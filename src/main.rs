@@ -405,6 +405,39 @@ impl ActionExecutor for SendInputExecutor {
 
 
 
+/// on_key_event_callback Step 4 の入力コンテキスト判定結果
+enum InputContext {
+    /// テキスト入力確定 → エンジン処理
+    TextInput,
+    /// 非テキスト確定 → パススルー
+    NonText,
+    /// 判定不能 + IME ON → バッファリング
+    UndeterminedImeOn,
+    /// 判定不能 + IME OFF → パススルー + 記憶
+    UndeterminedImeOff,
+}
+
+/// フォーカス種別と IME 状態から入力コンテキストを判定する
+///
+/// # Safety
+/// `IME` / `FOCUS_KIND` はシングルスレッドからのみアクセスすること。
+unsafe fn resolve_input_context() -> InputContext {
+    match FocusKind::load(&FOCUS_KIND) {
+        FocusKind::TextInput => InputContext::TextInput,
+        FocusKind::NonText => InputContext::NonText,
+        FocusKind::Undetermined => {
+            let ime_on = IME
+                .get_ref()
+                .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+            if ime_on {
+                InputContext::UndeterminedImeOn
+            } else {
+                InputContext::UndeterminedImeOff
+            }
+        }
+    }
+}
+
 /// フックコールバックからの Engine 呼び出し
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let is_key_down = matches!(
@@ -494,40 +527,39 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
-    let focus = FocusKind::load(&FOCUS_KIND);
-    match focus {
-        FocusKind::NonText => {
+    match resolve_input_context() {
+        InputContext::NonText => {
             // 非テキストコントロール → 常にパススルー
             return CallbackResult::PassThrough;
         }
-        FocusKind::TextInput => {
+        InputContext::TextInput => {
             // テキスト入力 → 既存のエンジン処理（下の Step 5 に進む）
         }
-        FocusKind::Undetermined => {
-            // Undetermined → ハイブリッド戦略
+        InputContext::UndeterminedImeOn => {
+            // IME ON + Undetermined → 文字キーならバッファリング
             if is_key_down {
-                let ime_on = IME
-                    .get_ref()
-                    .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
-
                 let is_char = vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
-
-                if ime_on && is_char {
-                    // IME ON + Undetermined + 文字キー → バッファリング
+                if is_char {
                     if let Some(kb) = KEY_BUFFER.get_mut() {
                         kb.push_deferred(event);
                     }
                     key_buffer::start_buffer_timeout_if_needed();
                     return CallbackResult::Consumed;
-                } else if !ime_on && is_char {
-                    // IME OFF + Undetermined + 文字キー → PassThrough + 記憶
+                }
+            }
+            return CallbackResult::PassThrough;
+        }
+        InputContext::UndeterminedImeOff => {
+            // IME OFF + Undetermined → 文字キーなら PassThrough + 記憶
+            if is_key_down {
+                let is_char = vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
+                if is_char {
                     if let Some(kb) = KEY_BUFFER.get_mut() {
                         kb.push_passthrough(event);
                     }
                     return CallbackResult::PassThrough;
                 }
             }
-            // 文字キー以外や KeyUp → PassThrough
             return CallbackResult::PassThrough;
         }
     }
