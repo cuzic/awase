@@ -3,6 +3,8 @@
 //! IME 制御キー直後のガード、Undetermined 時のバッファリング、
 //! IME OFF 時の PassThrough 記憶を一元管理する。
 
+use std::collections::VecDeque;
+
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
@@ -20,17 +22,17 @@ pub struct KeyBuffer {
     /// ガード中に遅延されたキーイベントのバッファ
     pub deferred_keys: Vec<RawKeyEvent>,
     /// IME OFF 時の記憶バッファ（PassThrough 済みキー）
-    pub passthrough_memory: Vec<RawKeyEvent>,
+    pub passthrough_memory: VecDeque<RawKeyEvent>,
     /// Undetermined + IME ON 時のバッファリング中フラグ
     pub undetermined_buffering: bool,
 }
 
 impl KeyBuffer {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             ime_transition_guard: false,
             deferred_keys: Vec::new(),
-            passthrough_memory: Vec::new(),
+            passthrough_memory: VecDeque::new(),
             undetermined_buffering: false,
         }
     }
@@ -52,9 +54,9 @@ impl KeyBuffer {
 
     /// PassThrough 記憶にキーを追加する（上限 20）
     pub fn push_passthrough(&mut self, event: RawKeyEvent) {
-        self.passthrough_memory.push(event);
+        self.passthrough_memory.push_back(event);
         if self.passthrough_memory.len() > 20 {
-            self.passthrough_memory.remove(0);
+            self.passthrough_memory.pop_front();
         }
     }
 
@@ -65,7 +67,7 @@ impl KeyBuffer {
 
     /// PassThrough 記憶を全て取り出す
     pub fn drain_passthrough(&mut self) -> Vec<RawKeyEvent> {
-        std::mem::take(&mut self.passthrough_memory)
+        std::mem::take(&mut self.passthrough_memory).into()
     }
 
     /// バッファリング中かどうか

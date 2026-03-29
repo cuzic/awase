@@ -98,13 +98,51 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
 pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
 
+/// 起動時の警告を集約して報告する診断コレクター
+struct StartupDiagnostics {
+    warnings: Vec<String>,
+}
+
+impl StartupDiagnostics {
+    fn new() -> Self {
+        Self {
+            warnings: Vec::new(),
+        }
+    }
+
+    fn warn(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        log::warn!("startup: {}", msg);
+        self.warnings.push(msg);
+    }
+
+    fn report(&self) {
+        if self.warnings.is_empty() {
+            return;
+        }
+        log::info!("{} startup warning(s):", self.warnings.len());
+        for w in &self.warnings {
+            log::info!("  - {}", w);
+        }
+        // Show tray balloon if tray is available
+        unsafe {
+            if let Some(tray) = TRAY.get_mut() {
+                tray.show_balloon(
+                    "awase",
+                    &format!("{}件の警告があります", self.warnings.len()),
+                );
+            }
+        }
+    }
+}
 
 fn main() -> Result<()> {
     init_logging();
+    let mut diag = StartupDiagnostics::new();
     let config = load_config()?;
-    let (layout_names, initial_layout_name) = init_engine(&config)?;
-    init_ime();
-    init_ngram(&config);
+    let (layout_names, initial_layout_name) = init_engine(&config, &mut diag)?;
+    init_ime(&mut diag);
+    init_ngram(&config, &mut diag);
 
     unsafe {
         OUTPUT.set(Output::new());
@@ -114,6 +152,7 @@ fn main() -> Result<()> {
 
     init_tray(&layout_names, &initial_layout_name)?;
     install_hooks_and_hotkeys(&config)?;
+    diag.report();
 
     log::info!("Hook installed. Running message loop...");
     log::info!("Press Ctrl+C to exit.");
@@ -156,7 +195,7 @@ fn load_config() -> Result<AppConfig> {
 }
 
 /// 配列の読み込みとエンジン初期化を行い、レイアウト名一覧とデフォルト名を返す
-fn init_engine(config: &AppConfig) -> Result<(Vec<String>, String)> {
+fn init_engine(config: &AppConfig, diag: &mut StartupDiagnostics) -> Result<(Vec<String>, String)> {
     let left_thumb_vk = VkCode(vk_name_to_code(&config.general.left_thumb_key).context(format!(
         "Unknown VK name: {}",
         config.general.left_thumb_key
@@ -167,7 +206,7 @@ fn init_engine(config: &AppConfig) -> Result<(Vec<String>, String)> {
     ))?);
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
-    let layouts = scan_layouts(&layouts_dir, left_thumb_vk, right_thumb_vk)?;
+    let layouts = scan_layouts(&layouts_dir, left_thumb_vk, right_thumb_vk, diag)?;
     let layout_names: Vec<String> = layouts.iter().map(|(name, ..)| name.clone()).collect();
     log::info!("Available layouts: {layout_names:?}");
 
@@ -216,8 +255,11 @@ fn select_default_layout(
 }
 
 /// IME プロバイダ初期化（TSF 優先、IMM32 フォールバック）
-fn init_ime() {
+fn init_ime(diag: &mut StartupDiagnostics) {
     let ime_provider = HybridProvider::new();
+    if !ime::is_japanese_input_language() {
+        diag.warn("日本語キーボードが検出されませんでした");
+    }
     log::info!(
         "IME provider initialized. Japanese keyboard: {}",
         ime::is_japanese_input_language()
@@ -228,7 +270,7 @@ fn init_ime() {
 }
 
 /// n-gram モデルのロード（オプション）
-fn init_ngram(config: &AppConfig) {
+fn init_ngram(config: &AppConfig, diag: &mut StartupDiagnostics) {
     let Some(ref ngram_path) = config.general.ngram_file else {
         return;
     };
@@ -236,7 +278,7 @@ fn init_ngram(config: &AppConfig) {
     let content = match std::fs::read_to_string(&ngram_path) {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("Failed to read n-gram file {}: {e}", ngram_path.display());
+            diag.warn(format!("n-gramファイル読込失敗: {}: {e}", ngram_path.display()));
             return;
         }
     };
@@ -253,7 +295,7 @@ fn init_ngram(config: &AppConfig) {
                 }
             }
         }
-        Err(e) => log::warn!("Failed to parse n-gram model: {e}"),
+        Err(e) => diag.warn(format!("n-gramモデル解析失敗: {e}")),
     }
 }
 
@@ -770,7 +812,9 @@ unsafe fn reload_config() {
     }
 
     // n-gram モデルの再読み込み
-    init_ngram(&config);
+    let mut reload_diag = StartupDiagnostics::new();
+    init_ngram(&config, &mut reload_diag);
+    reload_diag.report();
 
     // フォーカスオーバーライド再読み込み + キャッシュクリア
     if let Some(f) = FOCUS.get_mut() {
@@ -787,11 +831,12 @@ fn scan_layouts(
     layouts_dir: &Path,
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
+    diag: &mut StartupDiagnostics,
 ) -> Result<Vec<(String, YabLayout, VkCode, VkCode)>> {
     let mut layouts = Vec::new();
 
     if !layouts_dir.is_dir() {
-        log::warn!("Layouts directory not found: {}", layouts_dir.display());
+        diag.warn(format!("レイアウトディレクトリが見つかりません: {}", layouts_dir.display()));
         return Ok(layouts);
     }
 
@@ -814,11 +859,11 @@ fn scan_layouts(
                         layouts.push((yab.name.clone(), yab, left_thumb_vk, right_thumb_vk));
                     }
                     Err(e) => {
-                        log::warn!("Failed to parse layout {}: {e}", path.display());
+                        diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
                     }
                 },
                 Err(e) => {
-                    log::warn!("Failed to read layout file {}: {e}", path.display());
+                    diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
                 }
             }
         }

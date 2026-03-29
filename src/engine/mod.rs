@@ -459,14 +459,20 @@ impl Engine {
                 match ev.key_class {
                     KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_char_thumb(ev),
                     KeyClass::Char => self.handle_pending_char_char(ev),
-                    KeyClass::Passthrough => unreachable!(),
+                    other => {
+                        log::error!("unexpected key_class in PendingChar: {:?}", other);
+                        Response::pass_through()
+                    }
                 }
             }
             EnginePhase::PendingThumb => {
                 match ev.key_class {
                     KeyClass::Char => self.handle_pending_thumb_char(ev),
                     KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_thumb_thumb(ev),
-                    KeyClass::Passthrough => unreachable!(),
+                    other => {
+                        log::error!("unexpected key_class in PendingThumb: {:?}", other);
+                        Response::pass_through()
+                    }
                 }
             }
             EnginePhase::PendingCharThumb => self.resolve_pending_char_thumb(ev),
@@ -474,7 +480,10 @@ impl Engine {
                 match ev.key_class {
                     KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_speculative_thumb(ev),
                     KeyClass::Char => self.handle_idle(ev),
-                    KeyClass::Passthrough => unreachable!(),
+                    other => {
+                        log::error!("unexpected key_class in SpeculativeChar: {:?}", other);
+                        Response::pass_through()
+                    }
                 }
             }
         }
@@ -1065,9 +1074,14 @@ impl Engine {
                 let thumb = old_thumb.expect("PendingThumb phase requires pending_thumb");
                 self.resolve_pending_thumb_as_single(thumb.vk_code)
             }
-            EnginePhase::Idle
-            | EnginePhase::PendingCharThumb
-            | EnginePhase::SpeculativeChar => unreachable!(),
+            other => {
+                log::error!("unexpected phase in handle_key_up_pending: {:?}", other);
+                // Safe fallback: no resolved actions, consume the event
+                ResolvedAction {
+                    actions: vec![],
+                    output: OutputUpdate::None,
+                }
+            }
         };
         self.update_history(resolved.output);
         let mut result = resolved.actions;
