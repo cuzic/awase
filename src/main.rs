@@ -17,20 +17,23 @@ mod single_thread_cell;
 mod tray;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, KillTimer, PostMessageW, PostQuitMessage, SetTimer, MSG, WM_APP,
-    WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
+    DispatchMessageW, GetClassNameW, GetMessageW, GetWindowLongW, GWL_EXSTYLE, GWL_STYLE,
+    KillTimer, PostMessageW, PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
+    WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
 use awase::config::{vk_name_to_code, AppConfig};
-use awase::engine::{ContextInvalidation, Engine, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::{ContextInvalidation, Engine, EngineBypassState, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{KeyEventType, RawKeyEvent};
 use awase::yab::YabLayout;
@@ -74,6 +77,21 @@ static DEFERRED_KEYS: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell::new
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// フォーカス中コントロールのバイパス判定キャッシュ（Unknown=2 で安全側初期化）
+static BYPASS_STATE: AtomicU8 = AtomicU8::new(EngineBypassState::Unknown as u8);
+
+/// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
+const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
+
+/// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
+const EVENT_OBJECT_FOCUS: u32 = 0x8005;
+
+/// `WS_EX_NOIME` (0x0040_0000) — IME 入力を受け付けないウィンドウスタイル
+const WS_EX_NOIME: i32 = 0x0040_0000;
+
+/// `ES_READONLY` (0x0800) — 読み取り専用 Edit コントロール
+const ES_READONLY: i32 = 0x0800;
+
 fn main() -> Result<()> {
     init_logging();
     let config = load_config()?;
@@ -93,6 +111,7 @@ fn main() -> Result<()> {
     log::info!("Hook installed. Running message loop...");
     log::info!("Press Ctrl+C to exit.");
     install_ctrl_handler();
+    install_focus_hook();
 
     run_message_loop();
     cleanup();
@@ -380,6 +399,14 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
+    // Bypass判定: 非テキストコントロール（Button, Static 等）ではエンジンをバイパス。
+    // Unknown（判定不能）は AllowEngine と同じ扱い（deny リスト方式）。
+    // Phase 2/3 (MSAA/UIA) で Unknown の解像度が上がったら allow リスト方式に切替可能。
+    let bypass = BYPASS_STATE.load(Ordering::Acquire);
+    if bypass == EngineBypassState::ShouldBypass as u8 {
+        return CallbackResult::PassThrough;
+    }
+
     // IME OFF / 英数モード → PassThrough（エンジンバイパス）
     if let Some(ime_provider) = IME.get_ref() {
         if !ime_provider.is_active() || !ime_provider.get_mode().is_kana_input() {
@@ -397,6 +424,134 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     } else {
         CallbackResult::PassThrough
     }
+}
+
+/// フォーカス変更イベントフックを登録する
+///
+/// `WINEVENT_OUTOFCONTEXT` を使用するため、コールバックはメッセージループ上で実行される。
+/// これにより `determine_bypass_state` が非同期（キーイベントとは別タイミング）で呼ばれる。
+fn install_focus_hook() {
+    unsafe {
+        let hook = SetWinEventHook(
+            EVENT_OBJECT_FOCUS,
+            EVENT_OBJECT_FOCUS,
+            None,
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if hook.is_invalid() {
+            log::warn!("Failed to install focus event hook");
+        } else {
+            log::info!("Focus event hook installed");
+        }
+    }
+}
+
+/// フォーカス変更イベントのコールバック
+///
+/// `WINEVENT_OUTOFCONTEXT` により、メッセージループのコンテキストで呼ばれる。
+/// フォーカスが移動するたびにバイパス判定を更新し、キャッシュに書き込む。
+unsafe extern "system" fn win_event_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    if event != EVENT_OBJECT_FOCUS {
+        return;
+    }
+
+    // Step 1: 評価中は安全側（Unknown → bypass）に設定
+    BYPASS_STATE.store(EngineBypassState::Unknown as u8, Ordering::Release);
+
+    // Step 2: バイパス状態を判定
+    let state = determine_bypass_state(hwnd);
+
+    // Step 3: キャッシュを更新
+    BYPASS_STATE.store(state as u8, Ordering::Release);
+
+    // Step 4: ShouldBypass ならエンジンの保留状態をフラッシュ
+    if state == EngineBypassState::ShouldBypass {
+        invalidate_engine_context(ContextInvalidation::FocusChanged);
+    }
+
+    log::debug!("Focus changed: hwnd={:?} → {:?}", hwnd, state);
+}
+
+/// フォーカス中のウィンドウがテキスト入力を受け付けるかを判定する
+///
+/// deny-first（バイパスを優先）、allow は確信がある場合のみ。
+/// 判定不能なら `Unknown`（安全側＝バイパス）を返す。
+unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
+    if hwnd == HWND::default() {
+        return EngineBypassState::ShouldBypass;
+    }
+
+    // 1. ImmGetContext == NULL → IME 入力不可
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return EngineBypassState::ShouldBypass;
+    }
+    let _ = ImmReleaseContext(hwnd, himc);
+
+    // 2. WS_EX_NOIME ウィンドウスタイル
+    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    if ex_style & WS_EX_NOIME != 0 {
+        return EngineBypassState::ShouldBypass;
+    }
+
+    // 3. クラス名による判定
+    let mut class_buf = [0u16; 256];
+    let len = GetClassNameW(hwnd, &mut class_buf);
+    if len > 0 {
+        let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+
+        // 既知のテキスト入力コントロール
+        if matches!(
+            class_name.as_str(),
+            "Edit"
+                | "RichEdit"
+                | "RichEdit20A"
+                | "RichEdit20W"
+                | "RICHEDIT50W"
+                | "Scintilla"
+                | "ConsoleWindowClass"
+        ) {
+            // Edit コントロールの読み取り専用チェック
+            if class_name == "Edit" {
+                let style = GetWindowLongW(hwnd, GWL_STYLE);
+                if style & ES_READONLY != 0 {
+                    return EngineBypassState::ShouldBypass;
+                }
+            }
+            return EngineBypassState::AllowEngine;
+        }
+
+        // 既知の非テキストコントロール
+        if matches!(
+            class_name.as_str(),
+            "Button"
+                | "Static"
+                | "SysListView32"
+                | "SysTreeView32"
+                | "SysHeader32"
+                | "ToolbarWindow32"
+                | "msctls_statusbar32"
+                | "SysTabControl32"
+                | "msctls_trackbar32"
+                | "msctls_progress32"
+        ) {
+            return EngineBypassState::ShouldBypass;
+        }
+    }
+
+    // 4. 判定不能 → Unknown（安全側: バイパス）
+    EngineBypassState::Unknown
 }
 
 /// メッセージループ

@@ -165,6 +165,23 @@ pub enum ContextInvalidation {
     EngineDisabled,
     /// レイアウトが差し替えられた
     LayoutSwapped,
+    /// フォーカスが別のコントロールに移動した
+    FocusChanged,
+}
+
+/// エンジン処理をバイパスすべきかの判定結果
+///
+/// フォーカス中のコントロールがテキスト入力を受け付けるかどうかを示す。
+/// `AtomicU8` で共有するため `repr(u8)` を使用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EngineBypassState {
+    /// エンジン処理を許可（テキスト入力の確信あり）
+    AllowEngine = 0,
+    /// バイパス推奨（テキスト入力でない証拠あり）
+    ShouldBypass = 1,
+    /// 判定不能 → バイパス（安全側）
+    Unknown = 2,
 }
 
 /// エンジンのフェーズ（状態タグ）

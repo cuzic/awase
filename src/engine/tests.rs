@@ -3108,3 +3108,48 @@ fn test_finalize_plan_retract_and_record() {
     );
     assert_eq!(engine.output_history.recent_kana(1), vec!['ゔ']);
 }
+
+// ── EngineBypassState のユニットテスト ──
+
+#[test]
+fn test_bypass_state_repr_values() {
+    // repr(u8) の値が AtomicU8 との変換で正しいことを確認
+    assert_eq!(EngineBypassState::AllowEngine as u8, 0);
+    assert_eq!(EngineBypassState::ShouldBypass as u8, 1);
+    assert_eq!(EngineBypassState::Unknown as u8, 2);
+}
+
+#[test]
+fn test_bypass_state_equality() {
+    assert_eq!(EngineBypassState::AllowEngine, EngineBypassState::AllowEngine);
+    assert_ne!(EngineBypassState::AllowEngine, EngineBypassState::ShouldBypass);
+    assert_ne!(EngineBypassState::ShouldBypass, EngineBypassState::Unknown);
+}
+
+#[test]
+fn test_bypass_state_copy_clone() {
+    let state = EngineBypassState::ShouldBypass;
+    let copied = state; // Copy
+    let cloned = state.clone(); // Clone
+    assert_eq!(copied, EngineBypassState::ShouldBypass);
+    assert_eq!(cloned, EngineBypassState::ShouldBypass);
+}
+
+#[test]
+fn test_bypass_state_debug_format() {
+    // Debug trait が実装されていることを確認
+    let s = format!("{:?}", EngineBypassState::AllowEngine);
+    assert_eq!(s, "AllowEngine");
+    let s = format!("{:?}", EngineBypassState::ShouldBypass);
+    assert_eq!(s, "ShouldBypass");
+    let s = format!("{:?}", EngineBypassState::Unknown);
+    assert_eq!(s, "Unknown");
+}
+
+#[test]
+fn test_context_invalidation_focus_changed() {
+    // FocusChanged バリアントが存在し Debug 出力できることを確認
+    let reason = ContextInvalidation::FocusChanged;
+    let s = format!("{:?}", reason);
+    assert_eq!(s, "FocusChanged");
+}
