@@ -5,6 +5,8 @@ use windows::core::{Interface, VARIANT};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
 
+use super::classify::{ClassifyReason, ClassifyResult};
+
 /// `OBJID_CLIENT` — クライアント領域のアクセシブルオブジェクト
 const OBJID_CLIENT: i32 = -4;
 
@@ -95,7 +97,7 @@ impl MsaaRole {
 /// テキスト入力ロール（Text, Document）なら TextInput、
 /// 非テキストロール（ツールバー、メニュー等）なら NonText、
 /// 判定不能なら Undetermined を返す。
-pub unsafe fn msaa_classify(hwnd: HWND) -> FocusKind {
+pub unsafe fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
     let ok = AccessibleObjectFromWindow(
         hwnd,
@@ -112,11 +114,17 @@ pub unsafe fn msaa_classify(hwnd: HWND) -> FocusKind {
             if let Some(role) = MsaaRole::from_u32(role_id) {
                 if role.is_text_input() {
                     log::debug!("MSAA: {:?} → TextInput", role);
-                    return FocusKind::TextInput;
+                    return ClassifyResult {
+                        kind: FocusKind::TextInput,
+                        reason: ClassifyReason::MsaaRole(format!("{:?}", role)),
+                    };
                 }
                 if role.is_non_text() {
                     log::debug!("MSAA: {:?} → NonText", role);
-                    return FocusKind::NonText;
+                    return ClassifyResult {
+                        kind: FocusKind::NonText,
+                        reason: ClassifyReason::MsaaRole(format!("{:?}", role)),
+                    };
                 }
             }
 
@@ -128,5 +136,8 @@ pub unsafe fn msaa_classify(hwnd: HWND) -> FocusKind {
     }
 
     // 判定不能 → Undetermined
-    FocusKind::Undetermined
+    ClassifyResult {
+        kind: FocusKind::Undetermined,
+        reason: ClassifyReason::Undetermined,
+    }
 }

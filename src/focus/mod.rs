@@ -166,7 +166,8 @@ unsafe extern "system" fn win_event_proc(
     FocusKind::Undetermined.store(&crate::FOCUS_KIND);
 
     // Step 2: バイパス状態を判定
-    let state = classify::classify_focus(hwnd);
+    let result = classify::classify_focus(hwnd);
+    let state = result.kind;
 
     // Step 3: キャッシュに格納し、FOCUS_KIND を更新
     if let Some(cache) = crate::FOCUS_CACHE.get_mut() {
@@ -196,9 +197,10 @@ unsafe extern "system" fn win_event_proc(
     }
 
     log::debug!(
-        "Focus changed: hwnd={:?} class={} → {:?}{}",
+        "Focus changed: hwnd={:?} class={} reason={} → {:?}{}",
         hwnd,
         class_name,
+        result.reason,
         state,
         if state == FocusKind::Undetermined && !vk::is_browser_or_electron_class(&class_name) {
             " (IME auto-OFF)"

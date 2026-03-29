@@ -13,26 +13,69 @@ const WS_EX_NOIME: i32 = 0x0040_0000;
 /// `ES_READONLY` (0x0800) — 読み取り専用 Edit コントロール
 const ES_READONLY: i32 = 0x0800;
 
+/// フォーカス判定の結果と根拠
+#[derive(Debug)]
+pub struct ClassifyResult {
+    pub kind: FocusKind,
+    pub reason: ClassifyReason,
+}
+
+/// 判定根拠
+#[derive(Debug)]
+pub enum ClassifyReason {
+    /// hwnd が NULL
+    NullHwnd,
+    /// ImmGetContext が NULL を返した（IME コンテキストなし）
+    NoImeContext,
+    /// WS_EX_NOIME ウィンドウスタイル
+    NoImeStyle,
+    /// Edit コントロールの ES_READONLY
+    ReadOnlyEdit,
+    /// 既知のテキスト入力クラス名
+    KnownTextClass(String),
+    /// 既知の非テキストクラス名
+    KnownNonTextClass(String),
+    /// MSAA ロールによる判定
+    MsaaRole(String),
+    /// Phase 1-2 で判定不能
+    Undetermined,
+}
+
+impl std::fmt::Display for ClassifyReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NullHwnd => write!(f, "NullHwnd"),
+            Self::NoImeContext => write!(f, "NoImeContext"),
+            Self::NoImeStyle => write!(f, "NoImeStyle"),
+            Self::ReadOnlyEdit => write!(f, "ReadOnlyEdit"),
+            Self::KnownTextClass(c) => write!(f, "KnownTextClass({})", c),
+            Self::KnownNonTextClass(c) => write!(f, "KnownNonTextClass({})", c),
+            Self::MsaaRole(r) => write!(f, "MsaaRole({})", r),
+            Self::Undetermined => write!(f, "Undetermined"),
+        }
+    }
+}
+
 /// フォーカス中のウィンドウがテキスト入力を受け付けるかを判定する
 ///
 /// deny-first（バイパスを優先）、allow は確信がある場合のみ。
 /// 判定不能なら `Undetermined` を返す。
-pub unsafe fn classify_focus(hwnd: HWND) -> FocusKind {
+pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
     if hwnd == HWND::default() {
-        return FocusKind::NonText;
+        return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::NullHwnd };
     }
 
     // 1. ImmGetContext == NULL → IME 入力不可
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
-        return FocusKind::NonText;
+        return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::NoImeContext };
     }
     let _ = ImmReleaseContext(hwnd, himc);
 
     // 2. WS_EX_NOIME ウィンドウスタイル
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
     if ex_style & WS_EX_NOIME != 0 {
-        return FocusKind::NonText;
+        return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::NoImeStyle };
     }
 
     // 3. クラス名による判定
@@ -54,10 +97,10 @@ pub unsafe fn classify_focus(hwnd: HWND) -> FocusKind {
             if class_name == "Edit" {
                 let style = GetWindowLongW(hwnd, GWL_STYLE);
                 if style & ES_READONLY != 0 {
-                    return FocusKind::NonText;
+                    return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::ReadOnlyEdit };
                 }
             }
-            return FocusKind::TextInput;
+            return ClassifyResult { kind: FocusKind::TextInput, reason: ClassifyReason::KnownTextClass(class_name) };
         }
 
         // 既知の非テキストコントロール
@@ -74,7 +117,7 @@ pub unsafe fn classify_focus(hwnd: HWND) -> FocusKind {
                 | "msctls_trackbar32"
                 | "msctls_progress32"
         ) {
-            return FocusKind::NonText;
+            return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::KnownNonTextClass(class_name) };
         }
     }
 
