@@ -105,11 +105,7 @@ unsafe fn log_system_info() {
     // Keyboard layout
     let hkl = GetKeyboardLayout(0);
     let lang_id = (hkl.0 as u32) & 0xFFFF;
-    log::info!(
-        "Keyboard layout: HKL={:?} lang_id=0x{:04X}",
-        hkl,
-        lang_id
-    );
+    log::info!("Keyboard layout: HKL={:?} lang_id=0x{:04X}", hkl, lang_id);
 
     // Thread ID
     log::info!("Thread ID: {:?}", std::thread::current().id());
@@ -460,10 +456,7 @@ impl TestEditWindow {
         };
 
         // Log window creation details
-        log::info!(
-            "Window created: hwnd={:?} class=AwaseTestWindow",
-            hwnd
-        );
+        log::info!("Window created: hwnd={:?} class=AwaseTestWindow", hwnd);
         log::info!("Edit created: hwnd={:?} class=EDIT", edit_hwnd);
 
         // ウィンドウを表示してフォーカス設定
@@ -665,12 +658,13 @@ fn e2e_message_edit_control() {
         log::info!("Edit content: '{text}'");
         assert_eq!(text, "abc", "Expected 'abc', got: '{text}'");
 
-        // Test 3: Backspace via WM_KEYDOWN
+        // Test 3: Backspace via WM_CHAR '\x08'
+        // Edit コントロールは WM_CHAR で BS 文字 (\x08) を受け取ると削除する
         log::info!("--- Test: Backspace ---");
         win.clear();
         send_char_to_edit(win.edit_hwnd, 'a');
         send_char_to_edit(win.edit_hwnd, 'b');
-        send_keydown_to_edit(win.edit_hwnd, 0x08); // VK_BACK
+        send_char_to_edit(win.edit_hwnd, '\x08'); // BS as WM_CHAR
         let text = win.get_text();
         log::info!("Edit content after BS: '{text}'");
         assert_eq!(text, "a", "After BS expected 'a', got: '{text}'");
@@ -821,7 +815,9 @@ fn e2e_message_special_keys() {
 fn e2e_sendinput_special_keys_interactive() {
     init_test_logging();
     if !is_interactive_session() {
-        log::info!("Skipping SendInput special keys interactive test (set AWASE_E2E_INTERACTIVE=1)");
+        log::info!(
+            "Skipping SendInput special keys interactive test (set AWASE_E2E_INTERACTIVE=1)"
+        );
         return;
     }
     let _lock = INTERACTIVE_TEST_LOCK.lock().unwrap();
@@ -895,11 +891,7 @@ unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bo
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
         let err = windows::core::Error::from_win32();
-        log::warn!(
-            "ImmGetContext failed for hwnd={:?}: {:?}",
-            hwnd,
-            err
-        );
+        log::warn!("ImmGetContext failed for hwnd={:?}: {:?}", hwnd, err);
         return false;
     }
     let result = ImmSetOpenStatus(himc, open);
