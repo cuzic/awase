@@ -1432,7 +1432,7 @@ impl Engine {
     }
 
     /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
-    const fn is_passthrough_vk(vk_code: u16) -> bool {
+    pub const fn is_passthrough_vk(vk_code: u16) -> bool {
         matches!(
             vk_code,
             // 修飾キー

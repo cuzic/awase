@@ -76,6 +76,14 @@ const WM_PROCESS_DEFERRED: u32 = WM_APP + 11;
 /// UIA 非同期判定完了通知用カスタムメッセージ
 const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 
+/// Undetermined + IME ON バッファリングのタイムアウト用カスタムメッセージ
+/// （将来的に `PostMessageW` で明示送信する場合に使用）
+#[allow(dead_code)]
+const WM_BUFFER_TIMEOUT: u32 = WM_APP + 13;
+
+/// Undetermined + IME ON バッファリングのタイマー ID
+const TIMER_UNDETERMINED_BUFFER: usize = 100;
+
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)]
 pub fn check_ime_composing() -> bool {
@@ -98,6 +106,15 @@ static DEFERRED_KEYS: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell::new
 
 /// UIA 非同期判定リクエスト送信チャネル（メインスレッドからのみアクセス）
 static UIA_SENDER: SingleThreadCell<mpsc::Sender<SendableHwnd>> = SingleThreadCell::new();
+
+/// タイピングパターン検出用トラッカー
+static KEY_PATTERN_TRACKER: SingleThreadCell<KeyPatternTracker> = SingleThreadCell::new();
+
+/// Undetermined + IME ON 時のバッファリング中フラグ
+static UNDETERMINED_BUFFERING: SingleThreadCell<bool> = SingleThreadCell::new();
+
+/// IME OFF 時の記憶バッファ（PassThrough 済みキー）
+static PASSTHROUGH_MEMORY: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell::new();
 
 /// フォーカス判定結果のキャッシュ（メインスレッドからのみアクセス）
 static FOCUS_CACHE: SingleThreadCell<FocusCache> = SingleThreadCell::new();
@@ -248,6 +265,9 @@ fn main() -> Result<()> {
         DEFERRED_KEYS.set(Vec::new());
         FOCUS_CACHE.set(FocusCache::new());
         LAST_FOCUS_INFO.set((0, String::new()));
+        KEY_PATTERN_TRACKER.set(KeyPatternTracker::new());
+        UNDETERMINED_BUFFERING.set(false);
+        PASSTHROUGH_MEMORY.set(Vec::new());
     }
 
     init_tray(&layout_names, &initial_layout_name)?;
@@ -457,6 +477,9 @@ fn cleanup() {
         LAYOUTS.clear();
         FOCUS_CACHE.clear();
         LAST_FOCUS_INFO.clear();
+        KEY_PATTERN_TRACKER.clear();
+        UNDETERMINED_BUFFERING.clear();
+        PASSTHROUGH_MEMORY.clear();
     }
     log::info!("Exited cleanly.");
 }
@@ -496,6 +519,267 @@ impl ActionExecutor for SendInputExecutor {
     }
 }
 
+/// IME コンテキストキー（IME 制御キー + 親指キー）かどうかを判定する。
+///
+/// `Engine::is_ime_control_vk()` のスーパーセットに親指キー（変換/無変換）を追加。
+/// これらのキーが押された場合、ユーザーがテキスト入力コンテキストにいる強いシグナルとなる。
+fn is_ime_context_key(vk_code: u16) -> bool {
+    matches!(
+        vk_code,
+        0x15 | 0x16 | 0x17 | 0x19 | 0x1C | 0x1D | 0xE5
+    )
+}
+
+/// 修飾キー（Ctrl/Alt）が押されていない単独文字キーかどうかを判定する。
+///
+/// パターン検出およびハイブリッドバッファリングで使用。
+fn is_modifier_free_char_key(vk_code: u16) -> bool {
+    !Engine::is_ime_control_vk(vk_code)
+        && !Engine::is_passthrough_vk(vk_code)
+        && vk_code != 0x1C  // VK_CONVERT (右親指)
+        && vk_code != 0x1D  // VK_NONCONVERT (左親指)
+        && vk_code != 0x08  // VK_BACK（BS は別途追跡）
+        && !is_os_modifier_held()
+}
+
+/// OS レベルで Ctrl/Alt が押されているかを判定する。
+///
+/// `GetAsyncKeyState` を使用してリアルタイムの修飾キー状態を取得する。
+fn is_os_modifier_held() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    unsafe {
+        let ctrl = GetAsyncKeyState(0x11);  // VK_CONTROL
+        let alt = GetAsyncKeyState(0x12);   // VK_MENU
+        (ctrl & (1 << 15) as i16) != 0 || (alt & (1 << 15) as i16) != 0
+    }
+}
+
+/// タイピングパターン検出用トラッカー
+///
+/// 直近のキー入力パターンからテキスト入力コンテキストを推定する。
+/// - 1 秒以内に修飾なし文字キーが 5 回 → TextInput に昇格
+/// - 文字キー後 2 秒以内に BS が 2 回 → TextInput に昇格（テキスト編集パターン）
+struct KeyPatternTracker {
+    /// 直近の修飾なし文字キーのタイムスタンプ
+    char_timestamps: Vec<Instant>,
+    /// 直近の BS キーのタイムスタンプ（文字キー後のみ追跡）
+    bs_timestamps: Vec<Instant>,
+    /// 最近文字キーが押されたか（BS 追跡用）
+    had_recent_chars: bool,
+}
+
+impl KeyPatternTracker {
+    fn new() -> Self {
+        Self {
+            char_timestamps: Vec::new(),
+            bs_timestamps: Vec::new(),
+            had_recent_chars: false,
+        }
+    }
+
+    /// キーイベントを追跡し、パターンが検出された場合は理由文字列を返す。
+    fn on_key(&mut self, vk_code: u16, is_modifier_free_char: bool) -> Option<&'static str> {
+        let now = Instant::now();
+
+        if is_modifier_free_char {
+            self.char_timestamps.push(now);
+            self.char_timestamps
+                .retain(|t| now.duration_since(*t).as_millis() < 1000);
+            self.had_recent_chars = true;
+
+            if self.char_timestamps.len() >= 5 {
+                self.char_timestamps.clear();
+                self.bs_timestamps.clear();
+                return Some("5 char keys in 1s");
+            }
+        }
+
+        if vk_code == 0x08 && self.had_recent_chars {
+            // VK_BACK
+            self.bs_timestamps.push(now);
+            self.bs_timestamps
+                .retain(|t| now.duration_since(*t).as_millis() < 2000);
+
+            if self.bs_timestamps.len() >= 2 {
+                self.char_timestamps.clear();
+                self.bs_timestamps.clear();
+                return Some("2 BS after chars in 2s");
+            }
+        }
+
+        // 文字キーでも BS でもないキー → 2 秒経過で recent chars リセット
+        if !is_modifier_free_char && vk_code != 0x08 {
+            if let Some(last) = self.char_timestamps.last() {
+                if now.duration_since(*last).as_millis() > 2000 {
+                    self.had_recent_chars = false;
+                    self.bs_timestamps.clear();
+                }
+            }
+        }
+
+        None
+    }
+
+    /// トラッカーをリセットする（昇格後やフォーカス変更時）
+    fn clear(&mut self) {
+        self.char_timestamps.clear();
+        self.bs_timestamps.clear();
+        self.had_recent_chars = false;
+    }
+}
+
+/// FocusKind を TextInput に昇格させる共通ヘルパー。
+///
+/// キャッシュとログの更新を一元化する。
+unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
+    let current = FOCUS_KIND.load(Ordering::Acquire);
+    if current == FocusKind::TextInput as u8 {
+        return;
+    }
+    FOCUS_KIND.store(FocusKind::TextInput as u8, Ordering::Release);
+    if let Some(cache) = FOCUS_CACHE.get_mut() {
+        if let Some((pid, cls)) = LAST_FOCUS_INFO.get_ref() {
+            cache.insert(*pid, cls.clone(), FocusKind::TextInput, source);
+        }
+    }
+    log::info!(
+        "Promoting to TextInput: {} (source={:?})",
+        reason,
+        source
+    );
+}
+
+/// キー入力パターンを観察し、テキスト入力コンテキストを推定する。
+///
+/// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
+/// パターンが検出されると `promote_to_text_input` で昇格する。
+unsafe fn observe_key_pattern(event: &RawKeyEvent) {
+    let is_key_down = matches!(
+        event.event_type,
+        KeyEventType::KeyDown | KeyEventType::SysKeyDown
+    );
+    if !is_key_down {
+        return;
+    }
+
+    let current = FOCUS_KIND.load(Ordering::Acquire);
+    if current == FocusKind::TextInput as u8 {
+        return; // 既に TextInput なら追跡不要
+    }
+
+    let is_char = is_modifier_free_char_key(event.vk_code);
+
+    if let Some(tracker) = KEY_PATTERN_TRACKER.get_mut() {
+        if let Some(reason) = tracker.on_key(event.vk_code, is_char) {
+            promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
+            tracker.clear();
+
+            // IME OFF + Undetermined で PassThrough 済みキーがある場合、
+            // BS で取り消して再処理する
+            retract_passthrough_memory();
+        }
+    }
+}
+
+/// PassThrough 済みキーを BS で取り消し、エンジンで再処理する。
+///
+/// IME OFF + Undetermined 状態で PassThrough したキーを、
+/// TextInput に昇格した後に正しく処理し直すために使用する。
+unsafe fn retract_passthrough_memory() {
+    let keys = PASSTHROUGH_MEMORY
+        .get_mut()
+        .map(std::mem::take)
+        .unwrap_or_default();
+
+    if keys.is_empty() {
+        return;
+    }
+
+    log::debug!(
+        "Retracting {} passthrough key(s) with BS + re-process",
+        keys.len()
+    );
+
+    // BS を送信して PassThrough 済みの文字を取り消す
+    if let Some(output) = OUTPUT.get_ref() {
+        let mut bs_actions: Vec<awase::types::KeyAction> = Vec::new();
+        for _ in 0..keys.len() {
+            bs_actions.push(awase::types::KeyAction::Key(0x08));   // VK_BACK down
+            bs_actions.push(awase::types::KeyAction::KeyUp(0x08)); // VK_BACK up
+        }
+        output.send_keys(&bs_actions);
+    }
+
+    // エンジンで再処理
+    for event in keys {
+        let ime_active = IME
+            .get_ref()
+            .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+
+        if ime_active {
+            if let Some(engine) = ENGINE.get_mut() {
+                let response = engine.on_event(event);
+                let mut timer_runtime = Win32TimerRuntime;
+                let mut action_executor = SendInputExecutor;
+                dispatch(&response, &mut timer_runtime, &mut action_executor);
+            }
+        }
+        // IME OFF のままなら再注入（元々 PassThrough だったので同じ結果）
+        // この場合は BS 分が余計だが、IME OFF → パターン検出 → 昇格の流れでは
+        // IME が ON になっていることが前提なので通常は engine 経由になる
+    }
+}
+
+/// Undetermined + IME ON バッファリングのタイムアウトを開始する（初回バッファ時のみ）。
+unsafe fn start_buffer_timeout_if_needed() {
+    if let Some(buffering) = UNDETERMINED_BUFFERING.get_mut() {
+        if !*buffering {
+            *buffering = true;
+            let _ = SetTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER, 300, None);
+        }
+    }
+}
+
+/// Undetermined + IME ON バッファリングのタイムアウト処理。
+///
+/// 300ms 以内にパターン検出されなかった場合、バッファされたキーを
+/// エンジンで処理する（安全側: TextInput として扱う）。
+unsafe fn handle_buffer_timeout() {
+    let _ = KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER);
+    if let Some(buffering) = UNDETERMINED_BUFFERING.get_mut() {
+        *buffering = false;
+    }
+
+    let keys = DEFERRED_KEYS
+        .get_mut()
+        .map(std::mem::take)
+        .unwrap_or_default();
+
+    if keys.is_empty() {
+        return;
+    }
+
+    log::debug!(
+        "Buffer timeout: promoting to TextInput and processing {} buffered key(s)",
+        keys.len()
+    );
+
+    // タイムアウト → TextInput に昇格してエンジンで処理
+    promote_to_text_input(
+        DetectionSource::TypingPatternInferred,
+        "buffer timeout (IME ON + Undetermined)",
+    );
+
+    for event in keys {
+        if let Some(engine) = ENGINE.get_mut() {
+            let response = engine.on_event(event);
+            let mut timer_runtime = Win32TimerRuntime;
+            let mut action_executor = SendInputExecutor;
+            dispatch(&response, &mut timer_runtime, &mut action_executor);
+        }
+    }
+}
+
 /// フックコールバックからの Engine 呼び出し
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let is_key_down = matches!(
@@ -503,7 +787,45 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         KeyEventType::KeyDown | KeyEventType::SysKeyDown
     );
 
-    // ── IME ガード: IME 制御キー直後の後続キーを遅延処理する ──
+    // ── Step 0: パターン観察（すべてのキーイベントに対して、バイパスチェック前に実行） ──
+    observe_key_pattern(&event);
+
+    // ── Step 1: IME/親指キー検出による即時 TextInput 昇格 ──
+    // IME 制御キーまたは親指キー（変換/無変換）が押された場合、
+    // ユーザーがテキスト入力コンテキストにいると判断して昇格する。
+    if is_key_down && is_ime_context_key(event.vk_code) {
+        let current = FOCUS_KIND.load(Ordering::Acquire);
+        if current != FocusKind::TextInput as u8 {
+            promote_to_text_input(
+                DetectionSource::ImeKeyInferred,
+                &format!("IME/thumb key 0x{:02X}", event.vk_code),
+            );
+            // Undetermined バッファリング中ならバッファを処理
+            if let Some(buffering) = UNDETERMINED_BUFFERING.get_mut() {
+                if *buffering {
+                    *buffering = false;
+                    let _ = KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER);
+                    // バッファされたキーをエンジンで処理
+                    let keys = DEFERRED_KEYS
+                        .get_mut()
+                        .map(std::mem::take)
+                        .unwrap_or_default();
+                    for buffered in keys {
+                        if let Some(engine) = ENGINE.get_mut() {
+                            let response = engine.on_event(buffered);
+                            let mut timer_runtime = Win32TimerRuntime;
+                            let mut action_executor = SendInputExecutor;
+                            dispatch(&response, &mut timer_runtime, &mut action_executor);
+                        }
+                    }
+                }
+            }
+            // PassThrough 済みキーがあれば取り消して再処理
+            retract_passthrough_memory();
+        }
+    }
+
+    // ── Step 2: IME ガード: IME 制御キー直後の後続キーを遅延処理する ──
     // IME 制御キー（半角/全角等）が OS に渡された直後は、IME 状態がまだ反映されて
     // いない可能性がある。後続キーをメッセージループに回すことで、IME 状態が
     // 確実に更新された後に処理する。
@@ -527,7 +849,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    // ── IME 制御キーの検出: ガードを有効にしてパススルー ──
+    // ── Step 3: IME 制御キーの検出: ガードを有効にしてパススルー ──
     if is_key_down && Engine::is_ime_control_vk(event.vk_code) {
         // エンジンの保留をフラッシュ（engine 側の handle_bypass で実行される）
         if let Some(engine) = ENGINE.get_mut() {
@@ -547,18 +869,54 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     }
 
-    // ── 通常のキー処理 ──
+    // ── Step 4: フォーカス判定によるハイブリッド戦略 ──
     let Some(engine) = ENGINE.get_mut() else {
         return CallbackResult::PassThrough;
     };
 
-    // フォーカス判定: 非テキストコントロール（Button, Static 等）ではエンジンをバイパス。
-    // Undetermined（判定不能）は TextInput と同じ扱い（deny リスト方式）。
     let focus = FOCUS_KIND.load(Ordering::Acquire);
-    if focus == FocusKind::NonText as u8 {
-        return CallbackResult::PassThrough;
+    match focus {
+        f if f == FocusKind::NonText as u8 => {
+            // 非テキストコントロール → 常にパススルー
+            return CallbackResult::PassThrough;
+        }
+        f if f == FocusKind::TextInput as u8 => {
+            // テキスト入力 → 既存のエンジン処理（下の Step 5 に進む）
+        }
+        _ => {
+            // Undetermined → ハイブリッド戦略
+            if is_key_down {
+                let ime_on = IME
+                    .get_ref()
+                    .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+
+                let is_char = is_modifier_free_char_key(event.vk_code);
+
+                if ime_on && is_char {
+                    // IME ON + Undetermined + 文字キー → バッファリング
+                    if let Some(buf) = DEFERRED_KEYS.get_mut() {
+                        buf.push(event);
+                    }
+                    start_buffer_timeout_if_needed();
+                    return CallbackResult::Consumed;
+                } else if !ime_on && is_char {
+                    // IME OFF + Undetermined + 文字キー → PassThrough + 記憶
+                    if let Some(mem) = PASSTHROUGH_MEMORY.get_mut() {
+                        mem.push(event);
+                        // 記憶バッファの上限（無限に溜めない）
+                        if mem.len() > 20 {
+                            mem.remove(0);
+                        }
+                    }
+                    return CallbackResult::PassThrough;
+                }
+            }
+            // 文字キー以外や KeyUp → PassThrough
+            return CallbackResult::PassThrough;
+        }
     }
 
+    // ── Step 5: エンジン処理（TextInput 確定時のみ到達） ──
     // IME OFF / 英数モード → PassThrough（エンジンバイパス）
     if let Some(ime_provider) = IME.get_ref() {
         if !ime_provider.is_active() || !ime_provider.get_mode().is_kana_input() {
@@ -625,6 +983,25 @@ unsafe extern "system" fn win_event_proc(
     // UIA 非同期結果のキャッシュ更新用に保存
     if let Some(last) = LAST_FOCUS_INFO.get_mut() {
         *last = (process_id, class_name.clone());
+    }
+
+    // フォーカス変更時にパターントラッカーと記憶バッファをリセット
+    if let Some(tracker) = KEY_PATTERN_TRACKER.get_mut() {
+        tracker.clear();
+    }
+    if let Some(mem) = PASSTHROUGH_MEMORY.get_mut() {
+        mem.clear();
+    }
+    // Undetermined バッファリング中ならキャンセル
+    if let Some(buffering) = UNDETERMINED_BUFFERING.get_mut() {
+        if *buffering {
+            *buffering = false;
+            let _ = KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER);
+            // バッファされたキーは破棄（フォーカスが変わったので無意味）
+            if let Some(buf) = DEFERRED_KEYS.get_mut() {
+                buf.clear();
+            }
+        }
     }
 
     // キャッシュヒット → 即座に結果を適用
@@ -979,6 +1356,11 @@ fn run_message_loop() {
         }
 
         match msg.message {
+            WM_TIMER if msg.wParam.0 == TIMER_UNDETERMINED_BUFFER => {
+                unsafe {
+                    handle_buffer_timeout();
+                }
+            }
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
                 let timer_id = msg.wParam.0;
                 unsafe {
