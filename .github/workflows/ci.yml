@@ -47,16 +47,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - name: Build awase.exe (main binary)
+
+      - name: Build awase.exe
         run: cargo build --release --target ${{ matrix.target }}
-      - name: Build awase-settings.exe (settings GUI)
+
+      - name: Build awase-settings.exe
         run: cargo build --release --target ${{ matrix.target }} --features gui --bin awase-settings
-      - name: Upload artifacts
+
+      - name: Prepare distribution
+        shell: bash
+        run: |
+          mkdir -p dist/layout
+          cp target/${{ matrix.target }}/release/awase.exe dist/
+          cp target/${{ matrix.target }}/release/awase-settings.exe dist/ || true
+          cp config.toml dist/
+          cp layout/*.yab dist/layout/
+          cp README.md dist/
+          cp LICENSE* dist/ 2>/dev/null || true
+
+      - name: Upload distribution
         uses: actions/upload-artifact@v4
         with:
           name: awase-${{ matrix.name }}
-          path: |
-            target/${{ matrix.target }}/release/awase.exe
-            target/${{ matrix.target }}/release/awase-settings.exe
-            config.toml
-            layout/
+          path: dist/
