@@ -9,15 +9,15 @@ use crate::config::ConfirmMode;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
 use crate::scanmap::scan_to_pos;
-use crate::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+use crate::types::{
+    ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode,
+};
 use crate::yab::{YabFace, YabLayout, YabValue};
 
-pub use types::{
-    ClassifiedEvent, FinalizePlan, KeyClass, OutputRecord, OutputUpdate, TimerIntent,
-};
 use types::{
     BypassReason, EnginePhase, Face, ModifierState, PendingKey, PendingThumbData, ResolvedAction,
 };
+pub use types::{ClassifiedEvent, FinalizePlan, KeyClass, OutputRecord, OutputUpdate, TimerIntent};
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;
@@ -195,7 +195,8 @@ impl Engine {
             EnginePhase::PendingChar => {
                 // 保留中の文字キーを通常面で単独確定
                 let pending = old_char.expect("PendingChar phase requires pending_char");
-                let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
+                let resolved =
+                    self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions)
             }
@@ -351,7 +352,10 @@ impl Engine {
                 self.right_thumb_down = Some(thumb_timestamp);
             }
             let output = record_output(char_scan, &action, kana);
-            ResolvedAction { actions: vec![action], output }
+            ResolvedAction {
+                actions: vec![action],
+                output,
+            }
         } else {
             // 親指面に定義がない場合は文字キーを単独確定
             self.resolve_pending_char_as_single(char_scan, char_vk)
@@ -455,37 +459,31 @@ impl Engine {
     fn dispatch_key_down(&mut self, ev: &ClassifiedEvent) -> Resp {
         match self.phase {
             EnginePhase::Idle => self.handle_idle(ev),
-            EnginePhase::PendingChar => {
-                match ev.key_class {
-                    KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_char_thumb(ev),
-                    KeyClass::Char => self.handle_pending_char_char(ev),
-                    KeyClass::Passthrough => {
-                        log::error!("unexpected Passthrough in PendingChar");
-                        Response::pass_through()
-                    }
+            EnginePhase::PendingChar => match ev.key_class {
+                KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_char_thumb(ev),
+                KeyClass::Char => self.handle_pending_char_char(ev),
+                KeyClass::Passthrough => {
+                    log::error!("unexpected Passthrough in PendingChar");
+                    Response::pass_through()
                 }
-            }
-            EnginePhase::PendingThumb => {
-                match ev.key_class {
-                    KeyClass::Char => self.handle_pending_thumb_char(ev),
-                    KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_thumb_thumb(ev),
-                    KeyClass::Passthrough => {
-                        log::error!("unexpected Passthrough in PendingThumb");
-                        Response::pass_through()
-                    }
+            },
+            EnginePhase::PendingThumb => match ev.key_class {
+                KeyClass::Char => self.handle_pending_thumb_char(ev),
+                KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_thumb_thumb(ev),
+                KeyClass::Passthrough => {
+                    log::error!("unexpected Passthrough in PendingThumb");
+                    Response::pass_through()
                 }
-            }
+            },
             EnginePhase::PendingCharThumb => self.resolve_pending_char_thumb(ev),
-            EnginePhase::SpeculativeChar => {
-                match ev.key_class {
-                    KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_speculative_thumb(ev),
-                    KeyClass::Char => self.handle_idle(ev),
-                    KeyClass::Passthrough => {
-                        log::error!("unexpected Passthrough in SpeculativeChar");
-                        Response::pass_through()
-                    }
+            EnginePhase::SpeculativeChar => match ev.key_class {
+                KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_speculative_thumb(ev),
+                KeyClass::Char => self.handle_idle(ev),
+                KeyClass::Passthrough => {
+                    log::error!("unexpected Passthrough in SpeculativeChar");
+                    Response::pass_through()
                 }
-            }
+            },
         }
     }
 
@@ -662,8 +660,7 @@ impl Engine {
 
         // Compute scores
         let recent = self.output_history.recent_kana(3);
-        let normal_score = normal_kana
-            .map_or(0.0, |ch| model.frequency_score(&recent, ch));
+        let normal_score = normal_kana.map_or(0.0, |ch| model.frequency_score(&recent, ch));
         let thumb_score = [left_kana, right_kana]
             .iter()
             .filter_map(|k| k.map(|ch| model.frequency_score(&recent, ch)))
@@ -690,7 +687,9 @@ impl Engine {
 impl Engine {
     /// 投機出力済み状態で親指キーが到着した場合の処理
     fn handle_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> Resp {
-        let pending = self.pending_char.expect("SpeculativeChar phase requires pending_char");
+        let pending = self
+            .pending_char
+            .expect("SpeculativeChar phase requires pending_char");
         let elapsed = ev.timestamp.saturating_sub(pending.timestamp);
         let face = Face::from_thumb(ev.key_class);
 
@@ -741,12 +740,18 @@ impl Engine {
 
     /// PendingChar + 親指キー → 同時打鍵候補（閾値内なら PendingCharThumb、超過なら flush+新規）
     fn handle_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> Resp {
-        let pending = self.pending_char.expect("PendingChar phase requires pending_char");
+        let pending = self
+            .pending_char
+            .expect("PendingChar phase requires pending_char");
         let elapsed_us = ev.timestamp.saturating_sub(pending.timestamp);
 
         // 親指面で保留文字キーの候補を取得し閾値を調整
         let candidate_face = Face::from_thumb(ev.key_class);
-        let candidate = self.lookup_face(pending.scan_code, pending.vk_code, self.get_face(candidate_face));
+        let candidate = self.lookup_face(
+            pending.scan_code,
+            pending.vk_code,
+            self.get_face(candidate_face),
+        );
         let threshold = candidate
             .as_ref()
             .and_then(|(_, kana)| *kana)
@@ -780,7 +785,9 @@ impl Engine {
 
     /// PendingChar + 文字キー → 前の保留を単独確定 + 今回のキーを新規処理
     fn handle_pending_char_char(&mut self, ev: &ClassifiedEvent) -> Resp {
-        let pending = self.pending_char.expect("PendingChar phase requires pending_char");
+        let pending = self
+            .pending_char
+            .expect("PendingChar phase requires pending_char");
         self.go_idle();
         let prev = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
         self.update_history(prev.output);
@@ -790,7 +797,9 @@ impl Engine {
 
     /// PendingThumb + 文字キー → 同時打鍵候補（閾値内なら即時確定、超過なら flush+新規）
     fn handle_pending_thumb_char(&mut self, ev: &ClassifiedEvent) -> Resp {
-        let thumb = self.pending_thumb.expect("PendingThumb phase requires pending_thumb");
+        let thumb = self
+            .pending_thumb
+            .expect("PendingThumb phase requires pending_thumb");
         let elapsed_us = ev.timestamp.saturating_sub(thumb.timestamp);
 
         // 親指面で到着文字キーの候補を取得し閾値を調整
@@ -828,7 +837,9 @@ impl Engine {
 
     /// PendingThumb + 親指キー → 前の保留を単独確定 + 今回のキーを新規処理
     fn handle_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> Resp {
-        let thumb = self.pending_thumb.expect("PendingThumb phase requires pending_thumb");
+        let thumb = self
+            .pending_thumb
+            .expect("PendingThumb phase requires pending_thumb");
         self.go_idle();
         let prev = self.resolve_pending_thumb_as_single(thumb.vk_code);
         self.update_history(prev.output);
@@ -895,11 +906,17 @@ impl Engine {
             self.lookup_face(scan_code, vk_code, self.get_face(Face::Normal))
         {
             let output = record_output(scan_code, &action, kana);
-            ResolvedAction { actions: vec![action], output }
+            ResolvedAction {
+                actions: vec![action],
+                output,
+            }
         } else {
             let action = KeyAction::Key(vk_code.0);
             let output = record_output(scan_code, &action, None);
-            ResolvedAction { actions: vec![action], output }
+            ResolvedAction {
+                actions: vec![action],
+                output,
+            }
         }
     }
 
@@ -910,13 +927,20 @@ impl Engine {
         // standard scan codes in our map; use u32 from vk_code for consistency.
         let action = KeyAction::Key(vk_code.0);
         let output = record_output(ScanCode(u32::from(vk_code.0)), &action, None);
-        ResolvedAction { actions: vec![action], output }
+        ResolvedAction {
+            actions: vec![action],
+            output,
+        }
     }
 
     /// `PendingCharThumb` 状態で新しいキーが到着した場合の 3 鍵仲裁処理
     fn resolve_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> Resp {
-        let pending = self.pending_char.expect("PendingCharThumb phase requires pending_char");
-        let thumb = self.pending_thumb.expect("PendingCharThumb phase requires pending_thumb");
+        let pending = self
+            .pending_char
+            .expect("PendingCharThumb phase requires pending_char");
+        let thumb = self
+            .pending_thumb
+            .expect("PendingCharThumb phase requires pending_thumb");
         self.go_idle();
 
         if !ev.key_class.is_thumb() {
@@ -987,8 +1011,14 @@ impl Engine {
 
         // PendingCharThumb 状態での KeyUp 処理
         if self.phase == EnginePhase::PendingCharThumb {
-            let char_vk = self.pending_char.expect("PendingCharThumb requires pending_char").vk_code;
-            let thumb_vk = self.pending_thumb.expect("PendingCharThumb requires pending_thumb").vk_code;
+            let char_vk = self
+                .pending_char
+                .expect("PendingCharThumb requires pending_char")
+                .vk_code;
+            let thumb_vk = self
+                .pending_thumb
+                .expect("PendingCharThumb requires pending_thumb")
+                .vk_code;
             if event.vk_code == char_vk || event.vk_code == thumb_vk {
                 return self.handle_key_up_pending_char_thumb(event);
             }
@@ -996,7 +1026,10 @@ impl Engine {
 
         // SpeculativeChar 状態で投機出力キーが離された場合 → 出力確定（Idle へ遷移）
         if self.phase == EnginePhase::SpeculativeChar {
-            let spec_vk = self.pending_char.expect("SpeculativeChar requires pending_char").vk_code;
+            let spec_vk = self
+                .pending_char
+                .expect("SpeculativeChar requires pending_char")
+                .vk_code;
             if event.vk_code == spec_vk {
                 self.go_idle();
                 // output_history から対応するキーの KeyUp を処理
@@ -1016,22 +1049,22 @@ impl Engine {
     /// 保留中キーの vk_code と一致するか判定する
     fn is_pending_key(&self, vk_code: VkCode) -> bool {
         match self.phase {
-            EnginePhase::PendingChar => {
-                self.pending_char.is_some_and(|p| p.vk_code == vk_code)
+            EnginePhase::PendingChar => self.pending_char.is_some_and(|p| p.vk_code == vk_code),
+            EnginePhase::PendingThumb => self.pending_thumb.is_some_and(|t| t.vk_code == vk_code),
+            EnginePhase::Idle | EnginePhase::PendingCharThumb | EnginePhase::SpeculativeChar => {
+                false
             }
-            EnginePhase::PendingThumb => {
-                self.pending_thumb.is_some_and(|t| t.vk_code == vk_code)
-            }
-            EnginePhase::Idle
-            | EnginePhase::PendingCharThumb
-            | EnginePhase::SpeculativeChar => false,
         }
     }
 
     /// PendingCharThumb 状態で char1 または thumb が離された場合の処理
     fn handle_key_up_pending_char_thumb(&mut self, event: &RawKeyEvent) -> Resp {
-        let pending = self.pending_char.expect("PendingCharThumb requires pending_char");
-        let thumb = self.pending_thumb.expect("PendingCharThumb requires pending_thumb");
+        let pending = self
+            .pending_char
+            .expect("PendingCharThumb requires pending_char");
+        let thumb = self
+            .pending_thumb
+            .expect("PendingCharThumb requires pending_thumb");
         self.go_idle();
         let resolved = self.resolve_char_thumb_as_simultaneous(
             pending.scan_code,
@@ -1075,7 +1108,10 @@ impl Engine {
                 self.resolve_pending_thumb_as_single(thumb.vk_code)
             }
             EnginePhase::Idle | EnginePhase::PendingCharThumb | EnginePhase::SpeculativeChar => {
-                log::error!("unexpected phase in handle_key_up_pending: {:?}", self.phase);
+                log::error!(
+                    "unexpected phase in handle_key_up_pending: {:?}",
+                    self.phase
+                );
                 ResolvedAction {
                     actions: vec![],
                     output: OutputUpdate::None,
@@ -1102,13 +1138,11 @@ impl Engine {
         if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
             return match entry.action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）
-                KeyAction::Char(_) | KeyAction::Romaji(_) => {
-                    self.finalize_plan(FinalizePlan {
-                        actions: vec![KeyAction::Suppress],
-                        timer: TimerIntent::CancelAll,
-                        output: OutputUpdate::None,
-                    })
-                }
+                KeyAction::Char(_) | KeyAction::Romaji(_) => self.finalize_plan(FinalizePlan {
+                    actions: vec![KeyAction::Suppress],
+                    timer: TimerIntent::CancelAll,
+                    output: OutputUpdate::None,
+                }),
                 KeyAction::Key(vk) => self.finalize_plan(FinalizePlan {
                     actions: vec![KeyAction::KeyUp(vk)],
                     timer: TimerIntent::CancelAll,
@@ -1183,7 +1217,9 @@ impl Engine {
     fn on_timeout_speculative(&mut self) -> Resp {
         match self.phase {
             EnginePhase::PendingChar => {
-                let pending = self.pending_char.expect("PendingChar phase requires pending_char");
+                let pending = self
+                    .pending_char
+                    .expect("PendingChar phase requires pending_char");
                 // Output normal face speculatively
                 let face = Face::Normal;
                 if let Some((action, kana)) =
@@ -1204,9 +1240,7 @@ impl Engine {
             }
             // Other phases shouldn't have TIMER_SPECULATIVE active
             other => {
-                log::warn!(
-                    "TIMER_SPECULATIVE fired in unexpected phase: {other:?}",
-                );
+                log::warn!("TIMER_SPECULATIVE fired in unexpected phase: {other:?}",);
                 Response::pass_through().with_kill_timer(TIMER_SPECULATIVE)
             }
         }
@@ -1343,12 +1377,15 @@ impl TimedStateMachine for Engine {
             EnginePhase::PendingCharThumb => {
                 let pending = old_char.expect("PendingCharThumb phase requires pending_char");
                 let thumb = old_thumb.expect("PendingCharThumb phase requires pending_thumb");
-                self.timeout_pending_char_thumb(pending.scan_code, pending.vk_code, thumb.is_left, thumb.timestamp)
+                self.timeout_pending_char_thumb(
+                    pending.scan_code,
+                    pending.vk_code,
+                    thumb.is_left,
+                    thumb.timestamp,
+                )
             }
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
-            EnginePhase::SpeculativeChar => {
-                Response::consume().with_kill_timer(TIMER_PENDING)
-            }
+            EnginePhase::SpeculativeChar => Response::consume().with_kill_timer(TIMER_PENDING),
         }
     }
 }

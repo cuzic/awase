@@ -3,7 +3,9 @@
 use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
-use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowLongW, GetWindowThreadProcessId, GWL_EXSTYLE, GWL_STYLE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetWindowLongW, GetWindowThreadProcessId, GWL_EXSTYLE, GWL_STYLE,
+};
 
 use super::msaa::msaa_classify;
 
@@ -62,26 +64,34 @@ impl std::fmt::Display for ClassifyReason {
 /// 判定不能なら `Undetermined` を返す。
 pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
     if hwnd == HWND::default() {
-        return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::NullHwnd };
+        return ClassifyResult {
+            kind: FocusKind::NonText,
+            reason: ClassifyReason::NullHwnd,
+        };
     }
 
     // 1. ImmGetContext == NULL → IME 入力不可
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
-        return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::NoImeContext };
+        return ClassifyResult {
+            kind: FocusKind::NonText,
+            reason: ClassifyReason::NoImeContext,
+        };
     }
     let _ = ImmReleaseContext(hwnd, himc);
 
     // 2. WS_EX_NOIME ウィンドウスタイル
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
     if ex_style & WS_EX_NOIME != 0 {
-        return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::NoImeStyle };
+        return ClassifyResult {
+            kind: FocusKind::NonText,
+            reason: ClassifyReason::NoImeStyle,
+        };
     }
 
     // 3. クラス名による判定
     let class_name = get_class_name_string(hwnd);
     if !class_name.is_empty() {
-
         // 既知のテキスト入力コントロール
         if matches!(
             class_name.as_str(),
@@ -97,10 +107,16 @@ pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
             if class_name == "Edit" {
                 let style = GetWindowLongW(hwnd, GWL_STYLE);
                 if style & ES_READONLY != 0 {
-                    return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::ReadOnlyEdit };
+                    return ClassifyResult {
+                        kind: FocusKind::NonText,
+                        reason: ClassifyReason::ReadOnlyEdit,
+                    };
                 }
             }
-            return ClassifyResult { kind: FocusKind::TextInput, reason: ClassifyReason::KnownTextClass(class_name) };
+            return ClassifyResult {
+                kind: FocusKind::TextInput,
+                reason: ClassifyReason::KnownTextClass(class_name),
+            };
         }
 
         // 既知の非テキストコントロール
@@ -117,7 +133,10 @@ pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
                 | "msctls_trackbar32"
                 | "msctls_progress32"
         ) {
-            return ClassifyResult { kind: FocusKind::NonText, reason: ClassifyReason::KnownNonTextClass(class_name) };
+            return ClassifyResult {
+                kind: FocusKind::NonText,
+                reason: ClassifyReason::KnownNonTextClass(class_name),
+            };
         }
     }
 
@@ -157,10 +176,15 @@ pub unsafe fn get_process_name(process_id: u32) -> String {
     };
     let mut buf = [0u16; 260];
     let mut len = buf.len() as u32;
-    let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &raw mut len);
+    let ok = QueryFullProcessImageNameW(
+        handle,
+        PROCESS_NAME_WIN32,
+        windows::core::PWSTR(buf.as_mut_ptr()),
+        &raw mut len,
+    );
     let _ = CloseHandle(handle);
     if ok.is_ok() && len > 0 {
-        let path = String::from_utf16_lossy(&buf[..len as usize]);  // len is non-negative
+        let path = String::from_utf16_lossy(&buf[..len as usize]); // len is non-negative
         path.rsplit('\\').next().unwrap_or(&path).to_string()
     } else {
         String::new()

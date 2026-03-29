@@ -213,7 +213,11 @@ impl AppConfig {
         }
 
         // default_layout: must end with .yab
-        if !general.default_layout.to_ascii_lowercase().ends_with(".yab") {
+        if !general
+            .default_layout
+            .to_ascii_lowercase()
+            .ends_with(".yab")
+        {
             warnings.push(format!(
                 "default_layout は .yab で終わる必要があります: {}",
                 general.default_layout
@@ -233,7 +237,13 @@ impl AppConfig {
             }
         }
 
-        (ValidatedConfig { general, focus_overrides }, warnings)
+        (
+            ValidatedConfig {
+                general,
+                focus_overrides,
+            },
+            warnings,
+        )
     }
 }
 
@@ -610,7 +620,9 @@ simultaneous_threshold_ms = 1000
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.simultaneous_threshold_ms, 100);
-        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("simultaneous_threshold_ms")));
     }
 
     #[test]
@@ -622,7 +634,9 @@ simultaneous_threshold_ms = 5
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.simultaneous_threshold_ms, 100);
-        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("simultaneous_threshold_ms")));
     }
 
     #[test]
@@ -685,7 +699,9 @@ simultaneous_threshold_ms = 9
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.simultaneous_threshold_ms, 100);
-        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("simultaneous_threshold_ms")));
     }
 
     #[test]
@@ -697,7 +713,9 @@ simultaneous_threshold_ms = 10
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.simultaneous_threshold_ms, 10);
-        assert!(!warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+        assert!(!warnings
+            .iter()
+            .any(|w| w.contains("simultaneous_threshold_ms")));
     }
 
     #[test]
@@ -709,7 +727,9 @@ simultaneous_threshold_ms = 500
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.simultaneous_threshold_ms, 500);
-        assert!(!warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+        assert!(!warnings
+            .iter()
+            .any(|w| w.contains("simultaneous_threshold_ms")));
     }
 
     #[test]
@@ -721,7 +741,9 @@ simultaneous_threshold_ms = 501
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.simultaneous_threshold_ms, 100);
-        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("simultaneous_threshold_ms")));
     }
 
     #[test]

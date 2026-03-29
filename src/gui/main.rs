@@ -548,7 +548,9 @@ impl SettingsApp {
         }
         ui.horizontal(|ui| {
             ui.label("  プロセス:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_force_text_process).desired_width(120.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_force_text_process).desired_width(120.0),
+            );
             ui.label("クラス:");
             ui.add(egui::TextEdit::singleline(&mut self.new_force_text_class).desired_width(120.0));
             if ui.button("追加").clicked()
@@ -583,9 +585,13 @@ impl SettingsApp {
         }
         ui.horizontal(|ui| {
             ui.label("  プロセス:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_force_bypass_process).desired_width(120.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_force_bypass_process).desired_width(120.0),
+            );
             ui.label("クラス:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_force_bypass_class).desired_width(120.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_force_bypass_class).desired_width(120.0),
+            );
             if ui.button("追加").clicked()
                 && !self.new_force_bypass_process.is_empty()
                 && !self.new_force_bypass_class.is_empty()

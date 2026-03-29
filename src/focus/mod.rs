@@ -10,11 +10,11 @@ pub mod msaa;
 pub mod pattern;
 pub mod uia;
 
+use crate::win32::ImeContext;
 use awase::types::{ContextChange, FocusKind};
 use awase::vk;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
-use crate::win32::ImeContext;
 use windows::Win32::UI::WindowsAndMessaging::KillTimer;
 
 use std::sync::mpsc;
@@ -176,9 +176,7 @@ unsafe extern "system" fn win_event_proc(
         .get_ref()
         .and_then(|f| f.cache.get(process_id, &class_name))
     {
-        log::trace!(
-            "classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",
-        );
+        log::trace!("classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",);
         cached.store(&crate::FOCUS_KIND);
         if cached == FocusKind::NonText {
             crate::invalidate_engine_context(ContextChange::FocusChanged);
@@ -195,7 +193,12 @@ unsafe extern "system" fn win_event_proc(
 
     // Step 3: キャッシュに格納し、FOCUS_KIND を更新
     if let Some(f) = crate::FOCUS.get_mut() {
-        f.cache.insert(process_id, class_name.clone(), state, DetectionSource::Automatic);
+        f.cache.insert(
+            process_id,
+            class_name.clone(),
+            state,
+            DetectionSource::Automatic,
+        );
     }
     state.store(&crate::FOCUS_KIND);
 
@@ -253,7 +256,8 @@ pub unsafe fn toggle_focus_override() {
     // Update learning cache
     if let Some(f) = crate::FOCUS.get_mut() {
         if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-            f.cache.insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
+            f.cache
+                .insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
         }
     }
 

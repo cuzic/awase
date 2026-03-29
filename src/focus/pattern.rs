@@ -87,8 +87,8 @@ impl KeyPatternTracker {
 pub fn is_os_modifier_held() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     unsafe {
-        let ctrl = GetAsyncKeyState(0x11);  // VK_CONTROL
-        let alt = GetAsyncKeyState(0x12);   // VK_MENU
+        let ctrl = GetAsyncKeyState(0x11); // VK_CONTROL
+        let alt = GetAsyncKeyState(0x12); // VK_MENU
         (ctrl & (1 << 15) as i16) != 0 || (alt & (1 << 15) as i16) != 0
     }
 }
@@ -104,12 +104,11 @@ pub unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
     FocusKind::TextInput.store(&crate::FOCUS_KIND);
     if let Some(f) = crate::FOCUS.get_mut() {
         if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-            f.cache.insert(*pid, cls.clone(), FocusKind::TextInput, source);
+            f.cache
+                .insert(*pid, cls.clone(), FocusKind::TextInput, source);
         }
     }
-    log::info!(
-        "Promoting to TextInput: {reason} (source={source:?})",
-    );
+    log::info!("Promoting to TextInput: {reason} (source={source:?})",);
 }
 
 /// キー入力パターンを観察し、テキスト入力コンテキストを推定する。

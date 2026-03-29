@@ -32,7 +32,7 @@ fn make_test_engine(mode: ConfirmMode) -> Engine {
         layout,
         VkCode(0x1D), // VK_NONCONVERT (left thumb)
         VkCode(0x1C), // VK_CONVERT (right thumb)
-        100,           // threshold_ms
+        100,          // threshold_ms
         mode,
         30, // speculative_delay_ms
     )
@@ -83,11 +83,7 @@ fn e2e_engine_basic_char_input() {
 
     // Timeout → should emit the character
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::debug!(
-        "Timeout: consumed={}, actions={:?}",
-        r.consumed,
-        r.actions
-    );
+    log::debug!("Timeout: consumed={}, actions={:?}", r.consumed, r.actions);
     assert!(
         !r.actions.is_empty(),
         "timeout should emit the pending char"
@@ -124,11 +120,7 @@ fn e2e_engine_simultaneous_keystroke() {
 
     // Timeout → should emit simultaneous result (thumb face)
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::debug!(
-        "Timeout: consumed={}, actions={:?}",
-        r.consumed,
-        r.actions
-    );
+    log::debug!("Timeout: consumed={}, actions={:?}", r.consumed, r.actions);
     assert!(
         !r.actions.is_empty(),
         "simultaneous keystroke should produce output"
@@ -281,10 +273,7 @@ fn e2e_engine_disabled_passthrough() {
 
     let r = engine.on_event(key_down(0x41, 0x1E, 1_000_000));
     log::debug!("Disabled engine: consumed={}", r.consumed);
-    assert!(
-        !r.consumed,
-        "disabled engine should passthrough all keys"
-    );
+    assert!(!r.consumed, "disabled engine should passthrough all keys");
 
     log::info!("Disabled engine passthrough verified");
 }
@@ -304,6 +293,16 @@ fn is_interactive_session() -> bool {
     }
 }
 
+/// テスト用ウィンドウプロシージャ（DefWindowProcW に委譲）
+unsafe extern "system" fn test_wnd_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
 /// 隠し Edit コントロール付きウィンドウを作成し、SendInput でキーを送信して
 /// Edit の内容を読み取るヘルパー。
 ///
@@ -315,14 +314,14 @@ struct TestEditWindow {
 
 impl TestEditWindow {
     unsafe fn create() -> Option<Self> {
-        use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
+        use windows::Win32::Foundation::{HINSTANCE, HWND};
         use windows::Win32::UI::WindowsAndMessaging::*;
 
         // ウィンドウクラス登録
         let class_name_wide: Vec<u16> = "AwaseTestWindow\0".encode_utf16().collect();
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            lpfnWndProc: Some(DefWindowProcW),
+            lpfnWndProc: Some(test_wnd_proc),
             hInstance: HINSTANCE::default(),
             lpszClassName: windows::core::PCWSTR(class_name_wide.as_ptr()),
             ..Default::default()
@@ -335,16 +334,22 @@ impl TestEditWindow {
             windows::core::PCWSTR(class_name_wide.as_ptr()),
             windows::core::PCWSTR::null(),
             WS_OVERLAPPEDWINDOW,
-            0, 0, 400, 300,
+            0,
+            0,
+            400,
+            300,
             HWND::default(),
             None,
             HINSTANCE::default(),
             None,
         );
-        if hwnd == HWND::default() {
-            log::error!("Failed to create test window");
-            return None;
-        }
+        let hwnd = match hwnd {
+            Ok(h) if h != HWND::default() => h,
+            _ => {
+                log::error!("Failed to create test window");
+                return None;
+            }
+        };
 
         // Edit コントロール作成
         let edit_class: Vec<u16> = "EDIT\0".encode_utf16().collect();
@@ -353,27 +358,37 @@ impl TestEditWindow {
             windows::core::PCWSTR(edit_class.as_ptr()),
             windows::core::PCWSTR::null(),
             WS_CHILD | WS_VISIBLE | WINDOW_STYLE(0x0080), // ES_AUTOHSCROLL
-            10, 10, 360, 30,
+            10,
+            10,
+            360,
+            30,
             hwnd,
             None,
             HINSTANCE::default(),
             None,
         );
-        if edit_hwnd == HWND::default() {
-            log::error!("Failed to create Edit control");
-            DestroyWindow(hwnd);
-            return None;
-        }
+        let edit_hwnd = match edit_hwnd {
+            Ok(h) if h != HWND::default() => h,
+            _ => {
+                log::error!("Failed to create Edit control");
+                let _ = DestroyWindow(hwnd);
+                return None;
+            }
+        };
 
         // ウィンドウを表示してフォーカス設定
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(edit_hwnd);
+        windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd);
 
         // メッセージを処理して描画を完了
         pump_messages();
 
-        log::debug!("TestEditWindow created: hwnd={:?} edit={:?}", hwnd, edit_hwnd);
+        log::debug!(
+            "TestEditWindow created: hwnd={:?} edit={:?}",
+            hwnd,
+            edit_hwnd
+        );
         Some(Self { hwnd, edit_hwnd })
     }
 
@@ -403,9 +418,9 @@ impl TestEditWindow {
 
     /// Edit にフォーカスを設定
     unsafe fn focus(&self) {
-        use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, SetFocus};
+        use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
         let _ = SetForegroundWindow(self.hwnd);
-        let _ = SetFocus(self.edit_hwnd);
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.edit_hwnd);
         pump_messages();
     }
 }
@@ -575,7 +590,12 @@ unsafe fn is_japanese_ime_available() -> bool {
     let hkl = GetKeyboardLayout(0);
     let lang_id = (hkl.0 as u32) & 0xFFFF;
     let is_japanese = lang_id == 0x0411; // ja-JP
-    log::debug!("Keyboard layout: HKL={:?} lang_id=0x{:04X} japanese={}", hkl, lang_id, is_japanese);
+    log::debug!(
+        "Keyboard layout: HKL={:?} lang_id=0x{:04X} japanese={}",
+        hkl,
+        lang_id,
+        is_japanese
+    );
     is_japanese
 }
 
@@ -590,7 +610,7 @@ unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bo
     let result = ImmSetOpenStatus(himc, open);
     ImmReleaseContext(hwnd, himc);
     log::debug!("ImmSetOpenStatus({open}): result={:?}", result);
-    result.is_ok()
+    result.as_bool()
 }
 
 /// IME のオープン状態を取得する
@@ -627,7 +647,9 @@ fn e2e_ime_status_detection() {
 
         if !has_japanese {
             log::warn!("Japanese IME not installed, skipping IME-specific tests");
-            log::info!("To enable: PowerShell → New-WinUserLanguageList ja-JP → Set-WinUserLanguageList");
+            log::info!(
+                "To enable: PowerShell → New-WinUserLanguageList ja-JP → Set-WinUserLanguageList"
+            );
             return;
         }
 

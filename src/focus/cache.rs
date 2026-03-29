@@ -24,9 +24,9 @@ impl DetectionSource {
     /// ソースに応じた TTL（秒）
     pub const fn ttl_secs(self) -> u64 {
         match self {
-            Self::Automatic | Self::UiaAsync => 300,         // 5分
+            Self::Automatic | Self::UiaAsync => 300, // 5分
             Self::TypingPatternInferred | Self::ImeKeyInferred => 1800, // 30分
-            Self::UserOverride => 86400,                     // 24時間
+            Self::UserOverride => 86400,             // 24時間
         }
     }
 }

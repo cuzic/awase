@@ -944,7 +944,8 @@ fn test_nicola_state_stores_scan_code() {
     assert_eq!(engine.phase, EnginePhase::PendingChar);
     let pending = engine.pending_char.expect("pending_char should be set");
     assert_eq!(
-        pending.scan_code, ScanCode(0x1E),
+        pending.scan_code,
+        ScanCode(0x1E),
         "scan_code should be preserved in pending_char"
     );
 }
@@ -976,7 +977,8 @@ fn test_pending_char_thumb_stores_char_scan() {
     assert_eq!(engine.phase, EnginePhase::PendingCharThumb);
     let pending = engine.pending_char.expect("pending_char should be set");
     assert_eq!(
-        pending.scan_code, ScanCode(0x1E),
+        pending.scan_code,
+        ScanCode(0x1E),
         "char_scan should be preserved in pending_char"
     );
 }
@@ -1090,7 +1092,10 @@ fn test_flush_pending_from_speculative_char() {
     assert!(!r1.actions.is_empty(), "speculative output");
     // flush → 既に出力済みなので追加出力なし
     let r = engine.flush_pending(ContextChange::ImeOff);
-    assert!(r.actions.is_empty(), "speculative was already output, no additional actions");
+    assert!(
+        r.actions.is_empty(),
+        "speculative was already output, no additional actions"
+    );
 }
 
 #[test]
@@ -1113,7 +1118,10 @@ fn test_toggle_enabled_flushes_pending() {
     // toggle → 保留がフラッシュされる
     let (enabled, flush_resp) = engine.toggle_enabled();
     assert!(!enabled);
-    assert!(!flush_resp.actions.is_empty(), "should flush the pending char");
+    assert!(
+        !flush_resp.actions.is_empty(),
+        "should flush the pending char"
+    );
 }
 
 // ── IME 制御キーのフラッシュ＋パススルー ──
@@ -1140,7 +1148,10 @@ fn test_ime_control_key_flushes_pending_and_passes_through() {
     let r = engine.on_event(Ev::down(VK_KANJI).scan(SCAN_KANJI).at(t0 + 50_000).build());
     // consumed=false (パススルー) だがフラッシュアクションが含まれる
     assert!(!r.consumed, "should pass through the IME control key");
-    assert!(!r.actions.is_empty(), "should emit flushed pending char actions");
+    assert!(
+        !r.actions.is_empty(),
+        "should emit flushed pending char actions"
+    );
 }
 
 #[test]
@@ -1302,7 +1313,10 @@ fn test_key_up_active_key_action() {
     // Timeout: not in normal face -> Key(VK_D)
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
+    assert!(r
+        .actions
+        .iter()
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
 
     // KeyUp should produce KeyUp(VK_D)
     let r = engine.on_event(Ev::up(VK_D).build());
@@ -1367,7 +1381,10 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
     // Then on KeyUp: output_history removal finds Key(VK_D) -> push KeyUp
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
+    assert!(r
+        .actions
+        .iter()
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
     assert!(r
         .actions
         .iter()
@@ -1416,7 +1433,10 @@ fn test_timeout_char_not_in_normal_layout() {
     // Timeout -> not in normal face -> Key(VK_F)
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F.0)));
+    assert!(r
+        .actions
+        .iter()
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F.0)));
 }
 
 // ── swap_layout with PendingCharThumb ──
@@ -1634,7 +1654,10 @@ fn test_key_up_while_pending_char_key_action() {
     // Then output_history removal finds Key(VK_D) -> push KeyUp(VK_D)
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
+    assert!(r
+        .actions
+        .iter()
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
     assert!(r
         .actions
         .iter()

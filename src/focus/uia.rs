@@ -4,19 +4,19 @@ use std::sync::mpsc;
 
 use awase::types::FocusKind;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-    IUIAutomationValuePattern, UIA_ButtonControlTypeId,
-    UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_HyperlinkControlTypeId,
-    UIA_ImageControlTypeId, UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId,
-    UIA_MenuControlTypeId, UIA_MenuItemControlTypeId, UIA_ProgressBarControlTypeId,
-    UIA_ScrollBarControlTypeId, UIA_SeparatorControlTypeId, UIA_SliderControlTypeId,
-    UIA_StatusBarControlTypeId, UIA_TabControlTypeId, UIA_TabItemControlTypeId,
-    UIA_TextControlTypeId, UIA_TextPatternId, UIA_TitleBarControlTypeId,
-    UIA_ToolBarControlTypeId, UIA_TreeItemControlTypeId, UIA_ValuePatternId,
-};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
+    IUIAutomationValuePattern, UIA_ButtonControlTypeId, UIA_DocumentControlTypeId,
+    UIA_EditControlTypeId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
+    UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId, UIA_MenuControlTypeId,
+    UIA_MenuItemControlTypeId, UIA_ProgressBarControlTypeId, UIA_ScrollBarControlTypeId,
+    UIA_SeparatorControlTypeId, UIA_SliderControlTypeId, UIA_StatusBarControlTypeId,
+    UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TextControlTypeId, UIA_TextPatternId,
+    UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeItemControlTypeId,
+    UIA_ValuePatternId,
 };
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
@@ -54,7 +54,9 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
 
     // 1. ValuePattern → IsReadOnly チェック
     //    「編集可能な値を持つ」が最も強いシグナル
-    if let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
+    if let Ok(pattern) =
+        element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+    {
         match pattern.CurrentIsReadOnly() {
             Ok(read_only) if !read_only.as_bool() => {
                 log::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
@@ -70,7 +72,10 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
 
     // 2. TextPattern チェック
     //    TextPattern をサポートする要素はテキスト編集能力を持つ
-    if element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId).is_ok() {
+    if element
+        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        .is_ok()
+    {
         log::debug!("UIA: TextPattern available → TextInput");
         return FocusKind::TextInput;
     }
@@ -130,9 +135,8 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
             }
         }
 
-        let automation: Option<IUIAutomation> = unsafe {
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()
-        };
+        let automation: Option<IUIAutomation> =
+            unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() };
 
         let Some(automation) = automation else {
             log::warn!("UIA: Failed to create IUIAutomation, Phase 3 disabled");

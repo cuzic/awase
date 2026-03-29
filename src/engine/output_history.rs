@@ -45,7 +45,11 @@ impl OutputHistory {
     #[must_use]
     #[allow(clippy::bool_to_int_with_if)] // usize::from(bool) is not const-stable
     pub const fn retract_bs_count(&self) -> usize {
-        if self.entries.is_empty() { 0 } else { 1 }
+        if self.entries.is_empty() {
+            0
+        } else {
+            1
+        }
     }
 
     /// n-gram 用の直近かな文字列（古い順）

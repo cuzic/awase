@@ -101,12 +101,7 @@ pub unsafe fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
     #[allow(clippy::cast_sign_loss)] // OBJID_CLIENT (-4) is a Windows API convention
     let objid = OBJID_CLIENT as u32;
-    let ok = AccessibleObjectFromWindow(
-        hwnd,
-        objid,
-        &IAccessible::IID,
-        &raw mut acc,
-    );
+    let ok = AccessibleObjectFromWindow(hwnd, objid, &IAccessible::IID, &raw mut acc);
     if ok.is_ok() && !acc.is_null() {
         let accessible: IAccessible = IAccessible::from_raw(acc);
         let child_self = VARIANT::from(0i32); // CHILDID_SELF
@@ -131,9 +126,7 @@ pub unsafe fn msaa_classify(hwnd: HWND) -> ClassifyResult {
                 }
             }
 
-            log::debug!(
-                "MSAA: role={role_id} → Undetermined (not in allow/deny list)",
-            );
+            log::debug!("MSAA: role={role_id} → Undetermined (not in allow/deny list)",);
         }
     }
 

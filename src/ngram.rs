@@ -142,7 +142,9 @@ impl NgramModel {
         let max = self.max_threshold_us as f64;
         // Clamped to [min, max] which are both non-negative, so the cast is safe.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        { (base + adjustment).clamp(min, max) as u64 }
+        {
+            (base + adjustment).clamp(min, max) as u64
+        }
     }
 
     /// Compute the frequency score for a candidate character given recent output.

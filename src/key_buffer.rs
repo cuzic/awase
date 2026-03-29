@@ -6,9 +6,9 @@
 use std::collections::VecDeque;
 
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent};
+use timed_fsm::{dispatch, TimedStateMachine};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
-use timed_fsm::{dispatch, TimedStateMachine};
 
 use crate::focus::cache::DetectionSource;
 use crate::ime::ImeProvider;
@@ -115,7 +115,7 @@ pub unsafe fn retract_passthrough_memory() {
     if let Some(output) = crate::OUTPUT.get_ref() {
         let mut bs_actions: Vec<KeyAction> = Vec::new();
         for _ in 0..keys.len() {
-            bs_actions.push(KeyAction::Key(0x08));   // VK_BACK down
+            bs_actions.push(KeyAction::Key(0x08)); // VK_BACK down
             bs_actions.push(KeyAction::KeyUp(0x08)); // VK_BACK up
         }
         output.send_keys(&bs_actions);
@@ -206,7 +206,10 @@ pub unsafe fn process_deferred_keys() {
         return;
     }
 
-    log::debug!("Processing {} deferred key(s) after IME control", keys.len());
+    log::debug!(
+        "Processing {} deferred key(s) after IME control",
+        keys.len()
+    );
 
     for event in keys {
         // IME 状態を再チェック（最新の状態で判定）
@@ -233,11 +236,11 @@ pub unsafe fn process_deferred_keys() {
 ///
 /// INJECTED_MARKER 付きなのでフックに再捕捉されない。
 pub unsafe fn reinject_key(event: &RawKeyEvent) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        KEYEVENTF_SCANCODE, VIRTUAL_KEY,
-    };
     use crate::output::INJECTED_MARKER;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
+        VIRTUAL_KEY,
+    };
 
     let is_keyup = matches!(
         event.event_type,

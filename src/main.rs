@@ -12,8 +12,8 @@
 
 mod focus;
 mod hook;
-mod key_buffer;
 mod ime;
+mod key_buffer;
 mod output;
 mod single_thread_cell;
 mod tray;
@@ -28,17 +28,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetGUIThreadInfo, GetMessageW,
-    GUITHREADINFO, KillTimer, PostMessageW,
-    PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
+    DispatchMessageW, GetGUIThreadInfo, GetMessageW, KillTimer, PostMessageW, PostQuitMessage,
+    SetTimer, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
 use awase::config::{vk_name_to_code, AppConfig, ValidatedConfig};
 use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
-use awase::types::{ContextChange, FocusKind};
-use awase::vk;
 use awase::ngram::NgramModel;
+use awase::types::{ContextChange, FocusKind};
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
+use awase::vk;
 use awase::yab::YabLayout;
 use timed_fsm::{dispatch, ActionExecutor, TimedStateMachine, TimerRuntime};
 
@@ -83,7 +82,8 @@ pub(crate) static IME: SingleThreadCell<HybridProvider> = SingleThreadCell::new(
 pub(crate) static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
 
 /// 利用可能な配列の一覧（名前, `YabLayout`, 左親指VK, 右親指VK）
-static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, VkCode, VkCode)>> = SingleThreadCell::new();
+static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, VkCode, VkCode)>> =
+    SingleThreadCell::new();
 
 /// キーイベントバッファ（IME ガード + 遅延キー + PassThrough 記憶）
 pub(crate) static KEY_BUFFER: SingleThreadCell<key_buffer::KeyBuffer> = SingleThreadCell::new();
@@ -200,15 +200,16 @@ fn load_config() -> Result<AppConfig> {
 }
 
 /// 検証済み設定で配列の読み込みとエンジン初期化を行い、レイアウト名一覧とデフォルト名を返す
-fn init_engine_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) -> Result<(Vec<String>, String)> {
-    let left_thumb_vk = VkCode(vk_name_to_code(&config.general.left_thumb_key).context(format!(
-        "Unknown VK name: {}",
-        config.general.left_thumb_key
-    ))?);
-    let right_thumb_vk = VkCode(vk_name_to_code(&config.general.right_thumb_key).context(format!(
-        "Unknown VK name: {}",
-        config.general.right_thumb_key
-    ))?);
+fn init_engine_validated(
+    config: &ValidatedConfig,
+    diag: &mut StartupDiagnostics,
+) -> Result<(Vec<String>, String)> {
+    let left_thumb_vk = VkCode(vk_name_to_code(&config.general.left_thumb_key).context(
+        format!("Unknown VK name: {}", config.general.left_thumb_key),
+    )?);
+    let right_thumb_vk = VkCode(vk_name_to_code(&config.general.right_thumb_key).context(
+        format!("Unknown VK name: {}", config.general.right_thumb_key),
+    )?);
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
     let layouts = scan_layouts(&layouts_dir, left_thumb_vk, right_thumb_vk, diag)?;
@@ -283,7 +284,10 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
     let content = match std::fs::read_to_string(&ngram_path) {
         Ok(c) => c,
         Err(e) => {
-            diag.warn(format!("n-gramファイル読込失敗: {}: {e}", ngram_path.display()));
+            diag.warn(format!(
+                "n-gramファイル読込失敗: {}: {e}",
+                ngram_path.display()
+            ));
             return;
         }
     };
@@ -370,7 +374,6 @@ fn register_focus_override_hotkey() {
     }
 }
 
-
 /// クリーンアップ処理
 fn cleanup() {
     hook::uninstall_hook();
@@ -430,8 +433,6 @@ impl ActionExecutor for SendInputExecutor {
         }
     }
 }
-
-
 
 /// on_key_event_callback Step 4 の入力コンテキスト判定結果
 enum InputContext {
@@ -567,7 +568,8 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         InputContext::UndeterminedImeOn => {
             // IME ON + Undetermined → 文字キーならバッファリング
             if is_key_down {
-                let is_char = vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
+                let is_char =
+                    vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
                 if is_char {
                     if let Some(kb) = KEY_BUFFER.get_mut() {
                         kb.push_deferred(event);
@@ -581,7 +583,8 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         InputContext::UndeterminedImeOff => {
             // IME OFF + Undetermined → 文字キーなら PassThrough + 記憶
             if is_key_down {
-                let is_char = vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
+                let is_char =
+                    vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
                 if is_char {
                     if let Some(kb) = KEY_BUFFER.get_mut() {
                         kb.push_passthrough(event);
@@ -613,13 +616,6 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     }
 }
 
-
-
-
-
-
-
-
 /// メッセージループ
 #[allow(clippy::too_many_lines)] // message loop dispatch with many match arms
 fn run_message_loop() {
@@ -632,11 +628,9 @@ fn run_message_loop() {
         }
 
         match msg.message {
-            WM_TIMER if msg.wParam.0 == TIMER_UNDETERMINED_BUFFER => {
-                unsafe {
-                    key_buffer::handle_buffer_timeout();
-                }
-            }
+            WM_TIMER if msg.wParam.0 == TIMER_UNDETERMINED_BUFFER => unsafe {
+                key_buffer::handle_buffer_timeout();
+            },
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
                 let timer_id = msg.wParam.0;
                 unsafe {
@@ -680,9 +674,7 @@ fn run_message_loop() {
                     cbSize: size_of::<GUITHREADINFO>() as u32,
                     ..Default::default()
                 };
-                if GetGUIThreadInfo(0, &raw mut info).is_ok()
-                    && info.hwndFocus != result_hwnd
-                {
+                if GetGUIThreadInfo(0, &raw mut info).is_ok() && info.hwndFocus != result_hwnd {
                     log::debug!("UIA result for stale hwnd, ignoring");
                     // フォーカスが変わっているので適用しない
                 } else {
@@ -692,7 +684,8 @@ fn run_message_loop() {
                     // UIA 結果をキャッシュに反映
                     if let Some(f) = FOCUS.get_mut() {
                         if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-                            f.cache.insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
+                            f.cache
+                                .insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
                         }
                     }
                     if kind == FocusKind::NonText {
@@ -751,7 +744,6 @@ fn run_message_loop() {
         }
     }
 }
-
 
 /// エンジンの有効/無効を切り替え、トレイアイコンを更新する
 ///
@@ -859,7 +851,10 @@ fn scan_layouts(
     let mut layouts = Vec::new();
 
     if !layouts_dir.is_dir() {
-        diag.warn(format!("レイアウトディレクトリが見つかりません: {}", layouts_dir.display()));
+        diag.warn(format!(
+            "レイアウトディレクトリが見つかりません: {}",
+            layouts_dir.display()
+        ));
         return Ok(layouts);
     }
 
