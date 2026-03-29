@@ -124,7 +124,10 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
     let (tx, rx) = mpsc::channel::<SendableHwnd>();
     std::thread::spawn(move || {
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            if hr.is_err() {
+                log::warn!("UIA: CoInitializeEx failed: {hr:?}");
+            }
         }
 
         let automation: Option<IUIAutomation> = unsafe {
@@ -139,6 +142,8 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
         log::info!("UIA worker thread started");
 
         while let Ok(SendableHwnd(hwnd)) = rx.recv() {
+            // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
+            // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
             let state = unsafe { uia_classify_focus(&automation, hwnd) };
             if state != FocusKind::Undetermined {
                 log::debug!("UIA async: hwnd={hwnd:?} → {state:?}");

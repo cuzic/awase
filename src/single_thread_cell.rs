@@ -1,9 +1,17 @@
 use std::cell::UnsafeCell;
 
-/// シングルスレッド専用のグローバルセル
-/// Safety: このプログラムはシングルスレッドで動作し、フックコールバックと
-/// メッセージループは同一スレッドで順次実行される。
+/// シングルスレッド専用の内部可変性コンテナ。
+///
+/// # Safety
+///
+/// `get_mut()` は `&self` から `&mut T` を返す。これは通常 Rust のエイリアシング規則に
+/// 違反するが、Windows のメッセージループがシングルスレッドであることを前提に安全性を保証する。
+/// マルチスレッドアクセスが必要な場合は `Mutex<T>` 等を使用すること。
+///
+/// `Sync` を実装しているのは、static 変数として使用するため。
+/// 実際のアクセスはメインスレッド（メッセージループ + フックコールバック）からのみ行われる。
 pub struct SingleThreadCell<T>(UnsafeCell<Option<T>>);
+// Safety: 実際のアクセスはメインスレッドからのみ行われる（上記ドキュメント参照）。
 unsafe impl<T> Sync for SingleThreadCell<T> {}
 
 impl<T> SingleThreadCell<T> {

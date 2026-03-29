@@ -68,6 +68,7 @@ pub struct GeneralConfig {
     pub speculative_delay_ms: u32,
 }
 
+/// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
 const fn default_threshold() -> u32 {
     100
 }
@@ -104,6 +105,7 @@ const fn default_confirm_mode() -> ConfirmMode {
     ConfirmMode::Wait
 }
 
+/// TwoPhase/AdaptiveTiming の投機出力待機時間（30ms: Phase 1 を短く保つ）
 const fn default_speculative_delay() -> u32 {
     30
 }
@@ -672,6 +674,54 @@ force_text = [
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (_validated, warnings) = config.validate();
         assert!(warnings.iter().any(|w| w.contains("force_text")));
+    }
+
+    #[test]
+    fn test_validate_threshold_boundary_low() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 9
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.simultaneous_threshold_ms, 100);
+        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+    }
+
+    #[test]
+    fn test_validate_threshold_boundary_exact_low() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 10
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.simultaneous_threshold_ms, 10);
+        assert!(!warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+    }
+
+    #[test]
+    fn test_validate_threshold_boundary_exact_high() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 500
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.simultaneous_threshold_ms, 500);
+        assert!(!warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+    }
+
+    #[test]
+    fn test_validate_threshold_boundary_high() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 501
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.simultaneous_threshold_ms, 100);
+        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
     }
 
     #[test]

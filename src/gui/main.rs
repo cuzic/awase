@@ -40,8 +40,13 @@ impl SettingsApp {
         setup_fonts(&cc.egui_ctx);
 
         let config_path = find_config_path();
-        let config =
-            awase::config::AppConfig::load(&config_path).unwrap_or_else(|_| default_config());
+        let config = match awase::config::AppConfig::load(&config_path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                log::warn!("Config load failed: {e}, using defaults");
+                default_config()
+            }
+        };
 
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
 

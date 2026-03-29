@@ -65,14 +65,14 @@ pub(crate) const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 
 /// Undetermined + IME ON バッファリングのタイムアウト用カスタムメッセージ
 /// （将来的に `PostMessageW` で明示送信する場合に使用）
-#[allow(dead_code)]
+#[allow(dead_code)] // Undetermined バッファタイムアウトを PostMessageW で明示送信する将来拡張用
 const WM_BUFFER_TIMEOUT: u32 = WM_APP + 13;
 
 /// Undetermined + IME ON バッファリングのタイマー ID
 pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;
 
 /// IME の未確定状態を確認する（engine から呼び出し用）
-#[allow(dead_code)]
+#[allow(dead_code)] // engine 側から IME 未確定状態を確認する将来拡張用
 pub fn check_ime_composing() -> bool {
     unsafe { IME.get_ref().is_some_and(ImeProvider::is_composing) }
 }
@@ -402,6 +402,7 @@ impl TimerRuntime for Win32TimerRuntime {
     type TimerId = usize;
 
     fn set_timer(&mut self, id: Self::TimerId, duration: std::time::Duration) {
+        // Windows SetTimer API は u32 ミリ秒（最大 ~49日）。超過時は u32::MAX にキャップ。
         let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
         unsafe {
             let _ = SetTimer(HWND::default(), id, ms, None);
@@ -950,7 +951,12 @@ unsafe fn switch_layout(index: usize) {
     log::info!("Switched layout to: {name}");
 }
 
-/// 設定ファイルのパスを探す
+/// 設定ファイルのパスを探索する。
+///
+/// 検索順序:
+/// 1. コマンドライン引数で指定されたパス
+/// 2. 実行ファイルと同じディレクトリの `config.toml`
+/// 3. カレントディレクトリの `config.toml`
 fn find_config_path() -> Result<PathBuf> {
     // 1. コマンドライン引数
     if let Some(path) = std::env::args().nth(1) {

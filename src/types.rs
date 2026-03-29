@@ -95,6 +95,8 @@ pub enum FocusKind {
 }
 
 impl FocusKind {
+    /// u8 から FocusKind に変換する。0→TextInput, 1→NonText, その他→Undetermined。
+    /// AtomicU8 との相互変換に使用。
     #[must_use]
     pub const fn from_u8(v: u8) -> Self {
         match v {

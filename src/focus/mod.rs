@@ -51,7 +51,7 @@ impl FocusDetector {
     }
 
     /// フォーカス変更時などに単一スレッド側の状態をリセットする
-    #[allow(dead_code)]
+    #[allow(dead_code)] // フォーカスリセットの将来拡張用に保持
     pub fn clear(&mut self) {
         self.cache = FocusCache::new();
         self.last_focus_info = None;
