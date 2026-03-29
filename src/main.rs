@@ -16,9 +16,11 @@ mod output;
 mod single_thread_cell;
 mod tray;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -44,9 +46,9 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetClassNameW, GetMessageW, GetWindowLongW, GWL_EXSTYLE, GWL_STYLE,
-    KillTimer, PostMessageW, PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
-    WM_INPUTLANGCHANGE, WM_TIMER,
+    DispatchMessageW, GetClassNameW, GetMessageW, GetWindowLongW, GetWindowThreadProcessId,
+    GWL_EXSTYLE, GWL_STYLE, KillTimer, PostMessageW, PostQuitMessage, SetTimer, MSG, WM_APP,
+    WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
 use awase::config::{vk_name_to_code, AppConfig};
@@ -97,6 +99,65 @@ static DEFERRED_KEYS: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell::new
 /// UIA 非同期判定リクエスト送信チャネル（メインスレッドからのみアクセス）
 static UIA_SENDER: SingleThreadCell<mpsc::Sender<SendableHwnd>> = SingleThreadCell::new();
 
+/// フォーカス判定結果のキャッシュ（メインスレッドからのみアクセス）
+static FOCUS_CACHE: SingleThreadCell<FocusCache> = SingleThreadCell::new();
+
+/// UIA 非同期判定完了時にキャッシュを更新するための直前のフォーカス情報
+static LAST_FOCUS_INFO: SingleThreadCell<(u32, String)> = SingleThreadCell::new();
+
+/// フォーカス判定キャッシュのエントリ
+struct FocusCacheEntry {
+    kind: FocusKind,
+    timestamp: Instant,
+}
+
+/// フォーカス判定結果のキャッシュ
+///
+/// `(process_id, class_name)` をキーとして判定結果を保持する。
+/// 同じコントロールへの再フォーカス時に UIA 非同期判定を省略できる。
+struct FocusCache {
+    entries: HashMap<(u32, String), FocusCacheEntry>,
+}
+
+impl FocusCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    /// キャッシュを検索する。未登録または期限切れ（5分超）なら `None` を返す。
+    fn get(&self, process_id: u32, class_name: &str) -> Option<FocusKind> {
+        let key = (process_id, class_name.to_string());
+        self.entries.get(&key).and_then(|entry| {
+            if entry.timestamp.elapsed().as_secs() < 300 {
+                Some(entry.kind)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// 判定結果をキャッシュに格納する。`Undetermined` は格納しない。
+    fn insert(&mut self, process_id: u32, class_name: String, kind: FocusKind) {
+        if kind == FocusKind::Undetermined {
+            return;
+        }
+        self.entries.insert(
+            (process_id, class_name),
+            FocusCacheEntry {
+                kind,
+                timestamp: Instant::now(),
+            },
+        );
+        // エントリ数が上限を超えたら期限切れのみ削除
+        if self.entries.len() > 1000 {
+            self.entries
+                .retain(|_, v| v.timestamp.elapsed().as_secs() < 300);
+        }
+    }
+}
+
 /// `HWND` を `Send` 可能にするラッパー
 ///
 /// `HWND` は `*mut c_void` を含むため `Send` を実装していないが、
@@ -138,6 +199,8 @@ fn main() -> Result<()> {
         OUTPUT.set(Output::new());
         IME_TRANSITION_GUARD.set(false);
         DEFERRED_KEYS.set(Vec::new());
+        FOCUS_CACHE.set(FocusCache::new());
+        LAST_FOCUS_INFO.set((0, String::new()));
     }
 
     init_tray(&layout_names, &initial_layout_name)?;
@@ -345,6 +408,8 @@ fn cleanup() {
         OUTPUT.clear();
         IME.clear();
         LAYOUTS.clear();
+        FOCUS_CACHE.clear();
+        LAST_FOCUS_INFO.clear();
     }
     log::info!("Exited cleanly.");
 }
@@ -506,13 +571,43 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
+    // Step 0: プロセスID・クラス名を取得し、キャッシュを検索
+    let process_id = get_window_process_id(hwnd);
+    let class_name = get_class_name_string(hwnd);
+
+    // UIA 非同期結果のキャッシュ更新用に保存
+    if let Some(last) = LAST_FOCUS_INFO.get_mut() {
+        *last = (process_id, class_name.clone());
+    }
+
+    // キャッシュヒット → 即座に結果を適用
+    if let Some(cached) = FOCUS_CACHE
+        .get_ref()
+        .and_then(|c| c.get(process_id, &class_name))
+    {
+        log::trace!(
+            "classify_focus: cache hit ({}, {}) → {:?}",
+            process_id,
+            class_name,
+            cached
+        );
+        FOCUS_KIND.store(cached as u8, Ordering::Release);
+        if cached == FocusKind::NonText {
+            invalidate_engine_context(ContextChange::FocusChanged);
+        }
+        return;
+    }
+
     // Step 1: 評価中は安全側（Undetermined）に設定
     FOCUS_KIND.store(FocusKind::Undetermined as u8, Ordering::Release);
 
     // Step 2: バイパス状態を判定
     let state = classify_focus(hwnd);
 
-    // Step 3: キャッシュを更新
+    // Step 3: キャッシュに格納し、FOCUS_KIND を更新
+    if let Some(cache) = FOCUS_CACHE.get_mut() {
+        cache.insert(process_id, class_name.clone(), state);
+    }
     FOCUS_KIND.store(state as u8, Ordering::Release);
 
     // Step 4: NonText ならエンジンの保留状態をフラッシュ
@@ -528,6 +623,24 @@ unsafe extern "system" fn win_event_proc(
     }
 
     log::debug!("Focus changed: hwnd={:?} → {:?}", hwnd, state);
+}
+
+/// ウィンドウハンドルからプロセス ID を取得する
+unsafe fn get_window_process_id(hwnd: HWND) -> u32 {
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    pid
+}
+
+/// ウィンドウハンドルからクラス名を取得する
+unsafe fn get_class_name_string(hwnd: HWND) -> String {
+    let mut class_buf = [0u16; 256];
+    let len = GetClassNameW(hwnd, &mut class_buf);
+    if len > 0 {
+        String::from_utf16_lossy(&class_buf[..len as usize])
+    } else {
+        String::new()
+    }
 }
 
 /// フォーカス中のウィンドウがテキスト入力を受け付けるかを判定する
@@ -553,10 +666,8 @@ unsafe fn classify_focus(hwnd: HWND) -> FocusKind {
     }
 
     // 3. クラス名による判定
-    let mut class_buf = [0u16; 256];
-    let len = GetClassNameW(hwnd, &mut class_buf);
-    if len > 0 {
-        let class_name = String::from_utf16_lossy(&class_buf[..len as usize]);
+    let class_name = get_class_name_string(hwnd);
+    if !class_name.is_empty() {
 
         // 既知のテキスト入力コントロール
         if matches!(
@@ -854,9 +965,20 @@ fn run_message_loop() {
                 process_deferred_keys();
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
-                // UIA 非同期判定が NonText を返した → エンジンの保留をフラッシュ
+                // UIA 非同期判定完了 → キャッシュ更新 + エンジンフラッシュ
                 let focus = FOCUS_KIND.load(Ordering::Acquire);
-                if focus == FocusKind::NonText as u8 {
+                let kind = match focus {
+                    x if x == FocusKind::TextInput as u8 => FocusKind::TextInput,
+                    x if x == FocusKind::NonText as u8 => FocusKind::NonText,
+                    _ => FocusKind::Undetermined,
+                };
+                // UIA 結果をキャッシュに反映
+                if let Some((pid, cls)) = LAST_FOCUS_INFO.get_ref() {
+                    if let Some(cache) = FOCUS_CACHE.get_mut() {
+                        cache.insert(*pid, cls.clone(), kind);
+                    }
+                }
+                if kind == FocusKind::NonText {
                     invalidate_engine_context(ContextChange::FocusChanged);
                 }
             },
