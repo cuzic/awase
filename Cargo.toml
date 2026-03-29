@@ -18,13 +18,20 @@ name = "awase"
 path = "src/main.rs"
 required-features = ["windows-bin"]
 
+[[bin]]
+name = "awase-settings"
+path = "src/gui/main.rs"
+required-features = ["gui"]
+
 [features]
 # The binary requires the `windows` crate which is Windows-only.
 # Enable this feature to build the binary (automatic on Windows via default).
 windows-bin = []
+gui = ["eframe"]
 default = ["windows-bin"]
 
 [dependencies]
+eframe = { version = "0.31", optional = true }
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 log = "0.4"
