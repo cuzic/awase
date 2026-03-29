@@ -282,10 +282,22 @@ fn e2e_engine_disabled_passthrough() {
 // Phase 2: SendInput + Edit control
 // ────────────────────────────────────────────
 
-/// Phase 2 tests require an actual Windows desktop session.
-/// Skip on headless CI if necessary.
+/// Phase 2-3 テストはインタラクティブなデスクトップセッションが必要。
+/// CI 環境（GitHub Actions）では SendInput がフォアグラウンドウィンドウに届かないためスキップ。
+///
+/// 環境変数 `AWASE_E2E_INTERACTIVE=1` を設定すると強制実行。
 fn is_interactive_session() -> bool {
-    // Check if we have a desktop
+    // 環境変数で明示的に有効化
+    if std::env::var("AWASE_E2E_INTERACTIVE").map_or(false, |v| v == "1") {
+        return true;
+    }
+    // CI 環境（GitHub Actions）ではスキップ
+    if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() {
+        log::info!("CI environment detected, skipping interactive tests");
+        log::info!("Set AWASE_E2E_INTERACTIVE=1 to force execution");
+        return false;
+    }
+    // デスクトップの有無
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
         let desktop = GetDesktopWindow();
