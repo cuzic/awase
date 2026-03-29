@@ -10,8 +10,6 @@ pub mod msaa;
 pub mod pattern;
 pub mod uia;
 
-use std::sync::atomic::Ordering;
-
 use awase::types::{ContextChange, FocusKind};
 use awase::vk;
 use windows::Win32::Foundation::HWND;
@@ -125,7 +123,7 @@ unsafe extern "system" fn win_event_proc(
                         process_name,
                         class_name
                     );
-                    crate::FOCUS_KIND.store(FocusKind::TextInput as u8, Ordering::Release);
+                    FocusKind::TextInput.store(&crate::FOCUS_KIND);
                     return;
                 }
             }
@@ -138,7 +136,7 @@ unsafe extern "system" fn win_event_proc(
                         process_name,
                         class_name
                     );
-                    crate::FOCUS_KIND.store(FocusKind::NonText as u8, Ordering::Release);
+                    FocusKind::NonText.store(&crate::FOCUS_KIND);
                     crate::invalidate_engine_context(ContextChange::FocusChanged);
                     return;
                 }
@@ -157,7 +155,7 @@ unsafe extern "system" fn win_event_proc(
             class_name,
             cached
         );
-        crate::FOCUS_KIND.store(cached as u8, Ordering::Release);
+        cached.store(&crate::FOCUS_KIND);
         if cached == FocusKind::NonText {
             crate::invalidate_engine_context(ContextChange::FocusChanged);
         }
@@ -165,7 +163,7 @@ unsafe extern "system" fn win_event_proc(
     }
 
     // Step 1: 評価中は安全側（Undetermined）に設定
-    crate::FOCUS_KIND.store(FocusKind::Undetermined as u8, Ordering::Release);
+    FocusKind::Undetermined.store(&crate::FOCUS_KIND);
 
     // Step 2: バイパス状態を判定
     let state = classify::classify_focus(hwnd);
@@ -174,7 +172,7 @@ unsafe extern "system" fn win_event_proc(
     if let Some(cache) = crate::FOCUS_CACHE.get_mut() {
         cache.insert(process_id, class_name.clone(), state, DetectionSource::Automatic);
     }
-    crate::FOCUS_KIND.store(state as u8, Ordering::Release);
+    state.store(&crate::FOCUS_KIND);
 
     // Step 4: NonText ならエンジンの保留状態をフラッシュ
     if state == FocusKind::NonText {
@@ -217,14 +215,14 @@ unsafe extern "system" fn win_event_proc(
 ///
 /// Safety: シングルスレッドからのみ呼び出すこと
 pub(crate) unsafe fn toggle_focus_override() {
-    let current = crate::FOCUS_KIND.load(Ordering::Acquire);
-    let new_kind = if current == FocusKind::TextInput as u8 {
+    let current = FocusKind::load(&crate::FOCUS_KIND);
+    let new_kind = if current == FocusKind::TextInput {
         FocusKind::NonText
     } else {
         FocusKind::TextInput
     };
 
-    crate::FOCUS_KIND.store(new_kind as u8, Ordering::Release);
+    new_kind.store(&crate::FOCUS_KIND);
 
     // Update learning cache
     if let Some((pid, cls)) = crate::LAST_FOCUS_INFO.get_ref() {

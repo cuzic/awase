@@ -13,7 +13,7 @@ use crate::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEven
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 pub use types::{
-    ClassifiedEvent, FinalizePlan, KeyClass, OutputUpdate, TimerIntent,
+    ClassifiedEvent, FinalizePlan, KeyClass, OutputRecord, OutputUpdate, TimerIntent,
 };
 use types::{
     BypassReason, EnginePhase, Face, ModifierState, PendingKey, PendingThumbData, ResolvedAction,
@@ -116,12 +116,12 @@ fn romaji_of(action: &KeyAction) -> String {
 
 /// `OutputUpdate::Record` を生成するヘルパー
 fn record_output(scan_code: u32, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
-    OutputUpdate::Record {
+    OutputUpdate::Record(OutputRecord {
         scan_code,
         romaji: romaji_of(action),
         kana,
         action: action.clone(),
-    }
+    })
 }
 
 // ── 公開 API ──
@@ -353,6 +353,30 @@ impl Engine {
         }
     }
 
+    fn enter_pending_char(&mut self, key: PendingKey) {
+        self.phase = EnginePhase::PendingChar;
+        self.pending_char = Some(key);
+        self.pending_thumb = None;
+    }
+
+    fn enter_pending_thumb(&mut self, thumb: PendingThumbData) {
+        self.phase = EnginePhase::PendingThumb;
+        self.pending_char = None;
+        self.pending_thumb = Some(thumb);
+    }
+
+    fn enter_pending_char_thumb(&mut self, char_key: PendingKey, thumb: PendingThumbData) {
+        self.phase = EnginePhase::PendingCharThumb;
+        self.pending_char = Some(char_key);
+        self.pending_thumb = Some(thumb);
+    }
+
+    fn enter_speculative_char(&mut self, key: PendingKey) {
+        self.phase = EnginePhase::SpeculativeChar;
+        self.pending_char = Some(key);
+        self.pending_thumb = None;
+    }
+
     /// `FinalizePlan` を `Response` に変換する
     fn finalize_plan(&mut self, plan: FinalizePlan) -> Resp {
         // 1. 出力履歴の更新
@@ -522,16 +546,14 @@ impl Engine {
     /// Idle + Wait モード: 新規キーを保留状態に遷移させタイマーを起動する
     fn handle_idle_wait(&mut self, ev: &ClassifiedEvent) -> Resp {
         if ev.key_class.is_thumb() {
-            self.phase = EnginePhase::PendingThumb;
-            self.pending_thumb = Some(PendingThumbData {
+            self.enter_pending_thumb(PendingThumbData {
                 scan_code: ev.scan_code,
                 vk_code: ev.vk_code,
                 is_left: ev.key_class.is_left_thumb(),
                 timestamp: ev.timestamp,
             });
         } else {
-            self.phase = EnginePhase::PendingChar;
-            self.pending_char = Some(PendingKey {
+            self.enter_pending_char(PendingKey {
                 scan_code: ev.scan_code,
                 vk_code: ev.vk_code,
                 timestamp: ev.timestamp,
@@ -556,8 +578,7 @@ impl Engine {
         if let Some((action, kana)) =
             self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
         {
-            self.phase = EnginePhase::SpeculativeChar;
-            self.pending_char = Some(PendingKey {
+            self.enter_speculative_char(PendingKey {
                 scan_code: ev.scan_code,
                 vk_code: ev.vk_code,
                 timestamp: ev.timestamp,
@@ -585,8 +606,7 @@ impl Engine {
 
         // Phase 1: Short wait (speculative_delay_us)
         // Same as Wait mode but with shorter timer
-        self.phase = EnginePhase::PendingChar;
-        self.pending_char = Some(PendingKey {
+        self.enter_pending_char(PendingKey {
             scan_code: ev.scan_code,
             vk_code: ev.vk_code,
             timestamp: ev.timestamp,
@@ -690,12 +710,12 @@ impl Engine {
                 return self.finalize_plan(FinalizePlan {
                     actions,
                     timer: TimerIntent::CancelAll,
-                    output: OutputUpdate::Record {
+                    output: OutputUpdate::Record(OutputRecord {
                         scan_code: pending.scan_code,
                         romaji: romaji_of(&thumb_action),
                         kana: thumb_kana,
                         action: thumb_action,
-                    },
+                    }),
                 });
             }
             // Outside threshold → speculative was correct, process thumb as new key
@@ -723,14 +743,15 @@ impl Engine {
 
         if elapsed_us < threshold {
             // 保留=文字, 到着=親指 → PendingCharThumb へ遷移（3 鍵目を待つ）
-            self.phase = EnginePhase::PendingCharThumb;
-            // pending_char is already set
-            self.pending_thumb = Some(PendingThumbData {
-                scan_code: ev.scan_code,
-                vk_code: ev.vk_code,
-                is_left: ev.key_class.is_left_thumb(),
-                timestamp: ev.timestamp,
-            });
+            self.enter_pending_char_thumb(
+                pending,
+                PendingThumbData {
+                    scan_code: ev.scan_code,
+                    vk_code: ev.vk_code,
+                    is_left: ev.key_class.is_left_thumb(),
+                    timestamp: ev.timestamp,
+                },
+            );
             return self.finalize_plan(FinalizePlan {
                 actions: vec![],
                 timer: TimerIntent::Pending,
@@ -807,31 +828,21 @@ impl Engine {
     /// OutputUpdate に基づいて出力履歴を更新する共通ヘルパー
     fn update_history(&mut self, output: OutputUpdate) {
         match output {
-            OutputUpdate::Record {
-                scan_code,
-                romaji,
-                kana,
-                action,
-            } => {
+            OutputUpdate::Record(rec) => {
                 self.output_history.push(OutputEntry {
-                    scan_code,
-                    romaji,
-                    kana,
-                    action,
+                    scan_code: rec.scan_code,
+                    romaji: rec.romaji,
+                    kana: rec.kana,
+                    action: rec.action,
                 });
             }
-            OutputUpdate::RetractAndRecord {
-                scan_code,
-                romaji,
-                kana,
-                action,
-            } => {
+            OutputUpdate::RetractAndRecord(rec) => {
                 self.output_history.retract_last();
                 self.output_history.push(OutputEntry {
-                    scan_code,
-                    romaji,
-                    kana,
-                    action,
+                    scan_code: rec.scan_code,
+                    romaji: rec.romaji,
+                    kana: rec.kana,
+                    action: rec.action,
                 });
             }
             OutputUpdate::None => {}
@@ -1163,8 +1174,7 @@ impl Engine {
                 if let Some((action, kana)) =
                     self.lookup_face(pending.scan_code, pending.vk_code, self.get_face(face))
                 {
-                    self.phase = EnginePhase::SpeculativeChar;
-                    // pending_char remains set (same data, now for SpeculativeChar)
+                    self.enter_speculative_char(pending);
                     // Emit the speculative output + set TIMER_PENDING for remaining time
                     let remaining_us = self.threshold_us.saturating_sub(self.speculative_delay_us);
                     self.finalize_plan(FinalizePlan {

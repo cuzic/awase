@@ -99,23 +99,22 @@ pub enum TimerIntent {
     Keep,
 }
 
+/// 出力履歴に記録する 1 件分のデータ
+#[derive(Debug, Clone)]
+pub struct OutputRecord {
+    pub scan_code: u32,
+    pub romaji: String,
+    pub kana: Option<char>,
+    pub action: KeyAction,
+}
+
 /// 出力履歴の更新指示
 #[derive(Debug, Clone)]
 pub enum OutputUpdate {
     /// 出力を記録
-    Record {
-        scan_code: u32,
-        romaji: String,
-        kana: Option<char>,
-        action: KeyAction,
-    },
+    Record(OutputRecord),
     /// 最後の出力を取り消して新しい出力を記録
-    RetractAndRecord {
-        scan_code: u32,
-        romaji: String,
-        kana: Option<char>,
-        action: KeyAction,
-    },
+    RetractAndRecord(OutputRecord),
     /// 変更なし
     None,
 }

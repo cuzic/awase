@@ -93,3 +93,21 @@ pub enum FocusKind {
     /// 判定不能
     Undetermined = 2,
 }
+
+impl FocusKind {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::TextInput,
+            1 => Self::NonText,
+            _ => Self::Undetermined,
+        }
+    }
+
+    pub fn load(atomic: &std::sync::atomic::AtomicU8) -> Self {
+        Self::from_u8(atomic.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn store(self, atomic: &std::sync::atomic::AtomicU8) {
+        atomic.store(self as u8, std::sync::atomic::Ordering::Release);
+    }
+}

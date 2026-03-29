@@ -113,7 +113,7 @@ use crate::focus::uia::SendableHwnd;
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
-pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(FocusKind::Undetermined as u8);
+pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
 
 
 fn main() -> Result<()> {
@@ -419,8 +419,8 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     // IME 制御キーまたは親指キー（変換/無変換）が押された場合、
     // ユーザーがテキスト入力コンテキストにいると判断して昇格する。
     if is_key_down && vk::is_ime_context(event.vk_code) {
-        let current = FOCUS_KIND.load(Ordering::Acquire);
-        if current != FocusKind::TextInput as u8 {
+        let current = FocusKind::load(&FOCUS_KIND);
+        if current != FocusKind::TextInput {
             focus::pattern::promote_to_text_input(
                 DetectionSource::ImeKeyInferred,
                 &format!("IME/thumb key 0x{:02X}", event.vk_code),
@@ -494,16 +494,16 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
-    let focus = FOCUS_KIND.load(Ordering::Acquire);
+    let focus = FocusKind::load(&FOCUS_KIND);
     match focus {
-        f if f == FocusKind::NonText as u8 => {
+        FocusKind::NonText => {
             // 非テキストコントロール → 常にパススルー
             return CallbackResult::PassThrough;
         }
-        f if f == FocusKind::TextInput as u8 => {
+        FocusKind::TextInput => {
             // テキスト入力 → 既存のエンジン処理（下の Step 5 に進む）
         }
-        _ => {
+        FocusKind::Undetermined => {
             // Undetermined → ハイブリッド戦略
             if is_key_down {
                 let ime_on = IME
@@ -609,12 +609,7 @@ fn run_message_loop() {
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
                 // UIA 非同期判定完了 → キャッシュ更新 + IME 状態復帰
-                let focus = FOCUS_KIND.load(Ordering::Acquire);
-                let kind = match focus {
-                    x if x == FocusKind::TextInput as u8 => FocusKind::TextInput,
-                    x if x == FocusKind::NonText as u8 => FocusKind::NonText,
-                    _ => FocusKind::Undetermined,
-                };
+                let kind = FocusKind::load(&FOCUS_KIND);
                 // UIA 結果をキャッシュに反映
                 if let Some((pid, cls)) = LAST_FOCUS_INFO.get_ref() {
                     if let Some(cache) = FOCUS_CACHE.get_mut() {

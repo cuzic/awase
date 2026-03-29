@@ -1,6 +1,5 @@
 //! タイピングパターン検出によるフォーカス推定
 
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use awase::types::{FocusKind, KeyEventType, RawKeyEvent};
@@ -98,11 +97,11 @@ pub(crate) fn is_os_modifier_held() -> bool {
 ///
 /// キャッシュとログの更新を一元化する。
 pub(crate) unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
-    let current = crate::FOCUS_KIND.load(Ordering::Acquire);
-    if current == FocusKind::TextInput as u8 {
+    let current = FocusKind::load(&crate::FOCUS_KIND);
+    if current == FocusKind::TextInput {
         return;
     }
-    crate::FOCUS_KIND.store(FocusKind::TextInput as u8, Ordering::Release);
+    FocusKind::TextInput.store(&crate::FOCUS_KIND);
     if let Some(cache) = crate::FOCUS_CACHE.get_mut() {
         if let Some((pid, cls)) = crate::LAST_FOCUS_INFO.get_ref() {
             cache.insert(*pid, cls.clone(), FocusKind::TextInput, source);
@@ -128,8 +127,8 @@ pub(crate) unsafe fn observe_key_pattern(event: &RawKeyEvent) {
         return;
     }
 
-    let current = crate::FOCUS_KIND.load(Ordering::Acquire);
-    if current == FocusKind::TextInput as u8 {
+    let current = FocusKind::load(&crate::FOCUS_KIND);
+    if current == FocusKind::TextInput {
         return; // 既に TextInput なら追跡不要
     }
 

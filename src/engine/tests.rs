@@ -3059,12 +3059,12 @@ fn test_finalize_plan_record_updates_history() {
     let plan = FinalizePlan {
         actions: vec![KeyAction::Romaji("ka".to_string())],
         timer: TimerIntent::CancelAll,
-        output: OutputUpdate::Record {
+        output: OutputUpdate::Record(OutputRecord {
             scan_code: SCAN_A,
             romaji: "ka".to_string(),
             kana: Some('か'),
             action: KeyAction::Romaji("ka".to_string()),
-        },
+        }),
     };
     let _resp = engine.finalize_plan(plan);
     assert_eq!(engine.output_history.len(), 1);
@@ -3079,12 +3079,12 @@ fn test_finalize_plan_retract_and_record() {
     let plan1 = FinalizePlan {
         actions: vec![KeyAction::Romaji("u".to_string())],
         timer: TimerIntent::CancelAll,
-        output: OutputUpdate::Record {
+        output: OutputUpdate::Record(OutputRecord {
             scan_code: SCAN_A,
             romaji: "u".to_string(),
             kana: Some('う'),
             action: KeyAction::Romaji("u".to_string()),
-        },
+        }),
     };
     let _resp = engine.finalize_plan(plan1);
     assert_eq!(engine.output_history.len(), 1);
@@ -3093,12 +3093,12 @@ fn test_finalize_plan_retract_and_record() {
     let plan2 = FinalizePlan {
         actions: vec![KeyAction::Romaji("vu".to_string())],
         timer: TimerIntent::CancelAll,
-        output: OutputUpdate::RetractAndRecord {
+        output: OutputUpdate::RetractAndRecord(OutputRecord {
             scan_code: SCAN_A,
             romaji: "vu".to_string(),
             kana: Some('ゔ'),
             action: KeyAction::Romaji("vu".to_string()),
-        },
+        }),
     };
     let _resp = engine.finalize_plan(plan2);
     assert_eq!(

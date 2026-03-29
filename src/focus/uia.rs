@@ -1,6 +1,5 @@
 //! Phase 3: UIA (UI Automation) パターンベース非同期判定
 
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use awase::types::FocusKind;
@@ -142,7 +141,7 @@ pub(crate) fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
         while let Ok(SendableHwnd(hwnd)) = rx.recv() {
             let state = unsafe { uia_classify_focus(&automation, hwnd) };
             if state != FocusKind::Undetermined {
-                crate::FOCUS_KIND.store(state as u8, Ordering::Release);
+                state.store(&crate::FOCUS_KIND);
                 log::debug!("UIA async: hwnd={:?} → {:?}", hwnd, state);
 
                 // NonText の場合はメインスレッドにエンジンフラッシュを依頼
