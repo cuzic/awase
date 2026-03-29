@@ -50,6 +50,11 @@ jobs:
       - name: Build awase-settings.exe
         run: cargo build --release --features gui --bin awase-settings
 
+      - name: Run E2E tests
+        run: cargo test --test e2e_windows -- --nocapture
+        env:
+          RUST_LOG: debug
+
       - name: Prepare distribution
         shell: bash
         run: |
