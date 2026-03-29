@@ -1,8 +1,23 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmMode {
+    /// 待機モード: タイムアウトまで出力を保留
+    Wait,
+    /// 先行確定モード: 即座に出力、同時打鍵時に BS で差し替え
+    Speculative,
+    /// 二段タイマー: 短い待機→投機出力→差し替え
+    TwoPhase,
+    /// 連続中は待機、途切れたら投機
+    AdaptiveTiming,
+    /// n-gram 予測で投機/待機を動的切替
+    NgramPredictive,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GeneralConfig {
     /// 同時打鍵の判定閾値（ミリ秒）
     #[serde(default = "default_threshold")]
@@ -43,6 +58,14 @@ pub struct GeneralConfig {
     /// n-gram 適応閾値の上限（ミリ秒、デフォルト 120ms）
     #[serde(default = "default_ngram_max_threshold")]
     pub ngram_max_threshold_ms: u32,
+
+    /// 確定モード（デフォルト: wait）
+    #[serde(default = "default_confirm_mode")]
+    pub confirm_mode: ConfirmMode,
+
+    /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming で使用）
+    #[serde(default = "default_speculative_delay")]
+    pub speculative_delay_ms: u32,
 }
 
 const fn default_threshold() -> u32 {
@@ -77,11 +100,19 @@ const fn default_ngram_max_threshold() -> u32 {
     120
 }
 
+const fn default_confirm_mode() -> ConfirmMode {
+    ConfirmMode::Wait
+}
+
+const fn default_speculative_delay() -> u32 {
+    30
+}
+
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
 /// このファイルにはアプリ全体の設定のみを含む。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub general: GeneralConfig,
 }
@@ -98,6 +129,18 @@ impl AppConfig {
         let config: Self = toml::from_str(&content)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
         Ok(config)
+    }
+
+    /// 設定を TOML 形式でファイルに保存する
+    ///
+    /// # Errors
+    ///
+    /// シリアライズまたはファイル書き込みに失敗した場合にエラーを返す。
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        std::fs::write(path, content)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -355,6 +398,41 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.right_thumb_key, "VK_CONVERT");
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(config.general.layouts_dir, "config");
+    }
+
+    #[test]
+    fn test_confirm_mode_deserialize() {
+        let toml_str = r#"
+[general]
+confirm_mode = "two_phase"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.confirm_mode, ConfirmMode::TwoPhase);
+    }
+
+    #[test]
+    fn test_confirm_mode_all_variants() {
+        for (input, expected) in [
+            ("wait", ConfirmMode::Wait),
+            ("speculative", ConfirmMode::Speculative),
+            ("two_phase", ConfirmMode::TwoPhase),
+            ("adaptive_timing", ConfirmMode::AdaptiveTiming),
+            ("ngram_predictive", ConfirmMode::NgramPredictive),
+        ] {
+            let toml_str = format!("[general]\nconfirm_mode = \"{input}\"");
+            let config: AppConfig = toml::from_str(&toml_str).unwrap();
+            assert_eq!(config.general.confirm_mode, expected);
+        }
+    }
+
+    #[test]
+    fn test_confirm_mode_default() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.confirm_mode, ConfirmMode::Wait);
+        assert_eq!(config.general.speculative_delay_ms, 30);
     }
 
     #[test]

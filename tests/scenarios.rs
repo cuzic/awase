@@ -22,6 +22,8 @@ fn make_nicola_engine() -> Engine {
         left_thumb_vk,
         right_thumb_vk,
         config.general.simultaneous_threshold_ms,
+        config.general.confirm_mode,
+        config.general.speculative_delay_ms,
     )
 }
 
