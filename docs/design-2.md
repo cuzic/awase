@@ -1127,14 +1127,6 @@ struct NgramModel {
 
     /// 閾値の調整幅（例: ±20ms）
     adjustment_range_ms: u32,
-
-    /// 2-gram ごとの典型的な打鍵間隔（Phase 2 後期）
-    bigram_typical_interval: HashMap<(char, char), TypicalInterval>,
-}
-
-struct TypicalInterval {
-    mean_ms: f32,
-    stddev_ms: f32,
 }
 ```
 
@@ -1191,28 +1183,6 @@ impl Engine {
 }
 ```
 
-#### タイミング情報の活用（Phase 2 後期）
-
-打鍵間隔パターンも n-gram と組み合わせると精度が上がる。
-
-```rust
-impl NgramModel {
-    /// 観測された打鍵間隔が、この n-gram の典型的な間隔に
-    /// どれだけ合致するかのスコアを返す
-    fn timing_score(
-        &self, prev: char, current: char, observed_ms: f32,
-    ) -> f32 {
-        match self.bigram_typical_interval.get(&(prev, current)) {
-            Some(typical) => {
-                let z = (observed_ms - typical.mean_ms) / typical.stddev_ms;
-                -z.abs() // 典型的な間隔に近いほど高スコア
-            }
-            None => 0.0,
-        }
-    }
-}
-```
-
 #### `recent_output` の管理ルール
 
 ```rust
@@ -1265,10 +1235,6 @@ PendingChar + 親指キー Down 到着
 "ありが" = 3.1
 "ですか" = 2.8
 
-[timing]
-# Phase 2 後期（オプション）
-"あい" = { mean_ms = 120.0, stddev_ms = 30.0 }
-"かく" = { mean_ms = 95.0, stddev_ms = 25.0 }
 ```
 
 ---
@@ -1628,11 +1594,6 @@ keyboard-hook/
 - `NgramModel` の読み込みと `adjusted_threshold()` の実装
 - `recent_output` の管理と `is_within_threshold()` の拡張
 - 固定閾値との A/B 比較検証
-
-**2c: n-gram 適応的閾値（後期・タイミングベース）**:
-- `TypicalInterval` の導入
-- `timing_score()` による打鍵間隔パターンの考慮
-- 頻度スコアとタイミングスコアの重み付き合成
 
 ### Phase 3: クロスプラットフォーム
 
