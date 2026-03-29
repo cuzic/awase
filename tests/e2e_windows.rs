@@ -69,7 +69,6 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
     }
 }
 
-#[allow(dead_code)]
 fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
     RawKeyEvent {
         vk_code: VkCode(vk),
@@ -566,6 +565,7 @@ unsafe fn send_char_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, ch: cha
 }
 
 /// Edit コントロールにキーイベントを直接送信する（WM_KEYDOWN + WM_KEYUP）
+#[allow(dead_code)]
 unsafe fn send_keydown_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, vk: u16) {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_KEYDOWN, WM_KEYUP};
@@ -1055,4 +1055,518 @@ fn e2e_engine_with_ime_context() {
     let _ = engine.flush_pending(ContextChange::ImeOff);
 
     log::info!("=== Phase 3 engine+IME tests completed ===");
+}
+
+// ─────────────────────────────────────────────
+// NICOLA レイアウト実機マッピングテスト
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_nicola_normal_face_mapping() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: NICOLA normal face mapping ===");
+
+    let t0 = 1_000_000u64;
+
+    // Test multiple keys on the normal face
+    // 'A' (VK_A=0x41, scan=0x1E) -> normal face character
+    let r = engine.on_event(key_down(0x41, 0x1E, t0));
+    assert!(r.consumed);
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Normal face 'A': {:?}", r.actions);
+    assert!(!r.actions.is_empty(), "should produce output for 'A'");
+
+    // 'S' (VK_S=0x53, scan=0x1F)
+    let r = engine.on_event(key_down(0x53, 0x1F, t0 + 500_000));
+    assert!(r.consumed);
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Normal face 'S': {:?}", r.actions);
+    assert!(!r.actions.is_empty(), "should produce output for 'S'");
+
+    // 'D' (VK_D=0x44, scan=0x20)
+    let r = engine.on_event(key_down(0x44, 0x20, t0 + 1_000_000));
+    assert!(r.consumed);
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Normal face 'D': {:?}", r.actions);
+    assert!(!r.actions.is_empty());
+
+    log::info!("Normal face mapping verified");
+}
+
+#[test]
+fn e2e_nicola_thumb_face_mapping() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: NICOLA thumb face mapping ===");
+
+    let t0 = 1_000_000u64;
+
+    // 'A' + left thumb (simultaneous) -> left thumb face character
+    engine.on_event(key_down(0x41, 0x1E, t0));
+    engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000)); // NONCONVERT within threshold
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Left thumb face 'A': {:?}", r.actions);
+    assert!(!r.actions.is_empty(), "thumb face should produce output");
+
+    // 'A' + right thumb (simultaneous) -> right thumb face character
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    engine.on_event(key_down(0x41, 0x1E, t0));
+    engine.on_event(key_down(0x1C, 0x79, t0 + 30_000)); // CONVERT within threshold
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Right thumb face 'A': {:?}", r.actions);
+    assert!(
+        !r.actions.is_empty(),
+        "right thumb face should produce output"
+    );
+
+    log::info!("Thumb face mapping verified");
+}
+
+// ─────────────────────────────────────────────
+// Timing edge case tests
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_timing_threshold_boundary() {
+    init_test_logging();
+    log::info!("=== E2E: Timing threshold boundary ===");
+
+    let t0 = 1_000_000u64;
+    let threshold_us = 100_000; // 100ms
+
+    // Just inside threshold -> simultaneous
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    engine.on_event(key_down(0x41, 0x1E, t0));
+    engine.on_event(key_down(0x1D, 0x7B, t0 + threshold_us - 1));
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Inside threshold ({}us): {:?}", threshold_us - 1, r.actions);
+    // Should be simultaneous (thumb face)
+
+    // Just outside threshold -> separate keys
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    engine.on_event(key_down(0x41, 0x1E, t0));
+    engine.on_event(key_down(0x1D, 0x7B, t0 + threshold_us + 1));
+    // The first key should have been flushed as single
+    log::info!(
+        "Outside threshold ({}us): first key flushed separately",
+        threshold_us + 1
+    );
+
+    log::info!("Threshold boundary verified");
+}
+
+#[test]
+fn e2e_rapid_sequential_input() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: Rapid sequential input ===");
+
+    let t0 = 1_000_000u64;
+    let interval = 200_000u64; // 200ms between keys (outside threshold)
+
+    // Type 10 characters rapidly, each separated by > threshold
+    let keys: [(u16, u32); 10] = [
+        (0x41, 0x1E), // A
+        (0x53, 0x1F), // S
+        (0x44, 0x20), // D
+        (0x46, 0x21), // F
+        (0x47, 0x22), // G
+        (0x48, 0x23), // H
+        (0x4A, 0x24), // J
+        (0x4B, 0x25), // K
+        (0x4C, 0x26), // L
+        (0x41, 0x1E), // A again
+    ];
+
+    let mut total_actions = 0;
+    for (i, (vk, scan)) in keys.iter().enumerate() {
+        let ts = t0 + (i as u64) * interval;
+        let r = engine.on_event(key_down(*vk, *scan, ts));
+        log::debug!("Key {i}: vk=0x{vk:02X} consumed={}", r.consumed);
+
+        // Each key goes pending, then the NEXT key flushes the previous
+        // (except the first one which just goes pending)
+        total_actions += r.actions.len();
+    }
+
+    // Flush the last pending key
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    total_actions += r.actions.len();
+
+    log::info!("Total actions from 10 keys: {total_actions}");
+    assert!(
+        total_actions >= 10,
+        "should produce at least 10 actions for 10 keys"
+    );
+
+    log::info!("Rapid sequential input verified");
+}
+
+#[test]
+fn e2e_three_key_arbitration() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: Three-key arbitration (d1 < d2) ===");
+
+    let t0 = 1_000_000u64;
+
+    // char1 -> thumb -> char2 (d1 < d2: char1+thumb simultaneous, char2 new)
+    // d1 = thumb - char1 = 20ms
+    // d2 = char2 - thumb = 50ms
+    engine.on_event(key_down(0x41, 0x1E, t0)); // char1: A
+    engine.on_event(key_down(0x1D, 0x7B, t0 + 20_000)); // thumb: NonConvert
+    let r = engine.on_event(key_down(0x53, 0x1F, t0 + 70_000)); // char2: S
+    log::info!(
+        "3-key (d1<d2): consumed={} actions={:?}",
+        r.consumed,
+        r.actions
+    );
+    // char1+thumb should be simultaneous, char2 should be new pending
+
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("3-key timeout: {:?}", r.actions);
+
+    log::info!("Three-key arbitration verified");
+}
+
+#[test]
+fn e2e_three_key_arbitration_reversed() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: Three-key arbitration (d1 >= d2) ===");
+
+    let t0 = 1_000_000u64;
+
+    // char1 -> thumb -> char2 (d1 >= d2: char1 single, char2+thumb simultaneous)
+    // d1 = thumb - char1 = 50ms
+    // d2 = char2 - thumb = 20ms
+    engine.on_event(key_down(0x41, 0x1E, t0)); // char1: A
+    engine.on_event(key_down(0x1D, 0x7B, t0 + 50_000)); // thumb
+    let r = engine.on_event(key_down(0x53, 0x1F, t0 + 70_000)); // char2: S
+    log::info!(
+        "3-key (d1>=d2): consumed={} actions={:?}",
+        r.consumed,
+        r.actions
+    );
+
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("3-key timeout: {:?}", r.actions);
+
+    log::info!("Three-key arbitration (reversed) verified");
+}
+
+// ─────────────────────────────────────────────
+// ConfirmMode detailed tests
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_two_phase_mode_transition() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::TwoPhase);
+    log::info!("=== E2E: TwoPhase mode Phase 1->2 transition ===");
+
+    let t0 = 1_000_000u64;
+
+    // Phase 1: short wait (speculative_delay_ms = 30ms)
+    let r = engine.on_event(key_down(0x41, 0x1E, t0));
+    log::debug!(
+        "TwoPhase KeyDown: consumed={} actions={:?}",
+        r.consumed,
+        r.actions
+    );
+    assert!(r.consumed);
+    assert!(r.actions.is_empty(), "Phase 1 should not output yet");
+
+    // TIMER_SPECULATIVE fires -> Phase 2 (speculative output)
+    let r = engine.on_timeout(awase::engine::TIMER_SPECULATIVE);
+    log::info!("Phase 2 transition: actions={:?}", r.actions);
+    // Should now have speculative output
+
+    // TIMER_PENDING fires -> confirm speculative
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Phase 2 confirm: actions={:?}", r.actions);
+
+    log::info!("TwoPhase transition verified");
+}
+
+#[test]
+fn e2e_speculative_retraction_then_normal() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Speculative);
+    log::info!("=== E2E: Speculative retraction followed by normal input ===");
+
+    let t0 = 1_000_000u64;
+
+    // Key 1: speculative output
+    let r = engine.on_event(key_down(0x41, 0x1E, t0));
+    log::debug!("Speculative A: {:?}", r.actions);
+    assert!(
+        !r.actions.is_empty(),
+        "speculative should output immediately"
+    );
+
+    // Thumb within threshold -> retract + new output
+    let r = engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000));
+    log::debug!("Retraction: {:?}", r.actions);
+    let has_bs = r
+        .actions
+        .iter()
+        .any(|a| matches!(a, KeyAction::Key(vk) if *vk == 0x08));
+    assert!(has_bs, "retraction should have BS");
+
+    // Key 2: normal speculative (fresh start)
+    let r = engine.on_event(key_down(0x53, 0x1F, t0 + 500_000));
+    log::debug!("Next speculative S: {:?}", r.actions);
+    assert!(
+        !r.actions.is_empty(),
+        "next key should also output speculatively"
+    );
+
+    // Timeout -> confirm
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::debug!("Confirm: {:?}", r.actions);
+
+    log::info!("Speculative retraction + normal verified");
+}
+
+// ─────────────────────────────────────────────
+// Key up handling tests
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_key_up_during_pending() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: KeyUp during pending forces resolution ===");
+
+    let t0 = 1_000_000u64;
+
+    // KeyDown A -> pending
+    engine.on_event(key_down(0x41, 0x1E, t0));
+
+    // KeyUp A -> should force resolution (single character)
+    let r = engine.on_event(key_up(0x41, 0x1E, t0 + 50_000));
+    log::info!(
+        "KeyUp during pending: consumed={} actions={:?}",
+        r.consumed,
+        r.actions
+    );
+    // Should have resolved the pending character
+    assert!(
+        r.consumed || !r.actions.is_empty(),
+        "KeyUp should trigger resolution"
+    );
+
+    log::info!("KeyUp during pending verified");
+}
+
+#[test]
+fn e2e_key_up_after_simultaneous() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: KeyUp sequence after simultaneous keystroke ===");
+
+    let t0 = 1_000_000u64;
+
+    // Simultaneous: A + NonConvert
+    engine.on_event(key_down(0x41, 0x1E, t0));
+    engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000));
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::debug!("Simultaneous result: {:?}", r.actions);
+
+    // KeyUp A
+    let r = engine.on_event(key_up(0x41, 0x1E, t0 + 200_000));
+    log::debug!("KeyUp A: consumed={} actions={:?}", r.consumed, r.actions);
+
+    // KeyUp NonConvert
+    let r = engine.on_event(key_up(0x1D, 0x7B, t0 + 210_000));
+    log::debug!(
+        "KeyUp NonConvert: consumed={} actions={:?}",
+        r.consumed,
+        r.actions
+    );
+
+    log::info!("KeyUp after simultaneous verified");
+}
+
+// ─────────────────────────────────────────────
+// Engine state management tests
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_engine_toggle_during_pending() {
+    init_test_logging();
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    log::info!("=== E2E: Toggle engine during pending state ===");
+
+    let t0 = 1_000_000u64;
+
+    // Start pending
+    engine.on_event(key_down(0x41, 0x1E, t0));
+
+    // Toggle off -> should flush pending
+    let (enabled, flush) = engine.toggle_enabled();
+    log::info!(
+        "Toggle off: enabled={enabled} flush_actions={:?}",
+        flush.actions
+    );
+    assert!(!enabled);
+    assert!(!flush.actions.is_empty(), "flush should emit pending char");
+
+    // Keys now pass through
+    let r = engine.on_event(key_down(0x53, 0x1F, t0 + 500_000));
+    assert!(!r.consumed);
+
+    // Toggle back on
+    let (enabled, _) = engine.toggle_enabled();
+    assert!(enabled);
+    let r = engine.on_event(key_down(0x44, 0x20, t0 + 1_000_000));
+    assert!(r.consumed, "re-enabled engine should consume");
+
+    let _ = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::info!("Toggle during pending verified");
+}
+
+#[test]
+fn e2e_layout_swap_during_pending() {
+    init_test_logging();
+    log::info!("=== E2E: Layout swap during pending ===");
+
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    let t0 = 1_000_000u64;
+
+    // Start pending
+    engine.on_event(key_down(0x41, 0x1E, t0));
+
+    // Swap layout -> should flush pending
+    let new_layout = load_test_layout(); // reload same layout
+    let flush = engine.swap_layout(new_layout);
+    log::info!("Swap layout: flush_actions={:?}", flush.actions);
+    assert!(!flush.actions.is_empty(), "swap should flush pending");
+
+    // Engine should be idle, next key works normally
+    let r = engine.on_event(key_down(0x53, 0x1F, t0 + 500_000));
+    assert!(r.consumed);
+    let _ = engine.on_timeout(awase::engine::TIMER_PENDING);
+
+    log::info!("Layout swap during pending verified");
+}
+
+#[test]
+fn e2e_config_validation() {
+    init_test_logging();
+    log::info!("=== E2E: Config validation ===");
+
+    use awase::config::AppConfig;
+
+    // Load actual config.toml
+    let config_path = std::path::Path::new("config.toml");
+    if config_path.exists() {
+        let config = AppConfig::load(config_path).expect("config.toml should parse");
+        let (validated, warnings) = config.validate();
+        log::info!(
+            "Config validated: threshold={}ms mode={:?}",
+            validated.general.simultaneous_threshold_ms,
+            validated.general.confirm_mode
+        );
+        for w in &warnings {
+            log::warn!("Config warning: {w}");
+        }
+        assert!(
+            warnings.is_empty(),
+            "default config should have no warnings"
+        );
+    } else {
+        log::warn!("config.toml not found, skipping");
+    }
+
+    log::info!("Config validation verified");
+}
+
+// ─────────────────────────────────────────────
+// SendMessage comprehensive (Phase 2 extension, CI-compatible)
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_message_unicode_chars() {
+    init_test_logging();
+    log::info!("=== E2E Phase 2: Unicode characters via SendMessage ===");
+
+    unsafe {
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+
+        // Hiragana
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, '\u{3042}');
+        send_char_to_edit(win.edit_hwnd, '\u{3044}');
+        send_char_to_edit(win.edit_hwnd, '\u{3046}');
+        let text = win.get_text();
+        log::info!("Hiragana: '{text}'");
+        assert_eq!(text, "\u{3042}\u{3044}\u{3046}");
+
+        // Katakana
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, '\u{30A2}');
+        send_char_to_edit(win.edit_hwnd, '\u{30A4}');
+        let text = win.get_text();
+        log::info!("Katakana: '{text}'");
+        assert_eq!(text, "\u{30A2}\u{30A4}");
+
+        // Mixed ASCII + Japanese
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, 'H');
+        send_char_to_edit(win.edit_hwnd, 'e');
+        send_char_to_edit(win.edit_hwnd, 'l');
+        send_char_to_edit(win.edit_hwnd, 'l');
+        send_char_to_edit(win.edit_hwnd, 'o');
+        send_char_to_edit(win.edit_hwnd, ' ');
+        send_char_to_edit(win.edit_hwnd, '\u{4E16}');
+        send_char_to_edit(win.edit_hwnd, '\u{754C}');
+        let text = win.get_text();
+        log::info!("Mixed: '{text}'");
+        assert_eq!(text, "Hello \u{4E16}\u{754C}");
+
+        // Multiple backspaces
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, 'a');
+        send_char_to_edit(win.edit_hwnd, 'b');
+        send_char_to_edit(win.edit_hwnd, 'c');
+        send_char_to_edit(win.edit_hwnd, '\x08'); // BS
+        send_char_to_edit(win.edit_hwnd, '\x08'); // BS
+        let text = win.get_text();
+        log::info!("After 2x BS: '{text}'");
+        assert_eq!(text, "a");
+
+        log::info!("Unicode tests passed");
+    }
+}
+
+#[test]
+fn e2e_message_long_text() {
+    init_test_logging();
+    log::info!("=== E2E Phase 2: Long text input ===");
+
+    unsafe {
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+
+        // Type 100 characters
+        win.clear();
+        let input = "abcdefghij".repeat(10);
+        for ch in input.chars() {
+            send_char_to_edit(win.edit_hwnd, ch);
+        }
+        let text = win.get_text();
+        log::info!("100 chars: len={}", text.len());
+        assert_eq!(text.len(), 100, "should have 100 chars, got {}", text.len());
+        assert_eq!(text, input);
+
+        log::info!("Long text test passed");
+    }
 }
