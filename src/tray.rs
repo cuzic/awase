@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use anyhow::{Context, Result};
 
 /// トレイメニュー項目 ID
+const IDM_SETTINGS: u16 = 50;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -29,8 +30,8 @@ const TRAY_ICON_ID: u32 = 1;
 /// トレイアイコン用カスタムメッセージ
 const WM_TRAY_CALLBACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP;
 
-/// ウィンドウクラス名
-const WINDOW_CLASS_NAME: &str = "NicolaTrayWindow";
+/// ウィンドウクラス名（設定 GUI からの `FindWindowW` 検索用に一定の名前を使う）
+const WINDOW_CLASS_NAME: &str = "awase_tray_window";
 
 /// システムトレイアイコン管理
 pub struct SystemTray {
@@ -209,6 +210,23 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String]) 
             );
         }
 
+        // 設定メニュー項目を追加
+        let settings_text: Vec<u16> = "設定...".encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            usize::from(IDM_SETTINGS),
+            PCWSTR(settings_text.as_ptr()),
+        );
+
+        // セパレータ
+        let _ = AppendMenuW(
+            hmenu,
+            windows::Win32::UI::WindowsAndMessaging::MF_SEPARATOR,
+            0,
+            PCWSTR::null(),
+        );
+
         // メニュー項目を追加
         let toggle_text: Vec<u16> = "有効/無効切替"
             .encode_utf16()
@@ -254,7 +272,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String]) 
 pub const fn handle_tray_command(wparam: WPARAM) -> Option<u16> {
     let cmd = (wparam.0 & 0xFFFF) as u16;
     match cmd {
-        IDM_TOGGLE | IDM_EXIT => Some(cmd),
+        IDM_SETTINGS | IDM_TOGGLE | IDM_EXIT => Some(cmd),
         // 配列選択メニュー項目 (IDM_LAYOUT_BASE 以上の範囲)
         _ if cmd >= IDM_LAYOUT_BASE && cmd < IDM_TOGGLE => Some(cmd),
         _ => None,
@@ -274,6 +292,11 @@ pub const fn cmd_exit() -> u16 {
 /// 配列選択メニュー項目のベース ID のアクセサ
 pub const fn cmd_layout_base() -> u16 {
     IDM_LAYOUT_BASE
+}
+
+/// 設定メニューコマンド ID のアクセサ
+pub const fn cmd_settings() -> u16 {
+    IDM_SETTINGS
 }
 
 /// トレイウィンドウプロシージャ
