@@ -273,6 +273,18 @@ pub unsafe fn toggle_focus_override() {
         kb.undetermined_buffering = false;
     }
 
+    // バルーン通知を表示
+    if let Some(tray) = crate::TRAY.get_mut() {
+        tray.show_balloon(
+            "awase",
+            if new_kind == FocusKind::TextInput {
+                "テキスト入力モードに切り替えました"
+            } else {
+                "バイパスモードに切り替えました"
+            },
+        );
+    }
+
     let mode_str = if new_kind == FocusKind::TextInput {
         "TextInput (engine enabled)"
     } else {

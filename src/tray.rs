@@ -4,8 +4,8 @@
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIIF_INFO, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
@@ -141,6 +141,30 @@ impl SystemTray {
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
         }
+    }
+
+    /// バルーン通知を表示する
+    pub fn show_balloon(&mut self, title: &str, message: &str) {
+        // szInfoTitle に UTF-16 タイトルをコピー
+        let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let title_len = title_wide.len().min(self.nid.szInfoTitle.len());
+        self.nid.szInfoTitle[..title_len].copy_from_slice(&title_wide[..title_len]);
+
+        // szInfo に UTF-16 メッセージをコピー
+        let msg_wide: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+        let msg_len = msg_wide.len().min(self.nid.szInfo.len());
+        self.nid.szInfo[..msg_len].copy_from_slice(&msg_wide[..msg_len]);
+
+        // バルーン表示用フラグを設定
+        self.nid.uFlags = NIF_INFO;
+        self.nid.dwInfoFlags = NIIF_INFO;
+
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
+        }
+
+        // フラグを元に戻す（次回の NIM_MODIFY でバルーンが意図せず再表示されないように）
+        self.nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     }
 
     /// トレイアイコンを削除し、ウィンドウを破棄する

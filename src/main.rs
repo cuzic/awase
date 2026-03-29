@@ -79,7 +79,7 @@ pub fn check_ime_composing() -> bool {
 pub(crate) static ENGINE: SingleThreadCell<Engine> = SingleThreadCell::new();
 pub(crate) static OUTPUT: SingleThreadCell<Output> = SingleThreadCell::new();
 pub(crate) static IME: SingleThreadCell<HybridProvider> = SingleThreadCell::new();
-static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
+pub(crate) static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
 
 /// 利用可能な配列の一覧（名前, `YabLayout`, 左親指VK, 右親指VK）
 static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, VkCode, VkCode)>> = SingleThreadCell::new();
