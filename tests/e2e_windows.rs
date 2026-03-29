@@ -568,14 +568,151 @@ fn e2e_sendinput_special_keys() {
 // Phase 3: IME + NICOLA conversion
 // ────────────────────────────────────────────
 
+/// 日本語 IME が利用可能かチェック
+unsafe fn is_japanese_ime_available() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+    // スレッドのキーボードレイアウトを確認
+    let hkl = GetKeyboardLayout(0);
+    let lang_id = (hkl.0 as u32) & 0xFFFF;
+    let is_japanese = lang_id == 0x0411; // ja-JP
+    log::debug!("Keyboard layout: HKL={:?} lang_id=0x{:04X} japanese={}", hkl, lang_id, is_japanese);
+    is_japanese
+}
+
+/// IME のオープン状態を設定する
+unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bool {
+    use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        log::warn!("ImmGetContext failed for hwnd={:?}", hwnd);
+        return false;
+    }
+    let result = ImmSetOpenStatus(himc, open);
+    ImmReleaseContext(hwnd, himc);
+    log::debug!("ImmSetOpenStatus({open}): result={:?}", result);
+    result.is_ok()
+}
+
+/// IME のオープン状態を取得する
+unsafe fn get_ime_open(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext};
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return false;
+    }
+    let status = ImmGetOpenStatus(himc);
+    ImmReleaseContext(hwnd, himc);
+    status.as_bool()
+}
+
 #[test]
-fn e2e_ime_nicola_conversion() {
+fn e2e_ime_status_detection() {
     init_test_logging();
     if !is_interactive_session() {
         log::warn!("Skipping IME test: no interactive desktop session");
         return;
     }
-    // Check if Japanese IME is available
-    log::info!("=== E2E Phase 3: IME + NICOLA conversion ===");
-    log::info!("Phase 3 test placeholder - needs Japanese IME");
+    log::info!("=== E2E Phase 3: IME status detection ===");
+
+    unsafe {
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+        win.focus();
+
+        // 日本語 IME の有無を確認
+        let has_japanese = is_japanese_ime_available();
+        log::info!("Japanese IME available: {has_japanese}");
+
+        if !has_japanese {
+            log::warn!("Japanese IME not installed, skipping IME-specific tests");
+            log::info!("To enable: PowerShell → New-WinUserLanguageList ja-JP → Set-WinUserLanguageList");
+            return;
+        }
+
+        // IME OFF → Edit に直接入力
+        log::info!("--- Test: IME OFF → direct input ---");
+        set_ime_open(win.edit_hwnd, false);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let ime_status = get_ime_open(win.edit_hwnd);
+        log::info!("IME open status after OFF: {ime_status}");
+
+        win.clear();
+        send_key_to_edit(0x41, 0x1E); // A
+        let text = win.get_text();
+        log::info!("IME OFF, typed 'A': edit='{text}'");
+        assert!(
+            text.contains('a') || text.contains('A'),
+            "IME OFF: 'A' should produce 'a', got: '{text}'"
+        );
+
+        // IME ON → ローマ字入力モードでの動作確認
+        log::info!("--- Test: IME ON → romaji input ---");
+        set_ime_open(win.edit_hwnd, true);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let ime_status = get_ime_open(win.edit_hwnd);
+        log::info!("IME open status after ON: {ime_status}");
+
+        if !ime_status {
+            log::warn!("Could not enable IME, skipping IME ON tests");
+            return;
+        }
+
+        win.clear();
+        // IME ON で 'A' を入力 → IME が処理（ローマ字→かな変換）
+        send_key_to_edit(0x41, 0x1E); // A
+        std::thread::sleep(std::time::Duration::from_millis(200)); // IME 処理待ち
+        pump_messages();
+        let text = win.get_text();
+        log::info!("IME ON, typed 'A': edit='{text}'");
+        // IME ON + ローマ字モードなら 'あ' になるか、未確定文字列として 'a' が表示される
+        log::info!("IME conversion result: '{text}' (expected: 'あ' or 'a' in composition)");
+
+        // IME OFF に戻す（クリーンアップ）
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== Phase 3 IME status tests completed ===");
+    }
+}
+
+#[test]
+fn e2e_engine_with_ime_context() {
+    init_test_logging();
+    if !is_interactive_session() {
+        log::warn!("Skipping engine+IME test: no interactive desktop session");
+        return;
+    }
+    log::info!("=== E2E Phase 3: Engine with IME context ===");
+
+    // Engine を in-process で使い、IME 状態に応じた動作を確認
+    let mut engine = make_test_engine(ConfirmMode::Wait);
+    let t0 = 1_000_000u64;
+
+    // エンジン有効 + 通常キー入力 → consumed
+    let r = engine.on_event(key_down(0x41, 0x1E, t0));
+    log::debug!("Engine enabled, 'A': consumed={}", r.consumed);
+    assert!(r.consumed, "enabled engine should consume char key");
+
+    // タイムアウトで確定
+    let r = engine.on_timeout(awase::engine::TIMER_PENDING);
+    log::debug!("Timeout: actions={:?}", r.actions);
+
+    // エンジン無効化
+    let (enabled, _flush) = engine.toggle_enabled();
+    assert!(!enabled);
+    let r = engine.on_event(key_down(0x41, 0x1E, t0 + 500_000));
+    log::debug!("Engine disabled, 'A': consumed={}", r.consumed);
+    assert!(!r.consumed, "disabled engine should passthrough");
+
+    // 再有効化
+    let (enabled, _flush) = engine.toggle_enabled();
+    assert!(enabled);
+    let r = engine.on_event(key_down(0x41, 0x1E, t0 + 1_000_000));
+    log::debug!("Engine re-enabled, 'A': consumed={}", r.consumed);
+    assert!(r.consumed, "re-enabled engine should consume");
+
+    // flush で解放
+    let _ = engine.flush_pending(ContextChange::ImeOff);
+
+    log::info!("=== Phase 3 engine+IME tests completed ===");
 }

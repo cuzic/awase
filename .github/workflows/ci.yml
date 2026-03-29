@@ -50,6 +50,14 @@ jobs:
       - name: Build awase-settings.exe
         run: cargo build --release --features gui --bin awase-settings
 
+      - name: Install Japanese IME
+        shell: pwsh
+        run: |
+          $langList = New-WinUserLanguageList ja-JP
+          $langList.Add("en-US")
+          Set-WinUserLanguageList $langList -Force
+          Write-Host "Language list set: ja-JP, en-US"
+
       - name: Run E2E tests
         run: cargo test --test e2e_windows -- --nocapture
         env:
