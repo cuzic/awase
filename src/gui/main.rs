@@ -1,9 +1,13 @@
 use eframe::egui;
 
+/// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
+#[cfg(target_os = "windows")]
+const WM_RELOAD_CONFIG: u32 = 0x8000 + 10; // WM_APP = 0x8000
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([500.0, 600.0])
+            .with_inner_size([500.0, 650.0])
             .with_title("awase 設定"),
         ..Default::default()
     };
@@ -23,6 +27,12 @@ struct SettingsApp {
     preview_engine: Option<awase::engine::Engine>,
     preview_output: String,
     preview_state: String,
+    /// 新規 force_text エントリ入力バッファ
+    new_force_text_process: String,
+    new_force_text_class: String,
+    /// 新規 force_bypass エントリ入力バッファ
+    new_force_bypass_process: String,
+    new_force_bypass_class: String,
 }
 
 impl SettingsApp {
@@ -43,6 +53,10 @@ impl SettingsApp {
             preview_engine: None,
             preview_output: String::new(),
             preview_state: String::new(),
+            new_force_text_process: String::new(),
+            new_force_text_class: String::new(),
+            new_force_bypass_process: String::new(),
+            new_force_bypass_class: String::new(),
         };
         app.rebuild_preview_engine();
         app
@@ -65,9 +79,10 @@ fn scan_layout_names(layouts_dir: &str) -> Vec<String> {
     let dir = if std::path::Path::new(layouts_dir).is_absolute() {
         std::path::PathBuf::from(layouts_dir)
     } else if let Ok(exe) = std::env::current_exe() {
-        exe.parent()
-            .map(|d| d.join(layouts_dir))
-            .unwrap_or_else(|| std::path::PathBuf::from(layouts_dir))
+        exe.parent().map_or_else(
+            || std::path::PathBuf::from(layouts_dir),
+            |d| d.join(layouts_dir),
+        )
     } else {
         std::path::PathBuf::from(layouts_dir)
     };
@@ -76,7 +91,7 @@ fn scan_layout_names(layouts_dir: &str) -> Vec<String> {
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "yab") {
+            if path.extension().is_some_and(|ext| ext == "yab") {
                 if let Some(stem) = path.file_stem() {
                     names.push(stem.to_string_lossy().to_string());
                 }
@@ -151,6 +166,13 @@ impl eframe::App for SettingsApp {
                     self.ngram_settings_ui(ui);
                 });
 
+            // ── フォーカスオーバーライド ──
+            egui::CollapsingHeader::new("フォーカスオーバーライド")
+                .default_open(false)
+                .show(ui, |ui| {
+                    self.focus_overrides_ui(ui);
+                });
+
             // ── プレビュー ──
             egui::CollapsingHeader::new("プレビュー")
                 .default_open(true)
@@ -164,7 +186,10 @@ impl eframe::App for SettingsApp {
             ui.horizontal(|ui| {
                 if ui.button("適用").clicked() {
                     match self.config.save(&self.config_path) {
-                        Ok(()) => self.status_message = "設定を保存しました".into(),
+                        Ok(()) => {
+                            self.status_message = "設定を保存しました".into();
+                            send_reload_config_message();
+                        }
                         Err(e) => self.status_message = format!("保存エラー: {e}"),
                     }
                     self.rebuild_preview_engine();
@@ -258,20 +283,14 @@ impl SettingsApp {
             );
         });
 
-        // Speculative delay slider (only show for relevant modes)
-        let show_speculative = matches!(
-            self.config.general.confirm_mode,
-            awase::config::ConfirmMode::TwoPhase | awase::config::ConfirmMode::AdaptiveTiming
-        );
-        if show_speculative {
-            ui.horizontal(|ui| {
-                ui.label("投機遅延:");
-                ui.add(
-                    egui::Slider::new(&mut self.config.general.speculative_delay_ms, 10..=100)
-                        .suffix(" ms"),
-                );
-            });
-        }
+        // Speculative delay slider (used by TwoPhase, AdaptiveTiming, etc.)
+        ui.horizontal(|ui| {
+            ui.label("投機遅延:");
+            ui.add(
+                egui::Slider::new(&mut self.config.general.speculative_delay_ms, 10..=100)
+                    .suffix(" ms"),
+            );
+        });
 
         // Hotkey
         ui.horizontal(|ui| {
@@ -344,9 +363,10 @@ fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
     if std::path::Path::new(layouts_dir).is_absolute() {
         std::path::PathBuf::from(layouts_dir)
     } else if let Ok(exe) = std::env::current_exe() {
-        exe.parent()
-            .map(|d| d.join(layouts_dir))
-            .unwrap_or_else(|| std::path::PathBuf::from(layouts_dir))
+        exe.parent().map_or_else(
+            || std::path::PathBuf::from(layouts_dir),
+            |d| d.join(layouts_dir),
+        )
     } else {
         std::path::PathBuf::from(layouts_dir)
     }
@@ -367,10 +387,12 @@ impl SettingsApp {
         };
         let layout = layout.resolve_kana();
 
-        let left_vk =
-            awase::config::vk_name_to_code(&self.config.general.left_thumb_key).unwrap_or(0x1D);
-        let right_vk =
-            awase::config::vk_name_to_code(&self.config.general.right_thumb_key).unwrap_or(0x1C);
+        let left_vk = awase::types::VkCode(
+            awase::config::vk_name_to_code(&self.config.general.left_thumb_key).unwrap_or(0x1D),
+        );
+        let right_vk = awase::types::VkCode(
+            awase::config::vk_name_to_code(&self.config.general.right_thumb_key).unwrap_or(0x1C),
+        );
 
         self.preview_engine = Some(awase::engine::Engine::new(
             layout,
@@ -461,17 +483,20 @@ impl SettingsApp {
 
         // Create a simulated RawKeyEvent
         let scan = awase::yab::vk_to_pos(vk)
-            .and_then(|pos| awase::scanmap::pos_to_scan(pos))
+            .and_then(awase::scanmap::pos_to_scan)
             .unwrap_or(0);
         let event = awase::types::RawKeyEvent {
-            vk_code: vk,
-            scan_code: scan,
+            vk_code: awase::types::VkCode(vk),
+            scan_code: awase::types::ScanCode(scan),
             event_type: awase::types::KeyEventType::KeyDown,
             extra_info: 0,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64,
+            timestamp: u64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_micros(),
+            )
+            .unwrap_or(u64::MAX),
         };
 
         let response = engine.on_event(event);
@@ -497,7 +522,109 @@ impl SettingsApp {
     }
 }
 
-fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
+impl SettingsApp {
+    fn focus_overrides_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("特定のプロセス/ウィンドウクラスに対する動作を強制指定します。");
+        ui.add_space(4.0);
+
+        // ── force_text（常にテキスト入力として扱う） ──
+        ui.label("常にテキスト入力として扱う (force_text):");
+        let mut remove_text_idx = None;
+        for (i, entry) in self.config.focus_overrides.force_text.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {} / {}", entry.process, entry.class));
+                if ui.small_button("削除").clicked() {
+                    remove_text_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_text_idx {
+            self.config.focus_overrides.force_text.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  プロセス:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_force_text_process).desired_width(120.0));
+            ui.label("クラス:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_force_text_class).desired_width(120.0));
+            if ui.button("追加").clicked()
+                && !self.new_force_text_process.is_empty()
+                && !self.new_force_text_class.is_empty()
+            {
+                self.config
+                    .focus_overrides
+                    .force_text
+                    .push(awase::config::FocusOverrideEntry {
+                        process: self.new_force_text_process.drain(..).collect(),
+                        class: self.new_force_text_class.drain(..).collect(),
+                    });
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // ── force_bypass（常に非テキストとしてバイパス） ──
+        ui.label("常にバイパスする (force_bypass):");
+        let mut remove_bypass_idx = None;
+        for (i, entry) in self.config.focus_overrides.force_bypass.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {} / {}", entry.process, entry.class));
+                if ui.small_button("削除").clicked() {
+                    remove_bypass_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_bypass_idx {
+            self.config.focus_overrides.force_bypass.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  プロセス:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_force_bypass_process).desired_width(120.0));
+            ui.label("クラス:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_force_bypass_class).desired_width(120.0));
+            if ui.button("追加").clicked()
+                && !self.new_force_bypass_process.is_empty()
+                && !self.new_force_bypass_class.is_empty()
+            {
+                self.config
+                    .focus_overrides
+                    .force_bypass
+                    .push(awase::config::FocusOverrideEntry {
+                        process: self.new_force_bypass_process.drain(..).collect(),
+                        class: self.new_force_bypass_class.drain(..).collect(),
+                    });
+            }
+        });
+    }
+}
+
+/// 設定保存後に awase 本体プロセスへ `WM_RELOAD_CONFIG` を送信する。
+///
+/// Windows では `FindWindowW` で awase のメッセージウィンドウを探し、
+/// `PostMessageW` でカスタムメッセージを送信する。
+/// Windows 以外では何もしない（GUI プレビュー開発用）。
+#[allow(clippy::missing_const_for_fn)]
+fn send_reload_config_message() {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+
+        unsafe {
+            let hwnd = FindWindowW(w!("awase_msg_window"), None);
+            if let Ok(hwnd) = hwnd {
+                let msg = windows::Win32::Foundation::WPARAM(0);
+                let lparam = windows::Win32::Foundation::LPARAM(0);
+                let _ = PostMessageW(hwnd, WM_RELOAD_CONFIG, msg, lparam);
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Non-Windows: no-op (for development/testing)
+    }
+}
+
+const fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
     use awase::config::ConfirmMode;
     match mode {
         ConfirmMode::Wait => "待機 (wait)",
@@ -508,7 +635,7 @@ fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
     }
 }
 
-fn confirm_mode_description(mode: awase::config::ConfirmMode) -> &'static str {
+const fn confirm_mode_description(mode: awase::config::ConfirmMode) -> &'static str {
     use awase::config::ConfirmMode;
     match mode {
         ConfirmMode::Wait => "  タイムアウトまで出力を保留します。安定性重視。",

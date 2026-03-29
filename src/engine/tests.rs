@@ -369,18 +369,18 @@ fn test_swap_layout_flushes_pending_thumb() {
 }
 
 #[test]
-fn test_swap_layout_clears_active_keys() {
+fn test_swap_layout_clears_output_history() {
     let mut engine = make_engine();
 
-    // キーを確定して active_keys にエントリを作る
+    // キーを確定して出力履歴にエントリを作る
     engine.on_event(Ev::down(VK_A).build());
     engine.on_timeout(TIMER_PENDING);
 
-    // swap_layout で active_keys がクリアされる
+    // swap_layout で出力履歴がクリアされる
     let new_layout = make_layout();
     engine.swap_layout(new_layout);
 
-    // active_keys がクリアされたので KeyUp は PassThrough になる
+    // 出力履歴がクリアされたので KeyUp は PassThrough になる
     let result = engine.on_event(Ev::up(VK_A).build());
     result.assert_pass_through();
 }
@@ -1282,7 +1282,7 @@ fn test_key_up_while_pending_thumb() {
         .actions
         .iter()
         .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT.0)));
-    // Note: active_keys uses u32::from(vk_code) as key for thumb,
+    // Note: output_history uses vk_code as key for thumb,
     // so scan_code-based removal in on_key_up won't find it -> no KeyUp action appended
 }
 
@@ -1363,8 +1363,8 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
 
     // KeyUp of D -> resolve char1+left_thumb
     // D NOT in left_thumb -> fallback to single
-    // D NOT in normal -> Key(VK_D), active_keys[SCAN_D] = Key(VK_D)
-    // Then line 579: active_keys.remove(&scan_code) finds Key(VK_D) -> push KeyUp
+    // D NOT in normal -> Key(VK_D), output_history records Key(VK_D)
+    // Then on KeyUp: output_history removal finds Key(VK_D) -> push KeyUp
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
@@ -1620,7 +1620,7 @@ fn test_key_up_for_romaji_produces_suppress() {
 #[test]
 fn test_key_up_while_pending_char_key_action() {
     // A key that's a layout key but NOT in normal face -> resolves to Key(vk)
-    // Then KeyUp should find Key in active_keys and append KeyUp
+    // Then KeyUp should find Key in output_history and append KeyUp
     let mut engine = make_engine();
     // Add D only to left_thumb (not normal)
     engine.layout.left_thumb.insert(POS_D, lit('な'));
@@ -1630,8 +1630,8 @@ fn test_key_up_while_pending_char_key_action() {
     assert_pending(&r);
 
     // KeyUp of D while pending -> resolve_pending_char_as_single
-    // D not in normal -> Key(VK_D), active_keys[SCAN_D] = Key(VK_D)
-    // Then active_keys.remove(&SCAN_D) finds Key(VK_D) -> push KeyUp(VK_D)
+    // D not in normal -> Key(VK_D), output_history records Key(VK_D)
+    // Then output_history removal finds Key(VK_D) -> push KeyUp(VK_D)
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
@@ -2534,12 +2534,12 @@ fn test_ngram_predictive_no_model_falls_back() {
     r.assert_timer_set(TIMER_SPECULATIVE);
 }
 
-/// recent_output が空の場合、スコアは両方 0 → diff=0 → Wait を使用する
+/// 出力履歴が空の場合、スコアは両方 0 → diff=0 → Wait を使用する
 #[test]
 fn test_ngram_predictive_no_history_uses_wait() {
     let mut engine = make_ngram_predictive_engine();
 
-    // Empty recent_output + model with some bigrams (but they won't match with empty history)
+    // Empty output_history + model with some bigrams (but they won't match with empty history)
     let toml_str = r#"
 [bigram]
 "あう" = 2.0

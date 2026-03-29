@@ -15,7 +15,7 @@ pub struct OutputEntry {
 
 /// Engine が出力した内容の履歴
 ///
-/// active_keys, recent_output, emitted_romaji/emitted_kana を統合する。
+/// 押下中キーの追跡、直近出力ローマ字/かな、出力記録を統合管理する。
 /// Speculative モードの BS 回数計算、n-gram 文脈取得、KeyUp 整合性を一元管理。
 #[derive(Debug, Default)]
 pub struct OutputHistory {

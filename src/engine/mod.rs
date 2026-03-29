@@ -102,7 +102,7 @@ pub struct Engine {
     /// 直前のキーとの間隔（マイクロ秒）。on_key_down の冒頭で算出。
     last_key_gap_us: Option<u64>,
 
-    /// 出力履歴（active_keys/recent_output を統合）
+    /// 出力履歴（押下中キーの追跡と直近出力の記録を統合管理）
     output_history: OutputHistory,
 }
 
