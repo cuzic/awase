@@ -66,11 +66,12 @@ jobs:
       - name: Prepare distribution
         shell: bash
         run: |
-          mkdir -p dist/layout
+          mkdir -p dist/layout dist/scripts
           cp target/release/awase.exe dist/
           cp target/release/awase-settings.exe dist/
           cp config.toml dist/
           cp layout/*.yab dist/layout/
+          cp scripts/run-e2e.ps1 dist/scripts/
           cp README.md dist/
           for f in LICENSE*; do [ -e "$f" ] && cp "$f" dist/; done
 
