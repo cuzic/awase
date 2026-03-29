@@ -12,3 +12,14 @@ default_layout = "nicola.yab"
 # ngram_adjustment_range_ms = 20
 # ngram_min_threshold_ms = 30
 # ngram_max_threshold_ms = 120
+
+# フォーカス判定の永続オーバーライド
+# 特定の (プロセス名, クラス名) の組み合わせに対して、
+# 自動判定を無視してテキスト入力 / 非テキストを強制する。
+# [focus_overrides]
+# force_text = [
+#     { process = "chrome.exe", class = "Chrome_RenderWidgetHostHWND" },
+# ]
+# force_bypass = [
+#     { process = "explorer.exe", class = "CabinetWClass" },
+# ]

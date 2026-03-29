@@ -51,7 +51,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
-use awase::config::{vk_name_to_code, AppConfig};
+use awase::config::{vk_name_to_code, AppConfig, FocusOverrides};
 use awase::engine::{ContextChange, Engine, FocusKind, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{KeyEventType, RawKeyEvent};
@@ -121,6 +121,9 @@ static PASSTHROUGH_MEMORY: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell
 
 /// フォーカス判定結果のキャッシュ（メインスレッドからのみアクセス）
 static FOCUS_CACHE: SingleThreadCell<FocusCache> = SingleThreadCell::new();
+
+/// config.toml の永続フォーカスオーバーライド設定
+static FOCUS_OVERRIDES: SingleThreadCell<FocusOverrides> = SingleThreadCell::new();
 
 /// UIA 非同期判定完了時にキャッシュを更新するための直前のフォーカス情報
 static LAST_FOCUS_INFO: SingleThreadCell<(u32, String)> = SingleThreadCell::new();
@@ -271,6 +274,7 @@ fn main() -> Result<()> {
         KEY_PATTERN_TRACKER.set(KeyPatternTracker::new());
         UNDETERMINED_BUFFERING.set(false);
         PASSTHROUGH_MEMORY.set(Vec::new());
+        FOCUS_OVERRIDES.set(config.focus_overrides.clone());
     }
 
     init_tray(&layout_names, &initial_layout_name)?;
@@ -1076,6 +1080,40 @@ unsafe extern "system" fn win_event_proc(
         }
     }
 
+    // Config オーバーライド（最高優先度、キャッシュより先に判定）
+    if let Some(overrides) = FOCUS_OVERRIDES.get_ref() {
+        if !overrides.force_text.is_empty() || !overrides.force_bypass.is_empty() {
+            let process_name = get_process_name(process_id);
+            for entry in &overrides.force_text {
+                if entry.process.eq_ignore_ascii_case(&process_name)
+                    && entry.class.eq_ignore_ascii_case(&class_name)
+                {
+                    log::debug!(
+                        "classify_focus: config override force_text ({}, {})",
+                        process_name,
+                        class_name
+                    );
+                    FOCUS_KIND.store(FocusKind::TextInput as u8, Ordering::Release);
+                    return;
+                }
+            }
+            for entry in &overrides.force_bypass {
+                if entry.process.eq_ignore_ascii_case(&process_name)
+                    && entry.class.eq_ignore_ascii_case(&class_name)
+                {
+                    log::debug!(
+                        "classify_focus: config override force_bypass ({}, {})",
+                        process_name,
+                        class_name
+                    );
+                    FOCUS_KIND.store(FocusKind::NonText as u8, Ordering::Release);
+                    invalidate_engine_context(ContextChange::FocusChanged);
+                    return;
+                }
+            }
+        }
+    }
+
     // キャッシュヒット → 即座に結果を適用
     if let Some(cached) = FOCUS_CACHE
         .get_ref()
@@ -1126,6 +1164,29 @@ unsafe fn get_window_process_id(hwnd: HWND) -> u32 {
     let mut pid: u32 = 0;
     GetWindowThreadProcessId(hwnd, Some(&mut pid));
     pid
+}
+
+/// プロセス ID から実行ファイル名を取得する
+unsafe fn get_process_name(process_id: u32) -> String {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) else {
+        return String::new();
+    };
+    let mut buf = [0u16; 260];
+    let mut len = buf.len() as u32;
+    let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+    let _ = CloseHandle(handle);
+    if ok.is_ok() && len > 0 {
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit('\\').next().unwrap_or(&path).to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// ウィンドウハンドルからクラス名を取得する
@@ -1678,6 +1739,15 @@ unsafe fn reload_config() {
 
     // n-gram モデルの再読み込み
     init_ngram(&config);
+
+    // フォーカスオーバーライドの再読み込み
+    FOCUS_OVERRIDES.set(config.focus_overrides);
+    log::info!("Focus overrides reloaded");
+
+    // オーバーライド変更後はキャッシュをクリアして再判定を促す
+    if let Some(cache) = FOCUS_CACHE.get_mut() {
+        *cache = FocusCache::new();
+    }
 
     log::info!("Config reloaded successfully");
 }

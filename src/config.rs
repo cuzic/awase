@@ -108,6 +108,25 @@ const fn default_speculative_delay() -> u32 {
     30
 }
 
+/// フォーカスオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct FocusOverrideEntry {
+    pub process: String,
+    pub class: String,
+}
+
+/// フォーカス判定の永続オーバーライド設定
+///
+/// `force_text` に指定した (process, class) の組み合わせは常にテキスト入力として扱い、
+/// `force_bypass` に指定した組み合わせは常に非テキストとしてバイパスする。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct FocusOverrides {
+    #[serde(default)]
+    pub force_text: Vec<FocusOverrideEntry>,
+    #[serde(default)]
+    pub force_bypass: Vec<FocusOverrideEntry>,
+}
+
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
@@ -115,6 +134,8 @@ const fn default_speculative_delay() -> u32 {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     pub general: GeneralConfig,
+    #[serde(default)]
+    pub focus_overrides: FocusOverrides,
 }
 
 impl AppConfig {
@@ -444,5 +465,65 @@ confirm_mode = "two_phase"
         let config = AppConfig::load(path).unwrap();
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(config.general.layouts_dir, "layout");
+    }
+
+    // ── FocusOverrides テスト ──
+
+    #[test]
+    fn test_focus_overrides_default_empty() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.focus_overrides.force_text.is_empty());
+        assert!(config.focus_overrides.force_bypass.is_empty());
+    }
+
+    #[test]
+    fn test_focus_overrides_parse() {
+        let toml_str = r#"
+[general]
+
+[focus_overrides]
+force_text = [
+    { process = "chrome.exe", class = "Chrome_RenderWidgetHostHWND" },
+    { process = "firefox.exe", class = "MozillaWindowClass" },
+]
+force_bypass = [
+    { process = "explorer.exe", class = "CabinetWClass" },
+]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.focus_overrides.force_text.len(), 2);
+        assert_eq!(config.focus_overrides.force_text[0].process, "chrome.exe");
+        assert_eq!(
+            config.focus_overrides.force_text[0].class,
+            "Chrome_RenderWidgetHostHWND"
+        );
+        assert_eq!(config.focus_overrides.force_text[1].process, "firefox.exe");
+        assert_eq!(config.focus_overrides.force_bypass.len(), 1);
+        assert_eq!(
+            config.focus_overrides.force_bypass[0].process,
+            "explorer.exe"
+        );
+        assert_eq!(
+            config.focus_overrides.force_bypass[0].class,
+            "CabinetWClass"
+        );
+    }
+
+    #[test]
+    fn test_focus_overrides_partial() {
+        let toml_str = r#"
+[general]
+
+[focus_overrides]
+force_text = [
+    { process = "notepad.exe", class = "Edit" },
+]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.focus_overrides.force_text.len(), 1);
+        assert!(config.focus_overrides.force_bypass.is_empty());
     }
 }
