@@ -38,7 +38,7 @@ use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::types::{ContextChange, FocusKind};
 use awase::vk;
 use awase::ngram::NgramModel;
-use awase::types::{KeyEventType, RawKeyEvent};
+use awase::types::{KeyEventType, RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
 use timed_fsm::{dispatch, ActionExecutor, TimedStateMachine, TimerRuntime};
 
@@ -83,7 +83,7 @@ pub(crate) static IME: SingleThreadCell<HybridProvider> = SingleThreadCell::new(
 static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
 
 /// 利用可能な配列の一覧（名前, `YabLayout`, 左親指VK, 右親指VK）
-static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, u16, u16)>> = SingleThreadCell::new();
+static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, VkCode, VkCode)>> = SingleThreadCell::new();
 
 /// キーイベントバッファ（IME ガード + 遅延キー + PassThrough 記憶）
 pub(crate) static KEY_BUFFER: SingleThreadCell<key_buffer::KeyBuffer> = SingleThreadCell::new();
@@ -175,14 +175,14 @@ fn load_config() -> Result<AppConfig> {
 
 /// 配列の読み込みとエンジン初期化を行い、レイアウト名一覧とデフォルト名を返す
 fn init_engine(config: &AppConfig) -> Result<(Vec<String>, String)> {
-    let left_thumb_vk = vk_name_to_code(&config.general.left_thumb_key).context(format!(
+    let left_thumb_vk = VkCode(vk_name_to_code(&config.general.left_thumb_key).context(format!(
         "Unknown VK name: {}",
         config.general.left_thumb_key
-    ))?;
-    let right_thumb_vk = vk_name_to_code(&config.general.right_thumb_key).context(format!(
+    ))?);
+    let right_thumb_vk = VkCode(vk_name_to_code(&config.general.right_thumb_key).context(format!(
         "Unknown VK name: {}",
         config.general.right_thumb_key
-    ))?;
+    ))?);
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
     let layouts = scan_layouts(&layouts_dir, left_thumb_vk, right_thumb_vk)?;
@@ -214,7 +214,7 @@ fn init_engine(config: &AppConfig) -> Result<(Vec<String>, String)> {
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
 fn select_default_layout(
-    layouts: &[(String, YabLayout, u16, u16)],
+    layouts: &[(String, YabLayout, VkCode, VkCode)],
     config: &AppConfig,
 ) -> (YabLayout, String) {
     let default_name = config.general.default_layout.trim_end_matches(".yab");
@@ -456,7 +456,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         if current != FocusKind::TextInput {
             focus::pattern::promote_to_text_input(
                 DetectionSource::ImeKeyInferred,
-                &format!("IME/thumb key 0x{:02X}", event.vk_code),
+                &format!("IME/thumb key 0x{:02X}", event.vk_code.0),
             );
             // Undetermined バッファリング中ならバッファを処理
             if let Some(kb) = KEY_BUFFER.get_mut() {
@@ -803,9 +803,9 @@ unsafe fn reload_config() {
 /// layouts_dir 内の *.yab を全てスキャンして配列一覧を構築する
 fn scan_layouts(
     layouts_dir: &Path,
-    left_thumb_vk: u16,
-    right_thumb_vk: u16,
-) -> Result<Vec<(String, YabLayout, u16, u16)>> {
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+) -> Result<Vec<(String, YabLayout, VkCode, VkCode)>> {
     let mut layouts = Vec::new();
 
     if !layouts_dir.is_dir() {

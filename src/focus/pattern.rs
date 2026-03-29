@@ -135,7 +135,7 @@ pub(crate) unsafe fn observe_key_pattern(event: &RawKeyEvent) {
     let is_char = vk::is_modifier_free_char(event.vk_code, is_os_modifier_held());
 
     if let Some(tracker) = crate::KEY_PATTERN_TRACKER.get_mut() {
-        if let Some(reason) = tracker.on_key(event.vk_code, is_char) {
+        if let Some(reason) = tracker.on_key(event.vk_code.0, is_char) {
             promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
             tracker.clear();
 

@@ -1,10 +1,10 @@
-use crate::types::KeyAction;
+use crate::types::{KeyAction, ScanCode};
 
 /// 出力履歴の1エントリ
 #[derive(Debug, Clone)]
 pub struct OutputEntry {
     /// 物理キーのスキャンコード
-    pub scan_code: u32,
+    pub scan_code: ScanCode,
     /// 送信したローマ字
     pub romaji: String,
     /// 対応するひらがな（n-gram 用）
@@ -63,7 +63,7 @@ impl OutputHistory {
     }
 
     /// scan_code に対応するアクションを検索（KeyUp 用）
-    pub fn find_action_by_scan(&self, scan_code: u32) -> Option<&KeyAction> {
+    pub fn find_action_by_scan(&self, scan_code: ScanCode) -> Option<&KeyAction> {
         self.entries
             .iter()
             .rev()
@@ -72,7 +72,7 @@ impl OutputHistory {
     }
 
     /// scan_code に対応するエントリを除去して返す（KeyUp 用）
-    pub fn remove_by_scan(&mut self, scan_code: u32) -> Option<OutputEntry> {
+    pub fn remove_by_scan(&mut self, scan_code: ScanCode) -> Option<OutputEntry> {
         if let Some(pos) = self.entries.iter().position(|e| e.scan_code == scan_code) {
             Some(self.entries.remove(pos))
         } else {
@@ -108,7 +108,7 @@ mod tests {
 
     fn make_entry(scan_code: u32, romaji: &str, kana: Option<char>) -> OutputEntry {
         OutputEntry {
-            scan_code,
+            scan_code: ScanCode(scan_code),
             romaji: romaji.to_string(),
             kana,
             action: KeyAction::Romaji(romaji.to_string()),
@@ -133,7 +133,7 @@ mod tests {
         h.push(make_entry(31, "ki", Some('き')));
 
         let retracted = h.retract_last().unwrap();
-        assert_eq!(retracted.scan_code, 31);
+        assert_eq!(retracted.scan_code, ScanCode(31));
         assert_eq!(h.len(), 1);
     }
 
@@ -158,10 +158,10 @@ mod tests {
         h.push(make_entry(30, "ka", Some('か')));
         h.push(make_entry(31, "ki", Some('き')));
 
-        let action = h.find_action_by_scan(30).unwrap();
+        let action = h.find_action_by_scan(ScanCode(30)).unwrap();
         assert!(matches!(action, KeyAction::Romaji(r) if r == "ka"));
 
-        assert!(h.find_action_by_scan(99).is_none());
+        assert!(h.find_action_by_scan(ScanCode(99)).is_none());
     }
 
     #[test]
@@ -171,17 +171,17 @@ mod tests {
         h.push(make_entry(31, "ki", Some('き')));
         h.push(make_entry(32, "ku", Some('く')));
 
-        let removed = h.remove_by_scan(31).unwrap();
+        let removed = h.remove_by_scan(ScanCode(31)).unwrap();
         assert_eq!(removed.romaji, "ki");
         assert_eq!(h.len(), 2);
 
         // Remaining entries should be scan_code 30 and 32
-        assert!(h.find_action_by_scan(30).is_some());
-        assert!(h.find_action_by_scan(32).is_some());
-        assert!(h.find_action_by_scan(31).is_none());
+        assert!(h.find_action_by_scan(ScanCode(30)).is_some());
+        assert!(h.find_action_by_scan(ScanCode(32)).is_some());
+        assert!(h.find_action_by_scan(ScanCode(31)).is_none());
 
         // Removing non-existent scan_code returns None
-        assert!(h.remove_by_scan(99).is_none());
+        assert!(h.remove_by_scan(ScanCode(99)).is_none());
     }
 
     #[test]
@@ -189,7 +189,7 @@ mod tests {
         let mut h = OutputHistory::new();
         h.push(make_entry(30, "ka", Some('か')));
         h.push(OutputEntry {
-            scan_code: 50,
+            scan_code: ScanCode(50),
             romaji: "shift".to_string(),
             kana: None,
             action: KeyAction::Key(0x10),

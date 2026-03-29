@@ -2,10 +2,12 @@
 //!
 //! エンジンおよびフック側で共通利用する、仮想キーコードの判定関数群。
 
+use crate::types::VkCode;
+
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
-pub const fn is_passthrough(vk_code: u16) -> bool {
+pub const fn is_passthrough(vk_code: VkCode) -> bool {
     matches!(
-        vk_code,
+        vk_code.0,
         // 修飾キー
         0x10 | 0x11 | 0x12 |  // Shift, Ctrl, Alt
         0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5 |  // L/R Shift, Ctrl, Alt
@@ -32,9 +34,9 @@ pub const fn is_passthrough(vk_code: u16) -> bool {
 ///
 /// これらのキーはエンジンの変換対象外だが、`is_passthrough` とは異なり
 /// 保留状態で到着した場合はフラッシュが必要。
-pub const fn is_ime_control(vk_code: u16) -> bool {
+pub const fn is_ime_control(vk_code: VkCode) -> bool {
     matches!(
-        vk_code,
+        vk_code.0,
         0x15 |  // VK_KANA (カタカナ/ひらがな)
         0x16 |  // VK_IME_ON
         0x17 |  // VK_IME_OFF / VK_JUNJA
@@ -47,9 +49,9 @@ pub const fn is_ime_control(vk_code: u16) -> bool {
 ///
 /// `is_ime_control()` のスーパーセットに親指キー（変換/無変換）を追加。
 /// これらのキーが押された場合、ユーザーがテキスト入力コンテキストにいる強いシグナルとなる。
-pub const fn is_ime_context(vk_code: u16) -> bool {
+pub const fn is_ime_context(vk_code: VkCode) -> bool {
     matches!(
-        vk_code,
+        vk_code.0,
         0x15 | 0x16 | 0x17 | 0x19 | 0x1C | 0x1D | 0xE5
     )
 }
@@ -58,12 +60,12 @@ pub const fn is_ime_context(vk_code: u16) -> bool {
 ///
 /// パターン検出およびハイブリッドバッファリングで使用。
 /// `os_modifier_held` は呼び出し側で OS の修飾キー状態を取得して渡す。
-pub fn is_modifier_free_char(vk_code: u16, os_modifier_held: bool) -> bool {
+pub fn is_modifier_free_char(vk_code: VkCode, os_modifier_held: bool) -> bool {
     !is_ime_control(vk_code)
         && !is_passthrough(vk_code)
-        && vk_code != 0x1C  // VK_CONVERT (右親指)
-        && vk_code != 0x1D  // VK_NONCONVERT (左親指)
-        && vk_code != 0x08  // VK_BACK（BS は別途追跡）
+        && vk_code != VkCode(0x1C)  // VK_CONVERT (右親指)
+        && vk_code != VkCode(0x1D)  // VK_NONCONVERT (左親指)
+        && vk_code != VkCode(0x08)  // VK_BACK（BS は別途追跡）
         && !os_modifier_held
 }
 

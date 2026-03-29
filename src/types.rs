@@ -34,8 +34,8 @@ impl From<VkCode> for u16 {
 /// フックから受け取る生のキーイベント
 #[derive(Debug, Clone, Copy)]
 pub struct RawKeyEvent {
-    pub vk_code: u16,
-    pub scan_code: u32,
+    pub vk_code: VkCode,
+    pub scan_code: ScanCode,
     pub event_type: KeyEventType,
     pub extra_info: usize,
     pub timestamp: Timestamp,

@@ -1,40 +1,41 @@
 use super::*;
+use crate::types::{ScanCode, VkCode};
 
 // VK code constants
-const VK_A: u16 = 0x41;
-const VK_S: u16 = 0x53;
-const VK_NONCONVERT: u16 = 0x1D;
-const VK_CONVERT: u16 = 0x1C;
-const VK_RETURN: u16 = 0x0D;
-const VK_SHIFT: u16 = 0x10;
-const VK_LSHIFT: u16 = 0xA0;
-const VK_RSHIFT: u16 = 0xA1;
-const VK_CTRL: u16 = 0x11;
-const VK_LCTRL: u16 = 0xA2;
-const VK_ALT: u16 = 0x12;
-const VK_LALT: u16 = 0xA4;
-const VK_D: u16 = 0x44;
-const VK_F: u16 = 0x46;
-const VK_C: u16 = 0x43;
-const VK_V: u16 = 0x56;
+const VK_A: VkCode = VkCode(0x41);
+const VK_S: VkCode = VkCode(0x53);
+const VK_NONCONVERT: VkCode = VkCode(0x1D);
+const VK_CONVERT: VkCode = VkCode(0x1C);
+const VK_RETURN: VkCode = VkCode(0x0D);
+const VK_SHIFT: VkCode = VkCode(0x10);
+const VK_LSHIFT: VkCode = VkCode(0xA0);
+const VK_RSHIFT: VkCode = VkCode(0xA1);
+const VK_CTRL: VkCode = VkCode(0x11);
+const VK_LCTRL: VkCode = VkCode(0xA2);
+const VK_ALT: VkCode = VkCode(0x12);
+const VK_LALT: VkCode = VkCode(0xA4);
+const VK_D: VkCode = VkCode(0x44);
+const VK_F: VkCode = VkCode(0x46);
+const VK_C: VkCode = VkCode(0x43);
+const VK_V: VkCode = VkCode(0x56);
 
 // Scan code constants matching the VK codes used in tests
-const SCAN_A: u32 = 0x1E;
-const SCAN_S: u32 = 0x1F;
-const SCAN_D: u32 = 0x20;
-const SCAN_F: u32 = 0x21;
-const SCAN_C: u32 = 0x2E;
-const SCAN_V: u32 = 0x2F;
-const SCAN_NONCONVERT: u32 = 0x7B; // muhenkan
-const SCAN_CONVERT: u32 = 0x79; // henkan
-const SCAN_RETURN: u32 = 0x1C;
-const SCAN_SHIFT: u32 = 0x2A;
-const SCAN_LSHIFT: u32 = 0x2A;
-const SCAN_RSHIFT: u32 = 0x36;
-const SCAN_CTRL: u32 = 0x1D;
-const SCAN_LCTRL: u32 = 0x1D;
-const SCAN_ALT: u32 = 0x38;
-const SCAN_LALT: u32 = 0x38;
+const SCAN_A: ScanCode = ScanCode(0x1E);
+const SCAN_S: ScanCode = ScanCode(0x1F);
+const SCAN_D: ScanCode = ScanCode(0x20);
+const SCAN_F: ScanCode = ScanCode(0x21);
+const SCAN_C: ScanCode = ScanCode(0x2E);
+const SCAN_V: ScanCode = ScanCode(0x2F);
+const SCAN_NONCONVERT: ScanCode = ScanCode(0x7B); // muhenkan
+const SCAN_CONVERT: ScanCode = ScanCode(0x79); // henkan
+const SCAN_RETURN: ScanCode = ScanCode(0x1C);
+const SCAN_SHIFT: ScanCode = ScanCode(0x2A);
+const SCAN_LSHIFT: ScanCode = ScanCode(0x2A);
+const SCAN_RSHIFT: ScanCode = ScanCode(0x36);
+const SCAN_CTRL: ScanCode = ScanCode(0x1D);
+const SCAN_LCTRL: ScanCode = ScanCode(0x1D);
+const SCAN_ALT: ScanCode = ScanCode(0x38);
+const SCAN_LALT: ScanCode = ScanCode(0x38);
 
 use crate::scanmap::PhysicalPos;
 
@@ -98,7 +99,7 @@ fn make_speculative_engine() -> Engine {
 struct Ev;
 
 impl Ev {
-    fn down(vk: u16) -> EvBuilder {
+    fn down(vk: VkCode) -> EvBuilder {
         EvBuilder {
             vk,
             scan: vk_to_scan(vk),
@@ -106,7 +107,7 @@ impl Ev {
             event_type: KeyEventType::KeyDown,
         }
     }
-    fn up(vk: u16) -> EvBuilder {
+    fn up(vk: VkCode) -> EvBuilder {
         EvBuilder {
             vk,
             scan: vk_to_scan(vk),
@@ -117,8 +118,8 @@ impl Ev {
 }
 
 struct EvBuilder {
-    vk: u16,
-    scan: u32,
+    vk: VkCode,
+    scan: ScanCode,
     ts: Timestamp,
     event_type: KeyEventType,
 }
@@ -128,7 +129,7 @@ impl EvBuilder {
         self.ts = ts;
         self
     }
-    fn scan(mut self, sc: u32) -> Self {
+    fn scan(mut self, sc: ScanCode) -> Self {
         self.scan = sc;
         self
     }
@@ -144,7 +145,7 @@ impl EvBuilder {
 }
 
 /// Map VK code to a realistic scan code for tests
-fn vk_to_scan(vk: u16) -> u32 {
+fn vk_to_scan(vk: VkCode) -> ScanCode {
     match vk {
         VK_A => SCAN_A,
         VK_S => SCAN_S,
@@ -162,7 +163,7 @@ fn vk_to_scan(vk: u16) -> u32 {
         VK_LCTRL => SCAN_LCTRL,
         VK_ALT => SCAN_ALT,
         VK_LALT => SCAN_LALT,
-        _ => 0,
+        _ => ScanCode(0),
     }
 }
 
@@ -273,7 +274,7 @@ fn test_pattern5_thumb_alone_timeout() {
     let result = engine.on_timeout(TIMER_PENDING);
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
-    assert!(matches!(result.actions[0], KeyAction::Key(VK_NONCONVERT)));
+    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT.0));
 }
 
 #[test]
@@ -364,7 +365,7 @@ fn test_swap_layout_flushes_pending_thumb() {
     let result = engine.swap_layout(new_layout);
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
-    assert!(matches!(result.actions[0], KeyAction::Key(VK_NONCONVERT)));
+    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT.0));
 }
 
 #[test]
@@ -930,7 +931,7 @@ fn test_nicola_state_stores_scan_code() {
     // Create a key event with a specific scan code
     let event = RawKeyEvent {
         vk_code: VK_A,
-        scan_code: 0x1E, // A key scan code
+        scan_code: ScanCode(0x1E), // A key scan code
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 0,
@@ -943,7 +944,7 @@ fn test_nicola_state_stores_scan_code() {
     assert_eq!(engine.phase, EnginePhase::PendingChar);
     let pending = engine.pending_char.expect("pending_char should be set");
     assert_eq!(
-        pending.scan_code, 0x1E,
+        pending.scan_code, ScanCode(0x1E),
         "scan_code should be preserved in pending_char"
     );
 }
@@ -955,7 +956,7 @@ fn test_pending_char_thumb_stores_char_scan() {
 
     let char_event = RawKeyEvent {
         vk_code: VK_A,
-        scan_code: 0x1E,
+        scan_code: ScanCode(0x1E),
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 0,
@@ -964,7 +965,7 @@ fn test_pending_char_thumb_stores_char_scan() {
 
     let thumb_event = RawKeyEvent {
         vk_code: VK_CONVERT,
-        scan_code: 0x79, // Convert key scan code
+        scan_code: ScanCode(0x79), // Convert key scan code
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 30_000,
@@ -975,7 +976,7 @@ fn test_pending_char_thumb_stores_char_scan() {
     assert_eq!(engine.phase, EnginePhase::PendingCharThumb);
     let pending = engine.pending_char.expect("pending_char should be set");
     assert_eq!(
-        pending.scan_code, 0x1E,
+        pending.scan_code, ScanCode(0x1E),
         "char_scan should be preserved in pending_char"
     );
 }
@@ -1065,7 +1066,7 @@ fn test_flush_pending_from_pending_thumb() {
     // flush → 親指キーを単独確定
     let r = engine.flush_pending(ContextChange::InputLanguageChanged);
     assert!(!r.actions.is_empty(), "should emit the pending thumb key");
-    assert!(matches!(r.actions[0], KeyAction::Key(VK_NONCONVERT)));
+    assert!(matches!(r.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT.0));
 }
 
 #[test]
@@ -1117,8 +1118,8 @@ fn test_toggle_enabled_flushes_pending() {
 
 // ── IME 制御キーのフラッシュ＋パススルー ──
 
-const VK_KANJI: u16 = 0x19; // 半角/全角キー
-const SCAN_KANJI: u32 = 0x29;
+const VK_KANJI: VkCode = VkCode(0x19); // 半角/全角キー
+const SCAN_KANJI: ScanCode = ScanCode(0x29);
 
 #[test]
 fn test_ime_control_key_passes_through_from_idle() {
@@ -1186,7 +1187,7 @@ fn test_pending_thumb_then_char_after_threshold() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(VK_NONCONVERT))));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT.0)));
 }
 
 #[test]
@@ -1204,7 +1205,7 @@ fn test_pending_thumb_then_another_thumb() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(VK_NONCONVERT))));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT.0)));
 }
 
 // ── PendingCharThumb + thumb key arrival (line 537, 543-544) ──
@@ -1280,7 +1281,7 @@ fn test_key_up_while_pending_thumb() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(VK_NONCONVERT))));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT.0)));
     // Note: active_keys uses u32::from(vk_code) as key for thumb,
     // so scan_code-based removal in on_key_up won't find it -> no KeyUp action appended
 }
@@ -1301,7 +1302,7 @@ fn test_key_up_active_key_action() {
     // Timeout: not in normal face -> Key(VK_D)
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(VK_D))));
+    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
 
     // KeyUp should produce KeyUp(VK_D)
     let r = engine.on_event(Ev::up(VK_D).build());
@@ -1309,7 +1310,7 @@ fn test_key_up_active_key_action() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(VK_D))));
+        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D.0)));
 }
 
 // ── KeyUp for active Suppress/other action (line 622) ──
@@ -1366,11 +1367,11 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
     // Then line 579: active_keys.remove(&scan_code) finds Key(VK_D) -> push KeyUp
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(VK_D))));
+    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(VK_D))));
+        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D.0)));
 }
 
 // ── is_layout_key coverage (lines 657-659) ──
@@ -1383,7 +1384,7 @@ fn test_is_layout_key_various_faces() {
     // D key is NOT in any face in the basic layout
     assert!(!engine.is_layout_key(SCAN_D));
     // Unknown scan code
-    assert!(!engine.is_layout_key(0xFF));
+    assert!(!engine.is_layout_key(ScanCode(0xFF)));
 }
 
 #[test]
@@ -1415,7 +1416,7 @@ fn test_timeout_char_not_in_normal_layout() {
     // Timeout -> not in normal face -> Key(VK_F)
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(VK_F))));
+    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F.0)));
 }
 
 // ── swap_layout with PendingCharThumb ──
@@ -1633,11 +1634,11 @@ fn test_key_up_while_pending_char_key_action() {
     // Then active_keys.remove(&SCAN_D) finds Key(VK_D) -> push KeyUp(VK_D)
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(VK_D))));
+    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(VK_D))));
+        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D.0)));
 }
 
 // ── 3-key d1 >= d2 with left thumb (lines 516, 522) ──
@@ -2445,7 +2446,7 @@ fn test_ngram_predictive_high_normal_score_uses_speculative() {
     // Seed output_history so that bigram ('あ', 'う') has a high score
     // Normal face for A key = 'う', left_thumb = 'を', right_thumb = 'ゔ'
     engine.output_history.push(OutputEntry {
-        scan_code: 0,
+        scan_code: ScanCode(0),
         romaji: String::new(),
         kana: Some('あ'),
         action: KeyAction::Char('あ'),
@@ -2481,7 +2482,7 @@ fn test_ngram_predictive_high_thumb_score_uses_wait() {
 
     // Seed output_history so that thumb face kana has high score
     engine.output_history.push(OutputEntry {
-        scan_code: 0,
+        scan_code: ScanCode(0),
         romaji: String::new(),
         kana: Some('あ'),
         action: KeyAction::Char('あ'),

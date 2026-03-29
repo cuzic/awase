@@ -7,7 +7,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::output::INJECTED_MARKER;
-use awase::types::{KeyEventType, RawKeyEvent, Timestamp};
+use awase::types::{KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 
 /// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
 struct SingleThreadCell<T>(UnsafeCell<T>);
@@ -104,8 +104,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         };
 
         let event = RawKeyEvent {
-            vk_code: kb.vkCode as u16,
-            scan_code: kb.scanCode,
+            vk_code: VkCode(kb.vkCode as u16),
+            scan_code: ScanCode(kb.scanCode),
             event_type,
             extra_info: kb.dwExtraInfo,
             timestamp: now_timestamp(),
@@ -113,8 +113,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
         log::trace!(
             "Hook: vk=0x{:02X} scan=0x{:04X} type={:?}",
-            event.vk_code,
-            event.scan_code,
+            event.vk_code.0,
+            event.scan_code.0,
             event.event_type
         );
 

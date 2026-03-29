@@ -1,7 +1,7 @@
 //! エンジン内部で使用する型定義
 
 use crate::scanmap::PhysicalPos;
-use crate::types::{KeyAction, KeyEventType, RawKeyEvent, Timestamp};
+use crate::types::{KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 
 /// キーの分類（フック受信時に一度だけ決定）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,8 +33,8 @@ pub struct ClassifiedEvent {
     /// 物理位置（Char キーの場合のみ Some）
     pub pos: Option<PhysicalPos>,
     /// 元のイベントデータ
-    pub scan_code: u32,
-    pub vk_code: u16,
+    pub scan_code: ScanCode,
+    pub vk_code: VkCode,
     pub timestamp: Timestamp,
 }
 
@@ -102,7 +102,7 @@ pub enum TimerIntent {
 /// 出力履歴に記録する 1 件分のデータ
 #[derive(Debug, Clone)]
 pub struct OutputRecord {
-    pub scan_code: u32,
+    pub scan_code: ScanCode,
     pub romaji: String,
     pub kana: Option<char>,
     pub action: KeyAction,
@@ -145,8 +145,8 @@ pub(crate) enum EnginePhase {
 /// 保留中の文字キーデータ
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PendingKey {
-    pub(crate) scan_code: u32,
-    pub(crate) vk_code: u16,
+    pub(crate) scan_code: ScanCode,
+    pub(crate) vk_code: VkCode,
     pub(crate) timestamp: Timestamp,
 }
 
@@ -154,8 +154,8 @@ pub(crate) struct PendingKey {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PendingThumbData {
     #[allow(dead_code)] // KeyUp 追跡の将来拡張用
-    pub(crate) scan_code: u32,
-    pub(crate) vk_code: u16,
+    pub(crate) scan_code: ScanCode,
+    pub(crate) vk_code: VkCode,
     pub(crate) is_left: bool,
     pub(crate) timestamp: Timestamp,
 }
@@ -176,7 +176,7 @@ impl ModifierState {
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
 
-        match event.vk_code {
+        match event.vk_code.0 {
             // Ctrl (generic), LCtrl, RCtrl
             0x11 | 0xA2 | 0xA3 => self.ctrl = is_down,
             // Alt (generic), LAlt, RAlt

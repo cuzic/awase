@@ -8,8 +8,8 @@ use timed_fsm::{Response, TimedStateMachine};
 use crate::config::ConfirmMode;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
-use crate::scanmap::{scan_to_pos, PhysicalPos};
-use crate::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, Timestamp};
+use crate::scanmap::scan_to_pos;
+use crate::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 pub use types::{
@@ -29,7 +29,7 @@ pub const TIMER_SPECULATIVE: usize = 2;
 const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
 
 /// VK_BACK (Backspace) の仮想キーコード
-const VK_BACK: u16 = 0x08;
+const VK_BACK: VkCode = VkCode(0x08);
 
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
@@ -58,10 +58,10 @@ pub struct Engine {
     layout: YabLayout,
 
     /// 左親指キーの仮想キーコード
-    left_thumb_vk: u16,
+    left_thumb_vk: VkCode,
 
     /// 右親指キーの仮想キーコード
-    right_thumb_vk: u16,
+    right_thumb_vk: VkCode,
 
     /// エンジンのフェーズ（状態タグ）
     phase: EnginePhase,
@@ -115,7 +115,7 @@ fn romaji_of(action: &KeyAction) -> String {
 }
 
 /// `OutputUpdate::Record` を生成するヘルパー
-fn record_output(scan_code: u32, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
+fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
     OutputUpdate::Record(OutputRecord {
         scan_code,
         romaji: romaji_of(action),
@@ -129,8 +129,8 @@ impl Engine {
     #[must_use]
     pub fn new(
         layout: YabLayout,
-        left_thumb_vk: u16,
-        right_thumb_vk: u16,
+        left_thumb_vk: VkCode,
+        right_thumb_vk: VkCode,
         threshold_ms: u32,
         confirm_mode: ConfirmMode,
         speculative_delay_ms: u32,
@@ -314,11 +314,11 @@ impl Engine {
     #[allow(clippy::unused_self)]
     fn lookup_face(
         &self,
-        scan_code: u32,
-        _vk_code: u16,
+        scan_code: ScanCode,
+        _vk_code: VkCode,
         face: &YabFace,
     ) -> Option<(KeyAction, Option<char>)> {
-        let pos = scan_to_pos(scan_code)?;
+        let pos = scan_to_pos(scan_code.0)?;
         let value = face.get(&pos)?;
         let kana = match value {
             YabValue::Romaji { kana, .. } => *kana,
@@ -331,8 +331,8 @@ impl Engine {
     /// `PendingCharThumb` 状態で char1+thumb を同時打鍵として解決し、アクション列と OutputUpdate を返す
     fn resolve_char_thumb_as_simultaneous(
         &mut self,
-        char_scan: u32,
-        char_vk: u16,
+        char_scan: ScanCode,
+        char_vk: VkCode,
         thumb_is_left: bool,
         thumb_timestamp: Timestamp,
     ) -> ResolvedAction {
@@ -702,7 +702,7 @@ impl Engine {
                 // complete romaji as a single composition unit (Bug #3 fix)
                 self.output_history.retract_last();
 
-                let mut actions = vec![KeyAction::Key(VK_BACK)];
+                let mut actions = vec![KeyAction::Key(VK_BACK.0)];
                 actions.push(thumb_action.clone());
 
                 self.go_idle();
@@ -877,8 +877,8 @@ impl Engine {
     /// 保留中の文字キーを単独打鍵として解決し、アクション列と OutputUpdate を返す
     fn resolve_pending_char_as_single(
         &self,
-        scan_code: u32,
-        vk_code: u16,
+        scan_code: ScanCode,
+        vk_code: VkCode,
     ) -> ResolvedAction {
         if let Some((action, kana)) =
             self.lookup_face(scan_code, vk_code, self.get_face(Face::Normal))
@@ -886,7 +886,7 @@ impl Engine {
             let output = record_output(scan_code, &action, kana);
             ResolvedAction { actions: vec![action], output }
         } else {
-            let action = KeyAction::Key(vk_code);
+            let action = KeyAction::Key(vk_code.0);
             let output = record_output(scan_code, &action, None);
             ResolvedAction { actions: vec![action], output }
         }
@@ -894,11 +894,11 @@ impl Engine {
 
     /// 保留中の親指キーを単独打鍵として解決し、アクション列と OutputUpdate を返す
     #[allow(clippy::unused_self)]
-    fn resolve_pending_thumb_as_single(&self, vk_code: u16) -> ResolvedAction {
+    fn resolve_pending_thumb_as_single(&self, vk_code: VkCode) -> ResolvedAction {
         // Thumb keys use vk_code as their scan_code key since they don't have
         // standard scan codes in our map; use u32 from vk_code for consistency.
-        let action = KeyAction::Key(vk_code);
-        let output = record_output(u32::from(vk_code), &action, None);
+        let action = KeyAction::Key(vk_code.0);
+        let output = record_output(ScanCode(u32::from(vk_code.0)), &action, None);
         ResolvedAction { actions: vec![action], output }
     }
 
@@ -1003,7 +1003,7 @@ impl Engine {
     }
 
     /// 保留中キーの vk_code と一致するか判定する
-    fn is_pending_key(&self, vk_code: u16) -> bool {
+    fn is_pending_key(&self, vk_code: VkCode) -> bool {
         match self.phase {
             EnginePhase::PendingChar => {
                 self.pending_char.map_or(false, |p| p.vk_code == vk_code)
@@ -1109,7 +1109,7 @@ impl Engine {
 // ── タイムアウト処理 ──
 impl Engine {
     /// PendingChar タイムアウト：文字キーを単独打鍵として確定する
-    fn timeout_pending_char(&mut self, scan_code: u32, vk_code: u16) -> Resp {
+    fn timeout_pending_char(&mut self, scan_code: ScanCode, vk_code: VkCode) -> Resp {
         if let Some((action, kana)) =
             self.lookup_face(scan_code, vk_code, self.get_face(Face::Normal))
         {
@@ -1120,7 +1120,7 @@ impl Engine {
             })
         } else {
             // 配列定義に含まれないキーはそのまま通す
-            let action = KeyAction::Key(vk_code);
+            let action = KeyAction::Key(vk_code.0);
             self.finalize_plan(FinalizePlan {
                 actions: vec![action.clone()],
                 timer: TimerIntent::CancelAll,
@@ -1130,20 +1130,20 @@ impl Engine {
     }
 
     /// PendingThumb タイムアウト：親指キーを単独打鍵として確定する
-    fn timeout_pending_thumb(&mut self, vk_code: u16) -> Resp {
-        let action = KeyAction::Key(vk_code);
+    fn timeout_pending_thumb(&mut self, vk_code: VkCode) -> Resp {
+        let action = KeyAction::Key(vk_code.0);
         self.finalize_plan(FinalizePlan {
             actions: vec![action.clone()],
             timer: TimerIntent::CancelAll,
-            output: record_output(u32::from(vk_code), &action, None),
+            output: record_output(ScanCode(u32::from(vk_code.0)), &action, None),
         })
     }
 
     /// PendingCharThumb タイムアウト：char1+thumb を同時打鍵として確定する
     fn timeout_pending_char_thumb(
         &mut self,
-        char_scan: u32,
-        char_vk: u16,
+        char_scan: ScanCode,
+        char_vk: VkCode,
         thumb_is_left: bool,
         thumb_timestamp: Timestamp,
     ) -> Resp {
@@ -1214,7 +1214,7 @@ impl Engine {
         };
 
         let pos = if key_class == KeyClass::Char {
-            scan_to_pos(event.scan_code)
+            scan_to_pos(event.scan_code.0)
         } else {
             None
         };
@@ -1240,8 +1240,8 @@ impl Engine {
     }
 
     /// いずれかの配列面に定義されているキーかどうか
-    fn is_layout_key(&self, scan_code: u32) -> bool {
-        let Some(pos) = scan_to_pos(scan_code) else {
+    fn is_layout_key(&self, scan_code: ScanCode) -> bool {
+        let Some(pos) = scan_to_pos(scan_code.0) else {
             return false;
         };
         self.get_face(Face::Normal).contains_key(&pos)

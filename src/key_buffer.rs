@@ -245,8 +245,8 @@ pub(crate) unsafe fn reinject_key(event: &RawKeyEvent) {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(event.vk_code),
-                wScan: event.scan_code as u16,
+                wVk: VIRTUAL_KEY(event.vk_code.0),
+                wScan: event.scan_code.0 as u16,
                 dwFlags: if is_keyup {
                     KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE
                 } else {
