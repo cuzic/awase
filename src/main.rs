@@ -428,9 +428,14 @@ fn run_message_loop() {
                 }
             }
             WM_INPUTLANGCHANGE => unsafe {
-                // 入力言語が変更された（Win+Space 等）→ 保留をフラッシュ
-                log::info!("Input language changed, flushing pending state");
+                // 入力言語が変更された（Win+Space 等）→ 保留をフラッシュ + ガード ON
+                // 言語切替直後は IME 状態が未反映の可能性があるため、
+                // 後続キーをメッセージループに回して確実に更新後に処理する。
+                log::info!("Input language changed, flushing pending state and enabling guard");
                 invalidate_engine_context(ContextInvalidation::InputLanguageChanged);
+                if let Some(guard) = IME_GUARD.get_mut() {
+                    *guard = true;
+                }
             },
             WM_PROCESS_DEFERRED => unsafe {
                 // IME 制御キー後の遅延キーを再処理する。
