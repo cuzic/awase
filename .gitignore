@@ -1,0 +1,13 @@
+/target
+/crates/timed-fsm/target
+Cargo.lock
+*.swp
+*.swo
+*~
+.DS_Store
+# Wikipedia dump (large)
+jawiki-*.json.gz
+claude.md
+libscanmap.rlib
+mise.toml
+data/ngram_hiragana.toml
