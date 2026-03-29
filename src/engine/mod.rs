@@ -1444,7 +1444,7 @@ impl Engine {
     ///
     /// これらのキーはエンジンの変換対象外だが、`is_passthrough_vk` とは異なり
     /// 保留状態で到着した場合はフラッシュが必要。
-    const fn is_ime_control_vk(vk_code: u16) -> bool {
+    pub const fn is_ime_control_vk(vk_code: u16) -> bool {
         matches!(
             vk_code,
             0x15 |  // VK_KANA (カタカナ/ひらがな)

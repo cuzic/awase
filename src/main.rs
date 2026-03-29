@@ -20,19 +20,19 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND,
-    WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
+    DispatchMessageW, GetMessageW, KillTimer, PostMessageW, PostQuitMessage, SetTimer, MSG, WM_APP,
+    WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
 use awase::config::{vk_name_to_code, AppConfig};
 use awase::engine::{ContextInvalidation, Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
-use awase::types::RawKeyEvent;
+use awase::types::{KeyEventType, RawKeyEvent};
 use awase::yab::YabLayout;
 use timed_fsm::{dispatch, ActionExecutor, TimedStateMachine, TimerRuntime};
 
@@ -48,6 +48,9 @@ const HOTKEY_ID_TOGGLE: i32 = 1;
 /// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
 const WM_RELOAD_CONFIG: u32 = WM_APP + 10;
 
+/// IME 制御キー後の遅延キー再処理用カスタムメッセージ
+const WM_PROCESS_DEFERRED: u32 = WM_APP + 11;
+
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)]
 pub fn check_ime_composing() -> bool {
@@ -62,6 +65,12 @@ static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
 /// 利用可能な配列の一覧（名前, `YabLayout`, 左親指VK, 右親指VK）
 static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, u16, u16)>> = SingleThreadCell::new();
 
+/// IME 制御キー直後のガードフラグ（true: 後続キーを遅延処理する）
+static IME_GUARD: SingleThreadCell<bool> = SingleThreadCell::new();
+
+/// ガード中に遅延されたキーイベントのバッファ
+static DEFERRED_KEYS: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell::new();
+
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -74,6 +83,8 @@ fn main() -> Result<()> {
 
     unsafe {
         OUTPUT.set(Output::new());
+        IME_GUARD.set(false);
+        DEFERRED_KEYS.set(Vec::new());
     }
 
     init_tray(&layout_names, &initial_layout_name)?;
@@ -315,24 +326,63 @@ impl ActionExecutor for SendInputExecutor {
 
 /// フックコールバックからの Engine 呼び出し
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
+    let is_key_down = matches!(
+        event.event_type,
+        KeyEventType::KeyDown | KeyEventType::SysKeyDown
+    );
+
+    // ── IME ガード: IME 制御キー直後の後続キーを遅延処理する ──
+    // IME 制御キー（半角/全角等）が OS に渡された直後は、IME 状態がまだ反映されて
+    // いない可能性がある。後続キーをメッセージループに回すことで、IME 状態が
+    // 確実に更新された後に処理する。
+    if let Some(guard) = IME_GUARD.get_mut() {
+        if *guard {
+            // IME 制御キーの KeyUp でガード解除
+            if !is_key_down && Engine::is_ime_control_vk(event.vk_code) {
+                *guard = false;
+                return CallbackResult::PassThrough;
+            }
+            // KeyDown はバッファに保存してメッセージループに回す
+            if is_key_down {
+                if let Some(buf) = DEFERRED_KEYS.get_mut() {
+                    buf.push(event);
+                    let _ = PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
+                }
+                return CallbackResult::Consumed;
+            }
+            // ガード中の KeyUp（IME制御キー以外）はパススルー
+            return CallbackResult::PassThrough;
+        }
+    }
+
+    // ── IME 制御キーの検出: ガードを有効にしてパススルー ──
+    if is_key_down && Engine::is_ime_control_vk(event.vk_code) {
+        // エンジンの保留をフラッシュ（engine 側の handle_bypass で実行される）
+        if let Some(engine) = ENGINE.get_mut() {
+            let response = engine.on_event(event);
+            let mut timer_runtime = Win32TimerRuntime;
+            let mut action_executor = SendInputExecutor;
+            dispatch(&response, &mut timer_runtime, &mut action_executor);
+            // engine が passthrough を返す → ガードを有効にして OS に渡す
+            if !response.consumed {
+                if let Some(guard) = IME_GUARD.get_mut() {
+                    *guard = true;
+                }
+            }
+        }
+        // consumed=false の場合は OS にそのまま渡す（CallbackResult::PassThrough）
+        // consumed=true の場合はエンジンが処理済み（通常ありえないがsafety）
+        return CallbackResult::PassThrough;
+    }
+
+    // ── 通常のキー処理 ──
     let Some(engine) = ENGINE.get_mut() else {
         return CallbackResult::PassThrough;
     };
 
-    // 出力方式:
-    // - IME OFF / 英数モード → PassThrough（エンジンバイパス）
-    // - かな入力モード → Engine が KeyAction::Char を出力、output が KEYEVENTF_UNICODE で送信
+    // IME OFF / 英数モード → PassThrough（エンジンバイパス）
     if let Some(ime_provider) = IME.get_ref() {
-        let mode = ime_provider.get_mode();
-        if !ime_provider.is_active() {
-            return CallbackResult::PassThrough;
-        }
-        log::trace!("IME mode: {:?}", mode);
-        if !mode.is_kana_input() {
-            log::warn!(
-                "IME is active but not in kana input mode ({:?}), passing through",
-                mode
-            );
+        if !ime_provider.is_active() || !ime_provider.get_mode().is_kana_input() {
             return CallbackResult::PassThrough;
         }
     }
@@ -382,6 +432,11 @@ fn run_message_loop() {
                 log::info!("Input language changed, flushing pending state");
                 invalidate_engine_context(ContextInvalidation::InputLanguageChanged);
             },
+            WM_PROCESS_DEFERRED => unsafe {
+                // IME 制御キー後の遅延キーを再処理する。
+                // この時点で IME 状態は確実に更新済み。
+                process_deferred_keys();
+            },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
                 toggle_engine();
             },
@@ -415,6 +470,85 @@ fn run_message_loop() {
             },
         }
     }
+}
+
+/// IME 制御キー後に遅延されたキーを再処理する。
+///
+/// メッセージループから呼ばれるため、この時点で IME 制御キーは OS/IME に
+/// 渡し済みで、IME 状態は最新に更新されている。
+///
+/// Safety: シングルスレッドからのみ呼び出すこと
+unsafe fn process_deferred_keys() {
+    // ガード解除
+    if let Some(guard) = IME_GUARD.get_mut() {
+        *guard = false;
+    }
+
+    // バッファからキーを取り出す
+    let keys = DEFERRED_KEYS
+        .get_mut()
+        .map(std::mem::take)
+        .unwrap_or_default();
+
+    if keys.is_empty() {
+        return;
+    }
+
+    log::debug!("Processing {} deferred key(s) after IME control", keys.len());
+
+    for event in keys {
+        // IME 状態を再チェック（最新の状態で判定）
+        let ime_active = IME
+            .get_ref()
+            .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+
+        if ime_active {
+            // IME ON → エンジンで処理
+            if let Some(engine) = ENGINE.get_mut() {
+                let response = engine.on_event(event);
+                let mut timer_runtime = Win32TimerRuntime;
+                let mut action_executor = SendInputExecutor;
+                dispatch(&response, &mut timer_runtime, &mut action_executor);
+            }
+        } else {
+            // IME OFF → キーをそのまま再注入（INJECTED_MARKER 付き）
+            reinject_key(&event);
+        }
+    }
+}
+
+/// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
+///
+/// INJECTED_MARKER 付きなのでフックに再捕捉されない。
+unsafe fn reinject_key(event: &RawKeyEvent) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        KEYEVENTF_SCANCODE, VIRTUAL_KEY,
+    };
+    use crate::output::INJECTED_MARKER;
+
+    let is_keyup = matches!(
+        event.event_type,
+        KeyEventType::KeyUp | KeyEventType::SysKeyUp
+    );
+
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(event.vk_code),
+                wScan: event.scan_code as u16,
+                dwFlags: if is_keyup {
+                    KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE
+                } else {
+                    KEYEVENTF_SCANCODE
+                },
+                time: 0,
+                dwExtraInfo: INJECTED_MARKER,
+            },
+        },
+    };
+    SendInput(&[input], size_of::<INPUT>() as i32);
 }
 
 /// エンジンの有効/無効を切り替え、トレイアイコンを更新する
