@@ -26,11 +26,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND,
-    WM_HOTKEY, WM_TIMER,
+    WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
 use awase::config::{vk_name_to_code, AppConfig};
-use awase::engine::{Engine, TIMER_PENDING};
+use awase::engine::{ContextInvalidation, Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::RawKeyEvent;
 use awase::yab::YabLayout;
@@ -44,6 +44,15 @@ use crate::tray::SystemTray;
 
 /// 有効/無効切り替えホットキー ID
 const HOTKEY_ID_TOGGLE: i32 = 1;
+
+/// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
+const WM_RELOAD_CONFIG: u32 = WM_APP + 10;
+
+/// IME の未確定状態を確認する（engine から呼び出し用）
+#[allow(dead_code)]
+pub fn check_ime_composing() -> bool {
+    unsafe { IME.get_ref().map_or(false, |ime| ime.is_composing()) }
+}
 
 static ENGINE: SingleThreadCell<Engine> = SingleThreadCell::new();
 static OUTPUT: SingleThreadCell<Output> = SingleThreadCell::new();
@@ -131,6 +140,8 @@ fn init_engine(config: &AppConfig) -> Result<(Vec<String>, String)> {
             left_thumb_vk,
             right_thumb_vk,
             config.general.simultaneous_threshold_ms,
+            config.general.confirm_mode,
+            config.general.speculative_delay_ms,
         ));
         LAYOUTS.set(layouts);
     }
@@ -349,17 +360,28 @@ fn run_message_loop() {
         }
 
         match msg.message {
-            WM_TIMER if msg.wParam.0 == TIMER_PENDING => {
-                // タイムアウト：保留キーを単独打鍵として確定
+            WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
+                let timer_id = msg.wParam.0;
                 unsafe {
-                    if let Some(engine) = ENGINE.get_mut() {
-                        let response = engine.on_timeout(TIMER_PENDING);
+                    // IME が非活性なら on_timeout せず flush（コンテキスト喪失）
+                    let ime_active = IME
+                        .get_ref()
+                        .map_or(true, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+                    if !ime_active {
+                        invalidate_engine_context(ContextInvalidation::ImeOff);
+                    } else if let Some(engine) = ENGINE.get_mut() {
+                        let response = engine.on_timeout(timer_id);
                         let mut timer_runtime = Win32TimerRuntime;
                         let mut action_executor = SendInputExecutor;
                         dispatch(&response, &mut timer_runtime, &mut action_executor);
                     }
                 }
             }
+            WM_INPUTLANGCHANGE => unsafe {
+                // 入力言語が変更された（Win+Space 等）→ 保留をフラッシュ
+                log::info!("Input language changed, flushing pending state");
+                invalidate_engine_context(ContextInvalidation::InputLanguageChanged);
+            },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
                 toggle_engine();
             },
@@ -370,9 +392,15 @@ fn run_message_loop() {
                     .unwrap_or_default();
                 tray::handle_tray_message(msg.hwnd, msg.lParam, &layout_names);
             },
+            WM_RELOAD_CONFIG => unsafe {
+                log::info!("Config reload requested via WM_RELOAD_CONFIG");
+                reload_config();
+            },
             WM_COMMAND => unsafe {
                 if let Some(cmd) = tray::handle_tray_command(msg.wParam) {
-                    if cmd == tray::cmd_toggle() {
+                    if cmd == tray::cmd_settings() {
+                        launch_settings();
+                    } else if cmd == tray::cmd_toggle() {
                         toggle_engine();
                     } else if cmd == tray::cmd_exit() {
                         PostQuitMessage(0);
@@ -394,12 +422,81 @@ fn run_message_loop() {
 /// Safety: シングルスレッドからのみ呼び出すこと
 unsafe fn toggle_engine() {
     if let Some(engine) = ENGINE.get_mut() {
-        let enabled = engine.toggle_enabled();
+        let (enabled, flush_resp) = engine.toggle_enabled();
+        let mut timer_runtime = Win32TimerRuntime;
+        let mut action_executor = SendInputExecutor;
+        dispatch(&flush_resp, &mut timer_runtime, &mut action_executor);
         log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
         if let Some(tray) = TRAY.get_mut() {
             tray.set_enabled(enabled);
         }
     }
+}
+
+/// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
+///
+/// IMEオフ、入力言語変更など、エンジンの前提が崩れた場合に呼ぶ。
+/// 全てのコンテキスト無効化経路はこの関数を通すこと。
+unsafe fn invalidate_engine_context(reason: ContextInvalidation) {
+    if let Some(engine) = ENGINE.get_mut() {
+        let response = engine.flush_pending(reason);
+        let mut timer_runtime = Win32TimerRuntime;
+        let mut action_executor = SendInputExecutor;
+        dispatch(&response, &mut timer_runtime, &mut action_executor);
+    }
+}
+
+/// 設定画面 (awase-settings) を起動する
+fn launch_settings() {
+    let names = if cfg!(windows) {
+        vec!["awase-settings.exe"]
+    } else {
+        vec!["awase-settings"]
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in &names {
+                let path = dir.join(name);
+                if path.exists() {
+                    let _ = std::process::Command::new(&path).spawn();
+                    return;
+                }
+            }
+        }
+    }
+    log::warn!("awase-settings not found");
+}
+
+/// 設定ファイルを再読み込みし、エンジンのパラメータを更新する
+///
+/// Safety: シングルスレッドからのみ呼び出すこと
+unsafe fn reload_config() {
+    let config = match load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to reload config: {e}");
+            return;
+        }
+    };
+
+    if let Some(engine) = ENGINE.get_mut() {
+        engine.set_threshold_ms(config.general.simultaneous_threshold_ms);
+        engine.set_confirm_mode(
+            config.general.confirm_mode,
+            config.general.speculative_delay_ms,
+        );
+        log::info!(
+            "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms",
+            config.general.simultaneous_threshold_ms,
+            config.general.confirm_mode,
+            config.general.speculative_delay_ms,
+        );
+    }
+
+    // n-gram モデルの再読み込み
+    init_ngram(&config);
+
+    log::info!("Config reloaded successfully");
 }
 
 /// layouts_dir 内の *.yab を全てスキャンして配列一覧を構築する

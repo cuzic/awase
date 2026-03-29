@@ -74,7 +74,25 @@ fn make_layout() -> YabLayout {
 }
 
 fn make_engine() -> Engine {
-    Engine::new(make_layout(), VK_NONCONVERT, VK_CONVERT, 100)
+    Engine::new(
+        make_layout(),
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    )
+}
+
+fn make_speculative_engine() -> Engine {
+    Engine::new(
+        make_layout(),
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Speculative,
+        30,
+    )
 }
 
 struct Ev;
@@ -157,7 +175,7 @@ fn assert_pending(result: &Resp) {
 #[test]
 fn test_disabled_engine_passes_through() {
     let mut engine = make_engine();
-    engine.toggle_enabled();
+    let _ = engine.toggle_enabled();
     engine
         .on_event(Ev::down(VK_A).build())
         .assert_pass_through();
@@ -389,9 +407,9 @@ fn test_swap_layout_uses_new_layout() {
 fn test_toggle_enabled() {
     let mut engine = make_engine();
     assert!(engine.is_enabled());
-    engine.toggle_enabled();
+    let _ = engine.toggle_enabled();
     assert!(!engine.is_enabled());
-    engine.toggle_enabled();
+    let _ = engine.toggle_enabled();
     assert!(engine.is_enabled());
 }
 
@@ -474,7 +492,14 @@ fn make_engine_with_shift() -> Engine {
     let mut layout = make_layout();
     layout.shift.insert(POS_A, lit('ウ'));
     layout.shift.insert(POS_S, lit('シ'));
-    Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100)
+    Engine::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    )
 }
 
 #[test]
@@ -615,7 +640,14 @@ fn make_engine_with_extended_layout() -> Engine {
     layout.left_thumb.insert(POS_F, lit('よ'));
     layout.right_thumb.insert(POS_D, lit('で'));
     layout.right_thumb.insert(POS_F, lit('げ'));
-    Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100)
+    Engine::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    )
 }
 
 // ── 連続シフト（左親指）テスト ──
@@ -907,16 +939,13 @@ fn test_nicola_state_stores_scan_code() {
     let result = engine.on_event(event);
     assert_pending(&result);
 
-    // The engine should have stored the scan_code in PendingChar state
-    match &engine.state {
-        NicolaState::PendingChar { scan_code, .. } => {
-            assert_eq!(
-                *scan_code, 0x1E,
-                "scan_code should be preserved in PendingChar"
-            );
-        }
-        other => panic!("expected PendingChar, got {other:?}"),
-    }
+    // The engine should have stored the scan_code in pending_char
+    assert_eq!(engine.phase, EnginePhase::PendingChar);
+    let pending = engine.pending_char.expect("pending_char should be set");
+    assert_eq!(
+        pending.scan_code, 0x1E,
+        "scan_code should be preserved in pending_char"
+    );
 }
 
 #[test]
@@ -943,15 +972,12 @@ fn test_pending_char_thumb_stores_char_scan() {
     let result = engine.on_event(thumb_event);
     assert_pending(&result);
 
-    match &engine.state {
-        NicolaState::PendingCharThumb { char_scan, .. } => {
-            assert_eq!(
-                *char_scan, 0x1E,
-                "char_scan should be preserved in PendingCharThumb"
-            );
-        }
-        other => panic!("expected PendingCharThumb, got {other:?}"),
-    }
+    assert_eq!(engine.phase, EnginePhase::PendingCharThumb);
+    let pending = engine.pending_char.expect("pending_char should be set");
+    assert_eq!(
+        pending.scan_code, 0x1E,
+        "char_scan should be preserved in pending_char"
+    );
 }
 
 // ── yab_value_to_action coverage ──
@@ -996,13 +1022,138 @@ fn test_yab_value_to_action_none() {
 fn test_toggle_enabled_returns_state() {
     let mut engine = make_engine();
     assert!(engine.is_enabled());
-    let result = engine.toggle_enabled();
-    assert!(!result);
-    let result = engine.toggle_enabled();
-    assert!(result);
+    let (enabled, _) = engine.toggle_enabled();
+    assert!(!enabled);
+    let (enabled, _) = engine.toggle_enabled();
+    assert!(enabled);
 }
 
-// ── set_ngram_model / adjusted_threshold_us / push_recent_output ──
+// ── flush_pending: 全状態からの安全なリセット ──
+
+#[test]
+fn test_flush_pending_from_idle_is_noop() {
+    let mut engine = make_engine();
+    let r = engine.flush_pending(ContextInvalidation::ImeOff);
+    // Idle → no-op, consume with no actions
+    assert!(r.actions.is_empty());
+    assert!(r.consumed);
+    // 再入しても no-op
+    let r2 = engine.flush_pending(ContextInvalidation::ImeOff);
+    assert!(r2.actions.is_empty());
+}
+
+#[test]
+fn test_flush_pending_from_pending_char() {
+    let mut engine = make_engine();
+    let t0 = 1_000_000;
+    // PendingChar 状態にする
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    // flush → 通常面で単独確定
+    let r = engine.flush_pending(ContextInvalidation::EngineDisabled);
+    assert!(!r.actions.is_empty(), "should emit the pending char");
+    // Idle に戻っている
+    let r2 = engine.flush_pending(ContextInvalidation::ImeOff);
+    assert!(r2.actions.is_empty(), "should be idle after flush");
+}
+
+#[test]
+fn test_flush_pending_from_pending_thumb() {
+    let mut engine = make_engine();
+    let t0 = 1_000_000;
+    // PendingThumb 状態にする
+    let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0).build());
+    // flush → 親指キーを単独確定
+    let r = engine.flush_pending(ContextInvalidation::InputLanguageChanged);
+    assert!(!r.actions.is_empty(), "should emit the pending thumb key");
+    assert!(matches!(r.actions[0], KeyAction::Key(VK_NONCONVERT)));
+}
+
+#[test]
+fn test_flush_pending_from_pending_char_thumb() {
+    let mut engine = make_engine();
+    let t0 = 1_000_000;
+    // PendingChar → PendingCharThumb にする
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0 + 30_000).build());
+    // flush → 同時打鍵として確定
+    let r = engine.flush_pending(ContextInvalidation::LayoutSwapped);
+    assert!(!r.actions.is_empty(), "should emit simultaneous result");
+}
+
+#[test]
+fn test_flush_pending_from_speculative_char() {
+    let mut engine = make_speculative_engine();
+    let t0 = 1_000_000;
+    // SpeculativeChar 状態にする（即時出力済み）
+    let r1 = engine.on_event(Ev::down(VK_A).at(t0).build());
+    assert!(!r1.actions.is_empty(), "speculative output");
+    // flush → 既に出力済みなので追加出力なし
+    let r = engine.flush_pending(ContextInvalidation::ImeOff);
+    assert!(r.actions.is_empty(), "speculative was already output, no additional actions");
+}
+
+#[test]
+fn test_flush_pending_cancels_timers() {
+    let mut engine = make_engine();
+    let t0 = 1_000_000;
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    let r = engine.flush_pending(ContextInvalidation::ImeOff);
+    // タイマー停止命令が含まれる（assert_timer_kill ヘルパーを使用）
+    r.assert_timer_kill(TIMER_PENDING);
+    r.assert_timer_kill(TIMER_SPECULATIVE);
+}
+
+#[test]
+fn test_toggle_enabled_flushes_pending() {
+    let mut engine = make_engine();
+    let t0 = 1_000_000;
+    // PendingChar 状態にする
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    // toggle → 保留がフラッシュされる
+    let (enabled, flush_resp) = engine.toggle_enabled();
+    assert!(!enabled);
+    assert!(!flush_resp.actions.is_empty(), "should flush the pending char");
+}
+
+// ── IME 制御キーのフラッシュ＋パススルー ──
+
+const VK_KANJI: u16 = 0x19; // 半角/全角キー
+const SCAN_KANJI: u32 = 0x29;
+
+#[test]
+fn test_ime_control_key_passes_through_from_idle() {
+    let mut engine = make_engine();
+    // Idle 状態で半角/全角 → pass_through, アクションなし
+    let r = engine.on_event(Ev::down(VK_KANJI).scan(SCAN_KANJI).build());
+    r.assert_pass_through();
+    assert!(r.actions.is_empty());
+}
+
+#[test]
+fn test_ime_control_key_flushes_pending_and_passes_through() {
+    let mut engine = make_engine();
+    let t0 = 1_000_000;
+    // PendingChar 状態にする
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    // 半角/全角キー到着 → 保留フラッシュ + パススルー
+    let r = engine.on_event(Ev::down(VK_KANJI).scan(SCAN_KANJI).at(t0 + 50_000).build());
+    // consumed=false (パススルー) だがフラッシュアクションが含まれる
+    assert!(!r.consumed, "should pass through the IME control key");
+    assert!(!r.actions.is_empty(), "should emit flushed pending char actions");
+}
+
+#[test]
+fn test_ime_control_key_flushes_speculative_and_passes_through() {
+    let mut engine = make_speculative_engine();
+    let t0 = 1_000_000;
+    // SpeculativeChar 状態にする
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    // 半角/全角キー → speculative は確定済みなので追加アクションなし、パススルー
+    let r = engine.on_event(Ev::down(VK_KANJI).scan(SCAN_KANJI).at(t0 + 50_000).build());
+    assert!(!r.consumed, "should pass through the IME control key");
+}
+
+// ── set_ngram_model / adjusted_threshold_us ──
 
 #[test]
 fn test_set_ngram_model_and_adjusted_threshold() {
@@ -1016,18 +1167,6 @@ fn test_set_ngram_model_and_adjusted_threshold() {
     // Unknown candidate -> score 0 -> tanh(0)=0 -> base threshold
     let threshold = engine.adjusted_threshold_us('x');
     assert_eq!(threshold, 100_000);
-}
-
-#[test]
-fn test_push_recent_output() {
-    let mut engine = make_engine();
-    engine.push_recent_output('あ');
-    engine.push_recent_output('い');
-    engine.push_recent_output('う');
-    assert_eq!(engine.recent_output, vec!['あ', 'い', 'う']);
-    // Adding a 4th should remove the first
-    engine.push_recent_output('え');
-    assert_eq!(engine.recent_output, vec!['い', 'う', 'え']);
 }
 
 // ── PendingThumb + another thumb key (expired) ──
@@ -1177,11 +1316,16 @@ fn test_key_up_active_key_action() {
 
 #[test]
 fn test_key_up_active_suppress_action() {
-    // When active_keys has a Suppress action (unlikely in practice, but covers line 622)
+    // When output_history has a Suppress action (unlikely in practice, but covers pass_through branch)
     let mut engine = make_engine();
 
-    // Manually insert a Suppress action into active_keys
-    engine.active_keys.insert(SCAN_D, KeyAction::Suppress);
+    // Manually insert a Suppress action into output_history
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_D,
+        romaji: String::new(),
+        kana: None,
+        action: KeyAction::Suppress,
+    });
 
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_pass_through();
@@ -1235,22 +1379,22 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
 fn test_is_layout_key_various_faces() {
     let engine = make_engine();
     // A key is in normal face
-    assert!(engine.is_layout_key(VK_A, SCAN_A));
+    assert!(engine.is_layout_key(SCAN_A));
     // D key is NOT in any face in the basic layout
-    assert!(!engine.is_layout_key(VK_D, SCAN_D));
+    assert!(!engine.is_layout_key(SCAN_D));
     // Unknown scan code
-    assert!(!engine.is_layout_key(0xFF, 0xFF));
+    assert!(!engine.is_layout_key(0xFF));
 }
 
 #[test]
 fn test_is_layout_key_thumb_and_shift_faces() {
     let mut engine = make_engine_with_shift();
     // A is in normal, left_thumb, right_thumb, and shift
-    assert!(engine.is_layout_key(VK_A, SCAN_A));
+    assert!(engine.is_layout_key(SCAN_A));
 
     // Add D only to left_thumb face
     engine.layout.left_thumb.insert(POS_D, lit('な'));
-    assert!(engine.is_layout_key(VK_D, SCAN_D));
+    assert!(engine.is_layout_key(SCAN_D));
 }
 
 // ── timeout for char not in normal layout (lines 722-723) ──
@@ -1320,7 +1464,14 @@ fn test_romaji_value_in_layout() {
             kana: Some('か'),
         },
     );
-    let mut engine = Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100);
+    let mut engine = Engine::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
 
     engine.on_event(Ev::down(VK_D).build());
     let r = engine.on_timeout(TIMER_PENDING);
@@ -1340,7 +1491,14 @@ fn test_special_value_in_layout() {
     layout
         .normal
         .insert(POS_D, YabValue::Special(SpecialKey::Backspace));
-    let mut engine = Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100);
+    let mut engine = Engine::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
 
     engine.on_event(Ev::down(VK_D).build());
     let r = engine.on_timeout(TIMER_PENDING);
@@ -1362,7 +1520,14 @@ fn test_special_value_in_layout() {
 fn test_none_value_in_layout() {
     let mut layout = make_layout();
     layout.normal.insert(POS_D, YabValue::None);
-    let mut engine = Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100);
+    let mut engine = Engine::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
 
     engine.on_event(Ev::down(VK_D).build());
     let r = engine.on_timeout(TIMER_PENDING);
@@ -1432,7 +1597,14 @@ fn test_key_up_for_romaji_produces_suppress() {
             kana: Some('か'),
         },
     );
-    let mut engine = Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100);
+    let mut engine = Engine::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
 
     engine.on_event(Ev::down(VK_D).build());
     engine.on_timeout(TIMER_PENDING);
@@ -1486,27 +1658,27 @@ fn test_three_key_d1_ge_d2_left_thumb() {
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('あ'))));
 }
 
-// ── recent_output tracking tests ──
+// ── output_history tracking tests ──
 
 #[test]
-fn test_recent_output_tracked_on_timeout() {
+fn test_output_history_tracked_on_timeout() {
     let mut engine = make_engine();
 
     // Press A key, goes to PendingChar
     let result = engine.on_event(Ev::down(VK_A).build());
     assert_pending(&result);
-    assert!(engine.recent_output.is_empty());
+    assert!(engine.output_history.recent_kana(3).is_empty());
 
     // Timeout confirms A as standalone → 'う' (normal face)
     let result = engine.on_timeout(TIMER_PENDING);
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
     assert!(matches!(result.actions[0], KeyAction::Char('う')));
-    assert_eq!(engine.recent_output, vec!['う']);
+    assert_eq!(engine.output_history.recent_kana(3), vec!['う']);
 }
 
 #[test]
-fn test_recent_output_tracked_on_simultaneous() {
+fn test_output_history_tracked_on_simultaneous() {
     let mut engine = make_engine();
     let t0 = 0;
 
@@ -1520,33 +1692,33 @@ fn test_recent_output_tracked_on_simultaneous() {
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
     assert!(matches!(result.actions[0], KeyAction::Char('を')));
-    assert_eq!(engine.recent_output, vec!['を']);
+    assert_eq!(engine.output_history.recent_kana(3), vec!['を']);
 }
 
 #[test]
-fn test_recent_output_max_3() {
+fn test_output_history_recent_kana_limit() {
     let mut engine = make_engine();
 
     // Output 4 chars via successive timeout confirmations
     // 1st: A → 'う'
     engine.on_event(Ev::down(VK_A).build());
     engine.on_timeout(TIMER_PENDING);
-    assert_eq!(engine.recent_output, vec!['う']);
+    assert_eq!(engine.output_history.recent_kana(3), vec!['う']);
 
     // 2nd: S → 'し'
     engine.on_event(Ev::down(VK_S).build());
     engine.on_timeout(TIMER_PENDING);
-    assert_eq!(engine.recent_output, vec!['う', 'し']);
+    assert_eq!(engine.output_history.recent_kana(3), vec!['う', 'し']);
 
     // 3rd: A → 'う'
     engine.on_event(Ev::down(VK_A).build());
     engine.on_timeout(TIMER_PENDING);
-    assert_eq!(engine.recent_output, vec!['う', 'し', 'う']);
+    assert_eq!(engine.output_history.recent_kana(3), vec!['う', 'し', 'う']);
 
-    // 4th: S → 'し' — oldest should be evicted
+    // 4th: S → 'し' — recent_kana(3) returns only the last 3
     engine.on_event(Ev::down(VK_S).build());
     engine.on_timeout(TIMER_PENDING);
-    assert_eq!(engine.recent_output, vec!['し', 'う', 'し']);
+    assert_eq!(engine.output_history.recent_kana(3), vec!['し', 'う', 'し']);
 }
 
 // ── n-gram adaptive threshold tests ──────────────────────────────
@@ -1583,7 +1755,13 @@ fn make_ngram_model() -> NgramModel {
 fn test_ngram_high_freq_relaxes_threshold() {
     let mut engine = make_engine();
     engine.set_ngram_model(make_ngram_model());
-    engine.push_recent_output('し');
+    // Seed output_history with 'し' to provide n-gram context
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
 
     let t0: u64 = 0;
 
@@ -1619,7 +1797,13 @@ fn test_ngram_high_freq_relaxes_threshold() {
 fn test_ngram_low_freq_tightens_threshold() {
     let mut engine = make_engine();
     engine.set_ngram_model(make_ngram_model());
-    engine.push_recent_output('し');
+    // Seed output_history with 'し' to provide n-gram context
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
 
     let t0: u64 = 0;
 
@@ -1725,4 +1909,1202 @@ fn test_without_ngram_90ms_is_simultaneous() {
         "fixed threshold: 90ms < 100ms should be simultaneous, got {:?}",
         r.actions[0]
     );
+}
+
+#[test]
+fn test_speculative_char_timeout_confirms() {
+    // Manually set engine to SpeculativeChar state
+    let mut engine = make_engine();
+    engine.phase = EnginePhase::SpeculativeChar;
+    engine.pending_char = Some(PendingKey {
+        scan_code: SCAN_A,
+        vk_code: VK_A,
+        timestamp: 1_000_000,
+    });
+
+    // Call on_timeout → should return to Idle with no actions
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "SpeculativeChar timeout should produce no actions (already emitted), got {:?}",
+        r.actions
+    );
+    assert!(
+        engine.phase == EnginePhase::Idle,
+        "state should be Idle after timeout, got {:?}",
+        engine.phase
+    );
+}
+
+// ── Speculative confirm mode tests ──
+
+#[test]
+fn test_speculative_single_char() {
+    // Character press in Speculative mode → immediate output → timeout → no additional output
+    let mut engine = make_speculative_engine();
+
+    // Press 'A' key → should immediately output 'う' (normal face) and enter SpeculativeChar
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+    r.assert_consumed();
+    assert_eq!(r.actions.len(), 1, "should emit one action immediately");
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('う')),
+        "should emit normal face char 'う', got {:?}",
+        r.actions[0]
+    );
+    assert!(
+        engine.phase == EnginePhase::SpeculativeChar,
+        "state should be SpeculativeChar, got {:?}",
+        engine.phase
+    );
+
+    // Timeout → no additional output, back to Idle
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "timeout should produce no actions (already emitted), got {:?}",
+        r.actions
+    );
+    assert!(
+        engine.phase == EnginePhase::Idle,
+        "state should be Idle after timeout, got {:?}",
+        engine.phase
+    );
+}
+
+#[test]
+fn test_speculative_simultaneous() {
+    // Char press → immediate output → thumb arrives within threshold → BS + thumb face
+    let mut engine = make_speculative_engine();
+    let t0 = 1_000_000;
+
+    // Press 'A' key → immediate output 'う'
+    let r = engine.on_event(Ev::down(VK_A).at(t0).build());
+    r.assert_consumed();
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('う')),
+        "should emit 'う' immediately"
+    );
+
+    // Left thumb arrives within threshold (30ms < 100ms threshold)
+    let t1 = t0 + 30_000;
+    let r = engine.on_event(Ev::down(VK_NONCONVERT).at(t1).build());
+    r.assert_consumed();
+    // Should have BS (retract 'う' which is a Char → 0 romaji chars → 0 BS)
+    // Actually, for Literal chars, emitted_romaji is empty string, so no BS needed
+    // The action should just be the thumb face char 'を'
+    assert!(
+        !r.actions.is_empty(),
+        "should produce actions for thumb retraction"
+    );
+    // Last action should be the thumb-face character
+    assert!(
+        matches!(r.actions.last(), Some(KeyAction::Char('を'))),
+        "last action should be thumb face char 'を', got {:?}",
+        r.actions
+    );
+    assert!(
+        engine.phase == EnginePhase::Idle,
+        "state should be Idle after retraction, got {:?}",
+        engine.phase
+    );
+}
+
+#[test]
+fn test_speculative_simultaneous_with_romaji() {
+    // Char press with romaji → immediate output → thumb arrives → BS×N + thumb face
+    let mut layout = make_layout();
+    layout.normal.insert(
+        POS_D,
+        YabValue::Romaji {
+            romaji: "ka".to_string(),
+            kana: Some('か'),
+        },
+    );
+    layout.left_thumb.insert(POS_D, lit('げ'));
+
+    let mut engine = Engine::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Speculative,
+        30,
+    );
+    let t0 = 1_000_000;
+
+    // Press 'D' key → immediate output Romaji("ka")
+    let r = engine.on_event(Ev::down(VK_D).at(t0).build());
+    r.assert_consumed();
+    assert!(
+        matches!(&r.actions[0], KeyAction::Romaji(s) if s == "ka"),
+        "should emit Romaji 'ka' immediately, got {:?}",
+        r.actions[0]
+    );
+
+    // Left thumb arrives within threshold
+    let t1 = t0 + 30_000;
+    let r = engine.on_event(Ev::down(VK_NONCONVERT).at(t1).build());
+    r.assert_consumed();
+    // Bug #3 fix: IME treats complete romaji as 1 composition unit → always 1 BS
+    assert_eq!(
+        r.actions.len(),
+        2,
+        "should have 1 BS + 1 thumb action, got {:?}",
+        r.actions
+    );
+    assert!(
+        matches!(&r.actions[0], KeyAction::Key(0x08)),
+        "first action should be BS, got {:?}",
+        r.actions[0]
+    );
+    assert!(
+        matches!(&r.actions[1], KeyAction::Char('げ')),
+        "second action should be 'げ', got {:?}",
+        r.actions[1]
+    );
+}
+
+#[test]
+fn test_speculative_char_sequence() {
+    // char1 → immediate → char2 → char1 was correct + char2 immediate
+    let mut engine = make_speculative_engine();
+    let t0 = 1_000_000;
+
+    // Press 'A' key → immediate output 'う'
+    let r = engine.on_event(Ev::down(VK_A).at(t0).build());
+    r.assert_consumed();
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('う')),
+        "should emit 'う' immediately"
+    );
+
+    // Press 'S' key → char1 was correct, char2 emits immediately
+    let t1 = t0 + 50_000;
+    let r = engine.on_event(Ev::down(VK_S).at(t1).build());
+    r.assert_consumed();
+    // Should emit 'し' (normal face for S)
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('し')),
+        "should emit 'し' for second char, got {:?}",
+        r.actions
+    );
+    assert!(
+        engine.phase == EnginePhase::SpeculativeChar,
+        "state should be SpeculativeChar for second char, got {:?}",
+        engine.phase
+    );
+}
+
+#[test]
+fn test_speculative_thumb_outside_threshold() {
+    // Char press → thumb arrives after threshold → speculative was correct, thumb processed as new
+    let mut engine = make_speculative_engine();
+    let t0 = 1_000_000;
+
+    // Press 'A' key → immediate output 'う'
+    let r = engine.on_event(Ev::down(VK_A).at(t0).build());
+    r.assert_consumed();
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('う')),
+        "should emit 'う' immediately"
+    );
+
+    // Left thumb arrives AFTER threshold (150ms > 100ms)
+    let t1 = t0 + 150_000;
+    let r = engine.on_event(Ev::down(VK_NONCONVERT).at(t1).build());
+    // Thumb should be processed as a new key (pending thumb in Wait fallback via handle_idle)
+    r.assert_consumed();
+    // In Speculative mode, thumb goes to handle_idle_wait → PendingThumb
+    assert!(
+        engine.phase == EnginePhase::PendingThumb,
+        "thumb outside threshold should be pending, got {:?}",
+        engine.phase
+    );
+}
+
+#[test]
+fn test_speculative_thumb_first_falls_back_to_wait() {
+    // Thumb first in Speculative mode → same as Wait mode (PendingThumb)
+    let mut engine = make_speculative_engine();
+    let t0 = 1_000_000;
+
+    let r = engine.on_event(Ev::down(VK_NONCONVERT).at(t0).build());
+    assert_pending(&r);
+    assert!(
+        engine.phase == EnginePhase::PendingThumb,
+        "thumb first should enter PendingThumb, got {:?}",
+        engine.phase
+    );
+}
+
+// ── TwoPhase confirm mode tests ──
+
+fn make_two_phase_engine() -> Engine {
+    Engine::new(
+        make_layout(),
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::TwoPhase,
+        30,
+    )
+}
+
+#[test]
+fn test_two_phase_thumb_within_short_delay() {
+    // Thumb arrives at 20ms (< 30ms speculative delay) → clean simultaneous, no flicker
+    // Phase 1: char enters PendingChar with TIMER_SPECULATIVE
+    // Thumb arrives before TIMER_SPECULATIVE fires → same as Wait mode PendingChar+thumb path
+    let mut engine = make_two_phase_engine();
+    let t0 = 1_000_000;
+
+    // Press 'A' key → PendingChar with TIMER_SPECULATIVE
+    let r = engine.on_event(Ev::down(VK_A).at(t0).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty(), "Phase 1 should not emit any actions");
+    r.assert_timer_set(TIMER_SPECULATIVE);
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "state should be PendingChar, got {:?}",
+        engine.phase
+    );
+
+    // Left thumb arrives at 20ms (< 30ms) → PendingCharThumb
+    let t1 = t0 + 20_000;
+    let r = engine.on_event(Ev::down(VK_NONCONVERT).at(t1).build());
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "should be pending (PendingCharThumb), got {:?}",
+        r.actions
+    );
+
+    // Timeout resolves as simultaneous → left thumb face for A = 'を'
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert_eq!(r.actions.len(), 1);
+    assert!(
+        matches!(r.actions[0], KeyAction::Char('を')),
+        "clean simultaneous should produce 'を', got {:?}",
+        r.actions[0]
+    );
+}
+
+#[test]
+fn test_two_phase_thumb_after_short_delay() {
+    // Thumb arrives at 50ms (> 30ms but < 100ms) → speculative output happened, BS + replace
+    // Phase 1: char enters PendingChar with TIMER_SPECULATIVE
+    // TIMER_SPECULATIVE fires at 30ms → Phase 2: speculative output + SpeculativeChar
+    // Thumb arrives at 50ms → BS + thumb face
+    let mut engine = make_two_phase_engine();
+    let t0 = 1_000_000;
+
+    // Press 'A' key → PendingChar with TIMER_SPECULATIVE
+    let r = engine.on_event(Ev::down(VK_A).at(t0).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty(), "Phase 1 should not emit any actions");
+
+    // TIMER_SPECULATIVE fires → Phase 2: speculative output 'う'
+    let r = engine.on_timeout(TIMER_SPECULATIVE);
+    r.assert_consumed();
+    assert_eq!(r.actions.len(), 1, "should emit speculative output");
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('う')),
+        "speculative output should be 'う', got {:?}",
+        r.actions[0]
+    );
+    r.assert_timer_set(TIMER_PENDING);
+    assert!(
+        engine.phase == EnginePhase::SpeculativeChar,
+        "state should be SpeculativeChar, got {:?}",
+        engine.phase
+    );
+
+    // Left thumb arrives at 50ms (within remaining threshold window)
+    let t1 = t0 + 50_000;
+    let r = engine.on_event(Ev::down(VK_NONCONVERT).at(t1).build());
+    r.assert_consumed();
+    // Last action should be the thumb-face character 'を'
+    assert!(
+        matches!(r.actions.last(), Some(KeyAction::Char('を'))),
+        "last action should be thumb face char 'を', got {:?}",
+        r.actions
+    );
+    assert!(
+        engine.phase == EnginePhase::Idle,
+        "state should be Idle after retraction, got {:?}",
+        engine.phase
+    );
+}
+
+#[test]
+fn test_two_phase_no_thumb() {
+    // No thumb → speculative at 30ms, confirmed at 100ms
+    // Phase 1: PendingChar + TIMER_SPECULATIVE
+    // Phase 2 (30ms): speculative output + SpeculativeChar + TIMER_PENDING for remaining 70ms
+    // TIMER_PENDING fires: confirmed (no additional output)
+    let mut engine = make_two_phase_engine();
+    let t0 = 1_000_000;
+
+    // Press 'A' key → PendingChar
+    let r = engine.on_event(Ev::down(VK_A).at(t0).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty());
+
+    // TIMER_SPECULATIVE fires → speculative output
+    let r = engine.on_timeout(TIMER_SPECULATIVE);
+    r.assert_consumed();
+    assert_eq!(r.actions.len(), 1);
+    assert!(matches!(&r.actions[0], KeyAction::Char('う')));
+    assert!(engine.phase == EnginePhase::SpeculativeChar);
+
+    // TIMER_PENDING fires → confirmed, no additional output
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "SpeculativeChar timeout should produce no actions, got {:?}",
+        r.actions
+    );
+    assert!(
+        engine.phase == EnginePhase::Idle,
+        "state should be Idle after full confirmation, got {:?}",
+        engine.phase
+    );
+}
+
+#[test]
+fn test_two_phase_char_sequence() {
+    // Chars arrive rapidly, each within 30ms → wait confirms previous
+    // char1 → PendingChar, char2 arrives within 30ms → char1 confirmed as single, char2 pending
+    let mut engine = make_two_phase_engine();
+    let t0 = 1_000_000;
+
+    // Press 'A' key → PendingChar
+    let r = engine.on_event(Ev::down(VK_A).at(t0).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty());
+
+    // Press 'S' key at 20ms (< 30ms, before TIMER_SPECULATIVE fires)
+    let t1 = t0 + 20_000;
+    let r = engine.on_event(Ev::down(VK_S).at(t1).build());
+    r.assert_consumed();
+    // char1 (A) should be flushed as single ('う')
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('う'))),
+        "char1 should be confirmed as 'う', got {:?}",
+        r.actions
+    );
+    // char2 (S) should now be in PendingChar
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "state should be PendingChar for char2, got {:?}",
+        engine.phase
+    );
+}
+
+// ── AdaptiveTiming モード テスト ──
+
+fn make_adaptive_engine() -> Engine {
+    Engine::new(
+        make_layout(),
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::AdaptiveTiming,
+        30,
+    )
+}
+
+/// 最初のキー（前キーなし）→ TwoPhase 動作（PendingChar + TIMER_SPECULATIVE）
+#[test]
+fn test_adaptive_first_key_uses_two_phase() {
+    let mut engine = make_adaptive_engine();
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+
+    // TwoPhase: PendingChar 状態 + TIMER_SPECULATIVE が設定される
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "TwoPhase Phase 1 should have no actions"
+    );
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "state should be PendingChar, got {:?}",
+        engine.phase
+    );
+    r.assert_timer_set(TIMER_SPECULATIVE);
+}
+
+/// 連続打鍵（50ms 間隔）→ Wait 動作（PendingChar + TIMER_PENDING）
+#[test]
+fn test_adaptive_rapid_typing_uses_wait() {
+    let mut engine = make_adaptive_engine();
+
+    // 1 文字目（TwoPhase 動作）
+    let t0 = 1_000_000;
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    // タイムアウトで確定させて Idle に戻す
+    let _ = engine.on_timeout(TIMER_SPECULATIVE);
+    let _ = engine.on_timeout(TIMER_PENDING);
+
+    // 2 文字目: 50ms 後（< 80ms → continuous → Wait）
+    let t1 = t0 + 50_000;
+    let r = engine.on_event(Ev::down(VK_S).at(t1).build());
+
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "Wait mode should have no immediate actions"
+    );
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "state should be PendingChar, got {:?}",
+        engine.phase
+    );
+    r.assert_timer_set(TIMER_PENDING);
+}
+
+/// ポーズ後（200ms 間隔）→ TwoPhase 動作（PendingChar + TIMER_SPECULATIVE）
+#[test]
+fn test_adaptive_after_pause_uses_two_phase() {
+    let mut engine = make_adaptive_engine();
+
+    // 1 文字目
+    let t0 = 1_000_000;
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    let _ = engine.on_timeout(TIMER_SPECULATIVE);
+    let _ = engine.on_timeout(TIMER_PENDING);
+
+    // 2 文字目: 200ms 後（>= 80ms → paused → TwoPhase）
+    let t1 = t0 + 200_000;
+    let r = engine.on_event(Ev::down(VK_S).at(t1).build());
+
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "TwoPhase Phase 1 should have no actions"
+    );
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "state should be PendingChar, got {:?}",
+        engine.phase
+    );
+    r.assert_timer_set(TIMER_SPECULATIVE);
+}
+
+/// 連続打鍵 → ポーズ → 最後のキーは TwoPhase を使用
+#[test]
+fn test_adaptive_continuous_then_pause() {
+    let mut engine = make_adaptive_engine();
+
+    // 1 文字目 t=1000ms
+    let t0 = 1_000_000;
+    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
+    let _ = engine.on_timeout(TIMER_SPECULATIVE);
+    let _ = engine.on_timeout(TIMER_PENDING);
+
+    // 2 文字目 t=1050ms (50ms gap → continuous → Wait)
+    let t1 = t0 + 50_000;
+    let r1 = engine.on_event(Ev::down(VK_S).at(t1).build());
+    r1.assert_timer_set(TIMER_PENDING); // Wait mode
+    let _ = engine.on_timeout(TIMER_PENDING);
+
+    // 3 文字目 t=1300ms (250ms gap → paused → TwoPhase)
+    let t2 = t1 + 250_000;
+    let r2 = engine.on_event(Ev::down(VK_A).at(t2).build());
+    r2.assert_consumed();
+    assert!(
+        r2.actions.is_empty(),
+        "TwoPhase Phase 1 should have no actions"
+    );
+    r2.assert_timer_set(TIMER_SPECULATIVE);
+}
+
+// ── NgramPredictive confirm mode tests ──
+
+fn make_ngram_predictive_engine() -> Engine {
+    Engine::new(
+        make_layout(),
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::NgramPredictive,
+        30,
+    )
+}
+
+/// n-gram で通常面のスコアが高い場合、Speculative（即時出力）を使用する
+#[test]
+fn test_ngram_predictive_high_normal_score_uses_speculative() {
+    let mut engine = make_ngram_predictive_engine();
+
+    // Seed output_history so that bigram ('あ', 'う') has a high score
+    // Normal face for A key = 'う', left_thumb = 'を', right_thumb = 'ゔ'
+    engine.output_history.push(OutputEntry {
+        scan_code: 0,
+        romaji: String::new(),
+        kana: Some('あ'),
+        action: KeyAction::Char('あ'),
+    });
+
+    // High score for normal face kana ('あ', 'う'), low for thumb face
+    let toml_str = r#"
+[bigram]
+"あう" = 2.0
+"あを" = 0.5
+"あゔ" = 0.3
+"#;
+    let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+    engine.set_ngram_model(model);
+
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+
+    // Speculative: immediate output + SpeculativeChar state
+    assert!(
+        !r.actions.is_empty(),
+        "NgramPredictive should output immediately when normal score is high"
+    );
+    assert!(
+        engine.phase == EnginePhase::SpeculativeChar,
+        "Should be in SpeculativeChar state"
+    );
+}
+
+/// n-gram で親指面のスコアが高い場合、Wait（保留）を使用する
+#[test]
+fn test_ngram_predictive_high_thumb_score_uses_wait() {
+    let mut engine = make_ngram_predictive_engine();
+
+    // Seed output_history so that thumb face kana has high score
+    engine.output_history.push(OutputEntry {
+        scan_code: 0,
+        romaji: String::new(),
+        kana: Some('あ'),
+        action: KeyAction::Char('あ'),
+    });
+
+    // Low score for normal face kana, high for thumb face kana
+    let toml_str = r#"
+[bigram]
+"あう" = 0.3
+"あを" = 2.0
+"あゔ" = 0.1
+"#;
+    let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+    engine.set_ngram_model(model);
+
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+
+    // Wait: no actions, PendingChar state
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "NgramPredictive should wait when thumb score is higher"
+    );
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "Should be in PendingChar state"
+    );
+    r.assert_timer_set(TIMER_PENDING);
+}
+
+/// n-gram モデルが未設定の場合、TwoPhase にフォールバックする
+#[test]
+fn test_ngram_predictive_no_model_falls_back() {
+    let mut engine = make_ngram_predictive_engine();
+    // No ngram model set → should fall back to TwoPhase
+
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+
+    // TwoPhase: PendingChar + TIMER_SPECULATIVE
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "TwoPhase fallback Phase 1 should have no actions"
+    );
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "Should be in PendingChar state"
+    );
+    r.assert_timer_set(TIMER_SPECULATIVE);
+}
+
+/// recent_output が空の場合、スコアは両方 0 → diff=0 → Wait を使用する
+#[test]
+fn test_ngram_predictive_no_history_uses_wait() {
+    let mut engine = make_ngram_predictive_engine();
+
+    // Empty recent_output + model with some bigrams (but they won't match with empty history)
+    let toml_str = r#"
+[bigram]
+"あう" = 2.0
+"#;
+    let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+    engine.set_ngram_model(model);
+
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+
+    // Both scores are 0.0 → diff = 0.0 (not > 0.5) → Wait
+    r.assert_consumed();
+    assert!(
+        r.actions.is_empty(),
+        "NgramPredictive should wait when no history (scores are zero)"
+    );
+    assert!(
+        engine.phase == EnginePhase::PendingChar,
+        "Should be in PendingChar state"
+    );
+    r.assert_timer_set(TIMER_PENDING);
+}
+
+// ── Cross-mode comparison tests ──
+// These tests verify that all ConfirmMode variants produce the same final
+// characters after BS retraction is applied.  NgramPredictive is excluded
+// because it requires an n-gram model to be configured and its behaviour
+// depends on context history.
+
+/// Modes to include in cross-mode comparison tests.
+const CROSS_MODES: [ConfirmMode; 4] = [
+    ConfirmMode::Wait,
+    ConfirmMode::Speculative,
+    ConfirmMode::TwoPhase,
+    ConfirmMode::AdaptiveTiming,
+];
+
+fn make_engine_with_mode(mode: ConfirmMode) -> Engine {
+    let layout = make_layout();
+    Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30)
+}
+
+/// Collect final output from a sequence of Responses, handling BS retraction.
+/// BS (`Key(0x08)`) retracts the most recently emitted non-Suppress action.
+fn collect_output(responses: &[Resp]) -> Vec<KeyAction> {
+    let mut output: Vec<KeyAction> = Vec::new();
+    for r in responses {
+        for action in &r.actions {
+            match action {
+                KeyAction::Key(0x08) => {
+                    output.pop();
+                }
+                KeyAction::Suppress => {} // skip suppresses
+                other => output.push(other.clone()),
+            }
+        }
+    }
+    output
+}
+
+/// Extract only the Char values from the collected output.
+fn collect_chars(responses: &[Resp]) -> Vec<char> {
+    collect_output(responses)
+        .into_iter()
+        .filter_map(|a| match a {
+            KeyAction::Char(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_all_modes_single_char_same_output() {
+    let mut reference: Option<Vec<char>> = None;
+    for mode in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode);
+        let mut responses = vec![];
+
+        // Press A key
+        responses.push(engine.on_event(Ev::down(VK_A).at(1_000_000).build()));
+        // Fire all possible timers so every mode resolves
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_timeout(TIMER_PENDING));
+
+        let chars = collect_chars(&responses);
+        assert!(
+            !chars.is_empty(),
+            "mode {:?} should produce output for A key",
+            mode
+        );
+        assert_eq!(
+            chars,
+            vec!['う'],
+            "mode {:?} should produce normal face 'う' for A key, got {:?}",
+            mode,
+            chars
+        );
+
+        if let Some(ref expected) = reference {
+            assert_eq!(
+                &chars, expected,
+                "mode {:?} differs from reference output",
+                mode
+            );
+        } else {
+            reference = Some(chars);
+        }
+    }
+}
+
+#[test]
+fn test_all_modes_simultaneous_same_final_output() {
+    let mut reference: Option<Vec<char>> = None;
+    for mode in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode);
+        let mut responses = vec![];
+        let t = 1_000_000u64;
+
+        // Press A, then left thumb within threshold
+        responses.push(engine.on_event(Ev::down(VK_A).at(t).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_event(Ev::down(VK_NONCONVERT).at(t + 20_000).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_timeout(TIMER_PENDING));
+
+        let chars = collect_chars(&responses);
+        // After BS retraction, all modes should end up with left thumb face for A = 'を'
+        assert!(
+            chars.contains(&'を'),
+            "mode {:?} should produce left thumb face 'を' for simultaneous A+muhenkan, got {:?}",
+            mode,
+            chars
+        );
+
+        if let Some(ref expected) = reference {
+            assert_eq!(
+                &chars, expected,
+                "mode {:?} simultaneous output differs from reference",
+                mode
+            );
+        } else {
+            reference = Some(chars);
+        }
+    }
+}
+
+#[test]
+fn test_all_modes_simultaneous_right_thumb_same_final_output() {
+    let mut reference: Option<Vec<char>> = None;
+    for mode in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode);
+        let mut responses = vec![];
+        let t = 1_000_000u64;
+
+        // Press A, then right thumb within threshold
+        responses.push(engine.on_event(Ev::down(VK_A).at(t).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_event(Ev::down(VK_CONVERT).at(t + 20_000).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_timeout(TIMER_PENDING));
+
+        let chars = collect_chars(&responses);
+        // After BS retraction, all modes should end up with right thumb face for A = 'ゔ'
+        assert!(
+            chars.contains(&'ゔ'),
+            "mode {:?} should produce right thumb face 'ゔ' for A+henkan, got {:?}",
+            mode,
+            chars
+        );
+
+        if let Some(ref expected) = reference {
+            assert_eq!(
+                &chars, expected,
+                "mode {:?} right-thumb simultaneous differs from reference",
+                mode
+            );
+        } else {
+            reference = Some(chars);
+        }
+    }
+}
+
+#[test]
+fn test_all_modes_rapid_sequence_same_output() {
+    let mut reference: Option<Vec<char>> = None;
+    for mode in [
+        ConfirmMode::Wait,
+        ConfirmMode::Speculative,
+        ConfirmMode::TwoPhase,
+    ] {
+        let mut engine = make_engine_with_mode(mode);
+        let mut responses = vec![];
+
+        // Type A, S rapidly (50ms apart), well outside threshold for simultaneous
+        // but close enough to exercise the rapid path
+        responses.push(engine.on_event(Ev::down(VK_A).at(1_000_000).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_event(Ev::down(VK_S).at(1_050_000).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_timeout(TIMER_PENDING));
+
+        let chars = collect_chars(&responses);
+        // Should have normal-face outputs for A='う' and S='し'
+        assert_eq!(
+            chars,
+            vec!['う', 'し'],
+            "mode {:?} rapid A,S should produce ['う','し'], got {:?}",
+            mode,
+            chars
+        );
+
+        if let Some(ref expected) = reference {
+            assert_eq!(
+                &chars, expected,
+                "mode {:?} rapid sequence differs from reference",
+                mode
+            );
+        } else {
+            reference = Some(chars);
+        }
+    }
+}
+
+#[test]
+fn test_all_modes_thumb_first_then_char_same_output() {
+    let mut reference: Option<Vec<char>> = None;
+    for mode in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode);
+        let mut responses = vec![];
+        let t = 1_000_000u64;
+
+        // Thumb first, then char within threshold (pattern 1)
+        responses.push(engine.on_event(Ev::down(VK_NONCONVERT).at(t).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_event(Ev::down(VK_A).at(t + 30_000).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_timeout(TIMER_PENDING));
+
+        let chars = collect_chars(&responses);
+        assert!(
+            chars.contains(&'を'),
+            "mode {:?} thumb-first should produce 'を', got {:?}",
+            mode,
+            chars
+        );
+
+        if let Some(ref expected) = reference {
+            assert_eq!(
+                &chars, expected,
+                "mode {:?} thumb-first output differs from reference",
+                mode
+            );
+        } else {
+            reference = Some(chars);
+        }
+    }
+}
+
+#[test]
+fn test_all_modes_char_alone_after_threshold_same_output() {
+    // Char is pressed, thumb arrives after threshold → char confirmed as normal face
+    let mut reference: Option<Vec<char>> = None;
+    for mode in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode);
+        let mut responses = vec![];
+        let t = 1_000_000u64;
+
+        responses.push(engine.on_event(Ev::down(VK_A).at(t).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_timeout(TIMER_PENDING));
+        // Thumb arrives after full timeout → processed as new key, not simultaneous
+        responses.push(engine.on_event(Ev::down(VK_NONCONVERT).at(t + 200_000).build()));
+        responses.push(engine.on_timeout(TIMER_SPECULATIVE));
+        responses.push(engine.on_timeout(TIMER_PENDING));
+
+        let chars = collect_chars(&responses);
+        // 'う' from the A key (normal face) — thumb alone doesn't produce a char
+        assert!(
+            chars.contains(&'う'),
+            "mode {:?} should produce normal face 'う' for A, got {:?}",
+            mode,
+            chars
+        );
+
+        if let Some(ref expected) = reference {
+            assert_eq!(
+                &chars, expected,
+                "mode {:?} char-alone-after-threshold differs from reference",
+                mode
+            );
+        } else {
+            reference = Some(chars);
+        }
+    }
+}
+
+// ── Mode-specific characteristic tests ──
+
+#[test]
+fn test_speculative_has_immediate_output() {
+    let mut engine = make_engine_with_mode(ConfirmMode::Speculative);
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+    assert!(
+        !r.actions.is_empty(),
+        "Speculative should output immediately"
+    );
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('う')),
+        "Speculative immediate output should be normal face 'う', got {:?}",
+        r.actions[0]
+    );
+}
+
+#[test]
+fn test_wait_has_no_immediate_output() {
+    let mut engine = make_engine_with_mode(ConfirmMode::Wait);
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+    assert!(
+        r.actions.is_empty(),
+        "Wait should not output immediately on key down"
+    );
+}
+
+#[test]
+fn test_two_phase_no_output_before_speculative_timer() {
+    let mut engine = make_engine_with_mode(ConfirmMode::TwoPhase);
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+    assert!(
+        r.actions.is_empty(),
+        "TwoPhase should not output immediately (Phase 1)"
+    );
+    // But after speculative timer fires, output appears (Phase 2)
+    let r = engine.on_timeout(TIMER_SPECULATIVE);
+    assert!(
+        !r.actions.is_empty(),
+        "TwoPhase should output after speculative delay (Phase 2)"
+    );
+    assert!(
+        matches!(&r.actions[0], KeyAction::Char('う')),
+        "TwoPhase Phase 2 output should be 'う', got {:?}",
+        r.actions[0]
+    );
+}
+
+#[test]
+fn test_adaptive_first_key_behaves_like_two_phase() {
+    // AdaptiveTiming with no prior key history should use TwoPhase behavior
+    let mut engine = make_engine_with_mode(ConfirmMode::AdaptiveTiming);
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+    assert!(
+        r.actions.is_empty(),
+        "AdaptiveTiming first key should not output immediately (TwoPhase Phase 1)"
+    );
+    let r = engine.on_timeout(TIMER_SPECULATIVE);
+    assert!(
+        !r.actions.is_empty(),
+        "AdaptiveTiming first key should output after speculative timer"
+    );
+}
+
+#[test]
+fn test_speculative_retraction_on_simultaneous() {
+    // Verify that Speculative mode resolves to thumb face when thumb arrives
+    // within threshold.  The engine emits the speculative char immediately,
+    // then when thumb arrives it retracts (BS) and emits the thumb face.
+    // collect_output neutralises the BS+original pair.
+    let mut engine = make_engine_with_mode(ConfirmMode::Speculative);
+    let t = 1_000_000u64;
+
+    let r1 = engine.on_event(Ev::down(VK_A).at(t).build());
+    assert!(
+        matches!(&r1.actions[0], KeyAction::Char('う')),
+        "Speculative should emit 'う' immediately"
+    );
+
+    // Thumb within threshold
+    let r2 = engine.on_event(Ev::down(VK_NONCONVERT).at(t + 20_000).build());
+    // The thumb response must include the thumb face character 'を'
+    let has_thumb_char = r2
+        .actions
+        .iter()
+        .any(|a| matches!(a, KeyAction::Char('を')));
+    assert!(
+        has_thumb_char,
+        "Speculative retraction should include thumb face 'を', got {:?}",
+        r2.actions
+    );
+
+    // After collecting all output (with BS retraction applied), the final
+    // result should contain the thumb face 'を' and the speculative 'う'
+    // should be neutralised.
+    let responses = vec![r1, r2];
+    let chars = collect_chars(&responses);
+    assert!(
+        chars.last() == Some(&'を'),
+        "Final output should end with thumb face 'を', got {:?}",
+        chars
+    );
+}
+
+#[test]
+fn test_collect_output_handles_bs_retraction() {
+    // Unit test for the collect_output helper itself
+    let responses = vec![
+        Response {
+            actions: vec![KeyAction::Char('う')],
+            consumed: true,
+            timers: vec![],
+        },
+        Response {
+            actions: vec![
+                KeyAction::Key(0x08), // BS retracts 'う'
+                KeyAction::Char('を'),
+            ],
+            consumed: true,
+            timers: vec![],
+        },
+    ];
+    let chars = collect_chars(&responses);
+    assert_eq!(chars, vec!['を'], "BS should retract 'う', leaving 'を'");
+}
+
+#[test]
+fn test_collect_output_no_retraction() {
+    // No BS → all outputs preserved
+    let responses = vec![
+        Response {
+            actions: vec![KeyAction::Char('う')],
+            consumed: true,
+            timers: vec![],
+        },
+        Response {
+            actions: vec![KeyAction::Char('し')],
+            consumed: true,
+            timers: vec![],
+        },
+    ];
+    let chars = collect_chars(&responses);
+    assert_eq!(chars, vec!['う', 'し'], "No BS means all chars preserved");
+}
+
+// ── FinalizePlan tests ──
+
+#[test]
+fn test_finalize_plan_confirmed_cancels_timers() {
+    let mut engine = make_engine();
+    let plan = FinalizePlan {
+        actions: vec![KeyAction::Romaji("ka".to_string())],
+        timer: TimerIntent::CancelAll,
+        output: OutputUpdate::None,
+    };
+    let resp = engine.finalize_plan(plan);
+    resp.assert_consumed();
+    assert_eq!(resp.actions.len(), 1);
+    resp.assert_timer_kill(TIMER_PENDING);
+    resp.assert_timer_kill(TIMER_SPECULATIVE);
+    // CancelAll should not set any timers
+    assert!(
+        !resp
+            .timers
+            .iter()
+            .any(|t| matches!(t, timed_fsm::TimerCommand::Set { .. })),
+        "CancelAll should not set any timers"
+    );
+}
+
+#[test]
+fn test_finalize_plan_pending_sets_timer() {
+    let mut engine = make_engine();
+    let plan = FinalizePlan {
+        actions: vec![],
+        timer: TimerIntent::Pending,
+        output: OutputUpdate::None,
+    };
+    let resp = engine.finalize_plan(plan);
+    resp.assert_consumed();
+    assert!(resp.actions.is_empty(), "Pending should have no actions");
+    resp.assert_timer_set(TIMER_PENDING);
+    resp.assert_timer_kill(TIMER_SPECULATIVE);
+}
+
+#[test]
+fn test_finalize_plan_speculative_wait_sets_timer() {
+    let mut engine = make_engine();
+    let plan = FinalizePlan {
+        actions: vec![KeyAction::Romaji("u".to_string())],
+        timer: TimerIntent::SpeculativeWait,
+        output: OutputUpdate::None,
+    };
+    let resp = engine.finalize_plan(plan);
+    resp.assert_consumed();
+    assert_eq!(resp.actions.len(), 1);
+    resp.assert_timer_set(TIMER_SPECULATIVE);
+    resp.assert_timer_kill(TIMER_PENDING);
+}
+
+#[test]
+fn test_finalize_plan_phase2_transition() {
+    let mut engine = make_engine();
+    let plan = FinalizePlan {
+        actions: vec![KeyAction::Romaji("ka".to_string())],
+        timer: TimerIntent::Phase2Transition {
+            remaining_us: 50_000,
+        },
+        output: OutputUpdate::None,
+    };
+    let resp = engine.finalize_plan(plan);
+    resp.assert_consumed();
+    assert_eq!(resp.actions.len(), 1);
+    resp.assert_timer_kill(TIMER_SPECULATIVE);
+    resp.assert_timer_set(TIMER_PENDING);
+}
+
+#[test]
+fn test_finalize_plan_record_updates_history() {
+    let mut engine = make_engine();
+    assert!(engine.output_history.is_empty());
+
+    let plan = FinalizePlan {
+        actions: vec![KeyAction::Romaji("ka".to_string())],
+        timer: TimerIntent::CancelAll,
+        output: OutputUpdate::Record {
+            scan_code: SCAN_A,
+            romaji: "ka".to_string(),
+            kana: Some('か'),
+            action: KeyAction::Romaji("ka".to_string()),
+        },
+    };
+    let _resp = engine.finalize_plan(plan);
+    assert_eq!(engine.output_history.len(), 1);
+    assert_eq!(engine.output_history.recent_kana(1), vec!['か']);
+}
+
+#[test]
+fn test_finalize_plan_retract_and_record() {
+    let mut engine = make_engine();
+
+    // First, record an entry
+    let plan1 = FinalizePlan {
+        actions: vec![KeyAction::Romaji("u".to_string())],
+        timer: TimerIntent::CancelAll,
+        output: OutputUpdate::Record {
+            scan_code: SCAN_A,
+            romaji: "u".to_string(),
+            kana: Some('う'),
+            action: KeyAction::Romaji("u".to_string()),
+        },
+    };
+    let _resp = engine.finalize_plan(plan1);
+    assert_eq!(engine.output_history.len(), 1);
+
+    // Now retract and record a new entry
+    let plan2 = FinalizePlan {
+        actions: vec![KeyAction::Romaji("vu".to_string())],
+        timer: TimerIntent::CancelAll,
+        output: OutputUpdate::RetractAndRecord {
+            scan_code: SCAN_A,
+            romaji: "vu".to_string(),
+            kana: Some('ゔ'),
+            action: KeyAction::Romaji("vu".to_string()),
+        },
+    };
+    let _resp = engine.finalize_plan(plan2);
+    assert_eq!(
+        engine.output_history.len(),
+        1,
+        "retract+record should keep count at 1"
+    );
+    assert_eq!(engine.output_history.recent_kana(1), vec!['ゔ']);
 }
