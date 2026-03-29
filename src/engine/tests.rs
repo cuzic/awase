@@ -1033,12 +1033,12 @@ fn test_toggle_enabled_returns_state() {
 #[test]
 fn test_flush_pending_from_idle_is_noop() {
     let mut engine = make_engine();
-    let r = engine.flush_pending(ContextInvalidation::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff);
     // Idle → no-op, consume with no actions
     assert!(r.actions.is_empty());
     assert!(r.consumed);
     // 再入しても no-op
-    let r2 = engine.flush_pending(ContextInvalidation::ImeOff);
+    let r2 = engine.flush_pending(ContextChange::ImeOff);
     assert!(r2.actions.is_empty());
 }
 
@@ -1049,10 +1049,10 @@ fn test_flush_pending_from_pending_char() {
     // PendingChar 状態にする
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
     // flush → 通常面で単独確定
-    let r = engine.flush_pending(ContextInvalidation::EngineDisabled);
+    let r = engine.flush_pending(ContextChange::EngineDisabled);
     assert!(!r.actions.is_empty(), "should emit the pending char");
     // Idle に戻っている
-    let r2 = engine.flush_pending(ContextInvalidation::ImeOff);
+    let r2 = engine.flush_pending(ContextChange::ImeOff);
     assert!(r2.actions.is_empty(), "should be idle after flush");
 }
 
@@ -1063,7 +1063,7 @@ fn test_flush_pending_from_pending_thumb() {
     // PendingThumb 状態にする
     let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0).build());
     // flush → 親指キーを単独確定
-    let r = engine.flush_pending(ContextInvalidation::InputLanguageChanged);
+    let r = engine.flush_pending(ContextChange::InputLanguageChanged);
     assert!(!r.actions.is_empty(), "should emit the pending thumb key");
     assert!(matches!(r.actions[0], KeyAction::Key(VK_NONCONVERT)));
 }
@@ -1076,7 +1076,7 @@ fn test_flush_pending_from_pending_char_thumb() {
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
     let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0 + 30_000).build());
     // flush → 同時打鍵として確定
-    let r = engine.flush_pending(ContextInvalidation::LayoutSwapped);
+    let r = engine.flush_pending(ContextChange::LayoutSwapped);
     assert!(!r.actions.is_empty(), "should emit simultaneous result");
 }
 
@@ -1088,7 +1088,7 @@ fn test_flush_pending_from_speculative_char() {
     let r1 = engine.on_event(Ev::down(VK_A).at(t0).build());
     assert!(!r1.actions.is_empty(), "speculative output");
     // flush → 既に出力済みなので追加出力なし
-    let r = engine.flush_pending(ContextInvalidation::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff);
     assert!(r.actions.is_empty(), "speculative was already output, no additional actions");
 }
 
@@ -1097,7 +1097,7 @@ fn test_flush_pending_cancels_timers() {
     let mut engine = make_engine();
     let t0 = 1_000_000;
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
-    let r = engine.flush_pending(ContextInvalidation::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff);
     // タイマー停止命令が含まれる（assert_timer_kill ヘルパーを使用）
     r.assert_timer_kill(TIMER_PENDING);
     r.assert_timer_kill(TIMER_SPECULATIVE);
@@ -3109,47 +3109,47 @@ fn test_finalize_plan_retract_and_record() {
     assert_eq!(engine.output_history.recent_kana(1), vec!['ゔ']);
 }
 
-// ── EngineBypassState のユニットテスト ──
+// ── FocusKind のユニットテスト ──
 
 #[test]
 fn test_bypass_state_repr_values() {
     // repr(u8) の値が AtomicU8 との変換で正しいことを確認
-    assert_eq!(EngineBypassState::AllowEngine as u8, 0);
-    assert_eq!(EngineBypassState::ShouldBypass as u8, 1);
-    assert_eq!(EngineBypassState::Unknown as u8, 2);
+    assert_eq!(FocusKind::TextInput as u8, 0);
+    assert_eq!(FocusKind::NonText as u8, 1);
+    assert_eq!(FocusKind::Undetermined as u8, 2);
 }
 
 #[test]
 fn test_bypass_state_equality() {
-    assert_eq!(EngineBypassState::AllowEngine, EngineBypassState::AllowEngine);
-    assert_ne!(EngineBypassState::AllowEngine, EngineBypassState::ShouldBypass);
-    assert_ne!(EngineBypassState::ShouldBypass, EngineBypassState::Unknown);
+    assert_eq!(FocusKind::TextInput, FocusKind::TextInput);
+    assert_ne!(FocusKind::TextInput, FocusKind::NonText);
+    assert_ne!(FocusKind::NonText, FocusKind::Undetermined);
 }
 
 #[test]
 fn test_bypass_state_copy_clone() {
-    let state = EngineBypassState::ShouldBypass;
+    let state = FocusKind::NonText;
     let copied = state; // Copy
     let cloned = state.clone(); // Clone
-    assert_eq!(copied, EngineBypassState::ShouldBypass);
-    assert_eq!(cloned, EngineBypassState::ShouldBypass);
+    assert_eq!(copied, FocusKind::NonText);
+    assert_eq!(cloned, FocusKind::NonText);
 }
 
 #[test]
 fn test_bypass_state_debug_format() {
     // Debug trait が実装されていることを確認
-    let s = format!("{:?}", EngineBypassState::AllowEngine);
-    assert_eq!(s, "AllowEngine");
-    let s = format!("{:?}", EngineBypassState::ShouldBypass);
-    assert_eq!(s, "ShouldBypass");
-    let s = format!("{:?}", EngineBypassState::Unknown);
-    assert_eq!(s, "Unknown");
+    let s = format!("{:?}", FocusKind::TextInput);
+    assert_eq!(s, "TextInput");
+    let s = format!("{:?}", FocusKind::NonText);
+    assert_eq!(s, "NonText");
+    let s = format!("{:?}", FocusKind::Undetermined);
+    assert_eq!(s, "Undetermined");
 }
 
 #[test]
 fn test_context_invalidation_focus_changed() {
     // FocusChanged バリアントが存在し Debug 出力できることを確認
-    let reason = ContextInvalidation::FocusChanged;
+    let reason = ContextChange::FocusChanged;
     let s = format!("{:?}", reason);
     assert_eq!(s, "FocusChanged");
 }

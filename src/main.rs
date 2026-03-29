@@ -28,14 +28,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::core::{Interface, VARIANT};
 use windows::Win32::UI::Accessibility::{
     AccessibleObjectFromWindow, CUIAutomation, IAccessible, IUIAutomation,
-    IUIAutomationElement, SetWinEventHook, HWINEVENTHOOK,
-    UIA_ButtonControlTypeId, UIA_ComboBoxControlTypeId, UIA_DocumentControlTypeId,
+    IUIAutomationElement, IUIAutomationTextPattern, IUIAutomationValuePattern,
+    SetWinEventHook, HWINEVENTHOOK,
+    UIA_ButtonControlTypeId, UIA_DocumentControlTypeId,
     UIA_EditControlTypeId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
     UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId, UIA_MenuControlTypeId,
     UIA_MenuItemControlTypeId, UIA_ProgressBarControlTypeId, UIA_ScrollBarControlTypeId,
     UIA_SeparatorControlTypeId, UIA_SliderControlTypeId, UIA_StatusBarControlTypeId,
     UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TextControlTypeId,
-    UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeItemControlTypeId,
+    UIA_TextPatternId, UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId,
+    UIA_TreeItemControlTypeId, UIA_ValuePatternId,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -48,7 +50,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use awase::config::{vk_name_to_code, AppConfig};
-use awase::engine::{ContextInvalidation, Engine, EngineBypassState, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::{ContextChange, Engine, FocusKind, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{KeyEventType, RawKeyEvent};
 use awase::yab::YabLayout;
@@ -70,7 +72,7 @@ const WM_RELOAD_CONFIG: u32 = WM_APP + 10;
 const WM_PROCESS_DEFERRED: u32 = WM_APP + 11;
 
 /// UIA 非同期判定完了通知用カスタムメッセージ
-const WM_UIA_BYPASS_UPDATE: u32 = WM_APP + 12;
+const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)]
@@ -87,7 +89,7 @@ static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
 static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, u16, u16)>> = SingleThreadCell::new();
 
 /// IME 制御キー直後のガードフラグ（true: 後続キーを遅延処理する）
-static IME_GUARD: SingleThreadCell<bool> = SingleThreadCell::new();
+static IME_TRANSITION_GUARD: SingleThreadCell<bool> = SingleThreadCell::new();
 
 /// ガード中に遅延されたキーイベントのバッファ
 static DEFERRED_KEYS: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell::new();
@@ -110,8 +112,8 @@ unsafe impl Send for SendableHwnd {}
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// フォーカス中コントロールのバイパス判定キャッシュ（Unknown=2 で安全側初期化）
-static BYPASS_STATE: AtomicU8 = AtomicU8::new(EngineBypassState::Unknown as u8);
+/// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
+static FOCUS_KIND: AtomicU8 = AtomicU8::new(FocusKind::Undetermined as u8);
 
 /// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
 const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
@@ -134,7 +136,7 @@ fn main() -> Result<()> {
 
     unsafe {
         OUTPUT.set(Output::new());
-        IME_GUARD.set(false);
+        IME_TRANSITION_GUARD.set(false);
         DEFERRED_KEYS.set(Vec::new());
     }
 
@@ -393,7 +395,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     // IME 制御キー（半角/全角等）が OS に渡された直後は、IME 状態がまだ反映されて
     // いない可能性がある。後続キーをメッセージループに回すことで、IME 状態が
     // 確実に更新された後に処理する。
-    if let Some(guard) = IME_GUARD.get_mut() {
+    if let Some(guard) = IME_TRANSITION_GUARD.get_mut() {
         if *guard {
             // IME 制御キーの KeyUp でガード解除
             if !is_key_down && Engine::is_ime_control_vk(event.vk_code) {
@@ -423,7 +425,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             dispatch(&response, &mut timer_runtime, &mut action_executor);
             // engine が passthrough を返す → ガードを有効にして OS に渡す
             if !response.consumed {
-                if let Some(guard) = IME_GUARD.get_mut() {
+                if let Some(guard) = IME_TRANSITION_GUARD.get_mut() {
                     *guard = true;
                 }
             }
@@ -438,11 +440,10 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
-    // Bypass判定: 非テキストコントロール（Button, Static 等）ではエンジンをバイパス。
-    // Unknown（判定不能）は AllowEngine と同じ扱い（deny リスト方式）。
-    // Phase 2/3 (MSAA/UIA) で Unknown の解像度が上がったら allow リスト方式に切替可能。
-    let bypass = BYPASS_STATE.load(Ordering::Acquire);
-    if bypass == EngineBypassState::ShouldBypass as u8 {
+    // フォーカス判定: 非テキストコントロール（Button, Static 等）ではエンジンをバイパス。
+    // Undetermined（判定不能）は TextInput と同じ扱い（deny リスト方式）。
+    let focus = FOCUS_KIND.load(Ordering::Acquire);
+    if focus == FocusKind::NonText as u8 {
         return CallbackResult::PassThrough;
     }
 
@@ -468,7 +469,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 /// フォーカス変更イベントフックを登録する
 ///
 /// `WINEVENT_OUTOFCONTEXT` を使用するため、コールバックはメッセージループ上で実行される。
-/// これにより `determine_bypass_state` が非同期（キーイベントとは別タイミング）で呼ばれる。
+/// これにより `classify_focus` が非同期（キーイベントとは別タイミング）で呼ばれる。
 fn install_focus_hook() {
     unsafe {
         let hook = SetWinEventHook(
@@ -505,22 +506,22 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    // Step 1: 評価中は安全側（Unknown → bypass）に設定
-    BYPASS_STATE.store(EngineBypassState::Unknown as u8, Ordering::Release);
+    // Step 1: 評価中は安全側（Undetermined）に設定
+    FOCUS_KIND.store(FocusKind::Undetermined as u8, Ordering::Release);
 
     // Step 2: バイパス状態を判定
-    let state = determine_bypass_state(hwnd);
+    let state = classify_focus(hwnd);
 
     // Step 3: キャッシュを更新
-    BYPASS_STATE.store(state as u8, Ordering::Release);
+    FOCUS_KIND.store(state as u8, Ordering::Release);
 
-    // Step 4: ShouldBypass ならエンジンの保留状態をフラッシュ
-    if state == EngineBypassState::ShouldBypass {
-        invalidate_engine_context(ContextInvalidation::FocusChanged);
+    // Step 4: NonText ならエンジンの保留状態をフラッシュ
+    if state == FocusKind::NonText {
+        invalidate_engine_context(ContextChange::FocusChanged);
     }
 
     // Step 5: Phase 1-2 で判定不能なら UIA 非同期判定をリクエスト
-    if state == EngineBypassState::Unknown {
+    if state == FocusKind::Undetermined {
         if let Some(tx) = UIA_SENDER.get_ref() {
             let _ = tx.send(SendableHwnd(hwnd));
         }
@@ -532,23 +533,23 @@ unsafe extern "system" fn win_event_proc(
 /// フォーカス中のウィンドウがテキスト入力を受け付けるかを判定する
 ///
 /// deny-first（バイパスを優先）、allow は確信がある場合のみ。
-/// 判定不能なら `Unknown`（安全側＝バイパス）を返す。
-unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
+/// 判定不能なら `Undetermined` を返す。
+unsafe fn classify_focus(hwnd: HWND) -> FocusKind {
     if hwnd == HWND::default() {
-        return EngineBypassState::ShouldBypass;
+        return FocusKind::NonText;
     }
 
     // 1. ImmGetContext == NULL → IME 入力不可
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
-        return EngineBypassState::ShouldBypass;
+        return FocusKind::NonText;
     }
     let _ = ImmReleaseContext(hwnd, himc);
 
     // 2. WS_EX_NOIME ウィンドウスタイル
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
     if ex_style & WS_EX_NOIME != 0 {
-        return EngineBypassState::ShouldBypass;
+        return FocusKind::NonText;
     }
 
     // 3. クラス名による判定
@@ -572,10 +573,10 @@ unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
             if class_name == "Edit" {
                 let style = GetWindowLongW(hwnd, GWL_STYLE);
                 if style & ES_READONLY != 0 {
-                    return EngineBypassState::ShouldBypass;
+                    return FocusKind::NonText;
                 }
             }
-            return EngineBypassState::AllowEngine;
+            return FocusKind::TextInput;
         }
 
         // 既知の非テキストコントロール
@@ -592,7 +593,7 @@ unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
                 | "msctls_trackbar32"
                 | "msctls_progress32"
         ) {
-            return EngineBypassState::ShouldBypass;
+            return FocusKind::NonText;
         }
     }
 
@@ -619,8 +620,8 @@ unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
                 const ROLE_SYSTEM_DOCUMENT: u32 = 15; // 0x0F — document window
 
                 if matches!(role_id, ROLE_SYSTEM_TEXT | ROLE_SYSTEM_DOCUMENT) {
-                    log::debug!("MSAA: role={} → AllowEngine", role_id);
-                    return EngineBypassState::AllowEngine;
+                    log::debug!("MSAA: role={} → TextInput", role_id);
+                    return FocusKind::TextInput;
                 }
 
                 // 非テキストロール
@@ -664,27 +665,27 @@ unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
                         | ROLE_SYSTEM_PROGRESSBAR
                         | ROLE_SYSTEM_SLIDER
                 ) {
-                    log::debug!("MSAA: role={} → ShouldBypass", role_id);
-                    return EngineBypassState::ShouldBypass;
+                    log::debug!("MSAA: role={} → NonText", role_id);
+                    return FocusKind::NonText;
                 }
 
                 log::debug!(
-                    "MSAA: role={} → Unknown (not in allow/deny list)",
+                    "MSAA: role={} → Undetermined (not in allow/deny list)",
                     role_id
                 );
             }
         }
     }
 
-    // 5. 判定不能 → Unknown（安全側: バイパス）
-    EngineBypassState::Unknown
+    // 5. 判定不能 → Undetermined
+    FocusKind::Undetermined
 }
 
 /// UIA 非同期判定ワーカースレッドを起動する
 ///
 /// 専用スレッドで COM を初期化し、`IUIAutomation` インスタンスを保持する。
 /// チャネル経由で HWND を受け取り、`GetFocusedElement` でコントロール種別を判定して
-/// `BYPASS_STATE` を更新する。Phase 1-2 で `Unknown` だったコントロールの解像度を上げる。
+/// `FOCUS_KIND` を更新する。Phase 1-2 で `Undetermined` だったコントロールの解像度を上げる。
 fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
     let (tx, rx) = mpsc::channel::<SendableHwnd>();
     std::thread::spawn(move || {
@@ -704,17 +705,17 @@ fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
         log::info!("UIA worker thread started");
 
         while let Ok(SendableHwnd(hwnd)) = rx.recv() {
-            let state = unsafe { uia_determine_bypass(&automation, hwnd) };
-            if state != EngineBypassState::Unknown {
-                BYPASS_STATE.store(state as u8, Ordering::Release);
+            let state = unsafe { uia_classify_focus(&automation, hwnd) };
+            if state != FocusKind::Undetermined {
+                FOCUS_KIND.store(state as u8, Ordering::Release);
                 log::debug!("UIA async: hwnd={:?} → {:?}", hwnd, state);
 
-                // ShouldBypass の場合はメインスレッドにエンジンフラッシュを依頼
-                if state == EngineBypassState::ShouldBypass {
+                // NonText の場合はメインスレッドにエンジンフラッシュを依頼
+                if state == FocusKind::NonText {
                     unsafe {
                         let _ = PostMessageW(
                             HWND::default(),
-                            WM_UIA_BYPASS_UPDATE,
+                            WM_FOCUS_KIND_UPDATE,
                             WPARAM(0),
                             LPARAM(0),
                         );
@@ -726,63 +727,87 @@ fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
     tx
 }
 
-/// UIA を使用してフォーカス中コントロールのバイパス状態を判定する
+/// UIA を使用してフォーカス中コントロールの種別を判定する
 ///
-/// `GetFocusedElement` で実際の UI 要素を取得し、`CurrentControlType` で
-/// テキスト入力系か非テキスト系かを判別する。Chrome/WPF/UWP など
-/// Win32 クラス名では判定できないコントロールに有効。
+/// Pattern-first アプローチ:
+/// 1. `ValuePattern` → `IsReadOnly` で編集可能なテキストフィールドを検出
+/// 2. `TextPattern` の有無でテキスト編集能力を検出
+/// 3. `CurrentControlType` をフォールバックとして使用
+///
+/// Chrome/WPF/UWP など Win32 クラス名では判定できないコントロールに有効。
 ///
 /// Safety: COM が初期化済みのスレッドから呼び出すこと
 #[allow(unused_variables)] // hwnd はデバッグ用に保持
-unsafe fn uia_determine_bypass(automation: &IUIAutomation, hwnd: HWND) -> EngineBypassState {
+unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> FocusKind {
     let element: IUIAutomationElement = match automation.GetFocusedElement() {
         Ok(el) => el,
         Err(e) => {
             log::trace!("UIA: GetFocusedElement failed: {:?}", e);
-            return EngineBypassState::Unknown;
+            return FocusKind::Undetermined;
         }
     };
 
-    let control_type = match element.CurrentControlType() {
-        Ok(ct) => ct,
-        Err(_) => return EngineBypassState::Unknown,
-    };
-
-    // テキスト入力コントロール → AllowEngine
-    if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
-        return EngineBypassState::AllowEngine;
+    // 1. ValuePattern → IsReadOnly チェック
+    //    「編集可能な値を持つ」が最も強いシグナル
+    if let Ok(pattern) = element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
+        match pattern.CurrentIsReadOnly() {
+            Ok(read_only) if !read_only.as_bool() => {
+                log::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
+                return FocusKind::TextInput;
+            }
+            Ok(_) => {
+                log::debug!("UIA: ValuePattern(IsReadOnly=true) → NonText");
+                return FocusKind::NonText;
+            }
+            Err(_) => {} // fall through
+        }
     }
 
-    // ComboBox: 多くの場合テキスト入力を受け付ける
-    if control_type == UIA_ComboBoxControlTypeId {
-        return EngineBypassState::AllowEngine;
+    // 2. TextPattern チェック
+    //    TextPattern をサポートする要素はテキスト編集能力を持つ
+    if element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId).is_ok() {
+        log::debug!("UIA: TextPattern available → TextInput");
+        return FocusKind::TextInput;
     }
 
-    // 非テキストコントロール → ShouldBypass
-    if control_type == UIA_ButtonControlTypeId
-        || control_type == UIA_MenuItemControlTypeId
-        || control_type == UIA_TreeItemControlTypeId
-        || control_type == UIA_ListItemControlTypeId
-        || control_type == UIA_TabControlTypeId
-        || control_type == UIA_TabItemControlTypeId
-        || control_type == UIA_ToolBarControlTypeId
-        || control_type == UIA_StatusBarControlTypeId
-        || control_type == UIA_ProgressBarControlTypeId
-        || control_type == UIA_SliderControlTypeId
-        || control_type == UIA_ScrollBarControlTypeId
-        || control_type == UIA_HyperlinkControlTypeId
-        || control_type == UIA_ImageControlTypeId
-        || control_type == UIA_MenuBarControlTypeId
-        || control_type == UIA_MenuControlTypeId
-        || control_type == UIA_TitleBarControlTypeId
-        || control_type == UIA_SeparatorControlTypeId
-        || control_type == UIA_TextControlTypeId
-    {
-        return EngineBypassState::ShouldBypass;
+    // 3. フォールバック: ControlType で確定的な非テキストコントロールを判別
+    if let Ok(control_type) = element.CurrentControlType() {
+        // テキスト入力系（補助的な確認のみ）
+        if matches!(control_type, UIA_EditControlTypeId | UIA_DocumentControlTypeId) {
+            log::debug!("UIA: ControlType={:?} → TextInput", control_type);
+            return FocusKind::TextInput;
+        }
+
+        // 非テキスト系
+        if matches!(
+            control_type,
+            UIA_ButtonControlTypeId
+                | UIA_MenuItemControlTypeId
+                | UIA_TreeItemControlTypeId
+                | UIA_ListItemControlTypeId
+                | UIA_TabControlTypeId
+                | UIA_TabItemControlTypeId
+                | UIA_ToolBarControlTypeId
+                | UIA_StatusBarControlTypeId
+                | UIA_ProgressBarControlTypeId
+                | UIA_SliderControlTypeId
+                | UIA_ScrollBarControlTypeId
+                | UIA_HyperlinkControlTypeId
+                | UIA_ImageControlTypeId
+                | UIA_MenuBarControlTypeId
+                | UIA_MenuControlTypeId
+                | UIA_TitleBarControlTypeId
+                | UIA_SeparatorControlTypeId
+                | UIA_TextControlTypeId
+        ) {
+            log::debug!("UIA: ControlType={:?} → NonText", control_type);
+            return FocusKind::NonText;
+        }
     }
 
-    // 未知のコントロール種別
-    EngineBypassState::Unknown
+    // 4. 確定的なシグナルなし
+    log::debug!("UIA: no definitive signal → Undetermined");
+    FocusKind::Undetermined
 }
 
 /// メッセージループ
@@ -804,7 +829,7 @@ fn run_message_loop() {
                         .get_ref()
                         .map_or(true, |ime| ime.is_active() && ime.get_mode().is_kana_input());
                     if !ime_active {
-                        invalidate_engine_context(ContextInvalidation::ImeOff);
+                        invalidate_engine_context(ContextChange::ImeOff);
                     } else if let Some(engine) = ENGINE.get_mut() {
                         let response = engine.on_timeout(timer_id);
                         let mut timer_runtime = Win32TimerRuntime;
@@ -818,8 +843,8 @@ fn run_message_loop() {
                 // 言語切替直後は IME 状態が未反映の可能性があるため、
                 // 後続キーをメッセージループに回して確実に更新後に処理する。
                 log::info!("Input language changed, flushing pending state and enabling guard");
-                invalidate_engine_context(ContextInvalidation::InputLanguageChanged);
-                if let Some(guard) = IME_GUARD.get_mut() {
+                invalidate_engine_context(ContextChange::InputLanguageChanged);
+                if let Some(guard) = IME_TRANSITION_GUARD.get_mut() {
                     *guard = true;
                 }
             },
@@ -828,11 +853,11 @@ fn run_message_loop() {
                 // この時点で IME 状態は確実に更新済み。
                 process_deferred_keys();
             },
-            WM_UIA_BYPASS_UPDATE => unsafe {
-                // UIA 非同期判定が ShouldBypass を返した → エンジンの保留をフラッシュ
-                let bypass = BYPASS_STATE.load(Ordering::Acquire);
-                if bypass == EngineBypassState::ShouldBypass as u8 {
-                    invalidate_engine_context(ContextInvalidation::FocusChanged);
+            WM_FOCUS_KIND_UPDATE => unsafe {
+                // UIA 非同期判定が NonText を返した → エンジンの保留をフラッシュ
+                let focus = FOCUS_KIND.load(Ordering::Acquire);
+                if focus == FocusKind::NonText as u8 {
+                    invalidate_engine_context(ContextChange::FocusChanged);
                 }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
@@ -878,7 +903,7 @@ fn run_message_loop() {
 /// Safety: シングルスレッドからのみ呼び出すこと
 unsafe fn process_deferred_keys() {
     // ガード解除
-    if let Some(guard) = IME_GUARD.get_mut() {
+    if let Some(guard) = IME_TRANSITION_GUARD.get_mut() {
         *guard = false;
     }
 
@@ -969,7 +994,7 @@ unsafe fn toggle_engine() {
 ///
 /// IMEオフ、入力言語変更など、エンジンの前提が崩れた場合に呼ぶ。
 /// 全てのコンテキスト無効化経路はこの関数を通すこと。
-unsafe fn invalidate_engine_context(reason: ContextInvalidation) {
+unsafe fn invalidate_engine_context(reason: ContextChange) {
     if let Some(engine) = ENGINE.get_mut() {
         let response = engine.flush_pending(reason);
         let mut timer_runtime = Win32TimerRuntime;

@@ -156,7 +156,7 @@ enum BypassReason {
 
 /// コンテキスト無効化の理由（ログ・デバッグ用）
 #[derive(Debug, Clone, Copy)]
-pub enum ContextInvalidation {
+pub enum ContextChange {
     /// IME がオフになった
     ImeOff,
     /// 入力言語が変更された（Win+Space 等）
@@ -169,19 +169,19 @@ pub enum ContextInvalidation {
     FocusChanged,
 }
 
-/// エンジン処理をバイパスすべきかの判定結果
+/// フォーカス中コントロールの種別
 ///
-/// フォーカス中のコントロールがテキスト入力を受け付けるかどうかを示す。
+/// テキスト入力を受け付けるかどうかを示す。
 /// `AtomicU8` で共有するため `repr(u8)` を使用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum EngineBypassState {
-    /// エンジン処理を許可（テキスト入力の確信あり）
-    AllowEngine = 0,
-    /// バイパス推奨（テキスト入力でない証拠あり）
-    ShouldBypass = 1,
-    /// 判定不能 → バイパス（安全側）
-    Unknown = 2,
+pub enum FocusKind {
+    /// テキスト入力コントロール（エンジン処理を許可）
+    TextInput = 0,
+    /// 非テキストコントロール（エンジンをバイパス）
+    NonText = 1,
+    /// 判定不能
+    Undetermined = 2,
 }
 
 /// エンジンのフェーズ（状態タグ）
@@ -387,7 +387,7 @@ impl Engine {
     /// - 出力は二重送信されない（SpeculativeChar は既に出力済みなので何もしない）
     ///
     /// 呼び出し側は戻り値の `Response` を `dispatch()` で処理すること。
-    pub fn flush_pending(&mut self, reason: ContextInvalidation) -> Resp {
+    pub fn flush_pending(&mut self, reason: ContextChange) -> Resp {
         let was_idle = self.phase == EnginePhase::Idle;
         let old_phase = self.phase;
         let old_char = self.pending_char.take();
@@ -455,7 +455,7 @@ impl Engine {
     /// 無効化時は保留キーをフラッシュする。
     /// 戻り値の `Resp` を `dispatch()` で処理すること（タイマー停��� + 保留キー確定）。
     pub fn toggle_enabled(&mut self) -> (bool, Resp) {
-        let flush_resp = self.flush_pending(ContextInvalidation::EngineDisabled);
+        let flush_resp = self.flush_pending(ContextChange::EngineDisabled);
         self.enabled = !self.enabled;
         self.output_history.clear();
         log::info!(
@@ -502,7 +502,7 @@ impl Engine {
 
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
     pub fn swap_layout(&mut self, layout: YabLayout) -> Resp {
-        let flush_resp = self.flush_pending(ContextInvalidation::LayoutSwapped);
+        let flush_resp = self.flush_pending(ContextChange::LayoutSwapped);
         self.layout = layout;
         self.output_history.clear();
         flush_resp
@@ -1494,7 +1494,7 @@ impl Engine {
         if self.phase == EnginePhase::Idle {
             return Response::pass_through();
         }
-        let flush = self.flush_pending(ContextInvalidation::ImeOff);
+        let flush = self.flush_pending(ContextChange::ImeOff);
         let mut resp = Response::pass_through();
         resp.actions = flush.actions;
         resp.timers = flush.timers;
