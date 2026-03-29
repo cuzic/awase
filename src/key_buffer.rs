@@ -234,7 +234,7 @@ pub unsafe fn process_deferred_keys() {
 /// INJECTED_MARKER 付きなのでフックに再捕捉されない。
 pub unsafe fn reinject_key(event: &RawKeyEvent) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
         KEYEVENTF_SCANCODE, VIRTUAL_KEY,
     };
     use crate::output::INJECTED_MARKER;
@@ -260,5 +260,5 @@ pub unsafe fn reinject_key(event: &RawKeyEvent) {
             },
         },
     };
-    SendInput(&[input], size_of::<INPUT>() as i32);
+    crate::win32::send_input_safe(&[input]);
 }

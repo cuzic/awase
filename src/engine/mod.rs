@@ -459,8 +459,8 @@ impl Engine {
                 match ev.key_class {
                     KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_char_thumb(ev),
                     KeyClass::Char => self.handle_pending_char_char(ev),
-                    other => {
-                        log::error!("unexpected key_class in PendingChar: {:?}", other);
+                    KeyClass::Passthrough => {
+                        log::error!("unexpected Passthrough in PendingChar");
                         Response::pass_through()
                     }
                 }
@@ -469,8 +469,8 @@ impl Engine {
                 match ev.key_class {
                     KeyClass::Char => self.handle_pending_thumb_char(ev),
                     KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_pending_thumb_thumb(ev),
-                    other => {
-                        log::error!("unexpected key_class in PendingThumb: {:?}", other);
+                    KeyClass::Passthrough => {
+                        log::error!("unexpected Passthrough in PendingThumb");
                         Response::pass_through()
                     }
                 }
@@ -480,8 +480,8 @@ impl Engine {
                 match ev.key_class {
                     KeyClass::LeftThumb | KeyClass::RightThumb => self.handle_speculative_thumb(ev),
                     KeyClass::Char => self.handle_idle(ev),
-                    other => {
-                        log::error!("unexpected key_class in SpeculativeChar: {:?}", other);
+                    KeyClass::Passthrough => {
+                        log::error!("unexpected Passthrough in SpeculativeChar");
                         Response::pass_through()
                     }
                 }
@@ -1074,9 +1074,8 @@ impl Engine {
                 let thumb = old_thumb.expect("PendingThumb phase requires pending_thumb");
                 self.resolve_pending_thumb_as_single(thumb.vk_code)
             }
-            other => {
-                log::error!("unexpected phase in handle_key_up_pending: {:?}", other);
-                // Safe fallback: no resolved actions, consume the event
+            EnginePhase::Idle | EnginePhase::PendingCharThumb | EnginePhase::SpeculativeChar => {
+                log::error!("unexpected phase in handle_key_up_pending: {:?}", self.phase);
                 ResolvedAction {
                     actions: vec![],
                     output: OutputUpdate::None,

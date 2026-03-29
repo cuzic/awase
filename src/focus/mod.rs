@@ -14,7 +14,7 @@ use awase::types::{ContextChange, FocusKind};
 use awase::vk;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
-use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
+use crate::win32::ImeContext;
 use windows::Win32::UI::WindowsAndMessaging::KillTimer;
 
 use std::sync::mpsc;
@@ -67,20 +67,16 @@ const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
 /// 指定ウィンドウの IME を OFF にする。
 pub unsafe fn set_ime_off(hwnd: HWND) {
-    let himc = ImmGetContext(hwnd);
-    if !himc.is_invalid() {
-        let _ = ImmSetOpenStatus(himc, false);
-        let _ = ImmReleaseContext(hwnd, himc);
+    if let Some(ctx) = ImeContext::open(hwnd) {
+        ctx.set_open_status(false);
         log::debug!("IME auto-OFF for hwnd={hwnd:?}");
     }
 }
 
 /// 指定ウィンドウの IME を ON にする。
 pub unsafe fn set_ime_on(hwnd: HWND) {
-    let himc = ImmGetContext(hwnd);
-    if !himc.is_invalid() {
-        let _ = ImmSetOpenStatus(himc, true);
-        let _ = ImmReleaseContext(hwnd, himc);
+    if let Some(ctx) = ImeContext::open(hwnd) {
+        ctx.set_open_status(true);
         log::debug!("IME auto-ON for hwnd={hwnd:?}");
     }
 }

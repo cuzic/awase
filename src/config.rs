@@ -165,6 +165,76 @@ impl AppConfig {
     }
 }
 
+/// 検証済み設定（全値が妥当であることが保証される）
+#[derive(Debug)]
+pub struct ValidatedConfig {
+    /// 検証済みの一般設定
+    pub general: GeneralConfig,
+    /// 検証済みのフォーカスオーバーライド
+    pub focus_overrides: FocusOverrides,
+}
+
+impl AppConfig {
+    /// 設定値を検証し、`ValidatedConfig` を返す。
+    ///
+    /// 不正な値がある場合は警告メッセージのリストと共に返す（厳密なエラーではなくデフォルト値にフォールバック）。
+    #[must_use]
+    pub fn validate(self) -> (ValidatedConfig, Vec<String>) {
+        let mut warnings = Vec::new();
+        let mut general = self.general;
+
+        // threshold: 10..=500
+        if general.simultaneous_threshold_ms < 10 || general.simultaneous_threshold_ms > 500 {
+            warnings.push(format!(
+                "simultaneous_threshold_ms ({}) は 10-500 の範囲外です。100 にリセットします",
+                general.simultaneous_threshold_ms
+            ));
+            general.simultaneous_threshold_ms = 100;
+        }
+
+        // speculative_delay: 0..=threshold
+        if general.speculative_delay_ms > general.simultaneous_threshold_ms {
+            warnings.push(format!(
+                "speculative_delay_ms ({}) が threshold ({}) を超えています。30 にリセットします",
+                general.speculative_delay_ms, general.simultaneous_threshold_ms
+            ));
+            general.speculative_delay_ms = 30;
+        }
+
+        // layouts_dir: no path traversal
+        if general.layouts_dir.contains("..") {
+            warnings.push(format!(
+                "layouts_dir に '..' が含まれています: {}",
+                general.layouts_dir
+            ));
+            general.layouts_dir = "layout".to_string();
+        }
+
+        // default_layout: must end with .yab
+        if !general.default_layout.to_ascii_lowercase().ends_with(".yab") {
+            warnings.push(format!(
+                "default_layout は .yab で終わる必要があります: {}",
+                general.default_layout
+            ));
+        }
+
+        // focus_overrides: process names not empty
+        let focus_overrides = self.focus_overrides;
+        for entry in &focus_overrides.force_text {
+            if entry.process.is_empty() || entry.class.is_empty() {
+                warnings.push("focus_overrides.force_text に空のエントリがあります".to_string());
+            }
+        }
+        for entry in &focus_overrides.force_bypass {
+            if entry.process.is_empty() || entry.class.is_empty() {
+                warnings.push("focus_overrides.force_bypass に空のエントリがあります".to_string());
+            }
+        }
+
+        (ValidatedConfig { general, focus_overrides }, warnings)
+    }
+}
+
 /// 仮想キーコード名（"VK_A" 等）を実際の u16 値に変換する
 #[must_use]
 pub fn vk_name_to_code(name: &str) -> Option<u16> {
@@ -525,5 +595,100 @@ force_text = [
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.focus_overrides.force_text.len(), 1);
         assert!(config.focus_overrides.force_bypass.is_empty());
+    }
+
+    // ── validate テスト ──
+
+    #[test]
+    fn test_validate_threshold_out_of_range() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 1000
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.simultaneous_threshold_ms, 100);
+        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+    }
+
+    #[test]
+    fn test_validate_threshold_too_low() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 5
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.simultaneous_threshold_ms, 100);
+        assert!(warnings.iter().any(|w| w.contains("simultaneous_threshold_ms")));
+    }
+
+    #[test]
+    fn test_validate_speculative_delay_exceeds_threshold() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 50
+speculative_delay_ms = 80
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.speculative_delay_ms, 30);
+        assert!(warnings.iter().any(|w| w.contains("speculative_delay_ms")));
+    }
+
+    #[test]
+    fn test_validate_path_traversal() {
+        let toml_str = r#"
+[general]
+layouts_dir = "../../../etc"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.layouts_dir, "layout");
+        assert!(warnings.iter().any(|w| w.contains("..")));
+    }
+
+    #[test]
+    fn test_validate_default_layout_no_yab() {
+        let toml_str = r#"
+[general]
+default_layout = "nicola.txt"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains(".yab")));
+    }
+
+    #[test]
+    fn test_validate_empty_focus_override_entry() {
+        let toml_str = r#"
+[general]
+
+[focus_overrides]
+force_text = [
+    { process = "", class = "Edit" },
+]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("force_text")));
+    }
+
+    #[test]
+    fn test_validate_valid_config() {
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 100
+speculative_delay_ms = 30
+layouts_dir = "layout"
+default_layout = "nicola.yab"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert!(warnings.is_empty());
+        assert_eq!(validated.general.simultaneous_threshold_ms, 100);
+        assert_eq!(validated.general.speculative_delay_ms, 30);
+        assert_eq!(validated.general.layouts_dir, "layout");
+        assert_eq!(validated.general.default_layout, "nicola.yab");
     }
 }

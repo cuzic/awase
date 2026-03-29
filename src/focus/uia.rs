@@ -141,19 +141,16 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
         while let Ok(SendableHwnd(hwnd)) = rx.recv() {
             let state = unsafe { uia_classify_focus(&automation, hwnd) };
             if state != FocusKind::Undetermined {
-                state.store(&crate::FOCUS_KIND);
                 log::debug!("UIA async: hwnd={hwnd:?} → {state:?}");
 
-                // NonText の場合はメインスレッドにエンジンフラッシュを依頼
-                if state == FocusKind::NonText {
-                    unsafe {
-                        let _ = PostMessageW(
-                            HWND::default(),
-                            crate::WM_FOCUS_KIND_UPDATE,
-                            WPARAM(0),
-                            LPARAM(0),
-                        );
-                    }
+                // メインスレッドに結果を送信（FOCUS_KIND への書き込みはメインスレッドで行う）
+                unsafe {
+                    let _ = PostMessageW(
+                        HWND::default(),
+                        crate::WM_FOCUS_KIND_UPDATE,
+                        WPARAM(state as u8 as usize),
+                        LPARAM(hwnd.0 as isize),
+                    );
                 }
             }
         }

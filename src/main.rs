@@ -17,6 +17,7 @@ mod ime;
 mod output;
 mod single_thread_cell;
 mod tray;
+mod win32;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -32,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
-use awase::config::{vk_name_to_code, AppConfig};
+use awase::config::{vk_name_to_code, AppConfig, ValidatedConfig};
 use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::types::{ContextChange, FocusKind};
 use awase::vk;
@@ -139,10 +140,14 @@ impl StartupDiagnostics {
 fn main() -> Result<()> {
     init_logging();
     let mut diag = StartupDiagnostics::new();
-    let config = load_config()?;
-    let (layout_names, initial_layout_name) = init_engine(&config, &mut diag)?;
+    let raw_config = load_config()?;
+    let (config, config_warnings) = raw_config.validate();
+    for w in &config_warnings {
+        diag.warn(w);
+    }
+    let (layout_names, initial_layout_name) = init_engine_validated(&config, &mut diag)?;
     init_ime(&mut diag);
-    init_ngram(&config, &mut diag);
+    init_ngram_validated(&config, &mut diag);
 
     unsafe {
         OUTPUT.set(Output::new());
@@ -151,7 +156,7 @@ fn main() -> Result<()> {
     }
 
     init_tray(&layout_names, &initial_layout_name)?;
-    install_hooks_and_hotkeys(&config)?;
+    install_hooks_and_hotkeys_validated(&config)?;
     diag.report();
 
     log::info!("Hook installed. Running message loop...");
@@ -194,8 +199,8 @@ fn load_config() -> Result<AppConfig> {
     Ok(config)
 }
 
-/// 配列の読み込みとエンジン初期化を行い、レイアウト名一覧とデフォルト名を返す
-fn init_engine(config: &AppConfig, diag: &mut StartupDiagnostics) -> Result<(Vec<String>, String)> {
+/// 検証済み設定で配列の読み込みとエンジン初期化を行い、レイアウト名一覧とデフォルト名を返す
+fn init_engine_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) -> Result<(Vec<String>, String)> {
     let left_thumb_vk = VkCode(vk_name_to_code(&config.general.left_thumb_key).context(format!(
         "Unknown VK name: {}",
         config.general.left_thumb_key
@@ -236,7 +241,7 @@ fn init_engine(config: &AppConfig, diag: &mut StartupDiagnostics) -> Result<(Vec
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
 fn select_default_layout(
     layouts: &[(String, YabLayout, VkCode, VkCode)],
-    config: &AppConfig,
+    config: &ValidatedConfig,
 ) -> (YabLayout, String) {
     let default_name = config.general.default_layout.trim_end_matches(".yab");
     let index = layouts
@@ -269,8 +274,8 @@ fn init_ime(diag: &mut StartupDiagnostics) {
     }
 }
 
-/// n-gram モデルのロード（オプション）
-fn init_ngram(config: &AppConfig, diag: &mut StartupDiagnostics) {
+/// 検証済み設定で n-gram モデルのロード（オプション）
+fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
     let Some(ref ngram_path) = config.general.ngram_file else {
         return;
     };
@@ -310,8 +315,8 @@ fn init_tray(layout_names: &[String], initial_layout_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// フック登録とホットキー登録を行う
-fn install_hooks_and_hotkeys(config: &AppConfig) -> Result<()> {
+/// 検証済み設定でフック登録とホットキー登録を行う
+fn install_hooks_and_hotkeys_validated(config: &ValidatedConfig) -> Result<()> {
     let callback = Box::new(|event: RawKeyEvent| -> CallbackResult {
         unsafe { on_key_event_callback(event) }
     });
@@ -664,32 +669,44 @@ fn run_message_loop() {
                 key_buffer::process_deferred_keys();
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
-                // UIA 非同期判定完了 → キャッシュ更新 + IME 状態復帰
-                let kind = FocusKind::load(&FOCUS_KIND);
-                // UIA 結果をキャッシュに反映
-                if let Some(f) = FOCUS.get_mut() {
-                    if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-                        f.cache.insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
+                // UIA 非同期判定完了 → メッセージから結果を取得
+                let kind_u8 = msg.wParam.0 as u8;
+                let result_hwnd = HWND(msg.lParam.0 as *mut _);
+                let kind = FocusKind::from_u8(kind_u8);
+
+                // 検証: UIA 結果の hwnd が現在のフォーカスと一致するか確認
+                let mut info = GUITHREADINFO {
+                    cbSize: size_of::<GUITHREADINFO>() as u32,
+                    ..Default::default()
+                };
+                if GetGUIThreadInfo(0, &raw mut info).is_ok()
+                    && info.hwndFocus != result_hwnd
+                {
+                    log::debug!("UIA result for stale hwnd, ignoring");
+                    // フォーカスが変わっているので適用しない
+                } else {
+                    // FOCUS_KIND を更新（メインスレッドのみが書き込む）
+                    FocusKind::store(kind, &FOCUS_KIND);
+
+                    // UIA 結果をキャッシュに反映
+                    if let Some(f) = FOCUS.get_mut() {
+                        if let Some((pid, cls)) = f.last_focus_info.as_ref() {
+                            f.cache.insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
+                        }
                     }
-                }
-                if kind == FocusKind::NonText {
-                    invalidate_engine_context(ContextChange::FocusChanged);
-                }
-                // UIA が TextInput を返した場合、IME OFF されていたら ON に復帰
-                // （非ブラウザ系で自動 IME OFF された後に UIA が TextInput を返したケース）
-                if kind == FocusKind::TextInput {
-                    if let Some(f) = FOCUS.get_ref() {
-                        if let Some((_, cls)) = f.last_focus_info.as_ref() {
-                            if !vk::is_browser_or_electron_class(cls) {
-                                // 非ブラウザ系で UIA が TextInput → IME ON に復帰
-                                let mut info = GUITHREADINFO {
-                                    cbSize: size_of::<GUITHREADINFO>() as u32,
-                                    ..Default::default()
-                                };
-                                if GetGUIThreadInfo(0, &raw mut info).is_ok()
-                                    && info.hwndFocus != HWND::default()
-                                {
-                                    focus::set_ime_on(info.hwndFocus);
+                    if kind == FocusKind::NonText {
+                        invalidate_engine_context(ContextChange::FocusChanged);
+                    }
+                    // UIA が TextInput を返した場合、IME OFF されていたら ON に復帰
+                    // （非ブラウザ系で自動 IME OFF された後に UIA が TextInput を返したケース）
+                    if kind == FocusKind::TextInput {
+                        if let Some(f) = FOCUS.get_ref() {
+                            if let Some((_, cls)) = f.last_focus_info.as_ref() {
+                                if !vk::is_browser_or_electron_class(cls) {
+                                    // 非ブラウザ系で UIA が TextInput → IME ON に復帰
+                                    if info.hwndFocus != HWND::default() {
+                                        focus::set_ime_on(info.hwndFocus);
+                                    }
                                 }
                             }
                         }
@@ -789,13 +806,18 @@ fn launch_settings() {
 ///
 /// Safety: シングルスレッドからのみ呼び出すこと
 unsafe fn reload_config() {
-    let config = match load_config() {
+    let raw_config = match load_config() {
         Ok(c) => c,
         Err(e) => {
             log::warn!("Failed to reload config: {e}");
             return;
         }
     };
+
+    let (config, config_warnings) = raw_config.validate();
+    for w in &config_warnings {
+        log::warn!("config: {w}");
+    }
 
     if let Some(engine) = ENGINE.get_mut() {
         engine.set_threshold_ms(config.general.simultaneous_threshold_ms);
@@ -813,7 +835,7 @@ unsafe fn reload_config() {
 
     // n-gram モデルの再読み込み
     let mut reload_diag = StartupDiagnostics::new();
-    init_ngram(&config, &mut reload_diag);
+    init_ngram_validated(&config, &mut reload_diag);
     reload_diag.report();
 
     // フォーカスオーバーライド再読み込み + キャッシュクリア

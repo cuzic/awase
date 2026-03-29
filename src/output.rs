@@ -75,7 +75,7 @@ impl Output {
             },
         };
         unsafe {
-            SendInput(&[input], size_of::<INPUT>() as i32);
+            SendInput(&[input], i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"));
         }
     }
 
@@ -117,7 +117,7 @@ impl Output {
         }
 
         unsafe {
-            SendInput(&inputs, size_of::<INPUT>() as i32);
+            SendInput(&inputs, i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"));
         }
     }
 
