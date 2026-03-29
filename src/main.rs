@@ -67,6 +67,9 @@ use crate::tray::SystemTray;
 /// 有効/無効切り替えホットキー ID
 const HOTKEY_ID_TOGGLE: i32 = 1;
 
+/// 手動フォーカスオーバーライドホットキー ID (Ctrl+Shift+F11)
+const HOTKEY_ID_FOCUS_OVERRIDE: i32 = 2;
+
 /// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
 const WM_RELOAD_CONFIG: u32 = WM_APP + 10;
 
@@ -434,6 +437,7 @@ fn install_hooks_and_hotkeys(config: &AppConfig) -> Result<()> {
     if let Some(ref hotkey_str) = config.general.toggle_hotkey {
         register_toggle_hotkey(hotkey_str);
     }
+    register_focus_override_hotkey();
     Ok(())
 }
 
@@ -458,11 +462,79 @@ fn register_toggle_hotkey(hotkey_str: &str) {
     }
 }
 
+/// 手動フォーカスオーバーライドホットキー (Ctrl+Shift+F11) を登録する
+fn register_focus_override_hotkey() {
+    const MOD_CONTROL: u32 = 0x0002;
+    const MOD_SHIFT: u32 = 0x0004;
+    const VK_F11: u32 = 0x7A;
+    unsafe {
+        let result = RegisterHotKey(
+            HWND::default(),
+            HOTKEY_ID_FOCUS_OVERRIDE,
+            HOT_KEY_MODIFIERS(MOD_CONTROL | MOD_SHIFT),
+            VK_F11,
+        );
+        if result.is_ok() {
+            log::info!("Focus override hotkey registered: Ctrl+Shift+F11");
+        } else {
+            log::warn!("Failed to register focus override hotkey: Ctrl+Shift+F11");
+        }
+    }
+}
+
+/// 手動フォーカスオーバーライドのトグル処理
+///
+/// 現在の `FocusKind` を反転し、学習キャッシュに `UserOverride` で記録する。
+/// `NonText` への降格時はエンジンコンテキストを無効化し、バッファもクリアする。
+///
+/// Safety: シングルスレッドからのみ呼び出すこと
+unsafe fn toggle_focus_override() {
+    let current = FOCUS_KIND.load(Ordering::Acquire);
+    let new_kind = if current == FocusKind::TextInput as u8 {
+        FocusKind::NonText
+    } else {
+        FocusKind::TextInput
+    };
+
+    FOCUS_KIND.store(new_kind as u8, Ordering::Release);
+
+    // Update learning cache
+    if let Some((pid, cls)) = LAST_FOCUS_INFO.get_ref() {
+        if let Some(cache) = FOCUS_CACHE.get_mut() {
+            cache.insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
+        }
+    }
+
+    // If demoted to NonText, flush engine pending
+    if new_kind == FocusKind::NonText {
+        invalidate_engine_context(ContextChange::FocusChanged);
+    }
+
+    // Clear any active buffers
+    if let Some(buf) = DEFERRED_KEYS.get_mut() {
+        buf.clear();
+    }
+    if let Some(mem) = PASSTHROUGH_MEMORY.get_mut() {
+        mem.clear();
+    }
+    if let Some(buffering) = UNDETERMINED_BUFFERING.get_mut() {
+        *buffering = false;
+    }
+
+    let mode_str = if new_kind == FocusKind::TextInput {
+        "TextInput (engine enabled)"
+    } else {
+        "NonText (engine bypassed)"
+    };
+    log::info!("Manual focus override: → {}", mode_str);
+}
+
 /// クリーンアップ処理
 fn cleanup() {
     hook::uninstall_hook();
     unsafe {
         let _ = UnregisterHotKey(HWND::default(), HOTKEY_ID_TOGGLE);
+        let _ = UnregisterHotKey(HWND::default(), HOTKEY_ID_FOCUS_OVERRIDE);
     }
     unsafe {
         if let Some(tray) = TRAY.get_mut() {
@@ -1413,6 +1485,9 @@ fn run_message_loop() {
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
                 toggle_engine();
+            },
+            WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => unsafe {
+                toggle_focus_override();
             },
             WM_APP => unsafe {
                 let layout_names: Vec<String> = LAYOUTS
