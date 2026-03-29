@@ -21,6 +21,7 @@
 .NOTES
     ログは logs/e2e_YYYYMMDD_HHmmss.log に保存される。
     デバッグ時はこのログファイルを共有すること。
+    PowerShell 5.1 以上で動作。
 #>
 
 param(
@@ -30,8 +31,18 @@ param(
 
 $ErrorActionPreference = "Continue"
 
+# cargo が使えるか確認
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: cargo が見つかりません。Rust をインストールしてください。" -ForegroundColor Red
+    Write-Host "https://rustup.rs/"
+    exit 1
+}
+
+# プロジェクトルートを基準にする
+$projectRoot = Split-Path $PSScriptRoot -Parent
+
 # ログディレクトリ
-$logDir = Join-Path $PSScriptRoot "..\logs"
+$logDir = Join-Path $projectRoot "logs"
 if (-not (Test-Path $logDir)) {
     New-Item -ItemType Directory -Path $logDir | Out-Null
 }
@@ -40,8 +51,13 @@ $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = Join-Path $logDir "e2e_${timestamp}.log"
 
 Write-Host "=== awase E2E Test Runner ===" -ForegroundColor Cyan
+Write-Host "Project: $projectRoot"
 Write-Host "Log file: $logFile"
 Write-Host ""
+
+# 元の環境変数を保存
+$origRustLog = $env:RUST_LOG
+$origInteractive = $env:AWASE_E2E_INTERACTIVE
 
 # 環境情報
 $env:RUST_LOG = "debug"
@@ -54,7 +70,17 @@ if (-not $CIOnly) {
     Write-Host "Mode: CI-only (interactive tests skipped)" -ForegroundColor Yellow
 }
 
-# システム情報をログに記録
+# システム情報を収集（PowerShell 5.1 互換）
+$langInfo = "N/A"
+$imeInfo = "N/A"
+try {
+    $langs = Get-WinUserLanguageList -ErrorAction Stop
+    $langInfo = ($langs | ForEach-Object { $_.LanguageTag }) -join ", "
+    $imeInfo = if ($langs | Where-Object { $_.LanguageTag -eq "ja-JP" }) { "Yes" } else { "No" }
+} catch {
+    # Get-WinUserLanguageList が利用できない環境
+}
+
 $sysInfo = @"
 === System Info ===
 Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
@@ -63,9 +89,10 @@ User: $env:USERNAME
 PowerShell: $($PSVersionTable.PSVersion)
 Rust: $(rustc --version 2>&1)
 Cargo: $(cargo --version 2>&1)
-Keyboard Layouts: $(Get-WinUserLanguageList | ForEach-Object { $_.LanguageTag } | Join-String -Separator ", ")
-IME Installed: $(if (Get-WinUserLanguageList | Where-Object { $_.LanguageTag -eq "ja-JP" }) { "Yes" } else { "No" })
-Interactive: $(!$CIOnly)
+Keyboard Layouts: $langInfo
+IME Installed: $imeInfo
+Interactive: $(-not $CIOnly)
+Project Root: $projectRoot
 ===================
 
 "@
@@ -73,31 +100,40 @@ $sysInfo | Tee-Object -FilePath $logFile
 
 # ビルド
 Write-Host "Building tests..." -ForegroundColor Cyan
-$buildOutput = cargo test --test e2e_windows --no-run 2>&1
-$buildOutput | Out-File -Append -FilePath $logFile
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Build FAILED!" -ForegroundColor Red
-    $buildOutput | Write-Host
+Push-Location $projectRoot
+try {
+    $buildOutput = cargo test --test e2e_windows --no-run 2>&1
+    $buildOutput | Out-File -Append -FilePath $logFile -Encoding utf8
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Build FAILED!" -ForegroundColor Red
+        Write-Host ($buildOutput -join "`n")
+        Write-Host ""
+        Write-Host "Log saved to: $logFile" -ForegroundColor Yellow
+        exit 1
+    }
+    Write-Host "Build OK" -ForegroundColor Green
+
+    # テスト実行
     Write-Host ""
-    Write-Host "Log saved to: $logFile" -ForegroundColor Yellow
-    exit 1
+    Write-Host "Running E2E tests..." -ForegroundColor Cyan
+
+    if ($Filter) {
+        Write-Host "Filter: $Filter" -ForegroundColor Yellow
+        $testArgs = @("test", "--test", "e2e_windows", "--", "--nocapture", $Filter)
+    } else {
+        $testArgs = @("test", "--test", "e2e_windows", "--", "--nocapture")
+    }
+
+    & cargo @testArgs 2>&1 | Tee-Object -Append -FilePath $logFile
+
+    $exitCode = $LASTEXITCODE
+} finally {
+    Pop-Location
+
+    # 環境変数を復元
+    $env:RUST_LOG = $origRustLog
+    $env:AWASE_E2E_INTERACTIVE = $origInteractive
 }
-Write-Host "Build OK" -ForegroundColor Green
-
-# テスト実行
-Write-Host ""
-Write-Host "Running E2E tests..." -ForegroundColor Cyan
-
-if ($Filter) {
-    Write-Host "Filter: $Filter" -ForegroundColor Yellow
-    $testArgs = @("test", "--test", "e2e_windows", "--", "--nocapture", $Filter)
-} else {
-    $testArgs = @("test", "--test", "e2e_windows", "--", "--nocapture")
-}
-
-& cargo @testArgs 2>&1 | Tee-Object -Append -FilePath $logFile
-
-$exitCode = $LASTEXITCODE
 
 # 結果表示
 Write-Host ""
@@ -111,8 +147,5 @@ if ($exitCode -eq 0) {
 Write-Host ""
 Write-Host "Log saved to: $logFile" -ForegroundColor Yellow
 Write-Host "Share this file for remote debugging." -ForegroundColor Yellow
-
-# クリーンアップ
-$env:AWASE_E2E_INTERACTIVE = ""
 
 exit $exitCode
