@@ -3,7 +3,7 @@
 use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
-use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowLongW, GWL_EXSTYLE, GWL_STYLE};
+use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowLongW, GetWindowThreadProcessId, GWL_EXSTYLE, GWL_STYLE};
 
 use super::msaa::msaa_classify;
 
@@ -88,6 +88,36 @@ pub unsafe fn get_class_name_string(hwnd: HWND) -> String {
     let len = GetClassNameW(hwnd, &mut class_buf);
     if len > 0 {
         String::from_utf16_lossy(&class_buf[..len as usize])
+    } else {
+        String::new()
+    }
+}
+
+/// ウィンドウハンドルからプロセス ID を取得する
+pub(crate) unsafe fn get_window_process_id(hwnd: HWND) -> u32 {
+    let mut pid: u32 = 0;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    pid
+}
+
+/// プロセス ID から実行ファイル名を取得する
+pub(crate) unsafe fn get_process_name(process_id: u32) -> String {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) else {
+        return String::new();
+    };
+    let mut buf = [0u16; 260];
+    let mut len = buf.len() as u32;
+    let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+    let _ = CloseHandle(handle);
+    if ok.is_ok() && len > 0 {
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit('\\').next().unwrap_or(&path).to_string()
     } else {
         String::new()
     }

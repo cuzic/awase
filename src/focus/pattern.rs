@@ -1,6 +1,12 @@
 //! タイピングパターン検出によるフォーカス推定
 
+use std::sync::atomic::Ordering;
 use std::time::Instant;
+
+use awase::types::{FocusKind, KeyEventType, RawKeyEvent};
+use awase::vk;
+
+use crate::focus::cache::DetectionSource;
 
 /// タイピングパターン検出用トラッカー
 ///
@@ -73,5 +79,70 @@ impl KeyPatternTracker {
         self.char_timestamps.clear();
         self.bs_timestamps.clear();
         self.had_recent_chars = false;
+    }
+}
+
+/// OS レベルで Ctrl/Alt が押されているかを判定する。
+///
+/// `GetAsyncKeyState` を使用してリアルタイムの修飾キー状態を取得する。
+pub(crate) fn is_os_modifier_held() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    unsafe {
+        let ctrl = GetAsyncKeyState(0x11);  // VK_CONTROL
+        let alt = GetAsyncKeyState(0x12);   // VK_MENU
+        (ctrl & (1 << 15) as i16) != 0 || (alt & (1 << 15) as i16) != 0
+    }
+}
+
+/// FocusKind を TextInput に昇格させる共通ヘルパー。
+///
+/// キャッシュとログの更新を一元化する。
+pub(crate) unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
+    let current = crate::FOCUS_KIND.load(Ordering::Acquire);
+    if current == FocusKind::TextInput as u8 {
+        return;
+    }
+    crate::FOCUS_KIND.store(FocusKind::TextInput as u8, Ordering::Release);
+    if let Some(cache) = crate::FOCUS_CACHE.get_mut() {
+        if let Some((pid, cls)) = crate::LAST_FOCUS_INFO.get_ref() {
+            cache.insert(*pid, cls.clone(), FocusKind::TextInput, source);
+        }
+    }
+    log::info!(
+        "Promoting to TextInput: {} (source={:?})",
+        reason,
+        source
+    );
+}
+
+/// キー入力パターンを観察し、テキスト入力コンテキストを推定する。
+///
+/// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
+/// パターンが検出されると `promote_to_text_input` で昇格する。
+pub(crate) unsafe fn observe_key_pattern(event: &RawKeyEvent) {
+    let is_key_down = matches!(
+        event.event_type,
+        KeyEventType::KeyDown | KeyEventType::SysKeyDown
+    );
+    if !is_key_down {
+        return;
+    }
+
+    let current = crate::FOCUS_KIND.load(Ordering::Acquire);
+    if current == FocusKind::TextInput as u8 {
+        return; // 既に TextInput なら追跡不要
+    }
+
+    let is_char = vk::is_modifier_free_char(event.vk_code, is_os_modifier_held());
+
+    if let Some(tracker) = crate::KEY_PATTERN_TRACKER.get_mut() {
+        if let Some(reason) = tracker.on_key(event.vk_code, is_char) {
+            promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
+            tracker.clear();
+
+            // IME OFF + Undetermined で PassThrough 済みキーがある場合、
+            // BS で取り消して再処理する
+            crate::key_buffer::retract_passthrough_memory();
+        }
     }
 }

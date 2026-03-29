@@ -27,17 +27,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
-use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation,
-    SetWinEventHook, HWINEVENTHOOK,
-};
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-};
-use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetGUIThreadInfo, GetMessageW,
-    GetWindowThreadProcessId, GUITHREADINFO, KillTimer, PostMessageW,
+    GUITHREADINFO, KillTimer, PostMessageW,
     PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
@@ -69,7 +61,7 @@ const WM_RELOAD_CONFIG: u32 = WM_APP + 10;
 const WM_PROCESS_DEFERRED: u32 = WM_APP + 11;
 
 /// UIA 非同期判定完了通知用カスタムメッセージ
-const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
+pub(crate) const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 
 /// Undetermined + IME ON バッファリングのタイムアウト用カスタムメッセージ
 /// （将来的に `PostMessageW` で明示送信する場合に使用）
@@ -77,7 +69,7 @@ const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 const WM_BUFFER_TIMEOUT: u32 = WM_APP + 13;
 
 /// Undetermined + IME ON バッファリングのタイマー ID
-const TIMER_UNDETERMINED_BUFFER: usize = 100;
+pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;
 
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)]
@@ -85,65 +77,44 @@ pub fn check_ime_composing() -> bool {
     unsafe { IME.get_ref().map_or(false, |ime| ime.is_composing()) }
 }
 
-static ENGINE: SingleThreadCell<Engine> = SingleThreadCell::new();
-static OUTPUT: SingleThreadCell<Output> = SingleThreadCell::new();
-static IME: SingleThreadCell<HybridProvider> = SingleThreadCell::new();
+pub(crate) static ENGINE: SingleThreadCell<Engine> = SingleThreadCell::new();
+pub(crate) static OUTPUT: SingleThreadCell<Output> = SingleThreadCell::new();
+pub(crate) static IME: SingleThreadCell<HybridProvider> = SingleThreadCell::new();
 static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
 
 /// 利用可能な配列の一覧（名前, `YabLayout`, 左親指VK, 右親指VK）
 static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, u16, u16)>> = SingleThreadCell::new();
 
 /// キーイベントバッファ（IME ガード + 遅延キー + PassThrough 記憶）
-static KEY_BUFFER: SingleThreadCell<key_buffer::KeyBuffer> = SingleThreadCell::new();
+pub(crate) static KEY_BUFFER: SingleThreadCell<key_buffer::KeyBuffer> = SingleThreadCell::new();
 
 /// UIA 非同期判定リクエスト送信チャネル（メインスレッドからのみアクセス）
-static UIA_SENDER: SingleThreadCell<mpsc::Sender<SendableHwnd>> = SingleThreadCell::new();
+pub(crate) static UIA_SENDER: SingleThreadCell<mpsc::Sender<SendableHwnd>> = SingleThreadCell::new();
 
 /// タイピングパターン検出用トラッカー
-static KEY_PATTERN_TRACKER: SingleThreadCell<KeyPatternTracker> = SingleThreadCell::new();
+pub(crate) static KEY_PATTERN_TRACKER: SingleThreadCell<KeyPatternTracker> = SingleThreadCell::new();
 
 /// フォーカス判定結果のキャッシュ（メインスレッドからのみアクセス）
-static FOCUS_CACHE: SingleThreadCell<FocusCache> = SingleThreadCell::new();
+pub(crate) static FOCUS_CACHE: SingleThreadCell<FocusCache> = SingleThreadCell::new();
 
 /// config.toml の永続フォーカスオーバーライド設定
-static FOCUS_OVERRIDES: SingleThreadCell<FocusOverrides> = SingleThreadCell::new();
+pub(crate) static FOCUS_OVERRIDES: SingleThreadCell<FocusOverrides> = SingleThreadCell::new();
 
 /// UIA 非同期判定完了時にキャッシュを更新するための直前のフォーカス情報
-static LAST_FOCUS_INFO: SingleThreadCell<(u32, String)> = SingleThreadCell::new();
+pub(crate) static LAST_FOCUS_INFO: SingleThreadCell<(u32, String)> = SingleThreadCell::new();
 
 use crate::focus::cache::{DetectionSource, FocusCache};
 use crate::focus::pattern::KeyPatternTracker;
 
 
-/// `HWND` を `Send` 可能にするラッパー
-///
-/// `HWND` は `*mut c_void` を含むため `Send` を実装していないが、
-/// ウィンドウハンドルの値自体はスレッド間で安全に受け渡せる。
-/// UIA ワーカースレッドへの HWND 送信専用。
-#[derive(Clone, Copy)]
-struct SendableHwnd(HWND);
-// Safety: HWND の値（ポインタ値）はスレッド間で安全に共有できる。
-// ウィンドウハンドルはプロセス内でグローバルに有効であり、
-// 別スレッドから参照しても問題ない。
-unsafe impl Send for SendableHwnd {}
+use crate::focus::uia::SendableHwnd;
 
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
-static FOCUS_KIND: AtomicU8 = AtomicU8::new(FocusKind::Undetermined as u8);
+pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(FocusKind::Undetermined as u8);
 
-/// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
-const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
-
-/// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
-const EVENT_OBJECT_FOCUS: u32 = 0x8005;
-
-/// `WS_EX_NOIME` (0x0040_0000) — IME 入力を受け付けないウィンドウスタイル
-const WS_EX_NOIME: i32 = 0x0040_0000;
-
-/// `ES_READONLY` (0x0800) — 読み取り専用 Edit コントロール
-const ES_READONLY: i32 = 0x0800;
 
 fn main() -> Result<()> {
     init_logging();
@@ -167,10 +138,10 @@ fn main() -> Result<()> {
     log::info!("Hook installed. Running message loop...");
     log::info!("Press Ctrl+C to exit.");
     install_ctrl_handler();
-    install_focus_hook();
+    focus::install_focus_hook();
 
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
-    let uia_tx = spawn_uia_worker();
+    let uia_tx = focus::uia::spawn_uia_worker();
     unsafe {
         UIA_SENDER.set(uia_tx);
     }
@@ -370,48 +341,6 @@ fn register_focus_override_hotkey() {
     }
 }
 
-/// 手動フォーカスオーバーライドのトグル処理
-///
-/// 現在の `FocusKind` を反転し、学習キャッシュに `UserOverride` で記録する。
-/// `NonText` への降格時はエンジンコンテキストを無効化し、バッファもクリアする。
-///
-/// Safety: シングルスレッドからのみ呼び出すこと
-unsafe fn toggle_focus_override() {
-    let current = FOCUS_KIND.load(Ordering::Acquire);
-    let new_kind = if current == FocusKind::TextInput as u8 {
-        FocusKind::NonText
-    } else {
-        FocusKind::TextInput
-    };
-
-    FOCUS_KIND.store(new_kind as u8, Ordering::Release);
-
-    // Update learning cache
-    if let Some((pid, cls)) = LAST_FOCUS_INFO.get_ref() {
-        if let Some(cache) = FOCUS_CACHE.get_mut() {
-            cache.insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
-        }
-    }
-
-    // If demoted to NonText, flush engine pending
-    if new_kind == FocusKind::NonText {
-        invalidate_engine_context(ContextChange::FocusChanged);
-    }
-
-    // Clear any active buffers
-    if let Some(kb) = KEY_BUFFER.get_mut() {
-        kb.deferred_keys.clear();
-        kb.passthrough_memory.clear();
-        kb.undetermined_buffering = false;
-    }
-
-    let mode_str = if new_kind == FocusKind::TextInput {
-        "TextInput (engine enabled)"
-    } else {
-        "NonText (engine bypassed)"
-    };
-    log::info!("Manual focus override: → {}", mode_str);
-}
 
 /// クリーンアップ処理
 fn cleanup() {
@@ -440,7 +369,7 @@ fn cleanup() {
 }
 
 /// Win32 タイマーランタイム
-struct Win32TimerRuntime;
+pub(crate) struct Win32TimerRuntime;
 
 impl TimerRuntime for Win32TimerRuntime {
     type TimerId = usize;
@@ -460,7 +389,7 @@ impl TimerRuntime for Win32TimerRuntime {
 }
 
 /// `SendInput` アクション実行器
-struct SendInputExecutor;
+pub(crate) struct SendInputExecutor;
 
 impl ActionExecutor for SendInputExecutor {
     type Action = awase::types::KeyAction;
@@ -474,168 +403,7 @@ impl ActionExecutor for SendInputExecutor {
     }
 }
 
-/// OS レベルで Ctrl/Alt が押されているかを判定する。
-///
-/// `GetAsyncKeyState` を使用してリアルタイムの修飾キー状態を取得する。
-fn is_os_modifier_held() -> bool {
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-    unsafe {
-        let ctrl = GetAsyncKeyState(0x11);  // VK_CONTROL
-        let alt = GetAsyncKeyState(0x12);   // VK_MENU
-        (ctrl & (1 << 15) as i16) != 0 || (alt & (1 << 15) as i16) != 0
-    }
-}
 
-
-/// FocusKind を TextInput に昇格させる共通ヘルパー。
-///
-/// キャッシュとログの更新を一元化する。
-unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
-    let current = FOCUS_KIND.load(Ordering::Acquire);
-    if current == FocusKind::TextInput as u8 {
-        return;
-    }
-    FOCUS_KIND.store(FocusKind::TextInput as u8, Ordering::Release);
-    if let Some(cache) = FOCUS_CACHE.get_mut() {
-        if let Some((pid, cls)) = LAST_FOCUS_INFO.get_ref() {
-            cache.insert(*pid, cls.clone(), FocusKind::TextInput, source);
-        }
-    }
-    log::info!(
-        "Promoting to TextInput: {} (source={:?})",
-        reason,
-        source
-    );
-}
-
-/// キー入力パターンを観察し、テキスト入力コンテキストを推定する。
-///
-/// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
-/// パターンが検出されると `promote_to_text_input` で昇格する。
-unsafe fn observe_key_pattern(event: &RawKeyEvent) {
-    let is_key_down = matches!(
-        event.event_type,
-        KeyEventType::KeyDown | KeyEventType::SysKeyDown
-    );
-    if !is_key_down {
-        return;
-    }
-
-    let current = FOCUS_KIND.load(Ordering::Acquire);
-    if current == FocusKind::TextInput as u8 {
-        return; // 既に TextInput なら追跡不要
-    }
-
-    let is_char = vk::is_modifier_free_char(event.vk_code, is_os_modifier_held());
-
-    if let Some(tracker) = KEY_PATTERN_TRACKER.get_mut() {
-        if let Some(reason) = tracker.on_key(event.vk_code, is_char) {
-            promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
-            tracker.clear();
-
-            // IME OFF + Undetermined で PassThrough 済みキーがある場合、
-            // BS で取り消して再処理する
-            retract_passthrough_memory();
-        }
-    }
-}
-
-/// PassThrough 済みキーを BS で取り消し、エンジンで再処理する。
-///
-/// IME OFF + Undetermined 状態で PassThrough したキーを、
-/// TextInput に昇格した後に正しく処理し直すために使用する。
-unsafe fn retract_passthrough_memory() {
-    let keys = KEY_BUFFER
-        .get_mut()
-        .map(|kb| kb.drain_passthrough())
-        .unwrap_or_default();
-
-    if keys.is_empty() {
-        return;
-    }
-
-    log::debug!(
-        "Retracting {} passthrough key(s) with BS + re-process",
-        keys.len()
-    );
-
-    // BS を送信して PassThrough 済みの文字を取り消す
-    if let Some(output) = OUTPUT.get_ref() {
-        let mut bs_actions: Vec<awase::types::KeyAction> = Vec::new();
-        for _ in 0..keys.len() {
-            bs_actions.push(awase::types::KeyAction::Key(0x08));   // VK_BACK down
-            bs_actions.push(awase::types::KeyAction::KeyUp(0x08)); // VK_BACK up
-        }
-        output.send_keys(&bs_actions);
-    }
-
-    // エンジンで再処理
-    for event in keys {
-        let ime_active = IME
-            .get_ref()
-            .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
-
-        if ime_active {
-            if let Some(engine) = ENGINE.get_mut() {
-                let response = engine.on_event(event);
-                let mut timer_runtime = Win32TimerRuntime;
-                let mut action_executor = SendInputExecutor;
-                dispatch(&response, &mut timer_runtime, &mut action_executor);
-            }
-        }
-        // IME OFF のままなら再注入（元々 PassThrough だったので同じ結果）
-        // この場合は BS 分が余計だが、IME OFF → パターン検出 → 昇格の流れでは
-        // IME が ON になっていることが前提なので通常は engine 経由になる
-    }
-}
-
-/// Undetermined + IME ON バッファリングのタイムアウトを開始する（初回バッファ時のみ）。
-unsafe fn start_buffer_timeout_if_needed() {
-    if let Some(kb) = KEY_BUFFER.get_mut() {
-        if !kb.undetermined_buffering {
-            kb.undetermined_buffering = true;
-            let _ = SetTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER, 300, None);
-        }
-    }
-}
-
-/// Undetermined + IME ON バッファリングのタイムアウト処理。
-///
-/// 300ms 以内にパターン検出されなかった場合、バッファされたキーを
-/// エンジンで処理する（安全側: TextInput として扱う）。
-unsafe fn handle_buffer_timeout() {
-    let _ = KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER);
-    let keys = if let Some(kb) = KEY_BUFFER.get_mut() {
-        kb.undetermined_buffering = false;
-        kb.drain_deferred()
-    } else {
-        Vec::new()
-    };
-
-    if keys.is_empty() {
-        return;
-    }
-
-    log::debug!(
-        "Buffer timeout: promoting to TextInput and processing {} buffered key(s)",
-        keys.len()
-    );
-
-    // タイムアウト → TextInput に昇格してエンジンで処理
-    promote_to_text_input(
-        DetectionSource::TypingPatternInferred,
-        "buffer timeout (IME ON + Undetermined)",
-    );
-
-    for event in keys {
-        if let Some(engine) = ENGINE.get_mut() {
-            let response = engine.on_event(event);
-            let mut timer_runtime = Win32TimerRuntime;
-            let mut action_executor = SendInputExecutor;
-            dispatch(&response, &mut timer_runtime, &mut action_executor);
-        }
-    }
-}
 
 /// フックコールバックからの Engine 呼び出し
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
@@ -645,7 +413,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     );
 
     // ── Step 0: パターン観察（すべてのキーイベントに対して、バイパスチェック前に実行） ──
-    observe_key_pattern(&event);
+    focus::pattern::observe_key_pattern(&event);
 
     // ── Step 1: IME/親指キー検出による即時 TextInput 昇格 ──
     // IME 制御キーまたは親指キー（変換/無変換）が押された場合、
@@ -653,7 +421,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     if is_key_down && vk::is_ime_context(event.vk_code) {
         let current = FOCUS_KIND.load(Ordering::Acquire);
         if current != FocusKind::TextInput as u8 {
-            promote_to_text_input(
+            focus::pattern::promote_to_text_input(
                 DetectionSource::ImeKeyInferred,
                 &format!("IME/thumb key 0x{:02X}", event.vk_code),
             );
@@ -675,7 +443,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                 }
             }
             // PassThrough 済みキーがあれば取り消して再処理
-            retract_passthrough_memory();
+            key_buffer::retract_passthrough_memory();
         }
     }
 
@@ -742,14 +510,14 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                     .get_ref()
                     .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
 
-                let is_char = vk::is_modifier_free_char(event.vk_code, is_os_modifier_held());
+                let is_char = vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
 
                 if ime_on && is_char {
                     // IME ON + Undetermined + 文字キー → バッファリング
                     if let Some(kb) = KEY_BUFFER.get_mut() {
                         kb.push_deferred(event);
                     }
-                    start_buffer_timeout_if_needed();
+                    key_buffer::start_buffer_timeout_if_needed();
                     return CallbackResult::Consumed;
                 } else if !ime_on && is_char {
                     // IME OFF + Undetermined + 文字キー → PassThrough + 記憶
@@ -784,267 +552,12 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     }
 }
 
-/// フォーカス変更イベントフックを登録する
-///
-/// `WINEVENT_OUTOFCONTEXT` を使用するため、コールバックはメッセージループ上で実行される。
-/// これにより `classify_focus` が非同期（キーイベントとは別タイミング）で呼ばれる。
-fn install_focus_hook() {
-    unsafe {
-        let hook = SetWinEventHook(
-            EVENT_OBJECT_FOCUS,
-            EVENT_OBJECT_FOCUS,
-            None,
-            Some(win_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-        if hook.is_invalid() {
-            log::warn!("Failed to install focus event hook");
-        } else {
-            log::info!("Focus event hook installed");
-        }
-    }
-}
-
-/// フォーカス変更イベントのコールバック
-///
-/// `WINEVENT_OUTOFCONTEXT` により、メッセージループのコンテキストで呼ばれる。
-/// フォーカスが移動するたびにバイパス判定を更新し、キャッシュに書き込む。
-unsafe extern "system" fn win_event_proc(
-    _hook: HWINEVENTHOOK,
-    event: u32,
-    hwnd: HWND,
-    _id_object: i32,
-    _id_child: i32,
-    _event_thread: u32,
-    _event_time: u32,
-) {
-    if event != EVENT_OBJECT_FOCUS {
-        return;
-    }
-
-    // Step 0: プロセスID・クラス名を取得し、キャッシュを検索
-    let process_id = get_window_process_id(hwnd);
-    let class_name = focus::classify::get_class_name_string(hwnd);
-
-    // UIA 非同期結果のキャッシュ更新用に保存
-    if let Some(last) = LAST_FOCUS_INFO.get_mut() {
-        *last = (process_id, class_name.clone());
-    }
-
-    // フォーカス変更時にパターントラッカーと記憶バッファをリセット
-    if let Some(tracker) = KEY_PATTERN_TRACKER.get_mut() {
-        tracker.clear();
-    }
-    if let Some(kb) = KEY_BUFFER.get_mut() {
-        kb.passthrough_memory.clear();
-        // Undetermined バッファリング中ならキャンセル
-        if kb.undetermined_buffering {
-            kb.undetermined_buffering = false;
-            let _ = KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER);
-            // バッファされたキーは破棄（フォーカスが変わったので無意味）
-            kb.deferred_keys.clear();
-        }
-    }
-
-    // Config オーバーライド（最高優先度、キャッシュより先に判定）
-    if let Some(overrides) = FOCUS_OVERRIDES.get_ref() {
-        if !overrides.force_text.is_empty() || !overrides.force_bypass.is_empty() {
-            let process_name = get_process_name(process_id);
-            for entry in &overrides.force_text {
-                if entry.process.eq_ignore_ascii_case(&process_name)
-                    && entry.class.eq_ignore_ascii_case(&class_name)
-                {
-                    log::debug!(
-                        "classify_focus: config override force_text ({}, {})",
-                        process_name,
-                        class_name
-                    );
-                    FOCUS_KIND.store(FocusKind::TextInput as u8, Ordering::Release);
-                    return;
-                }
-            }
-            for entry in &overrides.force_bypass {
-                if entry.process.eq_ignore_ascii_case(&process_name)
-                    && entry.class.eq_ignore_ascii_case(&class_name)
-                {
-                    log::debug!(
-                        "classify_focus: config override force_bypass ({}, {})",
-                        process_name,
-                        class_name
-                    );
-                    FOCUS_KIND.store(FocusKind::NonText as u8, Ordering::Release);
-                    invalidate_engine_context(ContextChange::FocusChanged);
-                    return;
-                }
-            }
-        }
-    }
-
-    // キャッシュヒット → 即座に結果を適用
-    if let Some(cached) = FOCUS_CACHE
-        .get_ref()
-        .and_then(|c| c.get(process_id, &class_name))
-    {
-        log::trace!(
-            "classify_focus: cache hit ({}, {}) → {:?}",
-            process_id,
-            class_name,
-            cached
-        );
-        FOCUS_KIND.store(cached as u8, Ordering::Release);
-        if cached == FocusKind::NonText {
-            invalidate_engine_context(ContextChange::FocusChanged);
-        }
-        return;
-    }
-
-    // Step 1: 評価中は安全側（Undetermined）に設定
-    FOCUS_KIND.store(FocusKind::Undetermined as u8, Ordering::Release);
-
-    // Step 2: バイパス状態を判定
-    let state = focus::classify::classify_focus(hwnd);
-
-    // Step 3: キャッシュに格納し、FOCUS_KIND を更新
-    if let Some(cache) = FOCUS_CACHE.get_mut() {
-        cache.insert(process_id, class_name.clone(), state, DetectionSource::Automatic);
-    }
-    FOCUS_KIND.store(state as u8, Ordering::Release);
-
-    // Step 4: NonText ならエンジンの保留状態をフラッシュ
-    if state == FocusKind::NonText {
-        invalidate_engine_context(ContextChange::FocusChanged);
-    }
-
-    // Step 5: Phase 1-2 で判定不能なら UIA 非同期判定をリクエスト
-    if state == FocusKind::Undetermined {
-        if let Some(tx) = UIA_SENDER.get_ref() {
-            let _ = tx.send(SendableHwnd(hwnd));
-        }
-
-        // Step 6: Undetermined + 非ブラウザ系 → IME OFF にして安全側に倒す
-        // ブラウザ/Electron 系は UIA Phase 3 で正確に判定できるため、IME を維持する。
-        // ゲーム/gvim 等の非ブラウザ系は UIA でも判定不能なため、IME OFF で保護する。
-        // UIA が後から TextInput を返した場合は IME ON に復帰する（WM_FOCUS_KIND_UPDATE）。
-        if !vk::is_browser_or_electron_class(&class_name) {
-            set_ime_off(hwnd);
-            invalidate_engine_context(ContextChange::FocusChanged);
-        }
-    }
-
-    log::debug!(
-        "Focus changed: hwnd={:?} class={} → {:?}{}",
-        hwnd,
-        class_name,
-        state,
-        if state == FocusKind::Undetermined && !vk::is_browser_or_electron_class(&class_name) {
-            " (IME auto-OFF)"
-        } else {
-            ""
-        }
-    );
-}
-
-/// ウィンドウハンドルからプロセス ID を取得する
-unsafe fn get_window_process_id(hwnd: HWND) -> u32 {
-    let mut pid: u32 = 0;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    pid
-}
-
-/// プロセス ID から実行ファイル名を取得する
-unsafe fn get_process_name(process_id: u32) -> String {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) else {
-        return String::new();
-    };
-    let mut buf = [0u16; 260];
-    let mut len = buf.len() as u32;
-    let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
-    let _ = CloseHandle(handle);
-    if ok.is_ok() && len > 0 {
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        path.rsplit('\\').next().unwrap_or(&path).to_string()
-    } else {
-        String::new()
-    }
-}
 
 
-/// 指定ウィンドウの IME を OFF にする。
-unsafe fn set_ime_off(hwnd: HWND) {
-    let himc = ImmGetContext(hwnd);
-    if !himc.is_invalid() {
-        let _ = ImmSetOpenStatus(himc, false);
-        ImmReleaseContext(hwnd, himc);
-        log::debug!("IME auto-OFF for hwnd={:?}", hwnd);
-    }
-}
-
-/// 指定ウィンドウの IME を ON にする。
-unsafe fn set_ime_on(hwnd: HWND) {
-    let himc = ImmGetContext(hwnd);
-    if !himc.is_invalid() {
-        let _ = ImmSetOpenStatus(himc, true);
-        ImmReleaseContext(hwnd, himc);
-        log::debug!("IME auto-ON for hwnd={:?}", hwnd);
-    }
-}
 
 
-/// UIA 非同期判定ワーカースレッドを起動する
-///
-/// 専用スレッドで COM を初期化し、`IUIAutomation` インスタンスを保持する。
-/// チャネル経由で HWND を受け取り、`GetFocusedElement` でコントロール種別を判定して
-/// `FOCUS_KIND` を更新する。Phase 1-2 で `Undetermined` だったコントロールの解像度を上げる。
-fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
-    let (tx, rx) = mpsc::channel::<SendableHwnd>();
-    std::thread::spawn(move || {
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        }
 
-        let automation: Option<IUIAutomation> = unsafe {
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()
-        };
 
-        let Some(automation) = automation else {
-            log::warn!("UIA: Failed to create IUIAutomation, Phase 3 disabled");
-            return;
-        };
-
-        log::info!("UIA worker thread started");
-
-        while let Ok(SendableHwnd(hwnd)) = rx.recv() {
-            let state = unsafe { focus::uia::uia_classify_focus(&automation, hwnd) };
-            if state != FocusKind::Undetermined {
-                FOCUS_KIND.store(state as u8, Ordering::Release);
-                log::debug!("UIA async: hwnd={:?} → {:?}", hwnd, state);
-
-                // NonText の場合はメインスレッドにエンジンフラッシュを依頼
-                if state == FocusKind::NonText {
-                    unsafe {
-                        let _ = PostMessageW(
-                            HWND::default(),
-                            WM_FOCUS_KIND_UPDATE,
-                            WPARAM(0),
-                            LPARAM(0),
-                        );
-                    }
-                }
-            }
-        }
-    });
-    tx
-}
-
-/// UIA を使用してフォーカス中コントロールの種別を判定する
 
 /// メッセージループ
 fn run_message_loop() {
@@ -1059,7 +572,7 @@ fn run_message_loop() {
         match msg.message {
             WM_TIMER if msg.wParam.0 == TIMER_UNDETERMINED_BUFFER => {
                 unsafe {
-                    handle_buffer_timeout();
+                    key_buffer::handle_buffer_timeout();
                 }
             }
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
@@ -1092,7 +605,7 @@ fn run_message_loop() {
             WM_PROCESS_DEFERRED => unsafe {
                 // IME 制御キー後の遅延キーを再処理する。
                 // この時点で IME 状態は確実に更新済み。
-                process_deferred_keys();
+                key_buffer::process_deferred_keys();
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
                 // UIA 非同期判定完了 → キャッシュ更新 + IME 状態復帰
@@ -1124,7 +637,7 @@ fn run_message_loop() {
                             if GetGUIThreadInfo(0, &mut info).is_ok()
                                 && info.hwndFocus != HWND::default()
                             {
-                                set_ime_on(info.hwndFocus);
+                                focus::set_ime_on(info.hwndFocus);
                             }
                         }
                     }
@@ -1134,7 +647,7 @@ fn run_message_loop() {
                 toggle_engine();
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => unsafe {
-                toggle_focus_override();
+                focus::toggle_focus_override();
             },
             WM_APP => unsafe {
                 let layout_names: Vec<String> = LAYOUTS
@@ -1168,81 +681,6 @@ fn run_message_loop() {
     }
 }
 
-/// IME 制御キー後に遅延されたキーを再処理する。
-///
-/// メッセージループから呼ばれるため、この時点で IME 制御キーは OS/IME に
-/// 渡し済みで、IME 状態は最新に更新されている。
-///
-/// Safety: シングルスレッドからのみ呼び出すこと
-unsafe fn process_deferred_keys() {
-    // ガード解除 + バッファからキーを取り出す
-    let keys = if let Some(kb) = KEY_BUFFER.get_mut() {
-        kb.set_guard(false);
-        kb.drain_deferred()
-    } else {
-        Vec::new()
-    };
-
-    if keys.is_empty() {
-        return;
-    }
-
-    log::debug!("Processing {} deferred key(s) after IME control", keys.len());
-
-    for event in keys {
-        // IME 状態を再チェック（最新の状態で判定）
-        let ime_active = IME
-            .get_ref()
-            .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
-
-        if ime_active {
-            // IME ON → エンジンで処理
-            if let Some(engine) = ENGINE.get_mut() {
-                let response = engine.on_event(event);
-                let mut timer_runtime = Win32TimerRuntime;
-                let mut action_executor = SendInputExecutor;
-                dispatch(&response, &mut timer_runtime, &mut action_executor);
-            }
-        } else {
-            // IME OFF → キーをそのまま再注入（INJECTED_MARKER 付き）
-            reinject_key(&event);
-        }
-    }
-}
-
-/// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
-///
-/// INJECTED_MARKER 付きなのでフックに再捕捉されない。
-unsafe fn reinject_key(event: &RawKeyEvent) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        KEYEVENTF_SCANCODE, VIRTUAL_KEY,
-    };
-    use crate::output::INJECTED_MARKER;
-
-    let is_keyup = matches!(
-        event.event_type,
-        KeyEventType::KeyUp | KeyEventType::SysKeyUp
-    );
-
-    let input = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(event.vk_code),
-                wScan: event.scan_code as u16,
-                dwFlags: if is_keyup {
-                    KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE
-                } else {
-                    KEYEVENTF_SCANCODE
-                },
-                time: 0,
-                dwExtraInfo: INJECTED_MARKER,
-            },
-        },
-    };
-    SendInput(&[input], size_of::<INPUT>() as i32);
-}
 
 /// エンジンの有効/無効を切り替え、トレイアイコンを更新する
 ///
@@ -1264,7 +702,7 @@ unsafe fn toggle_engine() {
 ///
 /// IMEオフ、入力言語変更など、エンジンの前提が崩れた場合に呼ぶ。
 /// 全てのコンテキスト無効化経路はこの関数を通すこと。
-unsafe fn invalidate_engine_context(reason: ContextChange) {
+pub(crate) unsafe fn invalidate_engine_context(reason: ContextChange) {
     if let Some(engine) = ENGINE.get_mut() {
         let response = engine.flush_pending(reason);
         let mut timer_runtime = Win32TimerRuntime;
