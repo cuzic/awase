@@ -44,11 +44,11 @@ use windows::Win32::UI::Accessibility::{
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
-use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
+use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetClassNameW, GetMessageW, GetWindowLongW, GetWindowThreadProcessId,
-    GWL_EXSTYLE, GWL_STYLE, KillTimer, PostMessageW, PostQuitMessage, SetTimer, MSG, WM_APP,
-    WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
+    DispatchMessageW, GetClassNameW, GetGUIThreadInfo, GetMessageW, GetWindowLongW,
+    GetWindowThreadProcessId, GWL_EXSTYLE, GWL_STYLE, GUITHREADINFO, KillTimer, PostMessageW,
+    PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
 use awase::config::{vk_name_to_code, AppConfig, FocusOverrides};
@@ -1154,9 +1154,28 @@ unsafe extern "system" fn win_event_proc(
         if let Some(tx) = UIA_SENDER.get_ref() {
             let _ = tx.send(SendableHwnd(hwnd));
         }
+
+        // Step 6: Undetermined + 非ブラウザ系 → IME OFF にして安全側に倒す
+        // ブラウザ/Electron 系は UIA Phase 3 で正確に判定できるため、IME を維持する。
+        // ゲーム/gvim 等の非ブラウザ系は UIA でも判定不能なため、IME OFF で保護する。
+        // UIA が後から TextInput を返した場合は IME ON に復帰する（WM_FOCUS_KIND_UPDATE）。
+        if !is_browser_or_electron_class(&class_name) {
+            set_ime_off(hwnd);
+            invalidate_engine_context(ContextChange::FocusChanged);
+        }
     }
 
-    log::debug!("Focus changed: hwnd={:?} → {:?}", hwnd, state);
+    log::debug!(
+        "Focus changed: hwnd={:?} class={} → {:?}{}",
+        hwnd,
+        class_name,
+        state,
+        if state == FocusKind::Undetermined && !is_browser_or_electron_class(&class_name) {
+            " (IME auto-OFF)"
+        } else {
+            ""
+        }
+    );
 }
 
 /// ウィンドウハンドルからプロセス ID を取得する
@@ -1197,6 +1216,36 @@ unsafe fn get_class_name_string(hwnd: HWND) -> String {
         String::from_utf16_lossy(&class_buf[..len as usize])
     } else {
         String::new()
+    }
+}
+
+/// ブラウザ/Electron 系のクラス名かどうかを判定する。
+///
+/// これらのアプリは UIA Phase 3 でテキスト入力を正確に判定できるため、
+/// Undetermined 時の自動 IME OFF を適用しない。
+fn is_browser_or_electron_class(class_name: &str) -> bool {
+    // Chromium 系（Chrome, Edge, Brave, Opera, Vivaldi, 全 Electron アプリ）
+    // Firefox 系（Firefox, Waterfox, Tor Browser）
+    class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass"
+}
+
+/// 指定ウィンドウの IME を OFF にする。
+unsafe fn set_ime_off(hwnd: HWND) {
+    let himc = ImmGetContext(hwnd);
+    if !himc.is_invalid() {
+        let _ = ImmSetOpenStatus(himc, false);
+        ImmReleaseContext(hwnd, himc);
+        log::debug!("IME auto-OFF for hwnd={:?}", hwnd);
+    }
+}
+
+/// 指定ウィンドウの IME を ON にする。
+unsafe fn set_ime_on(hwnd: HWND) {
+    let himc = ImmGetContext(hwnd);
+    if !himc.is_invalid() {
+        let _ = ImmSetOpenStatus(himc, true);
+        ImmReleaseContext(hwnd, himc);
+        log::debug!("IME auto-ON for hwnd={:?}", hwnd);
     }
 }
 
@@ -1527,7 +1576,7 @@ fn run_message_loop() {
                 process_deferred_keys();
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
-                // UIA 非同期判定完了 → キャッシュ更新 + エンジンフラッシュ
+                // UIA 非同期判定完了 → キャッシュ更新 + IME 状態復帰
                 let focus = FOCUS_KIND.load(Ordering::Acquire);
                 let kind = match focus {
                     x if x == FocusKind::TextInput as u8 => FocusKind::TextInput,
@@ -1542,6 +1591,24 @@ fn run_message_loop() {
                 }
                 if kind == FocusKind::NonText {
                     invalidate_engine_context(ContextChange::FocusChanged);
+                }
+                // UIA が TextInput を返した場合、IME OFF されていたら ON に復帰
+                // （非ブラウザ系で自動 IME OFF された後に UIA が TextInput を返したケース）
+                if kind == FocusKind::TextInput {
+                    if let Some((_, cls)) = LAST_FOCUS_INFO.get_ref() {
+                        if !is_browser_or_electron_class(cls) {
+                            // 非ブラウザ系で UIA が TextInput → IME ON に復帰
+                            let mut info = GUITHREADINFO {
+                                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                                ..Default::default()
+                            };
+                            if GetGUIThreadInfo(0, &mut info).is_ok()
+                                && info.hwndFocus != HWND::default()
+                            {
+                                set_ime_on(info.hwndFocus);
+                            }
+                        }
+                    }
                 }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
