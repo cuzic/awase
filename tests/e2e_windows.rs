@@ -1,10 +1,10 @@
 //! # ローカル実行方法
 //!
 //! ```powershell
-//! # Phase 1 のみ（CI と同じ）
+//! # Phase 1 + Phase 2 SendMessage テスト（CI でも動作）
 //! cargo test --test e2e_windows -- --nocapture 2>&1 | Tee-Object e2e.log
 //!
-//! # Phase 2-3 含む（ローカル Windows でのみ動作）
+//! # Phase 2 SendInput + Phase 3 IME テスト含む（ローカル Windows でのみ動作）
 //! $env:AWASE_E2E_INTERACTIVE="1"
 //! $env:RUST_LOG="debug"
 //! cargo test --test e2e_windows -- --nocapture 2>&1 | Tee-Object e2e.log
@@ -337,7 +337,8 @@ fn e2e_engine_disabled_passthrough() {
 }
 
 // ────────────────────────────────────────────
-// Phase 2: SendInput + Edit control
+// Phase 2: SendMessage + Edit control (CI compatible)
+//          + SendInput interactive tests (local only)
 // ────────────────────────────────────────────
 
 /// Phase 2-3 テストはインタラクティブなデスクトップセッションが必要。
@@ -561,6 +562,30 @@ unsafe fn pump_messages() {
     }
 }
 
+/// Edit コントロールに文字を直接送信する（SendMessage 方式、フォーカス不要）
+unsafe fn send_char_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, ch: char) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_CHAR};
+
+    SendMessageW(edit_hwnd, WM_CHAR, WPARAM(ch as usize), LPARAM(0));
+    log::debug!("SendMessage WM_CHAR: '{ch}' to {:?}", edit_hwnd);
+    pump_messages();
+}
+
+/// Edit コントロールにキーイベントを直接送信する（WM_KEYDOWN + WM_KEYUP）
+unsafe fn send_keydown_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, vk: u16) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_KEYDOWN, WM_KEYUP};
+
+    SendMessageW(edit_hwnd, WM_KEYDOWN, WPARAM(vk as usize), LPARAM(0));
+    SendMessageW(edit_hwnd, WM_KEYUP, WPARAM(vk as usize), LPARAM(0));
+    log::debug!(
+        "SendMessage WM_KEYDOWN+UP: vk=0x{vk:02X} to {:?}",
+        edit_hwnd
+    );
+    pump_messages();
+}
+
 /// SendInput でキーストロークを送信する（フック非経由、直接 Edit に入力）
 unsafe fn send_key_to_edit(vk: u16, scan: u16) {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -612,14 +637,68 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
 }
 
 #[test]
-fn e2e_sendinput_edit_control() {
+fn e2e_message_edit_control() {
+    init_test_logging();
+    log::info!("=== E2E Phase 2: SendMessage + Edit control ===");
+
+    unsafe {
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+
+        // Test 1: Single char 'a'
+        log::info!("--- Test: WM_CHAR 'a' ---");
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, 'a');
+        let text = win.get_text();
+        log::info!("Edit content: '{text}'");
+        assert_eq!(text, "a", "WM_CHAR 'a' should produce 'a', got: '{text}'");
+
+        // Test 2: Multiple chars
+        log::info!("--- Test: WM_CHAR 'abc' ---");
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, 'a');
+        send_char_to_edit(win.edit_hwnd, 'b');
+        send_char_to_edit(win.edit_hwnd, 'c');
+        let text = win.get_text();
+        log::info!("Edit content: '{text}'");
+        assert_eq!(text, "abc", "Expected 'abc', got: '{text}'");
+
+        // Test 3: Backspace via WM_KEYDOWN
+        log::info!("--- Test: Backspace ---");
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, 'a');
+        send_char_to_edit(win.edit_hwnd, 'b');
+        send_keydown_to_edit(win.edit_hwnd, 0x08); // VK_BACK
+        let text = win.get_text();
+        log::info!("Edit content after BS: '{text}'");
+        assert_eq!(text, "a", "After BS expected 'a', got: '{text}'");
+
+        // Test 4: Unicode character (Japanese)
+        log::info!("--- Test: Unicode char '\u{3042}' ---");
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, '\u{3042}');
+        let text = win.get_text();
+        log::info!("Edit content: '{text}'");
+        assert_eq!(
+            text, "\u{3042}",
+            "WM_CHAR should handle Unicode, got: '{text}'"
+        );
+
+        log::info!("=== Phase 2 tests passed ===");
+    }
+}
+
+#[test]
+fn e2e_sendinput_interactive() {
     init_test_logging();
     if !is_interactive_session() {
-        log::warn!("Skipping SendInput test: no interactive desktop session");
+        log::info!("Skipping SendInput interactive test (set AWASE_E2E_INTERACTIVE=1)");
         return;
     }
     let _lock = INTERACTIVE_TEST_LOCK.lock().unwrap();
-    log::info!("=== E2E Phase 2: SendInput + Edit control ===");
+    log::info!("=== E2E Phase 2 (interactive): SendInput + Edit control ===");
 
     unsafe {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
@@ -706,19 +785,47 @@ fn e2e_sendinput_edit_control() {
             );
         }
 
-        log::info!("=== Phase 2 tests passed ===");
+        log::info!("=== Phase 2 interactive tests passed ===");
     }
 }
 
 #[test]
-fn e2e_sendinput_special_keys() {
+fn e2e_message_special_keys() {
+    init_test_logging();
+    log::info!("=== E2E Phase 2: Special keys via SendMessage ===");
+
+    unsafe {
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+
+        // Test: Multiple chars then clear
+        win.clear();
+        send_char_to_edit(win.edit_hwnd, 'x');
+        send_char_to_edit(win.edit_hwnd, 'y');
+        let text = win.get_text();
+        log::info!("Before clear: '{text}'");
+        assert_eq!(text, "xy");
+
+        win.clear();
+        let text = win.get_text();
+        log::info!("After clear: '{text}'");
+        assert_eq!(text, "", "clear() should empty the edit");
+
+        log::info!("=== Special keys tests passed ===");
+    }
+}
+
+#[test]
+fn e2e_sendinput_special_keys_interactive() {
     init_test_logging();
     if !is_interactive_session() {
-        log::warn!("Skipping special keys test: no interactive desktop session");
+        log::info!("Skipping SendInput special keys interactive test (set AWASE_E2E_INTERACTIVE=1)");
         return;
     }
     let _lock = INTERACTIVE_TEST_LOCK.lock().unwrap();
-    log::info!("=== E2E Phase 2: Special keys ===");
+    log::info!("=== E2E Phase 2 (interactive): Special keys ===");
 
     unsafe {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
@@ -758,7 +865,7 @@ fn e2e_sendinput_special_keys() {
             );
         }
 
-        log::info!("=== Special keys tests passed ===");
+        log::info!("=== Special keys interactive tests passed ===");
     }
 }
 
