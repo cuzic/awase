@@ -18,6 +18,7 @@ mod tray;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -26,7 +27,18 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::core::{Interface, VARIANT};
 use windows::Win32::UI::Accessibility::{
-    AccessibleObjectFromWindow, IAccessible, SetWinEventHook, HWINEVENTHOOK,
+    AccessibleObjectFromWindow, CUIAutomation, IAccessible, IUIAutomation,
+    IUIAutomationElement, SetWinEventHook, HWINEVENTHOOK,
+    UIA_ButtonControlTypeId, UIA_ComboBoxControlTypeId, UIA_DocumentControlTypeId,
+    UIA_EditControlTypeId, UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId,
+    UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId, UIA_MenuControlTypeId,
+    UIA_MenuItemControlTypeId, UIA_ProgressBarControlTypeId, UIA_ScrollBarControlTypeId,
+    UIA_SeparatorControlTypeId, UIA_SliderControlTypeId, UIA_StatusBarControlTypeId,
+    UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TextControlTypeId,
+    UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeItemControlTypeId,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -57,6 +69,9 @@ const WM_RELOAD_CONFIG: u32 = WM_APP + 10;
 /// IME 制御キー後の遅延キー再処理用カスタムメッセージ
 const WM_PROCESS_DEFERRED: u32 = WM_APP + 11;
 
+/// UIA 非同期判定完了通知用カスタムメッセージ
+const WM_UIA_BYPASS_UPDATE: u32 = WM_APP + 12;
+
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)]
 pub fn check_ime_composing() -> bool {
@@ -76,6 +91,21 @@ static IME_GUARD: SingleThreadCell<bool> = SingleThreadCell::new();
 
 /// ガード中に遅延されたキーイベントのバッファ
 static DEFERRED_KEYS: SingleThreadCell<Vec<RawKeyEvent>> = SingleThreadCell::new();
+
+/// UIA 非同期判定リクエスト送信チャネル（メインスレッドからのみアクセス）
+static UIA_SENDER: SingleThreadCell<mpsc::Sender<SendableHwnd>> = SingleThreadCell::new();
+
+/// `HWND` を `Send` 可能にするラッパー
+///
+/// `HWND` は `*mut c_void` を含むため `Send` を実装していないが、
+/// ウィンドウハンドルの値自体はスレッド間で安全に受け渡せる。
+/// UIA ワーカースレッドへの HWND 送信専用。
+#[derive(Clone, Copy)]
+struct SendableHwnd(HWND);
+// Safety: HWND の値（ポインタ値）はスレッド間で安全に共有できる。
+// ウィンドウハンドルはプロセス内でグローバルに有効であり、
+// 別スレッドから参照しても問題ない。
+unsafe impl Send for SendableHwnd {}
 
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -115,6 +145,12 @@ fn main() -> Result<()> {
     log::info!("Press Ctrl+C to exit.");
     install_ctrl_handler();
     install_focus_hook();
+
+    // Phase 3: UIA 非同期判定ワーカースレッドを起動
+    let uia_tx = spawn_uia_worker();
+    unsafe {
+        UIA_SENDER.set(uia_tx);
+    }
 
     run_message_loop();
     cleanup();
@@ -483,6 +519,13 @@ unsafe extern "system" fn win_event_proc(
         invalidate_engine_context(ContextInvalidation::FocusChanged);
     }
 
+    // Step 5: Phase 1-2 で判定不能なら UIA 非同期判定をリクエスト
+    if state == EngineBypassState::Unknown {
+        if let Some(tx) = UIA_SENDER.get_ref() {
+            let _ = tx.send(SendableHwnd(hwnd));
+        }
+    }
+
     log::debug!("Focus changed: hwnd={:?} → {:?}", hwnd, state);
 }
 
@@ -637,6 +680,111 @@ unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
     EngineBypassState::Unknown
 }
 
+/// UIA 非同期判定ワーカースレッドを起動する
+///
+/// 専用スレッドで COM を初期化し、`IUIAutomation` インスタンスを保持する。
+/// チャネル経由で HWND を受け取り、`GetFocusedElement` でコントロール種別を判定して
+/// `BYPASS_STATE` を更新する。Phase 1-2 で `Unknown` だったコントロールの解像度を上げる。
+fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
+    let (tx, rx) = mpsc::channel::<SendableHwnd>();
+    std::thread::spawn(move || {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        }
+
+        let automation: Option<IUIAutomation> = unsafe {
+            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()
+        };
+
+        let Some(automation) = automation else {
+            log::warn!("UIA: Failed to create IUIAutomation, Phase 3 disabled");
+            return;
+        };
+
+        log::info!("UIA worker thread started");
+
+        while let Ok(SendableHwnd(hwnd)) = rx.recv() {
+            let state = unsafe { uia_determine_bypass(&automation, hwnd) };
+            if state != EngineBypassState::Unknown {
+                BYPASS_STATE.store(state as u8, Ordering::Release);
+                log::debug!("UIA async: hwnd={:?} → {:?}", hwnd, state);
+
+                // ShouldBypass の場合はメインスレッドにエンジンフラッシュを依頼
+                if state == EngineBypassState::ShouldBypass {
+                    unsafe {
+                        let _ = PostMessageW(
+                            HWND::default(),
+                            WM_UIA_BYPASS_UPDATE,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
+            }
+        }
+    });
+    tx
+}
+
+/// UIA を使用してフォーカス中コントロールのバイパス状態を判定する
+///
+/// `GetFocusedElement` で実際の UI 要素を取得し、`CurrentControlType` で
+/// テキスト入力系か非テキスト系かを判別する。Chrome/WPF/UWP など
+/// Win32 クラス名では判定できないコントロールに有効。
+///
+/// Safety: COM が初期化済みのスレッドから呼び出すこと
+#[allow(unused_variables)] // hwnd はデバッグ用に保持
+unsafe fn uia_determine_bypass(automation: &IUIAutomation, hwnd: HWND) -> EngineBypassState {
+    let element: IUIAutomationElement = match automation.GetFocusedElement() {
+        Ok(el) => el,
+        Err(e) => {
+            log::trace!("UIA: GetFocusedElement failed: {:?}", e);
+            return EngineBypassState::Unknown;
+        }
+    };
+
+    let control_type = match element.CurrentControlType() {
+        Ok(ct) => ct,
+        Err(_) => return EngineBypassState::Unknown,
+    };
+
+    // テキスト入力コントロール → AllowEngine
+    if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
+        return EngineBypassState::AllowEngine;
+    }
+
+    // ComboBox: 多くの場合テキスト入力を受け付ける
+    if control_type == UIA_ComboBoxControlTypeId {
+        return EngineBypassState::AllowEngine;
+    }
+
+    // 非テキストコントロール → ShouldBypass
+    if control_type == UIA_ButtonControlTypeId
+        || control_type == UIA_MenuItemControlTypeId
+        || control_type == UIA_TreeItemControlTypeId
+        || control_type == UIA_ListItemControlTypeId
+        || control_type == UIA_TabControlTypeId
+        || control_type == UIA_TabItemControlTypeId
+        || control_type == UIA_ToolBarControlTypeId
+        || control_type == UIA_StatusBarControlTypeId
+        || control_type == UIA_ProgressBarControlTypeId
+        || control_type == UIA_SliderControlTypeId
+        || control_type == UIA_ScrollBarControlTypeId
+        || control_type == UIA_HyperlinkControlTypeId
+        || control_type == UIA_ImageControlTypeId
+        || control_type == UIA_MenuBarControlTypeId
+        || control_type == UIA_MenuControlTypeId
+        || control_type == UIA_TitleBarControlTypeId
+        || control_type == UIA_SeparatorControlTypeId
+        || control_type == UIA_TextControlTypeId
+    {
+        return EngineBypassState::ShouldBypass;
+    }
+
+    // 未知のコントロール種別
+    EngineBypassState::Unknown
+}
+
 /// メッセージループ
 fn run_message_loop() {
     let mut msg = MSG::default();
@@ -679,6 +827,13 @@ fn run_message_loop() {
                 // IME 制御キー後の遅延キーを再処理する。
                 // この時点で IME 状態は確実に更新済み。
                 process_deferred_keys();
+            },
+            WM_UIA_BYPASS_UPDATE => unsafe {
+                // UIA 非同期判定が ShouldBypass を返した → エンジンの保留をフラッシュ
+                let bypass = BYPASS_STATE.load(Ordering::Acquire);
+                if bypass == EngineBypassState::ShouldBypass as u8 {
+                    invalidate_engine_context(ContextInvalidation::FocusChanged);
+                }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
                 toggle_engine();
