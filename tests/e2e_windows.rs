@@ -304,6 +304,171 @@ fn is_interactive_session() -> bool {
     }
 }
 
+/// 隠し Edit コントロール付きウィンドウを作成し、SendInput でキーを送信して
+/// Edit の内容を読み取るヘルパー。
+///
+/// テスト終了時にウィンドウを破棄する。
+struct TestEditWindow {
+    hwnd: windows::Win32::Foundation::HWND,
+    edit_hwnd: windows::Win32::Foundation::HWND,
+}
+
+impl TestEditWindow {
+    unsafe fn create() -> Option<Self> {
+        use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::*;
+
+        // ウィンドウクラス登録
+        let class_name_wide: Vec<u16> = "AwaseTestWindow\0".encode_utf16().collect();
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(DefWindowProcW),
+            hInstance: HINSTANCE::default(),
+            lpszClassName: windows::core::PCWSTR(class_name_wide.as_ptr()),
+            ..Default::default()
+        };
+        RegisterClassExW(&wc);
+
+        // 親ウィンドウ作成
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            windows::core::PCWSTR(class_name_wide.as_ptr()),
+            windows::core::PCWSTR::null(),
+            WS_OVERLAPPEDWINDOW,
+            0, 0, 400, 300,
+            HWND::default(),
+            None,
+            HINSTANCE::default(),
+            None,
+        );
+        if hwnd == HWND::default() {
+            log::error!("Failed to create test window");
+            return None;
+        }
+
+        // Edit コントロール作成
+        let edit_class: Vec<u16> = "EDIT\0".encode_utf16().collect();
+        let edit_hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            windows::core::PCWSTR(edit_class.as_ptr()),
+            windows::core::PCWSTR::null(),
+            WS_CHILD | WS_VISIBLE | WINDOW_STYLE(0x0080), // ES_AUTOHSCROLL
+            10, 10, 360, 30,
+            hwnd,
+            None,
+            HINSTANCE::default(),
+            None,
+        );
+        if edit_hwnd == HWND::default() {
+            log::error!("Failed to create Edit control");
+            DestroyWindow(hwnd);
+            return None;
+        }
+
+        // ウィンドウを表示してフォーカス設定
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = SetForegroundWindow(hwnd);
+        let _ = SetFocus(edit_hwnd);
+
+        // メッセージを処理して描画を完了
+        pump_messages();
+
+        log::debug!("TestEditWindow created: hwnd={:?} edit={:?}", hwnd, edit_hwnd);
+        Some(Self { hwnd, edit_hwnd })
+    }
+
+    /// Edit コントロールのテキストを取得
+    unsafe fn get_text(&self) -> String {
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
+        let mut buf = [0u16; 1024];
+        let len = GetWindowTextW(self.edit_hwnd, &mut buf);
+        if len > 0 {
+            String::from_utf16_lossy(&buf[..len as usize])
+        } else {
+            String::new()
+        }
+    }
+
+    /// Edit コントロールのテキストをクリア
+    unsafe fn clear(&self) {
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SETTEXT};
+        let empty: Vec<u16> = "\0".encode_utf16().collect();
+        SendMessageW(
+            self.edit_hwnd,
+            WM_SETTEXT,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(empty.as_ptr() as isize),
+        );
+    }
+
+    /// Edit にフォーカスを設定
+    unsafe fn focus(&self) {
+        use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, SetFocus};
+        let _ = SetForegroundWindow(self.hwnd);
+        let _ = SetFocus(self.edit_hwnd);
+        pump_messages();
+    }
+}
+
+impl Drop for TestEditWindow {
+    fn drop(&mut self) {
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+            let _ = DestroyWindow(self.hwnd);
+            log::debug!("TestEditWindow destroyed");
+        }
+    }
+}
+
+/// 保留中のウィンドウメッセージを処理する
+unsafe fn pump_messages() {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    let mut msg = MSG::default();
+    while PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE).as_bool() {
+        DispatchMessageW(&msg);
+    }
+}
+
+/// SendInput でキーストロークを送信する（フック非経由、直接 Edit に入力）
+unsafe fn send_key_to_edit(vk: u16, scan: u16) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+    let inputs = [
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: scan,
+                    dwFlags: KEYBD_EVENT_FLAGS::default(),
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: scan,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+    ];
+    let size = i32::try_from(std::mem::size_of::<INPUT>()).expect("INPUT size fits i32");
+    let sent = SendInput(&inputs, size);
+    log::debug!("SendInput: vk=0x{vk:02X} scan=0x{scan:02X} sent={sent}");
+
+    // 入力が処理されるのを待つ
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    pump_messages();
+}
+
 #[test]
 fn e2e_sendinput_edit_control() {
     init_test_logging();
@@ -312,8 +477,91 @@ fn e2e_sendinput_edit_control() {
         return;
     }
     log::info!("=== E2E Phase 2: SendInput + Edit control ===");
-    // TODO: Implement when CI desktop is confirmed working
-    log::info!("Phase 2 test placeholder - needs interactive session");
+
+    unsafe {
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+
+        // テスト 1: 単純なキー入力（'A' → 'a'）
+        log::info!("--- Test: Single key 'A' → edit should contain 'a' ---");
+        win.clear();
+        win.focus();
+        send_key_to_edit(0x41, 0x1E); // VK_A, scan=0x1E
+        let text = win.get_text();
+        log::info!("Edit content after 'A': '{text}'");
+        assert!(
+            text.contains('a') || text.contains('A'),
+            "Edit should contain 'a' or 'A', got: '{text}'"
+        );
+
+        // テスト 2: 複数キー入力
+        log::info!("--- Test: Multiple keys 'ABC' ---");
+        win.clear();
+        win.focus();
+        send_key_to_edit(0x41, 0x1E); // A
+        send_key_to_edit(0x42, 0x30); // B
+        send_key_to_edit(0x43, 0x2E); // C
+        let text = win.get_text();
+        log::info!("Edit content after 'ABC': '{text}'");
+        assert_eq!(
+            text.to_ascii_lowercase(),
+            "abc",
+            "Edit should contain 'abc', got: '{text}'"
+        );
+
+        // テスト 3: Backspace
+        log::info!("--- Test: Backspace deletes last char ---");
+        win.clear();
+        win.focus();
+        send_key_to_edit(0x41, 0x1E); // A
+        send_key_to_edit(0x42, 0x30); // B
+        send_key_to_edit(0x08, 0x0E); // VK_BACK
+        let text = win.get_text();
+        log::info!("Edit content after 'AB' + BS: '{text}'");
+        assert_eq!(
+            text.to_ascii_lowercase(),
+            "a",
+            "Edit should contain 'a' after backspace, got: '{text}'"
+        );
+
+        log::info!("=== Phase 2 tests passed ===");
+    }
+}
+
+#[test]
+fn e2e_sendinput_special_keys() {
+    init_test_logging();
+    if !is_interactive_session() {
+        log::warn!("Skipping special keys test: no interactive desktop session");
+        return;
+    }
+    log::info!("=== E2E Phase 2: Special keys ===");
+
+    unsafe {
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+
+        // Enter キーは Edit で改行にならない（単行）
+        log::info!("--- Test: Enter key in single-line Edit ---");
+        win.clear();
+        win.focus();
+        send_key_to_edit(0x41, 0x1E); // A
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+        send_key_to_edit(0x42, 0x30); // B
+        let text = win.get_text();
+        log::info!("Edit content after A+Enter+B: '{text}'");
+        // 単行 Edit では Enter は無視される
+        assert!(
+            text.to_ascii_lowercase().contains("ab"),
+            "Single-line Edit should ignore Enter, got: '{text}'"
+        );
+
+        log::info!("=== Special keys tests passed ===");
+    }
 }
 
 // ────────────────────────────────────────────
