@@ -2,8 +2,9 @@ use windows::core::{Interface, GUID};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmGetConversionStatus, ImmReleaseContext, IME_CMODE_FULLSHAPE,
-    IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmReleaseContext,
+    GCS_COMPSTR, IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CONVERSION_MODE,
+    IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::TextServices::{
@@ -24,6 +25,9 @@ pub trait ImeProvider {
         let mode = self.get_mode();
         !matches!(mode, ImeMode::Off | ImeMode::Alphanumeric)
     }
+
+    /// IME が未確定文字列を持っているか（変換中か）
+    fn is_composing(&self) -> bool;
 }
 
 /// conversion モードビットマスクから `ImeMode` を判定する
@@ -93,6 +97,12 @@ impl ImeProvider for TsfProvider {
 
         conversion_to_ime_mode(open != 0, conversion)
     }
+
+    fn is_composing(&self) -> bool {
+        // TSF composition detection is complex (requires ITfContextComposition).
+        // Fall back to false for now — HybridProvider will use ImmProvider as fallback.
+        false
+    }
 }
 
 // ─── IMM32 (Input Method Manager) ────────────────────────────
@@ -133,6 +143,22 @@ impl ImeProvider for ImmProvider {
             conversion_to_ime_mode(conversion.0 & IME_CMODE_NATIVE.0 != 0, conversion.0)
         }
     }
+
+    fn is_composing(&self) -> bool {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd == HWND::default() {
+                return false;
+            }
+            let himc = ImmGetContext(hwnd);
+            if himc.is_invalid() {
+                return false;
+            }
+            let len = ImmGetCompositionStringW(himc, GCS_COMPSTR, None, 0);
+            let _ = ImmReleaseContext(hwnd, himc);
+            len > 0
+        }
+    }
 }
 
 // ─── 複合プロバイダ（TSF 優先、IMM32 フォールバック）────────
@@ -171,6 +197,11 @@ impl ImeProvider for HybridProvider {
         }
 
         self.imm.get_mode()
+    }
+
+    fn is_composing(&self) -> bool {
+        // Try IMM32 directly (more reliable for composition detection)
+        self.imm.is_composing()
     }
 }
 

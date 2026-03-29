@@ -90,4 +90,7 @@ pub trait ImeDetector {
         let mode = self.get_mode();
         !matches!(mode, ImeMode::Off | ImeMode::Alphanumeric)
     }
+
+    /// IME が未確定文字列を持っているか（変換中か）
+    fn is_composing(&self) -> bool;
 }
