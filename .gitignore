@@ -11,3 +11,4 @@ claude.md
 libscanmap.rlib
 mise.toml
 data/ngram_hiragana.toml
+logs/
