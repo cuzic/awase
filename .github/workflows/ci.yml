@@ -26,16 +26,6 @@ jobs:
           components: clippy
       - run: cargo clippy --lib -- -A clippy::cargo_common_metadata -D warnings
 
-  windows-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
-      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
-      - run: cargo check --target x86_64-pc-windows-gnu
-
   fmt:
     runs-on: ubuntu-latest
     steps:
@@ -44,3 +34,29 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt -- --check
+
+  windows-build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            name: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build awase.exe (main binary)
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build awase-settings.exe (settings GUI)
+        run: cargo build --release --target ${{ matrix.target }} --features gui --bin awase-settings
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: awase-${{ matrix.name }}
+          path: |
+            target/${{ matrix.target }}/release/awase.exe
+            target/${{ matrix.target }}/release/awase-settings.exe
+            config.toml
+            layout/
