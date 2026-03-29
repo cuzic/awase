@@ -24,7 +24,10 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
-use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::core::{Interface, VARIANT};
+use windows::Win32::UI::Accessibility::{
+    AccessibleObjectFromWindow, IAccessible, SetWinEventHook, HWINEVENTHOOK,
+};
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetClassNameW, GetMessageW, GetWindowLongW, GWL_EXSTYLE, GWL_STYLE,
@@ -550,7 +553,87 @@ unsafe fn determine_bypass_state(hwnd: HWND) -> EngineBypassState {
         }
     }
 
-    // 4. 判定不能 → Unknown（安全側: バイパス）
+    // 4. MSAA (IAccessible) role による判定
+    {
+        /// `OBJID_CLIENT` — クライアント領域のアクセシブルオブジェクト
+        const OBJID_CLIENT: i32 = -4;
+
+        let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
+        let ok = AccessibleObjectFromWindow(
+            hwnd,
+            OBJID_CLIENT as u32,
+            &IAccessible::IID,
+            &mut acc,
+        );
+        if ok.is_ok() && !acc.is_null() {
+            let accessible: IAccessible = IAccessible::from_raw(acc);
+            let child_self = VARIANT::from(0i32); // CHILDID_SELF
+            if let Ok(role) = accessible.get_accRole(&child_self) {
+                let role_id = role.as_raw().Anonymous.Anonymous.Anonymous.lVal as u32;
+
+                // テキスト入力ロール
+                const ROLE_SYSTEM_TEXT: u32 = 42; // 0x2A — editable text
+                const ROLE_SYSTEM_DOCUMENT: u32 = 15; // 0x0F — document window
+
+                if matches!(role_id, ROLE_SYSTEM_TEXT | ROLE_SYSTEM_DOCUMENT) {
+                    log::debug!("MSAA: role={} → AllowEngine", role_id);
+                    return EngineBypassState::AllowEngine;
+                }
+
+                // 非テキストロール
+                const ROLE_SYSTEM_TITLEBAR: u32 = 1;
+                const ROLE_SYSTEM_MENUBAR: u32 = 2;
+                const ROLE_SYSTEM_SCROLLBAR: u32 = 3;
+                const ROLE_SYSTEM_MENUPOPUP: u32 = 11;
+                const ROLE_SYSTEM_MENUITEM: u32 = 12;
+                const ROLE_SYSTEM_TOOLBAR: u32 = 22;
+                const ROLE_SYSTEM_STATUSBAR: u32 = 23;
+                const ROLE_SYSTEM_LIST: u32 = 33;
+                const ROLE_SYSTEM_LISTITEM: u32 = 34;
+                const ROLE_SYSTEM_OUTLINE: u32 = 35; // tree view
+                const ROLE_SYSTEM_OUTLINEITEM: u32 = 36;
+                const ROLE_SYSTEM_PAGETAB: u32 = 37;
+                const ROLE_SYSTEM_INDICATOR: u32 = 39;
+                const ROLE_SYSTEM_GRAPHIC: u32 = 40;
+                const ROLE_SYSTEM_STATICTEXT: u32 = 41;
+                const ROLE_SYSTEM_PUSHBUTTON: u32 = 43;
+                const ROLE_SYSTEM_PROGRESSBAR: u32 = 48;
+                const ROLE_SYSTEM_SLIDER: u32 = 51;
+
+                if matches!(
+                    role_id,
+                    ROLE_SYSTEM_TITLEBAR
+                        | ROLE_SYSTEM_MENUBAR
+                        | ROLE_SYSTEM_SCROLLBAR
+                        | ROLE_SYSTEM_MENUPOPUP
+                        | ROLE_SYSTEM_MENUITEM
+                        | ROLE_SYSTEM_TOOLBAR
+                        | ROLE_SYSTEM_STATUSBAR
+                        | ROLE_SYSTEM_LIST
+                        | ROLE_SYSTEM_LISTITEM
+                        | ROLE_SYSTEM_OUTLINE
+                        | ROLE_SYSTEM_OUTLINEITEM
+                        | ROLE_SYSTEM_PAGETAB
+                        | ROLE_SYSTEM_INDICATOR
+                        | ROLE_SYSTEM_GRAPHIC
+                        | ROLE_SYSTEM_STATICTEXT
+                        | ROLE_SYSTEM_PUSHBUTTON
+                        | ROLE_SYSTEM_PROGRESSBAR
+                        | ROLE_SYSTEM_SLIDER
+                ) {
+                    log::debug!("MSAA: role={} → ShouldBypass", role_id);
+                    return EngineBypassState::ShouldBypass;
+                }
+
+                log::debug!(
+                    "MSAA: role={} → Unknown (not in allow/deny list)",
+                    role_id
+                );
+            }
+        }
+    }
+
+    // 5. 判定不能 → Unknown（安全側: バイパス）
     EngineBypassState::Unknown
 }
 
