@@ -1,0 +1,11 @@
+[general]
+simultaneous_threshold_ms = 100
+toggle_hotkey = "Ctrl+Shift+F12"
+layouts_dir = "layout"
+default_layout = "nicola.yab"
+
+# n-gram コーパスファイル（オプション、指定しなければ固定閾値で動作）
+# ngram_file = "data/ngram_hiragana.toml"
+# ngram_adjustment_range_ms = 20
+# ngram_min_threshold_ms = 30
+# ngram_max_threshold_ms = 120
