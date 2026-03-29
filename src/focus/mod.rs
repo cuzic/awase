@@ -17,8 +17,47 @@ use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
 use windows::Win32::UI::WindowsAndMessaging::KillTimer;
 
-use crate::focus::cache::DetectionSource;
+use std::sync::mpsc;
+
+use crate::focus::cache::{DetectionSource, FocusCache};
+use crate::focus::pattern::KeyPatternTracker;
 use crate::focus::uia::SendableHwnd;
+
+/// フォーカス検出に関するシングルスレッド状態を集約する構造体
+///
+/// `FOCUS_KIND`（`AtomicU8`）は UIA ワーカースレッドからもアクセスされるため、
+/// スレッド安全性のために別の static として保持する。
+pub struct FocusDetector {
+    pub cache: FocusCache,
+    pub overrides: awase::config::FocusOverrides,
+    pub last_focus_info: Option<(u32, String)>,
+    pub pattern_tracker: KeyPatternTracker,
+    pub uia_sender: Option<mpsc::Sender<SendableHwnd>>,
+}
+
+impl FocusDetector {
+    pub fn new(overrides: awase::config::FocusOverrides) -> Self {
+        Self {
+            cache: FocusCache::new(),
+            overrides,
+            last_focus_info: None,
+            pattern_tracker: KeyPatternTracker::new(),
+            uia_sender: None,
+        }
+    }
+
+    pub fn set_uia_sender(&mut self, sender: mpsc::Sender<SendableHwnd>) {
+        self.uia_sender = Some(sender);
+    }
+
+    /// フォーカス変更時などに単一スレッド側の状態をリセットする
+    #[allow(dead_code)]
+    pub fn clear(&mut self) {
+        self.cache = FocusCache::new();
+        self.last_focus_info = None;
+        self.pattern_tracker.clear();
+    }
+}
 
 /// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
 const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
@@ -90,14 +129,10 @@ unsafe extern "system" fn win_event_proc(
     let process_id = classify::get_window_process_id(hwnd);
     let class_name = classify::get_class_name_string(hwnd);
 
-    // UIA 非同期結果のキャッシュ更新用に保存
-    if let Some(last) = crate::LAST_FOCUS_INFO.get_mut() {
-        *last = (process_id, class_name.clone());
-    }
-
-    // フォーカス変更時にパターントラッカーと記憶バッファをリセット
-    if let Some(tracker) = crate::KEY_PATTERN_TRACKER.get_mut() {
-        tracker.clear();
+    // UIA 非同期結果のキャッシュ更新用に保存 + パターントラッカーをリセット
+    if let Some(f) = crate::FOCUS.get_mut() {
+        f.last_focus_info = Some((process_id, class_name.clone()));
+        f.pattern_tracker.clear();
     }
     if let Some(kb) = crate::KEY_BUFFER.get_mut() {
         kb.passthrough_memory.clear();
@@ -111,7 +146,7 @@ unsafe extern "system" fn win_event_proc(
     }
 
     // Config オーバーライド（最高優先度、キャッシュより先に判定）
-    if let Some(overrides) = crate::FOCUS_OVERRIDES.get_ref() {
+    if let Some(overrides) = crate::FOCUS.get_ref().map(|f| &f.overrides) {
         if !overrides.force_text.is_empty() || !overrides.force_bypass.is_empty() {
             let process_name = classify::get_process_name(process_id);
             for entry in &overrides.force_text {
@@ -145,9 +180,9 @@ unsafe extern "system" fn win_event_proc(
     }
 
     // キャッシュヒット → 即座に結果を適用
-    if let Some(cached) = crate::FOCUS_CACHE
+    if let Some(cached) = crate::FOCUS
         .get_ref()
-        .and_then(|c| c.get(process_id, &class_name))
+        .and_then(|f| f.cache.get(process_id, &class_name))
     {
         log::trace!(
             "classify_focus: cache hit ({}, {}) → {:?}",
@@ -170,8 +205,8 @@ unsafe extern "system" fn win_event_proc(
     let state = result.kind;
 
     // Step 3: キャッシュに格納し、FOCUS_KIND を更新
-    if let Some(cache) = crate::FOCUS_CACHE.get_mut() {
-        cache.insert(process_id, class_name.clone(), state, DetectionSource::Automatic);
+    if let Some(f) = crate::FOCUS.get_mut() {
+        f.cache.insert(process_id, class_name.clone(), state, DetectionSource::Automatic);
     }
     state.store(&crate::FOCUS_KIND);
 
@@ -182,7 +217,7 @@ unsafe extern "system" fn win_event_proc(
 
     // Step 5: Phase 1-2 で判定不能なら UIA 非同期判定をリクエスト
     if state == FocusKind::Undetermined {
-        if let Some(tx) = crate::UIA_SENDER.get_ref() {
+        if let Some(tx) = crate::FOCUS.get_ref().and_then(|f| f.uia_sender.as_ref()) {
             let _ = tx.send(SendableHwnd(hwnd));
         }
 
@@ -227,9 +262,9 @@ pub(crate) unsafe fn toggle_focus_override() {
     new_kind.store(&crate::FOCUS_KIND);
 
     // Update learning cache
-    if let Some((pid, cls)) = crate::LAST_FOCUS_INFO.get_ref() {
-        if let Some(cache) = crate::FOCUS_CACHE.get_mut() {
-            cache.insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
+    if let Some(f) = crate::FOCUS.get_mut() {
+        if let Some((pid, cls)) = f.last_focus_info.as_ref() {
+            f.cache.insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
         }
     }
 

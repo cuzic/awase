@@ -20,7 +20,6 @@ mod tray;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -33,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, SetTimer, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
-use awase::config::{vk_name_to_code, AppConfig, FocusOverrides};
+use awase::config::{vk_name_to_code, AppConfig};
 use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::types::{ContextChange, FocusKind};
 use awase::vk;
@@ -88,26 +87,10 @@ static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, VkCode, VkCode)>> = Sin
 /// キーイベントバッファ（IME ガード + 遅延キー + PassThrough 記憶）
 pub(crate) static KEY_BUFFER: SingleThreadCell<key_buffer::KeyBuffer> = SingleThreadCell::new();
 
-/// UIA 非同期判定リクエスト送信チャネル（メインスレッドからのみアクセス）
-pub(crate) static UIA_SENDER: SingleThreadCell<mpsc::Sender<SendableHwnd>> = SingleThreadCell::new();
+/// フォーカス検出のシングルスレッド状態を集約した構造体
+pub(crate) static FOCUS: SingleThreadCell<focus::FocusDetector> = SingleThreadCell::new();
 
-/// タイピングパターン検出用トラッカー
-pub(crate) static KEY_PATTERN_TRACKER: SingleThreadCell<KeyPatternTracker> = SingleThreadCell::new();
-
-/// フォーカス判定結果のキャッシュ（メインスレッドからのみアクセス）
-pub(crate) static FOCUS_CACHE: SingleThreadCell<FocusCache> = SingleThreadCell::new();
-
-/// config.toml の永続フォーカスオーバーライド設定
-pub(crate) static FOCUS_OVERRIDES: SingleThreadCell<FocusOverrides> = SingleThreadCell::new();
-
-/// UIA 非同期判定完了時にキャッシュを更新するための直前のフォーカス情報
-pub(crate) static LAST_FOCUS_INFO: SingleThreadCell<(u32, String)> = SingleThreadCell::new();
-
-use crate::focus::cache::{DetectionSource, FocusCache};
-use crate::focus::pattern::KeyPatternTracker;
-
-
-use crate::focus::uia::SendableHwnd;
+use crate::focus::cache::DetectionSource;
 
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -126,10 +109,7 @@ fn main() -> Result<()> {
     unsafe {
         OUTPUT.set(Output::new());
         KEY_BUFFER.set(key_buffer::KeyBuffer::new());
-        FOCUS_CACHE.set(FocusCache::new());
-        LAST_FOCUS_INFO.set((0, String::new()));
-        KEY_PATTERN_TRACKER.set(KeyPatternTracker::new());
-        FOCUS_OVERRIDES.set(config.focus_overrides.clone());
+        FOCUS.set(focus::FocusDetector::new(config.focus_overrides.clone()));
     }
 
     init_tray(&layout_names, &initial_layout_name)?;
@@ -143,7 +123,9 @@ fn main() -> Result<()> {
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
     let uia_tx = focus::uia::spawn_uia_worker();
     unsafe {
-        UIA_SENDER.set(uia_tx);
+        if let Some(f) = FOCUS.get_mut() {
+            f.set_uia_sender(uia_tx);
+        }
     }
 
     run_message_loop();
@@ -360,9 +342,7 @@ fn cleanup() {
         OUTPUT.clear();
         IME.clear();
         LAYOUTS.clear();
-        FOCUS_CACHE.clear();
-        LAST_FOCUS_INFO.clear();
-        KEY_PATTERN_TRACKER.clear();
+        FOCUS.clear();
         KEY_BUFFER.clear();
     }
     log::info!("Exited cleanly.");
@@ -643,9 +623,9 @@ fn run_message_loop() {
                 // UIA 非同期判定完了 → キャッシュ更新 + IME 状態復帰
                 let kind = FocusKind::load(&FOCUS_KIND);
                 // UIA 結果をキャッシュに反映
-                if let Some((pid, cls)) = LAST_FOCUS_INFO.get_ref() {
-                    if let Some(cache) = FOCUS_CACHE.get_mut() {
-                        cache.insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
+                if let Some(f) = FOCUS.get_mut() {
+                    if let Some((pid, cls)) = f.last_focus_info.as_ref() {
+                        f.cache.insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
                     }
                 }
                 if kind == FocusKind::NonText {
@@ -654,17 +634,19 @@ fn run_message_loop() {
                 // UIA が TextInput を返した場合、IME OFF されていたら ON に復帰
                 // （非ブラウザ系で自動 IME OFF された後に UIA が TextInput を返したケース）
                 if kind == FocusKind::TextInput {
-                    if let Some((_, cls)) = LAST_FOCUS_INFO.get_ref() {
-                        if !vk::is_browser_or_electron_class(cls) {
-                            // 非ブラウザ系で UIA が TextInput → IME ON に復帰
-                            let mut info = GUITHREADINFO {
-                                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-                                ..Default::default()
-                            };
-                            if GetGUIThreadInfo(0, &mut info).is_ok()
-                                && info.hwndFocus != HWND::default()
-                            {
-                                focus::set_ime_on(info.hwndFocus);
+                    if let Some(f) = FOCUS.get_ref() {
+                        if let Some((_, cls)) = f.last_focus_info.as_ref() {
+                            if !vk::is_browser_or_electron_class(cls) {
+                                // 非ブラウザ系で UIA が TextInput → IME ON に復帰
+                                let mut info = GUITHREADINFO {
+                                    cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                                    ..Default::default()
+                                };
+                                if GetGUIThreadInfo(0, &mut info).is_ok()
+                                    && info.hwndFocus != HWND::default()
+                                {
+                                    focus::set_ime_on(info.hwndFocus);
+                                }
                             }
                         }
                     }
@@ -788,14 +770,12 @@ unsafe fn reload_config() {
     // n-gram モデルの再読み込み
     init_ngram(&config);
 
-    // フォーカスオーバーライドの再読み込み
-    FOCUS_OVERRIDES.set(config.focus_overrides);
-    log::info!("Focus overrides reloaded");
-
-    // オーバーライド変更後はキャッシュをクリアして再判定を促す
-    if let Some(cache) = FOCUS_CACHE.get_mut() {
-        *cache = FocusCache::new();
+    // フォーカスオーバーライド再読み込み + キャッシュクリア
+    if let Some(f) = FOCUS.get_mut() {
+        f.overrides = config.focus_overrides;
+        f.cache = focus::cache::FocusCache::new();
     }
+    log::info!("Focus overrides reloaded");
 
     log::info!("Config reloaded successfully");
 }
