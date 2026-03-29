@@ -95,7 +95,8 @@ pub enum FocusKind {
 }
 
 impl FocusKind {
-    pub fn from_u8(v: u8) -> Self {
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Self {
         match v {
             0 => Self::TextInput,
             1 => Self::NonText,

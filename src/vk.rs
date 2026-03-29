@@ -5,6 +5,7 @@
 use crate::types::VkCode;
 
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
+#[must_use]
 pub const fn is_passthrough(vk_code: VkCode) -> bool {
     matches!(
         vk_code.0,
@@ -34,6 +35,7 @@ pub const fn is_passthrough(vk_code: VkCode) -> bool {
 ///
 /// これらのキーはエンジンの変換対象外だが、`is_passthrough` とは異なり
 /// 保留状態で到着した場合はフラッシュが必要。
+#[must_use]
 pub const fn is_ime_control(vk_code: VkCode) -> bool {
     matches!(
         vk_code.0,
@@ -49,6 +51,7 @@ pub const fn is_ime_control(vk_code: VkCode) -> bool {
 ///
 /// `is_ime_control()` のスーパーセットに親指キー（変換/無変換）を追加。
 /// これらのキーが押された場合、ユーザーがテキスト入力コンテキストにいる強いシグナルとなる。
+#[must_use]
 pub const fn is_ime_context(vk_code: VkCode) -> bool {
     matches!(
         vk_code.0,
@@ -60,6 +63,7 @@ pub const fn is_ime_context(vk_code: VkCode) -> bool {
 ///
 /// パターン検出およびハイブリッドバッファリングで使用。
 /// `os_modifier_held` は呼び出し側で OS の修飾キー状態を取得して渡す。
+#[must_use]
 pub fn is_modifier_free_char(vk_code: VkCode, os_modifier_held: bool) -> bool {
     !is_ime_control(vk_code)
         && !is_passthrough(vk_code)
@@ -73,6 +77,7 @@ pub fn is_modifier_free_char(vk_code: VkCode, os_modifier_held: bool) -> bool {
 ///
 /// これらのアプリは UIA Phase 3 でテキスト入力を正確に判定できるため、
 /// Undetermined 時の自動 IME OFF を適用しない。
+#[must_use]
 pub fn is_browser_or_electron_class(class_name: &str) -> bool {
     // Chromium 系（Chrome, Edge, Brave, Opera, Vivaldi, 全 Electron アプリ）
     // Firefox 系（Firefox, Waterfox, Tor Browser）

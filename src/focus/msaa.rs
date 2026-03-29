@@ -37,7 +37,7 @@ enum MsaaRole {
 }
 
 impl MsaaRole {
-    fn from_u32(v: u32) -> Option<Self> {
+    const fn from_u32(v: u32) -> Option<Self> {
         match v {
             1 => Some(Self::TitleBar),
             2 => Some(Self::MenuBar),
@@ -63,11 +63,11 @@ impl MsaaRole {
         }
     }
 
-    fn is_text_input(self) -> bool {
+    const fn is_text_input(self) -> bool {
         matches!(self, Self::Text | Self::Document)
     }
 
-    fn is_non_text(self) -> bool {
+    const fn is_non_text(self) -> bool {
         matches!(
             self,
             Self::TitleBar
@@ -99,38 +99,40 @@ impl MsaaRole {
 /// 判定不能なら Undetermined を返す。
 pub unsafe fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
+    #[allow(clippy::cast_sign_loss)] // OBJID_CLIENT (-4) is a Windows API convention
+    let objid = OBJID_CLIENT as u32;
     let ok = AccessibleObjectFromWindow(
         hwnd,
-        OBJID_CLIENT as u32,
+        objid,
         &IAccessible::IID,
-        &mut acc,
+        &raw mut acc,
     );
     if ok.is_ok() && !acc.is_null() {
         let accessible: IAccessible = IAccessible::from_raw(acc);
         let child_self = VARIANT::from(0i32); // CHILDID_SELF
         if let Ok(role) = accessible.get_accRole(&child_self) {
+            #[allow(clippy::cast_sign_loss)] // MSAA role values are non-negative
             let role_id = role.as_raw().Anonymous.Anonymous.Anonymous.lVal as u32;
 
             if let Some(role) = MsaaRole::from_u32(role_id) {
                 if role.is_text_input() {
-                    log::debug!("MSAA: {:?} → TextInput", role);
+                    log::debug!("MSAA: {role:?} → TextInput");
                     return ClassifyResult {
                         kind: FocusKind::TextInput,
-                        reason: ClassifyReason::MsaaRole(format!("{:?}", role)),
+                        reason: ClassifyReason::MsaaRole(format!("{role:?}")),
                     };
                 }
                 if role.is_non_text() {
-                    log::debug!("MSAA: {:?} → NonText", role);
+                    log::debug!("MSAA: {role:?} → NonText");
                     return ClassifyResult {
                         kind: FocusKind::NonText,
-                        reason: ClassifyReason::MsaaRole(format!("{:?}", role)),
+                        reason: ClassifyReason::MsaaRole(format!("{role:?}")),
                     };
                 }
             }
 
             log::debug!(
-                "MSAA: role={} → Undetermined (not in allow/deny list)",
-                role_id
+                "MSAA: role={role_id} → Undetermined (not in allow/deny list)",
             );
         }
     }

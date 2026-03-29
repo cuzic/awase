@@ -11,7 +11,7 @@ pub const INJECTED_MARKER: usize = 0x4B45_594D;
 /// ASCII 文字を対応する VK コードに変換する。
 /// a-z, A-Z, 0-9, および一般的な句読点のみを扱う。
 /// 戻り値は `(vk_code, needs_shift)`。
-fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
+const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     match ch {
         'a'..='z' => Some((0x41 + (ch as u16 - 'a' as u16), false)),
         'A'..='Z' => Some((0x41 + (ch as u16 - 'A' as u16), true)),

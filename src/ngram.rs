@@ -136,13 +136,13 @@ impl NgramModel {
         let range = self.adjustment_range_us as f64;
         // tanh maps to [-1, 1], then scale by range
         let adjustment = f64::from(score).tanh() * range;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         #[allow(clippy::cast_precision_loss)]
         let min = self.min_threshold_us as f64;
         #[allow(clippy::cast_precision_loss)]
         let max = self.max_threshold_us as f64;
-        let result = (base + adjustment).clamp(min, max) as u64;
-        result
+        // Clamped to [min, max] which are both non-negative, so the cast is safe.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        { (base + adjustment).clamp(min, max) as u64 }
     }
 
     /// Compute the frequency score for a candidate character given recent output.

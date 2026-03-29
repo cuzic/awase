@@ -26,7 +26,7 @@ pub struct KeyBuffer {
 }
 
 impl KeyBuffer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             ime_transition_guard: false,
             deferred_keys: Vec::new(),
@@ -36,12 +36,12 @@ impl KeyBuffer {
     }
 
     /// ガードが有効かどうか
-    pub fn is_guarded(&self) -> bool {
+    pub const fn is_guarded(&self) -> bool {
         self.ime_transition_guard
     }
 
     /// ガードを設定/解除する
-    pub fn set_guard(&mut self, on: bool) {
+    pub const fn set_guard(&mut self, on: bool) {
         self.ime_transition_guard = on;
     }
 
@@ -69,16 +69,19 @@ impl KeyBuffer {
     }
 
     /// バッファリング中かどうか
-    pub fn is_buffering(&self) -> bool {
+    #[allow(dead_code)] // 将来拡張用に保持
+    pub const fn is_buffering(&self) -> bool {
         self.undetermined_buffering
     }
 
     /// バッファリング状態を設定する
-    pub fn set_buffering(&mut self, on: bool) {
+    #[allow(dead_code)] // 将来拡張用に保持
+    pub const fn set_buffering(&mut self, on: bool) {
         self.undetermined_buffering = on;
     }
 
     /// 全状態をクリアする
+    #[allow(dead_code)] // 将来拡張用に保持
     pub fn clear(&mut self) {
         self.ime_transition_guard = false;
         self.deferred_keys.clear();
@@ -91,10 +94,10 @@ impl KeyBuffer {
 ///
 /// IME OFF + Undetermined 状態で PassThrough したキーを、
 /// TextInput に昇格した後に正しく処理し直すために使用する。
-pub(crate) unsafe fn retract_passthrough_memory() {
+pub unsafe fn retract_passthrough_memory() {
     let keys = crate::KEY_BUFFER
         .get_mut()
-        .map(|kb| kb.drain_passthrough())
+        .map(KeyBuffer::drain_passthrough)
         .unwrap_or_default();
 
     if keys.is_empty() {
@@ -120,7 +123,7 @@ pub(crate) unsafe fn retract_passthrough_memory() {
     for event in keys {
         let ime_active = crate::IME
             .get_ref()
-            .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+            .is_some_and(|ime| ime.is_active() && ime.get_mode().is_kana_input());
 
         if ime_active {
             if let Some(engine) = crate::ENGINE.get_mut() {
@@ -137,7 +140,7 @@ pub(crate) unsafe fn retract_passthrough_memory() {
 }
 
 /// Undetermined + IME ON バッファリングのタイムアウトを開始する（初回バッファ時のみ）。
-pub(crate) unsafe fn start_buffer_timeout_if_needed() {
+pub unsafe fn start_buffer_timeout_if_needed() {
     if let Some(kb) = crate::KEY_BUFFER.get_mut() {
         if !kb.undetermined_buffering {
             kb.undetermined_buffering = true;
@@ -150,7 +153,7 @@ pub(crate) unsafe fn start_buffer_timeout_if_needed() {
 ///
 /// 300ms 以内にパターン検出されなかった場合、バッファされたキーを
 /// エンジンで処理する（安全側: TextInput として扱う）。
-pub(crate) unsafe fn handle_buffer_timeout() {
+pub unsafe fn handle_buffer_timeout() {
     let _ = KillTimer(HWND::default(), crate::TIMER_UNDETERMINED_BUFFER);
     let keys = if let Some(kb) = crate::KEY_BUFFER.get_mut() {
         kb.undetermined_buffering = false;
@@ -190,14 +193,12 @@ pub(crate) unsafe fn handle_buffer_timeout() {
 /// 渡し済みで、IME 状態は最新に更新されている。
 ///
 /// Safety: シングルスレッドからのみ呼び出すこと
-pub(crate) unsafe fn process_deferred_keys() {
+pub unsafe fn process_deferred_keys() {
     // ガード解除 + バッファからキーを取り出す
-    let keys = if let Some(kb) = crate::KEY_BUFFER.get_mut() {
+    let keys = crate::KEY_BUFFER.get_mut().map_or_else(Vec::new, |kb| {
         kb.set_guard(false);
         kb.drain_deferred()
-    } else {
-        Vec::new()
-    };
+    });
 
     if keys.is_empty() {
         return;
@@ -209,7 +210,7 @@ pub(crate) unsafe fn process_deferred_keys() {
         // IME 状態を再チェック（最新の状態で判定）
         let ime_active = crate::IME
             .get_ref()
-            .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+            .is_some_and(|ime| ime.is_active() && ime.get_mode().is_kana_input());
 
         if ime_active {
             // IME ON → エンジンで処理
@@ -229,7 +230,7 @@ pub(crate) unsafe fn process_deferred_keys() {
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///
 /// INJECTED_MARKER 付きなのでフックに再捕捉されない。
-pub(crate) unsafe fn reinject_key(event: &RawKeyEvent) {
+pub unsafe fn reinject_key(event: &RawKeyEvent) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
         KEYEVENTF_SCANCODE, VIRTUAL_KEY,

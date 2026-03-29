@@ -66,22 +66,22 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
 /// 指定ウィンドウの IME を OFF にする。
-pub(crate) unsafe fn set_ime_off(hwnd: HWND) {
+pub unsafe fn set_ime_off(hwnd: HWND) {
     let himc = ImmGetContext(hwnd);
     if !himc.is_invalid() {
         let _ = ImmSetOpenStatus(himc, false);
-        ImmReleaseContext(hwnd, himc);
-        log::debug!("IME auto-OFF for hwnd={:?}", hwnd);
+        let _ = ImmReleaseContext(hwnd, himc);
+        log::debug!("IME auto-OFF for hwnd={hwnd:?}");
     }
 }
 
 /// 指定ウィンドウの IME を ON にする。
-pub(crate) unsafe fn set_ime_on(hwnd: HWND) {
+pub unsafe fn set_ime_on(hwnd: HWND) {
     let himc = ImmGetContext(hwnd);
     if !himc.is_invalid() {
         let _ = ImmSetOpenStatus(himc, true);
-        ImmReleaseContext(hwnd, himc);
-        log::debug!("IME auto-ON for hwnd={:?}", hwnd);
+        let _ = ImmReleaseContext(hwnd, himc);
+        log::debug!("IME auto-ON for hwnd={hwnd:?}");
     }
 }
 
@@ -89,7 +89,7 @@ pub(crate) unsafe fn set_ime_on(hwnd: HWND) {
 ///
 /// `WINEVENT_OUTOFCONTEXT` を使用するため、コールバックはメッセージループ上で実行される。
 /// これにより `classify_focus` が非同期（キーイベントとは別タイミング）で呼ばれる。
-pub(crate) fn install_focus_hook() {
+pub fn install_focus_hook() {
     unsafe {
         let hook = SetWinEventHook(
             EVENT_OBJECT_FOCUS,
@@ -154,9 +154,7 @@ unsafe extern "system" fn win_event_proc(
                     && entry.class.eq_ignore_ascii_case(&class_name)
                 {
                     log::debug!(
-                        "classify_focus: config override force_text ({}, {})",
-                        process_name,
-                        class_name
+                        "classify_focus: config override force_text ({process_name}, {class_name})",
                     );
                     FocusKind::TextInput.store(&crate::FOCUS_KIND);
                     return;
@@ -167,9 +165,7 @@ unsafe extern "system" fn win_event_proc(
                     && entry.class.eq_ignore_ascii_case(&class_name)
                 {
                     log::debug!(
-                        "classify_focus: config override force_bypass ({}, {})",
-                        process_name,
-                        class_name
+                        "classify_focus: config override force_bypass ({process_name}, {class_name})",
                     );
                     FocusKind::NonText.store(&crate::FOCUS_KIND);
                     crate::invalidate_engine_context(ContextChange::FocusChanged);
@@ -185,10 +181,7 @@ unsafe extern "system" fn win_event_proc(
         .and_then(|f| f.cache.get(process_id, &class_name))
     {
         log::trace!(
-            "classify_focus: cache hit ({}, {}) → {:?}",
-            process_id,
-            class_name,
-            cached
+            "classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",
         );
         cached.store(&crate::FOCUS_KIND);
         if cached == FocusKind::NonText {
@@ -251,7 +244,7 @@ unsafe extern "system" fn win_event_proc(
 /// `NonText` への降格時はエンジンコンテキストを無効化し、バッファもクリアする。
 ///
 /// Safety: シングルスレッドからのみ呼び出すこと
-pub(crate) unsafe fn toggle_focus_override() {
+pub unsafe fn toggle_focus_override() {
     let current = FocusKind::load(&crate::FOCUS_KIND);
     let new_kind = if current == FocusKind::TextInput {
         FocusKind::NonText
@@ -285,5 +278,5 @@ pub(crate) unsafe fn toggle_focus_override() {
     } else {
         "NonText (engine bypassed)"
     };
-    log::info!("Manual focus override: → {}", mode_str);
+    log::info!("Manual focus override: → {mode_str}");
 }

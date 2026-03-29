@@ -22,7 +22,7 @@ pub struct KeyPatternTracker {
 }
 
 impl KeyPatternTracker {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             char_timestamps: Vec::new(),
             bs_timestamps: Vec::new(),
@@ -84,7 +84,7 @@ impl KeyPatternTracker {
 /// OS レベルで Ctrl/Alt が押されているかを判定する。
 ///
 /// `GetAsyncKeyState` を使用してリアルタイムの修飾キー状態を取得する。
-pub(crate) fn is_os_modifier_held() -> bool {
+pub fn is_os_modifier_held() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     unsafe {
         let ctrl = GetAsyncKeyState(0x11);  // VK_CONTROL
@@ -96,7 +96,7 @@ pub(crate) fn is_os_modifier_held() -> bool {
 /// FocusKind を TextInput に昇格させる共通ヘルパー。
 ///
 /// キャッシュとログの更新を一元化する。
-pub(crate) unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
+pub unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
     let current = FocusKind::load(&crate::FOCUS_KIND);
     if current == FocusKind::TextInput {
         return;
@@ -108,9 +108,7 @@ pub(crate) unsafe fn promote_to_text_input(source: DetectionSource, reason: &str
         }
     }
     log::info!(
-        "Promoting to TextInput: {} (source={:?})",
-        reason,
-        source
+        "Promoting to TextInput: {reason} (source={source:?})",
     );
 }
 
@@ -118,7 +116,7 @@ pub(crate) unsafe fn promote_to_text_input(source: DetectionSource, reason: &str
 ///
 /// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
 /// パターンが検出されると `promote_to_text_input` で昇格する。
-pub(crate) unsafe fn observe_key_pattern(event: &RawKeyEvent) {
+pub unsafe fn observe_key_pattern(event: &RawKeyEvent) {
     let is_key_down = matches!(
         event.event_type,
         KeyEventType::KeyDown | KeyEventType::SysKeyDown

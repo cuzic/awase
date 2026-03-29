@@ -9,7 +9,7 @@ use crate::config::ConfirmMode;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
 use crate::scanmap::scan_to_pos;
-use crate::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+use crate::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 pub use types::{
@@ -157,7 +157,7 @@ impl Engine {
     }
 
     /// Idle 状態に遷移するヘルパー
-    fn go_idle(&mut self) {
+    const fn go_idle(&mut self) {
         self.phase = EnginePhase::Idle;
         self.pending_char = None;
         self.pending_thumb = None;
@@ -175,6 +175,11 @@ impl Engine {
     /// - 出力は二重送信されない（SpeculativeChar は既に出力済みなので何もしない）
     ///
     /// 呼び出し側は戻り値の `Response` を `dispatch()` で処理すること。
+    ///
+    /// # Panics
+    ///
+    /// Panics if internal state is inconsistent (e.g. `PendingChar` phase
+    /// without a stored `pending_char`). This indicates a logic error.
     pub fn flush_pending(&mut self, reason: ContextChange) -> Resp {
         let was_idle = self.phase == EnginePhase::Idle;
         let old_phase = self.phase;
@@ -353,25 +358,25 @@ impl Engine {
         }
     }
 
-    fn enter_pending_char(&mut self, key: PendingKey) {
+    const fn enter_pending_char(&mut self, key: PendingKey) {
         self.phase = EnginePhase::PendingChar;
         self.pending_char = Some(key);
         self.pending_thumb = None;
     }
 
-    fn enter_pending_thumb(&mut self, thumb: PendingThumbData) {
+    const fn enter_pending_thumb(&mut self, thumb: PendingThumbData) {
         self.phase = EnginePhase::PendingThumb;
         self.pending_char = None;
         self.pending_thumb = Some(thumb);
     }
 
-    fn enter_pending_char_thumb(&mut self, char_key: PendingKey, thumb: PendingThumbData) {
+    const fn enter_pending_char_thumb(&mut self, char_key: PendingKey, thumb: PendingThumbData) {
         self.phase = EnginePhase::PendingCharThumb;
         self.pending_char = Some(char_key);
         self.pending_thumb = Some(thumb);
     }
 
-    fn enter_speculative_char(&mut self, key: PendingKey) {
+    const fn enter_speculative_char(&mut self, key: PendingKey) {
         self.phase = EnginePhase::SpeculativeChar;
         self.pending_char = Some(key);
         self.pending_thumb = None;
@@ -424,7 +429,7 @@ impl Engine {
     }
 
     /// Shift 面を使うべきかどうかを判定する
-    fn should_use_shift_plane(&self, ev: &ClassifiedEvent) -> bool {
+    const fn should_use_shift_plane(&self, ev: &ClassifiedEvent) -> bool {
         self.modifiers.shift && !ev.key_class.is_thumb()
     }
 
@@ -532,7 +537,7 @@ impl Engine {
             ConfirmMode::AdaptiveTiming => {
                 let is_continuous = self
                     .last_key_gap_us
-                    .map_or(false, |gap| gap < CONTINUOUS_KEYSTROKE_THRESHOLD_US);
+                    .is_some_and(|gap| gap < CONTINUOUS_KEYSTROKE_THRESHOLD_US);
                 if is_continuous {
                     self.handle_idle_wait(ev)
                 } else {
@@ -649,8 +654,7 @@ impl Engine {
         // Compute scores
         let recent = self.output_history.recent_kana(3);
         let normal_score = normal_kana
-            .map(|ch| model.frequency_score(&recent, ch))
-            .unwrap_or(0.0);
+            .map_or(0.0, |ch| model.frequency_score(&recent, ch));
         let thumb_score = [left_kana, right_kana]
             .iter()
             .filter_map(|k| k.map(|ch| model.frequency_score(&recent, ch)))
@@ -719,13 +723,11 @@ impl Engine {
                 });
             }
             // Outside threshold → speculative was correct, process thumb as new key
-            self.go_idle();
-            self.handle_idle(ev)
         } else {
             // No thumb face entry → speculative was correct
-            self.go_idle();
-            self.handle_idle(ev)
         }
+        self.go_idle();
+        self.handle_idle(ev)
     }
 
     /// PendingChar + 親指キー → 同時打鍵候補（閾値内なら PendingCharThumb、超過なら flush+新規）
@@ -1006,10 +1008,10 @@ impl Engine {
     fn is_pending_key(&self, vk_code: VkCode) -> bool {
         match self.phase {
             EnginePhase::PendingChar => {
-                self.pending_char.map_or(false, |p| p.vk_code == vk_code)
+                self.pending_char.is_some_and(|p| p.vk_code == vk_code)
             }
             EnginePhase::PendingThumb => {
-                self.pending_thumb.map_or(false, |t| t.vk_code == vk_code)
+                self.pending_thumb.is_some_and(|t| t.vk_code == vk_code)
             }
             EnginePhase::Idle
             | EnginePhase::PendingCharThumb
@@ -1190,8 +1192,7 @@ impl Engine {
             // Other phases shouldn't have TIMER_SPECULATIVE active
             other => {
                 log::warn!(
-                    "TIMER_SPECULATIVE fired in unexpected phase: {:?}",
-                    other
+                    "TIMER_SPECULATIVE fired in unexpected phase: {other:?}",
                 );
                 Response::pass_through().with_kill_timer(TIMER_SPECULATIVE)
             }
@@ -1268,7 +1269,7 @@ impl Engine {
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     fn handle_bypass(&mut self, reason: BypassReason) -> Resp {
-        log::trace!("bypass: {:?}", reason);
+        log::trace!("bypass: {reason:?}");
         if self.phase == EnginePhase::Idle {
             return Response::pass_through();
         }

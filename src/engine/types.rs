@@ -17,11 +17,13 @@ pub enum KeyClass {
 }
 
 impl KeyClass {
-    pub(crate) const fn is_thumb(self) -> bool {
+    #[must_use]
+    pub const fn is_thumb(self) -> bool {
         matches!(self, Self::LeftThumb | Self::RightThumb)
     }
 
-    pub(crate) const fn is_left_thumb(self) -> bool {
+    #[must_use]
+    pub const fn is_left_thumb(self) -> bool {
         matches!(self, Self::LeftThumb)
     }
 }
@@ -40,7 +42,7 @@ pub struct ClassifiedEvent {
 
 /// 配列の面を表す列挙型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Face {
+pub enum Face {
     Normal,
     LeftThumb,
     RightThumb,
@@ -49,7 +51,7 @@ pub(crate) enum Face {
 
 impl Face {
     /// KeyClass の親指キーから対応する Face を取得
-    pub(crate) const fn from_thumb(key_class: KeyClass) -> Self {
+    pub const fn from_thumb(key_class: KeyClass) -> Self {
         match key_class {
             KeyClass::LeftThumb => Self::LeftThumb,
             KeyClass::RightThumb => Self::RightThumb,
@@ -57,7 +59,7 @@ impl Face {
         }
     }
 
-    pub(crate) const fn from_thumb_bool(is_left: bool) -> Self {
+    pub const fn from_thumb_bool(is_left: bool) -> Self {
         if is_left {
             Self::LeftThumb
         } else {
@@ -68,9 +70,9 @@ impl Face {
 
 /// resolve_* メソッドの戻り値：アクション列と出力履歴の更新指示
 #[derive(Debug)]
-pub(crate) struct ResolvedAction {
-    pub(crate) actions: Vec<KeyAction>,
-    pub(crate) output: OutputUpdate,
+pub struct ResolvedAction {
+    pub actions: Vec<KeyAction>,
+    pub output: OutputUpdate,
 }
 
 /// Engine の唯一の出口に渡す実行計画
@@ -121,7 +123,7 @@ pub enum OutputUpdate {
 
 /// on_key_down の前段でエンジン処理をバイパスする理由
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum BypassReason {
+pub enum BypassReason {
     /// 修飾キー、ファンクションキー等（変換対象外）
     Passthrough,
     /// IME 制御キー（半角/全角、カタカナ/ひらがな等）
@@ -132,7 +134,7 @@ pub(crate) enum BypassReason {
 
 /// エンジンのフェーズ（状態タグ）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EnginePhase {
+pub enum EnginePhase {
     Idle,
     PendingChar,
     PendingThumb,
@@ -144,33 +146,33 @@ pub(crate) enum EnginePhase {
 
 /// 保留中の文字キーデータ
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingKey {
-    pub(crate) scan_code: ScanCode,
-    pub(crate) vk_code: VkCode,
-    pub(crate) timestamp: Timestamp,
+pub struct PendingKey {
+    pub scan_code: ScanCode,
+    pub vk_code: VkCode,
+    pub timestamp: Timestamp,
 }
 
 /// 保留中の親指キーデータ
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingThumbData {
+pub struct PendingThumbData {
     #[allow(dead_code)] // KeyUp 追跡の将来拡張用
-    pub(crate) scan_code: ScanCode,
-    pub(crate) vk_code: VkCode,
-    pub(crate) is_left: bool,
-    pub(crate) timestamp: Timestamp,
+    pub scan_code: ScanCode,
+    pub vk_code: VkCode,
+    pub is_left: bool,
+    pub timestamp: Timestamp,
 }
 
 /// 修飾キー（Ctrl / Alt / Shift）の押下状態
 #[derive(Debug, Default)]
-pub(crate) struct ModifierState {
-    pub(crate) ctrl: bool,
-    pub(crate) alt: bool,
-    pub(crate) shift: bool,
+pub struct ModifierState {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
 }
 
 impl ModifierState {
     /// Ctrl / Alt / Shift キーの押下状態を更新する
-    pub(crate) const fn update(&mut self, event: &RawKeyEvent) {
+    pub const fn update(&mut self, event: &RawKeyEvent) {
         let is_down = matches!(
             event.event_type,
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
@@ -188,7 +190,7 @@ impl ModifierState {
     }
 
     /// OS 予約キーコンビネーション用の修飾キーが押下中かどうか
-    pub(crate) const fn is_os_modifier_held(&self) -> bool {
+    pub const fn is_os_modifier_held(&self) -> bool {
         self.ctrl || self.alt
     }
 }

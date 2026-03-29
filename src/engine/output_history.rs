@@ -23,7 +23,8 @@ pub struct OutputHistory {
 }
 
 impl OutputHistory {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
@@ -41,15 +42,14 @@ impl OutputHistory {
 
     /// 取り消しに必要な BS 回数
     /// 完全なローマ字は IME で 1 composition unit になるため、常に 1。
-    pub fn retract_bs_count(&self) -> usize {
-        if self.entries.is_empty() {
-            0
-        } else {
-            1
-        }
+    #[must_use]
+    #[allow(clippy::bool_to_int_with_if)] // usize::from(bool) is not const-stable
+    pub const fn retract_bs_count(&self) -> usize {
+        if self.entries.is_empty() { 0 } else { 1 }
     }
 
     /// n-gram 用の直近かな文字列（古い順）
+    #[must_use]
     pub fn recent_kana(&self, n: usize) -> Vec<char> {
         self.entries
             .iter()
@@ -63,6 +63,7 @@ impl OutputHistory {
     }
 
     /// scan_code に対応するアクションを検索（KeyUp 用）
+    #[must_use]
     pub fn find_action_by_scan(&self, scan_code: ScanCode) -> Option<&KeyAction> {
         self.entries
             .iter()
@@ -81,17 +82,20 @@ impl OutputHistory {
     }
 
     /// GUI プレビュー用: 出力テキスト
+    #[must_use]
     pub fn display_text(&self) -> String {
         self.entries.iter().filter_map(|e| e.kana).collect()
     }
 
     /// エントリ数
-    pub fn len(&self) -> usize {
+    #[must_use]
+    pub const fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// 空かどうか
-    pub fn is_empty(&self) -> bool {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 

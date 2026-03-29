@@ -48,9 +48,9 @@ impl std::fmt::Display for ClassifyReason {
             Self::NoImeContext => write!(f, "NoImeContext"),
             Self::NoImeStyle => write!(f, "NoImeStyle"),
             Self::ReadOnlyEdit => write!(f, "ReadOnlyEdit"),
-            Self::KnownTextClass(c) => write!(f, "KnownTextClass({})", c),
-            Self::KnownNonTextClass(c) => write!(f, "KnownNonTextClass({})", c),
-            Self::MsaaRole(r) => write!(f, "MsaaRole({})", r),
+            Self::KnownTextClass(c) => write!(f, "KnownTextClass({c})"),
+            Self::KnownNonTextClass(c) => write!(f, "KnownNonTextClass({c})"),
+            Self::MsaaRole(r) => write!(f, "MsaaRole({r})"),
             Self::Undetermined => write!(f, "Undetermined"),
         }
     }
@@ -130,6 +130,7 @@ pub unsafe fn get_class_name_string(hwnd: HWND) -> String {
     let mut class_buf = [0u16; 256];
     let len = GetClassNameW(hwnd, &mut class_buf);
     if len > 0 {
+        #[allow(clippy::cast_sign_loss)] // len is guaranteed non-negative by GetClassNameW
         String::from_utf16_lossy(&class_buf[..len as usize])
     } else {
         String::new()
@@ -137,14 +138,14 @@ pub unsafe fn get_class_name_string(hwnd: HWND) -> String {
 }
 
 /// ウィンドウハンドルからプロセス ID を取得する
-pub(crate) unsafe fn get_window_process_id(hwnd: HWND) -> u32 {
+pub unsafe fn get_window_process_id(hwnd: HWND) -> u32 {
     let mut pid: u32 = 0;
-    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
     pid
 }
 
 /// プロセス ID から実行ファイル名を取得する
-pub(crate) unsafe fn get_process_name(process_id: u32) -> String {
+pub unsafe fn get_process_name(process_id: u32) -> String {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -156,10 +157,10 @@ pub(crate) unsafe fn get_process_name(process_id: u32) -> String {
     };
     let mut buf = [0u16; 260];
     let mut len = buf.len() as u32;
-    let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+    let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &raw mut len);
     let _ = CloseHandle(handle);
     if ok.is_ok() && len > 0 {
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let path = String::from_utf16_lossy(&buf[..len as usize]);  // len is non-negative
         path.rsplit('\\').next().unwrap_or(&path).to_string()
     } else {
         String::new()

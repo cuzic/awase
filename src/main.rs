@@ -73,7 +73,7 @@ pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)]
 pub fn check_ime_composing() -> bool {
-    unsafe { IME.get_ref().map_or(false, |ime| ime.is_composing()) }
+    unsafe { IME.get_ref().is_some_and(ImeProvider::is_composing) }
 }
 
 pub(crate) static ENGINE: SingleThreadCell<Engine> = SingleThreadCell::new();
@@ -408,7 +408,7 @@ unsafe fn resolve_input_context() -> InputContext {
         FocusKind::Undetermined => {
             let ime_on = IME
                 .get_ref()
-                .map_or(false, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+                .is_some_and(|ime| ime.is_active() && ime.get_mode().is_kana_input());
             if ime_on {
                 InputContext::UndeterminedImeOn
             } else {
@@ -419,6 +419,7 @@ unsafe fn resolve_input_context() -> InputContext {
 }
 
 /// フックコールバックからの Engine 呼び出し
+#[allow(clippy::too_many_lines)] // event dispatch hub with multiple steps
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let is_key_down = matches!(
         event.event_type,
@@ -572,6 +573,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 
 
 /// メッセージループ
+#[allow(clippy::too_many_lines)] // message loop dispatch with many match arms
 fn run_message_loop() {
     let mut msg = MSG::default();
 
@@ -593,7 +595,7 @@ fn run_message_loop() {
                     // IME が非活性なら on_timeout せず flush（コンテキスト喪失）
                     let ime_active = IME
                         .get_ref()
-                        .map_or(true, |ime| ime.is_active() && ime.get_mode().is_kana_input());
+                        .is_none_or(|ime| ime.is_active() && ime.get_mode().is_kana_input());
                     if !ime_active {
                         invalidate_engine_context(ContextChange::ImeOff);
                     } else if let Some(engine) = ENGINE.get_mut() {
@@ -639,10 +641,10 @@ fn run_message_loop() {
                             if !vk::is_browser_or_electron_class(cls) {
                                 // 非ブラウザ系で UIA が TextInput → IME ON に復帰
                                 let mut info = GUITHREADINFO {
-                                    cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                                    cbSize: size_of::<GUITHREADINFO>() as u32,
                                     ..Default::default()
                                 };
-                                if GetGUIThreadInfo(0, &mut info).is_ok()
+                                if GetGUIThreadInfo(0, &raw mut info).is_ok()
                                     && info.hwndFocus != HWND::default()
                                 {
                                     focus::set_ime_on(info.hwndFocus);

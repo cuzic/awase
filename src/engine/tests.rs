@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::{ScanCode, VkCode};
+use crate::types::{FocusKind, ScanCode, VkCode};
 
 // VK code constants
 const VK_A: VkCode = VkCode(0x41);

@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 /// ウィンドウハンドルの値自体はスレッド間で安全に受け渡せる。
 /// UIA ワーカースレッドへの HWND 送信専用。
 #[derive(Clone, Copy)]
-pub(crate) struct SendableHwnd(pub HWND);
+pub struct SendableHwnd(pub HWND);
 // Safety: HWND の値（ポインタ値）はスレッド間で安全に共有できる。
 // ウィンドウハンドルはプロセス内でグローバルに有効であり、
 // 別スレッドから参照しても問題ない。
@@ -47,7 +47,7 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
     let element: IUIAutomationElement = match automation.GetFocusedElement() {
         Ok(el) => el,
         Err(e) => {
-            log::trace!("UIA: GetFocusedElement failed: {:?}", e);
+            log::trace!("UIA: GetFocusedElement failed: {e:?}");
             return FocusKind::Undetermined;
         }
     };
@@ -78,34 +78,34 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
     // 3. フォールバック: ControlType で確定的な非テキストコントロールを判別
     if let Ok(control_type) = element.CurrentControlType() {
         // テキスト入力系（補助的な確認のみ）
-        if matches!(control_type, UIA_EditControlTypeId | UIA_DocumentControlTypeId) {
-            log::debug!("UIA: ControlType={:?} → TextInput", control_type);
+        if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
+            log::debug!("UIA: ControlType={control_type:?} → TextInput");
             return FocusKind::TextInput;
         }
 
         // 非テキスト系
-        if matches!(
-            control_type,
-            UIA_ButtonControlTypeId
-                | UIA_MenuItemControlTypeId
-                | UIA_TreeItemControlTypeId
-                | UIA_ListItemControlTypeId
-                | UIA_TabControlTypeId
-                | UIA_TabItemControlTypeId
-                | UIA_ToolBarControlTypeId
-                | UIA_StatusBarControlTypeId
-                | UIA_ProgressBarControlTypeId
-                | UIA_SliderControlTypeId
-                | UIA_ScrollBarControlTypeId
-                | UIA_HyperlinkControlTypeId
-                | UIA_ImageControlTypeId
-                | UIA_MenuBarControlTypeId
-                | UIA_MenuControlTypeId
-                | UIA_TitleBarControlTypeId
-                | UIA_SeparatorControlTypeId
-                | UIA_TextControlTypeId
-        ) {
-            log::debug!("UIA: ControlType={:?} → NonText", control_type);
+        let non_text_types = [
+            UIA_ButtonControlTypeId,
+            UIA_MenuItemControlTypeId,
+            UIA_TreeItemControlTypeId,
+            UIA_ListItemControlTypeId,
+            UIA_TabControlTypeId,
+            UIA_TabItemControlTypeId,
+            UIA_ToolBarControlTypeId,
+            UIA_StatusBarControlTypeId,
+            UIA_ProgressBarControlTypeId,
+            UIA_SliderControlTypeId,
+            UIA_ScrollBarControlTypeId,
+            UIA_HyperlinkControlTypeId,
+            UIA_ImageControlTypeId,
+            UIA_MenuBarControlTypeId,
+            UIA_MenuControlTypeId,
+            UIA_TitleBarControlTypeId,
+            UIA_SeparatorControlTypeId,
+            UIA_TextControlTypeId,
+        ];
+        if non_text_types.contains(&control_type) {
+            log::debug!("UIA: ControlType={control_type:?} → NonText");
             return FocusKind::NonText;
         }
     }
@@ -120,7 +120,7 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
 /// 専用スレッドで COM を初期化し、`IUIAutomation` インスタンスを保持する。
 /// チャネル経由で HWND を受け取り、`GetFocusedElement` でコントロール種別を判定して
 /// `FOCUS_KIND` を更新する。Phase 1-2 で `Undetermined` だったコントロールの解像度を上げる。
-pub(crate) fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
+pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
     let (tx, rx) = mpsc::channel::<SendableHwnd>();
     std::thread::spawn(move || {
         unsafe {
@@ -142,7 +142,7 @@ pub(crate) fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
             let state = unsafe { uia_classify_focus(&automation, hwnd) };
             if state != FocusKind::Undetermined {
                 state.store(&crate::FOCUS_KIND);
-                log::debug!("UIA async: hwnd={:?} → {:?}", hwnd, state);
+                log::debug!("UIA async: hwnd={hwnd:?} → {state:?}");
 
                 // NonText の場合はメインスレッドにエンジンフラッシュを依頼
                 if state == FocusKind::NonText {
