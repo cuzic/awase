@@ -1,3 +1,18 @@
+//! # ローカル実行方法
+//!
+//! ```powershell
+//! # Phase 1 のみ（CI と同じ）
+//! cargo test --test e2e_windows -- --nocapture 2>&1 | Tee-Object e2e.log
+//!
+//! # Phase 2-3 含む（ローカル Windows でのみ動作）
+//! $env:AWASE_E2E_INTERACTIVE="1"
+//! $env:RUST_LOG="debug"
+//! cargo test --test e2e_windows -- --nocapture 2>&1 | Tee-Object e2e.log
+//!
+//! # ログを共有してデバッグ
+//! # e2e.log をそのまま渡せば状況が分かる
+//! ```
+
 #![cfg(windows)]
 
 use awase::config::ConfirmMode;
@@ -5,6 +20,12 @@ use awase::engine::Engine;
 use awase::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, VkCode};
 use awase::yab::YabLayout;
 use timed_fsm::TimedStateMachine;
+
+use std::sync::Mutex;
+
+/// Phase 2-3 テストは並列実行するとフォアグラウンドのフォーカスを奪い合う。
+/// このロックで直列化する。
+static INTERACTIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 // ────────────────────────────────────────────
 // ヘルパー関数
@@ -57,6 +78,43 @@ fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         extra_info: 0,
         timestamp: ts,
     }
+}
+
+/// Phase 2-3 テスト冒頭でシステム診断情報をログ出力する
+unsafe fn log_system_info() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+    use windows::Win32::UI::WindowsAndMessaging::*;
+
+    log::info!("=== System Diagnostics ===");
+
+    // OS version
+    log::info!(
+        "OS: Windows (CI={}, GITHUB_ACTIONS={})",
+        std::env::var("CI").unwrap_or_default(),
+        std::env::var("GITHUB_ACTIONS").unwrap_or_default()
+    );
+
+    // Desktop window
+    let desktop = GetDesktopWindow();
+    log::info!("Desktop HWND: {:?}", desktop);
+
+    // Foreground window
+    let fg = GetForegroundWindow();
+    log::info!("Foreground HWND: {:?}", fg);
+
+    // Keyboard layout
+    let hkl = GetKeyboardLayout(0);
+    let lang_id = (hkl.0 as u32) & 0xFFFF;
+    log::info!(
+        "Keyboard layout: HKL={:?} lang_id=0x{:04X}",
+        hkl,
+        lang_id
+    );
+
+    // Thread ID
+    log::info!("Thread ID: {:?}", std::thread::current().id());
+
+    log::info!("=== End Diagnostics ===");
 }
 
 // ────────────────────────────────────────────
@@ -327,6 +385,7 @@ struct TestEditWindow {
 impl TestEditWindow {
     unsafe fn create() -> Option<Self> {
         use windows::Win32::Foundation::{HINSTANCE, HWND};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, GetKeyboardLayout};
         use windows::Win32::UI::WindowsAndMessaging::*;
 
         // ウィンドウクラス登録
@@ -357,8 +416,13 @@ impl TestEditWindow {
         );
         let hwnd = match hwnd {
             Ok(h) if h != HWND::default() => h,
-            _ => {
-                log::error!("Failed to create test window");
+            Ok(_) => {
+                let err = windows::core::Error::from_win32();
+                log::error!("CreateWindowExW returned null HWND: {:?}", err);
+                return None;
+            }
+            Err(e) => {
+                log::error!("CreateWindowExW failed: {:?}", e);
                 return None;
             }
         };
@@ -381,26 +445,55 @@ impl TestEditWindow {
         );
         let edit_hwnd = match edit_hwnd {
             Ok(h) if h != HWND::default() => h,
-            _ => {
-                log::error!("Failed to create Edit control");
+            Ok(_) => {
+                let err = windows::core::Error::from_win32();
+                log::error!("CreateWindowExW(EDIT) returned null HWND: {:?}", err);
+                let _ = DestroyWindow(hwnd);
+                return None;
+            }
+            Err(e) => {
+                log::error!("CreateWindowExW(EDIT) failed: {:?}", e);
                 let _ = DestroyWindow(hwnd);
                 return None;
             }
         };
 
+        // Log window creation details
+        log::info!(
+            "Window created: hwnd={:?} class=AwaseTestWindow",
+            hwnd
+        );
+        log::info!("Edit created: hwnd={:?} class=EDIT", edit_hwnd);
+
         // ウィンドウを表示してフォーカス設定
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
-        windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd);
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd);
 
         // メッセージを処理して描画を完了
         pump_messages();
 
-        log::debug!(
-            "TestEditWindow created: hwnd={:?} edit={:?}",
-            hwnd,
+        // Verify focus state after setup
+        let fg_after = GetForegroundWindow();
+        let focus_after = GetFocus();
+        log::info!(
+            "After focus: foreground={:?} focus={:?} (expected edit={:?})",
+            fg_after,
+            focus_after,
             edit_hwnd
         );
+        log::info!("Foreground match: {}", fg_after == hwnd);
+        log::info!("Focus match: {}", focus_after == edit_hwnd);
+
+        // Keyboard layout at creation time
+        let hkl = GetKeyboardLayout(0);
+        let lang_id = (hkl.0 as u32) & 0xFFFF;
+        log::info!(
+            "Keyboard layout at window create: HKL={:?} lang_id=0x{:04X}",
+            hkl,
+            lang_id
+        );
+
         Some(Self { hwnd, edit_hwnd })
     }
 
@@ -430,10 +523,21 @@ impl TestEditWindow {
 
     /// Edit にフォーカスを設定
     unsafe fn focus(&self) {
-        use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
         let _ = SetForegroundWindow(self.hwnd);
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.edit_hwnd);
         pump_messages();
+
+        let fg = GetForegroundWindow();
+        let focus = GetFocus();
+        log::debug!(
+            "focus(): foreground={:?} (expected={:?}) focus={:?} (expected={:?})",
+            fg,
+            self.hwnd,
+            focus,
+            self.edit_hwnd
+        );
     }
 }
 
@@ -460,6 +564,7 @@ unsafe fn pump_messages() {
 /// SendInput でキーストロークを送信する（フック非経由、直接 Edit に入力）
 unsafe fn send_key_to_edit(vk: u16, scan: u16) {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     let inputs = [
         INPUT {
@@ -491,9 +596,19 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
     let sent = SendInput(&inputs, size);
     log::debug!("SendInput: vk=0x{vk:02X} scan=0x{scan:02X} sent={sent}");
 
+    if sent == 0 {
+        let err = windows::core::Error::from_win32();
+        log::error!("SendInput failed! Error: {:?}", err);
+    }
+
     // 入力が処理されるのを待つ
     std::thread::sleep(std::time::Duration::from_millis(50));
     pump_messages();
+
+    // After pump_messages, check foreground
+    let fg = GetForegroundWindow();
+    let focus = GetFocus();
+    log::debug!("After send: foreground={:?} focus={:?}", fg, focus);
 }
 
 #[test]
@@ -503,16 +618,22 @@ fn e2e_sendinput_edit_control() {
         log::warn!("Skipping SendInput test: no interactive desktop session");
         return;
     }
+    let _lock = INTERACTIVE_TEST_LOCK.lock().unwrap();
     log::info!("=== E2E Phase 2: SendInput + Edit control ===");
 
     unsafe {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+        log_system_info();
+
         let Some(win) = TestEditWindow::create() else {
             log::error!("Could not create test window, skipping");
             return;
         };
 
         // テスト 1: 単純なキー入力（'A' → 'a'）
-        log::info!("--- Test: Single key 'A' → edit should contain 'a' ---");
+        log::info!("--- Test: Single key 'A' -> edit should contain 'a' ---");
         win.clear();
         win.focus();
         send_key_to_edit(0x41, 0x1E); // VK_A, scan=0x1E
@@ -520,7 +641,15 @@ fn e2e_sendinput_edit_control() {
         log::info!("Edit content after 'A': '{text}'");
         assert!(
             text.contains('a') || text.contains('A'),
-            "Edit should contain 'a' or 'A', got: '{text}'"
+            "Edit should contain 'a' or 'A'\n\
+             Got: '{}'\n\
+             Foreground HWND: {:?}\n\
+             Focus HWND: {:?}\n\
+             Edit HWND: {:?}",
+            text,
+            GetForegroundWindow(),
+            GetFocus(),
+            win.edit_hwnd
         );
 
         // テスト 2: 複数キー入力
@@ -532,11 +661,23 @@ fn e2e_sendinput_edit_control() {
         send_key_to_edit(0x43, 0x2E); // C
         let text = win.get_text();
         log::info!("Edit content after 'ABC': '{text}'");
-        assert_eq!(
-            text.to_ascii_lowercase(),
-            "abc",
-            "Edit should contain 'abc', got: '{text}'"
-        );
+        {
+            let fg = GetForegroundWindow();
+            let focus = GetFocus();
+            assert_eq!(
+                text.to_ascii_lowercase(),
+                "abc",
+                "Edit should contain 'abc'\n\
+                 Got: '{}'\n\
+                 Foreground HWND: {:?}\n\
+                 Focus HWND: {:?}\n\
+                 Edit HWND: {:?}",
+                text,
+                fg,
+                focus,
+                win.edit_hwnd
+            );
+        }
 
         // テスト 3: Backspace
         log::info!("--- Test: Backspace deletes last char ---");
@@ -547,11 +688,23 @@ fn e2e_sendinput_edit_control() {
         send_key_to_edit(0x08, 0x0E); // VK_BACK
         let text = win.get_text();
         log::info!("Edit content after 'AB' + BS: '{text}'");
-        assert_eq!(
-            text.to_ascii_lowercase(),
-            "a",
-            "Edit should contain 'a' after backspace, got: '{text}'"
-        );
+        {
+            let fg = GetForegroundWindow();
+            let focus = GetFocus();
+            assert_eq!(
+                text.to_ascii_lowercase(),
+                "a",
+                "Edit should contain 'a' after backspace\n\
+                 Got: '{}'\n\
+                 Foreground HWND: {:?}\n\
+                 Focus HWND: {:?}\n\
+                 Edit HWND: {:?}",
+                text,
+                fg,
+                focus,
+                win.edit_hwnd
+            );
+        }
 
         log::info!("=== Phase 2 tests passed ===");
     }
@@ -564,9 +717,15 @@ fn e2e_sendinput_special_keys() {
         log::warn!("Skipping special keys test: no interactive desktop session");
         return;
     }
+    let _lock = INTERACTIVE_TEST_LOCK.lock().unwrap();
     log::info!("=== E2E Phase 2: Special keys ===");
 
     unsafe {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+        log_system_info();
+
         let Some(win) = TestEditWindow::create() else {
             log::error!("Could not create test window, skipping");
             return;
@@ -582,10 +741,22 @@ fn e2e_sendinput_special_keys() {
         let text = win.get_text();
         log::info!("Edit content after A+Enter+B: '{text}'");
         // 単行 Edit では Enter は無視される
-        assert!(
-            text.to_ascii_lowercase().contains("ab"),
-            "Single-line Edit should ignore Enter, got: '{text}'"
-        );
+        {
+            let fg = GetForegroundWindow();
+            let focus = GetFocus();
+            assert!(
+                text.to_ascii_lowercase().contains("ab"),
+                "Single-line Edit should ignore Enter\n\
+                 Got: '{}'\n\
+                 Foreground HWND: {:?}\n\
+                 Focus HWND: {:?}\n\
+                 Edit HWND: {:?}",
+                text,
+                fg,
+                focus,
+                win.edit_hwnd
+            );
+        }
 
         log::info!("=== Special keys tests passed ===");
     }
@@ -616,11 +787,16 @@ unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bo
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
-        log::warn!("ImmGetContext failed for hwnd={:?}", hwnd);
+        let err = windows::core::Error::from_win32();
+        log::warn!(
+            "ImmGetContext failed for hwnd={:?}: {:?}",
+            hwnd,
+            err
+        );
         return false;
     }
     let result = ImmSetOpenStatus(himc, open);
-    ImmReleaseContext(hwnd, himc);
+    let _ = ImmReleaseContext(hwnd, himc);
     log::debug!("ImmSetOpenStatus({open}): result={:?}", result);
     result.as_bool()
 }
@@ -630,10 +806,16 @@ unsafe fn get_ime_open(hwnd: windows::Win32::Foundation::HWND) -> bool {
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext};
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
+        let err = windows::core::Error::from_win32();
+        log::warn!(
+            "ImmGetContext failed (get_ime_open) for hwnd={:?}: {:?}",
+            hwnd,
+            err
+        );
         return false;
     }
     let status = ImmGetOpenStatus(himc);
-    ImmReleaseContext(hwnd, himc);
+    let _ = ImmReleaseContext(hwnd, himc);
     status.as_bool()
 }
 
@@ -644,9 +826,15 @@ fn e2e_ime_status_detection() {
         log::warn!("Skipping IME test: no interactive desktop session");
         return;
     }
+    let _lock = INTERACTIVE_TEST_LOCK.lock().unwrap();
     log::info!("=== E2E Phase 3: IME status detection ===");
 
     unsafe {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+        log_system_info();
+
         let Some(win) = TestEditWindow::create() else {
             log::error!("Could not create test window, skipping");
             return;
@@ -660,13 +848,13 @@ fn e2e_ime_status_detection() {
         if !has_japanese {
             log::warn!("Japanese IME not installed, skipping IME-specific tests");
             log::info!(
-                "To enable: PowerShell → New-WinUserLanguageList ja-JP → Set-WinUserLanguageList"
+                "To enable: PowerShell -> New-WinUserLanguageList ja-JP -> Set-WinUserLanguageList"
             );
             return;
         }
 
         // IME OFF → Edit に直接入力
-        log::info!("--- Test: IME OFF → direct input ---");
+        log::info!("--- Test: IME OFF -> direct input ---");
         set_ime_open(win.edit_hwnd, false);
         std::thread::sleep(std::time::Duration::from_millis(100));
         let ime_status = get_ime_open(win.edit_hwnd);
@@ -676,13 +864,27 @@ fn e2e_ime_status_detection() {
         send_key_to_edit(0x41, 0x1E); // A
         let text = win.get_text();
         log::info!("IME OFF, typed 'A': edit='{text}'");
-        assert!(
-            text.contains('a') || text.contains('A'),
-            "IME OFF: 'A' should produce 'a', got: '{text}'"
-        );
+        {
+            let fg = GetForegroundWindow();
+            let focus = GetFocus();
+            assert!(
+                text.contains('a') || text.contains('A'),
+                "IME OFF: 'A' should produce 'a'\n\
+                 Got: '{}'\n\
+                 Foreground HWND: {:?}\n\
+                 Focus HWND: {:?}\n\
+                 Edit HWND: {:?}\n\
+                 IME open: {}",
+                text,
+                fg,
+                focus,
+                win.edit_hwnd,
+                ime_status
+            );
+        }
 
         // IME ON → ローマ字入力モードでの動作確認
-        log::info!("--- Test: IME ON → romaji input ---");
+        log::info!("--- Test: IME ON -> romaji input ---");
         set_ime_open(win.edit_hwnd, true);
         std::thread::sleep(std::time::Duration::from_millis(100));
         let ime_status = get_ime_open(win.edit_hwnd);
@@ -701,7 +903,7 @@ fn e2e_ime_status_detection() {
         let text = win.get_text();
         log::info!("IME ON, typed 'A': edit='{text}'");
         // IME ON + ローマ字モードなら 'あ' になるか、未確定文字列として 'a' が表示される
-        log::info!("IME conversion result: '{text}' (expected: 'あ' or 'a' in composition)");
+        log::info!("IME conversion result: '{text}' (expected: 'a' or 'a' in composition)");
 
         // IME OFF に戻す（クリーンアップ）
         set_ime_open(win.edit_hwnd, false);
@@ -716,7 +918,12 @@ fn e2e_engine_with_ime_context() {
         log::warn!("Skipping engine+IME test: no interactive desktop session");
         return;
     }
+    let _lock = INTERACTIVE_TEST_LOCK.lock().unwrap();
     log::info!("=== E2E Phase 3: Engine with IME context ===");
+
+    unsafe {
+        log_system_info();
+    }
 
     // Engine を in-process で使い、IME 状態に応じた動作を確認
     let mut engine = make_test_engine(ConfirmMode::Wait);
