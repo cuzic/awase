@@ -1,0 +1,27 @@
+[package]
+name = "timed-fsm"
+version = "0.1.0"
+edition = "2021"
+description = "A timed finite state machine framework where timer commands are declarative transition outputs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cuzic/timed-fsm"
+keywords = ["state-machine", "fsm", "timer", "event-driven"]
+categories = ["no-std", "data-structures"]
+readme = "README.md"
+rust-version = "1.70"
+
+[dependencies]
+# 依存ゼロ
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
