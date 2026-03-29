@@ -1,4 +1,5 @@
 pub mod output_history;
+mod types;
 
 use std::time::Duration;
 
@@ -8,8 +9,15 @@ use crate::config::ConfirmMode;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
 use crate::scanmap::{scan_to_pos, PhysicalPos};
-use crate::types::{KeyAction, KeyEventType, RawKeyEvent, Timestamp};
+use crate::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, Timestamp};
 use crate::yab::{YabFace, YabLayout, YabValue};
+
+pub use types::{
+    ClassifiedEvent, FinalizePlan, KeyClass, OutputUpdate, TimerIntent,
+};
+use types::{
+    BypassReason, EnginePhase, Face, ModifierState, PendingKey, PendingThumbData, ResolvedAction,
+};
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;
@@ -25,227 +33,6 @@ const VK_BACK: u16 = 0x08;
 
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
-
-/// キーの分類（フック受信時に一度だけ決定）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyClass {
-    /// 文字キー（配列変換の対象）
-    Char,
-    /// 左親指キー
-    LeftThumb,
-    /// 右親指キー
-    RightThumb,
-    /// パススルー（修飾キー、Fキー、ナビゲーション等）
-    Passthrough,
-}
-
-impl KeyClass {
-    const fn is_thumb(self) -> bool {
-        matches!(self, Self::LeftThumb | Self::RightThumb)
-    }
-
-    const fn is_left_thumb(self) -> bool {
-        matches!(self, Self::LeftThumb)
-    }
-}
-
-/// classify() の結果。キー分類と物理位置を一度に計算する。
-#[derive(Debug, Clone, Copy)]
-pub struct ClassifiedEvent {
-    pub key_class: KeyClass,
-    /// 物理位置（Char キーの場合のみ Some）
-    pub pos: Option<PhysicalPos>,
-    /// 元のイベントデータ
-    pub scan_code: u32,
-    pub vk_code: u16,
-    pub timestamp: Timestamp,
-}
-
-/// 配列の面を表す列挙型
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Face {
-    Normal,
-    LeftThumb,
-    RightThumb,
-    Shift,
-}
-
-impl Face {
-    /// KeyClass の親指キーから対応する Face を取得
-    const fn from_thumb(key_class: KeyClass) -> Self {
-        match key_class {
-            KeyClass::LeftThumb => Self::LeftThumb,
-            KeyClass::RightThumb => Self::RightThumb,
-            _ => Self::Normal, // fallback
-        }
-    }
-
-    const fn from_thumb_bool(is_left: bool) -> Self {
-        if is_left {
-            Self::LeftThumb
-        } else {
-            Self::RightThumb
-        }
-    }
-}
-
-/// resolve_* メソッドの戻り値：アクション列と出力履歴の更新指示
-#[derive(Debug)]
-struct ResolvedAction {
-    actions: Vec<KeyAction>,
-    output: OutputUpdate,
-}
-
-/// Engine の唯一の出口に渡す実行計画
-#[derive(Debug)]
-pub struct FinalizePlan {
-    /// 出力アクション（空なら consume）
-    pub actions: Vec<KeyAction>,
-    /// タイマー指示
-    pub timer: TimerIntent,
-    /// 出力履歴の更新
-    pub output: OutputUpdate,
-}
-
-/// タイマー操作の指示
-#[derive(Debug, Clone, Copy)]
-pub enum TimerIntent {
-    /// 全タイマー停止（確定完了、Idle へ）
-    CancelAll,
-    /// TIMER_PENDING を threshold_us で起動
-    Pending,
-    /// TIMER_SPECULATIVE を speculative_delay_us で起動
-    SpeculativeWait,
-    /// TIMER_SPECULATIVE 停止 + TIMER_PENDING を残り時間で起動
-    Phase2Transition { remaining_us: u64 },
-    /// タイマー変更なし
-    Keep,
-}
-
-/// 出力履歴の更新指示
-#[derive(Debug, Clone)]
-pub enum OutputUpdate {
-    /// 出力を記録
-    Record {
-        scan_code: u32,
-        romaji: String,
-        kana: Option<char>,
-        action: KeyAction,
-    },
-    /// 最後の出力を取り消して新しい出力を記録
-    RetractAndRecord {
-        scan_code: u32,
-        romaji: String,
-        kana: Option<char>,
-        action: KeyAction,
-    },
-    /// 変更なし
-    None,
-}
-
-/// on_key_down の前段でエンジン処理をバイパスする理由
-#[derive(Debug, Clone, Copy)]
-enum BypassReason {
-    /// 修飾キー、ファンクションキー等（変換対象外）
-    Passthrough,
-    /// IME 制御キー（半角/全角、カタカナ/ひらがな等）
-    ImeControl,
-    /// OS 予約ショートカット（Ctrl/Alt が押下中）
-    OsModifierHeld,
-}
-
-/// コンテキスト無効化の理由（ログ・デバッグ用）
-#[derive(Debug, Clone, Copy)]
-pub enum ContextChange {
-    /// IME がオフになった
-    ImeOff,
-    /// 入力言語が変更された（Win+Space 等）
-    InputLanguageChanged,
-    /// エンジンが無効化された（ホットキー等）
-    EngineDisabled,
-    /// レイアウトが差し替えられた
-    LayoutSwapped,
-    /// フォーカスが別のコントロールに移動した
-    FocusChanged,
-}
-
-/// フォーカス中コントロールの種別
-///
-/// テキスト入力を受け付けるかどうかを示す。
-/// `AtomicU8` で共有するため `repr(u8)` を使用。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum FocusKind {
-    /// テキスト入力コントロール（エンジン処理を許可）
-    TextInput = 0,
-    /// 非テキストコントロール（エンジンをバイパス）
-    NonText = 1,
-    /// 判定不能
-    Undetermined = 2,
-}
-
-/// エンジンのフェーズ（状態タグ）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EnginePhase {
-    Idle,
-    PendingChar,
-    PendingThumb,
-    /// 文字キー → 親指キーの順に到着し、3 鍵目（char2）を待機中
-    PendingCharThumb,
-    /// 投機出力済み: 通常面の文字を出力したが、同時打鍵で差し替えられる可能性がある
-    SpeculativeChar,
-}
-
-/// 保留中の文字キーデータ
-#[derive(Debug, Clone, Copy)]
-struct PendingKey {
-    scan_code: u32,
-    vk_code: u16,
-    timestamp: Timestamp,
-}
-
-/// 保留中の親指キーデータ
-#[derive(Debug, Clone, Copy)]
-struct PendingThumbData {
-    #[allow(dead_code)] // KeyUp 追跡の将来拡張用
-    scan_code: u32,
-    vk_code: u16,
-    is_left: bool,
-    timestamp: Timestamp,
-}
-
-/// 修飾キー（Ctrl / Alt / Shift）の押下状態
-#[derive(Debug, Default)]
-struct ModifierState {
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-}
-
-impl ModifierState {
-    /// Ctrl / Alt / Shift キーの押下状態を更新する
-    const fn update(&mut self, event: &RawKeyEvent) {
-        let is_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-
-        match event.vk_code {
-            // Ctrl (generic), LCtrl, RCtrl
-            0x11 | 0xA2 | 0xA3 => self.ctrl = is_down,
-            // Alt (generic), LAlt, RAlt
-            0x12 | 0xA4 | 0xA5 => self.alt = is_down,
-            // Shift (generic), LShift, RShift
-            0x10 | 0xA0 | 0xA1 => self.shift = is_down,
-            _ => {}
-        }
-    }
-
-    /// OS 予約キーコンビネーション用の修飾キーが押下中かどうか
-    const fn is_os_modifier_held(&self) -> bool {
-        self.ctrl || self.alt
-    }
-}
 
 impl From<&YabValue> for KeyAction {
     fn from(value: &YabValue) -> Self {
@@ -337,6 +124,7 @@ fn record_output(scan_code: u32, action: &KeyAction, kana: Option<char>) -> Outp
     }
 }
 
+// ── 公開 API ──
 impl Engine {
     #[must_use]
     pub fn new(
@@ -507,7 +295,10 @@ impl Engine {
         self.output_history.clear();
         flush_resp
     }
+}
 
+// ── 内部ユーティリティ ──
+impl Engine {
     /// Face 列挙値に対応する YabFace への参照を返す
     const fn get_face(&self, face: Face) -> &YabFace {
         match face {
@@ -596,7 +387,10 @@ impl Engine {
             TimerIntent::Keep => response,
         }
     }
+}
 
+// ── KeyDown ディスパッチ ──
+impl Engine {
     /// AdaptiveTiming 用: 直前キーとの間隔を算出してタイムスタンプを更新する
     fn update_timing(&mut self, event: &RawKeyEvent) {
         self.last_key_gap_us = self
@@ -672,7 +466,10 @@ impl Engine {
             Response::pass_through()
         }
     }
+}
 
+// ── ConfirmMode ハンドラ ──
+impl Engine {
     /// Idle 状態での新規キー押下処理
     fn handle_idle(&mut self, ev: &ClassifiedEvent) -> Resp {
         // Shift 面チェック: on_key_down の Shift チェックは直接呼び出し時のみ有効。
@@ -854,7 +651,10 @@ impl Engine {
             self.handle_idle_wait(ev)
         }
     }
+}
 
+// ── 同時打鍵解決 ──
+impl Engine {
     /// 投機出力済み状態で親指キーが到着した場合の処理
     fn handle_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> Resp {
         let pending = self.pending_char.expect("SpeculativeChar phase requires pending_char");
@@ -1150,7 +950,10 @@ impl Engine {
         let new_result = self.handle_idle(ev);
         Self::combine_prev_and_new(prev.actions, new_result)
     }
+}
 
+// ── KeyUp 処理 ──
+impl Engine {
     fn on_key_up(&mut self, event: &RawKeyEvent) -> Resp {
         // 親指キーのリリース追跡
         let ev = self.classify(event);
@@ -1290,7 +1093,10 @@ impl Engine {
         }
         Response::pass_through()
     }
+}
 
+// ── タイムアウト処理 ──
+impl Engine {
     /// PendingChar タイムアウト：文字キーを単独打鍵として確定する
     fn timeout_pending_char(&mut self, scan_code: u32, vk_code: u16) -> Resp {
         if let Some((action, kana)) =
@@ -1381,14 +1187,17 @@ impl Engine {
             }
         }
     }
+}
 
+// ── 分類・バイパス ──
+impl Engine {
     /// キーイベントを分類する
     fn classify(&self, event: &RawKeyEvent) -> ClassifiedEvent {
         let key_class = if event.vk_code == self.left_thumb_vk {
             KeyClass::LeftThumb
         } else if event.vk_code == self.right_thumb_vk {
             KeyClass::RightThumb
-        } else if Self::is_passthrough_vk(event.vk_code) {
+        } else if crate::vk::is_passthrough(event.vk_code) {
             KeyClass::Passthrough
         } else {
             KeyClass::Char
@@ -1431,53 +1240,12 @@ impl Engine {
             || self.get_face(Face::Shift).contains_key(&pos)
     }
 
-    /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
-    pub const fn is_passthrough_vk(vk_code: u16) -> bool {
-        matches!(
-            vk_code,
-            // 修飾キー
-            0x10 | 0x11 | 0x12 |  // Shift, Ctrl, Alt
-            0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5 |  // L/R Shift, Ctrl, Alt
-            // Windows キー
-            0x5B | 0x5C |
-            // Caps Lock
-            0x14 |
-            // Esc
-            0x1B |
-            // ファンクションキー (F1-F24)
-            0x70..=0x87 |
-            // ナビゲーション
-            0x21..=0x28 |  // PageUp, PageDown, End, Home, Arrow keys
-            // Insert, Delete
-            0x2D | 0x2E |
-            // Num Lock, Scroll Lock
-            0x90 | 0x91 |
-            // Print Screen, Pause
-            0x2C | 0x13
-        )
-    }
-
-    /// IME 制御キーかどうかを判定する。
-    ///
-    /// これらのキーはエンジンの変換対象外だが、`is_passthrough_vk` とは異なり
-    /// 保留状態で到着した場合はフラッシュが必要。
-    pub const fn is_ime_control_vk(vk_code: u16) -> bool {
-        matches!(
-            vk_code,
-            0x15 |  // VK_KANA (カタカナ/ひらがな)
-            0x16 |  // VK_IME_ON
-            0x17 |  // VK_IME_OFF / VK_JUNJA
-            0x19 |  // VK_KANJI / VK_HANJA (半角/全角)
-            0xE5    // VK_PROCESSKEY (IME PROCESS)
-        )
-    }
-
     /// キーイベントがエンジン処理をバイパスすべきかを判定する
     fn bypass_reason(&self, ev: &ClassifiedEvent) -> Option<BypassReason> {
         if ev.key_class == KeyClass::Passthrough {
             return Some(BypassReason::Passthrough);
         }
-        if Self::is_ime_control_vk(ev.vk_code) {
+        if crate::vk::is_ime_control(ev.vk_code) {
             return Some(BypassReason::ImeControl);
         }
         if self.modifiers.is_os_modifier_held() {
@@ -1502,6 +1270,7 @@ impl Engine {
     }
 }
 
+// ── TimedStateMachine 実装 ──
 impl TimedStateMachine for Engine {
     type Event = RawKeyEvent;
     type Action = KeyAction;

@@ -63,3 +63,33 @@ pub enum KeyAction {
     /// ローマ字文字列を VK コードのキーイベントとして送信（IME ローマ字入力モード用）
     Romaji(String),
 }
+
+/// コンテキスト無効化の理由（ログ・デバッグ用）
+#[derive(Debug, Clone, Copy)]
+pub enum ContextChange {
+    /// IME がオフになった
+    ImeOff,
+    /// 入力言語が変更された（Win+Space 等）
+    InputLanguageChanged,
+    /// エンジンが無効化された（ホットキー等）
+    EngineDisabled,
+    /// レイアウトが差し替えられた
+    LayoutSwapped,
+    /// フォーカスが別のコントロールに移動した
+    FocusChanged,
+}
+
+/// フォーカス中コントロールの種別
+///
+/// テキスト入力を受け付けるかどうかを示す。
+/// `AtomicU8` で共有するため `repr(u8)` を使用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FocusKind {
+    /// テキスト入力コントロール（エンジン処理を許可）
+    TextInput = 0,
+    /// 非テキストコントロール（エンジンをバイパス）
+    NonText = 1,
+    /// 判定不能
+    Undetermined = 2,
+}
