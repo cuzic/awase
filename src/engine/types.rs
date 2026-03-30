@@ -168,10 +168,11 @@ pub struct ModifierState {
     pub ctrl: bool,
     pub alt: bool,
     pub shift: bool,
+    pub win: bool,
 }
 
 impl ModifierState {
-    /// Ctrl / Alt / Shift キーの押下状態を更新する
+    /// Ctrl / Alt / Shift / Win キーの押下状態を更新する
     pub const fn update(&mut self, event: &RawKeyEvent) {
         let is_down = matches!(
             event.event_type,
@@ -185,12 +186,14 @@ impl ModifierState {
             0x12 | 0xA4 | 0xA5 => self.alt = is_down,
             // Shift (generic), LShift, RShift
             0x10 | 0xA0 | 0xA1 => self.shift = is_down,
+            // Win (LWin, RWin)
+            0x5B | 0x5C => self.win = is_down,
             _ => {}
         }
     }
 
     /// OS 予約キーコンビネーション用の修飾キーが押下中かどうか
     pub const fn is_os_modifier_held(&self) -> bool {
-        self.ctrl || self.alt
+        self.ctrl || self.alt || self.win
     }
 }
