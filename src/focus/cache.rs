@@ -15,6 +15,7 @@ pub enum DetectionSource {
     /// タイピングパターン推定（TTL: 30分）
     TypingPatternInferred = 2,
     /// IME/親指キー検出による推定（TTL: 30分）
+    #[allow(dead_code)] // 将来のIMEキーパターン検出で使用予定
     ImeKeyInferred = 3,
     /// ユーザー手動オーバーライド（TTL: 24時間、優先度: 最高）
     UserOverride = 4,

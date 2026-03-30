@@ -53,6 +53,7 @@ impl KeyBuffer {
     }
 
     /// PassThrough 記憶にキーを追加する（上限 20）
+    #[allow(dead_code)] // 将来のパターン検出再有効化で使用予定
     pub fn push_passthrough(&mut self, event: RawKeyEvent) {
         self.passthrough_memory.push_back(event);
         if self.passthrough_memory.len() > 20 {
@@ -142,6 +143,7 @@ pub unsafe fn retract_passthrough_memory() {
 }
 
 /// Undetermined + IME ON バッファリングのタイムアウトを開始する（初回バッファ時のみ）。
+#[allow(dead_code)] // 将来の Undetermined バッファリング再有効化で使用予定
 pub unsafe fn start_buffer_timeout_if_needed() {
     if let Some(kb) = crate::KEY_BUFFER.get_mut() {
         if !kb.undetermined_buffering {
@@ -208,18 +210,11 @@ pub unsafe fn process_deferred_keys() {
         return;
     }
 
-    log::debug!(
-        "Processing {} deferred key(s) after IME toggle",
-        keys.len()
-    );
+    log::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
 
     // Check actual IME state now (should be updated after toggle)
-    let ime_on = crate::ime::detect_ime_open_cross_process().unwrap_or_else(|| {
-        crate::SHADOW_IME_ON
-            .get_ref()
-            .copied()
-            .unwrap_or(true)
-    });
+    let ime_on = crate::ime::detect_ime_open_cross_process()
+        .unwrap_or_else(|| crate::SHADOW_IME_ON.get_ref().copied().unwrap_or(true));
 
     // Update shadow state to match actual IME state
     if let Some(shadow) = crate::SHADOW_IME_ON.get_mut() {

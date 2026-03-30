@@ -126,7 +126,6 @@ fn default_engine_off_keys() -> Vec<String> {
     vec!["Ctrl+VK_NONCONVERT".to_string()]
 }
 
-
 /// IME 同期設定（シャドウ IME 状態追跡用キー定義）
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct ImeSyncConfig {
@@ -374,8 +373,8 @@ pub fn vk_name_to_code(name: &str) -> Option<u16> {
         "VK_DBE_ALPHANUMERIC" => Some(0xF0),
         "VK_DBE_KATAKANA" => Some(0xF1),
         "VK_DBE_HIRAGANA" => Some(0xF2),
-        "VK_DBE_SBCSCHAR" => Some(0xF3),  // 半角モード
-        "VK_DBE_DBCSCHAR" => Some(0xF4),  // 全角モード
+        "VK_DBE_SBCSCHAR" => Some(0xF3), // 半角モード
+        "VK_DBE_DBCSCHAR" => Some(0xF4), // 全角モード
 
         // 修飾キー
         "VK_SHIFT" => Some(0x10),

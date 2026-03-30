@@ -27,8 +27,6 @@ pub struct ClassifyResult {
 pub enum ClassifyReason {
     /// hwnd が NULL
     NullHwnd,
-    /// ImmGetContext が NULL を返した（IME コンテキストなし）
-    NoImeContext,
     /// WS_EX_NOIME ウィンドウスタイル
     NoImeStyle,
     /// Edit コントロールの ES_READONLY
@@ -47,7 +45,6 @@ impl std::fmt::Display for ClassifyReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NullHwnd => write!(f, "NullHwnd"),
-            Self::NoImeContext => write!(f, "NoImeContext"),
             Self::NoImeStyle => write!(f, "NoImeStyle"),
             Self::ReadOnlyEdit => write!(f, "ReadOnlyEdit"),
             Self::KnownTextClass(c) => write!(f, "KnownTextClass({c})"),

@@ -32,12 +32,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetTimer, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
-use awase::config::{parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig};
+use awase::config::{
+    parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig,
+};
 use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
-use awase::vk;
 use awase::yab::YabLayout;
 use timed_fsm::{dispatch, ActionExecutor, TimedStateMachine, TimerRuntime};
 
@@ -283,7 +284,10 @@ fn select_default_layout(
 
 /// エンジン ON/OFF トグルキーの初期化（複数キー対応）
 fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
-    let on_keys: Vec<ParsedKeyCombo> = config.general.engine_on_keys.iter()
+    let on_keys: Vec<ParsedKeyCombo> = config
+        .general
+        .engine_on_keys
+        .iter()
         .filter_map(|s| {
             let result = parse_key_combo(s);
             if result.is_none() {
@@ -292,12 +296,19 @@ fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnosti
             result
         })
         .collect();
-    log::info!("Engine ON keys: {:?} ({} parsed)", config.general.engine_on_keys, on_keys.len());
+    log::info!(
+        "Engine ON keys: {:?} ({} parsed)",
+        config.general.engine_on_keys,
+        on_keys.len()
+    );
     unsafe {
         ENGINE_ON_KEYS.set(on_keys);
     }
 
-    let off_keys: Vec<ParsedKeyCombo> = config.general.engine_off_keys.iter()
+    let off_keys: Vec<ParsedKeyCombo> = config
+        .general
+        .engine_off_keys
+        .iter()
         .filter_map(|s| {
             let result = parse_key_combo(s);
             if result.is_none() {
@@ -306,7 +317,11 @@ fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnosti
             result
         })
         .collect();
-    log::info!("Engine OFF keys: {:?} ({} parsed)", config.general.engine_off_keys, off_keys.len());
+    log::info!(
+        "Engine OFF keys: {:?} ({} parsed)",
+        config.general.engine_off_keys,
+        off_keys.len()
+    );
     unsafe {
         ENGINE_OFF_KEYS.set(off_keys);
     }
@@ -525,40 +540,6 @@ impl ActionExecutor for SendInputExecutor {
     }
 }
 
-/// on_key_event_callback Step 4 の入���コン���キスト判定結果
-#[derive(Debug)]
-enum InputContext {
-    /// テキスト入力確定 → エンジン処理
-    TextInput,
-    /// 非テキスト確定 → パススルー
-    NonText,
-    /// 判定不能 + IME ON → バッファリング
-    UndeterminedImeOn,
-    /// 判定不能 + IME OFF → パススルー + 記憶
-    UndeterminedImeOff,
-}
-
-/// フォーカス種別と IME 状態から入力コンテキストを判定する
-///
-/// # Safety
-/// `IME` / `FOCUS_KIND` はシングルスレッドからのみアクセスすること。
-unsafe fn resolve_input_context() -> InputContext {
-    match FocusKind::load(&FOCUS_KIND) {
-        FocusKind::TextInput => InputContext::TextInput,
-        FocusKind::NonText => InputContext::NonText,
-        FocusKind::Undetermined => {
-            let ime_on = IME
-                .get_ref()
-                .is_some_and(|ime| ime.is_active() && ime.get_mode().is_kana_input());
-            if ime_on {
-                InputContext::UndeterminedImeOn
-            } else {
-                InputContext::UndeterminedImeOff
-            }
-        }
-    }
-}
-
 /// キーコンボが修飾キー条件を含めてイベントに一致するか判定する。
 ///
 /// 修飾キーの状態は `GetAsyncKeyState` で取得する（エンジン無効時は
@@ -625,11 +606,14 @@ unsafe fn check_engine_toggle_keys(
     None
 }
 
-/// フックコールバックからの Engine 呼び出し
-/// フックコールバック — IME チェック付き簡易版
+/// フックコールバック — キーイベント処理の中核
 ///
-/// IME が OFF / 英数モードならパススルー、それ以外はエンジン処理。
-/// フォーカス判定・ヒューリスティックは無効。
+/// 処理フロー:
+/// 1. Shadow IME 状態追跡（ime_sync キー）
+/// 2. IME トグルガード（バッファリング）
+/// 3. エンジン ON/OFF トグルキー
+/// 4. IME 状態検出（クロスプロセス API or shadow）
+/// 5. エンジン処理
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let Some(engine) = ENGINE.get_mut() else {
         return CallbackResult::PassThrough;
@@ -691,10 +675,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                 if let Some(kb) = KEY_BUFFER.get_mut() {
                     kb.set_guard(true);
                 }
-                log::debug!(
-                    "IME toggle guard ON (vk=0x{:02X})",
-                    event.vk_code.0
-                );
+                log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
                 return CallbackResult::PassThrough; // let IME process the toggle
             }
 
@@ -733,44 +714,6 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                         );
                     }
                 }
-            }
-        }
-    }
-
-    // ── IME モード連動: 全角/半角切替でエンジン ON/OFF を自動同期 ──
-    // VK 0xF3 (全角モード) → engine ON
-    // VK 0xF4 (半角モード) → engine OFF
-    // これらは IME 内部で全角⇔半角切替時にシステムが発行するキーイベント。
-    {
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-        if is_key_down {
-            match event.vk_code.0 {
-                0xF3 => {
-                    // 全角モード → エンジン ON
-                    if !engine.is_enabled() {
-                        let (_, flush) = engine.set_enabled(true);
-                        let mut tr = Win32TimerRuntime;
-                        let mut ae = SendInputExecutor;
-                        dispatch(&flush, &mut tr, &mut ae);
-                        log::info!("Engine ON (IME zenkaku mode 0xF3)");
-                    }
-                    return CallbackResult::PassThrough;
-                }
-                0xF4 => {
-                    // 半角モード → エンジン OFF
-                    if engine.is_enabled() {
-                        let (_, flush) = engine.set_enabled(false);
-                        let mut tr = Win32TimerRuntime;
-                        let mut ae = SendInputExecutor;
-                        dispatch(&flush, &mut tr, &mut ae);
-                        log::info!("Engine OFF (IME hankaku mode 0xF4)");
-                    }
-                    return CallbackResult::PassThrough;
-                }
-                _ => {}
             }
         }
     }

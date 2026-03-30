@@ -30,6 +30,7 @@ impl KeyPatternTracker {
         }
     }
 
+    #[allow(dead_code)] // 簡略化コールバックからは未使用だが、将来再有効化予定
     /// キーイベントを追跡し、パ���ーンが検出された場合は理由文字列を返す。
     pub fn on_key(&mut self, vk_code: u16, is_modifier_free_char: bool) -> Option<&'static str> {
         let now = Instant::now();
@@ -84,6 +85,7 @@ impl KeyPatternTracker {
 /// OS レベルで Ctrl/Alt が押されているかを判定する。
 ///
 /// `GetAsyncKeyState` を使用してリアルタイムの修飾キー状態を取得する。
+#[allow(dead_code)] // 簡略化コールバックからは未使用だが、将来再有効化予定
 pub fn is_os_modifier_held() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     unsafe {
@@ -115,6 +117,7 @@ pub unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
 ///
 /// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
 /// パターンが検出されると `promote_to_text_input` で昇格する。
+#[allow(dead_code)] // 簡略化コールバックからは未使用だが、将来再有効化予定
 pub unsafe fn observe_key_pattern(event: &RawKeyEvent) {
     let is_key_down = matches!(
         event.event_type,

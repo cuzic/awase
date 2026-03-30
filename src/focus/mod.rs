@@ -10,9 +10,7 @@ pub mod msaa;
 pub mod pattern;
 pub mod uia;
 
-use crate::win32::ImeContext;
 use awase::types::{ContextChange, FocusKind};
-use awase::vk;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::KillTimer;
@@ -64,36 +62,6 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 
 /// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
-
-/// Windows 11 XAML インフラストラクチャのクラス名かどうかを判定する。
-///
-/// これらはウィンドウ切替時に中間的にフォーカスを受ける内部ウィンドウで、
-/// ユーザーが操作するコントロールではない。フォーカスイベントを無視すべき。
-fn is_xaml_infrastructure_class(class_name: &str) -> bool {
-    matches!(
-        class_name,
-        "ForegroundStaging"
-            | "XamlExplorerHostIslandWindow"
-            | "Windows.UI.Composition.DesktopWindowContentBridge"
-            | "Windows.UI.Input.InputSite.WindowClass"
-    )
-}
-
-/// 指定ウィンドウの IME を OFF にする。
-pub unsafe fn set_ime_off(hwnd: HWND) {
-    if let Some(ctx) = ImeContext::open(hwnd) {
-        ctx.set_open_status(false);
-        log::debug!("IME auto-OFF for hwnd={hwnd:?}");
-    }
-}
-
-/// 指定ウィンドウの IME を ON にする。
-pub unsafe fn set_ime_on(hwnd: HWND) {
-    if let Some(ctx) = ImeContext::open(hwnd) {
-        ctx.set_open_status(true);
-        log::debug!("IME auto-ON for hwnd={hwnd:?}");
-    }
-}
 
 /// フォーカス変更イベントフックを登録する
 ///

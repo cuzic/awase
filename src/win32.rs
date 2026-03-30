@@ -19,6 +19,7 @@ pub const fn hwnd_is_valid(hwnd: HWND) -> bool {
 /// IME コンテキストの RAII ラッパー
 ///
 /// Drop 時に自動で `ImmReleaseContext` を呼ぶ。
+#[allow(dead_code)] // 将来の IME 直接制御で使用予定
 pub struct ImeContext {
     hwnd: HWND,
     himc: HIMC,
@@ -30,6 +31,7 @@ impl ImeContext {
     /// # Safety
     ///
     /// `hwnd` は有効なウィンドウハンドルであること。
+    #[allow(dead_code)] // 将来の IME 直接制御で使用予定
     pub unsafe fn open(hwnd: HWND) -> Option<Self> {
         let himc = ImmGetContext(hwnd);
         if himc.is_invalid() {
@@ -44,6 +46,7 @@ impl ImeContext {
     /// # Safety
     ///
     /// 呼び出し元は IME コンテキストが有効なスレッドから呼ぶこと。
+    #[allow(dead_code)] // 将来の IME 直接制御で使用予定
     pub unsafe fn set_open_status(&self, open: bool) {
         let _ = ImmSetOpenStatus(self.himc, open);
     }

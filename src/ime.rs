@@ -7,10 +7,12 @@ use windows::Win32::UI::Input::Ime::{
     IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfCompartment, ITfCompartmentMgr, ITfThreadMgr,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
 };
 
 pub use awase::platform::ImeMode;
@@ -290,9 +292,7 @@ impl ImeProvider for HybridProvider {
             // IME is ON — try to get conversion mode for detailed state
             if let Some(conversion) = unsafe { detect_ime_conversion_cross_process() } {
                 let mode = conversion_to_ime_mode(true, conversion);
-                log::trace!(
-                    "HybridIME: CrossProcess=ON conversion=0x{conversion:08X} → {mode:?}"
-                );
+                log::trace!("HybridIME: CrossProcess=ON conversion=0x{conversion:08X} → {mode:?}");
                 return mode;
             }
             // Could not get conversion mode — IME is ON but mode unknown, assume Hiragana
