@@ -17,7 +17,7 @@ use crate::types::{
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use types::{
-    BypassReason, EnginePhase, Face, ModifierState, PendingKey, PendingThumbData, ResolvedAction,
+    BypassReason, EnginePhase, Face, PendingKey, PendingThumbData, ResolvedAction,
 };
 pub use types::{
     ClassifiedEvent, FinalizePlan, KeyClass, OutputRecord, OutputUpdate, TimerIntent,
@@ -75,15 +75,6 @@ pub struct Engine {
 
     /// 保留中の親指キーデータ
     pending_thumb: Option<PendingThumbData>,
-
-    /// 修飾キーの押下状態
-    modifiers: ModifierState,
-
-    /// 左親指キーが押下中か（押下時刻を保持）
-    left_thumb_down: Option<Timestamp>,
-
-    /// 右親指キーが押下中か（押下時刻を保持）
-    right_thumb_down: Option<Timestamp>,
 
     /// 同時打鍵の判定閾値（マイクロ秒）
     threshold_us: u64,
@@ -149,9 +140,6 @@ impl Engine {
             phase: EnginePhase::Idle,
             pending_char: None,
             pending_thumb: None,
-            modifiers: ModifierState::default(),
-            left_thumb_down: None,
-            right_thumb_down: None,
             threshold_us: u64::from(threshold_ms) * 1000,
             enabled: true,
             ngram_model: None,
@@ -260,10 +248,8 @@ impl Engine {
         let flush_resp = self.flush_pending(ContextChange::EngineDisabled);
         self.enabled = !self.enabled;
         self.output_history.clear();
-        // エンジン OFF 中は on_event が早期 return するため modifiers.update() が
-        // 呼ばれず、OFF 中に離された修飾キーの KeyUp を見逃す。
-        // 再 ON 時に Ctrl/Alt が stuck して全キーが OsModifierHeld バイパスされるのを防止。
-        self.modifiers = ModifierState::default();
+        // 物理キー状態（modifiers, thumb_down）は InputTracker が常に追跡しているため、
+        // ここでのリセットは不要。
         log::info!(
             "Engine {}",
             if self.enabled { "enabled" } else { "disabled" }
@@ -274,16 +260,6 @@ impl Engine {
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
         self.enabled
-    }
-
-    /// InputTracker の物理キー状態を Engine 内部フィールドに同期する。
-    ///
-    /// Step 2 で Engine メソッドが `&PhysicalKeyState` を直接参照するようになるまでの
-    /// 暫定的な橋渡し。
-    pub fn sync_from_physical(&mut self, phys: &PhysicalKeyState) {
-        self.modifiers = phys.modifiers;
-        self.left_thumb_down = phys.left_thumb_down;
-        self.right_thumb_down = phys.right_thumb_down;
     }
 
     /// エンジンの有効/無効を明示的に設定する。
