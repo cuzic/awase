@@ -3,14 +3,18 @@
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
     NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    GetCursorPos, LoadIconW, PostQuitMessage, RegisterClassW, SetForegroundWindow, TrackPopupMenu,
-    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDI_APPLICATION, MF_STRING, TPM_BOTTOMALIGN,
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ICONINFO, MF_STRING, TPM_BOTTOMALIGN,
     TPM_LEFTALIGN, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
@@ -88,8 +92,8 @@ impl SystemTray {
             )
             .context("Failed to create tray window")?;
 
-            // デフォルトアイコンを読み込む
-            let icon = LoadIconW(None, IDI_APPLICATION).unwrap_or_default();
+            // キーボードシルエットアイコンを生成
+            let icon = create_keyboard_icon(enabled).unwrap_or_default();
 
             // NOTIFYICONDATAW を構築
             let mut nid = NOTIFYICONDATAW {
@@ -121,9 +125,18 @@ impl SystemTray {
         }
     }
 
-    /// トレイアイコンのツールチップを更新する
+    /// トレイアイコンのツールチップとアイコンを更新する
     pub fn set_enabled(&mut self, enabled: bool) {
         set_tooltip(&mut self.nid, enabled, &self.current_layout_name);
+        if let Some(icon) = create_keyboard_icon(enabled) {
+            // 古いアイコンを破棄してから差し替え
+            if !self.nid.hIcon.is_invalid() {
+                unsafe {
+                    let _ = DestroyIcon(self.nid.hIcon);
+                }
+            }
+            self.nid.hIcon = icon;
+        }
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
         }
@@ -175,6 +188,114 @@ impl Drop for SystemTray {
             let _ = DestroyWindow(self.hwnd);
         }
         log::info!("System tray icon destroyed");
+    }
+}
+
+/// 16x16 のキーボードシルエットアイコンを GDI で生成する。
+///
+/// ON: 明るい青系、OFF: グレー。
+/// キーボード本体（角丸風の矩形）+ 3列のキー配列を描画する。
+fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndMessaging::HICON> {
+    const SIZE: i32 = 16;
+
+    unsafe {
+        // DIB セクション（32bit ARGB）を作成
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: u32::try_from(size_of::<BITMAPINFOHEADER>()).unwrap_or(0),
+                biWidth: SIZE,
+                biHeight: -SIZE, // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let dc = CreateCompatibleDC(None);
+        let mut bits = std::ptr::null_mut();
+        let color_bmp =
+            CreateDIBSection(dc, &raw const bmi, DIB_RGB_COLORS, &raw mut bits, None, 0).ok()?;
+        let mask_bmp = CreateDIBSection(
+            dc,
+            &raw const bmi,
+            DIB_RGB_COLORS,
+            std::ptr::null_mut(),
+            None,
+            0,
+        )
+        .ok()?;
+
+        let pixels = std::slice::from_raw_parts_mut(bits.cast::<u32>(), (SIZE * SIZE) as usize);
+
+        // 色定義（BGRA 形式）
+        let bg = 0x00_00_00_00u32; // 透明
+        let body = if enabled {
+            0xFF_D4_7B_2E
+        } else {
+            0xFF_80_80_80
+        }; // 本体: 青 or グレー
+        let key = if enabled {
+            0xFF_FF_F0_E0
+        } else {
+            0xFF_C0_C0_C0
+        }; // キー: 明るい色
+
+        // 背景クリア
+        pixels.fill(bg);
+
+        // キーボード本体（y=3..13, x=1..15）
+        for y in 3..13 {
+            for x in 1..15 {
+                pixels[y * SIZE as usize + x] = body;
+            }
+        }
+        // 角を丸くする
+        pixels[3 * SIZE as usize + 1] = bg;
+        pixels[3 * SIZE as usize + 14] = bg; // 右上は x=14 ではなく x=13 の外なので境界注意
+        pixels[12 * SIZE as usize + 1] = bg;
+        pixels[12 * SIZE as usize + 14] = bg;
+
+        // キー配列（3列）
+        let key_rows: &[(usize, &[(usize, usize)])] = &[
+            // (y, [(x_start, x_end), ...])
+            (5, &[(3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]), // 上段: 5キー
+            (7, &[(3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]), // 中段: 5キー
+            (9, &[(4, 5), (6, 7), (8, 9), (10, 11)]),          // 下段: 4キー
+        ];
+
+        for &(y, keys) in key_rows {
+            for &(x_start, x_end) in keys {
+                for x in x_start..=x_end {
+                    pixels[y * SIZE as usize + x] = key;
+                }
+            }
+        }
+
+        // スペースバー（y=11, x=5..10）
+        for x in 5..11 {
+            pixels[11 * SIZE as usize + x] = key;
+        }
+
+        // マスクビットマップ（全不透明 — alpha チャネルで制御）
+        let old = SelectObject(dc, color_bmp);
+
+        let icon_info = ICONINFO {
+            fIcon: true.into(),
+            xHotspot: 0,
+            yHotspot: 0,
+            hbmMask: mask_bmp,
+            hbmColor: color_bmp,
+        };
+        let icon = CreateIconIndirect(&raw const icon_info).ok();
+
+        SelectObject(dc, old);
+        let _ = DeleteDC(dc);
+        let _ = DeleteObject(color_bmp);
+        let _ = DeleteObject(mask_bmp);
+
+        icon
     }
 }
 

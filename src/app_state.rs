@@ -403,33 +403,31 @@ impl AppState {
     /// 先にチェックし、マッチしなければ緩い修飾（Ctrl のみ）をチェックする。
     pub(crate) fn check_special_keys(&mut self, event: &RawKeyEvent) -> Option<CallbackResult> {
         // エンジントグルを先にチェック（より限定的な修飾キー）
-        if !self.engine.is_enabled() {
-            if self
+        if !self.engine.is_enabled()
+            && self
                 .special_keys
                 .engine_on
                 .iter()
                 .any(|k| matches_key_combo(*k, event))
-            {
-                let (enabled, flush_resp) = self.engine.set_enabled(true);
-                Self::dispatch_response(&flush_resp);
-                log::info!("Engine ON (key combo)");
-                self.tray.set_enabled(enabled);
-                return Some(CallbackResult::Consumed);
-            }
+        {
+            let (enabled, flush_resp) = self.engine.set_enabled(true);
+            Self::dispatch_response(&flush_resp);
+            log::info!("Engine ON (key combo)");
+            self.tray.set_enabled(enabled);
+            return Some(CallbackResult::Consumed);
         }
-        if self.engine.is_enabled() {
-            if self
+        if self.engine.is_enabled()
+            && self
                 .special_keys
                 .engine_off
                 .iter()
                 .any(|k| matches_key_combo(*k, event))
-            {
-                let (enabled, flush_resp) = self.engine.set_enabled(false);
-                Self::dispatch_response(&flush_resp);
-                log::info!("Engine OFF (key combo)");
-                self.tray.set_enabled(enabled);
-                return Some(CallbackResult::Consumed);
-            }
+        {
+            let (enabled, flush_resp) = self.engine.set_enabled(false);
+            Self::dispatch_response(&flush_resp);
+            log::info!("Engine OFF (key combo)");
+            self.tray.set_enabled(enabled);
+            return Some(CallbackResult::Consumed);
         }
 
         // IME 制御キー（エンジン状態に関わらずチェック）
