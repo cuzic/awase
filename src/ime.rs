@@ -210,7 +210,7 @@ pub unsafe fn detect_ime_open_cross_process() -> Option<bool> {
         WPARAM(IMC_GETOPENSTATUS),
         LPARAM(0),
         SMTO_ABORTIFHUNG,
-        10, // timeout ms — フックコールバックをブロックしないよう短く設定。
+        50, // timeout ms — メッセージループから呼ばれるためブロッキング OK。
             // タイムアウト時は None を返し shadow state にフォールバックする。
         Some(&mut result),
     );
@@ -247,7 +247,7 @@ unsafe fn detect_ime_conversion_cross_process() -> Option<u32> {
         WPARAM(IMC_GETCONVERSIONMODE),
         LPARAM(0),
         SMTO_ABORTIFHUNG,
-        10,
+        50,
         Some(&mut result),
     );
 
