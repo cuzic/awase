@@ -41,9 +41,10 @@ pub const fn is_ime_control(vk_code: VkCode) -> bool {
         vk_code.0,
         0x15 |  // VK_KANA (カタカナ/ひらがな)
         0x16 |  // VK_IME_ON
-        0x17 |  // VK_IME_OFF / VK_JUNJA
+        0x17 |  // VK_JUNJA
         0x19 |  // VK_KANJI / VK_HANJA (半角/全角)
-        0xE5 // VK_PROCESSKEY (IME PROCESS)
+        0x1A |  // VK_IME_OFF
+        0xE5    // VK_PROCESSKEY (IME PROCESS)
     )
 }
 
@@ -53,7 +54,7 @@ pub const fn is_ime_control(vk_code: VkCode) -> bool {
 /// これらのキーが押された場合、ユーザーがテキスト入力コンテキストにいる強いシグナルとなる。
 #[must_use]
 pub const fn is_ime_context(vk_code: VkCode) -> bool {
-    matches!(vk_code.0, 0x15 | 0x16 | 0x17 | 0x19 | 0x1C | 0x1D | 0xE5)
+    matches!(vk_code.0, 0x15 | 0x16 | 0x17 | 0x19 | 0x1A | 0x1C | 0x1D | 0xE5)
 }
 
 /// 修飾キー（Ctrl/Alt）が押されていない単独文字キーかどうかを判定する。
