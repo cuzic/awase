@@ -4,9 +4,10 @@ mod types;
 
 use std::time::Duration;
 
-use timed_fsm::{Response, TimedStateMachine};
+use timed_fsm::Response;
 
 use crate::config::ConfirmMode;
+use crate::engine::input_tracker::PhysicalKeyState;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
 use crate::scanmap::scan_to_pos;
@@ -19,7 +20,7 @@ use types::{
     BypassReason, EnginePhase, Face, ModifierState, PendingKey, PendingThumbData, ResolvedAction,
 };
 pub use types::{
-    ClassifiedEvent, FinalizePlan, KeyClass, ModifierState, OutputRecord, OutputUpdate, TimerIntent,
+    ClassifiedEvent, FinalizePlan, KeyClass, OutputRecord, OutputUpdate, TimerIntent,
 };
 
 /// 同時打鍵判定用タイマー ID
@@ -107,6 +108,9 @@ pub struct Engine {
 
     /// 出力履歴（押下中キーの追跡と直近出力の記録を統合管理）
     output_history: OutputHistory,
+
+    /// 最新の物理キー状態スナップショット（`on_event` の冒頭で更新される）
+    phys: PhysicalKeyState,
 }
 
 /// `KeyAction` からローマ字文字列を抽出するヘルパー
@@ -156,6 +160,7 @@ impl Engine {
             last_key_timestamp: None,
             last_key_gap_us: None,
             output_history: OutputHistory::new(),
+            phys: PhysicalKeyState::empty(),
         }
     }
 
@@ -275,7 +280,7 @@ impl Engine {
     ///
     /// Step 2 で Engine メソッドが `&PhysicalKeyState` を直接参照するようになるまでの
     /// 暫定的な橋渡し。
-    pub fn sync_from_physical(&mut self, phys: &input_tracker::PhysicalKeyState) {
+    pub fn sync_from_physical(&mut self, phys: &PhysicalKeyState) {
         self.modifiers = phys.modifiers;
         self.left_thumb_down = phys.left_thumb_down;
         self.right_thumb_down = phys.right_thumb_down;
@@ -460,7 +465,7 @@ impl Engine {
 
     /// Shift 面を使うべきかどうかを判定する
     const fn should_use_shift_plane(&self, ev: &ClassifiedEvent) -> bool {
-        self.modifiers.shift && !ev.key_class.is_thumb()
+        self.phys.modifiers.shift && !ev.key_class.is_thumb()
     }
 
     fn on_key_down(&mut self, event: &RawKeyEvent) -> Resp {
@@ -1288,9 +1293,9 @@ impl Engine {
 
     /// 現在押下中の親指キーに対応するシフト面を返す
     const fn active_thumb_face(&self) -> Option<Face> {
-        if self.left_thumb_down.is_some() {
+        if self.phys.left_thumb_down.is_some() {
             Some(Face::LeftThumb)
-        } else if self.right_thumb_down.is_some() {
+        } else if self.phys.right_thumb_down.is_some() {
             Some(Face::RightThumb)
         } else {
             None
@@ -1316,7 +1321,7 @@ impl Engine {
         if crate::vk::is_ime_control(ev.vk_code) {
             return Some(BypassReason::ImeControl);
         }
-        if self.modifiers.is_os_modifier_held() {
+        if self.phys.modifiers.is_os_modifier_held() {
             return Some(BypassReason::OsModifierHeld);
         }
         None
@@ -1338,16 +1343,14 @@ impl Engine {
     }
 }
 
-// ── TimedStateMachine 実装 ──
-impl TimedStateMachine for Engine {
-    type Event = RawKeyEvent;
-    type Action = KeyAction;
-    type TimerId = usize;
-
-    fn on_event(&mut self, event: RawKeyEvent) -> Resp {
-        // 修飾キー・親指キーの物理状態追跡は track_physical_keys() で
-        // フックコールバックの最初に行われる（IME チェックより前）。
-        // ここでは重複して追跡しない。
+// ── イベント処理エントリポイント ──
+impl Engine {
+    /// キーイベントを処理する。
+    ///
+    /// `phys` は `InputTracker::process()` が返した物理キー状態スナップショット。
+    /// 内部メソッドは `self.phys` フィールド経由でこの状態を参照する。
+    pub fn on_event(&mut self, event: RawKeyEvent, phys: &PhysicalKeyState) -> Resp {
+        self.phys = *phys;
 
         if !self.enabled {
             return Response::pass_through();
@@ -1359,7 +1362,8 @@ impl TimedStateMachine for Engine {
         }
     }
 
-    fn on_timeout(&mut self, timer_id: usize) -> Resp {
+    /// タイマー満了時の処理。
+    pub fn on_timeout(&mut self, timer_id: usize) -> Resp {
         match timer_id {
             TIMER_SPECULATIVE => return self.on_timeout_speculative(),
             TIMER_PENDING => {}

@@ -638,7 +638,7 @@ impl SettingsApp {
 
     #[allow(clippy::too_many_lines)]
     fn handle_preview_key(&mut self, key: egui::Key) {
-        use timed_fsm::TimedStateMachine;
+
 
         let Some(ref mut engine) = self.preview_engine else {
             return;
@@ -693,7 +693,8 @@ impl SettingsApp {
             .unwrap_or(u64::MAX),
         };
 
-        let response = engine.on_event(event);
+        let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
+        let response = engine.on_event(event, &phys);
 
         // Collect output from actions
         for action in &response.actions {

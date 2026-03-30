@@ -26,6 +26,27 @@ pub struct PhysicalKeyState {
     pub right_thumb_down: Option<Timestamp>,
 }
 
+impl PhysicalKeyState {
+    /// 中立な（何も押されていない）状態を返す。
+    ///
+    /// Engine の初期化時など、まだ実イベントを受け取っていない段階で使う。
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            classified: ClassifiedEvent {
+                key_class: KeyClass::Passthrough,
+                pos: None,
+                scan_code: ScanCode(0),
+                vk_code: VkCode(0),
+                timestamp: 0,
+            },
+            modifiers: ModifierState::default(),
+            left_thumb_down: None,
+            right_thumb_down: None,
+        }
+    }
+}
+
 /// 入力レイヤー: 物理キー状態の追跡
 ///
 /// 全キーイベントに対して [`process()`](Self::process) を無条件に呼ぶこと。

@@ -40,7 +40,7 @@ use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
-use timed_fsm::{dispatch, ActionExecutor, TimedStateMachine, TimerRuntime};
+use timed_fsm::{dispatch, ActionExecutor, TimerRuntime};
 
 use crate::hook::CallbackResult;
 use crate::ime::{HybridProvider, ImeProvider};
@@ -648,8 +648,6 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     // IME チェックやエンジン無効等で処理レイヤーがスキップされても、
     // 修飾キー/親指キーの押下・解放を漏らさないために最初に呼ぶ。
     let phys = tracker.process(&event);
-    // 暫定橋渡し: Engine 内部フィールドに同期（Step 2 で不要になる）
-    engine.sync_from_physical(&phys);
 
     // ── Shadow IME state tracking (ime_sync keys) ──
     {
@@ -887,7 +885,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     }
 
     // エンジン処理
-    let response = engine.on_event(event);
+    let response = engine.on_event(event, &phys);
     let mut timer_runtime = Win32TimerRuntime;
     let mut action_executor = SendInputExecutor;
     let consumed = dispatch(&response, &mut timer_runtime, &mut action_executor);

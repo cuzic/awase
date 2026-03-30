@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent};
-use timed_fsm::{dispatch, TimedStateMachine};
+use timed_fsm::dispatch;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
@@ -129,8 +129,11 @@ pub unsafe fn retract_passthrough_memory() {
             .is_some_and(|ime| ime.is_active() && ime.get_mode().is_kana_input());
 
         if ime_active {
-            if let Some(engine) = crate::ENGINE.get_mut() {
-                let response = engine.on_event(event);
+            if let (Some(engine), Some(tracker)) =
+                (crate::ENGINE.get_mut(), crate::INPUT_TRACKER.get_mut())
+            {
+                let phys = tracker.process(&event);
+                let response = engine.on_event(event, &phys);
                 let mut timer_runtime = crate::Win32TimerRuntime;
                 let mut action_executor = crate::SendInputExecutor;
                 dispatch(&response, &mut timer_runtime, &mut action_executor);
@@ -182,8 +185,11 @@ pub unsafe fn handle_buffer_timeout() {
     );
 
     for event in keys {
-        if let Some(engine) = crate::ENGINE.get_mut() {
-            let response = engine.on_event(event);
+        if let (Some(engine), Some(tracker)) =
+            (crate::ENGINE.get_mut(), crate::INPUT_TRACKER.get_mut())
+        {
+            let phys = tracker.process(&event);
+            let response = engine.on_event(event, &phys);
             let mut timer_runtime = crate::Win32TimerRuntime;
             let mut action_executor = crate::SendInputExecutor;
             dispatch(&response, &mut timer_runtime, &mut action_executor);
@@ -224,8 +230,11 @@ pub unsafe fn process_deferred_keys() {
     for event in keys {
         if ime_on {
             // IME ON → エンジンで処理
-            if let Some(engine) = crate::ENGINE.get_mut() {
-                let response = engine.on_event(event);
+            if let (Some(engine), Some(tracker)) =
+                (crate::ENGINE.get_mut(), crate::INPUT_TRACKER.get_mut())
+            {
+                let phys = tracker.process(&event);
+                let response = engine.on_event(event, &phys);
                 let mut timer_runtime = crate::Win32TimerRuntime;
                 let mut action_executor = crate::SendInputExecutor;
                 dispatch(&response, &mut timer_runtime, &mut action_executor);

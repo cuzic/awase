@@ -16,10 +16,10 @@
 #![cfg(windows)]
 
 use awase::config::ConfirmMode;
+use awase::engine::input_tracker::InputTracker;
 use awase::engine::Engine;
 use awase::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, VkCode};
 use awase::yab::YabLayout;
-use timed_fsm::TimedStateMachine;
 
 use std::sync::Mutex;
 
@@ -46,17 +46,49 @@ fn load_test_layout() -> YabLayout {
     YabLayout::parse(&yab_content).expect("layout should parse")
 }
 
+/// テスト用ハーネス: InputTracker + Engine を統合
+struct TestHarness {
+    tracker: InputTracker,
+    engine: Engine,
+}
+
+impl TestHarness {
+    fn on_event(&mut self, event: RawKeyEvent) -> timed_fsm::Response<KeyAction, usize> {
+        let phys = self.tracker.process(&event);
+        self.engine.on_event(event, &phys)
+    }
+
+    fn on_timeout(&mut self, timer_id: usize) -> timed_fsm::Response<KeyAction, usize> {
+        self.engine.on_timeout(timer_id)
+    }
+}
+
+impl std::ops::Deref for TestHarness {
+    type Target = Engine;
+    fn deref(&self) -> &Engine { &self.engine }
+}
+
+impl std::ops::DerefMut for TestHarness {
+    fn deref_mut(&mut self) -> &mut Engine { &mut self.engine }
+}
+
+const VK_NONCONVERT: VkCode = VkCode(0x1D);
+const VK_CONVERT: VkCode = VkCode(0x1C);
+
 /// Create a test engine
-fn make_test_engine(mode: ConfirmMode) -> Engine {
+fn make_test_engine(mode: ConfirmMode) -> TestHarness {
     let layout = load_test_layout();
-    Engine::new(
-        layout,
-        VkCode(0x1D), // VK_NONCONVERT (left thumb)
-        VkCode(0x1C), // VK_CONVERT (right thumb)
-        100,          // threshold_ms
-        mode,
-        30, // speculative_delay_ms
-    )
+    TestHarness {
+        tracker: InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,          // threshold_ms
+            mode,
+            30, // speculative_delay_ms
+        ),
+    }
 }
 
 fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {

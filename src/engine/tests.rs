@@ -74,26 +74,63 @@ fn make_layout() -> YabLayout {
     }
 }
 
-fn make_engine() -> Engine {
-    Engine::new(
-        make_layout(),
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    )
+/// テスト用ハーネス: InputTracker + Engine を統合し、
+/// on_event で自動的に物理キー状態を追跡する。
+struct TestHarness {
+    tracker: crate::engine::input_tracker::InputTracker,
+    engine: Engine,
 }
 
-fn make_speculative_engine() -> Engine {
-    Engine::new(
-        make_layout(),
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Speculative,
-        30,
-    )
+impl TestHarness {
+    fn on_event(&mut self, event: RawKeyEvent) -> Resp {
+        let phys = self.tracker.process(&event);
+        self.engine.on_event(event, &phys)
+    }
+
+    fn on_timeout(&mut self, timer_id: usize) -> Resp {
+        self.engine.on_timeout(timer_id)
+    }
+}
+
+impl std::ops::Deref for TestHarness {
+    type Target = Engine;
+    fn deref(&self) -> &Engine {
+        &self.engine
+    }
+}
+
+impl std::ops::DerefMut for TestHarness {
+    fn deref_mut(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
+}
+
+fn make_engine() -> TestHarness {
+    TestHarness {
+        tracker: crate::engine::input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    }
+}
+
+fn make_speculative_engine() -> TestHarness {
+    TestHarness {
+        tracker: crate::engine::input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Speculative,
+            30,
+        ),
+    }
 }
 
 struct Ev;
@@ -489,18 +526,18 @@ fn test_ctrl_held_non_layout_key_passes_through() {
 
 // ── Shift 面テスト ──
 
-fn make_engine_with_shift() -> Engine {
+fn make_engine_with_shift() -> TestHarness {
     let mut layout = make_layout();
     layout.shift.insert(POS_A, lit('ウ'));
     layout.shift.insert(POS_S, lit('シ'));
-    Engine::new(
+    wrap_engine(Engine::new(
         layout,
         VK_NONCONVERT,
         VK_CONVERT,
         100,
         ConfirmMode::Wait,
         30,
-    )
+    ))
 }
 
 #[test]
@@ -632,7 +669,7 @@ fn test_three_key_key_up_char_resolves_simultaneous() {
 
 // ── 連続シフト用ヘルパー ──
 
-fn make_engine_with_extended_layout() -> Engine {
+fn make_engine_with_extended_layout() -> TestHarness {
     let mut layout = make_layout();
     // D, F を配列に追加
     layout.normal.insert(POS_D, lit('て'));
@@ -641,14 +678,14 @@ fn make_engine_with_extended_layout() -> Engine {
     layout.left_thumb.insert(POS_F, lit('よ'));
     layout.right_thumb.insert(POS_D, lit('で'));
     layout.right_thumb.insert(POS_F, lit('げ'));
-    Engine::new(
+    wrap_engine(Engine::new(
         layout,
         VK_NONCONVERT,
         VK_CONVERT,
         100,
         ConfirmMode::Wait,
         30,
-    )
+    ))
 }
 
 // ── 連続シフト（左親指）テスト ──
@@ -2166,15 +2203,15 @@ fn test_speculative_thumb_first_falls_back_to_wait() {
 
 // ── TwoPhase confirm mode tests ──
 
-fn make_two_phase_engine() -> Engine {
-    Engine::new(
+fn make_two_phase_engine() -> TestHarness {
+    wrap_engine(Engine::new(
         make_layout(),
         VK_NONCONVERT,
         VK_CONVERT,
         100,
         ConfirmMode::TwoPhase,
         30,
-    )
+    ))
 }
 
 #[test]
@@ -2332,15 +2369,15 @@ fn test_two_phase_char_sequence() {
 
 // ── AdaptiveTiming モード テスト ──
 
-fn make_adaptive_engine() -> Engine {
-    Engine::new(
+fn make_adaptive_engine() -> TestHarness {
+    wrap_engine(Engine::new(
         make_layout(),
         VK_NONCONVERT,
         VK_CONVERT,
         100,
         ConfirmMode::AdaptiveTiming,
         30,
-    )
+    ))
 }
 
 /// 最初のキー（前キーなし）→ TwoPhase 動作（PendingChar + TIMER_SPECULATIVE）
@@ -2450,15 +2487,15 @@ fn test_adaptive_continuous_then_pause() {
 
 // ── NgramPredictive confirm mode tests ──
 
-fn make_ngram_predictive_engine() -> Engine {
-    Engine::new(
+fn make_ngram_predictive_engine() -> TestHarness {
+    wrap_engine(Engine::new(
         make_layout(),
         VK_NONCONVERT,
         VK_CONVERT,
         100,
         ConfirmMode::NgramPredictive,
         30,
-    )
+    ))
 }
 
 /// n-gram で通常面のスコアが高い場合、Speculative（即時出力）を使用する
@@ -2599,9 +2636,9 @@ const CROSS_MODES: [ConfirmMode; 4] = [
     ConfirmMode::AdaptiveTiming,
 ];
 
-fn make_engine_with_mode(mode: ConfirmMode) -> Engine {
+fn make_engine_with_mode(mode: ConfirmMode) -> TestHarness {
     let layout = make_layout();
-    Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30)
+    wrap_engine(Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30))
 }
 
 /// Collect final output from a sequence of Responses, handling BS retraction.
