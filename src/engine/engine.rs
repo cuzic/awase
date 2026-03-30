@@ -14,7 +14,7 @@
 use timed_fsm::{Response, TimerCommand};
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent};
+use crate::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent};
 
 use super::decision::{
     Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext, InputEffect, KeyBuffer,
@@ -215,7 +215,102 @@ impl Engine {
                 self.fsm.set_ngram_model(model);
                 Decision::pass_through()
             }
+            EngineCommand::ImeObserved(obs) => self.handle_ime_observed(obs),
+            EngineCommand::FocusChanged(obs) => self.handle_focus_changed(obs),
         }
+    }
+
+    /// IME 観測結果を処理し、キャッシュ更新 + エンジン同期の Decision を返す。
+    fn handle_ime_observed(&mut self, obs: super::observation::ImeObservation) -> Decision {
+        use super::decision::ImeCacheEffect;
+
+        let Some(ime_on) = obs.resolve(self.shadow_ime_on) else {
+            return Decision::pass_through();
+        };
+
+        let mut effects = vec![Effect::ImeCache(ImeCacheEffect::UpdateStateCache {
+            ime_on,
+        })];
+
+        // エンジンを IME 状態に追随させる（SyncImeState と同じロジック）
+        if ime_on && !self.fsm.is_enabled() {
+            let _ = self.fsm.set_enabled(true);
+            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
+            log::info!("Engine auto-enabled (IME ON)");
+        } else if !ime_on && self.fsm.is_enabled() {
+            let response = self.fsm.flush_pending(ContextChange::ImeOff);
+            let flush_effects = self.response_to_effects(&response);
+            effects.extend(flush_effects);
+            let _ = self.fsm.set_enabled(false);
+            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
+            log::info!("Engine auto-disabled (IME OFF)");
+        }
+
+        if effects.is_empty() {
+            Decision::pass_through()
+        } else {
+            Decision::pass_through_with(effects)
+        }
+    }
+
+    /// フォーカス変更の観測結果を処理し、コンテキスト無効化等の Decision を返す。
+    fn handle_focus_changed(&mut self, obs: super::observation::FocusObservation) -> Decision {
+        use super::decision::FocusEffect;
+
+        if obs.skip {
+            return Decision::pass_through();
+        }
+
+        let kind = obs.kind;
+        let process_id = obs.process_id;
+        let needs_uia = obs.needs_uia;
+        let overridden = obs.overridden;
+        let debounce_timer_id = obs.debounce_timer_id;
+        let debounce_ms = obs.debounce_ms;
+        let class_name = obs.class_name; // move ownership
+
+        let mut effects: Vec<Effect> = Vec::new();
+
+        // last_focus_info を更新
+        effects.push(Effect::Focus(FocusEffect::UpdateLastFocusInfo {
+            process_id,
+            class_name: class_name.clone(),
+        }));
+
+        // IME 信頼度をリセット
+        effects.push(Effect::Focus(FocusEffect::ResetImeReliability));
+
+        // FOCUS_KIND を更新
+        effects.push(Effect::Focus(FocusEffect::UpdateFocusKind(kind)));
+
+        // キャッシュ格納（オーバーライドでない場合のみ）
+        if !overridden {
+            effects.push(Effect::Focus(FocusEffect::InsertFocusCache {
+                process_id,
+                class_name,
+                kind,
+            }));
+        }
+
+        // NonText ならエンジンの保留状態をフラッシュ
+        if kind == FocusKind::NonText {
+            let response = self.fsm.flush_pending(ContextChange::FocusChanged);
+            let flush_effects = self.response_to_effects(&response);
+            effects.extend(flush_effects);
+        }
+
+        // UIA 非同期判定が必要なら要求
+        if needs_uia {
+            effects.push(Effect::Focus(FocusEffect::RequestUiaClassification));
+        }
+
+        // フォーカス変更デバウンスタイマー
+        effects.push(Effect::Timer(TimerEffect::Set {
+            id: debounce_timer_id,
+            duration: std::time::Duration::from_millis(debounce_ms),
+        }));
+
+        Decision::pass_through_with(effects)
     }
 
     #[must_use]

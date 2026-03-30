@@ -3,10 +3,11 @@
 use std::time::Duration;
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, ImeCacheState, KeyAction, RawKeyEvent, VkCode};
+use crate::types::{ContextChange, FocusKind, ImeCacheState, KeyAction, RawKeyEvent, VkCode};
 use crate::yab::YabLayout;
 
 use super::input_tracker::PhysicalKeyState;
+use super::observation::{FocusObservation, ImeObservation};
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
 
@@ -44,6 +45,32 @@ pub enum UiEffect {
     EngineStateChanged { enabled: bool },
 }
 
+/// フォーカス状態に関する副作用
+#[derive(Debug, Clone)]
+pub enum FocusEffect {
+    /// FOCUS_KIND アトミックを更新する
+    UpdateFocusKind(FocusKind),
+    /// IME_RELIABILITY アトミックをリセットする
+    ResetImeReliability,
+    /// フォーカスキャッシュにエントリを格納する
+    InsertFocusCache {
+        process_id: u32,
+        class_name: String,
+        kind: FocusKind,
+    },
+    /// UIA 非同期判定をリクエストする
+    RequestUiaClassification,
+    /// last_focus_info を更新する
+    UpdateLastFocusInfo { process_id: u32, class_name: String },
+}
+
+/// IME キャッシュ状態に関する副作用
+#[derive(Debug, Clone)]
+pub enum ImeCacheEffect {
+    /// IME_STATE_CACHE を更新する
+    UpdateStateCache { ime_on: bool },
+}
+
 /// アプリケーション全体の副作用を表す宣言型。
 /// Engine は Effect を返すだけで、実行は呼び出し側が行う。
 #[derive(Debug, Clone)]
@@ -52,6 +79,8 @@ pub enum Effect {
     Timer(TimerEffect),
     Ime(ImeEffect),
     Ui(UiEffect),
+    Focus(FocusEffect),
+    ImeCache(ImeCacheEffect),
 }
 
 /// Engine の判断結果（副作用なし、値で消費される）。
@@ -226,4 +255,8 @@ pub enum EngineCommand {
     },
     /// n-gram モデルを設定する
     SetNgramModel(crate::ngram::NgramModel),
+    /// IME 状態が観測された
+    ImeObserved(ImeObservation),
+    /// フォーカスが変更された
+    FocusChanged(FocusObservation),
 }

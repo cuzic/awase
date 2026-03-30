@@ -9,12 +9,13 @@ mod engine;
 pub mod fsm_types;
 pub mod input_tracker;
 mod nicola_fsm;
+pub mod observation;
 pub mod output_history;
 
 // Public re-exports
 pub use decision::{
-    Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext, InputEffect, KeyBuffer,
-    SpecialKeyCombos, TimerEffect, UiEffect,
+    Decision, Effect, EngineCommand, FocusEffect, ImeCacheEffect, ImeEffect, ImeSyncKeys,
+    InputContext, InputEffect, KeyBuffer, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 pub use engine::Engine;
 pub use fsm_types::{
@@ -22,6 +23,7 @@ pub use fsm_types::{
     OutputUpdate, PendingKey, PendingThumbData, TimerIntent,
 };
 pub use nicola_fsm::NicolaFsm;
+pub use observation::{FocusObservation, ImeObservation};
 
 pub use nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
 

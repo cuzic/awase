@@ -12,16 +12,18 @@
     clippy::type_complexity
 )]
 
-mod app_state;
+mod executor;
 mod focus;
 mod hook;
 mod ime;
+mod observer;
 mod output;
+mod runtime;
 mod single_thread_cell;
 mod tray;
 mod win32;
 
-pub(crate) use app_state::{AppState, LayoutEntry};
+pub(crate) use runtime::{LayoutEntry, Runtime};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -117,7 +119,7 @@ pub(crate) unsafe fn reinject_key(event: &RawKeyEvent) {
     win32::send_input_safe(&[input]);
 }
 
-pub(crate) static APP: SingleThreadCell<AppState> = SingleThreadCell::new();
+pub(crate) static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();
 
 use crate::focus::cache::DetectionSource;
 
@@ -177,7 +179,7 @@ impl StartupDiagnostics {
         // Show tray balloon if tray is available
         unsafe {
             if let Some(app) = APP.get_mut() {
-                app.tray.show_balloon(
+                app.executor.tray.show_balloon(
                     "awase",
                     &format!("{}件の警告があります", self.warnings.len()),
                 );
@@ -236,13 +238,15 @@ fn main() -> Result<()> {
     );
 
     unsafe {
-        APP.set(AppState {
+        APP.set(Runtime {
             engine,
-            output: Output::new(config.general.output_mode),
+            executor: executor::DecisionExecutor {
+                output: Output::new(config.general.output_mode),
+                tray: system_tray,
+                focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
+            },
             ime,
-            tray: system_tray,
             layouts,
-            focus: app_state::FocusDetector::new(config.focus_overrides.clone()),
         });
     }
 
@@ -278,7 +282,7 @@ fn main() -> Result<()> {
     let uia_tx = focus::uia::spawn_uia_worker();
     unsafe {
         if let Some(app) = APP.get_mut() {
-            app.focus.set_uia_sender(uia_tx);
+            app.executor.focus.set_uia_sender(uia_tx);
         }
     }
 
@@ -583,7 +587,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 /// フックコールバックの本体。
 ///
 /// Engine.on_input で全ロジックを処理し、Decision を execute_decision で実行する。
-fn on_key_event_impl(app: &mut AppState, event: RawKeyEvent) -> CallbackResult {
+fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     let ctx = InputContext {
         ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
     };
@@ -680,8 +684,8 @@ fn run_message_loop() {
 
                         // UIA 結果をキャッシュに反映
                         if let Some(app) = APP.get_mut() {
-                            if let Some((pid, cls)) = app.focus.last_focus_info.as_ref() {
-                                app.focus.cache.insert(
+                            if let Some((pid, cls)) = app.executor.focus.last_focus_info.as_ref() {
+                                app.executor.focus.cache.insert(
                                     *pid,
                                     cls.clone(),
                                     kind,
@@ -794,7 +798,7 @@ fn reload_config() {
                     confirm_mode: config.general.confirm_mode,
                     speculative_delay_ms: config.general.speculative_delay_ms,
                 });
-            app.output.set_mode(config.general.output_mode);
+            app.executor.output.set_mode(config.general.output_mode);
             log::info!(
                 "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
                 config.general.simultaneous_threshold_ms,
@@ -854,8 +858,8 @@ fn reload_config() {
     // フォーカスオーバーライド再読み込み + キャッシュクリア
     unsafe {
         if let Some(app) = APP.get_mut() {
-            app.focus.overrides = config.focus_overrides;
-            app.focus.cache = focus::cache::FocusCache::new();
+            app.executor.focus.overrides = config.focus_overrides;
+            app.executor.focus.cache = focus::cache::FocusCache::new();
         }
     }
     log::info!("Focus overrides reloaded");
@@ -1022,7 +1026,17 @@ unsafe extern "system" fn win_event_proc(
     let Some(app) = APP.get_mut() else {
         return;
     };
-    app.on_focus_changed(hwnd, process_id, &class_name);
+
+    // Observer: OS 観測 → FocusObservation
+    let obs = observer::focus_observer::observe(hwnd, process_id, &class_name, &app.executor.focus);
+
+    // Engine: 判断 → Decision
+    let decision = app
+        .engine
+        .on_command(awase::engine::EngineCommand::FocusChanged(obs));
+
+    // Runtime: 副作用実行
+    app.execute_decision(decision);
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
