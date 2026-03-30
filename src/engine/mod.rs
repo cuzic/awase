@@ -252,6 +252,10 @@ impl Engine {
         let flush_resp = self.flush_pending(ContextChange::EngineDisabled);
         self.enabled = !self.enabled;
         self.output_history.clear();
+        // エンジン OFF 中は on_event が早期 return するため modifiers.update() が
+        // 呼ばれず、OFF 中に離された修飾キーの KeyUp を見逃す。
+        // 再 ON 時に Ctrl/Alt が stuck して全キーが OsModifierHeld バイパスされるのを防止。
+        self.modifiers = ModifierState::default();
         log::info!(
             "Engine {}",
             if self.enabled { "enabled" } else { "disabled" }
