@@ -195,7 +195,7 @@ impl AppState {
     ///
     /// # Safety
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-    pub(crate) unsafe fn refresh_ime_state_cache(&self) {
+    pub(crate) unsafe fn refresh_ime_state_cache(&mut self) {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
         use windows::Win32::UI::WindowsAndMessaging::{
             GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
@@ -257,6 +257,23 @@ impl AppState {
                 match old_val { 0 => "OFF", 1 => "ON", _ => "Unknown" },
                 if ime_on { "ON" } else { "OFF" },
             );
+            // エンジンを IME 状態に追随させる
+            if ime_on {
+                if !self.engine.is_enabled() {
+                    let _ = self.engine.set_enabled(true);
+                    self.tray.set_enabled(true);
+                    log::info!("Engine auto-enabled (IME ON)");
+                }
+            } else {
+                if self.engine.is_enabled() {
+                    let (_, flush_resp) = self.engine.set_enabled(false);
+                    let mut tr = Win32TimerRuntime;
+                    let mut ae = SendInputExecutor;
+                    dispatch(&flush_resp, &mut tr, &mut ae);
+                    self.tray.set_enabled(false);
+                    log::info!("Engine auto-disabled (IME OFF)");
+                }
+            }
         }
     }
 

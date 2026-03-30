@@ -846,13 +846,13 @@ fn run_message_loop() {
                 }
             },
             WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
-                if let Some(app) = APP.get_ref() {
+                if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
                 }
             },
             WM_IME_KEY_DETECTED => unsafe {
                 // フックで IME 制御キーが検出された → 即座にキャッシュ更新
-                if let Some(app) = APP.get_ref() {
+                if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
                 }
             },
@@ -860,7 +860,7 @@ fn run_message_loop() {
                 // フォーカス遷移デバウンス完了 → IME キャッシュ更新
                 // キーはバッファせず、デバウンス中は前のキャッシュ値で処理される。
                 let _ = KillTimer(HWND::default(), TIMER_FOCUS_DEBOUNCE);
-                if let Some(app) = APP.get_ref() {
+                if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
                 }
             },
