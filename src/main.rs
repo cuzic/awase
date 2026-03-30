@@ -118,6 +118,9 @@ static IME_SYNC_OFF_KEYS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
+static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
 pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
 pub(crate) static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
@@ -186,6 +189,10 @@ fn main() -> Result<()> {
 
     log::info!("Hook installed. Running message loop...");
     log::info!("Press Ctrl+C to exit.");
+    MAIN_THREAD_ID.store(
+        unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
+        Ordering::SeqCst,
+    );
     install_ctrl_handler();
     focus::install_focus_hook();
 
@@ -1279,8 +1286,15 @@ fn find_config_path() -> Result<PathBuf> {
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
 fn install_ctrl_handler() {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::Win32::Foundation::BOOL {
+        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
         QUIT_REQUESTED.store(true, Ordering::SeqCst);
-        PostQuitMessage(0);
+        // PostQuitMessage は呼び出しスレッドのキューに WM_QUIT をポストするが、
+        // SetConsoleCtrlHandler のコールバックは別スレッドで呼ばれるため、
+        // メインスレッドには届かない。PostThreadMessageW でメインスレッドに送る。
+        let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
+        if tid != 0 {
+            let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
         windows::Win32::Foundation::BOOL(1) // TRUE = handled
     }
 
