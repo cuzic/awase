@@ -163,7 +163,7 @@ pub struct PendingThumbData {
 }
 
 /// 修飾キー（Ctrl / Alt / Shift）の押下状態
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct ModifierState {
     pub ctrl: bool,
     pub alt: bool,

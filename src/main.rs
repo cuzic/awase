@@ -78,6 +78,8 @@ pub fn check_ime_composing() -> bool {
 }
 
 pub(crate) static ENGINE: SingleThreadCell<Engine> = SingleThreadCell::new();
+pub(crate) static INPUT_TRACKER: SingleThreadCell<awase::engine::input_tracker::InputTracker> =
+    SingleThreadCell::new();
 pub(crate) static OUTPUT: SingleThreadCell<Output> = SingleThreadCell::new();
 pub(crate) static IME: SingleThreadCell<HybridProvider> = SingleThreadCell::new();
 pub(crate) static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
@@ -248,6 +250,10 @@ fn init_engine_validated(
     );
 
     unsafe {
+        INPUT_TRACKER.set(awase::engine::input_tracker::InputTracker::new(
+            left_thumb_vk,
+            right_thumb_vk,
+        ));
         ENGINE.set(Engine::new(
             layout,
             left_thumb_vk,
@@ -490,6 +496,7 @@ fn cleanup() {
     }
     unsafe {
         ENGINE.clear();
+        INPUT_TRACKER.clear();
         OUTPUT.clear();
         IME.clear();
         LAYOUTS.clear();
@@ -633,11 +640,16 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let Some(engine) = ENGINE.get_mut() else {
         return CallbackResult::PassThrough;
     };
+    let Some(tracker) = INPUT_TRACKER.get_mut() else {
+        return CallbackResult::PassThrough;
+    };
 
-    // ── 物理キー状態追跡（修飾キー・親指キー）──
-    // IME チェックやエンジン無効等で on_event がスキップされても、
+    // ── 入力レイヤー: 物理キー状態追跡 ──
+    // IME チェックやエンジン無効等で処理レイヤーがスキップされても、
     // 修飾キー/親指キーの押下・解放を漏らさないために最初に呼ぶ。
-    engine.track_physical_keys(&event);
+    let phys = tracker.process(&event);
+    // 暫定橋渡し: Engine 内部フィールドに同期（Step 2 で不要になる）
+    engine.sync_from_physical(&phys);
 
     // ── Shadow IME state tracking (ime_sync keys) ──
     {

@@ -1,3 +1,4 @@
+pub mod input_tracker;
 pub mod output_history;
 mod types;
 
@@ -17,7 +18,9 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 use types::{
     BypassReason, EnginePhase, Face, ModifierState, PendingKey, PendingThumbData, ResolvedAction,
 };
-pub use types::{ClassifiedEvent, FinalizePlan, KeyClass, OutputRecord, OutputUpdate, TimerIntent};
+pub use types::{
+    ClassifiedEvent, FinalizePlan, KeyClass, ModifierState, OutputRecord, OutputUpdate, TimerIntent,
+};
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;
@@ -268,29 +271,14 @@ impl Engine {
         self.enabled
     }
 
-    /// 修飾キー（Ctrl / Alt / Shift / Win）と親指キーの物理状態を追跡する。
+    /// InputTracker の物理キー状態を Engine 内部フィールドに同期する。
     ///
-    /// IME チェック等でエンジン処理がスキップされる場合でも、修飾キーの
-    /// 押下/解放を漏らさないために、フックコールバックの最も早い段階で呼ぶこと。
-    pub fn track_physical_keys(&mut self, event: &RawKeyEvent) {
-        self.modifiers.update(event);
-        let ev = self.classify(event);
-        match event.event_type {
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown => {
-                if ev.key_class.is_left_thumb() {
-                    self.left_thumb_down = Some(ev.timestamp);
-                } else if ev.key_class == KeyClass::RightThumb {
-                    self.right_thumb_down = Some(ev.timestamp);
-                }
-            }
-            KeyEventType::KeyUp | KeyEventType::SysKeyUp => {
-                if ev.key_class.is_left_thumb() {
-                    self.left_thumb_down = None;
-                } else if ev.key_class == KeyClass::RightThumb {
-                    self.right_thumb_down = None;
-                }
-            }
-        }
+    /// Step 2 で Engine メソッドが `&PhysicalKeyState` を直接参照するようになるまでの
+    /// 暫定的な橋渡し。
+    pub fn sync_from_physical(&mut self, phys: &input_tracker::PhysicalKeyState) {
+        self.modifiers = phys.modifiers;
+        self.left_thumb_down = phys.left_thumb_down;
+        self.right_thumb_down = phys.right_thumb_down;
     }
 
     /// エンジンの有効/無効を明示的に設定する。
