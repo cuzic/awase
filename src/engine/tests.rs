@@ -77,7 +77,7 @@ fn make_layout() -> YabLayout {
 /// テスト用ハーネス: InputTracker + Engine を統合し、
 /// on_event で自動的に物理キー状態を追跡する。
 struct TestHarness {
-    tracker: crate::engine::input_tracker::InputTracker,
+    tracker: input_tracker::InputTracker,
     engine: Engine,
 }
 
@@ -108,7 +108,7 @@ impl std::ops::DerefMut for TestHarness {
 
 fn make_engine() -> TestHarness {
     TestHarness {
-        tracker: crate::engine::input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
         engine: Engine::new(
             make_layout(),
             VK_NONCONVERT,
@@ -122,7 +122,7 @@ fn make_engine() -> TestHarness {
 
 fn make_speculative_engine() -> TestHarness {
     TestHarness {
-        tracker: crate::engine::input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
         engine: Engine::new(
             make_layout(),
             VK_NONCONVERT,
@@ -312,7 +312,7 @@ fn test_pattern5_thumb_alone_timeout() {
     let result = engine.on_timeout(TIMER_PENDING);
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
-    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT.0));
+    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
 }
 
 #[test]
@@ -403,7 +403,7 @@ fn test_swap_layout_flushes_pending_thumb() {
     let result = engine.swap_layout(new_layout);
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
-    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT.0));
+    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
 }
 
 #[test]
@@ -531,14 +531,17 @@ fn make_engine_with_shift() -> TestHarness {
     let mut layout = make_layout();
     layout.shift.insert(POS_A, lit('ウ'));
     layout.shift.insert(POS_S, lit('シ'));
-    wrap_engine(Engine::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    ))
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    }
 }
 
 #[test]
@@ -602,11 +605,14 @@ fn test_three_key_d1_less_than_d2() {
         .actions
         .iter()
         .any(|a| matches!(a, KeyAction::Char('ゔ'))));
-    // 親指キーがまだ押下中なので char2 も即時に同時打鍵として解決される
-    assert!(result
-        .actions
-        .iter()
-        .any(|a| matches!(a, KeyAction::Char('じ'))));
+    // 親指は消費済みなので char2 は保留に入り、ここでは出力されない
+    assert!(
+        !result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('じ'))),
+        "char2 should NOT be thumb-shifted (thumb consumed)"
+    );
 }
 
 #[test]
@@ -679,14 +685,17 @@ fn make_engine_with_extended_layout() -> TestHarness {
     layout.left_thumb.insert(POS_F, lit('よ'));
     layout.right_thumb.insert(POS_D, lit('で'));
     layout.right_thumb.insert(POS_F, lit('げ'));
-    wrap_engine(Engine::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    ))
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    }
 }
 
 // ── 連続シフト（左親指）テスト ──
@@ -710,30 +719,30 @@ fn test_continuous_shift_left_thumb() {
         "char1 should use left thumb face"
     );
 
-    // char2: 親指がまだ押下中 → active_thumb_face() 経由で即時シフト出力
+    // char2: 親指は消費済み → active_thumb_face() が None → PendingChar（保留）
     let r = engine.on_event(Ev::down(VK_S).at(t + 100_000).build());
-    r.assert_consumed();
-    assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('あ'))),
-        "char2 should use left thumb face for S"
-    );
+    assert_pending(&r);
 
-    // char3: 親指がまだ押下中 → 即時シフト出力
+    // char3: PendingChar(S) 中に char(D) 到着 → S が通常面で単独確定、D が新たに保留
     let r = engine.on_event(Ev::down(VK_D).at(t + 170_000).build());
     r.assert_consumed();
     assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('な'))),
-        "char3 should use left thumb face for D"
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('し'))),
+        "char2 should use normal face for S (thumb consumed)"
     );
 
-    // 親指リリース → left_thumb_down がクリアされる
+    // 親指リリース
     let _r = engine.on_event(Ev::up(VK_NONCONVERT).at(t + 200_000).build());
 
-    // char4: 親指リリース後 → 通常の保留（シフトなし）
+    // char4: PendingChar(D) 中に char(F) 到着 → D が通常面で単独確定、F が新たに保留
     let r = engine.on_event(Ev::down(VK_F).at(t + 250_000).build());
-    assert_pending(&r);
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('て'))),
+        "char3 should use normal face for D"
+    );
 
-    // タイムアウトで通常面が出力される
+    // タイムアウトで F が通常面で出力される
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
     assert!(
@@ -763,28 +772,28 @@ fn test_continuous_shift_right_thumb() {
         "char1 should use right thumb face"
     );
 
-    // char2: 即時シフト出力
+    // char2: 親指は消費済み → PendingChar（保留）
     let r = engine.on_event(Ev::down(VK_S).at(t + 100_000).build());
-    r.assert_consumed();
-    assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('じ'))),
-        "char2 should use right thumb face for S"
-    );
+    assert_pending(&r);
 
-    // char3: 即時シフト出力
+    // char3: PendingChar(S) 中に char(D) 到着 → S が通常面で単独確定、D が新たに保留
     let r = engine.on_event(Ev::down(VK_D).at(t + 170_000).build());
     r.assert_consumed();
     assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('で'))),
-        "char3 should use right thumb face for D"
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('し'))),
+        "char2 should use normal face for S (thumb consumed)"
     );
 
     // 親指リリース
     let _r = engine.on_event(Ev::up(VK_CONVERT).at(t + 200_000).build());
 
-    // char4: 通常面の保留
+    // char4: PendingChar(D) 中に char(F) 到着 → D が通常面で単独確定、F が新たに保留
     let r = engine.on_event(Ev::down(VK_F).at(t + 250_000).build());
-    assert_pending(&r);
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('て'))),
+        "char3 should use normal face for D"
+    );
 
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
@@ -818,12 +827,15 @@ fn test_continuous_shift_after_pending_char_thumb_timeout() {
         "timeout should resolve char1+left_thumb as simultaneous"
     );
 
-    // char2: 親指がまだ押下中 → 即時シフト出力
+    // char2: 親指は消費済み → PendingChar（保留）→ タイムアウトで通常面
     let r = engine.on_event(Ev::down(VK_S).at(t + 200_000).build());
+    assert_pending(&r);
+
+    let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
     assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('あ'))),
-        "char2 after PendingCharThumb timeout should use left thumb face"
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('し'))),
+        "char2 after PendingCharThumb timeout should use normal face (thumb consumed)"
     );
 }
 
@@ -843,24 +855,21 @@ fn test_continuous_shift_after_three_key_d1_less_d2() {
     let r = engine.on_event(Ev::down(VK_NONCONVERT).at(20_000).build());
     assert_pending(&r); // PendingCharThumb
 
-    // char2 到着: d1=20ms, d2=60ms → char1+thumb 同時、char2 即時シフト
+    // char2 到着: d1=20ms, d2=60ms → char1+thumb 同時、char2 は保留（親指消費済み）
     let r = engine.on_event(Ev::down(VK_S).at(80_000).build());
     r.assert_consumed();
     assert!(
         r.actions.iter().any(|a| matches!(a, KeyAction::Char('を'))),
         "char1+left_thumb should produce 'を'"
     );
-    assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('あ'))),
-        "char2 should use left thumb face (continuous shift)"
-    );
+    // char2 は親指消費済みのため保留に入り、ここでは出力されない
 
-    // char3: 引き続き親指押下中 → 即時シフト
+    // char3: PendingChar(S) 中に char(D) 到着 → S が通常面で単独確定、D が新たに保留
     let r = engine.on_event(Ev::down(VK_D).at(150_000).build());
     r.assert_consumed();
     assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('な'))),
-        "char3 should use left thumb face (continuous shift)"
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('し'))),
+        "char2 should use normal face for S (thumb consumed)"
     );
 }
 
@@ -880,12 +889,15 @@ fn test_continuous_shift_after_pending_char_thumb_key_up() {
     r.assert_consumed();
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('を'))));
 
-    // char2: 親指がまだ押下中 → 即時シフト出力
+    // char2: 親指は消費済み → PendingChar（保留）→ タイムアウトで通常面
     let r = engine.on_event(Ev::down(VK_S).at(t + 100_000).build());
+    assert_pending(&r);
+
+    let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
     assert!(
-        r.actions.iter().any(|a| matches!(a, KeyAction::Char('あ'))),
-        "char2 after KeyUp-resolved simultaneous should use left thumb face"
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('し'))),
+        "char2 after KeyUp-resolved simultaneous should use normal face (thumb consumed)"
     );
 }
 
@@ -924,40 +936,37 @@ fn test_continuous_shift_switch_thumb() {
 #[test]
 fn test_scancode_to_physical_pos_pipeline() {
     use crate::scanmap::{scan_to_pos, PhysicalPos};
+    use crate::types::ScanCode;
 
     // A key: scan code 0x1E → position (row=2, col=0)
-    let pos = scan_to_pos(0x1E).unwrap();
+    let pos = scan_to_pos(ScanCode(0x1E)).unwrap();
     assert_eq!(pos, PhysicalPos::new(2, 0));
 
     // S key: scan code 0x1F → position (row=2, col=1)
-    let pos = scan_to_pos(0x1F).unwrap();
+    let pos = scan_to_pos(ScanCode(0x1F)).unwrap();
     assert_eq!(pos, PhysicalPos::new(2, 1));
-
-    // This demonstrates the pipeline: RawKeyEvent.scan_code → PhysicalPos.
-    // When .yab replaces TOML, the engine will use PhysicalPos for layout
-    // lookup instead of vk_code.
 }
 
 #[test]
 fn test_scancode_pipeline_covers_nicola_keys() {
     use crate::scanmap::{scan_to_pos, PhysicalPos};
+    use crate::types::ScanCode;
 
-    // Verify all character rows used in NICOLA are covered by scan_to_pos.
-    // Row 0 (number row): 1-key through ¥-key
-    assert_eq!(scan_to_pos(0x02), Some(PhysicalPos::new(0, 0))); // 1
-    assert_eq!(scan_to_pos(0x0B), Some(PhysicalPos::new(0, 9))); // 0
+    // Row 0 (number row): 1-key through 0-key
+    assert_eq!(scan_to_pos(ScanCode(0x02)), Some(PhysicalPos::new(0, 0))); // 1
+    assert_eq!(scan_to_pos(ScanCode(0x0B)), Some(PhysicalPos::new(0, 9))); // 0
 
     // Row 1 (Q row): Q through [
-    assert_eq!(scan_to_pos(0x10), Some(PhysicalPos::new(1, 0))); // Q
-    assert_eq!(scan_to_pos(0x1B), Some(PhysicalPos::new(1, 11))); // [
+    assert_eq!(scan_to_pos(ScanCode(0x10)), Some(PhysicalPos::new(1, 0))); // Q
+    assert_eq!(scan_to_pos(ScanCode(0x1B)), Some(PhysicalPos::new(1, 11))); // [
 
     // Row 2 (A row): A through ]
-    assert_eq!(scan_to_pos(0x1E), Some(PhysicalPos::new(2, 0))); // A
-    assert_eq!(scan_to_pos(0x2B), Some(PhysicalPos::new(2, 11))); // ]
+    assert_eq!(scan_to_pos(ScanCode(0x1E)), Some(PhysicalPos::new(2, 0))); // A
+    assert_eq!(scan_to_pos(ScanCode(0x2B)), Some(PhysicalPos::new(2, 11))); // ]
 
     // Row 3 (Z row): Z through _
-    assert_eq!(scan_to_pos(0x2C), Some(PhysicalPos::new(3, 0))); // Z
-    assert_eq!(scan_to_pos(0x73), Some(PhysicalPos::new(3, 10))); // _
+    assert_eq!(scan_to_pos(ScanCode(0x2C)), Some(PhysicalPos::new(3, 0))); // Z
+    assert_eq!(scan_to_pos(ScanCode(0x73)), Some(PhysicalPos::new(3, 10))); // _
 }
 
 #[test]
@@ -979,8 +988,9 @@ fn test_nicola_state_stores_scan_code() {
     assert_pending(&result);
 
     // The engine should have stored the scan_code in pending_char
-    assert_eq!(engine.phase, EnginePhase::PendingChar);
-    let pending = engine.pending_char.expect("pending_char should be set");
+    let EngineState::PendingChar(pending) = engine.state else {
+        panic!("expected PendingChar state, got {:?}", engine.state);
+    };
     assert_eq!(
         pending.scan_code,
         ScanCode(0x1E),
@@ -1012,10 +1022,11 @@ fn test_pending_char_thumb_stores_char_scan() {
     let result = engine.on_event(thumb_event);
     assert_pending(&result);
 
-    assert_eq!(engine.phase, EnginePhase::PendingCharThumb);
-    let pending = engine.pending_char.expect("pending_char should be set");
+    let EngineState::PendingCharThumb { char_key, .. } = engine.state else {
+        panic!("expected PendingCharThumb state, got {:?}", engine.state);
+    };
     assert_eq!(
-        pending.scan_code,
+        char_key.scan_code,
         ScanCode(0x1E),
         "char_scan should be preserved in pending_char"
     );
@@ -1048,7 +1059,7 @@ fn test_yab_value_to_action_literal_empty() {
 fn test_yab_value_to_action_special() {
     use crate::yab::SpecialKey;
     let action = yab_value_to_action(&YabValue::Special(SpecialKey::Backspace));
-    assert!(matches!(action, KeyAction::Key(0x08)));
+    assert!(matches!(action, KeyAction::Key(VkCode(0x08))));
 }
 
 #[test]
@@ -1106,7 +1117,7 @@ fn test_flush_pending_from_pending_thumb() {
     // flush → 親指キーを単独確定
     let r = engine.flush_pending(ContextChange::InputLanguageChanged);
     assert!(!r.actions.is_empty(), "should emit the pending thumb key");
-    assert!(matches!(r.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT.0));
+    assert!(matches!(r.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
 }
 
 #[test]
@@ -1236,7 +1247,7 @@ fn test_pending_thumb_then_char_after_threshold() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT.0)));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)));
 }
 
 #[test]
@@ -1254,7 +1265,7 @@ fn test_pending_thumb_then_another_thumb() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT.0)));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)));
 }
 
 // ── PendingCharThumb + thumb key arrival (line 537, 543-544) ──
@@ -1330,7 +1341,7 @@ fn test_key_up_while_pending_thumb() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT.0)));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)));
     // Note: output_history uses vk_code as key for thumb,
     // so scan_code-based removal in on_key_up won't find it -> no KeyUp action appended
 }
@@ -1354,7 +1365,7 @@ fn test_key_up_active_key_action() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D)));
 
     // KeyUp should produce KeyUp(VK_D)
     let r = engine.on_event(Ev::up(VK_D).build());
@@ -1362,7 +1373,7 @@ fn test_key_up_active_key_action() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D.0)));
+        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D)));
 }
 
 // ── KeyUp for active Suppress/other action (line 622) ──
@@ -1422,11 +1433,11 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D)));
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D.0)));
+        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D)));
 }
 
 // ── is_layout_key coverage (lines 657-659) ──
@@ -1474,7 +1485,7 @@ fn test_timeout_char_not_in_normal_layout() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F.0)));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F)));
 }
 
 // ── swap_layout with PendingCharThumb ──
@@ -1523,14 +1534,17 @@ fn test_romaji_value_in_layout() {
             kana: Some('か'),
         },
     );
-    let mut engine = Engine::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    );
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    };
 
     engine.on_event(Ev::down(VK_D).build());
     let r = engine.on_timeout(TIMER_PENDING);
@@ -1550,19 +1564,22 @@ fn test_special_value_in_layout() {
     layout
         .normal
         .insert(POS_D, YabValue::Special(SpecialKey::Backspace));
-    let mut engine = Engine::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    );
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    };
 
     engine.on_event(Ev::down(VK_D).build());
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
-    assert!(matches!(r.actions[0], KeyAction::Key(0x08)));
+    assert!(matches!(r.actions[0], KeyAction::Key(VkCode(0x08))));
 
     // KeyUp should produce KeyUp(0x08) since it's a Key action
     let r = engine.on_event(Ev::up(VK_D).build());
@@ -1570,7 +1587,7 @@ fn test_special_value_in_layout() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(0x08))));
+        .any(|a| matches!(a, KeyAction::KeyUp(VkCode(0x08)))));
 }
 
 // ── None value in layout face ──
@@ -1579,14 +1596,17 @@ fn test_special_value_in_layout() {
 fn test_none_value_in_layout() {
     let mut layout = make_layout();
     layout.normal.insert(POS_D, YabValue::None);
-    let mut engine = Engine::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    );
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    };
 
     engine.on_event(Ev::down(VK_D).build());
     let r = engine.on_timeout(TIMER_PENDING);
@@ -1656,14 +1676,17 @@ fn test_key_up_for_romaji_produces_suppress() {
             kana: Some('か'),
         },
     );
-    let mut engine = Engine::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    );
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
+    };
 
     engine.on_event(Ev::down(VK_D).build());
     engine.on_timeout(TIMER_PENDING);
@@ -1695,11 +1718,11 @@ fn test_key_up_while_pending_char_key_action() {
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D.0)));
+        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D)));
     assert!(r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D.0)));
+        .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D)));
 }
 
 // ── 3-key d1 >= d2 with left thumb (lines 516, 522) ──
@@ -1977,8 +2000,7 @@ fn test_without_ngram_90ms_is_simultaneous() {
 fn test_speculative_char_timeout_confirms() {
     // Manually set engine to SpeculativeChar state
     let mut engine = make_engine();
-    engine.phase = EnginePhase::SpeculativeChar;
-    engine.pending_char = Some(PendingKey {
+    engine.state = EngineState::SpeculativeChar(PendingKey {
         scan_code: SCAN_A,
         vk_code: VK_A,
         timestamp: 1_000_000,
@@ -1993,9 +2015,9 @@ fn test_speculative_char_timeout_confirms() {
         r.actions
     );
     assert!(
-        engine.phase == EnginePhase::Idle,
+        engine.state.is_idle(),
         "state should be Idle after timeout, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
@@ -2016,9 +2038,9 @@ fn test_speculative_single_char() {
         r.actions[0]
     );
     assert!(
-        engine.phase == EnginePhase::SpeculativeChar,
+        matches!(engine.state, EngineState::SpeculativeChar(_)),
         "state should be SpeculativeChar, got {:?}",
-        engine.phase
+        engine.state
     );
 
     // Timeout → no additional output, back to Idle
@@ -2030,9 +2052,9 @@ fn test_speculative_single_char() {
         r.actions
     );
     assert!(
-        engine.phase == EnginePhase::Idle,
+        engine.state.is_idle(),
         "state should be Idle after timeout, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
@@ -2068,9 +2090,9 @@ fn test_speculative_simultaneous() {
         r.actions
     );
     assert!(
-        engine.phase == EnginePhase::Idle,
+        engine.state.is_idle(),
         "state should be Idle after retraction, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
@@ -2087,14 +2109,17 @@ fn test_speculative_simultaneous_with_romaji() {
     );
     layout.left_thumb.insert(POS_D, lit('げ'));
 
-    let mut engine = Engine::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Speculative,
-        30,
-    );
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Speculative,
+            30,
+        ),
+    };
     let t0 = 1_000_000;
 
     // Press 'D' key → immediate output Romaji("ka")
@@ -2118,7 +2143,7 @@ fn test_speculative_simultaneous_with_romaji() {
         r.actions
     );
     assert!(
-        matches!(&r.actions[0], KeyAction::Key(0x08)),
+        matches!(&r.actions[0], KeyAction::Key(VkCode(0x08))),
         "first action should be BS, got {:?}",
         r.actions[0]
     );
@@ -2154,9 +2179,9 @@ fn test_speculative_char_sequence() {
         r.actions
     );
     assert!(
-        engine.phase == EnginePhase::SpeculativeChar,
+        matches!(engine.state, EngineState::SpeculativeChar(_)),
         "state should be SpeculativeChar for second char, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
@@ -2181,9 +2206,9 @@ fn test_speculative_thumb_outside_threshold() {
     r.assert_consumed();
     // In Speculative mode, thumb goes to handle_idle_wait → PendingThumb
     assert!(
-        engine.phase == EnginePhase::PendingThumb,
+        matches!(engine.state, EngineState::PendingThumb(_)),
         "thumb outside threshold should be pending, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
@@ -2196,23 +2221,26 @@ fn test_speculative_thumb_first_falls_back_to_wait() {
     let r = engine.on_event(Ev::down(VK_NONCONVERT).at(t0).build());
     assert_pending(&r);
     assert!(
-        engine.phase == EnginePhase::PendingThumb,
+        matches!(engine.state, EngineState::PendingThumb(_)),
         "thumb first should enter PendingThumb, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
 // ── TwoPhase confirm mode tests ──
 
 fn make_two_phase_engine() -> TestHarness {
-    wrap_engine(Engine::new(
-        make_layout(),
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::TwoPhase,
-        30,
-    ))
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::TwoPhase,
+            30,
+        ),
+    }
 }
 
 #[test]
@@ -2229,9 +2257,9 @@ fn test_two_phase_thumb_within_short_delay() {
     assert!(r.actions.is_empty(), "Phase 1 should not emit any actions");
     r.assert_timer_set(TIMER_SPECULATIVE);
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "state should be PendingChar, got {:?}",
-        engine.phase
+        engine.state
     );
 
     // Left thumb arrives at 20ms (< 30ms) → PendingCharThumb
@@ -2280,9 +2308,9 @@ fn test_two_phase_thumb_after_short_delay() {
     );
     r.assert_timer_set(TIMER_PENDING);
     assert!(
-        engine.phase == EnginePhase::SpeculativeChar,
+        matches!(engine.state, EngineState::SpeculativeChar(_)),
         "state should be SpeculativeChar, got {:?}",
-        engine.phase
+        engine.state
     );
 
     // Left thumb arrives at 50ms (within remaining threshold window)
@@ -2296,9 +2324,9 @@ fn test_two_phase_thumb_after_short_delay() {
         r.actions
     );
     assert!(
-        engine.phase == EnginePhase::Idle,
+        engine.state.is_idle(),
         "state should be Idle after retraction, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
@@ -2321,7 +2349,7 @@ fn test_two_phase_no_thumb() {
     r.assert_consumed();
     assert_eq!(r.actions.len(), 1);
     assert!(matches!(&r.actions[0], KeyAction::Char('う')));
-    assert!(engine.phase == EnginePhase::SpeculativeChar);
+    assert!(matches!(engine.state, EngineState::SpeculativeChar(_)));
 
     // TIMER_PENDING fires → confirmed, no additional output
     let r = engine.on_timeout(TIMER_PENDING);
@@ -2332,9 +2360,9 @@ fn test_two_phase_no_thumb() {
         r.actions
     );
     assert!(
-        engine.phase == EnginePhase::Idle,
+        engine.state.is_idle(),
         "state should be Idle after full confirmation, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
@@ -2362,23 +2390,26 @@ fn test_two_phase_char_sequence() {
     );
     // char2 (S) should now be in PendingChar
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "state should be PendingChar for char2, got {:?}",
-        engine.phase
+        engine.state
     );
 }
 
 // ── AdaptiveTiming モード テスト ──
 
 fn make_adaptive_engine() -> TestHarness {
-    wrap_engine(Engine::new(
-        make_layout(),
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::AdaptiveTiming,
-        30,
-    ))
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::AdaptiveTiming,
+            30,
+        ),
+    }
 }
 
 /// 最初のキー（前キーなし）→ TwoPhase 動作（PendingChar + TIMER_SPECULATIVE）
@@ -2394,9 +2425,9 @@ fn test_adaptive_first_key_uses_two_phase() {
         "TwoPhase Phase 1 should have no actions"
     );
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "state should be PendingChar, got {:?}",
-        engine.phase
+        engine.state
     );
     r.assert_timer_set(TIMER_SPECULATIVE);
 }
@@ -2423,9 +2454,9 @@ fn test_adaptive_rapid_typing_uses_wait() {
         "Wait mode should have no immediate actions"
     );
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "state should be PendingChar, got {:?}",
-        engine.phase
+        engine.state
     );
     r.assert_timer_set(TIMER_PENDING);
 }
@@ -2451,9 +2482,9 @@ fn test_adaptive_after_pause_uses_two_phase() {
         "TwoPhase Phase 1 should have no actions"
     );
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "state should be PendingChar, got {:?}",
-        engine.phase
+        engine.state
     );
     r.assert_timer_set(TIMER_SPECULATIVE);
 }
@@ -2489,14 +2520,17 @@ fn test_adaptive_continuous_then_pause() {
 // ── NgramPredictive confirm mode tests ──
 
 fn make_ngram_predictive_engine() -> TestHarness {
-    wrap_engine(Engine::new(
-        make_layout(),
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::NgramPredictive,
-        30,
-    ))
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::NgramPredictive,
+            30,
+        ),
+    }
 }
 
 /// n-gram で通常面のスコアが高い場合、Speculative（即時出力）を使用する
@@ -2531,7 +2565,7 @@ fn test_ngram_predictive_high_normal_score_uses_speculative() {
         "NgramPredictive should output immediately when normal score is high"
     );
     assert!(
-        engine.phase == EnginePhase::SpeculativeChar,
+        matches!(engine.state, EngineState::SpeculativeChar(_)),
         "Should be in SpeculativeChar state"
     );
 }
@@ -2568,7 +2602,7 @@ fn test_ngram_predictive_high_thumb_score_uses_wait() {
         "NgramPredictive should wait when thumb score is higher"
     );
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "Should be in PendingChar state"
     );
     r.assert_timer_set(TIMER_PENDING);
@@ -2589,7 +2623,7 @@ fn test_ngram_predictive_no_model_falls_back() {
         "TwoPhase fallback Phase 1 should have no actions"
     );
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "Should be in PendingChar state"
     );
     r.assert_timer_set(TIMER_SPECULATIVE);
@@ -2617,7 +2651,7 @@ fn test_ngram_predictive_no_history_uses_wait() {
         "NgramPredictive should wait when no history (scores are zero)"
     );
     assert!(
-        engine.phase == EnginePhase::PendingChar,
+        matches!(engine.state, EngineState::PendingChar(_)),
         "Should be in PendingChar state"
     );
     r.assert_timer_set(TIMER_PENDING);
@@ -2639,7 +2673,10 @@ const CROSS_MODES: [ConfirmMode; 4] = [
 
 fn make_engine_with_mode(mode: ConfirmMode) -> TestHarness {
     let layout = make_layout();
-    wrap_engine(Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30))
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        engine: Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30),
+    }
 }
 
 /// Collect final output from a sequence of Responses, handling BS retraction.
@@ -2649,7 +2686,7 @@ fn collect_output(responses: &[Resp]) -> Vec<KeyAction> {
     for r in responses {
         for action in &r.actions {
             match action {
-                KeyAction::Key(0x08) => {
+                KeyAction::Key(VkCode(0x08)) => {
                     output.pop();
                 }
                 KeyAction::Suppress => {} // skip suppresses
@@ -3011,7 +3048,7 @@ fn test_collect_output_handles_bs_retraction() {
         },
         Response {
             actions: vec![
-                KeyAction::Key(0x08), // BS retracts 'う'
+                KeyAction::Key(VkCode(0x08)), // BS retracts 'う'
                 KeyAction::Char('を'),
             ],
             consumed: true,

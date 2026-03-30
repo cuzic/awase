@@ -132,16 +132,26 @@ pub enum BypassReason {
     OsModifierHeld,
 }
 
-/// エンジンのフェーズ（状態タグ）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnginePhase {
+/// エンジンの状態（データ付き enum で不正な状態をコンパイル時に排除）
+#[derive(Debug, Clone, Copy)]
+pub enum EngineState {
     Idle,
-    PendingChar,
-    PendingThumb,
+    PendingChar(PendingKey),
+    PendingThumb(PendingThumbData),
     /// 文字キー → 親指キーの順に到着し、3 鍵目（char2）を待機中
-    PendingCharThumb,
+    PendingCharThumb {
+        char_key: PendingKey,
+        thumb: PendingThumbData,
+    },
     /// 投機出力済み: 通常面の文字を出力したが、同時打鍵で差し替えられる可能性がある
-    SpeculativeChar,
+    SpeculativeChar(PendingKey),
+}
+
+impl EngineState {
+    /// 状態が Idle かどうか
+    pub const fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
 }
 
 /// 保留中の文字キーデータ
@@ -162,8 +172,9 @@ pub struct PendingThumbData {
     pub timestamp: Timestamp,
 }
 
-/// 修飾キー（Ctrl / Alt / Shift）の押下状態
+/// 修飾キー（Ctrl / Alt / Shift / Win）の押下状態
 #[derive(Debug, Default, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // 各修飾キーの物理状態を1:1で表現
 pub struct ModifierState {
     pub ctrl: bool,
     pub alt: bool,
@@ -193,7 +204,7 @@ impl ModifierState {
     }
 
     /// OS 予約キーコンビネーション用の修飾キーが押下中かどうか
-    pub const fn is_os_modifier_held(&self) -> bool {
+    pub const fn is_os_modifier_held(self) -> bool {
         self.ctrl || self.alt || self.win
     }
 }

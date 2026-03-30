@@ -1,5 +1,8 @@
 use crate::types::{KeyAction, ScanCode};
 
+#[cfg(test)]
+use crate::types::VkCode;
+
 /// 出力履歴の1エントリ
 #[derive(Debug, Clone)]
 pub struct OutputEntry {
@@ -55,15 +58,15 @@ impl OutputHistory {
     /// n-gram 用の直近かな文字列（古い順）
     #[must_use]
     pub fn recent_kana(&self, n: usize) -> Vec<char> {
-        self.entries
+        let mut result: Vec<char> = self
+            .entries
             .iter()
             .rev()
             .filter_map(|e| e.kana)
             .take(n)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
+            .collect();
+        result.reverse();
+        result
     }
 
     /// scan_code に対応するアクションを検索（KeyUp 用）
@@ -78,11 +81,10 @@ impl OutputHistory {
 
     /// scan_code に対応するエントリを除去して返す（KeyUp 用）
     pub fn remove_by_scan(&mut self, scan_code: ScanCode) -> Option<OutputEntry> {
-        if let Some(pos) = self.entries.iter().position(|e| e.scan_code == scan_code) {
-            Some(self.entries.remove(pos))
-        } else {
-            None
-        }
+        self.entries
+            .iter()
+            .position(|e| e.scan_code == scan_code)
+            .map(|pos| self.entries.remove(pos))
     }
 
     /// GUI プレビュー用: 出力テキスト
@@ -114,9 +116,9 @@ mod tests {
     use super::*;
     use crate::types::KeyAction;
 
-    fn make_entry(scan_code: u32, romaji: &str, kana: Option<char>) -> OutputEntry {
+    fn make_entry(scan_code: ScanCode, romaji: &str, kana: Option<char>) -> OutputEntry {
         OutputEntry {
-            scan_code: ScanCode(scan_code),
+            scan_code,
             romaji: romaji.to_string(),
             kana,
             action: KeyAction::Romaji(romaji.to_string()),
@@ -126,9 +128,9 @@ mod tests {
     #[test]
     fn test_push_and_recent_kana() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "ka", Some('か')));
-        h.push(make_entry(31, "ki", Some('き')));
-        h.push(make_entry(32, "ku", Some('く')));
+        h.push(make_entry(ScanCode(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode(32), "ku", Some('く')));
 
         let kana = h.recent_kana(3);
         assert_eq!(kana, vec!['か', 'き', 'く']);
@@ -137,8 +139,8 @@ mod tests {
     #[test]
     fn test_retract_last() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "ka", Some('か')));
-        h.push(make_entry(31, "ki", Some('き')));
+        h.push(make_entry(ScanCode(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode(31), "ki", Some('き')));
 
         let retracted = h.retract_last().unwrap();
         assert_eq!(retracted.scan_code, ScanCode(31));
@@ -150,21 +152,21 @@ mod tests {
         let mut h = OutputHistory::new();
         assert_eq!(h.retract_bs_count(), 0);
 
-        h.push(make_entry(30, "ka", Some('か')));
+        h.push(make_entry(ScanCode(30), "ka", Some('か')));
         assert_eq!(h.retract_bs_count(), 1);
 
-        h.push(make_entry(31, "ki", Some('き')));
+        h.push(make_entry(ScanCode(31), "ki", Some('き')));
         assert_eq!(h.retract_bs_count(), 1);
 
-        h.push(make_entry(32, "ku", Some('く')));
+        h.push(make_entry(ScanCode(32), "ku", Some('く')));
         assert_eq!(h.retract_bs_count(), 1);
     }
 
     #[test]
     fn test_find_action_by_scan() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "ka", Some('か')));
-        h.push(make_entry(31, "ki", Some('き')));
+        h.push(make_entry(ScanCode(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode(31), "ki", Some('き')));
 
         let action = h.find_action_by_scan(ScanCode(30)).unwrap();
         assert!(matches!(action, KeyAction::Romaji(r) if r == "ka"));
@@ -175,9 +177,9 @@ mod tests {
     #[test]
     fn test_remove_by_scan() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "ka", Some('か')));
-        h.push(make_entry(31, "ki", Some('き')));
-        h.push(make_entry(32, "ku", Some('く')));
+        h.push(make_entry(ScanCode(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode(32), "ku", Some('く')));
 
         let removed = h.remove_by_scan(ScanCode(31)).unwrap();
         assert_eq!(removed.romaji, "ki");
@@ -195,14 +197,14 @@ mod tests {
     #[test]
     fn test_display_text() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "ka", Some('か')));
+        h.push(make_entry(ScanCode(30), "ka", Some('か')));
         h.push(OutputEntry {
             scan_code: ScanCode(50),
             romaji: "shift".to_string(),
             kana: None,
-            action: KeyAction::Key(0x10),
+            action: KeyAction::Key(VkCode(0x10)),
         });
-        h.push(make_entry(31, "ki", Some('き')));
+        h.push(make_entry(ScanCode(31), "ki", Some('き')));
 
         assert_eq!(h.display_text(), "かき");
     }
@@ -210,8 +212,8 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "ka", Some('か')));
-        h.push(make_entry(31, "ki", Some('き')));
+        h.push(make_entry(ScanCode(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode(31), "ki", Some('き')));
 
         assert!(!h.is_empty());
         h.clear();
@@ -222,11 +224,11 @@ mod tests {
     #[test]
     fn test_recent_kana_ordering() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "a", Some('あ')));
-        h.push(make_entry(31, "i", Some('い')));
-        h.push(make_entry(32, "u", Some('う')));
-        h.push(make_entry(33, "e", Some('え')));
-        h.push(make_entry(34, "o", Some('お')));
+        h.push(make_entry(ScanCode(30), "a", Some('あ')));
+        h.push(make_entry(ScanCode(31), "i", Some('い')));
+        h.push(make_entry(ScanCode(32), "u", Some('う')));
+        h.push(make_entry(ScanCode(33), "e", Some('え')));
+        h.push(make_entry(ScanCode(34), "o", Some('お')));
 
         // recent_kana should return oldest-first order
         let kana = h.recent_kana(3);
@@ -236,9 +238,9 @@ mod tests {
     #[test]
     fn test_recent_kana_max_n() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(30, "a", Some('あ')));
-        h.push(make_entry(31, "i", Some('い')));
-        h.push(make_entry(32, "u", Some('う')));
+        h.push(make_entry(ScanCode(30), "a", Some('あ')));
+        h.push(make_entry(ScanCode(31), "i", Some('い')));
+        h.push(make_entry(ScanCode(32), "u", Some('う')));
 
         // Requesting more than available returns all
         let kana = h.recent_kana(10);

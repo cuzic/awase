@@ -77,7 +77,7 @@ impl InputTracker {
     /// タイマー発火時など、キーイベントを伴わない場面で最新の物理状態を取得する。
     /// `classified` は直前の `process()` で設定された値がそのまま残る。
     #[must_use]
-    pub fn snapshot(&self) -> PhysicalKeyState {
+    pub const fn snapshot(&self) -> PhysicalKeyState {
         PhysicalKeyState {
             classified: ClassifiedEvent {
                 key_class: KeyClass::Passthrough,
@@ -121,7 +121,7 @@ impl InputTracker {
         };
 
         let pos = if key_class == KeyClass::Char {
-            scan_to_pos(event.scan_code.0)
+            scan_to_pos(event.scan_code)
         } else {
             None
         };
