@@ -478,28 +478,91 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
-    // IME チェック: キーボードレイアウト（HKL）ベース
-    // TSF は per-thread のため他アプリの状態が見えない。
-    // IMM は Windows 11 の TSF-only アプリで NULL を返す。
-    // HKL（言語 ID）が唯一の信頼できるシグナル。
+    // IME チェック: 対象スレッドの HKL + ImmGetOpenStatus フォールバック
+    //
+    // 一次判定: GetGUIThreadInfo → GetWindowThreadProcessId → GetKeyboardLayout(threadId)
+    //   → 対象スレッドの入力ロケールが日本語かを判定
+    // 二次判定: ImmGetContext(hwndFocus) + ImmGetOpenStatus
+    //   → 取れた場合のみ IME ON/OFF を判定（TSF-only アプリでは取れない）
+    //
+    // 結果:
+    //   NonJapanese → PassThrough
+    //   JapaneseImeClosed → PassThrough（IME OFF 確定）
+    //   JapaneseImeOpen / JapaneseImeUnknown → Engine 処理
     {
+        use windows::Win32::Foundation::HWND as WinHWND;
+        use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext};
         use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-        let hkl = unsafe { GetKeyboardLayout(0) };
-        let lang_id = (hkl.0 as u32) & 0xFFFF;
-        let is_japanese = lang_id == 0x0411;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+        };
 
         let is_key_down = matches!(
             event.event_type,
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
+
+        // Step 1: 対象スレッドの HKL を取得
+        let mut gui_info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        let (thread_id, hwnd_focus) = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
+            let fg_hwnd = if gui_info.hwndFocus != WinHWND::default() {
+                gui_info.hwndFocus
+            } else {
+                gui_info.hwndActive
+            };
+            let mut pid = 0u32;
+            let tid = GetWindowThreadProcessId(fg_hwnd, Some(&mut pid));
+            (tid, fg_hwnd)
+        } else {
+            (0, WinHWND::default())
+        };
+
+        let hkl = GetKeyboardLayout(thread_id);
+        let lang_id = (hkl.0 as u32) & 0xFFFF;
+        let is_japanese = lang_id == 0x0411;
+
+        if !is_japanese {
+            if is_key_down {
+                log::trace!(
+                    "IME: vk=0x{:02X} tid={thread_id} HKL=0x{lang_id:04X} → NonJapanese → passthrough",
+                    event.vk_code.0,
+                );
+            }
+            return CallbackResult::PassThrough;
+        }
+
+        // Step 2: IMM フォールバック（取れる場合のみ）
+        let ime_open = if hwnd_focus != WinHWND::default() {
+            let himc = ImmGetContext(hwnd_focus);
+            if !himc.is_invalid() {
+                let open = ImmGetOpenStatus(himc).as_bool();
+                ImmReleaseContext(hwnd_focus, himc);
+                Some(open)
+            } else {
+                None // TSF-only アプリ（IMM コンテキストなし）
+            }
+        } else {
+            None
+        };
+
         if is_key_down {
             log::trace!(
-                "IME check: vk=0x{:02X} HKL=0x{lang_id:04X} japanese={is_japanese}",
+                "IME: vk=0x{:02X} tid={thread_id} HKL=0x{lang_id:04X} ImmOpen={ime_open:?} → {}",
                 event.vk_code.0,
+                match ime_open {
+                    Some(true) => "JapaneseImeOpen → engine",
+                    Some(false) => "JapaneseImeClosed → passthrough",
+                    None => "JapaneseImeUnknown → engine",
+                },
             );
         }
 
-        if !is_japanese {
+        // JapaneseImeClosed（IME OFF 確定）のみ PassThrough
+        // JapaneseImeUnknown（TSF-only）は安全側でエンジン処理
+        if ime_open == Some(false) {
             return CallbackResult::PassThrough;
         }
     }
