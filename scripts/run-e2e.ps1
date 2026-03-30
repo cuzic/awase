@@ -75,7 +75,7 @@ $imeInfo = "N/A"
 try {
     $langs = Get-WinUserLanguageList -ErrorAction Stop
     $langInfo = ($langs | ForEach-Object { $_.LanguageTag }) -join ", "
-    $imeInfo = if ($langs | Where-Object { $_.LanguageTag -eq "ja-JP" }) { "Yes" } else { "No" }
+    $imeInfo = if ($langs | Where-Object { $_.LanguageTag -like "ja*" }) { "Yes" } else { "No" }
 } catch {
     # Get-WinUserLanguageList may not be available
 }
