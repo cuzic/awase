@@ -76,7 +76,6 @@ const WM_BUFFER_TIMEOUT: u32 = WM_APP + 13;
 const WM_IME_KEY_DETECTED: u32 = WM_APP + 14;
 
 /// フォーカス遷移デバウンス完了通知
-const WM_FOCUS_DEBOUNCE: u32 = WM_APP + 15;
 
 /// Undetermined + IME ON バッファリングのタイマー ID
 pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;

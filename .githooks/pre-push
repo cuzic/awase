@@ -1,0 +1,9 @@
+#!/bin/bash
+# Pre-push hook: compile check before push
+echo "Running pre-push checks..."
+mise run check
+if [ $? -ne 0 ]; then
+    echo "❌ Compilation failed. Push aborted."
+    exit 1
+fi
+echo "✅ All checks passed."
