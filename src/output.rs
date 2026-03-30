@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use awase::types::KeyAction;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -24,56 +26,123 @@ const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     }
 }
 
-/// SendInput によるキー注入を行うモジュール
-pub struct Output;
+/// 非同期出力キューつき SendInput ラッパー
+///
+/// ローマ字の送信は即座に行わず、内部キューに積む。
+/// メッセージループの `WM_TIMER`（`TIMER_OUTPUT_DRAIN`）で
+/// キューから 1 イベントずつ取り出して `SendInput` する。
+/// これにより他のキーボードフック（PowerToys 等）に処理時間を与え、
+/// 文字の取りこぼしを防ぐ。
+///
+/// `Key`, `KeyUp`, `Char` は即座に送信する（遅延不要）。
+pub struct Output {
+    /// 遅延送信用キュー（ローマ字 INPUT イベント）
+    queue: VecDeque<INPUT>,
+}
 
 impl Output {
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self {
+            queue: VecDeque::new(),
+        }
     }
 
-    /// アクション列を順に実行する
-    pub fn send_keys(&self, actions: &[KeyAction]) {
+    /// アクション列を処理する。
+    ///
+    /// `Key`, `KeyUp`, `Char` は即座に送信。
+    /// `Romaji` はキューに積み、タイマーでドリップフィードする。
+    pub fn send_keys(&mut self, actions: &[KeyAction]) {
         for action in actions {
             match action {
                 KeyAction::Key(vk) => {
-                    self.send_key(*vk, false);
+                    // キューに溜まっている分を先にフラッシュ
+                    self.flush_queue();
+                    self.send_key_immediate(*vk, false);
                 }
                 KeyAction::KeyUp(vk) => {
-                    self.send_key(*vk, true);
+                    self.flush_queue();
+                    self.send_key_immediate(*vk, true);
                 }
                 KeyAction::Char(ch) => {
+                    self.flush_queue();
                     self.send_unicode_char(*ch);
                 }
                 KeyAction::Suppress => {
                     // 何もしない
                 }
                 KeyAction::Romaji(s) => {
-                    self.send_romaji(s);
+                    self.enqueue_romaji(s);
+                }
+            }
+        }
+        // キューにイベントがあればドレインタイマーを開始
+        if !self.queue.is_empty() {
+            self.start_drain_timer();
+        }
+    }
+
+    /// キューから 1 イベントを取り出して SendInput する。
+    ///
+    /// メッセージループの `WM_TIMER(TIMER_OUTPUT_DRAIN)` から呼ばれる。
+    /// キューが空になったらタイマーを停止する。
+    pub fn drain_one(&mut self) {
+        if let Some(input) = self.queue.pop_front() {
+            unsafe {
+                SendInput(
+                    &[input],
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+        }
+        if self.queue.is_empty() {
+            self.stop_drain_timer();
+        }
+    }
+
+    /// キューに残っているイベントを全て即座に送信する。
+    ///
+    /// `Key`/`KeyUp`/`Char`（即時送信が必要なアクション）の前に呼ぶ。
+    /// BS（投機出力の取り消し）等が正しい順序で送信されることを保証する。
+    pub fn flush_queue(&mut self) {
+        if self.queue.is_empty() {
+            return;
+        }
+        let inputs: Vec<INPUT> = self.queue.drain(..).collect();
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
+        self.stop_drain_timer();
+    }
+
+    /// キューが空かどうか
+    pub fn is_queue_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    // ── 内部メソッド ──
+
+    /// ローマ字文字列をキューに積む
+    fn enqueue_romaji(&mut self, romaji: &str) {
+        for ch in romaji.chars() {
+            if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
+                if needs_shift {
+                    self.queue.push_back(make_key_input(0xA0, false)); // LShift down
+                }
+                self.queue.push_back(make_key_input(vk, false)); // key down
+                self.queue.push_back(make_key_input(vk, true)); // key up
+                if needs_shift {
+                    self.queue.push_back(make_key_input(0xA0, true)); // LShift up
                 }
             }
         }
     }
 
-    /// 仮想キーコードを使って KeyDown または KeyUp を送信する
-    #[allow(clippy::unused_self)] // メソッドチェーンの一貫性のため &self を保持
-    fn send_key(&self, vk: u16, is_keyup: bool) {
-        let input = INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk),
-                    wScan: 0,
-                    dwFlags: if is_keyup {
-                        KEYEVENTF_KEYUP
-                    } else {
-                        KEYBD_EVENT_FLAGS::default()
-                    },
-                    time: 0,
-                    dwExtraInfo: INJECTED_MARKER,
-                },
-            },
-        };
+    /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
+    fn send_key_immediate(&self, vk: u16, is_keyup: bool) {
+        let input = make_key_input(vk, is_keyup);
         unsafe {
             SendInput(
                 &[input],
@@ -83,15 +152,12 @@ impl Output {
     }
 
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
-    /// BMP 外の文字（U+10000 以上）はサロゲートペアとして 2 回に分けて送信する
-    #[allow(clippy::unused_self)]
     fn send_unicode_char(&self, ch: char) {
         let mut utf16_buf = [0u16; 2];
         let utf16 = ch.encode_utf16(&mut utf16_buf);
 
         let mut inputs = Vec::with_capacity(utf16.len() * 2);
         for &code_unit in utf16.iter() {
-            // KeyDown
             inputs.push(INPUT {
                 r#type: INPUT_KEYBOARD,
                 Anonymous: INPUT_0 {
@@ -104,7 +170,6 @@ impl Output {
                     },
                 },
             });
-            // KeyUp
             inputs.push(INPUT {
                 r#type: INPUT_KEYBOARD,
                 Anonymous: INPUT_0 {
@@ -127,33 +192,49 @@ impl Output {
         }
     }
 
-    /// ローマ字文字列を VK コードのキーイベントとして送信する。
-    ///
-    /// 1文字ずつ KeyDown → Sleep → KeyUp → Sleep の順で送信する。
-    /// 他のキーボードフック（PowerToys 等）が各キーを処理する時間を確保するため、
-    /// バースト送信せずキー間に遅延を入れる。
-    fn send_romaji(&self, romaji: &str) {
-        use windows::Win32::System::Threading::Sleep;
-        const INTER_KEY_DELAY_MS: u32 = 10;
-
-        for ch in romaji.chars() {
-            if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
-                if needs_shift {
-                    self.send_key(0xA0, false); // LShift down
-                    unsafe { Sleep(INTER_KEY_DELAY_MS); }
-                }
-                self.send_key(vk, false); // key down
-                unsafe { Sleep(INTER_KEY_DELAY_MS); }
-                self.send_key(vk, true); // key up
-                if needs_shift {
-                    unsafe { Sleep(INTER_KEY_DELAY_MS); }
-                    self.send_key(0xA0, true); // LShift up
-                }
-                unsafe { Sleep(INTER_KEY_DELAY_MS); }
-            }
+    /// ドレインタイマーを開始する
+    fn start_drain_timer(&self) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::SetTimer;
+        unsafe {
+            let _ = SetTimer(HWND::default(), TIMER_OUTPUT_DRAIN, DRAIN_INTERVAL_MS, None);
         }
     }
 
+    /// ドレインタイマーを停止する
+    fn stop_drain_timer(&self) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::KillTimer;
+        unsafe {
+            let _ = KillTimer(HWND::default(), TIMER_OUTPUT_DRAIN);
+        }
+    }
+}
+
+/// ドレインタイマー ID
+pub const TIMER_OUTPUT_DRAIN: usize = 102;
+
+/// ドレイン間隔（ミリ秒）
+const DRAIN_INTERVAL_MS: u32 = 10;
+
+/// INPUT 構造体を作成するヘルパー
+fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: 0,
+                dwFlags: if is_keyup {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
+                time: 0,
+                dwExtraInfo: INJECTED_MARKER,
+            },
+        },
+    }
 }
 
 #[cfg(test)]

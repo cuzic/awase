@@ -567,7 +567,7 @@ impl ActionExecutor for SendInputExecutor {
 
     fn execute(&mut self, actions: &[Self::Action]) {
         unsafe {
-            if let Some(app) = APP.get_ref() {
+            if let Some(app) = APP.get_mut() {
                 app.output.send_keys(actions);
             }
         }
@@ -796,6 +796,12 @@ fn run_message_loop() {
             WM_TIMER if msg.wParam.0 == TIMER_UNDETERMINED_BUFFER => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.handle_buffer_timeout();
+                }
+            },
+            WM_TIMER if msg.wParam.0 == output::TIMER_OUTPUT_DRAIN => unsafe {
+                // 出力キューから 1 イベントを送信（ドリップフィード）
+                if let Some(app) = APP.get_mut() {
+                    app.output.drain_one();
                 }
             },
             WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
