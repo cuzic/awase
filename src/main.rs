@@ -584,6 +584,44 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
+    // ── IME モード連動: 全角/半角切替でエンジン ON/OFF を自動同期 ──
+    // VK 0xF3 (全角モード) → engine ON
+    // VK 0xF4 (半角モード) → engine OFF
+    // これらは IME 内部で全角⇔半角切替時にシステムが発行するキーイベント。
+    {
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if is_key_down {
+            match event.vk_code.0 {
+                0xF3 => {
+                    // 全角モード → エンジン ON
+                    if !engine.is_enabled() {
+                        let (_, flush) = engine.set_enabled(true);
+                        let mut tr = Win32TimerRuntime;
+                        let mut ae = SendInputExecutor;
+                        dispatch(&flush, &mut tr, &mut ae);
+                        log::info!("Engine ON (IME zenkaku mode 0xF3)");
+                    }
+                    return CallbackResult::PassThrough;
+                }
+                0xF4 => {
+                    // 半角モード → エンジン OFF
+                    if engine.is_enabled() {
+                        let (_, flush) = engine.set_enabled(false);
+                        let mut tr = Win32TimerRuntime;
+                        let mut ae = SendInputExecutor;
+                        dispatch(&flush, &mut tr, &mut ae);
+                        log::info!("Engine OFF (IME hankaku mode 0xF4)");
+                    }
+                    return CallbackResult::PassThrough;
+                }
+                _ => {}
+            }
+        }
+    }
+
     // ── エンジン ON/OFF トグルキー ──
     {
         let is_key_down = matches!(
