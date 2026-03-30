@@ -216,14 +216,16 @@ pub unsafe fn process_deferred_keys() {
 
     log::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
 
-    // Check actual IME state now (should be updated after toggle)
-    let ime_on = crate::ime::detect_ime_open_cross_process()
-        .unwrap_or_else(|| crate::SHADOW_IME_ON.get_ref().copied().unwrap_or(true));
+    // IME 状態キャッシュを更新（メッセージループ上なのでブロッキング OK）
+    crate::refresh_ime_state_cache();
 
-    // Update shadow state to match actual IME state
-    if let Some(shadow) = crate::SHADOW_IME_ON.get_mut() {
-        *shadow = ime_on;
-    }
+    // キャッシュから IME 状態を取得
+    let cached = crate::IME_STATE_CACHE.load(std::sync::atomic::Ordering::Acquire);
+    let ime_on = match cached {
+        0 => false,
+        1 => true,
+        _ => crate::SHADOW_IME_ON.get_ref().copied().unwrap_or(true),
+    };
 
     for (event, phys) in keys {
         if ime_on {

@@ -204,6 +204,11 @@ fn main() -> Result<()> {
     install_ctrl_handler();
     focus::install_focus_hook();
 
+    // IME 状態ポーリングタイマー（安全ネット: マウスで言語バー操作等に対応）
+    unsafe {
+        let _ = SetTimer(HWND::default(), TIMER_IME_POLL, 500, None);
+    }
+
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
     let uia_tx = focus::uia::spawn_uia_worker();
     unsafe {
@@ -500,6 +505,7 @@ fn register_focus_override_hotkey() {
 fn cleanup() {
     hook::uninstall_hook();
     unsafe {
+        let _ = KillTimer(HWND::default(), TIMER_IME_POLL);
         let _ = UnregisterHotKey(HWND::default(), HOTKEY_ID_TOGGLE);
         let _ = UnregisterHotKey(HWND::default(), HOTKEY_ID_FOCUS_OVERRIDE);
     }
@@ -1014,6 +1020,9 @@ fn run_message_loop() {
             WM_TIMER if msg.wParam.0 == TIMER_UNDETERMINED_BUFFER => unsafe {
                 key_buffer::handle_buffer_timeout();
             },
+            WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
+                refresh_ime_state_cache();
+            },
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
                 let timer_id = msg.wParam.0;
                 unsafe {
@@ -1043,6 +1052,7 @@ fn run_message_loop() {
                 if let Some(kb) = KEY_BUFFER.get_mut() {
                     kb.set_guard(true);
                 }
+                refresh_ime_state_cache();
             },
             WM_PROCESS_DEFERRED => unsafe {
                 // IME 制御キー後の遅延キーを再処理する。

@@ -238,6 +238,9 @@ unsafe extern "system" fn win_event_proc(
         result.reason,
         state,
     );
+
+    // フォーカス変更に伴い IME 状態キャッシュを更新
+    crate::refresh_ime_state_cache();
 }
 
 /// 手動フォーカスオーバーライドのトグル処理
