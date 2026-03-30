@@ -441,19 +441,19 @@ impl NicolaFsm {
             // Bypass check
             if let Some(reason) = self.bypass_reason(&current) {
                 let resp = self.handle_bypass(reason);
-                return Self::prepend_actions(accumulated_actions, resp);
+                return Self::finalize_accumulated(accumulated_actions, resp);
             }
 
             // Shift plane check
             if self.should_use_shift_plane(&current) {
                 let resp = self.handle_shift(&current);
-                return Self::prepend_actions(accumulated_actions, resp);
+                return Self::finalize_accumulated(accumulated_actions, resp);
             }
 
-            // Idle state: handle_idle already produces a final Resp
+            // Idle state: handle_idle produces a final Resp
             if self.state.is_idle() {
                 let resp = self.handle_idle(&current);
-                return Self::prepend_actions(accumulated_actions, resp);
+                return Self::finalize_accumulated(accumulated_actions, resp);
             }
 
             // Non-idle states: dispatch to step handler
@@ -467,18 +467,28 @@ impl NicolaFsm {
                         output: plan.output,
                     });
                 }
-                StepResult::Continue {
-                    resolved_actions,
-                    resolved_output,
-                    next,
-                } => {
-                    accumulated_actions.extend(resolved_actions);
-                    self.update_history(resolved_output);
+                StepResult::Continue { plan, next } => {
+                    // 統一経路: finalize_plan と同じ履歴更新を適用
+                    accumulated_actions.extend(plan.actions);
+                    self.update_history(plan.output);
+                    debug_assert!(self.state.is_idle(), "Continue step must leave FSM in Idle");
                     current = next;
-                    // Loop continues — state should now be Idle
                 }
             }
         }
+    }
+
+    /// 蓄積済みアクションを Response の先頭に追加する。
+    /// ループ内で bypass/shift/idle が最終 Response を返す際に使用。
+    fn finalize_accumulated(prefix: Vec<KeyAction>, mut resp: Resp) -> Resp {
+        if prefix.is_empty() {
+            return resp;
+        }
+        let mut all = prefix;
+        all.extend(resp.actions);
+        resp.actions = all;
+        resp.consumed = true;
+        resp
     }
 
     /// 非 Idle 状態に応じた1ステップのディスパッチ
@@ -519,8 +529,11 @@ impl NicolaFsm {
                     // SpeculativeChar + Char: speculative was correct, go Idle and re-loop
                     self.go_idle();
                     StepResult::Continue {
-                        resolved_actions: vec![],
-                        resolved_output: OutputUpdate::None,
+                        plan: FinalizePlan {
+                            actions: vec![],
+                            timer: TimerIntent::CancelAll,
+                            output: OutputUpdate::None,
+                        },
                         next: *ev,
                     }
                 }
@@ -534,17 +547,6 @@ impl NicolaFsm {
                 }
             },
         }
-    }
-
-    /// 蓄積されたアクションを Response の先頭に追加する
-    fn prepend_actions(prefix: Vec<KeyAction>, mut resp: Resp) -> Resp {
-        if !prefix.is_empty() {
-            let mut all = prefix;
-            all.extend(resp.actions);
-            resp.actions = all;
-            resp.consumed = true;
-        }
-        resp
     }
 
     /// Shift 面の処理（状態非依存）
@@ -797,8 +799,11 @@ impl NicolaFsm {
         // Go idle and re-process the thumb key
         self.go_idle();
         StepResult::Continue {
-            resolved_actions: vec![],
-            resolved_output: OutputUpdate::None,
+            plan: FinalizePlan {
+                actions: vec![],
+                timer: TimerIntent::CancelAll,
+                output: OutputUpdate::None,
+            },
             next: *ev,
         }
     }
@@ -844,8 +849,11 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
         StepResult::Continue {
-            resolved_actions: resolved.actions,
-            resolved_output: resolved.output,
+            plan: FinalizePlan {
+                actions: resolved.actions,
+                timer: TimerIntent::CancelAll,
+                output: resolved.output,
+            },
             next: *ev,
         }
     }
@@ -858,8 +866,11 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
         StepResult::Continue {
-            resolved_actions: resolved.actions,
-            resolved_output: resolved.output,
+            plan: FinalizePlan {
+                actions: resolved.actions,
+                timer: TimerIntent::CancelAll,
+                output: resolved.output,
+            },
             next: *ev,
         }
     }
@@ -897,8 +908,11 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
         StepResult::Continue {
-            resolved_actions: resolved.actions,
-            resolved_output: resolved.output,
+            plan: FinalizePlan {
+                actions: resolved.actions,
+                timer: TimerIntent::CancelAll,
+                output: resolved.output,
+            },
             next: *ev,
         }
     }
@@ -911,8 +925,11 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
         StepResult::Continue {
-            resolved_actions: resolved.actions,
-            resolved_output: resolved.output,
+            plan: FinalizePlan {
+                actions: resolved.actions,
+                timer: TimerIntent::CancelAll,
+                output: resolved.output,
+            },
             next: *ev,
         }
     }
@@ -1010,20 +1027,23 @@ impl NicolaFsm {
                     thumb.is_left,
                 );
                 return StepResult::Continue {
-                    resolved_actions: resolved.actions,
-                    resolved_output: resolved.output,
+                    plan: FinalizePlan {
+                        actions: resolved.actions,
+                        timer: TimerIntent::CancelAll,
+                        output: resolved.output,
+                    },
                     next: *ev,
                 };
             }
             // char1 = 単独、char2+thumb = 同時打鍵
             let char1_resolved =
                 self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
-            self.update_history(char1_resolved.output);
             let thumb_face = Face::from_thumb_bool(thumb.is_left);
             if let Some((action, kana)) =
                 self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(thumb_face))
             {
-                // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
+                // char1 の履歴を先に更新してから char2+thumb を確定
+                self.update_history(char1_resolved.output);
                 self.consume_thumb(thumb.is_left);
                 let mut all_actions = char1_resolved.actions;
                 all_actions.push(action.clone());
@@ -1035,8 +1055,11 @@ impl NicolaFsm {
             }
             // 親指面に char2 の定義がない場合は char1 を単独確定し、char2 を再処理
             return StepResult::Continue {
-                resolved_actions: char1_resolved.actions,
-                resolved_output: OutputUpdate::None, // already updated above
+                plan: FinalizePlan {
+                    actions: char1_resolved.actions,
+                    timer: TimerIntent::CancelAll,
+                    output: char1_resolved.output,
+                },
                 next: *ev,
             };
         }
@@ -1048,8 +1071,11 @@ impl NicolaFsm {
             thumb.is_left,
         );
         StepResult::Continue {
-            resolved_actions: resolved.actions,
-            resolved_output: resolved.output,
+            plan: FinalizePlan {
+                actions: resolved.actions,
+                timer: TimerIntent::CancelAll,
+                output: resolved.output,
+            },
             next: *ev,
         }
     }

@@ -91,14 +91,13 @@ pub struct FinalizePlan {
 /// FSM の1ステップの結果
 #[derive(Debug)]
 pub enum StepResult {
-    /// 処理完了（最終ステップ）
+    /// 処理完了（最終ステップ）— timer はこのステップのものを採用
     Complete(FinalizePlan),
-    /// 保留を解決して次のイベントを再処理する
+    /// 保留を解決して次のイベントを再処理する。
+    /// timer は `CancelAll` 固定（Continue ステップはタイマーを決めない）。
     Continue {
-        /// 保留解決のアクション（タイマーは CancelAll のみ許可）
-        resolved_actions: Vec<KeyAction>,
-        /// 解決した出力の履歴更新
-        resolved_output: OutputUpdate,
+        /// 保留解決の FinalizePlan（actions + output を統一経路で処理）
+        plan: FinalizePlan,
         /// 次に処理するイベント
         next: ClassifiedEvent,
     },
