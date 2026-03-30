@@ -8,7 +8,7 @@ use crate::scanmap::scan_to_pos;
 use crate::types::{KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 use crate::vk;
 
-use super::types::{ClassifiedEvent, KeyClass, ModifierState};
+use super::fsm_types::{ClassifiedEvent, KeyClass, ModifierState};
 
 /// 物理キー状態のスナップショット
 ///

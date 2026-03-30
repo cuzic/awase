@@ -39,8 +39,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use awase::config::{
     parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig,
 };
-use awase::engine::wrapper::{ImeSyncKeys, SpecialKeyCombos};
 use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::{ImeSyncKeys, SpecialKeyCombos};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, ImeCacheState};
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};

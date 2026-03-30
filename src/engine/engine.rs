@@ -14,104 +14,15 @@
 use timed_fsm::{Response, TimerCommand};
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, VkCode};
-use crate::yab::YabLayout;
+use crate::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent};
 
+use super::decision::{
+    Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext, InputEffect, KeyBuffer,
+    SpecialKeyCombos, TimerEffect, UiEffect,
+};
+use super::fsm_types::ModifierState;
 use super::input_tracker::{InputTracker, PhysicalKeyState};
-use super::types::{Decision, Effect, ImeEffect, InputContext, InputEffect, TimerEffect, UiEffect};
-use super::NicolaFsm;
-
-/// IME 同期キー（トグル・ON・OFF）を集約する構造体
-#[derive(Debug)]
-pub struct ImeSyncKeys {
-    pub toggle: Vec<VkCode>,
-    pub on: Vec<VkCode>,
-    pub off: Vec<VkCode>,
-}
-
-/// エンジン切替・IME 制御の特殊キーコンボを集約する構造体。
-#[derive(Debug)]
-pub struct SpecialKeyCombos {
-    pub engine_on: Vec<ParsedKeyCombo>,
-    pub engine_off: Vec<ParsedKeyCombo>,
-    pub ime_on: Vec<ParsedKeyCombo>,
-    pub ime_off: Vec<ParsedKeyCombo>,
-}
-
-/// キーイベントバッファ管理
-///
-/// フック → メッセージループ間のキーイベント遅延・バッファリングを管理する。
-/// OS 副作用は持たず、Engine メソッドがオーケストレーションを行う。
-#[derive(Debug)]
-pub struct KeyBuffer {
-    /// IME 制御キー直後のガードフラグ（true: 後続キーを遅延処理する）
-    pub ime_transition_guard: bool,
-    /// ガード中に遅延されたキーイベント + 物理キー状態のバッファ
-    pub deferred_keys: Vec<(RawKeyEvent, PhysicalKeyState)>,
-}
-
-impl Default for KeyBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl KeyBuffer {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            ime_transition_guard: false,
-            deferred_keys: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub const fn is_guarded(&self) -> bool {
-        self.ime_transition_guard
-    }
-
-    pub const fn set_guard(&mut self, on: bool) {
-        self.ime_transition_guard = on;
-    }
-
-    pub fn push_deferred(&mut self, event: RawKeyEvent, phys: PhysicalKeyState) {
-        self.deferred_keys.push((event, phys));
-    }
-
-    pub fn drain_deferred(&mut self) -> Vec<(RawKeyEvent, PhysicalKeyState)> {
-        std::mem::take(&mut self.deferred_keys)
-    }
-}
-
-/// Engine への外部コマンド
-#[derive(Debug)]
-pub enum EngineCommand {
-    /// エンジンの有効/無効を切り替える
-    ToggleEngine,
-    /// 外部コンテキスト喪失（IME OFF、言語切替等）
-    InvalidateContext(ContextChange),
-    /// 配列を切り替える
-    SwapLayout(YabLayout),
-    /// IME 状態に追随する
-    SyncImeState { ime_on: bool },
-    /// IME ガードを設定する
-    SetGuard(bool),
-    /// 遅延キーをクリアする
-    ClearDeferredKeys,
-    /// 設定を再読み込みする
-    ReloadKeys {
-        special: SpecialKeyCombos,
-        sync: ImeSyncKeys,
-    },
-    /// FSM パラメータを更新する
-    UpdateFsmParams {
-        threshold_ms: u32,
-        confirm_mode: crate::config::ConfirmMode,
-        speculative_delay_ms: u32,
-    },
-    /// n-gram モデルを設定する
-    SetNgramModel(crate::ngram::NgramModel),
-}
+use super::nicola_fsm::NicolaFsm;
 
 /// 統合エンジン: NicolaFsm + InputTracker + IME/特殊キー処理
 ///
@@ -534,7 +445,7 @@ impl Engine {
     fn matches_key_combo(
         combo: ParsedKeyCombo,
         event: &RawKeyEvent,
-        modifiers: super::types::ModifierState,
+        modifiers: ModifierState,
     ) -> bool {
         if event.vk_code != combo.vk {
             return false;

@@ -1,5 +1,15 @@
 use super::*;
-use crate::types::{FocusKind, ScanCode, VkCode};
+use crate::config::ConfirmMode;
+use crate::engine::nicola_fsm::yab_value_to_action;
+use crate::engine::output_history::OutputEntry;
+use crate::ngram::NgramModel;
+use crate::types::{
+    ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode,
+};
+use crate::yab::{YabFace, YabLayout, YabValue};
+use timed_fsm::Response;
+
+type Resp = Response<KeyAction, usize>;
 
 // VK code constants
 const VK_A: VkCode = VkCode(0x41);
