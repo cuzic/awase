@@ -659,12 +659,13 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             // 唯一の IME 状態ソースになるため、ここでの追跡が重要。
             match vk {
                 // IME ON: 半角/全角（activate）、VK_IME_ON
-                0xF2 | 0x16 => {
+                // 0xF4 は 0xF3 との交互ペアで IME ON 側
+                0xF2 | 0xF4 | 0x16 => {
                     app.shadow_ime_on = true;
                     log::trace!("Shadow IME ON (vk=0x{vk:02X})");
                 }
                 // IME OFF: 半角/全角（deactivate）、VK_IME_OFF
-                0xF3 | 0xF4 | 0x1A => {
+                0xF3 | 0x1A => {
                     app.shadow_ime_on = false;
                     log::trace!("Shadow IME OFF (vk=0x{vk:02X})");
                 }
