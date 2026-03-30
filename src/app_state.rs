@@ -54,6 +54,8 @@ impl FocusDetector {
 pub struct KeyBuffer {
     /// IME 制御キー直後のガードフラグ（true: 後続キーを遅延処理する）
     pub ime_transition_guard: bool,
+    /// フォーカス遷移中のガードフラグ（true: フォーカスが安定するまでキーをバッファ）
+    pub focus_transition_guard: bool,
     /// ガード中に遅延されたキーイベント + 物理キー状態のバッファ
     pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
     /// IME OFF 時の記憶バッファ（PassThrough 済みキー）
@@ -66,6 +68,7 @@ impl KeyBuffer {
     pub fn new() -> Self {
         Self {
             ime_transition_guard: false,
+            focus_transition_guard: false,
             deferred_keys: Vec::new(),
             passthrough_memory: std::collections::VecDeque::new(),
             undetermined_buffering: false,
@@ -73,7 +76,7 @@ impl KeyBuffer {
     }
 
     pub const fn is_guarded(&self) -> bool {
-        self.ime_transition_guard
+        self.ime_transition_guard || self.focus_transition_guard
     }
 
     pub const fn set_guard(&mut self, on: bool) {

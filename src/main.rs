@@ -75,8 +75,17 @@ const WM_BUFFER_TIMEOUT: u32 = WM_APP + 13;
 /// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
 const WM_IME_KEY_DETECTED: u32 = WM_APP + 14;
 
+/// フォーカス遷移デバウンス完了通知
+const WM_FOCUS_DEBOUNCE: u32 = WM_APP + 15;
+
 /// Undetermined + IME ON バッファリングのタイマー ID
 pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;
+
+/// フォーカス遷移デバウンスタイマー ID
+const TIMER_FOCUS_DEBOUNCE: usize = 103;
+
+/// フォーカス遷移デバウンス時間（ミリ秒）
+const FOCUS_DEBOUNCE_MS: u32 = 50;
 
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)] // engine 側から IME 未確定状態を確認する将来拡張用
@@ -810,6 +819,38 @@ fn run_message_loop() {
                     app.refresh_ime_state_cache();
                 }
             },
+            WM_TIMER if msg.wParam.0 == TIMER_FOCUS_DEBOUNCE => unsafe {
+                // フォーカス遷移デバウンス完了 → IME キャッシュ更新 + バッファ再処理
+                let _ = KillTimer(HWND::default(), TIMER_FOCUS_DEBOUNCE);
+                if let Some(app) = APP.get_mut() {
+                    app.refresh_ime_state_cache();
+                    app.key_buffer.focus_transition_guard = false;
+                    // バッファされたキーを再処理
+                    let keys = app.key_buffer.drain_deferred();
+                    if !keys.is_empty() {
+                        log::debug!(
+                            "Focus debounce: replaying {} buffered key(s)",
+                            keys.len()
+                        );
+                        let cached = IME_STATE_CACHE.load(Ordering::Acquire);
+                        let ime_on = match cached {
+                            0 => false,
+                            1 => true,
+                            _ => app.shadow_ime_on,
+                        };
+                        for (event, phys) in keys {
+                            if ime_on {
+                                let response = app.engine.on_event(event, &phys);
+                                let mut tr = Win32TimerRuntime;
+                                let mut ae = SendInputExecutor;
+                                dispatch(&response, &mut tr, &mut ae);
+                            } else {
+                                reinject_key(&event);
+                            }
+                        }
+                    }
+                }
+            },
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
                 let timer_id = msg.wParam.0;
                 unsafe {
@@ -1179,7 +1220,17 @@ unsafe extern "system" fn win_event_proc(
                 app.invalidate_engine_context(reason);
             }
             AppAction::RefreshImeStateCache => {
-                app.refresh_ime_state_cache();
+                // 即座に更新せず、デバウンスタイマーをセット（リセット）。
+                // フォーカス遷移中は中間ウィンドウの IME 状態が不正確なため、
+                // 最終ウィンドウに落ち着いてから更新する。
+                // その間のキーはフォーカスガードでバッファされる。
+                app.key_buffer.focus_transition_guard = true;
+                let _ = SetTimer(
+                    HWND::default(),
+                    TIMER_FOCUS_DEBOUNCE,
+                    FOCUS_DEBOUNCE_MS,
+                    None,
+                );
             }
             _ => {}
         }
