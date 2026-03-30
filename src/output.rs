@@ -129,53 +129,31 @@ impl Output {
 
     /// ローマ字文字列を VK コードのキーイベントとして送信する。
     ///
-    /// 全文字のキーイベントを1回の `SendInput` 呼び出しにまとめて送信する。
-    /// 個別の `SendInput` 呼び出しだと、他のキーボードフック（PowerToys 等）が
-    /// 途中で割り込み、一部の文字が取りこぼされる可能性がある。
+    /// 1文字ずつ KeyDown → Sleep → KeyUp → Sleep の順で送信する。
+    /// 他のキーボードフック（PowerToys 等）が各キーを処理する時間を確保するため、
+    /// バースト送信せずキー間に遅延を入れる。
     fn send_romaji(&self, romaji: &str) {
-        let mut inputs = Vec::with_capacity(romaji.len() * 4);
+        use windows::Win32::System::Threading::Sleep;
+        const INTER_KEY_DELAY_MS: u32 = 10;
+
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
                 if needs_shift {
-                    inputs.push(self.make_key_input(0xA0, false)); // LShift down
+                    self.send_key(0xA0, false); // LShift down
+                    unsafe { Sleep(INTER_KEY_DELAY_MS); }
                 }
-                inputs.push(self.make_key_input(vk, false)); // key down
-                inputs.push(self.make_key_input(vk, true)); // key up
+                self.send_key(vk, false); // key down
+                unsafe { Sleep(INTER_KEY_DELAY_MS); }
+                self.send_key(vk, true); // key up
                 if needs_shift {
-                    inputs.push(self.make_key_input(0xA0, true)); // LShift up
+                    unsafe { Sleep(INTER_KEY_DELAY_MS); }
+                    self.send_key(0xA0, true); // LShift up
                 }
-            }
-        }
-        if !inputs.is_empty() {
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
+                unsafe { Sleep(INTER_KEY_DELAY_MS); }
             }
         }
     }
 
-    /// SendInput 用の INPUT 構造体を作成する（バッチ送信用）
-    #[allow(clippy::unused_self)]
-    const fn make_key_input(&self, vk: u16, is_keyup: bool) -> INPUT {
-        INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk),
-                    wScan: 0,
-                    dwFlags: if is_keyup {
-                        KEYEVENTF_KEYUP
-                    } else {
-                        KEYBD_EVENT_FLAGS(0)
-                    },
-                    time: 0,
-                    dwExtraInfo: INJECTED_MARKER,
-                },
-            },
-        }
-    }
 }
 
 #[cfg(test)]
