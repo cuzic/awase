@@ -1351,12 +1351,14 @@ impl TimedStateMachine for Engine {
     type TimerId = usize;
 
     fn on_event(&mut self, event: RawKeyEvent) -> Resp {
+        // 修飾キー（Ctrl / Alt）の押下状態を追跡
+        // エンジン無効中も継続して追跡する。早期 return の後に置くと
+        // OFF 中の KeyUp を見逃して modifier が stuck する。
+        self.modifiers.update(&event);
+
         if !self.enabled {
             return Response::pass_through();
         }
-
-        // 修飾キー（Ctrl / Alt）の押下状態を追跡
-        self.modifiers.update(&event);
 
         match event.event_type {
             KeyEventType::KeyDown | KeyEventType::SysKeyDown => self.on_key_down(&event),

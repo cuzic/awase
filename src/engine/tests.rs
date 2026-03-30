@@ -3177,3 +3177,45 @@ fn test_context_invalidation_focus_changed() {
     let s = format!("{:?}", reason);
     assert_eq!(s, "FocusChanged");
 }
+
+// ── Modifier state tracking across engine disable/enable ──
+
+#[test]
+fn test_ctrl_released_while_disabled_does_not_stick() {
+    // エンジン OFF 中に Ctrl が離された場合、再 ON 後に stuck しないこと
+    let mut engine = make_engine();
+
+    // Ctrl を押す（エンジン ON 中）
+    engine.on_event(Ev::down(VK_CTRL).build());
+
+    // エンジン OFF
+    let _ = engine.toggle_enabled();
+    assert!(!engine.is_enabled());
+
+    // Ctrl を離す（エンジン OFF 中）
+    engine.on_event(Ev::up(VK_CTRL).build());
+
+    // エンジン ON
+    let _ = engine.toggle_enabled();
+    assert!(engine.is_enabled());
+
+    // 文字キーがエンジンで処理されること（OsModifierHeld でバイパスされない）
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+    r.assert_consumed();
+}
+
+#[test]
+fn test_alt_released_while_disabled_does_not_stick() {
+    let mut engine = make_engine();
+
+    engine.on_event(Ev::down(VK_ALT).build());
+    let _ = engine.toggle_enabled();
+
+    // Alt を離す（エンジン OFF 中）
+    engine.on_event(Ev::up(VK_ALT).build());
+
+    let _ = engine.toggle_enabled();
+
+    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
+    r.assert_consumed();
+}
