@@ -72,6 +72,9 @@ pub(crate) const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 #[allow(dead_code)] // Undetermined バッファタイムアウトを PostMessageW で明示送信する将来拡張用
 const WM_BUFFER_TIMEOUT: u32 = WM_APP + 13;
 
+/// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
+const WM_IME_KEY_DETECTED: u32 = WM_APP + 14;
+
 /// Undetermined + IME ON バッファリングのタイマー ID
 pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;
 
@@ -634,6 +637,23 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
     }
 
+    // ── IME 制御キー検出 → メッセージループにキャッシュ更新を要求 ──
+    // フック内ではブロッキングしないが、PostMessageW で即座に更新をスケジュールする。
+    {
+        let vk = event.vk_code.0;
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        // 半角/全角キー、カタカナ/ひらがなキー等、IME 状態を変える可能性のあるキー
+        // is_ime_control に加え、0xF0-0xF5 (日本語キーボード固有の IME トグルキー) も含む
+        let may_change_ime = awase::vk::is_ime_control(event.vk_code)
+            || matches!(vk, 0xF0..=0xF5);
+        if is_key_down && may_change_ime {
+            let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
+        }
+    }
+
     // ── IME toggle guard: buffer keys after toggle to let IME state settle ──
     {
         let is_key_down = matches!(
@@ -756,6 +776,12 @@ fn run_message_loop() {
                 }
             },
             WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
+                if let Some(app) = APP.get_ref() {
+                    app.refresh_ime_state_cache();
+                }
+            },
+            WM_IME_KEY_DETECTED => unsafe {
+                // フックで IME 制御キーが検出された → 即座にキャッシュ更新
                 if let Some(app) = APP.get_ref() {
                     app.refresh_ime_state_cache();
                 }

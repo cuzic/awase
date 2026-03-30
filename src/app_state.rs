@@ -102,6 +102,7 @@ impl KeyBuffer {
         std::mem::take(&mut self.deferred_keys)
     }
 
+    #[allow(dead_code)] // 将来のパターン検出再有効化で使用予定
     pub fn drain_passthrough(&mut self) -> Vec<RawKeyEvent> {
         std::mem::take(&mut self.passthrough_memory).into()
     }
@@ -558,6 +559,7 @@ impl AppState {
     ///
     /// # Safety
     /// Win32 API (`send_keys`, `dispatch`) を呼び出す。メインスレッドから呼ぶこと。
+    #[allow(dead_code)] // 将来のパターン検出再有効化で使用予定
     pub(crate) unsafe fn retract_passthrough_memory(&mut self) {
         let keys = self.key_buffer.drain_passthrough();
 
