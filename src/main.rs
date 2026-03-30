@@ -76,46 +76,33 @@ pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;
 /// IME の未確定状態を確認する（engine から呼び出し用）
 #[allow(dead_code)] // engine 側から IME 未確定状態を確認する将来拡張用
 pub fn check_ime_composing() -> bool {
-    unsafe { IME.get_ref().is_some_and(ImeProvider::is_composing) }
+    unsafe {
+        APP.get_ref()
+            .is_some_and(|app| app.ime.is_composing())
+    }
 }
 
-pub(crate) static ENGINE: SingleThreadCell<Engine> = SingleThreadCell::new();
-pub(crate) static INPUT_TRACKER: SingleThreadCell<awase::engine::input_tracker::InputTracker> =
-    SingleThreadCell::new();
-pub(crate) static OUTPUT: SingleThreadCell<Output> = SingleThreadCell::new();
-pub(crate) static IME: SingleThreadCell<HybridProvider> = SingleThreadCell::new();
-pub(crate) static TRAY: SingleThreadCell<SystemTray> = SingleThreadCell::new();
+/// シングルスレッド状態を集約した構造体
+pub(crate) struct AppState {
+    pub engine: Engine,
+    pub tracker: awase::engine::input_tracker::InputTracker,
+    pub output: Output,
+    pub ime: HybridProvider,
+    pub tray: SystemTray,
+    pub layouts: Vec<(String, YabLayout, VkCode, VkCode)>,
+    pub key_buffer: key_buffer::KeyBuffer,
+    pub focus: focus::FocusDetector,
+    pub engine_on_keys: Vec<ParsedKeyCombo>,
+    pub engine_off_keys: Vec<ParsedKeyCombo>,
+    pub shadow_ime_on: bool,
+    pub ime_sync_toggle_keys: Vec<u16>,
+    pub ime_sync_on_keys: Vec<u16>,
+    pub ime_sync_off_keys: Vec<u16>,
+}
 
-/// 利用可能な配列の一覧（名前, `YabLayout`, 左親指VK, 右親指VK）
-static LAYOUTS: SingleThreadCell<Vec<(String, YabLayout, VkCode, VkCode)>> =
-    SingleThreadCell::new();
-
-/// キーイベントバッファ（IME ガード + 遅延キー + PassThrough 記憶）
-pub(crate) static KEY_BUFFER: SingleThreadCell<key_buffer::KeyBuffer> = SingleThreadCell::new();
-
-/// フォーカス検出のシングルスレッド状態を集約した構造体
-pub(crate) static FOCUS: SingleThreadCell<focus::FocusDetector> = SingleThreadCell::new();
+pub(crate) static APP: SingleThreadCell<AppState> = SingleThreadCell::new();
 
 use crate::focus::cache::DetectionSource;
-
-/// エンジン ON キー（変換キー等）— 起動時に設定から初期化（複数キー対応）
-static ENGINE_ON_KEYS: SingleThreadCell<Vec<ParsedKeyCombo>> = SingleThreadCell::new();
-
-/// エンジン OFF キー（Ctrl+無変換等）— 起動時に設定から初期化（複数キー対応）
-static ENGINE_OFF_KEYS: SingleThreadCell<Vec<ParsedKeyCombo>> = SingleThreadCell::new();
-
-/// Shadow IME state (UWP fallback when cross-process detection fails).
-/// `true` = IME ON (safe default: engine processes keys).
-static SHADOW_IME_ON: SingleThreadCell<bool> = SingleThreadCell::new();
-
-/// IME sync toggle keys (VK codes, no modifiers)
-static IME_SYNC_TOGGLE_KEYS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
-
-/// IME sync ON keys (VK codes, no modifiers)
-static IME_SYNC_ON_KEYS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
-
-/// IME sync OFF keys (VK codes, no modifiers)
-static IME_SYNC_OFF_KEYS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
 
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -162,8 +149,8 @@ impl StartupDiagnostics {
         }
         // Show tray balloon if tray is available
         unsafe {
-            if let Some(tray) = TRAY.get_mut() {
-                tray.show_balloon(
+            if let Some(app) = APP.get_mut() {
+                app.tray.show_balloon(
                     "awase",
                     &format!("{}件の警告があります", self.warnings.len()),
                 );
@@ -180,19 +167,35 @@ fn main() -> Result<()> {
     for w in &config_warnings {
         diag.warn(w);
     }
-    let (layout_names, initial_layout_name) = init_engine_validated(&config, &mut diag)?;
-    init_engine_toggle_keys(&config, &mut diag);
-    init_ime_sync_keys(&config.ime_sync, &mut diag);
-    init_ime(&mut diag);
-    init_ngram_validated(&config, &mut diag);
+    let (engine, tracker, layouts, layout_names, initial_layout_name) =
+        init_engine_validated(&config, &mut diag)?;
+    let (engine_on_keys, engine_off_keys) = init_engine_toggle_keys(&config, &mut diag);
+    let (ime_sync_toggle_keys, ime_sync_on_keys, ime_sync_off_keys) =
+        init_ime_sync_keys(&config.ime_sync, &mut diag);
+    let ime = init_ime(&mut diag);
+
+    let system_tray = init_tray(&layout_names, &initial_layout_name)?;
 
     unsafe {
-        OUTPUT.set(Output::new());
-        KEY_BUFFER.set(key_buffer::KeyBuffer::new());
-        FOCUS.set(focus::FocusDetector::new(config.focus_overrides.clone()));
+        APP.set(AppState {
+            engine,
+            tracker,
+            output: Output::new(),
+            ime,
+            tray: system_tray,
+            layouts,
+            key_buffer: key_buffer::KeyBuffer::new(),
+            focus: focus::FocusDetector::new(config.focus_overrides.clone()),
+            engine_on_keys,
+            engine_off_keys,
+            shadow_ime_on: true, // safe default: engine ON
+            ime_sync_toggle_keys,
+            ime_sync_on_keys,
+            ime_sync_off_keys,
+        });
     }
 
-    init_tray(&layout_names, &initial_layout_name)?;
+    init_ngram_validated(&config, &mut diag);
     install_hooks_and_hotkeys_validated(&config)?;
     diag.report();
 
@@ -212,8 +215,8 @@ fn main() -> Result<()> {
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
     let uia_tx = focus::uia::spawn_uia_worker();
     unsafe {
-        if let Some(f) = FOCUS.get_mut() {
-            f.set_uia_sender(uia_tx);
+        if let Some(app) = APP.get_mut() {
+            app.focus.set_uia_sender(uia_tx);
         }
     }
 
@@ -244,11 +247,17 @@ fn load_config() -> Result<AppConfig> {
     Ok(config)
 }
 
-/// 検証済み設定で配列の読み込みとエンジン初期化を行い、レイアウト名一覧とデフォルト名を返す
+/// 検証済み設定で配列の読み込みとエンジン初期化を行い、構成要素を返す
 fn init_engine_validated(
     config: &ValidatedConfig,
     diag: &mut StartupDiagnostics,
-) -> Result<(Vec<String>, String)> {
+) -> Result<(
+    Engine,
+    awase::engine::input_tracker::InputTracker,
+    Vec<(String, YabLayout, VkCode, VkCode)>,
+    Vec<String>,
+    String,
+)> {
     let left_thumb_vk = VkCode(vk_name_to_code(&config.general.left_thumb_key).context(
         format!("Unknown VK name: {}", config.general.left_thumb_key),
     )?);
@@ -269,23 +278,17 @@ fn init_engine_validated(
         layout.right_thumb.len()
     );
 
-    unsafe {
-        INPUT_TRACKER.set(awase::engine::input_tracker::InputTracker::new(
-            left_thumb_vk,
-            right_thumb_vk,
-        ));
-        ENGINE.set(Engine::new(
-            layout,
-            left_thumb_vk,
-            right_thumb_vk,
-            config.general.simultaneous_threshold_ms,
-            config.general.confirm_mode,
-            config.general.speculative_delay_ms,
-        ));
-        LAYOUTS.set(layouts);
-    }
+    let tracker = awase::engine::input_tracker::InputTracker::new(left_thumb_vk, right_thumb_vk);
+    let engine = Engine::new(
+        layout,
+        left_thumb_vk,
+        right_thumb_vk,
+        config.general.simultaneous_threshold_ms,
+        config.general.confirm_mode,
+        config.general.speculative_delay_ms,
+    );
 
-    Ok((layout_names, initial_layout_name))
+    Ok((engine, tracker, layouts, layout_names, initial_layout_name))
 }
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
@@ -310,7 +313,10 @@ fn select_default_layout(
 }
 
 /// エンジン ON/OFF トグルキーの初期化（複数キー対応）
-fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
+fn init_engine_toggle_keys(
+    config: &ValidatedConfig,
+    diag: &mut StartupDiagnostics,
+) -> (Vec<ParsedKeyCombo>, Vec<ParsedKeyCombo>) {
     let on_keys: Vec<ParsedKeyCombo> = config
         .general
         .engine_on_keys
@@ -328,9 +334,6 @@ fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnosti
         config.general.engine_on_keys,
         on_keys.len()
     );
-    unsafe {
-        ENGINE_ON_KEYS.set(on_keys);
-    }
 
     let off_keys: Vec<ParsedKeyCombo> = config
         .general
@@ -349,13 +352,15 @@ fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnosti
         config.general.engine_off_keys,
         off_keys.len()
     );
-    unsafe {
-        ENGINE_OFF_KEYS.set(off_keys);
-    }
+
+    (on_keys, off_keys)
 }
 
 /// IME sync キーの初期化（shadow IME 状態追跡用）
-fn init_ime_sync_keys(ime_sync: &ImeSyncConfig, diag: &mut StartupDiagnostics) {
+fn init_ime_sync_keys(
+    ime_sync: &ImeSyncConfig,
+    diag: &mut StartupDiagnostics,
+) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
     let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<u16> {
         keys.iter()
             .filter_map(|s| {
@@ -379,16 +384,11 @@ fn init_ime_sync_keys(ime_sync: &ImeSyncConfig, diag: &mut StartupDiagnostics) {
         ime_sync.off_keys,
     );
 
-    unsafe {
-        IME_SYNC_TOGGLE_KEYS.set(toggle);
-        IME_SYNC_ON_KEYS.set(on);
-        IME_SYNC_OFF_KEYS.set(off);
-        SHADOW_IME_ON.set(true); // safe default: engine ON
-    }
+    (toggle, on, off)
 }
 
 /// IME プロバイダ初期化（TSF 優先、IMM32 フォールバック）
-fn init_ime(diag: &mut StartupDiagnostics) {
+fn init_ime(diag: &mut StartupDiagnostics) -> HybridProvider {
     let ime_provider = HybridProvider::new();
     if !ime::is_japanese_input_language() {
         diag.warn("日本語キーボードが検出されませんでした");
@@ -397,9 +397,7 @@ fn init_ime(diag: &mut StartupDiagnostics) {
         "IME provider initialized. Japanese keyboard: {}",
         ime::is_japanese_input_language()
     );
-    unsafe {
-        IME.set(ime_provider);
-    }
+    ime_provider
 }
 
 /// 検証済み設定で n-gram モデルのロード（オプション）
@@ -426,8 +424,8 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
             unsafe {
-                if let Some(engine) = ENGINE.get_mut() {
-                    engine.set_ngram_model(model);
+                if let Some(app) = APP.get_mut() {
+                    app.engine.set_ngram_model(model);
                 }
             }
         }
@@ -436,14 +434,11 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
 }
 
 /// システムトレイアイコンを作成する
-fn init_tray(layout_names: &[String], initial_layout_name: &str) -> Result<()> {
+fn init_tray(layout_names: &[String], initial_layout_name: &str) -> Result<SystemTray> {
     let mut system_tray = SystemTray::new(true).context("Failed to create system tray icon")?;
     system_tray.set_layout_names(layout_names.to_vec());
     system_tray.set_layout_name(initial_layout_name);
-    unsafe {
-        TRAY.set(system_tray);
-    }
-    Ok(())
+    Ok(system_tray)
 }
 
 /// 検証済み設定でフック登録とホットキー登録を行う
@@ -510,25 +505,10 @@ fn cleanup() {
         let _ = UnregisterHotKey(HWND::default(), HOTKEY_ID_FOCUS_OVERRIDE);
     }
     unsafe {
-        if let Some(tray) = TRAY.get_mut() {
-            tray.destroy();
+        if let Some(app) = APP.get_mut() {
+            app.tray.destroy();
         }
-        TRAY.clear();
-    }
-    unsafe {
-        ENGINE.clear();
-        INPUT_TRACKER.clear();
-        OUTPUT.clear();
-        IME.clear();
-        LAYOUTS.clear();
-        FOCUS.clear();
-        KEY_BUFFER.clear();
-        ENGINE_ON_KEYS.clear();
-        ENGINE_OFF_KEYS.clear();
-        SHADOW_IME_ON.clear();
-        IME_SYNC_TOGGLE_KEYS.clear();
-        IME_SYNC_ON_KEYS.clear();
-        IME_SYNC_OFF_KEYS.clear();
+        APP.clear();
     }
     log::info!("Exited cleanly.");
 }
@@ -562,8 +542,8 @@ impl ActionExecutor for SendInputExecutor {
 
     fn execute(&mut self, actions: &[Self::Action]) {
         unsafe {
-            if let Some(output) = OUTPUT.get_ref() {
-                output.send_keys(actions);
+            if let Some(app) = APP.get_ref() {
+                app.output.send_keys(actions);
             }
         }
     }
@@ -669,7 +649,7 @@ pub(crate) unsafe fn refresh_ime_state_cache() {
     // Step 4: 最終判定 → キャッシュに書き込み
     let ime_on = match cross_process {
         Some(open) => open,
-        None => SHADOW_IME_ON.get_ref().copied().unwrap_or(true), // shadow fallback
+        None => APP.get_ref().map_or(true, |app| app.shadow_ime_on), // shadow fallback
     };
 
     let new_val = if ime_on { 1u8 } else { 0u8 };
@@ -686,42 +666,31 @@ pub(crate) unsafe fn refresh_ime_state_cache() {
 /// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
 ///
 /// # Safety
-/// `ENGINE_ON_KEYS`, `ENGINE_OFF_KEYS`, `TRAY` はシングルスレッドからのみアクセスすること。
-unsafe fn check_engine_toggle_keys(
-    engine: &mut Engine,
-    event: &RawKeyEvent,
-) -> Option<CallbackResult> {
+/// `APP` はシングルスレッドからのみアクセスすること。
+unsafe fn check_engine_toggle_keys(app: &mut AppState, event: &RawKeyEvent) -> Option<CallbackResult> {
     // エンジン OFF → ON: engine_on_keys（デフォルト: VK_CONVERT）
-    if !engine.is_enabled() {
-        if let Some(keys) = ENGINE_ON_KEYS.get_ref() {
-            if keys.iter().any(|k| matches_key_combo(k, event)) {
-                let (enabled, flush_resp) = engine.set_enabled(true);
-                let mut tr = Win32TimerRuntime;
-                let mut ae = SendInputExecutor;
-                dispatch(&flush_resp, &mut tr, &mut ae);
-                log::info!("Engine ON (key combo)");
-                if let Some(tray) = TRAY.get_mut() {
-                    tray.set_enabled(enabled);
-                }
-                return Some(CallbackResult::Consumed);
-            }
+    if !app.engine.is_enabled() {
+        if app.engine_on_keys.iter().any(|k| matches_key_combo(k, event)) {
+            let (enabled, flush_resp) = app.engine.set_enabled(true);
+            let mut tr = Win32TimerRuntime;
+            let mut ae = SendInputExecutor;
+            dispatch(&flush_resp, &mut tr, &mut ae);
+            log::info!("Engine ON (key combo)");
+            app.tray.set_enabled(enabled);
+            return Some(CallbackResult::Consumed);
         }
     }
 
     // エンジン ON → OFF: engine_off_keys（デフォルト: Ctrl+VK_NONCONVERT）
-    if engine.is_enabled() {
-        if let Some(keys) = ENGINE_OFF_KEYS.get_ref() {
-            if keys.iter().any(|k| matches_key_combo(k, event)) {
-                let (enabled, flush_resp) = engine.set_enabled(false);
-                let mut tr = Win32TimerRuntime;
-                let mut ae = SendInputExecutor;
-                dispatch(&flush_resp, &mut tr, &mut ae);
-                log::info!("Engine OFF (key combo)");
-                if let Some(tray) = TRAY.get_mut() {
-                    tray.set_enabled(enabled);
-                }
-                return Some(CallbackResult::Consumed);
-            }
+    if app.engine.is_enabled() {
+        if app.engine_off_keys.iter().any(|k| matches_key_combo(k, event)) {
+            let (enabled, flush_resp) = app.engine.set_enabled(false);
+            let mut tr = Win32TimerRuntime;
+            let mut ae = SendInputExecutor;
+            dispatch(&flush_resp, &mut tr, &mut ae);
+            log::info!("Engine OFF (key combo)");
+            app.tray.set_enabled(enabled);
+            return Some(CallbackResult::Consumed);
         }
     }
 
@@ -737,17 +706,14 @@ unsafe fn check_engine_toggle_keys(
 /// 4. IME 状態検出（クロスプロセス API or shadow）
 /// 5. エンジン処理
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    let Some(engine) = ENGINE.get_mut() else {
-        return CallbackResult::PassThrough;
-    };
-    let Some(tracker) = INPUT_TRACKER.get_mut() else {
+    let Some(app) = APP.get_mut() else {
         return CallbackResult::PassThrough;
     };
 
     // ── 入力レイヤー: 物理キー状態追跡 ──
     // IME チェックやエンジン無効等で処理レイヤーがスキップされても、
     // 修飾キー/親指キーの押下・解放を漏らさないために最初に呼ぶ。
-    let phys = tracker.process(&event);
+    let phys = app.tracker.process(&event);
 
     // ── Shadow IME state tracking (ime_sync keys) ──
     {
@@ -758,25 +724,17 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         if is_key_down {
             let vk = event.vk_code.0;
 
-            if let Some(on_keys) = IME_SYNC_ON_KEYS.get_ref() {
-                if on_keys.contains(&vk) {
-                    SHADOW_IME_ON.set(true);
-                    log::debug!("Shadow IME ON (key 0x{vk:02X})");
-                }
+            if app.ime_sync_on_keys.contains(&vk) {
+                app.shadow_ime_on = true;
+                log::debug!("Shadow IME ON (key 0x{vk:02X})");
             }
-            if let Some(off_keys) = IME_SYNC_OFF_KEYS.get_ref() {
-                if off_keys.contains(&vk) {
-                    SHADOW_IME_ON.set(false);
-                    log::debug!("Shadow IME OFF (key 0x{vk:02X})");
-                }
+            if app.ime_sync_off_keys.contains(&vk) {
+                app.shadow_ime_on = false;
+                log::debug!("Shadow IME OFF (key 0x{vk:02X})");
             }
-            if let Some(toggle_keys) = IME_SYNC_TOGGLE_KEYS.get_ref() {
-                if toggle_keys.contains(&vk) {
-                    let current = SHADOW_IME_ON.get_ref().copied().unwrap_or(true);
-                    let new_state = !current;
-                    SHADOW_IME_ON.set(new_state);
-                    log::debug!("Shadow IME toggle → {new_state} (key 0x{vk:02X})");
-                }
+            if app.ime_sync_toggle_keys.contains(&vk) {
+                app.shadow_ime_on = !app.shadow_ime_on;
+                log::debug!("Shadow IME toggle → {} (key 0x{vk:02X})", app.shadow_ime_on);
             }
         }
     }
@@ -790,59 +748,41 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 
         if is_key_down {
             // Check if current key IS a toggle/on/off key
-            let is_toggle_key = IME_SYNC_TOGGLE_KEYS
-                .get_ref()
-                .is_some_and(|keys| keys.contains(&event.vk_code.0));
-            let is_on_key = IME_SYNC_ON_KEYS
-                .get_ref()
-                .is_some_and(|keys| keys.contains(&event.vk_code.0));
-            let is_off_key = IME_SYNC_OFF_KEYS
-                .get_ref()
-                .is_some_and(|keys| keys.contains(&event.vk_code.0));
+            let is_toggle_key = app.ime_sync_toggle_keys.contains(&event.vk_code.0);
+            let is_on_key = app.ime_sync_on_keys.contains(&event.vk_code.0);
+            let is_off_key = app.ime_sync_off_keys.contains(&event.vk_code.0);
 
             if is_toggle_key || is_on_key || is_off_key {
                 // Set guard — next keys will be buffered
-                if let Some(kb) = KEY_BUFFER.get_mut() {
-                    kb.set_guard(true);
-                }
+                app.key_buffer.set_guard(true);
                 log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
                 return CallbackResult::PassThrough; // let IME process the toggle
             }
 
             // While guard active, buffer character keys
-            if let Some(kb) = KEY_BUFFER.get_mut() {
-                if kb.is_guarded() {
-                    kb.push_deferred(event, phys);
-                    let _ =
-                        PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
-                    return CallbackResult::Consumed;
-                }
+            if app.key_buffer.is_guarded() {
+                app.key_buffer.push_deferred(event, phys);
+                let _ =
+                    PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
+                return CallbackResult::Consumed;
             }
         }
 
         // Guard clear on KeyUp of toggle key
         if !is_key_down {
-            if let Some(kb) = KEY_BUFFER.get_mut() {
-                if kb.is_guarded() {
-                    let is_toggle_key = IME_SYNC_TOGGLE_KEYS
-                        .get_ref()
-                        .is_some_and(|keys| keys.contains(&event.vk_code.0));
-                    let is_on_key = IME_SYNC_ON_KEYS
-                        .get_ref()
-                        .is_some_and(|keys| keys.contains(&event.vk_code.0));
-                    let is_off_key = IME_SYNC_OFF_KEYS
-                        .get_ref()
-                        .is_some_and(|keys| keys.contains(&event.vk_code.0));
-                    if is_toggle_key || is_on_key || is_off_key {
-                        kb.set_guard(false);
-                        // Process any buffered keys
-                        let _ = PostMessageW(
-                            HWND::default(),
-                            WM_PROCESS_DEFERRED,
-                            WPARAM(0),
-                            LPARAM(0),
-                        );
-                    }
+            if app.key_buffer.is_guarded() {
+                let is_toggle_key = app.ime_sync_toggle_keys.contains(&event.vk_code.0);
+                let is_on_key = app.ime_sync_on_keys.contains(&event.vk_code.0);
+                let is_off_key = app.ime_sync_off_keys.contains(&event.vk_code.0);
+                if is_toggle_key || is_on_key || is_off_key {
+                    app.key_buffer.set_guard(false);
+                    // Process any buffered keys
+                    let _ = PostMessageW(
+                        HWND::default(),
+                        WM_PROCESS_DEFERRED,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
                 }
             }
         }
@@ -855,7 +795,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
         if is_key_down {
-            if let Some(result) = check_engine_toggle_keys(engine, &event) {
+            if let Some(result) = check_engine_toggle_keys(app, &event) {
                 return result;
             }
         }
@@ -873,7 +813,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             1 => true,
             _ => {
                 // Unknown（初期状態 or キャッシュ未更新）→ shadow fallback
-                SHADOW_IME_ON.get_ref().copied().unwrap_or(true)
+                app.shadow_ime_on
             }
         };
 
@@ -883,7 +823,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     }
 
     // エンジン処理
-    let response = engine.on_event(event, &phys);
+    let response = app.engine.on_event(event, &phys);
     let mut timer_runtime = Win32TimerRuntime;
     let mut action_executor = SendInputExecutor;
     let consumed = dispatch(&response, &mut timer_runtime, &mut action_executor);
@@ -924,20 +864,23 @@ fn run_message_loop() {
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
                 let timer_id = msg.wParam.0;
                 unsafe {
-                    // IME が非活性なら on_timeout せず flush（コンテキスト喪失）
-                    let ime_active = IME
-                        .get_ref()
-                        .is_none_or(|ime| ime.is_active() && ime.get_mode().is_kana_input());
-                    if !ime_active {
-                        invalidate_engine_context(ContextChange::ImeOff);
-                    } else if let (Some(engine), Some(tracker)) =
-                        (ENGINE.get_mut(), INPUT_TRACKER.get_mut())
-                    {
-                        let phys = tracker.snapshot();
-                        let response = engine.on_timeout(timer_id, &phys);
-                        let mut timer_runtime = Win32TimerRuntime;
-                        let mut action_executor = SendInputExecutor;
-                        dispatch(&response, &mut timer_runtime, &mut action_executor);
+                    if let Some(app) = APP.get_mut() {
+                        // IME が非活性な��� on_timeout せず flush（コンテキスト喪失）
+                        let ime_active =
+                            app.ime.is_active() && app.ime.get_mode().is_kana_input();
+                        if !ime_active {
+                            let response =
+                                app.engine.flush_pending(ContextChange::ImeOff);
+                            let mut timer_runtime = Win32TimerRuntime;
+                            let mut action_executor = SendInputExecutor;
+                            dispatch(&response, &mut timer_runtime, &mut action_executor);
+                        } else {
+                            let phys = app.tracker.snapshot();
+                            let response = app.engine.on_timeout(timer_id, &phys);
+                            let mut timer_runtime = Win32TimerRuntime;
+                            let mut action_executor = SendInputExecutor;
+                            dispatch(&response, &mut timer_runtime, &mut action_executor);
+                        }
                     }
                 }
             }
@@ -947,8 +890,8 @@ fn run_message_loop() {
                 // 後続キーをメッセージループに回して確実に更新後に処理する。
                 log::info!("Input language changed, flushing pending state and enabling guard");
                 invalidate_engine_context(ContextChange::InputLanguageChanged);
-                if let Some(kb) = KEY_BUFFER.get_mut() {
-                    kb.set_guard(true);
+                if let Some(app) = APP.get_mut() {
+                    app.key_buffer.set_guard(true);
                 }
                 refresh_ime_state_cache();
             },
@@ -983,9 +926,9 @@ fn run_message_loop() {
                         FocusKind::store(kind, &FOCUS_KIND);
 
                         // UIA 結果をキャッシュに反映
-                        if let Some(f) = FOCUS.get_mut() {
-                            if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-                                f.cache
+                        if let Some(app) = APP.get_mut() {
+                            if let Some((pid, cls)) = app.focus.last_focus_info.as_ref() {
+                                app.focus.cache
                                     .insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
                             }
                         }
@@ -1002,9 +945,9 @@ fn run_message_loop() {
                 focus::toggle_focus_override();
             },
             WM_APP => unsafe {
-                let layout_names: Vec<String> = LAYOUTS
+                let layout_names: Vec<String> = APP
                     .get_ref()
-                    .map(|layouts| layouts.iter().map(|(name, ..)| name.clone()).collect())
+                    .map(|app| app.layouts.iter().map(|(name, ..)| name.clone()).collect())
                     .unwrap_or_default();
                 tray::handle_tray_message(msg.hwnd, msg.lParam, &layout_names);
             },
@@ -1037,15 +980,13 @@ fn run_message_loop() {
 ///
 /// Safety: シングルスレッドからのみ呼び出すこと
 unsafe fn toggle_engine() {
-    if let Some(engine) = ENGINE.get_mut() {
-        let (enabled, flush_resp) = engine.toggle_enabled();
+    if let Some(app) = APP.get_mut() {
+        let (enabled, flush_resp) = app.engine.toggle_enabled();
         let mut timer_runtime = Win32TimerRuntime;
         let mut action_executor = SendInputExecutor;
         dispatch(&flush_resp, &mut timer_runtime, &mut action_executor);
         log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
-        if let Some(tray) = TRAY.get_mut() {
-            tray.set_enabled(enabled);
-        }
+        app.tray.set_enabled(enabled);
     }
 }
 
@@ -1054,8 +995,8 @@ unsafe fn toggle_engine() {
 /// IMEオフ、入力言語変更など、エンジンの前提が崩れた場合に呼ぶ。
 /// 全てのコンテキスト無効化経路はこの関数を通すこと。
 pub(crate) unsafe fn invalidate_engine_context(reason: ContextChange) {
-    if let Some(engine) = ENGINE.get_mut() {
-        let response = engine.flush_pending(reason);
+    if let Some(app) = APP.get_mut() {
+        let response = app.engine.flush_pending(reason);
         let mut timer_runtime = Win32TimerRuntime;
         let mut action_executor = SendInputExecutor;
         dispatch(&response, &mut timer_runtime, &mut action_executor);
@@ -1100,9 +1041,9 @@ unsafe fn reload_config() {
         log::warn!("config: {w}");
     }
 
-    if let Some(engine) = ENGINE.get_mut() {
-        engine.set_threshold_ms(config.general.simultaneous_threshold_ms);
-        engine.set_confirm_mode(
+    if let Some(app) = APP.get_mut() {
+        app.engine.set_threshold_ms(config.general.simultaneous_threshold_ms);
+        app.engine.set_confirm_mode(
             config.general.confirm_mode,
             config.general.speculative_delay_ms,
         );
@@ -1122,27 +1063,30 @@ unsafe fn reload_config() {
     // エンジン ON/OFF キーの再読み込み
     {
         let mut reload_toggle_diag = StartupDiagnostics::new();
-        // 既存の値をクリアしてから再設定
-        ENGINE_ON_KEYS.clear();
-        ENGINE_OFF_KEYS.clear();
-        init_engine_toggle_keys(&config, &mut reload_toggle_diag);
+        let (on_keys, off_keys) = init_engine_toggle_keys(&config, &mut reload_toggle_diag);
+        if let Some(app) = APP.get_mut() {
+            app.engine_on_keys = on_keys;
+            app.engine_off_keys = off_keys;
+        }
         reload_toggle_diag.report();
     }
 
     // IME sync キーの再読み込み
     {
         let mut reload_sync_diag = StartupDiagnostics::new();
-        IME_SYNC_TOGGLE_KEYS.clear();
-        IME_SYNC_ON_KEYS.clear();
-        IME_SYNC_OFF_KEYS.clear();
-        init_ime_sync_keys(&config.ime_sync, &mut reload_sync_diag);
+        let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut reload_sync_diag);
+        if let Some(app) = APP.get_mut() {
+            app.ime_sync_toggle_keys = toggle;
+            app.ime_sync_on_keys = on;
+            app.ime_sync_off_keys = off;
+        }
         reload_sync_diag.report();
     }
 
     // フォーカスオーバーライド再読み込み + キャッシュクリア
-    if let Some(f) = FOCUS.get_mut() {
-        f.overrides = config.focus_overrides;
-        f.cache = focus::cache::FocusCache::new();
+    if let Some(app) = APP.get_mut() {
+        app.focus.overrides = config.focus_overrides;
+        app.focus.cache = focus::cache::FocusCache::new();
     }
     log::info!("Focus overrides reloaded");
 
@@ -1222,11 +1166,11 @@ fn resolve_relative(path: &str) -> PathBuf {
 ///
 /// Safety: シングルスレッドからのみ呼び出すこと
 unsafe fn switch_layout(index: usize) {
-    let Some(layouts) = LAYOUTS.get_ref() else {
+    let Some(app) = APP.get_mut() else {
         return;
     };
 
-    let Some((name, layout_template, _l_vk, _r_vk)) = layouts.get(index) else {
+    let Some((name, layout_template, _l_vk, _r_vk)) = app.layouts.get(index) else {
         log::warn!("Layout index {index} out of range");
         return;
     };
@@ -1239,17 +1183,14 @@ unsafe fn switch_layout(index: usize) {
         right_thumb: layout_template.right_thumb.clone(),
         shift: layout_template.shift.clone(),
     };
+    let name = name.clone();
 
-    if let Some(engine) = ENGINE.get_mut() {
-        let response = engine.swap_layout(new_layout);
-        let mut timer_runtime = Win32TimerRuntime;
-        let mut action_executor = SendInputExecutor;
-        dispatch(&response, &mut timer_runtime, &mut action_executor);
-    }
+    let response = app.engine.swap_layout(new_layout);
+    let mut timer_runtime = Win32TimerRuntime;
+    let mut action_executor = SendInputExecutor;
+    dispatch(&response, &mut timer_runtime, &mut action_executor);
 
-    if let Some(tray) = TRAY.get_mut() {
-        tray.set_layout_name(name);
-    }
+    app.tray.set_layout_name(&name);
 
     log::info!("Switched layout to: {name}");
 }

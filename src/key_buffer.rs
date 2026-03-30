@@ -99,10 +99,11 @@ impl KeyBuffer {
 /// IME OFF + Undetermined 状態で PassThrough したキーを、
 /// TextInput に昇格した後に正しく処理し直すために使用する。
 pub unsafe fn retract_passthrough_memory() {
-    let keys = crate::KEY_BUFFER
-        .get_mut()
-        .map(KeyBuffer::drain_passthrough)
-        .unwrap_or_default();
+    let Some(app) = crate::APP.get_mut() else {
+        return;
+    };
+
+    let keys = app.key_buffer.drain_passthrough();
 
     if keys.is_empty() {
         return;
@@ -114,31 +115,25 @@ pub unsafe fn retract_passthrough_memory() {
     );
 
     // BS を送信して PassThrough 済みの文字を取り消す
-    if let Some(output) = crate::OUTPUT.get_ref() {
+    {
         let mut bs_actions: Vec<KeyAction> = Vec::new();
         for _ in 0..keys.len() {
             bs_actions.push(KeyAction::Key(0x08)); // VK_BACK down
             bs_actions.push(KeyAction::KeyUp(0x08)); // VK_BACK up
         }
-        output.send_keys(&bs_actions);
+        app.output.send_keys(&bs_actions);
     }
 
     // エンジンで再処理
     for event in keys {
-        let ime_active = crate::IME
-            .get_ref()
-            .is_some_and(|ime| ime.is_active() && ime.get_mode().is_kana_input());
+        let ime_active = app.ime.is_active() && app.ime.get_mode().is_kana_input();
 
         if ime_active {
-            if let (Some(engine), Some(tracker)) =
-                (crate::ENGINE.get_mut(), crate::INPUT_TRACKER.get_mut())
-            {
-                let phys = tracker.process(&event);
-                let response = engine.on_event(event, &phys);
-                let mut timer_runtime = crate::Win32TimerRuntime;
-                let mut action_executor = crate::SendInputExecutor;
-                dispatch(&response, &mut timer_runtime, &mut action_executor);
-            }
+            let phys = app.tracker.process(&event);
+            let response = app.engine.on_event(event, &phys);
+            let mut timer_runtime = crate::Win32TimerRuntime;
+            let mut action_executor = crate::SendInputExecutor;
+            dispatch(&response, &mut timer_runtime, &mut action_executor);
         }
         // IME OFF のままなら再注入（元々 PassThrough だったので同じ結果）
         // この場合は BS 分が余計だが、IME OFF → パターン検出 → 昇格の流れでは
@@ -149,9 +144,9 @@ pub unsafe fn retract_passthrough_memory() {
 /// Undetermined + IME ON バッファリングのタイムアウトを開始する（初回バッファ時のみ）。
 #[allow(dead_code)] // 将来の Undetermined バッファリング再有効化で使用予定
 pub unsafe fn start_buffer_timeout_if_needed() {
-    if let Some(kb) = crate::KEY_BUFFER.get_mut() {
-        if !kb.undetermined_buffering {
-            kb.undetermined_buffering = true;
+    if let Some(app) = crate::APP.get_mut() {
+        if !app.key_buffer.undetermined_buffering {
+            app.key_buffer.undetermined_buffering = true;
             let _ = SetTimer(HWND::default(), crate::TIMER_UNDETERMINED_BUFFER, 300, None);
         }
     }
@@ -163,9 +158,9 @@ pub unsafe fn start_buffer_timeout_if_needed() {
 /// エンジンで処理する（安全側: TextInput として扱う）。
 pub unsafe fn handle_buffer_timeout() {
     let _ = KillTimer(HWND::default(), crate::TIMER_UNDETERMINED_BUFFER);
-    let keys = if let Some(kb) = crate::KEY_BUFFER.get_mut() {
-        kb.undetermined_buffering = false;
-        kb.drain_deferred()
+    let keys = if let Some(app) = crate::APP.get_mut() {
+        app.key_buffer.undetermined_buffering = false;
+        app.key_buffer.drain_deferred()
     } else {
         Vec::new()
     };
@@ -186,8 +181,8 @@ pub unsafe fn handle_buffer_timeout() {
     );
 
     for (event, phys) in keys {
-        if let Some(engine) = crate::ENGINE.get_mut() {
-            let response = engine.on_event(event, &phys);
+        if let Some(app) = crate::APP.get_mut() {
+            let response = app.engine.on_event(event, &phys);
             let mut timer_runtime = crate::Win32TimerRuntime;
             let mut action_executor = crate::SendInputExecutor;
             dispatch(&response, &mut timer_runtime, &mut action_executor);
@@ -205,9 +200,9 @@ pub unsafe fn handle_buffer_timeout() {
 /// Safety: シングルスレッドからのみ呼び出すこと
 pub unsafe fn process_deferred_keys() {
     // ガード解除 + バッファからキーを取り出す
-    let keys = crate::KEY_BUFFER.get_mut().map_or_else(Vec::new, |kb| {
-        kb.set_guard(false);
-        kb.drain_deferred()
+    let keys = crate::APP.get_mut().map_or_else(Vec::new, |app| {
+        app.key_buffer.set_guard(false);
+        app.key_buffer.drain_deferred()
     });
 
     if keys.is_empty() {
@@ -224,14 +219,14 @@ pub unsafe fn process_deferred_keys() {
     let ime_on = match cached {
         0 => false,
         1 => true,
-        _ => crate::SHADOW_IME_ON.get_ref().copied().unwrap_or(true),
+        _ => crate::APP.get_ref().map_or(true, |app| app.shadow_ime_on),
     };
 
     for (event, phys) in keys {
         if ime_on {
             // IME ON → エンジンで処理（push_deferred 時に保存した phys を使用）
-            if let Some(engine) = crate::ENGINE.get_mut() {
-                let response = engine.on_event(event, &phys);
+            if let Some(app) = crate::APP.get_mut() {
+                let response = app.engine.on_event(event, &phys);
                 let mut timer_runtime = crate::Win32TimerRuntime;
                 let mut action_executor = crate::SendInputExecutor;
                 dispatch(&response, &mut timer_runtime, &mut action_executor);

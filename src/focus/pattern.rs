@@ -104,9 +104,9 @@ pub unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
         return;
     }
     FocusKind::TextInput.store(&crate::FOCUS_KIND);
-    if let Some(f) = crate::FOCUS.get_mut() {
-        if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-            f.cache
+    if let Some(app) = crate::APP.get_mut() {
+        if let Some((pid, cls)) = app.focus.last_focus_info.as_ref() {
+            app.focus.cache
                 .insert(*pid, cls.clone(), FocusKind::TextInput, source);
         }
     }
@@ -134,10 +134,10 @@ pub unsafe fn observe_key_pattern(event: &RawKeyEvent) {
 
     let is_char = vk::is_modifier_free_char(event.vk_code, is_os_modifier_held());
 
-    if let Some(f) = crate::FOCUS.get_mut() {
-        if let Some(reason) = f.pattern_tracker.on_key(event.vk_code.0, is_char) {
+    if let Some(app) = crate::APP.get_mut() {
+        if let Some(reason) = app.focus.pattern_tracker.on_key(event.vk_code.0, is_char) {
             promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
-            f.pattern_tracker.clear();
+            app.focus.pattern_tracker.clear();
 
             // IME OFF + Undetermined で PassThrough 済みキーがある場合、
             // BS で取り消して再処理する

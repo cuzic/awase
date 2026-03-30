@@ -117,8 +117,8 @@ unsafe extern "system" fn win_event_proc(
         let current_kind = FocusKind::load(&crate::FOCUS_KIND);
         if current_kind == FocusKind::TextInput {
             // 既に TextInput — フォアグラウンドが変わっていなければ維持
-            if let Some(f) = crate::FOCUS.get_ref() {
-                if let Some((prev_pid, _)) = &f.last_focus_info {
+            if let Some(app) = crate::APP.get_ref() {
+                if let Some((prev_pid, _)) = &app.focus.last_focus_info {
                     let fg_pid = classify::get_window_process_id(fg);
                     if fg_pid == *prev_pid {
                         log::trace!(
@@ -132,18 +132,16 @@ unsafe extern "system" fn win_event_proc(
     }
 
     // UIA 非同期結果のキャッシュ更新用に保存 + パターントラッカーをリセット
-    if let Some(f) = crate::FOCUS.get_mut() {
-        f.last_focus_info = Some((process_id, class_name.clone()));
-        f.pattern_tracker.clear();
-    }
-    if let Some(kb) = crate::KEY_BUFFER.get_mut() {
-        kb.passthrough_memory.clear();
+    if let Some(app) = crate::APP.get_mut() {
+        app.focus.last_focus_info = Some((process_id, class_name.clone()));
+        app.focus.pattern_tracker.clear();
+        app.key_buffer.passthrough_memory.clear();
         // Undetermined バッファリング中ならキャンセル
-        if kb.undetermined_buffering {
-            kb.undetermined_buffering = false;
+        if app.key_buffer.undetermined_buffering {
+            app.key_buffer.undetermined_buffering = false;
             let _ = KillTimer(HWND::default(), crate::TIMER_UNDETERMINED_BUFFER);
             // バッファされたキーは破棄（フォーカスが変わったので無意味）
-            kb.deferred_keys.clear();
+            app.key_buffer.deferred_keys.clear();
         }
     }
 
@@ -153,7 +151,7 @@ unsafe extern "system" fn win_event_proc(
     awase::types::ImeReliability::Unknown.store(&crate::IME_RELIABILITY);
 
     // Config オーバーライド（最高優先度、キャッシュより先に判定）
-    if let Some(overrides) = crate::FOCUS.get_ref().map(|f| &f.overrides) {
+    if let Some(overrides) = crate::APP.get_ref().map(|app| &app.focus.overrides) {
         if !overrides.force_text.is_empty() || !overrides.force_bypass.is_empty() {
             let process_name = classify::get_process_name(process_id);
             for entry in &overrides.force_text {
@@ -183,9 +181,9 @@ unsafe extern "system" fn win_event_proc(
     }
 
     // キャッシュヒット → 即座に結果を適用
-    if let Some(cached) = crate::FOCUS
+    if let Some(cached) = crate::APP
         .get_ref()
-        .and_then(|f| f.cache.get(process_id, &class_name))
+        .and_then(|app| app.focus.cache.get(process_id, &class_name))
     {
         log::trace!("classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",);
         cached.store(&crate::FOCUS_KIND);
@@ -203,8 +201,8 @@ unsafe extern "system" fn win_event_proc(
     let state = result.kind;
 
     // Step 3: キャッシュに格納し、FOCUS_KIND を更新
-    if let Some(f) = crate::FOCUS.get_mut() {
-        f.cache.insert(
+    if let Some(app) = crate::APP.get_mut() {
+        app.focus.cache.insert(
             process_id,
             class_name.clone(),
             state,
@@ -222,7 +220,7 @@ unsafe extern "system" fn win_event_proc(
     // Phase 1-2 で FocusKind が確定していても、ImeReliability の判定には
     // UIA FrameworkId が必要なため、常にリクエストする。
     {
-        if let Some(tx) = crate::FOCUS.get_ref().and_then(|f| f.uia_sender.as_ref()) {
+        if let Some(tx) = crate::APP.get_ref().and_then(|app| app.focus.uia_sender.as_ref()) {
             let _ = tx.send(SendableHwnd(hwnd));
         }
         // auto-IME-OFF は行わない。Windows 11 では XAML インフラウィンドウが
@@ -259,29 +257,28 @@ pub unsafe fn toggle_focus_override() {
 
     new_kind.store(&crate::FOCUS_KIND);
 
-    // Update learning cache
-    if let Some(f) = crate::FOCUS.get_mut() {
-        if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-            f.cache
+    if let Some(app) = crate::APP.get_mut() {
+        // Update learning cache
+        if let Some((pid, cls)) = app.focus.last_focus_info.as_ref() {
+            app.focus.cache
                 .insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
         }
-    }
 
-    // If demoted to NonText, flush engine pending
-    if new_kind == FocusKind::NonText {
-        crate::invalidate_engine_context(ContextChange::FocusChanged);
-    }
+        // If demoted to NonText, flush engine pending
+        if new_kind == FocusKind::NonText {
+            let response = app.engine.flush_pending(ContextChange::FocusChanged);
+            let mut timer_runtime = crate::Win32TimerRuntime;
+            let mut action_executor = crate::SendInputExecutor;
+            timed_fsm::dispatch(&response, &mut timer_runtime, &mut action_executor);
+        }
 
-    // Clear any active buffers
-    if let Some(kb) = crate::KEY_BUFFER.get_mut() {
-        kb.deferred_keys.clear();
-        kb.passthrough_memory.clear();
-        kb.undetermined_buffering = false;
-    }
+        // Clear any active buffers
+        app.key_buffer.deferred_keys.clear();
+        app.key_buffer.passthrough_memory.clear();
+        app.key_buffer.undetermined_buffering = false;
 
-    // バルーン通知を表示
-    if let Some(tray) = crate::TRAY.get_mut() {
-        tray.show_balloon(
+        // バルーン通知を表示
+        app.tray.show_balloon(
             "awase",
             if new_kind == FocusKind::TextInput {
                 "テキスト入力モードに切り替えました"
