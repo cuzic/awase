@@ -12,13 +12,8 @@ pub enum DetectionSource {
     Automatic = 0,
     /// Phase 3 UIA 非同期判定（TTL: 5分）
     UiaAsync = 1,
-    /// タイピングパターン推定（TTL: 30分）
-    TypingPatternInferred = 2,
-    /// IME/親指キー検出による推定（TTL: 30分）
-    #[allow(dead_code)] // 将来のIMEキーパターン検出で使用予定
-    ImeKeyInferred = 3,
     /// ユーザー手動オーバーライド（TTL: 24時間、優先度: 最高）
-    UserOverride = 4,
+    UserOverride = 2,
 }
 
 impl DetectionSource {
@@ -26,7 +21,6 @@ impl DetectionSource {
     pub const fn ttl_secs(self) -> u64 {
         match self {
             Self::Automatic | Self::UiaAsync => 300, // 5分
-            Self::TypingPatternInferred | Self::ImeKeyInferred => 1800, // 30分
             Self::UserOverride => 86400,             // 24時間
         }
     }
@@ -58,11 +52,7 @@ impl FocusCache {
     pub fn get(&self, process_id: u32, class_name: &str) -> Option<FocusKind> {
         let key = (process_id, class_name.to_string());
         self.entries.get(&key).and_then(|entry| {
-            if entry.timestamp.elapsed().as_secs() < entry.source.ttl_secs() {
-                Some(entry.kind)
-            } else {
-                None
-            }
+            (entry.timestamp.elapsed().as_secs() < entry.source.ttl_secs()).then_some(entry.kind)
         })
     }
 

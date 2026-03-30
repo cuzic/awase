@@ -6,5 +6,4 @@
 pub mod cache;
 pub mod classify;
 pub mod msaa;
-pub mod pattern;
 pub mod uia;
