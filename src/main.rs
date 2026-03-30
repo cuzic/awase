@@ -1,3 +1,5 @@
+// コンソールウィンドウを非表示にする（タスクトレイで操作する）
+#![windows_subsystem = "windows"]
 // Win32 API (フック, SendInput, SetTimer 等) の使用に unsafe が必須
 #![allow(unsafe_code)]
 // Win32 API の型キャスト (usize → i32 等) は OS の ABI 制約により不可避
@@ -188,7 +190,6 @@ fn main() -> Result<()> {
     diag.report();
 
     log::info!("Hook installed. Running message loop...");
-    log::info!("Press Ctrl+C to exit.");
     MAIN_THREAD_ID.store(
         unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
         Ordering::SeqCst,
