@@ -41,6 +41,18 @@ struct SettingsApp {
     /// 新規 force_bypass エントリ入力バッファ
     new_force_bypass_process: String,
     new_force_bypass_class: String,
+    /// IME 同期トグルキー一覧（GUI 編集用コピー）
+    ime_toggle_keys: Vec<String>,
+    /// IME 同期 ON キー一覧（GUI 編集用コピー）
+    ime_on_keys: Vec<String>,
+    /// IME 同期 OFF キー一覧（GUI 編集用コピー）
+    ime_off_keys: Vec<String>,
+    /// IME 同期トグルキー追加用バッファ
+    new_ime_toggle_key: String,
+    /// IME 同期 ON キー追加用バッファ
+    new_ime_on_key: String,
+    /// IME 同期 OFF キー追加用バッファ
+    new_ime_off_key: String,
 }
 
 impl SettingsApp {
@@ -60,6 +72,9 @@ impl SettingsApp {
 
         let engine_on_keys = config.general.engine_on_keys.clone();
         let engine_off_keys = config.general.engine_off_keys.clone();
+        let ime_toggle_keys = config.ime_sync.toggle_keys.clone();
+        let ime_on_keys = config.ime_sync.on_keys.clone();
+        let ime_off_keys = config.ime_sync.off_keys.clone();
         let mut app = Self {
             config,
             config_path,
@@ -76,6 +91,12 @@ impl SettingsApp {
             new_force_text_class: String::new(),
             new_force_bypass_process: String::new(),
             new_force_bypass_class: String::new(),
+            ime_toggle_keys,
+            ime_on_keys,
+            ime_off_keys,
+            new_ime_toggle_key: String::new(),
+            new_ime_on_key: String::new(),
+            new_ime_off_key: String::new(),
         };
         app.rebuild_preview_engine();
         app
@@ -178,6 +199,13 @@ impl eframe::App for SettingsApp {
                     self.engine_toggle_keys_ui(ui);
                 });
 
+            // ── IME 同期設定 ──
+            egui::CollapsingHeader::new("IME 同期設定")
+                .default_open(false)
+                .show(ui, |ui| {
+                    self.ime_sync_keys_ui(ui);
+                });
+
             // ── 配列 ──
             egui::CollapsingHeader::new("配列")
                 .default_open(true)
@@ -214,6 +242,10 @@ impl eframe::App for SettingsApp {
                     // エンジン切替キーを config に反映
                     self.config.general.engine_on_keys = self.engine_on_keys.clone();
                     self.config.general.engine_off_keys = self.engine_off_keys.clone();
+                    // IME 同期キーを config に反映
+                    self.config.ime_sync.toggle_keys = self.ime_toggle_keys.clone();
+                    self.config.ime_sync.on_keys = self.ime_on_keys.clone();
+                    self.config.ime_sync.off_keys = self.ime_off_keys.clone();
                     match self.config.save(&self.config_path) {
                         Ok(()) => {
                             self.status_message = "設定を保存しました".into();
@@ -383,6 +415,85 @@ impl SettingsApp {
             if ui.button("+").clicked() && !self.new_engine_off_key.is_empty() {
                 self.engine_off_keys.push(self.new_engine_off_key.clone());
                 self.new_engine_off_key.clear();
+            }
+        });
+    }
+
+    fn ime_sync_keys_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("IME の状態を追跡するキーを設定します。");
+        ui.label("例: VK_KANJI, VK_IME_ON, VK_IME_OFF");
+        ui.add_space(4.0);
+
+        // ── Toggle keys ──
+        ui.label("トグルキー（IME 状態を反転）:");
+        let mut remove_toggle_idx = None;
+        for (i, key) in self.ime_toggle_keys.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {key}"));
+                if ui.small_button("削除").clicked() {
+                    remove_toggle_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_toggle_idx {
+            self.ime_toggle_keys.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  追加:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_ime_toggle_key).desired_width(200.0));
+            if ui.button("+").clicked() && !self.new_ime_toggle_key.is_empty() {
+                self.ime_toggle_keys.push(self.new_ime_toggle_key.clone());
+                self.new_ime_toggle_key.clear();
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // ── ON keys ──
+        ui.label("ON キー（IME が ON になる）:");
+        let mut remove_on_idx = None;
+        for (i, key) in self.ime_on_keys.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {key}"));
+                if ui.small_button("削除").clicked() {
+                    remove_on_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_on_idx {
+            self.ime_on_keys.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  追加:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_ime_on_key).desired_width(200.0));
+            if ui.button("+").clicked() && !self.new_ime_on_key.is_empty() {
+                self.ime_on_keys.push(self.new_ime_on_key.clone());
+                self.new_ime_on_key.clear();
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // ── OFF keys ──
+        ui.label("OFF キー（IME が OFF になる）:");
+        let mut remove_off_idx = None;
+        for (i, key) in self.ime_off_keys.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {key}"));
+                if ui.small_button("削除").clicked() {
+                    remove_off_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_off_idx {
+            self.ime_off_keys.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  追加:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_ime_off_key).desired_width(200.0));
+            if ui.button("+").clicked() && !self.new_ime_off_key.is_empty() {
+                self.ime_off_keys.push(self.new_ime_off_key.clone());
+                self.new_ime_off_key.clear();
             }
         });
     }
