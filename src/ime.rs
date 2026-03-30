@@ -181,6 +181,7 @@ const WM_IME_CONTROL: u32 = 0x0283;
 /// IMC_GETOPENSTATUS wParam for WM_IME_CONTROL
 const IMC_GETOPENSTATUS: usize = 0x0005;
 /// IMC_GETCONVERSIONMODE wParam for WM_IME_CONTROL
+const IMC_SETOPENSTATUS: usize = 0x0006;
 const IMC_GETCONVERSIONMODE: usize = 0x0001;
 
 /// Cross-process IME ON/OFF detection via `ImmGetDefaultIMEWnd`.
@@ -221,6 +222,44 @@ pub unsafe fn detect_ime_open_cross_process() -> Option<bool> {
         return None; // timeout or error
     }
     Some(result != 0)
+}
+
+/// クロスプロセスで IME の ON/OFF を設定する。
+///
+/// `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL / IMC_SETOPENSTATUS` を使用。
+/// Google 日本語入力、MS-IME 等の IMM32 互換 IME で動作する。
+///
+/// Returns `true` if the operation succeeded.
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread.
+pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return false;
+    }
+
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return false;
+    }
+
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_SETOPENSTATUS),
+        LPARAM(if open { 1 } else { 0 }),
+        SMTO_ABORTIFHUNG,
+        50,
+        Some(&mut result),
+    );
+
+    let success = ok.0 != 0;
+    log::debug!(
+        "set_ime_open_cross_process: ime_wnd={ime_wnd:?} open={open} success={success}"
+    );
+    success
 }
 
 /// Cross-process IME conversion mode detection via `ImmGetDefaultIMEWnd`.

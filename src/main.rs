@@ -221,8 +221,6 @@ fn main() -> Result<()> {
             focus: app_state::FocusDetector::new(config.focus_overrides.clone()),
             engine_on_keys,
             engine_off_keys,
-            ctrl_convert_remap_vk: vk_name_to_code(&config.general.ctrl_convert_remap_vk).unwrap_or(0),
-            ctrl_nonconvert_remap_vk: vk_name_to_code(&config.general.ctrl_nonconvert_remap_vk).unwrap_or(0),
             shadow_ime_on: true, // safe default: engine ON
             ime_sync_toggle_keys,
             ime_sync_on_keys,
@@ -749,24 +747,19 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             let ctrl_held = GetAsyncKeyState(0x11) & (0x8000_u16 as i16) != 0;
             let shift_held = GetAsyncKeyState(0x10) & (0x8000_u16 as i16) != 0;
             if ctrl_held && !shift_held {
-                // Ctrl+変換 (Shift なし) → IME ON キーを送信
-                if event.vk_code.0 == 0x1C && app.ctrl_convert_remap_vk != 0 {
-                    app.output.send_keys(&[
-                        KeyAction::Key(app.ctrl_convert_remap_vk),
-                        KeyAction::KeyUp(app.ctrl_convert_remap_vk),
-                    ]);
+                // Ctrl+変換 (Shift なし) → IME ON (ImmSetOpenStatus API)
+                if event.vk_code.0 == 0x1C {
+                    let _ = ime::set_ime_open_cross_process(true);
                     app.shadow_ime_on = true;
-                    log::debug!("Ctrl+Convert → remap to vk=0x{:02X}", app.ctrl_convert_remap_vk);
+                    // キャッシュも即時更新
+                    let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
                     return CallbackResult::Consumed;
                 }
-                // Ctrl+無変換 (Shift なし) → IME OFF キーを送信
-                if event.vk_code.0 == 0x1D && app.ctrl_nonconvert_remap_vk != 0 {
-                    app.output.send_keys(&[
-                        KeyAction::Key(app.ctrl_nonconvert_remap_vk),
-                        KeyAction::KeyUp(app.ctrl_nonconvert_remap_vk),
-                    ]);
+                // Ctrl+無変換 (Shift なし) → IME OFF (ImmSetOpenStatus API)
+                if event.vk_code.0 == 0x1D {
+                    let _ = ime::set_ime_open_cross_process(false);
                     app.shadow_ime_on = false;
-                    log::debug!("Ctrl+Nonconvert → remap to vk=0x{:02X}", app.ctrl_nonconvert_remap_vk);
+                    let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
                     return CallbackResult::Consumed;
                 }
             }

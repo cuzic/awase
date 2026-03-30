@@ -43,11 +43,9 @@ engine_on_keys = ["Ctrl+Shift+VK_CONVERT"]
 # エンジン OFF キー（NICOLA 入力を無効にするキー）
 engine_off_keys = ["Ctrl+Shift+VK_NONCONVERT"]
 
-# キーリマップ: Ctrl+変換 → IME ON キーを送信（エンジン状態に関係なく動作）
-ctrl_convert_remap_vk = "VK_OEM_ENLW"     # 0xF4 = ひらがなモード
-
-# キーリマップ: Ctrl+無変換 → IME OFF キーを送信（エンジン状態に関係なく動作）
-ctrl_nonconvert_remap_vk = "VK_OEM_AUTO"  # 0xF3 = 直接入力モード
+# IME 制御: Ctrl+変換 → IME ON, Ctrl+無変換 → IME OFF
+# ImmSetOpenStatus API で直接 IME を切り替える（Google 日本語入力、MS-IME 対応）
+# エンジンは IME 状態に自動追随する
 
 # n-gram コーパスファイル（オプション、ngram_predictive モード用）
 # ngram_file = "data/ngram_hiragana.toml"

@@ -142,10 +142,6 @@ pub(crate) struct AppState {
     pub focus: FocusDetector,
     pub engine_on_keys: Vec<ParsedKeyCombo>,
     pub engine_off_keys: Vec<ParsedKeyCombo>,
-    /// Ctrl+変換 リマップ先の VK コード（0 = リマップしない）
-    pub ctrl_convert_remap_vk: u16,
-    /// Ctrl+無変換 リマップ先の VK コード（0 = リマップしない）
-    pub ctrl_nonconvert_remap_vk: u16,
     pub shadow_ime_on: bool,
     pub ime_sync_toggle_keys: Vec<u16>,
     pub ime_sync_on_keys: Vec<u16>,

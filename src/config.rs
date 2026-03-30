@@ -92,15 +92,6 @@ pub struct GeneralConfig {
     #[serde(default = "default_engine_off_keys")]
     pub engine_off_keys: Vec<String>,
 
-    /// キーリマップ: Ctrl+変換 → 指定 VK を送信（デフォルト: VK_OEM_ENLW=0xF4）
-    /// エンジン状態に関係なく、Ctrl+変換 を押すと IME ON に切り替える
-    #[serde(default = "default_ime_on_key")]
-    pub ctrl_convert_remap_vk: String,
-
-    /// キーリマップ: Ctrl+無変換 → 指定 VK を送信（デフォルト: VK_OEM_AUTO=0xF3）
-    /// エンジン状態に関係なく、Ctrl+無変換 を押すと IME OFF に切り替える
-    #[serde(default = "default_ime_off_key")]
-    pub ctrl_nonconvert_remap_vk: String,
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -151,14 +142,6 @@ fn default_engine_on_keys() -> Vec<String> {
 
 fn default_engine_off_keys() -> Vec<String> {
     vec!["Ctrl+Shift+VK_NONCONVERT".to_string()]
-}
-
-fn default_ime_on_key() -> String {
-    "VK_OEM_ENLW".to_string() // 0xF4
-}
-
-fn default_ime_off_key() -> String {
-    "VK_OEM_AUTO".to_string() // 0xF3
 }
 
 /// IME 同期設定（シャドウ IME 状態追跡用キー定義）
