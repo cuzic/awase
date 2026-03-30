@@ -1,22 +1,29 @@
-use std::sync::atomic::Ordering;
-
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::KillTimer;
 
 use awase::config::ParsedKeyCombo;
 use awase::engine::Engine;
-use awase::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, VkCode};
+use awase::types::{ContextChange, FocusKind, ImeCacheState, KeyEventType, RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
 use timed_fsm::dispatch;
 
 use crate::focus;
 use crate::focus::cache::{DetectionSource, FocusCache};
-use crate::focus::pattern::KeyPatternTracker;
 use crate::focus::uia::SendableHwnd;
 use crate::hook::CallbackResult;
-use crate::ime::{HybridProvider, ImeProvider};
+use crate::ime::HybridProvider;
 use crate::output::Output;
 use crate::tray::SystemTray;
+
+// ── LayoutEntry（名前付きレイアウトエントリ）──
+
+/// レイアウト設定一式を保持する構造体
+#[allow(dead_code)] // left/right_thumb_vk はレイアウト切替時に使用予定
+pub struct LayoutEntry {
+    pub name: String,
+    pub layout: YabLayout,
+    pub left_thumb_vk: VkCode,
+    pub right_thumb_vk: VkCode,
+}
 
 // ── FocusDetector（フォーカス検出状態）──
 
@@ -25,7 +32,6 @@ pub struct FocusDetector {
     pub cache: FocusCache,
     pub overrides: awase::config::FocusOverrides,
     pub last_focus_info: Option<(u32, String)>,
-    pub pattern_tracker: KeyPatternTracker,
     pub uia_sender: Option<std::sync::mpsc::Sender<SendableHwnd>>,
 }
 
@@ -35,7 +41,6 @@ impl FocusDetector {
             cache: FocusCache::new(),
             overrides,
             last_focus_info: None,
-            pattern_tracker: KeyPatternTracker::new(),
             uia_sender: None,
         }
     }
@@ -56,19 +61,13 @@ pub struct KeyBuffer {
     pub ime_transition_guard: bool,
     /// ガード中に遅延されたキーイベント + 物理キー状態のバッファ
     pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
-    /// IME OFF 時の記憶バッファ（PassThrough 済みキー）
-    pub passthrough_memory: std::collections::VecDeque<RawKeyEvent>,
-    /// Undetermined + IME ON 時のバッファリング中フラグ
-    pub undetermined_buffering: bool,
 }
 
 impl KeyBuffer {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             ime_transition_guard: false,
             deferred_keys: Vec::new(),
-            passthrough_memory: std::collections::VecDeque::new(),
-            undetermined_buffering: false,
         }
     }
 
@@ -88,64 +87,79 @@ impl KeyBuffer {
         self.deferred_keys.push((event, phys));
     }
 
-    #[allow(dead_code)]
-    pub fn push_passthrough(&mut self, event: RawKeyEvent) {
-        self.passthrough_memory.push_back(event);
-        if self.passthrough_memory.len() > 20 {
-            self.passthrough_memory.pop_front();
-        }
-    }
-
     pub fn drain_deferred(
         &mut self,
     ) -> Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)> {
         std::mem::take(&mut self.deferred_keys)
     }
-
-    #[allow(dead_code)] // 将来のパターン検出再有効化で使用予定
-    pub fn drain_passthrough(&mut self) -> Vec<RawKeyEvent> {
-        std::mem::take(&mut self.passthrough_memory).into()
-    }
-
-    #[allow(dead_code)]
-    pub const fn is_buffering(&self) -> bool {
-        self.undetermined_buffering
-    }
-
-    #[allow(dead_code)]
-    pub const fn set_buffering(&mut self, on: bool) {
-        self.undetermined_buffering = on;
-    }
-
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.ime_transition_guard = false;
-        self.deferred_keys.clear();
-        self.passthrough_memory.clear();
-        self.undetermined_buffering = false;
-    }
 }
 use crate::{
     matches_key_combo, reinject_key, SendInputExecutor, Win32TimerRuntime, FOCUS_KIND,
-    IME_RELIABILITY, IME_STATE_CACHE, TIMER_UNDETERMINED_BUFFER,
+    IME_RELIABILITY, IME_STATE_CACHE,
 };
 
+/// IME 同期キー（トグル・ON・OFF）を集約する構造体
+pub struct ImeSyncKeys {
+    pub toggle: Vec<VkCode>,
+    pub on: Vec<VkCode>,
+    pub off: Vec<VkCode>,
+}
+
+/// `check_special_keys` が返す特殊キーアクション種別。
+#[derive(Debug, Clone, Copy)]
+pub enum SpecialKeyAction {
+    EngineOn,
+    EngineOff,
+    ImeOn,
+    ImeOff,
+}
+
+/// エンジン切替・IME 制御の特殊キーコンボを集約する構造体。
+///
+/// `find_match` はより限定的な修飾キー（Ctrl+Shift 等）を先にチェックし、
+/// マッチしなければ緩い修飾（Ctrl のみ等）をチェックする。
+pub struct SpecialKeyCombos {
+    pub engine_on: Vec<ParsedKeyCombo>,
+    pub engine_off: Vec<ParsedKeyCombo>,
+    pub ime_on: Vec<ParsedKeyCombo>,
+    pub ime_off: Vec<ParsedKeyCombo>,
+}
+
+impl SpecialKeyCombos {
+    /// イベントにマッチする特殊キーアクションを返す。
+    ///
+    /// チェック順: engine_on → engine_off → ime_on → ime_off
+    /// （修飾キーが多い＝より限定的なコンボを先にチェック）
+    pub fn find_match(&self, event: &RawKeyEvent) -> Option<SpecialKeyAction> {
+        if self.engine_on.iter().any(|k| matches_key_combo(*k, event)) {
+            return Some(SpecialKeyAction::EngineOn);
+        }
+        if self.engine_off.iter().any(|k| matches_key_combo(*k, event)) {
+            return Some(SpecialKeyAction::EngineOff);
+        }
+        if self.ime_on.iter().any(|k| matches_key_combo(*k, event)) {
+            return Some(SpecialKeyAction::ImeOn);
+        }
+        if self.ime_off.iter().any(|k| matches_key_combo(*k, event)) {
+            return Some(SpecialKeyAction::ImeOff);
+        }
+        None
+    }
+}
+
 /// シングルスレッド状態を集約した構造体
-pub(crate) struct AppState {
+pub struct AppState {
     pub engine: Engine,
     pub tracker: awase::engine::input_tracker::InputTracker,
     pub output: Output,
     pub ime: HybridProvider,
     pub tray: SystemTray,
-    pub layouts: Vec<(String, YabLayout, VkCode, VkCode)>,
+    pub layouts: Vec<LayoutEntry>,
     pub key_buffer: KeyBuffer,
     pub focus: FocusDetector,
-    pub engine_on_keys: Vec<ParsedKeyCombo>,
-    pub engine_off_keys: Vec<ParsedKeyCombo>,
+    pub special_keys: SpecialKeyCombos,
     pub shadow_ime_on: bool,
-    pub ime_sync_toggle_keys: Vec<u16>,
-    pub ime_sync_on_keys: Vec<u16>,
-    pub ime_sync_off_keys: Vec<u16>,
+    pub ime_sync_keys: ImeSyncKeys,
 }
 
 /// AppState のメソッドが返す副作用指示。
@@ -153,22 +167,25 @@ pub(crate) struct AppState {
 /// 呼び出し側が AppAction を実行する。
 #[derive(Debug)]
 #[allow(dead_code)] // 将来のフェーズで副作用を戻り値として返す際に使用
-pub(crate) enum AppAction {
+pub enum AppAction {
     /// エンジンの保留状態をフラッシュする
     InvalidateEngineContext(ContextChange),
     /// IME 状態キャッシュを更新する
     RefreshImeStateCache,
-    /// PassThrough 済みキーを BS で取り消してエンジンで再処理
-    RetractPassthroughMemory,
 }
 
 impl AppState {
+    /// エンジンの応答を Win32 タイマー + SendInput で実行するヘルパー
+    fn dispatch_response(resp: &timed_fsm::Response<awase::types::KeyAction, usize>) {
+        let mut tr = Win32TimerRuntime;
+        let mut ae = SendInputExecutor;
+        dispatch(resp, &mut tr, &mut ae);
+    }
+
     /// エンジンの有効/無効を切り替え、トレイアイコンを更新する
     pub(crate) fn toggle_engine(&mut self) {
         let (enabled, flush_resp) = self.engine.toggle_enabled();
-        let mut timer_runtime = Win32TimerRuntime;
-        let mut action_executor = SendInputExecutor;
-        dispatch(&flush_resp, &mut timer_runtime, &mut action_executor);
+        Self::dispatch_response(&flush_resp);
         log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
         self.tray.set_enabled(enabled);
     }
@@ -179,50 +196,50 @@ impl AppState {
     /// 全てのコンテキスト無効化経路はこのメソッドを通すこと。
     pub(crate) fn invalidate_engine_context(&mut self, reason: ContextChange) {
         let response = self.engine.flush_pending(reason);
-        let mut timer_runtime = Win32TimerRuntime;
-        let mut action_executor = SendInputExecutor;
-        dispatch(&response, &mut timer_runtime, &mut action_executor);
+        Self::dispatch_response(&response);
     }
 
     /// IME ON/OFF 状態をキャッシュに書き込む。
     ///
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     /// フォーカス変更、WM_INPUTLANGCHANGE、IME トグル後、定期ポーリングで呼ばれる。
-    ///
-    /// # Safety
-    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-    pub(crate) unsafe fn refresh_ime_state_cache(&mut self) {
+    pub(crate) fn refresh_ime_state_cache(&mut self) {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
         use windows::Win32::UI::WindowsAndMessaging::{
             GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
         };
 
         // Step 1: 対象スレッドの HKL を取得（日本語チェック）
-        let mut gui_info = GUITHREADINFO {
-            cbSize: size_of::<GUITHREADINFO>() as u32,
-            ..Default::default()
-        };
-        let thread_id = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
-            let fg_hwnd = if gui_info.hwndFocus != HWND::default() {
-                gui_info.hwndFocus
-            } else {
-                gui_info.hwndActive
+        // SAFETY: Win32 API (GetGUIThreadInfo, GetWindowThreadProcessId, GetKeyboardLayout)。
+        //         メインスレッドから呼ぶ。
+        let lang_id = unsafe {
+            let mut gui_info = GUITHREADINFO {
+                cbSize: size_of::<GUITHREADINFO>() as u32,
+                ..Default::default()
             };
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(fg_hwnd, Some(&mut pid))
-        } else {
-            0
-        };
+            let thread_id = if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
+                let fg_hwnd = if gui_info.hwndFocus == HWND::default() {
+                    gui_info.hwndActive
+                } else {
+                    gui_info.hwndFocus
+                };
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(fg_hwnd, Some(&raw mut pid))
+            } else {
+                0
+            };
 
-        let hkl = GetKeyboardLayout(thread_id);
-        let lang_id = (hkl.0 as u32) & 0xFFFF;
-        if lang_id != 0x0411 {
-            IME_STATE_CACHE.store(0, Ordering::Release); // 非日本語 → OFF
+            let hkl = GetKeyboardLayout(thread_id);
+            (hkl.0 as u32) & 0xFFFF
+        };
+        if lang_id != awase::vk::LANGID_JAPANESE {
+            ImeCacheState::Off.store(&IME_STATE_CACHE); // 非日本語 → OFF
             return;
         }
 
         // Step 2: クロスプロセス IME 検出（ブロッキング OK — メッセージループ上）
-        let cross_process = crate::ime::detect_ime_open_cross_process();
+        // SAFETY: detect_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
+        let cross_process = unsafe { crate::ime::detect_ime_open_cross_process() };
 
         // Step 3: ImeReliability を考慮した評価
         let cross_process = if cross_process == Some(false) {
@@ -234,7 +251,11 @@ impl AppState {
             // shadow state にフォールバックする。
             let unreliable = reliability != ImeReliability::Reliable;
 
-            if unreliable { None } else { cross_process }
+            if unreliable {
+                None
+            } else {
+                cross_process
+            }
         } else {
             cross_process
         };
@@ -245,93 +266,209 @@ impl AppState {
             None => self.shadow_ime_on, // shadow fallback
         };
 
-        let new_val = if ime_on { 1u8 } else { 0u8 };
-        let old_val = IME_STATE_CACHE.swap(new_val, Ordering::AcqRel);
-        if old_val != new_val {
+        let new_state = ImeCacheState::from(ime_on);
+        let old_state = new_state.swap(&IME_STATE_CACHE);
+        if old_state != new_state {
             log::debug!(
                 "IME state cache updated: {} → {}",
-                match old_val { 0 => "OFF", 1 => "ON", _ => "Unknown" },
-                if ime_on { "ON" } else { "OFF" },
+                old_state.as_str(),
+                new_state.as_str(),
             );
             // エンジンを IME 状態に追随させる
-            if ime_on {
-                if !self.engine.is_enabled() {
-                    let _ = self.engine.set_enabled(true);
-                    self.tray.set_enabled(true);
-                    log::info!("Engine auto-enabled (IME ON)");
-                }
-            } else {
-                if self.engine.is_enabled() {
-                    let (_, flush_resp) = self.engine.set_enabled(false);
-                    let mut tr = Win32TimerRuntime;
-                    let mut ae = SendInputExecutor;
-                    dispatch(&flush_resp, &mut tr, &mut ae);
-                    self.tray.set_enabled(false);
-                    log::info!("Engine auto-disabled (IME OFF)");
-                }
+            if ime_on && !self.engine.is_enabled() {
+                let _ = self.engine.set_enabled(true);
+                self.tray.set_enabled(true);
+                log::info!("Engine auto-enabled (IME ON)");
+            } else if !ime_on && self.engine.is_enabled() {
+                let (_, flush_resp) = self.engine.set_enabled(false);
+                Self::dispatch_response(&flush_resp);
+                self.tray.set_enabled(false);
+                log::info!("Engine auto-disabled (IME OFF)");
             }
         }
     }
 
     /// 配列を動的に切り替える
     pub(crate) fn switch_layout(&mut self, index: usize) {
-        let Some((name, layout_template, _l_vk, _r_vk)) = self.layouts.get(index) else {
+        let Some(entry) = self.layouts.get(index) else {
             log::warn!("Layout index {index} out of range");
             return;
         };
 
-        // YabLayout の各面を clone して新しいレイアウトを構築する
-        let new_layout = YabLayout {
-            name: layout_template.name.clone(),
-            normal: layout_template.normal.clone(),
-            left_thumb: layout_template.left_thumb.clone(),
-            right_thumb: layout_template.right_thumb.clone(),
-            shift: layout_template.shift.clone(),
-        };
-        let name = name.clone();
-
-        let response = self.engine.swap_layout(new_layout);
-        let mut timer_runtime = Win32TimerRuntime;
-        let mut action_executor = SendInputExecutor;
-        dispatch(&response, &mut timer_runtime, &mut action_executor);
+        let name = entry.name.clone();
+        let response = self.engine.swap_layout(entry.layout.clone());
+        Self::dispatch_response(&response);
 
         self.tray.set_layout_name(&name);
 
         log::info!("Switched layout to: {name}");
     }
 
-    /// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
+    /// Shadow IME 状態を更新する（ime_sync キー + IME 制御キー）。
     ///
-    /// # Safety
-    /// `matches_key_combo` が Win32 API を呼ぶため unsafe。
-    pub(crate) unsafe fn check_engine_toggle_keys(&mut self, event: &RawKeyEvent) -> Option<CallbackResult> {
-        // エンジン OFF → ON: engine_on_keys（デフォルト: VK_CONVERT）
-        if !self.engine.is_enabled() {
-            if self.engine_on_keys.iter().any(|k| matches_key_combo(k, event)) {
-                let (enabled, flush_resp) = self.engine.set_enabled(true);
-                let mut tr = Win32TimerRuntime;
-                let mut ae = SendInputExecutor;
-                dispatch(&flush_resp, &mut tr, &mut ae);
-                log::info!("Engine ON (key combo)");
-                self.tray.set_enabled(enabled);
+    /// ime_sync 設定のキーと日本語キーボード固有の IME ON/OFF キーの両方を処理する。
+    /// 純粋な状態更新のみ — OS 副作用は呼び出し側が行う。
+    pub(crate) fn update_shadow_ime(&mut self, event: &RawKeyEvent) {
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if !is_key_down {
+            return;
+        }
+
+        // ── ime_sync 設定キー ──
+        let vk = event.vk_code;
+        if self.ime_sync_keys.on.contains(&vk) {
+            self.shadow_ime_on = true;
+            log::debug!("Shadow IME ON (key 0x{:02X})", vk.0);
+        }
+        if self.ime_sync_keys.off.contains(&vk) {
+            self.shadow_ime_on = false;
+            log::debug!("Shadow IME OFF (key 0x{:02X})", vk.0);
+        }
+        if self.ime_sync_keys.toggle.contains(&vk) {
+            self.shadow_ime_on = !self.shadow_ime_on;
+            log::debug!(
+                "Shadow IME toggle → {} (key 0x{:02X})",
+                self.shadow_ime_on,
+                vk.0
+            );
+        }
+
+        // ── 日本語キーボード固有の IME ON/OFF キー ──
+        if let Some(ime_key) = awase::vk::ImeKeyKind::from_vk(event.vk_code) {
+            match ime_key.shadow_effect() {
+                awase::vk::ShadowImeEffect::TurnOn => {
+                    self.shadow_ime_on = true;
+                    log::trace!("Shadow IME ON ({ime_key:?})");
+                }
+                awase::vk::ShadowImeEffect::TurnOff => {
+                    self.shadow_ime_on = false;
+                    log::trace!("Shadow IME OFF ({ime_key:?})");
+                }
+                awase::vk::ShadowImeEffect::Toggle => {
+                    self.shadow_ime_on = !self.shadow_ime_on;
+                    log::trace!("Shadow IME toggle → {} ({ime_key:?})", self.shadow_ime_on);
+                }
+            }
+        }
+    }
+
+    /// IME トグルガードを処理し、キーをバッファリングすべきか判定する。
+    ///
+    /// IME トグル/ON/OFF キーの直後に続くキーをバッファリングし、
+    /// IME の状態遷移が安定してからまとめて処理する。
+    ///
+    /// 戻り値:
+    /// - `Some(CallbackResult)` — 呼び出し側はこれを即座に返すべき
+    /// - `None` — ガード処理なし、続行
+    pub(crate) fn handle_ime_toggle_guard(
+        &mut self,
+        event: &RawKeyEvent,
+        phys: &awase::engine::input_tracker::PhysicalKeyState,
+    ) -> Option<CallbackResult> {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+
+        if is_key_down {
+            // Check if current key IS a toggle/on/off key
+            let is_toggle_key = self.ime_sync_keys.toggle.contains(&event.vk_code);
+            let is_on_key = self.ime_sync_keys.on.contains(&event.vk_code);
+            let is_off_key = self.ime_sync_keys.off.contains(&event.vk_code);
+
+            if is_toggle_key || is_on_key || is_off_key {
+                // Set guard — next keys will be buffered
+                self.key_buffer.set_guard(true);
+                log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
+                return Some(CallbackResult::PassThrough); // let IME process the toggle
+            }
+
+            // While IME guard active, buffer keys
+            if self.key_buffer.is_guarded() {
+                self.key_buffer.push_deferred(*event, *phys);
+                // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶ。
+                let _ = unsafe {
+                    PostMessageW(
+                        HWND::default(),
+                        crate::WM_PROCESS_DEFERRED,
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                };
                 return Some(CallbackResult::Consumed);
             }
         }
 
-        // エンジン ON → OFF: engine_off_keys（デフォルト: Ctrl+Shift+VK_NONCONVERT）
-        if self.engine.is_enabled() {
-            if self.engine_off_keys.iter().any(|k| matches_key_combo(k, event)) {
-                let (enabled, flush_resp) = self.engine.set_enabled(false);
-                let mut tr = Win32TimerRuntime;
-                let mut ae = SendInputExecutor;
-                dispatch(&flush_resp, &mut tr, &mut ae);
-                log::info!("Engine OFF (key combo)");
-                self.tray.set_enabled(enabled);
-                return Some(CallbackResult::Consumed);
+        // Guard clear on KeyUp of toggle key
+        if !is_key_down && self.key_buffer.is_guarded() {
+            let is_toggle_key = self.ime_sync_keys.toggle.contains(&event.vk_code);
+            let is_on_key = self.ime_sync_keys.on.contains(&event.vk_code);
+            let is_off_key = self.ime_sync_keys.off.contains(&event.vk_code);
+            if is_toggle_key || is_on_key || is_off_key {
+                self.key_buffer.set_guard(false);
+                // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶ。
+                let _ = unsafe {
+                    PostMessageW(
+                        HWND::default(),
+                        crate::WM_PROCESS_DEFERRED,
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                };
             }
         }
 
         None
+    }
+
+    /// 変換/無変換系の特殊キーを一括チェックし、一致した場合は状態変更して結果を返す。
+    ///
+    /// チェック順:
+    /// 1. エンジン ON/OFF トグルキー（Ctrl+Shift+変換 等）
+    /// 2. IME 制御キー（Ctrl+変換 等 → ImmSetOpenStatus）
+    ///
+    /// 変換/無変換キーは1回だけ consume される。より限定的な修飾キー（Ctrl+Shift）を
+    /// 先にチェックし、マッチしなければ緩い修飾（Ctrl のみ）をチェックする。
+    pub(crate) fn check_special_keys(&mut self, event: &RawKeyEvent) -> Option<CallbackResult> {
+        let action = self.special_keys.find_match(event)?;
+
+        match action {
+            SpecialKeyAction::EngineOn if !self.engine.is_enabled() => {
+                let (enabled, flush_resp) = self.engine.set_enabled(true);
+                Self::dispatch_response(&flush_resp);
+                log::info!("Engine ON (key combo)");
+                self.tray.set_enabled(enabled);
+                Some(CallbackResult::Consumed)
+            }
+            SpecialKeyAction::EngineOff if self.engine.is_enabled() => {
+                let (enabled, flush_resp) = self.engine.set_enabled(false);
+                Self::dispatch_response(&flush_resp);
+                log::info!("Engine OFF (key combo)");
+                self.tray.set_enabled(enabled);
+                Some(CallbackResult::Consumed)
+            }
+            SpecialKeyAction::ImeOn => {
+                // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
+                let _ = unsafe { crate::ime::set_ime_open_cross_process(true) };
+                self.shadow_ime_on = true;
+                log::info!("IME ON (ImmSetOpenStatus, key combo)");
+                Some(CallbackResult::Consumed)
+            }
+            SpecialKeyAction::ImeOff => {
+                // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
+                let _ = unsafe { crate::ime::set_ime_open_cross_process(false) };
+                self.shadow_ime_on = false;
+                log::info!("IME OFF (ImmSetOpenStatus, key combo)");
+                Some(CallbackResult::Consumed)
+            }
+            _ => None, // EngineOn when already on, EngineOff when already off
+        }
     }
 
     /// フォーカス変更時の状態遷移を行い、必要な副作用を返す。
@@ -350,7 +487,7 @@ impl AppState {
             let current_kind = FocusKind::load(&FOCUS_KIND);
             if current_kind == FocusKind::TextInput {
                 if let Some((prev_pid, _)) = &self.focus.last_focus_info {
-                    let fg_pid = unsafe { focus::classify::get_window_process_id(fg) };
+                    let fg_pid = focus::classify::get_window_process_id(fg);
                     if fg_pid == *prev_pid {
                         log::trace!(
                             "Keeping TextInput (same process {fg_pid}): class={class_name}"
@@ -361,17 +498,8 @@ impl AppState {
             }
         }
 
-        // UIA 非同期結果のキャッシュ更新用に保存 + パターントラッカーをリセット
+        // UIA 非同期結果のキャッシュ更新用に保存
         self.focus.last_focus_info = Some((process_id, class_name.to_owned()));
-        self.focus.pattern_tracker.clear();
-        self.key_buffer.passthrough_memory.clear();
-        // Undetermined バッファリング中ならキャンセル
-        if self.key_buffer.undetermined_buffering {
-            self.key_buffer.undetermined_buffering = false;
-            let _ = unsafe { KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER) };
-            // バッファされたキーは破棄（フォーカスが変わったので無意味）
-            self.key_buffer.deferred_keys.clear();
-        }
 
         // IME 信頼度をリセット
         awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
@@ -380,7 +508,7 @@ impl AppState {
         if !self.focus.overrides.force_text.is_empty()
             || !self.focus.overrides.force_bypass.is_empty()
         {
-            let process_name = unsafe { focus::classify::get_process_name(process_id) };
+            let process_name = focus::classify::get_process_name(process_id);
             for entry in &self.focus.overrides.force_text {
                 if entry.process.eq_ignore_ascii_case(&process_name)
                     && entry.class.eq_ignore_ascii_case(class_name)
@@ -400,7 +528,9 @@ impl AppState {
                         "classify_focus: config override force_bypass ({process_name}, {class_name})",
                     );
                     FocusKind::NonText.store(&FOCUS_KIND);
-                    actions.push(AppAction::InvalidateEngineContext(ContextChange::FocusChanged));
+                    actions.push(AppAction::InvalidateEngineContext(
+                        ContextChange::FocusChanged,
+                    ));
                     return actions;
                 }
             }
@@ -408,12 +538,12 @@ impl AppState {
 
         // キャッシュヒット → 即座に結果を適用
         if let Some(cached) = self.focus.cache.get(process_id, class_name) {
-            log::trace!(
-                "classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",
-            );
+            log::trace!("classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",);
             cached.store(&FOCUS_KIND);
             if cached == FocusKind::NonText {
-                actions.push(AppAction::InvalidateEngineContext(ContextChange::FocusChanged));
+                actions.push(AppAction::InvalidateEngineContext(
+                    ContextChange::FocusChanged,
+                ));
             }
             return actions;
         }
@@ -422,7 +552,7 @@ impl AppState {
         FocusKind::Undetermined.store(&FOCUS_KIND);
 
         // Step 2: バイパス状態を判定
-        let result = unsafe { focus::classify::classify_focus(hwnd) };
+        let result = focus::classify::classify_focus(hwnd);
         let state = result.kind;
 
         // Step 3: キャッシュに格納し、FOCUS_KIND を更新
@@ -436,7 +566,9 @@ impl AppState {
 
         // Step 4: NonText ならエンジンの保留状態をフラッシュ
         if state == FocusKind::NonText {
-            actions.push(AppAction::InvalidateEngineContext(ContextChange::FocusChanged));
+            actions.push(AppAction::InvalidateEngineContext(
+                ContextChange::FocusChanged,
+            ));
         }
 
         // Step 5: UIA 非同期判定をリクエスト
@@ -461,7 +593,7 @@ impl AppState {
     ///
     /// 現在の `FocusKind` を反転し、学習キャッシュに `UserOverride` で記録する。
     /// `NonText` への降格時はエンジンコンテキストを無効化し、バッファもクリアする。
-    pub(crate) unsafe fn toggle_focus_override(&mut self) {
+    pub(crate) fn toggle_focus_override(&mut self) {
         let current = FocusKind::load(&FOCUS_KIND);
         let new_kind = if current == FocusKind::TextInput {
             FocusKind::NonText
@@ -473,23 +605,19 @@ impl AppState {
 
         // Update learning cache
         if let Some((pid, cls)) = self.focus.last_focus_info.as_ref() {
-            self.focus.cache
+            self.focus
+                .cache
                 .insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
         }
 
         // If demoted to NonText, flush engine pending
         if new_kind == FocusKind::NonText {
             let response = self.engine.flush_pending(ContextChange::FocusChanged);
-            let mut timer_runtime = Win32TimerRuntime;
-            let mut action_executor = SendInputExecutor;
-            dispatch(&response, &mut timer_runtime, &mut action_executor);
+            Self::dispatch_response(&response);
         }
 
         // Clear any active buffers
         self.key_buffer.deferred_keys.clear();
-        self.key_buffer.passthrough_memory.clear();
-        self.key_buffer.undetermined_buffering = false;
-
         // バルーン通知を表示
         self.tray.show_balloon(
             "awase",
@@ -508,152 +636,13 @@ impl AppState {
         log::info!("Manual focus override: → {mode_str}");
     }
 
-    /// FocusKind を TextInput に昇格させる。
-    ///
-    /// キャッシュとログの更新を一元化する。
-    pub(crate) fn promote_to_text_input(&mut self, source: DetectionSource, reason: &str) {
-        let current = FocusKind::load(&FOCUS_KIND);
-        if current == FocusKind::TextInput {
-            return;
-        }
-        FocusKind::TextInput.store(&FOCUS_KIND);
-        if let Some((pid, cls)) = self.focus.last_focus_info.as_ref() {
-            self.focus.cache
-                .insert(*pid, cls.clone(), FocusKind::TextInput, source);
-        }
-        log::info!("Promoting to TextInput: {reason} (source={source:?})");
-    }
-
-    /// キー入力パターンを観察し、テキスト入力コンテキストを推定する。
-    ///
-    /// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
-    /// パターンが検出されると `promote_to_text_input` で昇格する。
-    #[allow(dead_code)] // 簡略化コールバックからは未使用だが、将来再有効化予定
-    pub(crate) fn observe_key_pattern(&mut self, event: &RawKeyEvent) -> Vec<AppAction> {
-        let mut actions = Vec::new();
-
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-        if !is_key_down {
-            return actions;
-        }
-
-        let current = FocusKind::load(&FOCUS_KIND);
-        if current == FocusKind::TextInput {
-            return actions; // 既に TextInput なら追跡不要
-        }
-
-        let is_char = awase::vk::is_modifier_free_char(
-            event.vk_code,
-            focus::pattern::is_os_modifier_held(),
-        );
-
-        if let Some(reason) = self.focus.pattern_tracker.on_key(event.vk_code.0, is_char) {
-            self.promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
-            self.focus.pattern_tracker.clear();
-
-            // IME OFF + Undetermined で PassThrough 済みキーがある場合、
-            // BS で取り消して再処理する
-            actions.push(AppAction::RetractPassthroughMemory);
-        }
-
-        actions
-    }
-
-    /// PassThrough 済みキーを BS で取り消し、エンジンで再処理する。
-    ///
-    /// IME OFF + Undetermined 状態で PassThrough したキーを、
-    /// TextInput に昇格した後に正しく処理し直すために使用する。
-    ///
-    /// # Safety
-    /// Win32 API (`send_keys`, `dispatch`) を呼び出す。メインスレッドから呼ぶこと。
-    #[allow(dead_code)] // 将来のパターン検出再有効化で使用予定
-    pub(crate) unsafe fn retract_passthrough_memory(&mut self) {
-        let keys = self.key_buffer.drain_passthrough();
-
-        if keys.is_empty() {
-            return;
-        }
-
-        log::debug!(
-            "Retracting {} passthrough key(s) with BS + re-process",
-            keys.len()
-        );
-
-        // BS を送信して PassThrough 済みの文字を取り消す
-        {
-            let mut bs_actions: Vec<KeyAction> = Vec::new();
-            for _ in 0..keys.len() {
-                bs_actions.push(KeyAction::Key(0x08)); // VK_BACK down
-                bs_actions.push(KeyAction::KeyUp(0x08)); // VK_BACK up
-            }
-            self.output.send_keys(&bs_actions);
-        }
-
-        // エンジンで再処理
-        for event in keys {
-            let ime_active = self.ime.is_active() && self.ime.get_mode().is_kana_input();
-
-            if ime_active {
-                let phys = self.tracker.process(&event);
-                let response = self.engine.on_event(event, &phys);
-                let mut timer_runtime = Win32TimerRuntime;
-                let mut action_executor = SendInputExecutor;
-                dispatch(&response, &mut timer_runtime, &mut action_executor);
-            }
-            // IME OFF のままなら再注入（元々 PassThrough だったので同じ結果）
-            // この場合は BS 分が余計だが、IME OFF → パターン検出 → 昇格の流れでは
-            // IME が ON になっていることが前提なので通常は engine 経由になる
-        }
-    }
-
-    /// Undetermined + IME ON バッファリングのタイムアウト処理。
-    ///
-    /// 300ms 以内にパターン検出されなかった場合、バッファされたキーを
-    /// エンジンで処理する（安全側: TextInput として扱う）。
-    ///
-    /// # Safety
-    /// Win32 API (`KillTimer`, `dispatch`) を呼び出す。メインスレッドから呼ぶこと。
-    pub(crate) unsafe fn handle_buffer_timeout(&mut self) {
-        let _ = KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER);
-        self.key_buffer.undetermined_buffering = false;
-        let keys = self.key_buffer.drain_deferred();
-
-        if keys.is_empty() {
-            return;
-        }
-
-        log::debug!(
-            "Buffer timeout: promoting to TextInput and processing {} buffered key(s)",
-            keys.len()
-        );
-
-        // タイムアウト → TextInput に昇格してエンジンで処理
-        self.promote_to_text_input(
-            DetectionSource::TypingPatternInferred,
-            "buffer timeout (IME ON + Undetermined)",
-        );
-
-        for (event, phys) in keys {
-            let response = self.engine.on_event(event, &phys);
-            let mut timer_runtime = Win32TimerRuntime;
-            let mut action_executor = SendInputExecutor;
-            dispatch(&response, &mut timer_runtime, &mut action_executor);
-        }
-    }
-
     /// IME 制御キー後に遅延されたキーを再処理する。
     ///
     /// メッセージループから呼ばれるため、この時点で IME 制御キーは OS/IME に
     /// 渡し済みで、IME 状態は最新に更新されている。
     ///
     /// クロスプロセス API で実際の IME 状態を確認し、shadow state も同期する。
-    ///
-    /// # Safety
-    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-    pub(crate) unsafe fn process_deferred_keys(&mut self) {
+    pub(crate) fn process_deferred_keys(&mut self) {
         // ガード解除 + バッファからキーを取り出す
         self.key_buffer.set_guard(false);
         let keys = self.key_buffer.drain_deferred();
@@ -668,37 +657,18 @@ impl AppState {
         self.refresh_ime_state_cache();
 
         // キャッシュから IME 状態を取得
-        let cached = IME_STATE_CACHE.load(Ordering::Acquire);
-        let ime_on = match cached {
-            0 => false,
-            1 => true,
-            _ => self.shadow_ime_on,
-        };
+        let ime_on = ImeCacheState::load(&IME_STATE_CACHE).resolve_with_shadow(self.shadow_ime_on);
 
         for (event, phys) in keys {
             if ime_on {
                 // IME ON → エンジンで処理（push_deferred 時に保存した phys を使用）
                 let response = self.engine.on_event(event, &phys);
-                let mut timer_runtime = Win32TimerRuntime;
-                let mut action_executor = SendInputExecutor;
-                dispatch(&response, &mut timer_runtime, &mut action_executor);
+                Self::dispatch_response(&response);
             } else {
                 // IME OFF → キーをそのまま再注入（INJECTED_MARKER 付き）
-                reinject_key(&event);
+                // SAFETY: reinject_key は Win32 API (SendInput)。メインスレッドから呼ぶ。
+                unsafe { reinject_key(&event) };
             }
-        }
-    }
-
-    /// Undetermined + IME ON バッファリングのタイムアウトを開始する（初回バッファ時のみ）。
-    ///
-    /// # Safety
-    /// Win32 API (`SetTimer`) を呼び出す。メインスレッドから呼ぶこと。
-    #[allow(dead_code)] // 将来の Undetermined バッファリング再有効化で使用予定
-    pub(crate) unsafe fn start_buffer_timeout_if_needed(&mut self) {
-        use windows::Win32::UI::WindowsAndMessaging::SetTimer;
-        if !self.key_buffer.undetermined_buffering {
-            self.key_buffer.undetermined_buffering = true;
-            let _ = SetTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER, 300, None);
         }
     }
 }

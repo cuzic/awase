@@ -166,9 +166,10 @@ impl SystemTray {
         // フラグを元に戻す（次回の NIM_MODIFY でバルーンが意図せず再表示されないように）
         self.nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
     }
+}
 
-    /// トレイアイコンを削除し、ウィンドウを破棄する
-    pub fn destroy(&mut self) {
+impl Drop for SystemTray {
+    fn drop(&mut self) {
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &raw const self.nid);
             let _ = DestroyWindow(self.hwnd);

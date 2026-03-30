@@ -45,10 +45,35 @@ pub enum CallbackResult {
     PassThrough,
 }
 
+/// フック解除を保証する RAII ガード
+///
+/// スコープを抜けると自動的に `UnhookWindowsHookEx` を呼び出し、
+/// コールバックもクリアする。
+pub struct HookGuard {
+    _private: (), // 外部から直接構築させない
+}
+
+impl Drop for HookGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let handle = *HOOK_HANDLE.get_mut();
+            if !handle.0.is_null() {
+                let _ = UnhookWindowsHookEx(handle);
+                HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
+                log::info!("Keyboard hook uninstalled");
+            }
+            KEY_EVENT_CALLBACK.set(None);
+        }
+    }
+}
+
 /// フックを登録する
+///
+/// 返された `HookGuard` を保持している間フックが有効。
+/// ドロップ時に自動解除される。
 pub fn install_hook(
     callback: Box<dyn FnMut(RawKeyEvent) -> CallbackResult>,
-) -> windows::core::Result<()> {
+) -> windows::core::Result<HookGuard> {
     unsafe {
         KEY_EVENT_CALLBACK.set(Some(callback));
 
@@ -57,20 +82,7 @@ pub fn install_hook(
 
         log::info!("Keyboard hook installed successfully");
     }
-    Ok(())
-}
-
-/// フックを解除する
-pub fn uninstall_hook() {
-    unsafe {
-        let handle = *HOOK_HANDLE.get_mut();
-        if !handle.0.is_null() {
-            let _ = UnhookWindowsHookEx(handle);
-            HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
-            log::info!("Keyboard hook uninstalled");
-        }
-        KEY_EVENT_CALLBACK.set(None);
-    }
+    Ok(HookGuard { _private: () })
 }
 
 /// WH_KEYBOARD_LL フックコールバック

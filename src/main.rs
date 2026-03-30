@@ -21,7 +21,7 @@ mod single_thread_cell;
 mod tray;
 mod win32;
 
-pub(crate) use app_state::{AppAction, AppState};
+pub(crate) use app_state::{AppAction, AppState, LayoutEntry};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -67,34 +67,14 @@ const WM_PROCESS_DEFERRED: u32 = WM_APP + 11;
 /// UIA 非同期判定完了通知用カスタムメッセージ
 pub(crate) const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 
-/// Undetermined + IME ON バッファリングのタイムアウト用カスタムメッセージ
-/// （将来的に `PostMessageW` で明示送信する場合に使用）
-#[allow(dead_code)] // Undetermined バッファタイムアウトを PostMessageW で明示送信する将来拡張用
-const WM_BUFFER_TIMEOUT: u32 = WM_APP + 13;
-
 /// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
 const WM_IME_KEY_DETECTED: u32 = WM_APP + 14;
-
-/// フォーカス遷移デバウンス完了通知
-
-/// Undetermined + IME ON バッファリングのタイマー ID
-pub(crate) const TIMER_UNDETERMINED_BUFFER: usize = 100;
 
 /// フォーカス遷移デバウンスタイマー ID
 const TIMER_FOCUS_DEBOUNCE: usize = 103;
 
 /// フォーカス遷移デバウンス時間（ミリ秒）
 const FOCUS_DEBOUNCE_MS: u32 = 50;
-
-/// IME の未確定状態を確認する（engine から呼び出し用）
-#[allow(dead_code)] // engine 側から IME 未確定状態を確認する将来拡張用
-pub fn check_ime_composing() -> bool {
-    unsafe {
-        APP.get_ref()
-            .is_some_and(|app| app.ime.is_composing())
-    }
-}
-
 
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///
@@ -160,7 +140,7 @@ struct StartupDiagnostics {
 }
 
 impl StartupDiagnostics {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             warnings: Vec::new(),
         }
@@ -168,7 +148,7 @@ impl StartupDiagnostics {
 
     fn warn(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
-        log::warn!("startup: {}", msg);
+        log::warn!("startup: {msg}");
         self.warnings.push(msg);
     }
 
@@ -178,7 +158,7 @@ impl StartupDiagnostics {
         }
         log::info!("{} startup warning(s):", self.warnings.len());
         for w in &self.warnings {
-            log::info!("  - {}", w);
+            log::info!("  - {w}");
         }
         // Show tray balloon if tray is available
         unsafe {
@@ -202,8 +182,24 @@ fn main() -> Result<()> {
     }
     let (engine, tracker, layouts, layout_names, initial_layout_name) =
         init_engine_validated(&config, &mut diag)?;
-    let (engine_on_keys, engine_off_keys) = init_engine_toggle_keys(&config, &mut diag);
-    let (ime_sync_toggle_keys, ime_sync_on_keys, ime_sync_off_keys) =
+    let engine_on_keys =
+        parse_key_combos(&config.general.engine_on_keys, "Engine ON keys", &mut diag);
+    let engine_off_keys = parse_key_combos(
+        &config.general.engine_off_keys,
+        "Engine OFF keys",
+        &mut diag,
+    );
+    let ime_control_on_keys = parse_key_combos(
+        &config.general.ime_on_keys,
+        "IME control ON keys",
+        &mut diag,
+    );
+    let ime_control_off_keys = parse_key_combos(
+        &config.general.ime_off_keys,
+        "IME control OFF keys",
+        &mut diag,
+    );
+    let (ime_sync_toggle, ime_sync_on, ime_sync_off) =
         init_ime_sync_keys(&config.ime_sync, &mut diag);
     let ime = init_ime(&mut diag);
 
@@ -219,17 +215,24 @@ fn main() -> Result<()> {
             layouts,
             key_buffer: app_state::KeyBuffer::new(),
             focus: app_state::FocusDetector::new(config.focus_overrides.clone()),
-            engine_on_keys,
-            engine_off_keys,
+            special_keys: app_state::SpecialKeyCombos {
+                engine_on: engine_on_keys,
+                engine_off: engine_off_keys,
+                ime_on: ime_control_on_keys,
+                ime_off: ime_control_off_keys,
+            },
             shadow_ime_on: true, // safe default: engine ON
-            ime_sync_toggle_keys,
-            ime_sync_on_keys,
-            ime_sync_off_keys,
+            ime_sync_keys: app_state::ImeSyncKeys {
+                toggle: ime_sync_toggle,
+                on: ime_sync_on,
+                off: ime_sync_off,
+            },
         });
     }
 
     init_ngram_validated(&config, &mut diag);
-    install_hooks_and_hotkeys_validated(&config)?;
+    let (hook_guard, _toggle_hotkey_guard, _focus_override_hotkey_guard) =
+        install_hooks_and_hotkeys_validated(&config)?;
     diag.report();
 
     log::info!("Hook installed. Running message loop...");
@@ -238,12 +241,13 @@ fn main() -> Result<()> {
         Ordering::SeqCst,
     );
     install_ctrl_handler();
-    install_focus_hook();
+    let _focus_hook_guard = install_focus_hook();
 
     // IME 状態ポーリングタイマー（安全ネット: マウスで言語バー操作等に対応）
-    unsafe {
+    let _ime_timer_guard = unsafe {
         let _ = SetTimer(HWND::default(), TIMER_IME_POLL, 500, None);
-    }
+        TimerGuard(TIMER_IME_POLL)
+    };
 
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
     let uia_tx = focus::uia::spawn_uia_worker();
@@ -255,6 +259,7 @@ fn main() -> Result<()> {
 
     run_message_loop();
     cleanup();
+    drop(hook_guard);
 
     Ok(())
 }
@@ -288,20 +293,22 @@ fn init_engine_validated(
 ) -> Result<(
     Engine,
     awase::engine::input_tracker::InputTracker,
-    Vec<(String, YabLayout, VkCode, VkCode)>,
+    Vec<LayoutEntry>,
     Vec<String>,
     String,
 )> {
-    let left_thumb_vk = VkCode(vk_name_to_code(&config.general.left_thumb_key).context(
-        format!("Unknown VK name: {}", config.general.left_thumb_key),
-    )?);
-    let right_thumb_vk = VkCode(vk_name_to_code(&config.general.right_thumb_key).context(
-        format!("Unknown VK name: {}", config.general.right_thumb_key),
-    )?);
+    let left_thumb_vk = vk_name_to_code(&config.general.left_thumb_key).context(format!(
+        "Unknown VK name: {}",
+        config.general.left_thumb_key
+    ))?;
+    let right_thumb_vk = vk_name_to_code(&config.general.right_thumb_key).context(format!(
+        "Unknown VK name: {}",
+        config.general.right_thumb_key
+    ))?;
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
     let layouts = scan_layouts(&layouts_dir, left_thumb_vk, right_thumb_vk, diag)?;
-    let layout_names: Vec<String> = layouts.iter().map(|(name, ..)| name.clone()).collect();
+    let layout_names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
     log::info!("Available layouts: {layout_names:?}");
 
     let (layout, initial_layout_name) = select_default_layout(&layouts, config);
@@ -326,83 +333,47 @@ fn init_engine_validated(
 }
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
-fn select_default_layout(
-    layouts: &[(String, YabLayout, VkCode, VkCode)],
-    config: &ValidatedConfig,
-) -> (YabLayout, String) {
+fn select_default_layout(layouts: &[LayoutEntry], config: &ValidatedConfig) -> (YabLayout, String) {
     let default_name = config.general.default_layout.trim_end_matches(".yab");
     let index = layouts
         .iter()
-        .position(|(name, ..)| name == default_name)
+        .position(|e| e.name == default_name)
         .unwrap_or(0);
-    let (ref name, ref layout, _, _) = layouts[index];
-    let copied = YabLayout {
-        name: layout.name.clone(),
-        normal: layout.normal.clone(),
-        left_thumb: layout.left_thumb.clone(),
-        right_thumb: layout.right_thumb.clone(),
-        shift: layout.shift.clone(),
-    };
-    (copied, name.clone())
+    let entry = &layouts[index];
+    (entry.layout.clone(), entry.name.clone())
 }
 
-/// エンジン ON/OFF トグルキーの初期化（複数キー対応）
-fn init_engine_toggle_keys(
-    config: &ValidatedConfig,
+/// キーコンボ文字列のリストをパースし、失敗時は診断に警告を出す
+fn parse_key_combos(
+    keys: &[String],
+    label: &str,
     diag: &mut StartupDiagnostics,
-) -> (Vec<ParsedKeyCombo>, Vec<ParsedKeyCombo>) {
-    let on_keys: Vec<ParsedKeyCombo> = config
-        .general
-        .engine_on_keys
+) -> Vec<ParsedKeyCombo> {
+    let parsed: Vec<ParsedKeyCombo> = keys
         .iter()
         .filter_map(|s| {
-            let result = parse_key_combo(s);
-            if result.is_none() {
-                diag.warn(format!("engine_on_keys のパースに失敗しました: {s}"));
-            }
-            result
+            parse_key_combo(s).or_else(|| {
+                diag.warn(format!("{label} のパースに失敗しました: {s}"));
+                None
+            })
         })
         .collect();
-    log::info!(
-        "Engine ON keys: {:?} ({} parsed)",
-        config.general.engine_on_keys,
-        on_keys.len()
-    );
-
-    let off_keys: Vec<ParsedKeyCombo> = config
-        .general
-        .engine_off_keys
-        .iter()
-        .filter_map(|s| {
-            let result = parse_key_combo(s);
-            if result.is_none() {
-                diag.warn(format!("engine_off_keys のパースに失敗しました: {s}"));
-            }
-            result
-        })
-        .collect();
-    log::info!(
-        "Engine OFF keys: {:?} ({} parsed)",
-        config.general.engine_off_keys,
-        off_keys.len()
-    );
-
-    (on_keys, off_keys)
+    log::info!("{label}: {keys:?} ({} parsed)", parsed.len());
+    parsed
 }
 
 /// IME sync キーの初期化（shadow IME 状態追跡用）
 fn init_ime_sync_keys(
     ime_sync: &ImeSyncConfig,
     diag: &mut StartupDiagnostics,
-) -> (Vec<u16>, Vec<u16>, Vec<u16>) {
-    let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<u16> {
+) -> (Vec<VkCode>, Vec<VkCode>, Vec<VkCode>) {
+    let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<VkCode> {
         keys.iter()
             .filter_map(|s| {
-                let code = vk_name_to_code(s);
-                if code.is_none() {
+                vk_name_to_code(s).or_else(|| {
                     diag.warn(format!("ime_sync.{label} のパースに失敗しました: {s}"));
-                }
-                code
+                    None
+                })
             })
             .collect()
     };
@@ -476,42 +447,73 @@ fn init_tray(layout_names: &[String], initial_layout_name: &str) -> Result<Syste
 }
 
 /// 検証済み設定でフック登録とホットキー登録を行う
-fn install_hooks_and_hotkeys_validated(config: &ValidatedConfig) -> Result<()> {
+fn install_hooks_and_hotkeys_validated(
+    config: &ValidatedConfig,
+) -> Result<(hook::HookGuard, Option<HotKeyGuard>, Option<HotKeyGuard>)> {
     let callback = Box::new(|event: RawKeyEvent| -> CallbackResult {
         unsafe { on_key_event_callback(event) }
     });
-    hook::install_hook(callback).context("Failed to install keyboard hook")?;
+    let guard = hook::install_hook(callback).context("Failed to install keyboard hook")?;
 
-    if let Some(ref hotkey_str) = config.general.toggle_hotkey {
-        register_toggle_hotkey(hotkey_str);
+    let toggle_guard = config
+        .general
+        .toggle_hotkey
+        .as_ref()
+        .and_then(|hotkey_str| register_toggle_hotkey(hotkey_str));
+    let focus_override_guard = register_focus_override_hotkey();
+    Ok((guard, toggle_guard, focus_override_guard))
+}
+
+/// `SetTimer` の RAII ガード。Drop 時に `KillTimer` を呼ぶ。
+struct TimerGuard(usize);
+
+impl Drop for TimerGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = KillTimer(HWND::default(), self.0);
+        }
+        log::info!("Timer {} killed", self.0);
     }
-    register_focus_override_hotkey();
-    Ok(())
+}
+
+/// `RegisterHotKey` の RAII ガード。Drop 時に `UnregisterHotKey` を呼ぶ。
+struct HotKeyGuard(i32);
+
+impl Drop for HotKeyGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = UnregisterHotKey(HWND::default(), self.0);
+        }
+        log::info!("Hotkey {} unregistered", self.0);
+    }
 }
 
 /// トグルホットキーを登録する
-fn register_toggle_hotkey(hotkey_str: &str) {
+fn register_toggle_hotkey(hotkey_str: &str) -> Option<HotKeyGuard> {
     if let Some((modifiers, vk)) = awase::config::parse_hotkey(hotkey_str) {
         unsafe {
             let result = RegisterHotKey(
                 HWND::default(),
                 HOTKEY_ID_TOGGLE,
                 HOT_KEY_MODIFIERS(modifiers),
-                u32::from(vk),
+                u32::from(vk.0),
             );
             if result.is_ok() {
                 log::info!("Toggle hotkey registered: {hotkey_str}");
+                Some(HotKeyGuard(HOTKEY_ID_TOGGLE))
             } else {
                 log::warn!("Failed to register toggle hotkey: {hotkey_str}");
+                None
             }
         }
     } else {
         log::warn!("Invalid toggle hotkey format: {hotkey_str}");
+        None
     }
 }
 
 /// 手動フォーカスオーバーライドホットキー (Ctrl+Shift+F11) を登録する
-fn register_focus_override_hotkey() {
+fn register_focus_override_hotkey() -> Option<HotKeyGuard> {
     const MOD_CONTROL: u32 = 0x0002;
     const MOD_SHIFT: u32 = 0x0004;
     const VK_F11: u32 = 0x7A;
@@ -524,24 +526,17 @@ fn register_focus_override_hotkey() {
         );
         if result.is_ok() {
             log::info!("Focus override hotkey registered: Ctrl+Shift+F11");
+            Some(HotKeyGuard(HOTKEY_ID_FOCUS_OVERRIDE))
         } else {
             log::warn!("Failed to register focus override hotkey: Ctrl+Shift+F11");
+            None
         }
     }
 }
 
-/// クリーンアップ処理
+/// クリーンアップ処理（フック解除は HookGuard の Drop で行われる）
 fn cleanup() {
-    hook::uninstall_hook();
     unsafe {
-        let _ = KillTimer(HWND::default(), TIMER_IME_POLL);
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_ID_TOGGLE);
-        let _ = UnregisterHotKey(HWND::default(), HOTKEY_ID_FOCUS_OVERRIDE);
-    }
-    unsafe {
-        if let Some(app) = APP.get_mut() {
-            app.tray.destroy();
-        }
         APP.clear();
     }
     log::info!("Exited cleanly.");
@@ -587,220 +582,112 @@ impl ActionExecutor for SendInputExecutor {
 ///
 /// 修飾キーの状態は `GetAsyncKeyState` で取得する（エンジン無効時は
 /// エンジン内部の `ModifierState` が更新されないため OS 側で確認する必要がある）。
-///
-/// # Safety
-/// `GetAsyncKeyState` は Win32 API。シングルスレッドフックコールバック内でのみ呼ぶこと。
-pub(crate) unsafe fn matches_key_combo(combo: &ParsedKeyCombo, event: &RawKeyEvent) -> bool {
+pub(crate) fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent) -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-    if event.vk_code.0 != combo.vk {
+    if event.vk_code != combo.vk {
         return false;
     }
 
-    let ctrl_held = GetAsyncKeyState(0x11) & (0x8000_u16 as i16) != 0;
-    let shift_held = GetAsyncKeyState(0x10) & (0x8000_u16 as i16) != 0;
-    let alt_held = GetAsyncKeyState(0x12) & (0x8000_u16 as i16) != 0;
+    // SAFETY: GetAsyncKeyState は Win32 API。シングルスレッドフックコールバック内で呼ぶ。
+    let (ctrl_held, shift_held, alt_held) = unsafe {
+        (
+            GetAsyncKeyState(0x11) & (0x8000_u16 as i16) != 0,
+            GetAsyncKeyState(0x10) & (0x8000_u16 as i16) != 0,
+            GetAsyncKeyState(0x12) & (0x8000_u16 as i16) != 0,
+        )
+    };
 
     combo.ctrl == ctrl_held && combo.shift == shift_held && combo.alt == alt_held
 }
 
-/// フックコールバック — キーイベント処理の中核
+/// フックコールバック — unsafe は `APP.get_mut()` のみ。
 ///
-/// 処理フロー:
-/// 1. Shadow IME 状態追跡（ime_sync キー）
-/// 2. IME トグルガード（バッファリング）
-/// 3. エンジン ON/OFF トグルキー
-/// 4. IME 状態検出（クロスプロセス API or shadow）
-/// 5. エンジン処理
+/// # Safety
+/// `APP.get_mut()` はシングルスレッド保証下でのみ安全。
+/// フックコールバックはメインスレッドで呼ばれるため OK。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let Some(app) = APP.get_mut() else {
         return CallbackResult::PassThrough;
     };
+    on_key_event_impl(app, event)
+}
 
-    // ── 入力レイヤー: 物理キー状態追跡 ──
+/// フックコールバックの本体（safe）。
+///
+/// unsafe は `APP.get_mut()` のみ — 残りのロジックは safe
+/// （Win32 API 呼び出しは個別の unsafe ブロックで囲む）。
+///
+/// 処理フロー:
+/// 1. 入力レイヤー: 物理キー状態追跡
+/// 2. Shadow IME 状態追跡（ime_sync キー + IME 制御キー）
+/// 3. IME 制御キー検出 → キャッシュ更新要求
+/// 4. IME トグルガード（バッファリング）
+/// 5. エンジン ON/OFF トグルキー + IME 制御キー
+/// 6. IME 状態判定（キャッシュ読み取りのみ）
+/// 7. エンジン処理
+fn on_key_event_impl(app: &mut AppState, event: RawKeyEvent) -> CallbackResult {
+    // ── 1. 入力レイヤー: 物理キー状態追跡 ──
     // IME チェックやエンジン無効等で処理レイヤーがスキップされても、
     // 修飾キー/親指キーの押下・解放を漏らさないために最初に呼ぶ。
     let phys = app.tracker.process(&event);
 
-    // ── Shadow IME state tracking (ime_sync keys) ──
+    // ── 2. Shadow IME 状態追跡（ime_sync + IME 制御キー）──
+    app.update_shadow_ime(&event);
+
+    // ── 3. IME 制御キー検出 → キャッシュ更新要求 ──
     {
         let is_key_down = matches!(
             event.event_type,
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
-        if is_key_down {
-            let vk = event.vk_code.0;
-
-            if app.ime_sync_on_keys.contains(&vk) {
-                app.shadow_ime_on = true;
-                log::debug!("Shadow IME ON (key 0x{vk:02X})");
-            }
-            if app.ime_sync_off_keys.contains(&vk) {
-                app.shadow_ime_on = false;
-                log::debug!("Shadow IME OFF (key 0x{vk:02X})");
-            }
-            if app.ime_sync_toggle_keys.contains(&vk) {
-                app.shadow_ime_on = !app.shadow_ime_on;
-                log::debug!("Shadow IME toggle → {} (key 0x{vk:02X})", app.shadow_ime_on);
+        if is_key_down && awase::vk::may_change_ime(event.vk_code) {
+            // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶこと。
+            unsafe {
+                let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
             }
         }
     }
 
-    // ── IME 制御キー検出 → shadow 更新 + キャッシュ更新要求 ──
-    {
-        let vk = event.vk_code.0;
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-        if is_key_down {
-            // 日本語キーボード固有の IME ON/OFF キーで shadow を追跡する。
-            // CrossProcess 検出が不正確なアプリ（Modern UI 等）では shadow が
-            // 唯一の IME 状態ソースになるため、ここでの追跡が重要。
-            match vk {
-                // IME ON: 半角/全角（activate）、VK_IME_ON
-                // 0xF4 は 0xF3 との交互ペアで IME ON 側
-                0xF2 | 0xF4 | 0x16 => {
-                    app.shadow_ime_on = true;
-                    log::trace!("Shadow IME ON (vk=0x{vk:02X})");
-                }
-                // IME OFF: 半角/全角（deactivate）、VK_IME_OFF
-                0xF3 | 0x1A => {
-                    app.shadow_ime_on = false;
-                    log::trace!("Shadow IME OFF (vk=0x{vk:02X})");
-                }
-                // VK_KANJI (半角/全角トグル)
-                0x19 => {
-                    app.shadow_ime_on = !app.shadow_ime_on;
-                    log::trace!("Shadow IME toggle → {} (vk=0x{vk:02X})", app.shadow_ime_on);
-                }
-                _ => {}
-            }
-
-            // IME 状態を変える可能性のあるキー → キャッシュ更新を要求
-            let may_change_ime = awase::vk::is_ime_control(event.vk_code)
-                || matches!(vk, 0xF0..=0xF5);
-            if may_change_ime {
-                let _ =
-                    PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
-            }
-        }
+    // ── 4. IME トグルガード: トグル直後のキーをバッファリング ──
+    if let Some(result) = app.handle_ime_toggle_guard(&event, &phys) {
+        return result;
     }
 
-    // ── IME toggle guard: buffer keys after toggle to let IME state settle ──
-    {
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-
-        if is_key_down {
-            // Check if current key IS a toggle/on/off key
-            let is_toggle_key = app.ime_sync_toggle_keys.contains(&event.vk_code.0);
-            let is_on_key = app.ime_sync_on_keys.contains(&event.vk_code.0);
-            let is_off_key = app.ime_sync_off_keys.contains(&event.vk_code.0);
-
-            if is_toggle_key || is_on_key || is_off_key {
-                // Set guard — next keys will be buffered
-                app.key_buffer.set_guard(true);
-                log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
-                return CallbackResult::PassThrough; // let IME process the toggle
-            }
-
-            // While IME guard active, buffer keys
-            if app.key_buffer.is_guarded() {
-                app.key_buffer.push_deferred(event, phys);
-                let _ =
-                    PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
-                return CallbackResult::Consumed;
-            }
-        }
-
-        // Guard clear on KeyUp of toggle key
-        if !is_key_down {
-            if app.key_buffer.is_guarded() {
-                let is_toggle_key = app.ime_sync_toggle_keys.contains(&event.vk_code.0);
-                let is_on_key = app.ime_sync_on_keys.contains(&event.vk_code.0);
-                let is_off_key = app.ime_sync_off_keys.contains(&event.vk_code.0);
-                if is_toggle_key || is_on_key || is_off_key {
-                    app.key_buffer.set_guard(false);
-                    // Process any buffered keys
-                    let _ = PostMessageW(
-                        HWND::default(),
-                        WM_PROCESS_DEFERRED,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
-                }
-            }
-        }
-    }
-
-    // ── Ctrl+変換/Ctrl+無変換 → IME 制御キーリマップ ──
-    {
-        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-        if is_key_down {
-            let ctrl_held = GetAsyncKeyState(0x11) & (0x8000_u16 as i16) != 0;
-            let shift_held = GetAsyncKeyState(0x10) & (0x8000_u16 as i16) != 0;
-            if ctrl_held && !shift_held {
-                // Ctrl+変換 (Shift なし) → IME ON (ImmSetOpenStatus API)
-                if event.vk_code.0 == 0x1C {
-                    let _ = ime::set_ime_open_cross_process(true);
-                    app.shadow_ime_on = true;
-                    // キャッシュも即時更新
-                    let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
-                    return CallbackResult::Consumed;
-                }
-                // Ctrl+無変換 (Shift なし) → IME OFF (ImmSetOpenStatus API)
-                if event.vk_code.0 == 0x1D {
-                    let _ = ime::set_ime_open_cross_process(false);
-                    app.shadow_ime_on = false;
-                    let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
-                    return CallbackResult::Consumed;
-                }
-            }
-        }
-    }
-
-    // ── エンジン ON/OFF トグルキー ──
+    // ── 5. エンジントグル + IME 制御キー（変換/無変換系の一括チェック）──
     {
         let is_key_down = matches!(
             event.event_type,
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
         if is_key_down {
-            if let Some(result) = app.check_engine_toggle_keys(&event) {
+            if let Some(result) = app.check_special_keys(&event) {
+                // IME 制御キーの場合はキャッシュ更新を要求
+                // SAFETY: PostMessageW は Win32 API。
+                unsafe {
+                    let _ =
+                        PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
+                }
                 return result;
             }
         }
     }
 
-    // ── IME 状態判定（キャッシュ読み取りのみ — ノンブロッキング）──
+    // ── 6. IME 状態判定（キャッシュ読み取りのみ — ノンブロッキング）──
     //
     // 実際の IME 検出（CrossProcess + ImeReliability + shadow fallback）は
     // メッセージループ上の refresh_ime_state_cache() で行い、結果を
     // IME_STATE_CACHE に書き込む。フックではキャッシュを読むだけ。
     {
-        let cached = IME_STATE_CACHE.load(Ordering::Acquire);
-        let ime_on = match cached {
-            0 => false,
-            1 => true,
-            _ => {
-                // Unknown（初期状態 or キャッシュ未更新）→ shadow fallback
-                app.shadow_ime_on
-            }
-        };
+        let ime_on = awase::types::ImeCacheState::load(&IME_STATE_CACHE)
+            .resolve_with_shadow(app.shadow_ime_on);
 
         if !ime_on {
             return CallbackResult::PassThrough;
         }
     }
 
-    // エンジン処理
+    // ── 7. エンジン処理 ──
     let response = app.engine.on_event(event, &phys);
     let mut timer_runtime = Win32TimerRuntime;
     let mut action_executor = SendInputExecutor;
@@ -833,11 +720,6 @@ fn run_message_loop() {
         }
 
         match msg.message {
-            WM_TIMER if msg.wParam.0 == TIMER_UNDETERMINED_BUFFER => unsafe {
-                if let Some(app) = APP.get_mut() {
-                    app.handle_buffer_timeout();
-                }
-            },
             WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
@@ -862,17 +744,15 @@ fn run_message_loop() {
                 unsafe {
                     if let Some(app) = APP.get_mut() {
                         // IME が非活性な��� on_timeout せず flush（コンテキスト喪失）
-                        let ime_active =
-                            app.ime.is_active() && app.ime.get_mode().is_kana_input();
-                        if !ime_active {
-                            let response =
-                                app.engine.flush_pending(ContextChange::ImeOff);
+                        let ime_active = app.ime.is_active() && app.ime.get_mode().is_kana_input();
+                        if ime_active {
+                            let phys = app.tracker.snapshot();
+                            let response = app.engine.on_timeout(timer_id, &phys);
                             let mut timer_runtime = Win32TimerRuntime;
                             let mut action_executor = SendInputExecutor;
                             dispatch(&response, &mut timer_runtime, &mut action_executor);
                         } else {
-                            let phys = app.tracker.snapshot();
-                            let response = app.engine.on_timeout(timer_id, &phys);
+                            let response = app.engine.flush_pending(ContextChange::ImeOff);
                             let mut timer_runtime = Win32TimerRuntime;
                             let mut action_executor = SendInputExecutor;
                             dispatch(&response, &mut timer_runtime, &mut action_executor);
@@ -926,8 +806,12 @@ fn run_message_loop() {
                         // UIA 結果をキャッシュに反映
                         if let Some(app) = APP.get_mut() {
                             if let Some((pid, cls)) = app.focus.last_focus_info.as_ref() {
-                                app.focus.cache
-                                    .insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
+                                app.focus.cache.insert(
+                                    *pid,
+                                    cls.clone(),
+                                    kind,
+                                    DetectionSource::UiaAsync,
+                                );
                             }
                         }
                         if kind == FocusKind::NonText {
@@ -951,14 +835,14 @@ fn run_message_loop() {
             WM_APP => unsafe {
                 let layout_names: Vec<String> = APP
                     .get_ref()
-                    .map(|app| app.layouts.iter().map(|(name, ..)| name.clone()).collect())
+                    .map(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
                     .unwrap_or_default();
                 tray::handle_tray_message(msg.hwnd, msg.lParam, &layout_names);
             },
-            WM_RELOAD_CONFIG => unsafe {
+            WM_RELOAD_CONFIG => {
                 log::info!("Config reload requested via WM_RELOAD_CONFIG");
                 reload_config();
-            },
+            }
             WM_COMMAND => unsafe {
                 if let Some(cmd) = tray::handle_tray_command(msg.wParam) {
                     if cmd == tray::cmd_settings() {
@@ -991,15 +875,19 @@ fn launch_settings() {
     } else {
         vec!["awase-settings"]
     };
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for name in &names {
-                let path = dir.join(name);
-                if path.exists() {
-                    let _ = std::process::Command::new(&path).spawn();
-                    return;
-                }
-            }
+    let Ok(exe) = std::env::current_exe() else {
+        log::warn!("awase-settings not found");
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        log::warn!("awase-settings not found");
+        return;
+    };
+    for name in &names {
+        let path = dir.join(name);
+        if path.exists() {
+            let _ = std::process::Command::new(&path).spawn();
+            return;
         }
     }
     log::warn!("awase-settings not found");
@@ -1007,8 +895,8 @@ fn launch_settings() {
 
 /// 設定ファイルを再読み込みし、エンジンのパラメータを更新する
 ///
-/// Safety: シングルスレッドからのみ呼び出すこと
-unsafe fn reload_config() {
+/// Safety: `APP.get_mut()` はシングルスレッドからのみ呼び出すこと
+fn reload_config() {
     let raw_config = match load_config() {
         Ok(c) => c,
         Err(e) => {
@@ -1022,20 +910,24 @@ unsafe fn reload_config() {
         log::warn!("config: {w}");
     }
 
-    if let Some(app) = APP.get_mut() {
-        app.engine.set_threshold_ms(config.general.simultaneous_threshold_ms);
-        app.engine.set_confirm_mode(
-            config.general.confirm_mode,
-            config.general.speculative_delay_ms,
-        );
-        app.output.set_mode(config.general.output_mode);
-        log::info!(
-            "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
-            config.general.simultaneous_threshold_ms,
-            config.general.confirm_mode,
-            config.general.speculative_delay_ms,
-            config.general.output_mode,
-        );
+    // Safety: メインスレッドのメッセージループ上でのみ呼ばれる
+    unsafe {
+        if let Some(app) = APP.get_mut() {
+            app.engine
+                .set_threshold_ms(config.general.simultaneous_threshold_ms);
+            app.engine.set_confirm_mode(
+                config.general.confirm_mode,
+                config.general.speculative_delay_ms,
+            );
+            app.output.set_mode(config.general.output_mode);
+            log::info!(
+                "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
+                config.general.simultaneous_threshold_ms,
+                config.general.confirm_mode,
+                config.general.speculative_delay_ms,
+                config.general.output_mode,
+            );
+        }
     }
 
     // n-gram モデルの再読み込み
@@ -1043,33 +935,60 @@ unsafe fn reload_config() {
     init_ngram_validated(&config, &mut reload_diag);
     reload_diag.report();
 
-    // エンジン ON/OFF キーの再読み込み
+    // キーコンボの再読み込み（エンジン切替 + IME 制御）
     {
-        let mut reload_toggle_diag = StartupDiagnostics::new();
-        let (on_keys, off_keys) = init_engine_toggle_keys(&config, &mut reload_toggle_diag);
-        if let Some(app) = APP.get_mut() {
-            app.engine_on_keys = on_keys;
-            app.engine_off_keys = off_keys;
+        let mut key_diag = StartupDiagnostics::new();
+        let engine_on = parse_key_combos(
+            &config.general.engine_on_keys,
+            "Engine ON keys",
+            &mut key_diag,
+        );
+        let engine_off = parse_key_combos(
+            &config.general.engine_off_keys,
+            "Engine OFF keys",
+            &mut key_diag,
+        );
+        let ime_on = parse_key_combos(
+            &config.general.ime_on_keys,
+            "IME control ON keys",
+            &mut key_diag,
+        );
+        let ime_off = parse_key_combos(
+            &config.general.ime_off_keys,
+            "IME control OFF keys",
+            &mut key_diag,
+        );
+        unsafe {
+            if let Some(app) = APP.get_mut() {
+                app.special_keys = app_state::SpecialKeyCombos {
+                    engine_on,
+                    engine_off,
+                    ime_on,
+                    ime_off,
+                };
+            }
         }
-        reload_toggle_diag.report();
+        key_diag.report();
     }
 
     // IME sync キーの再読み込み
     {
         let mut reload_sync_diag = StartupDiagnostics::new();
         let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut reload_sync_diag);
-        if let Some(app) = APP.get_mut() {
-            app.ime_sync_toggle_keys = toggle;
-            app.ime_sync_on_keys = on;
-            app.ime_sync_off_keys = off;
+        unsafe {
+            if let Some(app) = APP.get_mut() {
+                app.ime_sync_keys = app_state::ImeSyncKeys { toggle, on, off };
+            }
         }
         reload_sync_diag.report();
     }
 
     // フォーカスオーバーライド再読み込み + キャッシュクリア
-    if let Some(app) = APP.get_mut() {
-        app.focus.overrides = config.focus_overrides;
-        app.focus.cache = focus::cache::FocusCache::new();
+    unsafe {
+        if let Some(app) = APP.get_mut() {
+            app.focus.overrides = config.focus_overrides;
+            app.focus.cache = focus::cache::FocusCache::new();
+        }
     }
     log::info!("Focus overrides reloaded");
 
@@ -1082,7 +1001,7 @@ fn scan_layouts(
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
     diag: &mut StartupDiagnostics,
-) -> Result<Vec<(String, YabLayout, VkCode, VkCode)>> {
+) -> Result<Vec<LayoutEntry>> {
     let mut layouts = Vec::new();
 
     if !layouts_dir.is_dir() {
@@ -1109,7 +1028,12 @@ fn scan_layouts(
                     Ok(yab) => {
                         let yab = yab.resolve_kana();
                         log::info!("Discovered layout: {} ({})", yab.name, path.display());
-                        layouts.push((yab.name.clone(), yab, left_thumb_vk, right_thumb_vk));
+                        layouts.push(LayoutEntry {
+                            name: yab.name.clone(),
+                            layout: yab,
+                            left_thumb_vk,
+                            right_thumb_vk,
+                        });
                     }
                     Err(e) => {
                         diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
@@ -1123,7 +1047,7 @@ fn scan_layouts(
     }
 
     // 名前順にソートして安定した順序にする
-    layouts.sort_by(|(a, ..), (b, ..)| a.cmp(b));
+    layouts.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(layouts)
 }
@@ -1144,8 +1068,6 @@ fn resolve_relative(path: &str) -> PathBuf {
     // フォールバック: カレントディレクトリからの相対パス
     PathBuf::from(path)
 }
-
-
 
 /// 設定ファイルのパスを探索する。
 ///
@@ -1178,7 +1100,19 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
 /// フォーカス変更イベントフックを登録する
-fn install_focus_hook() {
+/// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
+struct WinEventHookGuard(windows::Win32::UI::Accessibility::HWINEVENTHOOK);
+
+impl Drop for WinEventHookGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(self.0);
+        }
+        log::info!("Focus event hook uninstalled");
+    }
+}
+
+fn install_focus_hook() -> Option<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
     unsafe {
         let hook = SetWinEventHook(
@@ -1192,8 +1126,10 @@ fn install_focus_hook() {
         );
         if hook.is_invalid() {
             log::warn!("Failed to install focus event hook");
+            None
         } else {
             log::info!("Focus event hook installed");
+            Some(WinEventHookGuard(hook))
         }
     }
 }
@@ -1237,7 +1173,6 @@ unsafe extern "system" fn win_event_proc(
                     None,
                 );
             }
-            _ => {}
         }
     }
 }
