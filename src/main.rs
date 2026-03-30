@@ -455,7 +455,8 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
             log::info!("N-gram model loaded from {}", ngram_path.display());
             unsafe {
                 if let Some(app) = APP.get_mut() {
-                    app.engine.set_ngram_model(model);
+                    app.engine
+                        .on_command(awase::engine::EngineCommand::SetNgramModel(model));
                 }
             }
         }
@@ -640,7 +641,8 @@ fn run_message_loop() {
                 log::info!("Input language changed, flushing pending state and enabling guard");
                 if let Some(app) = APP.get_mut() {
                     app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-                    app.engine.set_guard(true);
+                    app.engine
+                        .on_command(awase::engine::EngineCommand::SetGuard(true));
                     app.refresh_ime_state_cache();
                 }
             },
@@ -787,11 +789,11 @@ fn reload_config() {
     unsafe {
         if let Some(app) = APP.get_mut() {
             app.engine
-                .set_threshold_ms(config.general.simultaneous_threshold_ms);
-            app.engine.set_confirm_mode(
-                config.general.confirm_mode,
-                config.general.speculative_delay_ms,
-            );
+                .on_command(awase::engine::EngineCommand::UpdateFsmParams {
+                    threshold_ms: config.general.simultaneous_threshold_ms,
+                    confirm_mode: config.general.confirm_mode,
+                    speculative_delay_ms: config.general.speculative_delay_ms,
+                });
             app.output.set_mode(config.general.output_mode);
             log::info!(
                 "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
@@ -834,15 +836,16 @@ fn reload_config() {
         let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut key_diag);
         unsafe {
             if let Some(app) = APP.get_mut() {
-                app.engine.reload_keys(
-                    SpecialKeyCombos {
-                        engine_on,
-                        engine_off,
-                        ime_on,
-                        ime_off,
-                    },
-                    ImeSyncKeys { toggle, on, off },
-                );
+                app.engine
+                    .on_command(awase::engine::EngineCommand::ReloadKeys {
+                        special: SpecialKeyCombos {
+                            engine_on,
+                            engine_off,
+                            ime_on,
+                            ime_off,
+                        },
+                        sync: ImeSyncKeys { toggle, on, off },
+                    });
             }
         }
         key_diag.report();

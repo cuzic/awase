@@ -39,8 +39,8 @@ pub enum ImeEffect {
 /// UI に関する副作用
 #[derive(Debug, Clone)]
 pub enum UiEffect {
-    /// トレイアイコンを更新する
-    UpdateTray { enabled: bool },
+    /// エンジンの有効/無効が変わった
+    EngineStateChanged { enabled: bool },
 }
 
 /// アプリケーション全体の副作用を表す宣言型。

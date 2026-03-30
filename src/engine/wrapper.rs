@@ -1,12 +1,21 @@
 //! 新 Engine: NicolaFsm + InputTracker + IME/特殊キー処理を統合するラッパー。
 //!
-//! `on_input` / `on_timeout` が唯一のエントリポイント。
+//! `on_input` / `on_timeout` / `on_command` が唯一のエントリポイント。
 //! Win32 API を一切呼ばず、副作用は `Decision` として返す。
+//!
+//! # IME 状態の同期ルール
+//!
+//! - `shadow_ime_on`: 入力イベントから推定した IME 状態（Engine 内部）
+//! - `InputContext::ime_cache`: メッセージループで観測した外界の IME 状態
+//! - 判定: `ime_cache.resolve_with_shadow(shadow_ime_on)` — キャッシュ優先、Unknown 時は shadow にフォールバック
+//! - `Effect::Ime(ImeEffect::RequestCacheRefresh)` は非同期要求。次回の on_input で反映される保証はない
+//! - Engine は常に現在の InputContext のスナップショットだけで判断する（先読みしない）
 
 use timed_fsm::{Response, TimerCommand};
 
 use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, VkCode};
+use crate::yab::YabLayout;
 
 use super::input_tracker::{InputTracker, PhysicalKeyState};
 use super::types::{Decision, Effect, ImeEffect, InputContext, InputEffect, TimerEffect, UiEffect};
@@ -72,6 +81,36 @@ impl KeyBuffer {
     pub fn drain_deferred(&mut self) -> Vec<(RawKeyEvent, PhysicalKeyState)> {
         std::mem::take(&mut self.deferred_keys)
     }
+}
+
+/// Engine への外部コマンド
+#[derive(Debug)]
+pub enum EngineCommand {
+    /// エンジンの有効/無効を切り替える
+    ToggleEngine,
+    /// 外部コンテキスト喪失（IME OFF、言語切替等）
+    InvalidateContext(ContextChange),
+    /// 配列を切り替える
+    SwapLayout(YabLayout),
+    /// IME 状態に追随する
+    SyncImeState { ime_on: bool },
+    /// IME ガードを設定する
+    SetGuard(bool),
+    /// 遅延キーをクリアする
+    ClearDeferredKeys,
+    /// 設定を再読み込みする
+    ReloadKeys {
+        special: SpecialKeyCombos,
+        sync: ImeSyncKeys,
+    },
+    /// FSM パラメータを更新する
+    UpdateFsmParams {
+        threshold_ms: u32,
+        confirm_mode: crate::config::ConfirmMode,
+        speculative_delay_ms: u32,
+    },
+    /// n-gram モデルを設定する
+    SetNgramModel(crate::ngram::NgramModel),
 }
 
 /// 統合エンジン: NicolaFsm + InputTracker + IME/特殊キー処理
@@ -200,42 +239,72 @@ impl Engine {
             .collect()
     }
 
-    /// エンジンの有効/無効を切り替え、トレイ更新の Effect を含む Decision を返す。
-    pub fn toggle_engine(&mut self) -> Decision {
-        let (enabled, flush_resp) = self.fsm.toggle_enabled();
-        log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
-        let mut decision = self.response_to_decision(&flush_resp);
-        decision.push_effect(Effect::Ui(UiEffect::UpdateTray { enabled }));
-        decision
-    }
-
-    /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
-    pub fn invalidate_engine_context(&mut self, reason: ContextChange) -> Decision {
-        let response = self.fsm.flush_pending(reason);
-        self.response_to_decision(&response)
-    }
-
-    /// 配列を動的に切り替える。
-    pub fn swap_layout(&mut self, layout: crate::yab::YabLayout) -> Decision {
-        let response = self.fsm.swap_layout(layout);
-        self.response_to_decision(&response)
-    }
-
-    /// NicolaFsm の設定変更への委譲メソッド群
-    pub fn set_threshold_ms(&mut self, ms: u32) {
-        self.fsm.set_threshold_ms(ms);
-    }
-
-    pub fn set_confirm_mode(
-        &mut self,
-        mode: crate::config::ConfirmMode,
-        speculative_delay_ms: u32,
-    ) {
-        self.fsm.set_confirm_mode(mode, speculative_delay_ms);
-    }
-
-    pub fn set_ngram_model(&mut self, model: crate::ngram::NgramModel) {
-        self.fsm.set_ngram_model(model);
+    /// 外部コマンドの統合エントリポイント。
+    ///
+    /// `toggle_engine`, `invalidate_engine_context`, `swap_layout` 等の個別メソッドを
+    /// 単一のディスパッチに集約する。
+    pub fn on_command(&mut self, cmd: EngineCommand) -> Decision {
+        match cmd {
+            EngineCommand::ToggleEngine => {
+                let (enabled, flush_resp) = self.fsm.toggle_enabled();
+                log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
+                let mut decision = self.response_to_decision(&flush_resp);
+                decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
+                decision
+            }
+            EngineCommand::InvalidateContext(reason) => {
+                let response = self.fsm.flush_pending(reason);
+                self.response_to_decision(&response)
+            }
+            EngineCommand::SwapLayout(layout) => {
+                let response = self.fsm.swap_layout(layout);
+                self.response_to_decision(&response)
+            }
+            EngineCommand::SyncImeState { ime_on } => {
+                if ime_on && !self.fsm.is_enabled() {
+                    let _ = self.fsm.set_enabled(true);
+                    Decision::pass_through_with(vec![Effect::Ui(UiEffect::EngineStateChanged {
+                        enabled: true,
+                    })])
+                } else if !ime_on && self.fsm.is_enabled() {
+                    let response = self.fsm.flush_pending(ContextChange::ImeOff);
+                    let mut decision = self.response_to_decision(&response);
+                    let _ = self.fsm.set_enabled(false);
+                    decision
+                        .push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
+                    decision
+                } else {
+                    Decision::pass_through()
+                }
+            }
+            EngineCommand::SetGuard(on) => {
+                self.key_buffer.set_guard(on);
+                Decision::pass_through()
+            }
+            EngineCommand::ClearDeferredKeys => {
+                self.key_buffer.deferred_keys.clear();
+                Decision::pass_through()
+            }
+            EngineCommand::ReloadKeys { special, sync } => {
+                self.special_keys = special;
+                self.ime_sync_keys = sync;
+                Decision::pass_through()
+            }
+            EngineCommand::UpdateFsmParams {
+                threshold_ms,
+                confirm_mode,
+                speculative_delay_ms,
+            } => {
+                self.fsm.set_threshold_ms(threshold_ms);
+                self.fsm
+                    .set_confirm_mode(confirm_mode, speculative_delay_ms);
+                Decision::pass_through()
+            }
+            EngineCommand::SetNgramModel(model) => {
+                self.fsm.set_ngram_model(model);
+                Decision::pass_through()
+            }
+        }
     }
 
     #[must_use]
@@ -250,37 +319,6 @@ impl Engine {
 
     pub const fn set_shadow_ime_on(&mut self, on: bool) {
         self.shadow_ime_on = on;
-    }
-
-    /// 特殊キーコンボと IME 同期キーを一括再読み込みする
-    pub fn reload_keys(&mut self, special: SpecialKeyCombos, sync: ImeSyncKeys) {
-        self.special_keys = special;
-        self.ime_sync_keys = sync;
-    }
-
-    /// ガード ON: 後続キーをバッファリングする
-    pub const fn set_guard(&mut self, on: bool) {
-        self.key_buffer.set_guard(on);
-    }
-
-    /// 遅延キーバッファをクリアする（フォーカスオーバーライド時等）
-    pub fn clear_deferred_keys(&mut self) {
-        self.key_buffer.deferred_keys.clear();
-    }
-
-    /// IME 状態変化に追随してエンジンの有効/無効を切り替える
-    pub fn sync_with_ime_state(&mut self, ime_on: bool) -> Decision {
-        if ime_on && !self.fsm.is_enabled() {
-            let _ = self.fsm.set_enabled(true);
-            Decision::pass_through_with(vec![Effect::Ui(UiEffect::UpdateTray { enabled: true })])
-        } else if !ime_on && self.fsm.is_enabled() {
-            let mut decision = self.invalidate_engine_context(ContextChange::ImeOff);
-            let _ = self.fsm.set_enabled(false);
-            decision.push_effect(Effect::Ui(UiEffect::UpdateTray { enabled: false }));
-            decision
-        } else {
-            Decision::pass_through()
-        }
     }
 
     // ── 内部メソッド ──
@@ -444,7 +482,7 @@ impl Engine {
             let (enabled, flush_resp) = self.fsm.set_enabled(true);
             log::info!("Engine ON (key combo)");
             let mut effects = self.response_to_effects(&flush_resp);
-            effects.push(Effect::Ui(UiEffect::UpdateTray { enabled }));
+            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
             return Some(Decision::consumed_with(effects));
         }
         if self.fsm.is_enabled()
@@ -457,7 +495,7 @@ impl Engine {
             let (enabled, flush_resp) = self.fsm.set_enabled(false);
             log::info!("Engine OFF (key combo)");
             let mut effects = self.response_to_effects(&flush_resp);
-            effects.push(Effect::Ui(UiEffect::UpdateTray { enabled }));
+            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
             return Some(Decision::consumed_with(effects));
         }
 

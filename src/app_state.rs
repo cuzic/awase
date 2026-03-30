@@ -1,7 +1,8 @@
 use windows::Win32::Foundation::HWND;
 
 use awase::engine::{
-    Decision, Effect, Engine, ImeEffect, InputContext, InputEffect, TimerEffect, UiEffect,
+    Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext, InputEffect, TimerEffect,
+    UiEffect,
 };
 use awase::types::{ContextChange, FocusKind, ImeCacheState, VkCode};
 use awase::yab::YabLayout;
@@ -52,7 +53,13 @@ impl FocusDetector {
 
 use crate::{reinject_key, FOCUS_KIND, IME_RELIABILITY, IME_STATE_CACHE};
 
-/// シングルスレッド状態を集約した構造体
+/// アプリケーションランタイム。
+///
+/// Engine を保持し、外部サービス（Output, IME, Tray, Focus）を束ねる。
+/// Decision を受け取って副作用を実行する唯一のポイント（`execute_decision`）。
+/// OS 観測値を Engine に橋渡しする役割も持つ。
+///
+/// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
 pub struct AppState {
     pub engine: Engine,
     pub output: Output,
@@ -128,7 +135,7 @@ impl AppState {
                     }
                 },
                 Effect::Ui(ue) => match ue {
-                    UiEffect::UpdateTray { enabled } => {
+                    UiEffect::EngineStateChanged { enabled } => {
                         self.tray.set_enabled(enabled);
                     }
                 },
@@ -138,13 +145,15 @@ impl AppState {
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub(crate) fn toggle_engine(&mut self) {
-        let decision = self.engine.toggle_engine();
+        let decision = self.engine.on_command(EngineCommand::ToggleEngine);
         self.execute_decision(decision);
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
     pub(crate) fn invalidate_engine_context(&mut self, reason: ContextChange) {
-        let decision = self.engine.invalidate_engine_context(reason);
+        let decision = self
+            .engine
+            .on_command(EngineCommand::InvalidateContext(reason));
         self.execute_decision(decision);
     }
 
@@ -215,7 +224,9 @@ impl AppState {
                 new_state.as_str(),
             );
             // エンジンを IME 状態に追随させる
-            let decision = self.engine.sync_with_ime_state(ime_on);
+            let decision = self
+                .engine
+                .on_command(EngineCommand::SyncImeState { ime_on });
             if !matches!(decision, Decision::PassThrough) {
                 log::info!(
                     "Engine auto-{} (IME {})",
@@ -235,7 +246,9 @@ impl AppState {
         };
 
         let name = entry.name.clone();
-        let decision = self.engine.swap_layout(entry.layout.clone());
+        let decision = self
+            .engine
+            .on_command(EngineCommand::SwapLayout(entry.layout.clone()));
         self.execute_decision(decision);
 
         self.tray.set_layout_name(&name);
@@ -379,7 +392,7 @@ impl AppState {
         }
 
         // Clear any active buffers
-        self.engine.clear_deferred_keys();
+        self.engine.on_command(EngineCommand::ClearDeferredKeys);
         // バルーン通知を表示
         self.tray.show_balloon(
             "awase",

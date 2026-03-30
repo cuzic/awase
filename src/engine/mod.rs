@@ -22,7 +22,7 @@ pub use types::{
     ClassifiedEvent, Decision, Effect, FinalizePlan, ImeEffect, InputContext, InputEffect,
     KeyClass, ModifierState, OutputRecord, OutputUpdate, TimerEffect, TimerIntent, UiEffect,
 };
-pub use wrapper::Engine;
+pub use wrapper::{Engine, EngineCommand};
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;

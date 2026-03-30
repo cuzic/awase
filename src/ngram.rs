@@ -5,7 +5,7 @@ use std::collections::HashMap;
 /// Adjusts the simultaneous keystroke detection threshold based on
 /// the likelihood of character sequences. Common sequences get a
 /// more lenient threshold, rare ones get tighter.
-#[allow(missing_debug_implementations)] // HashMap 内部は Debug 出力に不向き
+#[derive(Debug)]
 pub struct NgramModel {
     /// 2-gram frequency: (prev_char, current_char) -> log-probability score
     bigram: HashMap<(char, char), f32>,
