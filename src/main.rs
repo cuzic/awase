@@ -488,6 +488,19 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                 DetectionSource::ImeKeyInferred,
                 &format!("IME/thumb key 0x{:02X}", event.vk_code.0),
             );
+            // auto-IME-OFF されていた場合は IME ON に復帰
+            // （非ブラウザ Undetermined で自動 OFF された後のケース）
+            {
+                let mut info = GUITHREADINFO {
+                    cbSize: size_of::<GUITHREADINFO>() as u32,
+                    ..Default::default()
+                };
+                if GetGUIThreadInfo(0, &mut info).is_ok()
+                    && !info.hwndFocus.0.is_null()
+                {
+                    focus::set_ime_on(info.hwndFocus);
+                }
+            }
             // Undetermined バッファリング中ならバッファを処理
             if let Some(kb) = KEY_BUFFER.get_mut() {
                 if kb.undetermined_buffering {
