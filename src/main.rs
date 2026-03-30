@@ -100,6 +100,181 @@ pub(crate) struct AppState {
     pub ime_sync_off_keys: Vec<u16>,
 }
 
+/// AppState のメソッドが返す副作用指示。
+/// メソッドは状態遷移を行い、必要な副作用を AppAction として返す。
+/// 呼び出し側が AppAction を実行する。
+#[derive(Debug)]
+#[allow(dead_code)] // 将来のフェーズで副作用を戻り値として返す際に使用
+pub(crate) enum AppAction {
+    /// エンジンの保留状態をフラッシュする
+    InvalidateEngineContext(ContextChange),
+    /// IME 状態キャッシュを更新する
+    RefreshImeStateCache,
+}
+
+impl AppState {
+    /// エンジンの有効/無効を切り替え、トレイアイコンを更新する
+    pub(crate) fn toggle_engine(&mut self) {
+        let (enabled, flush_resp) = self.engine.toggle_enabled();
+        let mut timer_runtime = Win32TimerRuntime;
+        let mut action_executor = SendInputExecutor;
+        dispatch(&flush_resp, &mut timer_runtime, &mut action_executor);
+        log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
+        self.tray.set_enabled(enabled);
+    }
+
+    /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
+    ///
+    /// IMEオフ、入力言語変更など、エンジンの前提が崩れた場合に呼ぶ。
+    /// 全てのコンテキスト無効化経路はこのメソッドを通すこと。
+    pub(crate) fn invalidate_engine_context(&mut self, reason: ContextChange) {
+        let response = self.engine.flush_pending(reason);
+        let mut timer_runtime = Win32TimerRuntime;
+        let mut action_executor = SendInputExecutor;
+        dispatch(&response, &mut timer_runtime, &mut action_executor);
+    }
+
+    /// IME ON/OFF 状態をキャッシュに書き込む。
+    ///
+    /// メッセージループ上で呼ぶこと（ブロッキング OK）。
+    /// フォーカス変更、WM_INPUTLANGCHANGE、IME トグル後、定期ポーリングで呼ばれる。
+    ///
+    /// # Safety
+    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+    pub(crate) unsafe fn refresh_ime_state_cache(&self) {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+        };
+
+        // Step 1: 対象スレッドの HKL を取得（日本語チェック）
+        let mut gui_info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        let thread_id = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
+            let fg_hwnd = if gui_info.hwndFocus != HWND::default() {
+                gui_info.hwndFocus
+            } else {
+                gui_info.hwndActive
+            };
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(fg_hwnd, Some(&mut pid))
+        } else {
+            0
+        };
+
+        let hkl = GetKeyboardLayout(thread_id);
+        let lang_id = (hkl.0 as u32) & 0xFFFF;
+        if lang_id != 0x0411 {
+            IME_STATE_CACHE.store(0, Ordering::Release); // 非日本語 → OFF
+            return;
+        }
+
+        // Step 2: クロスプロセス IME 検出（ブロッキング OK — メッセージループ上）
+        let cross_process = ime::detect_ime_open_cross_process();
+
+        // Step 3: ImeReliability を考慮した評価
+        let cross_process = if cross_process == Some(false) {
+            use awase::types::ImeReliability;
+            let reliability = ImeReliability::load(&IME_RELIABILITY);
+
+            let unreliable = match reliability {
+                ImeReliability::Reliable => false,
+                ImeReliability::Unreliable => true,
+                ImeReliability::Unknown => {
+                    gui_info.hwndFocus != HWND::default() && {
+                        let class =
+                            focus::classify::get_class_name_string(gui_info.hwndFocus);
+                        is_cross_process_ime_unreliable_class(&class)
+                    }
+                }
+            };
+
+            if unreliable { None } else { cross_process }
+        } else {
+            cross_process
+        };
+
+        // Step 4: 最終判定 → キャッシュに書き込み
+        let ime_on = match cross_process {
+            Some(open) => open,
+            None => self.shadow_ime_on, // shadow fallback
+        };
+
+        let new_val = if ime_on { 1u8 } else { 0u8 };
+        let old_val = IME_STATE_CACHE.swap(new_val, Ordering::AcqRel);
+        if old_val != new_val {
+            log::debug!(
+                "IME state cache updated: {} → {}",
+                match old_val { 0 => "OFF", 1 => "ON", _ => "Unknown" },
+                if ime_on { "ON" } else { "OFF" },
+            );
+        }
+    }
+
+    /// 配列を動的に切り替える
+    pub(crate) fn switch_layout(&mut self, index: usize) {
+        let Some((name, layout_template, _l_vk, _r_vk)) = self.layouts.get(index) else {
+            log::warn!("Layout index {index} out of range");
+            return;
+        };
+
+        // YabLayout の各面を clone して新しいレイアウトを構築する
+        let new_layout = YabLayout {
+            name: layout_template.name.clone(),
+            normal: layout_template.normal.clone(),
+            left_thumb: layout_template.left_thumb.clone(),
+            right_thumb: layout_template.right_thumb.clone(),
+            shift: layout_template.shift.clone(),
+        };
+        let name = name.clone();
+
+        let response = self.engine.swap_layout(new_layout);
+        let mut timer_runtime = Win32TimerRuntime;
+        let mut action_executor = SendInputExecutor;
+        dispatch(&response, &mut timer_runtime, &mut action_executor);
+
+        self.tray.set_layout_name(&name);
+
+        log::info!("Switched layout to: {name}");
+    }
+
+    /// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
+    ///
+    /// # Safety
+    /// `matches_key_combo` が Win32 API を呼ぶため unsafe。
+    unsafe fn check_engine_toggle_keys(&mut self, event: &RawKeyEvent) -> Option<CallbackResult> {
+        // エンジン OFF → ON: engine_on_keys（デフォルト: VK_CONVERT）
+        if !self.engine.is_enabled() {
+            if self.engine_on_keys.iter().any(|k| matches_key_combo(k, event)) {
+                let (enabled, flush_resp) = self.engine.set_enabled(true);
+                let mut tr = Win32TimerRuntime;
+                let mut ae = SendInputExecutor;
+                dispatch(&flush_resp, &mut tr, &mut ae);
+                log::info!("Engine ON (key combo)");
+                self.tray.set_enabled(enabled);
+                return Some(CallbackResult::Consumed);
+            }
+        }
+
+        // エンジン ON → OFF: engine_off_keys（デフォルト: Ctrl+VK_NONCONVERT）
+        if self.engine.is_enabled() {
+            if self.engine_off_keys.iter().any(|k| matches_key_combo(k, event)) {
+                let (enabled, flush_resp) = self.engine.set_enabled(false);
+                let mut tr = Win32TimerRuntime;
+                let mut ae = SendInputExecutor;
+                dispatch(&flush_resp, &mut tr, &mut ae);
+                log::info!("Engine OFF (key combo)");
+                self.tray.set_enabled(enabled);
+                return Some(CallbackResult::Consumed);
+            }
+        }
+
+        None
+    }
+}
+
 pub(crate) static APP: SingleThreadCell<AppState> = SingleThreadCell::new();
 
 use crate::focus::cache::DetectionSource;
@@ -584,119 +759,6 @@ fn is_cross_process_ime_unreliable_class(class_name: &str) -> bool {
     )
 }
 
-/// IME ON/OFF 状態をキャッシュに書き込む。
-///
-/// メッセージループ上で呼ぶこと（ブロッキング OK）。
-/// フォーカス変更、WM_INPUTLANGCHANGE、IME トグル後、定期ポーリングで呼ばれる。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub(crate) unsafe fn refresh_ime_state_cache() {
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
-    };
-
-    // Step 1: 対象スレッドの HKL を取得（日本語チェック）
-    let mut gui_info = GUITHREADINFO {
-        cbSize: size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    let thread_id = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
-        let fg_hwnd = if gui_info.hwndFocus != HWND::default() {
-            gui_info.hwndFocus
-        } else {
-            gui_info.hwndActive
-        };
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(fg_hwnd, Some(&mut pid))
-    } else {
-        0
-    };
-
-    let hkl = GetKeyboardLayout(thread_id);
-    let lang_id = (hkl.0 as u32) & 0xFFFF;
-    if lang_id != 0x0411 {
-        IME_STATE_CACHE.store(0, Ordering::Release); // 非日本語 → OFF
-        return;
-    }
-
-    // Step 2: クロスプロセス IME 検出（ブロッキング OK — メッセージループ上）
-    let cross_process = ime::detect_ime_open_cross_process();
-
-    // Step 3: ImeReliability を考慮した評価
-    let cross_process = if cross_process == Some(false) {
-        use awase::types::ImeReliability;
-        let reliability = ImeReliability::load(&IME_RELIABILITY);
-
-        let unreliable = match reliability {
-            ImeReliability::Reliable => false,
-            ImeReliability::Unreliable => true,
-            ImeReliability::Unknown => {
-                gui_info.hwndFocus != HWND::default() && {
-                    let class =
-                        focus::classify::get_class_name_string(gui_info.hwndFocus);
-                    is_cross_process_ime_unreliable_class(&class)
-                }
-            }
-        };
-
-        if unreliable { None } else { cross_process }
-    } else {
-        cross_process
-    };
-
-    // Step 4: 最終判定 → キャッシュに書き込み
-    let ime_on = match cross_process {
-        Some(open) => open,
-        None => APP.get_ref().map_or(true, |app| app.shadow_ime_on), // shadow fallback
-    };
-
-    let new_val = if ime_on { 1u8 } else { 0u8 };
-    let old_val = IME_STATE_CACHE.swap(new_val, Ordering::AcqRel);
-    if old_val != new_val {
-        log::debug!(
-            "IME state cache updated: {} → {}",
-            match old_val { 0 => "OFF", 1 => "ON", _ => "Unknown" },
-            if ime_on { "ON" } else { "OFF" },
-        );
-    }
-}
-
-/// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
-///
-/// # Safety
-/// `APP` はシングルスレッドからのみアクセスすること。
-unsafe fn check_engine_toggle_keys(app: &mut AppState, event: &RawKeyEvent) -> Option<CallbackResult> {
-    // エンジン OFF → ON: engine_on_keys（デフォルト: VK_CONVERT）
-    if !app.engine.is_enabled() {
-        if app.engine_on_keys.iter().any(|k| matches_key_combo(k, event)) {
-            let (enabled, flush_resp) = app.engine.set_enabled(true);
-            let mut tr = Win32TimerRuntime;
-            let mut ae = SendInputExecutor;
-            dispatch(&flush_resp, &mut tr, &mut ae);
-            log::info!("Engine ON (key combo)");
-            app.tray.set_enabled(enabled);
-            return Some(CallbackResult::Consumed);
-        }
-    }
-
-    // エンジン ON → OFF: engine_off_keys（デフォルト: Ctrl+VK_NONCONVERT）
-    if app.engine.is_enabled() {
-        if app.engine_off_keys.iter().any(|k| matches_key_combo(k, event)) {
-            let (enabled, flush_resp) = app.engine.set_enabled(false);
-            let mut tr = Win32TimerRuntime;
-            let mut ae = SendInputExecutor;
-            dispatch(&flush_resp, &mut tr, &mut ae);
-            log::info!("Engine OFF (key combo)");
-            app.tray.set_enabled(enabled);
-            return Some(CallbackResult::Consumed);
-        }
-    }
-
-    None
-}
-
 /// フックコールバック — キーイベント処理の中核
 ///
 /// 処理フロー:
@@ -795,7 +857,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
         if is_key_down {
-            if let Some(result) = check_engine_toggle_keys(app, &event) {
+            if let Some(result) = app.check_engine_toggle_keys(&event) {
                 return result;
             }
         }
@@ -859,7 +921,9 @@ fn run_message_loop() {
                 key_buffer::handle_buffer_timeout();
             },
             WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
-                refresh_ime_state_cache();
+                if let Some(app) = APP.get_ref() {
+                    app.refresh_ime_state_cache();
+                }
             },
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
                 let timer_id = msg.wParam.0;
@@ -889,11 +953,11 @@ fn run_message_loop() {
                 // 言語切替直後は IME 状態が未反映の可能性があるため、
                 // 後続キーをメッセージループに回して確実に更新後に処理する。
                 log::info!("Input language changed, flushing pending state and enabling guard");
-                invalidate_engine_context(ContextChange::InputLanguageChanged);
                 if let Some(app) = APP.get_mut() {
+                    app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                     app.key_buffer.set_guard(true);
+                    app.refresh_ime_state_cache();
                 }
-                refresh_ime_state_cache();
             },
             WM_PROCESS_DEFERRED => unsafe {
                 // IME 制御キー後の遅延キーを再処理する。
@@ -933,13 +997,17 @@ fn run_message_loop() {
                             }
                         }
                         if kind == FocusKind::NonText {
-                            invalidate_engine_context(ContextChange::FocusChanged);
+                            if let Some(app) = APP.get_mut() {
+                                app.invalidate_engine_context(ContextChange::FocusChanged);
+                            }
                         }
                     }
                 }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
-                toggle_engine();
+                if let Some(app) = APP.get_mut() {
+                    app.toggle_engine();
+                }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => unsafe {
                 focus::toggle_focus_override();
@@ -960,12 +1028,16 @@ fn run_message_loop() {
                     if cmd == tray::cmd_settings() {
                         launch_settings();
                     } else if cmd == tray::cmd_toggle() {
-                        toggle_engine();
+                        if let Some(app) = APP.get_mut() {
+                            app.toggle_engine();
+                        }
                     } else if cmd == tray::cmd_exit() {
                         PostQuitMessage(0);
                     } else if cmd >= tray::cmd_layout_base() {
                         let index = usize::from(cmd - tray::cmd_layout_base());
-                        switch_layout(index);
+                        if let Some(app) = APP.get_mut() {
+                            app.switch_layout(index);
+                        }
                     }
                 }
             },
@@ -973,33 +1045,6 @@ fn run_message_loop() {
                 DispatchMessageW(&raw const msg);
             },
         }
-    }
-}
-
-/// エンジンの有効/無効を切り替え、トレイアイコンを更新する
-///
-/// Safety: シングルスレッドからのみ呼び出すこと
-unsafe fn toggle_engine() {
-    if let Some(app) = APP.get_mut() {
-        let (enabled, flush_resp) = app.engine.toggle_enabled();
-        let mut timer_runtime = Win32TimerRuntime;
-        let mut action_executor = SendInputExecutor;
-        dispatch(&flush_resp, &mut timer_runtime, &mut action_executor);
-        log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
-        app.tray.set_enabled(enabled);
-    }
-}
-
-/// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
-///
-/// IMEオフ、入力言語変更など、エンジンの前提が崩れた場合に呼ぶ。
-/// 全てのコンテキスト無効化経路はこの関数を通すこと。
-pub(crate) unsafe fn invalidate_engine_context(reason: ContextChange) {
-    if let Some(app) = APP.get_mut() {
-        let response = app.engine.flush_pending(reason);
-        let mut timer_runtime = Win32TimerRuntime;
-        let mut action_executor = SendInputExecutor;
-        dispatch(&response, &mut timer_runtime, &mut action_executor);
     }
 }
 
@@ -1162,38 +1207,7 @@ fn resolve_relative(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// 配列を動的に切り替える
-///
-/// Safety: シングルスレッドからのみ呼び出すこと
-unsafe fn switch_layout(index: usize) {
-    let Some(app) = APP.get_mut() else {
-        return;
-    };
 
-    let Some((name, layout_template, _l_vk, _r_vk)) = app.layouts.get(index) else {
-        log::warn!("Layout index {index} out of range");
-        return;
-    };
-
-    // YabLayout の各面を clone して新しいレイアウトを構築する
-    let new_layout = YabLayout {
-        name: layout_template.name.clone(),
-        normal: layout_template.normal.clone(),
-        left_thumb: layout_template.left_thumb.clone(),
-        right_thumb: layout_template.right_thumb.clone(),
-        shift: layout_template.shift.clone(),
-    };
-    let name = name.clone();
-
-    let response = app.engine.swap_layout(new_layout);
-    let mut timer_runtime = Win32TimerRuntime;
-    let mut action_executor = SendInputExecutor;
-    dispatch(&response, &mut timer_runtime, &mut action_executor);
-
-    app.tray.set_layout_name(&name);
-
-    log::info!("Switched layout to: {name}");
-}
 
 /// 設定ファイルのパスを探索する。
 ///

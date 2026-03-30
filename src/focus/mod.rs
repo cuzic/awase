@@ -173,7 +173,7 @@ unsafe extern "system" fn win_event_proc(
                         "classify_focus: config override force_bypass ({process_name}, {class_name})",
                     );
                     FocusKind::NonText.store(&crate::FOCUS_KIND);
-                    crate::invalidate_engine_context(ContextChange::FocusChanged);
+                    crate::APP.get_mut().map(|app| app.invalidate_engine_context(ContextChange::FocusChanged));
                     return;
                 }
             }
@@ -188,7 +188,7 @@ unsafe extern "system" fn win_event_proc(
         log::trace!("classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",);
         cached.store(&crate::FOCUS_KIND);
         if cached == FocusKind::NonText {
-            crate::invalidate_engine_context(ContextChange::FocusChanged);
+            crate::APP.get_mut().map(|app| app.invalidate_engine_context(ContextChange::FocusChanged));
         }
         return;
     }
@@ -213,7 +213,7 @@ unsafe extern "system" fn win_event_proc(
 
     // Step 4: NonText ならエンジンの保留状態をフラッシュ
     if state == FocusKind::NonText {
-        crate::invalidate_engine_context(ContextChange::FocusChanged);
+        crate::APP.get_mut().map(|app| app.invalidate_engine_context(ContextChange::FocusChanged));
     }
 
     // Step 5: UIA 非同期判定をリクエスト
@@ -238,7 +238,7 @@ unsafe extern "system" fn win_event_proc(
     );
 
     // フォーカス変更に伴い IME 状態キャッシュを更新
-    crate::refresh_ime_state_cache();
+    crate::APP.get_ref().map(|app| app.refresh_ime_state_cache());
 }
 
 /// 手動フォーカスオーバーライドのトグル処理

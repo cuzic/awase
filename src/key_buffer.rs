@@ -212,7 +212,7 @@ pub unsafe fn process_deferred_keys() {
     log::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
 
     // IME 状態キャッシュを更新（メッセージループ上なのでブロッキング OK）
-    crate::refresh_ime_state_cache();
+    crate::APP.get_ref().map(|app| app.refresh_ime_state_cache());
 
     // キャッシュから IME 状態を取得
     let cached = crate::IME_STATE_CACHE.load(std::sync::atomic::Ordering::Acquire);
