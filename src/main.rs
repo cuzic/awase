@@ -127,6 +127,13 @@ static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU
 pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
 pub(crate) static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
 
+/// キャッシュされた IME ON/OFF 状態。メッセージループで更新、フックで読み取り。
+/// 0=OFF, 1=ON, 2=Unknown（初期状態）
+pub(crate) static IME_STATE_CACHE: AtomicU8 = AtomicU8::new(2);
+
+/// IME 状態ポーリング用タイマー ID（安全ネット: マウスで言語バー操作した場合等）
+pub(crate) const TIMER_IME_POLL: usize = 101;
+
 /// 起動時の警告を集約して報告する診断コレクター
 struct StartupDiagnostics {
     warnings: Vec<String>,
@@ -589,6 +596,85 @@ fn is_cross_process_ime_unreliable_class(class_name: &str) -> bool {
         // XAML Islands の入力面 (Windows Terminal 等)
         | "Windows.UI.Input.InputSite.WindowClass"
     )
+}
+
+/// IME ON/OFF 状態をキャッシュに書き込む。
+///
+/// メッセージループ上で呼ぶこと（ブロッキング OK）。
+/// フォーカス変更、WM_INPUTLANGCHANGE、IME トグル後、定期ポーリングで呼ばれる。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub(crate) unsafe fn refresh_ime_state_cache() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+    };
+
+    // Step 1: 対象スレッドの HKL を取得（日本語チェック）
+    let mut gui_info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    let thread_id = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
+        let fg_hwnd = if gui_info.hwndFocus != HWND::default() {
+            gui_info.hwndFocus
+        } else {
+            gui_info.hwndActive
+        };
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg_hwnd, Some(&mut pid))
+    } else {
+        0
+    };
+
+    let hkl = GetKeyboardLayout(thread_id);
+    let lang_id = (hkl.0 as u32) & 0xFFFF;
+    if lang_id != 0x0411 {
+        IME_STATE_CACHE.store(0, Ordering::Release); // 非日本語 → OFF
+        return;
+    }
+
+    // Step 2: クロスプロセス IME 検出（ブロッキング OK — メッセージループ上）
+    let cross_process = ime::detect_ime_open_cross_process();
+
+    // Step 3: ImeReliability を考慮した評価
+    let cross_process = if cross_process == Some(false) {
+        use awase::types::ImeReliability;
+        let reliability = ImeReliability::load(&IME_RELIABILITY);
+
+        let unreliable = match reliability {
+            ImeReliability::Reliable => false,
+            ImeReliability::Unreliable => true,
+            ImeReliability::Unknown => {
+                gui_info.hwndFocus != HWND::default() && {
+                    let class =
+                        focus::classify::get_class_name_string(gui_info.hwndFocus);
+                    is_cross_process_ime_unreliable_class(&class)
+                }
+            }
+        };
+
+        if unreliable { None } else { cross_process }
+    } else {
+        cross_process
+    };
+
+    // Step 4: 最終判定 → キャッシュに書き込み
+    let ime_on = match cross_process {
+        Some(open) => open,
+        None => SHADOW_IME_ON.get_ref().copied().unwrap_or(true), // shadow fallback
+    };
+
+    let new_val = if ime_on { 1u8 } else { 0u8 };
+    let old_val = IME_STATE_CACHE.swap(new_val, Ordering::AcqRel);
+    if old_val != new_val {
+        log::debug!(
+            "IME state cache updated: {} → {}",
+            match old_val { 0 => "OFF", 1 => "ON", _ => "Unknown" },
+            if ime_on { "ON" } else { "OFF" },
+        );
+    }
 }
 
 /// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
