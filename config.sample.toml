@@ -50,6 +50,14 @@ ime_on_keys = ["Ctrl+VK_CONVERT"]
 # IME OFF キー（ImmSetOpenStatus API で IME を OFF にするキー）
 ime_off_keys = ["Ctrl+VK_NONCONVERT"]
 
+# フォーカス遷移デバウンス時間（ミリ秒）
+# Alt-Tab 等でフォーカスが連続変更される際に IME 状態の誤検知を防ぐ。
+# focus_debounce_ms = 50
+
+# IME 状態ポーリング間隔（ミリ秒）
+# マウスでの言語バー操作等、イベント駆動で検出できない変更を補完する。
+# ime_poll_interval_ms = 500
+
 # n-gram コーパスファイル（オプション、ngram_predictive モード用）
 # ngram_file = "data/ngram_hiragana.toml"
 

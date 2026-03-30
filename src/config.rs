@@ -101,6 +101,16 @@ pub struct GeneralConfig {
     /// IME OFF keys — ImmSetOpenStatus(false) を呼び出すキーコンボ
     #[serde(default = "default_ime_control_off_keys")]
     pub ime_off_keys: Vec<String>,
+
+    /// フォーカス遷移デバウンス時間（ミリ秒）。
+    /// Alt-Tab 等でフォーカスが連続変更される際に IME 状態の誤検知を防ぐ。
+    #[serde(default = "default_focus_debounce_ms")]
+    pub focus_debounce_ms: u32,
+
+    /// IME 状態ポーリング間隔（ミリ秒）。
+    /// イベント駆動の IME 検出を補完する安全ネット。
+    #[serde(default = "default_ime_poll_interval_ms")]
+    pub ime_poll_interval_ms: u32,
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -159,6 +169,14 @@ fn default_ime_control_on_keys() -> Vec<String> {
 
 fn default_ime_control_off_keys() -> Vec<String> {
     vec!["Ctrl+VK_NONCONVERT".to_string()]
+}
+
+const fn default_focus_debounce_ms() -> u32 {
+    50
+}
+
+const fn default_ime_poll_interval_ms() -> u32 {
+    500
 }
 
 /// IME 同期設定（シャドウ IME 状態追跡用キー定義）

@@ -73,8 +73,11 @@ const WM_IME_KEY_DETECTED: u32 = WM_APP + 14;
 /// フォーカス遷移デバウンスタイマー ID
 const TIMER_FOCUS_DEBOUNCE: usize = 103;
 
-/// フォーカス遷移デバウンス時間（ミリ秒）
-const FOCUS_DEBOUNCE_MS: u32 = 50;
+/// フォーカス遷移デバウンス時間（ミリ秒、config から初期化）
+static FOCUS_DEBOUNCE_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(50);
+
+/// IME 状態ポーリング間隔（ミリ秒、config から初期化）
+static IME_POLL_INTERVAL_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(500);
 
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///
@@ -230,6 +233,10 @@ fn main() -> Result<()> {
         });
     }
 
+    // タイミング設定を Atomic に書き込み（コールバックから参照）
+    FOCUS_DEBOUNCE_MS.store(config.general.focus_debounce_ms, Ordering::Relaxed);
+    IME_POLL_INTERVAL_MS.store(config.general.ime_poll_interval_ms, Ordering::Relaxed);
+
     init_ngram_validated(&config, &mut diag);
     let (hook_guard, _toggle_hotkey_guard, _focus_override_hotkey_guard) =
         install_hooks_and_hotkeys_validated(&config)?;
@@ -245,7 +252,12 @@ fn main() -> Result<()> {
 
     // IME 状態ポーリングタイマー（安全ネット: マウスで言語バー操作等に対応）
     let _ime_timer_guard = unsafe {
-        let _ = SetTimer(HWND::default(), TIMER_IME_POLL, 500, None);
+        let _ = SetTimer(
+            HWND::default(),
+            TIMER_IME_POLL,
+            IME_POLL_INTERVAL_MS.load(Ordering::Relaxed),
+            None,
+        );
         TimerGuard(TIMER_IME_POLL)
     };
 
@@ -1169,7 +1181,7 @@ unsafe extern "system" fn win_event_proc(
                 let _ = SetTimer(
                     HWND::default(),
                     TIMER_FOCUS_DEBOUNCE,
-                    FOCUS_DEBOUNCE_MS,
+                    FOCUS_DEBOUNCE_MS.load(Ordering::Relaxed),
                     None,
                 );
             }

@@ -191,20 +191,51 @@ impl Drop for SystemTray {
     }
 }
 
+// ── トレイアイコン描画定義 ──
+
+/// アイコンサイズ（ピクセル）
+const ICON_SIZE: i32 = 16;
+
+/// BGRA カラー定義
+mod icon_color {
+    /// 透明（背景）
+    pub const TRANSPARENT: u32 = 0x00_00_00_00;
+    /// ON 時のキーボード本体（青系）
+    pub const BODY_ON: u32 = 0xFF_D4_7B_2E;
+    /// OFF 時のキーボード本体（グレー）
+    pub const BODY_OFF: u32 = 0xFF_80_80_80;
+    /// ON 時のキートップ（明るいクリーム色）
+    pub const KEY_ON: u32 = 0xFF_FF_F0_E0;
+    /// OFF 時のキートップ（薄いグレー）
+    pub const KEY_OFF: u32 = 0xFF_C0_C0_C0;
+}
+
+/// キーボード本体の描画範囲
+const BODY_Y: std::ops::Range<usize> = 3..13;
+const BODY_X: std::ops::Range<usize> = 1..15;
+
+/// キー配列の定義: (y座標, [(x開始, x終了), ...])
+const KEY_ROWS: &[(usize, &[(usize, usize)])] = &[
+    (5, &[(3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]), // 上段: 5キー
+    (7, &[(3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]), // 中段: 5キー
+    (9, &[(4, 5), (6, 7), (8, 9), (10, 11)]),          // 下段: 4キー
+];
+
+/// スペースバーの描画範囲
+const SPACEBAR_Y: usize = 11;
+const SPACEBAR_X: std::ops::Range<usize> = 5..11;
+
 /// 16x16 のキーボードシルエットアイコンを GDI で生成する。
 ///
-/// ON: 明るい青系、OFF: グレー。
-/// キーボード本体（角丸風の矩形）+ 3列のキー配列を描画する。
+/// ON: 青系のキーボード、OFF: グレーのキーボード。
 fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndMessaging::HICON> {
-    const SIZE: i32 = 16;
-
     unsafe {
         // DIB セクション（32bit ARGB）を作成
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: u32::try_from(size_of::<BITMAPINFOHEADER>()).unwrap_or(0),
-                biWidth: SIZE,
-                biHeight: -SIZE, // top-down
+                biWidth: ICON_SIZE,
+                biHeight: -ICON_SIZE, // top-down
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
@@ -227,55 +258,52 @@ fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndM
         )
         .ok()?;
 
-        let pixels = std::slice::from_raw_parts_mut(bits.cast::<u32>(), (SIZE * SIZE) as usize);
+        let stride = ICON_SIZE as usize;
+        let pixels = std::slice::from_raw_parts_mut(bits.cast::<u32>(), stride * stride);
 
-        // 色定義（BGRA 形式）
-        let bg = 0x00_00_00_00u32; // 透明
-        let body = if enabled {
-            0xFF_D4_7B_2E
+        let body_color = if enabled {
+            icon_color::BODY_ON
         } else {
-            0xFF_80_80_80
-        }; // 本体: 青 or グレー
-        let key = if enabled {
-            0xFF_FF_F0_E0
+            icon_color::BODY_OFF
+        };
+        let key_color = if enabled {
+            icon_color::KEY_ON
         } else {
-            0xFF_C0_C0_C0
-        }; // キー: 明るい色
+            icon_color::KEY_OFF
+        };
 
         // 背景クリア
-        pixels.fill(bg);
+        pixels.fill(icon_color::TRANSPARENT);
 
-        // キーボード本体（y=3..13, x=1..15）
-        for y in 3..13 {
-            for x in 1..15 {
-                pixels[y * SIZE as usize + x] = body;
+        // キーボード本体
+        for y in BODY_Y {
+            for x in BODY_X.clone() {
+                pixels[y * stride + x] = body_color;
             }
         }
-        // 角を丸くする
-        pixels[3 * SIZE as usize + 1] = bg;
-        pixels[3 * SIZE as usize + 14] = bg; // 右上は x=14 ではなく x=13 の外なので境界注意
-        pixels[12 * SIZE as usize + 1] = bg;
-        pixels[12 * SIZE as usize + 14] = bg;
 
-        // キー配列（3列）
-        let key_rows: &[(usize, &[(usize, usize)])] = &[
-            // (y, [(x_start, x_end), ...])
-            (5, &[(3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]), // 上段: 5キー
-            (7, &[(3, 4), (5, 6), (7, 8), (9, 10), (11, 12)]), // 中段: 5キー
-            (9, &[(4, 5), (6, 7), (8, 9), (10, 11)]),          // 下段: 4キー
-        ];
+        // 四隅を透明にして角丸風に
+        let top = BODY_Y.start;
+        let bottom = BODY_Y.end - 1;
+        let left = BODY_X.start;
+        let right = BODY_X.end;
+        pixels[top * stride + left] = icon_color::TRANSPARENT;
+        pixels[top * stride + right] = icon_color::TRANSPARENT;
+        pixels[bottom * stride + left] = icon_color::TRANSPARENT;
+        pixels[bottom * stride + right] = icon_color::TRANSPARENT;
 
-        for &(y, keys) in key_rows {
+        // キー配列
+        for &(y, keys) in KEY_ROWS {
             for &(x_start, x_end) in keys {
                 for x in x_start..=x_end {
-                    pixels[y * SIZE as usize + x] = key;
+                    pixels[y * stride + x] = key_color;
                 }
             }
         }
 
-        // スペースバー（y=11, x=5..10）
-        for x in 5..11 {
-            pixels[11 * SIZE as usize + x] = key;
+        // スペースバー
+        for x in SPACEBAR_X {
+            pixels[SPACEBAR_Y * stride + x] = key_color;
         }
 
         // マスクビットマップ（全不透明 — alpha チャネルで制御）
