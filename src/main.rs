@@ -32,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetTimer, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
-use awase::config::{vk_name_to_code, AppConfig, ValidatedConfig};
+use awase::config::{parse_key_combo, vk_name_to_code, AppConfig, ParsedKeyCombo, ValidatedConfig};
 use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
@@ -93,6 +93,12 @@ pub(crate) static FOCUS: SingleThreadCell<focus::FocusDetector> = SingleThreadCe
 
 use crate::focus::cache::DetectionSource;
 
+/// エンジン ON キー（変換キー等）— 起動時に設定から初期化
+static ENGINE_ON_KEY: SingleThreadCell<ParsedKeyCombo> = SingleThreadCell::new();
+
+/// エンジン OFF キー（Ctrl+無変換等）— 起動時に設定から初期化
+static ENGINE_OFF_KEY: SingleThreadCell<ParsedKeyCombo> = SingleThreadCell::new();
+
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -146,6 +152,7 @@ fn main() -> Result<()> {
         diag.warn(w);
     }
     let (layout_names, initial_layout_name) = init_engine_validated(&config, &mut diag)?;
+    init_engine_toggle_keys(&config, &mut diag);
     init_ime(&mut diag);
     init_ngram_validated(&config, &mut diag);
 
@@ -258,6 +265,38 @@ fn select_default_layout(
         shift: layout.shift.clone(),
     };
     (copied, name.clone())
+}
+
+/// エンジン ON/OFF トグルキーの初期化
+fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
+    match parse_key_combo(&config.general.engine_on_key) {
+        Some(combo) => {
+            log::info!("Engine ON key: {}", config.general.engine_on_key);
+            unsafe {
+                ENGINE_ON_KEY.set(combo);
+            }
+        }
+        None => {
+            diag.warn(format!(
+                "engine_on_key のパースに失敗しました: {}",
+                config.general.engine_on_key
+            ));
+        }
+    }
+    match parse_key_combo(&config.general.engine_off_key) {
+        Some(combo) => {
+            log::info!("Engine OFF key: {}", config.general.engine_off_key);
+            unsafe {
+                ENGINE_OFF_KEY.set(combo);
+            }
+        }
+        None => {
+            diag.warn(format!(
+                "engine_off_key のパースに失敗しました: {}",
+                config.general.engine_off_key
+            ));
+        }
+    }
 }
 
 /// IME プロバイダ初期化（TSF 優先、IMM32 フォールバック）
@@ -394,6 +433,8 @@ fn cleanup() {
         LAYOUTS.clear();
         FOCUS.clear();
         KEY_BUFFER.clear();
+        ENGINE_ON_KEY.clear();
+        ENGINE_OFF_KEY.clear();
     }
     log::info!("Exited cleanly.");
 }
@@ -468,6 +509,72 @@ unsafe fn resolve_input_context() -> InputContext {
     }
 }
 
+/// キーコンボが修飾キー条件を含めてイベントに一致するか判定する。
+///
+/// 修飾キーの状態は `GetAsyncKeyState` で取得する（エンジン無効時は
+/// エンジン内部の `ModifierState` が更新されないため OS 側で確認する必要がある）。
+///
+/// # Safety
+/// `GetAsyncKeyState` は Win32 API。シングルスレッドフックコールバック内でのみ呼ぶこと。
+unsafe fn matches_key_combo(combo: &ParsedKeyCombo, event: &RawKeyEvent) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+    if event.vk_code.0 != combo.vk {
+        return false;
+    }
+
+    let ctrl_held = GetAsyncKeyState(0x11) & (0x8000_u16 as i16) != 0;
+    let shift_held = GetAsyncKeyState(0x10) & (0x8000_u16 as i16) != 0;
+    let alt_held = GetAsyncKeyState(0x12) & (0x8000_u16 as i16) != 0;
+
+    combo.ctrl == ctrl_held && combo.shift == shift_held && combo.alt == alt_held
+}
+
+/// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
+///
+/// # Safety
+/// `ENGINE_ON_KEY`, `ENGINE_OFF_KEY`, `TRAY` はシングルスレッドからのみアクセスすること。
+unsafe fn check_engine_toggle_keys(
+    engine: &mut Engine,
+    event: &RawKeyEvent,
+) -> Option<CallbackResult> {
+    // エンジン OFF → ON: engine_on_key（デフォルト: VK_CONVERT）
+    if !engine.is_enabled() {
+        if let Some(on_key) = ENGINE_ON_KEY.get_ref() {
+            if matches_key_combo(on_key, event) {
+                let (enabled, flush_resp) = engine.set_enabled(true);
+                let mut tr = Win32TimerRuntime;
+                let mut ae = SendInputExecutor;
+                dispatch(&flush_resp, &mut tr, &mut ae);
+                log::info!("Engine ON (変換キー)");
+                if let Some(tray) = TRAY.get_mut() {
+                    tray.set_enabled(enabled);
+                }
+                return Some(CallbackResult::Consumed);
+            }
+        }
+    }
+
+    // エンジン ON → OFF: engine_off_key（デフォルト: Ctrl+VK_NONCONVERT）
+    if engine.is_enabled() {
+        if let Some(off_key) = ENGINE_OFF_KEY.get_ref() {
+            if matches_key_combo(off_key, event) {
+                let (enabled, flush_resp) = engine.set_enabled(false);
+                let mut tr = Win32TimerRuntime;
+                let mut ae = SendInputExecutor;
+                dispatch(&flush_resp, &mut tr, &mut ae);
+                log::info!("Engine OFF (Ctrl+無変換キー)");
+                if let Some(tray) = TRAY.get_mut() {
+                    tray.set_enabled(enabled);
+                }
+                return Some(CallbackResult::Consumed);
+            }
+        }
+    }
+
+    None
+}
+
 /// フックコールバックからの Engine 呼び出し
 /// フックコールバック — IME チェック付き簡易版
 ///
@@ -477,6 +584,19 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let Some(engine) = ENGINE.get_mut() else {
         return CallbackResult::PassThrough;
     };
+
+    // ── エンジン ON/OFF トグルキー ──
+    {
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if is_key_down {
+            if let Some(result) = check_engine_toggle_keys(engine, &event) {
+                return result;
+            }
+        }
+    }
 
     // IME チェック: 対象スレッドの HKL + ImmGetOpenStatus フォールバック
     //
@@ -788,6 +908,16 @@ unsafe fn reload_config() {
     let mut reload_diag = StartupDiagnostics::new();
     init_ngram_validated(&config, &mut reload_diag);
     reload_diag.report();
+
+    // エンジン ON/OFF キーの再読み込み
+    {
+        let mut reload_toggle_diag = StartupDiagnostics::new();
+        // 既存の値をクリアしてから再設定
+        ENGINE_ON_KEY.clear();
+        ENGINE_OFF_KEY.clear();
+        init_engine_toggle_keys(&config, &mut reload_toggle_diag);
+        reload_toggle_diag.report();
+    }
 
     // フォーカスオーバーライド再読み込み + キャッシュクリア
     if let Some(f) = FOCUS.get_mut() {

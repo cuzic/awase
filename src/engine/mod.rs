@@ -264,6 +264,18 @@ impl Engine {
         self.enabled
     }
 
+    /// エンジンの有効/無効を明示的に設定する。
+    ///
+    /// 現在の状態と同じ場合は何もしない。
+    /// 無効化時は保留キーをフラッシュする。
+    /// 戻り値の `Resp` を `dispatch()` で処理すること。
+    pub fn set_enabled(&mut self, enable: bool) -> (bool, Resp) {
+        if self.enabled == enable {
+            return (self.enabled, Response::pass_through());
+        }
+        self.toggle_enabled()
+    }
+
     /// 同時打鍵判定の閾値を更新する（ミリ秒指定）。
     pub fn set_threshold_ms(&mut self, ms: u32) {
         self.threshold_us = u64::from(ms) * 1000;

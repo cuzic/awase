@@ -66,6 +66,14 @@ pub struct GeneralConfig {
     /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming で使用）
     #[serde(default = "default_speculative_delay")]
     pub speculative_delay_ms: u32,
+
+    /// エンジン OFF キー（デフォルト: "Ctrl+VK_NONCONVERT"）
+    #[serde(default = "default_engine_off_key")]
+    pub engine_off_key: String,
+
+    /// エンジン ON キー（デフォルト: "VK_CONVERT"）
+    #[serde(default = "default_engine_on_key")]
+    pub engine_on_key: String,
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -109,6 +117,15 @@ const fn default_confirm_mode() -> ConfirmMode {
 const fn default_speculative_delay() -> u32 {
     30
 }
+
+fn default_engine_off_key() -> String {
+    "Ctrl+VK_NONCONVERT".to_string()
+}
+
+fn default_engine_on_key() -> String {
+    "VK_CONVERT".to_string()
+}
+
 
 /// フォーカスオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -380,6 +397,49 @@ pub fn parse_hotkey(s: &str) -> Option<(u32, u16)> {
     let vk = vk_name_to_code(&key_name)?;
 
     Some((modifiers, vk))
+}
+
+/// キーコンボ文字列をパースして (ctrl, shift, alt, vk_code) を返す。
+///
+/// `parse_hotkey` と異なり、キー名は `VK_` プレフィックス付きで指定する。
+/// 例: `"Ctrl+VK_NONCONVERT"` → `Some(ParsedKeyCombo { ctrl: true, shift: false, alt: false, vk: 0x1D })`
+///      `"VK_CONVERT"` → `Some(ParsedKeyCombo { ctrl: false, shift: false, alt: false, vk: 0x1C })`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedKeyCombo {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub vk: u16,
+}
+
+#[must_use]
+pub fn parse_key_combo(s: &str) -> Option<ParsedKeyCombo> {
+    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut ctrl = false;
+    let mut shift = false;
+    let mut alt = false;
+    for &part in &parts[..parts.len() - 1] {
+        match part {
+            "Ctrl" | "Control" => ctrl = true,
+            "Shift" => shift = true,
+            "Alt" => alt = true,
+            _ => return None,
+        }
+    }
+
+    let key_name = *parts.last()?;
+    let vk = vk_name_to_code(key_name)?;
+
+    Some(ParsedKeyCombo {
+        ctrl,
+        shift,
+        alt,
+        vk,
+    })
 }
 
 #[cfg(test)]
@@ -762,5 +822,80 @@ default_layout = "nicola.yab"
         assert_eq!(validated.general.speculative_delay_ms, 30);
         assert_eq!(validated.general.layouts_dir, "layout");
         assert_eq!(validated.general.default_layout, "nicola.yab");
+    }
+
+    // ── parse_key_combo テスト ──
+
+    #[test]
+    fn test_parse_key_combo_ctrl_nonconvert() {
+        let result = parse_key_combo("Ctrl+VK_NONCONVERT");
+        assert_eq!(
+            result,
+            Some(ParsedKeyCombo {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                vk: 0x1D,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_key_combo_convert_alone() {
+        let result = parse_key_combo("VK_CONVERT");
+        assert_eq!(
+            result,
+            Some(ParsedKeyCombo {
+                ctrl: false,
+                shift: false,
+                alt: false,
+                vk: 0x1C,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_key_combo_ctrl_shift_f12() {
+        let result = parse_key_combo("Ctrl+Shift+VK_F12");
+        assert_eq!(
+            result,
+            Some(ParsedKeyCombo {
+                ctrl: true,
+                shift: true,
+                alt: false,
+                vk: 0x7B,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_key_combo_invalid() {
+        assert!(parse_key_combo("Ctrl+UNKNOWN").is_none());
+        assert!(parse_key_combo("").is_none());
+        assert!(parse_key_combo("Win+VK_A").is_none());
+    }
+
+    // ── engine_on/off_key デフォルトテスト ──
+
+    #[test]
+    fn test_engine_toggle_key_defaults() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.engine_off_key, "Ctrl+VK_NONCONVERT");
+        assert_eq!(config.general.engine_on_key, "VK_CONVERT");
+    }
+
+    #[test]
+    fn test_engine_toggle_key_custom() {
+        let toml_str = r#"
+[general]
+engine_off_key = "Ctrl+Shift+VK_F10"
+engine_on_key = "Ctrl+VK_F10"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.engine_off_key, "Ctrl+Shift+VK_F10");
+        assert_eq!(config.general.engine_on_key, "Ctrl+VK_F10");
     }
 }
