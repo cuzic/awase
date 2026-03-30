@@ -339,7 +339,7 @@ impl AppState {
             let current_kind = FocusKind::load(&FOCUS_KIND);
             if current_kind == FocusKind::TextInput {
                 if let Some((prev_pid, _)) = &self.focus.last_focus_info {
-                    let fg_pid = focus::classify::get_window_process_id(fg);
+                    let fg_pid = unsafe { focus::classify::get_window_process_id(fg) };
                     if fg_pid == *prev_pid {
                         log::trace!(
                             "Keeping TextInput (same process {fg_pid}): class={class_name}"
@@ -369,7 +369,7 @@ impl AppState {
         if !self.focus.overrides.force_text.is_empty()
             || !self.focus.overrides.force_bypass.is_empty()
         {
-            let process_name = focus::classify::get_process_name(process_id);
+            let process_name = unsafe { focus::classify::get_process_name(process_id) };
             for entry in &self.focus.overrides.force_text {
                 if entry.process.eq_ignore_ascii_case(&process_name)
                     && entry.class.eq_ignore_ascii_case(class_name)
@@ -411,7 +411,7 @@ impl AppState {
         FocusKind::Undetermined.store(&FOCUS_KIND);
 
         // Step 2: バイパス状態を判定
-        let result = focus::classify::classify_focus(hwnd);
+        let result = unsafe { focus::classify::classify_focus(hwnd) };
         let state = result.kind;
 
         // Step 3: キャッシュに格納し、FOCUS_KIND を更新
@@ -430,7 +430,7 @@ impl AppState {
 
         // Step 5: UIA 非同期判定をリクエスト
         if let Some(tx) = self.focus.uia_sender.as_ref() {
-            let _ = tx.send(focus::uia::SendableHwnd(hwnd));
+            let _ = tx.send(SendableHwnd(hwnd));
         }
 
         log::debug!(

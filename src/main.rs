@@ -119,7 +119,7 @@ pub(crate) unsafe fn reinject_key(event: &RawKeyEvent) {
             },
         },
     };
-    crate::win32::send_input_safe(&[input]);
+    win32::send_input_safe(&[input]);
 }
 
 pub(crate) static APP: SingleThreadCell<AppState> = SingleThreadCell::new();
