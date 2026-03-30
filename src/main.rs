@@ -434,7 +434,8 @@ impl ActionExecutor for SendInputExecutor {
     }
 }
 
-/// on_key_event_callback Step 4 の入力コンテキスト判定結果
+/// on_key_event_callback Step 4 の入���コン���キスト判定結果
+#[derive(Debug)]
 enum InputContext {
     /// テキスト入力確定 → エンジン処理
     TextInput,
@@ -567,16 +568,20 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 
     // ── Step 4: フォーカス判定によるハイブリッド戦略 ──
     let Some(engine) = ENGINE.get_mut() else {
+        log::trace!("Step 4: ENGINE not available, passthrough");
         return CallbackResult::PassThrough;
     };
 
-    match resolve_input_context() {
+    let input_ctx = resolve_input_context();
+    log::trace!("Step 4: vk=0x{:02X} input_context={:?}", event.vk_code.0, input_ctx);
+    match input_ctx {
         InputContext::NonText => {
-            // 非テキストコントロール → 常にパススルー
+            log::trace!("Step 4: NonText → passthrough");
             return CallbackResult::PassThrough;
         }
         InputContext::TextInput => {
             // テキスト入力 → 既存のエンジン処理（下の Step 5 に進む）
+            log::trace!("Step 4: TextInput → proceeding to engine");
         }
         InputContext::UndeterminedImeOn => {
             // IME ON + Undetermined → 文字キーならバッファリング
@@ -612,15 +617,22 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     // ── Step 5: エンジン処理（TextInput 確定時のみ到達） ──
     // IME OFF / 英数モード → PassThrough（エンジンバイパス）
     if let Some(ime_provider) = IME.get_ref() {
-        if !ime_provider.is_active() || !ime_provider.get_mode().is_kana_input() {
+        let active = ime_provider.is_active();
+        let mode = ime_provider.get_mode();
+        let kana = mode.is_kana_input();
+        log::trace!("Step 5: IME active={active} mode={mode:?} kana={kana}");
+        if !active || !kana {
+            log::trace!("Step 5: IME not in kana mode → passthrough");
             return CallbackResult::PassThrough;
         }
     }
 
+    log::trace!("Step 6: Engine processing vk=0x{:02X}", event.vk_code.0);
     let response = engine.on_event(event);
     let mut timer_runtime = Win32TimerRuntime;
     let mut action_executor = SendInputExecutor;
     let consumed = dispatch(&response, &mut timer_runtime, &mut action_executor);
+    log::trace!("Step 6: consumed={consumed} actions={:?}", response.actions);
 
     if consumed {
         CallbackResult::Consumed
