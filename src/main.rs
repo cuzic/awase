@@ -707,8 +707,10 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                 return CallbackResult::PassThrough; // let IME process the toggle
             }
 
-            // While guard active, buffer character keys
-            if app.key_buffer.is_guarded() {
+            // While guard active, buffer character keys (passthrough keys are not buffered)
+            if app.key_buffer.is_guarded()
+                && !awase::vk::is_passthrough(event.vk_code)
+            {
                 app.key_buffer.push_deferred(event, phys);
                 let _ =
                     PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
