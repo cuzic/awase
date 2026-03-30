@@ -10,12 +10,120 @@ use awase::yab::YabLayout;
 use timed_fsm::dispatch;
 
 use crate::focus;
-use crate::focus::cache::DetectionSource;
+use crate::focus::cache::{DetectionSource, FocusCache};
+use crate::focus::pattern::KeyPatternTracker;
+use crate::focus::uia::SendableHwnd;
 use crate::hook::CallbackResult;
 use crate::ime::{HybridProvider, ImeProvider};
-use crate::key_buffer::KeyBuffer;
 use crate::output::Output;
 use crate::tray::SystemTray;
+
+// ── FocusDetector（フォーカス検出状態）──
+
+/// フォーカス検出に関するシングルスレッド状態を集約する構造体
+pub struct FocusDetector {
+    pub cache: FocusCache,
+    pub overrides: awase::config::FocusOverrides,
+    pub last_focus_info: Option<(u32, String)>,
+    pub pattern_tracker: KeyPatternTracker,
+    pub uia_sender: Option<std::sync::mpsc::Sender<SendableHwnd>>,
+}
+
+impl FocusDetector {
+    pub fn new(overrides: awase::config::FocusOverrides) -> Self {
+        Self {
+            cache: FocusCache::new(),
+            overrides,
+            last_focus_info: None,
+            pattern_tracker: KeyPatternTracker::new(),
+            uia_sender: None,
+        }
+    }
+
+    pub fn set_uia_sender(&mut self, sender: std::sync::mpsc::Sender<SendableHwnd>) {
+        self.uia_sender = Some(sender);
+    }
+}
+
+// ── KeyBuffer（純粋データ構造）──
+
+/// キーイベントバッファ管理
+///
+/// フック → メッセージループ間のキーイベント遅延・バッファリングを管理する。
+/// OS 副作用は持たず、AppState メソッドがオーケストレーションを行う。
+pub struct KeyBuffer {
+    /// IME 制御キー直後のガードフラグ（true: 後続キーを遅延処理する）
+    pub ime_transition_guard: bool,
+    /// ガード中に遅延されたキーイベント + 物理キー状態のバッファ
+    pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
+    /// IME OFF 時の記憶バッファ（PassThrough 済みキー）
+    pub passthrough_memory: std::collections::VecDeque<RawKeyEvent>,
+    /// Undetermined + IME ON 時のバッファリング中フラグ
+    pub undetermined_buffering: bool,
+}
+
+impl KeyBuffer {
+    pub fn new() -> Self {
+        Self {
+            ime_transition_guard: false,
+            deferred_keys: Vec::new(),
+            passthrough_memory: std::collections::VecDeque::new(),
+            undetermined_buffering: false,
+        }
+    }
+
+    pub const fn is_guarded(&self) -> bool {
+        self.ime_transition_guard
+    }
+
+    pub const fn set_guard(&mut self, on: bool) {
+        self.ime_transition_guard = on;
+    }
+
+    pub fn push_deferred(
+        &mut self,
+        event: RawKeyEvent,
+        phys: awase::engine::input_tracker::PhysicalKeyState,
+    ) {
+        self.deferred_keys.push((event, phys));
+    }
+
+    #[allow(dead_code)]
+    pub fn push_passthrough(&mut self, event: RawKeyEvent) {
+        self.passthrough_memory.push_back(event);
+        if self.passthrough_memory.len() > 20 {
+            self.passthrough_memory.pop_front();
+        }
+    }
+
+    pub fn drain_deferred(
+        &mut self,
+    ) -> Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)> {
+        std::mem::take(&mut self.deferred_keys)
+    }
+
+    pub fn drain_passthrough(&mut self) -> Vec<RawKeyEvent> {
+        std::mem::take(&mut self.passthrough_memory).into()
+    }
+
+    #[allow(dead_code)]
+    pub const fn is_buffering(&self) -> bool {
+        self.undetermined_buffering
+    }
+
+    #[allow(dead_code)]
+    pub const fn set_buffering(&mut self, on: bool) {
+        self.undetermined_buffering = on;
+    }
+
+    #[allow(dead_code)]
+    pub fn clear(&mut self) {
+        self.ime_transition_guard = false;
+        self.deferred_keys.clear();
+        self.passthrough_memory.clear();
+        self.undetermined_buffering = false;
+    }
+}
 use crate::{
     matches_key_combo, reinject_key, SendInputExecutor, Win32TimerRuntime, FOCUS_KIND,
     IME_RELIABILITY, IME_STATE_CACHE, TIMER_UNDETERMINED_BUFFER,
@@ -30,7 +138,7 @@ pub(crate) struct AppState {
     pub tray: SystemTray,
     pub layouts: Vec<(String, YabLayout, VkCode, VkCode)>,
     pub key_buffer: KeyBuffer,
-    pub focus: focus::FocusDetector,
+    pub focus: FocusDetector,
     pub engine_on_keys: Vec<ParsedKeyCombo>,
     pub engine_off_keys: Vec<ParsedKeyCombo>,
     pub shadow_ime_on: bool,

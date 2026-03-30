@@ -16,7 +16,6 @@ mod app_state;
 mod focus;
 mod hook;
 mod ime;
-mod key_buffer;
 mod output;
 mod single_thread_cell;
 mod tray;
@@ -207,8 +206,8 @@ fn main() -> Result<()> {
             ime,
             tray: system_tray,
             layouts,
-            key_buffer: key_buffer::KeyBuffer::new(),
-            focus: focus::FocusDetector::new(config.focus_overrides.clone()),
+            key_buffer: app_state::KeyBuffer::new(),
+            focus: app_state::FocusDetector::new(config.focus_overrides.clone()),
             engine_on_keys,
             engine_off_keys,
             shadow_ime_on: true, // safe default: engine ON
@@ -228,7 +227,7 @@ fn main() -> Result<()> {
         Ordering::SeqCst,
     );
     install_ctrl_handler();
-    focus::install_focus_hook();
+    install_focus_hook();
 
     // IME 状態ポーリングタイマー（安全ネット: マウスで言語バー操作等に対応）
     unsafe {
@@ -1071,6 +1070,68 @@ fn find_config_path() -> Result<PathBuf> {
         "Config file not found. Place config.toml next to the executable, \
          or specify path as command line argument."
     )
+}
+
+/// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
+const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
+
+/// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
+const EVENT_OBJECT_FOCUS: u32 = 0x8005;
+
+/// フォーカス変更イベントフックを登録する
+fn install_focus_hook() {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    unsafe {
+        let hook = SetWinEventHook(
+            EVENT_OBJECT_FOCUS,
+            EVENT_OBJECT_FOCUS,
+            None,
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if hook.is_invalid() {
+            log::warn!("Failed to install focus event hook");
+        } else {
+            log::info!("Focus event hook installed");
+        }
+    }
+}
+
+/// フォーカス変更イベントのコールバック（メッセージループ上で実行される）
+unsafe extern "system" fn win_event_proc(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    _id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    if event != EVENT_OBJECT_FOCUS {
+        return;
+    }
+
+    let process_id = focus::classify::get_window_process_id(hwnd);
+    let class_name = focus::classify::get_class_name_string(hwnd);
+
+    let Some(app) = APP.get_mut() else {
+        return;
+    };
+    let actions = app.on_focus_changed(hwnd, process_id, &class_name);
+
+    for action in actions {
+        match action {
+            AppAction::InvalidateEngineContext(reason) => {
+                app.invalidate_engine_context(reason);
+            }
+            AppAction::RefreshImeStateCache => {
+                app.refresh_ime_state_cache();
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
