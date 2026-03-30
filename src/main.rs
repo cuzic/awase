@@ -861,121 +861,19 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    // ── IME 状態検出（二層方式）──
+    // ── IME 状態判定（キャッシュ読み取りのみ — ノンブロッキング）──
     //
-    // Layer 1: ImmGetDefaultIMEWnd + WM_IME_CONTROL（Win32 アプリ向けクロスプロセス検出）
-    // Layer 2: Shadow IME state（UWP 等、Layer 1 失敗時のフォールバック）
-    //
-    // さらに HKL で日本語かどうかの基本チェックも行う。
+    // 実際の IME 検出（CrossProcess + ImeReliability + shadow fallback）は
+    // メッセージループ上の refresh_ime_state_cache() で行い、結果を
+    // IME_STATE_CACHE に書き込む。フックではキャッシュを読むだけ。
     {
-        use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
-        };
-
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-
-        // Step 1: 対象スレッドの HKL を取得（日本語チェック）
-        let mut gui_info = GUITHREADINFO {
-            cbSize: size_of::<GUITHREADINFO>() as u32,
-            ..Default::default()
-        };
-        let thread_id = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
-            let fg_hwnd = if gui_info.hwndFocus != HWND::default() {
-                gui_info.hwndFocus
-            } else {
-                gui_info.hwndActive
-            };
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(fg_hwnd, Some(&mut pid))
-        } else {
-            0
-        };
-
-        let hkl = GetKeyboardLayout(thread_id);
-        let lang_id = (hkl.0 as u32) & 0xFFFF;
-        let is_japanese = lang_id == 0x0411;
-
-        if !is_japanese {
-            if is_key_down {
-                log::trace!(
-                    "IME: vk=0x{:02X} tid={thread_id} HKL=0x{lang_id:04X} → NonJapanese → passthrough",
-                    event.vk_code.0,
-                );
-            }
-            return CallbackResult::PassThrough;
-        }
-
-        // Step 2: Two-layer IME ON/OFF detection
-        //
-        // Modern UI (WinUI 3, XAML Islands 等) では ImmGetDefaultIMEWnd +
-        // WM_IME_CONTROL による IME 状態検出が TSF 状態を反映しない。
-        // UIA FrameworkId ベースの IME_RELIABILITY（非同期）と、
-        // ウィンドウクラス名ベースのフォールバック（同期）を組み合わせて
-        // cross-process 結果の信頼性を判断する。
-        let ime_on = {
-            let cross_process = ime::detect_ime_open_cross_process();
-
-            // cross-process が false の場合のみ信頼性を検証する。
-            // true (IME ON) は Modern UI でも正確に返されることが多い。
-            let cross_process = if cross_process == Some(false) {
-                use awase::types::ImeReliability;
-                let reliability = ImeReliability::load(&IME_RELIABILITY);
-
-                let unreliable = match reliability {
-                    ImeReliability::Reliable => false,
-                    ImeReliability::Unreliable => true,
-                    ImeReliability::Unknown => {
-                        // UIA 非同期結果がまだ到着していない →
-                        // ウィンドウクラス名で同期フォールバック判定
-                        gui_info.hwndFocus != HWND::default() && {
-                            let class = focus::classify::get_class_name_string(
-                                gui_info.hwndFocus,
-                            );
-                            is_cross_process_ime_unreliable_class(&class)
-                        }
-                    }
-                };
-
-                if unreliable {
-                    if is_key_down {
-                        log::trace!(
-                            "IME: vk=0x{:02X} CrossProcess=false but ime_reliability={reliability:?} → fallback to shadow",
-                            event.vk_code.0,
-                        );
-                    }
-                    None // shadow にフォールバック
-                } else {
-                    cross_process
-                }
-            } else {
-                cross_process
-            };
-
-            // Layer 1: Direct API detection (Win32 apps)
-            if let Some(open) = cross_process {
-                if is_key_down {
-                    log::trace!(
-                        "IME: vk=0x{:02X} CrossProcess={open} → {}",
-                        event.vk_code.0,
-                        if open { "engine" } else { "passthrough" },
-                    );
-                }
-                open
-            } else {
-                // Layer 2: Shadow state (UWP / Modern UI / TSF-only fallback)
-                let shadow = SHADOW_IME_ON.get_ref().copied().unwrap_or(true);
-                if is_key_down {
-                    log::trace!(
-                        "IME: vk=0x{:02X} CrossProcess=None shadow={shadow} → {}",
-                        event.vk_code.0,
-                        if shadow { "engine" } else { "passthrough" },
-                    );
-                }
-                shadow
+        let cached = IME_STATE_CACHE.load(Ordering::Acquire);
+        let ime_on = match cached {
+            0 => false,
+            1 => true,
+            _ => {
+                // Unknown（初期状態 or キャッシュ未更新）→ shadow fallback
+                SHADOW_IME_ON.get_ref().copied().unwrap_or(true)
             }
         };
 
