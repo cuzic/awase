@@ -17,7 +17,7 @@
 
 use awase::config::ConfirmMode;
 use awase::engine::input_tracker::InputTracker;
-use awase::engine::Engine;
+use awase::engine::NicolaFsm;
 use awase::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, VkCode};
 use awase::yab::YabLayout;
 
@@ -85,7 +85,7 @@ fn make_test_engine(mode: ConfirmMode) -> TestHarness {
     let layout = load_test_layout();
     TestHarness {
         tracker: InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,

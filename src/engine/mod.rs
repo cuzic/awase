@@ -1,6 +1,7 @@
 pub mod input_tracker;
 pub mod output_history;
 mod types;
+pub mod wrapper;
 
 use std::time::Duration;
 
@@ -17,7 +18,11 @@ use crate::types::{
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use types::{BypassReason, EngineState, Face, PendingKey, PendingThumbData, ResolvedAction};
-pub use types::{ClassifiedEvent, FinalizePlan, KeyClass, OutputRecord, OutputUpdate, TimerIntent};
+pub use types::{
+    ClassifiedEvent, Decision, Effect, FinalizePlan, InputContext, KeyClass, ModifierState,
+    OutputRecord, OutputUpdate, TimerIntent,
+};
+pub use wrapper::Engine;
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;
@@ -53,7 +58,7 @@ fn yab_value_to_action(value: &YabValue) -> KeyAction {
 
 /// 配列変換エンジン（状態機械 + 同時打鍵判定）
 #[allow(missing_debug_implementations)]
-pub struct Engine {
+pub struct NicolaFsm {
     /// 配列定義（.yab ベース）
     layout: YabLayout,
 
@@ -116,7 +121,7 @@ fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) ->
 }
 
 // ── 公開 API ──
-impl Engine {
+impl NicolaFsm {
     #[must_use]
     pub fn new(
         layout: YabLayout,
@@ -295,7 +300,7 @@ impl Engine {
 }
 
 // ── 内部ユーティリティ ──
-impl Engine {
+impl NicolaFsm {
     /// Face 列挙値に対応する YabFace への参照を返す
     const fn get_face(&self, face: Face) -> &YabFace {
         match face {
@@ -417,7 +422,7 @@ impl Engine {
 }
 
 // ── KeyDown ディスパッチ ──
-impl Engine {
+impl NicolaFsm {
     /// AdaptiveTiming 用: 直前キーとの間隔を算出してタイムスタンプを更新する
     fn update_timing(&mut self, event: &RawKeyEvent) {
         self.last_key_gap_us = self
@@ -499,7 +504,7 @@ impl Engine {
 }
 
 // ── ConfirmMode ハンドラ ──
-impl Engine {
+impl NicolaFsm {
     /// Idle 状態での新規キー押下処理
     fn handle_idle(&mut self, ev: &ClassifiedEvent) -> Resp {
         // Shift 面チェック: on_key_down の Shift チェックは直接呼び出し時のみ有効。
@@ -681,7 +686,7 @@ impl Engine {
 }
 
 // ── 同時打鍵解決 ──
-impl Engine {
+impl NicolaFsm {
     /// 投機出力済み状態で親指キーが到着した場合の処理
     fn handle_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> Resp {
         let EngineState::SpeculativeChar(pending) = self.state else {
@@ -1072,7 +1077,7 @@ impl Engine {
 }
 
 // ── KeyUp 処理 ──
-impl Engine {
+impl NicolaFsm {
     fn on_key_up(&mut self, event: &RawKeyEvent) -> Resp {
         // phys.classified は dispatch_key_down 側で使用済み
 
@@ -1206,7 +1211,7 @@ impl Engine {
 }
 
 // ── タイムアウト処理 ──
-impl Engine {
+impl NicolaFsm {
     /// PendingChar タイムアウト：文字キーを単独打鍵として確定する
     fn timeout_pending_char(&mut self, scan_code: ScanCode, vk_code: VkCode) -> Resp {
         if let Some((action, kana)) =
@@ -1289,7 +1294,7 @@ impl Engine {
 }
 
 // ── バイパス ──
-impl Engine {
+impl NicolaFsm {
     /// 現在押下中かつ未消費の親指キーに対応するシフト面を返す。
     ///
     /// 消費済みかどうかはタイムスタンプの一致で判定する。物理状態が変われば
@@ -1351,7 +1356,7 @@ impl Engine {
 }
 
 // ── イベント処理エントリポイント ──
-impl Engine {
+impl NicolaFsm {
     /// キーイベントを処理する。
     ///
     /// `phys` は `InputTracker::process()` が返した物理キー状態スナップショット。

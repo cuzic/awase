@@ -72,6 +72,12 @@ impl InputTracker {
         }
     }
 
+    /// 現在の修飾キー状態を返す。
+    #[must_use]
+    pub const fn modifiers(&self) -> ModifierState {
+        self.modifiers
+    }
+
     /// 現在の物理キー状態スナップショットを返す（イベントなし）。
     ///
     /// タイマー発火時など、キーイベントを伴わない場面で最新の物理状態を取得する。

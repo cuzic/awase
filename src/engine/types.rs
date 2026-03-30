@@ -1,7 +1,79 @@
 //! エンジン内部で使用する型定義
 
+use std::time::Duration;
+
 use crate::scanmap::PhysicalPos;
-use crate::types::{KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+use crate::types::{
+    ImeCacheState, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode,
+};
+
+// ── 副作用モデル（Effect / Decision / InputContext）──
+
+/// アプリケーション全体の副作用を表す宣言型。
+/// Engine は Effect を返すだけで、実行は呼び出し側（main.rs）が行う。
+#[derive(Debug, Clone)]
+pub enum Effect {
+    /// キーアクションを SendInput で出力する
+    SendKeys(Vec<KeyAction>),
+    /// キーをそのまま再注入する（IME OFF 時の deferred key 用）
+    ReinjectKey(RawKeyEvent),
+    /// タイマーを設定する
+    SetTimer { id: usize, duration: Duration },
+    /// タイマーをキャンセルする
+    KillTimer(usize),
+    /// IME の ON/OFF を設定する (ImmSetOpenStatus)
+    SetImeOpen(bool),
+    /// IME キャッシュ更新を要求する (PostMessageW)
+    RequestImeCacheRefresh,
+    /// トレイアイコンを更新する
+    UpdateTray { enabled: bool },
+}
+
+/// Engine の判断結果（副作用なし）
+#[derive(Debug)]
+pub struct Decision {
+    /// キーを消費するか素通しするか
+    pub consumed: bool,
+    /// 実行すべき副作用のリスト
+    pub effects: Vec<Effect>,
+}
+
+impl Decision {
+    #[must_use]
+    pub const fn pass_through() -> Self {
+        Self {
+            consumed: false,
+            effects: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn consumed() -> Self {
+        Self {
+            consumed: true,
+            effects: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn consumed_with(effects: Vec<Effect>) -> Self {
+        Self {
+            consumed: true,
+            effects,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_effects(consumed: bool, effects: Vec<Effect>) -> Self {
+        Self { consumed, effects }
+    }
+}
+
+/// Engine が判断に使う外部コンテキスト（読み取り専用）
+#[derive(Debug)]
+pub struct InputContext {
+    pub ime_cache: ImeCacheState,
+}
 
 /// キーの分類（フック受信時に一度だけ決定）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +276,7 @@ impl ModifierState {
     }
 
     /// OS 予約キーコンビネーション用の修飾キーが押下中かどうか
+    #[must_use]
     pub const fn is_os_modifier_held(self) -> bool {
         self.ctrl || self.alt || self.win
     }

@@ -32,22 +32,22 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetGUIThreadInfo, GetMessageW, KillTimer, PostMessageW, PostQuitMessage,
-    SetTimer, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
+    DispatchMessageW, GetGUIThreadInfo, GetMessageW, KillTimer, PostQuitMessage, SetTimer,
+    GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
 use awase::config::{
     parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig,
 };
-use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::wrapper::{ImeSyncKeys, SpecialKeyCombos};
+use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
-use awase::types::{ContextChange, FocusKind};
-use awase::types::{KeyAction, KeyEventType, RawKeyEvent, VkCode};
+use awase::types::{ContextChange, FocusKind, ImeCacheState};
+use awase::types::{KeyEventType, RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
-use timed_fsm::{dispatch, ActionExecutor, TimerRuntime};
 
 use crate::hook::CallbackResult;
-use crate::ime::{HybridProvider, ImeProvider};
+use crate::ime::HybridProvider;
 use crate::output::Output;
 use crate::single_thread_cell::SingleThreadCell;
 use crate::tray::SystemTray;
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
     for w in &config_warnings {
         diag.warn(w);
     }
-    let (engine, tracker, layouts, layout_names, initial_layout_name) =
+    let (fsm, tracker, layouts, layout_names, initial_layout_name) =
         init_engine_validated(&config, &mut diag)?;
     let engine_on_keys =
         parse_key_combos(&config.general.engine_on_keys, "Engine ON keys", &mut diag);
@@ -208,28 +208,30 @@ fn main() -> Result<()> {
 
     let system_tray = init_tray(&layout_names, &initial_layout_name)?;
 
+    let engine = Engine::new(
+        fsm,
+        tracker,
+        ImeSyncKeys {
+            toggle: ime_sync_toggle,
+            on: ime_sync_on,
+            off: ime_sync_off,
+        },
+        SpecialKeyCombos {
+            engine_on: engine_on_keys,
+            engine_off: engine_off_keys,
+            ime_on: ime_control_on_keys,
+            ime_off: ime_control_off_keys,
+        },
+    );
+
     unsafe {
         APP.set(AppState {
             engine,
-            tracker,
             output: Output::new(config.general.output_mode),
             ime,
             tray: system_tray,
             layouts,
-            key_buffer: app_state::KeyBuffer::new(),
             focus: app_state::FocusDetector::new(config.focus_overrides.clone()),
-            special_keys: app_state::SpecialKeyCombos {
-                engine_on: engine_on_keys,
-                engine_off: engine_off_keys,
-                ime_on: ime_control_on_keys,
-                ime_off: ime_control_off_keys,
-            },
-            shadow_ime_on: true, // safe default: engine ON
-            ime_sync_keys: app_state::ImeSyncKeys {
-                toggle: ime_sync_toggle,
-                on: ime_sync_on,
-                off: ime_sync_off,
-            },
         });
     }
 
@@ -303,7 +305,7 @@ fn init_engine_validated(
     config: &ValidatedConfig,
     diag: &mut StartupDiagnostics,
 ) -> Result<(
-    Engine,
+    NicolaFsm,
     awase::engine::input_tracker::InputTracker,
     Vec<LayoutEntry>,
     Vec<String>,
@@ -332,7 +334,7 @@ fn init_engine_validated(
     );
 
     let tracker = awase::engine::input_tracker::InputTracker::new(left_thumb_vk, right_thumb_vk);
-    let engine = Engine::new(
+    let engine = NicolaFsm::new(
         layout,
         left_thumb_vk,
         right_thumb_vk,
@@ -554,65 +556,6 @@ fn cleanup() {
     log::info!("Exited cleanly.");
 }
 
-/// Win32 タイマーランタイム
-pub(crate) struct Win32TimerRuntime;
-
-impl TimerRuntime for Win32TimerRuntime {
-    type TimerId = usize;
-
-    fn set_timer(&mut self, id: Self::TimerId, duration: std::time::Duration) {
-        // Windows SetTimer API は u32 ミリ秒（最大 ~49日）。超過時は u32::MAX にキャップ。
-        let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
-        unsafe {
-            let _ = SetTimer(HWND::default(), id, ms, None);
-        }
-    }
-
-    fn kill_timer(&mut self, id: Self::TimerId) {
-        unsafe {
-            let _ = KillTimer(HWND::default(), id);
-        }
-    }
-}
-
-/// `SendInput` アクション実行器
-pub(crate) struct SendInputExecutor;
-
-impl ActionExecutor for SendInputExecutor {
-    type Action = KeyAction;
-
-    fn execute(&mut self, actions: &[Self::Action]) {
-        unsafe {
-            if let Some(app) = APP.get_mut() {
-                app.output.send_keys(actions);
-            }
-        }
-    }
-}
-
-/// キーコンボが修飾キー条件を含めてイベントに一致するか判定する。
-///
-/// 修飾キーの状態は `GetAsyncKeyState` で取得する（エンジン無効時は
-/// エンジン内部の `ModifierState` が更新されないため OS 側で確認する必要がある）。
-pub(crate) fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent) -> bool {
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-
-    if event.vk_code != combo.vk {
-        return false;
-    }
-
-    // SAFETY: GetAsyncKeyState は Win32 API。シングルスレッドフックコールバック内で呼ぶ。
-    let (ctrl_held, shift_held, alt_held) = unsafe {
-        (
-            GetAsyncKeyState(0x11) & (0x8000_u16 as i16) != 0,
-            GetAsyncKeyState(0x10) & (0x8000_u16 as i16) != 0,
-            GetAsyncKeyState(0x12) & (0x8000_u16 as i16) != 0,
-        )
-    };
-
-    combo.ctrl == ctrl_held && combo.shift == shift_held && combo.alt == alt_held
-}
-
 /// フックコールバック — unsafe は `APP.get_mut()` のみ。
 ///
 /// # Safety
@@ -625,99 +568,15 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     on_key_event_impl(app, event)
 }
 
-/// フックコールバックの本体（safe）。
+/// フックコールバックの本体。
 ///
-/// unsafe は `APP.get_mut()` のみ — 残りのロジックは safe
-/// （Win32 API 呼び出しは個別の unsafe ブロックで囲む）。
-///
-/// 処理フロー:
-/// 1. 入力レイヤー: 物理キー状態追跡
-/// 2. Shadow IME 状態追跡（ime_sync キー + IME 制御キー）
-/// 3. IME 制御キー検出 → キャッシュ更新要求
-/// 4. IME トグルガード（バッファリング）
-/// 5. エンジン ON/OFF トグルキー + IME 制御キー
-/// 6. IME 状態判定（キャッシュ読み取りのみ）
-/// 7. エンジン処理
+/// Engine.on_input で全ロジックを処理し、Decision を execute_decision で実行する。
 fn on_key_event_impl(app: &mut AppState, event: RawKeyEvent) -> CallbackResult {
-    // ── 1. 入力レイヤー: 物理キー状態追跡 ──
-    // IME チェックやエンジン無効等で処理レイヤーがスキップされても、
-    // 修飾キー/親指キーの押下・解放を漏らさないために最初に呼ぶ。
-    let phys = app.tracker.process(&event);
-
-    // ── 2. Shadow IME 状態追跡（ime_sync + IME 制御キー）──
-    app.update_shadow_ime(&event);
-
-    // ── 3. IME 制御キー検出 → キャッシュ更新要求 ──
-    {
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-        if is_key_down && awase::vk::may_change_ime(event.vk_code) {
-            // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶこと。
-            unsafe {
-                let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
-            }
-        }
-    }
-
-    // ── 4. IME トグルガード: トグル直後のキーをバッファリング ──
-    if let Some(result) = app.handle_ime_toggle_guard(&event, &phys) {
-        return result;
-    }
-
-    // ── 5. エンジントグル + IME 制御キー（変換/無変換系の一括チェック）──
-    {
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-        if is_key_down {
-            if let Some(result) = app.check_special_keys(&event) {
-                // IME 制御キーの場合はキャッシュ更新を要求
-                // SAFETY: PostMessageW は Win32 API。
-                unsafe {
-                    let _ =
-                        PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
-                }
-                return result;
-            }
-        }
-    }
-
-    // ── 6. IME 状態判定（キャッシュ読み取りのみ — ノンブロッキング）──
-    //
-    // 実際の IME 検出（CrossProcess + ImeReliability + shadow fallback）は
-    // メッセージループ上の refresh_ime_state_cache() で行い、結果を
-    // IME_STATE_CACHE に書き込む。フックではキャッシュを読むだけ。
-    {
-        let ime_on = awase::types::ImeCacheState::load(&IME_STATE_CACHE)
-            .resolve_with_shadow(app.shadow_ime_on);
-
-        if !ime_on {
-            return CallbackResult::PassThrough;
-        }
-    }
-
-    // ── 7. エンジン処理 ──
-    let response = app.engine.on_event(event, &phys);
-    let mut timer_runtime = Win32TimerRuntime;
-    let mut action_executor = SendInputExecutor;
-    let consumed = dispatch(&response, &mut timer_runtime, &mut action_executor);
-
-    if !response.actions.is_empty() {
-        log::trace!(
-            "Engine: vk=0x{:02X} consumed={consumed} actions={:?}",
-            event.vk_code.0,
-            response.actions,
-        );
-    }
-
-    if consumed {
-        CallbackResult::Consumed
-    } else {
-        CallbackResult::PassThrough
-    }
+    let ctx = InputContext {
+        ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
+    };
+    let decision = app.engine.on_input(event, &ctx);
+    app.execute_decision(&decision)
 }
 
 /// メッセージループ
@@ -755,20 +614,11 @@ fn run_message_loop() {
                 let timer_id = msg.wParam.0;
                 unsafe {
                     if let Some(app) = APP.get_mut() {
-                        // IME が非活性な��� on_timeout せず flush（コンテキスト喪失）
-                        let ime_active = app.ime.is_active() && app.ime.get_mode().is_kana_input();
-                        if ime_active {
-                            let phys = app.tracker.snapshot();
-                            let response = app.engine.on_timeout(timer_id, &phys);
-                            let mut timer_runtime = Win32TimerRuntime;
-                            let mut action_executor = SendInputExecutor;
-                            dispatch(&response, &mut timer_runtime, &mut action_executor);
-                        } else {
-                            let response = app.engine.flush_pending(ContextChange::ImeOff);
-                            let mut timer_runtime = Win32TimerRuntime;
-                            let mut action_executor = SendInputExecutor;
-                            dispatch(&response, &mut timer_runtime, &mut action_executor);
-                        }
+                        let ctx = InputContext {
+                            ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
+                        };
+                        let decision = app.engine.on_timeout(timer_id, &ctx);
+                        app.execute_decision(&decision);
                     }
                 }
             }
@@ -779,7 +629,7 @@ fn run_message_loop() {
                 log::info!("Input language changed, flushing pending state and enabling guard");
                 if let Some(app) = APP.get_mut() {
                     app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-                    app.key_buffer.set_guard(true);
+                    app.engine.set_guard(true);
                     app.refresh_ime_state_cache();
                 }
             },
@@ -972,7 +822,7 @@ fn reload_config() {
         );
         unsafe {
             if let Some(app) = APP.get_mut() {
-                app.special_keys = app_state::SpecialKeyCombos {
+                app.engine.special_keys = SpecialKeyCombos {
                     engine_on,
                     engine_off,
                     ime_on,
@@ -989,7 +839,7 @@ fn reload_config() {
         let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut reload_sync_diag);
         unsafe {
             if let Some(app) = APP.get_mut() {
-                app.ime_sync_keys = app_state::ImeSyncKeys { toggle, on, off };
+                app.engine.ime_sync_keys = ImeSyncKeys { toggle, on, off };
             }
         }
         reload_sync_diag.report();

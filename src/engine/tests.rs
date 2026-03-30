@@ -74,11 +74,11 @@ fn make_layout() -> YabLayout {
     }
 }
 
-/// テスト用ハーネス: InputTracker + Engine を統合し、
+/// テスト用ハーネス: InputTracker + NicolaFsm を統合し、
 /// on_event で自動的に物理キー状態を追跡する。
 struct TestHarness {
     tracker: input_tracker::InputTracker,
-    engine: Engine,
+    engine: NicolaFsm,
 }
 
 impl TestHarness {
@@ -94,14 +94,14 @@ impl TestHarness {
 }
 
 impl std::ops::Deref for TestHarness {
-    type Target = Engine;
-    fn deref(&self) -> &Engine {
+    type Target = NicolaFsm;
+    fn deref(&self) -> &NicolaFsm {
         &self.engine
     }
 }
 
 impl std::ops::DerefMut for TestHarness {
-    fn deref_mut(&mut self) -> &mut Engine {
+    fn deref_mut(&mut self) -> &mut NicolaFsm {
         &mut self.engine
     }
 }
@@ -109,7 +109,7 @@ impl std::ops::DerefMut for TestHarness {
 fn make_engine() -> TestHarness {
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
             VK_CONVERT,
@@ -123,7 +123,7 @@ fn make_engine() -> TestHarness {
 fn make_speculative_engine() -> TestHarness {
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
             VK_CONVERT,
@@ -533,7 +533,7 @@ fn make_engine_with_shift() -> TestHarness {
     layout.shift.insert(POS_S, lit('シ'));
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
@@ -687,7 +687,7 @@ fn make_engine_with_extended_layout() -> TestHarness {
     layout.right_thumb.insert(POS_F, lit('げ'));
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
@@ -1536,7 +1536,7 @@ fn test_romaji_value_in_layout() {
     );
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
@@ -1566,7 +1566,7 @@ fn test_special_value_in_layout() {
         .insert(POS_D, YabValue::Special(SpecialKey::Backspace));
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
@@ -1598,7 +1598,7 @@ fn test_none_value_in_layout() {
     layout.normal.insert(POS_D, YabValue::None);
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
@@ -1678,7 +1678,7 @@ fn test_key_up_for_romaji_produces_suppress() {
     );
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
@@ -2111,7 +2111,7 @@ fn test_speculative_simultaneous_with_romaji() {
 
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
@@ -2232,7 +2232,7 @@ fn test_speculative_thumb_first_falls_back_to_wait() {
 fn make_two_phase_engine() -> TestHarness {
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
             VK_CONVERT,
@@ -2401,7 +2401,7 @@ fn test_two_phase_char_sequence() {
 fn make_adaptive_engine() -> TestHarness {
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
             VK_CONVERT,
@@ -2522,7 +2522,7 @@ fn test_adaptive_continuous_then_pause() {
 fn make_ngram_predictive_engine() -> TestHarness {
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(
+        engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
             VK_CONVERT,
@@ -2675,7 +2675,7 @@ fn make_engine_with_mode(mode: ConfirmMode) -> TestHarness {
     let layout = make_layout();
     TestHarness {
         tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
-        engine: Engine::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30),
+        engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30),
     }
 }
 
