@@ -232,17 +232,10 @@ impl AppState {
             use awase::types::ImeReliability;
             let reliability = ImeReliability::load(&IME_RELIABILITY);
 
-            let unreliable = match reliability {
-                ImeReliability::Reliable => false,
-                ImeReliability::Unreliable => true,
-                ImeReliability::Unknown => {
-                    gui_info.hwndFocus != HWND::default() && {
-                        let class =
-                            focus::classify::get_class_name_string(gui_info.hwndFocus);
-                        is_cross_process_ime_unreliable_class(&class)
-                    }
-                }
-            };
+            // Reliable 以外は CrossProcess=false を信頼しない。
+            // Chrome 等の Unknown フレームワークでも CrossProcess が不正確な場合があるため、
+            // shadow state にフォールバックする。
+            let unreliable = reliability != ImeReliability::Reliable;
 
             if unreliable { None } else { cross_process }
         } else {
@@ -697,15 +690,3 @@ impl AppState {
 }
 
 /// クロスプロセス IME 状態検出が不正確な既知のウィンドウクラスか判定する。
-///
-/// UIA `FrameworkId` ベースの非同期判定（`IME_RELIABILITY`）がまだ到着して
-/// いない場合の同期フォールバック。UIA 結果が到着済みの場合はそちらを優先する。
-fn is_cross_process_ime_unreliable_class(class_name: &str) -> bool {
-    matches!(
-        class_name,
-        // Windows 11 メモ帳 (WinUI 3) の TSF-only テキストコントロール
-        "RichEditD2DPT"
-        // XAML Islands の入力面 (Windows Terminal 等)
-        | "Windows.UI.Input.InputSite.WindowClass"
-    )
-}
