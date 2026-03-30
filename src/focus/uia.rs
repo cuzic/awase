@@ -46,9 +46,8 @@ pub struct UiaClassifyResult {
 fn classify_framework_id(framework_id: &str) -> ImeReliability {
     match framework_id {
         "Win32" | "WinForm" => ImeReliability::Reliable,
-        "DirectUI" | "XAML" => ImeReliability::Unreliable,
         // WPF は TSF 統合だが IMM 互換もあるため安全側に倒す
-        "WPF" => ImeReliability::Unreliable,
+        "DirectUI" | "XAML" | "WPF" => ImeReliability::Unreliable,
         // Chrome/Electron 等は独自の IME 実装
         _ => ImeReliability::Unknown,
     }
@@ -65,10 +64,10 @@ fn classify_framework_id(framework_id: &str) -> ImeReliability {
 ///
 /// Chrome/WPF/UWP など Win32 クラス名では判定できないコントロールに有効。
 ///
-/// Safety: COM が初期化済みのスレッドから呼び出すこと
+/// COM が初期化済みのスレッドから呼び出すこと
 #[allow(unused_variables)] // hwnd はデバッグ用に保持
-pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassifyResult {
-    let element: IUIAutomationElement = match automation.GetFocusedElement() {
+pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassifyResult {
+    let element: IUIAutomationElement = match unsafe { automation.GetFocusedElement() } {
         Ok(el) => el,
         Err(e) => {
             log::trace!("UIA: GetFocusedElement failed: {e:?}");
@@ -80,7 +79,7 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaC
     };
 
     // FrameworkId を取得して IME 信頼度を判定
-    let ime_reliability = match element.CurrentFrameworkId() {
+    let ime_reliability = match unsafe { element.CurrentFrameworkId() } {
         Ok(fid) => {
             let fid_str = fid.to_string();
             let reliability = classify_framework_id(&fid_str);
@@ -106,9 +105,9 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaC
     // 1. ValuePattern → IsReadOnly チェック
     //    「編集可能な値を持つ」が最も強いシグナル
     if let Ok(pattern) =
-        element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
     {
-        match pattern.CurrentIsReadOnly() {
+        match unsafe { pattern.CurrentIsReadOnly() } {
             Ok(read_only) if !read_only.as_bool() => {
                 log::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
                 return result!(FocusKind::TextInput);
@@ -123,16 +122,17 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaC
 
     // 2. TextPattern チェック
     //    TextPattern をサポートする要素はテキスト編集能力を持つ
-    if element
-        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-        .is_ok()
-    {
+    if unsafe {
+        element
+            .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+            .is_ok()
+    } {
         log::debug!("UIA: TextPattern available → TextInput");
         return result!(FocusKind::TextInput);
     }
 
     // 3. フォールバック: ControlType で確定的な非テキストコントロールを判別
-    if let Ok(control_type) = element.CurrentControlType() {
+    if let Ok(control_type) = unsafe { element.CurrentControlType() } {
         // テキスト入力系（補助的な確認のみ）
         if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
             log::debug!("UIA: ControlType={control_type:?} → TextInput");
@@ -199,7 +199,7 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
         while let Ok(SendableHwnd(hwnd)) = rx.recv() {
             // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
             // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
-            let result = unsafe { uia_classify_focus(&automation, hwnd) };
+            let result = uia_classify_focus(&automation, hwnd);
             if result.focus_kind != FocusKind::Undetermined {
                 log::debug!(
                     "UIA async: hwnd={hwnd:?} → {:?} (ime_reliability={:?})",

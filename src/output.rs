@@ -11,6 +11,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 /// 自己注入マーカー（"KEYM" = 0x4B45_594D）
 pub const INJECTED_MARKER: usize = 0x4B45_594D;
 
+/// VK_LSHIFT の仮想キーコード
+const VK_LSHIFT: u16 = 0xA0;
+
 /// ASCII 文字を対応する VK コードに変換する。
 const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     match ch {
@@ -48,8 +51,9 @@ impl Output {
     /// 出力モードを変更する
     pub fn set_mode(&mut self, mode: OutputMode) {
         self.mode = mode;
-        if mode == OutputMode::Unicode && self.romaji_to_kana.is_none() {
-            self.romaji_to_kana = Some(awase::kana_table::build_romaji_to_kana());
+        if mode == OutputMode::Unicode {
+            self.romaji_to_kana
+                .get_or_insert_with(awase::kana_table::build_romaji_to_kana);
         }
     }
 
@@ -57,8 +61,8 @@ impl Output {
     pub fn send_keys(&self, actions: &[KeyAction]) {
         for action in actions {
             match action {
-                KeyAction::Key(vk) => self.send_key(*vk, false),
-                KeyAction::KeyUp(vk) => self.send_key(*vk, true),
+                KeyAction::Key(vk) => self.send_key(vk.0, false),
+                KeyAction::KeyUp(vk) => self.send_key(vk.0, true),
                 KeyAction::Char(ch) => self.send_unicode_char(*ch),
                 KeyAction::Suppress => {}
                 KeyAction::Romaji(s) => self.send_romaji(s),
@@ -133,17 +137,18 @@ impl Output {
     /// 各文字の KeyDown+KeyUp は1回の SendInput にまとめるが、
     /// 文字間は別の SendInput 呼び出しに分離する。
     /// 他のキーボードフックに処理時間を与える。
+    #[allow(clippy::unused_self)]
     fn send_romaji_per_key(&self, romaji: &str) {
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
                 let mut inputs = Vec::with_capacity(4);
                 if needs_shift {
-                    inputs.push(make_key_input(0xA0, false));
+                    inputs.push(make_key_input(VK_LSHIFT, false));
                 }
                 inputs.push(make_key_input(vk, false));
                 inputs.push(make_key_input(vk, true));
                 if needs_shift {
-                    inputs.push(make_key_input(0xA0, true));
+                    inputs.push(make_key_input(VK_LSHIFT, true));
                 }
                 unsafe {
                     SendInput(
@@ -158,17 +163,18 @@ impl Output {
     /// Batched モード: 全文字を1回の SendInput にまとめて送信
     ///
     /// 最も高速。SendInput のアトミック性により他の入力が割り込めない。
+    #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
         let mut inputs = Vec::with_capacity(romaji.len() * 4);
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
                 if needs_shift {
-                    inputs.push(make_key_input(0xA0, false));
+                    inputs.push(make_key_input(VK_LSHIFT, false));
                 }
                 inputs.push(make_key_input(vk, false));
                 inputs.push(make_key_input(vk, true));
                 if needs_shift {
-                    inputs.push(make_key_input(0xA0, true));
+                    inputs.push(make_key_input(VK_LSHIFT, true));
                 }
             }
         }
@@ -187,11 +193,9 @@ impl Output {
     /// IME を経由せず、ひらがなを直接テキストフィールドに挿入する。
     /// 変換テーブルにないローマ字は PerKey モードでフォールバック送信する。
     fn send_romaji_as_unicode(&self, romaji: &str) {
-        if let Some(table) = &self.romaji_to_kana {
-            if let Some(&kana) = table.get(romaji) {
-                self.send_unicode_char(kana);
-                return;
-            }
+        if let Some(&kana) = self.romaji_to_kana.as_ref().and_then(|t| t.get(romaji)) {
+            self.send_unicode_char(kana);
+            return;
         }
         // テーブルにない場合はフォールバック
         self.send_romaji_per_key(romaji);
@@ -199,7 +203,7 @@ impl Output {
 }
 
 /// INPUT 構造体を作成するヘルパー
-fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
+const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {

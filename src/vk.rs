@@ -4,6 +4,93 @@
 
 use crate::types::VkCode;
 
+/// Windows 言語 ID: 日本語 (0x0411)
+pub const LANGID_JAPANESE: u32 = 0x0411;
+
+// ── IME キー種別 ──────────────────────────────────────────
+
+/// IME の ON/OFF 状態を変更するキーの種別。
+///
+/// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImeKeyKind {
+    /// 半角/全角トグル (VK_KANJI, 0x19)
+    KanjiToggle,
+    /// IME ON — VK_DBE_HIRAGANA (0xF2)
+    Activate,
+    /// IME OFF — VK_DBE_SBCSCHAR / VK_OEM_AUTO (0xF3)
+    Deactivate,
+    /// IME ON ペア — VK_DBE_DBCSCHAR / VK_OEM_ENLW (0xF4)
+    ActivatePair,
+    /// VK_IME_ON (0x16)
+    ImeOn,
+    /// VK_IME_OFF (0x1A)
+    ImeOff,
+}
+
+/// `ImeKeyKind` が IME 状態に与える効果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShadowImeEffect {
+    TurnOn,
+    TurnOff,
+    Toggle,
+}
+
+impl ImeKeyKind {
+    /// VK コードから `ImeKeyKind` への変換。該当しなければ `None`。
+    #[must_use]
+    pub const fn from_vk(vk: VkCode) -> Option<Self> {
+        match vk.0 {
+            0x19 => Some(Self::KanjiToggle),
+            0xF2 => Some(Self::Activate),
+            0xF3 => Some(Self::Deactivate),
+            0xF4 => Some(Self::ActivatePair),
+            0x16 => Some(Self::ImeOn),
+            0x1A => Some(Self::ImeOff),
+            _ => None,
+        }
+    }
+
+    /// このキーが shadow IME 状態に与える効果。
+    #[must_use]
+    pub const fn shadow_effect(&self) -> ShadowImeEffect {
+        match self {
+            Self::Activate | Self::ActivatePair | Self::ImeOn => ShadowImeEffect::TurnOn,
+            Self::Deactivate | Self::ImeOff => ShadowImeEffect::TurnOff,
+            Self::KanjiToggle => ShadowImeEffect::Toggle,
+        }
+    }
+
+    /// IME を ON にするキーか。
+    #[must_use]
+    pub const fn is_on(&self) -> bool {
+        matches!(self, Self::Activate | Self::ActivatePair | Self::ImeOn)
+    }
+
+    /// IME を OFF にするキーか。
+    #[must_use]
+    pub const fn is_off(&self) -> bool {
+        matches!(self, Self::Deactivate | Self::ImeOff)
+    }
+
+    /// IME をトグルするキーか。
+    #[must_use]
+    pub const fn is_toggle(&self) -> bool {
+        matches!(self, Self::KanjiToggle)
+    }
+}
+
+/// VK コードが IME 状態を変更する可能性があるかどうかを判定する。
+///
+/// `is_ime_control()` に加え、DBE 系キー (0xF0..=0xF5) も含む。
+#[must_use]
+pub const fn may_change_ime(vk_code: VkCode) -> bool {
+    if is_ime_control(vk_code) {
+        return true;
+    }
+    matches!(vk_code.0, 0xF0..=0xF5)
+}
+
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
 #[must_use]
 pub const fn is_passthrough(vk_code: VkCode) -> bool {

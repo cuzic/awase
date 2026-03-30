@@ -97,17 +97,18 @@ impl MsaaRole {
 /// テキスト入力ロール（Text, Document）なら TextInput、
 /// 非テキストロール（ツールバー、メニュー等）なら NonText、
 /// 判定不能なら Undetermined を返す。
-pub unsafe fn msaa_classify(hwnd: HWND) -> ClassifyResult {
+pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
     #[allow(clippy::cast_sign_loss)] // OBJID_CLIENT (-4) is a Windows API convention
     let objid = OBJID_CLIENT as u32;
-    let ok = AccessibleObjectFromWindow(hwnd, objid, &IAccessible::IID, &raw mut acc);
+    let ok = unsafe { AccessibleObjectFromWindow(hwnd, objid, &IAccessible::IID, &raw mut acc) };
     if ok.is_ok() && !acc.is_null() {
-        let accessible: IAccessible = IAccessible::from_raw(acc);
+        // Safety: AccessibleObjectFromWindow succeeded and acc is non-null
+        let accessible: IAccessible = unsafe { IAccessible::from_raw(acc) };
         let child_self = VARIANT::from(0i32); // CHILDID_SELF
-        if let Ok(role) = accessible.get_accRole(&child_self) {
+        if let Ok(role) = unsafe { accessible.get_accRole(&child_self) } {
             #[allow(clippy::cast_sign_loss)] // MSAA role values are non-negative
-            let role_id = role.as_raw().Anonymous.Anonymous.Anonymous.lVal as u32;
+            let role_id = unsafe { role.as_raw().Anonymous.Anonymous.Anonymous.lVal as u32 };
 
             if let Some(role) = MsaaRole::from_u32(role_id) {
                 if role.is_text_input() {

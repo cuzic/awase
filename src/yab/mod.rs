@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::kana_table::build_romaji_to_kana;
 use crate::scanmap::PhysicalPos;
+use crate::types::VkCode;
 
 /// .yab ファイルからパースされた値
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +40,7 @@ pub enum SpecialKey {
 pub type YabFace = HashMap<PhysicalPos, YabValue>;
 
 /// パース済みの .yab レイアウト全体
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct YabLayout {
     /// レイアウト名
     pub name: String,
@@ -161,13 +162,13 @@ fn parse_face(lines: &[String]) -> Result<YabFace> {
 impl SpecialKey {
     /// 特殊キーに対応する仮想キーコード (VK code) を返す。
     #[must_use]
-    pub const fn to_vk(self) -> u16 {
+    pub const fn to_vk(self) -> VkCode {
         match self {
-            Self::Backspace => 0x08,
-            Self::Escape => 0x1B,
-            Self::Enter => 0x0D,
-            Self::Space => 0x20,
-            Self::Delete => 0x2E,
+            Self::Backspace => VkCode(0x08),
+            Self::Escape => VkCode(0x1B),
+            Self::Enter => VkCode(0x0D),
+            Self::Space => VkCode(0x20),
+            Self::Delete => VkCode(0x2E),
         }
     }
 }

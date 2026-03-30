@@ -59,7 +59,7 @@ impl std::fmt::Display for ClassifyReason {
 ///
 /// deny-first（バイパスを優先）、allow は確信がある場合のみ。
 /// 判定不能なら `Undetermined` を返す。
-pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
+pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
     if hwnd == HWND::default() {
         return ClassifyResult {
             kind: FocusKind::NonText,
@@ -70,14 +70,17 @@ pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
     // 1. ImmGetContext — NULL でも NonText 確定にしない。
     // Windows 11 のメモ帳 (RichEditD2DPT) 等、TSF のみで IMM コンテキストを
     // 持たないテキストコントロールがあるため、Phase 2/3 に判断を委ねる。
-    let himc = ImmGetContext(hwnd);
-    let has_imm_context = !himc.is_invalid();
-    if has_imm_context {
-        let _ = ImmReleaseContext(hwnd, himc);
-    }
+    let _has_imm_context = unsafe {
+        let himc = ImmGetContext(hwnd);
+        let valid = !himc.is_invalid();
+        if valid {
+            let _ = ImmReleaseContext(hwnd, himc);
+        }
+        valid
+    };
 
     // 2. WS_EX_NOIME ウィンドウスタイル
-    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) };
     if ex_style & WS_EX_NOIME != 0 {
         return ClassifyResult {
             kind: FocusKind::NonText,
@@ -102,7 +105,7 @@ pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
         ) {
             // Edit コントロールの読み取り専用チェック
             if class_name == "Edit" {
-                let style = GetWindowLongW(hwnd, GWL_STYLE);
+                let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) };
                 if style & ES_READONLY != 0 {
                     return ClassifyResult {
                         kind: FocusKind::NonText,
@@ -142,9 +145,9 @@ pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
 }
 
 /// ウィンドウハンドルからクラス名を取得する
-pub unsafe fn get_class_name_string(hwnd: HWND) -> String {
+pub fn get_class_name_string(hwnd: HWND) -> String {
     let mut class_buf = [0u16; 256];
-    let len = GetClassNameW(hwnd, &mut class_buf);
+    let len = unsafe { GetClassNameW(hwnd, &mut class_buf) };
     if len > 0 {
         #[allow(clippy::cast_sign_loss)] // len is guaranteed non-negative by GetClassNameW
         String::from_utf16_lossy(&class_buf[..len as usize])
@@ -154,32 +157,35 @@ pub unsafe fn get_class_name_string(hwnd: HWND) -> String {
 }
 
 /// ウィンドウハンドルからプロセス ID を取得する
-pub unsafe fn get_window_process_id(hwnd: HWND) -> u32 {
+pub fn get_window_process_id(hwnd: HWND) -> u32 {
     let mut pid: u32 = 0;
-    GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
     pid
 }
 
 /// プロセス ID から実行ファイル名を取得する
-pub unsafe fn get_process_name(process_id: u32) -> String {
+pub fn get_process_name(process_id: u32) -> String {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
-    let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) else {
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) })
+    else {
         return String::new();
     };
     let mut buf = [0u16; 260];
     let mut len = buf.len() as u32;
-    let ok = QueryFullProcessImageNameW(
-        handle,
-        PROCESS_NAME_WIN32,
-        windows::core::PWSTR(buf.as_mut_ptr()),
-        &raw mut len,
-    );
-    let _ = CloseHandle(handle);
+    let ok = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &raw mut len,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
     if ok.is_ok() && len > 0 {
         let path = String::from_utf16_lossy(&buf[..len as usize]); // len is non-negative
         path.rsplit('\\').next().unwrap_or(&path).to_string()

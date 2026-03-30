@@ -18,20 +18,8 @@ impl PhysicalPos {
 
 /// Maps a `ScanCode` to a physical key position on a JIS keyboard.
 #[must_use]
-pub const fn scan_to_pos_typed(scan_code: ScanCode) -> Option<PhysicalPos> {
-    scan_to_pos(scan_code.0)
-}
-
-/// Maps a physical key position back to a `ScanCode` on a JIS keyboard.
-#[must_use]
-pub fn pos_to_scan_typed(pos: PhysicalPos) -> Option<ScanCode> {
-    pos_to_scan(pos).map(ScanCode)
-}
-
-/// Maps a Set 1 scan code to a physical key position on a JIS keyboard.
-#[must_use]
-pub const fn scan_to_pos(scan_code: u32) -> Option<PhysicalPos> {
-    let (row, col) = match scan_code {
+pub const fn scan_to_pos(scan_code: ScanCode) -> Option<PhysicalPos> {
+    let (row, col) = match scan_code.0 {
         // Row 0: number row (13 keys)
         0x02 => (0, 0),  // 1
         0x03 => (0, 1),  // 2
@@ -93,68 +81,69 @@ pub const fn scan_to_pos(scan_code: u32) -> Option<PhysicalPos> {
     Some(PhysicalPos::new(row, col))
 }
 
-/// Maps a physical key position back to a Set 1 scan code on a JIS keyboard.
+/// Maps a physical key position back to a `ScanCode` on a JIS keyboard.
 #[must_use]
-pub const fn pos_to_scan(pos: PhysicalPos) -> Option<u32> {
-    match (pos.row, pos.col) {
+pub const fn pos_to_scan(pos: PhysicalPos) -> Option<ScanCode> {
+    let raw = match (pos.row, pos.col) {
         // Row 0: number row
-        (0, 0) => Some(0x02),
-        (0, 1) => Some(0x03),
-        (0, 2) => Some(0x04),
-        (0, 3) => Some(0x05),
-        (0, 4) => Some(0x06),
-        (0, 5) => Some(0x07),
-        (0, 6) => Some(0x08),
-        (0, 7) => Some(0x09),
-        (0, 8) => Some(0x0A),
-        (0, 9) => Some(0x0B),
-        (0, 10) => Some(0x0C),
-        (0, 11) => Some(0x0D),
-        (0, 12) => Some(0x7D),
+        (0, 0) => 0x02,
+        (0, 1) => 0x03,
+        (0, 2) => 0x04,
+        (0, 3) => 0x05,
+        (0, 4) => 0x06,
+        (0, 5) => 0x07,
+        (0, 6) => 0x08,
+        (0, 7) => 0x09,
+        (0, 8) => 0x0A,
+        (0, 9) => 0x0B,
+        (0, 10) => 0x0C,
+        (0, 11) => 0x0D,
+        (0, 12) => 0x7D,
 
         // Row 1: Q row
-        (1, 0) => Some(0x10),
-        (1, 1) => Some(0x11),
-        (1, 2) => Some(0x12),
-        (1, 3) => Some(0x13),
-        (1, 4) => Some(0x14),
-        (1, 5) => Some(0x15),
-        (1, 6) => Some(0x16),
-        (1, 7) => Some(0x17),
-        (1, 8) => Some(0x18),
-        (1, 9) => Some(0x19),
-        (1, 10) => Some(0x1A),
-        (1, 11) => Some(0x1B),
+        (1, 0) => 0x10,
+        (1, 1) => 0x11,
+        (1, 2) => 0x12,
+        (1, 3) => 0x13,
+        (1, 4) => 0x14,
+        (1, 5) => 0x15,
+        (1, 6) => 0x16,
+        (1, 7) => 0x17,
+        (1, 8) => 0x18,
+        (1, 9) => 0x19,
+        (1, 10) => 0x1A,
+        (1, 11) => 0x1B,
 
         // Row 2: A row
-        (2, 0) => Some(0x1E),
-        (2, 1) => Some(0x1F),
-        (2, 2) => Some(0x20),
-        (2, 3) => Some(0x21),
-        (2, 4) => Some(0x22),
-        (2, 5) => Some(0x23),
-        (2, 6) => Some(0x24),
-        (2, 7) => Some(0x25),
-        (2, 8) => Some(0x26),
-        (2, 9) => Some(0x27),
-        (2, 10) => Some(0x28),
-        (2, 11) => Some(0x2B),
+        (2, 0) => 0x1E,
+        (2, 1) => 0x1F,
+        (2, 2) => 0x20,
+        (2, 3) => 0x21,
+        (2, 4) => 0x22,
+        (2, 5) => 0x23,
+        (2, 6) => 0x24,
+        (2, 7) => 0x25,
+        (2, 8) => 0x26,
+        (2, 9) => 0x27,
+        (2, 10) => 0x28,
+        (2, 11) => 0x2B,
 
         // Row 3: Z row
-        (3, 0) => Some(0x2C),
-        (3, 1) => Some(0x2D),
-        (3, 2) => Some(0x2E),
-        (3, 3) => Some(0x2F),
-        (3, 4) => Some(0x30),
-        (3, 5) => Some(0x31),
-        (3, 6) => Some(0x32),
-        (3, 7) => Some(0x33),
-        (3, 8) => Some(0x34),
-        (3, 9) => Some(0x35),
-        (3, 10) => Some(0x73),
+        (3, 0) => 0x2C,
+        (3, 1) => 0x2D,
+        (3, 2) => 0x2E,
+        (3, 3) => 0x2F,
+        (3, 4) => 0x30,
+        (3, 5) => 0x31,
+        (3, 6) => 0x32,
+        (3, 7) => 0x33,
+        (3, 8) => 0x34,
+        (3, 9) => 0x35,
+        (3, 10) => 0x73,
 
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(ScanCode(raw))
 }
 
 #[cfg(test)]
@@ -162,13 +151,59 @@ mod tests {
     use super::*;
 
     /// All known scan codes mapped in scan_to_pos.
-    const ALL_SCAN_CODES: &[u32] = &[
+    const ALL_SCAN_CODES: &[ScanCode] = &[
         // Row 0
-        0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x7D,
+        ScanCode(0x02),
+        ScanCode(0x03),
+        ScanCode(0x04),
+        ScanCode(0x05),
+        ScanCode(0x06),
+        ScanCode(0x07),
+        ScanCode(0x08),
+        ScanCode(0x09),
+        ScanCode(0x0A),
+        ScanCode(0x0B),
+        ScanCode(0x0C),
+        ScanCode(0x0D),
+        ScanCode(0x7D),
         // Row 1
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, // Row 2
-        0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2B, // Row 3
-        0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x73,
+        ScanCode(0x10),
+        ScanCode(0x11),
+        ScanCode(0x12),
+        ScanCode(0x13),
+        ScanCode(0x14),
+        ScanCode(0x15),
+        ScanCode(0x16),
+        ScanCode(0x17),
+        ScanCode(0x18),
+        ScanCode(0x19),
+        ScanCode(0x1A),
+        ScanCode(0x1B),
+        // Row 2
+        ScanCode(0x1E),
+        ScanCode(0x1F),
+        ScanCode(0x20),
+        ScanCode(0x21),
+        ScanCode(0x22),
+        ScanCode(0x23),
+        ScanCode(0x24),
+        ScanCode(0x25),
+        ScanCode(0x26),
+        ScanCode(0x27),
+        ScanCode(0x28),
+        ScanCode(0x2B),
+        // Row 3
+        ScanCode(0x2C),
+        ScanCode(0x2D),
+        ScanCode(0x2E),
+        ScanCode(0x2F),
+        ScanCode(0x30),
+        ScanCode(0x31),
+        ScanCode(0x32),
+        ScanCode(0x33),
+        ScanCode(0x34),
+        ScanCode(0x35),
+        ScanCode(0x73),
     ];
 
     #[test]
@@ -176,7 +211,8 @@ mod tests {
         for &sc in ALL_SCAN_CODES {
             assert!(
                 scan_to_pos(sc).is_some(),
-                "scan code {sc:#04X} should map to a position"
+                "scan code {:#04X} should map to a position",
+                sc.0
             );
         }
     }
@@ -188,8 +224,8 @@ mod tests {
             let back = pos_to_scan(pos).unwrap();
             assert_eq!(
                 sc, back,
-                "round-trip failed for scan code {sc:#04X} -> pos({},{}) -> {back:#04X}",
-                pos.row, pos.col
+                "round-trip failed for scan code {:#04X} -> pos({},{}) -> {:#04X}",
+                sc.0, pos.row, pos.col, back.0
             );
         }
     }
@@ -206,26 +242,20 @@ mod tests {
 
     #[test]
     fn known_specific_mappings() {
-        // A key
-        assert_eq!(scan_to_pos(0x1E), Some(PhysicalPos::new(2, 0)));
-        // Q key
-        assert_eq!(scan_to_pos(0x10), Some(PhysicalPos::new(1, 0)));
-        // Z key
-        assert_eq!(scan_to_pos(0x2C), Some(PhysicalPos::new(3, 0)));
-        // 1 key
-        assert_eq!(scan_to_pos(0x02), Some(PhysicalPos::new(0, 0)));
-        // ¥ key (JIS-specific)
-        assert_eq!(scan_to_pos(0x7D), Some(PhysicalPos::new(0, 12)));
-        // _ key (JIS-specific)
-        assert_eq!(scan_to_pos(0x73), Some(PhysicalPos::new(3, 10)));
+        assert_eq!(scan_to_pos(ScanCode(0x1E)), Some(PhysicalPos::new(2, 0))); // A
+        assert_eq!(scan_to_pos(ScanCode(0x10)), Some(PhysicalPos::new(1, 0))); // Q
+        assert_eq!(scan_to_pos(ScanCode(0x2C)), Some(PhysicalPos::new(3, 0))); // Z
+        assert_eq!(scan_to_pos(ScanCode(0x02)), Some(PhysicalPos::new(0, 0))); // 1
+        assert_eq!(scan_to_pos(ScanCode(0x7D)), Some(PhysicalPos::new(0, 12))); // ¥
+        assert_eq!(scan_to_pos(ScanCode(0x73)), Some(PhysicalPos::new(3, 10))); // _
     }
 
     #[test]
     fn unknown_scan_codes_return_none() {
-        assert_eq!(scan_to_pos(0x00), None);
-        assert_eq!(scan_to_pos(0x01), None);
-        assert_eq!(scan_to_pos(0xFF), None);
-        assert_eq!(scan_to_pos(0x100), None);
+        assert_eq!(scan_to_pos(ScanCode(0x00)), None);
+        assert_eq!(scan_to_pos(ScanCode(0x01)), None);
+        assert_eq!(scan_to_pos(ScanCode(0xFF)), None);
+        assert_eq!(scan_to_pos(ScanCode(0x100)), None);
     }
 
     #[test]
@@ -248,71 +278,6 @@ mod tests {
         assert_eq!(count(1), 12, "Row 1 should have 12 keys");
         assert_eq!(count(2), 12, "Row 2 should have 12 keys");
         assert_eq!(count(3), 11, "Row 3 should have 11 keys");
-    }
-
-    // --- Typed API tests using ScanCode newtype ---
-
-    #[test]
-    fn typed_scan_to_pos_matches_raw() {
-        for &sc in ALL_SCAN_CODES {
-            assert_eq!(
-                scan_to_pos_typed(ScanCode(sc)),
-                scan_to_pos(sc),
-                "typed and raw scan_to_pos should agree for {sc:#04X}"
-            );
-        }
-    }
-
-    #[test]
-    fn typed_pos_to_scan_matches_raw() {
-        for &sc in ALL_SCAN_CODES {
-            let pos = scan_to_pos(sc).unwrap();
-            assert_eq!(
-                pos_to_scan_typed(pos),
-                pos_to_scan(pos).map(ScanCode),
-                "typed and raw pos_to_scan should agree for pos({},{})",
-                pos.row,
-                pos.col
-            );
-        }
-    }
-
-    #[test]
-    fn typed_round_trip() {
-        for &sc in ALL_SCAN_CODES {
-            let code = ScanCode(sc);
-            let pos = scan_to_pos_typed(code).unwrap();
-            let back = pos_to_scan_typed(pos).unwrap();
-            assert_eq!(
-                code, back,
-                "typed round-trip failed for ScanCode({sc:#04X})"
-            );
-        }
-    }
-
-    #[test]
-    fn typed_known_specific_mappings() {
-        // A key
-        assert_eq!(
-            scan_to_pos_typed(ScanCode(0x1E)),
-            Some(PhysicalPos::new(2, 0))
-        );
-        // Q key
-        assert_eq!(
-            scan_to_pos_typed(ScanCode(0x10)),
-            Some(PhysicalPos::new(1, 0))
-        );
-        // Z key
-        assert_eq!(
-            scan_to_pos_typed(ScanCode(0x2C)),
-            Some(PhysicalPos::new(3, 0))
-        );
-    }
-
-    #[test]
-    fn typed_unknown_scan_codes_return_none() {
-        assert_eq!(scan_to_pos_typed(ScanCode(0x00)), None);
-        assert_eq!(scan_to_pos_typed(ScanCode(0xFF)), None);
     }
 
     #[test]

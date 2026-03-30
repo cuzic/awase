@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::VkCode;
 
 // ── 全角→半角変換テスト ──
 
@@ -384,11 +385,11 @@ fn parse_multiple_sections() {
 
 #[test]
 fn test_special_key_to_vk() {
-    assert_eq!(SpecialKey::Backspace.to_vk(), 0x08);
-    assert_eq!(SpecialKey::Escape.to_vk(), 0x1B);
-    assert_eq!(SpecialKey::Enter.to_vk(), 0x0D);
-    assert_eq!(SpecialKey::Space.to_vk(), 0x20);
-    assert_eq!(SpecialKey::Delete.to_vk(), 0x2E);
+    assert_eq!(SpecialKey::Backspace.to_vk(), VkCode(0x08));
+    assert_eq!(SpecialKey::Escape.to_vk(), VkCode(0x1B));
+    assert_eq!(SpecialKey::Enter.to_vk(), VkCode(0x0D));
+    assert_eq!(SpecialKey::Space.to_vk(), VkCode(0x20));
+    assert_eq!(SpecialKey::Delete.to_vk(), VkCode(0x2E));
 }
 
 // ── classify_section テスト ──

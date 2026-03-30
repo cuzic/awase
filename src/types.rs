@@ -53,9 +53,9 @@ pub enum KeyEventType {
 #[derive(Debug, Clone)]
 pub enum KeyAction {
     /// 単一の仮想キーコードを押下
-    Key(u16),
+    Key(VkCode),
     /// 単一の仮想キーコードをリリース
-    KeyUp(u16),
+    KeyUp(VkCode),
     /// Unicode 文字を直接出力（`SendInput` の `KEYEVENTF_UNICODE`）
     Char(char),
     /// 何もしない（キーを握りつぶす）
@@ -112,6 +112,75 @@ impl ImeReliability {
 
     pub fn store(self, atomic: &std::sync::atomic::AtomicU8) {
         atomic.store(self as u8, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// IME 状態キャッシュ値（`IME_STATE_CACHE: AtomicU8` との相互変換用）
+///
+/// メッセージループで `refresh_ime_state_cache()` が書き込み、フックで読み取る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ImeCacheState {
+    /// IME OFF
+    Off = 0,
+    /// IME ON
+    On = 1,
+    /// 未判定（初期状態 or キャッシュ未更新）
+    Unknown = 2,
+}
+
+impl ImeCacheState {
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Off,
+            1 => Self::On,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn load(atomic: &std::sync::atomic::AtomicU8) -> Self {
+        Self::from_u8(atomic.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn store(self, atomic: &std::sync::atomic::AtomicU8) {
+        atomic.store(self as u8, std::sync::atomic::Ordering::Release);
+    }
+
+    /// `AtomicU8` に対してアトミック swap を行い、以前の値を返す
+    #[must_use]
+    pub fn swap(self, atomic: &std::sync::atomic::AtomicU8) -> Self {
+        Self::from_u8(atomic.swap(self as u8, std::sync::atomic::Ordering::AcqRel))
+    }
+
+    /// Unknown の場合は shadow state にフォールバック
+    #[must_use]
+    pub const fn resolve_with_shadow(self, shadow_ime_on: bool) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::Unknown => shadow_ime_on,
+        }
+    }
+
+    /// 表示用ラベル
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "OFF",
+            Self::On => "ON",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
+impl From<bool> for ImeCacheState {
+    fn from(ime_on: bool) -> Self {
+        if ime_on {
+            Self::On
+        } else {
+            Self::Off
+        }
     }
 }
 

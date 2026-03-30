@@ -66,11 +66,15 @@ impl TestHarness {
 
 impl std::ops::Deref for TestHarness {
     type Target = Engine;
-    fn deref(&self) -> &Engine { &self.engine }
+    fn deref(&self) -> &Engine {
+        &self.engine
+    }
 }
 
 impl std::ops::DerefMut for TestHarness {
-    fn deref_mut(&mut self) -> &mut Engine { &mut self.engine }
+    fn deref_mut(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
 }
 
 const VK_NONCONVERT: VkCode = VkCode(0x1D);
@@ -85,7 +89,7 @@ fn make_test_engine(mode: ConfirmMode) -> TestHarness {
             layout,
             VK_NONCONVERT,
             VK_CONVERT,
-            100,          // threshold_ms
+            100, // threshold_ms
             mode,
             30, // speculative_delay_ms
         ),

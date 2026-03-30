@@ -18,6 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub use awase::platform::ImeMode;
 
 /// IME 状態検知のトレイト
+#[allow(dead_code)] // is_composing は将来の未確定文字列検出で使用予定
 pub trait ImeProvider {
     /// 現在の IME モードを取得する
     fn get_mode(&self) -> ImeMode;
@@ -212,8 +213,8 @@ pub unsafe fn detect_ime_open_cross_process() -> Option<bool> {
         LPARAM(0),
         SMTO_ABORTIFHUNG,
         50, // timeout ms — メッセージループから呼ばれるためブロッキング OK。
-            // タイムアウト時は None を返し shadow state にフォールバックする。
-        Some(&mut result),
+        // タイムアウト時は None を返し shadow state にフォールバックする。
+        Some(&raw mut result),
     );
 
     log::trace!("CrossProcess: ime_wnd={ime_wnd:?} open={result:?}");
@@ -249,16 +250,14 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
         ime_wnd,
         WM_IME_CONTROL,
         WPARAM(IMC_SETOPENSTATUS),
-        LPARAM(if open { 1 } else { 0 }),
+        LPARAM(isize::from(open)),
         SMTO_ABORTIFHUNG,
         50,
-        Some(&mut result),
+        Some(&raw mut result),
     );
 
     let success = ok.0 != 0;
-    log::debug!(
-        "set_ime_open_cross_process: ime_wnd={ime_wnd:?} open={open} success={success}"
-    );
+    log::debug!("set_ime_open_cross_process: ime_wnd={ime_wnd:?} open={open} success={success}");
     success
 }
 
@@ -287,7 +286,7 @@ unsafe fn detect_ime_conversion_cross_process() -> Option<u32> {
         LPARAM(0),
         SMTO_ABORTIFHUNG,
         50,
-        Some(&mut result),
+        Some(&raw mut result),
     );
 
     if ok.0 == 0 {
@@ -349,22 +348,22 @@ impl ImeProvider for HybridProvider {
         // Keyboard layout (HKL) as additional signal
         let hkl = unsafe { GetKeyboardLayout(0) };
         let lang_id = hkl.0 as u32 & 0xFFFF;
-        let is_japanese_hkl = lang_id == 0x0411;
+        let is_japanese_hkl = lang_id == awase::vk::LANGID_JAPANESE;
 
         // ImmGetOpenStatus as yet another signal
         let imm_open = unsafe {
             let hwnd = GetForegroundWindow();
-            if hwnd != HWND::default() {
+            if hwnd == HWND::default() {
+                None
+            } else {
                 let himc = ImmGetContext(hwnd);
-                if !himc.is_invalid() {
+                if himc.is_invalid() {
+                    None
+                } else {
                     let open = ImmGetOpenStatus(himc);
                     let _ = ImmReleaseContext(hwnd, himc);
                     Some(open.as_bool())
-                } else {
-                    None
                 }
-            } else {
-                None
             }
         };
 
@@ -373,16 +372,14 @@ impl ImeProvider for HybridProvider {
         );
 
         // Decision: TSF first, then IMM fallback
-        let result = if let Some(tsf) = tsf_mode {
-            if tsf != ImeMode::Off {
-                tsf
-            } else {
+        let result = tsf_mode.map_or(imm_mode, |tsf| {
+            if tsf == ImeMode::Off {
                 // TSF says Off — check IMM as fallback
                 imm_mode
+            } else {
+                tsf
             }
-        } else {
-            imm_mode
-        };
+        });
 
         // Additional fallback: if both say Off but ImmOpenStatus is true,
         // the IME is likely active but in a state we can't detect well.
@@ -411,6 +408,6 @@ pub fn is_japanese_input_language() -> bool {
         let hkl = GetKeyboardLayout(0);
         // 下位 16 bit が言語 ID。日本語は 0x0411
         let lang_id = hkl.0 as u32 & 0xFFFF;
-        lang_id == 0x0411
+        lang_id == awase::vk::LANGID_JAPANESE
     }
 }

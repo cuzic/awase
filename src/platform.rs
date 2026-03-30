@@ -69,10 +69,10 @@ pub trait KeySender {
     fn send_literal(&self, s: &str);
 
     /// Send a virtual key code (`KeyDown` + `KeyUp`)
-    fn send_vk(&self, vk: u16);
+    fn send_vk(&self, vk: crate::types::VkCode);
 
     /// Send a virtual key event (`KeyDown` or `KeyUp`)
-    fn send_vk_event(&self, vk: u16, is_keyup: bool);
+    fn send_vk_event(&self, vk: crate::types::VkCode, is_keyup: bool);
 }
 
 /// Abstraction for IME state detection.
