@@ -118,6 +118,7 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
 pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
+pub(crate) static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
 
 /// 起動時の警告を集約して報告する診断コレクター
 struct StartupDiagnostics {
@@ -561,6 +562,20 @@ unsafe fn matches_key_combo(combo: &ParsedKeyCombo, event: &RawKeyEvent) -> bool
     combo.ctrl == ctrl_held && combo.shift == shift_held && combo.alt == alt_held
 }
 
+/// クロスプロセス IME 状態検出が不正確な既知のウィンドウクラスか判定する。
+///
+/// UIA `FrameworkId` ベースの非同期判定（`IME_RELIABILITY`）がまだ到着して
+/// いない場合の同期フォールバック。UIA 結果が到着済みの場合はそちらを優先する。
+fn is_cross_process_ime_unreliable_class(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        // Windows 11 メモ帳 (WinUI 3) の TSF-only テキストコントロール
+        "RichEditD2DPT"
+        // XAML Islands の入力面 (Windows Terminal 等)
+        | "Windows.UI.Input.InputSite.WindowClass"
+    )
+}
+
 /// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
 ///
 /// # Safety
@@ -780,9 +795,53 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
 
         // Step 2: Two-layer IME ON/OFF detection
+        //
+        // Modern UI (WinUI 3, XAML Islands 等) では ImmGetDefaultIMEWnd +
+        // WM_IME_CONTROL による IME 状態検出が TSF 状態を反映しない。
+        // UIA FrameworkId ベースの IME_RELIABILITY（非同期）と、
+        // ウィンドウクラス名ベースのフォールバック（同期）を組み合わせて
+        // cross-process 結果の信頼性を判断する。
         let ime_on = {
+            let cross_process = ime::detect_ime_open_cross_process();
+
+            // cross-process が false の場合のみ信頼性を検証する。
+            // true (IME ON) は Modern UI でも正確に返されることが多い。
+            let cross_process = if cross_process == Some(false) {
+                use awase::types::ImeReliability;
+                let reliability = ImeReliability::load(&IME_RELIABILITY);
+
+                let unreliable = match reliability {
+                    ImeReliability::Reliable => false,
+                    ImeReliability::Unreliable => true,
+                    ImeReliability::Unknown => {
+                        // UIA 非同期結果がまだ到着していない →
+                        // ウィンドウクラス名で同期フォールバック判定
+                        gui_info.hwndFocus != HWND::default() && {
+                            let class = focus::classify::get_class_name_string(
+                                gui_info.hwndFocus,
+                            );
+                            is_cross_process_ime_unreliable_class(&class)
+                        }
+                    }
+                };
+
+                if unreliable {
+                    if is_key_down {
+                        log::trace!(
+                            "IME: vk=0x{:02X} CrossProcess=false but ime_reliability={reliability:?} → fallback to shadow",
+                            event.vk_code.0,
+                        );
+                    }
+                    None // shadow にフォールバック
+                } else {
+                    cross_process
+                }
+            } else {
+                cross_process
+            };
+
             // Layer 1: Direct API detection (Win32 apps)
-            if let Some(open) = ime::detect_ime_open_cross_process() {
+            if let Some(open) = cross_process {
                 if is_key_down {
                     log::trace!(
                         "IME: vk=0x{:02X} CrossProcess={open} → {}",
@@ -792,7 +851,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                 }
                 open
             } else {
-                // Layer 2: Shadow state from key tracking (UWP fallback)
+                // Layer 2: Shadow state (UWP / Modern UI / TSF-only fallback)
                 let shadow = SHADOW_IME_ON.get_ref().copied().unwrap_or(true);
                 if is_key_down {
                     log::trace!(
@@ -880,9 +939,12 @@ fn run_message_loop() {
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
                 // UIA 非同期判定完了 → メッセージから結果を取得
+                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = ImeReliability
                 let kind_u8 = msg.wParam.0 as u8;
+                let reliability_u8 = (msg.wParam.0 >> 8) as u8;
                 let result_hwnd = HWND(msg.lParam.0 as *mut _);
                 let kind = FocusKind::from_u8(kind_u8);
+                let reliability = awase::types::ImeReliability::from_u8(reliability_u8);
 
                 // 検証: UIA 結果の hwnd が現在のフォーカスと一致するか確認
                 let mut info = GUITHREADINFO {
@@ -893,18 +955,23 @@ fn run_message_loop() {
                     log::debug!("UIA result for stale hwnd, ignoring");
                     // フォーカスが変わっているので適用しない
                 } else {
-                    // FOCUS_KIND を更新（メインスレッドのみが書き込む）
-                    FocusKind::store(kind, &FOCUS_KIND);
+                    // ImeReliability を更新（常に適用）
+                    reliability.store(&IME_RELIABILITY);
 
-                    // UIA 結果をキャッシュに反映
-                    if let Some(f) = FOCUS.get_mut() {
-                        if let Some((pid, cls)) = f.last_focus_info.as_ref() {
-                            f.cache
-                                .insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
+                    // FOCUS_KIND を更新（Undetermined の場合はスキップ）
+                    if kind != FocusKind::Undetermined {
+                        FocusKind::store(kind, &FOCUS_KIND);
+
+                        // UIA 結果をキャッシュに反映
+                        if let Some(f) = FOCUS.get_mut() {
+                            if let Some((pid, cls)) = f.last_focus_info.as_ref() {
+                                f.cache
+                                    .insert(*pid, cls.clone(), kind, DetectionSource::UiaAsync);
+                            }
                         }
-                    }
-                    if kind == FocusKind::NonText {
-                        invalidate_engine_context(ContextChange::FocusChanged);
+                        if kind == FocusKind::NonText {
+                            invalidate_engine_context(ContextChange::FocusChanged);
+                        }
                     }
                 }
             },

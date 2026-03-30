@@ -2,7 +2,7 @@
 
 use std::sync::mpsc;
 
-use awase::types::FocusKind;
+use awase::types::{FocusKind, ImeReliability};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -32,25 +32,76 @@ pub struct SendableHwnd(pub HWND);
 // 別スレッドから参照しても問題ない。
 unsafe impl Send for SendableHwnd {}
 
-/// UIA を使用してフォーカス中コントロールの種別を判定する
+/// UIA 非同期判定の結果（FocusKind + ImeReliability）
+pub struct UiaClassifyResult {
+    pub focus_kind: FocusKind,
+    pub ime_reliability: ImeReliability,
+}
+
+/// UIA `FrameworkId` から IME 状態取得の信頼度を推定する
+///
+/// Win32 / WinForms は従来の IMM32 パスを使用するためクロスプロセス検出が正確。
+/// WPF は IMM32 互換レイヤーを持つが TSF 寄りなので Unknown とする。
+/// DirectUI / XAML / その他の Modern UI は TSF のみで IMM が不正確。
+fn classify_framework_id(framework_id: &str) -> ImeReliability {
+    match framework_id {
+        "Win32" | "WinForm" => ImeReliability::Reliable,
+        "DirectUI" | "XAML" => ImeReliability::Unreliable,
+        // WPF は TSF 統合だが IMM 互換もあるため安全側に倒す
+        "WPF" => ImeReliability::Unreliable,
+        // Chrome/Electron 等は独自の IME 実装
+        _ => ImeReliability::Unknown,
+    }
+}
+
+/// UIA を使用してフォーカス中コントロールの種別と IME 信頼度を判定する
 ///
 /// Pattern-first アプローチ:
 /// 1. `ValuePattern` → `IsReadOnly` で編集可能なテキストフィールドを検出
 /// 2. `TextPattern` の有無でテキスト編集能力を検出
 /// 3. `CurrentControlType` をフォールバックとして使用
 ///
+/// さらに `FrameworkId` から IME 状態取得の信頼度を推定する。
+///
 /// Chrome/WPF/UWP など Win32 クラス名では判定できないコントロールに有効。
 ///
 /// Safety: COM が初期化済みのスレッドから呼び出すこと
 #[allow(unused_variables)] // hwnd はデバッグ用に保持
-pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> FocusKind {
+pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassifyResult {
     let element: IUIAutomationElement = match automation.GetFocusedElement() {
         Ok(el) => el,
         Err(e) => {
             log::trace!("UIA: GetFocusedElement failed: {e:?}");
-            return FocusKind::Undetermined;
+            return UiaClassifyResult {
+                focus_kind: FocusKind::Undetermined,
+                ime_reliability: ImeReliability::Unknown,
+            };
         }
     };
+
+    // FrameworkId を取得して IME 信頼度を判定
+    let ime_reliability = match element.CurrentFrameworkId() {
+        Ok(fid) => {
+            let fid_str = fid.to_string();
+            let reliability = classify_framework_id(&fid_str);
+            log::debug!("UIA: FrameworkId=\"{fid_str}\" → {reliability:?}");
+            reliability
+        }
+        Err(e) => {
+            log::trace!("UIA: CurrentFrameworkId failed: {e:?}");
+            ImeReliability::Unknown
+        }
+    };
+
+    // マクロ的ヘルパー: FocusKind と ime_reliability をまとめて返す
+    macro_rules! result {
+        ($kind:expr) => {
+            UiaClassifyResult {
+                focus_kind: $kind,
+                ime_reliability,
+            }
+        };
+    }
 
     // 1. ValuePattern → IsReadOnly チェック
     //    「編集可能な値を持つ」が最も強いシグナル
@@ -60,11 +111,11 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
         match pattern.CurrentIsReadOnly() {
             Ok(read_only) if !read_only.as_bool() => {
                 log::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
-                return FocusKind::TextInput;
+                return result!(FocusKind::TextInput);
             }
             Ok(_) => {
                 log::debug!("UIA: ValuePattern(IsReadOnly=true) → NonText");
-                return FocusKind::NonText;
+                return result!(FocusKind::NonText);
             }
             Err(_) => {} // fall through
         }
@@ -77,7 +128,7 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
         .is_ok()
     {
         log::debug!("UIA: TextPattern available → TextInput");
-        return FocusKind::TextInput;
+        return result!(FocusKind::TextInput);
     }
 
     // 3. フォールバック: ControlType で確定的な非テキストコントロールを判別
@@ -85,7 +136,7 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
         // テキスト入力系（補助的な確認のみ）
         if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
             log::debug!("UIA: ControlType={control_type:?} → TextInput");
-            return FocusKind::TextInput;
+            return result!(FocusKind::TextInput);
         }
 
         // 非テキスト系
@@ -111,13 +162,13 @@ pub unsafe fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> Focu
         ];
         if non_text_types.contains(&control_type) {
             log::debug!("UIA: ControlType={control_type:?} → NonText");
-            return FocusKind::NonText;
+            return result!(FocusKind::NonText);
         }
     }
 
     // 4. 確定的なシグナルなし
     log::debug!("UIA: no definitive signal → Undetermined");
-    FocusKind::Undetermined
+    result!(FocusKind::Undetermined)
 }
 
 /// UIA 非同期判定ワーカースレッドを起動する
@@ -148,16 +199,39 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
         while let Ok(SendableHwnd(hwnd)) = rx.recv() {
             // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
             // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
-            let state = unsafe { uia_classify_focus(&automation, hwnd) };
-            if state != FocusKind::Undetermined {
-                log::debug!("UIA async: hwnd={hwnd:?} → {state:?}");
+            let result = unsafe { uia_classify_focus(&automation, hwnd) };
+            if result.focus_kind != FocusKind::Undetermined {
+                log::debug!(
+                    "UIA async: hwnd={hwnd:?} → {:?} (ime_reliability={:?})",
+                    result.focus_kind,
+                    result.ime_reliability,
+                );
 
-                // メインスレッドに結果を送信（FOCUS_KIND への書き込みはメインスレッドで行う）
+                // メインスレッドに結果を送信
+                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = ImeReliability
+                let wparam_val = (result.focus_kind as u8 as usize)
+                    | ((result.ime_reliability as u8 as usize) << 8);
                 unsafe {
                     let _ = PostMessageW(
                         HWND::default(),
                         crate::WM_FOCUS_KIND_UPDATE,
-                        WPARAM(state as u8 as usize),
+                        WPARAM(wparam_val),
+                        LPARAM(hwnd.0 as isize),
+                    );
+                }
+            } else if result.ime_reliability != ImeReliability::Unknown {
+                // FocusKind は Undetermined だが ImeReliability は判明 → 送信
+                log::debug!(
+                    "UIA async: hwnd={hwnd:?} → Undetermined (ime_reliability={:?})",
+                    result.ime_reliability,
+                );
+                let wparam_val = (FocusKind::Undetermined as u8 as usize)
+                    | ((result.ime_reliability as u8 as usize) << 8);
+                unsafe {
+                    let _ = PostMessageW(
+                        HWND::default(),
+                        crate::WM_FOCUS_KIND_UPDATE,
+                        WPARAM(wparam_val),
                         LPARAM(hwnd.0 as isize),
                     );
                 }

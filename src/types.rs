@@ -79,6 +79,42 @@ pub enum ContextChange {
     FocusChanged,
 }
 
+/// 外部プロセスの IME 状態をクロスプロセス API で正確に取得できるかの信頼度
+///
+/// `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL / IMC_GETOPENSTATUS` は Win32 アプリでは
+/// 正確に動作するが、WinUI 3 / XAML Islands 等の Modern UI では互換レイヤー経由のため
+/// 実際の TSF IME 状態を反映しないことがある。
+/// UIA `FrameworkId` と IMM コンテキスト有無から推定する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ImeReliability {
+    /// クラシック Win32 / WinForms — クロスプロセス IME 検出を信頼できる
+    Reliable = 0,
+    /// Modern UI (DirectUI, XAML, WinUI 等) — クロスプロセス IME 検出が不正確な可能性
+    Unreliable = 1,
+    /// 未判定（UIA 非同期結果待ち）
+    Unknown = 2,
+}
+
+impl ImeReliability {
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Reliable,
+            1 => Self::Unreliable,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn load(atomic: &std::sync::atomic::AtomicU8) -> Self {
+        Self::from_u8(atomic.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn store(self, atomic: &std::sync::atomic::AtomicU8) {
+        atomic.store(self as u8, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// フォーカス中コントロールの種別
 ///
 /// テキスト入力を受け付けるかどうかを示す。

@@ -147,6 +147,11 @@ unsafe extern "system" fn win_event_proc(
         }
     }
 
+    // IME 信頼度をリセット（フォーカスが変わるたびに再判定が必要）
+    // UIA 非同期結果が到着するまでは Unknown。
+    // その間はウィンドウクラス名による同期フォールバックが使われる。
+    awase::types::ImeReliability::Unknown.store(&crate::IME_RELIABILITY);
+
     // Config オーバーライド（最高優先度、キャッシュより先に判定）
     if let Some(overrides) = crate::FOCUS.get_ref().map(|f| &f.overrides) {
         if !overrides.force_text.is_empty() || !overrides.force_bypass.is_empty() {
@@ -213,13 +218,15 @@ unsafe extern "system" fn win_event_proc(
         crate::invalidate_engine_context(ContextChange::FocusChanged);
     }
 
-    // Step 5: Phase 1-2 で判定不能なら UIA 非同期判定をリクエスト
-    if state == FocusKind::Undetermined {
+    // Step 5: UIA 非同期判定をリクエスト
+    // Phase 1-2 で FocusKind が確定していても、ImeReliability の判定には
+    // UIA FrameworkId が必要なため、常にリクエストする。
+    {
         if let Some(tx) = crate::FOCUS.get_ref().and_then(|f| f.uia_sender.as_ref()) {
             let _ = tx.send(SendableHwnd(hwnd));
         }
         // auto-IME-OFF は行わない。Windows 11 では XAML インフラウィンドウが
-        // 通常のウィンドウ切替時にも Undetermined フォーカスイベントを発火するた���、
+        // 通常のウィンドウ切替時にも Undetermined フォーカスイベントを発火するため、
         // auto-IME-OFF は正常なテキスト入力を阻害する。
         // ゲーム/gvim 保護は config.toml の force_bypass で対応する。
     }
