@@ -469,32 +469,51 @@ unsafe fn resolve_input_context() -> InputContext {
 }
 
 /// フックコールバックからの Engine 呼び出し
-/// フックコールバック — 最小版（全自動判定無効）
+/// フックコールバック — IME チェック付き簡易版
 ///
-/// エンジンが有効なら常にエンジン処理。
-/// Ctrl+Shift+F12 でエンジン ON/OFF、Ctrl+Shift+F11 でフォーカスオーバーライド。
-/// IME チェック・フォーカス判定・ヒューリスティック全て無効。
+/// IME が OFF / 英数モードならパススルー、それ以外はエンジン処理。
+/// フォーカス判定・ヒューリスティックは無効。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     let Some(engine) = ENGINE.get_mut() else {
         return CallbackResult::PassThrough;
     };
 
-    log::trace!(
-        "Hook callback: vk=0x{:02X} scan=0x{:04X} type={:?}",
-        event.vk_code.0,
-        event.scan_code.0,
-        event.event_type,
-    );
+    // IME チェック（詳細ログ付き）
+    if let Some(ime_provider) = IME.get_ref() {
+        let mode = ime_provider.get_mode();
+        let active = ime_provider.is_active();
+        let kana = mode.is_kana_input();
 
+        // KeyDown のみログ出力（KeyUp は省略して見やすく）
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if is_key_down {
+            log::trace!(
+                "IME check: vk=0x{:02X} active={active} mode={mode:?} kana={kana}",
+                event.vk_code.0,
+            );
+        }
+
+        if !active || !kana {
+            return CallbackResult::PassThrough;
+        }
+    }
+
+    // エンジン処理
     let response = engine.on_event(event);
     let mut timer_runtime = Win32TimerRuntime;
     let mut action_executor = SendInputExecutor;
     let consumed = dispatch(&response, &mut timer_runtime, &mut action_executor);
 
-    log::trace!(
-        "Engine result: consumed={consumed} actions={:?}",
-        response.actions,
-    );
+    if !response.actions.is_empty() {
+        log::trace!(
+            "Engine: vk=0x{:02X} consumed={consumed} actions={:?}",
+            event.vk_code.0,
+            response.actions,
+        );
+    }
 
     if consumed {
         CallbackResult::Consumed

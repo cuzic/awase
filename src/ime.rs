@@ -2,16 +2,16 @@ use windows::core::{Interface, GUID};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmReleaseContext,
-    GCS_COMPSTR, IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CONVERSION_MODE,
-    IME_SENTENCE_MODE,
+    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
+    ImmReleaseContext, GCS_COMPSTR, IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE,
+    IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfCompartment, ITfCompartmentMgr, ITfThreadMgr,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 pub use awase::platform::ImeMode;
 
@@ -95,7 +95,9 @@ impl ImeProvider for TsfProvider {
             .get_compartment_value(&GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)
             .unwrap_or(0);
 
-        conversion_to_ime_mode(open != 0, conversion)
+        let mode = conversion_to_ime_mode(open != 0, conversion);
+        log::trace!("TSF: open={open} conversion=0x{conversion:08X} → {mode:?}");
+        mode
     }
 
     fn is_composing(&self) -> bool {
@@ -122,11 +124,13 @@ impl ImeProvider for ImmProvider {
         unsafe {
             let hwnd = GetForegroundWindow();
             if hwnd == HWND::default() {
+                log::trace!("IMM: GetForegroundWindow returned NULL");
                 return ImeMode::Off;
             }
 
             let himc = ImmGetContext(hwnd);
             if himc.is_invalid() {
+                log::trace!("IMM: ImmGetContext({hwnd:?}) returned invalid");
                 return ImeMode::Off;
             }
 
@@ -137,10 +141,17 @@ impl ImeProvider for ImmProvider {
             let _ = ImmReleaseContext(hwnd, himc);
 
             if !ok.as_bool() {
+                log::trace!("IMM: ImmGetConversionStatus failed for hwnd={hwnd:?}");
                 return ImeMode::Off;
             }
 
-            conversion_to_ime_mode(conversion.0 & IME_CMODE_NATIVE.0 != 0, conversion.0)
+            let native = conversion.0 & IME_CMODE_NATIVE.0 != 0;
+            let mode = conversion_to_ime_mode(native, conversion.0);
+            log::trace!(
+                "IMM: hwnd={hwnd:?} conversion=0x{:08X} native={native} → {mode:?}",
+                conversion.0,
+            );
+            mode
         }
     }
 
@@ -185,23 +196,65 @@ impl HybridProvider {
 
 impl ImeProvider for HybridProvider {
     fn get_mode(&self) -> ImeMode {
-        // TSF が利用可能ならまず TSF で取得を試みる
-        if let Some(ref tsf) = self.tsf {
-            let mode = tsf.get_mode();
-            // TSF が有効な結果を返したらそれを使う
-            if mode != ImeMode::Off {
-                return mode;
+        // All methods for comparison logging
+        let tsf_mode = self.tsf.as_ref().map(ImeProvider::get_mode);
+        let imm_mode = self.imm.get_mode();
+
+        // Keyboard layout (HKL) as additional signal
+        let hkl = unsafe { GetKeyboardLayout(0) };
+        let lang_id = hkl.0 as u32 & 0xFFFF;
+        let is_japanese_hkl = lang_id == 0x0411;
+
+        // ImmGetOpenStatus as yet another signal
+        let imm_open = unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd != HWND::default() {
+                let himc = ImmGetContext(hwnd);
+                if !himc.is_invalid() {
+                    let open = ImmGetOpenStatus(himc);
+                    let _ = ImmReleaseContext(hwnd, himc);
+                    Some(open.as_bool())
+                } else {
+                    None
+                }
+            } else {
+                None
             }
-            // TSF が Off を返した場合、IMM32 でも確認する
-            // （一部アプリで TSF が正しく動作しないケースへの対応）
+        };
+
+        log::trace!(
+            "HybridIME: TSF={tsf_mode:?} IMM={imm_mode:?} ImmOpenStatus={imm_open:?} HKL=0x{lang_id:04X} japanese={is_japanese_hkl}",
+        );
+
+        // Decision: TSF first, then IMM fallback
+        let result = if let Some(tsf) = tsf_mode {
+            if tsf != ImeMode::Off {
+                tsf
+            } else {
+                // TSF says Off — check IMM as fallback
+                imm_mode
+            }
+        } else {
+            imm_mode
+        };
+
+        // Additional fallback: if both say Off but ImmOpenStatus is true,
+        // the IME is likely active but in a state we can't detect well.
+        // Log this discrepancy for debugging.
+        if result == ImeMode::Off && imm_open == Some(true) {
+            log::debug!(
+                "HybridIME: TSF/IMM say Off but ImmOpenStatus=true — possible detection gap"
+            );
         }
 
-        self.imm.get_mode()
+        log::trace!("HybridIME: final result={result:?}");
+        result
     }
 
     fn is_composing(&self) -> bool {
-        // Try IMM32 directly (more reliable for composition detection)
-        self.imm.is_composing()
+        let result = self.imm.is_composing();
+        log::trace!("HybridIME: is_composing={result}");
+        result
     }
 }
 
