@@ -43,13 +43,6 @@ engine_on_keys = ["Ctrl+Shift+VK_CONVERT"]
 # エンジン OFF キー（NICOLA 入力を無効にするキー）
 engine_off_keys = ["Ctrl+Shift+VK_NONCONVERT"]
 
-# Engine ON 時に送信する IME 制御キー（IME をひらがなモードに切り替え）
-# "none" または空文字で無効化
-ime_on_vk = "VK_OEM_ENLW"     # 0xF4 = 全角モード
-
-# Engine OFF 時に送信する IME 制御キー（IME を直接入力モードに切り替え）
-ime_off_vk = "VK_OEM_AUTO"    # 0xF3 = 半角モード
-
 # キーリマップ: Ctrl+変換 → IME ON キーを送信（エンジン状態に関係なく動作）
 ctrl_convert_remap_vk = "VK_OEM_ENLW"     # 0xF4 = ひらがなモード
 

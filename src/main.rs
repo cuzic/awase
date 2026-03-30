@@ -221,8 +221,6 @@ fn main() -> Result<()> {
             focus: app_state::FocusDetector::new(config.focus_overrides.clone()),
             engine_on_keys,
             engine_off_keys,
-            ime_on_vk: vk_name_to_code(&config.general.ime_on_vk).unwrap_or(0),
-            ime_off_vk: vk_name_to_code(&config.general.ime_off_vk).unwrap_or(0),
             ctrl_convert_remap_vk: vk_name_to_code(&config.general.ctrl_convert_remap_vk).unwrap_or(0),
             ctrl_nonconvert_remap_vk: vk_name_to_code(&config.general.ctrl_nonconvert_remap_vk).unwrap_or(0),
             shadow_ime_on: true, // safe default: engine ON

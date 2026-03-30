@@ -92,16 +92,6 @@ pub struct GeneralConfig {
     #[serde(default = "default_engine_off_keys")]
     pub engine_off_keys: Vec<String>,
 
-    /// Engine ON 時に送信する IME 制御キー（VK コード名、デフォルト: VK_OEM_ENLW=0xF4）
-    /// IME をひらがなモードに切り替える
-    #[serde(default = "default_ime_on_key")]
-    pub ime_on_vk: String,
-
-    /// Engine OFF 時に送信する IME 制御キー（VK コード名、デフォルト: VK_OEM_AUTO=0xF3）
-    /// IME を直接入力モードに切り替える
-    #[serde(default = "default_ime_off_key")]
-    pub ime_off_vk: String,
-
     /// キーリマップ: Ctrl+変換 → 指定 VK を送信（デフォルト: VK_OEM_ENLW=0xF4）
     /// エンジン状態に関係なく、Ctrl+変換 を押すと IME ON に切り替える
     #[serde(default = "default_ime_on_key")]

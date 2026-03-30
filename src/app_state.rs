@@ -142,10 +142,6 @@ pub(crate) struct AppState {
     pub focus: FocusDetector,
     pub engine_on_keys: Vec<ParsedKeyCombo>,
     pub engine_off_keys: Vec<ParsedKeyCombo>,
-    /// Engine ON 時に送信する IME 制御キーの VK コード（0 = 送信しない）
-    pub ime_on_vk: u16,
-    /// Engine OFF 時に送信する IME 制御キーの VK コード（0 = 送信しない）
-    pub ime_off_vk: u16,
     /// Ctrl+変換 リマップ先の VK コード（0 = リマップしない）
     pub ctrl_convert_remap_vk: u16,
     /// Ctrl+無変換 リマップ先の VK コード（0 = リマップしない）
@@ -305,17 +301,11 @@ impl AppState {
                 dispatch(&flush_resp, &mut tr, &mut ae);
                 log::info!("Engine ON (key combo)");
                 self.tray.set_enabled(enabled);
-                // IME をひらがなモードに切り替え
-                if self.ime_on_vk != 0 {
-                    self.output.send_keys(&[KeyAction::Key(self.ime_on_vk), KeyAction::KeyUp(self.ime_on_vk)]);
-                    self.shadow_ime_on = true;
-                    log::debug!("Sent IME ON key (vk=0x{:02X})", self.ime_on_vk);
-                }
                 return Some(CallbackResult::Consumed);
             }
         }
 
-        // エンジン ON → OFF: engine_off_keys（デフォルト: Ctrl+VK_NONCONVERT）
+        // エンジン ON → OFF: engine_off_keys（デフォルト: Ctrl+Shift+VK_NONCONVERT）
         if self.engine.is_enabled() {
             if self.engine_off_keys.iter().any(|k| matches_key_combo(k, event)) {
                 let (enabled, flush_resp) = self.engine.set_enabled(false);
@@ -324,12 +314,6 @@ impl AppState {
                 dispatch(&flush_resp, &mut tr, &mut ae);
                 log::info!("Engine OFF (key combo)");
                 self.tray.set_enabled(enabled);
-                // IME を直接入力モードに切り替え
-                if self.ime_off_vk != 0 {
-                    self.output.send_keys(&[KeyAction::Key(self.ime_off_vk), KeyAction::KeyUp(self.ime_off_vk)]);
-                    self.shadow_ime_on = false;
-                    log::debug!("Sent IME OFF key (vk=0x{:02X})", self.ime_off_vk);
-                }
                 return Some(CallbackResult::Consumed);
             }
         }
