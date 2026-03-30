@@ -32,7 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetTimer, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
 };
 
-use awase::config::{parse_key_combo, vk_name_to_code, AppConfig, ParsedKeyCombo, ValidatedConfig};
+use awase::config::{parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig};
 use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
@@ -99,6 +99,19 @@ static ENGINE_ON_KEYS: SingleThreadCell<Vec<ParsedKeyCombo>> = SingleThreadCell:
 /// エンジン OFF キー（Ctrl+無変換等）— 起動時に設定から初期化（複数キー対応）
 static ENGINE_OFF_KEYS: SingleThreadCell<Vec<ParsedKeyCombo>> = SingleThreadCell::new();
 
+/// Shadow IME state (UWP fallback when cross-process detection fails).
+/// `true` = IME ON (safe default: engine processes keys).
+static SHADOW_IME_ON: SingleThreadCell<bool> = SingleThreadCell::new();
+
+/// IME sync toggle keys (VK codes, no modifiers)
+static IME_SYNC_TOGGLE_KEYS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
+
+/// IME sync ON keys (VK codes, no modifiers)
+static IME_SYNC_ON_KEYS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
+
+/// IME sync OFF keys (VK codes, no modifiers)
+static IME_SYNC_OFF_KEYS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
+
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -153,6 +166,7 @@ fn main() -> Result<()> {
     }
     let (layout_names, initial_layout_name) = init_engine_validated(&config, &mut diag)?;
     init_engine_toggle_keys(&config, &mut diag);
+    init_ime_sync_keys(&config.ime_sync, &mut diag);
     init_ime(&mut diag);
     init_ngram_validated(&config, &mut diag);
 
@@ -298,6 +312,39 @@ fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnosti
     }
 }
 
+/// IME sync キーの初期化（shadow IME 状態追跡用）
+fn init_ime_sync_keys(ime_sync: &ImeSyncConfig, diag: &mut StartupDiagnostics) {
+    let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<u16> {
+        keys.iter()
+            .filter_map(|s| {
+                let code = vk_name_to_code(s);
+                if code.is_none() {
+                    diag.warn(format!("ime_sync.{label} のパースに失敗しました: {s}"));
+                }
+                code
+            })
+            .collect()
+    };
+
+    let toggle = parse_vk_list(&ime_sync.toggle_keys, "toggle_keys");
+    let on = parse_vk_list(&ime_sync.on_keys, "on_keys");
+    let off = parse_vk_list(&ime_sync.off_keys, "off_keys");
+
+    log::info!(
+        "IME sync keys: toggle={:?} on={:?} off={:?}",
+        ime_sync.toggle_keys,
+        ime_sync.on_keys,
+        ime_sync.off_keys,
+    );
+
+    unsafe {
+        IME_SYNC_TOGGLE_KEYS.set(toggle);
+        IME_SYNC_ON_KEYS.set(on);
+        IME_SYNC_OFF_KEYS.set(off);
+        SHADOW_IME_ON.set(true); // safe default: engine ON
+    }
+}
+
 /// IME プロバイダ初期化（TSF 優先、IMM32 フォールバック）
 fn init_ime(diag: &mut StartupDiagnostics) {
     let ime_provider = HybridProvider::new();
@@ -434,6 +481,10 @@ fn cleanup() {
         KEY_BUFFER.clear();
         ENGINE_ON_KEYS.clear();
         ENGINE_OFF_KEYS.clear();
+        SHADOW_IME_ON.clear();
+        IME_SYNC_TOGGLE_KEYS.clear();
+        IME_SYNC_ON_KEYS.clear();
+        IME_SYNC_OFF_KEYS.clear();
     }
     log::info!("Exited cleanly.");
 }
@@ -584,6 +635,38 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
+    // ── Shadow IME state tracking (ime_sync keys) ──
+    {
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if is_key_down {
+            let vk = event.vk_code.0;
+
+            if let Some(on_keys) = IME_SYNC_ON_KEYS.get_ref() {
+                if on_keys.contains(&vk) {
+                    SHADOW_IME_ON.set(true);
+                    log::debug!("Shadow IME ON (key 0x{vk:02X})");
+                }
+            }
+            if let Some(off_keys) = IME_SYNC_OFF_KEYS.get_ref() {
+                if off_keys.contains(&vk) {
+                    SHADOW_IME_ON.set(false);
+                    log::debug!("Shadow IME OFF (key 0x{vk:02X})");
+                }
+            }
+            if let Some(toggle_keys) = IME_SYNC_TOGGLE_KEYS.get_ref() {
+                if toggle_keys.contains(&vk) {
+                    let current = SHADOW_IME_ON.get_ref().copied().unwrap_or(true);
+                    let new_state = !current;
+                    SHADOW_IME_ON.set(new_state);
+                    log::debug!("Shadow IME toggle → {new_state} (key 0x{vk:02X})");
+                }
+            }
+        }
+    }
+
     // ── IME モード連動: 全角/半角切替でエンジン ON/OFF を自動同期 ──
     // VK 0xF3 (全角モード) → engine ON
     // VK 0xF4 (半角モード) → engine OFF
@@ -635,20 +718,13 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    // IME チェック: 対象スレッドの HKL + ImmGetOpenStatus フォールバック
+    // ── IME 状態検出（二層方式）──
     //
-    // 一次判定: GetGUIThreadInfo → GetWindowThreadProcessId → GetKeyboardLayout(threadId)
-    //   → 対象スレッドの入力ロケールが日本語かを判定
-    // 二次判定: ImmGetContext(hwndFocus) + ImmGetOpenStatus
-    //   → 取れた場合のみ IME ON/OFF を判定（TSF-only アプリでは取れない）
+    // Layer 1: ImmGetDefaultIMEWnd + WM_IME_CONTROL（Win32 アプリ向けクロスプロセス検出）
+    // Layer 2: Shadow IME state（UWP 等、Layer 1 失敗時のフォールバック）
     //
-    // 結果:
-    //   NonJapanese → PassThrough
-    //   JapaneseImeClosed → PassThrough（IME OFF 確定）
-    //   JapaneseImeOpen / JapaneseImeUnknown → Engine 処理
+    // さらに HKL で日本語かどうかの基本チェックも行う。
     {
-        use windows::Win32::Foundation::HWND as WinHWND;
-        use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext};
         use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
         use windows::Win32::UI::WindowsAndMessaging::{
             GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
@@ -659,22 +735,21 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
 
-        // Step 1: 対象スレッドの HKL を取得
+        // Step 1: 対象スレッドの HKL を取得（日本語チェック）
         let mut gui_info = GUITHREADINFO {
             cbSize: size_of::<GUITHREADINFO>() as u32,
             ..Default::default()
         };
-        let (thread_id, hwnd_focus) = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
-            let fg_hwnd = if gui_info.hwndFocus != WinHWND::default() {
+        let thread_id = if GetGUIThreadInfo(0, &mut gui_info).is_ok() {
+            let fg_hwnd = if gui_info.hwndFocus != HWND::default() {
                 gui_info.hwndFocus
             } else {
                 gui_info.hwndActive
             };
             let mut pid = 0u32;
-            let tid = GetWindowThreadProcessId(fg_hwnd, Some(&mut pid));
-            (tid, fg_hwnd)
+            GetWindowThreadProcessId(fg_hwnd, Some(&mut pid))
         } else {
-            (0, WinHWND::default())
+            0
         };
 
         let hkl = GetKeyboardLayout(thread_id);
@@ -691,35 +766,33 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             return CallbackResult::PassThrough;
         }
 
-        // Step 2: IMM フォールバック（取れる場合のみ）
-        let ime_open = if hwnd_focus != WinHWND::default() {
-            let himc = ImmGetContext(hwnd_focus);
-            if !himc.is_invalid() {
-                let open = ImmGetOpenStatus(himc).as_bool();
-                ImmReleaseContext(hwnd_focus, himc);
-                Some(open)
+        // Step 2: Two-layer IME ON/OFF detection
+        let ime_on = {
+            // Layer 1: Direct API detection (Win32 apps)
+            if let Some(open) = ime::detect_ime_open_cross_process() {
+                if is_key_down {
+                    log::trace!(
+                        "IME: vk=0x{:02X} CrossProcess={open} → {}",
+                        event.vk_code.0,
+                        if open { "engine" } else { "passthrough" },
+                    );
+                }
+                open
             } else {
-                None // TSF-only アプリ（IMM コンテキストなし）
+                // Layer 2: Shadow state from key tracking (UWP fallback)
+                let shadow = SHADOW_IME_ON.get_ref().copied().unwrap_or(true);
+                if is_key_down {
+                    log::trace!(
+                        "IME: vk=0x{:02X} CrossProcess=None shadow={shadow} → {}",
+                        event.vk_code.0,
+                        if shadow { "engine" } else { "passthrough" },
+                    );
+                }
+                shadow
             }
-        } else {
-            None
         };
 
-        if is_key_down {
-            log::trace!(
-                "IME: vk=0x{:02X} tid={thread_id} HKL=0x{lang_id:04X} ImmOpen={ime_open:?} → {}",
-                event.vk_code.0,
-                match ime_open {
-                    Some(true) => "JapaneseImeOpen → engine",
-                    Some(false) => "JapaneseImeClosed → passthrough",
-                    None => "JapaneseImeUnknown → engine",
-                },
-            );
-        }
-
-        // JapaneseImeClosed（IME OFF 確定）のみ PassThrough
-        // JapaneseImeUnknown（TSF-only）は安全側でエンジン処理
-        if ime_open == Some(false) {
+        if !ime_on {
             return CallbackResult::PassThrough;
         }
     }
@@ -954,6 +1027,16 @@ unsafe fn reload_config() {
         ENGINE_OFF_KEYS.clear();
         init_engine_toggle_keys(&config, &mut reload_toggle_diag);
         reload_toggle_diag.report();
+    }
+
+    // IME sync キーの再読み込み
+    {
+        let mut reload_sync_diag = StartupDiagnostics::new();
+        IME_SYNC_TOGGLE_KEYS.clear();
+        IME_SYNC_ON_KEYS.clear();
+        IME_SYNC_OFF_KEYS.clear();
+        init_ime_sync_keys(&config.ime_sync, &mut reload_sync_diag);
+        reload_sync_diag.report();
     }
 
     // フォーカスオーバーライド再読み込み + キャッシュクリア

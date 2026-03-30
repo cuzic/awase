@@ -27,3 +27,9 @@ default_layout = "nicola.yab"
 # force_bypass = [
 #     { process = "explorer.exe", class = "CabinetWClass" },
 # ]
+
+# IME 同期設定（シャドウ IME 状態追跡用キー定義）
+# [ime_sync]
+# toggle_keys = ["VK_KANJI"]
+# on_keys = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
+# off_keys = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]

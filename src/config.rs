@@ -127,6 +127,34 @@ fn default_engine_off_keys() -> Vec<String> {
 }
 
 
+/// IME 同期設定（シャドウ IME 状態追跡用キー定義）
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ImeSyncConfig {
+    /// Toggle keys (direction unknown, flip shadow state)
+    #[serde(default = "default_ime_toggle_keys")]
+    pub toggle_keys: Vec<String>,
+
+    /// ON keys (IME is now ON / zenkaku)
+    #[serde(default = "default_ime_on_keys")]
+    pub on_keys: Vec<String>,
+
+    /// OFF keys (IME is now OFF / hankaku)
+    #[serde(default = "default_ime_off_keys")]
+    pub off_keys: Vec<String>,
+}
+
+fn default_ime_toggle_keys() -> Vec<String> {
+    vec!["VK_KANJI".to_string()]
+}
+
+fn default_ime_on_keys() -> Vec<String> {
+    vec!["VK_DBE_DBCSCHAR".to_string(), "VK_IME_ON".to_string()]
+}
+
+fn default_ime_off_keys() -> Vec<String> {
+    vec!["VK_DBE_SBCSCHAR".to_string(), "VK_IME_OFF".to_string()]
+}
+
 /// フォーカスオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FocusOverrideEntry {
@@ -155,6 +183,8 @@ pub struct AppConfig {
     pub general: GeneralConfig,
     #[serde(default)]
     pub focus_overrides: FocusOverrides,
+    #[serde(default)]
+    pub ime_sync: ImeSyncConfig,
 }
 
 impl AppConfig {
@@ -191,6 +221,8 @@ pub struct ValidatedConfig {
     pub general: GeneralConfig,
     /// 検証済みのフォーカスオーバーライド
     pub focus_overrides: FocusOverrides,
+    /// 検証済みの IME 同期設定
+    pub ime_sync: ImeSyncConfig,
 }
 
 impl AppConfig {
@@ -258,6 +290,7 @@ impl AppConfig {
             ValidatedConfig {
                 general,
                 focus_overrides,
+                ime_sync: self.ime_sync,
             },
             warnings,
         )
@@ -335,6 +368,14 @@ pub fn vk_name_to_code(name: &str) -> Option<u16> {
         #[allow(clippy::match_same_arms)] // 意図的なエイリアス
         "VK_NONCONVERT" | "VK_MUHENKAN" => Some(0x1D), // 無変換
         "VK_KANA" => Some(0x15),    // かな
+        "VK_KANJI" => Some(0x19),   // 半角/全角
+        "VK_IME_ON" => Some(0x16),
+        "VK_IME_OFF" => Some(0x1A),
+        "VK_DBE_ALPHANUMERIC" => Some(0xF0),
+        "VK_DBE_KATAKANA" => Some(0xF1),
+        "VK_DBE_HIRAGANA" => Some(0xF2),
+        "VK_DBE_SBCSCHAR" => Some(0xF3),  // 半角モード
+        "VK_DBE_DBCSCHAR" => Some(0xF4),  // 全角モード
 
         // 修飾キー
         "VK_SHIFT" => Some(0x10),

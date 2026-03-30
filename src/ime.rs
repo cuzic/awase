@@ -1,13 +1,13 @@
 use windows::core::{Interface, GUID};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
-    ImmReleaseContext, GCS_COMPSTR, IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE,
-    IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd,
+    ImmGetOpenStatus, ImmReleaseContext, GCS_COMPSTR, IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA,
+    IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfCompartment, ITfCompartmentMgr, ITfThreadMgr,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
@@ -172,6 +172,88 @@ impl ImeProvider for ImmProvider {
     }
 }
 
+// ─── Cross-process IME detection via ImmGetDefaultIMEWnd ─────
+
+/// WM_IME_CONTROL message constant
+const WM_IME_CONTROL: u32 = 0x0283;
+/// IMC_GETOPENSTATUS wParam for WM_IME_CONTROL
+const IMC_GETOPENSTATUS: usize = 0x0005;
+/// IMC_GETCONVERSIONMODE wParam for WM_IME_CONTROL
+const IMC_GETCONVERSIONMODE: usize = 0x0001;
+
+/// Cross-process IME ON/OFF detection via `ImmGetDefaultIMEWnd`.
+///
+/// This works across process boundaries (unlike `ImmGetContext` which
+/// returns NULL for other processes' windows).
+///
+/// Returns `Some(true)` = IME ON, `Some(false)` = IME OFF, `None` = detection failed.
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread.
+pub unsafe fn detect_ime_open_cross_process() -> Option<bool> {
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return None;
+    }
+
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return None; // UWP — no IME window
+    }
+
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETOPENSTATUS),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        200, // timeout ms
+        Some(&mut result),
+    );
+
+    log::trace!("CrossProcess: ime_wnd={ime_wnd:?} open={result:?}");
+
+    if ok.0 == 0 {
+        return None; // timeout or error
+    }
+    Some(result != 0)
+}
+
+/// Cross-process IME conversion mode detection via `ImmGetDefaultIMEWnd`.
+///
+/// Returns the raw conversion mode bits, or `None` if detection failed.
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread.
+unsafe fn detect_ime_conversion_cross_process() -> Option<u32> {
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return None;
+    }
+
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return None;
+    }
+
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETCONVERSIONMODE),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        200,
+        Some(&mut result),
+    );
+
+    if ok.0 == 0 {
+        return None;
+    }
+    Some(result as u32)
+}
+
 // ─── 複合プロバイダ（TSF 優先、IMM32 フォールバック）────────
 
 /// TSF を優先し、失敗時に IMM32 にフォールバックするプロバイダ
@@ -196,7 +278,31 @@ impl HybridProvider {
 
 impl ImeProvider for HybridProvider {
     fn get_mode(&self) -> ImeMode {
-        // All methods for comparison logging
+        // Layer 1: Cross-process detection via ImmGetDefaultIMEWnd (works for Win32 apps)
+        let cross_process_result = unsafe { detect_ime_open_cross_process() };
+
+        if let Some(open) = cross_process_result {
+            if !open {
+                // IME is definitively OFF
+                log::trace!("HybridIME: CrossProcess=OFF → Off");
+                return ImeMode::Off;
+            }
+            // IME is ON — try to get conversion mode for detailed state
+            if let Some(conversion) = unsafe { detect_ime_conversion_cross_process() } {
+                let mode = conversion_to_ime_mode(true, conversion);
+                log::trace!(
+                    "HybridIME: CrossProcess=ON conversion=0x{conversion:08X} → {mode:?}"
+                );
+                return mode;
+            }
+            // Could not get conversion mode — IME is ON but mode unknown, assume Hiragana
+            log::trace!("HybridIME: CrossProcess=ON, conversion unavailable → Hiragana");
+            return ImeMode::Hiragana;
+        }
+
+        // Layer 2: Fall back to existing TSF/IMM (only works for own thread)
+        log::trace!("HybridIME: CrossProcess=None, falling back to TSF/IMM");
+
         let tsf_mode = self.tsf.as_ref().map(ImeProvider::get_mode);
         let imm_mode = self.imm.get_mode();
 
