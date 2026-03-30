@@ -637,20 +637,43 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    // ── IME 制御キー検出 → メッセージループにキャッシュ更新を要求 ──
-    // フック内ではブロッキングしないが、PostMessageW で即座に更新をスケジュールする。
+    // ── IME 制御キー検出 → shadow 更新 + キャッシュ更新要求 ──
     {
         let vk = event.vk_code.0;
         let is_key_down = matches!(
             event.event_type,
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
-        // 半角/全角キー、カタカナ/ひらがなキー等、IME 状態を変える可能性のあるキー
-        // is_ime_control に加え、0xF0-0xF5 (日本語キーボード固有の IME トグルキー) も含む
-        let may_change_ime = awase::vk::is_ime_control(event.vk_code)
-            || matches!(vk, 0xF0..=0xF5);
-        if is_key_down && may_change_ime {
-            let _ = PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
+        if is_key_down {
+            // 日本語キーボード固有の IME ON/OFF キーで shadow を追跡する。
+            // CrossProcess 検出が不正確なアプリ（Modern UI 等）では shadow が
+            // 唯一の IME 状態ソースになるため、ここでの追跡が重要。
+            match vk {
+                // IME ON: 半角/全角（activate）、VK_IME_ON
+                0xF2 | 0x16 => {
+                    app.shadow_ime_on = true;
+                    log::trace!("Shadow IME ON (vk=0x{vk:02X})");
+                }
+                // IME OFF: 半角/全角（deactivate）、VK_IME_OFF
+                0xF3 | 0xF4 | 0x1A => {
+                    app.shadow_ime_on = false;
+                    log::trace!("Shadow IME OFF (vk=0x{vk:02X})");
+                }
+                // VK_KANJI (半角/全角トグル)
+                0x19 => {
+                    app.shadow_ime_on = !app.shadow_ime_on;
+                    log::trace!("Shadow IME toggle → {} (vk=0x{vk:02X})", app.shadow_ime_on);
+                }
+                _ => {}
+            }
+
+            // IME 状態を変える可能性のあるキー → キャッシュ更新を要求
+            let may_change_ime = awase::vk::is_ime_control(event.vk_code)
+                || matches!(vk, 0xF0..=0xF5);
+            if may_change_ime {
+                let _ =
+                    PostMessageW(HWND::default(), WM_IME_KEY_DETECTED, WPARAM(0), LPARAM(0));
+            }
         }
     }
 
