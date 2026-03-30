@@ -1,0 +1,82 @@
+# awase 設定ファイル (config.toml)
+#
+# このファイルを config.toml にコピーして編集してください。
+# 設定されていない項目はデフォルト値が使用されます。
+
+[general]
+# 同時打鍵の判定閾値（ミリ秒）。NICOLA 規格標準は 100ms。
+# 値を小さくすると高速打鍵に追従するが、同時打鍵の認識率が下がる。
+simultaneous_threshold_ms = 100
+
+# 左親指キー（VK コード名）
+left_thumb_key = "VK_NONCONVERT"    # 無変換キー
+
+# 右親指キー（VK コード名）
+right_thumb_key = "VK_CONVERT"       # 変換キー
+
+# 配列定義ファイルの格納ディレクトリ
+layouts_dir = "config"
+
+# デフォルトの .yab レイアウトファイル名
+default_layout = "nicola.yab"
+
+# 確定モード
+#   wait             - タイムアウトまで出力を保留（最も正確）
+#   speculative      - 即座に出力、同時打鍵時に BS で差し替え（最も高速）
+#   two_phase        - 短い待機→投機出力→差し替え（バランス型）
+#   adaptive_timing  - 連続打鍵中は待機、途切れたら投機
+#   ngram_predictive - n-gram 予測で投機/待機を動的切替
+confirm_mode = "wait"
+
+# 投機出力までの待機時間（ミリ秒、two_phase/adaptive_timing で使用）
+speculative_delay_ms = 30
+
+# ローマ字出力の送信方式
+#   unicode  - ひらがなを直接送信（IME 不要、推奨）
+#   per_key  - 1文字ずつ SendInput（他のフックとの互換性重視）
+#   batched  - 全文字を1回の SendInput（高速）
+output_mode = "unicode"
+
+# エンジン ON キー（NICOLA 入力を有効にするキー）
+engine_on_keys = ["VK_CONVERT"]
+
+# エンジン OFF キー（NICOLA 入力を無効にするキー）
+engine_off_keys = ["Ctrl+VK_NONCONVERT"]
+
+# Engine ON 時に送信する IME 制御キー（IME をひらがなモードに切り替え）
+# "none" または空文字で無効化
+ime_on_vk = "VK_OEM_ENLW"     # 0xF4 = 全角モード
+
+# Engine OFF 時に送信する IME 制御キー（IME を直接入力モードに切り替え）
+ime_off_vk = "VK_OEM_AUTO"    # 0xF3 = 半角モード
+
+# n-gram コーパスファイル（オプション、ngram_predictive モード用）
+# ngram_file = "data/ngram_hiragana.toml"
+
+# n-gram 閾値調整幅（ミリ秒）
+# ngram_adjustment_range_ms = 20
+
+# n-gram 適応閾値の下限/上限（ミリ秒）
+# ngram_min_threshold_ms = 30
+# ngram_max_threshold_ms = 120
+
+# ── IME 同期設定 ──
+# Shadow IME 状態を追跡するためのキー設定。
+# awase は独自に IME ON/OFF を追跡し、IME が OFF の時はエンジンをスキップする。
+# 通常は自動検出で十分だが、特殊なキーボードでは手動設定が必要な場合がある。
+[ime_sync]
+# toggle = ["VK_KANJI"]           # 半角/全角トグル
+# on = ["VK_DBE_HIRAGANA"]        # IME ON キー
+# off = ["VK_DBE_SBCSCHAR"]       # IME OFF キー
+
+# ── フォーカスオーバーライド ──
+# 自動判定を無視してテキスト入力 / 非テキストを強制する。
+# process: 実行ファイル名（大文字小文字区別なし）
+# class: ウィンドウクラス名（大文字小文字区別なし）
+[focus_overrides]
+# force_text = [
+#     { process = "chrome.exe", class = "Chrome_RenderWidgetHostHWND" },
+# ]
+# force_bypass = [
+#     { process = "PowerToys.PowerLauncher.exe", class = "InputSiteWindowClass" },
+# ]

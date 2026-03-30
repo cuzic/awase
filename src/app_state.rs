@@ -142,6 +142,10 @@ pub(crate) struct AppState {
     pub focus: FocusDetector,
     pub engine_on_keys: Vec<ParsedKeyCombo>,
     pub engine_off_keys: Vec<ParsedKeyCombo>,
+    /// Engine ON 時に送信する IME 制御キーの VK コード（0 = 送信しない）
+    pub ime_on_vk: u16,
+    /// Engine OFF 時に送信する IME 制御キーの VK コード（0 = 送信しない）
+    pub ime_off_vk: u16,
     pub shadow_ime_on: bool,
     pub ime_sync_toggle_keys: Vec<u16>,
     pub ime_sync_on_keys: Vec<u16>,
@@ -297,6 +301,12 @@ impl AppState {
                 dispatch(&flush_resp, &mut tr, &mut ae);
                 log::info!("Engine ON (key combo)");
                 self.tray.set_enabled(enabled);
+                // IME をひらがなモードに切り替え
+                if self.ime_on_vk != 0 {
+                    self.output.send_keys(&[KeyAction::Key(self.ime_on_vk), KeyAction::KeyUp(self.ime_on_vk)]);
+                    self.shadow_ime_on = true;
+                    log::debug!("Sent IME ON key (vk=0x{:02X})", self.ime_on_vk);
+                }
                 return Some(CallbackResult::Consumed);
             }
         }
@@ -310,6 +320,12 @@ impl AppState {
                 dispatch(&flush_resp, &mut tr, &mut ae);
                 log::info!("Engine OFF (key combo)");
                 self.tray.set_enabled(enabled);
+                // IME を直接入力モードに切り替え
+                if self.ime_off_vk != 0 {
+                    self.output.send_keys(&[KeyAction::Key(self.ime_off_vk), KeyAction::KeyUp(self.ime_off_vk)]);
+                    self.shadow_ime_on = false;
+                    log::debug!("Sent IME OFF key (vk=0x{:02X})", self.ime_off_vk);
+                }
                 return Some(CallbackResult::Consumed);
             }
         }

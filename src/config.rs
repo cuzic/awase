@@ -7,11 +7,11 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {
     /// 1文字ずつ個別の SendInput 呼び出し（他のフックとの互換性重視）
-    #[default]
     PerKey,
     /// 全文字を1回の SendInput にまとめて送信（高速、アトミック）
     Batched,
     /// ローマ字→ひらがなに変換して Unicode 文字として直接送信（IME 不要）
+    #[default]
     Unicode,
 }
 
@@ -91,6 +91,16 @@ pub struct GeneralConfig {
     /// Engine OFF keys (multiple combos allowed)
     #[serde(default = "default_engine_off_keys")]
     pub engine_off_keys: Vec<String>,
+
+    /// Engine ON 時に送信する IME 制御キー（VK コード名、デフォルト: VK_OEM_ENLW=0xF4）
+    /// IME をひらがなモードに切り替える
+    #[serde(default = "default_ime_on_key")]
+    pub ime_on_vk: String,
+
+    /// Engine OFF 時に送信する IME 制御キー（VK コード名、デフォルト: VK_OEM_AUTO=0xF3）
+    /// IME を直接入力モードに切り替える
+    #[serde(default = "default_ime_off_key")]
+    pub ime_off_vk: String,
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -141,6 +151,14 @@ fn default_engine_on_keys() -> Vec<String> {
 
 fn default_engine_off_keys() -> Vec<String> {
     vec!["Ctrl+VK_NONCONVERT".to_string()]
+}
+
+fn default_ime_on_key() -> String {
+    "VK_OEM_ENLW".to_string() // 0xF4
+}
+
+fn default_ime_off_key() -> String {
+    "VK_OEM_AUTO".to_string() // 0xF3
 }
 
 /// IME 同期設定（シャドウ IME 状態追跡用キー定義）
@@ -390,8 +408,8 @@ pub fn vk_name_to_code(name: &str) -> Option<u16> {
         "VK_DBE_ALPHANUMERIC" => Some(0xF0),
         "VK_DBE_KATAKANA" => Some(0xF1),
         "VK_DBE_HIRAGANA" => Some(0xF2),
-        "VK_DBE_SBCSCHAR" => Some(0xF3), // 半角モード
-        "VK_DBE_DBCSCHAR" => Some(0xF4), // 全角モード
+        "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(0xF3), // 半角モード
+        "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(0xF4), // 全角モード
 
         // 修飾キー
         "VK_SHIFT" => Some(0x10),
