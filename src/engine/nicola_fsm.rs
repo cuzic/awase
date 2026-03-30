@@ -179,6 +179,11 @@ impl NicolaFsm {
         self.state = EngineState::Idle;
     }
 
+    /// `TimerIntent` を `Vec<TimerCommand<usize>>` に変換するヘルパー
+    pub(crate) fn timer_cmds(&self, intent: TimerIntent) -> Vec<timed_fsm::TimerCommand<usize>> {
+        intent.to_commands(self.threshold_us, self.speculative_delay_us)
+    }
+
     /// 保留中のキーを安全に解消し、Idle 状態に戻す。
     ///
     /// 外部コンテキスト変更（IMEオフ、エンジン無効化、言語切替、レイアウト差替え等）
@@ -449,6 +454,22 @@ impl NicolaFsm {
     }
 }
 
+// ── ShiftReduceParser 実装 ──
+impl timed_fsm::ShiftReduceParser for NicolaFsm {
+    type Action = KeyAction;
+    type Token = ClassifiedEvent;
+    type TimerId = usize;
+    type ReduceRecord = OutputUpdate;
+
+    fn decide(&mut self, token: &ClassifiedEvent) -> ParseAction {
+        self.decide_and_transition(token)
+    }
+
+    fn on_reduce(&mut self, record: OutputUpdate) {
+        self.update_history(record);
+    }
+}
+
 // ── KeyDown ディスパッチ ──
 impl NicolaFsm {
     /// AdaptiveTiming 用: 直前キーとの間隔を算出してタイムスタンプを更新する
@@ -468,53 +489,14 @@ impl NicolaFsm {
         self.update_timing(event);
 
         // Bypass check: modifiers, IME control, OS shortcuts.
-        // Handled before the ParseAction loop because bypass needs consumed=false
+        // Handled before the parser loop because bypass needs consumed=false
         // even when flush actions are emitted.
         let ev = self.phys.classified;
         if self.bypass_reason(&ev).is_some() {
             return self.handle_bypass(&ev);
         }
 
-        let mut actions: Vec<KeyAction> = Vec::new();
-        let mut current = Some(ev);
-
-        while let Some(ev) = current.take() {
-            match self.decide_and_transition(&ev) {
-                ParseAction::Shift { timer } => {
-                    return self.build_response(actions, true, timer);
-                }
-                ParseAction::Reduce {
-                    output,
-                    record,
-                    timer,
-                } => {
-                    actions.extend(output);
-                    self.update_history(record);
-                    return self.build_response(actions, true, timer);
-                }
-                ParseAction::ReduceAndContinue {
-                    output,
-                    record,
-                    remaining,
-                } => {
-                    actions.extend(output);
-                    self.update_history(record);
-                    debug_assert!(
-                        self.state.is_idle(),
-                        "ReduceAndContinue must leave FSM in Idle"
-                    );
-                    current = Some(remaining);
-                }
-                ParseAction::PassThrough { timer } => {
-                    // PassThrough: 管轄外のキーをそのまま通す。
-                    // accumulated actions がある場合（ReduceAndContinue 後の pass-through 等）は
-                    // consumed=true にする（先行アクションを出力するため）。
-                    let consumed = !actions.is_empty();
-                    return self.build_response(actions, consumed, timer);
-                }
-            }
-        }
-        unreachable!("process loop must terminate via Shift/Reduce/PassThrough")
+        timed_fsm::parse(self, ev)
     }
 
     /// 状態とイベントに基づいてアクションを決定し、状態遷移を行う
@@ -535,14 +517,14 @@ impl NicolaFsm {
             self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::Shift))
         {
             ParseAction::Reduce {
-                output: vec![action.clone()],
+                actions: vec![action.clone()],
                 record: record_output(ev.scan_code, &action, kana),
-                timer: TimerIntent::CancelAll,
+                timers: self.timer_cmds(TimerIntent::CancelAll),
             }
         } else {
             // Shift 面に定義がないキーは OS に任せる
             ParseAction::PassThrough {
-                timer: TimerIntent::Keep,
+                timers: self.timer_cmds(TimerIntent::Keep),
             }
         }
     }
@@ -563,9 +545,9 @@ impl NicolaFsm {
                     let is_left = matches!(face, Face::LeftThumb);
                     self.consume_thumb(is_left);
                     return ParseAction::Reduce {
-                        output: vec![action.clone()],
+                        actions: vec![action.clone()],
                         record: record_output(ev.scan_code, &action, kana),
-                        timer: TimerIntent::CancelAll,
+                        timers: self.timer_cmds(TimerIntent::CancelAll),
                     };
                 }
                 // 親指面に定義がない → 確定モードに委譲（fall through）
@@ -574,7 +556,7 @@ impl NicolaFsm {
         // Non-layout key
         if !ev.key_class.is_thumb() && !self.is_layout_key(ev.scan_code) {
             return ParseAction::PassThrough {
-                timer: TimerIntent::Keep,
+                timers: self.timer_cmds(TimerIntent::Keep),
             };
         }
         // Confirm mode dispatch
@@ -589,9 +571,9 @@ impl NicolaFsm {
             KeyClass::Passthrough => {
                 log::error!("unexpected Passthrough in PendingChar");
                 ParseAction::Reduce {
-                    output: vec![],
+                    actions: vec![],
                     record: OutputUpdate::None,
-                    timer: TimerIntent::Keep,
+                    timers: self.timer_cmds(TimerIntent::Keep),
                 }
             }
         }
@@ -605,9 +587,9 @@ impl NicolaFsm {
             KeyClass::Passthrough => {
                 log::error!("unexpected Passthrough in PendingThumb");
                 ParseAction::Reduce {
-                    output: vec![],
+                    actions: vec![],
                     record: OutputUpdate::None,
-                    timer: TimerIntent::Keep,
+                    timers: self.timer_cmds(TimerIntent::Keep),
                 }
             }
         }
@@ -626,7 +608,7 @@ impl NicolaFsm {
                 // SpeculativeChar + Char: speculative was correct, go Idle and re-loop
                 self.go_idle();
                 ParseAction::ReduceAndContinue {
-                    output: vec![],
+                    actions: vec![],
                     record: OutputUpdate::None,
                     remaining: *ev,
                 }
@@ -634,9 +616,9 @@ impl NicolaFsm {
             KeyClass::Passthrough => {
                 log::error!("unexpected Passthrough in SpeculativeChar");
                 ParseAction::Reduce {
-                    output: vec![],
+                    actions: vec![],
                     record: OutputUpdate::None,
-                    timer: TimerIntent::Keep,
+                    timers: self.timer_cmds(TimerIntent::Keep),
                 }
             }
         }
@@ -690,14 +672,14 @@ impl NicolaFsm {
                 self.go_idle();
                 // Use Record (not RetractAndRecord) since we already retracted above
                 return ParseAction::Reduce {
-                    output: actions,
+                    actions,
                     record: OutputUpdate::Record(OutputRecord {
                         scan_code: pending.scan_code,
                         romaji: romaji_of(&thumb_action),
                         kana: thumb_kana,
                         action: thumb_action,
                     }),
-                    timer: TimerIntent::CancelAll,
+                    timers: self.timer_cmds(TimerIntent::CancelAll),
                 };
             }
             // Outside threshold → speculative was correct, process thumb as new key
@@ -707,7 +689,7 @@ impl NicolaFsm {
         // Go idle and re-process the thumb key
         self.go_idle();
         ParseAction::ReduceAndContinue {
-            output: vec![],
+            actions: vec![],
             record: OutputUpdate::None,
             remaining: *ev,
         }
@@ -744,7 +726,7 @@ impl NicolaFsm {
                 },
             );
             return ParseAction::Shift {
-                timer: TimerIntent::Pending,
+                timers: self.timer_cmds(TimerIntent::Pending),
             };
         }
 
@@ -752,7 +734,7 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
         ParseAction::ReduceAndContinue {
-            output: resolved.actions,
+            actions: resolved.actions,
             record: resolved.output,
             remaining: *ev,
         }
@@ -766,7 +748,7 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
         ParseAction::ReduceAndContinue {
-            output: resolved.actions,
+            actions: resolved.actions,
             record: resolved.output,
             remaining: *ev,
         }
@@ -794,9 +776,9 @@ impl NicolaFsm {
                 self.consume_thumb(thumb.is_left);
                 self.go_idle();
                 return ParseAction::Reduce {
-                    output: vec![action.clone()],
+                    actions: vec![action.clone()],
                     record: record_output(ev.scan_code, &action, kana),
-                    timer: TimerIntent::CancelAll,
+                    timers: self.timer_cmds(TimerIntent::CancelAll),
                 };
             }
         }
@@ -805,7 +787,7 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
         ParseAction::ReduceAndContinue {
-            output: resolved.actions,
+            actions: resolved.actions,
             record: resolved.output,
             remaining: *ev,
         }
@@ -819,7 +801,7 @@ impl NicolaFsm {
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
         ParseAction::ReduceAndContinue {
-            output: resolved.actions,
+            actions: resolved.actions,
             record: resolved.output,
             remaining: *ev,
         }
@@ -918,7 +900,7 @@ impl NicolaFsm {
                     thumb.is_left,
                 );
                 return ParseAction::ReduceAndContinue {
-                    output: resolved.actions,
+                    actions: resolved.actions,
                     record: resolved.output,
                     remaining: *ev,
                 };
@@ -936,14 +918,14 @@ impl NicolaFsm {
                 let mut all_actions = char1_resolved.actions;
                 all_actions.push(action.clone());
                 return ParseAction::Reduce {
-                    output: all_actions,
+                    actions: all_actions,
                     record: record_output(ev.scan_code, &action, kana),
-                    timer: TimerIntent::CancelAll,
+                    timers: self.timer_cmds(TimerIntent::CancelAll),
                 };
             }
             // 親指面に char2 の定義がない場合は char1 を単独確定し、char2 を再処理
             return ParseAction::ReduceAndContinue {
-                output: char1_resolved.actions,
+                actions: char1_resolved.actions,
                 record: char1_resolved.output,
                 remaining: *ev,
             };
@@ -956,7 +938,7 @@ impl NicolaFsm {
             thumb.is_left,
         );
         ParseAction::ReduceAndContinue {
-            output: resolved.actions,
+            actions: resolved.actions,
             record: resolved.output,
             remaining: *ev,
         }

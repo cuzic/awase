@@ -1,7 +1,13 @@
 //! FSM 内部で使用する型定義
 
+use std::time::Duration;
+
+use timed_fsm::TimerCommand;
+
 use crate::scanmap::PhysicalPos;
 use crate::types::{KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+
+use super::nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
 
 /// キーの分類（フック受信時に一度だけ決定）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,26 +84,8 @@ pub struct ResolvedAction {
 }
 
 /// パーサーアクション: FSM の1ステップの判断結果。
-/// シフト-リデュースパーサーのアナロジーで設計。
-#[derive(Debug)]
-pub enum ParseAction {
-    /// バッファに積む（次の入力を待つ）— Shift
-    Shift { timer: TimerIntent },
-    /// パターン認識 → 出力生成 — Reduce
-    Reduce {
-        output: Vec<KeyAction>,
-        record: OutputUpdate,
-        timer: TimerIntent,
-    },
-    /// 一部を Reduce して残りを再処理 — Reduce + Continue
-    ReduceAndContinue {
-        output: Vec<KeyAction>,
-        record: OutputUpdate,
-        remaining: ClassifiedEvent,
-    },
-    /// 管轄外、そのまま通す
-    PassThrough { timer: TimerIntent },
-}
+/// `timed_fsm::ParseAction` の具象型エイリアス。
+pub type ParseAction = timed_fsm::ParseAction<KeyAction, ClassifiedEvent, usize, OutputUpdate>;
 
 /// タイマー操作の指示
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +100,57 @@ pub enum TimerIntent {
     Phase2Transition { remaining_us: u64 },
     /// タイマー変更なし
     Keep,
+}
+
+impl TimerIntent {
+    /// `TimerIntent` を `Vec<TimerCommand<usize>>` に変換する。
+    ///
+    /// `threshold_us` と `speculative_delay_us` は `NicolaFsm` から渡される。
+    #[must_use]
+    pub fn to_commands(
+        self,
+        threshold_us: u64,
+        speculative_delay_us: u64,
+    ) -> Vec<TimerCommand<usize>> {
+        match self {
+            Self::CancelAll => vec![
+                TimerCommand::Kill { id: TIMER_PENDING },
+                TimerCommand::Kill {
+                    id: TIMER_SPECULATIVE,
+                },
+            ],
+            Self::Pending => vec![
+                TimerCommand::Kill { id: TIMER_PENDING },
+                TimerCommand::Kill {
+                    id: TIMER_SPECULATIVE,
+                },
+                TimerCommand::Set {
+                    id: TIMER_PENDING,
+                    duration: Duration::from_micros(threshold_us),
+                },
+            ],
+            Self::SpeculativeWait => vec![
+                TimerCommand::Kill { id: TIMER_PENDING },
+                TimerCommand::Kill {
+                    id: TIMER_SPECULATIVE,
+                },
+                TimerCommand::Set {
+                    id: TIMER_SPECULATIVE,
+                    duration: Duration::from_micros(speculative_delay_us),
+                },
+            ],
+            Self::Phase2Transition { remaining_us } => vec![
+                TimerCommand::Kill {
+                    id: TIMER_SPECULATIVE,
+                },
+                TimerCommand::Set {
+                    id: TIMER_PENDING,
+                    duration: Duration::from_micros(remaining_us),
+                },
+            ],
+            Self::Keep => vec![],
+        }
+    }
 }
 
 /// 出力履歴に記録する 1 件分のデータ

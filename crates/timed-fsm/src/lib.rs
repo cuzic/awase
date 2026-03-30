@@ -29,6 +29,7 @@
 //! - [`TimerCommand`] — set or kill a timer
 //! - [`dispatch`] — connects a state machine to a runtime
 //! - [`TimerRuntime`] / [`ActionExecutor`] — runtime traits for platform integration
+//! - [`ShiftReduceParser`] / [`parse`] — shift-reduce parser framework with timer support
 //!
 //! # Example: debounce filter
 //!
@@ -82,8 +83,10 @@
 
 mod dispatch;
 mod machine;
+pub mod parser;
 mod response;
 
 pub use dispatch::{dispatch, ActionExecutor, TimerRuntime};
 pub use machine::TimedStateMachine;
+pub use parser::{parse, ParseAction, ShiftReduceParser};
 pub use response::{Response, TimerCommand};
