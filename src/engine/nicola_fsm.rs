@@ -15,10 +15,9 @@ use crate::types::{
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::fsm_types::{
-    BypassReason, EngineState, Face, FinalizePlan, IdleIntent, OutputRecord, OutputUpdate,
-    PendingKey, PendingThumbData, ResolvedAction, StepResult, TimerIntent,
+    BypassReason, ClassifiedEvent, EngineState, Face, KeyClass, OutputRecord, OutputUpdate,
+    ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
 };
-use super::fsm_types::{ClassifiedEvent, KeyClass};
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;
@@ -92,11 +91,7 @@ fn romaji_of(action: &KeyAction) -> String {
 }
 
 /// `OutputUpdate::Record` を生成するヘルパー
-pub fn record_output(
-    scan_code: ScanCode,
-    action: &KeyAction,
-    kana: Option<char>,
-) -> OutputUpdate {
+pub fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
     OutputUpdate::Record(OutputRecord {
         scan_code,
         romaji: romaji_of(action),
@@ -416,20 +411,22 @@ impl NicolaFsm {
         self.state = EngineState::SpeculativeChar(key);
     }
 
-    /// `FinalizePlan` を `Response` に変換する
-    pub(crate) fn finalize_plan(&mut self, plan: FinalizePlan) -> Resp {
-        // 1. 出力履歴の更新
-        self.update_history(plan.output);
-
-        // 2. Response 構築
-        let response = if plan.actions.is_empty() {
+    /// アクション列・consumed フラグ・タイマー指示から `Response` を組み立てる
+    pub(crate) fn build_response(
+        &self,
+        actions: Vec<KeyAction>,
+        consumed: bool,
+        timer: TimerIntent,
+    ) -> Resp {
+        let response = if actions.is_empty() && consumed {
             Response::consume()
+        } else if actions.is_empty() {
+            Response::pass_through()
         } else {
-            Response::emit(plan.actions)
+            Response::emit(actions)
         };
 
-        // 3. タイマー命令付与
-        match plan.timer {
+        match timer {
             TimerIntent::CancelAll => response
                 .with_kill_timer(TIMER_PENDING)
                 .with_kill_timer(TIMER_SPECULATIVE),
@@ -469,180 +466,179 @@ impl NicolaFsm {
 
     fn on_key_down(&mut self, event: &RawKeyEvent) -> Resp {
         self.update_timing(event);
-        let mut current = self.phys.classified;
-        let mut accumulated_actions: Vec<KeyAction> = Vec::new();
 
-        loop {
-            // Bypass check
-            if let Some(reason) = self.bypass_reason(&current) {
-                let resp = self.handle_bypass(reason);
-                return Self::finalize_accumulated(accumulated_actions, resp);
-            }
+        // Bypass check: modifiers, IME control, OS shortcuts.
+        // Handled before the ParseAction loop because bypass needs consumed=false
+        // even when flush actions are emitted.
+        let ev = self.phys.classified;
+        if self.bypass_reason(&ev).is_some() {
+            return self.handle_bypass(&ev);
+        }
 
-            // Idle state: handle_idle (via classify_idle_intent) handles
-            // shift plane, active thumb combo, pass-through, and policy dispatch
-            if self.state.is_idle() {
-                let resp = self.handle_idle(&current);
-                return Self::finalize_accumulated(accumulated_actions, resp);
-            }
+        let mut actions: Vec<KeyAction> = Vec::new();
+        let mut current = Some(ev);
 
-            // Non-idle states: dispatch to step handler
-            match self.step(&current) {
-                StepResult::Complete(plan) => {
-                    let mut all_actions = accumulated_actions;
-                    all_actions.extend(plan.actions);
-                    return self.finalize_plan(FinalizePlan {
-                        actions: all_actions,
-                        timer: plan.timer,
-                        output: plan.output,
-                    });
+        while let Some(ev) = current.take() {
+            match self.decide_and_transition(&ev) {
+                ParseAction::Shift { timer } => {
+                    return self.build_response(actions, true, timer);
                 }
-                StepResult::Continue { plan, next } => {
-                    // 統一経路: finalize_plan と同じ履歴更新を適用
-                    accumulated_actions.extend(plan.actions);
-                    self.update_history(plan.output);
-                    debug_assert!(self.state.is_idle(), "Continue step must leave FSM in Idle");
-                    current = next;
+                ParseAction::Reduce {
+                    output,
+                    record,
+                    timer,
+                } => {
+                    actions.extend(output);
+                    self.update_history(record);
+                    return self.build_response(actions, true, timer);
+                }
+                ParseAction::ReduceAndContinue {
+                    output,
+                    record,
+                    remaining,
+                } => {
+                    actions.extend(output);
+                    self.update_history(record);
+                    debug_assert!(
+                        self.state.is_idle(),
+                        "ReduceAndContinue must leave FSM in Idle"
+                    );
+                    current = Some(remaining);
+                }
+                ParseAction::PassThrough { timer } => {
+                    // PassThrough: 管轄外のキーをそのまま通す。
+                    // accumulated actions がある場合（ReduceAndContinue 後の pass-through 等）は
+                    // consumed=true にする（先行アクションを出力するため）。
+                    let consumed = !actions.is_empty();
+                    return self.build_response(actions, consumed, timer);
                 }
             }
         }
+        unreachable!("process loop must terminate via Shift/Reduce/PassThrough")
     }
 
-    /// 蓄積済みアクションを Response の先頭に追加する。
-    /// ループ内で bypass/shift/idle が最終 Response を返す際に使用。
-    fn finalize_accumulated(prefix: Vec<KeyAction>, mut resp: Resp) -> Resp {
-        if prefix.is_empty() {
-            return resp;
-        }
-        let mut all = prefix;
-        all.extend(resp.actions);
-        resp.actions = all;
-        resp.consumed = true;
-        resp
-    }
-
-    /// 非 Idle 状態に応じた1ステップのディスパッチ
-    ///
-    /// Idle 状態は on_key_down のループ本体で handle_idle を直接呼ぶため、
-    /// このメソッドには到達しない。
-    fn step(&mut self, ev: &ClassifiedEvent) -> StepResult {
+    /// 状態とイベントに基づいてアクションを決定し、状態遷移を行う
+    fn decide_and_transition(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        // State-based dispatch (bypass is handled in on_key_down before entering the loop)
         match self.state {
-            EngineState::Idle => unreachable!("step() called in Idle state"),
-            EngineState::PendingChar(_) => match ev.key_class {
-                KeyClass::LeftThumb | KeyClass::RightThumb => self.step_pending_char_thumb(ev),
-                KeyClass::Char => self.step_pending_char_char(ev),
-                KeyClass::Passthrough => {
-                    log::error!("unexpected Passthrough in PendingChar");
-                    StepResult::Complete(FinalizePlan {
-                        actions: vec![],
-                        timer: TimerIntent::Keep,
-                        output: OutputUpdate::None,
-                    })
-                }
-            },
-            EngineState::PendingThumb(_) => match ev.key_class {
-                KeyClass::Char => self.step_pending_thumb_char(ev),
-                KeyClass::LeftThumb | KeyClass::RightThumb => self.step_pending_thumb_thumb(ev),
-                KeyClass::Passthrough => {
-                    log::error!("unexpected Passthrough in PendingThumb");
-                    StepResult::Complete(FinalizePlan {
-                        actions: vec![],
-                        timer: TimerIntent::Keep,
-                        output: OutputUpdate::None,
-                    })
-                }
-            },
-            EngineState::PendingCharThumb { .. } => self.step_pending_char_thumb_3key(ev),
-            EngineState::SpeculativeChar(_) => match ev.key_class {
-                KeyClass::LeftThumb | KeyClass::RightThumb => self.step_speculative_thumb(ev),
-                KeyClass::Char => {
-                    // SpeculativeChar + Char: speculative was correct, go Idle and re-loop
-                    self.go_idle();
-                    StepResult::Continue {
-                        plan: FinalizePlan {
-                            actions: vec![],
-                            timer: TimerIntent::CancelAll,
-                            output: OutputUpdate::None,
-                        },
-                        next: *ev,
-                    }
-                }
-                KeyClass::Passthrough => {
-                    log::error!("unexpected Passthrough in SpeculativeChar");
-                    StepResult::Complete(FinalizePlan {
-                        actions: vec![],
-                        timer: TimerIntent::Keep,
-                        output: OutputUpdate::None,
-                    })
-                }
-            },
+            EngineState::Idle => self.decide_idle(ev),
+            EngineState::PendingChar(_) => self.decide_pending_char(ev),
+            EngineState::PendingThumb(_) => self.decide_pending_thumb(ev),
+            EngineState::PendingCharThumb { .. } => self.decide_pending_char_thumb(ev),
+            EngineState::SpeculativeChar(_) => self.decide_speculative(ev),
         }
     }
 
-    /// Shift 面の処理（状態非依存）
-    fn handle_shift(&mut self, ev: &ClassifiedEvent) -> Resp {
+    /// Shift 面で Reduce する共通ヘルパー
+    fn shift_face_reduce(&self, ev: &ClassifiedEvent) -> ParseAction {
         if let Some((action, kana)) =
             self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::Shift))
         {
-            self.finalize_plan(FinalizePlan {
-                actions: vec![action.clone()],
+            ParseAction::Reduce {
+                output: vec![action.clone()],
+                record: record_output(ev.scan_code, &action, kana),
                 timer: TimerIntent::CancelAll,
-                output: record_output(ev.scan_code, &action, kana),
-            })
+            }
         } else {
             // Shift 面に定義がないキーは OS に任せる
-            Response::pass_through()
-        }
-    }
-}
-
-// ── Idle ハンドラ ──
-impl NicolaFsm {
-    /// Idle 状態でのキー押下の意図を分類する
-    ///
-    /// Shift 面、親指押下中の即時同時打鍵、配列外パススルー、確定モード委譲の
-    /// 4 分岐を判定のみ行い、副作用なしで返す。
-    fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
-        if self.should_use_shift_plane(ev) {
-            return IdleIntent::ShiftPlane;
-        }
-        if !ev.key_class.is_thumb() {
-            if let Some(face) = self.active_thumb_face() {
-                return IdleIntent::ActiveThumbCombo(face);
+            ParseAction::PassThrough {
+                timer: TimerIntent::Keep,
             }
         }
+    }
+
+    /// Idle 状態でのキー押下処理
+    fn decide_idle(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        // Shift plane
+        if self.should_use_shift_plane(ev) {
+            return self.shift_face_reduce(ev);
+        }
+        // Active thumb combo
+        if !ev.key_class.is_thumb() {
+            if let Some(face) = self.active_thumb_face() {
+                if let Some((action, kana)) =
+                    self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
+                {
+                    // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
+                    let is_left = matches!(face, Face::LeftThumb);
+                    self.consume_thumb(is_left);
+                    return ParseAction::Reduce {
+                        output: vec![action.clone()],
+                        record: record_output(ev.scan_code, &action, kana),
+                        timer: TimerIntent::CancelAll,
+                    };
+                }
+                // 親指面に定義がない → 確定モードに委譲（fall through）
+            }
+        }
+        // Non-layout key
         if !ev.key_class.is_thumb() && !self.is_layout_key(ev.scan_code) {
-            return IdleIntent::PassThrough;
+            return ParseAction::PassThrough {
+                timer: TimerIntent::Keep,
+            };
         }
-        IdleIntent::PolicyDriven
+        // Confirm mode dispatch
+        self.dispatch_confirm_mode(ev)
     }
 
-    /// Idle 状態での新規キー押下処理
-    fn handle_idle(&mut self, ev: &ClassifiedEvent) -> Resp {
-        match self.classify_idle_intent(ev) {
-            IdleIntent::ShiftPlane => self.handle_shift(ev),
-            IdleIntent::ActiveThumbCombo(face) => self.handle_active_thumb(ev, face),
-            IdleIntent::PassThrough => Response::pass_through(),
-            IdleIntent::PolicyDriven => self.dispatch_confirm_mode(ev),
+    /// PendingChar 状態でのキー押下処理
+    fn decide_pending_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        match ev.key_class {
+            KeyClass::LeftThumb | KeyClass::RightThumb => self.step_pending_char_thumb(ev),
+            KeyClass::Char => self.step_pending_char_char(ev),
+            KeyClass::Passthrough => {
+                log::error!("unexpected Passthrough in PendingChar");
+                ParseAction::Reduce {
+                    output: vec![],
+                    record: OutputUpdate::None,
+                    timer: TimerIntent::Keep,
+                }
+            }
         }
     }
 
-    /// 親指キー押下中に文字キーが到着した場合の即時同時打鍵処理
-    fn handle_active_thumb(&mut self, ev: &ClassifiedEvent, face: Face) -> Resp {
-        if let Some((action, kana)) =
-            self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
-        {
-            // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-            let is_left = matches!(face, Face::LeftThumb);
-            self.consume_thumb(is_left);
-            self.finalize_plan(FinalizePlan {
-                actions: vec![action.clone()],
-                timer: TimerIntent::CancelAll,
-                output: record_output(ev.scan_code, &action, kana),
-            })
-        } else {
-            // 親指面に定義がない → 確定モードに委譲
-            self.dispatch_confirm_mode(ev)
+    /// PendingThumb 状態でのキー押下処理
+    fn decide_pending_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        match ev.key_class {
+            KeyClass::Char => self.step_pending_thumb_char(ev),
+            KeyClass::LeftThumb | KeyClass::RightThumb => self.step_pending_thumb_thumb(ev),
+            KeyClass::Passthrough => {
+                log::error!("unexpected Passthrough in PendingThumb");
+                ParseAction::Reduce {
+                    output: vec![],
+                    record: OutputUpdate::None,
+                    timer: TimerIntent::Keep,
+                }
+            }
+        }
+    }
+
+    /// PendingCharThumb 状態でのキー押下処理
+    fn decide_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        self.step_pending_char_thumb_3key(ev)
+    }
+
+    /// SpeculativeChar 状態でのキー押下処理
+    fn decide_speculative(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        match ev.key_class {
+            KeyClass::LeftThumb | KeyClass::RightThumb => self.step_speculative_thumb(ev),
+            KeyClass::Char => {
+                // SpeculativeChar + Char: speculative was correct, go Idle and re-loop
+                self.go_idle();
+                ParseAction::ReduceAndContinue {
+                    output: vec![],
+                    record: OutputUpdate::None,
+                    remaining: *ev,
+                }
+            }
+            KeyClass::Passthrough => {
+                log::error!("unexpected Passthrough in SpeculativeChar");
+                ParseAction::Reduce {
+                    output: vec![],
+                    record: OutputUpdate::None,
+                    timer: TimerIntent::Keep,
+                }
+            }
         }
     }
 }
@@ -663,7 +659,7 @@ impl NicolaFsm {
     ///
     /// 閾値超過時や親指面に定義がない場合は、投機出力は正しかったとみなし、
     /// Idle に戻って親指キーを新規イベントとして再処理する。
-    fn step_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> StepResult {
+    fn step_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::SpeculativeChar(pending) = self.state else {
             unreachable!()
         };
@@ -693,16 +689,16 @@ impl NicolaFsm {
 
                 self.go_idle();
                 // Use Record (not RetractAndRecord) since we already retracted above
-                return StepResult::Complete(FinalizePlan {
-                    actions,
-                    timer: TimerIntent::CancelAll,
-                    output: OutputUpdate::Record(OutputRecord {
+                return ParseAction::Reduce {
+                    output: actions,
+                    record: OutputUpdate::Record(OutputRecord {
                         scan_code: pending.scan_code,
                         romaji: romaji_of(&thumb_action),
                         kana: thumb_kana,
                         action: thumb_action,
                     }),
-                });
+                    timer: TimerIntent::CancelAll,
+                };
             }
             // Outside threshold → speculative was correct, process thumb as new key
         } else {
@@ -710,18 +706,15 @@ impl NicolaFsm {
         }
         // Go idle and re-process the thumb key
         self.go_idle();
-        StepResult::Continue {
-            plan: FinalizePlan {
-                actions: vec![],
-                timer: TimerIntent::CancelAll,
-                output: OutputUpdate::None,
-            },
-            next: *ev,
+        ParseAction::ReduceAndContinue {
+            output: vec![],
+            record: OutputUpdate::None,
+            remaining: *ev,
         }
     }
 
     /// PendingChar + 親指キー → 同時打鍵候補（閾値内なら PendingCharThumb、超過なら flush+新規）
-    fn step_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> StepResult {
+    fn step_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingChar(pending) = self.state else {
             unreachable!()
         };
@@ -750,45 +743,37 @@ impl NicolaFsm {
                     timestamp: ev.timestamp,
                 },
             );
-            return StepResult::Complete(FinalizePlan {
-                actions: vec![],
+            return ParseAction::Shift {
                 timer: TimerIntent::Pending,
-                output: OutputUpdate::None,
-            });
+            };
         }
 
         // 時間超過 → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
-        StepResult::Continue {
-            plan: FinalizePlan {
-                actions: resolved.actions,
-                timer: TimerIntent::CancelAll,
-                output: resolved.output,
-            },
-            next: *ev,
+        ParseAction::ReduceAndContinue {
+            output: resolved.actions,
+            record: resolved.output,
+            remaining: *ev,
         }
     }
 
     /// PendingChar + 文字キー → 前の保留を単独確定し、今回のキーを再処理
-    fn step_pending_char_char(&mut self, ev: &ClassifiedEvent) -> StepResult {
+    fn step_pending_char_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingChar(pending) = self.state else {
             unreachable!()
         };
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
-        StepResult::Continue {
-            plan: FinalizePlan {
-                actions: resolved.actions,
-                timer: TimerIntent::CancelAll,
-                output: resolved.output,
-            },
-            next: *ev,
+        ParseAction::ReduceAndContinue {
+            output: resolved.actions,
+            record: resolved.output,
+            remaining: *ev,
         }
     }
 
     /// PendingThumb + 文字キー → 同時打鍵候補（閾値内なら即時確定、超過なら flush+新規）
-    fn step_pending_thumb_char(&mut self, ev: &ClassifiedEvent) -> StepResult {
+    fn step_pending_thumb_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingThumb(thumb) = self.state else {
             unreachable!()
         };
@@ -808,46 +793,40 @@ impl NicolaFsm {
                 // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
                 self.consume_thumb(thumb.is_left);
                 self.go_idle();
-                return StepResult::Complete(FinalizePlan {
-                    actions: vec![action.clone()],
+                return ParseAction::Reduce {
+                    output: vec![action.clone()],
+                    record: record_output(ev.scan_code, &action, kana),
                     timer: TimerIntent::CancelAll,
-                    output: record_output(ev.scan_code, &action, kana),
-                });
+                };
             }
         }
 
         // 時間超過 or 候補なし → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
-        StepResult::Continue {
-            plan: FinalizePlan {
-                actions: resolved.actions,
-                timer: TimerIntent::CancelAll,
-                output: resolved.output,
-            },
-            next: *ev,
+        ParseAction::ReduceAndContinue {
+            output: resolved.actions,
+            record: resolved.output,
+            remaining: *ev,
         }
     }
 
     /// PendingThumb + 親指キー → 前の保留を単独確定し、今回のキーを再処理
-    fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> StepResult {
+    fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingThumb(thumb) = self.state else {
             unreachable!()
         };
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
-        StepResult::Continue {
-            plan: FinalizePlan {
-                actions: resolved.actions,
-                timer: TimerIntent::CancelAll,
-                output: resolved.output,
-            },
-            next: *ev,
+        ParseAction::ReduceAndContinue {
+            output: resolved.actions,
+            record: resolved.output,
+            remaining: *ev,
         }
     }
 
     /// OutputUpdate に基づいて出力履歴を更新する共通ヘルパー
-    fn update_history(&mut self, output: OutputUpdate) {
+    pub(crate) fn update_history(&mut self, output: OutputUpdate) {
         match output {
             OutputUpdate::Record(rec) => {
                 self.output_history.push(OutputEntry {
@@ -917,7 +896,7 @@ impl NicolaFsm {
     ///
     /// タイミング差が小さいとき（どちらとも取れる場合）は n-gram スコアで
     /// より自然な日本語になるほうを選ぶ。
-    fn step_pending_char_thumb_3key(&mut self, ev: &ClassifiedEvent) -> StepResult {
+    fn step_pending_char_thumb_3key(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingCharThumb {
             char_key: pending,
             thumb,
@@ -938,13 +917,10 @@ impl NicolaFsm {
                     pending.vk_code,
                     thumb.is_left,
                 );
-                return StepResult::Continue {
-                    plan: FinalizePlan {
-                        actions: resolved.actions,
-                        timer: TimerIntent::CancelAll,
-                        output: resolved.output,
-                    },
-                    next: *ev,
+                return ParseAction::ReduceAndContinue {
+                    output: resolved.actions,
+                    record: resolved.output,
+                    remaining: *ev,
                 };
             }
             // char1 = 単独、char2+thumb = 同時打鍵
@@ -959,20 +935,17 @@ impl NicolaFsm {
                 self.consume_thumb(thumb.is_left);
                 let mut all_actions = char1_resolved.actions;
                 all_actions.push(action.clone());
-                return StepResult::Complete(FinalizePlan {
-                    actions: all_actions,
+                return ParseAction::Reduce {
+                    output: all_actions,
+                    record: record_output(ev.scan_code, &action, kana),
                     timer: TimerIntent::CancelAll,
-                    output: record_output(ev.scan_code, &action, kana),
-                });
+                };
             }
             // 親指面に char2 の定義がない場合は char1 を単独確定し、char2 を再処理
-            return StepResult::Continue {
-                plan: FinalizePlan {
-                    actions: char1_resolved.actions,
-                    timer: TimerIntent::CancelAll,
-                    output: char1_resolved.output,
-                },
-                next: *ev,
+            return ParseAction::ReduceAndContinue {
+                output: char1_resolved.actions,
+                record: char1_resolved.output,
+                remaining: *ev,
             };
         }
         // 親指キーが来た場合は char1+thumb を同時打鍵として確定し、
@@ -982,13 +955,10 @@ impl NicolaFsm {
             pending.vk_code,
             thumb.is_left,
         );
-        StepResult::Continue {
-            plan: FinalizePlan {
-                actions: resolved.actions,
-                timer: TimerIntent::CancelAll,
-                output: resolved.output,
-            },
-            next: *ev,
+        ParseAction::ReduceAndContinue {
+            output: resolved.actions,
+            record: resolved.output,
+            remaining: *ev,
         }
     }
 
@@ -1139,11 +1109,7 @@ impl NicolaFsm {
         }
         // thumb 側が離された場合: thumb KeyDown は consume 済みなので KeyUp も consume する
         // （output_history には thumb のエントリはないため remove 不要）
-        self.finalize_plan(FinalizePlan {
-            actions,
-            timer: TimerIntent::CancelAll,
-            output: OutputUpdate::None,
-        })
+        self.build_response(actions, true, TimerIntent::CancelAll)
     }
 
     /// 保留中のキーが離された場合、保留を単独確定して KeyUp を処理する
@@ -1176,11 +1142,7 @@ impl NicolaFsm {
             }
         }
         // Unicode 文字 (Char) は Down+Up 一括送信済みなので KeyUp 追加不要
-        self.finalize_plan(FinalizePlan {
-            actions: result,
-            timer: TimerIntent::CancelAll,
-            output: OutputUpdate::None,
-        })
+        self.build_response(result, true, TimerIntent::CancelAll)
     }
 
     /// output_history から対応する注入済みキーを探してリリースする
@@ -1188,16 +1150,12 @@ impl NicolaFsm {
         if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
             return match entry.action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）
-                KeyAction::Char(_) | KeyAction::Romaji(_) => self.finalize_plan(FinalizePlan {
-                    actions: vec![KeyAction::Suppress],
-                    timer: TimerIntent::CancelAll,
-                    output: OutputUpdate::None,
-                }),
-                KeyAction::Key(vk) => self.finalize_plan(FinalizePlan {
-                    actions: vec![KeyAction::KeyUp(vk)],
-                    timer: TimerIntent::CancelAll,
-                    output: OutputUpdate::None,
-                }),
+                KeyAction::Char(_) | KeyAction::Romaji(_) => {
+                    self.build_response(vec![KeyAction::Suppress], true, TimerIntent::CancelAll)
+                }
+                KeyAction::Key(vk) => {
+                    self.build_response(vec![KeyAction::KeyUp(vk)], true, TimerIntent::CancelAll)
+                }
                 _ => Response::pass_through(),
             };
         }
@@ -1212,30 +1170,21 @@ impl NicolaFsm {
         if let Some((action, kana)) =
             self.lookup_face(scan_code, vk_code, self.get_face(Face::Normal))
         {
-            self.finalize_plan(FinalizePlan {
-                actions: vec![action.clone()],
-                timer: TimerIntent::CancelAll,
-                output: record_output(scan_code, &action, kana),
-            })
+            self.update_history(record_output(scan_code, &action, kana));
+            self.build_response(vec![action], true, TimerIntent::CancelAll)
         } else {
             // 配列定義に含まれないキーはそのまま通す
             let action = KeyAction::Key(vk_code);
-            self.finalize_plan(FinalizePlan {
-                actions: vec![action.clone()],
-                timer: TimerIntent::CancelAll,
-                output: record_output(scan_code, &action, None),
-            })
+            self.update_history(record_output(scan_code, &action, None));
+            self.build_response(vec![action], true, TimerIntent::CancelAll)
         }
     }
 
     /// PendingThumb タイムアウト：親指キーを単独打鍵として確定する
     fn timeout_pending_thumb(&mut self, vk_code: VkCode) -> Resp {
         let action = KeyAction::Key(vk_code);
-        self.finalize_plan(FinalizePlan {
-            actions: vec![action.clone()],
-            timer: TimerIntent::CancelAll,
-            output: record_output(ScanCode(u32::from(vk_code.0)), &action, None),
-        })
+        self.update_history(record_output(ScanCode(u32::from(vk_code.0)), &action, None));
+        self.build_response(vec![action], true, TimerIntent::CancelAll)
     }
 
     /// PendingCharThumb タイムアウト：char1+thumb を同時打鍵として確定する
@@ -1246,11 +1195,8 @@ impl NicolaFsm {
         thumb_is_left: bool,
     ) -> Resp {
         let resolved = self.resolve_char_thumb_as_simultaneous(char_scan, char_vk, thumb_is_left);
-        self.finalize_plan(FinalizePlan {
-            actions: resolved.actions,
-            timer: TimerIntent::CancelAll,
-            output: resolved.output,
-        })
+        self.update_history(resolved.output);
+        self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
     /// TwoPhase モード: Phase 1 の短い待機がタイムアウトした場合の処理。
@@ -1273,11 +1219,12 @@ impl NicolaFsm {
                     self.enter_speculative_char(pending);
                     // Emit the speculative output + set TIMER_PENDING for remaining time
                     let remaining_us = self.threshold_us.saturating_sub(self.speculative_delay_us);
-                    self.finalize_plan(FinalizePlan {
-                        actions: vec![action.clone()],
-                        timer: TimerIntent::Phase2Transition { remaining_us },
-                        output: record_output(pending.scan_code, &action, kana),
-                    })
+                    self.update_history(record_output(pending.scan_code, &action, kana));
+                    self.build_response(
+                        vec![action],
+                        true,
+                        TimerIntent::Phase2Transition { remaining_us },
+                    )
                 } else {
                     self.go_idle();
                     Response::pass_through().with_kill_timer(TIMER_SPECULATIVE)
@@ -1341,8 +1288,11 @@ impl NicolaFsm {
     /// バイパス理由に基づいて保留キーをフラッシュしつつパススルーする
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
-    fn handle_bypass(&mut self, reason: BypassReason) -> Resp {
-        log::trace!("bypass: {reason:?}");
+    /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
+    fn handle_bypass(&mut self, ev: &ClassifiedEvent) -> Resp {
+        if let Some(reason) = self.bypass_reason(ev) {
+            log::trace!("bypass: {reason:?}");
+        }
         if self.state.is_idle() {
             return Response::pass_through();
         }

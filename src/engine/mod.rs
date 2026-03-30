@@ -22,8 +22,8 @@ pub use decision::{
 };
 pub use engine::Engine;
 pub use fsm_types::{
-    ClassifiedEvent, EngineState, FinalizePlan, KeyClass, ModifierState, OutputRecord,
-    OutputUpdate, PendingKey, PendingThumbData, TimerIntent,
+    ClassifiedEvent, EngineState, KeyClass, ModifierState, OutputRecord, OutputUpdate, ParseAction,
+    PendingKey, PendingThumbData, TimerIntent,
 };
 pub use ime_coordinator::ImeCoordinator;
 pub use nicola_fsm::NicolaFsm;

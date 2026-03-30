@@ -1314,7 +1314,7 @@ fn test_resolve_char_thumb_no_thumb_face_definition() {
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('て'))));
 }
 
-// ── StepResult::Continue + pass_through edge cases ──
+// ── ReduceAndContinue + pass_through edge cases ──
 
 #[test]
 fn test_pending_char_then_non_layout_key_passes_through_new() {
@@ -3088,17 +3088,16 @@ fn test_collect_output_no_retraction() {
     assert_eq!(chars, vec!['う', 'し'], "No BS means all chars preserved");
 }
 
-// ── FinalizePlan tests ──
+// ── build_response tests ──
 
 #[test]
-fn test_finalize_plan_confirmed_cancels_timers() {
-    let mut engine = make_engine();
-    let plan = FinalizePlan {
-        actions: vec![KeyAction::Romaji("ka".to_string())],
-        timer: TimerIntent::CancelAll,
-        output: OutputUpdate::None,
-    };
-    let resp = engine.finalize_plan(plan);
+fn test_build_response_cancel_all_timers() {
+    let engine = make_engine();
+    let resp = engine.build_response(
+        vec![KeyAction::Romaji("ka".to_string())],
+        true,
+        TimerIntent::CancelAll,
+    );
     resp.assert_consumed();
     assert_eq!(resp.actions.len(), 1);
     resp.assert_timer_kill(TIMER_PENDING);
@@ -3114,14 +3113,9 @@ fn test_finalize_plan_confirmed_cancels_timers() {
 }
 
 #[test]
-fn test_finalize_plan_pending_sets_timer() {
-    let mut engine = make_engine();
-    let plan = FinalizePlan {
-        actions: vec![],
-        timer: TimerIntent::Pending,
-        output: OutputUpdate::None,
-    };
-    let resp = engine.finalize_plan(plan);
+fn test_build_response_pending_sets_timer() {
+    let engine = make_engine();
+    let resp = engine.build_response(vec![], true, TimerIntent::Pending);
     resp.assert_consumed();
     assert!(resp.actions.is_empty(), "Pending should have no actions");
     resp.assert_timer_set(TIMER_PENDING);
@@ -3129,14 +3123,13 @@ fn test_finalize_plan_pending_sets_timer() {
 }
 
 #[test]
-fn test_finalize_plan_speculative_wait_sets_timer() {
-    let mut engine = make_engine();
-    let plan = FinalizePlan {
-        actions: vec![KeyAction::Romaji("u".to_string())],
-        timer: TimerIntent::SpeculativeWait,
-        output: OutputUpdate::None,
-    };
-    let resp = engine.finalize_plan(plan);
+fn test_build_response_speculative_wait_sets_timer() {
+    let engine = make_engine();
+    let resp = engine.build_response(
+        vec![KeyAction::Romaji("u".to_string())],
+        true,
+        TimerIntent::SpeculativeWait,
+    );
     resp.assert_consumed();
     assert_eq!(resp.actions.len(), 1);
     resp.assert_timer_set(TIMER_SPECULATIVE);
@@ -3144,16 +3137,15 @@ fn test_finalize_plan_speculative_wait_sets_timer() {
 }
 
 #[test]
-fn test_finalize_plan_phase2_transition() {
-    let mut engine = make_engine();
-    let plan = FinalizePlan {
-        actions: vec![KeyAction::Romaji("ka".to_string())],
-        timer: TimerIntent::Phase2Transition {
+fn test_build_response_phase2_transition() {
+    let engine = make_engine();
+    let resp = engine.build_response(
+        vec![KeyAction::Romaji("ka".to_string())],
+        true,
+        TimerIntent::Phase2Transition {
             remaining_us: 50_000,
         },
-        output: OutputUpdate::None,
-    };
-    let resp = engine.finalize_plan(plan);
+    );
     resp.assert_consumed();
     assert_eq!(resp.actions.len(), 1);
     resp.assert_timer_kill(TIMER_SPECULATIVE);
@@ -3161,55 +3153,40 @@ fn test_finalize_plan_phase2_transition() {
 }
 
 #[test]
-fn test_finalize_plan_record_updates_history() {
+fn test_update_history_record() {
     let mut engine = make_engine();
     assert!(engine.output_history.is_empty());
 
-    let plan = FinalizePlan {
-        actions: vec![KeyAction::Romaji("ka".to_string())],
-        timer: TimerIntent::CancelAll,
-        output: OutputUpdate::Record(OutputRecord {
-            scan_code: SCAN_A,
-            romaji: "ka".to_string(),
-            kana: Some('か'),
-            action: KeyAction::Romaji("ka".to_string()),
-        }),
-    };
-    let _resp = engine.finalize_plan(plan);
+    engine.update_history(OutputUpdate::Record(OutputRecord {
+        scan_code: SCAN_A,
+        romaji: "ka".to_string(),
+        kana: Some('か'),
+        action: KeyAction::Romaji("ka".to_string()),
+    }));
     assert_eq!(engine.output_history.len(), 1);
     assert_eq!(engine.output_history.recent_kana(1), vec!['か']);
 }
 
 #[test]
-fn test_finalize_plan_retract_and_record() {
+fn test_update_history_retract_and_record() {
     let mut engine = make_engine();
 
     // First, record an entry
-    let plan1 = FinalizePlan {
-        actions: vec![KeyAction::Romaji("u".to_string())],
-        timer: TimerIntent::CancelAll,
-        output: OutputUpdate::Record(OutputRecord {
-            scan_code: SCAN_A,
-            romaji: "u".to_string(),
-            kana: Some('う'),
-            action: KeyAction::Romaji("u".to_string()),
-        }),
-    };
-    let _resp = engine.finalize_plan(plan1);
+    engine.update_history(OutputUpdate::Record(OutputRecord {
+        scan_code: SCAN_A,
+        romaji: "u".to_string(),
+        kana: Some('う'),
+        action: KeyAction::Romaji("u".to_string()),
+    }));
     assert_eq!(engine.output_history.len(), 1);
 
     // Now retract and record a new entry
-    let plan2 = FinalizePlan {
-        actions: vec![KeyAction::Romaji("vu".to_string())],
-        timer: TimerIntent::CancelAll,
-        output: OutputUpdate::RetractAndRecord(OutputRecord {
-            scan_code: SCAN_A,
-            romaji: "vu".to_string(),
-            kana: Some('ゔ'),
-            action: KeyAction::Romaji("vu".to_string()),
-        }),
-    };
-    let _resp = engine.finalize_plan(plan2);
+    engine.update_history(OutputUpdate::RetractAndRecord(OutputRecord {
+        scan_code: SCAN_A,
+        romaji: "vu".to_string(),
+        kana: Some('ゔ'),
+        action: KeyAction::Romaji("vu".to_string()),
+    }));
     assert_eq!(
         engine.output_history.len(),
         1,

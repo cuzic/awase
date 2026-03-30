@@ -77,30 +77,26 @@ pub struct ResolvedAction {
     pub output: OutputUpdate,
 }
 
-/// Engine の唯一の出口に渡す実行計画
+/// パーサーアクション: FSM の1ステップの判断結果。
+/// シフト-リデュースパーサーのアナロジーで設計。
 #[derive(Debug)]
-pub struct FinalizePlan {
-    /// 出力アクション（空なら consume）
-    pub actions: Vec<KeyAction>,
-    /// タイマー指示
-    pub timer: TimerIntent,
-    /// 出力履歴の更新
-    pub output: OutputUpdate,
-}
-
-/// FSM の1ステップの結果
-#[derive(Debug)]
-pub enum StepResult {
-    /// 処理完了（最終ステップ）— timer はこのステップのものを採用
-    Complete(FinalizePlan),
-    /// 保留を解決して次のイベントを再処理する。
-    /// timer は `CancelAll` 固定（Continue ステップはタイマーを決めない）。
-    Continue {
-        /// 保留解決の FinalizePlan（actions + output を統一経路で処理）
-        plan: FinalizePlan,
-        /// 次に処理するイベント
-        next: ClassifiedEvent,
+pub enum ParseAction {
+    /// バッファに積む（次の入力を待つ）— Shift
+    Shift { timer: TimerIntent },
+    /// パターン認識 → 出力生成 — Reduce
+    Reduce {
+        output: Vec<KeyAction>,
+        record: OutputUpdate,
+        timer: TimerIntent,
     },
+    /// 一部を Reduce して残りを再処理 — Reduce + Continue
+    ReduceAndContinue {
+        output: Vec<KeyAction>,
+        record: OutputUpdate,
+        remaining: ClassifiedEvent,
+    },
+    /// 管轄外、そのまま通す
+    PassThrough { timer: TimerIntent },
 }
 
 /// タイマー操作の指示
@@ -145,19 +141,6 @@ pub enum OutputUpdate {
     RetractAndRecord(OutputRecord),
     /// 変更なし。
     None,
-}
-
-/// Idle 状態でのキー押下の意図分類
-#[derive(Debug, Clone, Copy)]
-pub enum IdleIntent {
-    /// Shift 面を使う
-    ShiftPlane,
-    /// 親指押下中 → 即時同時打鍵
-    ActiveThumbCombo(Face),
-    /// 配列外キー → そのまま通す
-    PassThrough,
-    /// 確定モードに委譲
-    PolicyDriven,
 }
 
 /// on_key_down の前段でエンジン処理をバイパスする理由
