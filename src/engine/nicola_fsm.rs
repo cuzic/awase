@@ -15,8 +15,8 @@ use crate::types::{
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::fsm_types::{
-    BypassReason, ClassifiedEvent, EngineState, Face, KeyClass, OutputRecord, OutputUpdate,
-    ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
+    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, OutputRecord,
+    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
 };
 
 /// 同時打鍵判定用タイマー ID
@@ -454,6 +454,9 @@ impl NicolaFsm {
     }
 }
 
+/// `timed_fsm::ParseAction` の具象型エイリアス（ShiftReduceParser 実装用）。
+type TieredParseAction = timed_fsm::ParseAction<KeyAction, ClassifiedEvent, usize, OutputUpdate>;
+
 // ── ShiftReduceParser 実装 ──
 impl timed_fsm::ShiftReduceParser for NicolaFsm {
     type Action = KeyAction;
@@ -461,8 +464,34 @@ impl timed_fsm::ShiftReduceParser for NicolaFsm {
     type TimerId = usize;
     type ReduceRecord = OutputUpdate;
 
-    fn decide(&mut self, token: &ClassifiedEvent) -> ParseAction {
-        self.decide_and_transition(token)
+    fn decide(&mut self, token: &ClassifiedEvent) -> TieredParseAction {
+        let local = self.decide_and_transition(token);
+        match local {
+            ParseAction::Shift { timer } => TieredParseAction::Shift {
+                timers: self.timer_cmds(timer),
+            },
+            ParseAction::Reduce {
+                actions,
+                record,
+                timer,
+            } => TieredParseAction::Reduce {
+                actions,
+                record,
+                timers: self.timer_cmds(timer),
+            },
+            ParseAction::ReduceAndContinue {
+                actions,
+                record,
+                remaining,
+            } => TieredParseAction::ReduceAndContinue {
+                actions,
+                record,
+                remaining,
+            },
+            ParseAction::PassThrough { timer } => TieredParseAction::PassThrough {
+                timers: self.timer_cmds(timer),
+            },
+        }
     }
 
     fn on_reduce(&mut self, record: OutputUpdate) {
@@ -519,48 +548,72 @@ impl NicolaFsm {
             ParseAction::Reduce {
                 actions: vec![action.clone()],
                 record: record_output(ev.scan_code, &action, kana),
-                timers: self.timer_cmds(TimerIntent::CancelAll),
+                timer: TimerIntent::CancelAll,
             }
         } else {
             // Shift 面に定義がないキーは OS に任せる
             ParseAction::PassThrough {
-                timers: self.timer_cmds(TimerIntent::Keep),
+                timer: TimerIntent::Keep,
             }
         }
     }
 
-    /// Idle 状態でのキー押下処理
-    fn decide_idle(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+    /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
+    fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
         // Shift plane
         if self.should_use_shift_plane(ev) {
-            return self.shift_face_reduce(ev);
+            return IdleIntent::ShiftPlane;
         }
         // Active thumb combo
         if !ev.key_class.is_thumb() {
             if let Some(face) = self.active_thumb_face() {
-                if let Some((action, kana)) =
-                    self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
+                if self
+                    .lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
+                    .is_some()
                 {
-                    // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-                    let is_left = matches!(face, Face::LeftThumb);
-                    self.consume_thumb(is_left);
-                    return ParseAction::Reduce {
-                        actions: vec![action.clone()],
-                        record: record_output(ev.scan_code, &action, kana),
-                        timers: self.timer_cmds(TimerIntent::CancelAll),
-                    };
+                    return IdleIntent::ActiveThumb(face);
                 }
                 // 親指面に定義がない → 確定モードに委譲（fall through）
             }
         }
         // Non-layout key
         if !ev.key_class.is_thumb() && !self.is_layout_key(ev.scan_code) {
-            return ParseAction::PassThrough {
-                timers: self.timer_cmds(TimerIntent::Keep),
-            };
+            return IdleIntent::PassThrough;
         }
         // Confirm mode dispatch
-        self.dispatch_confirm_mode(ev)
+        IdleIntent::ConfirmMode
+    }
+
+    /// Idle 状態でのキー押下処理
+    fn decide_idle(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        match self.classify_idle_intent(ev) {
+            IdleIntent::ShiftPlane => self.shift_face_reduce(ev),
+            IdleIntent::ActiveThumb(face) => self.reduce_active_thumb(ev, face),
+            IdleIntent::PassThrough => ParseAction::PassThrough {
+                timer: TimerIntent::Keep,
+            },
+            IdleIntent::ConfirmMode => self.dispatch_confirm_mode(ev),
+        }
+    }
+
+    /// 未消費の親指キーが押下中の場合に親指面で即時確定する。
+    fn reduce_active_thumb(&mut self, ev: &ClassifiedEvent, face: Face) -> ParseAction {
+        if let Some((action, kana)) =
+            self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
+        {
+            // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
+            let is_left = matches!(face, Face::LeftThumb);
+            self.consume_thumb(is_left);
+            ParseAction::Reduce {
+                actions: vec![action.clone()],
+                record: record_output(ev.scan_code, &action, kana),
+                timer: TimerIntent::CancelAll,
+            }
+        } else {
+            // classify_idle_intent が lookup 成功を確認済みなのでここには来ないが、
+            // 安全側に倒して確定モードに委譲する。
+            self.dispatch_confirm_mode(ev)
+        }
     }
 
     /// PendingChar 状態でのキー押下処理
@@ -573,7 +626,7 @@ impl NicolaFsm {
                 ParseAction::Reduce {
                     actions: vec![],
                     record: OutputUpdate::None,
-                    timers: self.timer_cmds(TimerIntent::Keep),
+                    timer: TimerIntent::Keep,
                 }
             }
         }
@@ -589,7 +642,7 @@ impl NicolaFsm {
                 ParseAction::Reduce {
                     actions: vec![],
                     record: OutputUpdate::None,
-                    timers: self.timer_cmds(TimerIntent::Keep),
+                    timer: TimerIntent::Keep,
                 }
             }
         }
@@ -618,7 +671,7 @@ impl NicolaFsm {
                 ParseAction::Reduce {
                     actions: vec![],
                     record: OutputUpdate::None,
-                    timers: self.timer_cmds(TimerIntent::Keep),
+                    timer: TimerIntent::Keep,
                 }
             }
         }
@@ -627,17 +680,34 @@ impl NicolaFsm {
 
 // ── 同時打鍵解決 ──
 impl NicolaFsm {
+    /// 投機出力を取り消して新しい出力に差し替える。
+    ///
+    /// 前提: IME は完結済みローマ字を1つの変換単位として扱うため、
+    /// VK_BACK 1発で投機出力全体を削除できる。
+    fn retract_and_replace(
+        &mut self,
+        pending: PendingKey,
+        new_action: &KeyAction,
+        kana: Option<char>,
+    ) -> ParseAction {
+        self.output_history.retract_last();
+        let actions = vec![KeyAction::Key(VK_BACK), new_action.clone()];
+        ParseAction::Reduce {
+            actions,
+            record: OutputUpdate::Record(OutputRecord {
+                scan_code: pending.scan_code,
+                romaji: romaji_of(new_action),
+                kana,
+                action: new_action.clone(),
+            }),
+            timer: TimerIntent::CancelAll,
+        }
+    }
+
     /// 投機出力済み状態で親指キーが到着した場合の処理。
     ///
     /// `SpeculativeChar` 状態では通常面の文字が既に IME に送信されている。
-    /// 親指キーが閾値時間内に到着した場合、以下の手順で出力を差し替える:
-    ///
-    /// 1. `output_history.retract_last()` で内部履歴から投機出力を削除
-    /// 2. `VK_BACK` を送信して IME の未確定文字を 1 文字削除
-    /// 3. 親指面の文字を新たに送信
-    ///
-    /// この「BS + 再送信」パターンは IME が BS 1 回でローマ字列全体を
-    /// 削除する前提に依存している（詳細は `VK_BACK` 定数のドキュメントを参照）。
+    /// 親指キーが閾値時間内に到着した場合、`retract_and_replace()` で出力を差し替える。
     ///
     /// 閾値超過時や親指面に定義がない場合は、投機出力は正しかったとみなし、
     /// Idle に戻って親指キーを新規イベントとして再処理する。
@@ -662,25 +732,8 @@ impl NicolaFsm {
                 let is_left = matches!(face, Face::LeftThumb);
                 self.consume_thumb(is_left);
 
-                // Retract the speculative output: always 1 BS because IME treats
-                // complete romaji as a single composition unit (Bug #3 fix)
-                self.output_history.retract_last();
-
-                let mut actions = vec![KeyAction::Key(VK_BACK)];
-                actions.push(thumb_action.clone());
-
                 self.go_idle();
-                // Use Record (not RetractAndRecord) since we already retracted above
-                return ParseAction::Reduce {
-                    actions,
-                    record: OutputUpdate::Record(OutputRecord {
-                        scan_code: pending.scan_code,
-                        romaji: romaji_of(&thumb_action),
-                        kana: thumb_kana,
-                        action: thumb_action,
-                    }),
-                    timers: self.timer_cmds(TimerIntent::CancelAll),
-                };
+                return self.retract_and_replace(pending, &thumb_action, thumb_kana);
             }
             // Outside threshold → speculative was correct, process thumb as new key
         } else {
@@ -726,7 +779,7 @@ impl NicolaFsm {
                 },
             );
             return ParseAction::Shift {
-                timers: self.timer_cmds(TimerIntent::Pending),
+                timer: TimerIntent::Pending,
             };
         }
 
@@ -778,7 +831,7 @@ impl NicolaFsm {
                 return ParseAction::Reduce {
                     actions: vec![action.clone()],
                     record: record_output(ev.scan_code, &action, kana),
-                    timers: self.timer_cmds(TimerIntent::CancelAll),
+                    timer: TimerIntent::CancelAll,
                 };
             }
         }
@@ -920,7 +973,7 @@ impl NicolaFsm {
                 return ParseAction::Reduce {
                     actions: all_actions,
                     record: record_output(ev.scan_code, &action, kana),
-                    timers: self.timer_cmds(TimerIntent::CancelAll),
+                    timer: TimerIntent::CancelAll,
                 };
             }
             // 親指面に char2 の定義がない場合は char1 を単独確定し、char2 を再処理

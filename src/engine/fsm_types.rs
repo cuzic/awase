@@ -2,8 +2,6 @@
 
 use std::time::Duration;
 
-use timed_fsm::TimerCommand;
-
 use crate::scanmap::PhysicalPos;
 use crate::types::{KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 
@@ -84,8 +82,28 @@ pub struct ResolvedAction {
 }
 
 /// パーサーアクション: FSM の1ステップの判断結果。
-/// `timed_fsm::ParseAction` の具象型エイリアス。
-pub type ParseAction = timed_fsm::ParseAction<KeyAction, ClassifiedEvent, usize, OutputUpdate>;
+///
+/// `timed_fsm::ParseAction` と同構造だが、タイマー指示に `TimerIntent` を使用する。
+/// `ShiftReduceParser::decide()` 実装で `timed_fsm::ParseAction` に変換される。
+#[derive(Debug)]
+pub enum ParseAction {
+    /// トークンをバッファして追加入力を待つ。
+    Shift { timer: TimerIntent },
+    /// パターンを認識して出力を生成する。
+    Reduce {
+        actions: Vec<KeyAction>,
+        record: OutputUpdate,
+        timer: TimerIntent,
+    },
+    /// パターンを部分認識し、出力を生成してから残りのトークンを再処理する。
+    ReduceAndContinue {
+        actions: Vec<KeyAction>,
+        record: OutputUpdate,
+        remaining: ClassifiedEvent,
+    },
+    /// このパーサーでは処理しない。次のハンドラにパススルーする。
+    PassThrough { timer: TimerIntent },
+}
 
 /// タイマー操作の指示
 #[derive(Debug, Clone, Copy)]
@@ -111,39 +129,39 @@ impl TimerIntent {
         self,
         threshold_us: u64,
         speculative_delay_us: u64,
-    ) -> Vec<TimerCommand<usize>> {
+    ) -> Vec<timed_fsm::TimerCommand<usize>> {
         match self {
             Self::CancelAll => vec![
-                TimerCommand::Kill { id: TIMER_PENDING },
-                TimerCommand::Kill {
+                timed_fsm::TimerCommand::Kill { id: TIMER_PENDING },
+                timed_fsm::TimerCommand::Kill {
                     id: TIMER_SPECULATIVE,
                 },
             ],
             Self::Pending => vec![
-                TimerCommand::Kill { id: TIMER_PENDING },
-                TimerCommand::Kill {
+                timed_fsm::TimerCommand::Kill { id: TIMER_PENDING },
+                timed_fsm::TimerCommand::Kill {
                     id: TIMER_SPECULATIVE,
                 },
-                TimerCommand::Set {
+                timed_fsm::TimerCommand::Set {
                     id: TIMER_PENDING,
                     duration: Duration::from_micros(threshold_us),
                 },
             ],
             Self::SpeculativeWait => vec![
-                TimerCommand::Kill { id: TIMER_PENDING },
-                TimerCommand::Kill {
+                timed_fsm::TimerCommand::Kill { id: TIMER_PENDING },
+                timed_fsm::TimerCommand::Kill {
                     id: TIMER_SPECULATIVE,
                 },
-                TimerCommand::Set {
+                timed_fsm::TimerCommand::Set {
                     id: TIMER_SPECULATIVE,
                     duration: Duration::from_micros(speculative_delay_us),
                 },
             ],
             Self::Phase2Transition { remaining_us } => vec![
-                TimerCommand::Kill {
+                timed_fsm::TimerCommand::Kill {
                     id: TIMER_SPECULATIVE,
                 },
-                TimerCommand::Set {
+                timed_fsm::TimerCommand::Set {
                     id: TIMER_PENDING,
                     duration: Duration::from_micros(remaining_us),
                 },
@@ -151,6 +169,22 @@ impl TimerIntent {
             Self::Keep => vec![],
         }
     }
+}
+
+/// Idle 状態でのキー到着時の意図分類。
+///
+/// `decide_idle()` の前段で `classify_idle_intent()` が返す。
+/// 各 variant に応じて適切な処理メソッドにディスパッチされる。
+#[derive(Debug, Clone, Copy)]
+pub enum IdleIntent {
+    /// Shift 面で即時確定する（物理 Shift キー押下中）。
+    ShiftPlane,
+    /// 未消費の親指キーが押下中で、親指面で即時確定する。
+    ActiveThumb(Face),
+    /// 配列定義に含まれないキー → OS にパススルー。
+    PassThrough,
+    /// 確定モードに基づいて保留/投機/即時確定を選択する。
+    ConfirmMode,
 }
 
 /// 出力履歴に記録する 1 件分のデータ

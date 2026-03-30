@@ -33,7 +33,7 @@ impl NicolaFsm {
     }
 
     /// Idle + Wait モード: 新規キーを保留状態に遷移させタイマーを起動する
-    pub(crate) fn idle_wait(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+    pub(crate) const fn idle_wait(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         if ev.key_class.is_thumb() {
             self.enter_pending_thumb(PendingThumbData {
                 scan_code: ev.scan_code,
@@ -49,7 +49,7 @@ impl NicolaFsm {
             });
         }
         ParseAction::Shift {
-            timers: self.timer_cmds(TimerIntent::Pending),
+            timer: TimerIntent::Pending,
         }
     }
 
@@ -74,11 +74,11 @@ impl NicolaFsm {
             ParseAction::Reduce {
                 actions: vec![action.clone()],
                 record: record_output(ev.scan_code, &action, kana),
-                timers: self.timer_cmds(TimerIntent::Pending),
+                timer: TimerIntent::Pending,
             }
         } else {
             ParseAction::PassThrough {
-                timers: self.timer_cmds(TimerIntent::Keep),
+                timer: TimerIntent::Keep,
             }
         }
     }
@@ -87,7 +87,7 @@ impl NicolaFsm {
     ///
     /// 親指キーは Wait モードと同じ扱い。
     /// 文字キーは短い待機（speculative_delay_us）の後、投機出力に遷移する。
-    pub(crate) fn idle_two_phase(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+    pub(crate) const fn idle_two_phase(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         if ev.key_class.is_thumb() {
             // Thumb keys use Wait mode (same as Speculative)
             return self.idle_wait(ev);
@@ -103,7 +103,7 @@ impl NicolaFsm {
 
         // Use TIMER_SPECULATIVE with the short delay
         ParseAction::Shift {
-            timers: self.timer_cmds(TimerIntent::SpeculativeWait),
+            timer: TimerIntent::SpeculativeWait,
         }
     }
 
