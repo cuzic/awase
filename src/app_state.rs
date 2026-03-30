@@ -105,46 +105,12 @@ pub struct ImeSyncKeys {
     pub off: Vec<VkCode>,
 }
 
-/// `check_special_keys` が返す特殊キーアクション種別。
-#[derive(Debug, Clone, Copy)]
-pub enum SpecialKeyAction {
-    EngineOn,
-    EngineOff,
-    ImeOn,
-    ImeOff,
-}
-
 /// エンジン切替・IME 制御の特殊キーコンボを集約する構造体。
-///
-/// `find_match` はより限定的な修飾キー（Ctrl+Shift 等）を先にチェックし、
-/// マッチしなければ緩い修飾（Ctrl のみ等）をチェックする。
 pub struct SpecialKeyCombos {
     pub engine_on: Vec<ParsedKeyCombo>,
     pub engine_off: Vec<ParsedKeyCombo>,
     pub ime_on: Vec<ParsedKeyCombo>,
     pub ime_off: Vec<ParsedKeyCombo>,
-}
-
-impl SpecialKeyCombos {
-    /// イベントにマッチする特殊キーアクションを返す。
-    ///
-    /// チェック順: engine_on → engine_off → ime_on → ime_off
-    /// （修飾キーが多い＝より限定的なコンボを先にチェック）
-    pub fn find_match(&self, event: &RawKeyEvent) -> Option<SpecialKeyAction> {
-        if self.engine_on.iter().any(|k| matches_key_combo(*k, event)) {
-            return Some(SpecialKeyAction::EngineOn);
-        }
-        if self.engine_off.iter().any(|k| matches_key_combo(*k, event)) {
-            return Some(SpecialKeyAction::EngineOff);
-        }
-        if self.ime_on.iter().any(|k| matches_key_combo(*k, event)) {
-            return Some(SpecialKeyAction::ImeOn);
-        }
-        if self.ime_off.iter().any(|k| matches_key_combo(*k, event)) {
-            return Some(SpecialKeyAction::ImeOff);
-        }
-        None
-    }
 }
 
 /// シングルスレッド状態を集約した構造体
@@ -436,39 +402,61 @@ impl AppState {
     /// 変換/無変換キーは1回だけ consume される。より限定的な修飾キー（Ctrl+Shift）を
     /// 先にチェックし、マッチしなければ緩い修飾（Ctrl のみ）をチェックする。
     pub(crate) fn check_special_keys(&mut self, event: &RawKeyEvent) -> Option<CallbackResult> {
-        let action = self.special_keys.find_match(event)?;
-
-        match action {
-            SpecialKeyAction::EngineOn if !self.engine.is_enabled() => {
+        // エンジントグルを先にチェック（より限定的な修飾キー）
+        if !self.engine.is_enabled() {
+            if self
+                .special_keys
+                .engine_on
+                .iter()
+                .any(|k| matches_key_combo(*k, event))
+            {
                 let (enabled, flush_resp) = self.engine.set_enabled(true);
                 Self::dispatch_response(&flush_resp);
                 log::info!("Engine ON (key combo)");
                 self.tray.set_enabled(enabled);
-                Some(CallbackResult::Consumed)
+                return Some(CallbackResult::Consumed);
             }
-            SpecialKeyAction::EngineOff if self.engine.is_enabled() => {
+        }
+        if self.engine.is_enabled() {
+            if self
+                .special_keys
+                .engine_off
+                .iter()
+                .any(|k| matches_key_combo(*k, event))
+            {
                 let (enabled, flush_resp) = self.engine.set_enabled(false);
                 Self::dispatch_response(&flush_resp);
                 log::info!("Engine OFF (key combo)");
                 self.tray.set_enabled(enabled);
-                Some(CallbackResult::Consumed)
+                return Some(CallbackResult::Consumed);
             }
-            SpecialKeyAction::ImeOn => {
-                // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
-                let _ = unsafe { crate::ime::set_ime_open_cross_process(true) };
-                self.shadow_ime_on = true;
-                log::info!("IME ON (ImmSetOpenStatus, key combo)");
-                Some(CallbackResult::Consumed)
-            }
-            SpecialKeyAction::ImeOff => {
-                // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
-                let _ = unsafe { crate::ime::set_ime_open_cross_process(false) };
-                self.shadow_ime_on = false;
-                log::info!("IME OFF (ImmSetOpenStatus, key combo)");
-                Some(CallbackResult::Consumed)
-            }
-            _ => None, // EngineOn when already on, EngineOff when already off
         }
+
+        // IME 制御キー（エンジン状態に関わらずチェック）
+        if self
+            .special_keys
+            .ime_on
+            .iter()
+            .any(|k| matches_key_combo(*k, event))
+        {
+            let _ = unsafe { crate::ime::set_ime_open_cross_process(true) };
+            self.shadow_ime_on = true;
+            log::info!("IME ON (ImmSetOpenStatus, key combo)");
+            return Some(CallbackResult::Consumed);
+        }
+        if self
+            .special_keys
+            .ime_off
+            .iter()
+            .any(|k| matches_key_combo(*k, event))
+        {
+            let _ = unsafe { crate::ime::set_ime_open_cross_process(false) };
+            self.shadow_ime_on = false;
+            log::info!("IME OFF (ImmSetOpenStatus, key combo)");
+            return Some(CallbackResult::Consumed);
+        }
+
+        None
     }
 
     /// フォーカス変更時の状態遷移を行い、必要な副作用を返す。
