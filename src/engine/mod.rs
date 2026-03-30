@@ -61,13 +61,7 @@ pub struct Engine {
     /// 配列定義（.yab ベース）
     layout: YabLayout,
 
-    /// 左親指キーの仮想キーコード
-    left_thumb_vk: VkCode,
-
-    /// 右親指キーの仮想キーコード
-    right_thumb_vk: VkCode,
-
-    /// エンジンのフェーズ（状態タグ）
+    /// エンジンの���ェーズ（状態タグ）
     phase: EnginePhase,
 
     /// 保留中の文字キーデータ
@@ -127,16 +121,14 @@ impl Engine {
     #[must_use]
     pub fn new(
         layout: YabLayout,
-        left_thumb_vk: VkCode,
-        right_thumb_vk: VkCode,
+        _left_thumb_vk: VkCode,
+        _right_thumb_vk: VkCode,
         threshold_ms: u32,
         confirm_mode: ConfirmMode,
         speculative_delay_ms: u32,
     ) -> Self {
         Self {
             layout,
-            left_thumb_vk,
-            right_thumb_vk,
             phase: EnginePhase::Idle,
             pending_char: None,
             pending_thumb: None,

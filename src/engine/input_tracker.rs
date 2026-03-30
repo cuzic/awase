@@ -4,7 +4,7 @@
 //! FSM（処理レイヤー）とは独立して動作し、IME チェック等で FSM がスキップ
 //! される場合でも物理キー状態を正確に追跡し続ける。
 
-use crate::scanmap::{scan_to_pos, PhysicalPos};
+use crate::scanmap::scan_to_pos;
 use crate::types::{KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 use crate::vk;
 
@@ -51,6 +51,7 @@ impl PhysicalKeyState {
 ///
 /// 全キーイベントに対して [`process()`](Self::process) を無条件に呼ぶこと。
 /// IME チェックやエンジン有効/無効に関係なく、常に正確な物理キー状態を保持する。
+#[derive(Debug)]
 pub struct InputTracker {
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
