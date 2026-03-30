@@ -1314,13 +1314,13 @@ fn test_resolve_char_thumb_no_thumb_face_definition() {
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('て'))));
 }
 
-// ── combine_prev_and_new edge cases ──
+// ── StepResult::Continue + pass_through edge cases ──
 
 #[test]
 fn test_pending_char_then_non_layout_key_passes_through_new() {
     // PendingChar + non-layout key after threshold
-    // prev resolved as single, new is pass_through
-    // Tests combine_prev_and_new passthrough branch with non-empty prev (line 460)
+    // prev resolved as single via Continue, new is pass_through
+    // Tests prepend_actions with non-empty accumulated actions
     let mut engine = make_engine();
 
     let r = engine.on_event(Ev::down(VK_A).at(0).build());

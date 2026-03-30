@@ -88,6 +88,22 @@ pub struct FinalizePlan {
     pub output: OutputUpdate,
 }
 
+/// FSM の1ステップの結果
+#[derive(Debug)]
+pub enum StepResult {
+    /// 処理完了（最終ステップ）
+    Complete(FinalizePlan),
+    /// 保留を解決して次のイベントを再処理する
+    Continue {
+        /// 保留解決のアクション（タイマーは CancelAll のみ許可）
+        resolved_actions: Vec<KeyAction>,
+        /// 解決した出力の履歴更新
+        resolved_output: OutputUpdate,
+        /// 次に処理するイベント
+        next: ClassifiedEvent,
+    },
+}
+
 /// タイマー操作の指示
 #[derive(Debug, Clone, Copy)]
 pub enum TimerIntent {
