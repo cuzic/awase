@@ -144,7 +144,7 @@ impl Decision {
                     effects: Vec::new(),
                 };
                 let Self::Consume { effects } = self else {
-                    unreachable!()
+                    unreachable!("just assigned Consume")
                 };
                 effects
             }

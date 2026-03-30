@@ -29,43 +29,43 @@ impl FsmAdapter {
     /// キーイベントを処理し、Decision を返す。
     pub fn on_event(&mut self, event: RawKeyEvent, phys: &PhysicalKeyState) -> Decision {
         let resp = self.fsm.on_event(event, phys);
-        Self::response_to_decision(&resp)
+        Self::response_to_decision(resp)
     }
 
     /// タイマー満了時の処理。
     pub fn on_timeout(&mut self, timer_id: usize, phys: &PhysicalKeyState) -> Decision {
         let resp = self.fsm.on_timeout(timer_id, phys);
-        Self::response_to_decision(&resp)
+        Self::response_to_decision(resp)
     }
 
     /// 保留中のキーをフラッシュし、Decision を返す。
     pub fn flush(&mut self, reason: ContextChange) -> Decision {
         let resp = self.fsm.flush_pending(reason);
-        Self::response_to_decision(&resp)
+        Self::response_to_decision(resp)
     }
 
     /// フラッシュして Effect リストのみを返す（他の Effect と結合する用途）。
     pub fn flush_to_effects(&mut self, reason: ContextChange) -> Vec<Effect> {
         let resp = self.fsm.flush_pending(reason);
-        Self::response_to_effects(&resp)
+        Self::response_to_effects(resp)
     }
 
     /// エンジンの有効/無効をトグルする。
     pub fn toggle_enabled(&mut self) -> (bool, Decision) {
         let (enabled, resp) = self.fsm.toggle_enabled();
-        (enabled, Self::response_to_decision(&resp))
+        (enabled, Self::response_to_decision(resp))
     }
 
     /// エンジンの有効/無効を明示的に設定する。
     pub fn set_enabled(&mut self, enabled: bool) -> (bool, Decision) {
         let (actual, resp) = self.fsm.set_enabled(enabled);
-        (actual, Self::response_to_decision(&resp))
+        (actual, Self::response_to_decision(resp))
     }
 
     /// 配列を動的に差し替える。
     pub fn swap_layout(&mut self, layout: YabLayout) -> Decision {
         let resp = self.fsm.swap_layout(layout);
-        Self::response_to_decision(&resp)
+        Self::response_to_decision(resp)
     }
 
     /// 同時打鍵判定の閾値を更新する（ミリ秒指定）。
@@ -92,7 +92,7 @@ impl FsmAdapter {
     // ── 内部メソッド ──
 
     /// timed-fsm Response → Effect リストに変換（consumed フラグは呼び出し側で判定）
-    fn response_to_effects(resp: &Response<KeyAction, usize>) -> Vec<Effect> {
+    fn response_to_effects(resp: Response<KeyAction, usize>) -> Vec<Effect> {
         let mut effects = Vec::new();
         for cmd in &resp.timers {
             match cmd {
@@ -108,15 +108,16 @@ impl FsmAdapter {
             }
         }
         if !resp.actions.is_empty() {
-            effects.push(Effect::Input(InputEffect::SendKeys(resp.actions.clone())));
+            effects.push(Effect::Input(InputEffect::SendKeys(resp.actions)));
         }
         effects
     }
 
-    /// timed-fsm Response → Decision に変換
-    fn response_to_decision(resp: &Response<KeyAction, usize>) -> Decision {
+    /// timed-fsm Response → Decision に変換（Response を消費する）
+    fn response_to_decision(resp: Response<KeyAction, usize>) -> Decision {
+        let consumed = resp.consumed;
         let effects = Self::response_to_effects(resp);
-        if resp.consumed {
+        if consumed {
             Decision::consumed_with(effects)
         } else if effects.is_empty() {
             Decision::pass_through()

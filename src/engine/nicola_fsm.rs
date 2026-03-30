@@ -713,7 +713,7 @@ impl NicolaFsm {
     /// Idle に戻って親指キーを新規イベントとして再処理する。
     fn step_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::SpeculativeChar(pending) = self.state else {
-            unreachable!()
+            unreachable!("unexpected state: {:?}", self.state)
         };
         let elapsed = ev.timestamp.saturating_sub(pending.timestamp);
         let face = Face::from_thumb(ev.key_class);
@@ -751,7 +751,7 @@ impl NicolaFsm {
     /// PendingChar + 親指キー → 同時打鍵候補（閾値内なら PendingCharThumb、超過なら flush+新規）
     fn step_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingChar(pending) = self.state else {
-            unreachable!()
+            unreachable!("unexpected state: {:?}", self.state)
         };
         let elapsed_us = ev.timestamp.saturating_sub(pending.timestamp);
 
@@ -796,7 +796,7 @@ impl NicolaFsm {
     /// PendingChar + 文字キー → 前の保留を単独確定し、今回のキーを再処理
     fn step_pending_char_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingChar(pending) = self.state else {
-            unreachable!()
+            unreachable!("unexpected state: {:?}", self.state)
         };
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
@@ -810,7 +810,7 @@ impl NicolaFsm {
     /// PendingThumb + 文字キー → 同時打鍵候補（閾値内なら即時確定、超過なら flush+新規）
     fn step_pending_thumb_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingThumb(thumb) = self.state else {
-            unreachable!()
+            unreachable!("unexpected state: {:?}", self.state)
         };
         let elapsed_us = ev.timestamp.saturating_sub(thumb.timestamp);
 
@@ -849,7 +849,7 @@ impl NicolaFsm {
     /// PendingThumb + 親指キー → 前の保留を単独確定し、今回のキーを再処理
     fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let EngineState::PendingThumb(thumb) = self.state else {
-            unreachable!()
+            unreachable!("unexpected state: {:?}", self.state)
         };
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
@@ -937,7 +937,7 @@ impl NicolaFsm {
             thumb,
         } = self.state
         else {
-            unreachable!()
+            unreachable!("unexpected state: {:?}", self.state)
         };
         self.go_idle();
 
@@ -1124,7 +1124,7 @@ impl NicolaFsm {
             thumb,
         } = self.state
         else {
-            unreachable!()
+            unreachable!("unexpected state: {:?}", self.state)
         };
         self.go_idle();
         let resolved = self.resolve_char_thumb_as_simultaneous(
