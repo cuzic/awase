@@ -65,6 +65,20 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 /// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
+/// Windows 11 XAML インフラストラクチャのクラス名かどうかを判定する。
+///
+/// これらはウィンドウ切替時に中間的にフォーカスを受ける内部ウィンドウで、
+/// ユーザーが操作するコントロールではない。フォーカスイベントを無視すべき。
+fn is_xaml_infrastructure_class(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "ForegroundStaging"
+            | "XamlExplorerHostIslandWindow"
+            | "Windows.UI.Composition.DesktopWindowContentBridge"
+            | "Windows.UI.Input.InputSite.WindowClass"
+    )
+}
+
 /// 指定ウィンドウの IME を OFF にする。
 pub unsafe fn set_ime_off(hwnd: HWND) {
     if let Some(ctx) = ImeContext::open(hwnd) {
@@ -121,9 +135,17 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    // Step 0: プロセスID・クラス名を取得し、キャッシュを検索
+    // Step 0: プロセスID・クラス名を取得
     let process_id = classify::get_window_process_id(hwnd);
     let class_name = classify::get_class_name_string(hwnd);
+
+    // Windows 11 XAML インフラストラクチャウィンドウのフォーカスイベントを無視。
+    // これらはユーザーが操作するコントロールではなく、ウィンドウ切替時に
+    // 中間的に発火する。無視しないと TextInput 判定が Undetermined で上書きされる。
+    if is_xaml_infrastructure_class(&class_name) {
+        log::trace!("Ignoring XAML infrastructure focus: class={class_name}");
+        return;
+    }
 
     // UIA 非同期結果のキャッシュ更新用に保存 + パターントラッカーをリセット
     if let Some(f) = crate::FOCUS.get_mut() {
