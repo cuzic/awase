@@ -101,6 +101,16 @@ pub struct GeneralConfig {
     /// IME を直接入力モードに切り替える
     #[serde(default = "default_ime_off_key")]
     pub ime_off_vk: String,
+
+    /// キーリマップ: Ctrl+変換 → 指定 VK を送信（デフォルト: VK_OEM_ENLW=0xF4）
+    /// エンジン状態に関係なく、Ctrl+変換 を押すと IME ON に切り替える
+    #[serde(default = "default_ime_on_key")]
+    pub ctrl_convert_remap_vk: String,
+
+    /// キーリマップ: Ctrl+無変換 → 指定 VK を送信（デフォルト: VK_OEM_AUTO=0xF3）
+    /// エンジン状態に関係なく、Ctrl+無変換 を押すと IME OFF に切り替える
+    #[serde(default = "default_ime_off_key")]
+    pub ctrl_nonconvert_remap_vk: String,
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -146,11 +156,11 @@ const fn default_speculative_delay() -> u32 {
 }
 
 fn default_engine_on_keys() -> Vec<String> {
-    vec!["Ctrl+VK_CONVERT".to_string()]
+    vec!["Ctrl+Shift+VK_CONVERT".to_string()]
 }
 
 fn default_engine_off_keys() -> Vec<String> {
-    vec!["Ctrl+VK_NONCONVERT".to_string()]
+    vec!["Ctrl+Shift+VK_NONCONVERT".to_string()]
 }
 
 fn default_ime_on_key() -> String {

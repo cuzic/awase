@@ -42,7 +42,7 @@ use awase::config::{
 use awase::engine::{Engine, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
-use awase::types::{KeyEventType, RawKeyEvent, VkCode};
+use awase::types::{KeyAction, KeyEventType, RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
 use timed_fsm::{dispatch, ActionExecutor, TimerRuntime};
 
@@ -223,6 +223,8 @@ fn main() -> Result<()> {
             engine_off_keys,
             ime_on_vk: vk_name_to_code(&config.general.ime_on_vk).unwrap_or(0),
             ime_off_vk: vk_name_to_code(&config.general.ime_off_vk).unwrap_or(0),
+            ctrl_convert_remap_vk: vk_name_to_code(&config.general.ctrl_convert_remap_vk).unwrap_or(0),
+            ctrl_nonconvert_remap_vk: vk_name_to_code(&config.general.ctrl_nonconvert_remap_vk).unwrap_or(0),
             shadow_ime_on: true, // safe default: engine ON
             ime_sync_toggle_keys,
             ime_sync_on_keys,
@@ -574,7 +576,7 @@ impl TimerRuntime for Win32TimerRuntime {
 pub(crate) struct SendInputExecutor;
 
 impl ActionExecutor for SendInputExecutor {
-    type Action = awase::types::KeyAction;
+    type Action = KeyAction;
 
     fn execute(&mut self, actions: &[Self::Action]) {
         unsafe {
@@ -733,6 +735,41 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                         WPARAM(0),
                         LPARAM(0),
                     );
+                }
+            }
+        }
+    }
+
+    // ── Ctrl+変換/Ctrl+無変換 → IME 制御キーリマップ ──
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if is_key_down {
+            let ctrl_held = GetAsyncKeyState(0x11) & (0x8000_u16 as i16) != 0;
+            let shift_held = GetAsyncKeyState(0x10) & (0x8000_u16 as i16) != 0;
+            if ctrl_held && !shift_held {
+                // Ctrl+変換 (Shift なし) → IME ON キーを送信
+                if event.vk_code.0 == 0x1C && app.ctrl_convert_remap_vk != 0 {
+                    app.output.send_keys(&[
+                        KeyAction::Key(app.ctrl_convert_remap_vk),
+                        KeyAction::KeyUp(app.ctrl_convert_remap_vk),
+                    ]);
+                    app.shadow_ime_on = true;
+                    log::debug!("Ctrl+Convert → remap to vk=0x{:02X}", app.ctrl_convert_remap_vk);
+                    return CallbackResult::Consumed;
+                }
+                // Ctrl+無変換 (Shift なし) → IME OFF キーを送信
+                if event.vk_code.0 == 0x1D && app.ctrl_nonconvert_remap_vk != 0 {
+                    app.output.send_keys(&[
+                        KeyAction::Key(app.ctrl_nonconvert_remap_vk),
+                        KeyAction::KeyUp(app.ctrl_nonconvert_remap_vk),
+                    ]);
+                    app.shadow_ime_on = false;
+                    log::debug!("Ctrl+Nonconvert → remap to vk=0x{:02X}", app.ctrl_nonconvert_remap_vk);
+                    return CallbackResult::Consumed;
                 }
             }
         }
