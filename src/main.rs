@@ -469,157 +469,32 @@ unsafe fn resolve_input_context() -> InputContext {
 }
 
 /// フックコールバックからの Engine 呼び出し
-#[allow(clippy::too_many_lines)] // event dispatch hub with multiple steps
+/// フックコールバック — 最小版（全自動判定無効）
+///
+/// エンジンが有効なら常にエンジン処理。
+/// Ctrl+Shift+F12 でエンジン ON/OFF、Ctrl+Shift+F11 でフォーカスオーバーライド。
+/// IME チェック・フォーカス判定・ヒューリスティック全て無効。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    let is_key_down = matches!(
-        event.event_type,
-        KeyEventType::KeyDown | KeyEventType::SysKeyDown
-    );
-
-    // ── Step 0: パターン観察（すべてのキーイベントに対して、バイパスチェック前に実行） ──
-    focus::pattern::observe_key_pattern(&event);
-
-    // ── Step 1: IME/親指キー検出による即時 TextInput 昇格 ──
-    // IME 制御キーまたは親指キー（変換/無変換）が押された場合、
-    // ユーザーがテキスト入力コンテキストにいると判断して昇格する。
-    if is_key_down && vk::is_ime_context(event.vk_code) {
-        let current = FocusKind::load(&FOCUS_KIND);
-        if current != FocusKind::TextInput {
-            focus::pattern::promote_to_text_input(
-                DetectionSource::ImeKeyInferred,
-                &format!("IME/thumb key 0x{:02X}", event.vk_code.0),
-            );
-            // Undetermined バッファリング中ならバッファを処理
-            if let Some(kb) = KEY_BUFFER.get_mut() {
-                if kb.undetermined_buffering {
-                    kb.undetermined_buffering = false;
-                    let _ = KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER);
-                    // バッファされたキーをエンジンで処理
-                    let keys = kb.drain_deferred();
-                    for buffered in keys {
-                        if let Some(engine) = ENGINE.get_mut() {
-                            let response = engine.on_event(buffered);
-                            let mut timer_runtime = Win32TimerRuntime;
-                            let mut action_executor = SendInputExecutor;
-                            dispatch(&response, &mut timer_runtime, &mut action_executor);
-                        }
-                    }
-                }
-            }
-            // PassThrough 済みキーがあれば取り消して再処理
-            key_buffer::retract_passthrough_memory();
-        }
-    }
-
-    // ── Step 2: IME ガード: IME 制御キー直後の後続キーを遅延処理する ──
-    // IME 制御キー（半角/全角等）が OS に渡された直後は、IME 状態がまだ反映されて
-    // いない可能性がある。後続キーをメッセージループに回すことで、IME 状態が
-    // 確実に更新された後に処理する。
-    if let Some(kb) = KEY_BUFFER.get_mut() {
-        if kb.is_guarded() {
-            // IME 制御キーの KeyUp でガード解除
-            if !is_key_down && vk::is_ime_control(event.vk_code) {
-                kb.set_guard(false);
-                return CallbackResult::PassThrough;
-            }
-            // KeyDown はバッファに保存してメッセージループに回す
-            if is_key_down {
-                kb.push_deferred(event);
-                let _ = PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
-                return CallbackResult::Consumed;
-            }
-            // ガード中の KeyUp（IME制御キー以外）はパススルー
-            return CallbackResult::PassThrough;
-        }
-    }
-
-    // ── Step 3: IME 制御キーの検出: ガードを有効にしてパススルー ──
-    if is_key_down && vk::is_ime_control(event.vk_code) {
-        // エンジンの保留をフラッシュ（engine 側の handle_bypass で実行される）
-        if let Some(engine) = ENGINE.get_mut() {
-            let response = engine.on_event(event);
-            let mut timer_runtime = Win32TimerRuntime;
-            let mut action_executor = SendInputExecutor;
-            dispatch(&response, &mut timer_runtime, &mut action_executor);
-            // engine が passthrough を返す → ガードを有効にして OS に渡す
-            if !response.consumed {
-                if let Some(kb) = KEY_BUFFER.get_mut() {
-                    kb.set_guard(true);
-                }
-            }
-        }
-        // consumed=false の場合は OS にそのまま渡す（CallbackResult::PassThrough）
-        // consumed=true の場合はエンジンが処理済み（通常ありえないがsafety）
-        return CallbackResult::PassThrough;
-    }
-
-    // ── Step 4: フォーカス判定によるハイブリッド戦略 ──
     let Some(engine) = ENGINE.get_mut() else {
-        log::trace!("Step 4: ENGINE not available, passthrough");
         return CallbackResult::PassThrough;
     };
 
-    let input_ctx = resolve_input_context();
-    log::trace!("Step 4: vk=0x{:02X} input_context={:?}", event.vk_code.0, input_ctx);
-    match input_ctx {
-        InputContext::NonText => {
-            log::trace!("Step 4: NonText → passthrough");
-            return CallbackResult::PassThrough;
-        }
-        InputContext::TextInput => {
-            // テキスト入力 → 既存のエンジン処理（下の Step 5 に進む）
-            log::trace!("Step 4: TextInput → proceeding to engine");
-        }
-        InputContext::UndeterminedImeOn => {
-            // IME ON + Undetermined → 文字キーならバッファリング
-            if is_key_down {
-                let is_char =
-                    vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
-                if is_char {
-                    if let Some(kb) = KEY_BUFFER.get_mut() {
-                        kb.push_deferred(event);
-                    }
-                    key_buffer::start_buffer_timeout_if_needed();
-                    return CallbackResult::Consumed;
-                }
-            }
-            return CallbackResult::PassThrough;
-        }
-        InputContext::UndeterminedImeOff => {
-            // IME OFF + Undetermined → 文字キーなら PassThrough + 記憶
-            if is_key_down {
-                let is_char =
-                    vk::is_modifier_free_char(event.vk_code, focus::pattern::is_os_modifier_held());
-                if is_char {
-                    if let Some(kb) = KEY_BUFFER.get_mut() {
-                        kb.push_passthrough(event);
-                    }
-                    return CallbackResult::PassThrough;
-                }
-            }
-            return CallbackResult::PassThrough;
-        }
-    }
+    log::trace!(
+        "Hook callback: vk=0x{:02X} scan=0x{:04X} type={:?}",
+        event.vk_code.0,
+        event.scan_code.0,
+        event.event_type,
+    );
 
-    // ── Step 5: エンジン処理（TextInput 確定時のみ到達） ──
-    // IME OFF / 英数モード → PassThrough（エンジンバイパス）
-    if let Some(ime_provider) = IME.get_ref() {
-        let active = ime_provider.is_active();
-        let mode = ime_provider.get_mode();
-        let kana = mode.is_kana_input();
-        log::trace!("Step 5: IME active={active} mode={mode:?} kana={kana}");
-        if !active || !kana {
-            log::trace!("Step 5: IME not in kana mode → passthrough");
-            return CallbackResult::PassThrough;
-        }
-    }
-
-    log::trace!("Step 6: Engine processing vk=0x{:02X}", event.vk_code.0);
     let response = engine.on_event(event);
     let mut timer_runtime = Win32TimerRuntime;
     let mut action_executor = SendInputExecutor;
     let consumed = dispatch(&response, &mut timer_runtime, &mut action_executor);
-    log::trace!("Step 6: consumed={consumed} actions={:?}", response.actions);
+
+    log::trace!(
+        "Engine result: consumed={consumed} actions={:?}",
+        response.actions,
+    );
 
     if consumed {
         CallbackResult::Consumed
