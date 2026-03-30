@@ -707,10 +707,8 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                 return CallbackResult::PassThrough; // let IME process the toggle
             }
 
-            // While guard active, buffer character keys (passthrough keys are not buffered)
-            if app.key_buffer.is_guarded()
-                && !awase::vk::is_passthrough(event.vk_code)
-            {
+            // While IME guard active, buffer keys
+            if app.key_buffer.is_guarded() {
                 app.key_buffer.push_deferred(event, phys);
                 let _ =
                     PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
@@ -748,6 +746,22 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             if let Some(result) = app.check_engine_toggle_keys(&event) {
                 return result;
             }
+        }
+    }
+
+    // ── フォーカス遷移ガード ──
+    // フォーカスが安定するまで（デバウンスタイマー発火まで）文字キーをバッファ。
+    // パススルーキー（BS, Enter, 矢印, 修飾キー等）はバッファせず通す。
+    if app.key_buffer.focus_transition_guard
+        && !awase::vk::is_passthrough(event.vk_code)
+    {
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if is_key_down {
+            app.key_buffer.push_deferred(event, phys);
+            return CallbackResult::Consumed;
         }
     }
 

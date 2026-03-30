@@ -76,7 +76,7 @@ impl KeyBuffer {
     }
 
     pub const fn is_guarded(&self) -> bool {
-        self.ime_transition_guard || self.focus_transition_guard
+        self.ime_transition_guard
     }
 
     pub const fn set_guard(&mut self, on: bool) {
