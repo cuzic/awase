@@ -139,12 +139,28 @@ unsafe extern "system" fn win_event_proc(
     let process_id = classify::get_window_process_id(hwnd);
     let class_name = classify::get_class_name_string(hwnd);
 
-    // Windows 11 XAML インフラストラクチャウィンドウのフォーカスイベントを無視。
-    // これらはユーザーが操作するコントロールではなく、ウィンドウ切替時に
-    // 中間的に発火する。無視しないと TextInput 判定が Undetermined で上書きされる。
-    if is_xaml_infrastructure_class(&class_name) {
-        log::trace!("Ignoring XAML infrastructure focus: class={class_name}");
-        return;
+    // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止。
+    // Windows 11 では XAML インフラ等がフォーカスイベントを連続発火するが、
+    // 同一ウィンドウ内の別サブコンポーネントが Undetermined でも、
+    // 先に TextInput が確認されていれば維持する（OR 条件）。
+    {
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        let fg = GetForegroundWindow();
+        let current_kind = FocusKind::load(&crate::FOCUS_KIND);
+        if current_kind == FocusKind::TextInput {
+            // 既に TextInput — フォアグラウンドが変わっていなければ維持
+            if let Some(f) = crate::FOCUS.get_ref() {
+                if let Some((prev_pid, _)) = &f.last_focus_info {
+                    let fg_pid = classify::get_window_process_id(fg);
+                    if fg_pid == *prev_pid {
+                        log::trace!(
+                            "Keeping TextInput (same process {fg_pid}): class={class_name}"
+                        );
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     // UIA 非同期結果のキャッシュ更新用に保存 + パターントラッカーをリセット
