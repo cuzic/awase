@@ -3,10 +3,13 @@
 //! - `Engine`: 統合エントリポイント（on_input / on_timeout / on_command）
 //! - `NicolaFsm`: 同時打鍵判定 FSM（timed-fsm ベース）
 
+mod confirm_policy;
 pub mod decision;
 #[allow(clippy::module_inception)]
 mod engine;
+mod fsm_adapter;
 pub mod fsm_types;
+pub mod ime_coordinator;
 pub mod input_tracker;
 mod nicola_fsm;
 pub mod observation;
@@ -22,6 +25,7 @@ pub use fsm_types::{
     ClassifiedEvent, EngineState, FinalizePlan, KeyClass, ModifierState, OutputRecord,
     OutputUpdate, PendingKey, PendingThumbData, TimerIntent,
 };
+pub use ime_coordinator::ImeCoordinator;
 pub use nicola_fsm::NicolaFsm;
 pub use observation::{FocusObservation, ImeObservation};
 

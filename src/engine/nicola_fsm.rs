@@ -15,8 +15,8 @@ use crate::types::{
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::fsm_types::{
-    BypassReason, EngineState, Face, FinalizePlan, OutputRecord, OutputUpdate, PendingKey,
-    PendingThumbData, ResolvedAction, StepResult, TimerIntent,
+    BypassReason, EngineState, Face, FinalizePlan, IdleIntent, OutputRecord, OutputUpdate,
+    PendingKey, PendingThumbData, ResolvedAction, StepResult, TimerIntent,
 };
 use super::fsm_types::{ClassifiedEvent, KeyClass};
 
@@ -27,9 +27,40 @@ pub const TIMER_PENDING: usize = 1;
 pub const TIMER_SPECULATIVE: usize = 2;
 
 /// AdaptiveTiming モードで連続打鍵と判定する閾値（マイクロ秒）
-const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
+pub const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
 
-/// VK_BACK (Backspace) の仮想キーコード
+/// VK_BACK (Backspace) の仮想キーコード。
+///
+/// 投機出力の取り消し（speculative retract）に使用する。
+///
+/// # 投機出力の取り消しメカニズム
+///
+/// Speculative / TwoPhase モードでは、同時打鍵の閾値時間内に親指キーが
+/// 到着すると、既に IME に送信済みの通常面出力を Backspace（VK_BACK）で
+/// 削除してから親指面の出力を再送信する。
+///
+/// ## 前提条件
+///
+/// - **1 BS = 1 文字削除**: IME のローマ字入力モードでは、ローマ字列全体
+///   （例: "ka"）が 1 つの変換単位として扱われるため、BS 1 回で完全に
+///   削除される。この前提が崩れる IME（例: ローマ字を 1 文字ずつ処理する
+///   IME）では、投機出力の取り消しが不完全になる可能性がある。
+///
+/// - **IME 変換中の BS**: 未確定文字列（変換中）に対して BS が送信される
+///   ため、テキストフィールドに既に確定済みの文字は影響を受けない。
+///   ただし、IME がオフの場合やパススルーモードでは BS が直接テキスト
+///   フィールドに到達するため、投機出力モードは IME オン時のみ使用する
+///   設計になっている（`on_input` の Phase 6 で IME オフ時はパススルー）。
+///
+/// - **タイミング制約**: BS 送信と新しい文字送信の間に OS レベルの遅延が
+///   入る可能性があるが、SendInput で一括送信するため実用上問題ない。
+///
+/// ## 対応する `OutputHistory` 操作
+///
+/// `step_speculative_thumb()` では `output_history.retract_last()` を
+/// 先に呼び、その後 `OutputUpdate::Record` で新しい出力を記録する。
+/// `RetractAndRecord` ではなく分離しているのは、retract が副作用として
+/// 即時に必要なため。
 const VK_BACK: VkCode = VkCode(0x08);
 
 /// `Response` の型エイリアス
@@ -61,7 +92,11 @@ fn romaji_of(action: &KeyAction) -> String {
 }
 
 /// `OutputUpdate::Record` を生成するヘルパー
-fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
+pub fn record_output(
+    scan_code: ScanCode,
+    action: &KeyAction,
+    kana: Option<char>,
+) -> OutputUpdate {
     OutputUpdate::Record(OutputRecord {
         scan_code,
         romaji: romaji_of(action),
@@ -298,7 +333,7 @@ impl NicolaFsm {
 // ── 内部ユーティリティ ──
 impl NicolaFsm {
     /// Face 列挙値に対応する YabFace への参照を返す
-    const fn get_face(&self, face: Face) -> &YabFace {
+    pub(crate) const fn get_face(&self, face: Face) -> &YabFace {
         match face {
             Face::Normal => &self.layout.normal,
             Face::LeftThumb => &self.layout.left_thumb,
@@ -310,7 +345,7 @@ impl NicolaFsm {
     /// scan_code から PhysicalPos を経由して YabFace を引き、`KeyAction` と
     /// 事前解決済みの仮名文字を返す。
     #[allow(clippy::unused_self)]
-    fn lookup_face(
+    pub(crate) fn lookup_face(
         &self,
         scan_code: ScanCode,
         _vk_code: VkCode,
@@ -365,11 +400,11 @@ impl NicolaFsm {
         }
     }
 
-    const fn enter_pending_char(&mut self, key: PendingKey) {
+    pub(crate) const fn enter_pending_char(&mut self, key: PendingKey) {
         self.state = EngineState::PendingChar(key);
     }
 
-    const fn enter_pending_thumb(&mut self, thumb: PendingThumbData) {
+    pub(crate) const fn enter_pending_thumb(&mut self, thumb: PendingThumbData) {
         self.state = EngineState::PendingThumb(thumb);
     }
 
@@ -377,7 +412,7 @@ impl NicolaFsm {
         self.state = EngineState::PendingCharThumb { char_key, thumb };
     }
 
-    const fn enter_speculative_char(&mut self, key: PendingKey) {
+    pub(crate) const fn enter_speculative_char(&mut self, key: PendingKey) {
         self.state = EngineState::SpeculativeChar(key);
     }
 
@@ -444,13 +479,8 @@ impl NicolaFsm {
                 return Self::finalize_accumulated(accumulated_actions, resp);
             }
 
-            // Shift plane check
-            if self.should_use_shift_plane(&current) {
-                let resp = self.handle_shift(&current);
-                return Self::finalize_accumulated(accumulated_actions, resp);
-            }
-
-            // Idle state: handle_idle produces a final Resp
+            // Idle state: handle_idle (via classify_idle_intent) handles
+            // shift plane, active thumb combo, pass-through, and policy dispatch
             if self.state.is_idle() {
                 let resp = self.handle_idle(&current);
                 return Self::finalize_accumulated(accumulated_actions, resp);
@@ -566,191 +596,73 @@ impl NicolaFsm {
     }
 }
 
-// ── ConfirmMode ハンドラ ──
+// ── Idle ハンドラ ──
 impl NicolaFsm {
-    /// Idle 状態での新規キー押下処理
-    fn handle_idle(&mut self, ev: &ClassifiedEvent) -> Resp {
-        // Shift 面チェック: on_key_down の Shift チェックは直接呼び出し時のみ有効。
-        // handle_idle は on_key_down ループの Continue 後にも呼ばれるため、
-        // ここにも Shift チェックが必要。
+    /// Idle 状態でのキー押下の意図を分類する
+    ///
+    /// Shift 面、親指押下中の即時同時打鍵、配列外パススルー、確定モード委譲の
+    /// 4 分岐を判定のみ行い、副作用なしで返す。
+    fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
         if self.should_use_shift_plane(ev) {
-            return self.handle_shift(ev);
+            return IdleIntent::ShiftPlane;
         }
-
-        // 親指キーが既に押下中なら即時同時打鍵（モード非依存）
         if !ev.key_class.is_thumb() {
             if let Some(face) = self.active_thumb_face() {
-                if let Some((action, kana)) =
-                    self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
-                {
-                    // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-                    let is_left = matches!(face, Face::LeftThumb);
-                    self.consume_thumb(is_left);
-                    return self.finalize_plan(FinalizePlan {
-                        actions: vec![action.clone()],
-                        timer: TimerIntent::CancelAll,
-                        output: record_output(ev.scan_code, &action, kana),
-                    });
-                }
+                return IdleIntent::ActiveThumbCombo(face);
             }
         }
-
-        // 配列定義にもなく親指キーでもないキーは即座に素通しする（モード非依存）
-        // （Enter, Backspace, Tab 等に不要な 100ms 遅延を生じさせない）
         if !ev.key_class.is_thumb() && !self.is_layout_key(ev.scan_code) {
-            return Response::pass_through();
+            return IdleIntent::PassThrough;
         }
+        IdleIntent::PolicyDriven
+    }
 
-        // 確定モードに応じた保留処理へディスパッチ
-        match self.confirm_mode {
-            ConfirmMode::Wait => self.handle_idle_wait(ev),
-            ConfirmMode::Speculative => self.handle_idle_speculative(ev),
-            ConfirmMode::TwoPhase => self.handle_idle_two_phase(ev),
-            ConfirmMode::AdaptiveTiming => {
-                let is_continuous = self
-                    .last_key_gap_us
-                    .is_some_and(|gap| gap < CONTINUOUS_KEYSTROKE_THRESHOLD_US);
-                if is_continuous {
-                    self.handle_idle_wait(ev)
-                } else {
-                    self.handle_idle_two_phase(ev)
-                }
-            }
-            ConfirmMode::NgramPredictive => self.handle_idle_ngram_predictive(ev),
+    /// Idle 状態での新規キー押下処理
+    fn handle_idle(&mut self, ev: &ClassifiedEvent) -> Resp {
+        match self.classify_idle_intent(ev) {
+            IdleIntent::ShiftPlane => self.handle_shift(ev),
+            IdleIntent::ActiveThumbCombo(face) => self.handle_active_thumb(ev, face),
+            IdleIntent::PassThrough => Response::pass_through(),
+            IdleIntent::PolicyDriven => self.dispatch_confirm_mode(ev),
         }
     }
 
-    /// Idle + Wait モード: 新規キーを保留状態に遷移させタイマーを起動する
-    fn handle_idle_wait(&mut self, ev: &ClassifiedEvent) -> Resp {
-        if ev.key_class.is_thumb() {
-            self.enter_pending_thumb(PendingThumbData {
-                scan_code: ev.scan_code,
-                vk_code: ev.vk_code,
-                is_left: ev.key_class.is_left_thumb(),
-                timestamp: ev.timestamp,
-            });
-        } else {
-            self.enter_pending_char(PendingKey {
-                scan_code: ev.scan_code,
-                vk_code: ev.vk_code,
-                timestamp: ev.timestamp,
-            });
-        }
-        self.finalize_plan(FinalizePlan {
-            actions: vec![],
-            timer: TimerIntent::Pending,
-            output: OutputUpdate::None,
-        })
-    }
-
-    /// Idle + Speculative モード: 文字キーは即時出力して SpeculativeChar へ遷移
-    fn handle_idle_speculative(&mut self, ev: &ClassifiedEvent) -> Resp {
-        if ev.key_class.is_thumb() {
-            // Thumb key → same as Wait mode (pending thumb)
-            return self.handle_idle_wait(ev);
-        }
-
-        // Character key → immediately output normal face, enter SpeculativeChar
-        let face = Face::Normal;
+    /// 親指キー押下中に文字キーが到着した場合の即時同時打鍵処理
+    fn handle_active_thumb(&mut self, ev: &ClassifiedEvent, face: Face) -> Resp {
         if let Some((action, kana)) =
             self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
         {
-            self.enter_speculative_char(PendingKey {
-                scan_code: ev.scan_code,
-                vk_code: ev.vk_code,
-                timestamp: ev.timestamp,
-            });
-            // Output immediately + set timer for the threshold window
+            // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
+            let is_left = matches!(face, Face::LeftThumb);
+            self.consume_thumb(is_left);
             self.finalize_plan(FinalizePlan {
                 actions: vec![action.clone()],
-                timer: TimerIntent::Pending,
+                timer: TimerIntent::CancelAll,
                 output: record_output(ev.scan_code, &action, kana),
             })
         } else {
-            Response::pass_through()
-        }
-    }
-
-    /// Idle + TwoPhase モード: Phase 1 は短い待機、Phase 2 は投機出力
-    ///
-    /// 親指キーは Wait モードと同じ扱い。
-    /// 文字キーは短い待機（speculative_delay_us）の後、投機出力に遷移する。
-    fn handle_idle_two_phase(&mut self, ev: &ClassifiedEvent) -> Resp {
-        if ev.key_class.is_thumb() {
-            // Thumb keys use Wait mode (same as Speculative)
-            return self.handle_idle_wait(ev);
-        }
-
-        // Phase 1: Short wait (speculative_delay_us)
-        // Same as Wait mode but with shorter timer
-        self.enter_pending_char(PendingKey {
-            scan_code: ev.scan_code,
-            vk_code: ev.vk_code,
-            timestamp: ev.timestamp,
-        });
-
-        // Use TIMER_SPECULATIVE with the short delay
-        self.finalize_plan(FinalizePlan {
-            actions: vec![],
-            timer: TimerIntent::SpeculativeWait,
-            output: OutputUpdate::None,
-        })
-    }
-
-    /// Idle + NgramPredictive モード: n-gram スコアで投機/待機を動的切替
-    ///
-    /// 親指キーは Wait モードと同じ扱い。
-    /// 文字キーは通常面と親指面の n-gram スコアを比較し、
-    /// 通常面が明らかに有利なら Speculative、そうでなければ Wait。
-    fn handle_idle_ngram_predictive(&mut self, ev: &ClassifiedEvent) -> Resp {
-        if ev.key_class.is_thumb() {
-            return self.handle_idle_wait(ev);
-        }
-
-        // If no n-gram model, fall back to TwoPhase
-        let Some(ref model) = self.ngram_model else {
-            return self.handle_idle_two_phase(ev);
-        };
-
-        // Get candidate kana for each face
-        let normal_kana = self
-            .lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::Normal))
-            .and_then(|(_, kana)| kana);
-        let left_kana = self
-            .lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::LeftThumb))
-            .and_then(|(_, kana)| kana);
-        let right_kana = self
-            .lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::RightThumb))
-            .and_then(|(_, kana)| kana);
-
-        // Compute scores
-        let recent = self.output_history.recent_kana(3);
-        let normal_score = normal_kana.map_or(0.0, |ch| model.frequency_score(&recent, ch));
-        let thumb_score = [left_kana, right_kana]
-            .iter()
-            .filter_map(|k| k.map(|ch| model.frequency_score(&recent, ch)))
-            .fold(f32::NEG_INFINITY, f32::max);
-        let thumb_score = if thumb_score == f32::NEG_INFINITY {
-            0.0
-        } else {
-            thumb_score
-        };
-
-        // Decision: if normal is clearly more likely, output speculatively
-        let score_diff = normal_score - thumb_score;
-        if score_diff > 0.5 {
-            // Normal face is much more likely → Speculative
-            self.handle_idle_speculative(ev)
-        } else {
-            // Unclear or thumb is likely → Wait (safe)
-            self.handle_idle_wait(ev)
+            // 親指面に定義がない → 確定モードに委譲
+            self.dispatch_confirm_mode(ev)
         }
     }
 }
 
 // ── 同時打鍵解決 ──
 impl NicolaFsm {
-    /// 投機出力済み状態で親指キーが到着した場合の処理
+    /// 投機出力済み状態で親指キーが到着した場合の処理。
+    ///
+    /// `SpeculativeChar` 状態では通常面の文字が既に IME に送信されている。
+    /// 親指キーが閾値時間内に到着した場合、以下の手順で出力を差し替える:
+    ///
+    /// 1. `output_history.retract_last()` で内部履歴から投機出力を削除
+    /// 2. `VK_BACK` を送信して IME の未確定文字を 1 文字削除
+    /// 3. 親指面の文字を新たに送信
+    ///
+    /// この「BS + 再送信」パターンは IME が BS 1 回でローマ字列全体を
+    /// 削除する前提に依存している（詳細は `VK_BACK` 定数のドキュメントを参照）。
+    ///
+    /// 閾値超過時や親指面に定義がない場合は、投機出力は正しかったとみなし、
+    /// Idle に戻って親指キーを新規イベントとして再処理する。
     fn step_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> StepResult {
         let EngineState::SpeculativeChar(pending) = self.state else {
             unreachable!()
@@ -1341,11 +1253,15 @@ impl NicolaFsm {
         })
     }
 
-    /// TwoPhase モード: Phase 1 の短い待機がタイムアウトした場合の処理
+    /// TwoPhase モード: Phase 1 の短い待機がタイムアウトした場合の処理。
     ///
     /// 親指キーが Phase 1 内に到着しなかったので、投機出力（Phase 2）に遷移する。
-    /// 通常面の文字を出力し、SpeculativeChar 状態に入る。
-    /// 残りの閾値時間（threshold_us - speculative_delay_us）で TIMER_PENDING を設定する。
+    /// 通常面の文字を出力し、`SpeculativeChar` 状態に入る。
+    /// 残りの閾値時間（`threshold_us - speculative_delay_us`）で `TIMER_PENDING` を設定する。
+    ///
+    /// Phase 2 に入った後、残り時間内に親指キーが到着すれば
+    /// `step_speculative_thumb()` が VK_BACK で投機出力を取り消す。
+    /// `TIMER_PENDING` が満了すれば投機出力は正しかったとみなし、Idle に戻る。
     fn on_timeout_speculative(&mut self) -> Resp {
         match self.state {
             EngineState::PendingChar(pending) => {

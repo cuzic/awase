@@ -127,15 +127,37 @@ pub struct OutputRecord {
     pub action: KeyAction,
 }
 
-/// 出力履歴の更新指示
+/// 出力履歴の更新指示。
+///
+/// 投機出力の取り消し（speculative retract）では、`step_speculative_thumb()` が
+/// `output_history.retract_last()` を直接呼んだ後に `Record` を使用する。
+/// `RetractAndRecord` は将来の拡張用に残しているが、現在の投機取り消しパスでは
+/// 使用されていない（retract と record が分離されているため）。
 #[derive(Debug, Clone)]
 pub enum OutputUpdate {
-    /// 出力を記録
+    /// 出力を記録する。
     Record(OutputRecord),
-    /// 最後の出力を取り消して新しい出力を記録
+    /// 最後の出力を取り消して新しい出力を記録する。
+    ///
+    /// 注意: 投機出力の取り消しでは `step_speculative_thumb()` が
+    /// `retract_last()` + `Record` の 2 段階で処理するため、この variant は
+    /// そのパスでは使用されない。
     RetractAndRecord(OutputRecord),
-    /// 変更なし
+    /// 変更なし。
     None,
+}
+
+/// Idle 状態でのキー押下の意図分類
+#[derive(Debug, Clone, Copy)]
+pub enum IdleIntent {
+    /// Shift 面を使う
+    ShiftPlane,
+    /// 親指押下中 → 即時同時打鍵
+    ActiveThumbCombo(Face),
+    /// 配列外キー → そのまま通す
+    PassThrough,
+    /// 確定モードに委譲
+    PolicyDriven,
 }
 
 /// on_key_down の前段でエンジン処理をバイパスする理由

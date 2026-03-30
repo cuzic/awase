@@ -5,37 +5,35 @@
 //!
 //! # IME 状態の同期ルール
 //!
-//! - `shadow_ime_on`: 入力イベントから推定した IME 状態（Engine 内部）
+//! - `ImeCoordinator::shadow_on`: 入力イベントから推定した IME 状態（Engine 内部）
 //! - `InputContext::ime_cache`: メッセージループで観測した外界の IME 状態
-//! - 判定: `ime_cache.resolve_with_shadow(shadow_ime_on)` — キャッシュ優先、Unknown 時は shadow にフォールバック
+//! - 判定: `ime_cache.resolve_with_shadow(shadow_on)` — キャッシュ優先、Unknown 時は shadow にフォールバック
 //! - `Effect::Ime(ImeEffect::RequestCacheRefresh)` は非同期要求。次回の on_input で反映される保証はない
 //! - Engine は常に現在の InputContext のスナップショットだけで判断する（先読みしない）
 
-use timed_fsm::{Response, TimerCommand};
-
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent};
+use crate::types::{ContextChange, FocusKind, KeyEventType, RawKeyEvent};
 
 use super::decision::{
-    Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext, InputEffect, KeyBuffer,
+    Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext, InputEffect,
     SpecialKeyCombos, TimerEffect, UiEffect,
 };
+use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
-use super::input_tracker::{InputTracker, PhysicalKeyState};
+use super::ime_coordinator::ImeCoordinator;
+use super::input_tracker::InputTracker;
 use super::nicola_fsm::NicolaFsm;
 
-/// 統合エンジン: NicolaFsm + InputTracker + IME/特殊キー処理
+/// 統合エンジン: NicolaFsm + InputTracker + ImeCoordinator + 特殊キー処理
 ///
 /// `on_input` が唯一のキーイベントエントリポイント。
 /// Win32 API を一切呼ばず、副作用は `Decision` として返す。
 #[allow(missing_debug_implementations)]
 pub struct Engine {
-    fsm: NicolaFsm,
+    adapter: FsmAdapter,
     tracker: InputTracker,
-    shadow_ime_on: bool,
-    ime_sync_keys: ImeSyncKeys,
+    ime: ImeCoordinator,
     special_keys: SpecialKeyCombos,
-    key_buffer: KeyBuffer,
 }
 
 impl Engine {
@@ -47,12 +45,10 @@ impl Engine {
         special_keys: SpecialKeyCombos,
     ) -> Self {
         Self {
-            fsm,
+            adapter: FsmAdapter::new(fsm),
             tracker,
-            shadow_ime_on: true, // safe default: engine ON
-            ime_sync_keys,
+            ime: ImeCoordinator::new(ime_sync_keys),
             special_keys,
-            key_buffer: KeyBuffer::new(),
         }
     }
 
@@ -71,7 +67,7 @@ impl Engine {
         let phys = self.tracker.process(&event);
 
         // Phase 2: Shadow IME update
-        self.update_shadow_ime(&event);
+        self.ime.update_shadow(&event);
 
         // Phase 3: IME key detection → request cache refresh
         let mut effects = Vec::new();
@@ -84,7 +80,7 @@ impl Engine {
         }
 
         // Phase 4: IME toggle guard
-        if let Some(decision) = self.check_ime_guard(&event, &phys, &mut effects) {
+        if let Some(decision) = self.ime.check_guard(&event, &phys, &mut effects) {
             return decision;
         }
 
@@ -98,14 +94,13 @@ impl Engine {
         }
 
         // Phase 6: IME state check
-        let ime_on = ctx.ime_cache.resolve_with_shadow(self.shadow_ime_on);
+        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
         if !ime_on {
             return Decision::pass_through();
         }
 
         // Phase 7: NicolaFsm
-        let resp = self.fsm.on_event(event, &phys);
-        self.response_to_decision(&resp)
+        self.adapter.on_event(event, &phys)
     }
 
     /// タイマー満了時のエントリポイント。
@@ -113,22 +108,19 @@ impl Engine {
         let phys = self.tracker.snapshot();
 
         // IME が非活性なら on_timeout せず flush（コンテキスト喪失）
-        let ime_on = ctx.ime_cache.resolve_with_shadow(self.shadow_ime_on);
+        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
         if !ime_on {
-            let response = self.fsm.flush_pending(ContextChange::ImeOff);
-            return self.response_to_decision(&response);
+            return self.adapter.flush(ContextChange::ImeOff);
         }
 
-        let response = self.fsm.on_timeout(timer_id, &phys);
-        self.response_to_decision(&response)
+        self.adapter.on_timeout(timer_id, &phys)
     }
 
     /// 遅延キーを再処理し、Decision のリストを返す。
     ///
     /// メッセージループから呼ばれる。IME 状態キャッシュ更新後に呼ぶこと。
     pub fn process_deferred_keys(&mut self, ctx: &InputContext) -> Vec<Decision> {
-        self.key_buffer.set_guard(false);
-        let keys = self.key_buffer.drain_deferred();
+        let keys = self.ime.drain_deferred();
 
         if keys.is_empty() {
             return vec![];
@@ -136,13 +128,12 @@ impl Engine {
 
         log::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
 
-        let ime_on = ctx.ime_cache.resolve_with_shadow(self.shadow_ime_on);
+        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
 
         keys.into_iter()
             .map(|(event, phys)| {
                 if ime_on {
-                    let response = self.fsm.on_event(event, &phys);
-                    self.response_to_decision(&response)
+                    self.adapter.on_event(event, &phys)
                 } else {
                     Decision::consumed_with(vec![Effect::Input(InputEffect::ReinjectKey(event))])
                 }
@@ -157,30 +148,23 @@ impl Engine {
     pub fn on_command(&mut self, cmd: EngineCommand) -> Decision {
         match cmd {
             EngineCommand::ToggleEngine => {
-                let (enabled, flush_resp) = self.fsm.toggle_enabled();
+                let (enabled, decision) = self.adapter.toggle_enabled();
                 log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
-                let mut decision = self.response_to_decision(&flush_resp);
+                let mut decision = decision;
                 decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
                 decision
             }
-            EngineCommand::InvalidateContext(reason) => {
-                let response = self.fsm.flush_pending(reason);
-                self.response_to_decision(&response)
-            }
-            EngineCommand::SwapLayout(layout) => {
-                let response = self.fsm.swap_layout(layout);
-                self.response_to_decision(&response)
-            }
+            EngineCommand::InvalidateContext(reason) => self.adapter.flush(reason),
+            EngineCommand::SwapLayout(layout) => self.adapter.swap_layout(layout),
             EngineCommand::SyncImeState { ime_on } => {
-                if ime_on && !self.fsm.is_enabled() {
-                    let _ = self.fsm.set_enabled(true);
+                if ime_on && !self.adapter.is_enabled() {
+                    let _ = self.adapter.set_enabled(true);
                     Decision::pass_through_with(vec![Effect::Ui(UiEffect::EngineStateChanged {
                         enabled: true,
                     })])
-                } else if !ime_on && self.fsm.is_enabled() {
-                    let response = self.fsm.flush_pending(ContextChange::ImeOff);
-                    let mut decision = self.response_to_decision(&response);
-                    let _ = self.fsm.set_enabled(false);
+                } else if !ime_on && self.adapter.is_enabled() {
+                    let mut decision = self.adapter.flush(ContextChange::ImeOff);
+                    let _ = self.adapter.set_enabled(false);
                     decision
                         .push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
                     decision
@@ -189,16 +173,16 @@ impl Engine {
                 }
             }
             EngineCommand::SetGuard(on) => {
-                self.key_buffer.set_guard(on);
+                self.ime.set_guard(on);
                 Decision::pass_through()
             }
             EngineCommand::ClearDeferredKeys => {
-                self.key_buffer.deferred_keys.clear();
+                self.ime.clear_deferred();
                 Decision::pass_through()
             }
             EngineCommand::ReloadKeys { special, sync } => {
                 self.special_keys = special;
-                self.ime_sync_keys = sync;
+                self.ime.reload_sync_keys(sync);
                 Decision::pass_through()
             }
             EngineCommand::UpdateFsmParams {
@@ -206,13 +190,13 @@ impl Engine {
                 confirm_mode,
                 speculative_delay_ms,
             } => {
-                self.fsm.set_threshold_ms(threshold_ms);
-                self.fsm
+                self.adapter.set_threshold_ms(threshold_ms);
+                self.adapter
                     .set_confirm_mode(confirm_mode, speculative_delay_ms);
                 Decision::pass_through()
             }
             EngineCommand::SetNgramModel(model) => {
-                self.fsm.set_ngram_model(model);
+                self.adapter.set_ngram_model(model);
                 Decision::pass_through()
             }
             EngineCommand::ImeObserved(obs) => self.handle_ime_observed(obs),
@@ -224,7 +208,7 @@ impl Engine {
     fn handle_ime_observed(&mut self, obs: super::observation::ImeObservation) -> Decision {
         use super::decision::ImeCacheEffect;
 
-        let Some(ime_on) = obs.resolve(self.shadow_ime_on) else {
+        let Some(ime_on) = obs.resolve(self.ime.shadow_on()) else {
             return Decision::pass_through();
         };
 
@@ -233,15 +217,14 @@ impl Engine {
         })];
 
         // エンジンを IME 状態に追随させる（SyncImeState と同じロジック）
-        if ime_on && !self.fsm.is_enabled() {
-            let _ = self.fsm.set_enabled(true);
+        if ime_on && !self.adapter.is_enabled() {
+            let _ = self.adapter.set_enabled(true);
             effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
             log::info!("Engine auto-enabled (IME ON)");
-        } else if !ime_on && self.fsm.is_enabled() {
-            let response = self.fsm.flush_pending(ContextChange::ImeOff);
-            let flush_effects = self.response_to_effects(&response);
+        } else if !ime_on && self.adapter.is_enabled() {
+            let flush_effects = self.adapter.flush_to_effects(ContextChange::ImeOff);
             effects.extend(flush_effects);
-            let _ = self.fsm.set_enabled(false);
+            let _ = self.adapter.set_enabled(false);
             effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
             log::info!("Engine auto-disabled (IME OFF)");
         }
@@ -294,8 +277,7 @@ impl Engine {
 
         // NonText ならエンジンの保留状態をフラッシュ
         if kind == FocusKind::NonText {
-            let response = self.fsm.flush_pending(ContextChange::FocusChanged);
-            let flush_effects = self.response_to_effects(&response);
+            let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);
             effects.extend(flush_effects);
         }
 
@@ -315,194 +297,48 @@ impl Engine {
 
     #[must_use]
     pub const fn is_fsm_enabled(&self) -> bool {
-        self.fsm.is_enabled()
+        self.adapter.is_enabled()
     }
 
     #[must_use]
     pub const fn shadow_ime_on(&self) -> bool {
-        self.shadow_ime_on
+        self.ime.shadow_on()
     }
 
     pub const fn set_shadow_ime_on(&mut self, on: bool) {
-        self.shadow_ime_on = on;
+        self.ime.set_shadow_on(on);
     }
 
     // ── 内部メソッド ──
-
-    /// timed-fsm Response → Effect リストに変換（consumed フラグは呼び出し側で判定）
-    #[allow(clippy::unused_self)]
-    fn response_to_effects(&self, resp: &Response<KeyAction, usize>) -> Vec<Effect> {
-        let mut effects = Vec::new();
-        for cmd in &resp.timers {
-            match cmd {
-                TimerCommand::Set { id, duration } => {
-                    effects.push(Effect::Timer(TimerEffect::Set {
-                        id: *id,
-                        duration: *duration,
-                    }));
-                }
-                TimerCommand::Kill { id } => {
-                    effects.push(Effect::Timer(TimerEffect::Kill(*id)));
-                }
-            }
-        }
-        if !resp.actions.is_empty() {
-            effects.push(Effect::Input(InputEffect::SendKeys(resp.actions.clone())));
-        }
-        effects
-    }
-
-    /// timed-fsm Response → Decision に変換
-    #[allow(clippy::unused_self)] // メソッドチェーン可読性のために &self を保持
-    fn response_to_decision(&self, resp: &Response<KeyAction, usize>) -> Decision {
-        let effects = self.response_to_effects(resp);
-        if resp.consumed {
-            Decision::consumed_with(effects)
-        } else if effects.is_empty() {
-            Decision::pass_through()
-        } else {
-            Decision::pass_through_with(effects)
-        }
-    }
-
-    /// Shadow IME 状態を更新する（ime_sync キー + IME 制御キー）
-    fn update_shadow_ime(&mut self, event: &RawKeyEvent) {
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-        if !is_key_down {
-            return;
-        }
-
-        // ── ime_sync 設定キー ──
-        let vk = event.vk_code;
-        if self.ime_sync_keys.on.contains(&vk) {
-            self.shadow_ime_on = true;
-            log::debug!("Shadow IME ON (key 0x{:02X})", vk.0);
-        }
-        if self.ime_sync_keys.off.contains(&vk) {
-            self.shadow_ime_on = false;
-            log::debug!("Shadow IME OFF (key 0x{:02X})", vk.0);
-        }
-        if self.ime_sync_keys.toggle.contains(&vk) {
-            self.shadow_ime_on = !self.shadow_ime_on;
-            log::debug!(
-                "Shadow IME toggle → {} (key 0x{:02X})",
-                self.shadow_ime_on,
-                vk.0
-            );
-        }
-
-        // ── 日本語キーボード固有の IME ON/OFF キー ──
-        if let Some(ime_key) = crate::vk::ImeKeyKind::from_vk(event.vk_code) {
-            match ime_key.shadow_effect() {
-                crate::vk::ShadowImeEffect::TurnOn => {
-                    self.shadow_ime_on = true;
-                    log::trace!("Shadow IME ON ({ime_key:?})");
-                }
-                crate::vk::ShadowImeEffect::TurnOff => {
-                    self.shadow_ime_on = false;
-                    log::trace!("Shadow IME OFF ({ime_key:?})");
-                }
-                crate::vk::ShadowImeEffect::Toggle => {
-                    self.shadow_ime_on = !self.shadow_ime_on;
-                    log::trace!("Shadow IME toggle → {} ({ime_key:?})", self.shadow_ime_on);
-                }
-            }
-        }
-    }
-
-    /// IME トグルガードを処理し、キーをバッファリングすべきか判定する。
-    ///
-    /// 戻り値:
-    /// - `Some(Decision)` — 呼び出し側はこれを即座に返すべき
-    /// - `None` — ガード処理なし、続行
-    fn check_ime_guard(
-        &mut self,
-        event: &RawKeyEvent,
-        phys: &PhysicalKeyState,
-        effects: &mut Vec<Effect>,
-    ) -> Option<Decision> {
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
-
-        if is_key_down {
-            // Check if current key IS a toggle/on/off key
-            let is_toggle_key = self.ime_sync_keys.toggle.contains(&event.vk_code);
-            let is_on_key = self.ime_sync_keys.on.contains(&event.vk_code);
-            let is_off_key = self.ime_sync_keys.off.contains(&event.vk_code);
-
-            if is_toggle_key || is_on_key || is_off_key {
-                // Set guard — next keys will be buffered
-                self.key_buffer.set_guard(true);
-                log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
-                // Prepend any accumulated effects, then pass through
-                let all_effects = std::mem::take(effects);
-                // pass through: let IME process the toggle
-                if all_effects.is_empty() {
-                    return Some(Decision::pass_through());
-                }
-                return Some(Decision::pass_through_with(all_effects));
-            }
-
-            // While IME guard active, buffer keys
-            if self.key_buffer.is_guarded() {
-                self.key_buffer.push_deferred(*event, *phys);
-                // Return consumed + RequestImeCacheRefresh (via effects already accumulated)
-                // plus a "process deferred" signal
-                let mut all_effects = std::mem::take(effects);
-                all_effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
-                return Some(Decision::consumed_with(all_effects));
-            }
-        }
-
-        // Guard clear on KeyUp of toggle key
-        if !is_key_down && self.key_buffer.is_guarded() {
-            let is_toggle_key = self.ime_sync_keys.toggle.contains(&event.vk_code);
-            let is_on_key = self.ime_sync_keys.on.contains(&event.vk_code);
-            let is_off_key = self.ime_sync_keys.off.contains(&event.vk_code);
-            if is_toggle_key || is_on_key || is_off_key {
-                self.key_buffer.set_guard(false);
-                effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
-            }
-        }
-
-        None
-    }
 
     /// 変換/無変換系の特殊キーを一括チェックし、一致した場合は状態変更して結果を返す。
     fn check_special_keys(&mut self, event: &RawKeyEvent) -> Option<Decision> {
         let modifiers = self.tracker.modifiers();
 
         // エンジントグルを先にチェック（より限定的な修飾キー）
-        if !self.fsm.is_enabled()
+        if !self.adapter.is_enabled()
             && self
                 .special_keys
                 .engine_on
                 .iter()
                 .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            let (enabled, flush_resp) = self.fsm.set_enabled(true);
+            let (enabled, mut decision) = self.adapter.set_enabled(true);
             log::info!("Engine ON (key combo)");
-            let mut effects = self.response_to_effects(&flush_resp);
-            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
-            return Some(Decision::consumed_with(effects));
+            decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
+            return Some(decision);
         }
-        if self.fsm.is_enabled()
+        if self.adapter.is_enabled()
             && self
                 .special_keys
                 .engine_off
                 .iter()
                 .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            let (enabled, flush_resp) = self.fsm.set_enabled(false);
+            let (enabled, mut decision) = self.adapter.set_enabled(false);
             log::info!("Engine OFF (key combo)");
-            let mut effects = self.response_to_effects(&flush_resp);
-            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
-            return Some(Decision::consumed_with(effects));
+            decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
+            return Some(decision);
         }
 
         // IME 制御キー（エンジン状態に関わらずチェック）
@@ -512,7 +348,7 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            self.shadow_ime_on = true;
+            self.ime.set_shadow_on(true);
             log::info!("IME ON (ImmSetOpenStatus, key combo)");
             return Some(Decision::consumed_with(vec![Effect::Ime(
                 ImeEffect::SetOpen(true),
@@ -524,7 +360,7 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            self.shadow_ime_on = false;
+            self.ime.set_shadow_on(false);
             log::info!("IME OFF (ImmSetOpenStatus, key combo)");
             return Some(Decision::consumed_with(vec![Effect::Ime(
                 ImeEffect::SetOpen(false),
