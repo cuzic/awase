@@ -478,25 +478,28 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
-    // IME チェック（詳細ログ付き）
-    if let Some(ime_provider) = IME.get_ref() {
-        let mode = ime_provider.get_mode();
-        let active = ime_provider.is_active();
-        let kana = mode.is_kana_input();
+    // IME チェック: キーボードレイアウト（HKL）ベース
+    // TSF は per-thread のため他アプリの状態が見えない。
+    // IMM は Windows 11 の TSF-only アプリで NULL を返す。
+    // HKL（言語 ID）が唯一の信頼できるシグナル。
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+        let hkl = unsafe { GetKeyboardLayout(0) };
+        let lang_id = (hkl.0 as u32) & 0xFFFF;
+        let is_japanese = lang_id == 0x0411;
 
-        // KeyDown のみログ出力（KeyUp は省略して見やすく）
         let is_key_down = matches!(
             event.event_type,
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
         if is_key_down {
             log::trace!(
-                "IME check: vk=0x{:02X} active={active} mode={mode:?} kana={kana}",
+                "IME check: vk=0x{:02X} HKL=0x{lang_id:04X} japanese={is_japanese}",
                 event.vk_code.0,
             );
         }
 
-        if !active || !kana {
+        if !is_japanese {
             return CallbackResult::PassThrough;
         }
     }
