@@ -70,15 +70,14 @@ pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
         };
     }
 
-    // 1. ImmGetContext == NULL → IME 入力不可
+    // 1. ImmGetContext — NULL でも NonText 確定にしない。
+    // Windows 11 のメモ帳 (RichEditD2DPT) 等、TSF のみで IMM コンテキストを
+    // 持たないテキストコントロールがあるため、Phase 2/3 に判断を委ねる。
     let himc = ImmGetContext(hwnd);
-    if himc.is_invalid() {
-        return ClassifyResult {
-            kind: FocusKind::NonText,
-            reason: ClassifyReason::NoImeContext,
-        };
+    let has_imm_context = !himc.is_invalid();
+    if has_imm_context {
+        let _ = ImmReleaseContext(hwnd, himc);
     }
-    let _ = ImmReleaseContext(hwnd, himc);
 
     // 2. WS_EX_NOIME ウィンドウスタイル
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE);
@@ -100,6 +99,7 @@ pub unsafe fn classify_focus(hwnd: HWND) -> ClassifyResult {
                 | "RichEdit20A"
                 | "RichEdit20W"
                 | "RICHEDIT50W"
+                | "RichEditD2DPT"
                 | "Scintilla"
                 | "ConsoleWindowClass"
         ) {
