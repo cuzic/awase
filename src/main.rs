@@ -634,6 +634,11 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::PassThrough;
     };
 
+    // ── 物理キー状態追跡（修飾キー・親指キー）──
+    // IME チェックやエンジン無効等で on_event がスキップされても、
+    // 修飾キー/親指キーの押下・解放を漏らさないために最初に呼ぶ。
+    engine.track_physical_keys(&event);
+
     // ── Shadow IME state tracking (ime_sync keys) ──
     {
         let is_key_down = matches!(

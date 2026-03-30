@@ -268,6 +268,31 @@ impl Engine {
         self.enabled
     }
 
+    /// 修飾キー（Ctrl / Alt / Shift / Win）と親指キーの物理状態を追跡する。
+    ///
+    /// IME チェック等でエンジン処理がスキップされる場合でも、修飾キーの
+    /// 押下/解放を漏らさないために、フックコールバックの最も早い段階で呼ぶこと。
+    pub fn track_physical_keys(&mut self, event: &RawKeyEvent) {
+        self.modifiers.update(event);
+        let ev = self.classify(event);
+        match event.event_type {
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown => {
+                if ev.key_class.is_left_thumb() {
+                    self.left_thumb_down = Some(ev.timestamp);
+                } else if ev.key_class == KeyClass::RightThumb {
+                    self.right_thumb_down = Some(ev.timestamp);
+                }
+            }
+            KeyEventType::KeyUp | KeyEventType::SysKeyUp => {
+                if ev.key_class.is_left_thumb() {
+                    self.left_thumb_down = None;
+                } else if ev.key_class == KeyClass::RightThumb {
+                    self.right_thumb_down = None;
+                }
+            }
+        }
+    }
+
     /// エンジンの有効/無効を明示的に設定する。
     ///
     /// 現在の状態と同じ場合は何もしない。
@@ -356,13 +381,13 @@ impl Engine {
         char_scan: ScanCode,
         char_vk: VkCode,
         thumb_is_left: bool,
-        thumb_timestamp: Timestamp,
+        _thumb_timestamp: Timestamp,
     ) -> ResolvedAction {
         let thumb_face = Face::from_thumb_bool(thumb_is_left);
         if let Some((action, kana)) =
             self.lookup_face(char_scan, char_vk, self.get_face(thumb_face))
         {
-            // left_thumb_down / right_thumb_down は on_key_down で物理キー状態として
+            // left_thumb_down / right_thumb_down は track_physical_keys() で物理キー状態として
             // 追跡済みなので、ここではセットしない。
             let output = record_output(char_scan, &action, kana);
             ResolvedAction {
@@ -454,14 +479,7 @@ impl Engine {
         self.update_timing(event);
         let ev = self.classify(event);
 
-        // 物理的な親指キー押下状態を追跡（連続シフト用）。
-        // FSM の pending_thumb とは独立して、純粋に物理キー状態を反映する。
-        // KeyUp でのクリアは on_key_up 冒頭で行う。
-        if ev.key_class.is_left_thumb() {
-            self.left_thumb_down = Some(ev.timestamp);
-        } else if ev.key_class == KeyClass::RightThumb {
-            self.right_thumb_down = Some(ev.timestamp);
-        }
+        // 親指キー・修飾キーの物理状態は track_physical_keys() で追跡済み。
 
         if let Some(reason) = self.bypass_reason(&ev) {
             return self.handle_bypass(reason);
@@ -1010,13 +1028,8 @@ impl Engine {
 // ── KeyUp 処理 ──
 impl Engine {
     fn on_key_up(&mut self, event: &RawKeyEvent) -> Resp {
-        // 親指キーのリリース追跡
+        // 親指キー・修飾キーの物理状態は track_physical_keys() で追跡済み。
         let ev = self.classify(event);
-        if ev.key_class.is_left_thumb() {
-            self.left_thumb_down = None;
-        } else if ev.key_class == KeyClass::RightThumb {
-            self.right_thumb_down = None;
-        }
 
         // PendingCharThumb 状態での KeyUp 処理
         if self.phase == EnginePhase::PendingCharThumb {
@@ -1344,10 +1357,9 @@ impl TimedStateMachine for Engine {
     type TimerId = usize;
 
     fn on_event(&mut self, event: RawKeyEvent) -> Resp {
-        // 修飾キー（Ctrl / Alt）の押下状態を追跡
-        // エンジン無効中も継続して追跡する。早期 return の後に置くと
-        // OFF 中の KeyUp を見逃して modifier が stuck する。
-        self.modifiers.update(&event);
+        // 修飾キー・親指キーの物理状態追跡は track_physical_keys() で
+        // フックコールバックの最初に行われる（IME チェックより前）。
+        // ここでは重複して追跡しない。
 
         if !self.enabled {
             return Response::pass_through();
