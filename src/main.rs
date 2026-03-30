@@ -798,12 +798,6 @@ fn run_message_loop() {
                     app.handle_buffer_timeout();
                 }
             },
-            WM_TIMER if msg.wParam.0 == output::TIMER_OUTPUT_DRAIN => unsafe {
-                // 出力キューから 1 イベントを送信（ドリップフィード）
-                if let Some(app) = APP.get_mut() {
-                    app.output.drain_one();
-                }
-            },
             WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
                 if let Some(app) = APP.get_ref() {
                     app.refresh_ime_state_cache();
