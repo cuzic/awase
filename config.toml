@@ -7,9 +7,9 @@ default_layout = "nicola.yab"
 # confirm_mode = "wait"  # wait / speculative / two_phase / adaptive_timing / ngram_predictive
 # speculative_delay_ms = 30
 
-# エンジン ON/OFF キー（デフォルト: Ctrl+無変換で OFF、変換で ON）
-# engine_off_key = "Ctrl+VK_NONCONVERT"
-# engine_on_key = "VK_CONVERT"
+# エンジン ON/OFF キー（複数指定可、デフォルト: 変換で ON、Ctrl+無変換で OFF）
+# engine_on_keys = ["VK_CONVERT"]
+# engine_off_keys = ["Ctrl+VK_NONCONVERT"]
 
 # n-gram コーパスファイル（オプション、指定しなければ固定閾値で動作）
 # ngram_file = "data/ngram_hiragana.toml"

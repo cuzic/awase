@@ -67,13 +67,13 @@ pub struct GeneralConfig {
     #[serde(default = "default_speculative_delay")]
     pub speculative_delay_ms: u32,
 
-    /// エンジン OFF キー（デフォルト: "Ctrl+VK_NONCONVERT"）
-    #[serde(default = "default_engine_off_key")]
-    pub engine_off_key: String,
+    /// Engine ON keys (multiple combos allowed)
+    #[serde(default = "default_engine_on_keys")]
+    pub engine_on_keys: Vec<String>,
 
-    /// エンジン ON キー（デフォルト: "VK_CONVERT"）
-    #[serde(default = "default_engine_on_key")]
-    pub engine_on_key: String,
+    /// Engine OFF keys (multiple combos allowed)
+    #[serde(default = "default_engine_off_keys")]
+    pub engine_off_keys: Vec<String>,
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -118,12 +118,12 @@ const fn default_speculative_delay() -> u32 {
     30
 }
 
-fn default_engine_off_key() -> String {
-    "Ctrl+VK_NONCONVERT".to_string()
+fn default_engine_on_keys() -> Vec<String> {
+    vec!["VK_CONVERT".to_string()]
 }
 
-fn default_engine_on_key() -> String {
-    "VK_CONVERT".to_string()
+fn default_engine_off_keys() -> Vec<String> {
+    vec!["Ctrl+VK_NONCONVERT".to_string()]
 }
 
 
@@ -875,7 +875,7 @@ default_layout = "nicola.yab"
         assert!(parse_key_combo("Win+VK_A").is_none());
     }
 
-    // ── engine_on/off_key デフォルトテスト ──
+    // ── engine_on/off_keys デフォルトテスト ──
 
     #[test]
     fn test_engine_toggle_key_defaults() {
@@ -883,19 +883,31 @@ default_layout = "nicola.yab"
 [general]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.engine_off_key, "Ctrl+VK_NONCONVERT");
-        assert_eq!(config.general.engine_on_key, "VK_CONVERT");
+        assert_eq!(config.general.engine_off_keys, vec!["Ctrl+VK_NONCONVERT"]);
+        assert_eq!(config.general.engine_on_keys, vec!["VK_CONVERT"]);
     }
 
     #[test]
     fn test_engine_toggle_key_custom() {
         let toml_str = r#"
 [general]
-engine_off_key = "Ctrl+Shift+VK_F10"
-engine_on_key = "Ctrl+VK_F10"
+engine_off_keys = ["Ctrl+Shift+VK_F10"]
+engine_on_keys = ["Ctrl+VK_F10"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.engine_off_key, "Ctrl+Shift+VK_F10");
-        assert_eq!(config.general.engine_on_key, "Ctrl+VK_F10");
+        assert_eq!(config.general.engine_off_keys, vec!["Ctrl+Shift+VK_F10"]);
+        assert_eq!(config.general.engine_on_keys, vec!["Ctrl+VK_F10"]);
+    }
+
+    #[test]
+    fn test_multiple_engine_keys() {
+        let toml_str = r#"
+[general]
+engine_on_keys = ["VK_CONVERT", "Ctrl+VK_CONVERT"]
+engine_off_keys = ["Ctrl+VK_NONCONVERT", "VK_NONCONVERT"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.engine_on_keys.len(), 2);
+        assert_eq!(config.general.engine_off_keys.len(), 2);
     }
 }

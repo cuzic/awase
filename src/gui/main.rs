@@ -27,6 +27,14 @@ struct SettingsApp {
     preview_engine: Option<awase::engine::Engine>,
     preview_output: String,
     preview_state: String,
+    /// エンジン ON キー一覧（GUI 編集用コピー）
+    engine_on_keys: Vec<String>,
+    /// エンジン OFF キー一覧（GUI 編集用コピー）
+    engine_off_keys: Vec<String>,
+    /// エンジン ON キー追加用バッファ
+    new_engine_on_key: String,
+    /// エンジン OFF キー追加用バッファ
+    new_engine_off_key: String,
     /// 新規 force_text エントリ入力バッファ
     new_force_text_process: String,
     new_force_text_class: String,
@@ -50,6 +58,8 @@ impl SettingsApp {
 
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
 
+        let engine_on_keys = config.general.engine_on_keys.clone();
+        let engine_off_keys = config.general.engine_off_keys.clone();
         let mut app = Self {
             config,
             config_path,
@@ -58,6 +68,10 @@ impl SettingsApp {
             preview_engine: None,
             preview_output: String::new(),
             preview_state: String::new(),
+            engine_on_keys,
+            engine_off_keys,
+            new_engine_on_key: String::new(),
+            new_engine_off_key: String::new(),
             new_force_text_process: String::new(),
             new_force_text_class: String::new(),
             new_force_bypass_process: String::new(),
@@ -157,6 +171,13 @@ impl eframe::App for SettingsApp {
                     self.basic_settings_ui(ui);
                 });
 
+            // ── エンジン切替キー ──
+            egui::CollapsingHeader::new("エンジン切替キー")
+                .default_open(false)
+                .show(ui, |ui| {
+                    self.engine_toggle_keys_ui(ui);
+                });
+
             // ── 配列 ──
             egui::CollapsingHeader::new("配列")
                 .default_open(true)
@@ -190,6 +211,9 @@ impl eframe::App for SettingsApp {
             // Apply/Cancel buttons
             ui.horizontal(|ui| {
                 if ui.button("適用").clicked() {
+                    // エンジン切替キーを config に反映
+                    self.config.general.engine_on_keys = self.engine_on_keys.clone();
+                    self.config.general.engine_off_keys = self.engine_off_keys.clone();
                     match self.config.save(&self.config_path) {
                         Ok(()) => {
                             self.status_message = "設定を保存しました".into();
@@ -306,6 +330,60 @@ impl SettingsApp {
                 .toggle_hotkey
                 .get_or_insert_with(String::new);
             ui.text_edit_singleline(hotkey);
+        });
+    }
+
+    fn engine_toggle_keys_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("エンジンの ON/OFF を切り替えるキーコンボを設定します。");
+        ui.label("例: VK_CONVERT, Ctrl+VK_NONCONVERT, Ctrl+Shift+VK_F10");
+        ui.add_space(4.0);
+
+        // Engine ON keys
+        ui.label("エンジン ON キー:");
+        let mut remove_on_idx = None;
+        for (i, key) in self.engine_on_keys.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {key}"));
+                if ui.small_button("削除").clicked() {
+                    remove_on_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_on_idx {
+            self.engine_on_keys.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  追加:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_engine_on_key).desired_width(200.0));
+            if ui.button("+").clicked() && !self.new_engine_on_key.is_empty() {
+                self.engine_on_keys.push(self.new_engine_on_key.clone());
+                self.new_engine_on_key.clear();
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // Engine OFF keys
+        ui.label("エンジン OFF キー:");
+        let mut remove_off_idx = None;
+        for (i, key) in self.engine_off_keys.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {key}"));
+                if ui.small_button("削除").clicked() {
+                    remove_off_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_off_idx {
+            self.engine_off_keys.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  追加:");
+            ui.add(egui::TextEdit::singleline(&mut self.new_engine_off_key).desired_width(200.0));
+            if ui.button("+").clicked() && !self.new_engine_off_key.is_empty() {
+                self.engine_off_keys.push(self.new_engine_off_key.clone());
+                self.new_engine_off_key.clear();
+            }
         });
     }
 }

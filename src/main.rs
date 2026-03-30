@@ -93,11 +93,11 @@ pub(crate) static FOCUS: SingleThreadCell<focus::FocusDetector> = SingleThreadCe
 
 use crate::focus::cache::DetectionSource;
 
-/// エンジン ON キー（変換キー等）— 起動時に設定から初期化
-static ENGINE_ON_KEY: SingleThreadCell<ParsedKeyCombo> = SingleThreadCell::new();
+/// エンジン ON キー（変換キー等）— 起動時に設定から初期化（複数キー対応）
+static ENGINE_ON_KEYS: SingleThreadCell<Vec<ParsedKeyCombo>> = SingleThreadCell::new();
 
-/// エンジン OFF キー（Ctrl+無変換等）— 起動時に設定から初期化
-static ENGINE_OFF_KEY: SingleThreadCell<ParsedKeyCombo> = SingleThreadCell::new();
+/// エンジン OFF キー（Ctrl+無変換等）— 起動時に設定から初期化（複数キー対応）
+static ENGINE_OFF_KEYS: SingleThreadCell<Vec<ParsedKeyCombo>> = SingleThreadCell::new();
 
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -267,35 +267,34 @@ fn select_default_layout(
     (copied, name.clone())
 }
 
-/// エンジン ON/OFF トグルキーの初期化
+/// エンジン ON/OFF トグルキーの初期化（複数キー対応）
 fn init_engine_toggle_keys(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
-    match parse_key_combo(&config.general.engine_on_key) {
-        Some(combo) => {
-            log::info!("Engine ON key: {}", config.general.engine_on_key);
-            unsafe {
-                ENGINE_ON_KEY.set(combo);
+    let on_keys: Vec<ParsedKeyCombo> = config.general.engine_on_keys.iter()
+        .filter_map(|s| {
+            let result = parse_key_combo(s);
+            if result.is_none() {
+                diag.warn(format!("engine_on_keys のパースに失敗しました: {s}"));
             }
-        }
-        None => {
-            diag.warn(format!(
-                "engine_on_key のパースに失敗しました: {}",
-                config.general.engine_on_key
-            ));
-        }
+            result
+        })
+        .collect();
+    log::info!("Engine ON keys: {:?} ({} parsed)", config.general.engine_on_keys, on_keys.len());
+    unsafe {
+        ENGINE_ON_KEYS.set(on_keys);
     }
-    match parse_key_combo(&config.general.engine_off_key) {
-        Some(combo) => {
-            log::info!("Engine OFF key: {}", config.general.engine_off_key);
-            unsafe {
-                ENGINE_OFF_KEY.set(combo);
+
+    let off_keys: Vec<ParsedKeyCombo> = config.general.engine_off_keys.iter()
+        .filter_map(|s| {
+            let result = parse_key_combo(s);
+            if result.is_none() {
+                diag.warn(format!("engine_off_keys のパースに失敗しました: {s}"));
             }
-        }
-        None => {
-            diag.warn(format!(
-                "engine_off_key のパースに失敗しました: {}",
-                config.general.engine_off_key
-            ));
-        }
+            result
+        })
+        .collect();
+    log::info!("Engine OFF keys: {:?} ({} parsed)", config.general.engine_off_keys, off_keys.len());
+    unsafe {
+        ENGINE_OFF_KEYS.set(off_keys);
     }
 }
 
@@ -433,8 +432,8 @@ fn cleanup() {
         LAYOUTS.clear();
         FOCUS.clear();
         KEY_BUFFER.clear();
-        ENGINE_ON_KEY.clear();
-        ENGINE_OFF_KEY.clear();
+        ENGINE_ON_KEYS.clear();
+        ENGINE_OFF_KEYS.clear();
     }
     log::info!("Exited cleanly.");
 }
@@ -533,20 +532,20 @@ unsafe fn matches_key_combo(combo: &ParsedKeyCombo, event: &RawKeyEvent) -> bool
 /// エンジン ON/OFF トグルキーをチェックし、一致した場合は状態を変更して結果を返す。
 ///
 /// # Safety
-/// `ENGINE_ON_KEY`, `ENGINE_OFF_KEY`, `TRAY` はシングルスレッドからのみアクセスすること。
+/// `ENGINE_ON_KEYS`, `ENGINE_OFF_KEYS`, `TRAY` はシングルスレッドからのみアクセスすること。
 unsafe fn check_engine_toggle_keys(
     engine: &mut Engine,
     event: &RawKeyEvent,
 ) -> Option<CallbackResult> {
-    // エンジン OFF → ON: engine_on_key（デフォルト: VK_CONVERT）
+    // エンジン OFF → ON: engine_on_keys（デフォルト: VK_CONVERT）
     if !engine.is_enabled() {
-        if let Some(on_key) = ENGINE_ON_KEY.get_ref() {
-            if matches_key_combo(on_key, event) {
+        if let Some(keys) = ENGINE_ON_KEYS.get_ref() {
+            if keys.iter().any(|k| matches_key_combo(k, event)) {
                 let (enabled, flush_resp) = engine.set_enabled(true);
                 let mut tr = Win32TimerRuntime;
                 let mut ae = SendInputExecutor;
                 dispatch(&flush_resp, &mut tr, &mut ae);
-                log::info!("Engine ON (変換キー)");
+                log::info!("Engine ON (key combo)");
                 if let Some(tray) = TRAY.get_mut() {
                     tray.set_enabled(enabled);
                 }
@@ -555,15 +554,15 @@ unsafe fn check_engine_toggle_keys(
         }
     }
 
-    // エンジン ON → OFF: engine_off_key（デフォルト: Ctrl+VK_NONCONVERT）
+    // エンジン ON → OFF: engine_off_keys（デフォルト: Ctrl+VK_NONCONVERT）
     if engine.is_enabled() {
-        if let Some(off_key) = ENGINE_OFF_KEY.get_ref() {
-            if matches_key_combo(off_key, event) {
+        if let Some(keys) = ENGINE_OFF_KEYS.get_ref() {
+            if keys.iter().any(|k| matches_key_combo(k, event)) {
                 let (enabled, flush_resp) = engine.set_enabled(false);
                 let mut tr = Win32TimerRuntime;
                 let mut ae = SendInputExecutor;
                 dispatch(&flush_resp, &mut tr, &mut ae);
-                log::info!("Engine OFF (Ctrl+無変換キー)");
+                log::info!("Engine OFF (key combo)");
                 if let Some(tray) = TRAY.get_mut() {
                     tray.set_enabled(enabled);
                 }
@@ -913,8 +912,8 @@ unsafe fn reload_config() {
     {
         let mut reload_toggle_diag = StartupDiagnostics::new();
         // 既存の値をクリアしてから再設定
-        ENGINE_ON_KEY.clear();
-        ENGINE_OFF_KEY.clear();
+        ENGINE_ON_KEYS.clear();
+        ENGINE_OFF_KEYS.clear();
         init_engine_toggle_keys(&config, &mut reload_toggle_diag);
         reload_toggle_diag.report();
     }
