@@ -205,7 +205,7 @@ fn main() -> Result<()> {
         APP.set(AppState {
             engine,
             tracker,
-            output: Output::new(),
+            output: Output::new(config.general.output_mode),
             ime,
             tray: system_tray,
             layouts,
@@ -265,9 +265,10 @@ fn load_config() -> Result<AppConfig> {
     log::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
     log::info!(
-        "Default layout: {}, Threshold: {}ms",
+        "Default layout: {}, Threshold: {}ms, Output: {:?}",
         config.general.default_layout,
-        config.general.simultaneous_threshold_ms
+        config.general.simultaneous_threshold_ms,
+        config.general.output_mode
     );
     Ok(config)
 }
@@ -980,11 +981,13 @@ unsafe fn reload_config() {
             config.general.confirm_mode,
             config.general.speculative_delay_ms,
         );
+        app.output.set_mode(config.general.output_mode);
         log::info!(
-            "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms",
+            "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
             config.general.simultaneous_threshold_ms,
             config.general.confirm_mode,
             config.general.speculative_delay_ms,
+            config.general.output_mode,
         );
     }
 

@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use awase::config::OutputMode;
 use awase::types::KeyAction;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -9,53 +12,61 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 pub const INJECTED_MARKER: usize = 0x4B45_594D;
 
 /// ASCII 文字を対応する VK コードに変換する。
-/// a-z, A-Z, 0-9, および一般的な句読点のみを扱う。
-/// 戻り値は `(vk_code, needs_shift)`。
 const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     match ch {
         'a'..='z' => Some((0x41 + (ch as u16 - 'a' as u16), false)),
         'A'..='Z' => Some((0x41 + (ch as u16 - 'A' as u16), true)),
         '0'..='9' => Some((0x30 + (ch as u16 - '0' as u16), false)),
-        '-' => Some((0xBD, false)), // VK_OEM_MINUS
-        '.' => Some((0xBE, false)), // VK_OEM_PERIOD
-        ',' => Some((0xBC, false)), // VK_OEM_COMMA
-        '/' => Some((0xBF, false)), // VK_OEM_2
+        '-' => Some((0xBD, false)),
+        '.' => Some((0xBE, false)),
+        ',' => Some((0xBC, false)),
+        '/' => Some((0xBF, false)),
         _ => None,
     }
 }
 
 /// SendInput によるキー注入を行うモジュール
-pub struct Output;
+pub struct Output {
+    mode: OutputMode,
+    /// Unicode モード用: ローマ字→ひらがな変換テーブル
+    romaji_to_kana: Option<HashMap<String, char>>,
+}
 
 impl Output {
-    pub const fn new() -> Self {
-        Self
+    pub fn new(mode: OutputMode) -> Self {
+        let romaji_to_kana = if mode == OutputMode::Unicode {
+            Some(awase::kana_table::build_romaji_to_kana())
+        } else {
+            None
+        };
+        Self {
+            mode,
+            romaji_to_kana,
+        }
+    }
+
+    /// 出力モードを変更する
+    pub fn set_mode(&mut self, mode: OutputMode) {
+        self.mode = mode;
+        if mode == OutputMode::Unicode && self.romaji_to_kana.is_none() {
+            self.romaji_to_kana = Some(awase::kana_table::build_romaji_to_kana());
+        }
     }
 
     /// アクション列を順に実行する
     pub fn send_keys(&self, actions: &[KeyAction]) {
         for action in actions {
             match action {
-                KeyAction::Key(vk) => {
-                    self.send_key(*vk, false);
-                }
-                KeyAction::KeyUp(vk) => {
-                    self.send_key(*vk, true);
-                }
-                KeyAction::Char(ch) => {
-                    self.send_unicode_char(*ch);
-                }
-                KeyAction::Suppress => {
-                    // 何もしない
-                }
-                KeyAction::Romaji(s) => {
-                    self.send_romaji(s);
-                }
+                KeyAction::Key(vk) => self.send_key(*vk, false),
+                KeyAction::KeyUp(vk) => self.send_key(*vk, true),
+                KeyAction::Char(ch) => self.send_unicode_char(*ch),
+                KeyAction::Suppress => {}
+                KeyAction::Romaji(s) => self.send_romaji(s),
             }
         }
     }
 
-    /// 仮想キーコードを使って KeyDown または KeyUp を送信する
+    /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
     #[allow(clippy::unused_self)]
     fn send_key(&self, vk: u16, is_keyup: bool) {
         let input = make_key_input(vk, is_keyup);
@@ -100,7 +111,6 @@ impl Output {
                 },
             });
         }
-
         unsafe {
             SendInput(
                 &inputs,
@@ -109,23 +119,31 @@ impl Output {
         }
     }
 
-    /// ローマ字文字列を VK コードのキーイベントとして送信する。
-    ///
-    /// 1文字ずつ個別の SendInput 呼び出しで送る。
-    /// 各文字の KeyDown+KeyUp はバッチ化（1回の SendInput）するが、
-    /// 文字間は別の SendInput 呼び出しに分離する。
-    /// これにより他のキーボードフック（PowerToys 等）に処理時間を与える。
+    /// ローマ字文字列を送信する（モードに応じて方式を切り替え）
     fn send_romaji(&self, romaji: &str) {
+        match self.mode {
+            OutputMode::PerKey => self.send_romaji_per_key(romaji),
+            OutputMode::Batched => self.send_romaji_batched(romaji),
+            OutputMode::Unicode => self.send_romaji_as_unicode(romaji),
+        }
+    }
+
+    /// PerKey モード: 1文字ずつ個別の SendInput 呼び出し
+    ///
+    /// 各文字の KeyDown+KeyUp は1回の SendInput にまとめるが、
+    /// 文字間は別の SendInput 呼び出しに分離する。
+    /// 他のキーボードフックに処理時間を与える。
+    fn send_romaji_per_key(&self, romaji: &str) {
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
                 let mut inputs = Vec::with_capacity(4);
                 if needs_shift {
-                    inputs.push(make_key_input(0xA0, false)); // LShift down
+                    inputs.push(make_key_input(0xA0, false));
                 }
-                inputs.push(make_key_input(vk, false)); // key down
-                inputs.push(make_key_input(vk, true)); // key up
+                inputs.push(make_key_input(vk, false));
+                inputs.push(make_key_input(vk, true));
                 if needs_shift {
-                    inputs.push(make_key_input(0xA0, true)); // LShift up
+                    inputs.push(make_key_input(0xA0, true));
                 }
                 unsafe {
                     SendInput(
@@ -135,6 +153,48 @@ impl Output {
                 }
             }
         }
+    }
+
+    /// Batched モード: 全文字を1回の SendInput にまとめて送信
+    ///
+    /// 最も高速。SendInput のアトミック性により他の入力が割り込めない。
+    fn send_romaji_batched(&self, romaji: &str) {
+        let mut inputs = Vec::with_capacity(romaji.len() * 4);
+        for ch in romaji.chars() {
+            if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
+                if needs_shift {
+                    inputs.push(make_key_input(0xA0, false));
+                }
+                inputs.push(make_key_input(vk, false));
+                inputs.push(make_key_input(vk, true));
+                if needs_shift {
+                    inputs.push(make_key_input(0xA0, true));
+                }
+            }
+        }
+        if !inputs.is_empty() {
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+        }
+    }
+
+    /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
+    ///
+    /// IME を経由せず、ひらがなを直接テキストフィールドに挿入する。
+    /// 変換テーブルにないローマ字は PerKey モードでフォールバック送信する。
+    fn send_romaji_as_unicode(&self, romaji: &str) {
+        if let Some(table) = &self.romaji_to_kana {
+            if let Some(&kana) = table.get(romaji) {
+                self.send_unicode_char(kana);
+                return;
+            }
+        }
+        // テーブルにない場合はフォールバック
+        self.send_romaji_per_key(romaji);
     }
 }
 

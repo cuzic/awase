@@ -2,6 +2,19 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// ローマ字出力の送信方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputMode {
+    /// 1文字ずつ個別の SendInput 呼び出し（他のフックとの互換性重視）
+    #[default]
+    PerKey,
+    /// 全文字を1回の SendInput にまとめて送信（高速、アトミック）
+    Batched,
+    /// ローマ字→ひらがなに変換して Unicode 文字として直接送信（IME 不要）
+    Unicode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmMode {
@@ -66,6 +79,10 @@ pub struct GeneralConfig {
     /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming で使用）
     #[serde(default = "default_speculative_delay")]
     pub speculative_delay_ms: u32,
+
+    /// ローマ字出力の送信方式（デフォルト: per_key）
+    #[serde(default)]
+    pub output_mode: OutputMode,
 
     /// Engine ON keys (multiple combos allowed)
     #[serde(default = "default_engine_on_keys")]
