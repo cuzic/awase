@@ -194,6 +194,8 @@ pub unsafe fn handle_buffer_timeout() {
 /// メッセージループから呼ばれるため、この時点で IME 制御キーは OS/IME に
 /// 渡し済みで、IME 状態は最新に更新されている。
 ///
+/// クロスプロセス API で実際の IME 状態を確認し、shadow state も同期する。
+///
 /// Safety: シングルスレッドからのみ呼び出すこと
 pub unsafe fn process_deferred_keys() {
     // ガード解除 + バッファからキーを取り出す
@@ -207,17 +209,25 @@ pub unsafe fn process_deferred_keys() {
     }
 
     log::debug!(
-        "Processing {} deferred key(s) after IME control",
+        "Processing {} deferred key(s) after IME toggle",
         keys.len()
     );
 
-    for event in keys {
-        // IME 状態を再チェック（最新の状態で判定）
-        let ime_active = crate::IME
+    // Check actual IME state now (should be updated after toggle)
+    let ime_on = crate::ime::detect_ime_open_cross_process().unwrap_or_else(|| {
+        crate::SHADOW_IME_ON
             .get_ref()
-            .is_some_and(|ime| ime.is_active() && ime.get_mode().is_kana_input());
+            .copied()
+            .unwrap_or(true)
+    });
 
-        if ime_active {
+    // Update shadow state to match actual IME state
+    if let Some(shadow) = crate::SHADOW_IME_ON.get_mut() {
+        *shadow = ime_on;
+    }
+
+    for event in keys {
+        if ime_on {
             // IME ON → エンジンで処理
             if let Some(engine) = crate::ENGINE.get_mut() {
                 let response = engine.on_event(event);

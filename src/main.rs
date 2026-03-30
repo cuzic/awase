@@ -667,6 +667,76 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
     }
 
+    // ── IME toggle guard: buffer keys after toggle to let IME state settle ──
+    {
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+
+        if is_key_down {
+            // Check if current key IS a toggle/on/off key
+            let is_toggle_key = IME_SYNC_TOGGLE_KEYS
+                .get_ref()
+                .is_some_and(|keys| keys.contains(&event.vk_code.0));
+            let is_on_key = IME_SYNC_ON_KEYS
+                .get_ref()
+                .is_some_and(|keys| keys.contains(&event.vk_code.0));
+            let is_off_key = IME_SYNC_OFF_KEYS
+                .get_ref()
+                .is_some_and(|keys| keys.contains(&event.vk_code.0));
+
+            if is_toggle_key || is_on_key || is_off_key {
+                // Set guard — next keys will be buffered
+                if let Some(kb) = KEY_BUFFER.get_mut() {
+                    kb.set_guard(true);
+                }
+                log::debug!(
+                    "IME toggle guard ON (vk=0x{:02X})",
+                    event.vk_code.0
+                );
+                return CallbackResult::PassThrough; // let IME process the toggle
+            }
+
+            // While guard active, buffer character keys
+            if let Some(kb) = KEY_BUFFER.get_mut() {
+                if kb.is_guarded() {
+                    kb.push_deferred(event);
+                    let _ =
+                        PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
+                    return CallbackResult::Consumed;
+                }
+            }
+        }
+
+        // Guard clear on KeyUp of toggle key
+        if !is_key_down {
+            if let Some(kb) = KEY_BUFFER.get_mut() {
+                if kb.is_guarded() {
+                    let is_toggle_key = IME_SYNC_TOGGLE_KEYS
+                        .get_ref()
+                        .is_some_and(|keys| keys.contains(&event.vk_code.0));
+                    let is_on_key = IME_SYNC_ON_KEYS
+                        .get_ref()
+                        .is_some_and(|keys| keys.contains(&event.vk_code.0));
+                    let is_off_key = IME_SYNC_OFF_KEYS
+                        .get_ref()
+                        .is_some_and(|keys| keys.contains(&event.vk_code.0));
+                    if is_toggle_key || is_on_key || is_off_key {
+                        kb.set_guard(false);
+                        // Process any buffered keys
+                        let _ = PostMessageW(
+                            HWND::default(),
+                            WM_PROCESS_DEFERRED,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ── IME モード連動: 全角/半角切替でエンジン ON/OFF を自動同期 ──
     // VK 0xF3 (全角モード) → engine ON
     // VK 0xF4 (半角モード) → engine OFF
