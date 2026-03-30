@@ -110,6 +110,8 @@ pub(crate) enum AppAction {
     InvalidateEngineContext(ContextChange),
     /// IME 状態キャッシュを更新する
     RefreshImeStateCache,
+    /// PassThrough 済みキーを BS で取り消してエンジンで再処理
+    RetractPassthroughMemory,
 }
 
 impl AppState {
@@ -272,6 +274,234 @@ impl AppState {
         }
 
         None
+    }
+
+    /// フォーカス変更時の状態遷移を行い、必要な副作用を返す。
+    pub(crate) fn on_focus_changed(
+        &mut self,
+        hwnd: HWND,
+        process_id: u32,
+        class_name: &str,
+    ) -> Vec<AppAction> {
+        let mut actions = Vec::new();
+
+        // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止。
+        {
+            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+            let fg = unsafe { GetForegroundWindow() };
+            let current_kind = FocusKind::load(&FOCUS_KIND);
+            if current_kind == FocusKind::TextInput {
+                if let Some((prev_pid, _)) = &self.focus.last_focus_info {
+                    let fg_pid = focus::classify::get_window_process_id(fg);
+                    if fg_pid == *prev_pid {
+                        log::trace!(
+                            "Keeping TextInput (same process {fg_pid}): class={class_name}"
+                        );
+                        return actions;
+                    }
+                }
+            }
+        }
+
+        // UIA 非同期結果のキャッシュ更新用に保存 + パターントラッカーをリセット
+        self.focus.last_focus_info = Some((process_id, class_name.to_owned()));
+        self.focus.pattern_tracker.clear();
+        self.key_buffer.passthrough_memory.clear();
+        // Undetermined バッファリング中ならキャンセル
+        if self.key_buffer.undetermined_buffering {
+            self.key_buffer.undetermined_buffering = false;
+            let _ = unsafe { KillTimer(HWND::default(), TIMER_UNDETERMINED_BUFFER) };
+            // バッファされたキーは破棄（フォーカスが変わったので無意味）
+            self.key_buffer.deferred_keys.clear();
+        }
+
+        // IME 信頼度をリセット
+        awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
+
+        // Config オーバーライド（最高優先度、キャッシュより先に判定）
+        if !self.focus.overrides.force_text.is_empty()
+            || !self.focus.overrides.force_bypass.is_empty()
+        {
+            let process_name = focus::classify::get_process_name(process_id);
+            for entry in &self.focus.overrides.force_text {
+                if entry.process.eq_ignore_ascii_case(&process_name)
+                    && entry.class.eq_ignore_ascii_case(class_name)
+                {
+                    log::debug!(
+                        "classify_focus: config override force_text ({process_name}, {class_name})",
+                    );
+                    FocusKind::TextInput.store(&FOCUS_KIND);
+                    return actions;
+                }
+            }
+            for entry in &self.focus.overrides.force_bypass {
+                if entry.process.eq_ignore_ascii_case(&process_name)
+                    && entry.class.eq_ignore_ascii_case(class_name)
+                {
+                    log::debug!(
+                        "classify_focus: config override force_bypass ({process_name}, {class_name})",
+                    );
+                    FocusKind::NonText.store(&FOCUS_KIND);
+                    actions.push(AppAction::InvalidateEngineContext(ContextChange::FocusChanged));
+                    return actions;
+                }
+            }
+        }
+
+        // キャッシュヒット → 即座に結果を適用
+        if let Some(cached) = self.focus.cache.get(process_id, class_name) {
+            log::trace!(
+                "classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",
+            );
+            cached.store(&FOCUS_KIND);
+            if cached == FocusKind::NonText {
+                actions.push(AppAction::InvalidateEngineContext(ContextChange::FocusChanged));
+            }
+            return actions;
+        }
+
+        // Step 1: 評価中は安全側（Undetermined）に設定
+        FocusKind::Undetermined.store(&FOCUS_KIND);
+
+        // Step 2: バイパス状態を判定
+        let result = focus::classify::classify_focus(hwnd);
+        let state = result.kind;
+
+        // Step 3: キャッシュに格納し、FOCUS_KIND を更新
+        self.focus.cache.insert(
+            process_id,
+            class_name.to_owned(),
+            state,
+            DetectionSource::Automatic,
+        );
+        state.store(&FOCUS_KIND);
+
+        // Step 4: NonText ならエンジンの保留状態をフラッシュ
+        if state == FocusKind::NonText {
+            actions.push(AppAction::InvalidateEngineContext(ContextChange::FocusChanged));
+        }
+
+        // Step 5: UIA 非同期判定をリクエスト
+        if let Some(tx) = self.focus.uia_sender.as_ref() {
+            let _ = tx.send(focus::uia::SendableHwnd(hwnd));
+        }
+
+        log::debug!(
+            "Focus changed: hwnd={:?} class={} reason={} → {:?}",
+            hwnd,
+            class_name,
+            result.reason,
+            state,
+        );
+
+        // フォーカス変更に伴い IME 状態キャッシュを更新
+        actions.push(AppAction::RefreshImeStateCache);
+        actions
+    }
+
+    /// 手動フォーカスオーバーライドのトグル処理
+    ///
+    /// 現在の `FocusKind` を反転し、学習キャッシュに `UserOverride` で記録する。
+    /// `NonText` への降格時はエンジンコンテキストを無効化し、バッファもクリアする。
+    pub(crate) unsafe fn toggle_focus_override(&mut self) {
+        let current = FocusKind::load(&FOCUS_KIND);
+        let new_kind = if current == FocusKind::TextInput {
+            FocusKind::NonText
+        } else {
+            FocusKind::TextInput
+        };
+
+        new_kind.store(&FOCUS_KIND);
+
+        // Update learning cache
+        if let Some((pid, cls)) = self.focus.last_focus_info.as_ref() {
+            self.focus.cache
+                .insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
+        }
+
+        // If demoted to NonText, flush engine pending
+        if new_kind == FocusKind::NonText {
+            let response = self.engine.flush_pending(ContextChange::FocusChanged);
+            let mut timer_runtime = Win32TimerRuntime;
+            let mut action_executor = SendInputExecutor;
+            dispatch(&response, &mut timer_runtime, &mut action_executor);
+        }
+
+        // Clear any active buffers
+        self.key_buffer.deferred_keys.clear();
+        self.key_buffer.passthrough_memory.clear();
+        self.key_buffer.undetermined_buffering = false;
+
+        // バルーン通知を表示
+        self.tray.show_balloon(
+            "awase",
+            if new_kind == FocusKind::TextInput {
+                "テキスト入力モードに切り替えました"
+            } else {
+                "バイパスモードに切り替えました"
+            },
+        );
+
+        let mode_str = if new_kind == FocusKind::TextInput {
+            "TextInput (engine enabled)"
+        } else {
+            "NonText (engine bypassed)"
+        };
+        log::info!("Manual focus override: → {mode_str}");
+    }
+
+    /// FocusKind を TextInput に昇格させる。
+    ///
+    /// キャッシュとログの更新を一元化する。
+    pub(crate) fn promote_to_text_input(&mut self, source: DetectionSource, reason: &str) {
+        let current = FocusKind::load(&FOCUS_KIND);
+        if current == FocusKind::TextInput {
+            return;
+        }
+        FocusKind::TextInput.store(&FOCUS_KIND);
+        if let Some((pid, cls)) = self.focus.last_focus_info.as_ref() {
+            self.focus.cache
+                .insert(*pid, cls.clone(), FocusKind::TextInput, source);
+        }
+        log::info!("Promoting to TextInput: {reason} (source={source:?})");
+    }
+
+    /// キー入力パターンを観察し、テキスト入力コンテキストを推定する。
+    ///
+    /// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
+    /// パターンが検出されると `promote_to_text_input` で昇格する。
+    #[allow(dead_code)] // 簡略化コールバックからは未使用だが、将来再有効化予定
+    pub(crate) fn observe_key_pattern(&mut self, event: &RawKeyEvent) -> Vec<AppAction> {
+        let mut actions = Vec::new();
+
+        let is_key_down = matches!(
+            event.event_type,
+            KeyEventType::KeyDown | KeyEventType::SysKeyDown
+        );
+        if !is_key_down {
+            return actions;
+        }
+
+        let current = FocusKind::load(&FOCUS_KIND);
+        if current == FocusKind::TextInput {
+            return actions; // 既に TextInput なら追跡不要
+        }
+
+        let is_char = awase::vk::is_modifier_free_char(
+            event.vk_code,
+            focus::pattern::is_os_modifier_held(),
+        );
+
+        if let Some(reason) = self.focus.pattern_tracker.on_key(event.vk_code.0, is_char) {
+            self.promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
+            self.focus.pattern_tracker.clear();
+
+            // IME OFF + Undetermined で PassThrough 済みキーがある場合、
+            // BS で取り消して再処理する
+            actions.push(AppAction::RetractPassthroughMemory);
+        }
+
+        actions
     }
 }
 
@@ -1010,7 +1240,9 @@ fn run_message_loop() {
                 }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => unsafe {
-                focus::toggle_focus_override();
+                if let Some(app) = APP.get_mut() {
+                    app.toggle_focus_override();
+                }
             },
             WM_APP => unsafe {
                 let layout_names: Vec<String> = APP

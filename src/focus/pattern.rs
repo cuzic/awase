@@ -2,11 +2,6 @@
 
 use std::time::Instant;
 
-use awase::types::{FocusKind, KeyEventType, RawKeyEvent};
-use awase::vk;
-
-use crate::focus::cache::DetectionSource;
-
 /// タイピングパターン検出用トラッカー
 ///
 /// 直近のキー入力パターンからテキスト入力コンテキストを推定する。
@@ -95,53 +90,3 @@ pub fn is_os_modifier_held() -> bool {
     }
 }
 
-/// FocusKind を TextInput に昇格させる共通ヘルパー。
-///
-/// キャッシュとログの更新を一元化する。
-pub unsafe fn promote_to_text_input(source: DetectionSource, reason: &str) {
-    let current = FocusKind::load(&crate::FOCUS_KIND);
-    if current == FocusKind::TextInput {
-        return;
-    }
-    FocusKind::TextInput.store(&crate::FOCUS_KIND);
-    if let Some(app) = crate::APP.get_mut() {
-        if let Some((pid, cls)) = app.focus.last_focus_info.as_ref() {
-            app.focus.cache
-                .insert(*pid, cls.clone(), FocusKind::TextInput, source);
-        }
-    }
-    log::info!("Promoting to TextInput: {reason} (source={source:?})",);
-}
-
-/// キー入力パターンを観察し、テキスト入力コンテキストを推定する。
-///
-/// すべてのキーイベントに対して、FOCUS_KIND バイパスチェックの **前** に呼び出す。
-/// パターンが検出されると `promote_to_text_input` で昇格する。
-#[allow(dead_code)] // 簡略化コールバックからは未使用だが、将来再有効化予定
-pub unsafe fn observe_key_pattern(event: &RawKeyEvent) {
-    let is_key_down = matches!(
-        event.event_type,
-        KeyEventType::KeyDown | KeyEventType::SysKeyDown
-    );
-    if !is_key_down {
-        return;
-    }
-
-    let current = FocusKind::load(&crate::FOCUS_KIND);
-    if current == FocusKind::TextInput {
-        return; // 既に TextInput なら追跡不要
-    }
-
-    let is_char = vk::is_modifier_free_char(event.vk_code, is_os_modifier_held());
-
-    if let Some(app) = crate::APP.get_mut() {
-        if let Some(reason) = app.focus.pattern_tracker.on_key(event.vk_code.0, is_char) {
-            promote_to_text_input(DetectionSource::TypingPatternInferred, reason);
-            app.focus.pattern_tracker.clear();
-
-            // IME OFF + Undetermined で PassThrough 済みキーがある場合、
-            // BS で取り消して再処理する
-            crate::key_buffer::retract_passthrough_memory();
-        }
-    }
-}

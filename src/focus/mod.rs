@@ -10,14 +10,12 @@ pub mod msaa;
 pub mod pattern;
 pub mod uia;
 
-use awase::types::{ContextChange, FocusKind};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
-use windows::Win32::UI::WindowsAndMessaging::KillTimer;
 
 use std::sync::mpsc;
 
-use crate::focus::cache::{DetectionSource, FocusCache};
+use crate::focus::cache::FocusCache;
 use crate::focus::pattern::KeyPatternTracker;
 use crate::focus::uia::SendableHwnd;
 
@@ -89,7 +87,7 @@ pub fn install_focus_hook() {
 /// フォーカス変更イベントのコールバック
 ///
 /// `WINEVENT_OUTOFCONTEXT` により、メッセージループのコンテキストで呼ばれる。
-/// フォーカスが移動するたびにバイパス判定を更新し、キャッシュに書き込む。
+/// 状態遷移は `AppState::on_focus_changed` に委譲し、ここでは副作用のみ実行する。
 unsafe extern "system" fn win_event_proc(
     _hook: HWINEVENTHOOK,
     event: u32,
@@ -103,195 +101,24 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    // Step 0: プロセスID・クラス名を取得
     let process_id = classify::get_window_process_id(hwnd);
     let class_name = classify::get_class_name_string(hwnd);
 
-    // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止。
-    // Windows 11 では XAML インフラ等がフォーカスイベントを連続発火するが、
-    // 同一ウィンドウ内の別サブコンポーネントが Undetermined でも、
-    // 先に TextInput が確認されていれば維持する（OR 条件）。
-    {
-        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-        let fg = GetForegroundWindow();
-        let current_kind = FocusKind::load(&crate::FOCUS_KIND);
-        if current_kind == FocusKind::TextInput {
-            // 既に TextInput — フォアグラウンドが変わっていなければ維持
-            if let Some(app) = crate::APP.get_ref() {
-                if let Some((prev_pid, _)) = &app.focus.last_focus_info {
-                    let fg_pid = classify::get_window_process_id(fg);
-                    if fg_pid == *prev_pid {
-                        log::trace!(
-                            "Keeping TextInput (same process {fg_pid}): class={class_name}"
-                        );
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    // UIA 非同期結果のキャッシュ更新用に保存 + パターントラッカーをリセット
-    if let Some(app) = crate::APP.get_mut() {
-        app.focus.last_focus_info = Some((process_id, class_name.clone()));
-        app.focus.pattern_tracker.clear();
-        app.key_buffer.passthrough_memory.clear();
-        // Undetermined バッファリング中ならキャンセル
-        if app.key_buffer.undetermined_buffering {
-            app.key_buffer.undetermined_buffering = false;
-            let _ = KillTimer(HWND::default(), crate::TIMER_UNDETERMINED_BUFFER);
-            // バッファされたキーは破棄（フォーカスが変わったので無意味）
-            app.key_buffer.deferred_keys.clear();
-        }
-    }
-
-    // IME 信頼度をリセット（フォーカスが変わるたびに再判定が必要）
-    // UIA 非同期結果が到着するまでは Unknown。
-    // その間はウィンドウクラス名による同期フォールバックが使われる。
-    awase::types::ImeReliability::Unknown.store(&crate::IME_RELIABILITY);
-
-    // Config オーバーライド（最高優先度、キャッシュより先に判定）
-    if let Some(overrides) = crate::APP.get_ref().map(|app| &app.focus.overrides) {
-        if !overrides.force_text.is_empty() || !overrides.force_bypass.is_empty() {
-            let process_name = classify::get_process_name(process_id);
-            for entry in &overrides.force_text {
-                if entry.process.eq_ignore_ascii_case(&process_name)
-                    && entry.class.eq_ignore_ascii_case(&class_name)
-                {
-                    log::debug!(
-                        "classify_focus: config override force_text ({process_name}, {class_name})",
-                    );
-                    FocusKind::TextInput.store(&crate::FOCUS_KIND);
-                    return;
-                }
-            }
-            for entry in &overrides.force_bypass {
-                if entry.process.eq_ignore_ascii_case(&process_name)
-                    && entry.class.eq_ignore_ascii_case(&class_name)
-                {
-                    log::debug!(
-                        "classify_focus: config override force_bypass ({process_name}, {class_name})",
-                    );
-                    FocusKind::NonText.store(&crate::FOCUS_KIND);
-                    crate::APP.get_mut().map(|app| app.invalidate_engine_context(ContextChange::FocusChanged));
-                    return;
-                }
-            }
-        }
-    }
-
-    // キャッシュヒット → 即座に結果を適用
-    if let Some(cached) = crate::APP
-        .get_ref()
-        .and_then(|app| app.focus.cache.get(process_id, &class_name))
-    {
-        log::trace!("classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",);
-        cached.store(&crate::FOCUS_KIND);
-        if cached == FocusKind::NonText {
-            crate::APP.get_mut().map(|app| app.invalidate_engine_context(ContextChange::FocusChanged));
-        }
+    let Some(app) = crate::APP.get_mut() else {
         return;
-    }
+    };
+    let actions = app.on_focus_changed(hwnd, process_id, &class_name);
 
-    // Step 1: 評価中は安全側（Undetermined）に設定
-    FocusKind::Undetermined.store(&crate::FOCUS_KIND);
-
-    // Step 2: バイパス状態を判定
-    let result = classify::classify_focus(hwnd);
-    let state = result.kind;
-
-    // Step 3: キャッシュに格納し、FOCUS_KIND を更新
-    if let Some(app) = crate::APP.get_mut() {
-        app.focus.cache.insert(
-            process_id,
-            class_name.clone(),
-            state,
-            DetectionSource::Automatic,
-        );
-    }
-    state.store(&crate::FOCUS_KIND);
-
-    // Step 4: NonText ならエンジンの保留状態をフラッシュ
-    if state == FocusKind::NonText {
-        crate::APP.get_mut().map(|app| app.invalidate_engine_context(ContextChange::FocusChanged));
-    }
-
-    // Step 5: UIA 非同期判定をリクエスト
-    // Phase 1-2 で FocusKind が確定していても、ImeReliability の判定には
-    // UIA FrameworkId が必要なため、常にリクエストする。
-    {
-        if let Some(tx) = crate::APP.get_ref().and_then(|app| app.focus.uia_sender.as_ref()) {
-            let _ = tx.send(SendableHwnd(hwnd));
+    for action in actions {
+        match action {
+            crate::AppAction::InvalidateEngineContext(reason) => {
+                app.invalidate_engine_context(reason);
+            }
+            crate::AppAction::RefreshImeStateCache => {
+                app.refresh_ime_state_cache();
+            }
+            _ => {}
         }
-        // auto-IME-OFF は行わない。Windows 11 では XAML インフラウィンドウが
-        // 通常のウィンドウ切替時にも Undetermined フォーカスイベントを発火するため、
-        // auto-IME-OFF は正常なテキスト入力を阻害する。
-        // ゲーム/gvim 保護は config.toml の force_bypass で対応する。
     }
-
-    log::debug!(
-        "Focus changed: hwnd={:?} class={} reason={} → {:?}",
-        hwnd,
-        class_name,
-        result.reason,
-        state,
-    );
-
-    // フォーカス変更に伴い IME 状態キャッシュを更新
-    crate::APP.get_ref().map(|app| app.refresh_ime_state_cache());
 }
 
-/// 手動フォーカスオーバーライドのトグル処理
-///
-/// 現在の `FocusKind` を反転し、学習キャッシュに `UserOverride` で記録する。
-/// `NonText` への降格時はエンジンコンテキストを無効化し、バッファもクリアする。
-///
-/// Safety: シングルスレッドからのみ呼び出すこと
-pub unsafe fn toggle_focus_override() {
-    let current = FocusKind::load(&crate::FOCUS_KIND);
-    let new_kind = if current == FocusKind::TextInput {
-        FocusKind::NonText
-    } else {
-        FocusKind::TextInput
-    };
-
-    new_kind.store(&crate::FOCUS_KIND);
-
-    if let Some(app) = crate::APP.get_mut() {
-        // Update learning cache
-        if let Some((pid, cls)) = app.focus.last_focus_info.as_ref() {
-            app.focus.cache
-                .insert(*pid, cls.clone(), new_kind, DetectionSource::UserOverride);
-        }
-
-        // If demoted to NonText, flush engine pending
-        if new_kind == FocusKind::NonText {
-            let response = app.engine.flush_pending(ContextChange::FocusChanged);
-            let mut timer_runtime = crate::Win32TimerRuntime;
-            let mut action_executor = crate::SendInputExecutor;
-            timed_fsm::dispatch(&response, &mut timer_runtime, &mut action_executor);
-        }
-
-        // Clear any active buffers
-        app.key_buffer.deferred_keys.clear();
-        app.key_buffer.passthrough_memory.clear();
-        app.key_buffer.undetermined_buffering = false;
-
-        // バルーン通知を表示
-        app.tray.show_balloon(
-            "awase",
-            if new_kind == FocusKind::TextInput {
-                "テキスト入力モードに切り替えました"
-            } else {
-                "バイパスモードに切り替えました"
-            },
-        );
-    }
-
-    let mode_str = if new_kind == FocusKind::TextInput {
-        "TextInput (engine enabled)"
-    } else {
-        "NonText (engine bypassed)"
-    };
-    log::info!("Manual focus override: → {mode_str}");
-}

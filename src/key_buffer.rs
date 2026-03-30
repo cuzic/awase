@@ -175,10 +175,12 @@ pub unsafe fn handle_buffer_timeout() {
     );
 
     // タイムアウト → TextInput に昇格してエンジンで処理
-    crate::focus::pattern::promote_to_text_input(
-        DetectionSource::TypingPatternInferred,
-        "buffer timeout (IME ON + Undetermined)",
-    );
+    if let Some(app) = crate::APP.get_mut() {
+        app.promote_to_text_input(
+            DetectionSource::TypingPatternInferred,
+            "buffer timeout (IME ON + Undetermined)",
+        );
+    }
 
     for (event, phys) in keys {
         if let Some(app) = crate::APP.get_mut() {
