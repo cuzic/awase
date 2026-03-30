@@ -587,7 +587,7 @@ fn on_key_event_impl(app: &mut AppState, event: RawKeyEvent) -> CallbackResult {
         ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
     };
     let decision = app.engine.on_input(event, &ctx);
-    app.execute_decision(&decision)
+    app.execute_decision(decision)
 }
 
 /// メッセージループ
@@ -629,7 +629,7 @@ fn run_message_loop() {
                             ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
                         };
                         let decision = app.engine.on_timeout(timer_id, &ctx);
-                        app.execute_decision(&decision);
+                        app.execute_decision(decision);
                     }
                 }
             }

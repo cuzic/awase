@@ -9,69 +9,129 @@ use crate::types::{
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
 
-/// アプリケーション全体の副作用を表す宣言型。
-/// Engine は Effect を返すだけで、実行は呼び出し側（main.rs）が行う。
+/// 入力・出力に関する副作用
 #[derive(Debug, Clone)]
-pub enum Effect {
+pub enum InputEffect {
     /// キーアクションを SendInput で出力する
     SendKeys(Vec<KeyAction>),
     /// キーをそのまま再注入する（IME OFF 時の deferred key 用）
     ReinjectKey(RawKeyEvent),
+}
+
+/// タイマーに関する副作用
+#[derive(Debug, Clone)]
+pub enum TimerEffect {
     /// タイマーを設定する
-    SetTimer { id: usize, duration: Duration },
+    Set { id: usize, duration: Duration },
     /// タイマーをキャンセルする
-    KillTimer(usize),
+    Kill(usize),
+}
+
+/// IME 制御に関する副作用
+#[derive(Debug, Clone)]
+pub enum ImeEffect {
     /// IME の ON/OFF を設定する (ImmSetOpenStatus)
-    SetImeOpen(bool),
+    SetOpen(bool),
     /// IME キャッシュ更新を要求する (PostMessageW)
-    RequestImeCacheRefresh,
+    RequestCacheRefresh,
+}
+
+/// UI に関する副作用
+#[derive(Debug, Clone)]
+pub enum UiEffect {
     /// トレイアイコンを更新する
     UpdateTray { enabled: bool },
 }
 
-/// Engine の判断結果（副作用なし）
+/// アプリケーション全体の副作用を表す宣言型。
+/// Engine は Effect を返すだけで、実行は呼び出し側が行う。
+#[derive(Debug, Clone)]
+pub enum Effect {
+    Input(InputEffect),
+    Timer(TimerEffect),
+    Ime(ImeEffect),
+    Ui(UiEffect),
+}
+
+/// Engine の判断結果（副作用なし、値で消費される）。
+///
+/// `consumed: bool` ではなく enum で意味を固定する。
+/// `PassThrough` なのに `SendKeys` が入る、といった不整合を型で防ぐ。
 #[derive(Debug)]
-pub struct Decision {
-    /// キーを消費するか素通しするか
-    pub consumed: bool,
-    /// 実行すべき副作用のリスト
-    pub effects: Vec<Effect>,
+pub enum Decision {
+    /// キーを素通しする（副作用なし）
+    PassThrough,
+    /// キーを素通しするが副作用を伴う（例: IME トグルキーの pass-through + キャッシュ更新要求）
+    PassThroughWith { effects: Vec<Effect> },
+    /// キーを消費する（副作用あり or なし）
+    Consume { effects: Vec<Effect> },
 }
 
 impl Decision {
     #[must_use]
     pub const fn pass_through() -> Self {
-        Self {
-            consumed: false,
-            effects: Vec::new(),
-        }
+        Self::PassThrough
+    }
+
+    #[must_use]
+    pub const fn pass_through_with(effects: Vec<Effect>) -> Self {
+        Self::PassThroughWith { effects }
     }
 
     #[must_use]
     pub const fn consumed() -> Self {
-        Self {
-            consumed: true,
+        Self::Consume {
             effects: Vec::new(),
         }
     }
 
     #[must_use]
     pub const fn consumed_with(effects: Vec<Effect>) -> Self {
-        Self {
-            consumed: true,
-            effects,
+        Self::Consume { effects }
+    }
+
+    /// effects に追加する。PassThrough なら Consume に昇格。
+    pub fn push_effect(&mut self, effect: Effect) {
+        match self {
+            Self::Consume { effects } | Self::PassThroughWith { effects } => {
+                effects.push(effect);
+            }
+            Self::PassThrough => {
+                *self = Self::Consume {
+                    effects: vec![effect],
+                };
+            }
         }
     }
 
+    /// effects への可変参照。PassThrough なら Consume に昇格して空 Vec を返す。
     #[must_use]
-    pub const fn with_effects(consumed: bool, effects: Vec<Effect>) -> Self {
-        Self { consumed, effects }
+    pub fn effects_mut(&mut self) -> &mut Vec<Effect> {
+        match self {
+            Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
+            Self::PassThrough => {
+                *self = Self::Consume {
+                    effects: Vec::new(),
+                };
+                let Self::Consume { effects } = self else {
+                    unreachable!()
+                };
+                effects
+            }
+        }
     }
 }
 
-/// Engine が判断に使う外部コンテキスト（読み取り専用）
+/// Engine が判断に使う外部コンテキスト（読み取り専用）。
+///
+/// # 設計ルール
+/// - OS 由来の「瞬間値」のみを含む（ポーリングで変わる可能性のある値）
+/// - Engine 内部で保持できる永続状態は Engine 側に寄せる
+/// - 副作用結果を反映したい場合は Effect 経由で表現する
+/// - このフィールドを増やす前に、Engine 内部状態で代替できないか検討すること
 #[derive(Debug)]
 pub struct InputContext {
+    /// メッセージループで更新される IME ON/OFF キャッシュ
     pub ime_cache: ImeCacheState,
 }
 

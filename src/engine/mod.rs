@@ -19,8 +19,8 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 
 use types::{BypassReason, EngineState, Face, PendingKey, PendingThumbData, ResolvedAction};
 pub use types::{
-    ClassifiedEvent, Decision, Effect, FinalizePlan, InputContext, KeyClass, ModifierState,
-    OutputRecord, OutputUpdate, TimerIntent,
+    ClassifiedEvent, Decision, Effect, FinalizePlan, ImeEffect, InputContext, InputEffect,
+    KeyClass, ModifierState, OutputRecord, OutputUpdate, TimerEffect, TimerIntent, UiEffect,
 };
 pub use wrapper::Engine;
 

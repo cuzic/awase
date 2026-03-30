@@ -9,7 +9,7 @@ use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, VkCode};
 
 use super::input_tracker::{InputTracker, PhysicalKeyState};
-use super::types::{Decision, Effect, InputContext};
+use super::types::{Decision, Effect, ImeEffect, InputContext, InputEffect, TimerEffect, UiEffect};
 use super::NicolaFsm;
 
 /// IME 同期キー（トグル・ON・OFF）を集約する構造体
@@ -130,7 +130,7 @@ impl Engine {
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
         if is_key_down && crate::vk::may_change_ime(event.vk_code) {
-            effects.push(Effect::RequestImeCacheRefresh);
+            effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
         }
 
         // Phase 4: IME toggle guard
@@ -142,7 +142,7 @@ impl Engine {
         if is_key_down {
             if let Some(mut decision) = self.check_special_keys(&event) {
                 // IME 制御キーの場合もキャッシュ更新を要求
-                decision.effects.push(Effect::RequestImeCacheRefresh);
+                decision.push_effect(Effect::Ime(ImeEffect::RequestCacheRefresh));
                 return decision;
             }
         }
@@ -194,7 +194,7 @@ impl Engine {
                     let response = self.fsm.on_event(event, &phys);
                     self.response_to_decision(&response)
                 } else {
-                    Decision::with_effects(true, vec![Effect::ReinjectKey(event)])
+                    Decision::consumed_with(vec![Effect::Input(InputEffect::ReinjectKey(event))])
                 }
             })
             .collect()
@@ -205,7 +205,7 @@ impl Engine {
         let (enabled, flush_resp) = self.fsm.toggle_enabled();
         log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
         let mut decision = self.response_to_decision(&flush_resp);
-        decision.effects.push(Effect::UpdateTray { enabled });
+        decision.push_effect(Effect::Ui(UiEffect::UpdateTray { enabled }));
         decision
     }
 
@@ -272,11 +272,11 @@ impl Engine {
     pub fn sync_with_ime_state(&mut self, ime_on: bool) -> Decision {
         if ime_on && !self.fsm.is_enabled() {
             let _ = self.fsm.set_enabled(true);
-            Decision::with_effects(false, vec![Effect::UpdateTray { enabled: true }])
+            Decision::pass_through_with(vec![Effect::Ui(UiEffect::UpdateTray { enabled: true })])
         } else if !ime_on && self.fsm.is_enabled() {
             let mut decision = self.invalidate_engine_context(ContextChange::ImeOff);
             let _ = self.fsm.set_enabled(false);
-            decision.effects.push(Effect::UpdateTray { enabled: false });
+            decision.push_effect(Effect::Ui(UiEffect::UpdateTray { enabled: false }));
             decision
         } else {
             Decision::pass_through()
@@ -285,29 +285,40 @@ impl Engine {
 
     // ── 内部メソッド ──
 
-    /// timed-fsm Response → Decision に変換
-    #[allow(clippy::unused_self)] // メソッドチェーン可読性のために &self を保持
-    fn response_to_decision(&self, resp: &Response<KeyAction, usize>) -> Decision {
+    /// timed-fsm Response → Effect リストに変換（consumed フラグは呼び出し側で判定）
+    #[allow(clippy::unused_self)]
+    fn response_to_effects(&self, resp: &Response<KeyAction, usize>) -> Vec<Effect> {
         let mut effects = Vec::new();
-        // Timer commands → Effects
         for cmd in &resp.timers {
             match cmd {
                 TimerCommand::Set { id, duration } => {
-                    effects.push(Effect::SetTimer {
+                    effects.push(Effect::Timer(TimerEffect::Set {
                         id: *id,
                         duration: *duration,
-                    });
+                    }));
                 }
                 TimerCommand::Kill { id } => {
-                    effects.push(Effect::KillTimer(*id));
+                    effects.push(Effect::Timer(TimerEffect::Kill(*id)));
                 }
             }
         }
-        // Actions → SendKeys effect
         if !resp.actions.is_empty() {
-            effects.push(Effect::SendKeys(resp.actions.clone()));
+            effects.push(Effect::Input(InputEffect::SendKeys(resp.actions.clone())));
         }
-        Decision::with_effects(resp.consumed, effects)
+        effects
+    }
+
+    /// timed-fsm Response → Decision に変換
+    #[allow(clippy::unused_self)] // メソッドチェーン可読性のために &self を保持
+    fn response_to_decision(&self, resp: &Response<KeyAction, usize>) -> Decision {
+        let effects = self.response_to_effects(resp);
+        if resp.consumed {
+            Decision::consumed_with(effects)
+        } else if effects.is_empty() {
+            Decision::pass_through()
+        } else {
+            Decision::pass_through_with(effects)
+        }
     }
 
     /// Shadow IME 状態を更新する（ime_sync キー + IME 制御キー）
@@ -387,7 +398,10 @@ impl Engine {
                 // Prepend any accumulated effects, then pass through
                 let all_effects = std::mem::take(effects);
                 // pass through: let IME process the toggle
-                return Some(Decision::with_effects(false, all_effects));
+                if all_effects.is_empty() {
+                    return Some(Decision::pass_through());
+                }
+                return Some(Decision::pass_through_with(all_effects));
             }
 
             // While IME guard active, buffer keys
@@ -396,7 +410,7 @@ impl Engine {
                 // Return consumed + RequestImeCacheRefresh (via effects already accumulated)
                 // plus a "process deferred" signal
                 let mut all_effects = std::mem::take(effects);
-                all_effects.push(Effect::RequestImeCacheRefresh);
+                all_effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
                 return Some(Decision::consumed_with(all_effects));
             }
         }
@@ -408,7 +422,7 @@ impl Engine {
             let is_off_key = self.ime_sync_keys.off.contains(&event.vk_code);
             if is_toggle_key || is_on_key || is_off_key {
                 self.key_buffer.set_guard(false);
-                effects.push(Effect::RequestImeCacheRefresh);
+                effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
             }
         }
 
@@ -429,10 +443,9 @@ impl Engine {
         {
             let (enabled, flush_resp) = self.fsm.set_enabled(true);
             log::info!("Engine ON (key combo)");
-            let mut decision = self.response_to_decision(&flush_resp);
-            decision.consumed = true;
-            decision.effects.push(Effect::UpdateTray { enabled });
-            return Some(decision);
+            let mut effects = self.response_to_effects(&flush_resp);
+            effects.push(Effect::Ui(UiEffect::UpdateTray { enabled }));
+            return Some(Decision::consumed_with(effects));
         }
         if self.fsm.is_enabled()
             && self
@@ -443,10 +456,9 @@ impl Engine {
         {
             let (enabled, flush_resp) = self.fsm.set_enabled(false);
             log::info!("Engine OFF (key combo)");
-            let mut decision = self.response_to_decision(&flush_resp);
-            decision.consumed = true;
-            decision.effects.push(Effect::UpdateTray { enabled });
-            return Some(decision);
+            let mut effects = self.response_to_effects(&flush_resp);
+            effects.push(Effect::Ui(UiEffect::UpdateTray { enabled }));
+            return Some(Decision::consumed_with(effects));
         }
 
         // IME 制御キー（エンジン状態に関わらずチェック）
@@ -458,7 +470,9 @@ impl Engine {
         {
             self.shadow_ime_on = true;
             log::info!("IME ON (ImmSetOpenStatus, key combo)");
-            return Some(Decision::consumed_with(vec![Effect::SetImeOpen(true)]));
+            return Some(Decision::consumed_with(vec![Effect::Ime(
+                ImeEffect::SetOpen(true),
+            )]));
         }
         if self
             .special_keys
@@ -468,7 +482,9 @@ impl Engine {
         {
             self.shadow_ime_on = false;
             log::info!("IME OFF (ImmSetOpenStatus, key combo)");
-            return Some(Decision::consumed_with(vec![Effect::SetImeOpen(false)]));
+            return Some(Decision::consumed_with(vec![Effect::Ime(
+                ImeEffect::SetOpen(false),
+            )]));
         }
 
         None

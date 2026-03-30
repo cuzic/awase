@@ -1,6 +1,8 @@
 use windows::Win32::Foundation::HWND;
 
-use awase::engine::{Decision, Effect, Engine, InputContext};
+use awase::engine::{
+    Decision, Effect, Engine, ImeEffect, InputContext, InputEffect, TimerEffect, UiEffect,
+};
 use awase::types::{ContextChange, FocusKind, ImeCacheState, VkCode};
 use awase::yab::YabLayout;
 
@@ -63,70 +65,87 @@ pub struct AppState {
 
 impl AppState {
     /// Decision の副作用を実行する — 唯一の副作用実行ポイント
-    pub(crate) fn execute_decision(&mut self, decision: &Decision) -> CallbackResult {
-        use windows::Win32::Foundation::{LPARAM, WPARAM};
-        use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer};
-
-        for effect in &decision.effects {
-            match effect {
-                Effect::SendKeys(actions) => {
-                    self.output.send_keys(actions);
-                }
-                Effect::ReinjectKey(event) => {
-                    // SAFETY: reinject_key は Win32 API (SendInput)。メインスレッドから呼ぶ。
-                    unsafe { reinject_key(event) };
-                }
-                Effect::SetTimer { id, duration } => {
-                    let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
-                    // SAFETY: SetTimer は Win32 API。メインスレッドから呼ぶ。
-                    unsafe {
-                        let _ = SetTimer(HWND::default(), *id, ms, None);
-                    }
-                }
-                Effect::KillTimer(id) => {
-                    // SAFETY: KillTimer は Win32 API。メインスレッドから呼ぶ。
-                    unsafe {
-                        let _ = KillTimer(HWND::default(), *id);
-                    }
-                }
-                Effect::SetImeOpen(open) => {
-                    // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
-                    let _ = unsafe { crate::ime::set_ime_open_cross_process(*open) };
-                }
-                Effect::RequestImeCacheRefresh => {
-                    // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶ。
-                    unsafe {
-                        let _ = PostMessageW(
-                            HWND::default(),
-                            crate::WM_IME_KEY_DETECTED,
-                            WPARAM(0),
-                            LPARAM(0),
-                        );
-                    }
-                }
-                Effect::UpdateTray { enabled } => {
-                    self.tray.set_enabled(*enabled);
-                }
-            }
-        }
-
-        if decision.consumed {
+    pub(crate) fn execute_decision(&mut self, decision: Decision) -> CallbackResult {
+        let (consumed, effects) = match decision {
+            Decision::PassThrough => return CallbackResult::PassThrough,
+            Decision::PassThroughWith { effects } => (false, effects),
+            Decision::Consume { effects } => (true, effects),
+        };
+        self.execute_effects(effects);
+        if consumed {
             CallbackResult::Consumed
         } else {
             CallbackResult::PassThrough
         }
     }
 
+    /// Effect リストを実行する
+    fn execute_effects(&mut self, effects: Vec<Effect>) {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer};
+
+        for effect in effects {
+            match effect {
+                Effect::Input(ie) => match ie {
+                    InputEffect::SendKeys(actions) => {
+                        self.output.send_keys(&actions);
+                    }
+                    InputEffect::ReinjectKey(event) => {
+                        // SAFETY: reinject_key は Win32 API (SendInput)。メインスレッドから呼ぶ。
+                        unsafe { reinject_key(&event) };
+                    }
+                },
+                Effect::Timer(te) => match te {
+                    TimerEffect::Set { id, duration } => {
+                        let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
+                        // SAFETY: SetTimer は Win32 API。メインスレッドから呼ぶ。
+                        unsafe {
+                            let _ = SetTimer(HWND::default(), id, ms, None);
+                        }
+                    }
+                    TimerEffect::Kill(id) => {
+                        // SAFETY: KillTimer は Win32 API。メインスレッドから呼ぶ。
+                        unsafe {
+                            let _ = KillTimer(HWND::default(), id);
+                        }
+                    }
+                },
+                Effect::Ime(ie) => match ie {
+                    ImeEffect::SetOpen(open) => {
+                        // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
+                        let _ = unsafe { crate::ime::set_ime_open_cross_process(open) };
+                    }
+                    ImeEffect::RequestCacheRefresh => {
+                        // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶ。
+                        unsafe {
+                            let _ = PostMessageW(
+                                HWND::default(),
+                                crate::WM_IME_KEY_DETECTED,
+                                WPARAM(0),
+                                LPARAM(0),
+                            );
+                        }
+                    }
+                },
+                Effect::Ui(ue) => match ue {
+                    UiEffect::UpdateTray { enabled } => {
+                        self.tray.set_enabled(enabled);
+                    }
+                },
+            }
+        }
+    }
+
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub(crate) fn toggle_engine(&mut self) {
         let decision = self.engine.toggle_engine();
-        self.execute_decision(&decision);
+        self.execute_decision(decision);
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
     pub(crate) fn invalidate_engine_context(&mut self, reason: ContextChange) {
         let decision = self.engine.invalidate_engine_context(reason);
-        self.execute_decision(&decision);
+        self.execute_decision(decision);
     }
 
     /// IME ON/OFF 状態をキャッシュに書き込む。
@@ -197,13 +216,13 @@ impl AppState {
             );
             // エンジンを IME 状態に追随させる
             let decision = self.engine.sync_with_ime_state(ime_on);
-            if !decision.effects.is_empty() {
+            if !matches!(decision, Decision::PassThrough) {
                 log::info!(
                     "Engine auto-{} (IME {})",
                     if ime_on { "enabled" } else { "disabled" },
                     if ime_on { "ON" } else { "OFF" },
                 );
-                self.execute_decision(&decision);
+                self.execute_decision(decision);
             }
         }
     }
@@ -217,7 +236,7 @@ impl AppState {
 
         let name = entry.name.clone();
         let decision = self.engine.swap_layout(entry.layout.clone());
-        self.execute_decision(&decision);
+        self.execute_decision(decision);
 
         self.tray.set_layout_name(&name);
 
@@ -327,16 +346,13 @@ impl AppState {
         );
 
         // フォーカス変更に伴い IME 状態キャッシュを更新（デバウンスタイマー経由）
-        let debounce = Decision::with_effects(
-            false,
-            vec![Effect::SetTimer {
-                id: crate::TIMER_FOCUS_DEBOUNCE,
-                duration: std::time::Duration::from_millis(u64::from(
-                    crate::FOCUS_DEBOUNCE_MS.load(std::sync::atomic::Ordering::Relaxed),
-                )),
-            }],
-        );
-        self.execute_decision(&debounce);
+        let debounce = Decision::pass_through_with(vec![Effect::Timer(TimerEffect::Set {
+            id: crate::TIMER_FOCUS_DEBOUNCE,
+            duration: std::time::Duration::from_millis(u64::from(
+                crate::FOCUS_DEBOUNCE_MS.load(std::sync::atomic::Ordering::Relaxed),
+            )),
+        })]);
+        self.execute_decision(debounce);
     }
 
     /// 手動フォーカスオーバーライドのトグル処理
@@ -391,7 +407,7 @@ impl AppState {
             ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
         };
         let decisions = self.engine.process_deferred_keys(&ctx);
-        for decision in &decisions {
+        for decision in decisions {
             self.execute_decision(decision);
         }
     }
