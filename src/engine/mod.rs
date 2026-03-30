@@ -362,11 +362,8 @@ impl Engine {
         if let Some((action, kana)) =
             self.lookup_face(char_scan, char_vk, self.get_face(thumb_face))
         {
-            if thumb_is_left {
-                self.left_thumb_down = Some(thumb_timestamp);
-            } else {
-                self.right_thumb_down = Some(thumb_timestamp);
-            }
+            // left_thumb_down / right_thumb_down は on_key_down で物理キー状態として
+            // 追跡済みなので、ここではセットしない。
             let output = record_output(char_scan, &action, kana);
             ResolvedAction {
                 actions: vec![action],
@@ -456,6 +453,15 @@ impl Engine {
     fn on_key_down(&mut self, event: &RawKeyEvent) -> Resp {
         self.update_timing(event);
         let ev = self.classify(event);
+
+        // 物理的な親指キー押下状態を追跡（連続シフト用）。
+        // FSM の pending_thumb とは独立して、純粋に物理キー状態を反映する。
+        // KeyUp でのクリアは on_key_up 冒頭で行う。
+        if ev.key_class.is_left_thumb() {
+            self.left_thumb_down = Some(ev.timestamp);
+        } else if ev.key_class == KeyClass::RightThumb {
+            self.right_thumb_down = Some(ev.timestamp);
+        }
 
         if let Some(reason) = self.bypass_reason(&ev) {
             return self.handle_bypass(reason);
@@ -719,12 +725,7 @@ impl Engine {
             if elapsed < threshold {
                 // Within threshold → retract speculative output + emit thumb face
 
-                // Record thumb as held (for continuous shift)
-                if ev.key_class == KeyClass::LeftThumb {
-                    self.left_thumb_down = Some(ev.timestamp);
-                } else {
-                    self.right_thumb_down = Some(ev.timestamp);
-                }
+                // left_thumb_down / right_thumb_down は on_key_down で追跡済み。
 
                 // Retract the speculative output: always 1 BS because IME treats
                 // complete romaji as a single composition unit (Bug #3 fix)
@@ -829,11 +830,7 @@ impl Engine {
         if elapsed_us < threshold {
             if let Some((action, kana)) = candidate {
                 // 保留=親指, 到着=文字 → 同時打鍵
-                if thumb.is_left {
-                    self.left_thumb_down = Some(thumb.timestamp);
-                } else {
-                    self.right_thumb_down = Some(thumb.timestamp);
-                }
+                // left_thumb_down / right_thumb_down は親指 KeyDown 時に追跡済み。
                 self.go_idle();
                 return self.finalize_plan(FinalizePlan {
                     actions: vec![action.clone()],
@@ -983,11 +980,7 @@ impl Engine {
             if let Some((action, kana)) =
                 self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(thumb_face))
             {
-                if thumb.is_left {
-                    self.left_thumb_down = Some(thumb.timestamp);
-                } else {
-                    self.right_thumb_down = Some(thumb.timestamp);
-                }
+                // left_thumb_down / right_thumb_down は親指 KeyDown 時に追跡済み。
                 let mut all_actions = prev.actions;
                 all_actions.push(action.clone());
                 return self.finalize_plan(FinalizePlan {
