@@ -489,19 +489,6 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
                 DetectionSource::ImeKeyInferred,
                 &format!("IME/thumb key 0x{:02X}", event.vk_code.0),
             );
-            // auto-IME-OFF されていた場合は IME ON に復帰
-            // （非ブラウザ Undetermined で自動 OFF された後のケース）
-            {
-                let mut info = GUITHREADINFO {
-                    cbSize: size_of::<GUITHREADINFO>() as u32,
-                    ..Default::default()
-                };
-                if GetGUIThreadInfo(0, &mut info).is_ok()
-                    && !info.hwndFocus.0.is_null()
-                {
-                    focus::set_ime_on(info.hwndFocus);
-                }
-            }
             // Undetermined バッファリング中ならバッファを処理
             if let Some(kb) = KEY_BUFFER.get_mut() {
                 if kb.undetermined_buffering {
@@ -715,20 +702,6 @@ fn run_message_loop() {
                     }
                     if kind == FocusKind::NonText {
                         invalidate_engine_context(ContextChange::FocusChanged);
-                    }
-                    // UIA が TextInput を返した場合、IME OFF されていたら ON に復帰
-                    // （非ブラウザ系で自動 IME OFF された後に UIA が TextInput を返したケース）
-                    if kind == FocusKind::TextInput {
-                        if let Some(f) = FOCUS.get_ref() {
-                            if let Some((_, cls)) = f.last_focus_info.as_ref() {
-                                if !vk::is_browser_or_electron_class(cls) {
-                                    // 非ブラウザ系で UIA が TextInput → IME ON に復帰
-                                    if info.hwndFocus != HWND::default() {
-                                        focus::set_ime_on(info.hwndFocus);
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             },

@@ -250,28 +250,18 @@ unsafe extern "system" fn win_event_proc(
         if let Some(tx) = crate::FOCUS.get_ref().and_then(|f| f.uia_sender.as_ref()) {
             let _ = tx.send(SendableHwnd(hwnd));
         }
-
-        // Step 6: Undetermined + 非ブラウザ系 → IME OFF にして安全側に倒す
-        // ブラウザ/Electron 系は UIA Phase 3 で正確に判定できるため、IME を維持する。
-        // ゲーム/gvim 等の非ブラウザ系は UIA でも判定不能なため、IME OFF で保護する。
-        // UIA が後から TextInput を返した場合は IME ON に復帰する（WM_FOCUS_KIND_UPDATE）。
-        if !vk::is_browser_or_electron_class(&class_name) {
-            set_ime_off(hwnd);
-            crate::invalidate_engine_context(ContextChange::FocusChanged);
-        }
+        // auto-IME-OFF は行わない。Windows 11 では XAML インフラウィンドウが
+        // 通常のウィンドウ切替時にも Undetermined フォーカスイベントを発火するた���、
+        // auto-IME-OFF は正常なテキスト入力を阻害する。
+        // ゲーム/gvim 保護は config.toml の force_bypass で対応する。
     }
 
     log::debug!(
-        "Focus changed: hwnd={:?} class={} reason={} → {:?}{}",
+        "Focus changed: hwnd={:?} class={} reason={} → {:?}",
         hwnd,
         class_name,
         result.reason,
         state,
-        if state == FocusKind::Undetermined && !vk::is_browser_or_electron_class(&class_name) {
-            " (IME auto-OFF)"
-        } else {
-            ""
-        }
     );
 }
 
