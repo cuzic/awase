@@ -42,6 +42,14 @@ struct SettingsApp {
     /// 新規 force_bypass エントリ入力バッファ
     new_force_bypass_process: String,
     new_force_bypass_class: String,
+    /// IME 制御 ON キー一覧（GUI 編集用コピー）
+    ime_control_on_keys: Vec<String>,
+    /// IME 制御 OFF キー一覧（GUI 編集用コピー）
+    ime_control_off_keys: Vec<String>,
+    /// IME 制御 ON キー追加用バッファ
+    new_ime_control_on_key: String,
+    /// IME 制御 OFF キー追加用バッファ
+    new_ime_control_off_key: String,
     /// IME 同期トグルキー一覧（GUI 編集用コピー）
     ime_toggle_keys: Vec<String>,
     /// IME 同期 ON キー一覧（GUI 編集用コピー）
@@ -73,6 +81,8 @@ impl SettingsApp {
 
         let engine_on_keys = config.general.engine_on_keys.clone();
         let engine_off_keys = config.general.engine_off_keys.clone();
+        let ime_control_on_keys = config.general.ime_on_keys.clone();
+        let ime_control_off_keys = config.general.ime_off_keys.clone();
         let ime_toggle_keys = config.ime_sync.toggle_keys.clone();
         let ime_on_keys = config.ime_sync.on_keys.clone();
         let ime_off_keys = config.ime_sync.off_keys.clone();
@@ -92,6 +102,10 @@ impl SettingsApp {
             new_force_text_class: String::new(),
             new_force_bypass_process: String::new(),
             new_force_bypass_class: String::new(),
+            ime_control_on_keys,
+            ime_control_off_keys,
+            new_ime_control_on_key: String::new(),
+            new_ime_control_off_key: String::new(),
             ime_toggle_keys,
             ime_on_keys,
             ime_off_keys,
@@ -105,13 +119,15 @@ impl SettingsApp {
 }
 
 fn find_config_path() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("config.toml");
-            if p.exists() {
-                return p;
-            }
-        }
+    let Ok(exe) = std::env::current_exe() else {
+        return std::path::PathBuf::from("config.toml");
+    };
+    let Some(dir) = exe.parent() else {
+        return std::path::PathBuf::from("config.toml");
+    };
+    let p = dir.join("config.toml");
+    if p.exists() {
+        return p;
     }
     std::path::PathBuf::from("config.toml")
 }
@@ -129,14 +145,18 @@ fn scan_layout_names(layouts_dir: &str) -> Vec<String> {
     };
 
     let mut names = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "yab") {
-                if let Some(stem) = path.file_stem() {
-                    names.push(stem.to_string_lossy().to_string());
-                }
-            }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        names.sort();
+        return names;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Some(stem) = path
+            .extension()
+            .filter(|ext| *ext == "yab")
+            .and_then(|_| path.file_stem())
+        {
+            names.push(stem.to_string_lossy().to_string());
         }
     }
     names.sort();
@@ -200,6 +220,13 @@ impl eframe::App for SettingsApp {
                     self.engine_toggle_keys_ui(ui);
                 });
 
+            // ── IME 制御キー ──
+            egui::CollapsingHeader::new("IME 制御キー")
+                .default_open(false)
+                .show(ui, |ui| {
+                    self.ime_control_keys_ui(ui);
+                });
+
             // ── IME 同期設定 ──
             egui::CollapsingHeader::new("IME 同期設定")
                 .default_open(false)
@@ -243,6 +270,9 @@ impl eframe::App for SettingsApp {
                     // エンジン切替キーを config に反映
                     self.config.general.engine_on_keys = self.engine_on_keys.clone();
                     self.config.general.engine_off_keys = self.engine_off_keys.clone();
+                    // IME 制御キーを config に反映
+                    self.config.general.ime_on_keys = self.ime_control_on_keys.clone();
+                    self.config.general.ime_off_keys = self.ime_control_off_keys.clone();
                     // IME 同期キーを config に反映
                     self.config.ime_sync.toggle_keys = self.ime_toggle_keys.clone();
                     self.config.ime_sync.on_keys = self.ime_on_keys.clone();
@@ -420,6 +450,66 @@ impl SettingsApp {
         });
     }
 
+    fn ime_control_keys_ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("ImmSetOpenStatus API で IME の ON/OFF を制御するキーコンボを設定します。");
+        ui.label("例: Ctrl+VK_CONVERT, Ctrl+VK_NONCONVERT");
+        ui.add_space(4.0);
+
+        // IME ON keys
+        ui.label("IME ON キー:");
+        let mut remove_on_idx = None;
+        for (i, key) in self.ime_control_on_keys.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {key}"));
+                if ui.small_button("削除").clicked() {
+                    remove_on_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_on_idx {
+            self.ime_control_on_keys.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  追加:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_ime_control_on_key).desired_width(200.0),
+            );
+            if ui.button("+").clicked() && !self.new_ime_control_on_key.is_empty() {
+                self.ime_control_on_keys
+                    .push(self.new_ime_control_on_key.clone());
+                self.new_ime_control_on_key.clear();
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // IME OFF keys
+        ui.label("IME OFF キー:");
+        let mut remove_off_idx = None;
+        for (i, key) in self.ime_control_off_keys.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!("  {key}"));
+                if ui.small_button("削除").clicked() {
+                    remove_off_idx = Some(i);
+                }
+            });
+        }
+        if let Some(idx) = remove_off_idx {
+            self.ime_control_off_keys.remove(idx);
+        }
+        ui.horizontal(|ui| {
+            ui.label("  追加:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_ime_control_off_key).desired_width(200.0),
+            );
+            if ui.button("+").clicked() && !self.new_ime_control_off_key.is_empty() {
+                self.ime_control_off_keys
+                    .push(self.new_ime_control_off_key.clone());
+                self.new_ime_control_off_key.clear();
+            }
+        });
+    }
+
     fn ime_sync_keys_ui(&mut self, ui: &mut egui::Ui) {
         ui.label("IME の状態を追跡するキーを設定します。");
         ui.label("例: VK_KANJI, VK_IME_ON, VK_IME_OFF");
@@ -591,8 +681,9 @@ impl SettingsApp {
             awase::config::vk_name_to_code(&self.config.general.right_thumb_key).unwrap_or(0x1C),
         );
 
-        self.preview_tracker =
-            Some(awase::engine::input_tracker::InputTracker::new(left_vk, right_vk));
+        self.preview_tracker = Some(awase::engine::input_tracker::InputTracker::new(
+            left_vk, right_vk,
+        ));
         self.preview_engine = Some(awase::engine::Engine::new(
             layout,
             left_vk,
@@ -643,8 +734,6 @@ impl SettingsApp {
 
     #[allow(clippy::too_many_lines)]
     fn handle_preview_key(&mut self, key: egui::Key) {
-
-
         let (Some(ref mut engine), Some(ref mut tracker)) =
             (&mut self.preview_engine, &mut self.preview_tracker)
         else {
@@ -708,7 +797,7 @@ impl SettingsApp {
             match action {
                 awase::types::KeyAction::Romaji(s) => self.preview_output.push_str(s),
                 awase::types::KeyAction::Char(ch) => self.preview_output.push(*ch),
-                awase::types::KeyAction::Key(0x08) => {
+                awase::types::KeyAction::Key(awase::types::VkCode(0x08)) => {
                     // Backspace
                     self.preview_output.pop();
                 }

@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::types::VkCode;
+
 /// ローマ字出力の送信方式
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -92,6 +94,13 @@ pub struct GeneralConfig {
     #[serde(default = "default_engine_off_keys")]
     pub engine_off_keys: Vec<String>,
 
+    /// IME ON keys — ImmSetOpenStatus(true) を呼び出すキーコンボ
+    #[serde(default = "default_ime_control_on_keys")]
+    pub ime_on_keys: Vec<String>,
+
+    /// IME OFF keys — ImmSetOpenStatus(false) を呼び出すキーコンボ
+    #[serde(default = "default_ime_control_off_keys")]
+    pub ime_off_keys: Vec<String>,
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -142,6 +151,14 @@ fn default_engine_on_keys() -> Vec<String> {
 
 fn default_engine_off_keys() -> Vec<String> {
     vec!["Ctrl+Shift+VK_NONCONVERT".to_string()]
+}
+
+fn default_ime_control_on_keys() -> Vec<String> {
+    vec!["Ctrl+VK_CONVERT".to_string()]
+}
+
+fn default_ime_control_off_keys() -> Vec<String> {
+    vec!["Ctrl+VK_NONCONVERT".to_string()]
 }
 
 /// IME 同期設定（シャドウ IME 状態追跡用キー定義）
@@ -314,110 +331,110 @@ impl AppConfig {
     }
 }
 
-/// 仮想キーコード名（"VK_A" 等）を実際の u16 値に変換する
+/// 仮想キーコード名（"VK_A" 等）を実際の VkCode 値に変換する
 #[must_use]
-pub fn vk_name_to_code(name: &str) -> Option<u16> {
+pub fn vk_name_to_code(name: &str) -> Option<VkCode> {
     match name {
         // アルファベットキー
-        "VK_A" => Some(0x41),
-        "VK_B" => Some(0x42),
-        "VK_C" => Some(0x43),
-        "VK_D" => Some(0x44),
-        "VK_E" => Some(0x45),
-        "VK_F" => Some(0x46),
-        "VK_G" => Some(0x47),
-        "VK_H" => Some(0x48),
-        "VK_I" => Some(0x49),
-        "VK_J" => Some(0x4A),
-        "VK_K" => Some(0x4B),
-        "VK_L" => Some(0x4C),
-        "VK_M" => Some(0x4D),
-        "VK_N" => Some(0x4E),
-        "VK_O" => Some(0x4F),
-        "VK_P" => Some(0x50),
-        "VK_Q" => Some(0x51),
-        "VK_R" => Some(0x52),
-        "VK_S" => Some(0x53),
-        "VK_T" => Some(0x54),
-        "VK_U" => Some(0x55),
-        "VK_V" => Some(0x56),
-        "VK_W" => Some(0x57),
-        "VK_X" => Some(0x58),
-        "VK_Y" => Some(0x59),
-        "VK_Z" => Some(0x5A),
+        "VK_A" => Some(VkCode(0x41)),
+        "VK_B" => Some(VkCode(0x42)),
+        "VK_C" => Some(VkCode(0x43)),
+        "VK_D" => Some(VkCode(0x44)),
+        "VK_E" => Some(VkCode(0x45)),
+        "VK_F" => Some(VkCode(0x46)),
+        "VK_G" => Some(VkCode(0x47)),
+        "VK_H" => Some(VkCode(0x48)),
+        "VK_I" => Some(VkCode(0x49)),
+        "VK_J" => Some(VkCode(0x4A)),
+        "VK_K" => Some(VkCode(0x4B)),
+        "VK_L" => Some(VkCode(0x4C)),
+        "VK_M" => Some(VkCode(0x4D)),
+        "VK_N" => Some(VkCode(0x4E)),
+        "VK_O" => Some(VkCode(0x4F)),
+        "VK_P" => Some(VkCode(0x50)),
+        "VK_Q" => Some(VkCode(0x51)),
+        "VK_R" => Some(VkCode(0x52)),
+        "VK_S" => Some(VkCode(0x53)),
+        "VK_T" => Some(VkCode(0x54)),
+        "VK_U" => Some(VkCode(0x55)),
+        "VK_V" => Some(VkCode(0x56)),
+        "VK_W" => Some(VkCode(0x57)),
+        "VK_X" => Some(VkCode(0x58)),
+        "VK_Y" => Some(VkCode(0x59)),
+        "VK_Z" => Some(VkCode(0x5A)),
 
         // 数字キー
-        "VK_0" => Some(0x30),
-        "VK_1" => Some(0x31),
-        "VK_2" => Some(0x32),
-        "VK_3" => Some(0x33),
-        "VK_4" => Some(0x34),
-        "VK_5" => Some(0x35),
-        "VK_6" => Some(0x36),
-        "VK_7" => Some(0x37),
-        "VK_8" => Some(0x38),
-        "VK_9" => Some(0x39),
+        "VK_0" => Some(VkCode(0x30)),
+        "VK_1" => Some(VkCode(0x31)),
+        "VK_2" => Some(VkCode(0x32)),
+        "VK_3" => Some(VkCode(0x33)),
+        "VK_4" => Some(VkCode(0x34)),
+        "VK_5" => Some(VkCode(0x35)),
+        "VK_6" => Some(VkCode(0x36)),
+        "VK_7" => Some(VkCode(0x37)),
+        "VK_8" => Some(VkCode(0x38)),
+        "VK_9" => Some(VkCode(0x39)),
 
         // OEM キー
-        "VK_OEM_PLUS" => Some(0xBB),
-        "VK_OEM_COMMA" => Some(0xBC),
-        "VK_OEM_MINUS" => Some(0xBD),
-        "VK_OEM_PERIOD" => Some(0xBE),
-        "VK_OEM_2" => Some(0xBF),   // /
-        "VK_OEM_1" => Some(0xBA),   // ;
-        "VK_OEM_3" => Some(0xC0),   // `
-        "VK_OEM_4" => Some(0xDB),   // [
-        "VK_OEM_5" => Some(0xDC),   // \
-        "VK_OEM_6" => Some(0xDD),   // ]
-        "VK_OEM_7" => Some(0xDE),   // '
-        "VK_OEM_102" => Some(0xE2), // <> (日本語キーボードの＼)
+        "VK_OEM_PLUS" => Some(VkCode(0xBB)),
+        "VK_OEM_COMMA" => Some(VkCode(0xBC)),
+        "VK_OEM_MINUS" => Some(VkCode(0xBD)),
+        "VK_OEM_PERIOD" => Some(VkCode(0xBE)),
+        "VK_OEM_2" => Some(VkCode(0xBF)),   // /
+        "VK_OEM_1" => Some(VkCode(0xBA)),   // ;
+        "VK_OEM_3" => Some(VkCode(0xC0)),   // `
+        "VK_OEM_4" => Some(VkCode(0xDB)),   // [
+        "VK_OEM_5" => Some(VkCode(0xDC)),   // \
+        "VK_OEM_6" => Some(VkCode(0xDD)),   // ]
+        "VK_OEM_7" => Some(VkCode(0xDE)),   // '
+        "VK_OEM_102" => Some(VkCode(0xE2)), // <> (日本語キーボードの＼)
 
         // 特殊キー
-        "VK_SPACE" => Some(0x20),
-        "VK_RETURN" => Some(0x0D),
-        "VK_TAB" => Some(0x09),
-        "VK_BACK" => Some(0x08),
-        "VK_ESCAPE" => Some(0x1B),
-        "VK_DELETE" => Some(0x2E),
+        "VK_SPACE" => Some(VkCode(0x20)),
+        "VK_RETURN" => Some(VkCode(0x0D)),
+        "VK_TAB" => Some(VkCode(0x09)),
+        "VK_BACK" => Some(VkCode(0x08)),
+        "VK_ESCAPE" => Some(VkCode(0x1B)),
+        "VK_DELETE" => Some(VkCode(0x2E)),
 
         // 日本語入力関連
-        "VK_CONVERT" => Some(0x1C), // 変換
+        "VK_CONVERT" => Some(VkCode(0x1C)), // 変換
         #[allow(clippy::match_same_arms)] // 意図的なエイリアス
-        "VK_NONCONVERT" | "VK_MUHENKAN" => Some(0x1D), // 無変換
-        "VK_KANA" => Some(0x15),    // かな
-        "VK_KANJI" => Some(0x19),   // 半角/全角
-        "VK_IME_ON" => Some(0x16),
-        "VK_IME_OFF" => Some(0x1A),
-        "VK_DBE_ALPHANUMERIC" => Some(0xF0),
-        "VK_DBE_KATAKANA" => Some(0xF1),
-        "VK_DBE_HIRAGANA" => Some(0xF2),
-        "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(0xF3), // 半角モード
-        "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(0xF4), // 全角モード
+        "VK_NONCONVERT" | "VK_MUHENKAN" => Some(VkCode(0x1D)), // 無変換
+        "VK_KANA" => Some(VkCode(0x15)),    // かな
+        "VK_KANJI" => Some(VkCode(0x19)),   // 半角/全角
+        "VK_IME_ON" => Some(VkCode(0x16)),
+        "VK_IME_OFF" => Some(VkCode(0x1A)),
+        "VK_DBE_ALPHANUMERIC" => Some(VkCode(0xF0)),
+        "VK_DBE_KATAKANA" => Some(VkCode(0xF1)),
+        "VK_DBE_HIRAGANA" => Some(VkCode(0xF2)),
+        "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(VkCode(0xF3)), // 半角モード
+        "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(VkCode(0xF4)), // 全角モード
 
         // 修飾キー
-        "VK_SHIFT" => Some(0x10),
-        "VK_CONTROL" => Some(0x11),
-        "VK_MENU" => Some(0x12), // Alt
-        "VK_LSHIFT" => Some(0xA0),
-        "VK_RSHIFT" => Some(0xA1),
-        "VK_LCONTROL" => Some(0xA2),
-        "VK_RCONTROL" => Some(0xA3),
-        "VK_LMENU" => Some(0xA4),
-        "VK_RMENU" => Some(0xA5),
+        "VK_SHIFT" => Some(VkCode(0x10)),
+        "VK_CONTROL" => Some(VkCode(0x11)),
+        "VK_MENU" => Some(VkCode(0x12)), // Alt
+        "VK_LSHIFT" => Some(VkCode(0xA0)),
+        "VK_RSHIFT" => Some(VkCode(0xA1)),
+        "VK_LCONTROL" => Some(VkCode(0xA2)),
+        "VK_RCONTROL" => Some(VkCode(0xA3)),
+        "VK_LMENU" => Some(VkCode(0xA4)),
+        "VK_RMENU" => Some(VkCode(0xA5)),
 
         // ファンクションキー
-        "VK_F1" => Some(0x70),
-        "VK_F2" => Some(0x71),
-        "VK_F3" => Some(0x72),
-        "VK_F4" => Some(0x73),
-        "VK_F5" => Some(0x74),
-        "VK_F6" => Some(0x75),
-        "VK_F7" => Some(0x76),
-        "VK_F8" => Some(0x77),
-        "VK_F9" => Some(0x78),
-        "VK_F10" => Some(0x79),
-        "VK_F11" => Some(0x7A),
-        "VK_F12" => Some(0x7B),
+        "VK_F1" => Some(VkCode(0x70)),
+        "VK_F2" => Some(VkCode(0x71)),
+        "VK_F3" => Some(VkCode(0x72)),
+        "VK_F4" => Some(VkCode(0x73)),
+        "VK_F5" => Some(VkCode(0x74)),
+        "VK_F6" => Some(VkCode(0x75)),
+        "VK_F7" => Some(VkCode(0x76)),
+        "VK_F8" => Some(VkCode(0x77)),
+        "VK_F9" => Some(VkCode(0x78)),
+        "VK_F10" => Some(VkCode(0x79)),
+        "VK_F11" => Some(VkCode(0x7A)),
+        "VK_F12" => Some(VkCode(0x7B)),
 
         _ => None,
     }
@@ -431,7 +448,7 @@ pub fn vk_name_to_code(name: &str) -> Option<u16> {
 ///
 /// 最後のトークンがメインキーとして `vk_name_to_code` で解決される。
 #[must_use]
-pub fn parse_hotkey(s: &str) -> Option<(u32, u16)> {
+pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
     const MOD_ALT: u32 = 0x0001;
     const MOD_CONTROL: u32 = 0x0002;
     const MOD_SHIFT: u32 = 0x0004;
@@ -467,7 +484,7 @@ pub struct ParsedKeyCombo {
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
-    pub vk: u16,
+    pub vk: VkCode,
 }
 
 #[must_use]
@@ -508,30 +525,30 @@ mod tests {
 
     #[test]
     fn test_alphabet_keys() {
-        assert_eq!(vk_name_to_code("VK_A"), Some(0x41));
-        assert_eq!(vk_name_to_code("VK_Z"), Some(0x5A));
+        assert_eq!(vk_name_to_code("VK_A"), Some(VkCode(0x41)));
+        assert_eq!(vk_name_to_code("VK_Z"), Some(VkCode(0x5A)));
     }
 
     #[test]
     fn test_number_keys() {
-        assert_eq!(vk_name_to_code("VK_0"), Some(0x30));
-        assert_eq!(vk_name_to_code("VK_9"), Some(0x39));
+        assert_eq!(vk_name_to_code("VK_0"), Some(VkCode(0x30)));
+        assert_eq!(vk_name_to_code("VK_9"), Some(VkCode(0x39)));
     }
 
     #[test]
     fn test_oem_keys() {
-        assert_eq!(vk_name_to_code("VK_OEM_PLUS"), Some(0xBB));
-        assert_eq!(vk_name_to_code("VK_OEM_COMMA"), Some(0xBC));
-        assert_eq!(vk_name_to_code("VK_OEM_MINUS"), Some(0xBD));
-        assert_eq!(vk_name_to_code("VK_OEM_PERIOD"), Some(0xBE));
+        assert_eq!(vk_name_to_code("VK_OEM_PLUS"), Some(VkCode(0xBB)));
+        assert_eq!(vk_name_to_code("VK_OEM_COMMA"), Some(VkCode(0xBC)));
+        assert_eq!(vk_name_to_code("VK_OEM_MINUS"), Some(VkCode(0xBD)));
+        assert_eq!(vk_name_to_code("VK_OEM_PERIOD"), Some(VkCode(0xBE)));
     }
 
     #[test]
     fn test_japanese_input_keys() {
-        assert_eq!(vk_name_to_code("VK_CONVERT"), Some(0x1C));
-        assert_eq!(vk_name_to_code("VK_NONCONVERT"), Some(0x1D));
+        assert_eq!(vk_name_to_code("VK_CONVERT"), Some(VkCode(0x1C)));
+        assert_eq!(vk_name_to_code("VK_NONCONVERT"), Some(VkCode(0x1D)));
         // エイリアス
-        assert_eq!(vk_name_to_code("VK_MUHENKAN"), Some(0x1D));
+        assert_eq!(vk_name_to_code("VK_MUHENKAN"), Some(VkCode(0x1D)));
         // NONCONVERT と MUHENKAN は同じ値
         assert_eq!(
             vk_name_to_code("VK_NONCONVERT"),
@@ -551,25 +568,25 @@ mod tests {
     #[test]
     fn test_parse_hotkey_ctrl_shift_f12() {
         let result = parse_hotkey("Ctrl+Shift+F12");
-        assert_eq!(result, Some((0x0002 | 0x0004, 0x7B)));
+        assert_eq!(result, Some((0x0002 | 0x0004, VkCode(0x7B))));
     }
 
     #[test]
     fn test_parse_hotkey_ctrl_f1() {
         let result = parse_hotkey("Ctrl+F1");
-        assert_eq!(result, Some((0x0002, 0x70)));
+        assert_eq!(result, Some((0x0002, VkCode(0x70))));
     }
 
     #[test]
     fn test_parse_hotkey_alt_shift_a() {
         let result = parse_hotkey("Alt+Shift+A");
-        assert_eq!(result, Some((0x0001 | 0x0004, 0x41)));
+        assert_eq!(result, Some((0x0001 | 0x0004, VkCode(0x41))));
     }
 
     #[test]
     fn test_parse_hotkey_single_key() {
         let result = parse_hotkey("F12");
-        assert_eq!(result, Some((0, 0x7B)));
+        assert_eq!(result, Some((0, VkCode(0x7B))));
     }
 
     #[test]
@@ -893,7 +910,7 @@ default_layout = "nicola.yab"
                 ctrl: true,
                 shift: false,
                 alt: false,
-                vk: 0x1D,
+                vk: VkCode(0x1D),
             })
         );
     }
@@ -907,7 +924,7 @@ default_layout = "nicola.yab"
                 ctrl: false,
                 shift: false,
                 alt: false,
-                vk: 0x1C,
+                vk: VkCode(0x1C),
             })
         );
     }
@@ -921,7 +938,7 @@ default_layout = "nicola.yab"
                 ctrl: true,
                 shift: true,
                 alt: false,
-                vk: 0x7B,
+                vk: VkCode(0x7B),
             })
         );
     }
@@ -941,8 +958,11 @@ default_layout = "nicola.yab"
 [general]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.engine_off_keys, vec!["Ctrl+VK_NONCONVERT"]);
-        assert_eq!(config.general.engine_on_keys, vec!["VK_CONVERT"]);
+        assert_eq!(
+            config.general.engine_off_keys,
+            vec!["Ctrl+Shift+VK_NONCONVERT"]
+        );
+        assert_eq!(config.general.engine_on_keys, vec!["Ctrl+Shift+VK_CONVERT"]);
     }
 
     #[test]
