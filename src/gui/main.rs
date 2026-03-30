@@ -25,6 +25,7 @@ struct SettingsApp {
     status_message: String,
     available_layouts: Vec<String>,
     preview_engine: Option<awase::engine::Engine>,
+    preview_tracker: Option<awase::engine::input_tracker::InputTracker>,
     preview_output: String,
     preview_state: String,
     /// エンジン ON キー一覧（GUI 編集用コピー）
@@ -573,10 +574,12 @@ impl SettingsApp {
 
         let Ok(content) = std::fs::read_to_string(&layout_file) else {
             self.preview_engine = None;
+            self.preview_tracker = None;
             return;
         };
         let Ok(layout) = awase::yab::YabLayout::parse(&content) else {
             self.preview_engine = None;
+            self.preview_tracker = None;
             return;
         };
         let layout = layout.resolve_kana();
@@ -588,6 +591,8 @@ impl SettingsApp {
             awase::config::vk_name_to_code(&self.config.general.right_thumb_key).unwrap_or(0x1C),
         );
 
+        self.preview_tracker =
+            Some(awase::engine::input_tracker::InputTracker::new(left_vk, right_vk));
         self.preview_engine = Some(awase::engine::Engine::new(
             layout,
             left_vk,
@@ -640,7 +645,9 @@ impl SettingsApp {
     fn handle_preview_key(&mut self, key: egui::Key) {
 
 
-        let Some(ref mut engine) = self.preview_engine else {
+        let (Some(ref mut engine), Some(ref mut tracker)) =
+            (&mut self.preview_engine, &mut self.preview_tracker)
+        else {
             return;
         };
 
@@ -693,7 +700,7 @@ impl SettingsApp {
             .unwrap_or(u64::MAX),
         };
 
-        let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
+        let phys = tracker.process(&event);
         let response = engine.on_event(event, &phys);
 
         // Collect output from actions

@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 
+use awase::engine::input_tracker::PhysicalKeyState;
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent};
 use timed_fsm::dispatch;
 use windows::Win32::Foundation::HWND;
@@ -19,8 +20,8 @@ use crate::ime::ImeProvider;
 pub struct KeyBuffer {
     /// IME 制御キー直後のガードフラグ（true: 後続キーを遅延処理する）
     pub ime_transition_guard: bool,
-    /// ガード中に遅延されたキーイベントのバッファ
-    pub deferred_keys: Vec<RawKeyEvent>,
+    /// ガード中に遅延されたキーイベント + 物理キー状態のバッファ
+    pub deferred_keys: Vec<(RawKeyEvent, PhysicalKeyState)>,
     /// IME OFF 時の記憶バッファ（PassThrough 済みキー）
     pub passthrough_memory: VecDeque<RawKeyEvent>,
     /// Undetermined + IME ON 時のバッファリング中フラグ
@@ -47,9 +48,9 @@ impl KeyBuffer {
         self.ime_transition_guard = on;
     }
 
-    /// 遅延キーを追加する
-    pub fn push_deferred(&mut self, event: RawKeyEvent) {
-        self.deferred_keys.push(event);
+    /// 遅延キーを追加する（物理キー状態のスナップショットも一緒に保存）
+    pub fn push_deferred(&mut self, event: RawKeyEvent, phys: PhysicalKeyState) {
+        self.deferred_keys.push((event, phys));
     }
 
     /// PassThrough 記憶にキーを追加する（上限 20）
@@ -62,7 +63,7 @@ impl KeyBuffer {
     }
 
     /// 遅延キーを全て取り出す
-    pub fn drain_deferred(&mut self) -> Vec<RawKeyEvent> {
+    pub fn drain_deferred(&mut self) -> Vec<(RawKeyEvent, PhysicalKeyState)> {
         std::mem::take(&mut self.deferred_keys)
     }
 
@@ -184,11 +185,8 @@ pub unsafe fn handle_buffer_timeout() {
         "buffer timeout (IME ON + Undetermined)",
     );
 
-    for event in keys {
-        if let (Some(engine), Some(tracker)) =
-            (crate::ENGINE.get_mut(), crate::INPUT_TRACKER.get_mut())
-        {
-            let phys = tracker.process(&event);
+    for (event, phys) in keys {
+        if let Some(engine) = crate::ENGINE.get_mut() {
             let response = engine.on_event(event, &phys);
             let mut timer_runtime = crate::Win32TimerRuntime;
             let mut action_executor = crate::SendInputExecutor;
@@ -227,13 +225,10 @@ pub unsafe fn process_deferred_keys() {
         *shadow = ime_on;
     }
 
-    for event in keys {
+    for (event, phys) in keys {
         if ime_on {
-            // IME ON → エンジンで処理
-            if let (Some(engine), Some(tracker)) =
-                (crate::ENGINE.get_mut(), crate::INPUT_TRACKER.get_mut())
-            {
-                let phys = tracker.process(&event);
+            // IME ON → エンジンで処理（push_deferred 時に保存した phys を使用）
+            if let Some(engine) = crate::ENGINE.get_mut() {
                 let response = engine.on_event(event, &phys);
                 let mut timer_runtime = crate::Win32TimerRuntime;
                 let mut action_executor = crate::SendInputExecutor;

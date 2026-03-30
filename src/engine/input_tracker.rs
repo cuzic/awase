@@ -71,6 +71,26 @@ impl InputTracker {
         }
     }
 
+    /// 現在の物理キー状態スナップショットを返す（イベントなし）。
+    ///
+    /// タイマー発火時など、キーイベントを伴わない場面で最新の物理状態を取得する。
+    /// `classified` は直前の `process()` で設定された値がそのまま残る。
+    #[must_use]
+    pub fn snapshot(&self) -> PhysicalKeyState {
+        PhysicalKeyState {
+            classified: ClassifiedEvent {
+                key_class: KeyClass::Passthrough,
+                pos: None,
+                scan_code: ScanCode(0),
+                vk_code: VkCode(0),
+                timestamp: 0,
+            },
+            modifiers: self.modifiers,
+            left_thumb_down: self.left_thumb_down,
+            right_thumb_down: self.right_thumb_down,
+        }
+    }
+
     /// キーイベントを処理し、更新後の物理キー状態スナップショットを返す。
     ///
     /// **全イベントで無条件に呼ぶこと。** IME チェック前、エンジン処理前の

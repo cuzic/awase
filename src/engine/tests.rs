@@ -88,7 +88,8 @@ impl TestHarness {
     }
 
     fn on_timeout(&mut self, timer_id: usize) -> Resp {
-        self.engine.on_timeout(timer_id)
+        let phys = self.tracker.snapshot();
+        self.engine.on_timeout(timer_id, &phys)
     }
 }
 

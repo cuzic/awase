@@ -211,7 +211,6 @@ impl Engine {
                     pending.scan_code,
                     pending.vk_code,
                     thumb.is_left,
-                    thumb.timestamp,
                 );
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions)
@@ -350,7 +349,6 @@ impl Engine {
         char_scan: ScanCode,
         char_vk: VkCode,
         thumb_is_left: bool,
-        _thumb_timestamp: Timestamp,
     ) -> ResolvedAction {
         let thumb_face = Face::from_thumb_bool(thumb_is_left);
         if let Some((action, kana)) =
@@ -446,9 +444,7 @@ impl Engine {
 
     fn on_key_down(&mut self, event: &RawKeyEvent) -> Resp {
         self.update_timing(event);
-        let ev = self.classify(event);
-
-        // 親指キー・修飾キーの物理状態は track_physical_keys() で追跡済み。
+        let ev = self.phys.classified;
 
         if let Some(reason) = self.bypass_reason(&ev) {
             return self.handle_bypass(reason);
@@ -954,7 +950,6 @@ impl Engine {
                     pending.scan_code,
                     pending.vk_code,
                     thumb.is_left,
-                    thumb.timestamp,
                 );
                 self.update_history(prev.output);
                 let new_result = self.handle_idle(ev);
@@ -986,7 +981,6 @@ impl Engine {
             pending.scan_code,
             pending.vk_code,
             thumb.is_left,
-            thumb.timestamp,
         );
         self.update_history(prev.output);
         let new_result = self.handle_idle(ev);
@@ -997,8 +991,7 @@ impl Engine {
 // ── KeyUp 処理 ──
 impl Engine {
     fn on_key_up(&mut self, event: &RawKeyEvent) -> Resp {
-        // 親指キー・修飾キーの物理状態は track_physical_keys() で追跡済み。
-        let ev = self.classify(event);
+        let _ev = self.phys.classified;
 
         // PendingCharThumb 状態での KeyUp 処理
         if self.phase == EnginePhase::PendingCharThumb {
@@ -1061,7 +1054,6 @@ impl Engine {
             pending.scan_code,
             pending.vk_code,
             thumb.is_left,
-            thumb.timestamp,
         );
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
@@ -1185,13 +1177,11 @@ impl Engine {
         char_scan: ScanCode,
         char_vk: VkCode,
         thumb_is_left: bool,
-        thumb_timestamp: Timestamp,
     ) -> Resp {
         let resolved = self.resolve_char_thumb_as_simultaneous(
             char_scan,
             char_vk,
             thumb_is_left,
-            thumb_timestamp,
         );
         self.finalize_plan(FinalizePlan {
             actions: resolved.actions,
@@ -1238,34 +1228,8 @@ impl Engine {
     }
 }
 
-// ── 分類・バイパス ──
+// ── バイパス ──
 impl Engine {
-    /// キーイベントを分類する
-    fn classify(&self, event: &RawKeyEvent) -> ClassifiedEvent {
-        let key_class = if event.vk_code == self.left_thumb_vk {
-            KeyClass::LeftThumb
-        } else if event.vk_code == self.right_thumb_vk {
-            KeyClass::RightThumb
-        } else if crate::vk::is_passthrough(event.vk_code) {
-            KeyClass::Passthrough
-        } else {
-            KeyClass::Char
-        };
-
-        let pos = if key_class == KeyClass::Char {
-            scan_to_pos(event.scan_code.0)
-        } else {
-            None
-        };
-
-        ClassifiedEvent {
-            key_class,
-            pos,
-            scan_code: event.scan_code,
-            vk_code: event.vk_code,
-            timestamp: event.timestamp,
-        }
-    }
 
     /// 現在押下中の親指キーに対応するシフト面を返す
     const fn active_thumb_face(&self) -> Option<Face> {
@@ -1339,7 +1303,11 @@ impl Engine {
     }
 
     /// タイマー満了時の処理。
-    pub fn on_timeout(&mut self, timer_id: usize) -> Resp {
+    ///
+    /// `phys` は `InputTracker` の最新スナップショット。
+    /// タイマー発火時点の正確な物理キー状態を反映する。
+    pub fn on_timeout(&mut self, timer_id: usize, phys: &PhysicalKeyState) -> Resp {
+        self.phys = *phys;
         match timer_id {
             TIMER_SPECULATIVE => return self.on_timeout_speculative(),
             TIMER_PENDING => {}
@@ -1372,7 +1340,6 @@ impl Engine {
                     pending.scan_code,
                     pending.vk_code,
                     thumb.is_left,
-                    thumb.timestamp,
                 )
             }
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ

@@ -712,7 +712,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             // While guard active, buffer character keys
             if let Some(kb) = KEY_BUFFER.get_mut() {
                 if kb.is_guarded() {
-                    kb.push_deferred(event);
+                    kb.push_deferred(event, phys);
                     let _ =
                         PostMessageW(HWND::default(), WM_PROCESS_DEFERRED, WPARAM(0), LPARAM(0));
                     return CallbackResult::Consumed;
@@ -929,8 +929,11 @@ fn run_message_loop() {
                         .is_none_or(|ime| ime.is_active() && ime.get_mode().is_kana_input());
                     if !ime_active {
                         invalidate_engine_context(ContextChange::ImeOff);
-                    } else if let Some(engine) = ENGINE.get_mut() {
-                        let response = engine.on_timeout(timer_id);
+                    } else if let (Some(engine), Some(tracker)) =
+                        (ENGINE.get_mut(), INPUT_TRACKER.get_mut())
+                    {
+                        let phys = tracker.snapshot();
+                        let response = engine.on_timeout(timer_id, &phys);
                         let mut timer_runtime = Win32TimerRuntime;
                         let mut action_executor = SendInputExecutor;
                         dispatch(&response, &mut timer_runtime, &mut action_executor);
