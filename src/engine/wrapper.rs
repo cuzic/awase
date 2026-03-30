@@ -80,12 +80,12 @@ impl KeyBuffer {
 /// Win32 API を一切呼ばず、副作用は `Decision` として返す。
 #[allow(missing_debug_implementations)]
 pub struct Engine {
-    pub fsm: NicolaFsm,
-    pub tracker: InputTracker,
+    fsm: NicolaFsm,
+    tracker: InputTracker,
     shadow_ime_on: bool,
-    pub ime_sync_keys: ImeSyncKeys,
-    pub special_keys: SpecialKeyCombos,
-    pub key_buffer: KeyBuffer,
+    ime_sync_keys: ImeSyncKeys,
+    special_keys: SpecialKeyCombos,
+    key_buffer: KeyBuffer,
 }
 
 impl Engine {
@@ -250,6 +250,12 @@ impl Engine {
 
     pub const fn set_shadow_ime_on(&mut self, on: bool) {
         self.shadow_ime_on = on;
+    }
+
+    /// 特殊キーコンボと IME 同期キーを一括再読み込みする
+    pub fn reload_keys(&mut self, special: SpecialKeyCombos, sync: ImeSyncKeys) {
+        self.special_keys = special;
+        self.ime_sync_keys = sync;
     }
 
     /// ガード ON: 後続キーをバッファリングする

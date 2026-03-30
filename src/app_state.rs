@@ -224,18 +224,10 @@ impl AppState {
         log::info!("Switched layout to: {name}");
     }
 
-    /// フォーカス変更時の状態遷移を行い、必要な副作用を返す。
+    /// フォーカス変更時の状態遷移を行い、副作用を内部で実行する。
     ///
-    /// `InvalidateEngineContext` は内部で実行し、IME キャッシュ更新が必要な場合は
-    /// `Effect::SetTimer` を返す（呼び出し側でデバウンスタイマーとして実行）。
-    pub(crate) fn on_focus_changed(
-        &mut self,
-        hwnd: HWND,
-        process_id: u32,
-        class_name: &str,
-    ) -> Vec<Effect> {
-        let mut effects = Vec::new();
-
+    /// `InvalidateEngineContext` とデバウンスタイマー設定を全て内部で完結させる。
+    pub(crate) fn on_focus_changed(&mut self, hwnd: HWND, process_id: u32, class_name: &str) {
         // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止。
         {
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
@@ -248,7 +240,7 @@ impl AppState {
                         log::trace!(
                             "Keeping TextInput (same process {fg_pid}): class={class_name}"
                         );
-                        return effects;
+                        return;
                     }
                 }
             }
@@ -273,7 +265,7 @@ impl AppState {
                         "classify_focus: config override force_text ({process_name}, {class_name})",
                     );
                     FocusKind::TextInput.store(&FOCUS_KIND);
-                    return effects;
+                    return;
                 }
             }
             for entry in &self.focus.overrides.force_bypass {
@@ -285,7 +277,7 @@ impl AppState {
                     );
                     FocusKind::NonText.store(&FOCUS_KIND);
                     self.invalidate_engine_context(ContextChange::FocusChanged);
-                    return effects;
+                    return;
                 }
             }
         }
@@ -297,7 +289,7 @@ impl AppState {
             if cached == FocusKind::NonText {
                 self.invalidate_engine_context(ContextChange::FocusChanged);
             }
-            return effects;
+            return;
         }
 
         // Step 1: 評価中は安全側（Undetermined）に設定
@@ -335,13 +327,16 @@ impl AppState {
         );
 
         // フォーカス変更に伴い IME 状態キャッシュを更新（デバウンスタイマー経由）
-        effects.push(Effect::SetTimer {
-            id: crate::TIMER_FOCUS_DEBOUNCE,
-            duration: std::time::Duration::from_millis(u64::from(
-                crate::FOCUS_DEBOUNCE_MS.load(std::sync::atomic::Ordering::Relaxed),
-            )),
-        });
-        effects
+        let debounce = Decision::with_effects(
+            false,
+            vec![Effect::SetTimer {
+                id: crate::TIMER_FOCUS_DEBOUNCE,
+                duration: std::time::Duration::from_millis(u64::from(
+                    crate::FOCUS_DEBOUNCE_MS.load(std::sync::atomic::Ordering::Relaxed),
+                )),
+            }],
+        );
+        self.execute_decision(&debounce);
     }
 
     /// 手動フォーカスオーバーライドのトグル処理

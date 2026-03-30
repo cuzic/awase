@@ -40,7 +40,7 @@ use awase::config::{
     parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig,
 };
 use awase::engine::wrapper::{ImeSyncKeys, SpecialKeyCombos};
-use awase::engine::{Decision, Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, ImeCacheState};
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
@@ -121,19 +121,29 @@ pub(crate) static APP: SingleThreadCell<AppState> = SingleThreadCell::new();
 
 use crate::focus::cache::DetectionSource;
 
-/// Ctrl+C 受信フラグ
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+// ── クロススレッド共有グローバル状態 ──
+//
+// フック（メインスレッド）とメッセージループ間、または Ctrl+C ハンドラ（別スレッド）
+// からアクセスされるため、Atomic 型でなければならない。
+//
+// FOCUS_KIND / IME_STATE_CACHE / IME_RELIABILITY: フックで読み取り、メッセージループで更新
+// FOCUS_DEBOUNCE_MS / IME_POLL_INTERVAL_MS: config から初期化、タイマー設定で参照
+// MAIN_THREAD_ID / QUIT_REQUESTED: Ctrl+C ハンドラ ↔ メインスレッド間の通信
+
+/// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
+pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
+
+/// キャッシュされた IME ON/OFF 状態。0=OFF, 1=ON, 2=Unknown（初期状態）
+pub(crate) static IME_STATE_CACHE: AtomicU8 = AtomicU8::new(2);
+
+/// IME 検出の信頼度キャッシュ（UIA 非同期判定で更新）
+pub(crate) static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
 
 /// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
 static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
-pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
-pub(crate) static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
-
-/// キャッシュされた IME ON/OFF 状態。メッセージループで更新、フックで読み取り。
-/// 0=OFF, 1=ON, 2=Unknown（初期状態）
-pub(crate) static IME_STATE_CACHE: AtomicU8 = AtomicU8::new(2);
+/// Ctrl+C 受信フラグ
+static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// IME 状態ポーリング用タイマー ID（安全ネット: マウスで言語バー操作した場合等）
 pub(crate) const TIMER_IME_POLL: usize = 101;
@@ -821,29 +831,21 @@ fn reload_config() {
             "IME control OFF keys",
             &mut key_diag,
         );
+        let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut key_diag);
         unsafe {
             if let Some(app) = APP.get_mut() {
-                app.engine.special_keys = SpecialKeyCombos {
-                    engine_on,
-                    engine_off,
-                    ime_on,
-                    ime_off,
-                };
+                app.engine.reload_keys(
+                    SpecialKeyCombos {
+                        engine_on,
+                        engine_off,
+                        ime_on,
+                        ime_off,
+                    },
+                    ImeSyncKeys { toggle, on, off },
+                );
             }
         }
         key_diag.report();
-    }
-
-    // IME sync キーの再読み込み
-    {
-        let mut reload_sync_diag = StartupDiagnostics::new();
-        let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut reload_sync_diag);
-        unsafe {
-            if let Some(app) = APP.get_mut() {
-                app.engine.ime_sync_keys = ImeSyncKeys { toggle, on, off };
-            }
-        }
-        reload_sync_diag.report();
     }
 
     // フォーカスオーバーライド再読み込み + キャッシュクリア
@@ -1017,14 +1019,7 @@ unsafe extern "system" fn win_event_proc(
     let Some(app) = APP.get_mut() else {
         return;
     };
-    let effects = app.on_focus_changed(hwnd, process_id, &class_name);
-
-    // on_focus_changed は InvalidateEngineContext を内部で実行済み。
-    // 残りの Effect（デバウンスタイマー等）を execute_decision で実行する。
-    if !effects.is_empty() {
-        let decision = Decision::with_effects(false, effects);
-        app.execute_decision(&decision);
-    }
+    app.on_focus_changed(hwnd, process_id, &class_name);
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
