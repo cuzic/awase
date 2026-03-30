@@ -257,6 +257,26 @@ impl Engine {
         self.key_buffer.set_guard(on);
     }
 
+    /// 遅延キーバッファをクリアする（フォーカスオーバーライド時等）
+    pub fn clear_deferred_keys(&mut self) {
+        self.key_buffer.deferred_keys.clear();
+    }
+
+    /// IME 状態変化に追随してエンジンの有効/無効を切り替える
+    pub fn sync_with_ime_state(&mut self, ime_on: bool) -> Decision {
+        if ime_on && !self.fsm.is_enabled() {
+            let _ = self.fsm.set_enabled(true);
+            Decision::with_effects(false, vec![Effect::UpdateTray { enabled: true }])
+        } else if !ime_on && self.fsm.is_enabled() {
+            let mut decision = self.invalidate_engine_context(ContextChange::ImeOff);
+            let _ = self.fsm.set_enabled(false);
+            decision.effects.push(Effect::UpdateTray { enabled: false });
+            decision
+        } else {
+            Decision::pass_through()
+        }
+    }
+
     // ── 内部メソッド ──
 
     /// timed-fsm Response → Decision に変換

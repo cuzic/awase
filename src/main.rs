@@ -21,7 +21,7 @@ mod single_thread_cell;
 mod tray;
 mod win32;
 
-pub(crate) use app_state::{AppAction, AppState, LayoutEntry};
+pub(crate) use app_state::{AppState, LayoutEntry};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -40,7 +40,7 @@ use awase::config::{
     parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig,
 };
 use awase::engine::wrapper::{ImeSyncKeys, SpecialKeyCombos};
-use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::{Decision, Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, ImeCacheState};
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
@@ -71,10 +71,11 @@ pub(crate) const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
 const WM_IME_KEY_DETECTED: u32 = WM_APP + 14;
 
 /// フォーカス遷移デバウンスタイマー ID
-const TIMER_FOCUS_DEBOUNCE: usize = 103;
+pub(crate) const TIMER_FOCUS_DEBOUNCE: usize = 103;
 
 /// フォーカス遷移デバウンス時間（ミリ秒、config から初期化）
-static FOCUS_DEBOUNCE_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(50);
+pub(crate) static FOCUS_DEBOUNCE_MS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(50);
 
 /// IME 状態ポーリング間隔（ミリ秒、config から初期化）
 static IME_POLL_INTERVAL_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(500);
@@ -1016,26 +1017,13 @@ unsafe extern "system" fn win_event_proc(
     let Some(app) = APP.get_mut() else {
         return;
     };
-    let actions = app.on_focus_changed(hwnd, process_id, &class_name);
+    let effects = app.on_focus_changed(hwnd, process_id, &class_name);
 
-    for action in actions {
-        match action {
-            AppAction::InvalidateEngineContext(reason) => {
-                app.invalidate_engine_context(reason);
-            }
-            AppAction::RefreshImeStateCache => {
-                // 即座に更新せず、デバウンスタイマーをセット（リセット）。
-                // フォーカス遷移中は中間ウィンドウの IME 状態が不正確なため、
-                // 最終ウィンドウに落ち着いてから更新する。
-                // その間のキーはフォーカスガードでバッファされる。
-                let _ = SetTimer(
-                    HWND::default(),
-                    TIMER_FOCUS_DEBOUNCE,
-                    FOCUS_DEBOUNCE_MS.load(Ordering::Relaxed),
-                    None,
-                );
-            }
-        }
+    // on_focus_changed は InvalidateEngineContext を内部で実行済み。
+    // 残りの Effect（デバウンスタイマー等）を execute_decision で実行する。
+    if !effects.is_empty() {
+        let decision = Decision::with_effects(false, effects);
+        app.execute_decision(&decision);
     }
 }
 

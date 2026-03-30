@@ -50,17 +50,6 @@ impl FocusDetector {
 
 use crate::{reinject_key, FOCUS_KIND, IME_RELIABILITY, IME_STATE_CACHE};
 
-/// AppState のメソッドが返す副作用指示。
-/// メソッドは状態遷移を行い、必要な副作用を AppAction として返す。
-/// 呼び出し側が AppAction を実行する。
-#[derive(Debug)]
-pub enum AppAction {
-    /// エンジンの保留状態をフラッシュする
-    InvalidateEngineContext(ContextChange),
-    /// IME 状態キャッシュを更新する
-    RefreshImeStateCache,
-}
-
 /// シングルスレッド状態を集約した構造体
 pub struct AppState {
     pub engine: Engine,
@@ -207,17 +196,14 @@ impl AppState {
                 new_state.as_str(),
             );
             // エンジンを IME 状態に追随させる
-            if ime_on && !self.engine.is_fsm_enabled() {
-                let _ = self.engine.fsm.set_enabled(true);
-                self.tray.set_enabled(true);
-                log::info!("Engine auto-enabled (IME ON)");
-            } else if !ime_on && self.engine.is_fsm_enabled() {
-                // flush_pending + disable を一括で行う
-                let decision = self.engine.invalidate_engine_context(ContextChange::ImeOff);
+            let decision = self.engine.sync_with_ime_state(ime_on);
+            if !decision.effects.is_empty() {
+                log::info!(
+                    "Engine auto-{} (IME {})",
+                    if ime_on { "enabled" } else { "disabled" },
+                    if ime_on { "ON" } else { "OFF" },
+                );
                 self.execute_decision(&decision);
-                let _ = self.engine.fsm.set_enabled(false);
-                self.tray.set_enabled(false);
-                log::info!("Engine auto-disabled (IME OFF)");
             }
         }
     }
@@ -239,13 +225,16 @@ impl AppState {
     }
 
     /// フォーカス変更時の状態遷移を行い、必要な副作用を返す。
+    ///
+    /// `InvalidateEngineContext` は内部で実行し、IME キャッシュ更新が必要な場合は
+    /// `Effect::SetTimer` を返す（呼び出し側でデバウンスタイマーとして実行）。
     pub(crate) fn on_focus_changed(
         &mut self,
         hwnd: HWND,
         process_id: u32,
         class_name: &str,
-    ) -> Vec<AppAction> {
-        let mut actions = Vec::new();
+    ) -> Vec<Effect> {
+        let mut effects = Vec::new();
 
         // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止。
         {
@@ -259,7 +248,7 @@ impl AppState {
                         log::trace!(
                             "Keeping TextInput (same process {fg_pid}): class={class_name}"
                         );
-                        return actions;
+                        return effects;
                     }
                 }
             }
@@ -284,7 +273,7 @@ impl AppState {
                         "classify_focus: config override force_text ({process_name}, {class_name})",
                     );
                     FocusKind::TextInput.store(&FOCUS_KIND);
-                    return actions;
+                    return effects;
                 }
             }
             for entry in &self.focus.overrides.force_bypass {
@@ -295,10 +284,8 @@ impl AppState {
                         "classify_focus: config override force_bypass ({process_name}, {class_name})",
                     );
                     FocusKind::NonText.store(&FOCUS_KIND);
-                    actions.push(AppAction::InvalidateEngineContext(
-                        ContextChange::FocusChanged,
-                    ));
-                    return actions;
+                    self.invalidate_engine_context(ContextChange::FocusChanged);
+                    return effects;
                 }
             }
         }
@@ -308,11 +295,9 @@ impl AppState {
             log::trace!("classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}",);
             cached.store(&FOCUS_KIND);
             if cached == FocusKind::NonText {
-                actions.push(AppAction::InvalidateEngineContext(
-                    ContextChange::FocusChanged,
-                ));
+                self.invalidate_engine_context(ContextChange::FocusChanged);
             }
-            return actions;
+            return effects;
         }
 
         // Step 1: 評価中は安全側（Undetermined）に設定
@@ -333,9 +318,7 @@ impl AppState {
 
         // Step 4: NonText ならエンジンの保留状態をフラッシュ
         if state == FocusKind::NonText {
-            actions.push(AppAction::InvalidateEngineContext(
-                ContextChange::FocusChanged,
-            ));
+            self.invalidate_engine_context(ContextChange::FocusChanged);
         }
 
         // Step 5: UIA 非同期判定をリクエスト
@@ -351,9 +334,14 @@ impl AppState {
             state,
         );
 
-        // フォーカス変更に伴い IME 状態キャッシュを更新
-        actions.push(AppAction::RefreshImeStateCache);
-        actions
+        // フォーカス変更に伴い IME 状態キャッシュを更新（デバウンスタイマー経由）
+        effects.push(Effect::SetTimer {
+            id: crate::TIMER_FOCUS_DEBOUNCE,
+            duration: std::time::Duration::from_millis(u64::from(
+                crate::FOCUS_DEBOUNCE_MS.load(std::sync::atomic::Ordering::Relaxed),
+            )),
+        });
+        effects
     }
 
     /// 手動フォーカスオーバーライドのトグル処理
@@ -380,7 +368,7 @@ impl AppState {
         }
 
         // Clear any active buffers
-        self.engine.key_buffer.deferred_keys.clear();
+        self.engine.clear_deferred_keys();
         // バルーン通知を表示
         self.tray.show_balloon(
             "awase",
