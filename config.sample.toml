@@ -38,7 +38,7 @@ speculative_delay_ms = 30
 output_mode = "unicode"
 
 # エンジン ON キー（NICOLA 入力を有効にするキー）
-engine_on_keys = ["VK_CONVERT"]
+engine_on_keys = ["Ctrl+VK_CONVERT"]
 
 # エンジン OFF キー（NICOLA 入力を無効にするキー）
 engine_off_keys = ["Ctrl+VK_NONCONVERT"]

@@ -146,7 +146,7 @@ const fn default_speculative_delay() -> u32 {
 }
 
 fn default_engine_on_keys() -> Vec<String> {
-    vec!["VK_CONVERT".to_string()]
+    vec!["Ctrl+VK_CONVERT".to_string()]
 }
 
 fn default_engine_off_keys() -> Vec<String> {
