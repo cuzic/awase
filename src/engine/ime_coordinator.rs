@@ -99,14 +99,16 @@ impl ImeCoordinator {
         );
 
         if is_key_down {
-            // Check if current key IS a toggle/on/off key
-            // ime_sync_keys（設定ベース）と ImeKeyKind（ハードコード）の両方をチェック
+            // ime_sync_keys（設定ベース）のみ guard のトリガーにする。
+            // ImeKeyKind キー（0xF2/0xF3/0xF4 等）は guard に使わない:
+            // これらはロック型/トグル型で KeyUp が来ない or 大幅に遅延するため、
+            // guard が永久に ON になり全キーがバッファされてしまう。
+            // ImeKeyKind は shadow 更新 + cache refresh で十分。
             let is_sync_key = self.sync_keys.toggle.contains(&event.vk_code)
                 || self.sync_keys.on.contains(&event.vk_code)
                 || self.sync_keys.off.contains(&event.vk_code);
-            let is_ime_key = crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some();
 
-            if is_sync_key || is_ime_key {
+            if is_sync_key {
                 // Set guard — next keys will be buffered
                 self.guard.set_guard(true);
                 log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
@@ -137,13 +139,12 @@ impl ImeCoordinator {
             }
         }
 
-        // Guard clear on KeyUp of any IME key.
+        // Guard clear on KeyUp of any ime_sync key.
         if !is_key_down && self.guard.is_guarded() {
             let is_sync_key = self.sync_keys.toggle.contains(&event.vk_code)
                 || self.sync_keys.on.contains(&event.vk_code)
                 || self.sync_keys.off.contains(&event.vk_code);
-            let is_ime_key = crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some();
-            if is_sync_key || is_ime_key {
+            if is_sync_key {
                 self.guard.set_guard(false);
                 effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
             }
