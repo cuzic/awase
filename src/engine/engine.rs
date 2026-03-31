@@ -78,15 +78,14 @@ impl Engine {
             event.event_type,
             KeyEventType::KeyDown | KeyEventType::SysKeyDown
         );
-        if is_key_down && crate::vk::may_change_ime(event.vk_code) {
-            effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
-        }
-
         // Phase 3.5: IME 変更キー検出時:
         // 1. 保留キーを先にフラッシュ（IME が切り替わる前に現在の状態で確定）
         // 2. IME キャッシュを Unknown に無効化（次のキーで shadow にフォールバック）
-        //    キャッシュ更新は非同期（PostMessageW）なので、次のキーが来る前に
-        //    更新が間に合わない。Unknown にすれば shadow（既に更新済み）が使われる。
+        //
+        // 注意: ここで RequestImeCacheRefresh を送ってはいけない。
+        // IME トグルキーはフックで捕捉された時点で OS にまだ届いていないため、
+        // CrossProcess 検出が古い値を返す。shadow を信頼し、ポーリングで
+        // 最終的にキャッシュを同期する。
         let is_ime_change = is_key_down
             && (crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some()
                 || crate::vk::may_change_ime(event.vk_code));
