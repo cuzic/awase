@@ -209,24 +209,22 @@ fn main() -> Result<()> {
     install_ctrl_handler();
     let _focus_hook_guard = install_focus_hook();
 
-    // IME 状態ポーリングタイマー（安全ネット: マウスで言語バー操作等に対応）
-    let _ime_timer_guard = unsafe {
-        let os_id = SetTimer(
-            HWND::default(),
-            0,
-            IME_POLL_INTERVAL_MS.load(Ordering::Relaxed),
-            None,
-        );
-        awase_windows::timer_map_set(TIMER_IME_POLL, os_id);
-        TimerGuard(TIMER_IME_POLL)
-    };
-
-    // フック消失ウォッチドッグタイマー（3秒間隔、IME ポーリングとは独立）
-    let _watchdog_timer_guard = unsafe {
-        let os_id = SetTimer(HWND::default(), 0, 3000, None);
-        awase_windows::timer_map_set(TIMER_HOOK_WATCHDOG, os_id);
-        TimerGuard(TIMER_HOOK_WATCHDOG)
-    };
+    // IME 状態ポーリングタイマー + ウォッチドッグタイマー
+    // Win32Timer 経由で設定（OS ID マッピングは内部で管理）
+    unsafe {
+        if let Some(app) = APP.get_mut() {
+            app.executor.platform.timer.set(
+                TIMER_IME_POLL,
+                std::time::Duration::from_millis(u64::from(
+                    IME_POLL_INTERVAL_MS.load(Ordering::Relaxed),
+                )),
+            );
+            app.executor
+                .platform
+                .timer
+                .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(3));
+        }
+    }
 
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
     let uia_tx = focus::uia::spawn_uia_worker();
@@ -502,19 +500,7 @@ impl Drop for WtsGuard {
     }
 }
 
-/// `SetTimer` の RAII ガード。Drop 時に `KillTimer` を呼ぶ。
-struct TimerGuard(usize);
-
-impl Drop for TimerGuard {
-    fn drop(&mut self) {
-        unsafe {
-            if let Some(os_id) = awase_windows::timer_map_remove(self.0) {
-                let _ = KillTimer(HWND::default(), os_id);
-            }
-        }
-        log::info!("Timer {} killed", self.0);
-    }
-}
+// タイマーは Win32Timer が管理するため RAII ガード不要
 
 /// `RegisterHotKey` の RAII ガード。Drop 時に `UnregisterHotKey` を呼ぶ。
 struct HotKeyGuard(i32);
@@ -609,6 +595,7 @@ fn initialize_app(
                 output: Output::new(config.general.output_mode),
                 tray,
                 focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
+                timer: awase_windows::timer::Win32Timer::new(),
             }),
             ime,
             layouts,
@@ -697,73 +684,74 @@ fn run_message_loop() {
         }
 
         match msg.message {
-            WM_TIMER if awase_windows::timer_map_resolve(msg.wParam.0) == Some(TIMER_IME_POLL) => unsafe {
-                if let Some(app) = APP.get_mut() {
-                    app.refresh_ime_state_cache();
-                }
-            },
-            WM_TIMER
-                if awase_windows::timer_map_resolve(msg.wParam.0) == Some(TIMER_HOOK_WATCHDOG) =>
-            unsafe {
-                // ── フック消失ウォッチドッグ（3秒間隔、IME ポーリングとは独立）──
-                //
-                // 方式: イベントカウンタ比較。前回チェック時のカウンタと比較し、
-                // 増えていなければフック消失の可能性がある。
-                // GetAsyncKeyState の瞬間チェックより信頼性が高い。
-                use std::sync::atomic::AtomicU64;
-                static LAST_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+            WM_TIMER => unsafe {
+                let Some(app) = APP.get_mut() else { continue };
+                let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
+                match logical_id {
+                    Some(id) if id == TIMER_IME_POLL => {
+                        app.refresh_ime_state_cache();
+                    }
+                    Some(id) if id == TIMER_HOOK_WATCHDOG => {
+                        use std::sync::atomic::AtomicU64;
+                        static LAST_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
 
-                let current_count = hook::hook_event_count();
-                let prev_count = LAST_CHECK_COUNT.swap(current_count, Ordering::Relaxed);
+                        let current_count = hook::hook_event_count();
+                        let prev_count = LAST_CHECK_COUNT.swap(current_count, Ordering::Relaxed);
 
-                // カウンタが増えている → フックは正常動作中
-                if current_count > prev_count {
-                    continue;
-                }
-
-                // カウンタが増えていない + 3秒以上無応答 → フック消失の可能性
-                if !hook::is_hook_responsive(3_000) {
-                    // 本当にキー入力があるのにフックが反応していないか確認
-                    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-                    let any_key_pressed = (0x08u16..=0x5Au16)
-                        .any(|vk| GetAsyncKeyState(i32::from(vk)).cast_unsigned() & 0x8000 != 0);
-                    if any_key_pressed {
-                        let stale_ms = hook::current_tick_ms() - hook::last_hook_activity_ms();
-                        log::error!(
-                            "Hook watchdog: no activity for {stale_ms}ms despite keyboard input — reinstalling"
-                        );
-                        if hook::reinstall_hook() {
-                            log::info!("Hook reinstalled by watchdog");
-                            if let Some(app) = APP.get_mut() {
-                                app.executor
-                                    .platform
-                                    .tray
-                                    .show_balloon("awase", "キーボードフックを自動復旧しました");
-                            }
-                        } else if let Some(app) = APP.get_mut() {
-                            app.executor.platform.tray.show_balloon(
-                                "awase",
-                                "フック復旧に失敗しました。再起動してください。",
-                            );
+                        if current_count > prev_count {
+                            continue;
                         }
+                        if !hook::is_hook_responsive(3_000) {
+                            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+                            let any_key_pressed = (0x08u16..=0x5Au16).any(|vk| {
+                                GetAsyncKeyState(i32::from(vk)).cast_unsigned() & 0x8000 != 0
+                            });
+                            if any_key_pressed {
+                                let stale_ms =
+                                    hook::current_tick_ms() - hook::last_hook_activity_ms();
+                                log::error!(
+                                    "Hook watchdog: no activity for {stale_ms}ms — reinstalling"
+                                );
+                                if hook::reinstall_hook() {
+                                    app.executor.platform.tray.show_balloon(
+                                        "awase",
+                                        "キーボードフックを自動復旧しました",
+                                    );
+                                } else {
+                                    app.executor.platform.tray.show_balloon(
+                                        "awase",
+                                        "フック復旧に失敗しました。再起動してください。",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Some(id) if id == TIMER_FOCUS_DEBOUNCE => {
+                        app.executor.platform.timer.kill(TIMER_FOCUS_DEBOUNCE);
+                        app.refresh_ime_state_cache();
+                    }
+                    Some(timer_id) => {
+                        // Engine タイマー (TIMER_PENDING, TIMER_SPECULATIVE)
+                        log::debug!("WM_TIMER fired: logical_id={timer_id}");
+                        let ctx = InputContext {
+                            ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
+                        };
+                        let decision = app.engine.on_timeout(timer_id, &ctx);
+                        app.execute_decision(decision);
+                    }
+                    None => {
+                        // 未知のタイマー → 無視
                     }
                 }
             },
             WM_EXECUTE_EFFECTS => unsafe {
-                // フックコールバックからキューされた Effects を実行する。
-                // ここはメッセージループ上なので時間制約がない。
                 if let Some(app) = APP.get_mut() {
                     app.executor.drain_deferred();
                 }
             },
             WM_IME_KEY_DETECTED => unsafe {
-                // フックで IME 制御キーが検出された:
-                // 1. キャッシュ更新 + 遅延キードレイン
-                // 2. OS の修飾キー状態と内部状態を同期（IME 切替中に KeyUp を取りこぼす対策）
                 if let Some(app) = APP.get_mut() {
                     app.process_deferred_keys();
-
-                    // OS の実際の修飾キー状態を読み取り、Engine と同期
                     let os_mods = observer::focus_observer::read_os_modifiers();
                     let decision = app
                         .engine
@@ -771,34 +759,6 @@ fn run_message_loop() {
                     app.executor.execute_from_loop(decision);
                 }
             },
-            WM_TIMER
-                if awase_windows::timer_map_resolve(msg.wParam.0) == Some(TIMER_FOCUS_DEBOUNCE) =>
-            unsafe {
-                // フォーカス遷移デバウンス完了 → IME キャッシュ更新
-                // キーはバッファせず、デバウンス中は前のキャッシュ値で処理される。
-                if let Some(os_id) = awase_windows::timer_map_remove(TIMER_FOCUS_DEBOUNCE) {
-                    let _ = KillTimer(HWND::default(), os_id);
-                }
-                if let Some(app) = APP.get_mut() {
-                    app.refresh_ime_state_cache();
-                }
-            },
-            WM_TIMER if awase_windows::timer_map_resolve(msg.wParam.0).is_some() => {
-                let timer_id = awase_windows::timer_map_resolve(msg.wParam.0).unwrap();
-                log::debug!(
-                    "WM_TIMER fired: os_id={}, logical_id={timer_id}",
-                    msg.wParam.0
-                );
-                unsafe {
-                    if let Some(app) = APP.get_mut() {
-                        let ctx = InputContext {
-                            ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
-                        };
-                        let decision = app.engine.on_timeout(timer_id, &ctx);
-                        app.execute_decision(decision);
-                    }
-                }
-            }
             WM_POWERBROADCAST => unsafe {
                 // スリープ復帰時に全状態をリフレッシュする。
                 // PBT_APMRESUMEAUTOMATIC (0x12) / PBT_APMRESUMESUSPEND (0x07)

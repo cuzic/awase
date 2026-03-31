@@ -1,12 +1,12 @@
 //! Windows 実装の `PlatformRuntime`。
 //!
-//! `Output`, `SystemTray`, `FocusDetector` および Win32 グローバル状態を束ね、
+//! `Output`, `SystemTray`, `FocusDetector`, `Win32Timer` を束ね、
 //! `PlatformRuntime` トレイトを実装する。
 
 use std::time::Duration;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer};
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use awase::platform::PlatformRuntime;
 use awase::types::{FocusKind, ImeCacheState, ImeReliability, KeyAction, RawKeyEvent};
@@ -15,6 +15,7 @@ use crate::focus::cache::DetectionSource;
 use crate::focus::uia::SendableHwnd;
 use crate::output::Output;
 use crate::runtime::FocusDetector;
+use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 use crate::{FOCUS_KIND, IME_RELIABILITY, IME_STATE_CACHE};
 
@@ -23,6 +24,7 @@ pub struct WindowsPlatform {
     pub output: Output,
     pub tray: SystemTray,
     pub focus: FocusDetector,
+    pub timer: Win32Timer,
 }
 
 impl PlatformRuntime for WindowsPlatform {
@@ -33,43 +35,26 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn reinject_key(&mut self, event: &RawKeyEvent) {
-        // SAFETY: reinject_key は Win32 API (SendInput)。メインスレッドから呼ぶ。
         unsafe { crate::reinject_key(event) };
     }
 
     // ── タイマー ──
 
     fn set_timer(&mut self, id: usize, duration: Duration) {
-        let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
-        // SAFETY: SetTimer は Win32 API。メインスレッドから呼ぶ。
-        // HWND NULL + SetTimer は OS が独自の ID を割り当てる。
-        // 戻り値をグローバルマップに保存し、WM_TIMER で逆引きする。
-        unsafe {
-            let os_id = SetTimer(HWND::default(), 0, ms, None);
-            log::debug!("SetTimer(logical={id}, ms={ms}) → os_id={os_id}");
-            crate::timer_map_set(id, os_id);
-        }
+        self.timer.set(id, duration);
     }
 
     fn kill_timer(&mut self, id: usize) {
-        // SAFETY: KillTimer は Win32 API。メインスレッドから呼ぶ。
-        unsafe {
-            if let Some(os_id) = crate::timer_map_remove(id) {
-                let _ = KillTimer(HWND::default(), os_id);
-                log::debug!("KillTimer(logical={id}, os_id={os_id})");
-            }
-        }
+        self.timer.kill(id);
     }
 
-    // ── IME 制御 ──
+    // ── IME ──
 
     fn set_ime_open(&mut self, open: bool) -> bool {
-        // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
         unsafe { crate::ime::set_ime_open_cross_process(open) }
     }
 
     fn post_ime_refresh(&mut self) {
-        // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶ。
         unsafe {
             let _ = PostMessageW(
                 HWND::default(),
@@ -111,10 +96,18 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn request_uia_classification(&mut self) {
-        if let Some(tx) = self.focus.uia_sender.as_ref() {
-            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-            let fg = unsafe { GetForegroundWindow() };
-            let _ = tx.send(SendableHwnd(fg));
+        if let Some(ref sender) = self.focus.uia_sender {
+            use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
+            let mut info = GUITHREADINFO {
+                cbSize: size_of::<GUITHREADINFO>() as u32,
+                ..Default::default()
+            };
+            let hwnd = if unsafe { GetGUIThreadInfo(0, &raw mut info) }.is_ok() {
+                info.hwndFocus
+            } else {
+                HWND::default()
+            };
+            let _ = sender.send(SendableHwnd(hwnd));
         }
     }
 
@@ -137,7 +130,7 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!(
                 "IME state cache updated: {} → {}",
                 old_state.as_str(),
-                new_state.as_str(),
+                new_state.as_str()
             );
         }
     }

@@ -25,6 +25,7 @@ pub mod platform;
 pub mod runtime;
 pub mod scanmap;
 pub mod single_thread_cell;
+pub mod timer;
 pub mod tray;
 pub mod vk;
 pub mod win32;
@@ -92,38 +93,6 @@ pub const WM_IME_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 
 /// フックコールバックからキューされた Effects の実行要求
 pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
-
-// ── タイマー ID マッピング ──
-//
-// HWND NULL + SetTimer は OS が独自の ID を割り当てるため、
-// 論理 ID (TIMER_PENDING=1 等) と OS ID のマッピングが必要。
-// メインスレッドからのみアクセスするため Mutex 不要。
-
-/// 論理タイマー ID ⇔ OS タイマー ID のマッピング。
-/// メインスレッド専用。
-static TIMER_MAP: std::sync::Mutex<Option<std::collections::HashMap<usize, usize>>> =
-    std::sync::Mutex::new(None);
-
-/// 論理タイマー ID → OS タイマー ID のマッピングを設定する
-pub fn timer_map_set(logical_id: usize, os_id: usize) {
-    let mut guard = TIMER_MAP.lock().unwrap();
-    let map = guard.get_or_insert_with(std::collections::HashMap::new);
-    map.insert(logical_id, os_id);
-}
-
-/// 論理タイマー ID → OS タイマー ID を取得して削除する
-pub fn timer_map_remove(logical_id: usize) -> Option<usize> {
-    let mut guard = TIMER_MAP.lock().unwrap();
-    guard.as_mut().and_then(|map| map.remove(&logical_id))
-}
-
-/// OS タイマー ID → 論理タイマー ID を逆引きする（WM_TIMER ハンドラ用）
-pub fn timer_map_resolve(os_id: usize) -> Option<usize> {
-    let guard = TIMER_MAP.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|map| map.iter().find(|(_, &v)| v == os_id).map(|(&k, _)| k))
-}
 
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///
