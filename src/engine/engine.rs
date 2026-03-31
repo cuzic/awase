@@ -124,15 +124,7 @@ impl Engine {
         }
 
         // Phase 6: IME state check
-        let shadow = self.ime.shadow_on();
-        let ime_on = ctx.ime_cache.resolve_with_shadow(shadow);
-        let fsm_enabled = self.adapter.is_enabled();
-        log::debug!(
-            "Phase6: vk=0x{:02X} cache={:?} shadow={shadow} resolve={ime_on} fsm_enabled={fsm_enabled} os_ime={:?}",
-            event.vk_code.0,
-            ctx.ime_cache,
-            ctx.debug_os_ime,
-        );
+        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
         if !ime_on {
             if effects.is_empty() {
                 return Decision::pass_through();
