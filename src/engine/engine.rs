@@ -15,8 +15,8 @@ use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyEventType, RawKeyEvent};
 
 use super::decision::{
-    Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext, InputEffect,
-    SpecialKeyCombos, TimerEffect, UiEffect,
+    Decision, Effect, EngineCommand, ImeCacheEffect, ImeEffect, ImeSyncKeys, InputContext,
+    InputEffect, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
@@ -82,14 +82,18 @@ impl Engine {
             effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
         }
 
-        // Phase 3.5: IME 変更キー検出時、保留キーを先にフラッシュする。
-        // IME が切り替わる前に、現在の IME 状態で保留キーを確定する。
+        // Phase 3.5: IME 変更キー検出時:
+        // 1. 保留キーを先にフラッシュ（IME が切り替わる前に現在の状態で確定）
+        // 2. IME キャッシュを Unknown に無効化（次のキーで shadow にフォールバック）
+        //    キャッシュ更新は非同期（PostMessageW）なので、次のキーが来る前に
+        //    更新が間に合わない。Unknown にすれば shadow（既に更新済み）が使われる。
         let is_ime_change = is_key_down
             && (crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some()
                 || crate::vk::may_change_ime(event.vk_code));
         if is_ime_change {
             let flush_effects = self.adapter.flush_to_effects(ContextChange::ImeOff);
             effects.extend(flush_effects);
+            effects.push(Effect::ImeCache(ImeCacheEffect::Invalidate));
         }
 
         // Phase 4: IME toggle guard

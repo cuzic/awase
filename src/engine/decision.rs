@@ -75,6 +75,8 @@ pub enum FocusEffect {
 pub enum ImeCacheEffect {
     /// IME_STATE_CACHE を更新する
     UpdateStateCache { ime_on: bool },
+    /// IME_STATE_CACHE を Unknown に無効化する（次のキーで shadow にフォールバック）
+    Invalidate,
 }
 
 /// アプリケーション全体の副作用を表す宣言型。

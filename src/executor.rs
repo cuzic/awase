@@ -149,6 +149,10 @@ impl DecisionExecutor {
                             );
                         }
                     }
+                    ImeCacheEffect::Invalidate => {
+                        ImeCacheState::Unknown.store(&IME_STATE_CACHE);
+                        log::trace!("IME state cache invalidated → Unknown");
+                    }
                 },
             }
         }
