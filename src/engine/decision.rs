@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use smallvec::{smallvec, SmallVec};
+
 use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, FocusKind, ImeCacheState, KeyAction, RawKeyEvent, VkCode};
 use crate::yab::YabLayout;
@@ -10,6 +12,9 @@ use super::input_tracker::PhysicalKeyState;
 use super::observation::{FocusObservation, ImeObservation};
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
+
+/// ヒープ確保なしで 0〜4 個の Effect を格納できるインライン Vec。
+pub type EffectVec = SmallVec<[Effect; 4]>;
 
 /// 入力・出力に関する副作用
 #[derive(Debug, Clone)]
@@ -100,31 +105,31 @@ pub enum Decision {
     /// キーを素通しする（副作用なし）
     PassThrough,
     /// キーを素通しするが副作用を伴う（例: IME トグルキーの pass-through + キャッシュ更新要求）
-    PassThroughWith { effects: Vec<Effect> },
+    PassThroughWith { effects: EffectVec },
     /// キーを消費する（副作用あり or なし）
-    Consume { effects: Vec<Effect> },
+    Consume { effects: EffectVec },
 }
 
 impl Decision {
     #[must_use]
-    pub const fn pass_through() -> Self {
+    pub fn pass_through() -> Self {
         Self::PassThrough
     }
 
     #[must_use]
-    pub const fn pass_through_with(effects: Vec<Effect>) -> Self {
+    pub fn pass_through_with(effects: EffectVec) -> Self {
         Self::PassThroughWith { effects }
     }
 
     #[must_use]
-    pub const fn consumed() -> Self {
+    pub fn consumed() -> Self {
         Self::Consume {
-            effects: Vec::new(),
+            effects: EffectVec::new(),
         }
     }
 
     #[must_use]
-    pub const fn consumed_with(effects: Vec<Effect>) -> Self {
+    pub fn consumed_with(effects: EffectVec) -> Self {
         Self::Consume { effects }
     }
 
@@ -142,20 +147,20 @@ impl Decision {
             }
             Self::PassThrough => {
                 *self = Self::Consume {
-                    effects: vec![effect],
+                    effects: smallvec![effect],
                 };
             }
         }
     }
 
-    /// effects への可変参照。PassThrough なら Consume に昇格して空 Vec を返す。
+    /// effects への可変参照。PassThrough なら Consume に昇格して空 EffectVec を返す。
     #[must_use]
-    pub fn effects_mut(&mut self) -> &mut Vec<Effect> {
+    pub fn effects_mut(&mut self) -> &mut EffectVec {
         match self {
             Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
             Self::PassThrough => {
                 *self = Self::Consume {
-                    effects: Vec::new(),
+                    effects: EffectVec::new(),
                 };
                 let Self::Consume { effects } = self else {
                     unreachable!("just assigned Consume")
@@ -305,7 +310,7 @@ mod tests {
 
     #[test]
     fn consumed_with_creates_consume_with_effects() {
-        let d = Decision::consumed_with(vec![test_effect()]);
+        let d = Decision::consumed_with(smallvec![test_effect()]);
         match d {
             Decision::Consume { effects } => assert_eq!(effects.len(), 1),
             other => panic!("expected Consume, got {:?}", other),
@@ -314,7 +319,7 @@ mod tests {
 
     #[test]
     fn pass_through_with_creates_pass_through_with() {
-        let d = Decision::pass_through_with(vec![test_effect()]);
+        let d = Decision::pass_through_with(smallvec![test_effect()]);
         match d {
             Decision::PassThroughWith { effects } => assert_eq!(effects.len(), 1),
             other => panic!("expected PassThroughWith, got {:?}", other),
@@ -335,7 +340,7 @@ mod tests {
 
     #[test]
     fn is_consumed_false_for_pass_through_with() {
-        assert!(!Decision::pass_through_with(vec![]).is_consumed());
+        assert!(!Decision::pass_through_with(smallvec![]).is_consumed());
     }
 
     // ── push_effect ──
@@ -353,7 +358,7 @@ mod tests {
 
     #[test]
     fn push_effect_on_consume_appends() {
-        let mut d = Decision::consumed_with(vec![test_effect()]);
+        let mut d = Decision::consumed_with(smallvec![test_effect()]);
         d.push_effect(test_effect());
         match d {
             Decision::Consume { effects } => assert_eq!(effects.len(), 2),
@@ -363,7 +368,7 @@ mod tests {
 
     #[test]
     fn push_effect_on_pass_through_with_appends() {
-        let mut d = Decision::pass_through_with(vec![test_effect()]);
+        let mut d = Decision::pass_through_with(smallvec![test_effect()]);
         d.push_effect(test_effect());
         match d {
             Decision::PassThroughWith { effects } => assert_eq!(effects.len(), 2),

@@ -23,8 +23,101 @@ pub enum YabValue {
     None,
 }
 
+/// 最大キー数: 4 行 × 13 列 (JIS)
+const MAX_KEYS: usize = 4 * 13;
+/// 列数上限
+const MAX_COLS: usize = 13;
+/// 行数上限
+const MAX_ROWS: usize = 4;
+
 /// キーマッピングのセクション（レイアウトの一面）
-pub type YabFace = HashMap<PhysicalPos, YabValue>;
+///
+/// `PhysicalPos` を `row * 13 + col` の固定インデックスに変換し、
+/// O(1) ルックアップを実現する。
+#[derive(Clone)]
+pub struct YabFace(Box<[Option<YabValue>; MAX_KEYS]>);
+
+impl std::fmt::Debug for YabFace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // HashMap 風の出力を生成
+        let mut map = f.debug_map();
+        for row in 0..MAX_ROWS {
+            for col in 0..MAX_COLS {
+                let idx = row * MAX_COLS + col;
+                if let Some(ref val) = self.0[idx] {
+                    map.entry(&PhysicalPos::new(row as u8, col as u8), val);
+                }
+            }
+        }
+        map.finish()
+    }
+}
+
+/// `PhysicalPos` を配列インデックスに変換する。範囲外なら `None`。
+const fn pos_to_index(pos: &PhysicalPos) -> Option<usize> {
+    let r = pos.row as usize;
+    let c = pos.col as usize;
+    if r >= MAX_ROWS || c >= MAX_COLS {
+        None
+    } else {
+        Some(r * MAX_COLS + c)
+    }
+}
+
+impl YabFace {
+    /// 空の面を作成する。
+    #[must_use]
+    pub fn new() -> Self {
+        // const { None } の配列を Box で確保
+        Self(Box::new([const { None }; MAX_KEYS]))
+    }
+
+    /// 指定位置の値を参照する。
+    #[must_use]
+    pub fn get(&self, pos: &PhysicalPos) -> Option<&YabValue> {
+        let idx = pos_to_index(pos)?;
+        self.0[idx].as_ref()
+    }
+
+    /// 指定位置に値を挿入する。
+    ///
+    /// # Panics
+    ///
+    /// `pos` が範囲外の場合パニックする。
+    pub fn insert(&mut self, pos: PhysicalPos, value: YabValue) {
+        let idx = pos_to_index(&pos).expect("PhysicalPos out of range for YabFace");
+        self.0[idx] = Some(value);
+    }
+
+    /// 指定位置にキーが定義されているか判定する。
+    #[must_use]
+    pub fn contains_key(&self, pos: &PhysicalPos) -> bool {
+        pos_to_index(pos).is_some_and(|idx| self.0[idx].is_some())
+    }
+
+    /// 全値への可変イテレータ（`Some` エントリのみ）。
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut YabValue> {
+        self.0.iter_mut().filter_map(|slot| slot.as_mut())
+    }
+
+    /// 定義されているキーの数を返す。
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// キーが一つも定義されていないか判定する。
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.iter().all(|slot| slot.is_none())
+    }
+}
+
+impl Default for YabFace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// パース済みの .yab レイアウト全体
 #[derive(Debug, Clone)]

@@ -8,7 +8,7 @@ use crate::ngram::NgramModel;
 use crate::types::{ContextChange, KeyAction, RawKeyEvent};
 use crate::yab::YabLayout;
 
-use super::decision::{Decision, Effect, InputEffect, TimerEffect};
+use super::decision::{Decision, Effect, EffectVec, InputEffect, TimerEffect};
 use super::input_tracker::PhysicalKeyState;
 use super::nicola_fsm::NicolaFsm;
 
@@ -45,7 +45,7 @@ impl FsmAdapter {
     }
 
     /// フラッシュして Effect リストのみを返す（他の Effect と結合する用途）。
-    pub fn flush_to_effects(&mut self, reason: ContextChange) -> Vec<Effect> {
+    pub fn flush_to_effects(&mut self, reason: ContextChange) -> EffectVec {
         let resp = self.fsm.flush_pending(reason);
         Self::response_to_effects(resp)
     }
@@ -92,8 +92,8 @@ impl FsmAdapter {
     // ── 内部メソッド ──
 
     /// timed-fsm Response → Effect リストに変換（consumed フラグは呼び出し側で判定）
-    fn response_to_effects(resp: Response<KeyAction, usize>) -> Vec<Effect> {
-        let mut effects = Vec::new();
+    fn response_to_effects(resp: Response<KeyAction, usize>) -> EffectVec {
+        let mut effects = EffectVec::new();
         for cmd in &resp.timers {
             match cmd {
                 TimerCommand::Set { id, duration } => {

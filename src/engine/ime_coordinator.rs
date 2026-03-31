@@ -4,7 +4,7 @@
 
 use crate::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
 
-use super::decision::{Decision, Effect, ImeEffect, ImeSyncKeys, KeyBuffer};
+use super::decision::{Decision, Effect, EffectVec, ImeEffect, ImeSyncKeys, KeyBuffer};
 use super::input_tracker::PhysicalKeyState;
 
 /// IME 状態管理: shadow 追跡、ガード、同期キー判定
@@ -93,7 +93,7 @@ impl ImeCoordinator {
         &mut self,
         event: &RawKeyEvent,
         phys: &PhysicalKeyState,
-        effects: &mut Vec<Effect>,
+        effects: &mut EffectVec,
     ) -> Option<Decision> {
         let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
 
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn check_guard_sync_key_down_sets_guard_and_returns_pass_through() {
         let mut coord = ImeCoordinator::new(empty_sync_keys());
-        let mut effects = vec![];
+        let mut effects = EffectVec::new();
 
         let mut event = make_event(KeyEventType::KeyDown);
         event.ime_relevance.is_sync_key = true;
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn check_guard_while_guarded_buffers_keys_and_returns_consumed() {
         let mut coord = ImeCoordinator::new(empty_sync_keys());
-        let mut effects = vec![];
+        let mut effects = EffectVec::new();
 
         // First: set guard via sync key
         let mut sync_event = make_event(KeyEventType::KeyDown);
@@ -318,7 +318,7 @@ mod tests {
 
         // Now send a regular key while guarded
         let regular_event = make_event(KeyEventType::KeyDown);
-        let mut effects2 = vec![];
+        let mut effects2 = EffectVec::new();
         let decision = coord.check_guard(&regular_event, &phys, &mut effects2);
         assert!(decision.is_some());
         assert!(decision.unwrap().is_consumed());
@@ -342,7 +342,7 @@ mod tests {
         // Push a deferred key manually via check_guard
         let event = make_event(KeyEventType::KeyDown);
         let phys = PhysicalKeyState::empty();
-        let mut effects = vec![];
+        let mut effects = EffectVec::new();
         coord.check_guard(&event, &phys, &mut effects);
 
         // Drain

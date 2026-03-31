@@ -21,6 +21,7 @@ env_logger = "0.11"
 anyhow = "1"
 flate2 = "1"
 timed-fsm = { path = "crates/timed-fsm" }
+smallvec = "1.15.1"
 
 [lints.rust]
 unsafe_code = "warn"

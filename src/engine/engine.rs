@@ -11,12 +11,14 @@
 //! - `Effect::Ime(ImeEffect::RequestCacheRefresh)` は非同期要求。次回の on_input で反映される保証はない
 //! - Engine は常に現在の InputContext のスナップショットだけで判断する（先読みしない）
 
+use smallvec::smallvec;
+
 use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyEventType, RawKeyEvent};
 
 use super::decision::{
-    Decision, Effect, EngineCommand, ImeCacheEffect, ImeEffect, ImeSyncKeys, InputContext,
-    InputEffect, SpecialKeyCombos, TimerEffect, UiEffect,
+    Decision, Effect, EffectVec, EngineCommand, ImeCacheEffect, ImeEffect, ImeSyncKeys,
+    InputContext, InputEffect, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
@@ -87,7 +89,7 @@ impl Engine {
         self.ime.update_shadow(&event);
 
         // Phase 3: IME key detection → request cache refresh
-        let mut effects = Vec::new();
+        let mut effects = EffectVec::new();
         // Phase 3.5: IME 変更キー検出時:
         // 1. 保留キーを先にフラッシュ（IME が切り替わる前に現在の状態で確定）
         // 2. IME キャッシュを Unknown に無効化（次のキーで shadow にフォールバック）
@@ -186,7 +188,9 @@ impl Engine {
                 if ime_on {
                     self.adapter.on_event(event, &phys)
                 } else {
-                    Decision::consumed_with(vec![Effect::Input(InputEffect::ReinjectKey(event))])
+                    Decision::consumed_with(smallvec![Effect::Input(InputEffect::ReinjectKey(
+                        event
+                    ))])
                 }
             })
             .collect()
@@ -210,9 +214,9 @@ impl Engine {
             EngineCommand::SyncImeState { ime_on } => {
                 if ime_on && !self.adapter.is_enabled() {
                     let _ = self.adapter.set_enabled(true);
-                    Decision::pass_through_with(vec![Effect::Ui(UiEffect::EngineStateChanged {
-                        enabled: true,
-                    })])
+                    Decision::pass_through_with(smallvec![Effect::Ui(
+                        UiEffect::EngineStateChanged { enabled: true }
+                    )])
                 } else if !ime_on && self.adapter.is_enabled() {
                     let mut decision = self.adapter.flush(ContextChange::ImeOff);
                     let _ = self.adapter.set_enabled(false);
@@ -264,7 +268,7 @@ impl Engine {
             return Decision::pass_through();
         };
 
-        let mut effects = Vec::new();
+        let mut effects = EffectVec::new();
 
         // エンジンを IME 状態に追随させる（SyncImeState と同じロジック）
         // フラッシュをキャッシュ更新より先に実行する（保留キーが消失しないように）
@@ -305,7 +309,7 @@ impl Engine {
         let cached_engine_enabled = obs.cached_engine_enabled;
         let class_name = obs.class_name; // move ownership
 
-        let mut effects: Vec<Effect> = Vec::new();
+        let mut effects = EffectVec::new();
 
         // 旧ウィンドウのエンジン状態をキャッシュに保存
         if let Some((old_pid, ref old_class)) = self.last_focus_info {
@@ -407,7 +411,7 @@ impl Engine {
     /// タイミングで呼ぶ。
     fn handle_sync_modifiers(&mut self, os_mods: ModifierState) -> Decision {
         let engine_mods = self.tracker.modifiers();
-        let mut effects = Vec::new();
+        let mut effects = EffectVec::new();
 
         // Engine が「押下中」と思っているが OS では離されているキー
         // → lifecycle から KeyUp を再注入
@@ -502,7 +506,7 @@ impl Engine {
         {
             self.ime.set_shadow_on(true);
             log::info!("IME ON (key combo)");
-            return Some(Decision::consumed_with(vec![Effect::Ime(
+            return Some(Decision::consumed_with(smallvec![Effect::Ime(
                 ImeEffect::SetOpen(true),
             )]));
         }
@@ -514,7 +518,7 @@ impl Engine {
         {
             self.ime.set_shadow_on(false);
             log::info!("IME OFF (key combo)");
-            return Some(Decision::consumed_with(vec![Effect::Ime(
+            return Some(Decision::consumed_with(smallvec![Effect::Ime(
                 ImeEffect::SetOpen(false),
             )]));
         }
