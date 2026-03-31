@@ -82,6 +82,16 @@ impl Engine {
             effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
         }
 
+        // Phase 3.5: IME 変更キー検出時、保留キーを先にフラッシュする。
+        // IME が切り替わる前に、現在の IME 状態で保留キーを確定する。
+        let is_ime_change = is_key_down
+            && (crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some()
+                || crate::vk::may_change_ime(event.vk_code));
+        if is_ime_change {
+            let flush_effects = self.adapter.flush_to_effects(ContextChange::ImeOff);
+            effects.extend(flush_effects);
+        }
+
         // Phase 4: IME toggle guard
         if let Some(decision) = self.ime.check_guard(&event, &phys, &mut effects) {
             return decision;
@@ -90,7 +100,6 @@ impl Engine {
         // Phase 5: Special keys (engine toggle + IME control)
         if is_key_down {
             if let Some(mut decision) = self.check_special_keys(&event) {
-                // IME 制御キーの場合もキャッシュ更新を要求
                 decision.push_effect(Effect::Ime(ImeEffect::RequestCacheRefresh));
                 return decision;
             }
