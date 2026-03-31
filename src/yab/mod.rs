@@ -3,37 +3,24 @@ use std::collections::HashMap;
 use anyhow::{bail, Context, Result};
 
 use crate::kana_table::build_romaji_to_kana;
-use crate::scanmap::PhysicalPos;
-use crate::types::VkCode;
+use crate::scanmap::{KeyboardModel, PhysicalPos};
+
+// Re-export SpecialKey for backward compatibility (previously defined here)
+pub use crate::types::SpecialKey;
 
 /// .yab ファイルからパースされた値
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum YabValue {
-    /// ローマ字文字列（VK コードで送信する）（例: "ka", "si", "wo"）
+    /// ローマ字文字列（例: "ka", "si", "wo"）
     /// `kana` にはパース時に逆引きした仮名文字を保持する。
     /// 拗音など単一 `char` に収まらないローマ字の場合は `None`。
     Romaji { romaji: String, kana: Option<char> },
-    /// リテラル文字（`KEYEVENTF_UNICODE` で送信する）
+    /// リテラル文字（Unicode 文字として直接送信する）
     Literal(String),
     /// 特殊キー
     Special(SpecialKey),
     /// 割り当てなし（パススルー）
     None,
-}
-
-/// 特殊キーの種別
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpecialKey {
-    /// 後 (Backspace)
-    Backspace,
-    /// 逃 (Escape)
-    Escape,
-    /// 入 (Enter)
-    Enter,
-    /// 空 (Space)
-    Space,
-    /// 消 (Delete)
-    Delete,
 }
 
 /// キーマッピングのセクション（レイアウトの一面）
@@ -53,9 +40,6 @@ pub struct YabLayout {
     /// 小指シフト面
     pub shift: YabFace,
 }
-
-/// 各行のキー数上限
-const MAX_COLS: [usize; 4] = [13, 12, 12, 11];
 
 /// 全角文字を半角文字に変換する。
 /// 全角 ASCII 範囲 (U+FF01..U+FF5E) に該当する場合、対応する半角文字を返す。
@@ -128,19 +112,20 @@ fn parse_value(raw: &str) -> YabValue {
 }
 
 /// セクションの 4 行分の CSV データを `YabFace` にパースする。
-fn parse_face(lines: &[String]) -> Result<YabFace> {
+fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
     if lines.len() != 4 {
         bail!("Expected 4 data lines in section, got {}", lines.len());
     }
 
+    let row_sizes = model.row_sizes();
     let mut face = YabFace::new();
 
     for (row, line) in lines.iter().enumerate() {
         let values: Vec<&str> = line.split(',').collect();
-        let max_col = MAX_COLS[row];
+        let max_col = row_sizes[row];
         if values.len() > max_col {
             bail!(
-                "Row {row} has {} values, but maximum is {max_col}",
+                "Row {row} has {} values, but maximum is {max_col} for {model} keyboard",
                 values.len()
             );
         }
@@ -157,20 +142,6 @@ fn parse_face(lines: &[String]) -> Result<YabFace> {
     }
 
     Ok(face)
-}
-
-impl SpecialKey {
-    /// 特殊キーに対応する仮想キーコード (VK code) を返す。
-    #[must_use]
-    pub const fn to_vk(self) -> VkCode {
-        match self {
-            Self::Backspace => VkCode(0x08),
-            Self::Escape => VkCode(0x1B),
-            Self::Enter => VkCode(0x0D),
-            Self::Space => VkCode(0x20),
-            Self::Delete => VkCode(0x2E),
-        }
-    }
 }
 
 /// セクション名からフェイスの種類を判別する。
@@ -196,10 +167,12 @@ enum FaceKind {
 impl YabLayout {
     /// .yab 形式の文字列をパースして `YabLayout` を構築する。
     ///
+    /// `model` で指定されたキーボードモデルに応じて各行の最大キー数が決まる。
+    ///
     /// # Errors
     ///
     /// フォーマットが不正な場合や必須セクションが欠落している場合にエラーを返す。
-    pub fn parse(input: &str) -> Result<Self> {
+    pub fn parse(input: &str, model: KeyboardModel) -> Result<Self> {
         let mut name = String::new();
         let mut sections: HashMap<FaceKind, Vec<String>> = HashMap::new();
         let mut current_section: Option<FaceKind> = None;
@@ -259,25 +232,25 @@ impl YabLayout {
         }
 
         let normal = if let Some(lines) = sections.get(&FaceKind::Normal) {
-            parse_face(lines).context("Failed to parse normal face")?
+            parse_face(lines, model).context("Failed to parse normal face")?
         } else {
             YabFace::new()
         };
 
         let left_thumb = if let Some(lines) = sections.get(&FaceKind::LeftThumb) {
-            parse_face(lines).context("Failed to parse left thumb face")?
+            parse_face(lines, model).context("Failed to parse left thumb face")?
         } else {
             YabFace::new()
         };
 
         let right_thumb = if let Some(lines) = sections.get(&FaceKind::RightThumb) {
-            parse_face(lines).context("Failed to parse right thumb face")?
+            parse_face(lines, model).context("Failed to parse right thumb face")?
         } else {
             YabFace::new()
         };
 
         let shift = if let Some(lines) = sections.get(&FaceKind::Shift) {
-            parse_face(lines).context("Failed to parse shift face")?
+            parse_face(lines, model).context("Failed to parse shift face")?
         } else {
             YabFace::new()
         };
@@ -314,74 +287,6 @@ fn resolve_face_kana(face: &mut YabFace, table: &HashMap<String, char>) {
             *kana = table.get(romaji.as_str()).copied();
         }
     }
-}
-
-/// 仮想キーコード (VK code) から `PhysicalPos` への変換。
-///
-/// JIS キーボードの一般的なマッピングに基づく。
-/// 修飾キーや特殊キーは `None` を返す。
-#[must_use]
-pub const fn vk_to_pos(vk: u16) -> Option<PhysicalPos> {
-    let (row, col) = match vk {
-        // Row 0: number row (0x30..=0x39 → '0'..'9')
-        0x31 => (0, 0),  // 1
-        0x32 => (0, 1),  // 2
-        0x33 => (0, 2),  // 3
-        0x34 => (0, 3),  // 4
-        0x35 => (0, 4),  // 5
-        0x36 => (0, 5),  // 6
-        0x37 => (0, 6),  // 7
-        0x38 => (0, 7),  // 8
-        0x39 => (0, 8),  // 9
-        0x30 => (0, 9),  // 0
-        0xBD => (0, 10), // VK_OEM_MINUS (-)
-        0xDE => (0, 11), // VK_OEM_7 (^) — JIS layout
-        0xDC => (0, 12), // VK_OEM_5 (¥)
-
-        // Row 1: Q row
-        0x51 => (1, 0),  // Q
-        0x57 => (1, 1),  // W
-        0x45 => (1, 2),  // E
-        0x52 => (1, 3),  // R
-        0x54 => (1, 4),  // T
-        0x59 => (1, 5),  // Y
-        0x55 => (1, 6),  // U
-        0x49 => (1, 7),  // I
-        0x4F => (1, 8),  // O
-        0x50 => (1, 9),  // P
-        0xC0 => (1, 10), // VK_OEM_3 (@) — JIS layout
-        0xDB => (1, 11), // VK_OEM_4 ([)
-
-        // Row 2: A row
-        0x41 => (2, 0),  // A
-        0x53 => (2, 1),  // S
-        0x44 => (2, 2),  // D
-        0x46 => (2, 3),  // F
-        0x47 => (2, 4),  // G
-        0x48 => (2, 5),  // H
-        0x4A => (2, 6),  // J
-        0x4B => (2, 7),  // K
-        0x4C => (2, 8),  // L
-        0xBB => (2, 9),  // VK_OEM_PLUS (;) — JIS layout
-        0xBA => (2, 10), // VK_OEM_1 (:)
-        0xDD => (2, 11), // VK_OEM_6 (])
-
-        // Row 3: Z row
-        0x5A => (3, 0),  // Z
-        0x58 => (3, 1),  // X
-        0x43 => (3, 2),  // C
-        0x56 => (3, 3),  // V
-        0x42 => (3, 4),  // B
-        0x4E => (3, 5),  // N
-        0x4D => (3, 6),  // M
-        0xBC => (3, 7),  // VK_OEM_COMMA (,)
-        0xBE => (3, 8),  // VK_OEM_PERIOD (.)
-        0xBF => (3, 9),  // VK_OEM_2 (/)
-        0xE2 => (3, 10), // VK_OEM_102 (_) — JIS layout
-
-        _ => return None,
-    };
-    Some(PhysicalPos::new(row, col))
 }
 
 #[cfg(test)]

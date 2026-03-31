@@ -38,10 +38,12 @@ pub struct ClassifiedEvent {
     pub key_class: KeyClass,
     /// 物理位置（Char キーの場合のみ Some）
     pub pos: Option<PhysicalPos>,
-    /// 元のイベントデータ
+    /// 元のイベントデータ（プラットフォーム固有、Engine は直接検査しない）
     pub scan_code: ScanCode,
     pub vk_code: VkCode,
     pub timestamp: Timestamp,
+    /// IME 制御キーか（保留フラッシュ判定用、プラットフォーム層が事前分類）
+    pub is_ime_control: bool,
 }
 
 /// 配列の面を表す列挙型
@@ -255,6 +257,7 @@ impl EngineState {
 pub struct PendingKey {
     pub scan_code: ScanCode,
     pub vk_code: VkCode,
+    pub pos: Option<PhysicalPos>,
     pub timestamp: Timestamp,
 }
 
@@ -279,23 +282,19 @@ pub struct ModifierState {
 }
 
 impl ModifierState {
-    /// Ctrl / Alt / Shift / Win キーの押下状態を更新する
+    /// Ctrl / Alt / Shift / Meta キーの押下状態を更新する
+    ///
+    /// プラットフォーム層が `RawKeyEvent.modifier_key` に事前分類した情報を使用する。
     pub const fn update(&mut self, event: &RawKeyEvent) {
-        let is_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
+        let is_down = matches!(event.event_type, KeyEventType::KeyDown);
 
-        match event.vk_code.0 {
-            // Ctrl (generic), LCtrl, RCtrl
-            0x11 | 0xA2 | 0xA3 => self.ctrl = is_down,
-            // Alt (generic), LAlt, RAlt
-            0x12 | 0xA4 | 0xA5 => self.alt = is_down,
-            // Shift (generic), LShift, RShift
-            0x10 | 0xA0 | 0xA1 => self.shift = is_down,
-            // Win (LWin, RWin)
-            0x5B | 0x5C => self.win = is_down,
-            _ => {}
+        if let Some(mk) = event.modifier_key {
+            match mk {
+                crate::types::ModifierKey::Ctrl => self.ctrl = is_down,
+                crate::types::ModifierKey::Alt => self.alt = is_down,
+                crate::types::ModifierKey::Shift => self.shift = is_down,
+                crate::types::ModifierKey::Meta => self.win = is_down,
+            }
         }
     }
 

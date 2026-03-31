@@ -4,9 +4,7 @@
 //! FSM（処理レイヤー）とは独立して動作し、IME チェック等で FSM がスキップ
 //! される場合でも物理キー状態を正確に追跡し続ける。
 
-use crate::scanmap::scan_to_pos;
-use crate::types::{KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
-use crate::vk;
+use crate::types::{KeyClassification, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 
 use super::fsm_types::{ClassifiedEvent, KeyClass, ModifierState};
 
@@ -39,6 +37,7 @@ impl PhysicalKeyState {
                 scan_code: ScanCode(0),
                 vk_code: VkCode(0),
                 timestamp: 0,
+                is_ime_control: false,
             },
             modifiers: ModifierState::default(),
             left_thumb_down: None,
@@ -53,20 +52,27 @@ impl PhysicalKeyState {
 /// IME チェックやエンジン有効/無効に関係なく、常に正確な物理キー状態を保持する。
 #[derive(Debug)]
 pub struct InputTracker {
-    left_thumb_vk: VkCode,
-    right_thumb_vk: VkCode,
     modifiers: ModifierState,
     left_thumb_down: Option<Timestamp>,
     right_thumb_down: Option<Timestamp>,
 }
 
+impl Default for InputTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputTracker {
     #[must_use]
-    pub fn new(left_thumb_vk: VkCode, right_thumb_vk: VkCode) -> Self {
+    pub const fn new() -> Self {
         Self {
-            left_thumb_vk,
-            right_thumb_vk,
-            modifiers: ModifierState::default(),
+            modifiers: ModifierState {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                win: false,
+            },
             left_thumb_down: None,
             right_thumb_down: None,
         }
@@ -99,6 +105,7 @@ impl InputTracker {
                 scan_code: ScanCode(0),
                 vk_code: VkCode(0),
                 timestamp: 0,
+                is_ime_control: false,
             },
             modifiers: self.modifiers,
             left_thumb_down: self.left_thumb_down,
@@ -112,7 +119,7 @@ impl InputTracker {
     /// 最も早い段階でこのメソッドを呼び出す。
     pub fn process(&mut self, event: &RawKeyEvent) -> PhysicalKeyState {
         self.modifiers.update(event);
-        let classified = self.classify(event);
+        let classified = Self::classify(event);
         self.update_thumb_state(&classified, event);
         PhysicalKeyState {
             classified,
@@ -122,47 +129,184 @@ impl InputTracker {
         }
     }
 
-    /// VK コードからキー分類と物理位置を決定する
-    fn classify(&self, event: &RawKeyEvent) -> ClassifiedEvent {
-        let key_class = if event.vk_code == self.left_thumb_vk {
-            KeyClass::LeftThumb
-        } else if event.vk_code == self.right_thumb_vk {
-            KeyClass::RightThumb
-        } else if vk::is_passthrough(event.vk_code) {
-            KeyClass::Passthrough
-        } else if scan_to_pos(event.scan_code).is_some() {
-            // scan_to_pos でマッピングできるキーだけを Char とみなす。
-            // マッピングできないキー（メディアキー、OEM キー等）は Passthrough。
-            KeyClass::Char
-        } else {
-            KeyClass::Passthrough
-        };
-
-        let pos = if key_class == KeyClass::Char {
-            scan_to_pos(event.scan_code)
-        } else {
-            None
+    /// プラットフォーム層が事前分類したキー情報から ClassifiedEvent を構築する
+    const fn classify(event: &RawKeyEvent) -> ClassifiedEvent {
+        let key_class = match event.key_classification {
+            KeyClassification::Char => KeyClass::Char,
+            KeyClassification::LeftThumb => KeyClass::LeftThumb,
+            KeyClassification::RightThumb => KeyClass::RightThumb,
+            KeyClassification::Passthrough => KeyClass::Passthrough,
         };
 
         ClassifiedEvent {
             key_class,
-            pos,
+            pos: event.physical_pos,
             scan_code: event.scan_code,
             vk_code: event.vk_code,
             timestamp: event.timestamp,
+            is_ime_control: event.ime_relevance.is_ime_control,
         }
     }
 
     /// 親指キーの押下/解放状態を更新する
     fn update_thumb_state(&mut self, ev: &ClassifiedEvent, event: &RawKeyEvent) {
-        let is_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
+        let is_down = matches!(event.event_type, KeyEventType::KeyDown);
         if ev.key_class.is_left_thumb() {
             self.left_thumb_down = if is_down { Some(ev.timestamp) } else { None };
         } else if ev.key_class == KeyClass::RightThumb {
             self.right_thumb_down = if is_down { Some(ev.timestamp) } else { None };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ImeRelevance, KeyClassification, ModifierKey};
+
+    fn make_event(event_type: KeyEventType) -> RawKeyEvent {
+        RawKeyEvent {
+            vk_code: VkCode(0),
+            scan_code: ScanCode(0),
+            event_type,
+            extra_info: 0,
+            timestamp: 0,
+            key_classification: KeyClassification::Passthrough,
+            physical_pos: None,
+            ime_relevance: ImeRelevance::default(),
+            modifier_key: None,
+        }
+    }
+
+    #[test]
+    fn new_creates_default_state() {
+        let tracker = InputTracker::new();
+        let mods = tracker.modifiers();
+        assert!(!mods.ctrl);
+        assert!(!mods.alt);
+        assert!(!mods.shift);
+        assert!(!mods.win);
+    }
+
+    #[test]
+    fn modifiers_returns_default_all_false() {
+        let tracker = InputTracker::default();
+        let mods = tracker.modifiers();
+        assert!(!mods.ctrl && !mods.alt && !mods.shift && !mods.win);
+    }
+
+    #[test]
+    fn set_modifiers_updates_state() {
+        let mut tracker = InputTracker::new();
+        let mods = ModifierState {
+            ctrl: true,
+            alt: false,
+            shift: true,
+            win: false,
+        };
+        tracker.set_modifiers(mods);
+        let got = tracker.modifiers();
+        assert!(got.ctrl);
+        assert!(got.shift);
+        assert!(!got.alt);
+        assert!(!got.win);
+    }
+
+    #[test]
+    fn process_char_key_down_returns_correct_classified_event() {
+        let mut tracker = InputTracker::new();
+        let mut event = make_event(KeyEventType::KeyDown);
+        event.key_classification = KeyClassification::Char;
+        event.vk_code = VkCode(0x41); // 'A'
+        event.scan_code = ScanCode(30);
+        event.timestamp = 1000;
+
+        let phys = tracker.process(&event);
+        assert_eq!(phys.classified.key_class, KeyClass::Char);
+        assert_eq!(phys.classified.vk_code, VkCode(0x41));
+        assert_eq!(phys.classified.scan_code, ScanCode(30));
+        assert_eq!(phys.classified.timestamp, 1000);
+    }
+
+    #[test]
+    fn process_modifier_key_down_updates_modifier_state() {
+        let mut tracker = InputTracker::new();
+        let mut event = make_event(KeyEventType::KeyDown);
+        event.modifier_key = Some(ModifierKey::Ctrl);
+
+        let phys = tracker.process(&event);
+        assert!(phys.modifiers.ctrl);
+        assert!(!phys.modifiers.shift);
+
+        // Verify tracker internal state also updated
+        assert!(tracker.modifiers().ctrl);
+    }
+
+    #[test]
+    fn process_thumb_key_tracks_thumb_down_timestamps() {
+        let mut tracker = InputTracker::new();
+
+        // Left thumb down
+        let mut event = make_event(KeyEventType::KeyDown);
+        event.key_classification = KeyClassification::LeftThumb;
+        event.timestamp = 500;
+        let phys = tracker.process(&event);
+        assert_eq!(phys.left_thumb_down, Some(500));
+        assert_eq!(phys.right_thumb_down, None);
+
+        // Right thumb down
+        let mut event = make_event(KeyEventType::KeyDown);
+        event.key_classification = KeyClassification::RightThumb;
+        event.timestamp = 600;
+        let phys = tracker.process(&event);
+        assert_eq!(phys.right_thumb_down, Some(600));
+        assert_eq!(phys.left_thumb_down, Some(500));
+
+        // Left thumb up
+        let mut event = make_event(KeyEventType::KeyUp);
+        event.key_classification = KeyClassification::LeftThumb;
+        event.timestamp = 700;
+        let phys = tracker.process(&event);
+        assert_eq!(phys.left_thumb_down, None);
+        assert_eq!(phys.right_thumb_down, Some(600));
+    }
+
+    #[test]
+    fn snapshot_returns_current_state_without_event() {
+        let mut tracker = InputTracker::new();
+
+        // Set some state first
+        let mut event = make_event(KeyEventType::KeyDown);
+        event.modifier_key = Some(ModifierKey::Shift);
+        tracker.process(&event);
+
+        let mut event = make_event(KeyEventType::KeyDown);
+        event.key_classification = KeyClassification::LeftThumb;
+        event.timestamp = 999;
+        tracker.process(&event);
+
+        let snap = tracker.snapshot();
+        assert!(snap.modifiers.shift);
+        assert_eq!(snap.left_thumb_down, Some(999));
+        assert_eq!(snap.right_thumb_down, None);
+        // snapshot classified is always Passthrough placeholder
+        assert_eq!(snap.classified.key_class, KeyClass::Passthrough);
+    }
+
+    #[test]
+    fn physical_key_state_empty_returns_neutral_state() {
+        let empty = PhysicalKeyState::empty();
+        assert_eq!(empty.classified.key_class, KeyClass::Passthrough);
+        assert!(empty.classified.pos.is_none());
+        assert_eq!(empty.classified.scan_code, ScanCode(0));
+        assert_eq!(empty.classified.vk_code, VkCode(0));
+        assert_eq!(empty.classified.timestamp, 0);
+        assert!(!empty.classified.is_ime_control);
+        assert!(!empty.modifiers.ctrl);
+        assert!(!empty.modifiers.alt);
+        assert!(!empty.modifiers.shift);
+        assert!(!empty.modifiers.win);
+        assert!(empty.left_thumb_down.is_none());
+        assert!(empty.right_thumb_down.is_none());
     }
 }

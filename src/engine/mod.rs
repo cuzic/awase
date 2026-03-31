@@ -11,6 +11,7 @@ mod fsm_adapter;
 pub mod fsm_types;
 pub mod ime_coordinator;
 pub mod input_tracker;
+pub mod key_lifecycle;
 mod nicola_fsm;
 pub mod observation;
 pub mod output_history;
@@ -27,6 +28,7 @@ pub use fsm_types::{
     PendingKey, PendingThumbData, TimerIntent,
 };
 pub use ime_coordinator::ImeCoordinator;
+pub use key_lifecycle::KeyLifecycle;
 pub use nicola_fsm::NicolaFsm;
 pub use observation::{FocusObservation, ImeObservation};
 
