@@ -8,11 +8,91 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::output::INJECTED_MARKER;
-use awase::types::{KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+use crate::scanmap::scan_to_pos;
+use awase::scanmap::PhysicalPos;
+use awase::types::{
+    ImeRelevance, KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode,
+    ShadowImeAction, Timestamp, VkCode,
+};
+
+/// Windows VK + ScanCode からキー分類と物理位置を生成する
+fn classify_key(vk: VkCode, scan: ScanCode) -> (KeyClassification, Option<PhysicalPos>) {
+    use crate::vk;
+
+    let left_thumb = VkCode(LEFT_THUMB_VK.load(Ordering::Relaxed));
+    let right_thumb = VkCode(RIGHT_THUMB_VK.load(Ordering::Relaxed));
+
+    if vk == left_thumb {
+        (KeyClassification::LeftThumb, None)
+    } else if vk == right_thumb {
+        (KeyClassification::RightThumb, None)
+    } else if vk::is_passthrough(vk) {
+        (KeyClassification::Passthrough, None)
+    } else if let Some(pos) = scan_to_pos(scan) {
+        (KeyClassification::Char, Some(pos))
+    } else {
+        (KeyClassification::Passthrough, None)
+    }
+}
+
+/// Windows VK コードから修飾キー分類を生成する
+const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
+    match vk.0 {
+        0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
+        0x11 | 0xA2 | 0xA3 => Some(ModifierKey::Ctrl),
+        0x12 | 0xA4 | 0xA5 => Some(ModifierKey::Alt),
+        0x5B | 0x5C => Some(ModifierKey::Meta),
+        _ => None,
+    }
+}
+
+/// Windows VK コードから IME 関連の事前分類情報を生成する
+fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
+    use crate::vk;
+
+    let ime_key = vk::ImeKeyKind::from_vk(vk);
+    let shadow_action = ime_key.map(|k| match k.shadow_effect() {
+        vk::ShadowImeEffect::TurnOn => ShadowImeAction::TurnOn,
+        vk::ShadowImeEffect::TurnOff => ShadowImeAction::TurnOff,
+        vk::ShadowImeEffect::Toggle => ShadowImeAction::Toggle,
+    });
+
+    // Note: is_sync_key and sync_direction are set later by the runtime
+    // when it has access to the config. This function only classifies
+    // hardware-level IME properties.
+    ImeRelevance {
+        may_change_ime: ime_key.is_some() || vk::may_change_ime(vk),
+        shadow_action,
+        is_sync_key: false,   // set by runtime with config
+        sync_direction: None, // set by runtime with config
+        is_ime_control: vk::is_ime_control(vk),
+    }
+}
+
+/// 左親指キーの VK コード（config から設定）
+static LEFT_THUMB_VK: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0x1D); // VK_NONCONVERT
+
+/// 右親指キーの VK コード（config から設定）
+static RIGHT_THUMB_VK: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0x1C); // VK_CONVERT
+
+/// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
+pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
+    LEFT_THUMB_VK.store(left.0, Ordering::Relaxed);
+    RIGHT_THUMB_VK.store(right.0, Ordering::Relaxed);
+}
 
 /// フックコールバックが最後に呼ばれた時刻（`GetTickCount64` ミリ秒）。
 /// 0 はまだ一度も呼ばれていないことを意味する。
 static LAST_HOOK_ACTIVITY: AtomicU64 = AtomicU64::new(0);
+
+/// フックコールバックの累積呼び出し回数。
+/// ウォッチドッグが前回チェック時の値と比較して、増えていなければフック消失。
+static HOOK_EVENT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// フックイベントカウンタの現在値を返す
+pub fn hook_event_count() -> u64 {
+    HOOK_EVENT_COUNT.load(Ordering::Relaxed)
+}
 
 /// フックコールバックの最終活動時刻を返す（`GetTickCount64` ミリ秒、0 = 未活動）。
 pub fn last_hook_activity_ms() -> u64 {
@@ -151,6 +231,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
         // ── ハートビート更新（ウォッチドッグ用）──
         LAST_HOOK_ACTIVITY.store(current_tick_ms(), Ordering::Relaxed);
+        HOOK_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
 
         // ── 自己注入チェック（無限ループ防止）──
         if kb.dwExtraInfo == INJECTED_MARKER {
@@ -165,22 +246,27 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         *in_callback = true;
 
         let event_type = match wparam.0 as u32 {
-            WM_KEYDOWN => KeyEventType::KeyDown,
-            WM_KEYUP => KeyEventType::KeyUp,
-            WM_SYSKEYDOWN => KeyEventType::SysKeyDown,
-            WM_SYSKEYUP => KeyEventType::SysKeyUp,
+            WM_KEYDOWN | WM_SYSKEYDOWN => KeyEventType::KeyDown,
+            WM_KEYUP | WM_SYSKEYUP => KeyEventType::KeyUp,
             _ => {
                 *in_callback = false;
                 return CallNextHookEx(hook_handle, ncode, wparam, lparam);
             }
         };
 
+        let vk = VkCode(kb.vkCode as u16);
+        let scan = ScanCode(kb.scanCode);
+        let (key_classification, physical_pos) = classify_key(vk, scan);
         let event = RawKeyEvent {
-            vk_code: VkCode(kb.vkCode as u16),
-            scan_code: ScanCode(kb.scanCode),
+            vk_code: vk,
+            scan_code: scan,
             event_type,
             extra_info: kb.dwExtraInfo,
             timestamp: now_timestamp(),
+            key_classification,
+            physical_pos,
+            ime_relevance: classify_ime_relevance(vk),
+            modifier_key: classify_modifier(vk),
         };
 
         log::trace!(

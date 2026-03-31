@@ -348,7 +348,7 @@ impl ImeProvider for HybridProvider {
         // Keyboard layout (HKL) as additional signal
         let hkl = unsafe { GetKeyboardLayout(0) };
         let lang_id = hkl.0 as u32 & 0xFFFF;
-        let is_japanese_hkl = lang_id == awase::vk::LANGID_JAPANESE;
+        let is_japanese_hkl = lang_id == crate::vk::LANGID_JAPANESE;
 
         // ImmGetOpenStatus as yet another signal
         let imm_open = unsafe {
@@ -410,7 +410,7 @@ pub fn keyboard_layout_info() -> (bool, u32) {
         let hkl = GetKeyboardLayout(0);
         // 下位 16 bit が言語 ID。日本語は 0x0411
         let lang_id = hkl.0 as u32 & 0xFFFF;
-        (lang_id == awase::vk::LANGID_JAPANESE, lang_id)
+        (lang_id == crate::vk::LANGID_JAPANESE, lang_id)
     }
 }
 

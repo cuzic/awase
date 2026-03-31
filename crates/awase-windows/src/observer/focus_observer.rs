@@ -16,7 +16,7 @@ use crate::{FOCUS_DEBOUNCE_MS, FOCUS_KIND, TIMER_FOCUS_DEBOUNCE};
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-unsafe fn read_os_modifiers() -> ModifierState {
+pub unsafe fn read_os_modifiers() -> ModifierState {
     // GetAsyncKeyState: 最上位ビットが 1 なら押下中
     let pressed = |vk: i32| -> bool { (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) != 0 };
     ModifierState {

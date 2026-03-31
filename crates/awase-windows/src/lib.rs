@@ -23,8 +23,10 @@ pub mod observer;
 pub mod output;
 pub mod platform;
 pub mod runtime;
+pub mod scanmap;
 pub mod single_thread_cell;
 pub mod tray;
+pub mod vk;
 pub mod win32;
 
 pub use runtime::{LayoutEntry, Runtime};
@@ -73,6 +75,9 @@ pub const TIMER_FOCUS_DEBOUNCE: usize = 103;
 /// IME 状態ポーリング用タイマー ID（安全ネット: マウスで言語バー操作した場合等）
 pub const TIMER_IME_POLL: usize = 101;
 
+/// フック消失ウォッチドッグタイマー ID（IME ポーリングとは独立）
+pub const TIMER_HOOK_WATCHDOG: usize = 102;
+
 /// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
 pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 
@@ -84,6 +89,9 @@ pub const WM_FOCUS_KIND_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::W
 
 /// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
 pub const WM_IME_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
+
+/// フックコールバックからキューされた Effects の実行要求
+pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
 
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///
@@ -99,10 +107,7 @@ pub unsafe fn reinject_key(event: &RawKeyEvent) {
         VIRTUAL_KEY,
     };
 
-    let is_keyup = matches!(
-        event.event_type,
-        KeyEventType::KeyUp | KeyEventType::SysKeyUp
-    );
+    let is_keyup = matches!(event.event_type, KeyEventType::KeyUp);
 
     let input = INPUT {
         r#type: INPUT_KEYBOARD,

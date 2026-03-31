@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use awase::config::OutputMode;
-use awase::types::KeyAction;
+use awase::types::{KeyAction, SpecialKey};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
@@ -25,6 +25,17 @@ const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
         ',' => Some((0xBC, false)),
         '/' => Some((0xBF, false)),
         _ => None,
+    }
+}
+
+/// SpecialKey を Windows VK コードに変換する
+const fn special_key_to_vk(sk: SpecialKey) -> u16 {
+    match sk {
+        SpecialKey::Backspace => 0x08, // VK_BACK
+        SpecialKey::Escape => 0x1B,    // VK_ESCAPE
+        SpecialKey::Enter => 0x0D,     // VK_RETURN
+        SpecialKey::Space => 0x20,     // VK_SPACE
+        SpecialKey::Delete => 0x2E,    // VK_DELETE
     }
 }
 
@@ -61,6 +72,7 @@ impl Output {
     pub fn send_keys(&self, actions: &[KeyAction]) {
         for action in actions {
             match action {
+                KeyAction::SpecialKey(sk) => self.send_key(special_key_to_vk(*sk), false),
                 KeyAction::Key(vk) => self.send_key(vk.0, false),
                 KeyAction::KeyUp(vk) => self.send_key(vk.0, true),
                 KeyAction::Char(ch) => self.send_unicode_char(*ch),

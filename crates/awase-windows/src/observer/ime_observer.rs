@@ -36,7 +36,7 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
         let hkl = GetKeyboardLayout(thread_id);
         (hkl.0 as u32) & 0xFFFF
     };
-    let is_japanese = lang_id == awase::vk::LANGID_JAPANESE;
+    let is_japanese = lang_id == crate::vk::LANGID_JAPANESE;
 
     // Step 2: クロスプロセス IME 検出
     let cross_process = crate::ime::detect_ime_open_cross_process();

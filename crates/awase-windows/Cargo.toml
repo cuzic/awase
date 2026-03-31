@@ -11,8 +11,17 @@ path = "src/lib.rs"
 name = "awase"
 path = "src/main.rs"
 
+[[bin]]
+name = "awase-settings"
+path = "src/gui/main.rs"
+required-features = ["gui"]
+
+[features]
+gui = ["eframe"]
+
 [dependencies]
 awase = { path = "../.." }
+eframe = { version = "0.31", optional = true }
 timed-fsm = { path = "../timed-fsm" }
 log = "0.4"
 env_logger = "0.11"
