@@ -118,6 +118,13 @@ impl ImeCoordinator {
             }
 
             // While IME guard active, buffer keys
+            // 安全策: バッファが 10 キーを超えたらガードを強制解除（スタック防止）
+            if self.guard.is_guarded() && self.guard.deferred_keys.len() >= 10 {
+                log::warn!("IME guard forced clear: deferred buffer overflow");
+                self.guard.set_guard(false);
+                effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
+                return None; // ガード解除、通常処理に戻る
+            }
             if self.guard.is_guarded() {
                 self.guard.push_deferred(*event, *phys);
                 // Return consumed + RequestImeCacheRefresh (via effects already accumulated)
@@ -128,12 +135,14 @@ impl ImeCoordinator {
             }
         }
 
-        // Guard clear on KeyUp of toggle key
+        // Guard clear on KeyUp of any IME sync key.
+        // 複数の sync キーが設定されている場合、どのキーの KeyUp でも解除する。
+        // これにより、KEY1 で guard ON → KEY2 の KeyUp で解除、という組み合わせも安全。
         if !is_key_down && self.guard.is_guarded() {
-            let is_toggle_key = self.sync_keys.toggle.contains(&event.vk_code);
-            let is_on_key = self.sync_keys.on.contains(&event.vk_code);
-            let is_off_key = self.sync_keys.off.contains(&event.vk_code);
-            if is_toggle_key || is_on_key || is_off_key {
+            let is_sync_key = self.sync_keys.toggle.contains(&event.vk_code)
+                || self.sync_keys.on.contains(&event.vk_code)
+                || self.sync_keys.off.contains(&event.vk_code);
+            if is_sync_key {
                 self.guard.set_guard(false);
                 effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
             }

@@ -212,11 +212,10 @@ impl Engine {
             return Decision::pass_through();
         };
 
-        let mut effects = vec![Effect::ImeCache(ImeCacheEffect::UpdateStateCache {
-            ime_on,
-        })];
+        let mut effects = Vec::new();
 
         // エンジンを IME 状態に追随させる（SyncImeState と同じロジック）
+        // フラッシュをキャッシュ更新より先に実行する（保留キーが消失しないように）
         if ime_on && !self.adapter.is_enabled() {
             let _ = self.adapter.set_enabled(true);
             effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
@@ -229,11 +228,12 @@ impl Engine {
             log::info!("Engine auto-disabled (IME OFF)");
         }
 
-        if effects.is_empty() {
-            Decision::pass_through()
-        } else {
-            Decision::pass_through_with(effects)
-        }
+        // キャッシュ更新はフラッシュの後（保留キーの出力が先に実行される）
+        effects.push(Effect::ImeCache(ImeCacheEffect::UpdateStateCache {
+            ime_on,
+        }));
+
+        Decision::pass_through_with(effects)
     }
 
     /// フォーカス変更の観測結果を処理し、コンテキスト無効化等の Decision を返す。
