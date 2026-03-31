@@ -106,9 +106,15 @@ impl Engine {
         }
 
         // Phase 6: IME state check
+        // 蓄積された effects（RequestImeCacheRefresh 等）を含めて返す。
+        // effects を捨てると IME キャッシュ更新が行われず、
+        // 半角/全角後にエンジンが有効にならない。
         let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
         if !ime_on {
-            return Decision::pass_through();
+            if effects.is_empty() {
+                return Decision::pass_through();
+            }
+            return Decision::pass_through_with(effects);
         }
 
         // Phase 7: NicolaFsm
