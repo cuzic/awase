@@ -120,33 +120,39 @@ impl DecisionExecutor {
         }
     }
 
-    // ── Relay モード ──
+    // ── Relay モード（スマートリレー）──
+    //
+    // 普通の PassThrough はそのまま OS に通す（他フックとの相性を保つ）。
+    // PassThroughWith（flush 出力あり）のときだけ Consume して、
+    // flush 出力 → キー再注入 を FIFO でキューに入れる（順序保証）。
 
     fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
-        let effects = match decision {
+        match decision {
             Decision::PassThrough => {
-                // PassThrough キーも Consume して ReinjectKey でキューに入れる
-                self.queue
-                    .push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
-                return HookResult {
+                // Effects なし → そのまま OS に通す（物理キーとして他フックにも届く）
+                HookResult {
+                    callback: CallbackResult::PassThrough,
+                    has_pending: self.has_pending(),
+                }
+            }
+            Decision::PassThroughWith { mut effects } => {
+                // flush 出力あり → Consume して、出力 + キー再注入を FIFO でキュー
+                // これにより flush 出力がキーより先に実行される（順序保証）
+                effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                self.queue.extend(effects);
+                HookResult {
                     callback: CallbackResult::Consumed,
                     has_pending: true,
-                };
+                }
             }
-            Decision::PassThroughWith { effects } => {
-                // PassThrough + Effects → 全て Consume、キーも ReinjectKey
-                let mut all = effects;
-                all.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
-                all
+            Decision::Consume { effects } => {
+                // Engine が消費 → 全 Effects をキューに入れる
+                self.queue.extend(effects);
+                HookResult {
+                    callback: CallbackResult::Consumed,
+                    has_pending: self.has_pending(),
+                }
             }
-            Decision::Consume { effects } => effects,
-        };
-
-        self.queue.extend(effects);
-
-        HookResult {
-            callback: CallbackResult::Consumed,
-            has_pending: self.has_pending(),
         }
     }
 
