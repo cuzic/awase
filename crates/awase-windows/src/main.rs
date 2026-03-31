@@ -158,7 +158,8 @@ fn main() -> Result<()> {
         );
     }
 
-    let raw_config = load_config()?;
+    let mut raw_config = load_config()?;
+    handle_auto_start(&mut raw_config);
     let (config, config_warnings) = raw_config.validate();
     for w in &config_warnings {
         diag.warn(w);
@@ -294,6 +295,46 @@ fn load_config() -> Result<AppConfig> {
         config.general.hook_mode,
     );
     Ok(config)
+}
+
+/// 自動起動の設定を処理する
+///
+/// `auto_start` の値に応じて Task Scheduler への登録/解除を行う。
+/// "ask" の場合はダイアログで確認し、結果を config.toml に保存する。
+fn handle_auto_start(config: &mut AppConfig) {
+    use awase_windows::autostart;
+
+    match config.general.auto_start.as_str() {
+        "ask" => {
+            if !autostart::is_registered() {
+                if autostart::ask_user() {
+                    autostart::register();
+                    config.general.auto_start = "enabled".to_string();
+                } else {
+                    config.general.auto_start = "disabled".to_string();
+                }
+                // 設定を保存して次回以降は確認しない
+                if let Ok(config_path) = find_config_path() {
+                    if let Err(e) = config.save(&config_path) {
+                        log::error!("Failed to save auto_start setting: {e}");
+                    }
+                }
+            }
+        }
+        "enabled" => {
+            if !autostart::is_registered() {
+                autostart::register();
+            }
+        }
+        "disabled" => {
+            if autostart::is_registered() {
+                autostart::unregister();
+            }
+        }
+        other => {
+            log::warn!("Unknown auto_start value: {other}, ignoring");
+        }
+    }
 }
 
 /// 検証済み設定で配列の読み込みとエンジン初期化を行い、構成要素を返す

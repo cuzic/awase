@@ -133,6 +133,10 @@ pub struct GeneralConfig {
     #[serde(default = "default_ime_poll_interval_ms")]
     pub ime_poll_interval_ms: u32,
 
+    /// 自動起動の設定（"ask" = 初回起動時に確認, "enabled" = 有効, "disabled" = 無効）
+    #[serde(default = "default_auto_start")]
+    pub auto_start: String,
+
     /// Linux 入力バックエンド ("evdev", "x11", "libinput")
     #[serde(default = "default_linux_input_backend")]
     pub linux_input_backend: String,
@@ -210,6 +214,10 @@ const fn default_focus_debounce_ms() -> u32 {
 
 const fn default_ime_poll_interval_ms() -> u32 {
     500
+}
+
+fn default_auto_start() -> String {
+    "ask".to_string()
 }
 
 fn default_linux_input_backend() -> String {

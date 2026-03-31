@@ -15,6 +15,7 @@
 //! キーボードフック、出力、IME 制御、システムトレイ、フォーカス判定など
 //! すべての Win32 API 依存コードを集約する。
 
+pub mod autostart;
 pub mod executor;
 pub mod focus;
 pub mod hook;
