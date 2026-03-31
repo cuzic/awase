@@ -81,6 +81,7 @@ impl Engine {
         // Phase 3.5: IME 変更キー検出時:
         // 1. 保留キーを先にフラッシュ（IME が切り替わる前に現在の状態で確定）
         // 2. IME キャッシュを Unknown に無効化（次のキーで shadow にフォールバック）
+        // 3. shadow に基づいてエンジンの有効/無効を同期する
         //
         // 注意: ここで RequestImeCacheRefresh を送ってはいけない。
         // IME トグルキーはフックで捕捉された時点で OS にまだ届いていないため、
@@ -93,6 +94,20 @@ impl Engine {
             let flush_effects = self.adapter.flush_to_effects(ContextChange::ImeOff);
             effects.extend(flush_effects);
             effects.push(Effect::ImeCache(ImeCacheEffect::Invalidate));
+
+            // shadow に基づいてエンジン有効/無効を即座に同期する。
+            // cache 更新は非同期なので、ここで sync しないと
+            // FSM の enabled フラグが古いまま残る。
+            let shadow_on = self.ime.shadow_on();
+            if shadow_on && !self.adapter.is_enabled() {
+                let _ = self.adapter.set_enabled(true);
+                effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
+                log::info!("Engine auto-enabled (IME toggle, shadow ON)");
+            } else if !shadow_on && self.adapter.is_enabled() {
+                let _ = self.adapter.set_enabled(false);
+                effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
+                log::info!("Engine auto-disabled (IME toggle, shadow OFF)");
+            }
         }
 
         // Phase 4: IME toggle guard
