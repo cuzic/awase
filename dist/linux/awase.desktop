@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=awase
+Comment=NICOLA thumb shift keyboard emulator
+Exec=awase
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true

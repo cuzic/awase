@@ -1,0 +1,14 @@
+[Unit]
+Description=awase - NICOLA thumb shift keyboard emulator
+Documentation=https://github.com/cuzic/awase
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/awase
+Restart=on-failure
+RestartSec=3
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
