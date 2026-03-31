@@ -59,9 +59,10 @@ const fn conversion_to_ime_mode(open: bool, conversion: u32) -> ImeMode {
 /// TSF ベースの IME 状態検知
 pub struct TsfProvider {
     thread_mgr: ITfThreadMgr,
-    /// 言語プロファイル変更シンクの cookie（Drop 時に解除用）
-    #[allow(dead_code)]
-    sink_cookie: Option<u32>,
+    // TODO: ITfActiveLanguageProfileNotifySink で IME ON/OFF をリアルタイム検出する。
+    // windows クレートの #[implement] マクロが必要（Windows ビルド環境で実装）。
+    // 方針: OnActivated で PostMessage(WM_IME_KEY_DETECTED) → 既存ハンドラに通知。
+    // ポーリング（500ms）は安全ネットとして残す。
 }
 
 impl TsfProvider {
@@ -74,19 +75,8 @@ impl TsfProvider {
             let thread_mgr: ITfThreadMgr =
                 CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER).ok()?;
 
-            // 入力プロファイル変更のリアルタイム通知を登録
-            let sink_cookie = advise_language_profile_sink(&thread_mgr);
-            if sink_cookie.is_none() {
-                log::warn!(
-                    "TSF language profile sink registration failed — falling back to polling"
-                );
-            }
-
             log::info!("TSF provider initialized successfully");
-            Some(Self {
-                thread_mgr,
-                sink_cookie,
-            })
+            Some(Self { thread_mgr })
         }
     }
 
@@ -122,23 +112,6 @@ impl ImeProvider for TsfProvider {
         // Fall back to false for now — HybridProvider will use ImmProvider as fallback.
         false
     }
-}
-
-// ─── TSF 入力プロファイル変更通知シンク ──────────────────────
-//
-// TODO: ITfActiveLanguageProfileNotifySink を実装して IME ON/OFF をリアルタイム検出する。
-// windows クレート 0.58 の #[implement] マクロが Linux クロスコンパイルで動作しないため、
-// Windows 環境で完成させる必要がある。
-//
-// 方針:
-// 1. ITfActiveLanguageProfileNotifySink::OnActivated で IME 変更を検出
-// 2. PostMessage(WM_IME_KEY_DETECTED) でメッセージループに通知
-// 3. 既存のポーリング（500ms）を安全ネットとして残す
-
-/// TSF シンク登録のスタブ。Windows 環境で #[implement] マクロを使って実装する。
-fn advise_language_profile_sink(_thread_mgr: &ITfThreadMgr) -> Option<u32> {
-    log::info!("TSF language profile sink: not yet implemented (requires Windows build)");
-    None
 }
 
 // ─── IMM32 (Input Method Manager) ────────────────────────────

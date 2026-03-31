@@ -30,7 +30,6 @@ anyhow = "1"
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
 features = [
-    "implement",
     "Win32_Foundation",
     "Win32_UI_Accessibility",
     "Win32_UI_WindowsAndMessaging",
