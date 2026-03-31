@@ -42,16 +42,22 @@ impl PlatformRuntime for WindowsPlatform {
     fn set_timer(&mut self, id: usize, duration: Duration) {
         let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
         // SAFETY: SetTimer は Win32 API。メインスレッドから呼ぶ。
+        // HWND NULL + SetTimer は OS が独自の ID を割り当てる。
+        // 戻り値をグローバルマップに保存し、WM_TIMER で逆引きする。
         unsafe {
-            let ret = SetTimer(HWND::default(), id, ms, None);
-            log::debug!("SetTimer(id={id}, ms={ms}) → ret={ret}");
+            let os_id = SetTimer(HWND::default(), 0, ms, None);
+            log::debug!("SetTimer(logical={id}, ms={ms}) → os_id={os_id}");
+            crate::timer_map_set(id, os_id);
         }
     }
 
     fn kill_timer(&mut self, id: usize) {
         // SAFETY: KillTimer は Win32 API。メインスレッドから呼ぶ。
         unsafe {
-            let _ = KillTimer(HWND::default(), id);
+            if let Some(os_id) = crate::timer_map_remove(id) {
+                let _ = KillTimer(HWND::default(), os_id);
+                log::debug!("KillTimer(logical={id}, os_id={os_id})");
+            }
         }
     }
 

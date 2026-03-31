@@ -211,18 +211,20 @@ fn main() -> Result<()> {
 
     // IME 状態ポーリングタイマー（安全ネット: マウスで言語バー操作等に対応）
     let _ime_timer_guard = unsafe {
-        let _ = SetTimer(
+        let os_id = SetTimer(
             HWND::default(),
-            TIMER_IME_POLL,
+            0,
             IME_POLL_INTERVAL_MS.load(Ordering::Relaxed),
             None,
         );
+        awase_windows::timer_map_set(TIMER_IME_POLL, os_id);
         TimerGuard(TIMER_IME_POLL)
     };
 
     // フック消失ウォッチドッグタイマー（3秒間隔、IME ポーリングとは独立）
     let _watchdog_timer_guard = unsafe {
-        let _ = SetTimer(HWND::default(), TIMER_HOOK_WATCHDOG, 3000, None);
+        let os_id = SetTimer(HWND::default(), 0, 3000, None);
+        awase_windows::timer_map_set(TIMER_HOOK_WATCHDOG, os_id);
         TimerGuard(TIMER_HOOK_WATCHDOG)
     };
 
@@ -506,7 +508,9 @@ struct TimerGuard(usize);
 impl Drop for TimerGuard {
     fn drop(&mut self) {
         unsafe {
-            let _ = KillTimer(HWND::default(), self.0);
+            if let Some(os_id) = awase_windows::timer_map_remove(self.0) {
+                let _ = KillTimer(HWND::default(), os_id);
+            }
         }
         log::info!("Timer {} killed", self.0);
     }
@@ -693,12 +697,14 @@ fn run_message_loop() {
         }
 
         match msg.message {
-            WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
+            WM_TIMER if awase_windows::timer_map_resolve(msg.wParam.0) == Some(TIMER_IME_POLL) => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
                 }
             },
-            WM_TIMER if msg.wParam.0 == TIMER_HOOK_WATCHDOG => unsafe {
+            WM_TIMER
+                if awase_windows::timer_map_resolve(msg.wParam.0) == Some(TIMER_HOOK_WATCHDOG) =>
+            unsafe {
                 // ── フック消失ウォッチドッグ（3秒間隔、IME ポーリングとは独立）──
                 //
                 // 方式: イベントカウンタ比較。前回チェック時のカウンタと比較し、
@@ -765,17 +771,24 @@ fn run_message_loop() {
                     app.executor.execute_from_loop(decision);
                 }
             },
-            WM_TIMER if msg.wParam.0 == TIMER_FOCUS_DEBOUNCE => unsafe {
+            WM_TIMER
+                if awase_windows::timer_map_resolve(msg.wParam.0) == Some(TIMER_FOCUS_DEBOUNCE) =>
+            unsafe {
                 // フォーカス遷移デバウンス完了 → IME キャッシュ更新
                 // キーはバッファせず、デバウンス中は前のキャッシュ値で処理される。
-                let _ = KillTimer(HWND::default(), TIMER_FOCUS_DEBOUNCE);
+                if let Some(os_id) = awase_windows::timer_map_remove(TIMER_FOCUS_DEBOUNCE) {
+                    let _ = KillTimer(HWND::default(), os_id);
+                }
                 if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
                 }
             },
-            WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
-                let timer_id = msg.wParam.0;
-                log::debug!("WM_TIMER fired: timer_id={timer_id}");
+            WM_TIMER if awase_windows::timer_map_resolve(msg.wParam.0).is_some() => {
+                let timer_id = awase_windows::timer_map_resolve(msg.wParam.0).unwrap();
+                log::debug!(
+                    "WM_TIMER fired: os_id={}, logical_id={timer_id}",
+                    msg.wParam.0
+                );
                 unsafe {
                     if let Some(app) = APP.get_mut() {
                         let ctx = InputContext {
