@@ -1,0 +1,81 @@
+# awase 設定ファイル
+#
+# このファイルを config.toml にコピーして使用してください。
+# cp config.toml.sample config.toml
+
+[general]
+# キーボードの物理レイアウト（"jis" or "us"）
+keyboard_model = "jis"
+
+# 同時打鍵の判定閾値（ミリ秒、NICOLA 規格標準: 100ms）
+simultaneous_threshold_ms = 100
+
+# 左親指キー / 右親指キー
+left_thumb_key = "Nonconvert"
+right_thumb_key = "Convert"
+
+# 配列定義ファイル
+layouts_dir = "layout"
+default_layout = "nicola.yab"
+
+# 確定モード
+#   wait             - タイムアウトまで出力を保留
+#   speculative      - 即座に出力、同時打鍵時に BS で差し替え
+#   two_phase        - 短い待機→投機出力→差し替え
+#   adaptive_timing  - 連続中は待機、途切れたら投機
+#   ngram_predictive - n-gram 予測で投機/待機を動的切替
+confirm_mode = "ngram_predictive"
+# speculative_delay_ms = 30
+
+# ローマ字出力の送信方式
+#   per_key  - 1文字ずつ個別にキーイベントを送信
+#   batched  - 全文字を1回にまとめて送信
+#   unicode  - ひらがなに変換して Unicode 文字として直接送信
+output_mode = "unicode"
+
+# フックの動作モード
+#   filter - PassThrough キーは OS にそのまま通す（低レイテンシ）
+#   relay  - 全キーを Consume し、メッセージループで再注入（キー順序保証）
+hook_mode = "relay"
+
+# n-gram コーパスファイル（.csv.gz / .toml 対応）
+ngram_file = "data/ngram_hiragana.csv.gz"
+# ngram_adjustment_range_ms = 20
+# ngram_min_threshold_ms = 30
+# ngram_max_threshold_ms = 120
+
+# エンジン ON/OFF キー（複数指定可）
+engine_on_keys = ["Ctrl+Shift+Convert"]
+engine_off_keys = ["Ctrl+Shift+Nonconvert"]
+
+# IME ON/OFF キー（複数指定可）
+ime_on_keys = ["Ctrl+Convert"]
+ime_off_keys = ["Ctrl+Nonconvert"]
+
+# エンジン ON/OFF トグルホットキー
+toggle_hotkey = "Ctrl+Shift+F12"
+
+# フォーカス遷移デバウンス時間（ミリ秒）
+# focus_debounce_ms = 50
+
+# IME 状態ポーリング間隔（ミリ秒）
+# ime_poll_interval_ms = 500
+
+# Linux 入力バックエンド（Linux のみ有効）
+# linux_input_backend = "evdev"
+# linux_evdev_device = "/dev/input/event0"
+
+# フォーカス判定のオーバーライド
+# [focus_overrides]
+# force_text = [
+#     { process = "browser", class = "WebContent" },
+# ]
+# force_bypass = [
+#     { process = "launcher", class = "SearchBox" },
+# ]
+
+# IME 同期設定（シャドウ IME 状態追跡用キー定義）
+[ime_sync]
+toggle_keys = ["VK_KANJI"]
+on_keys = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
+off_keys = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]
