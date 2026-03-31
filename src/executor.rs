@@ -41,6 +41,7 @@ impl DecisionExecutor {
     }
 
     /// Effect リストを実行する
+    #[allow(clippy::too_many_lines)]
     fn execute_effects(&mut self, effects: Vec<Effect>) {
         use windows::Win32::Foundation::{LPARAM, WPARAM};
         use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer};
@@ -125,6 +126,15 @@ impl DecisionExecutor {
                         class_name,
                     } => {
                         self.focus.last_focus_info = Some((process_id, class_name));
+                    }
+                    FocusEffect::SaveEngineState {
+                        process_id,
+                        class_name,
+                        enabled,
+                    } => {
+                        self.focus
+                            .cache
+                            .set_engine_state(process_id, class_name, enabled);
                     }
                 },
                 Effect::ImeCache(ice) => match ice {

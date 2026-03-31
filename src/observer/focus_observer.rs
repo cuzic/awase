@@ -12,6 +12,7 @@ use crate::runtime::FocusDetector;
 use crate::{FOCUS_DEBOUNCE_MS, FOCUS_KIND, TIMER_FOCUS_DEBOUNCE};
 
 /// 共通フィールドを設定した `FocusObservation` を生成するヘルパー
+#[allow(clippy::too_many_arguments)]
 fn make_obs(
     process_id: u32,
     class_name: &str,
@@ -21,6 +22,7 @@ fn make_obs(
     overridden: bool,
     skip: bool,
     debounce_ms: u64,
+    cached_engine_enabled: Option<bool>,
 ) -> FocusObservation {
     FocusObservation {
         process_id,
@@ -32,6 +34,7 @@ fn make_obs(
         skip,
         debounce_timer_id: TIMER_FOCUS_DEBOUNCE,
         debounce_ms,
+        cached_engine_enabled,
     }
 }
 
@@ -47,13 +50,22 @@ pub unsafe fn observe(
 ) -> FocusObservation {
     let debounce_ms = u64::from(FOCUS_DEBOUNCE_MS.load(Ordering::Relaxed));
 
+    // 新ウィンドウのキャッシュ済みエンジン状態を取得
+    let cached_engine_enabled = focus.cache.get_engine_state(process_id, class_name);
+
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止
     if let Some(obs) = check_same_process_skip(process_id, class_name, focus, debounce_ms) {
         return obs;
     }
 
     // Config オーバーライド（最高優先度、キャッシュより先に判定）
-    if let Some(obs) = check_overrides(process_id, class_name, focus, debounce_ms) {
+    if let Some(obs) = check_overrides(
+        process_id,
+        class_name,
+        focus,
+        debounce_ms,
+        cached_engine_enabled,
+    ) {
         return obs;
     }
 
@@ -69,6 +81,7 @@ pub unsafe fn observe(
             false,
             false,
             debounce_ms,
+            cached_engine_enabled,
         );
     }
 
@@ -88,6 +101,7 @@ pub unsafe fn observe(
         false,
         false,
         debounce_ms,
+        cached_engine_enabled,
     )
 }
 
@@ -118,6 +132,7 @@ unsafe fn check_same_process_skip(
         false,
         true,
         debounce_ms,
+        None, // skip=true なので復元不要
     ))
 }
 
@@ -127,6 +142,7 @@ fn check_overrides(
     class_name: &str,
     focus: &FocusDetector,
     debounce_ms: u64,
+    cached_engine_enabled: Option<bool>,
 ) -> Option<FocusObservation> {
     if focus.overrides.force_text.is_empty() && focus.overrides.force_bypass.is_empty() {
         return None;
@@ -149,6 +165,7 @@ fn check_overrides(
                 true,
                 false,
                 debounce_ms,
+                cached_engine_enabled,
             ));
         }
     }
@@ -168,6 +185,7 @@ fn check_overrides(
                 true,
                 false,
                 debounce_ms,
+                cached_engine_enabled,
             ));
         }
     }

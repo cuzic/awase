@@ -71,6 +71,14 @@ impl Runtime {
     pub(crate) fn toggle_engine(&mut self) {
         let decision = self.engine.on_command(EngineCommand::ToggleEngine);
         self.executor.execute(decision);
+        // ウィンドウごとのエンジン状態をキャッシュに保存
+        if let Some((pid, cls)) = self.executor.focus.last_focus_info.as_ref() {
+            self.executor.focus.cache.set_engine_state(
+                *pid,
+                cls.clone(),
+                self.engine.is_fsm_enabled(),
+            );
+        }
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。

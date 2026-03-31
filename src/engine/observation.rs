@@ -62,4 +62,6 @@ pub struct FocusObservation {
     pub debounce_timer_id: usize,
     /// デバウンス期間（ミリ秒）
     pub debounce_ms: u64,
+    /// キャッシュから取得した新ウィンドウのエンジン ON/OFF 状態（None = 未設定）
+    pub cached_engine_enabled: Option<bool>,
 }
