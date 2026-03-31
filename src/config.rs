@@ -10,11 +10,10 @@ use crate::types::VkCode;
 pub enum HookMode {
     /// フィルター型: PassThrough キーは OS にそのまま通す。
     /// フック内で SendInput を呼ぶため、レイヤー分離は不完全だがレイテンシが低い。
-    #[default]
     Filter,
     /// リレー型: 全キーを Consume し、メッセージループで再注入する。
     /// フック内で OS API を呼ばず、キー順序を FIFO で保証する。
-    /// わずかな入力遅延が生じる可能性がある。
+    #[default]
     Relay,
 }
 
