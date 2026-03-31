@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::io::Read;
+use std::path::Path;
 
 /// N-gram model for adaptive threshold adjustment.
 ///
@@ -38,6 +40,115 @@ impl NgramModel {
             min_threshold_us,
             max_threshold_us,
         }
+    }
+
+    /// Load from a file path (TOML, CSV, or gzip-compressed CSV).
+    ///
+    /// Format is auto-detected:
+    /// - `.gz` extension triggers gzip decompression first
+    /// - Content starting with `[` is parsed as TOML
+    /// - Otherwise parsed as CSV (`type,chars,score`)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read, decompressed, or parsed.
+    pub fn from_file(
+        path: &Path,
+        base_threshold_us: u64,
+        adjustment_range_us: u64,
+        min_threshold_us: u64,
+        max_threshold_us: u64,
+    ) -> anyhow::Result<Self> {
+        let content = if path.extension().is_some_and(|e| e == "gz") {
+            let file = std::fs::File::open(path)?;
+            let mut decoder = flate2::read::GzDecoder::new(file);
+            let mut s = String::new();
+            decoder.read_to_string(&mut s)?;
+            s
+        } else {
+            std::fs::read_to_string(path)?
+        };
+
+        if content.trim_start().starts_with('[') {
+            Self::from_toml(
+                &content,
+                base_threshold_us,
+                adjustment_range_us,
+                min_threshold_us,
+                max_threshold_us,
+            )
+        } else {
+            Self::from_csv(
+                &content,
+                base_threshold_us,
+                adjustment_range_us,
+                min_threshold_us,
+                max_threshold_us,
+            )
+        }
+    }
+
+    /// Load from a CSV string.
+    ///
+    /// Expected format:
+    /// ```csv
+    /// # comment lines start with #
+    /// 2,かき,-1.234
+    /// 3,かきく,-3.456
+    /// ```
+    ///
+    /// First column: `2` for bigram, `3` for trigram.
+    /// Second column: character sequence.
+    /// Third column: float score.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a line has an incorrect format or mismatched
+    /// character count for the given n-gram type.
+    pub fn from_csv(
+        csv: &str,
+        base_threshold_us: u64,
+        adjustment_range_us: u64,
+        min_threshold_us: u64,
+        max_threshold_us: u64,
+    ) -> anyhow::Result<Self> {
+        let mut bigram = HashMap::new();
+        let mut trigram = HashMap::new();
+
+        for line in csv.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.splitn(3, ',').collect();
+            if parts.len() != 3 {
+                anyhow::bail!("invalid CSV line: {line}");
+            }
+            let n: u8 = parts[0].parse()?;
+            let chars: Vec<char> = parts[1].chars().collect();
+            let score: f32 = parts[2].parse()?;
+            match n {
+                2 if chars.len() == 2 => {
+                    bigram.insert((chars[0], chars[1]), score);
+                }
+                3 if chars.len() == 3 => {
+                    trigram.insert((chars[0], chars[1], chars[2]), score);
+                }
+                _ => anyhow::bail!(
+                    "invalid n-gram: type={n} with {} chars in line: {line}",
+                    chars.len()
+                ),
+            }
+        }
+
+        Ok(Self {
+            bigram,
+            trigram,
+            base_threshold_us,
+            adjustment_range_us,
+            min_threshold_us,
+            max_threshold_us,
+        })
     }
 
     /// Load from a TOML string.
@@ -325,5 +436,95 @@ mod tests {
 "#;
         let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['あ'], 'い') - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn from_csv_parses_correctly() {
+        let csv = "\
+# comment line
+2,ある,1.5
+2,した,1.8
+2,をぱ,-1.5
+
+3,ありが,2.5
+3,ですか,2.0
+";
+        let model = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000).unwrap();
+        assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
+        assert!((model.frequency_score(&['し'], 'た') - 1.8).abs() < f32::EPSILON);
+        assert!((model.frequency_score(&['を'], 'ぱ') - (-1.5)).abs() < f32::EPSILON);
+        assert!((model.frequency_score(&['あ', 'り'], 'が') - 2.5).abs() < f32::EPSILON);
+        assert!((model.frequency_score(&['で', 'す'], 'か') - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn from_csv_empty_and_comments_ok() {
+        let csv = "# only comments\n\n# another comment\n";
+        let model = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000).unwrap();
+        assert!((model.frequency_score(&['a'], 'b')).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn from_csv_rejects_wrong_char_count() {
+        let csv = "2,abc,1.0\n";
+        let result = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_csv_rejects_invalid_line() {
+        let csv = "bad line\n";
+        let result = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_file_detects_csv_format() {
+        let dir = std::env::temp_dir().join("ngram_test_csv");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.csv");
+        std::fs::write(&path, "2,ある,1.5\n3,ありが,2.5\n").unwrap();
+        let model = NgramModel::from_file(&path, 100_000, 20_000, 30_000, 120_000).unwrap();
+        assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
+        assert!((model.frequency_score(&['あ', 'り'], 'が') - 2.5).abs() < f32::EPSILON);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn from_file_detects_toml_format() {
+        let dir = std::env::temp_dir().join("ngram_test_toml");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.toml");
+        std::fs::write(
+            &path,
+            "[bigram]\n\"ある\" = 1.5\n\n[trigram]\n\"ありが\" = 2.5\n",
+        )
+        .unwrap();
+        let model = NgramModel::from_file(&path, 100_000, 20_000, 30_000, 120_000).unwrap();
+        assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
+        assert!((model.frequency_score(&['あ', 'り'], 'が') - 2.5).abs() < f32::EPSILON);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn from_file_reads_gzip() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join("ngram_test_gz");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.csv.gz");
+
+        let csv_data = "2,ある,1.5\n3,ありが,2.5\n";
+        let file = std::fs::File::create(&path).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder.write_all(csv_data.as_bytes()).unwrap();
+        encoder.finish().unwrap();
+
+        let model = NgramModel::from_file(&path, 100_000, 20_000, 30_000, 120_000).unwrap();
+        assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
+        assert!((model.frequency_score(&['あ', 'り'], 'が') - 2.5).abs() < f32::EPSILON);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

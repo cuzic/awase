@@ -79,8 +79,8 @@ ime_off_keys = ["Ctrl+VK_NONCONVERT"]
 # マウスでの言語バー操作等、イベント駆動で検出できない変更を補完する。
 # ime_poll_interval_ms = 500
 
-# n-gram コーパスファイル（オプション、ngram_predictive モード用）
-# ngram_file = "data/ngram_hiragana.toml"
+# n-gram コーパスファイル（.toml, .csv, .csv.gz に対応）
+# ngram_file = "data/ngram_hiragana.csv.gz"
 
 # n-gram 閾値調整幅（ミリ秒）
 # ngram_adjustment_range_ms = 20
