@@ -14,6 +14,7 @@ pub mod input_tracker;
 mod nicola_fsm;
 pub mod observation;
 pub mod output_history;
+pub mod timing;
 
 // Public re-exports
 pub use decision::{
@@ -30,6 +31,7 @@ pub use nicola_fsm::NicolaFsm;
 pub use observation::{FocusObservation, ImeObservation};
 
 pub use nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
+pub use timing::{ThreeKeyResult, TimingJudge};
 
 #[cfg(test)]
 mod tests;

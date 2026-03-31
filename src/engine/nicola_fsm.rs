@@ -18,6 +18,7 @@ use super::fsm_types::{
     BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, OutputRecord,
     OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
 };
+use super::timing;
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;
@@ -309,16 +310,13 @@ impl NicolaFsm {
         self.ngram_model = Some(model);
     }
 
-    /// n-gram モデルに基づいて閾値を動的に調整する。
-    ///
-    /// モデルが未設定の場合は固定閾値 (`threshold_us`) を返す。
-    pub(crate) fn adjusted_threshold_us(&self, candidate: char) -> u64 {
-        self.ngram_model
-            .as_ref()
-            .map_or(self.threshold_us, |model| {
-                let recent = self.output_history.recent_kana(3);
-                model.adjusted_threshold(&recent, candidate)
-            })
+    /// タイミング判定器を構築するヘルパー
+    pub(crate) fn timing_judge(&self) -> timing::TimingJudge<'_> {
+        timing::TimingJudge::new(
+            self.threshold_us,
+            self.ngram_model.as_ref(),
+            self.output_history.recent_kana(timing::NGRAM_CONTEXT_SIZE),
+        )
     }
 
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
@@ -715,17 +713,16 @@ impl NicolaFsm {
         let EngineState::SpeculativeChar(pending) = self.state else {
             unreachable!("unexpected state: {:?}", self.state)
         };
-        let elapsed = ev.timestamp.saturating_sub(pending.timestamp);
         let face = Face::from_thumb(ev.key_class);
 
         // Look up what the simultaneous keystroke would produce
         if let Some((thumb_action, thumb_kana)) =
             self.lookup_face(pending.scan_code, pending.vk_code, self.get_face(face))
         {
-            let threshold =
-                thumb_kana.map_or(self.threshold_us, |ch| self.adjusted_threshold_us(ch));
-
-            if elapsed < threshold {
+            if self
+                .timing_judge()
+                .is_simultaneous(pending.timestamp, ev.timestamp, thumb_kana)
+            {
                 // Within threshold → retract speculative output + emit thumb face
 
                 // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
@@ -753,8 +750,6 @@ impl NicolaFsm {
         let EngineState::PendingChar(pending) = self.state else {
             unreachable!("unexpected state: {:?}", self.state)
         };
-        let elapsed_us = ev.timestamp.saturating_sub(pending.timestamp);
-
         // 親指面で保留文字キーの候補を取得し閾値を調整
         let candidate_face = Face::from_thumb(ev.key_class);
         let candidate = self.lookup_face(
@@ -762,12 +757,12 @@ impl NicolaFsm {
             pending.vk_code,
             self.get_face(candidate_face),
         );
-        let threshold = candidate
-            .as_ref()
-            .and_then(|(_, kana)| *kana)
-            .map_or(self.threshold_us, |ch| self.adjusted_threshold_us(ch));
+        let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
 
-        if elapsed_us < threshold {
+        if self
+            .timing_judge()
+            .is_simultaneous(pending.timestamp, ev.timestamp, candidate_kana)
+        {
             // 保留=文字, 到着=親指 → PendingCharThumb へ遷移（3 鍵目を待つ）
             self.enter_pending_char_thumb(
                 pending,
@@ -812,17 +807,15 @@ impl NicolaFsm {
         let EngineState::PendingThumb(thumb) = self.state else {
             unreachable!("unexpected state: {:?}", self.state)
         };
-        let elapsed_us = ev.timestamp.saturating_sub(thumb.timestamp);
-
         // 親指面で到着文字キーの候補を取得し閾値を調整
         let pending_face = Face::from_thumb_bool(thumb.is_left);
         let candidate = self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(pending_face));
-        let threshold = candidate
-            .as_ref()
-            .and_then(|(_, kana)| *kana)
-            .map_or(self.threshold_us, |ch| self.adjusted_threshold_us(ch));
+        let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
 
-        if elapsed_us < threshold {
+        if self
+            .timing_judge()
+            .is_simultaneous(thumb.timestamp, ev.timestamp, candidate_kana)
+        {
             if let Some((action, kana)) = candidate {
                 // 保留=親指, 到着=文字 → 同時打鍵
                 // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
@@ -943,7 +936,34 @@ impl NicolaFsm {
 
         if !ev.key_class.is_thumb() {
             // char2 到着 → 3 鍵仲裁
-            let prefer_char1 = self.should_pair_with_char1(&pending, &thumb, ev);
+            let judge = self.timing_judge();
+            let thumb_face = Face::from_thumb_bool(thumb.is_left);
+            let char1_thumb_kana = self
+                .lookup_face(
+                    pending.scan_code,
+                    pending.vk_code,
+                    self.get_face(thumb_face),
+                )
+                .and_then(|(_, k)| k);
+            let char1_single_kana = self
+                .lookup_face(
+                    pending.scan_code,
+                    pending.vk_code,
+                    self.get_face(Face::Normal),
+                )
+                .and_then(|(_, k)| k);
+            let char2_thumb_kana = self
+                .lookup_face(ev.scan_code, ev.vk_code, self.get_face(thumb_face))
+                .and_then(|(_, k)| k);
+            let result = judge.three_key_pairing(
+                pending.timestamp,
+                thumb.timestamp,
+                ev.timestamp,
+                char1_thumb_kana,
+                char1_single_kana,
+                char2_thumb_kana,
+            );
+            let prefer_char1 = result == timing::ThreeKeyResult::PairWithChar1;
 
             if prefer_char1 {
                 // char1+thumb = 同時打鍵、char2 は再処理
@@ -994,84 +1014,6 @@ impl NicolaFsm {
             actions: resolved.actions,
             record: resolved.output,
             remaining: *ev,
-        }
-    }
-
-    /// 3 鍵仲裁で char1+thumb を優先するか判定する。
-    ///
-    /// - タイミング差が大きい場合はタイミングだけで決定
-    /// - タイミングが接近している場合は n-gram スコアで判定
-    fn should_pair_with_char1(
-        &self,
-        char1: &PendingKey,
-        thumb: &PendingThumbData,
-        char2: &ClassifiedEvent,
-    ) -> bool {
-        let d1 = thumb.timestamp.saturating_sub(char1.timestamp);
-        let d2 = char2.timestamp.saturating_sub(thumb.timestamp);
-
-        // n-gram モデルがない場合はタイミングのみ（従来動作）
-        let Some(ref model) = self.ngram_model else {
-            return d1 < d2;
-        };
-
-        // タイミング差が大きい場合（閾値の 30% 以上）はタイミング優先
-        let timing_margin = self.threshold_us * 3 / 10;
-        if d1 + timing_margin < d2 {
-            return true; // char1 のほうが明らかに近い
-        }
-        if d2 + timing_margin < d1 {
-            return false; // char2 のほうが明らかに近い
-        }
-
-        // タイミングが接近 → n-gram スコアで判定
-        let recent = self.output_history.recent_kana(3);
-        let thumb_face = Face::from_thumb_bool(thumb.is_left);
-
-        // char1+thumb の候補かな
-        let char1_thumb_kana = self
-            .lookup_face(char1.scan_code, char1.vk_code, self.get_face(thumb_face))
-            .and_then(|(_, kana)| kana);
-        // char1 単独 + char2+thumb の候補かな（char2+thumb に繋がるスコアを評価）
-        let char1_single_kana = self
-            .lookup_face(char1.scan_code, char1.vk_code, self.get_face(Face::Normal))
-            .and_then(|(_, kana)| kana);
-        let char2_thumb_kana = self
-            .lookup_face(char2.scan_code, char2.vk_code, self.get_face(thumb_face))
-            .and_then(|(_, kana)| kana);
-
-        // パターン A: char1+thumb → char2（単独）
-        let score_a =
-            char1_thumb_kana.map_or(f32::NEG_INFINITY, |ch| model.frequency_score(&recent, ch));
-
-        // パターン B: char1（単独）→ char2+thumb
-        let score_b = match (char1_single_kana, char2_thumb_kana) {
-            (Some(c1), Some(c2)) => {
-                // char1 単独の後に char2+thumb が来る連接スコア
-                #[allow(clippy::redundant_clone)]
-                // (None, Some) ブランチで recent を借用するため必要
-                let mut extended = recent.clone();
-                extended.push(c1);
-                model.frequency_score(&extended, c2)
-            }
-            (None, Some(c2)) => model.frequency_score(&recent, c2),
-            _ => f32::NEG_INFINITY,
-        };
-
-        log::trace!(
-            "3-key arbitration: d1={d1}µs d2={d2}µs score_a={score_a:.3} score_b={score_b:.3} → {}",
-            if score_a >= score_b {
-                "char1+thumb"
-            } else {
-                "char2+thumb"
-            }
-        );
-
-        // スコアが高いほうを選択。同点ならタイミングにフォールバック
-        if (score_a - score_b).abs() > f32::EPSILON {
-            score_a > score_b
-        } else {
-            d1 < d2
         }
     }
 }

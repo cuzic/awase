@@ -1224,20 +1224,24 @@ fn test_ime_control_key_flushes_speculative_and_passes_through() {
     assert!(!r.consumed, "should pass through the IME control key");
 }
 
-// ── set_ngram_model / adjusted_threshold_us ──
+// ── set_ngram_model / timing_judge ──
 
 #[test]
-fn test_set_ngram_model_and_adjusted_threshold() {
+fn test_set_ngram_model_and_timing_judge() {
     let mut engine = make_engine();
-    // Without model, adjusted_threshold_us returns fixed threshold
-    assert_eq!(engine.adjusted_threshold_us('あ'), engine.threshold_us);
+    // Without model, timing_judge uses fixed threshold (is_simultaneous within threshold)
+    let judge = engine.timing_judge();
+    assert!(judge.is_simultaneous(0, engine.threshold_us - 1, Some('あ')));
+    assert!(!judge.is_simultaneous(0, engine.threshold_us + 1, Some('あ')));
+    drop(judge);
 
-    // With model, adjusted_threshold_us uses the model
+    // With model, timing_judge uses the model for threshold adjustment
     let model = NgramModel::new(100_000, 20_000, 30_000, 120_000);
     engine.set_ngram_model(model);
-    // Unknown candidate -> score 0 -> tanh(0)=0 -> base threshold
-    let threshold = engine.adjusted_threshold_us('x');
-    assert_eq!(threshold, 100_000);
+    // Unknown candidate -> score 0 -> tanh(0)=0 -> base threshold unchanged
+    let judge = engine.timing_judge();
+    assert!(judge.is_simultaneous(0, 99_999, Some('x')));
+    assert!(!judge.is_simultaneous(0, 100_001, Some('x')));
 }
 
 // ── PendingThumb + another thumb key (expired) ──

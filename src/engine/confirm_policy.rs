@@ -118,9 +118,9 @@ impl NicolaFsm {
         }
 
         // If no n-gram model, fall back to TwoPhase
-        let Some(ref model) = self.ngram_model else {
+        if self.ngram_model.is_none() {
             return self.idle_two_phase(ev);
-        };
+        }
 
         // Get candidate kana for each face
         let normal_kana = self
@@ -133,26 +133,11 @@ impl NicolaFsm {
             .lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::RightThumb))
             .and_then(|(_, kana)| kana);
 
-        // Compute scores
-        let recent = self.output_history.recent_kana(3);
-        let normal_score = normal_kana.map_or(0.0, |ch| model.frequency_score(&recent, ch));
-        let thumb_score = [left_kana, right_kana]
-            .iter()
-            .filter_map(|k: &Option<char>| k.map(|ch| model.frequency_score(&recent, ch)))
-            .fold(f32::NEG_INFINITY, f32::max);
-        let thumb_score = if thumb_score == f32::NEG_INFINITY {
-            0.0
-        } else {
-            thumb_score
-        };
-
         // Decision: if normal is clearly more likely, output speculatively
-        let score_diff = normal_score - thumb_score;
-        if score_diff > 0.5 {
-            // Normal face is much more likely → Speculative
+        let judge = self.timing_judge();
+        if judge.should_speculate(normal_kana, left_kana, right_kana) {
             self.idle_speculative(ev)
         } else {
-            // Unclear or thumb is likely → Wait (safe)
             self.idle_wait(ev)
         }
     }
