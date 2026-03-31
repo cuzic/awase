@@ -202,7 +202,7 @@ mod tests {
             scan_code: ScanCode(50),
             romaji: "shift".to_string(),
             kana: None,
-            action: KeyAction::Key(VkCode(0x10)),
+            action: KeyAction::Key(VkCode(0)), // dummy platform key
         });
         h.push(make_entry(ScanCode(31), "ki", Some('き')));
 

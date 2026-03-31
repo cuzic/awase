@@ -146,3 +146,55 @@ pub fn build_romaji_to_kana() -> HashMap<String, char> {
     ];
     entries.iter().map(|&(k, v)| (k.to_string(), v)).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_romaji_to_kana_non_empty() {
+        let table = build_romaji_to_kana();
+        assert!(!table.is_empty());
+    }
+
+    #[test]
+    fn vowel_mappings() {
+        let table = build_romaji_to_kana();
+        assert_eq!(table.get("a"), Some(&'あ'));
+        assert_eq!(table.get("i"), Some(&'い'));
+        assert_eq!(table.get("u"), Some(&'う'));
+        assert_eq!(table.get("e"), Some(&'え'));
+        assert_eq!(table.get("o"), Some(&'お'));
+    }
+
+    #[test]
+    fn common_romaji_mappings() {
+        let table = build_romaji_to_kana();
+        assert_eq!(table.get("ka"), Some(&'か'));
+        assert_eq!(table.get("si"), Some(&'し'));
+        assert_eq!(table.get("tu"), Some(&'つ'));
+        assert_eq!(table.get("nn"), Some(&'ん'));
+    }
+
+    #[test]
+    fn nicola_special_romaji() {
+        let table = build_romaji_to_kana();
+        assert_eq!(table.get("wo"), Some(&'を'));
+        assert_eq!(table.get("vu"), Some(&'ゔ'));
+    }
+
+    #[test]
+    fn fu_and_hu_both_map_to_fu() {
+        let table = build_romaji_to_kana();
+        assert_eq!(table.get("fu"), Some(&'ふ'));
+        assert_eq!(table.get("hu"), Some(&'ふ'));
+    }
+
+    #[test]
+    fn youon_maps_to_representative_char() {
+        let table = build_romaji_to_kana();
+        assert_eq!(table.get("kya"), Some(&'き'));
+        assert_eq!(table.get("sya"), Some(&'し'));
+        assert_eq!(table.get("nya"), Some(&'に'));
+    }
+}

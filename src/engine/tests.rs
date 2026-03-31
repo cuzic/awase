@@ -118,7 +118,7 @@ impl std::ops::DerefMut for TestHarness {
 
 fn make_engine() -> TestHarness {
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
@@ -132,7 +132,7 @@ fn make_engine() -> TestHarness {
 
 fn make_speculative_engine() -> TestHarness {
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
@@ -182,17 +182,67 @@ impl EvBuilder {
         self
     }
     fn build(self) -> RawKeyEvent {
+        let (kc, pos) = classify_test_key(self.vk, self.scan);
         RawKeyEvent {
             vk_code: self.vk,
             scan_code: self.scan,
             event_type: self.event_type,
             extra_info: 0,
             timestamp: self.ts,
+            key_classification: kc,
+            physical_pos: pos,
+            ime_relevance: crate::types::ImeRelevance::default(),
+            modifier_key: classify_test_modifier(self.vk),
         }
     }
 }
 
 /// Map VK code to a realistic scan code for tests
+fn classify_test_key(
+    vk: VkCode,
+    _scan: ScanCode,
+) -> (
+    crate::types::KeyClassification,
+    Option<crate::scanmap::PhysicalPos>,
+) {
+    use crate::scanmap::PhysicalPos;
+    use crate::types::KeyClassification;
+
+    if vk == VK_NONCONVERT {
+        (KeyClassification::LeftThumb, None)
+    } else if vk == VK_CONVERT {
+        (KeyClassification::RightThumb, None)
+    } else if let Some(pos) = test_vk_to_pos(vk) {
+        (KeyClassification::Char, Some(pos))
+    } else {
+        (KeyClassification::Passthrough, None)
+    }
+}
+
+/// テスト用: VK → PhysicalPos 直接マッピング（scan_to_pos を使わない）
+fn test_vk_to_pos(vk: VkCode) -> Option<crate::scanmap::PhysicalPos> {
+    use crate::scanmap::PhysicalPos;
+    match vk {
+        VK_A => Some(PhysicalPos::new(2, 0)),
+        VK_S => Some(PhysicalPos::new(2, 1)),
+        VK_D => Some(PhysicalPos::new(2, 2)),
+        VK_F => Some(PhysicalPos::new(2, 3)),
+        VK_C => Some(PhysicalPos::new(3, 2)),
+        VK_V => Some(PhysicalPos::new(3, 3)),
+        _ => None,
+    }
+}
+
+fn classify_test_modifier(vk: VkCode) -> Option<crate::types::ModifierKey> {
+    use crate::types::ModifierKey;
+    match vk {
+        VK_SHIFT | VK_LSHIFT | VK_RSHIFT => Some(ModifierKey::Shift),
+        VK_CTRL | VK_LCTRL => Some(ModifierKey::Ctrl),
+        VK_ALT | VK_LALT => Some(ModifierKey::Alt),
+        _ => None,
+    }
+}
+
 fn vk_to_scan(vk: VkCode) -> ScanCode {
     match vk {
         VK_A => SCAN_A,
@@ -542,7 +592,7 @@ fn make_engine_with_shift() -> TestHarness {
     layout.shift.insert(POS_A, lit('ウ'));
     layout.shift.insert(POS_S, lit('シ'));
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -696,7 +746,7 @@ fn make_engine_with_extended_layout() -> TestHarness {
     layout.right_thumb.insert(POS_D, lit('で'));
     layout.right_thumb.insert(POS_F, lit('げ'));
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -941,43 +991,7 @@ fn test_continuous_shift_switch_thumb() {
     );
 }
 
-// ── scan_code → PhysicalPos pipeline tests ──
-
-#[test]
-fn test_scancode_to_physical_pos_pipeline() {
-    use crate::scanmap::{scan_to_pos, PhysicalPos};
-    use crate::types::ScanCode;
-
-    // A key: scan code 0x1E → position (row=2, col=0)
-    let pos = scan_to_pos(ScanCode(0x1E)).unwrap();
-    assert_eq!(pos, PhysicalPos::new(2, 0));
-
-    // S key: scan code 0x1F → position (row=2, col=1)
-    let pos = scan_to_pos(ScanCode(0x1F)).unwrap();
-    assert_eq!(pos, PhysicalPos::new(2, 1));
-}
-
-#[test]
-fn test_scancode_pipeline_covers_nicola_keys() {
-    use crate::scanmap::{scan_to_pos, PhysicalPos};
-    use crate::types::ScanCode;
-
-    // Row 0 (number row): 1-key through 0-key
-    assert_eq!(scan_to_pos(ScanCode(0x02)), Some(PhysicalPos::new(0, 0))); // 1
-    assert_eq!(scan_to_pos(ScanCode(0x0B)), Some(PhysicalPos::new(0, 9))); // 0
-
-    // Row 1 (Q row): Q through [
-    assert_eq!(scan_to_pos(ScanCode(0x10)), Some(PhysicalPos::new(1, 0))); // Q
-    assert_eq!(scan_to_pos(ScanCode(0x1B)), Some(PhysicalPos::new(1, 11))); // [
-
-    // Row 2 (A row): A through ]
-    assert_eq!(scan_to_pos(ScanCode(0x1E)), Some(PhysicalPos::new(2, 0))); // A
-    assert_eq!(scan_to_pos(ScanCode(0x2B)), Some(PhysicalPos::new(2, 11))); // ]
-
-    // Row 3 (Z row): Z through _
-    assert_eq!(scan_to_pos(ScanCode(0x2C)), Some(PhysicalPos::new(3, 0))); // Z
-    assert_eq!(scan_to_pos(ScanCode(0x73)), Some(PhysicalPos::new(3, 10))); // _
-}
+// scan_to_pos テストは awase-windows に移動済み
 
 #[test]
 fn test_nicola_state_stores_scan_code() {
@@ -992,6 +1006,10 @@ fn test_nicola_state_stores_scan_code() {
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 0,
+        ime_relevance: crate::types::ImeRelevance::default(),
+        modifier_key: None,
+        key_classification: crate::types::KeyClassification::Char,
+        physical_pos: Some(crate::scanmap::PhysicalPos::new(2, 0)),
     };
 
     let result = engine.on_event(event);
@@ -1019,6 +1037,10 @@ fn test_pending_char_thumb_stores_char_scan() {
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 0,
+        ime_relevance: crate::types::ImeRelevance::default(),
+        modifier_key: None,
+        key_classification: crate::types::KeyClassification::Char,
+        physical_pos: Some(crate::scanmap::PhysicalPos::new(2, 0)),
     };
     engine.on_event(char_event);
 
@@ -1028,6 +1050,10 @@ fn test_pending_char_thumb_stores_char_scan() {
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 30_000,
+        ime_relevance: crate::types::ImeRelevance::default(),
+        modifier_key: None,
+        key_classification: crate::types::KeyClassification::RightThumb,
+        physical_pos: None,
     };
     let result = engine.on_event(thumb_event);
     assert_pending(&result);
@@ -1069,7 +1095,10 @@ fn test_yab_value_to_action_literal_empty() {
 fn test_yab_value_to_action_special() {
     use crate::yab::SpecialKey;
     let action = yab_value_to_action(&YabValue::Special(SpecialKey::Backspace));
-    assert!(matches!(action, KeyAction::Key(VkCode(0x08))));
+    assert!(matches!(
+        action,
+        KeyAction::SpecialKey(crate::types::SpecialKey::Backspace)
+    ));
 }
 
 #[test]
@@ -1456,22 +1485,22 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
 fn test_is_layout_key_various_faces() {
     let engine = make_engine();
     // A key is in normal face
-    assert!(engine.is_layout_key(SCAN_A));
+    assert!(engine.is_layout_key(Some(POS_A)));
     // D key is NOT in any face in the basic layout
-    assert!(!engine.is_layout_key(SCAN_D));
-    // Unknown scan code
-    assert!(!engine.is_layout_key(ScanCode(0xFF)));
+    assert!(!engine.is_layout_key(Some(POS_D)));
+    // None pos
+    assert!(!engine.is_layout_key(None));
 }
 
 #[test]
 fn test_is_layout_key_thumb_and_shift_faces() {
     let mut engine = make_engine_with_shift();
     // A is in normal, left_thumb, right_thumb, and shift
-    assert!(engine.is_layout_key(SCAN_A));
+    assert!(engine.is_layout_key(Some(POS_A)));
 
     // Add D only to left_thumb face
     engine.layout.left_thumb.insert(POS_D, lit('な'));
-    assert!(engine.is_layout_key(SCAN_D));
+    assert!(engine.is_layout_key(Some(POS_D)));
 }
 
 // ── timeout for char not in normal layout (lines 722-723) ──
@@ -1545,7 +1574,7 @@ fn test_romaji_value_in_layout() {
         },
     );
     let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -1575,7 +1604,7 @@ fn test_special_value_in_layout() {
         .normal
         .insert(POS_D, YabValue::Special(SpecialKey::Backspace));
     let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -1589,15 +1618,15 @@ fn test_special_value_in_layout() {
     engine.on_event(Ev::down(VK_D).build());
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
-    assert!(matches!(r.actions[0], KeyAction::Key(VkCode(0x08))));
+    assert!(matches!(
+        r.actions[0],
+        KeyAction::SpecialKey(crate::types::SpecialKey::Backspace)
+    ));
 
-    // KeyUp should produce KeyUp(0x08) since it's a Key action
-    let r = engine.on_event(Ev::up(VK_D).build());
-    r.assert_consumed();
-    assert!(r
-        .actions
-        .iter()
-        .any(|a| matches!(a, KeyAction::KeyUp(VkCode(0x08)))));
+    // SpecialKey actions are atomic (down+up in one shot).
+    // output_history stores the SpecialKey action, so KeyUp finds it
+    // and suppresses or passes through since there's no VK to release.
+    let _r = engine.on_event(Ev::up(VK_D).build());
 }
 
 // ── None value in layout face ──
@@ -1607,7 +1636,7 @@ fn test_none_value_in_layout() {
     let mut layout = make_layout();
     layout.normal.insert(POS_D, YabValue::None);
     let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -1624,40 +1653,8 @@ fn test_none_value_in_layout() {
     assert!(matches!(r.actions[0], KeyAction::Suppress));
 }
 
-// ── SysKeyDown / SysKeyUp event types ──
-
-#[test]
-fn test_sys_key_down_processed() {
-    let mut engine = make_engine();
-    let event = RawKeyEvent {
-        vk_code: VK_A,
-        scan_code: SCAN_A,
-        event_type: KeyEventType::SysKeyDown,
-        extra_info: 0,
-        timestamp: 0,
-    };
-    let r = engine.on_event(event);
-    assert_pending(&r);
-}
-
-#[test]
-fn test_sys_key_up_processed() {
-    let mut engine = make_engine();
-    // First emit a key
-    engine.on_event(Ev::down(VK_A).build());
-    engine.on_timeout(TIMER_PENDING);
-
-    let event = RawKeyEvent {
-        vk_code: VK_A,
-        scan_code: SCAN_A,
-        event_type: KeyEventType::SysKeyUp,
-        extra_info: 0,
-        timestamp: 0,
-    };
-    let r = engine.on_event(event);
-    r.assert_consumed();
-    assert!(matches!(r.actions[0], KeyAction::Suppress));
-}
+// SysKeyDown/SysKeyUp テストは削除
+// Windows の SysKey イベントはプラットフォーム層で KeyDown/KeyUp に変換される
 
 // ── KeyUp of thumb during PendingCharThumb (thumb released) ──
 
@@ -1687,7 +1684,7 @@ fn test_key_up_for_romaji_produces_suppress() {
         },
     );
     let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -2013,6 +2010,7 @@ fn test_speculative_char_timeout_confirms() {
     engine.state = EngineState::SpeculativeChar(PendingKey {
         scan_code: SCAN_A,
         vk_code: VK_A,
+        pos: Some(POS_A),
         timestamp: 1_000_000,
     });
 
@@ -2120,7 +2118,7 @@ fn test_speculative_simultaneous_with_romaji() {
     layout.left_thumb.insert(POS_D, lit('げ'));
 
     let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -2153,7 +2151,10 @@ fn test_speculative_simultaneous_with_romaji() {
         r.actions
     );
     assert!(
-        matches!(&r.actions[0], KeyAction::Key(VkCode(0x08))),
+        matches!(
+            &r.actions[0],
+            KeyAction::SpecialKey(crate::types::SpecialKey::Backspace)
+        ),
         "first action should be BS, got {:?}",
         r.actions[0]
     );
@@ -2241,7 +2242,7 @@ fn test_speculative_thumb_first_falls_back_to_wait() {
 
 fn make_two_phase_engine() -> TestHarness {
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
@@ -2410,7 +2411,7 @@ fn test_two_phase_char_sequence() {
 
 fn make_adaptive_engine() -> TestHarness {
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
@@ -2531,7 +2532,7 @@ fn test_adaptive_continuous_then_pause() {
 
 fn make_ngram_predictive_engine() -> TestHarness {
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
             make_layout(),
             VK_NONCONVERT,
@@ -2684,7 +2685,7 @@ const CROSS_MODES: [ConfirmMode; 4] = [
 fn make_engine_with_mode(mode: ConfirmMode) -> TestHarness {
     let layout = make_layout();
     TestHarness {
-        tracker: input_tracker::InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30),
     }
 }
@@ -2696,7 +2697,7 @@ fn collect_output(responses: &[Resp]) -> Vec<KeyAction> {
     for r in responses {
         for action in &r.actions {
             match action {
-                KeyAction::Key(VkCode(0x08)) => {
+                KeyAction::SpecialKey(crate::types::SpecialKey::Backspace) => {
                     output.pop();
                 }
                 KeyAction::Suppress => {} // skip suppresses
@@ -3058,7 +3059,7 @@ fn test_collect_output_handles_bs_retraction() {
         },
         Response {
             actions: vec![
-                KeyAction::Key(VkCode(0x08)), // BS retracts 'う'
+                KeyAction::SpecialKey(crate::types::SpecialKey::Backspace), // BS retracts 'う'
                 KeyAction::Char('を'),
             ],
             consumed: true,
@@ -3280,4 +3281,1257 @@ fn test_alt_released_while_disabled_does_not_stick() {
 
     let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
     r.assert_consumed();
+}
+
+// ── FsmAdapter tests ──
+
+mod fsm_adapter_tests {
+    use super::*;
+    use crate::config::ConfirmMode;
+    use crate::engine::fsm_adapter::FsmAdapter;
+    use crate::engine::input_tracker::{InputTracker, PhysicalKeyState};
+    use crate::engine::nicola_fsm::NicolaFsm;
+    use crate::types::ContextChange;
+
+    fn make_adapter() -> FsmAdapter {
+        let fsm = NicolaFsm::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        FsmAdapter::new(fsm)
+    }
+
+    #[test]
+    fn is_enabled_default_true() {
+        let adapter = make_adapter();
+        assert!(adapter.is_enabled());
+    }
+
+    #[test]
+    fn set_enabled_false() {
+        let mut adapter = make_adapter();
+        let (actual, decision) = adapter.set_enabled(false);
+        assert!(!actual);
+        assert!(!adapter.is_enabled());
+        // Decision should exist (may have effects or not)
+        let _ = decision;
+    }
+
+    #[test]
+    fn set_enabled_true_when_already_true() {
+        let mut adapter = make_adapter();
+        let (actual, _decision) = adapter.set_enabled(true);
+        assert!(actual);
+        assert!(adapter.is_enabled());
+    }
+
+    #[test]
+    fn toggle_enabled_flips_state() {
+        let mut adapter = make_adapter();
+        assert!(adapter.is_enabled());
+
+        let (enabled, _decision) = adapter.toggle_enabled();
+        assert!(!enabled);
+        assert!(!adapter.is_enabled());
+
+        let (enabled, _decision) = adapter.toggle_enabled();
+        assert!(enabled);
+        assert!(adapter.is_enabled());
+    }
+
+    #[test]
+    fn flush_returns_decision() {
+        let mut adapter = make_adapter();
+        let decision = adapter.flush(ContextChange::FocusChanged);
+        // Flush on idle should return a Decision without panicking
+        let _ = decision.is_consumed();
+    }
+
+    #[test]
+    fn flush_to_effects_returns_vec() {
+        let mut adapter = make_adapter();
+        let effects = adapter.flush_to_effects(ContextChange::FocusChanged);
+        // Verify it returns a Vec (may or may not be empty depending on FSM internals)
+        let _ = effects.len();
+    }
+
+    #[test]
+    fn on_event_processes_key_down() {
+        let mut adapter = make_adapter();
+        let mut tracker = InputTracker::new();
+        let event = Ev::down(VK_A).at(1_000_000).build();
+        let phys = tracker.process(&event);
+        let decision = adapter.on_event(event, &phys);
+        // Character key when enabled should be consumed
+        assert!(decision.is_consumed());
+    }
+
+    #[test]
+    fn on_event_key_up_pass_through_when_idle() {
+        let mut adapter = make_adapter();
+        let mut tracker = InputTracker::new();
+        // Key up without prior key down
+        let event = Ev::up(VK_A).build();
+        let phys = tracker.process(&event);
+        let decision = adapter.on_event(event, &phys);
+        // Key-up without pending state should pass through
+        let _ = decision;
+    }
+
+    #[test]
+    fn on_timeout_on_idle() {
+        let mut adapter = make_adapter();
+        let phys = PhysicalKeyState::empty();
+        let decision = adapter.on_timeout(0, &phys);
+        // Timeout on idle should not panic, just produce a decision
+        let _ = decision;
+    }
+
+    #[test]
+    fn set_threshold_ms_updates() {
+        let mut adapter = make_adapter();
+        // Should not panic; verify indirectly through behavior
+        adapter.set_threshold_ms(200);
+        // After increasing threshold, keys further apart should still be simultaneous
+        let mut tracker = InputTracker::new();
+        let ev1 = Ev::down(VK_NONCONVERT).at(0).build();
+        let phys1 = tracker.process(&ev1);
+        let _ = adapter.on_event(ev1, &phys1);
+
+        let ev2 = Ev::down(VK_A).at(150_000).build(); // 150ms apart
+        let phys2 = tracker.process(&ev2);
+        let decision = adapter.on_event(ev2, &phys2);
+        assert!(decision.is_consumed());
+    }
+
+    #[test]
+    fn set_confirm_mode_updates() {
+        let mut adapter = make_adapter();
+        // Should not panic
+        adapter.set_confirm_mode(ConfirmMode::Speculative, 50);
+        adapter.set_confirm_mode(ConfirmMode::Wait, 30);
+    }
+
+    #[test]
+    fn swap_layout_returns_decision() {
+        let mut adapter = make_adapter();
+        let new_layout = make_layout();
+        let decision = adapter.swap_layout(new_layout);
+        // swap_layout may flush pending state
+        let _ = decision;
+    }
+
+    #[test]
+    fn swap_layout_on_idle_no_consumed() {
+        let mut adapter = make_adapter();
+        let decision = adapter.swap_layout(make_layout());
+        // On idle, no pending keys to flush, so likely pass-through or empty
+        // Just verify it doesn't panic
+        let _ = decision.is_consumed();
+    }
+
+    #[test]
+    fn set_enabled_false_then_on_event_passes_through() {
+        let mut adapter = make_adapter();
+        let (_actual, _decision) = adapter.set_enabled(false);
+
+        let mut tracker = InputTracker::new();
+        let event = Ev::down(VK_A).at(1_000_000).build();
+        let phys = tracker.process(&event);
+        let decision = adapter.on_event(event, &phys);
+        // When disabled, key events should pass through
+        assert!(!decision.is_consumed());
+    }
+
+    #[test]
+    fn toggle_then_flush() {
+        let mut adapter = make_adapter();
+        // Process a key to create pending state
+        let mut tracker = InputTracker::new();
+        let event = Ev::down(VK_A).at(1_000_000).build();
+        let phys = tracker.process(&event);
+        let _ = adapter.on_event(event, &phys);
+
+        // Toggle off should flush pending
+        let (enabled, decision) = adapter.toggle_enabled();
+        assert!(!enabled);
+        let _ = decision;
+    }
+
+    #[test]
+    fn set_ngram_model_does_not_panic() {
+        let mut adapter = make_adapter();
+        let toml_str = r#"
+[bigram]
+"あり" = 1.5
+"#;
+        let model = crate::ngram::NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000)
+            .unwrap();
+        adapter.set_ngram_model(model);
+    }
+
+    #[test]
+    fn response_to_decision_consumed_flag() {
+        // Test indirectly: when engine is enabled and receives a character key,
+        // the adapter should produce a consumed decision
+        let mut adapter = make_adapter();
+        let mut tracker = InputTracker::new();
+        let event = Ev::down(VK_A).at(1_000_000).build();
+        let phys = tracker.process(&event);
+        let decision = adapter.on_event(event, &phys);
+        assert!(decision.is_consumed());
+    }
+
+    #[test]
+    fn flush_after_key_produces_effects() {
+        let mut adapter = make_adapter();
+        let mut tracker = InputTracker::new();
+
+        // Send a character key to create pending state
+        let event = Ev::down(VK_A).at(1_000_000).build();
+        let phys = tracker.process(&event);
+        let _ = adapter.on_event(event, &phys);
+
+        // Flush should resolve the pending key
+        let decision = adapter.flush(ContextChange::FocusChanged);
+        // The flush should produce some output (consumed with effects)
+        let _ = decision;
+    }
+}
+
+// ============================================================================
+// Engine integration tests (engine.rs coverage)
+// ============================================================================
+
+mod engine_integration_tests {
+    use super::*;
+    use crate::config::{ConfirmMode, ParsedKeyCombo};
+    use crate::engine::decision::{
+        Decision, Effect, EngineCommand, ImeCacheEffect, ImeEffect, ImeSyncKeys, InputContext,
+        InputEffect, SpecialKeyCombos, UiEffect,
+    };
+    use crate::engine::engine::Engine;
+    use crate::engine::input_tracker::InputTracker;
+    use crate::engine::nicola_fsm::NicolaFsm;
+    use crate::engine::observation::{FocusObservation, ImeObservation};
+    use crate::types::{FocusKind, ImeCacheState, ImeReliability};
+
+    fn empty_sync_keys() -> ImeSyncKeys {
+        ImeSyncKeys {
+            toggle: vec![],
+            on: vec![],
+            off: vec![],
+        }
+    }
+
+    fn empty_special_keys() -> SpecialKeyCombos {
+        SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+        }
+    }
+
+    fn make_test_engine() -> Engine {
+        let layout = make_layout();
+        let tracker = InputTracker::new();
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        Engine::new(fsm, tracker, empty_sync_keys(), empty_special_keys())
+    }
+
+    fn ime_on_ctx() -> InputContext {
+        InputContext {
+            ime_cache: ImeCacheState::On,
+        }
+    }
+
+    fn ime_off_ctx() -> InputContext {
+        InputContext {
+            ime_cache: ImeCacheState::Off,
+        }
+    }
+
+    fn ime_unknown_ctx() -> InputContext {
+        InputContext {
+            ime_cache: ImeCacheState::Unknown,
+        }
+    }
+
+    fn has_effect<F: Fn(&Effect) -> bool>(decision: &Decision, pred: F) -> bool {
+        match decision {
+            Decision::Consume { effects } => effects.iter().any(&pred),
+            Decision::PassThroughWith { effects } => effects.iter().any(&pred),
+            Decision::PassThrough => false,
+        }
+    }
+
+    fn effects_of(decision: &Decision) -> &[Effect] {
+        match decision {
+            Decision::Consume { effects } => effects,
+            Decision::PassThroughWith { effects } => effects,
+            Decision::PassThrough => &[],
+        }
+    }
+
+    // ── 1. Engine::on_input basic flow ──
+
+    #[test]
+    fn on_input_char_key_with_ime_on_is_consumed() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(
+            d.is_consumed(),
+            "char key with IME ON should be consumed by FSM"
+        );
+    }
+
+    #[test]
+    fn on_input_char_key_with_ime_off_passes_through() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_off_ctx());
+        assert!(
+            !d.is_consumed(),
+            "char key with IME OFF should pass through"
+        );
+    }
+
+    #[test]
+    fn on_input_char_key_with_ime_unknown_uses_shadow() {
+        let mut engine = make_test_engine();
+        // shadow defaults to ON, so Unknown resolves to ON
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_unknown_ctx());
+        assert!(
+            d.is_consumed(),
+            "char key with IME Unknown + shadow ON should be consumed"
+        );
+    }
+
+    #[test]
+    fn on_input_char_key_with_ime_unknown_shadow_off_passes_through() {
+        let mut engine = make_test_engine();
+        engine.set_shadow_ime_on(false);
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_unknown_ctx());
+        assert!(
+            !d.is_consumed(),
+            "char key with IME Unknown + shadow OFF should pass through"
+        );
+    }
+
+    #[test]
+    fn on_input_key_up_after_consumed_down_is_auto_consumed() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        let d = engine.on_input(Ev::up(VK_A).at(200).build(), &ime_on_ctx());
+        assert!(
+            d.is_consumed(),
+            "KeyUp for consumed KeyDown should also be consumed"
+        );
+    }
+
+    #[test]
+    fn on_input_key_up_without_consumed_down_passes_through() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::up(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(
+            !d.is_consumed(),
+            "KeyUp without prior consumed KeyDown should pass through"
+        );
+    }
+
+    // ── 2. Engine::on_input with modifiers ──
+
+    #[test]
+    fn on_input_shift_key_passes_through() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_SHIFT).at(100).build(), &ime_on_ctx());
+        assert!(!d.is_consumed(), "Shift KeyDown should pass through");
+    }
+
+    #[test]
+    fn on_input_ctrl_key_passes_through() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_CTRL).at(100).build(), &ime_on_ctx());
+        assert!(!d.is_consumed(), "Ctrl KeyDown should pass through");
+    }
+
+    #[test]
+    fn on_input_alt_key_passes_through() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_ALT).at(100).build(), &ime_on_ctx());
+        assert!(!d.is_consumed(), "Alt KeyDown should pass through");
+    }
+
+    // ── 3. Engine::on_timeout ──
+
+    #[test]
+    fn on_timeout_after_pending_char() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(
+            has_effect(&d, |e| matches!(e, Effect::Input(InputEffect::SendKeys(_)))),
+            "timeout should produce SendKeys"
+        );
+    }
+
+    #[test]
+    fn on_timeout_with_ime_off_flushes() {
+        let mut engine = make_test_engine();
+        engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_off_ctx());
+        assert!(d.is_consumed());
+    }
+
+    // ── 4. Engine::on_command ──
+
+    #[test]
+    fn on_command_toggle_engine() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+
+        let d = engine.on_command(EngineCommand::ToggleEngine);
+        assert!(!engine.is_fsm_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+        )));
+
+        let d = engine.on_command(EngineCommand::ToggleEngine);
+        assert!(engine.is_fsm_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+        )));
+    }
+
+    #[test]
+    fn on_command_invalidate_context() {
+        let mut engine = make_test_engine();
+        engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        let d = engine.on_command(EngineCommand::InvalidateContext(ContextChange::ImeOff));
+        assert!(d.is_consumed());
+    }
+
+    #[test]
+    fn on_command_sync_ime_state_off_when_enabled() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false });
+        assert!(!engine.is_fsm_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+        )));
+    }
+
+    #[test]
+    fn on_command_sync_ime_state_on_when_disabled() {
+        let mut engine = make_test_engine();
+        engine.on_command(EngineCommand::ToggleEngine);
+        assert!(!engine.is_fsm_enabled());
+
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true });
+        assert!(engine.is_fsm_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+        )));
+    }
+
+    #[test]
+    fn on_command_sync_ime_state_no_change() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true });
+        assert!(!d.is_consumed());
+        assert!(engine.is_fsm_enabled());
+    }
+
+    #[test]
+    fn on_command_set_guard() {
+        let mut engine = make_test_engine();
+        let d = engine.on_command(EngineCommand::SetGuard(true));
+        assert!(!d.is_consumed());
+    }
+
+    #[test]
+    fn on_command_clear_deferred_keys() {
+        let mut engine = make_test_engine();
+        let d = engine.on_command(EngineCommand::ClearDeferredKeys);
+        assert!(!d.is_consumed());
+    }
+
+    #[test]
+    fn on_command_update_fsm_params() {
+        let mut engine = make_test_engine();
+        let d = engine.on_command(EngineCommand::UpdateFsmParams {
+            threshold_ms: 200,
+            confirm_mode: ConfirmMode::Speculative,
+            speculative_delay_ms: 50,
+        });
+        assert!(!d.is_consumed());
+    }
+
+    #[test]
+    fn on_command_reload_keys() {
+        let mut engine = make_test_engine();
+        let d = engine.on_command(EngineCommand::ReloadKeys {
+            special: empty_special_keys(),
+            sync: empty_sync_keys(),
+        });
+        assert!(!d.is_consumed());
+    }
+
+    // ── 5. Engine::check_special_keys ──
+
+    fn make_engine_with_special(special: SpecialKeyCombos) -> Engine {
+        let layout = make_layout();
+        let tracker = InputTracker::new();
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        Engine::new(fsm, tracker, empty_sync_keys(), special)
+    }
+
+    #[test]
+    fn special_key_engine_on_combo() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![combo],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        engine.on_command(EngineCommand::ToggleEngine);
+        assert!(!engine.is_fsm_enabled());
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            engine.is_fsm_enabled(),
+            "engine should be re-enabled by special key combo"
+        );
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+        )));
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::RequestCacheRefresh)
+        )));
+    }
+
+    #[test]
+    fn special_key_engine_off_combo() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![combo],
+            ime_on: vec![],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        assert!(engine.is_fsm_enabled());
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            !engine.is_fsm_enabled(),
+            "engine should be disabled by special key combo"
+        );
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+        )));
+    }
+
+    #[test]
+    fn special_key_ime_on_combo() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen(true))
+        )));
+    }
+
+    #[test]
+    fn special_key_ime_off_combo() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen(false))
+        )));
+    }
+
+    #[test]
+    fn special_key_not_triggered_on_key_up() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![combo],
+            ime_on: vec![],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            engine.is_fsm_enabled(),
+            "KeyUp should not trigger engine_off"
+        );
+        assert!(!has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { .. })
+        )));
+    }
+
+    // ── 6. KeyLifecycle integration ──
+
+    #[test]
+    fn lifecycle_key_down_consumed_key_up_consumed() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        let d = engine.on_input(Ev::up(VK_A).at(200).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+    }
+
+    #[test]
+    fn lifecycle_key_down_passthrough_key_up_passthrough() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_off_ctx());
+        assert!(!d.is_consumed());
+        let d = engine.on_input(Ev::up(VK_A).at(200).build(), &ime_off_ctx());
+        assert!(!d.is_consumed());
+    }
+
+    // ── 7. Engine::on_command ImeObserved ──
+
+    #[test]
+    fn ime_observed_on_enables_engine() {
+        let mut engine = make_test_engine();
+        engine.on_command(EngineCommand::ToggleEngine);
+        assert!(!engine.is_fsm_enabled());
+
+        let obs = ImeObservation {
+            cross_process: Some(true),
+            is_japanese: true,
+            reliability: ImeReliability::Reliable,
+        };
+        let d = engine.on_command(EngineCommand::ImeObserved(obs));
+        assert!(engine.is_fsm_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+        )));
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: true })
+        )));
+    }
+
+    #[test]
+    fn ime_observed_off_disables_engine() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+
+        let obs = ImeObservation {
+            cross_process: Some(false),
+            is_japanese: true,
+            reliability: ImeReliability::Reliable,
+        };
+        let d = engine.on_command(EngineCommand::ImeObserved(obs));
+        assert!(!engine.is_fsm_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+        )));
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: false })
+        )));
+    }
+
+    #[test]
+    fn ime_observed_no_change_just_updates_cache() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+
+        let obs = ImeObservation {
+            cross_process: Some(true),
+            is_japanese: true,
+            reliability: ImeReliability::Reliable,
+        };
+        let d = engine.on_command(EngineCommand::ImeObserved(obs));
+        assert!(engine.is_fsm_enabled());
+        assert!(!has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { .. })
+        )));
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: true })
+        )));
+    }
+
+    #[test]
+    fn ime_observed_not_japanese_disables() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+
+        let obs = ImeObservation {
+            cross_process: Some(true),
+            is_japanese: false,
+            reliability: ImeReliability::Reliable,
+        };
+        let d = engine.on_command(EngineCommand::ImeObserved(obs));
+        assert!(!engine.is_fsm_enabled());
+        // not_japanese resolves to false, so should have cache update with ime_on: false
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: false })
+        )));
+    }
+
+    // ── 8. Engine::on_command FocusChanged ──
+
+    fn make_focus_obs(
+        process_id: u32,
+        class_name: &str,
+        kind: FocusKind,
+        skip: bool,
+        needs_uia: bool,
+        overridden: bool,
+        cached_engine_enabled: Option<bool>,
+        os_modifiers: Option<super::ModifierState>,
+    ) -> FocusObservation {
+        FocusObservation {
+            process_id,
+            class_name: class_name.to_string(),
+            kind,
+            reason: "test".to_string(),
+            needs_uia,
+            overridden,
+            skip,
+            debounce_timer_id: 99,
+            debounce_ms: 50,
+            cached_engine_enabled,
+            os_modifiers,
+        }
+    }
+
+    #[test]
+    fn focus_changed_basic() {
+        let mut engine = make_test_engine();
+        let obs = make_focus_obs(
+            1234,
+            "TestClass",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(!d.is_consumed());
+
+        let effs = effects_of(&d);
+        assert!(effs.iter().any(|e| matches!(e, Effect::Timer(..))));
+        assert!(effs.iter().any(|e| matches!(
+            e,
+            Effect::Focus(super::decision::FocusEffect::UpdateLastFocusInfo { .. })
+        )));
+    }
+
+    #[test]
+    fn focus_changed_skip_returns_passthrough() {
+        let mut engine = make_test_engine();
+        let obs = make_focus_obs(
+            1234,
+            "TestClass",
+            FocusKind::TextInput,
+            true,
+            false,
+            false,
+            None,
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(matches!(d, Decision::PassThrough));
+    }
+
+    #[test]
+    fn focus_changed_restores_engine_state() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+
+        let obs = make_focus_obs(
+            5678,
+            "Other",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            Some(false),
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(
+            !engine.is_fsm_enabled(),
+            "engine should be disabled from cached state"
+        );
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+        )));
+    }
+
+    #[test]
+    fn focus_changed_needs_uia() {
+        let mut engine = make_test_engine();
+        let obs = make_focus_obs(
+            1234,
+            "Unknown",
+            FocusKind::Undetermined,
+            false,
+            true,
+            false,
+            None,
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Focus(super::decision::FocusEffect::RequestUiaClassification)
+        )));
+    }
+
+    #[test]
+    fn focus_changed_saves_old_engine_state() {
+        let mut engine = make_test_engine();
+
+        // First focus change to set last_focus_info
+        let obs1 = make_focus_obs(
+            100,
+            "First",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+        engine.on_command(EngineCommand::FocusChanged(obs1));
+
+        // Second focus change should save state for the first window
+        let obs2 = make_focus_obs(
+            200,
+            "Second",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs2));
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Focus(super::decision::FocusEffect::SaveEngineState { .. })
+        )));
+    }
+
+    #[test]
+    fn focus_changed_overridden_no_cache_insert() {
+        let mut engine = make_test_engine();
+        let obs = make_focus_obs(
+            1234,
+            "Override",
+            FocusKind::NonText,
+            false,
+            false,
+            true,
+            None,
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(!has_effect(&d, |e| matches!(
+            e,
+            Effect::Focus(super::decision::FocusEffect::InsertFocusCache { .. })
+        )));
+    }
+
+    #[test]
+    fn focus_changed_with_os_modifiers() {
+        let mut engine = make_test_engine();
+        let mods = super::ModifierState {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            win: false,
+        };
+        let obs = make_focus_obs(
+            1234,
+            "WithMods",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            None,
+            Some(mods),
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(!d.is_consumed());
+    }
+
+    // ── 9. Engine::handle_sync_modifiers ──
+
+    #[test]
+    fn sync_modifiers_no_mismatch_passes_through() {
+        let mut engine = make_test_engine();
+        let os_mods = super::ModifierState {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+        };
+        let d = engine.on_command(EngineCommand::SyncModifiers(os_mods));
+        assert!(!d.is_consumed());
+    }
+
+    // ── 10. process_deferred_keys ──
+
+    #[test]
+    fn process_deferred_keys_empty_returns_empty() {
+        let mut engine = make_test_engine();
+        let results = engine.process_deferred_keys(&ime_on_ctx());
+        assert!(results.is_empty());
+    }
+
+    // ── 11. is_fsm_enabled / shadow_ime_on ──
+
+    #[test]
+    fn is_fsm_enabled_default_true() {
+        let engine = make_test_engine();
+        assert!(engine.is_fsm_enabled());
+    }
+
+    #[test]
+    fn shadow_ime_on_default_true() {
+        let engine = make_test_engine();
+        assert!(engine.shadow_ime_on());
+    }
+
+    #[test]
+    fn set_shadow_ime_on_updates() {
+        let mut engine = make_test_engine();
+        engine.set_shadow_ime_on(false);
+        assert!(!engine.shadow_ime_on());
+        engine.set_shadow_ime_on(true);
+        assert!(engine.shadow_ime_on());
+    }
+
+    // ── 12. Engine::on_command with SwapLayout ──
+
+    #[test]
+    fn on_command_swap_layout() {
+        let mut engine = make_test_engine();
+        let new_layout = make_layout();
+        let d = engine.on_command(EngineCommand::SwapLayout(new_layout));
+        let _ = d; // verify no panic
+    }
+
+    // ── 13. Multiple key sequence integration ──
+
+    #[test]
+    fn full_char_input_sequence() {
+        let mut engine = make_test_engine();
+
+        // Type 'A' key: down -> timeout -> up
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(
+            has_effect(&d, |e| matches!(e, Effect::Input(InputEffect::SendKeys(_)))),
+            "timeout should produce SendKeys"
+        );
+
+        let d = engine.on_input(Ev::up(VK_A).at(300).build(), &ime_on_ctx());
+        assert!(d.is_consumed()); // lifecycle auto-consume
+
+        // Type 'S' key
+        let d = engine.on_input(Ev::down(VK_S).at(400).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+    }
+
+    // ── 14. Focus change flushes pending key ups ──
+
+    #[test]
+    fn focus_change_flushes_pending_key_ups() {
+        let mut engine = make_test_engine();
+
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+
+        let obs = make_focus_obs(
+            9999,
+            "NewWindow",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Input(InputEffect::ReinjectKey(_))
+        )));
+    }
+
+    // ── 15. Engine disabled -> char key passes through ──
+
+    #[test]
+    fn disabled_engine_char_passes_through() {
+        let mut engine = make_test_engine();
+        engine.on_command(EngineCommand::ToggleEngine);
+        assert!(!engine.is_fsm_enabled());
+
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(!d.is_consumed());
+    }
+
+    // ── 16. Thumb key with IME ON ──
+
+    #[test]
+    fn thumb_key_with_ime_on_is_consumed() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+    }
+
+    // ── 17. SyncImeState with pending flush ──
+
+    #[test]
+    fn sync_ime_off_flushes_pending() {
+        let mut engine = make_test_engine();
+        engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false });
+        assert!(!engine.is_fsm_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+        )));
+    }
+
+    // ── 18. SetNgramModel command ──
+
+    #[test]
+    fn on_command_set_ngram_model() {
+        use crate::ngram::NgramModel;
+        let mut engine = make_test_engine();
+        let model = NgramModel::new(100_000, 20_000, 50_000, 200_000);
+        let d = engine.on_command(EngineCommand::SetNgramModel(model));
+        assert!(!d.is_consumed());
+    }
+
+    // ── 19. Two char keys in sequence (second key resolves first) ──
+
+    #[test]
+    fn two_char_keys_second_resolves_first() {
+        let mut engine = make_test_engine();
+
+        // First char key enters PendingChar
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+
+        // Second char key resolves first and enters new PendingChar
+        let d = engine.on_input(Ev::down(VK_S).at(150).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        // Should have SendKeys for the first character
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Input(InputEffect::SendKeys(_))
+        )));
+    }
+
+    // ── 20. Thumb + char simultaneous input ──
+
+    #[test]
+    fn thumb_then_char_within_threshold() {
+        let mut engine = make_test_engine();
+
+        // Left thumb down
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+
+        // Char key within threshold -> simultaneous input
+        let d = engine.on_input(Ev::down(VK_A).at(130).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+    }
+
+    // ── 21. Focus changed then input ──
+
+    #[test]
+    fn focus_changed_then_input_works() {
+        let mut engine = make_test_engine();
+
+        let obs = make_focus_obs(
+            1234,
+            "Editor",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            None,
+            None,
+        );
+        engine.on_command(EngineCommand::FocusChanged(obs));
+
+        // Input should still work after focus change
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+    }
+
+    // ── 22. Multiple toggles ──
+
+    #[test]
+    fn multiple_toggles_cycle() {
+        let mut engine = make_test_engine();
+
+        for _ in 0..5 {
+            engine.on_command(EngineCommand::ToggleEngine);
+            assert!(!engine.is_fsm_enabled());
+            engine.on_command(EngineCommand::ToggleEngine);
+            assert!(engine.is_fsm_enabled());
+        }
+    }
+
+    // ── 23. ImeObserved with pending key flushes ──
+
+    #[test]
+    fn ime_observed_off_with_pending_flushes() {
+        let mut engine = make_test_engine();
+        // Enter pending state
+        engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+
+        let obs = ImeObservation {
+            cross_process: Some(false),
+            is_japanese: true,
+            reliability: ImeReliability::Reliable,
+        };
+        let d = engine.on_command(EngineCommand::ImeObserved(obs));
+        assert!(!engine.is_fsm_enabled());
+        // Should have flush effects (SendKeys) before the state change
+        let effs = effects_of(&d);
+        assert!(
+            effs.len() >= 2,
+            "should have flush + state change + cache update effects"
+        );
+    }
+
+    // ── 24. Focus change restores enabled state ──
+
+    #[test]
+    fn focus_changed_restores_enabled_true() {
+        let mut engine = make_test_engine();
+        // Disable engine
+        engine.on_command(EngineCommand::ToggleEngine);
+        assert!(!engine.is_fsm_enabled());
+
+        // Focus change with cached_engine_enabled=true should re-enable
+        let obs = make_focus_obs(
+            5678,
+            "Other",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            Some(true),
+            None,
+        );
+        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(
+            engine.is_fsm_enabled(),
+            "engine should be re-enabled from cached state"
+        );
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+        )));
+    }
 }

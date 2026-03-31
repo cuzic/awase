@@ -231,4 +231,197 @@ mod tests {
         let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
         assert!(!judge.should_speculate(Some('x'), Some('り'), None));
     }
+
+    // ── ThreeKeyResult enum variants ──
+
+    #[test]
+    fn three_key_result_variants_are_distinct() {
+        assert_ne!(ThreeKeyResult::PairWithChar1, ThreeKeyResult::PairWithChar2);
+    }
+
+    #[test]
+    fn three_key_result_clone_and_copy() {
+        let a = ThreeKeyResult::PairWithChar1;
+        let b = a; // Copy
+        let c = a.clone(); // Clone
+        assert_eq!(a, b);
+        assert_eq!(a, c);
+    }
+
+    #[test]
+    fn three_key_result_debug() {
+        let s = format!("{:?}", ThreeKeyResult::PairWithChar1);
+        assert!(s.contains("PairWithChar1"));
+    }
+
+    // ── TimingJudge construction ──
+
+    #[test]
+    fn timing_judge_construction_zero_threshold() {
+        let judge = TimingJudge::new(0, None, vec![]);
+        // With zero threshold, nothing is simultaneous (elapsed must be < 0, impossible for u64)
+        assert!(!judge.is_simultaneous(0, 0, None));
+        assert!(!judge.is_simultaneous(0, 1, None));
+    }
+
+    #[test]
+    fn timing_judge_construction_with_model_and_context() {
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ', 'り']);
+        // Should work normally with non-empty context
+        assert!(judge.is_simultaneous(0, 50_000, None));
+    }
+
+    #[test]
+    fn timing_judge_debug() {
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        let s = format!("{:?}", judge);
+        assert!(s.contains("TimingJudge"));
+    }
+
+    // ── is_simultaneous edge cases ──
+
+    #[test]
+    fn is_simultaneous_equal_timestamps() {
+        // elapsed = 0, threshold = 100_000 → 0 < 100_000 → true
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(judge.is_simultaneous(5000, 5000, None));
+    }
+
+    #[test]
+    fn is_simultaneous_exactly_at_threshold() {
+        // elapsed == threshold → not simultaneous (strict <)
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(!judge.is_simultaneous(0, 100_000, None));
+    }
+
+    #[test]
+    fn is_simultaneous_one_below_threshold() {
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(judge.is_simultaneous(0, 99_999, None));
+    }
+
+    #[test]
+    fn is_simultaneous_with_ngram_adjusted_threshold() {
+        let model = sample_model();
+        // 'あ' → 'り' has bigram score 1.5, which should widen the threshold
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        // With model adjustment, the threshold may differ from raw 100_000
+        // Just verify it doesn't panic and returns a value
+        let _result = judge.is_simultaneous(0, 100_000, Some('り'));
+    }
+
+    #[test]
+    fn is_simultaneous_saturating_sub_no_panic() {
+        // If pending_ts > new_ts, saturating_sub returns 0
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(judge.is_simultaneous(200_000, 100_000, None));
+    }
+
+    // ── should_speculate edge cases ──
+
+    #[test]
+    fn should_speculate_all_none_no_model() {
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(!judge.should_speculate(None, None, None));
+    }
+
+    #[test]
+    fn should_speculate_all_none_with_model() {
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec![]);
+        // normal=None → score 0, both thumbs None → NEG_INFINITY → thumb_score=0
+        // 0 - 0 = 0 which is not > 0.5
+        assert!(!judge.should_speculate(None, None, None));
+    }
+
+    #[test]
+    fn should_speculate_only_right_thumb() {
+        let model = sample_model();
+        // recent = ['あ'], normal = 'り' (1.5), right_thumb = 'x' (0)
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        assert!(judge.should_speculate(Some('り'), None, Some('x')));
+    }
+
+    #[test]
+    fn should_speculate_both_thumbs_high() {
+        let model = sample_model();
+        // recent = ['し'], normal = 'x' (0), left_thumb = 'た' (1.8), right = None
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        assert!(!judge.should_speculate(Some('x'), Some('た'), None));
+    }
+
+    // ── three_key_pairing with ngram ──
+
+    #[test]
+    fn three_key_pairing_with_ngram_timing_dominates() {
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec![]);
+        // d1=10, d2=90 → margin = 30_000, d1+margin=30_010 < 90 is false for small ts
+        // Use large timestamps so margin matters
+        // d1=10_000, d2=80_000 → margin=30_000, d1+margin=40_000 < 80_000 → PairWithChar1
+        assert_eq!(
+            judge.three_key_pairing(0, 10_000, 90_000, None, None, None),
+            ThreeKeyResult::PairWithChar1
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_with_ngram_d2_dominates() {
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec![]);
+        // d1=80_000, d2=10_000 → margin=30_000, d2+margin=40_000 < 80_000 → PairWithChar2
+        assert_eq!(
+            judge.three_key_pairing(0, 80_000, 90_000, None, None, None),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_equal_d1_d2_no_ngram() {
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        // d1 == d2 → d1 < d2 is false → PairWithChar2
+        assert_eq!(
+            judge.three_key_pairing(0, 50, 100, None, None, None),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_ngram_score_decides_close_timing() {
+        let model = sample_model();
+        // recent = ['あ'], char1_thumb_kana = 'り' (score 1.5), char1_single = None, char2_thumb = None
+        // score_a = 1.5, score_b = NEG_INFINITY → score_a > score_b → PairWithChar1
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        // d1=50_000, d2=50_000 → margin=30_000, d1+margin=80_000 not < 50_000 → close timing
+        assert_eq!(
+            judge.three_key_pairing(0, 50_000, 100_000, Some('り'), None, None),
+            ThreeKeyResult::PairWithChar1
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_ngram_prefers_char2_when_score_b_higher() {
+        let model = sample_model();
+        // recent = ['し'], char1_thumb_kana = 'x' (0), char1_single = 'し', char2_thumb = 'た' (score 1.8 with context ['し'])
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        assert_eq!(
+            judge.three_key_pairing(0, 50_000, 100_000, Some('x'), Some('し'), Some('た')),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_ngram_score_b_with_only_char2_thumb() {
+        let model = sample_model();
+        // char1_single = None, char2_thumb = 'り' → uses recent_kana directly
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        // score_a from char1_thumb_kana=None → NEG_INFINITY
+        // score_b from char2_thumb='り' with context=['あ'] → 1.5
+        // score_b > score_a → PairWithChar2
+        assert_eq!(
+            judge.three_key_pairing(0, 50_000, 100_000, None, None, Some('り')),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
 }
