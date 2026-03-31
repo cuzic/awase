@@ -12,7 +12,7 @@
 //! - Engine は常に現在の InputContext のスナップショットだけで判断する（先読みしない）
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, FocusKind, KeyEventType, RawKeyEvent};
+use crate::types::{ContextChange, KeyEventType, RawKeyEvent};
 
 use super::decision::{
     Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext, InputEffect,
@@ -291,11 +291,14 @@ impl Engine {
             }));
         }
 
-        // NonText ならエンジンの保留状態をフラッシュ
-        if kind == FocusKind::NonText {
-            let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);
-            effects.extend(flush_effects);
-        }
+        // ウィンドウ切替時は常に内部状態をフラッシュする。
+        // 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
+        let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);
+        effects.extend(flush_effects);
+
+        // IME トグルガードもクリア（前ウィンドウのガードを引きずらない）
+        self.ime.clear_deferred();
+        self.ime.set_guard(false);
 
         // UIA 非同期判定が必要なら要求
         if needs_uia {
