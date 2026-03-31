@@ -26,15 +26,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_TIMER,
 };
 
-use awase::config::{
-    parse_key_combo, vk_name_to_code, AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig,
-};
+use awase::config::{AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig};
 use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::engine::{ImeSyncKeys, SpecialKeyCombos};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, ImeCacheState};
 use awase::types::{RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
+use awase_windows::vk::{parse_key_combo, vk_name_to_code};
 
 use awase_windows::executor;
 use awase_windows::focus;
@@ -51,8 +50,8 @@ use awase_windows::tray::SystemTray;
 use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED, FOCUS_DEBOUNCE_MS, FOCUS_KIND, IME_POLL_INTERVAL_MS,
     IME_RELIABILITY, IME_STATE_CACHE, MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
-    TIMER_IME_POLL, WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED, WM_PROCESS_DEFERRED,
-    WM_RELOAD_CONFIG,
+    TIMER_HOOK_WATCHDOG, TIMER_IME_POLL, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
+    WM_IME_KEY_DETECTED, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
 /// 有効/無効切り替えホットキー ID
@@ -164,6 +163,11 @@ fn main() -> Result<()> {
 
     let system_tray = init_tray(&layout_names, &initial_layout_name, elevated)?;
 
+    // Clone sync keys for Runtime's event enrichment
+    let sync_toggle_keys = ime_sync_toggle.clone();
+    let sync_on_keys = ime_sync_on.clone();
+    let sync_off_keys = ime_sync_off.clone();
+
     let engine = Engine::new(
         fsm,
         tracker,
@@ -180,7 +184,16 @@ fn main() -> Result<()> {
         },
     );
 
-    initialize_app(engine, system_tray, &config, ime, layouts);
+    initialize_app(
+        engine,
+        system_tray,
+        &config,
+        ime,
+        layouts,
+        sync_toggle_keys,
+        sync_on_keys,
+        sync_off_keys,
+    );
     store_timing_config(&config);
 
     init_ngram_validated(&config, &mut diag);
@@ -205,6 +218,12 @@ fn main() -> Result<()> {
             None,
         );
         TimerGuard(TIMER_IME_POLL)
+    };
+
+    // フック消失ウォッチドッグタイマー（3秒間隔、IME ポーリングとは独立）
+    let _watchdog_timer_guard = unsafe {
+        let _ = SetTimer(HWND::default(), TIMER_HOOK_WATCHDOG, 3000, None);
+        TimerGuard(TIMER_HOOK_WATCHDOG)
     };
 
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
@@ -280,7 +299,9 @@ fn init_engine_validated(
         layout.right_thumb.len()
     );
 
-    let tracker = awase::engine::input_tracker::InputTracker::new(left_thumb_vk, right_thumb_vk);
+    let tracker = awase::engine::input_tracker::InputTracker::new();
+    // Set thumb VK codes for hook classification
+    awase_windows::hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
     let engine = NicolaFsm::new(
         layout,
         left_thumb_vk,
@@ -505,7 +526,7 @@ impl Drop for HotKeyGuard {
 
 /// トグルホットキーを登録する
 fn register_toggle_hotkey(hotkey_str: &str) -> Option<HotKeyGuard> {
-    if let Some((modifiers, vk)) = awase::config::parse_hotkey(hotkey_str) {
+    if let Some((modifiers, vk)) = awase_windows::vk::parse_hotkey(hotkey_str) {
         unsafe {
             let result = RegisterHotKey(
                 HWND::default(),
@@ -573,19 +594,23 @@ fn initialize_app(
     config: &ValidatedConfig,
     ime: HybridProvider,
     layouts: Vec<LayoutEntry>,
+    sync_toggle_keys: Vec<VkCode>,
+    sync_on_keys: Vec<VkCode>,
+    sync_off_keys: Vec<VkCode>,
 ) {
     unsafe {
         APP.set(Runtime {
             engine,
-            executor: executor::DecisionExecutor {
-                platform: platform::WindowsPlatform {
-                    output: Output::new(config.general.output_mode),
-                    tray,
-                    focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
-                },
-            },
+            executor: executor::DecisionExecutor::new(platform::WindowsPlatform {
+                output: Output::new(config.general.output_mode),
+                tray,
+                focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
+            }),
             ime,
             layouts,
+            sync_toggle_keys,
+            sync_on_keys,
+            sync_off_keys,
         });
     }
 }
@@ -626,26 +651,39 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 
 /// フックコールバックの本体。
 ///
-/// Engine.on_input で全ロジックを処理し、Decision を execute_decision で実行する。
-/// Windows はフックコールバックが 300ms を超えると無視し、11 回連続で
-/// タイムアウトするとフックを強制解除するため、処理時間を監視する。
+/// Engine.on_input() で consume/passthrough を判断し即座に返す（1-5ms）。
+/// Effect の実行（SendInput, IME 操作等）はキューに入れ、メッセージループに委譲する。
+/// これにより OS の 300ms タイムアウトでフックが解除されることを根本的に防ぐ。
 fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
-    let start = std::time::Instant::now();
+    // Enrich IME relevance with sync key info from config
+    let mut event = event;
+    app.enrich_ime_relevance(&mut event);
 
     let ctx = InputContext {
         ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
     };
-    let decision = app.engine.on_input(event, &ctx);
-    let result = app.execute_decision(decision);
 
-    let elapsed = start.elapsed();
-    if elapsed.as_millis() > 100 {
-        log::warn!(
-            "Hook callback took {}ms — OS limit is 300ms, exceeding it risks hook removal",
-            elapsed.as_millis()
-        );
+    // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
+    let decision = app.engine.on_input(event, &ctx);
+
+    // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
+    let hook_result = app.executor.execute_from_hook(decision);
+
+    // キューに Effects があれば、メッセージループに実行を委譲する
+    if hook_result.has_pending {
+        unsafe {
+            use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+            let _ = PostMessageW(
+                HWND::default(),
+                awase_windows::WM_EXECUTE_EFFECTS,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
     }
-    result
+
+    hook_result.callback
 }
 
 /// メッセージループ
@@ -664,23 +702,37 @@ fn run_message_loop() {
                 if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
                 }
-                // ── フック消失ウォッチドッグ ──
-                // 10 秒以上フックコールバックが呼ばれていない場合、
-                // ユーザーがキーを押しているか確認し、押しているなら警告する。
-                if !hook::is_hook_responsive(10_000) {
-                    // GetAsyncKeyState で直近のキー押下を確認
-                    // いずれかの一般キーが押されていればフック消失の可能性が高い
+            },
+            WM_TIMER if msg.wParam.0 == TIMER_HOOK_WATCHDOG => unsafe {
+                // ── フック消失ウォッチドッグ（3秒間隔、IME ポーリングとは独立）──
+                //
+                // 方式: イベントカウンタ比較。前回チェック時のカウンタと比較し、
+                // 増えていなければフック消失の可能性がある。
+                // GetAsyncKeyState の瞬間チェックより信頼性が高い。
+                use std::sync::atomic::AtomicU64;
+                static LAST_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+
+                let current_count = hook::hook_event_count();
+                let prev_count = LAST_CHECK_COUNT.swap(current_count, Ordering::Relaxed);
+
+                // カウンタが増えている → フックは正常動作中
+                if current_count > prev_count {
+                    continue;
+                }
+
+                // カウンタが増えていない + 3秒以上無応答 → フック消失の可能性
+                if !hook::is_hook_responsive(3_000) {
+                    // 本当にキー入力があるのにフックが反応していないか確認
                     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
                     let any_key_pressed = (0x08u16..=0x5Au16)
                         .any(|vk| GetAsyncKeyState(i32::from(vk)).cast_unsigned() & 0x8000 != 0);
                     if any_key_pressed {
                         let stale_ms = hook::current_tick_ms() - hook::last_hook_activity_ms();
                         log::error!(
-                            "Hook watchdog: no activity for {stale_ms}ms despite keyboard input — attempting reinstall"
+                            "Hook watchdog: no activity for {stale_ms}ms despite keyboard input — reinstalling"
                         );
-                        // フックを自動再登録（UAC 不要、プロセス再起動不要）
                         if hook::reinstall_hook() {
-                            log::info!("Hook reinstalled automatically");
+                            log::info!("Hook reinstalled by watchdog");
                             if let Some(app) = APP.get_mut() {
                                 app.executor
                                     .platform
@@ -690,16 +742,32 @@ fn run_message_loop() {
                         } else if let Some(app) = APP.get_mut() {
                             app.executor.platform.tray.show_balloon(
                                 "awase",
-                                "キーボードフックの復旧に失敗しました。アプリケーションを再起動してください。",
+                                "フック復旧に失敗しました。再起動してください。",
                             );
                         }
                     }
                 }
             },
-            WM_IME_KEY_DETECTED => unsafe {
-                // フックで IME 制御キーが検出された → 即座にキャッシュ更新
+            WM_EXECUTE_EFFECTS => unsafe {
+                // フックコールバックからキューされた Effects を実行する。
+                // ここはメッセージループ上なので時間制約がない。
                 if let Some(app) = APP.get_mut() {
-                    app.refresh_ime_state_cache();
+                    app.executor.drain_deferred();
+                }
+            },
+            WM_IME_KEY_DETECTED => unsafe {
+                // フックで IME 制御キーが検出された:
+                // 1. キャッシュ更新 + 遅延キードレイン
+                // 2. OS の修飾キー状態と内部状態を同期（IME 切替中に KeyUp を取りこぼす対策）
+                if let Some(app) = APP.get_mut() {
+                    app.process_deferred_keys();
+
+                    // OS の実際の修飾キー状態を読み取り、Engine と同期
+                    let os_mods = crate::observer::focus_observer::read_os_modifiers();
+                    let decision = app
+                        .engine
+                        .on_command(awase::engine::EngineCommand::SyncModifiers(os_mods));
+                    app.executor.execute_from_loop(decision);
                 }
             },
             WM_TIMER if msg.wParam.0 == TIMER_FOCUS_DEBOUNCE => unsafe {
@@ -987,6 +1055,11 @@ fn reload_config() {
         let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut key_diag);
         unsafe {
             if let Some(app) = APP.get_mut() {
+                // Update Runtime's sync keys for event enrichment
+                app.sync_toggle_keys = toggle.clone();
+                app.sync_on_keys = on.clone();
+                app.sync_off_keys = off.clone();
+
                 app.engine
                     .on_command(awase::engine::EngineCommand::ReloadKeys {
                         special: SpecialKeyCombos {
@@ -1043,7 +1116,8 @@ fn scan_layouts(
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "yab") {
             match std::fs::read_to_string(&path) {
-                Ok(content) => match YabLayout::parse(&content) {
+                Ok(content) => match YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis)
+                {
                     Ok(yab) => {
                         let yab = yab.resolve_kana();
                         log::info!("Discovered layout: {} ({})", yab.name, path.display());

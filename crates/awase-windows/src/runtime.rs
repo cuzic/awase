@@ -1,5 +1,5 @@
 use awase::engine::{Engine, EngineCommand, InputContext};
-use awase::types::{ContextChange, FocusKind, ImeCacheState, VkCode};
+use awase::types::{ContextChange, FocusKind, ImeCacheState, RawKeyEvent, ShadowImeAction, VkCode};
 use awase::yab::YabLayout;
 
 use crate::executor::DecisionExecutor;
@@ -59,18 +59,42 @@ pub struct Runtime {
     #[allow(dead_code)] // IME プロバイダは将来のモード検出で使用予定
     pub ime: HybridProvider,
     pub layouts: Vec<LayoutEntry>,
+    /// IME 同期キー（イベント事前分類用）
+    pub sync_toggle_keys: Vec<VkCode>,
+    pub sync_on_keys: Vec<VkCode>,
+    pub sync_off_keys: Vec<VkCode>,
 }
 
 impl Runtime {
-    /// Decision の副作用を実行する — executor に委譲
+    /// IME 関連の事前分類情報を sync key 設定で補完する
+    pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
+        let vk = event.vk_code;
+        let rel = &mut event.ime_relevance;
+
+        if self.sync_toggle_keys.contains(&vk) {
+            rel.is_sync_key = true;
+            rel.sync_direction = Some(ShadowImeAction::Toggle);
+            rel.may_change_ime = true;
+        } else if self.sync_on_keys.contains(&vk) {
+            rel.is_sync_key = true;
+            rel.sync_direction = Some(ShadowImeAction::TurnOn);
+            rel.may_change_ime = true;
+        } else if self.sync_off_keys.contains(&vk) {
+            rel.is_sync_key = true;
+            rel.sync_direction = Some(ShadowImeAction::TurnOff);
+            rel.may_change_ime = true;
+        }
+    }
+
+    /// Decision の副作用を実行する（メッセージループ用）。
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        self.executor.execute(decision)
+        self.executor.execute_from_loop(decision)
     }
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
         let decision = self.engine.on_command(EngineCommand::ToggleEngine);
-        self.executor.execute(decision);
+        self.executor.execute_from_loop(decision);
         // ウィンドウごとのエンジン状態をキャッシュに保存
         if let Some((pid, cls)) = self.executor.platform.focus.last_focus_info.as_ref() {
             self.executor.platform.focus.cache.set_engine_state(
@@ -86,7 +110,7 @@ impl Runtime {
         let decision = self
             .engine
             .on_command(EngineCommand::InvalidateContext(reason));
-        self.executor.execute(decision);
+        self.executor.execute_from_loop(decision);
     }
 
     /// IME ON/OFF 状態をキャッシュに書き込む。
@@ -101,7 +125,7 @@ impl Runtime {
         let decision = self.engine.on_command(EngineCommand::ImeObserved(obs));
 
         // Runtime: 副作用実行
-        self.executor.execute(decision);
+        self.executor.execute_from_loop(decision);
     }
 
     /// 配列を動的に切り替える
@@ -115,7 +139,7 @@ impl Runtime {
         let decision = self
             .engine
             .on_command(EngineCommand::SwapLayout(entry.layout.clone()));
-        self.executor.execute(decision);
+        self.executor.execute_from_loop(decision);
 
         self.executor.platform.tray.set_layout_name(&name);
 
@@ -178,7 +202,8 @@ impl Runtime {
         };
         let decisions = self.engine.process_deferred_keys(&ctx);
         for decision in decisions {
-            self.executor.execute(decision);
+            // メッセージループ上なので即座に drain して Effects を実行する
+            self.execute_decision(decision);
         }
     }
 }
