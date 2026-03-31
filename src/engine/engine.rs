@@ -89,7 +89,8 @@ impl Engine {
         // 最終的にキャッシュを同期する。
         let is_ime_change = is_key_down
             && (crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some()
-                || crate::vk::may_change_ime(event.vk_code));
+                || crate::vk::may_change_ime(event.vk_code)
+                || self.ime.is_sync_key(event.vk_code));
         if is_ime_change {
             let flush_effects = self.adapter.flush_to_effects(ContextChange::ImeOff);
             effects.extend(flush_effects);

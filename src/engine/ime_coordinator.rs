@@ -2,7 +2,7 @@
 //!
 //! Engine から IME 関連の状態管理ロジックを分離し、凝集度を高める。
 
-use crate::types::{KeyEventType, RawKeyEvent};
+use crate::types::{KeyEventType, RawKeyEvent, VkCode};
 
 use super::decision::{Decision, Effect, ImeEffect, ImeSyncKeys, KeyBuffer};
 use super::input_tracker::PhysicalKeyState;
@@ -32,6 +32,14 @@ impl ImeCoordinator {
 
     pub const fn set_shadow_on(&mut self, on: bool) {
         self.shadow_on = on;
+    }
+
+    /// 指定された VK コードが ime_sync_keys に含まれるか
+    #[must_use]
+    pub fn is_sync_key(&self, vk: VkCode) -> bool {
+        self.sync_keys.toggle.contains(&vk)
+            || self.sync_keys.on.contains(&vk)
+            || self.sync_keys.off.contains(&vk)
     }
 
     /// Shadow IME 状態を更新する（ime_sync キー + IME 制御キー）
