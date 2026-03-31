@@ -91,6 +91,25 @@ pub unsafe fn observe(
         return obs;
     }
 
+    // ビルトイン bypass: スタートメニュー・Windows 検索など、
+    // IME 状態を正しく検出できないシステムウィンドウをデフォルトで bypass する。
+    // やまぶきR の既知問題「スタートメニュー検索で不正な文字が出力される」への対策。
+    if is_builtin_bypass(process_id, class_name) {
+        log::debug!("classify_focus: builtin bypass ({class_name})");
+        return make_obs(
+            process_id,
+            class_name,
+            FocusKind::NonText,
+            "builtin bypass (system search/menu)".to_owned(),
+            false,
+            false,
+            false,
+            debounce_ms,
+            cached_engine_enabled,
+            os_modifiers,
+        );
+    }
+
     // キャッシュヒット → 即座に結果を適用
     if let Some(cached) = focus.cache.get(process_id, class_name) {
         log::trace!("classify_focus: cache hit ({process_id}, {class_name}) → {cached:?}");
@@ -219,4 +238,22 @@ fn check_overrides(
     }
 
     None
+}
+
+/// IME 状態を正しく検出できないシステムウィンドウを判定する。
+///
+/// これらのウィンドウは XAML/DirectUI ベースで、クロスプロセス IME 検出が
+/// 不正確なため、NICOLA 変換をバイパスする必要がある。
+/// ユーザー設定（force_bypass）より低優先度で、config で上書き可能。
+fn is_builtin_bypass(_process_id: u32, class_name: &str) -> bool {
+    let class_lower = class_name.to_ascii_lowercase();
+    matches!(
+        class_lower.as_str(),
+        // Windows 11 検索 (SearchHost.exe)
+        "searchhost"
+        // スタートメニュー / Windows 10 検索 / UWP 系システムウィンドウ
+        | "windows.ui.core.corewindow"
+        // Cortana
+        | "cortana"
+    )
 }
