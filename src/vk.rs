@@ -114,7 +114,15 @@ pub const fn is_passthrough(vk_code: VkCode) -> bool {
         // Num Lock, Scroll Lock
         0x90 | 0x91 |
         // Print Screen, Pause
-        0x2C | 0x13
+        0x2C | 0x13 |
+        // メディアキー（音量、再生制御）
+        0xAD..=0xB7 |
+        // ブラウザキー
+        0xA6..=0xAC |
+        // アプリケーションキー
+        0x5D |  // VK_APPS (メニューキー)
+        // スリープ
+        0x5F
     )
 }
 
