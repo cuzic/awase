@@ -1,29 +1,26 @@
 /// Decision の副作用を実行する。
 ///
-/// # レイヤー分離アーキテクチャ
+/// # 2モード: Filter / Relay
 ///
-/// フックコールバックと Effect 実行を完全に分離する:
+/// - **Filter**: PassThrough キーは OS にそのまま通す。入出力系 Effects は
+///   フック内で即座実行（キー順序保証のため）。重い Effects は遅延。
 ///
-/// - **フックコールバック** (`execute_from_hook`):
-///   Engine の判断（consume/passthrough）のみ行い、即座に OS に返す。
-///   全 Effects はキューに溜め、`WM_EXECUTE_EFFECTS` で委譲する。
-///   OS API は一切呼ばない。
-///
-/// - **メッセージループ** (`execute_from_loop`, `drain_deferred`):
-///   キューに溜まった Effects を全て実行する。
-///   時間制約がないため、SendInput, IME 操作等の重い処理も安全。
+/// - **Relay**: 全キーを Consume し、PassThrough キーも ReinjectKey として
+///   キューに入れる。全 Effects がメッセージループで FIFO 実行される。
+///   フック内で OS API を一切呼ばない。
 use std::collections::VecDeque;
 
+use awase::config::HookMode;
 use awase::engine::{
     Decision, Effect, FocusEffect, ImeCacheEffect, ImeEffect, InputEffect, TimerEffect, UiEffect,
 };
 use awase::platform::PlatformRuntime;
+use awase::types::RawKeyEvent;
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
 
 /// `execute_from_hook` の戻り値。
-/// フックコールバックに返す `CallbackResult` と、Effect キューの状態を含む。
 pub struct HookResult {
     /// OS に返す consume/passthrough 判定
     pub callback: CallbackResult,
@@ -35,59 +32,32 @@ pub struct DecisionExecutor {
     pub platform: WindowsPlatform,
     /// Effects キュー（FIFO 順序保証）
     queue: VecDeque<Effect>,
+    /// フックの動作モード
+    hook_mode: HookMode,
 }
 
 impl DecisionExecutor {
-    pub const fn new(platform: WindowsPlatform) -> Self {
+    pub fn new(platform: WindowsPlatform, hook_mode: HookMode) -> Self {
         Self {
             platform,
             queue: VecDeque::new(),
+            hook_mode,
         }
     }
 
     /// フックコールバックから呼ぶ。
     ///
-    /// consume/passthrough を即座に返す。
-    /// 入出力系 Effects（SendKeys, ReinjectKey）は即座実行（キー順序を保証）。
-    /// 重い Effects（IME 制御, トレイ更新等）はキューに溜める。
-    ///
-    /// 戻り値の `has_pending` が true なら、呼び出し元は
-    /// `PostMessage(WM_EXECUTE_EFFECTS)` でメッセージループに通知すること。
-    pub fn execute_from_hook(&mut self, decision: Decision) -> HookResult {
-        let (consumed, effects) = match decision {
-            Decision::PassThrough => {
-                return HookResult {
-                    callback: CallbackResult::PassThrough,
-                    has_pending: self.has_pending(),
-                }
-            }
-            Decision::PassThroughWith { effects } => (false, effects),
-            Decision::Consume { effects } => (true, effects),
-        };
-
-        for effect in effects {
-            if Self::is_input_critical(&effect) {
-                // キー入出力: 即座実行（キー順序を保証するため遅延不可）
-                self.execute_one(effect);
-            } else {
-                // 重い処理: メッセージループに遅延
-                self.queue.push_back(effect);
-            }
-        }
-
-        HookResult {
-            callback: if consumed {
-                CallbackResult::Consumed
-            } else {
-                CallbackResult::PassThrough
-            },
-            has_pending: self.has_pending(),
+    /// - Filter モード: 入出力系は即座実行、重い処理は遅延。PassThrough を OS に返す。
+    /// - Relay モード: 全 Effects をキューに入れ、PassThrough キーも ReinjectKey に変換。
+    ///   常に Consumed を返す。
+    pub fn execute_from_hook(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
+        match self.hook_mode {
+            HookMode::Filter => self.execute_filter(decision),
+            HookMode::Relay => self.execute_relay(decision, raw_event),
         }
     }
 
-    /// メッセージループから呼ぶ。
-    ///
-    /// Decision の Effects を全て即座に実行する。時間制約なし。
+    /// メッセージループから呼ぶ。全 Effects を即座に実行する。
     pub fn execute_from_loop(&mut self, decision: Decision) -> CallbackResult {
         let (consumed, effects) = match decision {
             Decision::PassThrough => return CallbackResult::PassThrough,
@@ -107,8 +77,6 @@ impl DecisionExecutor {
     }
 
     /// `WM_EXECUTE_EFFECTS` ハンドラから呼ぶ。
-    ///
-    /// フックコールバックが溜めた Effects を全て実行する。
     pub fn drain_deferred(&mut self) {
         while let Some(effect) = self.queue.pop_front() {
             self.execute_one(effect);
@@ -120,11 +88,70 @@ impl DecisionExecutor {
         !self.queue.is_empty()
     }
 
-    /// キー入出力に関わる Effect か（フック内で即座実行すべきか）
-    ///
-    /// SendKeys と ReinjectKey はキー順序に関わるため遅延不可。
-    /// Timer も同時打鍵判定のタイミングに影響するため即座実行。
-    /// ImeCache は IME 状態判定の整合性に必要。
+    // ── Filter モード ──
+
+    fn execute_filter(&mut self, decision: Decision) -> HookResult {
+        let (consumed, effects) = match decision {
+            Decision::PassThrough => {
+                return HookResult {
+                    callback: CallbackResult::PassThrough,
+                    has_pending: self.has_pending(),
+                }
+            }
+            Decision::PassThroughWith { effects } => (false, effects),
+            Decision::Consume { effects } => (true, effects),
+        };
+
+        for effect in effects {
+            if Self::is_input_critical(&effect) {
+                self.execute_one(effect);
+            } else {
+                self.queue.push_back(effect);
+            }
+        }
+
+        HookResult {
+            callback: if consumed {
+                CallbackResult::Consumed
+            } else {
+                CallbackResult::PassThrough
+            },
+            has_pending: self.has_pending(),
+        }
+    }
+
+    // ── Relay モード ──
+
+    fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
+        let effects = match decision {
+            Decision::PassThrough => {
+                // PassThrough キーも Consume して ReinjectKey でキューに入れる
+                self.queue
+                    .push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                return HookResult {
+                    callback: CallbackResult::Consumed,
+                    has_pending: true,
+                };
+            }
+            Decision::PassThroughWith { effects } => {
+                // PassThrough + Effects → 全て Consume、キーも ReinjectKey
+                let mut all = effects;
+                all.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                all
+            }
+            Decision::Consume { effects } => effects,
+        };
+
+        self.queue.extend(effects);
+
+        HookResult {
+            callback: CallbackResult::Consumed,
+            has_pending: self.has_pending(),
+        }
+    }
+
+    // ── 共通 ──
+
     fn is_input_critical(effect: &Effect) -> bool {
         matches!(
             effect,
@@ -132,7 +159,6 @@ impl DecisionExecutor {
         )
     }
 
-    /// Effect を1つ実行する
     fn execute_one(&mut self, effect: Effect) {
         let platform: &mut dyn PlatformRuntime = &mut self.platform;
         match effect {

@@ -258,10 +258,11 @@ fn load_config() -> Result<AppConfig> {
     log::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
     log::info!(
-        "Default layout: {}, Threshold: {}ms, Output: {:?}",
+        "Default layout: {}, Threshold: {}ms, Output: {:?}, Hook: {:?}",
         config.general.default_layout,
         config.general.simultaneous_threshold_ms,
-        config.general.output_mode
+        config.general.output_mode,
+        config.general.hook_mode,
     );
     Ok(config)
 }
@@ -591,12 +592,15 @@ fn initialize_app(
     unsafe {
         APP.set(Runtime {
             engine,
-            executor: executor::DecisionExecutor::new(platform::WindowsPlatform {
-                output: Output::new(config.general.output_mode),
-                tray,
-                focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
-                timer: awase_windows::timer::Win32Timer::new(),
-            }),
+            executor: executor::DecisionExecutor::new(
+                platform::WindowsPlatform {
+                    output: Output::new(config.general.output_mode),
+                    tray,
+                    focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
+                    timer: awase_windows::timer::Win32Timer::new(),
+                },
+                config.general.hook_mode,
+            ),
             ime,
             layouts,
             sync_toggle_keys,
@@ -658,7 +662,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     let decision = app.engine.on_input(event, &ctx);
 
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
-    let hook_result = app.executor.execute_from_hook(decision);
+    let hook_result = app.executor.execute_from_hook(decision, &event);
 
     // キューに Effects があれば、メッセージループに実行を委譲する
     if hook_result.has_pending {

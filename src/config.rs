@@ -4,6 +4,20 @@ use std::path::Path;
 
 use crate::types::VkCode;
 
+/// フックの動作モード
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HookMode {
+    /// フィルター型: PassThrough キーは OS にそのまま通す。
+    /// フック内で SendInput を呼ぶため、レイヤー分離は不完全だがレイテンシが低い。
+    #[default]
+    Filter,
+    /// リレー型: 全キーを Consume し、メッセージループで再注入する。
+    /// フック内で OS API を呼ばず、キー順序を FIFO で保証する。
+    /// わずかな入力遅延が生じる可能性がある。
+    Relay,
+}
+
 /// ローマ字出力の送信方式
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +103,10 @@ pub struct GeneralConfig {
     /// ローマ字出力の送信方式（デフォルト: per_key）
     #[serde(default)]
     pub output_mode: OutputMode,
+
+    /// フックの動作モード（デフォルト: filter）
+    #[serde(default)]
+    pub hook_mode: HookMode,
 
     /// Engine ON keys (multiple combos allowed)
     #[serde(default = "default_engine_on_keys")]
