@@ -284,9 +284,7 @@ fn main() -> Result<()> {
         });
     }
 
-    // タイミング設定を Atomic に書き込み（コールバックから参照）
-    FOCUS_DEBOUNCE_MS.store(config.general.focus_debounce_ms, Ordering::Relaxed);
-    IME_POLL_INTERVAL_MS.store(config.general.ime_poll_interval_ms, Ordering::Relaxed);
+    store_timing_config(&config);
 
     init_ngram_validated(&config, &mut diag);
     let (hook_guard, _toggle_hotkey_guard, _focus_override_hotkey_guard) =
@@ -321,6 +319,7 @@ fn main() -> Result<()> {
     }
 
     let _wts_guard = register_session_notification();
+    initialize_ime_cache();
 
     run_message_loop();
     cleanup();
@@ -666,6 +665,21 @@ fn register_session_notification() -> Option<WtsGuard> {
                 None
             }
         })
+    }
+}
+
+/// タイミング設定を Atomic に書き込み（コールバックから参照）
+fn store_timing_config(config: &ValidatedConfig) {
+    FOCUS_DEBOUNCE_MS.store(config.general.focus_debounce_ms, Ordering::Relaxed);
+    IME_POLL_INTERVAL_MS.store(config.general.ime_poll_interval_ms, Ordering::Relaxed);
+}
+
+/// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
+fn initialize_ime_cache() {
+    unsafe {
+        if let Some(app) = APP.get_mut() {
+            app.refresh_ime_state_cache();
+        }
     }
 }
 

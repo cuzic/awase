@@ -100,11 +100,13 @@ impl ImeCoordinator {
 
         if is_key_down {
             // Check if current key IS a toggle/on/off key
-            let is_toggle_key = self.sync_keys.toggle.contains(&event.vk_code);
-            let is_on_key = self.sync_keys.on.contains(&event.vk_code);
-            let is_off_key = self.sync_keys.off.contains(&event.vk_code);
+            // ime_sync_keys（設定ベース）と ImeKeyKind（ハードコード）の両方をチェック
+            let is_sync_key = self.sync_keys.toggle.contains(&event.vk_code)
+                || self.sync_keys.on.contains(&event.vk_code)
+                || self.sync_keys.off.contains(&event.vk_code);
+            let is_ime_key = crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some();
 
-            if is_toggle_key || is_on_key || is_off_key {
+            if is_sync_key || is_ime_key {
                 // Set guard — next keys will be buffered
                 self.guard.set_guard(true);
                 log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
@@ -135,14 +137,13 @@ impl ImeCoordinator {
             }
         }
 
-        // Guard clear on KeyUp of any IME sync key.
-        // 複数の sync キーが設定されている場合、どのキーの KeyUp でも解除する。
-        // これにより、KEY1 で guard ON → KEY2 の KeyUp で解除、という組み合わせも安全。
+        // Guard clear on KeyUp of any IME key.
         if !is_key_down && self.guard.is_guarded() {
             let is_sync_key = self.sync_keys.toggle.contains(&event.vk_code)
                 || self.sync_keys.on.contains(&event.vk_code)
                 || self.sync_keys.off.contains(&event.vk_code);
-            if is_sync_key {
+            let is_ime_key = crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some();
+            if is_sync_key || is_ime_key {
                 self.guard.set_guard(false);
                 effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
             }
