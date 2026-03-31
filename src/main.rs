@@ -148,6 +148,9 @@ static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU
 /// Ctrl+C 受信フラグ
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
+static ELEVATED: AtomicBool = AtomicBool::new(false);
+
 /// IME 状態ポーリング用タイマー ID（安全ネット: マウスで言語バー操作した場合等）
 pub(crate) const TIMER_IME_POLL: usize = 101;
 
@@ -209,6 +212,19 @@ impl StartupDiagnostics {
 fn main() -> Result<()> {
     init_logging();
     let mut diag = StartupDiagnostics::new();
+
+    // 管理者権限チェック
+    let elevated = tray::is_elevated();
+    ELEVATED.store(elevated, Ordering::Relaxed);
+    if elevated {
+        log::info!("Running with administrator privileges");
+    } else {
+        log::warn!(
+            "Running without administrator privileges — \
+             keyboard hook will not work in elevated windows (e.g. Task Manager)"
+        );
+    }
+
     let raw_config = load_config()?;
     let (config, config_warnings) = raw_config.validate();
     for w in &config_warnings {
@@ -237,7 +253,7 @@ fn main() -> Result<()> {
         init_ime_sync_keys(&config.ime_sync, &mut diag);
     let ime = init_ime(&mut diag);
 
-    let system_tray = init_tray(&layout_names, &initial_layout_name)?;
+    let system_tray = init_tray(&layout_names, &initial_layout_name, elevated)?;
 
     let engine = Engine::new(
         fsm,
@@ -444,14 +460,60 @@ fn init_ime_sync_keys(
 /// IME プロバイダ初期化（TSF 優先、IMM32 フォールバック）
 fn init_ime(diag: &mut StartupDiagnostics) -> HybridProvider {
     let ime_provider = HybridProvider::new();
-    if !ime::is_japanese_input_language() {
-        diag.warn("日本語キーボードが検出されませんでした");
-    }
-    log::info!(
-        "IME provider initialized. Japanese keyboard: {}",
-        ime::is_japanese_input_language()
-    );
+    check_keyboard_layout(diag);
     ime_provider
+}
+
+/// キーボードレイアウトが日本語(106/109)かどうかを検証し、警告を出す
+fn check_keyboard_layout(diag: &mut StartupDiagnostics) {
+    let (is_japanese, lang_id) = ime::keyboard_layout_info();
+    log::info!("Keyboard layout: LANGID=0x{lang_id:04X}, Japanese={is_japanese}",);
+    if !is_japanese {
+        // 英語キーボード (0x0409) の場合、より具体的なメッセージを出す
+        if lang_id == 0x0409 {
+            diag.warn(
+                "英語キーボード(101/102)が検出されました。\
+                 親指シフトには日本語キーボードレイアウト(106/109)が必要です。\
+                 設定 → 時刻と言語 → 言語と地域 → 日本語 → キーボードレイアウト で\
+                 「日本語キーボード(106/109キー)」に変更してください。\
+                 ※ Windows Update 後にレイアウトが英語に戻る場合があります。",
+            );
+        } else {
+            diag.warn(format!(
+                "日本語キーボード(106/109)が検出されませんでした(LANGID=0x{lang_id:04X})。\
+                 親指シフトには日本語キーボードレイアウトが必要です。\
+                 設定 → 時刻と言語 → 言語と地域 → 日本語 → キーボードレイアウト で変更できます。"
+            ));
+        }
+    }
+}
+
+/// `WM_INPUTLANGCHANGE` 時にキーボードレイアウトを検証する
+fn check_keyboard_layout_on_change() {
+    let (is_japanese, lang_id) = ime::keyboard_layout_info();
+    if !is_japanese {
+        if lang_id == 0x0409 {
+            log::warn!(
+                "Input language changed to English keyboard (101/102). \
+                 Thumb-shift requires Japanese keyboard layout (106/109). \
+                 LANGID=0x{lang_id:04X}",
+            );
+        } else {
+            log::warn!(
+                "Input language changed to non-Japanese layout (LANGID=0x{lang_id:04X}). \
+                 Thumb-shift requires Japanese keyboard layout (106/109).",
+            );
+        }
+        // バルーン通知で警告
+        unsafe {
+            if let Some(app) = APP.get_mut() {
+                app.executor.tray.show_balloon(
+                    "awase",
+                    "日本語キーボードレイアウトが検出されません。親指シフトが正常に動作しない可能性があります。",
+                );
+            }
+        }
+    }
 }
 
 /// 検証済み設定で n-gram モデルのロード（オプション）
@@ -489,8 +551,13 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
 }
 
 /// システムトレイアイコンを作成する
-fn init_tray(layout_names: &[String], initial_layout_name: &str) -> Result<SystemTray> {
-    let mut system_tray = SystemTray::new(true).context("Failed to create system tray icon")?;
+fn init_tray(
+    layout_names: &[String],
+    initial_layout_name: &str,
+    elevated: bool,
+) -> Result<SystemTray> {
+    let mut system_tray =
+        SystemTray::new(true, elevated).context("Failed to create system tray icon")?;
     system_tray.set_layout_names(layout_names.to_vec());
     system_tray.set_layout_name(initial_layout_name);
     Ok(system_tray)
@@ -635,12 +702,25 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 /// フックコールバックの本体。
 ///
 /// Engine.on_input で全ロジックを処理し、Decision を execute_decision で実行する。
+/// Windows はフックコールバックが 300ms を超えると無視し、11 回連続で
+/// タイムアウトするとフックを強制解除するため、処理時間を監視する。
 fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
+    let start = std::time::Instant::now();
+
     let ctx = InputContext {
         ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
     };
     let decision = app.engine.on_input(event, &ctx);
-    app.execute_decision(decision)
+    let result = app.execute_decision(decision);
+
+    let elapsed = start.elapsed();
+    if elapsed.as_millis() > 100 {
+        log::warn!(
+            "Hook callback took {}ms — OS limit is 300ms, exceeding it risks hook removal",
+            elapsed.as_millis()
+        );
+    }
+    result
 }
 
 /// メッセージループ
@@ -658,6 +738,29 @@ fn run_message_loop() {
             WM_TIMER if msg.wParam.0 == TIMER_IME_POLL => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.refresh_ime_state_cache();
+                }
+                // ── フック消失ウォッチドッグ ──
+                // 10 秒以上フックコールバックが呼ばれていない場合、
+                // ユーザーがキーを押しているか確認し、押しているなら警告する。
+                if !hook::is_hook_responsive(10_000) {
+                    // GetAsyncKeyState で直近のキー押下を確認
+                    // いずれかの一般キーが押されていればフック消失の可能性が高い
+                    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+                    let any_key_pressed = (0x08u16..=0x5Au16)
+                        .any(|vk| GetAsyncKeyState(i32::from(vk)) & (0x8000u16 as i16) != 0);
+                    if any_key_pressed {
+                        log::error!(
+                            "Hook watchdog: no hook activity for {}ms despite keyboard input — \
+                             hook may have been silently removed by OS. Please restart the application.",
+                            hook::current_tick_ms() - hook::last_hook_activity_ms()
+                        );
+                        if let Some(app) = APP.get_mut() {
+                            app.executor.tray.show_balloon(
+                                "awase",
+                                "キーボードフックが応答しません。アプリケーションを再起動してください。",
+                            );
+                        }
+                    }
                 }
             },
             WM_IME_KEY_DETECTED => unsafe {
@@ -699,6 +802,12 @@ fn run_message_loop() {
                     // IME 信頼度とフォーカスキャッシュもリセット
                     awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
                     FocusKind::Undetermined.store(&FOCUS_KIND);
+                    // フック消失ウォッチドッグ: スリープ復帰後にハートビートを確認
+                    let last = hook::last_hook_activity_ms();
+                    if last != 0 {
+                        let elapsed = hook::current_tick_ms().saturating_sub(last);
+                        log::info!("Hook heartbeat age after resume: {elapsed}ms");
+                    }
                 }
             },
             WM_WTSSESSION_CHANGE => unsafe {
@@ -719,6 +828,12 @@ fn run_message_loop() {
                         // IME 信頼度とフォーカスキャッシュもリセット
                         awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
                         FocusKind::Undetermined.store(&FOCUS_KIND);
+                        // フック消失ウォッチドッグ: セッションアンロック後にハートビートを確認
+                        let last = hook::last_hook_activity_ms();
+                        if last != 0 {
+                            let elapsed = hook::current_tick_ms().saturating_sub(last);
+                            log::info!("Hook heartbeat age after unlock: {elapsed}ms");
+                        }
                     }
                     _ => {}
                 }
@@ -734,6 +849,8 @@ fn run_message_loop() {
                         .on_command(awase::engine::EngineCommand::SetGuard(true));
                     app.refresh_ime_state_cache();
                 }
+                // レイアウトが日本語でなくなった場合に警告
+                check_keyboard_layout_on_change();
             },
             WM_PROCESS_DEFERRED => unsafe {
                 // IME 制御キー後の遅延キーを再処理する。
@@ -801,7 +918,12 @@ fn run_message_loop() {
                     .get_ref()
                     .map(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
                     .unwrap_or_default();
-                tray::handle_tray_message(msg.hwnd, msg.lParam, &layout_names);
+                tray::handle_tray_message(
+                    msg.hwnd,
+                    msg.lParam,
+                    &layout_names,
+                    ELEVATED.load(Ordering::Relaxed),
+                );
             },
             WM_RELOAD_CONFIG => {
                 log::info!("Config reload requested via WM_RELOAD_CONFIG");
@@ -811,6 +933,8 @@ fn run_message_loop() {
                 if let Some(cmd) = tray::handle_tray_command(msg.wParam) {
                     if cmd == tray::cmd_settings() {
                         launch_settings();
+                    } else if cmd == tray::cmd_restart_admin() {
+                        tray::restart_as_admin();
                     } else if cmd == tray::cmd_toggle() {
                         if let Some(app) = APP.get_mut() {
                             app.toggle_engine();

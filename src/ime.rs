@@ -401,13 +401,22 @@ impl ImeProvider for HybridProvider {
     }
 }
 
-/// 現在のキーボードレイアウトが日本語かどうかを判定する
+/// 現在のキーボードレイアウトの言語情報を返す。
+///
+/// Returns `(is_japanese, lang_id)` — 日本語レイアウトかどうかと言語 ID (下位16ビット)。
 #[must_use]
-pub fn is_japanese_input_language() -> bool {
+pub fn keyboard_layout_info() -> (bool, u32) {
     unsafe {
         let hkl = GetKeyboardLayout(0);
         // 下位 16 bit が言語 ID。日本語は 0x0411
         let lang_id = hkl.0 as u32 & 0xFFFF;
-        lang_id == awase::vk::LANGID_JAPANESE
+        (lang_id == awase::vk::LANGID_JAPANESE, lang_id)
     }
+}
+
+/// 現在のキーボードレイアウトが日本語かどうかを判定する
+#[must_use]
+#[allow(dead_code)]
+pub fn is_japanese_input_language() -> bool {
+    keyboard_layout_info().0
 }

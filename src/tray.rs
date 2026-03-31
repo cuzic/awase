@@ -8,20 +8,21 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ICONINFO, MF_STRING, TPM_BOTTOMALIGN,
-    TPM_LEFTALIGN, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ICONINFO, MF_STRING, SW_SHOWNORMAL,
+    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use anyhow::{Context, Result};
 
 /// トレイメニュー項目 ID
 const IDM_SETTINGS: u16 = 50;
+const IDM_RESTART_ADMIN: u16 = 51;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -45,6 +46,8 @@ pub struct SystemTray {
     layout_names: Vec<String>,
     /// 現在アクティブな配列名
     current_layout_name: String,
+    /// 管理者権限で実行中かどうか
+    elevated: bool,
 }
 
 impl SystemTray {
@@ -53,7 +56,7 @@ impl SystemTray {
     /// # Errors
     ///
     /// ウィンドウクラスの登録、ウィンドウの作成、またはトレイアイコンの追加に失敗した場合
-    pub fn new(enabled: bool) -> Result<Self> {
+    pub fn new(enabled: bool, elevated: bool) -> Result<Self> {
         unsafe {
             // ウィンドウクラス名を UTF-16 に変換
             let class_name_wide: Vec<u16> = WINDOW_CLASS_NAME
@@ -107,27 +110,33 @@ impl SystemTray {
             };
 
             // ツールチップ設定
-            set_tooltip(&mut nid, enabled, "");
+            set_tooltip(&mut nid, enabled, "", elevated);
 
             // トレイアイコンを追加
             Shell_NotifyIconW(NIM_ADD, &raw const nid)
                 .ok()
                 .context("Failed to add tray icon")?;
 
-            log::info!("System tray icon created");
+            log::info!("System tray icon created (elevated={elevated})");
 
             Ok(Self {
                 hwnd,
                 nid,
                 layout_names: Vec::new(),
                 current_layout_name: String::new(),
+                elevated,
             })
         }
     }
 
     /// トレイアイコンのツールチップとアイコンを更新する
     pub fn set_enabled(&mut self, enabled: bool) {
-        set_tooltip(&mut self.nid, enabled, &self.current_layout_name);
+        set_tooltip(
+            &mut self.nid,
+            enabled,
+            &self.current_layout_name,
+            self.elevated,
+        );
         if let Some(icon) = create_keyboard_icon(enabled) {
             // 古いアイコンを破棄してから差し替え
             if !self.nid.hIcon.is_invalid() {
@@ -150,7 +159,12 @@ impl SystemTray {
     /// 現在の配列名を設定し、ツールチップを更新する
     pub fn set_layout_name(&mut self, name: &str) {
         self.current_layout_name = name.to_string();
-        set_tooltip(&mut self.nid, true, &self.current_layout_name);
+        set_tooltip(
+            &mut self.nid,
+            true,
+            &self.current_layout_name,
+            self.elevated,
+        );
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
         }
@@ -334,17 +348,18 @@ fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndM
 }
 
 /// ツールチップ文字列を `NOTIFYICONDATAW` に設定する
-fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str) {
+fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str, elevated: bool) {
+    let admin_suffix = if elevated { " (管理者)" } else { "" };
     let tip = if layout_name.is_empty() {
         if enabled {
-            "NICOLA: ON".to_string()
+            format!("NICOLA: ON{admin_suffix}")
         } else {
-            "NICOLA: OFF".to_string()
+            format!("NICOLA: OFF{admin_suffix}")
         }
     } else if enabled {
-        format!("NICOLA: ON ({layout_name})")
+        format!("NICOLA: ON ({layout_name}){admin_suffix}")
     } else {
-        format!("NICOLA: OFF ({layout_name})")
+        format!("NICOLA: OFF ({layout_name}){admin_suffix}")
     };
 
     let tip_wide: Vec<u16> = tip.encode_utf16().chain(std::iter::once(0)).collect();
@@ -356,7 +371,7 @@ fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str) {
 ///
 /// `WM_APP` メッセージを受け取った時にメッセージループから呼ばれる。
 /// 右クリックでコンテキストメニューを表示する。
-pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String]) {
+pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], elevated: bool) {
     #[allow(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
 
@@ -398,6 +413,20 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String]) 
             usize::from(IDM_SETTINGS),
             PCWSTR(settings_text.as_ptr()),
         );
+
+        // 管理者として再起動（未昇格時のみ表示）
+        if !elevated {
+            let admin_text: Vec<u16> = "管理者として再起動"
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let _ = AppendMenuW(
+                hmenu,
+                MF_STRING,
+                usize::from(IDM_RESTART_ADMIN),
+                PCWSTR(admin_text.as_ptr()),
+            );
+        }
 
         // セパレータ
         let _ = AppendMenuW(
@@ -452,7 +481,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String]) 
 pub const fn handle_tray_command(wparam: WPARAM) -> Option<u16> {
     let cmd = (wparam.0 & 0xFFFF) as u16;
     match cmd {
-        IDM_SETTINGS | IDM_TOGGLE | IDM_EXIT => Some(cmd),
+        IDM_SETTINGS | IDM_RESTART_ADMIN | IDM_TOGGLE | IDM_EXIT => Some(cmd),
         // 配列選択メニュー項目 (IDM_LAYOUT_BASE 以上の範囲)
         _ if cmd >= IDM_LAYOUT_BASE && cmd < IDM_TOGGLE => Some(cmd),
         _ => None,
@@ -477,6 +506,62 @@ pub const fn cmd_layout_base() -> u16 {
 /// 設定メニューコマンド ID のアクセサ
 pub const fn cmd_settings() -> u16 {
     IDM_SETTINGS
+}
+
+/// 管理者再起動メニューコマンド ID のアクセサ
+pub const fn cmd_restart_admin() -> u16 {
+    IDM_RESTART_ADMIN
+}
+
+/// 現在のプロセスが管理者権限で実行中かどうかを判定する。
+///
+/// `shell32.dll` の `IsUserAnAdmin` を使用する。
+/// この API は非推奨だが、シンプルで `Win32_Security` feature を追加せずに使えるため採用。
+pub fn is_elevated() -> bool {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn IsUserAnAdmin() -> i32;
+    }
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
+/// 管理者権限で自身を再起動する。
+///
+/// `ShellExecuteW` の "runas" verb で UAC ダイアログを表示し、
+/// 成功したら現在のプロセスを終了する。
+pub fn restart_as_admin() {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("Failed to get current exe path: {e}");
+            return;
+        }
+    };
+
+    let exe_wide: Vec<u16> = exe
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
+
+    unsafe {
+        let result = ShellExecuteW(
+            HWND::default(),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(exe_wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
+        // ShellExecuteW returns HINSTANCE > 32 on success
+        if result.0 as isize > 32 {
+            log::info!("Restarting as admin, exiting current process");
+            std::process::exit(0);
+        } else {
+            log::warn!("Failed to restart as admin (user may have cancelled UAC)");
+        }
+    }
 }
 
 /// トレイウィンドウプロシージャ

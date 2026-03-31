@@ -325,6 +325,15 @@ impl AppConfig {
             ));
         }
 
+        // VK_KANA はロック型キーで KeyUp が発生しないため親指キーとして非推奨
+        if general.left_thumb_key == "VK_KANA" || general.right_thumb_key == "VK_KANA" {
+            warnings.push(
+                "VK_KANA はロック型キーで KeyUp イベントが発生しません。\
+                 親指キーとしての使用は推奨しません。"
+                    .to_string(),
+            );
+        }
+
         // focus_overrides: process names not empty
         let focus_overrides = self.focus_overrides;
         for entry in &focus_overrides.force_text {

@@ -1,4 +1,5 @@
 use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -8,6 +9,33 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::output::INJECTED_MARKER;
 use awase::types::{KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+
+/// フックコールバックが最後に呼ばれた時刻（`GetTickCount64` ミリ秒）。
+/// 0 はまだ一度も呼ばれていないことを意味する。
+static LAST_HOOK_ACTIVITY: AtomicU64 = AtomicU64::new(0);
+
+/// フックコールバックの最終活動時刻を返す（`GetTickCount64` ミリ秒、0 = 未活動）。
+pub fn last_hook_activity_ms() -> u64 {
+    LAST_HOOK_ACTIVITY.load(Ordering::Relaxed)
+}
+
+/// 現在時刻を `GetTickCount64` ミリ秒で返す。
+pub fn current_tick_ms() -> u64 {
+    unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
+}
+
+/// フックが応答しているかを判定する。
+///
+/// `timeout_ms` 以内にフックコールバックが呼ばれていれば `true`。
+/// まだ一度も呼ばれていない場合も `true`（起動直後はキー入力がない）。
+pub fn is_hook_responsive(timeout_ms: u64) -> bool {
+    let last = LAST_HOOK_ACTIVITY.load(Ordering::Relaxed);
+    if last == 0 {
+        return true; // 起動直後: まだキー入力がない
+    }
+    let now = current_tick_ms();
+    (now - last) < timeout_ms
+}
 
 /// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
 struct SingleThreadCell<T>(UnsafeCell<T>);
@@ -91,6 +119,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
     if ncode >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+
+        // ── ハートビート更新（ウォッチドッグ用）──
+        LAST_HOOK_ACTIVITY.store(current_tick_ms(), Ordering::Relaxed);
 
         // ── 自己注入チェック（無限ループ防止）──
         if kb.dwExtraInfo == INJECTED_MARKER {

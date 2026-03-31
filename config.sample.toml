@@ -2,6 +2,27 @@
 #
 # このファイルを config.toml にコピーして編集してください。
 # 設定されていない項目はデフォルト値が使用されます。
+#
+# ── 注意事項 ──
+#
+# ■ Unicode モード推奨
+#   Windows 10 20H1 以降の新 Microsoft IME では、per_key / batched モードで
+#   入力が正しく処理されない場合があります。unicode モード（デフォルト）を推奨します。
+#   問題が発生する場合は Windows 設定 → 時刻と言語 → 言語と地域 →
+#   日本語 → オプション → 「旧バージョンの Microsoft IME を使う」も有効です。
+#
+# ■ Windows 11 での自動起動
+#   スタートアップフォルダからの起動が失敗する場合があります。
+#   代替方法:
+#     - タスクスケジューラ: 「ログオン時」トリガーでタスクを作成
+#     - レジストリ Run キー: HKCU\Software\Microsoft\Windows\CurrentVersion\Run に追加
+#
+# ■ スタートメニュー / 検索バーでの入力問題
+#   スタートメニューや Windows 検索バーで文字入力がおかしくなる場合は、
+#   下記 [focus_overrides] の force_bypass にウィンドウクラスを追加してください。
+#   一般的なクラス名:
+#     - Windows.UI.Core.CoreWindow  (スタートメニュー, 検索)
+#     - SearchHost                  (Windows 11 検索)
 
 [general]
 # 同時打鍵の判定閾値（ミリ秒）。NICOLA 規格標準は 100ms。
@@ -87,4 +108,7 @@ ime_off_keys = ["Ctrl+VK_NONCONVERT"]
 # ]
 # force_bypass = [
 #     { process = "PowerToys.PowerLauncher.exe", class = "InputSiteWindowClass" },
+#     { process = "SearchHost.exe", class = "SearchHost" },                          # Windows 11 検索
+#     { process = "SearchUI.exe", class = "Windows.UI.Core.CoreWindow" },            # Windows 10 検索
+#     { process = "StartMenuExperienceHost.exe", class = "Windows.UI.Core.CoreWindow" }, # スタートメニュー
 # ]
