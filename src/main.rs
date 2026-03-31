@@ -35,7 +35,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetGUIThreadInfo, GetMessageW, KillTimer, PostQuitMessage, SetTimer,
-    GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_TIMER,
+    GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_POWERBROADCAST,
+    WM_TIMER,
 };
 
 use awase::config::{
@@ -638,6 +639,21 @@ fn run_message_loop() {
                     }
                 }
             }
+            WM_POWERBROADCAST => unsafe {
+                // スリープ復帰時に全状態をリフレッシュする。
+                // PBT_APMRESUMEAUTOMATIC (0x12) / PBT_APMRESUMESUSPEND (0x07)
+                let pbt = msg.wParam.0;
+                if pbt == 0x12 || pbt == 0x07 {
+                    log::info!("Power resume detected (PBT=0x{pbt:02X}), refreshing all state");
+                    if let Some(app) = APP.get_mut() {
+                        app.invalidate_engine_context(ContextChange::InputLanguageChanged);
+                        app.refresh_ime_state_cache();
+                    }
+                    // IME 信頼度とフォーカスキャッシュもリセット
+                    awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
+                    FocusKind::Undetermined.store(&FOCUS_KIND);
+                }
+            },
             WM_INPUTLANGCHANGE => unsafe {
                 // 入力言語が変更された（Win+Space 等）→ 保留をフラッシュ + ガード ON
                 // 言語切替直後は IME 状態が未反映の可能性があるため、
