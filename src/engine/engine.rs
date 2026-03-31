@@ -124,10 +124,14 @@ impl Engine {
         }
 
         // Phase 6: IME state check
-        // 蓄積された effects（RequestImeCacheRefresh 等）を含めて返す。
-        // effects を捨てると IME キャッシュ更新が行われず、
-        // 半角/全角後にエンジンが有効にならない。
-        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
+        let shadow = self.ime.shadow_on();
+        let ime_on = ctx.ime_cache.resolve_with_shadow(shadow);
+        let fsm_enabled = self.adapter.is_enabled();
+        log::trace!(
+            "Phase6: vk=0x{:02X} cache={:?} shadow={shadow} resolve={ime_on} fsm_enabled={fsm_enabled}",
+            event.vk_code.0,
+            ctx.ime_cache,
+        );
         if !ime_on {
             if effects.is_empty() {
                 return Decision::pass_through();
