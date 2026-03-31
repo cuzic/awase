@@ -1,0 +1,38 @@
+[package]
+name = "awase-macos"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "awase_macos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "awase"
+path = "src/main.rs"
+
+[dependencies]
+awase = { path = "../.." }
+timed-fsm = { path = "../timed-fsm" }
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+toml = "0.8"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+cocoa = "0.26"
+
+[lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+doc_markdown = "allow"
