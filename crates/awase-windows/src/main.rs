@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
 };
 
-use awase::config::{AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig};
+use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};
 use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::engine::{ImeSyncKeys, SpecialKeyCombos};
 use awase::ngram::NgramModel;
@@ -166,25 +166,14 @@ fn main() -> Result<()> {
     }
     let (fsm, tracker, layouts, layout_names, initial_layout_name) =
         init_engine_validated(&config, &mut diag)?;
-    let engine_on_keys =
-        parse_key_combos(&config.general.engine_on_keys, "Engine ON keys", &mut diag);
-    let engine_off_keys = parse_key_combos(
-        &config.general.engine_off_keys,
-        "Engine OFF keys",
-        &mut diag,
-    );
-    let ime_control_on_keys = parse_key_combos(
-        &config.general.ime_on_keys,
-        "IME control ON keys",
-        &mut diag,
-    );
-    let ime_control_off_keys = parse_key_combos(
-        &config.general.ime_off_keys,
-        "IME control OFF keys",
-        &mut diag,
-    );
+    let engine_on_keys = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
+    let engine_off_keys = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
+    let ime_control_on_keys =
+        parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut diag);
+    let ime_control_off_keys =
+        parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut diag);
     let (ime_sync_toggle, ime_sync_on, ime_sync_off) =
-        init_ime_sync_keys(&config.ime_sync, &mut diag);
+        init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
     let ime = init_ime(&mut diag);
 
     let system_tray = init_tray(&layout_names, &initial_layout_name, elevated)?;
@@ -417,29 +406,31 @@ fn parse_key_combos(
 
 /// IME sync キーの初期化（shadow IME 状態追跡用）
 fn init_ime_sync_keys(
-    ime_sync: &ImeSyncConfig,
+    ime_detect: &ImeDetectConfig,
     diag: &mut StartupDiagnostics,
 ) -> (Vec<VkCode>, Vec<VkCode>, Vec<VkCode>) {
     let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<VkCode> {
         keys.iter()
             .filter_map(|s| {
                 vk_name_to_code(s).or_else(|| {
-                    diag.warn(format!("ime_sync.{label} のパースに失敗しました: {s}"));
+                    diag.warn(format!(
+                        "keys.ime_detect.{label} のパースに失敗しました: {s}"
+                    ));
                     None
                 })
             })
             .collect()
     };
 
-    let toggle = parse_vk_list(&ime_sync.toggle_keys, "toggle_keys");
-    let on = parse_vk_list(&ime_sync.on_keys, "on_keys");
-    let off = parse_vk_list(&ime_sync.off_keys, "off_keys");
+    let toggle = parse_vk_list(&ime_detect.toggle, "toggle");
+    let on = parse_vk_list(&ime_detect.on, "on");
+    let off = parse_vk_list(&ime_detect.off, "off");
 
     log::info!(
-        "IME sync keys: toggle={:?} on={:?} off={:?}",
-        ime_sync.toggle_keys,
-        ime_sync.on_keys,
-        ime_sync.off_keys,
+        "IME detect keys: toggle={:?} on={:?} off={:?}",
+        ime_detect.toggle,
+        ime_detect.on,
+        ime_detect.off,
     );
 
     (toggle, on, off)
@@ -552,7 +543,7 @@ fn install_hooks_and_hotkeys_validated(
 
     let toggle_guard = config
         .general
-        .toggle_hotkey
+        .engine_toggle_hotkey
         .as_ref()
         .and_then(|hotkey_str| register_toggle_hotkey(hotkey_str));
     let focus_override_guard = register_focus_override_hotkey();
@@ -1071,27 +1062,12 @@ fn reload_config() {
     // キーコンボの再読み込み（エンジン切替 + IME 制御）
     {
         let mut key_diag = StartupDiagnostics::new();
-        let engine_on = parse_key_combos(
-            &config.general.engine_on_keys,
-            "Engine ON keys",
-            &mut key_diag,
-        );
-        let engine_off = parse_key_combos(
-            &config.general.engine_off_keys,
-            "Engine OFF keys",
-            &mut key_diag,
-        );
-        let ime_on = parse_key_combos(
-            &config.general.ime_on_keys,
-            "IME control ON keys",
-            &mut key_diag,
-        );
-        let ime_off = parse_key_combos(
-            &config.general.ime_off_keys,
-            "IME control OFF keys",
-            &mut key_diag,
-        );
-        let (toggle, on, off) = init_ime_sync_keys(&config.ime_sync, &mut key_diag);
+        let engine_on = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut key_diag);
+        let engine_off =
+            parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut key_diag);
+        let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
+        let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
+        let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
         unsafe {
             if let Some(app) = APP.get_mut() {
                 // Update Runtime's sync keys for event enrichment

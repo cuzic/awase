@@ -44,16 +44,8 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # ngram_min_threshold_ms = 30
 # ngram_max_threshold_ms = 120
 
-# エンジン ON/OFF キー（複数指定可）
-engine_on_keys = ["Ctrl+Shift+Convert"]
-engine_off_keys = ["Ctrl+Shift+Nonconvert"]
-
-# IME ON/OFF キー（複数指定可）
-ime_on_keys = ["Ctrl+Convert"]
-ime_off_keys = ["Ctrl+Nonconvert"]
-
 # エンジン ON/OFF トグルホットキー
-toggle_hotkey = "Ctrl+Shift+F12"
+engine_toggle_hotkey = "Ctrl+Shift+F12"
 
 # フォーカス遷移デバウンス時間（ミリ秒）
 # focus_debounce_ms = 50
@@ -65,6 +57,22 @@ toggle_hotkey = "Ctrl+Shift+F12"
 # linux_input_backend = "evdev"
 # linux_evdev_device = "/dev/input/event0"
 
+# キーバインディング設定
+[keys]
+# エンジン ON/OFF キー（複数指定可）
+engine_on = ["Ctrl+Shift+Convert"]
+engine_off = ["Ctrl+Shift+Nonconvert"]
+
+# IME ON/OFF キー（複数指定可）
+ime_on = ["Ctrl+Convert"]
+ime_off = ["Ctrl+Nonconvert"]
+
+# IME 検出設定（シャドウ IME 状態追跡用キー定義）
+[keys.ime_detect]
+toggle = ["VK_KANJI"]
+on = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
+off = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]
+
 # フォーカス判定のオーバーライド
 # [focus_overrides]
 # force_text = [
@@ -73,9 +81,3 @@ toggle_hotkey = "Ctrl+Shift+F12"
 # force_bypass = [
 #     { process = "launcher", class = "SearchBox" },
 # ]
-
-# IME 同期設定（シャドウ IME 状態追跡用キー定義）
-[ime_sync]
-toggle_keys = ["VK_KANJI"]
-on_keys = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
-off_keys = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]

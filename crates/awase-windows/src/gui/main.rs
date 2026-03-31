@@ -79,13 +79,13 @@ impl SettingsApp {
 
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
 
-        let engine_on_keys = config.general.engine_on_keys.clone();
-        let engine_off_keys = config.general.engine_off_keys.clone();
-        let ime_control_on_keys = config.general.ime_on_keys.clone();
-        let ime_control_off_keys = config.general.ime_off_keys.clone();
-        let ime_toggle_keys = config.ime_sync.toggle_keys.clone();
-        let ime_on_keys = config.ime_sync.on_keys.clone();
-        let ime_off_keys = config.ime_sync.off_keys.clone();
+        let engine_on_keys = config.keys.engine_on.clone();
+        let engine_off_keys = config.keys.engine_off.clone();
+        let ime_control_on_keys = config.keys.ime_on.clone();
+        let ime_control_off_keys = config.keys.ime_off.clone();
+        let ime_toggle_keys = config.keys.ime_detect.toggle.clone();
+        let ime_on_keys = config.keys.ime_detect.on.clone();
+        let ime_off_keys = config.keys.ime_detect.off.clone();
         let mut app = Self {
             config,
             config_path,
@@ -268,15 +268,15 @@ impl eframe::App for SettingsApp {
             ui.horizontal(|ui| {
                 if ui.button("適用").clicked() {
                     // エンジン切替キーを config に反映
-                    self.config.general.engine_on_keys = self.engine_on_keys.clone();
-                    self.config.general.engine_off_keys = self.engine_off_keys.clone();
+                    self.config.keys.engine_on = self.engine_on_keys.clone();
+                    self.config.keys.engine_off = self.engine_off_keys.clone();
                     // IME 制御キーを config に反映
-                    self.config.general.ime_on_keys = self.ime_control_on_keys.clone();
-                    self.config.general.ime_off_keys = self.ime_control_off_keys.clone();
+                    self.config.keys.ime_on = self.ime_control_on_keys.clone();
+                    self.config.keys.ime_off = self.ime_control_off_keys.clone();
                     // IME 同期キーを config に反映
-                    self.config.ime_sync.toggle_keys = self.ime_toggle_keys.clone();
-                    self.config.ime_sync.on_keys = self.ime_on_keys.clone();
-                    self.config.ime_sync.off_keys = self.ime_off_keys.clone();
+                    self.config.keys.ime_detect.toggle = self.ime_toggle_keys.clone();
+                    self.config.keys.ime_detect.on = self.ime_on_keys.clone();
+                    self.config.keys.ime_detect.off = self.ime_off_keys.clone();
                     match self.config.save(&self.config_path) {
                         Ok(()) => {
                             self.status_message = "設定を保存しました".into();
@@ -390,7 +390,7 @@ impl SettingsApp {
             let hotkey = self
                 .config
                 .general
-                .toggle_hotkey
+                .engine_toggle_hotkey
                 .get_or_insert_with(String::new);
             ui.text_edit_singleline(hotkey);
         });

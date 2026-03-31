@@ -1,21 +1,29 @@
 [general]
 simultaneous_threshold_ms = 100
-toggle_hotkey = "Ctrl+Shift+F12"
+engine_toggle_hotkey = "Ctrl+Shift+F12"
 layouts_dir = "layout"
 default_layout = "nicola.yab"
 
 # confirm_mode = "wait"  # wait / speculative / two_phase / adaptive_timing / ngram_predictive
 # speculative_delay_ms = 30
 
-# エンジン ON/OFF キー（複数指定可、デフォルト: 変換で ON、Ctrl+無変換で OFF）
-# engine_on_keys = ["VK_CONVERT"]
-# engine_off_keys = ["Ctrl+VK_NONCONVERT"]
-
 # n-gram コーパスファイル（オプション、指定しなければ固定閾値で動作）
 # ngram_file = "data/ngram_hiragana.toml"
 # ngram_adjustment_range_ms = 20
 # ngram_min_threshold_ms = 30
 # ngram_max_threshold_ms = 120
+
+# キーバインディング設定
+# [keys]
+# エンジン ON/OFF キー（複数指定可、デフォルト: Ctrl+Shift+変換で ON、Ctrl+Shift+無変換で OFF）
+# engine_on = ["Ctrl+Shift+Convert"]
+# engine_off = ["Ctrl+Shift+Nonconvert"]
+
+# IME 検出設定（シャドウ IME 状態追跡用キー定義）
+# [keys.ime_detect]
+# toggle = ["VK_KANJI"]
+# on = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
+# off = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]
 
 # フォーカス判定の永続オーバーライド
 # 特定の (プロセス名, クラス名) の組み合わせに対して、
@@ -27,9 +35,3 @@ default_layout = "nicola.yab"
 # force_bypass = [
 #     { process = "explorer.exe", class = "CabinetWClass" },
 # ]
-
-# IME 同期設定（シャドウ IME 状態追跡用キー定義）
-# [ime_sync]
-# toggle_keys = ["VK_KANJI"]
-# on_keys = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
-# off_keys = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]

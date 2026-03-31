@@ -66,7 +66,7 @@ pub struct GeneralConfig {
 
     /// 有効/無効切り替えホットキー
     #[serde(default)]
-    pub toggle_hotkey: Option<String>,
+    pub engine_toggle_hotkey: Option<String>,
 
     /// 配列定義ファイルの格納ディレクトリ
     #[serde(default = "default_layouts_dir")]
@@ -107,22 +107,6 @@ pub struct GeneralConfig {
     /// フックの動作モード（デフォルト: filter）
     #[serde(default)]
     pub hook_mode: HookMode,
-
-    /// Engine ON keys (multiple combos allowed)
-    #[serde(default = "default_engine_on_keys")]
-    pub engine_on_keys: Vec<String>,
-
-    /// Engine OFF keys (multiple combos allowed)
-    #[serde(default = "default_engine_off_keys")]
-    pub engine_off_keys: Vec<String>,
-
-    /// IME ON keys — IME を ON にするキーコンボ
-    #[serde(default = "default_ime_control_on_keys")]
-    pub ime_on_keys: Vec<String>,
-
-    /// IME OFF keys — IME を OFF にするキーコンボ
-    #[serde(default = "default_ime_control_off_keys")]
-    pub ime_off_keys: Vec<String>,
 
     /// フォーカス遷移デバウンス時間（ミリ秒）。
     /// Alt-Tab 等でフォーカスが連続変更される際に IME 状態の誤検知を防ぐ。
@@ -225,20 +209,66 @@ fn default_linux_input_backend() -> String {
     "evdev".to_string()
 }
 
-/// IME 同期設定（シャドウ IME 状態追跡用キー定義）
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct ImeSyncConfig {
+/// IME 検出設定（シャドウ IME 状態追跡用キー定義）
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ImeDetectConfig {
     /// Toggle keys (direction unknown, flip shadow state)
     #[serde(default = "default_ime_toggle_keys")]
-    pub toggle_keys: Vec<String>,
+    pub toggle: Vec<String>,
 
     /// ON keys (IME is now ON / zenkaku)
     #[serde(default = "default_ime_on_keys")]
-    pub on_keys: Vec<String>,
+    pub on: Vec<String>,
 
     /// OFF keys (IME is now OFF / hankaku)
     #[serde(default = "default_ime_off_keys")]
-    pub off_keys: Vec<String>,
+    pub off: Vec<String>,
+}
+
+impl Default for ImeDetectConfig {
+    fn default() -> Self {
+        Self {
+            toggle: default_ime_toggle_keys(),
+            on: default_ime_on_keys(),
+            off: default_ime_off_keys(),
+        }
+    }
+}
+
+/// キーバインディング設定
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KeysConfig {
+    /// Engine ON keys (multiple combos allowed)
+    #[serde(default = "default_engine_on_keys")]
+    pub engine_on: Vec<String>,
+
+    /// Engine OFF keys (multiple combos allowed)
+    #[serde(default = "default_engine_off_keys")]
+    pub engine_off: Vec<String>,
+
+    /// IME ON keys — IME を ON にするキーコンボ
+    #[serde(default = "default_ime_control_on_keys")]
+    pub ime_on: Vec<String>,
+
+    /// IME OFF keys — IME を OFF にするキーコンボ
+    #[serde(default = "default_ime_control_off_keys")]
+    pub ime_off: Vec<String>,
+
+    /// IME 検出設定
+    #[serde(default)]
+    pub ime_detect: ImeDetectConfig,
+}
+
+impl Default for KeysConfig {
+    fn default() -> Self {
+        Self {
+            engine_on: default_engine_on_keys(),
+            engine_off: default_engine_off_keys(),
+            ime_on: default_ime_control_on_keys(),
+            ime_off: default_ime_control_off_keys(),
+            ime_detect: ImeDetectConfig::default(),
+        }
+    }
 }
 
 fn default_ime_toggle_keys() -> Vec<String> {
@@ -280,9 +310,9 @@ pub struct FocusOverrides {
 pub struct AppConfig {
     pub general: GeneralConfig,
     #[serde(default)]
-    pub focus_overrides: FocusOverrides,
+    pub keys: KeysConfig,
     #[serde(default)]
-    pub ime_sync: ImeSyncConfig,
+    pub focus_overrides: FocusOverrides,
 }
 
 impl AppConfig {
@@ -317,10 +347,10 @@ impl AppConfig {
 pub struct ValidatedConfig {
     /// 検証済みの一般設定
     pub general: GeneralConfig,
+    /// 検証済みのキーバインディング設定
+    pub keys: KeysConfig,
     /// 検証済みのフォーカスオーバーライド
     pub focus_overrides: FocusOverrides,
-    /// 検証済みの IME 同期設定
-    pub ime_sync: ImeSyncConfig,
 }
 
 impl AppConfig {
@@ -419,8 +449,8 @@ impl AppConfig {
         (
             ValidatedConfig {
                 general,
+                keys: self.keys,
                 focus_overrides,
-                ime_sync: self.ime_sync,
             },
             warnings,
         )
@@ -452,7 +482,7 @@ mod tests {
         let toml_str = r#"
 [general]
 simultaneous_threshold_ms = 100
-toggle_hotkey = "Ctrl+Shift+F12"
+engine_toggle_hotkey = "Ctrl+Shift+F12"
 layouts_dir = "layout"
 default_layout = "nicola.yab"
 "#;
@@ -461,7 +491,7 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.layouts_dir, "layout");
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(
-            config.general.toggle_hotkey,
+            config.general.engine_toggle_hotkey,
             Some("Ctrl+Shift+F12".to_string())
         );
     }
@@ -741,23 +771,22 @@ default_layout = "nicola.yab"
 [general]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            config.general.engine_off_keys,
-            vec!["Ctrl+Shift+Nonconvert"]
-        );
-        assert_eq!(config.general.engine_on_keys, vec!["Ctrl+Shift+Convert"]);
+        assert_eq!(config.keys.engine_off, vec!["Ctrl+Shift+Nonconvert"]);
+        assert_eq!(config.keys.engine_on, vec!["Ctrl+Shift+Convert"]);
     }
 
     #[test]
     fn test_engine_toggle_key_custom() {
         let toml_str = r#"
 [general]
-engine_off_keys = ["Ctrl+Shift+VK_F10"]
-engine_on_keys = ["Ctrl+VK_F10"]
+
+[keys]
+engine_off = ["Ctrl+Shift+VK_F10"]
+engine_on = ["Ctrl+VK_F10"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.engine_off_keys, vec!["Ctrl+Shift+VK_F10"]);
-        assert_eq!(config.general.engine_on_keys, vec!["Ctrl+VK_F10"]);
+        assert_eq!(config.keys.engine_off, vec!["Ctrl+Shift+VK_F10"]);
+        assert_eq!(config.keys.engine_on, vec!["Ctrl+VK_F10"]);
     }
 
     // ── Linux 設定テスト ──
@@ -827,11 +856,13 @@ linux_evdev_device = "not/a/dev/path"
     fn test_multiple_engine_keys() {
         let toml_str = r#"
 [general]
-engine_on_keys = ["VK_CONVERT", "Ctrl+VK_CONVERT"]
-engine_off_keys = ["Ctrl+VK_NONCONVERT", "VK_NONCONVERT"]
+
+[keys]
+engine_on = ["VK_CONVERT", "Ctrl+VK_CONVERT"]
+engine_off = ["Ctrl+VK_NONCONVERT", "VK_NONCONVERT"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.engine_on_keys.len(), 2);
-        assert_eq!(config.general.engine_off_keys.len(), 2);
+        assert_eq!(config.keys.engine_on.len(), 2);
+        assert_eq!(config.keys.engine_off.len(), 2);
     }
 }
