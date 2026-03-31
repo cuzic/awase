@@ -795,20 +795,15 @@ fn run_message_loop() {
                 // PBT_APMRESUMEAUTOMATIC (0x12) / PBT_APMRESUMESUSPEND (0x07)
                 let pbt = msg.wParam.0;
                 if pbt == 0x12 || pbt == 0x07 {
-                    log::info!("Power resume detected (PBT=0x{pbt:02X}), refreshing all state");
+                    log::info!("Power resume detected (PBT=0x{pbt:02X}), reinstalling hook and refreshing state");
+                    // スリープ中にフックが解除されている可能性があるため即座に再インストール
+                    hook::reinstall_hook();
                     if let Some(app) = APP.get_mut() {
                         app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                         app.refresh_ime_state_cache();
                     }
-                    // IME 信頼度とフォーカスキャッシュもリセット
                     awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
                     FocusKind::Undetermined.store(&FOCUS_KIND);
-                    // フック消失ウォッチドッグ: スリープ復帰後にハートビートを確認
-                    let last = hook::last_hook_activity_ms();
-                    if last != 0 {
-                        let elapsed = hook::current_tick_ms().saturating_sub(last);
-                        log::info!("Hook heartbeat age after resume: {elapsed}ms");
-                    }
                 }
             },
             WM_WTSSESSION_CHANGE => unsafe {
@@ -821,20 +816,15 @@ fn run_message_loop() {
                         }
                     }
                     WTS_SESSION_UNLOCK => {
-                        log::info!("Session unlocked, refreshing all state");
+                        log::info!("Session unlocked, reinstalling hook and refreshing state");
+                        // ロック中にフックが解除されている可能性があるため即座に再インストール
+                        hook::reinstall_hook();
                         if let Some(app) = APP.get_mut() {
                             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                             app.refresh_ime_state_cache();
                         }
-                        // IME 信頼度とフォーカスキャッシュもリセット
                         awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
                         FocusKind::Undetermined.store(&FOCUS_KIND);
-                        // フック消失ウォッチドッグ: セッションアンロック後にハートビートを確認
-                        let last = hook::last_hook_activity_ms();
-                        if last != 0 {
-                            let elapsed = hook::current_tick_ms().saturating_sub(last);
-                            log::info!("Hook heartbeat age after unlock: {elapsed}ms");
-                        }
                     }
                     _ => {}
                 }
