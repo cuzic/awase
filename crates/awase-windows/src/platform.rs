@@ -43,7 +43,8 @@ impl PlatformRuntime for WindowsPlatform {
         let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
         // SAFETY: SetTimer は Win32 API。メインスレッドから呼ぶ。
         unsafe {
-            let _ = SetTimer(HWND::default(), id, ms, None);
+            let ret = SetTimer(HWND::default(), id, ms, None);
+            log::debug!("SetTimer(id={id}, ms={ms}) → ret={ret}");
         }
     }
 

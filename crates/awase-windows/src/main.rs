@@ -775,6 +775,7 @@ fn run_message_loop() {
             },
             WM_TIMER if msg.wParam.0 == TIMER_PENDING || msg.wParam.0 == TIMER_SPECULATIVE => {
                 let timer_id = msg.wParam.0;
+                log::debug!("WM_TIMER fired: timer_id={timer_id}");
                 unsafe {
                     if let Some(app) = APP.get_mut() {
                         let ctx = InputContext {
