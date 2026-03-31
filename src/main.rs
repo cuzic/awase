@@ -747,17 +747,24 @@ fn run_message_loop() {
                     // いずれかの一般キーが押されていればフック消失の可能性が高い
                     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
                     let any_key_pressed = (0x08u16..=0x5Au16)
-                        .any(|vk| GetAsyncKeyState(i32::from(vk)) & (0x8000u16 as i16) != 0);
+                        .any(|vk| GetAsyncKeyState(i32::from(vk)).cast_unsigned() & 0x8000 != 0);
                     if any_key_pressed {
+                        let stale_ms = hook::current_tick_ms() - hook::last_hook_activity_ms();
                         log::error!(
-                            "Hook watchdog: no hook activity for {}ms despite keyboard input — \
-                             hook may have been silently removed by OS. Please restart the application.",
-                            hook::current_tick_ms() - hook::last_hook_activity_ms()
+                            "Hook watchdog: no activity for {stale_ms}ms despite keyboard input — attempting reinstall"
                         );
-                        if let Some(app) = APP.get_mut() {
+                        // フックを自動再登録（UAC 不要、プロセス再起動不要）
+                        if hook::reinstall_hook() {
+                            log::info!("Hook reinstalled automatically");
+                            if let Some(app) = APP.get_mut() {
+                                app.executor
+                                    .tray
+                                    .show_balloon("awase", "キーボードフックを自動復旧しました");
+                            }
+                        } else if let Some(app) = APP.get_mut() {
                             app.executor.tray.show_balloon(
                                 "awase",
-                                "キーボードフックが応答しません。アプリケーションを再起動してください。",
+                                "キーボードフックの復旧に失敗しました。アプリケーションを再起動してください。",
                             );
                         }
                     }

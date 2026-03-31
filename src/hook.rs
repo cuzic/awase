@@ -37,6 +37,35 @@ pub fn is_hook_responsive(timeout_ms: u64) -> bool {
     (now - last) < timeout_ms
 }
 
+/// フックを再登録する（OS に無言で削除された場合の自動復旧用）。
+///
+/// コールバックは既にグローバルに保持されているため、
+/// `SetWindowsHookExW` を再度呼んでハンドルを差し替えるだけ。
+/// UAC 昇格もプロセス再起動も不要。
+pub fn reinstall_hook() -> bool {
+    unsafe {
+        // 旧ハンドルがあれば念のため解除（既に無効な可能性あり）
+        let old = *HOOK_HANDLE.get_mut();
+        if !old.0.is_null() {
+            let _ = UnhookWindowsHookEx(old);
+        }
+
+        match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) {
+            Ok(new_handle) => {
+                HOOK_HANDLE.set(new_handle);
+                LAST_HOOK_ACTIVITY.store(current_tick_ms(), Ordering::Relaxed);
+                log::info!("Keyboard hook reinstalled successfully");
+                true
+            }
+            Err(e) => {
+                log::error!("Failed to reinstall keyboard hook: {e}");
+                HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
+                false
+            }
+        }
+    }
+}
+
 /// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
 struct SingleThreadCell<T>(UnsafeCell<T>);
 unsafe impl<T> Sync for SingleThreadCell<T> {}
