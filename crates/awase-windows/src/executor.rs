@@ -120,39 +120,30 @@ impl DecisionExecutor {
         }
     }
 
-    // ── Relay モード（スマートリレー）──
+    // ── Relay モード ──
     //
-    // 普通の PassThrough はそのまま OS に通す（他フックとの相性を保つ）。
-    // PassThroughWith（flush 出力あり）のときだけ Consume して、
-    // flush 出力 → キー再注入 を FIFO でキューに入れる（順序保証）。
+    // 全キーを Consume し、メッセージループで FIFO 実行する。
+    // PassThrough キーも ReinjectKey で再送されるので、他フックにも届く。
+    // フック内で OS API を一切呼ばず、キー順序を完全に保証する。
 
     fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
         match decision {
             Decision::PassThrough => {
-                // Effects なし → そのまま OS に通す（物理キーとして他フックにも届く）
-                HookResult {
-                    callback: CallbackResult::PassThrough,
-                    has_pending: self.has_pending(),
-                }
+                self.queue
+                    .push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
             }
             Decision::PassThroughWith { mut effects } => {
-                // flush 出力あり → Consume して、出力 + キー再注入を FIFO でキュー
-                // これにより flush 出力がキーより先に実行される（順序保証）
                 effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
                 self.queue.extend(effects);
-                HookResult {
-                    callback: CallbackResult::Consumed,
-                    has_pending: true,
-                }
             }
             Decision::Consume { effects } => {
-                // Engine が消費 → 全 Effects をキューに入れる
                 self.queue.extend(effects);
-                HookResult {
-                    callback: CallbackResult::Consumed,
-                    has_pending: self.has_pending(),
-                }
             }
+        }
+
+        HookResult {
+            callback: CallbackResult::Consumed,
+            has_pending: true,
         }
     }
 
