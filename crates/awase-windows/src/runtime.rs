@@ -63,12 +63,12 @@ pub struct Runtime {
 
 impl Runtime {
     /// Decision の副作用を実行する — executor に委譲
-    pub(crate) fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
+    pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
         self.executor.execute(decision)
     }
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
-    pub(crate) fn toggle_engine(&mut self) {
+    pub fn toggle_engine(&mut self) {
         let decision = self.engine.on_command(EngineCommand::ToggleEngine);
         self.executor.execute(decision);
         // ウィンドウごとのエンジン状態をキャッシュに保存
@@ -82,7 +82,7 @@ impl Runtime {
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
-    pub(crate) fn invalidate_engine_context(&mut self, reason: ContextChange) {
+    pub fn invalidate_engine_context(&mut self, reason: ContextChange) {
         let decision = self
             .engine
             .on_command(EngineCommand::InvalidateContext(reason));
@@ -93,7 +93,7 @@ impl Runtime {
     ///
     /// Observer → Engine → Runtime の 3 層パイプラインで処理する。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
-    pub(crate) fn refresh_ime_state_cache(&mut self) {
+    pub fn refresh_ime_state_cache(&mut self) {
         // Observer: OS 観測 → ImeObservation
         let obs = unsafe { crate::observer::ime_observer::observe(&IME_RELIABILITY) };
 
@@ -105,7 +105,7 @@ impl Runtime {
     }
 
     /// 配列を動的に切り替える
-    pub(crate) fn switch_layout(&mut self, index: usize) {
+    pub fn switch_layout(&mut self, index: usize) {
         let Some(entry) = self.layouts.get(index) else {
             log::warn!("Layout index {index} out of range");
             return;
@@ -123,7 +123,7 @@ impl Runtime {
     }
 
     /// 手動フォーカスオーバーライドのトグル処理
-    pub(crate) fn toggle_focus_override(&mut self) {
+    pub fn toggle_focus_override(&mut self) {
         let current = FocusKind::load(&FOCUS_KIND);
         let new_kind = if current == FocusKind::TextInput {
             FocusKind::NonText
@@ -169,7 +169,7 @@ impl Runtime {
     }
 
     /// IME 制御キー後に遅延されたキーを再処理する。
-    pub(crate) fn process_deferred_keys(&mut self) {
+    pub fn process_deferred_keys(&mut self) {
         // IME 状態キャッシュを更新（メッセージループ上なのでブロッキング OK）
         self.refresh_ime_state_cache();
 

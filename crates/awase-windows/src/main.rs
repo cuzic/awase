@@ -12,22 +12,8 @@
     clippy::type_complexity
 )]
 
-mod executor;
-mod focus;
-mod hook;
-mod ime;
-mod observer;
-mod output;
-mod platform_windows;
-mod runtime;
-mod single_thread_cell;
-mod tray;
-mod win32;
-
-pub(crate) use runtime::{LayoutEntry, Runtime};
-
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
@@ -47,14 +33,27 @@ use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECUL
 use awase::engine::{ImeSyncKeys, SpecialKeyCombos};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, ImeCacheState};
-use awase::types::{KeyEventType, RawKeyEvent, VkCode};
+use awase::types::{RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
 
-use crate::hook::CallbackResult;
-use crate::ime::HybridProvider;
-use crate::output::Output;
-use crate::single_thread_cell::SingleThreadCell;
-use crate::tray::SystemTray;
+use awase_windows::executor;
+use awase_windows::focus;
+use awase_windows::hook;
+use awase_windows::hook::CallbackResult;
+use awase_windows::ime;
+use awase_windows::ime::HybridProvider;
+use awase_windows::observer;
+use awase_windows::output::Output;
+use awase_windows::platform;
+use awase_windows::runtime;
+use awase_windows::tray;
+use awase_windows::tray::SystemTray;
+use awase_windows::{
+    LayoutEntry, Runtime, APP, ELEVATED, FOCUS_DEBOUNCE_MS, FOCUS_KIND, IME_POLL_INTERVAL_MS,
+    IME_RELIABILITY, IME_STATE_CACHE, MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
+    TIMER_IME_POLL, WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED, WM_PROCESS_DEFERRED,
+    WM_RELOAD_CONFIG,
+};
 
 /// 有効/無効切り替えホットキー ID
 const HOTKEY_ID_TOGGLE: i32 = 1;
@@ -62,98 +61,7 @@ const HOTKEY_ID_TOGGLE: i32 = 1;
 /// 手動フォーカスオーバーライドホットキー ID (Ctrl+Shift+F11)
 const HOTKEY_ID_FOCUS_OVERRIDE: i32 = 2;
 
-/// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
-const WM_RELOAD_CONFIG: u32 = WM_APP + 10;
-
-/// IME 制御キー後の遅延キー再処理用カスタムメッセージ
-const WM_PROCESS_DEFERRED: u32 = WM_APP + 11;
-
-/// UIA 非同期判定完了通知用カスタムメッセージ
-pub(crate) const WM_FOCUS_KIND_UPDATE: u32 = WM_APP + 12;
-
-/// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
-const WM_IME_KEY_DETECTED: u32 = WM_APP + 14;
-
-/// フォーカス遷移デバウンスタイマー ID
-pub(crate) const TIMER_FOCUS_DEBOUNCE: usize = 103;
-
-/// フォーカス遷移デバウンス時間（ミリ秒、config から初期化）
-pub(crate) static FOCUS_DEBOUNCE_MS: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(50);
-
-/// IME 状態ポーリング間隔（ミリ秒、config から初期化）
-static IME_POLL_INTERVAL_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(500);
-
-/// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
-///
-/// INJECTED_MARKER 付きなのでフックに再捕捉されない。
-///
-/// # Safety
-/// Win32 API (`send_input_safe`) を呼び出す。メインスレッドから呼ぶこと。
-pub(crate) unsafe fn reinject_key(event: &RawKeyEvent) {
-    use crate::output::INJECTED_MARKER;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
-        VIRTUAL_KEY,
-    };
-
-    let is_keyup = matches!(
-        event.event_type,
-        KeyEventType::KeyUp | KeyEventType::SysKeyUp
-    );
-
-    let input = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(event.vk_code.0),
-                wScan: event.scan_code.0 as u16,
-                dwFlags: if is_keyup {
-                    KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE
-                } else {
-                    KEYEVENTF_SCANCODE
-                },
-                time: 0,
-                dwExtraInfo: INJECTED_MARKER,
-            },
-        },
-    };
-    win32::send_input_safe(&[input]);
-}
-
-pub(crate) static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();
-
-use crate::focus::cache::DetectionSource;
-
-// ── クロススレッド共有グローバル状態 ──
-//
-// フック（メインスレッド）とメッセージループ間、または Ctrl+C ハンドラ（別スレッド）
-// からアクセスされるため、Atomic 型でなければならない。
-//
-// FOCUS_KIND / IME_STATE_CACHE / IME_RELIABILITY: フックで読み取り、メッセージループで更新
-// FOCUS_DEBOUNCE_MS / IME_POLL_INTERVAL_MS: config から初期化、タイマー設定で参照
-// MAIN_THREAD_ID / QUIT_REQUESTED: Ctrl+C ハンドラ ↔ メインスレッド間の通信
-
-/// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
-pub(crate) static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
-
-/// キャッシュされた IME ON/OFF 状態。0=OFF, 1=ON, 2=Unknown（初期状態）
-pub(crate) static IME_STATE_CACHE: AtomicU8 = AtomicU8::new(2);
-
-/// IME 検出の信頼度キャッシュ（UIA 非同期判定で更新）
-pub(crate) static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
-
-/// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
-static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Ctrl+C 受信フラグ
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
-
-/// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
-static ELEVATED: AtomicBool = AtomicBool::new(false);
-
-/// IME 状態ポーリング用タイマー ID（安全ネット: マウスで言語バー操作した場合等）
-pub(crate) const TIMER_IME_POLL: usize = 101;
+use awase_windows::focus::cache::DetectionSource;
 
 // ── セッション変更通知（WTS）定数 ──
 
@@ -670,7 +578,7 @@ fn initialize_app(
         APP.set(Runtime {
             engine,
             executor: executor::DecisionExecutor {
-                platform: platform_windows::WindowsPlatform {
+                platform: platform::WindowsPlatform {
                     output: Output::new(config.general.output_mode),
                     tray,
                     focus: runtime::FocusDetector::new(config.focus_overrides.clone()),

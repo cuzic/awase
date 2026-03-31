@@ -8,7 +8,7 @@ use awase::engine::{
 use awase::platform::PlatformRuntime;
 
 use crate::hook::CallbackResult;
-use crate::platform_windows::WindowsPlatform;
+use crate::platform::WindowsPlatform;
 
 pub struct DecisionExecutor {
     /// プラットフォーム固有の実装。

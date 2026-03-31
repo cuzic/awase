@@ -3,7 +3,7 @@ rust = "latest"
 
 [tasks.check]
 description = "Compile check (Windows target)"
-run = "cargo check --target x86_64-pc-windows-gnu"
+run = "cargo check --target x86_64-pc-windows-gnu --workspace"
 
 [tasks.clippy]
 description = "Run clippy lints (Windows target)"
