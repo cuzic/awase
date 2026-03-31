@@ -171,6 +171,8 @@ impl Decision {
 pub struct InputContext {
     /// メッセージループで更新される IME ON/OFF キャッシュ
     pub ime_cache: ImeCacheState,
+    /// デバッグ用: OS の生の IME 状態（CrossProcess 検出結果）
+    pub debug_os_ime: Option<bool>,
 }
 
 /// IME 同期キー（トグル・ON・OFF）を集約する構造体

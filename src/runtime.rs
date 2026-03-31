@@ -175,6 +175,7 @@ impl Runtime {
 
         let ctx = InputContext {
             ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
+            debug_os_ime: None,
         };
         let decisions = self.engine.process_deferred_keys(&ctx);
         for decision in decisions {

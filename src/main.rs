@@ -713,6 +713,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
     let ctx = InputContext {
         ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
+        debug_os_ime: unsafe { crate::ime::detect_ime_open_cross_process() },
     };
     let decision = app.engine.on_input(event, &ctx);
     let result = app.execute_decision(decision);
@@ -794,6 +795,7 @@ fn run_message_loop() {
                     if let Some(app) = APP.get_mut() {
                         let ctx = InputContext {
                             ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
+                            debug_os_ime: None, // タイマーパスでは CrossProcess 不要
                         };
                         let decision = app.engine.on_timeout(timer_id, &ctx);
                         app.execute_decision(decision);
