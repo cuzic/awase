@@ -37,3 +37,6 @@ pub use timing::{ThreeKeyResult, TimingJudge};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod proptest_tests;

@@ -40,3 +40,6 @@ multiple_crate_versions = "allow"
 
 # 日本語コメントで誤検知するため無効化
 doc_markdown = "allow"
+
+[dev-dependencies]
+proptest = "1.11.0"
