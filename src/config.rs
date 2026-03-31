@@ -8,9 +8,9 @@ use crate::types::VkCode;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {
-    /// 1文字ずつ個別の SendInput 呼び出し（他のフックとの互換性重視）
+    /// 1文字ずつ個別にキーイベントを送信（他のフックとの互換性重視）
     PerKey,
-    /// 全文字を1回の SendInput にまとめて送信（高速、アトミック）
+    /// 全文字を1回にまとめて送信（高速、アトミック）
     Batched,
     /// ローマ字→ひらがなに変換して Unicode 文字として直接送信（IME 不要）
     #[default]
@@ -34,11 +34,15 @@ pub enum ConfirmMode {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GeneralConfig {
+    /// キーボードの物理レイアウトモデル（"jis" or "us"）
+    #[serde(default = "default_keyboard_model")]
+    pub keyboard_model: String,
+
     /// 同時打鍵の判定閾値（ミリ秒）
     #[serde(default = "default_threshold")]
     pub simultaneous_threshold_ms: u32,
 
-    /// 左親指キーの仮想キーコード名
+    /// 左親指キーのキー名
     #[serde(default = "default_left_thumb")]
     pub left_thumb_key: String,
 
@@ -94,11 +98,11 @@ pub struct GeneralConfig {
     #[serde(default = "default_engine_off_keys")]
     pub engine_off_keys: Vec<String>,
 
-    /// IME ON keys — ImmSetOpenStatus(true) を呼び出すキーコンボ
+    /// IME ON keys — IME を ON にするキーコンボ
     #[serde(default = "default_ime_control_on_keys")]
     pub ime_on_keys: Vec<String>,
 
-    /// IME OFF keys — ImmSetOpenStatus(false) を呼び出すキーコンボ
+    /// IME OFF keys — IME を OFF にするキーコンボ
     #[serde(default = "default_ime_control_off_keys")]
     pub ime_off_keys: Vec<String>,
 
@@ -111,6 +115,18 @@ pub struct GeneralConfig {
     /// イベント駆動の IME 検出を補完する安全ネット。
     #[serde(default = "default_ime_poll_interval_ms")]
     pub ime_poll_interval_ms: u32,
+
+    /// Linux 入力バックエンド ("evdev", "x11", "libinput")
+    #[serde(default = "default_linux_input_backend")]
+    pub linux_input_backend: String,
+
+    /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
+    #[serde(default)]
+    pub linux_evdev_device: Option<String>,
+}
+
+fn default_keyboard_model() -> String {
+    "jis".to_string()
 }
 
 /// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
@@ -119,11 +135,11 @@ const fn default_threshold() -> u32 {
 }
 
 fn default_left_thumb() -> String {
-    "VK_NONCONVERT".to_string()
+    "Nonconvert".to_string()
 }
 
 fn default_right_thumb() -> String {
-    "VK_CONVERT".to_string()
+    "Convert".to_string()
 }
 
 fn default_layouts_dir() -> String {
@@ -156,19 +172,19 @@ const fn default_speculative_delay() -> u32 {
 }
 
 fn default_engine_on_keys() -> Vec<String> {
-    vec!["Ctrl+Shift+VK_CONVERT".to_string()]
+    vec!["Ctrl+Shift+Convert".to_string()]
 }
 
 fn default_engine_off_keys() -> Vec<String> {
-    vec!["Ctrl+Shift+VK_NONCONVERT".to_string()]
+    vec!["Ctrl+Shift+Nonconvert".to_string()]
 }
 
 fn default_ime_control_on_keys() -> Vec<String> {
-    vec!["Ctrl+VK_CONVERT".to_string()]
+    vec!["Ctrl+Convert".to_string()]
 }
 
 fn default_ime_control_off_keys() -> Vec<String> {
-    vec!["Ctrl+VK_NONCONVERT".to_string()]
+    vec!["Ctrl+Nonconvert".to_string()]
 }
 
 const fn default_focus_debounce_ms() -> u32 {
@@ -177,6 +193,10 @@ const fn default_focus_debounce_ms() -> u32 {
 
 const fn default_ime_poll_interval_ms() -> u32 {
     500
+}
+
+fn default_linux_input_backend() -> String {
+    "evdev".to_string()
 }
 
 /// IME 同期設定（シャドウ IME 状態追跡用キー定義）
@@ -196,15 +216,15 @@ pub struct ImeSyncConfig {
 }
 
 fn default_ime_toggle_keys() -> Vec<String> {
-    vec!["VK_KANJI".to_string()]
+    vec!["Kanji".to_string()]
 }
 
 fn default_ime_on_keys() -> Vec<String> {
-    vec!["VK_DBE_DBCSCHAR".to_string(), "VK_IME_ON".to_string()]
+    vec!["ImeOn".to_string()]
 }
 
 fn default_ime_off_keys() -> Vec<String> {
-    vec!["VK_DBE_SBCSCHAR".to_string(), "VK_IME_OFF".to_string()]
+    vec!["ImeOff".to_string()]
 }
 
 /// フォーカスオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
@@ -325,13 +345,36 @@ impl AppConfig {
             ));
         }
 
-        // VK_KANA はロック型キーで KeyUp が発生しないため親指キーとして非推奨
-        if general.left_thumb_key == "VK_KANA" || general.right_thumb_key == "VK_KANA" {
+        // Kana キーはロック型キーで KeyUp が発生しないため親指キーとして非推奨
+        if general.left_thumb_key == "Kana"
+            || general.left_thumb_key == "VK_KANA"
+            || general.right_thumb_key == "Kana"
+            || general.right_thumb_key == "VK_KANA"
+        {
             warnings.push(
-                "VK_KANA はロック型キーで KeyUp イベントが発生しません。\
+                "Kana キーはロック型キーで KeyUp イベントが発生しません。\
                  親指キーとしての使用は推奨しません。"
                     .to_string(),
             );
+        }
+
+        // linux_input_backend: must be one of "evdev", "x11", "libinput"
+        if !["evdev", "x11", "libinput"].contains(&general.linux_input_backend.as_str()) {
+            warnings.push(format!(
+                "linux_input_backend \"{}\" は不正です。evdev/x11/libinput のいずれかを指定してください。evdev にリセットします",
+                general.linux_input_backend
+            ));
+            general.linux_input_backend = "evdev".to_string();
+        }
+
+        // linux_evdev_device: if specified, must start with "/dev/"
+        if let Some(ref dev) = general.linux_evdev_device {
+            if !dev.starts_with("/dev/") {
+                warnings.push(format!(
+                    "linux_evdev_device \"{dev}\" は /dev/ で始まる必要があります。自動検出にリセットします"
+                ));
+                general.linux_evdev_device = None;
+            }
         }
 
         // focus_overrides: process names not empty
@@ -358,154 +401,10 @@ impl AppConfig {
     }
 }
 
-/// 仮想キーコード名（"VK_A" 等）を実際の VkCode 値に変換する
-#[must_use]
-pub fn vk_name_to_code(name: &str) -> Option<VkCode> {
-    match name {
-        // アルファベットキー
-        "VK_A" => Some(VkCode(0x41)),
-        "VK_B" => Some(VkCode(0x42)),
-        "VK_C" => Some(VkCode(0x43)),
-        "VK_D" => Some(VkCode(0x44)),
-        "VK_E" => Some(VkCode(0x45)),
-        "VK_F" => Some(VkCode(0x46)),
-        "VK_G" => Some(VkCode(0x47)),
-        "VK_H" => Some(VkCode(0x48)),
-        "VK_I" => Some(VkCode(0x49)),
-        "VK_J" => Some(VkCode(0x4A)),
-        "VK_K" => Some(VkCode(0x4B)),
-        "VK_L" => Some(VkCode(0x4C)),
-        "VK_M" => Some(VkCode(0x4D)),
-        "VK_N" => Some(VkCode(0x4E)),
-        "VK_O" => Some(VkCode(0x4F)),
-        "VK_P" => Some(VkCode(0x50)),
-        "VK_Q" => Some(VkCode(0x51)),
-        "VK_R" => Some(VkCode(0x52)),
-        "VK_S" => Some(VkCode(0x53)),
-        "VK_T" => Some(VkCode(0x54)),
-        "VK_U" => Some(VkCode(0x55)),
-        "VK_V" => Some(VkCode(0x56)),
-        "VK_W" => Some(VkCode(0x57)),
-        "VK_X" => Some(VkCode(0x58)),
-        "VK_Y" => Some(VkCode(0x59)),
-        "VK_Z" => Some(VkCode(0x5A)),
-
-        // 数字キー
-        "VK_0" => Some(VkCode(0x30)),
-        "VK_1" => Some(VkCode(0x31)),
-        "VK_2" => Some(VkCode(0x32)),
-        "VK_3" => Some(VkCode(0x33)),
-        "VK_4" => Some(VkCode(0x34)),
-        "VK_5" => Some(VkCode(0x35)),
-        "VK_6" => Some(VkCode(0x36)),
-        "VK_7" => Some(VkCode(0x37)),
-        "VK_8" => Some(VkCode(0x38)),
-        "VK_9" => Some(VkCode(0x39)),
-
-        // OEM キー
-        "VK_OEM_PLUS" => Some(VkCode(0xBB)),
-        "VK_OEM_COMMA" => Some(VkCode(0xBC)),
-        "VK_OEM_MINUS" => Some(VkCode(0xBD)),
-        "VK_OEM_PERIOD" => Some(VkCode(0xBE)),
-        "VK_OEM_2" => Some(VkCode(0xBF)),   // /
-        "VK_OEM_1" => Some(VkCode(0xBA)),   // ;
-        "VK_OEM_3" => Some(VkCode(0xC0)),   // `
-        "VK_OEM_4" => Some(VkCode(0xDB)),   // [
-        "VK_OEM_5" => Some(VkCode(0xDC)),   // \
-        "VK_OEM_6" => Some(VkCode(0xDD)),   // ]
-        "VK_OEM_7" => Some(VkCode(0xDE)),   // '
-        "VK_OEM_102" => Some(VkCode(0xE2)), // <> (日本語キーボードの＼)
-
-        // 特殊キー
-        "VK_SPACE" => Some(VkCode(0x20)),
-        "VK_RETURN" => Some(VkCode(0x0D)),
-        "VK_TAB" => Some(VkCode(0x09)),
-        "VK_BACK" => Some(VkCode(0x08)),
-        "VK_ESCAPE" => Some(VkCode(0x1B)),
-        "VK_DELETE" => Some(VkCode(0x2E)),
-
-        // 日本語入力関連
-        "VK_CONVERT" => Some(VkCode(0x1C)), // 変換
-        #[allow(clippy::match_same_arms)] // 意図的なエイリアス
-        "VK_NONCONVERT" | "VK_MUHENKAN" => Some(VkCode(0x1D)), // 無変換
-        "VK_KANA" => Some(VkCode(0x15)),    // かな
-        "VK_KANJI" => Some(VkCode(0x19)),   // 半角/全角
-        "VK_IME_ON" => Some(VkCode(0x16)),
-        "VK_IME_OFF" => Some(VkCode(0x1A)),
-        "VK_DBE_ALPHANUMERIC" => Some(VkCode(0xF0)),
-        "VK_DBE_KATAKANA" => Some(VkCode(0xF1)),
-        "VK_DBE_HIRAGANA" => Some(VkCode(0xF2)),
-        "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(VkCode(0xF3)), // 半角モード
-        "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(VkCode(0xF4)), // 全角モード
-
-        // 修飾キー
-        "VK_SHIFT" => Some(VkCode(0x10)),
-        "VK_CONTROL" => Some(VkCode(0x11)),
-        "VK_MENU" => Some(VkCode(0x12)), // Alt
-        "VK_LSHIFT" => Some(VkCode(0xA0)),
-        "VK_RSHIFT" => Some(VkCode(0xA1)),
-        "VK_LCONTROL" => Some(VkCode(0xA2)),
-        "VK_RCONTROL" => Some(VkCode(0xA3)),
-        "VK_LMENU" => Some(VkCode(0xA4)),
-        "VK_RMENU" => Some(VkCode(0xA5)),
-
-        // ファンクションキー
-        "VK_F1" => Some(VkCode(0x70)),
-        "VK_F2" => Some(VkCode(0x71)),
-        "VK_F3" => Some(VkCode(0x72)),
-        "VK_F4" => Some(VkCode(0x73)),
-        "VK_F5" => Some(VkCode(0x74)),
-        "VK_F6" => Some(VkCode(0x75)),
-        "VK_F7" => Some(VkCode(0x76)),
-        "VK_F8" => Some(VkCode(0x77)),
-        "VK_F9" => Some(VkCode(0x78)),
-        "VK_F10" => Some(VkCode(0x79)),
-        "VK_F11" => Some(VkCode(0x7A)),
-        "VK_F12" => Some(VkCode(0x7B)),
-
-        _ => None,
-    }
-}
-
-/// ホットキー文字列をパースして修飾キーフラグと仮想キーコードに変換する。
+/// キーコンボ（修飾キー + メインキー）のパース済みデータ。
 ///
-/// 例: `"Ctrl+Shift+F12"` → `Some((0x0006, 0x7B))` (MOD\_CONTROL | MOD\_SHIFT, VK\_F12)
-///
-/// 修飾キー: Ctrl (`MOD_CONTROL` = 0x0002), Shift (`MOD_SHIFT` = 0x0004), Alt (`MOD_ALT` = 0x0001)
-///
-/// 最後のトークンがメインキーとして `vk_name_to_code` で解決される。
-#[must_use]
-pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
-    const MOD_ALT: u32 = 0x0001;
-    const MOD_CONTROL: u32 = 0x0002;
-    const MOD_SHIFT: u32 = 0x0004;
-
-    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
-    if parts.is_empty() {
-        return None;
-    }
-
-    let mut modifiers: u32 = 0;
-    for &part in &parts[..parts.len() - 1] {
-        match part {
-            "Ctrl" | "Control" => modifiers |= MOD_CONTROL,
-            "Shift" => modifiers |= MOD_SHIFT,
-            "Alt" => modifiers |= MOD_ALT,
-            _ => return None,
-        }
-    }
-
-    let key_name = format!("VK_{}", parts.last()?);
-    let vk = vk_name_to_code(&key_name)?;
-
-    Some((modifiers, vk))
-}
-
-/// キーコンボ文字列をパースして (ctrl, shift, alt, vk_code) を返す。
-///
-/// `parse_hotkey` と異なり、キー名は `VK_` プレフィックス付きで指定する。
-/// 例: `"Ctrl+VK_NONCONVERT"` → `Some(ParsedKeyCombo { ctrl: true, shift: false, alt: false, vk: 0x1D })`
-///      `"VK_CONVERT"` → `Some(ParsedKeyCombo { ctrl: false, shift: false, alt: false, vk: 0x1C })`
+/// プラットフォーム層が `vk_name_to_code` 等で解決して構築する。
+/// Engine はこの構造体の VkCode を等値比較するのみ（値の検査はしない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParsedKeyCombo {
     pub ctrl: bool,
@@ -514,122 +413,11 @@ pub struct ParsedKeyCombo {
     pub vk: VkCode,
 }
 
-#[must_use]
-pub fn parse_key_combo(s: &str) -> Option<ParsedKeyCombo> {
-    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
-    if parts.is_empty() {
-        return None;
-    }
-
-    let mut ctrl = false;
-    let mut shift = false;
-    let mut alt = false;
-    for &part in &parts[..parts.len() - 1] {
-        match part {
-            "Ctrl" | "Control" => ctrl = true,
-            "Shift" => shift = true,
-            "Alt" => alt = true,
-            _ => return None,
-        }
-    }
-
-    let key_name = *parts.last()?;
-    let vk = vk_name_to_code(key_name)?;
-
-    Some(ParsedKeyCombo {
-        ctrl,
-        shift,
-        alt,
-        vk,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── vk_name_to_code テスト ──
-
-    #[test]
-    fn test_alphabet_keys() {
-        assert_eq!(vk_name_to_code("VK_A"), Some(VkCode(0x41)));
-        assert_eq!(vk_name_to_code("VK_Z"), Some(VkCode(0x5A)));
-    }
-
-    #[test]
-    fn test_number_keys() {
-        assert_eq!(vk_name_to_code("VK_0"), Some(VkCode(0x30)));
-        assert_eq!(vk_name_to_code("VK_9"), Some(VkCode(0x39)));
-    }
-
-    #[test]
-    fn test_oem_keys() {
-        assert_eq!(vk_name_to_code("VK_OEM_PLUS"), Some(VkCode(0xBB)));
-        assert_eq!(vk_name_to_code("VK_OEM_COMMA"), Some(VkCode(0xBC)));
-        assert_eq!(vk_name_to_code("VK_OEM_MINUS"), Some(VkCode(0xBD)));
-        assert_eq!(vk_name_to_code("VK_OEM_PERIOD"), Some(VkCode(0xBE)));
-    }
-
-    #[test]
-    fn test_japanese_input_keys() {
-        assert_eq!(vk_name_to_code("VK_CONVERT"), Some(VkCode(0x1C)));
-        assert_eq!(vk_name_to_code("VK_NONCONVERT"), Some(VkCode(0x1D)));
-        // エイリアス
-        assert_eq!(vk_name_to_code("VK_MUHENKAN"), Some(VkCode(0x1D)));
-        // NONCONVERT と MUHENKAN は同じ値
-        assert_eq!(
-            vk_name_to_code("VK_NONCONVERT"),
-            vk_name_to_code("VK_MUHENKAN")
-        );
-    }
-
-    #[test]
-    fn test_unknown_key_returns_none() {
-        assert_eq!(vk_name_to_code("VK_UNKNOWN"), None);
-        assert_eq!(vk_name_to_code(""), None);
-        assert_eq!(vk_name_to_code("INVALID"), None);
-    }
-
-    // ── parse_hotkey テスト ──
-
-    #[test]
-    fn test_parse_hotkey_ctrl_shift_f12() {
-        let result = parse_hotkey("Ctrl+Shift+F12");
-        assert_eq!(result, Some((0x0002 | 0x0004, VkCode(0x7B))));
-    }
-
-    #[test]
-    fn test_parse_hotkey_ctrl_f1() {
-        let result = parse_hotkey("Ctrl+F1");
-        assert_eq!(result, Some((0x0002, VkCode(0x70))));
-    }
-
-    #[test]
-    fn test_parse_hotkey_alt_shift_a() {
-        let result = parse_hotkey("Alt+Shift+A");
-        assert_eq!(result, Some((0x0001 | 0x0004, VkCode(0x41))));
-    }
-
-    #[test]
-    fn test_parse_hotkey_single_key() {
-        let result = parse_hotkey("F12");
-        assert_eq!(result, Some((0, VkCode(0x7B))));
-    }
-
-    #[test]
-    fn test_parse_hotkey_invalid_modifier() {
-        assert!(parse_hotkey("Win+F12").is_none());
-    }
-
-    #[test]
-    fn test_parse_hotkey_invalid_key() {
-        assert!(parse_hotkey("Ctrl+UNKNOWN").is_none());
-    }
-
-    #[test]
-    fn test_parse_hotkey_empty() {
-        assert!(parse_hotkey("").is_none());
-    }
+    // vk_name_to_code / parse_hotkey / parse_key_combo テストは awase-windows に移動済み
 
     // ── AppConfig パーステスト ──
 
@@ -659,8 +447,8 @@ default_layout = "nicola.yab"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.general.simultaneous_threshold_ms, 100);
-        assert_eq!(config.general.left_thumb_key, "VK_NONCONVERT");
-        assert_eq!(config.general.right_thumb_key, "VK_CONVERT");
+        assert_eq!(config.general.left_thumb_key, "Nonconvert");
+        assert_eq!(config.general.right_thumb_key, "Convert");
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(config.general.layouts_dir, "config");
     }
@@ -730,30 +518,21 @@ confirm_mode = "two_phase"
 
 [focus_overrides]
 force_text = [
-    { process = "chrome.exe", class = "Chrome_RenderWidgetHostHWND" },
-    { process = "firefox.exe", class = "MozillaWindowClass" },
+    { process = "browser", class = "WebContent" },
+    { process = "editor", class = "TextArea" },
 ]
 force_bypass = [
-    { process = "explorer.exe", class = "CabinetWClass" },
+    { process = "launcher", class = "SearchBox" },
 ]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.focus_overrides.force_text.len(), 2);
-        assert_eq!(config.focus_overrides.force_text[0].process, "chrome.exe");
-        assert_eq!(
-            config.focus_overrides.force_text[0].class,
-            "Chrome_RenderWidgetHostHWND"
-        );
-        assert_eq!(config.focus_overrides.force_text[1].process, "firefox.exe");
+        assert_eq!(config.focus_overrides.force_text[0].process, "browser");
+        assert_eq!(config.focus_overrides.force_text[0].class, "WebContent");
+        assert_eq!(config.focus_overrides.force_text[1].process, "editor");
         assert_eq!(config.focus_overrides.force_bypass.len(), 1);
-        assert_eq!(
-            config.focus_overrides.force_bypass[0].process,
-            "explorer.exe"
-        );
-        assert_eq!(
-            config.focus_overrides.force_bypass[0].class,
-            "CabinetWClass"
-        );
+        assert_eq!(config.focus_overrides.force_bypass[0].process, "launcher");
+        assert_eq!(config.focus_overrides.force_bypass[0].class, "SearchBox");
     }
 
     #[test]
@@ -763,7 +542,7 @@ force_bypass = [
 
 [focus_overrides]
 force_text = [
-    { process = "notepad.exe", class = "Edit" },
+    { process = "editor", class = "TextInput" },
 ]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
@@ -926,56 +705,7 @@ default_layout = "nicola.yab"
         assert_eq!(validated.general.default_layout, "nicola.yab");
     }
 
-    // ── parse_key_combo テスト ──
-
-    #[test]
-    fn test_parse_key_combo_ctrl_nonconvert() {
-        let result = parse_key_combo("Ctrl+VK_NONCONVERT");
-        assert_eq!(
-            result,
-            Some(ParsedKeyCombo {
-                ctrl: true,
-                shift: false,
-                alt: false,
-                vk: VkCode(0x1D),
-            })
-        );
-    }
-
-    #[test]
-    fn test_parse_key_combo_convert_alone() {
-        let result = parse_key_combo("VK_CONVERT");
-        assert_eq!(
-            result,
-            Some(ParsedKeyCombo {
-                ctrl: false,
-                shift: false,
-                alt: false,
-                vk: VkCode(0x1C),
-            })
-        );
-    }
-
-    #[test]
-    fn test_parse_key_combo_ctrl_shift_f12() {
-        let result = parse_key_combo("Ctrl+Shift+VK_F12");
-        assert_eq!(
-            result,
-            Some(ParsedKeyCombo {
-                ctrl: true,
-                shift: true,
-                alt: false,
-                vk: VkCode(0x7B),
-            })
-        );
-    }
-
-    #[test]
-    fn test_parse_key_combo_invalid() {
-        assert!(parse_key_combo("Ctrl+UNKNOWN").is_none());
-        assert!(parse_key_combo("").is_none());
-        assert!(parse_key_combo("Win+VK_A").is_none());
-    }
+    // parse_key_combo テストは awase-windows に移動済み
 
     // ── engine_on/off_keys デフォルトテスト ──
 
@@ -987,9 +717,9 @@ default_layout = "nicola.yab"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(
             config.general.engine_off_keys,
-            vec!["Ctrl+Shift+VK_NONCONVERT"]
+            vec!["Ctrl+Shift+Nonconvert"]
         );
-        assert_eq!(config.general.engine_on_keys, vec!["Ctrl+Shift+VK_CONVERT"]);
+        assert_eq!(config.general.engine_on_keys, vec!["Ctrl+Shift+Convert"]);
     }
 
     #[test]
@@ -1002,6 +732,69 @@ engine_on_keys = ["Ctrl+VK_F10"]
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.general.engine_off_keys, vec!["Ctrl+Shift+VK_F10"]);
         assert_eq!(config.general.engine_on_keys, vec!["Ctrl+VK_F10"]);
+    }
+
+    // ── Linux 設定テスト ──
+
+    #[test]
+    fn test_linux_defaults() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.linux_input_backend, "evdev");
+        assert_eq!(config.general.linux_evdev_device, None);
+    }
+
+    #[test]
+    fn test_linux_custom_values() {
+        let toml_str = r#"
+[general]
+linux_input_backend = "x11"
+linux_evdev_device = "/dev/input/event3"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.linux_input_backend, "x11");
+        assert_eq!(
+            config.general.linux_evdev_device,
+            Some("/dev/input/event3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_linux_libinput_backend() {
+        let toml_str = r#"
+[general]
+linux_input_backend = "libinput"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert!(warnings.iter().all(|w| !w.contains("linux_input_backend")));
+        assert_eq!(validated.general.linux_input_backend, "libinput");
+    }
+
+    #[test]
+    fn test_linux_invalid_backend_produces_warning() {
+        let toml_str = r#"
+[general]
+linux_input_backend = "wayland"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("linux_input_backend")));
+        assert_eq!(validated.general.linux_input_backend, "evdev");
+    }
+
+    #[test]
+    fn test_linux_invalid_evdev_device_produces_warning() {
+        let toml_str = r#"
+[general]
+linux_evdev_device = "not/a/dev/path"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("linux_evdev_device")));
+        assert_eq!(validated.general.linux_evdev_device, None);
     }
 
     #[test]

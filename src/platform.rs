@@ -115,7 +115,7 @@ pub struct ForegroundInfo {
 pub trait PlatformRuntime {
     // ── キー出力 ──
 
-    /// `KeyAction` のスライスを順に実行する（SendInput 等）
+    /// `KeyAction` のスライスを順に実行する
     fn send_keys(&mut self, actions: &[KeyAction]);
 
     /// 元のキーイベントを再注入する（IME OFF 時の遅延キー再生用）
@@ -175,4 +175,37 @@ pub trait PlatformRuntime {
 
     /// IME 状態キャッシュを無効化する（Unknown にする）
     fn invalidate_ime_cache(&mut self);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ime_mode_is_kana_input() {
+        assert!(!ImeMode::Off.is_kana_input());
+        assert!(ImeMode::Hiragana.is_kana_input());
+        assert!(ImeMode::Katakana.is_kana_input());
+        assert!(ImeMode::HalfKatakana.is_kana_input());
+        assert!(!ImeMode::Alphanumeric.is_kana_input());
+    }
+
+    #[test]
+    fn ime_mode_debug_and_clone() {
+        let mode = ImeMode::Hiragana;
+        let cloned = mode;
+        assert_eq!(mode, cloned);
+        // Verify Debug is implemented
+        let _debug = format!("{:?}", mode);
+    }
+
+    #[test]
+    fn foreground_info_fields() {
+        let info = ForegroundInfo {
+            process_id: 42,
+            class_name: "Notepad".to_string(),
+        };
+        assert_eq!(info.process_id, 42);
+        assert_eq!(info.class_name, "Notepad");
+    }
 }
