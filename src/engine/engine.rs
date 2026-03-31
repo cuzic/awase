@@ -1,7 +1,7 @@
 //! 新 Engine: NicolaFsm + InputTracker + IME/特殊キー処理を統合するラッパー。
 //!
 //! `on_input` / `on_timeout` / `on_command` が唯一のエントリポイント。
-//! Win32 API を一切呼ばず、副作用は `Decision` として返す。
+//! OS API を一切呼ばず、副作用は `Decision` として返す。
 //!
 //! # IME 状態の同期ルール
 //!
@@ -22,18 +22,21 @@ use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
 use super::ime_coordinator::ImeCoordinator;
 use super::input_tracker::InputTracker;
+use super::key_lifecycle::KeyLifecycle;
 use super::nicola_fsm::NicolaFsm;
 
 /// 統合エンジン: NicolaFsm + InputTracker + ImeCoordinator + 特殊キー処理
 ///
 /// `on_input` が唯一のキーイベントエントリポイント。
-/// Win32 API を一切呼ばず、副作用は `Decision` として返す。
+/// OS API を一切呼ばず、副作用は `Decision` として返す。
 #[allow(missing_debug_implementations)]
 pub struct Engine {
     adapter: FsmAdapter,
     tracker: InputTracker,
     ime: ImeCoordinator,
     special_keys: SpecialKeyCombos,
+    /// キーの Down/Up ペア追跡
+    lifecycle: KeyLifecycle,
     /// 最後のフォーカス情報（エンジン状態保存用）
     last_focus_info: Option<(u32, String)>,
 }
@@ -51,6 +54,7 @@ impl Engine {
             tracker,
             ime: ImeCoordinator::new(ime_sync_keys),
             special_keys,
+            lifecycle: KeyLifecycle::new(),
             last_focus_info: None,
         }
     }
@@ -66,6 +70,16 @@ impl Engine {
     /// 6. IME 状態判定
     /// 7. NicolaFsm 処理
     pub fn on_input(&mut self, event: RawKeyEvent, ctx: &InputContext) -> Decision {
+        // Phase 0: KeyUp 自動追跡
+        // 対応する KeyDown が Consume 済みなら、KeyUp も自動的に Consume する。
+        // これにより Down/Up ペアの整合性が保証される。
+        let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
+        if !is_key_down && self.lifecycle.on_key_up(event.vk_code) {
+            // この KeyUp に対応する KeyDown は Engine が Consume していた。
+            // KeyUp も Consume して OS に渡さない（OS は KeyDown を受け取っていないため）。
+            return Decision::consumed();
+        }
+
         // Phase 1: Physical key tracking
         let phys = self.tracker.process(&event);
 
@@ -74,10 +88,6 @@ impl Engine {
 
         // Phase 3: IME key detection → request cache refresh
         let mut effects = Vec::new();
-        let is_key_down = matches!(
-            event.event_type,
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown
-        );
         // Phase 3.5: IME 変更キー検出時:
         // 1. 保留キーを先にフラッシュ（IME が切り替わる前に現在の状態で確定）
         // 2. IME キャッシュを Unknown に無効化（次のキーで shadow にフォールバック）
@@ -87,10 +97,7 @@ impl Engine {
         // IME トグルキーはフックで捕捉された時点で OS にまだ届いていないため、
         // CrossProcess 検出が古い値を返す。shadow を信頼し、ポーリングで
         // 最終的にキャッシュを同期する。
-        let is_ime_change = is_key_down
-            && (crate::vk::ImeKeyKind::from_vk(event.vk_code).is_some()
-                || crate::vk::may_change_ime(event.vk_code)
-                || self.ime.is_sync_key(event.vk_code));
+        let is_ime_change = is_key_down && event.ime_relevance.may_change_ime;
         if is_ime_change {
             let flush_effects = self.adapter.flush_to_effects(ContextChange::ImeOff);
             effects.extend(flush_effects);
@@ -113,6 +120,9 @@ impl Engine {
 
         // Phase 4: IME toggle guard
         if let Some(decision) = self.ime.check_guard(&event, &phys, &mut effects) {
+            if is_key_down && decision.is_consumed() {
+                self.lifecycle.on_key_down_consumed(&event);
+            }
             return decision;
         }
 
@@ -120,6 +130,9 @@ impl Engine {
         if is_key_down {
             if let Some(mut decision) = self.check_special_keys(&event) {
                 decision.push_effect(Effect::Ime(ImeEffect::RequestCacheRefresh));
+                if decision.is_consumed() {
+                    self.lifecycle.on_key_down_consumed(&event);
+                }
                 return decision;
             }
         }
@@ -134,7 +147,11 @@ impl Engine {
         }
 
         // Phase 7: NicolaFsm
-        self.adapter.on_event(event, &phys)
+        let decision = self.adapter.on_event(event, &phys);
+        if is_key_down && decision.is_consumed() {
+            self.lifecycle.on_key_down_consumed(&event);
+        }
+        decision
     }
 
     /// タイマー満了時のエントリポイント。
@@ -235,6 +252,7 @@ impl Engine {
             }
             EngineCommand::ImeObserved(obs) => self.handle_ime_observed(obs),
             EngineCommand::FocusChanged(obs) => self.handle_focus_changed(obs),
+            EngineCommand::SyncModifiers(os_mods) => self.handle_sync_modifiers(os_mods),
         }
     }
 
@@ -333,9 +351,15 @@ impl Engine {
         let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);
         effects.extend(flush_effects);
 
-        // IME トグルガードもクリア（前ウィンドウのガードを引きずらない）
+        // IME トグルガードをクリア（deferred keys は破棄）
         self.ime.clear_deferred();
-        self.ime.set_guard(false);
+
+        // Consume 済みで KeyUp が来ていないキーの KeyUp を再注入して
+        // OS 側のキーボード状態と整合させる。
+        let pending_key_ups = self.lifecycle.flush_pending_key_ups();
+        for evt in pending_key_ups {
+            effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
+        }
 
         // UIA 非同期判定が必要なら要求
         if needs_uia {
@@ -375,6 +399,46 @@ impl Engine {
 
     pub const fn set_shadow_ime_on(&mut self, on: bool) {
         self.ime.set_shadow_on(on);
+    }
+
+    /// OS の修飾キー状態と Engine 内部状態を同期し、不整合があれば KeyUp を再注入する。
+    ///
+    /// IME トグル直後など、フックが修飾キーの KeyUp を取りこぼす可能性がある
+    /// タイミングで呼ぶ。
+    fn handle_sync_modifiers(&mut self, os_mods: ModifierState) -> Decision {
+        let engine_mods = self.tracker.modifiers();
+        let mut effects = Vec::new();
+
+        // Engine が「押下中」と思っているが OS では離されているキー
+        // → lifecycle から KeyUp を再注入
+        // Engine 側も内部状態を OS に合わせる
+        let pending_ups = self.lifecycle.flush_pending_key_ups();
+        for evt in pending_ups {
+            // OS で既に離されている修飾キーの KeyUp のみ再注入
+            let should_reinject = match evt.modifier_key {
+                Some(crate::types::ModifierKey::Ctrl) => engine_mods.ctrl && !os_mods.ctrl,
+                Some(crate::types::ModifierKey::Alt) => engine_mods.alt && !os_mods.alt,
+                Some(crate::types::ModifierKey::Shift) => engine_mods.shift && !os_mods.shift,
+                Some(crate::types::ModifierKey::Meta) => engine_mods.win && !os_mods.win,
+                None => false, // 修飾キー以外は不整合チェック不要
+            };
+            if should_reinject {
+                log::info!(
+                    "Modifier sync: reinjecting KeyUp for vk=0x{:02X}",
+                    evt.vk_code.0
+                );
+                effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
+            }
+        }
+
+        // InputTracker の修飾キー状態を OS に合わせる
+        self.tracker.set_modifiers(os_mods);
+
+        if effects.is_empty() {
+            Decision::pass_through()
+        } else {
+            Decision::pass_through_with(effects)
+        }
     }
 
     // ── 内部メソッド ──
@@ -437,7 +501,7 @@ impl Engine {
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
             self.ime.set_shadow_on(true);
-            log::info!("IME ON (ImmSetOpenStatus, key combo)");
+            log::info!("IME ON (key combo)");
             return Some(Decision::consumed_with(vec![Effect::Ime(
                 ImeEffect::SetOpen(true),
             )]));
@@ -449,7 +513,7 @@ impl Engine {
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
             self.ime.set_shadow_on(false);
-            log::info!("IME OFF (ImmSetOpenStatus, key combo)");
+            log::info!("IME OFF (key combo)");
             return Some(Decision::consumed_with(vec![Effect::Ime(
                 ImeEffect::SetOpen(false),
             )]));
@@ -460,7 +524,7 @@ impl Engine {
 
     /// キーコンボが修飾キー条件を含めてイベントに一致するか判定する。
     ///
-    /// InputTracker の修飾キー状態を使用する（Win32 API 不要）。
+    /// InputTracker の修飾キー状態を使用する（OS API 不要）。
     fn matches_key_combo(
         combo: ParsedKeyCombo,
         event: &RawKeyEvent,

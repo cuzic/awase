@@ -1,6 +1,6 @@
 //! OS 非依存の観測結果型定義。
 //!
-//! Observer レイヤー（Win32 依存）が OS API を呼び出して取得した結果を、
+//! Observer レイヤー（プラットフォーム依存）が OS API を呼び出して取得した結果を、
 //! これらの型に変換して Engine に渡す。Engine は OS API に一切依存せず判断を行う。
 
 use crate::types::{FocusKind, ImeReliability};
@@ -73,4 +73,59 @@ pub struct FocusObservation {
     pub cached_engine_enabled: Option<bool>,
     /// OS から取得した修飾キー状態（フォーカス変更時の同期用）
     pub os_modifiers: Option<ModifierState>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obs(
+        cross_process: Option<bool>,
+        is_japanese: bool,
+        reliability: ImeReliability,
+    ) -> ImeObservation {
+        ImeObservation {
+            cross_process,
+            is_japanese,
+            reliability,
+        }
+    }
+
+    #[test]
+    fn resolve_not_japanese_returns_false() {
+        let result = obs(Some(true), false, ImeReliability::Reliable).resolve(true);
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn resolve_cross_process_false_returns_false() {
+        let result = obs(Some(false), true, ImeReliability::Reliable).resolve(true);
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn resolve_cross_process_true_reliable_returns_true() {
+        let result = obs(Some(true), true, ImeReliability::Reliable).resolve(false);
+        assert_eq!(result, Some(true));
+    }
+
+    #[test]
+    fn resolve_cross_process_true_unreliable_returns_shadow() {
+        // shadow=true
+        let result = obs(Some(true), true, ImeReliability::Unreliable).resolve(true);
+        assert_eq!(result, Some(true));
+
+        // shadow=false
+        let result = obs(Some(true), true, ImeReliability::Unreliable).resolve(false);
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn resolve_cross_process_none_returns_shadow() {
+        let result = obs(None, true, ImeReliability::Reliable).resolve(true);
+        assert_eq!(result, Some(true));
+
+        let result = obs(None, true, ImeReliability::Reliable).resolve(false);
+        assert_eq!(result, Some(false));
+    }
 }

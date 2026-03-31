@@ -14,7 +14,7 @@ use super::observation::{FocusObservation, ImeObservation};
 /// 入力・出力に関する副作用
 #[derive(Debug, Clone)]
 pub enum InputEffect {
-    /// キーアクションを SendInput で出力する
+    /// キーアクションを出力する
     SendKeys(Vec<KeyAction>),
     /// キーをそのまま再注入する（IME OFF 時の deferred key 用）
     ReinjectKey(RawKeyEvent),
@@ -32,7 +32,7 @@ pub enum TimerEffect {
 /// IME 制御に関する副作用
 #[derive(Debug, Clone)]
 pub enum ImeEffect {
-    /// IME の ON/OFF を設定する (ImmSetOpenStatus)
+    /// IME の ON/OFF を設定する
     SetOpen(bool),
     /// IME キャッシュ更新を要求する (PostMessageW)
     RequestCacheRefresh,
@@ -126,6 +126,12 @@ impl Decision {
     #[must_use]
     pub const fn consumed_with(effects: Vec<Effect>) -> Self {
         Self::Consume { effects }
+    }
+
+    /// Consume バリアントかどうかを返す
+    #[must_use]
+    pub const fn is_consumed(&self) -> bool {
+        matches!(self, Self::Consume { .. })
     }
 
     /// effects に追加する。PassThrough なら Consume に昇格。
@@ -267,4 +273,167 @@ pub enum EngineCommand {
     ImeObserved(ImeObservation),
     /// フォーカスが変更された
     FocusChanged(FocusObservation),
+    /// OS の修飾キー状態と内部状態を同期する。
+    /// 不整合があれば KeyUp を再注入して OS 側を正す。
+    SyncModifiers(super::fsm_types::ModifierState),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_effect() -> Effect {
+        Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+    }
+
+    // ── Decision factory methods ──
+
+    #[test]
+    fn pass_through_creates_pass_through() {
+        let d = Decision::pass_through();
+        assert!(matches!(d, Decision::PassThrough));
+    }
+
+    #[test]
+    fn consumed_creates_consume_with_empty_effects() {
+        let d = Decision::consumed();
+        match d {
+            Decision::Consume { effects } => assert!(effects.is_empty()),
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn consumed_with_creates_consume_with_effects() {
+        let d = Decision::consumed_with(vec![test_effect()]);
+        match d {
+            Decision::Consume { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pass_through_with_creates_pass_through_with() {
+        let d = Decision::pass_through_with(vec![test_effect()]);
+        match d {
+            Decision::PassThroughWith { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected PassThroughWith, got {:?}", other),
+        }
+    }
+
+    // ── is_consumed ──
+
+    #[test]
+    fn is_consumed_true_for_consume() {
+        assert!(Decision::consumed().is_consumed());
+    }
+
+    #[test]
+    fn is_consumed_false_for_pass_through() {
+        assert!(!Decision::pass_through().is_consumed());
+    }
+
+    #[test]
+    fn is_consumed_false_for_pass_through_with() {
+        assert!(!Decision::pass_through_with(vec![]).is_consumed());
+    }
+
+    // ── push_effect ──
+
+    #[test]
+    fn push_effect_on_pass_through_promotes_to_consume() {
+        let mut d = Decision::pass_through();
+        d.push_effect(test_effect());
+        assert!(d.is_consumed());
+        match d {
+            Decision::Consume { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn push_effect_on_consume_appends() {
+        let mut d = Decision::consumed_with(vec![test_effect()]);
+        d.push_effect(test_effect());
+        match d {
+            Decision::Consume { effects } => assert_eq!(effects.len(), 2),
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn push_effect_on_pass_through_with_appends() {
+        let mut d = Decision::pass_through_with(vec![test_effect()]);
+        d.push_effect(test_effect());
+        match d {
+            Decision::PassThroughWith { effects } => assert_eq!(effects.len(), 2),
+            other => panic!("expected PassThroughWith, got {:?}", other),
+        }
+    }
+
+    // ── effects_mut ──
+
+    #[test]
+    fn effects_mut_on_pass_through_promotes_to_consume() {
+        let mut d = Decision::pass_through();
+        let effects = d.effects_mut();
+        assert!(effects.is_empty());
+        effects.push(test_effect());
+        assert!(d.is_consumed());
+        match d {
+            Decision::Consume { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
+
+    // ── KeyBuffer ──
+
+    #[test]
+    fn key_buffer_new_starts_empty_and_not_guarded() {
+        let buf = KeyBuffer::new();
+        assert!(!buf.is_guarded());
+        assert!(buf.deferred_keys.is_empty());
+    }
+
+    #[test]
+    fn key_buffer_set_guard_is_guarded_round_trip() {
+        let mut buf = KeyBuffer::new();
+        buf.set_guard(true);
+        assert!(buf.is_guarded());
+        buf.set_guard(false);
+        assert!(!buf.is_guarded());
+    }
+
+    #[test]
+    fn key_buffer_push_and_drain_deferred() {
+        use crate::engine::input_tracker::PhysicalKeyState;
+
+        let mut buf = KeyBuffer::new();
+        let raw = RawKeyEvent {
+            vk_code: VkCode(0x41),
+            scan_code: crate::types::ScanCode(0x1E),
+            event_type: crate::types::KeyEventType::KeyDown,
+            extra_info: 0,
+            timestamp: 0,
+            key_classification: crate::types::KeyClassification::Char,
+            physical_pos: None,
+            ime_relevance: crate::types::ImeRelevance {
+                may_change_ime: false,
+                shadow_action: None,
+                is_sync_key: false,
+                sync_direction: None,
+                is_ime_control: false,
+            },
+            modifier_key: None,
+        };
+        let phys = PhysicalKeyState::empty();
+
+        buf.push_deferred(raw.clone(), phys);
+        buf.push_deferred(raw, phys);
+        assert_eq!(buf.deferred_keys.len(), 2);
+
+        let drained = buf.drain_deferred();
+        assert_eq!(drained.len(), 2);
+        assert!(buf.deferred_keys.is_empty());
+    }
 }

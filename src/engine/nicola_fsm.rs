@@ -8,9 +8,9 @@ use crate::config::ConfirmMode;
 use crate::engine::input_tracker::PhysicalKeyState;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
-use crate::scanmap::scan_to_pos;
+use crate::scanmap::PhysicalPos;
 use crate::types::{
-    ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode,
+    ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, SpecialKey, Timestamp, VkCode,
 };
 use crate::yab::{YabFace, YabLayout, YabValue};
 
@@ -29,40 +29,6 @@ pub const TIMER_SPECULATIVE: usize = 2;
 /// AdaptiveTiming モードで連続打鍵と判定する閾値（マイクロ秒）
 pub const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
 
-/// VK_BACK (Backspace) の仮想キーコード。
-///
-/// 投機出力の取り消し（speculative retract）に使用する。
-///
-/// # 投機出力の取り消しメカニズム
-///
-/// Speculative / TwoPhase モードでは、同時打鍵の閾値時間内に親指キーが
-/// 到着すると、既に IME に送信済みの通常面出力を Backspace（VK_BACK）で
-/// 削除してから親指面の出力を再送信する。
-///
-/// ## 前提条件
-///
-/// - **1 BS = 1 文字削除**: IME のローマ字入力モードでは、ローマ字列全体
-///   （例: "ka"）が 1 つの変換単位として扱われるため、BS 1 回で完全に
-///   削除される。この前提が崩れる IME（例: ローマ字を 1 文字ずつ処理する
-///   IME）では、投機出力の取り消しが不完全になる可能性がある。
-///
-/// - **IME 変換中の BS**: 未確定文字列（変換中）に対して BS が送信される
-///   ため、テキストフィールドに既に確定済みの文字は影響を受けない。
-///   ただし、IME がオフの場合やパススルーモードでは BS が直接テキスト
-///   フィールドに到達するため、投機出力モードは IME オン時のみ使用する
-///   設計になっている（`on_input` の Phase 6 で IME オフ時はパススルー）。
-///
-/// - **タイミング制約**: BS 送信と新しい文字送信の間に OS レベルの遅延が
-///   入る可能性があるが、SendInput で一括送信するため実用上問題ない。
-///
-/// ## 対応する `OutputHistory` 操作
-///
-/// `step_speculative_thumb()` では `output_history.retract_last()` を
-/// 先に呼び、その後 `OutputUpdate::Record` で新しい出力を記録する。
-/// `RetractAndRecord` ではなく分離しているのは、retract が副作用として
-/// 即時に必要なため。
-const VK_BACK: VkCode = VkCode(0x08);
-
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
 
@@ -71,7 +37,7 @@ impl From<&YabValue> for KeyAction {
         match value {
             YabValue::Romaji { romaji, .. } => Self::Romaji(romaji.clone()),
             YabValue::Literal(s) => s.chars().next().map_or(Self::Suppress, Self::Char),
-            YabValue::Special(sk) => Self::Key(sk.to_vk()),
+            YabValue::Special(sk) => Self::SpecialKey(*sk),
             YabValue::None => Self::Suppress,
         }
     }
@@ -213,8 +179,11 @@ impl NicolaFsm {
             }
             EngineState::PendingChar(pending) => {
                 // 保留中の文字キーを通常面で単独確定
-                let resolved =
-                    self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
+                let resolved = self.resolve_pending_char_as_single(
+                    pending.scan_code,
+                    pending.vk_code,
+                    pending.pos,
+                );
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions)
             }
@@ -229,6 +198,7 @@ impl NicolaFsm {
                 let resolved = self.resolve_char_thumb_as_simultaneous(
                     char_key.scan_code,
                     char_key.vk_code,
+                    char_key.pos,
                     thumb.is_left,
                 );
                 self.update_history(resolved.output);
@@ -345,12 +315,10 @@ impl NicolaFsm {
     #[allow(clippy::unused_self)]
     pub(crate) fn lookup_face(
         &self,
-        scan_code: ScanCode,
-        _vk_code: VkCode,
+        pos: Option<PhysicalPos>,
         face: &YabFace,
     ) -> Option<(KeyAction, Option<char>)> {
-        let pos = scan_to_pos(scan_code)?;
-        let value = face.get(&pos)?;
+        let value = face.get(&pos?)?;
         let kana = match value {
             YabValue::Romaji { kana, .. } => *kana,
             YabValue::Literal(s) => s.chars().next(),
@@ -367,12 +335,11 @@ impl NicolaFsm {
         &mut self,
         char_scan: ScanCode,
         char_vk: VkCode,
+        char_pos: Option<PhysicalPos>,
         thumb_is_left: bool,
     ) -> ResolvedAction {
         let thumb_face = Face::from_thumb_bool(thumb_is_left);
-        if let Some((action, kana)) =
-            self.lookup_face(char_scan, char_vk, self.get_face(thumb_face))
-        {
+        if let Some((action, kana)) = self.lookup_face(char_pos, self.get_face(thumb_face)) {
             // 親指キーを「消費」: 同じ物理押下で後続キーがシフトされないようにする
             self.consume_thumb(thumb_is_left);
             let output = record_output(char_scan, &action, kana);
@@ -382,7 +349,7 @@ impl NicolaFsm {
             }
         } else {
             // 親指面に定義がない場合は文字キーを単独確定
-            self.resolve_pending_char_as_single(char_scan, char_vk)
+            self.resolve_pending_char_as_single(char_scan, char_vk, char_pos)
         }
     }
 
@@ -540,9 +507,7 @@ impl NicolaFsm {
 
     /// Shift 面で Reduce する共通ヘルパー
     fn shift_face_reduce(&self, ev: &ClassifiedEvent) -> ParseAction {
-        if let Some((action, kana)) =
-            self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::Shift))
-        {
+        if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(Face::Shift)) {
             ParseAction::Reduce {
                 actions: vec![action.clone()],
                 record: record_output(ev.scan_code, &action, kana),
@@ -565,17 +530,14 @@ impl NicolaFsm {
         // Active thumb combo
         if !ev.key_class.is_thumb() {
             if let Some(face) = self.active_thumb_face() {
-                if self
-                    .lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
-                    .is_some()
-                {
+                if self.lookup_face(ev.pos, self.get_face(face)).is_some() {
                     return IdleIntent::ActiveThumb(face);
                 }
                 // 親指面に定義がない → 確定モードに委譲（fall through）
             }
         }
         // Non-layout key
-        if !ev.key_class.is_thumb() && !self.is_layout_key(ev.scan_code) {
+        if !ev.key_class.is_thumb() && !self.is_layout_key(ev.pos) {
             return IdleIntent::PassThrough;
         }
         // Confirm mode dispatch
@@ -596,9 +558,7 @@ impl NicolaFsm {
 
     /// 未消費の親指キーが押下中の場合に親指面で即時確定する。
     fn reduce_active_thumb(&mut self, ev: &ClassifiedEvent, face: Face) -> ParseAction {
-        if let Some((action, kana)) =
-            self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
-        {
+        if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
             // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
             let is_left = matches!(face, Face::LeftThumb);
             self.consume_thumb(is_left);
@@ -681,7 +641,7 @@ impl NicolaFsm {
     /// 投機出力を取り消して新しい出力に差し替える。
     ///
     /// 前提: IME は完結済みローマ字を1つの変換単位として扱うため、
-    /// VK_BACK 1発で投機出力全体を削除できる。
+    /// BACKSPACE 1発で投機出力全体を削除できる。
     fn retract_and_replace(
         &mut self,
         pending: PendingKey,
@@ -689,7 +649,10 @@ impl NicolaFsm {
         kana: Option<char>,
     ) -> ParseAction {
         self.output_history.retract_last();
-        let actions = vec![KeyAction::Key(VK_BACK), new_action.clone()];
+        let actions = vec![
+            KeyAction::SpecialKey(SpecialKey::Backspace),
+            new_action.clone(),
+        ];
         ParseAction::Reduce {
             actions,
             record: OutputUpdate::Record(OutputRecord {
@@ -716,8 +679,7 @@ impl NicolaFsm {
         let face = Face::from_thumb(ev.key_class);
 
         // Look up what the simultaneous keystroke would produce
-        if let Some((thumb_action, thumb_kana)) =
-            self.lookup_face(pending.scan_code, pending.vk_code, self.get_face(face))
+        if let Some((thumb_action, thumb_kana)) = self.lookup_face(pending.pos, self.get_face(face))
         {
             if self
                 .timing_judge()
@@ -752,11 +714,7 @@ impl NicolaFsm {
         };
         // 親指面で保留文字キーの候補を取得し閾値を調整
         let candidate_face = Face::from_thumb(ev.key_class);
-        let candidate = self.lookup_face(
-            pending.scan_code,
-            pending.vk_code,
-            self.get_face(candidate_face),
-        );
+        let candidate = self.lookup_face(pending.pos, self.get_face(candidate_face));
         let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
 
         if self
@@ -780,7 +738,8 @@ impl NicolaFsm {
 
         // 時間超過 → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
-        let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
+        let resolved =
+            self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
         ParseAction::ReduceAndContinue {
             actions: resolved.actions,
             record: resolved.output,
@@ -794,7 +753,8 @@ impl NicolaFsm {
             unreachable!("unexpected state: {:?}", self.state)
         };
         self.go_idle();
-        let resolved = self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
+        let resolved =
+            self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
         ParseAction::ReduceAndContinue {
             actions: resolved.actions,
             record: resolved.output,
@@ -809,7 +769,7 @@ impl NicolaFsm {
         };
         // 親指面で到着文字キーの候補を取得し閾値を調整
         let pending_face = Face::from_thumb_bool(thumb.is_left);
-        let candidate = self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(pending_face));
+        let candidate = self.lookup_face(ev.pos, self.get_face(pending_face));
         let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
 
         if self
@@ -882,10 +842,9 @@ impl NicolaFsm {
         &self,
         scan_code: ScanCode,
         vk_code: VkCode,
+        pos: Option<PhysicalPos>,
     ) -> ResolvedAction {
-        if let Some((action, kana)) =
-            self.lookup_face(scan_code, vk_code, self.get_face(Face::Normal))
-        {
+        if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
             let output = record_output(scan_code, &action, kana);
             ResolvedAction {
                 actions: vec![action],
@@ -939,21 +898,13 @@ impl NicolaFsm {
             let judge = self.timing_judge();
             let thumb_face = Face::from_thumb_bool(thumb.is_left);
             let char1_thumb_kana = self
-                .lookup_face(
-                    pending.scan_code,
-                    pending.vk_code,
-                    self.get_face(thumb_face),
-                )
+                .lookup_face(pending.pos, self.get_face(thumb_face))
                 .and_then(|(_, k)| k);
             let char1_single_kana = self
-                .lookup_face(
-                    pending.scan_code,
-                    pending.vk_code,
-                    self.get_face(Face::Normal),
-                )
+                .lookup_face(pending.pos, self.get_face(Face::Normal))
                 .and_then(|(_, k)| k);
             let char2_thumb_kana = self
-                .lookup_face(ev.scan_code, ev.vk_code, self.get_face(thumb_face))
+                .lookup_face(ev.pos, self.get_face(thumb_face))
                 .and_then(|(_, k)| k);
             let result = judge.three_key_pairing(
                 pending.timestamp,
@@ -970,6 +921,7 @@ impl NicolaFsm {
                 let resolved = self.resolve_char_thumb_as_simultaneous(
                     pending.scan_code,
                     pending.vk_code,
+                    pending.pos,
                     thumb.is_left,
                 );
                 return ParseAction::ReduceAndContinue {
@@ -979,12 +931,13 @@ impl NicolaFsm {
                 };
             }
             // char1 = 単独、char2+thumb = 同時打鍵
-            let char1_resolved =
-                self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code);
+            let char1_resolved = self.resolve_pending_char_as_single(
+                pending.scan_code,
+                pending.vk_code,
+                pending.pos,
+            );
             let thumb_face = Face::from_thumb_bool(thumb.is_left);
-            if let Some((action, kana)) =
-                self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(thumb_face))
-            {
+            if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(thumb_face)) {
                 // char1 の履歴を先に更新してから char2+thumb を確定
                 self.update_history(char1_resolved.output);
                 self.consume_thumb(thumb.is_left);
@@ -1008,6 +961,7 @@ impl NicolaFsm {
         let resolved = self.resolve_char_thumb_as_simultaneous(
             pending.scan_code,
             pending.vk_code,
+            pending.pos,
             thumb.is_left,
         );
         ParseAction::ReduceAndContinue {
@@ -1072,6 +1026,7 @@ impl NicolaFsm {
         let resolved = self.resolve_char_thumb_as_simultaneous(
             pending.scan_code,
             pending.vk_code,
+            pending.pos,
             thumb.is_left,
         );
         self.update_history(resolved.output);
@@ -1095,7 +1050,7 @@ impl NicolaFsm {
 
         let resolved = match old_state {
             EngineState::PendingChar(pending) => {
-                self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code)
+                self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos)
             }
             EngineState::PendingThumb(thumb) => self.resolve_pending_thumb_as_single(thumb.vk_code),
             EngineState::Idle
@@ -1143,10 +1098,13 @@ impl NicolaFsm {
 // ── タイムアウト処理 ──
 impl NicolaFsm {
     /// PendingChar タイムアウト：文字キーを単独打鍵として確定する
-    fn timeout_pending_char(&mut self, scan_code: ScanCode, vk_code: VkCode) -> Resp {
-        if let Some((action, kana)) =
-            self.lookup_face(scan_code, vk_code, self.get_face(Face::Normal))
-        {
+    fn timeout_pending_char(
+        &mut self,
+        scan_code: ScanCode,
+        vk_code: VkCode,
+        pos: Option<PhysicalPos>,
+    ) -> Resp {
+        if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
             self.update_history(record_output(scan_code, &action, kana));
             self.build_response(vec![action], true, TimerIntent::CancelAll)
         } else {
@@ -1169,9 +1127,11 @@ impl NicolaFsm {
         &mut self,
         char_scan: ScanCode,
         char_vk: VkCode,
+        char_pos: Option<PhysicalPos>,
         thumb_is_left: bool,
     ) -> Resp {
-        let resolved = self.resolve_char_thumb_as_simultaneous(char_scan, char_vk, thumb_is_left);
+        let resolved =
+            self.resolve_char_thumb_as_simultaneous(char_scan, char_vk, char_pos, thumb_is_left);
         self.update_history(resolved.output);
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
@@ -1183,16 +1143,14 @@ impl NicolaFsm {
     /// 残りの閾値時間（`threshold_us - speculative_delay_us`）で `TIMER_PENDING` を設定する。
     ///
     /// Phase 2 に入った後、残り時間内に親指キーが到着すれば
-    /// `step_speculative_thumb()` が VK_BACK で投機出力を取り消す。
+    /// `step_speculative_thumb()` が BACKSPACE で投機出力を取り消す。
     /// `TIMER_PENDING` が満了すれば投機出力は正しかったとみなし、Idle に戻る。
     fn on_timeout_speculative(&mut self) -> Resp {
         match self.state {
             EngineState::PendingChar(pending) => {
                 // Output normal face speculatively
                 let face = Face::Normal;
-                if let Some((action, kana)) =
-                    self.lookup_face(pending.scan_code, pending.vk_code, self.get_face(face))
-                {
+                if let Some((action, kana)) = self.lookup_face(pending.pos, self.get_face(face)) {
                     self.enter_speculative_char(pending);
                     // Emit the speculative output + set TIMER_PENDING for remaining time
                     let remaining_us = self.threshold_us.saturating_sub(self.speculative_delay_us);
@@ -1238,8 +1196,8 @@ impl NicolaFsm {
     }
 
     /// いずれかの配列面に定義されているキーかどうか
-    pub(crate) fn is_layout_key(&self, scan_code: ScanCode) -> bool {
-        let Some(pos) = scan_to_pos(scan_code) else {
+    pub(crate) fn is_layout_key(&self, pos: Option<PhysicalPos>) -> bool {
+        let Some(pos) = pos else {
             return false;
         };
         self.get_face(Face::Normal).contains_key(&pos)
@@ -1253,7 +1211,7 @@ impl NicolaFsm {
         if ev.key_class == KeyClass::Passthrough {
             return Some(BypassReason::Passthrough);
         }
-        if crate::vk::is_ime_control(ev.vk_code) {
+        if ev.is_ime_control {
             return Some(BypassReason::ImeControl);
         }
         if self.phys.modifiers.is_os_modifier_held() {
@@ -1296,8 +1254,8 @@ impl NicolaFsm {
         }
 
         match event.event_type {
-            KeyEventType::KeyDown | KeyEventType::SysKeyDown => self.on_key_down(&event),
-            KeyEventType::KeyUp | KeyEventType::SysKeyUp => self.on_key_up(&event),
+            KeyEventType::KeyDown => self.on_key_down(&event),
+            KeyEventType::KeyUp => self.on_key_up(&event),
         }
     }
 
@@ -1322,12 +1280,15 @@ impl NicolaFsm {
                 Response::pass_through().with_kill_timer(TIMER_PENDING)
             }
             EngineState::PendingChar(pending) => {
-                self.timeout_pending_char(pending.scan_code, pending.vk_code)
+                self.timeout_pending_char(pending.scan_code, pending.vk_code, pending.pos)
             }
             EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(thumb.vk_code),
-            EngineState::PendingCharThumb { char_key, thumb } => {
-                self.timeout_pending_char_thumb(char_key.scan_code, char_key.vk_code, thumb.is_left)
-            }
+            EngineState::PendingCharThumb { char_key, thumb } => self.timeout_pending_char_thumb(
+                char_key.scan_code,
+                char_key.vk_code,
+                char_key.pos,
+                thumb.is_left,
+            ),
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
             EngineState::SpeculativeChar(_) => Response::consume().with_kill_timer(TIMER_PENDING),
         }

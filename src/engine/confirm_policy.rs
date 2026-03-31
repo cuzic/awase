@@ -45,6 +45,7 @@ impl NicolaFsm {
             self.enter_pending_char(PendingKey {
                 scan_code: ev.scan_code,
                 vk_code: ev.vk_code,
+                pos: ev.pos,
                 timestamp: ev.timestamp,
             });
         }
@@ -62,12 +63,11 @@ impl NicolaFsm {
 
         // Character key → immediately output normal face, enter SpeculativeChar
         let face = Face::Normal;
-        if let Some((action, kana)) =
-            self.lookup_face(ev.scan_code, ev.vk_code, self.get_face(face))
-        {
+        if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
             self.enter_speculative_char(PendingKey {
                 scan_code: ev.scan_code,
                 vk_code: ev.vk_code,
+                pos: ev.pos,
                 timestamp: ev.timestamp,
             });
             // Output immediately + set timer for the threshold window
@@ -98,6 +98,7 @@ impl NicolaFsm {
         self.enter_pending_char(PendingKey {
             scan_code: ev.scan_code,
             vk_code: ev.vk_code,
+            pos: ev.pos,
             timestamp: ev.timestamp,
         });
 
@@ -124,13 +125,13 @@ impl NicolaFsm {
 
         // Get candidate kana for each face
         let normal_kana = self
-            .lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::Normal))
+            .lookup_face(ev.pos, self.get_face(Face::Normal))
             .and_then(|(_, kana)| kana);
         let left_kana = self
-            .lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::LeftThumb))
+            .lookup_face(ev.pos, self.get_face(Face::LeftThumb))
             .and_then(|(_, kana)| kana);
         let right_kana = self
-            .lookup_face(ev.scan_code, ev.vk_code, self.get_face(Face::RightThumb))
+            .lookup_face(ev.pos, self.get_face(Face::RightThumb))
             .and_then(|(_, kana)| kana);
 
         // Decision: if normal is clearly more likely, output speculatively
