@@ -75,6 +75,8 @@ jobs:
           cp data/*.csv.gz dist/data/ 2>/dev/null || true
           cp data/*.toml dist/data/ 2>/dev/null || true
           cp scripts/run-e2e.ps1 dist/scripts/
+          cp scripts/install.ps1 dist/
+          cp scripts/uninstall.ps1 dist/
           cp README.md dist/
           for f in LICENSE*; do [ -e "$f" ] && cp "$f" dist/; done
 
@@ -83,3 +85,30 @@ jobs:
         with:
           name: awase-windows-x64
           path: dist/
+
+      - name: Create ZIP archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/* -DestinationPath awase-windows-x64.zip
+
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: awase-windows-x64-zip
+          path: awase-windows-x64.zip
+
+      - name: Install WiX Toolset
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Build MSI
+        shell: cmd
+        run: |
+          set PATH=%PATH%;C:\Program Files (x86)\WiX Toolset v3.14\bin
+          candle.exe wix\main.wxs -out wix\main.wixobj
+          light.exe wix\main.wixobj -out awase-0.1.0-x64.msi -ext WixUIExtension
+
+      - name: Upload MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: awase-windows-x64-msi
+          path: awase-0.1.0-x64.msi

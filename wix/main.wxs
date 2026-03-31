@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="awase"
+           Language="1041"
+           Version="0.1.0"
+           Manufacturer="awase"
+           UpgradeCode="7A8B9C0D-1234-5678-9ABC-DEF012345678">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLDIR" Name="awase">
+          <Directory Id="LayoutDir" Name="layout" />
+          <Directory Id="DataDir" Name="data" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="awase" />
+      </Directory>
+    </Directory>
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLDIR">
+      <Component Id="MainExe" Guid="*">
+        <File Source="dist\awase.exe" KeyPath="yes" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                       Name="awase"
+                       Type="string"
+                       Value="[INSTALLDIR]awase.exe" />
+      </Component>
+      <Component Id="SettingsExe" Guid="*">
+        <File Source="dist\awase-settings.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="ConfigFile" Guid="*" NeverOverwrite="yes">
+        <File Source="dist\config.toml" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Layout files -->
+    <ComponentGroup Id="LayoutFiles" Directory="LayoutDir">
+      <Component Id="NicolaYab" Guid="*">
+        <File Source="dist\layout\nicola.yab" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Data files -->
+    <ComponentGroup Id="DataFiles" Directory="DataDir">
+      <Component Id="NgramData" Guid="*">
+        <File Source="dist\data\ngram_hiragana.csv.gz" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Start Menu shortcuts -->
+    <ComponentGroup Id="Shortcuts" Directory="ApplicationProgramsFolder">
+      <Component Id="AppShortcut" Guid="*">
+        <Shortcut Id="AwaseShortcut" Name="awase" Target="[INSTALLDIR]awase.exe" WorkingDirectory="INSTALLDIR" />
+        <Shortcut Id="SettingsShortcut" Name="awase Settings" Target="[INSTALLDIR]awase-settings.exe" WorkingDirectory="INSTALLDIR" />
+        <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="ProductFeature" Title="awase" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentGroupRef Id="LayoutFiles" />
+      <ComponentGroupRef Id="DataFiles" />
+      <ComponentGroupRef Id="Shortcuts" />
+    </Feature>
+  </Product>
+</Wix>
