@@ -1322,22 +1322,18 @@ fn test_resolve_char_thumb_no_thumb_face_definition() {
 
 #[test]
 fn test_pending_char_then_non_layout_key_passes_through_new() {
-    // PendingChar + non-layout key after threshold
-    // prev resolved as single via Continue, new is pass_through
-    // Tests prepend_actions with non-empty accumulated actions
+    // PendingChar 中に scan_to_pos にないキー（VK_RETURN 等）が来た場合、
+    // InputTracker で Passthrough に分類されるため、
+    // bypass_reason → Passthrough で即座にパススルーされる。
+    // 保留中の A はタイムアウトで後から確定される。
     let mut engine = make_engine();
 
     let r = engine.on_event(Ev::down(VK_A).at(0).build());
     assert_pending(&r);
 
-    // VK_RETURN is not a layout key and also not passthrough_key...
-    // Actually VK_RETURN is not a passthrough key, so it reaches pending resolution
-    // After resolving pending A, RETURN goes to process_new_key_down
-    // RETURN is not thumb, not layout key -> pass_through
+    // VK_RETURN は scan_to_pos にないので Passthrough に分類される
     let r = engine.on_event(Ev::down(VK_RETURN).at(200_000).build());
-    r.assert_consumed();
-    // prev(A) -> 'う' emitted, new is pass_through but prev not empty
-    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('う'))));
+    assert!(!r.consumed, "non-layout key should pass through");
 }
 
 // ── KeyUp while PendingThumb (lines 599-600, 606) ──

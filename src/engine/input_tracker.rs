@@ -122,8 +122,12 @@ impl InputTracker {
             KeyClass::RightThumb
         } else if vk::is_passthrough(event.vk_code) {
             KeyClass::Passthrough
-        } else {
+        } else if scan_to_pos(event.scan_code).is_some() {
+            // scan_to_pos でマッピングできるキーだけを Char とみなす。
+            // マッピングできないキー（メディアキー、OEM キー等）は Passthrough。
             KeyClass::Char
+        } else {
+            KeyClass::Passthrough
         };
 
         let pos = if key_class == KeyClass::Char {
