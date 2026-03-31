@@ -47,8 +47,9 @@ impl DecisionExecutor {
 
     /// フックコールバックから呼ぶ。
     ///
-    /// consume/passthrough を即座に返す。Effects は全てキューに溜める。
-    /// OS API は一切呼ばない（フックの 300ms 制限を根本的に回避）。
+    /// consume/passthrough を即座に返す。
+    /// 入出力系 Effects（SendKeys, ReinjectKey）は即座実行（キー順序を保証）。
+    /// 重い Effects（IME 制御, トレイ更新等）はキューに溜める。
     ///
     /// 戻り値の `has_pending` が true なら、呼び出し元は
     /// `PostMessage(WM_EXECUTE_EFFECTS)` でメッセージループに通知すること。
@@ -64,7 +65,15 @@ impl DecisionExecutor {
             Decision::Consume { effects } => (true, effects),
         };
 
-        self.queue.extend(effects);
+        for effect in effects {
+            if Self::is_input_critical(&effect) {
+                // キー入出力: 即座実行（キー順序を保証するため遅延不可）
+                self.execute_one(effect);
+            } else {
+                // 重い処理: メッセージループに遅延
+                self.queue.push_back(effect);
+            }
+        }
 
         HookResult {
             callback: if consumed {
@@ -109,6 +118,18 @@ impl DecisionExecutor {
     /// キューに Effects が溜まっているか
     pub fn has_pending(&self) -> bool {
         !self.queue.is_empty()
+    }
+
+    /// キー入出力に関わる Effect か（フック内で即座実行すべきか）
+    ///
+    /// SendKeys と ReinjectKey はキー順序に関わるため遅延不可。
+    /// Timer も同時打鍵判定のタイミングに影響するため即座実行。
+    /// ImeCache は IME 状態判定の整合性に必要。
+    fn is_input_critical(effect: &Effect) -> bool {
+        matches!(
+            effect,
+            Effect::Input(_) | Effect::Timer(_) | Effect::ImeCache(_)
+        )
     }
 
     /// Effect を1つ実行する
