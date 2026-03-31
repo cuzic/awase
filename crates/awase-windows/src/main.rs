@@ -21,9 +21,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetGUIThreadInfo, GetMessageW, KillTimer, PostQuitMessage, SetTimer,
-    GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE, WM_POWERBROADCAST,
-    WM_TIMER,
+    DispatchMessageW, GetGUIThreadInfo, GetMessageW, KillTimer, PostQuitMessage,
+    RegisterWindowMessageW, SetTimer, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
+    WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
 };
 
 use awase::config::{AppConfig, ImeSyncConfig, ParsedKeyCombo, ValidatedConfig};
@@ -119,6 +119,31 @@ impl StartupDiagnostics {
 
 fn main() -> Result<()> {
     init_logging();
+
+    // 多重起動防止: Named Mutex で既存インスタンスをチェック
+    unsafe {
+        use windows::core::w;
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::System::Threading::CreateMutexW;
+
+        let mutex = CreateMutexW(None, false, w!("Global\\awase_keyboard_emulator"));
+        match mutex {
+            Ok(handle) => {
+                if GetLastError() == ERROR_ALREADY_EXISTS {
+                    log::error!("Another instance of awase is already running. Exiting.");
+                    let _ = windows::Win32::Foundation::CloseHandle(handle);
+                    std::process::exit(1);
+                }
+                // ハンドルをプロセス終了まで保持する（ドロップさせない）
+                std::mem::forget(handle);
+            }
+            Err(e) => {
+                log::warn!("Failed to create instance mutex: {e}");
+                // Mutex 作成失敗は起動を妨げない
+            }
+        }
+    }
+
     let mut diag = StartupDiagnostics::new();
 
     // 管理者権限チェック
@@ -237,7 +262,11 @@ fn main() -> Result<()> {
     let _wts_guard = register_session_notification();
     initialize_ime_cache();
 
-    run_message_loop();
+    // Explorer 再起動時にトレイアイコンを復元するため TaskbarCreated メッセージを登録
+    let taskbar_created_msg =
+        unsafe { RegisterWindowMessageW(windows::core::w!("TaskbarCreated")) };
+
+    run_message_loop(taskbar_created_msg);
     cleanup();
     drop(hook_guard);
 
@@ -678,7 +707,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
 /// メッセージループ
 #[allow(clippy::too_many_lines)] // message loop dispatch with many match arms
-fn run_message_loop() {
+fn run_message_loop(taskbar_created_msg: u32) {
     let mut msg = MSG::default();
 
     loop {
@@ -913,6 +942,12 @@ fn run_message_loop() {
                             app.switch_layout(index);
                         }
                     }
+                }
+            },
+            m if m == taskbar_created_msg && taskbar_created_msg != 0 => unsafe {
+                log::info!("Explorer restarted, re-registering tray icon");
+                if let Some(app) = APP.get_mut() {
+                    app.executor.platform.tray.recreate();
                 }
             },
             _ => unsafe {

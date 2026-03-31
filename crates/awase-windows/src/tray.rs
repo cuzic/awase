@@ -176,6 +176,14 @@ impl SystemTray {
         self.hwnd
     }
 
+    /// Explorer 再起動時にトレイアイコンを再登録する
+    pub fn recreate(&self) {
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_ADD, &raw const self.nid);
+        }
+        log::info!("Tray icon re-registered after Explorer restart");
+    }
+
     /// バルーン通知を表示する
     pub fn show_balloon(&mut self, title: &str, message: &str) {
         // szInfoTitle に UTF-16 タイトルをコピー
