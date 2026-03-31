@@ -301,7 +301,7 @@ fn init_engine_validated(
 
     let tracker = awase::engine::input_tracker::InputTracker::new();
     // Set thumb VK codes for hook classification
-    awase_windows::hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
+    hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
     let engine = NicolaFsm::new(
         layout,
         left_thumb_vk,
@@ -674,12 +674,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         unsafe {
             use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
             use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-            let _ = PostMessageW(
-                HWND::default(),
-                awase_windows::WM_EXECUTE_EFFECTS,
-                WPARAM(0),
-                LPARAM(0),
-            );
+            let _ = PostMessageW(HWND::default(), WM_EXECUTE_EFFECTS, WPARAM(0), LPARAM(0));
         }
     }
 
@@ -763,7 +758,7 @@ fn run_message_loop() {
                     app.process_deferred_keys();
 
                     // OS の実際の修飾キー状態を読み取り、Engine と同期
-                    let os_mods = crate::observer::focus_observer::read_os_modifiers();
+                    let os_mods = observer::focus_observer::read_os_modifiers();
                     let decision = app
                         .engine
                         .on_command(awase::engine::EngineCommand::SyncModifiers(os_mods));

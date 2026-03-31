@@ -87,7 +87,7 @@ static LAST_HOOK_ACTIVITY: AtomicU64 = AtomicU64::new(0);
 
 /// フックコールバックの累積呼び出し回数。
 /// ウォッチドッグが前回チェック時の値と比較して、増えていなければフック消失。
-static HOOK_EVENT_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HOOK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// フックイベントカウンタの現在値を返す
 pub fn hook_event_count() -> u64 {
