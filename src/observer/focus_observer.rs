@@ -2,14 +2,30 @@
 
 use std::sync::atomic::Ordering;
 
-use awase::engine::FocusObservation;
+use awase::engine::{FocusObservation, ModifierState};
 use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::focus;
 use crate::runtime::FocusDetector;
 use crate::{FOCUS_DEBOUNCE_MS, FOCUS_KIND, TIMER_FOCUS_DEBOUNCE};
+
+/// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+unsafe fn read_os_modifiers() -> ModifierState {
+    // GetAsyncKeyState: 最上位ビットが 1 なら押下中
+    let pressed = |vk: i32| -> bool { (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) != 0 };
+    ModifierState {
+        ctrl: pressed(0x11),                 // VK_CONTROL
+        alt: pressed(0x12),                  // VK_MENU
+        shift: pressed(0x10),                // VK_SHIFT
+        win: pressed(0x5B) || pressed(0x5C), // VK_LWIN / VK_RWIN
+    }
+}
 
 /// 共通フィールドを設定した `FocusObservation` を生成するヘルパー
 #[allow(clippy::too_many_arguments)]
@@ -23,6 +39,7 @@ fn make_obs(
     skip: bool,
     debounce_ms: u64,
     cached_engine_enabled: Option<bool>,
+    os_modifiers: Option<ModifierState>,
 ) -> FocusObservation {
     FocusObservation {
         process_id,
@@ -35,6 +52,7 @@ fn make_obs(
         debounce_timer_id: TIMER_FOCUS_DEBOUNCE,
         debounce_ms,
         cached_engine_enabled,
+        os_modifiers,
     }
 }
 
@@ -53,6 +71,9 @@ pub unsafe fn observe(
     // 新ウィンドウのキャッシュ済みエンジン状態を取得
     let cached_engine_enabled = focus.cache.get_engine_state(process_id, class_name);
 
+    // OS から修飾キー状態を取得（フォーカス変更時の同期用）
+    let os_modifiers = Some(read_os_modifiers());
+
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止
     if let Some(obs) = check_same_process_skip(process_id, class_name, focus, debounce_ms) {
         return obs;
@@ -65,6 +86,7 @@ pub unsafe fn observe(
         focus,
         debounce_ms,
         cached_engine_enabled,
+        os_modifiers,
     ) {
         return obs;
     }
@@ -82,6 +104,7 @@ pub unsafe fn observe(
             false,
             debounce_ms,
             cached_engine_enabled,
+            os_modifiers,
         );
     }
 
@@ -102,6 +125,7 @@ pub unsafe fn observe(
         false,
         debounce_ms,
         cached_engine_enabled,
+        os_modifiers,
     )
 }
 
@@ -133,6 +157,7 @@ unsafe fn check_same_process_skip(
         true,
         debounce_ms,
         None, // skip=true なので復元不要
+        None, // skip=true なので修飾キー同期不要
     ))
 }
 
@@ -143,6 +168,7 @@ fn check_overrides(
     focus: &FocusDetector,
     debounce_ms: u64,
     cached_engine_enabled: Option<bool>,
+    os_modifiers: Option<ModifierState>,
 ) -> Option<FocusObservation> {
     if focus.overrides.force_text.is_empty() && focus.overrides.force_bypass.is_empty() {
         return None;
@@ -166,6 +192,7 @@ fn check_overrides(
                 false,
                 debounce_ms,
                 cached_engine_enabled,
+                os_modifiers,
             ));
         }
     }
@@ -186,6 +213,7 @@ fn check_overrides(
                 false,
                 debounce_ms,
                 cached_engine_enabled,
+                os_modifiers,
             ));
         }
     }

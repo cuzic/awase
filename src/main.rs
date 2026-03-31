@@ -151,6 +151,23 @@ static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// IME 状態ポーリング用タイマー ID（安全ネット: マウスで言語バー操作した場合等）
 pub(crate) const TIMER_IME_POLL: usize = 101;
 
+// ── セッション変更通知（WTS）定数 ──
+
+/// `WM_WTSSESSION_CHANGE` — セッションの状態変更通知メッセージ
+const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
+/// セッションがロックされた
+const WTS_SESSION_LOCK: u32 = 7;
+/// セッションがアンロックされた
+const WTS_SESSION_UNLOCK: u32 = 8;
+/// 現在のセッションのみ通知を受け取る
+const NOTIFY_FOR_THIS_SESSION: u32 = 0;
+
+#[link(name = "wtsapi32")]
+extern "system" {
+    fn WTSRegisterSessionNotification(hwnd: HWND, flags: u32) -> windows::Win32::Foundation::BOOL;
+    fn WTSUnRegisterSessionNotification(hwnd: HWND) -> windows::Win32::Foundation::BOOL;
+}
+
 /// 起動時の警告を集約して報告する診断コレクター
 struct StartupDiagnostics {
     warnings: Vec<String>,
@@ -286,6 +303,8 @@ fn main() -> Result<()> {
             app.executor.focus.set_uia_sender(uia_tx);
         }
     }
+
+    let _wts_guard = register_session_notification();
 
     run_message_loop();
     cleanup();
@@ -495,6 +514,18 @@ fn install_hooks_and_hotkeys_validated(
     Ok((guard, toggle_guard, focus_override_guard))
 }
 
+/// `WTSRegisterSessionNotification` の RAII ガード。Drop 時に解除する。
+struct WtsGuard(HWND);
+
+impl Drop for WtsGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = WTSUnRegisterSessionNotification(self.0);
+        }
+        log::info!("WTS session notification unregistered");
+    }
+}
+
 /// `SetTimer` の RAII ガード。Drop 時に `KillTimer` を呼ぶ。
 struct TimerGuard(usize);
 
@@ -562,6 +593,22 @@ fn register_focus_override_hotkey() -> Option<HotKeyGuard> {
             log::warn!("Failed to register focus override hotkey: Ctrl+Shift+F11");
             None
         }
+    }
+}
+
+/// セッション変更通知（画面ロック/アンロック）を登録する
+fn register_session_notification() -> Option<WtsGuard> {
+    unsafe {
+        APP.get_ref().and_then(|app| {
+            let tray_hwnd = app.executor.tray.hwnd();
+            if WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION).as_bool() {
+                log::info!("WTS session notification registered");
+                Some(WtsGuard(tray_hwnd))
+            } else {
+                log::warn!("Failed to register WTS session notification");
+                None
+            }
+        })
     }
 }
 
@@ -652,6 +699,28 @@ fn run_message_loop() {
                     // IME 信頼度とフォーカスキャッシュもリセット
                     awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
                     FocusKind::Undetermined.store(&FOCUS_KIND);
+                }
+            },
+            WM_WTSSESSION_CHANGE => unsafe {
+                let session_event = msg.wParam.0 as u32;
+                match session_event {
+                    WTS_SESSION_LOCK => {
+                        log::info!("Session locked, flushing engine state");
+                        if let Some(app) = APP.get_mut() {
+                            app.invalidate_engine_context(ContextChange::FocusChanged);
+                        }
+                    }
+                    WTS_SESSION_UNLOCK => {
+                        log::info!("Session unlocked, refreshing all state");
+                        if let Some(app) = APP.get_mut() {
+                            app.invalidate_engine_context(ContextChange::InputLanguageChanged);
+                            app.refresh_ime_state_cache();
+                        }
+                        // IME 信頼度とフォーカスキャッシュもリセット
+                        awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
+                        FocusKind::Undetermined.store(&FOCUS_KIND);
+                    }
+                    _ => {}
                 }
             },
             WM_INPUTLANGCHANGE => unsafe {

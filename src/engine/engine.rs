@@ -291,6 +291,12 @@ impl Engine {
             }));
         }
 
+        // OS から取得した修飾キー状態で InputTracker を同期する。
+        // フォーカス変更中にフックが取りこぼした修飾キーの押下/解放を補正する。
+        if let Some(mods) = obs.os_modifiers {
+            self.tracker.set_modifiers(mods);
+        }
+
         // ウィンドウ切替時は常に内部状態をフラッシュする。
         // 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
         let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);

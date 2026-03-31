@@ -5,6 +5,8 @@
 
 use crate::types::{FocusKind, ImeReliability};
 
+use super::fsm_types::ModifierState;
+
 /// IME 状態の観測結果（OS 非依存）
 #[derive(Debug, Clone, Copy)]
 pub struct ImeObservation {
@@ -64,4 +66,6 @@ pub struct FocusObservation {
     pub debounce_ms: u64,
     /// キャッシュから取得した新ウィンドウのエンジン ON/OFF 状態（None = 未設定）
     pub cached_engine_enabled: Option<bool>,
+    /// OS から取得した修飾キー状態（フォーカス変更時の同期用）
+    pub os_modifiers: Option<ModifierState>,
 }

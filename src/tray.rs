@@ -156,6 +156,12 @@ impl SystemTray {
         }
     }
 
+    /// トレイウィンドウの HWND を返す
+    #[must_use]
+    pub const fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
     /// バルーン通知を表示する
     pub fn show_balloon(&mut self, title: &str, message: &str) {
         // szInfoTitle に UTF-16 タイトルをコピー

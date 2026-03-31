@@ -78,6 +78,14 @@ impl InputTracker {
         self.modifiers
     }
 
+    /// OS から取得した修飾キー状態で上書きする。
+    ///
+    /// フォーカス変更・セッション復帰等で、フックが取りこぼした
+    /// 修飾キーの押下/解放を補正するために使う。
+    pub const fn set_modifiers(&mut self, mods: ModifierState) {
+        self.modifiers = mods;
+    }
+
     /// 現在の物理キー状態スナップショットを返す（イベントなし）。
     ///
     /// タイマー発火時など、キーイベントを伴わない場面で最新の物理状態を取得する。
