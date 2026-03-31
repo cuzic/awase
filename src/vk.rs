@@ -115,14 +115,18 @@ pub const fn is_passthrough(vk_code: VkCode) -> bool {
         0x90 | 0x91 |
         // Print Screen, Pause
         0x2C | 0x13 |
-        // メディアキー（音量、再生制御）
+        // Tab
+        0x09 |
+        // テンキー (0-9, *, +, separator, -, ., /)
+        0x60..=0x6F |
+        // メディアキー（音量、再生制御、ランチャー）
         0xAD..=0xB7 |
         // ブラウザキー
         0xA6..=0xAC |
         // アプリケーションキー
         0x5D |  // VK_APPS (メニューキー)
-        // スリープ
-        0x5F
+        // スリープ、Power
+        0x5E | 0x5F
     )
 }
 
