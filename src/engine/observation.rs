@@ -22,24 +22,29 @@ impl ImeObservation {
     /// shadow IME 状態を考慮して最終的な IME ON/OFF を解決する。
     ///
     /// - 日本語レイアウトでない → `false` (Off)
-    /// - クロスプロセス検出成功 → その値を採用
-    /// - Unreliable で Off 検出 → shadow にフォールバック
-    /// - 検出不可 → shadow にフォールバック
+    /// - クロスプロセス検出 Off → Off を採用（信頼度に関わらず）
+    /// - クロスプロセス検出 On + Reliable → On を採用
+    /// - クロスプロセス検出 On + Unreliable/Unknown → shadow にフォールバック
+    /// - 検出不可 (None) → shadow にフォールバック
+    ///
+    /// # 設計根拠
+    /// Off の誤検知（本当は On なのに Off と返す）は稀。
+    /// On の誤検知（本当は Off なのに On と返す）は Chrome 等で発生する。
+    /// よって Off は常に信頼し、On だけ reliability で検証する。
     #[must_use]
     pub fn resolve(self, shadow_ime_on: bool) -> Option<bool> {
         if !self.is_japanese {
             return Some(false);
         }
 
-        // Unreliable な環境で Off 検出した場合は shadow にフォールバック
-        let cross_process =
-            if self.cross_process == Some(false) && self.reliability != ImeReliability::Reliable {
-                None
-            } else {
-                self.cross_process
-            };
-
-        Some(cross_process.unwrap_or(shadow_ime_on))
+        match self.cross_process {
+            // Off 検出は常に信頼する（Off の誤検知はまれ）
+            Some(false) => Some(false),
+            // On 検出は Reliable な環境のみ信頼
+            Some(true) if self.reliability == ImeReliability::Reliable => Some(true),
+            // On 検出だが Unreliable/Unknown、または検出不可 → shadow にフォールバック
+            _ => Some(shadow_ime_on),
+        }
     }
 }
 
