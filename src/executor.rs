@@ -1,27 +1,20 @@
 /// Decision の副作用を実行する。
 ///
-/// Win32 API (SendInput, SetTimer, KillTimer, PostMessageW, ImmSetOpenStatus) の
-/// 呼び出しを集約する唯一のポイント。判断ロジックを含まない。
-use windows::Win32::Foundation::HWND;
-
+/// `PlatformRuntime` トレイト経由で OS 操作を行う。
+/// 判断ロジックを含まない。
 use awase::engine::{
     Decision, Effect, FocusEffect, ImeCacheEffect, ImeEffect, InputEffect, TimerEffect, UiEffect,
 };
-use awase::types::ImeCacheState;
+use awase::platform::PlatformRuntime;
 
-use crate::focus::cache::DetectionSource;
-use crate::focus::uia::SendableHwnd;
 use crate::hook::CallbackResult;
-use crate::output::Output;
-use crate::tray::SystemTray;
-use crate::{reinject_key, FOCUS_KIND, IME_RELIABILITY, IME_STATE_CACHE};
-
-use crate::runtime::FocusDetector;
+use crate::platform_windows::WindowsPlatform;
 
 pub struct DecisionExecutor {
-    pub output: Output,
-    pub tray: SystemTray,
-    pub focus: FocusDetector,
+    /// プラットフォーム固有の実装。
+    /// `execute_effects` は `PlatformRuntime` トレイト経由でのみアクセスする。
+    /// Windows 固有のフィールドへの直接アクセスは `runtime.rs` / `main.rs` から行う。
+    pub platform: WindowsPlatform,
 }
 
 impl DecisionExecutor {
@@ -40,118 +33,77 @@ impl DecisionExecutor {
         }
     }
 
-    /// Effect リストを実行する
-    #[allow(clippy::too_many_lines)]
+    /// Effect リストを実行する — `PlatformRuntime` トレイト経由のみ
     fn execute_effects(&mut self, effects: Vec<Effect>) {
-        use windows::Win32::Foundation::{LPARAM, WPARAM};
-        use windows::Win32::UI::WindowsAndMessaging::{KillTimer, PostMessageW, SetTimer};
-
+        let platform: &mut dyn PlatformRuntime = &mut self.platform;
         for effect in effects {
             match effect {
                 Effect::Input(ie) => match ie {
                     InputEffect::SendKeys(actions) => {
-                        self.output.send_keys(&actions);
+                        platform.send_keys(&actions);
                     }
                     InputEffect::ReinjectKey(event) => {
-                        // SAFETY: reinject_key は Win32 API (SendInput)。メインスレッドから呼ぶ。
-                        unsafe { reinject_key(&event) };
+                        platform.reinject_key(&event);
                     }
                 },
                 Effect::Timer(te) => match te {
                     TimerEffect::Set { id, duration } => {
-                        let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
-                        // SAFETY: SetTimer は Win32 API。メインスレッドから呼ぶ。
-                        unsafe {
-                            let _ = SetTimer(HWND::default(), id, ms, None);
-                        }
+                        platform.set_timer(id, duration);
                     }
                     TimerEffect::Kill(id) => {
-                        // SAFETY: KillTimer は Win32 API。メインスレッドから呼ぶ。
-                        unsafe {
-                            let _ = KillTimer(HWND::default(), id);
-                        }
+                        platform.kill_timer(id);
                     }
                 },
                 Effect::Ime(ie) => match ie {
                     ImeEffect::SetOpen(open) => {
-                        // SAFETY: set_ime_open_cross_process は Win32 API。メインスレッドから呼ぶ。
-                        let _ = unsafe { crate::ime::set_ime_open_cross_process(open) };
+                        platform.set_ime_open(open);
                     }
                     ImeEffect::RequestCacheRefresh => {
-                        // SAFETY: PostMessageW は Win32 API。メインスレッドから呼ぶ。
-                        unsafe {
-                            let _ = PostMessageW(
-                                HWND::default(),
-                                crate::WM_IME_KEY_DETECTED,
-                                WPARAM(0),
-                                LPARAM(0),
-                            );
-                        }
+                        platform.post_ime_refresh();
                     }
                 },
                 Effect::Ui(ue) => match ue {
                     UiEffect::EngineStateChanged { enabled } => {
-                        self.tray.set_enabled(enabled);
+                        platform.update_tray(enabled);
                     }
                 },
                 Effect::Focus(fe) => match fe {
                     FocusEffect::UpdateFocusKind(kind) => {
-                        kind.store(&FOCUS_KIND);
+                        platform.update_focus_kind(kind);
                     }
                     FocusEffect::ResetImeReliability => {
-                        awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
+                        platform.reset_ime_reliability();
                     }
                     FocusEffect::InsertFocusCache {
                         process_id,
                         class_name,
                         kind,
                     } => {
-                        self.focus.cache.insert(
-                            process_id,
-                            class_name,
-                            kind,
-                            DetectionSource::Automatic,
-                        );
+                        platform.insert_focus_cache(process_id, class_name, kind);
                     }
                     FocusEffect::RequestUiaClassification => {
-                        // UIA 非同期判定をリクエスト
-                        if let Some(tx) = self.focus.uia_sender.as_ref() {
-                            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-                            let fg = unsafe { GetForegroundWindow() };
-                            let _ = tx.send(SendableHwnd(fg));
-                        }
+                        platform.request_uia_classification();
                     }
                     FocusEffect::UpdateLastFocusInfo {
                         process_id,
                         class_name,
                     } => {
-                        self.focus.last_focus_info = Some((process_id, class_name));
+                        platform.update_last_focus_info(process_id, class_name);
                     }
                     FocusEffect::SaveEngineState {
                         process_id,
                         class_name,
                         enabled,
                     } => {
-                        self.focus
-                            .cache
-                            .set_engine_state(process_id, class_name, enabled);
+                        platform.save_engine_state(process_id, class_name, enabled);
                     }
                 },
                 Effect::ImeCache(ice) => match ice {
                     ImeCacheEffect::UpdateStateCache { ime_on } => {
-                        let new_state = ImeCacheState::from(ime_on);
-                        let old_state = new_state.swap(&IME_STATE_CACHE);
-                        if old_state != new_state {
-                            log::debug!(
-                                "IME state cache updated: {} → {}",
-                                old_state.as_str(),
-                                new_state.as_str(),
-                            );
-                        }
+                        platform.update_ime_cache(ime_on);
                     }
                     ImeCacheEffect::Invalidate => {
-                        ImeCacheState::Unknown.store(&IME_STATE_CACHE);
-                        log::trace!("IME state cache invalidated → Unknown");
+                        platform.invalidate_ime_cache();
                     }
                 },
             }

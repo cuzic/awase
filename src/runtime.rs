@@ -72,8 +72,8 @@ impl Runtime {
         let decision = self.engine.on_command(EngineCommand::ToggleEngine);
         self.executor.execute(decision);
         // ウィンドウごとのエンジン状態をキャッシュに保存
-        if let Some((pid, cls)) = self.executor.focus.last_focus_info.as_ref() {
-            self.executor.focus.cache.set_engine_state(
+        if let Some((pid, cls)) = self.executor.platform.focus.last_focus_info.as_ref() {
+            self.executor.platform.focus.cache.set_engine_state(
                 *pid,
                 cls.clone(),
                 self.engine.is_fsm_enabled(),
@@ -117,7 +117,7 @@ impl Runtime {
             .on_command(EngineCommand::SwapLayout(entry.layout.clone()));
         self.executor.execute(decision);
 
-        self.executor.tray.set_layout_name(&name);
+        self.executor.platform.tray.set_layout_name(&name);
 
         log::info!("Switched layout to: {name}");
     }
@@ -134,8 +134,8 @@ impl Runtime {
         new_kind.store(&FOCUS_KIND);
 
         // Update learning cache
-        if let Some((pid, cls)) = self.executor.focus.last_focus_info.as_ref() {
-            self.executor.focus.cache.insert(
+        if let Some((pid, cls)) = self.executor.platform.focus.last_focus_info.as_ref() {
+            self.executor.platform.focus.cache.insert(
                 *pid,
                 cls.clone(),
                 new_kind,
@@ -151,7 +151,7 @@ impl Runtime {
         // Clear any active buffers
         self.engine.on_command(EngineCommand::ClearDeferredKeys);
         // バルーン通知を表示
-        self.executor.tray.show_balloon(
+        self.executor.platform.tray.show_balloon(
             "awase",
             if new_kind == FocusKind::TextInput {
                 "テキスト入力モードに切り替えました"

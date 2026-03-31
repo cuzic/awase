@@ -18,6 +18,7 @@ mod hook;
 mod ime;
 mod observer;
 mod output;
+mod platform_windows;
 mod runtime;
 mod single_thread_cell;
 mod tray;
@@ -200,7 +201,7 @@ impl StartupDiagnostics {
         // Show tray balloon if tray is available
         unsafe {
             if let Some(app) = APP.get_mut() {
-                app.executor.tray.show_balloon(
+                app.executor.platform.tray.show_balloon(
                     "awase",
                     &format!("{}件の警告があります", self.warnings.len()),
                 );
@@ -271,19 +272,7 @@ fn main() -> Result<()> {
         },
     );
 
-    unsafe {
-        APP.set(Runtime {
-            engine,
-            executor: executor::DecisionExecutor {
-                output: Output::new(config.general.output_mode),
-                tray: system_tray,
-                focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
-            },
-            ime,
-            layouts,
-        });
-    }
-
+    initialize_app(engine, system_tray, &config, ime, layouts);
     store_timing_config(&config);
 
     init_ngram_validated(&config, &mut diag);
@@ -314,7 +303,7 @@ fn main() -> Result<()> {
     let uia_tx = focus::uia::spawn_uia_worker();
     unsafe {
         if let Some(app) = APP.get_mut() {
-            app.executor.focus.set_uia_sender(uia_tx);
+            app.executor.platform.focus.set_uia_sender(uia_tx);
         }
     }
 
@@ -506,7 +495,7 @@ fn check_keyboard_layout_on_change() {
         // バルーン通知で警告
         unsafe {
             if let Some(app) = APP.get_mut() {
-                app.executor.tray.show_balloon(
+                app.executor.platform.tray.show_balloon(
                     "awase",
                     "日本語キーボードレイアウトが検出されません。親指シフトが正常に動作しない可能性があります。",
                 );
@@ -656,7 +645,7 @@ fn register_focus_override_hotkey() -> Option<HotKeyGuard> {
 fn register_session_notification() -> Option<WtsGuard> {
     unsafe {
         APP.get_ref().and_then(|app| {
-            let tray_hwnd = app.executor.tray.hwnd();
+            let tray_hwnd = app.executor.platform.tray.hwnd();
             if WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION).as_bool() {
                 log::info!("WTS session notification registered");
                 Some(WtsGuard(tray_hwnd))
@@ -669,6 +658,30 @@ fn register_session_notification() -> Option<WtsGuard> {
 }
 
 /// タイミング設定を Atomic に書き込み（コールバックから参照）
+/// APP グローバルの初期化
+fn initialize_app(
+    engine: Engine,
+    tray: SystemTray,
+    config: &ValidatedConfig,
+    ime: HybridProvider,
+    layouts: Vec<LayoutEntry>,
+) {
+    unsafe {
+        APP.set(Runtime {
+            engine,
+            executor: executor::DecisionExecutor {
+                platform: platform_windows::WindowsPlatform {
+                    output: Output::new(config.general.output_mode),
+                    tray,
+                    focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
+                },
+            },
+            ime,
+            layouts,
+        });
+    }
+}
+
 fn store_timing_config(config: &ValidatedConfig) {
     FOCUS_DEBOUNCE_MS.store(config.general.focus_debounce_ms, Ordering::Relaxed);
     IME_POLL_INTERVAL_MS.store(config.general.ime_poll_interval_ms, Ordering::Relaxed);
@@ -762,11 +775,12 @@ fn run_message_loop() {
                             log::info!("Hook reinstalled automatically");
                             if let Some(app) = APP.get_mut() {
                                 app.executor
+                                    .platform
                                     .tray
                                     .show_balloon("awase", "キーボードフックを自動復旧しました");
                             }
                         } else if let Some(app) = APP.get_mut() {
-                            app.executor.tray.show_balloon(
+                            app.executor.platform.tray.show_balloon(
                                 "awase",
                                 "キーボードフックの復旧に失敗しました。アプリケーションを再起動してください。",
                             );
@@ -897,8 +911,10 @@ fn run_message_loop() {
 
                         // UIA 結果をキャッシュに反映
                         if let Some(app) = APP.get_mut() {
-                            if let Some((pid, cls)) = app.executor.focus.last_focus_info.as_ref() {
-                                app.executor.focus.cache.insert(
+                            if let Some((pid, cls)) =
+                                app.executor.platform.focus.last_focus_info.as_ref()
+                            {
+                                app.executor.platform.focus.cache.insert(
                                     *pid,
                                     cls.clone(),
                                     kind,
@@ -1018,7 +1034,10 @@ fn reload_config() {
                     confirm_mode: config.general.confirm_mode,
                     speculative_delay_ms: config.general.speculative_delay_ms,
                 });
-            app.executor.output.set_mode(config.general.output_mode);
+            app.executor
+                .platform
+                .output
+                .set_mode(config.general.output_mode);
             log::info!(
                 "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
                 config.general.simultaneous_threshold_ms,
@@ -1078,8 +1097,8 @@ fn reload_config() {
     // フォーカスオーバーライド再読み込み + キャッシュクリア
     unsafe {
         if let Some(app) = APP.get_mut() {
-            app.executor.focus.overrides = config.focus_overrides;
-            app.executor.focus.cache = focus::cache::FocusCache::new();
+            app.executor.platform.focus.overrides = config.focus_overrides;
+            app.executor.platform.focus.cache = focus::cache::FocusCache::new();
         }
     }
     log::info!("Focus overrides reloaded");
@@ -1248,7 +1267,12 @@ unsafe extern "system" fn win_event_proc(
     };
 
     // Observer: OS 観測 → FocusObservation
-    let obs = observer::focus_observer::observe(hwnd, process_id, &class_name, &app.executor.focus);
+    let obs = observer::focus_observer::observe(
+        hwnd,
+        process_id,
+        &class_name,
+        &app.executor.platform.focus,
+    );
 
     // Engine: 判断 → Decision
     let decision = app
