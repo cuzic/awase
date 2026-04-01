@@ -122,11 +122,31 @@ impl DecisionExecutor {
 
     // ── Relay モード ──
     //
-    // 全キーを Consume し、メッセージループで FIFO 実行する。
-    // PassThrough キーも ReinjectKey で再送されるので、他フックにも届く。
-    // フック内で OS API を一切呼ばず、キー順序を完全に保証する。
+    // NICOLA 変換対象のキーを Consume し、メッセージループで FIFO 実行する。
+    // 修飾キー（Shift/Ctrl/Alt/Win）は Consume せず直接 PassThrough する。
+    // 修飾キーを ReinjectKey すると OS のシステム動作（スタートメニュー等）が
+    // INJECTED フラグで正常に動作しなくなるため。
 
     fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
+        // 修飾キーはリレーせず直接 PassThrough
+        if raw_event.modifier_key.is_some() {
+            let effects = match decision {
+                Decision::PassThrough => {
+                    return HookResult {
+                        callback: CallbackResult::PassThrough,
+                        has_pending: self.has_pending(),
+                    }
+                }
+                Decision::PassThroughWith { effects } => effects,
+                Decision::Consume { effects } => effects,
+            };
+            self.queue.extend(effects);
+            return HookResult {
+                callback: CallbackResult::PassThrough,
+                has_pending: self.has_pending(),
+            };
+        }
+
         match decision {
             Decision::PassThrough => {
                 self.queue
