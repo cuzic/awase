@@ -348,37 +348,20 @@ impl Output {
     /// かな文字はローマ字に逆変換してからキーストロークとして送信する。
     /// ASCII 記号は対応する VK コードで直接送信する。
     /// いずれにもマッチしない場合は Unicode 直接出力にフォールバックする。
+    /// 文字を Chrome モード用に送信する。
+    ///
+    /// かな文字のみローマ字 VK に変換し、それ以外は Unicode 直接出力。
+    /// Chrome では KEYEVENTF_UNICODE でもかな文字は正常に入力できるが、
+    /// IME 経由のローマ字変換が必要な場合にこのパスを使う。
     fn send_char_as_vk(&self, ch: char) {
-        // 1. かな→ローマ字逆引き（か → "ka" → VK(k), VK(a)）
+        // かな→ローマ字逆引き（か → "ka" → VK(k), VK(a) → IME が変換）
         if let Some(romaji) = self.kana_to_romaji.get(&ch) {
             log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
             self.send_romaji_per_key(romaji);
             return;
         }
-        // 2. ASCII 記号（全角含む）→ VK コード直接変換（？ → Shift+/）
-        if let Some((vk, needs_shift)) = char_to_key_sequence(ch) {
-            log::debug!(
-                "    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}"
-            );
-            let mut inputs = Vec::with_capacity(4);
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, false));
-            }
-            inputs.push(make_key_input(vk, false));
-            inputs.push(make_key_input(vk, true));
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, true));
-            }
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-            return;
-        }
-        // 3. フォールバック: Unicode 直接出力
-        log::debug!("    send_char_as_vk: '{ch}' → fallback Unicode (no VK mapping)");
+        // かな以外（記号・句読点等）は Unicode 直接出力
+        log::debug!("    send_char_as_vk: '{ch}' → Unicode (not kana)");
         self.send_unicode_char(ch);
     }
 
