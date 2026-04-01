@@ -46,6 +46,19 @@ const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
     }
 }
 
+/// Shift 以外の修飾キー（Ctrl, Alt, Win）かどうかを判定する。
+///
+/// これらのキーは NICOLA 処理に関与しないため、Engine をバイパスして
+/// 常に OS に直接渡す。KeyDown/KeyUp ペアの保証により Ctrl スタックを防止する。
+const fn is_non_shift_modifier(vk: u16) -> bool {
+    matches!(
+        vk,
+        0x11 | 0xA2 | 0xA3  // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
+        | 0x12 | 0xA4 | 0xA5  // VK_MENU, VK_LMENU, VK_RMENU
+        | 0x5B | 0x5C          // VK_LWIN, VK_RWIN
+    )
+}
+
 /// Windows VK コードから IME 関連の事前分類情報を生成する
 fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     use crate::vk;
@@ -289,6 +302,52 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ── かな入力方式バイパス ──
         // IME がかな入力モードの場合、awase は一切介入せずパススルーする。
         if crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed) {
+            return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+        }
+
+        // ── Ctrl/Alt/Win バイパス ──
+        // これらの修飾キーは NICOLA 処理に関与しない。
+        // Engine をバイパスして常に OS に直接渡すことで、
+        // KeyDown/KeyUp ペアが状態変化で壊れるのを防ぐ。
+        //
+        // KeyDown 時: Engine にイベントを送って保留フラッシュを促すが、
+        // Engine の判定結果に関係なく必ず PassThrough する。
+        // KeyUp 時: Engine に送らず直接 PassThrough する。
+        let vk_raw = kb.vkCode as u16;
+        if is_non_shift_modifier(vk_raw) {
+            let is_keydown = matches!(
+                wparam.0 as u32,
+                WM_KEYDOWN | WM_SYSKEYDOWN
+            );
+            if is_keydown {
+                // Engine にイベントを送って保留フラッシュを促す。
+                // ただし Engine の返り値（Consume/PassThrough）は無視し、
+                // 常に OS に直接渡す。
+                let in_callback = IN_CALLBACK.get_mut();
+                if !*in_callback {
+                    *in_callback = true;
+                    let vk = VkCode(vk_raw);
+                    let scan = ScanCode(kb.scanCode);
+                    let event = RawKeyEvent {
+                        vk_code: vk,
+                        scan_code: scan,
+                        event_type: KeyEventType::KeyDown,
+                        extra_info: kb.dwExtraInfo,
+                        timestamp: now_timestamp(),
+                        key_classification: KeyClassification::Passthrough,
+                        physical_pos: None,
+                        ime_relevance: ImeRelevance::default(),
+                        modifier_key: classify_modifier(vk),
+                    };
+                    if let Some(callback) = KEY_EVENT_CALLBACK.get_mut().as_mut() {
+                        let _ = callback(event);
+                    }
+                    *IN_CALLBACK.get_mut() = false;
+                }
+                log::trace!("Hook: modifier vk=0x{vk_raw:02X} KeyDown → flush + PassThrough");
+            } else {
+                log::trace!("Hook: modifier vk=0x{vk_raw:02X} KeyUp → PassThrough");
+            }
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 
