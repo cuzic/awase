@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>awase（合わせ）— 親指シフト（NICOLA）キーボードエミュレータ</title>
+<meta name="description" content="Rust 製の高速・安定な親指シフト（NICOLA）キーボードエミュレータ。Windows で動作し、macOS / Linux にも対応予定。">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#2563EB;
+  --accent-light:#3B82F6;
+  --bg:#ffffff;
+  --bg-alt:#F8FAFC;
+  --text:#1E293B;
+  --text-secondary:#475569;
+  --border:#E2E8F0;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
+  --section-gap:5rem;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0F172A;
+    --bg-alt:#1E293B;
+    --text:#E2E8F0;
+    --text-secondary:#94A3B8;
+    --border:#334155;
+    --card-shadow:0 1px 3px rgba(0,0,0,0.3),0 1px 2px rgba(0,0,0,0.2);
+  }
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  line-height:1.7;
+  color:var(--text);
+  background:var(--bg);
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.container{max-width:960px;margin:0 auto;padding:0 1.5rem}
+
+/* Hero */
+.hero{
+  text-align:center;
+  padding:6rem 1.5rem 4rem;
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+}
+.hero-title{
+  font-size:2.8rem;
+  font-weight:800;
+  letter-spacing:-0.02em;
+  color:var(--text);
+}
+.hero-subtitle{
+  font-size:1.1rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+}
+.hero-catchcopy{
+  font-size:1.5rem;
+  font-weight:600;
+  color:var(--accent);
+  margin-top:2rem;
+}
+.hero-desc{
+  max-width:600px;
+  margin:1rem auto 0;
+  color:var(--text-secondary);
+  font-size:1.05rem;
+}
+
+/* Sections */
+section{padding:var(--section-gap) 0}
+section:nth-child(even){background:var(--bg-alt)}
+.section-title{
+  font-size:1.6rem;
+  font-weight:700;
+  text-align:center;
+  margin-bottom:2.5rem;
+  color:var(--text);
+}
+
+/* Features */
+.features-grid{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:1.5rem;
+}
+.feature-card{
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:1.8rem;
+  box-shadow:var(--card-shadow);
+}
+.feature-card h3{
+  font-size:1.15rem;
+  font-weight:700;
+  margin-bottom:0.8rem;
+  color:var(--accent);
+}
+.feature-card ul{
+  list-style:none;
+  padding:0;
+}
+.feature-card li{
+  position:relative;
+  padding-left:1.2em;
+  margin-bottom:0.4rem;
+  font-size:0.95rem;
+  color:var(--text-secondary);
+}
+.feature-card li::before{
+  content:"\2013";
+  position:absolute;
+  left:0;
+  color:var(--accent-light);
+}
+
+/* Install */
+.install-block{max-width:700px;margin:0 auto}
+.install-block h3{
+  font-size:1.1rem;
+  font-weight:600;
+  margin:1.5rem 0 0.8rem;
+  color:var(--text);
+}
+.install-block ol,
+.install-block ul{
+  padding-left:1.5em;
+  color:var(--text-secondary);
+}
+.install-block li{margin-bottom:0.4rem;font-size:0.95rem}
+code,.code-block{
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.9rem;
+}
+.code-block{
+  display:block;
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:0.8rem 1.2rem;
+  margin:0.8rem 0;
+  overflow-x:auto;
+  color:var(--text);
+}
+
+/* Usage */
+.usage-block{max-width:700px;margin:0 auto}
+.usage-block h3{
+  font-size:1.1rem;
+  font-weight:600;
+  margin:1.5rem 0 0.8rem;
+  color:var(--text);
+}
+.usage-block ul{
+  padding-left:1.5em;
+  color:var(--text-secondary);
+}
+.usage-block li{margin-bottom:0.4rem;font-size:0.95rem}
+.config-table{
+  width:100%;
+  border-collapse:collapse;
+  margin:1rem 0;
+  font-size:0.92rem;
+}
+.config-table th,
+.config-table td{
+  text-align:left;
+  padding:0.6rem 0.8rem;
+  border-bottom:1px solid var(--border);
+}
+.config-table th{
+  font-weight:600;
+  color:var(--text);
+  white-space:nowrap;
+}
+.config-table td{color:var(--text-secondary)}
+
+/* FAQ */
+.faq-list{max-width:700px;margin:0 auto}
+.faq-item{
+  border-bottom:1px solid var(--border);
+  padding:1.2rem 0;
+}
+.faq-item:first-child{border-top:1px solid var(--border)}
+.faq-q{
+  font-weight:600;
+  font-size:1rem;
+  color:var(--text);
+  margin-bottom:0.5rem;
+}
+.faq-q::before{content:"Q. ";color:var(--accent)}
+.faq-a{
+  font-size:0.95rem;
+  color:var(--text-secondary);
+  padding-left:0.2rem;
+}
+.faq-a::before{content:"A. ";font-weight:600;color:var(--text)}
+
+/* Footer */
+footer{
+  text-align:center;
+  padding:2.5rem 1.5rem;
+  border-top:1px solid var(--border);
+  color:var(--text-secondary);
+  font-size:0.9rem;
+  background:var(--bg-alt);
+}
+footer p{margin-bottom:0.3rem}
+
+/* Responsive */
+@media(max-width:640px){
+  .hero{padding:4rem 1.5rem 3rem}
+  .hero-title{font-size:2rem}
+  .hero-catchcopy{font-size:1.2rem}
+  .features-grid{grid-template-columns:1fr}
+  section{padding:3rem 0}
+  .section-title{font-size:1.3rem}
+}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<header class="hero">
+  <div class="container">
+    <h1 class="hero-title">awase（合わせ）</h1>
+    <p class="hero-subtitle">親指シフト（NICOLA）キーボードエミュレータ</p>
+    <p class="hero-catchcopy">親指シフトを、もっと快適に。</p>
+    <p class="hero-desc">Rust 製の高速・安定な親指シフトエミュレータ。Windows で動作し、macOS / Linux にも対応予定。</p>
+  </div>
+</header>
+
+<!-- Features -->
+<section>
+  <div class="container">
+    <h2 class="section-title">特徴</h2>
+    <div class="features-grid">
+      <div class="feature-card">
+        <h3>安定動作</h3>
+        <ul>
+          <li>独自のリレーモードで、キーボードフックが OS に強制解除されにくい設計</li>
+          <li>万が一解除されても、自動復旧機能で即座に再登録</li>
+          <li>スリープ復帰やスクリーンロック解除時も自動回復</li>
+        </ul>
+      </div>
+      <div class="feature-card">
+        <h3>高速・正確</h3>
+        <ul>
+          <li>Rust 製で処理速度 1-5ms。入力遅延を感じさせない</li>
+          <li>n-gram 統計予測で、通常打鍵と同時打鍵を賢く判定</li>
+          <li>5 種類の確定モードからタイピングスタイルに合わせて選択</li>
+        </ul>
+      </div>
+      <div class="feature-card">
+        <h3>カスタマイズ自由</h3>
+        <ul>
+          <li>.yab 形式で配列定義を自由に編集</li>
+          <li>JIS / US キーボード両対応</li>
+          <li>親指キーの割り当て、同時打鍵の閾値など細かく調整可能</li>
+          <li>GUI 設定画面で直感的に設定変更</li>
+        </ul>
+      </div>
+      <div class="feature-card">
+        <h3>オープンソース</h3>
+        <ul>
+          <li>MIT / Apache 2.0 デュアルライセンス</li>
+          <li>GitHub でソースコード公開</li>
+          <li>macOS / Linux 対応も進行中</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section>
+  <div class="container">
+    <h2 class="section-title">インストール</h2>
+    <div class="install-block">
+      <h3>ダウンロード</h3>
+      <p><a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> からバイナリを取得できます。</p>
+
+      <h3>セットアップ手順</h3>
+      <ol>
+        <li><code>awase.exe</code> を任意のフォルダに配置</li>
+        <li><code>config.toml</code> と <code>layout/nicola.yab</code> を同じフォルダに配置</li>
+        <li><code>awase.exe</code> を実行（トレイアイコンに常駐）</li>
+        <li>初回起動時に自動起動の設定ダイアログが表示される</li>
+      </ol>
+
+      <h3>ソースからビルド</h3>
+      <div class="code-block">cargo build -p awase-windows --release</div>
+    </div>
+  </div>
+</section>
+
+<!-- Usage -->
+<section>
+  <div class="container">
+    <h2 class="section-title">使い方</h2>
+    <div class="usage-block">
+      <h3>基本操作</h3>
+      <ul>
+        <li>半角/全角キーで IME ON → 親指シフト入力が有効に</li>
+        <li>変換キー / 無変換キーが親指シフトキーとして機能</li>
+        <li>Ctrl+Shift+変換 でエンジン ON、Ctrl+Shift+無変換 でエンジン OFF</li>
+        <li>トレイアイコンで状態確認、右クリックで設定・終了</li>
+      </ul>
+
+      <h3>config.toml の主要設定</h3>
+      <table class="config-table">
+        <tr>
+          <th><code>confirm_mode</code></th>
+          <td>確定モードの選択。<code>wait</code>（正確重視）、<code>speculative</code>（速度重視）、<code>ngram_predictive</code>（バランス）など</td>
+        </tr>
+        <tr>
+          <th><code>output_mode</code></th>
+          <td>出力方式。<code>unicode</code> がデフォルト</td>
+        </tr>
+        <tr>
+          <th><code>hook_mode</code></th>
+          <td>フックの動作方式。<code>relay</code> がデフォルトで、安定性を重視した設計</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section>
+  <div class="container">
+    <h2 class="section-title">よくある質問</h2>
+    <div class="faq-list">
+      <div class="faq-item">
+        <p class="faq-q">IME は何に対応していますか？</p>
+        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">他のキーリマッパー（AutoHotKey 等）と併用できますか？</p>
+        <p class="faq-a">はい。リレーモードでは全キーが再注入されるため、他のフックベースのソフトウェアにもキーが届きます。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">スリープ復帰後に動かなくなりませんか？</p>
+        <p class="faq-a">スリープ復帰・スクリーンロック解除時に自動でフックを再登録します。また 3 秒ごとのヘルスチェックで異常を検知し、自動復旧します。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">パスワード入力画面で誤動作しませんか？</p>
+        <p class="faq-a">IME が OFF のときは自動的にエンジンが無効になり、通常のキー入力になります。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">macOS / Linux に対応していますか？</p>
+        <p class="faq-a">基盤は完成しており、プラットフォーム固有の実装を進めています。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">NICOLA 以外の配列は使えますか？</p>
+        <p class="faq-a">.yab 形式の配列定義ファイルを作成すれば、任意の配列を定義できます。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p><a href="https://github.com/cuzic/awase">GitHub</a></p>
+  <p>License: MIT / Apache 2.0</p>
+  <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
+</footer>
+
+</body>
+</html>
