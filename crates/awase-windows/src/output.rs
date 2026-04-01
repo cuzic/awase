@@ -152,36 +152,34 @@ impl Output {
     /// アクション列を順に実行する
     ///
     /// `AppKind` に応じて `Char` と `KeySequence` の出力方式を適応的に切り替える:
-    /// - Win32: Char→Unicode, KeySequence→VK（デフォルト）
-    /// - Chrome: Char→VK に変換（KEYEVENTF_UNICODE で全角→半角変換される問題の回避）
-    /// - Uwp: KeySequence→Unicode に変換（VK が正しく処理されない場合の回避）
+    /// - Chrome: Char/KeySequence ともに VK キーストローク（全角→半角変換問題の回避）
+    /// - Win32/Uwp 等: Unicode 直接送信
     pub fn send_keys(&self, actions: &[KeyAction]) {
-        let app_kind = AppKind::load(&crate::APP_KIND);
+        let use_vk = AppKind::load(&crate::APP_KIND) == AppKind::Chrome;
 
         for action in actions {
             match action {
                 KeyAction::SpecialKey(sk) => self.send_key(special_key_to_vk(*sk), false),
                 KeyAction::Key(vk) => self.send_key(vk.0, false),
                 KeyAction::KeyUp(vk) => self.send_key(vk.0, true),
-                KeyAction::Char(ch) => match app_kind {
-                    AppKind::Chrome => {
-                        // Chrome: Unicode だと全角 ASCII 記号が半角に変換されるため VK で送信
-                        let s = ch.to_string();
-                        self.send_key_sequence(&s);
+                KeyAction::Char(ch) => {
+                    if use_vk {
+                        self.send_key_sequence(&ch.to_string());
+                    } else {
+                        self.send_unicode_char(*ch);
                     }
-                    _ => self.send_unicode_char(*ch),
-                },
+                }
                 KeyAction::Suppress => {}
                 KeyAction::Romaji(s) => self.send_romaji(s),
-                KeyAction::KeySequence(s) => match app_kind {
-                    AppKind::Uwp => {
-                        // UWP: VK キーストロークが正しく処理されない場合があるため Unicode で送信
+                KeyAction::KeySequence(s) => {
+                    if use_vk {
+                        self.send_key_sequence(s);
+                    } else {
                         for ch in s.chars() {
                             self.send_unicode_char(ch);
                         }
                     }
-                    _ => self.send_key_sequence(s),
-                },
+                }
             }
         }
     }

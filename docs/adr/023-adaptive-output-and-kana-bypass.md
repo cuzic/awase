@@ -36,9 +36,8 @@ enum AppKind {
 
 | AppKind | KeyAction::Char | KeyAction::KeySequence |
 |---------|----------------|----------------------|
-| Win32 | Unicode 直接 | VK キーストローク |
 | Chrome | VK キーストローク | VK キーストローク |
-| Uwp | Unicode 直接 | Unicode 直接 |
+| Win32/Uwp | Unicode 直接 | Unicode 直接 |
 
 **検出方法:**
 1. **同期（フォーカス変更時）:** ウィンドウクラス名から判定
