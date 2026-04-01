@@ -159,6 +159,7 @@ fn build_symbol_to_vk() -> HashMap<char, (u16, bool)> {
         ('＂', 0x32, true),   // 全角" → Shift+2
         ('；', 0xBB, false),  // ; (VK_OEM_PLUS, JIS: ;)
         ('：', 0xBA, false),  // : (VK_OEM_1, JIS: :)
+        ('－', 0xBD, false),  // - (VK_OEM_MINUS) 全角ハイフンマイナス
         ('／', 0xBF, false),  // / (VK_OEM_2)
         ('＾', 0xDE, false),  // ^ (VK_OEM_7, JIS)
         ('｀', 0xC0, true),   // Shift+@ (JIS: `)
