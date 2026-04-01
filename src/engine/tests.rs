@@ -1102,6 +1102,12 @@ fn test_yab_value_to_action_special() {
 }
 
 #[test]
+fn test_yab_value_to_action_key_sequence() {
+    let action = yab_value_to_action(&YabValue::KeySequence("?".to_string()));
+    assert!(matches!(action, KeyAction::KeySequence(ref s) if s == "?"));
+}
+
+#[test]
 fn test_yab_value_to_action_none() {
     let action = yab_value_to_action(&YabValue::None);
     assert!(matches!(action, KeyAction::Suppress));

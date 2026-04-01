@@ -28,6 +28,87 @@ const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     }
 }
 
+/// 半角 ASCII 文字をキーシーケンス用に VK コードに変換する。
+/// `ascii_to_vk` より広い範囲の記号を対応する。JIS キーボード前提。
+const fn ascii_to_vk_extended(ch: char) -> Option<(u16, bool)> {
+    match ch {
+        'a'..='z' => Some((0x41 + (ch as u16 - 'a' as u16), false)),
+        'A'..='Z' => Some((0x41 + (ch as u16 - 'A' as u16), true)),
+        '0' => Some((0x30, false)),
+        '1' => Some((0x31, false)),
+        '2' => Some((0x32, false)),
+        '3' => Some((0x33, false)),
+        '4' => Some((0x34, false)),
+        '5' => Some((0x35, false)),
+        '6' => Some((0x36, false)),
+        '7' => Some((0x37, false)),
+        '8' => Some((0x38, false)),
+        '9' => Some((0x39, false)),
+        // Shifted digits (JIS keyboard)
+        '!' => Some((0x31, true)),  // Shift+1
+        '"' => Some((0x32, true)),  // Shift+2
+        '#' => Some((0x33, true)),  // Shift+3
+        '$' => Some((0x34, true)),  // Shift+4
+        '%' => Some((0x35, true)),  // Shift+5
+        '&' => Some((0x36, true)),  // Shift+6
+        '\'' => Some((0x37, true)), // Shift+7
+        '(' => Some((0x38, true)),  // Shift+8
+        ')' => Some((0x39, true)),  // Shift+9
+        // Symbols (JIS keyboard)
+        '-' => Some((0xBD, false)),  // VK_OEM_MINUS
+        '=' => Some((0xBD, true)),   // Shift+- (JIS: =)
+        '^' => Some((0xDE, false)),  // VK_OEM_7 (JIS: ^)
+        '~' => Some((0xDE, true)),   // Shift+^ (JIS: ~)
+        '\\' => Some((0xE2, false)), // VK_OEM_102 (JIS: ＼)
+        '|' => Some((0xDC, true)),   // Shift+¥ (JIS: |)
+        '@' => Some((0xC0, false)),  // VK_OEM_3 (JIS: @)
+        '`' => Some((0xC0, true)),   // Shift+@ (JIS: `)
+        '[' => Some((0xDB, false)),  // VK_OEM_4
+        '{' => Some((0xDB, true)),   // Shift+[
+        ']' => Some((0xDD, false)),  // VK_OEM_6
+        '}' => Some((0xDD, true)),   // Shift+]
+        ';' => Some((0xBB, false)),  // VK_OEM_PLUS (JIS: ;)
+        '+' => Some((0xBB, true)),   // Shift+; (JIS: +)
+        ':' => Some((0xBA, false)),  // VK_OEM_1 (JIS: :)
+        '*' => Some((0xBA, true)),   // Shift+: (JIS: *)
+        ',' => Some((0xBC, false)),  // VK_OEM_COMMA
+        '<' => Some((0xBC, true)),   // Shift+,
+        '.' => Some((0xBE, false)),  // VK_OEM_PERIOD
+        '>' => Some((0xBE, true)),   // Shift+.
+        '/' => Some((0xBF, false)),  // VK_OEM_2
+        '?' => Some((0xBF, true)),   // Shift+/
+        '_' => Some((0xE2, true)),   // Shift+＼ (JIS: _)
+        _ => None,
+    }
+}
+
+/// 全角文字を半角に変換する。
+/// 全角 ASCII 範囲 (U+FF01..U+FF5E) に該当する場合、対応する半角文字を返す。
+const fn fullwidth_to_halfwidth(ch: char) -> Option<char> {
+    let cp = ch as u32;
+    // 全角 ASCII: U+FF01 ('！') .. U+FF5E ('～')
+    // 対応する半角: U+0021 ('!') .. U+007E ('~')
+    if cp >= 0xFF01 && cp <= 0xFF5E {
+        // const fn では char::from_u32 が使えないため直接変換
+        let half_cp = cp - 0xFEE0;
+        if half_cp <= 0x7F {
+            Some(half_cp as u8 as char)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// 文字をキーシーケンス用の VK コードに変換する。
+/// 全角文字は半角に変換してから `ascii_to_vk_extended` で対応する。
+fn char_to_key_sequence(ch: char) -> Option<(u16, bool)> {
+    // まず全角→半角変換を試みる
+    let half = fullwidth_to_halfwidth(ch).unwrap_or(ch);
+    ascii_to_vk_extended(half)
+}
+
 /// SpecialKey を Windows VK コードに変換する
 const fn special_key_to_vk(sk: SpecialKey) -> u16 {
     match sk {
@@ -78,6 +159,7 @@ impl Output {
                 KeyAction::Char(ch) => self.send_unicode_char(*ch),
                 KeyAction::Suppress => {}
                 KeyAction::Romaji(s) => self.send_romaji(s),
+                KeyAction::KeySequence(s) => self.send_key_sequence(s),
             }
         }
     }
@@ -211,6 +293,35 @@ impl Output {
         }
         // テーブルにない場合はフォールバック
         self.send_romaji_per_key(romaji);
+    }
+
+    /// キーシーケンスを送信する（IME がキーストロークを変換する）
+    ///
+    /// 各文字について対応するキーストローク（VK コード + Shift）を送信する。
+    /// マッピングが見つからない文字は Unicode 直接出力でフォールバックする。
+    fn send_key_sequence(&self, s: &str) {
+        for ch in s.chars() {
+            if let Some((vk, needs_shift)) = char_to_key_sequence(ch) {
+                let mut inputs = Vec::with_capacity(4);
+                if needs_shift {
+                    inputs.push(make_key_input(VK_LSHIFT, false));
+                }
+                inputs.push(make_key_input(vk, false));
+                inputs.push(make_key_input(vk, true));
+                if needs_shift {
+                    inputs.push(make_key_input(VK_LSHIFT, true));
+                }
+                unsafe {
+                    SendInput(
+                        &inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+            } else {
+                // マッピングが見つからない場合は Unicode 直接出力
+                self.send_unicode_char(ch);
+            }
+        }
     }
 }
 

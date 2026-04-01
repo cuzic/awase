@@ -37,6 +37,7 @@ impl From<&YabValue> for KeyAction {
         match value {
             YabValue::Romaji { romaji, .. } => Self::Romaji(romaji.clone()),
             YabValue::Literal(s) => s.chars().next().map_or(Self::Suppress, Self::Char),
+            YabValue::KeySequence(s) => Self::KeySequence(s.clone()),
             YabValue::Special(sk) => Self::SpecialKey(*sk),
             YabValue::None => Self::Suppress,
         }

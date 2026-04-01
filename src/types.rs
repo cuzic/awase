@@ -148,6 +148,8 @@ pub enum KeyAction {
     Suppress,
     /// ローマ字文字列をキーイベントとして送信（IME ローマ字入力モード用）
     Romaji(String),
+    /// キーシーケンスとして出力（IME がキーストロークを変換する）
+    KeySequence(String),
 }
 
 /// コンテキスト無効化の理由（ログ・デバッグ用）

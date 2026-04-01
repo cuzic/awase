@@ -106,13 +106,28 @@ fn parse_value_fullwidth_uppercase() {
 
 #[test]
 fn parse_value_fullwidth_digit() {
-    assert_eq!(parse_value("１"), YabValue::Literal("1".to_string()));
-    assert_eq!(parse_value("２"), YabValue::Literal("2".to_string()));
+    assert_eq!(parse_value("１"), YabValue::KeySequence("1".to_string()));
+    assert_eq!(parse_value("２"), YabValue::KeySequence("2".to_string()));
 }
 
 #[test]
 fn parse_value_fullwidth_symbol() {
-    assert_eq!(parse_value("！"), YabValue::Literal("!".to_string()));
+    assert_eq!(parse_value("！"), YabValue::KeySequence("!".to_string()));
+}
+
+#[test]
+fn parse_value_double_quoted_literal() {
+    assert_eq!(parse_value("\"？\""), YabValue::Literal("？".to_string()));
+    assert_eq!(parse_value("\"！\""), YabValue::Literal("！".to_string()));
+}
+
+#[test]
+fn parse_value_key_sequence_round_trip() {
+    let val = YabValue::KeySequence("?".to_string());
+    let serialized = serialize_value(&val);
+    assert_eq!(serialized, "？");
+    let parsed = parse_value(&serialized);
+    assert_eq!(parsed, YabValue::KeySequence("?".to_string()));
 }
 
 // ── 最小限のパーステスト ──
@@ -181,7 +196,7 @@ fn parse_nicola_trimmed_example() {
     // 通常面の検証
     assert_eq!(
         layout.normal.get(&PhysicalPos::new(0, 0)),
-        Some(&YabValue::Literal("1".to_string()))
+        Some(&YabValue::KeySequence("1".to_string()))
     );
     assert_eq!(
         layout.normal.get(&PhysicalPos::new(1, 2)),
@@ -475,12 +490,12 @@ fn test_parse_layout_missing_sections() {
 
 #[test]
 fn test_fullwidth_digits_and_symbols() {
-    // 全角数字はリテラルになる
-    assert_eq!(parse_value("３"), YabValue::Literal("3".to_string()));
-    assert_eq!(parse_value("７"), YabValue::Literal("7".to_string()));
-    // 全角記号もリテラルになる
-    assert_eq!(parse_value("＃"), YabValue::Literal("#".to_string()));
-    assert_eq!(parse_value("＆"), YabValue::Literal("&".to_string()));
+    // 全角数字はキーシーケンスになる
+    assert_eq!(parse_value("３"), YabValue::KeySequence("3".to_string()));
+    assert_eq!(parse_value("７"), YabValue::KeySequence("7".to_string()));
+    // 全角記号もキーシーケンスになる
+    assert_eq!(parse_value("＃"), YabValue::KeySequence("#".to_string()));
+    assert_eq!(parse_value("＆"), YabValue::KeySequence("&".to_string()));
     // 全角の範囲外端の文字
     assert_eq!(fullwidth_to_halfwidth('～'), Some('~')); // U+FF5E -> '~'
 }
@@ -598,13 +613,27 @@ fn test_serialize_value_literal_unicode() {
 
 #[test]
 fn test_serialize_value_literal_ascii_digit() {
+    // Literal は常にクォート付き
     let val = YabValue::Literal("1".to_string());
-    assert_eq!(serialize_value(&val), "１");
+    assert_eq!(serialize_value(&val), "'1'");
 }
 
 #[test]
 fn test_serialize_value_literal_ascii_symbol() {
+    // Literal は常にクォート付き
     let val = YabValue::Literal("!".to_string());
+    assert_eq!(serialize_value(&val), "'!'");
+}
+
+#[test]
+fn test_serialize_value_key_sequence_digit() {
+    let val = YabValue::KeySequence("1".to_string());
+    assert_eq!(serialize_value(&val), "１");
+}
+
+#[test]
+fn test_serialize_value_key_sequence_symbol() {
+    let val = YabValue::KeySequence("!".to_string());
     assert_eq!(serialize_value(&val), "！");
 }
 
@@ -720,8 +749,8 @@ fn test_serialize_round_trip_all_variants() {
                 kana: None,
             },
         ),
-        (7, YabValue::Literal("1".to_string())),
-        (8, YabValue::Literal("!".to_string())),
+        (7, YabValue::KeySequence("1".to_string())),
+        (8, YabValue::KeySequence("!".to_string())),
     ];
 
     for (col, expected) in &row0 {

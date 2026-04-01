@@ -15,8 +15,10 @@ pub enum YabValue {
     /// `kana` にはパース時に逆引きした仮名文字を保持する。
     /// 拗音など単一 `char` に収まらないローマ字の場合は `None`。
     Romaji { romaji: String, kana: Option<char> },
-    /// リテラル文字（Unicode 文字として直接送信する）
+    /// リテラル文字（Unicode 文字として直接送信する）（.yab ではクォート付き）
     Literal(String),
+    /// キーシーケンスとして出力（IME がキーストロークを変換する）（.yab ではクォート無し全角記号）
+    KeySequence(String),
     /// 特殊キー
     Special(SpecialKey),
     /// 割り当てなし（パススルー）
@@ -186,6 +188,12 @@ fn parse_value(raw: &str) -> YabValue {
         return YabValue::Literal(inner.to_string());
     }
 
+    // ダブルクォートで囲まれたリテラル（例: "？"）
+    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() > 2 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        return YabValue::Literal(inner.to_string());
+    }
+
     // 全角 ASCII 文字列 → 半角変換してローマ字として扱う
     if is_all_fullwidth_ascii(trimmed) {
         let half = convert_fullwidth_str(trimmed);
@@ -196,8 +204,8 @@ fn parse_value(raw: &str) -> YabValue {
                 kana: None,
             };
         }
-        // 数字や記号はリテラル
-        return YabValue::Literal(half);
+        // 数字や記号はキーシーケンス（IME がキーストロークを変換する）
+        return YabValue::KeySequence(half);
     }
 
     // それ以外はリテラルとして扱う
@@ -415,16 +423,12 @@ fn serialize_value(value: &YabValue) -> String {
     match value {
         YabValue::Romaji { romaji, .. } => halfwidth_to_fullwidth(romaji),
         YabValue::Literal(s) => {
-            // If the literal is a half-width ASCII string that would be fullwidth in .yab,
-            // check if it's digits/symbols (non-alpha) — those were parsed from fullwidth
-            if !s.is_empty()
-                && s.chars()
-                    .all(|ch| ch.is_ascii() && !ch.is_ascii_alphabetic())
-            {
-                halfwidth_to_fullwidth(s)
-            } else {
-                format!("'{s}'")
-            }
+            // Literal は常にクォート付きでシリアライズする
+            format!("'{s}'")
+        }
+        YabValue::KeySequence(s) => {
+            // KeySequence は全角クォート無しでシリアライズする
+            halfwidth_to_fullwidth(s)
         }
         YabValue::Special(SpecialKey::Backspace) => "後".to_string(),
         YabValue::Special(SpecialKey::Escape) => "逃".to_string(),
