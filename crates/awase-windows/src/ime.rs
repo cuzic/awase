@@ -416,16 +416,67 @@ const IME_CMODE_ROMAN: u32 = 0x0010;
 /// Returns `Some(true)` = かな入力方式, `Some(false)` = ローマ字入力方式,
 /// `None` = 検出失敗（IME OFF など）。
 ///
+/// 注意: 一部の IME（Google 日本語入力等）はクロスプロセス検出で `IME_CMODE_ROMAN`
+/// フラグを返さない場合がある。その場合はローマ字入力（デフォルト）として扱う。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn detect_kana_input_method() -> Option<bool> {
     let conversion = detect_ime_conversion_cross_process()?;
     let is_native = conversion & IME_CMODE_NATIVE.0 != 0;
+    let is_roman = conversion & IME_CMODE_ROMAN != 0;
+
+    log::debug!(
+        "detect_kana_input_method: conversion=0x{conversion:08X} native={is_native} roman={is_roman}"
+    );
+
     if !is_native {
         return Some(false); // IME が日本語モードでなければ、かな入力ではない
     }
-    let is_roman = conversion & IME_CMODE_ROMAN != 0;
-    Some(!is_roman) // ROMAN フラグなし = かな入力方式
+
+    // ROMAN フラグが明示的にセットされている → ローマ字入力
+    if is_roman {
+        return Some(false);
+    }
+
+    // ROMAN フラグなし: ImmGetConversionStatus で再確認する。
+    // クロスプロセス検出 (WM_IME_CONTROL) では ROMAN フラグが
+    // 返されない IME があるため、直接 API で二重チェック。
+    let direct_result = detect_kana_direct();
+    log::debug!("detect_kana_input_method: direct_check={direct_result:?}");
+    Some(direct_result.unwrap_or(false)) // 不明なら安全側（ローマ字）
+}
+
+/// ImmGetConversionStatus で直接かな入力方式を確認する。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+unsafe fn detect_kana_direct() -> Option<bool> {
+    let hwnd = GetForegroundWindow();
+    if hwnd == HWND::default() {
+        return None;
+    }
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return None;
+    }
+    let mut conversion = IME_CONVERSION_MODE::default();
+    let mut sentence = IME_SENTENCE_MODE::default();
+    let ok = ImmGetConversionStatus(himc, Some(&raw mut conversion), Some(&raw mut sentence));
+    let _ = ImmReleaseContext(hwnd, himc);
+    if !ok.as_bool() {
+        return None;
+    }
+    let is_native = conversion.0 & IME_CMODE_NATIVE.0 != 0;
+    let is_roman = conversion.0 & IME_CMODE_ROMAN != 0;
+    log::debug!(
+        "detect_kana_direct: conversion=0x{:08X} native={is_native} roman={is_roman}",
+        conversion.0
+    );
+    if !is_native {
+        return Some(false);
+    }
+    Some(!is_roman)
 }
 
 /// 現在のキーボードレイアウトの言語情報を返す。

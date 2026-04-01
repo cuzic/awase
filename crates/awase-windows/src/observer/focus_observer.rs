@@ -262,6 +262,7 @@ fn classify_app_kind(class_name: &str) -> AppKind {
         AppKind::Chrome
     } else if class_lower == "windows.ui.core.corewindow"
         || class_lower == "applicationframewindow"
+        || class_lower.starts_with("windows.ui.input.")
     {
         AppKind::Uwp
     } else {
