@@ -158,28 +158,51 @@ impl Output {
     /// - Chrome: Char/KeySequence ともに VK キーストローク（全角→半角変換問題の回避）
     /// - Win32/Uwp 等: Unicode 直接送信
     pub fn send_keys(&self, actions: &[KeyAction]) {
-        let use_vk = AppKind::load(&crate::APP_KIND) == AppKind::Chrome;
+        let app_kind = AppKind::load(&crate::APP_KIND);
+        let use_vk = app_kind == AppKind::Chrome;
+
+        log::debug!(
+            "send_keys: app_kind={app_kind:?} use_vk={use_vk} actions={actions:?}",
+        );
 
         for action in actions {
             match action {
-                KeyAction::SpecialKey(sk) => self.send_key(special_key_to_vk(*sk), false),
-                KeyAction::Key(vk) => self.send_key(vk.0, false),
-                KeyAction::KeyUp(vk) => self.send_key(vk.0, true),
+                KeyAction::SpecialKey(sk) => {
+                    log::debug!("  → SpecialKey({sk:?}) vk=0x{:02X}", special_key_to_vk(*sk));
+                    self.send_key(special_key_to_vk(*sk), false);
+                }
+                KeyAction::Key(vk) => {
+                    log::debug!("  → Key(0x{:04X})", vk.0);
+                    self.send_key(vk.0, false);
+                }
+                KeyAction::KeyUp(vk) => {
+                    log::debug!("  → KeyUp(0x{:04X})", vk.0);
+                    self.send_key(vk.0, true);
+                }
                 KeyAction::Char(ch) => {
                     if use_vk {
+                        log::debug!("  → Char('{ch}') via VK (Chrome mode)");
                         self.send_char_as_vk(*ch);
                     } else {
+                        log::debug!("  → Char('{ch}') via Unicode");
                         self.send_unicode_char(*ch);
                     }
                 }
-                KeyAction::Suppress => {}
-                KeyAction::Romaji(s) => self.send_romaji(s),
+                KeyAction::Suppress => {
+                    log::debug!("  → Suppress");
+                }
+                KeyAction::Romaji(s) => {
+                    log::debug!("  → Romaji(\"{s}\") mode={:?}", self.mode);
+                    self.send_romaji(s);
+                }
                 KeyAction::KeySequence(s) => {
                     if use_vk {
+                        log::debug!("  → KeySequence(\"{s}\") via VK (Chrome mode)");
                         for ch in s.chars() {
                             self.send_char_as_vk(ch);
                         }
                     } else {
+                        log::debug!("  → KeySequence(\"{s}\") via Unicode");
                         for ch in s.chars() {
                             self.send_unicode_char(ch);
                         }
@@ -328,11 +351,15 @@ impl Output {
     fn send_char_as_vk(&self, ch: char) {
         // 1. かな→ローマ字逆引き（か → "ka" → VK(k), VK(a)）
         if let Some(romaji) = self.kana_to_romaji.get(&ch) {
+            log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
             self.send_romaji_per_key(romaji);
             return;
         }
         // 2. ASCII 記号（全角含む）→ VK コード直接変換（？ → Shift+/）
         if let Some((vk, needs_shift)) = char_to_key_sequence(ch) {
+            log::debug!(
+                "    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}"
+            );
             let mut inputs = Vec::with_capacity(4);
             if needs_shift {
                 inputs.push(make_key_input(VK_LSHIFT, false));
@@ -351,6 +378,7 @@ impl Output {
             return;
         }
         // 3. フォールバック: Unicode 直接出力
+        log::debug!("    send_char_as_vk: '{ch}' → fallback Unicode (no VK mapping)");
         self.send_unicode_char(ch);
     }
 

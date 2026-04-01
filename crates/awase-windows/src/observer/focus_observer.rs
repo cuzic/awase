@@ -133,6 +133,8 @@ pub unsafe fn observe(
     app_kind.store(&APP_KIND);
     if app_kind != prev_app_kind {
         log::info!("AppKind changed: {prev_app_kind:?} → {app_kind:?} (class={class_name})");
+    } else {
+        log::debug!("AppKind: {app_kind:?} (class={class_name})");
     }
 
     // バイパス状態を判定（Win32 API 呼び出し）
