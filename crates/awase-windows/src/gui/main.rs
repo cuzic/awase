@@ -4,6 +4,15 @@ use eframe::egui;
 #[cfg(target_os = "windows")]
 const WM_RELOAD_CONFIG: u32 = 0x8000 + 10; // WM_APP = 0x8000
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Basic,
+    Keys,
+    ImeDetect,
+    Focus,
+    Advanced,
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -11,7 +20,6 @@ fn main() -> eframe::Result<()> {
             .with_title("awase 設定"),
         ..Default::default()
     };
-
     eframe::run_native(
         "awase-settings",
         options,
@@ -22,52 +30,27 @@ fn main() -> eframe::Result<()> {
 struct SettingsApp {
     config: awase::config::AppConfig,
     config_path: std::path::PathBuf,
-    status_message: String,
+    status: String,
+    active_tab: Tab,
     available_layouts: Vec<String>,
-    preview_engine: Option<awase::engine::Engine>,
-    preview_tracker: Option<awase::engine::input_tracker::InputTracker>,
-    preview_output: String,
-    preview_state: String,
-    /// エンジン ON キー一覧（GUI 編集用コピー）
-    engine_on_keys: Vec<String>,
-    /// エンジン OFF キー一覧（GUI 編集用コピー）
-    engine_off_keys: Vec<String>,
-    /// エンジン ON キー追加用バッファ
+    // Key list add-buffers
     new_engine_on_key: String,
-    /// エンジン OFF キー追加用バッファ
     new_engine_off_key: String,
-    /// 新規 force_text エントリ入力バッファ
+    new_ime_on_key: String,
+    new_ime_off_key: String,
+    new_ime_toggle_key: String,
+    new_ime_detect_on_key: String,
+    new_ime_detect_off_key: String,
+    // Focus override add-buffers
     new_force_text_process: String,
     new_force_text_class: String,
-    /// 新規 force_bypass エントリ入力バッファ
     new_force_bypass_process: String,
     new_force_bypass_class: String,
-    /// IME 制御 ON キー一覧（GUI 編集用コピー）
-    ime_control_on_keys: Vec<String>,
-    /// IME 制御 OFF キー一覧（GUI 編集用コピー）
-    ime_control_off_keys: Vec<String>,
-    /// IME 制御 ON キー追加用バッファ
-    new_ime_control_on_key: String,
-    /// IME 制御 OFF キー追加用バッファ
-    new_ime_control_off_key: String,
-    /// IME 同期トグルキー一覧（GUI 編集用コピー）
-    ime_toggle_keys: Vec<String>,
-    /// IME 同期 ON キー一覧（GUI 編集用コピー）
-    ime_on_keys: Vec<String>,
-    /// IME 同期 OFF キー一覧（GUI 編集用コピー）
-    ime_off_keys: Vec<String>,
-    /// IME 同期トグルキー追加用バッファ
-    new_ime_toggle_key: String,
-    /// IME 同期 ON キー追加用バッファ
-    new_ime_on_key: String,
-    /// IME 同期 OFF キー追加用バッファ
-    new_ime_off_key: String,
 }
 
 impl SettingsApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_fonts(&cc.egui_ctx);
-
         let config_path = find_config_path();
         let config = match awase::config::AppConfig::load(&config_path) {
             Ok(cfg) => cfg,
@@ -76,58 +59,500 @@ impl SettingsApp {
                 default_config()
             }
         };
-
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
-
-        let engine_on_keys = config.keys.engine_on.clone();
-        let engine_off_keys = config.keys.engine_off.clone();
-        let ime_control_on_keys = config.keys.ime_on.clone();
-        let ime_control_off_keys = config.keys.ime_off.clone();
-        let ime_toggle_keys = config.keys.ime_detect.toggle.clone();
-        let ime_on_keys = config.keys.ime_detect.on.clone();
-        let ime_off_keys = config.keys.ime_detect.off.clone();
-        let mut app = Self {
+        Self {
             config,
             config_path,
-            status_message: String::new(),
+            status: String::new(),
+            active_tab: Tab::Basic,
             available_layouts,
-            preview_engine: None,
-            preview_output: String::new(),
-            preview_state: String::new(),
-            engine_on_keys,
-            engine_off_keys,
             new_engine_on_key: String::new(),
             new_engine_off_key: String::new(),
+            new_ime_on_key: String::new(),
+            new_ime_off_key: String::new(),
+            new_ime_toggle_key: String::new(),
+            new_ime_detect_on_key: String::new(),
+            new_ime_detect_off_key: String::new(),
             new_force_text_process: String::new(),
             new_force_text_class: String::new(),
             new_force_bypass_process: String::new(),
             new_force_bypass_class: String::new(),
-            ime_control_on_keys,
-            ime_control_off_keys,
-            new_ime_control_on_key: String::new(),
-            new_ime_control_off_key: String::new(),
-            ime_toggle_keys,
-            ime_on_keys,
-            ime_off_keys,
-            new_ime_toggle_key: String::new(),
-            new_ime_on_key: String::new(),
-            new_ime_off_key: String::new(),
-        };
-        app.rebuild_preview_engine();
-        app
+        }
+    }
+
+    fn apply(&mut self) {
+        let clone = self.config.clone();
+        let (_validated, warnings) = clone.validate();
+        if !warnings.is_empty() {
+            self.status = format!("警告: {}", warnings.join("; "));
+        }
+        match self.config.save(&self.config_path) {
+            Ok(()) => {
+                if warnings.is_empty() {
+                    self.status = "設定を保存しました".to_string();
+                }
+                send_reload_config_message();
+            }
+            Err(e) => self.status = format!("保存失敗: {e}"),
+        }
+    }
+
+    fn cancel(&mut self) {
+        match awase::config::AppConfig::load(&self.config_path) {
+            Ok(cfg) => {
+                self.available_layouts = scan_layout_names(&cfg.general.layouts_dir);
+                self.config = cfg;
+                self.status = "変更を破棄しました".to_string();
+            }
+            Err(e) => self.status = format!("読み込み失敗: {e}"),
+        }
     }
 }
 
+// ── Tab methods ──
+
+impl SettingsApp {
+    fn tab_basic(&mut self, ui: &mut egui::Ui) {
+        ui.heading("基本設定");
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label("キーボードモデル:");
+            egui::ComboBox::from_id_salt("kb_model")
+                .selected_text(&self.config.general.keyboard_model)
+                .show_ui(ui, |ui| {
+                    for m in ["jis", "us"] {
+                        ui.selectable_value(
+                            &mut self.config.general.keyboard_model,
+                            m.to_string(),
+                            m,
+                        );
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("同時打鍵閾値:");
+            ui.add(
+                egui::Slider::new(&mut self.config.general.simultaneous_threshold_ms, 10..=500)
+                    .suffix(" ms"),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("確定モード:");
+            egui::ComboBox::from_id_salt("confirm_mode")
+                .selected_text(confirm_mode_label(self.config.general.confirm_mode))
+                .show_ui(ui, |ui| {
+                    use awase::config::ConfirmMode;
+                    for (mode, label) in [
+                        (ConfirmMode::Wait, "待機 (wait)"),
+                        (ConfirmMode::Speculative, "先行確定 (speculative)"),
+                        (ConfirmMode::TwoPhase, "二段タイマー (two_phase)"),
+                        (
+                            ConfirmMode::AdaptiveTiming,
+                            "適応タイミング (adaptive_timing)",
+                        ),
+                        (
+                            ConfirmMode::NgramPredictive,
+                            "n-gram 予測 (ngram_predictive)",
+                        ),
+                    ] {
+                        ui.selectable_value(&mut self.config.general.confirm_mode, mode, label);
+                    }
+                });
+        });
+        ui.label(confirm_mode_tooltip(self.config.general.confirm_mode));
+        let spec_enabled = matches!(
+            self.config.general.confirm_mode,
+            awase::config::ConfirmMode::TwoPhase | awase::config::ConfirmMode::AdaptiveTiming
+        );
+        ui.add_enabled_ui(spec_enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("投機出力待機:");
+                ui.add(
+                    egui::Slider::new(&mut self.config.general.speculative_delay_ms, 0..=100)
+                        .suffix(" ms"),
+                );
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.label("出力モード:");
+            egui::ComboBox::from_id_salt("output_mode")
+                .selected_text(output_mode_label(self.config.general.output_mode))
+                .show_ui(ui, |ui| {
+                    use awase::config::OutputMode;
+                    for (mode, label) in [
+                        (OutputMode::Unicode, "Unicode"),
+                        (OutputMode::PerKey, "PerKey"),
+                        (OutputMode::Batched, "Batched"),
+                    ] {
+                        ui.selectable_value(&mut self.config.general.output_mode, mode, label);
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label("フックモード:");
+            ui.radio_value(
+                &mut self.config.general.hook_mode,
+                awase::config::HookMode::Filter,
+                "Filter",
+            )
+            .on_hover_text("フック内で SendInput。低レイテンシ。");
+            ui.radio_value(
+                &mut self.config.general.hook_mode,
+                awase::config::HookMode::Relay,
+                "Relay",
+            )
+            .on_hover_text("全キー Consume → メッセージループで再注入。FIFO 保証。");
+        });
+        let mut auto_start_checked = self.config.general.auto_start == "enabled";
+        if ui.checkbox(&mut auto_start_checked, "自動起動").changed() {
+            self.config.general.auto_start = if auto_start_checked {
+                "enabled"
+            } else {
+                "disabled"
+            }
+            .to_string();
+        }
+        ui.horizontal(|ui| {
+            ui.label("レイアウト:");
+            let current = self
+                .config
+                .general
+                .default_layout
+                .trim_end_matches(".yab")
+                .to_string();
+            egui::ComboBox::from_id_salt("layout")
+                .selected_text(&current)
+                .show_ui(ui, |ui| {
+                    for name in &self.available_layouts {
+                        if ui.selectable_label(current == *name, name).clicked() {
+                            self.config.general.default_layout = format!("{name}.yab");
+                        }
+                    }
+                });
+            if ui.button("再スキャン").clicked() {
+                self.available_layouts = scan_layout_names(&self.config.general.layouts_dir);
+            }
+        });
+    }
+
+    fn tab_keys(&mut self, ui: &mut egui::Ui) {
+        ui.heading("キー設定");
+        ui.add_space(4.0);
+
+        // Thumb keys
+        ui.label("親指キー");
+        ui.horizontal(|ui| {
+            ui.label("  左親指:");
+            ui.text_edit_singleline(&mut self.config.general.left_thumb_key);
+        });
+        ui.horizontal(|ui| {
+            ui.label("  右親指:");
+            ui.text_edit_singleline(&mut self.config.general.right_thumb_key);
+        });
+        ui.add_space(8.0);
+
+        // Engine on/off
+        ui.label("エンジン制御");
+        key_list_ui(
+            ui,
+            "エンジン ON",
+            "eng_on",
+            &mut self.config.keys.engine_on,
+            &mut self.new_engine_on_key,
+        );
+        key_list_ui(
+            ui,
+            "エンジン OFF",
+            "eng_off",
+            &mut self.config.keys.engine_off,
+            &mut self.new_engine_off_key,
+        );
+        ui.add_space(8.0);
+
+        // IME on/off
+        ui.label("IME 制御");
+        key_list_ui(
+            ui,
+            "IME ON",
+            "ime_on",
+            &mut self.config.keys.ime_on,
+            &mut self.new_ime_on_key,
+        );
+        key_list_ui(
+            ui,
+            "IME OFF",
+            "ime_off",
+            &mut self.config.keys.ime_off,
+            &mut self.new_ime_off_key,
+        );
+        ui.add_space(8.0);
+
+        // Toggle hotkey
+        ui.label("トグルホットキー");
+        ui.horizontal(|ui| {
+            ui.label("  エンジン切替:");
+            let hotkey = self
+                .config
+                .general
+                .engine_toggle_hotkey
+                .get_or_insert_with(String::new);
+            ui.text_edit_singleline(hotkey);
+        });
+    }
+
+    fn tab_ime_detect(&mut self, ui: &mut egui::Ui) {
+        ui.heading("IME 検出");
+        ui.label("IME の ON/OFF 切替を検出するためのキー設定です。通常はデフォルトのままで OK。");
+        ui.add_space(8.0);
+
+        key_list_ui(
+            ui,
+            "トグルキー（ON/OFF 切替）",
+            "ime_det_toggle",
+            &mut self.config.keys.ime_detect.toggle,
+            &mut self.new_ime_toggle_key,
+        );
+        key_list_ui(
+            ui,
+            "ON キー（IME を ON にする）",
+            "ime_det_on",
+            &mut self.config.keys.ime_detect.on,
+            &mut self.new_ime_detect_on_key,
+        );
+        key_list_ui(
+            ui,
+            "OFF キー（IME を OFF にする）",
+            "ime_det_off",
+            &mut self.config.keys.ime_detect.off,
+            &mut self.new_ime_detect_off_key,
+        );
+
+        ui.add_space(8.0);
+        if ui.button("デフォルトに戻す").clicked() {
+            self.config.keys.ime_detect = awase::config::ImeDetectConfig::default();
+        }
+    }
+
+    fn tab_focus(&mut self, ui: &mut egui::Ui) {
+        ui.heading("フォーカス制御");
+        ui.label("特定のアプリでエンジンの動作を強制設定できます。");
+        ui.add_space(8.0);
+
+        // force_text
+        ui.label("テキスト入力として強制:");
+        focus_table_ui(
+            ui,
+            "ft",
+            &mut self.config.focus_overrides.force_text,
+            &mut self.new_force_text_process,
+            &mut self.new_force_text_class,
+        );
+        ui.add_space(12.0);
+
+        // force_bypass
+        ui.label("バイパスとして強制（エンジン無効）:");
+        focus_table_ui(
+            ui,
+            "fb",
+            &mut self.config.focus_overrides.force_bypass,
+            &mut self.new_force_bypass_process,
+            &mut self.new_force_bypass_class,
+        );
+
+        ui.add_space(8.0);
+        ui.label("プロセス名・クラス名はログで確認できます。");
+    }
+
+    fn tab_advanced(&mut self, ui: &mut egui::Ui) {
+        ui.heading("詳細設定");
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("n-gram ファイル:");
+            let mut buf = self.config.general.ngram_file.clone().unwrap_or_default();
+            if ui.text_edit_singleline(&mut buf).changed() {
+                self.config.general.ngram_file = if buf.is_empty() { None } else { Some(buf) };
+            }
+        });
+        let slider =
+            |ui: &mut egui::Ui, label, val: &mut u32, range: std::ops::RangeInclusive<u32>| {
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    ui.add(egui::Slider::new(val, range).suffix(" ms"));
+                });
+            };
+        slider(
+            ui,
+            "n-gram 調整幅:",
+            &mut self.config.general.ngram_adjustment_range_ms,
+            0..=100,
+        );
+        slider(
+            ui,
+            "n-gram 最小閾値:",
+            &mut self.config.general.ngram_min_threshold_ms,
+            10..=200,
+        );
+        slider(
+            ui,
+            "n-gram 最大閾値:",
+            &mut self.config.general.ngram_max_threshold_ms,
+            50..=500,
+        );
+        ui.add_space(8.0);
+        slider(
+            ui,
+            "フォーカスデバウンス:",
+            &mut self.config.general.focus_debounce_ms,
+            0..=200,
+        );
+        slider(
+            ui,
+            "IME ポーリング間隔:",
+            &mut self.config.general.ime_poll_interval_ms,
+            100..=5000,
+        );
+        ui.horizontal(|ui| {
+            ui.label("レイアウトディレクトリ:");
+            ui.text_edit_singleline(&mut self.config.general.layouts_dir);
+        });
+    }
+}
+
+// ── eframe::App ──
+
+impl eframe::App for SettingsApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Side panel for tab selection
+        egui::SidePanel::left("tab_panel")
+            .resizable(false)
+            .default_width(100.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                for (tab, label) in [
+                    (Tab::Basic, "基本設定"),
+                    (Tab::Keys, "キー設定"),
+                    (Tab::ImeDetect, "IME 検出"),
+                    (Tab::Focus, "フォーカス"),
+                    (Tab::Advanced, "詳細設定"),
+                ] {
+                    if ui.selectable_label(self.active_tab == tab, label).clicked() {
+                        self.active_tab = tab;
+                    }
+                }
+            });
+
+        // Main content
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| match self.active_tab {
+                Tab::Basic => self.tab_basic(ui),
+                Tab::Keys => self.tab_keys(ui),
+                Tab::ImeDetect => self.tab_ime_detect(ui),
+                Tab::Focus => self.tab_focus(ui),
+                Tab::Advanced => self.tab_advanced(ui),
+            });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("適用").clicked() {
+                    self.apply();
+                }
+                if ui.button("キャンセル").clicked() {
+                    self.cancel();
+                }
+                if !self.status.is_empty() {
+                    ui.label(&self.status);
+                }
+            });
+        });
+    }
+}
+
+// ── Reusable UI helpers ──
+
+fn key_list_ui(ui: &mut egui::Ui, label: &str, id: &str, keys: &mut Vec<String>, buf: &mut String) {
+    ui.label(format!("  {label}:"));
+    let mut rm = None;
+    for (i, key) in keys.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("    {key}"));
+            if ui.small_button("x").clicked() {
+                rm = Some(i);
+            }
+        });
+    }
+    if let Some(i) = rm {
+        keys.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(buf)
+                .desired_width(180.0)
+                .id(egui::Id::new(id)),
+        );
+        if ui.button("+追加").clicked() && !buf.is_empty() {
+            keys.push(buf.clone());
+            buf.clear();
+        }
+    });
+}
+
+fn focus_table_ui(
+    ui: &mut egui::Ui,
+    id: &str,
+    entries: &mut Vec<awase::config::FocusOverrideEntry>,
+    np: &mut String,
+    nc: &mut String,
+) {
+    ui.horizontal(|ui| {
+        ui.label("  プロセス名");
+        ui.add_space(60.0);
+        ui.label("クラス名");
+    });
+    let mut rm = None;
+    for (i, e) in entries.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("  {}", e.process));
+            ui.add_space(40.0);
+            ui.label(&e.class);
+            if ui.small_button("x").clicked() {
+                rm = Some(i);
+            }
+        });
+    }
+    if let Some(i) = rm {
+        entries.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(np)
+                .desired_width(120.0)
+                .id(egui::Id::new(format!("{id}_p"))),
+        );
+        ui.add(
+            egui::TextEdit::singleline(nc)
+                .desired_width(120.0)
+                .id(egui::Id::new(format!("{id}_c"))),
+        );
+        if ui.button("+追加").clicked() && !np.is_empty() && !nc.is_empty() {
+            entries.push(awase::config::FocusOverrideEntry {
+                process: std::mem::take(np),
+                class: std::mem::take(nc),
+            });
+        }
+    });
+}
+
+// ── Utility functions ──
+
 fn find_config_path() -> std::path::PathBuf {
-    let Ok(exe) = std::env::current_exe() else {
-        return std::path::PathBuf::from("config.toml");
-    };
-    let Some(dir) = exe.parent() else {
-        return std::path::PathBuf::from("config.toml");
-    };
-    let p = dir.join("config.toml");
-    if p.exists() {
-        return p;
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("config.toml");
+            if p.exists() {
+                return p;
+            }
+        }
     }
     std::path::PathBuf::from("config.toml")
 }
@@ -143,20 +568,17 @@ fn scan_layout_names(layouts_dir: &str) -> Vec<String> {
     } else {
         std::path::PathBuf::from(layouts_dir)
     };
-
     let mut names = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        names.sort();
-        return names;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if let Some(stem) = path
-            .extension()
-            .filter(|ext| *ext == "yab")
-            .and_then(|_| path.file_stem())
-        {
-            names.push(stem.to_string_lossy().to_string());
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(stem) = path
+                .extension()
+                .filter(|ext| *ext == "yab")
+                .and_then(|_| path.file_stem())
+            {
+                names.push(stem.to_string_lossy().to_string());
+            }
         }
     }
     names.sort();
@@ -169,8 +591,6 @@ fn default_config() -> awase::config::AppConfig {
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-
-    // Try to load OS Japanese font
     for path in &[
         "C:\\Windows\\Fonts\\meiryo.ttc",
         "C:\\Windows\\Fonts\\msgothic.ttc",
@@ -196,757 +616,15 @@ fn setup_fonts(ctx: &egui::Context) {
             break;
         }
     }
-
     ctx.set_fonts(fonts);
 }
 
-impl eframe::App for SettingsApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("awase 設定");
-            ui.separator();
-
-            // ── 基本設定 ──
-            egui::CollapsingHeader::new("基本設定")
-                .default_open(true)
-                .show(ui, |ui| {
-                    self.basic_settings_ui(ui);
-                });
-
-            // ── エンジン切替キー ──
-            egui::CollapsingHeader::new("エンジン切替キー")
-                .default_open(false)
-                .show(ui, |ui| {
-                    self.engine_toggle_keys_ui(ui);
-                });
-
-            // ── IME 制御キー ──
-            egui::CollapsingHeader::new("IME 制御キー")
-                .default_open(false)
-                .show(ui, |ui| {
-                    self.ime_control_keys_ui(ui);
-                });
-
-            // ── IME 同期設定 ──
-            egui::CollapsingHeader::new("IME 同期設定")
-                .default_open(false)
-                .show(ui, |ui| {
-                    self.ime_sync_keys_ui(ui);
-                });
-
-            // ── 配列 ──
-            egui::CollapsingHeader::new("配列")
-                .default_open(true)
-                .show(ui, |ui| {
-                    self.layout_settings_ui(ui);
-                });
-
-            // ── n-gram（上級設定） ──
-            egui::CollapsingHeader::new("n-gram（上級設定）")
-                .default_open(false)
-                .show(ui, |ui| {
-                    self.ngram_settings_ui(ui);
-                });
-
-            // ── フォーカスオーバーライド ──
-            egui::CollapsingHeader::new("フォーカスオーバーライド")
-                .default_open(false)
-                .show(ui, |ui| {
-                    self.focus_overrides_ui(ui);
-                });
-
-            // ── プレビュー ──
-            egui::CollapsingHeader::new("プレビュー")
-                .default_open(true)
-                .show(ui, |ui| {
-                    self.preview_ui(ui);
-                });
-
-            ui.separator();
-
-            // Apply/Cancel buttons
-            ui.horizontal(|ui| {
-                if ui.button("適用").clicked() {
-                    // エンジン切替キーを config に反映
-                    self.config.keys.engine_on = self.engine_on_keys.clone();
-                    self.config.keys.engine_off = self.engine_off_keys.clone();
-                    // IME 制御キーを config に反映
-                    self.config.keys.ime_on = self.ime_control_on_keys.clone();
-                    self.config.keys.ime_off = self.ime_control_off_keys.clone();
-                    // IME 同期キーを config に反映
-                    self.config.keys.ime_detect.toggle = self.ime_toggle_keys.clone();
-                    self.config.keys.ime_detect.on = self.ime_on_keys.clone();
-                    self.config.keys.ime_detect.off = self.ime_off_keys.clone();
-                    match self.config.save(&self.config_path) {
-                        Ok(()) => {
-                            self.status_message = "設定を保存しました".into();
-                            send_reload_config_message();
-                        }
-                        Err(e) => self.status_message = format!("保存エラー: {e}"),
-                    }
-                    self.rebuild_preview_engine();
-                }
-                if ui.button("キャンセル").clicked() {
-                    std::process::exit(0);
-                }
-                if !self.status_message.is_empty() {
-                    ui.label(&self.status_message);
-                }
-            });
-        });
-    }
-}
-
-impl SettingsApp {
-    fn layout_settings_ui(&mut self, ui: &mut egui::Ui) {
-        // Default layout dropdown
-        ui.horizontal(|ui| {
-            ui.label("デフォルト配列:");
-            let current = self
-                .config
-                .general
-                .default_layout
-                .trim_end_matches(".yab")
-                .to_string();
-            egui::ComboBox::from_id_salt("default_layout")
-                .selected_text(&current)
-                .show_ui(ui, |ui| {
-                    for name in &self.available_layouts {
-                        let is_selected = current == *name;
-                        if ui.selectable_label(is_selected, name).clicked() {
-                            self.config.general.default_layout = format!("{name}.yab");
-                        }
-                    }
-                });
-        });
-
-        // Layouts directory
-        ui.horizontal(|ui| {
-            ui.label("配列フォルダ:");
-            ui.text_edit_singleline(&mut self.config.general.layouts_dir);
-            if ui.button("再スキャン").clicked() {
-                self.available_layouts = scan_layout_names(&self.config.general.layouts_dir);
-            }
-        });
-
-        // Layout info
-        ui.label(format!(
-            "  検出された配列: {} 件",
-            self.available_layouts.len()
-        ));
-    }
-
-    fn basic_settings_ui(&mut self, ui: &mut egui::Ui) {
-        // Confirm mode dropdown
-        ui.horizontal(|ui| {
-            ui.label("確定モード:");
-            egui::ComboBox::from_id_salt("confirm_mode")
-                .selected_text(confirm_mode_label(self.config.general.confirm_mode))
-                .show_ui(ui, |ui| {
-                    use awase::config::ConfirmMode;
-                    for (mode, label) in [
-                        (ConfirmMode::Wait, "待機 (wait)"),
-                        (ConfirmMode::Speculative, "先行確定 (speculative)"),
-                        (ConfirmMode::TwoPhase, "二段タイマー (two_phase)"),
-                        (
-                            ConfirmMode::AdaptiveTiming,
-                            "適応タイミング (adaptive_timing)",
-                        ),
-                        (
-                            ConfirmMode::NgramPredictive,
-                            "n-gram 予測 (ngram_predictive)",
-                        ),
-                    ] {
-                        ui.selectable_value(&mut self.config.general.confirm_mode, mode, label);
-                    }
-                });
-        });
-
-        // Confirm mode description
-        ui.label(confirm_mode_description(self.config.general.confirm_mode));
-        ui.add_space(8.0);
-
-        // Threshold slider
-        ui.horizontal(|ui| {
-            ui.label("同時打鍵閾値:");
-            ui.add(
-                egui::Slider::new(&mut self.config.general.simultaneous_threshold_ms, 30..=200)
-                    .suffix(" ms"),
-            );
-        });
-
-        // Speculative delay slider (used by TwoPhase, AdaptiveTiming, etc.)
-        ui.horizontal(|ui| {
-            ui.label("投機遅延:");
-            ui.add(
-                egui::Slider::new(&mut self.config.general.speculative_delay_ms, 10..=100)
-                    .suffix(" ms"),
-            );
-        });
-
-        // Hotkey
-        ui.horizontal(|ui| {
-            ui.label("切替ホットキー:");
-            let hotkey = self
-                .config
-                .general
-                .engine_toggle_hotkey
-                .get_or_insert_with(String::new);
-            ui.text_edit_singleline(hotkey);
-        });
-    }
-
-    fn engine_toggle_keys_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label("エンジンの ON/OFF を切り替えるキーコンボを設定します。");
-        ui.label("例: VK_CONVERT, Ctrl+VK_NONCONVERT, Ctrl+Shift+VK_F10");
-        ui.add_space(4.0);
-
-        // Engine ON keys
-        ui.label("エンジン ON キー:");
-        let mut remove_on_idx = None;
-        for (i, key) in self.engine_on_keys.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {key}"));
-                if ui.small_button("削除").clicked() {
-                    remove_on_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_on_idx {
-            self.engine_on_keys.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  追加:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_engine_on_key).desired_width(200.0));
-            if ui.button("+").clicked() && !self.new_engine_on_key.is_empty() {
-                self.engine_on_keys.push(self.new_engine_on_key.clone());
-                self.new_engine_on_key.clear();
-            }
-        });
-
-        ui.add_space(8.0);
-
-        // Engine OFF keys
-        ui.label("エンジン OFF キー:");
-        let mut remove_off_idx = None;
-        for (i, key) in self.engine_off_keys.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {key}"));
-                if ui.small_button("削除").clicked() {
-                    remove_off_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_off_idx {
-            self.engine_off_keys.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  追加:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_engine_off_key).desired_width(200.0));
-            if ui.button("+").clicked() && !self.new_engine_off_key.is_empty() {
-                self.engine_off_keys.push(self.new_engine_off_key.clone());
-                self.new_engine_off_key.clear();
-            }
-        });
-    }
-
-    fn ime_control_keys_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label("ImmSetOpenStatus API で IME の ON/OFF を制御するキーコンボを設定します。");
-        ui.label("例: Ctrl+VK_CONVERT, Ctrl+VK_NONCONVERT");
-        ui.add_space(4.0);
-
-        // IME ON keys
-        ui.label("IME ON キー:");
-        let mut remove_on_idx = None;
-        for (i, key) in self.ime_control_on_keys.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {key}"));
-                if ui.small_button("削除").clicked() {
-                    remove_on_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_on_idx {
-            self.ime_control_on_keys.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  追加:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_ime_control_on_key).desired_width(200.0),
-            );
-            if ui.button("+").clicked() && !self.new_ime_control_on_key.is_empty() {
-                self.ime_control_on_keys
-                    .push(self.new_ime_control_on_key.clone());
-                self.new_ime_control_on_key.clear();
-            }
-        });
-
-        ui.add_space(8.0);
-
-        // IME OFF keys
-        ui.label("IME OFF キー:");
-        let mut remove_off_idx = None;
-        for (i, key) in self.ime_control_off_keys.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {key}"));
-                if ui.small_button("削除").clicked() {
-                    remove_off_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_off_idx {
-            self.ime_control_off_keys.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  追加:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_ime_control_off_key).desired_width(200.0),
-            );
-            if ui.button("+").clicked() && !self.new_ime_control_off_key.is_empty() {
-                self.ime_control_off_keys
-                    .push(self.new_ime_control_off_key.clone());
-                self.new_ime_control_off_key.clear();
-            }
-        });
-    }
-
-    fn ime_sync_keys_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label("IME の状態を追跡するキーを設定します。");
-        ui.label("例: VK_KANJI, VK_IME_ON, VK_IME_OFF");
-        ui.add_space(4.0);
-
-        // ── Toggle keys ──
-        ui.label("トグルキー（IME 状態を反転）:");
-        let mut remove_toggle_idx = None;
-        for (i, key) in self.ime_toggle_keys.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {key}"));
-                if ui.small_button("削除").clicked() {
-                    remove_toggle_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_toggle_idx {
-            self.ime_toggle_keys.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  追加:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_ime_toggle_key).desired_width(200.0));
-            if ui.button("+").clicked() && !self.new_ime_toggle_key.is_empty() {
-                self.ime_toggle_keys.push(self.new_ime_toggle_key.clone());
-                self.new_ime_toggle_key.clear();
-            }
-        });
-
-        ui.add_space(8.0);
-
-        // ── ON keys ──
-        ui.label("ON キー（IME が ON になる）:");
-        let mut remove_on_idx = None;
-        for (i, key) in self.ime_on_keys.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {key}"));
-                if ui.small_button("削除").clicked() {
-                    remove_on_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_on_idx {
-            self.ime_on_keys.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  追加:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_ime_on_key).desired_width(200.0));
-            if ui.button("+").clicked() && !self.new_ime_on_key.is_empty() {
-                self.ime_on_keys.push(self.new_ime_on_key.clone());
-                self.new_ime_on_key.clear();
-            }
-        });
-
-        ui.add_space(8.0);
-
-        // ── OFF keys ──
-        ui.label("OFF キー（IME が OFF になる）:");
-        let mut remove_off_idx = None;
-        for (i, key) in self.ime_off_keys.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {key}"));
-                if ui.small_button("削除").clicked() {
-                    remove_off_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_off_idx {
-            self.ime_off_keys.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  追加:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_ime_off_key).desired_width(200.0));
-            if ui.button("+").clicked() && !self.new_ime_off_key.is_empty() {
-                self.ime_off_keys.push(self.new_ime_off_key.clone());
-                self.new_ime_off_key.clear();
-            }
-        });
-    }
-}
-
-impl SettingsApp {
-    fn ngram_settings_ui(&mut self, ui: &mut egui::Ui) {
-        // Enable/disable checkbox
-        let mut enabled = self.config.general.ngram_file.is_some();
-        if ui
-            .checkbox(&mut enabled, "n-gram 適応閾値を有効にする")
-            .changed()
-        {
-            if enabled {
-                self.config.general.ngram_file = Some("data/ngram_hiragana.toml".into());
-            } else {
-                self.config.general.ngram_file = None;
-            }
-        }
-
-        // Grayed out if disabled
-        ui.add_enabled_ui(enabled, |ui| {
-            // Corpus file path
-            if let Some(ref mut path) = self.config.general.ngram_file {
-                ui.horizontal(|ui| {
-                    ui.label("コーパスファイル:");
-                    ui.text_edit_singleline(path);
-                });
-            }
-
-            // Adjustment range
-            ui.horizontal(|ui| {
-                ui.label("調整幅:");
-                ui.add(
-                    egui::Slider::new(&mut self.config.general.ngram_adjustment_range_ms, 5..=50)
-                        .suffix(" ms"),
-                );
-            });
-
-            // Min/Max thresholds
-            ui.horizontal(|ui| {
-                ui.label("閾値下限:");
-                ui.add(
-                    egui::Slider::new(&mut self.config.general.ngram_min_threshold_ms, 10..=100)
-                        .suffix(" ms"),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label("閾値上限:");
-                ui.add(
-                    egui::Slider::new(&mut self.config.general.ngram_max_threshold_ms, 50..=200)
-                        .suffix(" ms"),
-                );
-            });
-        });
-    }
-}
-
-/// 配列フォルダのパスを解決する（相対パスなら実行ファイルの親ディレクトリを基準にする）。
-fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
-    if std::path::Path::new(layouts_dir).is_absolute() {
-        std::path::PathBuf::from(layouts_dir)
-    } else if let Ok(exe) = std::env::current_exe() {
-        exe.parent().map_or_else(
-            || std::path::PathBuf::from(layouts_dir),
-            |d| d.join(layouts_dir),
-        )
-    } else {
-        std::path::PathBuf::from(layouts_dir)
-    }
-}
-
-impl SettingsApp {
-    fn rebuild_preview_engine(&mut self) {
-        let layouts_dir = resolve_layouts_dir(&self.config.general.layouts_dir);
-        let layout_file = layouts_dir.join(&self.config.general.default_layout);
-
-        let Ok(content) = std::fs::read_to_string(&layout_file) else {
-            self.preview_engine = None;
-            self.preview_tracker = None;
-            return;
-        };
-        let Ok(layout) = awase::yab::YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis)
-        else {
-            self.preview_engine = None;
-            self.preview_tracker = None;
-            return;
-        };
-        let layout = layout.resolve_kana();
-
-        let left_vk = awase_windows::vk::vk_name_to_code(&self.config.general.left_thumb_key)
-            .unwrap_or(awase::types::VkCode(0x1D));
-        let right_vk = awase_windows::vk::vk_name_to_code(&self.config.general.right_thumb_key)
-            .unwrap_or(awase::types::VkCode(0x1C));
-
-        let tracker = awase::engine::input_tracker::InputTracker::new();
-        let fsm = awase::engine::NicolaFsm::new(
-            layout,
-            left_vk,
-            right_vk,
-            self.config.general.simultaneous_threshold_ms,
-            self.config.general.confirm_mode,
-            self.config.general.speculative_delay_ms,
-        );
-        let ime_sync_keys = awase::engine::ImeSyncKeys {
-            toggle: vec![],
-            on: vec![],
-            off: vec![],
-        };
-        let special_keys = awase::engine::SpecialKeyCombos {
-            engine_on: vec![],
-            engine_off: vec![],
-            ime_on: vec![],
-            ime_off: vec![],
-        };
-        self.preview_tracker = Some(tracker);
-        self.preview_engine = Some(awase::engine::Engine::new(
-            fsm,
-            awase::engine::input_tracker::InputTracker::new(),
-            ime_sync_keys,
-            special_keys,
-        ));
-        self.preview_output.clear();
-    }
-
-    fn preview_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label("キーボードで入力してみてください（実際の IME には送信されません）");
-        ui.label("※ タイムアウトと同時打鍵のシミュレーションは簡易版です");
-
-        // Capture keyboard input from egui
-        let events = ui.input(|i| i.events.clone());
-        for event in &events {
-            if let egui::Event::Key {
-                key, pressed: true, ..
-            } = event
-            {
-                self.handle_preview_key(*key);
-            }
-        }
-
-        // Output display
-        ui.horizontal(|ui| {
-            ui.label("出力:");
-            ui.monospace(&self.preview_output);
-        });
-
-        // State display
-        if self.preview_engine.is_some() {
-            ui.label(format!(
-                "状態: {} | 確定モード: {:?}",
-                self.preview_state, self.config.general.confirm_mode
-            ));
-        } else {
-            ui.label("⚠ 配列ファイルを読み込めませんでした。配列設定を確認してください。");
-        }
-
-        if ui.button("クリア").clicked() {
-            self.preview_output.clear();
-            self.rebuild_preview_engine();
-        }
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn handle_preview_key(&mut self, key: egui::Key) {
-        let (Some(ref mut engine), Some(ref mut tracker)) =
-            (&mut self.preview_engine, &mut self.preview_tracker)
-        else {
-            return;
-        };
-
-        // Map egui key to VK code (simplified A-Z mapping)
-        let vk: u16 = match key {
-            egui::Key::A => 0x41,
-            egui::Key::B => 0x42,
-            egui::Key::C => 0x43,
-            egui::Key::D => 0x44,
-            egui::Key::E => 0x45,
-            egui::Key::F => 0x46,
-            egui::Key::G => 0x47,
-            egui::Key::H => 0x48,
-            egui::Key::I => 0x49,
-            egui::Key::J => 0x4A,
-            egui::Key::K => 0x4B,
-            egui::Key::L => 0x4C,
-            egui::Key::M => 0x4D,
-            egui::Key::N => 0x4E,
-            egui::Key::O => 0x4F,
-            egui::Key::P => 0x50,
-            egui::Key::Q => 0x51,
-            egui::Key::R => 0x52,
-            egui::Key::S => 0x53,
-            egui::Key::T => 0x54,
-            egui::Key::U => 0x55,
-            egui::Key::V => 0x56,
-            egui::Key::W => 0x57,
-            egui::Key::X => 0x58,
-            egui::Key::Y => 0x59,
-            egui::Key::Z => 0x5A,
-            _ => return,
-        };
-
-        // Create a simulated RawKeyEvent
-        let vk_code = awase::types::VkCode(vk);
-        let physical_pos = awase_windows::vk::vk_to_pos(vk_code);
-        let scan_code = physical_pos
-            .and_then(awase_windows::scanmap::pos_to_scan)
-            .unwrap_or(awase::types::ScanCode(0));
-        let timestamp = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros(),
-        )
-        .unwrap_or(u64::MAX);
-        let event = awase::types::RawKeyEvent {
-            vk_code,
-            scan_code,
-            event_type: awase::types::KeyEventType::KeyDown,
-            extra_info: 0,
-            timestamp,
-            key_classification: if physical_pos.is_some() {
-                awase::types::KeyClassification::Char
-            } else {
-                awase::types::KeyClassification::Passthrough
-            },
-            physical_pos,
-            ime_relevance: awase::types::ImeRelevance::default(),
-            modifier_key: None,
-        };
-
-        let ctx = awase::engine::InputContext {
-            ime_cache: awase::types::ImeCacheState::On,
-        };
-        let _phys = tracker.process(&event);
-        let decision = engine.on_input(event, &ctx);
-
-        // Collect output from decision effects
-        let (consumed, effects) = match &decision {
-            awase::engine::Decision::PassThrough => (false, vec![]),
-            awase::engine::Decision::PassThroughWith { effects } => (false, effects.clone()),
-            awase::engine::Decision::Consume { effects } => (true, effects.clone()),
-        };
-        for effect in &effects {
-            if let awase::engine::Effect::Input(awase::engine::InputEffect::SendKeys(actions)) =
-                effect
-            {
-                for action in actions {
-                    match action {
-                        awase::types::KeyAction::Romaji(s) => self.preview_output.push_str(s),
-                        awase::types::KeyAction::Char(ch) => self.preview_output.push(*ch),
-                        awase::types::KeyAction::SpecialKey(
-                            awase::types::SpecialKey::Backspace,
-                        ) => {
-                            self.preview_output.pop();
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-
-        self.preview_state = if consumed {
-            "消費".to_string()
-        } else {
-            "通過".to_string()
-        };
-    }
-}
-
-impl SettingsApp {
-    fn focus_overrides_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label("特定のプロセス/ウィンドウクラスに対する動作を強制指定します。");
-        ui.add_space(4.0);
-
-        // ── force_text（常にテキスト入力として扱う） ──
-        ui.label("常にテキスト入力として扱う (force_text):");
-        let mut remove_text_idx = None;
-        for (i, entry) in self.config.focus_overrides.force_text.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {} / {}", entry.process, entry.class));
-                if ui.small_button("削除").clicked() {
-                    remove_text_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_text_idx {
-            self.config.focus_overrides.force_text.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  プロセス:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_force_text_process).desired_width(120.0),
-            );
-            ui.label("クラス:");
-            ui.add(egui::TextEdit::singleline(&mut self.new_force_text_class).desired_width(120.0));
-            if ui.button("追加").clicked()
-                && !self.new_force_text_process.is_empty()
-                && !self.new_force_text_class.is_empty()
-            {
-                self.config
-                    .focus_overrides
-                    .force_text
-                    .push(awase::config::FocusOverrideEntry {
-                        process: self.new_force_text_process.drain(..).collect(),
-                        class: self.new_force_text_class.drain(..).collect(),
-                    });
-            }
-        });
-
-        ui.add_space(8.0);
-
-        // ── force_bypass（常に非テキストとしてバイパス） ──
-        ui.label("常にバイパスする (force_bypass):");
-        let mut remove_bypass_idx = None;
-        for (i, entry) in self.config.focus_overrides.force_bypass.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("  {} / {}", entry.process, entry.class));
-                if ui.small_button("削除").clicked() {
-                    remove_bypass_idx = Some(i);
-                }
-            });
-        }
-        if let Some(idx) = remove_bypass_idx {
-            self.config.focus_overrides.force_bypass.remove(idx);
-        }
-        ui.horizontal(|ui| {
-            ui.label("  プロセス:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_force_bypass_process).desired_width(120.0),
-            );
-            ui.label("クラス:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_force_bypass_class).desired_width(120.0),
-            );
-            if ui.button("追加").clicked()
-                && !self.new_force_bypass_process.is_empty()
-                && !self.new_force_bypass_class.is_empty()
-            {
-                self.config
-                    .focus_overrides
-                    .force_bypass
-                    .push(awase::config::FocusOverrideEntry {
-                        process: self.new_force_bypass_process.drain(..).collect(),
-                        class: self.new_force_bypass_class.drain(..).collect(),
-                    });
-            }
-        });
-    }
-}
-
-/// 設定保存後に awase 本体プロセスへ `WM_RELOAD_CONFIG` を送信する。
-///
-/// Windows では `FindWindowW` で awase のメッセージウィンドウを探し、
-/// `PostMessageW` でカスタムメッセージを送信する。
-/// Windows 以外では何もしない（GUI プレビュー開発用）。
 #[allow(clippy::missing_const_for_fn)]
 fn send_reload_config_message() {
     #[cfg(target_os = "windows")]
     {
         use windows::core::w;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
-
         unsafe {
             let hwnd = FindWindowW(w!("awase_msg_window"), None);
             if let Ok(hwnd) = hwnd {
@@ -955,10 +633,6 @@ fn send_reload_config_message() {
                 let _ = PostMessageW(hwnd, WM_RELOAD_CONFIG, msg, lparam);
             }
         }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Non-Windows: no-op (for development/testing)
     }
 }
 
@@ -973,13 +647,24 @@ const fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
     }
 }
 
-const fn confirm_mode_description(mode: awase::config::ConfirmMode) -> &'static str {
+const fn confirm_mode_tooltip(mode: awase::config::ConfirmMode) -> &'static str {
     use awase::config::ConfirmMode;
     match mode {
-        ConfirmMode::Wait => "  タイムアウトまで出力を保留します。安定性重視。",
-        ConfirmMode::Speculative => "  即座に出力し、同時打鍵時に BackSpace で差し替えます。",
-        ConfirmMode::TwoPhase => "  短い待機後に投機出力。遅延とちらつきのバランスが最適。",
-        ConfirmMode::AdaptiveTiming => "  連続入力中は待機、途切れたら投機出力に切り替えます。",
-        ConfirmMode::NgramPredictive => "  n-gram 頻度で投機/待機を自動判定します。",
+        ConfirmMode::Wait => "  タイムアウトまで出力を保留。最も正確だが遅延あり。",
+        ConfirmMode::Speculative => "  即座に出力し、同時打鍵時に差し替え。高速だが一瞬ちらつく。",
+        ConfirmMode::TwoPhase => "  短い待機後に投機出力。wait と speculative の中間。",
+        ConfirmMode::AdaptiveTiming => {
+            "  連続打鍵中は wait、途切れたら投機。タイピング速度に適応。"
+        }
+        ConfirmMode::NgramPredictive => "  n-gram 統計で投機/待機を動的判断。最も賢い。",
+    }
+}
+
+const fn output_mode_label(mode: awase::config::OutputMode) -> &'static str {
+    use awase::config::OutputMode;
+    match mode {
+        OutputMode::Unicode => "Unicode",
+        OutputMode::PerKey => "PerKey",
+        OutputMode::Batched => "Batched",
     }
 }

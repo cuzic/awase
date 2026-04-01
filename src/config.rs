@@ -46,7 +46,7 @@ pub enum ConfirmMode {
     NgramPredictive,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GeneralConfig {
     /// キーボードの物理レイアウトモデル（"jis" or "us"）
     #[serde(default = "default_keyboard_model")]
@@ -306,7 +306,7 @@ pub struct FocusOverrides {
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
 /// このファイルにはアプリ全体の設定のみを含む。
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub general: GeneralConfig,
     #[serde(default)]
