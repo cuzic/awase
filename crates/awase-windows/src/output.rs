@@ -120,6 +120,58 @@ const fn special_key_to_vk(sk: SpecialKey) -> u16 {
     }
 }
 
+/// 記号の VK マッピング（文字 → (VK コード, Shift 必要)）
+///
+/// JIS キーボード + IME ひらがなモード前提。
+/// IME が有効な状態でこれらのキーストロークを送ると、
+/// 対応する全角記号が入力される。
+fn build_symbol_to_vk() -> HashMap<char, (u16, bool)> {
+    let entries: &[(char, u16, bool)] = &[
+        // 句読点・括弧
+        ('、', 0xBC, false),  // , (VK_OEM_COMMA)
+        ('。', 0xBE, false),  // . (VK_OEM_PERIOD)
+        ('・', 0xBF, false),  // / (VK_OEM_2)
+        ('「', 0xDB, false),  // [ (VK_OEM_4)
+        ('」', 0xDD, false),  // ] (VK_OEM_6)
+        // 長音・記号
+        ('ー', 0xBD, false),  // - (VK_OEM_MINUS)
+        ('～', 0xDE, true),   // Shift+^ (VK_OEM_7, JIS)
+        // 全角 ASCII 記号
+        ('？', 0xBF, true),   // Shift+/
+        ('！', 0x31, true),   // Shift+1
+        ('＃', 0x33, true),   // Shift+3
+        ('＄', 0x34, true),   // Shift+4
+        ('％', 0x35, true),   // Shift+5
+        ('＆', 0x36, true),   // Shift+6
+        ('（', 0x38, true),   // Shift+8
+        ('）', 0x39, true),   // Shift+9
+        ('＝', 0xBD, true),   // Shift+- (JIS: =)
+        ('＋', 0xBB, true),   // Shift+; (VK_OEM_PLUS, JIS: +)
+        ('＊', 0xBA, true),   // Shift+: (VK_OEM_1, JIS: *)
+        ('＜', 0xBC, true),   // Shift+,
+        ('＞', 0xBE, true),   // Shift+.
+        ('＠', 0xC0, false),  // @ (VK_OEM_3, JIS)
+        ('｛', 0xDB, true),   // Shift+[
+        ('｝', 0xDD, true),   // Shift+]
+        ('＿', 0xE2, true),   // Shift+＼ (JIS: _)
+        ('｜', 0xDC, true),   // Shift+¥ (JIS: |)
+        ('"', 0x32, true),    // Shift+2 (JIS: ")
+        ('＂', 0x32, true),   // 全角" → Shift+2
+        ('；', 0xBB, false),  // ; (VK_OEM_PLUS, JIS: ;)
+        ('：', 0xBA, false),  // : (VK_OEM_1, JIS: :)
+        // 半角 ASCII 記号（Chrome で全角にならない場合のフォールバック用）
+        ('?', 0xBF, true),
+        ('!', 0x31, true),
+        ('-', 0xBD, false),
+        ('.', 0xBE, false),
+        (',', 0xBC, false),
+        ('/', 0xBF, false),
+        ('[', 0xDB, false),
+        (']', 0xDD, false),
+    ];
+    entries.iter().map(|&(ch, vk, shift)| (ch, (vk, shift))).collect()
+}
+
 /// SendInput によるキー注入を行うモジュール
 pub struct Output {
     mode: OutputMode,
@@ -127,6 +179,8 @@ pub struct Output {
     romaji_to_kana: Option<HashMap<String, char>>,
     /// Chrome VK モード用: かな→ローマ字逆引きテーブル
     kana_to_romaji: HashMap<char, String>,
+    /// Chrome VK モード用: 記号→VK コードマッピング
+    symbol_to_vk: HashMap<char, (u16, bool)>,
 }
 
 impl Output {
@@ -140,6 +194,7 @@ impl Output {
             mode,
             romaji_to_kana,
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
+            symbol_to_vk: build_symbol_to_vk(),
         }
     }
 
@@ -350,18 +405,38 @@ impl Output {
     /// いずれにもマッチしない場合は Unicode 直接出力にフォールバックする。
     /// 文字を Chrome モード用に送信する。
     ///
-    /// かな文字のみローマ字 VK に変換し、それ以外は Unicode 直接出力。
-    /// Chrome では KEYEVENTF_UNICODE でもかな文字は正常に入力できるが、
-    /// IME 経由のローマ字変換が必要な場合にこのパスを使う。
+    /// 1. かな → ローマ字 VK（IME 経由で変換）
+    /// 2. 記号 → マッピングテーブルの VK コード（IME が全角変換）
+    /// 3. フォールバック → Unicode 直接出力
     fn send_char_as_vk(&self, ch: char) {
-        // かな→ローマ字逆引き（か → "ka" → VK(k), VK(a) → IME が変換）
+        // 1. かな→ローマ字逆引き（か → "ka" → VK(k), VK(a) → IME が変換）
         if let Some(romaji) = self.kana_to_romaji.get(&ch) {
             log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
             self.send_romaji_per_key(romaji);
             return;
         }
-        // かな以外（記号・句読点等）は Unicode 直接出力
-        log::debug!("    send_char_as_vk: '{ch}' → Unicode (not kana)");
+        // 2. 記号→VK コード（？ → Shift+/ → IME が全角？に変換）
+        if let Some(&(vk, needs_shift)) = self.symbol_to_vk.get(&ch) {
+            log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+            let mut inputs = Vec::with_capacity(4);
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, false));
+            }
+            inputs.push(make_key_input(vk, false));
+            inputs.push(make_key_input(vk, true));
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, true));
+            }
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+            return;
+        }
+        // 3. フォールバック: Unicode 直接出力
+        log::debug!("    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
         self.send_unicode_char(ch);
     }
 
