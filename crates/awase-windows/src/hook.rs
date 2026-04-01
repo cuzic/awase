@@ -319,19 +319,24 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 wparam.0 as u32,
                 WM_KEYDOWN | WM_SYSKEYDOWN
             );
-            if is_keydown {
-                // Engine にイベントを送って保留フラッシュを促す。
-                // ただし Engine の返り値（Consume/PassThrough）は無視し、
-                // 常に OS に直接渡す。
+            // Engine にイベントを送信して内部状態（ModifierState 等）を更新させる。
+            // KeyDown 時は保留フラッシュも促進される。
+            // ただし Engine の判定結果は無視し、常に OS に直接渡す。
+            {
                 let in_callback = IN_CALLBACK.get_mut();
                 if !*in_callback {
                     *in_callback = true;
                     let vk = VkCode(vk_raw);
                     let scan = ScanCode(kb.scanCode);
+                    let event_type = if is_keydown {
+                        KeyEventType::KeyDown
+                    } else {
+                        KeyEventType::KeyUp
+                    };
                     let event = RawKeyEvent {
                         vk_code: vk,
                         scan_code: scan,
-                        event_type: KeyEventType::KeyDown,
+                        event_type,
                         extra_info: kb.dwExtraInfo,
                         timestamp: now_timestamp(),
                         key_classification: KeyClassification::Passthrough,
@@ -344,6 +349,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                     }
                     *IN_CALLBACK.get_mut() = false;
                 }
+            }
+            if is_keydown {
                 log::trace!("Hook: modifier vk=0x{vk_raw:02X} KeyDown → flush + PassThrough");
             } else {
                 log::trace!("Hook: modifier vk=0x{vk_raw:02X} KeyUp → PassThrough");
