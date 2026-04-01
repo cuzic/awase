@@ -304,3 +304,648 @@ impl ModifierState {
         self.ctrl || self.alt || self.win
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
+    use crate::scanmap::PhysicalPos;
+    use crate::types::{KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode};
+
+    // ── ヘルパー ──────────────────────────────────────────────
+
+    fn make_raw_key_event(event_type: KeyEventType, modifier_key: Option<ModifierKey>) -> RawKeyEvent {
+        RawKeyEvent {
+            vk_code: VkCode(0x41),
+            scan_code: ScanCode(0x1E),
+            event_type,
+            extra_info: 0,
+            timestamp: 1000,
+            key_classification: crate::types::KeyClassification::Char,
+            physical_pos: None,
+            ime_relevance: crate::types::ImeRelevance::default(),
+            modifier_key,
+        }
+    }
+
+    // ── KeyClass ──────────────────────────────────────────────
+
+    #[test]
+    fn key_class_is_thumb_char() {
+        assert!(!KeyClass::Char.is_thumb());
+    }
+
+    #[test]
+    fn key_class_is_thumb_left_thumb() {
+        assert!(KeyClass::LeftThumb.is_thumb());
+    }
+
+    #[test]
+    fn key_class_is_thumb_right_thumb() {
+        assert!(KeyClass::RightThumb.is_thumb());
+    }
+
+    #[test]
+    fn key_class_is_thumb_passthrough() {
+        assert!(!KeyClass::Passthrough.is_thumb());
+    }
+
+    #[test]
+    fn key_class_is_left_thumb_only_left() {
+        assert!(KeyClass::LeftThumb.is_left_thumb());
+        assert!(!KeyClass::RightThumb.is_left_thumb());
+        assert!(!KeyClass::Char.is_left_thumb());
+        assert!(!KeyClass::Passthrough.is_left_thumb());
+    }
+
+    #[test]
+    fn key_class_equality() {
+        assert_eq!(KeyClass::Char, KeyClass::Char);
+        assert_eq!(KeyClass::LeftThumb, KeyClass::LeftThumb);
+        assert_eq!(KeyClass::RightThumb, KeyClass::RightThumb);
+        assert_eq!(KeyClass::Passthrough, KeyClass::Passthrough);
+        assert_ne!(KeyClass::Char, KeyClass::LeftThumb);
+        assert_ne!(KeyClass::LeftThumb, KeyClass::RightThumb);
+    }
+
+    // ── Face ──────────────────────────────────────────────────
+
+    #[test]
+    fn face_from_thumb_left_thumb() {
+        assert_eq!(Face::from_thumb(KeyClass::LeftThumb), Face::LeftThumb);
+    }
+
+    #[test]
+    fn face_from_thumb_right_thumb() {
+        assert_eq!(Face::from_thumb(KeyClass::RightThumb), Face::RightThumb);
+    }
+
+    #[test]
+    fn face_from_thumb_char_fallback() {
+        // Char は thumb ではないが、フォールバックとして Normal が返る
+        assert_eq!(Face::from_thumb(KeyClass::Char), Face::Normal);
+    }
+
+    #[test]
+    fn face_from_thumb_passthrough_fallback() {
+        assert_eq!(Face::from_thumb(KeyClass::Passthrough), Face::Normal);
+    }
+
+    #[test]
+    fn face_from_thumb_bool_true_is_left() {
+        assert_eq!(Face::from_thumb_bool(true), Face::LeftThumb);
+    }
+
+    #[test]
+    fn face_from_thumb_bool_false_is_right() {
+        assert_eq!(Face::from_thumb_bool(false), Face::RightThumb);
+    }
+
+    #[test]
+    fn face_equality() {
+        assert_eq!(Face::Normal, Face::Normal);
+        assert_eq!(Face::LeftThumb, Face::LeftThumb);
+        assert_eq!(Face::RightThumb, Face::RightThumb);
+        assert_eq!(Face::Shift, Face::Shift);
+        assert_ne!(Face::Normal, Face::LeftThumb);
+        assert_ne!(Face::LeftThumb, Face::RightThumb);
+        assert_ne!(Face::Normal, Face::Shift);
+    }
+
+    // ── TimerIntent::to_commands ──────────────────────────────
+
+    fn find_set_commands(cmds: &[timed_fsm::TimerCommand<usize>]) -> Vec<(usize, Duration)> {
+        cmds.iter()
+            .filter_map(|c| {
+                if let timed_fsm::TimerCommand::Set { id, duration } = c {
+                    Some((*id, *duration))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn find_kill_ids(cmds: &[timed_fsm::TimerCommand<usize>]) -> Vec<usize> {
+        cmds.iter()
+            .filter_map(|c| {
+                if let timed_fsm::TimerCommand::Kill { id } = c {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn timer_intent_cancel_all_kills_both_timers() {
+        let cmds = TimerIntent::CancelAll.to_commands(50_000, 30_000);
+        let kills = find_kill_ids(&cmds);
+        assert!(kills.contains(&TIMER_PENDING), "TIMER_PENDING should be killed");
+        assert!(kills.contains(&TIMER_SPECULATIVE), "TIMER_SPECULATIVE should be killed");
+        assert!(find_set_commands(&cmds).is_empty(), "no Set commands expected");
+    }
+
+    #[test]
+    fn timer_intent_cancel_all_command_count() {
+        let cmds = TimerIntent::CancelAll.to_commands(50_000, 30_000);
+        assert_eq!(cmds.len(), 2);
+    }
+
+    #[test]
+    fn timer_intent_pending_sets_pending_timer_with_threshold() {
+        let threshold_us = 50_000u64;
+        let cmds = TimerIntent::Pending.to_commands(threshold_us, 30_000);
+        let sets = find_set_commands(&cmds);
+        assert_eq!(sets.len(), 1);
+        let (id, dur) = sets[0];
+        assert_eq!(id, TIMER_PENDING);
+        assert_eq!(dur, Duration::from_micros(threshold_us));
+    }
+
+    #[test]
+    fn timer_intent_pending_kills_both_before_set() {
+        let cmds = TimerIntent::Pending.to_commands(50_000, 30_000);
+        let kills = find_kill_ids(&cmds);
+        assert!(kills.contains(&TIMER_PENDING));
+        assert!(kills.contains(&TIMER_SPECULATIVE));
+    }
+
+    #[test]
+    fn timer_intent_pending_command_count() {
+        let cmds = TimerIntent::Pending.to_commands(50_000, 30_000);
+        assert_eq!(cmds.len(), 3);
+    }
+
+    #[test]
+    fn timer_intent_speculative_wait_sets_speculative_timer() {
+        let speculative_us = 20_000u64;
+        let cmds = TimerIntent::SpeculativeWait.to_commands(50_000, speculative_us);
+        let sets = find_set_commands(&cmds);
+        assert_eq!(sets.len(), 1);
+        let (id, dur) = sets[0];
+        assert_eq!(id, TIMER_SPECULATIVE);
+        assert_eq!(dur, Duration::from_micros(speculative_us));
+    }
+
+    #[test]
+    fn timer_intent_speculative_wait_kills_both_before_set() {
+        let cmds = TimerIntent::SpeculativeWait.to_commands(50_000, 20_000);
+        let kills = find_kill_ids(&cmds);
+        assert!(kills.contains(&TIMER_PENDING));
+        assert!(kills.contains(&TIMER_SPECULATIVE));
+    }
+
+    #[test]
+    fn timer_intent_speculative_wait_command_count() {
+        let cmds = TimerIntent::SpeculativeWait.to_commands(50_000, 20_000);
+        assert_eq!(cmds.len(), 3);
+    }
+
+    #[test]
+    fn timer_intent_phase2_transition_kills_speculative_and_sets_pending() {
+        let remaining_us = 12_345u64;
+        let cmds = TimerIntent::Phase2Transition { remaining_us }.to_commands(50_000, 20_000);
+        let kills = find_kill_ids(&cmds);
+        assert!(kills.contains(&TIMER_SPECULATIVE));
+        assert!(!kills.contains(&TIMER_PENDING), "TIMER_PENDING should NOT be killed in Phase2");
+        let sets = find_set_commands(&cmds);
+        assert_eq!(sets.len(), 1);
+        let (id, dur) = sets[0];
+        assert_eq!(id, TIMER_PENDING);
+        assert_eq!(dur, Duration::from_micros(remaining_us));
+    }
+
+    #[test]
+    fn timer_intent_phase2_transition_command_count() {
+        let cmds = TimerIntent::Phase2Transition { remaining_us: 10_000 }.to_commands(50_000, 20_000);
+        assert_eq!(cmds.len(), 2);
+    }
+
+    #[test]
+    fn timer_intent_phase2_transition_zero_remaining() {
+        let cmds = TimerIntent::Phase2Transition { remaining_us: 0 }.to_commands(50_000, 20_000);
+        let sets = find_set_commands(&cmds);
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].1, Duration::from_micros(0));
+    }
+
+    #[test]
+    fn timer_intent_keep_returns_empty() {
+        let cmds = TimerIntent::Keep.to_commands(50_000, 20_000);
+        assert!(cmds.is_empty());
+    }
+
+    #[test]
+    fn timer_intent_keep_ignores_parameters() {
+        // パラメータの値に関わらず空を返す
+        let cmds1 = TimerIntent::Keep.to_commands(0, 0);
+        let cmds2 = TimerIntent::Keep.to_commands(u64::MAX, u64::MAX);
+        assert!(cmds1.is_empty());
+        assert!(cmds2.is_empty());
+    }
+
+    // ── EngineState ───────────────────────────────────────────
+
+    fn make_pending_key() -> PendingKey {
+        PendingKey {
+            scan_code: ScanCode(0x1E),
+            vk_code: VkCode(0x41),
+            pos: Some(PhysicalPos { row: 1, col: 2 }),
+            timestamp: 1000,
+        }
+    }
+
+    fn make_pending_thumb_data(is_left: bool) -> PendingThumbData {
+        PendingThumbData {
+            scan_code: ScanCode(0x39),
+            vk_code: VkCode(0x20),
+            is_left,
+            timestamp: 2000,
+        }
+    }
+
+    #[test]
+    fn engine_state_idle_is_idle() {
+        assert!(EngineState::Idle.is_idle());
+    }
+
+    #[test]
+    fn engine_state_pending_char_is_not_idle() {
+        assert!(!EngineState::PendingChar(make_pending_key()).is_idle());
+    }
+
+    #[test]
+    fn engine_state_pending_thumb_is_not_idle() {
+        assert!(!EngineState::PendingThumb(make_pending_thumb_data(true)).is_idle());
+    }
+
+    #[test]
+    fn engine_state_pending_char_thumb_is_not_idle() {
+        let state = EngineState::PendingCharThumb {
+            char_key: make_pending_key(),
+            thumb: make_pending_thumb_data(false),
+        };
+        assert!(!state.is_idle());
+    }
+
+    #[test]
+    fn engine_state_speculative_char_is_not_idle() {
+        assert!(!EngineState::SpeculativeChar(make_pending_key()).is_idle());
+    }
+
+    // ── ModifierState ─────────────────────────────────────────
+
+    #[test]
+    fn modifier_state_default_all_false() {
+        let ms = ModifierState::default();
+        assert!(!ms.ctrl);
+        assert!(!ms.alt);
+        assert!(!ms.shift);
+        assert!(!ms.win);
+    }
+
+    #[test]
+    fn modifier_state_is_os_modifier_held_none_held() {
+        let ms = ModifierState { ctrl: false, alt: false, shift: false, win: false };
+        assert!(!ms.is_os_modifier_held());
+    }
+
+    #[test]
+    fn modifier_state_is_os_modifier_held_shift_only_is_false() {
+        // Shift alone does NOT count as an OS modifier
+        let ms = ModifierState { ctrl: false, alt: false, shift: true, win: false };
+        assert!(!ms.is_os_modifier_held());
+    }
+
+    #[test]
+    fn modifier_state_is_os_modifier_held_ctrl() {
+        let ms = ModifierState { ctrl: true, alt: false, shift: false, win: false };
+        assert!(ms.is_os_modifier_held());
+    }
+
+    #[test]
+    fn modifier_state_is_os_modifier_held_alt() {
+        let ms = ModifierState { ctrl: false, alt: true, shift: false, win: false };
+        assert!(ms.is_os_modifier_held());
+    }
+
+    #[test]
+    fn modifier_state_is_os_modifier_held_win() {
+        let ms = ModifierState { ctrl: false, alt: false, shift: false, win: true };
+        assert!(ms.is_os_modifier_held());
+    }
+
+    #[test]
+    fn modifier_state_is_os_modifier_held_all_held() {
+        let ms = ModifierState { ctrl: true, alt: true, shift: true, win: true };
+        assert!(ms.is_os_modifier_held());
+    }
+
+    #[test]
+    fn modifier_state_update_ctrl_down() {
+        let mut ms = ModifierState::default();
+        let ev = make_raw_key_event(KeyEventType::KeyDown, Some(ModifierKey::Ctrl));
+        ms.update(&ev);
+        assert!(ms.ctrl);
+        assert!(!ms.alt);
+        assert!(!ms.shift);
+        assert!(!ms.win);
+    }
+
+    #[test]
+    fn modifier_state_update_ctrl_up() {
+        let mut ms = ModifierState { ctrl: true, alt: false, shift: false, win: false };
+        let ev = make_raw_key_event(KeyEventType::KeyUp, Some(ModifierKey::Ctrl));
+        ms.update(&ev);
+        assert!(!ms.ctrl);
+    }
+
+    #[test]
+    fn modifier_state_update_alt_down() {
+        let mut ms = ModifierState::default();
+        let ev = make_raw_key_event(KeyEventType::KeyDown, Some(ModifierKey::Alt));
+        ms.update(&ev);
+        assert!(ms.alt);
+    }
+
+    #[test]
+    fn modifier_state_update_shift_down() {
+        let mut ms = ModifierState::default();
+        let ev = make_raw_key_event(KeyEventType::KeyDown, Some(ModifierKey::Shift));
+        ms.update(&ev);
+        assert!(ms.shift);
+    }
+
+    #[test]
+    fn modifier_state_update_meta_down() {
+        let mut ms = ModifierState::default();
+        let ev = make_raw_key_event(KeyEventType::KeyDown, Some(ModifierKey::Meta));
+        ms.update(&ev);
+        assert!(ms.win);
+    }
+
+    #[test]
+    fn modifier_state_update_non_modifier_key_no_change() {
+        let mut ms = ModifierState { ctrl: true, alt: true, shift: true, win: true };
+        let ev = make_raw_key_event(KeyEventType::KeyDown, None);
+        ms.update(&ev);
+        // None の modifier_key では何も変化しない
+        assert!(ms.ctrl);
+        assert!(ms.alt);
+        assert!(ms.shift);
+        assert!(ms.win);
+    }
+
+    #[test]
+    fn modifier_state_update_shift_up_only_clears_shift() {
+        let mut ms = ModifierState { ctrl: true, alt: true, shift: true, win: true };
+        let ev = make_raw_key_event(KeyEventType::KeyUp, Some(ModifierKey::Shift));
+        ms.update(&ev);
+        assert!(ms.ctrl);
+        assert!(ms.alt);
+        assert!(!ms.shift);
+        assert!(ms.win);
+    }
+
+    // ── OutputUpdate ──────────────────────────────────────────
+
+    #[test]
+    fn output_update_none_variant() {
+        let u = OutputUpdate::None;
+        assert!(matches!(u, OutputUpdate::None));
+    }
+
+    #[test]
+    fn output_update_record_variant() {
+        use crate::types::KeyAction;
+        let record = OutputRecord {
+            scan_code: ScanCode(0x1E),
+            romaji: "a".to_string(),
+            kana: Some('あ'),
+            action: KeyAction::Char('a'),
+        };
+        let u = OutputUpdate::Record(record);
+        assert!(matches!(u, OutputUpdate::Record(_)));
+    }
+
+    #[test]
+    fn output_update_retract_and_record_variant() {
+        use crate::types::KeyAction;
+        let record = OutputRecord {
+            scan_code: ScanCode(0x1E),
+            romaji: "ka".to_string(),
+            kana: Some('か'),
+            action: KeyAction::Romaji("ka".to_string()),
+        };
+        let u = OutputUpdate::RetractAndRecord(record);
+        assert!(matches!(u, OutputUpdate::RetractAndRecord(_)));
+    }
+
+    // ── OutputRecord ──────────────────────────────────────────
+
+    #[test]
+    fn output_record_clone() {
+        use crate::types::KeyAction;
+        let r = OutputRecord {
+            scan_code: ScanCode(42),
+            romaji: "ni".to_string(),
+            kana: Some('に'),
+            action: KeyAction::Romaji("ni".to_string()),
+        };
+        let r2 = r.clone();
+        assert_eq!(r2.scan_code, ScanCode(42));
+        assert_eq!(r2.romaji, "ni");
+        assert_eq!(r2.kana, Some('に'));
+    }
+
+    #[test]
+    fn output_record_no_kana() {
+        use crate::types::KeyAction;
+        let r = OutputRecord {
+            scan_code: ScanCode(1),
+            romaji: String::new(),
+            kana: None,
+            action: KeyAction::Suppress,
+        };
+        assert!(r.kana.is_none());
+    }
+
+    // ── PendingKey ────────────────────────────────────────────
+
+    #[test]
+    fn pending_key_with_pos() {
+        let pk = make_pending_key();
+        assert_eq!(pk.scan_code, ScanCode(0x1E));
+        assert_eq!(pk.vk_code, VkCode(0x41));
+        assert!(pk.pos.is_some());
+        assert_eq!(pk.timestamp, 1000);
+    }
+
+    #[test]
+    fn pending_key_without_pos() {
+        let pk = PendingKey {
+            scan_code: ScanCode(0x01),
+            vk_code: VkCode(0x10),
+            pos: None,
+            timestamp: 500,
+        };
+        assert!(pk.pos.is_none());
+    }
+
+    // ── PendingThumbData ──────────────────────────────────────
+
+    #[test]
+    fn pending_thumb_data_left() {
+        let td = make_pending_thumb_data(true);
+        assert!(td.is_left);
+        assert_eq!(td.vk_code, VkCode(0x20));
+        assert_eq!(td.timestamp, 2000);
+    }
+
+    #[test]
+    fn pending_thumb_data_right() {
+        let td = make_pending_thumb_data(false);
+        assert!(!td.is_left);
+    }
+
+    // ── ClassifiedEvent ───────────────────────────────────────
+
+    #[test]
+    fn classified_event_char_with_pos() {
+        let ev = ClassifiedEvent {
+            key_class: KeyClass::Char,
+            pos: Some(PhysicalPos { row: 0, col: 3 }),
+            scan_code: ScanCode(0x20),
+            vk_code: VkCode(0x48),
+            timestamp: 3000,
+            is_ime_control: false,
+        };
+        assert_eq!(ev.key_class, KeyClass::Char);
+        assert!(ev.pos.is_some());
+        assert!(!ev.is_ime_control);
+    }
+
+    #[test]
+    fn classified_event_thumb_no_pos() {
+        let ev = ClassifiedEvent {
+            key_class: KeyClass::LeftThumb,
+            pos: None,
+            scan_code: ScanCode(0x39),
+            vk_code: VkCode(0x20),
+            timestamp: 4000,
+            is_ime_control: false,
+        };
+        assert!(ev.key_class.is_thumb());
+        assert!(ev.pos.is_none());
+    }
+
+    #[test]
+    fn classified_event_ime_control_flag() {
+        let ev = ClassifiedEvent {
+            key_class: KeyClass::Passthrough,
+            pos: None,
+            scan_code: ScanCode(0x70),
+            vk_code: VkCode(0xF3),
+            timestamp: 5000,
+            is_ime_control: true,
+        };
+        assert!(ev.is_ime_control);
+    }
+
+    // ── IdleIntent ────────────────────────────────────────────
+
+    #[test]
+    fn idle_intent_active_thumb_carries_face() {
+        let intent = IdleIntent::ActiveThumb(Face::LeftThumb);
+        if let IdleIntent::ActiveThumb(face) = intent {
+            assert_eq!(face, Face::LeftThumb);
+        } else {
+            panic!("expected ActiveThumb");
+        }
+    }
+
+    #[test]
+    fn idle_intent_variants_debug() {
+        // Debug impl が存在することを確認
+        let _ = format!("{:?}", IdleIntent::ShiftPlane);
+        let _ = format!("{:?}", IdleIntent::ActiveThumb(Face::RightThumb));
+        let _ = format!("{:?}", IdleIntent::PassThrough);
+        let _ = format!("{:?}", IdleIntent::ConfirmMode);
+    }
+
+    // ── BypassReason ──────────────────────────────────────────
+
+    #[test]
+    fn bypass_reason_variants_debug() {
+        let _ = format!("{:?}", BypassReason::Passthrough);
+        let _ = format!("{:?}", BypassReason::ImeControl);
+        let _ = format!("{:?}", BypassReason::OsModifierHeld);
+    }
+
+    // ── ResolvedAction ────────────────────────────────────────
+
+    #[test]
+    fn resolved_action_empty_actions() {
+        let ra = ResolvedAction {
+            actions: vec![],
+            output: OutputUpdate::None,
+        };
+        assert!(ra.actions.is_empty());
+    }
+
+    #[test]
+    fn resolved_action_with_actions() {
+        use crate::types::KeyAction;
+        let ra = ResolvedAction {
+            actions: vec![KeyAction::Char('a'), KeyAction::Suppress],
+            output: OutputUpdate::None,
+        };
+        assert_eq!(ra.actions.len(), 2);
+    }
+
+    // ── ParseAction ───────────────────────────────────────────
+
+    #[test]
+    fn parse_action_shift_variant() {
+        let pa = ParseAction::Shift { timer: TimerIntent::Keep };
+        assert!(matches!(pa, ParseAction::Shift { .. }));
+    }
+
+    #[test]
+    fn parse_action_reduce_variant() {
+        use crate::types::KeyAction;
+        let pa = ParseAction::Reduce {
+            actions: vec![KeyAction::Char('b')],
+            record: OutputUpdate::None,
+            timer: TimerIntent::CancelAll,
+        };
+        assert!(matches!(pa, ParseAction::Reduce { .. }));
+    }
+
+    #[test]
+    fn parse_action_pass_through_variant() {
+        let pa = ParseAction::PassThrough { timer: TimerIntent::Keep };
+        assert!(matches!(pa, ParseAction::PassThrough { .. }));
+    }
+
+    #[test]
+    fn parse_action_reduce_and_continue_variant() {
+        use crate::types::KeyAction;
+        let remaining = ClassifiedEvent {
+            key_class: KeyClass::Char,
+            pos: None,
+            scan_code: ScanCode(1),
+            vk_code: VkCode(1),
+            timestamp: 0,
+            is_ime_control: false,
+        };
+        let pa = ParseAction::ReduceAndContinue {
+            actions: vec![KeyAction::Suppress],
+            record: OutputUpdate::None,
+            remaining,
+        };
+        assert!(matches!(pa, ParseAction::ReduceAndContinue { .. }));
+    }
+}
