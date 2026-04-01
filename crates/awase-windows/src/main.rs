@@ -51,7 +51,7 @@ use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED, FOCUS_DEBOUNCE_MS, FOCUS_KIND, IME_POLL_INTERVAL_MS,
     IME_RELIABILITY, IME_STATE_CACHE, MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
     TIMER_HOOK_WATCHDOG, TIMER_IME_POLL, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
-    WM_IME_KEY_DETECTED, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
+    WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
 /// 有効/無効切り替えホットキー ID
@@ -668,6 +668,7 @@ fn initialize_app(
             sync_on_keys,
             sync_off_keys,
         });
+        RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     }
 }
 
@@ -693,6 +694,62 @@ fn cleanup() {
     log::info!("Exited cleanly.");
 }
 
+// ── パニックリセット: IME 関連キー連打検出 ──
+
+/// IME 関連キー押下のタイムスタンプ（循環バッファ）。
+/// フックコールバックはメインスレッドで実行されるため `SingleThreadCell` で十分。
+static RAPID_IME_TIMESTAMPS: awase_windows::SingleThreadCell<RapidPressTracker> =
+    awase_windows::SingleThreadCell::new();
+
+/// 連打検出用の軽量トラッカー
+struct RapidPressTracker {
+    /// 直近のタイムスタンプ（最大 `THRESHOLD` 個保持）
+    buf: [u64; 3],
+    /// 次の書き込み位置
+    cursor: usize,
+    /// 有効なエントリ数
+    count: usize,
+}
+
+impl RapidPressTracker {
+    /// 検出閾値: この回数以上の IME キー押下で発動
+    const THRESHOLD: usize = 3;
+    /// 検出ウィンドウ（ミリ秒）
+    const WINDOW_MS: u64 = 1000;
+
+    const fn new() -> Self {
+        Self {
+            buf: [0; Self::THRESHOLD],
+            cursor: 0,
+            count: 0,
+        }
+    }
+
+    /// タイムスタンプを記録し、連打が検出されたら `true` を返す。
+    fn push(&mut self, now_ms: u64) -> bool {
+        self.buf[self.cursor] = now_ms;
+        self.cursor = (self.cursor + 1) % Self::THRESHOLD;
+        if self.count < Self::THRESHOLD {
+            self.count += 1;
+        }
+
+        if self.count < Self::THRESHOLD {
+            return false;
+        }
+
+        // 全エントリが WINDOW_MS 以内に収まっているか
+        let oldest = *self.buf.iter().min().unwrap_or(&0);
+        now_ms.saturating_sub(oldest) < Self::WINDOW_MS
+    }
+
+    /// バッファをクリアする（発動後のリセット用）
+    fn clear(&mut self) {
+        self.buf = [0; Self::THRESHOLD];
+        self.cursor = 0;
+        self.count = 0;
+    }
+}
+
 /// フックコールバック — unsafe は `APP.get_mut()` のみ。
 ///
 /// # Safety
@@ -714,6 +771,24 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // Enrich IME relevance with sync key info from config
     let mut event = event;
     app.enrich_ime_relevance(&mut event);
+
+    // ── パニックリセット: IME 関連キーの連打を検出 ──
+    if event.ime_relevance.may_change_ime
+        && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+    {
+        let now = hook::current_tick_ms();
+        unsafe {
+            if let Some(tracker) = RAPID_IME_TIMESTAMPS.get_mut() {
+                if tracker.push(now) {
+                    tracker.clear();
+                    log::warn!("Rapid IME key press detected — requesting panic reset");
+                    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+                    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+                    let _ = PostMessageW(HWND::default(), WM_PANIC_RESET, WPARAM(0), LPARAM(0));
+                }
+            }
+        }
+    }
 
     let ctx = InputContext {
         ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
@@ -812,6 +887,11 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_EXECUTE_EFFECTS => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.executor.drain_deferred();
+                }
+            },
+            WM_PANIC_RESET => unsafe {
+                if let Some(app) = APP.get_mut() {
+                    app.panic_reset();
                 }
             },
             WM_IME_KEY_DETECTED => unsafe {

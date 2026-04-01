@@ -1,4 +1,5 @@
 use awase::engine::{Engine, EngineCommand, InputContext};
+use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, ImeCacheState, RawKeyEvent, ShadowImeAction, VkCode};
 use awase::yab::YabLayout;
 
@@ -206,4 +207,102 @@ impl Runtime {
             self.execute_decision(decision);
         }
     }
+
+    /// パニックリセット: IME 関連キー連打で発動する緊急リセット。
+    ///
+    /// エンジン状態・IME・修飾キー・フック・キャッシュをすべて初期状態に戻す。
+    /// メッセージループ上で呼ぶこと（ブロッキング OK）。
+    pub fn panic_reset(&mut self) {
+        log::warn!("Panic reset triggered!");
+
+        // 1. エンジンの保留状態をフラッシュ
+        self.invalidate_engine_context(ContextChange::InputLanguageChanged);
+
+        // 2. IME 未確定文字列をキャンセル → OFF → ON
+        unsafe { cancel_ime_composition() };
+        self.executor.platform.set_ime_open(false);
+        self.executor.platform.set_ime_open(true);
+
+        // 3. 全修飾キーの KeyUp を送信（スタック解消）
+        send_all_modifier_key_ups();
+
+        // 4. フック再インストール（OS に無言削除されていた場合のリカバリ）
+        crate::hook::reinstall_hook();
+
+        // 5. IME キャッシュをリセット
+        ImeCacheState::Unknown.store(&IME_STATE_CACHE);
+        awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
+
+        // 6. IME 状態を再取得
+        self.refresh_ime_state_cache();
+
+        // 7. バルーン通知
+        self.executor
+            .platform
+            .tray
+            .show_balloon("awase", "状態をリセットしました");
+    }
+}
+
+/// 全修飾キーの KeyUp を `SendInput` で送信する。
+///
+/// Shift, Ctrl, Alt, Win の左右それぞれに対して KeyUp を送り、
+/// スタックした修飾キー状態を解消する。
+fn send_all_modifier_key_ups() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    };
+
+    // VK_SHIFT(0x10), VK_CONTROL(0x11), VK_MENU(0x12),
+    // VK_LWIN(0x5B), VK_RWIN(0x5C),
+    // VK_LSHIFT(0xA0), VK_RSHIFT(0xA1),
+    // VK_LCONTROL(0xA2), VK_RCONTROL(0xA3),
+    // VK_LMENU(0xA4), VK_RMENU(0xA5)
+    const MODIFIER_VKS: [u16; 11] = [
+        0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
+    ];
+
+    let inputs: Vec<INPUT> = MODIFIER_VKS
+        .iter()
+        .map(|&vk| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: crate::output::INJECTED_MARKER,
+                },
+            },
+        })
+        .collect();
+
+    crate::win32::send_input_safe(&inputs);
+    log::debug!("Sent KeyUp for all modifier keys");
+}
+
+/// IME の未確定文字列をキャンセルする。
+///
+/// # Safety
+/// Win32 IMM API (`ImmGetContext`, `ImmNotifyIME`, `ImmReleaseContext`) を呼び出す。
+unsafe fn cancel_ime_composition() {
+    use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmNotifyIME, ImmReleaseContext};
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return;
+    }
+
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return;
+    }
+
+    use windows::Win32::UI::Input::Ime::{NOTIFY_IME_ACTION, NOTIFY_IME_INDEX};
+    // NI_COMPOSITIONSTR = 0x15, CPS_CANCEL = 0x04
+    let _ = ImmNotifyIME(himc, NOTIFY_IME_ACTION(0x15), NOTIFY_IME_INDEX(0x04), 0);
+    let _ = ImmReleaseContext(hwnd, himc);
+    log::debug!("Cancelled IME composition");
 }

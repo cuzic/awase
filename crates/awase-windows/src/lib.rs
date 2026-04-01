@@ -95,6 +95,9 @@ pub const WM_IME_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 /// フックコールバックからキューされた Effects の実行要求
 pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
 
+/// パニックリセット要求（IME 関連キー連打検出時にフックから PostMessage）
+pub const WM_PANIC_RESET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
+
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///
 /// INJECTED_MARKER 付きなのでフックに再捕捉されない。
