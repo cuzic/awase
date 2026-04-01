@@ -2,7 +2,7 @@
 
 use std::sync::mpsc;
 
-use awase::types::{FocusKind, ImeReliability};
+use awase::types::{AppKind, FocusKind, ImeReliability};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -32,10 +32,11 @@ pub struct SendableHwnd(pub HWND);
 // 別スレッドから参照しても問題ない。
 unsafe impl Send for SendableHwnd {}
 
-/// UIA 非同期判定の結果（FocusKind + ImeReliability）
+/// UIA 非同期判定の結果（FocusKind + ImeReliability + AppKind）
 pub struct UiaClassifyResult {
     pub focus_kind: FocusKind,
     pub ime_reliability: ImeReliability,
+    pub app_kind: Option<AppKind>,
 }
 
 /// UIA `FrameworkId` から IME 状態取得の信頼度を推定する
@@ -50,6 +51,16 @@ fn classify_framework_id(framework_id: &str) -> ImeReliability {
         "DirectUI" | "XAML" | "WPF" => ImeReliability::Unreliable,
         // Chrome/Electron 等は独自の IME 実装
         _ => ImeReliability::Unknown,
+    }
+}
+
+/// UIA `FrameworkId` から `AppKind` を推定する
+fn classify_framework_app_kind(framework_id: &str) -> Option<AppKind> {
+    match framework_id {
+        "Win32" | "WinForm" => Some(AppKind::Win32),
+        "DirectUI" | "XAML" | "WPF" => Some(AppKind::Uwp),
+        // Chrome/Electron は FrameworkId が空文字列のことが多い → class name で判定済み
+        _ => None,
     }
 }
 
@@ -74,30 +85,33 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
             return UiaClassifyResult {
                 focus_kind: FocusKind::Undetermined,
                 ime_reliability: ImeReliability::Unknown,
+                app_kind: None,
             };
         }
     };
 
-    // FrameworkId を取得して IME 信頼度を判定
-    let ime_reliability = match unsafe { element.CurrentFrameworkId() } {
+    // FrameworkId を取得して IME 信頼度と AppKind を判定
+    let (ime_reliability, app_kind) = match unsafe { element.CurrentFrameworkId() } {
         Ok(fid) => {
             let fid_str = fid.to_string();
             let reliability = classify_framework_id(&fid_str);
-            log::debug!("UIA: FrameworkId=\"{fid_str}\" → {reliability:?}");
-            reliability
+            let kind = classify_framework_app_kind(&fid_str);
+            log::debug!("UIA: FrameworkId=\"{fid_str}\" → {reliability:?}, app_kind={kind:?}");
+            (reliability, kind)
         }
         Err(e) => {
             log::trace!("UIA: CurrentFrameworkId failed: {e:?}");
-            ImeReliability::Unknown
+            (ImeReliability::Unknown, None)
         }
     };
 
-    // マクロ的ヘルパー: FocusKind と ime_reliability をまとめて返す
+    // マクロ的ヘルパー: FocusKind, ime_reliability, app_kind をまとめて返す
     macro_rules! result {
         ($kind:expr) => {
             UiaClassifyResult {
                 focus_kind: $kind,
                 ime_reliability,
+                app_kind,
             }
         };
     }
@@ -200,33 +214,25 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
             // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
             // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
             let result = uia_classify_focus(&automation, hwnd);
-            if result.focus_kind != FocusKind::Undetermined {
+            let has_info = result.focus_kind != FocusKind::Undetermined
+                || result.ime_reliability != ImeReliability::Unknown
+                || result.app_kind.is_some();
+
+            if has_info {
                 log::debug!(
-                    "UIA async: hwnd={hwnd:?} → {:?} (ime_reliability={:?})",
+                    "UIA async: hwnd={hwnd:?} → {:?} (ime_reliability={:?}, app_kind={:?})",
                     result.focus_kind,
                     result.ime_reliability,
+                    result.app_kind,
                 );
 
                 // メインスレッドに結果を送信
-                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = ImeReliability
+                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = ImeReliability,
+                //         次の 8 bit = AppKind (0xFF = なし)
+                let app_kind_val = result.app_kind.map_or(0xFF_usize, |k| k as u8 as usize);
                 let wparam_val = (result.focus_kind as u8 as usize)
-                    | ((result.ime_reliability as u8 as usize) << 8);
-                unsafe {
-                    let _ = PostMessageW(
-                        HWND::default(),
-                        crate::WM_FOCUS_KIND_UPDATE,
-                        WPARAM(wparam_val),
-                        LPARAM(hwnd.0 as isize),
-                    );
-                }
-            } else if result.ime_reliability != ImeReliability::Unknown {
-                // FocusKind は Undetermined だが ImeReliability は判明 → 送信
-                log::debug!(
-                    "UIA async: hwnd={hwnd:?} → Undetermined (ime_reliability={:?})",
-                    result.ime_reliability,
-                );
-                let wparam_val = (FocusKind::Undetermined as u8 as usize)
-                    | ((result.ime_reliability as u8 as usize) << 8);
+                    | ((result.ime_reliability as u8 as usize) << 8)
+                    | (app_kind_val << 16);
                 unsafe {
                     let _ = PostMessageW(
                         HWND::default(),
