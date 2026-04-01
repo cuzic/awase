@@ -303,17 +303,10 @@ impl Output {
                     self.send_romaji(s);
                 }
                 KeyAction::KeySequence(s) => {
-                    if use_vk {
-                        log::debug!("  → KeySequence(\"{s}\") via VK (Chrome mode)");
-                        for ch in s.chars() {
-                            self.send_char_as_vk(ch);
-                        }
-                    } else {
-                        log::debug!("  → KeySequence(\"{s}\") via Unicode");
-                        for ch in s.chars() {
-                            self.send_unicode_char(ch);
-                        }
-                    }
+                    // KeySequence は常に VK キーストロークで送信する。
+                    // IME が全角に変換するため、Unicode 直接では半角になってしまう。
+                    log::debug!("  → KeySequence(\"{s}\") via VK");
+                    self.send_key_sequence(s);
                 }
             }
         }
