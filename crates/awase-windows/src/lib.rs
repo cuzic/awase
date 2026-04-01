@@ -46,11 +46,18 @@ use awase::types::RawKeyEvent;
 /// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
 pub static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
 
+/// フォーカス中アプリの UI フレームワーク種別（Win32=0 で初期化）
+pub static APP_KIND: AtomicU8 = AtomicU8::new(0); // AppKind::Win32
+
 /// キャッシュされた IME ON/OFF 状態。0=OFF, 1=ON, 2=Unknown（初期状態）
 pub static IME_STATE_CACHE: AtomicU8 = AtomicU8::new(2);
 
 /// IME 検出の信頼度キャッシュ（UIA 非同期判定で更新）
 pub static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
+
+/// IME がかな入力方式かどうか（false=ローマ字入力, true=かな入力）
+/// かな入力方式の場合、フックはすべてのキーをパススルーする。
+pub static IME_IS_KANA_INPUT: AtomicBool = AtomicBool::new(false);
 
 /// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
 pub static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

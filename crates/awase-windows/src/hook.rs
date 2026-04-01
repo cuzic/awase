@@ -238,6 +238,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 
+        // ── かな入力方式バイパス ──
+        // IME がかな入力モードの場合、awase は一切介入せずパススルーする。
+        if crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed) {
+            return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+        }
+
         // ── 再入ガード ──
         let in_callback = IN_CALLBACK.get_mut();
         if *in_callback {

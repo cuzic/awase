@@ -405,6 +405,29 @@ impl ImeProvider for HybridProvider {
     }
 }
 
+/// IME_CMODE_ROMAN: ローマ字入力モードフラグ（0x0010）
+///
+/// このビットが立っていればローマ字入力方式、
+/// 立っていなければ（かつ NATIVE が立っていれば）JIS かな入力方式。
+const IME_CMODE_ROMAN: u32 = 0x0010;
+
+/// IME がかな入力方式（JIS かな）かどうかをクロスプロセスで検出する。
+///
+/// Returns `Some(true)` = かな入力方式, `Some(false)` = ローマ字入力方式,
+/// `None` = 検出失敗（IME OFF など）。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn detect_kana_input_method() -> Option<bool> {
+    let conversion = detect_ime_conversion_cross_process()?;
+    let is_native = conversion & IME_CMODE_NATIVE.0 != 0;
+    if !is_native {
+        return Some(false); // IME が日本語モードでなければ、かな入力ではない
+    }
+    let is_roman = conversion & IME_CMODE_ROMAN != 0;
+    Some(!is_roman) // ROMAN フラグなし = かな入力方式
+}
+
 /// 現在のキーボードレイアウトの言語情報を返す。
 ///
 /// Returns `(is_japanese, lang_id)` — 日本語レイアウトかどうかと言語 ID (下位16ビット)。

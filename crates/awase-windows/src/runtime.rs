@@ -232,6 +232,7 @@ impl Runtime {
         // 5. IME キャッシュをリセット
         ImeCacheState::Unknown.store(&IME_STATE_CACHE);
         awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
+        crate::IME_IS_KANA_INPUT.store(false, std::sync::atomic::Ordering::Relaxed);
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();

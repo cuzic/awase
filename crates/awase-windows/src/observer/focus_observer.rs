@@ -3,14 +3,14 @@
 use std::sync::atomic::Ordering;
 
 use awase::engine::{FocusObservation, ModifierState};
-use awase::types::FocusKind;
+use awase::types::{AppKind, FocusKind};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::focus;
 use crate::runtime::FocusDetector;
-use crate::{FOCUS_DEBOUNCE_MS, FOCUS_KIND, TIMER_FOCUS_DEBOUNCE};
+use crate::{APP_KIND, FOCUS_DEBOUNCE_MS, FOCUS_KIND, TIMER_FOCUS_DEBOUNCE};
 
 /// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
 ///
@@ -127,6 +127,14 @@ pub unsafe fn observe(
         );
     }
 
+    // AppKind をクラス名から判定して更新
+    let app_kind = classify_app_kind(class_name);
+    let prev_app_kind = AppKind::load(&APP_KIND);
+    app_kind.store(&APP_KIND);
+    if app_kind != prev_app_kind {
+        log::info!("AppKind changed: {prev_app_kind:?} → {app_kind:?} (class={class_name})");
+    }
+
     // バイパス状態を判定（Win32 API 呼び出し）
     let result = focus::classify::classify_focus(hwnd);
     let state = result.kind;
@@ -238,6 +246,25 @@ fn check_overrides(
     }
 
     None
+}
+
+/// ウィンドウクラス名からアプリの UI フレームワーク種別を判定する。
+///
+/// - `Chrome_WidgetWin_1`: Chromium 系（Chrome, Edge, Electron, VS Code 等）
+/// - `MozillaWindowClass`: Firefox（Chromium と同様の入力処理）
+/// - `Windows.UI.Core.CoreWindow`: UWP / XAML 系
+/// - その他: Win32 クラシック
+fn classify_app_kind(class_name: &str) -> AppKind {
+    let class_lower = class_name.to_ascii_lowercase();
+    if class_lower == "chrome_widgetwin_1" || class_lower == "mozillawindowclass" {
+        AppKind::Chrome
+    } else if class_lower == "windows.ui.core.corewindow"
+        || class_lower == "applicationframewindow"
+    {
+        AppKind::Uwp
+    } else {
+        AppKind::Win32
+    }
 }
 
 /// IME 状態を正しく検出できないシステムウィンドウを判定する。

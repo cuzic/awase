@@ -265,6 +265,42 @@ impl From<bool> for ImeCacheState {
     }
 }
 
+/// アプリケーションの UI フレームワーク種別
+///
+/// フォーカス中のアプリに応じて出力方式を適応的に切り替えるために使用する。
+/// - Win32: ローマ字送信（デフォルト）
+/// - Chrome: VK キーストローク送信（KEYEVENTF_UNICODE だと全角→半角変換される問題の回避）
+/// - Uwp: Unicode 直接送信（VK キーストロークが正しく処理されない場合がある）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AppKind {
+    /// クラシック Win32 / WinForms アプリ
+    Win32 = 0,
+    /// Chromium ベースアプリ（Chrome, Edge, Electron 等）
+    Chrome = 1,
+    /// UWP / XAML / DirectUI アプリ
+    Uwp = 2,
+}
+
+impl AppKind {
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Win32,
+            1 => Self::Chrome,
+            _ => Self::Uwp,
+        }
+    }
+
+    pub fn load(atomic: &std::sync::atomic::AtomicU8) -> Self {
+        Self::from_u8(atomic.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn store(self, atomic: &std::sync::atomic::AtomicU8) {
+        atomic.store(self as u8, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// フォーカス中コントロールの種別
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -299,6 +335,27 @@ impl FocusKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── AppKind ──
+
+    #[test]
+    fn app_kind_from_u8_known_values() {
+        assert_eq!(AppKind::from_u8(0), AppKind::Win32);
+        assert_eq!(AppKind::from_u8(1), AppKind::Chrome);
+        assert_eq!(AppKind::from_u8(2), AppKind::Uwp);
+    }
+
+    #[test]
+    fn app_kind_from_u8_fallback() {
+        assert_eq!(AppKind::from_u8(255), AppKind::Uwp);
+    }
+
+    #[test]
+    fn app_kind_load_store_roundtrip() {
+        let atomic = std::sync::atomic::AtomicU8::new(0);
+        AppKind::Chrome.store(&atomic);
+        assert_eq!(AppKind::load(&atomic), AppKind::Chrome);
+    }
 
     // ── ImeReliability ──
 

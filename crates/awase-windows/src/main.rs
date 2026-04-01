@@ -966,9 +966,10 @@ fn run_message_loop(taskbar_created_msg: u32) {
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
                 // UIA 非同期判定完了 → メッセージから結果を取得
-                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = ImeReliability
+                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = ImeReliability, 次の 8 bit = AppKind
                 let kind_u8 = msg.wParam.0 as u8;
                 let reliability_u8 = (msg.wParam.0 >> 8) as u8;
+                let app_kind_u8 = (msg.wParam.0 >> 16) as u8;
                 let result_hwnd = HWND(msg.lParam.0 as *mut _);
                 let kind = FocusKind::from_u8(kind_u8);
                 let reliability = awase::types::ImeReliability::from_u8(reliability_u8);
@@ -984,6 +985,13 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 } else {
                     // ImeReliability を更新（常に適用）
                     reliability.store(&IME_RELIABILITY);
+
+                    // AppKind を更新（UIA 結果が有効な場合のみ）
+                    if app_kind_u8 != 0xFF {
+                        let app_kind = awase::types::AppKind::from_u8(app_kind_u8);
+                        app_kind.store(&awase_windows::APP_KIND);
+                        log::debug!("UIA AppKind update: {app_kind:?}");
+                    }
 
                     // FOCUS_KIND を更新（Undetermined の場合はスキップ）
                     if kind != FocusKind::Undetermined {
