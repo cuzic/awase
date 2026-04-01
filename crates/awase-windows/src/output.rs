@@ -159,15 +159,50 @@ fn build_symbol_to_vk() -> HashMap<char, (u16, bool)> {
         ('＂', 0x32, true),   // 全角" → Shift+2
         ('；', 0xBB, false),  // ; (VK_OEM_PLUS, JIS: ;)
         ('：', 0xBA, false),  // : (VK_OEM_1, JIS: :)
-        // 半角 ASCII 記号（Chrome で全角にならない場合のフォールバック用）
-        ('?', 0xBF, true),
-        ('!', 0x31, true),
+        // 半角数字
+        ('0', 0x30, false),
+        ('1', 0x31, false),
+        ('2', 0x32, false),
+        ('3', 0x33, false),
+        ('4', 0x34, false),
+        ('5', 0x35, false),
+        ('6', 0x36, false),
+        ('7', 0x37, false),
+        ('8', 0x38, false),
+        ('9', 0x39, false),
+        // 半角 ASCII 記号
+        ('!', 0x31, true),   // Shift+1
+        ('"', 0x32, true),   // Shift+2 (JIS)
+        ('#', 0x33, true),   // Shift+3
+        ('$', 0x34, true),   // Shift+4
+        ('%', 0x35, true),   // Shift+5
+        ('&', 0x36, true),   // Shift+6
+        ('\'', 0x37, true),  // Shift+7 (JIS)
+        ('(', 0x38, true),   // Shift+8
+        (')', 0x39, true),   // Shift+9
+        ('?', 0xBF, true),   // Shift+/
         ('-', 0xBD, false),
+        ('=', 0xBD, true),   // Shift+- (JIS)
         ('.', 0xBE, false),
         (',', 0xBC, false),
         ('/', 0xBF, false),
         ('[', 0xDB, false),
         (']', 0xDD, false),
+        (';', 0xBB, false),  // JIS: ;
+        (':', 0xBA, false),  // JIS: :
+        ('+', 0xBB, true),   // Shift+; (JIS)
+        ('*', 0xBA, true),   // Shift+: (JIS)
+        ('<', 0xBC, true),   // Shift+,
+        ('>', 0xBE, true),   // Shift+.
+        ('@', 0xC0, false),  // JIS: @
+        ('^', 0xDE, false),  // JIS: ^
+        ('_', 0xE2, true),   // Shift+＼ (JIS)
+        ('{', 0xDB, true),   // Shift+[
+        ('}', 0xDD, true),   // Shift+]
+        ('|', 0xDC, true),   // Shift+¥ (JIS)
+        ('~', 0xDE, true),   // Shift+^ (JIS)
+        ('`', 0xC0, true),   // Shift+@ (JIS)
+        ('\\', 0xE2, false), // JIS: ＼
     ];
     entries.iter().map(|&(ch, vk, shift)| (ch, (vk, shift))).collect()
 }
