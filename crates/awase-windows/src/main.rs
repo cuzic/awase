@@ -264,11 +264,34 @@ fn main() -> Result<()> {
 }
 
 /// ログ初期化
+///
+/// `#![windows_subsystem = "windows"]` でコンソールがないため、
+/// ログはファイル（実行ファイルと同じディレクトリの `awase.log`）に出力する。
 fn init_logging() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
-    log::info!("Keyboard Layout Emulator starting...");
+    let log_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("awase.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("awase.log"));
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    builder.format_timestamp_millis();
+
+    if let Ok(file) = log_file {
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    }
+    // ファイルが開けない場合は stderr フォールバック（コンソール起動時用）
+
+    builder.init();
+    log::info!(
+        "Keyboard Layout Emulator starting... (log → {})",
+        log_path.display()
+    );
 }
 
 /// 設定ファイルを読み込む
