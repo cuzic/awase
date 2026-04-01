@@ -101,6 +101,23 @@ const fn fullwidth_to_halfwidth(ch: char) -> Option<char> {
     }
 }
 
+/// 半角 ASCII 文字を全角に変換する。
+/// `fullwidth_to_halfwidth` の逆操作。
+/// 半角 ASCII 範囲 (U+0021..U+007E) を全角 (U+FF01..U+FF5E) に変換する。
+/// 範囲外の文字はそのまま返す。
+const fn halfwidth_to_fullwidth_char(ch: char) -> char {
+    let cp = ch as u32;
+    if cp >= 0x21 && cp <= 0x7E {
+        // Safety: 0x21 + 0xFEE0 = 0xFF01, 0x7E + 0xFEE0 = 0xFF5E — valid Unicode
+        // const fn では char::from_u32 が使えないため直接キャスト
+        let full_cp = cp + 0xFEE0;
+        // full_cp is always a valid char in the fullwidth ASCII range
+        unsafe { char::from_u32_unchecked(full_cp) }
+    } else {
+        ch
+    }
+}
+
 /// 文字をキーシーケンス用の VK コードに変換する。
 /// 全角文字は半角に変換してから `ascii_to_vk_extended` で対応する。
 fn char_to_key_sequence(ch: char) -> Option<(u16, bool)> {
@@ -311,7 +328,12 @@ impl Output {
                     } else {
                         log::debug!("  → KeySequence(\"{s}\") via Unicode");
                         for ch in s.chars() {
-                            self.send_unicode_char(ch);
+                            // KeySequence は halfwidth で格納されているため、
+                            // Unicode 送信時は fullwidth に戻す。
+                            // 例: "." → "．", "," → "，"
+                            let fullwidth = halfwidth_to_fullwidth_char(ch);
+                            log::debug!("    KeySequence Unicode: '{ch}' → '{fullwidth}'");
+                            self.send_unicode_char(fullwidth);
                         }
                     }
                 }
