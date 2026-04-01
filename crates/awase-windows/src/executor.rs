@@ -120,50 +120,42 @@ impl DecisionExecutor {
         }
     }
 
-    // ── Relay モード ──
+    // ── Relay モード（スマートリレー）──
     //
-    // NICOLA 変換対象のキーを Consume し、メッセージループで FIFO 実行する。
-    // 修飾キー（Shift/Ctrl/Alt/Win）は Consume せず直接 PassThrough する。
-    // 修飾キーを ReinjectKey すると OS のシステム動作（スタートメニュー等）が
-    // INJECTED フラグで正常に動作しなくなるため。
+    // PassThrough（Effects なし）: 直接 OS に通す（修飾キー、スペース等）
+    // PassThroughWith（flush あり）: Consume → flush 出力 + キー再注入を FIFO
+    // Consume: Effects をキューに入れる
+    //
+    // NICOLA 変換と無関係なキーは OS に直接通すことで、
+    // Win キー等のシステム動作を壊さず、INJECTED フラグ問題も回避する。
+    // flush を伴う PassThrough のみ Consume して順序を保証する。
 
     fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
-        // 修飾キーはリレーせず直接 PassThrough
-        if raw_event.modifier_key.is_some() {
-            let effects = match decision {
-                Decision::PassThrough => {
-                    return HookResult {
-                        callback: CallbackResult::PassThrough,
-                        has_pending: self.has_pending(),
-                    }
-                }
-                Decision::PassThroughWith { effects } => effects,
-                Decision::Consume { effects } => effects,
-            };
-            self.queue.extend(effects);
-            return HookResult {
-                callback: CallbackResult::PassThrough,
-                has_pending: self.has_pending(),
-            };
-        }
-
         match decision {
             Decision::PassThrough => {
-                self.queue
-                    .push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                // Effects なし → 直接 OS に通す
+                HookResult {
+                    callback: CallbackResult::PassThrough,
+                    has_pending: self.has_pending(),
+                }
             }
             Decision::PassThroughWith { mut effects } => {
+                // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー
                 effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
                 self.queue.extend(effects);
+                HookResult {
+                    callback: CallbackResult::Consumed,
+                    has_pending: true,
+                }
             }
             Decision::Consume { effects } => {
+                // Engine が消費 → Effects をキューに入れる
                 self.queue.extend(effects);
+                HookResult {
+                    callback: CallbackResult::Consumed,
+                    has_pending: self.has_pending(),
+                }
             }
-        }
-
-        HookResult {
-            callback: CallbackResult::Consumed,
-            has_pending: true,
         }
     }
 
