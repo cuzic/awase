@@ -237,7 +237,7 @@ fn main() -> Result<()> {
             app.executor
                 .platform
                 .timer
-                .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(3));
+                .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(10));
         }
     }
 
@@ -856,38 +856,34 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     }
                     Some(id) if id == TIMER_HOOK_WATCHDOG => {
                         use std::sync::atomic::AtomicU64;
-                        static LAST_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
+                        // Ping 方式: 合成キーイベントを送り、フックが受信するか確認する。
+                        // Phase 1: 前回の ping 後にフックが応答したか確認
+                        static PING_SENT_AT: AtomicU64 = AtomicU64::new(0);
+                        let ping_sent = PING_SENT_AT.load(Ordering::Relaxed);
+                        let last_activity = hook::last_hook_activity_ms();
 
-                        let current_count = hook::hook_event_count();
-                        let prev_count = LAST_CHECK_COUNT.swap(current_count, Ordering::Relaxed);
-
-                        if current_count > prev_count {
-                            continue;
-                        }
-                        if !hook::is_hook_responsive(3_000) {
-                            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-                            let any_key_pressed = (0x08u16..=0x5Au16).any(|vk| {
-                                GetAsyncKeyState(i32::from(vk)).cast_unsigned() & 0x8000 != 0
-                            });
-                            if any_key_pressed {
-                                let stale_ms =
-                                    hook::current_tick_ms() - hook::last_hook_activity_ms();
-                                log::error!(
-                                    "Hook watchdog: no activity for {stale_ms}ms — reinstalling"
+                        if ping_sent > 0 && last_activity < ping_sent {
+                            // ping を送ったのにフックが応答していない → フック消失
+                            let stale_ms = hook::current_tick_ms() - last_activity;
+                            log::error!(
+                                "Hook watchdog: ping not received (last activity {stale_ms}ms ago) — reinstalling"
+                            );
+                            if hook::reinstall_hook() {
+                                app.executor.platform.tray.show_balloon(
+                                    "awase",
+                                    "キーボードフックを自動復旧しました",
                                 );
-                                if hook::reinstall_hook() {
-                                    app.executor.platform.tray.show_balloon(
-                                        "awase",
-                                        "キーボードフックを自動復旧しました",
-                                    );
-                                } else {
-                                    app.executor.platform.tray.show_balloon(
-                                        "awase",
-                                        "フック復旧に失敗しました。再起動してください。",
-                                    );
-                                }
+                            } else {
+                                app.executor.platform.tray.show_balloon(
+                                    "awase",
+                                    "フック復旧に失敗しました。再起動してください。",
+                                );
                             }
                         }
+
+                        // Phase 2: 次回チェック用に ping を送信
+                        PING_SENT_AT.store(hook::current_tick_ms(), Ordering::Relaxed);
+                        hook::send_ping();
                     }
                     Some(id) if id == TIMER_FOCUS_DEBOUNCE => {
                         app.executor.platform.timer.kill(TIMER_FOCUS_DEBOUNCE);

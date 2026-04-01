@@ -117,6 +117,54 @@ pub fn is_hook_responsive(timeout_ms: u64) -> bool {
     (now - last) < timeout_ms
 }
 
+/// フックの生存確認用 ping を送信する。
+///
+/// `INJECTED_MARKER` 付きの VK_NONAME (0xFC) KeyDown+KeyUp を SendInput で送信する。
+/// フックが生きていればコールバックが呼ばれ、`LAST_HOOK_ACTIVITY` が更新される。
+/// フックが死んでいれば何も起きない。
+///
+/// # Safety
+/// Win32 API (`SendInput`) を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn send_ping() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        VIRTUAL_KEY,
+    };
+
+    let vk_noname = 0xFC_u16; // VK_NONAME — 何も入力されない無害なキー
+    let inputs = [
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk_noname),
+                    wScan: 0,
+                    dwFlags: KEYBD_EVENT_FLAGS(0),
+                    time: 0,
+                    dwExtraInfo: INJECTED_MARKER,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk_noname),
+                    wScan: 0,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: INJECTED_MARKER,
+                },
+            },
+        },
+    ];
+    SendInput(
+        &inputs,
+        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+    );
+    log::trace!("Hook ping sent");
+}
+
 /// フックを再登録する（OS に無言で削除された場合の自動復旧用）。
 ///
 /// コールバックは既にグローバルに保持されているため、
