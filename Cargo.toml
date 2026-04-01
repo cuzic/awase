@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/timed-fsm", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos"]
+members = [".", "crates/timed-fsm", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos", "crates/awase-yab-editor"]
 
 [package]
 name = "awase"

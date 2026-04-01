@@ -1,0 +1,27 @@
+[package]
+name = "awase-yab-editor"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "awase-yab-editor"
+path = "src/main.rs"
+
+[dependencies]
+awase = { path = "../.." }
+eframe = "0.31"
+log = "0.4"
+env_logger = "0.11"
+
+[lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+doc_markdown = "allow"

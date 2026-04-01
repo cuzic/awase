@@ -357,6 +357,31 @@ impl YabLayout {
         })
     }
 
+    /// .yab 形式の文字列にシリアライズする。
+    ///
+    /// `model` で指定されたキーボードモデルに応じて各行の列数が決まる。
+    #[must_use]
+    pub fn serialize(&self, model: KeyboardModel) -> String {
+        let row_sizes = model.row_sizes();
+        let sections = [
+            ("ローマ字シフト無し", &self.normal),
+            ("ローマ字左親指シフト", &self.left_thumb),
+            ("ローマ字右親指シフト", &self.right_thumb),
+            ("ローマ字小指シフト", &self.shift),
+        ];
+
+        let mut out = self.name.clone();
+        out.push('\n');
+
+        for (name, face) in &sections {
+            out.push_str(&format!("[{name}]\n"));
+            out.push_str(&serialize_face(face, &row_sizes));
+            out.push('\n');
+        }
+
+        out
+    }
+
     /// ローマ字→かな逆引きテーブルを使い、各 `YabValue::Romaji` の `kana` フィールドを解決する。
     #[must_use]
     pub fn resolve_kana(mut self) -> Self {
@@ -367,6 +392,65 @@ impl YabLayout {
         resolve_face_kana(&mut self.shift, &table);
         self
     }
+}
+
+/// 半角 ASCII 文字列を全角文字列に変換する（`convert_fullwidth_str` の逆変換）。
+fn halfwidth_to_fullwidth(s: &str) -> String {
+    s.chars()
+        .map(|ch| {
+            let cp = u32::from(ch);
+            // 半角 ASCII: U+0021 ('!') .. U+007E ('~')
+            // 対応する全角: U+FF01 ('！') .. U+FF5E ('～')
+            if (0x0021..=0x007E).contains(&cp) {
+                char::from_u32(cp + 0xFEE0).unwrap_or(ch)
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+/// `YabValue` を .yab テキスト形式に変換する。
+fn serialize_value(value: &YabValue) -> String {
+    match value {
+        YabValue::Romaji { romaji, .. } => halfwidth_to_fullwidth(romaji),
+        YabValue::Literal(s) => {
+            // If the literal is a half-width ASCII string that would be fullwidth in .yab,
+            // check if it's digits/symbols (non-alpha) — those were parsed from fullwidth
+            if !s.is_empty()
+                && s.chars()
+                    .all(|ch| ch.is_ascii() && !ch.is_ascii_alphabetic())
+            {
+                halfwidth_to_fullwidth(s)
+            } else {
+                format!("'{s}'")
+            }
+        }
+        YabValue::Special(SpecialKey::Backspace) => "後".to_string(),
+        YabValue::Special(SpecialKey::Escape) => "逃".to_string(),
+        YabValue::Special(SpecialKey::Enter) => "入".to_string(),
+        YabValue::Special(SpecialKey::Space) => "空".to_string(),
+        YabValue::Special(SpecialKey::Delete) => "消".to_string(),
+        YabValue::None => "無".to_string(),
+    }
+}
+
+/// `YabFace` を .yab テキストの CSV 行に変換する。
+fn serialize_face(face: &YabFace, row_sizes: &[usize; 4]) -> String {
+    let mut lines = Vec::new();
+    for row in 0..MAX_ROWS {
+        let cols = row_sizes[row];
+        let mut values = Vec::with_capacity(cols);
+        for col in 0..cols {
+            let pos = PhysicalPos::new(row as u8, col as u8);
+            match face.get(&pos) {
+                Some(val) => values.push(serialize_value(val)),
+                None => values.push("無".to_string()),
+            }
+        }
+        lines.push(values.join(","));
+    }
+    lines.join("\n")
 }
 
 /// `YabFace` 内の全 `YabValue::Romaji` の `kana` フィールドをテーブルから解決する。

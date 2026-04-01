@@ -550,3 +550,249 @@ fn test_load_nicola_yab_file() {
         })
     );
 }
+
+// ── halfwidth_to_fullwidth テスト ──
+
+#[test]
+fn test_halfwidth_to_fullwidth_alpha() {
+    assert_eq!(halfwidth_to_fullwidth("ka"), "ｋａ");
+    assert_eq!(halfwidth_to_fullwidth("si"), "ｓｉ");
+    assert_eq!(halfwidth_to_fullwidth("A"), "Ａ");
+    assert_eq!(halfwidth_to_fullwidth("Z"), "Ｚ");
+}
+
+#[test]
+fn test_halfwidth_to_fullwidth_digits() {
+    assert_eq!(halfwidth_to_fullwidth("123"), "１２３");
+    assert_eq!(halfwidth_to_fullwidth("0"), "０");
+}
+
+#[test]
+fn test_halfwidth_to_fullwidth_symbols() {
+    assert_eq!(halfwidth_to_fullwidth("!"), "！");
+    assert_eq!(halfwidth_to_fullwidth("#"), "＃");
+    assert_eq!(halfwidth_to_fullwidth("~"), "～");
+}
+
+#[test]
+fn test_halfwidth_to_fullwidth_empty() {
+    assert_eq!(halfwidth_to_fullwidth(""), "");
+}
+
+// ── serialize_value テスト ──
+
+#[test]
+fn test_serialize_value_romaji() {
+    let val = YabValue::Romaji {
+        romaji: "ka".to_string(),
+        kana: None,
+    };
+    assert_eq!(serialize_value(&val), "ｋａ");
+}
+
+#[test]
+fn test_serialize_value_literal_unicode() {
+    let val = YabValue::Literal("ー".to_string());
+    assert_eq!(serialize_value(&val), "'ー'");
+}
+
+#[test]
+fn test_serialize_value_literal_ascii_digit() {
+    let val = YabValue::Literal("1".to_string());
+    assert_eq!(serialize_value(&val), "１");
+}
+
+#[test]
+fn test_serialize_value_literal_ascii_symbol() {
+    let val = YabValue::Literal("!".to_string());
+    assert_eq!(serialize_value(&val), "！");
+}
+
+#[test]
+fn test_serialize_value_special_keys() {
+    assert_eq!(
+        serialize_value(&YabValue::Special(SpecialKey::Backspace)),
+        "後"
+    );
+    assert_eq!(
+        serialize_value(&YabValue::Special(SpecialKey::Escape)),
+        "逃"
+    );
+    assert_eq!(serialize_value(&YabValue::Special(SpecialKey::Enter)), "入");
+    assert_eq!(serialize_value(&YabValue::Special(SpecialKey::Space)), "空");
+    assert_eq!(
+        serialize_value(&YabValue::Special(SpecialKey::Delete)),
+        "消"
+    );
+}
+
+#[test]
+fn test_serialize_value_none() {
+    assert_eq!(serialize_value(&YabValue::None), "無");
+}
+
+// ── serialize round-trip テスト ──
+
+#[test]
+fn test_serialize_round_trip_minimal() {
+    let input = "\
+テスト配列
+[ローマ字シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,ｋａ,無,無,無,無,無,無,無,無
+無,ｓｉ,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字左親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字右親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let model = KeyboardModel::Jis;
+    let layout1 = YabLayout::parse(input, model).unwrap();
+    let serialized = layout1.serialize(model);
+    let layout2 = YabLayout::parse(&serialized, model).unwrap();
+
+    // Compare key values
+    assert_eq!(layout1.name, layout2.name);
+    assert_eq!(
+        layout1.normal.get(&PhysicalPos::new(1, 3)),
+        layout2.normal.get(&PhysicalPos::new(1, 3))
+    );
+    assert_eq!(
+        layout1.normal.get(&PhysicalPos::new(2, 1)),
+        layout2.normal.get(&PhysicalPos::new(2, 1))
+    );
+}
+
+#[test]
+fn test_serialize_round_trip_all_variants() {
+    let input = "\
+テスト
+[ローマ字シフト無し]
+後,逃,入,空,消,'ー',ｋａ,１,！,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字左親指シフト]
+ｇａ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字右親指シフト]
+ｍａ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指シフト]
+Ａ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let model = KeyboardModel::Jis;
+    let layout1 = YabLayout::parse(input, model).unwrap();
+    let serialized = layout1.serialize(model);
+    let layout2 = YabLayout::parse(&serialized, model).unwrap();
+
+    // Verify all variant types round-trip correctly
+    let row0 = [
+        (0, YabValue::Special(SpecialKey::Backspace)),
+        (1, YabValue::Special(SpecialKey::Escape)),
+        (2, YabValue::Special(SpecialKey::Enter)),
+        (3, YabValue::Special(SpecialKey::Space)),
+        (4, YabValue::Special(SpecialKey::Delete)),
+        (5, YabValue::Literal("ー".to_string())),
+        (
+            6,
+            YabValue::Romaji {
+                romaji: "ka".to_string(),
+                kana: None,
+            },
+        ),
+        (7, YabValue::Literal("1".to_string())),
+        (8, YabValue::Literal("!".to_string())),
+    ];
+
+    for (col, expected) in &row0 {
+        let pos = PhysicalPos::new(0, *col as u8);
+        assert_eq!(
+            layout2.normal.get(&pos),
+            Some(expected),
+            "Mismatch at col {col}"
+        );
+    }
+
+    // Check other faces
+    assert_eq!(
+        layout2.left_thumb.get(&PhysicalPos::new(0, 0)),
+        Some(&YabValue::Romaji {
+            romaji: "ga".to_string(),
+            kana: None,
+        })
+    );
+    assert_eq!(
+        layout2.right_thumb.get(&PhysicalPos::new(0, 0)),
+        Some(&YabValue::Romaji {
+            romaji: "ma".to_string(),
+            kana: None,
+        })
+    );
+    assert_eq!(
+        layout2.shift.get(&PhysicalPos::new(0, 0)),
+        Some(&YabValue::Romaji {
+            romaji: "A".to_string(),
+            kana: None,
+        })
+    );
+}
+
+#[test]
+fn test_serialize_round_trip_nicola_file() {
+    let path = std::path::Path::new("layout/nicola.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    let model = KeyboardModel::Jis;
+    let layout1 = YabLayout::parse(&content, model).unwrap();
+    let serialized = layout1.serialize(model);
+    let layout2 = YabLayout::parse(&serialized, model).unwrap();
+
+    // Spot check several positions across faces
+    for row in 0..4u8 {
+        for col in 0..13u8 {
+            let pos = PhysicalPos::new(row, col);
+            assert_eq!(
+                layout1.normal.get(&pos),
+                layout2.normal.get(&pos),
+                "normal mismatch at ({row}, {col})"
+            );
+            assert_eq!(
+                layout1.left_thumb.get(&pos),
+                layout2.left_thumb.get(&pos),
+                "left_thumb mismatch at ({row}, {col})"
+            );
+            assert_eq!(
+                layout1.right_thumb.get(&pos),
+                layout2.right_thumb.get(&pos),
+                "right_thumb mismatch at ({row}, {col})"
+            );
+            assert_eq!(
+                layout1.shift.get(&pos),
+                layout2.shift.get(&pos),
+                "shift mismatch at ({row}, {col})"
+            );
+        }
+    }
+}
