@@ -125,6 +125,8 @@ pub struct Output {
     mode: OutputMode,
     /// Unicode モード用: ローマ字→ひらがな変換テーブル
     romaji_to_kana: Option<HashMap<String, char>>,
+    /// Chrome VK モード用: かな→ローマ字逆引きテーブル
+    kana_to_romaji: HashMap<char, String>,
 }
 
 impl Output {
@@ -137,6 +139,7 @@ impl Output {
         Self {
             mode,
             romaji_to_kana,
+            kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
         }
     }
 
@@ -164,7 +167,7 @@ impl Output {
                 KeyAction::KeyUp(vk) => self.send_key(vk.0, true),
                 KeyAction::Char(ch) => {
                     if use_vk {
-                        self.send_key_sequence(&ch.to_string());
+                        self.send_char_as_vk(*ch);
                     } else {
                         self.send_unicode_char(*ch);
                     }
@@ -173,7 +176,9 @@ impl Output {
                 KeyAction::Romaji(s) => self.send_romaji(s),
                 KeyAction::KeySequence(s) => {
                     if use_vk {
-                        self.send_key_sequence(s);
+                        for ch in s.chars() {
+                            self.send_char_as_vk(ch);
+                        }
                     } else {
                         for ch in s.chars() {
                             self.send_unicode_char(ch);
@@ -313,6 +318,40 @@ impl Output {
         }
         // テーブルにない場合はフォールバック
         self.send_romaji_per_key(romaji);
+    }
+
+    /// 文字を VK キーストロークとして送信する（Chrome モード用）
+    ///
+    /// かな文字はローマ字に逆変換してからキーストロークとして送信する。
+    /// ASCII 記号は対応する VK コードで直接送信する。
+    /// いずれにもマッチしない場合は Unicode 直接出力にフォールバックする。
+    fn send_char_as_vk(&self, ch: char) {
+        // 1. かな→ローマ字逆引き（か → "ka" → VK(k), VK(a)）
+        if let Some(romaji) = self.kana_to_romaji.get(&ch) {
+            self.send_romaji_per_key(romaji);
+            return;
+        }
+        // 2. ASCII 記号（全角含む）→ VK コード直接変換（？ → Shift+/）
+        if let Some((vk, needs_shift)) = char_to_key_sequence(ch) {
+            let mut inputs = Vec::with_capacity(4);
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, false));
+            }
+            inputs.push(make_key_input(vk, false));
+            inputs.push(make_key_input(vk, true));
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, true));
+            }
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+            return;
+        }
+        // 3. フォールバック: Unicode 直接出力
+        self.send_unicode_char(ch);
     }
 
     /// キーシーケンスを送信する（IME がキーストロークを変換する）

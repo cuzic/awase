@@ -147,6 +147,30 @@ pub fn build_romaji_to_kana() -> HashMap<String, char> {
     entries.iter().map(|&(k, v)| (k.to_string(), v)).collect()
 }
 
+/// かな→ローマ字の逆引きテーブルを構築する。
+///
+/// `build_romaji_to_kana` の逆方向マッピング。
+/// 同一かなに複数のローマ字が対応する場合、最も短いものを採用する。
+/// 拗音の代表文字マッピング（"kya"→'き' 等）は基本マッピング（"ki"→'き'）より
+/// 長いため自動的に除外される。
+#[must_use]
+pub fn build_kana_to_romaji() -> HashMap<char, String> {
+    let forward = build_romaji_to_kana();
+    let mut reverse: HashMap<char, String> = HashMap::with_capacity(forward.len());
+    for (romaji, &kana) in &forward {
+        reverse
+            .entry(kana)
+            .and_modify(|existing| {
+                // 短い方を優先（"ki" > "kya"、"hu" vs "fu" は先勝ち）
+                if romaji.len() < existing.len() {
+                    *existing = romaji.clone();
+                }
+            })
+            .or_insert_with(|| romaji.clone());
+    }
+    reverse
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +220,30 @@ mod tests {
         assert_eq!(table.get("kya"), Some(&'き'));
         assert_eq!(table.get("sya"), Some(&'し'));
         assert_eq!(table.get("nya"), Some(&'に'));
+    }
+
+    // ── kana_to_romaji (逆引き) ──
+
+    #[test]
+    fn kana_to_romaji_basic() {
+        let table = build_kana_to_romaji();
+        assert_eq!(table.get(&'あ'), Some(&"a".to_string()));
+        assert_eq!(table.get(&'か'), Some(&"ka".to_string()));
+        assert_eq!(table.get(&'ん'), Some(&"nn".to_string()));
+    }
+
+    #[test]
+    fn kana_to_romaji_prefers_shorter() {
+        let table = build_kana_to_romaji();
+        // 'き' has "ki" (2) and "kya"/"kyu"/"kyo" (3) → "ki" wins
+        assert_eq!(table.get(&'き'), Some(&"ki".to_string()));
+        assert_eq!(table.get(&'し'), Some(&"si".to_string()));
+    }
+
+    #[test]
+    fn kana_to_romaji_dakuon() {
+        let table = build_kana_to_romaji();
+        assert_eq!(table.get(&'が'), Some(&"ga".to_string()));
+        assert_eq!(table.get(&'ぱ'), Some(&"pa".to_string()));
     }
 }
