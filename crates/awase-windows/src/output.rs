@@ -302,25 +302,17 @@ impl Output {
                     log::debug!("  → Romaji(\"{s}\") mode={:?}", self.mode);
                     self.send_romaji(s);
                 }
-                KeyAction::KeySequence(s) => match app_kind {
-                    AppKind::Uwp => {
-                        // UWP: VK が正しく処理されないため Unicode 直接
-                        log::debug!("  → KeySequence(\"{s}\") via Unicode (UWP)");
-                        for ch in s.chars() {
-                            self.send_unicode_char(ch);
-                        }
-                    }
-                    AppKind::Chrome => {
-                        // Chrome: かな→ローマ字、記号→VK テーブル経由
+                KeyAction::KeySequence(s) => {
+                    if use_vk {
                         log::debug!("  → KeySequence(\"{s}\") via VK (Chrome)");
                         for ch in s.chars() {
                             self.send_char_as_vk(ch);
                         }
-                    }
-                    AppKind::Win32 => {
-                        // Win32: IME が VK キーストロークを全角に変換
-                        log::debug!("  → KeySequence(\"{s}\") via VK (Win32)");
-                        self.send_key_sequence(s);
+                    } else {
+                        log::debug!("  → KeySequence(\"{s}\") via Unicode");
+                        for ch in s.chars() {
+                            self.send_unicode_char(ch);
+                        }
                     }
                 }
             }
