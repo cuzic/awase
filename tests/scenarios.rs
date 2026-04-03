@@ -1,32 +1,58 @@
-use awase::config::{vk_name_to_code, AppConfig};
-use awase::engine::{Engine, TIMER_PENDING};
-use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+use awase::config::AppConfig;
+use awase::engine::input_tracker::InputTracker;
+use awase::engine::{
+    Decision, Effect, Engine, ImeSyncKeys, InputContext, InputEffect, NicolaFsm, SpecialKeyCombos,
+    TIMER_PENDING,
+};
+use awase::scanmap::{KeyboardModel, PhysicalPos};
+use awase::types::{
+    ImeCacheState, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent,
+    ScanCode, Timestamp, VkCode,
+};
 use awase::yab::YabLayout;
-use timed_fsm::TimedStateMachine;
 
 // ── Helper functions ─────────────────────────────────────────
 
 fn make_nicola_engine() -> Engine {
     let config = AppConfig::load(std::path::Path::new("config.toml")).unwrap();
-    let left_thumb_vk: VkCode =
-        vk_name_to_code(&config.general.left_thumb_key).expect("left thumb vk");
-    let right_thumb_vk: VkCode =
-        vk_name_to_code(&config.general.right_thumb_key).expect("right thumb vk");
 
-    let layouts_dir = &config.general.layouts_dir;
-    let layout_file = format!("{}/{}", layouts_dir, config.general.default_layout);
-    let content = std::fs::read_to_string(&layout_file)
-        .unwrap_or_else(|_| panic!("Failed to read layout file: {layout_file}"));
-    let layout = YabLayout::parse(&content).expect("Failed to parse .yab layout");
+    let content = std::fs::read_to_string("layout/nicola.yab")
+        .expect("Failed to read layout/nicola.yab");
+    let layout =
+        YabLayout::parse(&content, KeyboardModel::Jis).expect("Failed to parse .yab layout");
 
-    Engine::new(
+    let fsm = NicolaFsm::new(
         layout,
-        left_thumb_vk,
-        right_thumb_vk,
+        VK_NONCONVERT,
+        VK_CONVERT,
         config.general.simultaneous_threshold_ms,
         config.general.confirm_mode,
         config.general.speculative_delay_ms,
+    );
+    let tracker = InputTracker::new();
+
+    Engine::new(
+        fsm,
+        tracker,
+        ImeSyncKeys {
+            toggle: vec![],
+            on: vec![],
+            off: vec![],
+        },
+        SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+        },
     )
+}
+
+/// Default InputContext for tests (IME ON)
+fn ctx() -> InputContext {
+    InputContext {
+        ime_cache: ImeCacheState::On,
+    }
 }
 
 /// VK code -> scan code (JIS keyboard) for scenario tests
@@ -64,24 +90,61 @@ fn vk_to_scan(vk: VkCode) -> ScanCode {
     })
 }
 
+/// Classify VK code into KeyClassification and PhysicalPos
+fn classify_key(vk: VkCode) -> (KeyClassification, Option<PhysicalPos>) {
+    if vk == VK_NONCONVERT {
+        (KeyClassification::LeftThumb, None)
+    } else if vk == VK_CONVERT {
+        (KeyClassification::RightThumb, None)
+    } else if let Some(pos) = vk_to_pos(vk) {
+        (KeyClassification::Char, Some(pos))
+    } else {
+        (KeyClassification::Passthrough, None)
+    }
+}
+
+/// VK -> PhysicalPos mapping for test keys
+fn vk_to_pos(vk: VkCode) -> Option<PhysicalPos> {
+    // Row/col positions matching nicola.yab layout
+    match vk.0 {
+        0x41 => Some(PhysicalPos::new(2, 0)), // A
+        0x53 => Some(PhysicalPos::new(2, 1)), // S
+        0x44 => Some(PhysicalPos::new(2, 2)), // D
+        0x46 => Some(PhysicalPos::new(2, 3)), // F
+        0x43 => Some(PhysicalPos::new(3, 2)), // C
+        0x56 => Some(PhysicalPos::new(3, 3)), // V
+        _ => None,
+    }
+}
+
 fn key_down(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
+    let (kc, pos) = classify_key(vk);
     RawKeyEvent {
         vk_code: vk,
         scan_code: vk_to_scan(vk),
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: ts,
+        key_classification: kc,
+        physical_pos: pos,
+        ime_relevance: ImeRelevance::default(),
+        modifier_key: None,
     }
 }
 
 #[allow(dead_code)]
 fn key_up(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
+    let (kc, pos) = classify_key(vk);
     RawKeyEvent {
         vk_code: vk,
         scan_code: vk_to_scan(vk),
         event_type: KeyEventType::KeyUp,
         extra_info: 0,
         timestamp: ts,
+        key_classification: kc,
+        physical_pos: pos,
+        ime_relevance: ImeRelevance::default(),
+        modifier_key: None,
     }
 }
 
@@ -89,17 +152,22 @@ const VK_NONCONVERT: VkCode = VkCode(0x1D);
 #[allow(dead_code)]
 const VK_CONVERT: VkCode = VkCode(0x1C);
 
-/// Collect output text from actions.
-///
-/// With .yab romaji-only output, the engine emits `KeyAction::Romaji`
-/// for most keys. We concatenate all text-producing actions into a string.
-fn collect_output(actions: &[KeyAction]) -> String {
+/// Collect output text from a Decision's effects.
+fn collect_output(decision: &Decision) -> String {
+    let effects = match decision {
+        Decision::PassThrough => return String::new(),
+        Decision::PassThroughWith { effects } | Decision::Consume { effects } => effects,
+    };
     let mut out = String::new();
-    for a in actions {
-        match a {
-            KeyAction::Char(ch) => out.push(*ch),
-            KeyAction::Romaji(s) => out.push_str(s),
-            _ => {}
+    for effect in effects {
+        if let Effect::Input(InputEffect::SendKeys(actions)) = effect {
+            for a in actions {
+                match a {
+                    KeyAction::Char(ch) => out.push(*ch),
+                    KeyAction::Romaji(s) => out.push_str(s),
+                    _ => {}
+                }
+            }
         }
     }
     out
@@ -118,22 +186,22 @@ fn scenario_single_chars_sequential() {
     let mut output = String::new();
     let mut t: Timestamp = 0;
 
-    let r = engine.on_event(key_down(VkCode(0x41), t));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x41), t), &ctx());
+    output.push_str(&collect_output(&r));
     t += 120_000; // 120ms later (past threshold)
 
     // Timeout fires, confirming "u"
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
     // VK_S in normal face -> "si"
-    let r = engine.on_event(key_down(VkCode(0x53), t));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x53), t), &ctx());
+    output.push_str(&collect_output(&r));
     t += 120_000;
 
     let _ = t;
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
     assert_eq!(output, "usi");
 }
@@ -144,15 +212,15 @@ fn scenario_thumb_shift_simultaneous() {
     let mut engine = make_nicola_engine();
     let t: Timestamp = 0;
 
-    let r1 = engine.on_event(key_down(VK_NONCONVERT, t));
-    let r2 = engine.on_event(key_down(VkCode(0x41), t + 30_000));
-    let r3 = engine.on_timeout(TIMER_PENDING);
+    let r1 = engine.on_input(key_down(VK_NONCONVERT, t), &ctx());
+    let r2 = engine.on_input(key_down(VkCode(0x41), t + 30_000), &ctx());
+    let r3 = engine.on_timeout(TIMER_PENDING, &ctx());
 
     let output = format!(
         "{}{}{}",
-        collect_output(&r1.actions),
-        collect_output(&r2.actions),
-        collect_output(&r3.actions)
+        collect_output(&r1),
+        collect_output(&r2),
+        collect_output(&r3)
     );
 
     assert!(output.contains("wo"), "Expected 'wo' but got {output:?}");
@@ -164,17 +232,17 @@ fn scenario_rapid_sequence_pattern4() {
     let mut engine = make_nicola_engine();
     let mut output = String::new();
 
-    let r = engine.on_event(key_down(VkCode(0x41), 0));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x41), 0), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_event(key_down(VkCode(0x53), 50_000));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x53), 50_000), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_event(key_down(VkCode(0x44), 100_000));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x44), 100_000), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
     assert_eq!(output, "usite");
 }
@@ -187,20 +255,20 @@ fn scenario_continuous_shift() {
     let mut output = String::new();
     let t: Timestamp = 0;
 
-    let r = engine.on_event(key_down(VK_NONCONVERT, t));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VK_NONCONVERT, t), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_event(key_down(VkCode(0x41), t + 30_000));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x41), t + 30_000), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_event(key_down(VkCode(0x53), t + 200_000));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x53), t + 200_000), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
     assert!(
         !output.is_empty(),
@@ -219,14 +287,14 @@ fn scenario_char_then_thumb_within_threshold() {
     let mut output = String::new();
     let t: Timestamp = 0;
 
-    let r = engine.on_event(key_down(VkCode(0x41), t));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x41), t), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_event(key_down(VK_NONCONVERT, t + 40_000));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VK_NONCONVERT, t + 40_000), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
     assert!(
         output.contains("wo"),
@@ -240,13 +308,13 @@ fn scenario_timeout_confirms_single_char() {
     // D = "te"
     let mut engine = make_nicola_engine();
 
-    let r = engine.on_event(key_down(VkCode(0x44), 0));
-    let mut output = collect_output(&r.actions);
+    let r = engine.on_input(key_down(VkCode(0x44), 0), &ctx());
+    let mut output = collect_output(&r);
 
-    assert!(r.consumed, "key_down should be consumed");
+    assert!(r.is_consumed(), "key_down should be consumed");
 
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
     assert_eq!(output, "te");
 }
@@ -258,14 +326,14 @@ fn scenario_right_thumb_shift() {
     let mut output = String::new();
     let t: Timestamp = 0;
 
-    let r = engine.on_event(key_down(VK_CONVERT, t));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VK_CONVERT, t), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_event(key_down(VkCode(0x53), t + 30_000));
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_input(key_down(VkCode(0x53), t + 30_000), &ctx());
+    output.push_str(&collect_output(&r));
 
-    let r = engine.on_timeout(TIMER_PENDING);
-    output.push_str(&collect_output(&r.actions));
+    let r = engine.on_timeout(TIMER_PENDING, &ctx());
+    output.push_str(&collect_output(&r));
 
     assert!(
         output.contains("zi"),

@@ -4077,8 +4077,8 @@ mod engine_integration_tests {
         skip: bool,
         needs_uia: bool,
         overridden: bool,
-        cached_engine_enabled: Option<bool>,
         os_modifiers: Option<super::ModifierState>,
+        ime_open_at_focus: Option<bool>,
     ) -> FocusObservation {
         FocusObservation {
             process_id,
@@ -4090,8 +4090,8 @@ mod engine_integration_tests {
             skip,
             debounce_timer_id: 99,
             debounce_ms: 50,
-            cached_engine_enabled,
             os_modifiers,
+            ime_open_at_focus,
         }
     }
 
@@ -4137,7 +4137,7 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn focus_changed_restores_engine_state() {
+    fn focus_changed_ime_off_disables_engine() {
         let mut engine = make_test_engine();
         assert!(engine.is_fsm_enabled());
 
@@ -4148,13 +4148,13 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            Some(false),
             None,
+            Some(false), // IME OFF
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs));
         assert!(
             !engine.is_fsm_enabled(),
-            "engine should be disabled from cached state"
+            "engine should be disabled when IME is OFF at focus change"
         );
         assert!(has_effect(&d, |e| matches!(
             e,
@@ -4183,11 +4183,11 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn focus_changed_saves_old_engine_state() {
+    fn focus_changed_syncs_engine_with_ime() {
         let mut engine = make_test_engine();
 
-        // First focus change to set last_focus_info
-        let obs1 = make_focus_obs(
+        // Focus change with IME OFF should disable engine
+        let obs = make_focus_obs(
             100,
             "First",
             FocusKind::TextInput,
@@ -4195,12 +4195,16 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            None,
+            Some(false), // IME OFF
         );
-        engine.on_command(EngineCommand::FocusChanged(obs1));
+        engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(
+            !engine.is_fsm_enabled(),
+            "engine should be disabled when IME is OFF at focus change"
+        );
 
-        // Second focus change should save state for the first window
-        let obs2 = make_focus_obs(
+        // Focus change with IME ON should enable engine
+        let obs = make_focus_obs(
             200,
             "Second",
             FocusKind::TextInput,
@@ -4208,13 +4212,13 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            None,
+            Some(true), // IME ON
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs2));
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Focus(super::decision::FocusEffect::SaveEngineState { .. })
-        )));
+        engine.on_command(EngineCommand::FocusChanged(obs));
+        assert!(
+            engine.is_fsm_enabled(),
+            "engine should be enabled when IME is ON at focus change"
+        );
     }
 
     #[test]
@@ -4253,8 +4257,8 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
             Some(mods),
+            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs));
         assert!(!d.is_consumed());
@@ -4510,16 +4514,16 @@ mod engine_integration_tests {
         );
     }
 
-    // ── 24. Focus change restores enabled state ──
+    // ── 24. Focus change syncs engine with IME state ──
 
     #[test]
-    fn focus_changed_restores_enabled_true() {
+    fn focus_changed_ime_on_enables_engine() {
         let mut engine = make_test_engine();
         // Disable engine
         engine.on_command(EngineCommand::ToggleEngine);
         assert!(!engine.is_fsm_enabled());
 
-        // Focus change with cached_engine_enabled=true should re-enable
+        // Focus change with IME ON should re-enable engine
         let obs = make_focus_obs(
             5678,
             "Other",
@@ -4527,13 +4531,13 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            Some(true),
             None,
+            Some(true), // IME ON
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs));
         assert!(
             engine.is_fsm_enabled(),
-            "engine should be re-enabled from cached state"
+            "engine should be enabled when IME is ON at focus change"
         );
         assert!(has_effect(&d, |e| matches!(
             e,
