@@ -235,6 +235,83 @@ static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) ->
 /// 再入ガード
 static IN_CALLBACK: SingleThreadCell<bool> = SingleThreadCell::new(false);
 
+/// Engine に送った KeyDown を記録するビットセット（VK コードは 0-255）。
+/// KeyUp は KeyDown の判定に自動追随し、KeyDown/KeyUp ペアを構造的に保証する。
+static SENT_TO_ENGINE: SingleThreadCell<[u64; 4]> = SingleThreadCell::new([0u64; 4]);
+
+/// キーの処理先を決定する。
+///
+/// Engine に送るか、OS にそのまま渡すかを一元的に判定する。
+/// KeyUp は KeyDown の判定に自動追随する（ペア保証）。
+///
+/// # Safety
+/// `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
+unsafe fn classify_route(vk: u16, is_keydown: bool) -> KeyRoute {
+    // KeyUp は KeyDown の判定に従う（ペア保証）
+    if !is_keydown {
+        let bits = SENT_TO_ENGINE.get_mut();
+        let idx = (vk as usize) / 64;
+        let bit = 1u64 << ((vk as usize) % 64);
+        return if idx < 4 && (bits[idx] & bit) != 0 {
+            KeyRoute::Engine
+        } else {
+            KeyRoute::Bypass
+        };
+    }
+
+    // KeyDown の分類
+    if is_non_shift_modifier(vk) {
+        return KeyRoute::Bypass;
+    }
+
+    // Ctrl/Alt/Win が押されている間のキーはショートカット → Bypass
+    // 例外: 親指キーは Engine のコンボキー用
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let ctrl = (GetAsyncKeyState(0x11).cast_unsigned() & 0x8000) != 0;
+        let alt = (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0;
+        let win = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
+            || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
+        if ctrl || alt || win {
+            let left_thumb = LEFT_THUMB_VK.load(Ordering::Relaxed);
+            let right_thumb = RIGHT_THUMB_VK.load(Ordering::Relaxed);
+            if vk != left_thumb && vk != right_thumb {
+                return KeyRoute::Bypass;
+            }
+        }
+    }
+
+    KeyRoute::Engine
+}
+
+/// classify_route の結果
+enum KeyRoute {
+    /// Engine で NICOLA 処理する
+    Engine,
+    /// OS にそのまま渡す
+    Bypass,
+}
+
+/// SENT_TO_ENGINE ビットセットにキーを記録する
+unsafe fn mark_sent_to_engine(vk: u16) {
+    let bits = SENT_TO_ENGINE.get_mut();
+    let idx = (vk as usize) / 64;
+    let bit = 1u64 << ((vk as usize) % 64);
+    if idx < 4 {
+        bits[idx] |= bit;
+    }
+}
+
+/// SENT_TO_ENGINE ビットセットからキーを削除する
+unsafe fn clear_sent_to_engine(vk: u16) {
+    let bits = SENT_TO_ENGINE.get_mut();
+    let idx = (vk as usize) / 64;
+    let bit = 1u64 << ((vk as usize) % 64);
+    if idx < 4 {
+        bits[idx] &= !bit;
+    }
+}
+
 /// コールバックの戻り値
 pub enum CallbackResult {
     /// 元キーを握りつぶす（LRESULT(1)）
@@ -284,6 +361,9 @@ pub fn install_hook(
 }
 
 /// WH_KEYBOARD_LL フックコールバック
+///
+/// キーイベントの処理先を `classify_route` で一元的に判定し、
+/// `SENT_TO_ENGINE` ビットセットで KeyDown/KeyUp ペアを構造的に保証する。
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hook_handle = *HOOK_HANDLE.get_mut();
 
@@ -300,86 +380,31 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         }
 
         // ── かな入力方式バイパス ──
-        // IME がかな入力モードの場合、awase は一切介入せずパススルーする。
         if crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed) {
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 
-        // ── Ctrl/Alt/Win バイパス ──
-        // これらの修飾キーは NICOLA 処理に関与しない。
-        // Engine をバイパスして常に OS に直接渡すことで、
-        // KeyDown/KeyUp ペアが状態変化で壊れるのを防ぐ。
-        //
-        // KeyDown 時: Engine にイベントを送って保留フラッシュを促すが、
-        // Engine の判定結果に関係なく必ず PassThrough する。
-        // KeyUp 時: Engine に送らず直接 PassThrough する。
         let vk_raw = kb.vkCode as u16;
-        if is_non_shift_modifier(vk_raw) {
-            let is_keydown = matches!(
-                wparam.0 as u32,
-                WM_KEYDOWN | WM_SYSKEYDOWN
-            );
-            // Engine にイベントを送信して内部状態（ModifierState 等）を更新させる。
-            // KeyDown 時は保留フラッシュも促進される。
-            // ただし Engine の判定結果は無視し、常に OS に直接渡す。
-            {
-                let in_callback = IN_CALLBACK.get_mut();
-                if !*in_callback {
-                    *in_callback = true;
-                    let vk = VkCode(vk_raw);
-                    let scan = ScanCode(kb.scanCode);
-                    let event_type = if is_keydown {
-                        KeyEventType::KeyDown
-                    } else {
-                        KeyEventType::KeyUp
-                    };
-                    let event = RawKeyEvent {
-                        vk_code: vk,
-                        scan_code: scan,
-                        event_type,
-                        extra_info: kb.dwExtraInfo,
-                        timestamp: now_timestamp(),
-                        key_classification: KeyClassification::Passthrough,
-                        physical_pos: None,
-                        ime_relevance: ImeRelevance::default(),
-                        modifier_key: classify_modifier(vk),
-                    };
-                    if let Some(callback) = KEY_EVENT_CALLBACK.get_mut().as_mut() {
-                        let _ = callback(event);
-                    }
-                    *IN_CALLBACK.get_mut() = false;
-                }
-            }
-            if is_keydown {
-                log::trace!("Hook: modifier vk=0x{vk_raw:02X} KeyDown → flush + PassThrough");
-            } else {
-                log::trace!("Hook: modifier vk=0x{vk_raw:02X} KeyUp → PassThrough");
-            }
-            return CallNextHookEx(hook_handle, ncode, wparam, lparam);
-        }
+        let is_keydown = matches!(
+            wparam.0 as u32,
+            WM_KEYDOWN | WM_SYSKEYDOWN
+        );
 
-        // ── 修飾キー併用バイパス ──
-        // Ctrl/Alt/Win が押されている間のキーはショートカットなので、
-        // Engine を通さず OS にそのまま渡す。
-        // （修飾キー自体のバイパスは上で処理済み。ここでは「修飾+文字」を処理する）
-        //
-        // 例外: 親指キー（Convert/Nonconvert）は Engine のコンボキー
-        // （Ctrl+Convert = IME ON 等）として使うため、バイパスしない。
-        {
-            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-            let ctrl_held = (GetAsyncKeyState(0x11).cast_unsigned() & 0x8000) != 0;
-            let alt_held = (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0;
-            let win_held = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
-                || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
-            if ctrl_held || alt_held || win_held {
-                let left_thumb = LEFT_THUMB_VK.load(Ordering::Relaxed);
-                let right_thumb = RIGHT_THUMB_VK.load(Ordering::Relaxed);
-                let is_thumb_key = vk_raw == left_thumb || vk_raw == right_thumb;
-                if !is_thumb_key {
-                    log::trace!(
-                        "Hook: vk=0x{vk_raw:02X} with modifier held (ctrl={ctrl_held} alt={alt_held} win={win_held}) → PassThrough"
-                    );
-                    return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+        // ── 一元的なルーティング判定 ──
+        match classify_route(vk_raw, is_keydown) {
+            KeyRoute::Bypass => {
+                log::trace!(
+                    "Hook: vk=0x{vk_raw:02X} {} → Bypass",
+                    if is_keydown { "KeyDown" } else { "KeyUp" }
+                );
+                return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+            }
+            KeyRoute::Engine => {
+                // KeyDown/KeyUp ペア追跡を更新
+                if is_keydown {
+                    mark_sent_to_engine(vk_raw);
+                } else {
+                    clear_sent_to_engine(vk_raw);
                 }
             }
         }
@@ -391,16 +416,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         }
         *in_callback = true;
 
-        let event_type = match wparam.0 as u32 {
-            WM_KEYDOWN | WM_SYSKEYDOWN => KeyEventType::KeyDown,
-            WM_KEYUP | WM_SYSKEYUP => KeyEventType::KeyUp,
-            _ => {
-                *in_callback = false;
-                return CallNextHookEx(hook_handle, ncode, wparam, lparam);
-            }
+        let event_type = if is_keydown {
+            KeyEventType::KeyDown
+        } else {
+            KeyEventType::KeyUp
         };
 
-        let vk = VkCode(kb.vkCode as u16);
+        let vk = VkCode(vk_raw);
         let scan = ScanCode(kb.scanCode);
         let (key_classification, physical_pos) = classify_key(vk, scan);
         let event = RawKeyEvent {
@@ -416,13 +438,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         };
 
         log::trace!(
-            "Hook: vk=0x{:02X} scan=0x{:04X} type={:?}",
+            "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → Engine",
             event.vk_code.0,
             event.scan_code.0,
             event.event_type
         );
 
-        // ── コールバック呼び出し ──
+        // ── Engine コールバック呼び出し ──
         let result = KEY_EVENT_CALLBACK
             .get_mut()
             .as_mut()
@@ -432,11 +454,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
         match result {
             CallbackResult::Consumed => {
-                return LRESULT(1); // 元キーを握りつぶす
+                return LRESULT(1);
             }
-            CallbackResult::PassThrough => {
-                // 何もしない（元キーをそのまま通す）
-            }
+            CallbackResult::PassThrough => {}
         }
     }
 
