@@ -5,7 +5,7 @@ use std::time::Duration;
 use smallvec::{smallvec, SmallVec};
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, FocusKind, ImeCacheState, KeyAction, RawKeyEvent, VkCode};
+use crate::types::{ContextChange, FocusKind, KeyAction, RawKeyEvent, VkCode};
 use crate::yab::YabLayout;
 
 use super::input_tracker::PhysicalKeyState;
@@ -172,10 +172,14 @@ impl Decision {
 /// - Engine 内部で保持できる永続状態は Engine 側に寄せる
 /// - 副作用結果を反映したい場合は Effect 経由で表現する
 /// - このフィールドを増やす前に、Engine 内部状態で代替できないか検討すること
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct InputContext {
-    /// メッセージループで更新される IME ON/OFF キャッシュ
-    pub ime_cache: ImeCacheState,
+    /// IME が ON か（Platform 層がアトミック変数から取得、shadow 反映済み）
+    pub ime_on: bool,
+    /// ローマ字入力モードか（false = かな入力）
+    pub is_romaji: bool,
+    /// 日本語 IME がアクティブか（MS-IME, Google, ATOK 等）
+    pub is_japanese_ime: bool,
 }
 
 /// IME 同期キー（トグル・ON・OFF）を集約する構造体

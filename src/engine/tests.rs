@@ -3517,14 +3517,14 @@ mod engine_integration_tests {
     use super::*;
     use crate::config::{ConfirmMode, ParsedKeyCombo};
     use crate::engine::decision::{
-        Decision, Effect, EngineCommand, ImeCacheEffect, ImeEffect, ImeSyncKeys, InputContext,
+        Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext,
         InputEffect, SpecialKeyCombos, UiEffect,
     };
     use crate::engine::engine::Engine;
     use crate::engine::input_tracker::InputTracker;
     use crate::engine::nicola_fsm::NicolaFsm;
     use crate::engine::observation::{FocusObservation, ImeObservation};
-    use crate::types::{FocusKind, ImeCacheState, ImeReliability};
+    use crate::types::{FocusKind, ImeReliability};
 
     fn empty_sync_keys() -> ImeSyncKeys {
         ImeSyncKeys {
@@ -3555,30 +3555,24 @@ mod engine_integration_tests {
             30,
         );
         let mut engine = Engine::new(fsm, tracker, empty_sync_keys(), empty_special_keys());
-        // テストではデフォルトで全前提条件を満たす
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: true,
-            is_romaji: true,
-            is_japanese_ime: true,
-        });
+        // テストでは prev_active=true にしておく（全前提条件を満たす ctx で使う想定）
+        engine.set_prev_active(true);
         engine
     }
 
     fn ime_on_ctx() -> InputContext {
         InputContext {
-            ime_cache: ImeCacheState::On,
+            ime_on: true,
+            is_romaji: true,
+            is_japanese_ime: true,
         }
     }
 
     fn ime_off_ctx() -> InputContext {
         InputContext {
-            ime_cache: ImeCacheState::Off,
-        }
-    }
-
-    fn ime_unknown_ctx() -> InputContext {
-        InputContext {
-            ime_cache: ImeCacheState::Unknown,
+            ime_on: false,
+            is_romaji: true,
+            is_japanese_ime: true,
         }
     }
 
@@ -3613,11 +3607,6 @@ mod engine_integration_tests {
     #[test]
     fn on_input_char_key_with_preconditions_not_met_passes_through() {
         let mut engine = make_test_engine();
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: false,
-            is_romaji: true,
-            is_japanese_ime: true,
-        });
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_off_ctx());
         assert!(
             !d.is_consumed(),
@@ -3639,12 +3628,8 @@ mod engine_integration_tests {
     #[test]
     fn on_input_char_key_not_romaji_passes_through() {
         let mut engine = make_test_engine();
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: true,
-            is_romaji: false,
-            is_japanese_ime: true,
-        });
-        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
+        let kana_ctx = InputContext { ime_on: true, is_romaji: false, is_japanese_ime: true };
+        let d = engine.on_input(Ev::down(VK_A).at(100).build(), &kana_ctx);
         assert!(
             !d.is_consumed(),
             "char key with kana input mode should pass through"
@@ -3726,17 +3711,17 @@ mod engine_integration_tests {
     #[test]
     fn on_command_toggle_engine() {
         let mut engine = make_test_engine();
-        assert!(engine.is_fsm_enabled());
+        assert!(engine.is_user_enabled());
 
-        let d = engine.on_command(EngineCommand::ToggleEngine);
-        assert!(!engine.is_fsm_enabled());
+        let d = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        assert!(!engine.is_user_enabled());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
         )));
 
-        let d = engine.on_command(EngineCommand::ToggleEngine);
-        assert!(engine.is_fsm_enabled());
+        let d = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        assert!(engine.is_user_enabled());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
@@ -3747,18 +3732,19 @@ mod engine_integration_tests {
     fn on_command_invalidate_context() {
         let mut engine = make_test_engine();
         engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
-        let d = engine.on_command(EngineCommand::InvalidateContext(ContextChange::ImeOff));
+        let d = engine.on_command(EngineCommand::InvalidateContext(ContextChange::ImeOff), &ime_on_ctx());
         assert!(d.is_consumed());
     }
 
     #[test]
     fn on_command_sync_ime_state_off_deactivates() {
         let mut engine = make_test_engine();
-        assert!(engine.is_active());
+        assert!(engine.compute_active(&ime_on_ctx()));
 
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false });
-        assert!(!engine.is_active());
-        assert!(engine.is_fsm_enabled(), "user_enabled unchanged");
+        // Platform updated atomic → ctx now reflects ime_on=false
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false }, &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
+        assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
@@ -3768,16 +3754,13 @@ mod engine_integration_tests {
     #[test]
     fn on_command_sync_ime_state_on_activates() {
         let mut engine = make_test_engine();
-        // preconditions.ime_on を OFF にしておく
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: false,
-            is_romaji: true,
-            is_japanese_ime: true,
-        });
-        assert!(!engine.is_active());
+        // まず ime_off で inactive にする
+        engine.on_command(EngineCommand::SyncImeState { ime_on: false }, &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
 
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true });
-        assert!(engine.is_active());
+        // Platform updated atomic → ctx now reflects ime_on=true
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true }, &ime_on_ctx());
+        assert!(engine.compute_active(&ime_on_ctx()));
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
@@ -3787,12 +3770,12 @@ mod engine_integration_tests {
     #[test]
     fn on_command_sync_ime_state_on_but_user_disabled() {
         let mut engine = make_test_engine();
-        engine.on_command(EngineCommand::ToggleEngine); // user OFF
-        assert!(!engine.is_active());
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx()); // user OFF
+        assert!(!engine.compute_active(&ime_on_ctx()));
 
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true });
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true }, &ime_on_ctx());
         // user disabled → still inactive
-        assert!(!engine.is_active());
+        assert!(!engine.compute_active(&ime_on_ctx()));
         assert!(!has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { .. })
@@ -3802,24 +3785,24 @@ mod engine_integration_tests {
     #[test]
     fn on_command_sync_ime_state_no_change() {
         let mut engine = make_test_engine();
-        assert!(engine.is_active());
+        assert!(engine.compute_active(&ime_on_ctx()));
 
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true });
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true }, &ime_on_ctx());
         assert!(!d.is_consumed());
-        assert!(engine.is_active());
+        assert!(engine.compute_active(&ime_on_ctx()));
     }
 
     #[test]
     fn on_command_set_guard() {
         let mut engine = make_test_engine();
-        let d = engine.on_command(EngineCommand::SetGuard(true));
+        let d = engine.on_command(EngineCommand::SetGuard(true), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
     #[test]
     fn on_command_clear_deferred_keys() {
         let mut engine = make_test_engine();
-        let d = engine.on_command(EngineCommand::ClearDeferredKeys);
+        let d = engine.on_command(EngineCommand::ClearDeferredKeys, &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
@@ -3830,7 +3813,7 @@ mod engine_integration_tests {
             threshold_ms: 200,
             confirm_mode: ConfirmMode::Speculative,
             speculative_delay_ms: 50,
-        });
+        }, &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
@@ -3840,7 +3823,7 @@ mod engine_integration_tests {
         let d = engine.on_command(EngineCommand::ReloadKeys {
             special: empty_special_keys(),
             sync: empty_sync_keys(),
-        });
+        }, &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
@@ -3858,11 +3841,7 @@ mod engine_integration_tests {
             30,
         );
         let mut engine = Engine::new(fsm, tracker, empty_sync_keys(), special);
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: true,
-            is_romaji: true,
-            is_japanese_ime: true,
-        });
+        engine.set_prev_active(true);
         engine
     }
 
@@ -3882,12 +3861,12 @@ mod engine_integration_tests {
         };
         let mut engine = make_engine_with_special(special);
 
-        engine.on_command(EngineCommand::ToggleEngine);
-        assert!(!engine.is_fsm_enabled());
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        assert!(!engine.is_user_enabled());
 
         let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         assert!(
-            engine.is_fsm_enabled(),
+            engine.is_user_enabled(),
             "engine should be re-enabled by special key combo"
         );
         assert!(has_effect(&d, |e| matches!(
@@ -3915,11 +3894,11 @@ mod engine_integration_tests {
             ime_off: vec![],
         };
         let mut engine = make_engine_with_special(special);
-        assert!(engine.is_fsm_enabled());
+        assert!(engine.is_user_enabled());
 
         let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         assert!(
-            !engine.is_fsm_enabled(),
+            !engine.is_user_enabled(),
             "engine should be disabled by special key combo"
         );
         assert!(has_effect(&d, |e| matches!(
@@ -3994,7 +3973,7 @@ mod engine_integration_tests {
 
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         assert!(
-            engine.is_fsm_enabled(),
+            engine.is_user_enabled(),
             "KeyUp should not trigger engine_off"
         );
         assert!(!has_effect(&d, |e| matches!(
@@ -4017,12 +3996,7 @@ mod engine_integration_tests {
     #[test]
     fn lifecycle_key_down_passthrough_key_up_passthrough() {
         let mut engine = make_test_engine();
-        // preconditions not met → passthrough
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: false,
-            is_romaji: true,
-            is_japanese_ime: true,
-        });
+        // preconditions not met → passthrough (use ime_off_ctx)
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_off_ctx());
         assert!(!d.is_consumed());
         let d = engine.on_input(Ev::up(VK_A).at(200).build(), &ime_off_ctx());
@@ -4034,37 +4008,36 @@ mod engine_integration_tests {
     #[test]
     fn ime_observed_on_updates_preconditions() {
         let mut engine = make_test_engine();
-        // user_enabled=ON だが preconditions.ime_on を OFF にしておく
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: false,
-            is_romaji: true,
-            is_japanese_ime: true,
-        });
-        assert!(!engine.is_active());
+        // まず ImeObserved(off) で prev_active=false に遷移させる
+        let obs_off = ImeObservation {
+            cross_process: Some(false),
+            is_japanese: true,
+            reliability: ImeReliability::Reliable,
+            is_romaji: Some(true),
+        };
+        engine.on_command(EngineCommand::ImeObserved(obs_off), &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
 
-        let obs = ImeObservation {
+        // ImeObserved(on) → Platform updated atomic → ctx reflects ime_on=true
+        let obs_on = ImeObservation {
             cross_process: Some(true),
             is_japanese: true,
             reliability: ImeReliability::Reliable,
             is_romaji: Some(true),
         };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs));
-        assert!(engine.is_active(), "preconditions met → active");
+        let d = engine.on_command(EngineCommand::ImeObserved(obs_on), &ime_on_ctx());
+        assert!(engine.compute_active(&ime_on_ctx()), "preconditions met → active");
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
-        )));
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: true })
         )));
     }
 
     #[test]
     fn ime_observed_on_but_user_disabled_stays_inactive() {
         let mut engine = make_test_engine();
-        engine.on_command(EngineCommand::ToggleEngine); // user OFF
-        assert!(!engine.is_fsm_enabled());
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx()); // user OFF
+        assert!(!engine.is_user_enabled());
 
         let obs = ImeObservation {
             cross_process: Some(true),
@@ -4072,9 +4045,9 @@ mod engine_integration_tests {
             reliability: ImeReliability::Reliable,
             is_romaji: Some(true),
         };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs));
+        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_on_ctx());
         // user disabled → still inactive even with IME ON
-        assert!(!engine.is_active());
+        assert!(!engine.compute_active(&ime_on_ctx()));
         assert!(!has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { .. })
@@ -4084,7 +4057,7 @@ mod engine_integration_tests {
     #[test]
     fn ime_observed_off_deactivates_engine() {
         let mut engine = make_test_engine();
-        assert!(engine.is_active());
+        assert!(engine.compute_active(&ime_on_ctx()));
 
         let obs = ImeObservation {
             cross_process: Some(false),
@@ -4092,23 +4065,20 @@ mod engine_integration_tests {
             reliability: ImeReliability::Reliable,
             is_romaji: Some(true),
         };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs));
-        assert!(!engine.is_active());
-        assert!(engine.is_fsm_enabled(), "user_enabled unchanged");
+        // Platform updated atomic → ctx reflects ime_on=false
+        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
+        assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
-        )));
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: false })
         )));
     }
 
     #[test]
     fn ime_observed_no_change_just_updates_cache() {
         let mut engine = make_test_engine();
-        assert!(engine.is_active());
+        assert!(engine.compute_active(&ime_on_ctx()));
 
         let obs = ImeObservation {
             cross_process: Some(true),
@@ -4116,22 +4086,19 @@ mod engine_integration_tests {
             reliability: ImeReliability::Reliable,
             is_romaji: Some(true),
         };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs));
-        assert!(engine.is_active());
+        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_on_ctx());
+        assert!(engine.compute_active(&ime_on_ctx()));
+        // No state change → no EngineStateChanged effect
         assert!(!has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { .. })
-        )));
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: true })
         )));
     }
 
     #[test]
     fn ime_observed_not_japanese_deactivates() {
         let mut engine = make_test_engine();
-        assert!(engine.is_active());
+        assert!(engine.compute_active(&ime_on_ctx()));
 
         let obs = ImeObservation {
             cross_process: Some(true),
@@ -4139,12 +4106,14 @@ mod engine_integration_tests {
             reliability: ImeReliability::Reliable,
             is_romaji: Some(true),
         };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs));
-        assert!(!engine.is_active());
-        assert!(engine.is_fsm_enabled(), "user_enabled unchanged");
+        // Platform updated is_japanese_ime=false in ctx
+        let not_japanese_ctx = InputContext { ime_on: true, is_romaji: true, is_japanese_ime: false };
+        let d = engine.on_command(EngineCommand::ImeObserved(obs), &not_japanese_ctx);
+        assert!(!engine.compute_active(&not_japanese_ctx));
+        assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::ImeCache(ImeCacheEffect::UpdateStateCache { ime_on: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
         )));
     }
 
@@ -4188,7 +4157,7 @@ mod engine_integration_tests {
             None,
             None,
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
 
         let effs = effects_of(&d);
@@ -4212,14 +4181,14 @@ mod engine_integration_tests {
             None,
             None,
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(matches!(d, Decision::PassThrough));
     }
 
     #[test]
     fn focus_changed_ime_off_deactivates_engine() {
         let mut engine = make_test_engine();
-        assert!(engine.is_active());
+        assert!(engine.compute_active(&ime_on_ctx()));
 
         let obs = make_focus_obs(
             5678,
@@ -4231,12 +4200,13 @@ mod engine_integration_tests {
             None,
             Some(false), // IME OFF
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        // Platform updated atomic → ctx reflects ime_on=false
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
         assert!(
-            !engine.is_active(),
+            !engine.compute_active(&ime_off_ctx()),
             "engine should be inactive when IME is OFF at focus change"
         );
-        assert!(engine.is_fsm_enabled(), "user_enabled unchanged");
+        assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
@@ -4256,7 +4226,7 @@ mod engine_integration_tests {
             None,
             None,
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Focus(super::decision::FocusEffect::RequestUiaClassification)
@@ -4278,12 +4248,13 @@ mod engine_integration_tests {
             None,
             Some(false), // IME OFF
         );
-        engine.on_command(EngineCommand::FocusChanged(obs));
+        // Platform updated atomic → ctx reflects ime_on=false
+        engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
         assert!(
-            !engine.is_active(),
+            !engine.compute_active(&ime_off_ctx()),
             "engine should be inactive when IME is OFF at focus change"
         );
-        assert!(engine.is_fsm_enabled(), "user_enabled unchanged");
+        assert!(engine.is_user_enabled(), "user_enabled unchanged");
 
         // Focus change with IME ON should activate engine
         let obs = make_focus_obs(
@@ -4296,9 +4267,9 @@ mod engine_integration_tests {
             None,
             Some(true), // IME ON
         );
-        engine.on_command(EngineCommand::FocusChanged(obs));
+        engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
-            engine.is_active(),
+            engine.compute_active(&ime_on_ctx()),
             "engine should be active when IME is ON at focus change"
         );
     }
@@ -4316,7 +4287,7 @@ mod engine_integration_tests {
             None,
             None,
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!has_effect(&d, |e| matches!(
             e,
             Effect::Focus(super::decision::FocusEffect::InsertFocusCache { .. })
@@ -4342,7 +4313,7 @@ mod engine_integration_tests {
             Some(mods),
             None,
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
@@ -4357,7 +4328,7 @@ mod engine_integration_tests {
             shift: false,
             win: false,
         };
-        let d = engine.on_command(EngineCommand::SyncModifiers(os_mods));
+        let d = engine.on_command(EngineCommand::SyncModifiers(os_mods), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
@@ -4370,27 +4341,12 @@ mod engine_integration_tests {
         assert!(results.is_empty());
     }
 
-    // ── 11. is_fsm_enabled / shadow_ime_on ──
+    // ── 11. is_user_enabled ──
 
     #[test]
-    fn is_fsm_enabled_default_true() {
+    fn is_user_enabled_default_true() {
         let engine = make_test_engine();
-        assert!(engine.is_fsm_enabled());
-    }
-
-    #[test]
-    fn shadow_ime_on_default_true() {
-        let engine = make_test_engine();
-        assert!(engine.shadow_ime_on());
-    }
-
-    #[test]
-    fn set_shadow_ime_on_updates() {
-        let mut engine = make_test_engine();
-        engine.set_shadow_ime_on(false);
-        assert!(!engine.shadow_ime_on());
-        engine.set_shadow_ime_on(true);
-        assert!(engine.shadow_ime_on());
+        assert!(engine.is_user_enabled());
     }
 
     // ── 12. Engine::on_command with SwapLayout ──
@@ -4399,7 +4355,7 @@ mod engine_integration_tests {
     fn on_command_swap_layout() {
         let mut engine = make_test_engine();
         let new_layout = make_layout();
-        let d = engine.on_command(EngineCommand::SwapLayout(new_layout));
+        let d = engine.on_command(EngineCommand::SwapLayout(new_layout), &ime_on_ctx());
         let _ = d; // verify no panic
     }
 
@@ -4447,7 +4403,7 @@ mod engine_integration_tests {
             None,
             None,
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Input(InputEffect::ReinjectKey(_))
@@ -4459,8 +4415,8 @@ mod engine_integration_tests {
     #[test]
     fn disabled_engine_char_passes_through() {
         let mut engine = make_test_engine();
-        engine.on_command(EngineCommand::ToggleEngine);
-        assert!(!engine.is_fsm_enabled());
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        assert!(!engine.is_user_enabled());
 
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
         assert!(!d.is_consumed());
@@ -4482,9 +4438,10 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
         engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
 
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false });
-        assert!(!engine.is_active());
-        assert!(engine.is_fsm_enabled(), "user_enabled unchanged");
+        // Platform updated atomic → ctx reflects ime_on=false
+        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false }, &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
+        assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
@@ -4498,7 +4455,7 @@ mod engine_integration_tests {
         use crate::ngram::NgramModel;
         let mut engine = make_test_engine();
         let model = NgramModel::new(100_000, 20_000, 50_000, 200_000);
-        let d = engine.on_command(EngineCommand::SetNgramModel(model));
+        let d = engine.on_command(EngineCommand::SetNgramModel(model), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
@@ -4553,7 +4510,7 @@ mod engine_integration_tests {
             None,
             None,
         );
-        engine.on_command(EngineCommand::FocusChanged(obs));
+        engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
 
         // Input should still work after focus change
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
@@ -4567,10 +4524,10 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
 
         for _ in 0..5 {
-            engine.on_command(EngineCommand::ToggleEngine);
-            assert!(!engine.is_fsm_enabled());
-            engine.on_command(EngineCommand::ToggleEngine);
-            assert!(engine.is_fsm_enabled());
+            engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+            assert!(!engine.is_user_enabled());
+            engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+            assert!(engine.is_user_enabled());
         }
     }
 
@@ -4588,9 +4545,10 @@ mod engine_integration_tests {
             reliability: ImeReliability::Reliable,
             is_romaji: Some(true),
         };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs));
-        assert!(!engine.is_active());
-        assert!(engine.is_fsm_enabled(), "user_enabled unchanged");
+        // Platform updated atomic → ctx reflects ime_on=false
+        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
+        assert!(engine.is_user_enabled(), "user_enabled unchanged");
         // Should have flush effects (SendKeys) before the state change
         let effs = effects_of(&d);
         assert!(
@@ -4604,13 +4562,19 @@ mod engine_integration_tests {
     #[test]
     fn focus_changed_ime_on_activates_engine() {
         let mut engine = make_test_engine();
-        // preconditions.ime_on を OFF にしておく
-        engine.set_preconditions(super::engine::Preconditions {
-            ime_on: false,
-            is_romaji: true,
-            is_japanese_ime: true,
-        });
-        assert!(!engine.is_active());
+        // まず IME OFF のフォーカス変更で prev_active=false にする
+        let obs_off = make_focus_obs(
+            1234,
+            "First",
+            FocusKind::TextInput,
+            false,
+            false,
+            false,
+            None,
+            Some(false), // IME OFF
+        );
+        engine.on_command(EngineCommand::FocusChanged(obs_off), &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
 
         // Focus change with IME ON should activate engine
         let obs = make_focus_obs(
@@ -4623,9 +4587,9 @@ mod engine_integration_tests {
             None,
             Some(true), // IME ON
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
-            engine.is_active(),
+            engine.compute_active(&ime_on_ctx()),
             "engine should be active when IME is ON at focus change"
         );
         assert!(has_effect(&d, |e| matches!(
@@ -4637,8 +4601,8 @@ mod engine_integration_tests {
     #[test]
     fn focus_changed_ime_on_but_user_disabled() {
         let mut engine = make_test_engine();
-        engine.on_command(EngineCommand::ToggleEngine); // user OFF
-        assert!(!engine.is_active());
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx()); // user OFF
+        assert!(!engine.compute_active(&ime_on_ctx()));
 
         // Focus change with IME ON should not activate (user disabled)
         let obs = make_focus_obs(
@@ -4651,8 +4615,8 @@ mod engine_integration_tests {
             None,
             Some(true), // IME ON
         );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs));
-        assert!(!engine.is_active(), "user disabled → still inactive");
+        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
+        assert!(!engine.compute_active(&ime_on_ctx()), "user disabled → still inactive");
         assert!(!has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { .. })

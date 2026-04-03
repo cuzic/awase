@@ -22,7 +22,7 @@ pub use decision::{
     Decision, Effect, EffectVec, EngineCommand, FocusEffect, ImeCacheEffect, ImeEffect,
     ImeSyncKeys, InputContext, InputEffect, KeyBuffer, SpecialKeyCombos, TimerEffect, UiEffect,
 };
-pub use engine::{Engine, Preconditions};
+pub use engine::Engine;
 pub use fsm_types::{
     ClassifiedEvent, EngineState, KeyClass, ModifierState, OutputRecord, OutputUpdate, ParseAction,
     PendingKey, PendingThumbData, TimerIntent,

@@ -1,12 +1,12 @@
 use awase::config::AppConfig;
 use awase::engine::input_tracker::InputTracker;
 use awase::engine::{
-    Decision, Effect, Engine, ImeSyncKeys, InputContext, InputEffect, NicolaFsm, Preconditions,
+    Decision, Effect, Engine, ImeSyncKeys, InputContext, InputEffect, NicolaFsm,
     SpecialKeyCombos, TIMER_PENDING,
 };
 use awase::scanmap::{KeyboardModel, PhysicalPos};
 use awase::types::{
-    ImeCacheState, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent,
+    ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent,
     ScanCode, Timestamp, VkCode,
 };
 use awase::yab::YabLayout;
@@ -46,18 +46,16 @@ fn make_nicola_engine() -> Engine {
             ime_off: vec![],
         },
     );
-    engine.set_preconditions(Preconditions {
-        ime_on: true,
-        is_romaji: true,
-        is_japanese_ime: true,
-    });
+    engine.set_prev_active(true);
     engine
 }
 
 /// Default InputContext for tests (IME ON)
 fn ctx() -> InputContext {
     InputContext {
-        ime_cache: ImeCacheState::On,
+        ime_on: true,
+        is_romaji: true,
+        is_japanese_ime: true,
     }
 }
 

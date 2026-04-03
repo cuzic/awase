@@ -10,7 +10,7 @@ use crate::engine::input_tracker::InputTracker;
 use crate::engine::nicola_fsm::{NicolaFsm, TIMER_PENDING};
 use crate::scanmap::PhysicalPos;
 use crate::types::{
-    ImeCacheState, KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode,
+    KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode,
 };
 use crate::yab::{YabFace, YabLayout, YabValue};
 
@@ -90,11 +90,7 @@ fn make_test_engine() -> Engine {
         30,
     );
     let mut engine = Engine::new(fsm, tracker, empty_sync_keys(), empty_special_keys());
-    engine.set_preconditions(crate::engine::Preconditions {
-        ime_on: true,
-        is_romaji: true,
-        is_japanese_ime: true,
-    });
+    engine.set_prev_active(true);
     engine
 }
 
@@ -132,7 +128,9 @@ impl TestHarness {
 
 fn ime_on_ctx() -> InputContext {
     InputContext {
-        ime_cache: ImeCacheState::On,
+        ime_on: true,
+        is_romaji: true,
+        is_japanese_ime: true,
     }
 }
 

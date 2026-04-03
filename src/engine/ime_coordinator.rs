@@ -2,15 +2,17 @@
 //!
 //! Engine から IME 関連の状態管理ロジックを分離し、凝集度を高める。
 
-use crate::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
+use crate::types::{KeyEventType, RawKeyEvent};
 
 use super::decision::{Decision, Effect, EffectVec, ImeEffect, ImeSyncKeys, KeyBuffer};
 use super::input_tracker::PhysicalKeyState;
 
-/// IME 状態管理: shadow 追跡、ガード、同期キー判定
+/// IME トグルガード管理
+///
+/// Shadow IME 状態の追跡は Platform 層に移動済み。
+/// Engine 側はガード（IME 遷移中のキーバッファリング）のみ担当する。
 #[derive(Debug)]
 pub struct ImeCoordinator {
-    shadow_on: bool,
     sync_keys: ImeSyncKeys,
     guard: KeyBuffer,
 }
@@ -19,68 +21,8 @@ impl ImeCoordinator {
     #[must_use]
     pub const fn new(sync_keys: ImeSyncKeys) -> Self {
         Self {
-            shadow_on: true, // safe default: engine ON
             sync_keys,
             guard: KeyBuffer::new(),
-        }
-    }
-
-    #[must_use]
-    pub const fn shadow_on(&self) -> bool {
-        self.shadow_on
-    }
-
-    pub const fn set_shadow_on(&mut self, on: bool) {
-        self.shadow_on = on;
-    }
-
-    /// Shadow IME 状態を更新する（事前分類済みの IME 関連情報を使用）
-    pub fn update_shadow(&mut self, event: &RawKeyEvent) {
-        let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
-        if !is_key_down {
-            return;
-        }
-
-        let rel = &event.ime_relevance;
-
-        // ── ime_sync 設定キー（プラットフォーム層が事前判定） ──
-        if let Some(dir) = rel.sync_direction {
-            match dir {
-                ShadowImeAction::TurnOn => {
-                    self.shadow_on = true;
-                    log::debug!("Shadow IME ON (sync key 0x{:02X})", event.vk_code.0);
-                }
-                ShadowImeAction::TurnOff => {
-                    self.shadow_on = false;
-                    log::debug!("Shadow IME OFF (sync key 0x{:02X})", event.vk_code.0);
-                }
-                ShadowImeAction::Toggle => {
-                    self.shadow_on = !self.shadow_on;
-                    log::debug!(
-                        "Shadow IME toggle → {} (sync key 0x{:02X})",
-                        self.shadow_on,
-                        event.vk_code.0
-                    );
-                }
-            }
-        }
-
-        // ── ハードウェア IME キー（プラットフォーム層が事前判定） ──
-        if let Some(action) = rel.shadow_action {
-            match action {
-                ShadowImeAction::TurnOn => {
-                    self.shadow_on = true;
-                    log::trace!("Shadow IME ON (hw key)");
-                }
-                ShadowImeAction::TurnOff => {
-                    self.shadow_on = false;
-                    log::trace!("Shadow IME OFF (hw key)");
-                }
-                ShadowImeAction::Toggle => {
-                    self.shadow_on = !self.shadow_on;
-                    log::trace!("Shadow IME toggle → {} (hw key)", self.shadow_on);
-                }
-            }
         }
     }
 
@@ -179,7 +121,7 @@ impl ImeCoordinator {
 mod tests {
     use super::*;
     use crate::types::{
-        ImeRelevance, KeyClassification, KeyEventType, ScanCode, ShadowImeAction, VkCode,
+        ImeRelevance, KeyClassification, KeyEventType, ScanCode, VkCode,
     };
 
     fn make_event(event_type: KeyEventType) -> RawKeyEvent {
@@ -202,88 +144,6 @@ mod tests {
             on: vec![],
             off: vec![],
         }
-    }
-
-    #[test]
-    fn new_starts_with_shadow_on_true() {
-        let coord = ImeCoordinator::new(empty_sync_keys());
-        assert!(coord.shadow_on());
-    }
-
-    #[test]
-    fn set_shadow_on_updates_shadow() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-        coord.set_shadow_on(false);
-        assert!(!coord.shadow_on());
-        coord.set_shadow_on(true);
-        assert!(coord.shadow_on());
-    }
-
-    #[test]
-    fn shadow_on_returns_current_shadow() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-        assert!(coord.shadow_on());
-        coord.set_shadow_on(false);
-        assert!(!coord.shadow_on());
-    }
-
-    #[test]
-    fn update_shadow_sync_direction_toggle_flips_shadow() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-        assert!(coord.shadow_on());
-
-        let mut event = make_event(KeyEventType::KeyDown);
-        event.ime_relevance.sync_direction = Some(ShadowImeAction::Toggle);
-        coord.update_shadow(&event);
-        assert!(!coord.shadow_on());
-
-        coord.update_shadow(&event);
-        assert!(coord.shadow_on());
-    }
-
-    #[test]
-    fn update_shadow_sync_direction_turn_on_sets_true() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-        coord.set_shadow_on(false);
-
-        let mut event = make_event(KeyEventType::KeyDown);
-        event.ime_relevance.sync_direction = Some(ShadowImeAction::TurnOn);
-        coord.update_shadow(&event);
-        assert!(coord.shadow_on());
-    }
-
-    #[test]
-    fn update_shadow_sync_direction_turn_off_sets_false() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-        assert!(coord.shadow_on());
-
-        let mut event = make_event(KeyEventType::KeyDown);
-        event.ime_relevance.sync_direction = Some(ShadowImeAction::TurnOff);
-        coord.update_shadow(&event);
-        assert!(!coord.shadow_on());
-    }
-
-    #[test]
-    fn update_shadow_shadow_action_toggle_flips_shadow() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-        assert!(coord.shadow_on());
-
-        let mut event = make_event(KeyEventType::KeyDown);
-        event.ime_relevance.shadow_action = Some(ShadowImeAction::Toggle);
-        coord.update_shadow(&event);
-        assert!(!coord.shadow_on());
-    }
-
-    #[test]
-    fn update_shadow_ignores_key_up_events() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-        assert!(coord.shadow_on());
-
-        let mut event = make_event(KeyEventType::KeyUp);
-        event.ime_relevance.sync_direction = Some(ShadowImeAction::Toggle);
-        coord.update_shadow(&event);
-        // Should remain true because KeyUp is ignored
-        assert!(coord.shadow_on());
     }
 
     #[test]
@@ -362,8 +222,7 @@ mod tests {
         };
         coord.reload_sync_keys(new_keys);
 
-        // Verify by inspecting debug output (sync_keys is private, but we can
-        // at least confirm no panic and the coordinator still works)
-        assert!(coord.shadow_on());
+        // Verify by confirming no panic and the coordinator still works
+        assert!(!coord.is_guarded());
     }
 }
