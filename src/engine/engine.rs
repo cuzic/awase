@@ -346,9 +346,13 @@ impl Engine {
             return Decision::pass_through();
         };
 
-        // 前提条件を更新（フラッシュはキャッシュ更新より先に実行される）
+        // 前提条件を全軸更新（フラッシュはキャッシュ更新より先に実行される）
         let mut pc = self.preconditions;
         pc.ime_on = ime_on;
+        pc.is_japanese_ime = obs.is_japanese;
+        if let Some(romaji) = obs.is_romaji {
+            pc.is_romaji = romaji;
+        }
         let mut effects = self.update_preconditions(pc);
 
         // キャッシュ更新はフラッシュの後（保留キーの出力が先に実行される）

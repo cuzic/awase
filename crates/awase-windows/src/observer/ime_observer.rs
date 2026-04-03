@@ -44,7 +44,7 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
     let cross_process = crate::ime::detect_ime_open_cross_process();
 
     // Step 3: かな入力方式の検出 → グローバルフラグ更新
-    if let Some(is_kana) = crate::ime::detect_kana_input_method() {
+    let is_romaji = if let Some(is_kana) = crate::ime::detect_kana_input_method() {
         let prev = crate::IME_IS_KANA_INPUT.swap(is_kana, Ordering::Relaxed);
         if prev != is_kana {
             log::info!(
@@ -53,7 +53,10 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
                 if is_kana { "kana" } else { "romaji" },
             );
         }
-    }
+        Some(!is_kana)
+    } else {
+        None
+    };
 
     // Step 4: ImeReliability を読み取り
     let reliability = ImeReliability::load(ime_reliability);
@@ -62,5 +65,6 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
         cross_process,
         is_japanese,
         reliability,
+        is_romaji,
     }
 }

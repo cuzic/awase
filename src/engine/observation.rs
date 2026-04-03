@@ -16,6 +16,8 @@ pub struct ImeObservation {
     pub is_japanese: bool,
     /// IME の信頼度
     pub reliability: ImeReliability,
+    /// ローマ字入力モードか（false = かな入力、None = 検出不可）
+    pub is_romaji: Option<bool>,
 }
 
 impl ImeObservation {
@@ -89,6 +91,7 @@ mod tests {
             cross_process,
             is_japanese,
             reliability,
+            is_romaji: Some(true),
         }
     }
 

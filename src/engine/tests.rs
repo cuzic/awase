@@ -4046,6 +4046,7 @@ mod engine_integration_tests {
             cross_process: Some(true),
             is_japanese: true,
             reliability: ImeReliability::Reliable,
+            is_romaji: Some(true),
         };
         let d = engine.on_command(EngineCommand::ImeObserved(obs));
         assert!(engine.is_active(), "preconditions met → active");
@@ -4069,6 +4070,7 @@ mod engine_integration_tests {
             cross_process: Some(true),
             is_japanese: true,
             reliability: ImeReliability::Reliable,
+            is_romaji: Some(true),
         };
         let d = engine.on_command(EngineCommand::ImeObserved(obs));
         // user disabled → still inactive even with IME ON
@@ -4088,6 +4090,7 @@ mod engine_integration_tests {
             cross_process: Some(false),
             is_japanese: true,
             reliability: ImeReliability::Reliable,
+            is_romaji: Some(true),
         };
         let d = engine.on_command(EngineCommand::ImeObserved(obs));
         assert!(!engine.is_active());
@@ -4111,6 +4114,7 @@ mod engine_integration_tests {
             cross_process: Some(true),
             is_japanese: true,
             reliability: ImeReliability::Reliable,
+            is_romaji: Some(true),
         };
         let d = engine.on_command(EngineCommand::ImeObserved(obs));
         assert!(engine.is_active());
@@ -4133,6 +4137,7 @@ mod engine_integration_tests {
             cross_process: Some(true),
             is_japanese: false,
             reliability: ImeReliability::Reliable,
+            is_romaji: Some(true),
         };
         let d = engine.on_command(EngineCommand::ImeObserved(obs));
         assert!(!engine.is_active());
@@ -4581,6 +4586,7 @@ mod engine_integration_tests {
             cross_process: Some(false),
             is_japanese: true,
             reliability: ImeReliability::Reliable,
+            is_romaji: Some(true),
         };
         let d = engine.on_command(EngineCommand::ImeObserved(obs));
         assert!(!engine.is_active());
