@@ -239,6 +239,10 @@ static IN_CALLBACK: SingleThreadCell<bool> = SingleThreadCell::new(false);
 /// KeyUp は KeyDown の判定に自動追随し、KeyDown/KeyUp ペアを構造的に保証する。
 static SENT_TO_ENGINE: SingleThreadCell<[u64; 4]> = SingleThreadCell::new([0u64; 4]);
 
+/// TrackOnly で送った KeyDown を記録するビットセット。
+/// KeyUp 時に TrackOnly か Engine かを区別するために使用する。
+static TRACK_ONLY_KEYS: SingleThreadCell<[u64; 4]> = SingleThreadCell::new([0u64; 4]);
+
 /// キーの処理先を決定する。
 ///
 /// Engine に送るか、OS にそのまま渡すかを一元的に判定する。
@@ -249,19 +253,26 @@ static SENT_TO_ENGINE: SingleThreadCell<[u64; 4]> = SingleThreadCell::new([0u64;
 unsafe fn classify_route(vk: u16, is_keydown: bool) -> KeyRoute {
     // KeyUp は KeyDown の判定に従う（ペア保証）
     if !is_keydown {
-        let bits = SENT_TO_ENGINE.get_mut();
+        let sent = SENT_TO_ENGINE.get_mut();
+        let track = TRACK_ONLY_KEYS.get_mut();
         let idx = (vk as usize) / 64;
         let bit = 1u64 << ((vk as usize) % 64);
-        return if idx < 4 && (bits[idx] & bit) != 0 {
-            KeyRoute::Engine
-        } else {
-            KeyRoute::Bypass
-        };
+        if idx >= 4 {
+            return KeyRoute::Bypass;
+        }
+        if (track[idx] & bit) != 0 {
+            return KeyRoute::TrackOnly;
+        }
+        if (sent[idx] & bit) != 0 {
+            return KeyRoute::Engine;
+        }
+        return KeyRoute::Bypass;
     }
 
     // KeyDown の分類
+    // Ctrl/Alt/Win 自体 → TrackOnly（Engine の InputTracker を更新するが OS には必ず通す）
     if is_non_shift_modifier(vk) {
-        return KeyRoute::Bypass;
+        return KeyRoute::TrackOnly;
     }
 
     // Ctrl/Alt/Win が押されている間のキーはショートカット → Bypass
@@ -286,29 +297,42 @@ unsafe fn classify_route(vk: u16, is_keydown: bool) -> KeyRoute {
 
 /// classify_route の結果
 enum KeyRoute {
-    /// Engine で NICOLA 処理する
+    /// Engine で NICOLA 処理する（Consume/PassThrough は Engine が決める）
     Engine,
-    /// OS にそのまま渡す
+    /// Engine に送って状態追跡させるが、結果を無視して常に OS に PassThrough する。
+    /// Ctrl/Alt/Win 用: InputTracker の更新と保留キーのフラッシュに必要だが、
+    /// Engine が誤って Consume しても OS には必ず通す（修飾キースタック防止）。
+    TrackOnly,
+    /// Engine に一切送らず OS にそのまま渡す
     Bypass,
 }
 
-/// SENT_TO_ENGINE ビットセットにキーを記録する
+/// SENT_TO_ENGINE ビットセットに Engine ルートで記録する
 unsafe fn mark_sent_to_engine(vk: u16) {
-    let bits = SENT_TO_ENGINE.get_mut();
     let idx = (vk as usize) / 64;
     let bit = 1u64 << ((vk as usize) % 64);
     if idx < 4 {
-        bits[idx] |= bit;
+        SENT_TO_ENGINE.get_mut()[idx] |= bit;
     }
 }
 
-/// SENT_TO_ENGINE ビットセットからキーを削除する
-unsafe fn clear_sent_to_engine(vk: u16) {
-    let bits = SENT_TO_ENGINE.get_mut();
+/// SENT_TO_ENGINE / TRACK_ONLY_KEYS ビットセットに TrackOnly ルートで記録する
+unsafe fn mark_sent_as_track_only(vk: u16) {
     let idx = (vk as usize) / 64;
     let bit = 1u64 << ((vk as usize) % 64);
     if idx < 4 {
-        bits[idx] &= !bit;
+        SENT_TO_ENGINE.get_mut()[idx] |= bit;
+        TRACK_ONLY_KEYS.get_mut()[idx] |= bit;
+    }
+}
+
+/// SENT_TO_ENGINE / TRACK_ONLY_KEYS からキーを削除する
+unsafe fn clear_sent_to_engine(vk: u16) {
+    let idx = (vk as usize) / 64;
+    let bit = 1u64 << ((vk as usize) % 64);
+    if idx < 4 {
+        SENT_TO_ENGINE.get_mut()[idx] &= !bit;
+        TRACK_ONLY_KEYS.get_mut()[idx] &= !bit;
     }
 }
 
@@ -322,22 +346,25 @@ unsafe fn clear_sent_to_engine(vk: u16) {
 pub unsafe fn sync_sent_to_engine() {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-    let bits = SENT_TO_ENGINE.get_mut();
+    let sent = SENT_TO_ENGINE.get_mut();
+    let track = TRACK_ONLY_KEYS.get_mut();
     let mut cleared = 0u32;
-    for (idx, word) in bits.iter_mut().enumerate() {
-        if *word == 0 {
+    for idx in 0..4 {
+        if sent[idx] == 0 {
             continue;
         }
-        let mut remaining = *word;
+        let mut remaining = sent[idx];
         while remaining != 0 {
             let bit_pos = remaining.trailing_zeros() as usize;
             let vk = (idx * 64 + bit_pos) as i32;
+            let bit = 1u64 << bit_pos;
             // OS でキーが離されている → ビットをクリア
             if (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) == 0 {
-                *word &= !(1u64 << bit_pos);
+                sent[idx] &= !bit;
+                track[idx] &= !bit;
                 cleared += 1;
             }
-            remaining &= remaining - 1; // 最下位ビットを消す
+            remaining &= remaining - 1;
         }
     }
     if cleared > 0 {
@@ -424,7 +451,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         );
 
         // ── 一元的なルーティング判定 ──
-        match classify_route(vk_raw, is_keydown) {
+        let route = classify_route(vk_raw, is_keydown);
+
+        match route {
             KeyRoute::Bypass => {
                 log::trace!(
                     "Hook: vk=0x{vk_raw:02X} {} → Bypass",
@@ -432,10 +461,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 );
                 return CallNextHookEx(hook_handle, ncode, wparam, lparam);
             }
-            KeyRoute::Engine => {
+            KeyRoute::Engine | KeyRoute::TrackOnly => {
                 // KeyDown/KeyUp ペア追跡を更新
                 if is_keydown {
-                    mark_sent_to_engine(vk_raw);
+                    match route {
+                        KeyRoute::Engine => mark_sent_to_engine(vk_raw),
+                        KeyRoute::TrackOnly => mark_sent_as_track_only(vk_raw),
+                        KeyRoute::Bypass => unreachable!(),
+                    }
                 } else {
                     clear_sent_to_engine(vk_raw);
                 }
@@ -471,10 +504,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         };
 
         log::trace!(
-            "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → Engine",
+            "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → {}",
             event.vk_code.0,
             event.scan_code.0,
-            event.event_type
+            event.event_type,
+            if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
         );
 
         // ── Engine コールバック呼び出し ──
@@ -484,6 +518,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             .map_or(CallbackResult::PassThrough, |callback| callback(event));
 
         *IN_CALLBACK.get_mut() = false;
+
+        // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）
+        if matches!(route, KeyRoute::TrackOnly) {
+            return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+        }
 
         match result {
             CallbackResult::Consumed => {
