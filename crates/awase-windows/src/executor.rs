@@ -181,7 +181,14 @@ impl DecisionExecutor {
             },
             Effect::Ime(ie) => match ie {
                 ImeEffect::SetOpen(open) => {
-                    platform.set_ime_open(open);
+                    let success = platform.set_ime_open(open);
+                    if !success {
+                        log::warn!(
+                            "set_ime_open({open}) failed — invalidating IME cache for resync"
+                        );
+                        platform.invalidate_ime_cache();
+                        platform.post_ime_refresh();
+                    }
                 }
                 ImeEffect::RequestCacheRefresh => platform.post_ime_refresh(),
             },
@@ -201,11 +208,6 @@ impl DecisionExecutor {
                     process_id,
                     class_name,
                 } => platform.update_last_focus_info(process_id, class_name),
-                FocusEffect::SaveEngineState {
-                    process_id,
-                    class_name,
-                    enabled,
-                } => platform.save_engine_state(process_id, class_name, enabled),
             },
             Effect::ImeCache(ice) => match ice {
                 ImeCacheEffect::UpdateStateCache { ime_on } => platform.update_ime_cache(ime_on),
