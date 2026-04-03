@@ -69,10 +69,11 @@ pub struct FocusObservation {
     pub debounce_timer_id: usize,
     /// デバウンス期間（ミリ秒）
     pub debounce_ms: u64,
-    /// キャッシュから取得した新ウィンドウのエンジン ON/OFF 状態（None = 未設定）
-    pub cached_engine_enabled: Option<bool>,
     /// OS から取得した修飾キー状態（フォーカス変更時の同期用）
     pub os_modifiers: Option<ModifierState>,
+    /// フォーカス変更時に即座取得した IME ON/OFF 状態（None = 取得失敗）
+    /// Engine ON/OFF を新ウィンドウの IME 状態に即座追随させるために使用。
+    pub ime_open_at_focus: Option<bool>,
 }
 
 #[cfg(test)]

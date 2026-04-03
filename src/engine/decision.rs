@@ -67,12 +67,6 @@ pub enum FocusEffect {
     RequestUiaClassification,
     /// last_focus_info を更新する
     UpdateLastFocusInfo { process_id: u32, class_name: String },
-    /// 現在のウィンドウのエンジン状態をキャッシュに保存する
-    SaveEngineState {
-        process_id: u32,
-        class_name: String,
-        enabled: bool,
-    },
 }
 
 /// IME キャッシュ状態に関する副作用

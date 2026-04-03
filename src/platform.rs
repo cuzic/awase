@@ -165,9 +165,6 @@ pub trait PlatformRuntime {
     /// 最終フォーカス情報を更新する
     fn update_last_focus_info(&mut self, process_id: u32, class_name: String);
 
-    /// ウィンドウごとのエンジン状態をキャッシュに保存する
-    fn save_engine_state(&mut self, process_id: u32, class_name: String, enabled: bool);
-
     // ── IME キャッシュ ──
 
     /// IME 状態キャッシュを更新する

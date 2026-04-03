@@ -306,19 +306,10 @@ impl Engine {
         let overridden = obs.overridden;
         let debounce_timer_id = obs.debounce_timer_id;
         let debounce_ms = obs.debounce_ms;
-        let cached_engine_enabled = obs.cached_engine_enabled;
+        let ime_open_at_focus = obs.ime_open_at_focus;
         let class_name = obs.class_name; // move ownership
 
         let mut effects = EffectVec::new();
-
-        // 旧ウィンドウのエンジン状態をキャッシュに保存
-        if let Some((old_pid, ref old_class)) = self.last_focus_info {
-            effects.push(Effect::Focus(FocusEffect::SaveEngineState {
-                process_id: old_pid,
-                class_name: old_class.clone(),
-                enabled: self.adapter.is_enabled(),
-            }));
-        }
 
         // last_focus_info を Engine 内部でも更新
         self.last_focus_info = Some((process_id, class_name.clone()));
@@ -376,16 +367,27 @@ impl Engine {
             duration: std::time::Duration::from_millis(debounce_ms),
         }));
 
-        // 新ウィンドウのエンジン状態を復元
-        if let Some(enabled) = cached_engine_enabled {
-            if enabled != self.adapter.is_enabled() {
-                let _ = self.adapter.set_enabled(enabled);
-                effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
-                log::info!(
-                    "Engine state restored for window: {}",
-                    if enabled { "ON" } else { "OFF" }
-                );
+        // Engine ON/OFF を新ウィンドウの IME 状態に即座追随する。
+        // ウィンドウごとのキャッシュ復元は行わない（IME 状態が真の情報源）。
+        if let Some(ime_on) = ime_open_at_focus {
+            if ime_on != self.adapter.is_enabled() {
+                if ime_on {
+                    let _ = self.adapter.set_enabled(true);
+                    effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
+                    log::info!("Engine ON (IME ON at focus change)");
+                } else {
+                    let flush_effects =
+                        self.adapter.flush_to_effects(ContextChange::ImeOff);
+                    effects.extend(flush_effects);
+                    let _ = self.adapter.set_enabled(false);
+                    effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
+                    log::info!("Engine OFF (IME OFF at focus change)");
+                }
             }
+            // IME キャッシュも即座更新
+            effects.push(Effect::ImeCache(ImeCacheEffect::UpdateStateCache {
+                ime_on,
+            }));
         }
 
         Decision::pass_through_with(effects)
@@ -462,16 +464,6 @@ impl Engine {
             let (enabled, mut decision) = self.adapter.set_enabled(true);
             log::info!("Engine ON (key combo)");
             decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
-            // ウィンドウごとのエンジン状態をキャッシュに保存
-            if let Some((pid, ref cls)) = self.last_focus_info {
-                decision.push_effect(Effect::Focus(
-                    super::decision::FocusEffect::SaveEngineState {
-                        process_id: pid,
-                        class_name: cls.clone(),
-                        enabled,
-                    },
-                ));
-            }
             return Some(decision);
         }
         if self.adapter.is_enabled()
@@ -484,16 +476,6 @@ impl Engine {
             let (enabled, mut decision) = self.adapter.set_enabled(false);
             log::info!("Engine OFF (key combo)");
             decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
-            // ウィンドウごとのエンジン状態をキャッシュに保存
-            if let Some((pid, ref cls)) = self.last_focus_info {
-                decision.push_effect(Effect::Focus(
-                    super::decision::FocusEffect::SaveEngineState {
-                        process_id: pid,
-                        class_name: cls.clone(),
-                        enabled,
-                    },
-                ));
-            }
             return Some(decision);
         }
 

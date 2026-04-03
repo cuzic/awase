@@ -115,11 +115,6 @@ impl PlatformRuntime for WindowsPlatform {
         self.focus.last_focus_info = Some((process_id, class_name));
     }
 
-    fn save_engine_state(&mut self, process_id: u32, class_name: String, enabled: bool) {
-        self.focus
-            .cache
-            .set_engine_state(process_id, class_name, enabled);
-    }
 
     // ── IME キャッシュ ──
 

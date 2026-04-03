@@ -38,8 +38,8 @@ fn make_obs(
     overridden: bool,
     skip: bool,
     debounce_ms: u64,
-    cached_engine_enabled: Option<bool>,
     os_modifiers: Option<ModifierState>,
+    ime_open_at_focus: Option<bool>,
 ) -> FocusObservation {
     FocusObservation {
         process_id,
@@ -51,8 +51,8 @@ fn make_obs(
         skip,
         debounce_timer_id: TIMER_FOCUS_DEBOUNCE,
         debounce_ms,
-        cached_engine_enabled,
         os_modifiers,
+        ime_open_at_focus,
     }
 }
 
@@ -68,11 +68,11 @@ pub unsafe fn observe(
 ) -> FocusObservation {
     let debounce_ms = u64::from(FOCUS_DEBOUNCE_MS.load(Ordering::Relaxed));
 
-    // 新ウィンドウのキャッシュ済みエンジン状態を取得
-    let cached_engine_enabled = focus.cache.get_engine_state(process_id, class_name);
-
     // OS から修飾キー状態を取得（フォーカス変更時の同期用）
     let os_modifiers = Some(read_os_modifiers());
+
+    // IME 状態を即座に取得（Engine ON/OFF を IME に追随させるため）
+    let ime_open_at_focus = crate::ime::detect_ime_open_cross_process();
 
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止
     if let Some(obs) = check_same_process_skip(process_id, class_name, focus, debounce_ms) {
@@ -85,8 +85,8 @@ pub unsafe fn observe(
         class_name,
         focus,
         debounce_ms,
-        cached_engine_enabled,
         os_modifiers,
+        ime_open_at_focus,
     ) {
         return obs;
     }
@@ -105,8 +105,8 @@ pub unsafe fn observe(
             false,
             false,
             debounce_ms,
-            cached_engine_enabled,
             os_modifiers,
+            ime_open_at_focus,
         );
     }
 
@@ -122,8 +122,8 @@ pub unsafe fn observe(
             false,
             false,
             debounce_ms,
-            cached_engine_enabled,
             os_modifiers,
+            ime_open_at_focus,
         );
     }
 
@@ -153,8 +153,8 @@ pub unsafe fn observe(
         false,
         false,
         debounce_ms,
-        cached_engine_enabled,
         os_modifiers,
+        ime_open_at_focus,
     )
 }
 
@@ -196,8 +196,8 @@ fn check_overrides(
     class_name: &str,
     focus: &FocusDetector,
     debounce_ms: u64,
-    cached_engine_enabled: Option<bool>,
     os_modifiers: Option<ModifierState>,
+    ime_open_at_focus: Option<bool>,
 ) -> Option<FocusObservation> {
     if focus.overrides.force_text.is_empty() && focus.overrides.force_bypass.is_empty() {
         return None;
@@ -220,8 +220,8 @@ fn check_overrides(
                 true,
                 false,
                 debounce_ms,
-                cached_engine_enabled,
                 os_modifiers,
+                ime_open_at_focus,
             ));
         }
     }
@@ -241,8 +241,8 @@ fn check_overrides(
                 true,
                 false,
                 debounce_ms,
-                cached_engine_enabled,
                 os_modifiers,
+                ime_open_at_focus,
             ));
         }
     }
