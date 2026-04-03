@@ -30,7 +30,7 @@ use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig}
 use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::engine::{ImeSyncKeys, SpecialKeyCombos};
 use awase::ngram::NgramModel;
-use awase::types::{ContextChange, FocusKind, ImeCacheState};
+use awase::types::{ContextChange, FocusKind};
 use awase::types::{RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
 use awase_windows::vk::{parse_key_combo, vk_name_to_code};
@@ -49,7 +49,7 @@ use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED, FOCUS_DEBOUNCE_MS, FOCUS_KIND, IME_POLL_INTERVAL_MS,
-    IME_RELIABILITY, IME_STATE_CACHE, MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
+    IME_RELIABILITY, MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
     TIMER_HOOK_WATCHDOG, TIMER_IME_POLL, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
@@ -795,6 +795,30 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     let mut event = event;
     app.enrich_ime_relevance(&mut event);
 
+    // ── Shadow IME toggle: フックコールバックで即座に PRECOND_IME_ON を更新 ──
+    // IME トグルキーのキーダウン時に shadow 値を反映する。
+    // Observer のポーリングで実際の OS 状態に収束するが、
+    // ポーリング間隔中は shadow 値で Engine が正しく動作する。
+    if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
+        if let Some(action) = event.ime_relevance.shadow_action.or(event.ime_relevance.sync_direction) {
+            let current = awase_windows::PRECOND_IME_ON.load(Ordering::Acquire);
+            let new_val = match action {
+                awase::types::ShadowImeAction::Toggle => !current,
+                awase::types::ShadowImeAction::TurnOn => true,
+                awase::types::ShadowImeAction::TurnOff => false,
+            };
+            if new_val != current {
+                awase_windows::PRECOND_IME_ON.store(new_val, Ordering::Release);
+                log::debug!(
+                    "Shadow IME toggle: {} → {} (vk=0x{:02X})",
+                    if current { "ON" } else { "OFF" },
+                    if new_val { "ON" } else { "OFF" },
+                    event.vk_code.0,
+                );
+            }
+        }
+    }
+
     // ── パニックリセット: IME 関連キーの連打を検出 ──
     if event.ime_relevance.may_change_ime
         && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
@@ -1373,6 +1397,11 @@ unsafe extern "system" fn win_event_proc(
         &class_name,
         &app.executor.platform.focus,
     );
+
+    // PRECOND_IME_ON をフォーカス変更時の IME 状態で更新
+    if let Some(ime_on) = obs.ime_open_at_focus {
+        awase_windows::PRECOND_IME_ON.store(ime_on, Ordering::Release);
+    }
 
     // Engine: 判断 → Decision
     let decision = app

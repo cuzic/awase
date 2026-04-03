@@ -40,8 +40,22 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
     };
     let is_japanese = lang_id == crate::vk::LANGID_JAPANESE;
 
+    // PRECOND_IS_JAPANESE を更新
+    crate::PRECOND_IS_JAPANESE.store(is_japanese, Ordering::Relaxed);
+
     // Step 2: クロスプロセス IME 検出
     let cross_process = crate::ime::detect_ime_open_cross_process();
+
+    // PRECOND_IME_ON を更新（クロスプロセス検出が信頼できる場合）
+    // None の場合は shadow 値を維持する（更新しない）
+    if let Some(ime_on) = cross_process {
+        // 日本語以外は常に OFF
+        let effective = ime_on && is_japanese;
+        crate::PRECOND_IME_ON.store(effective, Ordering::Release);
+    } else if !is_japanese {
+        // 日本語 IME でなければ常に OFF
+        crate::PRECOND_IME_ON.store(false, Ordering::Release);
+    }
 
     // Step 3: かな入力方式の検出 → グローバルフラグ更新
     let is_romaji = if let Some(is_kana) = crate::ime::detect_kana_input_method() {

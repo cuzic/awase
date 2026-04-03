@@ -210,8 +210,15 @@ impl DecisionExecutor {
                 } => platform.update_last_focus_info(process_id, class_name),
             },
             Effect::ImeCache(ice) => match ice {
-                ImeCacheEffect::UpdateStateCache { ime_on } => platform.update_ime_cache(ime_on),
-                ImeCacheEffect::Invalidate => platform.invalidate_ime_cache(),
+                ImeCacheEffect::UpdateStateCache { ime_on } => {
+                    platform.update_ime_cache(ime_on);
+                    // PRECOND_IME_ON も同期更新
+                    crate::PRECOND_IME_ON.store(ime_on, std::sync::atomic::Ordering::Release);
+                }
+                ImeCacheEffect::Invalidate => {
+                    platform.invalidate_ime_cache();
+                    // Note: PRECOND_IME_ON は invalidate しない（shadow 値を維持）
+                }
             },
         }
     }

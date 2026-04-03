@@ -6,19 +6,15 @@ use awase::types::{ContextChange, FocusKind, ImeCacheState, RawKeyEvent, ShadowI
 
 /// 現在のアトミック変数から InputContext を構築する。
 ///
-/// TODO: Phase 2 で PRECOND_* アトミックに統合し、IME_STATE_CACHE を廃止する。
+/// PRECOND_IME_ON / PRECOND_IS_JAPANESE / IME_IS_KANA_INPUT の 3 つの
+/// アトミック変数から InputContext を組み立てる。
+/// フックコールバックで shadow toggle が即座に反映され、
+/// Observer のポーリングで実際の OS 状態に収束する。
 pub fn build_input_context() -> InputContext {
-    let ime_cache = ImeCacheState::load(&crate::IME_STATE_CACHE);
-    let ime_on = match ime_cache {
-        ImeCacheState::On => true,
-        ImeCacheState::Off => false,
-        ImeCacheState::Unknown => true, // 安全側: Engine ON にしておく
-    };
-    let is_kana = crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed);
     InputContext {
-        ime_on,
-        is_romaji: !is_kana,
-        is_japanese_ime: true, // TODO: LANGID チェックから取得
+        ime_on: crate::PRECOND_IME_ON.load(Ordering::Acquire),
+        is_romaji: !crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed),
+        is_japanese_ime: crate::PRECOND_IS_JAPANESE.load(Ordering::Relaxed),
     }
 }
 use awase::yab::YabLayout;
@@ -245,7 +241,9 @@ impl Runtime {
         // 5. IME キャッシュをリセット
         ImeCacheState::Unknown.store(&IME_STATE_CACHE);
         awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
-        crate::IME_IS_KANA_INPUT.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::IME_IS_KANA_INPUT.store(false, Ordering::Relaxed);
+        crate::PRECOND_IME_ON.store(true, Ordering::Release); // 安全側: ON
+        crate::PRECOND_IS_JAPANESE.store(true, Ordering::Relaxed);
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();

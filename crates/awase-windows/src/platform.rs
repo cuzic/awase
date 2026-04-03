@@ -128,10 +128,13 @@ impl PlatformRuntime for WindowsPlatform {
                 new_state.as_str()
             );
         }
+        // PRECOND_IME_ON も同期更新
+        crate::PRECOND_IME_ON.store(ime_on, std::sync::atomic::Ordering::Release);
     }
 
     fn invalidate_ime_cache(&mut self) {
         ImeCacheState::Unknown.store(&IME_STATE_CACHE);
         log::trace!("IME state cache invalidated → Unknown");
+        // Note: PRECOND_IME_ON は invalidate しない（shadow 値を維持）
     }
 }

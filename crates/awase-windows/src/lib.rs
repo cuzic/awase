@@ -50,6 +50,10 @@ pub static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
 pub static APP_KIND: AtomicU8 = AtomicU8::new(0); // AppKind::Win32
 
 /// キャッシュされた IME ON/OFF 状態。0=OFF, 1=ON, 2=Unknown（初期状態）
+///
+/// 注意: 新しい `PRECOND_IME_ON` / `PRECOND_IS_JAPANESE` アトミックが
+/// `build_input_context()` の正規ソースとなる。
+/// `IME_STATE_CACHE` はレガシー互換のため一時的に残す。
 pub static IME_STATE_CACHE: AtomicU8 = AtomicU8::new(2);
 
 /// IME 検出の信頼度キャッシュ（UIA 非同期判定で更新）
@@ -58,6 +62,17 @@ pub static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unkn
 /// IME がかな入力方式かどうか（false=ローマ字入力, true=かな入力）
 /// かな入力方式の場合、フックはすべてのキーをパススルーする。
 pub static IME_IS_KANA_INPUT: AtomicBool = AtomicBool::new(false);
+
+/// Platform 層の事前条件: IME が ON か（shadow 追跡含む）
+///
+/// フックコールバックで shadow toggle を即座に反映し、
+/// Observer のポーリングで実際の OS 状態に収束する。
+pub static PRECOND_IME_ON: AtomicBool = AtomicBool::new(true); // 安全側: ON で初期化
+
+/// Platform 層の事前条件: 日本語 IME がアクティブか
+///
+/// Observer のポーリングおよびフォーカス変更時に更新される。
+pub static PRECOND_IS_JAPANESE: AtomicBool = AtomicBool::new(true); // デフォルトは日本語
 
 /// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
 pub static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
