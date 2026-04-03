@@ -238,15 +238,6 @@ impl Engine {
             }
             EngineCommand::InvalidateContext(reason) => self.adapter.flush(reason),
             EngineCommand::SwapLayout(layout) => self.adapter.swap_layout(layout),
-            EngineCommand::SyncImeState { .. } => {
-                // Platform 層がアトミック変数を更新済み。ctx に反映されている。
-                let effects = self.check_active_transition(ctx);
-                if effects.is_empty() {
-                    Decision::pass_through()
-                } else {
-                    Decision::pass_through_with(effects)
-                }
-            }
             EngineCommand::SetGuard(on) => {
                 self.ime.set_guard(on);
                 Decision::pass_through()
@@ -274,7 +265,7 @@ impl Engine {
                 self.adapter.set_ngram_model(model);
                 Decision::pass_through()
             }
-            EngineCommand::ImeObserved(_obs) => {
+            EngineCommand::RefreshState => {
                 // Platform 層がアトミック変数を更新済み。ctx に反映されている。
                 let effects = self.check_active_transition(ctx);
                 if effects.is_empty() {

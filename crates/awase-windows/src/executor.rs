@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 
 use awase::config::HookMode;
 use awase::engine::{
-    Decision, Effect, FocusEffect, ImeCacheEffect, ImeEffect, InputEffect, TimerEffect, UiEffect,
+    Decision, Effect, FocusEffect, ImeEffect, InputEffect, TimerEffect, UiEffect,
 };
 use awase::platform::PlatformRuntime;
 use awase::types::RawKeyEvent;
@@ -162,10 +162,7 @@ impl DecisionExecutor {
     // ── 共通 ──
 
     fn is_input_critical(effect: &Effect) -> bool {
-        matches!(
-            effect,
-            Effect::Input(_) | Effect::Timer(_) | Effect::ImeCache(_)
-        )
+        matches!(effect, Effect::Input(_) | Effect::Timer(_))
     }
 
     fn execute_one(&mut self, effect: Effect) {
@@ -184,9 +181,8 @@ impl DecisionExecutor {
                     let success = platform.set_ime_open(open);
                     if !success {
                         log::warn!(
-                            "set_ime_open({open}) failed — invalidating IME cache for resync"
+                            "set_ime_open({open}) failed — requesting IME refresh for resync"
                         );
-                        platform.invalidate_ime_cache();
                         platform.post_ime_refresh();
                     }
                 }
@@ -208,17 +204,6 @@ impl DecisionExecutor {
                     process_id,
                     class_name,
                 } => platform.update_last_focus_info(process_id, class_name),
-            },
-            Effect::ImeCache(ice) => match ice {
-                ImeCacheEffect::UpdateStateCache { ime_on } => {
-                    platform.update_ime_cache(ime_on);
-                    // PRECOND_IME_ON も同期更新
-                    crate::PRECOND_IME_ON.store(ime_on, std::sync::atomic::Ordering::Release);
-                }
-                ImeCacheEffect::Invalidate => {
-                    platform.invalidate_ime_cache();
-                    // Note: PRECOND_IME_ON は invalidate しない（shadow 値を維持）
-                }
             },
         }
     }

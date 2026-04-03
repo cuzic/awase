@@ -39,7 +39,6 @@ fn make_obs(
     skip: bool,
     debounce_ms: u64,
     os_modifiers: Option<ModifierState>,
-    ime_open_at_focus: Option<bool>,
 ) -> FocusObservation {
     FocusObservation {
         process_id,
@@ -52,7 +51,6 @@ fn make_obs(
         debounce_timer_id: TIMER_FOCUS_DEBOUNCE,
         debounce_ms,
         os_modifiers,
-        ime_open_at_focus,
     }
 }
 
@@ -71,8 +69,10 @@ pub unsafe fn observe(
     // OS から修飾キー状態を取得（フォーカス変更時の同期用）
     let os_modifiers = Some(read_os_modifiers());
 
-    // IME 状態を即座に取得（Engine ON/OFF を IME に追随させるため）
-    let ime_open_at_focus = crate::ime::detect_ime_open_cross_process();
+    // IME 状態をフォーカス変更時に更新（PRECOND_IME_ON を新ウィンドウの状態に追随）
+    if let Some(ime_on) = crate::ime::detect_ime_open_cross_process() {
+        crate::PRECOND_IME_ON.store(ime_on, Ordering::Release);
+    }
 
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止
     if let Some(obs) = check_same_process_skip(process_id, class_name, focus, debounce_ms) {
@@ -86,7 +86,6 @@ pub unsafe fn observe(
         focus,
         debounce_ms,
         os_modifiers,
-        ime_open_at_focus,
     ) {
         return obs;
     }
@@ -106,7 +105,6 @@ pub unsafe fn observe(
             false,
             debounce_ms,
             os_modifiers,
-            ime_open_at_focus,
         );
     }
 
@@ -123,7 +121,6 @@ pub unsafe fn observe(
             false,
             debounce_ms,
             os_modifiers,
-            ime_open_at_focus,
         );
     }
 
@@ -154,7 +151,6 @@ pub unsafe fn observe(
         false,
         debounce_ms,
         os_modifiers,
-        ime_open_at_focus,
     )
 }
 
@@ -185,7 +181,6 @@ unsafe fn check_same_process_skip(
         false,
         true,
         debounce_ms,
-        None, // skip=true なので復元不要
         None, // skip=true なので修飾キー同期不要
     ))
 }
@@ -197,7 +192,6 @@ fn check_overrides(
     focus: &FocusDetector,
     debounce_ms: u64,
     os_modifiers: Option<ModifierState>,
-    ime_open_at_focus: Option<bool>,
 ) -> Option<FocusObservation> {
     if focus.overrides.force_text.is_empty() && focus.overrides.force_bypass.is_empty() {
         return None;
@@ -221,7 +215,6 @@ fn check_overrides(
                 false,
                 debounce_ms,
                 os_modifiers,
-                ime_open_at_focus,
             ));
         }
     }
@@ -242,7 +235,6 @@ fn check_overrides(
                 false,
                 debounce_ms,
                 os_modifiers,
-                ime_open_at_focus,
             ));
         }
     }

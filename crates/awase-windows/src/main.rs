@@ -1398,11 +1398,6 @@ unsafe extern "system" fn win_event_proc(
         &app.executor.platform.focus,
     );
 
-    // PRECOND_IME_ON をフォーカス変更時の IME 状態で更新
-    if let Some(ime_on) = obs.ime_open_at_focus {
-        awase_windows::PRECOND_IME_ON.store(ime_on, Ordering::Release);
-    }
-
     // Engine: 判断 → Decision
     let decision = app
         .engine

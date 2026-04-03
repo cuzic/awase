@@ -3523,8 +3523,8 @@ mod engine_integration_tests {
     use crate::engine::engine::Engine;
     use crate::engine::input_tracker::InputTracker;
     use crate::engine::nicola_fsm::NicolaFsm;
-    use crate::engine::observation::{FocusObservation, ImeObservation};
-    use crate::types::{FocusKind, ImeReliability};
+    use crate::engine::observation::FocusObservation;
+    use crate::types::FocusKind;
 
     fn empty_sync_keys() -> ImeSyncKeys {
         ImeSyncKeys {
@@ -3742,7 +3742,7 @@ mod engine_integration_tests {
         assert!(engine.compute_active(&ime_on_ctx()));
 
         // Platform updated atomic → ctx now reflects ime_on=false
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false }, &ime_off_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
@@ -3755,11 +3755,11 @@ mod engine_integration_tests {
     fn on_command_sync_ime_state_on_activates() {
         let mut engine = make_test_engine();
         // まず ime_off で inactive にする
-        engine.on_command(EngineCommand::SyncImeState { ime_on: false }, &ime_off_ctx());
+        engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
 
         // Platform updated atomic → ctx now reflects ime_on=true
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true }, &ime_on_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
         assert!(engine.compute_active(&ime_on_ctx()));
         assert!(has_effect(&d, |e| matches!(
             e,
@@ -3773,7 +3773,7 @@ mod engine_integration_tests {
         engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx()); // user OFF
         assert!(!engine.compute_active(&ime_on_ctx()));
 
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true }, &ime_on_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
         // user disabled → still inactive
         assert!(!engine.compute_active(&ime_on_ctx()));
         assert!(!has_effect(&d, |e| matches!(
@@ -3787,7 +3787,7 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: true }, &ime_on_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
         assert!(!d.is_consumed());
         assert!(engine.compute_active(&ime_on_ctx()));
     }
@@ -4003,29 +4003,17 @@ mod engine_integration_tests {
         assert!(!d.is_consumed());
     }
 
-    // ── 7. Engine::on_command ImeObserved ──
+    // ── 7. Engine::on_command RefreshState ──
 
     #[test]
-    fn ime_observed_on_updates_preconditions() {
+    fn refresh_state_on_updates_preconditions() {
         let mut engine = make_test_engine();
-        // まず ImeObserved(off) で prev_active=false に遷移させる
-        let obs_off = ImeObservation {
-            cross_process: Some(false),
-            is_japanese: true,
-            reliability: ImeReliability::Reliable,
-            is_romaji: Some(true),
-        };
-        engine.on_command(EngineCommand::ImeObserved(obs_off), &ime_off_ctx());
+        // まず RefreshState で prev_active=false に遷移させる
+        engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
 
-        // ImeObserved(on) → Platform updated atomic → ctx reflects ime_on=true
-        let obs_on = ImeObservation {
-            cross_process: Some(true),
-            is_japanese: true,
-            reliability: ImeReliability::Reliable,
-            is_romaji: Some(true),
-        };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs_on), &ime_on_ctx());
+        // RefreshState → Platform updated atomic → ctx reflects ime_on=true
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
         assert!(engine.compute_active(&ime_on_ctx()), "preconditions met → active");
         assert!(has_effect(&d, |e| matches!(
             e,
@@ -4034,18 +4022,12 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn ime_observed_on_but_user_disabled_stays_inactive() {
+    fn refresh_state_on_but_user_disabled_stays_inactive() {
         let mut engine = make_test_engine();
         engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx()); // user OFF
         assert!(!engine.is_user_enabled());
 
-        let obs = ImeObservation {
-            cross_process: Some(true),
-            is_japanese: true,
-            reliability: ImeReliability::Reliable,
-            is_romaji: Some(true),
-        };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_on_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
         // user disabled → still inactive even with IME ON
         assert!(!engine.compute_active(&ime_on_ctx()));
         assert!(!has_effect(&d, |e| matches!(
@@ -4055,18 +4037,12 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn ime_observed_off_deactivates_engine() {
+    fn refresh_state_off_deactivates_engine() {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
-        let obs = ImeObservation {
-            cross_process: Some(false),
-            is_japanese: true,
-            reliability: ImeReliability::Reliable,
-            is_romaji: Some(true),
-        };
         // Platform updated atomic → ctx reflects ime_on=false
-        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_off_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
@@ -4076,17 +4052,11 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn ime_observed_no_change_just_updates_cache() {
+    fn refresh_state_no_change() {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
-        let obs = ImeObservation {
-            cross_process: Some(true),
-            is_japanese: true,
-            reliability: ImeReliability::Reliable,
-            is_romaji: Some(true),
-        };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_on_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
         assert!(engine.compute_active(&ime_on_ctx()));
         // No state change → no EngineStateChanged effect
         assert!(!has_effect(&d, |e| matches!(
@@ -4096,19 +4066,13 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn ime_observed_not_japanese_deactivates() {
+    fn refresh_state_not_japanese_deactivates() {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
-        let obs = ImeObservation {
-            cross_process: Some(true),
-            is_japanese: false,
-            reliability: ImeReliability::Reliable,
-            is_romaji: Some(true),
-        };
         // Platform updated is_japanese_ime=false in ctx
         let not_japanese_ctx = InputContext { ime_on: true, is_romaji: true, is_japanese_ime: false };
-        let d = engine.on_command(EngineCommand::ImeObserved(obs), &not_japanese_ctx);
+        let d = engine.on_command(EngineCommand::RefreshState, &not_japanese_ctx);
         assert!(!engine.compute_active(&not_japanese_ctx));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
@@ -4127,7 +4091,6 @@ mod engine_integration_tests {
         needs_uia: bool,
         overridden: bool,
         os_modifiers: Option<super::ModifierState>,
-        ime_open_at_focus: Option<bool>,
     ) -> FocusObservation {
         FocusObservation {
             process_id,
@@ -4140,7 +4103,6 @@ mod engine_integration_tests {
             debounce_timer_id: 99,
             debounce_ms: 50,
             os_modifiers,
-            ime_open_at_focus,
         }
     }
 
@@ -4154,7 +4116,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
             None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
@@ -4179,7 +4140,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(matches!(d, Decision::PassThrough));
@@ -4198,7 +4158,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            Some(false), // IME OFF
         );
         // Platform updated atomic → ctx reflects ime_on=false
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
@@ -4224,7 +4183,6 @@ mod engine_integration_tests {
             true,
             false,
             None,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
@@ -4246,7 +4204,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            Some(false), // IME OFF
         );
         // Platform updated atomic → ctx reflects ime_on=false
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
@@ -4265,7 +4222,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            Some(true), // IME ON
         );
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
@@ -4284,7 +4240,6 @@ mod engine_integration_tests {
             false,
             false,
             true,
-            None,
             None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
@@ -4311,7 +4266,6 @@ mod engine_integration_tests {
             false,
             false,
             Some(mods),
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
@@ -4401,7 +4355,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
@@ -4431,7 +4384,7 @@ mod engine_integration_tests {
         assert!(d.is_consumed());
     }
 
-    // ── 17. SyncImeState with pending flush ──
+    // ── 17. RefreshState with pending flush ──
 
     #[test]
     fn sync_ime_off_flushes_pending() {
@@ -4439,7 +4392,7 @@ mod engine_integration_tests {
         engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
 
         // Platform updated atomic → ctx reflects ime_on=false
-        let d = engine.on_command(EngineCommand::SyncImeState { ime_on: false }, &ime_off_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
@@ -4508,7 +4461,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            None,
         );
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
 
@@ -4531,22 +4483,16 @@ mod engine_integration_tests {
         }
     }
 
-    // ── 23. ImeObserved with pending key flushes ──
+    // ── 23. RefreshState with pending key flushes ──
 
     #[test]
-    fn ime_observed_off_with_pending_flushes() {
+    fn refresh_state_off_with_pending_flushes() {
         let mut engine = make_test_engine();
         // Enter pending state
         engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
 
-        let obs = ImeObservation {
-            cross_process: Some(false),
-            is_japanese: true,
-            reliability: ImeReliability::Reliable,
-            is_romaji: Some(true),
-        };
         // Platform updated atomic → ctx reflects ime_on=false
-        let d = engine.on_command(EngineCommand::ImeObserved(obs), &ime_off_ctx());
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         // Should have flush effects (SendKeys) before the state change
@@ -4571,7 +4517,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            Some(false), // IME OFF
         );
         engine.on_command(EngineCommand::FocusChanged(obs_off), &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
@@ -4585,7 +4530,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            Some(true), // IME ON
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
@@ -4613,7 +4557,6 @@ mod engine_integration_tests {
             false,
             false,
             None,
-            Some(true), // IME ON
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!engine.compute_active(&ime_on_ctx()), "user disabled → still inactive");

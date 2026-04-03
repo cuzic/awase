@@ -19,8 +19,8 @@ pub mod timing;
 
 // Public re-exports
 pub use decision::{
-    Decision, Effect, EffectVec, EngineCommand, FocusEffect, ImeCacheEffect, ImeEffect,
-    ImeSyncKeys, InputContext, InputEffect, KeyBuffer, SpecialKeyCombos, TimerEffect, UiEffect,
+    Decision, Effect, EffectVec, EngineCommand, FocusEffect, ImeEffect, ImeSyncKeys, InputContext,
+    InputEffect, KeyBuffer, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 pub use engine::Engine;
 pub use fsm_types::{
@@ -30,7 +30,7 @@ pub use fsm_types::{
 pub use ime_coordinator::ImeCoordinator;
 pub use key_lifecycle::KeyLifecycle;
 pub use nicola_fsm::NicolaFsm;
-pub use observation::{FocusObservation, ImeObservation};
+pub use observation::FocusObservation;
 
 pub use nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
 pub use timing::{ThreeKeyResult, TimingJudge};

@@ -198,73 +198,6 @@ impl ImeReliability {
     }
 }
 
-/// IME 状態キャッシュ値
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ImeCacheState {
-    /// IME OFF
-    Off = 0,
-    /// IME ON
-    On = 1,
-    /// 未判定（初期状態 or キャッシュ未更新）
-    Unknown = 2,
-}
-
-impl ImeCacheState {
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Self {
-        match v {
-            0 => Self::Off,
-            1 => Self::On,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn load(atomic: &std::sync::atomic::AtomicU8) -> Self {
-        Self::from_u8(atomic.load(std::sync::atomic::Ordering::Acquire))
-    }
-
-    pub fn store(self, atomic: &std::sync::atomic::AtomicU8) {
-        atomic.store(self as u8, std::sync::atomic::Ordering::Release);
-    }
-
-    /// `AtomicU8` に対してアトミック swap を行い、以前の値を返す
-    #[must_use]
-    pub fn swap(self, atomic: &std::sync::atomic::AtomicU8) -> Self {
-        Self::from_u8(atomic.swap(self as u8, std::sync::atomic::Ordering::AcqRel))
-    }
-
-    /// Unknown の場合は shadow state にフォールバック
-    #[must_use]
-    pub const fn resolve_with_shadow(self, shadow_ime_on: bool) -> bool {
-        match self {
-            Self::On => true,
-            Self::Off => false,
-            Self::Unknown => shadow_ime_on,
-        }
-    }
-
-    /// 表示用ラベル
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "OFF",
-            Self::On => "ON",
-            Self::Unknown => "Unknown",
-        }
-    }
-}
-
-impl From<bool> for ImeCacheState {
-    fn from(ime_on: bool) -> Self {
-        if ime_on {
-            Self::On
-        } else {
-            Self::Off
-        }
-    }
-}
-
 /// アプリケーションの UI フレームワーク種別
 ///
 /// フォーカス中のアプリに応じて出力方式を適応的に切り替えるために使用する。
@@ -369,43 +302,6 @@ mod tests {
     #[test]
     fn ime_reliability_from_u8_unknown_fallback() {
         assert_eq!(ImeReliability::from_u8(255), ImeReliability::Unknown);
-    }
-
-    // ── ImeCacheState ──
-
-    #[test]
-    fn ime_cache_state_from_u8_known_values() {
-        assert_eq!(ImeCacheState::from_u8(0), ImeCacheState::Off);
-        assert_eq!(ImeCacheState::from_u8(1), ImeCacheState::On);
-        assert_eq!(ImeCacheState::from_u8(2), ImeCacheState::Unknown);
-    }
-
-    #[test]
-    fn ime_cache_state_from_u8_unknown_fallback() {
-        assert_eq!(ImeCacheState::from_u8(255), ImeCacheState::Unknown);
-    }
-
-    #[test]
-    fn ime_cache_state_resolve_with_shadow() {
-        assert!(ImeCacheState::On.resolve_with_shadow(false));
-        assert!(ImeCacheState::On.resolve_with_shadow(true));
-        assert!(!ImeCacheState::Off.resolve_with_shadow(false));
-        assert!(!ImeCacheState::Off.resolve_with_shadow(true));
-        assert!(!ImeCacheState::Unknown.resolve_with_shadow(false));
-        assert!(ImeCacheState::Unknown.resolve_with_shadow(true));
-    }
-
-    #[test]
-    fn ime_cache_state_as_str() {
-        assert_eq!(ImeCacheState::Off.as_str(), "OFF");
-        assert_eq!(ImeCacheState::On.as_str(), "ON");
-        assert_eq!(ImeCacheState::Unknown.as_str(), "Unknown");
-    }
-
-    #[test]
-    fn ime_cache_state_from_bool() {
-        assert_eq!(ImeCacheState::from(true), ImeCacheState::On);
-        assert_eq!(ImeCacheState::from(false), ImeCacheState::Off);
     }
 
     // ── FocusKind ──

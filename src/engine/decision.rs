@@ -9,7 +9,7 @@ use crate::types::{ContextChange, FocusKind, KeyAction, RawKeyEvent, VkCode};
 use crate::yab::YabLayout;
 
 use super::input_tracker::PhysicalKeyState;
-use super::observation::{FocusObservation, ImeObservation};
+use super::observation::FocusObservation;
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
 
@@ -69,15 +69,6 @@ pub enum FocusEffect {
     UpdateLastFocusInfo { process_id: u32, class_name: String },
 }
 
-/// IME キャッシュ状態に関する副作用
-#[derive(Debug, Clone)]
-pub enum ImeCacheEffect {
-    /// IME_STATE_CACHE を更新する
-    UpdateStateCache { ime_on: bool },
-    /// IME_STATE_CACHE を Unknown に無効化する（次のキーで shadow にフォールバック）
-    Invalidate,
-}
-
 /// アプリケーション全体の副作用を表す宣言型。
 /// Engine は Effect を返すだけで、実行は呼び出し側が行う。
 #[derive(Debug, Clone)]
@@ -87,7 +78,6 @@ pub enum Effect {
     Ime(ImeEffect),
     Ui(UiEffect),
     Focus(FocusEffect),
-    ImeCache(ImeCacheEffect),
 }
 
 /// Engine の判断結果（副作用なし、値で消費される）。
@@ -253,8 +243,6 @@ pub enum EngineCommand {
     InvalidateContext(ContextChange),
     /// 配列を切り替える
     SwapLayout(YabLayout),
-    /// IME 状態に追随する
-    SyncImeState { ime_on: bool },
     /// IME ガードを設定する
     SetGuard(bool),
     /// 遅延キーをクリアする
@@ -272,8 +260,8 @@ pub enum EngineCommand {
     },
     /// n-gram モデルを設定する
     SetNgramModel(crate::ngram::NgramModel),
-    /// IME 状態が観測された
-    ImeObserved(ImeObservation),
+    /// IME 状態を再チェックする（Platform 層がアトミック変数を更新済み）
+    RefreshState,
     /// フォーカスが変更された
     FocusChanged(FocusObservation),
     /// OS の修飾キー状態と内部状態を同期する。

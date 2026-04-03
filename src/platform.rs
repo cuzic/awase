@@ -165,13 +165,6 @@ pub trait PlatformRuntime {
     /// 最終フォーカス情報を更新する
     fn update_last_focus_info(&mut self, process_id: u32, class_name: String);
 
-    // ── IME キャッシュ ──
-
-    /// IME 状態キャッシュを更新する
-    fn update_ime_cache(&mut self, ime_on: bool);
-
-    /// IME 状態キャッシュを無効化する（Unknown にする）
-    fn invalidate_ime_cache(&mut self);
 }
 
 #[cfg(test)]

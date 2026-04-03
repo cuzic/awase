@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use awase::platform::PlatformRuntime;
-use awase::types::{FocusKind, ImeCacheState, ImeReliability, KeyAction, RawKeyEvent};
+use awase::types::{FocusKind, ImeReliability, KeyAction, RawKeyEvent};
 
 use crate::focus::cache::DetectionSource;
 use crate::focus::uia::SendableHwnd;
@@ -17,7 +17,7 @@ use crate::output::Output;
 use crate::runtime::FocusDetector;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
-use crate::{FOCUS_KIND, IME_RELIABILITY, IME_STATE_CACHE};
+use crate::{FOCUS_KIND, IME_RELIABILITY};
 
 /// Windows 固有のプラットフォーム実装
 pub struct WindowsPlatform {
@@ -115,26 +115,4 @@ impl PlatformRuntime for WindowsPlatform {
         self.focus.last_focus_info = Some((process_id, class_name));
     }
 
-
-    // ── IME キャッシュ ──
-
-    fn update_ime_cache(&mut self, ime_on: bool) {
-        let new_state = ImeCacheState::from(ime_on);
-        let old_state = new_state.swap(&IME_STATE_CACHE);
-        if old_state != new_state {
-            log::debug!(
-                "IME state cache updated: {} → {}",
-                old_state.as_str(),
-                new_state.as_str()
-            );
-        }
-        // PRECOND_IME_ON も同期更新
-        crate::PRECOND_IME_ON.store(ime_on, std::sync::atomic::Ordering::Release);
-    }
-
-    fn invalidate_ime_cache(&mut self) {
-        ImeCacheState::Unknown.store(&IME_STATE_CACHE);
-        log::trace!("IME state cache invalidated → Unknown");
-        // Note: PRECOND_IME_ON は invalidate しない（shadow 値を維持）
-    }
 }

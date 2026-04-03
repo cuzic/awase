@@ -49,13 +49,6 @@ pub static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
 /// フォーカス中アプリの UI フレームワーク種別（Win32=0 で初期化）
 pub static APP_KIND: AtomicU8 = AtomicU8::new(0); // AppKind::Win32
 
-/// キャッシュされた IME ON/OFF 状態。0=OFF, 1=ON, 2=Unknown（初期状態）
-///
-/// 注意: 新しい `PRECOND_IME_ON` / `PRECOND_IS_JAPANESE` アトミックが
-/// `build_input_context()` の正規ソースとなる。
-/// `IME_STATE_CACHE` はレガシー互換のため一時的に残す。
-pub static IME_STATE_CACHE: AtomicU8 = AtomicU8::new(2);
-
 /// IME 検出の信頼度キャッシュ（UIA 非同期判定で更新）
 pub static IME_RELIABILITY: AtomicU8 = AtomicU8::new(2); // ImeReliability::Unknown
 

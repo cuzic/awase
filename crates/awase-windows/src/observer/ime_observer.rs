@@ -1,8 +1,7 @@
-//! IME 状態の観測 — Win32 API を呼び出して `ImeObservation` を返す。
+//! IME 状態の観測 — Win32 API を呼び出してアトミック変数を直接更新する。
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use awase::engine::ImeObservation;
 use awase::types::ImeReliability;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
@@ -10,13 +9,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
 };
 
-/// Win32 API を使って IME 状態を観測し、OS 非依存の `ImeObservation` を返す。
+/// Win32 API を使って IME 状態を観測し、アトミック変数を直接更新する。
 ///
-/// 副作用: `IME_IS_KANA_INPUT` フラグも同時に更新する。
+/// 副作用: `PRECOND_IME_ON`, `PRECOND_IS_JAPANESE`, `IME_IS_KANA_INPUT` を更新する。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
+pub unsafe fn observe(ime_reliability: &AtomicU8) {
     // Step 1: 対象スレッドの HKL を取得（日本語チェック）
     let lang_id = {
         let mut gui_info = GUITHREADINFO {
@@ -58,7 +57,7 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
     }
 
     // Step 3: かな入力方式の検出 → グローバルフラグ更新
-    let is_romaji = if let Some(is_kana) = crate::ime::detect_kana_input_method() {
+    if let Some(is_kana) = crate::ime::detect_kana_input_method() {
         let prev = crate::IME_IS_KANA_INPUT.swap(is_kana, Ordering::Relaxed);
         if prev != is_kana {
             log::info!(
@@ -67,18 +66,8 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) -> ImeObservation {
                 if is_kana { "kana" } else { "romaji" },
             );
         }
-        Some(!is_kana)
-    } else {
-        None
-    };
-
-    // Step 4: ImeReliability を読み取り
-    let reliability = ImeReliability::load(ime_reliability);
-
-    ImeObservation {
-        cross_process,
-        is_japanese,
-        reliability,
-        is_romaji,
     }
+
+    // Step 4: ImeReliability を読み取り（ログ用のみ）
+    let _reliability = ImeReliability::load(ime_reliability);
 }

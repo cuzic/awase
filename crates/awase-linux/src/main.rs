@@ -203,9 +203,6 @@ fn execute_effects(effects: &[Effect], output: &mut UinputOutput) {
             Effect::Focus(focus_effect) => {
                 log::debug!("Focus effect: {focus_effect:?} (not applicable on Linux)");
             }
-            Effect::ImeCache(cache_effect) => {
-                log::debug!("IME cache effect: {cache_effect:?}");
-            }
         }
     }
 }
