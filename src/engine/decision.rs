@@ -55,8 +55,6 @@ pub enum UiEffect {
 pub enum FocusEffect {
     /// FOCUS_KIND アトミックを更新する
     UpdateFocusKind(FocusKind),
-    /// IME_RELIABILITY アトミックをリセットする
-    ResetImeReliability,
     /// フォーカスキャッシュにエントリを格納する
     InsertFocusCache {
         process_id: u32,

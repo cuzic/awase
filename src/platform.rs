@@ -153,9 +153,6 @@ pub trait PlatformRuntime {
     /// 現在のフォーカス種別を設定する
     fn update_focus_kind(&mut self, kind: FocusKind);
 
-    /// IME 信頼度をリセットする
-    fn reset_ime_reliability(&mut self);
-
     /// フォーカスキャッシュにエントリを挿入する
     fn insert_focus_cache(&mut self, process_id: u32, class_name: String, kind: FocusKind);
 

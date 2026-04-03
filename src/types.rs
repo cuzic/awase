@@ -167,37 +167,6 @@ pub enum ContextChange {
     FocusChanged,
 }
 
-/// 外部プロセスの IME 状態をクロスプロセス API で正確に取得できるかの信頼度
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum ImeReliability {
-    /// クロスプロセス IME 検出を信頼できる
-    Reliable = 0,
-    /// クロスプロセス IME 検出が不正確な可能性
-    Unreliable = 1,
-    /// 未判定
-    Unknown = 2,
-}
-
-impl ImeReliability {
-    #[must_use]
-    pub const fn from_u8(v: u8) -> Self {
-        match v {
-            0 => Self::Reliable,
-            1 => Self::Unreliable,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn load(atomic: &std::sync::atomic::AtomicU8) -> Self {
-        Self::from_u8(atomic.load(std::sync::atomic::Ordering::Acquire))
-    }
-
-    pub fn store(self, atomic: &std::sync::atomic::AtomicU8) {
-        atomic.store(self as u8, std::sync::atomic::Ordering::Release);
-    }
-}
-
 /// アプリケーションの UI フレームワーク種別
 ///
 /// フォーカス中のアプリに応じて出力方式を適応的に切り替えるために使用する。
@@ -288,20 +257,6 @@ mod tests {
         let atomic = std::sync::atomic::AtomicU8::new(0);
         AppKind::Chrome.store(&atomic);
         assert_eq!(AppKind::load(&atomic), AppKind::Chrome);
-    }
-
-    // ── ImeReliability ──
-
-    #[test]
-    fn ime_reliability_from_u8_known_values() {
-        assert_eq!(ImeReliability::from_u8(0), ImeReliability::Reliable);
-        assert_eq!(ImeReliability::from_u8(1), ImeReliability::Unreliable);
-        assert_eq!(ImeReliability::from_u8(2), ImeReliability::Unknown);
-    }
-
-    #[test]
-    fn ime_reliability_from_u8_unknown_fallback() {
-        assert_eq!(ImeReliability::from_u8(255), ImeReliability::Unknown);
     }
 
     // ── FocusKind ──

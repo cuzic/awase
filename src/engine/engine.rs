@@ -310,9 +310,6 @@ impl Engine {
             class_name: class_name.clone(),
         }));
 
-        // IME 信頼度をリセット
-        effects.push(Effect::Focus(FocusEffect::ResetImeReliability));
-
         // FOCUS_KIND を更新
         effects.push(Effect::Focus(FocusEffect::UpdateFocusKind(kind)));
 

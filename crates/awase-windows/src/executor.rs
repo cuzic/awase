@@ -193,7 +193,6 @@ impl DecisionExecutor {
             },
             Effect::Focus(fe) => match fe {
                 FocusEffect::UpdateFocusKind(kind) => platform.update_focus_kind(kind),
-                FocusEffect::ResetImeReliability => platform.reset_ime_reliability(),
                 FocusEffect::InsertFocusCache {
                     process_id,
                     class_name,

@@ -9,7 +9,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 use awase::platform::PlatformRuntime;
-use awase::types::{FocusKind, ImeReliability, KeyAction, RawKeyEvent};
+use awase::types::{FocusKind, KeyAction, RawKeyEvent};
 
 use crate::focus::cache::DetectionSource;
 use crate::focus::uia::SendableHwnd;
@@ -17,7 +17,7 @@ use crate::output::Output;
 use crate::runtime::FocusDetector;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
-use crate::{FOCUS_KIND, IME_RELIABILITY};
+use crate::FOCUS_KIND;
 
 /// Windows 固有のプラットフォーム実装
 pub struct WindowsPlatform {
@@ -83,10 +83,6 @@ impl PlatformRuntime for WindowsPlatform {
 
     fn update_focus_kind(&mut self, kind: FocusKind) {
         kind.store(&FOCUS_KIND);
-    }
-
-    fn reset_ime_reliability(&mut self) {
-        ImeReliability::Unknown.store(&IME_RELIABILITY);
     }
 
     fn insert_focus_cache(&mut self, process_id: u32, class_name: String, kind: FocusKind) {

@@ -23,7 +23,7 @@ use crate::executor::DecisionExecutor;
 use crate::focus::cache::DetectionSource;
 use crate::hook::CallbackResult;
 use crate::ime::HybridProvider;
-use crate::{FOCUS_KIND, IME_RELIABILITY};
+use crate::FOCUS_KIND;
 
 // ── LayoutEntry（名前付きレイアウトエントリ）──
 
@@ -130,7 +130,7 @@ impl Runtime {
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn refresh_ime_state_cache(&mut self) {
         // Observer: OS 観測 → アトミック変数を直接更新
-        unsafe { crate::observer::ime_observer::observe(&IME_RELIABILITY) };
+        unsafe { crate::observer::ime_observer::observe() };
 
         // Engine: 判断 → Decision（アトミック変数は更新済み）
         let ctx = build_input_context();
@@ -239,7 +239,6 @@ impl Runtime {
         crate::hook::reinstall_hook();
 
         // 5. IME キャッシュをリセット
-        awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
         crate::IME_IS_KANA_INPUT.store(false, Ordering::Relaxed);
         crate::PRECOND_IME_ON.store(true, Ordering::Release); // 安全側: ON
         crate::PRECOND_IS_JAPANESE.store(true, Ordering::Relaxed);

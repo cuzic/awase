@@ -49,7 +49,7 @@ use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED, FOCUS_DEBOUNCE_MS, FOCUS_KIND, IME_POLL_INTERVAL_MS,
-    IME_RELIABILITY, MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
+    MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
     TIMER_HOOK_WATCHDOG, TIMER_IME_POLL, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
@@ -955,7 +955,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                         app.refresh_ime_state_cache();
                     }
-                    awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
                     FocusKind::Undetermined.store(&FOCUS_KIND);
                 }
             },
@@ -976,7 +975,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
                             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                             app.refresh_ime_state_cache();
                         }
-                        awase::types::ImeReliability::Unknown.store(&IME_RELIABILITY);
                         FocusKind::Undetermined.store(&FOCUS_KIND);
                     }
                     _ => {}
@@ -1005,13 +1003,11 @@ fn run_message_loop(taskbar_created_msg: u32) {
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
                 // UIA 非同期判定完了 → メッセージから結果を取得
-                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = ImeReliability, 次の 8 bit = AppKind
+                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = AppKind (0xFF = なし)
                 let kind_u8 = msg.wParam.0 as u8;
-                let reliability_u8 = (msg.wParam.0 >> 8) as u8;
-                let app_kind_u8 = (msg.wParam.0 >> 16) as u8;
+                let app_kind_u8 = (msg.wParam.0 >> 8) as u8;
                 let result_hwnd = HWND(msg.lParam.0 as *mut _);
                 let kind = FocusKind::from_u8(kind_u8);
-                let reliability = awase::types::ImeReliability::from_u8(reliability_u8);
 
                 // 検証: UIA 結果の hwnd が現在のフォーカスと一致するか確認
                 let mut info = GUITHREADINFO {
@@ -1022,9 +1018,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     log::debug!("UIA result for stale hwnd, ignoring");
                     // フォーカスが変わっているので適用しない
                 } else {
-                    // ImeReliability を更新（常に適用）
-                    reliability.store(&IME_RELIABILITY);
-
                     // AppKind を更新（UIA 結果が有効な場合のみ）
                     if app_kind_u8 != 0xFF {
                         let app_kind = awase::types::AppKind::from_u8(app_kind_u8);

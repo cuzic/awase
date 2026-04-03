@@ -1,8 +1,7 @@
 //! IME 状態の観測 — Win32 API を呼び出してアトミック変数を直接更新する。
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::Ordering;
 
-use awase::types::ImeReliability;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -15,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn observe(ime_reliability: &AtomicU8) {
+pub unsafe fn observe() {
     // Step 1: 対象スレッドの HKL を取得（日本語チェック）
     let lang_id = {
         let mut gui_info = GUITHREADINFO {
@@ -68,6 +67,4 @@ pub unsafe fn observe(ime_reliability: &AtomicU8) {
         }
     }
 
-    // Step 4: ImeReliability を読み取り（ログ用のみ）
-    let _reliability = ImeReliability::load(ime_reliability);
 }
