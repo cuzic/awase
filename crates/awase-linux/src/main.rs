@@ -7,7 +7,6 @@ use awase::engine::{
     TimerEffect,
 };
 use awase::scanmap::KeyboardModel;
-use awase::types::ImeCacheState;
 use awase::yab::YabLayout;
 
 use awase_linux::hook::EvdevInput;
@@ -123,7 +122,9 @@ fn main() -> Result<()> {
         let event_type = event.event_type;
 
         let ctx = InputContext {
-            ime_cache: ImeCacheState::On, // Assume IME ON for now
+            ime_on: true, // Assume IME ON for now
+            is_romaji: true,
+            is_japanese_ime: true,
         };
         let decision = engine.on_input(event, &ctx);
 

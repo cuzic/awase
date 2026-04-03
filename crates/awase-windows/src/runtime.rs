@@ -1,6 +1,26 @@
+use std::sync::atomic::Ordering;
+
 use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, ImeCacheState, RawKeyEvent, ShadowImeAction, VkCode};
+
+/// 現在のアトミック変数から InputContext を構築する。
+///
+/// TODO: Phase 2 で PRECOND_* アトミックに統合し、IME_STATE_CACHE を廃止する。
+pub fn build_input_context() -> InputContext {
+    let ime_cache = ImeCacheState::load(&crate::IME_STATE_CACHE);
+    let ime_on = match ime_cache {
+        ImeCacheState::On => true,
+        ImeCacheState::Off => false,
+        ImeCacheState::Unknown => true, // 安全側: Engine ON にしておく
+    };
+    let is_kana = crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed);
+    InputContext {
+        ime_on,
+        is_romaji: !is_kana,
+        is_japanese_ime: true, // TODO: LANGID チェックから取得
+    }
+}
 use awase::yab::YabLayout;
 
 use crate::executor::DecisionExecutor;
@@ -94,23 +114,17 @@ impl Runtime {
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
-        let decision = self.engine.on_command(EngineCommand::ToggleEngine);
+        let ctx = build_input_context();
+        let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
         self.executor.execute_from_loop(decision);
-        // ウィンドウごとのエンジン状態をキャッシュに保存
-        if let Some((pid, cls)) = self.executor.platform.focus.last_focus_info.as_ref() {
-            self.executor.platform.focus.cache.set_engine_state(
-                *pid,
-                cls.clone(),
-                self.engine.is_fsm_enabled(),
-            );
-        }
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
     pub fn invalidate_engine_context(&mut self, reason: ContextChange) {
+        let ctx = build_input_context();
         let decision = self
             .engine
-            .on_command(EngineCommand::InvalidateContext(reason));
+            .on_command(EngineCommand::InvalidateContext(reason), &ctx);
         self.executor.execute_from_loop(decision);
     }
 
@@ -123,7 +137,8 @@ impl Runtime {
         let obs = unsafe { crate::observer::ime_observer::observe(&IME_RELIABILITY) };
 
         // Engine: 判断 → Decision
-        let decision = self.engine.on_command(EngineCommand::ImeObserved(obs));
+        let ctx = build_input_context();
+        let decision = self.engine.on_command(EngineCommand::ImeObserved(obs), &ctx);
 
         // Runtime: 副作用実行
         self.executor.execute_from_loop(decision);
@@ -139,7 +154,7 @@ impl Runtime {
         let name = entry.name.clone();
         let decision = self
             .engine
-            .on_command(EngineCommand::SwapLayout(entry.layout.clone()));
+            .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &build_input_context());
         self.executor.execute_from_loop(decision);
 
         self.executor.platform.tray.set_layout_name(&name);
@@ -174,7 +189,7 @@ impl Runtime {
         }
 
         // Clear any active buffers
-        self.engine.on_command(EngineCommand::ClearDeferredKeys);
+        self.engine.on_command(EngineCommand::ClearDeferredKeys, &build_input_context());
         // バルーン通知を表示
         self.executor.platform.tray.show_balloon(
             "awase",
@@ -198,9 +213,7 @@ impl Runtime {
         // IME 状態キャッシュを更新（メッセージループ上なのでブロッキング OK）
         self.refresh_ime_state_cache();
 
-        let ctx = InputContext {
-            ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
-        };
+        let ctx = build_input_context();
         let decisions = self.engine.process_deferred_keys(&ctx);
         for decision in decisions {
             // メッセージループ上なので即座に drain して Effects を実行する

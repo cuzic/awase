@@ -534,7 +534,7 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
             unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.engine
-                        .on_command(awase::engine::EngineCommand::SetNgramModel(model));
+                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &crate::runtime::build_input_context());
                 }
             }
         }
@@ -813,9 +813,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    let ctx = InputContext {
-        ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
-    };
+    let ctx = crate::runtime::build_input_context();
 
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
     let decision = app.engine.on_input(event, &ctx);
@@ -892,9 +890,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     Some(timer_id) => {
                         // Engine タイマー (TIMER_PENDING, TIMER_SPECULATIVE)
                         log::debug!("WM_TIMER fired: logical_id={timer_id}");
-                        let ctx = InputContext {
-                            ime_cache: ImeCacheState::load(&IME_STATE_CACHE),
-                        };
+                        let ctx = crate::runtime::build_input_context();
                         let decision = app.engine.on_timeout(timer_id, &ctx);
                         app.execute_decision(decision);
                     }
@@ -919,7 +915,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     let os_mods = observer::focus_observer::read_os_modifiers();
                     let decision = app
                         .engine
-                        .on_command(awase::engine::EngineCommand::SyncModifiers(os_mods));
+                        .on_command(awase::engine::EngineCommand::SyncModifiers(os_mods), &crate::runtime::build_input_context());
                     app.executor.execute_from_loop(decision);
                 }
             },
@@ -970,7 +966,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 if let Some(app) = APP.get_mut() {
                     app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                     app.engine
-                        .on_command(awase::engine::EngineCommand::SetGuard(true));
+                        .on_command(awase::engine::EngineCommand::SetGuard(true), &crate::runtime::build_input_context());
                     app.refresh_ime_state_cache();
                 }
                 // レイアウトが日本語でなくなった場合に警告
@@ -1146,7 +1142,7 @@ fn reload_config() {
                     threshold_ms: config.general.simultaneous_threshold_ms,
                     confirm_mode: config.general.confirm_mode,
                     speculative_delay_ms: config.general.speculative_delay_ms,
-                });
+                }, &crate::runtime::build_input_context());
             app.executor
                 .platform
                 .output
@@ -1191,7 +1187,7 @@ fn reload_config() {
                             ime_off,
                         },
                         sync: ImeSyncKeys { toggle, on, off },
-                    });
+                    }, &crate::runtime::build_input_context());
             }
         }
         key_diag.report();
@@ -1381,7 +1377,7 @@ unsafe extern "system" fn win_event_proc(
     // Engine: 判断 → Decision
     let decision = app
         .engine
-        .on_command(awase::engine::EngineCommand::FocusChanged(obs));
+        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &crate::runtime::build_input_context());
 
     // Runtime: 副作用実行
     app.execute_decision(decision);
