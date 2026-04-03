@@ -89,7 +89,13 @@ fn make_test_engine() -> Engine {
         ConfirmMode::Wait,
         30,
     );
-    Engine::new(fsm, tracker, empty_sync_keys(), empty_special_keys())
+    let mut engine = Engine::new(fsm, tracker, empty_sync_keys(), empty_special_keys());
+    engine.set_preconditions(crate::engine::Preconditions {
+        ime_on: true,
+        is_romaji: true,
+        is_japanese_ime: true,
+    });
+    engine
 }
 
 /// Harness for NicolaFsm-level tests (direct state access).

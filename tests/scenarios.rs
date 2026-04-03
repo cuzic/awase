@@ -1,8 +1,8 @@
 use awase::config::AppConfig;
 use awase::engine::input_tracker::InputTracker;
 use awase::engine::{
-    Decision, Effect, Engine, ImeSyncKeys, InputContext, InputEffect, NicolaFsm, SpecialKeyCombos,
-    TIMER_PENDING,
+    Decision, Effect, Engine, ImeSyncKeys, InputContext, InputEffect, NicolaFsm, Preconditions,
+    SpecialKeyCombos, TIMER_PENDING,
 };
 use awase::scanmap::{KeyboardModel, PhysicalPos};
 use awase::types::{
@@ -31,7 +31,7 @@ fn make_nicola_engine() -> Engine {
     );
     let tracker = InputTracker::new();
 
-    Engine::new(
+    let mut engine = Engine::new(
         fsm,
         tracker,
         ImeSyncKeys {
@@ -45,7 +45,13 @@ fn make_nicola_engine() -> Engine {
             ime_on: vec![],
             ime_off: vec![],
         },
-    )
+    );
+    engine.set_preconditions(Preconditions {
+        ime_on: true,
+        is_romaji: true,
+        is_japanese_ime: true,
+    });
+    engine
 }
 
 /// Default InputContext for tests (IME ON)

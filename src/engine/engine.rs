@@ -27,7 +27,44 @@ use super::input_tracker::InputTracker;
 use super::key_lifecycle::KeyLifecycle;
 use super::nicola_fsm::NicolaFsm;
 
+/// Engine の動作に必要な環境前提条件。
+///
+/// すべて満たさないと Engine は動作しない。
+/// ユーザー操作では変更されず、環境（IME状態等）の変化で自動更新される。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Preconditions {
+    /// IME が ON か
+    pub ime_on: bool,
+    /// ローマ字入力モードか（かな入力ではない）
+    pub is_romaji: bool,
+    /// 日本語 IME がアクティブか（MS-IME, Google, ATOK 等）
+    pub is_japanese_ime: bool,
+}
+
+impl Preconditions {
+    /// すべての前提条件が満たされているか
+    #[must_use]
+    pub const fn all_met(&self) -> bool {
+        self.ime_on && self.is_romaji && self.is_japanese_ime
+    }
+}
+
+impl Default for Preconditions {
+    fn default() -> Self {
+        Self {
+            ime_on: false,
+            is_romaji: true,
+            is_japanese_ime: true,
+        }
+    }
+}
+
 /// 統合エンジン: NicolaFsm + InputTracker + ImeCoordinator + 特殊キー処理
+///
+/// Engine の有効状態は2軸で決まる:
+/// - `user_enabled`: ユーザーの意図（ホットキー/トレイで操作）— FSM の `enabled` フラグ
+/// - `preconditions`: 環境の前提条件（IME ON, ローマ字, 日本語 IME）— 自動更新
+/// - 実効状態: `user_enabled && preconditions.all_met()`
 ///
 /// `on_input` が唯一のキーイベントエントリポイント。
 /// OS API を一切呼ばず、副作用は `Decision` として返す。
@@ -39,8 +76,10 @@ pub struct Engine {
     special_keys: SpecialKeyCombos,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
-    /// 最後のフォーカス情報（エンジン状態保存用）
+    /// 最後のフォーカス情報
     last_focus_info: Option<(u32, String)>,
+    /// 環境の前提条件（自動更新）
+    preconditions: Preconditions,
 }
 
 impl Engine {
@@ -58,7 +97,52 @@ impl Engine {
             special_keys,
             lifecycle: KeyLifecycle::new(),
             last_focus_info: None,
+            preconditions: Preconditions {
+                ime_on: false,
+                is_romaji: true,
+                is_japanese_ime: true,
+            },
         }
+    }
+
+    /// Engine が実効的に動作中か（user_enabled && preconditions.all_met()）
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.adapter.is_enabled() && self.preconditions.all_met()
+    }
+
+    /// 前提条件の現在値を返す
+    #[must_use]
+    pub const fn preconditions(&self) -> &Preconditions {
+        &self.preconditions
+    }
+
+    /// 前提条件を更新し、実効状態の変化を Effect として返す。
+    /// user_enabled は変更しない。
+    fn update_preconditions(&mut self, new: Preconditions) -> EffectVec {
+        let old_active = self.is_active();
+        self.preconditions = new;
+        let new_active = self.is_active();
+
+        let mut effects = EffectVec::new();
+        if old_active != new_active {
+            if !new_active {
+                // 前提条件が崩れた → 保留キーをフラッシュ
+                let flush = self.adapter.flush_to_effects(ContextChange::ImeOff);
+                effects.extend(flush);
+            }
+            effects.push(Effect::Ui(UiEffect::EngineStateChanged {
+                enabled: new_active,
+            }));
+            log::info!(
+                "Engine {} (preconditions: ime={}, romaji={}, japanese={})",
+                if new_active { "activated" } else { "deactivated" },
+                new.ime_on,
+                new.is_romaji,
+                new.is_japanese_ime,
+            );
+        }
+        effects
     }
 
     /// キーイベントの統合エントリポイント。
@@ -105,19 +189,11 @@ impl Engine {
             effects.extend(flush_effects);
             effects.push(Effect::ImeCache(ImeCacheEffect::Invalidate));
 
-            // shadow に基づいてエンジン有効/無効を即座に同期する。
-            // cache 更新は非同期なので、ここで sync しないと
-            // FSM の enabled フラグが古いまま残る。
-            let shadow_on = self.ime.shadow_on();
-            if shadow_on && !self.adapter.is_enabled() {
-                let _ = self.adapter.set_enabled(true);
-                effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
-                log::info!("Engine auto-enabled (IME toggle, shadow ON)");
-            } else if !shadow_on && self.adapter.is_enabled() {
-                let _ = self.adapter.set_enabled(false);
-                effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
-                log::info!("Engine auto-disabled (IME toggle, shadow OFF)");
-            }
+            // shadow に基づいて前提条件を更新する。
+            let mut pc = self.preconditions;
+            pc.ime_on = self.ime.shadow_on();
+            let pc_effects = self.update_preconditions(pc);
+            effects.extend(pc_effects);
         }
 
         // Phase 4: IME toggle guard
@@ -139,9 +215,8 @@ impl Engine {
             }
         }
 
-        // Phase 6: IME state check
-        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
-        if !ime_on {
+        // Phase 6: Active state check (user_enabled && preconditions)
+        if !self.is_active() {
             if effects.is_empty() {
                 return Decision::pass_through();
             }
@@ -157,12 +232,11 @@ impl Engine {
     }
 
     /// タイマー満了時のエントリポイント。
-    pub fn on_timeout(&mut self, timer_id: usize, ctx: &InputContext) -> Decision {
+    pub fn on_timeout(&mut self, timer_id: usize, _ctx: &InputContext) -> Decision {
         let phys = self.tracker.snapshot();
 
-        // IME が非活性なら on_timeout せず flush（コンテキスト喪失）
-        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
-        if !ime_on {
+        // Engine が非活性なら on_timeout せず flush（コンテキスト喪失）
+        if !self.is_active() {
             return self.adapter.flush(ContextChange::ImeOff);
         }
 
@@ -181,11 +255,11 @@ impl Engine {
 
         log::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
 
-        let ime_on = ctx.ime_cache.resolve_with_shadow(self.ime.shadow_on());
+        let active = self.is_active();
 
         keys.into_iter()
             .map(|(event, phys)| {
-                if ime_on {
+                if active {
                     self.adapter.on_event(event, &phys)
                 } else {
                     Decision::consumed_with(smallvec![Effect::Input(InputEffect::ReinjectKey(
@@ -203,28 +277,32 @@ impl Engine {
     pub fn on_command(&mut self, cmd: EngineCommand) -> Decision {
         match cmd {
             EngineCommand::ToggleEngine => {
-                let (enabled, decision) = self.adapter.toggle_enabled();
-                log::info!("Engine toggled: {}", if enabled { "ON" } else { "OFF" });
+                let old_active = self.is_active();
+                let (user_enabled, decision) = self.adapter.toggle_enabled();
+                let new_active = self.is_active();
+                log::info!(
+                    "Engine user_enabled toggled: {} (active: {})",
+                    if user_enabled { "ON" } else { "OFF" },
+                    if new_active { "ON" } else { "OFF" },
+                );
                 let mut decision = decision;
-                decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
+                if old_active != new_active {
+                    decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
+                        enabled: new_active,
+                    }));
+                }
                 decision
             }
             EngineCommand::InvalidateContext(reason) => self.adapter.flush(reason),
             EngineCommand::SwapLayout(layout) => self.adapter.swap_layout(layout),
             EngineCommand::SyncImeState { ime_on } => {
-                if ime_on && !self.adapter.is_enabled() {
-                    let _ = self.adapter.set_enabled(true);
-                    Decision::pass_through_with(smallvec![Effect::Ui(
-                        UiEffect::EngineStateChanged { enabled: true }
-                    )])
-                } else if !ime_on && self.adapter.is_enabled() {
-                    let mut decision = self.adapter.flush(ContextChange::ImeOff);
-                    let _ = self.adapter.set_enabled(false);
-                    decision
-                        .push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
-                    decision
-                } else {
+                let mut pc = self.preconditions;
+                pc.ime_on = ime_on;
+                let effects = self.update_preconditions(pc);
+                if effects.is_empty() {
                     Decision::pass_through()
+                } else {
+                    Decision::pass_through_with(effects)
                 }
             }
             EngineCommand::SetGuard(on) => {
@@ -268,21 +346,10 @@ impl Engine {
             return Decision::pass_through();
         };
 
-        let mut effects = EffectVec::new();
-
-        // エンジンを IME 状態に追随させる（SyncImeState と同じロジック）
-        // フラッシュをキャッシュ更新より先に実行する（保留キーが消失しないように）
-        if ime_on && !self.adapter.is_enabled() {
-            let _ = self.adapter.set_enabled(true);
-            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
-            log::info!("Engine auto-enabled (IME ON)");
-        } else if !ime_on && self.adapter.is_enabled() {
-            let flush_effects = self.adapter.flush_to_effects(ContextChange::ImeOff);
-            effects.extend(flush_effects);
-            let _ = self.adapter.set_enabled(false);
-            effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
-            log::info!("Engine auto-disabled (IME OFF)");
-        }
+        // 前提条件を更新（フラッシュはキャッシュ更新より先に実行される）
+        let mut pc = self.preconditions;
+        pc.ime_on = ime_on;
+        let mut effects = self.update_preconditions(pc);
 
         // キャッシュ更新はフラッシュの後（保留キーの出力が先に実行される）
         effects.push(Effect::ImeCache(ImeCacheEffect::UpdateStateCache {
@@ -367,23 +434,12 @@ impl Engine {
             duration: std::time::Duration::from_millis(debounce_ms),
         }));
 
-        // Engine ON/OFF を新ウィンドウの IME 状態に即座追随する。
-        // ウィンドウごとのキャッシュ復元は行わない（IME 状態が真の情報源）。
+        // 前提条件を新ウィンドウの IME 状態で更新する。
         if let Some(ime_on) = ime_open_at_focus {
-            if ime_on != self.adapter.is_enabled() {
-                if ime_on {
-                    let _ = self.adapter.set_enabled(true);
-                    effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: true }));
-                    log::info!("Engine ON (IME ON at focus change)");
-                } else {
-                    let flush_effects =
-                        self.adapter.flush_to_effects(ContextChange::ImeOff);
-                    effects.extend(flush_effects);
-                    let _ = self.adapter.set_enabled(false);
-                    effects.push(Effect::Ui(UiEffect::EngineStateChanged { enabled: false }));
-                    log::info!("Engine OFF (IME OFF at focus change)");
-                }
-            }
+            let mut pc = self.preconditions;
+            pc.ime_on = ime_on;
+            let pc_effects = self.update_preconditions(pc);
+            effects.extend(pc_effects);
             // IME キャッシュも即座更新
             effects.push(Effect::ImeCache(ImeCacheEffect::UpdateStateCache {
                 ime_on,
@@ -393,9 +449,15 @@ impl Engine {
         Decision::pass_through_with(effects)
     }
 
+    /// user_enabled のみ（後方互換用、テスト等）
     #[must_use]
     pub const fn is_fsm_enabled(&self) -> bool {
         self.adapter.is_enabled()
+    }
+
+    /// 前提条件を直接設定する（テスト・初期化用）
+    pub fn set_preconditions(&mut self, pc: Preconditions) {
+        self.preconditions = pc;
     }
 
     #[must_use]
@@ -453,7 +515,7 @@ impl Engine {
     fn check_special_keys(&mut self, event: &RawKeyEvent) -> Option<Decision> {
         let modifiers = self.tracker.modifiers();
 
-        // エンジントグルを先にチェック（より限定的な修飾キー）
+        // エンジン ON/OFF コンボキー — user_enabled のみ変更
         if !self.adapter.is_enabled()
             && self
                 .special_keys
@@ -461,9 +523,15 @@ impl Engine {
                 .iter()
                 .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            let (enabled, mut decision) = self.adapter.set_enabled(true);
-            log::info!("Engine ON (key combo)");
-            decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
+            let old_active = self.is_active();
+            let (_, mut decision) = self.adapter.set_enabled(true);
+            let new_active = self.is_active();
+            log::info!("Engine user_enabled ON (key combo, active={})", new_active);
+            if old_active != new_active {
+                decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
+                    enabled: new_active,
+                }));
+            }
             return Some(decision);
         }
         if self.adapter.is_enabled()
@@ -473,9 +541,15 @@ impl Engine {
                 .iter()
                 .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            let (enabled, mut decision) = self.adapter.set_enabled(false);
-            log::info!("Engine OFF (key combo)");
-            decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged { enabled }));
+            let old_active = self.is_active();
+            let (_, mut decision) = self.adapter.set_enabled(false);
+            let new_active = self.is_active();
+            log::info!("Engine user_enabled OFF (key combo, active={})", new_active);
+            if old_active != new_active {
+                decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
+                    enabled: new_active,
+                }));
+            }
             return Some(decision);
         }
 
