@@ -312,6 +312,39 @@ unsafe fn clear_sent_to_engine(vk: u16) {
     }
 }
 
+/// SENT_TO_ENGINE ビットセットを OS のキー状態と同期する。
+///
+/// `GetAsyncKeyState` で実際に押されていないのにビットが残っているキーをクリアする。
+/// 500ms ポーリングで呼び出すことで、KeyUp 取りこぼしによるゴミを回収する。
+///
+/// # Safety
+/// `GetAsyncKeyState` を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn sync_sent_to_engine() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+    let bits = SENT_TO_ENGINE.get_mut();
+    let mut cleared = 0u32;
+    for (idx, word) in bits.iter_mut().enumerate() {
+        if *word == 0 {
+            continue;
+        }
+        let mut remaining = *word;
+        while remaining != 0 {
+            let bit_pos = remaining.trailing_zeros() as usize;
+            let vk = (idx * 64 + bit_pos) as i32;
+            // OS でキーが離されている → ビットをクリア
+            if (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) == 0 {
+                *word &= !(1u64 << bit_pos);
+                cleared += 1;
+            }
+            remaining &= remaining - 1; // 最下位ビットを消す
+        }
+    }
+    if cleared > 0 {
+        log::debug!("sync_sent_to_engine: cleared {cleared} stale bit(s)");
+    }
+}
+
 /// コールバックの戻り値
 pub enum CallbackResult {
     /// 元キーを握りつぶす（LRESULT(1)）

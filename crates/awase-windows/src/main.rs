@@ -875,6 +875,8 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 match logical_id {
                     Some(id) if id == TIMER_IME_POLL => {
                         app.refresh_ime_state_cache();
+                        // SENT_TO_ENGINE ビットセットを OS キー状態と同期
+                        unsafe { hook::sync_sent_to_engine(); }
                     }
                     Some(id) if id == TIMER_HOOK_WATCHDOG => {
                         use std::sync::atomic::AtomicU64;
