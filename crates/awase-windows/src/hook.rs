@@ -358,6 +358,32 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 
+        // ── 修飾キー併用バイパス ──
+        // Ctrl/Alt/Win が押されている間のキーはショートカットなので、
+        // Engine を通さず OS にそのまま渡す。
+        // （修飾キー自体のバイパスは上で処理済み。ここでは「修飾+文字」を処理する）
+        //
+        // 例外: 親指キー（Convert/Nonconvert）は Engine のコンボキー
+        // （Ctrl+Convert = IME ON 等）として使うため、バイパスしない。
+        {
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+            let ctrl_held = (GetAsyncKeyState(0x11).cast_unsigned() & 0x8000) != 0;
+            let alt_held = (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0;
+            let win_held = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
+                || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
+            if ctrl_held || alt_held || win_held {
+                let left_thumb = LEFT_THUMB_VK.load(Ordering::Relaxed);
+                let right_thumb = RIGHT_THUMB_VK.load(Ordering::Relaxed);
+                let is_thumb_key = vk_raw == left_thumb || vk_raw == right_thumb;
+                if !is_thumb_key {
+                    log::trace!(
+                        "Hook: vk=0x{vk_raw:02X} with modifier held (ctrl={ctrl_held} alt={alt_held} win={win_held}) → PassThrough"
+                    );
+                    return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+                }
+            }
+        }
+
         // ── 再入ガード ──
         let in_callback = IN_CALLBACK.get_mut();
         if *in_callback {
