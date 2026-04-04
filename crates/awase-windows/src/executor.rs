@@ -183,8 +183,10 @@ impl DecisionExecutor {
                         log::warn!(
                             "set_ime_open({open}) failed — requesting IME refresh for resync"
                         );
-                        platform.post_ime_refresh();
                     }
+                    // 成功/失敗に関わらず常に refresh を要求する。
+                    // refresh → process_deferred_keys で guard 解除 + 状態確認 + 再処理。
+                    platform.post_ime_refresh();
                 }
                 ImeEffect::RequestRefresh => platform.post_ime_refresh(),
             },

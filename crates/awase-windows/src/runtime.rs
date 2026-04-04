@@ -208,11 +208,19 @@ impl Runtime {
         log::info!("Manual focus override: → {mode_str}");
     }
 
-    /// IME 制御キー後に遅延されたキーを再処理する。
+    /// IME 状態変更後に遅延されたキーを再処理する。
     ///
-    /// IME ガードが Platform 層でバッファしたキーを Engine に順次再投入する。
+    /// sync key / IME 制御キーで guard が起動された後、
+    /// IME 状態が確定してから呼ばれる。
+    /// guard 解除 → IME 状態 refresh → バッファキー再処理。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
+        // Guard を解除（sync key KeyUp or SetOpen 後の refresh で到達）
+        if self.platform_state.ime_guard.active {
+            self.platform_state.ime_guard.active = false;
+            log::debug!("IME guard OFF (process_deferred_keys)");
+        }
+
         // Refresh IME state (Observer → Preconditions)
         unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
 
