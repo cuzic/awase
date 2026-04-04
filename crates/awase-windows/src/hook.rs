@@ -242,14 +242,16 @@ unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, 
     }
 
     // Ctrl/Alt/Win が押されている間のキーはショートカット → Bypass
-    // 例外: 親指キーは Engine のコンボキー用
+    // 例外1: 親指キーは Engine のコンボキー用
+    // 例外2: IME 制御コンボ直後の Ctrl はコンボで消費済み（suppress_ctrl_bypass）
     {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
         let ctrl = (GetAsyncKeyState(0x11).cast_unsigned() & 0x8000) != 0;
         let alt = (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0;
         let win = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
             || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
-        if ctrl || alt || win {
+        let effective_ctrl = ctrl && !(hook.suppress_ctrl_bypass && !alt && !win);
+        if effective_ctrl || alt || win {
             if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
                 return KeyRoute::Bypass;
             }
@@ -432,6 +434,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             WM_KEYDOWN | WM_SYSKEYDOWN
         );
 
+        // ── 修飾キータイミング追跡（同時押し判定用）──
+        update_modifier_timing(&mut ps.modifier_timing, vk_raw, is_keydown);
+
+        // Ctrl KeyUp で suppress_ctrl_bypass を解除
+        if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.suppress_ctrl_bypass {
+            ps.hook.suppress_ctrl_bypass = false;
+        }
+
         // ── 一元的なルーティング判定 ──
         let route = classify_route(&ps.hook, &ps.hook_config, vk_raw, is_keydown);
 
@@ -508,7 +518,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
 
                 // Flush engine pending keys
-                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions);
+                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
                 app.platform_state.hook.in_callback = false;
                 let decision = app.engine.on_command(
                     awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
@@ -579,6 +589,29 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
 
     CallNextHookEx(hook_handle, ncode, wparam, lparam)
+}
+
+/// フックで受け取った修飾キーイベントから `ModifierTiming` を更新する。
+fn update_modifier_timing(timing: &mut crate::ModifierTiming, vk: u16, is_keydown: bool) {
+    match vk {
+        0x11 | 0xA2 | 0xA3 => {
+            if is_keydown {
+                timing.ctrl_down = true;
+            } else {
+                timing.ctrl_down = false;
+                timing.ctrl_up_tick = current_tick_ms();
+            }
+        }
+        0x12 | 0xA4 | 0xA5 => {
+            if is_keydown {
+                timing.alt_down = true;
+            } else {
+                timing.alt_down = false;
+                timing.alt_up_tick = current_tick_ms();
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）

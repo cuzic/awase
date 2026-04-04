@@ -75,6 +75,10 @@ pub struct HookRoutingState {
     pub track_only_keys: [u64; 4],
     /// 再入ガード
     pub in_callback: bool,
+    /// IME 制御コンボ直後の Ctrl バイパス抑制フラグ。
+    /// Ctrl+Henkan/Muhenkan 消費後、Ctrl がまだ押されている間の文字キーを
+    /// ショートカットとして Bypass しない。Ctrl KeyUp で解除。
+    pub suppress_ctrl_bypass: bool,
 }
 
 /// フック設定（親指キー VK コード）
@@ -89,6 +93,37 @@ pub struct HookConfig {
 pub struct ImeGuardState {
     pub active: bool,
     pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
+}
+
+/// 修飾キーのフック追跡状態（同時押し判定用）
+///
+/// `GetAsyncKeyState` はフックコールバック内でタイミングにより
+/// Ctrl の押下を検出できないことがある。フックが受け取った
+/// KeyDown/KeyUp イベントから独自に追跡することで、
+/// Ctrl+Henkan 等のコンボキーを確実に検出する。
+#[derive(Debug)]
+pub struct ModifierTiming {
+    pub ctrl_down: bool,
+    pub ctrl_up_tick: u64,
+    pub alt_down: bool,
+    pub alt_up_tick: u64,
+}
+
+impl ModifierTiming {
+    /// 猶予期間（ミリ秒）: KeyUp 後この期間内なら「まだ押されている」と判定
+    pub const GRACE_MS: u64 = 150;
+
+    pub fn new() -> Self {
+        Self { ctrl_down: false, ctrl_up_tick: 0, alt_down: false, alt_up_tick: 0 }
+    }
+
+    pub fn is_ctrl_active(&self, now_tick: u64) -> bool {
+        self.ctrl_down || now_tick.saturating_sub(self.ctrl_up_tick) < Self::GRACE_MS
+    }
+
+    pub fn is_alt_active(&self, now_tick: u64) -> bool {
+        self.alt_down || now_tick.saturating_sub(self.alt_up_tick) < Self::GRACE_MS
+    }
 }
 
 /// Platform 層の全状態を集約する構造体。
@@ -107,6 +142,7 @@ pub struct PlatformState {
     pub focus_debounce_ms: u32,
     pub ime_poll_interval_ms: u32,
     pub ime_guard: ImeGuardState,
+    pub modifier_timing: ModifierTiming,
 }
 
 impl PlatformState {
@@ -123,6 +159,7 @@ impl PlatformState {
                 sent_to_engine: [0u64; 4],
                 track_only_keys: [0u64; 4],
                 in_callback: false,
+                suppress_ctrl_bypass: false,
             },
             hook_config: HookConfig {
                 left_thumb_vk: 0x1D,  // VK_NONCONVERT
@@ -135,6 +172,7 @@ impl PlatformState {
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
             ime_guard: ImeGuardState { active: false, deferred_keys: Vec::new() },
+            modifier_timing: ModifierTiming::new(),
         }
     }
 }
