@@ -228,6 +228,7 @@ fn build_symbol_to_vk() -> HashMap<char, (u16, bool)> {
 }
 
 /// SendInput によるキー注入を行うモジュール
+#[allow(missing_debug_implementations)]
 pub struct Output {
     mode: OutputMode,
     /// Unicode モード用: ローマ字→ひらがな変換テーブル

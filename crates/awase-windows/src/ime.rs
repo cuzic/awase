@@ -58,6 +58,7 @@ const fn conversion_to_ime_mode(open: bool, conversion: u32) -> ImeMode {
 // ─── TSF (Text Services Framework) ───────────────────────────
 
 /// TSF ベースの IME 状態検知
+#[allow(missing_debug_implementations)]
 pub struct TsfProvider {
     thread_mgr: ITfThreadMgr,
     // TODO: ITfActiveLanguageProfileNotifySink で IME ON/OFF をリアルタイム検出する。
@@ -118,6 +119,7 @@ impl ImeProvider for TsfProvider {
 // ─── IMM32 (Input Method Manager) ────────────────────────────
 
 /// IMM32 ベースの IME 状態検知
+#[derive(Debug)]
 pub struct ImmProvider;
 
 impl ImmProvider {
@@ -404,6 +406,7 @@ unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
 // ─── 複合プロバイダ（TSF 優先、IMM32 フォールバック）────────
 
 /// TSF を優先し、失敗時に IMM32 にフォールバックするプロバイダ
+#[allow(missing_debug_implementations)]
 pub struct HybridProvider {
     tsf: Option<TsfProvider>,
     imm: ImmProvider,
@@ -584,6 +587,7 @@ unsafe fn detect_kana_direct() -> Option<bool> {
 // ─── 統合 IME 状態スナップショット ────────────────────────────
 
 /// OS から取得した IME 環境の完全なスナップショット
+#[derive(Debug)]
 pub struct ImeSnapshot {
     /// キーボードレイアウトが日本語か
     pub is_japanese_ime: bool,

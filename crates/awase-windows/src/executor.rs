@@ -21,6 +21,7 @@ use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
 
 /// `execute_from_hook` の戻り値。
+#[derive(Debug)]
 pub struct HookResult {
     /// OS に返す consume/passthrough 判定
     pub callback: CallbackResult,
@@ -28,6 +29,7 @@ pub struct HookResult {
     pub has_pending: bool,
 }
 
+#[allow(missing_debug_implementations)]
 pub struct DecisionExecutor {
     pub platform: WindowsPlatform,
     /// Effects キュー（FIFO 順序保証）

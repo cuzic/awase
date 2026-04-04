@@ -11,6 +11,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 
 /// Win32 タイマー管理。論理 ID ⇔ OS ID のマッピングを内部に隠蔽。
+#[derive(Debug)]
 pub struct Win32Timer {
     to_os: HashMap<usize, usize>,
     to_logical: HashMap<usize, usize>,

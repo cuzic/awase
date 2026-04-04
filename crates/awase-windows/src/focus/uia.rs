@@ -25,6 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 /// `HWND` は `*mut c_void` を含むため `Send` を実装していないが、
 /// ウィンドウハンドルの値自体はスレッド間で安全に受け渡せる。
 /// UIA ワーカースレッドへの HWND 送信専用。
+#[allow(missing_debug_implementations)]
 #[derive(Clone, Copy)]
 pub struct SendableHwnd(pub HWND);
 // Safety: HWND の値（ポインタ値）はスレッド間で安全に共有できる。
@@ -33,6 +34,7 @@ pub struct SendableHwnd(pub HWND);
 unsafe impl Send for SendableHwnd {}
 
 /// UIA 非同期判定の結果（FocusKind + AppKind）
+#[derive(Debug)]
 pub struct UiaClassifyResult {
     pub focus_kind: FocusKind,
     pub app_kind: Option<AppKind>,

@@ -39,6 +39,7 @@ const WM_TRAY_CALLBACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP;
 const WINDOW_CLASS_NAME: &str = "awase_tray_window";
 
 /// システムトレイアイコン管理
+#[allow(missing_debug_implementations)]
 pub struct SystemTray {
     hwnd: HWND,
     nid: NOTIFYICONDATAW,

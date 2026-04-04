@@ -13,6 +13,7 @@ use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
 /// Windows 固有のプラットフォーム実装
+#[allow(missing_debug_implementations)]
 pub struct WindowsPlatform {
     pub output: Output,
     pub tray: SystemTray,

@@ -10,6 +10,7 @@ use std::cell::UnsafeCell;
 ///
 /// `Sync` を実装しているのは、static 変数として使用するため。
 /// 実際のアクセスはメインスレッド（メッセージループ + フックコールバック）からのみ行われる。
+#[allow(missing_debug_implementations)]
 pub struct SingleThreadCell<T>(UnsafeCell<Option<T>>);
 // Safety: 実際のアクセスはメインスレッドからのみ行われる（上記ドキュメント参照）。
 unsafe impl<T> Sync for SingleThreadCell<T> {}

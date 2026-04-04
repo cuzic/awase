@@ -26,6 +26,7 @@ impl DetectionSource {
     }
 }
 
+#[derive(Debug)]
 struct FocusCacheEntry {
     kind: FocusKind,
     source: DetectionSource,
@@ -37,6 +38,7 @@ struct FocusCacheEntry {
 /// `(process_id, class_name)` をキーとして判定結果を保持する。
 /// 同じコントロールへの再フォーカス時に UIA 非同期判定を省略できる。
 /// ソース別の TTL と優先順位により、高優先エントリは低優先で上書きされない。
+#[derive(Debug)]
 pub struct FocusCache {
     entries: HashMap<(u32, String), FocusCacheEntry>,
 }

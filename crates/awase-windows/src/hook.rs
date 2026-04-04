@@ -337,6 +337,7 @@ pub unsafe fn sync_sent_to_engine(hook: &mut HookRoutingState) {
 }
 
 /// コールバックの戻り値
+#[derive(Debug)]
 pub enum CallbackResult {
     /// 元キーを握りつぶす（LRESULT(1)）
     Consumed,
@@ -348,6 +349,7 @@ pub enum CallbackResult {
 ///
 /// スコープを抜けると自動的に `UnhookWindowsHookEx` を呼び出し、
 /// コールバックもクリアする。
+#[derive(Debug)]
 pub struct HookGuard {
     _private: (), // 外部から直接構築させない
 }

@@ -65,6 +65,7 @@ use crate::ime::HybridProvider;
 // ── LayoutEntry（名前付きレイアウトエントリ）──
 
 /// レイアウト設定一式を保持する構造体
+#[derive(Debug)]
 #[allow(dead_code)] // left/right_thumb_vk はレイアウト切替時に使用予定
 pub struct LayoutEntry {
     pub name: String,
@@ -76,6 +77,7 @@ pub struct LayoutEntry {
 // ── FocusDetector（フォーカス検出状態）──
 
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
+#[allow(missing_debug_implementations)]
 pub struct FocusDetector {
     pub cache: crate::focus::cache::FocusCache,
     pub overrides: awase::config::FocusOverrides,
@@ -107,6 +109,7 @@ impl FocusDetector {
 /// OS イベントの受け取り → Observer → Engine → Executor のパイプラインを駆動する。
 ///
 /// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
+#[allow(missing_debug_implementations)]
 pub struct Runtime {
     pub engine: Engine,
     pub executor: DecisionExecutor,
