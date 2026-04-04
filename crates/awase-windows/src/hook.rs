@@ -1,14 +1,14 @@
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
-    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_KEYDOWN, WM_SYSKEYDOWN,
 };
 
 use crate::output::INJECTED_MARKER;
 use crate::scanmap::scan_to_pos;
+use crate::{HookConfig, HookRoutingState};
 use awase::scanmap::PhysicalPos;
 use awase::types::{
     ImeRelevance, KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode,
@@ -16,11 +16,11 @@ use awase::types::{
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
-fn classify_key(vk: VkCode, scan: ScanCode) -> (KeyClassification, Option<PhysicalPos>) {
+fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
     use crate::vk;
 
-    let left_thumb = VkCode(LEFT_THUMB_VK.load(Ordering::Relaxed));
-    let right_thumb = VkCode(RIGHT_THUMB_VK.load(Ordering::Relaxed));
+    let left_thumb = VkCode(config.left_thumb_vk);
+    let right_thumb = VkCode(config.right_thumb_vk);
 
     if vk == left_thumb {
         (KeyClassification::LeftThumb, None)
@@ -82,34 +82,10 @@ fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     }
 }
 
-/// 左親指キーの VK コード（config から設定）
-static LEFT_THUMB_VK: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0x1D); // VK_NONCONVERT
-
-/// 右親指キーの VK コード（config から設定）
-static RIGHT_THUMB_VK: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0x1C); // VK_CONVERT
-
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
-pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
-    LEFT_THUMB_VK.store(left.0, Ordering::Relaxed);
-    RIGHT_THUMB_VK.store(right.0, Ordering::Relaxed);
-}
-
-/// フックコールバックが最後に呼ばれた時刻（`GetTickCount64` ミリ秒）。
-/// 0 はまだ一度も呼ばれていないことを意味する。
-static LAST_HOOK_ACTIVITY: AtomicU64 = AtomicU64::new(0);
-
-/// フックコールバックの累積呼び出し回数。
-/// ウォッチドッグが前回チェック時の値と比較して、増えていなければフック消失。
-static HOOK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// フックイベントカウンタの現在値を返す
-pub fn hook_event_count() -> u64 {
-    HOOK_EVENT_COUNT.load(Ordering::Relaxed)
-}
-
-/// フックコールバックの最終活動時刻を返す（`GetTickCount64` ミリ秒、0 = 未活動）。
-pub fn last_hook_activity_ms() -> u64 {
-    LAST_HOOK_ACTIVITY.load(Ordering::Relaxed)
+pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) {
+    config.left_thumb_vk = left.0;
+    config.right_thumb_vk = right.0;
 }
 
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
@@ -121,8 +97,8 @@ pub fn current_tick_ms() -> u64 {
 ///
 /// `timeout_ms` 以内にフックコールバックが呼ばれていれば `true`。
 /// まだ一度も呼ばれていない場合も `true`（起動直後はキー入力がない）。
-pub fn is_hook_responsive(timeout_ms: u64) -> bool {
-    let last = LAST_HOOK_ACTIVITY.load(Ordering::Relaxed);
+pub fn is_hook_responsive(ps: &crate::PlatformState, timeout_ms: u64) -> bool {
+    let last = ps.last_hook_activity_ms;
     if last == 0 {
         return true; // 起動直後: まだキー入力がない
     }
@@ -133,7 +109,7 @@ pub fn is_hook_responsive(timeout_ms: u64) -> bool {
 /// フックの生存確認用 ping を送信する。
 ///
 /// `INJECTED_MARKER` 付きの VK_NONAME (0xFC) KeyDown+KeyUp を SendInput で送信する。
-/// フックが生きていればコールバックが呼ばれ、`LAST_HOOK_ACTIVITY` が更新される。
+/// フックが生きていればコールバックが呼ばれ、`last_hook_activity_ms` が更新される。
 /// フックが死んでいれば何も起きない。
 ///
 /// # Safety
@@ -194,7 +170,10 @@ pub fn reinstall_hook() -> bool {
         match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) {
             Ok(new_handle) => {
                 HOOK_HANDLE.set(new_handle);
-                LAST_HOOK_ACTIVITY.store(current_tick_ms(), Ordering::Relaxed);
+                // Update last_hook_activity_ms via APP
+                if let Some(app) = crate::APP.get_mut() {
+                    app.platform_state.last_hook_activity_ms = current_tick_ms();
+                }
                 log::info!("Keyboard hook reinstalled successfully");
                 true
             }
@@ -225,23 +204,12 @@ impl<T> SingleThreadCell<T> {
     }
 }
 
-/// グローバルなフックハンドル
+/// グローバルなフックハンドル（構造的に必要: OS コールバックから参照）
 static HOOK_HANDLE: SingleThreadCell<HHOOK> = SingleThreadCell::new(HHOOK(std::ptr::null_mut()));
 
-/// フックコールバックで使うコールバック関数
+/// フックコールバックで使うコールバック関数（構造的に必要: OS コールバックから参照）
 static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) -> CallbackResult>>> =
     SingleThreadCell::new(None);
-
-/// 再入ガード
-static IN_CALLBACK: SingleThreadCell<bool> = SingleThreadCell::new(false);
-
-/// Engine に送った KeyDown を記録するビットセット（VK コードは 0-255）。
-/// KeyUp は KeyDown の判定に自動追随し、KeyDown/KeyUp ペアを構造的に保証する。
-static SENT_TO_ENGINE: SingleThreadCell<[u64; 4]> = SingleThreadCell::new([0u64; 4]);
-
-/// TrackOnly で送った KeyDown を記録するビットセット。
-/// KeyUp 時に TrackOnly か Engine かを区別するために使用する。
-static TRACK_ONLY_KEYS: SingleThreadCell<[u64; 4]> = SingleThreadCell::new([0u64; 4]);
 
 /// キーの処理先を決定する。
 ///
@@ -250,20 +218,18 @@ static TRACK_ONLY_KEYS: SingleThreadCell<[u64; 4]> = SingleThreadCell::new([0u64
 ///
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
-unsafe fn classify_route(vk: u16, is_keydown: bool) -> KeyRoute {
+unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, is_keydown: bool) -> KeyRoute {
     // KeyUp は KeyDown の判定に従う（ペア保証）
     if !is_keydown {
-        let sent = SENT_TO_ENGINE.get_mut();
-        let track = TRACK_ONLY_KEYS.get_mut();
         let idx = (vk as usize) / 64;
         let bit = 1u64 << ((vk as usize) % 64);
         if idx >= 4 {
             return KeyRoute::Bypass;
         }
-        if (track[idx] & bit) != 0 {
+        if (hook.track_only_keys[idx] & bit) != 0 {
             return KeyRoute::TrackOnly;
         }
-        if (sent[idx] & bit) != 0 {
+        if (hook.sent_to_engine[idx] & bit) != 0 {
             return KeyRoute::Engine;
         }
         return KeyRoute::Bypass;
@@ -284,9 +250,7 @@ unsafe fn classify_route(vk: u16, is_keydown: bool) -> KeyRoute {
         let win = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
             || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
         if ctrl || alt || win {
-            let left_thumb = LEFT_THUMB_VK.load(Ordering::Relaxed);
-            let right_thumb = RIGHT_THUMB_VK.load(Ordering::Relaxed);
-            if vk != left_thumb && vk != right_thumb {
+            if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
                 return KeyRoute::Bypass;
             }
         }
@@ -308,31 +272,31 @@ enum KeyRoute {
 }
 
 /// SENT_TO_ENGINE ビットセットに Engine ルートで記録する
-unsafe fn mark_sent_to_engine(vk: u16) {
+fn mark_sent_to_engine(hook: &mut HookRoutingState, vk: u16) {
     let idx = (vk as usize) / 64;
     let bit = 1u64 << ((vk as usize) % 64);
     if idx < 4 {
-        SENT_TO_ENGINE.get_mut()[idx] |= bit;
+        hook.sent_to_engine[idx] |= bit;
     }
 }
 
 /// SENT_TO_ENGINE / TRACK_ONLY_KEYS ビットセットに TrackOnly ルートで記録する
-unsafe fn mark_sent_as_track_only(vk: u16) {
+fn mark_sent_as_track_only(hook: &mut HookRoutingState, vk: u16) {
     let idx = (vk as usize) / 64;
     let bit = 1u64 << ((vk as usize) % 64);
     if idx < 4 {
-        SENT_TO_ENGINE.get_mut()[idx] |= bit;
-        TRACK_ONLY_KEYS.get_mut()[idx] |= bit;
+        hook.sent_to_engine[idx] |= bit;
+        hook.track_only_keys[idx] |= bit;
     }
 }
 
 /// SENT_TO_ENGINE / TRACK_ONLY_KEYS からキーを削除する
-unsafe fn clear_sent_to_engine(vk: u16) {
+fn clear_sent_to_engine(hook: &mut HookRoutingState, vk: u16) {
     let idx = (vk as usize) / 64;
     let bit = 1u64 << ((vk as usize) % 64);
     if idx < 4 {
-        SENT_TO_ENGINE.get_mut()[idx] &= !bit;
-        TRACK_ONLY_KEYS.get_mut()[idx] &= !bit;
+        hook.sent_to_engine[idx] &= !bit;
+        hook.track_only_keys[idx] &= !bit;
     }
 }
 
@@ -343,25 +307,23 @@ unsafe fn clear_sent_to_engine(vk: u16) {
 ///
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn sync_sent_to_engine() {
+pub unsafe fn sync_sent_to_engine(hook: &mut HookRoutingState) {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-    let sent = SENT_TO_ENGINE.get_mut();
-    let track = TRACK_ONLY_KEYS.get_mut();
     let mut cleared = 0u32;
     for idx in 0..4 {
-        if sent[idx] == 0 {
+        if hook.sent_to_engine[idx] == 0 {
             continue;
         }
-        let mut remaining = sent[idx];
+        let mut remaining = hook.sent_to_engine[idx];
         while remaining != 0 {
             let bit_pos = remaining.trailing_zeros() as usize;
             let vk = (idx * 64 + bit_pos) as i32;
             let bit = 1u64 << bit_pos;
             // OS でキーが離されている → ビットをクリア
             if (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) == 0 {
-                sent[idx] &= !bit;
-                track[idx] &= !bit;
+                hook.sent_to_engine[idx] &= !bit;
+                hook.track_only_keys[idx] &= !bit;
                 cleared += 1;
             }
             remaining &= remaining - 1;
@@ -423,24 +385,36 @@ pub fn install_hook(
 /// WH_KEYBOARD_LL フックコールバック
 ///
 /// キーイベントの処理先を `classify_route` で一元的に判定し、
-/// `SENT_TO_ENGINE` ビットセットで KeyDown/KeyUp ペアを構造的に保証する。
+/// `HookRoutingState` のビットセットで KeyDown/KeyUp ペアを構造的に保証する。
+/// 状態は `APP.platform_state` から読み書きする。
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hook_handle = *HOOK_HANDLE.get_mut();
 
     if ncode >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
 
-        // ── ハートビート更新（ウォッチドッグ用）──
-        LAST_HOOK_ACTIVITY.store(current_tick_ms(), Ordering::Relaxed);
-        HOOK_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
-
         // ── 自己注入チェック（無限ループ防止）──
         if kb.dwExtraInfo == INJECTED_MARKER {
+            // ハートビートは自己注入でも更新する（ping 応答のため）
+            if let Some(app) = crate::APP.get_mut() {
+                app.platform_state.last_hook_activity_ms = current_tick_ms();
+                app.platform_state.hook_event_count += 1;
+            }
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 
+        // ── APP からプラットフォーム状態を取得 ──
+        let Some(app) = crate::APP.get_mut() else {
+            return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+        };
+        let ps = &mut app.platform_state;
+
+        // ── ハートビート更新（ウォッチドッグ用）──
+        ps.last_hook_activity_ms = current_tick_ms();
+        ps.hook_event_count += 1;
+
         // ── かな入力方式バイパス ──
-        if crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed) {
+        if !ps.preconditions.is_romaji {
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 
@@ -451,7 +425,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         );
 
         // ── 一元的なルーティング判定 ──
-        let route = classify_route(vk_raw, is_keydown);
+        let route = classify_route(&ps.hook, &ps.hook_config, vk_raw, is_keydown);
 
         match route {
             KeyRoute::Bypass => {
@@ -465,22 +439,21 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 // KeyDown/KeyUp ペア追跡を更新
                 if is_keydown {
                     match route {
-                        KeyRoute::Engine => mark_sent_to_engine(vk_raw),
-                        KeyRoute::TrackOnly => mark_sent_as_track_only(vk_raw),
+                        KeyRoute::Engine => mark_sent_to_engine(&mut ps.hook, vk_raw),
+                        KeyRoute::TrackOnly => mark_sent_as_track_only(&mut ps.hook, vk_raw),
                         KeyRoute::Bypass => unreachable!(),
                     }
                 } else {
-                    clear_sent_to_engine(vk_raw);
+                    clear_sent_to_engine(&mut ps.hook, vk_raw);
                 }
             }
         }
 
         // ── 再入ガード ──
-        let in_callback = IN_CALLBACK.get_mut();
-        if *in_callback {
+        if ps.hook.in_callback {
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
-        *in_callback = true;
+        ps.hook.in_callback = true;
 
         let event_type = if is_keydown {
             KeyEventType::KeyDown
@@ -490,7 +463,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
         let vk = VkCode(vk_raw);
         let scan = ScanCode(kb.scanCode);
-        let (key_classification, physical_pos) = classify_key(vk, scan);
+        let (key_classification, physical_pos) = classify_key(vk, scan, &ps.hook_config);
         let event = RawKeyEvent {
             vk_code: vk,
             scan_code: scan,
@@ -517,7 +490,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             .as_mut()
             .map_or(CallbackResult::PassThrough, |callback| callback(event));
 
-        *IN_CALLBACK.get_mut() = false;
+        // Re-acquire platform_state for in_callback reset
+        // (callback may have accessed APP.get_mut() internally)
+        if let Some(app) = crate::APP.get_mut() {
+            app.platform_state.hook.in_callback = false;
+        }
 
         // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）
         if matches!(route, KeyRoute::TrackOnly) {

@@ -1,6 +1,4 @@
-//! IME 状態の観測 — Win32 API を呼び出してアトミック変数を直接更新する。
-
-use std::sync::atomic::Ordering;
+//! IME 状態の観測 — Win32 API を呼び出して Preconditions を直接更新する。
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
@@ -8,13 +6,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
 };
 
-/// Win32 API を使って IME 状態を観測し、アトミック変数を直接更新する。
-///
-/// 副作用: `PRECOND_IME_ON`, `PRECOND_IS_JAPANESE`, `IME_IS_KANA_INPUT` を更新する。
+use crate::Preconditions;
+
+/// Win32 API を使って IME 状態を観測し、`Preconditions` を直接更新する。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn observe() {
+pub unsafe fn observe(preconditions: &mut Preconditions) {
     // Step 1: 対象スレッドの HKL を取得（日本語チェック）
     let lang_id = {
         let mut gui_info = GUITHREADINFO {
@@ -38,33 +36,33 @@ pub unsafe fn observe() {
     };
     let is_japanese = lang_id == crate::vk::LANGID_JAPANESE;
 
-    // PRECOND_IS_JAPANESE を更新
-    crate::PRECOND_IS_JAPANESE.store(is_japanese, Ordering::Relaxed);
+    // is_japanese_ime を更新
+    preconditions.is_japanese_ime = is_japanese;
 
     // Step 2: クロスプロセス IME 検出
     let cross_process = crate::ime::detect_ime_open_cross_process();
 
-    // PRECOND_IME_ON を更新（クロスプロセス検出が信頼できる場合）
+    // ime_on を更新（クロスプロセス検出が信頼できる場合）
     // None の場合は shadow 値を維持する（更新しない）
     if let Some(ime_on) = cross_process {
         // 日本語以外は常に OFF
         let effective = ime_on && is_japanese;
-        crate::PRECOND_IME_ON.store(effective, Ordering::Release);
+        preconditions.ime_on = effective;
     } else if !is_japanese {
         // 日本語 IME でなければ常に OFF
-        crate::PRECOND_IME_ON.store(false, Ordering::Release);
+        preconditions.ime_on = false;
     }
 
-    // Step 3: かな入力方式の検出 → グローバルフラグ更新
+    // Step 3: かな入力方式の検出 → is_romaji 更新
     if let Some(is_kana) = crate::ime::detect_kana_input_method() {
-        let prev = crate::IME_IS_KANA_INPUT.swap(is_kana, Ordering::Relaxed);
-        if prev != is_kana {
+        let prev_romaji = preconditions.is_romaji;
+        preconditions.is_romaji = !is_kana;
+        if prev_romaji != preconditions.is_romaji {
             log::info!(
                 "IME input method changed: {} → {}",
-                if prev { "kana" } else { "romaji" },
+                if !prev_romaji { "kana" } else { "romaji" },
                 if is_kana { "kana" } else { "romaji" },
             );
         }
     }
-
 }

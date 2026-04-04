@@ -21,13 +21,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetGUIThreadInfo, GetMessageW, KillTimer, PostQuitMessage,
-    RegisterWindowMessageW, SetTimer, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
+    DispatchMessageW, GetGUIThreadInfo, GetMessageW, PostQuitMessage,
+    RegisterWindowMessageW, GUITHREADINFO, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
     WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
 };
 
 use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};
-use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::{Engine, NicolaFsm};
 use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
@@ -48,7 +48,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, Runtime, APP, ELEVATED, FOCUS_DEBOUNCE_MS, FOCUS_KIND, IME_POLL_INTERVAL_MS,
+    LayoutEntry, Runtime, APP, ELEVATED,
     MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
     TIMER_HOOK_WATCHDOG, TIMER_IME_POLL, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
@@ -164,7 +164,7 @@ fn main() -> Result<()> {
     for w in &config_warnings {
         diag.warn(w);
     }
-    let (fsm, layouts, layout_names, initial_layout_name) =
+    let (fsm, layouts, layout_names, initial_layout_name, left_thumb_vk, right_thumb_vk) =
         init_engine_validated(&config, &mut diag)?;
     let engine_on_keys = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
     let engine_off_keys = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
@@ -202,8 +202,9 @@ fn main() -> Result<()> {
         sync_toggle_keys,
         sync_on_keys,
         sync_off_keys,
+        left_thumb_vk,
+        right_thumb_vk,
     );
-    store_timing_config(&config);
 
     init_ngram_validated(&config, &mut diag);
     let (hook_guard, _toggle_hotkey_guard, _focus_override_hotkey_guard) =
@@ -225,7 +226,7 @@ fn main() -> Result<()> {
             app.executor.platform.timer.set(
                 TIMER_IME_POLL,
                 std::time::Duration::from_millis(u64::from(
-                    IME_POLL_INTERVAL_MS.load(Ordering::Relaxed),
+                    app.platform_state.ime_poll_interval_ms,
                 )),
             );
             app.executor
@@ -352,6 +353,8 @@ fn init_engine_validated(
     Vec<LayoutEntry>,
     Vec<String>,
     String,
+    VkCode,
+    VkCode,
 )> {
     let left_thumb_vk = vk_name_to_code(&config.general.left_thumb_key).context(format!(
         "Unknown VK name: {}",
@@ -375,8 +378,6 @@ fn init_engine_validated(
         layout.right_thumb.len()
     );
 
-    // Set thumb VK codes for hook classification
-    hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
     let engine = NicolaFsm::new(
         layout,
         left_thumb_vk,
@@ -386,7 +387,7 @@ fn init_engine_validated(
         config.general.speculative_delay_ms,
     );
 
-    Ok((engine, layouts, layout_names, initial_layout_name))
+    Ok((engine, layouts, layout_names, initial_layout_name, left_thumb_vk, right_thumb_vk))
 }
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
@@ -526,7 +527,7 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
             unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.engine
-                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &crate::runtime::build_input_context());
+                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &runtime::build_input_context(&app.platform_state.preconditions));
                 }
             }
         }
@@ -653,8 +654,7 @@ fn register_session_notification() -> Option<WtsGuard> {
     }
 }
 
-/// タイミング設定を Atomic に書き込み（コールバックから参照）
-/// APP グローバルの初期化
+/// APP グローバルの初期化（PlatformState を含む）
 fn initialize_app(
     engine: Engine,
     tray: SystemTray,
@@ -664,7 +664,14 @@ fn initialize_app(
     sync_toggle_keys: Vec<VkCode>,
     sync_on_keys: Vec<VkCode>,
     sync_off_keys: Vec<VkCode>,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
 ) {
+    let mut ps = awase_windows::PlatformState::new();
+    ps.focus_debounce_ms = config.general.focus_debounce_ms;
+    ps.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+    hook::set_thumb_vk_codes(&mut ps.hook_config, left_thumb_vk, right_thumb_vk);
+
     unsafe {
         APP.set(Runtime {
             engine,
@@ -682,14 +689,10 @@ fn initialize_app(
             sync_toggle_keys,
             sync_on_keys,
             sync_off_keys,
+            platform_state: ps,
         });
         RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     }
-}
-
-fn store_timing_config(config: &ValidatedConfig) {
-    FOCUS_DEBOUNCE_MS.store(config.general.focus_debounce_ms, Ordering::Relaxed);
-    IME_POLL_INTERVAL_MS.store(config.general.ime_poll_interval_ms, Ordering::Relaxed);
 }
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
@@ -787,20 +790,20 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     let mut event = event;
     app.enrich_ime_relevance(&mut event);
 
-    // ── Shadow IME toggle: フックコールバックで即座に PRECOND_IME_ON を更新 ──
+    // ── Shadow IME toggle: フックコールバックで即座に preconditions.ime_on を更新 ──
     // IME トグルキーのキーダウン時に shadow 値を反映する。
     // Observer のポーリングで実際の OS 状態に収束するが、
     // ポーリング間隔中は shadow 値で Engine が正しく動作する。
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
         if let Some(action) = event.ime_relevance.shadow_action.or(event.ime_relevance.sync_direction) {
-            let current = awase_windows::PRECOND_IME_ON.load(Ordering::Acquire);
+            let current = app.platform_state.preconditions.ime_on;
             let new_val = match action {
                 awase::types::ShadowImeAction::Toggle => !current,
                 awase::types::ShadowImeAction::TurnOn => true,
                 awase::types::ShadowImeAction::TurnOff => false,
             };
             if new_val != current {
-                awase_windows::PRECOND_IME_ON.store(new_val, Ordering::Release);
+                app.platform_state.preconditions.ime_on = new_val;
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X})",
                     if current { "ON" } else { "OFF" },
@@ -829,7 +832,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    let ctx = crate::runtime::build_input_context();
+    let ctx = runtime::build_input_context(&app.platform_state.preconditions);
 
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
     let decision = app.engine.on_input(event, &ctx);
@@ -868,7 +871,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     Some(id) if id == TIMER_IME_POLL => {
                         app.refresh_ime_state_cache();
                         // SENT_TO_ENGINE ビットセットを OS キー状態と同期
-                        unsafe { hook::sync_sent_to_engine(); }
+                        hook::sync_sent_to_engine(&mut app.platform_state.hook);
                     }
                     Some(id) if id == TIMER_HOOK_WATCHDOG => {
                         use std::sync::atomic::AtomicU64;
@@ -876,7 +879,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         // Phase 1: 前回の ping 後にフックが応答したか確認
                         static PING_SENT_AT: AtomicU64 = AtomicU64::new(0);
                         let ping_sent = PING_SENT_AT.load(Ordering::Relaxed);
-                        let last_activity = hook::last_hook_activity_ms();
+                        let last_activity = app.platform_state.last_hook_activity_ms;
 
                         if ping_sent > 0 && last_activity < ping_sent {
                             // ping を送ったのにフックが応答していない → フック消失
@@ -908,7 +911,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     Some(timer_id) => {
                         // Engine タイマー (TIMER_PENDING, TIMER_SPECULATIVE)
                         log::debug!("WM_TIMER fired: logical_id={timer_id}");
-                        let ctx = crate::runtime::build_input_context();
+                        let ctx = runtime::build_input_context(&app.platform_state.preconditions);
                         let decision = app.engine.on_timeout(timer_id, &ctx);
                         app.execute_decision(decision);
                     }
@@ -943,8 +946,8 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     if let Some(app) = APP.get_mut() {
                         app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                         app.refresh_ime_state_cache();
+                        app.platform_state.focus_kind = FocusKind::Undetermined;
                     }
-                    FocusKind::Undetermined.store(&FOCUS_KIND);
                 }
             },
             WM_WTSSESSION_CHANGE => unsafe {
@@ -963,8 +966,8 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         if let Some(app) = APP.get_mut() {
                             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
                             app.refresh_ime_state_cache();
+                            app.platform_state.focus_kind = FocusKind::Undetermined;
                         }
-                        FocusKind::Undetermined.store(&FOCUS_KIND);
                     }
                     _ => {}
                 }
@@ -1004,35 +1007,31 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 if GetGUIThreadInfo(0, &raw mut info).is_ok() && info.hwndFocus != result_hwnd {
                     log::debug!("UIA result for stale hwnd, ignoring");
                     // フォーカスが変わっているので適用しない
-                } else {
+                } else if let Some(app) = APP.get_mut() {
                     // AppKind を更新（UIA 結果が有効な場合のみ）
                     if app_kind_u8 != 0xFF {
                         let app_kind = awase::types::AppKind::from_u8(app_kind_u8);
-                        app_kind.store(&awase_windows::APP_KIND);
+                        app.platform_state.app_kind = app_kind;
                         log::debug!("UIA AppKind update: {app_kind:?}");
                     }
 
-                    // FOCUS_KIND を更新（Undetermined の場合はスキップ）
+                    // focus_kind を更新（Undetermined の場合はスキップ）
                     if kind != FocusKind::Undetermined {
-                        FocusKind::store(kind, &FOCUS_KIND);
+                        app.platform_state.focus_kind = kind;
 
                         // UIA 結果をキャッシュに反映
-                        if let Some(app) = APP.get_mut() {
-                            if let Some((pid, cls)) =
-                                app.executor.platform.focus.last_focus_info.as_ref()
-                            {
-                                app.executor.platform.focus.cache.insert(
-                                    *pid,
-                                    cls.clone(),
-                                    kind,
-                                    DetectionSource::UiaAsync,
-                                );
-                            }
+                        if let Some((pid, cls)) =
+                            app.executor.platform.focus.last_focus_info.as_ref()
+                        {
+                            app.executor.platform.focus.cache.insert(
+                                *pid,
+                                cls.clone(),
+                                kind,
+                                DetectionSource::UiaAsync,
+                            );
                         }
                         if kind == FocusKind::NonText {
-                            if let Some(app) = APP.get_mut() {
-                                app.invalidate_engine_context(ContextChange::FocusChanged);
-                            }
+                            app.invalidate_engine_context(ContextChange::FocusChanged);
                         }
                     }
                 }
@@ -1146,7 +1145,7 @@ fn reload_config() {
                     threshold_ms: config.general.simultaneous_threshold_ms,
                     confirm_mode: config.general.confirm_mode,
                     speculative_delay_ms: config.general.speculative_delay_ms,
-                }, &crate::runtime::build_input_context());
+                }, &runtime::build_input_context(&app.platform_state.preconditions));
             app.executor
                 .platform
                 .output
@@ -1190,7 +1189,7 @@ fn reload_config() {
                             ime_on,
                             ime_off,
                         },
-                    }, &crate::runtime::build_input_context());
+                    }, &runtime::build_input_context(&app.platform_state.preconditions));
             }
         }
         key_diag.report();
@@ -1375,12 +1374,13 @@ unsafe extern "system" fn win_event_proc(
         process_id,
         &class_name,
         &app.executor.platform.focus,
+        &mut app.platform_state,
     );
 
     // Engine: 判断 → Decision
     let decision = app
         .engine
-        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &crate::runtime::build_input_context());
+        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &runtime::build_input_context(&app.platform_state.preconditions));
 
     // Runtime: 副作用実行
     app.execute_decision(decision);

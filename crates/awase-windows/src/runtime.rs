@@ -1,20 +1,18 @@
-use std::sync::atomic::Ordering;
-
 use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
-/// 現在のアトミック変数から InputContext を構築する。
+use crate::Preconditions;
+
+/// `Preconditions` から `InputContext` を構築する。
 ///
-/// PRECOND_IME_ON / PRECOND_IS_JAPANESE / IME_IS_KANA_INPUT の 3 つの
-/// アトミック変数から InputContext を組み立てる。
 /// フックコールバックで shadow toggle が即座に反映され、
 /// Observer のポーリングで実際の OS 状態に収束する。
-pub fn build_input_context() -> InputContext {
+pub fn build_input_context(preconditions: &Preconditions) -> InputContext {
     InputContext {
-        ime_on: crate::PRECOND_IME_ON.load(Ordering::Acquire),
-        is_romaji: !crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed),
-        is_japanese_ime: crate::PRECOND_IS_JAPANESE.load(Ordering::Relaxed),
+        ime_on: preconditions.ime_on,
+        is_romaji: preconditions.is_romaji,
+        is_japanese_ime: preconditions.is_japanese_ime,
         modifiers: awase::engine::ModifierState::default(),
         left_thumb_down: None,
         right_thumb_down: None,
@@ -26,7 +24,6 @@ use crate::executor::DecisionExecutor;
 use crate::focus::cache::DetectionSource;
 use crate::hook::CallbackResult;
 use crate::ime::HybridProvider;
-use crate::FOCUS_KIND;
 
 // ── LayoutEntry（名前付きレイアウトエントリ）──
 
@@ -83,6 +80,8 @@ pub struct Runtime {
     pub sync_toggle_keys: Vec<VkCode>,
     pub sync_on_keys: Vec<VkCode>,
     pub sync_off_keys: Vec<VkCode>,
+    /// Platform 層の全状態
+    pub platform_state: crate::PlatformState,
 }
 
 impl Runtime {
@@ -113,14 +112,14 @@ impl Runtime {
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
-        let ctx = build_input_context();
+        let ctx = build_input_context(&self.platform_state.preconditions);
         let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
         self.executor.execute_from_loop(decision);
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
     pub fn invalidate_engine_context(&mut self, reason: ContextChange) {
-        let ctx = build_input_context();
+        let ctx = build_input_context(&self.platform_state.preconditions);
         let decision = self
             .engine
             .on_command(EngineCommand::InvalidateContext(reason), &ctx);
@@ -132,11 +131,11 @@ impl Runtime {
     /// Observer → Engine → Runtime の 3 層パイプラインで処理する。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn refresh_ime_state_cache(&mut self) {
-        // Observer: OS 観測 → アトミック変数を直接更新
-        unsafe { crate::observer::ime_observer::observe() };
+        // Observer: OS 観測 → Preconditions を直接更新
+        unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
 
         // Engine: 判断 → Decision（アトミック変数は更新済み）
-        let ctx = build_input_context();
+        let ctx = build_input_context(&self.platform_state.preconditions);
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
 
         // Runtime: 副作用実行
@@ -153,7 +152,7 @@ impl Runtime {
         let name = entry.name.clone();
         let decision = self
             .engine
-            .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &build_input_context());
+            .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &build_input_context(&self.platform_state.preconditions));
         self.executor.execute_from_loop(decision);
 
         self.executor.platform.tray.set_layout_name(&name);
@@ -163,14 +162,14 @@ impl Runtime {
 
     /// 手動フォーカスオーバーライドのトグル処理
     pub fn toggle_focus_override(&mut self) {
-        let current = FocusKind::load(&FOCUS_KIND);
+        let current = self.platform_state.focus_kind;
         let new_kind = if current == FocusKind::TextInput {
             FocusKind::NonText
         } else {
             FocusKind::TextInput
         };
 
-        new_kind.store(&FOCUS_KIND);
+        self.platform_state.focus_kind = new_kind;
 
         // Update learning cache
         if let Some((pid, cls)) = self.executor.platform.focus.last_focus_info.as_ref() {
@@ -235,9 +234,9 @@ impl Runtime {
         crate::hook::reinstall_hook();
 
         // 5. IME キャッシュをリセット
-        crate::IME_IS_KANA_INPUT.store(false, Ordering::Relaxed);
-        crate::PRECOND_IME_ON.store(true, Ordering::Release); // 安全側: ON
-        crate::PRECOND_IS_JAPANESE.store(true, Ordering::Relaxed);
+        self.platform_state.preconditions.is_romaji = true;
+        self.platform_state.preconditions.ime_on = true; // 安全側: ON
+        self.platform_state.preconditions.is_japanese_ime = true;
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();

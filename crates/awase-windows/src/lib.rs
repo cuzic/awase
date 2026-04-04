@@ -34,35 +34,13 @@ pub mod win32;
 pub use runtime::{LayoutEntry, Runtime};
 pub use single_thread_cell::SingleThreadCell;
 
-use std::sync::atomic::{AtomicBool, AtomicU8};
+use std::sync::atomic::AtomicBool;
 
-use awase::types::RawKeyEvent;
+use awase::types::{AppKind, FocusKind, RawKeyEvent};
 
 // ── クロススレッド共有グローバル状態 ──
 //
-// フック（メインスレッド）とメッセージループ間、または Ctrl+C ハンドラ（別スレッド）
-// からアクセスされるため、Atomic 型でなければならない。
-
-/// フォーカス中コントロールの種別キャッシュ（Undetermined=2 で初期化）
-pub static FOCUS_KIND: AtomicU8 = AtomicU8::new(2); // FocusKind::Undetermined
-
-/// フォーカス中アプリの UI フレームワーク種別（Win32=0 で初期化）
-pub static APP_KIND: AtomicU8 = AtomicU8::new(0); // AppKind::Win32
-
-/// IME がかな入力方式かどうか（false=ローマ字入力, true=かな入力）
-/// かな入力方式の場合、フックはすべてのキーをパススルーする。
-pub static IME_IS_KANA_INPUT: AtomicBool = AtomicBool::new(false);
-
-/// Platform 層の事前条件: IME が ON か（shadow 追跡含む）
-///
-/// フックコールバックで shadow toggle を即座に反映し、
-/// Observer のポーリングで実際の OS 状態に収束する。
-pub static PRECOND_IME_ON: AtomicBool = AtomicBool::new(true); // 安全側: ON で初期化
-
-/// Platform 層の事前条件: 日本語 IME がアクティブか
-///
-/// Observer のポーリングおよびフォーカス変更時に更新される。
-pub static PRECOND_IS_JAPANESE: AtomicBool = AtomicBool::new(true); // デフォルトは日本語
+// Ctrl+C ハンドラ（別スレッド）からアクセスされるため、Atomic 型でなければならない。
 
 /// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
 pub static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -73,12 +51,87 @@ pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
 pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 
-/// フォーカス遷移デバウンス時間（ミリ秒、config から初期化）
-pub static FOCUS_DEBOUNCE_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(50);
+// ── PlatformState: シングルスレッド上の全状態を集約 ──
 
-/// IME 状態ポーリング間隔（ミリ秒、config から初期化）
-pub static IME_POLL_INTERVAL_MS: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(500);
+/// 環境前提条件（IME 状態・入力方式・日本語判定）
+#[derive(Debug)]
+pub struct Preconditions {
+    /// IME が ON か（shadow 追跡含む、Observer ポーリングで実際の OS 状態に収束）
+    pub ime_on: bool,
+    /// ローマ字入力方式か（false = かな入力、フックはすべてのキーをパススルー）
+    pub is_romaji: bool,
+    /// 日本語 IME がアクティブか
+    pub is_japanese_ime: bool,
+}
+
+/// フックルーティング状態（キーペア追跡・再入ガード）
+#[derive(Debug)]
+pub struct HookRoutingState {
+    /// Engine に送った KeyDown を記録するビットセット（VK 0-255）
+    pub sent_to_engine: [u64; 4],
+    /// TrackOnly で送った KeyDown を記録するビットセット
+    pub track_only_keys: [u64; 4],
+    /// 再入ガード
+    pub in_callback: bool,
+}
+
+/// フック設定（親指キー VK コード）
+#[derive(Debug)]
+pub struct HookConfig {
+    pub left_thumb_vk: u16,
+    pub right_thumb_vk: u16,
+}
+
+/// Platform 層の全状態を集約する構造体。
+///
+/// シングルスレッド（メインスレッド＋フックコールバック）からのみアクセスされる。
+/// `APP: SingleThreadCell<Runtime>` 経由で保持される。
+#[derive(Debug)]
+pub struct PlatformState {
+    pub preconditions: Preconditions,
+    pub hook: HookRoutingState,
+    pub hook_config: HookConfig,
+    pub focus_kind: FocusKind,
+    pub app_kind: AppKind,
+    pub last_hook_activity_ms: u64,
+    pub hook_event_count: u64,
+    pub focus_debounce_ms: u32,
+    pub ime_poll_interval_ms: u32,
+}
+
+impl PlatformState {
+    /// デフォルト値で初期化する
+    pub fn new() -> Self {
+        Self {
+            preconditions: Preconditions {
+                ime_on: true,        // 安全側: ON で初期化
+                is_romaji: true,     // デフォルト: ローマ字入力
+                is_japanese_ime: true, // デフォルト: 日本語
+            },
+            hook: HookRoutingState {
+                sent_to_engine: [0u64; 4],
+                track_only_keys: [0u64; 4],
+                in_callback: false,
+            },
+            hook_config: HookConfig {
+                left_thumb_vk: 0x1D,  // VK_NONCONVERT
+                right_thumb_vk: 0x1C, // VK_CONVERT
+            },
+            focus_kind: FocusKind::Undetermined,
+            app_kind: AppKind::Win32,
+            last_hook_activity_ms: 0,
+            hook_event_count: 0,
+            focus_debounce_ms: 50,
+            ime_poll_interval_ms: 500,
+        }
+    }
+}
+
+impl Default for PlatformState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// APP グローバル — シングルスレッド専用
 pub static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();

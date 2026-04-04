@@ -265,7 +265,11 @@ impl Output {
     /// - Chrome: Char/KeySequence ともに VK キーストローク（全角→半角変換問題の回避）
     /// - Win32/Uwp 等: Unicode 直接送信
     pub fn send_keys(&self, actions: &[KeyAction]) {
-        let app_kind = AppKind::load(&crate::APP_KIND);
+        let app_kind = unsafe {
+            crate::APP.get_ref()
+                .map(|app| app.platform_state.app_kind)
+                .unwrap_or(AppKind::Win32)
+        };
         let use_vk = app_kind == AppKind::Chrome;
 
         log::debug!(

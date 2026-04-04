@@ -17,7 +17,6 @@ use crate::output::Output;
 use crate::runtime::FocusDetector;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
-use crate::FOCUS_KIND;
 
 /// Windows 固有のプラットフォーム実装
 pub struct WindowsPlatform {
@@ -82,7 +81,11 @@ impl PlatformRuntime for WindowsPlatform {
     // ── フォーカス ──
 
     fn update_focus_kind(&mut self, kind: FocusKind) {
-        kind.store(&FOCUS_KIND);
+        unsafe {
+            if let Some(app) = crate::APP.get_mut() {
+                app.platform_state.focus_kind = kind;
+            }
+        }
     }
 
     fn insert_focus_cache(&mut self, process_id: u32, class_name: String, kind: FocusKind) {

@@ -1,7 +1,5 @@
 //! フォーカス変更の観測 — Win32 API + 分類ロジックを使って `FocusObservation` を返す。
 
-use std::sync::atomic::Ordering;
-
 use awase::engine::FocusObservation;
 use awase::engine::ModifierState;
 use awase::types::{AppKind, FocusKind};
@@ -11,7 +9,8 @@ use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::focus;
 use crate::runtime::FocusDetector;
-use crate::{APP_KIND, FOCUS_DEBOUNCE_MS, FOCUS_KIND, TIMER_FOCUS_DEBOUNCE};
+use crate::PlatformState;
+use crate::TIMER_FOCUS_DEBOUNCE;
 
 /// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
 ///
@@ -55,6 +54,8 @@ fn make_obs(
 
 /// Win32 API とキャッシュを使ってフォーカス変更を観測し、OS 非依存の `FocusObservation` を返す。
 ///
+/// `platform_state` の `focus_kind`, `app_kind`, `preconditions.ime_on` を更新する。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn observe(
@@ -62,16 +63,23 @@ pub unsafe fn observe(
     process_id: u32,
     class_name: &str,
     focus: &FocusDetector,
+    platform_state: &mut PlatformState,
 ) -> FocusObservation {
-    let debounce_ms = u64::from(FOCUS_DEBOUNCE_MS.load(Ordering::Relaxed));
+    let debounce_ms = u64::from(platform_state.focus_debounce_ms);
 
-    // IME 状態をフォーカス変更時に更新（PRECOND_IME_ON を新ウィンドウの状態に追随）
+    // IME 状態をフォーカス変更時に更新（preconditions.ime_on を新ウィンドウの状態に追随）
     if let Some(ime_on) = crate::ime::detect_ime_open_cross_process() {
-        crate::PRECOND_IME_ON.store(ime_on, Ordering::Release);
+        platform_state.preconditions.ime_on = ime_on;
     }
 
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止
-    if let Some(obs) = check_same_process_skip(process_id, class_name, focus, debounce_ms) {
+    if let Some(obs) = check_same_process_skip(
+        process_id,
+        class_name,
+        focus,
+        platform_state.focus_kind,
+        debounce_ms,
+    ) {
         return obs;
     }
 
@@ -119,8 +127,8 @@ pub unsafe fn observe(
 
     // AppKind をクラス名から判定して更新
     let app_kind = classify_app_kind(class_name);
-    let prev_app_kind = AppKind::load(&APP_KIND);
-    app_kind.store(&APP_KIND);
+    let prev_app_kind = platform_state.app_kind;
+    platform_state.app_kind = app_kind;
     if app_kind != prev_app_kind {
         log::info!("AppKind changed: {prev_app_kind:?} → {app_kind:?} (class={class_name})");
     } else {
@@ -151,11 +159,11 @@ unsafe fn check_same_process_skip(
     process_id: u32,
     class_name: &str,
     focus: &FocusDetector,
+    current_focus_kind: FocusKind,
     debounce_ms: u64,
 ) -> Option<FocusObservation> {
     let fg = GetForegroundWindow();
-    let current_kind = FocusKind::load(&FOCUS_KIND);
-    if current_kind != FocusKind::TextInput {
+    if current_focus_kind != FocusKind::TextInput {
         return None;
     }
     let (prev_pid, _) = focus.last_focus_info.as_ref()?;
