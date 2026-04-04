@@ -656,9 +656,11 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
             );
             match direct {
                 Some(is_kana) => Some(!is_kana),
-                // direct が失敗しても cross-process で native=true, roman=false なら
-                // かな入力として報告する（バグ修正: 以前は安全側でローマ字にしていた）
-                None => Some(false),
+                // direct が失敗した場合: 判定不能（None を返し、前回値を維持する）。
+                // Zoom 等は romaji モードでも ROMAN ビットを報告しないため、
+                // ここで Some(false) を返すと Engine が起動しなくなる。
+                // 実際のかな切替は observer 側で conversion_mode の ROMAN→非ROMAN 遷移を検出する。
+                None => None,
             }
         }
     } else {

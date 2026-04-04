@@ -62,6 +62,8 @@ pub struct Preconditions {
     pub is_romaji: bool,
     /// 日本語 IME がアクティブか
     pub is_japanese_ime: bool,
+    /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
+    pub prev_conversion_mode: u32,
 }
 
 /// フックルーティング状態（キーペア追跡・再入ガード）
@@ -115,6 +117,7 @@ impl PlatformState {
                 ime_on: true,        // 安全側: ON で初期化
                 is_romaji: true,     // デフォルト: ローマ字入力
                 is_japanese_ime: true, // デフォルト: 日本語
+                prev_conversion_mode: 0,
             },
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],
