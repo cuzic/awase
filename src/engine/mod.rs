@@ -29,7 +29,6 @@ pub use fsm_types::{
 };
 pub use key_lifecycle::KeyLifecycle;
 pub use nicola_fsm::NicolaFsm;
-pub use observation::FocusObservation;
 
 pub use nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
 pub use timing::{ThreeKeyResult, TimingJudge};

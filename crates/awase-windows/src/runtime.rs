@@ -176,9 +176,9 @@ impl Runtime {
         let focus_changed = unsafe { self.detect_and_update_focus() };
 
         // ── Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）──
-        if let Some(obs) = focus_changed {
+        if focus_changed {
             let ctx = build_input_context(&self.platform_state.preconditions);
-            let decision = self.engine.on_command(EngineCommand::FocusChanged(obs), &ctx);
+            let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
             self.executor.execute_from_loop(decision);
         }
 
@@ -196,12 +196,12 @@ impl Runtime {
 
     /// 現在のフォーカス先を検出し、focus_kind / app_kind を更新する。
     ///
-    /// 前面プロセスが前回と異なる場合は `FocusObservation` を返す（flush が必要）。
-    /// 同一プロセス内のフォーカス移動では None を返す（flush 不要）。
+    /// 前面プロセスが前回と異なる場合は `true` を返す（flush が必要）。
+    /// 同一プロセス内のフォーカス移動では `false` を返す（flush 不要）。
     ///
     /// # Safety
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-    unsafe fn detect_and_update_focus(&mut self) -> Option<awase::engine::FocusObservation> {
+    unsafe fn detect_and_update_focus(&mut self) -> bool {
         use crate::focus::classify;
         use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetGUIThreadInfo, GUITHREADINFO};
 
@@ -217,7 +217,7 @@ impl Runtime {
         };
 
         if hwnd.0.is_null() {
-            return None;
+            return false;
         }
 
         let process_id = classify::get_window_process_id(hwnd);
@@ -278,18 +278,15 @@ impl Runtime {
                 }
             }
 
-            Some(awase::engine::FocusObservation {
-                process_id,
-                class_name,
-            })
+            true
         } else {
-            // 同一プロセス内: UIA 判定は必要に応じて
+            // 同一プロセ���内: UIA 判定は必要に応じ���
             if kind == FocusKind::Undetermined {
                 if let Some(sender) = &self.executor.platform.focus.uia_sender {
                     let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
                 }
             }
-            None
+            false
         }
     }
 

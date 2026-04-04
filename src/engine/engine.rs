@@ -43,8 +43,6 @@ pub struct Engine {
     special_keys: SpecialKeyCombos,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
-    /// 最後のフォーカス情報
-    last_focus_info: Option<(u32, String)>,
     /// 前回の呼び出し時の実効状態（遷移検知用）
     prev_active: bool,
 }
@@ -59,7 +57,6 @@ impl Engine {
             adapter: FsmAdapter::new(fsm),
             special_keys,
             lifecycle: KeyLifecycle::new(),
-            last_focus_info: None,
             prev_active: false,
         }
     }
@@ -212,7 +209,7 @@ impl Engine {
                     Decision::pass_through_with(effects)
                 }
             }
-            EngineCommand::FocusChanged(obs) => self.handle_focus_changed(ctx, obs),
+            EngineCommand::FocusChanged => self.handle_focus_changed(ctx),
         }
     }
 
@@ -225,12 +222,8 @@ impl Engine {
     fn handle_focus_changed(
         &mut self,
         ctx: &InputContext,
-        obs: super::observation::FocusObservation,
     ) -> Decision {
         let mut effects = EffectVec::new();
-
-        // Engine 内部の last_focus_info を更新
-        self.last_focus_info = Some((obs.process_id, obs.class_name));
 
         // アプリ切替: 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
         let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);

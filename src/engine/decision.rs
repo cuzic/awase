@@ -10,7 +10,6 @@ use crate::yab::YabLayout;
 
 use super::fsm_types::ModifierState;
 use super::input_tracker::PhysicalKeyState;
-use super::observation::FocusObservation;
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
 
@@ -262,8 +261,8 @@ pub enum EngineCommand {
     SetNgramModel(crate::ngram::NgramModel),
     /// IME 状態を再チェックする（Platform 層がアトミック変数を更新済み）
     RefreshState,
-    /// フォーカスが変更された
-    FocusChanged(FocusObservation),
+    /// 前面プロセスが変更された（デバウンス後に Platform 層が検出、ADR 028）
+    FocusChanged,
 }
 
 #[cfg(test)]
