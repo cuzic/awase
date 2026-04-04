@@ -135,7 +135,7 @@ fn main() -> Result<()> {
                     std::process::exit(1);
                 }
                 // ハンドルをプロセス終了まで保持する（ドロップさせない）
-                std::mem::forget(handle);
+                let _ = handle;
             }
             Err(e) => {
                 log::warn!("Failed to create instance mutex: {e}");
@@ -260,7 +260,7 @@ fn init_logging() {
     let log_path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("awase.log")))
-        .unwrap_or_else(|| std::path::PathBuf::from("awase.log"));
+        .unwrap_or_else(|| PathBuf::from("awase.log"));
 
     let log_file = std::fs::OpenOptions::new()
         .create(true)
@@ -839,7 +839,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // タイマーを停止する。SetOpen 実行後に post_ime_refresh() が再スケジュール。
     if let Some(new_ime_on) = decision.find_ime_set_open() {
         app.platform_state.preconditions.ime_on = new_ime_on;
-        app.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
+        app.executor.platform.timer.kill(TIMER_IME_REFRESH);
         app.platform_state.hook.suppress_ctrl_bypass = true;
         log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended, ctrl bypass suppressed");
     }

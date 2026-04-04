@@ -99,7 +99,7 @@ pub trait ImeDetector {
 
 use std::time::Duration;
 
-use crate::types::{FocusKind, KeyAction, RawKeyEvent};
+use crate::types::{KeyAction, RawKeyEvent};
 
 /// フォアグラウンドウィンドウ情報（プラットフォーム非依存）
 #[derive(Debug, Clone)]

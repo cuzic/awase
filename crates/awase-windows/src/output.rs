@@ -30,6 +30,7 @@ const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
 
 /// 半角 ASCII 文字をキーシーケンス用に VK コードに変換する。
 /// `ascii_to_vk` より広い範囲の記号を対応する。JIS キーボード前提。
+#[allow(dead_code)]
 const fn ascii_to_vk_extended(ch: char) -> Option<(u16, bool)> {
     match ch {
         'a'..='z' => Some((0x41 + (ch as u16 - 'a' as u16), false)),
@@ -84,6 +85,7 @@ const fn ascii_to_vk_extended(ch: char) -> Option<(u16, bool)> {
 
 /// 全角文字を半角に変換する。
 /// 全角 ASCII 範囲 (U+FF01..U+FF5E) に該当する場合、対応する半角文字を返す。
+#[allow(dead_code)]
 const fn fullwidth_to_halfwidth(ch: char) -> Option<char> {
     let cp = ch as u32;
     // 全角 ASCII: U+FF01 ('！') .. U+FF5E ('～')
@@ -103,6 +105,7 @@ const fn fullwidth_to_halfwidth(ch: char) -> Option<char> {
 
 /// 文字をキーシーケンス用の VK コードに変換する。
 /// 全角文字は半角に変換してから `ascii_to_vk_extended` で対応する。
+#[allow(dead_code)]
 fn char_to_key_sequence(ch: char) -> Option<(u16, bool)> {
     // まず全角→半角変換を試みる
     let half = fullwidth_to_halfwidth(ch).unwrap_or(ch);
@@ -500,6 +503,7 @@ impl Output {
     ///
     /// 各文字について対応するキーストローク（VK コード + Shift）を送信する。
     /// マッピングが見つからない文字は Unicode 直接出力でフォールバックする。
+    #[allow(dead_code)]
     fn send_key_sequence(&self, s: &str) {
         for ch in s.chars() {
             if let Some((vk, needs_shift)) = char_to_key_sequence(ch) {

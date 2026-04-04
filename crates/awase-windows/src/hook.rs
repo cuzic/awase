@@ -1,6 +1,6 @@
 use std::cell::UnsafeCell;
 
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
     WM_KEYDOWN, WM_SYSKEYDOWN,
@@ -495,7 +495,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         };
 
         // Drop ps borrow — subsequent sections re-acquire app from APP
-        drop(ps);
+        let _ = ps;
 
         // ── IME 事前分類の補完（sync key 判定）──
         app.enrich_ime_relevance(&mut event);
@@ -534,10 +534,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 log::debug!("IME guard OFF (sync key vk=0x{:02X})", vk_raw);
                 app.platform_state.hook.in_callback = false;
                 let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                    windows::Win32::Foundation::HWND::default(),
+                    HWND::default(),
                     crate::WM_PROCESS_DEFERRED,
-                    windows::Win32::Foundation::WPARAM(0),
-                    windows::Win32::Foundation::LPARAM(0),
+                    WPARAM(0),
+                    LPARAM(0),
                 );
                 return CallNextHookEx(hook_handle, ncode, wparam, lparam);
             }

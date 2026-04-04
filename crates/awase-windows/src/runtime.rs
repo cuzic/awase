@@ -2,6 +2,7 @@ use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
+use crate::focus::cache::DetectionSource;
 use crate::Preconditions;
 
 /// Config の force_text / force_bypass オーバーライドをチェックする。
@@ -58,7 +59,6 @@ pub fn build_input_context(preconditions: &Preconditions, timing: &crate::Modifi
 use awase::yab::YabLayout;
 
 use crate::executor::DecisionExecutor;
-use crate::focus::cache::DetectionSource;
 use crate::hook::CallbackResult;
 use crate::ime::HybridProvider;
 
@@ -262,7 +262,7 @@ impl Runtime {
                 process_id,
                 class_name.clone(),
                 kind,
-                crate::focus::cache::DetectionSource::Automatic,
+                DetectionSource::Automatic,
             );
         }
 

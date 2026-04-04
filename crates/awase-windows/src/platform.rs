@@ -53,7 +53,7 @@ impl PlatformRuntime for WindowsPlatform {
         // guard が active なら後続キーはバッファされるので安全。
         self.timer.set(
             crate::TIMER_IME_REFRESH,
-            std::time::Duration::from_millis(20),
+            Duration::from_millis(20),
         );
     }
 
