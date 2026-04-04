@@ -232,15 +232,32 @@ pub unsafe fn detect_ime_open_cross_process() -> Option<bool> {
 
 /// クロスプロセスで IME の ON/OFF を設定する。
 ///
-/// `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL / IMC_SETOPENSTATUS` を使用。
-/// Google 日本語入力、MS-IME 等の IMM32 互換 IME で動作する。
+/// `GetGUIThreadInfo().hwndFocus` で実際のキーボードフォーカスウィンドウを特定し、
+/// `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL / IMC_SETOPENSTATUS` で IME 状態を設定する。
+/// detect 側と同じ hwndFocus を使うことで、Zoom 等のマルチウィンドウアプリで
+/// トップレベルウィンドウと入力ウィンドウの IME context が異なる場合も正しく動作する。
 ///
 /// Returns `true` if the operation succeeded.
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
 pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
-    let hwnd = GetForegroundWindow();
+    // detect_ime_state() と同じく hwndFocus を使う
+    let hwnd = {
+        let mut gui_info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
+            if gui_info.hwndFocus != HWND::default() {
+                gui_info.hwndFocus
+            } else {
+                gui_info.hwndActive
+            }
+        } else {
+            GetForegroundWindow()
+        }
+    };
     if hwnd.0.is_null() {
         return false;
     }
@@ -262,7 +279,7 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     );
 
     let success = ok.0 != 0;
-    log::debug!("set_ime_open_cross_process: ime_wnd={ime_wnd:?} open={open} success={success}");
+    log::debug!("set_ime_open_cross_process: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success}");
     success
 }
 
