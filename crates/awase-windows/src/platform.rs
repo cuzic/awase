@@ -54,14 +54,13 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn post_ime_refresh(&mut self) {
-        unsafe {
-            let _ = PostMessageW(
-                HWND::default(),
-                crate::WM_IME_KEY_DETECTED,
-                WPARAM(0),
-                LPARAM(0),
-            );
-        }
+        // SetOpen 後の IME 状態反映に数十ms かかるため、即時ではなく
+        // 統合タイマー経由で短い遅延後にリフレッシュする。
+        // guard が active なら後続キーはバッファされるので安全。
+        self.timer.set(
+            crate::TIMER_IME_REFRESH,
+            std::time::Duration::from_millis(20),
+        );
     }
 
     // ── トレイ ──

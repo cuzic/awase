@@ -872,11 +872,17 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
                 match logical_id {
                     Some(id) if id == TIMER_IME_REFRESH => {
-                        // 統合 IME リフレッシュ（ポーリング + フォーカスデバウンス統合）
+                        // 統合 IME リフレッシュ（ポーリング + フォーカスデバウンス + SetOpen 後の遅延）
                         // refresh_ime_state_cache 内で次回ポーリングが自動再スケジュールされる
                         app.refresh_ime_state_cache();
                         // SENT_TO_ENGINE ビットセットを OS キー状態と同期
                         hook::sync_sent_to_engine(&mut app.platform_state.hook);
+                        // IME 制御キー後の deferred keys があれば処理
+                        if app.platform_state.ime_guard.active
+                            || !app.platform_state.ime_guard.deferred_keys.is_empty()
+                        {
+                            app.process_deferred_keys();
+                        }
                     }
                     Some(id) if id == TIMER_HOOK_WATCHDOG => {
                         use std::sync::atomic::AtomicU64;
