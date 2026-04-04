@@ -18,7 +18,7 @@ use crate::types::{ContextChange, KeyEventType, RawKeyEvent};
 
 use super::decision::{
     Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext, InputEffect,
-    SpecialKeyCombos, TimerEffect, UiEffect,
+    SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;

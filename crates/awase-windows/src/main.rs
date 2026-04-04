@@ -41,7 +41,7 @@ use awase_windows::hook;
 use awase_windows::hook::CallbackResult;
 use awase_windows::ime;
 use awase_windows::ime::HybridProvider;
-use awase_windows::observer;
+// observer モジュールは runtime::refresh_ime_state_cache 内で使用
 use awase_windows::output::Output;
 use awase_windows::platform;
 use awase_windows::runtime;
