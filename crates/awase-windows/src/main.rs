@@ -829,14 +829,16 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
     let ctx = runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
 
-    // 親指キー + 修飾キーの状態をログ（コンボキー判定のデバッグ用）
-    if event.vk_code == VkCode(0x1C) || event.vk_code == VkCode(0x1D) {
+    // 全キーイベントのログ（デバッグ用）
+    {
         let t = &app.platform_state.modifier_timing;
         let now = awase_windows::hook::current_tick_ms();
         log::debug!(
-            "Thumb key vk=0x{:02X}: ctx.ctrl={} (os={} timing_down={} up_ago={}ms)",
+            "on_key_event: vk=0x{:02X} {:?} {:?} ime_on={} ctrl=(os={} t_down={} up_ago={}ms)",
             event.vk_code.0,
-            ctx.modifiers.ctrl,
+            event.event_type,
+            event.key_classification,
+            ctx.ime_on,
             unsafe { crate::observer::focus_observer::read_os_modifiers() }.ctrl,
             t.ctrl_down,
             now.saturating_sub(t.ctrl_up_tick),
@@ -844,7 +846,13 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     }
 
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
-    let decision = app.engine.on_input(event, &ctx);
+    let mut decision = app.engine.on_input(event, &ctx);
+
+    log::debug!(
+        "  → decision: consumed={} effects={}",
+        decision.is_consumed(),
+        decision.effects_mut().len(),
+    );
 
     // IME 制御キー: preconditions.ime_on を即座に更新 + ポーリング一時停止。
     // Engine が Ctrl+Muhenkan 等を判定した時点で結果は確定しているため、
