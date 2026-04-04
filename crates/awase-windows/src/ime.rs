@@ -12,7 +12,8 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
+    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, SendMessageTimeoutW,
+    GUITHREADINFO, SMTO_ABORTIFHUNG,
 };
 
 pub use awase::platform::ImeMode;
@@ -477,6 +478,93 @@ unsafe fn detect_kana_direct() -> Option<bool> {
         return Some(false);
     }
     Some(!is_roman)
+}
+
+// ─── 統合 IME 状態スナップショット ────────────────────────────
+
+/// OS から取得した IME 環境の完全なスナップショット
+pub struct ImeSnapshot {
+    /// キーボードレイアウトが日本語か
+    pub is_japanese_ime: bool,
+    /// IME が ON か（None = 検出失敗）
+    pub ime_on: Option<bool>,
+    /// ローマ字入力モードか（None = 検出失敗）
+    pub is_romaji: Option<bool>,
+    /// 生の conversion mode 値（デバッグ用）
+    pub conversion_mode: u32,
+}
+
+/// OS API を呼び出して IME 状態を一括取得する。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn detect_ime_state() -> ImeSnapshot {
+    // 1. Keyboard layout → is_japanese_ime
+    //    GetGUIThreadInfo → GetKeyboardLayout → check LANGID
+    let is_japanese_ime = {
+        let mut gui_info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        let thread_id = if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
+            let fg_hwnd = if gui_info.hwndFocus == HWND::default() {
+                gui_info.hwndActive
+            } else {
+                gui_info.hwndFocus
+            };
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(fg_hwnd, Some(&raw mut pid))
+        } else {
+            0
+        };
+        let hkl = GetKeyboardLayout(thread_id);
+        let lang_id = (hkl.0 as u32) & 0xFFFF;
+        lang_id == crate::vk::LANGID_JAPANESE
+    };
+
+    // 2. Cross-process IME ON/OFF → ime_on
+    let ime_on = detect_ime_open_cross_process();
+
+    // 3. Cross-process conversion mode → is_romaji + raw conversion_mode
+    let cross_conversion = detect_ime_conversion_cross_process();
+    let conversion_mode = cross_conversion.unwrap_or(0);
+
+    // 4. Determine is_romaji from cross-process and direct check
+    let is_romaji = if let Some(conversion) = cross_conversion {
+        let is_native = conversion & IME_CMODE_NATIVE.0 != 0;
+        let is_roman = conversion & IME_CMODE_ROMAN != 0;
+
+        if !is_native {
+            // IME が日本語モードでなければ、かな/ローマ字の区別は不要
+            None
+        } else if is_roman {
+            // ROMAN フラグが明示的にセット → ローマ字入力
+            Some(true)
+        } else {
+            // ROMAN フラグなし + NATIVE あり: クロスプロセスではかな入力に見える。
+            // 直接 API で二重チェック（一部 IME は ROMAN を返さないため）。
+            let direct = detect_kana_direct();
+            log::debug!(
+                "detect_ime_state: cross native={is_native} roman={is_roman}, direct_kana={direct:?}"
+            );
+            match direct {
+                Some(is_kana) => Some(!is_kana),
+                // direct が失敗しても cross-process で native=true, roman=false なら
+                // かな入力として報告する（バグ修正: 以前は安全側でローマ字にしていた）
+                None => Some(false),
+            }
+        }
+    } else {
+        // cross-process 失敗: direct のみで試行
+        detect_kana_direct().map(|is_kana| !is_kana)
+    };
+
+    ImeSnapshot {
+        is_japanese_ime,
+        ime_on,
+        is_romaji,
+        conversion_mode,
+    }
 }
 
 /// 現在のキーボードレイアウトの言語情報を返す。

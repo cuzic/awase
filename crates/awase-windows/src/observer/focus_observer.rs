@@ -67,9 +67,19 @@ pub unsafe fn observe(
 ) -> FocusObservation {
     let debounce_ms = u64::from(platform_state.focus_debounce_ms);
 
-    // IME 状態をフォーカス変更時に更新（preconditions.ime_on を新ウィンドウの状態に追随）
-    if let Some(ime_on) = crate::ime::detect_ime_open_cross_process() {
-        platform_state.preconditions.ime_on = ime_on;
+    // IME 状態をフォーカス変更時に一括更新（新ウィンドウの状態に追随）
+    {
+        let snap = crate::ime::detect_ime_state();
+        let ps = &mut platform_state.preconditions;
+        ps.is_japanese_ime = snap.is_japanese_ime;
+        if let Some(on) = snap.ime_on {
+            ps.ime_on = on && snap.is_japanese_ime;
+        } else if !snap.is_japanese_ime {
+            ps.ime_on = false;
+        }
+        if let Some(romaji) = snap.is_romaji {
+            ps.is_romaji = romaji;
+        }
     }
 
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止

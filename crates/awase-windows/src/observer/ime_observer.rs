@@ -1,10 +1,4 @@
-//! IME 状態の観測 — Win32 API を呼び出して Preconditions を直接更新する。
-
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
-};
+//! IME 状態の観測 — `detect_ime_state()` を呼び出して Preconditions を直接更新する。
 
 use crate::Preconditions;
 
@@ -13,56 +7,36 @@ use crate::Preconditions;
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn observe(preconditions: &mut Preconditions) {
-    // Step 1: 対象スレッドの HKL を取得（日本語チェック）
-    let lang_id = {
-        let mut gui_info = GUITHREADINFO {
-            cbSize: size_of::<GUITHREADINFO>() as u32,
-            ..Default::default()
-        };
-        let thread_id = if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
-            let fg_hwnd = if gui_info.hwndFocus == HWND::default() {
-                gui_info.hwndActive
-            } else {
-                gui_info.hwndFocus
-            };
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(fg_hwnd, Some(&raw mut pid))
-        } else {
-            0
-        };
+    let snap = crate::ime::detect_ime_state();
 
-        let hkl = GetKeyboardLayout(thread_id);
-        (hkl.0 as u32) & 0xFFFF
-    };
-    let is_japanese = lang_id == crate::vk::LANGID_JAPANESE;
+    // is_japanese_ime: always update (LANGID is reliable)
+    preconditions.is_japanese_ime = snap.is_japanese_ime;
 
-    // is_japanese_ime を更新
-    preconditions.is_japanese_ime = is_japanese;
-
-    // Step 2: クロスプロセス IME 検出
-    let cross_process = crate::ime::detect_ime_open_cross_process();
-
-    // ime_on を更新（クロスプロセス検出が信頼できる場合）
-    // None の場合は shadow 値を維持する（更新しない）
-    if let Some(ime_on) = cross_process {
-        // 日本語以外は常に OFF
-        let effective = ime_on && is_japanese;
-        preconditions.ime_on = effective;
-    } else if !is_japanese {
-        // 日本語 IME でなければ常に OFF
+    // ime_on: update if detected, keep shadow if not
+    if let Some(on) = snap.ime_on {
+        preconditions.ime_on = on && snap.is_japanese_ime;
+    } else if !snap.is_japanese_ime {
         preconditions.ime_on = false;
     }
 
-    // Step 3: かな入力方式の検出 → is_romaji 更新
-    if let Some(is_kana) = crate::ime::detect_kana_input_method() {
-        let prev_romaji = preconditions.is_romaji;
-        preconditions.is_romaji = !is_kana;
-        if prev_romaji != preconditions.is_romaji {
+    // is_romaji: update if detected, keep current if not
+    if let Some(romaji) = snap.is_romaji {
+        let prev = preconditions.is_romaji;
+        preconditions.is_romaji = romaji;
+        if prev != romaji {
             log::info!(
                 "IME input method changed: {} → {}",
-                if !prev_romaji { "kana" } else { "romaji" },
-                if is_kana { "kana" } else { "romaji" },
+                if !prev { "kana" } else { "romaji" },
+                if !romaji { "kana" } else { "romaji" },
             );
         }
     }
+
+    log::debug!(
+        "IME snapshot: japanese={} ime_on={:?} romaji={:?} conv=0x{:08X}",
+        snap.is_japanese_ime,
+        snap.ime_on,
+        snap.is_romaji,
+        snap.conversion_mode
+    );
 }
