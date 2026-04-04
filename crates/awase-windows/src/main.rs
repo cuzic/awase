@@ -838,6 +838,13 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
     let decision = app.engine.on_input(event, &ctx);
 
+    // ImeEffect::SetOpen を即座に preconditions に反映する。
+    // Effects キューはメッセージループで実行されるため、反映が遅れると
+    // 次のキーイベントで Engine が旧状態で判断してしまう。
+    if let Some(new_ime_on) = decision.find_ime_set_open() {
+        app.platform_state.preconditions.ime_on = new_ime_on;
+    }
+
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
     let hook_result = app.executor.execute_from_hook(decision, &event);
 

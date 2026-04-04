@@ -136,6 +136,22 @@ impl Decision {
         }
     }
 
+    /// Effects 内に `ImeEffect::SetOpen` があればその値を返す。
+    /// フックコールバックで IME 制御キー検出後に即座に preconditions を更新するために使う。
+    #[must_use]
+    pub fn find_ime_set_open(&self) -> Option<bool> {
+        let effects = match self {
+            Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
+            Self::PassThrough => return None,
+        };
+        for effect in effects {
+            if let Effect::Ime(ImeEffect::SetOpen(open)) = effect {
+                return Some(*open);
+            }
+        }
+        None
+    }
+
     /// effects への可変参照。PassThrough なら Consume に昇格して空 EffectVec を返す。
     #[must_use]
     pub fn effects_mut(&mut self) -> &mut EffectVec {
