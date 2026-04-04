@@ -1069,6 +1069,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_APP => unsafe {
+                log::debug!("WM_APP received: hwnd={:?} lparam=0x{:016X}", msg.hwnd, msg.lParam.0);
                 let layout_names: Vec<String> = APP
                     .get_ref()
                     .map(|app| app.layouts.iter().map(|e| e.name.clone()).collect())

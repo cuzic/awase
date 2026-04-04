@@ -384,6 +384,8 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
     #[allow(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
 
+    log::debug!("Tray message: event=0x{event:04X} lparam=0x{:016X}", lparam.0);
+
     if event != WM_RBUTTONUP {
         return;
     }
