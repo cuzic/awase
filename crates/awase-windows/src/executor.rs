@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 
 use awase::config::HookMode;
 use awase::engine::{
-    Decision, Effect, FocusEffect, ImeEffect, InputEffect, TimerEffect, UiEffect,
+    Decision, Effect, ImeEffect, InputEffect, TimerEffect, UiEffect,
 };
 use awase::platform::PlatformRuntime;
 use awase::types::RawKeyEvent;
@@ -191,19 +191,6 @@ impl DecisionExecutor {
             },
             Effect::Ui(ue) => match ue {
                 UiEffect::EngineStateChanged { enabled } => platform.update_tray(enabled),
-            },
-            Effect::Focus(fe) => match fe {
-                FocusEffect::UpdateFocusKind(kind) => platform.update_focus_kind(kind),
-                FocusEffect::InsertFocusCache {
-                    process_id,
-                    class_name,
-                    kind,
-                } => platform.insert_focus_cache(process_id, class_name, kind),
-                FocusEffect::RequestUiaClassification => platform.request_uia_classification(),
-                FocusEffect::UpdateLastFocusInfo {
-                    process_id,
-                    class_name,
-                } => platform.update_last_focus_info(process_id, class_name),
             },
         }
     }

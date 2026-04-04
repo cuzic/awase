@@ -5,7 +5,7 @@ use std::time::Duration;
 use smallvec::{smallvec, SmallVec};
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, FocusKind, KeyAction, RawKeyEvent, Timestamp, VkCode};
+use crate::types::{ContextChange, KeyAction, RawKeyEvent, Timestamp, VkCode};
 use crate::yab::YabLayout;
 
 use super::fsm_types::ModifierState;
@@ -51,23 +51,6 @@ pub enum UiEffect {
     EngineStateChanged { enabled: bool },
 }
 
-/// フォーカス状態に関する副作用
-#[derive(Debug, Clone)]
-pub enum FocusEffect {
-    /// FOCUS_KIND アトミックを更新する
-    UpdateFocusKind(FocusKind),
-    /// フォーカスキャッシュにエントリを格納する
-    InsertFocusCache {
-        process_id: u32,
-        class_name: String,
-        kind: FocusKind,
-    },
-    /// UIA 非同期判定をリクエストする
-    RequestUiaClassification,
-    /// last_focus_info を更新する
-    UpdateLastFocusInfo { process_id: u32, class_name: String },
-}
-
 /// アプリケーション全体の副作用を表す宣言型。
 /// Engine は Effect を返すだけで、実行は呼び出し側が行う。
 #[derive(Debug, Clone)]
@@ -76,7 +59,6 @@ pub enum Effect {
     Timer(TimerEffect),
     Ime(ImeEffect),
     Ui(UiEffect),
-    Focus(FocusEffect),
 }
 
 /// Engine の判断結果（副作用なし、値で消費される）。

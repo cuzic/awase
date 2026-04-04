@@ -4175,7 +4175,9 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn focus_changed_overridden_no_cache_insert() {
+    fn focus_changed_overridden() {
+        // ADR 028: キャッシュ格納は Platform 層が直接処理。
+        // Engine は FocusEffect を emit しない。
         let mut engine = make_test_engine();
         let obs = make_focus_obs(
             1234,
@@ -4186,10 +4188,7 @@ mod engine_integration_tests {
             true,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
-        assert!(!has_effect(&d, |e| matches!(
-            e,
-            Effect::Focus(super::decision::FocusEffect::InsertFocusCache { .. })
-        )));
+        assert!(!d.is_consumed());
     }
 
     #[test]

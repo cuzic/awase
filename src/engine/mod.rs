@@ -19,7 +19,7 @@ pub mod timing;
 
 // Public re-exports
 pub use decision::{
-    Decision, Effect, EffectVec, EngineCommand, FocusEffect, ImeEffect, ImeSyncKeys, InputContext,
+    Decision, Effect, EffectVec, EngineCommand, ImeEffect, ImeSyncKeys, InputContext,
     InputEffect, KeyBuffer, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 pub use engine::Engine;

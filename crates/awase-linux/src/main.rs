@@ -196,9 +196,6 @@ fn execute_effects(effects: &[Effect], output: &mut UinputOutput) {
             Effect::Ui(ui_effect) => {
                 log::debug!("UI effect: {ui_effect:?}");
             }
-            Effect::Focus(focus_effect) => {
-                log::debug!("Focus effect: {focus_effect:?} (not applicable on Linux)");
-            }
         }
     }
 }

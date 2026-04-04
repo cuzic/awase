@@ -148,20 +148,6 @@ pub trait PlatformRuntime {
     /// 配列名をトレイに表示する
     fn set_tray_layout_name(&mut self, name: &str);
 
-    // ── フォーカス ──
-
-    /// 現在のフォーカス種別を設定する
-    fn update_focus_kind(&mut self, kind: FocusKind);
-
-    /// フォーカスキャッシュにエントリを挿入する
-    fn insert_focus_cache(&mut self, process_id: u32, class_name: String, kind: FocusKind);
-
-    /// UIA 非同期判定をリクエストする
-    fn request_uia_classification(&mut self);
-
-    /// 最終フォーカス情報を更新する
-    fn update_last_focus_info(&mut self, process_id: u32, class_name: String);
-
 }
 
 #[cfg(test)]
