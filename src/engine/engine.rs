@@ -81,10 +81,6 @@ impl Engine {
                 // active → inactive: 保留キーをフラッシュ
                 let flush = self.adapter.flush_to_effects(ContextChange::ImeOff);
                 effects.extend(flush);
-                // lifecycle をクリア: Engine が consumed した KeyDown の対応 KeyUp が
-                // Engine inactive 時に到着しても consumed されないようにする。
-                // OS は consumed された KeyDown を受け取っていないので KeyUp の再注入は不要。
-                let _ = self.lifecycle.flush_pending_key_ups();
             }
             effects.push(Effect::Ui(UiEffect::EngineStateChanged {
                 enabled: new_active,

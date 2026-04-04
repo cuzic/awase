@@ -521,7 +521,7 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
             unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.engine
-                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
+                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &runtime::build_input_context(&app.platform_state.preconditions));
                 }
             }
         }
@@ -827,32 +827,10 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    let ctx = runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
-
-    // 全キーイベントのログ（デバッグ用）
-    {
-        let t = &app.platform_state.modifier_timing;
-        let now = awase_windows::hook::current_tick_ms();
-        log::debug!(
-            "on_key_event: vk=0x{:02X} {:?} {:?} ime_on={} ctrl=(os={} t_down={} up_ago={}ms)",
-            event.vk_code.0,
-            event.event_type,
-            event.key_classification,
-            ctx.ime_on,
-            unsafe { crate::observer::focus_observer::read_os_modifiers() }.ctrl,
-            t.ctrl_down,
-            now.saturating_sub(t.ctrl_up_tick),
-        );
-    }
+    let ctx = runtime::build_input_context(&app.platform_state.preconditions);
 
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
-    let mut decision = app.engine.on_input(event, &ctx);
-
-    log::debug!(
-        "  → decision: consumed={} effects={}",
-        decision.is_consumed(),
-        decision.effects_mut().len(),
-    );
+    let decision = app.engine.on_input(event, &ctx);
 
     // IME 制御キー: preconditions.ime_on を即座に更新 + ポーリング一時停止。
     // Engine が Ctrl+Muhenkan 等を判定した時点で結果は確定しているため、
@@ -862,10 +840,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     if let Some(new_ime_on) = decision.find_ime_set_open() {
         app.platform_state.preconditions.ime_on = new_ime_on;
         app.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
-        // Ctrl+Henkan/Muhenkan 直後: Ctrl がまだ押されている間に文字キーが来ても
-        // ショートカットとして Bypass しないようにする
-        app.platform_state.hook.suppress_ctrl_bypass = true;
-        log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended, ctrl bypass suppressed");
+        log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended");
     }
 
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
@@ -946,7 +921,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     Some(timer_id) => {
                         // Engine タイマー (TIMER_PENDING, TIMER_SPECULATIVE)
                         log::debug!("WM_TIMER fired: logical_id={timer_id}");
-                        let ctx = runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
+                        let ctx = runtime::build_input_context(&app.platform_state.preconditions);
                         let decision = app.engine.on_timeout(timer_id, &ctx);
                         app.execute_decision(decision);
                     }
@@ -1180,7 +1155,7 @@ fn reload_config() {
                     threshold_ms: config.general.simultaneous_threshold_ms,
                     confirm_mode: config.general.confirm_mode,
                     speculative_delay_ms: config.general.speculative_delay_ms,
-                }, &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
+                }, &runtime::build_input_context(&app.platform_state.preconditions));
             app.executor
                 .platform
                 .output
@@ -1224,7 +1199,7 @@ fn reload_config() {
                             ime_on,
                             ime_off,
                         },
-                    }, &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
+                    }, &runtime::build_input_context(&app.platform_state.preconditions));
             }
         }
         key_diag.report();
@@ -1415,7 +1390,7 @@ unsafe extern "system" fn win_event_proc(
     // Engine: 判断 → Decision
     let decision = app
         .engine
-        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
+        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &runtime::build_input_context(&app.platform_state.preconditions));
 
     // Runtime: 副作用実行
     app.execute_decision(decision);

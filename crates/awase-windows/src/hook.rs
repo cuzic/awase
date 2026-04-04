@@ -241,20 +241,15 @@ unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, 
         return KeyRoute::TrackOnly;
     }
 
-    // Ctrl/Alt/Win が押さ��ている間のキーは��ョートカット → Bypass
-    // 例外1: 親指キーは Engine のコンボキー用
-    // 例外2: IME 制御コ��ボ直後の Ctrl は抑制（コンボの残りの Ctrl 押下）
+    // Ctrl/Alt/Win が押されている間のキーはショートカット → Bypass
+    // 例外: 親指キーは Engine のコンボキー用
     {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
         let ctrl = (GetAsyncKeyState(0x11).cast_unsigned() & 0x8000) != 0;
         let alt = (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0;
         let win = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
             || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
-
-        // suppress_ctrl_bypass: Ctrl+Henkan/Muhenkan 直後は Ctrl だけの Bypass を抑制
-        let effective_ctrl = ctrl && !(hook.suppress_ctrl_bypass && !alt && !win);
-
-        if effective_ctrl || alt || win {
+        if ctrl || alt || win {
             if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
                 return KeyRoute::Bypass;
             }
@@ -440,17 +435,6 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ── 一元的なルーティング判定 ──
         let route = classify_route(&ps.hook, &ps.hook_config, vk_raw, is_keydown);
 
-        // ── 修飾キ��タイミング追跡（同時押し判定用）──
-        // GetAsyncKeyState ���頼らず、フックで Ctrl/Alt の押下状態を追跡する。
-        // classify_route より前に更新して、以降の処理で最新状態を使えるようにする。
-        update_modifier_timing(&mut ps.modifier_timing, vk_raw, is_keydown);
-
-        // Ctrl KeyUp で suppress_ctrl_bypass を解除
-        if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.suppress_ctrl_bypass {
-            ps.hook.suppress_ctrl_bypass = false;
-            log::debug!("Ctrl bypass suppression cleared (Ctrl KeyUp)");
-        }
-
         match route {
             KeyRoute::Bypass => {
                 log::trace!(
@@ -524,7 +508,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
 
                 // Flush engine pending keys
-                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
+                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions);
                 app.platform_state.hook.in_callback = false;
                 let decision = app.engine.on_command(
                     awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
@@ -595,34 +579,6 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
 
     CallNextHookEx(hook_handle, ncode, wparam, lparam)
-}
-
-/// フックで受け取った修飾キーイベントから `ModifierTiming` を更新する。
-///
-/// Ctrl/Alt の KeyDown/KeyUp をフック内で追跡し、`GetAsyncKeyState` に依存せずに
-/// 修飾キーの押下状態と離された時刻を記録する。
-fn update_modifier_timing(timing: &mut crate::ModifierTiming, vk: u16, is_keydown: bool) {
-    match vk {
-        // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
-        0x11 | 0xA2 | 0xA3 => {
-            if is_keydown {
-                timing.ctrl_down = true;
-            } else {
-                timing.ctrl_down = false;
-                timing.ctrl_up_tick = current_tick_ms();
-            }
-        }
-        // VK_MENU, VK_LMENU, VK_RMENU
-        0x12 | 0xA4 | 0xA5 => {
-            if is_keydown {
-                timing.alt_down = true;
-            } else {
-                timing.alt_down = false;
-                timing.alt_up_tick = current_tick_ms();
-            }
-        }
-        _ => {}
-    }
 }
 
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）
