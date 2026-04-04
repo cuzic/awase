@@ -64,9 +64,6 @@ pub struct Preconditions {
     pub is_japanese_ime: bool,
     /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
     pub prev_conversion_mode: u32,
-    /// IME 制御キーで ime_on を直接設定済み。OS 側の SetOpen 完了まで
-    /// observer による ime_on 上書きを抑制する。SetOpen Effect 実行後にクリア。
-    pub ime_on_override: bool,
 }
 
 /// フックルーティング状態（キーペア追跡・再入ガード）
@@ -121,7 +118,6 @@ impl PlatformState {
                 is_romaji: true,     // デフォルト: ローマ字入力
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: 0,
-                ime_on_override: false,
             },
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],

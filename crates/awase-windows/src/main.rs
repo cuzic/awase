@@ -832,14 +832,15 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
     let decision = app.engine.on_input(event, &ctx);
 
-    // IME 制御キー: preconditions.ime_on を即座に更新。
+    // IME 制御キー: preconditions.ime_on を即座に更新 + ポーリング一時停止。
     // Engine が Ctrl+Muhenkan 等を判定した時点で結果は確定しているため、
     // OS への SetOpen 完了を待たずに次のキーイベントから正しい状態で判断できる。
-    // ime_on_override で、SetOpen Effect 実行まで observer の上書きを抑制する。
+    // SetOpen Effect 実行前に observer が stale な OS 状態で上書きしないよう
+    // タイマーを停止する。SetOpen 実行後に post_ime_refresh() が再スケジュール。
     if let Some(new_ime_on) = decision.find_ime_set_open() {
         app.platform_state.preconditions.ime_on = new_ime_on;
-        app.platform_state.preconditions.ime_on_override = true;
-        log::debug!("IME control: preconditions.ime_on = {new_ime_on} (override)");
+        app.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
+        log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended");
     }
 
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
