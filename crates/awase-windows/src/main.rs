@@ -832,12 +832,13 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
     let decision = app.engine.on_input(event, &ctx);
 
-    // IME 制御キー検出 → guard 起動（sync key と同じメカニズム）
-    // SetOpen Effect は message loop で実行され、post_ime_refresh() 経由で
-    // process_deferred_keys() が呼ばれる。そこで guard 解除 + 状態確認 + 再処理。
-    if decision.find_ime_set_open().is_some() && !app.platform_state.ime_guard.active {
-        app.platform_state.ime_guard.active = true;
-        log::debug!("IME guard ON (IME control key)");
+    // IME 制御キー: preconditions.ime_on を即座に更新。
+    // Engine が Ctrl+Muhenkan 等を判定した時点で結果は確定しているため、
+    // OS への SetOpen 完了を待たずに次のキーイベントから正しい状態で判断できる。
+    // （Sync key と異なり、IME 切替は OS ではなく我々が行うので guard 不要）
+    if let Some(new_ime_on) = decision.find_ime_set_open() {
+        app.platform_state.preconditions.ime_on = new_ime_on;
+        log::debug!("IME control: preconditions.ime_on = {new_ime_on}");
     }
 
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
@@ -930,19 +931,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_EXECUTE_EFFECTS => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.executor.drain_deferred();
-
-                    // SetOpen 成功時: 結果を preconditions に直接反映し、deferred keys を即時処理。
-                    // OS への再問い合わせを待たないため遅延ゼロ。
-                    // observer をスキップして stale な値で上書きされるのを防ぐ。
-                    if let Some(ime_on) = app.executor.last_set_open_result.take() {
-                        app.platform_state.preconditions.ime_on = ime_on;
-                        log::debug!("SetOpen result applied: ime_on={ime_on}");
-                        if app.platform_state.ime_guard.active
-                            || !app.platform_state.ime_guard.deferred_keys.is_empty()
-                        {
-                            app.process_deferred_keys_confirmed();
-                        }
-                    }
                 }
             },
             WM_PANIC_RESET => unsafe {

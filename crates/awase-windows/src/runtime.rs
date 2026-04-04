@@ -223,37 +223,20 @@ impl Runtime {
         log::info!("Manual focus override: → {mode_str}");
     }
 
-    /// IME 状態変更後に遅延されたキーを再処理する。
+    /// Sync key 後に遅延されたキーを再処理する。
     ///
-    /// sync key / IME 制御キーで guard が起動された後、
-    /// IME 状態が確定してから呼ばれる。
-    /// guard 解除 → (必要なら) IME 状態 refresh → バッファキー再処理。
-    ///
-    /// `skip_observer`: true の場合、observer 呼び出しをスキップする。
-    /// SetOpen 成功後に preconditions が直接反映済みの場合に使用。
-    /// observer が stale な値で上書きするのを防ぐ。
-    ///
+    /// sync key で guard が起動された後、KeyUp で OS が IME を切り替えてから呼ばれる。
+    /// guard 解除 → IME 状態 refresh → バッファキー再処理。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
-        self.process_deferred_keys_impl(false);
-    }
-
-    /// SetOpen 結果を直接反映済みの場合、observer をスキップして deferred keys を処理する。
-    pub fn process_deferred_keys_confirmed(&mut self) {
-        self.process_deferred_keys_impl(true);
-    }
-
-    fn process_deferred_keys_impl(&mut self, skip_observer: bool) {
-        // Guard を解除（sync key KeyUp or SetOpen 後の refresh で到達）
+        // Guard を解除
         if self.platform_state.ime_guard.active {
             self.platform_state.ime_guard.active = false;
             log::debug!("IME guard OFF (process_deferred_keys)");
         }
 
         // Refresh IME state (Observer → Preconditions)
-        if !skip_observer {
-            unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
-        }
+        unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
 
         // Drain deferred keys from Platform guard
         let keys: Vec<_> = self.platform_state.ime_guard.deferred_keys.drain(..).collect();
