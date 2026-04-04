@@ -575,7 +575,30 @@ pub fn restart_as_admin() {
     }
 }
 
+/// 設定画面 (awase-settings) を起動する。
+/// 実行ファイルと同じディレクトリにある awase-settings.exe を探す。
+fn launch_settings_gui() {
+    let Ok(exe) = std::env::current_exe() else {
+        log::warn!("awase-settings not found: cannot determine exe path");
+        return;
+    };
+    let Some(dir) = exe.parent() else {
+        log::warn!("awase-settings not found: no parent directory");
+        return;
+    };
+    let path = dir.join("awase-settings.exe");
+    if path.exists() {
+        let _ = std::process::Command::new(&path).spawn();
+    } else {
+        log::warn!("awase-settings not found at {}", path.display());
+    }
+}
+
 /// トレイウィンドウプロシージャ
+///
+/// Shell はトレイコールバックメッセージ（WM_TRAY_CALLBACK）をこのウィンドウに
+/// 直接送信する。メッセージループの `match msg.message` には到達しないため、
+/// ここで処理してメインスレッドの WM_APP / WM_COMMAND に転送する。
 unsafe extern "system" fn tray_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -583,6 +606,39 @@ unsafe extern "system" fn tray_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_TRAY_CALLBACK => {
+            // Shell からのトレイコールバック → メインのメッセージループに転送
+            // PostMessage ではなく直接処理する（同じスレッドなので安全）
+            let layout_names: Vec<String> = crate::APP
+                .get_ref()
+                .map(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
+                .unwrap_or_default();
+            let elevated = crate::ELEVATED.load(std::sync::atomic::Ordering::Relaxed);
+            handle_tray_message(hwnd, lparam, &layout_names, elevated);
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            // メニュー選択 → メインのメッセージループに転送
+            if let Some(cmd) = handle_tray_command(wparam) {
+                if cmd == cmd_exit() {
+                    PostQuitMessage(0);
+                } else if cmd == cmd_toggle() {
+                    if let Some(app) = crate::APP.get_mut() {
+                        app.toggle_engine();
+                    }
+                } else if cmd == cmd_settings() {
+                    launch_settings_gui();
+                } else if cmd == cmd_restart_admin() {
+                    restart_as_admin();
+                } else if cmd >= cmd_layout_base() {
+                    let index = usize::from(cmd - cmd_layout_base());
+                    if let Some(app) = crate::APP.get_mut() {
+                        app.switch_layout(index);
+                    }
+                }
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             PostQuitMessage(0);
             LRESULT(0)

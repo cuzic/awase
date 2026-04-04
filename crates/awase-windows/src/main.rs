@@ -1119,7 +1119,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
 }
 
 /// 設定画面 (awase-settings) を起動する
-fn launch_settings() {
+pub fn launch_settings() {
     let names = if cfg!(windows) {
         vec!["awase-settings.exe"]
     } else {
