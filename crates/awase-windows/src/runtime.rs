@@ -8,12 +8,16 @@ use crate::Preconditions;
 ///
 /// フックコールバックで shadow toggle が即座に反映され、
 /// Observer のポーリングで実際の OS 状態に収束する。
+///
+/// `GetAsyncKeyState` で現在の修飾キー状態を取得し、Engine の
+/// `check_special_keys`（Ctrl+Muhenkan 等のコンボキー判定）に渡す。
 pub fn build_input_context(preconditions: &Preconditions) -> InputContext {
+    let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
     InputContext {
         ime_on: preconditions.ime_on,
         is_romaji: preconditions.is_romaji,
         is_japanese_ime: preconditions.is_japanese_ime,
-        modifiers: awase::engine::ModifierState::default(),
+        modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
     }
