@@ -521,7 +521,7 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
             unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.engine
-                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &runtime::build_input_context(&app.platform_state.preconditions));
+                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
                 }
             }
         }
@@ -827,7 +827,21 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    let ctx = runtime::build_input_context(&app.platform_state.preconditions);
+    let ctx = runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
+
+    // 親指キー + 修飾キーの状態をログ（コンボキー判定のデバッグ用）
+    if event.vk_code == VkCode(0x1C) || event.vk_code == VkCode(0x1D) {
+        let t = &app.platform_state.modifier_timing;
+        let now = awase_windows::hook::current_tick_ms();
+        log::debug!(
+            "Thumb key vk=0x{:02X}: ctx.ctrl={} (os={} timing_down={} up_ago={}ms)",
+            event.vk_code.0,
+            ctx.modifiers.ctrl,
+            unsafe { crate::observer::focus_observer::read_os_modifiers() }.ctrl,
+            t.ctrl_down,
+            now.saturating_sub(t.ctrl_up_tick),
+        );
+    }
 
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
     let decision = app.engine.on_input(event, &ctx);
@@ -921,7 +935,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     Some(timer_id) => {
                         // Engine タイマー (TIMER_PENDING, TIMER_SPECULATIVE)
                         log::debug!("WM_TIMER fired: logical_id={timer_id}");
-                        let ctx = runtime::build_input_context(&app.platform_state.preconditions);
+                        let ctx = runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
                         let decision = app.engine.on_timeout(timer_id, &ctx);
                         app.execute_decision(decision);
                     }
@@ -1155,7 +1169,7 @@ fn reload_config() {
                     threshold_ms: config.general.simultaneous_threshold_ms,
                     confirm_mode: config.general.confirm_mode,
                     speculative_delay_ms: config.general.speculative_delay_ms,
-                }, &runtime::build_input_context(&app.platform_state.preconditions));
+                }, &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
             app.executor
                 .platform
                 .output
@@ -1199,7 +1213,7 @@ fn reload_config() {
                             ime_on,
                             ime_off,
                         },
-                    }, &runtime::build_input_context(&app.platform_state.preconditions));
+                    }, &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
             }
         }
         key_diag.report();
@@ -1390,7 +1404,7 @@ unsafe extern "system" fn win_event_proc(
     // Engine: 判断 → Decision
     let decision = app
         .engine
-        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &runtime::build_input_context(&app.platform_state.preconditions));
+        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
 
     // Runtime: 副作用実行
     app.execute_decision(decision);

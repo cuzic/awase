@@ -435,6 +435,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ── 一元的なルーティング判定 ──
         let route = classify_route(&ps.hook, &ps.hook_config, vk_raw, is_keydown);
 
+        // ── 修飾キータイミング追跡（同時押し判定用）──
+        // GetAsyncKeyState に頼らず、フックで Ctrl/Alt の押下状態を追跡する。
+        // classify_route より前に更新して、以降の処理で最新状態を使えるようにする。
+        update_modifier_timing(&mut ps.modifier_timing, vk_raw, is_keydown);
+
         match route {
             KeyRoute::Bypass => {
                 log::trace!(
@@ -508,7 +513,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
 
                 // Flush engine pending keys
-                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions);
+                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
                 app.platform_state.hook.in_callback = false;
                 let decision = app.engine.on_command(
                     awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
@@ -579,6 +584,34 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
 
     CallNextHookEx(hook_handle, ncode, wparam, lparam)
+}
+
+/// フックで受け取った修飾キーイベントから `ModifierTiming` を更新する。
+///
+/// Ctrl/Alt の KeyDown/KeyUp をフック内で追跡し、`GetAsyncKeyState` に依存せずに
+/// 修飾キーの押下状態と離された時刻を記録する。
+fn update_modifier_timing(timing: &mut crate::ModifierTiming, vk: u16, is_keydown: bool) {
+    match vk {
+        // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
+        0x11 | 0xA2 | 0xA3 => {
+            if is_keydown {
+                timing.ctrl_down = true;
+            } else {
+                timing.ctrl_down = false;
+                timing.ctrl_up_tick = current_tick_ms();
+            }
+        }
+        // VK_MENU, VK_LMENU, VK_RMENU
+        0x12 | 0xA4 | 0xA5 => {
+            if is_keydown {
+                timing.alt_down = true;
+            } else {
+                timing.alt_down = false;
+                timing.alt_up_tick = current_tick_ms();
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）

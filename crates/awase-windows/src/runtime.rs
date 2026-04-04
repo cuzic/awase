@@ -4,15 +4,29 @@ use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCod
 
 use crate::Preconditions;
 
-/// `Preconditions` から `InputContext` を構築する。
+/// `Preconditions` と `ModifierTiming` から `InputContext` を構築する。
 ///
 /// フックコールバックで shadow toggle が即座に反映され、
 /// Observer のポーリングで実際の OS 状態に収束する。
 ///
-/// `GetAsyncKeyState` で現在の修飾キー状態を取得し、Engine の
-/// `check_special_keys`（Ctrl+Muhenkan 等のコンボキー判定）に渡す。
-pub fn build_input_context(preconditions: &Preconditions) -> InputContext {
-    let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+/// 修飾キー判定は 2 つの情報源を OR で統合する:
+/// - `GetAsyncKeyState`: OS が報告する瞬間的な押下状態
+/// - `ModifierTiming`: フックが追跡した押下状態 + 猶予期間
+///
+/// フックベースの追跡により `GetAsyncKeyState` のタイミング問題を回避し、
+/// 猶予期間により Ctrl をわずかに早く離した場合でも Ctrl+Henkan 等の
+/// コンボキーを確実に検出する（同時押し的な判定）。
+pub fn build_input_context(preconditions: &Preconditions, timing: &crate::ModifierTiming) -> InputContext {
+    let os_modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+    let now_tick = crate::hook::current_tick_ms();
+
+    let modifiers = awase::engine::ModifierState {
+        ctrl: os_modifiers.ctrl || timing.is_ctrl_active(now_tick),
+        alt: os_modifiers.alt || timing.is_alt_active(now_tick),
+        shift: os_modifiers.shift,
+        win: os_modifiers.win,
+    };
+
     InputContext {
         ime_on: preconditions.ime_on,
         is_romaji: preconditions.is_romaji,
@@ -89,6 +103,11 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// 現在の `PlatformState` から `InputContext` を構築するヘルパー
+    fn build_ctx(&self) -> InputContext {
+        build_input_context(&self.platform_state.preconditions, &self.platform_state.modifier_timing)
+    }
+
     /// IME 関連の事前分類情報を sync key 設定で補完する
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         let vk = event.vk_code;
@@ -116,14 +135,14 @@ impl Runtime {
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
-        let ctx = build_input_context(&self.platform_state.preconditions);
+        let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
         self.executor.execute_from_loop(decision);
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
     pub fn invalidate_engine_context(&mut self, reason: ContextChange) {
-        let ctx = build_input_context(&self.platform_state.preconditions);
+        let ctx = self.build_ctx();
         let decision = self
             .engine
             .on_command(EngineCommand::InvalidateContext(reason), &ctx);
@@ -140,7 +159,7 @@ impl Runtime {
         unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
 
         // Engine: 判断 → Decision
-        let ctx = build_input_context(&self.platform_state.preconditions);
+        let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
 
         // Runtime: 副作用実行
@@ -171,7 +190,7 @@ impl Runtime {
         let name = entry.name.clone();
         let decision = self
             .engine
-            .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &build_input_context(&self.platform_state.preconditions));
+            .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &self.build_ctx());
         self.executor.execute_from_loop(decision);
 
         self.executor.platform.tray.set_layout_name(&name);
@@ -248,7 +267,7 @@ impl Runtime {
 
         for (event, _phys) in keys {
             // Build fresh context with updated preconditions
-            let ctx = build_input_context(&self.platform_state.preconditions);
+            let ctx = self.build_ctx();
             let decision = self.engine.on_input(event, &ctx);
             self.executor.execute_from_loop(decision);
         }
@@ -285,6 +304,7 @@ impl Runtime {
         self.platform_state.hook.in_callback = false;
         self.platform_state.ime_guard.active = false;
         self.platform_state.ime_guard.deferred_keys.clear();
+        self.platform_state.modifier_timing = crate::ModifierTiming::new();
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();
