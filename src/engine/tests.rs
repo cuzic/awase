@@ -4063,7 +4063,7 @@ mod engine_integration_tests {
         process_id: u32,
         class_name: &str,
         kind: FocusKind,
-        skip: bool,
+        _skip: bool,
         needs_uia: bool,
         overridden: bool,
     ) -> FocusObservation {
@@ -4074,9 +4074,6 @@ mod engine_integration_tests {
             reason: "test".to_string(),
             needs_uia,
             overridden,
-            skip,
-            debounce_timer_id: 99,
-            debounce_ms: 50,
         }
     }
 
@@ -4093,28 +4090,8 @@ mod engine_integration_tests {
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
-
-        let effs = effects_of(&d);
-        assert!(effs.iter().any(|e| matches!(e, Effect::Timer(..))));
-        assert!(effs.iter().any(|e| matches!(
-            e,
-            Effect::Focus(super::decision::FocusEffect::UpdateLastFocusInfo { .. })
-        )));
-    }
-
-    #[test]
-    fn focus_changed_skip_returns_passthrough() {
-        let mut engine = make_test_engine();
-        let obs = make_focus_obs(
-            1234,
-            "TestClass",
-            FocusKind::TextInput,
-            true,
-            false,
-            false,
-        );
-        let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
-        assert!(matches!(d, Decision::PassThrough));
+        // ADR 028: Engine は flush と active transition のみ担当。
+        // FocusEffect (UpdateLastFocusInfo, Timer 等) は Platform 層が直接処理。
     }
 
     #[test]
@@ -4145,6 +4122,8 @@ mod engine_integration_tests {
 
     #[test]
     fn focus_changed_needs_uia() {
+        // ADR 028: UIA リクエストは Platform 層が直接実行。
+        // Engine は needs_uia を処理しない。
         let mut engine = make_test_engine();
         let obs = make_focus_obs(
             1234,
@@ -4155,10 +4134,7 @@ mod engine_integration_tests {
             false,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Focus(super::decision::FocusEffect::RequestUiaClassification)
-        )));
+        assert!(!d.is_consumed());
     }
 
     #[test]

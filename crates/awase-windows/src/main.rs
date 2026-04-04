@@ -1369,6 +1369,13 @@ fn install_focus_hook() -> Option<WinEventHookGuard> {
 }
 
 /// フォーカス変更イベントのコールバック（メッセージループ上で実行される）
+///
+/// デバウンスタイマーの（再）設定のみ行う。分類・flush・IME refresh は
+/// デバウンス後の `refresh_ime_state_cache` で一括処理する（ADR 028）。
+///
+/// EVENT_OBJECT_FOCUS は中間ウィンドウ（IME 候補、シェル遷移等）でも発火するため、
+/// 即座に Engine に通知すると pending キーの誤 flush が起きる。
+/// デバウンス後に最終的な hwnd で判定することで中間状態を無視する。
 unsafe extern "system" fn win_event_proc(
     _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
     event: u32,
@@ -1382,36 +1389,19 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    // NullHwnd は実際のフォーカス移動ではなく一瞬の中間状態。
-    // NonText とし��処理すると Engine の pending がフラッシュされ、
-    // 入���中の文字が乱れる。無視する。
+    // NullHwnd は OS 内部の一瞬の中間状態。デバウンスで自然に除外されるが、
+    // 不要なタイマーリセットを避けるため早期 return する。
     if hwnd == HWND::default() {
         return;
     }
-
-    let process_id = focus::classify::get_window_process_id(hwnd);
-    let class_name = focus::classify::get_class_name_string(hwnd);
 
     let Some(app) = APP.get_mut() else {
         return;
     };
 
-    // Observer: OS 観測 → FocusObservation
-    let obs = observer::focus_observer::observe(
-        hwnd,
-        process_id,
-        &class_name,
-        &app.executor.platform.focus,
-        &mut app.platform_state,
-    );
-
-    // Engine: 判断 → Decision
-    let decision = app
-        .engine
-        .on_command(awase::engine::EngineCommand::FocusChanged(obs), &runtime::build_input_context(&app.platform_state.preconditions));
-
-    // Runtime: 副作用実行
-    app.execute_decision(decision);
+    // デバウンスタイマーのみ設定。Engine への通知はデバウンス後に行う。
+    let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
+    app.schedule_ime_refresh(debounce_ms);
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）

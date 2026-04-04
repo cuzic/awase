@@ -10,7 +10,6 @@ use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use crate::focus;
 use crate::runtime::FocusDetector;
 use crate::PlatformState;
-use crate::TIMER_IME_REFRESH;
 
 /// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
 ///
@@ -28,7 +27,6 @@ pub unsafe fn read_os_modifiers() -> ModifierState {
 }
 
 /// 共通フィールドを設定した `FocusObservation` を生成するヘルパー
-#[allow(clippy::too_many_arguments)]
 fn make_obs(
     process_id: u32,
     class_name: &str,
@@ -36,8 +34,6 @@ fn make_obs(
     reason: String,
     needs_uia: bool,
     overridden: bool,
-    skip: bool,
-    debounce_ms: u64,
 ) -> FocusObservation {
     FocusObservation {
         process_id,
@@ -46,9 +42,6 @@ fn make_obs(
         reason,
         needs_uia,
         overridden,
-        skip,
-        debounce_timer_id: TIMER_IME_REFRESH,
-        debounce_ms,
     }
 }
 
@@ -112,8 +105,6 @@ pub unsafe fn observe(
             "builtin bypass (system search/menu)".to_owned(),
             false,
             false,
-            false,
-            debounce_ms,
         );
     }
 
@@ -127,13 +118,11 @@ pub unsafe fn observe(
             "cache hit".to_owned(),
             false,
             false,
-            false,
-            debounce_ms,
         );
     }
 
     // AppKind をクラス名から判定して更新
-    let app_kind = classify_app_kind(class_name);
+    let app_kind = detect_app_kind(class_name);
     let prev_app_kind = platform_state.app_kind;
     platform_state.app_kind = app_kind;
     if app_kind != prev_app_kind {
@@ -156,8 +145,6 @@ pub unsafe fn observe(
         reason,
         true,
         false,
-        false,
-        debounce_ms,
     )
 }
 
@@ -186,8 +173,6 @@ unsafe fn check_same_process_skip(
         format!("same process {fg_pid}"),
         false,
         false,
-        true,
-        debounce_ms,
     ))
 }
 
@@ -217,8 +202,6 @@ fn check_overrides(
                 format!("config override force_text ({process_name})"),
                 false,
                 true,
-                false,
-                debounce_ms,
             ));
         }
     }
@@ -236,8 +219,6 @@ fn check_overrides(
                 format!("config override force_bypass ({process_name})"),
                 false,
                 true,
-                false,
-                debounce_ms,
             ));
         }
     }
@@ -251,7 +232,7 @@ fn check_overrides(
 /// - `MozillaWindowClass`: Firefox（Chromium と同様の入力処理）
 /// - `Windows.UI.Core.CoreWindow`: UWP / XAML 系
 /// - その他: Win32 クラシック
-fn classify_app_kind(class_name: &str) -> AppKind {
+pub fn detect_app_kind(class_name: &str) -> AppKind {
     let class_lower = class_name.to_ascii_lowercase();
     if class_lower.starts_with("chrome_") || class_lower == "mozillawindowclass" {
         AppKind::Chrome

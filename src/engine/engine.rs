@@ -217,50 +217,22 @@ impl Engine {
     }
 
     /// フォーカス変更の観測結果を処理し、コン���キスト無効化等の Decision を返す。
+    /// フォーカス変更（前面プロセス変更）の処理。
+    ///
+    /// デバウンス後に Platform 層が前面プロセスの変化を検出した場合のみ呼ばれる（ADR 028）。
+    /// focus_kind / app_kind / last_focus_info / キャッシュの更新は Platform 層で完了済み。
+    /// Engine は pending flush と lifecycle 整合のみ担当する。
     fn handle_focus_changed(
         &mut self,
         ctx: &InputContext,
         obs: super::observation::FocusObservation,
     ) -> Decision {
-        use super::decision::FocusEffect;
-
-        if obs.skip {
-            return Decision::pass_through();
-        }
-
-        let kind = obs.kind;
-        let process_id = obs.process_id;
-        let needs_uia = obs.needs_uia;
-        let overridden = obs.overridden;
-        let debounce_timer_id = obs.debounce_timer_id;
-        let debounce_ms = obs.debounce_ms;
-        let class_name = obs.class_name; // move ownership
-
         let mut effects = EffectVec::new();
 
-        // last_focus_info を Engine 内部でも更新
-        self.last_focus_info = Some((process_id, class_name.clone()));
+        // Engine 内部の last_focus_info を更新
+        self.last_focus_info = Some((obs.process_id, obs.class_name));
 
-        // last_focus_info を更新（Executor 側）
-        effects.push(Effect::Focus(FocusEffect::UpdateLastFocusInfo {
-            process_id,
-            class_name: class_name.clone(),
-        }));
-
-        // FOCUS_KIND を更新
-        effects.push(Effect::Focus(FocusEffect::UpdateFocusKind(kind)));
-
-        // キャッシュ格納（オーバーライドでない場合のみ）
-        if !overridden {
-            effects.push(Effect::Focus(FocusEffect::InsertFocusCache {
-                process_id,
-                class_name,
-                kind,
-            }));
-        }
-
-        // ウィンドウ切替時は常に内部状態をフラッシュする。
-        // 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
+        // アプリ切替: 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
         let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);
         effects.extend(flush_effects);
 
@@ -271,18 +243,7 @@ impl Engine {
             effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
         }
 
-        // UIA 非同期判定が必要なら要求
-        if needs_uia {
-            effects.push(Effect::Focus(FocusEffect::RequestUiaClassification));
-        }
-
-        // フォーカス変更デバウンスタイマー
-        effects.push(Effect::Timer(TimerEffect::Set {
-            id: debounce_timer_id,
-            duration: std::time::Duration::from_millis(debounce_ms),
-        }));
-
-        // 実効状態の遷移を検知（Platform 層が ctx を新ウィンドウの状態で構築済み）
+        // 実効状態の遷移を検知
         let transition_effects = self.check_active_transition(ctx);
         effects.extend(transition_effects);
 

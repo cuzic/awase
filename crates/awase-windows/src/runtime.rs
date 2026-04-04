@@ -4,6 +4,34 @@ use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCod
 
 use crate::Preconditions;
 
+/// Config の force_text / force_bypass オーバーライドをチェックする。
+/// マッチした場合は強制される FocusKind を返す。
+fn check_focus_override(
+    overrides: &awase::config::FocusOverrides,
+    process_id: u32,
+    class_name: &str,
+) -> Option<FocusKind> {
+    if overrides.force_text.is_empty() && overrides.force_bypass.is_empty() {
+        return None;
+    }
+    let process_name = crate::focus::classify::get_process_name(process_id);
+    for entry in &overrides.force_text {
+        if entry.process.eq_ignore_ascii_case(&process_name)
+            && entry.class.eq_ignore_ascii_case(class_name)
+        {
+            return Some(FocusKind::TextInput);
+        }
+    }
+    for entry in &overrides.force_bypass {
+        if entry.process.eq_ignore_ascii_case(&process_name)
+            && entry.class.eq_ignore_ascii_case(class_name)
+        {
+            return Some(FocusKind::NonText);
+        }
+    }
+    None
+}
+
 /// `Preconditions` から `InputContext` を構築する。
 ///
 /// フックコールバックで shadow toggle が即座に反映され、
@@ -130,24 +158,143 @@ impl Runtime {
         self.executor.execute_from_loop(decision);
     }
 
-    /// IME ON/OFF 状態を再観測して Preconditions を更新し、Engine に通知する。
+    /// IME 状態とフォーカス状態を一括で再観測し、Engine に通知する。
     ///
-    /// Observer → Engine → Runtime の 3 層パイプラインで処理する。
-    /// 完了後に自動的に `ime_poll_interval_ms` で次回リフレッシュをスケジュールする。
+    /// フォーカスデバウンス後・500ms ポーリング・may_change_ime 後など、
+    /// 全ての IME/フォーカス更新がこのメソッドに集約される（ADR 028）。
+    ///
+    /// 処理フロー:
+    /// 1. 現在のフォーカス先を取得・分類（focus_kind, app_kind 更新）
+    /// 2. 前面プロセスが変わった場合は Engine に FocusChanged（flush あり）
+    /// 3. IME 状態を再取得して Preconditions を更新
+    /// 4. Engine に RefreshState（active 状態の遷移検知）
+    /// 5. 次回ポーリングを自動スケジュール
+    ///
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn refresh_ime_state_cache(&mut self) {
-        // Observer: OS 観測 → Preconditions を直接更新
+        // ── Phase 1: フォーカス先の検出・分類 ──
+        let focus_changed = unsafe { self.detect_and_update_focus() };
+
+        // ── Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）──
+        if let Some(obs) = focus_changed {
+            let ctx = build_input_context(&self.platform_state.preconditions);
+            let decision = self.engine.on_command(EngineCommand::FocusChanged(obs), &ctx);
+            self.executor.execute_from_loop(decision);
+        }
+
+        // ── Phase 3: IME 状態の再取得 ──
         unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
 
-        // Engine: 判断 → Decision
+        // ── Phase 4: Engine に RefreshState（active 遷移検知）──
         let ctx = build_input_context(&self.platform_state.preconditions);
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
-
-        // Runtime: 副作用実行
         self.executor.execute_from_loop(decision);
 
-        // 次回ポーリングを自動スケジュール（統一タイマー）
+        // ── Phase 5: 次回ポーリングを自動スケジュール ──
         self.schedule_ime_refresh(u64::from(self.platform_state.ime_poll_interval_ms));
+    }
+
+    /// 現在のフォーカス先を検出し、focus_kind / app_kind を更新する。
+    ///
+    /// 前面プロセスが前回と異なる場合は `FocusObservation` を返す（flush が必要）。
+    /// 同一プロセス内のフォーカス移動では None を返す（flush 不要）。
+    ///
+    /// # Safety
+    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+    unsafe fn detect_and_update_focus(&mut self) -> Option<awase::engine::FocusObservation> {
+        use crate::focus::classify;
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetGUIThreadInfo, GUITHREADINFO};
+
+        // 現在のフォーカス hwnd を取得（GetGUIThreadInfo が最も正確）
+        let mut info = GUITHREADINFO {
+            cbSize: u32::try_from(size_of::<GUITHREADINFO>()).unwrap(),
+            ..Default::default()
+        };
+        let hwnd = if GetGUIThreadInfo(0, &raw mut info).is_ok() && !info.hwndFocus.0.is_null() {
+            info.hwndFocus
+        } else {
+            GetForegroundWindow()
+        };
+
+        if hwnd.0.is_null() {
+            return None;
+        }
+
+        let process_id = classify::get_window_process_id(hwnd);
+        let class_name = classify::get_class_name_string(hwnd);
+
+        // app_kind を更新
+        let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
+        if self.platform_state.app_kind != new_app_kind {
+            log::info!("AppKind changed: {:?} → {:?} (class={class_name})", self.platform_state.app_kind, new_app_kind);
+            self.platform_state.app_kind = new_app_kind;
+        }
+
+        // focus_kind を分類
+        // Config オーバーライドをチェック
+        let (kind, reason, overridden) = if let Some(kind) = check_focus_override(&self.executor.platform.focus.overrides, process_id, &class_name) {
+            (kind, "config override".to_string(), true)
+        } else if let Some(cached) = self.executor.platform.focus.cache.get(process_id, &class_name) {
+            (cached, "cache hit".to_string(), false)
+        } else {
+            let result = classify::classify_focus(hwnd);
+            (result.kind, format!("{}", result.reason), false)
+        };
+
+        // focus_kind を更新
+        if self.platform_state.focus_kind != kind {
+            log::debug!("Focus kind changed: {:?} → {kind:?} (reason={reason})", self.platform_state.focus_kind);
+            self.platform_state.focus_kind = kind;
+        }
+
+        // キャッシュ格納（オーバーライドでない場合のみ）
+        if !overridden {
+            self.executor.platform.focus.cache.insert(
+                process_id,
+                class_name.clone(),
+                kind,
+                crate::focus::cache::DetectionSource::Automatic,
+            );
+        }
+
+        // 前面プロセスが変わったかチェック
+        let last_pid = self.executor.platform.focus.last_focus_info.as_ref().map(|(pid, _)| *pid);
+        let process_changed = last_pid.is_some_and(|last| last != process_id);
+
+        // last_focus_info を更新
+        self.executor.platform.focus.last_focus_info = Some((process_id, class_name.clone()));
+
+        // prev_conversion_mode をリセット（異なるウィンドウの conversion_mode を比較しない）
+        self.platform_state.preconditions.prev_conversion_mode = 0;
+
+        if process_changed {
+            log::debug!("Foreground process changed → FocusChanged (pid={process_id} class={class_name})");
+
+            // UIA 非同期判定が必要かチェック（Undetermined の場合）
+            let needs_uia = kind == FocusKind::Undetermined;
+            if needs_uia {
+                if let Some(sender) = &self.executor.platform.focus.uia_sender {
+                    let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
+                }
+            }
+
+            Some(awase::engine::FocusObservation {
+                process_id,
+                class_name,
+                kind,
+                reason,
+                needs_uia,
+                overridden,
+            })
+        } else {
+            // 同一プロセス内: UIA 判定は必要に応じて
+            if kind == FocusKind::Undetermined {
+                if let Some(sender) = &self.executor.platform.focus.uia_sender {
+                    let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
+                }
+            }
+            None
+        }
     }
 
     /// 統合 IME リフレッシュタイマーをスケジュール（リセット）する。

@@ -6,6 +6,9 @@
 use crate::types::FocusKind;
 
 /// フォーカス変更の観測結果（OS 非依存）
+///
+/// デバウンス後に確定したフォーカス先の情報。
+/// 前面プロセスが変わった場合のみ Engine に送られる（ADR 028）。
 #[derive(Debug, Clone)]
 pub struct FocusObservation {
     /// フォーカス先のプロセス ID
@@ -20,11 +23,5 @@ pub struct FocusObservation {
     pub needs_uia: bool,
     /// config オーバーライドによる強制か
     pub overridden: bool,
-    /// 同一プロセス内の TextInput 降格防止でスキップすべきか
-    pub skip: bool,
-    /// デバウンスタイマー ID（bin crate 側で設定）
-    pub debounce_timer_id: usize,
-    /// デバウンス期間（ミリ秒）
-    pub debounce_ms: u64,
 }
 
