@@ -61,6 +61,9 @@ fn make_obs(
 /// が一瞬フォーカスを得るため、即座に更新すると不正確な状態を拾ってしまう。
 /// IME 状態の更新はデバウンスタイマー後の `refresh_ime_state_cache()` に委譲する。
 ///
+/// ただし `prev_conversion_mode` はリセットする。異なるウィンドウの conversion_mode を
+/// 比較すると偽の ROMAN ビット遷移が検出されるため。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn observe(
@@ -71,6 +74,10 @@ pub unsafe fn observe(
     platform_state: &mut PlatformState,
 ) -> FocusObservation {
     let debounce_ms = u64::from(platform_state.focus_debounce_ms);
+
+    // フォーカス変更時に prev_conversion_mode をリセット。
+    // 異なるウィンドウの conversion_mode を比較して偽の ROMAN ビット遷移を検出するのを防止。
+    platform_state.preconditions.prev_conversion_mode = 0;
 
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止
     if let Some(obs) = check_same_process_skip(
