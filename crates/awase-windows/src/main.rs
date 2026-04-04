@@ -1382,6 +1382,13 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
+    // NullHwnd は実際のフォーカス移動ではなく一瞬の中間状態。
+    // NonText とし��処理すると Engine の pending がフラッシュされ、
+    // 入���中の文字が乱れる。無視する。
+    if hwnd == HWND::default() {
+        return;
+    }
+
     let process_id = focus::classify::get_window_process_id(hwnd);
     let class_name = focus::classify::get_class_name_string(hwnd);
 
