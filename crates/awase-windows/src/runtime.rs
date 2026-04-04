@@ -281,10 +281,6 @@ impl Runtime {
             Some(awase::engine::FocusObservation {
                 process_id,
                 class_name,
-                kind,
-                reason,
-                needs_uia,
-                overridden,
             })
         } else {
             // 同一プロセス内: UIA 判定は必要に応じて

@@ -4062,32 +4062,17 @@ mod engine_integration_tests {
     fn make_focus_obs(
         process_id: u32,
         class_name: &str,
-        kind: FocusKind,
-        _skip: bool,
-        needs_uia: bool,
-        overridden: bool,
     ) -> FocusObservation {
         FocusObservation {
             process_id,
             class_name: class_name.to_string(),
-            kind,
-            reason: "test".to_string(),
-            needs_uia,
-            overridden,
         }
     }
 
     #[test]
     fn focus_changed_basic() {
         let mut engine = make_test_engine();
-        let obs = make_focus_obs(
-            1234,
-            "TestClass",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(1234, "TestClass");
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
         // ADR 028: Engine は flush と active transition のみ担当。
@@ -4099,14 +4084,7 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
-        let obs = make_focus_obs(
-            5678,
-            "Other",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(5678, "Other");
         // Platform updated atomic → ctx reflects ime_on=false
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
         assert!(
@@ -4125,14 +4103,7 @@ mod engine_integration_tests {
         // ADR 028: UIA リクエストは Platform 層が直接実行。
         // Engine は needs_uia を処理しない。
         let mut engine = make_test_engine();
-        let obs = make_focus_obs(
-            1234,
-            "Unknown",
-            FocusKind::Undetermined,
-            false,
-            true,
-            false,
-        );
+        let obs = make_focus_obs(1234, "Unknown");
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
@@ -4142,14 +4113,7 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
 
         // Focus change with IME OFF should deactivate engine
-        let obs = make_focus_obs(
-            100,
-            "First",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(100, "First");
         // Platform updated atomic → ctx reflects ime_on=false
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
         assert!(
@@ -4159,14 +4123,7 @@ mod engine_integration_tests {
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
 
         // Focus change with IME ON should activate engine
-        let obs = make_focus_obs(
-            200,
-            "Second",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(200, "Second");
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
             engine.compute_active(&ime_on_ctx()),
@@ -4179,14 +4136,7 @@ mod engine_integration_tests {
         // ADR 028: キャッシュ格納は Platform 層が直接処理。
         // Engine は FocusEffect を emit しない。
         let mut engine = make_test_engine();
-        let obs = make_focus_obs(
-            1234,
-            "Override",
-            FocusKind::NonText,
-            false,
-            false,
-            true,
-        );
+        let obs = make_focus_obs(1234, "Override");
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
@@ -4194,14 +4144,7 @@ mod engine_integration_tests {
     #[test]
     fn focus_changed_with_modifiers_in_ctx() {
         let mut engine = make_test_engine();
-        let obs = make_focus_obs(
-            1234,
-            "WithMods",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(1234, "WithMods");
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
@@ -4258,14 +4201,7 @@ mod engine_integration_tests {
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
         assert!(d.is_consumed());
 
-        let obs = make_focus_obs(
-            9999,
-            "NewWindow",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(9999, "NewWindow");
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
@@ -4363,14 +4299,7 @@ mod engine_integration_tests {
     fn focus_changed_then_input_works() {
         let mut engine = make_test_engine();
 
-        let obs = make_focus_obs(
-            1234,
-            "Editor",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(1234, "Editor");
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
 
         // Input should still work after focus change
@@ -4418,26 +4347,12 @@ mod engine_integration_tests {
     fn focus_changed_ime_on_activates_engine() {
         let mut engine = make_test_engine();
         // まず IME OFF のフォーカス変更で prev_active=false にする
-        let obs_off = make_focus_obs(
-            1234,
-            "First",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs_off = make_focus_obs(1234, "First");
         engine.on_command(EngineCommand::FocusChanged(obs_off), &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
 
         // Focus change with IME ON should activate engine
-        let obs = make_focus_obs(
-            5678,
-            "Other",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(5678, "Other");
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
             engine.compute_active(&ime_on_ctx()),
@@ -4456,14 +4371,7 @@ mod engine_integration_tests {
         assert!(!engine.compute_active(&ime_on_ctx()));
 
         // Focus change with IME ON should not activate (user disabled)
-        let obs = make_focus_obs(
-            5678,
-            "Other",
-            FocusKind::TextInput,
-            false,
-            false,
-            false,
-        );
+        let obs = make_focus_obs(5678, "Other");
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!engine.compute_active(&ime_on_ctx()), "user disabled → still inactive");
         assert!(!has_effect(&d, |e| matches!(
