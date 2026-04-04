@@ -418,6 +418,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 
+        // ── NonText ウィンドウバイパス ──
+        // フォーカスが NonText（システムウィンドウ、タスクバー等）の場合は
+        // Engine をバイパスして OS にそのまま通す。
+        // フォーカス切替時の中間ウィンドウで Engine が誤作動するのを防止。
+        if ps.focus_kind == awase::types::FocusKind::NonText {
+            return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+        }
+
         let vk_raw = kb.vkCode as u16;
         let is_keydown = matches!(
             wparam.0 as u32,

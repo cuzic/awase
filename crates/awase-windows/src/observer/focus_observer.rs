@@ -283,5 +283,15 @@ fn is_builtin_bypass(_process_id: u32, class_name: &str) -> bool {
         | "windows.ui.core.corewindow"
         // Cortana
         | "cortana"
+        // ── タスクバー経由のウィンドウ切替で一瞬フォーカスされる中間ウィンドウ群 ──
+        // これらは XAML/DirectUI ベースのシェルウィンドウで、IME 検出が不正確。
+        // 前ウィンドウの IME 状態を引き継いで Engine が誤作動する原因となる。
+        | "foregroundstaging"
+        | "xamlexplorerhostislandwindow"
+        | "desktopwindowcontentbridge"
+        | "inputsite"
+        | "shell_traywnd"
+        | "tasklistthumbnailwnd"
+        | "toplevelwindowforoverflowxamlisland"
     )
 }
