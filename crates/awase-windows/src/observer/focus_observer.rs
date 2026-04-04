@@ -54,7 +54,12 @@ fn make_obs(
 
 /// Win32 API とキャッシュを使ってフォーカス変更を観測し、OS 非依存の `FocusObservation` を返す。
 ///
-/// `platform_state` の `focus_kind`, `app_kind`, `preconditions.ime_on` を更新する。
+/// `platform_state` の `focus_kind`, `app_kind` を更新する。
+///
+/// **注意**: `preconditions`（IME 状態）はここでは更新しない。
+/// フォーカス変更チェーン中は中間ウィンドウ（異なる IME context を持つ子ウィンドウ等）
+/// が一瞬フォーカスを得るため、即座に更新すると不正確な状態を拾ってしまう。
+/// IME 状態の更新はデバウンスタイマー後の `refresh_ime_state_cache()` に委譲する。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
@@ -66,21 +71,6 @@ pub unsafe fn observe(
     platform_state: &mut PlatformState,
 ) -> FocusObservation {
     let debounce_ms = u64::from(platform_state.focus_debounce_ms);
-
-    // IME 状態をフォーカス変更時に一括更新（新ウィンドウの状態に追随）
-    {
-        let snap = crate::ime::detect_ime_state();
-        let ps = &mut platform_state.preconditions;
-        ps.is_japanese_ime = snap.is_japanese_ime;
-        if let Some(on) = snap.ime_on {
-            ps.ime_on = on && snap.is_japanese_ime;
-        } else if !snap.is_japanese_ime {
-            ps.ime_on = false;
-        }
-        if let Some(romaji) = snap.is_romaji {
-            ps.is_romaji = romaji;
-        }
-    }
 
     // 同一フォアグラウンドウィンドウ内での TextInput → Undetermined 降格を防止
     if let Some(obs) = check_same_process_skip(

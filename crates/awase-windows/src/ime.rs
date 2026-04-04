@@ -300,6 +300,90 @@ unsafe fn detect_ime_conversion_cross_process() -> Option<u32> {
     Some(result as u32)
 }
 
+// ─── hwnd 指定版のクロスプロセス検出 ──────────────────────
+
+/// 指定した hwnd の IME ON/OFF をクロスプロセスで検出する。
+///
+/// `detect_ime_state()` から呼ばれ、`GetGUIThreadInfo().hwndFocus` を使うことで
+/// 実際のキーボードフォーカスウィンドウの IME 状態を取得する。
+unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return None;
+    }
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETOPENSTATUS),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        50,
+        Some(&raw mut result),
+    );
+    log::trace!("CrossProcess(hwndFocus): ime_wnd={ime_wnd:?} open={result:?}");
+    if ok.0 == 0 {
+        return None;
+    }
+    Some(result != 0)
+}
+
+/// 指定した hwnd の IME conversion mode をクロスプロセスで検出する。
+unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return None;
+    }
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETCONVERSIONMODE),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        50,
+        Some(&raw mut result),
+    );
+    if ok.0 == 0 {
+        return None;
+    }
+    Some(result as u32)
+}
+
+/// 指定した hwnd で直接かな入力方式を確認する。
+unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
+    if hwnd == HWND::default() {
+        return None;
+    }
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return None;
+    }
+    let mut conversion = IME_CONVERSION_MODE::default();
+    let mut sentence = IME_SENTENCE_MODE::default();
+    let ok = ImmGetConversionStatus(himc, Some(&raw mut conversion), Some(&raw mut sentence));
+    let _ = ImmReleaseContext(hwnd, himc);
+    if !ok.as_bool() {
+        return None;
+    }
+    let is_native = conversion.0 & IME_CMODE_NATIVE.0 != 0;
+    let is_roman = conversion.0 & IME_CMODE_ROMAN != 0;
+    log::debug!(
+        "detect_kana_for_hwnd: conversion=0x{:08X} native={is_native} roman={is_roman}",
+        conversion.0
+    );
+    if !is_native {
+        return Some(false);
+    }
+    Some(!is_roman)
+}
+
 // ─── 複合プロバイダ（TSF 優先、IMM32 フォールバック）────────
 
 /// TSF を優先し、失敗時に IMM32 にフォールバックするプロバイダ
@@ -496,37 +580,43 @@ pub struct ImeSnapshot {
 
 /// OS API を呼び出して IME 状態を一括取得する。
 ///
+/// `GetGUIThreadInfo().hwndFocus` を使って実際のキーボードフォーカスウィンドウの
+/// IME 状態を取得する。`GetForegroundWindow()` はトップレベルウィンドウを返すため、
+/// 子ウィンドウと異なる IME context を持つ場合（wezterm 等）に不正確になる。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn detect_ime_state() -> ImeSnapshot {
-    // 1. Keyboard layout → is_japanese_ime
-    //    GetGUIThreadInfo → GetKeyboardLayout → check LANGID
-    let is_japanese_ime = {
-        let mut gui_info = GUITHREADINFO {
-            cbSize: size_of::<GUITHREADINFO>() as u32,
-            ..Default::default()
-        };
-        let thread_id = if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
-            let fg_hwnd = if gui_info.hwndFocus == HWND::default() {
-                gui_info.hwndActive
-            } else {
-                gui_info.hwndFocus
-            };
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(fg_hwnd, Some(&raw mut pid))
+    // 0. Resolve the focused window once and use it for all queries
+    let mut gui_info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    let (focused_hwnd, thread_id) = if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
+        let hwnd = if gui_info.hwndFocus == HWND::default() {
+            gui_info.hwndActive
         } else {
-            0
+            gui_info.hwndFocus
         };
+        let mut pid = 0u32;
+        let tid = GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+        (hwnd, tid)
+    } else {
+        (GetForegroundWindow(), 0)
+    };
+
+    // 1. Keyboard layout → is_japanese_ime
+    let is_japanese_ime = {
         let hkl = GetKeyboardLayout(thread_id);
         let lang_id = (hkl.0 as u32) & 0xFFFF;
         lang_id == crate::vk::LANGID_JAPANESE
     };
 
-    // 2. Cross-process IME ON/OFF → ime_on
-    let ime_on = detect_ime_open_cross_process();
+    // 2. Cross-process IME ON/OFF → ime_on (using focused hwnd)
+    let ime_on = detect_ime_open_for_hwnd(focused_hwnd);
 
-    // 3. Cross-process conversion mode → is_romaji + raw conversion_mode
-    let cross_conversion = detect_ime_conversion_cross_process();
+    // 3. Cross-process conversion mode → is_romaji + raw conversion_mode (using focused hwnd)
+    let cross_conversion = detect_ime_conversion_for_hwnd(focused_hwnd);
     let conversion_mode = cross_conversion.unwrap_or(0);
 
     // 4. Determine is_romaji from cross-process and direct check
@@ -543,7 +633,7 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
         } else {
             // ROMAN フラグなし + NATIVE あり: クロスプロセスではかな入力に見える。
             // 直接 API で二重チェック（一部 IME は ROMAN を返さないため）。
-            let direct = detect_kana_direct();
+            let direct = detect_kana_for_hwnd(focused_hwnd);
             log::debug!(
                 "detect_ime_state: cross native={is_native} roman={is_roman}, direct_kana={direct:?}"
             );
@@ -556,7 +646,7 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
         }
     } else {
         // cross-process 失敗: direct のみで試行
-        detect_kana_direct().map(|is_kana| !is_kana)
+        detect_kana_for_hwnd(focused_hwnd).map(|is_kana| !is_kana)
     };
 
     ImeSnapshot {
