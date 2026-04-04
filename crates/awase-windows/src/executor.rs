@@ -34,6 +34,9 @@ pub struct DecisionExecutor {
     queue: VecDeque<Effect>,
     /// フックの動作モード
     hook_mode: HookMode,
+    /// 直近の `ImeEffect::SetOpen` の成功結果。
+    /// `drain_deferred` 後に呼び出し側が `take()` して preconditions に反映する。
+    pub last_set_open_result: Option<bool>,
 }
 
 impl DecisionExecutor {
@@ -42,6 +45,7 @@ impl DecisionExecutor {
             platform,
             queue: VecDeque::new(),
             hook_mode,
+            last_set_open_result: None,
         }
     }
 
@@ -179,13 +183,17 @@ impl DecisionExecutor {
             Effect::Ime(ie) => match ie {
                 ImeEffect::SetOpen(open) => {
                     let success = platform.set_ime_open(open);
-                    if !success {
+                    if success {
+                        // SetOpen 成功 → 結果を保存。呼び出し側が preconditions に直接反映する。
+                        // OS への再問い合わせ不要（set_ime_open は同期的に完了済み）。
+                        self.last_set_open_result = Some(open);
+                    } else {
                         log::warn!(
                             "set_ime_open({open}) failed — requesting IME refresh for resync"
                         );
+                        self.last_set_open_result = None;
                     }
-                    // 成功/失敗に関わらず常に refresh を要求する。
-                    // refresh → process_deferred_keys で guard 解除 + 状態確認 + 再処理。
+                    // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
                     platform.post_ime_refresh();
                 }
                 ImeEffect::RequestRefresh => platform.post_ime_refresh(),

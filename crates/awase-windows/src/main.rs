@@ -930,6 +930,19 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_EXECUTE_EFFECTS => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.executor.drain_deferred();
+
+                    // SetOpen 成功時: 結果を preconditions に直接反映し、deferred keys を即時処理。
+                    // OS への再問い合わせを待たないため遅延ゼロ。
+                    // observer をスキップして stale な値で上書きされるのを防ぐ。
+                    if let Some(ime_on) = app.executor.last_set_open_result.take() {
+                        app.platform_state.preconditions.ime_on = ime_on;
+                        log::debug!("SetOpen result applied: ime_on={ime_on}");
+                        if app.platform_state.ime_guard.active
+                            || !app.platform_state.ime_guard.deferred_keys.is_empty()
+                        {
+                            app.process_deferred_keys_confirmed();
+                        }
+                    }
                 }
             },
             WM_PANIC_RESET => unsafe {
