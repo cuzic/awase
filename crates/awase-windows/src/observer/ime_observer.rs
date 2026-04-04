@@ -23,8 +23,23 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
     // is_japanese_ime: always update (LANGID is reliable)
     preconditions.is_japanese_ime = snap.is_japanese_ime;
 
-    // ime_on: update if detected, keep shadow if not
-    if let Some(on) = snap.ime_on {
+    // ime_on: IME 制御キーの override 中は、OS 状態が一致するまで上書きしない。
+    // SetOpen Effect がまだ実行されておらず OS 状態が stale な場合に
+    // observer が ime_on を元に戻してしまうのを防ぐ。
+    // OS 状態が override 値と一致したら override を解除する。
+    if preconditions.ime_on_override {
+        if let Some(on) = snap.ime_on {
+            let expected = preconditions.ime_on;
+            let actual = on && snap.is_japanese_ime;
+            if actual == expected {
+                // OS が追いついた → override 解除、通常更新に復帰
+                preconditions.ime_on_override = false;
+                log::debug!("ime_on override cleared (OS confirmed ime_on={expected})");
+            } else {
+                log::trace!("ime_on update skipped (override active, OS={actual} expected={expected})");
+            }
+        }
+    } else if let Some(on) = snap.ime_on {
         preconditions.ime_on = on && snap.is_japanese_ime;
     } else if !snap.is_japanese_ime {
         preconditions.ime_on = false;

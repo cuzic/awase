@@ -835,10 +835,11 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // IME 制御キー: preconditions.ime_on を即座に更新。
     // Engine が Ctrl+Muhenkan 等を判定した時点で結果は確定しているため、
     // OS への SetOpen 完了を待たずに次のキーイベントから正しい状態で判断できる。
-    // （Sync key と異なり、IME 切替は OS ではなく我々が行うので guard 不要）
+    // ime_on_override で、SetOpen Effect 実行まで observer の上書きを抑制する。
     if let Some(new_ime_on) = decision.find_ime_set_open() {
         app.platform_state.preconditions.ime_on = new_ime_on;
-        log::debug!("IME control: preconditions.ime_on = {new_ime_on}");
+        app.platform_state.preconditions.ime_on_override = true;
+        log::debug!("IME control: preconditions.ime_on = {new_ime_on} (override)");
     }
 
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
