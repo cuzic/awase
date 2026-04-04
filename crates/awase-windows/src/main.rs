@@ -854,7 +854,10 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     if let Some(new_ime_on) = decision.find_ime_set_open() {
         app.platform_state.preconditions.ime_on = new_ime_on;
         app.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
-        log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended");
+        // Ctrl+Henkan/Muhenkan 直後: Ctrl がまだ押されている間に文字キーが来ても
+        // ショートカットとして Bypass しないようにする
+        app.platform_state.hook.suppress_ctrl_bypass = true;
+        log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended, ctrl bypass suppressed");
     }
 
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）

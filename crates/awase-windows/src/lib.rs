@@ -75,6 +75,13 @@ pub struct HookRoutingState {
     pub track_only_keys: [u64; 4],
     /// 再入ガード
     pub in_callback: bool,
+    /// IME 制御コンボ直後の Ctrl バイパス抑制フラグ。
+    ///
+    /// Ctrl+Henkan/Muhenkan 検出後、Ctrl がまだ押されている間に
+    /// 文字キーが来ると `classify_route` がショートカットと誤判定して
+    /// Bypass する。このフラグが true の間は Ctrl による Bypass を抑制し、
+    /// Ctrl KeyUp で解除する。
+    pub suppress_ctrl_bypass: bool,
 }
 
 /// フック設定（親指キー VK コード）
@@ -169,6 +176,7 @@ impl PlatformState {
                 sent_to_engine: [0u64; 4],
                 track_only_keys: [0u64; 4],
                 in_callback: false,
+                suppress_ctrl_bypass: false,
             },
             hook_config: HookConfig {
                 left_thumb_vk: 0x1D,  // VK_NONCONVERT

@@ -302,6 +302,7 @@ impl Runtime {
         self.platform_state.hook.sent_to_engine = [0u64; 4];
         self.platform_state.hook.track_only_keys = [0u64; 4];
         self.platform_state.hook.in_callback = false;
+        self.platform_state.hook.suppress_ctrl_bypass = false;
         self.platform_state.ime_guard.active = false;
         self.platform_state.ime_guard.deferred_keys.clear();
         self.platform_state.modifier_timing = crate::ModifierTiming::new();
