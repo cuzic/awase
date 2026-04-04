@@ -27,7 +27,6 @@ pub use fsm_types::{
     ClassifiedEvent, EngineState, KeyClass, ModifierState, OutputRecord, OutputUpdate, ParseAction,
     PendingKey, PendingThumbData, TimerIntent,
 };
-pub use ime_coordinator::ImeCoordinator;
 pub use key_lifecycle::KeyLifecycle;
 pub use nicola_fsm::NicolaFsm;
 pub use observation::FocusObservation;

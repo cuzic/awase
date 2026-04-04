@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use awase::config::AppConfig;
-use awase::engine::{Engine, ImeSyncKeys, NicolaFsm, SpecialKeyCombos};
+use awase::engine::{Engine, NicolaFsm, SpecialKeyCombos};
 use awase::scanmap::KeyboardModel;
 use awase::yab::YabLayout;
 
@@ -60,7 +60,6 @@ fn main() -> Result<()> {
     };
 
     // 6. Build Engine (NicolaFsm + InputTracker + empty ImeSyncKeys/SpecialKeyCombos)
-    let tracker = awase::engine::input_tracker::InputTracker::new();
     let fsm = NicolaFsm::new(
         layout,
         left_thumb,
@@ -71,12 +70,6 @@ fn main() -> Result<()> {
     );
     let _engine = Engine::new(
         fsm,
-        tracker,
-        ImeSyncKeys {
-            toggle: vec![],
-            on: vec![],
-            off: vec![],
-        },
         SpecialKeyCombos {
             engine_on: vec![],
             engine_off: vec![],

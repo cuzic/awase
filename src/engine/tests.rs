@@ -3517,22 +3517,13 @@ mod engine_integration_tests {
     use super::*;
     use crate::config::{ConfirmMode, ParsedKeyCombo};
     use crate::engine::decision::{
-        Decision, Effect, EngineCommand, ImeEffect, ImeSyncKeys, InputContext,
+        Decision, Effect, EngineCommand, ImeEffect, InputContext,
         InputEffect, SpecialKeyCombos, UiEffect,
     };
     use crate::engine::engine::Engine;
-    use crate::engine::input_tracker::InputTracker;
     use crate::engine::nicola_fsm::NicolaFsm;
     use crate::engine::observation::FocusObservation;
     use crate::types::FocusKind;
-
-    fn empty_sync_keys() -> ImeSyncKeys {
-        ImeSyncKeys {
-            toggle: vec![],
-            on: vec![],
-            off: vec![],
-        }
-    }
 
     fn empty_special_keys() -> SpecialKeyCombos {
         SpecialKeyCombos {
@@ -3545,7 +3536,6 @@ mod engine_integration_tests {
 
     fn make_test_engine() -> Engine {
         let layout = make_layout();
-        let tracker = InputTracker::new();
         let fsm = NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -3554,7 +3544,7 @@ mod engine_integration_tests {
             ConfirmMode::Wait,
             30,
         );
-        let mut engine = Engine::new(fsm, tracker, empty_sync_keys(), empty_special_keys());
+        let mut engine = Engine::new(fsm, empty_special_keys());
         // テストでは prev_active=true にしておく（全前提条件を満たす ctx で使う想定）
         engine.set_prev_active(true);
         engine
@@ -3565,6 +3555,9 @@ mod engine_integration_tests {
             ime_on: true,
             is_romaji: true,
             is_japanese_ime: true,
+            modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
+            left_thumb_down: None,
+            right_thumb_down: None,
         }
     }
 
@@ -3573,6 +3566,9 @@ mod engine_integration_tests {
             ime_on: false,
             is_romaji: true,
             is_japanese_ime: true,
+            modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
+            left_thumb_down: None,
+            right_thumb_down: None,
         }
     }
 
@@ -3628,7 +3624,7 @@ mod engine_integration_tests {
     #[test]
     fn on_input_char_key_not_romaji_passes_through() {
         let mut engine = make_test_engine();
-        let kana_ctx = InputContext { ime_on: true, is_romaji: false, is_japanese_ime: true };
+        let kana_ctx = InputContext { ime_on: true, is_romaji: false, is_japanese_ime: true, modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &kana_ctx);
         assert!(
             !d.is_consumed(),
@@ -3793,20 +3789,6 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn on_command_set_guard() {
-        let mut engine = make_test_engine();
-        let d = engine.on_command(EngineCommand::SetGuard(true), &ime_on_ctx());
-        assert!(!d.is_consumed());
-    }
-
-    #[test]
-    fn on_command_clear_deferred_keys() {
-        let mut engine = make_test_engine();
-        let d = engine.on_command(EngineCommand::ClearDeferredKeys, &ime_on_ctx());
-        assert!(!d.is_consumed());
-    }
-
-    #[test]
     fn on_command_update_fsm_params() {
         let mut engine = make_test_engine();
         let d = engine.on_command(EngineCommand::UpdateFsmParams {
@@ -3822,7 +3804,6 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
         let d = engine.on_command(EngineCommand::ReloadKeys {
             special: empty_special_keys(),
-            sync: empty_sync_keys(),
         }, &ime_on_ctx());
         assert!(!d.is_consumed());
     }
@@ -3831,7 +3812,6 @@ mod engine_integration_tests {
 
     fn make_engine_with_special(special: SpecialKeyCombos) -> Engine {
         let layout = make_layout();
-        let tracker = InputTracker::new();
         let fsm = NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -3840,7 +3820,7 @@ mod engine_integration_tests {
             ConfirmMode::Wait,
             30,
         );
-        let mut engine = Engine::new(fsm, tracker, empty_sync_keys(), special);
+        let mut engine = Engine::new(fsm, special);
         engine.set_prev_active(true);
         engine
     }
@@ -3872,10 +3852,6 @@ mod engine_integration_tests {
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
-        )));
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::RequestCacheRefresh)
         )));
     }
 
@@ -4071,7 +4047,7 @@ mod engine_integration_tests {
         assert!(engine.compute_active(&ime_on_ctx()));
 
         // Platform updated is_japanese_ime=false in ctx
-        let not_japanese_ctx = InputContext { ime_on: true, is_romaji: true, is_japanese_ime: false };
+        let not_japanese_ctx = InputContext { ime_on: true, is_romaji: true, is_japanese_ime: false, modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
         let d = engine.on_command(EngineCommand::RefreshState, &not_japanese_ctx);
         assert!(!engine.compute_active(&not_japanese_ctx));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
@@ -4090,7 +4066,6 @@ mod engine_integration_tests {
         skip: bool,
         needs_uia: bool,
         overridden: bool,
-        os_modifiers: Option<super::ModifierState>,
     ) -> FocusObservation {
         FocusObservation {
             process_id,
@@ -4102,7 +4077,6 @@ mod engine_integration_tests {
             skip,
             debounce_timer_id: 99,
             debounce_ms: 50,
-            os_modifiers,
         }
     }
 
@@ -4116,7 +4090,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
@@ -4139,7 +4112,6 @@ mod engine_integration_tests {
             true,
             false,
             false,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(matches!(d, Decision::PassThrough));
@@ -4157,7 +4129,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         // Platform updated atomic → ctx reflects ime_on=false
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
@@ -4182,7 +4153,6 @@ mod engine_integration_tests {
             false,
             true,
             false,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
@@ -4203,7 +4173,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         // Platform updated atomic → ctx reflects ime_on=false
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_off_ctx());
@@ -4221,7 +4190,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
@@ -4240,7 +4208,6 @@ mod engine_integration_tests {
             false,
             false,
             true,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!has_effect(&d, |e| matches!(
@@ -4250,14 +4217,8 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn focus_changed_with_os_modifiers() {
+    fn focus_changed_with_modifiers_in_ctx() {
         let mut engine = make_test_engine();
-        let mods = super::ModifierState {
-            ctrl: true,
-            alt: false,
-            shift: false,
-            win: false,
-        };
         let obs = make_focus_obs(
             1234,
             "WithMods",
@@ -4265,37 +4226,12 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            Some(mods),
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!d.is_consumed());
     }
 
-    // ── 9. Engine::handle_sync_modifiers ──
-
-    #[test]
-    fn sync_modifiers_no_mismatch_passes_through() {
-        let mut engine = make_test_engine();
-        let os_mods = super::ModifierState {
-            ctrl: false,
-            alt: false,
-            shift: false,
-            win: false,
-        };
-        let d = engine.on_command(EngineCommand::SyncModifiers(os_mods), &ime_on_ctx());
-        assert!(!d.is_consumed());
-    }
-
-    // ── 10. process_deferred_keys ──
-
-    #[test]
-    fn process_deferred_keys_empty_returns_empty() {
-        let mut engine = make_test_engine();
-        let results = engine.process_deferred_keys(&ime_on_ctx());
-        assert!(results.is_empty());
-    }
-
-    // ── 11. is_user_enabled ──
+    // ── 10. is_user_enabled ──
 
     #[test]
     fn is_user_enabled_default_true() {
@@ -4354,7 +4290,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
@@ -4460,7 +4395,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
 
@@ -4516,7 +4450,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         engine.on_command(EngineCommand::FocusChanged(obs_off), &ime_off_ctx());
         assert!(!engine.compute_active(&ime_off_ctx()));
@@ -4529,7 +4462,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(
@@ -4556,7 +4488,6 @@ mod engine_integration_tests {
             false,
             false,
             false,
-            None,
         );
         let d = engine.on_command(EngineCommand::FocusChanged(obs), &ime_on_ctx());
         assert!(!engine.compute_active(&ime_on_ctx()), "user disabled → still inactive");

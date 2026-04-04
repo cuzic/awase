@@ -3,7 +3,7 @@
 use proptest::prelude::*;
 
 use crate::config::ConfirmMode;
-use crate::engine::decision::{ImeSyncKeys, InputContext, SpecialKeyCombos};
+use crate::engine::decision::{InputContext, SpecialKeyCombos};
 use crate::engine::engine::Engine;
 use crate::engine::fsm_types::EngineState;
 use crate::engine::input_tracker::InputTracker;
@@ -60,14 +60,6 @@ fn make_layout() -> YabLayout {
     }
 }
 
-fn empty_sync_keys() -> ImeSyncKeys {
-    ImeSyncKeys {
-        toggle: vec![],
-        on: vec![],
-        off: vec![],
-    }
-}
-
 fn empty_special_keys() -> SpecialKeyCombos {
     SpecialKeyCombos {
         engine_on: vec![],
@@ -80,7 +72,6 @@ fn empty_special_keys() -> SpecialKeyCombos {
 /// Create an Engine for high-level tests.
 fn make_test_engine() -> Engine {
     let layout = make_layout();
-    let tracker = InputTracker::new();
     let fsm = NicolaFsm::new(
         layout,
         VK_NONCONVERT,
@@ -89,7 +80,7 @@ fn make_test_engine() -> Engine {
         ConfirmMode::Wait,
         30,
     );
-    let mut engine = Engine::new(fsm, tracker, empty_sync_keys(), empty_special_keys());
+    let mut engine = Engine::new(fsm, empty_special_keys());
     engine.set_prev_active(true);
     engine
 }
@@ -131,6 +122,9 @@ fn ime_on_ctx() -> InputContext {
         ime_on: true,
         is_romaji: true,
         is_japanese_ime: true,
+        modifiers: crate::engine::fsm_types::ModifierState { ctrl: false, alt: false, shift: false, win: false },
+        left_thumb_down: None,
+        right_thumb_down: None,
     }
 }
 

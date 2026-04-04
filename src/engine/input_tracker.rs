@@ -6,6 +6,7 @@
 
 use crate::types::{KeyClassification, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 
+use super::decision::InputContext;
 use super::fsm_types::{ClassifiedEvent, KeyClass, ModifierState};
 
 /// 物理キー状態のスナップショット
@@ -42,6 +43,38 @@ impl PhysicalKeyState {
             modifiers: ModifierState::default(),
             left_thumb_down: None,
             right_thumb_down: None,
+        }
+    }
+
+    /// InputContext と RawKeyEvent から PhysicalKeyState を構築する。
+    ///
+    /// Platform 層の InputTracker が物理キー状態を追跡済みなので、
+    /// Engine は InputContext からスナップショットを構築するだけでよい。
+    #[must_use]
+    pub fn from_ctx(ctx: &InputContext, event: &RawKeyEvent) -> Self {
+        Self {
+            classified: InputTracker::classify(event),
+            modifiers: ctx.modifiers,
+            left_thumb_down: ctx.left_thumb_down,
+            right_thumb_down: ctx.right_thumb_down,
+        }
+    }
+
+    /// InputContext からタイマー用スナップショットを構築する（イベントなし）。
+    #[must_use]
+    pub fn from_ctx_snapshot(ctx: &InputContext) -> Self {
+        Self {
+            classified: ClassifiedEvent {
+                key_class: KeyClass::Passthrough,
+                pos: None,
+                scan_code: ScanCode(0),
+                vk_code: VkCode(0),
+                timestamp: 0,
+                is_ime_control: false,
+            },
+            modifiers: ctx.modifiers,
+            left_thumb_down: ctx.left_thumb_down,
+            right_thumb_down: ctx.right_thumb_down,
         }
     }
 }
@@ -130,7 +163,7 @@ impl InputTracker {
     }
 
     /// プラットフォーム層が事前分類したキー情報から ClassifiedEvent を構築する
-    const fn classify(event: &RawKeyEvent) -> ClassifiedEvent {
+    pub(crate) const fn classify(event: &RawKeyEvent) -> ClassifiedEvent {
         let key_class = match event.key_classification {
             KeyClassification::Char => KeyClass::Char,
             KeyClassification::LeftThumb => KeyClass::LeftThumb,

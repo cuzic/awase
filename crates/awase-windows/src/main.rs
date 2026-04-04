@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};
 use awase::engine::{Engine, InputContext, NicolaFsm, TIMER_PENDING, TIMER_SPECULATIVE};
-use awase::engine::{ImeSyncKeys, SpecialKeyCombos};
+use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
 use awase::types::{RawKeyEvent, VkCode};
@@ -164,7 +164,7 @@ fn main() -> Result<()> {
     for w in &config_warnings {
         diag.warn(w);
     }
-    let (fsm, tracker, layouts, layout_names, initial_layout_name) =
+    let (fsm, layouts, layout_names, initial_layout_name) =
         init_engine_validated(&config, &mut diag)?;
     let engine_on_keys = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
     let engine_off_keys = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
@@ -185,12 +185,6 @@ fn main() -> Result<()> {
 
     let engine = Engine::new(
         fsm,
-        tracker,
-        ImeSyncKeys {
-            toggle: ime_sync_toggle,
-            on: ime_sync_on,
-            off: ime_sync_off,
-        },
         SpecialKeyCombos {
             engine_on: engine_on_keys,
             engine_off: engine_off_keys,
@@ -355,7 +349,6 @@ fn init_engine_validated(
     diag: &mut StartupDiagnostics,
 ) -> Result<(
     NicolaFsm,
-    awase::engine::input_tracker::InputTracker,
     Vec<LayoutEntry>,
     Vec<String>,
     String,
@@ -382,7 +375,6 @@ fn init_engine_validated(
         layout.right_thumb.len()
     );
 
-    let tracker = awase::engine::input_tracker::InputTracker::new();
     // Set thumb VK codes for hook classification
     hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
     let engine = NicolaFsm::new(
@@ -394,7 +386,7 @@ fn init_engine_validated(
         config.general.speculative_delay_ms,
     );
 
-    Ok((engine, tracker, layouts, layout_names, initial_layout_name))
+    Ok((engine, layouts, layout_names, initial_layout_name))
 }
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
@@ -938,11 +930,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_IME_KEY_DETECTED => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.process_deferred_keys();
-                    let os_mods = observer::focus_observer::read_os_modifiers();
-                    let decision = app
-                        .engine
-                        .on_command(awase::engine::EngineCommand::SyncModifiers(os_mods), &crate::runtime::build_input_context());
-                    app.executor.execute_from_loop(decision);
                 }
             },
             WM_POWERBROADCAST => unsafe {
@@ -983,14 +970,12 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_INPUTLANGCHANGE => unsafe {
-                // 入力言語が変更された（Win+Space 等）→ 保留をフラッシュ + ガード ON
+                // 入力言語が変更された（Win+Space 等）→ 保留をフラッシュ
                 // 言語切替直後は IME 状態が未反映の可能性があるため、
                 // 後続キーをメッセージループに回して確実に更新後に処理する。
-                log::info!("Input language changed, flushing pending state and enabling guard");
+                log::info!("Input language changed, flushing pending state");
                 if let Some(app) = APP.get_mut() {
                     app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-                    app.engine
-                        .on_command(awase::engine::EngineCommand::SetGuard(true), &crate::runtime::build_input_context());
                     app.refresh_ime_state_cache();
                 }
                 // レイアウトが日本語でなくなった場合に警告
@@ -1205,7 +1190,6 @@ fn reload_config() {
                             ime_on,
                             ime_off,
                         },
-                        sync: ImeSyncKeys { toggle, on, off },
                     }, &crate::runtime::build_input_context());
             }
         }

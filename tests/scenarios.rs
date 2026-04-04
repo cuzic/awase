@@ -1,7 +1,6 @@
 use awase::config::AppConfig;
-use awase::engine::input_tracker::InputTracker;
 use awase::engine::{
-    Decision, Effect, Engine, ImeSyncKeys, InputContext, InputEffect, NicolaFsm,
+    Decision, Effect, Engine, InputContext, InputEffect, NicolaFsm,
     SpecialKeyCombos, TIMER_PENDING,
 };
 use awase::scanmap::{KeyboardModel, PhysicalPos};
@@ -29,16 +28,9 @@ fn make_nicola_engine() -> Engine {
         config.general.confirm_mode,
         config.general.speculative_delay_ms,
     );
-    let tracker = InputTracker::new();
 
     let mut engine = Engine::new(
         fsm,
-        tracker,
-        ImeSyncKeys {
-            toggle: vec![],
-            on: vec![],
-            off: vec![],
-        },
         SpecialKeyCombos {
             engine_on: vec![],
             engine_off: vec![],
@@ -56,6 +48,9 @@ fn ctx() -> InputContext {
         ime_on: true,
         is_romaji: true,
         is_japanese_ime: true,
+        modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },
+        left_thumb_down: None,
+        right_thumb_down: None,
     }
 }
 

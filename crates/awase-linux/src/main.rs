@@ -3,7 +3,7 @@ use std::path::Path;
 
 use awase::config::AppConfig;
 use awase::engine::{
-    Decision, Effect, Engine, ImeSyncKeys, InputContext, InputEffect, NicolaFsm, SpecialKeyCombos,
+    Decision, Effect, Engine, InputContext, InputEffect, NicolaFsm, SpecialKeyCombos,
     TimerEffect,
 };
 use awase::scanmap::KeyboardModel;
@@ -64,7 +64,6 @@ fn main() -> Result<()> {
     };
 
     // 5. Build Engine
-    let tracker = awase::engine::input_tracker::InputTracker::new();
     let fsm = NicolaFsm::new(
         layout,
         left_thumb,
@@ -75,12 +74,6 @@ fn main() -> Result<()> {
     );
     let mut engine = Engine::new(
         fsm,
-        tracker,
-        ImeSyncKeys {
-            toggle: vec![],
-            on: vec![],
-            off: vec![],
-        },
         SpecialKeyCombos {
             engine_on: vec![],
             engine_off: vec![],
@@ -125,6 +118,9 @@ fn main() -> Result<()> {
             ime_on: true, // Assume IME ON for now
             is_romaji: true,
             is_japanese_ime: true,
+            modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },
+            left_thumb_down: None,
+            right_thumb_down: None,
         };
         let decision = engine.on_input(event, &ctx);
 

@@ -5,9 +5,10 @@ use std::time::Duration;
 use smallvec::{smallvec, SmallVec};
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, FocusKind, KeyAction, RawKeyEvent, VkCode};
+use crate::types::{ContextChange, FocusKind, KeyAction, RawKeyEvent, Timestamp, VkCode};
 use crate::yab::YabLayout;
 
+use super::fsm_types::ModifierState;
 use super::input_tracker::PhysicalKeyState;
 use super::observation::FocusObservation;
 
@@ -162,12 +163,20 @@ impl Decision {
 /// - このフィールドを増やす前に、Engine 内部状態で代替できないか検討すること
 #[derive(Debug, Clone, Copy)]
 pub struct InputContext {
+    // ── Environment preconditions ──
     /// IME が ON か（Platform 層がアトミック変数から取得、shadow 反映済み）
     pub ime_on: bool,
     /// ローマ字入力モードか（false = かな入力）
     pub is_romaji: bool,
     /// 日本語 IME がアクティブか（MS-IME, Google, ATOK 等）
     pub is_japanese_ime: bool,
+    // ── Physical key state (provided by Platform) ──
+    /// 修飾キー状態
+    pub modifiers: ModifierState,
+    /// 左親指キー押下時刻（None = 非押下）
+    pub left_thumb_down: Option<Timestamp>,
+    /// 右親指キー押下時刻（None = 非押下）
+    pub right_thumb_down: Option<Timestamp>,
 }
 
 /// IME 同期キー（トグル・ON・OFF）を集約する構造体
@@ -241,14 +250,9 @@ pub enum EngineCommand {
     InvalidateContext(ContextChange),
     /// 配列を切り替える
     SwapLayout(YabLayout),
-    /// IME ガードを設定する
-    SetGuard(bool),
-    /// 遅延キーをクリアする
-    ClearDeferredKeys,
-    /// 設定を再読み込みする
+    /// 特殊キーコンボを再読み込みする
     ReloadKeys {
         special: SpecialKeyCombos,
-        sync: ImeSyncKeys,
     },
     /// FSM パラメータを更新する
     UpdateFsmParams {
@@ -262,9 +266,6 @@ pub enum EngineCommand {
     RefreshState,
     /// フォーカスが変更された
     FocusChanged(FocusObservation),
-    /// OS の修飾キー状態と内部状態を同期する。
-    /// 不整合があれば KeyUp を再注入して OS 側を正す。
-    SyncModifiers(super::fsm_types::ModifierState),
 }
 
 #[cfg(test)]

@@ -5,8 +5,6 @@
 
 use crate::types::FocusKind;
 
-use super::fsm_types::ModifierState;
-
 /// フォーカス変更の観測結果（OS 非依存）
 #[derive(Debug, Clone)]
 pub struct FocusObservation {
@@ -28,7 +26,5 @@ pub struct FocusObservation {
     pub debounce_timer_id: usize,
     /// デバウンス期間（ミリ秒）
     pub debounce_ms: u64,
-    /// OS から取得した修飾キー状態（フォーカス変更時の同期用）
-    pub os_modifiers: Option<ModifierState>,
 }
 

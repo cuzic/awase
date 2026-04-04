@@ -15,6 +15,9 @@ pub fn build_input_context() -> InputContext {
         ime_on: crate::PRECOND_IME_ON.load(Ordering::Acquire),
         is_romaji: !crate::IME_IS_KANA_INPUT.load(Ordering::Relaxed),
         is_japanese_ime: crate::PRECOND_IS_JAPANESE.load(Ordering::Relaxed),
+        modifiers: awase::engine::ModifierState::default(),
+        left_thumb_down: None,
+        right_thumb_down: None,
     }
 }
 use awase::yab::YabLayout;
@@ -184,8 +187,6 @@ impl Runtime {
             self.invalidate_engine_context(ContextChange::FocusChanged);
         }
 
-        // Clear any active buffers
-        self.engine.on_command(EngineCommand::ClearDeferredKeys, &build_input_context());
         // バルーン通知を表示
         self.executor.platform.tray.show_balloon(
             "awase",
@@ -205,16 +206,11 @@ impl Runtime {
     }
 
     /// IME 制御キー後に遅延されたキーを再処理する。
+    ///
+    /// IME ガードは Platform 層に移動したため、現在は IME 状態キャッシュの更新のみ行う。
     pub fn process_deferred_keys(&mut self) {
         // IME 状態キャッシュを更新（メッセージループ上なのでブロッキング OK）
         self.refresh_ime_state_cache();
-
-        let ctx = build_input_context();
-        let decisions = self.engine.process_deferred_keys(&ctx);
-        for decision in decisions {
-            // メッセージループ上なので即座に drain して Effects を実行する
-            self.execute_decision(decision);
-        }
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。
