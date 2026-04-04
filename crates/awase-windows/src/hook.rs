@@ -532,8 +532,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 return CallNextHookEx(hook_handle, ncode, wparam, lparam);
             }
 
-            // Guard active → buffer key
+            // Guard active → buffer key (ただし修飾キーは OS にパススルー)
             if app.platform_state.ime_guard.active {
+                // TrackOnly（Ctrl/Alt/Win）は OS にパススルー。
+                // バッファすると KeyUp が OS に届かず修飾キーが「押しっぱなし」になる。
+                if matches!(route, KeyRoute::TrackOnly) {
+                    app.platform_state.hook.in_callback = false;
+                    return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+                }
                 if app.platform_state.ime_guard.deferred_keys.len() < 10 {
                     let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
                     app.platform_state.ime_guard.deferred_keys.push((event, phys));
