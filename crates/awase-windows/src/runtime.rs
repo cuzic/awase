@@ -249,10 +249,15 @@ impl Runtime {
         // 4. フック再インストール（OS に無言削除されていた場合のリカバリ）
         crate::hook::reinstall_hook();
 
-        // 5. IME キャッシュをリセット
+        // 5. PlatformState を全面リセット
         self.platform_state.preconditions.is_romaji = true;
         self.platform_state.preconditions.ime_on = true; // 安全側: ON
         self.platform_state.preconditions.is_japanese_ime = true;
+        self.platform_state.hook.sent_to_engine = [0u64; 4];
+        self.platform_state.hook.track_only_keys = [0u64; 4];
+        self.platform_state.hook.in_callback = false;
+        self.platform_state.ime_guard.active = false;
+        self.platform_state.ime_guard.deferred_keys.clear();
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();
