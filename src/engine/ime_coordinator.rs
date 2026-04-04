@@ -67,7 +67,7 @@ impl ImeCoordinator {
             if !is_key_down && event.ime_relevance.is_sync_key {
                 self.guard.set_guard(false);
                 log::debug!("IME toggle guard OFF (vk=0x{:02X})", event.vk_code.0);
-                effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
+                effects.push(Effect::Ime(ImeEffect::RequestRefresh));
                 // sync key の KeyUp は素通し（OS に IME トグルを処理させる）
                 let all_effects = std::mem::take(effects);
                 if all_effects.is_empty() {
@@ -80,14 +80,14 @@ impl ImeCoordinator {
             if self.guard.deferred_keys.len() >= 10 {
                 log::warn!("IME guard forced clear: deferred buffer overflow");
                 self.guard.set_guard(false);
-                effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
+                effects.push(Effect::Ime(ImeEffect::RequestRefresh));
                 return None; // ガード解除、通常処理に戻る
             }
 
             // KeyDown も KeyUp もバッファする
             self.guard.push_deferred(*event, *phys);
             let mut all_effects = std::mem::take(effects);
-            all_effects.push(Effect::Ime(ImeEffect::RequestCacheRefresh));
+            all_effects.push(Effect::Ime(ImeEffect::RequestRefresh));
             return Some(Decision::consumed_with(all_effects));
         }
 

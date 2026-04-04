@@ -186,7 +186,7 @@ impl DecisionExecutor {
                         platform.post_ime_refresh();
                     }
                 }
-                ImeEffect::RequestCacheRefresh => platform.post_ime_refresh(),
+                ImeEffect::RequestRefresh => platform.post_ime_refresh(),
             },
             Effect::Ui(ue) => match ue {
                 UiEffect::EngineStateChanged { enabled } => platform.update_tray(enabled),

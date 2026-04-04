@@ -464,7 +464,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         let vk = VkCode(vk_raw);
         let scan = ScanCode(kb.scanCode);
         let (key_classification, physical_pos) = classify_key(vk, scan, &ps.hook_config);
-        let event = RawKeyEvent {
+        let mut event = RawKeyEvent {
             vk_code: vk,
             scan_code: scan,
             event_type,
@@ -476,6 +476,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             modifier_key: classify_modifier(vk),
         };
 
+        // Drop ps borrow — subsequent sections re-acquire app from APP
+        drop(ps);
+
+        // ── IME 事前分類の補完（sync key 判定）──
+        app.enrich_ime_relevance(&mut event);
+
         log::trace!(
             "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → {}",
             event.vk_code.0,
@@ -483,6 +489,55 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             event.event_type,
             if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
         );
+
+        // ── IME トグルガード ──
+        {
+            let is_sync_key = event.ime_relevance.is_sync_key;
+
+            // sync key KeyDown → activate guard, flush Engine pending, PassThrough
+            if is_keydown && is_sync_key && !app.platform_state.ime_guard.active {
+                app.platform_state.ime_guard.active = true;
+                log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
+
+                // Flush engine pending keys
+                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions);
+                app.platform_state.hook.in_callback = false;
+                let decision = app.engine.on_command(
+                    awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
+                    &ctx,
+                );
+                app.executor.execute_from_loop(decision);
+                return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+            }
+
+            // sync key KeyUp → deactivate guard, PassThrough, request deferred processing
+            if !is_keydown && is_sync_key && app.platform_state.ime_guard.active {
+                app.platform_state.ime_guard.active = false;
+                log::debug!("IME guard OFF (sync key vk=0x{:02X})", vk_raw);
+                app.platform_state.hook.in_callback = false;
+                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                    windows::Win32::Foundation::HWND::default(),
+                    crate::WM_PROCESS_DEFERRED,
+                    windows::Win32::Foundation::WPARAM(0),
+                    windows::Win32::Foundation::LPARAM(0),
+                );
+                return CallNextHookEx(hook_handle, ncode, wparam, lparam);
+            }
+
+            // Guard active → buffer key
+            if app.platform_state.ime_guard.active {
+                if app.platform_state.ime_guard.deferred_keys.len() < 10 {
+                    let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
+                    app.platform_state.ime_guard.deferred_keys.push((event, phys));
+                    log::trace!("IME guard: buffered key vk=0x{:02X}", vk_raw);
+                } else {
+                    log::warn!("IME guard forced clear: buffer overflow");
+                    app.platform_state.ime_guard.active = false;
+                }
+                app.platform_state.hook.in_callback = false;
+                return LRESULT(1); // Consumed
+            }
+        }
 
         // ── Engine コールバック呼び出し ──
         let result = KEY_EVENT_CALLBACK

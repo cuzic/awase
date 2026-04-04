@@ -206,10 +206,26 @@ impl Runtime {
 
     /// IME 制御キー後に遅延されたキーを再処理する。
     ///
-    /// IME ガードは Platform 層に移動したため、現在は IME 状態キャッシュの更新のみ行う。
+    /// IME ガードが Platform 層でバッファしたキーを Engine に順次再投入する。
+    /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
-        // IME 状態キャッシュを更新（メッセージループ上なのでブロッキング OK）
-        self.refresh_ime_state_cache();
+        // Refresh IME state (Observer → Preconditions)
+        unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
+
+        // Drain deferred keys from Platform guard
+        let keys: Vec<_> = self.platform_state.ime_guard.deferred_keys.drain(..).collect();
+        if keys.is_empty() {
+            return;
+        }
+
+        log::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
+
+        for (event, _phys) in keys {
+            // Build fresh context with updated preconditions
+            let ctx = build_input_context(&self.platform_state.preconditions);
+            let decision = self.engine.on_input(event, &ctx);
+            self.executor.execute_from_loop(decision);
+        }
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。

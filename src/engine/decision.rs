@@ -40,8 +40,8 @@ pub enum TimerEffect {
 pub enum ImeEffect {
     /// IME の ON/OFF を設定する
     SetOpen(bool),
-    /// IME キャッシュ更新を要求する (PostMessageW)
-    RequestCacheRefresh,
+    /// IME 状態更新を要求する (PostMessageW)
+    RequestRefresh,
 }
 
 /// UI に関する副作用

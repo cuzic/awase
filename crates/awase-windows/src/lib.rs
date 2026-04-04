@@ -82,6 +82,13 @@ pub struct HookConfig {
     pub right_thumb_vk: u16,
 }
 
+/// IME 遷移ガード状態（IME トグルキー押下中のキーバッファリング）
+#[derive(Debug)]
+pub struct ImeGuardState {
+    pub active: bool,
+    pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
+}
+
 /// Platform 層の全状態を集約する構造体。
 ///
 /// シングルスレッド（メインスレッド＋フックコールバック）からのみアクセスされる。
@@ -97,6 +104,7 @@ pub struct PlatformState {
     pub hook_event_count: u64,
     pub focus_debounce_ms: u32,
     pub ime_poll_interval_ms: u32,
+    pub ime_guard: ImeGuardState,
 }
 
 impl PlatformState {
@@ -123,6 +131,7 @@ impl PlatformState {
             hook_event_count: 0,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
+            ime_guard: ImeGuardState { active: false, deferred_keys: Vec::new() },
         }
     }
 }
