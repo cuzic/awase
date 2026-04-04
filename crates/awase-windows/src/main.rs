@@ -791,11 +791,12 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     app.enrich_ime_relevance(&mut event);
 
     // ── Shadow IME toggle: フックコールバックで即座に preconditions.ime_on を更新 ──
-    // IME トグルキーのキーダウン時に shadow 値を反映する。
+    // 設定で指定された sync key のキーダウン時のみ shadow 値を反映する。
+    // hardware IME key（shadow_action）は IME ガードの対象外のため使用しない。
     // Observer のポーリングで実際の OS 状態に収束するが、
     // ポーリング間隔中は shadow 値で Engine が正しく動作する。
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
-        if let Some(action) = event.ime_relevance.shadow_action.or(event.ime_relevance.sync_direction) {
+        if let Some(action) = event.ime_relevance.sync_direction {
             let current = app.platform_state.preconditions.ime_on;
             let new_val = match action {
                 awase::types::ShadowImeAction::Toggle => !current,
