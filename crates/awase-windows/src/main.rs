@@ -49,8 +49,8 @@ use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED,
-    MAIN_THREAD_ID, QUIT_REQUESTED, TIMER_FOCUS_DEBOUNCE,
-    TIMER_HOOK_WATCHDOG, TIMER_IME_POLL, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
+    MAIN_THREAD_ID, QUIT_REQUESTED,
+    TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
@@ -219,16 +219,10 @@ fn main() -> Result<()> {
     install_ctrl_handler();
     let _focus_hook_guard = install_focus_hook();
 
-    // IME 状態ポーリングタイマー + ウォッチドッグタイマー
-    // Win32Timer 経由で設定（OS ID マッピングは内部で管理）
+    // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     unsafe {
         if let Some(app) = APP.get_mut() {
-            app.executor.platform.timer.set(
-                TIMER_IME_POLL,
-                std::time::Duration::from_millis(u64::from(
-                    app.platform_state.ime_poll_interval_ms,
-                )),
-            );
+            app.schedule_ime_refresh(u64::from(app.platform_state.ime_poll_interval_ms));
             app.executor
                 .platform
                 .timer
@@ -877,7 +871,9 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 let Some(app) = APP.get_mut() else { continue };
                 let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
                 match logical_id {
-                    Some(id) if id == TIMER_IME_POLL => {
+                    Some(id) if id == TIMER_IME_REFRESH => {
+                        // 統合 IME リフレッシュ（ポーリング + フォーカスデバウンス統合）
+                        // refresh_ime_state_cache 内で次回ポーリングが自動再スケジュールされる
                         app.refresh_ime_state_cache();
                         // SENT_TO_ENGINE ビットセットを OS キー状態と同期
                         hook::sync_sent_to_engine(&mut app.platform_state.hook);
@@ -912,10 +908,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         // Phase 2: 次回チェック用に ping を送信
                         PING_SENT_AT.store(hook::current_tick_ms(), Ordering::Relaxed);
                         hook::send_ping();
-                    }
-                    Some(id) if id == TIMER_FOCUS_DEBOUNCE => {
-                        app.executor.platform.timer.kill(TIMER_FOCUS_DEBOUNCE);
-                        app.refresh_ime_state_cache();
                     }
                     Some(timer_id) => {
                         // Engine タイマー (TIMER_PENDING, TIMER_SPECULATIVE)

@@ -130,20 +130,35 @@ impl Runtime {
         self.executor.execute_from_loop(decision);
     }
 
-    /// IME ON/OFF 状態を再観測してアトミック変数を更新し、Engine に通知する。
+    /// IME ON/OFF 状態を再観測して Preconditions を更新し、Engine に通知する。
     ///
     /// Observer → Engine → Runtime の 3 層パイプラインで処理する。
+    /// 完了後に自動的に `ime_poll_interval_ms` で次回リフレッシュをスケジュールする。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn refresh_ime_state_cache(&mut self) {
         // Observer: OS 観測 → Preconditions を直接更新
         unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
 
-        // Engine: 判断 → Decision（アトミック変数は更新済み）
+        // Engine: 判断 → Decision
         let ctx = build_input_context(&self.platform_state.preconditions);
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
 
         // Runtime: 副作用実行
         self.executor.execute_from_loop(decision);
+
+        // 次回ポーリングを自動スケジュール（統一タイマー）
+        self.schedule_ime_refresh(u64::from(self.platform_state.ime_poll_interval_ms));
+    }
+
+    /// 統合 IME リフレッシュタイマーをスケジュール（リセット）する。
+    ///
+    /// 既存のタイマーをキャンセルして `delay_ms` 後に再設定する。
+    /// フォーカス変更(50ms) / ポーリング(500ms) / 即時(0ms) を統一的に扱う。
+    pub fn schedule_ime_refresh(&mut self, delay_ms: u64) {
+        self.executor.platform.timer.set(
+            crate::TIMER_IME_REFRESH,
+            std::time::Duration::from_millis(delay_ms),
+        );
     }
 
     /// 配列を動的に切り替える

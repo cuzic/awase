@@ -10,7 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use crate::focus;
 use crate::runtime::FocusDetector;
 use crate::PlatformState;
-use crate::TIMER_FOCUS_DEBOUNCE;
+use crate::TIMER_IME_REFRESH;
 
 /// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
 ///
@@ -47,7 +47,7 @@ fn make_obs(
         needs_uia,
         overridden,
         skip,
-        debounce_timer_id: TIMER_FOCUS_DEBOUNCE,
+        debounce_timer_id: TIMER_IME_REFRESH,
         debounce_ms,
     }
 }

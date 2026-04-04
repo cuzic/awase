@@ -148,11 +148,12 @@ impl Default for PlatformState {
 /// APP グローバル — シングルスレッド専用
 pub static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();
 
-/// フォーカス遷移デバウンスタイマー ID
-pub const TIMER_FOCUS_DEBOUNCE: usize = 103;
-
-/// IME 状態ポーリング用タイマー ID（安全ネット: マウスで言語バー操作した場合等）
-pub const TIMER_IME_POLL: usize = 101;
+/// 統合 IME リフレッシュタイマー ID
+///
+/// フォーカスデバウンス (50ms) と定期ポーリング (500ms) を統合。
+/// `schedule_ime_refresh(delay_ms)` で遅延を指定してリセットする。
+/// refresh 完了後に自動的に `ime_poll_interval_ms` で再スケジュールされる。
+pub const TIMER_IME_REFRESH: usize = 101;
 
 /// フック消失ウォッチドッグタイマー ID（IME ポーリングとは独立）
 pub const TIMER_HOOK_WATCHDOG: usize = 102;
