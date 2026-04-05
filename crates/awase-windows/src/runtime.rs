@@ -39,19 +39,28 @@ fn check_focus_override(
 /// フックベースの追跡により `GetAsyncKeyState` のタイミング問題を回避し、
 /// 猶予期間により Ctrl をわずかに早く離した場合でもコンボキーを確実に検出する。
 pub fn build_input_context(preconditions: &Preconditions, timing: &crate::ModifierTiming) -> InputContext {
-    let os_modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+    let raw = unsafe { crate::observer::focus_observer::read_os_modifiers() };
     let now_tick = crate::hook::current_tick_ms();
+    // grace 猶予込み: コンボキー検出用（Ctrl をわずかに早く離しても検出）
     let modifiers = awase::engine::ModifierState {
-        ctrl: os_modifiers.ctrl || timing.is_ctrl_active(now_tick),
-        alt: os_modifiers.alt || timing.is_alt_active(now_tick),
-        shift: os_modifiers.shift,
-        win: os_modifiers.win,
+        ctrl: raw.ctrl || timing.is_ctrl_active(now_tick),
+        alt: raw.alt || timing.is_alt_active(now_tick),
+        shift: raw.shift,
+        win: raw.win,
+    };
+    // OS 実状態のみ: NicolaFsm の OsModifierHeld 判定用（grace を含めない）
+    let os_modifiers = awase::engine::ModifierState {
+        ctrl: raw.ctrl,
+        alt: raw.alt,
+        shift: raw.shift,
+        win: raw.win,
     };
     InputContext {
         ime_on: preconditions.ime_on,
         is_romaji: preconditions.is_romaji,
         is_japanese_ime: preconditions.is_japanese_ime,
         modifiers,
+        os_modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
     }

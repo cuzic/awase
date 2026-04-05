@@ -54,7 +54,7 @@ impl PhysicalKeyState {
     pub fn from_ctx(ctx: &InputContext, event: &RawKeyEvent) -> Self {
         Self {
             classified: InputTracker::classify(event),
-            modifiers: ctx.modifiers,
+            modifiers: ctx.os_modifiers,
             left_thumb_down: ctx.left_thumb_down,
             right_thumb_down: ctx.right_thumb_down,
         }
@@ -72,7 +72,7 @@ impl PhysicalKeyState {
                 timestamp: 0,
                 is_ime_control: false,
             },
-            modifiers: ctx.modifiers,
+            modifiers: ctx.os_modifiers,
             left_thumb_down: ctx.left_thumb_down,
             right_thumb_down: ctx.right_thumb_down,
         }

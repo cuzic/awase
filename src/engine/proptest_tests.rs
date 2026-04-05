@@ -123,6 +123,7 @@ fn ime_on_ctx() -> InputContext {
         is_romaji: true,
         is_japanese_ime: true,
         modifiers: crate::engine::fsm_types::ModifierState { ctrl: false, alt: false, shift: false, win: false },
+        os_modifiers: crate::engine::fsm_types::ModifierState { ctrl: false, alt: false, shift: false, win: false },
         left_thumb_down: None,
         right_thumb_down: None,
     }

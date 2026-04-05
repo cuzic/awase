@@ -168,8 +168,10 @@ pub struct InputContext {
     /// 日本語 IME がアクティブか（MS-IME, Google, ATOK 等）
     pub is_japanese_ime: bool,
     // ── Physical key state (provided by Platform) ──
-    /// 修飾キー状態
+    /// 修飾キー状態（grace 猶予込み — コンボキー検出用）
     pub modifiers: ModifierState,
+    /// 修飾キー状態（OS 実状態のみ — NicolaFsm の OsModifierHeld 判定用）
+    pub os_modifiers: ModifierState,
     /// 左親指キー押下時刻（None = 非押下）
     pub left_thumb_down: Option<Timestamp>,
     /// 右親指キー押下時刻（None = 非押下）
