@@ -254,33 +254,40 @@ fn main() -> Result<()> {
 
 /// ログ初期化
 ///
-/// `#![windows_subsystem = "windows"]` でコンソールがないため、
-/// ログはファイル（実行ファイルと同じディレクトリの `awase.log`）に出力する。
+/// コンソールがアタッチされている場合は stderr に出力する。
+/// それ以外（`#![windows_subsystem = "windows"]` でコンソールなし）は
+/// ファイル（実行ファイルと同じディレクトリの `awase.log`）に出力する。
 fn init_logging() {
-    let log_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("awase.log")))
-        .unwrap_or_else(|| PathBuf::from("awase.log"));
+    use windows::Win32::System::Console::GetConsoleWindow;
 
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path);
+    let has_console = unsafe { !GetConsoleWindow().is_invalid() };
 
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
     builder.format_timestamp_millis();
 
-    if let Ok(file) = log_file {
-        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    let log_dest;
+    if has_console {
+        // コンソール起動時は stderr に出力（builder のデフォルト）
+        log_dest = "stderr".to_string();
+    } else {
+        let log_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("awase.log")))
+            .unwrap_or_else(|| PathBuf::from("awase.log"));
+
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+        }
+        log_dest = log_path.display().to_string();
     }
-    // ファイルが開けない場合は stderr フォールバック（コンソール起動時用）
 
     builder.init();
-    log::info!(
-        "Keyboard Layout Emulator starting... (log → {})",
-        log_path.display()
-    );
+    log::info!("Keyboard Layout Emulator starting... (log → {log_dest})");
 }
 
 /// 設定ファイルを読み込む
