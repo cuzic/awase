@@ -159,6 +159,9 @@ impl Runtime {
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
         self.executor.execute_from_loop(decision);
+        // ホットキーコンボ消費後: 猶予を即座にクリアし、
+        // 直後のキーが OsModifierHeld でバイパスされるのを防ぐ。
+        self.platform_state.modifier_timing.clear_grace();
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。

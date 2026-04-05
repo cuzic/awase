@@ -124,6 +124,15 @@ impl ModifierTiming {
     pub fn is_alt_active(&self, now_tick: u64) -> bool {
         self.alt_down || now_tick.saturating_sub(self.alt_up_tick) < Self::GRACE_MS
     }
+
+    /// コンボキー消費後に猶予をクリアする。
+    ///
+    /// Ctrl/Alt コンボが消費されたら猶予を維持する意味がないため、
+    /// 直後のキーが `OsModifierHeld` でバイパスされるのを防ぐ。
+    pub fn clear_grace(&mut self) {
+        self.ctrl_up_tick = 0;
+        self.alt_up_tick = 0;
+    }
 }
 
 /// Platform 層の全状態を集約する構造体。

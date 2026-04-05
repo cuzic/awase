@@ -258,9 +258,12 @@ fn main() -> Result<()> {
 /// それ以外（`#![windows_subsystem = "windows"]` でコンソールなし）は
 /// ファイル（実行ファイルと同じディレクトリの `awase.log`）に出力する。
 fn init_logging() {
-    use windows::Win32::System::Console::GetConsoleWindow;
+    use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
-    let has_console = unsafe { !GetConsoleWindow().is_invalid() };
+    // windows_subsystem = "windows" アプリは stderr ハンドルを持たない���め、
+    // 親プロセスのコンソ��ルにアタッチして stderr を取得する。
+    // コンソー��から起動され��場合のみ成功する。
+    let has_console = unsafe { AttachConsole(ATTACH_PARENT_PROCESS).is_ok() };
 
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));

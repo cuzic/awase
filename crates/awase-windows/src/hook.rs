@@ -574,6 +574,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // Re-acquire platform_state for in_callback reset
         // (callback may have accessed APP.get_mut() internally)
         if let Some(app) = crate::APP.get_mut() {
+            // コンボキー消費後の猶予クリア:
+            // Engine が KeyDown を consumed した場合、Ctrl/Alt コンボが成立したことを意味する。
+            // 猶予を維持すると直後のキーが OsModifierHeld でバイパスされるため即座にクリア。
+            if is_keydown && matches!(result, CallbackResult::Consumed) {
+                app.platform_state.modifier_timing.clear_grace();
+            }
             app.platform_state.hook.in_callback = false;
         }
 
