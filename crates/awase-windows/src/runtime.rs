@@ -38,18 +38,12 @@ fn check_focus_override(
 /// 修飾キー判定は `GetAsyncKeyState` と `ModifierTiming` の OR で統合。
 /// フックベースの追跡により `GetAsyncKeyState` のタイミング問題を回避し、
 /// 猶予期間により Ctrl をわずかに早く離した場合でもコンボキーを確実に検出する。
-pub fn build_input_context(preconditions: &Preconditions, timing: &crate::ModifierTiming) -> InputContext {
+pub fn build_input_context(preconditions: &Preconditions, _timing: &crate::ModifierTiming) -> InputContext {
     let raw = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-    let now_tick = crate::hook::current_tick_ms();
-    // grace 猶予込み: コンボキー検出用（Ctrl をわずかに早く離しても検出）
+    // OS 実状態のみ使用。ModifierTiming の grace 猶予は廃止。
+    // grace は Ctrl+key コ���ボで Ctrl を早く離した場合の救済だったが、
+    // Ctrl+I 直後の親指キーが Ctrl+Nonconvert (IME OFF) と誤検出される問題を引き起こすため除去。
     let modifiers = awase::engine::ModifierState {
-        ctrl: raw.ctrl || timing.is_ctrl_active(now_tick),
-        alt: raw.alt || timing.is_alt_active(now_tick),
-        shift: raw.shift,
-        win: raw.win,
-    };
-    // OS 実状態のみ: NicolaFsm の OsModifierHeld 判定用（grace を含めない）
-    let os_modifiers = awase::engine::ModifierState {
         ctrl: raw.ctrl,
         alt: raw.alt,
         shift: raw.shift,
@@ -60,7 +54,7 @@ pub fn build_input_context(preconditions: &Preconditions, timing: &crate::Modifi
         is_romaji: preconditions.is_romaji,
         is_japanese_ime: preconditions.is_japanese_ime,
         modifiers,
-        os_modifiers,
+        os_modifiers: modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
     }

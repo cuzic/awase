@@ -271,7 +271,7 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<Decision> {
-        let modifiers = ctx.modifiers;
+        let modifiers = ctx.os_modifiers;
 
         // エンジン ON/OFF コンボキー — user_enabled のみ変更
         if !self.adapter.is_enabled()
