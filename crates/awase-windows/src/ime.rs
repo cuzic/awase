@@ -608,23 +608,14 @@ pub struct ImeSnapshot {
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn detect_ime_state() -> ImeSnapshot {
-    // 0. Resolve the focused window once and use it for all queries
-    let mut gui_info = GUITHREADINFO {
-        cbSize: size_of::<GUITHREADINFO>() as u32,
-        ..Default::default()
-    };
-    let (focused_hwnd, thread_id) = if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
-        let hwnd = if gui_info.hwndFocus == HWND::default() {
-            gui_info.hwndActive
-        } else {
-            gui_info.hwndFocus
-        };
-        let mut pid = 0u32;
-        let tid = GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
-        (hwnd, tid)
-    } else {
-        (GetForegroundWindow(), 0)
-    };
+    // 0. Resolve the focused window once and use it for all queries.
+    // GetGUIThreadInfo はフォアグラウンドスレッドがハングすると無期限ブロックするため、
+    // タイムアウト付きヘルパーを使用する。
+    let result = crate::win32::get_gui_thread_info_with_timeout(
+        std::time::Duration::from_millis(200),
+    );
+    let focused_hwnd = result.focused_hwnd;
+    let thread_id = result.thread_id;
 
     // 1. Keyboard layout → is_japanese_ime
     let is_japanese_ime = {

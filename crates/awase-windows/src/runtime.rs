@@ -221,18 +221,13 @@ impl Runtime {
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
     unsafe fn detect_and_update_focus(&mut self) -> bool {
         use crate::focus::classify;
-        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetGUIThreadInfo, GUITHREADINFO};
 
-        // 現在のフォーカス hwnd を取得（GetGUIThreadInfo が最も正確）
-        let mut info = GUITHREADINFO {
-            cbSize: u32::try_from(size_of::<GUITHREADINFO>()).unwrap(),
-            ..Default::default()
-        };
-        let hwnd = if GetGUIThreadInfo(0, &raw mut info).is_ok() && !info.hwndFocus.0.is_null() {
-            info.hwndFocus
-        } else {
-            GetForegroundWindow()
-        };
+        // GetGUIThreadInfo はフォアグラウンドスレッドがハングすると無期限ブロックするため、
+        // タイムアウト付きヘルパーを使用する。
+        let result = crate::win32::get_gui_thread_info_with_timeout(
+            std::time::Duration::from_millis(200),
+        );
+        let hwnd = result.focused_hwnd;
 
         if hwnd.0.is_null() {
             return false;

@@ -50,7 +50,7 @@ use awase_windows::tray::SystemTray;
 use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED,
     MAIN_THREAD_ID, QUIT_REQUESTED,
-    TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
+    TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
@@ -899,6 +899,22 @@ fn run_message_loop(taskbar_created_msg: u32) {
                             app.process_deferred_keys();
                         }
                     }
+                    Some(id) if id == TIMER_POWER_RESUME => {
+                        // スリープ復帰 / セッションアンロック後の遅延リカバリ。
+                        //
+                        // 復帰後は OS や IME サービスが未回復の可能性があるため、
+                        // ブロッキング API（GetGUIThreadInfo, ImmGetConversionStatus 等）を
+                        // 含む refresh_ime_state_cache() はここでは呼ばない。
+                        // 軽量なフック再登録とエンジン状態無効化のみ行い、
+                        // IME 状態の検出は既存の 500ms ポーリング（TIMER_IME_REFRESH）に委譲する。
+                        app.executor.platform.timer.kill(TIMER_POWER_RESUME);
+                        log::info!("Power resume recovery: reinstalling hook (lightweight)");
+                        hook::reinstall_hook();
+                        app.invalidate_engine_context(ContextChange::InputLanguageChanged);
+                        app.platform_state.focus_kind = FocusKind::Undetermined;
+                        // ポーリングを短い間隔でスケジュールし、IME 状態を早めに回復させる
+                        app.schedule_ime_refresh(500);
+                    }
                     Some(id) if id == TIMER_HOOK_WATCHDOG => {
                         use std::sync::atomic::AtomicU64;
                         // Ping 方式: 合成キーイベントを送り、フックが受信するか確認する。
@@ -960,15 +976,19 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_POWERBROADCAST => unsafe {
                 // スリープ復帰時に全状態をリフレッシュする。
                 // PBT_APMRESUMEAUTOMATIC (0x12) / PBT_APMRESUMESUSPEND (0x07)
+                //
+                // 復帰直後は OS や IME サービスがまだ回復途中で、ブロッキング
+                // Win32 API（SetWindowsHookExW, GetGUIThreadInfo, ImmGetConversionStatus 等）
+                // がメッセージループをハングさせる恐れがある。
+                // タイマーで遅延実行し、OS が十分回復してから処理する。
                 let pbt = msg.wParam.0;
                 if pbt == 0x12 || pbt == 0x07 {
-                    log::info!("Power resume detected (PBT=0x{pbt:02X}), reinstalling hook and refreshing state");
-                    // スリープ中にフックが解除されている可能性があるため即座に再インストール
-                    hook::reinstall_hook();
+                    log::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
                     if let Some(app) = APP.get_mut() {
-                        app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-                        app.refresh_ime_state_cache();
-                        app.platform_state.focus_kind = FocusKind::Undetermined;
+                        app.executor.platform.timer.set(
+                            TIMER_POWER_RESUME,
+                            std::time::Duration::from_secs(2),
+                        );
                     }
                 }
             },
@@ -982,13 +1002,14 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         }
                     }
                     WTS_SESSION_UNLOCK => {
-                        log::info!("Session unlocked, reinstalling hook and refreshing state");
-                        // ロック中にフックが解除されている可能性があるため即座に再インストール
-                        hook::reinstall_hook();
+                        log::info!("Session unlocked, scheduling deferred recovery");
+                        // ロック中にフックが解除されている可能性があるため遅延復帰を予約。
+                        // 即座に呼ぶと OS/IME が未回復でハングする恐れがある。
                         if let Some(app) = APP.get_mut() {
-                            app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-                            app.refresh_ime_state_cache();
-                            app.platform_state.focus_kind = FocusKind::Undetermined;
+                            app.executor.platform.timer.set(
+                                TIMER_POWER_RESUME,
+                                std::time::Duration::from_secs(2),
+                            );
                         }
                     }
                     _ => {}

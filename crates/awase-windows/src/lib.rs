@@ -205,6 +205,12 @@ pub const TIMER_IME_REFRESH: usize = 101;
 /// フック消失ウォッチドッグタイマー ID（IME ポーリングとは独立）
 pub const TIMER_HOOK_WATCHDOG: usize = 102;
 
+/// スリープ復帰 / セッションアンロック後の遅延リカバリタイマー ID
+///
+/// 復帰直後は OS や IME サービスがまだ回復途中で、ブロッキング Win32 API が
+/// メッセージループをハングさせる恐れがある。2秒遅延して安全に復帰処理を行う。
+pub const TIMER_POWER_RESUME: usize = 103;
+
 /// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
 pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 
