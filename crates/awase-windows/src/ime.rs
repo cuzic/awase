@@ -12,7 +12,7 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, SendMessageTimeoutW,
+    GetForegroundWindow, GetGUIThreadInfo, SendMessageTimeoutW,
     GUITHREADINFO, SMTO_ABORTIFHUNG,
 };
 
