@@ -53,6 +53,12 @@ pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 
 // ── PlatformState: シングルスレッド上の全状態を集約 ──
 
+/// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。
+///
+/// ポーリング間隔 500ms × 3 = 1.5秒。一時的な検出失敗は許容しつつ、
+/// 長時間の乖離（実際は IME OFF なのにキャッシュが ON のまま）を防ぐ。
+pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
+
 /// 環境前提条件（IME 状態・入力方式・日本語判定）
 #[derive(Debug)]
 pub struct Preconditions {
@@ -64,6 +70,13 @@ pub struct Preconditions {
     pub is_japanese_ime: bool,
     /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
     pub prev_conversion_mode: u32,
+    /// IME 状態検出の連続失敗回数。
+    ///
+    /// `detect_ime_state()` が `ime_on = None` を返すたびにインクリメントされ、
+    /// 検出成功時またはシャドウ更新（ユーザー操作）時にリセットされる。
+    /// [`IME_DETECT_MISS_THRESHOLD`] を超えると `InputContext.ime_state_reliable = false` となり、
+    /// Engine が非活性化される（`ime_on` 自体は維持し、検出復帰で即復帰可能）。
+    pub ime_detect_miss_count: u32,
 }
 
 /// フックルーティング状態（キーペア追跡・再入ガード）
@@ -163,6 +176,7 @@ impl PlatformState {
                 is_romaji: true,     // デフォルト: ローマ字入力
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: 0,
+                ime_detect_miss_count: 0,
             },
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],

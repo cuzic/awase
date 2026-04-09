@@ -23,11 +23,26 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
     // is_japanese_ime: always update (LANGID is reliable)
     preconditions.is_japanese_ime = snap.is_japanese_ime;
 
-    // ime_on: update if detected, keep shadow if not
+    // ime_on: update if detected, fallback on repeated failure
     if let Some(on) = snap.ime_on {
         preconditions.ime_on = on && snap.is_japanese_ime;
+        preconditions.ime_detect_miss_count = 0;
     } else if !snap.is_japanese_ime {
         preconditions.ime_on = false;
+        preconditions.ime_detect_miss_count = 0;
+    } else {
+        // 検出失敗: カウンタをインクリメント。
+        // ime_on 自体は変更しない（検出成功時に即座に正しい値に復帰できるよう維持）。
+        // カウンタは build_input_context で ime_state_reliable に変換され、
+        // Engine の compute_active が参照する。
+        preconditions.ime_detect_miss_count =
+            preconditions.ime_detect_miss_count.saturating_add(1);
+        if preconditions.ime_detect_miss_count == crate::IME_DETECT_MISS_THRESHOLD {
+            log::warn!(
+                "IME detection failed {} consecutive times, Engine will be deactivated until detection succeeds",
+                preconditions.ime_detect_miss_count
+            );
+        }
     }
 
     // is_romaji: update if detected, otherwise use conversion_mode transition

@@ -167,6 +167,10 @@ pub struct InputContext {
     pub is_romaji: bool,
     /// 日本語 IME がアクティブか（MS-IME, Google, ATOK 等）
     pub is_japanese_ime: bool,
+    /// IME 状態検出が信頼できるか。
+    /// 連続検出失敗時に `false` になり、`compute_active` が Engine を非活性にする。
+    /// `ime_on` 自体は前回値を維持するため、検出成功で即座に復帰できる。
+    pub ime_state_reliable: bool,
     // ── Physical key state (provided by Platform) ──
     /// 修飾キー状態（grace 猶予込み — コンボキー検出用）
     pub modifiers: ModifierState,

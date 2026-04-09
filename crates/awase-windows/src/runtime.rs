@@ -53,6 +53,7 @@ pub fn build_input_context(preconditions: &Preconditions, _timing: &crate::Modif
         ime_on: preconditions.ime_on,
         is_romaji: preconditions.is_romaji,
         is_japanese_ime: preconditions.is_japanese_ime,
+        ime_state_reliable: preconditions.ime_detect_miss_count < crate::IME_DETECT_MISS_THRESHOLD,
         modifiers,
         os_modifiers: modifiers,
         left_thumb_down: None,
@@ -433,6 +434,7 @@ impl Runtime {
         self.platform_state.preconditions.ime_on = true; // 安全側: ON
         self.platform_state.preconditions.is_japanese_ime = true;
         self.platform_state.preconditions.prev_conversion_mode = 0;
+        self.platform_state.preconditions.ime_detect_miss_count = 0;
         self.platform_state.hook.sent_to_engine = [0u64; 4];
         self.platform_state.hook.track_only_keys = [0u64; 4];
         self.platform_state.hook.in_callback = false;
