@@ -77,6 +77,12 @@ pub struct Preconditions {
     /// [`IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
     /// IME を強制 ON にして Engine の活性状態を維持する。
     pub ime_detect_miss_count: u32,
+    /// IME 強制 ON 後のガードフラグ。
+    ///
+    /// `true` の間、`observe()` は検出失敗時に `ime_on` を変更しない（awase が SSOT）。
+    /// 検出成功時にクリアされ、OS 側の SSOT に戻る。
+    /// force-ON の無限ループ防止、panic_reset 直後の上書き防止にも使用。
+    pub ime_force_on_guard: bool,
 }
 
 /// フックルーティング状態（キーペア追跡・再入ガード）
@@ -177,6 +183,7 @@ impl PlatformState {
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: 0,
                 ime_detect_miss_count: 0,
+                ime_force_on_guard: false,
             },
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],

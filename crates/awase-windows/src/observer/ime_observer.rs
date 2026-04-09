@@ -15,6 +15,10 @@ const IME_CMODE_NATIVE: u32 = 0x0001;
 ///   `conversion_mode` の ROMAN ビット変化で実際のかな切替を検出する。
 ///   変化がなければ前回値を維持する（Zoom 等のアプリ対応）。
 ///
+/// `ime_force_on_guard` が `true` の場合（awase が SSOT）:
+/// - 検出成功時のみガードを解除して OS 側の SSOT に戻る。
+/// - 検出失敗時は `ime_on` / `is_romaji` を変更しない。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn observe(preconditions: &mut Preconditions) {
@@ -25,11 +29,22 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
 
     // ime_on: update if detected, fallback on repeated failure
     if let Some(on) = snap.ime_on {
+        // 検出成功: OS が SSOT に戻る
         preconditions.ime_on = on && snap.is_japanese_ime;
         preconditions.ime_detect_miss_count = 0;
+        preconditions.ime_force_on_guard = false;
     } else if !snap.is_japanese_ime {
+        // 日本語 IME でない: 確実に OFF
         preconditions.ime_on = false;
         preconditions.ime_detect_miss_count = 0;
+        preconditions.ime_force_on_guard = false;
+    } else if preconditions.ime_force_on_guard {
+        // 検出失敗かつガード中: awase が SSOT なので ime_on を変更しない。
+        // miss_count もインクリメントしない（ガードが解除されるまで force-ON は再発火しない）。
+        log::debug!(
+            "IME detection failed but force_on_guard active, preserving ime_on={}",
+            preconditions.ime_on
+        );
     } else {
         // 検出失敗: カウンタをインクリメント。
         // ime_on 自体は変更しない（検出成功時に即座に正しい値に復帰できるよう維持）。
@@ -38,14 +53,17 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
             preconditions.ime_detect_miss_count.saturating_add(1);
         if preconditions.ime_detect_miss_count == crate::IME_DETECT_MISS_THRESHOLD {
             log::warn!(
-                "IME detection failed {} consecutive times, Engine will be deactivated until detection succeeds",
+                "IME detection failed {} consecutive times, will force IME ON",
                 preconditions.ime_detect_miss_count
             );
         }
     }
 
     // is_romaji: update if detected, otherwise use conversion_mode transition
-    if let Some(romaji) = snap.is_romaji {
+    // ガード中は変更しない（awase が SSOT）
+    if preconditions.ime_force_on_guard && snap.is_romaji.is_none() {
+        // ガード中かつ検出失敗: is_romaji を維持
+    } else if let Some(romaji) = snap.is_romaji {
         let prev = preconditions.is_romaji;
         preconditions.is_romaji = romaji;
         if prev != romaji {
@@ -87,10 +105,11 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
     }
 
     log::debug!(
-        "IME snapshot: japanese={} ime_on={:?} romaji={:?} conv=0x{:08X}",
+        "IME snapshot: japanese={} ime_on={:?} romaji={:?} conv=0x{:08X} guard={}",
         snap.is_japanese_ime,
         snap.ime_on,
         snap.is_romaji,
-        snap.conversion_mode
+        snap.conversion_mode,
+        preconditions.ime_force_on_guard,
     );
 }

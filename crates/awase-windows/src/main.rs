@@ -799,8 +799,9 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
             };
             if new_val != current {
                 app.platform_state.preconditions.ime_on = new_val;
-                // shadow 更新はユーザー操作に基づくので検出失敗カウンタをリセット
+                // shadow 更新はユーザー操作に基づくので検出失敗カウンタとガードをリセット
                 app.platform_state.preconditions.ime_detect_miss_count = 0;
+                app.platform_state.preconditions.ime_force_on_guard = false;
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X})",
                     if current { "ON" } else { "OFF" },
@@ -842,6 +843,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     if let Some(new_ime_on) = decision.find_ime_set_open() {
         app.platform_state.preconditions.ime_on = new_ime_on;
         app.platform_state.preconditions.ime_detect_miss_count = 0;
+        app.platform_state.preconditions.ime_force_on_guard = false;
         app.executor.platform.timer.kill(TIMER_IME_REFRESH);
         app.platform_state.hook.suppress_ctrl_bypass = true;
         log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended, ctrl bypass suppressed");
@@ -972,8 +974,17 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_IME_KEY_DETECTED => unsafe {
+                // TSF CompartmentEventSink または IME 制御キーからの通知。
+                // IME ガード中は deferred keys を処理し、
+                // それ以外は IME 状態を即座にリフレッシュする。
                 if let Some(app) = APP.get_mut() {
-                    app.process_deferred_keys();
+                    if app.platform_state.ime_guard.active
+                        || !app.platform_state.ime_guard.deferred_keys.is_empty()
+                    {
+                        app.process_deferred_keys();
+                    } else {
+                        app.refresh_ime_state_cache();
+                    }
                 }
             },
             WM_POWERBROADCAST => unsafe {

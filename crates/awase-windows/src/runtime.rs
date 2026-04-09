@@ -206,20 +206,24 @@ impl Runtime {
         // ── Phase 3.5: IME 検出失敗が続いたら IME を強制 ON にする ──
         // ユーザーが Engine を有効にしている = NICOLA を使いたいので、
         // 検出できないなら読むのをやめて書く（awase が SSOT になる）。
+        // ime_force_on_guard 中は再発火しない（無限ループ防止）。
         if self.platform_state.preconditions.ime_detect_miss_count
             >= crate::IME_DETECT_MISS_THRESHOLD
             && self.platform_state.preconditions.ime_on
             && self.engine.is_user_enabled()
             && self.platform_state.preconditions.is_japanese_ime
+            && !self.platform_state.preconditions.ime_force_on_guard
         {
             log::warn!(
-                "IME detection failed {} times, forcing IME ON",
+                "IME detection failed {} times, forcing IME ON (awase becomes SSOT)",
                 self.platform_state.preconditions.ime_detect_miss_count
             );
             let success = self.executor.platform.set_ime_open(true);
             if success {
                 self.platform_state.preconditions.ime_on = true;
-                self.platform_state.preconditions.ime_detect_miss_count = 0;
+                self.platform_state.preconditions.is_romaji = true;
+                self.platform_state.preconditions.ime_force_on_guard = true;
+                // miss_count はリセットしない。ガードが検出成功まで保護する。
             }
         }
 
@@ -454,6 +458,9 @@ impl Runtime {
         self.platform_state.preconditions.is_japanese_ime = true;
         self.platform_state.preconditions.prev_conversion_mode = 0;
         self.platform_state.preconditions.ime_detect_miss_count = 0;
+        // 直後の refresh_ime_state_cache() で observe() が上書きしないようガードする。
+        // 次の検出成功時に自然に解除される。
+        self.platform_state.preconditions.ime_force_on_guard = true;
         self.platform_state.hook.sent_to_engine = [0u64; 4];
         self.platform_state.hook.track_only_keys = [0u64; 4];
         self.platform_state.hook.in_callback = false;
