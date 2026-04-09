@@ -8,8 +8,8 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_ThreadMgr, ITfCompartment, ITfCompartmentEventSink, ITfCompartmentMgr,
-    ITfSource, ITfThreadMgr,
+    CLSID_TF_ThreadMgr, ITfCompartment, ITfCompartmentEventSink,
+    ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfSource, ITfThreadMgr,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
