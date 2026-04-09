@@ -33,8 +33,7 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
     } else {
         // 検出失敗: カウンタをインクリメント。
         // ime_on 自体は変更しない（検出成功時に即座に正しい値に復帰できるよう維持）。
-        // カウンタは build_input_context で ime_state_reliable に変換され、
-        // Engine の compute_active が参照する。
+        // 閾値到達時は refresh_ime_state_cache が IME を強制 ON にする。
         preconditions.ime_detect_miss_count =
             preconditions.ime_detect_miss_count.saturating_add(1);
         if preconditions.ime_detect_miss_count == crate::IME_DETECT_MISS_THRESHOLD {

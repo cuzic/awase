@@ -53,7 +53,6 @@ pub fn build_input_context(preconditions: &Preconditions, _timing: &crate::Modif
         ime_on: preconditions.ime_on,
         is_romaji: preconditions.is_romaji,
         is_japanese_ime: preconditions.is_japanese_ime,
-        ime_state_reliable: preconditions.ime_detect_miss_count < crate::IME_DETECT_MISS_THRESHOLD,
         modifiers,
         os_modifiers: modifiers,
         left_thumb_down: None,
@@ -203,6 +202,26 @@ impl Runtime {
 
         // ── Phase 3: IME 状態の再取得 ──
         unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
+
+        // ── Phase 3.5: IME 検出失敗が続いたら IME を強制 ON にする ──
+        // ユーザーが Engine を有効にしている = NICOLA を使いたいので、
+        // 検出できないなら読むのをやめて書く（awase が SSOT になる）。
+        if self.platform_state.preconditions.ime_detect_miss_count
+            >= crate::IME_DETECT_MISS_THRESHOLD
+            && self.platform_state.preconditions.ime_on
+            && self.engine.is_user_enabled()
+            && self.platform_state.preconditions.is_japanese_ime
+        {
+            log::warn!(
+                "IME detection failed {} times, forcing IME ON",
+                self.platform_state.preconditions.ime_detect_miss_count
+            );
+            let success = self.executor.platform.set_ime_open(true);
+            if success {
+                self.platform_state.preconditions.ime_on = true;
+                self.platform_state.preconditions.ime_detect_miss_count = 0;
+            }
+        }
 
         // ── Phase 4: Engine に RefreshState（active 遷移検知）──
         let ctx = self.build_ctx();

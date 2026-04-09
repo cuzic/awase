@@ -74,8 +74,8 @@ pub struct Preconditions {
     ///
     /// `detect_ime_state()` が `ime_on = None` を返すたびにインクリメントされ、
     /// 検出成功時またはシャドウ更新（ユーザー操作）時にリセットされる。
-    /// [`IME_DETECT_MISS_THRESHOLD`] を超えると `InputContext.ime_state_reliable = false` となり、
-    /// Engine が非活性化される（`ime_on` 自体は維持し、検出復帰で即復帰可能）。
+    /// [`IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
+    /// IME を強制 ON にして Engine の活性状態を維持する。
     pub ime_detect_miss_count: u32,
 }
 

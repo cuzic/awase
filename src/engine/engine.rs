@@ -64,11 +64,7 @@ impl Engine {
     /// InputContext から実効状態を計算する
     #[must_use]
     pub fn compute_active(&self, ctx: &InputContext) -> bool {
-        self.adapter.is_enabled()
-            && ctx.ime_on
-            && ctx.is_romaji
-            && ctx.is_japanese_ime
-            && ctx.ime_state_reliable
+        self.adapter.is_enabled() && ctx.ime_on && ctx.is_romaji && ctx.is_japanese_ime
     }
 
     /// 実効状態の遷移を検知し、必要な Effect（flush, UI 通知）を返す。
