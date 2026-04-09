@@ -578,20 +578,38 @@ pub fn restart_as_admin() {
 
 /// 設定画面 (awase-settings) を起動する。
 /// 実行ファイルと同じディレクトリにある awase-settings.exe を探す。
+/// 失敗時はバルーン通知でユーザーに知らせる。
 fn launch_settings_gui() {
     let Ok(exe) = std::env::current_exe() else {
-        log::warn!("awase-settings not found: cannot determine exe path");
+        show_settings_error("実行ファイルのパスを取得できません");
         return;
     };
     let Some(dir) = exe.parent() else {
-        log::warn!("awase-settings not found: no parent directory");
+        show_settings_error("実行ファイルのディレクトリを取得できません");
         return;
     };
     let path = dir.join("awase-settings.exe");
-    if path.exists() {
-        let _ = std::process::Command::new(&path).spawn();
-    } else {
-        log::warn!("awase-settings not found at {}", path.display());
+    if !path.exists() {
+        let msg = format!("設定画面が見つかりません:\n{}", path.display());
+        show_settings_error(&msg);
+        return;
+    }
+    match std::process::Command::new(&path).spawn() {
+        Ok(_) => log::info!("awase-settings launched: {}", path.display()),
+        Err(e) => {
+            let msg = format!("設定画面の起動に失敗しました:\n{e}");
+            show_settings_error(&msg);
+        }
+    }
+}
+
+/// 設定画面起動エラーをログとバルーン通知で表示する。
+fn show_settings_error(msg: &str) {
+    log::error!("Settings launch: {msg}");
+    unsafe {
+        if let Some(app) = crate::APP.get_mut() {
+            app.executor.platform.tray.show_balloon("awase", msg);
+        }
     }
 }
 
