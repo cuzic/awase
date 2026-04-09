@@ -77,7 +77,7 @@ pub struct GeneralConfig {
     pub default_layout: String,
 
     /// n-gram コーパスファイル（オプション）
-    #[serde(default)]
+    #[serde(default = "default_ngram_file")]
     pub ngram_file: Option<String>,
 
     /// n-gram 閾値調整幅（ミリ秒、デフォルト 20ms）
@@ -141,11 +141,11 @@ const fn default_threshold() -> u32 {
 }
 
 fn default_left_thumb() -> String {
-    "Nonconvert".to_string()
+    "無変換".to_string()
 }
 
 fn default_right_thumb() -> String {
-    "Convert".to_string()
+    "変換".to_string()
 }
 
 fn default_layouts_dir() -> String {
@@ -154,6 +154,10 @@ fn default_layouts_dir() -> String {
 
 fn default_layout() -> String {
     "nicola.yab".to_string()
+}
+
+fn default_ngram_file() -> Option<String> {
+    Some("data/ngram_hiragana.csv.gz".to_string())
 }
 
 const fn default_ngram_adjustment() -> u32 {
@@ -178,19 +182,19 @@ const fn default_speculative_delay() -> u32 {
 }
 
 fn default_engine_on_keys() -> Vec<String> {
-    vec!["Ctrl+Shift+Convert".to_string()]
+    vec!["Ctrl+Shift+変換".to_string()]
 }
 
 fn default_engine_off_keys() -> Vec<String> {
-    vec!["Ctrl+Shift+Nonconvert".to_string()]
+    vec!["Ctrl+Shift+無変換".to_string()]
 }
 
 fn default_ime_control_on_keys() -> Vec<String> {
-    vec!["Ctrl+Convert".to_string()]
+    vec!["Ctrl+変換".to_string()]
 }
 
 fn default_ime_control_off_keys() -> Vec<String> {
-    vec!["Ctrl+Nonconvert".to_string()]
+    vec!["Ctrl+無変換".to_string()]
 }
 
 const fn default_focus_debounce_ms() -> u32 {
@@ -272,15 +276,15 @@ impl Default for KeysConfig {
 }
 
 fn default_ime_toggle_keys() -> Vec<String> {
-    vec!["Kanji".to_string()]
+    vec!["漢字".to_string()]
 }
 
 fn default_ime_on_keys() -> Vec<String> {
-    vec!["ImeOn".to_string()]
+    vec!["IMEオン".to_string()]
 }
 
 fn default_ime_off_keys() -> Vec<String> {
-    vec!["ImeOff".to_string()]
+    vec!["IMEオフ".to_string()]
 }
 
 /// フォーカスオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
@@ -503,8 +507,8 @@ default_layout = "nicola.yab"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.general.simultaneous_threshold_ms, 100);
-        assert_eq!(config.general.left_thumb_key, "Nonconvert");
-        assert_eq!(config.general.right_thumb_key, "Convert");
+        assert_eq!(config.general.left_thumb_key, "無変換");
+        assert_eq!(config.general.right_thumb_key, "変換");
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(config.general.layouts_dir, "config");
     }
@@ -771,8 +775,8 @@ default_layout = "nicola.yab"
 [general]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.keys.engine_off, vec!["Ctrl+Shift+Nonconvert"]);
-        assert_eq!(config.keys.engine_on, vec!["Ctrl+Shift+Convert"]);
+        assert_eq!(config.keys.engine_off, vec!["Ctrl+Shift+無変換"]);
+        assert_eq!(config.keys.engine_on, vec!["Ctrl+Shift+変換"]);
     }
 
     #[test]

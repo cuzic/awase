@@ -449,7 +449,6 @@ impl eframe::App for SettingsApp {
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::ImeDetect, "IME 検出"),
-                    (Tab::Focus, "フォーカス"),
                     (Tab::Advanced, "詳細設定"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
