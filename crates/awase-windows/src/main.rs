@@ -785,12 +785,20 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     app.enrich_ime_relevance(&mut event);
 
     // ── Shadow IME toggle: フックコールバックで即座に preconditions.ime_on を更新 ──
-    // 設定で指定された sync key のキーダウン時のみ shadow 値を反映する。
-    // hardware IME key（shadow_action）は IME ガードの対象外のため使用しない。
-    // Observer のポーリングで実際の OS 状態に収束するが、
-    // ポーリング間隔中は shadow 値で Engine が正しく動作する。
+    //
+    // 2段階で判定:
+    // 1. config で指定された sync key（sync_direction） — 最優先
+    // 2. ハードウェア IME キー（shadow_action） — VK_KANJI, VK_IME_ON, VK_DBE_HIRAGANA 等
+    //
+    // どちらのケースでも、ユーザー操作に基づくので detection miss_count と
+    // force_on_guard をリセットする。awase が SSOT として機能するには、
+    // OS の IME 状態を読めなくてもキーイベントから状態を追跡する必要がある。
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
-        if let Some(action) = event.ime_relevance.sync_direction {
+        let action = event
+            .ime_relevance
+            .sync_direction
+            .or(event.ime_relevance.shadow_action);
+        if let Some(action) = action {
             let current = app.platform_state.preconditions.ime_on;
             let new_val = match action {
                 awase::types::ShadowImeAction::Toggle => !current,
