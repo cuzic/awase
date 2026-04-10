@@ -203,25 +203,31 @@ impl Runtime {
         // ── Phase 3: IME 状態の再取得 ──
         unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
 
-        // ── Phase 3.5: IME 検出失敗が続いたら IME を強制 ON にする ──
-        // ユーザーが Engine を有効にしている = NICOLA を使いたいので、
-        // 検出できないなら読むのをやめて書く（awase が SSOT になる）。
-        // ime_force_on_guard 中は再発火しない（無限ループ防止）。
+        // ── Phase 3.5: IME 検出が失敗しているとき、キャッシュ値を OS にミラーする ──
+        //
+        // 検出失敗が続いている = OS の IME 状態を読めない状態。
+        // このとき awase のキャッシュ（preconditions.ime_on）を SSOT として OS に書き込む。
+        // ユーザーが shadow update で IME OFF に切り替えた場合も、
+        // キャッシュと OS の乖離を毎サイクル解消できる。
+        //
+        // set_ime_open_cross_process は GetGUIThreadInfo もタイムアウト付き、
+        // SendMessageTimeoutW は 50ms タイムアウトなので安全に呼べる。
+        //
+        // ime_force_on_guard 中は初回ミラーリング後にフラグが立つので再書き込みしない
+        // （毎サイクル書き込むと他アプリの IME 操作と競合するため）。
         if self.platform_state.preconditions.ime_detect_miss_count
             >= crate::IME_DETECT_MISS_THRESHOLD
-            && self.platform_state.preconditions.ime_on
             && self.engine.is_user_enabled()
             && self.platform_state.preconditions.is_japanese_ime
             && !self.platform_state.preconditions.ime_force_on_guard
         {
+            let target = self.platform_state.preconditions.ime_on;
             log::warn!(
-                "IME detection failed {} times, forcing IME ON (awase becomes SSOT)",
+                "IME detection failed {} times, mirroring cached state to OS (ime_on={target})",
                 self.platform_state.preconditions.ime_detect_miss_count
             );
-            let success = self.executor.platform.set_ime_open(true);
+            let success = self.executor.platform.set_ime_open(target);
             if success {
-                self.platform_state.preconditions.ime_on = true;
-                self.platform_state.preconditions.is_romaji = true;
                 self.platform_state.preconditions.ime_force_on_guard = true;
                 // miss_count はリセットしない。ガードが検出成功まで保護する。
             }

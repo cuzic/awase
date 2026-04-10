@@ -13,8 +13,7 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetGUIThreadInfo, PostMessageW, SendMessageTimeoutW,
-    GUITHREADINFO, SMTO_ABORTIFHUNG,
+    GetForegroundWindow, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
 };
 
 pub use awase::platform::ImeMode;
@@ -328,22 +327,11 @@ pub unsafe fn detect_ime_open_cross_process() -> Option<bool> {
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
 pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
-    // detect_ime_state() と同じく hwndFocus を使う
-    let hwnd = {
-        let mut gui_info = GUITHREADINFO {
-            cbSize: size_of::<GUITHREADINFO>() as u32,
-            ..Default::default()
-        };
-        if GetGUIThreadInfo(0, &raw mut gui_info).is_ok() {
-            if gui_info.hwndFocus != HWND::default() {
-                gui_info.hwndFocus
-            } else {
-                gui_info.hwndActive
-            }
-        } else {
-            GetForegroundWindow()
-        }
-    };
+    // GetGUIThreadInfo はタイムアウト付きラッパーを使用（直接呼ぶとブロックする可能性）
+    let gui_result = crate::win32::get_gui_thread_info_with_timeout(
+        std::time::Duration::from_millis(150),
+    );
+    let hwnd = gui_result.focused_hwnd;
     if hwnd.0.is_null() {
         return false;
     }
