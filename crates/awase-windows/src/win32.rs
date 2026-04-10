@@ -13,11 +13,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// タイムアウトで放棄されたワーカースレッドのリスト。
 ///
 /// 次の `run_with_timeout` 呼び出し時に完了済みのものを刈り取る（GC）。
-/// リストが肥大化するのを防ぐため上限を設ける。
+/// 永久にブロックする API を叩いたスレッドは `is_finished()` が false のままなので
+/// GC できない。そのため上限を設け、満杯なら新規 spawn を拒否してリソース暴走を防ぐ。
 static LEAKED_THREADS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
-/// 孤児スレッドの警告を出すしきい値
-const LEAKED_THREAD_WARN_THRESHOLD: usize = 16;
+/// 孤児スレッドの最大許容数。これを超えると `run_with_timeout` は spawn せず即 `None` を返す。
+const LEAKED_THREAD_MAX: usize = 8;
 
 /// 孤児スレッドリストから完了済みのものを刈り取る。
 /// `run_with_timeout` の冒頭で呼ばれる。
@@ -45,13 +46,17 @@ fn leak_thread(handle: JoinHandle<()>) {
         return;
     };
     leaked.push(handle);
-    if leaked.len() >= LEAKED_THREAD_WARN_THRESHOLD {
-        log::warn!(
-            "Leaked worker threads accumulating: {} currently in list. \
-             This suggests a Win32 API is persistently blocking.",
-            leaked.len()
-        );
-    }
+    log::warn!(
+        "Leaked worker thread (now {} in list)",
+        leaked.len()
+    );
+}
+
+/// 孤児スレッドリストが満杯かどうかを返す。
+fn is_leaked_list_full() -> bool {
+    LEAKED_THREADS
+        .lock()
+        .map_or(false, |leaked| leaked.len() >= LEAKED_THREAD_MAX)
 }
 
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
@@ -74,6 +79,17 @@ where
 {
     // 前回以前にリークしたスレッドのうち完了済みのものを刈り取る
     reap_leaked_threads();
+
+    // 満杯なら新規スレッドを生成せず即失敗。
+    // これ以上リークしないようにするセーフティネット。
+    // 検出失敗扱いになるが、ime_force_on_guard により Engine は動作継続する。
+    if is_leaked_list_full() {
+        log::error!(
+            "Leaked thread list is full ({LEAKED_THREAD_MAX}), refusing to spawn new worker. \
+             A Win32 API is persistently blocking."
+        );
+        return None;
+    }
 
     // 結果はチャンネルで受け取る（JoinHandle の型を () に揃えるため）
     let (tx, rx) = std::sync::mpsc::sync_channel::<T>(1);
