@@ -1,10 +1,12 @@
 //! Windows API の安全ラッパー
 
+use std::os::windows::io::AsRawHandle;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HANDLE, HWND};
+use windows::Win32::System::Threading::TerminateThread;
 use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
@@ -52,11 +54,44 @@ fn leak_thread(handle: JoinHandle<()>) {
     );
 }
 
-/// 孤児スレッドリストが満杯かどうかを返す。
-fn is_leaked_list_full() -> bool {
-    LEAKED_THREADS
-        .lock()
-        .map_or(false, |leaked| leaked.len() >= LEAKED_THREAD_MAX)
+/// 孤児スレッドリストが満杯のとき、最も古い（インデックス 0）スレッドを
+/// `TerminateThread` で強制終了してスロットを空ける。
+///
+/// ラウンドロビン的に古いスレッドを捨てることで、新しいリクエストを受け付けられるようにする。
+///
+/// # 警告
+/// `TerminateThread` はスレッドのデストラクタを実行せず、ロックを解放しない危険な API。
+/// しかし対象はすでにハングしているスレッドなので、失うものは少ない。
+/// メッセージループを守る方が優先。
+fn terminate_oldest_leaked_if_full() -> bool {
+    let Ok(mut leaked) = LEAKED_THREADS.lock() else {
+        return false;
+    };
+    if leaked.len() < LEAKED_THREAD_MAX {
+        return true; // 空きがあるので何もしない
+    }
+    // 最も古いスレッドを強制終了
+    let oldest = leaked.remove(0);
+    let raw_handle = oldest.as_raw_handle();
+    unsafe {
+        let handle = HANDLE(raw_handle.cast());
+        match TerminateThread(handle, 1) {
+            Ok(()) => {
+                log::warn!(
+                    "Forcibly terminated oldest leaked worker thread (round-robin, {} remaining)",
+                    leaked.len()
+                );
+                // JoinHandle を drop → OS スレッドリソースが回収される
+                drop(oldest);
+                true
+            }
+            Err(e) => {
+                log::error!("TerminateThread failed: {e}, putting handle back");
+                leaked.insert(0, oldest);
+                false
+            }
+        }
+    }
 }
 
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
@@ -80,13 +115,11 @@ where
     // 前回以前にリークしたスレッドのうち完了済みのものを刈り取る
     reap_leaked_threads();
 
-    // 満杯なら新規スレッドを生成せず即失敗。
-    // これ以上リークしないようにするセーフティネット。
-    // 検出失敗扱いになるが、ime_force_on_guard により Engine は動作継続する。
-    if is_leaked_list_full() {
+    // 満杯なら最古のスレッドを TerminateThread で強制終了してスロットを空ける（ラウンドロビン）。
+    // 万一終了に失敗した場合は新規 spawn を諦めて None を返す。
+    if !terminate_oldest_leaked_if_full() {
         log::error!(
-            "Leaked thread list is full ({LEAKED_THREAD_MAX}), refusing to spawn new worker. \
-             A Win32 API is persistently blocking."
+            "Leaked thread list is full and TerminateThread failed, refusing to spawn new worker."
         );
         return None;
     }
