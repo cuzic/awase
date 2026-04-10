@@ -246,19 +246,53 @@ impl Runtime {
     unsafe fn detect_and_update_focus(&mut self) -> bool {
         use crate::focus::classify;
 
-        // GetGUIThreadInfo はフォアグラウンドスレッドがハングすると無期限ブロックするため、
-        // タイムアウト付きヘルパーを使用する。
-        let result = crate::win32::get_gui_thread_info_with_timeout(
-            std::time::Duration::from_millis(200),
-        );
-        let hwnd = result.focused_hwnd;
-
-        if hwnd.0.is_null() {
-            return false;
+        // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
+        // GetGUIThreadInfo / GetWindowThreadProcessId / GetClassNameW は
+        // フォアグラウンドスレッドがハングしていると無期限ブロックする。
+        // HWND は *mut c_void で Send でないため、usize に変換して転送する。
+        struct FocusProbe {
+            hwnd_addr: usize,
+            process_id: u32,
+            class_name: String,
         }
 
-        let process_id = classify::get_window_process_id(hwnd);
-        let class_name = classify::get_class_name_string(hwnd);
+        let probe = crate::win32::run_with_timeout(
+            std::time::Duration::from_millis(300),
+            || {
+                let result = unsafe {
+                    crate::win32::get_gui_thread_info_with_timeout(
+                        std::time::Duration::from_millis(150),
+                    )
+                };
+                let hwnd = result.focused_hwnd;
+                if hwnd.0.is_null() {
+                    return FocusProbe {
+                        hwnd_addr: 0,
+                        process_id: 0,
+                        class_name: String::new(),
+                    };
+                }
+                let process_id = classify::get_window_process_id(hwnd);
+                let class_name = classify::get_class_name_string(hwnd);
+                FocusProbe {
+                    hwnd_addr: hwnd.0 as usize,
+                    process_id,
+                    class_name,
+                }
+            },
+        );
+
+        let Some(probe) = probe else {
+            log::warn!("Focus probe timed out — skipping update this cycle");
+            return false;
+        };
+
+        if probe.hwnd_addr == 0 {
+            return false;
+        }
+        let hwnd = windows::Win32::Foundation::HWND(probe.hwnd_addr as *mut _);
+        let process_id = probe.process_id;
+        let class_name = probe.class_name;
 
         // app_kind を更新
         let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
@@ -274,8 +308,24 @@ impl Runtime {
         } else if let Some(cached) = self.executor.platform.focus.cache.get(process_id, &class_name) {
             (cached, "cache hit".to_string(), false)
         } else {
-            let result = classify::classify_focus(hwnd);
-            (result.kind, format!("{}", result.reason), false)
+            // classify_focus は ImmGetContext / GetWindowLongW / MSAA 等の
+            // ブロッキング API を呼び出すため、ワーカースレッドで実行する。
+            // HWND は *mut c_void なので、usize に変換してスレッド間転送する。
+            let hwnd_addr = hwnd.0 as usize;
+            let classify_result = crate::win32::run_with_timeout(
+                std::time::Duration::from_millis(300),
+                move || {
+                    let hwnd = windows::Win32::Foundation::HWND(hwnd_addr as *mut _);
+                    classify::classify_focus(hwnd)
+                },
+            );
+            match classify_result {
+                Some(result) => (result.kind, format!("{}", result.reason), false),
+                None => {
+                    log::warn!("classify_focus timed out for hwnd={:?}", hwnd);
+                    (FocusKind::Undetermined, "classify timeout".to_string(), false)
+                }
+            }
         };
 
         // focus_kind を更新

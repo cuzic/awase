@@ -999,9 +999,13 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 if pbt == 0x12 || pbt == 0x07 {
                     log::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
                     if let Some(app) = APP.get_mut() {
+                        // 既存の IME ポーリングをキャンセル。
+                        // 復帰直後にポーリングが発火すると refresh_ime_state_cache() の
+                        // ブロッキング API 群でハングする恐れがある。
+                        app.executor.platform.timer.kill(TIMER_IME_REFRESH);
                         app.executor.platform.timer.set(
                             TIMER_POWER_RESUME,
-                            std::time::Duration::from_secs(2),
+                            std::time::Duration::from_secs(3),
                         );
                     }
                 }
@@ -1020,9 +1024,11 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         // ロック中にフックが解除されている可能性があるため遅延復帰を予約。
                         // 即座に呼ぶと OS/IME が未回復でハングする恐れがある。
                         if let Some(app) = APP.get_mut() {
+                            // 既存の IME ポーリングをキャンセル（復帰中の発火を防止）
+                            app.executor.platform.timer.kill(TIMER_IME_REFRESH);
                             app.executor.platform.timer.set(
                                 TIMER_POWER_RESUME,
-                                std::time::Duration::from_secs(2),
+                                std::time::Duration::from_secs(3),
                             );
                         }
                     }

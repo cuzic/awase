@@ -683,6 +683,26 @@ pub struct ImeSnapshot {
     pub conversion_mode: u32,
 }
 
+/// `detect_ime_state` をワーカースレッドでタイムアウト付きで実行する。
+///
+/// 複数のブロッキング IMM32 API（`ImmGetContext`, `ImmGetConversionStatus` 等）を
+/// 連鎖的に呼ぶため、メッセージループスレッドから直接呼ぶとハングする恐れがある。
+/// ワーカースレッドで実行し、タイムアウトした場合は検出失敗扱いにする。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+pub unsafe fn detect_ime_state_with_timeout(timeout: std::time::Duration) -> ImeSnapshot {
+    crate::win32::run_with_timeout(timeout, || unsafe { detect_ime_state() }).unwrap_or_else(|| {
+        log::warn!("detect_ime_state timed out, returning empty snapshot");
+        ImeSnapshot {
+            is_japanese_ime: false,
+            ime_on: None,
+            is_romaji: None,
+            conversion_mode: 0,
+        }
+    })
+}
+
 /// OS API を呼び出して IME 状態を一括取得する。
 ///
 /// `GetGUIThreadInfo().hwndFocus` を使って実際のキーボードフォーカスウィンドウの

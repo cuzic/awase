@@ -8,6 +8,41 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
 };
 
+/// タイムアウト付きで任意の処理をワーカースレッドで実行する。
+///
+/// ブロッキング Win32 API（IMM32, MSAA, UIA 等）を安全に呼び出すために使用する。
+/// タイムアウトした場合は `None` を返し、ワーカースレッドは放置される（リーク）。
+/// これは OS がスレッド終了時に回収するが、頻繁に発生するとリソース枯渇の原因になる。
+///
+/// # Type parameters
+/// - `T`: 戻り値の型。`Send + 'static` である必要がある。
+///
+/// # 制約
+/// クロージャ内では COM/IMM32/GDI 等のスレッド親和性のある API を呼び出せない。
+/// ただし `GetForegroundWindow`, `GetGUIThreadInfo`, `SendMessageTimeoutW` 等の
+/// 読み取り系 API は一般的にワーカースレッドから呼んでも安全。
+pub fn run_with_timeout<T, F>(timeout: Duration, f: F) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let handle = std::thread::spawn(f);
+    let start = std::time::Instant::now();
+    loop {
+        if handle.is_finished() {
+            return handle.join().ok();
+        }
+        if start.elapsed() >= timeout {
+            log::warn!(
+                "run_with_timeout: worker thread exceeded {}ms, abandoning",
+                timeout.as_millis()
+            );
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
 pub fn send_input_safe(inputs: &[INPUT]) -> u32 {
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");

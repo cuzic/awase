@@ -22,7 +22,9 @@ const IME_CMODE_NATIVE: u32 = 0x0001;
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn observe(preconditions: &mut Preconditions) {
-    let snap = crate::ime::detect_ime_state();
+    // detect_ime_state は複数のブロッキング IMM32 API を連鎖呼び出しするため、
+    // ワーカースレッドでタイムアウト付き実行する（メッセージループハング防止）。
+    let snap = crate::ime::detect_ime_state_with_timeout(std::time::Duration::from_millis(300));
 
     // is_japanese_ime: always update (LANGID is reliable)
     preconditions.is_japanese_ime = snap.is_japanese_ime;
