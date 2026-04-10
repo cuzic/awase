@@ -1,5 +1,7 @@
 //! Windows API の安全ラッパー
 
+use std::sync::Mutex;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
@@ -8,11 +10,55 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
 };
 
+/// タイムアウトで放棄されたワーカースレッドのリスト。
+///
+/// 次の `run_with_timeout` 呼び出し時に完了済みのものを刈り取る（GC）。
+/// リストが肥大化するのを防ぐため上限を設ける。
+static LEAKED_THREADS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// 孤児スレッドの警告を出すしきい値
+const LEAKED_THREAD_WARN_THRESHOLD: usize = 16;
+
+/// 孤児スレッドリストから完了済みのものを刈り取る。
+/// `run_with_timeout` の冒頭で呼ばれる。
+///
+/// `is_finished() == true` の `JoinHandle` を `retain` で削除すると drop され、
+/// 既に終了している OS スレッドのリソースが回収される。
+fn reap_leaked_threads() {
+    let Ok(mut leaked) = LEAKED_THREADS.lock() else {
+        return;
+    };
+    let before = leaked.len();
+    leaked.retain(|h| !h.is_finished());
+    let reaped = before - leaked.len();
+    if reaped > 0 {
+        log::debug!(
+            "Reaped {reaped} finished leaked worker threads ({} remaining)",
+            leaked.len()
+        );
+    }
+}
+
+/// 孤児スレッドリストに追加する。
+fn leak_thread(handle: JoinHandle<()>) {
+    let Ok(mut leaked) = LEAKED_THREADS.lock() else {
+        return;
+    };
+    leaked.push(handle);
+    if leaked.len() >= LEAKED_THREAD_WARN_THRESHOLD {
+        log::warn!(
+            "Leaked worker threads accumulating: {} currently in list. \
+             This suggests a Win32 API is persistently blocking.",
+            leaked.len()
+        );
+    }
+}
+
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
 ///
 /// ブロッキング Win32 API（IMM32, MSAA, UIA 等）を安全に呼び出すために使用する。
-/// タイムアウトした場合は `None` を返し、ワーカースレッドは放置される（リーク）。
-/// これは OS がスレッド終了時に回収するが、頻繁に発生するとリソース枯渇の原因になる。
+/// タイムアウトした場合は `None` を返し、ワーカースレッドは孤児スレッドリストに追加され、
+/// 次回の `run_with_timeout` 呼び出し時に完了していれば刈り取られる（GC）。
 ///
 /// # Type parameters
 /// - `T`: 戻り値の型。`Send + 'static` である必要がある。
@@ -26,17 +72,41 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    let handle = std::thread::spawn(f);
+    // 前回以前にリークしたスレッドのうち完了済みのものを刈り取る
+    reap_leaked_threads();
+
+    // 結果はチャンネルで受け取る（JoinHandle の型を () に揃えるため）
+    let (tx, rx) = std::sync::mpsc::sync_channel::<T>(1);
+    let handle: JoinHandle<()> = std::thread::spawn(move || {
+        let result = f();
+        // 受信側がタイムアウトで drop されている可能性があるので送信失敗は無視
+        let _ = tx.send(result);
+    });
+
     let start = std::time::Instant::now();
     loop {
-        if handle.is_finished() {
-            return handle.join().ok();
+        // 結果が届いたか確認
+        match rx.try_recv() {
+            Ok(result) => {
+                // スレッドは間もなく終了するはず。join で回収する。
+                let _ = handle.join();
+                return Some(result);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // ワーカーがパニック等で送信せずに終了
+                let _ = handle.join();
+                log::error!("run_with_timeout: worker thread ended without result");
+                return None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
+
         if start.elapsed() >= timeout {
             log::warn!(
-                "run_with_timeout: worker thread exceeded {}ms, abandoning",
+                "run_with_timeout: worker thread exceeded {}ms, leaked for later GC",
                 timeout.as_millis()
             );
+            leak_thread(handle);
             return None;
         }
         std::thread::sleep(Duration::from_millis(1));
