@@ -363,6 +363,21 @@ impl Runtime {
         if process_changed {
             log::debug!("Foreground process changed → FocusChanged (pid={process_id} class={class_name})");
 
+            // フォーカス変更時は IME 強制書き込みガードをリセットする。
+            // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、
+            // 前のウィンドウで設定した状態を引きずらず、再検出から始める。
+            // miss_count もリセットして、新しいウィンドウで十分な猶予を与える。
+            if self.platform_state.preconditions.ime_force_on_guard
+                || self.platform_state.preconditions.ime_detect_miss_count > 0
+            {
+                log::debug!(
+                    "Focus changed: clearing ime_force_on_guard and detect_miss_count \
+                     (new window may have different IME state)"
+                );
+                self.platform_state.preconditions.ime_force_on_guard = false;
+                self.platform_state.preconditions.ime_detect_miss_count = 0;
+            }
+
             // UIA 非同期判定が必要かチェック（Undetermined の場合）
             let needs_uia = kind == FocusKind::Undetermined;
             if needs_uia {
