@@ -11,8 +11,6 @@ path = "src/lib.rs"
 name = "awase"
 path = "src/main.rs"
 
-[features]
-
 [dependencies]
 awase = { path = "../.." }
 timed-fsm = { path = "../timed-fsm" }
