@@ -9,6 +9,7 @@ enum Tab {
     Basic,
     Keys,
     ImeDetect,
+    Preview,
     Advanced,
 }
 
@@ -40,6 +41,8 @@ struct SettingsApp {
     new_ime_toggle_key: String,
     new_ime_detect_on_key: String,
     new_ime_detect_off_key: String,
+    // Preview cache: (layout filename, parsed result)
+    preview_cache: Option<(String, Result<awase::yab::YabLayout, String>)>,
 }
 
 impl SettingsApp {
@@ -67,6 +70,7 @@ impl SettingsApp {
             new_ime_toggle_key: String::new(),
             new_ime_detect_on_key: String::new(),
             new_ime_detect_off_key: String::new(),
+            preview_cache: None,
         }
     }
 
@@ -331,6 +335,55 @@ impl SettingsApp {
         }
     }
 
+    fn tab_preview(&mut self, ui: &mut egui::Ui) {
+        ui.heading("配列プレビュー");
+        ui.label("選択中のレイアウトをキーボード風に表示します。\n通常面・左親指シフト面・右親指シフト面を確認できます。");
+        ui.add_space(8.0);
+
+        let layout_file = self.config.general.default_layout.clone();
+        ui.horizontal(|ui| {
+            ui.label(format!("レイアウト: {layout_file}"));
+            if ui.button("再読み込み").clicked() {
+                self.preview_cache = None;
+            }
+        });
+        ui.add_space(8.0);
+
+        // キャッシュをチェック、無ければロード
+        let need_reload = self
+            .preview_cache
+            .as_ref()
+            .map_or(true, |(cached_name, _)| cached_name != &layout_file);
+        if need_reload {
+            self.preview_cache = Some((layout_file.clone(), load_layout_for_preview(
+                &self.config.general.layouts_dir,
+                &layout_file,
+                &self.config.general.keyboard_model,
+            )));
+        }
+
+        match self.preview_cache.as_ref().map(|(_, r)| r) {
+            Some(Ok(layout)) => {
+                ui.label(format!("名前: {}", layout.name));
+                ui.add_space(12.0);
+                ui.label("通常面");
+                draw_face_grid(ui, &layout.normal, "normal");
+                ui.add_space(12.0);
+                ui.label("左親指シフト面");
+                draw_face_grid(ui, &layout.left_thumb, "left");
+                ui.add_space(12.0);
+                ui.label("右親指シフト面");
+                draw_face_grid(ui, &layout.right_thumb, "right");
+            }
+            Some(Err(e)) => {
+                ui.colored_label(egui::Color32::RED, format!("読み込みエラー: {e}"));
+            }
+            None => {
+                ui.label("読み込み中...");
+            }
+        }
+    }
+
     fn tab_advanced(&mut self, ui: &mut egui::Ui) {
         ui.heading("詳細設定");
         ui.add_space(4.0);
@@ -409,6 +462,7 @@ impl eframe::App for SettingsApp {
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::ImeDetect, "IME 検出"),
+                    (Tab::Preview, "プレビュー"),
                     (Tab::Advanced, "詳細設定"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
@@ -423,6 +477,7 @@ impl eframe::App for SettingsApp {
                 Tab::Basic => self.tab_basic(ui),
                 Tab::Keys => self.tab_keys(ui),
                 Tab::ImeDetect => self.tab_ime_detect(ui),
+                Tab::Preview => self.tab_preview(ui),
                 Tab::Advanced => self.tab_advanced(ui),
             });
 
@@ -476,6 +531,89 @@ fn key_list_ui(
             buf.clear();
         }
     });
+}
+
+// ── Preview helpers ──
+
+/// JIS キーボードの各行のキー数（.yab の行/列と一致）
+const JIS_ROW_KEYS: [usize; 4] = [13, 12, 11, 10];
+
+/// 指定されたレイアウトファイルをパースしてプレビュー用に読み込む。
+fn load_layout_for_preview(
+    layouts_dir: &str,
+    layout_file: &str,
+    keyboard_model: &str,
+) -> Result<awase::yab::YabLayout, String> {
+    // layouts_dir が相対パスなら current_exe の隣を探す
+    let dir = if std::path::Path::new(layouts_dir).is_absolute() {
+        std::path::PathBuf::from(layouts_dir)
+    } else if let Ok(exe) = std::env::current_exe() {
+        exe.parent().map_or_else(
+            || std::path::PathBuf::from(layouts_dir),
+            |d| d.join(layouts_dir),
+        )
+    } else {
+        std::path::PathBuf::from(layouts_dir)
+    };
+    let path = dir.join(layout_file);
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let model = match keyboard_model {
+        "us" => awase::scanmap::KeyboardModel::Us,
+        _ => awase::scanmap::KeyboardModel::Jis,
+    };
+    awase::yab::YabLayout::parse(&content, model).map_err(|e| format!("{e}"))
+}
+
+/// YabFace をキーボード風のグリッドで描画する。
+fn draw_face_grid(ui: &mut egui::Ui, face: &awase::yab::YabFace, id_suffix: &str) {
+    let key_size = egui::vec2(32.0, 32.0);
+    egui::Grid::new(format!("face_grid_{id_suffix}"))
+        .spacing(egui::vec2(2.0, 2.0))
+        .show(ui, |ui| {
+            for (row_idx, &col_count) in JIS_ROW_KEYS.iter().enumerate() {
+                // 行インデントで段差を表現
+                let indent = (row_idx as f32) * 8.0;
+                if indent > 0.0 {
+                    ui.add_space(indent);
+                }
+                for col_idx in 0..col_count {
+                    let pos = awase::scanmap::PhysicalPos::new(row_idx as u8, col_idx as u8);
+                    let label = face
+                        .get(&pos)
+                        .map(yab_value_display)
+                        .unwrap_or_default();
+                    let (rect, _response) = ui.allocate_exact_size(key_size, egui::Sense::hover());
+                    ui.painter().rect_stroke(
+                        rect,
+                        4.0,
+                        egui::Stroke::new(1.0, egui::Color32::GRAY),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &label,
+                        egui::FontId::proportional(16.0),
+                        ui.visuals().text_color(),
+                    );
+                }
+                ui.end_row();
+            }
+        });
+}
+
+/// `YabValue` を1〜2文字の表示文字列に変換する。
+fn yab_value_display(v: &awase::yab::YabValue) -> String {
+    use awase::yab::YabValue;
+    match v {
+        YabValue::Romaji { kana: Some(k), .. } => k.to_string(),
+        YabValue::Romaji { romaji, kana: None } => romaji.clone(),
+        YabValue::Literal(s) => s.clone(),
+        YabValue::KeySequence(s) => s.clone(),
+        YabValue::Special(_) => "◆".to_string(),
+        YabValue::None => String::new(),
+    }
 }
 
 // ── Utility functions ──
