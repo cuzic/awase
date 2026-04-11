@@ -110,7 +110,10 @@ impl Decision {
                 effects.push(effect);
             }
             Self::PassThrough => {
-                *self = Self::Consume {
+                // PassThrough に effect を足すと PassThroughWith になる（Consume ではない）。
+                // Consume にすると元のキーイベントが OS に渡らなくなり、
+                // IME ON/OFF キーが奪われて 2回押しが必要になる等の不具合を引き起こす。
+                *self = Self::PassThroughWith {
                     effects: smallvec![effect],
                 };
             }
@@ -139,11 +142,14 @@ impl Decision {
         match self {
             Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
             Self::PassThrough => {
-                *self = Self::Consume {
+                // PassThrough に effect を足すと PassThroughWith になる（Consume ではない）。
+                // Consume にすると元のキーイベントが OS に渡らなくなり、
+                // IME ON/OFF キーが奪われて 2回押しが必要になる等の不具合を引き起こす。
+                *self = Self::PassThroughWith {
                     effects: EffectVec::new(),
                 };
-                let Self::Consume { effects } = self else {
-                    unreachable!("just assigned Consume")
+                let Self::PassThroughWith { effects } = self else {
+                    unreachable!("just assigned PassThroughWith")
                 };
                 effects
             }
@@ -330,13 +336,15 @@ mod tests {
     // ── push_effect ──
 
     #[test]
-    fn push_effect_on_pass_through_promotes_to_consume() {
+    fn push_effect_on_pass_through_promotes_to_pass_through_with() {
         let mut d = Decision::pass_through();
         d.push_effect(test_effect());
-        assert!(d.is_consumed());
+        // PassThrough + effect should become PassThroughWith, NOT Consume.
+        // Consuming here would steal IME control keys from the OS.
+        assert!(!d.is_consumed());
         match d {
-            Decision::Consume { effects } => assert_eq!(effects.len(), 1),
-            other => panic!("expected Consume, got {:?}", other),
+            Decision::PassThroughWith { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected PassThroughWith, got {:?}", other),
         }
     }
 
@@ -363,15 +371,16 @@ mod tests {
     // ── effects_mut ──
 
     #[test]
-    fn effects_mut_on_pass_through_promotes_to_consume() {
+    fn effects_mut_on_pass_through_promotes_to_pass_through_with() {
         let mut d = Decision::pass_through();
         let effects = d.effects_mut();
         assert!(effects.is_empty());
         effects.push(test_effect());
-        assert!(d.is_consumed());
+        // PassThrough + effect should become PassThroughWith, NOT Consume.
+        assert!(!d.is_consumed());
         match d {
-            Decision::Consume { effects } => assert_eq!(effects.len(), 1),
-            other => panic!("expected Consume, got {:?}", other),
+            Decision::PassThroughWith { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected PassThroughWith, got {:?}", other),
         }
     }
 
