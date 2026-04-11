@@ -793,11 +793,18 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // どちらのケースでも、ユーザー操作に基づくので detection miss_count と
     // force_on_guard をリセットする。awase が SSOT として機能するには、
     // OS の IME 状態を読めなくてもキーイベントから状態を追跡する必要がある。
+    //
+    // ハードウェアキー（shadow_action）は日本語キーボードでのみ適用する。
+    // 韓国語キーボードでは VK_KANJI(0x19) は VK_HANJA で意味が異なる（漢字変換、トグルではない）。
+    // sync_direction (config 由来) はユーザー指定なので言語ガードしない。
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
-        let action = event
-            .ime_relevance
-            .sync_direction
-            .or(event.ime_relevance.shadow_action);
+        let action = event.ime_relevance.sync_direction.or_else(|| {
+            if app.platform_state.preconditions.is_japanese_ime {
+                event.ime_relevance.shadow_action
+            } else {
+                None
+            }
+        });
         if let Some(action) = action {
             let current = app.platform_state.preconditions.ime_on;
             let new_val = match action {
