@@ -1,4 +1,4 @@
-use windows::core::{implement, Interface, GUID};
+use windows::core::{Interface, GUID};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Input::Ime::{
@@ -8,12 +8,11 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_ThreadMgr, ITfCompartment, ITfCompartmentEventSink,
-    ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfSource, ITfThreadMgr,
+    CLSID_TF_ThreadMgr, ITfCompartment, ITfCompartmentMgr, ITfThreadMgr,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
+    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
 };
 
 pub use awase::platform::ImeMode;
@@ -57,76 +56,15 @@ const fn conversion_to_ime_mode(open: bool, conversion: u32) -> ImeMode {
 
 // ─── TSF (Text Services Framework) ───────────────────────────
 
-// ── ITfCompartmentEventSink 実装 ──
-
-/// IME 状態変更のリアルタイム通知を受け取る TSF イベントシンク。
-///
-/// `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`（IME ON/OFF）と
-/// `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`（変換モード）の
-/// 変更時にコールバックされ、`WM_IME_KEY_DETECTED` をメッセージループに通知する。
-#[implement(ITfCompartmentEventSink)]
-struct CompartmentEventSink;
-
-impl ITfCompartmentEventSink_Impl for CompartmentEventSink_Impl {
-    fn OnChange(&self, rguid: *const GUID) -> windows::core::Result<()> {
-        let guid = unsafe { &*rguid };
-        if *guid == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE
-            || *guid == GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION
-        {
-            log::debug!("TSF CompartmentEventSink: IME state changed");
-            unsafe {
-                let _ = PostMessageW(
-                    HWND::default(),
-                    crate::WM_IME_KEY_DETECTED,
-                    WPARAM(0),
-                    LPARAM(0),
-                );
-            }
-        }
-        Ok(())
-    }
-}
-
-/// イベントシンクの登録結果（アンレジスト用の cookie を保持）
-#[allow(missing_debug_implementations)]
-struct SinkRegistration {
-    source: ITfSource,
-    cookie: u32,
-}
-
-impl Drop for SinkRegistration {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = self.source.UnadviseSink(self.cookie);
-        }
-    }
-}
-
-/// 指定された Compartment に対してイベントシンクを登録する。
-fn advise_compartment_sink(
-    thread_mgr: &ITfThreadMgr,
-    guid: &GUID,
-) -> Option<SinkRegistration> {
-    unsafe {
-        let mgr: ITfCompartmentMgr = thread_mgr.cast().ok()?;
-        let compartment: ITfCompartment = mgr.GetCompartment(guid).ok()?;
-        let source: ITfSource = compartment.cast().ok()?;
-        let sink: ITfCompartmentEventSink = CompartmentEventSink.into();
-        let cookie = source
-            .AdviseSink(&ITfCompartmentEventSink::IID, &sink)
-            .ok()?;
-        Some(SinkRegistration { source, cookie })
-    }
-}
-
 /// TSF ベースの IME 状態検知
+///
+/// `ITfThreadMgr` 経由で取得する compartment は thread-local（自スレッド専用）のため、
+/// 他プロセスの IME 状態変更をイベント通知として受け取ることはできない。
+/// そのため `ITfCompartmentEventSink` は登録していない。
+/// IME 状態検知は IMM32 経由のクロスプロセス検出 + 500ms ポーリングで行う。
 #[allow(missing_debug_implementations)]
 pub struct TsfProvider {
     thread_mgr: ITfThreadMgr,
-    /// OPENCLOSE compartment のイベントシンク登録
-    _open_close_sink: Option<SinkRegistration>,
-    /// CONVERSION compartment のイベントシンク登録
-    _conversion_sink: Option<SinkRegistration>,
 }
 
 impl TsfProvider {
@@ -139,29 +77,8 @@ impl TsfProvider {
             let thread_mgr: ITfThreadMgr =
                 CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER).ok()?;
 
-            // IME 状態変更のイベントシンクを登録
-            let open_close_sink = advise_compartment_sink(
-                &thread_mgr,
-                &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
-            );
-            let conversion_sink = advise_compartment_sink(
-                &thread_mgr,
-                &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
-            );
-
-            if open_close_sink.is_some() {
-                log::info!("TSF CompartmentEventSink registered for OPENCLOSE");
-            }
-            if conversion_sink.is_some() {
-                log::info!("TSF CompartmentEventSink registered for CONVERSION");
-            }
-
             log::info!("TSF provider initialized successfully");
-            Some(Self {
-                thread_mgr,
-                _open_close_sink: open_close_sink,
-                _conversion_sink: conversion_sink,
-            })
+            Some(Self { thread_mgr })
         }
     }
 
