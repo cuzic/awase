@@ -200,36 +200,61 @@ impl Runtime {
             self.executor.execute_from_loop(decision);
         }
 
-        // ── Phase 3: IME 状態の再取得 ──
-        unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
+        // ── Phase 2.5: IMM ブリッジ非対応クラスの判定 ──
+        //
+        // Chrome / UWP / Electron 等はクロスプロセス IMM 問い合わせ（WM_IME_CONTROL）が
+        // 動作しないか、無期限ブロックする恐れがある。既知のクラス名なら事前にスキップし、
+        // シャドウ状態（hook から追跡）のみで IME 状態を管理する。
+        //
+        // この分岐の場合、言語バーのマウス操作等による OS 側の IME 変更は検知不能だが、
+        // ハードウェアキー押下（半角/全角等）は hook でシャドウが更新されるため実用上問題ない。
+        let skip_imm_query = self
+            .executor
+            .platform
+            .focus
+            .last_focus_info
+            .as_ref()
+            .map_or(false, |(_, class_name)| {
+                crate::focus::classify::is_imm_bridge_broken(class_name)
+            });
 
-        // ── Phase 3.5: IME 検出が失敗しているとき、キャッシュ値を OS にミラーする ──
-        //
-        // 検出失敗が続いている = OS の IME 状態を読めない状態。
-        // このとき awase のキャッシュ（preconditions.ime_on）を SSOT として OS に書き込む。
-        // ユーザーが shadow update で IME OFF に切り替えた場合も、
-        // キャッシュと OS の乖離を毎サイクル解消できる。
-        //
-        // set_ime_open_cross_process は GetGUIThreadInfo もタイムアウト付き、
-        // SendMessageTimeoutW は 50ms タイムアウトなので安全に呼べる。
-        //
-        // ime_force_on_guard 中は初回ミラーリング後にフラグが立つので再書き込みしない
-        // （毎サイクル書き込むと他アプリの IME 操作と競合するため）。
-        if self.platform_state.preconditions.ime_detect_miss_count
-            >= crate::IME_DETECT_MISS_THRESHOLD
-            && self.engine.is_user_enabled()
-            && self.platform_state.preconditions.is_japanese_ime
-            && !self.platform_state.preconditions.ime_force_on_guard
-        {
-            let target = self.platform_state.preconditions.ime_on;
-            log::warn!(
-                "IME detection failed {} times, mirroring cached state to OS (ime_on={target})",
-                self.platform_state.preconditions.ime_detect_miss_count
-            );
-            let success = self.executor.platform.set_ime_open(target);
-            if success {
-                self.platform_state.preconditions.ime_force_on_guard = true;
-                // miss_count はリセットしない。ガードが検出成功まで保護する。
+        if skip_imm_query {
+            // ── ブラックリストクラス: OS 読み取りをスキップ ──
+            // preconditions.ime_on はシャドウ更新が直接書き換えるので、そのまま使う。
+            // miss_count もインクリメントしない（既知の失敗なので「検出失敗」ではない）。
+            log::debug!("Skipping IMM query for known-broken class (shadow state only)");
+        } else {
+            // ── Phase 3: IME 状態の再取得 ──
+            unsafe {
+                crate::observer::ime_observer::observe(&mut self.platform_state.preconditions);
+            }
+
+            // ── Phase 3.5: IME 検出が失敗しているとき、キャッシュ値を OS にミラーする ──
+            //
+            // 検出失敗が続いている = OS の IME 状態を読めない状態。
+            // このとき awase のキャッシュ（preconditions.ime_on）を SSOT として OS に書き込む。
+            //
+            // set_ime_open_cross_process は GetGUIThreadInfo もタイムアウト付き、
+            // SendMessageTimeoutW は 50ms タイムアウトなので安全に呼べる。
+            //
+            // ime_force_on_guard 中は初回ミラーリング後にフラグが立つので再書き込みしない
+            // （毎サイクル書き込むと他アプリの IME 操作と競合するため）。
+            if self.platform_state.preconditions.ime_detect_miss_count
+                >= crate::IME_DETECT_MISS_THRESHOLD
+                && self.engine.is_user_enabled()
+                && self.platform_state.preconditions.is_japanese_ime
+                && !self.platform_state.preconditions.ime_force_on_guard
+            {
+                let target = self.platform_state.preconditions.ime_on;
+                log::warn!(
+                    "IME detection failed {} times, mirroring cached state to OS (ime_on={target})",
+                    self.platform_state.preconditions.ime_detect_miss_count
+                );
+                let success = self.executor.platform.set_ime_open(target);
+                if success {
+                    self.platform_state.preconditions.ime_force_on_guard = true;
+                    // miss_count はリセットしない。ガードが検出成功まで保護する。
+                }
             }
         }
 

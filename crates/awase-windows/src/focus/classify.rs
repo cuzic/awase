@@ -144,6 +144,36 @@ pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
     msaa_classify(hwnd)
 }
 
+/// IMM ブリッジ（WM_IME_CONTROL）が動作しない、または不安定なウィンドウクラス。
+///
+/// これらのクラスにフォーカスがあるとき、`ImmGet*` / `SendMessage(WM_IME_CONTROL)` は
+/// 反応しなかったり無期限にブロックする恐れがあるため、IME 状態検出をスキップする。
+/// シャドウ状態（hook から追跡）のみで IME 状態を管理する。
+///
+/// 検知できないケース:
+/// - 言語バーのマウス操作による IME 切り替え
+/// - アプリ内の IME ボタンクリック
+/// しかし、これらは非常に稀なので割り切る。
+pub const IMM_BRIDGE_BROKEN_CLASSES: &[&str] = &[
+    // Chromium 系（Chrome, Edge, Brave, Opera 等）
+    "Chrome_RenderWidgetHostHWND",
+    "Chrome_WidgetWin_0",
+    "Chrome_WidgetWin_1",
+    "Intermediate D3D Window",
+    // UWP / WinUI
+    "Windows.UI.Core.CoreWindow",
+    "ApplicationFrameWindow",
+    // Console 系
+    "PseudoConsoleWindow",
+    "CASCADIA_HOSTING_WINDOW_CLASS",
+];
+
+/// 指定クラスが IMM ブリッジ非対応かどうか判定する。
+#[must_use]
+pub fn is_imm_bridge_broken(class_name: &str) -> bool {
+    IMM_BRIDGE_BROKEN_CLASSES.contains(&class_name)
+}
+
 /// ウィンドウハンドルからクラス名を取得する
 pub fn get_class_name_string(hwnd: HWND) -> String {
     let mut class_buf = [0u16; 256];
