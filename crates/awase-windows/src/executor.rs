@@ -141,8 +141,20 @@ impl DecisionExecutor {
                     has_pending: self.has_pending(),
                 }
             }
-            Decision::PassThroughWith { mut effects } => {
-                // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー
+            Decision::PassThroughWith { effects } => {
+                // IME 関連キー (VK_KANA, VK_DBE_HIRAGANA 等) は再注入経路を避ける。
+                // 一部の IME（wezterm の TSF text store 等）は LLKHF_INJECTED フラグの
+                // ついた合成キーを物理キーと別扱いし、IME 状態変更を受け付けない。
+                // Effects だけキューして、キー自体は物理通り passthrough する。
+                if raw_event.ime_relevance.may_change_ime {
+                    self.queue.extend(effects);
+                    return HookResult {
+                        callback: CallbackResult::PassThrough,
+                        has_pending: self.has_pending(),
+                    };
+                }
+                // 通常: flush 出力あり → Consume して flush + キー再注入を FIFO でキュー
+                let mut effects = effects;
                 effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
                 self.queue.extend(effects);
                 HookResult {
