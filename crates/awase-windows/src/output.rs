@@ -305,7 +305,7 @@ impl Output {
                     log::debug!("  → Suppress");
                 }
                 KeyAction::Romaji(s) => {
-                    log::debug!("  → Romaji(\"{s}\") mode={:?}", self.mode);
+                    log::debug!("  → Romaji(\"{s}\") (mode auto-selected by AppKind)");
                     self.send_romaji(s);
                 }
                 KeyAction::KeySequence(s) => {
@@ -397,8 +397,18 @@ impl Output {
                 .unwrap_or(AppKind::Win32)
         };
         match app_kind {
-            AppKind::Uwp => self.send_romaji_as_unicode(romaji),
-            AppKind::Win32 | AppKind::Chrome => self.send_romaji_per_key(romaji),
+            AppKind::Uwp => {
+                log::debug!(
+                    "  send_romaji: app_kind=Uwp → Unicode (TSF compatibility)"
+                );
+                self.send_romaji_as_unicode(romaji);
+            }
+            AppKind::Win32 | AppKind::Chrome => {
+                log::debug!(
+                    "  send_romaji: app_kind={app_kind:?} → PerKey (IME composition)"
+                );
+                self.send_romaji_per_key(romaji);
+            }
         }
     }
 
