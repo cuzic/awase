@@ -241,11 +241,9 @@ pub struct Output {
 
 impl Output {
     pub fn new(mode: OutputMode) -> Self {
-        let romaji_to_kana = if mode == OutputMode::Unicode {
-            Some(awase::kana_table::build_romaji_to_kana())
-        } else {
-            None
-        };
+        // romaji_to_kana テーブルは UWP アプリ向けの Unicode フォールバックで
+        // 常に必要なので、設定に関わらず構築する。
+        let romaji_to_kana = Some(awase::kana_table::build_romaji_to_kana());
         Self {
             mode,
             romaji_to_kana,
@@ -382,10 +380,25 @@ impl Output {
 
     /// ローマ字文字列を送信する（モードに応じて方式を切り替え）
     fn send_romaji(&self, romaji: &str) {
-        match self.mode {
-            OutputMode::PerKey => self.send_romaji_per_key(romaji),
-            OutputMode::Batched => self.send_romaji_batched(romaji),
-            OutputMode::Unicode => self.send_romaji_as_unicode(romaji),
+        // AppKind に応じて出力モードを自動選択する。
+        //
+        // - UWP: Unicode 必須（TSF が VK キーストロークを composition できない）
+        // - Win32 (Notepad, wezterm 等): PerKey で IME composition を経由
+        //   → kana→kanji 変換が可能
+        // - Chrome (Chrome, Edge, Electron, VS Code 等): PerKey で
+        //   IME composition を経由（Chromium の TSF text store が処理）
+        //
+        // self.mode（config の output_mode）は Char/KeySequence に対する
+        // フォールバック設定として残るが、Romaji では参照しない。
+        let app_kind = unsafe {
+            crate::APP
+                .get_ref()
+                .map(|app| app.platform_state.app_kind)
+                .unwrap_or(AppKind::Win32)
+        };
+        match app_kind {
+            AppKind::Uwp => self.send_romaji_as_unicode(romaji),
+            AppKind::Win32 | AppKind::Chrome => self.send_romaji_per_key(romaji),
         }
     }
 
@@ -420,7 +433,9 @@ impl Output {
     /// Batched モード: 全文字を1回の SendInput にまとめて送信
     ///
     /// 最も高速。SendInput のアトミック性により他の入力が割り込めない。
-    #[allow(clippy::unused_self)]
+    /// 現在 send_romaji は AppKind ベース判定で使っていないが、
+    /// 将来 config から復活させる可能性があるため残す。
+    #[allow(clippy::unused_self, dead_code)]
     fn send_romaji_batched(&self, romaji: &str) {
         let mut inputs = Vec::with_capacity(romaji.len() * 4);
         for ch in romaji.chars() {
