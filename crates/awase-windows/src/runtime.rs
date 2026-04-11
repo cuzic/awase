@@ -219,10 +219,24 @@ impl Runtime {
             });
 
         if skip_imm_query {
-            // ── ブラックリストクラス: OS 読み取りをスキップ ──
-            // preconditions.ime_on はシャドウ更新が直接書き換えるので、そのまま使う。
-            // miss_count もインクリメントしない（既知の失敗なので「検出失敗」ではない）。
-            log::debug!("Skipping IMM query for known-broken class (shadow state only)");
+            // ── ブラックリストクラス: OS 読み取りをスキップ + 強制同期 ──
+            // preconditions.ime_on はシャドウ更新が直接書き換える。
+            // miss_count はインクリメントしない（既知の失敗なので「検出失敗」ではない）。
+            //
+            // さらに SSOT を推し進め、キャッシュ値を毎サイクル OS に書き込む。
+            // - レガシー IMM 対応アプリ: 実際に同期される
+            // - Chrome/UWP 等の完全非対応アプリ: ImmGetDefaultIMEWnd が NULL を返して無害に失敗
+            //
+            // これによりシャドウ経由で検出できないケース（言語バークリック等）の
+            // 一部でも、次のサイクルで awase の意図通りに戻せる。
+            log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
+            if self.engine.is_user_enabled()
+                && self.platform_state.preconditions.is_japanese_ime
+            {
+                let target = self.platform_state.preconditions.ime_on;
+                let _success = self.executor.platform.set_ime_open(target);
+                log::trace!("Blacklist SSOT write: ime_on={target}");
+            }
         } else {
             // ── Phase 3: IME 状態の再取得 ──
             unsafe {
