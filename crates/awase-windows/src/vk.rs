@@ -14,18 +14,27 @@ pub const LANGID_JAPANESE: u32 = 0x0411;
 /// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImeKeyKind {
-    /// 半角/全角トグル (VK_KANJI, 0x19)
-    KanjiToggle,
-    /// IME ON — VK_DBE_HIRAGANA (0xF2)
-    Activate,
-    /// IME OFF — VK_DBE_SBCSCHAR / VK_OEM_AUTO (0xF3)
-    Deactivate,
-    /// IME ON ペア — VK_DBE_DBCSCHAR / VK_OEM_ENLW (0xF4)
-    ActivatePair,
+    /// VK_KANA (0x15) — カタカナ/ひらがなトグル。
+    /// wezterm 等で IME on/off のトグルとして動作する。
+    KanaToggle,
     /// VK_IME_ON (0x16)
     ImeOn,
+    /// VK_JUNJA (0x17) — IME on 系
+    Junja,
+    /// VK_KANJI (0x19) — 半角/全角トグル
+    KanjiToggle,
     /// VK_IME_OFF (0x1A)
     ImeOff,
+    /// VK_DBE_ALPHANUMERIC / VK_OEM_ATTN (0xF0) — 英数モード（IME OFF 扱い）
+    Alphanumeric,
+    /// VK_DBE_KATAKANA (0xF1) — カタカナモード（IME ON）
+    Katakana,
+    /// VK_DBE_HIRAGANA (0xF2) — ひらがなモード（IME ON）
+    Activate,
+    /// VK_DBE_SBCSCHAR / VK_OEM_AUTO (0xF3) — 半角モード（IME OFF 扱い）
+    Deactivate,
+    /// VK_DBE_DBCSCHAR / VK_OEM_ENLW (0xF4) — 全角モード（IME ON）
+    ActivatePair,
 }
 
 /// `ImeKeyKind` が IME 状態に与える効果。
@@ -41,12 +50,16 @@ impl ImeKeyKind {
     #[must_use]
     pub const fn from_vk(vk: VkCode) -> Option<Self> {
         match vk.0 {
+            0x15 => Some(Self::KanaToggle),
+            0x16 => Some(Self::ImeOn),
+            0x17 => Some(Self::Junja),
             0x19 => Some(Self::KanjiToggle),
+            0x1A => Some(Self::ImeOff),
+            0xF0 => Some(Self::Alphanumeric),
+            0xF1 => Some(Self::Katakana),
             0xF2 => Some(Self::Activate),
             0xF3 => Some(Self::Deactivate),
             0xF4 => Some(Self::ActivatePair),
-            0x16 => Some(Self::ImeOn),
-            0x1A => Some(Self::ImeOff),
             _ => None,
         }
     }
@@ -55,9 +68,13 @@ impl ImeKeyKind {
     #[must_use]
     pub const fn shadow_effect(&self) -> ShadowImeEffect {
         match self {
-            Self::Activate | Self::ActivatePair | Self::ImeOn => ShadowImeEffect::TurnOn,
-            Self::Deactivate | Self::ImeOff => ShadowImeEffect::TurnOff,
-            Self::KanjiToggle => ShadowImeEffect::Toggle,
+            Self::ImeOn
+            | Self::Junja
+            | Self::Katakana
+            | Self::Activate
+            | Self::ActivatePair => ShadowImeEffect::TurnOn,
+            Self::ImeOff | Self::Alphanumeric | Self::Deactivate => ShadowImeEffect::TurnOff,
+            Self::KanjiToggle | Self::KanaToggle => ShadowImeEffect::Toggle,
         }
     }
 }
