@@ -817,6 +817,9 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 // shadow 更新はユーザー操作に基づくので検出失敗カウンタとガードをリセット
                 app.platform_state.preconditions.ime_detect_miss_count = 0;
                 app.platform_state.preconditions.ime_force_on_guard = false;
+                // shadow priority grace を開始（OS の状態伝播遅延を吸収）
+                app.platform_state.preconditions.last_shadow_update_ms =
+                    hook::current_tick_ms();
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X})",
                     if current { "ON" } else { "OFF" },

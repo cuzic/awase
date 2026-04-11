@@ -59,6 +59,13 @@ pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 /// 長時間の乖離（実際は IME OFF なのにキャッシュが ON のまま）を防ぐ。
 pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
 
+/// シャドウ更新後、OS 読み取りより shadow を優先する猶予期間（ミリ秒）。
+///
+/// ユーザーが IME キーを押した直後は OS 側の状態伝播が間に合わず、
+/// `ImmGet*` が古い値を返すことがある（実測 ~150ms 以上）。
+/// この期間中は OS 読み取りで shadow を上書きしない。
+pub const SHADOW_PRIORITY_GRACE_MS: u64 = 2000;
+
 /// 環境前提条件（IME 状態・入力方式・日本語判定）
 #[derive(Debug)]
 pub struct Preconditions {
@@ -83,6 +90,13 @@ pub struct Preconditions {
     /// 検出成功時にクリアされ、OS 側の SSOT に戻る。
     /// force-ON の無限ループ防止、panic_reset 直後の上書き防止にも使用。
     pub ime_force_on_guard: bool,
+    /// シャドウ更新のタイムスタンプ（ミリ秒）。
+    ///
+    /// hook で IME キー（VK_KANA, VK_DBE_HIRAGANA 等）を検知して shadow を更新したとき、
+    /// 現在の tick を記録する。直後の OS 読み取りはしばしば古い値（OS が状態を伝播する前）
+    /// を返すため、[`SHADOW_PRIORITY_GRACE_MS`] 期間中は OS 読み取りより shadow を優先する。
+    /// 0 = まだ shadow 更新が起きていない。
+    pub last_shadow_update_ms: u64,
 }
 
 /// フックルーティング状態（キーペア追跡・再入ガード）
@@ -184,6 +198,7 @@ impl PlatformState {
                 prev_conversion_mode: 0,
                 ime_detect_miss_count: 0,
                 ime_force_on_guard: false,
+                last_shadow_update_ms: 0,
             },
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],
