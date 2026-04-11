@@ -14,14 +14,19 @@ pub const LANGID_JAPANESE: u32 = 0x0411;
 /// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImeKeyKind {
-    /// VK_KANA (0x15) — カタカナ/ひらがなトグル。
-    /// wezterm 等で IME on/off のトグルとして動作する。
-    KanaToggle,
+    /// VK_KANA (0x15) — カタカナ/ひらがなキー
+    ///
+    /// Microsoft 公式: "The IME On key has the virtual key code VK_KANA (0x15)".
+    /// 単独押下でひらがな入力モードに入る（IME ON）。Shift+ で カタカナモード。
+    /// トグルではなく常に IME ON にする動作。
+    /// wezterm 等のアプリで IME ON キーとして使われる。
+    Kana,
     /// VK_IME_ON (0x16)
     ImeOn,
     /// VK_JUNJA (0x17) — IME on 系
     Junja,
-    /// VK_KANJI (0x19) — 半角/全角トグル
+    /// VK_KANJI (0x19) — 半角/全角キー
+    /// 多くの JIS キーボードでは IME ON/OFF のトグルとして動作する。
     KanjiToggle,
     /// VK_IME_OFF (0x1A)
     ImeOff,
@@ -50,7 +55,7 @@ impl ImeKeyKind {
     #[must_use]
     pub const fn from_vk(vk: VkCode) -> Option<Self> {
         match vk.0 {
-            0x15 => Some(Self::KanaToggle),
+            0x15 => Some(Self::Kana),
             0x16 => Some(Self::ImeOn),
             0x17 => Some(Self::Junja),
             0x19 => Some(Self::KanjiToggle),
@@ -68,13 +73,14 @@ impl ImeKeyKind {
     #[must_use]
     pub const fn shadow_effect(&self) -> ShadowImeEffect {
         match self {
-            Self::ImeOn
+            Self::Kana
+            | Self::ImeOn
             | Self::Junja
             | Self::Katakana
             | Self::Activate
             | Self::ActivatePair => ShadowImeEffect::TurnOn,
             Self::ImeOff | Self::Alphanumeric | Self::Deactivate => ShadowImeEffect::TurnOff,
-            Self::KanjiToggle | Self::KanaToggle => ShadowImeEffect::Toggle,
+            Self::KanjiToggle => ShadowImeEffect::Toggle,
         }
     }
 }
