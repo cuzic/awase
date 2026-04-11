@@ -870,12 +870,19 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // may_change_ime なキーが Engine で消費されずパススルーされた場合、
     // OS が IME 状態を変更した可能性がある。500ms poll を待たずに即座に refresh を
     // スケジュールして、次のキーイベントまでに preconditions を更新する。
-    if !decision.is_consumed()
-        && event.ime_relevance.may_change_ime
+    if event.ime_relevance.may_change_ime
         && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
     {
-        app.schedule_ime_refresh(20);
-        log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
+        log::debug!(
+            "may_change_ime KeyDown vk=0x{:02X}: consumed={} shadow_action={:?}",
+            event.vk_code.0,
+            decision.is_consumed(),
+            event.ime_relevance.shadow_action
+        );
+        if !decision.is_consumed() {
+            app.schedule_ime_refresh(20);
+            log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
+        }
     }
 
     // consume/passthrough を即座に返し、Effects はキューに入れる（OS API 呼び出しなし）
