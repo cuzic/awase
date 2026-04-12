@@ -90,6 +90,64 @@ pub enum ImmCapability {
     Broken,
 }
 
+/// IMM 能力キャッシュファイル名（config.toml と同じディレクトリ）
+const IMM_CACHE_FILENAME: &str = "imm_cache.toml";
+
+/// IMM 能力キャッシュをファイルから読み込む。
+/// ファイルが存在しない場合は空の HashMap を返す。
+fn load_imm_cache(base_dir: &std::path::Path) -> std::collections::HashMap<String, ImmCapability> {
+    let path = base_dir.join(IMM_CACHE_FILENAME);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let table: toml::Table = match content.parse() {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("Failed to parse {}: {e}", path.display());
+            return std::collections::HashMap::new();
+        }
+    };
+    let mut cache = std::collections::HashMap::new();
+    if let Some(toml::Value::Table(classes)) = table.get("classes") {
+        for (class_name, value) in classes {
+            if let toml::Value::String(s) = value {
+                let cap = match s.as_str() {
+                    "works" => ImmCapability::Works,
+                    "broken" => ImmCapability::Broken,
+                    _ => continue,
+                };
+                cache.insert(class_name.clone(), cap);
+            }
+        }
+    }
+    if !cache.is_empty() {
+        log::info!("Loaded IMM capability cache: {} entries from {}", cache.len(), path.display());
+    }
+    cache
+}
+
+/// IMM 能力キャッシュをファイルに書き出す。
+fn save_imm_cache(base_dir: &std::path::Path, cache: &std::collections::HashMap<String, ImmCapability>) {
+    let path = base_dir.join(IMM_CACHE_FILENAME);
+    let mut classes = toml::Table::new();
+    for (class_name, cap) in cache {
+        let value = match cap {
+            ImmCapability::Works => "works",
+            ImmCapability::Broken => "broken",
+        };
+        classes.insert(class_name.clone(), toml::Value::String(value.to_string()));
+    }
+    let mut root = toml::Table::new();
+    root.insert("classes".to_string(), toml::Value::Table(classes));
+    let content = toml::to_string_pretty(&root).unwrap_or_default();
+    if let Err(e) = std::fs::write(&path, content) {
+        log::warn!("Failed to save IMM cache to {}: {e}", path.display());
+    } else {
+        log::debug!("Saved IMM capability cache: {} entries to {}", cache.len(), path.display());
+    }
+}
+
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
 pub struct FocusDetector {
@@ -99,18 +157,33 @@ pub struct FocusDetector {
     pub uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
     /// class_name ごとの IMM ブリッジ能力キャッシュ。
     /// 検出成功/失敗の実績に基づいて学習し、AppKind 判定に使う。
+    /// ファイルに永続化される（起動時ロード、学習時セーブ）。
     pub imm_capability_cache: std::collections::HashMap<String, ImmCapability>,
+    /// キャッシュファイルの格納ディレクトリ（実行ファイルと同じ場所）
+    base_dir: std::path::PathBuf,
 }
 
 impl FocusDetector {
     pub fn new(overrides: awase::config::FocusOverrides) -> Self {
+        let base_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let imm_capability_cache = load_imm_cache(&base_dir);
         Self {
             cache: crate::focus::cache::FocusCache::new(),
             overrides,
             last_focus_info: None,
             uia_sender: None,
-            imm_capability_cache: std::collections::HashMap::new(),
+            imm_capability_cache,
+            base_dir,
         }
+    }
+
+    /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。
+    pub fn learn_imm_capability(&mut self, class_name: String, cap: ImmCapability) {
+        self.imm_capability_cache.insert(class_name, cap);
+        save_imm_cache(&self.base_dir, &self.imm_capability_cache);
     }
 
     pub fn set_uia_sender(
@@ -271,8 +344,8 @@ impl Runtime {
                     let prev = self.executor.platform.focus.imm_capability_cache.get(&class_name);
                     if prev != Some(&ImmCapability::Works) {
                         log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
-                        self.executor.platform.focus.imm_capability_cache
-                            .insert(class_name, ImmCapability::Works);
+                        self.executor.platform.focus
+                            .learn_imm_capability(class_name, ImmCapability::Works);
                     }
                 } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
                     && miss_before < crate::IME_DETECT_MISS_THRESHOLD
@@ -284,8 +357,8 @@ impl Runtime {
                             "IMM capability learned: {class_name} → Broken (detection failed {} times)",
                             miss_after
                         );
-                        self.executor.platform.focus.imm_capability_cache
-                            .insert(class_name.clone(), ImmCapability::Broken);
+                        self.executor.platform.focus
+                            .learn_imm_capability(class_name.clone(), ImmCapability::Broken);
                         // AppKind も即座に更新
                         if self.platform_state.app_kind == awase::types::AppKind::Win32 {
                             log::info!("AppKind promoted: Win32 → Chrome (learned IMM broken)");
@@ -417,8 +490,8 @@ impl Runtime {
                         "AppKind heuristic: Win32 → Chrome (ImmGetDefaultIMEWnd=NULL, class={class_name})"
                     );
                     new_app_kind = awase::types::AppKind::Chrome;
-                    self.executor.platform.focus.imm_capability_cache
-                        .insert(class_name.clone(), ImmCapability::Broken);
+                    self.executor.platform.focus
+                        .learn_imm_capability(class_name.clone(), ImmCapability::Broken);
                 }
             }
         }
