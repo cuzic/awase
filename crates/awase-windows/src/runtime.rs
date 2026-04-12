@@ -79,6 +79,17 @@ pub struct LayoutEntry {
 
 // ── FocusDetector（フォーカス検出状態）──
 
+/// IMM ブリッジの検出結果（class_name ごとにキャッシュ）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImmCapability {
+    /// IMM ブリッジが動作する（ImmGetOpenStatus が信頼できる値を返す）
+    /// → Unicode 直接入力で OK
+    Works,
+    /// IMM ブリッジが動作しない（独自 TSF text store を持つアプリ）
+    /// → PerKey (VK injection) が必要
+    Broken,
+}
+
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
 pub struct FocusDetector {
@@ -86,6 +97,9 @@ pub struct FocusDetector {
     pub overrides: awase::config::FocusOverrides,
     pub last_focus_info: Option<(u32, String)>,
     pub uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
+    /// class_name ごとの IMM ブリッジ能力キャッシュ。
+    /// 検出成功/失敗の実績に基づいて学習し、AppKind 判定に使う。
+    pub imm_capability_cache: std::collections::HashMap<String, ImmCapability>,
 }
 
 impl FocusDetector {
@@ -95,6 +109,7 @@ impl FocusDetector {
             overrides,
             last_focus_info: None,
             uia_sender: None,
+            imm_capability_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -239,8 +254,45 @@ impl Runtime {
             }
         } else {
             // ── Phase 3: IME 状態の再取得 ──
+            let miss_before = self.platform_state.preconditions.ime_detect_miss_count;
             unsafe {
                 crate::observer::ime_observer::observe(&mut self.platform_state.preconditions);
+            }
+            let miss_after = self.platform_state.preconditions.ime_detect_miss_count;
+
+            // ── Phase 3.1: IMM 能力の学習 ──
+            // 検出結果に基づいて class_name ごとの IMM 能力をキャッシュ。
+            // 検出成功 (miss_count がリセット) → IMM Works
+            // 検出連続失敗 (閾値到達) → IMM Broken → 次回から Chrome 扱い
+            if let Some((_, class_name)) = self.executor.platform.focus.last_focus_info.as_ref() {
+                let class_name = class_name.clone();
+                if miss_after == 0 && miss_before > 0 {
+                    // 検出成功: IMM ブリッジが動作している
+                    let prev = self.executor.platform.focus.imm_capability_cache.get(&class_name);
+                    if prev != Some(&ImmCapability::Works) {
+                        log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
+                        self.executor.platform.focus.imm_capability_cache
+                            .insert(class_name, ImmCapability::Works);
+                    }
+                } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
+                    && miss_before < crate::IME_DETECT_MISS_THRESHOLD
+                {
+                    // 閾値到達: IMM ブリッジが壊れている
+                    let prev = self.executor.platform.focus.imm_capability_cache.get(&class_name);
+                    if prev != Some(&ImmCapability::Broken) {
+                        log::info!(
+                            "IMM capability learned: {class_name} → Broken (detection failed {} times)",
+                            miss_after
+                        );
+                        self.executor.platform.focus.imm_capability_cache
+                            .insert(class_name.clone(), ImmCapability::Broken);
+                        // AppKind も即座に更新
+                        if self.platform_state.app_kind == awase::types::AppKind::Win32 {
+                            log::info!("AppKind promoted: Win32 → Chrome (learned IMM broken)");
+                            self.platform_state.app_kind = awase::types::AppKind::Chrome;
+                        }
+                    }
+                }
             }
 
             // ── Phase 3.5: IME 検出が失敗しているとき、キャッシュ値を OS にミラーする ──
@@ -340,7 +392,37 @@ impl Runtime {
         let class_name = probe.class_name;
 
         // app_kind を更新
-        let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
+        let mut new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
+
+        // ヒューリスティック: Win32 と判定されたアプリでも、独自 TSF text store を
+        // 持っている場合は AppKind::Chrome に昇格させる。
+        //
+        // 判定基準（優先順位順）:
+        // 1. IMM 能力キャッシュ（過去の検出実績）→ 最も信頼できる
+        // 2. ImmGetDefaultIMEWnd が NULL → IMM ブリッジなし（初回フォールバック）
+        if new_app_kind == awase::types::AppKind::Win32 {
+            if let Some(&cap) = self.executor.platform.focus.imm_capability_cache.get(&class_name) {
+                if cap == ImmCapability::Broken {
+                    log::debug!(
+                        "AppKind heuristic: Win32 → Chrome (learned IMM broken, class={class_name})"
+                    );
+                    new_app_kind = awase::types::AppKind::Chrome;
+                }
+            } else {
+                // キャッシュなし → ImmGetDefaultIMEWnd で初期判定
+                use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
+                let ime_wnd = unsafe { ImmGetDefaultIMEWnd(hwnd) };
+                if ime_wnd.0.is_null() {
+                    log::info!(
+                        "AppKind heuristic: Win32 → Chrome (ImmGetDefaultIMEWnd=NULL, class={class_name})"
+                    );
+                    new_app_kind = awase::types::AppKind::Chrome;
+                    self.executor.platform.focus.imm_capability_cache
+                        .insert(class_name.clone(), ImmCapability::Broken);
+                }
+            }
+        }
+
         if self.platform_state.app_kind != new_app_kind {
             log::info!("AppKind changed: {:?} → {:?} (class={class_name})", self.platform_state.app_kind, new_app_kind);
             self.platform_state.app_kind = new_app_kind;
