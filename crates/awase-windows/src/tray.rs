@@ -24,6 +24,7 @@ use anyhow::{Context, Result};
 /// トレイメニュー項目 ID
 const IDM_SETTINGS: u16 = 50;
 const IDM_RESTART_ADMIN: u16 = 51;
+const IDM_CLEAR_IMM_CACHE: u16 = 52;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -426,6 +427,18 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             PCWSTR(settings_text.as_ptr()),
         );
 
+        // IMM キャッシュクリア
+        let clear_cache_text: Vec<u16> = "学習キャッシュをクリア"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            usize::from(IDM_CLEAR_IMM_CACHE),
+            PCWSTR(clear_cache_text.as_ptr()),
+        );
+
         // 管理者として再起動（未昇格時のみ表示）
         if !elevated {
             let admin_text: Vec<u16> = "管理者として再起動"
@@ -493,7 +506,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
 pub const fn handle_tray_command(wparam: WPARAM) -> Option<u16> {
     let cmd = (wparam.0 & 0xFFFF) as u16;
     match cmd {
-        IDM_SETTINGS | IDM_RESTART_ADMIN | IDM_TOGGLE | IDM_EXIT => Some(cmd),
+        IDM_SETTINGS | IDM_RESTART_ADMIN | IDM_CLEAR_IMM_CACHE | IDM_TOGGLE | IDM_EXIT => Some(cmd),
         // 配列選択メニュー項目 (IDM_LAYOUT_BASE 以上の範囲)
         _ if cmd >= IDM_LAYOUT_BASE && cmd < IDM_TOGGLE => Some(cmd),
         _ => None,
@@ -523,6 +536,11 @@ pub const fn cmd_settings() -> u16 {
 /// 管理者再起動メニューコマンド ID のアクセサ
 pub const fn cmd_restart_admin() -> u16 {
     IDM_RESTART_ADMIN
+}
+
+/// IMM キャッシュクリアメニューコマンド ID のアクセサ
+pub const fn cmd_clear_imm_cache() -> u16 {
+    IDM_CLEAR_IMM_CACHE
 }
 
 /// 現在のプロセスが管理者権限で実行中かどうかを判定する。
@@ -647,6 +665,23 @@ unsafe extern "system" fn tray_wnd_proc(
                     }
                 } else if cmd == cmd_settings() {
                     launch_settings_gui();
+                } else if cmd == cmd_clear_imm_cache() {
+                    if let Some(app) = crate::APP.get_mut() {
+                        let count = app.executor.platform.focus.imm_capability_cache.len();
+                        app.executor.platform.focus.imm_capability_cache.clear();
+                        // ファイルも削除
+                        let base_dir = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                        if let Some(dir) = base_dir {
+                            let _ = std::fs::remove_file(dir.join("imm_cache.toml"));
+                        }
+                        log::info!("IMM capability cache cleared ({count} entries)");
+                        app.executor.platform.tray.show_balloon(
+                            "awase",
+                            &format!("学習キャッシュをクリアしました（{count}件）"),
+                        );
+                    }
                 } else if cmd == cmd_restart_admin() {
                     restart_as_admin();
                 } else if cmd >= cmd_layout_base() {
