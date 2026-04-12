@@ -29,25 +29,8 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
     // is_japanese_ime: always update (LANGID is reliable)
     preconditions.is_japanese_ime = snap.is_japanese_ime;
 
-    // Shadow priority grace check:
-    // hook で IME キーが押された直後は OS の状態伝播が間に合わず、
-    // ImmGet* が古い値を返すことがある。直前のシャドウ更新から
-    // SHADOW_PRIORITY_GRACE_MS 以内なら OS 読み取りで ime_on を上書きしない。
-    let now_ms = crate::hook::current_tick_ms();
-    let in_shadow_grace = preconditions.last_shadow_update_ms != 0
-        && now_ms.saturating_sub(preconditions.last_shadow_update_ms)
-            < crate::SHADOW_PRIORITY_GRACE_MS;
-
     // ime_on: update if detected, fallback on repeated failure
-    if in_shadow_grace {
-        // シャドウ更新直後: OS 読み取りで ime_on を上書きしない（伝播遅延吸収）
-        // is_romaji や conversion_mode は別途下で処理する。
-        log::debug!(
-            "IME observe: shadow priority grace active, preserving ime_on={} (snap.ime_on={:?})",
-            preconditions.ime_on,
-            snap.ime_on
-        );
-    } else if let Some(on) = snap.ime_on {
+    if let Some(on) = snap.ime_on {
         // 検出成功: OS が SSOT に戻る
         preconditions.ime_on = on && snap.is_japanese_ime;
         preconditions.ime_detect_miss_count = 0;

@@ -107,22 +107,15 @@ impl Engine {
     /// 3. 実効状態チェッ��� + 遷移検知
     /// 4. NicolaFsm 処理
     pub fn on_input(&mut self, event: RawKeyEvent, ctx: &InputContext) -> Decision {
-        let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
-        let trace_vk = event.vk_code.0;
-
         // Phase 0: KeyUp 自動追跡
+        let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
         if !is_key_down && self.lifecycle.on_key_up(event.vk_code) {
-            log::debug!("engine.on_input vk=0x{trace_vk:02X}: Phase0 KeyUp consumed");
             return Decision::consumed();
         }
 
         // Phase 1: Special keys (engine toggle + IME control)
         if is_key_down {
             if let Some(decision) = self.check_special_keys(ctx, &event) {
-                log::debug!(
-                    "engine.on_input vk=0x{trace_vk:02X}: Phase1 special_keys consumed={}",
-                    decision.is_consumed()
-                );
                 if decision.is_consumed() {
                     self.lifecycle.on_key_down_consumed(&event);
                 }
@@ -132,12 +125,7 @@ impl Engine {
 
         // Phase 2: Active state check + transition detection
         let transition_effects = self.check_active_transition(ctx);
-        let active = self.compute_active(ctx);
-        if !active {
-            log::debug!(
-                "engine.on_input vk=0x{trace_vk:02X}: Phase2 inactive (transition_effects.len={})",
-                transition_effects.len()
-            );
+        if !self.compute_active(ctx) {
             if transition_effects.is_empty() {
                 return Decision::pass_through();
             }
@@ -147,11 +135,9 @@ impl Engine {
         // Phase 3: NicolaFsm
         let phys = PhysicalKeyState::from_ctx(ctx, &event);
         let mut decision = self.adapter.on_event(event, &phys);
-        let fsm_consumed = decision.is_consumed();
-        if is_key_down && fsm_consumed {
+        if is_key_down && decision.is_consumed() {
             self.lifecycle.on_key_down_consumed(&event);
         }
-        let trans_count = transition_effects.len();
         // Prepend transition effects if any
         if !transition_effects.is_empty() {
             let effects = decision.effects_mut();
@@ -159,10 +145,6 @@ impl Engine {
                 effects.insert(0, e);
             }
         }
-        log::debug!(
-            "engine.on_input vk=0x{trace_vk:02X}: Phase3 fsm_consumed={fsm_consumed} final_consumed={} transition_count={trans_count}",
-            decision.is_consumed()
-        );
         decision
     }
 
