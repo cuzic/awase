@@ -382,14 +382,12 @@ impl Output {
     fn send_romaji(&self, romaji: &str) {
         // AppKind に応じて出力モードを自動選択する。
         //
-        // - UWP: Unicode 必須（TSF が VK キーストロークを composition できない）
-        // - Win32 (Notepad, wezterm 等): PerKey で IME composition を経由
-        //   → kana→kanji 変換が可能
-        // - Chrome (Chrome, Edge, Electron, VS Code 等): PerKey で
-        //   IME composition を経由（Chromium の TSF text store が処理）
-        //
-        // self.mode（config の output_mode）は Char/KeySequence に対する
-        // フォールバック設定として残るが、Romaji では参照しない。
+        // - Chrome (Chrome, Edge, Electron, VS Code, wezterm 等):
+        //   PerKey で IME composition を経由。独自 TSF text store を持つアプリでは
+        //   VK キーストロークを IME に渡して composition させる必要がある。
+        // - Win32 / UWP: Unicode 直接送信（IME をバイパス）。
+        //   Win32 クラシックアプリは Unicode 注入が最も安定。
+        //   UWP は TSF が VK キーストロークを composition できないため Unicode 必須。
         let app_kind = unsafe {
             crate::APP
                 .get_ref()
@@ -397,17 +395,13 @@ impl Output {
                 .unwrap_or(AppKind::Win32)
         };
         match app_kind {
-            AppKind::Uwp => {
-                log::debug!(
-                    "  send_romaji: app_kind=Uwp → Unicode (TSF compatibility)"
-                );
-                self.send_romaji_as_unicode(romaji);
-            }
-            AppKind::Win32 | AppKind::Chrome => {
-                log::debug!(
-                    "  send_romaji: app_kind={app_kind:?} → PerKey (IME composition)"
-                );
+            AppKind::Chrome => {
+                log::debug!("  send_romaji: app_kind=Chrome → PerKey (IME composition)");
                 self.send_romaji_per_key(romaji);
+            }
+            AppKind::Win32 | AppKind::Uwp => {
+                log::debug!("  send_romaji: app_kind={app_kind:?} → Unicode");
+                self.send_romaji_as_unicode(romaji);
             }
         }
     }
