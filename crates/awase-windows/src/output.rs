@@ -383,8 +383,11 @@ impl Output {
         // AppKind に応じて出力モードを自動選択する。
         //
         // - Chrome (Chrome, Edge, Electron, VS Code, wezterm 等):
-        //   PerKey で IME composition を経由。独自 TSF text store を持つアプリでは
+        //   Batched で IME composition を経由。独自 TSF text store を持つアプリでは
         //   VK キーストロークを IME に渡して composition させる必要がある。
+        //   Batched (1回の SendInput) を使うことで、flush 時の出力と後続キー
+        //   (Enter 等) の reinject が競合するのを防ぐ。PerKey だと個別の
+        //   SendInput 呼び出し間に IME が中途半端な状態で確定するリスクがある。
         // - Win32 / UWP: Unicode 直接送信（IME をバイパス）。
         //   Win32 クラシックアプリは Unicode 注入が最も安定。
         //   UWP は TSF が VK キーストロークを composition できないため Unicode 必須。
@@ -396,8 +399,8 @@ impl Output {
         };
         match app_kind {
             AppKind::Chrome => {
-                log::debug!("  send_romaji: app_kind=Chrome → PerKey (IME composition)");
-                self.send_romaji_per_key(romaji);
+                log::debug!("  send_romaji: app_kind=Chrome → Batched (IME composition)");
+                self.send_romaji_batched(romaji);
             }
             AppKind::Win32 | AppKind::Uwp => {
                 log::debug!("  send_romaji: app_kind={app_kind:?} → Unicode");
@@ -437,9 +440,9 @@ impl Output {
     /// Batched モード: 全文字を1回の SendInput にまとめて送信
     ///
     /// 最も高速。SendInput のアトミック性により他の入力が割り込めない。
-    /// 現在 send_romaji は AppKind ベース判定で使っていないが、
-    /// 将来 config から復活させる可能性があるため残す。
-    #[allow(clippy::unused_self, dead_code)]
+    /// Chrome/wezterm 等の AppKind::Chrome アプリで使用。
+    /// flush 時の出力と後続キー (Enter reinject 等) の競合を防ぐ。
+    #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
         let mut inputs = Vec::with_capacity(romaji.len() * 4);
         for ch in romaji.chars() {
