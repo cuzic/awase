@@ -699,3 +699,74 @@ pub fn keyboard_layout_info() -> (bool, u32) {
 pub fn is_japanese_input_language() -> bool {
     keyboard_layout_info().0
 }
+
+/// フォーカス切替直後の高速 IME 状態プローブ。
+///
+/// フックコールバック内で同期的に呼べるよう、高速 API のみ使用する:
+/// - `GetKeyboardLayout` (< 1ms) → `is_japanese_ime`
+/// - `GetForegroundWindow` (< 1ms) → hwnd
+/// - `ImmGetDefaultIMEWnd` (< 1ms) → IMM ブリッジ有無
+/// - `SendMessageTimeoutW(20ms)` → `ime_on`
+///
+/// 最大 ~20ms。ブラックリストアプリ（`ImmGetDefaultIMEWnd` が NULL）なら < 1ms。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
+    // 1. is_japanese_ime (always fast)
+    let (is_japanese_ime, _) = keyboard_layout_info();
+
+    if !is_japanese_ime {
+        return FastImeProbeResult {
+            is_japanese_ime: false,
+            ime_on: Some(false),
+        };
+    }
+
+    // 2. ime_on via fast cross-process check
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return FastImeProbeResult {
+            is_japanese_ime: true,
+            ime_on: None,
+        };
+    }
+
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        // IMM ブリッジなし（Chrome/UWP/wezterm 等）→ 検出不能
+        return FastImeProbeResult {
+            is_japanese_ime: true,
+            ime_on: None,
+        };
+    }
+
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETOPENSTATUS),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        20, // 20ms タイムアウト（通常のポーリングは 50ms）
+        Some(&raw mut result),
+    );
+
+    let ime_on = if ok.0 != 0 {
+        Some(result != 0)
+    } else {
+        None // タイムアウトまたはエラー
+    };
+
+    FastImeProbeResult {
+        is_japanese_ime: true,
+        ime_on,
+    }
+}
+
+/// 高速プローブの結果
+#[derive(Debug)]
+pub struct FastImeProbeResult {
+    pub is_japanese_ime: bool,
+    pub ime_on: Option<bool>,
+}

@@ -172,6 +172,13 @@ pub struct PlatformState {
     pub ime_poll_interval_ms: u32,
     pub ime_guard: ImeGuardState,
     pub modifier_timing: ModifierTiming,
+    /// フォーカス切替直後フラグ。
+    ///
+    /// フォーカス変更を検知したときに `true` にセットされる。
+    /// 次のキーストローク到着時に同期プローブ（高速 IME 状態検出）を実行し、
+    /// preconditions を即座に更新してからキーを処理する。
+    /// これにより「古い preconditions でキーが処理される」ギャップを解消する。
+    pub focus_transition_pending: bool,
 }
 
 impl PlatformState {
@@ -204,6 +211,7 @@ impl PlatformState {
             ime_poll_interval_ms: 500,
             ime_guard: ImeGuardState { active: false, deferred_keys: Vec::new() },
             modifier_timing: ModifierTiming::new(),
+            focus_transition_pending: false,
         }
     }
 }

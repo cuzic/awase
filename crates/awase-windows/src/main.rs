@@ -784,6 +784,28 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     let mut event = event;
     app.enrich_ime_relevance(&mut event);
 
+    // ── フォーカス切替直後の同期プローブ ──
+    //
+    // フォーカス変更直後は preconditions が前のウィンドウの値のまま。
+    // 最初のキーストローク到着時に高速プローブ（~20ms）で IME 状態を即座に更新し、
+    // 古い状態でキーが処理される「ギャップ」を解消する。
+    if app.platform_state.focus_transition_pending {
+        app.platform_state.focus_transition_pending = false;
+        let probe = unsafe { ime::fast_ime_probe() };
+        app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
+        if let Some(on) = probe.ime_on {
+            app.platform_state.preconditions.ime_on = on && probe.is_japanese_ime;
+            app.platform_state.preconditions.ime_detect_miss_count = 0;
+            app.platform_state.preconditions.ime_force_on_guard = false;
+        }
+        // ime_on が None の場合（ブラックリストアプリ等）は shadow 値を維持
+        log::debug!(
+            "Focus probe: japanese={} ime_on={:?}",
+            probe.is_japanese_ime,
+            probe.ime_on
+        );
+    }
+
     // ── Shadow IME toggle: フックコールバックで即座に preconditions.ime_on を更新 ──
     //
     // 2段階で判定:
@@ -1456,6 +1478,10 @@ unsafe extern "system" fn win_event_proc(
     let Some(app) = APP.get_mut() else {
         return;
     };
+
+    // フォーカス切替直後フラグをセット。
+    // 次のキーストローク到着時に同期プローブで IME 状態を即座に検出する。
+    app.platform_state.focus_transition_pending = true;
 
     // デバウンスタイマーのみ設定。Engine への通知はデバウンス後に行う。
     let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
