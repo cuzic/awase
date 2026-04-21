@@ -326,23 +326,22 @@ impl Runtime {
             });
 
         if skip_imm_query {
-            // ── ブラックリストクラス: OS 読み取りをスキップ + 強制同期 ──
-            // preconditions.ime_on はシャドウ更新が直接書き換える。
+            // ── ブラックリストクラス: OS 読み取りをスキップ ──
+            // preconditions.ime_on はシャドウ更新 (hook 経由) が直接書き換える。
             // miss_count はインクリメントしない（既知の失敗なので「検出失敗」ではない）。
             //
-            // さらに SSOT を推し進め、キャッシュ値を毎サイクル OS に書き込む。
-            // - レガシー IMM 対応アプリ: 実際に同期される
-            // - Chrome/UWP 等の完全非対応アプリ: ImmGetDefaultIMEWnd が NULL を返して無害に失敗
-            //
-            // これによりシャドウ経由で検出できないケース（言語バークリック等）の
-            // 一部でも、次のサイクルで awase の意図通りに戻せる。
+            // 書き込みは「shadow が ON のときだけ」に限定する (ADR 029 の force-ON 原則)。
+            // shadow=OFF のときに書き込むと、ユーザーが OS 経由 (言語バー、OS ショートカット等)
+            // で意図的に OFF にした瞬間を awase が毎サイクル上書きしてしまう。
+            // 「言語バー ON → awase 意図の OFF に戻す」ユースケースは諦める代わりに、
+            // ユーザーの明示的な OFF が絶対に効くことを優先する。
             log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
             if self.engine.is_user_enabled()
                 && self.platform_state.preconditions.is_japanese_ime
+                && self.platform_state.preconditions.ime_on
             {
-                let target = self.platform_state.preconditions.ime_on;
-                let _success = self.executor.platform.set_ime_open(target);
-                log::trace!("Blacklist SSOT write: ime_on={target}");
+                let _success = self.executor.platform.set_ime_open(true);
+                log::trace!("Blacklist SSOT write: ime_on=true (force-ON only)");
             }
         } else {
             // ── Phase 3: IME 状態の再取得 ──
@@ -387,13 +386,14 @@ impl Runtime {
                 }
             }
 
-            // ── Phase 3.5: IME 検出が失敗しているとき、キャッシュ値を OS にミラーする ──
+            // ── Phase 3.5: IME 検出が失敗しているとき、shadow=ON なら OS に強制 ON を書く ──
             //
             // 検出失敗が続いている = OS の IME 状態を読めない状態。
-            // このとき awase のキャッシュ（preconditions.ime_on）を SSOT として OS に書き込む。
+            // このとき shadow=ON であれば「ユーザーは日本語入力したい」と解釈して
+            // OS に SetOpen(true) を書き込み、engine を active のまま維持する (ADR 029)。
             //
-            // set_ime_open_cross_process は GetGUIThreadInfo もタイムアウト付き、
-            // SendMessageTimeoutW は 50ms タイムアウトなので安全に呼べる。
+            // 元の commit 6531a83 の原則どおり force-ON のみで、shadow=OFF のときは
+            // 書き込まない (ユーザーの明示的な OFF を上書きしないため)。
             //
             // ime_force_on_guard 中は初回ミラーリング後にフラグが立つので再書き込みしない
             // （毎サイクル書き込むと他アプリの IME 操作と競合するため）。
@@ -401,14 +401,14 @@ impl Runtime {
                 >= crate::IME_DETECT_MISS_THRESHOLD
                 && self.engine.is_user_enabled()
                 && self.platform_state.preconditions.is_japanese_ime
+                && self.platform_state.preconditions.ime_on
                 && !self.platform_state.preconditions.ime_force_on_guard
             {
-                let target = self.platform_state.preconditions.ime_on;
                 log::warn!(
-                    "IME detection failed {} times, mirroring cached state to OS (ime_on={target})",
+                    "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                     self.platform_state.preconditions.ime_detect_miss_count
                 );
-                let success = self.executor.platform.set_ime_open(target);
+                let success = self.executor.platform.set_ime_open(true);
                 if success {
                     self.platform_state.preconditions.ime_force_on_guard = true;
                     // miss_count はリセットしない。ガードが検出成功まで保護する。
