@@ -37,8 +37,8 @@ const TRAY_ICON_ID: u32 = 1;
 /// トレイアイコン用カスタムメッセージ
 const WM_TRAY_CALLBACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP;
 
-/// ウィンドウクラス名（設定 GUI からの `FindWindowW` 検索用に一定の名前を使う）
-const WINDOW_CLASS_NAME: &str = "awase_tray_window";
+/// ウィンドウクラス名（設定 GUI や多重起動検出時の `FindWindowW` 検索用に一定の名前を使う）
+pub const WINDOW_CLASS_NAME: &str = "awase_tray_window";
 
 /// システムトレイアイコン管理
 #[allow(missing_debug_implementations)]

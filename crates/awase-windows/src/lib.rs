@@ -259,6 +259,12 @@ pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_
 /// パニックリセット要求（IME 関連キー連打検出時にフックから PostMessage）
 pub const WM_PANIC_RESET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
 
+/// 多重起動検出時に新インスタンスから既存インスタンスに送る通知
+///
+/// 既存インスタンスはこのメッセージを受けるとタスクトレイにバルーン通知を表示し、
+/// ユーザーに「すでに起動している」ことを知らせる。
+pub const WM_DUPLICATE_INSTANCE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 17;
+
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///
 /// INJECTED_MARKER 付きなのでフックに再捕捉されない。

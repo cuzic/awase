@@ -51,7 +51,8 @@ use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED,
     MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
-    WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
+    WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
+    WM_RELOAD_CONFIG,
 };
 
 /// 有効/無効切り替えホットキー ID
@@ -122,15 +123,32 @@ fn main() -> Result<()> {
 
     // 多重起動防止: Named Mutex で既存インスタンスをチェック
     unsafe {
-        use windows::core::w;
+        use windows::core::{w, PCWSTR};
         use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
         use windows::Win32::System::Threading::CreateMutexW;
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 
         let mutex = CreateMutexW(None, false, w!("Global\\awase_keyboard_emulator"));
         match mutex {
             Ok(handle) => {
                 if GetLastError() == ERROR_ALREADY_EXISTS {
                     log::error!("Another instance of awase is already running. Exiting.");
+                    // 既存インスタンスのトレイウィンドウを探してバルーン通知を依頼
+                    let class_wide: Vec<u16> = tray::WINDOW_CLASS_NAME
+                        .encode_utf16()
+                        .chain(std::iter::once(0))
+                        .collect();
+                    if let Ok(existing) = FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null())
+                    {
+                        if !existing.is_invalid() {
+                            let _ = PostMessageW(
+                                existing,
+                                WM_DUPLICATE_INSTANCE,
+                                WPARAM(0),
+                                LPARAM(0),
+                            );
+                        }
+                    }
                     let _ = windows::Win32::Foundation::CloseHandle(handle);
                     std::process::exit(1);
                 }
@@ -1008,6 +1026,15 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_PANIC_RESET => unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.panic_reset();
+                }
+            },
+            WM_DUPLICATE_INSTANCE => unsafe {
+                log::info!("Duplicate instance notification received");
+                if let Some(app) = APP.get_mut() {
+                    app.executor
+                        .platform
+                        .tray
+                        .show_balloon("awase", "awase はすでに起動しています");
                 }
             },
             WM_IME_KEY_DETECTED => unsafe {
