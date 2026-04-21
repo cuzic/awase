@@ -1,4 +1,4 @@
-use awase::engine::{Engine, EngineCommand, InputContext};
+use awase::engine::{Engine, EngineCommand, InputContext, TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
@@ -325,7 +325,23 @@ impl Runtime {
                 crate::focus::classify::is_imm_bridge_broken(class_name)
             });
 
-        if skip_imm_query {
+        // ── Phase 2.7: 入力中ガード ──
+        //
+        // エンジンのキー解決タイマー (TIMER_PENDING / TIMER_SPECULATIVE) がアクティブな間は
+        // ユーザーが入力中でまもなく SendInput で VK 出力が走る可能性が高い。
+        // このタイミングで observer の `WM_IME_CONTROL(IMC_GETOPENSTATUS)` や
+        // blacklist SSOT の `set_ime_open` が IME に割り込むと、直後の VK バッチの
+        // composition が崩れて「て」→「t」のような母音落ち症状が発生する。
+        //
+        // 入力中なら IMM との SendMessage を一切行わず、次の 500ms poll に任せる。
+        // shadow は hook 経由で常時更新されているので、1 cycle の遅延は実害なし。
+        let timer = &self.executor.platform.timer;
+        let engine_timer_active =
+            timer.is_active(TIMER_PENDING) || timer.is_active(TIMER_SPECULATIVE);
+
+        if engine_timer_active {
+            log::debug!("Skipping observer/SSOT write: engine timer active (user typing)");
+        } else if skip_imm_query {
             // ── ブラックリストクラス: OS 読み取りをスキップ ──
             // preconditions.ime_on はシャドウ更新 (hook 経由) が直接書き換える。
             // miss_count はインクリメントしない（既知の失敗なので「検出失敗」ではない）。

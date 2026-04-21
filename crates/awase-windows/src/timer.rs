@@ -56,6 +56,12 @@ impl Win32Timer {
     pub fn resolve(&self, wparam: usize) -> Option<usize> {
         self.to_logical.get(&wparam).copied()
     }
+
+    /// 指定の論理 ID のタイマーが現在設定されているかを返す。
+    #[must_use]
+    pub fn is_active(&self, logical_id: usize) -> bool {
+        self.to_os.contains_key(&logical_id)
+    }
 }
 
 impl Default for Win32Timer {
