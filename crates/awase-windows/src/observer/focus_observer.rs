@@ -28,7 +28,7 @@ pub unsafe fn read_os_modifiers() -> ModifierState {
 /// - `Chrome_WidgetWin_1`: Chromium 系（Chrome, Edge, Electron, VS Code 等）
 /// - `MozillaWindowClass`: Firefox（Chromium と同様の入力処理）
 /// - `Windows.UI.Core.CoreWindow`: UWP / XAML 系
-/// - その他: Win32 クラシック
+/// - その他: Win32 クラシック（ヒューリスティックで Chrome に昇格する場合あり）
 pub fn detect_app_kind(class_name: &str) -> AppKind {
     let class_lower = class_name.to_ascii_lowercase();
     if class_lower.starts_with("chrome_") || class_lower == "mozillawindowclass" {

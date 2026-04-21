@@ -81,3 +81,7 @@ off = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]
 # force_bypass = [
 #     { process = "launcher", class = "SearchBox" },
 # ]
+# # ローマ字出力を VK キーストロークで送る (IME composition 必須のアプリ用)
+# force_vk = [
+#     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+# ]

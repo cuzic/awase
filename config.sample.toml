@@ -112,3 +112,12 @@ ime_off_keys = ["Ctrl+VK_NONCONVERT"]
 #     { process = "SearchUI.exe", class = "Windows.UI.Core.CoreWindow" },            # Windows 10 検索
 #     { process = "StartMenuExperienceHost.exe", class = "Windows.UI.Core.CoreWindow" }, # スタートメニュー
 # ]
+
+# ── ローマ字出力方式のオーバーライド ──
+# force_vk: ローマ字を VK キーストローク経由で送る (IME composition 必須のアプリ用)
+# IMM query は通るが composition は独自 TSF text store というハイブリッド系
+# (wezterm 等) を VK 側へ倒すときに使用。
+force_vk = [
+    # wezterm: IMM query は通るが composition は独自 TSF text store のため VK 必須
+    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+]

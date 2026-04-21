@@ -14,6 +14,30 @@ pub const INJECTED_MARKER: usize = 0x4B45_594D;
 /// VK_LSHIFT の仮想キーコード
 const VK_LSHIFT: u16 = 0xA0;
 
+/// 出力で VK 経路を使うべきかを現在のフォーカスから判定する。
+///
+/// 優先順位:
+///   1. config の `focus_overrides.force_vk` にマッチ → VK
+///   2. AppKind::Chrome → VK
+///   3. それ以外 (Win32 / Uwp) → Unicode
+fn resolve_use_vk() -> bool {
+    unsafe {
+        let Some(app) = crate::APP.get_ref() else {
+            return false;
+        };
+        if let Some((pid, class)) = app.executor.platform.focus.last_focus_info.as_ref() {
+            if crate::runtime::is_force_vk(
+                &app.executor.platform.focus.overrides,
+                *pid,
+                class,
+            ) {
+                return true;
+            }
+        }
+        app.platform_state.app_kind == AppKind::Chrome
+    }
+}
+
 /// ASCII 文字を対応する VK コードに変換する。
 const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     match ch {
@@ -263,19 +287,15 @@ impl Output {
 
     /// アクション列を順に実行する
     ///
-    /// `AppKind` に応じて `Char` と `KeySequence` の出力方式を適応的に切り替える:
-    /// - Chrome: Char/KeySequence ともに VK キーストローク（全角→半角変換問題の回避）
-    /// - Win32/Uwp 等: Unicode 直接送信
+    /// 出力方式は `AppKind::Chrome` または config の `focus_overrides.force_vk` に
+    /// マッチする場合に VK 経路、それ以外は Unicode 直接送信:
+    /// - Chrome: VK キーストローク（独自 TSF text store 経由で IME composition）
+    /// - Win32/Uwp: Unicode 直接送信
     pub fn send_keys(&self, actions: &[KeyAction]) {
-        let app_kind = unsafe {
-            crate::APP.get_ref()
-                .map(|app| app.platform_state.app_kind)
-                .unwrap_or(AppKind::Win32)
-        };
-        let use_vk = app_kind == AppKind::Chrome;
+        let use_vk = resolve_use_vk();
 
         log::debug!(
-            "send_keys: app_kind={app_kind:?} use_vk={use_vk} actions={actions:?}",
+            "send_keys: use_vk={use_vk} actions={actions:?}",
         );
 
         for action in actions {
@@ -380,32 +400,24 @@ impl Output {
 
     /// ローマ字文字列を送信する（モードに応じて方式を切り替え）
     fn send_romaji(&self, romaji: &str) {
-        // AppKind に応じて出力モードを自動選択する。
-        //
-        // - Chrome (Chrome, Edge, Electron, VS Code, wezterm 等):
+        // AppKind 自動判定:
+        // - Chrome (Chrome, Edge, Electron, VS Code 等):
         //   Batched で IME composition を経由。独自 TSF text store を持つアプリでは
         //   VK キーストロークを IME に渡して composition させる必要がある。
         //   Batched (1回の SendInput) を使うことで、flush 時の出力と後続キー
-        //   (Enter 等) の reinject が競合するのを防ぐ。PerKey だと個別の
-        //   SendInput 呼び出し間に IME が中途半端な状態で確定するリスクがある。
+        //   (Enter 等) の reinject が競合するのを防ぐ。
         // - Win32 / UWP: Unicode 直接送信（IME をバイパス）。
         //   Win32 クラシックアプリは Unicode 注入が最も安定。
         //   UWP は TSF が VK キーストロークを composition できないため Unicode 必須。
-        let app_kind = unsafe {
-            crate::APP
-                .get_ref()
-                .map(|app| app.platform_state.app_kind)
-                .unwrap_or(AppKind::Win32)
-        };
-        match app_kind {
-            AppKind::Chrome => {
-                log::debug!("  send_romaji: app_kind=Chrome → Batched (IME composition)");
-                self.send_romaji_batched(romaji);
-            }
-            AppKind::Win32 | AppKind::Uwp => {
-                log::debug!("  send_romaji: app_kind={app_kind:?} → Unicode");
-                self.send_romaji_as_unicode(romaji);
-            }
+        //
+        // wezterm など「IMM query は通るが composition は独自 TSF」系アプリは
+        // config の `focus_overrides.force_vk` で VK 側へ明示的に倒す。
+        if resolve_use_vk() {
+            log::debug!("  send_romaji: → Batched (VK composition)");
+            self.send_romaji_batched(romaji);
+        } else {
+            log::debug!("  send_romaji: → Unicode");
+            self.send_romaji_as_unicode(romaji);
         }
     }
 

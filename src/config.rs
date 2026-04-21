@@ -296,14 +296,18 @@ pub struct FocusOverrideEntry {
 
 /// フォーカス判定の永続オーバーライド設定
 ///
-/// `force_text` に指定した (process, class) の組み合わせは常にテキスト入力として扱い、
-/// `force_bypass` に指定した組み合わせは常に非テキストとしてバイパスする。
+/// - `force_text`: 常にテキスト入力として扱う (process, class) の組
+/// - `force_bypass`: 常に非テキストとしてバイパスする組
+/// - `force_vk`: ローマ字出力を常に VK キーストローク (IME composition 経由) で送る組。
+///   wezterm のように独自 TSF text store を持つが IMM query は通るハイブリッド系アプリ用。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct FocusOverrides {
     #[serde(default)]
     pub force_text: Vec<FocusOverrideEntry>,
     #[serde(default)]
     pub force_bypass: Vec<FocusOverrideEntry>,
+    #[serde(default)]
+    pub force_vk: Vec<FocusOverrideEntry>,
 }
 
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
@@ -449,6 +453,11 @@ impl AppConfig {
                 warnings.push("focus_overrides.force_bypass に空のエントリがあります".to_string());
             }
         }
+        for entry in &focus_overrides.force_vk {
+            if entry.process.is_empty() || entry.class.is_empty() {
+                warnings.push("focus_overrides.force_vk に空のエントリがあります".to_string());
+            }
+        }
 
         (
             ValidatedConfig {
@@ -569,6 +578,29 @@ confirm_mode = "two_phase"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.focus_overrides.force_text.is_empty());
         assert!(config.focus_overrides.force_bypass.is_empty());
+        assert!(config.focus_overrides.force_vk.is_empty());
+    }
+
+    #[test]
+    fn test_focus_overrides_force_vk_parse() {
+        let toml_str = r#"
+[general]
+
+[focus_overrides]
+force_vk = [
+    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.focus_overrides.force_vk.len(), 1);
+        assert_eq!(
+            config.focus_overrides.force_vk[0].process,
+            "wezterm-gui.exe"
+        );
+        assert_eq!(
+            config.focus_overrides.force_vk[0].class,
+            "org.wezfurlong.wezterm"
+        );
     }
 
     #[test]

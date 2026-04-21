@@ -33,6 +33,25 @@ fn check_focus_override(
     None
 }
 
+/// Config の `force_vk` オーバーライドに現在のフォーカス先がマッチするか判定する。
+///
+/// `force_vk` が空なら Win32 API を呼ばずに即 false を返す (fast path)。
+/// マッチは `process` と `class` の両方が大文字小文字を無視して一致したとき。
+pub fn is_force_vk(
+    overrides: &awase::config::FocusOverrides,
+    process_id: u32,
+    class_name: &str,
+) -> bool {
+    if overrides.force_vk.is_empty() {
+        return false;
+    }
+    let process_name = crate::focus::classify::get_process_name(process_id);
+    overrides.force_vk.iter().any(|entry| {
+        entry.process.eq_ignore_ascii_case(&process_name)
+            && entry.class.eq_ignore_ascii_case(class_name)
+    })
+}
+
 /// `Preconditions` と `ModifierTiming` から `InputContext` を構築する。
 ///
 /// 修飾キー判定は `GetAsyncKeyState` と `ModifierTiming` の OR で統合。
