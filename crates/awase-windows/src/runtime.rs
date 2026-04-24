@@ -584,7 +584,7 @@ impl Runtime {
         self.executor.platform.focus.last_focus_info = Some((process_id, class_name.clone()));
 
         // prev_conversion_mode をリセット（異なるウィンドウの conversion_mode を比較しない）
-        self.platform_state.preconditions.prev_conversion_mode = 0;
+        self.platform_state.preconditions.prev_conversion_mode = None;
 
         if process_changed {
             log::debug!("Foreground process changed → FocusChanged (pid={process_id} class={class_name})");
@@ -753,7 +753,7 @@ impl Runtime {
         self.platform_state.preconditions.is_romaji = true;
         self.platform_state.preconditions.ime_on = true; // 安全側: ON
         self.platform_state.preconditions.is_japanese_ime = true;
-        self.platform_state.preconditions.prev_conversion_mode = 0;
+        self.platform_state.preconditions.prev_conversion_mode = None;
         self.platform_state.preconditions.ime_detect_miss_count = 0;
         // 直後の refresh_ime_state_cache() で observe() が上書きしないようガードする。
         // 次の検出成功時に自然に解除される。

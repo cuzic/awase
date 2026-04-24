@@ -70,7 +70,8 @@ pub struct Preconditions {
     /// 日本語 IME がアクティブか
     pub is_japanese_ime: bool,
     /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
-    pub prev_conversion_mode: u32,
+    /// None = まだ一度も取得できていない
+    pub prev_conversion_mode: Option<u32>,
     /// IME 状態検出の連続失敗回数。
     ///
     /// `detect_ime_state()` が `ime_on = None` を返すたびにインクリメントされ、
@@ -189,7 +190,7 @@ impl PlatformState {
                 ime_on: true,        // 安全側: ON で初期化
                 is_romaji: true,     // デフォルト: ローマ字入力
                 is_japanese_ime: true, // デフォルト: 日本語
-                prev_conversion_mode: 0,
+                prev_conversion_mode: None,
                 ime_detect_miss_count: 0,
                 ime_force_on_guard: false,
             },
