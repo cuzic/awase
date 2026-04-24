@@ -82,7 +82,6 @@ use awase::yab::YabLayout;
 
 use crate::executor::DecisionExecutor;
 use crate::hook::CallbackResult;
-use crate::ime::HybridProvider;
 
 // ── LayoutEntry（名前付きレイアウトエントリ）──
 
@@ -223,8 +222,6 @@ impl FocusDetector {
 pub struct Runtime {
     pub engine: Engine,
     pub executor: DecisionExecutor,
-    #[allow(dead_code)] // IME プロバイダは将来のモード検出で使用予定
-    pub ime: HybridProvider,
     pub layouts: Vec<LayoutEntry>,
     /// IME 同期キー（イベント事前分類用）
     pub sync_toggle_keys: Vec<VkCode>,
