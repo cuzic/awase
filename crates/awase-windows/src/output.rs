@@ -506,7 +506,10 @@ impl Output {
         // 1. かな→ローマ字逆引き（か → "ka" → VK(k), VK(a) → IME が変換）
         if let Some(romaji) = self.kana_to_romaji.get(&ch) {
             log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
-            self.send_romaji_per_key(romaji);
+            // Batched (1回の SendInput) を使うことで、後続キー（Enter reinject 等）との
+            // 競合を防ぐ。per_key では K↓K↑ と A↓A↑ が別 SendInput になり、
+            // 間に Enter が割り込むと "kあ" のような出力破壊が起きる。
+            self.send_romaji_batched(romaji);
             return;
         }
         // 2. 記号→VK コード（？ → Shift+/ → IME が全角？に変換）

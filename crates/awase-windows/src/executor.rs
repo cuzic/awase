@@ -135,10 +135,21 @@ impl DecisionExecutor {
     fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
         match decision {
             Decision::PassThrough => {
-                // Effects なし → 直接 OS に通す
-                HookResult {
-                    callback: CallbackResult::PassThrough,
-                    has_pending: self.has_pending(),
+                if self.has_pending() {
+                    // pending effects（未送出の文字等）がある場合、PassThrough のまま通すと
+                    // ENTER 等が先に WezTerm に届いて "kあ" 等の出力破壊が起きる。
+                    // Consume して reinject をキューの末尾に積み、effects → キー の順を保証。
+                    self.queue.push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                    HookResult {
+                        callback: CallbackResult::Consumed,
+                        has_pending: true,
+                    }
+                } else {
+                    // Effects なし → 直接 OS に通す
+                    HookResult {
+                        callback: CallbackResult::PassThrough,
+                        has_pending: false,
+                    }
                 }
             }
             Decision::PassThroughWith { mut effects } => {
