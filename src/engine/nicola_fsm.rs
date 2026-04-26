@@ -581,11 +581,21 @@ impl NicolaFsm {
             KeyClass::LeftThumb | KeyClass::RightThumb => self.step_pending_char_thumb(ev),
             KeyClass::Char => self.step_pending_char_char(ev),
             KeyClass::Passthrough => {
-                log::error!("unexpected Passthrough in PendingChar");
-                ParseAction::Reduce {
-                    actions: vec![],
-                    record: OutputUpdate::None,
-                    timer: TimerIntent::Keep,
+                // Passthrough key (e.g. ENTER) arrived while a char is pending.
+                // Flush the pending char first so it reaches IME before the passthrough key.
+                let EngineState::PendingChar(pending) = self.state else {
+                    unreachable!("unexpected state: {:?}", self.state)
+                };
+                self.go_idle();
+                let resolved = self.resolve_pending_char_as_single(
+                    pending.scan_code,
+                    pending.vk_code,
+                    pending.pos,
+                );
+                ParseAction::ReduceAndContinue {
+                    actions: resolved.actions,
+                    record: resolved.output,
+                    remaining: *ev,
                 }
             }
         }
@@ -597,11 +607,17 @@ impl NicolaFsm {
             KeyClass::Char => self.step_pending_thumb_char(ev),
             KeyClass::LeftThumb | KeyClass::RightThumb => self.step_pending_thumb_thumb(ev),
             KeyClass::Passthrough => {
-                log::error!("unexpected Passthrough in PendingThumb");
-                ParseAction::Reduce {
-                    actions: vec![],
-                    record: OutputUpdate::None,
-                    timer: TimerIntent::Keep,
+                // Passthrough key arrived while a thumb is pending.
+                // Flush the pending thumb first so it reaches IME before the passthrough key.
+                let EngineState::PendingThumb(thumb) = self.state else {
+                    unreachable!("unexpected state: {:?}", self.state)
+                };
+                self.go_idle();
+                let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
+                ParseAction::ReduceAndContinue {
+                    actions: resolved.actions,
+                    record: resolved.output,
+                    remaining: *ev,
                 }
             }
         }
@@ -626,11 +642,12 @@ impl NicolaFsm {
                 }
             }
             KeyClass::Passthrough => {
-                log::error!("unexpected Passthrough in SpeculativeChar");
-                ParseAction::Reduce {
+                // Speculative char was already sent to IME; just go idle and pass through.
+                self.go_idle();
+                ParseAction::ReduceAndContinue {
                     actions: vec![],
                     record: OutputUpdate::None,
-                    timer: TimerIntent::Keep,
+                    remaining: *ev,
                 }
             }
         }
