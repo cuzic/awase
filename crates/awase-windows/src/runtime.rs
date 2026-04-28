@@ -492,7 +492,7 @@ impl Runtime {
         let class_name = probe.class_name;
 
         // app_kind を更新
-        let mut new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
+        let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
 
         // IMM 能力キャッシュの初期学習（AppKind は変更しない）。
         // "IMM Broken" = IMM 状態クエリが信頼できない。VK 合成が必要とは限らない。
