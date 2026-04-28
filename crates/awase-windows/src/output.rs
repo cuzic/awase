@@ -449,30 +449,40 @@ impl Output {
         }
     }
 
-    /// Batched モード: 全文字を1回の SendInput にまとめて送信（逐次押し順）
+    /// Batched モード: 全文字を1回の SendInput にまとめて送信（重畳押し順）
     ///
-    /// 送信順序: 各文字ごとに KeyDown + KeyUp（逐次押し、例: "ko" → K↓ K↑ O↓ O↑）
+    /// 送信順序: 全文字の KeyDown を先に送り、その後全文字の KeyUp を送る
+    /// （重畳順: 例 "mu" → M↓ U↓ M↑ U↑）
     ///
+    /// WezTerm 等の TSF アプリは逐次順（M↓ M↑ U↓ U↑）だと M↑ 受信時に
+    /// "m" 組成を確定させ、後続の U が独立した "う" になる問題がある。
+    /// 重畳順では U↓ が M↑ より先に届くため IME は M+U を一組として
+    /// "む" に正しく変換する。
     /// 全文字を1回の SendInput にまとめることで、後続キー（Enter reinject 等）が
     /// 文字キーの間に割り込むのを防ぐ（per_key との違い）。
     #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
-        let mut inputs = Vec::with_capacity(romaji.len() * 4);
+        let chars: Vec<(u16, bool)> = romaji.chars()
+            .filter_map(|ch| ascii_to_vk(ch))
+            .collect();
 
-        for ch in romaji.chars() {
-            let Some((vk, needs_shift)) = ascii_to_vk(ch) else { continue };
+        if chars.is_empty() {
+            return;
+        }
+
+        let mut inputs = Vec::with_capacity(chars.len() * 4);
+
+        for &(vk, needs_shift) in &chars {
             if needs_shift {
                 inputs.push(make_key_input(VK_LSHIFT, false));
             }
             inputs.push(make_key_input(vk, false));
+        }
+        for &(vk, needs_shift) in &chars {
             inputs.push(make_key_input(vk, true));
             if needs_shift {
                 inputs.push(make_key_input(VK_LSHIFT, true));
             }
-        }
-
-        if inputs.is_empty() {
-            return;
         }
 
         unsafe {
