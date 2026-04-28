@@ -390,11 +390,6 @@ impl Runtime {
                         );
                         self.executor.platform.focus
                             .learn_imm_capability(class_name.clone(), ImmCapability::Broken);
-                        // AppKind も即座に更新
-                        if self.platform_state.app_kind == awase::types::AppKind::Win32 {
-                            log::info!("AppKind promoted: Win32 → Chrome (learned IMM broken)");
-                            self.platform_state.app_kind = awase::types::AppKind::Chrome;
-                        }
                     }
                 }
             }
@@ -499,29 +494,17 @@ impl Runtime {
         // app_kind を更新
         let mut new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
 
-        // ヒューリスティック: Win32 と判定されたアプリでも、独自 TSF text store を
-        // 持っている場合は AppKind::Chrome に昇格させる。
-        //
-        // 判定基準（優先順位順）:
-        // 1. IMM 能力キャッシュ（過去の検出実績）→ 最も信頼できる
-        // 2. ImmGetDefaultIMEWnd が NULL → IMM ブリッジなし（初回フォールバック）
+        // IMM 能力キャッシュの初期学習（AppKind は変更しない）。
+        // "IMM Broken" = IMM 状態クエリが信頼できない。VK 合成が必要とは限らない。
+        // WezTerm 等は ImmGetDefaultIMEWnd=NULL でも WM_CHAR (Unicode) を正しく処理する。
         if new_app_kind == awase::types::AppKind::Win32 {
-            if let Some(&cap) = self.executor.platform.focus.imm_capability_cache.get(&class_name) {
-                if cap == ImmCapability::Broken {
-                    log::debug!(
-                        "AppKind heuristic: Win32 → Chrome (learned IMM broken, class={class_name})"
-                    );
-                    new_app_kind = awase::types::AppKind::Chrome;
-                }
-            } else {
-                // キャッシュなし → ImmGetDefaultIMEWnd で初期判定
+            if self.executor.platform.focus.imm_capability_cache.get(&class_name).is_none() {
                 use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
                 let ime_wnd = unsafe { ImmGetDefaultIMEWnd(hwnd) };
                 if ime_wnd.0.is_null() {
                     log::info!(
-                        "AppKind heuristic: Win32 → Chrome (ImmGetDefaultIMEWnd=NULL, class={class_name})"
+                        "IMM capability: ImmGetDefaultIMEWnd=NULL, learning Broken (class={class_name})"
                     );
-                    new_app_kind = awase::types::AppKind::Chrome;
                     self.executor.platform.focus
                         .learn_imm_capability(class_name.clone(), ImmCapability::Broken);
                 }

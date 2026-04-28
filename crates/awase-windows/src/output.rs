@@ -462,27 +462,22 @@ impl Output {
     /// 文字キーの間に割り込むのを防ぐ（per_key との違い）。
     #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
-        let chars: Vec<(u16, bool)> = romaji.chars()
-            .filter_map(|ch| ascii_to_vk(ch))
-            .collect();
+        let mut inputs = Vec::with_capacity(romaji.len() * 4);
 
-        if chars.is_empty() {
-            return;
-        }
-
-        let mut inputs = Vec::with_capacity(chars.len() * 4);
-
-        for &(vk, needs_shift) in &chars {
+        for ch in romaji.chars() {
+            let Some((vk, needs_shift)) = ascii_to_vk(ch) else { continue };
             if needs_shift {
                 inputs.push(make_key_input(VK_LSHIFT, false));
             }
             inputs.push(make_key_input(vk, false));
-        }
-        for &(vk, needs_shift) in &chars {
             inputs.push(make_key_input(vk, true));
             if needs_shift {
                 inputs.push(make_key_input(VK_LSHIFT, true));
             }
+        }
+
+        if inputs.is_empty() {
+            return;
         }
 
         unsafe {
