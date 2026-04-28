@@ -291,24 +291,31 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
         return FastImeProbeResult {
             is_japanese_ime: false,
             ime_on: Some(false),
+            is_romaji: None,
         };
     }
 
-    // 2. ime_on via fast cross-process check
+    // 2. ime_on + is_romaji via fast cross-process check
+    // GetForegroundWindow() はトップレベルウィンドウを返す。
+    // detect_ime_state が使う GetGUIThreadInfo().hwndFocus（子ウィンドウ）と異なり、
+    // トップレベル hwnd は TSF 互換ブリッジ経由で IMM32 API に応答できる場合が多い。
+    // フォーカス切替直後に子ウィンドウで検出不能な状態でも、ここでは検出できることがある。
     let hwnd = GetForegroundWindow();
     if hwnd.0.is_null() {
         return FastImeProbeResult {
             is_japanese_ime: true,
             ime_on: None,
+            is_romaji: None,
         };
     }
 
     let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
     if ime_wnd.0.is_null() {
-        // IMM ブリッジなし（Chrome/UWP/wezterm 等）→ 検出不能
+        // IMM ブリッジなし（Chrome/UWP 等）→ 検出不能
         return FastImeProbeResult {
             is_japanese_ime: true,
             ime_on: None,
+            is_romaji: None,
         };
     }
 
@@ -329,9 +336,35 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
         None // タイムアウトまたはエラー
     };
 
+    // 3. conversion mode → is_romaji
+    // ウィンドウ切替直後は detect_ime_state（子 hwnd 使用）が変換モードを取得できない場合があるが、
+    // トップレベル hwnd 経由なら取得できることが多い。これにより focus_transition_pending 時の
+    // stale な is_romaji をリセットできる。
+    let mut conv_result = 0usize;
+    let conv_ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETCONVERSIONMODE),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        20,
+        Some(&raw mut conv_result),
+    );
+
+    let is_romaji = if conv_ok.0 != 0 {
+        let conv = conv_result as u32;
+        let is_native = conv & IME_CMODE_NATIVE.0 != 0;
+        let is_roman = conv & IME_CMODE_ROMAN != 0;
+        log::debug!("fast_ime_probe: conv=0x{conv:08X} native={is_native} roman={is_roman}");
+        if is_native { Some(is_roman) } else { None }
+    } else {
+        None
+    };
+
     FastImeProbeResult {
         is_japanese_ime: true,
         ime_on,
+        is_romaji,
     }
 }
 
@@ -340,4 +373,6 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
 pub struct FastImeProbeResult {
     pub is_japanese_ime: bool,
     pub ime_on: Option<bool>,
+    /// ローマ字入力か（Some(true)=ローマ字, Some(false)=かな, None=検出不能）
+    pub is_romaji: Option<bool>,
 }

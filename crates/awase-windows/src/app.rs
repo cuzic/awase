@@ -792,10 +792,27 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
             app.platform_state.preconditions.ime_force_on_guard = false;
         }
         // ime_on が None の場合（ブラックリストアプリ等）は shadow 値を維持
+        //
+        // ウィンドウ切替直後は detect_ime_state（子 hwnd 経由）が変換モードを取得できず、
+        // is_romaji がフォーカス前の古い値のまま残ることがある。
+        // fast_ime_probe はトップレベル hwnd を使うため変換モードを取得できる場合が多い。
+        // probe に is_romaji が含まれていれば preconditions をここで即座に更新する。
+        if let Some(romaji) = probe.is_romaji {
+            let prev = app.platform_state.preconditions.is_romaji;
+            app.platform_state.preconditions.is_romaji = romaji;
+            if prev != romaji {
+                log::info!(
+                    "Focus probe: is_romaji {} → {}",
+                    if prev { "romaji" } else { "kana" },
+                    if romaji { "romaji" } else { "kana" },
+                );
+            }
+        }
         log::debug!(
-            "Focus probe: japanese={} ime_on={:?}",
+            "Focus probe: japanese={} ime_on={:?} is_romaji={:?}",
             probe.is_japanese_ime,
-            probe.ime_on
+            probe.ime_on,
+            probe.is_romaji,
         );
     }
 
