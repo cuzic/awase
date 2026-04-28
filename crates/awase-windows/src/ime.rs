@@ -336,35 +336,34 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
         None // タイムアウトまたはエラー
     };
 
-    // 3. conversion mode → is_romaji
-    // ウィンドウ切替直後は detect_ime_state（子 hwnd 使用）が変換モードを取得できない場合があるが、
-    // トップレベル hwnd 経由なら取得できることが多い。これにより focus_transition_pending 時の
-    // stale な is_romaji をリセットできる。
-    let mut conv_result = 0usize;
-    let conv_ok = SendMessageTimeoutW(
-        ime_wnd,
-        WM_IME_CONTROL,
-        WPARAM(IMC_GETCONVERSIONMODE),
-        LPARAM(0),
-        SMTO_ABORTIFHUNG,
-        20,
-        Some(&raw mut conv_result),
-    );
-
-    let is_romaji = if conv_ok.0 != 0 {
-        let conv = conv_result as u32;
-        let is_native = conv & IME_CMODE_NATIVE.0 != 0;
-        let is_roman = conv & IME_CMODE_ROMAN != 0;
-        log::debug!("fast_ime_probe: conv=0x{conv:08X} native={is_native} roman={is_roman}");
-        if is_native { Some(is_roman) } else { None }
-    } else {
-        None
-    };
+    // 3. conversion mode → is_romaji（ログのみ、更新は行わない）
+    // IMM32 ブリッジは WezTerm 等の TSF アプリでロ－マ字モードでも ROMAN ビットを
+    // 報告しないことがある（Zoom 等と同様）。ROMAN ビット不在を「かな入力」と
+    // 断定するのは誤検出を招くため、ここでは診断ログ出力のみ行う。
+    // is_romaji の確定的な更新は detect_ime_state（observe）に委ねる。
+    {
+        let mut conv_result = 0usize;
+        let conv_ok = SendMessageTimeoutW(
+            ime_wnd,
+            WM_IME_CONTROL,
+            WPARAM(IMC_GETCONVERSIONMODE),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            20,
+            Some(&raw mut conv_result),
+        );
+        if conv_ok.0 != 0 {
+            let conv = conv_result as u32;
+            let is_native = conv & IME_CMODE_NATIVE.0 != 0;
+            let is_roman = conv & IME_CMODE_ROMAN != 0;
+            log::debug!("fast_ime_probe: conv=0x{conv:08X} native={is_native} roman={is_roman}");
+        }
+    }
 
     FastImeProbeResult {
         is_japanese_ime: true,
         ime_on,
-        is_romaji,
+        is_romaji: None,
     }
 }
 
