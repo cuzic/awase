@@ -449,33 +449,50 @@ impl Output {
         }
     }
 
-    /// Batched モード: 全文字を1回の SendInput にまとめて送信
+    /// Batched モード: 全文字を1回の SendInput にまとめて送信（重なり押し順）
     ///
-    /// 最も高速。SendInput のアトミック性により他の入力が割り込めない。
-    /// Chrome/wezterm 等の AppKind::Chrome アプリで使用。
-    /// flush 時の出力と後続キー (Enter reinject 等) の競合を防ぐ。
+    /// 送信順序: 全 KeyDown → 全 KeyUp（重なり押し、例: "ko" → K↓ O↓ K↑ O↑）
+    ///
+    /// K↓ K↑ O↓ O↑（逐次）ではなく K↓ O↓ K↑ O↑（重なり）にする理由:
+    /// WezTerm の TSF は K↑ のタイミングで IME 変換バッファをコミットする。
+    /// 逐次順だと K↑ で 'k' がコミットされ、O↓ が単独で 'o' → 'お' になって
+    /// 'こ' の代わりに 'kお' が出力されてしまう。
+    /// 重なり順なら O↓ 到着時に K がまだ押されているため IME が 'ko' を一括変換する。
+    ///
+    /// 1文字の場合（'a' など）は K↓ K↑ のみで同動作。
     #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
-        let mut inputs = Vec::with_capacity(romaji.len() * 4);
-        for ch in romaji.chars() {
-            if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, false));
-                }
-                inputs.push(make_key_input(vk, false));
-                inputs.push(make_key_input(vk, true));
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, true));
-                }
+        // (vk, needs_shift) のリストを先に収集して DOWN/UP を分離する
+        let keys: Vec<(u16, bool)> = romaji
+            .chars()
+            .filter_map(|ch| ascii_to_vk(ch))
+            .collect();
+
+        if keys.is_empty() {
+            return;
+        }
+
+        let mut inputs = Vec::with_capacity(keys.len() * 4);
+        // 全 KeyDown を先に送出（重なり押し）
+        for &(vk, needs_shift) in &keys {
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, false));
+            }
+            inputs.push(make_key_input(vk, false));
+        }
+        // 全 KeyUp を後で送出
+        for &(vk, needs_shift) in &keys {
+            inputs.push(make_key_input(vk, true));
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, true));
             }
         }
-        if !inputs.is_empty() {
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
+
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
         }
     }
 
