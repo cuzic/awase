@@ -1076,7 +1076,7 @@ fn test_yab_value_to_action_romaji() {
         romaji: "ka".to_string(),
         kana: Some('か'),
     });
-    assert!(matches!(action, KeyAction::Romaji(ref s) if s == "ka"));
+    assert!(matches!(action, KeyAction::Char('か')));
 }
 
 #[test]
@@ -1595,8 +1595,8 @@ fn test_romaji_value_in_layout() {
     let r = engine.on_timeout(TIMER_PENDING);
     r.assert_consumed();
     assert!(
-        matches!(&r.actions[0], KeyAction::Romaji(s) if s == "ka"),
-        "should output Romaji action"
+        matches!(&r.actions[0], KeyAction::Char('か')),
+        "should output Char('か') action"
     );
 }
 
@@ -2136,12 +2136,12 @@ fn test_speculative_simultaneous_with_romaji() {
     };
     let t0 = 1_000_000;
 
-    // Press 'D' key → immediate output Romaji("ka")
+    // Press 'D' key → immediate output Char('か')
     let r = engine.on_event(Ev::down(VK_D).at(t0).build());
     r.assert_consumed();
     assert!(
-        matches!(&r.actions[0], KeyAction::Romaji(s) if s == "ka"),
-        "should emit Romaji 'ka' immediately, got {:?}",
+        matches!(&r.actions[0], KeyAction::Char('か')),
+        "should emit Char('か') immediately, got {:?}",
         r.actions[0]
     );
 

@@ -35,7 +35,12 @@ type Resp = Response<KeyAction, usize>;
 impl From<&YabValue> for KeyAction {
     fn from(value: &YabValue) -> Self {
         match value {
-            YabValue::Romaji { romaji, .. } => Self::Romaji(romaji.clone()),
+            // kana が解決済みの場合は Char で直接出力。
+            // Unicode モードでは IME を経由せず直接送信、VK モードでは
+            // send_char_as_vk が kana_to_romaji で逆引きして batched 送信する。
+            YabValue::Romaji { kana: Some(ch), .. } => Self::Char(*ch),
+            // kana 未解決（拗音など単一 char に収まらないケース）は VK 経由でフォールバック
+            YabValue::Romaji { romaji, kana: None } => Self::Romaji(romaji.clone()),
             YabValue::Literal(s) => s.chars().next().map_or(Self::Suppress, Self::Char),
             YabValue::KeySequence(s) => Self::KeySequence(s.clone()),
             YabValue::Special(sk) => Self::SpecialKey(*sk),
