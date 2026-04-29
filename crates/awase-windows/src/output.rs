@@ -410,8 +410,6 @@ impl Output {
         //   Win32 クラシックアプリは Unicode 注入が最も安定。
         //   UWP は TSF が VK キーストロークを composition できないため Unicode 必須。
         //
-        // wezterm など「IMM query は通るが composition は独自 TSF」系アプリは
-        // config の `focus_overrides.force_vk` で VK 側へ明示的に倒す。
         if resolve_use_vk() {
             log::debug!("  send_romaji: → Batched (VK composition)");
             self.send_romaji_batched(romaji);
