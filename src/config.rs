@@ -298,8 +298,8 @@ pub struct FocusOverrideEntry {
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
 /// - `force_bypass`: 常に非テキストとしてバイパスする組
-/// - `force_vk`: ローマ字出力を常に VK キーストローク (IME composition 経由) で送る組。
-///   wezterm のように独自 TSF text store を持つが IMM query は通るハイブリッド系アプリ用。
+/// - `force_vk`: ローマ字出力を VK キーストローク Batched モードで送る組（Chrome/Edge/Electron 等）
+/// - `force_tsf`: ローマ字出力を VK キーストローク Sequential モードで送る組（WezTerm 等 TSF 直結アプリ）
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct FocusOverrides {
     #[serde(default)]
@@ -308,6 +308,8 @@ pub struct FocusOverrides {
     pub force_bypass: Vec<FocusOverrideEntry>,
     #[serde(default)]
     pub force_vk: Vec<FocusOverrideEntry>,
+    #[serde(default)]
+    pub force_tsf: Vec<FocusOverrideEntry>,
 }
 
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
@@ -456,6 +458,11 @@ impl AppConfig {
         for entry in &focus_overrides.force_vk {
             if entry.process.is_empty() || entry.class.is_empty() {
                 warnings.push("focus_overrides.force_vk に空のエントリがあります".to_string());
+            }
+        }
+        for entry in &focus_overrides.force_tsf {
+            if entry.process.is_empty() || entry.class.is_empty() {
+                warnings.push("focus_overrides.force_tsf に空のエントリがあります".to_string());
             }
         }
 

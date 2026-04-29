@@ -38,9 +38,15 @@ default_layout = "nicola.yab"
 
 # ローマ字出力を VK キーストローク経由で送るアプリの明示指定。
 # Chrome/Edge/Electron 等 IME composition を VK 経由でないと扱えないアプリ向け。
-# WezTerm は SendInput の INJECTED フラグを検出して PTY に直送するため VK 不可。
 # Win32 モード（Unicode 直接注入）がデフォルトで動作する。
-# [focus_overrides]
+#
+# force_tsf: VK Sequential モード（WezTerm 等 TSF 直結アプリ）
+#   IME composition + 漢字変換を有効にする。NICOLA フックはスルーして
+#   WezTerm の TSF に通常のキーストロークとして届ける。
+[focus_overrides]
+force_tsf = [
+    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+]
 # force_vk = [
 #     { process = "chrome.exe", class = "Chrome_WidgetWin_1" },
 # ]

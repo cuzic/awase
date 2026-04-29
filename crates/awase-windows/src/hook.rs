@@ -398,7 +398,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
 
         // ── 自己注入チェック（無限ループ防止）──
-        if kb.dwExtraInfo == INJECTED_MARKER {
+        if kb.dwExtraInfo == INJECTED_MARKER || kb.dwExtraInfo == crate::output::TSF_MARKER {
             // ハートビートは自己注入でも更新する（ping 応答のため）
             if let Some(app) = crate::APP.get_mut() {
                 app.platform_state.last_hook_activity_ms = current_tick_ms();

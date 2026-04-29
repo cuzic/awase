@@ -11,30 +11,59 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 /// 自己注入マーカー（"KEYM" = 0x4B45_594D）
 pub const INJECTED_MARKER: usize = 0x4B45_594D;
 
+/// TSF 向け注入マーカー（"KEYF" = 0x4B45_5946）
+///
+/// hook では INJECTED_MARKER と同様に再処理をスキップするが、
+/// dwExtraInfo の値が異なることで TSF Sequential モードの識別に使う。
+pub const TSF_MARKER: usize = 0x4B45_5946;
+
+/// 出力注入モード
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InjectionMode {
+    /// Unicode 直接注入（Win32/UWP デフォルト）
+    Unicode,
+    /// VK Batched 注入（Chrome/Edge/Electron — IME composition 経由）
+    Vk,
+    /// VK Sequential 注入（WezTerm — TSF 直結アプリ向け）
+    Tsf,
+}
+
 /// VK_LSHIFT の仮想キーコード
 const VK_LSHIFT: u16 = 0xA0;
 
-/// 出力で VK 経路を使うべきかを現在のフォーカスから判定する。
+/// 現在のフォーカス先から出力注入モードを決定する。
 ///
 /// 優先順位:
-///   1. config の `focus_overrides.force_vk` にマッチ → VK
-///   2. AppKind::Chrome → VK
-///   3. それ以外 (Win32 / Uwp) → Unicode
-fn resolve_use_vk() -> bool {
+///   1. config の `focus_overrides.force_tsf` にマッチ → Tsf
+///   2. config の `focus_overrides.force_vk` にマッチ → Vk
+///   3. AppKind::Chrome → Vk
+///   4. それ以外 (Win32 / Uwp) → Unicode
+fn resolve_injection_mode() -> InjectionMode {
     unsafe {
         let Some(app) = crate::APP.get_ref() else {
-            return false;
+            return InjectionMode::Unicode;
         };
         if let Some((pid, class)) = app.executor.platform.focus.last_focus_info.as_ref() {
+            if crate::runtime::is_force_tsf(
+                &app.executor.platform.focus.overrides,
+                *pid,
+                class,
+            ) {
+                return InjectionMode::Tsf;
+            }
             if crate::runtime::is_force_vk(
                 &app.executor.platform.focus.overrides,
                 *pid,
                 class,
             ) {
-                return true;
+                return InjectionMode::Vk;
             }
         }
-        app.platform_state.app_kind == AppKind::Chrome
+        if app.platform_state.app_kind == AppKind::Chrome {
+            InjectionMode::Vk
+        } else {
+            InjectionMode::Unicode
+        }
     }
 }
 
@@ -287,16 +316,14 @@ impl Output {
 
     /// アクション列を順に実行する
     ///
-    /// 出力方式は `AppKind::Chrome` または config の `focus_overrides.force_vk` に
-    /// マッチする場合に VK 経路、それ以外は Unicode 直接送信:
-    /// - Chrome: VK キーストローク（独自 TSF text store 経由で IME composition）
-    /// - Win32/Uwp: Unicode 直接送信
+    /// 注入モードは `resolve_injection_mode()` で決定:
+    /// - Unicode: Win32/UWP デフォルト。Unicode 直接注入で IME をバイパス。
+    /// - Vk: Chrome/Edge/Electron。Batched VK で IME composition。
+    /// - Tsf: WezTerm 等。Sequential VK で TSF/IME に composition させる。
     pub fn send_keys(&self, actions: &[KeyAction]) {
-        let use_vk = resolve_use_vk();
+        let mode = resolve_injection_mode();
 
-        log::debug!(
-            "send_keys: use_vk={use_vk} actions={actions:?}",
-        );
+        log::debug!("send_keys: mode={mode:?} actions={actions:?}");
 
         for action in actions {
             match action {
@@ -312,35 +339,47 @@ impl Output {
                     log::debug!("  → KeyUp(0x{:04X})", vk.0);
                     self.send_key(vk.0, true);
                 }
-                KeyAction::Char(ch) => {
-                    if use_vk {
-                        log::debug!("  → Char('{ch}') via VK (Chrome mode)");
+                KeyAction::Char(ch) => match mode {
+                    InjectionMode::Vk => {
+                        log::debug!("  → Char('{ch}') via VK Batched (Chrome mode)");
                         self.send_char_as_vk(*ch);
-                    } else {
+                    }
+                    InjectionMode::Tsf => {
+                        log::debug!("  → Char('{ch}') via VK Sequential (TSF mode)");
+                        self.send_char_as_tsf(*ch);
+                    }
+                    InjectionMode::Unicode => {
                         log::debug!("  → Char('{ch}') via Unicode");
                         self.send_unicode_char(*ch);
                     }
-                }
+                },
                 KeyAction::Suppress => {
                     log::debug!("  → Suppress");
                 }
                 KeyAction::Romaji(s) => {
-                    log::debug!("  → Romaji(\"{s}\") (mode auto-selected by AppKind)");
+                    log::debug!("  → Romaji(\"{s}\") mode={mode:?}");
                     self.send_romaji(s);
                 }
-                KeyAction::KeySequence(s) => {
-                    if use_vk {
-                        log::debug!("  → KeySequence(\"{s}\") via VK (Chrome)");
+                KeyAction::KeySequence(s) => match mode {
+                    InjectionMode::Vk => {
+                        log::debug!("  → KeySequence(\"{s}\") via VK Batched (Chrome)");
                         for ch in s.chars() {
                             self.send_char_as_vk(ch);
                         }
-                    } else {
+                    }
+                    InjectionMode::Tsf => {
+                        log::debug!("  → KeySequence(\"{s}\") via VK Sequential (TSF)");
+                        for ch in s.chars() {
+                            self.send_char_as_tsf(ch);
+                        }
+                    }
+                    InjectionMode::Unicode => {
                         log::debug!("  → KeySequence(\"{s}\") via Unicode");
                         for ch in s.chars() {
                             self.send_unicode_char(ch);
                         }
                     }
-                }
+                },
             }
         }
     }
@@ -400,22 +439,19 @@ impl Output {
 
     /// ローマ字文字列を送信する（モードに応じて方式を切り替え）
     fn send_romaji(&self, romaji: &str) {
-        // AppKind 自動判定:
-        // - Chrome (Chrome, Edge, Electron, VS Code 等):
-        //   Batched で IME composition を経由。独自 TSF text store を持つアプリでは
-        //   VK キーストロークを IME に渡して composition させる必要がある。
-        //   Batched (1回の SendInput) を使うことで、flush 時の出力と後続キー
-        //   (Enter 等) の reinject が競合するのを防ぐ。
-        // - Win32 / UWP: Unicode 直接送信（IME をバイパス）。
-        //   Win32 クラシックアプリは Unicode 注入が最も安定。
-        //   UWP は TSF が VK キーストロークを composition できないため Unicode 必須。
-        //
-        if resolve_use_vk() {
-            log::debug!("  send_romaji: → Batched (VK composition)");
-            self.send_romaji_batched(romaji);
-        } else {
-            log::debug!("  send_romaji: → Unicode");
-            self.send_romaji_as_unicode(romaji);
+        match resolve_injection_mode() {
+            InjectionMode::Vk => {
+                log::debug!("  send_romaji: → VK Batched (Chrome)");
+                self.send_romaji_batched(romaji);
+            }
+            InjectionMode::Tsf => {
+                log::debug!("  send_romaji: → VK Sequential (TSF)");
+                self.send_romaji_as_tsf(romaji);
+            }
+            InjectionMode::Unicode => {
+                log::debug!("  send_romaji: → Unicode");
+                self.send_romaji_as_unicode(romaji);
+            }
         }
     }
 
@@ -503,6 +539,68 @@ impl Output {
         self.send_romaji_per_key(romaji);
     }
 
+    /// TSF Sequential モード: 1文字ずつ個別の SendInput 呼び出し（TSF_MARKER 付き）
+    ///
+    /// WezTerm 等 TSF 直結アプリ向け。1文字の K↓K↑ を1回の SendInput にまとめ、
+    /// 文字間は別の SendInput に分離する。TSF_MARKER により hook の再処理をスキップ。
+    /// Sequential 送信により TSF が1文字ずつ composition を積み上げ、
+    /// Space キーで漢字変換候補を表示できる。
+    fn send_romaji_as_tsf(&self, romaji: &str) {
+        for ch in romaji.chars() {
+            if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
+                let mut inputs = Vec::with_capacity(4);
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                }
+                inputs.push(make_key_input_ex(vk, false, TSF_MARKER));
+                inputs.push(make_key_input_ex(vk, true, TSF_MARKER));
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                }
+                unsafe {
+                    SendInput(
+                        &inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+            }
+        }
+    }
+
+    /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
+    ///
+    /// かな文字はローマ字に逆変換してから `send_romaji_as_tsf` で送信する。
+    /// 記号は symbol_to_vk テーブルで直接 VK コードに変換する。
+    /// マッチしない場合は Unicode 直接出力にフォールバックする。
+    fn send_char_as_tsf(&self, ch: char) {
+        if let Some(romaji) = self.kana_to_romaji.get(&ch) {
+            log::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
+            self.send_romaji_as_tsf(romaji);
+            return;
+        }
+        if let Some(&(vk, needs_shift)) = self.symbol_to_vk.get(&ch) {
+            log::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+            let mut inputs = Vec::with_capacity(4);
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+            }
+            inputs.push(make_key_input_ex(vk, false, TSF_MARKER));
+            inputs.push(make_key_input_ex(vk, true, TSF_MARKER));
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+            }
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+            return;
+        }
+        log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
+        self.send_unicode_char(ch);
+    }
+
     /// 文字を VK キーストロークとして送信する（Chrome モード用）
     ///
     /// かな文字はローマ字に逆変換してからキーストロークとして送信する。
@@ -579,8 +677,13 @@ impl Output {
     }
 }
 
-/// INPUT 構造体を作成するヘルパー
+/// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
 const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
+    make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
+}
+
+/// INPUT 構造体を作成するヘルパー（dwExtraInfo 指定版）
+const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -593,7 +696,7 @@ const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
                     KEYBD_EVENT_FLAGS(0)
                 },
                 time: 0,
-                dwExtraInfo: INJECTED_MARKER,
+                dwExtraInfo: extra_info,
             },
         },
     }
