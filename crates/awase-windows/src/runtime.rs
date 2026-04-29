@@ -526,19 +526,32 @@ impl Runtime {
             // classify_focus は ImmGetContext / GetWindowLongW / MSAA 等の
             // ブロッキング API を呼び出すため、ワーカースレッドで実行する。
             // HWND は *mut c_void なので、usize に変換してスレッド間転送する。
-            let hwnd_addr = hwnd.0 as usize;
-            let classify_result = crate::win32::run_with_timeout(
-                std::time::Duration::from_millis(300),
-                move || {
-                    let hwnd = windows::Win32::Foundation::HWND(hwnd_addr as *mut _);
-                    classify::classify_focus(hwnd)
-                },
-            );
-            match classify_result {
-                Some(result) => (result.kind, format!("{}", result.reason), false),
-                None => {
-                    log::warn!("classify_focus timed out for hwnd={:?}", hwnd);
-                    (FocusKind::Undetermined, "classify timeout".to_string(), false)
+            //
+            // エンジンタイマーが動作中（ユーザー入力中）は classify_focus をスキップする。
+            // UIA/MSAA の SendMessage が WezTerm 等の TSF コンポジションを破壊し、
+            // VK バッチの直後に「ｋあ」のような出力化けが起きるのを防ぐ。
+            let engine_timer_active = {
+                let timer = &self.executor.platform.timer;
+                timer.is_active(TIMER_PENDING) || timer.is_active(TIMER_SPECULATIVE)
+            };
+            if engine_timer_active {
+                log::debug!("classify_focus skipped: engine timer active (user typing)");
+                (FocusKind::Undetermined, "skipped (engine active)".to_string(), false)
+            } else {
+                let hwnd_addr = hwnd.0 as usize;
+                let classify_result = crate::win32::run_with_timeout(
+                    std::time::Duration::from_millis(300),
+                    move || {
+                        let hwnd = windows::Win32::Foundation::HWND(hwnd_addr as *mut _);
+                        classify::classify_focus(hwnd)
+                    },
+                );
+                match classify_result {
+                    Some(result) => (result.kind, format!("{}", result.reason), false),
+                    None => {
+                        log::warn!("classify_focus timed out for hwnd={:?}", hwnd);
+                        (FocusKind::Undetermined, "classify timeout".to_string(), false)
+                    }
                 }
             }
         };
