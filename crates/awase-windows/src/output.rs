@@ -539,31 +539,44 @@ impl Output {
         self.send_romaji_per_key(romaji);
     }
 
-    /// TSF Sequential モード: 1文字ずつ個別の SendInput 呼び出し（TSF_MARKER 付き）
+    /// TSF Batched モード: 全文字を1回の SendInput にまとめて送信（TSF_MARKER 付き）
     ///
-    /// WezTerm 等 TSF 直結アプリ向け。1文字の K↓K↑ を1回の SendInput にまとめ、
-    /// 文字間は別の SendInput に分離する。TSF_MARKER により hook の再処理をスキップ。
-    /// Sequential 送信により TSF が1文字ずつ composition を積み上げ、
-    /// Space キーで漢字変換候補を表示できる。
+    /// WezTerm 等 TSF 直結アプリ向け。送信順序は Chrome Batched と同じく
+    /// 全文字の KeyDown を先に送り、その後全文字の KeyUp を送る
+    /// （重畳順: 例 "mu" → M↓ U↓ M↑ U↑）。
+    ///
+    /// Sequential（M↓M↑ then U↓U↑）では M↑ 到着時点で IME が 'm' を単独確定し
+    /// "mう" になる。重畳順では U↓ が M↑ より先に到達するため IME が "mu" を
+    /// ひとまとまりとして受け取り "む" に変換する。
+    /// TSF_MARKER を使うことで WezTerm の IME バイパスを回避する（INJECTED_MARKER
+    /// を使うと WezTerm が IME をスキップして PTY に直送してしまう）。
     fn send_romaji_as_tsf(&self, romaji: &str) {
-        for ch in romaji.chars() {
-            if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
-                let mut inputs = Vec::with_capacity(4);
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-                }
-                inputs.push(make_key_input_ex(vk, false, TSF_MARKER));
-                inputs.push(make_key_input_ex(vk, true, TSF_MARKER));
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-                }
-                unsafe {
-                    SendInput(
-                        &inputs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
+        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+
+        if chars.is_empty() {
+            return;
+        }
+
+        let mut inputs = Vec::with_capacity(chars.len() * 4);
+
+        for &(vk, needs_shift) in &chars {
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
             }
+            inputs.push(make_key_input_ex(vk, false, TSF_MARKER));
+        }
+        for &(vk, needs_shift) in &chars {
+            inputs.push(make_key_input_ex(vk, true, TSF_MARKER));
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+            }
+        }
+
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
         }
     }
 
