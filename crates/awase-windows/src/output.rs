@@ -4,8 +4,8 @@ use awase::config::OutputMode;
 use awase::types::{AppKind, KeyAction, SpecialKey};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, VIRTUAL_KEY,
+    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 
 /// 自己注入マーカー（"KEYM" = 0x4B45_594D）
@@ -579,14 +579,17 @@ impl Output {
 
         let mut inputs = Vec::with_capacity(chars.len() * 4);
 
+        // KEYEVENTF_SCANCODE 付きの make_tsf_key_input を使用することで
+        // WezTerm の IME composition が初回キーを確実に受け取れるようにする。
+        // wScan=0 / スキャンコードなしだと IME が composition を開始しない場合がある。
         for &(vk, needs_shift) in &chars {
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
             }
-            inputs.push(make_key_input_ex(vk, false, TSF_MARKER));
+            inputs.push(make_tsf_key_input(vk, false));
         }
         for &(vk, needs_shift) in &chars {
-            inputs.push(make_key_input_ex(vk, true, TSF_MARKER));
+            inputs.push(make_tsf_key_input(vk, true));
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
             }
@@ -617,8 +620,8 @@ impl Output {
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
             }
-            inputs.push(make_key_input_ex(vk, false, TSF_MARKER));
-            inputs.push(make_key_input_ex(vk, true, TSF_MARKER));
+            inputs.push(make_tsf_key_input(vk, false));
+            inputs.push(make_tsf_key_input(vk, true));
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
             }
@@ -713,6 +716,32 @@ impl Output {
 /// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
 const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
+}
+
+/// TSF モード用 INPUT 構造体を作成するヘルパー（TSF_MARKER + KEYEVENTF_SCANCODE 付き）
+///
+/// `MapVirtualKeyW` でスキャンコードを算出し `KEYEVENTF_SCANCODE` フラグを付加する。
+/// スキャンコードがないと WezTerm の IME が初回キーを composition に取り込まず
+/// "kおちら" のような母音落ちが確率的に発生するため、明示的に指定する。
+fn make_tsf_key_input(vk: u16, is_keyup: bool) -> INPUT {
+    let scan = unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) as u16 };
+    let flags = if is_keyup {
+        KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE
+    } else {
+        KEYEVENTF_SCANCODE
+    };
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: TSF_MARKER,
+            },
+        },
+    }
 }
 
 /// INPUT 構造体を作成するヘルパー（dwExtraInfo 指定版）
