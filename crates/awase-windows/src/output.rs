@@ -314,15 +314,16 @@ impl Output {
         }
     }
 
-    /// VK/TSF 出力後のタイムスタンプを記録する。
+    /// VK/TSF 出力後に「最終キー活動時刻」を同期更新する。
     ///
-    /// IME ポーリングの `set_ime_open` が Chrome の VK バッチ処理に
-    /// 割り込むと「て→tえ」の母音落ちが起きる。
-    /// このタイムスタンプを基に出力直後のポーリングをスキップする。
+    /// SendInput 後の hook 通知はメッセージループで非同期処理されるため、
+    /// 直後に IME ポーリングが走ると `last_hook_activity_ms` が更新前のまま
+    /// アイドル判定を通過してしまう。送信直後に同期更新することで
+    /// アイドルタイマーが正しくリセットされる。
     fn mark_vk_output() {
         unsafe {
             if let Some(app) = crate::APP.get_mut() {
-                app.platform_state.last_vk_output_ms = crate::hook::current_tick_ms();
+                app.platform_state.last_hook_activity_ms = crate::hook::current_tick_ms();
             }
         }
     }
