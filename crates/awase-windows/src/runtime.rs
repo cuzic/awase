@@ -343,20 +343,30 @@ impl Runtime {
 
         // ── Phase 2.7: 入力中ガード ──
         //
-        // エンジンのキー解決タイマー (TIMER_PENDING / TIMER_SPECULATIVE) がアクティブな間は
-        // ユーザーが入力中でまもなく SendInput で VK 出力が走る可能性が高い。
-        // このタイミングで observer の `WM_IME_CONTROL(IMC_GETOPENSTATUS)` や
-        // blacklist SSOT の `set_ime_open` が IME に割り込むと、直後の VK バッチの
-        // composition が崩れて「て」→「t」のような母音落ち症状が発生する。
+        // 2つの条件どちらかが成立する間は IMM との SendMessage を一切行わない。
         //
-        // 入力中なら IMM との SendMessage を一切行わず、次の 500ms poll に任せる。
+        // (A) エンジンのキー解決タイマー (TIMER_PENDING / TIMER_SPECULATIVE) がアクティブ:
+        //     ユーザーが入力中で、まもなく SendInput で VK 出力が走る可能性が高い。
+        //
+        // (B) VK/TSF 出力直後（VK_OUTPUT_GUARD_MS 以内）:
+        //     SendInput で T↓E↓T↑E↑ を送出した直後に IME ポーリングの
+        //     `set_ime_open` が割り込むと、Chrome がまだ E↓ を処理する前に
+        //     composition をリセットし「て→tえ」のような母音落ちが起きる。
+        //     出力後一定時間はポーリングをスキップして Chrome の IME 処理を待つ。
+        //
         // shadow は hook 経由で常時更新されているので、1 cycle の遅延は実害なし。
+        const VK_OUTPUT_GUARD_MS: u64 = 150;
         let timer = &self.executor.platform.timer;
         let engine_timer_active =
             timer.is_active(TIMER_PENDING) || timer.is_active(TIMER_SPECULATIVE);
+        let recent_vk_output = crate::hook::current_tick_ms()
+            .saturating_sub(self.platform_state.last_vk_output_ms)
+            < VK_OUTPUT_GUARD_MS;
 
-        if engine_timer_active {
-            log::debug!("Skipping observer/SSOT write: engine timer active (user typing)");
+        if engine_timer_active || recent_vk_output {
+            log::debug!(
+                "Skipping observer/SSOT write: engine_timer={engine_timer_active} recent_vk={recent_vk_output}"
+            );
         } else if skip_imm_query {
             // ── ブラックリストクラス: OS 読み取りをスキップ ──
             // preconditions.ime_on はシャドウ更新 (hook 経由) が直接書き換える。

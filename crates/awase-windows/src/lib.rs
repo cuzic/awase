@@ -182,6 +182,12 @@ pub struct PlatformState {
     /// preconditions を即座に更新してからキーを処理する。
     /// これにより「古い preconditions でキーが処理される」ギャップを解消する。
     pub focus_transition_pending: bool,
+    /// VK/TSF モードで最後に SendInput を呼び出した時刻（GetTickCount64 ベース）。
+    ///
+    /// IME ポーリングによる `set_ime_open` が Chrome の VK バッチ処理に
+    /// 割り込むことで「て→tえ」のような母音落ちが起きる。
+    /// 出力後 `VK_OUTPUT_GUARD_MS` が経過するまでポーリングをスキップする。
+    pub last_vk_output_ms: u64,
 }
 
 impl PlatformState {
@@ -215,6 +221,7 @@ impl PlatformState {
             ime_guard: ImeGuardState { active: false, deferred_keys: Vec::new() },
             modifier_timing: ModifierTiming::new(),
             focus_transition_pending: false,
+            last_vk_output_ms: 0,
         }
     }
 }

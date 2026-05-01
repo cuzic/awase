@@ -314,6 +314,19 @@ impl Output {
         }
     }
 
+    /// VK/TSF 出力後のタイムスタンプを記録する。
+    ///
+    /// IME ポーリングの `set_ime_open` が Chrome の VK バッチ処理に
+    /// 割り込むと「て→tえ」の母音落ちが起きる。
+    /// このタイムスタンプを基に出力直後のポーリングをスキップする。
+    fn mark_vk_output() {
+        unsafe {
+            if let Some(app) = crate::APP.get_mut() {
+                app.platform_state.last_vk_output_ms = crate::hook::current_tick_ms();
+            }
+        }
+    }
+
     /// アクション列を順に実行する
     ///
     /// 注入モードは `resolve_injection_mode()` で決定:
@@ -381,6 +394,12 @@ impl Output {
                     }
                 },
             }
+        }
+
+        // VK/TSF モードで出力した場合、直後の IME ポーリングをガードするため
+        // タイムスタンプを記録する（母音落ち「て→tえ」防止）。
+        if mode != InjectionMode::Unicode {
+            Self::mark_vk_output();
         }
     }
 
