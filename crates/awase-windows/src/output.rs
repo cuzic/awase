@@ -293,6 +293,10 @@ pub struct Output {
     /// TSF ウォームアップ用: 最後の TSF 出力時刻（ms）。
     /// 前回出力から 500ms 以上経過した場合のみ VK_DBE_HIRAGANA ウォームアップを送信する。
     tsf_last_output_ms: std::cell::Cell<u64>,
+    /// Chrome VK Batched ウォームアップ用: 最後の VK Batched 出力時刻（ms）。
+    /// IME 切替キー直後の cold-start 状態を回避するため、500ms 以上経過した場合に
+    /// VK_DBE_HIRAGANA を先行送信して Chrome の IME を確実に起動させる。
+    vk_last_output_ms: std::cell::Cell<u64>,
 }
 
 impl Output {
@@ -306,6 +310,7 @@ impl Output {
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
             tsf_last_output_ms: std::cell::Cell::new(0),
+            vk_last_output_ms: std::cell::Cell::new(0),
         }
     }
 
@@ -519,7 +524,6 @@ impl Output {
     /// 受け取り "む" に正しく変換される。
     /// 全文字を1回の SendInput にまとめることで、後続キー（Enter reinject 等）が
     /// 文字キーの間に割り込むのを防ぐ（per_key との違い）。
-    #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
 
@@ -527,7 +531,25 @@ impl Output {
             return;
         }
 
-        let mut inputs = Vec::with_capacity(chars.len() * 4);
+        // ユーザーが IME 切替キー (VK_DBE_HIRAGANA 等) を押した直後は、Chrome の IME
+        // composition context が初期化されておらず、最初の VK 列が素通しされて
+        // 例 "ko" → "ko"（リテラル）のように literal ASCII で出力されてしまう。
+        // 前回 VK Batched 出力から 500ms 以上経過した場合をコールドスタートと見なし、
+        // VK_DBE_HIRAGANA を先行送信して IME を確実に起動させる。
+        const VK_DBE_HIRAGANA: u16 = 0xF2;
+        const COLD_THRESHOLD_MS: u64 = 500;
+
+        let now = crate::hook::current_tick_ms();
+        let is_cold = now.saturating_sub(self.vk_last_output_ms.get()) > COLD_THRESHOLD_MS;
+        self.vk_last_output_ms.set(now);
+
+        let warmup = if is_cold { 2 } else { 0 };
+        let mut inputs = Vec::with_capacity(chars.len() * 4 + warmup);
+        if is_cold {
+            log::debug!("send_romaji_batched: cold start, sending VK_DBE_HIRAGANA warmup");
+            inputs.push(make_key_input(VK_DBE_HIRAGANA, false));
+            inputs.push(make_key_input(VK_DBE_HIRAGANA, true));
+        }
 
         for &(vk, needs_shift) in &chars {
             if needs_shift {
