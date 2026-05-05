@@ -577,7 +577,14 @@ impl Output {
             return;
         }
 
-        let mut inputs = Vec::with_capacity(chars.len() * 4);
+        // WezTerm は TSF composition context をコールドスタート時に遅延初期化する。
+        // 最初の子音キー（例 "ko" の 'k'）が届いた時点では TestKeyDown が FALSE を返し、
+        // PTY に直送されるため "kお" になる。VK_DBE_HIRAGANA を先行送信することで
+        // TestKeyDown を TRUE にさせ TSF context をウォームアップする。
+        const VK_DBE_HIRAGANA: u16 = 0xF2;
+        let mut inputs = Vec::with_capacity(chars.len() * 4 + 2);
+        inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, false));
+        inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, true));
 
         for &(vk, needs_shift) in &chars {
             if needs_shift {
