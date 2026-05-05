@@ -290,6 +290,9 @@ pub struct Output {
     kana_to_romaji: HashMap<char, String>,
     /// Chrome VK モード用: 記号→VK コードマッピング
     symbol_to_vk: HashMap<char, (u16, bool)>,
+    /// TSF ウォームアップ用: 最後の TSF 出力時刻（ms）。
+    /// 前回出力から 500ms 以上経過した場合のみ VK_DBE_HIRAGANA ウォームアップを送信する。
+    tsf_last_output_ms: std::cell::Cell<u64>,
 }
 
 impl Output {
@@ -302,6 +305,7 @@ impl Output {
             romaji_to_kana,
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
+            tsf_last_output_ms: std::cell::Cell::new(0),
         }
     }
 
@@ -577,14 +581,26 @@ impl Output {
             return;
         }
 
-        // WezTerm は TSF composition context をコールドスタート時に遅延初期化する。
-        // 最初の子音キー（例 "ko" の 'k'）が届いた時点では TestKeyDown が FALSE を返し、
-        // PTY に直送されるため "kお" になる。VK_DBE_HIRAGANA を先行送信することで
-        // TestKeyDown を TRUE にさせ TSF context をウォームアップする。
+        // WezTerm の TSF composition context はコールドスタート時に遅延初期化される。
+        // 最初の子音キー到着時に TestKeyDown が FALSE を返して PTY に直送されるため
+        // 例えば "ko" → "kお" になる。前回 TSF 出力から 500ms 以上経過した場合を
+        // コールドスタートと見なし、VK_DBE_HIRAGANA を先行送信して TSF を
+        // ウォームアップする。連続打鍵中は F2 を都度送ると IME モードが変化して
+        // "かいsい" のような誤出力が生じるため、コールド時のみ送信する。
         const VK_DBE_HIRAGANA: u16 = 0xF2;
-        let mut inputs = Vec::with_capacity(chars.len() * 4 + 2);
-        inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, false));
-        inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, true));
+        const COLD_THRESHOLD_MS: u64 = 500;
+
+        let now = crate::hook::current_tick_ms();
+        let is_cold = now.saturating_sub(self.tsf_last_output_ms.get()) > COLD_THRESHOLD_MS;
+        self.tsf_last_output_ms.set(now);
+
+        let warmup = if is_cold { 2 } else { 0 };
+        let mut inputs = Vec::with_capacity(chars.len() * 4 + warmup);
+        if is_cold {
+            log::debug!("send_romaji_as_tsf: cold start, sending VK_DBE_HIRAGANA warmup");
+            inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, false));
+            inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, true));
+        }
 
         for &(vk, needs_shift) in &chars {
             if needs_shift {
