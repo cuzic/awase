@@ -535,7 +535,9 @@ impl Output {
         // composition context が初期化されておらず、最初の VK 列が素通しされて
         // 例 "ko" → "ko"（リテラル）のように literal ASCII で出力されてしまう。
         // 前回 VK Batched 出力から 500ms 以上経過した場合をコールドスタートと見なし、
-        // VK_DBE_HIRAGANA を先行送信して IME を確実に起動させる。
+        // VK_DBE_HIRAGANA を別 SendInput 呼び出しで先行送信して IME を確実に起動させる。
+        // 同一バッチに含めると IME が F2 を処理し終える前に子音キーが届いて
+        // バイパスが残るため、SendInput を分離して Windows に F2 処理時間を与える。
         const VK_DBE_HIRAGANA: u16 = 0xF2;
         const COLD_THRESHOLD_MS: u64 = 500;
 
@@ -543,13 +545,21 @@ impl Output {
         let is_cold = now.saturating_sub(self.vk_last_output_ms.get()) > COLD_THRESHOLD_MS;
         self.vk_last_output_ms.set(now);
 
-        let warmup = if is_cold { 2 } else { 0 };
-        let mut inputs = Vec::with_capacity(chars.len() * 4 + warmup);
         if is_cold {
-            log::debug!("send_romaji_batched: cold start, sending VK_DBE_HIRAGANA warmup");
-            inputs.push(make_key_input(VK_DBE_HIRAGANA, false));
-            inputs.push(make_key_input(VK_DBE_HIRAGANA, true));
+            log::debug!("send_romaji_batched: cold start, sending VK_DBE_HIRAGANA warmup (separate SendInput)");
+            let warmup = [
+                make_key_input(VK_DBE_HIRAGANA, false),
+                make_key_input(VK_DBE_HIRAGANA, true),
+            ];
+            unsafe {
+                SendInput(
+                    &warmup,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
         }
+
+        let mut inputs = Vec::with_capacity(chars.len() * 4);
 
         for &(vk, needs_shift) in &chars {
             if needs_shift {
@@ -606,9 +616,12 @@ impl Output {
         // WezTerm の TSF composition context はコールドスタート時に遅延初期化される。
         // 最初の子音キー到着時に TestKeyDown が FALSE を返して PTY に直送されるため
         // 例えば "ko" → "kお" になる。前回 TSF 出力から 500ms 以上経過した場合を
-        // コールドスタートと見なし、VK_DBE_HIRAGANA を先行送信して TSF を
-        // ウォームアップする。連続打鍵中は F2 を都度送ると IME モードが変化して
-        // "かいsい" のような誤出力が生じるため、コールド時のみ送信する。
+        // コールドスタートと見なし、VK_DBE_HIRAGANA を別 SendInput 呼び出しで
+        // 先行送信して TSF をウォームアップする。同一バッチに含めると IME が F2 を
+        // 処理し終える前に子音キーが届いてしまい "kあ" 等のバイパスが残るため、
+        // SendInput を分離して Windows メッセージループに F2 処理時間を与える。
+        // 連続打鍵中は F2 を都度送ると IME モードが変化して "かいsい" のような
+        // 誤出力が生じるため、コールド時のみ送信する。
         const VK_DBE_HIRAGANA: u16 = 0xF2;
         const COLD_THRESHOLD_MS: u64 = 500;
 
@@ -616,13 +629,21 @@ impl Output {
         let is_cold = now.saturating_sub(self.tsf_last_output_ms.get()) > COLD_THRESHOLD_MS;
         self.tsf_last_output_ms.set(now);
 
-        let warmup = if is_cold { 2 } else { 0 };
-        let mut inputs = Vec::with_capacity(chars.len() * 4 + warmup);
         if is_cold {
-            log::debug!("send_romaji_as_tsf: cold start, sending VK_DBE_HIRAGANA warmup");
-            inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, false));
-            inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, true));
+            log::debug!("send_romaji_as_tsf: cold start, sending VK_DBE_HIRAGANA warmup (separate SendInput)");
+            let warmup = [
+                make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                make_tsf_key_input(VK_DBE_HIRAGANA, true),
+            ];
+            unsafe {
+                SendInput(
+                    &warmup,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
         }
+
+        let mut inputs = Vec::with_capacity(chars.len() * 4);
 
         for &(vk, needs_shift) in &chars {
             if needs_shift {
