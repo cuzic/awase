@@ -643,26 +643,42 @@ impl Output {
             }
         }
 
-        let mut inputs = Vec::with_capacity(chars.len() * 4);
-
-        for &(vk, needs_shift) in &chars {
-            if needs_shift {
-                inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+        // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
+        // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。結果 "n"+次の母音 →
+        // "ne" 等に合成され、例えば "かんえい" → "かねい" になる。
+        // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る
+        // ことで、N↑ が次の N↓ より先に届き auto-repeat 判定を回避できる。
+        // 異なる VK 同士は重畳順を保つため同一バッチに含める（"mu" の崩れ防止）。
+        let mut runs: Vec<&[(u16, bool)]> = Vec::new();
+        let mut start = 0;
+        for i in 1..chars.len() {
+            if chars[i].0 == chars[i - 1].0 {
+                runs.push(&chars[start..i]);
+                start = i;
             }
-            inputs.push(make_tsf_key_input(vk, false));
         }
-        for &(vk, needs_shift) in &chars {
-            inputs.push(make_tsf_key_input(vk, true));
-            if needs_shift {
-                inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-            }
-        }
+        runs.push(&chars[start..]);
 
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
+        for run in &runs {
+            let mut inputs = Vec::with_capacity(run.len() * 4);
+            for &(vk, needs_shift) in *run {
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                }
+                inputs.push(make_tsf_key_input(vk, false));
+            }
+            for &(vk, needs_shift) in *run {
+                inputs.push(make_tsf_key_input(vk, true));
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                }
+            }
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
         }
     }
 
