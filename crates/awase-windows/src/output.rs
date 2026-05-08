@@ -546,7 +546,7 @@ impl Output {
         self.vk_last_output_ms.set(now);
 
         if is_cold {
-            log::debug!("send_romaji_batched: cold start, sending VK_DBE_HIRAGANA warmup (separate SendInput)");
+            log::debug!("send_romaji_batched: cold start, sending VK_DBE_HIRAGANA warmup + 30ms wait");
             let warmup = [
                 make_key_input(VK_DBE_HIRAGANA, false),
                 make_key_input(VK_DBE_HIRAGANA, true),
@@ -557,6 +557,11 @@ impl Output {
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
             }
+            // F2 を IME が完全に処理し romaji 入力モードを確立するための実時間遅延。
+            // 別 SendInput に分離するだけでは数マイクロ秒の差しかなく、Microsoft IME の
+            // TIP が hiragana mode 切替を完了する前に romaji キーが届いて素通しされる
+            // ため、cold start 時に限り 30ms ブロックして message loop に処理時間を与える。
+            std::thread::sleep(std::time::Duration::from_millis(30));
         }
 
         let mut inputs = Vec::with_capacity(chars.len() * 4);
@@ -630,7 +635,7 @@ impl Output {
         self.tsf_last_output_ms.set(now);
 
         if is_cold {
-            log::debug!("send_romaji_as_tsf: cold start, sending VK_DBE_HIRAGANA warmup (separate SendInput)");
+            log::debug!("send_romaji_as_tsf: cold start, sending VK_DBE_HIRAGANA warmup + 30ms wait");
             let warmup = [
                 make_tsf_key_input(VK_DBE_HIRAGANA, false),
                 make_tsf_key_input(VK_DBE_HIRAGANA, true),
@@ -641,6 +646,12 @@ impl Output {
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
             }
+            // F2 を IME が完全に処理し hiragana romaji mode を確立するための実時間遅延。
+            // 別 SendInput に分離するだけでは数マイクロ秒の差しかなく、WezTerm 等の TSF
+            // ホストでは TIP が mode 切替を完了する前に romaji キーが届いて bypass され
+            // "koの" のように literal 化する。cold start 時に限り 30ms ブロックして
+            // message loop に F2 処理時間を与える。
+            std::thread::sleep(std::time::Duration::from_millis(30));
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
