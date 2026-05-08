@@ -337,6 +337,55 @@ impl Output {
         }
     }
 
+    /// フォーカス変更後の IME pre-warm（VK_DBE_HIRAGANA を先行投入）。
+    ///
+    /// アプリ切替直後の最初の打鍵で TSF context が cold で TestKeyDown が FALSE を
+    /// 返し、子音が PTY に直送される（例 "こ → ko"）問題を予防する。
+    /// debounce 完了後の `refresh_ime_state_cache` から呼ぶことで、ユーザーが打鍵を
+    /// 始めるまで（数百ms〜数秒）に IME が hiragana romaji mode を確立できる。
+    ///
+    /// 注入モードは `resolve_injection_mode()` で判定:
+    /// - Tsf: TSF_MARKER 付きで F2 を投入、`tsf_last_output_ms` を更新
+    /// - Vk: INJECTED_MARKER 付きで F2 を投入、`vk_last_output_ms` を更新
+    /// - Unicode: IME 経由ではないので no-op
+    ///
+    /// 直後の `send_romaji_*` 呼び出しでは cold 判定されないため、output 時の
+    /// 30ms sleep / 重複 F2 warmup は走らない（typical case で遅延ゼロ）。
+    pub fn prewarm_ime(&self) {
+        const VK_DBE_HIRAGANA: u16 = 0xF2;
+        let mode = resolve_injection_mode();
+        let now = crate::hook::current_tick_ms();
+
+        let warmup = match mode {
+            InjectionMode::Tsf => {
+                self.tsf_last_output_ms.set(now);
+                [
+                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                ]
+            }
+            InjectionMode::Vk => {
+                self.vk_last_output_ms.set(now);
+                [
+                    make_key_input(VK_DBE_HIRAGANA, false),
+                    make_key_input(VK_DBE_HIRAGANA, true),
+                ]
+            }
+            InjectionMode::Unicode => {
+                log::debug!("prewarm_ime: skipping (Unicode mode, no IME involvement)");
+                return;
+            }
+        };
+
+        log::debug!("prewarm_ime: sending VK_DBE_HIRAGANA warmup (mode={mode:?})");
+        unsafe {
+            SendInput(
+                &warmup,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
+    }
+
     /// アクション列を順に実行する
     ///
     /// 注入モードは `resolve_injection_mode()` で決定:
