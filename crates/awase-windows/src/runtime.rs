@@ -452,24 +452,6 @@ impl Runtime {
             }
         }
 
-        // ── Phase 3.7: フォーカス変更時の IME pre-warm（TSF/Vk 対象アプリのみ）──
-        //
-        // アプリ切替直後の最初の打鍵で TSF context が cold で K↓ が IME bypass され
-        // 「こ → ko」のように literal 化する問題を予防する。debounce 完了直後に
-        // VK_DBE_HIRAGANA を投入することで、ユーザーが打鍵を始めるまでに IME が
-        // hiragana romaji mode を確立できる（数百ms〜秒オーダーの実時間余裕）。
-        //
-        // Output が注入モードを判別し、Unicode (Win32 通常 / UWP) は no-op。
-        // `tsf_last_output_ms` / `vk_last_output_ms` も同時に更新するので、
-        // 直後の打鍵で重複 warmup や output 時 sleep は走らない。
-        if focus_changed
-            && self.engine.is_user_enabled()
-            && self.platform_state.preconditions.is_japanese_ime
-            && self.platform_state.preconditions.ime_on
-        {
-            self.executor.platform.output.prewarm_ime();
-        }
-
         // ── Phase 4: Engine に RefreshState（active 遷移検知）──
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);

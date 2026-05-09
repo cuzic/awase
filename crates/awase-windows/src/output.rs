@@ -290,13 +290,6 @@ pub struct Output {
     kana_to_romaji: HashMap<char, String>,
     /// Chrome VK モード用: 記号→VK コードマッピング
     symbol_to_vk: HashMap<char, (u16, bool)>,
-    /// TSF ウォームアップ用: 最後の TSF 出力時刻（ms）。
-    /// 前回出力から 500ms 以上経過した場合のみ VK_DBE_HIRAGANA ウォームアップを送信する。
-    tsf_last_output_ms: std::cell::Cell<u64>,
-    /// Chrome VK Batched ウォームアップ用: 最後の VK Batched 出力時刻（ms）。
-    /// IME 切替キー直後の cold-start 状態を回避するため、500ms 以上経過した場合に
-    /// VK_DBE_HIRAGANA を先行送信して Chrome の IME を確実に起動させる。
-    vk_last_output_ms: std::cell::Cell<u64>,
 }
 
 impl Output {
@@ -309,8 +302,6 @@ impl Output {
             romaji_to_kana,
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
-            tsf_last_output_ms: std::cell::Cell::new(0),
-            vk_last_output_ms: std::cell::Cell::new(0),
         }
     }
 
@@ -334,55 +325,6 @@ impl Output {
             if let Some(app) = crate::APP.get_mut() {
                 app.platform_state.last_hook_activity_ms = crate::hook::current_tick_ms();
             }
-        }
-    }
-
-    /// フォーカス変更後の IME pre-warm（VK_DBE_HIRAGANA を先行投入）。
-    ///
-    /// アプリ切替直後の最初の打鍵で TSF context が cold で TestKeyDown が FALSE を
-    /// 返し、子音が PTY に直送される（例 "こ → ko"）問題を予防する。
-    /// debounce 完了後の `refresh_ime_state_cache` から呼ぶことで、ユーザーが打鍵を
-    /// 始めるまで（数百ms〜数秒）に IME が hiragana romaji mode を確立できる。
-    ///
-    /// 注入モードは `resolve_injection_mode()` で判定:
-    /// - Tsf: TSF_MARKER 付きで F2 を投入、`tsf_last_output_ms` を更新
-    /// - Vk: INJECTED_MARKER 付きで F2 を投入、`vk_last_output_ms` を更新
-    /// - Unicode: IME 経由ではないので no-op
-    ///
-    /// 直後の `send_romaji_*` 呼び出しでは cold 判定されないため、output 時の
-    /// 30ms sleep / 重複 F2 warmup は走らない（typical case で遅延ゼロ）。
-    pub fn prewarm_ime(&self) {
-        const VK_DBE_HIRAGANA: u16 = 0xF2;
-        let mode = resolve_injection_mode();
-        let now = crate::hook::current_tick_ms();
-
-        let warmup = match mode {
-            InjectionMode::Tsf => {
-                self.tsf_last_output_ms.set(now);
-                [
-                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                ]
-            }
-            InjectionMode::Vk => {
-                self.vk_last_output_ms.set(now);
-                [
-                    make_key_input(VK_DBE_HIRAGANA, false),
-                    make_key_input(VK_DBE_HIRAGANA, true),
-                ]
-            }
-            InjectionMode::Unicode => {
-                log::debug!("prewarm_ime: skipping (Unicode mode, no IME involvement)");
-                return;
-            }
-        };
-
-        log::debug!("prewarm_ime: sending VK_DBE_HIRAGANA warmup (mode={mode:?})");
-        unsafe {
-            SendInput(
-                &warmup,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
         }
     }
 
@@ -573,44 +515,12 @@ impl Output {
     /// 受け取り "む" に正しく変換される。
     /// 全文字を1回の SendInput にまとめることで、後続キー（Enter reinject 等）が
     /// 文字キーの間に割り込むのを防ぐ（per_key との違い）。
+    #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
 
         if chars.is_empty() {
             return;
-        }
-
-        // ユーザーが IME 切替キー (VK_DBE_HIRAGANA 等) を押した直後は、Chrome の IME
-        // composition context が初期化されておらず、最初の VK 列が素通しされて
-        // 例 "ko" → "ko"（リテラル）のように literal ASCII で出力されてしまう。
-        // 前回 VK Batched 出力から 500ms 以上経過した場合をコールドスタートと見なし、
-        // VK_DBE_HIRAGANA を別 SendInput 呼び出しで先行送信して IME を確実に起動させる。
-        // 同一バッチに含めると IME が F2 を処理し終える前に子音キーが届いて
-        // バイパスが残るため、SendInput を分離して Windows に F2 処理時間を与える。
-        const VK_DBE_HIRAGANA: u16 = 0xF2;
-        const COLD_THRESHOLD_MS: u64 = 500;
-
-        let now = crate::hook::current_tick_ms();
-        let is_cold = now.saturating_sub(self.vk_last_output_ms.get()) > COLD_THRESHOLD_MS;
-        self.vk_last_output_ms.set(now);
-
-        if is_cold {
-            log::debug!("send_romaji_batched: cold start, sending VK_DBE_HIRAGANA warmup + 30ms wait");
-            let warmup = [
-                make_key_input(VK_DBE_HIRAGANA, false),
-                make_key_input(VK_DBE_HIRAGANA, true),
-            ];
-            unsafe {
-                SendInput(
-                    &warmup,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-            // F2 を IME が完全に処理し romaji 入力モードを確立するための実時間遅延。
-            // 別 SendInput に分離するだけでは数マイクロ秒の差しかなく、Microsoft IME の
-            // TIP が hiragana mode 切替を完了する前に romaji キーが届いて素通しされる
-            // ため、cold start 時に限り 30ms ブロックして message loop に処理時間を与える。
-            std::thread::sleep(std::time::Duration::from_millis(30));
         }
 
         let mut inputs = Vec::with_capacity(chars.len() * 4);
@@ -665,42 +575,6 @@ impl Output {
 
         if chars.is_empty() {
             return;
-        }
-
-        // WezTerm の TSF composition context はコールドスタート時に遅延初期化される。
-        // 最初の子音キー到着時に TestKeyDown が FALSE を返して PTY に直送されるため
-        // 例えば "ko" → "kお" になる。前回 TSF 出力から 500ms 以上経過した場合を
-        // コールドスタートと見なし、VK_DBE_HIRAGANA を別 SendInput 呼び出しで
-        // 先行送信して TSF をウォームアップする。同一バッチに含めると IME が F2 を
-        // 処理し終える前に子音キーが届いてしまい "kあ" 等のバイパスが残るため、
-        // SendInput を分離して Windows メッセージループに F2 処理時間を与える。
-        // 連続打鍵中は F2 を都度送ると IME モードが変化して "かいsい" のような
-        // 誤出力が生じるため、コールド時のみ送信する。
-        const VK_DBE_HIRAGANA: u16 = 0xF2;
-        const COLD_THRESHOLD_MS: u64 = 500;
-
-        let now = crate::hook::current_tick_ms();
-        let is_cold = now.saturating_sub(self.tsf_last_output_ms.get()) > COLD_THRESHOLD_MS;
-        self.tsf_last_output_ms.set(now);
-
-        if is_cold {
-            log::debug!("send_romaji_as_tsf: cold start, sending VK_DBE_HIRAGANA warmup + 30ms wait");
-            let warmup = [
-                make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                make_tsf_key_input(VK_DBE_HIRAGANA, true),
-            ];
-            unsafe {
-                SendInput(
-                    &warmup,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-            // F2 を IME が完全に処理し hiragana romaji mode を確立するための実時間遅延。
-            // 別 SendInput に分離するだけでは数マイクロ秒の差しかなく、WezTerm 等の TSF
-            // ホストでは TIP が mode 切替を完了する前に romaji キーが届いて bypass され
-            // "koの" のように literal 化する。cold start 時に限り 30ms ブロックして
-            // message loop に F2 処理時間を与える。
-            std::thread::sleep(std::time::Duration::from_millis(30));
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
