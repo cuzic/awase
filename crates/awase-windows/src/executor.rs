@@ -133,14 +133,32 @@ impl DecisionExecutor {
     // flush を伴う PassThrough のみ Consume して順序を保証する。
 
     fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
+        // awase の SendInput 出力直後 N ms は、OS キュー → アプリ → IME の pipeline で
+        // 出力イベントが処理中。この間に user passthrough キー (Enter / Ctrl /
+        // Backspace 等) が割り込むと IME composition が cancel され
+        // 「タスク → タスk」のような race が発生する。
+        // 本ガードは「直近 N ms 以内の passthrough キーは pending と同様に
+        // deferr して reinject 時に wait する」ことで race を構造的に解消する。
+        const OUTPUT_GUARD_MS: u64 = 50;
+
         match decision {
             Decision::PassThrough => {
-                if self.has_pending() {
-                    // pending effects（未送出の文字等）がある場合、PassThrough のまま通すと
-                    // ENTER 等が先に WezTerm に届いて "kあ" 等の出力破壊が起きる。
-                    // Consume して reinject をキューの末尾に積み、effects → キー の順を保証。
+                let in_flight_ms = self.platform.output.ms_since_last_send();
+                let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
+                let has_pending = self.has_pending();
+
+                if has_pending || output_in_flight {
+                    // pending effects または output in-flight 中の passthrough は
+                    // Consume + reinject 経由で順序保証する。
+                    let reason = if output_in_flight && !has_pending {
+                        format!("output in-flight ({in_flight_ms}ms ago)")
+                    } else if has_pending && output_in_flight {
+                        format!("pending effects + output in-flight ({in_flight_ms}ms)")
+                    } else {
+                        "pending effects".to_string()
+                    };
                     log::debug!(
-                        "[relay-defer] PassThrough with pending effects: deferring reinject(vk={:#04x} {})",
+                        "[relay-defer] PassThrough deferred: {reason}, reinject(vk={:#04x} {})",
                         raw_event.vk_code.0,
                         match raw_event.event_type {
                             awase::types::KeyEventType::KeyDown => "down",
@@ -211,21 +229,41 @@ impl DecisionExecutor {
     }
 
     fn execute_one(&mut self, effect: Effect) {
+        // ReinjectKey は output guard 期間を消化してから注入する必要があるため、
+        // 先にガード時間チェック + sleep を行ってからトレイト経由の処理に渡す。
+        if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
+            const OUTPUT_GUARD_MS: u64 = 50;
+            let elapsed = self.platform.output.ms_since_last_send();
+            if elapsed < OUTPUT_GUARD_MS {
+                let remaining = OUTPUT_GUARD_MS - elapsed;
+                log::debug!(
+                    "[reinject-wait] sleeping {remaining}ms (output {elapsed}ms ago) before reinject(vk={:#04x})",
+                    event.vk_code.0,
+                );
+                // メインスレッドを短時間ブロックする。message loop / hook callback も
+                // この間停止するが、最大 50ms なので体感影響は小さい。
+                // この sleep を入れないと Ctrl/Enter が IME composition を cancel する
+                // race が残る (実測: SendInput 直後 9ms で race 発生)。
+                std::thread::sleep(std::time::Duration::from_millis(remaining));
+            }
+            let dir = match event.event_type {
+                awase::types::KeyEventType::KeyDown => "down",
+                awase::types::KeyEventType::KeyUp => "up",
+            };
+            log::debug!(
+                "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
+                event.vk_code.0,
+            );
+            let platform: &mut dyn PlatformRuntime = &mut self.platform;
+            platform.reinject_key(&event);
+            return;
+        }
+
         let platform: &mut dyn PlatformRuntime = &mut self.platform;
         match effect {
             Effect::Input(ie) => match ie {
                 InputEffect::SendKeys(actions) => platform.send_keys(&actions),
-                InputEffect::ReinjectKey(event) => {
-                    let dir = match event.event_type {
-                        awase::types::KeyEventType::KeyDown => "down",
-                        awase::types::KeyEventType::KeyUp => "up",
-                    };
-                    log::debug!(
-                        "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
-                        event.vk_code.0,
-                    );
-                    platform.reinject_key(&event);
-                }
+                InputEffect::ReinjectKey(_) => unreachable!("handled above"),
             },
             Effect::Timer(te) => match te {
                 TimerEffect::Set { id, duration } => platform.set_timer(id, duration),

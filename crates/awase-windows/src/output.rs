@@ -290,6 +290,16 @@ pub struct Output {
     kana_to_romaji: HashMap<char, String>,
     /// Chrome VK モード用: 記号→VK コードマッピング
     symbol_to_vk: HashMap<char, (u16, bool)>,
+    /// 最後の `send_keys` 完了時刻（ms）。
+    ///
+    /// awase が SendInput でキーを注入した直後は、OS 入力キュー → WezTerm/Chrome
+    /// → IME の composition pipeline で出力イベントが処理中。この間に user の
+    /// passthrough キー (Enter / Ctrl / Backspace 等) が届くと、IME が pending
+    /// composition を cancel して "タスク → タスk" 等の race condition が起きる。
+    ///
+    /// executor がこの値を読んで「output in-flight 期間」を判定し、当該期間内に
+    /// 来た passthrough を deferr/wait することで race を解消する。
+    last_send_ms: std::cell::Cell<u64>,
 }
 
 impl Output {
@@ -302,7 +312,24 @@ impl Output {
             romaji_to_kana,
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
+            last_send_ms: std::cell::Cell::new(0),
         }
+    }
+
+    /// 最後の `send_keys` 完了からの経過時間（ms）。
+    /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
+    #[must_use]
+    pub fn ms_since_last_send(&self) -> u64 {
+        let last = self.last_send_ms.get();
+        if last == 0 {
+            return u64::MAX;
+        }
+        crate::hook::current_tick_ms().saturating_sub(last)
+    }
+
+    /// `send_keys` 完了時刻を記録する内部ヘルパー。
+    fn mark_send(&self) {
+        self.last_send_ms.set(crate::hook::current_tick_ms());
     }
 
     /// 出力モードを変更する
@@ -407,6 +434,11 @@ impl Output {
         if mode != InjectionMode::Unicode {
             Self::mark_vk_output();
         }
+
+        // executor が「output in-flight」判定に使う送信時刻を記録する。
+        // user passthrough キー (Enter / Ctrl 等) が race するのを防ぐための基準点。
+        // Unicode モードでも記録しておく（race の理論的可能性は残るため）。
+        self.mark_send();
     }
 
     /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
