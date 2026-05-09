@@ -154,6 +154,21 @@ impl DecisionExecutor {
                     }
                 } else {
                     // Effects なし → 直接 OS に通す
+                    // Passthrough 系の VK (Enter, Esc, Tab 等) は awase 出力との
+                    // 時系列を見えるようログを残す（char/thumb はノイズになるため除外）。
+                    if matches!(
+                        raw_event.key_classification,
+                        awase::types::KeyClassification::Passthrough
+                    ) {
+                        log::debug!(
+                            "[relay-passthrough] PassThrough idle: direct OS pass-through (vk={:#04x} {})",
+                            raw_event.vk_code.0,
+                            match raw_event.event_type {
+                                awase::types::KeyEventType::KeyDown => "down",
+                                awase::types::KeyEventType::KeyUp => "up",
+                            },
+                        );
+                    }
                     HookResult {
                         callback: CallbackResult::PassThrough,
                         has_pending: false,

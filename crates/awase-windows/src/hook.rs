@@ -510,6 +510,22 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
         );
 
+        // Passthrough class (Enter, Tab, Esc, 矢印キー等) は debug でも常時記録する。
+        // 通常の char / thumb は trace 止まり（ノイズ削減）だが、Passthrough は頻度が
+        // 低くかつ awase 出力との race condition 解析の鍵になるため debug で残す。
+        if matches!(
+            event.key_classification,
+            KeyClassification::Passthrough
+        ) {
+            log::debug!(
+                "[hook-passthrough] vk={:#04x} scan={:#06x} type={:?} route={}",
+                event.vk_code.0,
+                event.scan_code.0,
+                event.event_type,
+                if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
+            );
+        }
+
         // ── IME トグルガード ──
         {
             let is_sync_key = event.ime_relevance.is_sync_key;
