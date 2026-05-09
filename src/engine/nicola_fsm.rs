@@ -883,16 +883,22 @@ impl NicolaFsm {
         }
     }
 
-    /// 保留中の親指キーを単独打鍵として解決し、アクション列と OutputUpdate を返す
+    /// 保留中の親指キーを単独打鍵として解決し、アクション列と `OutputUpdate` を返す。
+    ///
+    /// NICOLA では親指キー (無変換 / 変換) は文字キーとの同時打鍵専用であり、
+    /// 単独打鍵は本質的に誤打鍵 / 親指の離しの遅れ / 文字キーが間に合わなかった等の
+    /// 偶発的なケース。元の VK_NONCONVERT / VK_CONVERT を OS に送ってしまうと
+    /// IME 側で カタカナトグル等の副作用（Microsoft IME のデフォルト挙動）が起こり、
+    /// 入力モードが意図せず切り替わる。
+    ///
+    /// したがって何も送出しない（suppress）。これにより親指の単独打鍵は完全に無視され、
+    /// IME に対して透明になる。Engine が無効な場合は hook 層で bypass されてここには
+    /// 来ないので、Windows 全般での 無変換 / 変換 キー機能は引き続き使える。
     #[allow(clippy::unused_self)]
-    fn resolve_pending_thumb_as_single(&self, vk_code: VkCode) -> ResolvedAction {
-        // Thumb keys use vk_code as their scan_code key since they don't have
-        // standard scan codes in our map; use u32 from vk_code for consistency.
-        let action = KeyAction::Key(vk_code);
-        let output = record_output(ScanCode(u32::from(vk_code.0)), &action, None);
+    fn resolve_pending_thumb_as_single(&self, _vk_code: VkCode) -> ResolvedAction {
         ResolvedAction {
-            actions: vec![action],
-            output,
+            actions: vec![],
+            output: OutputUpdate::None,
         }
     }
 

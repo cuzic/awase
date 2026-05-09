@@ -462,8 +462,12 @@ fn test_swap_layout_flushes_pending_thumb() {
     let new_layout = make_layout();
     let result = engine.swap_layout(new_layout);
     result.assert_consumed();
-    assert_eq!(result.actions.len(), 1);
-    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
+    // 単独親指打鍵は IME 副作用 (カタカナトグル等) を防ぐため suppress される。
+    // よって VK_NONCONVERT は emit されず、actions は空。
+    assert!(
+        result.actions.is_empty(),
+        "thumb single should be suppressed, not emitted"
+    );
 }
 
 #[test]
@@ -1159,10 +1163,13 @@ fn test_flush_pending_from_pending_thumb() {
     let t0 = 1_000_000;
     // PendingThumb 状態にする
     let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0).build());
-    // flush → 親指キーを単独確定
+    // flush → 親指キーを単独確定 (= suppress = action 無し)
     let r = engine.flush_pending(ContextChange::InputLanguageChanged);
-    assert!(!r.actions.is_empty(), "should emit the pending thumb key");
-    assert!(matches!(r.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
+    // 単独親指打鍵は IME 副作用を防ぐため suppress される
+    assert!(
+        r.actions.is_empty(),
+        "thumb single should be suppressed on flush, not emitted"
+    );
 }
 
 #[test]
@@ -1283,7 +1290,7 @@ fn test_set_ngram_model_and_timing_judge() {
 
 #[test]
 fn test_pending_thumb_then_char_after_threshold() {
-    // PendingThumb + char after threshold -> thumb single, char new pending
+    // PendingThumb + char after threshold -> thumb single (suppressed), char new pending
     let mut engine = make_engine();
 
     let r = engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
@@ -1292,16 +1299,19 @@ fn test_pending_thumb_then_char_after_threshold() {
     // Char arrives after threshold
     let r = engine.on_event(Ev::down(VK_A).at(200_000).build());
     r.assert_consumed();
-    // Should contain thumb single (Key(VK_NONCONVERT)) and char is new pending
-    assert!(r
-        .actions
-        .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)));
+    // 単独親指打鍵は suppress されるので VK_NONCONVERT は emit されない。
+    // char は新規 pending で取り込まれるので、ここでも emit はない（消費されたまま pending）。
+    assert!(
+        !r.actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "thumb single should be suppressed, not emitted"
+    );
 }
 
 #[test]
 fn test_pending_thumb_then_another_thumb() {
-    // PendingThumb + another thumb -> first thumb single, second thumb pending
+    // PendingThumb + another thumb -> first thumb suppressed, second thumb pending
     let mut engine = make_engine();
 
     let r = engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
@@ -1310,11 +1320,13 @@ fn test_pending_thumb_then_another_thumb() {
     // Another thumb arrives within threshold (still same kind = thumb)
     let r = engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
     r.assert_consumed();
-    // First thumb resolved as single
-    assert!(r
-        .actions
-        .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)));
+    // First thumb is resolved as suppressed (no VK_NONCONVERT emit)
+    assert!(
+        !r.actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "first thumb single should be suppressed, not emitted"
+    );
 }
 
 // ── PendingCharThumb + thumb key arrival (line 537, 543-544) ──
@@ -1380,15 +1392,16 @@ fn test_key_up_while_pending_thumb() {
     let r = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&r);
 
-    // KeyUp of the pending thumb key -> resolves as single Key(VK_NONCONVERT)
+    // KeyUp of the pending thumb key -> resolves as single (suppressed = no action)
     let r = engine.on_event(Ev::up(VK_NONCONVERT).build());
     r.assert_consumed();
-    assert!(r
-        .actions
-        .iter()
-        .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)));
-    // Note: output_history uses vk_code as key for thumb,
-    // so scan_code-based removal in on_key_up won't find it -> no KeyUp action appended
+    // 単独親指打鍵は IME 副作用 (カタカナトグル等) を防ぐため suppress される。
+    assert!(
+        !r.actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "thumb single on KeyUp should be suppressed, not emitted"
+    );
 }
 
 // ── KeyUp for active Key action (lines 619-620) ──
