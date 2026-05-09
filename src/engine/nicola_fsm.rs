@@ -591,6 +591,12 @@ impl NicolaFsm {
                 let EngineState::PendingChar(pending) = self.state else {
                     unreachable!("unexpected state: {:?}", self.state)
                 };
+                log::debug!(
+                    "[passthrough-flush] pending=PendingChar(vk={:#04x}) → flush, then reprocess passthrough_vk={:#04x} ts={}us",
+                    pending.vk_code.0,
+                    ev.vk_code.0,
+                    ev.timestamp,
+                );
                 self.go_idle();
                 let resolved = self.resolve_pending_char_as_single(
                     pending.scan_code,
@@ -617,6 +623,12 @@ impl NicolaFsm {
                 let EngineState::PendingThumb(thumb) = self.state else {
                     unreachable!("unexpected state: {:?}", self.state)
                 };
+                log::debug!(
+                    "[passthrough-flush] pending=PendingThumb(vk={:#04x}) → flush, then reprocess passthrough_vk={:#04x} ts={}us",
+                    thumb.vk_code.0,
+                    ev.vk_code.0,
+                    ev.timestamp,
+                );
                 self.go_idle();
                 let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
                 ParseAction::ReduceAndContinue {

@@ -139,6 +139,14 @@ impl DecisionExecutor {
                     // pending effects（未送出の文字等）がある場合、PassThrough のまま通すと
                     // ENTER 等が先に WezTerm に届いて "kあ" 等の出力破壊が起きる。
                     // Consume して reinject をキューの末尾に積み、effects → キー の順を保証。
+                    log::debug!(
+                        "[relay-defer] PassThrough with pending effects: deferring reinject(vk={:#04x} {})",
+                        raw_event.vk_code.0,
+                        match raw_event.event_type {
+                            awase::types::KeyEventType::KeyDown => "down",
+                            awase::types::KeyEventType::KeyUp => "up",
+                        },
+                    );
                     self.queue.push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
                     HookResult {
                         callback: CallbackResult::Consumed,
@@ -154,6 +162,15 @@ impl DecisionExecutor {
             }
             Decision::PassThroughWith { mut effects } => {
                 // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー
+                log::debug!(
+                    "[relay-flush] PassThroughWith: queue {} effect(s) + reinject(vk={:#04x} {})",
+                    effects.len(),
+                    raw_event.vk_code.0,
+                    match raw_event.event_type {
+                            awase::types::KeyEventType::KeyDown => "down",
+                            awase::types::KeyEventType::KeyUp => "up",
+                        },
+                );
                 effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
                 self.queue.extend(effects);
                 HookResult {
@@ -183,7 +200,17 @@ impl DecisionExecutor {
         match effect {
             Effect::Input(ie) => match ie {
                 InputEffect::SendKeys(actions) => platform.send_keys(&actions),
-                InputEffect::ReinjectKey(event) => platform.reinject_key(&event),
+                InputEffect::ReinjectKey(event) => {
+                    let dir = match event.event_type {
+                        awase::types::KeyEventType::KeyDown => "down",
+                        awase::types::KeyEventType::KeyUp => "up",
+                    };
+                    log::debug!(
+                        "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
+                        event.vk_code.0,
+                    );
+                    platform.reinject_key(&event);
+                }
             },
             Effect::Timer(te) => match te {
                 TimerEffect::Set { id, duration } => platform.set_timer(id, duration),
