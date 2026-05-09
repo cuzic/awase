@@ -452,6 +452,14 @@ impl Runtime {
             }
         }
 
+        // ── Phase 3.7: 診断スナップショット ──
+        //
+        // フォーカス変更が確定した直後の IME 状態を 1 行ログに吐き出す。
+        // ウィンドウ切替直後の cold-start 不具合を解析するための観測点。
+        if focus_changed {
+            crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
+        }
+
         // ── Phase 4: Engine に RefreshState（active 遷移検知）──
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
@@ -612,6 +620,9 @@ impl Runtime {
 
         if process_changed {
             log::debug!("Foreground process changed → FocusChanged (pid={process_id} class={class_name})");
+
+            // 診断用: フォアグラウンドプロセス変更時刻を記録
+            self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
 
             // フォーカス変更時は IME 強制書き込みガードをリセットする。
             // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、

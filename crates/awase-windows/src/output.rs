@@ -339,6 +339,11 @@ impl Output {
 
         log::debug!("send_keys: mode={mode:?} actions={actions:?}");
 
+        // 診断スナップショット: 出力直前の IME 状態を記録
+        // (Vk/Tsf モードの cold-start 解析用; Unicode は IME 経由しないので低優先だが
+        //  比較材料として常に取る)
+        crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("send_keys_pre").log();
+
         for action in actions {
             match action {
                 KeyAction::SpecialKey(sk) => {

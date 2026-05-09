@@ -1,0 +1,280 @@
+//! IME 状態の診断スナップショット（Phase 1: 観測強化）。
+//!
+//! フォーカス変更直後・出力直前など重要タイミングで IME 周辺の各種状態を
+//! 一括で取得して 1 行ログに吐き出す。これにより blind だったデバッグを
+//! データ駆動に切り替える。
+//!
+//! 取得項目:
+//! - フォーカス hwnd / pid / class
+//! - 現在スレッドの HKL / lang_id
+//! - ImmGetDefaultIMEWnd の有無 (IMM bridge availability)
+//! - IMC_GETOPENSTATUS / IMC_GETCONVERSIONMODE のクロスプロセス値
+//! - awase の shadow ime_on
+//! - 解決された注入モード (Vk / Tsf / Unicode)
+//! - 最後のフォーカス変更からの経過時間
+//!
+//! Phase 2 以降で ITfInputProcessorProfileMgr による active TIP 情報の追加を検討。
+
+use std::time::Duration;
+
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG};
+
+const WM_IME_CONTROL: u32 = 0x0283;
+const IMC_GETOPENSTATUS: usize = 0x0005;
+const IMC_GETCONVERSIONMODE: usize = 0x0001;
+
+/// 各観測点での IME 状態のスナップショット。
+///
+/// すべてのフィールドが取得失敗を許容する `Option` または `bool`。
+/// クロスプロセスクエリは `run_with_timeout` で保護される。
+#[derive(Debug, Clone)]
+pub struct ImeDiagnosticSnapshot {
+    /// 観測点の識別ラベル（例: "focus_change_done", "send_keys_pre"）
+    pub label: &'static str,
+    /// 取得時刻（ms, `current_tick_ms`）
+    pub timestamp_ms: u64,
+    /// フォーカス hwnd（生 ptr 値、表示用）
+    pub focus_hwnd_raw: usize,
+    /// フォーカスウィンドウのプロセス ID
+    pub focus_pid: u32,
+    /// フォーカスウィンドウのクラス名
+    pub focus_class: String,
+    /// フォーカスウィンドウのスレッド ID
+    pub focus_thread_id: u32,
+    /// HKL（KeyboardLayout）の生値
+    pub hkl: u32,
+    /// HKL の下位 16bit（言語 ID）
+    pub hkl_lang_id: u32,
+    /// `ImmGetDefaultIMEWnd` が非 NULL を返したか（IMM bridge の存在）
+    pub has_imm_bridge: bool,
+    /// クロスプロセス IMC_GETOPENSTATUS の結果（None=タイムアウト/失敗）
+    pub imc_open_status: Option<bool>,
+    /// クロスプロセス IMC_GETCONVERSIONMODE の生値（None=タイムアウト/失敗）
+    pub imc_conversion_mode: Option<u32>,
+    /// awase の shadow IME on/off
+    pub shadow_ime_on: bool,
+    /// shadow が romaji 入力モードと判定しているか
+    pub shadow_is_romaji: bool,
+    /// shadow が日本語キーボードと判定しているか
+    pub shadow_is_japanese: bool,
+    /// 解決された注入モード
+    pub injection_mode: &'static str,
+    /// 最後のフォアグラウンド変更からの経過時間（None=未発生）
+    pub ms_since_focus_change: Option<u64>,
+    /// 最後のキー活動からの経過時間（typing 判定用）
+    pub ms_since_last_activity: Option<u64>,
+}
+
+impl ImeDiagnosticSnapshot {
+    /// 現在の状態を捕捉する。
+    ///
+    /// `crate::APP` グローバル経由で焦点情報・shadow 状態を読み取り、
+    /// クロスプロセスクエリは 50ms タイムアウトで保護する。
+    /// メインスレッドから呼ぶこと（APP の借用要件）。
+    pub fn capture(label: &'static str) -> Self {
+        let now = crate::hook::current_tick_ms();
+
+        // ── shadow / app state を APP から取得 ──
+        let (
+            focus_hwnd_raw,
+            focus_pid,
+            focus_class,
+            shadow_ime_on,
+            shadow_is_romaji,
+            shadow_is_japanese,
+            injection_mode,
+            ms_since_focus_change,
+            ms_since_last_activity,
+        ) = unsafe {
+            if let Some(app) = crate::APP.get_ref() {
+                let (pid, class) = app
+                    .executor
+                    .platform
+                    .focus
+                    .last_focus_info
+                    .as_ref()
+                    .map_or((0u32, String::new()), |(p, c)| (*p, c.clone()));
+
+                let preconditions = &app.platform_state.preconditions;
+                let focus_change_ms = app.platform_state.last_focus_change_ms;
+                let activity_ms = app.platform_state.last_hook_activity_ms;
+
+                let dt_focus = if focus_change_ms == 0 {
+                    None
+                } else {
+                    Some(now.saturating_sub(focus_change_ms))
+                };
+                let dt_activity = if activity_ms == 0 {
+                    None
+                } else {
+                    Some(now.saturating_sub(activity_ms))
+                };
+
+                // フォーカス hwnd は last_focus_info に保存されない（pid/class のみ）
+                // ため、現時点のフォアグラウンド hwnd を取得する。
+                use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+                let hwnd = GetForegroundWindow();
+                let hwnd_raw = hwnd.0 as usize;
+
+                (
+                    hwnd_raw,
+                    pid,
+                    class,
+                    preconditions.ime_on,
+                    preconditions.is_romaji,
+                    preconditions.is_japanese_ime,
+                    resolve_injection_mode_label(),
+                    dt_focus,
+                    dt_activity,
+                )
+            } else {
+                (0, 0, String::new(), false, false, false, "Unknown", None, None)
+            }
+        };
+
+        // ── HKL ──
+        let (hkl, hkl_lang_id, focus_thread_id) = unsafe {
+            let gui = crate::win32::get_gui_thread_info_with_timeout(Duration::from_millis(100));
+            let tid = gui.thread_id;
+            let layout = GetKeyboardLayout(tid);
+            let hkl = layout.0 as u32;
+            let lang_id = hkl & 0xFFFF;
+            (hkl, lang_id, tid)
+        };
+
+        // ── ImmGetDefaultIMEWnd ──
+        let has_imm_bridge = unsafe {
+            let hwnd = HWND(focus_hwnd_raw as *mut _);
+            !ImmGetDefaultIMEWnd(hwnd).0.is_null()
+        };
+
+        // ── クロスプロセス IMC_GETOPENSTATUS / IMC_GETCONVERSIONMODE ──
+        let (imc_open_status, imc_conversion_mode) = capture_imc(focus_hwnd_raw);
+
+        Self {
+            label,
+            timestamp_ms: now,
+            focus_hwnd_raw,
+            focus_pid,
+            focus_class,
+            focus_thread_id,
+            hkl,
+            hkl_lang_id,
+            has_imm_bridge,
+            imc_open_status,
+            imc_conversion_mode,
+            shadow_ime_on,
+            shadow_is_romaji,
+            shadow_is_japanese,
+            injection_mode,
+            ms_since_focus_change,
+            ms_since_last_activity,
+        }
+    }
+
+    /// 1 行ログ出力（`debug` レベル）。
+    ///
+    /// 機械的に grep / 正規表現で抽出しやすいように key=value 形式。
+    pub fn log(&self) {
+        let conv = self
+            .imc_conversion_mode
+            .map_or_else(|| "-".to_string(), |c| format!("{c:#08x}"));
+        let dt_focus = self
+            .ms_since_focus_change
+            .map_or_else(|| "-".to_string(), |d| format!("{d}"));
+        let dt_act = self
+            .ms_since_last_activity
+            .map_or_else(|| "-".to_string(), |d| format!("{d}"));
+        let imc_open = self
+            .imc_open_status
+            .map_or_else(|| "-".to_string(), |o| if o { "true" } else { "false" }.to_string());
+
+        log::debug!(
+            "[ime-diag] label={label} t={t} hwnd={hwnd:#x} pid={pid} tid={tid} class=\"{class}\" \
+             hkl={hkl:08x} lang={lang:04x} imm_bridge={bridge} \
+             imc_open={imc_open} imc_conv={conv} \
+             shadow_on={shadow_on} shadow_romaji={romaji} shadow_jp={jp} \
+             inject={inject} dt_focus_ms={dt_focus} dt_activity_ms={dt_act}",
+            label = self.label,
+            t = self.timestamp_ms,
+            hwnd = self.focus_hwnd_raw,
+            pid = self.focus_pid,
+            tid = self.focus_thread_id,
+            class = self.focus_class,
+            hkl = self.hkl,
+            lang = self.hkl_lang_id,
+            bridge = self.has_imm_bridge,
+            shadow_on = self.shadow_ime_on,
+            romaji = self.shadow_is_romaji,
+            jp = self.shadow_is_japanese,
+            inject = self.injection_mode,
+        );
+    }
+}
+
+/// クロスプロセス IMC クエリ（`IMC_GETOPENSTATUS` / `IMC_GETCONVERSIONMODE`）。
+/// IMM bridge が NULL の場合は `(None, None)` を返す。
+fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
+    unsafe {
+        let hwnd = HWND(focus_hwnd_raw as *mut _);
+        if hwnd.0.is_null() {
+            return (None, None);
+        }
+        let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+        if ime_wnd.0.is_null() {
+            return (None, None);
+        }
+
+        let mut open_result = 0usize;
+        let open_ok = SendMessageTimeoutW(
+            ime_wnd,
+            WM_IME_CONTROL,
+            WPARAM(IMC_GETOPENSTATUS),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            50,
+            Some(&raw mut open_result),
+        );
+        let open = if open_ok.0 != 0 { Some(open_result != 0) } else { None };
+
+        let mut conv_result = 0usize;
+        let conv_ok = SendMessageTimeoutW(
+            ime_wnd,
+            WM_IME_CONTROL,
+            WPARAM(IMC_GETCONVERSIONMODE),
+            LPARAM(0),
+            SMTO_ABORTIFHUNG,
+            50,
+            Some(&raw mut conv_result),
+        );
+        let conv = if conv_ok.0 != 0 { Some(conv_result as u32) } else { None };
+
+        (open, conv)
+    }
+}
+
+/// 解決される注入モードのラベル文字列を返す（出力経路と同じロジックを参照する）。
+fn resolve_injection_mode_label() -> &'static str {
+    use awase::types::AppKind;
+
+    unsafe {
+        let Some(app) = crate::APP.get_ref() else {
+            return "Unknown";
+        };
+        if let Some((pid, class)) = app.executor.platform.focus.last_focus_info.as_ref() {
+            if crate::runtime::is_force_tsf(&app.executor.platform.focus.overrides, *pid, class) {
+                return "Tsf";
+            }
+            if crate::runtime::is_force_vk(&app.executor.platform.focus.overrides, *pid, class) {
+                return "Vk";
+            }
+        }
+        match app.platform_state.app_kind {
+            AppKind::Chrome => "Vk",
+            _ => "Unicode",
+        }
+    }
+}

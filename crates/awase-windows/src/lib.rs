@@ -22,6 +22,7 @@ pub mod executor;
 pub mod focus;
 pub mod hook;
 pub mod ime;
+pub mod ime_diagnostic;
 pub mod observer;
 pub mod output;
 pub mod platform;
@@ -182,6 +183,9 @@ pub struct PlatformState {
     /// preconditions を即座に更新してからキーを処理する。
     /// これにより「古い preconditions でキーが処理される」ギャップを解消する。
     pub focus_transition_pending: bool,
+    /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
+    /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
+    pub last_focus_change_ms: u64,
 }
 
 impl PlatformState {
@@ -215,6 +219,7 @@ impl PlatformState {
             ime_guard: ImeGuardState { active: false, deferred_keys: Vec::new() },
             modifier_timing: ModifierTiming::new(),
             focus_transition_pending: false,
+            last_focus_change_ms: 0,
         }
     }
 }
