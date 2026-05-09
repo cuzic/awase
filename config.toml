@@ -7,8 +7,11 @@ default_layout = "nicola.yab"
 # confirm_mode = "wait"  # wait / speculative / two_phase / adaptive_timing / ngram_predictive
 # speculative_delay_ms = 30
 
-# n-gram コーパスファイル（オプション、指定しなければ固定閾値で動作）
-# ngram_file = "data/ngram_hiragana.toml"
+# n-gram コーパスファイル（実行ファイルからの相対パス）。
+# 同時打鍵 3 鍵仲裁（例: 「よかった」の「か」と「ん」のどちらに右親指が
+# 帰属するか）を頻度モデルで判定するために使用する。設定しない場合は
+# 純粋なタイミング比較 (d1 < d2) のみで判定するため、誤判定が増える。
+ngram_file = "data/ngram_hiragana.csv.gz"
 # ngram_adjustment_range_ms = 20
 # ngram_min_threshold_ms = 30
 # ngram_max_threshold_ms = 120
