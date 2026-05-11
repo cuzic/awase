@@ -147,6 +147,18 @@ impl DecisionExecutor {
                 let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
 
+                log::debug!(
+                    "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
+                    raw_event.vk_code.0,
+                    match raw_event.event_type {
+                        awase::types::KeyEventType::KeyDown => "down",
+                        awase::types::KeyEventType::KeyUp => "up",
+                    },
+                    if in_flight_ms == u64::MAX { "never".to_string() } else { in_flight_ms.to_string() },
+                    has_pending,
+                    output_in_flight,
+                );
+
                 if has_pending || output_in_flight {
                     // pending effects または output in-flight 中の passthrough は
                     // Consume + reinject 経由で順序保証する。

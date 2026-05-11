@@ -329,7 +329,9 @@ impl Output {
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
     fn mark_send(&self) {
-        self.last_send_ms.set(crate::hook::current_tick_ms());
+        let ms = crate::hook::current_tick_ms();
+        log::debug!("[mark-send] last_send_ms={ms}");
+        self.last_send_ms.set(ms);
     }
 
     /// 出力モードを変更する
