@@ -647,28 +647,25 @@ impl Output {
             return;
         }
 
-        // TSF コールドスタート: 物理 VK_DBE_HIRAGANA (vk=0xF2) が PassThrough で
-        // WezTerm に届くと WezTerm の TSF composition context がリセットされる。
-        // その後の最初の子音 VK に対して TSF の TestKeyDown が FALSE を返し PTY に
-        // 直送されるため "ko" → "kお" になる。
+        // TSF コールドスタート検出（イベント駆動）。
+        //
+        // 物理 VK_DBE_HIRAGANA (vk=0xF2) が PassThrough で WezTerm に届くと
+        // WezTerm の TSF composition context がリセットされる。その後の最初の VK に
+        // 対して TSF の TestKeyDown が FALSE を返し PTY に直送されるため
+        // "ko" → "kお" になる。
         //
         // executor が physical F2 passthrough を検出した際に mark_tsf_coldstart() を
-        // 呼び出してこのフラグをセットする。ここで VK_DBE_HIRAGANA を TSF_MARKER 付きで
-        // 先行送信し TSF context を再初期化する。
+        // 呼び出してこのフラグをセットする。ここでは第 1 run の SendInput 先頭に
+        // VK_DBE_HIRAGANA↓↑ を埋め込む。別 SendInput にすると WezTerm が TSF の
+        // 初期化を完了する前に次のキーが届いてしまい効果がないため、同一 SendInput
+        // に含める必要がある（旧実装 1703fcf と同方式）。
         //
         // タイマーベース（旧 500ms 閾値）でなくイベント駆動にすることで、連続打鍵中の
         // 誤発火（"かいsい" 問題）を回避する。
-        if self.tsf_coldstart_pending.get() {
+        let prepend_f2_warmup = self.tsf_coldstart_pending.get();
+        if prepend_f2_warmup {
             self.tsf_coldstart_pending.set(false);
-            const VK_DBE_HIRAGANA: u16 = 0xF2;
-            let warmup = [
-                make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                make_tsf_key_input(VK_DBE_HIRAGANA, true),
-            ];
-            unsafe {
-                SendInput(&warmup, i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"));
-            }
-            log::debug!("[tsf-warmup] sent VK_DBE_HIRAGANA warmup (event-driven cold start)");
+            log::debug!("[tsf-warmup] will prepend VK_DBE_HIRAGANA to first SendInput (event-driven cold start)");
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
@@ -687,8 +684,14 @@ impl Output {
         }
         runs.push(&chars[start..]);
 
-        for run in &runs {
-            let mut inputs = Vec::with_capacity(run.len() * 4);
+        for (run_idx, run) in runs.iter().enumerate() {
+            let warmup_slots = if run_idx == 0 && prepend_f2_warmup { 2 } else { 0 };
+            let mut inputs = Vec::with_capacity(run.len() * 4 + warmup_slots);
+            if run_idx == 0 && prepend_f2_warmup {
+                const VK_DBE_HIRAGANA: u16 = 0xF2;
+                inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, false));
+                inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, true));
+            }
             for &(vk, needs_shift) in *run {
                 if needs_shift {
                     inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
