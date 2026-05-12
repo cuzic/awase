@@ -368,10 +368,16 @@ impl Output {
 
         log::debug!("send_keys: mode={mode:?} actions={actions:?}");
 
-        // 診断スナップショット: 出力直前の IME 状態を記録
-        // (Vk/Tsf モードの cold-start 解析用; Unicode は IME 経由しないので低優先だが
-        //  比較材料として常に取る)
-        crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("send_keys_pre").log();
+        // NOTE: ImeDiagnosticSnapshot::capture("send_keys_pre") をここに置いてはいけない。
+        // capture() は内部で GetGUIThreadInfo(100ms) + SendMessageTimeoutW(50ms×2) を
+        // 呼ぶため、send_keys の中でメッセージポンプが走り Space 等の WH_KEYBOARD_LL
+        // コールバックが SendInput より前に発火して "境界dえ" 等の race を起こす。
+
+        // output in-flight guard の基準点を SendInput より前に設定する。
+        // 呼び出し元が何らかのブロッキング処理を send_keys 内に追加した場合でも
+        // guard が有効になるよう、ループ前に記録しておく。
+        // ループ後の mark_send() も残す（reinject wait の正確な基準点のため）。
+        self.mark_send();
 
         for action in actions {
             match action {
