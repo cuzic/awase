@@ -458,6 +458,14 @@ impl Runtime {
         // ウィンドウ切替直後の cold-start 不具合を解析するための観測点。
         if focus_changed {
             crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
+            // TSF cold start: WezTerm の TSF composition context は他のアプリから
+            // フォーカスが戻るたびに cold state（遅延初期化待ち）になる。
+            // 次の send_romaji_as_tsf 呼び出し時に VK_DBE_HIRAGANA を先行送信して
+            // TSF context を初期化させる。vk=0xf2 passthrough 時も同様にマークする。
+            if self.executor.platform.output.is_tsf_mode() {
+                log::debug!("[tsf-coldstart] focus change to TSF app → marking coldstart");
+                self.executor.platform.output.mark_tsf_coldstart();
+            }
         }
 
         // ── Phase 4: Engine に RefreshState（active 遷移検知）──
