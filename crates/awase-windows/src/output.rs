@@ -300,6 +300,15 @@ pub struct Output {
     /// executor がこの値を読んで「output in-flight 期間」を判定し、当該期間内に
     /// 来た passthrough を deferr/wait することで race を解消する。
     last_send_ms: std::cell::Cell<u64>,
+    /// TSF コールドスタートフラグ。
+    ///
+    /// vk=0xF2 (VK_DBE_HIRAGANA) が passthrough でユーザーから WezTerm に届くと
+    /// WezTerm の TSF composition context がリセットされる。次の `send_romaji_as_tsf`
+    /// 呼び出し時に VK_DBE_HIRAGANA ウォームアップを先行送信するためのフラグ。
+    ///
+    /// タイマーベース（旧 500ms 閾値）ではなくイベント駆動（物理 F2 通過時のみセット）
+    /// にすることで、連続打鍵中の誤発火（"かいsい" 問題）を回避する。
+    tsf_coldstart_pending: std::cell::Cell<bool>,
 }
 
 impl Output {
@@ -313,6 +322,7 @@ impl Output {
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
             last_send_ms: std::cell::Cell::new(0),
+            tsf_coldstart_pending: std::cell::Cell::new(false),
         }
     }
 
@@ -332,6 +342,21 @@ impl Output {
         let ms = crate::hook::current_tick_ms();
         log::debug!("[mark-send] last_send_ms={ms}");
         self.last_send_ms.set(ms);
+    }
+
+    /// TSF コールドスタートをマークする。
+    ///
+    /// vk=0xF2 (VK_DBE_HIRAGANA) が PassThrough でユーザーから WezTerm に届いた
+    /// ことを executor から通知する。次の `send_romaji_as_tsf` 呼び出し時に
+    /// VK_DBE_HIRAGANA ウォームアップを先行送信してTSF context を再初期化する。
+    pub fn mark_tsf_coldstart(&self) {
+        log::debug!("[tsf-coldstart] marked: next TSF output will send VK_DBE_HIRAGANA warmup");
+        self.tsf_coldstart_pending.set(true);
+    }
+
+    /// 現在のフォーカス先が TSF モード（WezTerm 等）かどうかを返す。
+    pub fn is_tsf_mode(&self) -> bool {
+        resolve_injection_mode() == InjectionMode::Tsf
     }
 
     /// 出力モードを変更する
@@ -620,6 +645,30 @@ impl Output {
 
         if chars.is_empty() {
             return;
+        }
+
+        // TSF コールドスタート: 物理 VK_DBE_HIRAGANA (vk=0xF2) が PassThrough で
+        // WezTerm に届くと WezTerm の TSF composition context がリセットされる。
+        // その後の最初の子音 VK に対して TSF の TestKeyDown が FALSE を返し PTY に
+        // 直送されるため "ko" → "kお" になる。
+        //
+        // executor が physical F2 passthrough を検出した際に mark_tsf_coldstart() を
+        // 呼び出してこのフラグをセットする。ここで VK_DBE_HIRAGANA を TSF_MARKER 付きで
+        // 先行送信し TSF context を再初期化する。
+        //
+        // タイマーベース（旧 500ms 閾値）でなくイベント駆動にすることで、連続打鍵中の
+        // 誤発火（"かいsい" 問題）を回避する。
+        if self.tsf_coldstart_pending.get() {
+            self.tsf_coldstart_pending.set(false);
+            const VK_DBE_HIRAGANA: u16 = 0xF2;
+            let warmup = [
+                make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                make_tsf_key_input(VK_DBE_HIRAGANA, true),
+            ];
+            unsafe {
+                SendInput(&warmup, i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"));
+            }
+            log::debug!("[tsf-warmup] sent VK_DBE_HIRAGANA warmup (event-driven cold start)");
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が

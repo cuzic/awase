@@ -143,6 +143,19 @@ impl DecisionExecutor {
 
         match decision {
             Decision::PassThrough => {
+                // vk=0xF2 (VK_DBE_HIRAGANA) が WezTerm に届くと TSF composition
+                // context がリセットされ、次の先頭子音が PTY に直送されて
+                // "こ → kお" のような cold-start バグが起きる。
+                // TSF モード時のみ coldstart フラグを立て、次の send_romaji_as_tsf で
+                // VK_DBE_HIRAGANA ウォームアップを先行送信させる。
+                // passthrough 自体は通常通り OS に通す（ユーザーの IME モード変更を保証）。
+                if raw_event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
+                    log::debug!(
+                        "[tsf-coldstart] vk=0xf2 passthrough detected in TSF mode → marking coldstart"
+                    );
+                    self.platform.output.mark_tsf_coldstart();
+                }
+
                 let in_flight_ms = self.platform.output.ms_since_last_send();
                 let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
