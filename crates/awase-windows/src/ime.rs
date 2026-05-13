@@ -5,7 +5,7 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
+    GetClassNameW, GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
 };
 
 // ─── Cross-process IME control constants ─────────────────────
@@ -309,6 +309,19 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
         };
     }
 
+    // Alt/Win キーなどで一時的に現れるシステム UI オーバーレイ（XamlExplorerHostIslandWindow,
+    // Windows.UI.Core.CoreWindow 等）は imc_open=false を返すため、ここでプローブすると
+    // Engine が誤 deactivate される。これらは一過性のウィンドウで IME 状態を信用できないため、
+    // ime_on=None（不明＝既存状態維持）を返して誤検出を防ぐ。
+    if is_transient_system_overlay(hwnd) {
+        log::debug!("fast_ime_probe: transient system overlay → ime_on=None (preserving state)");
+        return FastImeProbeResult {
+            is_japanese_ime: true,
+            ime_on: None,
+            is_romaji: None,
+        };
+    }
+
     let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
     if ime_wnd.0.is_null() {
         // IMM ブリッジなし（Chrome/UWP 等）→ 検出不能
@@ -374,4 +387,23 @@ pub struct FastImeProbeResult {
     pub ime_on: Option<bool>,
     /// ローマ字入力か（Some(true)=ローマ字, Some(false)=かな, None=検出不能）
     pub is_romaji: Option<bool>,
+}
+
+/// Alt/Win キー押下で一時的に現れるシステム UI オーバーレイクラスか判定する。
+///
+/// これらのウィンドウは imc_open=false + conv=0x19(ROMAN) を返すため、
+/// `fast_ime_probe` でプローブすると Engine が誤 deactivate される。
+fn is_transient_system_overlay(hwnd: HWND) -> bool {
+    let mut buf = [0u16; 64];
+    let len = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
+    if len == 0 {
+        return false;
+    }
+    let class = String::from_utf16_lossy(&buf[..len]);
+    matches!(
+        class.as_str(),
+        "Windows.UI.Core.CoreWindow"
+            | "XamlExplorerHostIslandWindow"
+            | "Windows.UI.Input.InputSite.WindowClass"
+    )
 }
