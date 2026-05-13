@@ -643,9 +643,11 @@ impl Output {
         // (2) タイムベース stale: 前回の composition から STALE_MS 以上経過した場合も
         //     同様に warmup を先行送信する。ユーザーが長時間入力を止めた後に
         //     再開すると Chrome の IME composition context が破棄されていることがある。
+        // elapsed = u64::MAX は「一度も composition を送っていない」（セッション初回）を意味し、
+        // coldstart_pending が立っていなくても warmup が必要なケースなので stale と同等に扱う。
         const STALE_MS: u64 = 1500;
         let elapsed = self.ms_since_last_composition_send();
-        let is_stale = elapsed < u64::MAX && elapsed > STALE_MS;
+        let is_stale = elapsed > STALE_MS;
 
         let prepend_f2_warmup = self.vk_coldstart_pending.get() || is_stale;
         if prepend_f2_warmup {
@@ -733,9 +735,11 @@ impl Output {
         //     同様に warmup を先行送信する。Space や Enter が passthrough した後に
         //     再び composition を送ると TSF context が stale になっていることがある
         //     （"ログイン情報は → ログイン情報ｈａ" 問題）。
+        // elapsed = u64::MAX は「一度も composition を送っていない」（セッション初回）を意味し、
+        // coldstart_pending が立っていなくても warmup が必要なケースなので stale と同等に扱う。
         const STALE_MS: u64 = 1500;
         let elapsed = self.ms_since_last_composition_send();
-        let is_stale = elapsed < u64::MAX && elapsed > STALE_MS;
+        let is_stale = elapsed > STALE_MS;
 
         let prepend_f2_warmup = self.tsf_coldstart_pending.get() || is_stale;
         if prepend_f2_warmup {
