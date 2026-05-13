@@ -143,17 +143,11 @@ impl DecisionExecutor {
 
         match decision {
             Decision::PassThrough => {
-                // vk=0xF2 (VK_DBE_HIRAGANA) が WezTerm に届くと TSF composition
-                // context がリセットされ、次の先頭子音が PTY に直送されて
-                // "こ → kお" のような cold-start バグが起きる。
-                // TSF モード時のみ coldstart フラグを立て、次の send_romaji_as_tsf で
-                // VK_DBE_HIRAGANA ウォームアップを先行送信させる。
-                // passthrough 自体は通常通り OS に通す（ユーザーの IME モード変更を保証）。
-                if raw_event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
-                    log::debug!(
-                        "[tsf-coldstart] vk=0xf2 passthrough detected in TSF mode → marking coldstart"
-                    );
-                    self.platform.output.mark_tsf_coldstart();
+                // vk=0xF2 (VK_DBE_HIRAGANA) が通過すると TSF/VK の composition context が
+                // リセットされる可能性があるため cold にマークする。
+                if raw_event.vk_code.0 == 0xF2 {
+                    log::debug!("[composition] vk=0xf2 passthrough → marking cold");
+                    self.platform.output.mark_composition_cold();
                 }
 
                 let in_flight_ms = self.platform.output.ms_since_last_send();
@@ -212,18 +206,16 @@ impl DecisionExecutor {
                             },
                         );
                     }
-                    // Space/Enter/Escape の直接 passthrough (KeyDown) は TSF composition を
+                    // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
                     // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-                    // 次の TSF 出力で warmup が必要なためフラグを立てる。
-                    if self.platform.output.is_tsf_mode()
-                        && matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
+                    if matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
                         && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B)
                     {
                         log::debug!(
-                            "[tsf-coldstart] passthrough vk={:#04x} KeyDown in TSF mode → marking coldstart (composition-confirm guard)",
+                            "[composition] passthrough vk={:#04x} KeyDown → marking cold",
                             raw_event.vk_code.0,
                         );
-                        self.platform.output.mark_tsf_coldstart();
+                        self.platform.output.mark_composition_cold();
                     }
                     HookResult {
                         callback: CallbackResult::PassThrough,
@@ -294,18 +286,14 @@ impl DecisionExecutor {
                 let platform: &mut dyn PlatformRuntime = &mut self.platform;
                 platform.reinject_key(&event);
             }
-            // Space/Enter/Escape の reinject (KeyDown) は TSF composition を確定・
-            // キャンセルしてコンテキストをアイドル状態に戻す。
+            // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
             // Backspace 等は composition を維持するためここでは対象外。
-            if is_key_down
-                && self.platform.output.is_tsf_mode()
-                && matches!(event.vk_code.0, 0x20 | 0x0D | 0x1B)
-            {
+            if is_key_down && matches!(event.vk_code.0, 0x20 | 0x0D | 0x1B) {
                 log::debug!(
-                    "[tsf-coldstart] reinject KeyDown vk={:#04x} in TSF mode → marking coldstart (post-composition guard)",
+                    "[composition] reinject KeyDown vk={:#04x} → marking cold",
                     event.vk_code.0,
                 );
-                self.platform.output.mark_tsf_coldstart();
+                self.platform.output.mark_composition_cold();
             }
             return;
         }
@@ -345,11 +333,10 @@ impl DecisionExecutor {
             }
         } // platform の借用をここで解放
 
-        // VK モード（Chrome）の場合、IME ON 直後の最初の VK キーが
-        // リテラルになる cold start を防ぐためウォームアップフラグをセット。
-        if ime_set_open_true && self.platform.output.is_vk_mode() {
-            log::debug!("[vk-coldstart] ImeEffect::SetOpen(true) in VK mode → marking coldstart");
-            self.platform.output.mark_vk_coldstart();
+        // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
+        if ime_set_open_true {
+            log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
+            self.platform.output.mark_composition_cold();
         }
     }
 }

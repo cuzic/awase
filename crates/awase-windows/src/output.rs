@@ -300,28 +300,21 @@ pub struct Output {
     /// executor がこの値を読んで「output in-flight 期間」を判定し、当該期間内に
     /// 来た passthrough を deferr/wait することで race を解消する。
     last_send_ms: std::cell::Cell<u64>,
-    /// TSF コールドスタートフラグ。
+    /// IME composition context がウォーム（初期化済み）かどうか。
     ///
-    /// vk=0xF2 (VK_DBE_HIRAGANA) が passthrough でユーザーから WezTerm に届くと
-    /// WezTerm の TSF composition context がリセットされる。次の `send_romaji_as_tsf`
-    /// 呼び出し時に VK_DBE_HIRAGANA ウォームアップを先行送信するためのフラグ。
+    /// VK/TSF モードで composition を送信するには、アプリの IME context が
+    /// アクティブである必要がある。次のイベントで `false`（コールド）になる:
+    ///   - 起動時（初期値 false）
+    ///   - フォーカス変更（別ウィンドウ = 新しい context）
+    ///   - Space / Enter / Escape の passthrough（composition 確定・キャンセル）
+    ///   - エンジン OFF → ON（IME 状態リセット）
+    ///   - F2 (VK_DBE_HIRAGANA) の passthrough（TSF context リセット）
     ///
-    /// タイマーベース（旧 500ms 閾値）ではなくイベント駆動（物理 F2 通過時のみセット）
-    /// にすることで、連続打鍵中の誤発火（"かいsい" 問題）を回避する。
-    tsf_coldstart_pending: std::cell::Cell<bool>,
-    /// VK (Chrome) コールドスタートフラグ。
-    ///
-    /// エンジン有効化（ImeEffect::SetOpen(true)）直後の最初の VK SendInput に
-    /// VK_DBE_HIRAGANA を先行送信するためのフラグ。
-    /// Chrome では IME が OFF→ON 直後の最初の VK キーがリテラルになる
-    /// ("こ" → "kお") という TSF コールドスタートと同じ問題が発生する。
-    vk_coldstart_pending: std::cell::Cell<bool>,
-    /// ローマ字 composition 送信の直前時刻（ms）。
-    ///
-    /// Suppress 等の non-composition 送信では更新しない。
-    /// `last_send_ms`（output in-flight ガード用）とは別に管理し、
-    /// 「前回の composition 出力からの経過時間」で stale warmup を判定する。
-    last_composition_send_ms: std::cell::Cell<u64>,
+    /// `send_romaji_batched` / `send_romaji_as_tsf` が `false` を検出すると
+    /// VK_DBE_HIRAGANA ウォームアップを先頭に挿入し、送信後に `true` にセットする。
+    /// 旧実装の `tsf_coldstart_pending` + `vk_coldstart_pending` + `last_composition_send_ms`
+    /// を1つのフラグに統合したもの。
+    composition_warm: std::cell::Cell<bool>,
 }
 
 impl Output {
@@ -335,9 +328,7 @@ impl Output {
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
             last_send_ms: std::cell::Cell::new(0),
-            tsf_coldstart_pending: std::cell::Cell::new(false),
-            vk_coldstart_pending: std::cell::Cell::new(false),
-            last_composition_send_ms: std::cell::Cell::new(0),
+            composition_warm: std::cell::Cell::new(false),
         }
     }
 
@@ -352,15 +343,14 @@ impl Output {
         crate::hook::current_tick_ms().saturating_sub(last)
     }
 
-    /// 最後の composition 送信からの経過時間（ms）。
-    /// 一度も送信していない場合は `u64::MAX` を返す（stale 判定の対象外にする）。
-    #[must_use]
-    fn ms_since_last_composition_send(&self) -> u64 {
-        let last = self.last_composition_send_ms.get();
-        if last == 0 {
-            return u64::MAX;
-        }
-        crate::hook::current_tick_ms().saturating_sub(last)
+    /// IME composition context をコールド状態にマークする。
+    ///
+    /// 次の VK / TSF composition 送信時に VK_DBE_HIRAGANA ウォームアップを
+    /// 先行送信させる。フォーカス変更・Space/Enter/Escape passthrough・
+    /// エンジン toggle・F2 passthrough 等のタイミングで呼ぶ。
+    pub fn mark_composition_cold(&self) {
+        log::debug!("[composition] marked cold → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        self.composition_warm.set(false);
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
@@ -368,36 +358,6 @@ impl Output {
         let ms = crate::hook::current_tick_ms();
         log::debug!("[mark-send] last_send_ms={ms}");
         self.last_send_ms.set(ms);
-    }
-
-    /// TSF コールドスタートをマークする。
-    ///
-    /// vk=0xF2 (VK_DBE_HIRAGANA) が PassThrough でユーザーから WezTerm に届いた
-    /// ことを executor から通知する。次の `send_romaji_as_tsf` 呼び出し時に
-    /// VK_DBE_HIRAGANA ウォームアップを先行送信してTSF context を再初期化する。
-    pub fn mark_tsf_coldstart(&self) {
-        log::debug!("[tsf-coldstart] marked: next TSF output will send VK_DBE_HIRAGANA warmup");
-        self.tsf_coldstart_pending.set(true);
-    }
-
-    /// 現在のフォーカス先が TSF モード（WezTerm 等）かどうかを返す。
-    pub fn is_tsf_mode(&self) -> bool {
-        resolve_injection_mode() == InjectionMode::Tsf
-    }
-
-    /// VK (Chrome) コールドスタートをマークする。
-    ///
-    /// ImeEffect::SetOpen(true) が VK モード（Chrome）で処理されたとき executor から呼ばれる。
-    /// 次の `send_romaji_batched` 呼び出し時に VK_DBE_HIRAGANA ウォームアップを
-    /// 先行送信して Chrome の IME composition context を初期化させる。
-    pub fn mark_vk_coldstart(&self) {
-        log::debug!("[vk-coldstart] marked: next VK output will send VK_DBE_HIRAGANA warmup");
-        self.vk_coldstart_pending.set(true);
-    }
-
-    /// 現在のフォーカス先が VK モード（Chrome 等）かどうかを返す。
-    pub fn is_vk_mode(&self) -> bool {
-        resolve_injection_mode() == InjectionMode::Vk
     }
 
     /// 出力モードを変更する
@@ -633,30 +593,12 @@ impl Output {
             return;
         }
 
-        // VK コールドスタート検出（イベント駆動 + タイムベース stale）。
-        //
-        // (1) イベント駆動: エンジン有効化（IME OFF→ON）直後の最初の VK キーは
-        //     Chrome の IME composition context が未初期化のため PTY に直送される
-        //     （"こ" → "kお" 問題）。executor が mark_vk_coldstart() を呼び出すと
-        //     このフラグがセットされ、次回 SendInput の先頭に VK_DBE_HIRAGANA を挿入する。
-        //
-        // (2) タイムベース stale: 前回の composition から STALE_MS 以上経過した場合も
-        //     同様に warmup を先行送信する。ユーザーが長時間入力を止めた後に
-        //     再開すると Chrome の IME composition context が破棄されていることがある。
-        // elapsed = u64::MAX は「一度も composition を送っていない」（セッション初回）を意味し、
-        // coldstart_pending が立っていなくても warmup が必要なケースなので stale と同等に扱う。
-        const STALE_MS: u64 = 1500;
-        let elapsed = self.ms_since_last_composition_send();
-        let is_stale = elapsed > STALE_MS;
-
-        let prepend_f2_warmup = self.vk_coldstart_pending.get() || is_stale;
+        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA ウォームアップを先行送信する。
+        // コールドになるタイミング: 起動時・フォーカス変更・Space/Enter/Escape passthrough・
+        // エンジン toggle・F2 passthrough（executor / runtime が mark_composition_cold() を呼ぶ）。
+        let prepend_f2_warmup = !self.composition_warm.get();
         if prepend_f2_warmup {
-            self.vk_coldstart_pending.set(false);
-            if is_stale {
-                log::debug!("[vk-warmup] stale {elapsed}ms since last composition → prepending VK_DBE_HIRAGANA warmup");
-            } else {
-                log::debug!("[vk-warmup] prepending VK_DBE_HIRAGANA to VK SendInput (Chrome cold start)");
-            }
+            log::debug!("[vk-warmup] cold → prepending VK_DBE_HIRAGANA warmup");
         }
 
         let warmup_slots = if prepend_f2_warmup { 2 } else { 0 };
@@ -687,7 +629,7 @@ impl Output {
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
-        self.last_composition_send_ms.set(crate::hook::current_tick_ms());
+        self.composition_warm.set(true);
     }
 
     /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
@@ -721,34 +663,13 @@ impl Output {
             return;
         }
 
-        // TSF コールドスタート検出（イベント駆動 + タイムベース stale）。
-        //
-        // (1) イベント駆動: 物理 VK_DBE_HIRAGANA (vk=0xF2) が PassThrough で WezTerm に
-        //     届くと WezTerm の TSF composition context がリセットされる。その後の最初の VK に
-        //     対して TSF の TestKeyDown が FALSE を返し PTY に直送されるため
-        //     "ko" → "kお" になる。executor が mark_tsf_coldstart() を呼び出すとフラグが
-        //     セットされ、ここで第 1 run の SendInput 先頭に VK_DBE_HIRAGANA↓↑ を埋め込む。
-        //     別 SendInput にすると WezTerm が TSF 初期化を完了する前に次のキーが届いて
-        //     しまい効果がないため、同一 SendInput に含める必要がある（旧実装 1703fcf と同方式）。
-        //
-        // (2) タイムベース stale: 前回の composition から STALE_MS 以上経過した場合も
-        //     同様に warmup を先行送信する。Space や Enter が passthrough した後に
-        //     再び composition を送ると TSF context が stale になっていることがある
-        //     （"ログイン情報は → ログイン情報ｈａ" 問題）。
-        // elapsed = u64::MAX は「一度も composition を送っていない」（セッション初回）を意味し、
-        // coldstart_pending が立っていなくても warmup が必要なケースなので stale と同等に扱う。
-        const STALE_MS: u64 = 1500;
-        let elapsed = self.ms_since_last_composition_send();
-        let is_stale = elapsed > STALE_MS;
-
-        let prepend_f2_warmup = self.tsf_coldstart_pending.get() || is_stale;
+        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA ウォームアップを先行送信する。
+        // WezTerm の TSF context は F2 passthrough・フォーカス変更・Space/Enter/Escape 後に
+        // コールド状態になる。同一 SendInput に含める必要がある（別 SendInput にすると
+        // WezTerm が TSF 初期化完了前に次のキーを受け取り効果がないため）。
+        let prepend_f2_warmup = !self.composition_warm.get();
         if prepend_f2_warmup {
-            self.tsf_coldstart_pending.set(false);
-            if is_stale {
-                log::debug!("[tsf-warmup] stale {elapsed}ms since last composition → prepending VK_DBE_HIRAGANA warmup");
-            } else {
-                log::debug!("[tsf-warmup] will prepend VK_DBE_HIRAGANA to first SendInput (event-driven cold start)");
-            }
+            log::debug!("[tsf-warmup] cold → prepending VK_DBE_HIRAGANA to first SendInput");
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
@@ -794,7 +715,7 @@ impl Output {
                 );
             }
         }
-        self.last_composition_send_ms.set(crate::hook::current_tick_ms());
+        self.composition_warm.set(true);
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
