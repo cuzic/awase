@@ -212,6 +212,19 @@ impl DecisionExecutor {
                             },
                         );
                     }
+                    // Space/Enter/Escape の直接 passthrough (KeyDown) は TSF composition を
+                    // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
+                    // 次の TSF 出力で warmup が必要なためフラグを立てる。
+                    if self.platform.output.is_tsf_mode()
+                        && matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
+                        && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B)
+                    {
+                        log::debug!(
+                            "[tsf-coldstart] passthrough vk={:#04x} KeyDown in TSF mode → marking coldstart (composition-confirm guard)",
+                            raw_event.vk_code.0,
+                        );
+                        self.platform.output.mark_tsf_coldstart();
+                    }
                     HookResult {
                         callback: CallbackResult::PassThrough,
                         has_pending: false,
@@ -281,10 +294,13 @@ impl DecisionExecutor {
                 let platform: &mut dyn PlatformRuntime = &mut self.platform;
                 platform.reinject_key(&event);
             }
-            // PassThrough KeyDown の reinject（Space, Enter 等）は TSF composition を
-            // 確定させてコンテキストをアイドル状態に戻す。直後の TSF 出力は
-            // coldstart 同様に warmup が必要なため、フラグを立てる。
-            if is_key_down && self.platform.output.is_tsf_mode() {
+            // Space/Enter/Escape の reinject (KeyDown) は TSF composition を確定・
+            // キャンセルしてコンテキストをアイドル状態に戻す。
+            // Backspace 等は composition を維持するためここでは対象外。
+            if is_key_down
+                && self.platform.output.is_tsf_mode()
+                && matches!(event.vk_code.0, 0x20 | 0x0D | 0x1B)
+            {
                 log::debug!(
                     "[tsf-coldstart] reinject KeyDown vk={:#04x} in TSF mode → marking coldstart (post-composition guard)",
                     event.vk_code.0,
