@@ -387,10 +387,21 @@ impl Runtime {
         } else {
             // ── Phase 3: IME 状態の再取得 ──
             let miss_before = self.platform_state.preconditions.ime_detect_miss_count;
+            let ime_on_before_observe = self.platform_state.preconditions.ime_on;
             unsafe {
                 crate::observer::ime_observer::observe(&mut self.platform_state.preconditions);
             }
             let miss_after = self.platform_state.preconditions.ime_detect_miss_count;
+            // observe() の生の結果を os_ime_on に記録（miss なし＝成功時のみ更新）
+            if miss_after == 0 {
+                self.platform_state.os_ime_on = Some(self.platform_state.preconditions.ime_on);
+            }
+            // user_enabled=true かつ observe が ime_on を ON→OFF に変えた場合は戻す。
+            // Win32 通常アプリへの observe 経由の false は基本的に正当だが、
+            // 将来的に過検出が確認されたらここに FocusPolicy ガードを追加する。
+            // 現時点は focus_transition_pending probe の方が問題になっているため、
+            // observe 経由は os_ime_on 記録のみでガードは設けない。
+            let _ = ime_on_before_observe; // 将来の FocusPolicy で参照予定
 
             // ── Phase 3.1: IMM 能力の学習 ──
             // 検出結果に基づいて class_name ごとの IMM 能力をキャッシュ。

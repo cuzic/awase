@@ -186,6 +186,13 @@ pub struct PlatformState {
     /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
     /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
     pub last_focus_change_ms: u64,
+    /// OS probe / observe から得た生の IME ON/OFF 観測値（ユーザー意図とは別管理）。
+    ///
+    /// `fast_ime_probe` や `observe()` の生の結果をここに記録する。
+    /// `preconditions.ime_on`（engine_active の判断基準）とは意図的に分離してあり、
+    /// `user_enabled=true` のとき OS probe が false を返しても
+    /// engine を deactivate しないための根拠として使う。
+    pub os_ime_on: Option<bool>,
 }
 
 impl PlatformState {
@@ -220,6 +227,7 @@ impl PlatformState {
             modifier_timing: ModifierTiming::new(),
             focus_transition_pending: false,
             last_focus_change_ms: 0,
+            os_ime_on: None,
         }
     }
 }

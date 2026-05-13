@@ -787,9 +787,24 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         let probe = unsafe { ime::fast_ime_probe() };
         app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
         if let Some(on) = probe.ime_on {
-            app.platform_state.preconditions.ime_on = on && probe.is_japanese_ime;
-            app.platform_state.preconditions.ime_detect_miss_count = 0;
-            app.platform_state.preconditions.ime_force_on_guard = false;
+            let effective = on && probe.is_japanese_ime;
+            // OS 観測値を別フィールドに記録（ユーザー意図と分離）
+            app.platform_state.os_ime_on = Some(effective);
+            // user_enabled=true のとき probe の false は preconditions に反映しない。
+            //
+            // 設計原則: OS probe は「観測値」、user_enabled は「ユーザー意図」。
+            // 一時オーバーレイ・UWP popup 等から誤 false が届いても Engine を落とさない。
+            // ユーザーの明示的な IME OFF は shadow toggle 経由で届くので影響を受けない。
+            // 言語バーのマウス操作が dead angle になるが、awase ユーザーはキー操作前提のため許容。
+            if effective || !app.engine.is_user_enabled() {
+                app.platform_state.preconditions.ime_on = effective;
+                app.platform_state.preconditions.ime_detect_miss_count = 0;
+                app.platform_state.preconditions.ime_force_on_guard = false;
+            } else {
+                log::debug!(
+                    "Focus probe: ime_on=false suppressed (user_enabled=true) → os_ime_on recorded, preconditions unchanged"
+                );
+            }
         }
         // ime_on が None の場合（ブラックリストアプリ等）は shadow 値を維持
         //
