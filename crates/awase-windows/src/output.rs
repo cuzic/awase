@@ -309,6 +309,13 @@ pub struct Output {
     /// タイマーベース（旧 500ms 閾値）ではなくイベント駆動（物理 F2 通過時のみセット）
     /// にすることで、連続打鍵中の誤発火（"かいsい" 問題）を回避する。
     tsf_coldstart_pending: std::cell::Cell<bool>,
+    /// VK (Chrome) コールドスタートフラグ。
+    ///
+    /// エンジン有効化（ImeEffect::SetOpen(true)）直後の最初の VK SendInput に
+    /// VK_DBE_HIRAGANA を先行送信するためのフラグ。
+    /// Chrome では IME が OFF→ON 直後の最初の VK キーがリテラルになる
+    /// ("こ" → "kお") という TSF コールドスタートと同じ問題が発生する。
+    vk_coldstart_pending: std::cell::Cell<bool>,
 }
 
 impl Output {
@@ -323,6 +330,7 @@ impl Output {
             symbol_to_vk: build_symbol_to_vk(),
             last_send_ms: std::cell::Cell::new(0),
             tsf_coldstart_pending: std::cell::Cell::new(false),
+            vk_coldstart_pending: std::cell::Cell::new(false),
         }
     }
 
@@ -357,6 +365,21 @@ impl Output {
     /// 現在のフォーカス先が TSF モード（WezTerm 等）かどうかを返す。
     pub fn is_tsf_mode(&self) -> bool {
         resolve_injection_mode() == InjectionMode::Tsf
+    }
+
+    /// VK (Chrome) コールドスタートをマークする。
+    ///
+    /// ImeEffect::SetOpen(true) が VK モード（Chrome）で処理されたとき executor から呼ばれる。
+    /// 次の `send_romaji_batched` 呼び出し時に VK_DBE_HIRAGANA ウォームアップを
+    /// 先行送信して Chrome の IME composition context を初期化させる。
+    pub fn mark_vk_coldstart(&self) {
+        log::debug!("[vk-coldstart] marked: next VK output will send VK_DBE_HIRAGANA warmup");
+        self.vk_coldstart_pending.set(true);
+    }
+
+    /// 現在のフォーカス先が VK モード（Chrome 等）かどうかを返す。
+    pub fn is_vk_mode(&self) -> bool {
+        resolve_injection_mode() == InjectionMode::Vk
     }
 
     /// 出力モードを変更する
@@ -585,7 +608,6 @@ impl Output {
     /// 受け取り "む" に正しく変換される。
     /// 全文字を1回の SendInput にまとめることで、後続キー（Enter reinject 等）が
     /// 文字キーの間に割り込むのを防ぐ（per_key との違い）。
-    #[allow(clippy::unused_self)]
     fn send_romaji_batched(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
 
@@ -593,7 +615,30 @@ impl Output {
             return;
         }
 
-        let mut inputs = Vec::with_capacity(chars.len() * 4);
+        // VK コールドスタート検出（イベント駆動）。
+        //
+        // エンジン有効化（IME OFF→ON）直後の最初の VK キーは Chrome の IME
+        // composition context が未初期化のため PTY に直送される
+        // （"こ" → "kお" 問題）。TSF コールドスタートと同じ構造。
+        //
+        // ImeEffect::SetOpen(true) が VK モードで処理されたとき executor が
+        // mark_vk_coldstart() を呼び出してこのフラグをセットする。ここでは
+        // 第 1 SendInput 先頭に VK_DBE_HIRAGANA↓↑ を埋め込んで IME を起動させる。
+        // TSF と同じく同一 SendInput に含める必要がある。
+        let prepend_f2_warmup = self.vk_coldstart_pending.get();
+        if prepend_f2_warmup {
+            self.vk_coldstart_pending.set(false);
+            log::debug!("[vk-warmup] prepending VK_DBE_HIRAGANA to VK SendInput (Chrome cold start)");
+        }
+
+        let warmup_slots = if prepend_f2_warmup { 2 } else { 0 };
+        let mut inputs = Vec::with_capacity(chars.len() * 4 + warmup_slots);
+
+        if prepend_f2_warmup {
+            const VK_DBE_HIRAGANA: u16 = 0xF2;
+            inputs.push(make_key_input(VK_DBE_HIRAGANA, false));
+            inputs.push(make_key_input(VK_DBE_HIRAGANA, true));
+        }
 
         for &(vk, needs_shift) in &chars {
             if needs_shift {

@@ -284,32 +284,46 @@ impl DecisionExecutor {
             return;
         }
 
-        let platform: &mut dyn PlatformRuntime = &mut self.platform;
-        match effect {
-            Effect::Input(ie) => match ie {
-                InputEffect::SendKeys(actions) => platform.send_keys(&actions),
-                InputEffect::ReinjectKey(_) => unreachable!("handled above"),
-            },
-            Effect::Timer(te) => match te {
-                TimerEffect::Set { id, duration } => platform.set_timer(id, duration),
-                TimerEffect::Kill(id) => platform.kill_timer(id),
-            },
-            Effect::Ime(ie) => match ie {
-                ImeEffect::SetOpen(open) => {
-                    let success = platform.set_ime_open(open);
-                    if !success {
-                        log::warn!(
-                            "set_ime_open({open}) failed — requesting IME refresh for resync"
-                        );
+        let mut ime_set_open_true = false;
+
+        {
+            let platform: &mut dyn PlatformRuntime = &mut self.platform;
+            match effect {
+                Effect::Input(ie) => match ie {
+                    InputEffect::SendKeys(actions) => platform.send_keys(&actions),
+                    InputEffect::ReinjectKey(_) => unreachable!("handled above"),
+                },
+                Effect::Timer(te) => match te {
+                    TimerEffect::Set { id, duration } => platform.set_timer(id, duration),
+                    TimerEffect::Kill(id) => platform.kill_timer(id),
+                },
+                Effect::Ime(ie) => match ie {
+                    ImeEffect::SetOpen(open) => {
+                        let success = platform.set_ime_open(open);
+                        if !success {
+                            log::warn!(
+                                "set_ime_open({open}) failed — requesting IME refresh for resync"
+                            );
+                        }
+                        // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
+                        platform.post_ime_refresh();
+                        if open {
+                            ime_set_open_true = true;
+                        }
                     }
-                    // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
-                    platform.post_ime_refresh();
-                }
-                ImeEffect::RequestRefresh => platform.post_ime_refresh(),
-            },
-            Effect::Ui(ue) => match ue {
-                UiEffect::EngineStateChanged { enabled } => platform.update_tray(enabled),
-            },
+                    ImeEffect::RequestRefresh => platform.post_ime_refresh(),
+                },
+                Effect::Ui(ue) => match ue {
+                    UiEffect::EngineStateChanged { enabled } => platform.update_tray(enabled),
+                },
+            }
+        } // platform の借用をここで解放
+
+        // VK モード（Chrome）の場合、IME ON 直後の最初の VK キーが
+        // リテラルになる cold start を防ぐためウォームアップフラグをセット。
+        if ime_set_open_true && self.platform.output.is_vk_mode() {
+            log::debug!("[vk-coldstart] ImeEffect::SetOpen(true) in VK mode → marking coldstart");
+            self.platform.output.mark_vk_coldstart();
         }
     }
 }
