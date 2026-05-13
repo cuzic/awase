@@ -271,16 +271,26 @@ impl DecisionExecutor {
                 // race が残る (実測: SendInput 直後 9ms で race 発生)。
                 std::thread::sleep(std::time::Duration::from_millis(remaining));
             }
-            let dir = match event.event_type {
-                awase::types::KeyEventType::KeyDown => "down",
-                awase::types::KeyEventType::KeyUp => "up",
-            };
+            let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
+            let dir = if is_key_down { "down" } else { "up" };
             log::debug!(
                 "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
                 event.vk_code.0,
             );
-            let platform: &mut dyn PlatformRuntime = &mut self.platform;
-            platform.reinject_key(&event);
+            {
+                let platform: &mut dyn PlatformRuntime = &mut self.platform;
+                platform.reinject_key(&event);
+            }
+            // PassThrough KeyDown の reinject（Space, Enter 等）は TSF composition を
+            // 確定させてコンテキストをアイドル状態に戻す。直後の TSF 出力は
+            // coldstart 同様に warmup が必要なため、フラグを立てる。
+            if is_key_down && self.platform.output.is_tsf_mode() {
+                log::debug!(
+                    "[tsf-coldstart] reinject KeyDown vk={:#04x} in TSF mode → marking coldstart (post-composition guard)",
+                    event.vk_code.0,
+                );
+                self.platform.output.mark_tsf_coldstart();
+            }
             return;
         }
 
