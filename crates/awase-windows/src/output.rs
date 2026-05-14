@@ -300,20 +300,39 @@ pub struct Output {
     /// executor がこの値を読んで「output in-flight 期間」を判定し、当該期間内に
     /// 来た passthrough を deferr/wait することで race を解消する。
     last_send_ms: std::cell::Cell<u64>,
-    /// IME composition context がウォーム（初期化済み）かどうか。
+    /// TSF composition context の readiness フラグ。
     ///
-    /// VK/TSF モードで composition を送信するには、アプリの IME context が
-    /// アクティブである必要がある。次のイベントで `false`（コールド）になる:
+    /// # 設計メモ（2026-05-14）
+    ///
+    /// このフラグは概念的に2つの独立した状態を1つに統合している:
+    ///   - `ime_enabled`: IME がオープン（ひらがなモード）かどうか
+    ///   - `composition_ready`: TSF composition session が awase の
+    ///     SendInput バッチを受け付ける状態にあるかどうか
+    ///
+    /// 今後問題が複雑化する場合は `ImeState { ime_enabled, composition_ready }`
+    /// への分離を検討すること。
+    ///
+    /// # cold になるタイミング（`false`）
     ///   - 起動時（初期値 false）
-    ///   - フォーカス変更（別ウィンドウ = 新しい context）
-    ///   - Space / Enter / Escape の passthrough（composition 確定・キャンセル）
+    ///   - フォーカス変更（別ウィンドウ = 新しい TSF context）
+    ///   - Space / Enter / Escape の passthrough / reinject（composition 確定・キャンセル）
     ///   - エンジン OFF → ON（IME 状態リセット）
-    ///   - F2 (VK_DBE_HIRAGANA) の passthrough（TSF context リセット）
+    ///   - F2 (VK_DBE_HIRAGANA) 検出（TSF context が未初期化になる可能性）
+    ///
+    /// # 重要: 物理 F2 と warmup F2 の違い
+    ///
+    /// 物理 F2（CallNextHookEx 経由）は OS レベルで IME をひらがなモードに
+    /// 切り替えるが、awase の SendInput バッチに対する TSF composition context を
+    /// 初期化しない（別のメッセージポンプサイクルで処理されるため）。
+    ///
+    /// TSF context の初期化には warmup F2 が SendInput バッチの先頭に含まれる
+    /// 必要がある（[F2↓F2↑, romaji...] の形で同一バッチ内に同居すること）。
+    ///
+    /// そのため TSF モードでは物理 F2 を awase が Consume し、
+    /// 次の NICOLA 出力バッチの warmup F2 で一本化する設計を取る。
     ///
     /// `send_romaji_batched` / `send_romaji_as_tsf` が `false` を検出すると
     /// VK_DBE_HIRAGANA ウォームアップを先頭に挿入し、送信後に `true` にセットする。
-    /// 旧実装の `tsf_coldstart_pending` + `vk_coldstart_pending` + `last_composition_send_ms`
-    /// を1つのフラグに統合したもの。
     composition_warm: std::cell::Cell<bool>,
 }
 
@@ -355,12 +374,19 @@ impl Output {
 
     /// IME composition context をウォーム状態にマークする。
     ///
-    /// VK_DBE_HIRAGANA (F2) が直接または reinject 経由で OS に届いた直後に呼ぶ。
-    /// F2 は TSF/VK の hiragana composition context を活性化するため、
-    /// 次の NICOLA 出力で warmup F2 を二重送信しないようにする。
+    /// 直前の NICOLA 出力バッチで warmup F2 が正常に送信され、
+    /// TSF composition context が初期化済みであると分かっている場合に呼ぶ。
     pub fn mark_composition_warm(&self) {
         log::debug!("[composition] marked warm → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
         self.composition_warm.set(true);
+    }
+
+    /// 現在のフォーカス先が TSF 注入モードかどうかを返す。
+    ///
+    /// TSF モード（WezTerm 等）では物理 F2 の扱いが特殊なため、
+    /// executor がこのメソッドで判定してキー処理を切り替える。
+    pub fn is_tsf_mode(&self) -> bool {
+        resolve_injection_mode() == InjectionMode::Tsf
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。

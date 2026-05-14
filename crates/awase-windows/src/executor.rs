@@ -143,6 +143,34 @@ impl DecisionExecutor {
 
         match decision {
             Decision::PassThrough => {
+                // ── F2 (VK_DBE_HIRAGANA) in TSF mode: 早期 Consume ──
+                //
+                // 物理 F2 は OS レベルで IME をひらがなモードに切り替えるが、
+                // awase の SendInput バッチに対する TSF composition context を初期化しない
+                // （別メッセージポンプサイクルで処理されるため）。
+                //
+                // TSF context の初期化には warmup F2 が SendInput バッチ先頭に同居する
+                // 必要があるため、物理 F2 を awase が Consume し、
+                // 次の NICOLA 出力バッチの warmup F2 に一本化する。
+                //
+                // pending/output_in_flight の状態に関わらず Consume（defer ではない）。
+                // pending が存在していても deferred F2 は不要なため reinject キューに
+                // 入れず、cold マークのみ行う。
+                if raw_event.vk_code.0 == 0xF2
+                    && matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
+                    && self.platform.output.is_tsf_mode()
+                {
+                    log::debug!(
+                        "[composition] TSF: consuming physical F2 KeyDown → marking cold \
+                        (warmup F2 will be prepended to next NICOLA batch)"
+                    );
+                    self.platform.output.mark_composition_cold();
+                    return HookResult {
+                        callback: CallbackResult::Consumed,
+                        has_pending: self.has_pending(),
+                    };
+                }
+
                 let in_flight_ms = self.platform.output.ms_since_last_send();
                 let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
@@ -210,14 +238,14 @@ impl DecisionExecutor {
                         );
                         self.platform.output.mark_composition_cold();
                     }
-                    // F2 (VK_DBE_HIRAGANA) の物理パススルーは OS レベルで hiragana モードを
-                    // 切り替えるが、WezTerm の TSF composition context をウォームにはしない。
-                    // awase の SendInput バッチ内の warmup F2 のみが TSF context を初期化する。
-                    // F2 後の composition context は cold のままにして、次の NICOLA 出力で
-                    // 確実に warmup F2 を prepend させる。
-                    if raw_event.vk_code.0 == 0xF2 {
+                    // F2 (VK_DBE_HIRAGANA) 非TSFモード: cold にマークして次の NICOLA 出力で
+                    // warmup F2 を prepend させる。
+                    // （TSF モードの場合は上の早期 Consume で処理済みなのでここには到達しない）
+                    if raw_event.vk_code.0 == 0xF2
+                        && matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
+                    {
                         log::debug!(
-                            "[composition] vk=0xf2 passthrough direct → marking cold (physical F2 does not warm TSF batch context)",
+                            "[composition] non-TSF vk=0xf2 passthrough direct → marking cold",
                         );
                         self.platform.output.mark_composition_cold();
                     }
@@ -282,6 +310,19 @@ impl DecisionExecutor {
             }
             let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
             let dir = if is_key_down { "down" } else { "up" };
+
+            // TSF モードでの F2 reinject: 物理 F2 と同様 TSF batch context を初期化しないため
+            // reinject せず cold マークのみ行う。
+            // （通常は execute_relay の早期 Consume で F2 は queue に入らないが、防御的に対処）
+            if is_key_down && event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
+                log::debug!(
+                    "[composition] TSF: suppressing F2 reinject → marking cold \
+                    (warmup F2 will be prepended to next NICOLA batch)"
+                );
+                self.platform.output.mark_composition_cold();
+                return;
+            }
+
             log::debug!(
                 "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
                 event.vk_code.0,
@@ -299,11 +340,11 @@ impl DecisionExecutor {
                 );
                 self.platform.output.mark_composition_cold();
             }
-            // F2 (VK_DBE_HIRAGANA) の reinject も物理 F2 と同様で TSF batch context を
-            // ウォームにしない。cold を維持して次の NICOLA 出力で warmup F2 を prepend させる。
+            // F2 (VK_DBE_HIRAGANA) 非TSFモード: cold を維持して次の NICOLA 出力で
+            // warmup F2 を prepend させる。
             if is_key_down && event.vk_code.0 == 0xF2 {
                 log::debug!(
-                    "[composition] reinject F2 KeyDown → marking cold (reinject F2 does not warm TSF batch context)",
+                    "[composition] non-TSF reinject F2 KeyDown → marking cold",
                 );
                 self.platform.output.mark_composition_cold();
             }
