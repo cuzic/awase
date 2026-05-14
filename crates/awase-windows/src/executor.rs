@@ -143,13 +143,6 @@ impl DecisionExecutor {
 
         match decision {
             Decision::PassThrough => {
-                // vk=0xF2 (VK_DBE_HIRAGANA) が通過すると TSF/VK の composition context が
-                // リセットされる可能性があるため cold にマークする。
-                if raw_event.vk_code.0 == 0xF2 {
-                    log::debug!("[composition] vk=0xf2 passthrough → marking cold");
-                    self.platform.output.mark_composition_cold();
-                }
-
                 let in_flight_ms = self.platform.output.ms_since_last_send();
                 let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
@@ -216,6 +209,15 @@ impl DecisionExecutor {
                             raw_event.vk_code.0,
                         );
                         self.platform.output.mark_composition_cold();
+                    }
+                    // F2 (VK_DBE_HIRAGANA) は hiragana composition context を活性化する。
+                    // F2 が OS に届いた時点でウォームになるため、次の NICOLA 出力で
+                    // warmup F2 を二重送信しないようウォームにマークする。
+                    if raw_event.vk_code.0 == 0xF2 {
+                        log::debug!(
+                            "[composition] vk=0xf2 passthrough direct → marking warm (F2 activates TSF)",
+                        );
+                        self.platform.output.mark_composition_warm();
                     }
                     HookResult {
                         callback: CallbackResult::PassThrough,
@@ -294,6 +296,13 @@ impl DecisionExecutor {
                     event.vk_code.0,
                 );
                 self.platform.output.mark_composition_cold();
+            }
+            // F2 (VK_DBE_HIRAGANA) の reinject は hiragana composition context を活性化する。
+            if is_key_down && event.vk_code.0 == 0xF2 {
+                log::debug!(
+                    "[composition] reinject F2 KeyDown → marking warm (F2 activates TSF)",
+                );
+                self.platform.output.mark_composition_warm();
             }
             return;
         }

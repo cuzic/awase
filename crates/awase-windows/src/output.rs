@@ -347,10 +347,20 @@ impl Output {
     ///
     /// 次の VK / TSF composition 送信時に VK_DBE_HIRAGANA ウォームアップを
     /// 先行送信させる。フォーカス変更・Space/Enter/Escape passthrough・
-    /// エンジン toggle・F2 passthrough 等のタイミングで呼ぶ。
+    /// エンジン toggle 等のタイミングで呼ぶ。
     pub fn mark_composition_cold(&self) {
         log::debug!("[composition] marked cold → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm.set(false);
+    }
+
+    /// IME composition context をウォーム状態にマークする。
+    ///
+    /// VK_DBE_HIRAGANA (F2) が直接または reinject 経由で OS に届いた直後に呼ぶ。
+    /// F2 は TSF/VK の hiragana composition context を活性化するため、
+    /// 次の NICOLA 出力で warmup F2 を二重送信しないようにする。
+    pub fn mark_composition_warm(&self) {
+        log::debug!("[composition] marked warm → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
+        self.composition_warm.set(true);
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
