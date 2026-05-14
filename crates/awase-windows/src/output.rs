@@ -381,6 +381,11 @@ impl Output {
         self.composition_warm.set(true);
     }
 
+    /// 現在の composition_warm フラグを返す（ログ・診断用）。
+    pub fn is_composition_warm(&self) -> bool {
+        self.composition_warm.get()
+    }
+
     /// 現在のフォーカス先が TSF 注入モードかどうかを返す。
     ///
     /// TSF モード（WezTerm 等）では物理 F2 の扱いが特殊なため、

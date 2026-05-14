@@ -219,6 +219,7 @@ pub fn run() -> Result<()> {
     );
     install_ctrl_handler();
     let _focus_hook_guard = install_focus_hook();
+    let _ime_event_hook_guard = install_ime_event_hook();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     unsafe {
@@ -1447,6 +1448,12 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 /// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
+/// IME composition イベント（WinSDK winuser.h より）
+/// WezTerm の TSF モードでこれらが発火するか検証用。
+const EVENT_OBJECT_IME_START:  u32 = 0x8026; // composition 開始
+const EVENT_OBJECT_IME_CHANGE: u32 = 0x8027; // composition 文字列変化
+const EVENT_OBJECT_IME_END:    u32 = 0x8028; // composition 確定 / キャンセル
+
 /// フォーカス変更イベントフックを登録する
 /// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
 struct WinEventHookGuard(windows::Win32::UI::Accessibility::HWINEVENTHOOK);
@@ -1520,6 +1527,74 @@ unsafe extern "system" fn win_event_proc(
     // デバウンスタイマーのみ設定。Engine への通知はデバウンス後に行う。
     let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
     app.schedule_ime_refresh(debounce_ms);
+}
+
+/// IME composition イベントフックを登録する（観察用プロトタイプ）
+///
+/// WezTerm の TSF モードで EVENT_OBJECT_IME_* が実際に発火するかを
+/// ログで確認するためのフック。現時点では composition_warm の変更は行わない。
+fn install_ime_event_hook() -> Option<WinEventHookGuard> {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    unsafe {
+        let hook = SetWinEventHook(
+            EVENT_OBJECT_IME_START,
+            EVENT_OBJECT_IME_END,
+            None,
+            Some(ime_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if hook.is_invalid() {
+            log::warn!("[ime-event] Failed to install IME event hook");
+            None
+        } else {
+            log::info!("[ime-event] IME event hook installed (observing 0x{EVENT_OBJECT_IME_START:04x}..0x{EVENT_OBJECT_IME_END:04x})");
+            Some(WinEventHookGuard(hook))
+        }
+    }
+}
+
+/// IME composition イベントのコールバック（観察用、メッセージループ上で実行）
+///
+/// WezTerm の TSF モードで composition の開始・変更・終了が
+/// WinEvent として届くかを確認する。
+unsafe extern "system" fn ime_event_proc(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    event_time: u32,
+) {
+    let name = match event {
+        EVENT_OBJECT_IME_START  => "IME_START",
+        EVENT_OBJECT_IME_CHANGE => "IME_CHANGE",
+        EVENT_OBJECT_IME_END    => "IME_END",
+        _                       => "IME_UNKNOWN",
+    };
+
+    // フォーカス中のアプリ名を取得（ログ可読性のため）
+    let class = {
+        let mut buf = [0u16; 64];
+        let len = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf);
+        if len > 0 {
+            String::from_utf16_lossy(&buf[..len as usize])
+        } else {
+            format!("hwnd={:?}", hwnd)
+        }
+    };
+
+    let warm = APP
+        .get_ref()
+        .map(|app| app.executor.platform.output.is_composition_warm())
+        .unwrap_or(false);
+
+    log::debug!(
+        "[ime-event] {name} event={event:#06x} hwnd={hwnd:?} obj={id_object} \
+        class={class} time={event_time} composition_warm={warm}"
+    );
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
