@@ -210,14 +210,16 @@ impl DecisionExecutor {
                         );
                         self.platform.output.mark_composition_cold();
                     }
-                    // F2 (VK_DBE_HIRAGANA) は hiragana composition context を活性化する。
-                    // F2 が OS に届いた時点でウォームになるため、次の NICOLA 出力で
-                    // warmup F2 を二重送信しないようウォームにマークする。
+                    // F2 (VK_DBE_HIRAGANA) の物理パススルーは OS レベルで hiragana モードを
+                    // 切り替えるが、WezTerm の TSF composition context をウォームにはしない。
+                    // awase の SendInput バッチ内の warmup F2 のみが TSF context を初期化する。
+                    // F2 後の composition context は cold のままにして、次の NICOLA 出力で
+                    // 確実に warmup F2 を prepend させる。
                     if raw_event.vk_code.0 == 0xF2 {
                         log::debug!(
-                            "[composition] vk=0xf2 passthrough direct → marking warm (F2 activates TSF)",
+                            "[composition] vk=0xf2 passthrough direct → marking cold (physical F2 does not warm TSF batch context)",
                         );
-                        self.platform.output.mark_composition_warm();
+                        self.platform.output.mark_composition_cold();
                     }
                     HookResult {
                         callback: CallbackResult::PassThrough,
@@ -297,12 +299,13 @@ impl DecisionExecutor {
                 );
                 self.platform.output.mark_composition_cold();
             }
-            // F2 (VK_DBE_HIRAGANA) の reinject は hiragana composition context を活性化する。
+            // F2 (VK_DBE_HIRAGANA) の reinject も物理 F2 と同様で TSF batch context を
+            // ウォームにしない。cold を維持して次の NICOLA 出力で warmup F2 を prepend させる。
             if is_key_down && event.vk_code.0 == 0xF2 {
                 log::debug!(
-                    "[composition] reinject F2 KeyDown → marking warm (F2 activates TSF)",
+                    "[composition] reinject F2 KeyDown → marking cold (reinject F2 does not warm TSF batch context)",
                 );
-                self.platform.output.mark_composition_warm();
+                self.platform.output.mark_composition_cold();
             }
             return;
         }
