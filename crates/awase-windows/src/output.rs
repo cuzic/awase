@@ -756,6 +756,10 @@ impl Output {
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
             }
+            // シンボル VK 送信後、WezTerm TSF は現在の composition を commit して
+            // context をリセットする可能性がある（例: 'ー' 後の composition リセット）。
+            // 次の romaji 出力で F2 warmup を prepend させるため cold にマーク。
+            self.mark_composition_cold();
             return;
         }
         log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
