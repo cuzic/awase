@@ -412,21 +412,23 @@ impl Runtime {
         } else {
             // ── Phase 3: IME 状態の再取得 ──
             let miss_before = self.platform_state.preconditions.ime_detect_miss_count;
-            let ime_on_before_observe = self.platform_state.preconditions.ime_on;
             unsafe {
-                crate::observer::ime_observer::observe(&mut self.platform_state.preconditions);
+                crate::observer::ime_observer::observe(
+                    &mut self.platform_state.preconditions,
+                    &mut self.platform_state.ime_observations,
+                );
             }
             let miss_after = self.platform_state.preconditions.ime_detect_miss_count;
             // observe() の生の結果を os_ime_on に記録（miss なし＝成功時のみ更新）
+            // observer_poll から読む（resolve 前の生値）
             if miss_after == 0 {
-                self.platform_state.os_ime_on = Some(self.platform_state.preconditions.ime_on);
+                if let Some(obs) = &self.platform_state.ime_observations.observer_poll {
+                    self.platform_state.os_ime_on =
+                        Some(obs.value && self.platform_state.preconditions.is_japanese_ime);
+                }
             }
-            // user_enabled=true かつ observe が ime_on を ON→OFF に変えた場合は戻す。
-            // Win32 通常アプリへの observe 経由の false は基本的に正当だが、
-            // 将来的に過検出が確認されたらここに FocusPolicy ガードを追加する。
-            // 現時点は focus_transition_pending probe の方が問題になっているため、
-            // observe 経由は os_ime_on 記録のみでガードは設けない。
-            let _ = ime_on_before_observe; // 将来の FocusPolicy で参照予定
+            // observer_poll → preconditions.ime_on に優先度付き解決
+            self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
             // ── Phase 3.1: IMM 能力の学習 ──
             // 検出結果に基づいて class_name ごとの IMM 能力をキャッシュ。
@@ -664,6 +666,8 @@ impl Runtime {
             self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
             // composition_warm を epoch ベースで自動無効化（前ウィンドウの warm 状態を引き継がない）
             self.executor.platform.output.on_focus_changed();
+            // 前ウィンドウの IME 観測値をクリア（新しいウィンドウは独自の状態を持つ）
+            self.platform_state.ime_observations.clear_on_focus_change();
 
             // フォーカス変更時は IME 強制書き込みガードをリセットする。
             // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、
@@ -785,8 +789,14 @@ impl Runtime {
             log::debug!("IME guard OFF (process_deferred_keys)");
         }
 
-        // Refresh IME state (Observer → Preconditions)
-        unsafe { crate::observer::ime_observer::observe(&mut self.platform_state.preconditions) };
+        // Refresh IME state (Observer → ImeObservations → Preconditions)
+        unsafe {
+            crate::observer::ime_observer::observe(
+                &mut self.platform_state.preconditions,
+                &mut self.platform_state.ime_observations,
+            );
+        }
+        self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
         // Drain deferred keys from Platform guard
         let keys: Vec<_> = self.platform_state.ime_guard.deferred_keys.drain(..).collect();

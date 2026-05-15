@@ -23,6 +23,7 @@ pub mod focus;
 pub mod hook;
 pub mod ime;
 pub mod ime_diagnostic;
+pub mod ime_observations;
 pub mod observer;
 pub mod output;
 pub mod platform;
@@ -229,6 +230,10 @@ pub struct PlatformState {
     /// `user_enabled=true` のとき OS probe が false を返しても
     /// engine を deactivate しないための根拠として使う。
     pub os_ime_on: Option<bool>,
+    /// 各ソースの最新観測値（Phase 2: 観測と判断の分離）。
+    ///
+    /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
+    pub ime_observations: crate::ime_observations::ImeObservations,
 }
 
 impl PlatformState {
@@ -265,6 +270,7 @@ impl PlatformState {
             focus_transition_pending: false,
             last_focus_change_ms: 0,
             os_ime_on: None,
+            ime_observations: crate::ime_observations::ImeObservations::default(),
         }
     }
 }
@@ -272,6 +278,20 @@ impl PlatformState {
 impl Default for PlatformState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl PlatformState {
+    /// `ime_observations.resolve_and_clear()` を実行して `preconditions.ime_on` を更新する。
+    ///
+    /// 各観測ソースが値を書き込んだ直後に呼ぶ。これにより `preconditions.ime_on` は
+    /// 常に最新の観測値を反映する。
+    pub fn apply_ime_observations(&mut self, user_enabled: bool) {
+        let current = self.preconditions.ime_on;
+        let is_japanese = self.preconditions.is_japanese_ime;
+        if let Some((val, src)) = self.ime_observations.resolve_and_clear(current, user_enabled, is_japanese) {
+            self.preconditions.set_ime_on(val, src);
+        }
     }
 }
 

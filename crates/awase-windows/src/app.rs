@@ -791,21 +791,16 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
             let effective = on && probe.is_japanese_ime;
             // OS 観測値を別フィールドに記録（ユーザー意図と分離）
             app.platform_state.os_ime_on = Some(effective);
-            // user_enabled=true のとき probe の false は preconditions に反映しない。
-            //
-            // 設計原則: OS probe は「観測値」、user_enabled は「ユーザー意図」。
-            // 一時オーバーレイ・UWP popup 等から誤 false が届いても Engine を落とさない。
-            // ユーザーの明示的な IME OFF は shadow toggle 経由で届くので影響を受けない。
-            // 言語バーのマウス操作が dead angle になるが、awase ユーザーはキー操作前提のため許容。
-            if effective || !app.engine.is_user_enabled() {
-                app.platform_state.preconditions.set_ime_on(effective, ShadowSource::FocusProbe);
+            let ms = awase_windows::hook::current_tick_ms();
+            // 観測値を ImeObservations に記録（フィルタリングは resolve_and_clear() で行う）
+            app.platform_state.ime_observations.focus_probe =
+                Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
+            if effective {
+                // ON の場合は即座に反映（miss_count / guard リセット含む）
                 app.platform_state.preconditions.ime_detect_miss_count = 0;
                 app.platform_state.preconditions.ime_force_on_guard = false;
-            } else {
-                log::debug!(
-                    "Focus probe: ime_on=false suppressed (user_enabled=true) → os_ime_on recorded, preconditions unchanged"
-                );
             }
+            app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
         }
         // ime_on が None の場合（ブラックリストアプリ等）は shadow 値を維持
         //
@@ -864,15 +859,22 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 awase::types::ShadowImeAction::TurnOn => true,
                 awase::types::ShadowImeAction::TurnOff => false,
             };
-            if new_val != current {
-                app.platform_state.preconditions.set_ime_on(new_val, source);
+            let ms = awase_windows::hook::current_tick_ms();
+            let obs = awase_windows::ime_observations::ImeObs { value: new_val, ms };
+            match source {
+                ShadowSource::SyncKey => app.platform_state.ime_observations.sync_key = Some(obs),
+                ShadowSource::PhysicalImeKey => app.platform_state.ime_observations.physical_key = Some(obs),
+                _ => {}
+            }
+            app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
+            if app.platform_state.preconditions.ime_on != current {
                 // shadow 更新はユーザー操作に基づくので検出失敗カウンタとガードをリセット
                 app.platform_state.preconditions.ime_detect_miss_count = 0;
                 app.platform_state.preconditions.ime_force_on_guard = false;
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
                     if current { "ON" } else { "OFF" },
-                    if new_val { "ON" } else { "OFF" },
+                    if app.platform_state.preconditions.ime_on { "ON" } else { "OFF" },
                     event.vk_code.0,
                     source,
                 );
@@ -909,7 +911,10 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // SetOpen Effect 実行前に observer が stale な OS 状態で上書きしないよう
     // タイマーを停止する。SetOpen 実行後に post_ime_refresh() が再スケジュール。
     if let Some(new_ime_on) = decision.find_ime_set_open() {
-        app.platform_state.preconditions.set_ime_on(new_ime_on, ShadowSource::SetOpenRequest);
+        let ms = awase_windows::hook::current_tick_ms();
+        app.platform_state.ime_observations.set_open_request =
+            Some(awase_windows::ime_observations::ImeObs { value: new_ime_on, ms });
+        app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
         app.platform_state.preconditions.ime_detect_miss_count = 0;
         app.platform_state.preconditions.ime_force_on_guard = false;
         app.executor.platform.timer.kill(TIMER_IME_REFRESH);

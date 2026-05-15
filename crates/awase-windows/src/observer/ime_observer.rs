@@ -9,27 +9,27 @@
 //! `None` を「偽」として扱ってはならない。
 
 use awase::engine::InputModeState;
-use crate::{Preconditions, ShadowSource};
+use crate::{Preconditions, ime_observations::{ImeObs, ImeObservations}};
 
 /// IME_CMODE_ROMAN ビット（0x0010）
 const IME_CMODE_ROMAN: u32 = 0x0010;
 /// IME_CMODE_NATIVE ビット（0x0001）
 const IME_CMODE_NATIVE: u32 = 0x0001;
 
-/// Win32 API を使って IME 状態を観測し、`Preconditions` を直接更新する。
+/// Win32 API を使って IME 状態を観測し、`Preconditions` と `ImeObservations` を更新する。
 ///
 /// ## フィールドごとの更新ルール
 ///
 /// ### `is_japanese_ime`
 /// `Some(v)` のときのみ更新。`None`（タイムアウト等）は前回値を維持。
 ///
-/// ### `ime_on`
+/// ### `ime_on` → `observations.observer_poll`
 /// 優先順位順に評価:
-/// 1. `is_japanese_ime == Some(false)`: 非日本語KB確定 → `ime_on = false`（推測不要）
-/// 2. `ime_on == Some(on)`: IME 状態検出成功 → `on && preconditions.is_japanese_ime`
-///    （`is_japanese_ime` が `None` の場合はキャッシュ値を使用）
-/// 3. `ime_force_on_guard`: awase が SSOT → 変更しない
-/// 4. それ以外（検出失敗）: miss_count をインクリメント、`ime_on` は維持
+/// 1. `is_japanese_ime == Some(false)`: 非日本語KB確定 → `observer_poll = false`
+/// 2. `ime_on == Some(on)`: IME 状態検出成功 → `observer_poll = on`
+///    （`&& is_japanese_ime` は `resolve_and_clear()` 側で適用）
+/// 3. `ime_force_on_guard`: awase が SSOT → `observer_poll` を更新しない
+/// 4. それ以外（検出失敗）: miss_count をインクリメント、`observer_poll` を更新しない
 ///
 /// ### `is_romaji`
 /// `Some(romaji)` のときのみ更新。
@@ -38,10 +38,11 @@ const IME_CMODE_NATIVE: u32 = 0x0001;
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn observe(preconditions: &mut Preconditions) {
+pub unsafe fn observe(preconditions: &mut Preconditions, observations: &mut ImeObservations) {
     // detect_ime_state は複数のブロッキング IMM32 API を連鎖呼び出しするため、
     // ワーカースレッドでタイムアウト付き実行する（メッセージループハング防止）。
     let snap = crate::ime::detect_ime_state_with_timeout(std::time::Duration::from_millis(300));
+    let now_ms = crate::hook::current_tick_ms();
 
     // ── is_japanese_ime: 検出成功時のみ更新 ──────────────────────────────────────
     // None（タイムアウト等）は「非日本語」ではなく「不明」なので前回値を維持する。
@@ -49,19 +50,21 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
         preconditions.is_japanese_ime = is_jp;
     }
 
-    // ── ime_on ────────────────────────────────────────────────────────────────────
+    // ── ime_on → observations.observer_poll ──────────────────────────────────────
     // is_japanese_ime の確定値を使用するため、上の更新後に評価する。
+    // 実際の preconditions.ime_on への反映は呼び出し側が apply_ime_observations() で行う。
     let known_not_japanese = snap.is_japanese_ime == Some(false);
 
     if known_not_japanese {
         // 非日本語KB確定: IME アクティブ不可
-        preconditions.set_ime_on(false, ShadowSource::ObserverPoll);
+        // resolve_and_clear() が `value && is_japanese_ime` を適用するので false のまま。
+        observations.observer_poll = Some(ImeObs { value: false, ms: now_ms });
         preconditions.ime_detect_miss_count = 0;
         preconditions.ime_force_on_guard = false;
     } else if let Some(on) = snap.ime_on {
-        // IME 状態検出成功: キャッシュ済みの is_japanese_ime と組み合わせる。
-        // （snap.is_japanese_ime が None でもキャッシュ値は直前のループで維持済み）
-        preconditions.set_ime_on(on && preconditions.is_japanese_ime, ShadowSource::ObserverPoll);
+        // IME 状態検出成功: 生の on 値を記録。
+        // `&& is_japanese_ime` は resolve_and_clear() 側で適用する。
+        observations.observer_poll = Some(ImeObs { value: on, ms: now_ms });
         preconditions.ime_detect_miss_count = 0;
         preconditions.ime_force_on_guard = false;
     } else if preconditions.ime_force_on_guard {
