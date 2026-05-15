@@ -55,9 +55,10 @@ pub(crate) fn yab_value_to_action(value: &YabValue) -> KeyAction {
 
 /// `KeyAction` からローマ字文字列を抽出するヘルパー
 fn romaji_of(action: &KeyAction) -> String {
-    match action {
-        KeyAction::Romaji(s) => s.clone(),
-        _ => String::new(),
+    if let KeyAction::Romaji(s) = action {
+        s.clone()
+    } else {
+        String::new()
     }
 }
 
@@ -203,7 +204,7 @@ impl NicolaFsm {
                     char_key.scan_code,
                     char_key.vk_code,
                     char_key.pos,
-                    thumb.is_left,
+                    thumb.face(),
                 );
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions)
@@ -340,12 +341,11 @@ impl NicolaFsm {
         char_scan: ScanCode,
         char_vk: VkCode,
         char_pos: Option<PhysicalPos>,
-        thumb_is_left: bool,
+        thumb_face: Face,
     ) -> ResolvedAction {
-        let thumb_face = Face::from_thumb_bool(thumb_is_left);
         if let Some((action, kana)) = self.lookup_face(char_pos, self.get_face(thumb_face)) {
             // 親指キーを「消費」: 同じ物理押下で後続キーがシフトされないようにする
-            self.consume_thumb(thumb_is_left);
+            self.consume_thumb(thumb_face);
             let output = record_output(char_scan, &action, kana);
             ResolvedAction {
                 actions: vec![action],
@@ -361,11 +361,11 @@ impl NicolaFsm {
     ///
     /// 現在の物理押下タイムスタンプを記録する。物理状態が変われば（新しい KeyDown
     /// や KeyUp）タイムスタンプが不一致になり、自動的に「未消費」に戻る。
-    const fn consume_thumb(&mut self, is_left: bool) {
-        if is_left {
-            self.left_thumb_consumed = self.phys.left_thumb_down;
-        } else {
-            self.right_thumb_consumed = self.phys.right_thumb_down;
+    const fn consume_thumb(&mut self, face: Face) {
+        match face {
+            Face::LeftThumb => self.left_thumb_consumed = self.phys.left_thumb_down,
+            Face::RightThumb => self.right_thumb_consumed = self.phys.right_thumb_down,
+            Face::Normal | Face::Shift => {} // 親指面以外は消費対象なし
         }
     }
 
@@ -545,8 +545,7 @@ impl NicolaFsm {
     fn reduce_active_thumb(&mut self, ev: &ClassifiedEvent, face: Face) -> ParseAction {
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
             // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-            let is_left = matches!(face, Face::LeftThumb);
-            self.consume_thumb(is_left);
+            self.consume_thumb(face);
             ParseAction::Reduce {
                 actions: vec![action.clone()],
                 record: record_output(ev.scan_code, &action, kana),
@@ -704,9 +703,7 @@ impl NicolaFsm {
                 // Within threshold → retract speculative output + emit thumb face
 
                 // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-                let is_left = matches!(face, Face::LeftThumb);
-                self.consume_thumb(is_left);
-
+                self.consume_thumb(face);
                 self.go_idle();
                 return self.retract_and_replace(pending, &thumb_action, thumb_kana);
             }
@@ -784,7 +781,7 @@ impl NicolaFsm {
             unreachable!("unexpected state: {:?}", self.state)
         };
         // 親指面で到着文字キーの候補を取得し閾値を調整
-        let pending_face = Face::from_thumb_bool(thumb.is_left);
+        let pending_face = thumb.face();
         let candidate = self.lookup_face(ev.pos, self.get_face(pending_face));
         let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
 
@@ -795,7 +792,7 @@ impl NicolaFsm {
             if let Some((action, kana)) = candidate {
                 // 保留=親指, 到着=文字 → 同時打鍵
                 // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-                self.consume_thumb(thumb.is_left);
+                self.consume_thumb(thumb.face());
                 self.go_idle();
                 return ParseAction::Reduce {
                     actions: vec![action.clone()],
@@ -918,7 +915,7 @@ impl NicolaFsm {
         if !ev.key_class.is_thumb() {
             // char2 到着 → 3 鍵仲裁
             let judge = self.timing_judge();
-            let thumb_face = Face::from_thumb_bool(thumb.is_left);
+            let thumb_face = thumb.face();
             let char1_thumb_kana = self
                 .lookup_face(pending.pos, self.get_face(thumb_face))
                 .and_then(|(_, k)| k);
@@ -944,7 +941,7 @@ impl NicolaFsm {
                     pending.scan_code,
                     pending.vk_code,
                     pending.pos,
-                    thumb.is_left,
+                    thumb_face,
                 );
                 return ParseAction::ReduceAndContinue {
                     actions: resolved.actions,
@@ -958,11 +955,10 @@ impl NicolaFsm {
                 pending.vk_code,
                 pending.pos,
             );
-            let thumb_face = Face::from_thumb_bool(thumb.is_left);
             if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(thumb_face)) {
                 // char1 の履歴を先に更新してから char2+thumb を確定
                 self.update_history(char1_resolved.output);
-                self.consume_thumb(thumb.is_left);
+                self.consume_thumb(thumb.face());
                 let mut all_actions = char1_resolved.actions;
                 all_actions.push(action.clone());
                 return ParseAction::Reduce {
@@ -984,7 +980,7 @@ impl NicolaFsm {
             pending.scan_code,
             pending.vk_code,
             pending.pos,
-            thumb.is_left,
+            thumb.face(),
         );
         ParseAction::ReduceAndContinue {
             actions: resolved.actions,
@@ -1049,7 +1045,7 @@ impl NicolaFsm {
             pending.scan_code,
             pending.vk_code,
             pending.pos,
-            thumb.is_left,
+            thumb.face(),
         );
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
@@ -1150,10 +1146,10 @@ impl NicolaFsm {
         char_scan: ScanCode,
         char_vk: VkCode,
         char_pos: Option<PhysicalPos>,
-        thumb_is_left: bool,
+        thumb_face: Face,
     ) -> Resp {
         let resolved =
-            self.resolve_char_thumb_as_simultaneous(char_scan, char_vk, char_pos, thumb_is_left);
+            self.resolve_char_thumb_as_simultaneous(char_scan, char_vk, char_pos, thumb_face);
         self.update_history(resolved.output);
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
@@ -1309,7 +1305,7 @@ impl NicolaFsm {
                 char_key.scan_code,
                 char_key.vk_code,
                 char_key.pos,
-                thumb.is_left,
+                thumb.face(),
             ),
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
             EngineState::SpeculativeChar(_) => Response::consume().with_kill_timer(TIMER_PENDING),

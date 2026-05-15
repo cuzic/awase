@@ -117,12 +117,10 @@ impl FsmAdapter {
     fn response_to_decision(resp: Response<KeyAction, usize>) -> Decision {
         let consumed = resp.consumed;
         let effects = Self::response_to_effects(resp);
-        if consumed {
-            Decision::consumed_with(effects)
-        } else if effects.is_empty() {
-            Decision::pass_through()
-        } else {
-            Decision::pass_through_with(effects)
+        match (consumed, effects.is_empty()) {
+            (true, _) => Decision::consumed_with(effects),
+            (false, true) => Decision::pass_through(),
+            (false, false) => Decision::pass_through_with(effects),
         }
     }
 }
@@ -143,52 +141,14 @@ mod tests {
         ContextChange, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent,
         ScanCode, VkCode,
     };
-    use crate::yab::{YabFace, YabLayout, YabValue};
 
+    use super::super::test_support::*;
     use super::FsmAdapter;
 
-    // ── VK / Scan 定数 ──────────────────────────────────────────────────────
+    // ── このファイル固有の定数 ────────────────────────────────────────────────
 
-    const VK_A: VkCode = VkCode(0x41);
-    const VK_NONCONVERT: VkCode = VkCode(0x1D); // 無変換（左親指）
-    const VK_CONVERT: VkCode = VkCode(0x1C);   // 変換（右親指）
-    const VK_RETURN: VkCode = VkCode(0x0D);    // パススルーキー
-
-    const SCAN_A: ScanCode = ScanCode(0x1E);
-    const SCAN_NONCONVERT: ScanCode = ScanCode(0x7B);
+    const VK_RETURN: VkCode = VkCode(0x0D);
     const SCAN_RETURN: ScanCode = ScanCode(0x1C);
-
-    const POS_A: PhysicalPos = PhysicalPos::new(2, 0);
-    const POS_S: PhysicalPos = PhysicalPos::new(2, 1);
-
-    // ── ヘルパー関数 ────────────────────────────────────────────────────────
-
-    fn lit(ch: char) -> YabValue {
-        YabValue::Literal(ch.to_string())
-    }
-
-    /// テスト用の最小限の YabLayout を構築する。
-    fn make_layout() -> YabLayout {
-        let mut normal = YabFace::new();
-        normal.insert(POS_A, lit('う'));
-        normal.insert(POS_S, lit('し'));
-
-        let mut left_thumb = YabFace::new();
-        left_thumb.insert(POS_A, lit('を'));
-        left_thumb.insert(POS_S, lit('あ'));
-
-        let mut right_thumb = YabFace::new();
-        right_thumb.insert(POS_A, lit('ゔ'));
-        right_thumb.insert(POS_S, lit('じ'));
-
-        YabLayout {
-            name: String::from("test"),
-            normal,
-            left_thumb,
-            right_thumb,
-            shift: YabFace::new(),
-        }
-    }
 
     /// テスト用の FsmAdapter (Wait モード) を生成する。
     fn make_adapter() -> FsmAdapter {

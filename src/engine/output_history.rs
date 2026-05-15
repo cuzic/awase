@@ -58,13 +58,10 @@ impl OutputHistory {
     /// n-gram 用の直近かな文字列（古い順）
     #[must_use]
     pub fn recent_kana(&self, n: usize) -> Vec<char> {
-        let mut result: Vec<char> = self
-            .entries
-            .iter()
-            .rev()
-            .filter_map(|e| e.kana)
-            .take(n)
-            .collect();
+        let mut result: Vec<char> = Vec::with_capacity(n.min(self.entries.len()));
+        result.extend(
+            self.entries.iter().rev().filter_map(|e| e.kana).take(n),
+        );
         result.reverse();
         result
     }

@@ -285,6 +285,12 @@ impl PendingThumbData {
             timestamp: ev.timestamp,
         }
     }
+
+    /// この親指キーに対応する `Face` を返す。
+    #[must_use]
+    pub const fn face(self) -> Face {
+        Face::from_thumb_bool(self.is_left)
+    }
 }
 
 /// 修飾キー（Ctrl / Alt / Shift / Win）の押下状態

@@ -144,14 +144,10 @@ impl<'a> TimingJudge<'a> {
         let normal_score =
             normal_kana.map_or(0.0, |ch| model.frequency_score(&self.recent_kana, ch));
         let thumb_score = [left_thumb_kana, right_thumb_kana]
-            .iter()
+            .into_iter()
             .filter_map(|k| k.map(|ch| model.frequency_score(&self.recent_kana, ch)))
-            .fold(f32::NEG_INFINITY, f32::max);
-        let thumb_score = if thumb_score == f32::NEG_INFINITY {
-            0.0
-        } else {
-            thumb_score
-        };
+            .reduce(f32::max)
+            .unwrap_or(0.0);
 
         normal_score - thumb_score > SPECULATIVE_SCORE_THRESHOLD
     }
