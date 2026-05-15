@@ -881,42 +881,15 @@ impl Output {
                 );
             }
 
-            // F2-only バッチ後: WezTerm のメインスレッドが F2 を処理して
-            // TSF context を初期化するまで待機する。
+            // WezTerm が F2 を処理して TSF composition context を初期化するまで待機。
             //
-            // 旧 probe（IME window への IMM32 変換モード問い合わせ）は IME window が
-            // 別メッセージキューで即時応答するため WezTerm メインスレッドの処理を反映せず、
-            // 常に elapsed=0ms で抜けていた（H1 race の根本原因）。
-            //
-            // WaitForInputIdle は WezTerm のメインメッセージキューが空になるまで
-            // ブロックするため、F2 処理完了を確実に待てる。
-            const H1_IDLE_TIMEOUT_MS: u32 = 100;
-            let idle_start_tick = crate::hook::current_tick_ms();
-            let focused_pid = unsafe {
-                crate::APP.get_ref()
-                    .and_then(|app| app.executor.platform.focus.last_focus_info.as_ref())
-                    .map(|(pid, _)| *pid)
-            };
-            let idle_result = if let Some(pid) = focused_pid {
-                unsafe { crate::ime::wait_for_focus_process_idle(pid, H1_IDLE_TIMEOUT_MS) }
-            } else {
-                log::debug!("[h1-idle] no focused pid, skipping WaitForInputIdle");
-                u32::MAX
-            };
-            let idle_elapsed_ms = crate::hook::current_tick_ms().saturating_sub(idle_start_tick);
-            let f2_to_idle_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
-            // idle_result: 0=idle, 258=WAIT_TIMEOUT, MAX=WAIT_FAILED/skipped
-            log::debug!(
-                "[h1-idle] cold={cold_n} WaitForInputIdle result={idle_result} idle_elapsed={}ms f2_to_idle={}ms",
-                idle_elapsed_ms,
-                f2_to_idle_ms,
-            );
-            // WaitForInputIdle が確認できなかった場合（WAIT_FAILED や pid 不明）は
-            // フォールバックとして短い sleep を挟み、WezTerm が F2 を処理して
-            // TSF composition context を初期化する時間を確保する。
-            if idle_result != 0 {
-                std::thread::sleep(std::time::Duration::from_millis(30));
-            }
+            // WaitForInputIdle は OS 入力キュー → アプリ message queue の配送前に
+            // 「idle」を返すことがあり（WezTerm が GetMessage でブロック中に見える）、
+            // F2 処理完了の保証にならないと判明した。固定 sleep で確実に待つ。
+            // cold start はフォーカス変更・Enter・F2 消費後のみで頻度は低い。
+            let f2_to_sleep_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            log::debug!("[h1-idle] cold={cold_n} slept 40ms (f2_to_sleep={}ms)", f2_to_sleep_ms);
 
         } else {
             cold_n = self.cold_start_count.get();

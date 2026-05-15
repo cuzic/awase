@@ -1,7 +1,4 @@
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
-use windows::Win32::System::Threading::{
-    OpenProcess, WaitForInputIdle, PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE,
-};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmReleaseContext,
     IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
@@ -105,33 +102,6 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
         return None;
     }
     Some(result as u32)
-}
-
-/// フォアグラウンドプロセスの入力キューがアイドルになるまで待機する（H1 修正用）。
-///
-/// `WaitForInputIdle` は対象プロセスのメッセージキューが空になるまでブロックする。
-/// probe が `IME window` (別メッセージキュー) に問い合わせるのと異なり、
-/// これは WezTerm の**メインスレッド**が F2 を処理して TSF context を
-/// 初期化するまで確実に待機する。
-///
-/// # 戻り値
-/// - `0`   = success（プロセスがアイドル状態になった）
-/// - `258` = WAIT_TIMEOUT（timeout_ms 内に完了しなかった）
-/// - その他 = WAIT_FAILED または STILL_ACTIVE
-///
-/// # Safety
-/// Calls Win32 APIs.
-pub unsafe fn wait_for_focus_process_idle(pid: u32, timeout_ms: u32) -> u32 {
-    // PROCESS_QUERY_INFORMATION is required by WaitForInputIdle internally
-    // (it needs to enumerate threads to check idle state).
-    let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION, false, pid) else {
-        log::debug!("[h1-idle] OpenProcess pid={pid} failed");
-        return u32::MAX;
-    };
-    // HANDLE is Copy — pass by value, original remains valid for CloseHandle.
-    let result = WaitForInputIdle(handle, timeout_ms);
-    let _ = CloseHandle(handle);
-    result
 }
 
 /// フォアグラウンドウィンドウのクラス名を返す（H1 診断ログ専用）。
