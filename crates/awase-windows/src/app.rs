@@ -304,11 +304,15 @@ fn load_config() -> Result<AppConfig> {
 ///
 /// `auto_start` の値に応じて Task Scheduler への登録/解除を行う。
 /// "ask" の場合はダイアログで確認し、結果を config.toml に保存する。
+///
+/// "enabled" / "disabled" は設定変更時にのみ schtasks を呼ぶ。
+/// 通常起動では何もしない（毎回 schtasks を起動するとコマンドプロンプト窓が一瞬出る）。
 fn handle_auto_start(config: &mut AppConfig) {
     use awase_windows::autostart;
 
     match config.general.auto_start.as_str() {
         "ask" => {
+            // 初回のみ: 未登録なら確認ダイアログを出して登録/拒否し、設定を保存する
             if !autostart::is_registered() {
                 if autostart::ask_user() {
                     autostart::register();
@@ -325,14 +329,12 @@ fn handle_auto_start(config: &mut AppConfig) {
             }
         }
         "enabled" => {
-            if !autostart::is_registered() {
-                autostart::register();
-            }
+            // タスクは登録済みのはずなので起動時は何もしない。
+            // 手動でタスクを削除した場合は Settings から再登録できる。
         }
         "disabled" => {
-            if autostart::is_registered() {
-                autostart::unregister();
-            }
+            // タスクは未登録のはずなので起動時は何もしない。
+            // 残留タスクを削除したい場合は Settings から操作できる。
         }
         other => {
             log::warn!("Unknown auto_start value: {other}, ignoring");
