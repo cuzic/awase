@@ -72,6 +72,55 @@ pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
     detect_ime_conversion_for_hwnd(GetForegroundWindow())
 }
 
+/// タイムアウト指定版 IME 変換モード取得（H1 タイミング計測専用）。
+///
+/// `get_ime_conversion_mode_raw` の 50ms 固定タイムアウトを変更できるバージョン。
+/// 短い timeout_ms（例: 10ms）を指定することで、warmup 直後の応答時間を細かく計測できる。
+///
+/// # Safety
+/// Calls Win32 APIs.
+pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32> {
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return None;
+    }
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETCONVERSIONMODE),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        timeout_ms,
+        Some(&raw mut result),
+    );
+    if ok.0 == 0 {
+        return None;
+    }
+    Some(result as u32)
+}
+
+/// フォアグラウンドウィンドウのクラス名を返す（H1 診断ログ専用）。
+///
+/// # Safety
+/// Calls Win32 APIs.
+pub unsafe fn get_foreground_window_class() -> String {
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return "null".to_string();
+    }
+    let mut buf = [0u16; 128];
+    let len = GetClassNameW(hwnd, &mut buf) as usize;
+    if len == 0 {
+        return "unknown".to_string();
+    }
+    String::from_utf16_lossy(&buf[..len])
+}
+
 /// クロスプロセスで IME をローマ字モードに設定する。
 ///
 /// VK_DBE_HIRAGANA (0xF2) による warmup は非同期のため、同一 SendInput バッチ内の

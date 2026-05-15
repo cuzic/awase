@@ -300,6 +300,11 @@ pub struct Output {
     /// executor がこの値を読んで「output in-flight 期間」を判定し、当該期間内に
     /// 来た passthrough を deferr/wait することで race を解消する。
     last_send_ms: std::cell::Cell<u64>,
+    /// Cold-start 発生回数カウンタ（H1 診断ログのセッション識別用）。
+    ///
+    /// warmup バッチを送るたびにインクリメントされる。
+    /// `[h1-probe]` ログの `cold=N` フィールドがこの値に対応する。
+    cold_start_count: std::cell::Cell<u32>,
     /// TSF composition context の readiness フラグ。
     ///
     /// # 設計メモ（2026-05-14）
@@ -347,6 +352,7 @@ impl Output {
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
             last_send_ms: std::cell::Cell::new(0),
+            cold_start_count: std::cell::Cell::new(0),
             composition_warm: std::cell::Cell::new(false),
         }
     }
@@ -700,28 +706,38 @@ impl Output {
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
-        // H1 判定: F2 を含むバッチ送信直後に conversion mode を読む。
-        // ROMAN bit がまだ立っていなければ F2 の mode switch は非同期（race window あり）。
-        // ROMAN bit がすぐ立っていれば mode switch は即座 → 別の原因を疑う。
+        // H1 タイミング計測: warmup SendInput 直後から IME が応答するまでの時間を計測。
+        //
+        // [h1-probe] ログの読み方:
+        //   responsive=false → IME がまだ SendInput 処理中（10ms timeout で即タイムアウト）
+        //   responsive=true  → IME が応答可能になった（elapsed_ms が案A/B/D の最小 wait 値）
+        //   roman=true       → IME がローマ字モードで応答（F2 warmup の効果が確定）
+        //
+        // 案A (F2-only先行): 最初に responsive=true になる elapsed_ms が sleep 量の上限
+        // 案B (次バッチguard): char1後の char2 以降は次の send_romaji で送るため、
+        //                      その間隔が elapsed_ms を超えていれば IME は準備完了
+        // 案D (adaptive): 最初の responsive=true で次バッチを flush するタイミングを決める
         if prepend_f2_warmup {
-            let conv_post = unsafe { crate::ime::get_ime_conversion_mode_raw() };
-            log::debug!(
-                "[cold-diag] post-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
-                conv_post.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_post.map_or(false, |v| v & 0x0001 != 0),
-                conv_post.map_or(false, |v| v & 0x0010 != 0),
-                conv_post.map_or(false, |v| v & 0x0002 != 0),
-            );
-            // ROMAN bit が立つまで最大 3 回追加ポーリング（sleep なし、~1ms/call）。
-            // これにより「いつ mode switch が完了したか」のタイミングが見える。
-            for i in 0..3u8 {
-                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+            let cold_n = self.cold_start_count.get() + 1;
+            self.cold_start_count.set(cold_n);
+            let win_class = unsafe { crate::ime::get_foreground_window_class() };
+            log::debug!("[h1-window] cold={cold_n} class={win_class}");
+            let probe_start = std::time::Instant::now();
+            // 10ms タイムアウトで最大 15 回プローブ（合計最大 150ms）。
+            // 応答時の elapsed_ms が案A/B/D の wait 時間の根拠になる。
+            const H1_PROBE_TIMEOUT_MS: u32 = 10;
+            const H1_PROBE_MAX: u8 = 15;
+            for i in 0..H1_PROBE_MAX {
+                let elapsed_ms = probe_start.elapsed().as_millis();
+                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
+                let responsive = conv.is_some();
                 let roman = conv.map_or(false, |v| v & 0x0010 != 0);
                 log::debug!(
-                    "[cold-diag] poll[{i}] conv={} ROMAN={roman}",
-                    conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                    "[h1-probe] cold={cold_n} vk attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
+                    elapsed_ms,
+                    conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
                 );
-                if roman { break; }
+                if responsive { break; }
             }
         }
         self.composition_warm.set(true);
@@ -813,10 +829,28 @@ impl Output {
         }
         runs.push(&chars[start..]);
 
+        let total_runs = runs.len();
+        // cold_n は warmup がある場合のみ使うが、先に計算してキャプチャしておく。
+        let cold_n = if prepend_f2_warmup {
+            let n = self.cold_start_count.get() + 1;
+            self.cold_start_count.set(n);
+            n
+        } else {
+            self.cold_start_count.get()
+        };
+
         for (run_idx, run) in runs.iter().enumerate() {
-            let warmup_slots = if run_idx == 0 && prepend_f2_warmup { 2 } else { 0 };
+            let is_warmup_run = run_idx == 0 && prepend_f2_warmup;
+            // [h1-run]: どのバッチ（run）が warmup 付きで送られるかを記録。
+            // run_idx=0 かつ warmup=true の文字が失敗候補。
+            // run_idx>=1 も失敗するなら「warmup後ガード（案B）」が必要。
+            log::debug!(
+                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} chars={} warmup={is_warmup_run}",
+                run.len(),
+            );
+            let warmup_slots = if is_warmup_run { 2 } else { 0 };
             let mut inputs = Vec::with_capacity(run.len() * 4 + warmup_slots);
-            if run_idx == 0 && prepend_f2_warmup {
+            if is_warmup_run {
                 const VK_DBE_HIRAGANA: u16 = 0xF2;
                 inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, false));
                 inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, true));
@@ -840,26 +874,34 @@ impl Output {
                 );
             }
         }
-        // H1 判定: F2 を含む最初のバッチ送信直後に conversion mode を読む。
-        // ROMAN bit がまだ立っていなければ F2 の mode switch は非同期（race window あり）。
+        // H1 タイミング計測: 全 run の SendInput 完了後、IME が応答するまでの時間を計測。
+        //
+        // [h1-probe] ログの読み方（TSF モード）:
+        //   responsive=false → WezTerm がまだ SendInput 処理中（10ms timeout でタイムアウト）
+        //   responsive=true  → WezTerm が応答可能になった
+        //   elapsed_ms       → warmup SendInput 完了から応答まで最小 elapsed_ms の wait が必要
+        //
+        // 案A (F2-only先行): この elapsed_ms が F2-only → romaji 間の必要 sleep 量
+        // 案B (次バッチguard): 次の send_romaji 呼び出しまでの間隔が elapsed_ms を超えればOK
+        // 案D (adaptive polling): この probe ループを実際の guard に転用できる
         if prepend_f2_warmup {
-            let conv_post = unsafe { crate::ime::get_ime_conversion_mode_raw() };
-            log::debug!(
-                "[cold-diag] post-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
-                conv_post.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_post.map_or(false, |v| v & 0x0001 != 0),
-                conv_post.map_or(false, |v| v & 0x0010 != 0),
-                conv_post.map_or(false, |v| v & 0x0002 != 0),
-            );
-            // ROMAN bit が立つまで最大 3 回追加ポーリング（sleep なし、~1ms/call）。
-            for i in 0..3u8 {
-                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+            let win_class = unsafe { crate::ime::get_foreground_window_class() };
+            log::debug!("[h1-window] cold={cold_n} class={win_class}");
+            let probe_start = std::time::Instant::now();
+            // 10ms タイムアウトで最大 15 回プローブ（合計最大 150ms）。
+            const H1_PROBE_TIMEOUT_MS: u32 = 10;
+            const H1_PROBE_MAX: u8 = 15;
+            for i in 0..H1_PROBE_MAX {
+                let elapsed_ms = probe_start.elapsed().as_millis();
+                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
+                let responsive = conv.is_some();
                 let roman = conv.map_or(false, |v| v & 0x0010 != 0);
                 log::debug!(
-                    "[cold-diag] poll[{i}] conv={} ROMAN={roman}",
-                    conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                    "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
+                    elapsed_ms,
+                    conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
                 );
-                if roman { break; }
+                if responsive { break; }
             }
         }
         self.composition_warm.set(true);
