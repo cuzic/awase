@@ -479,7 +479,7 @@ impl Output {
         unsafe {
             SendInput(
                 &f2_inputs,
-                i32::try_from(std::mem::size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
         let ms = crate::hook::current_tick_ms();
