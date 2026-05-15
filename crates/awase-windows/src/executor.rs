@@ -8,7 +8,7 @@
 /// - **Relay**: 全キーを Consume し、PassThrough キーも ReinjectKey として
 ///   キューに入れる。全 Effects がメッセージループで FIFO 実行される。
 ///   フック内で OS API を一切呼ばない。
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use awase::config::HookMode;
 use awase::engine::{
@@ -36,6 +36,9 @@ pub struct DecisionExecutor {
     queue: VecDeque<Effect>,
     /// フックの動作モード
     hook_mode: HookMode,
+    /// Reinject 経由で送った PassThrough KeyDown の VK 集合。
+    /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
+    deferred_passthrough_vks: HashSet<u16>,
 }
 
 impl DecisionExecutor {
@@ -44,6 +47,7 @@ impl DecisionExecutor {
             platform,
             queue: VecDeque::new(),
             hook_mode,
+            deferred_passthrough_vks: HashSet::new(),
         }
     }
 
@@ -143,6 +147,23 @@ impl DecisionExecutor {
 
         match decision {
             Decision::PassThrough => {
+                let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
+
+                // KeyUp: 対応する KeyDown を reinject 経由で送っていた場合、
+                // KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
+                // （WezTerm が INJECTED↓ + physical↑ のペアを異常扱いする可能性を排除）
+                if !is_key_down && self.deferred_passthrough_vks.remove(&raw_event.vk_code.0) {
+                    log::debug!(
+                        "[relay-sym] PassThrough KeyUp vk={:#04x}: KeyDown was deferred → force reinject for symmetry",
+                        raw_event.vk_code.0,
+                    );
+                    self.queue.push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                    return HookResult {
+                        callback: CallbackResult::Consumed,
+                        has_pending: true,
+                    };
+                }
+
                 let in_flight_ms = self.platform.output.ms_since_last_send();
                 let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
@@ -150,10 +171,7 @@ impl DecisionExecutor {
                 log::debug!(
                     "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
                     raw_event.vk_code.0,
-                    match raw_event.event_type {
-                        awase::types::KeyEventType::KeyDown => "down",
-                        awase::types::KeyEventType::KeyUp => "up",
-                    },
+                    if is_key_down { "down" } else { "up" },
                     if in_flight_ms == u64::MAX { "never".to_string() } else { in_flight_ms.to_string() },
                     has_pending,
                     output_in_flight,
@@ -172,12 +190,13 @@ impl DecisionExecutor {
                     log::debug!(
                         "[relay-defer] PassThrough deferred: {reason}, reinject(vk={:#04x} {})",
                         raw_event.vk_code.0,
-                        match raw_event.event_type {
-                            awase::types::KeyEventType::KeyDown => "down",
-                            awase::types::KeyEventType::KeyUp => "up",
-                        },
+                        if is_key_down { "down" } else { "up" },
                     );
                     self.queue.push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                    // KeyDown を defer した場合は VK を記録して KeyUp も reinject に揃える。
+                    if is_key_down {
+                        self.deferred_passthrough_vks.insert(raw_event.vk_code.0);
+                    }
                     HookResult {
                         callback: CallbackResult::Consumed,
                         has_pending: true,
@@ -191,7 +210,7 @@ impl DecisionExecutor {
                     // 物理 F2 を Consume し、次の NICOLA バッチの warmup F2 で一本化することで解消する。
                     // → output.rs の composition_warm ドキュメントの設計意図と一致。
                     if raw_event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
-                        if matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown) {
+                        if is_key_down {
                             log::debug!(
                                 "[composition] vk=0xf2 passthrough TSF mode → consuming (prevent double-F2), marking cold",
                             );
@@ -216,17 +235,12 @@ impl DecisionExecutor {
                         log::debug!(
                             "[relay-passthrough] PassThrough idle: direct OS pass-through (vk={:#04x} {})",
                             raw_event.vk_code.0,
-                            match raw_event.event_type {
-                                awase::types::KeyEventType::KeyDown => "down",
-                                awase::types::KeyEventType::KeyUp => "up",
-                            },
+                            if is_key_down { "down" } else { "up" },
                         );
                     }
                     // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
                     // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-                    if matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
-                        && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B)
-                    {
+                    if is_key_down && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B) {
                         log::debug!(
                             "[composition] passthrough vk={:#04x} KeyDown → marking cold",
                             raw_event.vk_code.0,
@@ -234,9 +248,7 @@ impl DecisionExecutor {
                         self.platform.output.mark_composition_cold();
                     }
                     // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
-                    if raw_event.vk_code.0 == 0xF2
-                        && matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
-                    {
+                    if raw_event.vk_code.0 == 0xF2 && is_key_down {
                         log::debug!(
                             "[composition] vk=0xf2 passthrough direct → marking cold",
                         );
