@@ -14,6 +14,7 @@ const WM_IME_CONTROL: u32 = 0x0283;
 const IMC_GETOPENSTATUS: usize = 0x0005;
 const IMC_SETOPENSTATUS: usize = 0x0006;
 const IMC_GETCONVERSIONMODE: usize = 0x0001;
+const IMC_SETCONVERSIONMODE: usize = 0x0002;
 
 /// ローマ字入力モードフラグ（0x0010）
 const IME_CMODE_ROMAN: u32 = 0x0010;
@@ -58,6 +59,72 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 
     let success = ok.0 != 0;
     log::debug!("set_ime_open_cross_process: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success}");
+    success
+}
+
+/// 現在のフォアグラウンドウィンドウの IME 変換モード生値を返す（診断ログ専用）。
+///
+/// ビット定義: NATIVE=0x0001 KATAKANA=0x0002 FULLSHAPE=0x0008 ROMAN=0x0010
+///
+/// # Safety
+/// Calls Win32 APIs.
+pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
+    detect_ime_conversion_for_hwnd(GetForegroundWindow())
+}
+
+/// クロスプロセスで IME をローマ字モードに設定する。
+///
+/// VK_DBE_HIRAGANA (0xF2) による warmup は非同期のため、同一 SendInput バッチ内の
+/// 最初の文字が mode switch 完了前に到達し "koの"/"ho助金" 等の cold-start 文字化けが発生する。
+/// 本関数は IMM32 の IMC_SETCONVERSIONMODE を使って SendInput 前に同期的にローマ字モードへ切り替える。
+///
+/// Returns `true` if the operation succeeded or the mode was already correct.
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread.
+pub unsafe fn set_ime_romaji_mode() -> bool {
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return false;
+    }
+
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return false;
+    }
+
+    let mut current = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETCONVERSIONMODE),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        50,
+        Some(&raw mut current),
+    );
+    if ok.0 == 0 {
+        return false;
+    }
+
+    let conv = current as u32;
+    let new_conv = conv | IME_CMODE_ROMAN;
+    if new_conv == conv {
+        return true; // already romaji
+    }
+
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_SETCONVERSIONMODE),
+        LPARAM(new_conv as isize),
+        SMTO_ABORTIFHUNG,
+        50,
+        Some(&raw mut result),
+    );
+    let success = ok.0 != 0;
+    log::debug!("[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success}");
     success
 }
 

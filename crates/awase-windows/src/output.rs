@@ -644,12 +644,32 @@ impl Output {
         let elapsed = self.ms_since_last_send();
         let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
+        // H6 判定: warm=true なのに bug が起きていれば false-positive warm（warmup がスキップされた）
+        log::debug!(
+            "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
+        );
         if prepend_f2_warmup {
             if session_expired {
                 log::debug!("[vk-warmup] session expired ({elapsed}ms) → prepending VK_DBE_HIRAGANA warmup");
             } else {
                 log::debug!("[vk-warmup] cold → prepending VK_DBE_HIRAGANA warmup");
             }
+            // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
+            //            NATIVE=false なら direct input モード（H5）。
+            let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+            log::debug!(
+                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+                conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv_pre.map_or(false, |v| v & 0x0001 != 0),
+                conv_pre.map_or(false, |v| v & 0x0010 != 0),
+                conv_pre.map_or(false, |v| v & 0x0002 != 0),
+            );
+            // VK_DBE_HIRAGANA の mode switch は非同期のため、同バッチ内の最初の文字が
+            // switch 完了前に IME に届き "koの" 等の文字化けが発生する。
+            // IMM32 経由で SendInput 前に同期的にローマ字モードへ切り替えて回避する。
+            // H7 判定: success=false なら IMM32 API が失敗している。
+            unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
         }
 
         let warmup_slots = if prepend_f2_warmup { 2 } else { 0 };
@@ -679,6 +699,30 @@ impl Output {
                 &inputs,
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
+        }
+        // H1 判定: F2 を含むバッチ送信直後に conversion mode を読む。
+        // ROMAN bit がまだ立っていなければ F2 の mode switch は非同期（race window あり）。
+        // ROMAN bit がすぐ立っていれば mode switch は即座 → 別の原因を疑う。
+        if prepend_f2_warmup {
+            let conv_post = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+            log::debug!(
+                "[cold-diag] post-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+                conv_post.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv_post.map_or(false, |v| v & 0x0001 != 0),
+                conv_post.map_or(false, |v| v & 0x0010 != 0),
+                conv_post.map_or(false, |v| v & 0x0002 != 0),
+            );
+            // ROMAN bit が立つまで最大 3 回追加ポーリング（sleep なし、~1ms/call）。
+            // これにより「いつ mode switch が完了したか」のタイミングが見える。
+            for i in 0..3u8 {
+                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+                let roman = conv.map_or(false, |v| v & 0x0010 != 0);
+                log::debug!(
+                    "[cold-diag] poll[{i}] conv={} ROMAN={roman}",
+                    conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                );
+                if roman { break; }
+            }
         }
         self.composition_warm.set(true);
     }
@@ -725,12 +769,32 @@ impl Output {
         let elapsed = self.ms_since_last_send();
         let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
+        // H6 判定: warm=true なのに bug が起きていれば false-positive warm（warmup がスキップされた）
+        log::debug!(
+            "[tsf-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
+        );
         if prepend_f2_warmup {
             if session_expired {
                 log::debug!("[tsf-warmup] session expired ({elapsed}ms) → prepending VK_DBE_HIRAGANA to first SendInput");
             } else {
                 log::debug!("[tsf-warmup] cold → prepending VK_DBE_HIRAGANA to first SendInput");
             }
+            // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
+            //            NATIVE=false なら direct input モード（H5）。
+            let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+            log::debug!(
+                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+                conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv_pre.map_or(false, |v| v & 0x0001 != 0),
+                conv_pre.map_or(false, |v| v & 0x0010 != 0),
+                conv_pre.map_or(false, |v| v & 0x0002 != 0),
+            );
+            // VK_DBE_HIRAGANA の mode switch は非同期のため、同バッチ内の最初の文字が
+            // switch 完了前に IME に届き "koの" 等の文字化けが発生する。
+            // IMM32 経由で SendInput 前に同期的にローマ字モードへ切り替えて回避する。
+            // H7 判定: success=false なら IMM32 API が失敗している。
+            unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
@@ -774,6 +838,28 @@ impl Output {
                     &inputs,
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
+            }
+        }
+        // H1 判定: F2 を含む最初のバッチ送信直後に conversion mode を読む。
+        // ROMAN bit がまだ立っていなければ F2 の mode switch は非同期（race window あり）。
+        if prepend_f2_warmup {
+            let conv_post = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+            log::debug!(
+                "[cold-diag] post-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+                conv_post.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv_post.map_or(false, |v| v & 0x0001 != 0),
+                conv_post.map_or(false, |v| v & 0x0010 != 0),
+                conv_post.map_or(false, |v| v & 0x0002 != 0),
+            );
+            // ROMAN bit が立つまで最大 3 回追加ポーリング（sleep なし、~1ms/call）。
+            for i in 0..3u8 {
+                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+                let roman = conv.map_or(false, |v| v & 0x0010 != 0);
+                log::debug!(
+                    "[cold-diag] poll[{i}] conv={} ROMAN={roman}",
+                    conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                );
+                if roman { break; }
             }
         }
         self.composition_warm.set(true);
