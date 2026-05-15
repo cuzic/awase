@@ -9,7 +9,7 @@
 //! `None` を「偽」として扱ってはならない。
 
 use awase::engine::InputModeState;
-use crate::Preconditions;
+use crate::{Preconditions, ShadowSource};
 
 /// IME_CMODE_ROMAN ビット（0x0010）
 const IME_CMODE_ROMAN: u32 = 0x0010;
@@ -55,13 +55,13 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
 
     if known_not_japanese {
         // 非日本語KB確定: IME アクティブ不可
-        preconditions.ime_on = false;
+        preconditions.set_ime_on(false, ShadowSource::ObserverPoll);
         preconditions.ime_detect_miss_count = 0;
         preconditions.ime_force_on_guard = false;
     } else if let Some(on) = snap.ime_on {
         // IME 状態検出成功: キャッシュ済みの is_japanese_ime と組み合わせる。
         // （snap.is_japanese_ime が None でもキャッシュ値は直前のループで維持済み）
-        preconditions.ime_on = on && preconditions.is_japanese_ime;
+        preconditions.set_ime_on(on && preconditions.is_japanese_ime, ShadowSource::ObserverPoll);
         preconditions.ime_detect_miss_count = 0;
         preconditions.ime_force_on_guard = false;
     } else if preconditions.ime_force_on_guard {

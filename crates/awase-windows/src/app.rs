@@ -33,7 +33,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, Runtime, APP, ELEVATED,
+    LayoutEntry, Runtime, ShadowSource, APP, ELEVATED,
     MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
@@ -798,7 +798,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
             // ユーザーの明示的な IME OFF は shadow toggle 経由で届くので影響を受けない。
             // 言語バーのマウス操作が dead angle になるが、awase ユーザーはキー操作前提のため許容。
             if effective || !app.engine.is_user_enabled() {
-                app.platform_state.preconditions.ime_on = effective;
+                app.platform_state.preconditions.set_ime_on(effective, ShadowSource::FocusProbe);
                 app.platform_state.preconditions.ime_detect_miss_count = 0;
                 app.platform_state.preconditions.ime_force_on_guard = false;
             } else {
@@ -850,14 +850,14 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // 韓国語キーボードでは VK_KANJI(0x19) は VK_HANJA で意味が異なる（漢字変換、トグルではない）。
     // sync_direction (config 由来) はユーザー指定なので言語ガードしない。
     if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
-        let action = event.ime_relevance.sync_direction.or_else(|| {
-            if app.platform_state.preconditions.is_japanese_ime {
-                event.ime_relevance.shadow_action
-            } else {
-                None
-            }
-        });
-        if let Some(action) = action {
+        let sync_source = event.ime_relevance.sync_direction.map(|a| (a, ShadowSource::SyncKey));
+        let phys_source = if app.platform_state.preconditions.is_japanese_ime {
+            event.ime_relevance.shadow_action.map(|a| (a, ShadowSource::PhysicalImeKey))
+        } else {
+            None
+        };
+        let action_with_source = sync_source.or(phys_source);
+        if let Some((action, source)) = action_with_source {
             let current = app.platform_state.preconditions.ime_on;
             let new_val = match action {
                 awase::types::ShadowImeAction::Toggle => !current,
@@ -865,15 +865,16 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 awase::types::ShadowImeAction::TurnOff => false,
             };
             if new_val != current {
-                app.platform_state.preconditions.ime_on = new_val;
+                app.platform_state.preconditions.set_ime_on(new_val, source);
                 // shadow 更新はユーザー操作に基づくので検出失敗カウンタとガードをリセット
                 app.platform_state.preconditions.ime_detect_miss_count = 0;
                 app.platform_state.preconditions.ime_force_on_guard = false;
                 log::debug!(
-                    "Shadow IME toggle: {} → {} (vk=0x{:02X})",
+                    "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
                     if current { "ON" } else { "OFF" },
                     if new_val { "ON" } else { "OFF" },
                     event.vk_code.0,
+                    source,
                 );
             }
         }
@@ -908,12 +909,12 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // SetOpen Effect 実行前に observer が stale な OS 状態で上書きしないよう
     // タイマーを停止する。SetOpen 実行後に post_ime_refresh() が再スケジュール。
     if let Some(new_ime_on) = decision.find_ime_set_open() {
-        app.platform_state.preconditions.ime_on = new_ime_on;
+        app.platform_state.preconditions.set_ime_on(new_ime_on, ShadowSource::SetOpenRequest);
         app.platform_state.preconditions.ime_detect_miss_count = 0;
         app.platform_state.preconditions.ime_force_on_guard = false;
         app.executor.platform.timer.kill(TIMER_IME_REFRESH);
         app.platform_state.hook.suppress_ctrl_bypass = true;
-        log::debug!("IME control: preconditions.ime_on = {new_ime_on}, poll suspended, ctrl bypass suppressed");
+        log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass suppressed");
     }
 
     // may_change_ime なキーが Engine で消費されずパススルーされた場合、

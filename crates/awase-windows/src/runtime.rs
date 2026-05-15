@@ -825,7 +825,7 @@ impl Runtime {
 
         // 5. PlatformState を全面リセット
         self.platform_state.preconditions.input_mode = InputModeState::ObservedRomaji;
-        self.platform_state.preconditions.ime_on = true; // 安全側: ON
+        self.platform_state.preconditions.set_ime_on(true, crate::ShadowSource::PanicReset); // 安全側: ON
         self.platform_state.preconditions.is_japanese_ime = true;
         self.platform_state.preconditions.prev_conversion_mode = None;
         self.platform_state.preconditions.ime_detect_miss_count = 0;

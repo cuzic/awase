@@ -64,11 +64,38 @@ pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
 
 
+/// `Preconditions.ime_on` を最後に更新したソース。
+///
+/// Phase 2 の `ImeObservations + resolve()` で優先度判定に使用する準備として記録する。
+/// 現時点では診断・ログ用途のみ（動作への影響なし）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShadowSource {
+    /// 初期化値（まだ一度も観測されていない）
+    #[default]
+    Init,
+    /// 物理 IME キー押下（半角/全角等）— ユーザーの明示的操作
+    PhysicalImeKey,
+    /// config 由来の同期キー（sync_direction）
+    SyncKey,
+    /// `ImeEffect::SetOpen` (Engine の判断による強制設定)
+    SetOpenRequest,
+    /// IME observer ポーリング（バックグラウンド観測）
+    ObserverPoll,
+    /// フォーカス変更直後の高速プローブ
+    FocusProbe,
+    /// panic_reset（強制リセット）
+    PanicReset,
+    /// IMM broken アプリ切替補正（Chrome 等）
+    ImmBrokenFix,
+}
+
 /// 環境前提条件（IME 状態・入力方式・日本語判定）
 #[derive(Debug)]
 pub struct Preconditions {
     /// IME が ON か（shadow 追跡含む、Observer ポーリングで実際の OS 状態に収束）
     pub ime_on: bool,
+    /// `ime_on` を最後に更新したソース（Phase 2 解決関数向けの診断情報）
+    pub ime_on_source: ShadowSource,
     /// 入力モード（ローマ字 / かな / 不明）
     pub input_mode: InputModeState,
     /// 日本語 IME がアクティブか
@@ -89,6 +116,14 @@ pub struct Preconditions {
     /// 検出成功時にクリアされ、OS 側の SSOT に戻る。
     /// force-ON の無限ループ防止、panic_reset 直後の上書き防止にも使用。
     pub ime_force_on_guard: bool,
+}
+
+impl Preconditions {
+    /// `ime_on` と `ime_on_source` をまとめて更新する。
+    pub fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
+        self.ime_on = value;
+        self.ime_on_source = source;
+    }
 }
 
 /// フックルーティング状態（キーペア追跡・再入ガード）
@@ -202,6 +237,7 @@ impl PlatformState {
         Self {
             preconditions: Preconditions {
                 ime_on: true,        // 安全側: ON で初期化
+                ime_on_source: ShadowSource::Init,
                 input_mode: InputModeState::ObservedRomaji, // デフォルト: ローマ字入力
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: None,
