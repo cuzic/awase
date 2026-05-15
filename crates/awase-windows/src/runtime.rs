@@ -316,13 +316,6 @@ impl Runtime {
         // ── Phase 1: フォーカス先の検出・分類 ──
         let focus_changed = unsafe { self.detect_and_update_focus() };
 
-        // ── Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）──
-        if focus_changed {
-            let ctx = self.build_ctx();
-            let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
-            self.executor.execute_from_loop(decision);
-        }
-
         // ── Phase 2.5: IMM ブリッジ非対応クラスの判定 ──
         //
         // Chrome / UWP / Electron 等はクロスプロセス IMM 問い合わせ（WM_IME_CONTROL）が
@@ -331,6 +324,10 @@ impl Runtime {
         //
         // この分岐の場合、言語バーのマウス操作等による OS 側の IME 変更は検知不能だが、
         // ハードウェアキー押下（半角/全角等）は hook でシャドウが更新されるため実用上問題ない。
+        //
+        // Phase 2 の FocusChanged より前に計算する必要がある。
+        // FocusChanged で build_ctx() が呼ばれる際、is_romaji が stale な false だと
+        // engine が inactive になってしまうため、先に補正する。
         let skip_imm_query = self
             .executor
             .platform
@@ -340,6 +337,26 @@ impl Runtime {
             .map_or(false, |(_, class_name)| {
                 crate::focus::classify::is_imm_bridge_broken(class_name)
             });
+
+        // ── Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）──
+        if focus_changed {
+            // IMM broken アプリ（Chrome 等）に切り替わった際に is_romaji が
+            // 前ウィンドウの stale な false を引き継いでいると、FocusChanged の ctx で
+            // engine が inactive になる。broken アプリでは is_romaji を検出できないため、
+            // ime_on=true のとき romaji モードと仮定して補正する。
+            if skip_imm_query
+                && self.platform_state.preconditions.ime_on
+                && !self.platform_state.preconditions.is_romaji
+            {
+                log::info!(
+                    "FocusChanged: is_romaji forced true (IMM broken, stale false from prev window)"
+                );
+                self.platform_state.preconditions.is_romaji = true;
+            }
+            let ctx = self.build_ctx();
+            let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
+            self.executor.execute_from_loop(decision);
+        }
 
         // ── Phase 2.7: 入力中ガード ──
         //
@@ -383,6 +400,12 @@ impl Runtime {
             {
                 let _success = self.executor.platform.set_ime_open(true);
                 log::trace!("Blacklist SSOT write: ime_on=true (force-ON only)");
+                // is_romaji も SSOT として維持: IMM broken アプリでは検出不能のため
+                // stale な false が engine を無効化しないよう補正する。
+                if !self.platform_state.preconditions.is_romaji {
+                    log::info!("Blacklist SSOT: is_romaji false → forced true (IMM broken, ime_on=true)");
+                    self.platform_state.preconditions.is_romaji = true;
+                }
             }
         } else {
             // ── Phase 3: IME 状態の再取得 ──
