@@ -767,6 +767,15 @@ impl Output {
     /// ひとまとまりとして受け取り "む" に変換する。
     /// TSF_MARKER を使うことで WezTerm の IME バイパスを回避する（INJECTED_MARKER
     /// を使うと WezTerm が IME をスキップして PTY に直送してしまう）。
+    ///
+    /// # H1 cold-start 修正（案A: F2-only 先行バッチ）
+    ///
+    /// 旧実装では [F2↓F2↑ i↓i↑] を同一 SendInput バッチで送っていた。
+    /// WezTerm は TSF context の初期化を F2 受信後に非同期で行うため、
+    /// 同じバッチ内の 'i' が初期化完了前に処理され ASCII 'i' として出力される。
+    ///
+    /// 案A では F2-only バッチを先行送信し、WezTerm が F2 を処理して
+    /// TSF context を初期化するまで待機（probe loop）してからローマ字バッチを送る。
     fn send_romaji_as_tsf(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
 
@@ -774,30 +783,26 @@ impl Output {
             return;
         }
 
-        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA ウォームアップを先行送信する。
-        // WezTerm の TSF context は F2 passthrough・フォーカス変更・Space/Enter/Escape 後に
-        // コールド状態になる。同一 SendInput に含める必要がある（別 SendInput にすると
-        // WezTerm が TSF 初期化完了前に次のキーを受け取り効果がないため）。
+        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
-        // IME composition context は長い沈黙の後に期限切れになる可能性があるため。
         const COMPOSITION_TIMEOUT_MS: u64 = 2000;
         let warm = self.composition_warm.get();
         let elapsed = self.ms_since_last_send();
         let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
-        // H6 判定: warm=true なのに bug が起きていれば false-positive warm（warmup がスキップされた）
         log::debug!(
             "[tsf-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
             if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
         );
+
+        let cold_n;
         if prepend_f2_warmup {
             if session_expired {
-                log::debug!("[tsf-warmup] session expired ({elapsed}ms) → prepending VK_DBE_HIRAGANA to first SendInput");
+                log::debug!("[tsf-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
             } else {
-                log::debug!("[tsf-warmup] cold → prepending VK_DBE_HIRAGANA to first SendInput");
+                log::debug!("[tsf-warmup] cold → F2-only先行バッチ (案A)");
             }
             // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
-            //            NATIVE=false なら direct input モード（H5）。
             let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
@@ -806,19 +811,58 @@ impl Output {
                 conv_pre.map_or(false, |v| v & 0x0010 != 0),
                 conv_pre.map_or(false, |v| v & 0x0002 != 0),
             );
-            // VK_DBE_HIRAGANA の mode switch は非同期のため、同バッチ内の最初の文字が
-            // switch 完了前に IME に届き "koの" 等の文字化けが発生する。
-            // IMM32 経由で SendInput 前に同期的にローマ字モードへ切り替えて回避する。
-            // H7 判定: success=false なら IMM32 API が失敗している。
+            // IMM32 経由で同期的にローマ字モードへ切り替え。
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
+
+            cold_n = self.cold_start_count.get() + 1;
+            self.cold_start_count.set(cold_n);
+
+            let win_class = unsafe { crate::ime::get_foreground_window_class() };
+            log::debug!("[h1-window] cold={cold_n} class={win_class}");
+
+            // 案A: F2-only バッチを先行送信し、WezTerm が TSF context を初期化するのを待つ。
+            // F2 と romaji を同一バッチに含めると WezTerm が TSF 初期化完了前に
+            // romaji を処理してしまい、cold-start 1 文字目が ASCII として出力される（H1 問題）。
+            const VK_DBE_HIRAGANA: u16 = 0xF2;
+            let f2_inputs = [
+                make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                make_tsf_key_input(VK_DBE_HIRAGANA, true),
+            ];
+            log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
+            unsafe {
+                SendInput(
+                    &f2_inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+
+            // F2-only バッチ後のプローブ:
+            //   responsive=true → WezTerm が F2 を処理済み（TSF context 初期化完了期待）
+            //   responsive=false → WezTerm がまだ処理中（timeout まで待機）
+            // probe がガードとして機能し、romaji バッチを送る前に WezTerm が確実に
+            // F2 を処理している状態を作る。
+            let probe_start = std::time::Instant::now();
+            const H1_PROBE_TIMEOUT_MS: u32 = 10;
+            const H1_PROBE_MAX: u8 = 15;
+            for i in 0..H1_PROBE_MAX {
+                let elapsed_ms = probe_start.elapsed().as_millis();
+                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
+                let responsive = conv.is_some();
+                let roman = conv.map_or(false, |v| v & 0x0010 != 0);
+                log::debug!(
+                    "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
+                    elapsed_ms,
+                    conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
+                );
+                if responsive { break; }
+            }
+        } else {
+            cold_n = self.cold_start_count.get();
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
-        // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。結果 "n"+次の母音 →
-        // "ne" 等に合成され、例えば "かんえい" → "かねい" になる。
-        // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る
-        // ことで、N↑ が次の N↓ より先に届き auto-repeat 判定を回避できる。
-        // 異なる VK 同士は重畳順を保つため同一バッチに含める（"mu" の崩れ防止）。
+        // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
+        // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
         let mut runs: Vec<&[(u16, bool)]> = Vec::new();
         let mut start = 0;
         for i in 1..chars.len() {
@@ -830,31 +874,13 @@ impl Output {
         runs.push(&chars[start..]);
 
         let total_runs = runs.len();
-        // cold_n は warmup がある場合のみ使うが、先に計算してキャプチャしておく。
-        let cold_n = if prepend_f2_warmup {
-            let n = self.cold_start_count.get() + 1;
-            self.cold_start_count.set(n);
-            n
-        } else {
-            self.cold_start_count.get()
-        };
 
         for (run_idx, run) in runs.iter().enumerate() {
-            let is_warmup_run = run_idx == 0 && prepend_f2_warmup;
-            // [h1-run]: どのバッチ（run）が warmup 付きで送られるかを記録。
-            // run_idx=0 かつ warmup=true の文字が失敗候補。
-            // run_idx>=1 も失敗するなら「warmup後ガード（案B）」が必要。
             log::debug!(
-                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} chars={} warmup={is_warmup_run}",
+                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} chars={}",
                 run.len(),
             );
-            let warmup_slots = if is_warmup_run { 2 } else { 0 };
-            let mut inputs = Vec::with_capacity(run.len() * 4 + warmup_slots);
-            if is_warmup_run {
-                const VK_DBE_HIRAGANA: u16 = 0xF2;
-                inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, false));
-                inputs.push(make_tsf_key_input(VK_DBE_HIRAGANA, true));
-            }
+            let mut inputs = Vec::with_capacity(run.len() * 4);
             for &(vk, needs_shift) in *run {
                 if needs_shift {
                     inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
@@ -872,36 +898,6 @@ impl Output {
                     &inputs,
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
-            }
-        }
-        // H1 タイミング計測: 全 run の SendInput 完了後、IME が応答するまでの時間を計測。
-        //
-        // [h1-probe] ログの読み方（TSF モード）:
-        //   responsive=false → WezTerm がまだ SendInput 処理中（10ms timeout でタイムアウト）
-        //   responsive=true  → WezTerm が応答可能になった
-        //   elapsed_ms       → warmup SendInput 完了から応答まで最小 elapsed_ms の wait が必要
-        //
-        // 案A (F2-only先行): この elapsed_ms が F2-only → romaji 間の必要 sleep 量
-        // 案B (次バッチguard): 次の send_romaji 呼び出しまでの間隔が elapsed_ms を超えればOK
-        // 案D (adaptive polling): この probe ループを実際の guard に転用できる
-        if prepend_f2_warmup {
-            let win_class = unsafe { crate::ime::get_foreground_window_class() };
-            log::debug!("[h1-window] cold={cold_n} class={win_class}");
-            let probe_start = std::time::Instant::now();
-            // 10ms タイムアウトで最大 15 回プローブ（合計最大 150ms）。
-            const H1_PROBE_TIMEOUT_MS: u32 = 10;
-            const H1_PROBE_MAX: u8 = 15;
-            for i in 0..H1_PROBE_MAX {
-                let elapsed_ms = probe_start.elapsed().as_millis();
-                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
-                let responsive = conv.is_some();
-                let roman = conv.map_or(false, |v| v & 0x0010 != 0);
-                log::debug!(
-                    "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
-                    elapsed_ms,
-                    conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
-                );
-                if responsive { break; }
             }
         }
         self.composition_warm.set(true);
