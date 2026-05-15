@@ -864,12 +864,6 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
-            // H8/H6: 診断プローブ（diag feature 有効時のみ、各 ~10ms のレイテンシあり）
-            #[cfg(feature = "diag")]
-            let ime_open_pre = unsafe { crate::ime::get_ime_open_status_raw_timeout(10) };
-            #[cfg(feature = "diag")]
-            let hwnd_pre_f2 = unsafe { crate::ime::get_foreground_hwnd_raw() };
-
             // 案A: F2-only バッチを先行送信し、WezTerm が TSF context を初期化するのを待つ。
             // F2 と romaji を同一バッチに含めると WezTerm が TSF 初期化完了前に
             // romaji を処理してしまい、cold-start 1 文字目が ASCII として出力される（H1 問題）。
@@ -879,8 +873,6 @@ impl Output {
                 make_tsf_key_input(VK_DBE_HIRAGANA, true),
             ];
             log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
-            #[cfg(feature = "diag")]
-            log::debug!("[h1-run-diag] cold={cold_n} hwnd_pre=0x{hwnd_pre_f2:X} ime_open_pre={ime_open_pre:?}");
             let f2_send_tick = crate::hook::current_tick_ms();
             unsafe {
                 SendInput(
@@ -920,21 +912,6 @@ impl Output {
                 f2_to_idle_ms,
             );
 
-            // IMM32 変換モードを確認（TSF 状態の参考値、diag feature 有効時のみ）
-            #[cfg(feature = "diag")]
-            {
-                let conv_post_idle = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
-                let ime_open_post_idle = unsafe { crate::ime::get_ime_open_status_raw_timeout(10) };
-                let hwnd_post_idle = unsafe { crate::ime::get_foreground_hwnd_raw() };
-                log::debug!(
-                    "[h1-probe-done] cold={cold_n} f2_to_idle_ms={} hwnd_changed={} ime_open={:?} conv={} ROMAN={}",
-                    f2_to_idle_ms,
-                    hwnd_pre_f2 != hwnd_post_idle,
-                    ime_open_post_idle,
-                    conv_post_idle.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                    conv_post_idle.map_or(false, |v| v & 0x0010 != 0),
-                );
-            }
         } else {
             cold_n = self.cold_start_count.get();
         }
@@ -953,17 +930,6 @@ impl Output {
         runs.push(&chars[start..]);
 
         let total_runs = runs.len();
-
-        // H6: chars 送信直前の HWND（diag feature 有効時のみ）
-        #[cfg(feature = "diag")]
-        if prepend_f2_warmup {
-            let hwnd_pre_chars = unsafe { crate::ime::get_foreground_hwnd_raw() };
-            log::debug!(
-                "[h1-chars-pre] cold={cold_n} hwnd=0x{hwnd_pre_chars:X} romaji={romaji:?}"
-            );
-        }
-        #[cfg(feature = "diag")]
-        let chars_send_tick = if prepend_f2_warmup { crate::hook::current_tick_ms() } else { 0 };
 
         for (run_idx, run) in runs.iter().enumerate() {
             log::debug!(
@@ -989,22 +955,6 @@ impl Output {
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
             }
-        }
-
-        // H9: chars 送信後の conv 状態（diag feature 有効時のみ）
-        #[cfg(feature = "diag")]
-        if prepend_f2_warmup {
-            let elapsed_since_chars = crate::hook::current_tick_ms().saturating_sub(chars_send_tick);
-            let conv_post = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
-            let open_post = unsafe { crate::ime::get_ime_open_status_raw_timeout(10) };
-            log::debug!(
-                "[h1-chars-post] cold={cold_n} elapsed_since_chars={}ms conv={} NATIVE={} ROMAN={} ime_open={:?}",
-                elapsed_since_chars,
-                conv_post.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_post.map_or(false, |v| v & 0x0001 != 0),
-                conv_post.map_or(false, |v| v & 0x0010 != 0),
-                open_post,
-            );
         }
 
         self.mark_composition_warm();

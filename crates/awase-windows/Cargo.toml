@@ -3,9 +3,6 @@ name = "awase-windows"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-diag = []
-
 [lib]
 name = "awase_windows"
 path = "src/lib.rs"
