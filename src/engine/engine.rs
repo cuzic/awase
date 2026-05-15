@@ -82,6 +82,12 @@ impl Engine {
                 // Engine inactive 時に到着しても consumed されないようにする。
                 // OS は consumed された KeyDown を受け取っていないので KeyUp の再注入は不要。
                 let _ = self.lifecycle.flush_pending_key_ups();
+            } else {
+                // inactive → active: shadow IME が ON になっても OS IME が閉じたままの場合がある。
+                // 典型例: TSF モードで F2 を消費（double-F2 防止）した場合、F2 が OS に届かず
+                // IME が開かれないまま engine だけが有効化される（"nonaiyo" 問題）。
+                // SetOpen(true) で OS IME を強制的に開くことで、IME が確実に有効な状態にする。
+                effects.push(Effect::Ime(ImeEffect::SetOpen(true)));
             }
             effects.push(Effect::Ui(UiEffect::EngineStateChanged {
                 enabled: new_active,
@@ -264,6 +270,10 @@ impl Engine {
         decision: &mut Decision,
     ) {
         if old_active != new_active {
+            if new_active {
+                // inactive → active: check_active_transition と対称に SetOpen(true) を送る。
+                decision.push_effect(Effect::Ime(ImeEffect::SetOpen(true)));
+            }
             decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
                 enabled: new_active,
             }));
