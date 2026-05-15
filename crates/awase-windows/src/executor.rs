@@ -183,6 +183,29 @@ impl DecisionExecutor {
                         has_pending: true,
                     }
                 } else {
+                    // F2 (VK_DBE_HIRAGANA) in TSF mode: 物理 F2 を Consume してパススルーしない。
+                    //
+                    // 物理 F2 が WezTerm に届いた後に warmup F2 を含むバッチを送ると、
+                    // WezTerm の TSF ハンドラが F2 を 2 回受け取り "この→koの" になる
+                    // （WezTerm 内部で F2 がトグル動作をしている模様）。
+                    // 物理 F2 を Consume し、次の NICOLA バッチの warmup F2 で一本化することで解消する。
+                    // → output.rs の composition_warm ドキュメントの設計意図と一致。
+                    if raw_event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
+                        if matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown) {
+                            log::debug!(
+                                "[composition] vk=0xf2 passthrough TSF mode → consuming (prevent double-F2), marking cold",
+                            );
+                            self.platform.output.mark_composition_cold();
+                        } else {
+                            log::debug!(
+                                "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
+                            );
+                        }
+                        return HookResult {
+                            callback: CallbackResult::Consumed,
+                            has_pending: self.has_pending(),
+                        };
+                    }
                     // Effects なし → 直接 OS に通す
                     // Passthrough 系の VK (Enter, Esc, Tab 等) は awase 出力との
                     // 時系列を見えるようログを残す（char/thumb はノイズになるため除外）。
@@ -210,9 +233,7 @@ impl DecisionExecutor {
                         );
                         self.platform.output.mark_composition_cold();
                     }
-                    // F2 (VK_DBE_HIRAGANA) は直後の NICOLA 出力で warmup F2 が必要になるため cold に。
-                    // VK_DBE_HIRAGANA は「ひらがなモードに SET する」定義でトグルではないため、
-                    // WezTerm に物理 F2 が届いた後でも warmup F2 を含むバッチを送れば正常に動作する。
+                    // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
                     if raw_event.vk_code.0 == 0xF2
                         && matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown)
                     {
@@ -283,6 +304,23 @@ impl DecisionExecutor {
             let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
             let dir = if is_key_down { "down" } else { "up" };
 
+            // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
+            // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
+            // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
+            if event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
+                if is_key_down {
+                    log::debug!(
+                        "[reinject-tsf] vk=0xf2 KeyDown TSF mode → consuming deferred F2 (no reinject), marking cold",
+                    );
+                    self.platform.output.mark_composition_cold();
+                } else {
+                    log::debug!(
+                        "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
+                    );
+                }
+                return;
+            }
+
             log::debug!(
                 "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
                 event.vk_code.0,
@@ -297,13 +335,6 @@ impl DecisionExecutor {
                 log::debug!(
                     "[composition] reinject KeyDown vk={:#04x} → marking cold",
                     event.vk_code.0,
-                );
-                self.platform.output.mark_composition_cold();
-            }
-            // F2 (VK_DBE_HIRAGANA) reinject: 次の NICOLA 出力で warmup F2 が必要になるため cold に。
-            if is_key_down && event.vk_code.0 == 0xF2 {
-                log::debug!(
-                    "[composition] reinject F2 KeyDown → marking cold",
                 );
                 self.platform.output.mark_composition_cold();
             }
