@@ -412,6 +412,9 @@ impl Runtime {
         } else {
             // ── Phase 3: IME 状態の再取得 ──
             let miss_before = self.platform_state.preconditions.ime_detect_miss_count;
+            // [診断] observe 前のスナップショット（差分検出用）
+            let ime_on_before_poll = self.platform_state.preconditions.ime_on;
+            let input_mode_before_poll = self.platform_state.preconditions.input_mode;
             unsafe {
                 crate::observer::ime_observer::observe(
                     &mut self.platform_state.preconditions,
@@ -429,6 +432,49 @@ impl Runtime {
             }
             // observer_poll → preconditions.ime_on に優先度付き解決
             self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
+
+            // [診断] フォーカス変更から 10 秒以内で状態が変わった場合にログ出力。
+            // - ime_on / input_mode のどちらが stale だったか
+            // - フォーカス変更からどれだけ後に正しい値に戻ったか
+            // これが安定して速ければアプローチ A（即時再プローブ）で十分。
+            // None が多い / 遅い場合はアプローチ B（per-HWND キャッシュ）を検討。
+            let age_ms = crate::hook::current_tick_ms()
+                .saturating_sub(self.platform_state.last_focus_change_ms);
+            if age_ms < 10_000 {
+                let ime_on_after = self.platform_state.preconditions.ime_on;
+                let input_mode_after = self.platform_state.preconditions.input_mode;
+                let ime_changed = ime_on_before_poll != ime_on_after;
+                let mode_changed = input_mode_before_poll != input_mode_after;
+                if ime_changed || mode_changed {
+                    log::info!(
+                        "ObserverPoll +{}ms since focus: {}{}",
+                        age_ms,
+                        if ime_changed {
+                            format!(
+                                "ime_on {} → {}({:?}) ",
+                                ime_on_before_poll,
+                                ime_on_after,
+                                self.platform_state.preconditions.ime_on_source,
+                            )
+                        } else {
+                            String::new()
+                        },
+                        if mode_changed {
+                            format!("mode {:?} → {:?}", input_mode_before_poll, input_mode_after)
+                        } else {
+                            String::new()
+                        },
+                    );
+                } else if miss_after > 0 {
+                    log::debug!(
+                        "ObserverPoll +{}ms since focus: detection failed (miss={}), stale ime_on={} mode={:?}",
+                        age_ms,
+                        miss_after,
+                        ime_on_before_poll,
+                        input_mode_before_poll,
+                    );
+                }
+            }
 
             // ── Phase 3.1: IMM 能力の学習 ──
             // 検出結果に基づいて class_name ごとの IMM 能力をキャッシュ。
@@ -660,7 +706,22 @@ impl Runtime {
         self.platform_state.preconditions.prev_conversion_mode = None;
 
         if process_changed {
-            log::debug!("Foreground process changed → FocusChanged (pid={process_id} class={class_name})");
+            // [診断] フォーカス切り替え時点の stale スナップショットを記録する。
+            // この値がどれだけ早く正しい値に置き換わるか（FocusProbe / ObserverPoll のタイミング）
+            // を観測することで、アプローチ A（即時再プローブ）か B（per-HWND キャッシュ）かを判断できる。
+            {
+                let pc = &self.platform_state.preconditions;
+                log::info!(
+                    "FocusChange [{}→{}] {}: stale ime_on={}({:?}) mode={:?} japanese={}",
+                    last_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
+                    process_id,
+                    class_name,
+                    pc.ime_on,
+                    pc.ime_on_source,
+                    pc.input_mode,
+                    pc.is_japanese_ime,
+                );
+            }
 
             // 診断用: フォアグラウンドプロセス変更時刻を記録
             self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();

@@ -785,6 +785,12 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // 古い状態でキーが処理される「ギャップ」を解消する。
     if app.platform_state.focus_transition_pending {
         app.platform_state.focus_transition_pending = false;
+        // [診断] probe 前のスナップショット（差分検出用）
+        let ime_on_before_probe = app.platform_state.preconditions.ime_on;
+        let input_mode_before_probe = app.platform_state.preconditions.input_mode;
+        let probe_age_ms = hook::current_tick_ms()
+            .saturating_sub(app.platform_state.last_focus_change_ms);
+
         let probe = unsafe { ime::fast_ime_probe() };
         app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
         if let Some(on) = probe.ime_on {
@@ -817,18 +823,43 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
             };
             if prev != romaji {
                 log::info!(
-                    "Focus probe: input_mode {} → {}",
+                    "FocusProbe +{}ms: mode {} → {}",
+                    probe_age_ms,
                     if prev { "romaji" } else { "kana" },
                     if romaji { "romaji" } else { "kana" },
                 );
             }
         }
-        log::debug!(
-            "Focus probe: japanese={} ime_on={:?} is_romaji={:?}",
-            probe.is_japanese_ime,
-            probe.ime_on,
-            probe.is_romaji,
+
+        // [診断] probe 結果をまとめてログ出力。
+        // - "stale" = probe が None を返し前のウィンドウの値が残っている
+        // - この場合、次の ObserverPoll まで誤った状態で動作する可能性がある
+        let ime_on_after_probe = app.platform_state.preconditions.ime_on;
+        let input_mode_after_probe = app.platform_state.preconditions.input_mode;
+        log::info!(
+            "FocusProbe +{}ms: ime_on={}{} mode={:?}{}",
+            probe_age_ms,
+            ime_on_after_probe,
+            if probe.ime_on.is_none() { "(stale)" } else { "" },
+            input_mode_after_probe,
+            if probe.is_romaji.is_none() { "(stale)" } else { "" },
         );
+        if probe.ime_on.is_none() {
+            log::warn!(
+                "FocusProbe: ime_on 未検出 — stale値 {} が ObserverPoll まで持続 \
+                 [probe_age={}ms, A/B判断: ime_on stale頻度を確認]",
+                ime_on_before_probe,
+                probe_age_ms,
+            );
+        }
+        if probe.is_romaji.is_none() {
+            log::warn!(
+                "FocusProbe: input_mode 未検出 — stale値 {:?} が ObserverPoll まで持続 \
+                 [probe_age={}ms, A/B判断: mode stale頻度を確認]",
+                input_mode_before_probe,
+                probe_age_ms,
+            );
+        }
     }
 
     // ── Shadow IME toggle: フックコールバックで即座に preconditions.ime_on を更新 ──
