@@ -637,9 +637,19 @@ impl Output {
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA ウォームアップを先行送信する。
         // コールドになるタイミング: 起動時・フォーカス変更・Space/Enter/Escape passthrough・
         // エンジン toggle・F2 passthrough（executor / runtime が mark_composition_cold() を呼ぶ）。
-        let prepend_f2_warmup = !self.composition_warm.get();
+        // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
+        // IME composition context は長い沈黙の後に期限切れになる可能性があるため。
+        const COMPOSITION_TIMEOUT_MS: u64 = 2000;
+        let warm = self.composition_warm.get();
+        let elapsed = self.ms_since_last_send();
+        let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
+        let prepend_f2_warmup = !warm || session_expired;
         if prepend_f2_warmup {
-            log::debug!("[vk-warmup] cold → prepending VK_DBE_HIRAGANA warmup");
+            if session_expired {
+                log::debug!("[vk-warmup] session expired ({elapsed}ms) → prepending VK_DBE_HIRAGANA warmup");
+            } else {
+                log::debug!("[vk-warmup] cold → prepending VK_DBE_HIRAGANA warmup");
+            }
         }
 
         let warmup_slots = if prepend_f2_warmup { 2 } else { 0 };
@@ -708,9 +718,19 @@ impl Output {
         // WezTerm の TSF context は F2 passthrough・フォーカス変更・Space/Enter/Escape 後に
         // コールド状態になる。同一 SendInput に含める必要がある（別 SendInput にすると
         // WezTerm が TSF 初期化完了前に次のキーを受け取り効果がないため）。
-        let prepend_f2_warmup = !self.composition_warm.get();
+        // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
+        // IME composition context は長い沈黙の後に期限切れになる可能性があるため。
+        const COMPOSITION_TIMEOUT_MS: u64 = 2000;
+        let warm = self.composition_warm.get();
+        let elapsed = self.ms_since_last_send();
+        let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
+        let prepend_f2_warmup = !warm || session_expired;
         if prepend_f2_warmup {
-            log::debug!("[tsf-warmup] cold → prepending VK_DBE_HIRAGANA to first SendInput");
+            if session_expired {
+                log::debug!("[tsf-warmup] session expired ({elapsed}ms) → prepending VK_DBE_HIRAGANA to first SendInput");
+            } else {
+                log::debug!("[tsf-warmup] cold → prepending VK_DBE_HIRAGANA to first SendInput");
+            }
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
