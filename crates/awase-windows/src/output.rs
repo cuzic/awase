@@ -305,7 +305,7 @@ pub struct Output {
     /// warmup バッチを送るたびにインクリメントされる。
     /// `[h1-probe]` ログの `cold=N` フィールドがこの値に対応する。
     cold_start_count: std::cell::Cell<u32>,
-    /// TSF composition context の readiness フラグ。
+    /// TSF composition context の readiness フラグ（epoch 付き）。
     ///
     /// # 設計メモ（2026-05-14）
     ///
@@ -317,12 +317,19 @@ pub struct Output {
     /// 今後問題が複雑化する場合は `ImeState { ime_enabled, composition_ready }`
     /// への分離を検討すること。
     ///
-    /// # cold になるタイミング（`false`）
-    ///   - 起動時（初期値 false）
-    ///   - フォーカス変更（別ウィンドウ = 新しい TSF context）
+    /// # cold になるタイミング（0）
+    ///   - 起動時（初期値 0 = cold）
+    ///   - フォーカス変更（`on_focus_changed()` が focus_epoch をインクリメント → 自動無効化）
     ///   - Space / Enter / Escape の passthrough / reinject（composition 確定・キャンセル）
     ///   - エンジン OFF → ON（IME 状態リセット）
     ///   - F2 (VK_DBE_HIRAGANA) 検出（TSF context が未初期化になる可能性）
+    ///
+    /// # epoch による自動無効化
+    ///
+    /// `composition_warm_epoch` はウォームになった時点の `focus_epoch` を記録する。
+    /// `is_composition_warm()` は両者が一致するときのみ true を返すため、
+    /// フォーカス変更で `focus_epoch` が進むと前ウィンドウのウォーム状態は
+    /// 自動的に無効化される（`mark_composition_cold()` 呼び出し漏れに対する安全ネット）。
     ///
     /// # 重要: 物理 F2 と warmup F2 の違い
     ///
@@ -336,9 +343,15 @@ pub struct Output {
     /// そのため TSF モードでは物理 F2 を awase が Consume し、
     /// 次の NICOLA 出力バッチの warmup F2 で一本化する設計を取る。
     ///
-    /// `send_romaji_batched` / `send_romaji_as_tsf` が `false` を検出すると
-    /// VK_DBE_HIRAGANA ウォームアップを先頭に挿入し、送信後に `true` にセットする。
-    composition_warm: std::cell::Cell<bool>,
+    /// `send_romaji_batched` / `send_romaji_as_tsf` が cold を検出すると
+    /// VK_DBE_HIRAGANA ウォームアップを先頭に挿入し、送信後に `mark_composition_warm()` を呼ぶ。
+    composition_warm_epoch: std::cell::Cell<u32>,
+    /// 現在のフォーカスウィンドウのエポック番号。
+    ///
+    /// `on_focus_changed()` が呼ばれるたびにインクリメントされる。
+    /// `composition_warm_epoch` と照合することで、前ウィンドウのウォーム状態を
+    /// 自動無効化する。
+    focus_epoch: std::cell::Cell<u32>,
 }
 
 impl Output {
@@ -353,7 +366,8 @@ impl Output {
             symbol_to_vk: build_symbol_to_vk(),
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(0),
-            composition_warm: std::cell::Cell::new(false),
+            composition_warm_epoch: std::cell::Cell::new(0), // 0 = cold
+            focus_epoch: std::cell::Cell::new(1),            // 1 = initial window
         }
     }
 
@@ -371,11 +385,11 @@ impl Output {
     /// IME composition context をコールド状態にマークする。
     ///
     /// 次の VK / TSF composition 送信時に VK_DBE_HIRAGANA ウォームアップを
-    /// 先行送信させる。フォーカス変更・Space/Enter/Escape passthrough・
-    /// エンジン toggle 等のタイミングで呼ぶ。
+    /// 先行送信させる。Space/Enter/Escape passthrough・エンジン toggle 等のタイミングで呼ぶ。
+    /// フォーカス変更は `on_focus_changed()` を使うこと（epoch も更新される）。
     pub fn mark_composition_cold(&self) {
         log::debug!("[composition] marked cold → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
-        self.composition_warm.set(false);
+        self.composition_warm_epoch.set(0);
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -383,13 +397,28 @@ impl Output {
     /// 直前の NICOLA 出力バッチで warmup F2 が正常に送信され、
     /// TSF composition context が初期化済みであると分かっている場合に呼ぶ。
     pub fn mark_composition_warm(&self) {
-        log::debug!("[composition] marked warm → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
-        self.composition_warm.set(true);
+        let epoch = self.focus_epoch.get();
+        log::debug!("[composition] marked warm (epoch={epoch}) → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
+        self.composition_warm_epoch.set(epoch);
     }
 
-    /// 現在の composition_warm フラグを返す（ログ・診断用）。
+    /// 現在の composition_warm フラグを返す。
+    ///
+    /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
     pub fn is_composition_warm(&self) -> bool {
-        self.composition_warm.get()
+        let epoch = self.focus_epoch.get();
+        self.composition_warm_epoch.get() == epoch && epoch != 0
+    }
+
+    /// フォーカスウィンドウが変わったことを通知する。
+    ///
+    /// `focus_epoch` をインクリメントし、前ウィンドウのウォーム状態を自動無効化する。
+    /// 従来の `mark_composition_cold()` 呼び出しの代わりに使う（明示的なコールド化も同時に行う）。
+    pub fn on_focus_changed(&self) {
+        let new_epoch = self.focus_epoch.get().wrapping_add(1).max(1); // 0 は cold の番兵値なので skip
+        self.focus_epoch.set(new_epoch);
+        self.composition_warm_epoch.set(0);
+        log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
     /// 現在のフォーカス先が TSF 注入モードかどうかを返す。
@@ -648,7 +677,7 @@ impl Output {
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
         const COMPOSITION_TIMEOUT_MS: u64 = 2000;
-        let warm = self.composition_warm.get();
+        let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
         let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
@@ -734,7 +763,7 @@ impl Output {
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
-        self.composition_warm.set(true);
+        self.mark_composition_warm();
     }
 
     /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
@@ -780,7 +809,7 @@ impl Output {
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
         const COMPOSITION_TIMEOUT_MS: u64 = 2000;
-        let warm = self.composition_warm.get();
+        let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
         let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
@@ -894,7 +923,7 @@ impl Output {
                 );
             }
         }
-        self.composition_warm.set(true);
+        self.mark_composition_warm();
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）

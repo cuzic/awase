@@ -662,6 +662,8 @@ impl Runtime {
 
             // 診断用: フォアグラウンドプロセス変更時刻を記録
             self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
+            // composition_warm を epoch ベースで自動無効化（前ウィンドウの warm 状態を引き継がない）
+            self.executor.platform.output.on_focus_changed();
 
             // フォーカス変更時は IME 強制書き込みガードをリセットする。
             // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、
