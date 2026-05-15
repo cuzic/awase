@@ -109,15 +109,15 @@ impl ActivationState {
 
     /// `Inactive` を `ContextChange` にマップする（flush 理由として使用）。
     #[must_use]
-    pub const fn to_context_change(self) -> crate::types::ContextChange {
+    pub const fn to_context_change(self) -> ContextChange {
         match self {
             Self::Inactive(InactiveReason::UserDisabled) => {
-                crate::types::ContextChange::EngineDisabled
+                ContextChange::EngineDisabled
             }
             Self::Inactive(InactiveReason::NonTextFocus) => {
-                crate::types::ContextChange::FocusChanged
+                ContextChange::FocusChanged
             }
-            _ => crate::types::ContextChange::ImeOff,
+            _ => ContextChange::ImeOff,
         }
     }
 }

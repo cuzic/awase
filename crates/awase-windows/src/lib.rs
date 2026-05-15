@@ -233,7 +233,7 @@ pub struct PlatformState {
     /// 各ソースの最新観測値（Phase 2: 観測と判断の分離）。
     ///
     /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
-    pub ime_observations: crate::ime_observations::ImeObservations,
+    pub ime_observations: ime_observations::ImeObservations,
 }
 
 impl PlatformState {
@@ -270,7 +270,7 @@ impl PlatformState {
             focus_transition_pending: false,
             last_focus_change_ms: 0,
             os_ime_on: None,
-            ime_observations: crate::ime_observations::ImeObservations::default(),
+            ime_observations: ime_observations::ImeObservations::default(),
         }
     }
 }

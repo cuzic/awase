@@ -791,7 +791,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
             let effective = on && probe.is_japanese_ime;
             // OS 観測値を別フィールドに記録（ユーザー意図と分離）
             app.platform_state.os_ime_on = Some(effective);
-            let ms = awase_windows::hook::current_tick_ms();
+            let ms = hook::current_tick_ms();
             // 観測値を ImeObservations に記録（フィルタリングは resolve_and_clear() で行う）
             app.platform_state.ime_observations.focus_probe =
                 Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
@@ -859,7 +859,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 awase::types::ShadowImeAction::TurnOn => true,
                 awase::types::ShadowImeAction::TurnOff => false,
             };
-            let ms = awase_windows::hook::current_tick_ms();
+            let ms = hook::current_tick_ms();
             let obs = awase_windows::ime_observations::ImeObs { value: new_val, ms };
             match source {
                 ShadowSource::SyncKey => app.platform_state.ime_observations.sync_key = Some(obs),
@@ -911,7 +911,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // SetOpen Effect 実行前に observer が stale な OS 状態で上書きしないよう
     // タイマーを停止する。SetOpen 実行後に post_ime_refresh() が再スケジュール。
     if let Some(new_ime_on) = decision.find_ime_set_open() {
-        let ms = awase_windows::hook::current_tick_ms();
+        let ms = hook::current_tick_ms();
         app.platform_state.ime_observations.set_open_request =
             Some(awase_windows::ime_observations::ImeObs { value: new_ime_on, ms });
         app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
