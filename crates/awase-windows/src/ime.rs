@@ -1,6 +1,6 @@
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{
-    OpenProcess, WaitForInputIdle, PROCESS_SYNCHRONIZE,
+    OpenProcess, WaitForInputIdle, PROCESS_QUERY_INFORMATION, PROCESS_SYNCHRONIZE,
 };
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmReleaseContext,
@@ -122,30 +122,14 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
 /// # Safety
 /// Calls Win32 APIs.
 pub unsafe fn wait_for_focus_process_idle(pid: u32, timeout_ms: u32) -> u32 {
-    let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+    // PROCESS_QUERY_INFORMATION is required by WaitForInputIdle internally
+    // (it needs to enumerate threads to check idle state).
+    let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_INFORMATION, false, pid) else {
         log::debug!("[h1-idle] OpenProcess pid={pid} failed");
         return u32::MAX;
     };
-    // WaitForInputIdle takes the handle by value (move), so duplicate it first.
-    use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
-    use windows::Win32::System::Threading::GetCurrentProcess;
-    let mut dup = windows::Win32::Foundation::HANDLE::default();
-    let ok = DuplicateHandle(
-        GetCurrentProcess(),
-        handle,
-        GetCurrentProcess(),
-        &mut dup,
-        0,
-        false,
-        DUPLICATE_SAME_ACCESS,
-    );
-    let result = if ok.is_ok() {
-        let r = WaitForInputIdle(dup, timeout_ms);
-        let _ = CloseHandle(dup);
-        r
-    } else {
-        WaitForInputIdle(handle, timeout_ms)
-    };
+    // HANDLE is Copy — pass by value, original remains valid for CloseHandle.
+    let result = WaitForInputIdle(handle, timeout_ms);
     let _ = CloseHandle(handle);
     result
 }
