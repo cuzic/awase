@@ -888,53 +888,49 @@ impl Output {
                 );
             }
 
-            // F2-only バッチ後のプローブ:
-            //   responsive=true → WezTerm が F2 を処理済み（TSF context 初期化完了期待）
-            //   responsive=false → WezTerm がまだ処理中（timeout まで待機）
-            // probe がガードとして機能し、romaji バッチを送る前に WezTerm が確実に
-            // F2 を処理している状態を作る。
-            let probe_start = std::time::Instant::now();
-            const H1_PROBE_TIMEOUT_MS: u32 = 10;
-            const H1_PROBE_MAX: u8 = 15;
-            let mut probe_final_conv: Option<u32> = None;
-            for i in 0..H1_PROBE_MAX {
-                let elapsed_ms = probe_start.elapsed().as_millis();
-                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
-                let responsive = conv.is_some();
-                let roman = conv.map_or(false, |v| v & 0x0010 != 0);
-                // H8: 最初のプローブだけ open status も取得（タイムアウト追加を避けるため i==0 のみ）
-                if i == 0 {
-                    let ime_open_probe0 = unsafe { crate::ime::get_ime_open_status_raw_timeout(H1_PROBE_TIMEOUT_MS) };
-                    log::debug!(
-                        "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={} ime_open={ime_open_probe0:?}",
-                        elapsed_ms,
-                        conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
-                    );
-                } else {
-                    log::debug!(
-                        "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
-                        elapsed_ms,
-                        conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
-                    );
-                }
-                if responsive {
-                    probe_final_conv = conv;
-                    break;
-                }
-            }
-            let probe_total_ms = probe_start.elapsed().as_millis();
-            let f2_to_probe_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
-            // H8: probe 後 open status（H8: IME 実際に open か）
-            let ime_open_post_probe = unsafe { crate::ime::get_ime_open_status_raw_timeout(H1_PROBE_TIMEOUT_MS) };
-            // H6: probe 後 HWND（ウィンドウ切り替えが起きたか）
-            let hwnd_post_probe = unsafe { crate::ime::get_foreground_hwnd_raw() };
+            // F2-only バッチ後: WezTerm のメインスレッドが F2 を処理して
+            // TSF context を初期化するまで待機する。
+            //
+            // 旧 probe（IME window への IMM32 変換モード問い合わせ）は IME window が
+            // 別メッセージキューで即時応答するため WezTerm メインスレッドの処理を反映せず、
+            // 常に elapsed=0ms で抜けていた（H1 race の根本原因）。
+            //
+            // WaitForInputIdle は WezTerm のメインメッセージキューが空になるまで
+            // ブロックするため、F2 処理完了を確実に待てる。
+            const H1_IDLE_TIMEOUT_MS: u32 = 100;
+            let idle_start_tick = crate::hook::current_tick_ms();
+            let focused_pid = unsafe {
+                crate::APP.get_ref()
+                    .and_then(|app| app.executor.platform.focus.last_focus_info.as_ref())
+                    .map(|(pid, _)| *pid)
+            };
+            let idle_result = if let Some(pid) = focused_pid {
+                unsafe { crate::ime::wait_for_focus_process_idle(pid, H1_IDLE_TIMEOUT_MS) }
+            } else {
+                log::debug!("[h1-idle] no focused pid, skipping WaitForInputIdle");
+                u32::MAX
+            };
+            let idle_elapsed_ms = crate::hook::current_tick_ms().saturating_sub(idle_start_tick);
+            let f2_to_idle_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
+            // idle_result: 0=idle, 258=WAIT_TIMEOUT, MAX=error/skipped
             log::debug!(
-                "[h1-probe-done] cold={cold_n} probe_total={}ms f2_to_probe_ms={} hwnd_changed={} ime_open_post={:?} final_conv={}",
-                probe_total_ms,
-                f2_to_probe_ms,
-                hwnd_pre_f2 != hwnd_post_probe,
-                ime_open_post_probe,
-                probe_final_conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                "[h1-idle] cold={cold_n} WaitForInputIdle result={idle_result} idle_elapsed={}ms f2_to_idle={}ms",
+                idle_elapsed_ms,
+                f2_to_idle_ms,
+            );
+
+            // IMM32 変換モードを確認（TSF 状態の参考値、H4/H9 判定用）
+            const H1_PROBE_TIMEOUT_MS: u32 = 10;
+            let conv_post_idle = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
+            let ime_open_post_idle = unsafe { crate::ime::get_ime_open_status_raw_timeout(H1_PROBE_TIMEOUT_MS) };
+            let hwnd_post_idle = unsafe { crate::ime::get_foreground_hwnd_raw() };
+            log::debug!(
+                "[h1-probe-done] cold={cold_n} f2_to_idle_ms={} hwnd_changed={} ime_open={:?} conv={} ROMAN={}",
+                f2_to_idle_ms,
+                hwnd_pre_f2 != hwnd_post_idle,
+                ime_open_post_idle,
+                conv_post_idle.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv_post_idle.map_or(false, |v| v & 0x0010 != 0),
             );
         } else {
             cold_n = self.cold_start_count.get();

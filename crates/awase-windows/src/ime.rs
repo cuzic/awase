@@ -1,4 +1,7 @@
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
+use windows::Win32::System::Threading::{
+    OpenProcess, WaitForInputIdle, PROCESS_SYNCHRONIZE,
+};
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmReleaseContext,
     IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
@@ -142,6 +145,49 @@ pub unsafe fn get_ime_open_status_raw_timeout(timeout_ms: u32) -> Option<bool> {
 /// Calls Win32 APIs.
 pub unsafe fn get_foreground_hwnd_raw() -> usize {
     GetForegroundWindow().0 as usize
+}
+
+/// フォアグラウンドプロセスの入力キューがアイドルになるまで待機する（H1 修正用）。
+///
+/// `WaitForInputIdle` は対象プロセスのメッセージキューが空になるまでブロックする。
+/// probe が `IME window` (別メッセージキュー) に問い合わせるのと異なり、
+/// これは WezTerm の**メインスレッド**が F2 を処理して TSF context を
+/// 初期化するまで確実に待機する。
+///
+/// # 戻り値
+/// - `0`   = success（プロセスがアイドル状態になった）
+/// - `258` = WAIT_TIMEOUT（timeout_ms 内に完了しなかった）
+/// - その他 = WAIT_FAILED または STILL_ACTIVE
+///
+/// # Safety
+/// Calls Win32 APIs.
+pub unsafe fn wait_for_focus_process_idle(pid: u32, timeout_ms: u32) -> u32 {
+    let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
+        log::debug!("[h1-idle] OpenProcess pid={pid} failed");
+        return u32::MAX;
+    };
+    // WaitForInputIdle takes the handle by value (move), so duplicate it first.
+    use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    let mut dup = windows::Win32::Foundation::HANDLE::default();
+    let ok = DuplicateHandle(
+        GetCurrentProcess(),
+        handle,
+        GetCurrentProcess(),
+        &mut dup,
+        0,
+        false,
+        DUPLICATE_SAME_ACCESS,
+    );
+    let result = if ok.is_ok() {
+        let r = WaitForInputIdle(dup, timeout_ms);
+        let _ = CloseHandle(dup);
+        r
+    } else {
+        WaitForInputIdle(handle, timeout_ms)
+    };
+    let _ = CloseHandle(handle);
+    result
 }
 
 /// フォアグラウンドウィンドウのクラス名を返す（H1 診断ログ専用）。
