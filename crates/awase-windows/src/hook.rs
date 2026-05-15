@@ -418,7 +418,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         ps.hook_event_count += 1;
 
         // ── かな入力方式バイパス ──
-        if !ps.preconditions.is_romaji {
+        if !ps.preconditions.input_mode.is_romaji_capable() {
             return CallNextHookEx(hook_handle, ncode, wparam, lparam);
         }
 

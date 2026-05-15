@@ -17,8 +17,8 @@ use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyEventType, RawKeyEvent};
 
 use super::decision::{
-    Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext, InputEffect,
-    SpecialKeyCombos, UiEffect,
+    ActivationController, ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
+    InactiveReason, InputContext, InputEffect, SpecialKeyCombos,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
@@ -29,9 +29,9 @@ use super::nicola_fsm::NicolaFsm;
 /// 統合エンジン: NicolaFsm + 特殊キー処理
 ///
 /// Engine の有効状態は2軸で決まる:
-/// - `user_enabled`: ユーザーの意図（ホットキー/トレイで操作）�� FSM の `enabled` フラグ
+/// - `user_enabled`: ユーザーの意図（ホットキー/トレイで操作）= FSM の `enabled` フラグ
 /// - 環境前提条件: `InputContext { ime_on, is_romaji, is_japanese_ime, ... }` — Platform 層が毎回渡す
-/// - 実効状態: `user_enabled && ctx.ime_on && ctx.is_romaji && ctx.is_japanese_ime`
+/// - 実効状態: `compute_state(ctx)` が `ActivationState::Active` を返すとき
 ///
 /// Engine は前提条件を内部にキャッシュしない。毎回の呼び出しで Platform 層から受け取る。
 ///
@@ -43,8 +43,8 @@ pub struct Engine {
     special_keys: SpecialKeyCombos,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
-    /// 前回の呼び出し時の実効状態（遷移検知用）
-    prev_active: bool,
+    /// 実効状態の遷移検知・SetOpen/UiEffect 発行を集約する
+    activation: ActivationController,
 }
 
 impl Engine {
@@ -57,51 +57,69 @@ impl Engine {
             adapter: FsmAdapter::new(fsm),
             special_keys,
             lifecycle: KeyLifecycle::new(),
-            prev_active: false,
+            activation: ActivationController::new(),
         }
     }
 
-    /// InputContext から実効状態を計算する
+    /// InputContext から実効状態を `ActivationState` で返す。
+    ///
+    /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
+    /// 各条件が false のとき対応する `InactiveReason` を返す。
+    #[must_use]
+    pub fn compute_state(&self, ctx: &InputContext) -> ActivationState {
+        if !self.adapter.is_enabled() {
+            return ActivationState::Inactive(InactiveReason::UserDisabled);
+        }
+        if !ctx.is_japanese_ime {
+            return ActivationState::Inactive(InactiveReason::NotJapaneseIme);
+        }
+        if !ctx.ime_on {
+            return ActivationState::Inactive(InactiveReason::ImeOff);
+        }
+        if !ctx.input_mode.is_romaji_capable() {
+            return ActivationState::Inactive(InactiveReason::NotRomajiInput);
+        }
+        ActivationState::Active
+    }
+
+    /// InputContext から実効状態を bool で返す（後方互換 API）。
     #[must_use]
     pub fn compute_active(&self, ctx: &InputContext) -> bool {
-        self.adapter.is_enabled() && ctx.ime_on && ctx.is_romaji && ctx.is_japanese_ime
+        self.compute_state(ctx).is_active()
     }
 
     /// 実効状態の遷移を検知し、必要な Effect（flush, UI 通知）を返す。
-    /// `prev_active` を更新する。
+    /// `ActivationController` を更新する。
     fn check_active_transition(&mut self, ctx: &InputContext) -> EffectVec {
-        let new_active = self.compute_active(ctx);
+        let new_state = self.compute_state(ctx);
+        let was_active = self.activation.current().is_active();
+        let now_active = new_state.is_active();
         let mut effects = EffectVec::new();
 
-        if self.prev_active != new_active {
-            if !new_active {
+        if was_active != now_active {
+            if !now_active {
                 // active → inactive: 保留キーをフラッシュ
-                let flush = self.adapter.flush_to_effects(ContextChange::ImeOff);
+                let reason = new_state.to_context_change();
+                let flush = self.adapter.flush_to_effects(reason);
                 effects.extend(flush);
                 // lifecycle をクリア: Engine が consumed した KeyDown の対応 KeyUp が
                 // Engine inactive 時に到着しても consumed されないようにする。
-                // OS は consumed された KeyDown を受け取っていないので KeyUp の再注入は不要。
                 let _ = self.lifecycle.flush_pending_key_ups();
-            } else {
-                // inactive → active: shadow IME が ON になっても OS IME が閉じたままの場合がある。
-                // 典型例: TSF モードで F2 を消費（double-F2 防止）した場合、F2 が OS に届かず
-                // IME が開かれないまま engine だけが有効化される（"nonaiyo" 問題）。
-                // SetOpen(true) で OS IME を強制的に開くことで、IME が確実に有効な状態にする。
-                effects.push(Effect::Ime(ImeEffect::SetOpen(true)));
             }
-            effects.push(Effect::Ui(UiEffect::EngineStateChanged {
-                enabled: new_active,
-            }));
             log::info!(
-                "Engine {} (ime={}, romaji={}, japanese={}, user={})",
-                if new_active { "activated" } else { "deactivated" },
+                "Engine {} (ime={}, romaji={}, japanese={}, user={}, reason={:?})",
+                if now_active { "activated" } else { "deactivated" },
                 ctx.ime_on,
-                ctx.is_romaji,
+                ctx.input_mode.is_romaji_capable(),
                 ctx.is_japanese_ime,
                 self.adapter.is_enabled(),
+                new_state,
             );
-            self.prev_active = new_active;
         }
+
+        // ActivationController が SetOpen(true) + UiEffect を発行し、prev を更新する
+        let transition_effects = self.activation.transition_to(new_state);
+        effects.extend(transition_effects);
         effects
     }
 
@@ -252,9 +270,14 @@ impl Engine {
         let _ = self.adapter.set_enabled(enabled);
     }
 
-    /// prev_active を直接設定する（テスト・初期化用）
+    /// 前回の実効状態を直接設定する（テスト・初期化用）。
     pub fn set_prev_active(&mut self, active: bool) {
-        self.prev_active = active;
+        let state = if active {
+            ActivationState::Active
+        } else {
+            ActivationState::Inactive(InactiveReason::UserDisabled)
+        };
+        self.activation.set(state);
     }
 
     // ── 内部メソッド ──
@@ -262,7 +285,7 @@ impl Engine {
     /// user_enabled 変更後の active 遷移を Decision に反映する。
     ///
     /// `old_active != new_active` のときのみ `EngineStateChanged` を push し、
-    /// `prev_active` を更新する。同じパターンが ON/OFF/toggle の3箇所に現れるため共通化。
+    /// `ActivationController` を更新する。
     fn apply_active_transition(
         &mut self,
         old_active: bool,
@@ -270,14 +293,23 @@ impl Engine {
         decision: &mut Decision,
     ) {
         if old_active != new_active {
-            if new_active {
-                // inactive → active: check_active_transition と対称に SetOpen(true) を送る。
-                decision.push_effect(Effect::Ime(ImeEffect::SetOpen(true)));
+            // activation.prev を呼び出し時点の実際の状態に同期してから遷移させる
+            let old_state = if old_active {
+                ActivationState::Active
+            } else {
+                ActivationState::Inactive(InactiveReason::UserDisabled)
+            };
+            self.activation.set(old_state);
+
+            let new_state = if new_active {
+                ActivationState::Active
+            } else {
+                ActivationState::Inactive(InactiveReason::UserDisabled)
+            };
+            let effects = self.activation.transition_to(new_state);
+            for e in effects {
+                decision.push_effect(e);
             }
-            decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
-                enabled: new_active,
-            }));
-            self.prev_active = new_active;
         }
     }
 

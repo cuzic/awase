@@ -60,6 +60,128 @@ pub enum Effect {
     Ui(UiEffect),
 }
 
+// ── Activation 状態モデル ──
+
+/// Engine の実効有効状態（3値）。
+///
+/// 旧 `Engine::prev_active: bool` を置き換える。
+/// `Pending` を導入することで「フォーカス変更直後の観測待ち」を
+/// false に落とさずに表現できる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationState {
+    Active,
+    Inactive(InactiveReason),
+    /// 一時的に判断保留。直前が Active なら grace 期間中は Active 扱い。
+    Pending(PendingReason),
+}
+
+/// 不活性の確定理由
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InactiveReason {
+    /// ユーザーがホットキー等で明示的に無効化
+    UserDisabled,
+    /// IME が OFF（shadow=OFF が確定）
+    ImeOff,
+    /// ローマ字以外の入力方式（かな入力等）
+    NotRomajiInput,
+    /// 日本語以外の IME（英語、中国語等）
+    NotJapaneseIme,
+    /// フォーカスが非テキスト領域
+    NonTextFocus,
+}
+
+/// 判断保留の理由
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingReason {
+    /// フォーカス変更直後で probe 結果待ち
+    FocusTransition { since_ms: u64 },
+    /// observe() が連続失敗しているが閾値未満
+    ObservationMissing { miss_count: u32 },
+    /// IMM ブリッジ broken アプリで初回検出待ち
+    ImmBridgeUnknown,
+}
+
+impl ActivationState {
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    /// `Inactive` を `ContextChange` にマップする（flush 理由として使用）。
+    #[must_use]
+    pub const fn to_context_change(self) -> crate::types::ContextChange {
+        match self {
+            Self::Inactive(InactiveReason::UserDisabled) => {
+                crate::types::ContextChange::EngineDisabled
+            }
+            Self::Inactive(InactiveReason::NonTextFocus) => {
+                crate::types::ContextChange::FocusChanged
+            }
+            _ => crate::types::ContextChange::ImeOff,
+        }
+    }
+}
+
+/// 実効状態遷移の検出・副作用発行を集約する。
+///
+/// 旧 `Engine::check_active_transition` + `Engine::apply_active_transition`
+/// の2系統を一本化する。`Engine` が内部で保持し、active 遷移に関する
+/// SetOpen(true) と UiEffect 発行をここに集約する。
+///
+/// flush と KeyLifecycle 操作は Engine 側が担う（FsmAdapter 依存のため）。
+#[derive(Debug)]
+pub struct ActivationController {
+    prev: ActivationState,
+}
+
+impl ActivationController {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            prev: ActivationState::Inactive(InactiveReason::UserDisabled),
+        }
+    }
+
+    #[must_use]
+    pub const fn current(&self) -> ActivationState {
+        self.prev
+    }
+
+    /// テスト・初期化用に prev を直接設定する。
+    pub fn set(&mut self, state: ActivationState) {
+        self.prev = state;
+    }
+
+    /// 新しい状態に遷移する。遷移が発生した場合に副作用 Effects を返す。
+    ///
+    /// inactive → active: `Ime(SetOpen(true))` + `Ui(EngineStateChanged{true})`
+    /// active → inactive: `Ui(EngineStateChanged{false})`（flush は Engine 側）
+    /// 同じ状態: 空の EffectVec
+    pub fn transition_to(&mut self, new_state: ActivationState) -> EffectVec {
+        let was_active = self.prev.is_active();
+        let now_active = new_state.is_active();
+        let mut effects = EffectVec::new();
+
+        if was_active != now_active {
+            if now_active {
+                // inactive → active: OS IME を強制的に開く（"nonaiyo" 問題対策）
+                effects.push(Effect::Ime(ImeEffect::SetOpen(true)));
+            }
+            effects.push(Effect::Ui(UiEffect::EngineStateChanged {
+                enabled: now_active,
+            }));
+            self.prev = new_state;
+        }
+        effects
+    }
+}
+
+impl Default for ActivationController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Engine の判断結果（副作用なし、値で消費される）。
 ///
 /// `consumed: bool` ではなく enum で意味を固定する。
@@ -170,6 +292,47 @@ impl Decision {
     }
 }
 
+// ── InputModeState ──
+
+/// 入力方式の確度付き状態。
+///
+/// 旧 `InputContext.is_romaji: bool` を置き換える。
+/// `bool` では「観測値」と「IMM broken アプリ向け仮定値」を区別できず、
+/// Chrome 等で stale な false に上書きされる問題があった。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputModeState {
+    /// IMM クエリ等でローマ字入力と確認できた
+    ObservedRomaji,
+    /// IMM クエリ等でかな入力と確認できた
+    ObservedKana,
+    /// 観測不能だが状況証拠から romaji と仮定（Chrome/UWP/Electron 等）
+    AssumedRomaji { reason: AssumedReason },
+    /// 不明（起動直後、フォーカス確定前等）
+    Unknown,
+}
+
+/// `AssumedRomaji` の根拠
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssumedReason {
+    /// IMM ブリッジが broken と既知のクラス名（Chrome_WidgetWin_1 等）
+    ImmBridgeBroken,
+    /// フォーカス変更直後で観測確定前
+    FocusTransition,
+    /// AppKind が Chrome/UWP で IMM クエリをスキップしている
+    AppKindBlacklist,
+    /// 強制 ON ガード中（連続検出失敗による）
+    ForceOnGuardActive,
+}
+
+impl InputModeState {
+    /// ローマ字入力と判断できるかどうか。
+    /// `ObservedRomaji` と `AssumedRomaji` を true とみなす。
+    #[must_use]
+    pub const fn is_romaji_capable(self) -> bool {
+        matches!(self, Self::ObservedRomaji | Self::AssumedRomaji { .. })
+    }
+}
+
 /// Engine が判断に使う外部コンテキスト（読み取り専用）。
 ///
 /// # 設計ルール
@@ -182,12 +345,12 @@ pub struct InputContext {
     // ── Environment preconditions ──
     /// IME が ON か（Platform 層がアトミック変数から取得、shadow 反映済み）
     pub ime_on: bool,
-    /// ローマ字入力モードか（false = かな入力）
-    pub is_romaji: bool,
+    /// 入力方式の確度付き状態（ObservedRomaji / AssumedRomaji / ObservedKana / Unknown）
+    pub input_mode: InputModeState,
     /// 日本語 IME がアクティブか（MS-IME, Google, ATOK 等）
     pub is_japanese_ime: bool,
     // ── Physical key state (provided by Platform) ──
-    /// 修飾キー状態（grace 猶予込み — コンボキー検出用）
+    /// 修飾キー状態（OS 実状態 — コンボキー検出用）
     pub modifiers: ModifierState,
     /// 修飾キー状態（OS 実状態のみ — NicolaFsm の OsModifierHeld 判定用）
     pub os_modifiers: ModifierState,
@@ -195,6 +358,14 @@ pub struct InputContext {
     pub left_thumb_down: Option<Timestamp>,
     /// 右親指キー押下時刻（None = 非押下）
     pub right_thumb_down: Option<Timestamp>,
+}
+
+impl InputContext {
+    /// 後方互換: is_romaji の bool アクセサ。
+    #[must_use]
+    pub const fn is_romaji(&self) -> bool {
+        self.input_mode.is_romaji_capable()
+    }
 }
 
 /// IME 同期キー（トグル・ON・OFF）を集約する構造体

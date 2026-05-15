@@ -1,6 +1,6 @@
 use awase::config::AppConfig;
 use awase::engine::{
-    Decision, Effect, Engine, InputContext, InputEffect, NicolaFsm,
+    Decision, Effect, Engine, InputContext, InputEffect, InputModeState, NicolaFsm,
     SpecialKeyCombos, TIMER_PENDING,
 };
 use awase::scanmap::{KeyboardModel, PhysicalPos};
@@ -46,7 +46,7 @@ fn make_nicola_engine() -> Engine {
 fn ctx() -> InputContext {
     InputContext {
         ime_on: true,
-        is_romaji: true,
+        input_mode: InputModeState::ObservedRomaji,
         is_japanese_ime: true,
         modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },
         os_modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },

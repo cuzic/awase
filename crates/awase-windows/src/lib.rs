@@ -39,6 +39,7 @@ pub use single_thread_cell::SingleThreadCell;
 
 use std::sync::atomic::AtomicBool;
 
+use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind, RawKeyEvent};
 
 // ── クロススレッド共有グローバル状態 ──
@@ -68,8 +69,8 @@ pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
 pub struct Preconditions {
     /// IME が ON か（shadow 追跡含む、Observer ポーリングで実際の OS 状態に収束）
     pub ime_on: bool,
-    /// ローマ字入力方式か（false = かな入力、フックはすべてのキーをパススルー）
-    pub is_romaji: bool,
+    /// 入力モード（ローマ字 / かな / 不明）
+    pub input_mode: InputModeState,
     /// 日本語 IME がアクティブか
     pub is_japanese_ime: bool,
     /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
@@ -201,7 +202,7 @@ impl PlatformState {
         Self {
             preconditions: Preconditions {
                 ime_on: true,        // 安全側: ON で初期化
-                is_romaji: true,     // デフォルト: ローマ字入力
+                input_mode: InputModeState::ObservedRomaji, // デフォルト: ローマ字入力
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: None,
                 ime_detect_miss_count: 0,

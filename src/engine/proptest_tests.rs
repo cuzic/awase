@@ -3,7 +3,7 @@
 use proptest::prelude::*;
 
 use crate::config::ConfirmMode;
-use crate::engine::decision::{InputContext, SpecialKeyCombos};
+use crate::engine::decision::{InputContext, InputModeState, SpecialKeyCombos};
 use crate::engine::engine::Engine;
 use crate::engine::fsm_types::EngineState;
 use crate::engine::input_tracker::InputTracker;
@@ -120,7 +120,7 @@ impl TestHarness {
 fn ime_on_ctx() -> InputContext {
     InputContext {
         ime_on: true,
-        is_romaji: true,
+        input_mode: InputModeState::ObservedRomaji,
         is_japanese_ime: true,
         modifiers: crate::engine::fsm_types::ModifierState { ctrl: false, alt: false, shift: false, win: false },
         os_modifiers: crate::engine::fsm_types::ModifierState { ctrl: false, alt: false, shift: false, win: false },

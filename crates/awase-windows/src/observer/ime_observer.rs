@@ -8,6 +8,7 @@
 //!
 //! `None` を「偽」として扱ってはならない。
 
+use awase::engine::InputModeState;
 use crate::Preconditions;
 
 /// IME_CMODE_ROMAN ビット（0x0010）
@@ -89,8 +90,12 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
     if preconditions.ime_force_on_guard && snap.is_romaji.is_none() {
         // ガード中かつ検出失敗: is_romaji を維持
     } else if let Some(romaji) = snap.is_romaji {
-        let prev = preconditions.is_romaji;
-        preconditions.is_romaji = romaji;
+        let prev = preconditions.input_mode.is_romaji_capable();
+        preconditions.input_mode = if romaji {
+            InputModeState::ObservedRomaji
+        } else {
+            InputModeState::ObservedKana
+        };
         if prev != romaji {
             log::info!(
                 "IME input method changed: {} → {}",
@@ -112,13 +117,18 @@ pub unsafe fn observe(preconditions: &mut Preconditions) {
             if prev_had_roman != curr_has_roman && curr_has_native {
                 // ROMAN ビットが実際に変化した → モード切替を検出
                 let new_romaji = curr_has_roman;
-                if preconditions.is_romaji != new_romaji {
+                let prev_romaji = preconditions.input_mode.is_romaji_capable();
+                if prev_romaji != new_romaji {
                     log::info!(
                         "IME input method changed (ROMAN bit transition): {} → {}",
-                        if !preconditions.is_romaji { "kana" } else { "romaji" },
+                        if !prev_romaji { "kana" } else { "romaji" },
                         if !new_romaji { "kana" } else { "romaji" },
                     );
-                    preconditions.is_romaji = new_romaji;
+                    preconditions.input_mode = if new_romaji {
+                        InputModeState::ObservedRomaji
+                    } else {
+                        InputModeState::ObservedKana
+                    };
                 }
             }
         }

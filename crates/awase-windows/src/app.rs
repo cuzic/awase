@@ -13,7 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};
-use awase::engine::{Engine, NicolaFsm};
+use awase::engine::{Engine, InputModeState, NicolaFsm};
 use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind};
@@ -814,11 +814,15 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         // fast_ime_probe はトップレベル hwnd を使うため変換モードを取得できる場合が多い。
         // probe に is_romaji が含まれていれば preconditions をここで即座に更新する。
         if let Some(romaji) = probe.is_romaji {
-            let prev = app.platform_state.preconditions.is_romaji;
-            app.platform_state.preconditions.is_romaji = romaji;
+            let prev = app.platform_state.preconditions.input_mode.is_romaji_capable();
+            app.platform_state.preconditions.input_mode = if romaji {
+                InputModeState::ObservedRomaji
+            } else {
+                InputModeState::ObservedKana
+            };
             if prev != romaji {
                 log::info!(
-                    "Focus probe: is_romaji {} → {}",
+                    "Focus probe: input_mode {} → {}",
                     if prev { "romaji" } else { "kana" },
                     if romaji { "romaji" } else { "kana" },
                 );

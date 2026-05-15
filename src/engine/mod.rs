@@ -19,8 +19,9 @@ pub mod timing;
 
 // Public re-exports
 pub use decision::{
-    Decision, Effect, EffectVec, EngineCommand, ImeEffect, ImeSyncKeys, InputContext,
-    InputEffect, KeyBuffer, SpecialKeyCombos, TimerEffect, UiEffect,
+    ActivationState, AssumedReason, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
+    ImeSyncKeys, InputContext, InputEffect, InputModeState, KeyBuffer, SpecialKeyCombos,
+    TimerEffect, UiEffect,
 };
 pub use engine::Engine;
 pub use fsm_types::{

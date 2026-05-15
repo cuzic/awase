@@ -124,7 +124,7 @@ impl ImeDiagnosticSnapshot {
                     pid,
                     class,
                     preconditions.ime_on,
-                    preconditions.is_romaji,
+                    preconditions.input_mode.is_romaji_capable(),
                     preconditions.is_japanese_ime,
                     resolve_injection_mode_label(),
                     dt_focus,
