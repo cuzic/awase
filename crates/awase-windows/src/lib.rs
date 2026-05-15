@@ -88,6 +88,8 @@ pub enum ShadowSource {
     PanicReset,
     /// IMM broken アプリ切替補正（Chrome 等）
     ImmBrokenFix,
+    /// per-HWND IME キャッシュからの復元（フォーカス切り替え時の即時復元）
+    HwndCache,
 }
 
 /// 環境前提条件（IME 状態・入力方式・日本語判定）

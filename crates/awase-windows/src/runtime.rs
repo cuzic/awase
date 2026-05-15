@@ -185,6 +185,15 @@ fn save_imm_cache(base_dir: &std::path::Path, cache: &std::collections::HashMap<
     }
 }
 
+/// フォーカス切り替え時の IME 状態スナップショット（per-HWND キャッシュ用）
+#[derive(Debug, Clone, Copy)]
+pub struct HwndImeSnapshot {
+    pub ime_on: bool,
+    pub input_mode: InputModeState,
+    /// 記録時刻（GetTickCount64 ミリ秒）
+    pub recorded_ms: u64,
+}
+
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
 pub struct FocusDetector {
@@ -196,6 +205,13 @@ pub struct FocusDetector {
     /// 検出成功/失敗の実績に基づいて学習し、AppKind 判定に使う。
     /// ファイルに永続化される（起動時ロード、学習時セーブ）。
     pub imm_capability_cache: std::collections::HashMap<String, ImmCapability>,
+    /// per-HWND IME 状態キャッシュ。
+    ///
+    /// キー: `(process_id, class_name)` — HWND は再利用されるため class_name を合わせる。
+    /// 値: フォーカスが離れた時点の IME 状態スナップショット。
+    /// フォーカスが戻ったとき preconditions を即座に復元し、stale 窓をゼロにする。
+    /// probe / poll が成功すれば自動的に上書き補正される。
+    pub hwnd_ime_cache: std::collections::HashMap<(u32, String), HwndImeSnapshot>,
     /// キャッシュファイルの格納ディレクトリ（実行ファイルと同じ場所）
     base_dir: std::path::PathBuf,
 }
@@ -213,6 +229,7 @@ impl FocusDetector {
             last_focus_info: None,
             uia_sender: None,
             imm_capability_cache,
+            hwnd_ime_cache: std::collections::HashMap::new(),
             base_dir,
         }
     }
@@ -699,6 +716,24 @@ impl Runtime {
         let last_pid = self.executor.platform.focus.last_focus_info.as_ref().map(|(pid, _)| *pid);
         let process_changed = last_pid.is_some_and(|last| last != process_id);
 
+        // フォーカス離脱: 現在の preconditions を per-HWND キャッシュに保存
+        // （last_focus_info 更新前に行う — 更新後は古い HWND の情報が消える）
+        if process_changed {
+            if let Some((old_pid, old_class)) = &self.executor.platform.focus.last_focus_info {
+                let snapshot = HwndImeSnapshot {
+                    ime_on: self.platform_state.preconditions.ime_on,
+                    input_mode: self.platform_state.preconditions.input_mode,
+                    recorded_ms: crate::hook::current_tick_ms(),
+                };
+                log::debug!(
+                    "HwndCache: save [{} {}] ime_on={} mode={:?}",
+                    old_pid, old_class, snapshot.ime_on, snapshot.input_mode,
+                );
+                self.executor.platform.focus.hwnd_ime_cache
+                    .insert((*old_pid, old_class.clone()), snapshot);
+            }
+        }
+
         // last_focus_info を更新
         self.executor.platform.focus.last_focus_info = Some((process_id, class_name.clone()));
 
@@ -729,6 +764,29 @@ impl Runtime {
             self.executor.platform.output.on_focus_changed();
             // 前ウィンドウの IME 観測値をクリア（新しいウィンドウは独自の状態を持つ）
             self.platform_state.ime_observations.clear_on_focus_change();
+
+            // per-HWND キャッシュから新しいウィンドウの既知状態を即座に復元する。
+            // - キャッシュヒット: stale 窓がゼロになる（FocusProbe / ObserverPoll で確認・補正）
+            // - キャッシュミス: 今まで通り stale のまま probe を待つ
+            let cache_key = (process_id, class_name.clone());
+            if let Some(&snapshot) = self.executor.platform.focus.hwnd_ime_cache.get(&cache_key) {
+                let age_ms = crate::hook::current_tick_ms()
+                    .saturating_sub(snapshot.recorded_ms);
+                self.platform_state.preconditions.set_ime_on(
+                    snapshot.ime_on,
+                    crate::ShadowSource::HwndCache,
+                );
+                self.platform_state.preconditions.input_mode = snapshot.input_mode;
+                log::info!(
+                    "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
+                    process_id, class_name, snapshot.ime_on, snapshot.input_mode, age_ms,
+                );
+            } else {
+                log::debug!(
+                    "HwndCache: no entry for [{} {}], stale until FocusProbe",
+                    process_id, class_name,
+                );
+            }
 
             // フォーカス変更時は IME 強制書き込みガードをリセットする。
             // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、
