@@ -1,8 +1,14 @@
 //! Windows 自動起動管理（Task Scheduler 経由）
 
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 
 const TASK_NAME: &str = "awase";
+
+/// コンソールウィンドウを生成しない CreateProcess フラグ。
+/// schtasks.exe はコンソールアプリのため、GUI アプリから起動すると
+/// 一瞬コマンドプロンプト窓が出る。このフラグで非表示にする。
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Task Scheduler にログオン時自動起動タスクを登録する
 pub fn register() -> bool {
@@ -16,6 +22,7 @@ pub fn register() -> bool {
         .args([
             "/create", "/tn", TASK_NAME, "/tr", exe_path, "/sc", "onlogon", "/rl", "limited", "/f",
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
 
     match output {
@@ -38,6 +45,7 @@ pub fn register() -> bool {
 pub fn unregister() -> bool {
     let output = Command::new("schtasks")
         .args(["/delete", "/tn", TASK_NAME, "/f"])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
 
     match output {
@@ -56,6 +64,7 @@ pub fn unregister() -> bool {
 pub fn is_registered() -> bool {
     Command::new("schtasks")
         .args(["/query", "/tn", TASK_NAME])
+        .creation_flags(CREATE_NO_WINDOW)
         .output()
         .is_ok_and(|o| o.status.success())
 }
