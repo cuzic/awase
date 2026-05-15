@@ -1,21 +1,22 @@
 use super::*;
+use super::test_support::*;
 use crate::config::ConfirmMode;
 use crate::engine::nicola_fsm::yab_value_to_action;
 use crate::engine::output_history::OutputEntry;
 use crate::ngram::NgramModel;
+use crate::scanmap::PhysicalPos;
 use crate::types::{
     ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode,
 };
-use crate::yab::{YabFace, YabLayout, YabValue};
+use crate::yab::YabValue;
 use timed_fsm::Response;
 
 type Resp = Response<KeyAction, usize>;
 
-// VK code constants
-const VK_A: VkCode = VkCode(0x41);
-const VK_S: VkCode = VkCode(0x53);
-const VK_NONCONVERT: VkCode = VkCode(0x1D);
-const VK_CONVERT: VkCode = VkCode(0x1C);
+// ── VK / scan codes shared with test_support: VK_A, VK_S, VK_NONCONVERT, VK_CONVERT,
+//    SCAN_A, SCAN_S, SCAN_NONCONVERT, SCAN_CONVERT, POS_A, POS_S, lit(), make_layout() ──
+
+// VK code constants specific to this test file
 const VK_RETURN: VkCode = VkCode(0x0D);
 const VK_SHIFT: VkCode = VkCode(0x10);
 const VK_LSHIFT: VkCode = VkCode(0xA0);
@@ -29,15 +30,11 @@ const VK_F: VkCode = VkCode(0x46);
 const VK_C: VkCode = VkCode(0x43);
 const VK_V: VkCode = VkCode(0x56);
 
-// Scan code constants matching the VK codes used in tests
-const SCAN_A: ScanCode = ScanCode(0x1E);
-const SCAN_S: ScanCode = ScanCode(0x1F);
+// Scan code constants specific to this test file
 const SCAN_D: ScanCode = ScanCode(0x20);
 const SCAN_F: ScanCode = ScanCode(0x21);
 const SCAN_C: ScanCode = ScanCode(0x2E);
 const SCAN_V: ScanCode = ScanCode(0x2F);
-const SCAN_NONCONVERT: ScanCode = ScanCode(0x7B); // muhenkan
-const SCAN_CONVERT: ScanCode = ScanCode(0x79); // henkan
 const SCAN_RETURN: ScanCode = ScanCode(0x1C);
 const SCAN_SHIFT: ScanCode = ScanCode(0x2A);
 const SCAN_LSHIFT: ScanCode = ScanCode(0x2A);
@@ -47,42 +44,10 @@ const SCAN_LCTRL: ScanCode = ScanCode(0x1D);
 const SCAN_ALT: ScanCode = ScanCode(0x38);
 const SCAN_LALT: ScanCode = ScanCode(0x38);
 
-use crate::scanmap::PhysicalPos;
-
-/// PhysicalPos for A key (row=2, col=0)
-const POS_A: PhysicalPos = PhysicalPos::new(2, 0);
-/// PhysicalPos for S key (row=2, col=1)
-const POS_S: PhysicalPos = PhysicalPos::new(2, 1);
 /// PhysicalPos for D key (row=2, col=2)
 const POS_D: PhysicalPos = PhysicalPos::new(2, 2);
 /// PhysicalPos for F key (row=2, col=3)
 const POS_F: PhysicalPos = PhysicalPos::new(2, 3);
-
-fn lit(ch: char) -> YabValue {
-    YabValue::Literal(ch.to_string())
-}
-
-fn make_layout() -> YabLayout {
-    let mut normal = YabFace::new();
-    normal.insert(POS_A, lit('う'));
-    normal.insert(POS_S, lit('し'));
-
-    let mut left_thumb = YabFace::new();
-    left_thumb.insert(POS_A, lit('を'));
-    left_thumb.insert(POS_S, lit('あ'));
-
-    let mut right_thumb = YabFace::new();
-    right_thumb.insert(POS_A, lit('ゔ'));
-    right_thumb.insert(POS_S, lit('じ'));
-
-    YabLayout {
-        name: String::from("test"),
-        normal,
-        left_thumb,
-        right_thumb,
-        shift: YabFace::new(),
-    }
-}
 
 /// テスト用ハーネス: InputTracker + NicolaFsm を統合し、
 /// on_event で自動的に物理キー状態を追跡する。
@@ -205,7 +170,6 @@ fn classify_test_key(
     crate::types::KeyClassification,
     Option<crate::scanmap::PhysicalPos>,
 ) {
-    use crate::scanmap::PhysicalPos;
     use crate::types::KeyClassification;
 
     if vk == VK_NONCONVERT {
@@ -3535,7 +3499,6 @@ mod engine_integration_tests {
     };
     use crate::engine::engine::Engine;
     use crate::engine::nicola_fsm::NicolaFsm;
-    use crate::types::FocusKind;
 
     fn empty_special_keys() -> SpecialKeyCombos {
         SpecialKeyCombos {

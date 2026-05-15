@@ -126,63 +126,24 @@ impl NicolaFsm {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fsm_types::{EngineState, KeyClass, ParseAction, TimerIntent};
+    use super::super::fsm_types::{ClassifiedEvent, EngineState, KeyClass, ParseAction, TimerIntent};
     use super::super::nicola_fsm::NicolaFsm;
+    use super::super::test_support::*;
     use crate::config::ConfirmMode;
     use crate::scanmap::PhysicalPos;
     use crate::types::{ScanCode, VkCode};
-    use crate::yab::{YabFace, YabLayout, YabValue};
 
-    // ── Test fixtures ────────────────────────────────────────────────
+    // ── Test fixtures specific to this module ────────────────────────
 
-    const VK_A: VkCode = VkCode(0x41);
-    const VK_S: VkCode = VkCode(0x53);
-    const VK_NONCONVERT: VkCode = VkCode(0x1D);
-    const VK_CONVERT: VkCode = VkCode(0x1C);
-
-    const SCAN_A: ScanCode = ScanCode(0x1E);
-    const SCAN_S: ScanCode = ScanCode(0x1F);
-    const SCAN_NONCONVERT: ScanCode = ScanCode(0x7B);
-    const SCAN_CONVERT: ScanCode = ScanCode(0x79);
-
-    const POS_A: PhysicalPos = PhysicalPos::new(2, 0);
-    const POS_S: PhysicalPos = PhysicalPos::new(2, 1);
     /// A position that is NOT present in the layout faces.
     const POS_UNKNOWN: PhysicalPos = PhysicalPos::new(9, 9);
-
-    fn lit(ch: char) -> YabValue {
-        YabValue::Literal(ch.to_string())
-    }
-
-    fn make_layout() -> YabLayout {
-        let mut normal = YabFace::new();
-        normal.insert(POS_A, lit('う'));
-        normal.insert(POS_S, lit('し'));
-
-        let mut left_thumb = YabFace::new();
-        left_thumb.insert(POS_A, lit('を'));
-        left_thumb.insert(POS_S, lit('あ'));
-
-        let mut right_thumb = YabFace::new();
-        right_thumb.insert(POS_A, lit('ゔ'));
-        right_thumb.insert(POS_S, lit('じ'));
-
-        YabLayout {
-            name: String::from("test"),
-            normal,
-            left_thumb,
-            right_thumb,
-            shift: YabFace::new(),
-        }
-    }
 
     fn make_fsm(mode: ConfirmMode) -> NicolaFsm {
         NicolaFsm::new(make_layout(), VK_NONCONVERT, VK_CONVERT, 100, mode, 30)
     }
 
-    /// Build a `ClassifiedEvent` for a regular character key.
-    fn char_ev(vk: VkCode, scan: ScanCode, pos: Option<PhysicalPos>) -> super::super::fsm_types::ClassifiedEvent {
-        super::super::fsm_types::ClassifiedEvent {
+    fn char_ev(vk: VkCode, scan: ScanCode, pos: Option<PhysicalPos>) -> ClassifiedEvent {
+        ClassifiedEvent {
             key_class: KeyClass::Char,
             pos,
             scan_code: scan,
@@ -192,9 +153,8 @@ mod tests {
         }
     }
 
-    /// Build a `ClassifiedEvent` for a left-thumb key.
-    fn left_thumb_ev() -> super::super::fsm_types::ClassifiedEvent {
-        super::super::fsm_types::ClassifiedEvent {
+    fn left_thumb_ev() -> ClassifiedEvent {
+        ClassifiedEvent {
             key_class: KeyClass::LeftThumb,
             pos: None,
             scan_code: SCAN_NONCONVERT,
@@ -204,9 +164,8 @@ mod tests {
         }
     }
 
-    /// Build a `ClassifiedEvent` for a right-thumb key.
-    fn right_thumb_ev() -> super::super::fsm_types::ClassifiedEvent {
-        super::super::fsm_types::ClassifiedEvent {
+    fn right_thumb_ev() -> ClassifiedEvent {
+        ClassifiedEvent {
             key_class: KeyClass::RightThumb,
             pos: None,
             scan_code: SCAN_CONVERT,

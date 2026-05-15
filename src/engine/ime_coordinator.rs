@@ -4,24 +4,28 @@
 
 use crate::types::{KeyEventType, RawKeyEvent};
 
-use super::decision::{Decision, Effect, EffectVec, ImeEffect, ImeSyncKeys, KeyBuffer};
+use super::decision::{Decision, Effect, EffectVec, ImeEffect, KeyBuffer};
 use super::input_tracker::PhysicalKeyState;
 
 /// IME トグルガード管理
 ///
 /// Shadow IME 状態の追跡は Platform 層に移動済み。
 /// Engine 側はガード（IME 遷移中のキーバッファリング）のみ担当する。
+///
+/// # sync_keys について
+///
+/// キーの IME 同期キー判定は Platform 層が事前分類し、`RawKeyEvent.ime_relevance.is_sync_key`
+/// フラグに格納する。`ImeCoordinator` はそのフラグを読むだけなので `ImeSyncKeys` を
+/// 内部に保持する必要はない。設定変更時は Platform 層側の分類ロジックを更新すること。
 #[derive(Debug)]
 pub struct ImeCoordinator {
-    sync_keys: ImeSyncKeys,
     guard: KeyBuffer,
 }
 
 impl ImeCoordinator {
     #[must_use]
-    pub const fn new(sync_keys: ImeSyncKeys) -> Self {
+    pub const fn new() -> Self {
         Self {
-            sync_keys,
             guard: KeyBuffer::new(),
         }
     }
@@ -112,9 +116,6 @@ impl ImeCoordinator {
         self.guard.is_guarded()
     }
 
-    pub fn reload_sync_keys(&mut self, keys: ImeSyncKeys) {
-        self.sync_keys = keys;
-    }
 }
 
 #[cfg(test)]
@@ -138,17 +139,9 @@ mod tests {
         }
     }
 
-    fn empty_sync_keys() -> ImeSyncKeys {
-        ImeSyncKeys {
-            toggle: vec![],
-            on: vec![],
-            off: vec![],
-        }
-    }
-
     #[test]
     fn check_guard_sync_key_down_sets_guard_and_returns_pass_through() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
+        let mut coord = ImeCoordinator::new();
         let mut effects = EffectVec::new();
 
         let mut event = make_event(KeyEventType::KeyDown);
@@ -159,24 +152,21 @@ mod tests {
         assert!(decision.is_some());
         assert!(coord.is_guarded());
 
-        // Decision should be pass-through
         let d = decision.unwrap();
         assert!(!d.is_consumed());
     }
 
     #[test]
     fn check_guard_while_guarded_buffers_keys_and_returns_consumed() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
+        let mut coord = ImeCoordinator::new();
         let mut effects = EffectVec::new();
 
-        // First: set guard via sync key
         let mut sync_event = make_event(KeyEventType::KeyDown);
         sync_event.ime_relevance.is_sync_key = true;
         let phys = PhysicalKeyState::empty();
         coord.check_guard(&sync_event, &phys, &mut effects);
         assert!(coord.is_guarded());
 
-        // Now send a regular key while guarded
         let regular_event = make_event(KeyEventType::KeyDown);
         let mut effects2 = EffectVec::new();
         let decision = coord.check_guard(&regular_event, &phys, &mut effects2);
@@ -186,7 +176,7 @@ mod tests {
 
     #[test]
     fn is_guarded_set_guard_round_trip() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
+        let mut coord = ImeCoordinator::new();
         assert!(!coord.is_guarded());
         coord.set_guard(true);
         assert!(coord.is_guarded());
@@ -196,33 +186,16 @@ mod tests {
 
     #[test]
     fn drain_deferred_clears_guard_and_returns_buffered_keys() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
+        let mut coord = ImeCoordinator::new();
         coord.set_guard(true);
 
-        // Push a deferred key manually via check_guard
         let event = make_event(KeyEventType::KeyDown);
         let phys = PhysicalKeyState::empty();
         let mut effects = EffectVec::new();
         coord.check_guard(&event, &phys, &mut effects);
 
-        // Drain
         let deferred = coord.drain_deferred();
         assert!(!coord.is_guarded());
         assert_eq!(deferred.len(), 1);
-    }
-
-    #[test]
-    fn reload_sync_keys_replaces_sync_keys() {
-        let mut coord = ImeCoordinator::new(empty_sync_keys());
-
-        let new_keys = ImeSyncKeys {
-            toggle: vec![VkCode(0x19)],
-            on: vec![VkCode(0xF2)],
-            off: vec![VkCode(0xF3)],
-        };
-        coord.reload_sync_keys(new_keys);
-
-        // Verify by confirming no panic and the coordinator still works
-        assert!(!coord.is_guarded());
     }
 }

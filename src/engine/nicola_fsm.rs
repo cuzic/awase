@@ -1,7 +1,5 @@
 //! NicolaFsm: 同時打鍵判定 FSM（timed-fsm ベース）
 
-use std::time::Duration;
-
 use timed_fsm::Response;
 
 use crate::config::ConfirmMode;
@@ -394,34 +392,15 @@ impl NicolaFsm {
         consumed: bool,
         timer: TimerIntent,
     ) -> Resp {
-        let response = if actions.is_empty() && consumed {
+        let mut response = if actions.is_empty() && consumed {
             Response::consume()
         } else if actions.is_empty() {
             Response::pass_through()
         } else {
             Response::emit(actions)
         };
-
-        match timer {
-            TimerIntent::CancelAll => response
-                .with_kill_timer(TIMER_PENDING)
-                .with_kill_timer(TIMER_SPECULATIVE),
-            TimerIntent::Pending => response
-                .with_kill_timer(TIMER_PENDING)
-                .with_kill_timer(TIMER_SPECULATIVE)
-                .with_timer(TIMER_PENDING, Duration::from_micros(self.threshold_us)),
-            TimerIntent::SpeculativeWait => response
-                .with_kill_timer(TIMER_PENDING)
-                .with_kill_timer(TIMER_SPECULATIVE)
-                .with_timer(
-                    TIMER_SPECULATIVE,
-                    Duration::from_micros(self.speculative_delay_us),
-                ),
-            TimerIntent::Phase2Transition { remaining_us } => response
-                .with_kill_timer(TIMER_SPECULATIVE)
-                .with_timer(TIMER_PENDING, Duration::from_micros(remaining_us)),
-            TimerIntent::Keep => response,
-        }
+        response.timers = self.timer_cmds(timer);
+        response
     }
 }
 
@@ -677,20 +656,22 @@ impl NicolaFsm {
     ///
     /// 前提: IME は完結済みローマ字を1つの変換単位として扱うため、
     /// BACKSPACE 1発で投機出力全体を削除できる。
+    ///
+    /// `RetractAndRecord` を使うことで、retract と record を `update_history()` で
+    /// アトミックに処理し、この関数を副作用のない純粋な構築関数にする。
     fn retract_and_replace(
         &mut self,
         pending: PendingKey,
         new_action: &KeyAction,
         kana: Option<char>,
     ) -> ParseAction {
-        self.output_history.retract_last();
         let actions = vec![
             KeyAction::SpecialKey(SpecialKey::Backspace),
             new_action.clone(),
         ];
         ParseAction::Reduce {
             actions,
-            record: OutputUpdate::Record(OutputRecord {
+            record: OutputUpdate::RetractAndRecord(OutputRecord {
                 scan_code: pending.scan_code,
                 romaji: romaji_of(new_action),
                 kana,
