@@ -114,6 +114,7 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
 ///
 /// # Safety
 /// Calls Win32 APIs.
+#[cfg(feature = "diag")]
 pub unsafe fn get_ime_open_status_raw_timeout(timeout_ms: u32) -> Option<bool> {
     let hwnd = GetForegroundWindow();
     if hwnd.0.is_null() {
@@ -143,6 +144,7 @@ pub unsafe fn get_ime_open_status_raw_timeout(timeout_ms: u32) -> Option<bool> {
 ///
 /// # Safety
 /// Calls Win32 APIs.
+#[cfg(feature = "diag")]
 pub unsafe fn get_foreground_hwnd_raw() -> usize {
     GetForegroundWindow().0 as usize
 }

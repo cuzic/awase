@@ -864,9 +864,10 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
-            // H8: pre-F2 IME open status
+            // H8/H6: 診断プローブ（diag feature 有効時のみ、各 ~10ms のレイテンシあり）
+            #[cfg(feature = "diag")]
             let ime_open_pre = unsafe { crate::ime::get_ime_open_status_raw_timeout(10) };
-            // H6: フォアグラウンド HWND（chars 送信直前と比較するため先に取得）
+            #[cfg(feature = "diag")]
             let hwnd_pre_f2 = unsafe { crate::ime::get_foreground_hwnd_raw() };
 
             // 案A: F2-only バッチを先行送信し、WezTerm が TSF context を初期化するのを待つ。
@@ -877,9 +878,9 @@ impl Output {
                 make_tsf_key_input(VK_DBE_HIRAGANA, false),
                 make_tsf_key_input(VK_DBE_HIRAGANA, true),
             ];
-            log::debug!(
-                "[h1-run] cold={cold_n} F2-only batch sending (hwnd=0x{hwnd_pre_f2:X} ime_open={ime_open_pre:?})"
-            );
+            log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
+            #[cfg(feature = "diag")]
+            log::debug!("[h1-run-diag] cold={cold_n} hwnd_pre=0x{hwnd_pre_f2:X} ime_open_pre={ime_open_pre:?}");
             let f2_send_tick = crate::hook::current_tick_ms();
             unsafe {
                 SendInput(
@@ -919,19 +920,21 @@ impl Output {
                 f2_to_idle_ms,
             );
 
-            // IMM32 変換モードを確認（TSF 状態の参考値、H4/H9 判定用）
-            const H1_PROBE_TIMEOUT_MS: u32 = 10;
-            let conv_post_idle = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
-            let ime_open_post_idle = unsafe { crate::ime::get_ime_open_status_raw_timeout(H1_PROBE_TIMEOUT_MS) };
-            let hwnd_post_idle = unsafe { crate::ime::get_foreground_hwnd_raw() };
-            log::debug!(
-                "[h1-probe-done] cold={cold_n} f2_to_idle_ms={} hwnd_changed={} ime_open={:?} conv={} ROMAN={}",
-                f2_to_idle_ms,
-                hwnd_pre_f2 != hwnd_post_idle,
-                ime_open_post_idle,
-                conv_post_idle.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_post_idle.map_or(false, |v| v & 0x0010 != 0),
-            );
+            // IMM32 変換モードを確認（TSF 状態の参考値、diag feature 有効時のみ）
+            #[cfg(feature = "diag")]
+            {
+                let conv_post_idle = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+                let ime_open_post_idle = unsafe { crate::ime::get_ime_open_status_raw_timeout(10) };
+                let hwnd_post_idle = unsafe { crate::ime::get_foreground_hwnd_raw() };
+                log::debug!(
+                    "[h1-probe-done] cold={cold_n} f2_to_idle_ms={} hwnd_changed={} ime_open={:?} conv={} ROMAN={}",
+                    f2_to_idle_ms,
+                    hwnd_pre_f2 != hwnd_post_idle,
+                    ime_open_post_idle,
+                    conv_post_idle.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                    conv_post_idle.map_or(false, |v| v & 0x0010 != 0),
+                );
+            }
         } else {
             cold_n = self.cold_start_count.get();
         }
@@ -951,13 +954,15 @@ impl Output {
 
         let total_runs = runs.len();
 
-        // H6: chars 送信直前の HWND（probe 後から変わっていないか）
+        // H6: chars 送信直前の HWND（diag feature 有効時のみ）
+        #[cfg(feature = "diag")]
         if prepend_f2_warmup {
             let hwnd_pre_chars = unsafe { crate::ime::get_foreground_hwnd_raw() };
             log::debug!(
                 "[h1-chars-pre] cold={cold_n} hwnd=0x{hwnd_pre_chars:X} romaji={romaji:?}"
             );
         }
+        #[cfg(feature = "diag")]
         let chars_send_tick = if prepend_f2_warmup { crate::hook::current_tick_ms() } else { 0 };
 
         for (run_idx, run) in runs.iter().enumerate() {
@@ -986,7 +991,8 @@ impl Output {
             }
         }
 
-        // H9: chars 送信後の conv 状態（F2 効果が遅延しているか検証）
+        // H9: chars 送信後の conv 状態（diag feature 有効時のみ）
+        #[cfg(feature = "diag")]
         if prepend_f2_warmup {
             let elapsed_since_chars = crate::hook::current_tick_ms().saturating_sub(chars_send_tick);
             let conv_post = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
