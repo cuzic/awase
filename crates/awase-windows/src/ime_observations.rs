@@ -120,3 +120,113 @@ impl ImeObservations {
         self.observer_poll = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn obs(value: bool, ms: u64) -> ImeObs {
+        ImeObs { value, ms }
+    }
+
+    // 1. 観測値が何もなければ None を返す
+    #[test]
+    fn test_no_observations_returns_none() {
+        let mut o = ImeObservations::default();
+        assert!(o.resolve_and_clear(false, true, true).is_none());
+    }
+
+    // 2. 優先度: sync_key > physical_key > set_open_request
+    #[test]
+    fn test_priority_order_high() {
+        let mut o = ImeObservations {
+            sync_key: Some(obs(true, 10)),
+            physical_key: Some(obs(false, 20)),
+            set_open_request: Some(obs(false, 30)),
+            ..Default::default()
+        };
+        let (val, src) = o.resolve_and_clear(false, true, true).unwrap();
+        assert_eq!(val, true);
+        assert_eq!(src, ShadowSource::SyncKey);
+    }
+
+    // 3. sync_key は一撃（採用後クリア）; 二度目は physical_key が出る
+    #[test]
+    fn test_sync_key_one_shot() {
+        let mut o = ImeObservations {
+            sync_key: Some(obs(true, 10)),
+            physical_key: Some(obs(false, 20)),
+            ..Default::default()
+        };
+        let (_, src1) = o.resolve_and_clear(false, true, true).unwrap();
+        assert_eq!(src1, ShadowSource::SyncKey);
+        // sync_key は消費済み → 次は physical_key
+        let (val2, src2) = o.resolve_and_clear(false, true, true).unwrap();
+        assert_eq!(val2, false);
+        assert_eq!(src2, ShadowSource::PhysicalImeKey);
+        // physical_key も消費済み → None
+        assert!(o.resolve_and_clear(false, true, true).is_none());
+    }
+
+    // 4. focus_probe=false は user_enabled=true のとき採用されない
+    #[test]
+    fn test_focus_probe_false_suppressed_when_user_enabled() {
+        let mut o = ImeObservations {
+            focus_probe: Some(obs(false, 100)),
+            ..Default::default()
+        };
+        // user_enabled=true → false は採用しない
+        assert!(o.resolve_and_clear(false, true, true).is_none());
+    }
+
+    // 5. focus_probe=false は user_enabled=false のとき採用される
+    #[test]
+    fn test_focus_probe_false_accepted_when_user_disabled() {
+        let mut o = ImeObservations {
+            focus_probe: Some(obs(false, 100)),
+            ..Default::default()
+        };
+        let (val, src) = o.resolve_and_clear(false, false, true).unwrap();
+        assert_eq!(val, false);
+        assert_eq!(src, ShadowSource::FocusProbe);
+    }
+
+    // 6. observer_poll=true でも is_japanese_ime=false なら effective=false
+    #[test]
+    fn test_observer_poll_filtered_by_japanese_ime() {
+        let mut o = ImeObservations {
+            observer_poll: Some(obs(true, 100)),
+            ..Default::default()
+        };
+        let (val, src) = o.resolve_and_clear(false, true, false).unwrap();
+        assert_eq!(val, false); // true && false → false
+        assert_eq!(src, ShadowSource::ObserverPoll);
+    }
+
+    // 7. タイムスタンプ: 新しい方が勝つ（focus_probe > observer_poll）
+    #[test]
+    fn test_newer_focus_probe_beats_observer_poll() {
+        let mut o = ImeObservations {
+            focus_probe: Some(obs(true, 200)), // 新しい
+            observer_poll: Some(obs(false, 100)),
+            ..Default::default()
+        };
+        let (val, src) = o.resolve_and_clear(false, true, true).unwrap();
+        assert_eq!(val, true);
+        assert_eq!(src, ShadowSource::FocusProbe);
+    }
+
+    // 8. clear_on_focus_change はすべてのフィールドをクリアする
+    #[test]
+    fn test_clear_on_focus_change() {
+        let mut o = ImeObservations {
+            sync_key: Some(obs(true, 1)),
+            physical_key: Some(obs(true, 2)),
+            set_open_request: Some(obs(true, 3)),
+            focus_probe: Some(obs(true, 4)),
+            observer_poll: Some(obs(true, 5)),
+        };
+        o.clear_on_focus_change();
+        assert!(o.resolve_and_clear(false, true, true).is_none());
+    }
+}
