@@ -136,6 +136,19 @@ impl Decision {
         None
     }
 
+    /// effects の先頭に `prefix` を挿入する。
+    ///
+    /// 空の prefix は no-op。PassThrough なら `effects_mut()` 経由で PassThroughWith に昇格する。
+    pub fn prepend_effects(&mut self, prefix: EffectVec) {
+        if prefix.is_empty() {
+            return;
+        }
+        let effects = self.effects_mut();
+        let mut new_effects = prefix;
+        new_effects.extend(effects.drain(..));
+        *effects = new_effects;
+    }
+
     /// effects への可変参照。PassThrough なら Consume に昇格して空 EffectVec を返す。
     #[must_use]
     pub fn effects_mut(&mut self) -> &mut EffectVec {

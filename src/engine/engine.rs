@@ -138,13 +138,7 @@ impl Engine {
         if is_key_down && decision.is_consumed() {
             self.lifecycle.on_key_down_consumed(&event);
         }
-        // Prepend transition effects if any
-        if !transition_effects.is_empty() {
-            let effects = decision.effects_mut();
-            for e in transition_effects.into_iter().rev() {
-                effects.insert(0, e);
-            }
-        }
+        decision.prepend_effects(transition_effects);
         decision
     }
 
@@ -168,20 +162,14 @@ impl Engine {
         match cmd {
             EngineCommand::ToggleEngine => {
                 let old_active = self.compute_active(ctx);
-                let (user_enabled, decision) = self.adapter.toggle_enabled();
+                let (user_enabled, mut decision) = self.adapter.toggle_enabled();
                 let new_active = self.compute_active(ctx);
                 log::info!(
                     "Engine user_enabled toggled: {} (active: {})",
                     if user_enabled { "ON" } else { "OFF" },
                     if new_active { "ON" } else { "OFF" },
                 );
-                let mut decision = decision;
-                if old_active != new_active {
-                    decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
-                        enabled: new_active,
-                    }));
-                    self.prev_active = new_active;
-                }
+                self.apply_active_transition(old_active, new_active, &mut decision);
                 decision
             }
             EngineCommand::InvalidateContext(reason) => self.adapter.flush(reason),
@@ -265,6 +253,24 @@ impl Engine {
 
     // ── 内部メソッド ──
 
+    /// user_enabled 変更後の active 遷移を Decision に反映する。
+    ///
+    /// `old_active != new_active` のときのみ `EngineStateChanged` を push し、
+    /// `prev_active` を更新する。同じパターンが ON/OFF/toggle の3箇所に現れるため共通化。
+    fn apply_active_transition(
+        &mut self,
+        old_active: bool,
+        new_active: bool,
+        decision: &mut Decision,
+    ) {
+        if old_active != new_active {
+            decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
+                enabled: new_active,
+            }));
+            self.prev_active = new_active;
+        }
+    }
+
     /// 変換/無変換系の特殊キーを一括チェックし、一致した場合は状態変更して結果を返す。
     fn check_special_keys(
         &mut self,
@@ -285,12 +291,7 @@ impl Engine {
             let (_, mut decision) = self.adapter.set_enabled(true);
             let new_active = self.compute_active(ctx);
             log::info!("Engine user_enabled ON (key combo, active={})", new_active);
-            if old_active != new_active {
-                decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
-                    enabled: new_active,
-                }));
-                self.prev_active = new_active;
-            }
+            self.apply_active_transition(old_active, new_active, &mut decision);
             return Some(decision);
         }
         if self.adapter.is_enabled()
@@ -304,12 +305,7 @@ impl Engine {
             let (_, mut decision) = self.adapter.set_enabled(false);
             let new_active = self.compute_active(ctx);
             log::info!("Engine user_enabled OFF (key combo, active={})", new_active);
-            if old_active != new_active {
-                decision.push_effect(Effect::Ui(UiEffect::EngineStateChanged {
-                    enabled: new_active,
-                }));
-                self.prev_active = new_active;
-            }
+            self.apply_active_transition(old_active, new_active, &mut decision);
             return Some(decision);
         }
 

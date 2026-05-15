@@ -261,6 +261,17 @@ pub struct PendingKey {
     pub timestamp: Timestamp,
 }
 
+impl PendingKey {
+    pub const fn from_event(ev: &ClassifiedEvent) -> Self {
+        Self {
+            scan_code: ev.scan_code,
+            vk_code: ev.vk_code,
+            pos: ev.pos,
+            timestamp: ev.timestamp,
+        }
+    }
+}
+
 /// 保留中の親指キーデータ
 #[derive(Debug, Clone, Copy)]
 pub struct PendingThumbData {
@@ -269,6 +280,17 @@ pub struct PendingThumbData {
     pub vk_code: VkCode,
     pub is_left: bool,
     pub timestamp: Timestamp,
+}
+
+impl PendingThumbData {
+    pub const fn from_event(ev: &ClassifiedEvent) -> Self {
+        Self {
+            scan_code: ev.scan_code,
+            vk_code: ev.vk_code,
+            is_left: ev.key_class.is_left_thumb(),
+            timestamp: ev.timestamp,
+        }
+    }
 }
 
 /// 修飾キー（Ctrl / Alt / Shift / Win）の押下状態

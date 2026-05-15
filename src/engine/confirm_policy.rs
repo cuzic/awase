@@ -35,19 +35,9 @@ impl NicolaFsm {
     /// Idle + Wait モード: 新規キーを保留状態に遷移させタイマーを起動する
     pub(crate) const fn idle_wait(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         if ev.key_class.is_thumb() {
-            self.enter_pending_thumb(PendingThumbData {
-                scan_code: ev.scan_code,
-                vk_code: ev.vk_code,
-                is_left: ev.key_class.is_left_thumb(),
-                timestamp: ev.timestamp,
-            });
+            self.enter_pending_thumb(PendingThumbData::from_event(ev));
         } else {
-            self.enter_pending_char(PendingKey {
-                scan_code: ev.scan_code,
-                vk_code: ev.vk_code,
-                pos: ev.pos,
-                timestamp: ev.timestamp,
-            });
+            self.enter_pending_char(PendingKey::from_event(ev));
         }
         ParseAction::Shift {
             timer: TimerIntent::Pending,
@@ -64,12 +54,7 @@ impl NicolaFsm {
         // Character key → immediately output normal face, enter SpeculativeChar
         let face = Face::Normal;
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
-            self.enter_speculative_char(PendingKey {
-                scan_code: ev.scan_code,
-                vk_code: ev.vk_code,
-                pos: ev.pos,
-                timestamp: ev.timestamp,
-            });
+            self.enter_speculative_char(PendingKey::from_event(ev));
             // Output immediately + set timer for the threshold window
             ParseAction::Reduce {
                 actions: vec![action.clone()],
@@ -95,12 +80,7 @@ impl NicolaFsm {
 
         // Phase 1: Short wait (speculative_delay_us)
         // Same as Wait mode but with shorter timer
-        self.enter_pending_char(PendingKey {
-            scan_code: ev.scan_code,
-            vk_code: ev.vk_code,
-            pos: ev.pos,
-            timestamp: ev.timestamp,
-        });
+        self.enter_pending_char(PendingKey::from_event(ev));
 
         // Use TIMER_SPECULATIVE with the short delay
         ParseAction::Shift {
