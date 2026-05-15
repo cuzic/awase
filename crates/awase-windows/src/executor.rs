@@ -214,7 +214,7 @@ impl DecisionExecutor {
                             log::debug!(
                                 "[composition] vk=0xf2 passthrough TSF mode → consuming (prevent double-F2), marking cold",
                             );
-                            self.platform.output.mark_composition_cold();
+                            self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
                         } else {
                             log::debug!(
                                 "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -245,14 +245,14 @@ impl DecisionExecutor {
                             "[composition] passthrough vk={:#04x} KeyDown → marking cold",
                             raw_event.vk_code.0,
                         );
-                        self.platform.output.mark_composition_cold();
+                        self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                     }
                     // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
                     if raw_event.vk_code.0 == 0xF2 && is_key_down {
                         log::debug!(
                             "[composition] vk=0xf2 passthrough direct → marking cold",
                         );
-                        self.platform.output.mark_composition_cold();
+                        self.platform.output.mark_composition_cold(crate::output::ColdReason::F2NonTsf);
                     }
                     HookResult {
                         callback: CallbackResult::PassThrough,
@@ -324,7 +324,7 @@ impl DecisionExecutor {
                     log::debug!(
                         "[reinject-tsf] vk=0xf2 KeyDown TSF mode → consuming deferred F2 (no reinject), marking cold",
                     );
-                    self.platform.output.mark_composition_cold();
+                    self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
                 } else {
                     log::debug!(
                         "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -348,7 +348,7 @@ impl DecisionExecutor {
                     "[composition] reinject KeyDown vk={:#04x} → marking cold",
                     event.vk_code.0,
                 );
-                self.platform.output.mark_composition_cold();
+                self.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             }
             return;
         }
@@ -391,7 +391,7 @@ impl DecisionExecutor {
         // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
         if ime_set_open_true {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-            self.platform.output.mark_composition_cold();
+            self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
         }
     }
 }

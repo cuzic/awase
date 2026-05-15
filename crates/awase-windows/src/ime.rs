@@ -104,6 +104,46 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
     Some(result as u32)
 }
 
+/// フォアグラウンドウィンドウの IME 開状態をタイムアウト付きで返す（H8 診断専用）。
+///
+/// `get_ime_conversion_mode_raw_timeout` と同じ短タイムアウトで
+/// `IMC_GETOPENSTATUS` を問い合わせる。
+///
+/// # Safety
+/// Calls Win32 APIs.
+pub unsafe fn get_ime_open_status_raw_timeout(timeout_ms: u32) -> Option<bool> {
+    let hwnd = GetForegroundWindow();
+    if hwnd.0.is_null() {
+        return None;
+    }
+    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+    if ime_wnd.0.is_null() {
+        return None;
+    }
+    let mut result = 0usize;
+    let ok = SendMessageTimeoutW(
+        ime_wnd,
+        WM_IME_CONTROL,
+        WPARAM(IMC_GETOPENSTATUS),
+        LPARAM(0),
+        SMTO_ABORTIFHUNG,
+        timeout_ms,
+        Some(&raw mut result),
+    );
+    if ok.0 == 0 {
+        return None;
+    }
+    Some(result != 0)
+}
+
+/// フォアグラウンドウィンドウの HWND を usize として返す（H6 診断ログ専用）。
+///
+/// # Safety
+/// Calls Win32 APIs.
+pub unsafe fn get_foreground_hwnd_raw() -> usize {
+    GetForegroundWindow().0 as usize
+}
+
 /// フォアグラウンドウィンドウのクラス名を返す（H1 診断ログ専用）。
 ///
 /// # Safety

@@ -561,7 +561,7 @@ impl Runtime {
             crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
             // フォーカス変更時は VK/TSF いずれも composition context が無効化される。
             log::debug!("[composition] focus change → marking cold");
-            self.executor.platform.output.mark_composition_cold();
+            self.executor.platform.output.mark_composition_cold(crate::output::ColdReason::FocusChange);
         }
 
         // ── Phase 4: Engine に RefreshState（active 遷移検知）──

@@ -17,6 +17,27 @@ pub const INJECTED_MARKER: usize = 0x4B45_594D;
 /// dwExtraInfo の値が異なることで TSF Sequential モードの識別に使う。
 pub const TSF_MARKER: usize = 0x4B45_5946;
 
+/// IME composition context がコールド状態になった理由（診断ログ用）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColdReason {
+    /// フォーカス変更
+    FocusChange,
+    /// `ImeEffect::SetOpen(true)` 実行後
+    SetOpenTrue,
+    /// 物理 F2 (VK_DBE_HIRAGANA) をフックで Consume（TSF モード）
+    NativeF2Consumed,
+    /// Space/Enter/Escape のパススルー
+    PassthroughConfirmKey,
+    /// Space/Enter/Escape の reinject
+    ReinjectConfirmKey,
+    /// 記号 VK 送信後（TSF context リセット可能性あり）
+    SymbolVkSent,
+    /// F2 non-TSF mode passthrough
+    F2NonTsf,
+    /// session_expired（前回送信から 2s 超過）
+    SessionExpired,
+}
+
 /// 出力注入モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InjectionMode {
@@ -387,8 +408,8 @@ impl Output {
     /// 次の VK / TSF composition 送信時に VK_DBE_HIRAGANA ウォームアップを
     /// 先行送信させる。Space/Enter/Escape passthrough・エンジン toggle 等のタイミングで呼ぶ。
     /// フォーカス変更は `on_focus_changed()` を使うこと（epoch も更新される）。
-    pub fn mark_composition_cold(&self) {
-        log::debug!("[composition] marked cold → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+    pub fn mark_composition_cold(&self, reason: ColdReason) {
+        log::debug!("[composition] marked cold reason={reason:?} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(0);
     }
 
@@ -843,6 +864,11 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
+            // H8: pre-F2 IME open status
+            let ime_open_pre = unsafe { crate::ime::get_ime_open_status_raw_timeout(10) };
+            // H6: フォアグラウンド HWND（chars 送信直前と比較するため先に取得）
+            let hwnd_pre_f2 = unsafe { crate::ime::get_foreground_hwnd_raw() };
+
             // 案A: F2-only バッチを先行送信し、WezTerm が TSF context を初期化するのを待つ。
             // F2 と romaji を同一バッチに含めると WezTerm が TSF 初期化完了前に
             // romaji を処理してしまい、cold-start 1 文字目が ASCII として出力される（H1 問題）。
@@ -851,7 +877,10 @@ impl Output {
                 make_tsf_key_input(VK_DBE_HIRAGANA, false),
                 make_tsf_key_input(VK_DBE_HIRAGANA, true),
             ];
-            log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
+            log::debug!(
+                "[h1-run] cold={cold_n} F2-only batch sending (hwnd=0x{hwnd_pre_f2:X} ime_open={ime_open_pre:?})"
+            );
+            let f2_send_tick = crate::hook::current_tick_ms();
             unsafe {
                 SendInput(
                     &f2_inputs,
@@ -867,18 +896,46 @@ impl Output {
             let probe_start = std::time::Instant::now();
             const H1_PROBE_TIMEOUT_MS: u32 = 10;
             const H1_PROBE_MAX: u8 = 15;
+            let mut probe_final_conv: Option<u32> = None;
             for i in 0..H1_PROBE_MAX {
                 let elapsed_ms = probe_start.elapsed().as_millis();
                 let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
                 let responsive = conv.is_some();
                 let roman = conv.map_or(false, |v| v & 0x0010 != 0);
-                log::debug!(
-                    "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
-                    elapsed_ms,
-                    conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
-                );
-                if responsive { break; }
+                // H8: 最初のプローブだけ open status も取得（タイムアウト追加を避けるため i==0 のみ）
+                if i == 0 {
+                    let ime_open_probe0 = unsafe { crate::ime::get_ime_open_status_raw_timeout(H1_PROBE_TIMEOUT_MS) };
+                    log::debug!(
+                        "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={} ime_open={ime_open_probe0:?}",
+                        elapsed_ms,
+                        conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
+                    );
+                } else {
+                    log::debug!(
+                        "[h1-probe] cold={cold_n} tsf attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
+                        elapsed_ms,
+                        conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
+                    );
+                }
+                if responsive {
+                    probe_final_conv = conv;
+                    break;
+                }
             }
+            let probe_total_ms = probe_start.elapsed().as_millis();
+            let f2_to_probe_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
+            // H8: probe 後 open status（H8: IME 実際に open か）
+            let ime_open_post_probe = unsafe { crate::ime::get_ime_open_status_raw_timeout(H1_PROBE_TIMEOUT_MS) };
+            // H6: probe 後 HWND（ウィンドウ切り替えが起きたか）
+            let hwnd_post_probe = unsafe { crate::ime::get_foreground_hwnd_raw() };
+            log::debug!(
+                "[h1-probe-done] cold={cold_n} probe_total={}ms f2_to_probe_ms={} hwnd_changed={} ime_open_post={:?} final_conv={}",
+                probe_total_ms,
+                f2_to_probe_ms,
+                hwnd_pre_f2 != hwnd_post_probe,
+                ime_open_post_probe,
+                probe_final_conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+            );
         } else {
             cold_n = self.cold_start_count.get();
         }
@@ -897,6 +954,15 @@ impl Output {
         runs.push(&chars[start..]);
 
         let total_runs = runs.len();
+
+        // H6: chars 送信直前の HWND（probe 後から変わっていないか）
+        if prepend_f2_warmup {
+            let hwnd_pre_chars = unsafe { crate::ime::get_foreground_hwnd_raw() };
+            log::debug!(
+                "[h1-chars-pre] cold={cold_n} hwnd=0x{hwnd_pre_chars:X} romaji={romaji:?}"
+            );
+        }
+        let chars_send_tick = if prepend_f2_warmup { crate::hook::current_tick_ms() } else { 0 };
 
         for (run_idx, run) in runs.iter().enumerate() {
             log::debug!(
@@ -923,6 +989,22 @@ impl Output {
                 );
             }
         }
+
+        // H9: chars 送信後の conv 状態（F2 効果が遅延しているか検証）
+        if prepend_f2_warmup {
+            let elapsed_since_chars = crate::hook::current_tick_ms().saturating_sub(chars_send_tick);
+            let conv_post = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+            let open_post = unsafe { crate::ime::get_ime_open_status_raw_timeout(10) };
+            log::debug!(
+                "[h1-chars-post] cold={cold_n} elapsed_since_chars={}ms conv={} NATIVE={} ROMAN={} ime_open={:?}",
+                elapsed_since_chars,
+                conv_post.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv_post.map_or(false, |v| v & 0x0001 != 0),
+                conv_post.map_or(false, |v| v & 0x0010 != 0),
+                open_post,
+            );
+        }
+
         self.mark_composition_warm();
     }
 
@@ -957,7 +1039,7 @@ impl Output {
             // シンボル VK 送信後、WezTerm TSF は現在の composition を commit して
             // context をリセットする可能性がある（例: 'ー' 後の composition リセット）。
             // 次の romaji 出力で F2 warmup を prepend させるため cold にマーク。
-            self.mark_composition_cold();
+            self.mark_composition_cold(ColdReason::SymbolVkSent);
             return;
         }
         log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
