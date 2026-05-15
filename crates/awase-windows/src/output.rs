@@ -326,6 +326,12 @@ pub struct Output {
     /// warmup バッチを送るたびにインクリメントされる。
     /// `[h1-probe]` ログの `cold=N` フィールドがこの値に対応する。
     cold_start_count: std::cell::Cell<u32>,
+    /// NativeF2Consumed 時に即送信した eager warmup F2 の送信時刻（ms）。
+    ///
+    /// 0 = 有効な eager warmup なし。
+    /// `send_romaji_as_tsf` がこれを参照して重複 F2 送信を避け、
+    /// 経過時間に応じた最小 sleep のみで済むようにする。
+    eager_warmup_sent_ms: std::cell::Cell<u64>,
     /// TSF composition context の readiness フラグ（epoch 付き）。
     ///
     /// # 設計メモ（2026-05-14）
@@ -387,6 +393,7 @@ impl Output {
             symbol_to_vk: build_symbol_to_vk(),
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(0),
+            eager_warmup_sent_ms: std::cell::Cell::new(0),
             composition_warm_epoch: std::cell::Cell::new(0), // 0 = cold
             focus_epoch: std::cell::Cell::new(1),            // 1 = initial window
         }
@@ -411,6 +418,7 @@ impl Output {
     pub fn mark_composition_cold(&self, reason: ColdReason) {
         log::debug!("[composition] marked cold reason={reason:?} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(0);
+        self.eager_warmup_sent_ms.set(0); // 以前の eager warmup は無効化
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -439,6 +447,7 @@ impl Output {
         let new_epoch = self.focus_epoch.get().wrapping_add(1).max(1); // 0 は cold の番兵値なので skip
         self.focus_epoch.set(new_epoch);
         self.composition_warm_epoch.set(0);
+        self.eager_warmup_sent_ms.set(0); // フォーカス変更で別ウィンドウ向け eager warmup を無効化
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
@@ -448,6 +457,34 @@ impl Output {
     /// executor がこのメソッドで判定してキー処理を切り替える。
     pub fn is_tsf_mode(&self) -> bool {
         resolve_injection_mode() == InjectionMode::Tsf
+    }
+
+    /// NativeF2Consumed 時に即時 warmup F2 を送信し、タイムスタンプを記録する。
+    ///
+    /// 物理 F2 を消費した直後に呼ぶことで、WezTerm の TSF composition context
+    /// 初期化をユーザーの次キーストロークより前に開始できる。
+    /// `send_romaji_as_tsf` がこのタイムスタンプを参照し、
+    /// 追加の F2 送信と固定 sleep を省略（または短縮）する。
+    ///
+    /// TSF モード以外では何もしない（Chrome/Unicode モードは独自 warmup を持つ）。
+    pub fn send_eager_tsf_warmup(&self) {
+        if !self.is_tsf_mode() {
+            return;
+        }
+        const VK_DBE_HIRAGANA: u16 = 0xF2;
+        let f2_inputs = [
+            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+            make_tsf_key_input(VK_DBE_HIRAGANA, true),
+        ];
+        unsafe {
+            SendInput(
+                &f2_inputs,
+                i32::try_from(std::mem::size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
+        let ms = crate::hook::current_tick_ms();
+        self.eager_warmup_sent_ms.set(ms);
+        log::debug!("[tsf-eager-warmup] F2 即送信 (NativeF2Consumed後), t={ms}ms");
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
@@ -872,24 +909,41 @@ impl Output {
                 make_tsf_key_input(VK_DBE_HIRAGANA, false),
                 make_tsf_key_input(VK_DBE_HIRAGANA, true),
             ];
-            log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
-            let f2_send_tick = crate::hook::current_tick_ms();
-            unsafe {
-                SendInput(
-                    &f2_inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
+            // F2 warmup: eager warmup（NativeF2Consumed 即送信）を優先使用。
+            // eager warmup が有効なら重複 F2 を送らず、残り settle 時間だけ sleep する。
+            // eager warmup がなければ F2 を今送信して固定 40ms sleep する。
+            const WARMUP_SETTLE_MS: u64 = 40;
+            let eager_ms = self.eager_warmup_sent_ms.get();
+            let now_ms = crate::hook::current_tick_ms();
+            let eager_elapsed = if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
+            // eager_warmup_sent_ms は mark_composition_cold で 0 にリセットされる。
+            // 有効期限は実質 mark_cold → send_romaji_as_tsf の間（通常 < 数秒）。
+            let use_eager = eager_ms != 0;
 
-            // WezTerm が F2 を処理して TSF composition context を初期化するまで待機。
-            //
-            // WaitForInputIdle は OS 入力キュー → アプリ message queue の配送前に
-            // 「idle」を返すことがあり（WezTerm が GetMessage でブロック中に見える）、
-            // F2 処理完了の保証にならないと判明した。固定 sleep で確実に待つ。
-            // cold start はフォーカス変更・Enter・F2 消費後のみで頻度は低い。
-            let f2_to_sleep_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            log::debug!("[h1-idle] cold={cold_n} slept 40ms (f2_to_sleep={}ms)", f2_to_sleep_ms);
+            if use_eager {
+                // eager warmup は send_eager_tsf_warmup() で既に F2 を送信済み。
+                // 重複 F2 を送らず、settle 時間の残りだけ sleep する。
+                let remaining = WARMUP_SETTLE_MS.saturating_sub(eager_elapsed);
+                log::debug!(
+                    "[h1-eager] cold={cold_n} F2既送信 ({eager_elapsed}ms前), 追加 sleep={remaining}ms",
+                );
+                if remaining > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(remaining));
+                }
+            } else {
+                // 通常 warmup: F2 を今送信して 40ms sleep する。
+                log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
+                let f2_send_tick = crate::hook::current_tick_ms();
+                unsafe {
+                    SendInput(
+                        &f2_inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+                let f2_to_sleep_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                log::debug!("[h1-idle] cold={cold_n} slept 40ms (f2_to_sleep={}ms)", f2_to_sleep_ms);
+            }
 
         } else {
             cold_n = self.cold_start_count.get();

@@ -215,6 +215,9 @@ impl DecisionExecutor {
                                 "[composition] vk=0xf2 passthrough TSF mode → consuming (prevent double-F2), marking cold",
                             );
                             self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+                            // 物理 F2 消費直後に warmup F2 を即送信。WezTerm の TSF context
+                            // 初期化がユーザーの次キーストロークまでに完了するよう先行させる。
+                            self.platform.output.send_eager_tsf_warmup();
                         } else {
                             log::debug!(
                                 "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -325,6 +328,8 @@ impl DecisionExecutor {
                         "[reinject-tsf] vk=0xf2 KeyDown TSF mode → consuming deferred F2 (no reinject), marking cold",
                     );
                     self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+                    // deferred F2 も即 eager warmup を送信する（passthrough 経路と同様）。
+                    self.platform.output.send_eager_tsf_warmup();
                 } else {
                     log::debug!(
                         "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
