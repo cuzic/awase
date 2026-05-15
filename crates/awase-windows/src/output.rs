@@ -626,13 +626,18 @@ impl Output {
     /// 送信順序: 全文字の KeyDown を先に送り、その後全文字の KeyUp を送る
     /// （重畳順: 例 "mu" → M↓ U↓ M↑ U↑）
     ///
-    /// WezTerm 等は WM_KEYUP 受信時にコンポジションをコミットする。
-    /// 逐次順（M↓ M↑ U↓ U↑）だと M↑ 到着時点でまだ U が来ていないため
-    /// 'm' が単独確定し "mう" になる。
-    /// 重畳順では U↓ が M↑ より先に処理されるため IME が 'mu' を一組として
-    /// 受け取り "む" に正しく変換される。
-    /// 全文字を1回の SendInput にまとめることで、後続キー（Enter reinject 等）が
-    /// 文字キーの間に割り込むのを防ぐ（per_key との違い）。
+    /// WM_KEYUP 受信時に IME がコンポジションをコミットするアプリ（Chrome 等）では、
+    /// 逐次順（M↓M↑ then U↓U↑）だと M↑ 到着時点で IME が 'm' を単独確定し "mう" になる。
+    /// 重畳順では U↓ が M↑ より先に処理されるため IME が "mu" を一組として受け取る。
+    ///
+    /// # H1 cold-start 修正（案A: F2-only 先行バッチ）
+    ///
+    /// Chrome も WezTerm と同様に F2 受信後の IME 初期化が非同期のため、
+    /// [F2↓F2↑ K↓I↓ K↑I↑] を同一バッチで送ると初期化完了前に romaji が処理され
+    /// ASCII として出力される（probe が attempt=0 で timeout → Chrome は >10ms 処理）。
+    ///
+    /// 案A: F2-only バッチを先行送信し、probe loop で Chrome が応答するまで待ってから
+    /// romaji バッチを送ることで初期化済み状態での文字受信を保証する。
     fn send_romaji_batched(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
 
@@ -640,29 +645,24 @@ impl Output {
             return;
         }
 
-        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA ウォームアップを先行送信する。
-        // コールドになるタイミング: 起動時・フォーカス変更・Space/Enter/Escape passthrough・
-        // エンジン toggle・F2 passthrough（executor / runtime が mark_composition_cold() を呼ぶ）。
+        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
-        // IME composition context は長い沈黙の後に期限切れになる可能性があるため。
         const COMPOSITION_TIMEOUT_MS: u64 = 2000;
         let warm = self.composition_warm.get();
         let elapsed = self.ms_since_last_send();
         let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
-        // H6 判定: warm=true なのに bug が起きていれば false-positive warm（warmup がスキップされた）
         log::debug!(
             "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
             if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
         );
+
         if prepend_f2_warmup {
             if session_expired {
-                log::debug!("[vk-warmup] session expired ({elapsed}ms) → prepending VK_DBE_HIRAGANA warmup");
+                log::debug!("[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
             } else {
-                log::debug!("[vk-warmup] cold → prepending VK_DBE_HIRAGANA warmup");
+                log::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
             }
-            // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
-            //            NATIVE=false なら direct input モード（H5）。
             let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
@@ -671,60 +671,33 @@ impl Output {
                 conv_pre.map_or(false, |v| v & 0x0010 != 0),
                 conv_pre.map_or(false, |v| v & 0x0002 != 0),
             );
-            // VK_DBE_HIRAGANA の mode switch は非同期のため、同バッチ内の最初の文字が
-            // switch 完了前に IME に届き "koの" 等の文字化けが発生する。
-            // IMM32 経由で SendInput 前に同期的にローマ字モードへ切り替えて回避する。
-            // H7 判定: success=false なら IMM32 API が失敗している。
+            // IMM32 経由で同期的にローマ字モードへ切り替え。
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
-        }
 
-        let warmup_slots = if prepend_f2_warmup { 2 } else { 0 };
-        let mut inputs = Vec::with_capacity(chars.len() * 4 + warmup_slots);
-
-        if prepend_f2_warmup {
-            const VK_DBE_HIRAGANA: u16 = 0xF2;
-            inputs.push(make_key_input(VK_DBE_HIRAGANA, false));
-            inputs.push(make_key_input(VK_DBE_HIRAGANA, true));
-        }
-
-        for &(vk, needs_shift) in &chars {
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, false));
-            }
-            inputs.push(make_key_input(vk, false));
-        }
-        for &(vk, needs_shift) in &chars {
-            inputs.push(make_key_input(vk, true));
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, true));
-            }
-        }
-
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
-        // H1 タイミング計測: warmup SendInput 直後から IME が応答するまでの時間を計測。
-        //
-        // [h1-probe] ログの読み方:
-        //   responsive=false → IME がまだ SendInput 処理中（10ms timeout で即タイムアウト）
-        //   responsive=true  → IME が応答可能になった（elapsed_ms が案A/B/D の最小 wait 値）
-        //   roman=true       → IME がローマ字モードで応答（F2 warmup の効果が確定）
-        //
-        // 案A (F2-only先行): 最初に responsive=true になる elapsed_ms が sleep 量の上限
-        // 案B (次バッチguard): char1後の char2 以降は次の send_romaji で送るため、
-        //                      その間隔が elapsed_ms を超えていれば IME は準備完了
-        // 案D (adaptive): 最初の responsive=true で次バッチを flush するタイミングを決める
-        if prepend_f2_warmup {
             let cold_n = self.cold_start_count.get() + 1;
             self.cold_start_count.set(cold_n);
+
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
+
+            // 案A: F2-only バッチを先行送信し、Chrome が IME を初期化するのを待つ。
+            const VK_DBE_HIRAGANA: u16 = 0xF2;
+            let f2_inputs = [
+                make_key_input(VK_DBE_HIRAGANA, false),
+                make_key_input(VK_DBE_HIRAGANA, true),
+            ];
+            log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
+            unsafe {
+                SendInput(
+                    &f2_inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+
+            // F2-only バッチ後のプローブ（ガード）:
+            //   responsive=true → Chrome が F2 を処理済み（IME 初期化完了期待）
+            //   responsive=false → Chrome がまだ処理中（timeout まで待機）
             let probe_start = std::time::Instant::now();
-            // 10ms タイムアウトで最大 15 回プローブ（合計最大 150ms）。
-            // 応答時の elapsed_ms が案A/B/D の wait 時間の根拠になる。
             const H1_PROBE_TIMEOUT_MS: u32 = 10;
             const H1_PROBE_MAX: u8 = 15;
             for i in 0..H1_PROBE_MAX {
@@ -739,6 +712,27 @@ impl Output {
                 );
                 if responsive { break; }
             }
+        }
+
+        // ローマ字バッチ送信（重畳順: 全 KeyDown → 全 KeyUp）
+        let mut inputs = Vec::with_capacity(chars.len() * 4);
+        for &(vk, needs_shift) in &chars {
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, false));
+            }
+            inputs.push(make_key_input(vk, false));
+        }
+        for &(vk, needs_shift) in &chars {
+            inputs.push(make_key_input(vk, true));
+            if needs_shift {
+                inputs.push(make_key_input(VK_LSHIFT, true));
+            }
+        }
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
         }
         self.composition_warm.set(true);
     }
