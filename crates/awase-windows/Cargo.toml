@@ -37,7 +37,11 @@ features = [
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Variant",
+    "implement",
 ]
+
+[target.'cfg(windows)'.dependencies.windows-core]
+version = "0.58"
 
 [lints.rust]
 unsafe_code = "warn"

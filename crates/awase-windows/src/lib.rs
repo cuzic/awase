@@ -56,6 +56,14 @@ pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
 pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 
+/// [観察用] eager warmup F2 の最終送信時刻（GetTickCount64 ms）。
+///
+/// UIA コールバックスレッド（COM スレッドプール）から参照するため
+/// `AtomicU64` を使用する。`output::Output::send_eager_tsf_warmup()` が更新する。
+/// WinEvent コールバックは `APP` 経由で読めるが UIA は別スレッドのためこちらを使う。
+pub static OBS_WARMUP_SENT_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 // ── PlatformState: シングルスレッド上の全状態を集約 ──
 
 /// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。

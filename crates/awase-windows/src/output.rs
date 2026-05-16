@@ -442,7 +442,8 @@ impl Output {
         log::debug!("[composition] marked cold reason={reason:?} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(0);
         if reason != ColdReason::NativeF2Consumed {
-            self.eager_warmup_sent_ms.set(0); // 以前の eager warmup は無効化
+            self.eager_warmup_sent_ms.set(0);
+            crate::OBS_WARMUP_SENT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -472,7 +473,8 @@ impl Output {
         let new_epoch = self.focus_epoch.get().wrapping_add(1).max(1); // 0 は cold の番兵値なので skip
         self.focus_epoch.set(new_epoch);
         self.composition_warm_epoch.set(0);
-        self.eager_warmup_sent_ms.set(0); // フォーカス変更で別ウィンドウ向け eager warmup を無効化
+        self.eager_warmup_sent_ms.set(0);
+        crate::OBS_WARMUP_SENT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
@@ -525,6 +527,8 @@ impl Output {
         // NativeF2Consumed 時にはより古い（より安全な）FocusChange 側を維持する。
         if self.eager_warmup_sent_ms.get() == 0 {
             self.eager_warmup_sent_ms.set(ms);
+            // UIA コールバックスレッドからも参照できるよう AtomicU64 に同期する。
+            crate::OBS_WARMUP_SENT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
             log::debug!("[tsf-eager-warmup] F2 送信, eager_warmup_sent_ms={ms}ms");
         } else {
             let prev = self.eager_warmup_sent_ms.get();

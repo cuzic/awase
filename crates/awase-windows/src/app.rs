@@ -33,7 +33,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, Runtime, ShadowSource, APP, ELEVATED,
+    LayoutEntry, OBS_WARMUP_SENT_MS, Runtime, ShadowSource, APP, ELEVATED,
     MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
@@ -220,6 +220,7 @@ pub fn run() -> Result<()> {
     install_ctrl_handler();
     let _focus_hook_guard = install_focus_hook();
     let _obs_hook_guards = install_observation_hooks();
+    install_uia_observer();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     unsafe {
@@ -1733,6 +1734,131 @@ fn obs_hwnd_class(hwnd: HWND) -> String {
         String::from_utf16_lossy(&buf[..len as usize])
     } else {
         "(unknown)".to_string()
+    }
+}
+
+// ── UIA TextChanged 観察スレッド ─────────────────────────────────────────────
+
+/// UIA `TextEdit_TextChanged` / `Text_TextChanged` イベントを別スレッドで観察する。
+///
+/// COM MTA アパートメント上でルート要素に対してサブツリー全体を監視するため、
+/// WezTerm を含む全アプリの UIA テキスト変化イベントを受け取れる。
+///
+/// DLL injection 不要。イベントは COM スレッドプールスレッドで配信される。
+///
+/// ログキーワード: `[uia-obs]`
+fn install_uia_observer() {
+    std::thread::spawn(|| {
+        if let Err(e) = run_uia_observer() {
+            log::warn!("[uia-obs] observer thread exited with error: {e:?}");
+        }
+    });
+}
+
+fn run_uia_observer() -> windows::core::Result<()> {
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, TreeScope_Subtree,
+        UIA_TextEdit_TextChangedEventId, UIA_Text_TextChangedEventId,
+    };
+
+    unsafe {
+        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
+    }
+    log::info!("[uia-obs] COM initialized (MTA)");
+
+    let uia: IUIAutomation = unsafe {
+        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?
+    };
+    let root = unsafe { uia.GetRootElement()? };
+    log::info!("[uia-obs] IUIAutomation created, root element acquired");
+
+    // TextEdit_TextChanged: IME/autocorrect 向け（Windows 10 以降）
+    let h1: windows::Win32::UI::Accessibility::IUIAutomationEventHandler =
+        UiaTextChangedHandler { label: "TextEdit_TextChanged" }.into();
+    match unsafe {
+        uia.AddAutomationEventHandler(
+            UIA_TextEdit_TextChangedEventId,
+            &root,
+            TreeScope_Subtree,
+            None,
+            &h1,
+        )
+    } {
+        Ok(()) => log::info!("[uia-obs] TextEdit_TextChanged handler registered (eventid={})", UIA_TextEdit_TextChangedEventId.0),
+        Err(e) => log::warn!("[uia-obs] TextEdit_TextChanged register failed: {e:?}"),
+    }
+
+    // Text_TextChanged: 通常テキスト変化（汎用）
+    let h2: windows::Win32::UI::Accessibility::IUIAutomationEventHandler =
+        UiaTextChangedHandler { label: "Text_TextChanged" }.into();
+    match unsafe {
+        uia.AddAutomationEventHandler(
+            UIA_Text_TextChangedEventId,
+            &root,
+            TreeScope_Subtree,
+            None,
+            &h2,
+        )
+    } {
+        Ok(()) => log::info!("[uia-obs] Text_TextChanged handler registered (eventid={})", UIA_Text_TextChangedEventId.0),
+        Err(e) => log::warn!("[uia-obs] Text_TextChanged register failed: {e:?}"),
+    }
+
+    // ハンドラをライブに保ちつつ QUIT_REQUESTED を監視する。
+    // MTA の場合、イベントは COM スレッドプールから直接コールバックされるため
+    // このスレッドはスリープで OK（メッセージポンプ不要）。
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        if QUIT_REQUESTED.load(Ordering::Relaxed) {
+            log::info!("[uia-obs] QUIT_REQUESTED → removing handlers");
+            let _ = unsafe { uia.RemoveAllEventHandlers() };
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// UIA テキスト変化イベントハンドラ（COM スレッドプールスレッドで呼ばれる）
+#[windows::core::implement(
+    windows::Win32::UI::Accessibility::IUIAutomationEventHandler
+)]
+struct UiaTextChangedHandler {
+    label: &'static str,
+}
+
+impl windows::Win32::UI::Accessibility::IUIAutomationEventHandler_Impl
+    for UiaTextChangedHandler_Impl
+{
+    fn HandleAutomationEvent(
+        &self,
+        sender: Option<&windows::Win32::UI::Accessibility::IUIAutomationElement>,
+        eventid: windows::Win32::UI::Accessibility::UIA_EVENT_ID,
+    ) -> windows::core::Result<()> {
+        let now_ms = unsafe {
+            windows::Win32::System::SystemInformation::GetTickCount64()
+        };
+        let warmup_ms = OBS_WARMUP_SENT_MS.load(Ordering::Relaxed);
+        let elapsed_str = if warmup_ms > 0 {
+            format!("{}ms after warmup", now_ms.saturating_sub(warmup_ms))
+        } else {
+            "no-warmup".to_string()
+        };
+
+        // 送信元の hwnd クラス名（可能な場合）
+        let class = sender
+            .and_then(|el| unsafe { el.CurrentNativeWindowHandle().ok() })
+            .map(|hwnd| obs_hwnd_class(HWND(hwnd.0 as _)))
+            .unwrap_or_default();
+
+        log::debug!(
+            "[uia-obs] {} eventid={} {elapsed_str} class={class}",
+            self.this.label,
+            eventid.0,
+        );
+        Ok(())
     }
 }
 
