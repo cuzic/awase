@@ -561,6 +561,8 @@ impl Runtime {
             crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
             // フォーカス変更時は VK/TSF いずれも composition context が無効化される。
             log::debug!("[composition] focus change → marking cold");
+            // shadow_ime_on を最新の IME 状態に同期してから warmup 判定を行う。
+            self.executor.platform.output.notify_ime_open(self.platform_state.preconditions.ime_on);
             self.executor.platform.output.mark_composition_cold(crate::output::ColdReason::FocusChange);
             // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
             // WezTerm の TSF composition context 初期化はアイドル後に >350ms かかることがある。
@@ -568,12 +570,9 @@ impl Runtime {
             // - WinEvent (IME_START) は WezTerm が発火しないため検出不可能
             // - 固定 sleep では長期アイドル後の初期化時間を予測できない
             // - pre-warmup により FocusChange 時刻から elapsed を計測でき、300ms threshold が有効になる
-            if self.platform_state.preconditions.ime_on
-                && self.executor.platform.output.is_tsf_mode()
-            {
-                self.executor.platform.output.send_eager_tsf_warmup();
-                log::debug!("[composition] FocusChange TSF pre-warmup sent");
-            }
+            // send_eager_tsf_warmup() は shadow_ime_on && is_tsf_mode を内部チェックする。
+            self.executor.platform.output.send_eager_tsf_warmup();
+            log::debug!("[composition] FocusChange: send_eager_tsf_warmup called (guarded by shadow_ime_on)");
         }
 
         // ── Phase 4: Engine に RefreshState（active 遷移検知）──

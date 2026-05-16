@@ -381,6 +381,11 @@ pub struct Output {
     /// `composition_warm_epoch` と照合することで、前ウィンドウのウォーム状態を
     /// 自動無効化する。
     focus_epoch: std::cell::Cell<u32>,
+    /// IME ON/OFF のシャドウ状態。
+    ///
+    /// `notify_ime_open()` で更新される。`send_eager_tsf_warmup()` が
+    /// IME OFF 時に F2 を誤送信しないためのガード。
+    shadow_ime_on: std::cell::Cell<bool>,
 }
 
 impl Output {
@@ -398,6 +403,7 @@ impl Output {
             eager_warmup_sent_ms: std::cell::Cell::new(0),
             composition_warm_epoch: std::cell::Cell::new(0), // 0 = cold
             focus_epoch: std::cell::Cell::new(1),            // 1 = initial window
+            shadow_ime_on: std::cell::Cell::new(false),
         }
     }
 
@@ -471,19 +477,29 @@ impl Output {
         resolve_injection_mode() == InjectionMode::Tsf
     }
 
+    /// IME ON/OFF のシャドウ状態を更新する。
+    ///
+    /// `ImeEffect::SetOpen` 実行時および FocusChange 時に呼ぶ。
+    /// `send_eager_tsf_warmup()` が IME OFF 時に F2 を誤送信しないためのガード。
+    pub fn notify_ime_open(&self, open: bool) {
+        log::debug!("[composition] shadow_ime_on → {open}");
+        self.shadow_ime_on.set(open);
+    }
+
     /// TSF composition context の事前ウォームアップ F2 を送信する。
     ///
     /// 以下のタイミングで呼ぶ:
-    /// - FocusChange 直後（ime_on=true && TSF mode）: WezTerm に TSF 初期化の先行時間を与える
+    /// - FocusChange 直後: WezTerm に TSF 初期化の先行時間を与える
     /// - NativeF2Consumed 直後: 物理 F2 の代替として送信（二重 F2 防止）
+    /// - PassthroughConfirmKey / ReinjectConfirmKey 直後: Enter/Escape 後の次打鍵を warmup
+    ///
+    /// `shadow_ime_on` が false（IME OFF）または TSF モード以外では何もしない。
     ///
     /// `eager_warmup_sent_ms` は既に設定済みの場合は更新しない（FocusChange 側のより古い
     /// タイムスタンプを優先する）。これにより NativeF2Consumed 後も FocusChange 時刻から
     /// の経過時間で wait 計算ができ、長期アイドル後の TSF 初期化問題を解消する。
-    ///
-    /// TSF モード以外では何もしない（Chrome/Unicode モードは独自 warmup を持つ）。
     pub fn send_eager_tsf_warmup(&self) {
-        if !self.is_tsf_mode() {
+        if !self.shadow_ime_on.get() || !self.is_tsf_mode() {
             return;
         }
         const VK_DBE_HIRAGANA: u16 = 0xF2;

@@ -245,10 +245,13 @@ impl DecisionExecutor {
                     // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
                     if is_key_down && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B) {
                         log::debug!(
-                            "[composition] passthrough vk={:#04x} KeyDown → marking cold",
+                            "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
                             raw_event.vk_code.0,
                         );
                         self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+                        // 次打鍵が 305ms 以内でも文字化けしないよう即 F2 warmup を先行送信する。
+                        // IME OFF の場合は send_eager_tsf_warmup が内部でガードする。
+                        self.platform.output.send_eager_tsf_warmup();
                     }
                     // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
                     if raw_event.vk_code.0 == 0xF2 && is_key_down {
@@ -350,15 +353,16 @@ impl DecisionExecutor {
             // Backspace 等は composition を維持するためここでは対象外。
             if is_key_down && matches!(event.vk_code.0, 0x20 | 0x0D | 0x1B) {
                 log::debug!(
-                    "[composition] reinject KeyDown vk={:#04x} → marking cold",
+                    "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
                     event.vk_code.0,
                 );
                 self.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+                self.platform.output.send_eager_tsf_warmup();
             }
             return;
         }
 
-        let mut ime_set_open_true = false;
+        let mut ime_set_open: Option<bool> = None;
 
         {
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
@@ -381,9 +385,7 @@ impl DecisionExecutor {
                         }
                         // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
                         platform.post_ime_refresh();
-                        if open {
-                            ime_set_open_true = true;
-                        }
+                        ime_set_open = Some(open);
                     }
                     ImeEffect::RequestRefresh => platform.post_ime_refresh(),
                 },
@@ -393,10 +395,14 @@ impl DecisionExecutor {
             }
         } // platform の借用をここで解放
 
-        // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
-        if ime_set_open_true {
-            log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-            self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+        if let Some(open) = ime_set_open {
+            // shadow_ime_on を IME 状態変化に追随させる。
+            self.platform.output.notify_ime_open(open);
+            // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
+            if open {
+                log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
+                self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            }
         }
     }
 }
