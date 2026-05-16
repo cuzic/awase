@@ -1505,6 +1505,7 @@ const EVENT_OBJECT_VALUECHANGE:          u32 = 0x800E;
 const EVENT_OBJECT_TEXTSELECTIONCHANGED: u32 = 0x8014;
 // グループ D: IME composition 専用イベント
 const EVENT_OBJECT_IME_START:            u32 = 0x8026;
+#[allow(dead_code)]
 const EVENT_OBJECT_IME_CHANGE:           u32 = 0x8027;
 const EVENT_OBJECT_IME_END:              u32 = 0x8028;
 
