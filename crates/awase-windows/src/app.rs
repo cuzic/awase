@@ -33,8 +33,8 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, OBS_WARMUP_SENT_MS, Runtime, ShadowSource, APP, ELEVATED,
-    MAIN_THREAD_ID, QUIT_REQUESTED,
+    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ, OBS_LAST_SEND_MS, OBS_WARMUP_SENT_MS,
+    Runtime, ShadowSource, APP, ELEVATED, MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
     WM_RELOAD_CONFIG,
@@ -1673,6 +1673,34 @@ unsafe extern "system" fn observation_event_proc(
         Some(ms) => format!("{ms}ms after warmup"),
         None     => "no-warmup".to_string(),
     };
+
+    // WezTerm WINDOW OBJ_NAMECHANGE: 連番付きで専用ログを出す（~250ms シグナル追跡用）
+    const EVENT_OBJ_NAMECHANGE: u32 = 0x800C;
+    const EVENT_OBJ_SHOW: u32 = 0x8002;
+    const OBJID_WINDOW: i32 = 0;
+
+    if event == EVENT_OBJ_NAMECHANGE && id_object == OBJID_WINDOW
+        && class.contains("CASCADIA")
+    {
+        let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        log::debug!(
+            "[obs-wez-nc] #{seq} {elapsed_str} warm={composition_warm}",
+        );
+    }
+
+    // GoogleJapaneseInputCandidateWindow OBJ_SHOW: 送信完了からの delta を付加
+    if event == EVENT_OBJ_SHOW && class == "GoogleJapaneseInputCandidateWindow" {
+        let send_ms = OBS_LAST_SEND_MS.load(Ordering::Relaxed);
+        let now_ms = hook::current_tick_ms();
+        let after_send_str = if send_ms != 0 {
+            format!(" {}ms-after-send", now_ms.saturating_sub(send_ms))
+        } else {
+            " no-send-ref".to_string()
+        };
+        log::debug!(
+            "[obs-candidate] {elapsed_str}{after_send_str} warm={composition_warm}",
+        );
+    }
 
     log::debug!(
         "[obs] {event_name} obj={objid_name} child={id_child} \

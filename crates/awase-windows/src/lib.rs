@@ -64,6 +64,22 @@ pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 pub static OBS_WARMUP_SENT_MS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// [観察用] romaji SendInput 完了直後の時刻（GetTickCount64 ms）。
+///
+/// `send_romaji_as_tsf` がローマ字バッチ送信後に更新する。
+/// `GoogleJapaneseInputCandidateWindow OBJ_SHOW` との delta を計算し、
+/// 「送信からどれだけ後に候補窓が現れるか」を計測するために使う。
+pub static OBS_LAST_SEND_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// [観察用] WezTerm WINDOW OBJ_NAMECHANGE の連番カウンタ。
+///
+/// `send_eager_tsf_warmup()` 呼び出し時に 0 にリセットされ、
+/// その後 WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
+/// 「warmup 後の何番目の NAMECHANGE が ~250ms のやつか」を特定するために使う。
+pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
 // ── PlatformState: シングルスレッド上の全状態を集約 ──
 
 /// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。

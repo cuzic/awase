@@ -511,6 +511,8 @@ impl Output {
         if !self.shadow_ime_on.get() || !self.is_tsf_mode() {
             return;
         }
+        // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
+        crate::OBS_FOCUS_NAMECHANGE_SEQ.store(0, std::sync::atomic::Ordering::Relaxed);
         const VK_DBE_HIRAGANA: u16 = 0xF2;
         let f2_inputs = [
             make_tsf_key_input(VK_DBE_HIRAGANA, false),
@@ -971,6 +973,13 @@ impl Output {
                 if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
             let use_eager = eager_ms != 0;
 
+            // どのパスを通るかを明示的にログ（根本原因判別用）
+            log::debug!(
+                "[h1-warmup] cold={cold_n} path={} eager_ms={eager_ms} now_ms={now_ms} elapsed={}ms",
+                if use_eager { "eager" } else { "non-eager" },
+                if eager_elapsed == u64::MAX { "∞".to_owned() } else { eager_elapsed.to_string() },
+            );
+
             if use_eager {
                 let remaining = EAGER_SETTLE_MS.saturating_sub(eager_elapsed);
                 if remaining == 0 {
@@ -979,9 +988,15 @@ impl Output {
                     );
                 } else {
                     log::debug!(
-                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過, sleep={remaining}ms",
+                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過, sleep予定={remaining}ms",
                     );
+                    let t_pre = crate::hook::current_tick_ms();
                     std::thread::sleep(std::time::Duration::from_millis(remaining));
+                    let actual_sleep = crate::hook::current_tick_ms().saturating_sub(t_pre);
+                    let total_elapsed = eager_elapsed + actual_sleep;
+                    log::debug!(
+                        "[h1-warmup] cold={cold_n} 実測sleep={actual_sleep}ms 送信時warmup経過={total_elapsed}ms",
+                    );
                 }
             } else {
                 log::debug!(
@@ -993,7 +1008,12 @@ impl Output {
                         i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                     );
                 }
+                let t_pre = crate::hook::current_tick_ms();
                 std::thread::sleep(std::time::Duration::from_millis(NON_EAGER_SLEEP_MS));
+                let actual_sleep = crate::hook::current_tick_ms().saturating_sub(t_pre);
+                log::debug!(
+                    "[h1-warmup] cold={cold_n} non-eager 実測sleep={actual_sleep}ms",
+                );
             }
 
         } else {
@@ -1042,6 +1062,11 @@ impl Output {
         }
 
         self.mark_composition_warm();
+        // [観察用] 送信完了時刻を記録（GoogleJapaneseInputCandidateWindow OBJ_SHOW との delta 計算用）
+        crate::OBS_LAST_SEND_MS.store(
+            crate::hook::current_tick_ms(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
