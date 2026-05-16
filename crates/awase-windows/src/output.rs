@@ -912,7 +912,14 @@ impl Output {
             // F2 warmup: eager warmup（NativeF2Consumed 即送信）を優先使用。
             // eager warmup が有効なら重複 F2 を送らず、残り settle 時間だけ sleep する。
             // eager warmup がなければ F2 を今送信して固定 40ms sleep する。
-            const WARMUP_SETTLE_MS: u64 = 40;
+            //
+            // EAGER_WARMUP_SETTLE_MS を 300ms に設定する理由:
+            // WezTerm が長期アイドル（>100s）後にフォーカスを受け取った場合、
+            // TSF composition context の初期化に >250ms かかることが確認されている。
+            // WezTerm の IME window は常に応答するため Chrome のような probe loop では
+            // TSF 初期化完了を検出できず、固定 sleep が唯一の同期手段となる。
+            // 40ms は不十分（245ms 後でも文字化けが発生）、300ms で余裕を持たせる。
+            const EAGER_WARMUP_SETTLE_MS: u64 = 300;
             let eager_ms = self.eager_warmup_sent_ms.get();
             let now_ms = crate::hook::current_tick_ms();
             let eager_elapsed = if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
@@ -923,15 +930,17 @@ impl Output {
             if use_eager {
                 // eager warmup は send_eager_tsf_warmup() で既に F2 を送信済み。
                 // 重複 F2 を送らず、settle 時間の残りだけ sleep する。
-                let remaining = WARMUP_SETTLE_MS.saturating_sub(eager_elapsed);
+                let remaining = EAGER_WARMUP_SETTLE_MS.saturating_sub(eager_elapsed);
                 log::debug!(
-                    "[h1-eager] cold={cold_n} F2既送信 ({eager_elapsed}ms前), 追加 sleep={remaining}ms",
+                    "[h1-eager] cold={cold_n} F2既送信 ({eager_elapsed}ms前), 追加 sleep={remaining}ms (settle={EAGER_WARMUP_SETTLE_MS}ms)",
                 );
                 if remaining > 0 {
                     std::thread::sleep(std::time::Duration::from_millis(remaining));
                 }
             } else {
                 // 通常 warmup: F2 を今送信して 40ms sleep する。
+                // 非 eager パス（Enter/Escape 後など）は WezTerm が既に TSF アクティブなため
+                // 長期 sleep は不要。
                 log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
                 let f2_send_tick = crate::hook::current_tick_ms();
                 unsafe {
