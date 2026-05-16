@@ -933,13 +933,14 @@ impl Output {
             // eager warmup が有効なら重複 F2 を送らず、残り settle 時間だけ sleep する。
             // eager warmup がなければ F2 を今送信して固定 40ms sleep する。
             //
-            // EAGER_WARMUP_SETTLE_MS を 300ms に設定する理由:
+            // EAGER_WARMUP_SETTLE_MS を 400ms に設定する理由:
             // WezTerm が長期アイドル（>100s）後にフォーカスを受け取った場合、
-            // TSF composition context の初期化に >250ms かかることが確認されている。
+            // TSF composition context の初期化に >300ms かかることが確認されている。
+            // IME OFF→ON 後の NativeF2Consumed ケースでは 305ms 必要で、
+            // 300ms では "nい" 化けが発生。400ms で余裕を持たせる。
             // WezTerm の IME window は常に応答するため Chrome のような probe loop では
             // TSF 初期化完了を検出できず、固定 sleep が唯一の同期手段となる。
-            // 40ms は不十分（245ms 後でも文字化けが発生）、300ms で余裕を持たせる。
-            const EAGER_WARMUP_SETTLE_MS: u64 = 300;
+            const EAGER_WARMUP_SETTLE_MS: u64 = 400;
             let eager_ms = self.eager_warmup_sent_ms.get();
             let now_ms = crate::hook::current_tick_ms();
             let eager_elapsed = if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
