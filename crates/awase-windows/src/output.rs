@@ -407,6 +407,13 @@ impl Output {
         }
     }
 
+    /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
+    /// WinEvent 観察コールバックが warmup からの経過時間をログするために使う。
+    #[must_use]
+    pub fn eager_warmup_sent_ms(&self) -> u64 {
+        self.eager_warmup_sent_ms.get()
+    }
+
     /// 最後の `send_keys` 完了からの経過時間（ms）。
     /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]

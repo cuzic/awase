@@ -219,7 +219,7 @@ pub fn run() -> Result<()> {
     );
     install_ctrl_handler();
     let _focus_hook_guard = install_focus_hook();
-    let _ime_event_hook_guard = install_ime_event_hook();
+    let _obs_hook_guards = install_observation_hooks();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     unsafe {
@@ -1491,11 +1491,22 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 /// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
-/// IME composition イベント（WinSDK winuser.h より）
-/// WezTerm の TSF モードでこれらが発火するか検証用。
-const EVENT_OBJECT_IME_START:  u32 = 0x8026; // composition 開始
-const EVENT_OBJECT_IME_CHANGE: u32 = 0x8027; // composition 文字列変化
-const EVENT_OBJECT_IME_END:    u32 = 0x8028; // composition 確定 / キャンセル
+// ── WinEvent 観察用イベント定数（winuser.h / WinSDK より）────────────────────
+// アルファベット順ではなく ID 昇順に並べる。
+
+// グループ A: オブジェクト表示/非表示（IME 候補 window 出現を捉える）
+const EVENT_OBJECT_SHOW:                 u32 = 0x8002;
+const EVENT_OBJECT_HIDE:                 u32 = 0x8003;
+// グループ B: オブジェクト状態/値変化
+const EVENT_OBJECT_STATECHANGE:          u32 = 0x800A;
+const EVENT_OBJECT_NAMECHANGE:           u32 = 0x800C;
+const EVENT_OBJECT_VALUECHANGE:          u32 = 0x800E;
+// グループ C: テキスト選択/キャレット変化（composition 中に発火する可能性）
+const EVENT_OBJECT_TEXTSELECTIONCHANGED: u32 = 0x8014;
+// グループ D: IME composition 専用イベント
+const EVENT_OBJECT_IME_START:            u32 = 0x8026;
+const EVENT_OBJECT_IME_CHANGE:           u32 = 0x8027;
+const EVENT_OBJECT_IME_END:              u32 = 0x8028;
 
 /// フォーカス変更イベントフックを登録する
 /// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
@@ -1572,72 +1583,156 @@ unsafe extern "system" fn win_event_proc(
     app.schedule_ime_refresh(debounce_ms);
 }
 
-/// IME composition イベントフックを登録する（観察用プロトタイプ）
+/// WinEvent 観察フックを複数登録し RAII ガードのリストを返す。
 ///
-/// WezTerm の TSF モードで EVENT_OBJECT_IME_* が実際に発火するかを
-/// ログで確認するためのフック。現時点では composition_warm の変更は行わない。
-fn install_ime_event_hook() -> Option<WinEventHookGuard> {
+/// 以下の 4 グループを個別フックでカバーする（同一コールバック）:
+///
+/// | グループ | イベント範囲 | 目的 |
+/// |---|---|---|
+/// | A | SHOW / HIDE | IME 候補 window の出現 |
+/// | B | STATECHANGE / NAMECHANGE / VALUECHANGE | オブジェクト状態変化 |
+/// | C | TEXTSELECTIONCHANGED | キャレット・選択変化（composition 中に発火する可能性） |
+/// | D | IME_START / IME_CHANGE / IME_END | IME composition 専用 |
+///
+/// `WINEVENT_OUTOFCONTEXT` のため全コールバックはメッセージループ上で実行される。
+/// DLL injection 不要。
+fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
-    unsafe {
-        let hook = SetWinEventHook(
-            EVENT_OBJECT_IME_START,
-            EVENT_OBJECT_IME_END,
-            None,
-            Some(ime_event_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
+
+    // (min_event, max_event, label) のリスト
+    let ranges: &[(u32, u32, &str)] = &[
+        (EVENT_OBJECT_SHOW,                 EVENT_OBJECT_HIDE,                 "SHOW..HIDE"),
+        (EVENT_OBJECT_STATECHANGE,          EVENT_OBJECT_STATECHANGE,          "STATECHANGE"),
+        (EVENT_OBJECT_NAMECHANGE,           EVENT_OBJECT_NAMECHANGE,           "NAMECHANGE"),
+        (EVENT_OBJECT_VALUECHANGE,          EVENT_OBJECT_VALUECHANGE,          "VALUECHANGE"),
+        (EVENT_OBJECT_TEXTSELECTIONCHANGED, EVENT_OBJECT_TEXTSELECTIONCHANGED, "TEXTSELECTIONCHANGED"),
+        (EVENT_OBJECT_IME_START,            EVENT_OBJECT_IME_END,              "IME_START..END"),
+    ];
+
+    let mut guards = Vec::new();
+    for &(min_ev, max_ev, label) in ranges {
+        let hook = unsafe {
+            SetWinEventHook(
+                min_ev, max_ev,
+                None,
+                Some(observation_event_proc),
+                0, 0,
+                WINEVENT_OUTOFCONTEXT,
+            )
+        };
         if hook.is_invalid() {
-            log::warn!("[ime-event] Failed to install IME event hook");
-            None
+            log::warn!("[obs-hook] failed to install hook for {label}");
         } else {
-            log::info!("[ime-event] IME event hook installed (observing 0x{EVENT_OBJECT_IME_START:04x}..0x{EVENT_OBJECT_IME_END:04x})");
-            Some(WinEventHookGuard(hook))
+            log::info!("[obs-hook] installed: {label} (0x{min_ev:04x}..0x{max_ev:04x})");
+            guards.push(WinEventHookGuard(hook));
         }
     }
+    guards
 }
 
-/// IME composition イベントのコールバック（観察用、メッセージループ上で実行）
+/// WinEvent 観察コールバック（全フックが共有、メッセージループ上で実行）
 ///
-/// WezTerm の TSF モードで composition の開始・変更・終了が
-/// WinEvent として届くかを確認する。
-unsafe extern "system" fn ime_event_proc(
+/// 観測目的: warmup F2 送信後にどのイベントが何 ms 後に発火するかを記録する。
+/// ここでは composition_warm の変更は行わない（観察のみ）。
+unsafe extern "system" fn observation_event_proc(
     _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
     event: u32,
     hwnd: HWND,
     id_object: i32,
-    _id_child: i32,
+    id_child: i32,
     _event_thread: u32,
     event_time: u32,
 ) {
-    let name = match event {
-        EVENT_OBJECT_IME_START  => "IME_START",
-        EVENT_OBJECT_IME_CHANGE => "IME_CHANGE",
-        EVENT_OBJECT_IME_END    => "IME_END",
-        _                       => "IME_UNKNOWN",
-    };
+    // イベント名
+    let event_name = obs_event_name(event);
+    // OBJID 名（-4=CLIENT, -8=CARET 等。正値は UIA native object）
+    let objid_name = obs_objid_name(id_object);
 
-    // フォーカス中のアプリ名を取得（ログ可読性のため）
-    let class = {
-        let mut buf = [0u16; 64];
-        let len = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf);
-        if len > 0 {
-            String::from_utf16_lossy(&buf[..len as usize])
-        } else {
-            format!("hwnd={:?}", hwnd)
-        }
-    };
+    // hwnd のクラス名（IME window, WezTerm, etc. の識別）
+    let class = obs_hwnd_class(hwnd);
 
-    let warm = APP
+    // warmup F2 送信からの経過時間
+    let (warmup_elapsed, composition_warm) = APP
         .get_ref()
-        .map(|app| app.executor.platform.output.is_composition_warm())
-        .unwrap_or(false);
+        .map(|app| {
+            let sent_ms = app.executor.platform.output.eager_warmup_sent_ms();
+            let now_ms = crate::hook::current_tick_ms();
+            let elapsed = if sent_ms == 0 {
+                None
+            } else {
+                Some(now_ms.saturating_sub(sent_ms))
+            };
+            let warm = app.executor.platform.output.is_composition_warm();
+            (elapsed, warm)
+        })
+        .unwrap_or((None, false));
+
+    let elapsed_str = match warmup_elapsed {
+        Some(ms) => format!("{ms}ms after warmup"),
+        None     => "no-warmup".to_string(),
+    };
 
     log::debug!(
-        "[ime-event] {name} event={event:#06x} hwnd={hwnd:?} obj={id_object} \
-        class={class} time={event_time} composition_warm={warm}"
+        "[obs] {event_name} obj={objid_name} child={id_child} \
+        class={class} hwnd={hwnd:?} time={event_time} \
+        {elapsed_str} warm={composition_warm}"
     );
+}
+
+/// WinEvent ID → 人間が読める名前
+fn obs_event_name(event: u32) -> &'static str {
+    match event {
+        0x8002 => "OBJ_SHOW",
+        0x8003 => "OBJ_HIDE",
+        0x8004 => "OBJ_REORDER",
+        0x8005 => "OBJ_FOCUS",
+        0x8006 => "OBJ_SELECTION",
+        0x800A => "OBJ_STATECHANGE",
+        0x800B => "OBJ_LOCATIONCHANGE",
+        0x800C => "OBJ_NAMECHANGE",
+        0x800D => "OBJ_DESCRIPTIONCHANGE",
+        0x800E => "OBJ_VALUECHANGE",
+        0x800F => "OBJ_PARENTCHANGE",
+        0x8013 => "OBJ_INVOKED",
+        0x8014 => "OBJ_TEXTSELECTIONCHANGED",
+        0x8015 => "OBJ_CONTENTSCROLLED",
+        0x8026 => "IME_START",
+        0x8027 => "IME_CHANGE",
+        0x8028 => "IME_END",
+        _ => "OBJ_OTHER",
+    }
+}
+
+/// OBJID 値 → 人間が読める名前（id_object は i32）
+fn obs_objid_name(id_object: i32) -> &'static str {
+    match id_object {
+        0  => "WINDOW",
+        -1 => "SYSMENU",
+        -2 => "TITLEBAR",
+        -3 => "MENU",
+        -4 => "CLIENT",
+        -5 => "VSCROLL",
+        -6 => "HSCROLL",
+        -7 => "SIZEGRIP",
+        -8 => "CARET",
+        -9 => "CURSOR",
+        _ if id_object > 0 => "UIA_NATIVE",
+        _ => "OTHER",
+    }
+}
+
+/// HWND のウィンドウクラス名を取得（取得失敗時は空文字）
+fn obs_hwnd_class(hwnd: HWND) -> String {
+    if hwnd.0.is_null() {
+        return "(null)".to_string();
+    }
+    let mut buf = [0u16; 128];
+    let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
+    if len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        "(unknown)".to_string()
+    }
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
