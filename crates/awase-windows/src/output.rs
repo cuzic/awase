@@ -415,10 +415,20 @@ impl Output {
     /// 次の VK / TSF composition 送信時に VK_DBE_HIRAGANA ウォームアップを
     /// 先行送信させる。Space/Enter/Escape passthrough・エンジン toggle 等のタイミングで呼ぶ。
     /// フォーカス変更は `on_focus_changed()` を使うこと（epoch も更新される）。
+    ///
+    /// # NativeF2Consumed の特殊処理
+    ///
+    /// NativeF2Consumed では `eager_warmup_sent_ms` をリセットしない。
+    /// FocusChange 直後に pre-warmup F2 を送った場合、そのタイムスタンプを保持することで
+    /// send_romaji_as_tsf がより古い（より安全な）タイムスタンプを参照できる。
+    /// NativeF2Consumed 直後に send_eager_tsf_warmup() が呼ばれるが、
+    /// 既にタイムスタンプが設定済みの場合はそちらを優先する。
     pub fn mark_composition_cold(&self, reason: ColdReason) {
         log::debug!("[composition] marked cold reason={reason:?} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(0);
-        self.eager_warmup_sent_ms.set(0); // 以前の eager warmup は無効化
+        if reason != ColdReason::NativeF2Consumed {
+            self.eager_warmup_sent_ms.set(0); // 以前の eager warmup は無効化
+        }
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -459,12 +469,15 @@ impl Output {
         resolve_injection_mode() == InjectionMode::Tsf
     }
 
-    /// NativeF2Consumed 時に即時 warmup F2 を送信し、タイムスタンプを記録する。
+    /// TSF composition context の事前ウォームアップ F2 を送信する。
     ///
-    /// 物理 F2 を消費した直後に呼ぶことで、WezTerm の TSF composition context
-    /// 初期化をユーザーの次キーストロークより前に開始できる。
-    /// `send_romaji_as_tsf` がこのタイムスタンプを参照し、
-    /// 追加の F2 送信と固定 sleep を省略（または短縮）する。
+    /// 以下のタイミングで呼ぶ:
+    /// - FocusChange 直後（ime_on=true && TSF mode）: WezTerm に TSF 初期化の先行時間を与える
+    /// - NativeF2Consumed 直後: 物理 F2 の代替として送信（二重 F2 防止）
+    ///
+    /// `eager_warmup_sent_ms` は既に設定済みの場合は更新しない（FocusChange 側のより古い
+    /// タイムスタンプを優先する）。これにより NativeF2Consumed 後も FocusChange 時刻から
+    /// の経過時間で wait 計算ができ、長期アイドル後の TSF 初期化問題を解消する。
     ///
     /// TSF モード以外では何もしない（Chrome/Unicode モードは独自 warmup を持つ）。
     pub fn send_eager_tsf_warmup(&self) {
@@ -483,8 +496,15 @@ impl Output {
             );
         }
         let ms = crate::hook::current_tick_ms();
-        self.eager_warmup_sent_ms.set(ms);
-        log::debug!("[tsf-eager-warmup] F2 即送信 (NativeF2Consumed後), t={ms}ms");
+        // FocusChange pre-warmup がある場合はそちらのタイムスタンプを優先する。
+        // NativeF2Consumed 時にはより古い（より安全な）FocusChange 側を維持する。
+        if self.eager_warmup_sent_ms.get() == 0 {
+            self.eager_warmup_sent_ms.set(ms);
+            log::debug!("[tsf-eager-warmup] F2 送信, eager_warmup_sent_ms={ms}ms");
+        } else {
+            let prev = self.eager_warmup_sent_ms.get();
+            log::debug!("[tsf-eager-warmup] F2 再送信 (既存タイムスタンプ {prev}ms を維持, now={ms}ms)");
+        }
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
