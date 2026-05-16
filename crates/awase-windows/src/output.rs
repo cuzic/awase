@@ -52,6 +52,9 @@ enum InjectionMode {
 /// VK_LSHIFT の仮想キーコード
 const VK_LSHIFT: u16 = 0xA0;
 
+/// VK_BACK の仮想キーコード（Backspace）
+const VK_BACK: u16 = 0x08;
+
 /// 現在のフォーカス先から出力注入モードを決定する。
 ///
 /// 優先順位:
@@ -897,6 +900,7 @@ impl Output {
         );
 
         let cold_n;
+        let mut probe_succeeded = false;
         if prepend_f2_warmup {
             if session_expired {
                 log::debug!("[tsf-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
@@ -921,58 +925,111 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
-            // 案A: F2-only バッチを先行送信し、WezTerm が TSF context を初期化するのを待つ。
-            // F2 と romaji を同一バッチに含めると WezTerm が TSF 初期化完了前に
-            // romaji を処理してしまい、cold-start 1 文字目が ASCII として出力される（H1 問題）。
+            // F2 warmup + probe-and-retry ループ。
+            //
+            // TSF cold-start 問題: WezTerm は F2 受信後に TSF composition context を
+            // 非同期で初期化する。初期化完了前に romaji が届くと 1 文字目がリテラル ASCII
+            // として出力される（"nい"/"kおれ" 等）。
+            //
+            // 解決策: 最初の 1 文字を "probe" として送り、ImmGetCompositionStringW で
+            // composition string が非空になったことを確認してから残りを送る。
+            // composition が空（TSF がまだ cold）なら BS で消してリトライ。
+            // 固定 sleep と異なり実際の TSF 初期化完了を検出できるため、
+            // 過剰な sleep を避けつつ文字化けを防げる。
             const VK_DBE_HIRAGANA: u16 = 0xF2;
             let f2_inputs = [
                 make_tsf_key_input(VK_DBE_HIRAGANA, false),
                 make_tsf_key_input(VK_DBE_HIRAGANA, true),
             ];
-            // F2 warmup: eager warmup（NativeF2Consumed 即送信）を優先使用。
-            // eager warmup が有効なら重複 F2 を送らず、残り settle 時間だけ sleep する。
-            // eager warmup がなければ F2 を今送信して固定 40ms sleep する。
-            //
-            // EAGER_WARMUP_SETTLE_MS を 400ms に設定する理由:
-            // WezTerm が長期アイドル（>100s）後にフォーカスを受け取った場合、
-            // TSF composition context の初期化に >300ms かかることが確認されている。
-            // IME OFF→ON 後の NativeF2Consumed ケースでは 305ms 必要で、
-            // 300ms では "nい" 化けが発生。400ms で余裕を持たせる。
-            // WezTerm の IME window は常に応答するため Chrome のような probe loop では
-            // TSF 初期化完了を検出できず、固定 sleep が唯一の同期手段となる。
-            const EAGER_WARMUP_SETTLE_MS: u64 = 400;
+            // probe 前の最小 wait: warmup F2 を WezTerm が受け取るまでのバッファ
+            const PROBE_INITIAL_WAIT_MS: u64 = 50;
+            // probe char 送信後、WezTerm が処理して HIMC を更新するまでの wait
+            const PROBE_SETTLE_MS: u64 = 20;
+            // probe 失敗後、次のリトライまで追加 wait（TSF 初期化中に polling interval を空ける）
+            const PROBE_RETRY_WAIT_MS: u64 = 50;
+            // 最大リトライ数: 50+(8*(20+50))=610ms max で打ち切り
+            const PROBE_MAX_RETRIES: u32 = 8;
+
             let eager_ms = self.eager_warmup_sent_ms.get();
             let now_ms = crate::hook::current_tick_ms();
-            let eager_elapsed = if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
-            // eager_warmup_sent_ms は mark_composition_cold で 0 にリセットされる。
-            // 有効期限は実質 mark_cold → send_romaji_as_tsf の間（通常 < 数秒）。
+            let eager_elapsed =
+                if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
             let use_eager = eager_ms != 0;
 
             if use_eager {
-                // eager warmup は send_eager_tsf_warmup() で既に F2 を送信済み。
-                // 重複 F2 を送らず、settle 時間の残りだけ sleep する。
-                let remaining = EAGER_WARMUP_SETTLE_MS.saturating_sub(eager_elapsed);
+                // eager warmup は既に F2 を送信済み。initial wait の残りだけ sleep する。
+                let initial_wait = PROBE_INITIAL_WAIT_MS.saturating_sub(eager_elapsed);
                 log::debug!(
-                    "[h1-eager] cold={cold_n} F2既送信 ({eager_elapsed}ms前), 追加 sleep={remaining}ms (settle={EAGER_WARMUP_SETTLE_MS}ms)",
+                    "[h1-probe] cold={cold_n} eager: F2既送信 ({eager_elapsed}ms前), initial_wait={initial_wait}ms",
                 );
-                if remaining > 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(remaining));
+                if initial_wait > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(initial_wait));
                 }
             } else {
-                // 通常 warmup: F2 を今送信して 40ms sleep する。
-                // 非 eager パス（Enter/Escape 後など）は WezTerm が既に TSF アクティブなため
-                // 長期 sleep は不要。
-                log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
-                let f2_send_tick = crate::hook::current_tick_ms();
+                // 通常 warmup: F2 を今送信してから initial wait。
+                log::debug!(
+                    "[h1-probe] cold={cold_n} non-eager: F2送信, initial_wait={PROBE_INITIAL_WAIT_MS}ms",
+                );
                 unsafe {
                     SendInput(
                         &f2_inputs,
                         i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                     );
                 }
-                let f2_to_sleep_ms = crate::hook::current_tick_ms().saturating_sub(f2_send_tick);
-                std::thread::sleep(std::time::Duration::from_millis(40));
-                log::debug!("[h1-idle] cold={cold_n} slept 40ms (f2_to_sleep={}ms)", f2_to_sleep_ms);
+                std::thread::sleep(std::time::Duration::from_millis(PROBE_INITIAL_WAIT_MS));
+            }
+
+            // probe loop: first char を送信して composition active を観測する
+            let probe_hwnd = unsafe { crate::ime::get_focused_hwnd() };
+            let first_vk = chars[0]; // chars は空でないことを冒頭で確認済み
+            for retry in 0..=PROBE_MAX_RETRIES {
+                let mut probe_inputs = Vec::with_capacity(4);
+                if first_vk.1 {
+                    probe_inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                }
+                probe_inputs.push(make_tsf_key_input(first_vk.0, false));
+                probe_inputs.push(make_tsf_key_input(first_vk.0, true));
+                if first_vk.1 {
+                    probe_inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                }
+                unsafe {
+                    SendInput(
+                        &probe_inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(PROBE_SETTLE_MS));
+
+                let active = unsafe { crate::ime::check_tsf_composition_active(probe_hwnd) };
+                log::debug!(
+                    "[tsf-probe] cold={cold_n} retry={retry} composition_active={active}",
+                );
+                if active {
+                    probe_succeeded = true;
+                    break;
+                }
+
+                // probe char がリテラルとして届いた → BS で消してリトライ
+                let bs = [
+                    make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+                    make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+                ];
+                unsafe {
+                    SendInput(
+                        &bs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+                if retry < PROBE_MAX_RETRIES {
+                    std::thread::sleep(std::time::Duration::from_millis(PROBE_RETRY_WAIT_MS));
+                }
+            }
+            if probe_succeeded {
+                log::debug!("[tsf-probe] cold={cold_n} probe 成功 → 残り chars を送信");
+            } else {
+                log::warn!(
+                    "[tsf-probe] cold={cold_n} {PROBE_MAX_RETRIES} retries 到達, fallback: 全 chars 再送",
+                );
             }
 
         } else {
@@ -982,15 +1039,23 @@ impl Output {
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
+        //
+        // probe 成功時は chars[0] を probe で送信済みのため chars[1..] のみ送る。
+        // probe 失敗（fallback）時・warm 時は chars[0..] を全て送る。
+        let send_from = if prepend_f2_warmup && probe_succeeded { 1 } else { 0 };
+        let chars_to_send = &chars[send_from..];
+
         let mut runs: Vec<&[(u16, bool)]> = Vec::new();
-        let mut start = 0;
-        for i in 1..chars.len() {
-            if chars[i].0 == chars[i - 1].0 {
-                runs.push(&chars[start..i]);
-                start = i;
+        if !chars_to_send.is_empty() {
+            let mut start = 0;
+            for i in 1..chars_to_send.len() {
+                if chars_to_send[i].0 == chars_to_send[i - 1].0 {
+                    runs.push(&chars_to_send[start..i]);
+                    start = i;
+                }
             }
+            runs.push(&chars_to_send[start..]);
         }
-        runs.push(&chars[start..]);
 
         let total_runs = runs.len();
 

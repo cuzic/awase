@@ -1,7 +1,8 @@
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd, ImmReleaseContext,
-    IME_CMODE_NATIVE, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd,
+    ImmReleaseContext, IME_CMODE_NATIVE, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
+    IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -522,4 +523,47 @@ fn is_transient_system_overlay(hwnd: HWND) -> bool {
             | "XamlExplorerHostIslandWindow"
             | "Windows.UI.Input.InputSite.WindowClass"
     )
+}
+
+// ─── TSF probe helpers ────────────────────────────────────────
+
+/// キーボードフォーカスウィンドウの HWND を返す。
+///
+/// `GetGUIThreadInfo().hwndFocus`（実際のフォーカス子ウィンドウ）を優先し、
+/// 取得失敗時は `GetForegroundWindow()` にフォールバックする。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+pub unsafe fn get_focused_hwnd() -> HWND {
+    let gui =
+        crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(30));
+    if !gui.focused_hwnd.0.is_null() {
+        gui.focused_hwnd
+    } else {
+        GetForegroundWindow()
+    }
+}
+
+/// フォーカスウィンドウの IMM32 HIMC に composition string が存在するか確認する。
+///
+/// TSF warm probe 用。TSF が active な場合、romaji キー到達後に composition string が
+/// 非空になる。TSF が cold（未初期化）な場合、キーはリテラルとして抜けるため空のまま。
+///
+/// クロスプロセスで `ImmGetCompositionStringW`（GCS_COMPSTR）を呼び出す。
+/// TSF→IMM32 bridge が HIMC を更新するため、外部プロセスからも読み取り可能。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() {
+        return false;
+    }
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return false;
+    }
+    // GCS_COMPSTR = IME_COMPOSITION_STRING(0x0008): null バッファで呼ぶと composition string のバイト長を返す
+    let len = ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(0x0008_u32), None, 0);
+    let _ = ImmReleaseContext(hwnd, himc);
+    len > 0
 }
