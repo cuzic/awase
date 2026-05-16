@@ -1656,7 +1656,7 @@ unsafe extern "system" fn observation_event_proc(
         .get_ref()
         .map(|app| {
             let sent_ms = app.executor.platform.output.eager_warmup_sent_ms();
-            let now_ms = crate::hook::current_tick_ms();
+            let now_ms = hook::current_tick_ms();
             let elapsed = if sent_ms == 0 {
                 None
             } else {
