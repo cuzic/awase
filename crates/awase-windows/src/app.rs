@@ -185,7 +185,7 @@ pub fn run() -> Result<()> {
     let sync_on_keys = ime_sync_on.clone();
     let sync_off_keys = ime_sync_off.clone();
 
-    let engine = Engine::new(
+    let mut engine = Engine::new(
         fsm,
         SpecialKeyCombos {
             engine_on: engine_on_keys,
@@ -194,6 +194,7 @@ pub fn run() -> Result<()> {
             ime_off: ime_control_off_keys,
         },
     );
+    engine.set_thumb_vks(left_thumb_vk, right_thumb_vk);
 
     initialize_app(
         engine,

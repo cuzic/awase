@@ -14,7 +14,7 @@
 use smallvec::smallvec;
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, KeyEventType, RawKeyEvent};
+use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 
 use super::decision::{
     ActivationController, ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
@@ -45,6 +45,10 @@ pub struct Engine {
     lifecycle: KeyLifecycle,
     /// 実効状態の遷移検知・SetOpen/UiEffect 発行を集約する
     activation: ActivationController,
+    /// NICOLA 親指シフトキーの VK コード（左・右）。
+    /// IME ON/OFF コンボ判定時に除外するために使用。
+    /// VkCode(0) = 未設定。
+    thumb_vks: (VkCode, VkCode),
 }
 
 impl Engine {
@@ -58,7 +62,14 @@ impl Engine {
             special_keys,
             lifecycle: KeyLifecycle::new(),
             activation: ActivationController::new(),
+            thumb_vks: (VkCode(0), VkCode(0)),
         }
+    }
+
+    /// NICOLA 親指シフトキーの VK コードを設定する。
+    /// IME ON/OFF コンボが親指キーと衝突しないように除外するために使用。
+    pub fn set_thumb_vks(&mut self, left: VkCode, right: VkCode) {
+        self.thumb_vks = (left, right);
     }
 
     /// InputContext から実効状態を `ActivationState` で返す。
@@ -353,22 +364,32 @@ impl Engine {
 
         // IME 制御キー（エンジン状態に関わらずチェック）
         // shadow 更新は Platform 層の責務（SetOpen Effect 処理時にアトミック反転）
-        if self
-            .special_keys
-            .ime_on
-            .iter()
-            .any(|k| Self::matches_key_combo(*k, event, modifiers))
+        //
+        // 親指シフトキー（無変換/変換等）は NICOLA 入力中にも押下される。
+        // Ctrl を保持したまま親指キーを押すと「Ctrl+無変換」が IME ON/OFF コンボに
+        // 誤マッチするため、thumb_vks に設定されたキーはコンボ判定から除外する。
+        let is_thumb = {
+            let (l, r) = self.thumb_vks;
+            (l.0 != 0 && event.vk_code == l) || (r.0 != 0 && event.vk_code == r)
+        };
+        if !is_thumb
+            && self
+                .special_keys
+                .ime_on
+                .iter()
+                .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
             log::info!("IME ON (key combo)");
             return Some(Decision::consumed_with(smallvec![Effect::Ime(
                 ImeEffect::SetOpen(true),
             )]));
         }
-        if self
-            .special_keys
-            .ime_off
-            .iter()
-            .any(|k| Self::matches_key_combo(*k, event, modifiers))
+        if !is_thumb
+            && self
+                .special_keys
+                .ime_off
+                .iter()
+                .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
             log::info!("IME OFF (key combo)");
             return Some(Decision::consumed_with(smallvec![Effect::Ime(
