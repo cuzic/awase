@@ -249,9 +249,6 @@ pub struct PlatformState {
     /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
     /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
     pub last_focus_change_ms: u64,
-    /// 最後に検出したフォアグラウンドウィンドウの HWND を usize で保持。
-    /// WM_NULL キュー待機で使用する。null の場合は 0。
-    pub focus_hwnd: usize,
     /// OS probe / observe から得た生の IME ON/OFF 観測値（ユーザー意図とは別管理）。
     ///
     /// `fast_ime_probe` や `observe()` の生の結果をここに記録する。
@@ -298,7 +295,6 @@ impl PlatformState {
             modifier_timing: ModifierTiming::new(),
             focus_transition_pending: false,
             last_focus_change_ms: 0,
-            focus_hwnd: 0,
             os_ime_on: None,
             ime_observations: ime_observations::ImeObservations::default(),
         }

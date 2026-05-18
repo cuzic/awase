@@ -565,29 +565,6 @@ impl Runtime {
             self.executor.platform.output.notify_ime_open(self.platform_state.preconditions.ime_on);
             self.executor.platform.output.mark_composition_cold(crate::output::ColdReason::FocusChange);
 
-            // TSF モード時: VK_IME_ON 送信前にフォーカス先ウィンドウの
-            // メッセージキュー渋滞が解消されるまで待機する。
-            // Alt+Tab 直後はフォーカス変更に伴う WM_ACTIVATE 等が大量に滞留し、
-            // VK_IME_ON（SendInput = 低優先度入力イベント）の処理が 200ms 以上遅延する。
-            // WM_NULL を繰り返し送信し、ラウンドトリップが短くなった（= キューが空 →
-            // WezTerm が GetMessage でブロック中）ことを検出した後に VK_IME_ON を送る。
-            if self.executor.platform.output.is_tsf_mode() {
-                let hwnd_addr = self.platform_state.focus_hwnd;
-                if hwnd_addr != 0 {
-                    // SAFETY: hwnd_addr は detect_and_update_focus で取得した有効な HWND
-                    let drained_ms = unsafe {
-                        wait_for_queue_drain(
-                            windows::Win32::Foundation::HWND(hwnd_addr as *mut _),
-                            400, // 最大待ち ms（ハング対策）
-                        )
-                    };
-                    log::debug!(
-                        "[queue-probe] FocusChange キュー待機完了: elapsed={}ms",
-                        drained_ms
-                    );
-                }
-            }
-
             // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
             // send_eager_tsf_warmup() は shadow_ime_on && is_tsf_mode を内部チェックする。
             self.executor.platform.output.send_eager_tsf_warmup();
@@ -660,9 +637,6 @@ impl Runtime {
         let hwnd = windows::Win32::Foundation::HWND(probe.hwnd_addr as *mut _);
         let process_id = probe.process_id;
         let class_name = probe.class_name;
-
-        // focus_hwnd を常に最新の値に更新する（WM_NULL キュー待機で使用）
-        self.platform_state.focus_hwnd = probe.hwnd_addr;
 
         // app_kind を更新
         let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
@@ -1092,74 +1066,3 @@ unsafe fn cancel_ime_composition() {
     log::debug!("Cancelled IME composition");
 }
 
-/// フォーカス先ウィンドウのメッセージキューが消化されるまで待機する。
-///
-/// WM_NULL（優先度最高の送信メッセージ）を繰り返し送り、
-/// ラウンドトリップが短くなった（= ウィンドウが GetMessage でブロック中 =
-/// キューが空）ことを検出したら終了する。
-///
-/// Alt+Tab 直後は WM_ACTIVATE 等が大量滞留し SendInput の VK_IME_ON（低優先度）
-/// の処理が遅延するため、この関数でキューを消化してから VK_IME_ON を送信する。
-///
-/// # Safety
-/// Win32 API `SendMessageTimeoutW` を呼び出す。
-unsafe fn wait_for_queue_drain(
-    hwnd: windows::Win32::Foundation::HWND,
-    max_ms: u64,
-) -> u64 {
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_NULL,
-    };
-
-    // ラウンドトリップがこれ以下になったら「キュー空」と判定する。
-    // 渋滞中: WezTerm がメッセージ処理中 → 次の GetMessage まで N ms 待つ → 長い
-    // キュー空: WezTerm が GetMessage でブロック中 → すぐ起床 → 短い
-    const RTT_IDLE_THRESHOLD_MS: u64 = 3;
-    // 1 回の WM_NULL のタイムアウト上限（ハング検出用）
-    const PER_MSG_TIMEOUT_MS: u32 = 50;
-
-    let start = crate::hook::current_tick_ms();
-    let mut iter = 0u32;
-
-    loop {
-        let elapsed = crate::hook::current_tick_ms().saturating_sub(start);
-        if elapsed >= max_ms {
-            log::debug!("[queue-probe] 最大待ち {}ms 超過, 打ち切り (iter={iter})", max_ms);
-            break;
-        }
-
-        let t0 = crate::hook::current_tick_ms();
-        let mut result = 0usize;
-        let ok = SendMessageTimeoutW(
-            hwnd,
-            WM_NULL,
-            WPARAM(0),
-            LPARAM(0),
-            SMTO_ABORTIFHUNG,
-            PER_MSG_TIMEOUT_MS,
-            Some(&mut result),
-        );
-        let rtt = crate::hook::current_tick_ms().saturating_sub(t0);
-        iter += 1;
-
-        if ok.0 == 0 {
-            // SMTO_ABORTIFHUNG: ウィンドウがハングしている → 待機を打ち切る
-            log::warn!("[queue-probe] #{iter} WM_NULL 失敗 (hung or timeout), 打ち切り rtt={rtt}ms");
-            break;
-        }
-
-        log::debug!("[queue-probe] #{iter} WM_NULL rtt={rtt}ms elapsed={}ms", elapsed + rtt);
-
-        if rtt <= RTT_IDLE_THRESHOLD_MS {
-            // ラウンドトリップが短い = ウィンドウがアイドル = キューが空
-            log::debug!(
-                "[queue-probe] キュー空を検出 (rtt={rtt}ms ≤ {RTT_IDLE_THRESHOLD_MS}ms), iter={iter}, total={}ms",
-                elapsed + rtt
-            );
-            break;
-        }
-    }
-
-    crate::hook::current_tick_ms().saturating_sub(start)
-}
