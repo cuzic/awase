@@ -230,6 +230,7 @@ fn monitor_loop() {
 ///
 /// 1. GJI モニター利用可能 → I/O が `GJI_IDLE_MS` 静止したら settled
 /// 2. GJI モニター利用不可 → 時間ベース（`timeout_ms` まで固定 sleep）
+#[derive(Debug)]
 pub struct TsfReadinessProbe {
     /// VK_IME_ON を送信した時刻 (ms)。0 = 未送信。
     pub warmup_sent_ms: u64,
