@@ -233,12 +233,13 @@ fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
 
         for (col, val) in values.iter().enumerate() {
             let yab_val = parse_value(val);
-            if yab_val != YabValue::None {
-                let row_u8 = u8::try_from(row).expect("row index always fits in u8");
-                let col_u8 = u8::try_from(col).expect("col index always fits in u8");
-                let pos = PhysicalPos::new(row_u8, col_u8);
-                face.insert(pos, yab_val);
-            }
+            let row_u8 = u8::try_from(row).expect("row index always fits in u8");
+            let col_u8 = u8::try_from(col).expect("col index always fits in u8");
+            let pos = PhysicalPos::new(row_u8, col_u8);
+            // YabValue::None（'無'）も格納する。
+            // lookup_face が Some(Suppress) を返すことで
+            // 「明示的な無出力」と「配列未定義」を区別できる。
+            face.insert(pos, yab_val);
         }
     }
 

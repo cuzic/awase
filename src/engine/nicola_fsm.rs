@@ -864,6 +864,9 @@ impl NicolaFsm {
                 output,
             }
         } else {
+            // Normal face に定義なし（yab に明示的に '無' がある場合は lookup_face が
+            // Some(Suppress) を返すため、ここには来ない）。
+            // 配列定義外のキー → Key(vk_code) でそのまま通す
             let action = KeyAction::Key(vk_code);
             let output = record_output(scan_code, &action, None);
             ResolvedAction {
@@ -1126,7 +1129,9 @@ impl NicolaFsm {
             self.update_history(record_output(scan_code, &action, kana));
             self.build_response(vec![action], true, TimerIntent::CancelAll)
         } else {
-            // 配列定義に含まれないキーはそのまま通す
+            // Normal face に定義なし（yab に明示的に '無' がある場合は lookup_face が
+            // Some(Suppress) を返すため、ここには来ない）。
+            // 配列定義外のキー → Key(vk_code) でそのまま通す
             let action = KeyAction::Key(vk_code);
             self.update_history(record_output(scan_code, &action, None));
             self.build_response(vec![action], true, TimerIntent::CancelAll)
@@ -1213,15 +1218,23 @@ impl NicolaFsm {
         }
     }
 
-    /// いずれかの配列面に定義されているキーかどうか
+    /// いずれかの配列面に非 None の出力定義があるキーかどうか。
+    ///
+    /// YabValue::None（'無'）は「その面では出力なし」を明示するが配列キーではないため除外する。
+    /// これにより、全面が '無' のキーはパススルー扱いとなり、
+    /// Shift面など一部に定義がある場合のみ NICOLA 処理対象となる。
     pub(crate) fn is_layout_key(&self, pos: Option<PhysicalPos>) -> bool {
         let Some(pos) = pos else {
             return false;
         };
-        self.get_face(Face::Normal).contains_key(&pos)
-            || self.get_face(Face::LeftThumb).contains_key(&pos)
-            || self.get_face(Face::RightThumb).contains_key(&pos)
-            || self.get_face(Face::Shift).contains_key(&pos)
+        let has_output = |face: &YabFace| {
+            face.get(&pos)
+                .map_or(false, |v| !matches!(v, YabValue::None))
+        };
+        has_output(self.get_face(Face::Normal))
+            || has_output(self.get_face(Face::LeftThumb))
+            || has_output(self.get_face(Face::RightThumb))
+            || has_output(self.get_face(Face::Shift))
     }
 
     /// キーイベントがエンジン処理をバイパスすべきかを判定する

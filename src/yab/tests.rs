@@ -160,8 +160,11 @@ fn parse_minimal_one_section() {
             kana: None
         })
     );
-    // 無のキーは含まれないこと
-    assert_eq!(layout.normal.get(&PhysicalPos::new(0, 0)), None);
+    // '無' のキーは YabValue::None として格納されていること
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(0, 0)),
+        Some(&YabValue::None)
+    );
 }
 
 // ── NICOLA 例のパーステスト ──

@@ -1616,8 +1616,12 @@ fn test_special_value_in_layout() {
 
 #[test]
 fn test_none_value_in_layout() {
+    // D: Normal='無'（明示的な抑制）かつ left_thumb='な'（配列キーとして確定）
+    // 単独打鍵した場合、Normal lookup が Some(Suppress) を返す → Suppress として確定される。
+    // これは VK_OEM_102 が Shift面に定義があるが Normal面が '無' の場合の修正を検証する。
     let mut layout = make_layout();
     layout.normal.insert(POS_D, YabValue::None);
+    layout.left_thumb.insert(POS_D, lit('な')); // is_layout_key = true にするため必要
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(),
         engine: NicolaFsm::new(
