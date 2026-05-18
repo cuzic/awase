@@ -248,16 +248,18 @@ impl DecisionExecutor {
                         let is_tsf = self.platform.output.is_tsf_mode();
                         if was_warm && is_tsf {
                             // 変換確定/取消 (TSF composition active 中の Enter/Space/Escape):
-                            // F2 を注入しない。CallNextHookEx より前に SendInput(F2) すると
-                            // F2 が Enter より先に WezTerm に届き、IME が確定処理を行う前に
-                            // composition 状態を壊して Enter が PTY に素通りする。
-                            // TSF は確定後も hiragana mode で生きているため次ローマ字に F2 不要。
-                            // warm を維持: 次ローマ字が直接 TSF に入れる。
-                            // 2000ms 沈黙後は session_expired で自動的に cold 化される。
+                            // cold にするが eager F2 は送らない。
+                            // hook callback 内で SendInput(F2) すると CallNextHookEx(Enter) より
+                            // 先に F2 が WezTerm に届き、IME 確定前に composition を壊して
+                            // Enter が PTY に素通りする。
+                            // 次ローマ字の F2 は send_romaji_as_tsf の non-eager path
+                            // (main スレッド, timer context) から送信し 40ms sleep 後に届く。
+                            // これにより Enter 処理完了後に F2 が到達することが保証される。
                             log::debug!(
-                                "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, F2注入スキップ",
+                                "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2なし)",
                                 raw_event.vk_code.0,
                             );
+                            self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                         } else {
                             // cold または non-TSF: mark cold + eager F2 warmup
                             log::debug!(
