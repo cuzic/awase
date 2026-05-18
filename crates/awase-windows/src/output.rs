@@ -957,11 +957,7 @@ impl Output {
             // eager 送信済みだが未到達 → 残り時間だけ sleep
             // eager なし → VK_IME_ON warmup + probe (2連送) で TSF 初期化を同期
             const VK_IME_ON: u16 = 0x16;
-            // 1500ms: フォーカス切替直後（Alt+Tab 等）はメッセージキュー洪水が
-            // 最大 200ms 以上継続し、VK_IME_ON の WezTerm 側処理が大幅に遅延する。
-            // 実測: キュー洪水 ~200ms + GJI 初期化 ~560ms = 760ms 必要。
-            // 600ms では「kおのぎょ バグ」のように頻繁に失敗するため、余裕を持って 1500ms に設定。
-            const EAGER_SETTLE_MS: u64 = 1500;
+            const EAGER_SETTLE_MS: u64 = 500;
 
             // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
             // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
