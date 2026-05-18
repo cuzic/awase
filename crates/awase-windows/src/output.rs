@@ -957,7 +957,10 @@ impl Output {
             // eager 送信済みだが未到達 → 残り時間だけ sleep
             // eager なし → VK_IME_ON warmup + probe (2連送) で TSF 初期化を同期
             const VK_IME_ON: u16 = 0x16;
-            const EAGER_SETTLE_MS: u64 = 500;
+            // 600ms: フォーカス切替直後はメッセージキュー混雑により VK_IME_ON の
+            // WezTerm 側処理が遅延するため、500ms では稀に GJI が未初期化のまま
+            // 'k' が到達して literal 出力になる（kおれ バグ）。
+            const EAGER_SETTLE_MS: u64 = 600;
 
             // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
             // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
