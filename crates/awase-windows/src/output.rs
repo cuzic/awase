@@ -515,14 +515,14 @@ impl Output {
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
         crate::OBS_FOCUS_NAMECHANGE_SEQ.store(0, std::sync::atomic::Ordering::Relaxed);
-        const VK_DBE_HIRAGANA: u16 = 0xF2;
-        let f2_inputs = [
-            make_tsf_key_input(VK_DBE_HIRAGANA, false),
-            make_tsf_key_input(VK_DBE_HIRAGANA, true),
+        const VK_IME_ON: u16 = 0x16;
+        let ime_on_inputs = [
+            make_tsf_key_input(VK_IME_ON, false),
+            make_tsf_key_input(VK_IME_ON, true),
         ];
         unsafe {
             SendInput(
-                &f2_inputs,
+                &ime_on_inputs,
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
@@ -532,7 +532,7 @@ impl Output {
         self.eager_warmup_sent_ms.set(ms);
         // UIA コールバックスレッドからも参照できるよう AtomicU64 に同期する。
         crate::OBS_WARMUP_SENT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
-        log::debug!("[tsf-eager-warmup] F2 送信, eager_warmup_sent_ms={ms}ms");
+        log::debug!("[tsf-eager-warmup] VK_IME_ON 送信, eager_warmup_sent_ms={ms}ms");
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
@@ -953,16 +953,11 @@ impl Output {
             // composition state を検出できない（IMM32 HIMC に propagate されない）。
             // 固定 sleep を使用するが、eager warmup から十分時間が経過している場合は
             // TSF が確実に初期化済みのため即送信する。
-            // FocusChange 等で eager F2 を送信済み + 500ms 以上経過 → 即送信
-            // eager F2 送信済みだが未到達 → 残り時間だけ sleep
-            // eager なし（Enter/Escape passthrough 直後）→ F2 + 40ms sleep
-            const VK_DBE_HIRAGANA: u16 = 0xF2;
-            let f2_inputs = [
-                make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                make_tsf_key_input(VK_DBE_HIRAGANA, true),
-            ];
+            // FocusChange 等で eager VK_IME_ON を送信済み + 500ms 以上経過 → 即送信
+            // eager 送信済みだが未到達 → 残り時間だけ sleep
+            // eager なし → VK_IME_ON warmup + probe (2連送) で TSF 初期化を同期
+            const VK_IME_ON: u16 = 0x16;
             const EAGER_SETTLE_MS: u64 = 500;
-            const NON_EAGER_SLEEP_MS: u64 = 40;
 
             let eager_ms = self.eager_warmup_sent_ms.get();
             let now_ms = crate::hook::current_tick_ms();
@@ -996,21 +991,26 @@ impl Output {
                     );
                 }
             } else {
-                log::debug!(
-                    "[h1-warmup] cold={cold_n} non-eager: F2送信 + {NON_EAGER_SLEEP_MS}ms sleep",
-                );
+                // 投機的プローブ: VK_IME_ON (冪等) を2連送する。
+                // 1回目 (warmup): TSF composition context 初期化をトリガー
+                // 2回目 (probe):  WezTerm が 1回目を処理済みであることを FIFO で保証
+                // VK_IME_ON は既に ON なら何もしない（トグルしない）ため BS 不要。
+                log::debug!("[h1-warmup] cold={cold_n} non-eager: VK_IME_ON warmup+probe 送信");
+                let ime_on_probe = [
+                    make_tsf_key_input(VK_IME_ON, false),
+                    make_tsf_key_input(VK_IME_ON, true),
+                    make_tsf_key_input(VK_IME_ON, false),
+                    make_tsf_key_input(VK_IME_ON, true),
+                ];
+                let t_pre = crate::hook::current_tick_ms();
                 unsafe {
                     SendInput(
-                        &f2_inputs,
+                        &ime_on_probe,
                         i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                     );
                 }
-                let t_pre = crate::hook::current_tick_ms();
-                std::thread::sleep(std::time::Duration::from_millis(NON_EAGER_SLEEP_MS));
-                let actual_sleep = crate::hook::current_tick_ms().saturating_sub(t_pre);
-                log::debug!(
-                    "[h1-warmup] cold={cold_n} non-eager 実測sleep={actual_sleep}ms",
-                );
+                let elapsed = crate::hook::current_tick_ms().saturating_sub(t_pre);
+                log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
             }
 
         } else {
