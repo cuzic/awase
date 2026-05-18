@@ -959,6 +959,15 @@ impl Output {
             const VK_IME_ON: u16 = 0x16;
             const EAGER_SETTLE_MS: u64 = 500;
 
+            // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
+            // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
+            // TSF が cold なまま 'd' 等が literal になる（dえーた バグ）。
+            // fresh な VK_IME_ON を送信して eager_warmup_sent_ms を更新し、500ms 待機を強制する。
+            if session_expired {
+                log::debug!("[h1-warmup] session expired → fresh VK_IME_ON 送信 (500ms待機を強制)");
+                self.send_eager_tsf_warmup();
+            }
+
             let eager_ms = self.eager_warmup_sent_ms.get();
             let now_ms = crate::hook::current_tick_ms();
             let eager_elapsed =
@@ -1011,10 +1020,10 @@ impl Output {
                 }
                 let elapsed = crate::hook::current_tick_ms().saturating_sub(t_pre);
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
-                // VK_IME_ON 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測 ~16ms では不足）。
-                // 40ms sleep で TSF が composition context を確立するのを待つ安全ネット。
-                std::thread::sleep(std::time::Duration::from_millis(40));
-                log::debug!("[h1-warmup] cold={cold_n} non-eager sleep 40ms 完了");
+                // VK_IME_ON 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
+                // eager path と同等の 500ms sleep で TSF composition context 確立を待つ。
+                std::thread::sleep(std::time::Duration::from_millis(EAGER_SETTLE_MS));
+                log::debug!("[h1-warmup] cold={cold_n} non-eager sleep {EAGER_SETTLE_MS}ms 完了");
             }
 
         } else {
@@ -1098,11 +1107,17 @@ impl Output {
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
             }
-            // シンボル VK 送信後、WezTerm TSF は現在の composition を commit して
-            // context をリセットする可能性がある（例: 'ー' 後の composition リセット）。
-            // 次の romaji 出力で F2 warmup を prepend させるため cold にマーク。
-            self.mark_composition_cold(ColdReason::SymbolVkSent);
-            self.send_eager_tsf_warmup();
+            // VK_OEM_MINUS (0xBD, no-shift) = '-' は GJI ローマ字モードで「ー」として
+            // composition に取り込まれる（composition context はリセットされない）。
+            // これらは warm 状態を維持し、次の romaji を warmup sleep なしで即送信する。
+            // その他の記号（句読点など）は composition を commit する可能性があるため cold にマーク。
+            let keeps_composition = vk == 0xBD && !needs_shift;
+            if keeps_composition {
+                log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
+            } else {
+                self.mark_composition_cold(ColdReason::SymbolVkSent);
+                self.send_eager_tsf_warmup();
+            }
             return;
         }
         log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
