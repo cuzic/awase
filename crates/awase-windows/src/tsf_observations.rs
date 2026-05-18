@@ -226,28 +226,51 @@ fn monitor_loop() {
 ///
 /// `send_romaji_as_tsf` の固定 sleep を置き換える。
 ///
-/// ## 判断ロジック（優先順位）
+/// ## 判断ロジック（2フェーズ）
 ///
-/// 1. GJI モニター利用可能 → I/O が `GJI_IDLE_MS` 静止したら settled
-/// 2. GJI モニター利用不可 → 時間ベース（`timeout_ms` まで固定 sleep）
+/// ### Phase 1 — 必須最小待機 (`min_ms` from `warmup_sent_ms`)
+///
+/// VK_IME_ON 送信直後は GJI の I/O がまだ始まっていない可能性がある。
+/// `min_ms` 経過するまでは GJI I/O の観測値を信頼せず待機する。
+///
+/// ### Phase 2 — GJI I/O 静止監視
+///
+/// - `last_io >= warmup_ms`（warmup 後に GJI I/O が発生した）かつ
+///   80ms 静止 → settled → `POST_IDLE_MARGIN_MS` 待機後に送信
+/// - `last_io < warmup_ms`（warmup 後に I/O なし）→ GJI は既に正常状態と推定、
+///   max_deadline 到達まで待機継続（万が一 I/O が来れば settled 検出に切り替え）
+/// - `now >= max_deadline` → タイムアウト（フォールバック）
+///
+/// ## `min_ms` の目安（ColdReason 別）
+///
+/// | 状況 | min_ms |
+/// |---|---|
+/// | FocusChange / SetOpenTrue / NativeF2Consumed | 300ms |
+/// | SessionExpired | 200ms |
+/// | PassthroughConfirmKey / ReinjectConfirmKey | 50ms |
+/// | SymbolVkSent | 30ms |
+/// | その他 | 100ms |
 #[derive(Debug)]
 pub struct TsfReadinessProbe {
-    /// VK_IME_ON を送信した時刻 (ms)。0 = 未送信。
+    /// VK_IME_ON を送信した時刻 (GetTickCount64 ms)。
     pub warmup_sent_ms: u64,
     /// ログ相関用 cold-start シーケンス番号。
     pub cold_n: u32,
+    /// VK_IME_ON 送信から最低この ms が経過するまで I/O 観測を信頼しない。
+    pub min_ms: u64,
 }
 
 impl TsfReadinessProbe {
-    pub const fn new(warmup_sent_ms: u64, cold_n: u32) -> Self {
-        Self { warmup_sent_ms, cold_n }
+    pub const fn new(warmup_sent_ms: u64, cold_n: u32, min_ms: u64) -> Self {
+        Self { warmup_sent_ms, cold_n, min_ms }
     }
 
-    /// GJI が settled になるまで、最大 `timeout_ms` 待機する。
+    /// GJI が settled になるまで待機する。
     ///
-    /// - `timeout_ms`: 許容する最大待機時間。GJI settled の場合はそれより早く終わる。
-    pub fn wait_until_ready(&self, timeout_ms: u64) {
-        /// GJI I/O がこの ms 静止したら settled とみなす
+    /// - `total_max_ms`: `warmup_sent_ms` からの最大許容待機時間（タイムアウト）。
+    ///   呼び出し時点での残り時間ではなく、VK_IME_ON 送信からの合計予算。
+    pub fn wait_until_ready(&self, total_max_ms: u64) {
+        /// warmup 後の GJI I/O がこの ms 静止したら settled
         const GJI_IDLE_MS: u64 = 80;
         /// settled 確認後の追加余裕 (ms)
         const POST_IDLE_MARGIN_MS: u64 = 30;
@@ -255,63 +278,89 @@ impl TsfReadinessProbe {
         const POLL_MS: u64 = 10;
 
         let cold_n = self.cold_n;
-        let start_ms = crate::hook::current_tick_ms();
-        let deadline_ms = start_ms + timeout_ms;
+        let warmup_ms = self.warmup_sent_ms;
+        let min_ms = self.min_ms;
+        let call_ms = crate::hook::current_tick_ms();
+        let min_deadline = warmup_ms.saturating_add(min_ms);
+        let max_deadline = warmup_ms.saturating_add(total_max_ms);
 
         if !OBS_GJI_MONITOR_OK.load(Ordering::Relaxed) {
-            // フォールバック: 固定 sleep
-            let remaining = deadline_ms.saturating_sub(crate::hook::current_tick_ms());
+            // GJI モニター利用不可: max_deadline まで固定 sleep
+            let remaining = max_deadline.saturating_sub(crate::hook::current_tick_ms());
             log::debug!(
                 "[tsf-probe] cold={cold_n} fallback fixed sleep {remaining}ms (GJI monitor unavailable)"
             );
             if remaining > 0 {
                 std::thread::sleep(Duration::from_millis(remaining));
             }
-            let total = crate::hook::current_tick_ms() - start_ms;
+            let total = crate::hook::current_tick_ms().saturating_sub(call_ms);
             log::debug!("[tsf-probe] cold={cold_n} done (fallback), waited {total}ms");
             return;
         }
 
-        // GJI モニター利用可能: ポーリングループ
-        let last_io_at_start = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
-        let gji_idle_at_start = start_ms.saturating_sub(last_io_at_start);
+        // Phase 1: min_deadline まで無条件待機（I/O 観測は信頼しない）
+        let phase1_wait = min_deadline.saturating_sub(crate::hook::current_tick_ms());
+        if phase1_wait > 0 {
+            log::debug!(
+                "[tsf-probe] cold={cold_n} phase1 min wait {phase1_wait}ms (warmup+{min_ms}ms not yet elapsed)"
+            );
+            std::thread::sleep(Duration::from_millis(phase1_wait));
+        }
+
+        // Phase 2: GJI I/O 静止監視
+        let p2_start = crate::hook::current_tick_ms();
+        let last_io_at_p2 = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+        let io_after_warmup_at_start = last_io_at_p2 >= warmup_ms;
         log::debug!(
-            "[tsf-probe] cold={cold_n} polling (GJI I/O monitor, timeout={timeout_ms}ms, gji_idle_at_start={gji_idle_at_start}ms)"
+            "[tsf-probe] cold={cold_n} phase2 polling \
+             (max_remaining={}ms, gji_idle={}ms, io_after_warmup={io_after_warmup_at_start})",
+            max_deadline.saturating_sub(p2_start),
+            p2_start.saturating_sub(last_io_at_p2),
         );
+
+        // warmup 後に GJI I/O が発生したかをトラッキング
+        let mut found_io_after_warmup = io_after_warmup_at_start;
 
         loop {
             let now = crate::hook::current_tick_ms();
+            let last_io = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
 
-            if now >= deadline_ms {
-                let last_io_ms = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+            if last_io >= warmup_ms {
+                found_io_after_warmup = true;
+            }
+
+            if now >= max_deadline {
                 log::debug!(
-                    "[tsf-probe] cold={cold_n} timeout after {}ms (gji_idle={}ms)",
-                    now.saturating_sub(start_ms),
-                    now.saturating_sub(last_io_ms),
+                    "[tsf-probe] cold={cold_n} timeout (warmup+{}ms, gji_idle={}ms, io_after_warmup={found_io_after_warmup})",
+                    now.saturating_sub(warmup_ms),
+                    now.saturating_sub(last_io),
                 );
                 break;
             }
 
-            let last_io_ms = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
-            let gji_idle_ms = now.saturating_sub(last_io_ms);
-
-            if gji_idle_ms >= GJI_IDLE_MS {
-                // settled → 余裕分だけ追加待機してから送信
-                let elapsed = now.saturating_sub(start_ms);
-                let margin = deadline_ms.saturating_sub(now).min(POST_IDLE_MARGIN_MS);
-                log::debug!(
-                    "[tsf-probe] cold={cold_n} GJI settled (idle={gji_idle_ms}ms) after {elapsed}ms, +{margin}ms margin"
-                );
-                if margin > 0 {
-                    std::thread::sleep(Duration::from_millis(margin));
+            if found_io_after_warmup {
+                // warmup 後に I/O 確認済み → 静止を待つ
+                let gji_idle = now.saturating_sub(last_io);
+                if gji_idle >= GJI_IDLE_MS {
+                    let elapsed_from_warmup = now.saturating_sub(warmup_ms);
+                    let margin = max_deadline.saturating_sub(now).min(POST_IDLE_MARGIN_MS);
+                    log::debug!(
+                        "[tsf-probe] cold={cold_n} GJI settled \
+                         (idle={gji_idle}ms) at warmup+{elapsed_from_warmup}ms, +{margin}ms margin"
+                    );
+                    if margin > 0 {
+                        std::thread::sleep(Duration::from_millis(margin));
+                    }
+                    break;
                 }
-                break;
             }
+            // found_io_after_warmup=false の場合は GJI が既に正常状態か未応答。
+            // max_deadline まで待機継続（I/O が来れば上記 settled 検出に切り替わる）。
 
             std::thread::sleep(Duration::from_millis(POLL_MS));
         }
 
-        let total = crate::hook::current_tick_ms().saturating_sub(start_ms);
+        let total = crate::hook::current_tick_ms().saturating_sub(call_ms);
         log::debug!("[tsf-probe] cold={cold_n} done, waited {total}ms");
     }
 }

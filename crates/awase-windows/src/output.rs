@@ -974,7 +974,22 @@ impl Output {
                 | ColdReason::NativeF2Consumed => 1000,
                 _ => 500,
             };
-            log::debug!("[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms reason={:?}", self.last_cold_reason.get());
+            // ColdReason に応じた probe 最小待機時間（warmup_sent_ms 起点）:
+            //   VK_IME_ON がキューに入ってから GJI が最初の I/O を開始するまでの
+            //   実測下限。この時間内は GJI I/O 監視結果を信頼しない。
+            let probe_min_ms: u64 = match self.last_cold_reason.get() {
+                ColdReason::FocusChange
+                | ColdReason::SetOpenTrue
+                | ColdReason::NativeF2Consumed => 300,
+                ColdReason::SessionExpired => 200,
+                ColdReason::PassthroughConfirmKey | ColdReason::ReinjectConfirmKey => 50,
+                ColdReason::SymbolVkSent => 30,
+                _ => 100,
+            };
+            log::debug!(
+                "[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms reason={:?}",
+                self.last_cold_reason.get()
+            );
 
             // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
             // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
@@ -1026,8 +1041,10 @@ impl Output {
                         }
                         const RE_WARMUP_MS: u64 = 500;
                         let re_warmup_sent_ms = crate::hook::current_tick_ms();
-                        crate::tsf_observations::TsfReadinessProbe::new(re_warmup_sent_ms, cold_n)
-                            .wait_until_ready(RE_WARMUP_MS);
+                        crate::tsf_observations::TsfReadinessProbe::new(
+                            re_warmup_sent_ms, cold_n, probe_min_ms,
+                        )
+                        .wait_until_ready(RE_WARMUP_MS);
                         let actual_wait = crate::hook::current_tick_ms().saturating_sub(re_warmup_sent_ms);
                         log::debug!(
                             "[h1-warmup] cold={cold_n} 再warmup probe完了={actual_wait}ms",
@@ -1043,10 +1060,14 @@ impl Output {
                     }
                 } else {
                     log::debug!(
-                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過, probe待機予定={remaining}ms",
+                        "[h1-warmup] cold={cold_n} eager: elapsed={eager_elapsed}ms → probe (budget={eager_settle_ms}ms from warmup)",
                     );
-                    crate::tsf_observations::TsfReadinessProbe::new(eager_ms, cold_n)
-                        .wait_until_ready(remaining);
+                    // total_max_ms は warmup_sent_ms 起点の合計予算（remaining ではない）。
+                    // probe 内で max_deadline = eager_ms + eager_settle_ms が計算される。
+                    crate::tsf_observations::TsfReadinessProbe::new(
+                        eager_ms, cold_n, probe_min_ms,
+                    )
+                    .wait_until_ready(eager_settle_ms);
                     let total_elapsed = crate::hook::current_tick_ms().saturating_sub(eager_ms);
                     log::debug!(
                         "[h1-warmup] cold={cold_n} probe完了 warmup経過={total_elapsed}ms",
@@ -1076,8 +1097,10 @@ impl Output {
                 // VK_IME_ON 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
                 // GJI I/O モニターが利用可能なら静止検出、なければ固定 sleep。
                 let probe_sent_ms = crate::hook::current_tick_ms();
-                crate::tsf_observations::TsfReadinessProbe::new(probe_sent_ms, cold_n)
-                    .wait_until_ready(eager_settle_ms);
+                crate::tsf_observations::TsfReadinessProbe::new(
+                    probe_sent_ms, cold_n, probe_min_ms,
+                )
+                .wait_until_ready(eager_settle_ms);
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe完了");
             }
 
