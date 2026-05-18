@@ -997,19 +997,55 @@ impl Output {
             if use_eager {
                 let remaining = eager_settle_ms.saturating_sub(eager_elapsed);
                 if remaining == 0 {
-                    log::debug!(
-                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 即送信",
+                    // eager_settle_ms 以上経過しているが、GJI は WM_SETFOCUS の遅延処理
+                    // (メッセージキュー滞留 500-900ms) で TSF context を再初期化することがある。
+                    // FocusChange / SetOpenTrue の場合はこの再初期化レースが発生しやすいため、
+                    // 新規 VK_IME_ON を送って再び 500ms 待機する。
+                    // PassthroughConfirmKey 等の composition-only reset では不要。
+                    let needs_re_warmup = matches!(
+                        self.last_cold_reason.get(),
+                        ColdReason::FocusChange | ColdReason::SetOpenTrue
                     );
+                    if needs_re_warmup {
+                        log::debug!(
+                            "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 再warmup (GJI 再初期化レース対策)",
+                        );
+                        let refresh_inputs = [
+                            make_tsf_key_input(VK_IME_ON, false),
+                            make_tsf_key_input(VK_IME_ON, true),
+                        ];
+                        unsafe {
+                            SendInput(
+                                &refresh_inputs,
+                                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                            );
+                        }
+                        const RE_WARMUP_MS: u64 = 500;
+                        let re_warmup_sent_ms = crate::hook::current_tick_ms();
+                        crate::tsf_observations::TsfReadinessProbe::new(re_warmup_sent_ms, cold_n)
+                            .wait_until_ready(RE_WARMUP_MS);
+                        let actual_wait = crate::hook::current_tick_ms().saturating_sub(re_warmup_sent_ms);
+                        log::debug!(
+                            "[h1-warmup] cold={cold_n} 再warmup probe完了={actual_wait}ms",
+                        );
+                    } else {
+                        let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        let gji_idle =
+                            crate::hook::current_tick_ms().saturating_sub(last_io);
+                        log::debug!(
+                            "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 即送信 (gji_idle={gji_idle}ms)",
+                        );
+                    }
                 } else {
                     log::debug!(
-                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過, sleep予定={remaining}ms",
+                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過, probe待機予定={remaining}ms",
                     );
-                    let t_pre = crate::hook::current_tick_ms();
-                    std::thread::sleep(std::time::Duration::from_millis(remaining));
-                    let actual_sleep = crate::hook::current_tick_ms().saturating_sub(t_pre);
-                    let total_elapsed = eager_elapsed + actual_sleep;
+                    crate::tsf_observations::TsfReadinessProbe::new(eager_ms, cold_n)
+                        .wait_until_ready(remaining);
+                    let total_elapsed = crate::hook::current_tick_ms().saturating_sub(eager_ms);
                     log::debug!(
-                        "[h1-warmup] cold={cold_n} 実測sleep={actual_sleep}ms 送信時warmup経過={total_elapsed}ms",
+                        "[h1-warmup] cold={cold_n} probe完了 warmup経過={total_elapsed}ms",
                     );
                 }
             } else {
@@ -1034,13 +1070,23 @@ impl Output {
                 let elapsed = crate::hook::current_tick_ms().saturating_sub(t_pre);
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
                 // VK_IME_ON 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
-                // eager path と同等の 500ms sleep で TSF composition context 確立を待つ。
-                std::thread::sleep(std::time::Duration::from_millis(eager_settle_ms));
-                log::debug!("[h1-warmup] cold={cold_n} non-eager sleep {eager_settle_ms}ms 完了");
+                // GJI I/O モニターが利用可能なら静止検出、なければ固定 sleep。
+                let probe_sent_ms = crate::hook::current_tick_ms();
+                crate::tsf_observations::TsfReadinessProbe::new(probe_sent_ms, cold_n)
+                    .wait_until_ready(eager_settle_ms);
+                log::debug!("[h1-warmup] cold={cold_n} non-eager probe完了");
             }
 
         } else {
             cold_n = self.cold_start_count.get();
+        }
+
+        // warmup 完了 → ローマ字送信開始 (GJI idle 状態を記録)
+        {
+            let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            log::debug!("[h1-send] cold={cold_n} sending romaji ({} chars), gji_idle={gji_idle}ms", chars.len());
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が

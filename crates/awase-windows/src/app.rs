@@ -236,6 +236,9 @@ pub fn run() -> Result<()> {
 
     // Phase 3: UIA 非同期判定ワーカースレッドを起動
     let uia_tx = focus::uia::spawn_uia_worker();
+
+    // GJI I/O モニタースレッドを起動（TSF cold-start 静止検出に使用）
+    awase_windows::tsf_observations::start_monitor_thread();
     unsafe {
         if let Some(app) = APP.get_mut() {
             app.executor.platform.focus.set_uia_sender(uia_tx);
