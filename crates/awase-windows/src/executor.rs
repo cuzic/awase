@@ -244,14 +244,31 @@ impl DecisionExecutor {
                     // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
                     // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
                     if is_key_down && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B) {
-                        log::debug!(
-                            "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
-                            raw_event.vk_code.0,
-                        );
-                        self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-                        // 次打鍵が 305ms 以内でも文字化けしないよう即 F2 warmup を先行送信する。
-                        // IME OFF の場合は send_eager_tsf_warmup が内部でガードする。
-                        self.platform.output.send_eager_tsf_warmup();
+                        let was_warm = self.platform.output.is_composition_warm();
+                        let is_tsf = self.platform.output.is_tsf_mode();
+                        if was_warm && is_tsf {
+                            // 変換確定/取消 (TSF composition active 中の Enter/Space/Escape):
+                            // F2 を注入しない。CallNextHookEx より前に SendInput(F2) すると
+                            // F2 が Enter より先に WezTerm に届き、IME が確定処理を行う前に
+                            // composition 状態を壊して Enter が PTY に素通りする。
+                            // TSF は確定後も hiragana mode で生きているため次ローマ字に F2 不要。
+                            // warm を維持: 次ローマ字が直接 TSF に入れる。
+                            // 2000ms 沈黙後は session_expired で自動的に cold 化される。
+                            log::debug!(
+                                "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, F2注入スキップ",
+                                raw_event.vk_code.0,
+                            );
+                        } else {
+                            // cold または non-TSF: mark cold + eager F2 warmup
+                            log::debug!(
+                                "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
+                                raw_event.vk_code.0,
+                            );
+                            self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+                            // 次打鍵が 305ms 以内でも文字化けしないよう即 F2 warmup を先行送信する。
+                            // IME OFF の場合は send_eager_tsf_warmup が内部でガードする。
+                            self.platform.output.send_eager_tsf_warmup();
+                        }
                     }
                     // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
                     if raw_event.vk_code.0 == 0xF2 && is_key_down {
