@@ -447,6 +447,7 @@ impl DecisionExecutor {
             if open {
                 log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
                 self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+                self.platform.output.send_eager_tsf_warmup();
             }
         }
     }

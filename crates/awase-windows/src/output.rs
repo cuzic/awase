@@ -1011,6 +1011,10 @@ impl Output {
                 }
                 let elapsed = crate::hook::current_tick_ms().saturating_sub(t_pre);
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
+                // VK_IME_ON 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測 ~16ms では不足）。
+                // 40ms sleep で TSF が composition context を確立するのを待つ安全ネット。
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                log::debug!("[h1-warmup] cold={cold_n} non-eager sleep 40ms 完了");
             }
 
         } else {
@@ -1098,6 +1102,7 @@ impl Output {
             // context をリセットする可能性がある（例: 'ー' 後の composition リセット）。
             // 次の romaji 出力で F2 warmup を prepend させるため cold にマーク。
             self.mark_composition_cold(ColdReason::SymbolVkSent);
+            self.send_eager_tsf_warmup();
             return;
         }
         log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
