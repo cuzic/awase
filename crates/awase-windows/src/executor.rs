@@ -187,6 +187,20 @@ impl DecisionExecutor {
                     self.platform.output.send_eager_tsf_warmup();
                 }
 
+                // Ctrl↑: cold 状態であれば eager_warmup_sent_ms をリセット（この→kおの バグ対策）
+                // Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。
+                // Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
+                if !is_key_down
+                    && matches!(raw_event.vk_code.0, 0x11 | 0xA2 | 0xA3)
+                    && !self.platform.output.is_composition_warm()
+                {
+                    log::debug!(
+                        "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
+                        raw_event.vk_code.0,
+                    );
+                    self.platform.output.send_eager_tsf_warmup();
+                }
+
                 let in_flight_ms = self.platform.output.ms_since_last_send();
                 let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
