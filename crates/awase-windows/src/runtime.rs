@@ -724,6 +724,7 @@ impl Runtime {
         }
 
         // 前面プロセスが変わったかチェック
+        const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
         let last_pid = self.executor.platform.focus.last_focus_info.as_ref().map(|(pid, _)| *pid);
         let process_changed = last_pid.is_some_and(|last| last != process_id);
 
@@ -740,8 +741,10 @@ impl Runtime {
                     "HwndCache: save [{} {}] ime_on={} mode={:?}",
                     old_pid, old_class, snapshot.ime_on, snapshot.input_mode,
                 );
-                self.executor.platform.focus.hwnd_ime_cache
-                    .insert((*old_pid, old_class.clone()), snapshot);
+                let cache = &mut self.executor.platform.focus.hwnd_ime_cache;
+                let now_ms = snapshot.recorded_ms;
+                cache.retain(|_, v| now_ms.saturating_sub(v.recorded_ms) <= HWND_CACHE_MAX_AGE_MS);
+                cache.insert((*old_pid, old_class.clone()), snapshot);
             }
         }
 
@@ -783,15 +786,26 @@ impl Runtime {
             if let Some(&snapshot) = self.executor.platform.focus.hwnd_ime_cache.get(&cache_key) {
                 let age_ms = crate::hook::current_tick_ms()
                     .saturating_sub(snapshot.recorded_ms);
-                self.platform_state.preconditions.set_ime_on(
-                    snapshot.ime_on,
-                    crate::ShadowSource::HwndCache,
-                );
-                self.platform_state.preconditions.input_mode = snapshot.input_mode;
-                log::info!(
-                    "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
-                    process_id, class_name, snapshot.ime_on, snapshot.input_mode, age_ms,
-                );
+                // キャッシュが古すぎる場合（ウィンドウの IME 状態が変わった可能性が高い）は
+                // キャッシュミスと同様に扱い、FocusProbe の結果を待つ。
+                // 即座に古い値で ime_on を更新するとエンジンが誤って無効化される。
+                if age_ms <= HWND_CACHE_MAX_AGE_MS {
+                    self.platform_state.preconditions.set_ime_on(
+                        snapshot.ime_on,
+                        crate::ShadowSource::HwndCache,
+                    );
+                    self.platform_state.preconditions.input_mode = snapshot.input_mode;
+                    log::info!(
+                        "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
+                        process_id, class_name, snapshot.ime_on, snapshot.input_mode, age_ms,
+                    );
+                } else {
+                    log::info!(
+                        "HwndCache: stale [{} {}] ime_on={} mode={:?} ({}ms ago > {}ms) → FocusProbe 待ち",
+                        process_id, class_name, snapshot.ime_on, snapshot.input_mode,
+                        age_ms, HWND_CACHE_MAX_AGE_MS,
+                    );
+                }
             } else {
                 log::debug!(
                     "HwndCache: no entry for [{} {}], stale until FocusProbe",
