@@ -39,6 +39,12 @@ pub struct DecisionExecutor {
     /// Reinject 経由で送った PassThrough KeyDown の VK 集合。
     /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
     deferred_passthrough_vks: HashSet<u16>,
+    /// warm+TSF Enter/Space/Escape KeyDown 後に KeyUp で eager warmup を送信するフラグ。
+    ///
+    /// hook callback 内では `SendInput(F2)` → `CallNextHookEx(Enter↓)` の順になり、
+    /// WezTerm が F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
+    /// KeyUp タイミングで F2 を送れば、Enter↓ は処理済みのため競合しない。
+    pending_warmup_on_keyup: bool,
 }
 
 impl DecisionExecutor {
@@ -48,6 +54,7 @@ impl DecisionExecutor {
             queue: VecDeque::new(),
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
+            pending_warmup_on_keyup: false,
         }
     }
 
@@ -164,6 +171,22 @@ impl DecisionExecutor {
                     };
                 }
 
+                // warm+TSF Enter/Space/Escape KeyDown で保留した eager warmup を KeyUp で送信する。
+                // KeyDown 時は SendInput(F2) → CallNextHookEx(Enter↓) の順になり WezTerm が
+                // F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
+                // KeyUp タイミングでは Enter↓ が既に処理済みのため F2 との競合なし。
+                if !is_key_down
+                    && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B)
+                    && self.pending_warmup_on_keyup
+                {
+                    self.pending_warmup_on_keyup = false;
+                    log::debug!(
+                        "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
+                        raw_event.vk_code.0,
+                    );
+                    self.platform.output.send_eager_tsf_warmup();
+                }
+
                 let in_flight_ms = self.platform.output.ms_since_last_send();
                 let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
@@ -248,20 +271,23 @@ impl DecisionExecutor {
                         let is_tsf = self.platform.output.is_tsf_mode();
                         if was_warm && is_tsf {
                             // 変換確定/取消 (TSF composition active 中の Enter/Space/Escape):
-                            // cold にするが eager F2 は送らない。
-                            // hook callback 内で SendInput(F2) すると CallNextHookEx(Enter) より
+                            // cold にするが eager F2 は KeyDown では送らない。
+                            // hook callback 内で SendInput(F2) すると CallNextHookEx(Enter↓) より
                             // 先に F2 が WezTerm に届き、IME 確定前に composition を壊して
                             // Enter が PTY に素通りする。
-                            // 次ローマ字の F2 は send_romaji_as_tsf の non-eager path
-                            // (main スレッド, timer context) から送信し 40ms sleep 後に届く。
-                            // これにより Enter 処理完了後に F2 が到達することが保証される。
+                            // 代わりに対応 KeyUp タイミングで eager F2 を送信する
+                            // (pending_warmup_on_keyup フラグで追跡)。
+                            // Enter↓ が WezTerm で処理済みの後に F2 が届くため競合しない。
                             log::debug!(
-                                "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2なし)",
+                                "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
                                 raw_event.vk_code.0,
                             );
                             self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+                            self.pending_warmup_on_keyup = true;
                         } else {
                             // cold または non-TSF: mark cold + eager F2 warmup
+                            // 直前の warm+TSF フラグがあれば解除（別キーが確定を引き継いだ）
+                            self.pending_warmup_on_keyup = false;
                             log::debug!(
                                 "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
                                 raw_event.vk_code.0,
