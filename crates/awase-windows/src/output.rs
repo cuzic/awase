@@ -431,20 +431,22 @@ impl Output {
     /// 先行送信させる。Space/Enter/Escape passthrough・エンジン toggle 等のタイミングで呼ぶ。
     /// フォーカス変更は `on_focus_changed()` を使うこと（epoch も更新される）。
     ///
-    /// # NativeF2Consumed の特殊処理
+    /// # NativeF2Consumed でも eager_warmup_sent_ms をリセットする理由
     ///
-    /// NativeF2Consumed では `eager_warmup_sent_ms` をリセットしない。
-    /// FocusChange 直後に pre-warmup F2 を送った場合、そのタイムスタンプを保持することで
-    /// send_romaji_as_tsf がより古い（より安全な）タイムスタンプを参照できる。
-    /// NativeF2Consumed 直後に send_eager_tsf_warmup() が呼ばれるが、
-    /// 既にタイムスタンプが設定済みの場合はそちらを優先する。
+    /// 物理 F2 が押された = WezTerm に新しい F2 が届く = TSF 初期化が再トリガーされる。
+    /// FocusChange のタイムスタンプを保持すると「古い F2 からの経過時間」を elapsed として
+    /// 計算してしまい、sleep がスキップされる（"hoんらい" 化け: BUG-06 の派生形）。
+    ///
+    /// 例: FocusChange warmup(T=0) → 物理F2(T=2265ms) → ほ送信(T=2562ms)
+    ///   旧: elapsed=2562ms→即送信、新F2からは297ms→TSF未初期化→"ho"リテラル
+    ///   新: elapsed=297ms→sleep203ms→新F2から500ms待機→TSF初期化済み→"ほ" ✓
+    ///
+    /// 直後に send_eager_tsf_warmup() が新しいタイムスタンプをセットする。
     pub fn mark_composition_cold(&self, reason: ColdReason) {
         log::debug!("[composition] marked cold reason={reason:?} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(0);
-        if reason != ColdReason::NativeF2Consumed {
-            self.eager_warmup_sent_ms.set(0);
-            crate::OBS_WARMUP_SENT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
-        }
+        self.eager_warmup_sent_ms.set(0);
+        crate::OBS_WARMUP_SENT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -525,17 +527,12 @@ impl Output {
             );
         }
         let ms = crate::hook::current_tick_ms();
-        // FocusChange pre-warmup がある場合はそちらのタイムスタンプを優先する。
-        // NativeF2Consumed 時にはより古い（より安全な）FocusChange 側を維持する。
-        if self.eager_warmup_sent_ms.get() == 0 {
-            self.eager_warmup_sent_ms.set(ms);
-            // UIA コールバックスレッドからも参照できるよう AtomicU64 に同期する。
-            crate::OBS_WARMUP_SENT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
-            log::debug!("[tsf-eager-warmup] F2 送信, eager_warmup_sent_ms={ms}ms");
-        } else {
-            let prev = self.eager_warmup_sent_ms.get();
-            log::debug!("[tsf-eager-warmup] F2 再送信 (既存タイムスタンプ {prev}ms を維持, now={ms}ms)");
-        }
+        // mark_composition_cold が常に eager_warmup_sent_ms=0 にリセットするため、
+        // ここは常に新しいタイムスタンプをセットする。
+        self.eager_warmup_sent_ms.set(ms);
+        // UIA コールバックスレッドからも参照できるよう AtomicU64 に同期する。
+        crate::OBS_WARMUP_SENT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+        log::debug!("[tsf-eager-warmup] F2 送信, eager_warmup_sent_ms={ms}ms");
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
