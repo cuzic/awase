@@ -18,9 +18,10 @@ pub const INJECTED_MARKER: usize = 0x4B45_594D;
 pub const TSF_MARKER: usize = 0x4B45_5946;
 
 /// IME composition context がコールド状態になった理由（診断ログ用）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColdReason {
     /// フォーカス変更
+    #[default]
     FocusChange,
     /// `ImeEffect::SetOpen(true)` 実行後
     SetOpenTrue,
@@ -386,6 +387,9 @@ pub struct Output {
     /// `notify_ime_open()` で更新される。`send_eager_tsf_warmup()` が
     /// IME OFF 時に F2 を誤送信しないためのガード。
     shadow_ime_on: std::cell::Cell<bool>,
+    /// 最後に cold にマークされた理由。
+    /// `send_romaji_as_tsf` が eager_settle_ms を動的に決定するために使用。
+    last_cold_reason: std::cell::Cell<ColdReason>,
 }
 
 impl Output {
@@ -404,6 +408,7 @@ impl Output {
             composition_warm_epoch: std::cell::Cell::new(0), // 0 = cold
             focus_epoch: std::cell::Cell::new(1),            // 1 = initial window
             shadow_ime_on: std::cell::Cell::new(false),
+            last_cold_reason: std::cell::Cell::new(ColdReason::FocusChange),
         }
     }
 
@@ -446,6 +451,7 @@ impl Output {
         log::debug!("[composition] marked cold reason={reason:?} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
+        self.last_cold_reason.set(reason);
         crate::OBS_WARMUP_SENT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -953,11 +959,18 @@ impl Output {
             // composition state を検出できない（IMM32 HIMC に propagate されない）。
             // 固定 sleep を使用するが、eager warmup から十分時間が経過している場合は
             // TSF が確実に初期化済みのため即送信する。
-            // FocusChange 等で eager VK_IME_ON を送信済み + 500ms 以上経過 → 即送信
+            // FocusChange 等で eager VK_IME_ON を送信済み + eager_settle_ms 以上経過 → 即送信
             // eager 送信済みだが未到達 → 残り時間だけ sleep
             // eager なし → VK_IME_ON warmup + probe (2連送) で TSF 初期化を同期
             const VK_IME_ON: u16 = 0x16;
-            const EAGER_SETTLE_MS: u64 = 500;
+            // ColdReason に応じてウォームアップ待機時間を決定:
+            //   FocusChange / SetOpenTrue: メッセージキュー洪水 + GJI 初期化 → 1000ms
+            //   その他（Enter/Space/記号/F2 等）: GJI 起動済み、composition 再突入のみ → 500ms
+            let eager_settle_ms: u64 = match self.last_cold_reason.get() {
+                ColdReason::FocusChange | ColdReason::SetOpenTrue => 1000,
+                _ => 500,
+            };
+            log::debug!("[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms reason={:?}", self.last_cold_reason.get());
 
             // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
             // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
@@ -982,7 +995,7 @@ impl Output {
             );
 
             if use_eager {
-                let remaining = EAGER_SETTLE_MS.saturating_sub(eager_elapsed);
+                let remaining = eager_settle_ms.saturating_sub(eager_elapsed);
                 if remaining == 0 {
                     log::debug!(
                         "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 即送信",
@@ -1022,8 +1035,8 @@ impl Output {
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
                 // VK_IME_ON 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
                 // eager path と同等の 500ms sleep で TSF composition context 確立を待つ。
-                std::thread::sleep(std::time::Duration::from_millis(EAGER_SETTLE_MS));
-                log::debug!("[h1-warmup] cold={cold_n} non-eager sleep {EAGER_SETTLE_MS}ms 完了");
+                std::thread::sleep(std::time::Duration::from_millis(eager_settle_ms));
+                log::debug!("[h1-warmup] cold={cold_n} non-eager sleep {eager_settle_ms}ms 完了");
             }
 
         } else {
