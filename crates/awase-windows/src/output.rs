@@ -964,10 +964,14 @@ impl Output {
             // eager なし → VK_IME_ON warmup + probe (2連送) で TSF 初期化を同期
             const VK_IME_ON: u16 = 0x16;
             // ColdReason に応じてウォームアップ待機時間を決定:
-            //   FocusChange / SetOpenTrue: メッセージキュー洪水 + GJI 初期化 → 1000ms
-            //   その他（Enter/Space/記号/F2 等）: GJI 起動済み、composition 再突入のみ → 500ms
+            //   FocusChange / SetOpenTrue / NativeF2Consumed:
+            //     awase が物理キーを消費して VK_IME_ON を代わりに送るため、
+            //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる → 1000ms
+            //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
             let eager_settle_ms: u64 = match self.last_cold_reason.get() {
-                ColdReason::FocusChange | ColdReason::SetOpenTrue => 1000,
+                ColdReason::FocusChange
+                | ColdReason::SetOpenTrue
+                | ColdReason::NativeF2Consumed => 1000,
                 _ => 500,
             };
             log::debug!("[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms reason={:?}", self.last_cold_reason.get());
