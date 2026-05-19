@@ -1030,12 +1030,12 @@ impl Output {
                 if remaining == 0 {
                     // eager_settle_ms 以上経過しているが、GJI は WM_SETFOCUS の遅延処理
                     // (メッセージキュー滞留 500-900ms) で TSF context を再初期化することがある。
-                    // FocusChange / SetOpenTrue の場合はこの再初期化レースが発生しやすいため、
-                    // 新規 VK_DBE_HIRAGANA を送って再び 500ms 待機する。
+                    // FocusChange / SetOpenTrue / NativeF2Consumed の場合はこの再初期化レースが
+                    // 発生しやすいため、新規 VK_DBE_HIRAGANA を送って再び 500ms 待機する。
                     // PassthroughConfirmKey 等の composition-only reset では不要。
                     let needs_re_warmup = matches!(
                         self.last_cold_reason.get(),
-                        ColdReason::FocusChange | ColdReason::SetOpenTrue
+                        ColdReason::FocusChange | ColdReason::SetOpenTrue | ColdReason::NativeF2Consumed
                     );
                     if needs_re_warmup {
                         log::debug!(
@@ -1084,6 +1084,40 @@ impl Output {
                     log::debug!(
                         "[h1-warmup] cold={cold_n} probe完了 warmup経過={total_elapsed}ms",
                     );
+
+                    // probe が GJI 活動なしでタイムアウトした場合、eager F2 だけでは
+                    // WezTerm の TSF composition context が確実に初期化されない。
+                    // (NativeF2Consumed: GJI は warmup F2 に対して I/O を起こさない)
+                    // romaji 直前に fresh F2 を送り、短時間待機して TSF context をリフレッシュする。
+                    let gji_last = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let session_last = crate::tsf_observations::OBS_GJI_SESSION_ATIME_MS
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let probe_settled = gji_last.max(session_last) >= eager_ms;
+                    let gji_monitor_ok = crate::tsf_observations::OBS_GJI_MONITOR_OK
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        || crate::tsf_observations::OBS_GJI_SESSION_MONITOR_OK
+                        .load(std::sync::atomic::Ordering::Relaxed);
+
+                    if !probe_settled && gji_monitor_ok {
+                        // GJI は監視できているが warmup 後の活動なし → probe timeout。
+                        // TSF context が stale の可能性があるため fresh F2 で再初期化。
+                        const REFRESH_SETTLE_MS: u64 = 50;
+                        log::debug!(
+                            "[h1-warmup] cold={cold_n} probe timeout (no GJI activity) → fresh F2 before romaji (+{REFRESH_SETTLE_MS}ms)",
+                        );
+                        let refresh_inputs = [
+                            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                            make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                        ];
+                        unsafe {
+                            SendInput(
+                                &refresh_inputs,
+                                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                            );
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(REFRESH_SETTLE_MS));
+                    }
                 }
             } else {
                 // 投機的プローブ: VK_DBE_HIRAGANA (F2相当) を2連送する。
