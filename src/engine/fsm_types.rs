@@ -233,6 +233,9 @@ pub enum EngineState {
     PendingCharThumb {
         char_key: PendingKey,
         thumb: PendingThumbData,
+        /// char1 が KeyUp で離されたかどうか
+        /// true の場合、char2 到着時に必ず PairWithChar2（char1 単独 + char2+thumb 同時）を選択する
+        char1_released: bool,
     },
     /// 投機出力済み: 通常面の文字を出力したが、同時打鍵で差し替えられる可能性がある
     SpeculativeChar(PendingKey),
@@ -608,6 +611,7 @@ mod tests {
         let state = EngineState::PendingCharThumb {
             char_key: make_pending_key(),
             thumb: make_pending_thumb_data(false),
+            char1_released: false,
         };
         assert!(!state.is_idle());
     }

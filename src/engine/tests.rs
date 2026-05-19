@@ -688,15 +688,23 @@ fn test_three_key_timeout_resolves_as_simultaneous() {
 
 #[test]
 fn test_three_key_key_up_char_resolves_simultaneous() {
-    // char1 → thumb → char1 KeyUp → char1+thumb を同時打鍵として確定
+    // char1 → thumb → char1 KeyUp → (char2 を待機) → thumb KeyUp → char1+thumb を確定
+    // char1 が離されてもすぐには出力せず、後続 char2 の有無を確認するため待機する。
+    // char2 が来ない場合は thumb KeyUp で同時打鍵として確定する。
     let mut engine = make_engine();
 
     engine.on_event(Ev::down(VK_A).at(0).build());
     engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
 
+    // char1 離鍵: 待機（何も出力しない）
     let result = engine.on_event(Ev::up(VK_A).build());
     result.assert_consumed();
-    assert!(result
+    assert!(result.actions.is_empty(), "char1 release should not emit immediately");
+
+    // thumb 離鍵: 同時打鍵として確定
+    let result2 = engine.on_event(Ev::up(VK_CONVERT).build());
+    result2.assert_consumed();
+    assert!(result2
         .actions
         .iter()
         .any(|a| matches!(a, KeyAction::Char('ゔ'))));
@@ -905,19 +913,24 @@ fn test_continuous_shift_after_three_key_d1_less_d2() {
 
 #[test]
 fn test_continuous_shift_after_pending_char_thumb_key_up() {
-    // char1 → thumb → char1 KeyUp → 同時打鍵確定 → char2 即時シフト
+    // char1 → thumb → char1 KeyUp → (待機) → thumb KeyUp → 同時打鍵確定 → char2 は通常面
     let mut engine = make_engine_with_extended_layout();
     let t = 0u64;
 
     engine.on_event(Ev::down(VK_A).at(t).build());
     engine.on_event(Ev::down(VK_NONCONVERT).at(t + 30_000).build());
 
-    // char1 KeyUp → 同時打鍵として確定
+    // char1 KeyUp → 待機（何も出力しない）
     let r = engine.on_event(Ev::up(VK_A).at(t + 60_000).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty(), "char1 release should not emit immediately");
+
+    // thumb KeyUp → 同時打鍵として確定
+    let r = engine.on_event(Ev::up(VK_NONCONVERT).at(t + 80_000).build());
     r.assert_consumed();
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('を'))));
 
-    // char2: 親指は消費済み → PendingChar（保留）→ タイムアウトで通常面
+    // char2: 親指は消費済み（解放済み）→ PendingChar（保留）→ タイムアウトで通常面
     let r = engine.on_event(Ev::down(VK_S).at(t + 100_000).build());
     assert_pending(&r);
 
@@ -1421,23 +1434,29 @@ fn test_key_up_active_suppress_action() {
 
 #[test]
 fn test_key_up_pending_char_thumb_resolves_char() {
-    // char1 in normal face but NOT in thumb face -> resolves via normal face as Char
+    // char1 in normal face but NOT in thumb face
+    // char1 KeyUp → 待機; thumb KeyUp → resolve (D not in left_thumb → fallback to normal → Char('て'))
     let mut engine = make_engine();
     engine.layout.normal.insert(POS_D, lit('て'));
 
     engine.on_event(Ev::down(VK_D).at(0).build());
     engine.on_event(Ev::down(VK_NONCONVERT).at(20_000).build());
 
-    // KeyUp of D -> resolves char1+thumb as simultaneous
-    // D not in left_thumb -> fallback to single via normal -> Char('て')
+    // KeyUp of D: 待機（何も出力しない）
     let r = engine.on_event(Ev::up(VK_D).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty(), "char1 release should not emit immediately");
+
+    // thumb KeyUp: resolve char1+thumb → D not in left_thumb → fallback to normal → Char('て')
+    let r = engine.on_event(Ev::up(VK_NONCONVERT).build());
     r.assert_consumed();
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('て'))));
 }
 
 #[test]
 fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
-    // char1 NOT in normal or left_thumb -> fallback to Key(vk), KeyUp appended (line 580)
+    // char1 NOT in normal or left_thumb -> fallback to Key(vk)
+    // char1 KeyUp → 待機; thumb KeyUp → Key(VK_D) + KeyUp(VK_D) まとめて出力
     let mut engine = make_engine();
     // Add D only to right_thumb (not left_thumb, not normal)
     engine.layout.right_thumb.insert(POS_D, lit('で'));
@@ -1446,11 +1465,13 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
     // Left thumb -> PendingCharThumb
     engine.on_event(Ev::down(VK_NONCONVERT).at(20_000).build());
 
-    // KeyUp of D -> resolve char1+left_thumb
-    // D NOT in left_thumb -> fallback to single
-    // D NOT in normal -> Key(VK_D), output_history records Key(VK_D)
-    // Then on KeyUp: output_history removal finds Key(VK_D) -> push KeyUp
+    // KeyUp of D → 待機（何も出力しない）
     let r = engine.on_event(Ev::up(VK_D).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty(), "char1 release should not emit immediately");
+
+    // thumb KeyUp → resolve: D NOT in left_thumb → Key(VK_D), char1 released → KeyUp(VK_D) も追加
+    let r = engine.on_event(Ev::up(VK_NONCONVERT).build());
     r.assert_consumed();
     assert!(r
         .actions

@@ -198,7 +198,7 @@ impl NicolaFsm {
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions)
             }
-            EngineState::PendingCharThumb { char_key, thumb } => {
+            EngineState::PendingCharThumb { char_key, thumb, char1_released } => {
                 // 文字+親指を同時打鍵として確定
                 let resolved = self.resolve_char_thumb_as_simultaneous(
                     char_key.scan_code,
@@ -207,7 +207,16 @@ impl NicolaFsm {
                     thumb.face(),
                 );
                 self.update_history(resolved.output);
-                Response::emit(resolved.actions)
+                let mut actions = resolved.actions;
+                if char1_released {
+                    // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
+                    if let Some(entry) = self.output_history.remove_by_scan(char_key.scan_code) {
+                        if let KeyAction::Key(vk) = entry.action {
+                            actions.push(KeyAction::KeyUp(vk));
+                        }
+                    }
+                }
+                Response::emit(actions)
             }
             EngineState::SpeculativeChar(_) => {
                 // 既に投機出力済み → 出力は正しかったとみなす。何も追加しない。
@@ -378,7 +387,7 @@ impl NicolaFsm {
     }
 
     const fn enter_pending_char_thumb(&mut self, char_key: PendingKey, thumb: PendingThumbData) {
-        self.state = EngineState::PendingCharThumb { char_key, thumb };
+        self.state = EngineState::PendingCharThumb { char_key, thumb, char1_released: false };
     }
 
     pub(crate) const fn enter_speculative_char(&mut self, key: PendingKey) {
@@ -909,6 +918,7 @@ impl NicolaFsm {
         let EngineState::PendingCharThumb {
             char_key: pending,
             thumb,
+            char1_released,
         } = self.state
         else {
             unreachable!("unexpected state: {:?}", self.state)
@@ -917,26 +927,30 @@ impl NicolaFsm {
 
         if !ev.key_class.is_thumb() {
             // char2 到着 → 3 鍵仲裁
-            let judge = self.timing_judge();
+            // char1 が既に離されていれば char1 は単独打鍵確定（タイミング比較不要）
             let thumb_face = thumb.face();
-            let char1_thumb_kana = self
-                .lookup_face(pending.pos, self.get_face(thumb_face))
-                .and_then(|(_, k)| k);
-            let char1_single_kana = self
-                .lookup_face(pending.pos, self.get_face(Face::Normal))
-                .and_then(|(_, k)| k);
-            let char2_thumb_kana = self
-                .lookup_face(ev.pos, self.get_face(thumb_face))
-                .and_then(|(_, k)| k);
-            let result = judge.three_key_pairing(
-                pending.timestamp,
-                thumb.timestamp,
-                ev.timestamp,
-                char1_thumb_kana,
-                char1_single_kana,
-                char2_thumb_kana,
-            );
-            let prefer_char1 = result == timing::ThreeKeyResult::PairWithChar1;
+            let prefer_char1 = if char1_released {
+                false
+            } else {
+                let judge = self.timing_judge();
+                let char1_thumb_kana = self
+                    .lookup_face(pending.pos, self.get_face(thumb_face))
+                    .and_then(|(_, k)| k);
+                let char1_single_kana = self
+                    .lookup_face(pending.pos, self.get_face(Face::Normal))
+                    .and_then(|(_, k)| k);
+                let char2_thumb_kana = self
+                    .lookup_face(ev.pos, self.get_face(thumb_face))
+                    .and_then(|(_, k)| k);
+                judge.three_key_pairing(
+                    pending.timestamp,
+                    thumb.timestamp,
+                    ev.timestamp,
+                    char1_thumb_kana,
+                    char1_single_kana,
+                    char2_thumb_kana,
+                ) == timing::ThreeKeyResult::PairWithChar1
+            };
 
             if prefer_char1 {
                 // char1+thumb = 同時打鍵、char2 は再処理
@@ -999,7 +1013,7 @@ impl NicolaFsm {
         // phys.classified は on_key_down 側で使用済み
 
         // PendingCharThumb 状態での KeyUp 処理
-        if let EngineState::PendingCharThumb { char_key, thumb } = self.state {
+        if let EngineState::PendingCharThumb { char_key, thumb, .. } = self.state {
             if event.vk_code == char_key.vk_code || event.vk_code == thumb.vk_code {
                 return self.handle_key_up_pending_char_thumb(event);
             }
@@ -1039,10 +1053,25 @@ impl NicolaFsm {
         let EngineState::PendingCharThumb {
             char_key: pending,
             thumb,
+            char1_released,
         } = self.state
         else {
             unreachable!("unexpected state: {:?}", self.state)
         };
+
+        // char1 が初めて離された場合: フラグを立てて待機継続。
+        // 後から char2 が来れば「char1 単独 + char2+thumb 同時」と確実に判定できる。
+        if event.vk_code == pending.vk_code && !char1_released {
+            self.state = EngineState::PendingCharThumb {
+                char_key: pending,
+                thumb,
+                char1_released: true,
+            };
+            return self.build_response(vec![], true, TimerIntent::Keep);
+        }
+
+        // thumb が離された、または char1_released 済みで char1 が再度離された:
+        // char1+thumb を同時打鍵として確定する
         self.go_idle();
         let resolved = self.resolve_char_thumb_as_simultaneous(
             pending.scan_code,
@@ -1053,8 +1082,15 @@ impl NicolaFsm {
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
         if event.vk_code == pending.vk_code {
-            // char1 が離された: Char は KeyUp 不要だが Key なら KeyUp 追加
+            // char1 が離された（char1_released=true 済み）
             if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
+                if let KeyAction::Key(vk) = entry.action {
+                    actions.push(KeyAction::KeyUp(vk));
+                }
+            }
+        } else if char1_released {
+            // thumb が離された。char1 は既に物理的に離されているため KeyUp も追加する。
+            if let Some(entry) = self.output_history.remove_by_scan(pending.scan_code) {
                 if let KeyAction::Key(vk) = entry.action {
                     actions.push(KeyAction::KeyUp(vk));
                 }
@@ -1152,11 +1188,21 @@ impl NicolaFsm {
         char_vk: VkCode,
         char_pos: Option<PhysicalPos>,
         thumb_face: Face,
+        char1_released: bool,
     ) -> Resp {
         let resolved =
             self.resolve_char_thumb_as_simultaneous(char_scan, char_vk, char_pos, thumb_face);
         self.update_history(resolved.output);
-        self.build_response(resolved.actions, true, TimerIntent::CancelAll)
+        let mut actions = resolved.actions;
+        if char1_released {
+            // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
+            if let Some(entry) = self.output_history.remove_by_scan(char_scan) {
+                if let KeyAction::Key(vk) = entry.action {
+                    actions.push(KeyAction::KeyUp(vk));
+                }
+            }
+        }
+        self.build_response(actions, true, TimerIntent::CancelAll)
     }
 
     /// TwoPhase モード: Phase 1 の短い待機がタイムアウトした場合の処理。
@@ -1314,12 +1360,15 @@ impl NicolaFsm {
                 self.timeout_pending_char(pending.scan_code, pending.vk_code, pending.pos)
             }
             EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(thumb.vk_code),
-            EngineState::PendingCharThumb { char_key, thumb } => self.timeout_pending_char_thumb(
-                char_key.scan_code,
-                char_key.vk_code,
-                char_key.pos,
-                thumb.face(),
-            ),
+            EngineState::PendingCharThumb { char_key, thumb, char1_released } => {
+                self.timeout_pending_char_thumb(
+                    char_key.scan_code,
+                    char_key.vk_code,
+                    char_key.pos,
+                    thumb.face(),
+                    char1_released,
+                )
+            }
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
             EngineState::SpeculativeChar(_) => Response::consume().with_kill_timer(TIMER_PENDING),
         }

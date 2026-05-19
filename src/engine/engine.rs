@@ -365,31 +365,27 @@ impl Engine {
         // IME 制御キー（エンジン状態に関わらずチェック）
         // shadow 更新は Platform 層の責務（SetOpen Effect 処理時にアトミック反転）
         //
-        // 親指シフトキー（無変換/変換等）は NICOLA 入力中にも押下される。
-        // Ctrl を保持したまま親指キーを押すと「Ctrl+無変換」が IME ON/OFF コンボに
-        // 誤マッチするため、thumb_vks に設定されたキーはコンボ判定から除外する。
-        let is_thumb = {
-            let (l, r) = self.thumb_vks;
-            (l.0 != 0 && event.vk_code == l) || (r.0 != 0 && event.vk_code == r)
-        };
-        if !is_thumb
-            && self
-                .special_keys
-                .ime_on
-                .iter()
-                .any(|k| Self::matches_key_combo(*k, event, modifiers))
+        // 注: 以前は thumb_vks のキーを除外するガードがあったが、
+        // ModifierTiming の grace 猶予廃止（OS 実状態のみ使用）により
+        // 誤マッチリスクが解消されたため除去。
+        // Ctrl+無変換 = ime_off デフォルトが親指キー (VK_NONCONVERT) と重複しても
+        // OS 実状態で Ctrl を確認するため誤判定しない。
+        if self
+            .special_keys
+            .ime_on
+            .iter()
+            .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
             log::info!("IME ON (key combo)");
             return Some(Decision::consumed_with(smallvec![Effect::Ime(
                 ImeEffect::SetOpen(true),
             )]));
         }
-        if !is_thumb
-            && self
-                .special_keys
-                .ime_off
-                .iter()
-                .any(|k| Self::matches_key_combo(*k, event, modifiers))
+        if self
+            .special_keys
+            .ime_off
+            .iter()
+            .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
             log::info!("IME OFF (key combo)");
             return Some(Decision::consumed_with(smallvec![Effect::Ime(
