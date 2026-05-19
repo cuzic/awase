@@ -5,14 +5,19 @@
 //! `ImeObservations` が「IME ON/OFF」を複数ソースから観測するのと同様に、
 //! `TsfObservations` は「TSF composition context が ready か」を複数ソースで観測する。
 //!
-//! ## 観測ソース（今後拡張予定）
+//! ## 観測ソース
 //!
 //! 1. `GjiMonitor` — GetProcessIoCounters ベースの I/O 静止検出
-//!    - GJI が VK_IME_ON 後に I/O を行い、静止したら初期化完了と推定
-//!    - ETW 不要・管理者権限不要
+//!    - GJI Converter プロセスの累積 I/O カウンタを 10ms ごとに監視
+//!    - 静止（80ms 変化なし）で初期化完了と推定
 //!
-//! 2. 時間ベース（フォールバック）
-//!    - GJI プロセスが見つからない場合の従来ロジック
+//! 2. `SessionIpcMonitor` — session.ipc の LastAccessTime 監視
+//!    - `%USERPROFILE%\AppData\LocalLow\Google\Google Japanese Input\session.ipc`
+//!    - TSF が GJI に session request を送ると atime が更新される直接シグナル
+//!    - GetFileTime(LastAccessTime) を 10ms ごとにポーリング
+//!
+//! 3. 時間ベース（フォールバック）
+//!    - 両モニターが利用不可の場合の固定 sleep
 //!
 //! ## 使い方
 //!
@@ -30,7 +35,11 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, GetFileTime, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING,
+};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
     TH32CS_SNAPPROCESS,
@@ -38,6 +47,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
 };
+use windows::core::PCWSTR;
 
 // ── グローバル観測値（バックグラウンドスレッド → ロジックスレッド）──
 
@@ -50,12 +60,36 @@ pub static OBS_GJI_LAST_IO_MS: AtomicU64 = AtomicU64::new(0);
 /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
 pub static OBS_GJI_MONITOR_OK: AtomicBool = AtomicBool::new(false);
 
+/// session.ipc の LastAccessTime が最後に変化した時刻 (GetTickCount64 ms)。0 = 未観測。
+///
+/// TSF が GJI Converter に session request を送ると atime が更新される。
+/// `TsfReadinessProbe` が `OBS_GJI_LAST_IO_MS` と並行して参照する。
+pub static OBS_GJI_SESSION_ATIME_MS: AtomicU64 = AtomicU64::new(0);
+
+/// session.ipc モニターが利用可能か（ファイルオープン成功）。
+pub static OBS_GJI_SESSION_MONITOR_OK: AtomicBool = AtomicBool::new(false);
+
 // ── GJI プロセス発見 ──
 
-const GJI_CONVERTER_EXE: &str = "GoogleJapaneseInputConverter.exe";
+/// GJI Converter プロセスのプレフィックス候補（大文字小文字無視）。
+/// バージョンによりプロセス名が異なるため複数候補を持つ。
+/// Converter プロセスのみを対象にする（Renderer/CacheService は除外）。
+const GJI_PROCESS_PREFIXES: &[&str] = &[
+    "GoogleIMEJaConverter",          // 現行バージョン
+    "GoogleJapaneseInputConverter",  // 旧バージョン
+];
+
+/// プロセス名が GJI 関連かどうか判定する。
+fn is_gji_process(name: &str) -> bool {
+    GJI_PROCESS_PREFIXES
+        .iter()
+        .any(|prefix| name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()))
+}
 
 /// プロセス一覧から GJI converter の PID を探す。
-fn find_gji_pid() -> Option<u32> {
+/// マッチしたプロセス名もあわせて返す。
+/// 見つからない場合は "Google" を含む全プロセスをデバッグログに出力する。
+fn find_gji_pid() -> Option<(u32, String)> {
     let snapshot =
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
 
@@ -65,6 +99,7 @@ fn find_gji_pid() -> Option<u32> {
     };
 
     let mut found = None;
+    let mut google_procs: Vec<String> = Vec::new();
 
     if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
         loop {
@@ -74,9 +109,14 @@ fn find_gji_pid() -> Option<u32> {
                 .position(|&c| c == 0)
                 .unwrap_or(entry.szExeFile.len());
             let name = String::from_utf16_lossy(&entry.szExeFile[..name_end]);
-            if name.eq_ignore_ascii_case(GJI_CONVERTER_EXE) {
-                found = Some(entry.th32ProcessID);
+            if is_gji_process(&name) {
+                found = Some((entry.th32ProcessID, name));
                 break;
+            }
+            // 診断用: "Google" または "Japanese" を含むプロセスを収集
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("google") || lower.contains("japanese") {
+                google_procs.push(format!("{}({})", name, entry.th32ProcessID));
             }
             if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
                 break;
@@ -86,10 +126,15 @@ fn find_gji_pid() -> Option<u32> {
 
     let _ = unsafe { CloseHandle(snapshot) };
 
-    if let Some(pid) = found {
-        log::debug!("[gji-monitor] found {GJI_CONVERTER_EXE} pid={pid}");
-    } else {
-        log::debug!("[gji-monitor] {GJI_CONVERTER_EXE} not found in process list");
+    match &found {
+        Some((pid, name)) => log::debug!("[gji-monitor] found GJI process: {name} pid={pid}"),
+        None => {
+            log::debug!(
+                "[gji-monitor] no GJI process found (searched prefixes: {:?}), google/japanese procs: {:?}",
+                GJI_PROCESS_PREFIXES,
+                google_procs,
+            );
+        }
     }
 
     found
@@ -116,7 +161,7 @@ unsafe impl Send for GjiMonitor {}
 impl GjiMonitor {
     /// GJI converter プロセスに接続する。失敗したら None。
     fn try_attach() -> Option<Self> {
-        let pid = find_gji_pid()?;
+        let (pid, _name) = find_gji_pid()?;
         let handle =
             unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) }.ok()?;
 
@@ -161,6 +206,109 @@ impl Drop for GjiMonitor {
     }
 }
 
+// ── SessionIpcMonitor ──
+
+/// FILETIME (100ns 単位, 1601年起点) を u64 に変換する。
+fn filetime_to_u64(ft: FILETIME) -> u64 {
+    (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime)
+}
+
+/// Path を null 終端 UTF-16 列に変換する。
+fn path_to_wide(path: &std::path::Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    wide
+}
+
+/// GJI の session.ipc パスを返す。ファイルが存在しない場合は `None`。
+///
+/// `%USERPROFILE%\AppData\LocalLow\Google\Google Japanese Input\session.ipc`
+fn find_session_ipc_path() -> Option<std::path::PathBuf> {
+    let profile = std::env::var("USERPROFILE").ok()?;
+    let path = std::path::PathBuf::from(profile)
+        .join("AppData")
+        .join("LocalLow")
+        .join("Google")
+        .join("Google Japanese Input")
+        .join("session.ipc");
+    if path.exists() { Some(path) } else { None }
+}
+
+/// GJI の `session.ipc` の LastAccessTime を監視し、TSF session request を検出する。
+///
+/// atime が更新された = GJI Converter がファイルを読んだ = TSF session を処理した。
+struct SessionIpcMonitor {
+    handle: HANDLE,
+    /// 前回サンプル時の LastAccessTime (FILETIME として u64 化)
+    last_atime_ft: u64,
+}
+
+// ファイルハンドルはスレッド非依存なので Send は安全。
+unsafe impl Send for SessionIpcMonitor {}
+
+impl std::fmt::Debug for SessionIpcMonitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionIpcMonitor")
+            .field("last_atime_ft", &self.last_atime_ft)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SessionIpcMonitor {
+    /// session.ipc を開いてモニターを初期化する。失敗したら `None`。
+    fn try_open() -> Option<Self> {
+        let path = find_session_ipc_path()?;
+        let wide = path_to_wide(&path);
+        // FILE_READ_ATTRIBUTES (0x80): ファイルデータを読まずに属性だけ取得する最小権限
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR(wide.as_ptr()),
+                0x0080, // FILE_READ_ATTRIBUTES
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        }
+        .ok()?;
+        log::info!(
+            "[session-monitor] opened session.ipc: {}",
+            path.display()
+        );
+        let mut mon = Self { handle, last_atime_ft: 0 };
+        let _ = mon.sample(); // ベースライン取得
+        Some(mon)
+    }
+
+    /// LastAccessTime を読み取り、変化があれば `OBS_GJI_SESSION_ATIME_MS` を更新する。
+    ///
+    /// 返り値: ハンドルが有効なら `true`、エラーなら `false`（再オープン要）。
+    fn sample(&mut self) -> bool {
+        let mut access = FILETIME::default();
+        if unsafe { GetFileTime(self.handle, None, Some(&mut access), None) }.is_err() {
+            return false;
+        }
+        let atime_ft = filetime_to_u64(access);
+        if self.last_atime_ft != 0 && atime_ft != self.last_atime_ft {
+            let now_ms = crate::hook::current_tick_ms();
+            OBS_GJI_SESSION_ATIME_MS.store(now_ms, Ordering::Relaxed);
+            log::debug!(
+                "[session-monitor] session.ipc atime changed (ft={atime_ft:#018x}), recorded at {now_ms}ms"
+            );
+        }
+        self.last_atime_ft = atime_ft;
+        true
+    }
+}
+
+impl Drop for SessionIpcMonitor {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.handle) };
+    }
+}
+
 // ── バックグラウンドモニタースレッド ──
 
 /// GJI I/O モニタースレッドを起動する。
@@ -182,16 +330,18 @@ fn monitor_loop() {
     log::info!("[gji-monitor] thread started");
 
     let mut monitor: Option<GjiMonitor> = None;
+    let mut session_monitor: Option<SessionIpcMonitor> = None;
     let mut next_attach_ms: u64 = 0;
+    let mut next_session_attach_ms: u64 = 0;
 
     loop {
         let now = crate::hook::current_tick_ms();
 
-        // アタッチ試行（未接続 or 再接続待ち）
+        // GJI プロセスへのアタッチ試行
         if monitor.is_none() && now >= next_attach_ms {
             match GjiMonitor::try_attach() {
                 Some(m) => {
-                    log::info!("[gji-monitor] attached to {GJI_CONVERTER_EXE}");
+                    log::info!("[gji-monitor] attached to GJI process");
                     OBS_GJI_MONITOR_OK.store(true, Ordering::Relaxed);
                     OBS_GJI_LAST_IO_MS.store(m.last_change_ms(), Ordering::Relaxed);
                     monitor = Some(m);
@@ -203,16 +353,39 @@ fn monitor_loop() {
             }
         }
 
-        // サンプリング
+        // session.ipc のオープン試行
+        if session_monitor.is_none() && now >= next_session_attach_ms {
+            match SessionIpcMonitor::try_open() {
+                Some(m) => {
+                    OBS_GJI_SESSION_MONITOR_OK.store(true, Ordering::Relaxed);
+                    session_monitor = Some(m);
+                }
+                None => {
+                    OBS_GJI_SESSION_MONITOR_OK.store(false, Ordering::Relaxed);
+                    next_session_attach_ms = now + REATTACH_INTERVAL_MS;
+                }
+            }
+        }
+
+        // GJI プロセス I/O サンプリング
         if let Some(ref mut m) = monitor {
             if !m.sample() {
-                // GJI プロセス死亡
-                log::info!("[gji-monitor] {GJI_CONVERTER_EXE} exited, will re-attach");
+                log::info!("[gji-monitor] GJI process exited, will re-attach");
                 OBS_GJI_MONITOR_OK.store(false, Ordering::Relaxed);
                 monitor = None;
                 next_attach_ms = now + REATTACH_INTERVAL_MS;
             } else {
                 OBS_GJI_LAST_IO_MS.store(m.last_change_ms(), Ordering::Relaxed);
+            }
+        }
+
+        // session.ipc atime サンプリング
+        if let Some(ref mut m) = session_monitor {
+            if !m.sample() {
+                log::info!("[session-monitor] session.ipc read error, will re-open");
+                OBS_GJI_SESSION_MONITOR_OK.store(false, Ordering::Relaxed);
+                session_monitor = None;
+                next_session_attach_ms = now + REATTACH_INTERVAL_MS;
             }
         }
 
@@ -284,11 +457,14 @@ impl TsfReadinessProbe {
         let min_deadline = warmup_ms.saturating_add(min_ms);
         let max_deadline = warmup_ms.saturating_add(total_max_ms);
 
-        if !OBS_GJI_MONITOR_OK.load(Ordering::Relaxed) {
-            // GJI モニター利用不可: max_deadline まで固定 sleep
+        let gji_ok = OBS_GJI_MONITOR_OK.load(Ordering::Relaxed);
+        let session_ok = OBS_GJI_SESSION_MONITOR_OK.load(Ordering::Relaxed);
+
+        if !gji_ok && !session_ok {
+            // 両モニター利用不可: max_deadline まで固定 sleep
             let remaining = max_deadline.saturating_sub(crate::hook::current_tick_ms());
             log::debug!(
-                "[tsf-probe] cold={cold_n} fallback fixed sleep {remaining}ms (GJI monitor unavailable)"
+                "[tsf-probe] cold={cold_n} fallback fixed sleep {remaining}ms (both monitors unavailable)"
             );
             if remaining > 0 {
                 std::thread::sleep(Duration::from_millis(remaining));
@@ -307,23 +483,30 @@ impl TsfReadinessProbe {
             std::thread::sleep(Duration::from_millis(phase1_wait));
         }
 
-        // Phase 2: GJI I/O 静止監視
+        // Phase 2: GJI 活動監視（I/O カウンタ + session.ipc atime の両シグナル）
         let p2_start = crate::hook::current_tick_ms();
-        let last_io_at_p2 = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+        let gji_io_at_p2 = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+        let session_atime_at_p2 = OBS_GJI_SESSION_ATIME_MS.load(Ordering::Relaxed);
+        // どちらか新しい方をベースとして採用
+        let last_io_at_p2 = gji_io_at_p2.max(session_atime_at_p2);
         let io_after_warmup_at_start = last_io_at_p2 >= warmup_ms;
         log::debug!(
             "[tsf-probe] cold={cold_n} phase2 polling \
-             (max_remaining={}ms, gji_idle={}ms, io_after_warmup={io_after_warmup_at_start})",
+             (max_remaining={}ms, gji_io_idle={}ms, session_atime_idle={}ms, io_after_warmup={io_after_warmup_at_start})",
             max_deadline.saturating_sub(p2_start),
-            p2_start.saturating_sub(last_io_at_p2),
+            p2_start.saturating_sub(gji_io_at_p2),
+            p2_start.saturating_sub(session_atime_at_p2),
         );
 
-        // warmup 後に GJI I/O が発生したかをトラッキング
+        // warmup 後に GJI 活動が発生したかをトラッキング
         let mut found_io_after_warmup = io_after_warmup_at_start;
 
         loop {
             let now = crate::hook::current_tick_ms();
-            let last_io = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+            let gji_io = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+            let session_atime = OBS_GJI_SESSION_ATIME_MS.load(Ordering::Relaxed);
+            // 両シグナルのうち新しい方を使う（どちらかが warmup 後に動けば settled 対象）
+            let last_io = gji_io.max(session_atime);
 
             if last_io >= warmup_ms {
                 found_io_after_warmup = true;
@@ -331,22 +514,25 @@ impl TsfReadinessProbe {
 
             if now >= max_deadline {
                 log::debug!(
-                    "[tsf-probe] cold={cold_n} timeout (warmup+{}ms, gji_idle={}ms, io_after_warmup={found_io_after_warmup})",
+                    "[tsf-probe] cold={cold_n} timeout \
+                     (warmup+{}ms, gji_io_idle={}ms, session_atime_idle={}ms, io_after_warmup={found_io_after_warmup})",
                     now.saturating_sub(warmup_ms),
-                    now.saturating_sub(last_io),
+                    now.saturating_sub(gji_io),
+                    now.saturating_sub(session_atime),
                 );
                 break;
             }
 
             if found_io_after_warmup {
-                // warmup 後に I/O 確認済み → 静止を待つ
+                // warmup 後に活動確認済み → 静止を待つ
                 let gji_idle = now.saturating_sub(last_io);
                 if gji_idle >= GJI_IDLE_MS {
                     let elapsed_from_warmup = now.saturating_sub(warmup_ms);
                     let margin = max_deadline.saturating_sub(now).min(POST_IDLE_MARGIN_MS);
                     log::debug!(
                         "[tsf-probe] cold={cold_n} GJI settled \
-                         (idle={gji_idle}ms) at warmup+{elapsed_from_warmup}ms, +{margin}ms margin"
+                         (idle={gji_idle}ms, gji_io={gji_io}ms, session_atime={session_atime}ms) \
+                         at warmup+{elapsed_from_warmup}ms, +{margin}ms margin"
                     );
                     if margin > 0 {
                         std::thread::sleep(Duration::from_millis(margin));
@@ -354,8 +540,8 @@ impl TsfReadinessProbe {
                     break;
                 }
             }
-            // found_io_after_warmup=false の場合は GJI が既に正常状態か未応答。
-            // max_deadline まで待機継続（I/O が来れば上記 settled 検出に切り替わる）。
+            // found_io_after_warmup=false: GJI が既に正常状態か未応答。
+            // max_deadline まで待機継続（活動が来れば上記 settled 検出に切り替わる）。
 
             std::thread::sleep(Duration::from_millis(POLL_MS));
         }
