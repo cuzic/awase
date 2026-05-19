@@ -57,27 +57,10 @@ pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
 pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 
-/// [観察用] eager warmup F2 の最終送信時刻（GetTickCount64 ms）。
-///
-/// UIA コールバックスレッド（COM スレッドプール）から参照するため
-/// `AtomicU64` を使用する。`output::Output::send_eager_tsf_warmup()` が更新する。
-/// WinEvent コールバックは `APP` 経由で読めるが UIA は別スレッドのためこちらを使う。
-pub static OBS_WARMUP_SENT_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// [観察用] romaji SendInput 完了直後の時刻（GetTickCount64 ms）。
-///
-/// `send_romaji_as_tsf` がローマ字バッチ送信後に更新する。
-/// `GoogleJapaneseInputCandidateWindow OBJ_SHOW` との delta を計算し、
-/// 「送信からどれだけ後に候補窓が現れるか」を計測するために使う。
-pub static OBS_LAST_SEND_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// [観察用] WezTerm WINDOW OBJ_NAMECHANGE の連番カウンタ。
+/// `wait_for_tsf_cold_settle()` が OBJ_NAMECHANGE を early-exit シグナルとして使うカウンタ。
 ///
 /// `send_eager_tsf_warmup()` 呼び出し時に 0 にリセットされ、
-/// その後 WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
-/// 「warmup 後の何番目の NAMECHANGE が ~250ms のやつか」を特定するために使う。
+/// WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
 pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 

@@ -33,7 +33,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ, OBS_LAST_SEND_MS, OBS_WARMUP_SENT_MS,
+    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ,
     Runtime, ShadowSource, APP, ELEVATED, MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
@@ -222,7 +222,6 @@ pub fn run() -> Result<()> {
     install_ctrl_handler();
     let _focus_hook_guard = install_focus_hook();
     let _obs_hook_guards = install_observation_hooks();
-    install_uia_observer();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     unsafe {
@@ -1585,21 +1584,7 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 /// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
-// ── WinEvent 観察用イベント定数（winuser.h / WinSDK より）────────────────────
-// アルファベット順ではなく ID 昇順に並べる。
-
-// グループ A: オブジェクト表示/非表示（IME 候補 window 出現を捉える）
-const EVENT_OBJECT_SHOW:                 u32 = 0x8002;
-const EVENT_OBJECT_HIDE:                 u32 = 0x8003;
-// グループ B: オブジェクト状態/値変化
-const EVENT_OBJECT_STATECHANGE:          u32 = 0x800A;
-const EVENT_OBJECT_NAMECHANGE:           u32 = 0x800C;
-const EVENT_OBJECT_VALUECHANGE:          u32 = 0x800E;
-// グループ C: テキスト選択/キャレット変化（composition 中に発火する可能性）
-const EVENT_OBJECT_TEXTSELECTIONCHANGED: u32 = 0x8014;
-// グループ D: IME composition 専用イベント
-const EVENT_OBJECT_IME_START:            u32 = 0x8026;
-const EVENT_OBJECT_IME_END:              u32 = 0x8028;
+const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
 
 /// フォーカス変更イベントフックを登録する
 /// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
@@ -1684,309 +1669,61 @@ unsafe extern "system" fn win_event_proc(
 /// |---|---|---|
 /// | A | SHOW / HIDE | IME 候補 window の出現 |
 /// | B | STATECHANGE / NAMECHANGE / VALUECHANGE | オブジェクト状態変化 |
-/// | C | TEXTSELECTIONCHANGED | キャレット・選択変化（composition 中に発火する可能性） |
-/// | D | IME_START / IME_CHANGE / IME_END | IME composition 専用 |
-///
-/// `WINEVENT_OUTOFCONTEXT` のため全コールバックはメッセージループ上で実行される。
-/// DLL injection 不要。
+/// OBJ_NAMECHANGE WinEvent をフックし、WezTerm の CASCADIA ウィンドウの
+/// 名前変更を `OBS_FOCUS_NAMECHANGE_SEQ` に記録する。
+/// `wait_for_tsf_cold_settle` がこのカウンタを early-exit シグナルとして使う。
 fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
-
-    // (min_event, max_event, label) のリスト
-    let ranges: &[(u32, u32, &str)] = &[
-        (EVENT_OBJECT_SHOW,                 EVENT_OBJECT_HIDE,                 "SHOW..HIDE"),
-        (EVENT_OBJECT_STATECHANGE,          EVENT_OBJECT_STATECHANGE,          "STATECHANGE"),
-        (EVENT_OBJECT_NAMECHANGE,           EVENT_OBJECT_NAMECHANGE,           "NAMECHANGE"),
-        (EVENT_OBJECT_VALUECHANGE,          EVENT_OBJECT_VALUECHANGE,          "VALUECHANGE"),
-        (EVENT_OBJECT_TEXTSELECTIONCHANGED, EVENT_OBJECT_TEXTSELECTIONCHANGED, "TEXTSELECTIONCHANGED"),
-        (EVENT_OBJECT_IME_START,            EVENT_OBJECT_IME_END,              "IME_START..END"),
-    ];
-
-    let mut guards = Vec::new();
-    for &(min_ev, max_ev, label) in ranges {
-        let hook = unsafe {
-            SetWinEventHook(
-                min_ev, max_ev,
-                None,
-                Some(observation_event_proc),
-                0, 0,
-                WINEVENT_OUTOFCONTEXT,
-            )
-        };
-        if hook.is_invalid() {
-            log::warn!("[obs-hook] failed to install hook for {label}");
-        } else {
-            log::info!("[obs-hook] installed: {label} (0x{min_ev:04x}..0x{max_ev:04x})");
-            guards.push(WinEventHookGuard(hook));
-        }
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_NAMECHANGE,
+            EVENT_OBJECT_NAMECHANGE,
+            None,
+            Some(observation_event_proc),
+            0, 0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if hook.is_invalid() {
+        log::warn!("[obs-hook] failed to install NAMECHANGE hook");
+        vec![]
+    } else {
+        vec![WinEventHookGuard(hook)]
     }
-    guards
 }
 
-/// WinEvent 観察コールバック（全フックが共有、メッセージループ上で実行）
-///
-/// 観測目的: warmup F2 送信後にどのイベントが何 ms 後に発火するかを記録する。
-/// ここでは composition_warm の変更は行わない（観察のみ）。
+/// OBJ_NAMECHANGE コールバック。CASCADIA ウィンドウの名前変更を `OBS_FOCUS_NAMECHANGE_SEQ` に記録する。
 unsafe extern "system" fn observation_event_proc(
     _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
-    event: u32,
+    _event: u32,
     hwnd: HWND,
     id_object: i32,
-    id_child: i32,
+    _id_child: i32,
     _event_thread: u32,
-    event_time: u32,
+    _event_time: u32,
 ) {
-    // イベント名
-    let event_name = obs_event_name(event);
-    // OBJID 名（-4=CLIENT, -8=CARET 等。正値は UIA native object）
-    let objid_name = obs_objid_name(id_object);
-
-    // hwnd のクラス名（IME window, WezTerm, etc. の識別）
-    let class = obs_hwnd_class(hwnd);
-
-    // warmup F2 送信からの経過時間
-    // PROBE_ACTIVE=true の間は APP.get_mut() が外側で保持されているため
-    // APP.get_ref() を呼ぶと aliasing になる → atomic 版で代替する。
-    let (warmup_elapsed, composition_warm) =
-        if awase_windows::PROBE_ACTIVE.load(Ordering::Relaxed) {
-            let sent_ms = OBS_WARMUP_SENT_MS.load(Ordering::Relaxed);
-            let now_ms = hook::current_tick_ms();
-            let elapsed = if sent_ms == 0 { None } else { Some(now_ms.saturating_sub(sent_ms)) };
-            (elapsed, false)
-        } else {
-            APP.get_ref()
-                .map(|app| {
-                    let sent_ms = app.executor.platform.output.eager_warmup_sent_ms();
-                    let now_ms = hook::current_tick_ms();
-                    let elapsed = if sent_ms == 0 {
-                        None
-                    } else {
-                        Some(now_ms.saturating_sub(sent_ms))
-                    };
-                    let warm = app.executor.platform.output.is_composition_warm();
-                    (elapsed, warm)
-                })
-                .unwrap_or((None, false))
-        };
-
-    let elapsed_str = match warmup_elapsed {
-        Some(ms) => format!("{ms}ms after warmup"),
-        None     => "no-warmup".to_string(),
-    };
-
-    // WezTerm WINDOW OBJ_NAMECHANGE: 連番付きで専用ログを出す（~250ms シグナル追跡用）
-    const EVENT_OBJ_NAMECHANGE: u32 = 0x800C;
-    const EVENT_OBJ_SHOW: u32 = 0x8002;
     const OBJID_WINDOW: i32 = 0;
-
-    if event == EVENT_OBJ_NAMECHANGE && id_object == OBJID_WINDOW
-        && class.contains("CASCADIA")
-    {
+    if id_object != OBJID_WINDOW {
+        return;
+    }
+    let class = hwnd_class_name(hwnd);
+    if class.contains("CASCADIA") {
         let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-        log::debug!(
-            "[obs-wez-nc] #{seq} {elapsed_str} warm={composition_warm}",
-        );
-    }
-
-    // GoogleJapaneseInputCandidateWindow OBJ_SHOW: 送信完了からの delta を付加
-    if event == EVENT_OBJ_SHOW && class == "GoogleJapaneseInputCandidateWindow" {
-        let send_ms = OBS_LAST_SEND_MS.load(Ordering::Relaxed);
-        let now_ms = hook::current_tick_ms();
-        let after_send_str = if send_ms != 0 {
-            format!(" {}ms-after-send", now_ms.saturating_sub(send_ms))
-        } else {
-            " no-send-ref".to_string()
-        };
-        log::debug!(
-            "[obs-candidate] {elapsed_str}{after_send_str} warm={composition_warm}",
-        );
-    }
-
-    log::debug!(
-        "[obs] {event_name} obj={objid_name} child={id_child} \
-        class={class} hwnd={hwnd:?} time={event_time} \
-        {elapsed_str} warm={composition_warm}"
-    );
-}
-
-/// WinEvent ID → 人間が読める名前
-fn obs_event_name(event: u32) -> &'static str {
-    match event {
-        0x8002 => "OBJ_SHOW",
-        0x8003 => "OBJ_HIDE",
-        0x8004 => "OBJ_REORDER",
-        0x8005 => "OBJ_FOCUS",
-        0x8006 => "OBJ_SELECTION",
-        0x800A => "OBJ_STATECHANGE",
-        0x800B => "OBJ_LOCATIONCHANGE",
-        0x800C => "OBJ_NAMECHANGE",
-        0x800D => "OBJ_DESCRIPTIONCHANGE",
-        0x800E => "OBJ_VALUECHANGE",
-        0x800F => "OBJ_PARENTCHANGE",
-        0x8013 => "OBJ_INVOKED",
-        0x8014 => "OBJ_TEXTSELECTIONCHANGED",
-        0x8015 => "OBJ_CONTENTSCROLLED",
-        0x8026 => "IME_START",
-        0x8027 => "IME_CHANGE",
-        0x8028 => "IME_END",
-        _ => "OBJ_OTHER",
+        log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
     }
 }
 
-/// OBJID 値 → 人間が読める名前（id_object は i32）
-fn obs_objid_name(id_object: i32) -> &'static str {
-    match id_object {
-        0  => "WINDOW",
-        -1 => "SYSMENU",
-        -2 => "TITLEBAR",
-        -3 => "MENU",
-        -4 => "CLIENT",
-        -5 => "VSCROLL",
-        -6 => "HSCROLL",
-        -7 => "SIZEGRIP",
-        -8 => "CARET",
-        -9 => "CURSOR",
-        _ if id_object > 0 => "UIA_NATIVE",
-        _ => "OTHER",
-    }
-}
-
-/// HWND のウィンドウクラス名を取得（取得失敗時は空文字）
-fn obs_hwnd_class(hwnd: HWND) -> String {
+/// HWND のウィンドウクラス名を取得する。
+fn hwnd_class_name(hwnd: HWND) -> String {
     if hwnd.0.is_null() {
-        return "(null)".to_string();
+        return String::new();
     }
     let mut buf = [0u16; 128];
     let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
     if len > 0 {
         String::from_utf16_lossy(&buf[..len as usize])
     } else {
-        "(unknown)".to_string()
-    }
-}
-
-// ── UIA TextChanged 観察スレッド ─────────────────────────────────────────────
-
-/// UIA `TextEdit_TextChanged` / `Text_TextChanged` イベントを別スレッドで観察する。
-///
-/// COM MTA アパートメント上でルート要素に対してサブツリー全体を監視するため、
-/// WezTerm を含む全アプリの UIA テキスト変化イベントを受け取れる。
-///
-/// DLL injection 不要。イベントは COM スレッドプールスレッドで配信される。
-///
-/// ログキーワード: `[uia-obs]`
-fn install_uia_observer() {
-    std::thread::spawn(|| {
-        if let Err(e) = run_uia_observer() {
-            log::warn!("[uia-obs] observer thread exited with error: {e:?}");
-        }
-    });
-}
-
-fn run_uia_observer() -> windows::core::Result<()> {
-    use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
-    };
-    use windows::Win32::UI::Accessibility::{
-        CUIAutomation, IUIAutomation, TreeScope_Subtree,
-        UIA_TextEdit_TextChangedEventId, UIA_Text_TextChangedEventId,
-    };
-
-    unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED).ok()?;
-    }
-    log::info!("[uia-obs] COM initialized (MTA)");
-
-    let uia: IUIAutomation = unsafe {
-        CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?
-    };
-    let root = unsafe { uia.GetRootElement()? };
-    log::info!("[uia-obs] IUIAutomation created, root element acquired");
-
-    // TextEdit_TextChanged: IME/autocorrect 向け（Windows 10 以降）
-    let h1: windows::Win32::UI::Accessibility::IUIAutomationEventHandler =
-        UiaTextChangedHandler { label: "TextEdit_TextChanged" }.into();
-    match unsafe {
-        uia.AddAutomationEventHandler(
-            UIA_TextEdit_TextChangedEventId,
-            &root,
-            TreeScope_Subtree,
-            None,
-            &h1,
-        )
-    } {
-        Ok(()) => log::info!("[uia-obs] TextEdit_TextChanged handler registered (eventid={})", UIA_TextEdit_TextChangedEventId.0),
-        Err(e) => log::warn!("[uia-obs] TextEdit_TextChanged register failed: {e:?}"),
-    }
-
-    // Text_TextChanged: 通常テキスト変化（汎用）
-    let h2: windows::Win32::UI::Accessibility::IUIAutomationEventHandler =
-        UiaTextChangedHandler { label: "Text_TextChanged" }.into();
-    match unsafe {
-        uia.AddAutomationEventHandler(
-            UIA_Text_TextChangedEventId,
-            &root,
-            TreeScope_Subtree,
-            None,
-            &h2,
-        )
-    } {
-        Ok(()) => log::info!("[uia-obs] Text_TextChanged handler registered (eventid={})", UIA_Text_TextChangedEventId.0),
-        Err(e) => log::warn!("[uia-obs] Text_TextChanged register failed: {e:?}"),
-    }
-
-    // ハンドラをライブに保ちつつ QUIT_REQUESTED を監視する。
-    // MTA の場合、イベントは COM スレッドプールから直接コールバックされるため
-    // このスレッドはスリープで OK（メッセージポンプ不要）。
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        if QUIT_REQUESTED.load(Ordering::Relaxed) {
-            log::info!("[uia-obs] QUIT_REQUESTED → removing handlers");
-            let _ = unsafe { uia.RemoveAllEventHandlers() };
-            break;
-        }
-    }
-    Ok(())
-}
-
-/// UIA テキスト変化イベントハンドラ（COM スレッドプールスレッドで呼ばれる）
-#[windows::core::implement(
-    windows::Win32::UI::Accessibility::IUIAutomationEventHandler
-)]
-struct UiaTextChangedHandler {
-    label: &'static str,
-}
-
-impl windows::Win32::UI::Accessibility::IUIAutomationEventHandler_Impl
-    for UiaTextChangedHandler_Impl
-{
-    fn HandleAutomationEvent(
-        &self,
-        sender: Option<&windows::Win32::UI::Accessibility::IUIAutomationElement>,
-        eventid: windows::Win32::UI::Accessibility::UIA_EVENT_ID,
-    ) -> windows::core::Result<()> {
-        let now_ms = unsafe {
-            windows::Win32::System::SystemInformation::GetTickCount64()
-        };
-        let warmup_ms = OBS_WARMUP_SENT_MS.load(Ordering::Relaxed);
-        let elapsed_str = if warmup_ms > 0 {
-            format!("{}ms after warmup", now_ms.saturating_sub(warmup_ms))
-        } else {
-            "no-warmup".to_string()
-        };
-
-        // 送信元の hwnd クラス名（可能な場合）
-        let class = sender
-            .and_then(|el| unsafe { el.CurrentNativeWindowHandle().ok() })
-            .map(|hwnd| obs_hwnd_class(HWND(hwnd.0 as _)))
-            .unwrap_or_default();
-
-        log::debug!(
-            "[uia-obs] {} eventid={} {elapsed_str} class={class}",
-            self.this.label,
-            eventid.0,
-        );
-        Ok(())
+        String::new()
     }
 }
 

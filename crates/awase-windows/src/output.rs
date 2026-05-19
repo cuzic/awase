@@ -375,7 +375,6 @@ impl Output {
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
         self.last_cold_reason.set(reason);
-        crate::OBS_WARMUP_SENT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -405,7 +404,6 @@ impl Output {
         self.focus_epoch.set(new_epoch);
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
-        crate::OBS_WARMUP_SENT_MS.store(0, std::sync::atomic::Ordering::Relaxed);
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
@@ -459,11 +457,7 @@ impl Output {
             );
         }
         let ms = crate::hook::current_tick_ms();
-        // mark_composition_cold が常に eager_warmup_sent_ms=0 にリセットするため、
-        // ここは常に新しいタイムスタンプをセットする。
         self.eager_warmup_sent_ms.set(ms);
-        // UIA コールバックスレッドからも参照できるよう AtomicU64 に同期する。
-        crate::OBS_WARMUP_SENT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
         log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
     }
 
@@ -1101,11 +1095,6 @@ impl Output {
         }
 
         self.mark_composition_warm();
-        // [観察用] 送信完了時刻を記録（GoogleJapaneseInputCandidateWindow OBJ_SHOW との delta 計算用）
-        crate::OBS_LAST_SEND_MS.store(
-            crate::hook::current_tick_ms(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
