@@ -800,22 +800,54 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
         let probe = unsafe { ime::fast_ime_probe() };
         app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
-        // Warmup-in-flight guard: VK_DBE_HIRAGANA 送信後 300ms 以内に imc_open=false が
-        // 返された場合は GJI がまだ処理中（false-negative）の可能性が高い。
-        // この間は ime_on=false を信用せず、既存の状態を維持する（None 扱い）。
-        // 300ms = FocusChange の probe_min_ms（GJI が最初の I/O を開始するまでの実測下限）。
+
+        // ── imc_open=false の false-negative 抑制ガード ──
+        //
+        // FocusChange 直後は GJI が新しいウィンドウの IME context を初期化中のため、
+        // imc_open=false が一時的に返される。3つのシグナルで抑制を判断する。
+        //
+        // Signal 1 (TSF warmup in-flight): VK_DBE_HIRAGANA 送信後 300ms 以内
+        //   → WezTerm など TSF モードで warmup が GJI に届いていない間
+        //
+        // Signal 2 (GJI I/O activity after focus change):
+        //   OBS_GJI_LAST_IO_MS > last_focus_change_ms かつ GJI idle < 300ms
+        //   → Edge など非TSFモードでも GJI が focus change を処理中の間
+        //   → VK_DBE_HIRAGANA を送らないアプリでも有効
+        //
+        // Signal 3 (shadow ON + 直後): shadow_ime_on=true かつ FocusProbe が
+        //   focus change から 200ms 以内 (GJI が I/O を開始する前の段階も保護)
+        //
+        // これら3つは OR 条件: どれか1つでも真なら抑制する。
         const WARMUP_GRACE_MS: u64 = 300;
+        const GJI_SETTLE_GRACE_MS: u64 = 300;
+        const SHADOW_GRACE_MS: u64 = 200;
+
+        let now_ms = hook::current_tick_ms();
+
+        // Signal 1: TSF warmup in-flight
         let warmup_ms = app.executor.platform.output.eager_warmup_sent_ms();
-        let warmup_elapsed = if warmup_ms > 0 {
-            hook::current_tick_ms().saturating_sub(warmup_ms)
-        } else {
-            u64::MAX
-        };
-        let mut warmup_suppressed = false;
+        let warmup_elapsed = if warmup_ms > 0 { now_ms.saturating_sub(warmup_ms) } else { u64::MAX };
+        let sig1_warmup = warmup_elapsed < WARMUP_GRACE_MS;
+
+        // Signal 2: GJI I/O が focus change 後に発生し、まだ settling 中
+        let gji_last_io_ms = awase_windows::tsf_observations::OBS_GJI_LAST_IO_MS
+            .load(Ordering::Relaxed);
+        let gji_active_after_focus =
+            gji_last_io_ms > 0 && gji_last_io_ms >= app.platform_state.last_focus_change_ms;
+        let gji_idle_ms = if gji_last_io_ms > 0 { now_ms.saturating_sub(gji_last_io_ms) } else { u64::MAX };
+        let sig2_gji = gji_active_after_focus && gji_idle_ms < GJI_SETTLE_GRACE_MS;
+
+        // Signal 3: shadow_on かつ focus change 直後（GJI I/O 開始前段階も保護）
+        let shadow_on = app.executor.platform.output.shadow_ime_on();
+        let sig3_shadow = shadow_on && probe_age_ms < SHADOW_GRACE_MS;
+
+        let mut suppressed = false;
+        let mut suppress_reason = "";
         if let Some(on) = probe.ime_on {
             let effective = on && probe.is_japanese_ime;
-            if !effective && warmup_elapsed < WARMUP_GRACE_MS {
-                warmup_suppressed = true;
+            if !effective && (sig1_warmup || sig2_gji || sig3_shadow) {
+                suppressed = true;
+                suppress_reason = if sig1_warmup { "warmup" } else if sig2_gji { "gji-io" } else { "shadow" };
             } else {
                 // OS 観測値を別フィールドに記録（ユーザー意図と分離）
                 app.platform_state.os_ime_on = Some(effective);
@@ -856,29 +888,33 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
         // [診断] probe 結果をまとめてログ出力。
         // - "stale" = probe が None を返し前のウィンドウの値が残っている
-        // - "warmup" = warmup in-flight のため imc_open=false を抑制した
-        // - この場合、次の ObserverPoll まで誤った状態で動作する可能性がある
+        // - "(suppressed:reason)" = false-negative を抑制した
         let ime_on_after_probe = app.platform_state.preconditions.ime_on;
         let input_mode_after_probe = app.platform_state.preconditions.input_mode;
-        let ime_on_suffix = if warmup_suppressed {
-            format!("(warmup-suppressed,{warmup_elapsed}ms)")
+        let ime_on_suffix = if suppressed {
+            let detail = match suppress_reason {
+                "warmup" => format!("warmup:{warmup_elapsed}ms"),
+                "gji-io" => format!("gji-io:{gji_idle_ms}ms"),
+                _ => format!("shadow:{probe_age_ms}ms"),
+            };
+            format!("(suppressed:{detail})")
         } else if probe.ime_on.is_none() {
             "(stale)".to_string()
         } else {
             String::new()
         };
         log::info!(
-            "FocusProbe +{}ms: ime_on={}{} mode={:?}{}",
+            "FocusProbe +{}ms: ime_on={}{} mode={:?}{} [gji_io={}ms sig1={sig1_warmup} sig2={sig2_gji} sig3={sig3_shadow}]",
             probe_age_ms,
             ime_on_after_probe,
             ime_on_suffix,
             input_mode_after_probe,
             if probe.is_romaji.is_none() { "(stale)" } else { "" },
+            if gji_idle_ms == u64::MAX { "never".to_string() } else { gji_idle_ms.to_string() },
         );
-        if warmup_suppressed {
+        if suppressed {
             log::debug!(
-                "FocusProbe: imc_open=false を抑制 (warmup {warmup_elapsed}ms < {WARMUP_GRACE_MS}ms) \
-                 — Engine deactivation を防止"
+                "FocusProbe: imc_open=false を抑制 (reason={suppress_reason}) — Engine deactivation を防止"
             );
         } else if probe.ime_on.is_none() {
             log::warn!(

@@ -419,6 +419,13 @@ impl Output {
         self.eager_warmup_sent_ms.get()
     }
 
+    /// シャドウ IME ON 状態を返す。
+    /// FocusChange / notify_ime_open() で更新される。
+    #[must_use]
+    pub fn shadow_ime_on(&self) -> bool {
+        self.shadow_ime_on.get()
+    }
+
     /// 最後の `send_keys` 完了からの経過時間（ms）。
     /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]
