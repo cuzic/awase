@@ -521,14 +521,17 @@ impl Output {
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
         crate::OBS_FOCUS_NAMECHANGE_SEQ.store(0, std::sync::atomic::Ordering::Relaxed);
-        const VK_IME_ON: u16 = 0x16;
-        let ime_on_inputs = [
-            make_tsf_key_input(VK_IME_ON, false),
-            make_tsf_key_input(VK_IME_ON, true),
+        // VK_DBE_HIRAGANA (F2) を送信: VK_IME_ON (0x16) は IME ON 状態をセットするだけで
+        // TSF composition context の初期化をトリガーしない。WezTerm は物理 F2 受信時に
+        // TSF composition を初期化するため、同等の VK_DBE_HIRAGANA を送る必要がある。
+        const VK_DBE_HIRAGANA: u16 = 0xF2;
+        let warmup_inputs = [
+            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+            make_tsf_key_input(VK_DBE_HIRAGANA, true),
         ];
         unsafe {
             SendInput(
-                &ime_on_inputs,
+                &warmup_inputs,
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
@@ -538,7 +541,7 @@ impl Output {
         self.eager_warmup_sent_ms.set(ms);
         // UIA コールバックスレッドからも参照できるよう AtomicU64 に同期する。
         crate::OBS_WARMUP_SENT_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
-        log::debug!("[tsf-eager-warmup] VK_IME_ON 送信, eager_warmup_sent_ms={ms}ms");
+        log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
@@ -959,13 +962,13 @@ impl Output {
             // composition state を検出できない（IMM32 HIMC に propagate されない）。
             // 固定 sleep を使用するが、eager warmup から十分時間が経過している場合は
             // TSF が確実に初期化済みのため即送信する。
-            // FocusChange 等で eager VK_IME_ON を送信済み + eager_settle_ms 以上経過 → 即送信
+            // FocusChange 等で eager VK_DBE_HIRAGANA を送信済み + eager_settle_ms 以上経過 → 即送信
             // eager 送信済みだが未到達 → 残り時間だけ sleep
-            // eager なし → VK_IME_ON warmup + probe (2連送) で TSF 初期化を同期
-            const VK_IME_ON: u16 = 0x16;
+            // eager なし → VK_DBE_HIRAGANA warmup + probe (2連送) で TSF 初期化を同期
+            const VK_DBE_HIRAGANA: u16 = 0xF2;
             // ColdReason に応じてウォームアップ待機時間を決定:
             //   FocusChange / SetOpenTrue / NativeF2Consumed:
-            //     awase が物理キーを消費して VK_IME_ON を代わりに送るため、
+            //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
             //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる → 1000ms
             //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
             let eager_settle_ms: u64 = match self.last_cold_reason.get() {
@@ -975,7 +978,7 @@ impl Output {
                 _ => 500,
             };
             // ColdReason に応じた probe 最小待機時間（warmup_sent_ms 起点）:
-            //   VK_IME_ON がキューに入ってから GJI が最初の I/O を開始するまでの
+            //   VK_DBE_HIRAGANA がキューに入ってから GJI が最初の I/O を開始するまでの
             //   実測下限。この時間内は GJI I/O 監視結果を信頼しない。
             let probe_min_ms: u64 = match self.last_cold_reason.get() {
                 ColdReason::FocusChange
@@ -994,9 +997,9 @@ impl Output {
             // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
             // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
             // TSF が cold なまま 'd' 等が literal になる（dえーた バグ）。
-            // fresh な VK_IME_ON を送信して eager_warmup_sent_ms を更新し、500ms 待機を強制する。
+            // fresh な VK_DBE_HIRAGANA を送信して eager_warmup_sent_ms を更新し、500ms 待機を強制する。
             if session_expired {
-                log::debug!("[h1-warmup] session expired → fresh VK_IME_ON 送信 (500ms待機を強制)");
+                log::debug!("[h1-warmup] session expired → fresh VK_DBE_HIRAGANA 送信 (500ms待機を強制)");
                 self.send_eager_tsf_warmup();
             }
 
@@ -1019,7 +1022,7 @@ impl Output {
                     // eager_settle_ms 以上経過しているが、GJI は WM_SETFOCUS の遅延処理
                     // (メッセージキュー滞留 500-900ms) で TSF context を再初期化することがある。
                     // FocusChange / SetOpenTrue の場合はこの再初期化レースが発生しやすいため、
-                    // 新規 VK_IME_ON を送って再び 500ms 待機する。
+                    // 新規 VK_DBE_HIRAGANA を送って再び 500ms 待機する。
                     // PassthroughConfirmKey 等の composition-only reset では不要。
                     let needs_re_warmup = matches!(
                         self.last_cold_reason.get(),
@@ -1030,8 +1033,8 @@ impl Output {
                             "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 再warmup (GJI 再初期化レース対策)",
                         );
                         let refresh_inputs = [
-                            make_tsf_key_input(VK_IME_ON, false),
-                            make_tsf_key_input(VK_IME_ON, true),
+                            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                            make_tsf_key_input(VK_DBE_HIRAGANA, true),
                         ];
                         unsafe {
                             SendInput(
@@ -1074,16 +1077,16 @@ impl Output {
                     );
                 }
             } else {
-                // 投機的プローブ: VK_IME_ON (冪等) を2連送する。
-                // 1回目 (warmup): TSF composition context 初期化をトリガー
+                // 投機的プローブ: VK_DBE_HIRAGANA (F2相当) を2連送する。
+                // 1回目 (warmup): TSF composition context 初期化をトリガー（VK_IME_ON では不足）
                 // 2回目 (probe):  WezTerm が 1回目を処理済みであることを FIFO で保証
-                // VK_IME_ON は既に ON なら何もしない（トグルしない）ため BS 不要。
-                log::debug!("[h1-warmup] cold={cold_n} non-eager: VK_IME_ON warmup+probe 送信");
+                // VK_DBE_HIRAGANA はひらがなモードへの切替のため、既にひらがななら実質冪等。
+                log::debug!("[h1-warmup] cold={cold_n} non-eager: VK_DBE_HIRAGANA warmup+probe 送信");
                 let ime_on_probe = [
-                    make_tsf_key_input(VK_IME_ON, false),
-                    make_tsf_key_input(VK_IME_ON, true),
-                    make_tsf_key_input(VK_IME_ON, false),
-                    make_tsf_key_input(VK_IME_ON, true),
+                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
                 ];
                 let t_pre = crate::hook::current_tick_ms();
                 unsafe {
@@ -1094,7 +1097,7 @@ impl Output {
                 }
                 let elapsed = crate::hook::current_tick_ms().saturating_sub(t_pre);
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
-                // VK_IME_ON 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
+                // VK_DBE_HIRAGANA 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
                 // GJI I/O モニターが利用可能なら静止検出、なければ固定 sleep。
                 let probe_sent_ms = crate::hook::current_tick_ms();
                 crate::tsf_observations::TsfReadinessProbe::new(
