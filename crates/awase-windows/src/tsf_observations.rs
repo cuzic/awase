@@ -50,7 +50,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
 };
-use windows::Win32::UI::Shell::SHGetKnownFolderPath;
+use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KNOWN_FOLDER_FLAG};
 use windows::core::{GUID, PCWSTR};
 
 // ── グローバル観測値（バックグラウンドスレッド → ロジックスレッド）──
@@ -244,7 +244,7 @@ fn find_gji_dir() -> Option<std::path::PathBuf> {
     };
 
     let base: Option<std::path::PathBuf> = unsafe {
-        SHGetKnownFolderPath(&FOLDERID_LOCAL_APP_DATA_LOW, 0, None)
+        SHGetKnownFolderPath(&FOLDERID_LOCAL_APP_DATA_LOW, KNOWN_FOLDER_FLAG(0), None)
     }
     .ok()
     .and_then(|pwstr| {
