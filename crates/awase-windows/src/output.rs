@@ -1367,19 +1367,16 @@ const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT 
 ///
 /// fresh F2 送信直後に呼ぶ。2つのシグナルを MsgWaitForMultipleObjects でポンプしながら待つ:
 ///
-/// **Signal 1 — OBJ_NAMECHANGE**（WezTerm 専用）
+/// **Signal 1 — OBJ_NAMECHANGE**（early-exit の唯一のパス）
 /// WezTerm はひらがなモード切替をタイトルに反映する (~125ms)。最も確実。
+/// このイベント以外では full timeout まで待機する。
 ///
-/// **Signal 2 — WM_NULL ACK + EXTRA_SETTLE_MS**（任意アプリ向け）
-/// fresh F2 直後に `SendMessageCallbackW(WM_NULL)` を非同期送信する。
-/// 対象アプリが WM_NULL を dispatch した瞬間 = F2 が message loop を通過した直後。
-/// その時点から EXTRA_SETTLE_MS 経過したら GJI 非同期初期化完了と推定して抜ける。
-/// OBJ_NAMECHANGE を発火しないアプリでの固定 sleep を排除する。
-///
-/// **EXTRA_SETTLE_MS の決め方**
-/// `wm_null_ack_ms` と `namechange_ms` の差 = GJI 非同期初期化時間。
-/// ログの `[tsf-settle] WM_NULL ACK … nc_delta=Xms` でこれを計測し、
-/// 余裕を持たせた値を設定する（実測 ~120ms → 125ms 設定）。
+/// **WM_NULL ACK（診断専用、early-exit には使わない）**
+/// `SendMessageCallbackW(WM_NULL)` は QS_SENDMESSAGE 優先度で処理されるため、
+/// `SendInput(F2)` の QS_INPUT より先に dispatch される。
+/// つまり WM_NULL ACK は「F2 が処理される前」に届く偽陽性シグナルであり、
+/// "F2 が message loop を通過した" 証拠にはならない。
+/// WM_NULL は `nc_delta` 計測（診断ログ）にのみ使用する。
 ///
 /// # Re-entrancy safety
 /// `PROBE_ACTIVE=true` を設定。フックコールバックは APP 未アクセスで即 PassThrough。
@@ -1395,19 +1392,12 @@ fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
         SendMessageCallbackW, MSG, PM_REMOVE, QS_ALLINPUT, WM_NULL,
     };
 
-    // WM_NULL ACK から追加で待つ時間。
-    // WezTerm の実測: OBJ_NAMECHANGE は F2 dispatch から ~120ms 後。
-    // WM_NULL ACK ≈ F2 dispatch なので EXTRA_SETTLE_MS ≈ 120ms が目安。
-    // 余裕を 5ms 乗せて 125ms とする。
-    const EXTRA_SETTLE_MS: u64 = 125;
-
     crate::PROBE_ACTIVE.store(true, Relaxed);
     crate::OBS_WM_NULL_ACK_MS.store(0, Relaxed);
 
-    // fresh F2 の直後（SendInput の後）に WM_NULL を非同期送信する。
-    // SendInput と WM_NULL は同じ対象アプリのキューに FIFO で積まれるため、
-    // WM_NULL ACK = 「F2 が対象 message loop を通過した」ことの確認になる。
-    // SendMessageCallbackW は即返り（非ブロッキング）。コールバックは PeekMessage 時に発火。
+    // fresh F2 の直後に WM_NULL を非同期送信する（診断ログ用）。
+    // QS_SENDMESSAGE > QS_INPUT のため WM_NULL ACK は F2 より先に届く偽陽性シグナルであり、
+    // early-exit には使わない。nc_delta の計測にのみ利用する。
     let focused_hwnd = unsafe { GetForegroundWindow() };
     let wm_null_sent = !focused_hwnd.0.is_null()
         && unsafe {
@@ -1422,28 +1412,21 @@ fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
         }
         .is_ok();
     if !wm_null_sent {
-        log::debug!("[tsf-settle] SendMessageCallbackW(WM_NULL) 失敗（フォールバック: NAMECHANGE のみ）");
+        log::debug!("[tsf-settle] SendMessageCallbackW(WM_NULL) 失敗");
     }
 
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(u64::from(timeout_ms));
-    let mut wm_null_settle_at: Option<std::time::Instant> = None;
+    let mut wm_null_ack_logged = false;
 
     let (settled, settle_reason) = loop {
         let now = std::time::Instant::now();
 
         // ── 終了条件チェック ──
 
-        // Signal 1: OBJ_NAMECHANGE（WezTerm: ~125ms, 最も確実）
+        // Signal 1: OBJ_NAMECHANGE（唯一の early-exit パス）
         if crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline {
             break (true, "OBJ_NAMECHANGE");
-        }
-
-        // Signal 2: WM_NULL ACK + EXTRA_SETTLE_MS 経過
-        if let Some(settle_at) = wm_null_settle_at {
-            if now >= settle_at {
-                break (true, "WM_NULL+settle");
-            }
         }
 
         // タイムアウト
@@ -1452,13 +1435,9 @@ fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
             break (false, "timeout");
         }
 
-        // ── 待機時間の決定 ──
-        // WM_NULL ACK 待ち中なら EXTRA_SETTLE_MS の残り時間も上限にする
-        let wait_cap = wm_null_settle_at
-            .map(|at| at.saturating_duration_since(now))
-            .unwrap_or(remaining);
+        // ── 待機 ──
         #[allow(clippy::cast_possible_truncation)]
-        let wait_ms = remaining.min(wait_cap).as_millis().min(u128::from(u32::MAX)) as u32;
+        let wait_ms = remaining.as_millis().min(u128::from(u32::MAX)) as u32;
         let wait_ms = wait_ms.max(1);
 
         let ret: WAIT_EVENT =
@@ -1475,18 +1454,10 @@ fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
             // drain only
         }
 
-        // WM_NULL ACK が届いたか確認（PeekMessage で発火したはず）
-        if wm_null_settle_at.is_none() {
-            let ack_ms = crate::OBS_WM_NULL_ACK_MS.load(Relaxed);
-            if ack_ms != 0 {
-                let settle_at = std::time::Instant::now()
-                    + std::time::Duration::from_millis(EXTRA_SETTLE_MS);
-                wm_null_settle_at = Some(settle_at);
-                log::debug!(
-                    "[tsf-settle] WM_NULL ACK 受信 → {}ms 後に settle 判定",
-                    EXTRA_SETTLE_MS,
-                );
-            }
+        // WM_NULL ACK を診断ログに一度だけ記録（early-exit には使わない）
+        if !wm_null_ack_logged && crate::OBS_WM_NULL_ACK_MS.load(Relaxed) != 0 {
+            wm_null_ack_logged = true;
+            log::debug!("[tsf-settle] WM_NULL ACK 受信（診断のみ、early-exit なし）");
         }
     };
 
