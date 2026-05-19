@@ -1102,7 +1102,12 @@ impl Output {
                     if !probe_settled && gji_monitor_ok {
                         // GJI は監視できているが warmup 後の活動なし → probe timeout。
                         // TSF context が stale の可能性があるため fresh F2 で再初期化。
-                        const REFRESH_SETTLE_MS: u64 = 50;
+                        //
+                        // WezTerm は VK_DBE_HIRAGANA を受け取ってから OBJ_NAMECHANGE を発火するまで
+                        // 実測〜125ms かかる（WezTerm がひらがなモード切替を反映するタイミング）。
+                        // この 125ms が経過する前に romaji が届くと先頭 1 文字が literal になる。
+                        // 200ms は 125ms + 余裕 75ms。
+                        const REFRESH_SETTLE_MS: u64 = 200;
                         log::debug!(
                             "[h1-warmup] cold={cold_n} probe timeout (no GJI activity) → fresh F2 before romaji (+{REFRESH_SETTLE_MS}ms)",
                         );
