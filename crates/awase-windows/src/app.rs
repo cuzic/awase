@@ -800,20 +800,36 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
         let probe = unsafe { ime::fast_ime_probe() };
         app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
+        // Warmup-in-flight guard: VK_DBE_HIRAGANA 送信後 300ms 以内に imc_open=false が
+        // 返された場合は GJI がまだ処理中（false-negative）の可能性が高い。
+        // この間は ime_on=false を信用せず、既存の状態を維持する（None 扱い）。
+        // 300ms = FocusChange の probe_min_ms（GJI が最初の I/O を開始するまでの実測下限）。
+        const WARMUP_GRACE_MS: u64 = 300;
+        let warmup_ms = app.executor.platform.output.eager_warmup_sent_ms();
+        let warmup_elapsed = if warmup_ms > 0 {
+            hook::current_tick_ms().saturating_sub(warmup_ms)
+        } else {
+            u64::MAX
+        };
+        let mut warmup_suppressed = false;
         if let Some(on) = probe.ime_on {
             let effective = on && probe.is_japanese_ime;
-            // OS 観測値を別フィールドに記録（ユーザー意図と分離）
-            app.platform_state.os_ime_on = Some(effective);
-            let ms = hook::current_tick_ms();
-            // 観測値を ImeObservations に記録（フィルタリングは resolve_and_clear() で行う）
-            app.platform_state.ime_observations.focus_probe =
-                Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
-            if effective {
-                // ON の場合は即座に反映（miss_count / guard リセット含む）
-                app.platform_state.preconditions.ime_detect_miss_count = 0;
-                app.platform_state.preconditions.ime_force_on_guard = false;
+            if !effective && warmup_elapsed < WARMUP_GRACE_MS {
+                warmup_suppressed = true;
+            } else {
+                // OS 観測値を別フィールドに記録（ユーザー意図と分離）
+                app.platform_state.os_ime_on = Some(effective);
+                let ms = hook::current_tick_ms();
+                // 観測値を ImeObservations に記録（フィルタリングは resolve_and_clear() で行う）
+                app.platform_state.ime_observations.focus_probe =
+                    Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
+                if effective {
+                    // ON の場合は即座に反映（miss_count / guard リセット含む）
+                    app.platform_state.preconditions.ime_detect_miss_count = 0;
+                    app.platform_state.preconditions.ime_force_on_guard = false;
+                }
+                app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
             }
-            app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
         }
         // ime_on が None の場合（ブラックリストアプリ等）は shadow 値を維持
         //
@@ -840,18 +856,31 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
         // [診断] probe 結果をまとめてログ出力。
         // - "stale" = probe が None を返し前のウィンドウの値が残っている
+        // - "warmup" = warmup in-flight のため imc_open=false を抑制した
         // - この場合、次の ObserverPoll まで誤った状態で動作する可能性がある
         let ime_on_after_probe = app.platform_state.preconditions.ime_on;
         let input_mode_after_probe = app.platform_state.preconditions.input_mode;
+        let ime_on_suffix = if warmup_suppressed {
+            format!("(warmup-suppressed,{warmup_elapsed}ms)")
+        } else if probe.ime_on.is_none() {
+            "(stale)".to_string()
+        } else {
+            String::new()
+        };
         log::info!(
             "FocusProbe +{}ms: ime_on={}{} mode={:?}{}",
             probe_age_ms,
             ime_on_after_probe,
-            if probe.ime_on.is_none() { "(stale)" } else { "" },
+            ime_on_suffix,
             input_mode_after_probe,
             if probe.is_romaji.is_none() { "(stale)" } else { "" },
         );
-        if probe.ime_on.is_none() {
+        if warmup_suppressed {
+            log::debug!(
+                "FocusProbe: imc_open=false を抑制 (warmup {warmup_elapsed}ms < {WARMUP_GRACE_MS}ms) \
+                 — Engine deactivation を防止"
+            );
+        } else if probe.ime_on.is_none() {
             log::warn!(
                 "FocusProbe: ime_on 未検出 — stale値 {} が ObserverPoll まで持続 \
                  [probe_age={}ms, A/B判断: ime_on stale頻度を確認]",
