@@ -87,15 +87,6 @@ pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
 /// これにより MsgWaitForMultipleObjects + PeekMessage ループ中の re-entrancy を防ぐ。
 pub static PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// [probe] WM_NULL ACK を受信した時刻 (GetTickCount64 ms)。0 = 未受信。
-///
-/// `wait_for_tsf_cold_settle()` が fresh F2 直後に `SendMessageCallbackW(WM_NULL)` を送り、
-/// 対象アプリが WM_NULL を dispatch した瞬間（= F2 が message loop を通過した直後）に
-/// `wm_null_ack_proc` が更新する。
-/// F2 dispatch 確認後に一定時間待つことで GJI の非同期初期化完了を推定する。
-pub static OBS_WM_NULL_ACK_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
 // ── PlatformState: シングルスレッド上の全状態を集約 ──
 
 /// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。
