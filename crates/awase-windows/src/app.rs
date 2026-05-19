@@ -104,7 +104,8 @@ impl StartupDiagnostics {
 }
 
 pub fn run() -> Result<()> {
-    init_logging();
+    let debug_console = std::env::args().any(|a| a == "--debug");
+    init_logging(debug_console);
 
     // 多重起動防止: Named Mutex で既存インスタンスをチェック
     unsafe {
@@ -262,32 +263,53 @@ pub fn run() -> Result<()> {
 /// ログ初期化
 ///
 /// `#![windows_subsystem = "windows"]` でコンソールがないため、
-/// ログはファイル（実行ファイルと同じディレクトリの `awase.log`）に出力する。
-fn init_logging() {
+/// ログを初期化する。
+///
+/// `debug_console=false`（通常起動）: 実行ファイルと同じディレクトリの `awase.log` に出力。
+/// `debug_console=true`（`--debug` フラグ）: 親プロセスのコンソール（WezTerm/PowerShell）に
+/// stderr で出力する。ログレベルを debug に上げ、リアルタイムに観察できる。
+fn init_logging(debug_console: bool) {
     let log_path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("awase.log")))
         .unwrap_or_else(|| PathBuf::from("awase.log"));
 
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path);
+    if debug_console {
+        // #![windows_subsystem = "windows"] だとコンソールウィンドウがないため、
+        // 親プロセス（WezTerm / PowerShell 等）のコンソールにアタッチして stderr を有効にする。
+        unsafe {
+            use windows::Win32::System::Console::AttachConsole;
+            const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+        let mut builder = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("debug"),
+        );
+        builder.format_timestamp_millis();
+        builder.target(env_logger::Target::Stderr);
+        builder.init();
+        log::info!("--debug: ログをコンソール(stderr)に出力, レベル=debug");
+    } else {
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path);
 
-    let mut builder =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    builder.format_timestamp_millis();
+        let mut builder =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+        builder.format_timestamp_millis();
 
-    if let Ok(file) = log_file {
-        builder.target(env_logger::Target::Pipe(Box::new(file)));
+        if let Ok(file) = log_file {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+        }
+        // ファイルが開けない場合は stderr フォールバック
+
+        builder.init();
+        log::info!(
+            "Keyboard Layout Emulator starting... (log → {})",
+            log_path.display()
+        );
     }
-    // ファイルが開けない場合は stderr フォールバック
-
-    builder.init();
-    log::info!(
-        "Keyboard Layout Emulator starting... (log → {})",
-        log_path.display()
-    );
 }
 
 /// 設定ファイルを読み込む
