@@ -275,6 +275,9 @@ pub struct ImeSnapshot {
     pub is_romaji: Option<bool>,
     /// 生の conversion mode 値（None = 検出失敗、デバッグ用）
     pub conversion_mode: Option<u32>,
+    /// TSF ネイティブウィンドウのため検出をスキップした（true = IMM32 未使用）。
+    /// タイムアウト等の一時的失敗と区別し、miss_count を増やさないために使う。
+    pub is_tsf_native: bool,
 }
 
 /// `detect_ime_state` をワーカースレッドでタイムアウト付きで実行する。
@@ -294,6 +297,7 @@ pub unsafe fn detect_ime_state_with_timeout(timeout: std::time::Duration) -> Ime
             ime_on: None,
             is_romaji: None,
             conversion_mode: None,
+            is_tsf_native: false,
         }
     })
 }
@@ -340,6 +344,7 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
                 ime_on: None,
                 is_romaji: None,
                 conversion_mode: None,
+                is_tsf_native: true,
             };
         }
     }
@@ -387,6 +392,7 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
         ime_on,
         is_romaji,
         conversion_mode,
+        is_tsf_native: false,
     }
 }
 

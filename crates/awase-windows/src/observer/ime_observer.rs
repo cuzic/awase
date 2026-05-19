@@ -67,6 +67,16 @@ pub unsafe fn observe(preconditions: &mut Preconditions, observations: &mut ImeO
         observations.observer_poll = Some(ImeObs { value: on, ms: now_ms });
         preconditions.ime_detect_miss_count = 0;
         preconditions.ime_force_on_guard = false;
+    } else if snap.is_tsf_native {
+        // TSF ネイティブウィンドウ（Windows Terminal 等）: IMM32 を使わないため常に None。
+        // これは一時的失敗ではなく「このウィンドウでは検出不能」という確定情報。
+        // miss_count を増やすと force-IME-ON が発火して set_ime_open_cross_process() が
+        // 呼ばれ、Windows Terminal の TSF 状態を乱す恐れがある。
+        // ime_on は直前の値を維持し、force-ON はスキップする。
+        log::debug!(
+            "IME detection skipped (TSF-native window), preserving ime_on={}",
+            preconditions.ime_on
+        );
     } else if preconditions.ime_force_on_guard {
         // 検出失敗かつガード中: awase が SSOT なので ime_on を変更しない。
         // miss_count もインクリメントしない（ガードが解除されるまで force-ON は再発火しない）。
