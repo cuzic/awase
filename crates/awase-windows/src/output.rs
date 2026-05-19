@@ -1103,15 +1103,14 @@ impl Output {
                         // GJI は監視できているが warmup 後の活動なし → probe timeout。
                         // TSF context が stale の可能性があるため fresh F2 で再初期化。
                         //
-                        // WezTerm は VK_DBE_HIRAGANA 処理後 ~125ms で OBJ_NAMECHANGE を発火する。
-                        // OBJ_NAMECHANGE を reactive に待つことで固定 sleep を排除する。
-                        // タイムアウト 300ms = 125ms + 余裕 175ms。
-                        const NAMECHANGE_TIMEOUT_MS: u32 = 300;
+                        // wait_for_tsf_cold_settle で OBJ_NAMECHANGE または WM_NULL ACK + settle を reactive に待つ。
+                        // タイムアウト 300ms = 余裕を持った上限（通常は 125ms 前後で抜ける）。
+                        const SETTLE_TIMEOUT_MS: u32 = 300;
                         let nc_baseline =
                             crate::OBS_FOCUS_NAMECHANGE_SEQ.load(std::sync::atomic::Ordering::Relaxed);
                         log::debug!(
                             "[h1-warmup] cold={cold_n} probe timeout (no GJI activity) \
-                            → fresh F2 + wait NAMECHANGE (up to {NAMECHANGE_TIMEOUT_MS}ms, nc_seq={nc_baseline})",
+                            → fresh F2 + tsf_cold_settle (up to {SETTLE_TIMEOUT_MS}ms, nc_seq={nc_baseline})",
                         );
                         let refresh_inputs = [
                             make_tsf_key_input(VK_DBE_HIRAGANA, false),
@@ -1123,12 +1122,9 @@ impl Output {
                                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                             );
                         }
-                        let nc_settled =
-                            wait_for_wezterm_namechange(nc_baseline, NAMECHANGE_TIMEOUT_MS);
-                        log::debug!(
-                            "[h1-warmup] cold={cold_n} namechange wait → {}",
-                            if nc_settled { "settled (OBJ_NAMECHANGE 受信)" } else { "timeout" },
-                        );
+                        // SendInput の F2 の直後に WM_NULL を非同期送信し、
+                        // F2 dispatch 確認 + settle 待ちを reactive に行う。
+                        wait_for_tsf_cold_settle(nc_baseline, SETTLE_TIMEOUT_MS);
                     }
                 }
             } else {
@@ -1391,63 +1387,169 @@ const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT 
     }
 }
 
-/// WezTerm の OBJ_NAMECHANGE（F2 処理完了シグナル）を reactive に待つ。
+/// TSF cold-start 後の composition context 初期化完了を reactive に待つ。
 ///
-/// `baseline_seq` より `OBS_FOCUS_NAMECHANGE_SEQ` が増えるか `timeout_ms` を超えたら返る。
-/// `PROBE_ACTIVE=true` を設定して再入ガードを張り、メッセージキューをポンプしながら待つ。
-/// これにより `std::thread::sleep` と異なり WinEvent コールバックが動作し続ける。
+/// fresh F2 送信直後に呼ぶ。2つのシグナルを MsgWaitForMultipleObjects でポンプしながら待つ:
+///
+/// **Signal 1 — OBJ_NAMECHANGE**（WezTerm 専用）
+/// WezTerm はひらがなモード切替をタイトルに反映する (~125ms)。最も確実。
+///
+/// **Signal 2 — WM_NULL ACK + EXTRA_SETTLE_MS**（任意アプリ向け）
+/// fresh F2 直後に `SendMessageCallbackW(WM_NULL)` を非同期送信する。
+/// 対象アプリが WM_NULL を dispatch した瞬間 = F2 が message loop を通過した直後。
+/// その時点から EXTRA_SETTLE_MS 経過したら GJI 非同期初期化完了と推定して抜ける。
+/// OBJ_NAMECHANGE を発火しないアプリでの固定 sleep を排除する。
+///
+/// **EXTRA_SETTLE_MS の決め方**
+/// `wm_null_ack_ms` と `namechange_ms` の差 = GJI 非同期初期化時間。
+/// ログの `[tsf-settle] WM_NULL ACK … nc_delta=Xms` でこれを計測し、
+/// 余裕を持たせた値を設定する（実測 ~120ms → 125ms 設定）。
 ///
 /// # Re-entrancy safety
-/// - フックコールバックは `PROBE_ACTIVE=true` で即 PassThrough → `APP.get_mut()` 未呼出
-/// - `observation_event_proc` も `PROBE_ACTIVE=true` で `APP.get_ref()` をスキップ
-/// - どちらも `APP` に触れないため aliasing 無し
+/// `PROBE_ACTIVE=true` を設定。フックコールバックは APP 未アクセスで即 PassThrough。
+/// `observation_event_proc` も APP.get_ref() をスキップし atomic で代替。
 ///
-/// # Return
-/// `true` = NAMECHANGE 検出、`false` = タイムアウト
-fn wait_for_wezterm_namechange(baseline_seq: u32, timeout_ms: u32) -> bool {
+/// Returns `true` = 初期化完了推定、`false` = タイムアウト
+#[allow(clippy::too_many_lines)]
+fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
-    use windows::Win32::Foundation::{HWND, WAIT_EVENT, WAIT_FAILED, WAIT_TIMEOUT};
+    use windows::Win32::Foundation::{HWND, LPARAM, WAIT_EVENT, WAIT_FAILED, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        MsgWaitForMultipleObjects, PeekMessageW, MSG, PM_REMOVE, QS_ALLINPUT,
+        GetForegroundWindow, MsgWaitForMultipleObjects, PeekMessageW,
+        SendMessageCallbackW, MSG, PM_REMOVE, QS_ALLINPUT, WM_NULL,
     };
 
+    // WM_NULL ACK から追加で待つ時間。
+    // WezTerm の実測: OBJ_NAMECHANGE は F2 dispatch から ~120ms 後。
+    // WM_NULL ACK ≈ F2 dispatch なので EXTRA_SETTLE_MS ≈ 120ms が目安。
+    // 余裕を 5ms 乗せて 125ms とする。
+    const EXTRA_SETTLE_MS: u64 = 125;
+
     crate::PROBE_ACTIVE.store(true, Relaxed);
+    crate::OBS_WM_NULL_ACK_MS.store(0, Relaxed);
+
+    // fresh F2 の直後（SendInput の後）に WM_NULL を非同期送信する。
+    // SendInput と WM_NULL は同じ対象アプリのキューに FIFO で積まれるため、
+    // WM_NULL ACK = 「F2 が対象 message loop を通過した」ことの確認になる。
+    // SendMessageCallbackW は即返り（非ブロッキング）。コールバックは PeekMessage 時に発火。
+    let focused_hwnd = unsafe { GetForegroundWindow() };
+    let wm_null_sent = !focused_hwnd.0.is_null()
+        && unsafe {
+            SendMessageCallbackW(
+                focused_hwnd,
+                WM_NULL,
+                WPARAM(0),
+                LPARAM(0),
+                Some(wm_null_ack_proc),
+                0,
+            )
+        }
+        .is_ok();
+    if !wm_null_sent {
+        log::debug!("[tsf-settle] SendMessageCallbackW(WM_NULL) 失敗（フォールバック: NAMECHANGE のみ）");
+    }
+
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(u64::from(timeout_ms));
+    let mut wm_null_settle_at: Option<std::time::Instant> = None;
 
-    let settled = loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            break false;
+    let (settled, settle_reason) = loop {
+        let now = std::time::Instant::now();
+
+        // ── 終了条件チェック ──
+
+        // Signal 1: OBJ_NAMECHANGE（WezTerm: ~125ms, 最も確実）
+        if crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline {
+            break (true, "OBJ_NAMECHANGE");
         }
-        #[allow(clippy::cast_possible_truncation)]
-        let wait_ms = remaining.as_millis().min(u128::from(u32::MAX)) as u32;
 
-        // メッセージが来るまで（または timeout まで）CPU を手放す。
-        // WINEVENT_OUTOFCONTEXT の通知もメッセージキュー経由で届く。
+        // Signal 2: WM_NULL ACK + EXTRA_SETTLE_MS 経過
+        if let Some(settle_at) = wm_null_settle_at {
+            if now >= settle_at {
+                break (true, "WM_NULL+settle");
+            }
+        }
+
+        // タイムアウト
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            break (false, "timeout");
+        }
+
+        // ── 待機時間の決定 ──
+        // WM_NULL ACK 待ち中なら EXTRA_SETTLE_MS の残り時間も上限にする
+        let wait_cap = wm_null_settle_at
+            .map(|at| at.saturating_duration_since(now))
+            .unwrap_or(remaining);
+        #[allow(clippy::cast_possible_truncation)]
+        let wait_ms = remaining.min(wait_cap).as_millis().min(u128::from(u32::MAX)) as u32;
+        let wait_ms = wait_ms.max(1);
+
         let ret: WAIT_EVENT =
             unsafe { MsgWaitForMultipleObjects(None, false, wait_ms, QS_ALLINPUT) };
 
-        if ret == WAIT_TIMEOUT || ret == WAIT_FAILED {
-            break false;
+        if ret == WAIT_FAILED {
+            break (false, "wait-failed");
         }
 
-        // キューを空にする。PeekMessage の呼び出し時に WinEvent コールバックが発火し、
-        // OBS_FOCUS_NAMECHANGE_SEQ がインクリメントされる。
-        // DispatchMessage は呼ばない（WM_TIMER 等の処理を hook callback 内で行うと
-        // APP への再入が起きる可能性があるため）。
+        // メッセージキューを空にする。
+        // WinEvent (OBJ_NAMECHANGE) と SendMessageCallback (WM_NULL ACK) はここで発火する。
         let mut msg = MSG::default();
         while unsafe { PeekMessageW(&raw mut msg, HWND::default(), 0, 0, PM_REMOVE).as_bool() } {
-            // drain only — WinEvent はここで発火する
+            // drain only
         }
 
-        if crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != baseline_seq {
-            break true;
+        // WM_NULL ACK が届いたか確認（PeekMessage で発火したはず）
+        if wm_null_settle_at.is_none() {
+            let ack_ms = crate::OBS_WM_NULL_ACK_MS.load(Relaxed);
+            if ack_ms != 0 {
+                let settle_at = std::time::Instant::now()
+                    + std::time::Duration::from_millis(EXTRA_SETTLE_MS);
+                wm_null_settle_at = Some(settle_at);
+                log::debug!(
+                    "[tsf-settle] WM_NULL ACK 受信 → {}ms 後に settle 判定",
+                    EXTRA_SETTLE_MS,
+                );
+            }
         }
     };
 
     crate::PROBE_ACTIVE.store(false, Relaxed);
+
+    // 診断ログ: 各シグナルの到達時刻を出力
+    let ack_ms = crate::OBS_WM_NULL_ACK_MS.load(Relaxed);
+    let nc_seq = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed);
+    let nc_delta = if nc_seq != nc_baseline && ack_ms != 0 {
+        format!(
+            " nc_delta={}ms",
+            crate::hook::current_tick_ms().saturating_sub(ack_ms),
+        )
+    } else {
+        String::new()
+    };
+    log::debug!(
+        "[tsf-settle] → {settle_reason}{nc_delta} (wm_null_ack={}, nc_fired={})",
+        ack_ms != 0,
+        nc_seq != nc_baseline,
+    );
+
     settled
+}
+
+/// WM_NULL を対象アプリが dispatch した際に呼ばれるコールバック。
+///
+/// `SendMessageCallbackW` の非同期コールバック。PeekMessage ポンプ中に発火する。
+/// `OBS_WM_NULL_ACK_MS` に受信時刻を記録する。
+unsafe extern "system" fn wm_null_ack_proc(
+    _hwnd: windows::Win32::Foundation::HWND,
+    _msg: u32,
+    _data: usize,
+    _result: windows::Win32::Foundation::LRESULT,
+) {
+    crate::OBS_WM_NULL_ACK_MS.store(
+        crate::hook::current_tick_ms(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 #[cfg(test)]
