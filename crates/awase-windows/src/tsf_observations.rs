@@ -11,10 +11,12 @@
 //!    - GJI Converter プロセスの累積 I/O カウンタを 10ms ごとに監視
 //!    - 静止（80ms 変化なし）で初期化完了と推定
 //!
-//! 2. `SessionIpcMonitor` — session.ipc の LastAccessTime 監視
-//!    - `%USERPROFILE%\AppData\LocalLow\Google\Google Japanese Input\session.ipc`
+//! 2. `SessionIpcMonitor` — GJI ディレクトリ内 .ipc ファイルの atime/mtime 監視
+//!    - `%LocalAppDataLow%\Google\Google Japanese Input\*.ipc`
+//!      (session.ipc, renderer.*.ipc など)
 //!    - TSF が GJI に session request を送ると atime が更新される直接シグナル
-//!    - GetFileTime(LastAccessTime) を 10ms ごとにポーリング
+//!    - GetFileTime(LastAccessTime + LastWriteTime) を 10ms ごとにポーリング
+//!    - GJI ディレクトリは SHGetKnownFolderPath(FOLDERID_LocalAppDataLow) で特定
 //!
 //! 3. 時間ベース（フォールバック）
 //!    - 両モニターが利用不可の場合の固定 sleep
@@ -40,6 +42,7 @@ use windows::Win32::Storage::FileSystem::{
     CreateFileW, GetFileTime, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, OPEN_EXISTING,
 };
+use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
     TH32CS_SNAPPROCESS,
@@ -47,7 +50,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
 };
-use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::SHGetKnownFolderPath;
+use windows::core::{GUID, PCWSTR};
 
 // ── グローバル観測値（バックグラウンドスレッド → ロジックスレッド）──
 
@@ -150,6 +154,8 @@ struct GjiMonitor {
     handle: HANDLE,
     last_read_ops: u64,
     last_write_ops: u64,
+    /// パイプ・セクション経由 IPC などが OtherOperationCount に計上される
+    last_other_ops: u64,
     /// 最後に I/O 変化を検出した時刻 (GetTickCount64 ms)
     last_change_ms: u64,
 }
@@ -170,6 +176,7 @@ impl GjiMonitor {
             handle,
             last_read_ops: 0,
             last_write_ops: 0,
+            last_other_ops: 0,
             last_change_ms: now_ms,
         };
         // ベースライン読み込み（次回 sample との差分比較用）
@@ -186,10 +193,12 @@ impl GjiMonitor {
             return false;
         }
         let changed = counters.ReadOperationCount != self.last_read_ops
-            || counters.WriteOperationCount != self.last_write_ops;
+            || counters.WriteOperationCount != self.last_write_ops
+            || counters.OtherOperationCount != self.last_other_ops;
         if changed {
             self.last_read_ops = counters.ReadOperationCount;
             self.last_write_ops = counters.WriteOperationCount;
+            self.last_other_ops = counters.OtherOperationCount;
             self.last_change_ms = crate::hook::current_tick_ms();
         }
         true
@@ -221,50 +230,67 @@ fn path_to_wide(path: &std::path::Path) -> Vec<u16> {
     wide
 }
 
-/// GJI の session.ipc パスを返す。ファイルが存在しない場合は `None`。
+/// GJI の LocalAppDataLow ディレクトリパスを返す。
 ///
-/// `%USERPROFILE%\AppData\LocalLow\Google\Google Japanese Input\session.ipc`
-fn find_session_ipc_path() -> Option<std::path::PathBuf> {
-    let profile = std::env::var("USERPROFILE").ok()?;
-    let path = std::path::PathBuf::from(profile)
-        .join("AppData")
-        .join("LocalLow")
-        .join("Google")
-        .join("Google Japanese Input")
-        .join("session.ipc");
-    if path.exists() { Some(path) } else { None }
-}
+/// 優先: `SHGetKnownFolderPath(FOLDERID_LocalAppDataLow)`
+/// 代替: `%USERPROFILE%\AppData\LocalLow`
+fn find_gji_dir() -> Option<std::path::PathBuf> {
+    // FOLDERID_LocalAppDataLow = {A520A1A4-1780-4FF6-BD18-167343C5AF16}
+    const FOLDERID_LOCAL_APP_DATA_LOW: GUID = GUID {
+        data1: 0xA520_A1A4,
+        data2: 0x1780,
+        data3: 0x4FF6,
+        data4: [0xBD, 0x18, 0x16, 0x73, 0x43, 0xC5, 0xAF, 0x16],
+    };
 
-/// GJI の `session.ipc` の LastAccessTime を監視し、TSF session request を検出する。
-///
-/// atime が更新された = GJI Converter がファイルを読んだ = TSF session を処理した。
-struct SessionIpcMonitor {
-    handle: HANDLE,
-    /// 前回サンプル時の LastAccessTime (FILETIME として u64 化)
-    last_atime_ft: u64,
-}
+    let base: Option<std::path::PathBuf> = unsafe {
+        SHGetKnownFolderPath(&FOLDERID_LOCAL_APP_DATA_LOW, 0, None)
+    }
+    .ok()
+    .and_then(|pwstr| {
+        let s = unsafe { pwstr.to_string() }.ok();
+        unsafe { CoTaskMemFree(Some(pwstr.0.cast())) };
+        s
+    })
+    .map(std::path::PathBuf::from);
 
-// ファイルハンドルはスレッド非依存なので Send は安全。
-unsafe impl Send for SessionIpcMonitor {}
+    let base = base.or_else(|| {
+        let profile = std::env::var("USERPROFILE").ok()?;
+        log::debug!("[session-monitor] SHGetKnownFolderPath failed, using USERPROFILE={profile}");
+        Some(std::path::PathBuf::from(profile).join("AppData").join("LocalLow"))
+    })?;
 
-impl std::fmt::Debug for SessionIpcMonitor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionIpcMonitor")
-            .field("last_atime_ft", &self.last_atime_ft)
-            .finish_non_exhaustive()
+    let dir = base.join("Google").join("Google Japanese Input");
+    log::debug!("[session-monitor] GJI dir candidate: {}", dir.display());
+    if dir.exists() {
+        Some(dir)
+    } else {
+        log::warn!("[session-monitor] GJI dir not found: {}", dir.display());
+        None
     }
 }
 
-impl SessionIpcMonitor {
-    /// session.ipc を開いてモニターを初期化する。失敗したら `None`。
-    fn try_open() -> Option<Self> {
-        let path = find_session_ipc_path()?;
-        let wide = path_to_wide(&path);
-        // FILE_READ_ATTRIBUTES (0x80): ファイルデータを読まずに属性だけ取得する最小権限
+// ── SessionIpcMonitor ──
+
+/// GJI ディレクトリ内の個別 .ipc ファイルのハンドルと前回タイムスタンプ。
+struct IpcEntry {
+    handle: HANDLE,
+    label: String,
+    last_atime_ft: u64,
+    last_mtime_ft: u64,
+}
+
+// ファイルハンドルはスレッド非依存なので Send は安全。
+unsafe impl Send for IpcEntry {}
+
+impl IpcEntry {
+    fn open(path: &std::path::Path) -> Option<Self> {
+        let wide = path_to_wide(path);
+        // FILE_READ_ATTRIBUTES (0x80): データを読まずに属性のみ取得する最小権限
         let handle = unsafe {
             CreateFileW(
                 PCWSTR(wide.as_ptr()),
-                0x0080, // FILE_READ_ATTRIBUTES
+                0x0080,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 None,
                 OPEN_EXISTING,
@@ -273,39 +299,93 @@ impl SessionIpcMonitor {
             )
         }
         .ok()?;
-        log::info!(
-            "[session-monitor] opened session.ipc: {}",
-            path.display()
-        );
-        let mut mon = Self { handle, last_atime_ft: 0 };
-        let _ = mon.sample(); // ベースライン取得
-        Some(mon)
+        let label = path
+            .file_name()
+            .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        Some(Self { handle, label, last_atime_ft: 0, last_mtime_ft: 0 })
     }
 
-    /// LastAccessTime を読み取り、変化があれば `OBS_GJI_SESSION_ATIME_MS` を更新する。
-    ///
-    /// 返り値: ハンドルが有効なら `true`、エラーなら `false`（再オープン要）。
+    /// atime/mtime を読み取り、変化があれば `OBS_GJI_SESSION_ATIME_MS` を更新する。
+    /// 返り値: ハンドルが有効なら `true`、エラーなら `false`。
     fn sample(&mut self) -> bool {
         let mut access = FILETIME::default();
-        if unsafe { GetFileTime(self.handle, None, Some(&mut access), None) }.is_err() {
+        let mut write = FILETIME::default();
+        if unsafe { GetFileTime(self.handle, None, Some(&mut access), Some(&mut write)) }.is_err() {
             return false;
         }
         let atime_ft = filetime_to_u64(access);
-        if self.last_atime_ft != 0 && atime_ft != self.last_atime_ft {
+        let mtime_ft = filetime_to_u64(write);
+        let changed = (self.last_atime_ft != 0 && atime_ft != self.last_atime_ft)
+            || (self.last_mtime_ft != 0 && mtime_ft != self.last_mtime_ft);
+        if changed {
             let now_ms = crate::hook::current_tick_ms();
             OBS_GJI_SESSION_ATIME_MS.store(now_ms, Ordering::Relaxed);
             log::debug!(
-                "[session-monitor] session.ipc atime changed (ft={atime_ft:#018x}), recorded at {now_ms}ms"
+                "[session-monitor] {} timestamp changed (atime={atime_ft:#018x} mtime={mtime_ft:#018x}), recorded at {now_ms}ms",
+                self.label
             );
         }
         self.last_atime_ft = atime_ft;
+        self.last_mtime_ft = mtime_ft;
         true
     }
 }
 
-impl Drop for SessionIpcMonitor {
+impl Drop for IpcEntry {
     fn drop(&mut self) {
         let _ = unsafe { CloseHandle(self.handle) };
+    }
+}
+
+/// GJI ディレクトリ内の全 .ipc ファイルの atime/mtime を監視する。
+///
+/// session.ipc (Converter)・renderer.*.ipc (Renderer) など複数ファイルを一括監視。
+struct SessionIpcMonitor {
+    entries: Vec<IpcEntry>,
+}
+
+impl std::fmt::Debug for SessionIpcMonitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let labels: Vec<&str> = self.entries.iter().map(|e| e.label.as_str()).collect();
+        f.debug_struct("SessionIpcMonitor").field("files", &labels).finish()
+    }
+}
+
+impl SessionIpcMonitor {
+    /// GJI ディレクトリをスキャンして全 .ipc ファイルを開く。
+    fn try_open() -> Option<Self> {
+        let dir = find_gji_dir()?;
+        let mut entries = Vec::new();
+        match std::fs::read_dir(&dir) {
+            Ok(read) => {
+                for entry in read.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ipc")) {
+                        match IpcEntry::open(&path) {
+                            Some(e) => {
+                                log::info!("[session-monitor] monitoring: {}", e.label);
+                                entries.push(e);
+                            }
+                            None => {
+                                log::warn!("[session-monitor] failed to open: {}", path.display());
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("[session-monitor] read_dir failed: {e}");
+            }
+        }
+        if entries.is_empty() { None } else { Some(Self { entries }) }
+    }
+
+    /// 全エントリをサンプリングする。全エントリが失敗しても true を返す（単一失敗は無視）。
+    fn sample(&mut self) -> bool {
+        for e in &mut self.entries {
+            let _ = e.sample();
+        }
+        true
     }
 }
 
@@ -490,12 +570,16 @@ impl TsfReadinessProbe {
         // どちらか新しい方をベースとして採用
         let last_io_at_p2 = gji_io_at_p2.max(session_atime_at_p2);
         let io_after_warmup_at_start = last_io_at_p2 >= warmup_ms;
+        let session_idle_str = if session_atime_at_p2 == 0 {
+            "never".to_string()
+        } else {
+            format!("{}ms", p2_start.saturating_sub(session_atime_at_p2))
+        };
         log::debug!(
             "[tsf-probe] cold={cold_n} phase2 polling \
-             (max_remaining={}ms, gji_io_idle={}ms, session_atime_idle={}ms, io_after_warmup={io_after_warmup_at_start})",
+             (max_remaining={}ms, gji_io_idle={}ms, session_atime_idle={session_idle_str}, io_after_warmup={io_after_warmup_at_start})",
             max_deadline.saturating_sub(p2_start),
             p2_start.saturating_sub(gji_io_at_p2),
-            p2_start.saturating_sub(session_atime_at_p2),
         );
 
         // warmup 後に GJI 活動が発生したかをトラッキング
@@ -513,12 +597,16 @@ impl TsfReadinessProbe {
             }
 
             if now >= max_deadline {
+                let s_idle = if session_atime == 0 {
+                    "never".to_string()
+                } else {
+                    format!("{}ms", now.saturating_sub(session_atime))
+                };
                 log::debug!(
                     "[tsf-probe] cold={cold_n} timeout \
-                     (warmup+{}ms, gji_io_idle={}ms, session_atime_idle={}ms, io_after_warmup={found_io_after_warmup})",
+                     (warmup+{}ms, gji_io_idle={}ms, session_atime_idle={s_idle}, io_after_warmup={found_io_after_warmup})",
                     now.saturating_sub(warmup_ms),
                     now.saturating_sub(gji_io),
-                    now.saturating_sub(session_atime),
                 );
                 break;
             }

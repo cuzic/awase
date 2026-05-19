@@ -969,12 +969,14 @@ impl Output {
             // ColdReason に応じてウォームアップ待機時間を決定:
             //   FocusChange / SetOpenTrue / NativeF2Consumed:
             //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
-            //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる → 1000ms
+            //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる。
+            //     実測で候補窓出現まで 1031ms かかることがあるため 1500ms を上限とする。
+            //     session.ipc モニターが動作すれば実際の待機時間は大幅に短縮される。
             //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
             let eager_settle_ms: u64 = match self.last_cold_reason.get() {
                 ColdReason::FocusChange
                 | ColdReason::SetOpenTrue
-                | ColdReason::NativeF2Consumed => 1000,
+                | ColdReason::NativeF2Consumed => 1500,
                 _ => 500,
             };
             // ColdReason に応じた probe 最小待機時間（warmup_sent_ms 起点）:
