@@ -323,6 +323,27 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
         lang_id == crate::vk::LANGID_JAPANESE
     };
 
+    // 1b. TSF-native ウィンドウ（Windows Terminal の InputSite 等）は IMM32 を使わないため
+    // imc_open=false を返すが、これは IME が OFF であることを意味しない。
+    // fast_ime_probe と同様に None を返して既存の状態を維持する。
+    {
+        let mut buf = [0u16; 64];
+        let len = unsafe { GetClassNameW(focused_hwnd, &mut buf) } as usize;
+        let class = if len > 0 { String::from_utf16_lossy(&buf[..len]) } else { String::new() };
+        log::debug!("detect_ime_state: focused_hwnd={focused_hwnd:?} class={class:?}");
+        if is_tsf_native_window(&class) {
+            log::debug!(
+                "detect_ime_state: TSF-native window ({class}) → ime_on=None (preserving state)"
+            );
+            return ImeSnapshot {
+                is_japanese_ime: Some(is_japanese_ime),
+                ime_on: None,
+                is_romaji: None,
+                conversion_mode: None,
+            };
+        }
+    }
+
     // 2. Cross-process IME ON/OFF → ime_on (using focused hwnd)
     let ime_on = detect_ime_open_for_hwnd(focused_hwnd);
 
@@ -506,10 +527,25 @@ pub struct FastImeProbeResult {
     pub is_romaji: Option<bool>,
 }
 
-/// Alt/Win キー押下で一時的に現れるシステム UI オーバーレイクラスか判定する。
+/// IMM32 を使わず TSF ネイティブ動作するウィンドウクラスか判定する。
 ///
-/// これらのウィンドウは imc_open=false + conv=0x19(ROMAN) を返すため、
-/// `fast_ime_probe` でプローブすると Engine が誤 deactivate される。
+/// 対象:
+/// - Alt/Win キーで一時表示されるシステム UI オーバーレイ（CoreWindow 等）
+/// - Windows Terminal の CASCADIA_HOSTING_WINDOW_CLASS
+/// - Windows Terminal の InputSite 子ウィンドウ
+///
+/// これらは `imc_open=false` を返すが IME が OFF であることを意味しない。
+fn is_tsf_native_window(class: &str) -> bool {
+    matches!(
+        class,
+        "Windows.UI.Core.CoreWindow"
+            | "XamlExplorerHostIslandWindow"
+            | "Windows.UI.Input.InputSite.WindowClass"
+            | "CASCADIA_HOSTING_WINDOW_CLASS"
+    )
+}
+
+/// `is_tsf_native_window` の HWND ラッパー（`fast_ime_probe` 用）。
 fn is_transient_system_overlay(hwnd: HWND) -> bool {
     let mut buf = [0u16; 64];
     let len = unsafe { GetClassNameW(hwnd, &mut buf) } as usize;
@@ -517,12 +553,7 @@ fn is_transient_system_overlay(hwnd: HWND) -> bool {
         return false;
     }
     let class = String::from_utf16_lossy(&buf[..len]);
-    matches!(
-        class.as_str(),
-        "Windows.UI.Core.CoreWindow"
-            | "XamlExplorerHostIslandWindow"
-            | "Windows.UI.Input.InputSite.WindowClass"
-    )
+    is_tsf_native_window(&class)
 }
 
 // ─── TSF probe helpers ────────────────────────────────────────
