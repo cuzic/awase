@@ -977,12 +977,8 @@ impl Output {
                     // romaji 直前に fresh F2 を送り、短時間待機して TSF context をリフレッシュする。
                     let gji_last = crate::tsf_observations::OBS_GJI_LAST_IO_MS
                         .load(std::sync::atomic::Ordering::Relaxed);
-                    let session_last = crate::tsf_observations::OBS_GJI_SESSION_ATIME_MS
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    let probe_settled = gji_last.max(session_last) >= eager_ms;
+                    let probe_settled = gji_last >= eager_ms;
                     let gji_monitor_ok = crate::tsf_observations::OBS_GJI_MONITOR_OK
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        || crate::tsf_observations::OBS_GJI_SESSION_MONITOR_OK
                         .load(std::sync::atomic::Ordering::Relaxed);
 
                     if !probe_settled && gji_monitor_ok {
