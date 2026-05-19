@@ -4,9 +4,12 @@ use windows::Win32::UI::Input::Ime::{
     ImmReleaseContext, IME_CMODE_NATIVE, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
     IME_SENTENCE_MODE,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyboardLayout, MapVirtualKeyW, MAPVK_VK_TO_VSC,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
+    GetClassNameW, GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN,
+    WM_KEYUP,
 };
 
 // ─── Cross-process IME control constants ─────────────────────
@@ -579,6 +582,50 @@ pub unsafe fn get_focused_hwnd() -> HWND {
     } else {
         GetForegroundWindow()
     }
+}
+
+/// VK_DBE_HIRAGANA (F2) を `SendMessageTimeoutW` でフォーカスウィンドウの wndproc に直接届ける。
+///
+/// `SendInput` は OS 入力キューを経由するため、その後の `SendMessageTimeoutW` による
+/// probe よりも低優先度で処理される（QS_SENDMESSAGE > QS_INPUT）。
+/// 本関数は入力キューを迂回して wndproc に同期的に届けるため、return 後は
+/// Chrome が WM_KEYDOWN を処理済みであることが保証される。
+///
+/// Returns `true` if both WM_KEYDOWN and WM_KEYUP were delivered without timeout.
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread.
+pub unsafe fn send_f2_via_sendmessage() -> bool {
+    let hwnd = get_focused_hwnd();
+    if hwnd.0.is_null() {
+        return false;
+    }
+    const VK_DBE_HIRAGANA: u32 = 0xF2;
+    let scan = MapVirtualKeyW(VK_DBE_HIRAGANA, MAPVK_VK_TO_VSC);
+    let lparam_down = LPARAM(1_isize | (isize::try_from(scan).unwrap_or(0) << 16));
+    let lparam_up = LPARAM(lparam_down.0 | (1 << 30) | (1_isize << 31));
+    let mut result = 0usize;
+    let ok_down = SendMessageTimeoutW(
+        hwnd,
+        WM_KEYDOWN,
+        WPARAM(VK_DBE_HIRAGANA as usize),
+        lparam_down,
+        SMTO_ABORTIFHUNG,
+        100,
+        Some(&raw mut result),
+    );
+    let ok_up = SendMessageTimeoutW(
+        hwnd,
+        WM_KEYUP,
+        WPARAM(VK_DBE_HIRAGANA as usize),
+        lparam_up,
+        SMTO_ABORTIFHUNG,
+        100,
+        Some(&raw mut result),
+    );
+    let success = ok_down.0 != 0 && ok_up.0 != 0;
+    log::debug!("[f2-sendmsg] hwnd={hwnd:?} scan=0x{scan:02X} success={success}");
+    success
 }
 
 /// フォーカスウィンドウの IMM32 HIMC に composition string が存在するか確認する。

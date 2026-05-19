@@ -831,38 +831,14 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
-            // 案A: F2-only バッチを先行送信し、Chrome が IME を初期化するのを待つ。
-            const VK_DBE_HIRAGANA: u16 = 0xF2;
-            let f2_inputs = [
-                make_key_input(VK_DBE_HIRAGANA, false),
-                make_key_input(VK_DBE_HIRAGANA, true),
-            ];
-            log::debug!("[h1-run] cold={cold_n} F2-only batch sending");
-            unsafe {
-                SendInput(
-                    &f2_inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-
-            // F2-only バッチ後のプローブ（ガード）:
-            //   responsive=true → Chrome が F2 を処理済み（IME 初期化完了期待）
-            //   responsive=false → Chrome がまだ処理中（timeout まで待機）
-            let probe_start = std::time::Instant::now();
-            const H1_PROBE_TIMEOUT_MS: u32 = 10;
-            const H1_PROBE_MAX: u8 = 15;
-            for i in 0..H1_PROBE_MAX {
-                let elapsed_ms = probe_start.elapsed().as_millis();
-                let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(H1_PROBE_TIMEOUT_MS) };
-                let responsive = conv.is_some();
-                let roman = conv.map_or(false, |v| v & 0x0010 != 0);
-                log::debug!(
-                    "[h1-probe] cold={cold_n} vk attempt={i} elapsed={}ms responsive={responsive} roman={roman} conv={}",
-                    elapsed_ms,
-                    conv.map_or_else(|| "none/timeout".to_string(), |v| format!("0x{v:08X}")),
-                );
-                if responsive { break; }
-            }
+            // F2 を SendMessageTimeout で wndproc に直接届ける。
+            // SendInput は OS 入力キューを経由するため、その後の probe（SendMessageTimeout）
+            // より低優先度で処理され（QS_SENDMESSAGE > QS_INPUT）、probe が F2 処理前に
+            // 完了してしまう競合が起きていた。
+            // SendMessageTimeout は return 後に Chrome が WM_KEYDOWN を処理済みであることを保証する。
+            log::debug!("[h1-run] cold={cold_n} F2 via SendMessageTimeout");
+            let f2_ok = unsafe { crate::ime::send_f2_via_sendmessage() };
+            log::debug!("[h1-run] cold={cold_n} F2 SendMessageTimeout delivered={f2_ok}");
         }
 
         // ローマ字バッチ送信（重畳順: 全 KeyDown → 全 KeyUp）
