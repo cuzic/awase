@@ -106,12 +106,9 @@ use crate::hook::CallbackResult;
 
 /// レイアウト設定一式を保持する構造体
 #[derive(Debug)]
-#[allow(dead_code)] // left/right_thumb_vk はレイアウト切替時に使用予定
 pub struct LayoutEntry {
     pub name: String,
     pub layout: YabLayout,
-    pub left_thumb_vk: VkCode,
-    pub right_thumb_vk: VkCode,
 }
 
 // ── FocusDetector（フォーカス検出状態）──

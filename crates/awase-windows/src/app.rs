@@ -391,7 +391,7 @@ fn init_engine_validated(
     ))?;
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
-    let layouts = scan_layouts(&layouts_dir, left_thumb_vk, right_thumb_vk, diag)?;
+    let layouts = scan_layouts(&layouts_dir, diag)?;
     let layout_names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
     log::info!("Available layouts: {layout_names:?}");
 
@@ -1487,8 +1487,6 @@ fn reload_config() {
 /// layouts_dir 内の *.yab を全てスキャンして配列一覧を構築する
 fn scan_layouts(
     layouts_dir: &Path,
-    left_thumb_vk: VkCode,
-    right_thumb_vk: VkCode,
     diag: &mut StartupDiagnostics,
 ) -> Result<Vec<LayoutEntry>> {
     let mut layouts = Vec::new();
@@ -1521,8 +1519,6 @@ fn scan_layouts(
                         layouts.push(LayoutEntry {
                             name: yab.name.clone(),
                             layout: yab,
-                            left_thumb_vk,
-                            right_thumb_vk,
                         });
                     }
                     Err(e) => {
@@ -1603,8 +1599,6 @@ const EVENT_OBJECT_VALUECHANGE:          u32 = 0x800E;
 const EVENT_OBJECT_TEXTSELECTIONCHANGED: u32 = 0x8014;
 // グループ D: IME composition 専用イベント
 const EVENT_OBJECT_IME_START:            u32 = 0x8026;
-#[allow(dead_code)]
-const EVENT_OBJECT_IME_CHANGE:           u32 = 0x8027;
 const EVENT_OBJECT_IME_END:              u32 = 0x8028;
 
 /// フォーカス変更イベントフックを登録する

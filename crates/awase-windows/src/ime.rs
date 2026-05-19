@@ -411,13 +411,6 @@ pub fn keyboard_layout_info() -> (bool, u32) {
     }
 }
 
-/// 現在のキーボードレイアウトが日本語かどうかを判定する
-#[must_use]
-#[allow(dead_code)]
-pub fn is_japanese_input_language() -> bool {
-    keyboard_layout_info().0
-}
-
 /// フォーカス切替直後の高速 IME 状態プローブ。
 ///
 /// フックコールバック内で同期的に呼べるよう、高速 API のみ使用する:
