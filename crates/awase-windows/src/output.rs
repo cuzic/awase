@@ -1103,13 +1103,15 @@ impl Output {
                         // GJI は監視できているが warmup 後の活動なし → probe timeout。
                         // TSF context が stale の可能性があるため fresh F2 で再初期化。
                         //
-                        // WezTerm は VK_DBE_HIRAGANA を受け取ってから OBJ_NAMECHANGE を発火するまで
-                        // 実測〜125ms かかる（WezTerm がひらがなモード切替を反映するタイミング）。
-                        // この 125ms が経過する前に romaji が届くと先頭 1 文字が literal になる。
-                        // 200ms は 125ms + 余裕 75ms。
-                        const REFRESH_SETTLE_MS: u64 = 200;
+                        // WezTerm は VK_DBE_HIRAGANA 処理後 ~125ms で OBJ_NAMECHANGE を発火する。
+                        // OBJ_NAMECHANGE を reactive に待つことで固定 sleep を排除する。
+                        // タイムアウト 300ms = 125ms + 余裕 175ms。
+                        const NAMECHANGE_TIMEOUT_MS: u32 = 300;
+                        let nc_baseline =
+                            crate::OBS_FOCUS_NAMECHANGE_SEQ.load(std::sync::atomic::Ordering::Relaxed);
                         log::debug!(
-                            "[h1-warmup] cold={cold_n} probe timeout (no GJI activity) → fresh F2 before romaji (+{REFRESH_SETTLE_MS}ms)",
+                            "[h1-warmup] cold={cold_n} probe timeout (no GJI activity) \
+                            → fresh F2 + wait NAMECHANGE (up to {NAMECHANGE_TIMEOUT_MS}ms, nc_seq={nc_baseline})",
                         );
                         let refresh_inputs = [
                             make_tsf_key_input(VK_DBE_HIRAGANA, false),
@@ -1121,7 +1123,12 @@ impl Output {
                                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                             );
                         }
-                        std::thread::sleep(std::time::Duration::from_millis(REFRESH_SETTLE_MS));
+                        let nc_settled =
+                            wait_for_wezterm_namechange(nc_baseline, NAMECHANGE_TIMEOUT_MS);
+                        log::debug!(
+                            "[h1-warmup] cold={cold_n} namechange wait → {}",
+                            if nc_settled { "settled (OBJ_NAMECHANGE 受信)" } else { "timeout" },
+                        );
                     }
                 }
             } else {
@@ -1382,6 +1389,65 @@ const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT 
             },
         },
     }
+}
+
+/// WezTerm の OBJ_NAMECHANGE（F2 処理完了シグナル）を reactive に待つ。
+///
+/// `baseline_seq` より `OBS_FOCUS_NAMECHANGE_SEQ` が増えるか `timeout_ms` を超えたら返る。
+/// `PROBE_ACTIVE=true` を設定して再入ガードを張り、メッセージキューをポンプしながら待つ。
+/// これにより `std::thread::sleep` と異なり WinEvent コールバックが動作し続ける。
+///
+/// # Re-entrancy safety
+/// - フックコールバックは `PROBE_ACTIVE=true` で即 PassThrough → `APP.get_mut()` 未呼出
+/// - `observation_event_proc` も `PROBE_ACTIVE=true` で `APP.get_ref()` をスキップ
+/// - どちらも `APP` に触れないため aliasing 無し
+///
+/// # Return
+/// `true` = NAMECHANGE 検出、`false` = タイムアウト
+fn wait_for_wezterm_namechange(baseline_seq: u32, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    use windows::Win32::Foundation::{HWND, WAIT_EVENT, WAIT_FAILED, WAIT_TIMEOUT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MsgWaitForMultipleObjects, PeekMessageW, MSG, PM_REMOVE, QS_ALLINPUT,
+    };
+
+    crate::PROBE_ACTIVE.store(true, Relaxed);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(u64::from(timeout_ms));
+
+    let settled = loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break false;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let wait_ms = remaining.as_millis().min(u128::from(u32::MAX)) as u32;
+
+        // メッセージが来るまで（または timeout まで）CPU を手放す。
+        // WINEVENT_OUTOFCONTEXT の通知もメッセージキュー経由で届く。
+        let ret: WAIT_EVENT =
+            unsafe { MsgWaitForMultipleObjects(None, false, wait_ms, QS_ALLINPUT) };
+
+        if ret == WAIT_TIMEOUT || ret == WAIT_FAILED {
+            break false;
+        }
+
+        // キューを空にする。PeekMessage の呼び出し時に WinEvent コールバックが発火し、
+        // OBS_FOCUS_NAMECHANGE_SEQ がインクリメントされる。
+        // DispatchMessage は呼ばない（WM_TIMER 等の処理を hook callback 内で行うと
+        // APP への再入が起きる可能性があるため）。
+        let mut msg = MSG::default();
+        while unsafe { PeekMessageW(&raw mut msg, HWND::default(), 0, 0, PM_REMOVE).as_bool() } {
+            // drain only — WinEvent はここで発火する
+        }
+
+        if crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != baseline_seq {
+            break true;
+        }
+    };
+
+    crate::PROBE_ACTIVE.store(false, Relaxed);
+    settled
 }
 
 #[cfg(test)]

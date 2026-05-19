@@ -769,6 +769,12 @@ impl RapidPressTracker {
 /// `APP.get_mut()` はシングルスレッド保証下でのみ安全。
 /// フックコールバックはメインスレッドで呼ばれるため OK。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
+    // wait_for_wezterm_namechange() が MsgWaitForMultipleObjects + PeekMessage ループ中は
+    // APP.get_mut() を保持しているため、ここで再入すると aliasing になる。
+    // PROBE_ACTIVE=true の間は APP にアクセスせず即 PassThrough する。
+    if awase_windows::PROBE_ACTIVE.load(Ordering::Relaxed) {
+        return CallbackResult::PassThrough;
+    }
     let Some(app) = APP.get_mut() else {
         return CallbackResult::PassThrough;
     };
@@ -1723,20 +1729,29 @@ unsafe extern "system" fn observation_event_proc(
     let class = obs_hwnd_class(hwnd);
 
     // warmup F2 送信からの経過時間
-    let (warmup_elapsed, composition_warm) = APP
-        .get_ref()
-        .map(|app| {
-            let sent_ms = app.executor.platform.output.eager_warmup_sent_ms();
+    // PROBE_ACTIVE=true の間は APP.get_mut() が外側で保持されているため
+    // APP.get_ref() を呼ぶと aliasing になる → atomic 版で代替する。
+    let (warmup_elapsed, composition_warm) =
+        if awase_windows::PROBE_ACTIVE.load(Ordering::Relaxed) {
+            let sent_ms = OBS_WARMUP_SENT_MS.load(Ordering::Relaxed);
             let now_ms = hook::current_tick_ms();
-            let elapsed = if sent_ms == 0 {
-                None
-            } else {
-                Some(now_ms.saturating_sub(sent_ms))
-            };
-            let warm = app.executor.platform.output.is_composition_warm();
-            (elapsed, warm)
-        })
-        .unwrap_or((None, false));
+            let elapsed = if sent_ms == 0 { None } else { Some(now_ms.saturating_sub(sent_ms)) };
+            (elapsed, false)
+        } else {
+            APP.get_ref()
+                .map(|app| {
+                    let sent_ms = app.executor.platform.output.eager_warmup_sent_ms();
+                    let now_ms = hook::current_tick_ms();
+                    let elapsed = if sent_ms == 0 {
+                        None
+                    } else {
+                        Some(now_ms.saturating_sub(sent_ms))
+                    };
+                    let warm = app.executor.platform.output.is_composition_warm();
+                    (elapsed, warm)
+                })
+                .unwrap_or((None, false))
+        };
 
     let elapsed_str = match warmup_elapsed {
         Some(ms) => format!("{ms}ms after warmup"),

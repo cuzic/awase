@@ -81,6 +81,12 @@ pub static OBS_LAST_SEND_MS: std::sync::atomic::AtomicU64 =
 pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
+/// [probe] `wait_for_wezterm_namechange()` がアクティブ中かどうかのフラグ。
+///
+/// true の間、フックコールバックは APP.get_mut() を呼ばず即 PassThrough を返す。
+/// これにより MsgWaitForMultipleObjects + PeekMessage ループ中の re-entrancy を防ぐ。
+pub static PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 // ── PlatformState: シングルスレッド上の全状態を集約 ──
 
 /// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。
