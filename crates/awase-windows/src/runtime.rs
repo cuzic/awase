@@ -56,6 +56,11 @@ pub fn is_force_vk(
 ///
 /// `force_tsf` が空なら Win32 API を呼ばずに即 false を返す (fast path)。
 /// マッチは `process` と `class` の両方が大文字小文字を無視して一致したとき。
+///
+/// `Windows.UI.Input.InputSite.WindowClass` がフォーカスを持つ場合（WezTerm 等の
+/// TSF ネイティブ子ウィンドウ）、`GetForegroundWindow()` でトップレベルクラスを
+/// 取得して再マッチを試みる。これにより force_tsf 設定が InputSite フォーカス時にも
+/// 正しく動作する。
 pub fn is_force_tsf(
     overrides: &awase::config::FocusOverrides,
     process_id: u32,
@@ -65,10 +70,29 @@ pub fn is_force_tsf(
         return false;
     }
     let process_name = crate::focus::classify::get_process_name(process_id);
-    overrides.force_tsf.iter().any(|entry| {
+    if overrides.force_tsf.iter().any(|entry| {
         entry.process.eq_ignore_ascii_case(&process_name)
             && entry.class.eq_ignore_ascii_case(class_name)
-    })
+    }) {
+        return true;
+    }
+    // InputSite は WezTerm 等の TSF ネイティブ子ウィンドウ。GetForegroundWindow()
+    // はトップレベルウィンドウ（org.wezfurlong.wezterm 等）を返すため、そのクラスで
+    // 再マッチすることで force_tsf 設定が InputSite フォーカス時にも機能する。
+    if class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
+        let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+        if !fg_class.is_empty() && !fg_class.eq_ignore_ascii_case(class_name) {
+            let matched = overrides.force_tsf.iter().any(|entry| {
+                entry.process.eq_ignore_ascii_case(&process_name)
+                    && entry.class.eq_ignore_ascii_case(&fg_class)
+            });
+            log::debug!(
+                "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
+            );
+            return matched;
+        }
+    }
+    false
 }
 
 /// `Preconditions` と `ModifierTiming` から `InputContext` を構築する。

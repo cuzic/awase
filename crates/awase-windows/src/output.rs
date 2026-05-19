@@ -747,8 +747,26 @@ impl Output {
             // 完了してしまう競合が起きていた。
             // SendMessageTimeout は return 後に Chrome が WM_KEYDOWN を処理済みであることを保証する。
             log::debug!("[h1-run] cold={cold_n} F2 via SendMessageTimeout");
+            let f2_sent_ms = crate::hook::current_tick_ms();
             let f2_ok = unsafe { crate::ime::send_f2_via_sendmessage() };
             log::debug!("[h1-run] cold={cold_n} F2 SendMessageTimeout delivered={f2_ok}");
+
+            // Chrome は F2 を wndproc で受け取った後、IPC でレンダラーに転送する。
+            // SendInput のローマ字もレンダラー IPC キューに積まれるため、
+            // レンダラーが F2 の IME 初期化を完了する前に 1 文字目が届くことがある。
+            // GJI I/O 静止を待つことで、IME がレンダラー側で ready になってから送る。
+            {
+                // min_ms: IPC 1往復分の余裕 (Chrome レンダラーは通常 20ms 以内)
+                // total_max_ms: GJI が応答しない場合でも 120ms で打ち切る
+                const CHROME_PROBE_MIN_MS: u64 = 20;
+                const CHROME_PROBE_MAX_MS: u64 = 120;
+                let probe = crate::tsf_observations::TsfReadinessProbe::new(
+                    f2_sent_ms,
+                    cold_n,
+                    CHROME_PROBE_MIN_MS,
+                );
+                probe.wait_until_ready(CHROME_PROBE_MAX_MS);
+            }
         }
 
         // ローマ字バッチ送信（重畳順: 全 KeyDown → 全 KeyUp）
