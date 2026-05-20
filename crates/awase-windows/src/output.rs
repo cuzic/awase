@@ -1268,9 +1268,18 @@ impl Output {
                     chars.len(),
                     std::sync::atomic::Ordering::Relaxed,
                 );
-                *crate::ZE_LITERAL_PENDING_ROMAJI
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
+                if self.last_cold_reason.get() != ColdReason::ZeLiteralRecovery {
+                    // 1回目の失敗: re-send をスケジュール
+                    *crate::ZE_LITERAL_PENDING_ROMAJI
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
+                } else {
+                    // ZeLiteralRecovery 後の再送も失敗: 無限ループ防止のためリトライしない
+                    log::warn!(
+                        "[ze-detect] cold={cold_n} ZeLiteralRecovery re-send also failed \
+                        → giving up (no retry)"
+                    );
+                }
                 self.mark_composition_cold(ColdReason::ZeLiteralRecovery);
             }
         }
