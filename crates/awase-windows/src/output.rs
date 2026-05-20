@@ -500,7 +500,14 @@ impl Output {
     pub fn send_keys(&self, actions: &[KeyAction]) {
         let mode = resolve_injection_mode();
 
-        log::debug!("send_keys: mode={mode:?} actions={actions:?}");
+        // mark_send() より前に elapsed を読む。mark_send() は last_send_ms を上書きするため、
+        // send_romaji_as_tsf 内の ms_since_last_send() は常に ~0ms を返す。
+        // 真の「前回送信からの経過時間」はここで記録する。
+        let prev_elapsed_ms = self.ms_since_last_send();
+        log::debug!(
+            "send_keys: mode={mode:?} actions={actions:?} prev_elapsed={}ms",
+            if prev_elapsed_ms == u64::MAX { "∞".to_string() } else { prev_elapsed_ms.to_string() }
+        );
 
         // NOTE: ImeDiagnosticSnapshot::capture("send_keys_pre") をここに置いてはいけない。
         // capture() は内部で GetGUIThreadInfo(100ms) + SendMessageTimeoutW(50ms×2) を
@@ -1078,12 +1085,21 @@ impl Output {
             cold_n = self.cold_start_count.get();
         }
 
-        // warmup 完了 → ローマ字送信開始 (GJI idle 状態を記録)
+        // warmup 完了 → ローマ字送信開始 (GJI idle・IME conv 状態を記録)
+        // conv は最大 10ms の WM_IME_CONTROL 問い合わせ。WezTerm が通常応答する場合は 1-3ms 以内。
         {
             let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
                 .load(std::sync::atomic::Ordering::Relaxed);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-            log::debug!("[h1-send] cold={cold_n} sending romaji ({} chars), gji_idle={gji_idle}ms", chars.len());
+            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+            log::debug!(
+                "[h1-send] cold={cold_n} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
+                 conv={} ROMAN={} NATIVE={}",
+                chars.len(),
+                conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv.map_or(false, |v| v & 0x0010 != 0),
+                conv.map_or(false, |v| v & 0x0001 != 0),
+            );
         }
 
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
@@ -1102,9 +1118,15 @@ impl Output {
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.iter().enumerate() {
+            let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            let vks: Vec<String> = run.iter().map(|&(v, s)| {
+                if s { format!("S{v:02X}") } else { format!("{v:02X}") }
+            }).collect();
             log::debug!(
-                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} chars={}",
-                run.len(),
+                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
+                vks.join(","),
             );
             let mut inputs = Vec::with_capacity(run.len() * 4);
             for &(vk, needs_shift) in *run {
