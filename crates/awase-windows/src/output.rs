@@ -308,6 +308,12 @@ pub struct Output {
     /// 最後に cold にマークされた理由。
     /// `send_romaji_as_tsf` が eager_settle_ms を動的に決定するために使用。
     last_cold_reason: std::cell::Cell<ColdReason>,
+    /// 最後に cold になった時点での `ms_since_last_send()` の値。
+    ///
+    /// PassthroughConfirmKey / ReinjectConfirmKey で長期間 idle（ナビゲーション等）の後に
+    /// cold になった場合を検出するために使う。長期 idle では GJI が TSF セッションを
+    /// リセットするため、500ms のウォームアップバジェットでは不足する。
+    idle_ms_at_last_cold: std::cell::Cell<u64>,
 }
 
 impl Output {
@@ -327,6 +333,7 @@ impl Output {
             focus_epoch: std::cell::Cell::new(1),            // 1 = initial window
             shadow_ime_on: std::cell::Cell::new(false),
             last_cold_reason: std::cell::Cell::new(ColdReason::FocusChange),
+            idle_ms_at_last_cold: std::cell::Cell::new(0),
         }
     }
 
@@ -373,10 +380,12 @@ impl Output {
     ///
     /// 直後に send_eager_tsf_warmup() が新しいタイムスタンプをセットする。
     pub fn mark_composition_cold(&self, reason: ColdReason) {
-        log::debug!("[composition] marked cold reason={reason:?} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        let idle_ms = self.ms_since_last_send();
+        log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
         self.last_cold_reason.set(reason);
+        self.idle_ms_at_last_cold.set(idle_ms);
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -406,6 +415,7 @@ impl Output {
         self.focus_epoch.set(new_epoch);
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
+        self.idle_ms_at_last_cold.set(self.ms_since_last_send());
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
@@ -890,17 +900,33 @@ impl Output {
             // eager 送信済みだが未到達 → 残り時間だけ sleep
             // eager なし → VK_DBE_HIRAGANA warmup + probe (2連送) で TSF 初期化を同期
             const VK_DBE_HIRAGANA: u16 = 0xF2;
+            // cold 発生前の idle 時間が長い場合（ナビゲーション等）、GJI が TSF セッションを
+            // リセットしている可能性があり、再初期化に FocusChange 相当の時間が必要。
+            const LONG_IDLE_MS: u64 = 2000;
+            let long_idle = self.idle_ms_at_last_cold.get() > LONG_IDLE_MS;
             // ColdReason に応じてウォームアップ待機時間を決定:
             //   FocusChange / SetOpenTrue / NativeF2Consumed:
             //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
             //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる。
             //     実測で候補窓出現まで 1031ms かかることがあるため 1500ms を上限とする。
-            //     session.ipc モニターが動作すれば実際の待機時間は大幅に短縮される。
+            //   PassthroughConfirmKey / ReinjectConfirmKey + long_idle:
+            //     Enter/Space/Escape 後でも長期 idle 後は GJI セッションがリセットされ、
+            //     500ms のバジェットでは不足する（kおのじしょう バグ）。1500ms に拡張する。
             //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
             let eager_settle_ms: u64 = match self.last_cold_reason.get() {
                 ColdReason::FocusChange
                 | ColdReason::SetOpenTrue
                 | ColdReason::NativeF2Consumed => 1500,
+                ColdReason::PassthroughConfirmKey | ColdReason::ReinjectConfirmKey
+                    if long_idle =>
+                {
+                    log::debug!(
+                        "[h1-warmup] cold={cold_n} PassthroughConfirmKey/ReinjectConfirmKey + long idle \
+                         ({}ms) → eager_settle_ms=1500ms",
+                        self.idle_ms_at_last_cold.get()
+                    );
+                    1500
+                }
                 _ => 500,
             };
             // ColdReason に応じた probe 最小待機時間（warmup_sent_ms 起点）:
@@ -911,13 +937,17 @@ impl Output {
                 | ColdReason::SetOpenTrue
                 | ColdReason::NativeF2Consumed => 300,
                 ColdReason::SessionExpired => 200,
+                ColdReason::PassthroughConfirmKey | ColdReason::ReinjectConfirmKey
+                    if long_idle => 300,
                 ColdReason::PassthroughConfirmKey | ColdReason::ReinjectConfirmKey => 50,
                 ColdReason::SymbolVkSent => 30,
                 _ => 100,
             };
             log::debug!(
-                "[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms reason={:?}",
-                self.last_cold_reason.get()
+                "[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms \
+                 reason={:?} long_idle={long_idle} idle_at_cold={}ms",
+                self.last_cold_reason.get(),
+                self.idle_ms_at_last_cold.get()
             );
 
             // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
