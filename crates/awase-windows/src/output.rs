@@ -1187,22 +1187,15 @@ impl Output {
             );
         }
 
-        // ze literal 検出用: 送信直前の GJI candidate window SHOW カウンタをベースラインとして記録
-        let gji_show_baseline =
-            crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(std::sync::atomic::Ordering::Relaxed);
-
         // cold + eager のときは KEYEVENTF_UNICODE + TSF_MARKER でひらがなを直接送信する実験。
         // VK "ke" → "け"（1文字）: アルファベット/ひらがな区別が不要になり ze-detect の
         // バックスペース数（chars.len()=2 vs kana=1 文字）の不一致も解消される。
-        // GJI TSF が Unicode VK_PACKET を composition に取り込めば漢字変換も可能。
+        // GJI TSF が Unicode VK_PACKET を composition に取り込めば漢字変換も可能（動作確認済み）。
         let unicode_kana: Option<char> = if prepend_f2_warmup && used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
             None
         };
-
-        // ze-detect でバックスペースすべき文字数: Unicode 送信なら kana 1文字, VK なら romaji 長
-        let ze_bs_count: usize;
 
         if let Some(kana) = unicode_kana {
             // Unicode + TSF_MARKER 送信: WezTerm が VK_PACKET を TSF 経由で GJI に渡す
@@ -1245,7 +1238,6 @@ impl Output {
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
             }
-            ze_bs_count = 1; // kana 1文字
         } else {
             // 通常の VK 送信。
             // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
@@ -1294,55 +1286,14 @@ impl Output {
                     );
                 }
             }
-            ze_bs_count = chars.len();
         }
 
         self.mark_composition_warm();
 
-        // cold start 後の ze literal 検出（GJI 専用）:
-        // GJI candidate window が表示されなければ literal ASCII が出力された疑い。
-        // GJI が動いていない環境（MS IME / ATOK 等）では SHOW が来ないため必ずタイムアウトし、
-        // 誤ったバックスペース回収が走る。OBS_GJI_MONITOR_OK でガードして GJI 専用にする。
-        // 通常は SHOW が 4ms 程度で届くため、成功時のオーバーヘッドはほぼゼロ。
-        let gji_active = crate::tsf_observations::OBS_GJI_MONITOR_OK
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if prepend_f2_warmup && gji_active {
-            const ZE_LITERAL_DETECT_MS: u32 = 300;
-            let t_send = crate::hook::current_tick_ms();
-            let detected = wait_for_gji_candidate_show(gji_show_baseline, ZE_LITERAL_DETECT_MS);
-            let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
-            if detected {
-                log::debug!("[ze-detect] cold={cold_n} composition confirmed ({elapsed_ms}ms)");
-            } else {
-                log::warn!(
-                    "[ze-detect] cold={cold_n} ze literal suspected \
-                    ({elapsed_ms}ms, no SHOW) → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
-                );
-                if self.last_cold_reason.get() != ColdReason::ZeLiteralRecovery {
-                    // 1回目の失敗: backspace + re-send をスケジュール。
-                    // WM_DRAIN_PROBE_QUEUE ハンドラが：
-                    //   1. backspace を SendInput（ze literal を消去）
-                    //   2. romaji を再送（warm な compose で正しく入力）
-                    //   3. drain キーを再配送
-                    // の順で処理し、WezTerm での到着順を保証する。
-                    crate::ZE_LITERAL_PENDING_BACKS.store(
-                        ze_bs_count,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                    *crate::ZE_LITERAL_PENDING_ROMAJI
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
-                } else {
-                    // ZeLiteralRecovery 後に再度 ze-detect 発火 = 連続発火 = false positive の疑い。
-                    // バックスペースもリトライも行わず静かに諦める（バックスペース暴走を防ぐ）。
-                    log::warn!(
-                        "[ze-detect] cold={cold_n} consecutive ze-detect fire (ZeLiteralRecovery) \
-                        → likely false positive, giving up without backspace"
-                    );
-                }
-                self.mark_composition_cold(ColdReason::ZeLiteralRecovery);
-            }
-        }
+        // ze-detect（GJI candidate window SHOW イベント待機）は無効化済み。
+        // 理由: GJI candidate window がすでに表示されている状態では SHOW イベントが発火せず
+        // （内容更新のみで SHOW/HIDE サイクルなし）、毎回 300ms タイムアウト待ちになり入力が遅くなる。
+        // プローブ（GJI I/O ベース）のみで TSF 準備完了を判定する。
 
         // バッチ送信・warm化完了後にプローブ退避キーを再配送（二重プローブ防止）。
         crate::post_drain_probe_queue();
