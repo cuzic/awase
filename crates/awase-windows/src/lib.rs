@@ -32,7 +32,6 @@ pub mod scanmap;
 pub mod timer;
 pub mod tray;
 pub mod tsf;
-pub mod tsf_observations;
 pub mod vk;
 pub mod win32;
 

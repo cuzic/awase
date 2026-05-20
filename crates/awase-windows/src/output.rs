@@ -655,7 +655,7 @@ impl Output {
                 // total_max_ms: GJI が応答しない場合でも 120ms で打ち切る
                 const CHROME_PROBE_MIN_MS: u64 = 20;
                 const CHROME_PROBE_MAX_MS: u64 = 120;
-                let probe = crate::tsf_observations::TsfReadinessProbe::new(
+                let probe = crate::tsf::probe::TsfReadinessProbe::new(
                     f2_sent_ms,
                     cold_n,
                     CHROME_PROBE_MIN_MS,
@@ -854,7 +854,7 @@ impl Output {
                         }
                         const RE_WARMUP_MS: u64 = 500;
                         let re_warmup_sent_ms = crate::hook::current_tick_ms();
-                        crate::tsf_observations::TsfReadinessProbe::new(
+                        crate::tsf::probe::TsfReadinessProbe::new(
                             re_warmup_sent_ms, cold_n, probe_min_ms,
                         )
                         .wait_until_ready(RE_WARMUP_MS);
@@ -868,7 +868,7 @@ impl Output {
                         // （GJI candidate SHOW が 300ms を超えるため raw-tsf-literal がタイムアウト）
                         // → fresh F2 を送って TsfReadinessProbe で composition context を
                         //   再確認してから送信する。追加 ~140ms だが false positive を防げる。
-                        let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                        let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS
                             .load(Relaxed);
                         let gji_idle =
                             crate::hook::current_tick_ms().saturating_sub(last_io);
@@ -887,7 +887,7 @@ impl Output {
                                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                             );
                         }
-                        crate::tsf_observations::TsfReadinessProbe::new(
+                        crate::tsf::probe::TsfReadinessProbe::new(
                             fresh_f2_ms, cold_n, probe_min_ms,
                         )
                         .wait_until_ready(eager_settle_ms);
@@ -903,7 +903,7 @@ impl Output {
                     );
                     // total_max_ms は warmup_sent_ms 起点の合計予算（remaining ではない）。
                     // probe 内で max_deadline = eager_ms + eager_settle_ms が計算される。
-                    crate::tsf_observations::TsfReadinessProbe::new(
+                    crate::tsf::probe::TsfReadinessProbe::new(
                         eager_ms, cold_n, probe_min_ms,
                     )
                     .wait_until_ready(eager_settle_ms);
@@ -925,10 +925,10 @@ impl Output {
                     // 修正: fresh F2 を送り wait_for_tsf_cold_settle でメッセージをポンプする。
                     // probe sleep 中に溜まった pending NAMECHANGE を即処理するため、
                     // NativeF2Consumed/SetOpenTrue では追加遅延はほぼ 0ms で済む。
-                    let gji_last = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                    let gji_last = crate::tsf::observer::OBS_GJI_LAST_IO_MS
                         .load(Relaxed);
                     let probe_settled = gji_last >= eager_ms;
-                    let gji_monitor_ok = crate::tsf_observations::OBS_GJI_MONITOR_OK
+                    let gji_monitor_ok = crate::tsf::observer::OBS_GJI_MONITOR_OK
                         .load(Relaxed);
 
                     let is_ime_init_cold = cold_reason.requires_settle();
@@ -973,7 +973,7 @@ impl Output {
                             log::debug!(
                                 "[h1-warmup] cold={cold_n} OBJ_NAMECHANGE後 GJI 二次プローブ (max {GJI_POST_NAMECHANGE_MS}ms)",
                             );
-                            crate::tsf_observations::TsfReadinessProbe::new(
+                            crate::tsf::probe::TsfReadinessProbe::new(
                                 fresh_f2_ms, cold_n, 0,
                             )
                             .wait_until_ready(GJI_POST_NAMECHANGE_MS);
@@ -1005,7 +1005,7 @@ impl Output {
                 // VK_DBE_HIRAGANA 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
                 // GJI I/O モニターが利用可能なら静止検出、なければ固定 sleep。
                 let probe_sent_ms = crate::hook::current_tick_ms();
-                crate::tsf_observations::TsfReadinessProbe::new(
+                crate::tsf::probe::TsfReadinessProbe::new(
                     probe_sent_ms, cold_n, probe_min_ms,
                 )
                 .wait_until_ready(eager_settle_ms);
@@ -1040,7 +1040,7 @@ impl Output {
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.iter().enumerate() {
-            let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS
                 .load(Relaxed);
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let vks: Vec<String> = run.iter().map(|&(v, s)| {
@@ -1085,7 +1085,7 @@ impl Output {
         // conv は最大 10ms の WM_IME_CONTROL 問い合わせ。WezTerm が通常応答する場合は 1-3ms 以内。
         {
             use std::sync::atomic::Ordering::Relaxed;
-            let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS
                 .load(Relaxed);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
@@ -1169,7 +1169,7 @@ impl Output {
         //   - was_visible=false: SHOW イベント（composition 時に非表示→表示）~4ms
         //   - was_visible=true : GJI I/O 変化（ウィンドウがすでに表示中で SHOW は来ない）
         // GJI が動いていない環境（MS IME 等）では OBS_GJI_MONITOR_OK=false なのでスキップ。
-        let gji_active = crate::tsf_observations::OBS_GJI_MONITOR_OK.load(Relaxed);
+        let gji_active = crate::tsf::observer::OBS_GJI_MONITOR_OK.load(Relaxed);
         if prepend_f2_warmup && gji_active {
             const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
             let t_send = crate::hook::current_tick_ms();
