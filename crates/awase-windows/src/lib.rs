@@ -29,7 +29,6 @@ pub mod output;
 pub mod platform;
 pub mod runtime;
 pub mod scanmap;
-pub mod single_thread_cell;
 pub mod timer;
 pub mod tray;
 pub mod tsf_observations;
@@ -37,7 +36,7 @@ pub mod vk;
 pub mod win32;
 
 pub use runtime::{LayoutEntry, Runtime};
-pub use single_thread_cell::SingleThreadCell;
+pub use win32_async::SingleThreadCell;
 
 use std::sync::atomic::AtomicBool;
 

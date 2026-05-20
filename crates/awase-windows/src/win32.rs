@@ -1,7 +1,5 @@
 //! Windows API の安全ラッパー
 
-use std::sync::Mutex;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
@@ -10,124 +8,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
 };
 
-/// タイムアウトで放棄されたワーカースレッドのリスト。
-///
-/// 次の `run_with_timeout` 呼び出し時に完了済みのものを刈り取る（GC）。
-/// 永久にブロックする API を叩いたスレッドは `is_finished()` が false のままなので
-/// GC できない。そのため上限を設け、満杯なら新規 spawn を拒否してリソース暴走を防ぐ。
-static LEAKED_THREADS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
-
-/// 孤児スレッドの最大許容数。これを超えると `run_with_timeout` は spawn せず即 `None` を返す。
-const LEAKED_THREAD_MAX: usize = 8;
-
-/// 孤児スレッドリストから完了済みのものを刈り取る。
-/// `run_with_timeout` の冒頭で呼ばれる。
-///
-/// `is_finished() == true` の `JoinHandle` を `retain` で削除すると drop され、
-/// 既に終了している OS スレッドのリソースが回収される。
-fn reap_leaked_threads() {
-    let Ok(mut leaked) = LEAKED_THREADS.lock() else {
-        return;
-    };
-    let before = leaked.len();
-    leaked.retain(|h| !h.is_finished());
-    let reaped = before - leaked.len();
-    if reaped > 0 {
-        log::debug!(
-            "Reaped {reaped} finished leaked worker threads ({} remaining)",
-            leaked.len()
-        );
-    }
-}
-
-/// 孤児スレッドリストに追加する。
-fn leak_thread(handle: JoinHandle<()>) {
-    let Ok(mut leaked) = LEAKED_THREADS.lock() else {
-        return;
-    };
-    leaked.push(handle);
-    log::warn!(
-        "Leaked worker thread (now {} in list)",
-        leaked.len()
-    );
-}
-
-/// 孤児スレッドリストが満杯かどうかを返す。
-fn is_leaked_list_full() -> bool {
-    LEAKED_THREADS
-        .lock()
-        .map_or(false, |leaked| leaked.len() >= LEAKED_THREAD_MAX)
-}
-
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
 ///
-/// ブロッキング Win32 API（IMM32, MSAA, UIA 等）を安全に呼び出すために使用する。
-/// タイムアウトした場合は `None` を返し、ワーカースレッドは孤児スレッドリストに追加され、
-/// 次回の `run_with_timeout` 呼び出し時に完了していれば刈り取られる（GC）。
-///
-/// # Type parameters
-/// - `T`: 戻り値の型。`Send + 'static` である必要がある。
-///
-/// # 制約
-/// クロージャ内では COM/IMM32/GDI 等のスレッド親和性のある API を呼び出せない。
-/// ただし `GetForegroundWindow`, `GetGUIThreadInfo`, `SendMessageTimeoutW` 等の
-/// 読み取り系 API は一般的にワーカースレッドから呼んでも安全。
-pub fn run_with_timeout<T, F>(timeout: Duration, f: F) -> Option<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    // 前回以前にリークしたスレッドのうち完了済みのものを刈り取る
-    reap_leaked_threads();
-
-    // 満杯なら新規スレッドを生成せず即失敗。
-    // TerminateThread は IMM32/MSAA の内部ロックを保持したまま殺すリスクがあるため使わない。
-    // ime_force_on_guard により検出失敗でも Engine は動作継続する。
-    if is_leaked_list_full() {
-        log::error!(
-            "Leaked thread list is full ({LEAKED_THREAD_MAX}), refusing to spawn new worker. \
-             A Win32 API is persistently blocking."
-        );
-        return None;
-    }
-
-    // 結果はチャンネルで受け取る（JoinHandle の型を () に揃えるため）
-    let (tx, rx) = std::sync::mpsc::sync_channel::<T>(1);
-    let handle: JoinHandle<()> = std::thread::spawn(move || {
-        let result = f();
-        // 受信側がタイムアウトで drop されている可能性があるので送信失敗は無視
-        let _ = tx.send(result);
-    });
-
-    let start = std::time::Instant::now();
-    loop {
-        // 結果が届いたか確認
-        match rx.try_recv() {
-            Ok(result) => {
-                // スレッドは間もなく終了するはず。join で回収する。
-                let _ = handle.join();
-                return Some(result);
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                // ワーカーがパニック等で送信せずに終了
-                let _ = handle.join();
-                log::error!("run_with_timeout: worker thread ended without result");
-                return None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        }
-
-        if start.elapsed() >= timeout {
-            log::warn!(
-                "run_with_timeout: worker thread exceeded {}ms, leaked for later GC",
-                timeout.as_millis()
-            );
-            leak_thread(handle);
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
+/// `win32_async::run_with_timeout` の re-export。
+pub use win32_async::run_with_timeout;
 
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
 pub fn send_input_safe(inputs: &[INPUT]) -> u32 {
