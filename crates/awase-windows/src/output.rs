@@ -1313,6 +1313,42 @@ const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
 }
 
+impl awase::platform::CompositionOutput for Output {
+    fn send_romaji(&self, romaji: &str) {
+        // モード判定は send_romaji_as_tsf 内部の resolve_injection_mode() が行う。
+        // 現状は TSF / VK Batched / Unicode の3モードを自動選択する。
+        self.send_romaji(romaji);
+    }
+
+    fn send_kana_char(&self, ch: char) {
+        self.send_char_as_tsf(ch);
+    }
+
+    fn is_composition_warm(&self) -> bool {
+        self.is_composition_warm()
+    }
+
+    fn mark_cold_focus_change(&self) {
+        self.mark_composition_cold(ColdReason::FocusChange);
+    }
+
+    fn mark_cold_confirm_key(&self) {
+        self.mark_composition_cold(ColdReason::PassthroughConfirmKey);
+    }
+
+    fn mark_cold_ime_toggle(&self) {
+        self.mark_composition_cold(ColdReason::SetOpenTrue);
+    }
+
+    fn notify_ime_open(&self, open: bool) {
+        self.notify_ime_open(open);
+    }
+
+    fn on_focus_changed(&self) {
+        self.on_focus_changed();
+    }
+}
+
 /// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
 ///
 /// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。

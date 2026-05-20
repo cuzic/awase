@@ -95,6 +95,48 @@ pub trait ImeDetector {
     fn is_composing(&self) -> bool;
 }
 
+// ─── CompositionOutput Trait ─────────────────────────────────
+
+/// IME composition context を管理する抽象インターフェース。
+///
+/// 各プラットフォーム（Windows TSF / macOS InputMethod / Linux IBus 等）が
+/// このトレイトを実装することで、awase エンジンが OS に依存せず
+/// composition 状態を操作できる。
+///
+/// # cold になるタイミング
+/// awase エンジンは以下のイベントで cold を通知する:
+/// - `mark_cold_focus_change`: フォーカス変更
+/// - `mark_cold_confirm_key`: Enter/Space/Escape（composition 確定・キャンセル）
+/// - `mark_cold_ime_toggle`: IME ON/OFF 操作
+///
+/// Windows TSF 実装は各メソッドを `ColdReason::FocusChange` 等にマップする。
+/// macOS/Linux 実装は自身のセマンティクスに従って実装する。
+pub trait CompositionOutput {
+    /// ローマ字文字列を composition 経由で送信する。
+    fn send_romaji(&self, romaji: &str);
+
+    /// かな文字を composition 経由で送信する。
+    fn send_kana_char(&self, ch: char);
+
+    /// composition context が warm（受け付け可能）かどうかを返す。
+    fn is_composition_warm(&self) -> bool;
+
+    /// フォーカス変更による composition context の cold 化を通知する。
+    fn mark_cold_focus_change(&self);
+
+    /// Enter/Space/Escape による composition 確定・キャンセルを通知する。
+    fn mark_cold_confirm_key(&self);
+
+    /// IME ON/OFF 操作による composition context の cold 化を通知する。
+    fn mark_cold_ime_toggle(&self);
+
+    /// IME の ON/OFF 状態変化を通知する（shadow 追跡用）。
+    fn notify_ime_open(&self, open: bool);
+
+    /// フォーカス変更を通知する（epoch インクリメント）。
+    fn on_focus_changed(&self);
+}
+
 // ─── PlatformRuntime Trait ──────────────────────────────────
 
 use std::time::Duration;
@@ -148,6 +190,11 @@ pub trait PlatformRuntime {
     /// 配列名をトレイに表示する
     fn set_tray_layout_name(&mut self, name: &str);
 
+    /// composition 出力コンポーネントへの参照を返す。
+    /// `None` の場合は composition 不要（macOS のシンプルモード等）。
+    fn composition_output(&self) -> Option<&dyn CompositionOutput> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -72,4 +72,7 @@ impl PlatformRuntime for WindowsPlatform {
         self.tray.set_layout_name(name);
     }
 
+    fn composition_output(&self) -> Option<&dyn awase::platform::CompositionOutput> {
+        Some(&self.output)
+    }
 }
