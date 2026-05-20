@@ -7,7 +7,9 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::tsf::observer::{OBS_GJI_LAST_IO_MS, OBS_GJI_MONITOR_OK};
+use crate::tsf::observer::{
+    OBS_GJI_CANDIDATE_SHOW_SEQ, OBS_GJI_CANDIDATE_VISIBLE, OBS_GJI_LAST_IO_MS, OBS_GJI_MONITOR_OK,
+};
 
 // ── TsfReadinessProbe ──
 
@@ -321,6 +323,142 @@ impl CompositionState {
     #[must_use]
     pub fn consecutive_count(&self) -> u32 {
         self.raw_tsf_literal_consecutive_count.get()
+    }
+}
+
+// ── LiteralDetector ──
+
+/// raw-TSF-literal 検出セッション ID。新規検出開始時にインクリメントし、
+/// orphan タイムアウトタスクが古いセッションで副作用を起こさないようにする。
+static RAW_TSF_LITERAL_DETECT_SESSION: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// `send_romaji_as_tsf` が文字を送信した直後に生成し、
+/// GJI 候補ウィンドウの変化を監視して composition が成功したか判定する検出器。
+#[derive(Debug)]
+pub struct LiteralDetector {
+    /// 送信前の GJI 候補ウィンドウ SHOW シーケンス番号
+    gji_show_baseline: u32,
+    /// 送信前の GJI I/O タイムスタンプ
+    io_baseline: u64,
+    /// 送信前に候補ウィンドウが表示中だったか
+    was_candidate_visible: bool,
+}
+
+/// raw-TSF-literal 検出結果。
+#[derive(Debug)]
+pub enum DetectionResult {
+    /// composition 成功（IME が文字を受け付けた）
+    CompositionConfirmed,
+    /// raw TSF literal 疑い（IME をバイパスして ASCII が出力された）
+    SuspectedLiteral,
+}
+
+impl LiteralDetector {
+    /// 現在の観測値からベースラインを取得して `LiteralDetector` を生成する。
+    ///
+    /// ローマ字送信直前に呼ぶこと。
+    pub fn new() -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        Self {
+            gji_show_baseline: OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed),
+            io_baseline: OBS_GJI_LAST_IO_MS.load(Relaxed),
+            was_candidate_visible: OBS_GJI_CANDIDATE_VISIBLE.load(Relaxed),
+        }
+    }
+
+    /// ローマ字送信後に呼び、composition 成功 / raw literal 疑いを判定する。
+    ///
+    /// - 候補ウィンドウが非表示だった場合: SHOW イベントで composition を確認
+    /// - 候補ウィンドウが表示済みだった場合: GJI I/O 変化で composition を確認
+    pub fn detect(&self, timeout_ms: u64) -> DetectionResult {
+        let timeout_u32 = u32::try_from(timeout_ms).unwrap_or(u32::MAX);
+        let confirmed = if self.was_candidate_visible {
+            wait_for_raw_tsf_literal_io(self.io_baseline, timeout_u32)
+        } else {
+            wait_for_raw_tsf_literal_show(self.gji_show_baseline, timeout_u32)
+        };
+        if confirmed {
+            DetectionResult::CompositionConfirmed
+        } else {
+            DetectionResult::SuspectedLiteral
+        }
+    }
+}
+
+/// cold start 後のローマ字送信で GJI candidate window が表示されるのを event-driven に待つ。
+///
+/// - `show_baseline`: 送信直前の `OBS_GJI_CANDIDATE_SHOW_SEQ` の値
+/// - `timeout_ms`: タイムアウト (ms)
+/// - 戻り値: `true` = SHOW 検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
+pub(crate) fn wait_for_raw_tsf_literal_show(show_baseline: u32, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _guard = crate::ProbeGuard;
+    crate::PROBE_ACTIVE.store(true, Relaxed);
+    win32_async::block_on(raw_tsf_literal_show_or_timeout_async(show_baseline, timeout_ms))
+}
+
+async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let probe_baseline = crate::COMPOSITION_PROBE_SEQ.load(Relaxed);
+    let session = RAW_TSF_LITERAL_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
+
+    // タイムアウトタスク: timeout_ms 後に COMPOSITION_PROBE_SEQ を +1 してウォッチャーを起こす。
+    // session チェックで古いセッション（orphan）の副作用を防ぐ。
+    win32_async::spawn_local(async move {
+        win32_async::sleep_ms(timeout_ms).await;
+        if RAW_TSF_LITERAL_DETECT_SESSION.load(Relaxed) == session {
+            crate::COMPOSITION_PROBE_SEQ.fetch_add(1, Relaxed);
+            win32_async::notify_all();
+        }
+    });
+
+    // 観測 (observation): COMPOSITION_PROBE_SEQ の変化を event-driven に待つ
+    win32_async::AtomicWatcher::new(&crate::COMPOSITION_PROBE_SEQ, probe_baseline).await;
+
+    // 集約 (reduce): OBS_GJI_CANDIDATE_SHOW_SEQ が変化していれば SHOW 検出
+    OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != show_baseline
+}
+
+/// GJI candidate window がすでに表示中の場合の raw TSF literal 検出。
+/// SHOW イベントは来ないため GJI I/O 変化（OBS_GJI_LAST_IO_MS）でポーリングする。
+///
+/// - `io_baseline`: 送信直前の `OBS_GJI_LAST_IO_MS` の値
+/// - `timeout_ms`: タイムアウト (ms)
+/// - 戻り値: `true` = I/O 変化検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
+pub(crate) fn wait_for_raw_tsf_literal_io(io_baseline: u64, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _guard = crate::ProbeGuard;
+    crate::PROBE_ACTIVE.store(true, Relaxed);
+    win32_async::block_on(raw_tsf_literal_io_or_timeout_async(io_baseline, timeout_ms))
+}
+
+/// [`wait_for_raw_tsf_literal_io`] の非同期実装。`OBS_GJI_LAST_IO_MS` をポーリングする。
+///
+/// GJI I/O モニタースレッドは 10ms 間隔でサンプリングするため、
+/// ポーリング間隔は 15ms に設定し、I/O 変化を確実に捕捉する。
+async fn raw_tsf_literal_io_or_timeout_async(io_baseline: u64, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    const POLL_MS: u32 = 15;
+
+    let session = RAW_TSF_LITERAL_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
+    let deadline = crate::hook::current_tick_ms() + u64::from(timeout_ms);
+
+    loop {
+        if RAW_TSF_LITERAL_DETECT_SESSION.load(Relaxed) != session {
+            return false;
+        }
+        let io_now = OBS_GJI_LAST_IO_MS.load(Relaxed);
+        if io_now != io_baseline {
+            return true;
+        }
+        let now = crate::hook::current_tick_ms();
+        if now >= deadline {
+            return false;
+        }
+        let remaining = u32::try_from(deadline.saturating_sub(now)).unwrap_or(u32::MAX);
+        win32_async::sleep_ms(remaining.min(POLL_MS)).await;
     }
 }
 
