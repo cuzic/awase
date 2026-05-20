@@ -797,6 +797,10 @@ impl Output {
             );
         }
         self.mark_composition_warm();
+        // バッチ送信・warm化が完了した後にプローブ中退避キーを再配送する。
+        // wait_until_ready / wait_for_tsf_cold_settle 内では drain しないため、
+        // composition warm な状態で後続キーが処理され、二重プローブを防ぐ。
+        crate::post_drain_probe_queue();
     }
 
     /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
@@ -1150,6 +1154,8 @@ impl Output {
         }
 
         self.mark_composition_warm();
+        // バッチ送信・warm化完了後にプローブ退避キーを再配送（二重プローブ防止）。
+        crate::post_drain_probe_queue();
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
@@ -1309,8 +1315,7 @@ fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
     crate::PROBE_ACTIVE.store(true, Relaxed);
     let settled = win32_async::block_on(settle_async(nc_baseline, timeout_ms));
     crate::PROBE_ACTIVE.store(false, Relaxed);
-    // プローブ中に退避したキーを NICOLA へ再配送（順序保証）
-    crate::post_drain_probe_queue();
+    // drain は呼ばない。呼び出し元 send_romaji_as_tsf が mark_composition_warm 後に呼ぶ。
 
     let nc_fired = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline;
     log::debug!(

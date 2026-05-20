@@ -315,8 +315,10 @@ impl TsfReadinessProbe {
         crate::PROBE_ACTIVE.store(true, Relaxed);
         win32_async::block_on(self.wait_until_ready_async(total_max_ms));
         crate::PROBE_ACTIVE.store(false, Relaxed);
-        // プローブ中に退避したキーを NICOLA へ再配送（順序保証）
-        crate::post_drain_probe_queue();
+        // drain はここでは呼ばない。呼び出し元（send_romaji_batched / send_romaji_as_tsf）が
+        // バッチ送信・mark_composition_warm 完了後に post_drain_probe_queue を呼ぶ。
+        // ここで drain すると block_on のネストされたメッセージループ中に再配送が走り、
+        // 後続キー（ん等）が composition cold のまま send_romaji_as_tsf → 再プローブ → 二重入力を起こす。
     }
 
     /// [`wait_until_ready`] の非同期実装。`sleep_ms` を使って待機し、
