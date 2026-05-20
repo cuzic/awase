@@ -1508,6 +1508,14 @@ impl Output {
         log::debug!("[raw-tsf-literal] re-sending raw TSF literal romaji={romaji:?}");
         self.send_romaji_as_tsf(&romaji);
     }
+
+    /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送。
+    ///
+    /// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。drain keys より前に実行すること。
+    pub fn flush_raw_tsf_literal_recovery(&self) {
+        flush_raw_tsf_literal_backspaces();
+        self.flush_raw_tsf_literal_romaji();
+    }
 }
 
 /// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。
@@ -1550,10 +1558,9 @@ pub fn flush_raw_tsf_literal_backspaces() {
 /// Returns `true` = OBJ_NAMECHANGE 検出、`false` = タイムアウト
 fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
-
+    let _guard = crate::ProbeGuard;
     crate::PROBE_ACTIVE.store(true, Relaxed);
     let settled = win32_async::block_on(settle_async(nc_baseline, timeout_ms));
-    crate::PROBE_ACTIVE.store(false, Relaxed);
     // drain は呼ばない。呼び出し元 send_romaji_as_tsf が mark_composition_warm 後に呼ぶ。
 
     let nc_fired = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline;
@@ -1615,10 +1622,9 @@ fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 
 fn wait_for_raw_tsf_literal_show(show_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
+    let _guard = crate::ProbeGuard;
     crate::PROBE_ACTIVE.store(true, Relaxed);
-    let detected = win32_async::block_on(raw_tsf_literal_show_or_timeout_async(show_baseline, timeout_ms));
-    crate::PROBE_ACTIVE.store(false, Relaxed);
-    detected
+    win32_async::block_on(raw_tsf_literal_show_or_timeout_async(show_baseline, timeout_ms))
 }
 
 async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
@@ -1652,10 +1658,9 @@ async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u
 /// - 戻り値: `true` = I/O 変化検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
 fn wait_for_raw_tsf_literal_io(io_baseline: u64, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
+    let _guard = crate::ProbeGuard;
     crate::PROBE_ACTIVE.store(true, Relaxed);
-    let detected = win32_async::block_on(raw_tsf_literal_io_or_timeout_async(io_baseline, timeout_ms));
-    crate::PROBE_ACTIVE.store(false, Relaxed);
-    detected
+    win32_async::block_on(raw_tsf_literal_io_or_timeout_async(io_baseline, timeout_ms))
 }
 
 /// [`wait_for_raw_tsf_literal_io`] の非同期実装。`OBS_GJI_LAST_IO_MS` をポーリングする。

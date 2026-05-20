@@ -94,6 +94,17 @@ pub static COMPOSITION_PROBE_SEQ: std::sync::atomic::AtomicU32 =
 /// これにより MsgWaitForMultipleObjects + PeekMessage ループ中の re-entrancy を防ぐ。
 pub static PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// PROBE_ACTIVE を RAII で管理するガード。
+/// Drop 時に `PROBE_ACTIVE` を false にリセットする。
+#[derive(Debug)]
+pub struct ProbeGuard;
+
+impl Drop for ProbeGuard {
+    fn drop(&mut self) {
+        PROBE_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// PROBE_ACTIVE=true 中に到着したキーイベントの退避キュー。
 ///
 /// プローブ終了後に WM_DRAIN_PROBE_QUEUE メッセージ経由で NICOLA へ再配送する。

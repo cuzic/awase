@@ -311,10 +311,10 @@ impl TsfReadinessProbe {
     /// `std::thread::sleep` を使わないため、待機中も WinEvent（OBJ_NAMECHANGE 等）が処理される。
     pub fn wait_until_ready(&self, total_max_ms: u64) {
         use std::sync::atomic::Ordering::Relaxed;
+        let _guard = crate::ProbeGuard;
         // ネストしたメッセージループ中にキーフックが再入しないようガード
         crate::PROBE_ACTIVE.store(true, Relaxed);
         win32_async::block_on(self.wait_until_ready_async(total_max_ms));
-        crate::PROBE_ACTIVE.store(false, Relaxed);
         // drain はここでは呼ばない。呼び出し元（send_romaji_batched / send_romaji_as_tsf）が
         // バッチ送信・mark_composition_warm 完了後に post_drain_probe_queue を呼ぶ。
         // ここで drain すると block_on のネストされたメッセージループ中に再配送が走り、
