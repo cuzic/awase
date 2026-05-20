@@ -1229,18 +1229,22 @@ impl Output {
             } else {
                 log::warn!(
                     "[ze-detect] cold={cold_n} ze literal suspected \
-                    ({elapsed_ms}ms, no SHOW) → backspace ×{} scheduled + mark cold",
+                    ({elapsed_ms}ms, no SHOW) → backspace ×{} + re-send {romaji:?} scheduled + mark cold",
                     chars.len()
                 );
-                // backspace を ZE_LITERAL_PENDING_BACKS に退避する。
-                // WM_DRAIN_PROBE_QUEUE ハンドラが drain キーより先に SendInput で送信し、
-                // WezTerm での処理順序を保証する（backspace → drain keys）。
-                // ここで直接 SendInput すると block_on のネストメッセージループによる
-                // 順序逆転リスクがある。
+                // backspace 数とローマ字を退避する。
+                // WM_DRAIN_PROBE_QUEUE ハンドラが：
+                //   1. backspace を SendInput（ze literal を消去）
+                //   2. romaji を再送（warm な compose で正しく入力）
+                //   3. drain キーを再配送
+                // の順で処理し、WezTerm での到着順を保証する。
                 crate::ZE_LITERAL_PENDING_BACKS.store(
                     chars.len(),
                     std::sync::atomic::Ordering::Relaxed,
                 );
+                *crate::ZE_LITERAL_PENDING_ROMAJI
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
                 self.mark_composition_cold(ColdReason::ZeLiteralRecovery);
             }
         }
@@ -1385,6 +1389,27 @@ const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT 
                 dwExtraInfo: extra_info,
             },
         },
+    }
+}
+
+/// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。`flush_ze_literal_backspaces` の後に呼ぶこと。
+///
+/// `ZE_LITERAL_PENDING_ROMAJI` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
+/// cold 状態（ZeLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
+/// drain キーの前に呼ぶことで「backspace → ze char → drain keys」の順を保証する。
+impl Output {
+    pub fn flush_ze_literal_romaji(&self) {
+        let romaji = {
+            let mut guard = crate::ZE_LITERAL_PENDING_ROMAJI
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *guard)
+        };
+        if romaji.is_empty() {
+            return;
+        }
+        log::debug!("[ze-detect] re-sending ze literal romaji={romaji:?}");
+        self.send_romaji_as_tsf(&romaji);
     }
 }
 

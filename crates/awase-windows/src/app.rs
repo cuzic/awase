@@ -1370,10 +1370,14 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // TSF 注入バッチが送信された後のメッセージループで処理されるため、
                 // WezTerm への到着順が保証される（物理キーがバッチより先に届かない）。
 
-                // ze literal 検出後のバックスペースを先に送信する。
-                // drain キーの SendInput より前に呼ぶことで WezTerm での処理順を保証する
-                // （backspace → drain keys の順で WezTerm に届く）。
+                // ze literal 回収: backspace → ze 文字再送 → drain keys の順を保証する。
+                // (1) backspace: ze literal 文字（例 'ko'）をターミナルから消去
                 awase_windows::output::flush_ze_literal_backspaces();
+                // (2) ze 文字再送: cold warmup probe を経て正しく compose（例 'こ'）
+                if let Some(runtime) = APP.get_mut() {
+                    runtime.executor.platform.output.flush_ze_literal_romaji();
+                }
+                // (3) drain: 先行入力キーを再配送（例 'のじじょう'）
 
                 let queue = {
                     let mut q = awase_windows::PROBE_KEY_QUEUE

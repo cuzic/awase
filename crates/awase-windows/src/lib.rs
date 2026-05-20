@@ -97,10 +97,17 @@ pub static PROBE_KEY_QUEUE: std::sync::Mutex<Vec<RawKeyEvent>> =
 /// ze literal 検出後に送信すべきバックスペースの数。
 ///
 /// WM_DRAIN_PROBE_QUEUE ハンドラが drain キーより先に SendInput でバックスペースを送信し、
-/// WezTerm での到着順を保証する（backspace → drain keys の順になるようにする）。
+/// WezTerm での到着順を保証する（backspace → ze char 再送 → drain keys の順になるようにする）。
 /// ze literal でない通常の drain では 0 のまま。
 pub static ZE_LITERAL_PENDING_BACKS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+/// ze literal 検出後に再送すべきローマ字文字列。
+///
+/// バックスペースで ze literal 文字を消した後、この文字列を `send_romaji_as_tsf` で
+/// 再送することで正しく composition に入れる。空文字列 = 再送なし。
+pub static ZE_LITERAL_PENDING_ROMAJI: std::sync::Mutex<String> =
+    std::sync::Mutex::new(String::new());
 
 /// PROBE_ACTIVE 解除後にキューされたキーを NICOLA へ再配送するカスタムメッセージ。
 ///
