@@ -145,12 +145,31 @@ pub struct Preconditions {
     /// 検出成功時またはシャドウ更新（ユーザー操作）時にリセットされる。
     /// [`IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
     /// IME を強制 ON にして Engine の活性状態を維持する。
-    pub ime_detect_miss_count: u32,
-    /// IME 強制 ON 後のガードフラグ。
     ///
-    /// `true` の間、`observe()` は検出失敗時に `ime_on` を変更しない（awase が SSOT）。
-    /// 検出成功時にクリアされ、OS 側の SSOT に戻る。
-    /// force-ON の無限ループ防止、panic_reset 直後の上書き防止にも使用。
+    /// ## 発火条件の実態
+    /// Chrome / WezTerm / Windows Terminal など **既知の** アプリでは発火しない：
+    /// - TSF native ウィンドウ（WezTerm, Windows Terminal）: `is_tsf_native` 分岐で
+    ///   miss_count のインクリメントをスキップ
+    /// - `ImmCapability::Broken` 学習済みクラス: `skip_imm_query=true` で Phase 3 自体を迂回
+    /// - Chrome 等 IMM32 が動くアプリ: 検出が普通に成功するので count は増えない
+    ///
+    /// 実際に増えるのは「**未知の IMM-broken アプリへの初回フォーカス時だけ**」。
+    /// 閾値到達後 `ImmCapability::Broken` として学習されると、以降は発火しなくなる。
+    pub ime_detect_miss_count: u32,
+    /// IME 強制 ON 後のガードフラグ。2 つの独立した用途がある。
+    ///
+    /// ## 用途 A — 未知 IMM-broken アプリの初回ブートストラップ（Phase 3.5）
+    /// 未知アプリへの初回フォーカス時に `set_ime_open(true)` を呼んだ後、
+    /// 次の `observe()` が即座に上書きしないよう 1 サイクルだけ保護する。
+    /// 検出成功（または `ImmCapability::Broken` 学習完了）後にクリアされる。
+    ///
+    /// ## 用途 B — `panic_reset()` 直後の上書き防止
+    /// パニックリセットで `ime_on=true` を書き込んだ直後に `refresh_ime_state_cache`
+    /// が走ると stale な `observe()` の結果に上書きされてしまう。これを防ぐ。
+    /// 次の検出成功時に自然にクリアされる。
+    ///
+    /// いずれも「awase が恒常的に SSOT になる」わけではなく、
+    /// **一時的な遷移期間中だけ OS 検出結果を無視する** という設計。
     pub ime_force_on_guard: bool,
 }
 

@@ -544,17 +544,19 @@ impl Runtime {
                 }
             }
 
-            // ── Phase 3.5: IME 検出が失敗しているとき、shadow=ON なら OS に強制 ON を書く ──
+            // ── Phase 3.5: 未知 IMM-broken アプリ向け一時 force-ON（初回ブートストラップ）──
             //
-            // 検出失敗が続いている = OS の IME 状態を読めない状態。
-            // このとき shadow=ON であれば「ユーザーは日本語入力したい」と解釈して
-            // OS に SetOpen(true) を書き込み、engine を active のまま維持する (ADR 029)。
+            // ここに来るのは「既知でも TSF-native でもないアプリで detect が連続失敗した」
+            // 場合だけ。Chrome・WezTerm・Windows Terminal 等の既知アプリでは
+            // この分岐に入らない（skip_imm_query または is_tsf_native が先に処理する）。
             //
-            // 元の commit 6531a83 の原則どおり force-ON のみで、shadow=OFF のときは
-            // 書き込まない (ユーザーの明示的な OFF を上書きしないため)。
+            // shadow=ON なら「ユーザーは日本語入力したい」と解釈して SetOpen(true) を呼び、
+            // engine を active のまま維持する (ADR 029)。shadow=OFF のときは書き込まない
+            // （ユーザーの明示的な OFF を上書きしないため）。
             //
-            // ime_force_on_guard 中は初回ミラーリング後にフラグが立つので再書き込みしない
-            // （毎サイクル書き込むと他アプリの IME 操作と競合するため）。
+            // force-ON 後は ime_force_on_guard を立てて次の observe() による上書きを1回防ぐ。
+            // 閾値到達時に ImmCapability::Broken と学習されるため、以降は skip_imm_query
+            // 経由の Blacklist SSOT パスに移行し、この分岐には来なくなる（一過性の処理）。
             if self.platform_state.preconditions.ime_detect_miss_count
                 >= crate::IME_DETECT_MISS_THRESHOLD
                 && self.engine.is_user_enabled()
@@ -1002,8 +1004,9 @@ impl Runtime {
         self.platform_state.preconditions.is_japanese_ime = true;
         self.platform_state.preconditions.prev_conversion_mode = None;
         self.platform_state.preconditions.ime_detect_miss_count = 0;
-        // 直後の refresh_ime_state_cache() で observe() が上書きしないようガードする。
-        // 次の検出成功時に自然に解除される。
+        // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
+        // ime_on=true を stale な observe() 結果が即座に上書きしてしまう。
+        // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
         self.platform_state.preconditions.ime_force_on_guard = true;
         self.platform_state.hook.sent_to_engine = [0u64; 4];
         self.platform_state.hook.track_only_keys = [0u64; 4];
