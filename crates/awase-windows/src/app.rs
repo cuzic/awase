@@ -33,7 +33,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ, OBS_GJI_CANDIDATE_SHOW_SEQ, ZE_LITERAL_PROBE_SEQ,
+    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ, OBS_GJI_CANDIDATE_SHOW_SEQ, COMPOSITION_PROBE_SEQ,
     Runtime, ShadowSource, APP, ELEVATED, MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_DRAIN_PROBE_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
@@ -1774,7 +1774,7 @@ unsafe extern "system" fn observation_event_proc(
                 let seq = OBS_GJI_CANDIDATE_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
                 // ze literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
                 // AtomicWatcher で event-driven に待機する設計）
-                ZE_LITERAL_PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
+                COMPOSITION_PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
                 log::debug!("[gji-candidate] SHOW #{seq}");
                 win32_async::notify_all();
             }

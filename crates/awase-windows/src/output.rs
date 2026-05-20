@@ -1419,10 +1419,10 @@ static ZE_DETECT_SESSION: std::sync::atomic::AtomicU32 =
 ///
 /// # 実装方針（observation / reduce 分離）
 ///
-/// observation: `ZE_LITERAL_PROBE_SEQ` に対する `AtomicWatcher` で event-driven に待機。
+/// observation: `COMPOSITION_PROBE_SEQ` に対する `AtomicWatcher` で event-driven に待機。
 ///   - SHOW 発火時: `observation_event_proc` が `OBS_GJI_CANDIDATE_SHOW_SEQ` +1 後に
-///     `ZE_LITERAL_PROBE_SEQ` も +1 して `notify_all()` → 即 wake
-///   - timeout 時: `spawn_local` タスクが `sleep_ms` 後に `ZE_LITERAL_PROBE_SEQ` +1 → 即 wake
+///     `COMPOSITION_PROBE_SEQ` も +1 して `notify_all()` → 即 wake
+///   - timeout 時: `spawn_local` タスクが `sleep_ms` 後に `COMPOSITION_PROBE_SEQ` +1 → 即 wake
 ///
 /// reduce: wake 後に `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化していれば SHOW、変化なければ timeout
 fn wait_for_gji_candidate_show(show_baseline: u32, timeout_ms: u32) -> bool {
@@ -1436,21 +1436,21 @@ fn wait_for_gji_candidate_show(show_baseline: u32, timeout_ms: u32) -> bool {
 async fn gji_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
 
-    let probe_baseline = crate::ZE_LITERAL_PROBE_SEQ.load(Relaxed);
+    let probe_baseline = crate::COMPOSITION_PROBE_SEQ.load(Relaxed);
     let session = ZE_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
 
-    // タイムアウトタスク: timeout_ms 後に ZE_LITERAL_PROBE_SEQ を +1 してウォッチャーを起こす。
+    // タイムアウトタスク: timeout_ms 後に COMPOSITION_PROBE_SEQ を +1 してウォッチャーを起こす。
     // session チェックで古いセッション（orphan）の副作用を防ぐ。
     win32_async::spawn_local(async move {
         win32_async::sleep_ms(timeout_ms).await;
         if ZE_DETECT_SESSION.load(Relaxed) == session {
-            crate::ZE_LITERAL_PROBE_SEQ.fetch_add(1, Relaxed);
+            crate::COMPOSITION_PROBE_SEQ.fetch_add(1, Relaxed);
             win32_async::notify_all();
         }
     });
 
-    // 観測 (observation): ZE_LITERAL_PROBE_SEQ の変化を event-driven に待つ
-    win32_async::AtomicWatcher::new(&crate::ZE_LITERAL_PROBE_SEQ, probe_baseline).await;
+    // 観測 (observation): COMPOSITION_PROBE_SEQ の変化を event-driven に待つ
+    win32_async::AtomicWatcher::new(&crate::COMPOSITION_PROBE_SEQ, probe_baseline).await;
 
     // 集約 (reduce): OBS_GJI_CANDIDATE_SHOW_SEQ が変化していれば SHOW 検出
     crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != show_baseline

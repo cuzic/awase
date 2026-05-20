@@ -77,7 +77,7 @@ pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
 /// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
 /// `output::gji_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
 /// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
-pub static ZE_LITERAL_PROBE_SEQ: std::sync::atomic::AtomicU32 =
+pub static COMPOSITION_PROBE_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
 /// [probe] `wait_for_tsf_cold_settle()` がアクティブ中かどうかのフラグ。
