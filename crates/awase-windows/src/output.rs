@@ -41,6 +41,43 @@ pub enum ColdReason {
     RawTsfLiteralRecovery,
 }
 
+impl ColdReason {
+    /// warmup 後の eager settle 待機時間 (ms)。long_idle=true のとき延長。
+    pub fn eager_settle_ms(self, long_idle: bool) -> u64 {
+        match self {
+            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 1500,
+            Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
+                if long_idle { 1500 } else { 500 }
+            }
+            Self::SessionExpired | Self::SymbolVkSent | Self::F2NonTsf
+            | Self::RawTsfLiteralRecovery => 500,
+        }
+    }
+
+    /// VK_DBE_HIRAGANA 送信後の最小待機時間 (ms)（GJI I/O 観測開始前の固定待機）
+    pub fn probe_min_ms(self, long_idle: bool) -> u64 {
+        match self {
+            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 300,
+            Self::SessionExpired => 200,
+            Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
+                if long_idle { 300 } else { 50 }
+            }
+            Self::SymbolVkSent => 30,
+            Self::F2NonTsf | Self::RawTsfLiteralRecovery => 100,
+        }
+    }
+
+    /// confirmation キー（composition 確定/キャンセル）かどうか
+    pub fn is_confirm_key(self) -> bool {
+        matches!(self, Self::PassthroughConfirmKey | Self::ReinjectConfirmKey)
+    }
+
+    /// fresh F2 再送 + settle が必要かどうか（IME 初期化系 cold reason）
+    pub fn requires_settle(self) -> bool {
+        matches!(self, Self::FocusChange | Self::NativeF2Consumed | Self::SetOpenTrue)
+    }
+}
+
 /// 出力注入モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InjectionMode {
@@ -917,36 +954,19 @@ impl Output {
             //     Enter/Space/Escape 後でも長期 idle 後は GJI セッションがリセットされ、
             //     500ms のバジェットでは不足する（kおのじしょう バグ）。1500ms に拡張する。
             //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
-            let eager_settle_ms: u64 = match self.last_cold_reason.get() {
-                ColdReason::FocusChange
-                | ColdReason::SetOpenTrue
-                | ColdReason::NativeF2Consumed => 1500,
-                ColdReason::PassthroughConfirmKey | ColdReason::ReinjectConfirmKey
-                    if long_idle =>
-                {
-                    log::debug!(
-                        "[h1-warmup] cold={cold_n} PassthroughConfirmKey/ReinjectConfirmKey + long idle \
-                         ({}ms) → eager_settle_ms=1500ms",
-                        self.idle_ms_at_last_cold.get()
-                    );
-                    1500
-                }
-                _ => 500,
-            };
+            let cold_reason = self.last_cold_reason.get();
+            if cold_reason.is_confirm_key() && long_idle {
+                log::debug!(
+                    "[h1-warmup] cold={cold_n} PassthroughConfirmKey/ReinjectConfirmKey + long idle \
+                     ({}ms) → eager_settle_ms=1500ms",
+                    self.idle_ms_at_last_cold.get()
+                );
+            }
+            let eager_settle_ms: u64 = cold_reason.eager_settle_ms(long_idle);
             // ColdReason に応じた probe 最小待機時間（warmup_sent_ms 起点）:
             //   VK_DBE_HIRAGANA がキューに入ってから GJI が最初の I/O を開始するまでの
             //   実測下限。この時間内は GJI I/O 監視結果を信頼しない。
-            let probe_min_ms: u64 = match self.last_cold_reason.get() {
-                ColdReason::FocusChange
-                | ColdReason::SetOpenTrue
-                | ColdReason::NativeF2Consumed => 300,
-                ColdReason::SessionExpired => 200,
-                ColdReason::PassthroughConfirmKey | ColdReason::ReinjectConfirmKey
-                    if long_idle => 300,
-                ColdReason::PassthroughConfirmKey | ColdReason::ReinjectConfirmKey => 50,
-                ColdReason::SymbolVkSent => 30,
-                _ => 100,
-            };
+            let probe_min_ms: u64 = cold_reason.probe_min_ms(long_idle);
             log::debug!(
                 "[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms \
                  reason={:?} long_idle={long_idle} idle_at_cold={}ms",
@@ -985,10 +1005,7 @@ impl Output {
                     // FocusChange / SetOpenTrue / NativeF2Consumed の場合はこの再初期化レースが
                     // 発生しやすいため、新規 VK_DBE_HIRAGANA を送って再び 500ms 待機する。
                     // PassthroughConfirmKey 等の composition-only reset では不要。
-                    let needs_re_warmup = matches!(
-                        self.last_cold_reason.get(),
-                        ColdReason::FocusChange | ColdReason::SetOpenTrue | ColdReason::NativeF2Consumed
-                    );
+                    let needs_re_warmup = cold_reason.requires_settle();
                     if needs_re_warmup {
                         log::debug!(
                             "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 再warmup (GJI 再初期化レース対策)",
@@ -1082,10 +1099,7 @@ impl Output {
                     let gji_monitor_ok = crate::tsf_observations::OBS_GJI_MONITOR_OK
                         .load(Relaxed);
 
-                    let is_ime_init_cold = matches!(
-                        self.last_cold_reason.get(),
-                        ColdReason::NativeF2Consumed | ColdReason::SetOpenTrue
-                    );
+                    let is_ime_init_cold = cold_reason.requires_settle();
 
                     if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
                         // GJI probe timeout (no activity) または IME ON 初期化 cold start:
@@ -1593,7 +1607,7 @@ async fn settle_async(nc_baseline: u32, timeout_ms: u32) -> bool {
     }
 }
 
-/// raw TSF literal 検出の各セッション ID。新規検出開始時にインクリメントし、
+/// raw TSF literal 検出セッション ID。新規検出開始時にインクリメントし、
 /// orphan タイムアウトタスクが古いセッションで副作用を起こさないようにする。
 static RAW_TSF_LITERAL_DETECT_SESSION: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
