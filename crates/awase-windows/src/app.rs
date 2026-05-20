@@ -1377,11 +1377,15 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 };
                 if !queue.is_empty() {
                     if let Some(app) = APP.get_mut() {
+                        let now_us = hook::now_timestamp_us();
                         for queued_event in queue {
                             log::debug!(
-                                "[probe-drain] replay vk=0x{:02X} {:?}",
+                                "[probe-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
                                 queued_event.vk_code.0,
-                                queued_event.event_type
+                                queued_event.event_type,
+                                queued_event.timestamp,
+                                now_us,
+                                now_us.saturating_sub(queued_event.timestamp) / 1000,
                             );
                             on_key_event_impl(app, queued_event);
                         }

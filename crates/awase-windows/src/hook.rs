@@ -638,6 +638,11 @@ fn update_modifier_timing(timing: &mut crate::ModifierTiming, vk: u16, is_keydow
     }
 }
 
+/// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）。診断用に公開。
+pub fn now_timestamp_us() -> u64 {
+    now_timestamp()
+}
+
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）
 fn now_timestamp() -> Timestamp {
     use std::sync::OnceLock;
