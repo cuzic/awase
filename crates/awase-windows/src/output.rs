@@ -351,6 +351,13 @@ pub struct Output {
     /// cold になった場合を検出するために使う。長期 idle では GJI が TSF セッションを
     /// リセットするため、500ms のウォームアップバジェットでは不足する。
     idle_ms_at_last_cold: std::cell::Cell<u64>,
+    /// `RawTsfLiteralRecovery` が連続で発火した回数。
+    ///
+    /// `mark_composition_cold(RawTsfLiteralRecovery)` でインクリメント。
+    /// 他の理由での cold 化、または `mark_composition_warm` でリセット。
+    /// 連続 2 回以上のときはバックスペースを送らず（false positive 扱い）、
+    /// ログに連続回数を出して診断しやすくする。
+    raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -381,6 +388,7 @@ impl Output {
             shadow_ime_on: std::cell::Cell::new(false),
             last_cold_reason: std::cell::Cell::new(ColdReason::FocusChange),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
+            raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
         }
     }
 
@@ -428,7 +436,14 @@ impl Output {
     /// 直後に send_eager_tsf_warmup() が新しいタイムスタンプをセットする。
     pub fn mark_composition_cold(&self, reason: ColdReason) {
         let idle_ms = self.ms_since_last_send();
-        log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        if reason == ColdReason::RawTsfLiteralRecovery {
+            let n = self.raw_tsf_literal_consecutive_count.get() + 1;
+            self.raw_tsf_literal_consecutive_count.set(n);
+            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        } else {
+            self.raw_tsf_literal_consecutive_count.set(0);
+            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        }
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
         self.last_cold_reason.set(reason);
@@ -443,6 +458,7 @@ impl Output {
         let epoch = self.focus_epoch.get();
         log::debug!("[composition] marked warm (epoch={epoch}) → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
         self.composition_warm_epoch.set(epoch);
+        self.raw_tsf_literal_consecutive_count.set(0);
     }
 
     /// 現在の composition_warm フラグを返す。
@@ -463,6 +479,7 @@ impl Output {
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
         self.idle_ms_at_last_cold.set(self.ms_since_last_send());
+        self.raw_tsf_literal_consecutive_count.set(0);
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
@@ -1361,24 +1378,23 @@ impl Output {
                     was_visible={was_candidate_visible})"
                 );
             } else {
-                log::warn!(
-                    "[raw-tsf-literal] cold={cold_n} raw TSF literal suspected \
-                    ({elapsed_ms}ms, was_visible={was_candidate_visible}) \
-                    → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
-                );
-                if self.last_cold_reason.get() != ColdReason::RawTsfLiteralRecovery {
-                    crate::RAW_TSF_LITERAL.backs.store(
-                        ze_bs_count,
-                        Relaxed,
+                let consecutive = self.raw_tsf_literal_consecutive_count.get();
+                if consecutive == 0 {
+                    log::warn!(
+                        "[raw-tsf-literal] cold={cold_n} raw TSF literal suspected \
+                        ({elapsed_ms}ms, was_visible={was_candidate_visible}) \
+                        → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
                     );
+                    crate::RAW_TSF_LITERAL.backs.store(ze_bs_count, Relaxed);
                     *crate::RAW_TSF_LITERAL.romaji
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
                 } else {
-                    // RawTsfLiteralRecovery 後に再度 raw-tsf-literal 発火 = 連続発火 = false positive の疑い。
+                    // 連続発火（consecutive >= 1）= false positive の疑い。バックスペース送信を中止。
                     log::warn!(
-                        "[raw-tsf-literal] cold={cold_n} consecutive raw-tsf-literal fire (RawTsfLiteralRecovery) \
-                        → likely false positive, giving up without backspace"
+                        "[raw-tsf-literal] cold={cold_n} consecutive raw-tsf-literal fire \
+                        (count={}) → likely false positive, giving up without backspace",
+                        consecutive + 1,
                     );
                 }
                 self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
