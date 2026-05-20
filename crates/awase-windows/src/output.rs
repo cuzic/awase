@@ -902,7 +902,10 @@ impl Output {
             const VK_DBE_HIRAGANA: u16 = 0xF2;
             // cold 発生前の idle 時間が長い場合（ナビゲーション等）、GJI が TSF セッションを
             // リセットしている可能性があり、再初期化に FocusChange 相当の時間が必要。
-            const LONG_IDLE_MS: u64 = 2000;
+            // 閾値は 10s: 2-9s 程度の「考える・少し読む」では GJI セッションが生存しており
+            // I/O が発火せず probe が 1500ms タイムアウトしてしまうため、低すぎる閾値は NG。
+            // 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
+            const LONG_IDLE_MS: u64 = 10_000;
             let long_idle = self.idle_ms_at_last_cold.get() > LONG_IDLE_MS;
             // ColdReason に応じてウォームアップ待機時間を決定:
             //   FocusChange / SetOpenTrue / NativeF2Consumed:
