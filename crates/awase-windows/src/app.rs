@@ -62,8 +62,8 @@ const NOTIFY_FOR_THIS_SESSION: u32 = 0;
 
 #[link(name = "wtsapi32")]
 extern "system" {
-    fn WTSRegisterSessionNotification(hwnd: HWND, flags: u32) -> windows::Win32::Foundation::BOOL;
-    fn WTSUnRegisterSessionNotification(hwnd: HWND) -> windows::Win32::Foundation::BOOL;
+    fn WTSRegisterSessionNotification(hwnd: HWND, flags: u32) -> windows::core::BOOL;
+    fn WTSUnRegisterSessionNotification(hwnd: HWND) -> windows::core::BOOL;
 }
 
 /// 起動時の警告を集約して報告する診断コレクター
@@ -129,7 +129,7 @@ pub fn run() -> Result<()> {
                     {
                         if !existing.is_invalid() {
                             let _ = PostMessageW(
-                                existing,
+                                Some(existing),
                                 WM_DUPLICATE_INSTANCE,
                                 WPARAM(0),
                                 LPARAM(0),
@@ -605,7 +605,7 @@ struct HotKeyGuard(i32);
 impl Drop for HotKeyGuard {
     fn drop(&mut self) {
         unsafe {
-            let _ = UnregisterHotKey(HWND::default(), self.0);
+            let _ = UnregisterHotKey(None, self.0);
         }
         log::info!("Hotkey {} unregistered", self.0);
     }
@@ -616,7 +616,7 @@ fn register_toggle_hotkey(hotkey_str: &str) -> Option<HotKeyGuard> {
     if let Some((modifiers, vk)) = awase_windows::vk::parse_hotkey(hotkey_str) {
         unsafe {
             let result = RegisterHotKey(
-                HWND::default(),
+                None,
                 HOTKEY_ID_TOGGLE,
                 HOT_KEY_MODIFIERS(modifiers),
                 u32::from(vk.0),
@@ -642,7 +642,7 @@ fn register_focus_override_hotkey() -> Option<HotKeyGuard> {
     const VK_F11: u32 = 0x7A;
     unsafe {
         let result = RegisterHotKey(
-            HWND::default(),
+            None,
             HOTKEY_ID_FOCUS_OVERRIDE,
             HOT_KEY_MODIFIERS(MOD_CONTROL | MOD_SHIFT),
             VK_F11,
@@ -1027,9 +1027,9 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 if tracker.push(now) {
                     tracker.clear();
                     log::warn!("Rapid IME key press detected — requesting panic reset");
-                    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+                    use windows::Win32::Foundation::{LPARAM, WPARAM};
                     use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-                    let _ = PostMessageW(HWND::default(), WM_PANIC_RESET, WPARAM(0), LPARAM(0));
+                    let _ = PostMessageW(None, WM_PANIC_RESET, WPARAM(0), LPARAM(0));
                 }
             }
         }
@@ -1074,9 +1074,9 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     // キューに Effects があれば、メッセージループに実行を委譲する
     if hook_result.has_pending {
         unsafe {
-            use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+            use windows::Win32::Foundation::{LPARAM, WPARAM};
             use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-            let _ = PostMessageW(HWND::default(), WM_EXECUTE_EFFECTS, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(None, WM_EXECUTE_EFFECTS, WPARAM(0), LPARAM(0));
         }
     }
 
@@ -1089,7 +1089,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
     let mut msg = MSG::default();
 
     loop {
-        let ret = unsafe { GetMessageW(&raw mut msg, HWND::default(), 0, 0) };
+        let ret = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
         if ret.0 <= 0 {
             break; // WM_QUIT or エラー
         }
@@ -1702,7 +1702,7 @@ unsafe extern "system" fn win_event_proc(
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
 fn install_ctrl_handler() {
-    unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::Win32::Foundation::BOOL {
+    unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
         use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
         QUIT_REQUESTED.store(true, Ordering::SeqCst);
         // PostQuitMessage は呼び出しスレッドのキューに WM_QUIT をポストするが、
@@ -1712,7 +1712,7 @@ fn install_ctrl_handler() {
         if tid != 0 {
             let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
         }
-        windows::Win32::Foundation::BOOL(1) // TRUE = handled
+        windows::core::BOOL(1) // TRUE = handled
     }
 
     unsafe {

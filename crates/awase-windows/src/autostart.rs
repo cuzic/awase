@@ -73,12 +73,11 @@ pub fn is_registered() -> bool {
 /// Returns: true = Yes, false = No
 pub fn ask_user() -> bool {
     use windows::core::w;
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO};
 
     let result = unsafe {
         MessageBoxW(
-            HWND::default(),
+            None,
             w!("awase をログオン時に自動起動しますか？\n\n後から config.toml の auto_start で変更できます。"),
             w!("awase - 自動起動設定"),
             MB_YESNO | MB_ICONQUESTION,

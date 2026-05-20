@@ -39,12 +39,11 @@ pub const WM_DRAIN_PROBE_QUEUE: u32 = 0x8000 + 18;
 
 /// PROBE_ACTIVE 解除後に呼ぶ。キューに溜まったキーを再配送するメッセージを投げる。
 pub fn post_drain_probe_queue() {
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
     // Safety: PostMessageW は非同期送信のみ、HWND=null でスレッドキューに投稿
     let _ = unsafe {
         PostMessageW(
-            HWND::default(),
+            None,
             WM_DRAIN_PROBE_QUEUE,
             windows::Win32::Foundation::WPARAM(0),
             windows::Win32::Foundation::LPARAM(0),

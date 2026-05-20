@@ -1,9 +1,10 @@
 //! Phase 2: MSAA (IAccessible) によるロールベース判定
 
 use awase::types::FocusKind;
-use windows::core::{Interface, VARIANT};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
+use windows::core::Interface;
 
 use super::classify::{ClassifyReason, ClassifyResult};
 
@@ -108,7 +109,7 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
         let child_self = VARIANT::from(0i32); // CHILDID_SELF
         if let Ok(role) = unsafe { accessible.get_accRole(&child_self) } {
             #[allow(clippy::cast_sign_loss)] // MSAA role values are non-negative
-            let role_id = unsafe { role.as_raw().Anonymous.Anonymous.Anonymous.lVal as u32 };
+            let role_id = unsafe { role.Anonymous.Anonymous.Anonymous.lVal as u32 };
 
             if let Some(role) = MsaaRole::from_u32(role_id) {
                 if role.is_text_input() {

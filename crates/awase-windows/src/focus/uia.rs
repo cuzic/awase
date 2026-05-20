@@ -214,7 +214,7 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
                     | (app_kind_val << 8);
                 unsafe {
                     let _ = PostMessageW(
-                        HWND::default(),
+                        None,
                         crate::WM_FOCUS_KIND_UPDATE,
                         WPARAM(wparam_val),
                         LPARAM(hwnd.0 as isize),

@@ -93,7 +93,7 @@ impl SystemTray {
                 CW_USEDEFAULT,
                 None,
                 None,
-                wc.hInstance,
+                Some(wc.hInstance),
                 None,
             )
             .context("Failed to create tray window")?;
@@ -278,9 +278,9 @@ fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndM
         let dc = CreateCompatibleDC(None);
         let mut bits = std::ptr::null_mut();
         let color_bmp =
-            CreateDIBSection(dc, &raw const bmi, DIB_RGB_COLORS, &raw mut bits, None, 0).ok()?;
+            CreateDIBSection(Some(dc), &raw const bmi, DIB_RGB_COLORS, &raw mut bits, None, 0).ok()?;
         let mask_bmp = CreateDIBSection(
-            dc,
+            Some(dc),
             &raw const bmi,
             DIB_RGB_COLORS,
             std::ptr::null_mut(),
@@ -338,7 +338,7 @@ fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndM
         }
 
         // マスクビットマップ（全不透明 — alpha チャネルで制御）
-        let old = SelectObject(dc, color_bmp);
+        let old = SelectObject(dc, color_bmp.into());
 
         let icon_info = ICONINFO {
             fIcon: true.into(),
@@ -351,8 +351,8 @@ fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndM
 
         SelectObject(dc, old);
         let _ = DeleteDC(dc);
-        let _ = DeleteObject(color_bmp);
-        let _ = DeleteObject(mask_bmp);
+        let _ = DeleteObject(color_bmp.into());
+        let _ = DeleteObject(mask_bmp.into());
 
         icon
     }
@@ -489,7 +489,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             TPM_LEFTALIGN | TPM_BOTTOMALIGN,
             point.x,
             point.y,
-            0,
+            Some(0),
             hwnd,
             None,
         );
@@ -577,7 +577,7 @@ pub fn restart_as_admin() {
 
     unsafe {
         let result = ShellExecuteW(
-            HWND::default(),
+            None,
             PCWSTR(verb.as_ptr()),
             PCWSTR(exe_wide.as_ptr()),
             PCWSTR::null(),
