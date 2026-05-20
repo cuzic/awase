@@ -1012,12 +1012,38 @@ impl Output {
                             "[h1-warmup] cold={cold_n} 再warmup probe完了={actual_wait}ms",
                         );
                     } else {
+                        // eager F2 から時間が経過（elapsed >= eager_settle_ms）しており、
+                        // gji_idle が大きい状態で即送信すると ze-detect false positive が発生する。
+                        // （GJI candidate SHOW が 300ms を超えるため ze-detect がタイムアウト）
+                        // → fresh F2 を送って TsfReadinessProbe で composition context を
+                        //   再確認してから送信する。追加 ~140ms だが false positive を防げる。
                         let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
                             .load(std::sync::atomic::Ordering::Relaxed);
                         let gji_idle =
                             crate::hook::current_tick_ms().saturating_sub(last_io);
                         log::debug!(
-                            "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 即送信 (gji_idle={gji_idle}ms)",
+                            "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 (gji_idle={gji_idle}ms) \
+                             → fresh F2 + probe (ze-detect false positive 防止)",
+                        );
+                        let refresh_inputs = [
+                            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                            make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                        ];
+                        let fresh_f2_ms = crate::hook::current_tick_ms();
+                        unsafe {
+                            SendInput(
+                                &refresh_inputs,
+                                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                            );
+                        }
+                        crate::tsf_observations::TsfReadinessProbe::new(
+                            fresh_f2_ms, cold_n, probe_min_ms,
+                        )
+                        .wait_until_ready(eager_settle_ms);
+                        let actual_wait =
+                            crate::hook::current_tick_ms().saturating_sub(fresh_f2_ms);
+                        log::debug!(
+                            "[h1-warmup] cold={cold_n} eager→fresh probe完了={actual_wait}ms",
                         );
                     }
                 } else {
