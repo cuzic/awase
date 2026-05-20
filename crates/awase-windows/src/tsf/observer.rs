@@ -2,7 +2,7 @@
 //!
 //! ここにあるグローバルは書き込み元が限定されている:
 //! - `GjiMonitor` バックグラウンドスレッド → `OBS_GJI_LAST_IO_MS`, `OBS_GJI_MONITOR_OK`
-//! - `observation_event_proc` (app.rs) → `OBS_GJI_CANDIDATE_VISIBLE`,
+//! - `observation_event_proc` → `OBS_GJI_CANDIDATE_VISIBLE`,
 //!   `OBS_GJI_CANDIDATE_SHOW_SEQ`, `OBS_FOCUS_NAMECHANGE_SEQ`, `COMPOSITION_PROBE_SEQ`
 //!
 //! 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
@@ -10,6 +10,9 @@
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
+
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -257,5 +260,141 @@ fn monitor_loop() {
         }
 
         std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
+    }
+}
+
+// ── WinEvent 観察フック ──
+
+/// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
+const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
+
+const EVENT_OBJECT_SHOW: u32 = 0x8002;
+const EVENT_OBJECT_HIDE: u32 = 0x8003;
+const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
+
+const GJI_CANDIDATE_CLASS: &str = "GoogleJapaneseInputCandidateWindow";
+
+/// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
+pub struct WinEventHookGuard(pub HWINEVENTHOOK);
+
+impl std::fmt::Debug for WinEventHookGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("WinEventHookGuard").field(&self.0 .0).finish()
+    }
+}
+
+impl Drop for WinEventHookGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(self.0);
+        }
+        log::info!("[obs-hook] uninstalled");
+    }
+}
+
+/// WinEvent 観察フックを登録し RAII ガードのリストを返す。
+///
+/// | フック | イベント範囲 | 目的 |
+/// |---|---|---|
+/// | NAMECHANGE | 0x800C | WezTerm title 変更 → `wait_for_tsf_cold_settle` early-exit |
+/// | OBJECT_SHOW/HIDE | 0x8002-0x8003 | GJI candidate window 表示状態追跡 → raw TSF literal 検出用 |
+pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
+    let mut hooks = Vec::new();
+
+    let nc_hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_NAMECHANGE,
+            EVENT_OBJECT_NAMECHANGE,
+            None,
+            Some(observation_event_proc),
+            0, 0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if nc_hook.is_invalid() {
+        log::warn!("[obs-hook] failed to install NAMECHANGE hook");
+    } else {
+        hooks.push(WinEventHookGuard(nc_hook));
+    }
+
+    let show_hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_HIDE, // SHOW(0x8002)〜HIDE(0x8003) の両方を捕捉
+            None,
+            Some(observation_event_proc),
+            0, 0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if show_hook.is_invalid() {
+        log::warn!("[obs-hook] failed to install OBJECT_SHOW/HIDE hook");
+    } else {
+        log::info!("[obs-hook] OBJECT_SHOW/HIDE hook installed (GJI candidate window visibility tracking)");
+        hooks.push(WinEventHookGuard(show_hook));
+    }
+
+    hooks
+}
+
+/// WinEvent 観察コールバック。NAMECHANGE / IME_SHOW / IME_HIDE / IME_CHANGE を処理する。
+unsafe extern "system" fn observation_event_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    _id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    const OBJID_WINDOW: i32 = 0;
+    if id_object != OBJID_WINDOW {
+        return;
+    }
+
+    match event {
+        EVENT_OBJECT_NAMECHANGE => {
+            let class = hwnd_class_name(hwnd);
+            if class.contains("CASCADIA") {
+                let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
+                win32_async::notify_all();
+            }
+        }
+        EVENT_OBJECT_SHOW => {
+            let class = hwnd_class_name(hwnd);
+            if class == GJI_CANDIDATE_CLASS {
+                OBS_GJI_CANDIDATE_VISIBLE.store(true, Ordering::Relaxed);
+                let seq = OBS_GJI_CANDIDATE_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
+                // AtomicWatcher で event-driven に待機する設計）
+                COMPOSITION_PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
+                log::debug!("[gji-candidate] SHOW #{seq}");
+                win32_async::notify_all();
+            }
+        }
+        EVENT_OBJECT_HIDE => {
+            let class = hwnd_class_name(hwnd);
+            if class == GJI_CANDIDATE_CLASS {
+                OBS_GJI_CANDIDATE_VISIBLE.store(false, Ordering::Relaxed);
+                log::debug!("[gji-candidate] HIDE");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// HWND のウィンドウクラス名を取得する。
+fn hwnd_class_name(hwnd: HWND) -> String {
+    if hwnd.0.is_null() {
+        return String::new();
+    }
+    let mut buf = [0u16; 128];
+    let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
+    if len > 0 {
+        String::from_utf16_lossy(&buf[..len as usize])
+    } else {
+        String::new()
     }
 }
