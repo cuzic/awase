@@ -1737,6 +1737,7 @@ fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     if ime_hook.is_invalid() {
         log::warn!("[obs-hook] failed to install IME_SHOW hook");
     } else {
+        log::info!("[obs-hook] IME_SHOW/HIDE/CHANGE hook installed");
         hooks.push(WinEventHookGuard(ime_hook));
     }
 
@@ -1754,12 +1755,12 @@ unsafe extern "system" fn observation_event_proc(
     _event_time: u32,
 ) {
     const OBJID_WINDOW: i32 = 0;
-    if id_object != OBJID_WINDOW {
-        return;
-    }
 
     match event {
         EVENT_OBJECT_NAMECHANGE => {
+            if id_object != OBJID_WINDOW {
+                return;
+            }
             let class = hwnd_class_name(hwnd);
             if class.contains("CASCADIA") {
                 let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1770,16 +1771,16 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_IME_SHOW => {
             let class = hwnd_class_name(hwnd);
             let seq = OBS_IME_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-            log::debug!("[ime-event] IME_SHOW #{seq} class={class}");
+            log::debug!("[ime-event] IME_SHOW #{seq} id_obj={id_object} class={class}");
             win32_async::notify_all();
         }
         EVENT_OBJECT_IME_HIDE => {
             let class = hwnd_class_name(hwnd);
-            log::debug!("[ime-event] IME_HIDE class={class}");
+            log::debug!("[ime-event] IME_HIDE id_obj={id_object} class={class}");
         }
         EVENT_OBJECT_IME_CHANGE => {
             let class = hwnd_class_name(hwnd);
-            log::debug!("[ime-event] IME_CHANGE class={class}");
+            log::debug!("[ime-event] IME_CHANGE id_obj={id_object} class={class}");
         }
         _ => {}
     }
