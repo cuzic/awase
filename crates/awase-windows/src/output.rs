@@ -1179,11 +1179,14 @@ impl Output {
 
         self.mark_composition_warm();
 
-        // cold start 後の ze literal 検出:
+        // cold start 後の ze literal 検出（GJI 専用）:
         // GJI candidate window が表示されなければ literal ASCII が出力された疑い。
-        // PROBE_ACTIVE=true で後続キーを退避しつつ event-driven に待機（最大 300ms）。
+        // GJI が動いていない環境（MS IME / ATOK 等）では SHOW が来ないため必ずタイムアウトし、
+        // 誤ったバックスペース回収が走る。OBS_GJI_MONITOR_OK でガードして GJI 専用にする。
         // 通常は SHOW が 4ms 程度で届くため、成功時のオーバーヘッドはほぼゼロ。
-        if prepend_f2_warmup {
+        let gji_active = crate::tsf_observations::OBS_GJI_MONITOR_OK
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if prepend_f2_warmup && gji_active {
             const VK_BACK: u16 = 0x08;
             const ZE_LITERAL_DETECT_MS: u32 = 300;
             let t_send = crate::hook::current_tick_ms();
