@@ -1188,6 +1188,7 @@ impl Output {
         }
 
         // ze literal 検出用ベースライン（送信直前に記録）
+        use std::sync::atomic::Ordering::Relaxed;
         let was_candidate_visible = crate::OBS_GJI_CANDIDATE_VISIBLE.load(Relaxed);
         let gji_show_baseline = crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed);
         let io_baseline = crate::tsf_observations::OBS_GJI_LAST_IO_MS.load(Relaxed);

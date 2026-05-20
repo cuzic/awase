@@ -76,8 +76,7 @@ pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
 /// `EVENT_OBJECT_SHOW` で `true` に、`EVENT_OBJECT_HIDE` で `false` にセットされる。
 /// ze literal 検出でウィンドウが既に表示中かを判定するために使用する。
 /// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
-pub static OBS_GJI_CANDIDATE_VISIBLE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+pub static OBS_GJI_CANDIDATE_VISIBLE: AtomicBool = AtomicBool::new(false);
 
 /// ze literal 検出の汎用シグナル AtomicU32。
 ///
