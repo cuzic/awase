@@ -33,7 +33,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ,
+    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ, OBS_IME_SHOW_SEQ,
     Runtime, ShadowSource, APP, ELEVATED, MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_DRAIN_PROBE_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
@@ -1619,6 +1619,9 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
 const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
+const EVENT_OBJECT_IME_SHOW: u32 = 0x8027;
+const EVENT_OBJECT_IME_HIDE: u32 = 0x8028;
+const EVENT_OBJECT_IME_CHANGE: u32 = 0x8029;
 
 /// フォーカス変更イベントフックを登録する
 /// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
@@ -1695,20 +1698,17 @@ unsafe extern "system" fn win_event_proc(
     app.schedule_ime_refresh(debounce_ms);
 }
 
-/// WinEvent 観察フックを複数登録し RAII ガードのリストを返す。
+/// WinEvent 観察フックを登録し RAII ガードのリストを返す。
 ///
-/// 以下の 4 グループを個別フックでカバーする（同一コールバック）:
-///
-/// | グループ | イベント範囲 | 目的 |
+/// | フック | イベント範囲 | 目的 |
 /// |---|---|---|
-/// | A | SHOW / HIDE | IME 候補 window の出現 |
-/// | B | STATECHANGE / NAMECHANGE / VALUECHANGE | オブジェクト状態変化 |
-/// OBJ_NAMECHANGE WinEvent をフックし、WezTerm の CASCADIA ウィンドウの
-/// 名前変更を `OBS_FOCUS_NAMECHANGE_SEQ` に記録する。
-/// `wait_for_tsf_cold_settle` がこのカウンタを early-exit シグナルとして使う。
+/// | NAMECHANGE | 0x800C | WezTerm title 変更 → `wait_for_tsf_cold_settle` early-exit |
+/// | IME_SHOW/HIDE/CHANGE | 0x8027-0x8029 | GJI composition 開始検出（ze literal 診断） |
 fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
-    let hook = unsafe {
+    let mut hooks = Vec::new();
+
+    let nc_hook = unsafe {
         SetWinEventHook(
             EVENT_OBJECT_NAMECHANGE,
             EVENT_OBJECT_NAMECHANGE,
@@ -1718,18 +1718,35 @@ fn install_observation_hooks() -> Vec<WinEventHookGuard> {
             WINEVENT_OUTOFCONTEXT,
         )
     };
-    if hook.is_invalid() {
+    if nc_hook.is_invalid() {
         log::warn!("[obs-hook] failed to install NAMECHANGE hook");
-        vec![]
     } else {
-        vec![WinEventHookGuard(hook)]
+        hooks.push(WinEventHookGuard(nc_hook));
     }
+
+    let ime_hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_IME_SHOW,
+            EVENT_OBJECT_IME_CHANGE,
+            None,
+            Some(observation_event_proc),
+            0, 0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if ime_hook.is_invalid() {
+        log::warn!("[obs-hook] failed to install IME_SHOW hook");
+    } else {
+        hooks.push(WinEventHookGuard(ime_hook));
+    }
+
+    hooks
 }
 
-/// OBJ_NAMECHANGE コールバック。CASCADIA ウィンドウの名前変更を `OBS_FOCUS_NAMECHANGE_SEQ` に記録する。
+/// WinEvent 観察コールバック。NAMECHANGE / IME_SHOW / IME_HIDE / IME_CHANGE を処理する。
 unsafe extern "system" fn observation_event_proc(
     _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
-    _event: u32,
+    event: u32,
     hwnd: HWND,
     id_object: i32,
     _id_child: i32,
@@ -1740,12 +1757,31 @@ unsafe extern "system" fn observation_event_proc(
     if id_object != OBJID_WINDOW {
         return;
     }
-    let class = hwnd_class_name(hwnd);
-    if class.contains("CASCADIA") {
-        let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-        log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
-        // AtomicWatcher で待機中のタスクを即座に起こす
-        win32_async::notify_all();
+
+    match event {
+        EVENT_OBJECT_NAMECHANGE => {
+            let class = hwnd_class_name(hwnd);
+            if class.contains("CASCADIA") {
+                let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
+                win32_async::notify_all();
+            }
+        }
+        EVENT_OBJECT_IME_SHOW => {
+            let class = hwnd_class_name(hwnd);
+            let seq = OBS_IME_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+            log::debug!("[ime-event] IME_SHOW #{seq} class={class}");
+            win32_async::notify_all();
+        }
+        EVENT_OBJECT_IME_HIDE => {
+            let class = hwnd_class_name(hwnd);
+            log::debug!("[ime-event] IME_HIDE class={class}");
+        }
+        EVENT_OBJECT_IME_CHANGE => {
+            let class = hwnd_class_name(hwnd);
+            log::debug!("[ime-event] IME_CHANGE class={class}");
+        }
+        _ => {}
     }
 }
 

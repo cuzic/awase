@@ -1045,13 +1045,31 @@ impl Output {
                             make_tsf_key_input(VK_DBE_HIRAGANA, false),
                             make_tsf_key_input(VK_DBE_HIRAGANA, true),
                         ];
+                        let fresh_f2_ms = crate::hook::current_tick_ms();
                         unsafe {
                             SendInput(
                                 &refresh_inputs,
                                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                             );
                         }
-                        wait_for_tsf_cold_settle(nc_baseline, SETTLE_TIMEOUT_MS);
+                        let settled = wait_for_tsf_cold_settle(nc_baseline, SETTLE_TIMEOUT_MS);
+
+                        // OBJ_NAMECHANGE 確認かつ GJI 活動なし（probe_settled=false）の場合、
+                        // OBJ_NAMECHANGE は「WezTerm が F2 を処理した」シグナルだが
+                        // GJI composition session 初期化の完了を意味しない。
+                        // 直後にローマ字を送ると GJI がまだ初期化中で literal になる（ze literal バグ）。
+                        // → fresh F2 タイムスタンプ起点で GJI I/O 静止を待つ二次プローブを実施。
+                        if settled && !probe_settled {
+                            const GJI_POST_NAMECHANGE_MS: u64 = 300;
+                            log::debug!(
+                                "[h1-warmup] cold={cold_n} OBJ_NAMECHANGE後 GJI 二次プローブ (max {GJI_POST_NAMECHANGE_MS}ms)",
+                            );
+                            crate::tsf_observations::TsfReadinessProbe::new(
+                                fresh_f2_ms, cold_n, 0,
+                            )
+                            .wait_until_ready(GJI_POST_NAMECHANGE_MS);
+                            log::debug!("[h1-warmup] cold={cold_n} GJI 二次プローブ完了");
+                        }
                     }
                 }
             } else {
