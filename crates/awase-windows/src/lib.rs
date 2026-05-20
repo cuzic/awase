@@ -57,35 +57,11 @@ pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
 pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 
-/// `wait_for_tsf_cold_settle()` が OBJ_NAMECHANGE を early-exit シグナルとして使うカウンタ。
-///
-/// `send_eager_tsf_warmup()` 呼び出し時に 0 にリセットされ、
-/// WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
-pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
-
-/// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
-///
-/// raw TSF literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
-/// GJI candidate window が開いた（composition 成功）、増えなければ literal ASCII の可能性。
-pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
-
-/// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうかのフラグ。
-///
-/// `EVENT_OBJECT_SHOW` で `true` に、`EVENT_OBJECT_HIDE` で `false` にセットされる。
-/// raw TSF literal 検出でウィンドウが既に表示中かを判定するために使用する。
-/// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
-pub static OBS_GJI_CANDIDATE_VISIBLE: AtomicBool = AtomicBool::new(false);
-
-/// raw TSF literal 検出の汎用シグナル AtomicU32。
-///
-/// `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化したとき（SHOW 発火）と
-/// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
-/// `output::raw_tsf_literal_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
-/// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
-pub static COMPOSITION_PROBE_SEQ: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+// OBS_* グローバルは tsf/observer.rs で定義。後方互換のため re-export する。
+pub use crate::tsf::observer::{
+    COMPOSITION_PROBE_SEQ, OBS_FOCUS_NAMECHANGE_SEQ, OBS_GJI_CANDIDATE_SHOW_SEQ,
+    OBS_GJI_CANDIDATE_VISIBLE,
+};
 
 /// [probe] `wait_for_tsf_cold_settle()` がアクティブ中かどうかのフラグ。
 ///
