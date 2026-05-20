@@ -1629,6 +1629,7 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
 const EVENT_OBJECT_SHOW: u32 = 0x8002;
+const EVENT_OBJECT_HIDE: u32 = 0x8003;
 const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
 
 const GJI_CANDIDATE_CLASS: &str = "GoogleJapaneseInputCandidateWindow";
@@ -1737,7 +1738,7 @@ fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     let show_hook = unsafe {
         SetWinEventHook(
             EVENT_OBJECT_SHOW,
-            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_HIDE, // SHOW(0x8002)〜HIDE(0x8003) の両方を捕捉
             None,
             Some(observation_event_proc),
             0, 0,
@@ -1745,9 +1746,9 @@ fn install_observation_hooks() -> Vec<WinEventHookGuard> {
         )
     };
     if show_hook.is_invalid() {
-        log::warn!("[obs-hook] failed to install OBJECT_SHOW hook");
+        log::warn!("[obs-hook] failed to install OBJECT_SHOW/HIDE hook");
     } else {
-        log::info!("[obs-hook] OBJECT_SHOW hook installed (GJI candidate window detection)");
+        log::info!("[obs-hook] OBJECT_SHOW/HIDE hook installed (GJI candidate window visibility tracking)");
         hooks.push(WinEventHookGuard(show_hook));
     }
 
@@ -1781,12 +1782,20 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_SHOW => {
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
+                crate::OBS_GJI_CANDIDATE_VISIBLE.store(true, Ordering::Relaxed);
                 let seq = OBS_GJI_CANDIDATE_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
                 // ze literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
                 // AtomicWatcher で event-driven に待機する設計）
                 COMPOSITION_PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
                 log::debug!("[gji-candidate] SHOW #{seq}");
                 win32_async::notify_all();
+            }
+        }
+        EVENT_OBJECT_HIDE => {
+            let class = hwnd_class_name(hwnd);
+            if class == GJI_CANDIDATE_CLASS {
+                crate::OBS_GJI_CANDIDATE_VISIBLE.store(false, Ordering::Relaxed);
+                log::debug!("[gji-candidate] HIDE");
             }
         }
         _ => {}

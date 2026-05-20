@@ -71,6 +71,14 @@ pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
 pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
+/// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうかのフラグ。
+///
+/// `EVENT_OBJECT_SHOW` で `true` に、`EVENT_OBJECT_HIDE` で `false` にセットされる。
+/// ze literal 検出でウィンドウが既に表示中かを判定するために使用する。
+/// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
+pub static OBS_GJI_CANDIDATE_VISIBLE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// ze literal 検出の汎用シグナル AtomicU32。
 ///
 /// `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化したとき（SHOW 発火）と
