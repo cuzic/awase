@@ -1607,7 +1607,7 @@ static ZE_DETECT_SESSION: std::sync::atomic::AtomicU32 =
 /// OnceLock で初回のみテーブルを構築し、以降は参照を返す。
 fn kana_for_romaji_static(romaji: &str) -> Option<char> {
     use std::sync::OnceLock;
-    static TABLE: OnceLock<std::collections::HashMap<String, char>> = OnceLock::new();
+    static TABLE: OnceLock<HashMap<String, char>> = OnceLock::new();
     TABLE.get_or_init(awase::kana_table::build_romaji_to_kana).get(romaji).copied()
 }
 
