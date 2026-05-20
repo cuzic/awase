@@ -1808,6 +1808,177 @@ mod tests {
         assert!(result, "NAMECHANGE fired during wait → should return true");
     }
 
+    // ── ColdReason impl メソッドテスト ────────────────────────────────────────
+
+    #[test]
+    fn cold_reason_eager_settle_ms_short_idle() {
+        assert_eq!(ColdReason::FocusChange.eager_settle_ms(false), 1500);
+        assert_eq!(ColdReason::NativeF2Consumed.eager_settle_ms(false), 1500);
+        assert_eq!(ColdReason::SetOpenTrue.eager_settle_ms(false), 1500);
+        assert_eq!(ColdReason::PassthroughConfirmKey.eager_settle_ms(false), 500);
+        assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(false), 500);
+        assert_eq!(ColdReason::SessionExpired.eager_settle_ms(false), 500);
+        assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(false), 500);
+        assert_eq!(ColdReason::F2NonTsf.eager_settle_ms(false), 500);
+        assert_eq!(ColdReason::RawTsfLiteralRecovery.eager_settle_ms(false), 500);
+    }
+
+    #[test]
+    fn cold_reason_eager_settle_ms_long_idle() {
+        // long_idle=true → ConfirmKey 系のみ延長
+        assert_eq!(ColdReason::PassthroughConfirmKey.eager_settle_ms(true), 1500);
+        assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(true), 1500);
+        // 他は不変
+        assert_eq!(ColdReason::SessionExpired.eager_settle_ms(true), 500);
+        assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(true), 500);
+    }
+
+    #[test]
+    fn cold_reason_probe_min_ms() {
+        assert_eq!(ColdReason::FocusChange.probe_min_ms(false), 300);
+        assert_eq!(ColdReason::NativeF2Consumed.probe_min_ms(false), 300);
+        assert_eq!(ColdReason::SetOpenTrue.probe_min_ms(false), 300);
+        assert_eq!(ColdReason::SessionExpired.probe_min_ms(false), 200);
+        assert_eq!(ColdReason::PassthroughConfirmKey.probe_min_ms(false), 50);
+        assert_eq!(ColdReason::ReinjectConfirmKey.probe_min_ms(false), 50);
+        assert_eq!(ColdReason::PassthroughConfirmKey.probe_min_ms(true), 300);
+        assert_eq!(ColdReason::SymbolVkSent.probe_min_ms(false), 30);
+        assert_eq!(ColdReason::F2NonTsf.probe_min_ms(false), 100);
+        assert_eq!(ColdReason::RawTsfLiteralRecovery.probe_min_ms(false), 100);
+    }
+
+    #[test]
+    fn cold_reason_is_confirm_key() {
+        assert!(ColdReason::PassthroughConfirmKey.is_confirm_key());
+        assert!(ColdReason::ReinjectConfirmKey.is_confirm_key());
+        assert!(!ColdReason::FocusChange.is_confirm_key());
+        assert!(!ColdReason::SessionExpired.is_confirm_key());
+        assert!(!ColdReason::RawTsfLiteralRecovery.is_confirm_key());
+    }
+
+    #[test]
+    fn cold_reason_requires_settle() {
+        assert!(ColdReason::FocusChange.requires_settle());
+        assert!(ColdReason::NativeF2Consumed.requires_settle());
+        assert!(ColdReason::SetOpenTrue.requires_settle());
+        assert!(!ColdReason::PassthroughConfirmKey.requires_settle());
+        assert!(!ColdReason::SessionExpired.requires_settle());
+        assert!(!ColdReason::RawTsfLiteralRecovery.requires_settle());
+    }
+
+    // ── Output 状態管理テスト ───────────────────────────────────────────────────
+
+    fn make_output() -> Output {
+        Output::new(OutputMode::Unicode)
+    }
+
+    #[test]
+    fn output_starts_cold() {
+        let o = make_output();
+        assert!(!o.is_composition_warm(), "Output should start cold");
+    }
+
+    #[test]
+    fn output_mark_warm_then_cold() {
+        let o = make_output();
+        o.mark_composition_warm();
+        assert!(o.is_composition_warm(), "should be warm after mark_composition_warm");
+        o.mark_composition_cold(ColdReason::FocusChange);
+        assert!(!o.is_composition_warm(), "should be cold after mark_composition_cold");
+    }
+
+    #[test]
+    fn output_focus_change_invalidates_warm() {
+        let o = make_output();
+        o.mark_composition_warm();
+        assert!(o.is_composition_warm());
+        o.on_focus_changed();
+        assert!(!o.is_composition_warm(), "focus change should invalidate warm state");
+    }
+
+    #[test]
+    fn output_rewarm_after_focus_change() {
+        let o = make_output();
+        o.mark_composition_warm();
+        o.on_focus_changed();
+        o.mark_composition_warm();
+        assert!(o.is_composition_warm(), "can warm again after focus change + re-warm");
+    }
+
+    #[test]
+    fn output_consecutive_count_increments_on_raw_tsf_literal_recovery() {
+        let o = make_output();
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0);
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 1);
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 2);
+    }
+
+    #[test]
+    fn output_consecutive_count_resets_on_other_cold_reason() {
+        let o = make_output();
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 2);
+        o.mark_composition_cold(ColdReason::FocusChange);
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0, "non-recovery cold should reset count");
+    }
+
+    #[test]
+    fn output_consecutive_count_resets_on_warm() {
+        let o = make_output();
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 2);
+        o.mark_composition_warm();
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0, "warm should reset consecutive count");
+    }
+
+    #[test]
+    fn output_consecutive_count_resets_on_focus_change() {
+        let o = make_output();
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 1);
+        o.on_focus_changed();
+        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0, "focus change should reset consecutive count");
+    }
+
+    #[test]
+    fn output_last_cold_reason_tracks_latest() {
+        let o = make_output();
+        o.mark_composition_cold(ColdReason::SessionExpired);
+        assert_eq!(o.last_cold_reason.get(), ColdReason::SessionExpired);
+        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(o.last_cold_reason.get(), ColdReason::RawTsfLiteralRecovery);
+    }
+
+    // ── RAW_TSF_LITERAL グローバル構造体テスト ──────────────────────────────────
+
+    #[test]
+    fn raw_tsf_literal_backs_roundtrip() {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::RAW_TSF_LITERAL.backs.store(3, Relaxed);
+        let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
+        assert_eq!(n, 3);
+        assert_eq!(crate::RAW_TSF_LITERAL.backs.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn raw_tsf_literal_romaji_roundtrip() {
+        {
+            let mut guard = crate::RAW_TSF_LITERAL.romaji.lock().unwrap();
+            *guard = "konnichiwa".to_string();
+        }
+        let taken = {
+            let mut guard = crate::RAW_TSF_LITERAL.romaji.lock().unwrap();
+            std::mem::take(&mut *guard)
+        };
+        assert_eq!(taken, "konnichiwa");
+        let now_empty = crate::RAW_TSF_LITERAL.romaji.lock().unwrap().clone();
+        assert!(now_empty.is_empty());
+    }
+
     // ── 既存テスト ─────────────────────────────────────────────────────────────
 
     #[test]
