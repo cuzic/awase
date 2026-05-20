@@ -1020,7 +1020,7 @@ impl Output {
                         // → fresh F2 を送って TsfReadinessProbe で composition context を
                         //   再確認してから送信する。追加 ~140ms だが false positive を防げる。
                         let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
-                            .load(std::sync::atomic::Ordering::Relaxed);
+                            .load(Relaxed);
                         let gji_idle =
                             crate::hook::current_tick_ms().saturating_sub(last_io);
                         log::debug!(
@@ -1077,10 +1077,10 @@ impl Output {
                     // probe sleep 中に溜まった pending NAMECHANGE を即処理するため、
                     // NativeF2Consumed/SetOpenTrue では追加遅延はほぼ 0ms で済む。
                     let gji_last = crate::tsf_observations::OBS_GJI_LAST_IO_MS
-                        .load(std::sync::atomic::Ordering::Relaxed);
+                        .load(Relaxed);
                     let probe_settled = gji_last >= eager_ms;
                     let gji_monitor_ok = crate::tsf_observations::OBS_GJI_MONITOR_OK
-                        .load(std::sync::atomic::Ordering::Relaxed);
+                        .load(Relaxed);
 
                     let is_ime_init_cold = matches!(
                         self.last_cold_reason.get(),
@@ -1094,7 +1094,7 @@ impl Output {
                         // wait_for_tsf_cold_settle で OBJ_NAMECHANGE を reactive に待つ（上限 300ms）。
                         const SETTLE_TIMEOUT_MS: u32 = 300;
                         let nc_baseline =
-                            crate::OBS_FOCUS_NAMECHANGE_SEQ.load(std::sync::atomic::Ordering::Relaxed);
+                            crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed);
                         let settle_reason = if !probe_settled {
                             "probe timeout (no GJI activity)"
                         } else {
@@ -1174,7 +1174,7 @@ impl Output {
         // conv は最大 10ms の WM_IME_CONTROL 問い合わせ。WezTerm が通常応答する場合は 1-3ms 以内。
         {
             let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(Relaxed);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
@@ -1265,7 +1265,7 @@ impl Output {
 
             for (run_idx, run) in runs.iter().enumerate() {
                 let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                    .load(Relaxed);
                 let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
                 let vks: Vec<String> = run.iter().map(|&(v, s)| {
                     if s { format!("S{v:02X}") } else { format!("{v:02X}") }
