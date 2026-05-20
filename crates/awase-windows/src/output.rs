@@ -1230,21 +1230,18 @@ impl Output {
             } else {
                 log::warn!(
                     "[ze-detect] cold={cold_n} ze literal suspected \
-                    ({elapsed_ms}ms, no SHOW) → backspace ×{} + mark cold",
+                    ({elapsed_ms}ms, no SHOW) → backspace ×{} scheduled + mark cold",
                     chars.len()
                 );
-                let backs: Vec<_> = (0..chars.len())
-                    .flat_map(|_| [
-                        make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
-                        make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
-                    ])
-                    .collect();
-                unsafe {
-                    SendInput(
-                        &backs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
+                // backspace を ZE_LITERAL_PENDING_BACKS に退避する。
+                // WM_DRAIN_PROBE_QUEUE ハンドラが drain キーより先に SendInput で送信し、
+                // WezTerm での処理順序を保証する（backspace → drain keys）。
+                // ここで直接 SendInput すると block_on のネストメッセージループによる
+                // 順序逆転リスクがある。
+                crate::ZE_LITERAL_PENDING_BACKS.store(
+                    chars.len(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 self.mark_composition_cold(ColdReason::ZeLiteralRecovery);
             }
         }
@@ -1389,6 +1386,32 @@ const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT 
                 dwExtraInfo: extra_info,
             },
         },
+    }
+}
+
+/// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。
+///
+/// `ZE_LITERAL_PENDING_BACKS` に退避されたバックスペース数を読み取り、SendInput で送信する。
+/// drain キーの SendInput より先に呼ぶことで WezTerm への到着順を保証する。
+pub fn flush_ze_literal_backspaces() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let n = crate::ZE_LITERAL_PENDING_BACKS.swap(0, Relaxed);
+    if n == 0 {
+        return;
+    }
+    const VK_BACK: u16 = 0x08;
+    let backs: Vec<_> = (0..n)
+        .flat_map(|_| [
+            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+        ])
+        .collect();
+    log::debug!("[ze-detect] flush backspace ×{n}");
+    unsafe {
+        SendInput(
+            &backs,
+            i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+        );
     }
 }
 

@@ -1369,6 +1369,12 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // PROBE_ACTIVE 中に退避されたキーを NICOLA へ再配送する。
                 // TSF 注入バッチが送信された後のメッセージループで処理されるため、
                 // WezTerm への到着順が保証される（物理キーがバッチより先に届かない）。
+
+                // ze literal 検出後のバックスペースを先に送信する。
+                // drain キーの SendInput より前に呼ぶことで WezTerm での処理順を保証する
+                // （backspace → drain keys の順で WezTerm に届く）。
+                awase_windows::output::flush_ze_literal_backspaces();
+
                 let queue = {
                     let mut q = awase_windows::PROBE_KEY_QUEUE
                         .lock()

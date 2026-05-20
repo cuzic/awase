@@ -94,6 +94,14 @@ pub static PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static PROBE_KEY_QUEUE: std::sync::Mutex<Vec<RawKeyEvent>> =
     std::sync::Mutex::new(Vec::new());
 
+/// ze literal 検出後に送信すべきバックスペースの数。
+///
+/// WM_DRAIN_PROBE_QUEUE ハンドラが drain キーより先に SendInput でバックスペースを送信し、
+/// WezTerm での到着順を保証する（backspace → drain keys の順になるようにする）。
+/// ze literal でない通常の drain では 0 のまま。
+pub static ZE_LITERAL_PENDING_BACKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// PROBE_ACTIVE 解除後にキューされたキーを NICOLA へ再配送するカスタムメッセージ。
 ///
 /// `WM_APP + 18` = 0x8012
