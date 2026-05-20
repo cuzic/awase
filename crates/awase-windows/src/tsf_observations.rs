@@ -315,6 +315,8 @@ impl TsfReadinessProbe {
         crate::PROBE_ACTIVE.store(true, Relaxed);
         win32_async::block_on(self.wait_until_ready_async(total_max_ms));
         crate::PROBE_ACTIVE.store(false, Relaxed);
+        // プローブ中に退避したキーを NICOLA へ再配送（順序保証）
+        crate::post_drain_probe_queue();
     }
 
     /// [`wait_until_ready`] の非同期実装。`sleep_ms` を使って待機し、

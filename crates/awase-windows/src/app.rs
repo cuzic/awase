@@ -35,7 +35,8 @@ use awase_windows::tray::SystemTray;
 use awase_windows::{
     LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ,
     Runtime, ShadowSource, APP, ELEVATED, MAIN_THREAD_ID, QUIT_REQUESTED,
-    TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
+    TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_DRAIN_PROBE_QUEUE,
+    WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
     WM_RELOAD_CONFIG,
 };
@@ -790,11 +791,15 @@ impl RapidPressTracker {
 /// `APP.get_mut()` はシングルスレッド保証下でのみ安全。
 /// フックコールバックはメインスレッドで呼ばれるため OK。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    // wait_for_wezterm_namechange() が MsgWaitForMultipleObjects + PeekMessage ループ中は
-    // APP.get_mut() を保持しているため、ここで再入すると aliasing になる。
-    // PROBE_ACTIVE=true の間は APP にアクセスせず即 PassThrough する。
+    // PROBE_ACTIVE=true の間は APP.get_mut() が aliasing になるため直接処理できない。
+    // キーを Consumed にして PROBE_KEY_QUEUE へ退避し、プローブ終了後に NICOLA へ再配送する。
+    // PassThrough にすると物理キーが TSF 注入バッチより先に WezTerm に届いて順序逆転が起きる。
     if awase_windows::PROBE_ACTIVE.load(Ordering::Relaxed) {
-        return CallbackResult::PassThrough;
+        log::debug!("[probe-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
+        if let Ok(mut q) = awase_windows::PROBE_KEY_QUEUE.lock() {
+            q.push(event);
+        }
+        return CallbackResult::Consumed;
     }
     let Some(app) = APP.get_mut() else {
         return CallbackResult::PassThrough;
@@ -1356,6 +1361,29 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         let index = usize::from(cmd - tray::cmd_layout_base());
                         if let Some(app) = APP.get_mut() {
                             app.switch_layout(index);
+                        }
+                    }
+                }
+            },
+            WM_DRAIN_PROBE_QUEUE => unsafe {
+                // PROBE_ACTIVE 中に退避されたキーを NICOLA へ再配送する。
+                // TSF 注入バッチが送信された後のメッセージループで処理されるため、
+                // WezTerm への到着順が保証される（物理キーがバッチより先に届かない）。
+                let queue = {
+                    let mut q = awase_windows::PROBE_KEY_QUEUE
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    std::mem::take(&mut *q)
+                };
+                if !queue.is_empty() {
+                    if let Some(app) = APP.get_mut() {
+                        for queued_event in queue {
+                            log::debug!(
+                                "[probe-drain] replay vk=0x{:02X} {:?}",
+                                queued_event.vk_code.0,
+                                queued_event.event_type
+                            );
+                            on_key_event_impl(app, queued_event);
                         }
                     }
                 }

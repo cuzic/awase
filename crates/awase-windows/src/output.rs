@@ -1309,6 +1309,8 @@ fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
     crate::PROBE_ACTIVE.store(true, Relaxed);
     let settled = win32_async::block_on(settle_async(nc_baseline, timeout_ms));
     crate::PROBE_ACTIVE.store(false, Relaxed);
+    // プローブ中に退避したキーを NICOLA へ再配送（順序保証）
+    crate::post_drain_probe_queue();
 
     let nc_fired = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline;
     log::debug!(
