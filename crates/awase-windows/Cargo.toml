@@ -45,9 +45,6 @@ features = [
     "implement",
 ]
 
-[target.'cfg(windows)'.dependencies.windows-core]
-version = "0.58"
-
 [lints.rust]
 unsafe_code = "warn"
 unused_qualifications = "warn"
