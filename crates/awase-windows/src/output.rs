@@ -904,7 +904,6 @@ impl Output {
             if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
         );
 
-        let mut used_eager_path = false;
         let cold_n;
         if prepend_f2_warmup {
             if session_expired {
@@ -988,7 +987,6 @@ impl Output {
             let eager_elapsed =
                 if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
             let use_eager = eager_ms != 0;
-            used_eager_path = use_eager;
 
             // どのパスを通るかを明示的にログ（根本原因判別用）
             log::debug!(
@@ -1212,8 +1210,13 @@ impl Output {
         // VK "ke" → "け"（1文字）にすることでアルファベット/ひらがな区別が不要になり、
         // raw TSF literal 検出のバックスペース数（chars.len() vs kana 1文字）の不一致も解消される。
         // GJI TSF が Unicode VK_PACKET を composition に取り込み漢字変換も可能（動作確認済み）。
-        let unicode_kana: Option<char> = if prepend_f2_warmup && used_eager_path {
-            kana_for_romaji_static(romaji)
+        let unicode_kana: Option<char> = if prepend_f2_warmup {
+            let eager_ms = self.eager_warmup_sent_ms.get();
+            if eager_ms != 0 {
+                kana_for_romaji_static(romaji)
+            } else {
+                None
+            }
         } else {
             None
         };
