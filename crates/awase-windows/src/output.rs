@@ -1194,10 +1194,10 @@ impl Output {
         let io_baseline = crate::tsf_observations::OBS_GJI_LAST_IO_MS.load(Relaxed);
         let ze_bs_count: usize;
 
-        // cold + eager のときは KEYEVENTF_UNICODE + TSF_MARKER でひらがなを直接送信する実験。
-        // VK "ke" → "け"（1文字）: アルファベット/ひらがな区別が不要になり raw-tsf-literal の
-        // バックスペース数（chars.len()=2 vs kana=1 文字）の不一致も解消される。
-        // GJI TSF が Unicode VK_PACKET を composition に取り込めば漢字変換も可能（動作確認済み）。
+        // cold + eager のときは KEYEVENTF_UNICODE + TSF_MARKER でひらがなを直接送信する。
+        // VK "ke" → "け"（1文字）にすることでアルファベット/ひらがな区別が不要になり、
+        // raw TSF literal 検出のバックスペース数（chars.len() vs kana 1文字）の不一致も解消される。
+        // GJI TSF が Unicode VK_PACKET を composition に取り込み漢字変換も可能（動作確認済み）。
         let unicode_kana: Option<char> = if prepend_f2_warmup && used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
