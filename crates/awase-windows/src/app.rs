@@ -1162,7 +1162,9 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         app.execute_decision(decision);
                     }
                     None => {
-                        // 未知のタイマー → 無視
+                        // 未知のタイマー → win32-async や外部 HWND タイマーかもしれないので dispatch
+                        // （null-HWND + TIMERPROC の WM_TIMER は DispatchMessageW 経由でコールバックが呼ばれる）
+                        DispatchMessageW(&raw const msg);
                     }
                 }
             },
@@ -1710,6 +1712,8 @@ unsafe extern "system" fn observation_event_proc(
     if class.contains("CASCADIA") {
         let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
         log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
+        // AtomicWatcher で待機中のタスクを即座に起こす
+        win32_async::notify_all();
     }
 }
 

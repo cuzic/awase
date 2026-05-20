@@ -1,0 +1,36 @@
+[package]
+name = "win32-async"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "win32_async"
+path = "src/lib.rs"
+
+[dependencies]
+log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+winmsg-executor = "0.3"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+]
+
+[lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+doc_markdown = "allow"
