@@ -66,7 +66,7 @@ pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
 
 /// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
 ///
-/// ze literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
+/// raw TSF literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
 /// GJI candidate window が開いた（composition 成功）、増えなければ literal ASCII の可能性。
 pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
@@ -74,15 +74,15 @@ pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
 /// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうかのフラグ。
 ///
 /// `EVENT_OBJECT_SHOW` で `true` に、`EVENT_OBJECT_HIDE` で `false` にセットされる。
-/// ze literal 検出でウィンドウが既に表示中かを判定するために使用する。
+/// raw TSF literal 検出でウィンドウが既に表示中かを判定するために使用する。
 /// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
 pub static OBS_GJI_CANDIDATE_VISIBLE: AtomicBool = AtomicBool::new(false);
 
-/// ze literal 検出の汎用シグナル AtomicU32。
+/// raw TSF literal 検出の汎用シグナル AtomicU32。
 ///
 /// `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化したとき（SHOW 発火）と
 /// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
-/// `output::gji_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
+/// `output::raw_tsf_literal_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
 /// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
 pub static COMPOSITION_PROBE_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
@@ -101,19 +101,19 @@ pub static PROBE_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static PROBE_KEY_QUEUE: std::sync::Mutex<Vec<RawKeyEvent>> =
     std::sync::Mutex::new(Vec::new());
 
-/// ze literal 検出後に送信すべきバックスペースの数。
+/// raw TSF literal 検出後に送信すべきバックスペースの数。
 ///
 /// WM_DRAIN_PROBE_QUEUE ハンドラが drain キーより先に SendInput でバックスペースを送信し、
-/// WezTerm での到着順を保証する（backspace → ze char 再送 → drain keys の順になるようにする）。
-/// ze literal でない通常の drain では 0 のまま。
-pub static ZE_LITERAL_PENDING_BACKS: std::sync::atomic::AtomicUsize =
+/// WezTerm での到着順を保証する（backspace → raw TSF literal char 再送 → drain keys の順になるようにする）。
+/// raw TSF literal でない通常の drain では 0 のまま。
+pub static RAW_TSF_LITERAL_PENDING_BACKS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// ze literal 検出後に再送すべきローマ字文字列。
+/// raw TSF literal 検出後に再送すべきローマ字文字列。
 ///
-/// バックスペースで ze literal 文字を消した後、この文字列を `send_romaji_as_tsf` で
+/// バックスペースで raw TSF literal 文字を消した後、この文字列を `send_romaji_as_tsf` で
 /// 再送することで正しく composition に入れる。空文字列 = 再送なし。
-pub static ZE_LITERAL_PENDING_ROMAJI: std::sync::Mutex<String> =
+pub static RAW_TSF_LITERAL_PENDING_ROMAJI: std::sync::Mutex<String> =
     std::sync::Mutex::new(String::new());
 
 /// PROBE_ACTIVE 解除後にキューされたキーを NICOLA へ再配送するカスタムメッセージ。

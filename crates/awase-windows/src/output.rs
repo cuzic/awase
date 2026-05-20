@@ -37,8 +37,8 @@ pub enum ColdReason {
     F2NonTsf,
     /// session_expired（前回送信から 2s 超過）
     SessionExpired,
-    /// ze literal 検出後のリカバリ（バックスペース後に再 cold 扱い）
-    ZeLiteralRecovery,
+    /// raw TSF literal 検出後のリカバリ（バックスペース後に再 cold 扱い）
+    RawTsfLiteralRecovery,
 }
 
 /// 出力注入モード
@@ -1015,8 +1015,8 @@ impl Output {
                         );
                     } else {
                         // eager F2 から時間が経過（elapsed >= eager_settle_ms）しており、
-                        // gji_idle が大きい状態で即送信すると ze-detect false positive が発生する。
-                        // （GJI candidate SHOW が 300ms を超えるため ze-detect がタイムアウト）
+                        // gji_idle が大きい状態で即送信すると raw-tsf-literal false positive が発生する。
+                        // （GJI candidate SHOW が 300ms を超えるため raw-tsf-literal がタイムアウト）
                         // → fresh F2 を送って TsfReadinessProbe で composition context を
                         //   再確認してから送信する。追加 ~140ms だが false positive を防げる。
                         let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
@@ -1025,7 +1025,7 @@ impl Output {
                             crate::hook::current_tick_ms().saturating_sub(last_io);
                         log::debug!(
                             "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 (gji_idle={gji_idle}ms) \
-                             → fresh F2 + probe (ze-detect false positive 防止)",
+                             → fresh F2 + probe (raw-tsf-literal false positive 防止)",
                         );
                         let refresh_inputs = [
                             make_tsf_key_input(VK_DBE_HIRAGANA, false),
@@ -1120,7 +1120,7 @@ impl Output {
                         // OBJ_NAMECHANGE 確認かつ GJI 活動なし（probe_settled=false）の場合、
                         // OBJ_NAMECHANGE は「WezTerm が F2 を処理した」シグナルだが
                         // GJI composition session 初期化の完了を意味しない。
-                        // 直後にローマ字を送ると GJI がまだ初期化中で literal になる（ze literal バグ）。
+                        // 直後にローマ字を送ると GJI がまだ初期化中で literal になる（raw TSF literal バグ）。
                         // → fresh F2 タイムスタンプ起点で GJI I/O 静止を待つ二次プローブを実施。
                         if settled && !probe_settled {
                             const GJI_POST_NAMECHANGE_MS: u64 = 300;
@@ -1187,7 +1187,7 @@ impl Output {
             );
         }
 
-        // ze literal 検出用ベースライン（送信直前に記録）
+        // raw TSF literal 検出用ベースライン（送信直前に記録）
         use std::sync::atomic::Ordering::Relaxed;
         let was_candidate_visible = crate::OBS_GJI_CANDIDATE_VISIBLE.load(Relaxed);
         let gji_show_baseline = crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed);
@@ -1195,7 +1195,7 @@ impl Output {
         let ze_bs_count: usize;
 
         // cold + eager のときは KEYEVENTF_UNICODE + TSF_MARKER でひらがなを直接送信する実験。
-        // VK "ke" → "け"（1文字）: アルファベット/ひらがな区別が不要になり ze-detect の
+        // VK "ke" → "け"（1文字）: アルファベット/ひらがな区別が不要になり raw-tsf-literal の
         // バックスペース数（chars.len()=2 vs kana=1 文字）の不一致も解消される。
         // GJI TSF が Unicode VK_PACKET を composition に取り込めば漢字変換も可能（動作確認済み）。
         let unicode_kana: Option<char> = if prepend_f2_warmup && used_eager_path {
@@ -1299,50 +1299,50 @@ impl Output {
 
         self.mark_composition_warm();
 
-        // ze literal 検出（GJI 専用）:
+        // raw TSF literal 検出（GJI 専用）:
         // ウィンドウ表示状態に応じてシグナルを使い分ける:
         //   - was_visible=false: SHOW イベント（composition 時に非表示→表示）~4ms
         //   - was_visible=true : GJI I/O 変化（ウィンドウがすでに表示中で SHOW は来ない）
         // GJI が動いていない環境（MS IME 等）では OBS_GJI_MONITOR_OK=false なのでスキップ。
         let gji_active = crate::tsf_observations::OBS_GJI_MONITOR_OK.load(Relaxed);
         if prepend_f2_warmup && gji_active {
-            const ZE_LITERAL_DETECT_MS: u32 = 300;
+            const RAW_TSF_LITERAL_DETECT_MS: u32 = 300;
             let t_send = crate::hook::current_tick_ms();
             let detected = if was_candidate_visible {
                 // 候補ウィンドウが表示済み: SHOW は来ない。GJI I/O 変化で composition を確認。
-                wait_for_gji_io_change(io_baseline, ZE_LITERAL_DETECT_MS)
+                wait_for_raw_tsf_literal_io(io_baseline, RAW_TSF_LITERAL_DETECT_MS)
             } else {
                 // 候補ウィンドウ非表示: SHOW イベントで composition を確認。
-                wait_for_gji_candidate_show(gji_show_baseline, ZE_LITERAL_DETECT_MS)
+                wait_for_raw_tsf_literal_show(gji_show_baseline, RAW_TSF_LITERAL_DETECT_MS)
             };
             let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
             if detected {
                 log::debug!(
-                    "[ze-detect] cold={cold_n} composition confirmed ({elapsed_ms}ms, \
+                    "[raw-tsf-literal] cold={cold_n} composition confirmed ({elapsed_ms}ms, \
                     was_visible={was_candidate_visible})"
                 );
             } else {
                 log::warn!(
-                    "[ze-detect] cold={cold_n} ze literal suspected \
+                    "[raw-tsf-literal] cold={cold_n} raw TSF literal suspected \
                     ({elapsed_ms}ms, was_visible={was_candidate_visible}) \
                     → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
                 );
-                if self.last_cold_reason.get() != ColdReason::ZeLiteralRecovery {
-                    crate::ZE_LITERAL_PENDING_BACKS.store(
+                if self.last_cold_reason.get() != ColdReason::RawTsfLiteralRecovery {
+                    crate::RAW_TSF_LITERAL_PENDING_BACKS.store(
                         ze_bs_count,
                         Relaxed,
                     );
-                    *crate::ZE_LITERAL_PENDING_ROMAJI
+                    *crate::RAW_TSF_LITERAL_PENDING_ROMAJI
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
                 } else {
-                    // ZeLiteralRecovery 後に再度 ze-detect 発火 = 連続発火 = false positive の疑い。
+                    // RawTsfLiteralRecovery 後に再度 raw-tsf-literal 発火 = 連続発火 = false positive の疑い。
                     log::warn!(
-                        "[ze-detect] cold={cold_n} consecutive ze-detect fire (ZeLiteralRecovery) \
+                        "[raw-tsf-literal] cold={cold_n} consecutive raw-tsf-literal fire (RawTsfLiteralRecovery) \
                         → likely false positive, giving up without backspace"
                     );
                 }
-                self.mark_composition_cold(ColdReason::ZeLiteralRecovery);
+                self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
             }
         }
 
@@ -1489,15 +1489,15 @@ const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT 
     }
 }
 
-/// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。`flush_ze_literal_backspaces` の後に呼ぶこと。
+/// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
 ///
-/// `ZE_LITERAL_PENDING_ROMAJI` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
-/// cold 状態（ZeLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
-/// drain キーの前に呼ぶことで「backspace → ze char → drain keys」の順を保証する。
+/// `RAW_TSF_LITERAL_PENDING_ROMAJI` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
+/// cold 状態（RawTsfLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
+/// drain キーの前に呼ぶことで「backspace → raw TSF literal char → drain keys」の順を保証する。
 impl Output {
-    pub fn flush_ze_literal_romaji(&self) {
+    pub fn flush_raw_tsf_literal_romaji(&self) {
         let romaji = {
-            let mut guard = crate::ZE_LITERAL_PENDING_ROMAJI
+            let mut guard = crate::RAW_TSF_LITERAL_PENDING_ROMAJI
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *guard)
@@ -1505,18 +1505,18 @@ impl Output {
         if romaji.is_empty() {
             return;
         }
-        log::debug!("[ze-detect] re-sending ze literal romaji={romaji:?}");
+        log::debug!("[raw-tsf-literal] re-sending raw TSF literal romaji={romaji:?}");
         self.send_romaji_as_tsf(&romaji);
     }
 }
 
 /// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。
 ///
-/// `ZE_LITERAL_PENDING_BACKS` に退避されたバックスペース数を読み取り、SendInput で送信する。
+/// `RAW_TSF_LITERAL_PENDING_BACKS` に退避されたバックスペース数を読み取り、SendInput で送信する。
 /// drain キーの SendInput より先に呼ぶことで WezTerm への到着順を保証する。
-pub fn flush_ze_literal_backspaces() {
+pub fn flush_raw_tsf_literal_backspaces() {
     use std::sync::atomic::Ordering::Relaxed;
-    let n = crate::ZE_LITERAL_PENDING_BACKS.swap(0, Relaxed);
+    let n = crate::RAW_TSF_LITERAL_PENDING_BACKS.swap(0, Relaxed);
     if n == 0 {
         return;
     }
@@ -1527,7 +1527,7 @@ pub fn flush_ze_literal_backspaces() {
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ])
         .collect();
-    log::debug!("[ze-detect] flush backspace ×{n}");
+    log::debug!("[raw-tsf-literal] flush backspace ×{n}");
     unsafe {
         SendInput(
             &backs,
@@ -1586,16 +1586,16 @@ async fn settle_async(nc_baseline: u32, timeout_ms: u32) -> bool {
     }
 }
 
-/// ze literal 検出の各セッション ID。新規検出開始時にインクリメントし、
+/// raw TSF literal 検出の各セッション ID。新規検出開始時にインクリメントし、
 /// orphan タイムアウトタスクが古いセッションで副作用を起こさないようにする。
-static ZE_DETECT_SESSION: std::sync::atomic::AtomicU32 =
+static RAW_TSF_LITERAL_DETECT_SESSION: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
 /// cold start 後のローマ字送信で GJI candidate window が表示されるのを event-driven に待つ。
 ///
 /// - `show_baseline`: 送信直前の `OBS_GJI_CANDIDATE_SHOW_SEQ` の値
 /// - `timeout_ms`: タイムアウト (ms)
-/// - 戻り値: `true` = SHOW 検出（composition 成功）、`false` = timeout（ze literal 疑い）
+/// - 戻り値: `true` = SHOW 検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
 ///
 /// # 実装方針（observation / reduce 分離）
 ///
@@ -1613,25 +1613,25 @@ fn kana_for_romaji_static(romaji: &str) -> Option<char> {
     TABLE.get_or_init(awase::kana_table::build_romaji_to_kana).get(romaji).copied()
 }
 
-fn wait_for_gji_candidate_show(show_baseline: u32, timeout_ms: u32) -> bool {
+fn wait_for_raw_tsf_literal_show(show_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
     crate::PROBE_ACTIVE.store(true, Relaxed);
-    let detected = win32_async::block_on(gji_show_or_timeout_async(show_baseline, timeout_ms));
+    let detected = win32_async::block_on(raw_tsf_literal_show_or_timeout_async(show_baseline, timeout_ms));
     crate::PROBE_ACTIVE.store(false, Relaxed);
     detected
 }
 
-async fn gji_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
+async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
 
     let probe_baseline = crate::COMPOSITION_PROBE_SEQ.load(Relaxed);
-    let session = ZE_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
+    let session = RAW_TSF_LITERAL_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
 
     // タイムアウトタスク: timeout_ms 後に COMPOSITION_PROBE_SEQ を +1 してウォッチャーを起こす。
     // session チェックで古いセッション（orphan）の副作用を防ぐ。
     win32_async::spawn_local(async move {
         win32_async::sleep_ms(timeout_ms).await;
-        if ZE_DETECT_SESSION.load(Relaxed) == session {
+        if RAW_TSF_LITERAL_DETECT_SESSION.load(Relaxed) == session {
             crate::COMPOSITION_PROBE_SEQ.fetch_add(1, Relaxed);
             win32_async::notify_all();
         }
@@ -1644,33 +1644,33 @@ async fn gji_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool 
     crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != show_baseline
 }
 
-/// GJI candidate window がすでに表示中の場合の ze literal 検出。
+/// GJI candidate window がすでに表示中の場合の raw TSF literal 検出。
 /// SHOW イベントは来ないため GJI I/O 変化（OBS_GJI_LAST_IO_MS）でポーリングする。
 ///
 /// - `io_baseline`: 送信直前の `OBS_GJI_LAST_IO_MS` の値
 /// - `timeout_ms`: タイムアウト (ms)
-/// - 戻り値: `true` = I/O 変化検出（composition 成功）、`false` = timeout（ze literal 疑い）
-fn wait_for_gji_io_change(io_baseline: u64, timeout_ms: u32) -> bool {
+/// - 戻り値: `true` = I/O 変化検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
+fn wait_for_raw_tsf_literal_io(io_baseline: u64, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
     crate::PROBE_ACTIVE.store(true, Relaxed);
-    let detected = win32_async::block_on(gji_io_change_or_timeout_async(io_baseline, timeout_ms));
+    let detected = win32_async::block_on(raw_tsf_literal_io_or_timeout_async(io_baseline, timeout_ms));
     crate::PROBE_ACTIVE.store(false, Relaxed);
     detected
 }
 
-/// [`wait_for_gji_io_change`] の非同期実装。`OBS_GJI_LAST_IO_MS` をポーリングする。
+/// [`wait_for_raw_tsf_literal_io`] の非同期実装。`OBS_GJI_LAST_IO_MS` をポーリングする。
 ///
 /// GJI I/O モニタースレッドは 10ms 間隔でサンプリングするため、
 /// ポーリング間隔は 15ms に設定し、I/O 変化を確実に捕捉する。
-async fn gji_io_change_or_timeout_async(io_baseline: u64, timeout_ms: u32) -> bool {
+async fn raw_tsf_literal_io_or_timeout_async(io_baseline: u64, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
     const POLL_MS: u32 = 15;
 
-    let session = ZE_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
+    let session = RAW_TSF_LITERAL_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
     let deadline = crate::hook::current_tick_ms() + u64::from(timeout_ms);
 
     loop {
-        if ZE_DETECT_SESSION.load(Relaxed) != session {
+        if RAW_TSF_LITERAL_DETECT_SESSION.load(Relaxed) != session {
             return false;
         }
         let io_now = crate::tsf_observations::OBS_GJI_LAST_IO_MS.load(Relaxed);

@@ -1371,12 +1371,12 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // TSF 注入バッチが送信された後のメッセージループで処理されるため、
                 // WezTerm への到着順が保証される（物理キーがバッチより先に届かない）。
 
-                // ze literal 回収: backspace → ze 文字再送 → drain keys の順を保証する。
-                // (1) backspace: ze literal 文字（例 'ko'）をターミナルから消去
-                awase_windows::output::flush_ze_literal_backspaces();
+                // raw TSF literal 回収: backspace → raw TSF literal 文字再送 → drain keys の順を保証する。
+                // (1) backspace: raw TSF literal 文字（例 'ko'）をターミナルから消去
+                awase_windows::output::flush_raw_tsf_literal_backspaces();
                 // (2) ze 文字再送: cold warmup probe を経て正しく compose（例 'こ'）
                 if let Some(runtime) = APP.get_mut() {
-                    runtime.executor.platform.output.flush_ze_literal_romaji();
+                    runtime.executor.platform.output.flush_raw_tsf_literal_romaji();
                 }
                 // (3) drain: 先行入力キーを再配送（例 'のじじょう'）
 
@@ -1715,7 +1715,7 @@ unsafe extern "system" fn win_event_proc(
 /// | フック | イベント範囲 | 目的 |
 /// |---|---|---|
 /// | NAMECHANGE | 0x800C | WezTerm title 変更 → `wait_for_tsf_cold_settle` early-exit |
-/// | OBJECT_SHOW | 0x8002 | GJI candidate window 表示 → ze literal 検出用 |
+/// | OBJECT_SHOW | 0x8002 | GJI candidate window 表示 → raw TSF literal 検出用 |
 fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
     let mut hooks = Vec::new();
@@ -1785,7 +1785,7 @@ unsafe extern "system" fn observation_event_proc(
             if class == GJI_CANDIDATE_CLASS {
                 OBS_GJI_CANDIDATE_VISIBLE.store(true, Ordering::Relaxed);
                 let seq = OBS_GJI_CANDIDATE_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-                // ze literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
+                // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
                 // AtomicWatcher で event-driven に待機する設計）
                 COMPOSITION_PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
                 log::debug!("[gji-candidate] SHOW #{seq}");
