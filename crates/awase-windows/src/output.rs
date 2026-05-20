@@ -353,6 +353,16 @@ pub struct Output {
     idle_ms_at_last_cold: std::cell::Cell<u64>,
 }
 
+/// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
+struct WarmupOutcome {
+    /// F2 ウォームアップバッチが前置きされたか
+    prepend_f2_warmup: bool,
+    /// eager warmup パス（既存の F2 経由）を通ったか（Unicode 送信判定に使用）
+    used_eager_path: bool,
+    /// cold start シーケンス番号（ログ相関用）
+    cold_n: u32,
+}
+
 impl Output {
     pub fn new(mode: OutputMode) -> Self {
         // romaji_to_kana テーブルは UWP アプリ向けの Unicode フォールバックで
@@ -885,12 +895,8 @@ impl Output {
     ///
     /// 案A では F2-only バッチを先行送信し、WezTerm が F2 を処理して
     /// TSF context を初期化するまで待機（probe loop）してからローマ字バッチを送る。
-    fn send_romaji_as_tsf(&self, romaji: &str) {
-        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
-
-        if chars.is_empty() {
-            return;
-        }
+    fn ensure_tsf_warm(&self) -> WarmupOutcome {
+        use std::sync::atomic::Ordering::Relaxed;
 
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
@@ -900,7 +906,7 @@ impl Output {
         let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
-            "[tsf-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
             if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
         );
 
@@ -1182,9 +1188,75 @@ impl Output {
             cold_n = self.cold_start_count.get();
         }
 
+        let used_eager_path = self.eager_warmup_sent_ms.get() != 0;
+        WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n }
+    }
+
+    /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
+    fn send_vk_runs(&self, chars: &[(u16, bool)], cold_n: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
+        // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
+        // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
+        let mut runs: Vec<&[(u16, bool)]> = Vec::new();
+        let mut start = 0;
+        for i in 1..chars.len() {
+            if chars[i].0 == chars[i - 1].0 {
+                runs.push(&chars[start..i]);
+                start = i;
+            }
+        }
+        runs.push(&chars[start..]);
+
+        let total_runs = runs.len();
+
+        for (run_idx, run) in runs.iter().enumerate() {
+            let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                .load(Relaxed);
+            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            let vks: Vec<String> = run.iter().map(|&(v, s)| {
+                if s { format!("S{v:02X}") } else { format!("{v:02X}") }
+            }).collect();
+            log::debug!(
+                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
+                vks.join(","),
+            );
+            let mut inputs = Vec::with_capacity(run.len() * 4);
+            for &(vk, needs_shift) in *run {
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                }
+                inputs.push(make_tsf_key_input(vk, false));
+            }
+            for &(vk, needs_shift) in *run {
+                inputs.push(make_tsf_key_input(vk, true));
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                }
+            }
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+        }
+    }
+
+    fn send_romaji_as_tsf(&self, romaji: &str) {
+        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+
+        if chars.is_empty() {
+            return;
+        }
+
+        let WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n } = self.ensure_tsf_warm();
+
         // warmup 完了 → ローマ字送信開始 (GJI idle・IME conv 状態を記録)
         // conv は最大 10ms の WM_IME_CONTROL 問い合わせ。WezTerm が通常応答する場合は 1-3ms 以内。
         {
+            use std::sync::atomic::Ordering::Relaxed;
             let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
                 .load(Relaxed);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
@@ -1210,13 +1282,8 @@ impl Output {
         // VK "ke" → "け"（1文字）にすることでアルファベット/ひらがな区別が不要になり、
         // raw TSF literal 検出のバックスペース数（chars.len() vs kana 1文字）の不一致も解消される。
         // GJI TSF が Unicode VK_PACKET を composition に取り込み漢字変換も可能（動作確認済み）。
-        let unicode_kana: Option<char> = if prepend_f2_warmup {
-            let eager_ms = self.eager_warmup_sent_ms.get();
-            if eager_ms != 0 {
-                kana_for_romaji_static(romaji)
-            } else {
-                None
-            }
+        let unicode_kana: Option<char> = if prepend_f2_warmup && used_eager_path {
+            kana_for_romaji_static(romaji)
         } else {
             None
         };
@@ -1265,52 +1332,7 @@ impl Output {
             ze_bs_count = 1; // Unicode kana 1文字
         } else {
             // 通常の VK 送信。
-            // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
-            // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
-            // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
-            let mut runs: Vec<&[(u16, bool)]> = Vec::new();
-            let mut start = 0;
-            for i in 1..chars.len() {
-                if chars[i].0 == chars[i - 1].0 {
-                    runs.push(&chars[start..i]);
-                    start = i;
-                }
-            }
-            runs.push(&chars[start..]);
-
-            let total_runs = runs.len();
-
-            for (run_idx, run) in runs.iter().enumerate() {
-                let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
-                    .load(Relaxed);
-                let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-                let vks: Vec<String> = run.iter().map(|&(v, s)| {
-                    if s { format!("S{v:02X}") } else { format!("{v:02X}") }
-                }).collect();
-                log::debug!(
-                    "[h1-run] cold={cold_n} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
-                    vks.join(","),
-                );
-                let mut inputs = Vec::with_capacity(run.len() * 4);
-                for &(vk, needs_shift) in *run {
-                    if needs_shift {
-                        inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-                    }
-                    inputs.push(make_tsf_key_input(vk, false));
-                }
-                for &(vk, needs_shift) in *run {
-                    inputs.push(make_tsf_key_input(vk, true));
-                    if needs_shift {
-                        inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-                    }
-                }
-                unsafe {
-                    SendInput(
-                        &inputs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
-            }
+            self.send_vk_runs(&chars, cold_n);
             ze_bs_count = chars.len();
         }
 
