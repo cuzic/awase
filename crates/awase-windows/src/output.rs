@@ -37,6 +37,8 @@ pub enum ColdReason {
     F2NonTsf,
     /// session_expired（前回送信から 2s 超過）
     SessionExpired,
+    /// ze literal 検出後のリカバリ（バックスペース後に再 cold 扱い）
+    ZeLiteralRecovery,
 }
 
 /// 出力注入モード
@@ -1124,6 +1126,10 @@ impl Output {
             );
         }
 
+        // ze literal 検出用: 送信直前の GJI candidate window SHOW カウンタをベースラインとして記録
+        let gji_show_baseline =
+            crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(std::sync::atomic::Ordering::Relaxed);
+
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
@@ -1172,6 +1178,41 @@ impl Output {
         }
 
         self.mark_composition_warm();
+
+        // cold start 後の ze literal 検出:
+        // GJI candidate window が表示されなければ literal ASCII が出力された疑い。
+        // PROBE_ACTIVE=true で後続キーを退避しつつ event-driven に待機（最大 300ms）。
+        // 通常は SHOW が 4ms 程度で届くため、成功時のオーバーヘッドはほぼゼロ。
+        if prepend_f2_warmup {
+            const VK_BACK: u16 = 0x08;
+            const ZE_LITERAL_DETECT_MS: u32 = 300;
+            let t_send = crate::hook::current_tick_ms();
+            let detected = wait_for_gji_candidate_show(gji_show_baseline, ZE_LITERAL_DETECT_MS);
+            let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
+            if detected {
+                log::debug!("[ze-detect] cold={cold_n} composition confirmed ({elapsed_ms}ms)");
+            } else {
+                log::warn!(
+                    "[ze-detect] cold={cold_n} ze literal suspected \
+                    ({elapsed_ms}ms, no SHOW) → backspace ×{} + mark cold",
+                    chars.len()
+                );
+                let backs: Vec<_> = (0..chars.len())
+                    .flat_map(|_| [
+                        make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+                        make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+                    ])
+                    .collect();
+                unsafe {
+                    SendInput(
+                        &backs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+                self.mark_composition_cold(ColdReason::ZeLiteralRecovery);
+            }
+        }
+
         // バッチ送信・warm化完了後にプローブ退避キーを再配送（二重プローブ防止）。
         crate::post_drain_probe_queue();
     }
@@ -1363,6 +1404,56 @@ async fn settle_async(nc_baseline: u32, timeout_ms: u32) -> bool {
         let remaining = u32::try_from(deadline_ms.saturating_sub(now)).unwrap_or(u32::MAX);
         win32_async::sleep_ms(remaining.min(POLL_MS)).await;
     }
+}
+
+/// ze literal 検出の各セッション ID。新規検出開始時にインクリメントし、
+/// orphan タイムアウトタスクが古いセッションで副作用を起こさないようにする。
+static ZE_DETECT_SESSION: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// cold start 後のローマ字送信で GJI candidate window が表示されるのを event-driven に待つ。
+///
+/// - `show_baseline`: 送信直前の `OBS_GJI_CANDIDATE_SHOW_SEQ` の値
+/// - `timeout_ms`: タイムアウト (ms)
+/// - 戻り値: `true` = SHOW 検出（composition 成功）、`false` = timeout（ze literal 疑い）
+///
+/// # 実装方針（observation / reduce 分離）
+///
+/// observation: `ZE_LITERAL_PROBE_SEQ` に対する `AtomicWatcher` で event-driven に待機。
+///   - SHOW 発火時: `observation_event_proc` が `OBS_GJI_CANDIDATE_SHOW_SEQ` +1 後に
+///     `ZE_LITERAL_PROBE_SEQ` も +1 して `notify_all()` → 即 wake
+///   - timeout 時: `spawn_local` タスクが `sleep_ms` 後に `ZE_LITERAL_PROBE_SEQ` +1 → 即 wake
+///
+/// reduce: wake 後に `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化していれば SHOW、変化なければ timeout
+fn wait_for_gji_candidate_show(show_baseline: u32, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    crate::PROBE_ACTIVE.store(true, Relaxed);
+    let detected = win32_async::block_on(gji_show_or_timeout_async(show_baseline, timeout_ms));
+    crate::PROBE_ACTIVE.store(false, Relaxed);
+    detected
+}
+
+async fn gji_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let probe_baseline = crate::ZE_LITERAL_PROBE_SEQ.load(Relaxed);
+    let session = ZE_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
+
+    // タイムアウトタスク: timeout_ms 後に ZE_LITERAL_PROBE_SEQ を +1 してウォッチャーを起こす。
+    // session チェックで古いセッション（orphan）の副作用を防ぐ。
+    win32_async::spawn_local(async move {
+        win32_async::sleep_ms(timeout_ms).await;
+        if ZE_DETECT_SESSION.load(Relaxed) == session {
+            crate::ZE_LITERAL_PROBE_SEQ.fetch_add(1, Relaxed);
+            win32_async::notify_all();
+        }
+    });
+
+    // 観測 (observation): ZE_LITERAL_PROBE_SEQ の変化を event-driven に待つ
+    win32_async::AtomicWatcher::new(&crate::ZE_LITERAL_PROBE_SEQ, probe_baseline).await;
+
+    // 集約 (reduce): OBS_GJI_CANDIDATE_SHOW_SEQ が変化していれば SHOW 検出
+    crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != show_baseline
 }
 
 #[cfg(test)]

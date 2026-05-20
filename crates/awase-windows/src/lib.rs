@@ -71,6 +71,15 @@ pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
 pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
+/// ze literal 検出の汎用シグナル AtomicU32。
+///
+/// `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化したとき（SHOW 発火）と
+/// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
+/// `output::gji_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
+/// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
+pub static ZE_LITERAL_PROBE_SEQ: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
 /// [probe] `wait_for_tsf_cold_settle()` がアクティブ中かどうかのフラグ。
 ///
 /// true の間、フックコールバックは APP.get_mut() を呼ばず Consumed を返す。
