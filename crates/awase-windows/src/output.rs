@@ -269,95 +269,11 @@ pub struct Output {
     kana_to_romaji: HashMap<char, String>,
     /// Chrome VK モード用: 記号→VK コードマッピング
     symbol_to_vk: HashMap<char, (u16, bool)>,
-    /// 最後の `send_keys` 完了時刻（ms）。
+    /// TSF composition context の warm/cold 状態管理。
     ///
-    /// awase が SendInput でキーを注入した直後は、OS 入力キュー → WezTerm/Chrome
-    /// → IME の composition pipeline で出力イベントが処理中。この間に user の
-    /// passthrough キー (Enter / Ctrl / Backspace 等) が届くと、IME が pending
-    /// composition を cancel して "タスク → タスk" 等の race condition が起きる。
-    ///
-    /// executor がこの値を読んで「output in-flight 期間」を判定し、当該期間内に
-    /// 来た passthrough を deferr/wait することで race を解消する。
-    last_send_ms: std::cell::Cell<u64>,
-    /// Cold-start 発生回数カウンタ（H1 診断ログのセッション識別用）。
-    ///
-    /// warmup バッチを送るたびにインクリメントされる。
-    /// `[h1-probe]` ログの `cold=N` フィールドがこの値に対応する。
-    cold_start_count: std::cell::Cell<u32>,
-    /// NativeF2Consumed 時に即送信した eager warmup F2 の送信時刻（ms）。
-    ///
-    /// 0 = 有効な eager warmup なし。
-    /// `send_romaji_as_tsf` がこれを参照して重複 F2 送信を避け、
-    /// 経過時間に応じた最小 sleep のみで済むようにする。
-    eager_warmup_sent_ms: std::cell::Cell<u64>,
-    /// TSF composition context の readiness フラグ（epoch 付き）。
-    ///
-    /// # 設計メモ（2026-05-14）
-    ///
-    /// このフラグは概念的に2つの独立した状態を1つに統合している:
-    ///   - `ime_enabled`: IME がオープン（ひらがなモード）かどうか
-    ///   - `composition_ready`: TSF composition session が awase の
-    ///     SendInput バッチを受け付ける状態にあるかどうか
-    ///
-    /// 今後問題が複雑化する場合は `ImeState { ime_enabled, composition_ready }`
-    /// への分離を検討すること。
-    ///
-    /// # cold になるタイミング（0）
-    ///   - 起動時（初期値 0 = cold）
-    ///   - フォーカス変更（`on_focus_changed()` が focus_epoch をインクリメント → 自動無効化）
-    ///   - Space / Enter / Escape の passthrough / reinject（composition 確定・キャンセル）
-    ///   - エンジン OFF → ON（IME 状態リセット）
-    ///   - F2 (VK_DBE_HIRAGANA) 検出（TSF context が未初期化になる可能性）
-    ///
-    /// # epoch による自動無効化
-    ///
-    /// `composition_warm_epoch` はウォームになった時点の `focus_epoch` を記録する。
-    /// `is_composition_warm()` は両者が一致するときのみ true を返すため、
-    /// フォーカス変更で `focus_epoch` が進むと前ウィンドウのウォーム状態は
-    /// 自動的に無効化される（`mark_composition_cold()` 呼び出し漏れに対する安全ネット）。
-    ///
-    /// # 重要: 物理 F2 と warmup F2 の違い
-    ///
-    /// 物理 F2（CallNextHookEx 経由）は OS レベルで IME をひらがなモードに
-    /// 切り替えるが、awase の SendInput バッチに対する TSF composition context を
-    /// 初期化しない（別のメッセージポンプサイクルで処理されるため）。
-    ///
-    /// TSF context の初期化には warmup F2 が SendInput バッチの先頭に含まれる
-    /// 必要がある（[F2↓F2↑, romaji...] の形で同一バッチ内に同居すること）。
-    ///
-    /// そのため TSF モードでは物理 F2 を awase が Consume し、
-    /// 次の NICOLA 出力バッチの warmup F2 で一本化する設計を取る。
-    ///
-    /// `send_romaji_batched` / `send_romaji_as_tsf` が cold を検出すると
-    /// VK_DBE_HIRAGANA ウォームアップを先頭に挿入し、送信後に `mark_composition_warm()` を呼ぶ。
-    composition_warm_epoch: std::cell::Cell<u32>,
-    /// 現在のフォーカスウィンドウのエポック番号。
-    ///
-    /// `on_focus_changed()` が呼ばれるたびにインクリメントされる。
-    /// `composition_warm_epoch` と照合することで、前ウィンドウのウォーム状態を
-    /// 自動無効化する。
-    focus_epoch: std::cell::Cell<u32>,
-    /// IME ON/OFF のシャドウ状態。
-    ///
-    /// `notify_ime_open()` で更新される。`send_eager_tsf_warmup()` が
-    /// IME OFF 時に F2 を誤送信しないためのガード。
-    shadow_ime_on: std::cell::Cell<bool>,
-    /// 最後に cold にマークされた理由。
-    /// `send_romaji_as_tsf` が eager_settle_ms を動的に決定するために使用。
-    last_cold_reason: std::cell::Cell<ColdReason>,
-    /// 最後に cold になった時点での `ms_since_last_send()` の値。
-    ///
-    /// PassthroughConfirmKey / ReinjectConfirmKey で長期間 idle（ナビゲーション等）の後に
-    /// cold になった場合を検出するために使う。長期 idle では GJI が TSF セッションを
-    /// リセットするため、500ms のウォームアップバジェットでは不足する。
-    idle_ms_at_last_cold: std::cell::Cell<u64>,
-    /// `RawTsfLiteralRecovery` が連続で発火した回数。
-    ///
-    /// `mark_composition_cold(RawTsfLiteralRecovery)` でインクリメント。
-    /// 他の理由での cold 化、または `mark_composition_warm` でリセット。
-    /// 連続 2 回以上のときはバックスペースを送らず（false positive 扱い）、
-    /// ログに連続回数を出して診断しやすくする。
-    raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
+    /// warm/cold epoch、last_send_ms、eager_warmup_sent_ms 等を集約する。
+    /// 詳細は [`crate::tsf::probe::CompositionState`] を参照。
+    pub composition: crate::tsf::probe::CompositionState,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -380,15 +296,7 @@ impl Output {
             romaji_to_kana,
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
-            last_send_ms: std::cell::Cell::new(0),
-            cold_start_count: std::cell::Cell::new(0),
-            eager_warmup_sent_ms: std::cell::Cell::new(0),
-            composition_warm_epoch: std::cell::Cell::new(0), // 0 = cold
-            focus_epoch: std::cell::Cell::new(1),            // 1 = initial window
-            shadow_ime_on: std::cell::Cell::new(false),
-            last_cold_reason: std::cell::Cell::new(ColdReason::FocusChange),
-            idle_ms_at_last_cold: std::cell::Cell::new(0),
-            raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
+            composition: crate::tsf::probe::CompositionState::new(),
         }
     }
 
@@ -396,25 +304,21 @@ impl Output {
     /// WinEvent 観察コールバックが warmup からの経過時間をログするために使う。
     #[must_use]
     pub fn eager_warmup_sent_ms(&self) -> u64 {
-        self.eager_warmup_sent_ms.get()
+        self.composition.eager_warmup_sent_ms()
     }
 
     /// シャドウ IME ON 状態を返す。
     /// FocusChange / notify_ime_open() で更新される。
     #[must_use]
     pub fn shadow_ime_on(&self) -> bool {
-        self.shadow_ime_on.get()
+        self.composition.shadow_ime_on()
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
     /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]
     pub fn ms_since_last_send(&self) -> u64 {
-        let last = self.last_send_ms.get();
-        if last == 0 {
-            return u64::MAX;
-        }
-        crate::hook::current_tick_ms().saturating_sub(last)
+        self.composition.ms_since_last_send()
     }
 
     /// IME composition context をコールド状態にマークする。
@@ -435,19 +339,7 @@ impl Output {
     ///
     /// 直後に send_eager_tsf_warmup() が新しいタイムスタンプをセットする。
     pub fn mark_composition_cold(&self, reason: ColdReason) {
-        let idle_ms = self.ms_since_last_send();
-        if reason == ColdReason::RawTsfLiteralRecovery {
-            let n = self.raw_tsf_literal_consecutive_count.get() + 1;
-            self.raw_tsf_literal_consecutive_count.set(n);
-            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
-        } else {
-            self.raw_tsf_literal_consecutive_count.set(0);
-            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
-        }
-        self.composition_warm_epoch.set(0);
-        self.eager_warmup_sent_ms.set(0);
-        self.last_cold_reason.set(reason);
-        self.idle_ms_at_last_cold.set(idle_ms);
+        self.composition.mark_composition_cold(reason);
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -455,18 +347,14 @@ impl Output {
     /// 直前の NICOLA 出力バッチで warmup F2 が正常に送信され、
     /// TSF composition context が初期化済みであると分かっている場合に呼ぶ。
     pub fn mark_composition_warm(&self) {
-        let epoch = self.focus_epoch.get();
-        log::debug!("[composition] marked warm (epoch={epoch}) → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
-        self.composition_warm_epoch.set(epoch);
-        self.raw_tsf_literal_consecutive_count.set(0);
+        self.composition.mark_composition_warm();
     }
 
     /// 現在の composition_warm フラグを返す。
     ///
     /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
     pub fn is_composition_warm(&self) -> bool {
-        let epoch = self.focus_epoch.get();
-        self.composition_warm_epoch.get() == epoch && epoch != 0
+        self.composition.is_composition_warm()
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
@@ -474,13 +362,7 @@ impl Output {
     /// `focus_epoch` をインクリメントし、前ウィンドウのウォーム状態を自動無効化する。
     /// 従来の `mark_composition_cold()` 呼び出しの代わりに使う（明示的なコールド化も同時に行う）。
     pub fn on_focus_changed(&self) {
-        let new_epoch = self.focus_epoch.get().wrapping_add(1).max(1); // 0 は cold の番兵値なので skip
-        self.focus_epoch.set(new_epoch);
-        self.composition_warm_epoch.set(0);
-        self.eager_warmup_sent_ms.set(0);
-        self.idle_ms_at_last_cold.set(self.ms_since_last_send());
-        self.raw_tsf_literal_consecutive_count.set(0);
-        log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
+        self.composition.on_focus_changed();
     }
 
     /// 現在のフォーカス先が TSF 注入モードかどうかを返す。
@@ -496,8 +378,7 @@ impl Output {
     /// `ImeEffect::SetOpen` 実行時および FocusChange 時に呼ぶ。
     /// `send_eager_tsf_warmup()` が IME OFF 時に F2 を誤送信しないためのガード。
     pub fn notify_ime_open(&self, open: bool) {
-        log::debug!("[composition] shadow_ime_on → {open}");
-        self.shadow_ime_on.set(open);
+        self.composition.notify_ime_open(open);
     }
 
     /// TSF composition context の事前ウォームアップ F2 を送信する。
@@ -513,7 +394,7 @@ impl Output {
     /// タイムスタンプを優先する）。これにより NativeF2Consumed 後も FocusChange 時刻から
     /// の経過時間で wait 計算ができ、長期アイドル後の TSF 初期化問題を解消する。
     pub fn send_eager_tsf_warmup(&self) {
-        if !self.shadow_ime_on.get() || !self.is_tsf_mode() {
+        if !self.composition.shadow_ime_on() || !self.is_tsf_mode() {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
@@ -533,15 +414,13 @@ impl Output {
             );
         }
         let ms = crate::hook::current_tick_ms();
-        self.eager_warmup_sent_ms.set(ms);
+        self.composition.set_eager_warmup_sent_ms(ms);
         log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
     fn mark_send(&self) {
-        let ms = crate::hook::current_tick_ms();
-        log::debug!("[mark-send] last_send_ms={ms}");
-        self.last_send_ms.set(ms);
+        self.composition.update_last_send_ms();
     }
 
     /// 出力モードを変更する
@@ -818,8 +697,7 @@ impl Output {
             // IMM32 経由で同期的にローマ字モードへ切り替え。
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
-            let cold_n = self.cold_start_count.get() + 1;
-            self.cold_start_count.set(cold_n);
+            let cold_n = self.composition.increment_cold_start_count();
 
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
@@ -946,8 +824,7 @@ impl Output {
             // IMM32 経由で同期的にローマ字モードへ切り替え。
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
-            cold_n = self.cold_start_count.get() + 1;
-            self.cold_start_count.set(cold_n);
+            cold_n = self.composition.increment_cold_start_count();
 
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
@@ -966,7 +843,7 @@ impl Output {
             // I/O が発火せず probe が 1500ms タイムアウトしてしまうため、低すぎる閾値は NG。
             // 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
             const LONG_IDLE_MS: u64 = 10_000;
-            let long_idle = self.idle_ms_at_last_cold.get() > LONG_IDLE_MS;
+            let long_idle = self.composition.idle_ms_at_last_cold() > LONG_IDLE_MS;
             // ColdReason に応じてウォームアップ待機時間を決定:
             //   FocusChange / SetOpenTrue / NativeF2Consumed:
             //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
@@ -976,12 +853,12 @@ impl Output {
             //     Enter/Space/Escape 後でも長期 idle 後は GJI セッションがリセットされ、
             //     500ms のバジェットでは不足する（kおのじしょう バグ）。1500ms に拡張する。
             //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
-            let cold_reason = self.last_cold_reason.get();
+            let cold_reason = self.composition.last_cold_reason();
             if cold_reason.is_confirm_key() && long_idle {
                 log::debug!(
                     "[h1-warmup] cold={cold_n} PassthroughConfirmKey/ReinjectConfirmKey + long idle \
                      ({}ms) → eager_settle_ms=1500ms",
-                    self.idle_ms_at_last_cold.get()
+                    self.composition.idle_ms_at_last_cold()
                 );
             }
             let eager_settle_ms: u64 = cold_reason.eager_settle_ms(long_idle);
@@ -992,8 +869,8 @@ impl Output {
             log::debug!(
                 "[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms \
                  reason={:?} long_idle={long_idle} idle_at_cold={}ms",
-                self.last_cold_reason.get(),
-                self.idle_ms_at_last_cold.get()
+                self.composition.last_cold_reason(),
+                self.composition.idle_ms_at_last_cold()
             );
 
             // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
@@ -1005,7 +882,7 @@ impl Output {
                 self.send_eager_tsf_warmup();
             }
 
-            let eager_ms = self.eager_warmup_sent_ms.get();
+            let eager_ms = self.composition.eager_warmup_sent_ms();
             let now_ms = crate::hook::current_tick_ms();
             let eager_elapsed =
                 if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
@@ -1202,10 +1079,10 @@ impl Output {
             }
 
         } else {
-            cold_n = self.cold_start_count.get();
+            cold_n = self.composition.cold_start_count();
         }
 
-        let used_eager_path = self.eager_warmup_sent_ms.get() != 0;
+        let used_eager_path = self.composition.eager_warmup_sent_ms() != 0;
         WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n }
     }
 
@@ -1378,7 +1255,7 @@ impl Output {
                     was_visible={was_candidate_visible})"
                 );
             } else {
-                let consecutive = self.raw_tsf_literal_consecutive_count.get();
+                let consecutive = self.composition.consecutive_count();
                 if consecutive == 0 {
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_n} raw TSF literal suspected \
@@ -1908,11 +1785,11 @@ mod tests {
     #[test]
     fn output_consecutive_count_increments_on_raw_tsf_literal_recovery() {
         let o = make_output();
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0);
+        assert_eq!(o.composition.consecutive_count(), 0);
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 1);
+        assert_eq!(o.composition.consecutive_count(), 1);
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 2);
+        assert_eq!(o.composition.consecutive_count(), 2);
     }
 
     #[test]
@@ -1920,9 +1797,9 @@ mod tests {
         let o = make_output();
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 2);
+        assert_eq!(o.composition.consecutive_count(), 2);
         o.mark_composition_cold(ColdReason::FocusChange);
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0, "non-recovery cold should reset count");
+        assert_eq!(o.composition.consecutive_count(), 0, "non-recovery cold should reset count");
     }
 
     #[test]
@@ -1930,27 +1807,27 @@ mod tests {
         let o = make_output();
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 2);
+        assert_eq!(o.composition.consecutive_count(), 2);
         o.mark_composition_warm();
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0, "warm should reset consecutive count");
+        assert_eq!(o.composition.consecutive_count(), 0, "warm should reset consecutive count");
     }
 
     #[test]
     fn output_consecutive_count_resets_on_focus_change() {
         let o = make_output();
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 1);
+        assert_eq!(o.composition.consecutive_count(), 1);
         o.on_focus_changed();
-        assert_eq!(o.raw_tsf_literal_consecutive_count.get(), 0, "focus change should reset consecutive count");
+        assert_eq!(o.composition.consecutive_count(), 0, "focus change should reset consecutive count");
     }
 
     #[test]
     fn output_last_cold_reason_tracks_latest() {
         let o = make_output();
         o.mark_composition_cold(ColdReason::SessionExpired);
-        assert_eq!(o.last_cold_reason.get(), ColdReason::SessionExpired);
+        assert_eq!(o.composition.last_cold_reason(), ColdReason::SessionExpired);
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.last_cold_reason.get(), ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(o.composition.last_cold_reason(), ColdReason::RawTsfLiteralRecovery);
     }
 
     // ── RAW_TSF_LITERAL グローバル構造体テスト ──────────────────────────────────
