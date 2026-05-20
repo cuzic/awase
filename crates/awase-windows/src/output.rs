@@ -867,6 +867,7 @@ impl Output {
             if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
         );
 
+        let mut used_eager_path = false;
         let cold_n;
         if prepend_f2_warmup {
             if session_expired {
@@ -967,6 +968,7 @@ impl Output {
             let eager_elapsed =
                 if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
             let use_eager = eager_ms != 0;
+            used_eager_path = use_eager;
 
             // どのパスを通るかを明示的にログ（根本原因判別用）
             log::debug!(
@@ -1189,44 +1191,53 @@ impl Output {
         let gji_show_baseline =
             crate::OBS_GJI_CANDIDATE_SHOW_SEQ.load(std::sync::atomic::Ordering::Relaxed);
 
-        // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
-        // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
-        // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
-        let mut runs: Vec<&[(u16, bool)]> = Vec::new();
-        let mut start = 0;
-        for i in 1..chars.len() {
-            if chars[i].0 == chars[i - 1].0 {
-                runs.push(&chars[start..i]);
-                start = i;
-            }
-        }
-        runs.push(&chars[start..]);
+        // cold + eager のときは KEYEVENTF_UNICODE + TSF_MARKER でひらがなを直接送信する実験。
+        // VK "ke" → "け"（1文字）: アルファベット/ひらがな区別が不要になり ze-detect の
+        // バックスペース数（chars.len()=2 vs kana=1 文字）の不一致も解消される。
+        // GJI TSF が Unicode VK_PACKET を composition に取り込めば漢字変換も可能。
+        let unicode_kana: Option<char> = if prepend_f2_warmup && used_eager_path {
+            kana_for_romaji_static(romaji)
+        } else {
+            None
+        };
 
-        let total_runs = runs.len();
+        // ze-detect でバックスペースすべき文字数: Unicode 送信なら kana 1文字, VK なら romaji 長
+        let ze_bs_count: usize;
 
-        for (run_idx, run) in runs.iter().enumerate() {
-            let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-            let vks: Vec<String> = run.iter().map(|&(v, s)| {
-                if s { format!("S{v:02X}") } else { format!("{v:02X}") }
-            }).collect();
+        if let Some(kana) = unicode_kana {
+            // Unicode + TSF_MARKER 送信: WezTerm が VK_PACKET を TSF 経由で GJI に渡す
+            let mut utf16_buf = [0u16; 2];
+            let utf16 = kana.encode_utf16(&mut utf16_buf);
             log::debug!(
-                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
-                vks.join(","),
+                "[h1-run] cold={cold_n} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
+                kana, kana as u32,
             );
-            let mut inputs = Vec::with_capacity(run.len() * 4);
-            for &(vk, needs_shift) in *run {
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-                }
-                inputs.push(make_tsf_key_input(vk, false));
-            }
-            for &(vk, needs_shift) in *run {
-                inputs.push(make_tsf_key_input(vk, true));
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-                }
+            let mut inputs = Vec::with_capacity(utf16.len() * 2);
+            for &code_unit in utf16.iter() {
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: code_unit,
+                            dwFlags: KEYEVENTF_UNICODE,
+                            time: 0,
+                            dwExtraInfo: TSF_MARKER,
+                        },
+                    },
+                });
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: code_unit,
+                            dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: TSF_MARKER,
+                        },
+                    },
+                });
             }
             unsafe {
                 SendInput(
@@ -1234,6 +1245,56 @@ impl Output {
                     i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                 );
             }
+            ze_bs_count = 1; // kana 1文字
+        } else {
+            // 通常の VK 送信。
+            // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
+            // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
+            // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
+            let mut runs: Vec<&[(u16, bool)]> = Vec::new();
+            let mut start = 0;
+            for i in 1..chars.len() {
+                if chars[i].0 == chars[i - 1].0 {
+                    runs.push(&chars[start..i]);
+                    start = i;
+                }
+            }
+            runs.push(&chars[start..]);
+
+            let total_runs = runs.len();
+
+            for (run_idx, run) in runs.iter().enumerate() {
+                let last_io = crate::tsf_observations::OBS_GJI_LAST_IO_MS
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+                let vks: Vec<String> = run.iter().map(|&(v, s)| {
+                    if s { format!("S{v:02X}") } else { format!("{v:02X}") }
+                }).collect();
+                log::debug!(
+                    "[h1-run] cold={cold_n} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
+                    vks.join(","),
+                );
+                let mut inputs = Vec::with_capacity(run.len() * 4);
+                for &(vk, needs_shift) in *run {
+                    if needs_shift {
+                        inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                    }
+                    inputs.push(make_tsf_key_input(vk, false));
+                }
+                for &(vk, needs_shift) in *run {
+                    inputs.push(make_tsf_key_input(vk, true));
+                    if needs_shift {
+                        inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                    }
+                }
+                unsafe {
+                    SendInput(
+                        &inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+            }
+            ze_bs_count = chars.len();
         }
 
         self.mark_composition_warm();
@@ -1255,8 +1316,7 @@ impl Output {
             } else {
                 log::warn!(
                     "[ze-detect] cold={cold_n} ze literal suspected \
-                    ({elapsed_ms}ms, no SHOW) → backspace ×{} + re-send {romaji:?} scheduled + mark cold",
-                    chars.len()
+                    ({elapsed_ms}ms, no SHOW) → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
                 );
                 if self.last_cold_reason.get() != ColdReason::ZeLiteralRecovery {
                     // 1回目の失敗: backspace + re-send をスケジュール。
@@ -1266,7 +1326,7 @@ impl Output {
                     //   3. drain キーを再配送
                     // の順で処理し、WezTerm での到着順を保証する。
                     crate::ZE_LITERAL_PENDING_BACKS.store(
-                        chars.len(),
+                        ze_bs_count,
                         std::sync::atomic::Ordering::Relaxed,
                     );
                     *crate::ZE_LITERAL_PENDING_ROMAJI
@@ -1543,6 +1603,14 @@ static ZE_DETECT_SESSION: std::sync::atomic::AtomicU32 =
 ///   - timeout 時: `spawn_local` タスクが `sleep_ms` 後に `COMPOSITION_PROBE_SEQ` +1 → 即 wake
 ///
 /// reduce: wake 後に `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化していれば SHOW、変化なければ timeout
+/// ローマ字文字列に対応するひらがな文字を返す静的ルックアップ。
+/// OnceLock で初回のみテーブルを構築し、以降は参照を返す。
+fn kana_for_romaji_static(romaji: &str) -> Option<char> {
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<std::collections::HashMap<String, char>> = OnceLock::new();
+    TABLE.get_or_init(awase::kana_table::build_romaji_to_kana).get(romaji).copied()
+}
+
 fn wait_for_gji_candidate_show(show_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
     crate::PROBE_ACTIVE.store(true, Relaxed);
