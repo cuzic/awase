@@ -1220,7 +1220,6 @@ impl Output {
         let gji_active = crate::tsf_observations::OBS_GJI_MONITOR_OK
             .load(std::sync::atomic::Ordering::Relaxed);
         if prepend_f2_warmup && gji_active {
-            const VK_BACK: u16 = 0x08;
             const ZE_LITERAL_DETECT_MS: u32 = 300;
             let t_send = crate::hook::current_tick_ms();
             let detected = wait_for_gji_candidate_show(gji_show_baseline, ZE_LITERAL_DETECT_MS);
