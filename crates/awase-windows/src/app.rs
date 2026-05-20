@@ -33,7 +33,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ, OBS_IME_SHOW_SEQ,
+    LayoutEntry, OBS_FOCUS_NAMECHANGE_SEQ, OBS_GJI_CANDIDATE_SHOW_SEQ,
     Runtime, ShadowSource, APP, ELEVATED, MAIN_THREAD_ID, QUIT_REQUESTED,
     TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_DRAIN_PROBE_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
@@ -1618,10 +1618,10 @@ const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
 /// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
 const EVENT_OBJECT_FOCUS: u32 = 0x8005;
 
+const EVENT_OBJECT_SHOW: u32 = 0x8002;
 const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
-const EVENT_OBJECT_IME_SHOW: u32 = 0x8027;
-const EVENT_OBJECT_IME_HIDE: u32 = 0x8028;
-const EVENT_OBJECT_IME_CHANGE: u32 = 0x8029;
+
+const GJI_CANDIDATE_CLASS: &str = "GoogleJapaneseInputCandidateWindow";
 
 /// フォーカス変更イベントフックを登録する
 /// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
@@ -1703,7 +1703,7 @@ unsafe extern "system" fn win_event_proc(
 /// | フック | イベント範囲 | 目的 |
 /// |---|---|---|
 /// | NAMECHANGE | 0x800C | WezTerm title 変更 → `wait_for_tsf_cold_settle` early-exit |
-/// | IME_SHOW/HIDE/CHANGE | 0x8027-0x8029 | GJI composition 開始検出（ze literal 診断） |
+/// | OBJECT_SHOW | 0x8002 | GJI candidate window 表示 → ze literal 検出用 |
 fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
     let mut hooks = Vec::new();
@@ -1724,21 +1724,21 @@ fn install_observation_hooks() -> Vec<WinEventHookGuard> {
         hooks.push(WinEventHookGuard(nc_hook));
     }
 
-    let ime_hook = unsafe {
+    let show_hook = unsafe {
         SetWinEventHook(
-            EVENT_OBJECT_IME_SHOW,
-            EVENT_OBJECT_IME_CHANGE,
+            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_SHOW,
             None,
             Some(observation_event_proc),
             0, 0,
             WINEVENT_OUTOFCONTEXT,
         )
     };
-    if ime_hook.is_invalid() {
-        log::warn!("[obs-hook] failed to install IME_SHOW hook");
+    if show_hook.is_invalid() {
+        log::warn!("[obs-hook] failed to install OBJECT_SHOW hook");
     } else {
-        log::info!("[obs-hook] IME_SHOW/HIDE/CHANGE hook installed");
-        hooks.push(WinEventHookGuard(ime_hook));
+        log::info!("[obs-hook] OBJECT_SHOW hook installed (GJI candidate window detection)");
+        hooks.push(WinEventHookGuard(show_hook));
     }
 
     hooks
@@ -1755,12 +1755,12 @@ unsafe extern "system" fn observation_event_proc(
     _event_time: u32,
 ) {
     const OBJID_WINDOW: i32 = 0;
+    if id_object != OBJID_WINDOW {
+        return;
+    }
 
     match event {
         EVENT_OBJECT_NAMECHANGE => {
-            if id_object != OBJID_WINDOW {
-                return;
-            }
             let class = hwnd_class_name(hwnd);
             if class.contains("CASCADIA") {
                 let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1768,19 +1768,13 @@ unsafe extern "system" fn observation_event_proc(
                 win32_async::notify_all();
             }
         }
-        EVENT_OBJECT_IME_SHOW => {
+        EVENT_OBJECT_SHOW => {
             let class = hwnd_class_name(hwnd);
-            let seq = OBS_IME_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-            log::debug!("[ime-event] IME_SHOW #{seq} id_obj={id_object} class={class}");
-            win32_async::notify_all();
-        }
-        EVENT_OBJECT_IME_HIDE => {
-            let class = hwnd_class_name(hwnd);
-            log::debug!("[ime-event] IME_HIDE id_obj={id_object} class={class}");
-        }
-        EVENT_OBJECT_IME_CHANGE => {
-            let class = hwnd_class_name(hwnd);
-            log::debug!("[ime-event] IME_CHANGE id_obj={id_object} class={class}");
+            if class == GJI_CANDIDATE_CLASS {
+                let seq = OBS_GJI_CANDIDATE_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                log::debug!("[gji-candidate] SHOW #{seq}");
+                win32_async::notify_all();
+            }
         }
         _ => {}
     }

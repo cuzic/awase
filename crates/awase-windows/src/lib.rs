@@ -64,11 +64,11 @@ pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 pub static OBS_FOCUS_NAMECHANGE_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
-/// `EVENT_OBJECT_IME_SHOW` (0x8027) が発火するたびに +1 されるカウンタ。
+/// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
 ///
 /// ze literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
-/// IME composition が開始した（成功）、増えなければ literal ASCII になった（失敗）。
-pub static OBS_IME_SHOW_SEQ: std::sync::atomic::AtomicU32 =
+/// GJI candidate window が開いた（composition 成功）、増えなければ literal ASCII の可能性。
+pub static OBS_GJI_CANDIDATE_SHOW_SEQ: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
 /// [probe] `wait_for_tsf_cold_settle()` がアクティブ中かどうかのフラグ。
