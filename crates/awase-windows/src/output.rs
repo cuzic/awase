@@ -1258,26 +1258,26 @@ impl Output {
                     ({elapsed_ms}ms, no SHOW) → backspace ×{} + re-send {romaji:?} scheduled + mark cold",
                     chars.len()
                 );
-                // backspace 数とローマ字を退避する。
-                // WM_DRAIN_PROBE_QUEUE ハンドラが：
-                //   1. backspace を SendInput（ze literal を消去）
-                //   2. romaji を再送（warm な compose で正しく入力）
-                //   3. drain キーを再配送
-                // の順で処理し、WezTerm での到着順を保証する。
-                crate::ZE_LITERAL_PENDING_BACKS.store(
-                    chars.len(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
                 if self.last_cold_reason.get() != ColdReason::ZeLiteralRecovery {
-                    // 1回目の失敗: re-send をスケジュール
+                    // 1回目の失敗: backspace + re-send をスケジュール。
+                    // WM_DRAIN_PROBE_QUEUE ハンドラが：
+                    //   1. backspace を SendInput（ze literal を消去）
+                    //   2. romaji を再送（warm な compose で正しく入力）
+                    //   3. drain キーを再配送
+                    // の順で処理し、WezTerm での到着順を保証する。
+                    crate::ZE_LITERAL_PENDING_BACKS.store(
+                        chars.len(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     *crate::ZE_LITERAL_PENDING_ROMAJI
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
                 } else {
-                    // ZeLiteralRecovery 後の再送も失敗: 無限ループ防止のためリトライしない
+                    // ZeLiteralRecovery 後に再度 ze-detect 発火 = 連続発火 = false positive の疑い。
+                    // バックスペースもリトライも行わず静かに諦める（バックスペース暴走を防ぐ）。
                     log::warn!(
-                        "[ze-detect] cold={cold_n} ZeLiteralRecovery re-send also failed \
-                        → giving up (no retry)"
+                        "[ze-detect] cold={cold_n} consecutive ze-detect fire (ZeLiteralRecovery) \
+                        → likely false positive, giving up without backspace"
                     );
                 }
                 self.mark_composition_cold(ColdReason::ZeLiteralRecovery);
