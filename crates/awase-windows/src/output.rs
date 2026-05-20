@@ -1345,11 +1345,11 @@ impl Output {
                     → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
                 );
                 if self.last_cold_reason.get() != ColdReason::RawTsfLiteralRecovery {
-                    crate::RAW_TSF_LITERAL_PENDING_BACKS.store(
+                    crate::RAW_TSF_LITERAL.backs.store(
                         ze_bs_count,
                         Relaxed,
                     );
-                    *crate::RAW_TSF_LITERAL_PENDING_ROMAJI
+                    *crate::RAW_TSF_LITERAL.romaji
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
                 } else {
@@ -1508,13 +1508,13 @@ const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT 
 
 /// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
 ///
-/// `RAW_TSF_LITERAL_PENDING_ROMAJI` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
+/// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
 /// cold 状態（RawTsfLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
 /// drain キーの前に呼ぶことで「backspace → raw TSF literal char → drain keys」の順を保証する。
 impl Output {
     pub fn flush_raw_tsf_literal_romaji(&self) {
         let romaji = {
-            let mut guard = crate::RAW_TSF_LITERAL_PENDING_ROMAJI
+            let mut guard = crate::RAW_TSF_LITERAL.romaji
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *guard)
@@ -1537,11 +1537,11 @@ impl Output {
 
 /// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。
 ///
-/// `RAW_TSF_LITERAL_PENDING_BACKS` に退避されたバックスペース数を読み取り、SendInput で送信する。
+/// `RAW_TSF_LITERAL.backs` に退避されたバックスペース数を読み取り、SendInput で送信する。
 /// drain キーの SendInput より先に呼ぶことで WezTerm への到着順を保証する。
 pub fn flush_raw_tsf_literal_backspaces() {
     use std::sync::atomic::Ordering::Relaxed;
-    let n = crate::RAW_TSF_LITERAL_PENDING_BACKS.swap(0, Relaxed);
+    let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
     if n == 0 {
         return;
     }

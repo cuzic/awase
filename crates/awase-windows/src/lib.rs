@@ -112,20 +112,28 @@ impl Drop for ProbeGuard {
 pub static PROBE_KEY_QUEUE: std::sync::Mutex<Vec<RawKeyEvent>> =
     std::sync::Mutex::new(Vec::new());
 
-/// raw TSF literal 検出後に送信すべきバックスペースの数。
+/// raw TSF literal 検出後の回収ペイロード。
 ///
-/// WM_DRAIN_PROBE_QUEUE ハンドラが drain キーより先に SendInput でバックスペースを送信し、
-/// WezTerm での到着順を保証する（backspace → raw TSF literal char 再送 → drain keys の順になるようにする）。
-/// raw TSF literal でない通常の drain では 0 のまま。
-pub static RAW_TSF_LITERAL_PENDING_BACKS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+/// バックスペース数とローマ字再送文字列を一括管理する。
+/// WM_DRAIN_PROBE_QUEUE ハンドラが `flush_raw_tsf_literal_recovery()` で消費する。
+#[derive(Debug)]
+pub struct RawTsfLiteralPending {
+    /// 送信すべきバックスペースの数
+    pub backs: std::sync::atomic::AtomicUsize,
+    /// 再送すべきローマ字文字列（空文字列 = 再送なし）
+    pub romaji: std::sync::Mutex<String>,
+}
 
-/// raw TSF literal 検出後に再送すべきローマ字文字列。
-///
-/// バックスペースで raw TSF literal 文字を消した後、この文字列を `send_romaji_as_tsf` で
-/// 再送することで正しく composition に入れる。空文字列 = 再送なし。
-pub static RAW_TSF_LITERAL_PENDING_ROMAJI: std::sync::Mutex<String> =
-    std::sync::Mutex::new(String::new());
+impl RawTsfLiteralPending {
+    const fn new() -> Self {
+        Self {
+            backs: std::sync::atomic::AtomicUsize::new(0),
+            romaji: std::sync::Mutex::new(String::new()),
+        }
+    }
+}
+
+pub static RAW_TSF_LITERAL: RawTsfLiteralPending = RawTsfLiteralPending::new();
 
 /// PROBE_ACTIVE 解除後にキューされたキーを NICOLA へ再配送するカスタムメッセージ。
 ///
