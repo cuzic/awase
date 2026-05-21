@@ -17,7 +17,7 @@ use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key
 /// `begin()` で `OUTPUT_ACTIVE=true` をセット。
 /// Drop 時に `OUTPUT_ACTIVE=false` にリセットし、`post_drain_output_queue()` を呼ぶ。
 #[derive(Debug)]
-pub(crate) struct OutputActiveGuard;
+pub struct OutputActiveGuard;
 
 impl OutputActiveGuard {
     pub(crate) fn begin() -> Self {
