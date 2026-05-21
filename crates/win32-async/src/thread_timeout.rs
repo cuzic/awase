@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// タイムアウトで放棄されたワーカースレッドのリスト。
 ///
@@ -76,22 +76,17 @@ where
         let _ = tx.send(result);
     });
 
-    let start = Instant::now();
-    loop {
-        match rx.try_recv() {
-            Ok(result) => {
-                let _ = handle.join();
-                return Some(result);
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                let _ = handle.join();
-                log::error!("run_with_timeout: worker thread ended without result");
-                return None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+    match rx.recv_timeout(timeout) {
+        Ok(result) => {
+            let _ = handle.join();
+            return Some(result);
         }
-
-        if start.elapsed() >= timeout {
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = handle.join();
+            log::error!("run_with_timeout: worker thread ended without result");
+            return None;
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             log::warn!(
                 "run_with_timeout: worker thread exceeded {}ms, leaked for later GC",
                 timeout.as_millis()
@@ -99,6 +94,5 @@ where
             leak_thread(handle);
             return None;
         }
-        std::thread::sleep(Duration::from_millis(1));
     }
 }
