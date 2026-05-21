@@ -9,7 +9,6 @@
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
@@ -213,16 +212,16 @@ impl Drop for GjiMonitor {
 ///
 /// 常駐し、`OBS_GJI_LAST_IO_MS` と `OBS_GJI_MONITOR_OK` を更新し続ける。
 /// GJI が再起動した場合は自動的に再接続する。
-/// 起動時に呼ぶこと（1 回のみ）。
-pub fn start_monitor_thread() {
-    std::thread::Builder::new()
-        .name("gji-io-monitor".to_string())
-        .spawn(monitor_loop)
-        .expect("failed to spawn gji-io-monitor thread");
+/// 起動時に呼ぶこと（1 回のみ）。戻り値の [`win32_worker::WorkerThread`] を
+/// アプリ終了まで保持すること（drop 時にスレッドが停止・join される）。
+pub fn start_monitor_thread() -> win32_worker::WorkerThread {
+    win32_worker::WorkerThread::spawn("gji-io-monitor", |token| {
+        monitor_loop(token);
+    })
 }
 
-fn monitor_loop() {
-    const SAMPLE_INTERVAL_MS: u64 = 10;
+fn monitor_loop(token: win32_worker::ShutdownToken) {
+    const SAMPLE_INTERVAL_MS: u32 = 10;
     const REATTACH_INTERVAL_MS: u64 = 3_000;
 
     log::info!("[gji-monitor] thread started");
@@ -259,7 +258,10 @@ fn monitor_loop() {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(SAMPLE_INTERVAL_MS));
+        if token.sleep_ms(SAMPLE_INTERVAL_MS).is_break() {
+            log::info!("[gji-monitor] shutdown signal received, exiting");
+            break;
+        }
     }
 }
 

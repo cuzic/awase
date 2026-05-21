@@ -636,8 +636,8 @@ pub(super) fn run_all() -> anyhow::Result<()> {
         }
     }
 
-    let uia_tx = awase_windows::focus::uia::spawn_uia_worker();
-    awase_windows::tsf::observer::start_monitor_thread();
+    let (_uia_worker, uia_tx) = awase_windows::focus::uia::spawn_uia_worker();
+    let _gji_worker = awase_windows::tsf::observer::start_monitor_thread();
     // SAFETY: APP is a SingleThreadCell; this runs on the main thread before the message loop.
     unsafe {
         if let Some(app) = APP.get_mut() {

@@ -441,11 +441,10 @@ impl DecisionExecutor {
                     "[reinject-wait] sleeping {remaining}ms (output {elapsed}ms ago) before reinject(vk={:#04x})",
                     event.vk_code.0,
                 );
-                // メインスレッドを短時間ブロックする。message loop / hook callback も
-                // この間停止するが、最大 50ms なので体感影響は小さい。
+                // メッセージループを pump しながら待機する。
                 // この sleep を入れないと Ctrl/Enter が IME composition を cancel する
                 // race が残る (実測: SendInput 直後 9ms で race 発生)。
-                std::thread::sleep(std::time::Duration::from_millis(remaining));
+                win32_async::block_on(win32_async::sleep_ms(remaining as u32));
             }
             let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
             let dir = if is_key_down { "down" } else { "up" };

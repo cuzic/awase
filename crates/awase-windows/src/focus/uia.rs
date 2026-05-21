@@ -173,9 +173,11 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
 /// 専用スレッドで COM を初期化し、`IUIAutomation` インスタンスを保持する。
 /// チャネル経由で HWND を受け取り、`GetFocusedElement` でコントロール種別を判定して
 /// `FOCUS_KIND` を更新する。Phase 1-2 で `Undetermined` だったコントロールの解像度を上げる。
-pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
+///
+/// 戻り値の `WorkerThread` をアプリ終了まで保持すること（drop 時に停止・join される）。
+pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableHwnd>) {
     let (tx, rx) = mpsc::channel::<SendableHwnd>();
-    std::thread::spawn(move || {
+    let worker = win32_worker::WorkerThread::spawn("uia-worker", move |token| {
         unsafe {
             let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if hr.is_err() {
@@ -193,35 +195,50 @@ pub fn spawn_uia_worker() -> mpsc::Sender<SendableHwnd> {
 
         log::info!("UIA worker thread started");
 
-        while let Ok(SendableHwnd(hwnd)) = rx.recv() {
-            // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
-            // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
-            let result = uia_classify_focus(&automation, hwnd);
-            let has_info = result.focus_kind != FocusKind::Undetermined
-                || result.app_kind.is_some();
+        loop {
+            // recv_timeout でシャットダウン通知も定期的に確認する
+            match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                Ok(SendableHwnd(hwnd)) => {
+                    // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
+                    // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
+                    let result = uia_classify_focus(&automation, hwnd);
+                    let has_info = result.focus_kind != FocusKind::Undetermined
+                        || result.app_kind.is_some();
 
-            if has_info {
-                log::debug!(
-                    "UIA async: hwnd={hwnd:?} → {:?} (app_kind={:?})",
-                    result.focus_kind,
-                    result.app_kind,
-                );
+                    if has_info {
+                        log::debug!(
+                            "UIA async: hwnd={hwnd:?} → {:?} (app_kind={:?})",
+                            result.focus_kind,
+                            result.app_kind,
+                        );
 
-                // メインスレッドに結果を送信
-                // wParam: 下位 8 bit = FocusKind, 次の 8 bit = AppKind (0xFF = なし)
-                let app_kind_val = result.app_kind.map_or(0xFF_usize, |k| k as u8 as usize);
-                let wparam_val = (result.focus_kind as u8 as usize)
-                    | (app_kind_val << 8);
-                unsafe {
-                    let _ = PostMessageW(
-                        None,
-                        crate::WM_FOCUS_KIND_UPDATE,
-                        WPARAM(wparam_val),
-                        LPARAM(hwnd.0 as isize),
-                    );
+                        // メインスレッドに結果を送信
+                        // wParam: 下位 8 bit = FocusKind, 次の 8 bit = AppKind (0xFF = なし)
+                        let app_kind_val = result.app_kind.map_or(0xFF_usize, |k| k as u8 as usize);
+                        let wparam_val = (result.focus_kind as u8 as usize)
+                            | (app_kind_val << 8);
+                        unsafe {
+                            let _ = PostMessageW(
+                                None,
+                                crate::WM_FOCUS_KIND_UPDATE,
+                                WPARAM(wparam_val),
+                                LPARAM(hwnd.0 as isize),
+                            );
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if token.is_shutdown() {
+                        log::info!("UIA worker: shutdown signal received, exiting");
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    log::info!("UIA worker: channel closed, exiting");
+                    break;
                 }
             }
         }
     });
-    tx
+    (worker, tx)
 }
