@@ -5,6 +5,9 @@
 
 pub mod cache;
 pub mod classify;
+pub mod hwnd_cache;
+pub mod imm_learning;
+pub mod kind_classifier;
 pub mod msaa;
 pub mod probe;
 pub mod uia;

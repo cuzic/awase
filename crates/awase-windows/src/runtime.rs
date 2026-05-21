@@ -7,7 +7,7 @@ use crate::{ImeForceOnGuard, Preconditions};
 
 /// Config の force_text / force_bypass オーバーライドをチェックする。
 /// マッチした場合は強制される FocusKind を返す。
-fn check_app_override(
+pub(crate) fn check_app_override(
     overrides: &awase::config::AppOverrides,
     process_id: u32,
     class_name: &str,
@@ -200,15 +200,6 @@ fn save_imm_cache(base_dir: &std::path::Path, cache: &std::collections::HashMap<
     }
 }
 
-/// フォーカス切り替え時の IME 状態スナップショット（per-HWND キャッシュ用）
-#[derive(Debug, Clone, Copy)]
-pub struct HwndImeSnapshot {
-    pub ime_on: bool,
-    pub input_mode: InputModeState,
-    /// 記録時刻（GetTickCount64 ミリ秒）
-    pub recorded_ms: u64,
-}
-
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
 pub struct AppKindClassifier {
@@ -226,7 +217,7 @@ pub struct AppKindClassifier {
     /// 値: フォーカスが離れた時点の IME 状態スナップショット。
     /// フォーカスが戻ったとき preconditions を即座に復元し、stale 窓をゼロにする。
     /// probe / poll が成功すれば自動的に上書き補正される。
-    pub hwnd_ime_cache: std::collections::HashMap<(u32, String), HwndImeSnapshot>,
+    pub hwnd_ime_cache: std::collections::HashMap<(u32, String), crate::focus::hwnd_cache::HwndImeSnapshot>,
     /// キャッシュファイルの格納ディレクトリ（実行ファイルと同じ場所）
     base_dir: std::path::PathBuf,
 }
@@ -602,6 +593,9 @@ impl Runtime {
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
     unsafe fn detect_and_update_focus(&mut self) -> bool {
         use crate::focus::classify;
+        use crate::focus::hwnd_cache;
+        use crate::focus::imm_learning;
+        use crate::focus::kind_classifier;
 
         // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
         // 詳細は focus::probe::run_focus_probe() を参照。
@@ -622,67 +616,32 @@ impl Runtime {
         // app_kind を更新
         let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
 
-        // IMM 能力キャッシュの初期学習（AppKind は変更しない）。
+        // ── Phase 2: IMM 能力キャッシュの初期学習 ──
         // "IMM Broken" = IMM 状態クエリが信頼できない。VK 合成が必要とは限らない。
         // WezTerm 等は ImmGetDefaultIMEWnd=NULL でも WM_CHAR (Unicode) を正しく処理する。
-        if new_app_kind == awase::types::AppKind::Win32 {
-            if self.executor.platform.focus.imm_capability_cache.get(&class_name).is_none() {
-                use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
-                let ime_wnd = unsafe { ImmGetDefaultIMEWnd(hwnd) };
-                if ime_wnd.0.is_null() {
-                    log::info!(
-                        "IMM capability: ImmGetDefaultIMEWnd=NULL, learning Broken (class={class_name})"
-                    );
-                    self.executor.platform.focus
-                        .learn_imm_capability(class_name.clone(), ImmCapability::Broken);
-                }
-            }
-        }
+        imm_learning::learn_imm_capability_on_focus(
+            &mut self.executor.platform.focus,
+            hwnd,
+            &class_name,
+            new_app_kind,
+        );
 
         if self.platform_state.app_kind != new_app_kind {
             log::info!("AppKind changed: {:?} → {:?} (class={class_name})", self.platform_state.app_kind, new_app_kind);
             self.platform_state.app_kind = new_app_kind;
         }
 
-        // focus_kind を分類
-        // Config オーバーライドをチェック
-        let (kind, reason, overridden) = if let Some(kind) = check_app_override(&self.executor.platform.focus.overrides, process_id, &class_name) {
-            (kind, "config override".to_string(), true)
-        } else if let Some(cached) = self.executor.platform.focus.cache.get(process_id, &class_name) {
-            (cached, "cache hit".to_string(), false)
-        } else {
-            // classify_focus は ImmGetContext / GetWindowLongW / MSAA 等の
-            // ブロッキング API を呼び出すため、ワーカースレッドで実行する。
-            // HWND は *mut c_void なので、usize に変換してスレッド間転送する。
-            //
-            // エンジンタイマーが動作中（ユーザー入力中）は classify_focus をスキップする。
-            // UIA/MSAA の SendMessage が WezTerm 等の TSF コンポジションを破壊し、
-            // VK バッチの直後に「ｋあ」のような出力化けが起きるのを防ぐ。
-            let engine_timer_active = {
-                let timer = &self.executor.platform.timer;
-                timer.is_active(TIMER_PENDING) || timer.is_active(TIMER_SPECULATIVE)
-            };
-            if engine_timer_active {
-                log::debug!("classify_focus skipped: engine timer active (user typing)");
-                (FocusKind::Undetermined, "skipped (engine active)".to_string(), false)
-            } else {
-                let hwnd_addr = hwnd.0 as usize;
-                let classify_result = crate::win32::run_with_timeout(
-                    std::time::Duration::from_millis(300),
-                    move || {
-                        let hwnd = windows::Win32::Foundation::HWND(hwnd_addr as *mut _);
-                        classify::classify_focus(hwnd)
-                    },
-                );
-                match classify_result {
-                    Some(result) => (result.kind, format!("{}", result.reason), false),
-                    None => {
-                        log::warn!("classify_focus timed out for hwnd={:?}", hwnd);
-                        (FocusKind::Undetermined, "classify timeout".to_string(), false)
-                    }
-                }
-            }
-        };
+        // ── Phase 3: focus_kind を決定 ──
+        let resolution = kind_classifier::resolve_focus_kind(
+            &self.executor.platform.focus,
+            &self.executor,
+            process_id,
+            &class_name,
+            hwnd,
+        );
+        let kind = resolution.kind;
+        let reason = resolution.reason;
+        let overridden = resolution.overridden;
 
         // focus_kind を更新
         if self.platform_state.focus_kind != kind {
@@ -707,20 +666,14 @@ impl Runtime {
         // フォーカス離脱: 現在の preconditions を per-HWND キャッシュに保存
         // （last_focus_info 更新前に行う — 更新後は古い HWND の情報が消える）
         if process_changed {
-            if let Some((old_pid, old_class)) = &self.executor.platform.focus.last_focus_info {
-                let snapshot = HwndImeSnapshot {
-                    ime_on: self.platform_state.preconditions.ime_on,
-                    input_mode: self.platform_state.preconditions.input_mode,
-                    recorded_ms: crate::hook::current_tick_ms(),
-                };
-                log::debug!(
-                    "HwndCache: save [{} {}] ime_on={} mode={:?}",
-                    old_pid, old_class, snapshot.ime_on, snapshot.input_mode,
+            if let Some((old_pid, old_class)) = self.executor.platform.focus.last_focus_info.clone() {
+                hwnd_cache::save_on_focus_leave(
+                    &mut self.executor.platform.focus.hwnd_ime_cache,
+                    old_pid,
+                    old_class,
+                    &self.platform_state.preconditions,
                 );
-                let cache = &mut self.executor.platform.focus.hwnd_ime_cache;
-                let now_ms = snapshot.recorded_ms;
-                cache.retain(|_, v| now_ms.saturating_sub(v.recorded_ms) <= crate::timing::HWND_CACHE_MAX_AGE_MS);
-                cache.insert((*old_pid, old_class.clone()), snapshot);
+
             }
         }
 
@@ -732,8 +685,6 @@ impl Runtime {
 
         if process_changed {
             // [診断] フォーカス切り替え時点の stale スナップショットを記録する。
-            // この値がどれだけ早く正しい値に置き換わるか（FocusProbe / ObserverPoll のタイミング）
-            // を観測することで、アプローチ A（即時再プローブ）か B（per-HWND キャッシュ）かを判断できる。
             {
                 let pc = &self.platform_state.preconditions;
                 log::info!(
@@ -758,36 +709,12 @@ impl Runtime {
             // per-HWND キャッシュから新しいウィンドウの既知状態を即座に復元する。
             // - キャッシュヒット: stale 窓がゼロになる（FocusProbe / ObserverPoll で確認・補正）
             // - キャッシュミス: 今まで通り stale のまま probe を待つ
-            let cache_key = (process_id, class_name.clone());
-            if let Some(&snapshot) = self.executor.platform.focus.hwnd_ime_cache.get(&cache_key) {
-                let age_ms = crate::hook::current_tick_ms()
-                    .saturating_sub(snapshot.recorded_ms);
-                // キャッシュが古すぎる場合（ウィンドウの IME 状態が変わった可能性が高い）は
-                // キャッシュミスと同様に扱い、FocusProbe の結果を待つ。
-                // 即座に古い値で ime_on を更新するとエンジンが誤って無効化される。
-                if age_ms <= crate::timing::HWND_CACHE_MAX_AGE_MS {
-                    self.platform_state.preconditions.set_ime_on(
-                        snapshot.ime_on,
-                        crate::ShadowSource::HwndCache,
-                    );
-                    self.platform_state.preconditions.input_mode = snapshot.input_mode;
-                    log::info!(
-                        "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
-                        process_id, class_name, snapshot.ime_on, snapshot.input_mode, age_ms,
-                    );
-                } else {
-                    log::info!(
-                        "HwndCache: stale [{} {}] ime_on={} mode={:?} ({}ms ago > {}ms) → FocusProbe 待ち",
-                        process_id, class_name, snapshot.ime_on, snapshot.input_mode,
-                        age_ms, crate::timing::HWND_CACHE_MAX_AGE_MS,
-                    );
-                }
-            } else {
-                log::debug!(
-                    "HwndCache: no entry for [{} {}], stale until FocusProbe",
-                    process_id, class_name,
-                );
-            }
+            hwnd_cache::restore_on_focus_enter(
+                &self.executor.platform.focus.hwnd_ime_cache,
+                process_id,
+                &class_name,
+                &mut self.platform_state.preconditions,
+            );
 
             // フォーカス変更時は IME 強制書き込みガードをリセットする。
             // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、
@@ -805,8 +732,7 @@ impl Runtime {
             }
 
             // UIA 非同期判定が必要かチェック（Undetermined の場合）
-            let needs_uia = kind == FocusKind::Undetermined;
-            if needs_uia {
+            if kind == FocusKind::Undetermined {
                 if let Some(sender) = &self.executor.platform.focus.uia_sender {
                     let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
                 }
@@ -814,7 +740,7 @@ impl Runtime {
 
             true
         } else {
-            // 同一プロセ���内: UIA 判定は必要に応じ���
+            // 同一プロセス内: UIA 判定は必要に応じて
             if kind == FocusKind::Undetermined {
                 if let Some(sender) = &self.executor.platform.focus.uia_sender {
                     let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
