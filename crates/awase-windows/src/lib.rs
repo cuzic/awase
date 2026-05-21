@@ -125,6 +125,21 @@ pub enum ShadowSource {
     HwndCache,
 }
 
+/// `ime_force_on_guard` の 2 用途を型レベルで区別する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImeForceOnGuard {
+    #[default]
+    Inactive,
+    BrokenAppBootstrap,  // 用途 A: IMM-broken アプリの初回 Phase 3.5
+    PanicResetProtect,   // 用途 B: panic_reset 直後の上書き防止
+}
+
+impl ImeForceOnGuard {
+    pub fn is_active(self) -> bool {
+        self != Self::Inactive
+    }
+}
+
 /// 環境前提条件（IME 状態・入力方式・日本語判定）
 #[derive(Debug)]
 pub struct Preconditions {
@@ -170,7 +185,7 @@ pub struct Preconditions {
     ///
     /// いずれも「awase が恒常的に SSOT になる」わけではなく、
     /// **一時的な遷移期間中だけ OS 検出結果を無視する** という設計。
-    pub ime_force_on_guard: bool,
+    pub ime_force_on_guard: ImeForceOnGuard,
 }
 
 impl Preconditions {
@@ -301,7 +316,7 @@ impl PlatformState {
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: None,
                 ime_detect_miss_count: 0,
-                ime_force_on_guard: false,
+                ime_force_on_guard: ImeForceOnGuard::Inactive,
             },
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],

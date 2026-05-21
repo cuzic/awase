@@ -3,7 +3,7 @@ use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
-use crate::Preconditions;
+use crate::{ImeForceOnGuard, Preconditions};
 
 /// Config の force_text / force_bypass オーバーライドをチェックする。
 /// マッチした場合は強制される FocusKind を返す。
@@ -562,7 +562,7 @@ impl Runtime {
                 && self.engine.is_user_enabled()
                 && self.platform_state.preconditions.is_japanese_ime
                 && self.platform_state.preconditions.ime_on
-                && !self.platform_state.preconditions.ime_force_on_guard
+                && !self.platform_state.preconditions.ime_force_on_guard.is_active()
             {
                 log::warn!(
                     "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
@@ -570,7 +570,7 @@ impl Runtime {
                 );
                 let success = self.executor.platform.set_ime_open(true);
                 if success {
-                    self.platform_state.preconditions.ime_force_on_guard = true;
+                    self.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::BrokenAppBootstrap;
                     // miss_count はリセットしない。ガードが検出成功まで保護する。
                 }
             }
@@ -836,14 +836,14 @@ impl Runtime {
             // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、
             // 前のウィンドウで設定した状態を引きずらず、再検出から始める。
             // miss_count もリセットして、新しいウィンドウで十分な猶予を与える。
-            if self.platform_state.preconditions.ime_force_on_guard
+            if self.platform_state.preconditions.ime_force_on_guard.is_active()
                 || self.platform_state.preconditions.ime_detect_miss_count > 0
             {
                 log::debug!(
                     "Focus changed: clearing ime_force_on_guard and detect_miss_count \
                      (new window may have different IME state)"
                 );
-                self.platform_state.preconditions.ime_force_on_guard = false;
+                self.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
                 self.platform_state.preconditions.ime_detect_miss_count = 0;
             }
 
@@ -1007,7 +1007,7 @@ impl Runtime {
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
         // ime_on=true を stale な observe() 結果が即座に上書きしてしまう。
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
-        self.platform_state.preconditions.ime_force_on_guard = true;
+        self.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::PanicResetProtect;
         self.platform_state.hook.sent_to_engine = [0u64; 4];
         self.platform_state.hook.track_only_keys = [0u64; 4];
         self.platform_state.hook.in_callback = false;
