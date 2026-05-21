@@ -43,7 +43,6 @@ use std::sync::atomic::AtomicBool;
 use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind, RawKeyEvent};
 
-pub use crate::output::OutputActiveGuard;
 pub use crate::tsf::probe_bridge::{
     OUTPUT_ACTIVE, OUTPUT_PENDING_QUEUE, WM_DRAIN_OUTPUT_QUEUE, post_drain_output_queue,
 };
