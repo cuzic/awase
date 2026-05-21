@@ -614,50 +614,18 @@ impl Runtime {
         use crate::focus::classify;
 
         // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
-        // GetGUIThreadInfo / GetWindowThreadProcessId / GetClassNameW は
-        // フォアグラウンドスレッドがハングしていると無期限ブロックする。
-        // HWND は *mut c_void で Send でないため、usize に変換して転送する。
-        struct FocusProbe {
-            hwnd_addr: usize,
-            process_id: u32,
-            class_name: String,
-        }
-
-        let probe = crate::win32::run_with_timeout(
-            std::time::Duration::from_millis(300),
-            || {
-                let result = unsafe {
-                    crate::win32::get_gui_thread_info_with_timeout(
-                        std::time::Duration::from_millis(150),
-                    )
-                };
-                let hwnd = result.focused_hwnd;
-                if hwnd.0.is_null() {
-                    return FocusProbe {
-                        hwnd_addr: 0,
-                        process_id: 0,
-                        class_name: String::new(),
-                    };
-                }
-                let process_id = classify::get_window_process_id(hwnd);
-                let class_name = classify::get_class_name_string(hwnd);
-                FocusProbe {
-                    hwnd_addr: hwnd.0 as usize,
-                    process_id,
-                    class_name,
-                }
-            },
-        );
+        // 詳細は focus::probe::run_focus_probe() を参照。
+        let probe = unsafe { crate::focus::probe::run_focus_probe() };
 
         let Some(probe) = probe else {
             log::warn!("Focus probe timed out — skipping update this cycle");
             return false;
         };
 
-        if probe.hwnd_addr == 0 {
+        if probe.process_id == 0 {
             return false;
         }
-        let hwnd = windows::Win32::Foundation::HWND(probe.hwnd_addr as *mut _);
+        let hwnd = probe.hwnd();
         let process_id = probe.process_id;
         let class_name = probe.class_name;
 
