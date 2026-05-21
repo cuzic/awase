@@ -26,6 +26,14 @@ use super::input_tracker::PhysicalKeyState;
 use super::key_lifecycle::KeyLifecycle;
 use super::nicola_fsm::NicolaFsm;
 
+/// 特殊キーコンボのマッチ結果
+enum SpecialKeyMatch {
+    EngineOn,
+    EngineOff,
+    ImeOn,
+    ImeOff,
+}
+
 /// 統合エンジン: NicolaFsm + 特殊キー処理
 ///
 /// Engine の有効状態は2軸で決まる:
@@ -324,13 +332,9 @@ impl Engine {
         }
     }
 
-    /// 変換/無変換系の特殊キーを一括チェックし、一致した場合は状態変更して結果を返す。
-    fn check_special_keys(
-        &mut self,
-        ctx: &InputContext,
-        event: &RawKeyEvent,
-    ) -> Option<Decision> {
-        let modifiers = ctx.os_modifiers;
+    /// 変換/無変換系の特殊キーのコンボマッチのみを行う純粋判定メソッド（副作用なし）。
+    fn match_special_keys(&self, ctx: &InputContext, event: &RawKeyEvent) -> Option<SpecialKeyMatch> {
+        let modifiers = ctx.modifiers;
 
         // エンジン ON/OFF コンボキー — user_enabled のみ変更
         if !self.adapter.is_enabled()
@@ -340,12 +344,7 @@ impl Engine {
                 .iter()
                 .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            let old_active = self.compute_active(ctx);
-            let (_, mut decision) = self.adapter.set_enabled(true);
-            let new_active = self.compute_active(ctx);
-            log::info!("Engine user_enabled ON (key combo, active={new_active})");
-            self.apply_active_transition(old_active, new_active, &mut decision);
-            return Some(decision);
+            return Some(SpecialKeyMatch::EngineOn);
         }
         if self.adapter.is_enabled()
             && self
@@ -354,12 +353,7 @@ impl Engine {
                 .iter()
                 .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            let old_active = self.compute_active(ctx);
-            let (_, mut decision) = self.adapter.set_enabled(false);
-            let new_active = self.compute_active(ctx);
-            log::info!("Engine user_enabled OFF (key combo, active={new_active})");
-            self.apply_active_transition(old_active, new_active, &mut decision);
-            return Some(decision);
+            return Some(SpecialKeyMatch::EngineOff);
         }
 
         // IME 制御キー（エンジン状態に関わらずチェック）
@@ -376,10 +370,7 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            log::info!("IME ON (key combo)");
-            return Some(Decision::consumed_with(smallvec![Effect::Ime(
-                ImeEffect::SetOpen(true),
-            )]));
+            return Some(SpecialKeyMatch::ImeOn);
         }
         if self
             .special_keys
@@ -387,13 +378,50 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            log::info!("IME OFF (key combo)");
-            return Some(Decision::consumed_with(smallvec![Effect::Ime(
-                ImeEffect::SetOpen(false),
-            )]));
+            return Some(SpecialKeyMatch::ImeOff);
         }
 
         None
+    }
+
+    /// `SpecialKeyMatch` に応じた状態変更と `Decision` 生成を行う副作用適用メソッド。
+    fn apply_special_key_match(&mut self, m: SpecialKeyMatch, ctx: &InputContext) -> Decision {
+        match m {
+            SpecialKeyMatch::EngineOn => {
+                let old_active = self.compute_active(ctx);
+                let (_, mut decision) = self.adapter.set_enabled(true);
+                let new_active = self.compute_active(ctx);
+                log::info!("Engine user_enabled ON (key combo, active={new_active})");
+                self.apply_active_transition(old_active, new_active, &mut decision);
+                decision
+            }
+            SpecialKeyMatch::EngineOff => {
+                let old_active = self.compute_active(ctx);
+                let (_, mut decision) = self.adapter.set_enabled(false);
+                let new_active = self.compute_active(ctx);
+                log::info!("Engine user_enabled OFF (key combo, active={new_active})");
+                self.apply_active_transition(old_active, new_active, &mut decision);
+                decision
+            }
+            SpecialKeyMatch::ImeOn => {
+                log::info!("IME ON (key combo)");
+                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen(true))])
+            }
+            SpecialKeyMatch::ImeOff => {
+                log::info!("IME OFF (key combo)");
+                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen(false))])
+            }
+        }
+    }
+
+    /// 変換/無変換系の特殊キーを一括チェックし、一致した場合は状態変更して結果を返す。
+    fn check_special_keys(
+        &mut self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<Decision> {
+        let m = self.match_special_keys(ctx, event)?;
+        Some(self.apply_special_key_match(m, ctx))
     }
 
     /// キーコンボが修飾キー条件を含めてイベントに一致するか判定する。
