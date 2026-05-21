@@ -1386,6 +1386,7 @@ pub use crate::tsf::output::flush_raw_tsf_literal_backspaces;
 ///
 /// Returns `true` = OBJ_NAMECHANGE 検出、`false` = タイムアウト
 fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
     let settled = win32_async::block_on(settle_async(nc_baseline, timeout_ms));
     // drain は OutputActiveGuard::drop が行うため、ここでは呼ばない。
 
