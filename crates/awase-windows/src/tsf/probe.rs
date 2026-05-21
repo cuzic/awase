@@ -173,6 +173,7 @@ impl TsfReadinessProbe {
 /// TSF composition context の warm/cold 状態を管理する。
 ///
 /// `Output` 構造体がこれをフィールドとして保持する。
+#[derive(Debug)]
 pub struct CompositionState {
     /// ウォーム状態の epoch（0 = cold）
     composition_warm_epoch: std::cell::Cell<u32>,
