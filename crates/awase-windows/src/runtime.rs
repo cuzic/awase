@@ -116,7 +116,6 @@ pub fn build_input_context(preconditions: &Preconditions, _timing: &crate::Modif
         input_mode: preconditions.input_mode,
         is_japanese_ime: preconditions.is_japanese_ime,
         modifiers,
-        os_modifiers: modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
     }

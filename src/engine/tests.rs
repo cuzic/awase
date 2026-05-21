@@ -3556,7 +3556,6 @@ mod engine_integration_tests {
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
             modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
-            os_modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
             left_thumb_down: None,
             right_thumb_down: None,
         }
@@ -3568,7 +3567,6 @@ mod engine_integration_tests {
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
             modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
-            os_modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
             left_thumb_down: None,
             right_thumb_down: None,
         }
@@ -3626,7 +3624,7 @@ mod engine_integration_tests {
     #[test]
     fn on_input_char_key_not_romaji_passes_through() {
         let mut engine = make_test_engine();
-        let kana_ctx = InputContext { ime_on: true, input_mode: InputModeState::ObservedKana, is_japanese_ime: true, modifiers: ModifierState::default(), os_modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
+        let kana_ctx = InputContext { ime_on: true, input_mode: InputModeState::ObservedKana, is_japanese_ime: true, modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &kana_ctx);
         assert!(
             !d.is_consumed(),
@@ -4049,7 +4047,7 @@ mod engine_integration_tests {
         assert!(engine.compute_active(&ime_on_ctx()));
 
         // Platform updated is_japanese_ime=false in ctx
-        let not_japanese_ctx = InputContext { ime_on: true, input_mode: InputModeState::ObservedRomaji, is_japanese_ime: false, modifiers: ModifierState::default(), os_modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
+        let not_japanese_ctx = InputContext { ime_on: true, input_mode: InputModeState::ObservedRomaji, is_japanese_ime: false, modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
         let d = engine.on_command(EngineCommand::RefreshState, &not_japanese_ctx);
         assert!(!engine.compute_active(&not_japanese_ctx));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
