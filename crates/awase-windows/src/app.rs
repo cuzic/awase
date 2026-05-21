@@ -558,7 +558,7 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
             unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.engine
-                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
+                        .on_command(awase::engine::EngineCommand::SetNgramModel(model), &runtime::build_input_context(&app.platform_state.preconditions));
                 }
             }
         }
@@ -1048,7 +1048,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         }
     }
 
-    let ctx = runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
+    let ctx = runtime::build_input_context(&app.platform_state.preconditions);
 
     // Engine の判断: consume/passthrough を決定（1-5ms、OS API 呼び出しなし）
     let decision = app.engine.on_input(event, &ctx);
@@ -1178,7 +1178,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     Some(timer_id) => {
                         // Engine タイマー (TIMER_PENDING, TIMER_SPECULATIVE)
                         log::debug!("WM_TIMER fired: logical_id={timer_id}");
-                        let ctx = runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
+                        let ctx = runtime::build_input_context(&app.platform_state.preconditions);
                         let decision = app.engine.on_timeout(timer_id, &ctx);
                         app.execute_decision(decision);
                     }
@@ -1495,7 +1495,7 @@ fn reload_config() {
                     threshold_ms: config.general.simultaneous_threshold_ms,
                     confirm_mode: config.general.confirm_mode,
                     speculative_delay_ms: config.general.speculative_delay_ms,
-                }, &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
+                }, &runtime::build_input_context(&app.platform_state.preconditions));
             app.executor
                 .platform
                 .output
@@ -1540,7 +1540,7 @@ fn reload_config() {
                             ime_on,
                             ime_off,
                         },
-                    }, &runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing));
+                    }, &runtime::build_input_context(&app.platform_state.preconditions));
             }
         }
         key_diag.report();

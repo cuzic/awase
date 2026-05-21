@@ -95,16 +95,11 @@ pub fn is_force_tsf(
     false
 }
 
-/// `Preconditions` と `ModifierTiming` から `InputContext` を構築する。
+/// `Preconditions` から `InputContext` を構築する。
 ///
-/// 修飾キー判定は `GetAsyncKeyState` と `ModifierTiming` の OR で統合。
-/// フックベースの追跡により `GetAsyncKeyState` のタイミング問題を回避し、
-/// 猶予期間により Ctrl をわずかに早く離した場合でもコンボキーを確実に検出する。
-pub fn build_input_context(preconditions: &Preconditions, _timing: &crate::ModifierTiming) -> InputContext {
+/// 修飾キー判定は `GetAsyncKeyState` で取得した OS 実状態のみ使用する。
+pub fn build_input_context(preconditions: &Preconditions) -> InputContext {
     let raw = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-    // OS 実状態のみ使用。ModifierTiming の grace 猶予は廃止。
-    // grace は Ctrl+key コ���ボで Ctrl を早く離した場合の救済だったが、
-    // Ctrl+I 直後の親指キーが Ctrl+Nonconvert (IME OFF) と誤検出される問題を引き起こすため除去。
     let modifiers = awase::engine::ModifierState {
         ctrl: raw.ctrl,
         alt: raw.alt,
@@ -290,7 +285,7 @@ pub struct Runtime {
 
 impl Runtime {
     fn build_ctx(&self) -> InputContext {
-        build_input_context(&self.platform_state.preconditions, &self.platform_state.modifier_timing)
+        build_input_context(&self.platform_state.preconditions)
     }
 
     /// IME 関連の事前分類情報を sync key 設定で補完する
@@ -323,9 +318,6 @@ impl Runtime {
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
         self.executor.execute_from_loop(decision);
-        // ホットキーコンボ消費後: 猶予を即座にクリアし、
-        // 直後のキーが OsModifierHeld でバイパスされるのを防ぐ。
-        self.platform_state.modifier_timing.clear_grace();
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
@@ -1014,7 +1006,6 @@ impl Runtime {
         self.platform_state.hook.suppress_ctrl_bypass = false;
         self.platform_state.ime_guard.active = false;
         self.platform_state.ime_guard.deferred_keys.clear();
-        self.platform_state.modifier_timing = crate::ModifierTiming::new();
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();

@@ -436,9 +436,6 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             WM_KEYDOWN | WM_SYSKEYDOWN
         );
 
-        // ── 修飾キータイミング追跡（同時押し判定用）──
-        update_modifier_timing(&mut ps.modifier_timing, vk_raw, is_keydown);
-
         // Ctrl KeyUp で suppress_ctrl_bypass を解除
         if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.suppress_ctrl_bypass {
             ps.hook.suppress_ctrl_bypass = false;
@@ -536,7 +533,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
 
                 // Flush engine pending keys
-                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions, &app.platform_state.modifier_timing);
+                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions);
                 app.platform_state.hook.in_callback = false;
                 let decision = app.engine.on_command(
                     awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
@@ -590,12 +587,6 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // Re-acquire platform_state for in_callback reset
         // (callback may have accessed APP.get_mut() internally)
         if let Some(app) = crate::APP.get_mut() {
-            // コンボキー消費後の猶予クリア:
-            // Engine が KeyDown を consumed した場合、Ctrl/Alt コンボが成立したことを意味する。
-            // 猶予を維持すると直後のキーが OsModifierHeld でバイパスされるため即座にクリア。
-            if is_keydown && matches!(result, CallbackResult::Consumed) {
-                app.platform_state.modifier_timing.clear_grace();
-            }
             app.platform_state.hook.in_callback = false;
         }
 
@@ -615,28 +606,6 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     CallNextHookEx(Some(hook_handle), ncode, wparam, lparam)
 }
 
-/// フックで受け取った修飾キーイベントから `ModifierTiming` を更新する。
-fn update_modifier_timing(timing: &mut crate::ModifierTiming, vk: u16, is_keydown: bool) {
-    match vk {
-        0x11 | 0xA2 | 0xA3 => {
-            if is_keydown {
-                timing.ctrl_down = true;
-            } else {
-                timing.ctrl_down = false;
-                timing.ctrl_up_tick = current_tick_ms();
-            }
-        }
-        0x12 | 0xA4 | 0xA5 => {
-            if is_keydown {
-                timing.alt_down = true;
-            } else {
-                timing.alt_down = false;
-                timing.alt_up_tick = current_tick_ms();
-            }
-        }
-        _ => {}
-    }
-}
 
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）。診断用に公開。
 pub fn now_timestamp_us() -> u64 {
