@@ -88,6 +88,39 @@ WM_NULL ACK（`e7a8bc5`）を組み合わせて入力キューの排出を確認
 FocusChange 直後に WM_NULL ループでキュー渋滞を検出してから VK_IME_ON を送信する案を
 実装したが「効果なし・むしろ悪化」として同日に revert。
 
+### Phase 10: LiteralDetector による raw-TSF-literal 自動検出・回収（`c71e029` 2026-05-20）
+
+cold start のローマ字送信が「composition に届かず ASCII リテラルとして
+出力された」ケースを送信後に検出し、自動回収する仕組み。
+
+```
+LiteralDetector::new()
+  ├─ OBS_GJI_CANDIDATE_SHOW_SEQ   ─ベースライン取得
+  ├─ OBS_GJI_LAST_IO_MS           ─ベースライン取得
+  └─ OBS_GJI_CANDIDATE_VISIBLE    ─送信前の候補ウィンドウ表示状態
+       │
+       │  ローマ字 SendInput
+       ↓
+detect(timeout_ms) → DetectionResult
+  ├─ was_candidate_visible == false → SHOW イベント（OBS_GJI_CANDIDATE_SHOW_SEQ 変化）で判定
+  └─ was_candidate_visible == true  → GJI I/O 変化（OBS_GJI_LAST_IO_MS 変化）で判定
+       │
+       ├─ CompositionConfirmed → 成功扱い、何もしない
+       └─ SuspectedLiteral     → バックスペース + ローマ字再送
+                                 （WM_DRAIN_PROBE_QUEUE で順序保証付きスケジュール）
+```
+
+**実装上のポイント:**
+
+- 検出ロジックは `tsf/probe.rs` の judgement 層に純粋ロジックとして配置
+  （ADR-030 の3層分離に従う）
+- リカバリ送信は `ColdReason::RawTsfLiteralRecovery` でタイミングパラメータを
+  設定し、再 cold 扱いで warmup シーケンスをやり直す
+- 連続発火による false positive を防ぐため `consecutive_count` で
+  2 回目以降をスキップ（誤検出時にバックスペースが暴走しないようガード）
+- 検出セッション ID（`RAW_TSF_LITERAL_DETECT_SESSION`）で orphan タイムアウト
+  タスクが古いセッションの atomic を触らないよう保護
+
 ---
 
 ## 現在の設計

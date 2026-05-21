@@ -42,6 +42,30 @@ Layer 3: SSOT フォールバック（検出失敗時）
   └─ フォーカス変更時にガードリセット（per-window 状態を尊重）
 ```
 
+#### `ime_force_on_guard` の 2 用途（一時的な遷移期間限定）
+
+このフラグは「awase が恒常的に SSOT になる」設計ではなく、**一時的な遷移期間中だけ
+OS 検出結果を無視するガード**として機能する。用途は次の 2 つに限定される:
+
+1. **未知 IMM-broken アプリの初回ブートストラップ（Phase 3.5）**
+   未知アプリへ初回フォーカスし `set_ime_open(true)` を呼んだ直後、
+   次の `observe()` がまだ未確定の `ImmCapability` のもとで stale な結果を
+   返して上書きしないよう 1 サイクルだけ保護する。`ImmCapability::Broken` を
+   学習した時点でクリアされる（一過性）。
+2. **`panic_reset()` 直後の上書き防止**
+   パニックリセットで `ime_on=true` を書き込んだ直後に
+   `refresh_ime_state_cache` が走ると、stale な `observe()` 結果に
+   上書きされる。これを次の検出成功まで保護する。
+
+#### `ime_detect_miss_count` が実際に増える条件
+
+- **増えないアプリ**: Chrome / Edge / WezTerm / Windows Terminal /
+  VS Code 等。これらは `is_tsf_native_window()` か `ImmCapability::Broken`
+  学習結果により早期 return し、miss_count は加算されない。
+- **増えるアプリ**: 「**未知の IMM-broken アプリへの初回フォーカス時のみ**」。
+  3 回連続で miss が積み上がるとフラグが立ち、`ImmCapability::Broken` として
+  学習・永続化される。学習後は再度 miss が積み上がることはない。
+
 ### IMM 能力の動的学習
 
 アプリごとの IMM ブリッジ能力を実行時に学習し、キャッシュする:

@@ -9,6 +9,8 @@
 | [0003](0003-chrome-vk-injection.md) | Chrome VK injection と F2 warmup | 実験中 |
 | [0004](0004-injection-mode-design.md) | InjectionMode 三分岐設計 | 安定 |
 | [0005](0005-focus-classification.md) | フォーカス判定と AppKind 設計 | 安定 |
+| [030](030-tsf-three-layer-architecture.md) | TSF 状態管理の3層分離アーキテクチャ | 採用済み |
+| [031](031-win32-async-crate.md) | win32-async クレートの設計 | 採用済み |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
