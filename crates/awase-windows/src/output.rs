@@ -12,6 +12,95 @@ pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
 use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key_input};
 
+/// 出力セッションを RAII で管理するガード。
+///
+/// `begin()` で `OUTPUT_ACTIVE=true` をセット。
+/// Drop 時に `OUTPUT_ACTIVE=false` にリセットし、`post_drain_output_queue()` を呼ぶ。
+#[derive(Debug)]
+pub(crate) struct OutputActiveGuard;
+
+impl OutputActiveGuard {
+    pub(crate) fn begin() -> Self {
+        crate::OUTPUT_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+        Self
+    }
+}
+
+impl Drop for OutputActiveGuard {
+    fn drop(&mut self) {
+        crate::OUTPUT_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+        crate::post_drain_output_queue();
+    }
+}
+
+/// モード別出力ディスパッチのトレイト。
+///
+/// `send_keys()` が `InjectionMode` ごとに match を繰り返す代わりに、
+/// このトレイトで一本化する。
+trait InjectionSender {
+    fn send_char(&self, ch: char);
+    fn send_romaji(&self, romaji: &str);
+    fn send_key_sequence(&self, s: &str) {
+        for ch in s.chars() {
+            self.send_char(ch);
+        }
+    }
+    fn mode_label(&self) -> &'static str;
+}
+
+struct UnicodeSender<'a>(&'a Output);
+struct VkSender<'a>(&'a Output);
+struct TsfSender<'a>(&'a Output);
+
+impl InjectionSender for UnicodeSender<'_> {
+    fn send_char(&self, ch: char) { self.0.send_unicode_char(ch); }
+    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_as_unicode(romaji); }
+    fn mode_label(&self) -> &'static str { "Unicode" }
+}
+
+impl InjectionSender for VkSender<'_> {
+    fn send_char(&self, ch: char) { self.0.send_char_as_vk(ch); }
+    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_batched(romaji); }
+    fn mode_label(&self) -> &'static str { "VK Batched (Chrome)" }
+}
+
+impl InjectionSender for TsfSender<'_> {
+    fn send_char(&self, ch: char) { self.0.send_char_as_tsf(ch); }
+    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_as_tsf(romaji); }
+    fn mode_label(&self) -> &'static str { "VK Sequential (TSF)" }
+}
+
+/// `send_keys()` 1回分の出力セッション。
+///
+/// - `begin()` で `InjectionMode` を解決し `OutputActiveGuard` を取得する
+/// - `sender()` で `InjectionSender` の動的ディスパッチオブジェクトを返す
+/// - Drop 時に Guard が `OUTPUT_ACTIVE=false` + drain を自動実行する
+struct OutputSession<'a> {
+    output: &'a Output,
+    mode: InjectionMode,
+    _guard: OutputActiveGuard,
+}
+
+impl<'a> OutputSession<'a> {
+    fn begin(output: &'a Output) -> Self {
+        let mode = resolve_injection_mode();
+        let _guard = OutputActiveGuard::begin();
+        Self { output, mode, _guard }
+    }
+
+    fn sender(&self) -> Box<dyn InjectionSender + '_> {
+        match self.mode {
+            InjectionMode::Unicode => Box::new(UnicodeSender(self.output)),
+            InjectionMode::Vk     => Box::new(VkSender(self.output)),
+            InjectionMode::Tsf    => Box::new(TsfSender(self.output)),
+        }
+    }
+
+    fn is_vk_mode(&self) -> bool {
+        self.mode != InjectionMode::Unicode
+    }
+}
+
 /// 出力注入モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InjectionMode {
@@ -387,14 +476,16 @@ impl Output {
     /// - Vk: Chrome/Edge/Electron。Batched VK で IME composition。
     /// - Tsf: WezTerm 等。Sequential VK で TSF/IME に composition させる。
     pub fn send_keys(&self, actions: &[KeyAction]) {
-        let mode = resolve_injection_mode();
+        // モード解決 + OutputActiveGuard 取得をセッションオブジェクトに委譲
+        let session = OutputSession::begin(self);
 
         // mark_send() より前に elapsed を読む。mark_send() は last_send_ms を上書きするため、
-        // send_romaji_as_tsf 内の ms_since_last_send() は常に ~0ms を返す。
+        // 内部の send_romaji_as_tsf 等での ms_since_last_send() は常に ~0ms を返す。
         // 真の「前回送信からの経過時間」はここで記録する。
         let prev_elapsed_ms = self.ms_since_last_send();
         log::debug!(
-            "send_keys: mode={mode:?} actions={actions:?} prev_elapsed={}ms",
+            "send_keys: mode={:?} actions={actions:?} prev_elapsed={}ms",
+            session.mode,
             if prev_elapsed_ms == u64::MAX { "∞".to_string() } else { prev_elapsed_ms.to_string() }
         );
 
@@ -403,16 +494,10 @@ impl Output {
         // 呼ぶため、send_keys の中でメッセージポンプが走り Space 等の WH_KEYBOARD_LL
         // コールバックが SendInput より前に発火して "境界dえ" 等の race を起こす。
 
-        // 出力セッション全体をガード: 期間中に到着した全キーを OUTPUT_PENDING_QUEUE に退避し、
-        // TSF 送信バッチより先に WezTerm へ届く順序逆転と APP re-entrancy を防ぐ。
-        let _output_guard = crate::OutputActiveGuard::begin();
-
         // output in-flight guard の基準点を SendInput より前に設定する。
-        // 呼び出し元が何らかのブロッキング処理を send_keys 内に追加した場合でも
-        // guard が有効になるよう、ループ前に記録しておく。
-        // ループ後の mark_send() も残す（reinject wait の正確な基準点のため）。
         self.mark_send();
 
+        let sender = session.sender();
         for action in actions {
             match action {
                 KeyAction::SpecialKey(sk) => {
@@ -427,60 +512,33 @@ impl Output {
                     log::debug!("  → KeyUp(0x{:04X})", vk.0);
                     self.send_key(vk.0, true);
                 }
-                KeyAction::Char(ch) => match mode {
-                    InjectionMode::Vk => {
-                        log::debug!("  → Char('{ch}') via VK Batched (Chrome mode)");
-                        self.send_char_as_vk(*ch);
-                    }
-                    InjectionMode::Tsf => {
-                        log::debug!("  → Char('{ch}') via VK Sequential (TSF mode)");
-                        self.send_char_as_tsf(*ch);
-                    }
-                    InjectionMode::Unicode => {
-                        log::debug!("  → Char('{ch}') via Unicode");
-                        self.send_unicode_char(*ch);
-                    }
-                },
+                KeyAction::Char(ch) => {
+                    log::debug!("  → Char('{ch}') via {}", sender.mode_label());
+                    sender.send_char(*ch);
+                }
                 KeyAction::Suppress => {
                     log::debug!("  → Suppress");
                 }
                 KeyAction::Romaji(s) => {
-                    log::debug!("  → Romaji(\"{s}\") mode={mode:?}");
-                    self.send_romaji(s);
+                    log::debug!("  → Romaji(\"{s}\") via {}", sender.mode_label());
+                    sender.send_romaji(s);
                 }
-                KeyAction::KeySequence(s) => match mode {
-                    InjectionMode::Vk => {
-                        log::debug!("  → KeySequence(\"{s}\") via VK Batched (Chrome)");
-                        for ch in s.chars() {
-                            self.send_char_as_vk(ch);
-                        }
-                    }
-                    InjectionMode::Tsf => {
-                        log::debug!("  → KeySequence(\"{s}\") via VK Sequential (TSF)");
-                        for ch in s.chars() {
-                            self.send_char_as_tsf(ch);
-                        }
-                    }
-                    InjectionMode::Unicode => {
-                        log::debug!("  → KeySequence(\"{s}\") via Unicode");
-                        for ch in s.chars() {
-                            self.send_unicode_char(ch);
-                        }
-                    }
-                },
+                KeyAction::KeySequence(s) => {
+                    log::debug!("  → KeySequence(\"{s}\") via {}", sender.mode_label());
+                    sender.send_key_sequence(s);
+                }
             }
         }
 
         // VK/TSF モードで出力した場合、直後の IME ポーリングをガードするため
         // タイムスタンプを記録する（母音落ち「て→tえ」防止）。
-        if mode != InjectionMode::Unicode {
+        if session.is_vk_mode() {
             Self::mark_vk_output();
         }
 
         // executor が「output in-flight」判定に使う送信時刻を記録する。
-        // user passthrough キー (Enter / Ctrl 等) が race するのを防ぐための基準点。
-        // Unicode モードでも記録しておく（race の理論的可能性は残るため）。
         self.mark_send();
+        // session ここで Drop → OutputActiveGuard::drop() → OUTPUT_ACTIVE=false + drain
     }
 
     /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
@@ -533,24 +591,6 @@ impl Output {
                 &inputs,
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
-        }
-    }
-
-    /// ローマ字文字列を送信する（モードに応じて方式を切り替え）
-    fn send_romaji(&self, romaji: &str) {
-        match resolve_injection_mode() {
-            InjectionMode::Vk => {
-                log::debug!("  send_romaji: → VK Batched (Chrome)");
-                self.send_romaji_batched(romaji);
-            }
-            InjectionMode::Tsf => {
-                log::debug!("  send_romaji: → VK Sequential (TSF)");
-                self.send_romaji_as_tsf(romaji);
-            }
-            InjectionMode::Unicode => {
-                log::debug!("  send_romaji: → Unicode");
-                self.send_romaji_as_unicode(romaji);
-            }
         }
     }
 
@@ -1073,140 +1113,7 @@ impl Output {
     }
 
     fn send_romaji_as_tsf(&self, romaji: &str) {
-        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
-
-        if chars.is_empty() {
-            return;
-        }
-
-        let WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n } = self.ensure_tsf_warm();
-
-        // warmup 完了 → ローマ字送信開始 (GJI idle・IME conv 状態を記録)
-        // conv は最大 10ms の WM_IME_CONTROL 問い合わせ。WezTerm が通常応答する場合は 1-3ms 以内。
-        {
-            use std::sync::atomic::Ordering::Relaxed;
-            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS
-                .load(Relaxed);
-            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
-            log::debug!(
-                "[h1-send] cold={cold_n} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
-                 conv={} ROMAN={} NATIVE={}",
-                chars.len(),
-                conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv.map_or(false, |v| v & 0x0010 != 0),
-                conv.map_or(false, |v| v & 0x0001 != 0),
-            );
-        }
-
-        // raw TSF literal 検出用ベースライン（送信直前に記録）
-        use std::sync::atomic::Ordering::Relaxed;
-        let detector = crate::tsf::probe::LiteralDetector::new();
-        let ze_bs_count: usize;
-
-        // cold + eager のときは KEYEVENTF_UNICODE + TSF_MARKER でひらがなを直接送信する。
-        // VK "ke" → "け"（1文字）にすることでアルファベット/ひらがな区別が不要になり、
-        // raw TSF literal 検出のバックスペース数（chars.len() vs kana 1文字）の不一致も解消される。
-        // GJI TSF が Unicode VK_PACKET を composition に取り込み漢字変換も可能（動作確認済み）。
-        let unicode_kana: Option<char> = if prepend_f2_warmup && used_eager_path {
-            kana_for_romaji_static(romaji)
-        } else {
-            None
-        };
-
-        if let Some(kana) = unicode_kana {
-            // Unicode + TSF_MARKER 送信: WezTerm が VK_PACKET を TSF 経由で GJI に渡す
-            let mut utf16_buf = [0u16; 2];
-            let utf16 = kana.encode_utf16(&mut utf16_buf);
-            log::debug!(
-                "[h1-run] cold={cold_n} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
-                kana, kana as u32,
-            );
-            let mut inputs = Vec::with_capacity(utf16.len() * 2);
-            for &code_unit in utf16.iter() {
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VIRTUAL_KEY(0),
-                            wScan: code_unit,
-                            dwFlags: KEYEVENTF_UNICODE,
-                            time: 0,
-                            dwExtraInfo: TSF_MARKER,
-                        },
-                    },
-                });
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VIRTUAL_KEY(0),
-                            wScan: code_unit,
-                            dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                            time: 0,
-                            dwExtraInfo: TSF_MARKER,
-                        },
-                    },
-                });
-            }
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-            ze_bs_count = 1; // Unicode kana 1文字
-        } else {
-            // 通常の VK 送信。
-            self.send_vk_runs(&chars, cold_n);
-            ze_bs_count = chars.len();
-        }
-
-        self.mark_composition_warm();
-
-        // raw TSF literal 検出（GJI 専用）:
-
-        // ウィンドウ表示状態に応じてシグナルを使い分ける:
-        //   - was_visible=false: SHOW イベント（composition 時に非表示→表示）~4ms
-        //   - was_visible=true : GJI I/O 変化（ウィンドウがすでに表示中で SHOW は来ない）
-        // GJI が動いていない環境（MS IME 等）では OBS_GJI_MONITOR_OK=false なのでスキップ。
-        let gji_active = crate::tsf::observer::OBS_GJI_MONITOR_OK.load(Relaxed);
-        if prepend_f2_warmup && gji_active {
-            const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
-            let t_send = crate::hook::current_tick_ms();
-            let detection = detector.detect(RAW_TSF_LITERAL_DETECT_MS);
-            let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
-            match detection {
-                crate::tsf::probe::DetectionResult::CompositionConfirmed => {
-                    log::debug!(
-                        "[raw-tsf-literal] cold={cold_n} composition confirmed ({elapsed_ms}ms)"
-                    );
-                }
-                crate::tsf::probe::DetectionResult::SuspectedLiteral => {
-                    let consecutive = self.composition.consecutive_count();
-                    if consecutive == 0 {
-                        log::warn!(
-                            "[raw-tsf-literal] cold={cold_n} raw TSF literal suspected \
-                            ({elapsed_ms}ms) \
-                            → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
-                        );
-                        crate::RAW_TSF_LITERAL.backs.store(ze_bs_count, Relaxed);
-                        *crate::RAW_TSF_LITERAL.romaji
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
-                    } else {
-                        // 連続発火（consecutive >= 1）= false positive の疑い。バックスペース送信を中止。
-                        log::warn!(
-                            "[raw-tsf-literal] cold={cold_n} consecutive raw-tsf-literal fire \
-                            (count={}) → likely false positive, giving up without backspace",
-                            consecutive + 1,
-                        );
-                    }
-                    self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-                }
-            }
-        }
-
+        TsfSendPipeline::new(self).run(romaji);
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
@@ -1301,6 +1208,173 @@ impl Output {
 
 }
 
+/// TSF 送信の 3 フェーズを管理するパイプライン。
+///
+/// - Phase 1 `warm_up`:  TSF composition context の初期化待ち（最大 1500ms）
+/// - Phase 2 `transmit`: VK または Unicode kana で romaji を WezTerm に送信
+/// - Phase 3 `verify`:   raw TSF literal 漏れを検出してリカバリをスケジュール
+///
+/// `send_romaji_as_tsf()` はこのパイプラインを呼び出す薄いラッパー。
+struct TsfSendPipeline<'a> {
+    output: &'a Output,
+}
+
+impl<'a> TsfSendPipeline<'a> {
+    fn new(output: &'a Output) -> Self {
+        Self { output }
+    }
+
+    fn run(&self, romaji: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        if chars.is_empty() {
+            return;
+        }
+
+        // Phase 1: warmup
+        let outcome = self.output.ensure_tsf_warm();
+
+        // warmup 完了 → ローマ字送信開始 (GJI idle・IME conv 状態を記録)
+        {
+            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+            log::debug!(
+                "[h1-send] cold={} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
+                 conv={} ROMAN={} NATIVE={}",
+                outcome.cold_n,
+                chars.len(),
+                conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv.map_or(false, |v| v & 0x0010 != 0),
+                conv.map_or(false, |v| v & 0x0001 != 0),
+            );
+        }
+
+        // Phase 2: transmit
+        let detector = crate::tsf::probe::LiteralDetector::new();
+        let ze_bs_count = self.transmit(romaji, &chars, &outcome);
+        self.output.mark_composition_warm();
+
+        // Phase 3: verify
+        self.verify(romaji, &outcome, detector, ze_bs_count);
+    }
+
+    /// Phase 2: VK run または Unicode kana を送信し、バックスペース数を返す。
+    fn transmit(&self, romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            KEYEVENTF_UNICODE, KEYEVENTF_KEYUP,
+        };
+        use crate::tsf::output::TSF_MARKER;
+
+        let unicode_kana: Option<char> = if outcome.prepend_f2_warmup && outcome.used_eager_path {
+            kana_for_romaji_static(romaji)
+        } else {
+            None
+        };
+
+        if let Some(kana) = unicode_kana {
+            let mut utf16_buf = [0u16; 2];
+            let utf16 = kana.encode_utf16(&mut utf16_buf);
+            log::debug!(
+                "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
+                outcome.cold_n, kana, kana as u32,
+            );
+            let mut inputs = Vec::with_capacity(utf16.len() * 2);
+            for &code_unit in utf16.iter() {
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: code_unit,
+                            dwFlags: KEYEVENTF_UNICODE,
+                            time: 0,
+                            dwExtraInfo: TSF_MARKER,
+                        },
+                    },
+                });
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: code_unit,
+                            dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: TSF_MARKER,
+                        },
+                    },
+                });
+            }
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+            1
+        } else {
+            self.output.send_vk_runs(chars, outcome.cold_n);
+            chars.len()
+        }
+    }
+
+    /// Phase 3: raw TSF literal 検出と回収スケジュール。
+    fn verify(
+        &self,
+        romaji: &str,
+        outcome: &WarmupOutcome,
+        detector: crate::tsf::probe::LiteralDetector,
+        ze_bs_count: usize,
+    ) {
+        use std::sync::atomic::Ordering::Relaxed;
+        use crate::tsf::probe::DetectionResult;
+
+        let gji_active = crate::tsf::observer::OBS_GJI_MONITOR_OK.load(Relaxed);
+        if !outcome.prepend_f2_warmup || !gji_active {
+            return;
+        }
+
+        const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
+        let t_send = crate::hook::current_tick_ms();
+        let detection = detector.detect(RAW_TSF_LITERAL_DETECT_MS);
+        let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
+
+        match detection {
+            DetectionResult::CompositionConfirmed => {
+                log::debug!(
+                    "[raw-tsf-literal] cold={} composition confirmed ({elapsed_ms}ms)",
+                    outcome.cold_n
+                );
+            }
+            DetectionResult::SuspectedLiteral => {
+                let consecutive = self.output.composition.consecutive_count();
+                if consecutive == 0 {
+                    log::warn!(
+                        "[raw-tsf-literal] cold={} raw TSF literal suspected \
+                        ({elapsed_ms}ms) \
+                        → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
+                        outcome.cold_n,
+                    );
+                    crate::RAW_TSF_LITERAL.backs.store(ze_bs_count, Relaxed);
+                    *crate::RAW_TSF_LITERAL.romaji
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
+                } else {
+                    log::warn!(
+                        "[raw-tsf-literal] cold={} consecutive raw-tsf-literal fire \
+                        (count={}) → likely false positive, giving up without backspace",
+                        outcome.cold_n,
+                        consecutive + 1,
+                    );
+                }
+                self.output.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+            }
+        }
+    }
+}
+
 /// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
 const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
@@ -1308,9 +1382,13 @@ const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
 
 impl awase::platform::CompositionOutput for Output {
     fn send_romaji(&self, romaji: &str) {
-        // モード判定は send_romaji_as_tsf 内部の resolve_injection_mode() が行う。
+        // モード判定は resolve_injection_mode() が行う。
         // 現状は TSF / VK Batched / Unicode の3モードを自動選択する。
-        self.send_romaji(romaji);
+        match resolve_injection_mode() {
+            InjectionMode::Vk => self.send_romaji_batched(romaji),
+            InjectionMode::Tsf => self.send_romaji_as_tsf(romaji),
+            InjectionMode::Unicode => self.send_romaji_as_unicode(romaji),
+        }
     }
 
     fn send_kana_char(&self, ch: char) {

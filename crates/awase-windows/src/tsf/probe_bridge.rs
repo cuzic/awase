@@ -15,28 +15,6 @@ use awase::types::RawKeyEvent;
 /// send_keys 実行中の APP re-entrancy を防ぐ。
 pub static OUTPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// 出力セッションを RAII で管理するガード。
-///
-/// `begin()` で `OUTPUT_ACTIVE=true` をセット。
-/// Drop 時に `OUTPUT_ACTIVE=false` にリセットし、`post_drain_output_queue()` を呼ぶ。
-#[derive(Debug)]
-pub struct OutputActiveGuard;
-
-impl OutputActiveGuard {
-    /// 出力セッションを開始する。OUTPUT_ACTIVE を true にセットして Guard を返す。
-    pub fn begin() -> Self {
-        OUTPUT_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
-        Self
-    }
-}
-
-impl Drop for OutputActiveGuard {
-    fn drop(&mut self) {
-        OUTPUT_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
-        post_drain_output_queue();
-    }
-}
-
 /// OUTPUT_ACTIVE=true 中に到着したキーイベントの退避キュー。
 ///
 /// セッション終了後に WM_DRAIN_OUTPUT_QUEUE メッセージ経由で NICOLA へ再配送する。
