@@ -40,7 +40,7 @@ impl Drop for OutputActiveGuard {
 const VK_LSHIFT: u16 = 0xA0;
 
 /// `u64::MAX` は「未送信」を意味するセンチネル値。ログ表示用に "∞" に変換する。
-fn fmt_ms(ms: u64) -> String {
+pub(crate) fn fmt_ms(ms: u64) -> String {
     if ms == u64::MAX { "∞".to_owned() } else { ms.to_string() }
 }
 
@@ -744,12 +744,9 @@ impl Output {
     /// TSF cold-start 時のウォームアップシーケンスを実行して cold-start シーケンス番号を返す。
     ///
     /// `ensure_tsf_warm` の `prepend_f2_warmup` ブランチを切り出したもの。
-    /// 処理の実体は [`crate::tsf::cold_warmup::ColdWarmupSequence`] に委譲する。
+    /// 実装は [`crate::tsf::cold_warmup::ColdWarmupSequence`] に委譲する。
     fn execute_cold_warmup(&self, session_expired: bool, elapsed_ms: u64) -> u32 {
-        // SAFETY: ColdWarmupSequence::run は SendInput を呼ぶ。メッセージループスレッドから呼ぶこと。
-        unsafe {
-            crate::tsf::cold_warmup::ColdWarmupSequence::new(self, session_expired, elapsed_ms).run()
-        }
+        crate::tsf::cold_warmup::ColdWarmupSequence::new(self).run(session_expired, elapsed_ms)
     }
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
@@ -1171,115 +1168,10 @@ impl Output {
 
 pub use crate::tsf::output::flush_raw_tsf_literal_backspaces;
 
-/// TSF cold-start 後の composition context 初期化完了を reactive に待つ。
-///
-/// fresh F2 送信直後に呼ぶ。OBJ_NAMECHANGE WinEvent か タイムアウトまで待機する。
-///
-/// WezTerm は TSF composition ウィンドウ名をひらがなモード切替時に更新する (~125ms)。
-/// このイベントで早期終了する。発火しない場合は timeout_ms まで待つ。
-///
-/// # Re-entrancy safety
-/// OUTPUT_ACTIVE=true（send_keys スコープ）でメッセージループを動かしながら OBJ_NAMECHANGE を待つ。
-/// `MsgWaitForMultipleObjects` を廃止し、`win32_async::block_on` + `sleep_ms` で実装。
-///
-/// Returns `true` = OBJ_NAMECHANGE 検出、`false` = タイムアウト
-pub(crate) fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
-    use std::sync::atomic::Ordering::Relaxed;
-    let settled = win32_async::block_on(settle_async(nc_baseline, timeout_ms));
-    // drain は OutputActiveGuard::drop が行うため、ここでは呼ばない。
-
-    let nc_fired = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline;
-    log::debug!(
-        "[tsf-settle] → {} (nc_fired={nc_fired})",
-        if settled { "OBJ_NAMECHANGE" } else { "timeout" },
-    );
-    settled
-}
-
-/// OBJ_NAMECHANGE または タイムアウト まで非ブロッキングで待つ。
-/// block_on の内部ループがメッセージをポンプするため WinEvent コールバックが発火し、
-/// `OBS_FOCUS_NAMECHANGE_SEQ` が更新される。
-async fn settle_async(nc_baseline: u32, timeout_ms: u32) -> bool {
-    use std::sync::atomic::Ordering::Relaxed;
-    const POLL_MS: u32 = 5;
-
-    let deadline_ms = crate::hook::current_tick_ms() + u64::from(timeout_ms);
-
-    loop {
-        if crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline {
-            return true;
-        }
-        let now = crate::hook::current_tick_ms();
-        if now >= deadline_ms {
-            return false;
-        }
-        let remaining = u32::try_from(deadline_ms.saturating_sub(now)).unwrap_or(u32::MAX);
-        win32_async::sleep_ms(remaining.min(POLL_MS)).await;
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── settle_async テスト（Windows のみ）──────────────────────────────────────
-
-    /// テスト間でグローバル OBS_FOCUS_NAMECHANGE_SEQ が競合しないようシリアライズ
-    #[cfg(windows)]
-    static SETTLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// baseline がすでに変化していれば即 true を返す
-    #[test]
-    #[cfg(windows)]
-    fn settle_returns_true_when_already_changed() {
-        let _g = SETTLE_TEST_LOCK.lock().unwrap();
-        // seq をインクリメントして baseline とずらす
-        let baseline = crate::OBS_FOCUS_NAMECHANGE_SEQ
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let result = win32_async::block_on(settle_async(baseline, 500));
-        assert!(result, "seq already != baseline → should return true");
-    }
-
-    /// NAMECHANGE が来ない場合は timeout_ms 後に false を返す
-    #[test]
-    #[cfg(windows)]
-    fn settle_times_out_when_no_namechange() {
-        let _g = SETTLE_TEST_LOCK.lock().unwrap();
-        let current = crate::OBS_FOCUS_NAMECHANGE_SEQ
-            .load(std::sync::atomic::Ordering::SeqCst);
-
-        let start = std::time::Instant::now();
-        let result = win32_async::block_on(settle_async(current, 100));
-        let elapsed = start.elapsed().as_millis();
-
-        assert!(!result, "no NAMECHANGE → should timeout with false");
-        assert!(elapsed >= 60, "timed out too early: {elapsed}ms");
-        assert!(elapsed < 500, "timed out too late: {elapsed}ms");
-    }
-
-    /// 待機中に別タスクから seq が変化したら true を返す
-    #[test]
-    #[cfg(windows)]
-    fn settle_returns_true_on_namechange_during_wait() {
-        let _g = SETTLE_TEST_LOCK.lock().unwrap();
-        let baseline = crate::OBS_FOCUS_NAMECHANGE_SEQ
-            .load(std::sync::atomic::Ordering::SeqCst);
-
-        let result = win32_async::block_on(async {
-            // 30ms 後に seq を変化させる spawn_local タスク
-            win32_async::spawn_local(async {
-                win32_async::sleep_ms(30).await;
-                crate::OBS_FOCUS_NAMECHANGE_SEQ
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                // settle_async は 5ms ポーリングなので次のポーリングで検出
-            });
-
-            settle_async(baseline, 500).await
-        });
-
-        assert!(result, "NAMECHANGE fired during wait → should return true");
-    }
 
     // ── ColdReason impl メソッドテスト ────────────────────────────────────────
 
