@@ -12,6 +12,9 @@ pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
 use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key_input};
 
+pub(crate) mod sender;
+pub(crate) use sender::{InjectionMode, InjectionSender, OutputSession, UnicodeSender, VkSender, TsfSender};
+
 /// 出力セッションを RAII で管理するガード。
 ///
 /// `begin()` で `OUTPUT_ACTIVE=true` をセット。
@@ -31,85 +34,6 @@ impl Drop for OutputActiveGuard {
         crate::OUTPUT_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
         crate::post_drain_output_queue();
     }
-}
-
-/// モード別出力ディスパッチのトレイト。
-///
-/// `send_keys()` が `InjectionMode` ごとに match を繰り返す代わりに、
-/// このトレイトで一本化する。
-trait InjectionSender {
-    fn send_char(&self, ch: char);
-    fn send_romaji(&self, romaji: &str);
-    fn send_key_sequence(&self, s: &str) {
-        for ch in s.chars() {
-            self.send_char(ch);
-        }
-    }
-    fn mode_label(&self) -> &'static str;
-}
-
-struct UnicodeSender<'a>(&'a Output);
-struct VkSender<'a>(&'a Output);
-struct TsfSender<'a>(&'a Output);
-
-impl InjectionSender for UnicodeSender<'_> {
-    fn send_char(&self, ch: char) { self.0.send_unicode_char(ch); }
-    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_as_unicode(romaji); }
-    fn mode_label(&self) -> &'static str { "Unicode" }
-}
-
-impl InjectionSender for VkSender<'_> {
-    fn send_char(&self, ch: char) { self.0.send_char_as_vk(ch); }
-    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_batched(romaji); }
-    fn mode_label(&self) -> &'static str { "VK Batched (Chrome)" }
-}
-
-impl InjectionSender for TsfSender<'_> {
-    fn send_char(&self, ch: char) { self.0.send_char_as_tsf(ch); }
-    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_as_tsf(romaji); }
-    fn mode_label(&self) -> &'static str { "VK Sequential (TSF)" }
-}
-
-/// `send_keys()` 1回分の出力セッション。
-///
-/// - `begin()` で `InjectionMode` を解決し `OutputActiveGuard` を取得する
-/// - `sender()` で `InjectionSender` の動的ディスパッチオブジェクトを返す
-/// - Drop 時に Guard が `OUTPUT_ACTIVE=false` + drain を自動実行する
-struct OutputSession<'a> {
-    output: &'a Output,
-    mode: InjectionMode,
-    _guard: OutputActiveGuard,
-}
-
-impl<'a> OutputSession<'a> {
-    fn begin(output: &'a Output) -> Self {
-        let mode = resolve_injection_mode();
-        let _guard = OutputActiveGuard::begin();
-        Self { output, mode, _guard }
-    }
-
-    fn sender(&self) -> Box<dyn InjectionSender + '_> {
-        match self.mode {
-            InjectionMode::Unicode => Box::new(UnicodeSender(self.output)),
-            InjectionMode::Vk     => Box::new(VkSender(self.output)),
-            InjectionMode::Tsf    => Box::new(TsfSender(self.output)),
-        }
-    }
-
-    fn is_vk_mode(&self) -> bool {
-        self.mode != InjectionMode::Unicode
-    }
-}
-
-/// 出力注入モード
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InjectionMode {
-    /// Unicode 直接注入（Win32/UWP デフォルト）
-    Unicode,
-    /// VK Batched 注入（Chrome/Edge/Electron — IME composition 経由）
-    Vk,
-    /// VK Sequential 注入（WezTerm — TSF 直結アプリ向け）
-    Tsf,
 }
 
 /// VK_LSHIFT の仮想キーコード
