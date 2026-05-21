@@ -29,6 +29,7 @@ pub mod output;
 pub mod platform;
 pub mod runtime;
 pub mod scanmap;
+pub(crate) mod timing;
 pub mod timer;
 pub mod tray;
 pub mod tsf;

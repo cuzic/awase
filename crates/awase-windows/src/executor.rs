@@ -150,7 +150,6 @@ impl DecisionExecutor {
         // 「タスク → タスk」のような race が発生する。
         // 本ガードは「直近 N ms 以内の passthrough キーは pending と同様に
         // deferr して reinject 時に wait する」ことで race を構造的に解消する。
-        const OUTPUT_GUARD_MS: u64 = 50;
 
         match decision {
             Decision::PassThrough => {
@@ -202,7 +201,7 @@ impl DecisionExecutor {
                 }
 
                 let in_flight_ms = self.platform.output.ms_since_last_send();
-                let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
+                let output_in_flight = in_flight_ms < crate::timing::OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
 
                 log::debug!(
@@ -364,10 +363,9 @@ impl DecisionExecutor {
         // ReinjectKey は output guard 期間を消化してから注入する必要があるため、
         // 先にガード時間チェック + sleep を行ってからトレイト経由の処理に渡す。
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
-            const OUTPUT_GUARD_MS: u64 = 50;
             let elapsed = self.platform.output.ms_since_last_send();
-            if elapsed < OUTPUT_GUARD_MS {
-                let remaining = OUTPUT_GUARD_MS - elapsed;
+            if elapsed < crate::timing::OUTPUT_GUARD_MS {
+                let remaining = crate::timing::OUTPUT_GUARD_MS - elapsed;
                 log::debug!(
                     "[reinject-wait] sleeping {remaining}ms (output {elapsed}ms ago) before reinject(vk={:#04x})",
                     event.vk_code.0,

@@ -659,10 +659,9 @@ impl Output {
 
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
-        const COMPOSITION_TIMEOUT_MS: u64 = 2000;
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
-        let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
+        let session_expired = warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
             "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
@@ -783,10 +782,9 @@ impl Output {
     fn ensure_tsf_warm(&self) -> WarmupOutcome {
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
-        const COMPOSITION_TIMEOUT_MS: u64 = 2000;
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
-        let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
+        let session_expired = warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
             "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
@@ -815,8 +813,6 @@ impl Output {
         // 閾値は 10s: 2-9s 程度の「考える・少し読む」では GJI セッションが生存しており
         // I/O が発火せず probe が 1500ms タイムアウトしてしまうため、低すぎる閾値は NG。
         // 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
-        const LONG_IDLE_MS: u64 = 10_000;
-
         if session_expired {
             log::debug!("[tsf-warmup] session expired ({elapsed_ms}ms) → F2-only先行バッチ (案A)");
         } else {
@@ -842,7 +838,7 @@ impl Output {
         let win_class = unsafe { crate::ime::get_foreground_window_class() };
         log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
-        let long_idle = self.composition.idle_ms_at_last_cold() > LONG_IDLE_MS;
+        let long_idle = self.composition.idle_ms_at_last_cold() > crate::timing::LONG_IDLE_MS;
         // ColdReason に応じてウォームアップ待機時間を決定:
         //   FocusChange / SetOpenTrue / NativeF2Consumed:
         //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
@@ -1383,9 +1379,8 @@ impl<'a> TsfSendPipeline<'a> {
             return;
         }
 
-        const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
         let t_send = crate::hook::current_tick_ms();
-        let detection = detector.detect(RAW_TSF_LITERAL_DETECT_MS);
+        let detection = detector.detect(crate::timing::RAW_TSF_LITERAL_DETECT_MS);
         let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
 
         match detection {

@@ -415,10 +415,9 @@ impl Runtime {
         // `last_hook_activity_ms` は物理キーで hook から、VK/TSF 出力後は
         // `Output::mark_vk_output()` で同期的に更新される。
         // shadow は hook 経由で常時更新されているので、1 cycle の遅延は実害なし。
-        const TYPING_IDLE_MS: u64 = 500;
         let idle_ms = crate::hook::current_tick_ms()
             .saturating_sub(self.platform_state.last_hook_activity_ms);
-        let is_typing = idle_ms < TYPING_IDLE_MS;
+        let is_typing = idle_ms < crate::timing::TYPING_IDLE_MS;
 
         if is_typing {
             log::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
@@ -743,7 +742,6 @@ impl Runtime {
         }
 
         // 前面プロセスが変わったかチェック
-        const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
         let last_pid = self.executor.platform.focus.last_focus_info.as_ref().map(|(pid, _)| *pid);
         let process_changed = last_pid.is_some_and(|last| last != process_id);
 
@@ -762,7 +760,7 @@ impl Runtime {
                 );
                 let cache = &mut self.executor.platform.focus.hwnd_ime_cache;
                 let now_ms = snapshot.recorded_ms;
-                cache.retain(|_, v| now_ms.saturating_sub(v.recorded_ms) <= HWND_CACHE_MAX_AGE_MS);
+                cache.retain(|_, v| now_ms.saturating_sub(v.recorded_ms) <= crate::timing::HWND_CACHE_MAX_AGE_MS);
                 cache.insert((*old_pid, old_class.clone()), snapshot);
             }
         }
@@ -808,7 +806,7 @@ impl Runtime {
                 // キャッシュが古すぎる場合（ウィンドウの IME 状態が変わった可能性が高い）は
                 // キャッシュミスと同様に扱い、FocusProbe の結果を待つ。
                 // 即座に古い値で ime_on を更新するとエンジンが誤って無効化される。
-                if age_ms <= HWND_CACHE_MAX_AGE_MS {
+                if age_ms <= crate::timing::HWND_CACHE_MAX_AGE_MS {
                     self.platform_state.preconditions.set_ime_on(
                         snapshot.ime_on,
                         crate::ShadowSource::HwndCache,
@@ -822,7 +820,7 @@ impl Runtime {
                     log::info!(
                         "HwndCache: stale [{} {}] ime_on={} mode={:?} ({}ms ago > {}ms) → FocusProbe 待ち",
                         process_id, class_name, snapshot.ime_on, snapshot.input_mode,
-                        age_ms, HWND_CACHE_MAX_AGE_MS,
+                        age_ms, crate::timing::HWND_CACHE_MAX_AGE_MS,
                     );
                 }
             } else {
