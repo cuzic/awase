@@ -33,8 +33,8 @@ pub struct GuiThreadResult {
 ///
 /// `GetGUIThreadInfo` はフォアグラウンドウィンドウの GUI スレッドにメッセージを送るため、
 /// 対象スレッドがハングしていると無期限にブロックする。
-/// ワーカースレッドで実行し、タイムアウトした場合は非ブロッキングな
-/// `GetForegroundWindow` にフォールバックする。
+/// `run_with_timeout` でワーカースレッドで実行し、タイムアウト時は
+/// 非ブロッキングな `GetForegroundWindow` にフォールバックする。
 ///
 /// # Safety
 /// Win32 API を呼び出す。
@@ -44,7 +44,7 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
     struct SendableResult(HWND, u32);
     unsafe impl Send for SendableResult {}
 
-    let handle = std::thread::spawn(|| {
+    let result = run_with_timeout(timeout, || {
         let mut info = GUITHREADINFO {
             cbSize: u32::try_from(size_of::<GUITHREADINFO>()).unwrap(),
             ..Default::default()
@@ -66,39 +66,11 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
         }
     });
 
-    // タイムアウト付き join: park_timeout で待機
-    let start = std::time::Instant::now();
-    loop {
-        if handle.is_finished() {
-            match handle.join() {
-                Ok(SendableResult(hwnd, tid)) => {
-                    return GuiThreadResult {
-                        focused_hwnd: hwnd,
-                        thread_id: tid,
-                    };
-                }
-                Err(_) => {
-                    // ワーカースレッドがパニックした場合はフォールバック
-                    log::error!("GetGUIThreadInfo worker thread panicked");
-                    break;
-                }
-            }
+    match result {
+        Some(SendableResult(hwnd, tid)) => GuiThreadResult { focused_hwnd: hwnd, thread_id: tid },
+        None => {
+            // フォールバック: GetForegroundWindow は非ブロッキング
+            GuiThreadResult { focused_hwnd: unsafe { GetForegroundWindow() }, thread_id: 0 }
         }
-        if start.elapsed() >= timeout {
-            log::warn!(
-                "GetGUIThreadInfo timed out after {}ms, falling back to GetForegroundWindow",
-                timeout.as_millis()
-            );
-            // ワーカースレッドは放置（OS がスレッド終了時に回収）
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-
-    // フォールバック: GetForegroundWindow は非ブロッキング
-    let hwnd = unsafe { GetForegroundWindow() };
-    GuiThreadResult {
-        focused_hwnd: hwnd,
-        thread_id: 0,
     }
 }
