@@ -224,8 +224,10 @@ pub fn run() -> Result<()> {
         unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
         Ordering::SeqCst,
     );
-    install_ctrl_handler();
-    let _focus_hook_guard = install_focus_hook();
+    if let Err(e) = install_ctrl_handler() {
+        log::warn!("{e}");
+    }
+    let _focus_hook_guard = install_focus_hook().map_err(|e| log::warn!("{e}")).ok();
     let _obs_hook_guards = awase_windows::tsf::observer::install_observation_hooks();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
@@ -252,7 +254,7 @@ pub fn run() -> Result<()> {
         }
     }
 
-    let _wts_guard = register_session_notification();
+    let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
     initialize_ime_cache();
 
     // Explorer 再起動時にトレイアイコンを復元するため TaskbarCreated メッセージを登録
@@ -591,8 +593,8 @@ fn install_hooks_and_hotkeys_validated(
         .general
         .engine_toggle_hotkey
         .as_ref()
-        .and_then(|hotkey_str| register_toggle_hotkey(hotkey_str));
-    let app_override_guard = register_app_override_hotkey();
+        .and_then(|hotkey_str| register_toggle_hotkey(hotkey_str).map_err(|e| log::warn!("{e}")).ok());
+    let app_override_guard = register_app_override_hotkey().map_err(|e| log::warn!("{e}")).ok();
     Ok((guard, toggle_guard, app_override_guard))
 }
 
@@ -625,68 +627,57 @@ impl Drop for HotKeyGuard {
 }
 
 /// トグルホットキーを登録する
-fn register_toggle_hotkey(hotkey_str: &str) -> Option<HotKeyGuard> {
-    if let Some((modifiers, vk)) = awase_windows::vk::parse_hotkey(hotkey_str) {
-        // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
-        unsafe {
-            let result = RegisterHotKey(
-                None,
-                HOTKEY_ID_TOGGLE,
-                HOT_KEY_MODIFIERS(modifiers),
-                u32::from(vk.0),
-            );
-            if result.is_ok() {
-                log::info!("Toggle hotkey registered: {hotkey_str}");
-                Some(HotKeyGuard(HOTKEY_ID_TOGGLE))
-            } else {
-                log::warn!("Failed to register toggle hotkey: {hotkey_str}");
-                None
-            }
-        }
-    } else {
-        log::warn!("Invalid toggle hotkey format: {hotkey_str}");
-        None
+fn register_toggle_hotkey(hotkey_str: &str) -> Result<HotKeyGuard> {
+    let (modifiers, vk) = awase_windows::vk::parse_hotkey(hotkey_str)
+        .context(format!("Invalid toggle hotkey format: {hotkey_str}"))?;
+    // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
+    unsafe {
+        RegisterHotKey(
+            None,
+            HOTKEY_ID_TOGGLE,
+            HOT_KEY_MODIFIERS(modifiers),
+            u32::from(vk.0),
+        )
+        .context(format!("Failed to register toggle hotkey: {hotkey_str}"))?;
     }
+    log::info!("Toggle hotkey registered: {hotkey_str}");
+    Ok(HotKeyGuard(HOTKEY_ID_TOGGLE))
 }
 
 /// 手動アプリオーバーライドホットキー (Ctrl+Shift+F11) を登録する
-fn register_app_override_hotkey() -> Option<HotKeyGuard> {
+fn register_app_override_hotkey() -> Result<HotKeyGuard> {
     const MOD_CONTROL: u32 = 0x0002;
     const MOD_SHIFT: u32 = 0x0004;
     const VK_F11: u32 = 0x7A;
     // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
     unsafe {
-        let result = RegisterHotKey(
+        RegisterHotKey(
             None,
             HOTKEY_ID_FOCUS_OVERRIDE,
             HOT_KEY_MODIFIERS(MOD_CONTROL | MOD_SHIFT),
             VK_F11,
-        );
-        if result.is_ok() {
-            log::info!("Focus override hotkey registered: Ctrl+Shift+F11");
-            Some(HotKeyGuard(HOTKEY_ID_FOCUS_OVERRIDE))
-        } else {
-            log::warn!("Failed to register focus override hotkey: Ctrl+Shift+F11");
-            None
-        }
+        )
+        .context("Failed to register focus override hotkey: Ctrl+Shift+F11")?;
     }
+    log::info!("Focus override hotkey registered: Ctrl+Shift+F11");
+    Ok(HotKeyGuard(HOTKEY_ID_FOCUS_OVERRIDE))
 }
 
 /// セッション変更通知（画面ロック/アンロック）を登録する
-fn register_session_notification() -> Option<WtsGuard> {
+fn register_session_notification() -> Result<WtsGuard> {
     // SAFETY: APP is a SingleThreadCell; called from the main thread at startup before the message loop.
-    unsafe {
-        APP.get_ref().and_then(|app| {
-            let tray_hwnd = app.executor.platform.tray.hwnd();
-            if WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION).as_bool() {
-                log::info!("WTS session notification registered");
-                Some(WtsGuard(tray_hwnd))
-            } else {
-                log::warn!("Failed to register WTS session notification");
-                None
-            }
-        })
-    }
+    let tray_hwnd = unsafe {
+        APP.get_ref()
+            .context("APP not initialized")?
+            .executor
+            .platform
+            .tray
+            .hwnd()
+    };
+    let ok = unsafe { WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION).as_bool() };
+    anyhow::ensure!(ok, "WTSRegisterSessionNotification failed");
+    log::info!("WTS session notification registered");
+    Ok(WtsGuard(tray_hwnd))
 }
 
 /// APP グローバルの初期化（PlatformState を含む）
@@ -1683,11 +1674,11 @@ impl Drop for WinEventHookGuard {
     }
 }
 
-fn install_focus_hook() -> Option<WinEventHookGuard> {
+fn install_focus_hook() -> Result<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
     // SAFETY: SetWinEventHook with WINEVENT_OUTOFCONTEXT and a valid callback function pointer; 0 thread/process IDs means all processes.
-    unsafe {
-        let hook = SetWinEventHook(
+    let hook = unsafe {
+        SetWinEventHook(
             EVENT_OBJECT_FOCUS,
             EVENT_OBJECT_FOCUS,
             None,
@@ -1695,15 +1686,11 @@ fn install_focus_hook() -> Option<WinEventHookGuard> {
             0,
             0,
             WINEVENT_OUTOFCONTEXT,
-        );
-        if hook.is_invalid() {
-            log::warn!("Failed to install focus event hook");
-            None
-        } else {
-            log::info!("Focus event hook installed");
-            Some(WinEventHookGuard(hook))
-        }
-    }
+        )
+    };
+    anyhow::ensure!(!hook.is_invalid(), "Failed to install focus event hook");
+    log::info!("Focus event hook installed");
+    Ok(WinEventHookGuard(hook))
 }
 
 /// フォーカス変更イベントのコールバック（メッセージループ上で実行される）
@@ -1747,7 +1734,7 @@ unsafe extern "system" fn win_event_proc(
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
-fn install_ctrl_handler() {
+fn install_ctrl_handler() -> Result<()> {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
         use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
         QUIT_REQUESTED.store(true, Ordering::SeqCst);
@@ -1763,10 +1750,7 @@ fn install_ctrl_handler() {
 
     // SAFETY: handler is a valid extern "system" fn pointer; SetConsoleCtrlHandler is safe to call from the main thread.
     unsafe {
-        windows::Win32::System::Console::SetConsoleCtrlHandler(Some(handler), true).unwrap_or_else(
-            |e| {
-                log::warn!("Failed to set console ctrl handler: {e}");
-            },
-        );
+        windows::Win32::System::Console::SetConsoleCtrlHandler(Some(handler), true)?;
     }
+    Ok(())
 }
