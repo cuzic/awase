@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
 
 use anyhow::{bail, Context, Result};
 
@@ -47,7 +48,13 @@ impl std::fmt::Debug for YabFace {
             for col in 0..MAX_COLS {
                 let idx = row * MAX_COLS + col;
                 if let Some(ref val) = self.0[idx] {
-                    map.entry(&PhysicalPos::new(row as u8, col as u8), val);
+                    map.entry(
+                        &PhysicalPos::new(
+                            u8::try_from(row).expect("row < MAX_ROWS fits u8"),
+                            u8::try_from(col).expect("col < MAX_COLS fits u8"),
+                        ),
+                        val,
+                    );
                 }
             }
         }
@@ -111,7 +118,7 @@ impl YabFace {
     /// キーが一つも定義されていないか判定する。
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.iter().all(|slot| slot.is_none())
+        self.0.iter().all(|slot| Option::is_none(slot))
     }
 }
 
@@ -383,7 +390,7 @@ impl YabLayout {
         out.push('\n');
 
         for (name, face) in &sections {
-            out.push_str(&format!("[{name}]\n"));
+            let _ = write!(out, "[{name}]\n");
             out.push_str(&serialize_face(face, &row_sizes));
             out.push('\n');
         }
@@ -443,11 +450,13 @@ fn serialize_value(value: &YabValue) -> String {
 /// `YabFace` を .yab テキストの CSV 行に変換する。
 fn serialize_face(face: &YabFace, row_sizes: &[usize; 4]) -> String {
     let mut lines = Vec::new();
-    for row in 0..MAX_ROWS {
-        let cols = row_sizes[row];
+    for (row, &cols) in row_sizes.iter().enumerate() {
         let mut values = Vec::with_capacity(cols);
         for col in 0..cols {
-            let pos = PhysicalPos::new(row as u8, col as u8);
+            let pos = PhysicalPos::new(
+            u8::try_from(row).expect("row < MAX_ROWS fits u8"),
+            u8::try_from(col).expect("col < MAX_COLS fits u8"),
+        );
             match face.get(&pos) {
                 Some(val) => values.push(serialize_value(val)),
                 None => values.push("無".to_string()),

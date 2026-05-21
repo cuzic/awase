@@ -22,6 +22,12 @@ pub struct ImeCoordinator {
     guard: KeyBuffer,
 }
 
+impl Default for ImeCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ImeCoordinator {
     #[must_use]
     pub const fn new() -> Self {

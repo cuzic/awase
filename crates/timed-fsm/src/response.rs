@@ -36,7 +36,7 @@ pub struct Response<A, T> {
 /// Timer commands are part of the [`Response`] returned by state machine
 /// transitions. The runtime is responsible for translating these into
 /// actual platform timer operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimerCommand<T> {
     /// Start (or restart) a timer with the given ID and duration.
     ///

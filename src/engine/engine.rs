@@ -68,7 +68,7 @@ impl Engine {
 
     /// NICOLA 親指シフトキーの VK コードを設定する。
     /// IME ON/OFF コンボが親指キーと衝突しないように除外するために使用。
-    pub fn set_thumb_vks(&mut self, left: VkCode, right: VkCode) {
+    pub const fn set_thumb_vks(&mut self, left: VkCode, right: VkCode) {
         self.thumb_vks = (left, right);
     }
 
@@ -343,7 +343,7 @@ impl Engine {
             let old_active = self.compute_active(ctx);
             let (_, mut decision) = self.adapter.set_enabled(true);
             let new_active = self.compute_active(ctx);
-            log::info!("Engine user_enabled ON (key combo, active={})", new_active);
+            log::info!("Engine user_enabled ON (key combo, active={new_active})");
             self.apply_active_transition(old_active, new_active, &mut decision);
             return Some(decision);
         }
@@ -357,7 +357,7 @@ impl Engine {
             let old_active = self.compute_active(ctx);
             let (_, mut decision) = self.adapter.set_enabled(false);
             let new_active = self.compute_active(ctx);
-            log::info!("Engine user_enabled OFF (key combo, active={})", new_active);
+            log::info!("Engine user_enabled OFF (key combo, active={new_active})");
             self.apply_active_transition(old_active, new_active, &mut decision);
             return Some(decision);
         }

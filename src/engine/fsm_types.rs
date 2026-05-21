@@ -259,6 +259,7 @@ pub struct PendingKey {
 }
 
 impl PendingKey {
+    #[must_use]
     pub const fn from_event(ev: &ClassifiedEvent) -> Self {
         Self {
             scan_code: ev.scan_code,
@@ -280,6 +281,7 @@ pub struct PendingThumbData {
 }
 
 impl PendingThumbData {
+    #[must_use]
     pub const fn from_event(ev: &ClassifiedEvent) -> Self {
         Self {
             scan_code: ev.scan_code,

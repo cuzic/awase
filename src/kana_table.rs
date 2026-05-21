@@ -163,7 +163,7 @@ pub fn build_kana_to_romaji() -> HashMap<char, String> {
             .and_modify(|existing| {
                 // 短い方を優先（"ki" > "kya"、"hu" vs "fu" は先勝ち）
                 if romaji.len() < existing.len() {
-                    *existing = romaji.clone();
+                    existing.clone_from(romaji);
                 }
             })
             .or_insert_with(|| romaji.clone());

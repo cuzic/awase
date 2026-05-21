@@ -148,7 +148,7 @@ impl ActivationController {
     }
 
     /// テスト・初期化用に prev を直接設定する。
-    pub fn set(&mut self, state: ActivationState) {
+    pub const fn set(&mut self, state: ActivationState) {
         self.prev = state;
     }
 
@@ -198,7 +198,7 @@ pub enum Decision {
 
 impl Decision {
     #[must_use]
-    pub fn pass_through() -> Self {
+    pub const fn pass_through() -> Self {
         Self::PassThrough
     }
 

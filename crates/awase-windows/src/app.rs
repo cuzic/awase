@@ -93,6 +93,7 @@ impl StartupDiagnostics {
             log::info!("  - {w}");
         }
         // Show tray balloon if tray is available
+        // SAFETY: APP is a SingleThreadCell; report() is only called from the main thread at startup.
         unsafe {
             if let Some(app) = APP.get_mut() {
                 app.executor.platform.tray.show_balloon(
@@ -109,6 +110,8 @@ pub fn run() -> Result<()> {
     init_logging(debug_console);
 
     // 多重起動防止: Named Mutex で既存インスタンスをチェック
+    // SAFETY: CreateMutexW, FindWindowW, PostMessageW, CloseHandle are standard Win32 calls with
+    // valid string literals and handles obtained from the OS; error paths are all handled.
     unsafe {
         use windows::core::{w, PCWSTR};
         use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
@@ -217,6 +220,7 @@ pub fn run() -> Result<()> {
 
     log::info!("Hook installed. Running message loop...");
     MAIN_THREAD_ID.store(
+        // SAFETY: GetCurrentThreadId always succeeds and has no preconditions.
         unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
         Ordering::SeqCst,
     );
@@ -225,6 +229,7 @@ pub fn run() -> Result<()> {
     let _obs_hook_guards = awase_windows::tsf::observer::install_observation_hooks();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
+    // SAFETY: APP is a SingleThreadCell; this runs on the main thread before the message loop.
     unsafe {
         if let Some(app) = APP.get_mut() {
             app.schedule_ime_refresh(u64::from(app.platform_state.ime_poll_interval_ms));
@@ -240,6 +245,7 @@ pub fn run() -> Result<()> {
 
     // GJI I/O モニタースレッドを起動（TSF cold-start 静止検出に使用）
     awase_windows::tsf::observer::start_monitor_thread();
+    // SAFETY: APP is a SingleThreadCell; this runs on the main thread before the message loop.
     unsafe {
         if let Some(app) = APP.get_mut() {
             app.executor.platform.focus.set_uia_sender(uia_tx);
@@ -250,6 +256,7 @@ pub fn run() -> Result<()> {
     initialize_ime_cache();
 
     // Explorer 再起動時にトレイアイコンを復元するため TaskbarCreated メッセージを登録
+    // SAFETY: RegisterWindowMessageW with a valid wide string literal; returns 0 on failure which is handled by treating msg as 0.
     let taskbar_created_msg =
         unsafe { RegisterWindowMessageW(windows::core::w!("TaskbarCreated")) };
 
@@ -277,6 +284,7 @@ fn init_logging(debug_console: bool) {
     if debug_console {
         // #![windows_subsystem = "windows"] だとコンソールウィンドウがないため、
         // 親プロセス（WezTerm / PowerShell 等）のコンソールにアタッチして stderr を有効にする。
+        // SAFETY: AttachConsole is a standard Win32 API; ATTACH_PARENT_PROCESS is the documented sentinel value.
         unsafe {
             use windows::Win32::System::Console::AttachConsole;
             const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
@@ -519,6 +527,7 @@ fn check_keyboard_layout_on_change() {
             );
         }
         // バルーン通知で警告
+        // SAFETY: APP is a SingleThreadCell; called from the message loop on the main thread.
         unsafe {
             if let Some(app) = APP.get_mut() {
                 app.executor.platform.tray.show_balloon(
@@ -543,6 +552,7 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
     match NgramModel::from_file(&ngram_path, base_us, range_us, min_us, max_us) {
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
+            // SAFETY: APP is a SingleThreadCell; called from the main thread at startup or reload.
             unsafe {
                 if let Some(app) = APP.get_mut() {
                     app.engine
@@ -572,6 +582,7 @@ fn install_hooks_and_hotkeys_validated(
     config: &ValidatedConfig,
 ) -> Result<(hook::HookGuard, Option<HotKeyGuard>, Option<HotKeyGuard>)> {
     let callback = Box::new(|event: RawKeyEvent| -> CallbackResult {
+        // SAFETY: on_key_event_callback accesses APP via SingleThreadCell; hook callbacks run on the main thread.
         unsafe { on_key_event_callback(event) }
     });
     let guard = hook::install_hook(callback).context("Failed to install keyboard hook")?;
@@ -590,6 +601,7 @@ struct WtsGuard(HWND);
 
 impl Drop for WtsGuard {
     fn drop(&mut self) {
+        // SAFETY: self.0 is the HWND passed to WTSRegisterSessionNotification; still valid at drop time.
         unsafe {
             let _ = WTSUnRegisterSessionNotification(self.0);
         }
@@ -604,6 +616,7 @@ struct HotKeyGuard(i32);
 
 impl Drop for HotKeyGuard {
     fn drop(&mut self) {
+        // SAFETY: self.0 is the hotkey ID registered with RegisterHotKey; None hwnd targets this thread.
         unsafe {
             let _ = UnregisterHotKey(None, self.0);
         }
@@ -614,6 +627,7 @@ impl Drop for HotKeyGuard {
 /// トグルホットキーを登録する
 fn register_toggle_hotkey(hotkey_str: &str) -> Option<HotKeyGuard> {
     if let Some((modifiers, vk)) = awase_windows::vk::parse_hotkey(hotkey_str) {
+        // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
         unsafe {
             let result = RegisterHotKey(
                 None,
@@ -640,6 +654,7 @@ fn register_app_override_hotkey() -> Option<HotKeyGuard> {
     const MOD_CONTROL: u32 = 0x0002;
     const MOD_SHIFT: u32 = 0x0004;
     const VK_F11: u32 = 0x7A;
+    // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
     unsafe {
         let result = RegisterHotKey(
             None,
@@ -659,6 +674,7 @@ fn register_app_override_hotkey() -> Option<HotKeyGuard> {
 
 /// セッション変更通知（画面ロック/アンロック）を登録する
 fn register_session_notification() -> Option<WtsGuard> {
+    // SAFETY: APP is a SingleThreadCell; called from the main thread at startup before the message loop.
     unsafe {
         APP.get_ref().and_then(|app| {
             let tray_hwnd = app.executor.platform.tray.hwnd();
@@ -690,6 +706,8 @@ fn initialize_app(
     ps.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(&mut ps.hook_config, left_thumb_vk, right_thumb_vk);
 
+    // SAFETY: APP.set() and RAPID_IME_TIMESTAMPS.set() are called once on the main thread before
+    // the message loop starts; SingleThreadCell guarantees exclusive access.
     unsafe {
         APP.set(Runtime {
             engine,
@@ -714,6 +732,7 @@ fn initialize_app(
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
 fn initialize_ime_cache() {
+    // SAFETY: APP is a SingleThreadCell; called from the main thread at startup before the message loop.
     unsafe {
         if let Some(app) = APP.get_mut() {
             app.refresh_ime_state_cache();
@@ -723,6 +742,7 @@ fn initialize_ime_cache() {
 
 /// クリーンアップ処理（フック解除は HookGuard の Drop で行われる）
 fn cleanup() {
+    // SAFETY: APP is a SingleThreadCell; cleanup() is called from the main thread after the message loop exits.
     unsafe {
         APP.clear();
     }
@@ -830,6 +850,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         let probe_age_ms = hook::current_tick_ms()
             .saturating_sub(app.platform_state.last_focus_change_ms);
 
+        // SAFETY: fast_ime_probe uses IMM32/Win32 APIs that are safe to call from the message-loop thread.
         let probe = unsafe { ime::fast_ime_probe() };
         app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
 
@@ -1022,6 +1043,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
         && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
     {
         let now = hook::current_tick_ms();
+        // SAFETY: RAPID_IME_TIMESTAMPS is a SingleThreadCell; the hook callback runs on the main thread.
         unsafe {
             if let Some(tracker) = RAPID_IME_TIMESTAMPS.get_mut() {
                 if tracker.push(now) {
@@ -1073,6 +1095,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
     // キューに Effects があれば、メッセージループに実行を委譲する
     if hook_result.has_pending {
+        // SAFETY: PostMessageW with None HWND posts to the calling thread's message queue; always safe.
         unsafe {
             use windows::Win32::Foundation::{LPARAM, WPARAM};
             use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
@@ -1089,12 +1112,14 @@ fn run_message_loop(taskbar_created_msg: u32) {
     let mut msg = MSG::default();
 
     loop {
+        // SAFETY: msg is a valid MSG on the stack; None HWND retrieves messages for the calling thread.
         let ret = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
         if ret.0 <= 0 {
             break; // WM_QUIT or エラー
         }
 
         match msg.message {
+            // SAFETY: All message-loop arms access APP via SingleThreadCell; the message loop runs on the main thread.
             WM_TIMER => unsafe {
                 let Some(app) = APP.get_mut() else { continue };
                 let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
@@ -1169,21 +1194,25 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     None => {
                         // 未知のタイマー → win32-async や外部 HWND タイマーかもしれないので dispatch
                         // （null-HWND + TIMERPROC の WM_TIMER は DispatchMessageW 経由でコールバックが呼ばれる）
+                        // SAFETY: msg was filled by GetMessageW and is valid for the calling thread.
                         DispatchMessageW(&raw const msg);
                     }
                 }
             },
             WM_EXECUTE_EFFECTS => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 if let Some(app) = APP.get_mut() {
                     app.executor.drain_deferred();
                 }
             },
             WM_PANIC_RESET => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 if let Some(app) = APP.get_mut() {
                     app.panic_reset();
                 }
             },
             WM_DUPLICATE_INSTANCE => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 log::info!("Duplicate instance notification received");
                 if let Some(app) = APP.get_mut() {
                     app.executor
@@ -1193,6 +1222,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_IME_KEY_DETECTED => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 // TSF CompartmentEventSink または IME 制御キーからの通知。
                 // IME ガード中は deferred keys を処理し、
                 // それ以外は IME 状態を即座にリフレッシュする。
@@ -1207,6 +1237,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_POWERBROADCAST => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 // スリープ復帰時に全状態をリフレッシュする。
                 // PBT_APMRESUMEAUTOMATIC (0x12) / PBT_APMRESUMESUSPEND (0x07)
                 //
@@ -1230,6 +1261,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_WTSSESSION_CHANGE => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 let session_event = msg.wParam.0 as u32;
                 match session_event {
                     WTS_SESSION_LOCK => {
@@ -1255,6 +1287,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_INPUTLANGCHANGE => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 // 入力言語が変更された（Win+Space 等）→ 保留をフラッシュ
                 // 言語切替直後は IME 状態が未反映の可能性があるため、
                 // 後続キーをメッセージループに回して確実に更新後に処理する。
@@ -1267,6 +1300,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 check_keyboard_layout_on_change();
             },
             WM_PROCESS_DEFERRED => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 // IME 制御キー後の遅延キーを再処理する。
                 // この時点で IME 状態は確実に更新済み。
                 if let Some(app) = APP.get_mut() {
@@ -1274,6 +1308,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_FOCUS_KIND_UPDATE => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 // UIA 非同期判定完了 → メッセージから結果を取得
                 // wParam: 下位 8 bit = FocusKind, 次の 8 bit = AppKind (0xFF = なし)
                 let kind_u8 = msg.wParam.0 as u8;
@@ -1319,16 +1354,19 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 if let Some(app) = APP.get_mut() {
                     app.toggle_engine();
                 }
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 if let Some(app) = APP.get_mut() {
                     app.toggle_app_override();
                 }
             },
             WM_APP => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 log::debug!("WM_APP received: hwnd={:?} lparam=0x{:016X}", msg.hwnd, msg.lParam.0);
                 let layout_names: Vec<String> = APP
                     .get_ref()
@@ -1346,6 +1384,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 reload_config();
             }
             WM_COMMAND => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 if let Some(cmd) = tray::handle_tray_command(msg.wParam) {
                     if cmd == tray::cmd_settings() {
                         launch_settings();
@@ -1366,6 +1405,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             WM_DRAIN_OUTPUT_QUEUE => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 // OUTPUT_ACTIVE 中に退避されたキーを NICOLA へ再配送する。
                 // TSF 注入バッチが送信された後のメッセージループで処理されるため、
                 // WezTerm への到着順が保証される（物理キーがバッチより先に届かない）。
@@ -1400,12 +1440,14 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 }
             },
             m if m == taskbar_created_msg && taskbar_created_msg != 0 => unsafe {
+                // SAFETY: APP is a SingleThreadCell; message loop runs on the main thread.
                 log::info!("Explorer restarted, re-registering tray icon");
                 if let Some(app) = APP.get_mut() {
                     app.executor.platform.tray.recreate();
                 }
             },
             _ => unsafe {
+                // SAFETY: msg was filled by GetMessageW and is valid for the calling thread.
                 DispatchMessageW(&raw const msg);
             },
         }
@@ -1454,7 +1496,7 @@ fn reload_config() {
         log::warn!("config: {w}");
     }
 
-    // Safety: メインスレッドのメッセージループ上でのみ呼ばれる
+    // SAFETY: APP is a SingleThreadCell; reload_config is only called from the main message-loop thread.
     unsafe {
         if let Some(app) = APP.get_mut() {
             app.engine
@@ -1491,6 +1533,7 @@ fn reload_config() {
         let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
         let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
         let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
+        // SAFETY: APP is a SingleThreadCell; called from the main message-loop thread.
         unsafe {
             if let Some(app) = APP.get_mut() {
                 // Update Runtime's sync keys for event enrichment
@@ -1513,6 +1556,7 @@ fn reload_config() {
     }
 
     // アプリオーバーライド再読み込み + キャッシュクリア
+    // SAFETY: APP is a SingleThreadCell; called from the main message-loop thread.
     unsafe {
         if let Some(app) = APP.get_mut() {
             app.executor.platform.focus.overrides = config.app_overrides;
@@ -1631,6 +1675,7 @@ struct WinEventHookGuard(windows::Win32::UI::Accessibility::HWINEVENTHOOK);
 
 impl Drop for WinEventHookGuard {
     fn drop(&mut self) {
+        // SAFETY: self.0 is a valid HWINEVENTHOOK handle obtained from SetWinEventHook; drop is called once.
         unsafe {
             let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(self.0);
         }
@@ -1640,6 +1685,7 @@ impl Drop for WinEventHookGuard {
 
 fn install_focus_hook() -> Option<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
+    // SAFETY: SetWinEventHook with WINEVENT_OUTOFCONTEXT and a valid callback function pointer; 0 thread/process IDs means all processes.
     unsafe {
         let hook = SetWinEventHook(
             EVENT_OBJECT_FOCUS,
@@ -1715,6 +1761,7 @@ fn install_ctrl_handler() {
         windows::core::BOOL(1) // TRUE = handled
     }
 
+    // SAFETY: handler is a valid extern "system" fn pointer; SetConsoleCtrlHandler is safe to call from the main thread.
     unsafe {
         windows::Win32::System::Console::SetConsoleCtrlHandler(Some(handler), true).unwrap_or_else(
             |e| {

@@ -130,6 +130,7 @@ fn fmt_ms(ms: u64) -> String {
 ///   3. AppKind::TsfNative → Vk
 ///   4. それ以外 (Win32 / Uwp) → Unicode
 fn resolve_injection_mode() -> InjectionMode {
+    // SAFETY: APP is a SingleThreadCell accessed only from the main message-loop thread.
     unsafe {
         let Some(app) = crate::APP.get_ref() else {
             return InjectionMode::Unicode;
@@ -435,6 +436,7 @@ impl Output {
             make_tsf_key_input(VK_DBE_HIRAGANA, false),
             make_tsf_key_input(VK_DBE_HIRAGANA, true),
         ];
+        // SAFETY: warmup_inputs is a valid slice of INPUT structs for the duration of the call.
         unsafe {
             SendInput(
                 &warmup_inputs,
@@ -467,6 +469,7 @@ impl Output {
     /// アイドル判定を通過してしまう。送信直後に同期更新することで
     /// アイドルタイマーが正しくリセットされる。
     fn mark_vk_output() {
+        // SAFETY: APP is a SingleThreadCell; this is only called from the main message-loop thread.
         unsafe {
             if let Some(app) = crate::APP.get_mut() {
                 app.platform_state.last_hook_activity_ms = crate::hook::current_tick_ms();
@@ -550,6 +553,7 @@ impl Output {
     #[allow(clippy::unused_self)]
     fn send_key(&self, vk: u16, is_keyup: bool) {
         let input = make_key_input(vk, is_keyup);
+        // SAFETY: &[input] is a valid single-element slice for the duration of the call.
         unsafe {
             SendInput(
                 &[input],
@@ -591,6 +595,7 @@ impl Output {
                 },
             });
         }
+        // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
         unsafe {
             SendInput(
                 &inputs,
@@ -617,6 +622,7 @@ impl Output {
                 if needs_shift {
                     inputs.push(make_key_input(VK_LSHIFT, true));
                 }
+                // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
                 unsafe {
                     SendInput(
                         &inputs,
@@ -669,6 +675,7 @@ impl Output {
             } else {
                 log::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
             }
+            // SAFETY: IMM32 API; uses the foreground thread's IME context, valid during message loop.
             let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
@@ -677,11 +684,13 @@ impl Output {
                 conv_pre.map_or(false, |v| v & 0x0010 != 0),
                 conv_pre.map_or(false, |v| v & 0x0002 != 0),
             );
+            // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
             // IMM32 経由で同期的にローマ字モードへ切り替え。
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
             let cold_n = self.composition.increment_cold_start_count();
 
+            // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
@@ -692,6 +701,7 @@ impl Output {
             // SendMessageTimeout は return 後に Chrome が WM_KEYDOWN を処理済みであることを保証する。
             log::debug!("[h1-run] cold={cold_n} F2 via SendMessageTimeout");
             let f2_sent_ms = crate::hook::current_tick_ms();
+            // SAFETY: sends WM_KEYDOWN/WM_KEYUP to the foreground window via SendMessageTimeout; HWND validity checked internally.
             let f2_ok = unsafe { crate::ime::send_f2_via_sendmessage() };
             log::debug!("[h1-run] cold={cold_n} F2 SendMessageTimeout delivered={f2_ok}");
 
@@ -727,6 +737,7 @@ impl Output {
                 inputs.push(make_key_input(VK_LSHIFT, true));
             }
         }
+        // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
         unsafe {
             SendInput(
                 &inputs,
@@ -812,6 +823,7 @@ impl Output {
             log::debug!("[tsf-warmup] cold → F2-only先行バッチ (案A)");
         }
         // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
+        // SAFETY: IMM32 API; uses the foreground thread's IME context, valid during message loop.
         let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
         log::debug!(
             "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
@@ -820,11 +832,13 @@ impl Output {
             conv_pre.map_or(false, |v| v & 0x0010 != 0),
             conv_pre.map_or(false, |v| v & 0x0002 != 0),
         );
+        // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
         // IMM32 経由で同期的にローマ字モードへ切り替え。
         unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
         let cold_n = self.composition.increment_cold_start_count();
 
+        // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
         let win_class = unsafe { crate::ime::get_foreground_window_class() };
         log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
@@ -897,6 +911,7 @@ impl Output {
                         make_tsf_key_input(VK_DBE_HIRAGANA, false),
                         make_tsf_key_input(VK_DBE_HIRAGANA, true),
                     ];
+                    // SAFETY: refresh_inputs is a valid array of INPUT structs for the duration of the call.
                     unsafe {
                         SendInput(
                             &refresh_inputs,
@@ -930,6 +945,7 @@ impl Output {
                         make_tsf_key_input(VK_DBE_HIRAGANA, true),
                     ];
                     let fresh_f2_ms = crate::hook::current_tick_ms();
+                    // SAFETY: refresh_inputs is a valid array of INPUT structs for the duration of the call.
                     unsafe {
                         SendInput(
                             &refresh_inputs,
@@ -1000,6 +1016,7 @@ impl Output {
                         make_tsf_key_input(VK_DBE_HIRAGANA, true),
                     ];
                     let fresh_f2_ms = crate::hook::current_tick_ms();
+                    // SAFETY: refresh_inputs is a valid array of INPUT structs for the duration of the call.
                     unsafe {
                         SendInput(
                             &refresh_inputs,
@@ -1039,6 +1056,7 @@ impl Output {
                 make_tsf_key_input(VK_DBE_HIRAGANA, true),
             ];
             let t_pre = crate::hook::current_tick_ms();
+            // SAFETY: ime_on_probe is a valid array of INPUT structs for the duration of the call.
             unsafe {
                 SendInput(
                     &ime_on_probe,
@@ -1103,6 +1121,7 @@ impl Output {
                     inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
                 }
             }
+            // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
             unsafe {
                 SendInput(
                     &inputs,
@@ -1151,6 +1170,7 @@ impl Output {
                 if needs_shift {
                     inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
                 }
+                // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
                 unsafe {
                     SendInput(
                         &inputs,
@@ -1206,6 +1226,7 @@ impl Output {
                 if needs_shift {
                     inputs.push(make_key_input(VK_LSHIFT, true));
                 }
+                // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
                 unsafe {
                     SendInput(
                         &inputs,
@@ -1263,6 +1284,7 @@ impl<'a> TsfSendPipeline<'a> {
         {
             let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            // SAFETY: IMM32 API; uses the foreground thread's IME context, valid during message loop.
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
                 "[h1-send] cold={} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
@@ -1331,6 +1353,7 @@ impl<'a> TsfSendPipeline<'a> {
                     },
                 });
             }
+            // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
             unsafe {
                 SendInput(
                     &inputs,

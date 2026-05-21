@@ -668,7 +668,7 @@ impl NicolaFsm {
     /// `RetractAndRecord` を使うことで、retract と record を `update_history()` で
     /// アトミックに処理し、この関数を副作用のない純粋な構築関数にする。
     fn retract_and_replace(
-        &mut self,
+        &self,
         pending: PendingKey,
         new_action: &KeyAction,
         kana: Option<char>,
@@ -1275,7 +1275,7 @@ impl NicolaFsm {
         };
         let has_output = |face: &YabFace| {
             face.get(&pos)
-                .map_or(false, |v| !matches!(v, YabValue::None))
+                .is_some_and(|v| !matches!(v, YabValue::None))
         };
         has_output(self.get_face(Face::Normal))
             || has_output(self.get_face(Face::LeftThumb))
