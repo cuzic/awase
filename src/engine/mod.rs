@@ -13,7 +13,6 @@ pub mod ime_coordinator;
 pub mod input_tracker;
 pub mod key_lifecycle;
 mod nicola_fsm;
-pub mod observation;
 pub mod output_history;
 pub mod timing;
 

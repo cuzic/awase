@@ -171,6 +171,15 @@ fn is_all_fullwidth_ascii(s: &str) -> bool {
             .all(|ch| (0xFF01..=0xFF5E).contains(&u32::from(ch)))
 }
 
+/// 特殊キーワードと対応する `SpecialKey` のテーブル
+const SPECIAL_KEYWORDS: &[(&str, SpecialKey)] = &[
+    ("後", SpecialKey::Backspace),
+    ("逃", SpecialKey::Escape),
+    ("入", SpecialKey::Enter),
+    ("空", SpecialKey::Space),
+    ("消", SpecialKey::Delete),
+];
+
 /// 単一の CSV 値をパースして `YabValue` に変換する。
 fn parse_value(raw: &str) -> YabValue {
     let trimmed = raw.trim();
@@ -179,14 +188,9 @@ fn parse_value(raw: &str) -> YabValue {
         return YabValue::None;
     }
 
-    // 特殊キーワード
-    match trimmed {
-        "後" => return YabValue::Special(SpecialKey::Backspace),
-        "逃" => return YabValue::Special(SpecialKey::Escape),
-        "入" => return YabValue::Special(SpecialKey::Enter),
-        "空" => return YabValue::Special(SpecialKey::Space),
-        "消" => return YabValue::Special(SpecialKey::Delete),
-        _ => {}
+    // 特殊キーワードをテーブルルックアップで処理
+    if let Some((_, sk)) = SPECIAL_KEYWORDS.iter().find(|(k, _)| *k == trimmed) {
+        return YabValue::Special(*sk);
     }
 
     // シングルクォートで囲まれたリテラル（例: '．'）
