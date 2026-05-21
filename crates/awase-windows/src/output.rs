@@ -675,10 +675,9 @@ impl Output {
 
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
-        const COMPOSITION_TIMEOUT_MS: u64 = 2000;
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
-        let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
+        let session_expired = warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
             "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
@@ -799,10 +798,9 @@ impl Output {
     fn ensure_tsf_warm(&self) -> WarmupOutcome {
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
-        const COMPOSITION_TIMEOUT_MS: u64 = 2000;
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
-        let session_expired = warm && elapsed < u64::MAX && elapsed > COMPOSITION_TIMEOUT_MS;
+        let session_expired = warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
             "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
@@ -1135,9 +1133,8 @@ impl<'a> TsfSendPipeline<'a> {
             return;
         }
 
-        const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
         let t_send = crate::hook::current_tick_ms();
-        let detection = detector.detect(RAW_TSF_LITERAL_DETECT_MS);
+        let detection = detector.detect(crate::timing::RAW_TSF_LITERAL_DETECT_MS);
         let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
 
         match detection {

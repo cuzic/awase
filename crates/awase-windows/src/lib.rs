@@ -30,6 +30,7 @@ pub mod platform;
 pub mod runtime;
 pub mod scanmap;
 pub(crate) mod state;
+pub(crate) mod timing;
 pub mod timer;
 pub mod tray;
 pub mod tsf;
