@@ -1,7 +1,7 @@
 use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
-use super::preconditions::{Preconditions, ShadowSource};
+use super::preconditions::{ImeForceOnGuard, Preconditions, ShadowSource};
 use super::hook_state::{HookRoutingState, HookConfig, ImeGuardState};
 
 /// Platform 層の全状態を集約する構造体。
@@ -54,7 +54,7 @@ impl PlatformState {
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: None,
                 ime_detect_miss_count: 0,
-                ime_force_on_guard: false,
+                ime_force_on_guard: ImeForceOnGuard::Inactive,
             },
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],

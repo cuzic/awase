@@ -9,7 +9,7 @@
 //! `None` を「偽」として扱ってはならない。
 
 use awase::engine::InputModeState;
-use crate::{Preconditions, ime_observations::{ImeObs, ImeObservations}};
+use crate::{ImeForceOnGuard, Preconditions, ime_observations::{ImeObs, ImeObservations}};
 
 /// IME_CMODE_ROMAN ビット（0x0010）
 const IME_CMODE_ROMAN: u32 = 0x0010;
@@ -60,13 +60,13 @@ pub unsafe fn observe(preconditions: &mut Preconditions, observations: &mut ImeO
         // resolve_and_clear() が `value && is_japanese_ime` を適用するので false のまま。
         observations.observer_poll = Some(ImeObs { value: false, ms: now_ms });
         preconditions.ime_detect_miss_count = 0;
-        preconditions.ime_force_on_guard = false;
+        preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
     } else if let Some(on) = snap.ime_on {
         // IME 状態検出成功: 生の on 値を記録。
         // `&& is_japanese_ime` は resolve_and_clear() 側で適用する。
         observations.observer_poll = Some(ImeObs { value: on, ms: now_ms });
         preconditions.ime_detect_miss_count = 0;
-        preconditions.ime_force_on_guard = false;
+        preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
     } else if snap.is_tsf_native {
         // TSF ネイティブウィンドウ（Windows Terminal 等）: IMM32 を使わないため常に None。
         // これは一時的失敗ではなく「このウィンドウでは検出不能」という確定情報。
@@ -77,7 +77,7 @@ pub unsafe fn observe(preconditions: &mut Preconditions, observations: &mut ImeO
             "IME detection skipped (TSF-native window), preserving ime_on={}",
             preconditions.ime_on
         );
-    } else if preconditions.ime_force_on_guard {
+    } else if preconditions.ime_force_on_guard.is_active() {
         // 検出失敗かつガード中: awase が SSOT なので ime_on を変更しない。
         // miss_count もインクリメントしない（ガードが解除されるまで force-ON は再発火しない）。
         log::debug!(
@@ -100,7 +100,7 @@ pub unsafe fn observe(preconditions: &mut Preconditions, observations: &mut ImeO
 
     // ── is_romaji ─────────────────────────────────────────────────────────────────
     // ガード中は変更しない（awase が SSOT）
-    if preconditions.ime_force_on_guard && snap.is_romaji.is_none() {
+    if preconditions.ime_force_on_guard.is_active() && snap.is_romaji.is_none() {
         // ガード中かつ検出失敗: is_romaji を維持
     } else if let Some(romaji) = snap.is_romaji {
         let prev = preconditions.input_mode.is_romaji_capable();
@@ -159,6 +159,6 @@ pub unsafe fn observe(preconditions: &mut Preconditions, observations: &mut ImeO
         snap.ime_on,
         snap.is_romaji,
         snap.conversion_mode.map(|v| format!("0x{v:08X}")),
-        preconditions.ime_force_on_guard,
+        preconditions.ime_force_on_guard.is_active(),
     );
 }

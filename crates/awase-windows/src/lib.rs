@@ -45,8 +45,8 @@ use std::sync::atomic::AtomicBool;
 use awase::types::RawKeyEvent;
 
 pub use crate::state::{
-    HookConfig, HookRoutingState, ImeGuardState, IME_DETECT_MISS_THRESHOLD, Preconditions,
-    PlatformState, ShadowSource,
+    HookConfig, HookRoutingState, ImeForceOnGuard, ImeGuardState, IME_DETECT_MISS_THRESHOLD,
+    Preconditions, PlatformState, ShadowSource,
 };
 
 pub use crate::tsf::probe_bridge::{
