@@ -122,40 +122,67 @@ fn fmt_ms(ms: u64) -> String {
 
 
 
-/// 現在のフォーカス先から出力注入モードを決定する。
+/// `resolve_injection_mode_from` に渡すコンテキスト。
+///
+/// APP グローバルから必要なフィールドだけを切り出すことで、
+/// ロジック部（`resolve_injection_mode_from`）を純粋関数としてテスト可能にする。
+pub(crate) struct InjectionModeContext<'a> {
+    /// 直前のフォーカス情報 (process_id, window_class)。未取得なら None。
+    pub focus_info: Option<(u32, &'a str)>,
+    /// config の app_overrides（force_tsf / force_vk / force_text / force_bypass）
+    pub overrides: &'a awase::config::AppOverrides,
+    /// 現在フォーカス中のアプリの種別（TSF ネイティブかどうか）
+    pub app_kind: AppKind,
+}
+
+/// `InjectionModeContext` から注入モードを決定する純粋関数。
+///
+/// APP グローバルへの直アクセスを持たないため、ユニットテストで直接呼び出せる。
 ///
 /// 優先順位:
 ///   1. config の `app_overrides.force_tsf` にマッチ → Tsf
 ///   2. config の `app_overrides.force_vk` にマッチ → Vk
 ///   3. AppKind::TsfNative → Vk
 ///   4. それ以外 (Win32 / Uwp) → Unicode
+fn resolve_injection_mode_from(ctx: &InjectionModeContext<'_>) -> InjectionMode {
+    if let Some((pid, class)) = ctx.focus_info {
+        if crate::runtime::is_force_tsf(ctx.overrides, pid, class) {
+            return InjectionMode::Tsf;
+        }
+        if crate::runtime::is_force_vk(ctx.overrides, pid, class) {
+            return InjectionMode::Vk;
+        }
+    }
+    if ctx.app_kind == AppKind::TsfNative {
+        InjectionMode::Vk
+    } else {
+        InjectionMode::Unicode
+    }
+}
+
+/// APP グローバルから `InjectionModeContext` を構築して注入モードを返す薄いシム。
+///
+/// APP への直アクセスはこの関数にのみ集約する。ロジック本体は
+/// `resolve_injection_mode_from` を参照のこと。
 fn resolve_injection_mode() -> InjectionMode {
     // SAFETY: APP is a SingleThreadCell accessed only from the main message-loop thread.
     unsafe {
         let Some(app) = crate::APP.get_ref() else {
             return InjectionMode::Unicode;
         };
-        if let Some((pid, class)) = app.executor.platform.focus.last_focus_info.as_ref() {
-            if crate::runtime::is_force_tsf(
-                &app.executor.platform.focus.overrides,
-                *pid,
-                class,
-            ) {
-                return InjectionMode::Tsf;
-            }
-            if crate::runtime::is_force_vk(
-                &app.executor.platform.focus.overrides,
-                *pid,
-                class,
-            ) {
-                return InjectionMode::Vk;
-            }
-        }
-        if app.platform_state.app_kind == AppKind::TsfNative {
-            InjectionMode::Vk
-        } else {
-            InjectionMode::Unicode
-        }
+        let focus_info = app
+            .executor
+            .platform
+            .focus
+            .last_focus_info
+            .as_ref()
+            .map(|(pid, class)| (*pid, class.as_str()));
+        let ctx = InjectionModeContext {
+            focus_info,
+            overrides: &app.executor.platform.focus.overrides,
+            app_kind: app.platform_state.app_kind,
+        };
+        resolve_injection_mode_from(&ctx)
     }
 }
 
