@@ -130,7 +130,7 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
     TABLE.get_or_init(awase::kana_table::build_romaji_to_kana).get(romaji).copied()
 }
 
-/// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。
+/// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。
 ///
 /// `RAW_TSF_LITERAL.backs` に退避されたバックスペース数を読み取り、SendInput で送信する。
 /// drain キーの SendInput より先に呼ぶことで WezTerm への到着順を保証する。

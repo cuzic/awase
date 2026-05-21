@@ -202,16 +202,11 @@ impl DecisionExecutor {
                 }
 
                 let in_flight_ms = self.platform.output.ms_since_last_send();
-                // PROBE_ACTIVE=true の間は TSF cold-start probe が block_on でメッセージループを
-                // ポンプしている。この間に passthrough キーを直接 OS に通すと TSF 送信バッチより
-                // 先に WezTerm に届き順序逆転（例: "ちょう" → "ちうょ"）が起きる。
-                // output_in_flight と同様に deferred キューに退避して probe 完了後に reinject する。
-                let probe_active = crate::PROBE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
-                let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS || probe_active;
+                let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
                 let has_pending = self.has_pending();
 
                 log::debug!(
-                    "[relay-guard] vk={:#04x} {} in_flight_ms={} probe_active={probe_active} has_pending={} output_in_flight={}",
+                    "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
                     raw_event.vk_code.0,
                     if is_key_down { "down" } else { "up" },
                     if in_flight_ms == u64::MAX { "never".to_string() } else { in_flight_ms.to_string() },
@@ -222,9 +217,7 @@ impl DecisionExecutor {
                 if has_pending || output_in_flight {
                     // pending effects または output in-flight 中の passthrough は
                     // Consume + reinject 経由で順序保証する。
-                    let reason = if probe_active && !has_pending {
-                        format!("probe active ({in_flight_ms}ms since last send)")
-                    } else if output_in_flight && !has_pending {
+                    let reason = if output_in_flight && !has_pending {
                         format!("output in-flight ({in_flight_ms}ms ago)")
                     } else if has_pending && output_in_flight {
                         format!("pending effects + output in-flight ({in_flight_ms}ms)")

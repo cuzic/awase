@@ -35,7 +35,7 @@ use awase_windows::tray::SystemTray;
 use awase_windows::{
     LayoutEntry,
     Runtime, ShadowSource, APP, ELEVATED, MAIN_THREAD_ID, QUIT_REQUESTED,
-    TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_DRAIN_PROBE_QUEUE,
+    TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_DRAIN_OUTPUT_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
     WM_RELOAD_CONFIG,
@@ -791,12 +791,12 @@ impl RapidPressTracker {
 /// `APP.get_mut()` はシングルスレッド保証下でのみ安全。
 /// フックコールバックはメインスレッドで呼ばれるため OK。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    // PROBE_ACTIVE=true の間は APP.get_mut() が aliasing になるため直接処理できない。
-    // キーを Consumed にして PROBE_KEY_QUEUE へ退避し、プローブ終了後に NICOLA へ再配送する。
+    // OUTPUT_ACTIVE=true の間は APP.get_mut() が aliasing になるため直接処理できない。
+    // キーを Consumed にして OUTPUT_PENDING_QUEUE へ退避し、出力セッション終了後に NICOLA へ再配送する。
     // PassThrough にすると物理キーが TSF 注入バッチより先に WezTerm に届いて順序逆転が起きる。
-    if awase_windows::PROBE_ACTIVE.load(Ordering::Relaxed) {
-        log::debug!("[probe-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
-        if let Ok(mut q) = awase_windows::PROBE_KEY_QUEUE.lock() {
+    if awase_windows::OUTPUT_ACTIVE.load(Ordering::Relaxed) {
+        log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
+        if let Ok(mut q) = awase_windows::OUTPUT_PENDING_QUEUE.lock() {
             q.push(event);
         }
         return CallbackResult::Consumed;
@@ -1365,8 +1365,8 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     }
                 }
             },
-            WM_DRAIN_PROBE_QUEUE => unsafe {
-                // PROBE_ACTIVE 中に退避されたキーを NICOLA へ再配送する。
+            WM_DRAIN_OUTPUT_QUEUE => unsafe {
+                // OUTPUT_ACTIVE 中に退避されたキーを NICOLA へ再配送する。
                 // TSF 注入バッチが送信された後のメッセージループで処理されるため、
                 // WezTerm への到着順が保証される（物理キーがバッチより先に届かない）。
 
@@ -1377,7 +1377,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // drain: 先行入力キーを再配送（例 'のじじょう'）
 
                 let queue = {
-                    let mut q = awase_windows::PROBE_KEY_QUEUE
+                    let mut q = awase_windows::OUTPUT_PENDING_QUEUE
                         .lock()
                         .unwrap_or_else(|e| e.into_inner());
                     std::mem::take(&mut *q)
@@ -1387,7 +1387,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         let now_us = hook::now_timestamp_us();
                         for queued_event in queue {
                             log::debug!(
-                                "[probe-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
+                                "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
                                 queued_event.vk_code.0,
                                 queued_event.event_type,
                                 queued_event.timestamp,

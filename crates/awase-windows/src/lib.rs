@@ -44,7 +44,7 @@ use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind, RawKeyEvent};
 
 pub use crate::tsf::probe_bridge::{
-    PROBE_ACTIVE, ProbeGuard, PROBE_KEY_QUEUE, WM_DRAIN_PROBE_QUEUE, post_drain_probe_queue,
+    OUTPUT_ACTIVE, OutputActiveGuard, OUTPUT_PENDING_QUEUE, WM_DRAIN_OUTPUT_QUEUE, post_drain_output_queue,
 };
 
 // ── クロススレッド共有グローバル状態 ──
@@ -69,7 +69,7 @@ pub use crate::tsf::observer::{
 /// raw TSF literal 検出後の回収ペイロード。
 ///
 /// バックスペース数とローマ字再送文字列を一括管理する。
-/// WM_DRAIN_PROBE_QUEUE ハンドラが `flush_raw_tsf_literal_recovery()` で消費する。
+/// WM_DRAIN_OUTPUT_QUEUE ハンドラが `flush_raw_tsf_literal_recovery()` で消費する。
 #[derive(Debug)]
 pub struct RawTsfLiteralPending {
     /// 送信すべきバックスペースの数

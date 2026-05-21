@@ -64,14 +64,9 @@ impl TsfReadinessProbe {
     /// 内部で `win32_async::block_on` を呼び、メッセージループを動かしながら待機する。
     /// `std::thread::sleep` を使わないため、待機中も WinEvent（OBJ_NAMECHANGE 等）が処理される。
     pub fn wait_until_ready(&self, total_max_ms: u64) {
-        use std::sync::atomic::Ordering::Relaxed;
-        let _guard = crate::ProbeGuard;
-        // ネストしたメッセージループ中にキーフックが再入しないようガード
-        crate::PROBE_ACTIVE.store(true, Relaxed);
         win32_async::block_on(self.wait_until_ready_async(total_max_ms));
-        // drain はここでは呼ばない。呼び出し元（send_romaji_batched / send_romaji_as_tsf）が
-        // バッチ送信・mark_composition_warm 完了後に post_drain_probe_queue を呼ぶ。
-        // ここで drain すると block_on のネストされたメッセージループ中に再配送が走り、
+        // drain は OutputActiveGuard::drop が send_keys 全体の終了時に行うため、ここでは呼ばない。
+        // block_on のネストされたメッセージループ中に再配送が走ると、
         // 後続キー（ん等）が composition cold のまま send_romaji_as_tsf → 再プローブ → 二重入力を起こす。
     }
 
@@ -393,9 +388,6 @@ impl LiteralDetector {
 /// - `timeout_ms`: タイムアウト (ms)
 /// - 戻り値: `true` = SHOW 検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
 pub(crate) fn wait_for_raw_tsf_literal_show(show_baseline: u32, timeout_ms: u32) -> bool {
-    use std::sync::atomic::Ordering::Relaxed;
-    let _guard = crate::ProbeGuard;
-    crate::PROBE_ACTIVE.store(true, Relaxed);
     win32_async::block_on(raw_tsf_literal_show_or_timeout_async(show_baseline, timeout_ms))
 }
 
@@ -429,9 +421,6 @@ async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u
 /// - `timeout_ms`: タイムアウト (ms)
 /// - 戻り値: `true` = I/O 変化検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
 pub(crate) fn wait_for_raw_tsf_literal_io(io_baseline: u64, timeout_ms: u32) -> bool {
-    use std::sync::atomic::Ordering::Relaxed;
-    let _guard = crate::ProbeGuard;
-    crate::PROBE_ACTIVE.store(true, Relaxed);
     win32_async::block_on(raw_tsf_literal_io_or_timeout_async(io_baseline, timeout_ms))
 }
 

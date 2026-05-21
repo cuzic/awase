@@ -403,6 +403,10 @@ impl Output {
         // 呼ぶため、send_keys の中でメッセージポンプが走り Space 等の WH_KEYBOARD_LL
         // コールバックが SendInput より前に発火して "境界dえ" 等の race を起こす。
 
+        // 出力セッション全体をガード: 期間中に到着した全キーを OUTPUT_PENDING_QUEUE に退避し、
+        // TSF 送信バッチより先に WezTerm へ届く順序逆転と APP re-entrancy を防ぐ。
+        let _output_guard = crate::OutputActiveGuard::begin();
+
         // output in-flight guard の基準点を SendInput より前に設定する。
         // 呼び出し元が何らかのブロッキング処理を send_keys 内に追加した場合でも
         // guard が有効になるよう、ループ前に記録しておく。
@@ -685,10 +689,6 @@ impl Output {
             );
         }
         self.mark_composition_warm();
-        // バッチ送信・warm化が完了した後にプローブ中退避キーを再配送する。
-        // wait_until_ready / wait_for_tsf_cold_settle 内では drain しないため、
-        // composition warm な状態で後続キーが処理され、二重プローブを防ぐ。
-        crate::post_drain_probe_queue();
     }
 
     /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
@@ -1012,15 +1012,6 @@ impl Output {
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe完了");
             }
 
-            // probe シーケンス完了後に output_in_flight タイマーをリセットする。
-            // ensure_tsf_warm は数百ms 以上 block_on でメッセージループをポンプするため、
-            // 戻り時点で ms_since_last_send() が OUTPUT_GUARD_MS (50ms) を大幅に超える。
-            // これにより PROBE_ACTIVE=false になった直後に到着した passthrough キーが
-            // output_in_flight=false のまま WezTerm に届き、TSF 送信バッチより先に処理され
-            // 順序逆転（例: "ちうょ"）が起きる。ここで延長することで直後の detect() 開始
-            // までの短い窓も守る。
-            self.mark_send();
-
         } else {
             cold_n = self.composition.cold_start_count();
         }
@@ -1174,6 +1165,7 @@ impl Output {
         self.mark_composition_warm();
 
         // raw TSF literal 検出（GJI 専用）:
+
         // ウィンドウ表示状態に応じてシグナルを使い分ける:
         //   - was_visible=false: SHOW イベント（composition 時に非表示→表示）~4ms
         //   - was_visible=true : GJI I/O 変化（ウィンドウがすでに表示中で SHOW は来ない）
@@ -1215,8 +1207,6 @@ impl Output {
             }
         }
 
-        // バッチ送信・warm化完了後にプローブ退避キーを再配送（二重プローブ防止）。
-        crate::post_drain_probe_queue();
     }
 
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
@@ -1352,7 +1342,7 @@ impl awase::platform::CompositionOutput for Output {
     }
 }
 
-/// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
+/// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
 ///
 /// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
 /// cold 状態（RawTsfLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
@@ -1374,7 +1364,7 @@ impl Output {
 
     /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送。
     ///
-    /// WM_DRAIN_PROBE_QUEUE ハンドラから呼ぶ。drain keys より前に実行すること。
+    /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。drain keys より前に実行すること。
     pub fn flush_raw_tsf_literal_recovery(&self) {
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
@@ -1391,16 +1381,13 @@ pub use crate::tsf::output::flush_raw_tsf_literal_backspaces;
 /// このイベントで早期終了する。発火しない場合は timeout_ms まで待つ。
 ///
 /// # Re-entrancy safety
-/// `PROBE_ACTIVE=true` を設定してメッセージループを動かしながら OBJ_NAMECHANGE を待つ。
+/// OUTPUT_ACTIVE=true（send_keys スコープ）でメッセージループを動かしながら OBJ_NAMECHANGE を待つ。
 /// `MsgWaitForMultipleObjects` を廃止し、`win32_async::block_on` + `sleep_ms` で実装。
 ///
 /// Returns `true` = OBJ_NAMECHANGE 検出、`false` = タイムアウト
 fn wait_for_tsf_cold_settle(nc_baseline: u32, timeout_ms: u32) -> bool {
-    use std::sync::atomic::Ordering::Relaxed;
-    let _guard = crate::ProbeGuard;
-    crate::PROBE_ACTIVE.store(true, Relaxed);
     let settled = win32_async::block_on(settle_async(nc_baseline, timeout_ms));
-    // drain は呼ばない。呼び出し元 send_romaji_as_tsf が mark_composition_warm 後に呼ぶ。
+    // drain は OutputActiveGuard::drop が行うため、ここでは呼ばない。
 
     let nc_fired = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline;
     log::debug!(
