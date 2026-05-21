@@ -31,7 +31,7 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # フォーカス判定の永続オーバーライド
 # 特定の (プロセス名, クラス名) の組み合わせに対して、
 # 自動判定を無視してテキスト入力 / 非テキストを強制する。
-# [focus_overrides]
+# [app_overrides]
 # force_text = [
 #     { process = "chrome.exe", class = "Chrome_RenderWidgetHostHWND" },
 # ]
@@ -46,7 +46,7 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # force_tsf: VK Sequential モード（WezTerm 等 TSF 直結アプリ）
 #   IME composition + 漢字変換を有効にする。NICOLA フックはスルーして
 #   WezTerm の TSF に通常のキーストロークとして届ける。
-[focus_overrides]
+[app_overrides]
 force_tsf = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
 ]

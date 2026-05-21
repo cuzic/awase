@@ -31,9 +31,9 @@ const VK_LSHIFT: u16 = 0xA0;
 /// 現在のフォーカス先から出力注入モードを決定する。
 ///
 /// 優先順位:
-///   1. config の `focus_overrides.force_tsf` にマッチ → Tsf
-///   2. config の `focus_overrides.force_vk` にマッチ → Vk
-///   3. AppKind::Chrome → Vk
+///   1. config の `app_overrides.force_tsf` にマッチ → Tsf
+///   2. config の `app_overrides.force_vk` にマッチ → Vk
+///   3. AppKind::TsfNative → Vk
 ///   4. それ以外 (Win32 / Uwp) → Unicode
 fn resolve_injection_mode() -> InjectionMode {
     unsafe {
@@ -56,7 +56,7 @@ fn resolve_injection_mode() -> InjectionMode {
                 return InjectionMode::Vk;
             }
         }
-        if app.platform_state.app_kind == AppKind::Chrome {
+        if app.platform_state.app_kind == AppKind::TsfNative {
             InjectionMode::Vk
         } else {
             InjectionMode::Unicode
@@ -1011,6 +1011,15 @@ impl Output {
                 .wait_until_ready(eager_settle_ms);
                 log::debug!("[h1-warmup] cold={cold_n} non-eager probe完了");
             }
+
+            // probe シーケンス完了後に output_in_flight タイマーをリセットする。
+            // ensure_tsf_warm は数百ms 以上 block_on でメッセージループをポンプするため、
+            // 戻り時点で ms_since_last_send() が OUTPUT_GUARD_MS (50ms) を大幅に超える。
+            // これにより PROBE_ACTIVE=false になった直後に到着した passthrough キーが
+            // output_in_flight=false のまま WezTerm に届き、TSF 送信バッチより先に処理され
+            // 順序逆転（例: "ちうょ"）が起きる。ここで延長することで直後の detect() 開始
+            // までの短い窓も守る。
+            self.mark_send();
 
         } else {
             cold_n = self.composition.cold_start_count();

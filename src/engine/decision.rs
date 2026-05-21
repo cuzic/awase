@@ -318,8 +318,8 @@ pub enum AssumedReason {
     ImmBridgeBroken,
     /// フォーカス変更直後で観測確定前
     FocusTransition,
-    /// AppKind が Chrome/UWP で IMM クエリをスキップしている
-    AppKindBlacklist,
+    /// AppKind が TsfNative/UWP で IMM クエリをスキップしている
+    AppKindExcluded,
     /// 強制 ON ガード中（連続検出失敗による）
     ForceOnGuardActive,
 }

@@ -178,8 +178,8 @@ pub enum ContextChange {
 pub enum AppKind {
     /// クラシック Win32 / WinForms アプリ
     Win32 = 0,
-    /// Chromium ベースアプリ（Chrome, Edge, Electron 等）
-    Chrome = 1,
+    /// TSF ネイティブアプリ（Chrome, Edge, VS Code, Electron, WezTerm 等）
+    TsfNative = 1,
     /// UWP / XAML / DirectUI アプリ
     Uwp = 2,
 }
@@ -189,7 +189,7 @@ impl AppKind {
     pub const fn from_u8(v: u8) -> Self {
         match v {
             0 => Self::Win32,
-            1 => Self::Chrome,
+            1 => Self::TsfNative,
             _ => Self::Uwp,
         }
     }
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn app_kind_from_u8_known_values() {
         assert_eq!(AppKind::from_u8(0), AppKind::Win32);
-        assert_eq!(AppKind::from_u8(1), AppKind::Chrome);
+        assert_eq!(AppKind::from_u8(1), AppKind::TsfNative);
         assert_eq!(AppKind::from_u8(2), AppKind::Uwp);
     }
 
@@ -255,8 +255,8 @@ mod tests {
     #[test]
     fn app_kind_load_store_roundtrip() {
         let atomic = std::sync::atomic::AtomicU8::new(0);
-        AppKind::Chrome.store(&atomic);
-        assert_eq!(AppKind::load(&atomic), AppKind::Chrome);
+        AppKind::TsfNative.store(&atomic);
+        assert_eq!(AppKind::load(&atomic), AppKind::TsfNative);
     }
 
     // ── FocusKind ──

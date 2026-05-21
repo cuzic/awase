@@ -9,7 +9,7 @@ enum Tab {
     Basic,
     Keys,
     ImeDetect,
-    Focus,
+    Apps,
     Advanced,
 }
 
@@ -46,6 +46,10 @@ struct SettingsApp {
     new_force_text_class: String,
     new_force_bypass_process: String,
     new_force_bypass_class: String,
+    new_force_vk_process: String,
+    new_force_vk_class: String,
+    new_force_tsf_process: String,
+    new_force_tsf_class: String,
 }
 
 impl SettingsApp {
@@ -77,6 +81,10 @@ impl SettingsApp {
             new_force_text_class: String::new(),
             new_force_bypass_process: String::new(),
             new_force_bypass_class: String::new(),
+            new_force_vk_process: String::new(),
+            new_force_vk_class: String::new(),
+            new_force_tsf_process: String::new(),
+            new_force_tsf_class: String::new(),
         }
     }
 
@@ -341,17 +349,17 @@ impl SettingsApp {
         }
     }
 
-    fn tab_focus(&mut self, ui: &mut egui::Ui) {
+    fn tab_apps(&mut self, ui: &mut egui::Ui) {
         ui.heading("フォーカス制御");
         ui.label("特定のアプリケーションで、エンジンの動作を強制的に切り替えます。\nプロセス名とクラス名の組み合わせで指定します。\nクラス名はログ出力で確認できます（RUST_LOG=debug で起動）。");
         ui.add_space(8.0);
 
         // force_text
         ui.label("テキスト入力として強制:").on_hover_text("これらのアプリでは、常にテキスト入力として扱います。\n自動判定で誤ってバイパスされるアプリを指定してください。");
-        focus_table_ui(
+        app_override_table_ui(
             ui,
             "ft",
-            &mut self.config.focus_overrides.force_text,
+            &mut self.config.app_overrides.force_text,
             &mut self.new_force_text_process,
             &mut self.new_force_text_class,
         );
@@ -359,12 +367,35 @@ impl SettingsApp {
 
         // force_bypass
         ui.label("バイパスとして強制（エンジン無効）:").on_hover_text("これらのアプリでは、常にエンジンを無効にします。\n日本語入力が不要なアプリを指定してください。");
-        focus_table_ui(
+        app_override_table_ui(
             ui,
             "fb",
-            &mut self.config.focus_overrides.force_bypass,
+            &mut self.config.app_overrides.force_bypass,
             &mut self.new_force_bypass_process,
             &mut self.new_force_bypass_class,
+        );
+
+        ui.add_space(12.0);
+
+        // force_vk
+        ui.label("VK 出力モードとして強制（Chrome/Edge/Electron 等）:").on_hover_text("これらのアプリでは、ローマ字を VK キーストロークとして送信します。\nChrome や Electron ベースのアプリ（VS Code 等）を指定してください。");
+        app_override_table_ui(
+            ui,
+            "fv",
+            &mut self.config.app_overrides.force_vk,
+            &mut self.new_force_vk_process,
+            &mut self.new_force_vk_class,
+        );
+        ui.add_space(12.0);
+
+        // force_tsf
+        ui.label("TSF 出力モードとして強制（WezTerm 等）:").on_hover_text("これらのアプリでは、ローマ字を TSF ネイティブモードで送信します。\nWezTerm などの TSF 直結アプリを指定してください。");
+        app_override_table_ui(
+            ui,
+            "fts",
+            &mut self.config.app_overrides.force_tsf,
+            &mut self.new_force_tsf_process,
+            &mut self.new_force_tsf_class,
         );
 
         ui.add_space(8.0);
@@ -449,6 +480,7 @@ impl eframe::App for SettingsApp {
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::ImeDetect, "IME 検出"),
+                    (Tab::Apps, "アプリ別設定"),
                     (Tab::Advanced, "詳細設定"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
@@ -463,7 +495,7 @@ impl eframe::App for SettingsApp {
                 Tab::Basic => self.tab_basic(ui),
                 Tab::Keys => self.tab_keys(ui),
                 Tab::ImeDetect => self.tab_ime_detect(ui),
-                Tab::Focus => self.tab_focus(ui),
+                Tab::Apps => self.tab_apps(ui),
                 Tab::Advanced => self.tab_advanced(ui),
             });
 
@@ -519,10 +551,10 @@ fn key_list_ui(
     });
 }
 
-fn focus_table_ui(
+fn app_override_table_ui(
     ui: &mut egui::Ui,
     id: &str,
-    entries: &mut Vec<awase::config::FocusOverrideEntry>,
+    entries: &mut Vec<awase::config::AppOverrideEntry>,
     np: &mut String,
     nc: &mut String,
 ) {
@@ -557,7 +589,7 @@ fn focus_table_ui(
                 .id(egui::Id::new(format!("{id}_c"))),
         );
         if ui.button("+追加").clicked() && !np.is_empty() && !nc.is_empty() {
-            entries.push(awase::config::FocusOverrideEntry {
+            entries.push(awase::config::AppOverrideEntry {
                 process: std::mem::take(np),
                 class: std::mem::take(nc),
             });

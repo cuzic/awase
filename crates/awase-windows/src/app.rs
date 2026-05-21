@@ -211,7 +211,7 @@ pub fn run() -> Result<()> {
     );
 
     init_ngram_validated(&config, &mut diag);
-    let (hook_guard, _toggle_hotkey_guard, _focus_override_hotkey_guard) =
+    let (hook_guard, _toggle_hotkey_guard, _app_override_hotkey_guard) =
         install_hooks_and_hotkeys_validated(&config)?;
     diag.report();
 
@@ -581,8 +581,8 @@ fn install_hooks_and_hotkeys_validated(
         .engine_toggle_hotkey
         .as_ref()
         .and_then(|hotkey_str| register_toggle_hotkey(hotkey_str));
-    let focus_override_guard = register_focus_override_hotkey();
-    Ok((guard, toggle_guard, focus_override_guard))
+    let app_override_guard = register_app_override_hotkey();
+    Ok((guard, toggle_guard, app_override_guard))
 }
 
 /// `WTSRegisterSessionNotification` の RAII ガード。Drop 時に解除する。
@@ -635,8 +635,8 @@ fn register_toggle_hotkey(hotkey_str: &str) -> Option<HotKeyGuard> {
     }
 }
 
-/// 手動フォーカスオーバーライドホットキー (Ctrl+Shift+F11) を登録する
-fn register_focus_override_hotkey() -> Option<HotKeyGuard> {
+/// 手動アプリオーバーライドホットキー (Ctrl+Shift+F11) を登録する
+fn register_app_override_hotkey() -> Option<HotKeyGuard> {
     const MOD_CONTROL: u32 = 0x0002;
     const MOD_SHIFT: u32 = 0x0004;
     const VK_F11: u32 = 0x7A;
@@ -697,7 +697,7 @@ fn initialize_app(
                 platform::WindowsPlatform {
                     output: Output::new(config.general.output_mode),
                     tray,
-                    focus: runtime::FocusDetector::new(config.focus_overrides.clone()),
+                    focus: runtime::AppKindClassifier::new(config.app_overrides.clone()),
                     timer: awase_windows::timer::Win32Timer::new(),
                 },
                 config.general.hook_mode,
@@ -1325,7 +1325,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
             },
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => unsafe {
                 if let Some(app) = APP.get_mut() {
-                    app.toggle_focus_override();
+                    app.toggle_app_override();
                 }
             },
             WM_APP => unsafe {
@@ -1512,14 +1512,14 @@ fn reload_config() {
         key_diag.report();
     }
 
-    // フォーカスオーバーライド再読み込み + キャッシュクリア
+    // アプリオーバーライド再読み込み + キャッシュクリア
     unsafe {
         if let Some(app) = APP.get_mut() {
-            app.executor.platform.focus.overrides = config.focus_overrides;
+            app.executor.platform.focus.overrides = config.app_overrides;
             app.executor.platform.focus.cache = focus::cache::FocusCache::new();
         }
     }
-    log::info!("Focus overrides reloaded");
+    log::info!("App overrides reloaded");
 
     log::info!("Config reloaded successfully");
 }

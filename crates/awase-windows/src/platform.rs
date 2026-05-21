@@ -1,6 +1,6 @@
 //! Windows 実装の `PlatformRuntime`。
 //!
-//! `Output`, `SystemTray`, `FocusDetector`, `Win32Timer` を束ね、
+//! `Output`, `SystemTray`, `AppKindClassifier`, `Win32Timer` を束ね、
 //! `PlatformRuntime` トレイトを実装する。
 
 use std::time::Duration;
@@ -8,7 +8,7 @@ use std::time::Duration;
 use awase::platform::PlatformRuntime;
 use awase::types::{KeyAction, RawKeyEvent};
 use crate::output::Output;
-use crate::runtime::FocusDetector;
+use crate::runtime::AppKindClassifier;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
@@ -17,7 +17,7 @@ use crate::tray::SystemTray;
 pub struct WindowsPlatform {
     pub output: Output,
     pub tray: SystemTray,
-    pub focus: FocusDetector,
+    pub focus: AppKindClassifier,
     pub timer: Win32Timer,
 }
 

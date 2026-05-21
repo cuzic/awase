@@ -1,83 +1,162 @@
-# awase — 同時打鍵キーボードリマッパー
+# awase — 親指シフト（NICOLA）キーボードリマッパー
 
-**awase**（合わせ）は、NICOLA 親指シフトに対応した同時打鍵キーボードリマッパーです。
-文字キーと親指キーを同時に押すことで、ピアノのコードのように異なる文字を出力します。
+**awase**（合わせ）は、Windows で親指シフト入力を実現するキーボードリマッパーです。
 
-## 概要
+---
 
-Windows 上で動作し、低レベルキーボードフックにより物理キー入力を横取りして、
-NICOLA 配列に基づくかな文字入力をリアルタイムで行います。
-やまぶき互換の `.yab` レイアウトファイルに対応しており、カスタム配列も利用可能です。
+## 親指シフトとは
+
+親指シフト（NICOLA 配列）は、スペースバー両隣の「変換」「無変換」キーを親指シフトキーとして使い、文字キーと同時押しすることでかな文字を直接入力する方式です。ローマ字入力より少ないキー操作で日本語を入力でき、習得後は高速・高効率なタイピングが可能です。
+
+awase は低レベルキーボードフックで物理キー入力を横取りし、同時打鍵を検出して IME にローマ字として送信します。IME は通常どおり漢字変換します。
+
+---
 
 ## 特徴
 
+- **NICOLA 準拠の同時打鍵判定** — d1/d2 比較による 3 キー仲裁
 - **5 つの確定モード** — wait / speculative / two\_phase / adaptive\_timing / ngram\_predictive
-- **n-gram 適応閾値** — 日本語文字頻度に基づく同時打鍵判定ウィンドウの自動調整
-- **やまぶき互換 `.yab` 設定** — 物理キー位置ベース × ローマ字出力の CSV 形式
-- **NICOLA 準拠 3 キー仲裁** — d1/d2 比較による正確な同時打鍵判定
-- **IME 統合** — TSF + IMM32 ハイブリッド検出、IME OFF 時の自動バイパス
-- **システムトレイ常駐** — 配列切替・ホットキートグル・設定画面起動
-- **フォーカス自動検出** — テキスト入力コントロールを自動判定し、不要な変換を回避
-- **timed-fsm** — 再利用可能なタイマー付き有限状態機械フレームワーク（ワークスペースクレート）
+- **n-gram 適応閾値** — Wikipedia コーパス由来の 2/3-gram で判定ウィンドウを動的調整し精度向上
+- **やまぶき互換 `.yab` 配列ファイル** — 既存の配列データをそのまま利用可能
+- **幅広いアプリ対応** — Win32 / UWP / TSF ネイティブ（Chrome・VS Code・WezTerm 等）を自動識別
+- **多重耐障害設計** — フック死活監視・スリープ復帰・IME 検出失敗フォールバック・TSF コールドスタート自動回復を多段装備
+- **非同期アーキテクチャ** — Windows メッセージループベースの非同期エグゼキュータ、ブロッキング API は別スレッドで隔離しタイムアウト保護
+- **フォーカス自動検出** — テキスト入力欄以外では変換を自動停止
+- **システムトレイ常駐** — 配列切替・設定画面・有効/無効トグル
+
+技術的な設計の詳細は [ARCHITECTURE.md](ARCHITECTURE.md) を参照してください。
+
+---
 
 ## 動作環境
 
-- Windows 10 / 11
-- Rust 1.70+
+- Windows 10 / 11（64 ビット）
+- Google 日本語入力（推奨）または MS-IME
+- Rust 1.70 以上（ビルド時のみ）
 
-## インストール
+---
+
+## クイックスタート
+
+### 1. ビルド
 
 ```sh
-cargo build --release --target x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-msvc
 ```
 
-ビルド後、`target/x86_64-pc-windows-gnu/release/awase.exe` が生成されます。
+生成物: `target/x86_64-pc-windows-msvc/release/awase.exe`
 
-## 使い方
+### 2. ファイル配置
 
-1. `awase.exe` と同じディレクトリに `config.toml` と `layout/` フォルダを配置
-2. `awase.exe` を起動するとシステムトレイに常駐
-3. **Ctrl+Shift+F12** でエンジン ON/OFF を切替
-4. **Ctrl+Shift+F11** でフォーカスオーバーライド（テキスト入力/バイパスの手動切替）
-5. トレイアイコン右クリックでメニュー表示
-   - レイアウト切替
-   - 設定画面起動
-   - 有効/無効切替
-   - 終了
+以下の構成で配置します。
 
-## 設定 (config.toml)
+```
+awase.exe
+config.toml          ← 設定ファイル
+layout/
+  nicola.yab         ← NICOLA 配列（同梱）
+data/
+  ngram_hiragana.csv.gz  ← n-gram コーパス（任意）
+```
+
+### 3. 起動
+
+`awase.exe` をダブルクリックするとシステムトレイに常駐します。
+
+### 4. エンジンを ON にする
+
+デフォルトのキーバインド：
+
+| 操作 | キー |
+|------|------|
+| エンジン ON | **Ctrl+Shift+変換** |
+| エンジン OFF | **Ctrl+Shift+無変換** |
+| IME ON | **Ctrl+変換** |
+| IME OFF | **Ctrl+無変換** |
+| アプリ別動作を手動切替 | **Ctrl+Shift+F11** |
+
+> トレイアイコンを右クリック → 「設定」から GUI で変更できます。
+
+### 5. 親指キーの確認
+
+デフォルトは「無変換」が左親指、「変換」が右親指です。  
+`config.toml` の `left_thumb_key` / `right_thumb_key` で変更できます。
+
+---
+
+## 設定ファイル (config.toml)
+
+最小構成：
 
 ```toml
 [general]
-simultaneous_threshold_ms = 100   # 同時打鍵判定の閾値（ミリ秒）
-toggle_hotkey = "Ctrl+Shift+F12"
-layouts_dir = "layout"
-default_layout = "nicola.yab"     # 起動時に読み込む配列
-
-[engine]
-confirm_mode = "adaptive_timing"  # 確定モード
-# wait              — タイマー満了まで待機して確定
-# speculative       — 投機的に確定し、誤りなら取消・再送
-# two_phase         — 2 段階判定（高速確定 + 遅延補正）
-# adaptive_timing   — 打鍵速度に応じて閾値を動的調整
-# ngram_predictive  — n-gram 頻度に基づく予測確定
-
-speculative_delay_ms = 50         # speculative / two_phase 用の遅延
-
-[focus_overrides]
-# 特定アプリケーションの動作を強制指定
-force_text = ["notepad.exe", "code.exe"]    # 常にテキスト入力モード
-force_bypass = ["cmd.exe", "powershell.exe"] # 常にバイパスモード
+simultaneous_threshold_ms = 100   # 同時打鍵判定の閾値（ms）。NICOLA 規格は 100ms
+left_thumb_key  = "無変換"
+right_thumb_key = "変換"
+layouts_dir     = "layout"
+default_layout  = "nicola.yab"
 ```
 
-## レイアウトファイル (.yab)
+フルサンプルは同梱の `config.toml` を参照してください。
 
-やまぶき互換の CSV 形式で配列を定義します。
+### 主なオプション
+
+| キー | デフォルト | 説明 |
+|------|-----------|------|
+| `simultaneous_threshold_ms` | 100 | 同時打鍵と判定する時間幅（ms） |
+| `left_thumb_key` | `無変換` | 左親指シフトキー |
+| `right_thumb_key` | `変換` | 右親指シフトキー |
+| `confirm_mode` | `wait` | 確定モード（後述） |
+| `output_mode` | `unicode` | 出力方式（通常は変更不要） |
+| `engine_toggle_hotkey` | なし | エンジン ON/OFF トグルホットキー |
+
+### 確定モード
+
+| モード | 特徴 |
+|--------|------|
+| `wait` | タイムアウトまで待機。最も正確、わずかに遅延あり |
+| `speculative` | 即座に出力し誤りなら取消・再送。高速だがちらつきあり |
+| `two_phase` | 短い待機後に投機出力。wait と speculative の中間 |
+| `adaptive_timing` | 打鍵速度に応じて自動調整 |
+| `ngram_predictive` | Wikipedia 由来の n-gram 統計で閾値を動的調整（n-gram ファイル推奨） |
+
+迷ったら `wait` から始め、遅延が気になったら `adaptive_timing` を試してください。
+
+n-gram の仕組みの詳細は [ARCHITECTURE.md](ARCHITECTURE.md#n-gram-による同時打鍵判定の精度向上) を参照してください。
+
+### アプリ別設定 ([app_overrides])
+
+特定アプリで動作が合わない場合に強制指定します。
+
+```toml
+[app_overrides]
+# 常にテキスト入力として扱う
+force_text = [
+    { process = "myapp.exe", class = "Edit" },
+]
+# エンジンを常に無効にする
+force_bypass = [
+    { process = "launcher.exe", class = "LauncherClass" },
+]
+# TSF ネイティブモード（WezTerm 等）
+force_tsf = [
+    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+]
+```
+
+プロセス名とクラス名は `RUST_LOG=debug awase.exe` のログで確認できます。
+
+---
+
+## 配列ファイル (.yab)
+
+やまぶき互換の CSV 形式で配列を定義します。`layout/` に `.yab` ファイルを置くとトレイメニューから切り替えられます。
 
 ```
+; コメント行はセミコロンで始める
 [ローマ字シフト無し]
-．,ｋａ,ｔａ,ｋｏ,ｓａ,ｒａ,ｔｉ,ｋｕ,ｔｕ,'，',，,無
-ｕ,ｓｉ,ｔｅ,ｋｅ,ｓｅ,ｈａ,ｔｏ,ｋｉ,ｉ,ｎｎ,後,逃
+'。',ka,ta,ko,sa, ra,ti,ku,tu,'，','、',無
+u, si,te,ke,se, ha,to,ki, i, nn, 後, 逃
 ...
 
 [ローマ字左親指シフト]
@@ -87,28 +166,39 @@ force_bypass = ["cmd.exe", "powershell.exe"] # 常にバイパスモード
 ...
 ```
 
-各セクションは物理キー位置に対応するローマ字出力を定義します。
-`layout/` ディレクトリに `.yab` ファイルを配置すると、トレイメニューから選択可能になります。
+NICOLA 標準配列は `layout/nicola.yab` として同梱しています。
 
-## フォーカス判定
+---
 
-awase は現在フォーカスしているコントロールがテキスト入力欄かどうかを自動判定します。
+## アプリ対応
 
-1. **Phase 1** — ウィンドウクラス名による即時判定（Edit, RichEdit 等）
-2. **Phase 2** — MSAA (Accessible Role) による同期判定
-3. **Phase 3** — UI Automation による非同期判定（別スレッド）
-4. **ヒューリスティック** — タイピングパターンの統計的分析による推定
-5. **手動オーバーライド** — Ctrl+Shift+F11 で即時切替、学習キャッシュに記録
+awase はフォーカス中のアプリを自動識別し、出力方式を切り替えます。手動設定は不要です。
 
-`config.toml` の `[focus_overrides]` でアプリケーション単位の強制指定も可能です。
+| アプリ種別 | 例 | 出力方式 |
+|-----------|-----|---------|
+| Win32 / WinForms | メモ帳、Word、Excel | Unicode 直接注入 |
+| TSF ネイティブ | Chrome, Edge, VS Code, WezTerm, Electron 系 | VK キーストローク |
+| UWP / XAML | Windows ストアアプリ | Unicode 直接注入 |
 
-## テスト
+識別結果はアプリのクラス名ごとに学習・キャッシュされ（`imm_cache.toml`）、再起動後も維持されます。自動識別が合わない場合は `[app_overrides]` で手動指定できます。
 
-```sh
-cargo test --lib                  # ユニットテスト
-cargo test --test scenarios       # シナリオテスト
-cargo test -p timed-fsm           # timed-fsm フレームワークテスト
-```
+---
+
+## トラブルシューティング
+
+**文字が入力されない / おかしな文字になる**  
+→ エンジンが OFF になっている可能性。Ctrl+Shift+変換 で ON にする。
+
+**特定アプリで動作しない**  
+→ `RUST_LOG=debug awase.exe` で起動してログを確認し、`[app_overrides]` に追加。
+
+**IME が自動で ON/OFF される**  
+→ `config.toml` の `[keys.ime_detect]` でシャドウ追跡キーを確認する。
+
+**同時打鍵の誤判定が多い**  
+→ `simultaneous_threshold_ms` を 80〜120ms の範囲で調整する。
+
+---
 
 ## ライセンス
 

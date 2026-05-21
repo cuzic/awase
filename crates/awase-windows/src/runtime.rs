@@ -7,8 +7,8 @@ use crate::Preconditions;
 
 /// Config の force_text / force_bypass オーバーライドをチェックする。
 /// マッチした場合は強制される FocusKind を返す。
-fn check_focus_override(
-    overrides: &awase::config::FocusOverrides,
+fn check_app_override(
+    overrides: &awase::config::AppOverrides,
     process_id: u32,
     class_name: &str,
 ) -> Option<FocusKind> {
@@ -38,7 +38,7 @@ fn check_focus_override(
 /// `force_vk` が空なら Win32 API を呼ばずに即 false を返す (fast path)。
 /// マッチは `process` と `class` の両方が大文字小文字を無視して一致したとき。
 pub fn is_force_vk(
-    overrides: &awase::config::FocusOverrides,
+    overrides: &awase::config::AppOverrides,
     process_id: u32,
     class_name: &str,
 ) -> bool {
@@ -62,7 +62,7 @@ pub fn is_force_vk(
 /// 取得して再マッチを試みる。これにより force_tsf 設定が InputSite フォーカス時にも
 /// 正しく動作する。
 pub fn is_force_tsf(
-    overrides: &awase::config::FocusOverrides,
+    overrides: &awase::config::AppOverrides,
     process_id: u32,
     class_name: &str,
 ) -> bool {
@@ -135,7 +135,7 @@ pub struct LayoutEntry {
     pub layout: YabLayout,
 }
 
-// ── FocusDetector（フォーカス検出状態）──
+// ── AppKindClassifier（フォーカス検出状態）──
 
 /// IMM ブリッジの検出結果（class_name ごとにキャッシュ）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,9 +217,9 @@ pub struct HwndImeSnapshot {
 
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
-pub struct FocusDetector {
+pub struct AppKindClassifier {
     pub cache: crate::focus::cache::FocusCache,
-    pub overrides: awase::config::FocusOverrides,
+    pub overrides: awase::config::AppOverrides,
     pub last_focus_info: Option<(u32, String)>,
     pub uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
     /// class_name ごとの IMM ブリッジ能力キャッシュ。
@@ -237,8 +237,8 @@ pub struct FocusDetector {
     base_dir: std::path::PathBuf,
 }
 
-impl FocusDetector {
-    pub fn new(overrides: awase::config::FocusOverrides) -> Self {
+impl AppKindClassifier {
+    pub fn new(overrides: awase::config::AppOverrides) -> Self {
         let base_dir = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -688,7 +688,7 @@ impl Runtime {
 
         // focus_kind を分類
         // Config オーバーライドをチェック
-        let (kind, reason, overridden) = if let Some(kind) = check_focus_override(&self.executor.platform.focus.overrides, process_id, &class_name) {
+        let (kind, reason, overridden) = if let Some(kind) = check_app_override(&self.executor.platform.focus.overrides, process_id, &class_name) {
             (kind, "config override".to_string(), true)
         } else if let Some(cached) = self.executor.platform.focus.cache.get(process_id, &class_name) {
             (cached, "cache hit".to_string(), false)
@@ -896,8 +896,8 @@ impl Runtime {
         log::info!("Switched layout to: {name}");
     }
 
-    /// 手動フォーカスオーバーライドのトグル処理
-    pub fn toggle_focus_override(&mut self) {
+    /// 手動アプリオーバーライドのトグル処理
+    pub fn toggle_app_override(&mut self) {
         let current = self.platform_state.focus_kind;
         let new_kind = if current == FocusKind::TextInput {
             FocusKind::NonText

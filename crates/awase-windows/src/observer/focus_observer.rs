@@ -32,7 +32,7 @@ pub unsafe fn read_os_modifiers() -> ModifierState {
 pub fn detect_app_kind(class_name: &str) -> AppKind {
     let class_lower = class_name.to_ascii_lowercase();
     if class_lower.starts_with("chrome_") || class_lower == "mozillawindowclass" {
-        AppKind::Chrome
+        AppKind::TsfNative
     } else if class_lower == "windows.ui.core.corewindow"
         || class_lower == "applicationframewindow"
         || class_lower.starts_with("windows.ui.input.")

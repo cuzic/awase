@@ -287,29 +287,29 @@ fn default_ime_off_keys() -> Vec<String> {
     vec!["IMEオフ".to_string()]
 }
 
-/// フォーカスオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
+/// アプリオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct FocusOverrideEntry {
+pub struct AppOverrideEntry {
     pub process: String,
     pub class: String,
 }
 
-/// フォーカス判定の永続オーバーライド設定
+/// アプリ別の永続オーバーライド設定
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
 /// - `force_bypass`: 常に非テキストとしてバイパスする組
 /// - `force_vk`: ローマ字出力を VK キーストローク Batched モードで送る組（Chrome/Edge/Electron 等）
 /// - `force_tsf`: ローマ字出力を VK キーストローク Sequential モードで送る組（WezTerm 等 TSF 直結アプリ）
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-pub struct FocusOverrides {
+pub struct AppOverrides {
     #[serde(default)]
-    pub force_text: Vec<FocusOverrideEntry>,
+    pub force_text: Vec<AppOverrideEntry>,
     #[serde(default)]
-    pub force_bypass: Vec<FocusOverrideEntry>,
+    pub force_bypass: Vec<AppOverrideEntry>,
     #[serde(default)]
-    pub force_vk: Vec<FocusOverrideEntry>,
+    pub force_vk: Vec<AppOverrideEntry>,
     #[serde(default)]
-    pub force_tsf: Vec<FocusOverrideEntry>,
+    pub force_tsf: Vec<AppOverrideEntry>,
 }
 
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
@@ -322,7 +322,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub keys: KeysConfig,
     #[serde(default)]
-    pub focus_overrides: FocusOverrides,
+    pub app_overrides: AppOverrides,
 }
 
 impl AppConfig {
@@ -359,8 +359,8 @@ pub struct ValidatedConfig {
     pub general: GeneralConfig,
     /// 検証済みのキーバインディング設定
     pub keys: KeysConfig,
-    /// 検証済みのフォーカスオーバーライド
-    pub focus_overrides: FocusOverrides,
+    /// 検証済みのアプリ別オーバーライド
+    pub app_overrides: AppOverrides,
 }
 
 impl AppConfig {
@@ -443,26 +443,26 @@ impl AppConfig {
             }
         }
 
-        // focus_overrides: process names not empty
-        let focus_overrides = self.focus_overrides;
-        for entry in &focus_overrides.force_text {
+        // app_overrides: process names not empty
+        let app_overrides = self.app_overrides;
+        for entry in &app_overrides.force_text {
             if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("focus_overrides.force_text に空のエントリがあります".to_string());
+                warnings.push("app_overrides.force_text に空のエントリがあります".to_string());
             }
         }
-        for entry in &focus_overrides.force_bypass {
+        for entry in &app_overrides.force_bypass {
             if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("focus_overrides.force_bypass に空のエントリがあります".to_string());
+                warnings.push("app_overrides.force_bypass に空のエントリがあります".to_string());
             }
         }
-        for entry in &focus_overrides.force_vk {
+        for entry in &app_overrides.force_vk {
             if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("focus_overrides.force_vk に空のエントリがあります".to_string());
+                warnings.push("app_overrides.force_vk に空のエントリがあります".to_string());
             }
         }
-        for entry in &focus_overrides.force_tsf {
+        for entry in &app_overrides.force_tsf {
             if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("focus_overrides.force_tsf に空のエントリがあります".to_string());
+                warnings.push("app_overrides.force_tsf に空のエントリがあります".to_string());
             }
         }
 
@@ -470,7 +470,7 @@ impl AppConfig {
             ValidatedConfig {
                 general,
                 keys: self.keys,
-                focus_overrides,
+                app_overrides,
             },
             warnings,
         )
@@ -575,47 +575,47 @@ confirm_mode = "two_phase"
         assert_eq!(config.general.layouts_dir, "layout");
     }
 
-    // ── FocusOverrides テスト ──
+    // ── AppOverrides テスト ──
 
     #[test]
-    fn test_focus_overrides_default_empty() {
+    fn test_app_overrides_default_empty() {
         let toml_str = r#"
 [general]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert!(config.focus_overrides.force_text.is_empty());
-        assert!(config.focus_overrides.force_bypass.is_empty());
-        assert!(config.focus_overrides.force_vk.is_empty());
+        assert!(config.app_overrides.force_text.is_empty());
+        assert!(config.app_overrides.force_bypass.is_empty());
+        assert!(config.app_overrides.force_vk.is_empty());
     }
 
     #[test]
-    fn test_focus_overrides_force_vk_parse() {
+    fn test_app_overrides_force_vk_parse() {
         let toml_str = r#"
 [general]
 
-[focus_overrides]
+[app_overrides]
 force_vk = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
 ]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.focus_overrides.force_vk.len(), 1);
+        assert_eq!(config.app_overrides.force_vk.len(), 1);
         assert_eq!(
-            config.focus_overrides.force_vk[0].process,
+            config.app_overrides.force_vk[0].process,
             "wezterm-gui.exe"
         );
         assert_eq!(
-            config.focus_overrides.force_vk[0].class,
+            config.app_overrides.force_vk[0].class,
             "org.wezfurlong.wezterm"
         );
     }
 
     #[test]
-    fn test_focus_overrides_parse() {
+    fn test_app_overrides_parse() {
         let toml_str = r#"
 [general]
 
-[focus_overrides]
+[app_overrides]
 force_text = [
     { process = "browser", class = "WebContent" },
     { process = "editor", class = "TextArea" },
@@ -625,28 +625,28 @@ force_bypass = [
 ]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.focus_overrides.force_text.len(), 2);
-        assert_eq!(config.focus_overrides.force_text[0].process, "browser");
-        assert_eq!(config.focus_overrides.force_text[0].class, "WebContent");
-        assert_eq!(config.focus_overrides.force_text[1].process, "editor");
-        assert_eq!(config.focus_overrides.force_bypass.len(), 1);
-        assert_eq!(config.focus_overrides.force_bypass[0].process, "launcher");
-        assert_eq!(config.focus_overrides.force_bypass[0].class, "SearchBox");
+        assert_eq!(config.app_overrides.force_text.len(), 2);
+        assert_eq!(config.app_overrides.force_text[0].process, "browser");
+        assert_eq!(config.app_overrides.force_text[0].class, "WebContent");
+        assert_eq!(config.app_overrides.force_text[1].process, "editor");
+        assert_eq!(config.app_overrides.force_bypass.len(), 1);
+        assert_eq!(config.app_overrides.force_bypass[0].process, "launcher");
+        assert_eq!(config.app_overrides.force_bypass[0].class, "SearchBox");
     }
 
     #[test]
-    fn test_focus_overrides_partial() {
+    fn test_app_overrides_partial() {
         let toml_str = r#"
 [general]
 
-[focus_overrides]
+[app_overrides]
 force_text = [
     { process = "editor", class = "TextInput" },
 ]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.focus_overrides.force_text.len(), 1);
-        assert!(config.focus_overrides.force_bypass.is_empty());
+        assert_eq!(config.app_overrides.force_text.len(), 1);
+        assert!(config.app_overrides.force_bypass.is_empty());
     }
 
     // ── validate テスト ──
@@ -720,7 +720,7 @@ default_layout = "nicola.txt"
         let toml_str = r#"
 [general]
 
-[focus_overrides]
+[app_overrides]
 force_text = [
     { process = "", class = "Edit" },
 ]

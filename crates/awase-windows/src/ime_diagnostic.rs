@@ -273,7 +273,7 @@ fn resolve_injection_mode_label() -> &'static str {
             }
         }
         match app.platform_state.app_kind {
-            AppKind::Chrome => "Vk",
+            AppKind::TsfNative => "Vk",
             _ => "Unicode",
         }
     }
