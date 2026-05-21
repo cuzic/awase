@@ -115,6 +115,11 @@ enum InjectionMode {
 /// VK_LSHIFT の仮想キーコード
 const VK_LSHIFT: u16 = 0xA0;
 
+/// `u64::MAX` は「未送信」を意味するセンチネル値。ログ表示用に "∞" に変換する。
+fn fmt_ms(ms: u64) -> String {
+    if ms == u64::MAX { "∞".to_owned() } else { ms.to_string() }
+}
+
 
 
 /// 現在のフォーカス先から出力注入モードを決定する。
@@ -486,7 +491,7 @@ impl Output {
         log::debug!(
             "send_keys: mode={:?} actions={actions:?} prev_elapsed={}ms",
             session.mode,
-            if prev_elapsed_ms == u64::MAX { "∞".to_string() } else { prev_elapsed_ms.to_string() }
+            fmt_ms(prev_elapsed_ms)
         );
 
         // NOTE: ImeDiagnosticSnapshot::capture("send_keys_pre") をここに置いてはいけない。
@@ -655,7 +660,7 @@ impl Output {
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
             "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
-            if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
+            fmt_ms(elapsed)
         );
 
         if prepend_f2_warmup {
@@ -765,8 +770,6 @@ impl Output {
     /// 案A では F2-only バッチを先行送信し、WezTerm が F2 を処理して
     /// TSF context を初期化するまで待機（probe loop）してからローマ字バッチを送る。
     fn ensure_tsf_warm(&self) -> WarmupOutcome {
-        use std::sync::atomic::Ordering::Relaxed;
-
         // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
         // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
         const COMPOSITION_TIMEOUT_MS: u64 = 2000;
@@ -776,288 +779,285 @@ impl Output {
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
             "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
-            if elapsed == u64::MAX { "∞".to_string() } else { elapsed.to_string() }
+            fmt_ms(elapsed)
         );
 
-        let cold_n;
-        if prepend_f2_warmup {
-            if session_expired {
-                log::debug!("[tsf-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
-            } else {
-                log::debug!("[tsf-warmup] cold → F2-only先行バッチ (案A)");
-            }
-            // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
-            let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
-            log::debug!(
-                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
-                conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_pre.map_or(false, |v| v & 0x0001 != 0),
-                conv_pre.map_or(false, |v| v & 0x0010 != 0),
-                conv_pre.map_or(false, |v| v & 0x0002 != 0),
-            );
-            // IMM32 経由で同期的にローマ字モードへ切り替え。
-            unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
-
-            cold_n = self.composition.increment_cold_start_count();
-
-            let win_class = unsafe { crate::ime::get_foreground_window_class() };
-            log::debug!("[h1-window] cold={cold_n} class={win_class}");
-
-            // TSF cold-start: WezTerm は TSF native app のため ImmGetCompositionStringW で
-            // composition state を検出できない（IMM32 HIMC に propagate されない）。
-            // 固定 sleep を使用するが、eager warmup から十分時間が経過している場合は
-            // TSF が確実に初期化済みのため即送信する。
-            // FocusChange 等で eager VK_DBE_HIRAGANA を送信済み + eager_settle_ms 以上経過 → 即送信
-            // eager 送信済みだが未到達 → 残り時間だけ sleep
-            // eager なし → VK_DBE_HIRAGANA warmup + probe (2連送) で TSF 初期化を同期
-            const VK_DBE_HIRAGANA: u16 = 0xF2;
-            // cold 発生前の idle 時間が長い場合（ナビゲーション等）、GJI が TSF セッションを
-            // リセットしている可能性があり、再初期化に FocusChange 相当の時間が必要。
-            // 閾値は 10s: 2-9s 程度の「考える・少し読む」では GJI セッションが生存しており
-            // I/O が発火せず probe が 1500ms タイムアウトしてしまうため、低すぎる閾値は NG。
-            // 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
-            const LONG_IDLE_MS: u64 = 10_000;
-            let long_idle = self.composition.idle_ms_at_last_cold() > LONG_IDLE_MS;
-            // ColdReason に応じてウォームアップ待機時間を決定:
-            //   FocusChange / SetOpenTrue / NativeF2Consumed:
-            //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
-            //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる。
-            //     実測で候補窓出現まで 1031ms かかることがあるため 1500ms を上限とする。
-            //   PassthroughConfirmKey / ReinjectConfirmKey + long_idle:
-            //     Enter/Space/Escape 後でも長期 idle 後は GJI セッションがリセットされ、
-            //     500ms のバジェットでは不足する（kおのじしょう バグ）。1500ms に拡張する。
-            //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
-            let cold_reason = self.composition.last_cold_reason();
-            if cold_reason.is_confirm_key() && long_idle {
-                log::debug!(
-                    "[h1-warmup] cold={cold_n} PassthroughConfirmKey/ReinjectConfirmKey + long idle \
-                     ({}ms) → eager_settle_ms=1500ms",
-                    self.composition.idle_ms_at_last_cold()
-                );
-            }
-            let eager_settle_ms: u64 = cold_reason.eager_settle_ms(long_idle);
-            // ColdReason に応じた probe 最小待機時間（warmup_sent_ms 起点）:
-            //   VK_DBE_HIRAGANA がキューに入ってから GJI が最初の I/O を開始するまでの
-            //   実測下限。この時間内は GJI I/O 監視結果を信頼しない。
-            let probe_min_ms: u64 = cold_reason.probe_min_ms(long_idle);
-            log::debug!(
-                "[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms \
-                 reason={:?} long_idle={long_idle} idle_at_cold={}ms",
-                self.composition.last_cold_reason(),
-                self.composition.idle_ms_at_last_cold()
-            );
-
-            // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
-            // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
-            // TSF が cold なまま 'd' 等が literal になる（dえーた バグ）。
-            // fresh な VK_DBE_HIRAGANA を送信して eager_warmup_sent_ms を更新し、500ms 待機を強制する。
-            if session_expired {
-                log::debug!("[h1-warmup] session expired → fresh VK_DBE_HIRAGANA 送信 (500ms待機を強制)");
-                self.send_eager_tsf_warmup();
-            }
-
-            let eager_ms = self.composition.eager_warmup_sent_ms();
-            let now_ms = crate::hook::current_tick_ms();
-            let eager_elapsed =
-                if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
-            let use_eager = eager_ms != 0;
-
-            // どのパスを通るかを明示的にログ（根本原因判別用）
-            log::debug!(
-                "[h1-warmup] cold={cold_n} path={} eager_ms={eager_ms} now_ms={now_ms} elapsed={}ms",
-                if use_eager { "eager" } else { "non-eager" },
-                if eager_elapsed == u64::MAX { "∞".to_owned() } else { eager_elapsed.to_string() },
-            );
-
-            if use_eager {
-                let remaining = eager_settle_ms.saturating_sub(eager_elapsed);
-                if remaining == 0 {
-                    // eager_settle_ms 以上経過しているが、GJI は WM_SETFOCUS の遅延処理
-                    // (メッセージキュー滞留 500-900ms) で TSF context を再初期化することがある。
-                    // FocusChange / SetOpenTrue / NativeF2Consumed の場合はこの再初期化レースが
-                    // 発生しやすいため、新規 VK_DBE_HIRAGANA を送って再び 500ms 待機する。
-                    // PassthroughConfirmKey 等の composition-only reset では不要。
-                    let needs_re_warmup = cold_reason.requires_settle();
-                    if needs_re_warmup {
-                        log::debug!(
-                            "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 再warmup (GJI 再初期化レース対策)",
-                        );
-                        let refresh_inputs = [
-                            make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                            make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                        ];
-                        unsafe {
-                            SendInput(
-                                &refresh_inputs,
-                                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                            );
-                        }
-                        const RE_WARMUP_MS: u64 = 500;
-                        let re_warmup_sent_ms = crate::hook::current_tick_ms();
-                        crate::tsf::probe::TsfReadinessProbe::new(
-                            re_warmup_sent_ms, cold_n, probe_min_ms,
-                        )
-                        .wait_until_ready(RE_WARMUP_MS);
-                        let actual_wait = crate::hook::current_tick_ms().saturating_sub(re_warmup_sent_ms);
-                        log::debug!(
-                            "[h1-warmup] cold={cold_n} 再warmup probe完了={actual_wait}ms",
-                        );
-                    } else {
-                        // eager F2 から時間が経過（elapsed >= eager_settle_ms）しており、
-                        // gji_idle が大きい状態で即送信すると raw-tsf-literal false positive が発生する。
-                        // （GJI candidate SHOW が 300ms を超えるため raw-tsf-literal がタイムアウト）
-                        // → fresh F2 を送って TsfReadinessProbe で composition context を
-                        //   再確認してから送信する。追加 ~140ms だが false positive を防げる。
-                        let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS
-                            .load(Relaxed);
-                        let gji_idle =
-                            crate::hook::current_tick_ms().saturating_sub(last_io);
-                        log::debug!(
-                            "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 (gji_idle={gji_idle}ms) \
-                             → fresh F2 + probe (raw-tsf-literal false positive 防止)",
-                        );
-                        let refresh_inputs = [
-                            make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                            make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                        ];
-                        let fresh_f2_ms = crate::hook::current_tick_ms();
-                        unsafe {
-                            SendInput(
-                                &refresh_inputs,
-                                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                            );
-                        }
-                        crate::tsf::probe::TsfReadinessProbe::new(
-                            fresh_f2_ms, cold_n, probe_min_ms,
-                        )
-                        .wait_until_ready(eager_settle_ms);
-                        let actual_wait =
-                            crate::hook::current_tick_ms().saturating_sub(fresh_f2_ms);
-                        log::debug!(
-                            "[h1-warmup] cold={cold_n} eager→fresh probe完了={actual_wait}ms",
-                        );
-                    }
-                } else {
-                    log::debug!(
-                        "[h1-warmup] cold={cold_n} eager: elapsed={eager_elapsed}ms → probe (budget={eager_settle_ms}ms from warmup)",
-                    );
-                    // total_max_ms は warmup_sent_ms 起点の合計予算（remaining ではない）。
-                    // probe 内で max_deadline = eager_ms + eager_settle_ms が計算される。
-                    crate::tsf::probe::TsfReadinessProbe::new(
-                        eager_ms, cold_n, probe_min_ms,
-                    )
-                    .wait_until_ready(eager_settle_ms);
-                    let total_elapsed = crate::hook::current_tick_ms().saturating_sub(eager_ms);
-                    log::debug!(
-                        "[h1-warmup] cold={cold_n} probe完了 warmup経過={total_elapsed}ms",
-                    );
-
-                    // probe が GJI 活動なしでタイムアウトした場合、または NativeF2Consumed /
-                    // SetOpenTrue の cold start では、GJI idle だけでは WezTerm の TSF
-                    // composition context が ready かを保証できない。
-                    //
-                    // 理由: probe は std::thread::sleep でブロックするため、その間に
-                    // WezTerm が発行した OBJ_NAMECHANGE WinEvent がキューに溜まるが
-                    // 処理されない。probe 完了後に即ローマ字送信すると、WezTerm の TSF が
-                    // まだ活性化処理中の場合、先頭の 1 文字（例: 't'）が PTY に素通りし、
-                    // 次の文字（例: 'o'）が IME に捕捉されて "tお" になる。
-                    //
-                    // 修正: fresh F2 を送り wait_for_tsf_cold_settle でメッセージをポンプする。
-                    // probe sleep 中に溜まった pending NAMECHANGE を即処理するため、
-                    // NativeF2Consumed/SetOpenTrue では追加遅延はほぼ 0ms で済む。
-                    let gji_last = crate::tsf::observer::OBS_GJI_LAST_IO_MS
-                        .load(Relaxed);
-                    let probe_settled = gji_last >= eager_ms;
-                    let gji_monitor_ok = crate::tsf::observer::OBS_GJI_MONITOR_OK
-                        .load(Relaxed);
-
-                    let is_ime_init_cold = cold_reason.requires_settle();
-
-                    if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
-                        // GJI probe timeout (no activity) または IME ON 初期化 cold start:
-                        // TSF context が stale / 未確定の可能性あり → fresh F2 + settle。
-                        //
-                        // wait_for_tsf_cold_settle で OBJ_NAMECHANGE を reactive に待つ（上限 300ms）。
-                        const SETTLE_TIMEOUT_MS: u32 = 300;
-                        let nc_baseline =
-                            crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed);
-                        let settle_reason = if !probe_settled {
-                            "probe timeout (no GJI activity)"
-                        } else {
-                            "NativeF2Consumed/SetOpenTrue (GJI settled だが NAMECHANGE 未処理の可能性)"
-                        };
-                        log::debug!(
-                            "[h1-warmup] cold={cold_n} {settle_reason} \
-                            → fresh F2 + tsf_cold_settle (up to {SETTLE_TIMEOUT_MS}ms, nc_seq={nc_baseline})",
-                        );
-                        let refresh_inputs = [
-                            make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                            make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                        ];
-                        let fresh_f2_ms = crate::hook::current_tick_ms();
-                        unsafe {
-                            SendInput(
-                                &refresh_inputs,
-                                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                            );
-                        }
-                        let settled = wait_for_tsf_cold_settle(nc_baseline, SETTLE_TIMEOUT_MS);
-
-                        // OBJ_NAMECHANGE 確認かつ GJI 活動なし（probe_settled=false）の場合、
-                        // OBJ_NAMECHANGE は「WezTerm が F2 を処理した」シグナルだが
-                        // GJI composition session 初期化の完了を意味しない。
-                        // 直後にローマ字を送ると GJI がまだ初期化中で literal になる（raw TSF literal バグ）。
-                        // → fresh F2 タイムスタンプ起点で GJI I/O 静止を待つ二次プローブを実施。
-                        if settled && !probe_settled {
-                            const GJI_POST_NAMECHANGE_MS: u64 = 300;
-                            log::debug!(
-                                "[h1-warmup] cold={cold_n} OBJ_NAMECHANGE後 GJI 二次プローブ (max {GJI_POST_NAMECHANGE_MS}ms)",
-                            );
-                            crate::tsf::probe::TsfReadinessProbe::new(
-                                fresh_f2_ms, cold_n, 0,
-                            )
-                            .wait_until_ready(GJI_POST_NAMECHANGE_MS);
-                            log::debug!("[h1-warmup] cold={cold_n} GJI 二次プローブ完了");
-                        }
-                    }
-                }
-            } else {
-                // 投機的プローブ: VK_DBE_HIRAGANA (F2相当) を2連送する。
-                // 1回目 (warmup): TSF composition context 初期化をトリガー（VK_IME_ON では不足）
-                // 2回目 (probe):  WezTerm が 1回目を処理済みであることを FIFO で保証
-                // VK_DBE_HIRAGANA はひらがなモードへの切替のため、既にひらがななら実質冪等。
-                log::debug!("[h1-warmup] cold={cold_n} non-eager: VK_DBE_HIRAGANA warmup+probe 送信");
-                let ime_on_probe = [
-                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                ];
-                let t_pre = crate::hook::current_tick_ms();
-                unsafe {
-                    SendInput(
-                        &ime_on_probe,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
-                let elapsed = crate::hook::current_tick_ms().saturating_sub(t_pre);
-                log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
-                // VK_DBE_HIRAGANA 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
-                // GJI I/O モニターが利用可能なら静止検出、なければ固定 sleep。
-                let probe_sent_ms = crate::hook::current_tick_ms();
-                crate::tsf::probe::TsfReadinessProbe::new(
-                    probe_sent_ms, cold_n, probe_min_ms,
-                )
-                .wait_until_ready(eager_settle_ms);
-                log::debug!("[h1-warmup] cold={cold_n} non-eager probe完了");
-            }
-
+        let cold_n = if prepend_f2_warmup {
+            self.execute_cold_warmup(session_expired, elapsed)
         } else {
-            cold_n = self.composition.cold_start_count();
-        }
+            self.composition.cold_start_count()
+        };
 
         let used_eager_path = self.composition.eager_warmup_sent_ms() != 0;
         WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n }
+    }
+
+    /// TSF cold-start 時のウォームアップシーケンスを実行して cold-start シーケンス番号を返す。
+    ///
+    /// `ensure_tsf_warm` の `prepend_f2_warmup` ブランチを切り出したもの。
+    fn execute_cold_warmup(&self, session_expired: bool, elapsed_ms: u64) -> u32 {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        const VK_DBE_HIRAGANA: u16 = 0xF2;
+        // cold 発生前の idle 時間が長い場合（ナビゲーション等）、GJI が TSF セッションを
+        // リセットしている可能性があり、再初期化に FocusChange 相当の時間が必要。
+        // 閾値は 10s: 2-9s 程度の「考える・少し読む」では GJI セッションが生存しており
+        // I/O が発火せず probe が 1500ms タイムアウトしてしまうため、低すぎる閾値は NG。
+        // 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
+        const LONG_IDLE_MS: u64 = 10_000;
+
+        if session_expired {
+            log::debug!("[tsf-warmup] session expired ({elapsed_ms}ms) → F2-only先行バッチ (案A)");
+        } else {
+            log::debug!("[tsf-warmup] cold → F2-only先行バッチ (案A)");
+        }
+        // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
+        let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+        log::debug!(
+            "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+            conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+            conv_pre.map_or(false, |v| v & 0x0001 != 0),
+            conv_pre.map_or(false, |v| v & 0x0010 != 0),
+            conv_pre.map_or(false, |v| v & 0x0002 != 0),
+        );
+        // IMM32 経由で同期的にローマ字モードへ切り替え。
+        unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
+
+        let cold_n = self.composition.increment_cold_start_count();
+
+        let win_class = unsafe { crate::ime::get_foreground_window_class() };
+        log::debug!("[h1-window] cold={cold_n} class={win_class}");
+
+        let long_idle = self.composition.idle_ms_at_last_cold() > LONG_IDLE_MS;
+        // ColdReason に応じてウォームアップ待機時間を決定:
+        //   FocusChange / SetOpenTrue / NativeF2Consumed:
+        //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
+        //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる。
+        //     実測で候補窓出現まで 1031ms かかることがあるため 1500ms を上限とする。
+        //   PassthroughConfirmKey / ReinjectConfirmKey + long_idle:
+        //     Enter/Space/Escape 後でも長期 idle 後は GJI セッションがリセットされ、
+        //     500ms のバジェットでは不足する（kおのじしょう バグ）。1500ms に拡張する。
+        //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
+        let cold_reason = self.composition.last_cold_reason();
+        if cold_reason.is_confirm_key() && long_idle {
+            log::debug!(
+                "[h1-warmup] cold={cold_n} PassthroughConfirmKey/ReinjectConfirmKey + long idle \
+                 ({}ms) → eager_settle_ms=1500ms",
+                self.composition.idle_ms_at_last_cold()
+            );
+        }
+        let eager_settle_ms: u64 = cold_reason.eager_settle_ms(long_idle);
+        // ColdReason に応じた probe 最小待機時間（warmup_sent_ms 起点）:
+        //   VK_DBE_HIRAGANA がキューに入ってから GJI が最初の I/O を開始するまでの
+        //   実測下限。この時間内は GJI I/O 監視結果を信頼しない。
+        let probe_min_ms: u64 = cold_reason.probe_min_ms(long_idle);
+        log::debug!(
+            "[h1-warmup] cold={cold_n} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms \
+             reason={:?} long_idle={long_idle} idle_at_cold={}ms",
+            self.composition.last_cold_reason(),
+            self.composition.idle_ms_at_last_cold()
+        );
+
+        // session_expired: 2秒以上放置後は TSF composition context がリセット済みの可能性大。
+        // 古い eager_warmup_sent_ms を使って「elapsed >= 500ms → スリープなし」にすると、
+        // TSF が cold なまま 'd' 等が literal になる（dえーた バグ）。
+        // fresh な VK_DBE_HIRAGANA を送信して eager_warmup_sent_ms を更新し、500ms 待機を強制する。
+        if session_expired {
+            log::debug!("[h1-warmup] cold={cold_n} session expired → fresh VK_DBE_HIRAGANA 送信 (500ms待機を強制)");
+            self.send_eager_tsf_warmup();
+        }
+
+        let eager_ms = self.composition.eager_warmup_sent_ms();
+        let now_ms = crate::hook::current_tick_ms();
+        let eager_elapsed =
+            if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
+        let use_eager = eager_ms != 0;
+
+        // どのパスを通るかを明示的にログ（根本原因判別用）
+        log::debug!(
+            "[h1-warmup] cold={cold_n} path={} eager_ms={eager_ms} now_ms={now_ms} elapsed={}ms",
+            if use_eager { "eager" } else { "non-eager" },
+            fmt_ms(eager_elapsed),
+        );
+
+        if use_eager {
+            let remaining = eager_settle_ms.saturating_sub(eager_elapsed);
+            if remaining == 0 {
+                // eager_settle_ms 以上経過しているが、GJI は WM_SETFOCUS の遅延処理
+                // (メッセージキュー滞留 500-900ms) で TSF context を再初期化することがある。
+                // FocusChange / SetOpenTrue / NativeF2Consumed の場合はこの再初期化レースが
+                // 発生しやすいため、新規 VK_DBE_HIRAGANA を送って再び 500ms 待機する。
+                // PassthroughConfirmKey 等の composition-only reset では不要。
+                let needs_re_warmup = cold_reason.requires_settle();
+                if needs_re_warmup {
+                    log::debug!(
+                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 → 再warmup (GJI 再初期化レース対策)",
+                    );
+                    let refresh_inputs = [
+                        make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                        make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                    ];
+                    unsafe {
+                        SendInput(
+                            &refresh_inputs,
+                            i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                        );
+                    }
+                    const RE_WARMUP_MS: u64 = 500;
+                    let re_warmup_sent_ms = crate::hook::current_tick_ms();
+                    crate::tsf::probe::TsfReadinessProbe::new(
+                        re_warmup_sent_ms, cold_n, probe_min_ms,
+                    )
+                    .wait_until_ready(RE_WARMUP_MS);
+                    let actual_wait = crate::hook::current_tick_ms().saturating_sub(re_warmup_sent_ms);
+                    log::debug!(
+                        "[h1-warmup] cold={cold_n} 再warmup probe完了={actual_wait}ms",
+                    );
+                } else {
+                    // eager F2 から時間が経過（elapsed >= eager_settle_ms）しており、
+                    // gji_idle が大きい状態で即送信すると raw-tsf-literal false positive が発生する。
+                    // （GJI candidate SHOW が 300ms を超えるため raw-tsf-literal がタイムアウト）
+                    // → fresh F2 を送って TsfReadinessProbe で composition context を
+                    //   再確認してから送信する。追加 ~140ms だが false positive を防げる。
+                    let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+                    let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+                    log::debug!(
+                        "[h1-warmup] cold={cold_n} eager: {eager_elapsed}ms 経過 (gji_idle={gji_idle}ms) \
+                         → fresh F2 + probe (raw-tsf-literal false positive 防止)",
+                    );
+                    let refresh_inputs = [
+                        make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                        make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                    ];
+                    let fresh_f2_ms = crate::hook::current_tick_ms();
+                    unsafe {
+                        SendInput(
+                            &refresh_inputs,
+                            i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                        );
+                    }
+                    crate::tsf::probe::TsfReadinessProbe::new(
+                        fresh_f2_ms, cold_n, probe_min_ms,
+                    )
+                    .wait_until_ready(eager_settle_ms);
+                    let actual_wait = crate::hook::current_tick_ms().saturating_sub(fresh_f2_ms);
+                    log::debug!(
+                        "[h1-warmup] cold={cold_n} eager→fresh probe完了={actual_wait}ms",
+                    );
+                }
+            } else {
+                log::debug!(
+                    "[h1-warmup] cold={cold_n} eager: elapsed={eager_elapsed}ms → probe (budget={eager_settle_ms}ms from warmup)",
+                );
+                // total_max_ms は warmup_sent_ms 起点の合計予算（remaining ではない）。
+                // probe 内で max_deadline = eager_ms + eager_settle_ms が計算される。
+                crate::tsf::probe::TsfReadinessProbe::new(
+                    eager_ms, cold_n, probe_min_ms,
+                )
+                .wait_until_ready(eager_settle_ms);
+                let total_elapsed = crate::hook::current_tick_ms().saturating_sub(eager_ms);
+                log::debug!(
+                    "[h1-warmup] cold={cold_n} probe完了 warmup経過={total_elapsed}ms",
+                );
+
+                // probe が GJI 活動なしでタイムアウトした場合、または NativeF2Consumed /
+                // SetOpenTrue の cold start では、GJI idle だけでは WezTerm の TSF
+                // composition context が ready かを保証できない。
+                //
+                // 理由: probe は std::thread::sleep でブロックするため、その間に
+                // WezTerm が発行した OBJ_NAMECHANGE WinEvent がキューに溜まるが
+                // 処理されない。probe 完了後に即ローマ字送信すると、WezTerm の TSF が
+                // まだ活性化処理中の場合、先頭の 1 文字（例: 't'）が PTY に素通りし、
+                // 次の文字（例: 'o'）が IME に捕捉されて "tお" になる。
+                //
+                // 修正: fresh F2 を送り wait_for_tsf_cold_settle でメッセージをポンプする。
+                // probe sleep 中に溜まった pending NAMECHANGE を即処理するため、
+                // NativeF2Consumed/SetOpenTrue では追加遅延はほぼ 0ms で済む。
+                let gji_last = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+                let probe_settled = gji_last >= eager_ms;
+                let gji_monitor_ok = crate::tsf::observer::OBS_GJI_MONITOR_OK.load(Relaxed);
+
+                let is_ime_init_cold = cold_reason.requires_settle();
+
+                if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
+                    // GJI probe timeout (no activity) または IME ON 初期化 cold start:
+                    // TSF context が stale / 未確定の可能性あり → fresh F2 + settle。
+                    //
+                    // wait_for_tsf_cold_settle で OBJ_NAMECHANGE を reactive に待つ（上限 300ms）。
+                    const SETTLE_TIMEOUT_MS: u32 = 300;
+                    let nc_baseline = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed);
+                    let settle_reason = if !probe_settled {
+                        "probe timeout (no GJI activity)"
+                    } else {
+                        "NativeF2Consumed/SetOpenTrue (GJI settled だが NAMECHANGE 未処理の可能性)"
+                    };
+                    log::debug!(
+                        "[h1-warmup] cold={cold_n} {settle_reason} \
+                        → fresh F2 + tsf_cold_settle (up to {SETTLE_TIMEOUT_MS}ms, nc_seq={nc_baseline})",
+                    );
+                    let refresh_inputs = [
+                        make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                        make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                    ];
+                    let fresh_f2_ms = crate::hook::current_tick_ms();
+                    unsafe {
+                        SendInput(
+                            &refresh_inputs,
+                            i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                        );
+                    }
+                    let settled = wait_for_tsf_cold_settle(nc_baseline, SETTLE_TIMEOUT_MS);
+
+                    // OBJ_NAMECHANGE 確認かつ GJI 活動なし（probe_settled=false）の場合、
+                    // OBJ_NAMECHANGE は「WezTerm が F2 を処理した」シグナルだが
+                    // GJI composition session 初期化の完了を意味しない。
+                    // 直後にローマ字を送ると GJI がまだ初期化中で literal になる（raw TSF literal バグ）。
+                    // → fresh F2 タイムスタンプ起点で GJI I/O 静止を待つ二次プローブを実施。
+                    if settled && !probe_settled {
+                        const GJI_POST_NAMECHANGE_MS: u64 = 300;
+                        log::debug!(
+                            "[h1-warmup] cold={cold_n} OBJ_NAMECHANGE後 GJI 二次プローブ (max {GJI_POST_NAMECHANGE_MS}ms)",
+                        );
+                        crate::tsf::probe::TsfReadinessProbe::new(
+                            fresh_f2_ms, cold_n, 0,
+                        )
+                        .wait_until_ready(GJI_POST_NAMECHANGE_MS);
+                        log::debug!("[h1-warmup] cold={cold_n} GJI 二次プローブ完了");
+                    }
+                }
+            }
+        } else {
+            // 投機的プローブ: VK_DBE_HIRAGANA (F2相当) を2連送する。
+            // 1回目 (warmup): TSF composition context 初期化をトリガー（VK_IME_ON では不足）
+            // 2回目 (probe):  WezTerm が 1回目を処理済みであることを FIFO で保証
+            // VK_DBE_HIRAGANA はひらがなモードへの切替のため、既にひらがななら実質冪等。
+            log::debug!("[h1-warmup] cold={cold_n} non-eager: VK_DBE_HIRAGANA warmup+probe 送信");
+            let ime_on_probe = [
+                make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                make_tsf_key_input(VK_DBE_HIRAGANA, true),
+            ];
+            let t_pre = crate::hook::current_tick_ms();
+            unsafe {
+                SendInput(
+                    &ime_on_probe,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+            let elapsed = crate::hook::current_tick_ms().saturating_sub(t_pre);
+            log::debug!("[h1-warmup] cold={cold_n} non-eager probe 完了 ({elapsed}ms)");
+            // VK_DBE_HIRAGANA 単独では SendInput 完了後でも TSF 初期化に時間がかかる（実測: 40ms では不足）。
+            // GJI I/O モニターが利用可能なら静止検出、なければ固定 sleep。
+            let probe_sent_ms = crate::hook::current_tick_ms();
+            crate::tsf::probe::TsfReadinessProbe::new(
+                probe_sent_ms, cold_n, probe_min_ms,
+            )
+            .wait_until_ready(eager_settle_ms);
+            log::debug!("[h1-warmup] cold={cold_n} non-eager probe完了");
+        }
+
+        cold_n
     }
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
@@ -1116,49 +1116,64 @@ impl Output {
         TsfSendPipeline::new(self).run(romaji);
     }
 
+    /// 文字の送信方法をルックアップテーブルで解決する。
+    ///
+    /// `send_char_as_tsf` / `send_char_as_vk` が共通で使う 3 段ルックアップ。
+    fn resolve_char(&self, ch: char) -> CharResolution<'_> {
+        if let Some(romaji) = self.kana_to_romaji.get(&ch) {
+            return CharResolution::Romaji(romaji);
+        }
+        if let Some(&(vk, shift)) = self.symbol_to_vk.get(&ch) {
+            return CharResolution::Vk(vk, shift);
+        }
+        CharResolution::Unicode(ch)
+    }
+
     /// 文字を TSF Sequential VK キーストロークとして送信する（WezTerm TSF モード用）
     ///
     /// かな文字はローマ字に逆変換してから `send_romaji_as_tsf` で送信する。
     /// 記号は symbol_to_vk テーブルで直接 VK コードに変換する。
     /// マッチしない場合は Unicode 直接出力にフォールバックする。
     fn send_char_as_tsf(&self, ch: char) {
-        if let Some(romaji) = self.kana_to_romaji.get(&ch) {
-            log::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
-            self.send_romaji_as_tsf(romaji);
-            return;
+        match self.resolve_char(ch) {
+            CharResolution::Romaji(romaji) => {
+                log::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
+                self.send_romaji_as_tsf(romaji);
+            }
+            CharResolution::Vk(vk, needs_shift) => {
+                log::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+                let mut inputs = Vec::with_capacity(4);
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                }
+                inputs.push(make_tsf_key_input(vk, false));
+                inputs.push(make_tsf_key_input(vk, true));
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                }
+                unsafe {
+                    SendInput(
+                        &inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+                // VK_OEM_MINUS (0xBD, no-shift) = '-' は GJI ローマ字モードで「ー」として
+                // composition に取り込まれる（composition context はリセットされない）。
+                // これらは warm 状態を維持し、次の romaji を warmup sleep なしで即送信する。
+                // その他の記号（句読点など）は composition を commit する可能性があるため cold にマーク。
+                let keeps_composition = vk == 0xBD && !needs_shift;
+                if keeps_composition {
+                    log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
+                } else {
+                    self.mark_composition_cold(ColdReason::SymbolVkSent);
+                    self.send_eager_tsf_warmup();
+                }
+            }
+            CharResolution::Unicode(ch) => {
+                log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
+                self.send_unicode_char(ch);
+            }
         }
-        if let Some(&(vk, needs_shift)) = self.symbol_to_vk.get(&ch) {
-            log::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
-            let mut inputs = Vec::with_capacity(4);
-            if needs_shift {
-                inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-            }
-            inputs.push(make_tsf_key_input(vk, false));
-            inputs.push(make_tsf_key_input(vk, true));
-            if needs_shift {
-                inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-            }
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-            // VK_OEM_MINUS (0xBD, no-shift) = '-' は GJI ローマ字モードで「ー」として
-            // composition に取り込まれる（composition context はリセットされない）。
-            // これらは warm 状態を維持し、次の romaji を warmup sleep なしで即送信する。
-            // その他の記号（句読点など）は composition を commit する可能性があるため cold にマーク。
-            let keeps_composition = vk == 0xBD && !needs_shift;
-            if keeps_composition {
-                log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
-            } else {
-                self.mark_composition_cold(ColdReason::SymbolVkSent);
-                self.send_eager_tsf_warmup();
-            }
-            return;
-        }
-        log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
-        self.send_unicode_char(ch);
     }
 
     /// 文字を VK キーストロークとして送信する（Chrome モード用）
@@ -1172,40 +1187,49 @@ impl Output {
     /// 2. 記号 → マッピングテーブルの VK コード（IME が全角変換）
     /// 3. フォールバック → Unicode 直接出力
     fn send_char_as_vk(&self, ch: char) {
-        // 1. かな→ローマ字逆引き（か → "ka" → VK(k), VK(a) → IME が変換）
-        if let Some(romaji) = self.kana_to_romaji.get(&ch) {
-            log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
-            // Batched (1回の SendInput) を使うことで、後続キー（Enter reinject 等）との
-            // 競合を防ぐ。per_key では K↓K↑ と A↓A↑ が別 SendInput になり、
-            // 間に Enter が割り込むと "kあ" のような出力破壊が起きる。
-            self.send_romaji_batched(romaji);
-            return;
+        match self.resolve_char(ch) {
+            CharResolution::Romaji(romaji) => {
+                log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
+                // Batched (1回の SendInput) を使うことで、後続キー（Enter reinject 等）との
+                // 競合を防ぐ。per_key では K↓K↑ と A↓A↑ が別 SendInput になり、
+                // 間に Enter が割り込むと "kあ" のような出力破壊が起きる。
+                self.send_romaji_batched(romaji);
+            }
+            CharResolution::Vk(vk, needs_shift) => {
+                log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+                let mut inputs = Vec::with_capacity(4);
+                if needs_shift {
+                    inputs.push(make_key_input(VK_LSHIFT, false));
+                }
+                inputs.push(make_key_input(vk, false));
+                inputs.push(make_key_input(vk, true));
+                if needs_shift {
+                    inputs.push(make_key_input(VK_LSHIFT, true));
+                }
+                unsafe {
+                    SendInput(
+                        &inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+            }
+            CharResolution::Unicode(ch) => {
+                log::debug!("    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
+                self.send_unicode_char(ch);
+            }
         }
-        // 2. 記号→VK コード（？ → Shift+/ → IME が全角？に変換）
-        if let Some(&(vk, needs_shift)) = self.symbol_to_vk.get(&ch) {
-            log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
-            let mut inputs = Vec::with_capacity(4);
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, false));
-            }
-            inputs.push(make_key_input(vk, false));
-            inputs.push(make_key_input(vk, true));
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, true));
-            }
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-            return;
-        }
-        // 3. フォールバック: Unicode 直接出力
-        log::debug!("    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
-        self.send_unicode_char(ch);
     }
 
+}
+
+/// `send_char_as_tsf` / `send_char_as_vk` 共通の文字解決結果。
+enum CharResolution<'a> {
+    /// かな → ローマ字（VK / TSF 経由で IME に渡す）
+    Romaji(&'a str),
+    /// 記号 → (VK コード, Shift 要否)
+    Vk(u16, bool),
+    /// フォールバック（Unicode 直接出力）
+    Unicode(char),
 }
 
 /// TSF 送信の 3 フェーズを管理するパイプライン。
