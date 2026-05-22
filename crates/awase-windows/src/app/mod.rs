@@ -266,6 +266,19 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
         return CallbackResult::Consumed;
     }
+    // OUTPUT_ACTIVE=false だがキューに未 drain エントリがある場合、
+    // 対応 KeyDown が drain 待ちの間に KeyUp が届いた（drain race）。
+    // drain で synthetic KeyUp が注入されるが、念のためログを残す。
+    if matches!(event.event_type, awase::types::KeyEventType::KeyUp) {
+        if let Ok(q) = awase_windows::OUTPUT_PENDING_QUEUE.try_lock() {
+            if !q.is_empty() {
+                log::debug!(
+                    "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {} item(s) (OUTPUT_ACTIVE=false)",
+                    event.vk_code.0, q.len()
+                );
+            }
+        }
+    }
     with_app(|app| on_key_event_impl(app, event)).unwrap_or_else(|| {
         // with_app 再入中（set_ime_open_cross_process の SendMessageTimeoutW が
         // メッセージポンプを起動し、その間にハードウェアキーが届いた場合）。

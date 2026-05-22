@@ -274,6 +274,31 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
         with_app(|app| {
+            // KeyDown のみキューに入っていて対応 KeyUp が無い場合、
+            // drain 後に NICOLA engine がそのキーを「押しっぱなし」と認識する。
+            // 次ユーザー入力と誤 combo になる（"しゅうせｌすいだけ" 等のバグ）。
+            // → replay 後に synthetic KeyUp を注入してエンジン状態をリセットする。
+            let mut synthetic_keyups: Vec<awase::types::RawKeyEvent> = Vec::new();
+            for ev in &queue {
+                use awase::types::KeyEventType;
+                if matches!(ev.event_type, KeyEventType::KeyDown) {
+                    let has_paired_keyup = queue.iter().any(|e| {
+                        e.vk_code == ev.vk_code
+                            && matches!(e.event_type, KeyEventType::KeyUp)
+                            && e.timestamp >= ev.timestamp
+                    });
+                    if !has_paired_keyup {
+                        let mut keyup = *ev;
+                        keyup.event_type = KeyEventType::KeyUp;
+                        synthetic_keyups.push(keyup);
+                        log::debug!(
+                            "[output-drain] vk=0x{:02X} KeyDown has no paired KeyUp in queue → will inject synthetic KeyUp",
+                            ev.vk_code.0,
+                        );
+                    }
+                }
+            }
+
             for queued_event in queue {
                 log::debug!(
                     "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
@@ -284,6 +309,14 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                     now_us.saturating_sub(queued_event.timestamp) / 1000,
                 );
                 on_key_event_impl(app, queued_event);
+            }
+
+            for keyup in synthetic_keyups {
+                log::debug!(
+                    "[output-drain] synthetic KeyUp vk=0x{:02X} (KeyDown replayed, KeyUp arrived before drain)",
+                    keyup.vk_code.0,
+                );
+                on_key_event_impl(app, keyup);
             }
         });
     }
