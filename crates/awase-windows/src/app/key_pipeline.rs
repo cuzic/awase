@@ -12,6 +12,7 @@ use awase_windows::hook;
 use awase_windows::ime;
 use awase_windows::runtime;
 use awase_windows::hook::CallbackResult;
+use awase_windows::win32::{post_to_main_thread};
 use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_PANIC_RESET};
 
 use super::RAPID_IME_TIMESTAMPS;
@@ -216,9 +217,7 @@ impl<'a> KeyEventPipeline<'a> {
                 if tracker.push(now) {
                     tracker.clear();
                     log::warn!("Rapid IME key press detected — requesting panic reset");
-                    use windows::Win32::Foundation::{LPARAM, WPARAM};
-                    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-                    let _ = PostMessageW(None, WM_PANIC_RESET, WPARAM(0), LPARAM(0));
+                    post_to_main_thread(WM_PANIC_RESET);
                 }
             }
         }
@@ -252,12 +251,7 @@ impl<'a> KeyEventPipeline<'a> {
         let hook_result = self.app.executor.execute_from_hook(decision, event);
 
         if hook_result.has_pending {
-            // SAFETY: PostMessageW with None HWND posts to the calling thread's message queue.
-            unsafe {
-                use windows::Win32::Foundation::{LPARAM, WPARAM};
-                use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-                let _ = PostMessageW(None, WM_EXECUTE_EFFECTS, WPARAM(0), LPARAM(0));
-            }
+            post_to_main_thread(WM_EXECUTE_EFFECTS);
         }
 
         hook_result.callback

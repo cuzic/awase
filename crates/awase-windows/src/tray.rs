@@ -624,11 +624,7 @@ fn launch_settings_gui() {
 /// 設定画面起動エラーをログとバルーン通知で表示する。
 fn show_settings_error(msg: &str) {
     log::error!("Settings launch: {msg}");
-    unsafe {
-        if let Some(app) = crate::APP.get_mut() {
-            app.executor.platform.tray.show_balloon("awase", msg);
-        }
-    }
+    crate::with_app(|app| app.executor.platform.tray.show_balloon("awase", msg));
 }
 
 /// トレイウィンドウプロシージャ
@@ -646,10 +642,10 @@ unsafe extern "system" fn tray_wnd_proc(
         WM_TRAY_CALLBACK => {
             // Shell からのトレイコールバック → メインのメッセージループに転送
             // PostMessage ではなく直接処理する（同じスレッドなので安全）
-            let layout_names: Vec<String> = crate::APP
-                .get_ref()
-                .map(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
-                .unwrap_or_default();
+            let layout_names: Vec<String> = crate::with_app_ref(|app| {
+                app.layouts.iter().map(|e| e.name.clone()).collect()
+            })
+            .unwrap_or_default();
             let elevated = crate::ELEVATED.load(std::sync::atomic::Ordering::Relaxed);
             handle_tray_message(hwnd, lparam, &layout_names, elevated);
             LRESULT(0)
@@ -660,20 +656,17 @@ unsafe extern "system" fn tray_wnd_proc(
                 if cmd == cmd_exit() {
                     PostQuitMessage(0);
                 } else if cmd == cmd_toggle() {
-                    if let Some(app) = crate::APP.get_mut() {
-                        app.toggle_engine();
-                    }
+                    crate::with_app(|app| app.toggle_engine());
                 } else if cmd == cmd_settings() {
                     launch_settings_gui();
                 } else if cmd == cmd_clear_imm_cache() {
-                    if let Some(app) = crate::APP.get_mut() {
+                    let base_dir = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                    crate::with_app(|app| {
                         let count = app.executor.platform.focus.imm_capability_cache.len();
                         app.executor.platform.focus.imm_capability_cache.clear();
-                        // ファイルも削除
-                        let base_dir = std::env::current_exe()
-                            .ok()
-                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                        if let Some(dir) = base_dir {
+                        if let Some(dir) = &base_dir {
                             let _ = std::fs::remove_file(dir.join("imm_cache.toml"));
                         }
                         log::info!("IMM capability cache cleared ({count} entries)");
@@ -681,14 +674,12 @@ unsafe extern "system" fn tray_wnd_proc(
                             "awase",
                             &format!("学習キャッシュをクリアしました（{count}件）"),
                         );
-                    }
+                    });
                 } else if cmd == cmd_restart_admin() {
                     restart_as_admin();
                 } else if cmd >= cmd_layout_base() {
                     let index = usize::from(cmd - cmd_layout_base());
-                    if let Some(app) = crate::APP.get_mut() {
-                        app.switch_layout(index);
-                    }
+                    crate::with_app(|app| app.switch_layout(index));
                 }
             }
             LRESULT(0)

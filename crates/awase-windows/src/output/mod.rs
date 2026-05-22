@@ -89,11 +89,7 @@ fn resolve_injection_mode_from(ctx: &InjectionModeContext<'_>) -> InjectionMode 
 /// APP への直アクセスはこの関数にのみ集約する。ロジック本体は
 /// `resolve_injection_mode_from` を参照のこと。
 fn resolve_injection_mode() -> InjectionMode {
-    // SAFETY: APP is a SingleThreadCell accessed only from the main message-loop thread.
-    unsafe {
-        let Some(app) = crate::APP.get_ref() else {
-            return InjectionMode::Unicode;
-        };
+    crate::with_app_ref(|app| {
         let focus_info = app
             .executor
             .platform
@@ -107,7 +103,8 @@ fn resolve_injection_mode() -> InjectionMode {
             app_kind: app.platform_state.app_kind,
         };
         resolve_injection_mode_from(&ctx)
-    }
+    })
+    .unwrap_or(InjectionMode::Unicode)
 }
 
 /// ASCII 文字を対応する VK コードに変換する。
@@ -409,12 +406,9 @@ impl Output {
     /// アイドル判定を通過してしまう。送信直後に同期更新することで
     /// アイドルタイマーが正しくリセットされる。
     fn mark_vk_output() {
-        // SAFETY: APP is a SingleThreadCell; this is only called from the main message-loop thread.
-        unsafe {
-            if let Some(app) = crate::APP.get_mut() {
-                app.platform_state.last_hook_activity_ms = crate::hook::current_tick_ms();
-            }
-        }
+        crate::with_app(|app| {
+            app.platform_state.last_hook_activity_ms = crate::hook::current_tick_ms();
+        });
     }
 
     /// アクション列を順に実行する

@@ -46,4 +46,20 @@ impl<T> SingleThreadCell<T> {
     pub unsafe fn clear(&self) {
         *self.0.get() = None;
     }
+
+    /// 値が存在する場合に `f` を共有参照で呼び出す。
+    ///
+    /// # Safety
+    /// シングルスレッドからのみ呼び出すこと。
+    pub unsafe fn with<R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
+        unsafe { self.get_ref() }.map(f)
+    }
+
+    /// 値が存在する場合に `f` を可変参照で呼び出す。
+    ///
+    /// # Safety
+    /// シングルスレッドからのみ呼び出すこと。
+    pub unsafe fn with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        unsafe { self.get_mut() }.map(f)
+    }
 }

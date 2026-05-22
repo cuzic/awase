@@ -3,7 +3,7 @@
 use std::sync::mpsc;
 
 use awase::types::{AppKind, FocusKind};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
@@ -18,7 +18,6 @@ use windows::Win32::UI::Accessibility::{
     UIA_TitleBarControlTypeId, UIA_ToolBarControlTypeId, UIA_TreeItemControlTypeId,
     UIA_ValuePatternId,
 };
-use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
 /// `HWND` を `Send` 可能にするラッパー
 ///
@@ -217,14 +216,11 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
                         let app_kind_val = result.app_kind.map_or(0xFF_usize, |k| k as u8 as usize);
                         let wparam_val = (result.focus_kind as u8 as usize)
                             | (app_kind_val << 8);
-                        unsafe {
-                            let _ = PostMessageW(
-                                None,
-                                crate::WM_FOCUS_KIND_UPDATE,
-                                WPARAM(wparam_val),
-                                LPARAM(hwnd.0 as isize),
-                            );
-                        }
+                        crate::win32::post_to_main_thread_with(
+                            crate::WM_FOCUS_KIND_UPDATE,
+                            wparam_val,
+                            hwnd.0 as isize,
+                        );
                     }
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

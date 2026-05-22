@@ -30,7 +30,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, Runtime, APP, ELEVATED, TIMER_HOOK_WATCHDOG,
+    LayoutEntry, Runtime, APP, ELEVATED, TIMER_HOOK_WATCHDOG, with_app, with_app_ref,
 };
 
 use awase_windows::{MAIN_THREAD_ID, TIMER_IME_REFRESH, TIMER_POWER_RESUME};
@@ -289,15 +289,8 @@ impl Drop for WtsGuard {
 
 /// セッション変更通知（画面ロック/アンロック）を登録する
 pub(super) fn register_session_notification() -> Result<WtsGuard> {
-    // SAFETY: APP is a SingleThreadCell; called from the main thread at startup before the message loop.
-    let tray_hwnd = unsafe {
-        APP.get_ref()
-            .context("APP not initialized")?
-            .executor
-            .platform
-            .tray
-            .hwnd()
-    };
+    let tray_hwnd = with_app_ref(|app| app.executor.platform.tray.hwnd())
+        .context("APP not initialized")?;
     let ok = unsafe {
         super::WTSRegisterSessionNotification(tray_hwnd, super::NOTIFY_FOR_THIS_SESSION).as_bool()
     };
@@ -349,12 +342,7 @@ pub(super) fn initialize_app(
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
 pub(super) fn initialize_ime_cache() {
-    // SAFETY: APP is a SingleThreadCell; called from the main thread at startup before the message loop.
-    unsafe {
-        if let Some(app) = APP.get_mut() {
-            app.refresh_ime_state_cache();
-        }
-    }
+    with_app(|app| app.refresh_ime_state_cache());
 }
 
 /// クリーンアップ処理（フック解除は HookGuard の Drop で行われる）
@@ -419,18 +407,15 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    if hwnd == HWND::default() {
+    if crate::win32::ValidHwnd::new(hwnd).is_none() {
         return;
     }
 
-    let Some(app) = APP.get_mut() else {
-        return;
-    };
-
-    app.platform_state.focus_transition_pending = true;
-
-    let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
-    app.schedule_ime_refresh(debounce_ms);
+    with_app(|app| {
+        app.platform_state.focus_transition_pending = true;
+        let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
+        app.schedule_ime_refresh(debounce_ms);
+    });
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
@@ -625,25 +610,17 @@ pub(super) fn run_all() -> anyhow::Result<()> {
     let _obs_hook_guards = awase_windows::tsf::observer::install_observation_hooks();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
-    // SAFETY: APP is a SingleThreadCell; this runs on the main thread before the message loop.
-    unsafe {
-        if let Some(app) = APP.get_mut() {
-            app.schedule_ime_refresh(u64::from(app.platform_state.ime_poll_interval_ms));
-            app.executor
-                .platform
-                .timer
-                .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(10));
-        }
-    }
+    with_app(|app| {
+        app.schedule_ime_refresh(u64::from(app.platform_state.ime_poll_interval_ms));
+        app.executor
+            .platform
+            .timer
+            .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(10));
+    });
 
     let (_uia_worker, uia_tx) = awase_windows::focus::uia::spawn_uia_worker();
     let _gji_worker = awase_windows::tsf::observer::start_monitor_thread();
-    // SAFETY: APP is a SingleThreadCell; this runs on the main thread before the message loop.
-    unsafe {
-        if let Some(app) = APP.get_mut() {
-            app.executor.platform.focus.set_uia_sender(uia_tx);
-        }
-    }
+    with_app(|app| app.executor.platform.focus.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
     initialize_ime_cache();

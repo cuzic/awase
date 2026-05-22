@@ -101,6 +101,25 @@ pub static RAW_TSF_LITERAL: RawTsfLiteralPending = RawTsfLiteralPending::new();
 /// APP グローバル — シングルスレッド専用
 pub static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();
 
+/// `APP` グローバルへの集約アクセスポイント。
+///
+/// `APP.get_mut()` の呼び出しをすべてここに集約し、unsafe 契約を一元管理する。
+/// 呼び出し側では `unsafe` ブロックが不要になる。
+///
+/// # Safety (module-level contract)
+/// awase-windows はすべての呼び出しが Windows メッセージループスレッドからのみ行われる。
+/// この保証により `SingleThreadCell::with_mut` の unsafe 要件が満たされる。
+pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
+    // Safety: Windows メッセージループはシングルスレッドである
+    unsafe { APP.with_mut(f) }
+}
+
+/// `APP` グローバルへの読み取り専用アクセスファサード。
+pub fn with_app_ref<R>(f: impl FnOnce(&Runtime) -> R) -> Option<R> {
+    // Safety: Windows メッセージループはシングルスレッドである
+    unsafe { APP.with(f) }
+}
+
 /// 統合 IME リフレッシュタイマー ID
 ///
 /// フォーカスデバウンス (50ms) と定期ポーリング (500ms) を統合。

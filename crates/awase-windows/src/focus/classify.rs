@@ -60,7 +60,7 @@ impl std::fmt::Display for ClassifyReason {
 /// deny-first（バイパスを優先）、allow は確信がある場合のみ。
 /// 判定不能なら `Undetermined` を返す。
 pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
-    if hwnd == HWND::default() {
+    if crate::win32::ValidHwnd::new(hwnd).is_none() {
         return ClassifyResult {
             kind: FocusKind::NonText,
             reason: ClassifyReason::NullHwnd,

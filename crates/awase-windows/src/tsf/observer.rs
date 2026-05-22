@@ -389,7 +389,7 @@ unsafe extern "system" fn observation_event_proc(
 
 /// HWND のウィンドウクラス名を取得する。
 fn hwnd_class_name(hwnd: HWND) -> String {
-    if hwnd.0.is_null() {
+    if crate::win32::ValidHwnd::new(hwnd).is_none() {
         return String::new();
     }
     let mut buf = [0u16; 128];

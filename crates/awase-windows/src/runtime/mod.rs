@@ -710,10 +710,10 @@ unsafe fn cancel_ime_composition() {
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmNotifyIME, ImmReleaseContext};
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
-    let hwnd = GetForegroundWindow();
-    if hwnd.0.is_null() {
+    let Some(valid) = crate::win32::ValidHwnd::new(GetForegroundWindow()) else {
         return;
-    }
+    };
+    let hwnd = valid.as_hwnd();
 
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {

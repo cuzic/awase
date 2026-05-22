@@ -16,7 +16,8 @@ use awase_windows::focus::cache::DetectionSource;
 use awase_windows::hook;
 use awase_windows::runtime;
 use awase_windows::{
-    Runtime, APP, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME,
+    Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, with_app,
+    with_app_ref,
 };
 use awase_windows::tray;
 
@@ -214,10 +215,10 @@ pub(super) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
 /// WM_APP (トレイメッセージ) ハンドラ
 pub(super) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
     log::debug!("WM_APP received: hwnd={:?} lparam=0x{:016X}", hwnd, lparam.0);
-    let layout_names: Vec<String> = APP
-        .get_ref()
-        .map(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
-        .unwrap_or_default();
+    let layout_names: Vec<String> = with_app_ref(|app| {
+        app.layouts.iter().map(|e| e.name.clone()).collect()
+    })
+    .unwrap_or_default();
     tray::handle_tray_message(
         hwnd,
         lparam,
@@ -240,25 +241,21 @@ pub(super) unsafe fn handle_wm_command(wparam: WPARAM) {
         } else if cmd == tray::cmd_restart_admin() {
             tray::restart_as_admin();
         } else if cmd == tray::cmd_toggle() {
-            if let Some(app) = APP.get_mut() {
-                app.toggle_engine();
-            }
+            with_app(|app| app.toggle_engine());
         } else if cmd == tray::cmd_exit() {
             PostQuitMessage(0);
         } else if cmd >= tray::cmd_layout_base() {
             let index = usize::from(cmd - tray::cmd_layout_base());
-            if let Some(app) = APP.get_mut() {
-                app.switch_layout(index);
-            }
+            with_app(|app| app.switch_layout(index));
         }
     }
 }
 
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ
 pub(super) unsafe fn handle_wm_drain_output_queue() {
-    if let Some(runtime) = APP.get_mut() {
+    with_app(|runtime| {
         runtime.executor.platform.output.flush_raw_tsf_literal_recovery();
-    }
+    });
 
     let queue = {
         let mut q = awase_windows::OUTPUT_PENDING_QUEUE
@@ -267,8 +264,8 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
         std::mem::take(&mut *q)
     };
     if !queue.is_empty() {
-        if let Some(app) = APP.get_mut() {
-            let now_us = hook::now_timestamp_us();
+        let now_us = hook::now_timestamp_us();
+        with_app(|app| {
             for queued_event in queue {
                 log::debug!(
                     "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
@@ -280,7 +277,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                 );
                 on_key_event_impl(app, queued_event);
             }
-        }
+        });
     }
 }
 

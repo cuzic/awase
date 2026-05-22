@@ -25,14 +25,14 @@ pub unsafe fn run_focus_probe() -> Option<FocusProbe> {
                     std::time::Duration::from_millis(150),
                 )
             };
-            let hwnd = result.focused_hwnd;
-            if hwnd.0.is_null() {
+            let Some(valid_hwnd) = result.focused_hwnd else {
                 return FocusProbe {
                     hwnd_addr: 0,
                     process_id: 0,
                     class_name: String::new(),
                 };
-            }
+            };
+            let hwnd = valid_hwnd.as_hwnd();
             let process_id = crate::focus::classify::get_window_process_id(hwnd);
             let class_name = crate::focus::classify::get_class_name_string(hwnd);
             FocusProbe {

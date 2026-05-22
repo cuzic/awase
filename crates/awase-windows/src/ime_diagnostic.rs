@@ -88,52 +88,49 @@ impl ImeDiagnosticSnapshot {
             injection_mode,
             ms_since_focus_change,
             ms_since_last_activity,
-        ) = unsafe {
-            if let Some(app) = crate::APP.get_ref() {
-                let (pid, class) = app
-                    .executor
-                    .platform
-                    .focus
-                    .last_focus_info
-                    .as_ref()
-                    .map_or((0u32, String::new()), |(p, c)| (*p, c.clone()));
+        ) = crate::with_app_ref(|app| {
+            let (pid, class) = app
+                .executor
+                .platform
+                .focus
+                .last_focus_info
+                .as_ref()
+                .map_or((0u32, String::new()), |(p, c)| (*p, c.clone()));
 
-                let preconditions = &app.platform_state.preconditions;
-                let focus_change_ms = app.platform_state.last_focus_change_ms;
-                let activity_ms = app.platform_state.last_hook_activity_ms;
+            let preconditions = &app.platform_state.preconditions;
+            let focus_change_ms = app.platform_state.last_focus_change_ms;
+            let activity_ms = app.platform_state.last_hook_activity_ms;
 
-                let dt_focus = if focus_change_ms == 0 {
-                    None
-                } else {
-                    Some(now.saturating_sub(focus_change_ms))
-                };
-                let dt_activity = if activity_ms == 0 {
-                    None
-                } else {
-                    Some(now.saturating_sub(activity_ms))
-                };
-
-                // フォーカス hwnd は last_focus_info に保存されない（pid/class のみ）
-                // ため、現時点のフォアグラウンド hwnd を取得する。
-                use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-                let hwnd = GetForegroundWindow();
-                let hwnd_raw = hwnd.0 as usize;
-
-                (
-                    hwnd_raw,
-                    pid,
-                    class,
-                    preconditions.ime_on,
-                    preconditions.input_mode.is_romaji_capable(),
-                    preconditions.is_japanese_ime,
-                    resolve_injection_mode_label(),
-                    dt_focus,
-                    dt_activity,
-                )
+            let dt_focus = if focus_change_ms == 0 {
+                None
             } else {
-                (0, 0, String::new(), false, false, false, "Unknown", None, None)
-            }
-        };
+                Some(now.saturating_sub(focus_change_ms))
+            };
+            let dt_activity = if activity_ms == 0 {
+                None
+            } else {
+                Some(now.saturating_sub(activity_ms))
+            };
+
+            // フォーカス hwnd は last_focus_info に保存されない（pid/class のみ）
+            // ため、現時点のフォアグラウンド hwnd を取得する。
+            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+            let hwnd = unsafe { GetForegroundWindow() };
+            let hwnd_raw = hwnd.0 as usize;
+
+            (
+                hwnd_raw,
+                pid,
+                class,
+                preconditions.ime_on,
+                preconditions.input_mode.is_romaji_capable(),
+                preconditions.is_japanese_ime,
+                resolve_injection_mode_label(),
+                dt_focus,
+                dt_activity,
+            )
+        })
+        .unwrap_or((0, 0, String::new(), false, false, false, "Unknown", None, None));
 
         // ── HKL ──
         let (hkl, hkl_lang_id, focus_thread_id) = unsafe {
@@ -220,9 +217,9 @@ impl ImeDiagnosticSnapshot {
 fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
     unsafe {
         let hwnd = HWND(focus_hwnd_raw as *mut _);
-        if hwnd.0.is_null() {
+        let Some(_) = crate::win32::ValidHwnd::new(hwnd) else {
             return (None, None);
-        }
+        };
         let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
         if ime_wnd.0.is_null() {
             return (None, None);
@@ -260,10 +257,7 @@ fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
 fn resolve_injection_mode_label() -> &'static str {
     use awase::types::AppKind;
 
-    unsafe {
-        let Some(app) = crate::APP.get_ref() else {
-            return "Unknown";
-        };
+    crate::with_app_ref(|app| {
         if let Some((pid, class)) = app.executor.platform.focus.last_focus_info.as_ref() {
             if crate::runtime::is_force_tsf(&app.executor.platform.focus.overrides, *pid, class) {
                 return "Tsf";
@@ -276,5 +270,6 @@ fn resolve_injection_mode_label() -> &'static str {
             AppKind::TsfNative => "Vk",
             _ => "Unicode",
         }
-    }
+    })
+    .unwrap_or("Unknown")
 }

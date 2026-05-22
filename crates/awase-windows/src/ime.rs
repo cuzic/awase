@@ -40,10 +40,10 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     let gui_result = crate::win32::get_gui_thread_info_with_timeout(
         std::time::Duration::from_millis(150),
     );
-    let hwnd = gui_result.focused_hwnd;
-    if hwnd.0.is_null() {
+    let Some(focused) = gui_result.focused_hwnd else {
         return false;
-    }
+    };
+    let hwnd = focused.as_hwnd();
 
     let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
     if ime_wnd.0.is_null() {
@@ -84,10 +84,7 @@ pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
 /// # Safety
 /// Calls Win32 APIs.
 pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32> {
-    let hwnd = GetForegroundWindow();
-    if hwnd.0.is_null() {
-        return None;
-    }
+    let hwnd = crate::win32::ValidHwnd::new(GetForegroundWindow())?.as_hwnd();
     let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
     if ime_wnd.0.is_null() {
         return None;
@@ -113,10 +110,10 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
 /// # Safety
 /// Calls Win32 APIs.
 pub unsafe fn get_foreground_window_class() -> String {
-    let hwnd = GetForegroundWindow();
-    if hwnd.0.is_null() {
+    let Some(valid) = crate::win32::ValidHwnd::new(GetForegroundWindow()) else {
         return "null".to_string();
-    }
+    };
+    let hwnd = valid.as_hwnd();
     let mut buf = [0u16; 128];
     let len = GetClassNameW(hwnd, &mut buf) as usize;
     if len == 0 {
@@ -136,10 +133,10 @@ pub unsafe fn get_foreground_window_class() -> String {
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
 pub unsafe fn set_ime_romaji_mode() -> bool {
-    let hwnd = GetForegroundWindow();
-    if hwnd.0.is_null() {
+    let Some(valid) = crate::win32::ValidHwnd::new(GetForegroundWindow()) else {
         return false;
-    }
+    };
+    let hwnd = valid.as_hwnd();
 
     let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
     if ime_wnd.0.is_null() {
@@ -184,9 +181,7 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
 // ─── hwnd 指定版クロスプロセス検出（detect_ime_state 専用）─────
 
 unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
-    if hwnd.0.is_null() {
-        return None;
-    }
+    let _ = crate::win32::ValidHwnd::new(hwnd)?;
     let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
     if ime_wnd.0.is_null() {
         return None;
@@ -209,9 +204,7 @@ unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
 }
 
 unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
-    if hwnd.0.is_null() {
-        return None;
-    }
+    let _ = crate::win32::ValidHwnd::new(hwnd)?;
     let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
     if ime_wnd.0.is_null() {
         return None;
@@ -233,9 +226,7 @@ unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
 }
 
 unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
-    if hwnd == HWND::default() {
-        return None;
-    }
+    let _ = crate::win32::ValidHwnd::new(hwnd)?;
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
         return None;
@@ -320,7 +311,9 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
     let result = crate::win32::get_gui_thread_info_with_timeout(
         std::time::Duration::from_millis(200),
     );
-    let focused_hwnd = result.focused_hwnd;
+    // None（フォーカスウィンドウ不明）の場合は HWND::default() にフォールバックする。
+    // detect_ime_open_for_hwnd 等は null HWND を適切に処理して None を返す。
+    let focused_hwnd = result.focused_hwnd.map(|h| h.as_hwnd()).unwrap_or_default();
     let thread_id = result.thread_id;
 
     // 1. Keyboard layout → is_japanese_ime
@@ -440,14 +433,14 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
     // detect_ime_state が使う GetGUIThreadInfo().hwndFocus（子ウィンドウ）と異なり、
     // トップレベル hwnd は TSF 互換ブリッジ経由で IMM32 API に応答できる場合が多い。
     // フォーカス切替直後に子ウィンドウで検出不能な状態でも、ここでは検出できることがある。
-    let hwnd = GetForegroundWindow();
-    if hwnd.0.is_null() {
+    let Some(valid_hwnd) = crate::win32::ValidHwnd::new(GetForegroundWindow()) else {
         return FastImeProbeResult {
             is_japanese_ime: true,
             ime_on: None,
             is_romaji: None,
         };
-    }
+    };
+    let hwnd = valid_hwnd.as_hwnd();
 
     // Alt/Win キーなどで一時的に現れるシステム UI オーバーレイ（XamlExplorerHostIslandWindow,
     // Windows.UI.Core.CoreWindow 等）は imc_open=false を返すため、ここでプローブすると
@@ -570,11 +563,9 @@ fn is_transient_system_overlay(hwnd: HWND) -> bool {
 pub unsafe fn get_focused_hwnd() -> HWND {
     let gui =
         crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(30));
-    if !gui.focused_hwnd.0.is_null() {
-        gui.focused_hwnd
-    } else {
-        GetForegroundWindow()
-    }
+    gui.focused_hwnd
+        .map(|h| h.as_hwnd())
+        .unwrap_or_else(|| GetForegroundWindow())
 }
 
 /// VK_DBE_HIRAGANA (F2) を `SendMessageTimeoutW` でフォーカスウィンドウの wndproc に直接届ける。
@@ -589,10 +580,10 @@ pub unsafe fn get_focused_hwnd() -> HWND {
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
 pub unsafe fn send_f2_via_sendmessage() -> bool {
-    let hwnd = get_focused_hwnd();
-    if hwnd.0.is_null() {
+    let Some(valid) = crate::win32::ValidHwnd::new(get_focused_hwnd()) else {
         return false;
-    }
+    };
+    let hwnd = valid.as_hwnd();
     const VK_DBE_HIRAGANA: u32 = 0xF2;
     let scan = MapVirtualKeyW(VK_DBE_HIRAGANA, MAPVK_VK_TO_VSC);
     let lparam_down = LPARAM(1_isize | (isize::try_from(scan).unwrap_or(0) << 16));
@@ -632,7 +623,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
 /// # Safety
 /// Win32 API を呼び出す。
 pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
-    if hwnd.0.is_null() {
+    if crate::win32::ValidHwnd::new(hwnd).is_none() {
         return false;
     }
     let himc = ImmGetContext(hwnd);

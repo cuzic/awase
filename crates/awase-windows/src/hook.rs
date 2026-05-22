@@ -171,9 +171,9 @@ pub fn reinstall_hook() -> bool {
             Ok(new_handle) => {
                 HOOK_HANDLE.set(new_handle);
                 // Update last_hook_activity_ms via APP
-                if let Some(app) = crate::APP.get_mut() {
+                crate::with_app(|app| {
                     app.platform_state.last_hook_activity_ms = current_tick_ms();
-                }
+                });
                 log::info!("Keyboard hook reinstalled successfully");
                 true
             }
@@ -400,10 +400,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ── 自己注入チェック（無限ループ防止）──
         if kb.dwExtraInfo == INJECTED_MARKER || kb.dwExtraInfo == crate::output::TSF_MARKER {
             // ハートビートは自己注入でも更新する（ping 応答のため）
-            if let Some(app) = crate::APP.get_mut() {
+            crate::with_app(|app| {
                 app.platform_state.last_hook_activity_ms = current_tick_ms();
                 app.platform_state.hook_event_count += 1;
-            }
+            });
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         }
 
@@ -548,12 +548,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 app.platform_state.ime_guard.active = false;
                 log::debug!("IME guard OFF (sync key vk=0x{:02X})", vk_raw);
                 app.platform_state.hook.in_callback = false;
-                let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-                    None,
-                    crate::WM_PROCESS_DEFERRED,
-                    WPARAM(0),
-                    LPARAM(0),
-                );
+                crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
                 return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
             }
 
@@ -585,10 +580,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             .map_or(CallbackResult::PassThrough, |callback| callback(event));
 
         // Re-acquire platform_state for in_callback reset
-        // (callback may have accessed APP.get_mut() internally)
-        if let Some(app) = crate::APP.get_mut() {
+        // (callback may have accessed APP.with_mut() internally)
+        crate::with_app(|app| {
             app.platform_state.hook.in_callback = false;
-        }
+        });
 
         // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）
         if matches!(route, KeyRoute::TrackOnly) {
