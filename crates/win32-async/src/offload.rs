@@ -21,5 +21,6 @@ pub async fn offload<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
         super::sleep_ms(5).await;
     }
 
-    result.lock().unwrap().take().unwrap()
+    let value = result.lock().unwrap().take().unwrap();
+    value
 }
