@@ -7,7 +7,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, MapVirtualKeyW, MAPVK_VK_TO_VSC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
+    GetForegroundWindow, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
 };
 
 use crate::imm::{
@@ -40,6 +40,31 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     .is_some();
     log::debug!("set_ime_open_cross_process: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success}");
     success
+}
+
+/// TSF ネイティブアプリ（Chrome 等）向け IME OFF フォールバック。
+///
+/// `WM_IME_CONTROL` が届かない TSF アプリに対して、フォアグラウンドウィンドウへ
+/// `VK_KANJI`（半角/全角キー）を `PostMessage` で送信し IME をトグル OFF する。
+///
+/// `PostMessage` は低レベルキーボードフックをバイパスするため awase が再インターセプトしない。
+/// VK_KANJI はトグルキーのため、Chrome の IME が ON のとき（IME OFF 要求時）のみ呼ぶこと。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn post_kanji_toggle_to_focused() {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() {
+        log::debug!("[ime-fallback] post_kanji_toggle: no foreground window");
+        return;
+    }
+    const VK_KANJI: u32 = 0x19;
+    let scan = unsafe { MapVirtualKeyW(VK_KANJI, MAPVK_VK_TO_VSC) } as usize;
+    let lparam_down = LPARAM((1 | (scan << 16)) as isize);
+    let lparam_up = LPARAM((1 | (scan << 16) | (1 << 30) | (1 << 31)) as isize);
+    log::debug!("[ime-fallback] posting VK_KANJI to hwnd={hwnd:?} (IME toggle-off)");
+    let _ = unsafe { PostMessageW(hwnd, WM_KEYDOWN, WPARAM(VK_KANJI as usize), lparam_down) };
+    let _ = unsafe { PostMessageW(hwnd, WM_KEYUP, WPARAM(VK_KANJI as usize), lparam_up) };
 }
 
 /// 現在のフォアグラウンドウィンドウの IME 変換モード生値を返す（診断ログ専用）。

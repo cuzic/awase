@@ -516,6 +516,7 @@ impl DecisionExecutor {
         }
 
         let mut ime_set_open: Option<bool> = None;
+        let mut tsf_fallback_toggle_off = false;
 
         {
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
@@ -535,6 +536,10 @@ impl DecisionExecutor {
                             log::warn!(
                                 "set_ime_open({open}) failed — requesting IME refresh for resync"
                             );
+                            // set_ime_open(false) 失敗時は VK_KANJI PostMessage でフォールバック。
+                            // Chrome 等の TSF ネイティブアプリでは WM_IME_CONTROL が届かないため。
+                            // フォーカス変更時の自動同期ではなく、ユーザー起点の IME OFF のみが対象。
+                            tsf_fallback_toggle_off = !open;
                         }
                         // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
                         platform.post_ime_refresh();
@@ -547,6 +552,10 @@ impl DecisionExecutor {
                 },
             }
         } // platform の借用をここで解放
+
+        if tsf_fallback_toggle_off {
+            unsafe { crate::ime::post_kanji_toggle_to_focused() };
+        }
 
         if let Some(open) = ime_set_open {
             // shadow_ime_on を IME 状態変化に追随させる。
