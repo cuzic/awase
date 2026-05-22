@@ -960,8 +960,24 @@ impl Output {
         let ze_bs_count = TsfSendPipeline::new(self).transmit(romaji, &chars, &outcome);
         self.mark_composition_warm();
 
-        // warm パスは prepend_f2_warmup=false なので literal detect は不要
-        let _ = (detector, ze_bs_count);
+        // Probing 状態の warm 投機送信: GJI 監視が有効なら LiteralDetect で検証する。
+        // (1) raw TSF literal 検出と回復, (2) advance_tsf_probe が on_ready() を呼んで
+        //     ゲートを Ready に進める、という 2 つの目的を兼ねる。
+        let gji_active = crate::tsf::observer::OBS_GJI_MONITOR_OK.load(Relaxed);
+        if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
+            let deadline_ms = crate::hook::current_tick_ms()
+                + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
+            let guard = OutputActiveGuard::begin();
+            self.put_back_probe(
+                romaji.to_string(),
+                cold_n,
+                Vec::new(),
+                TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms },
+                guard,
+            );
+        } else {
+            let _ = (detector, ze_bs_count);
+        }
     }
 
     /// 文字の送信方法をルックアップテーブルで解決する。

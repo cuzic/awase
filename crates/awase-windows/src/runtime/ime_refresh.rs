@@ -166,6 +166,24 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     fn apply_blacklist_ssot(&mut self) {
         log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
+
+        // Phase E: GJI I/O 観測を ImeBeliefStore に直結して Chrome の IME ON を確証化。
+        // バックグラウンドスレッドが OBS_GJI_LAST_IO_MS を更新していれば
+        // Chrome の IME が実際に ON であると判断し、belief を Confirmed(true) に昇格する。
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            const GJI_CONFIRM_WINDOW_MS: u64 = 500;
+            let now_ms = crate::hook::current_tick_ms();
+            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+            if last_io > 0 && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
+                log::debug!(
+                    "[gji-belief] GJI I/O observed {}ms ago → record_observation(true)",
+                    now_ms.saturating_sub(last_io)
+                );
+                self.rt.executor.platform.output.record_observation(true);
+            }
+        }
+
         if self.rt.engine.is_user_enabled()
             && self.rt.platform_state.preconditions.is_japanese_ime
             && self.rt.platform_state.preconditions.ime_on
