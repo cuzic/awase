@@ -59,6 +59,14 @@ impl PlatformRuntime for WindowsPlatform {
     // ── IME ──
 
     fn set_ime_open(&mut self, open: bool) -> bool {
+        // IMM ブリッジ非対応クラス（XamlExplorerHostIslandWindow 等）では
+        // get_gui_thread_info + send_ime_control が ~200ms タイムアウトしてブロックする。
+        // これらのウィンドウには cross-process IMM 呼び出しが届かないためスキップする。
+        if let Some((_, class_name)) = self.focus.last_focus_info.as_ref() {
+            if crate::focus::classify::is_imm_bridge_broken(class_name) {
+                return false;
+            }
+        }
         unsafe { crate::ime::set_ime_open_cross_process(open) }
     }
 

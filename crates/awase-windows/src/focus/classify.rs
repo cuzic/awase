@@ -156,6 +156,9 @@ pub const IMM_BRIDGE_BROKEN_CLASSES: &[&str] = &[
     // UWP / WinUI
     "Windows.UI.Core.CoreWindow",
     "ApplicationFrameWindow",
+    // XAML ホスト（Windows 11 エクスプローラー、タスクバー等）
+    // IMM クロスプロセスクエリがタイムアウトし ~200ms ブロックするため除外。
+    "XamlExplorerHostIslandWindow",
     // Console 系
     "PseudoConsoleWindow",
     "CASCADIA_HOSTING_WINDOW_CLASS",

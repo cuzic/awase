@@ -348,8 +348,12 @@ impl<'a> ImeRefreshPipeline<'a> {
     // フォーカス変更が確定した直後の IME 状態を 1 行ログに吐き出す。
     // ウィンドウ切替直後の cold-start 不具合を解析するための観測点。
 
-    fn phase3_7_post_focus_change_snapshot(&mut self, _state: &PipelineState) {
-        crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
+    fn phase3_7_post_focus_change_snapshot(&mut self, state: &PipelineState) {
+        // IMM ブリッジ非対応クラスでは capture_imc / get_gui_thread_info がタイムアウト
+        // して ~150ms ブロックするため診断をスキップする。
+        if !state.skip_imm_query {
+            crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
+        }
         // フォーカス変更時は VK/TSF いずれも composition context が無効化される。
         log::debug!("[composition] focus change → marking cold");
         // shadow_ime_on を最新の IME 状態に同期してから warmup 判定を行う。
