@@ -52,6 +52,7 @@ pub use crate::state::{
 
 pub use crate::tsf::probe_bridge::{
     OUTPUT_ACTIVE, OUTPUT_PENDING_QUEUE, WM_DRAIN_OUTPUT_QUEUE, post_drain_output_queue,
+    IN_WITH_APP_QUEUE, RawHookData,
 };
 
 // ── クロススレッド共有グローバル状態 ──

@@ -16,7 +16,7 @@ use awase::types::{
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
-fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
+pub(crate) fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
     use crate::vk;
 
     let left_thumb = VkCode(config.left_thumb_vk);
@@ -36,7 +36,7 @@ fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassifi
 }
 
 /// Windows VK コードから修飾キー分類を生成する
-const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
+pub(crate) const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
     match vk.0 {
         0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
         0x11 | 0xA2 | 0xA3 => Some(ModifierKey::Ctrl),
@@ -60,7 +60,7 @@ const fn is_non_shift_modifier(vk: u16) -> bool {
 }
 
 /// Windows VK コードから IME 関連の事前分類情報を生成する
-fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
+pub(crate) fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     use crate::vk;
 
     let ime_key = vk::ImeKeyKind::from_vk(vk);
@@ -397,17 +397,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let hook_handle = *HOOK_HANDLE.get_mut();
 
     if ncode >= 0 {
-        // ── with_app 再入ガード ──
-        // SendMessageTimeoutW (cross-process IME 制御) がメッセージポンプを起動した場合、
-        // このコールバックが再呼び出しされる。APP.get_mut() は IN_WITH_APP=true の間
-        // 呼べないため（&mut Runtime が二重に存在し UB）、全キーをパススルーする。
-        if crate::in_with_app() {
-            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-        }
-
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
 
         // ── 自己注入チェック（無限ループ防止）──
+        // in_with_app チェックより先に行う: 注入キーは常にパススルー。
         if kb.dwExtraInfo == INJECTED_MARKER || kb.dwExtraInfo == crate::output::TSF_MARKER {
             // ハートビートは自己注入でも更新する（ping 応答のため）。
             // with_app は SendMessageTimeoutW 経由でここが呼ばれた際に再入検出を返すため、
@@ -418,6 +411,32 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 app.platform_state.hook_event_count += 1;
             }
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+        }
+
+        // ── with_app 再入ガード ──
+        // SendMessageTimeoutW (cross-process IME 制御) がメッセージポンプを起動した場合、
+        // このコールバックが再呼び出しされる。APP.get_mut() は IN_WITH_APP=true の間
+        // 呼べないため（&mut Runtime が二重に存在し UB）、キーを IN_WITH_APP_QUEUE に
+        // 退避して drain 後に NICOLA で再処理する（CallNextHookEx での素通しは NICOLA バイパス）。
+        if crate::in_with_app() {
+            let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+            let raw = crate::tsf::probe_bridge::RawHookData {
+                vk_code: kb.vkCode as u16,
+                scan_code: kb.scanCode,
+                is_keydown,
+                extra_info: kb.dwExtraInfo,
+                timestamp: now_timestamp(),
+            };
+            log::debug!(
+                "[in-with-app] queuing vk=0x{:02X} {}",
+                raw.vk_code,
+                if raw.is_keydown { "KeyDown" } else { "KeyUp" }
+            );
+            if let Ok(mut q) = crate::tsf::probe_bridge::IN_WITH_APP_QUEUE.lock() {
+                q.push(raw);
+            }
+            crate::post_drain_output_queue();
+            return LRESULT(1); // Consumed — NICOLA 処理後に drain で再配送
         }
 
         // ── APP からプラットフォーム状態を取得 ──

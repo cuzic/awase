@@ -265,6 +265,56 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
         runtime.executor.platform.output.flush_raw_tsf_literal_recovery();
     });
 
+    // in_with_app() 中に届いたキーを NICOLA で再処理する。
+    // OUTPUT_PENDING_QUEUE より先に drain: 時系列上こちらが先に到着している。
+    {
+        let iwa_queue = {
+            let mut q = awase_windows::IN_WITH_APP_QUEUE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *q)
+        };
+        if !iwa_queue.is_empty() {
+            with_app(|app| {
+                for raw in iwa_queue {
+                    let vk = awase::types::VkCode(raw.vk_code);
+                    let scan = awase::types::ScanCode(raw.scan_code);
+                    let event_type = if raw.is_keydown {
+                        awase::types::KeyEventType::KeyDown
+                    } else {
+                        awase::types::KeyEventType::KeyUp
+                    };
+                    let (key_classification, physical_pos) =
+                        hook::classify_key(vk, scan, &app.platform_state.hook_config);
+                    let modifier_key = hook::classify_modifier(vk);
+                    let ime_relevance = hook::classify_ime_relevance(vk);
+                    let modifier_snapshot = unsafe {
+                        awase_windows::observer::focus_observer::read_os_modifiers()
+                    };
+                    let mut event = awase::types::RawKeyEvent {
+                        vk_code: vk,
+                        scan_code: scan,
+                        event_type,
+                        extra_info: raw.extra_info,
+                        timestamp: raw.timestamp,
+                        key_classification,
+                        physical_pos,
+                        ime_relevance,
+                        modifier_key,
+                        modifier_snapshot,
+                    };
+                    app.enrich_ime_relevance(&mut event);
+                    log::debug!(
+                        "[in-with-app-drain] replay vk=0x{:02X} {:?}",
+                        raw.vk_code,
+                        event_type,
+                    );
+                    on_key_event_impl(app, event);
+                }
+            });
+        }
+    }
+
     let queue = {
         let mut q = awase_windows::OUTPUT_PENDING_QUEUE
             .lock()
