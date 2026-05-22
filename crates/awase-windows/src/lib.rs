@@ -22,6 +22,7 @@ pub mod executor;
 pub mod focus;
 pub mod hook;
 pub mod ime;
+pub(crate) mod ime_controller;
 pub mod ime_diagnostic;
 pub(crate) mod imm;
 pub mod ime_observations;
