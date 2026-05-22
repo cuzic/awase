@@ -25,14 +25,14 @@ pub(crate) struct OutputActiveGuard;
 
 impl OutputActiveGuard {
     pub(crate) fn begin() -> Self {
-        crate::OUTPUT_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+        crate::OUTPUT_ACTIVE.store(true, Ordering::Release);
         Self
     }
 }
 
 impl Drop for OutputActiveGuard {
     fn drop(&mut self) {
-        crate::OUTPUT_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+        crate::OUTPUT_ACTIVE.store(false, Ordering::Release);
         crate::post_drain_output_queue();
     }
 }
@@ -383,7 +383,7 @@ impl Output {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
-        crate::OBS_FOCUS_NAMECHANGE_SEQ.store(0, std::sync::atomic::Ordering::Relaxed);
+        crate::OBS_FOCUS_NAMECHANGE_SEQ.store(0, Ordering::Relaxed);
         // VK_DBE_HIRAGANA (F2) を送信: VK_IME_ON (0x16) は IME ON 状態をセットするだけで
         // TSF composition context の初期化をトリガーしない。WezTerm は物理 F2 受信時に
         // TSF composition を初期化するため、同等の VK_DBE_HIRAGANA を送る必要がある。
