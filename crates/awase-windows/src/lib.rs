@@ -121,7 +121,10 @@ std::thread_local! {
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
     let already_in = IN_WITH_APP.with(|flag| flag.replace(true));
     if already_in {
-        log::error!("with_app re-entry detected — skipping to prevent UB (BUG: nested message pump?)");
+        // SendMessage (cross-process IME) がメッセージポンプを起動し、
+        // その間に dispatch されたメッセージが with_app を再呼び出しした。
+        // 呼び出し元がこの None を受けて re-post する設計になっている（例: WM_FOCUS_KIND_UPDATE）。
+        log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
         debug_assert!(false, "with_app re-entry");
         return None;
     }

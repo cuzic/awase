@@ -28,6 +28,7 @@ use awase_windows::{
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
     WM_RELOAD_CONFIG, with_app,
 };
+use awase_windows::win32::post_to_main_thread_with;
 
 // ── 定数 ──
 
@@ -320,7 +321,13 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
             }
             WM_FOCUS_KIND_UPDATE => {
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
-                with_app(|app| unsafe { message_handlers::handle_wm_focus_kind_update(app, wparam, lparam) });
+                if with_app(|app| unsafe {
+                    message_handlers::handle_wm_focus_kind_update(app, wparam, lparam)
+                }).is_none() {
+                    // with_app 再入中（set_ime_open → SendMessage がメッセージポンプを起動した場合）。
+                    // 現在の with_app が完了するまでキューに戻す。
+                    post_to_main_thread_with(WM_FOCUS_KIND_UPDATE, wparam, lparam);
+                }
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => {
                 with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
