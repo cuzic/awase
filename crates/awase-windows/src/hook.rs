@@ -16,7 +16,7 @@ use awase::types::{
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
-pub(crate) fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
+pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
     use crate::vk;
 
     let left_thumb = VkCode(config.left_thumb_vk);
@@ -36,7 +36,7 @@ pub(crate) fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (
 }
 
 /// Windows VK コードから修飾キー分類を生成する
-pub(crate) const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
+pub const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
     match vk.0 {
         0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
         0x11 | 0xA2 | 0xA3 => Some(ModifierKey::Ctrl),
@@ -60,7 +60,7 @@ const fn is_non_shift_modifier(vk: u16) -> bool {
 }
 
 /// Windows VK コードから IME 関連の事前分類情報を生成する
-pub(crate) fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
+pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     use crate::vk;
 
     let ime_key = vk::ImeKeyKind::from_vk(vk);
