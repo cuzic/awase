@@ -552,13 +552,8 @@ impl Runtime {
                 // PendingWarmup 以外では空 Vec を返すため安全。
                 app.executor.platform.timer.kill(crate::TIMER_TSF_GATE);
                 if !held.is_empty() {
-                    log::debug!("[tsf-gate] draining {} held keys via OUTPUT_PENDING_QUEUE", held.len());
-                    let mut q = crate::OUTPUT_PENDING_QUEUE
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    q.extend(held);
-                    drop(q);
-                    crate::tsf::probe_bridge::post_drain_output_queue();
+                    log::debug!("[tsf-gate] draining {} held keys via INPUT_DEFER", held.len());
+                    crate::INPUT_DEFER.replay_later(held);
                 }
             });
         });

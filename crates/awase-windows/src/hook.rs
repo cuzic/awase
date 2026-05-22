@@ -432,10 +432,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 raw.vk_code,
                 if raw.is_keydown { "KeyDown" } else { "KeyUp" }
             );
-            if let Ok(mut q) = crate::tsf::probe_bridge::IN_WITH_APP_QUEUE.lock() {
-                q.push(raw);
-            }
-            crate::post_drain_output_queue();
+            crate::INPUT_DEFER.defer_from_hook_reentry(raw);
             return LRESULT(1); // Consumed — NICOLA 処理後に drain で再配送
         }
 

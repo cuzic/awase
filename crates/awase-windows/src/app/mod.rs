@@ -261,20 +261,18 @@ fn check_keyboard_layout_on_change() {
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     if awase_windows::OUTPUT_ACTIVE.load(Ordering::Relaxed) {
         log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
-        if let Ok(mut q) = awase_windows::OUTPUT_PENDING_QUEUE.lock() {
-            q.push(event);
-        }
+        awase_windows::INPUT_DEFER.defer_during_output(event);
         return CallbackResult::Consumed;
     }
     // OUTPUT_ACTIVE=false だがキューに未 drain エントリがある場合、
     // 対応 KeyDown が drain 待ちの間に KeyUp が届いた（drain race）。
     // drain で synthetic KeyUp が注入されるが、念のためログを残す。
     if matches!(event.event_type, awase::types::KeyEventType::KeyUp) {
-        if let Ok(q) = awase_windows::OUTPUT_PENDING_QUEUE.try_lock() {
-            if !q.is_empty() {
+        if let Some(len) = awase_windows::INPUT_DEFER.pending_len_nonblocking() {
+            if len > 0 {
                 log::debug!(
-                    "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {} item(s) (OUTPUT_ACTIVE=false)",
-                    event.vk_code.0, q.len()
+                    "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {len} item(s) (OUTPUT_ACTIVE=false)",
+                    event.vk_code.0
                 );
             }
         }
@@ -284,15 +282,12 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         // メッセージポンプを起動し、その間にハードウェアキーが届いた場合）。
         // PassThrough にすると NICOLA 文字キー（F=け、U=ち など）が MS-IME に
         // ラテン文字として届き文字化けする。
-        // OUTPUT_PENDING_QUEUE に退避して WM_DRAIN_OUTPUT_QUEUE で NICOLA に再配送する。
+        // pending キューに退避して WM_DRAIN_OUTPUT_QUEUE で NICOLA に再配送する。
         log::debug!(
             "[with-app-reentry] queuing vk=0x{:02X} {:?} (IN_WITH_APP, defer to drain)",
             event.vk_code.0, event.event_type,
         );
-        if let Ok(mut q) = awase_windows::OUTPUT_PENDING_QUEUE.lock() {
-            q.push(event);
-        }
-        awase_windows::post_drain_output_queue();
+        awase_windows::INPUT_DEFER.defer_during_with_app(event);
         CallbackResult::Consumed
     })
 }

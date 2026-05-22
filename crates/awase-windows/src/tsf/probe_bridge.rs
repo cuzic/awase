@@ -49,7 +49,7 @@ pub static IN_WITH_APP_QUEUE: std::sync::Mutex<Vec<RawHookData>> =
     std::sync::Mutex::new(Vec::new());
 
 /// OUTPUT_ACTIVE 解除後に呼ぶ。キューに溜まったキーを再配送するメッセージを投げる。
-pub fn post_drain_output_queue() {
+pub(crate) fn post_drain_output_queue() {
     use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
     let _ = unsafe {
         PostMessageW(

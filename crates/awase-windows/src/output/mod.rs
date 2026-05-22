@@ -43,7 +43,7 @@ impl Drop for OutputActiveGuard {
         let prev = OUTPUT_ACTIVE_DEPTH.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
             crate::OUTPUT_ACTIVE.store(false, Ordering::Release);
-            crate::post_drain_output_queue();
+            crate::tsf::probe_bridge::post_drain_output_queue();
         }
     }
 }

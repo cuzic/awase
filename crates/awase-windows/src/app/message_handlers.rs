@@ -57,13 +57,10 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             let held = app.executor.platform.output.tsf_gate.on_warmup_timeout();
             if !held.is_empty() {
                 log::debug!(
-                    "[tsf-gate-timeout] draining {} held keys via OUTPUT_PENDING_QUEUE",
+                    "[tsf-gate-timeout] draining {} held keys via INPUT_DEFER",
                     held.len()
                 );
-                if let Ok(mut q) = awase_windows::OUTPUT_PENDING_QUEUE.lock() {
-                    q.extend(held);
-                }
-                awase_windows::post_drain_output_queue();
+                awase_windows::INPUT_DEFER.replay_later(held);
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
@@ -282,14 +279,9 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
     });
 
     // in_with_app() 中に届いたキーを NICOLA で再処理する。
-    // OUTPUT_PENDING_QUEUE より先に drain: 時系列上こちらが先に到着している。
+    // pending キューより先に drain: 時系列上こちらが先に到着している。
     {
-        let iwa_queue = {
-            let mut q = awase_windows::IN_WITH_APP_QUEUE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *q)
-        };
+        let iwa_queue = awase_windows::INPUT_DEFER.take_iwa();
         if !iwa_queue.is_empty() {
             with_app(|app| {
                 for raw in iwa_queue {
@@ -331,12 +323,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
         }
     }
 
-    let queue = {
-        let mut q = awase_windows::OUTPUT_PENDING_QUEUE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        std::mem::take(&mut *q)
-    };
+    let queue = awase_windows::INPUT_DEFER.take_pending();
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
         with_app(|app| {

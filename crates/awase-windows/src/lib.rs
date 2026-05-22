@@ -25,6 +25,7 @@ pub mod ime;
 pub mod ime_diagnostic;
 pub(crate) mod imm;
 pub mod ime_observations;
+pub mod input_defer;
 pub mod observer;
 pub mod output;
 pub mod platform;
@@ -52,9 +53,11 @@ pub use crate::state::{
 };
 
 pub use crate::tsf::probe_bridge::{
-    OUTPUT_ACTIVE, OUTPUT_PENDING_QUEUE, WM_DRAIN_OUTPUT_QUEUE, post_drain_output_queue,
+    OUTPUT_ACTIVE, OUTPUT_PENDING_QUEUE, WM_DRAIN_OUTPUT_QUEUE,
     IN_WITH_APP_QUEUE, RawHookData,
 };
+
+pub use crate::input_defer::{INPUT_DEFER, InputDeferQueue};
 
 // ── クロススレッド共有グローバル状態 ──
 //
