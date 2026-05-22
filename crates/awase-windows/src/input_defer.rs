@@ -1,52 +1,49 @@
 //! 入力遅延キュー — 複数の退避経路を 1 つの API に集約する。
 //!
-//! ## 内部構造（Step 2: 1 本の VecDeque に統合）
+//! ## 内部構造（単一キュー）
 //!
-//! `iwa`（in_with_app）は hook 再入のため classify 不可のまま `RawHookData` で保持し、
-//! `take_all(classify_fn)` 呼び出し時（WM_DRAIN_OUTPUT_QUEUE ハンドラ内、with_app 内）に
-//! `RawKeyEvent` へ変換してから `pending` と合流させる。
+//! すべての退避経路（hook 再入・OUTPUT_ACTIVE 中・TsfGate drain 等）は
+//! classify 済みの `RawKeyEvent` として同一キューに積む。
 //!
-//! - `iwa`: hook 再入中に到着した生イベント（`RawHookData`、classify は drain 時）
-//! - `pending`: OUTPUT_ACTIVE 中・TsfGate drain 等の classify 済みイベント（`RawKeyEvent`）
+//! hook 再入時のフック側でも `hook::HOOK_CONFIG` グローバルを使って
+//! 直接 classify するため、drain 時の classify クロージャは不要になった。
+//! `enrich_ime_relevance`（sync key 判定）のみ drain 側で `with_app` 内に実行する。
 
 use std::sync::Mutex;
 use awase::types::RawKeyEvent;
-use crate::tsf::probe_bridge::RawHookData;
 
 #[allow(missing_debug_implementations)]
 pub struct InputDeferQueue {
-    iwa: Mutex<Vec<RawHookData>>,
-    pending: Mutex<Vec<RawKeyEvent>>,
+    queue: Mutex<Vec<RawKeyEvent>>,
 }
 
 pub static INPUT_DEFER: InputDeferQueue = InputDeferQueue::new();
 
 impl InputDeferQueue {
     pub const fn new() -> Self {
-        Self { iwa: Mutex::new(Vec::new()), pending: Mutex::new(Vec::new()) }
+        Self { queue: Mutex::new(Vec::new()) }
     }
 
-    /// `in_with_app()` = true のときフックから呼ぶ。生データを退避し drain を要求する。
-    pub fn defer_from_hook_reentry(&self, raw: RawHookData) {
-        if let Ok(mut q) = self.iwa.lock() { q.push(raw); }
-        crate::tsf::probe_bridge::post_drain_output_queue();
+    /// classify 済みイベントをキューに積む。drain は呼び出し元が担う。
+    pub fn push(&self, event: RawKeyEvent) {
+        if let Ok(mut q) = self.queue.lock() { q.push(event); }
     }
 
     /// `OUTPUT_ACTIVE` = true のときフックから呼ぶ。
     /// drain は `OutputActiveGuard::drop` が担うため post しない。
     pub fn defer_during_output(&self, event: RawKeyEvent) {
-        if let Ok(mut q) = self.pending.lock() { q.push(event); }
+        if let Ok(mut q) = self.queue.lock() { q.push(event); }
     }
 
     /// `with_app` 再入（OUTPUT_ACTIVE=false、classify 済み）で退避し drain を要求する。
     pub fn defer_during_with_app(&self, event: RawKeyEvent) {
-        if let Ok(mut q) = self.pending.lock() { q.push(event); }
+        if let Ok(mut q) = self.queue.lock() { q.push(event); }
         crate::tsf::probe_bridge::post_drain_output_queue();
     }
 
     /// TsfGate・タイムアウト等から保留キーをまとめて再投入する。空でも安全（no-op）。
     pub fn replay_later(&self, events: impl IntoIterator<Item = RawKeyEvent>) {
-        let mut q = match self.pending.lock() {
+        let mut q = match self.queue.lock() {
             Ok(q) => q,
             Err(e) => e.into_inner(),
         };
@@ -58,37 +55,21 @@ impl InputDeferQueue {
         }
     }
 
-    /// 両キューを合流させてタイムスタンプ昇順で返す（WM_DRAIN_OUTPUT_QUEUE ハンドラの `with_app` 内専用）。
+    /// キューを全て取り出してタイムスタンプ昇順で返す（WM_DRAIN_OUTPUT_QUEUE ハンドラ専用）。
     ///
-    /// `classify_fn` は `RawHookData` を `RawKeyEvent` に変換する関数。
-    /// `with_app` 内から呼ぶこと（APP への読み取りアクセスが必要）。
-    ///
-    /// iwa と pending はどちらが古いか不定なため、単純に先頭に置くのではなく
-    /// timestamp でソートして物理的な押下順を復元する。
-    /// （例: cold probe 中に L が pending 入り → probe 完了直前に A が iwa 入り →
-    ///   iwa 先頭だと A→L になってしまう「きうょ」バグの原因）
-    pub fn take_all(&self, classify_fn: impl Fn(RawHookData) -> Option<RawKeyEvent>) -> Vec<RawKeyEvent> {
-        let iwa = {
-            let mut q = match self.iwa.lock() { Ok(q) => q, Err(e) => e.into_inner() };
-            std::mem::take(&mut *q)
+    /// 取り出し後は `enrich_ime_relevance` を `with_app` 内で呼ぶこと。
+    pub fn take_all(&self) -> Vec<RawKeyEvent> {
+        let mut q = match self.queue.lock() {
+            Ok(q) => q,
+            Err(e) => e.into_inner(),
         };
-        let pending = {
-            let mut q = match self.pending.lock() { Ok(q) => q, Err(e) => e.into_inner() };
-            std::mem::take(&mut *q)
-        };
-        let mut result = Vec::with_capacity(iwa.len() + pending.len());
-        for raw in iwa {
-            if let Some(ev) = classify_fn(raw) {
-                result.push(ev);
-            }
-        }
-        result.extend(pending);
+        let mut result = std::mem::take(&mut *q);
         result.sort_by_key(|ev| ev.timestamp);
         result
     }
 
     /// drain race 検出用（ノンブロッキング）。
     pub fn pending_len_nonblocking(&self) -> Option<usize> {
-        self.pending.try_lock().ok().map(|q| q.len())
+        self.queue.try_lock().ok().map(|q| q.len())
     }
 }

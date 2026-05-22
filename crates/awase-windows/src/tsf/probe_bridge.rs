@@ -5,7 +5,6 @@
 //! セッション終了後に `WM_DRAIN_OUTPUT_QUEUE` 経由でキーを順序保証付きで再配送する。
 
 use std::sync::atomic::AtomicBool;
-use awase::types::Timestamp;
 
 /// `send_keys()` の全期間にわたる出力セッションフラグ。
 ///
@@ -19,19 +18,6 @@ pub static OUTPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
 ///
 /// `WM_APP + 18` = 0x8012
 pub const WM_DRAIN_OUTPUT_QUEUE: u32 = 0x8000 + 18;
-
-/// `in_with_app()` = true のとき hook から退避した生キーイベント。
-///
-/// hook.rs 内で APP.get_mut() が呼べない（二重借用 UB）ため、
-/// 最小限の情報のみ保存し classify は drain 時に行う。
-#[derive(Debug, Clone, Copy)]
-pub struct RawHookData {
-    pub vk_code: u16,
-    pub scan_code: u32,
-    pub is_keydown: bool,
-    pub extra_info: usize,
-    pub timestamp: Timestamp,
-}
 
 /// OUTPUT_ACTIVE 解除後に呼ぶ。キューに溜まったキーを再配送するメッセージを投げる。
 pub(crate) fn post_drain_output_queue() {

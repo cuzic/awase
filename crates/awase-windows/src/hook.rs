@@ -209,6 +209,20 @@ impl<T> SingleThreadCell<T> {
 /// グローバルなフックハンドル（構造的に必要: OS コールバックから参照）
 static HOOK_HANDLE: SingleThreadCell<HHOOK> = SingleThreadCell::new(HHOOK(std::ptr::null_mut()));
 
+/// hook_callback が in_with_app 時に使うフック設定のグローバルコピー。
+///
+/// APP.get_mut() を呼べない状況でも classify_key が実行できるように、
+/// bootstrap 時（および thumb_vk 変更時）に更新する。
+static HOOK_CONFIG: SingleThreadCell<HookConfig> = SingleThreadCell::new(HookConfig {
+    left_thumb_vk: 0,
+    right_thumb_vk: 0,
+});
+
+/// グローバル HOOK_CONFIG を更新する。bootstrap と thumb_vk 変更後に呼ぶ。
+pub fn update_hook_config(config: HookConfig) {
+    unsafe { HOOK_CONFIG.set(config); }
+}
+
 /// フックコールバックで使うコールバック関数（構造的に必要: OS コールバックから参照）
 static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) -> CallbackResult>>> =
     SingleThreadCell::new(None);
@@ -420,19 +434,30 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // 退避して drain 後に NICOLA で再処理する（CallNextHookEx での素通しは NICOLA バイパス）。
         if crate::in_with_app() {
             let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            let raw = crate::tsf::probe_bridge::RawHookData {
-                vk_code: kb.vkCode as u16,
-                scan_code: kb.scanCode,
-                is_keydown,
+            let vk = VkCode(kb.vkCode as u16);
+            let scan = ScanCode(kb.scanCode);
+            let config = HOOK_CONFIG.get_mut();
+            let (key_classification, physical_pos) = classify_key(vk, scan, config);
+            let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+            let event = RawKeyEvent {
+                vk_code: vk,
+                scan_code: scan,
+                event_type: if is_keydown { KeyEventType::KeyDown } else { KeyEventType::KeyUp },
                 extra_info: kb.dwExtraInfo,
                 timestamp: now_timestamp(),
+                key_classification,
+                physical_pos,
+                ime_relevance: classify_ime_relevance(vk),
+                modifier_key: classify_modifier(vk),
+                modifier_snapshot,
             };
             log::debug!(
-                "[in-with-app] queuing vk=0x{:02X} {}",
-                raw.vk_code,
-                if raw.is_keydown { "KeyDown" } else { "KeyUp" }
+                "[in-with-app] queuing vk=0x{:02X} {:?}",
+                vk.0,
+                event.event_type,
             );
-            crate::INPUT_DEFER.defer_from_hook_reentry(raw);
+            crate::INPUT_DEFER.push(event);
+            crate::tsf::probe_bridge::post_drain_output_queue();
             return LRESULT(1); // Consumed — NICOLA 処理後に drain で再配送
         }
 

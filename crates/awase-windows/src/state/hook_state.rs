@@ -16,7 +16,7 @@ pub struct HookRoutingState {
 }
 
 /// フック設定（親指キー VK コード）
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct HookConfig {
     pub left_thumb_vk: u16,
     pub right_thumb_vk: u16,

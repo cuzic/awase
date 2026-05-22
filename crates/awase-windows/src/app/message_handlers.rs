@@ -278,46 +278,17 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
         runtime.executor.platform.output.flush_raw_tsf_literal_recovery();
     });
 
-    // 両キュー（iwa + pending）を合流させて取り出す。
-    // take_all は iwa アイテムを classify して pending の先頭に連結して返す。
-    // with_app 内から呼ぶことで APP への読み取りアクセスが安全に行える。
-    let queue = with_app(|app| {
-        awase_windows::INPUT_DEFER.take_all(|raw| {
-            let vk = awase::types::VkCode(raw.vk_code);
-            let scan = awase::types::ScanCode(raw.scan_code);
-            let event_type = if raw.is_keydown {
-                awase::types::KeyEventType::KeyDown
-            } else {
-                awase::types::KeyEventType::KeyUp
-            };
-            let (key_classification, physical_pos) =
-                hook::classify_key(vk, scan, &app.platform_state.hook_config);
-            let modifier_key = hook::classify_modifier(vk);
-            let ime_relevance = hook::classify_ime_relevance(vk);
-            let modifier_snapshot = unsafe {
-                awase_windows::observer::focus_observer::read_os_modifiers()
-            };
-            let mut event = awase::types::RawKeyEvent {
-                vk_code: vk,
-                scan_code: scan,
-                event_type,
-                extra_info: raw.extra_info,
-                timestamp: raw.timestamp,
-                key_classification,
-                physical_pos,
-                ime_relevance,
-                modifier_key,
-                modifier_snapshot,
-            };
-            app.enrich_ime_relevance(&mut event);
-            log::debug!(
-                "[in-with-app-drain] classified vk=0x{:02X} {:?}",
-                raw.vk_code,
-                event_type,
-            );
-            Some(event)
-        })
-    }).unwrap_or_default();
+    // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
+    let queue = {
+        let mut events = awase_windows::INPUT_DEFER.take_all();
+        with_app(|app| {
+            for ev in &mut events {
+                app.enrich_ime_relevance(ev);
+                log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code.0, ev.event_type);
+            }
+        });
+        events
+    };
 
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
