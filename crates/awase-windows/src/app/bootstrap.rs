@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS,
+    RegisterHotKey, HOT_KEY_MODIFIERS,
 };
 
 use awase::config::ValidatedConfig;
@@ -20,7 +20,6 @@ use awase::yab::YabLayout;
 use awase_windows::vk::vk_name_to_code;
 
 use awase_windows::executor;
-use awase_windows::focus;
 use awase_windows::hook;
 use awase_windows::hook::CallbackResult;
 use awase_windows::ime;
@@ -33,7 +32,7 @@ use awase_windows::{
     LayoutEntry, Runtime, APP, ELEVATED, TIMER_HOOK_WATCHDOG, with_app, with_app_ref,
 };
 
-use awase_windows::{MAIN_THREAD_ID, TIMER_IME_REFRESH, TIMER_POWER_RESUME};
+use awase_windows::MAIN_THREAD_ID;
 
 use super::{
     HotKeyGuard, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RapidPressTracker,
@@ -407,7 +406,7 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    if crate::win32::non_null_hwnd(hwnd).is_none() {
+    if awase_windows::win32::non_null_hwnd(hwnd).is_none() {
         return;
     }
 

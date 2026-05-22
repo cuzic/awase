@@ -24,7 +24,7 @@ use awase_windows::tray;
 use super::{check_keyboard_layout_on_change, launch_settings, on_key_event_impl, reload_config};
 
 /// WM_TIMER ハンドラ
-pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize>, msg_wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
+pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize>, _msg_wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {

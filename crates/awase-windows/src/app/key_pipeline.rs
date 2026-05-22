@@ -13,7 +13,7 @@ use awase_windows::ime;
 use awase_windows::runtime;
 use awase_windows::hook::CallbackResult;
 use awase_windows::win32::{post_to_main_thread};
-use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_PANIC_RESET};
+use awase_windows::{ImeForceOnGuard, Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_PANIC_RESET};
 
 use super::RAPID_IME_TIMESTAMPS;
 
@@ -93,7 +93,7 @@ impl<'a> KeyEventPipeline<'a> {
                     Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
                 if effective {
                     self.app.platform_state.preconditions.ime_detect_miss_count = 0;
-                    self.app.platform_state.preconditions.ime_force_on_guard = false;
+                    self.app.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
                 }
                 self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
             }
@@ -190,7 +190,7 @@ impl<'a> KeyEventPipeline<'a> {
             self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
             if self.app.platform_state.preconditions.ime_on != current {
                 self.app.platform_state.preconditions.ime_detect_miss_count = 0;
-                self.app.platform_state.preconditions.ime_force_on_guard = false;
+                self.app.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
                     if current { "ON" } else { "OFF" },
@@ -231,7 +231,7 @@ impl<'a> KeyEventPipeline<'a> {
                 Some(awase_windows::ime_observations::ImeObs { value: new_ime_on, ms });
             self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
             self.app.platform_state.preconditions.ime_detect_miss_count = 0;
-            self.app.platform_state.preconditions.ime_force_on_guard = false;
+            self.app.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
             self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
             self.app.platform_state.hook.suppress_ctrl_bypass = true;
             log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass suppressed");

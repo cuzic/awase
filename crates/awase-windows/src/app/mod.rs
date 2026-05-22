@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use anyhow::Result;
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
@@ -19,12 +19,11 @@ use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
 use awase::types::{RawKeyEvent, VkCode};
 
-use awase_windows::hook;
 use awase_windows::hook::CallbackResult;
 use awase_windows::ime;
 use awase_windows::runtime;
 use awase_windows::{
-    Runtime, TIMER_IME_REFRESH, TIMER_POWER_RESUME, WM_DRAIN_OUTPUT_QUEUE,
+    Runtime, WM_DRAIN_OUTPUT_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
     WM_RELOAD_CONFIG, with_app,
@@ -288,46 +287,46 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
 
         match msg.message {
             WM_TIMER => {
-                with_app(|app| {
+                with_app(|app| unsafe {
                     let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
                     message_handlers::handle_wm_timer(app, logical_id, msg.wParam.0, &msg);
                 });
             }
             WM_EXECUTE_EFFECTS => {
-                with_app(|app| message_handlers::handle_wm_execute_effects(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
             }
             WM_PANIC_RESET => {
-                with_app(|app| message_handlers::handle_wm_panic_reset(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_panic_reset(app) });
             }
             WM_DUPLICATE_INSTANCE => {
-                with_app(|app| message_handlers::handle_wm_duplicate_instance(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
             }
             WM_IME_KEY_DETECTED => {
-                with_app(|app| message_handlers::handle_wm_ime_key_detected(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_ime_key_detected(app) });
             }
             WM_POWERBROADCAST => {
                 let pbt = msg.wParam.0;
-                with_app(|app| message_handlers::handle_wm_powerbroadcast(app, pbt));
+                with_app(|app| unsafe { message_handlers::handle_wm_powerbroadcast(app, pbt) });
             }
             WM_WTSSESSION_CHANGE => {
                 let session_event = msg.wParam.0 as u32;
-                with_app(|app| message_handlers::handle_wts_session_change(app, session_event));
+                with_app(|app| unsafe { message_handlers::handle_wts_session_change(app, session_event) });
             }
             WM_INPUTLANGCHANGE => {
-                with_app(|app| message_handlers::handle_wm_inputlangchange(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
             }
             WM_PROCESS_DEFERRED => {
-                with_app(|app| message_handlers::handle_wm_process_deferred(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_process_deferred(app) });
             }
             WM_FOCUS_KIND_UPDATE => {
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
-                with_app(|app| message_handlers::handle_wm_focus_kind_update(app, wparam, lparam));
+                with_app(|app| unsafe { message_handlers::handle_wm_focus_kind_update(app, wparam, lparam) });
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => {
-                with_app(|app| message_handlers::handle_wm_hotkey_toggle(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => {
-                with_app(|app| message_handlers::handle_wm_hotkey_focus_override(app));
+                with_app(|app| unsafe { message_handlers::handle_wm_hotkey_focus_override(app) });
             }
             WM_APP => unsafe {
                 message_handlers::handle_wm_app_tray(msg.hwnd, msg.lParam);
@@ -342,7 +341,7 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
                 message_handlers::handle_wm_drain_output_queue();
             },
             m if m == taskbar_created_msg && taskbar_created_msg != 0 => {
-                with_app(|app| message_handlers::handle_taskbar_created(app));
+                with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
             }
             _ => unsafe {
                 // SAFETY: msg was filled by GetMessageW and is valid for the calling thread.
