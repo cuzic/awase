@@ -44,7 +44,7 @@ impl<'a> KeyEventPipeline<'a> {
     }
 
     /// フォーカス切替直後の同期プローブ
-    fn stage_focus_probe(&mut self, event: &mut RawKeyEvent) {
+    fn stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
         if !self.app.platform_state.focus_transition_pending {
             return;
         }

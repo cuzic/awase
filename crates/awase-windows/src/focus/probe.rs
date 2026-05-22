@@ -1,5 +1,6 @@
 use windows::Win32::Foundation::HWND;
 
+#[derive(Debug)]
 pub struct FocusProbe {
     hwnd_addr: usize,
     pub process_id: u32,

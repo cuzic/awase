@@ -16,6 +16,7 @@ pub struct HwndImeSnapshot {
 }
 
 /// キャッシュ参照の結果
+#[derive(Debug)]
 pub enum CacheOutcome {
     Hit,
     Miss,

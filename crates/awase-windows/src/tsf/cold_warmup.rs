@@ -41,8 +41,6 @@ const LONG_IDLE_MS: u64 = 10_000;
 struct WarmupContext {
     /// cold-start シーケンス番号（ログ相関用）
     cold_n: u32,
-    /// cold 発生前のアイドルが LONG_IDLE_MS を超えていたか
-    long_idle: bool,
     /// VK_DBE_HIRAGANA 送信後の eager settle 最大待機時間 (ms)
     eager_settle_ms: u64,
     /// VK_DBE_HIRAGANA 送信後の GJI I/O 観測を開始するまでの最小待機時間 (ms)
@@ -171,7 +169,7 @@ impl<'a> ColdWarmupSequence<'a> {
             self.output.composition.idle_ms_at_last_cold()
         );
 
-        WarmupContext { cold_n, long_idle, eager_settle_ms, probe_min_ms, cold_reason }
+        WarmupContext { cold_n, eager_settle_ms, probe_min_ms, cold_reason }
     }
 
     /// 非 eager パス: eager warmup なし（eager_warmup_sent_ms == 0）の場合の処理。

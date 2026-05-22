@@ -8,6 +8,7 @@ use crate::executor::DecisionExecutor;
 use crate::runtime::AppKindClassifier;
 
 /// `resolve_focus_kind` の戻り値
+#[derive(Debug)]
 pub struct FocusKindResolution {
     pub kind: FocusKind,
     pub reason: String,
@@ -73,7 +74,7 @@ pub unsafe fn resolve_focus_kind(
     let classify_result = crate::win32::run_with_timeout(
         std::time::Duration::from_millis(300),
         move || {
-            let hwnd = windows::Win32::Foundation::HWND(hwnd_addr as *mut _);
+            let hwnd = HWND(hwnd_addr as *mut _);
             classify::classify_focus(hwnd)
         },
     );

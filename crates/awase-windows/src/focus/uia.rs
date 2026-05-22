@@ -223,13 +223,13 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
                         );
                     }
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err(mpsc::RecvTimeoutError::Timeout) => {
                     if token.is_shutdown() {
                         log::info!("UIA worker: shutdown signal received, exiting");
                         break;
                     }
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
                     log::info!("UIA worker: channel closed, exiting");
                     break;
                 }

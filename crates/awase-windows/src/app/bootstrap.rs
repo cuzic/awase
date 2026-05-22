@@ -493,7 +493,7 @@ fn scan_layouts(
 /// アプリケーション全体の起動シーケンスを実行する。
 ///
 /// `app::run()` から呼ばれる唯一のエントリポイント。
-pub(super) fn run_all() -> anyhow::Result<()> {
+pub(super) fn run_all() -> Result<()> {
     let debug_console = std::env::args().any(|a| a == "--debug");
     init_logging(debug_console);
 
