@@ -52,10 +52,7 @@ pub use crate::state::{
     Preconditions, PlatformState, ShadowSource,
 };
 
-pub use crate::tsf::probe_bridge::{
-    OUTPUT_ACTIVE, OUTPUT_PENDING_QUEUE, WM_DRAIN_OUTPUT_QUEUE,
-    IN_WITH_APP_QUEUE, RawHookData,
-};
+pub use crate::tsf::probe_bridge::{OUTPUT_ACTIVE, WM_DRAIN_OUTPUT_QUEUE};
 
 pub use crate::input_defer::{INPUT_DEFER, InputDeferQueue};
 

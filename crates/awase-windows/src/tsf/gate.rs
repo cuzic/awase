@@ -32,7 +32,7 @@
 //!
 //! ## 保留キーの再処理
 //!
-//! PendingWarmup → Probing/Bypass 遷移時、保留キーを `OUTPUT_PENDING_QUEUE` に移し
+//! PendingWarmup → Probing/Bypass 遷移時、保留キーを `INPUT_DEFER` に移し
 //! `post_drain_output_queue()` で再処理する（呼び出し元の責務）。
 
 use std::time::Duration;
@@ -64,7 +64,7 @@ pub enum GateEvent {
 /// TsfGate が発行するアクション
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateAction {
-    /// 保留キーをドレインすること（呼び出し元が OUTPUT_PENDING_QUEUE へ移す）
+    /// 保留キーをドレインすること（呼び出し元が INPUT_DEFER.replay_later を呼ぶ）
     DrainHeld,
 }
 

@@ -416,7 +416,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ── with_app 再入ガード ──
         // SendMessageTimeoutW (cross-process IME 制御) がメッセージポンプを起動した場合、
         // このコールバックが再呼び出しされる。APP.get_mut() は IN_WITH_APP=true の間
-        // 呼べないため（&mut Runtime が二重に存在し UB）、キーを IN_WITH_APP_QUEUE に
+        // 呼べないため（&mut Runtime が二重に存在し UB）、キーを INPUT_DEFER に
         // 退避して drain 後に NICOLA で再処理する（CallNextHookEx での素通しは NICOLA バイパス）。
         if crate::in_with_app() {
             let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
