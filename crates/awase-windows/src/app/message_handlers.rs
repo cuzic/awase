@@ -17,7 +17,7 @@ use awase_windows::hook;
 use awase_windows::runtime;
 use awase_windows::{
     Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD,
-    TIMER_POWER_RESUME, with_app, with_app_ref,
+    TIMER_POWER_RESUME, TIMER_TSF_PROBE, with_app, with_app_ref,
 };
 use awase_windows::tray;
 
@@ -46,6 +46,9 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
             app.executor.on_output_guard_timer();
+        }
+        Some(id) if id == TIMER_TSF_PROBE => {
+            app.executor.platform.advance_tsf_probe();
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
             use std::sync::atomic::AtomicU64;

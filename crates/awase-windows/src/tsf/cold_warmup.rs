@@ -49,12 +49,30 @@ struct WarmupContext {
     cold_reason: crate::output::ColdReason,
 }
 
+/// `ColdWarmupSequence::run_start` の戻り値。
+///
+/// 即座に実行できる部分（F2 送信等）は完了済み。
+/// 残りの待機はタイマー（TIMER_TSF_PROBE）で `TsfReadinessProbe::check_now` を
+/// ポーリングすることで行う。
+pub struct WarmupStarted {
+    /// GJI 静止プローブ
+    pub probe: crate::tsf::probe::TsfReadinessProbe,
+    /// probe の最大待機時間 (ms, warmup_sent_ms 起点)
+    pub total_max_ms: u64,
+    /// プローブ完了後に NAMECHANGE 確認フェーズが必要かどうか
+    /// (`eager_probe_with_settle` パスのみ `true`)
+    pub needs_settle_check: bool,
+    /// cold になった理由（NAMECHANGE フェーズの判断に使用）
+    pub cold_reason: crate::output::ColdReason,
+}
+
 /// TSF cold-start ウォームアップシーケンスを管理する構造体。
 ///
 /// `Output::execute_cold_warmup` のロジックを複数のプライベートメソッドに分解し、
 /// 可読性・テスト性を高める。
 ///
-/// `run()` を呼ぶとウォームアップを実行し cold-start シーケンス番号を返す。
+/// `run_start()` を呼ぶと即座に実行できる部分（F2 送信等）を行い [`WarmupStarted`] を返す。
+/// `run()` は旧来のブロッキング API（テスト互換用）。
 pub struct ColdWarmupSequence<'a> {
     output: &'a Output,
 }
@@ -63,6 +81,41 @@ impl<'a> ColdWarmupSequence<'a> {
     /// 新しいシーケンスを生成する。
     pub fn new(output: &'a Output) -> Self {
         Self { output }
+    }
+
+    /// ノンブロッキング版ウォームアップ開始。
+    ///
+    /// 即座に実行できる部分（F2 送信、IMM32 設定等）を行い [`WarmupStarted`] を返す。
+    /// 残りの GJI 静止待ちは TIMER_TSF_PROBE + `TsfReadinessProbe::check_now` で行う。
+    pub fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
+        let ctx = self.preamble(session_expired, elapsed_ms);
+
+        if session_expired {
+            log::debug!(
+                "[h1-warmup] cold={} session expired → fresh VK_DBE_HIRAGANA 送信 (500ms待機を強制)",
+                ctx.cold_n
+            );
+            self.output.send_eager_tsf_warmup();
+        }
+
+        let eager_ms = self.output.composition.eager_warmup_sent_ms();
+        let now_ms = crate::hook::current_tick_ms();
+        let eager_elapsed =
+            if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
+        let use_eager = eager_ms != 0;
+
+        log::debug!(
+            "[h1-warmup] cold={} path={} eager_ms={eager_ms} now_ms={now_ms} elapsed={}ms",
+            ctx.cold_n,
+            if use_eager { "eager" } else { "non-eager" },
+            crate::output::fmt_ms(eager_elapsed),
+        );
+
+        if use_eager {
+            self.run_eager_start(&ctx, eager_ms, eager_elapsed)
+        } else {
+            self.run_non_eager_start(&ctx)
+        }
     }
 
     /// ウォームアップシーケンスを実行し、cold-start シーケンス番号を返す。
@@ -383,6 +436,124 @@ impl<'a> ColdWarmupSequence<'a> {
             }
         } else {
             self.eager_probe_with_settle(ctx, eager_ms, eager_elapsed);
+        }
+    }
+
+    // ── ノンブロッキング版サブメソッド ──
+
+    /// non-eager ノンブロッキング開始: F2×2 を送信して WarmupStarted を返す。
+    fn run_non_eager_start(&self, ctx: &WarmupContext) -> WarmupStarted {
+        log::debug!(
+            "[h1-warmup] cold={} non-eager: VK_DBE_HIRAGANA warmup+probe 送信",
+            ctx.cold_n
+        );
+        let ime_on_probe = [
+            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+            make_tsf_key_input(VK_DBE_HIRAGANA, true),
+            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+            make_tsf_key_input(VK_DBE_HIRAGANA, true),
+        ];
+        // SAFETY: ime_on_probe is a valid array of INPUT structs.
+        unsafe {
+            SendInput(
+                &ime_on_probe,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
+        let probe_sent_ms = crate::hook::current_tick_ms();
+        WarmupStarted {
+            probe: crate::tsf::probe::TsfReadinessProbe::new(
+                probe_sent_ms,
+                ctx.cold_n,
+                ctx.probe_min_ms,
+            ),
+            total_max_ms: ctx.eager_settle_ms,
+            needs_settle_check: false,
+            cold_reason: ctx.cold_reason,
+        }
+    }
+
+    /// eager ノンブロッキック開始: パスを判定して F2 を送信し WarmupStarted を返す。
+    fn run_eager_start(&self, ctx: &WarmupContext, eager_ms: u64, eager_elapsed: u64) -> WarmupStarted {
+        let remaining = ctx.eager_settle_ms.saturating_sub(eager_elapsed);
+        if remaining == 0 {
+            let needs_re_warmup = ctx.cold_reason.requires_settle();
+            if needs_re_warmup {
+                // eager_re_warmup: fresh F2 を送信して 500ms 待機
+                log::debug!(
+                    "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start",
+                    ctx.cold_n, ctx.eager_settle_ms,
+                );
+                let refresh_inputs = [
+                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                ];
+                // SAFETY: refresh_inputs is a valid array.
+                unsafe {
+                    SendInput(
+                        &refresh_inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+                const RE_WARMUP_MS: u64 = 500;
+                let re_warmup_ms = crate::hook::current_tick_ms();
+                WarmupStarted {
+                    probe: crate::tsf::probe::TsfReadinessProbe::new(
+                        re_warmup_ms,
+                        ctx.cold_n,
+                        ctx.probe_min_ms,
+                    ),
+                    total_max_ms: RE_WARMUP_MS,
+                    needs_settle_check: false,
+                    cold_reason: ctx.cold_reason,
+                }
+            } else {
+                // eager_fresh_f2_then_probe: fresh F2 + probe
+                let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+                let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+                log::debug!(
+                    "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start",
+                    ctx.cold_n, ctx.eager_settle_ms,
+                );
+                let refresh_inputs = [
+                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                ];
+                let fresh_f2_ms = crate::hook::current_tick_ms();
+                // SAFETY: refresh_inputs is a valid array.
+                unsafe {
+                    SendInput(
+                        &refresh_inputs,
+                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                    );
+                }
+                WarmupStarted {
+                    probe: crate::tsf::probe::TsfReadinessProbe::new(
+                        fresh_f2_ms,
+                        ctx.cold_n,
+                        ctx.probe_min_ms,
+                    ),
+                    total_max_ms: ctx.eager_settle_ms,
+                    needs_settle_check: false,
+                    cold_reason: ctx.cold_reason,
+                }
+            }
+        } else {
+            // eager_probe_with_settle: eager_ms 起点のプローブ（NAMECHANGE チェックが必要）
+            log::debug!(
+                "[h1-warmup] cold={} eager: elapsed={}ms → probe start (budget={}ms from warmup)",
+                ctx.cold_n, eager_elapsed, ctx.eager_settle_ms,
+            );
+            WarmupStarted {
+                probe: crate::tsf::probe::TsfReadinessProbe::new(
+                    eager_ms,
+                    ctx.cold_n,
+                    ctx.probe_min_ms,
+                ),
+                total_max_ms: ctx.eager_settle_ms,
+                needs_settle_check: true,
+                cold_reason: ctx.cold_reason,
+            }
         }
     }
 }

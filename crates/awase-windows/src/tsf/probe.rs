@@ -49,117 +49,79 @@ pub struct TsfReadinessProbe {
     pub cold_n: u32,
     /// VK_IME_ON 送信から最低この ms が経過するまで I/O 観測を信頼しない。
     pub min_ms: u64,
+    /// GJI 静止を最初に検出した時刻（POST_IDLE_MARGIN 用）。0 = 未検出。
+    settled_at_ms: std::cell::Cell<u64>,
 }
 
 impl TsfReadinessProbe {
     pub const fn new(warmup_sent_ms: u64, cold_n: u32, min_ms: u64) -> Self {
-        Self { warmup_sent_ms, cold_n, min_ms }
+        Self {
+            warmup_sent_ms,
+            cold_n,
+            min_ms,
+            settled_at_ms: std::cell::Cell::new(0),
+        }
     }
 
-    /// GJI が settled になるまで待機する。
+    /// タイマーポーリング用ノンブロッキング判定。
     ///
-    /// - `total_max_ms`: `warmup_sent_ms` からの最大許容待機時間（タイムアウト）。
-    ///   呼び出し時点での残り時間ではなく、VK_IME_ON 送信からの合計予算。
-    ///
-    /// 内部で `win32_async::block_on` を呼び、メッセージループを動かしながら待機する。
-    /// `std::thread::sleep` を使わないため、待機中も WinEvent（OBJ_NAMECHANGE 等）が処理される。
-    pub fn wait_until_ready(&self, total_max_ms: u64) {
-        win32_async::block_on(self.wait_until_ready_async(total_max_ms));
-        // drain は OutputActiveGuard::drop が send_keys 全体の終了時に行うため、ここでは呼ばない。
-        // block_on のネストされたメッセージループ中に再配送が走ると、
-        // 後続キー（ん等）が composition cold のまま send_romaji_as_tsf → 再プローブ → 二重入力を起こす。
-    }
-
-    /// [`wait_until_ready`] の非同期実装。`sleep_ms` を使って待機し、
-    /// メッセージループをブロックしない。
-    async fn wait_until_ready_async(&self, total_max_ms: u64) {
-        /// warmup 後の GJI I/O がこの ms 静止したら settled
+    /// `true` = 送信可能（GJI 静止 or タイムアウト）、`false` = まだ待機中。
+    /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    pub fn check_now(&self, total_max_ms: u64) -> bool {
         const GJI_IDLE_MS: u64 = 80;
-        /// settled 確認後の追加余裕 (ms)
         const POST_IDLE_MARGIN_MS: u64 = 30;
-        /// ポーリング間隔 (ms)
-        const POLL_MS: u32 = 10;
-
-        let cold_n = self.cold_n;
-        let warmup_ms = self.warmup_sent_ms;
-        let call_ms = crate::hook::current_tick_ms();
-        let min_deadline = warmup_ms.saturating_add(self.min_ms);
-        let max_deadline = warmup_ms.saturating_add(total_max_ms);
+        let now = crate::hook::current_tick_ms();
+        let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
+        let min_deadline = self.warmup_sent_ms.saturating_add(self.min_ms);
 
         if !OBS_GJI_MONITOR_OK.load(Ordering::Relaxed) {
-            // GJI プロセス監視不可: max_deadline まで非ブロッキング sleep
-            let remaining = max_deadline.saturating_sub(crate::hook::current_tick_ms());
-            log::debug!(
-                "[tsf-probe] cold={cold_n} fallback fixed sleep {remaining}ms (GJI monitor unavailable)"
-            );
-            if remaining > 0 {
-                win32_async::sleep_ms(u32::try_from(remaining).unwrap_or(u32::MAX)).await;
+            return now >= max_deadline;
+        }
+        if now < min_deadline {
+            return false;
+        }
+        if now >= max_deadline {
+            return true;
+        }
+        let gji_io = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+        let found_io_after_warmup = gji_io >= self.warmup_sent_ms;
+        if found_io_after_warmup {
+            let gji_idle = now.saturating_sub(gji_io);
+            if gji_idle >= GJI_IDLE_MS {
+                let settled_at = self.settled_at_ms.get();
+                if settled_at == 0 {
+                    self.settled_at_ms.set(now);
+                    return false;
+                }
+                let margin = max_deadline.saturating_sub(now).min(POST_IDLE_MARGIN_MS);
+                let since_settled = now.saturating_sub(settled_at);
+                return since_settled >= margin;
+            } else {
+                self.settled_at_ms.set(0); // GJI が再びアクティブになった
             }
-            let total = crate::hook::current_tick_ms().saturating_sub(call_ms);
-            log::debug!("[tsf-probe] cold={cold_n} done (fallback), waited {total}ms");
-            return;
         }
+        false
+    }
 
-        // Phase 1: min_deadline まで無条件待機（I/O 観測は信頼しない）
-        let phase1_wait = min_deadline.saturating_sub(crate::hook::current_tick_ms());
-        if phase1_wait > 0 {
-            log::debug!("[tsf-probe] cold={cold_n} phase1 min wait {phase1_wait}ms");
-            win32_async::sleep_ms(u32::try_from(phase1_wait).unwrap_or(u32::MAX)).await;
-        }
-
-        // Phase 2: GJI I/O 静止監視
-        let p2_start = crate::hook::current_tick_ms();
-        let gji_io_at_p2 = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
-        let io_after_warmup_at_start = gji_io_at_p2 >= warmup_ms;
-        log::debug!(
-            "[tsf-probe] cold={cold_n} phase2 polling \
-             (max_remaining={}ms, gji_io_idle={}ms, io_after_warmup={io_after_warmup_at_start})",
-            max_deadline.saturating_sub(p2_start),
-            p2_start.saturating_sub(gji_io_at_p2),
-        );
-
-        let mut found_io_after_warmup = io_after_warmup_at_start;
-
+    /// GJI が settled になるまでポーリング待機する。
+    ///
+    /// `block_on` ではなく `std::thread::sleep` を使うため、ネストされたメッセージループを
+    /// 起動しない。`with_app` 内からの呼び出しでも WinEvent 再入が発生しない。
+    ///
+    /// 主にテストコードおよびフォールバックパスで使用する。
+    /// 本番の TSF プローブは TIMER_TSF_PROBE + `check_now` を使うこと。
+    pub fn wait_until_ready(&self, total_max_ms: u64) {
+        const POLL_MS: u64 = 10;
+        let cold_n = self.cold_n;
+        let call_ms = crate::hook::current_tick_ms();
         loop {
-            let now = crate::hook::current_tick_ms();
-            let gji_io = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
-
-            if gji_io >= warmup_ms {
-                found_io_after_warmup = true;
-            }
-
-            if now >= max_deadline {
-                log::debug!(
-                    "[tsf-probe] cold={cold_n} timeout \
-                     (warmup+{}ms, gji_io_idle={}ms, io_after_warmup={found_io_after_warmup})",
-                    now.saturating_sub(warmup_ms),
-                    now.saturating_sub(gji_io),
-                );
+            if self.check_now(total_max_ms) {
                 break;
             }
-
-            if found_io_after_warmup {
-                let gji_idle = now.saturating_sub(gji_io);
-                if gji_idle >= GJI_IDLE_MS {
-                    let elapsed_from_warmup = now.saturating_sub(warmup_ms);
-                    let margin = max_deadline.saturating_sub(now).min(POST_IDLE_MARGIN_MS);
-                    log::debug!(
-                        "[tsf-probe] cold={cold_n} GJI settled \
-                         (idle={gji_idle}ms) at warmup+{elapsed_from_warmup}ms, +{margin}ms margin"
-                    );
-                    if margin > 0 {
-                        #[allow(clippy::cast_possible_truncation)]
-                        win32_async::sleep_ms(margin as u32).await;
-                    }
-                    break;
-                }
-            }
-
-            win32_async::sleep_ms(POLL_MS).await;
+            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
         }
-
         let total = crate::hook::current_tick_ms().saturating_sub(call_ms);
-        log::debug!("[tsf-probe] cold={cold_n} done, waited {total}ms");
+        log::debug!("[tsf-probe] cold={cold_n} wait_until_ready done, waited {total}ms");
     }
 }
 
@@ -360,6 +322,27 @@ impl LiteralDetector {
             gji_show_baseline: OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed),
             io_baseline: OBS_GJI_LAST_IO_MS.load(Relaxed),
             was_candidate_visible: OBS_GJI_CANDIDATE_VISIBLE.load(Relaxed),
+        }
+    }
+
+    /// タイマーポーリング用ノンブロッキング判定。
+    ///
+    /// `Some` = 判定確定、`None` = まだ待機中。
+    /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    pub fn check_now(&self, deadline_ms: u64) -> Option<DetectionResult> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now = crate::hook::current_tick_ms();
+        let confirmed = if self.was_candidate_visible {
+            OBS_GJI_LAST_IO_MS.load(Relaxed) != self.io_baseline
+        } else {
+            OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != self.gji_show_baseline
+        };
+        if confirmed {
+            Some(DetectionResult::CompositionConfirmed)
+        } else if now >= deadline_ms {
+            Some(DetectionResult::SuspectedLiteral)
+        } else {
+            None
         }
     }
 

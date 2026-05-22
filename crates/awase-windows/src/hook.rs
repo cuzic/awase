@@ -397,6 +397,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let hook_handle = *HOOK_HANDLE.get_mut();
 
     if ncode >= 0 {
+        // ── with_app 再入ガード ──
+        // SendMessageTimeoutW (cross-process IME 制御) がメッセージポンプを起動した場合、
+        // このコールバックが再呼び出しされる。APP.get_mut() は IN_WITH_APP=true の間
+        // 呼べないため（&mut Runtime が二重に存在し UB）、全キーをパススルーする。
+        if crate::in_with_app() {
+            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+        }
+
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
 
         // ── 自己注入チェック（無限ループ防止）──
@@ -580,6 +588,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 return LRESULT(1); // Consumed
             }
         }
+
+        // ── app を明示的に解放してから Engine コールバックを呼ぶ ──
+        // callback 内部で with_app → APP.with_mut() が呼ばれるため、
+        // ここで app を drop しないと &mut Runtime が二重に存在し UB となる。
+        drop(app);
 
         // ── Engine コールバック呼び出し ──
         let result = KEY_EVENT_CALLBACK

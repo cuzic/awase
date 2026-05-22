@@ -21,11 +21,24 @@ pub struct WindowsPlatform {
     pub timer: Win32Timer,
 }
 
+impl WindowsPlatform {
+    /// TIMER_TSF_PROBE ハンドラ。pending_tsf フェーズを進め、完了したらタイマーを kill する。
+    pub fn advance_tsf_probe(&mut self) {
+        if self.output.advance_tsf_probe() {
+            self.timer.kill(crate::TIMER_TSF_PROBE);
+        }
+    }
+}
+
 impl PlatformRuntime for WindowsPlatform {
     // ── キー出力 ──
 
     fn send_keys(&mut self, actions: &[KeyAction]) {
         self.output.send_keys(actions);
+        // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
+        if self.output.pending_tsf.borrow().is_some() {
+            self.timer.set(crate::TIMER_TSF_PROBE, std::time::Duration::from_millis(10));
+        }
     }
 
     fn reinject_key(&mut self, event: &RawKeyEvent) {

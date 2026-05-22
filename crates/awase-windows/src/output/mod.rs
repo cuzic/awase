@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use awase::config::OutputMode;
 use awase::types::{AppKind, KeyAction, SpecialKey};
@@ -16,24 +16,35 @@ use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key
 pub(crate) mod sender;
 pub(crate) use sender::{InjectionMode, OutputSession};
 
-/// 出力セッションを RAII で管理するガード。
+/// 出力セッションを RAII で管理するガード（参照カウント方式）。
 ///
-/// `begin()` で `OUTPUT_ACTIVE=true` をセット。
-/// Drop 時に `OUTPUT_ACTIVE=false` にリセットし、`post_drain_output_queue()` を呼ぶ。
+/// `begin()` で深度をインクリメントし、深度 0→1 のとき `OUTPUT_ACTIVE=true` をセット。
+/// Drop 時に深度をデクリメントし、深度 1→0 のとき `OUTPUT_ACTIVE=false` + drain。
+///
+/// TSF probe 延期中は `TsfProbeData` がガードを保持し続けることで、
+/// `OutputSession` が drop しても `OUTPUT_ACTIVE` が維持される。
 #[derive(Debug)]
 pub(crate) struct OutputActiveGuard;
 
+static OUTPUT_ACTIVE_DEPTH: AtomicU32 = AtomicU32::new(0);
+
 impl OutputActiveGuard {
     pub(crate) fn begin() -> Self {
-        crate::OUTPUT_ACTIVE.store(true, Ordering::Release);
+        let prev = OUTPUT_ACTIVE_DEPTH.fetch_add(1, Ordering::AcqRel);
+        if prev == 0 {
+            crate::OUTPUT_ACTIVE.store(true, Ordering::Release);
+        }
         Self
     }
 }
 
 impl Drop for OutputActiveGuard {
     fn drop(&mut self) {
-        crate::OUTPUT_ACTIVE.store(false, Ordering::Release);
-        crate::post_drain_output_queue();
+        let prev = OUTPUT_ACTIVE_DEPTH.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            crate::OUTPUT_ACTIVE.store(false, Ordering::Release);
+            crate::post_drain_output_queue();
+        }
     }
 }
 
@@ -259,6 +270,67 @@ pub struct Output {
     /// warm/cold epoch、last_send_ms、eager_warmup_sent_ms 等を集約する。
     /// 詳細は [`crate::tsf::probe::CompositionState`] を参照。
     pub composition: crate::tsf::probe::CompositionState,
+    /// TIMER_TSF_PROBE で処理中の保留 TSF/VK probe データ。
+    ///
+    /// `send_romaji_as_tsf` / `send_romaji_batched` が cold start 時に設定し、
+    /// `advance_tsf_probe` がタイマーごとに状態を進める。
+    /// `_guard` により OUTPUT_ACTIVE が保留期間中維持される。
+    pub(crate) pending_tsf: std::cell::RefCell<Option<TsfProbeData>>,
+}
+
+/// TSF/VK probe の現在フェーズ
+pub(crate) enum TsfProbePhase {
+    /// GJI 静止待ち（TSF warmup 後または Chrome F2 後）
+    GjiProbe {
+        probe: crate::tsf::probe::TsfReadinessProbe,
+        total_max_ms: u64,
+        /// プローブ完了後に NAMECHANGE 確認が必要か（eager_probe_with_settle パスのみ true）
+        needs_settle_check: bool,
+        cold_reason: ColdReason,
+        prepend_f2_warmup: bool,
+        used_eager_path: bool,
+    },
+    /// OBJ_NAMECHANGE 待ち（GJI probe + needs_settle_check の次フェーズ）
+    NameChangeWait {
+        nc_baseline: u32,
+        deadline_ms: u64,
+        fresh_f2_ms: u64,
+        probe_settled: bool,
+        cold_reason: ColdReason,
+        prepend_f2_warmup: bool,
+        used_eager_path: bool,
+    },
+    /// GJI 二次プローブ（OBJ_NAMECHANGE 後）
+    SecondaryGjiProbe {
+        probe: crate::tsf::probe::TsfReadinessProbe,
+        total_max_ms: u64,
+        prepend_f2_warmup: bool,
+        used_eager_path: bool,
+    },
+    /// raw TSF literal 検出待ち（TSF 送信後の verify フェーズ）
+    LiteralDetect {
+        detector: crate::tsf::probe::LiteralDetector,
+        ze_bs_count: usize,
+        deadline_ms: u64,
+        cold_n: u32,
+    },
+    /// Chrome/VK probe（F2 後の GJI 静止待ち）
+    ChromeProbe {
+        probe: crate::tsf::probe::TsfReadinessProbe,
+        total_max_ms: u64,
+    },
+}
+
+/// TSF/VK probe の保留データ。
+///
+/// `Output::pending_tsf` に格納し、TIMER_TSF_PROBE ハンドラが
+/// `advance_tsf_probe` を呼んで状態を進める。
+/// `_guard` によって OUTPUT_ACTIVE が維持される。
+pub(crate) struct TsfProbeData {
+    pub romaji: String,
+    pub cold_n: u32,
+    pub phase: TsfProbePhase,
+    pub _guard: OutputActiveGuard,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -282,6 +354,7 @@ impl Output {
             kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
             symbol_to_vk: build_symbol_to_vk(),
             composition: crate::tsf::probe::CompositionState::new(),
+            pending_tsf: std::cell::RefCell::new(None),
         }
     }
 
@@ -578,33 +651,18 @@ impl Output {
 
     /// Batched モード: 全文字を1回の SendInput にまとめて送信（重畳押し順）
     ///
-    /// 送信順序: 全文字の KeyDown を先に送り、その後全文字の KeyUp を送る
-    /// （重畳順: 例 "mu" → M↓ U↓ M↑ U↑）
-    ///
-    /// WM_KEYUP 受信時に IME がコンポジションをコミットするアプリ（Chrome 等）では、
-    /// 逐次順（M↓M↑ then U↓U↑）だと M↑ 到着時点で IME が 'm' を単独確定し "mう" になる。
-    /// 重畳順では U↓ が M↑ より先に処理されるため IME が "mu" を一組として受け取る。
-    ///
-    /// # H1 cold-start 修正（案A: F2-only 先行バッチ）
-    ///
-    /// Chrome も WezTerm と同様に F2 受信後の IME 初期化が非同期のため、
-    /// [F2↓F2↑ K↓I↓ K↑I↑] を同一バッチで送ると初期化完了前に romaji が処理され
-    /// ASCII として出力される（probe が attempt=0 で timeout → Chrome は >10ms 処理）。
-    ///
-    /// 案A: F2-only バッチを先行送信し、probe loop で Chrome が応答するまで待ってから
-    /// romaji バッチを送ることで初期化済み状態での文字受信を保証する。
+    /// cold 時は F2 を先行送信してから GJI プローブを開始し（ノンブロッキング）、
+    /// TIMER_TSF_PROBE が `ChromeProbe` フェーズを進めてローマ字を送信する。
     fn send_romaji_batched(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
-
         if chars.is_empty() {
             return;
         }
 
-        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
-        // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
-        let session_expired = warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
+        let session_expired =
+            warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
         let prepend_f2_warmup = !warm || session_expired;
         log::debug!(
             "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
@@ -617,7 +675,7 @@ impl Output {
             } else {
                 log::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
             }
-            // SAFETY: IMM32 API; uses the foreground thread's IME context, valid during message loop.
+            // SAFETY: IMM32 API; uses the foreground thread's IME context.
             let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
@@ -627,58 +685,59 @@ impl Output {
                 conv_pre.map_or(false, |v| v & 0x0002 != 0),
             );
             // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
-            // IMM32 経由で同期的にローマ字モードへ切り替え。
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
             let cold_n = self.composition.increment_cold_start_count();
-
-            // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_n} class={win_class}");
 
-            // F2 を SendMessageTimeout で wndproc に直接届ける。
-            // SendInput は OS 入力キューを経由するため、その後の probe（SendMessageTimeout）
-            // より低優先度で処理され（QS_SENDMESSAGE > QS_INPUT）、probe が F2 処理前に
-            // 完了してしまう競合が起きていた。
-            // SendMessageTimeout は return 後に Chrome が WM_KEYDOWN を処理済みであることを保証する。
             log::debug!("[h1-run] cold={cold_n} F2 via SendMessageTimeout");
             let f2_sent_ms = crate::hook::current_tick_ms();
-            // SAFETY: sends WM_KEYDOWN/WM_KEYUP to the foreground window via SendMessageTimeout; HWND validity checked internally.
+            // SAFETY: sends WM_KEYDOWN/WM_KEYUP to the foreground window via SendMessageTimeout.
             let f2_ok = unsafe { crate::ime::send_f2_via_sendmessage() };
             log::debug!("[h1-run] cold={cold_n} F2 SendMessageTimeout delivered={f2_ok}");
 
-            // Chrome は F2 を wndproc で受け取った後、IPC でレンダラーに転送する。
-            // SendInput のローマ字もレンダラー IPC キューに積まれるため、
-            // レンダラーが F2 の IME 初期化を完了する前に 1 文字目が届くことがある。
-            // GJI I/O 静止を待つことで、IME がレンダラー側で ready になってから送る。
-            {
-                // min_ms: IPC 1往復分の余裕 (Chrome レンダラーは通常 20ms 以内)
-                // total_max_ms: GJI が応答しない場合でも 120ms で打ち切る
-                const CHROME_PROBE_MIN_MS: u64 = 20;
-                const CHROME_PROBE_MAX_MS: u64 = 120;
-                let probe = crate::tsf::probe::TsfReadinessProbe::new(
-                    f2_sent_ms,
-                    cold_n,
-                    CHROME_PROBE_MIN_MS,
-                );
-                probe.wait_until_ready(CHROME_PROBE_MAX_MS);
-            }
+            // ノンブロッキング Chrome プローブを開始
+            const CHROME_PROBE_MIN_MS: u64 = 20;
+            const CHROME_PROBE_MAX_MS: u64 = 120;
+            let probe = crate::tsf::probe::TsfReadinessProbe::new(
+                f2_sent_ms,
+                cold_n,
+                CHROME_PROBE_MIN_MS,
+            );
+            let guard = OutputActiveGuard::begin();
+            *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                romaji: romaji.to_string(),
+                cold_n,
+                phase: TsfProbePhase::ChromeProbe { probe, total_max_ms: CHROME_PROBE_MAX_MS },
+                _guard: guard,
+            });
+            // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
+            return;
         }
 
-        // ローマ字バッチ送信（重畳順: 全 KeyDown → 全 KeyUp）
+        // warm パス: 即座にバッチ送信
+        self.send_romaji_batch_immediate(romaji, &chars);
+        self.mark_composition_warm();
+    }
+
+    /// ローマ字を即座にバッチ送信する（重畳順）。
+    /// warm パスおよび `advance_tsf_probe` の ChromeProbe 完了時に呼ぶ。
+    fn send_romaji_batch_immediate(&self, romaji: &str, chars: &[(u16, bool)]) {
         let mut inputs = Vec::with_capacity(chars.len() * 4);
-        for &(vk, needs_shift) in &chars {
+        for &(vk, needs_shift) in chars {
             if needs_shift {
                 inputs.push(make_key_input(VK_LSHIFT, false));
             }
             inputs.push(make_key_input(vk, false));
         }
-        for &(vk, needs_shift) in &chars {
+        for &(vk, needs_shift) in chars {
             inputs.push(make_key_input(vk, true));
             if needs_shift {
                 inputs.push(make_key_input(VK_LSHIFT, true));
             }
         }
+        log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", inputs.len());
         // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
         unsafe {
             SendInput(
@@ -686,7 +745,6 @@ impl Output {
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
-        self.mark_composition_warm();
     }
 
     /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
@@ -806,7 +864,72 @@ impl Output {
     }
 
     fn send_romaji_as_tsf(&self, romaji: &str) {
-        TsfSendPipeline::new(self).run(romaji);
+        use std::sync::atomic::Ordering::Relaxed;
+
+        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        if chars.is_empty() {
+            return;
+        }
+
+        let warm = self.is_composition_warm();
+        let elapsed = self.ms_since_last_send();
+        let session_expired =
+            warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
+        let prepend_f2_warmup = !warm || session_expired;
+        let used_eager_path = self.composition.eager_warmup_sent_ms() != 0;
+
+        log::debug!(
+            "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
+            fmt_ms(elapsed)
+        );
+
+        if prepend_f2_warmup {
+            // ノンブロッキング warmup を開始して pending_tsf に保留
+            let started = crate::tsf::cold_warmup::ColdWarmupSequence::new(self)
+                .run_start(session_expired, elapsed);
+            let cold_n = started.probe.cold_n;
+            let guard = OutputActiveGuard::begin();
+            *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                romaji: romaji.to_string(),
+                cold_n,
+                phase: TsfProbePhase::GjiProbe {
+                    probe: started.probe,
+                    total_max_ms: started.total_max_ms,
+                    needs_settle_check: started.needs_settle_check,
+                    cold_reason: started.cold_reason,
+                    prepend_f2_warmup,
+                    used_eager_path,
+                },
+                _guard: guard,
+            });
+            // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
+            return;
+        }
+
+        // warm パス: 即座に送信
+        let cold_n = self.composition.cold_start_count();
+        let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_n };
+
+        {
+            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+            log::debug!(
+                "[h1-send] cold={cold_n} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
+                 conv={} ROMAN={} NATIVE={}",
+                chars.len(),
+                conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv.map_or(false, |v| v & 0x0010 != 0),
+                conv.map_or(false, |v| v & 0x0001 != 0),
+            );
+        }
+
+        let detector = crate::tsf::probe::LiteralDetector::new();
+        let ze_bs_count = TsfSendPipeline::new(self).transmit(romaji, &chars, &outcome);
+        self.mark_composition_warm();
+
+        // warm パスは prepend_f2_warmup=false なので literal detect は不要
+        let _ = (detector, ze_bs_count);
     }
 
     /// 文字の送信方法をルックアップテーブルで解決する。
@@ -913,6 +1036,270 @@ impl Output {
                 self.send_unicode_char(ch);
             }
         }
+    }
+
+    /// TIMER_TSF_PROBE ハンドラから呼ぶ。pending_tsf の現フェーズを1ステップ進める。
+    ///
+    /// 戻り値: `true` = 完了（タイマーを kill すべき）、`false` = まだ継続中。
+    pub(crate) fn advance_tsf_probe(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        use crate::tsf::probe::DetectionResult;
+        use crate::tsf::observer::{OBS_GJI_LAST_IO_MS, OBS_GJI_MONITOR_OK};
+
+        let Some(data) = self.pending_tsf.borrow_mut().take() else {
+            return true;
+        };
+        let TsfProbeData { romaji, cold_n, phase, _guard: guard } = data;
+
+        match phase {
+            TsfProbePhase::GjiProbe {
+                probe, total_max_ms, needs_settle_check, cold_reason,
+                prepend_f2_warmup, used_eager_path,
+            } => {
+                if !probe.check_now(total_max_ms) {
+                    *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                        romaji, cold_n,
+                        phase: TsfProbePhase::GjiProbe {
+                            probe, total_max_ms, needs_settle_check, cold_reason,
+                            prepend_f2_warmup, used_eager_path,
+                        },
+                        _guard: guard,
+                    });
+                    return false;
+                }
+
+                let elapsed = crate::hook::current_tick_ms().saturating_sub(probe.warmup_sent_ms);
+                log::debug!("[tsf-probe] cold={cold_n} GjiProbe 完了 ({elapsed}ms)");
+
+                if needs_settle_check {
+                    let gji_last = OBS_GJI_LAST_IO_MS.load(Relaxed);
+                    let probe_settled = gji_last >= probe.warmup_sent_ms;
+                    let gji_monitor_ok = OBS_GJI_MONITOR_OK.load(Relaxed);
+                    let is_ime_init_cold = cold_reason.requires_settle();
+                    if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
+                        const SETTLE_TIMEOUT_MS: u64 = 300;
+                        let nc_baseline = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed);
+                        let settle_reason = if !probe_settled {
+                            "probe timeout"
+                        } else {
+                            "NativeF2Consumed/SetOpenTrue"
+                        };
+                        log::debug!(
+                            "[tsf-probe] cold={cold_n} {settle_reason} \
+                             → fresh F2 + NameChangeWait (nc_seq={nc_baseline})"
+                        );
+                        const VK_DBE_HIRAGANA: u16 = 0xF2;
+                        let refresh = [
+                            make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                            make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                        ];
+                        let fresh_f2_ms = crate::hook::current_tick_ms();
+                        // SAFETY: refresh is a valid fixed-size array of INPUT.
+                        unsafe {
+                            SendInput(
+                                &refresh,
+                                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                            );
+                        }
+                        let deadline_ms = fresh_f2_ms + SETTLE_TIMEOUT_MS;
+                        *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                            romaji, cold_n,
+                            phase: TsfProbePhase::NameChangeWait {
+                                nc_baseline, deadline_ms, fresh_f2_ms, probe_settled,
+                                cold_reason, prepend_f2_warmup, used_eager_path,
+                            },
+                            _guard: guard,
+                        });
+                        return false;
+                    }
+                }
+
+                self.do_transmit_tsf(romaji, cold_n, prepend_f2_warmup, used_eager_path, guard)
+            }
+
+            TsfProbePhase::NameChangeWait {
+                nc_baseline, deadline_ms, fresh_f2_ms, probe_settled,
+                cold_reason,
+                prepend_f2_warmup, used_eager_path,
+            } => {
+                let now = crate::hook::current_tick_ms();
+                let nc_fired = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline;
+                let timed_out = now >= deadline_ms;
+
+                if !nc_fired && !timed_out {
+                    *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                        romaji, cold_n,
+                        phase: TsfProbePhase::NameChangeWait {
+                            nc_baseline, deadline_ms, fresh_f2_ms, probe_settled,
+                            cold_reason,
+                            prepend_f2_warmup, used_eager_path,
+                        },
+                        _guard: guard,
+                    });
+                    return false;
+                }
+
+                let elapsed = now.saturating_sub(fresh_f2_ms);
+                log::debug!(
+                    "[tsf-probe] cold={cold_n} NameChangeWait → \
+                     nc_fired={nc_fired} timed_out={timed_out} ({elapsed}ms)"
+                );
+
+                if nc_fired && !probe_settled {
+                    const GJI_POST_NAMECHANGE_MS: u64 = 300;
+                    log::debug!(
+                        "[tsf-probe] cold={cold_n} \
+                         OBJ_NAMECHANGE後 GJI 二次プローブ (max {GJI_POST_NAMECHANGE_MS}ms)"
+                    );
+                    let probe =
+                        crate::tsf::probe::TsfReadinessProbe::new(fresh_f2_ms, cold_n, 0);
+                    *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                        romaji, cold_n,
+                        phase: TsfProbePhase::SecondaryGjiProbe {
+                            probe,
+                            total_max_ms: GJI_POST_NAMECHANGE_MS,
+                            prepend_f2_warmup,
+                            used_eager_path,
+                        },
+                        _guard: guard,
+                    });
+                    return false;
+                }
+
+                self.do_transmit_tsf(romaji, cold_n, prepend_f2_warmup, used_eager_path, guard)
+            }
+
+            TsfProbePhase::SecondaryGjiProbe {
+                probe, total_max_ms, prepend_f2_warmup, used_eager_path,
+            } => {
+                if !probe.check_now(total_max_ms) {
+                    *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                        romaji, cold_n,
+                        phase: TsfProbePhase::SecondaryGjiProbe {
+                            probe, total_max_ms, prepend_f2_warmup, used_eager_path,
+                        },
+                        _guard: guard,
+                    });
+                    return false;
+                }
+                let elapsed = crate::hook::current_tick_ms().saturating_sub(probe.warmup_sent_ms);
+                log::debug!("[tsf-probe] cold={cold_n} SecondaryGjiProbe 完了 ({elapsed}ms)");
+                self.do_transmit_tsf(romaji, cold_n, prepend_f2_warmup, used_eager_path, guard)
+            }
+
+            TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms, cold_n: _ } => {
+                let Some(detection) = detector.check_now(deadline_ms) else {
+                    *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                        romaji, cold_n,
+                        phase: TsfProbePhase::LiteralDetect {
+                            detector, ze_bs_count, deadline_ms, cold_n,
+                        },
+                        _guard: guard,
+                    });
+                    return false;
+                };
+                match detection {
+                    DetectionResult::CompositionConfirmed => {
+                        log::debug!("[raw-tsf-literal] cold={cold_n} composition confirmed");
+                    }
+                    DetectionResult::SuspectedLiteral => {
+                        let consecutive = self.composition.consecutive_count();
+                        if consecutive == 0 {
+                            log::warn!(
+                                "[raw-tsf-literal] cold={cold_n} raw TSF literal suspected \
+                                → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled \
+                                + mark cold"
+                            );
+                            crate::RAW_TSF_LITERAL.backs.store(ze_bs_count, Relaxed);
+                            *crate::RAW_TSF_LITERAL.romaji
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = romaji;
+                        } else {
+                            log::warn!(
+                                "[raw-tsf-literal] cold={cold_n} consecutive raw-tsf-literal \
+                                (count={}) → likely false positive, giving up",
+                                consecutive + 1,
+                            );
+                        }
+                        self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+                    }
+                }
+                true
+            }
+
+            TsfProbePhase::ChromeProbe { probe, total_max_ms } => {
+                if !probe.check_now(total_max_ms) {
+                    *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                        romaji, cold_n,
+                        phase: TsfProbePhase::ChromeProbe { probe, total_max_ms },
+                        _guard: guard,
+                    });
+                    return false;
+                }
+                log::debug!("[tsf-probe] cold={cold_n} ChromeProbe 完了 → batched 送信");
+                let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+                self.send_romaji_batch_immediate(&romaji, &chars);
+                self.mark_composition_warm();
+                true
+            }
+        }
+    }
+
+    /// GjiProbe / NameChangeWait / SecondaryGjiProbe 完了後の TSF 送信を実行する。
+    ///
+    /// LiteralDetect フェーズが必要なら pending_tsf にセットして `false` を返す。
+    /// 不要なら `true` を返す（guard がここで drop → OUTPUT_ACTIVE=false + drain）。
+    fn do_transmit_tsf(
+        &self,
+        romaji: String,
+        cold_n: u32,
+        prepend_f2_warmup: bool,
+        used_eager_path: bool,
+        guard: OutputActiveGuard,
+    ) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        use crate::tsf::observer::OBS_GJI_MONITOR_OK;
+
+        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        if chars.is_empty() {
+            return true;
+        }
+
+        let outcome = WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n };
+
+        {
+            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            // SAFETY: IMM32 API; called from message-loop thread.
+            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+            log::debug!(
+                "[h1-send] cold={cold_n} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
+                 conv={} ROMAN={} NATIVE={}",
+                chars.len(),
+                conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv.map_or(false, |v| v & 0x0010 != 0),
+                conv.map_or(false, |v| v & 0x0001 != 0),
+            );
+        }
+
+        let detector = crate::tsf::probe::LiteralDetector::new();
+        let ze_bs_count = TsfSendPipeline::new(self).transmit(&romaji, &chars, &outcome);
+        self.mark_composition_warm();
+
+        let gji_active = OBS_GJI_MONITOR_OK.load(Relaxed);
+        if prepend_f2_warmup && gji_active {
+            let deadline_ms = crate::hook::current_tick_ms()
+                + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
+            *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
+                romaji,
+                cold_n,
+                phase: TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms, cold_n },
+                _guard: guard,
+            });
+            return false;
+        }
+        // guard drops here → OUTPUT_ACTIVE=false + drain
+        true
     }
 
 }

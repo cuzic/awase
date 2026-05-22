@@ -121,11 +121,11 @@ std::thread_local! {
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
     let already_in = IN_WITH_APP.with(|flag| flag.replace(true));
     if already_in {
-        // SendMessage (cross-process IME) がメッセージポンプを起動し、
-        // その間に dispatch されたメッセージが with_app を再呼び出しした。
-        // 呼び出し元がこの None を受けて re-post する設計になっている（例: WM_FOCUS_KIND_UPDATE）。
+        // SendMessage (cross-process IME) や block_on のネストメッセージループ経由で
+        // win_event_proc などの外部コールバックから再呼び出しされた場合。
+        // debug_assert はここに置かない: win_event_proc は extern "system" FFI 境界であり、
+        // panic を FFI 越えに伝播させると UB / プロセスクラッシュになる。
         log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
-        debug_assert!(false, "with_app re-entry");
         return None;
     }
     // Safety: Windows メッセージループはシングルスレッドであり、再入ガード済み
@@ -138,6 +138,15 @@ pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
 pub fn with_app_ref<R>(f: impl FnOnce(&Runtime) -> R) -> Option<R> {
     // Safety: Windows メッセージループはシングルスレッドである
     unsafe { APP.with(f) }
+}
+
+/// `with_app` が現在アクティブかどうかを返す。
+///
+/// `hook_callback` が `SendMessageTimeoutW` 等のメッセージポンプ経由で再呼び出しされた際に
+/// `APP.get_mut()` を呼ぶと `&mut Runtime` が二重に存在し UB となる。
+/// このガードで早期リターンすることで UB を防ぐ。
+pub fn in_with_app() -> bool {
+    IN_WITH_APP.with(|flag| flag.get())
 }
 
 /// 統合 IME リフレッシュタイマー ID
@@ -155,6 +164,12 @@ pub const TIMER_HOOK_WATCHDOG: usize = 102;
 /// 復帰直後は OS や IME サービスがまだ回復途中で、ブロッキング Win32 API が
 /// メッセージループをハングさせる恐れがある。2秒遅延して安全に復帰処理を行う。
 pub const TIMER_POWER_RESUME: usize = 103;
+
+/// TSF ウォームアッププローブのポーリングタイマー ID
+///
+/// block_on ネストメッセージループを回避するため、
+/// 10ms 間隔で GJI 静止・NAMECHANGE・リテラル検出を行う。
+pub const TIMER_TSF_PROBE: usize = 105;
 
 /// ReinjectKey の output guard 解除待ちタイマー ID
 ///
