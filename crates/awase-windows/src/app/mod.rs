@@ -266,7 +266,22 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
         return CallbackResult::Consumed;
     }
-    with_app(|app| on_key_event_impl(app, event)).unwrap_or(CallbackResult::PassThrough)
+    with_app(|app| on_key_event_impl(app, event)).unwrap_or_else(|| {
+        // with_app 再入中（set_ime_open_cross_process の SendMessageTimeoutW が
+        // メッセージポンプを起動し、その間にハードウェアキーが届いた場合）。
+        // PassThrough にすると NICOLA 文字キー（F=け、U=ち など）が MS-IME に
+        // ラテン文字として届き文字化けする。
+        // OUTPUT_PENDING_QUEUE に退避して WM_DRAIN_OUTPUT_QUEUE で NICOLA に再配送する。
+        log::debug!(
+            "[with-app-reentry] queuing vk=0x{:02X} {:?} (IN_WITH_APP, defer to drain)",
+            event.vk_code.0, event.event_type,
+        );
+        if let Ok(mut q) = awase_windows::OUTPUT_PENDING_QUEUE.lock() {
+            q.push(event);
+        }
+        awase_windows::post_drain_output_queue();
+        CallbackResult::Consumed
+    })
 }
 
 /// フックコールバックの本体。`KeyEventPipeline` に処理を委譲する。
