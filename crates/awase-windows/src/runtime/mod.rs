@@ -518,6 +518,12 @@ impl Runtime {
     pub fn spawn_ime_refresh(&mut self) {
         self.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
 
+        // phase3_7 (T≈270ms) より先に eager warmup F2 を送る。これにより打鍵時の cold path で
+        // used_eager_path=true となり unicode fallback が有効になる（先頭文字欠け対策）。
+        if self.platform_state.focus_transition_pending {
+            self.executor.platform.output.send_eager_tsf_warmup();
+        }
+
         win32_async::spawn_local(async {
             let focus = crate::focus::probe::run_focus_probe_async().await;
             let snap = crate::ime::detect_ime_state_async().await;

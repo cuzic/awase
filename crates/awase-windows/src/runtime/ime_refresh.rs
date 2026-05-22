@@ -334,9 +334,11 @@ impl<'a> ImeRefreshPipeline<'a> {
                 self.rt.platform_state.preconditions.ime_detect_miss_count
             );
             let success = self.rt.executor.platform.set_ime_open(true);
-            if success {
-                self.rt.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::BrokenAppBootstrap;
-                // miss_count はリセットしない。ガードが検出成功まで保護する。
+            // success/failure 問わずガードをセット: IME 非対応ウィンドウ(DirectUIHWND 等)で
+            // 失敗し続ける無限ループを防ぐ。ガードはフォーカス変更時に解除される。
+            self.rt.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::BrokenAppBootstrap;
+            if !success {
+                log::warn!("set_ime_open failed (no IME window?) — guard set to suppress retry until focus change");
             }
         }
     }
