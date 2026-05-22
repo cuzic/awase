@@ -364,12 +364,14 @@ impl Runtime {
         let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
 
         // ── Phase 2: IMM 能力キャッシュの初期学習 ──
-        imm_learning::learn_imm_capability_on_focus(
-            &mut self.executor.platform.focus,
-            hwnd,
-            &class_name,
-            new_app_kind,
-        );
+        unsafe {
+            imm_learning::learn_imm_capability_on_focus(
+                &mut self.executor.platform.focus,
+                hwnd,
+                &class_name,
+                new_app_kind,
+            );
+        }
 
         if self.platform_state.app_kind != new_app_kind {
             log::info!(
@@ -381,13 +383,15 @@ impl Runtime {
         }
 
         // ── Phase 3: focus_kind を決定 ──
-        let resolution = kind_classifier::resolve_focus_kind(
-            &self.executor.platform.focus,
-            &self.executor,
-            process_id,
-            &class_name,
-            hwnd,
-        );
+        let resolution = unsafe {
+            kind_classifier::resolve_focus_kind(
+                &self.executor.platform.focus,
+                &self.executor,
+                process_id,
+                &class_name,
+                hwnd,
+            )
+        };
         let kind = resolution.kind;
         let reason = resolution.reason;
         let overridden = resolution.overridden;
@@ -407,7 +411,7 @@ impl Runtime {
                 process_id,
                 class_name.clone(),
                 kind,
-                crate::focus::cache::DetectionSource::Automatic,
+                DetectionSource::Automatic,
             );
         }
 
@@ -478,7 +482,7 @@ impl Runtime {
                 self.platform_state.preconditions.ime_detect_miss_count = 0;
             }
 
-            if kind == awase::types::FocusKind::Undetermined {
+            if kind == FocusKind::Undetermined {
                 if let Some(sender) = &self.executor.platform.focus.uia_sender {
                     let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
                 }
@@ -486,7 +490,7 @@ impl Runtime {
 
             true
         } else {
-            if kind == awase::types::FocusKind::Undetermined {
+            if kind == FocusKind::Undetermined {
                 if let Some(sender) = &self.executor.platform.focus.uia_sender {
                     let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
                 }
