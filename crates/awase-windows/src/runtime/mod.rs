@@ -517,6 +517,18 @@ impl Runtime {
     /// with_app の外でフェッチを行い、完了後に with_app で適用する。
     pub fn spawn_ime_refresh(&mut self) {
         self.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
+
+        // フォーカス変更直後にタイマーが発火した場合、async probe 完了前に
+        // ユーザーが打鍵する可能性がある。先手で composition を cold にしておく。
+        // stage_focus_probe でも同様に cold にするが、タイマー発火→打鍵の順の場合は
+        // こちらが先に動く（50ms 経過後でタイマー発火、その後のキー入力に対して）。
+        if self.platform_state.focus_transition_pending {
+            self.executor
+                .platform
+                .output
+                .mark_composition_cold(crate::output::ColdReason::FocusChange);
+        }
+
         win32_async::spawn_local(async {
             let focus = crate::focus::probe::run_focus_probe_async().await;
             let snap = crate::ime::detect_ime_state_async().await;
