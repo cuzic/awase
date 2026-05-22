@@ -994,6 +994,13 @@ impl Output {
             }
             CharResolution::Vk(vk, needs_shift) => {
                 log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+                // probe 進行中は VK を後回しにして romaji との送信順序を保証する。
+                // 例: ば(ChromeProbe中) + ー(VK0xBD) の場合、先に ba VKs を送ってから ー を送る。
+                if let Some(data) = self.pending_tsf.borrow_mut().as_mut() {
+                    log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
+                    data.deferred_vks.push((vk, needs_shift));
+                    return;
+                }
                 let mut inputs = Vec::with_capacity(4);
                 if needs_shift {
                     inputs.push(make_key_input(VK_LSHIFT, false));
@@ -1221,7 +1228,7 @@ impl Output {
                 log::debug!("[tsf-probe] cold={cold_n} ChromeProbe 完了 → batched 送信");
                 let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
                 self.send_romaji_batch_immediate(&romaji, &chars);
-                self.send_deferred_probe_vks_from(deferred_vks);
+                self.send_deferred_probe_vks_from(deferred_vks, false);
                 self.mark_composition_warm();
                 true
             }
@@ -1230,18 +1237,25 @@ impl Output {
 
     /// probe 完了後に deferred_vks を romaji の直後に送出する。
     /// vks が空なら no-op。
-    fn send_deferred_probe_vks_from(&self, vks: Vec<(u16, bool)>) {
+    /// `use_tsf_marker` = true → TSF_MARKER（WezTerm TSF モード）
+    ///                    false → INJECTED_MARKER（Chrome/VK モード）
+    fn send_deferred_probe_vks_from(&self, vks: Vec<(u16, bool)>, use_tsf_marker: bool) {
         if vks.is_empty() {
             return;
         }
-        log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出", vks.len());
+        log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})", vks.len());
         let mut inputs: Vec<INPUT> = Vec::with_capacity(vks.len() * 4);
         for &(vk, needs_shift) in &vks {
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
             }
-            inputs.push(make_tsf_key_input(vk, false));
-            inputs.push(make_tsf_key_input(vk, true));
+            if use_tsf_marker {
+                inputs.push(make_tsf_key_input(vk, false));
+                inputs.push(make_tsf_key_input(vk, true));
+            } else {
+                inputs.push(make_key_input(vk, false));
+                inputs.push(make_key_input(vk, true));
+            }
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
             }
@@ -1295,7 +1309,7 @@ impl Output {
 
         let detector = crate::tsf::probe::LiteralDetector::new();
         let ze_bs_count = TsfSendPipeline::new(self).transmit(&romaji, &chars, &outcome);
-        self.send_deferred_probe_vks_from(deferred_vks);
+        self.send_deferred_probe_vks_from(deferred_vks, true);
         self.mark_composition_warm();
 
         let gji_active = OBS_GJI_MONITOR_OK.load(Relaxed);
