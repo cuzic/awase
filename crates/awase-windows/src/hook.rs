@@ -416,8 +416,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ── 自己注入チェック（無限ループ防止）──
         // in_with_app チェックより先に行う: 注入キーは常にパススルー。
         if kb.dwExtraInfo == INJECTED_MARKER
-            || kb.dwExtraInfo == crate::output::TSF_MARKER
-            || kb.dwExtraInfo == crate::output::IME_KANJI_MARKER
+            || kb.dwExtraInfo == crate::tsf::output::TSF_MARKER
+            || kb.dwExtraInfo == crate::tsf::output::IME_KANJI_MARKER
         {
             // ハートビートは自己注入でも更新する（ping 応答のため）。
             // with_app は SendMessageTimeoutW 経由でここが呼ばれた際に再入検出を返すため、

@@ -1,3 +1,4 @@
+use std::mem::size_of;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetConversionStatus, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
@@ -7,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, MapVirtualKeyW, MAPVK_VK_TO_VSC, SendInput, INPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    SendMessageTimeoutW, SMTO_ABORTIFHUNG,
+    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
 };
 
 use crate::imm::{
@@ -60,7 +61,7 @@ pub unsafe fn post_kanji_toggle_to_focused() {
         make_key_input_ex(VK_KANJI, true, IME_KANJI_MARKER),
     ];
     log::debug!("[ime-fallback] SendInput VK_KANJI (IME_KANJI_MARKER) for IME toggle-off");
-    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
     if sent == 0 {
         log::warn!("[ime-fallback] SendInput(VK_KANJI) failed");
     }
