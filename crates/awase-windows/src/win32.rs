@@ -1,62 +1,8 @@
 //! Windows API の安全ラッパー
 
-use std::ptr::NonNull;
 use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
-
-/// 非 null が保証された HWND ラッパー。
-///
-/// Win32 API の HWND は null を返すことがある（フォーカスなし等）。
-/// `ValidHwnd` は境界で null チェックを行い、内部では非 null を型保証する。
-///
-/// # 使い方
-/// ```ignore
-/// let hwnd: HWND = unsafe { GetForegroundWindow() };
-/// if let Some(valid) = ValidHwnd::new(hwnd) {
-///     // valid は非 null 保証済み
-/// }
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValidHwnd(NonNull<std::ffi::c_void>);
-
-// Safety: HWND の値（ポインタ値）はスレッド間で安全に共有できる。
-// ウィンドウハンドルはプロセス内でグローバルに有効であり、
-// 別スレッドから参照しても問題ない。
-unsafe impl Send for ValidHwnd {}
-unsafe impl Sync for ValidHwnd {}
-
-impl ValidHwnd {
-    /// null チェックを行い、非 null なら `Some(ValidHwnd)` を返す。
-    pub fn new(hwnd: HWND) -> Option<Self> {
-        NonNull::new(hwnd.0).map(ValidHwnd)
-    }
-
-    /// 内部の `HWND` を返す。非 null が保証されている。
-    pub fn as_hwnd(self) -> HWND {
-        HWND(self.0.as_ptr())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use windows::Win32::Foundation::HWND;
-
-    #[test]
-    fn valid_hwnd_null_returns_none() {
-        let null_hwnd = HWND(std::ptr::null_mut());
-        assert!(ValidHwnd::new(null_hwnd).is_none());
-    }
-
-    #[test]
-    fn valid_hwnd_nonnull_roundtrips() {
-        let fake_ptr = 0x1234usize as *mut std::ffi::c_void;
-        let hwnd = HWND(fake_ptr);
-        let valid = ValidHwnd::new(hwnd).expect("non-null pointer should be Some");
-        assert_eq!(valid.as_hwnd().0, fake_ptr);
-    }
-}
 use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
@@ -66,6 +12,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 ///
 /// `win32_async::run_with_timeout` の re-export。
 pub use win32_async::run_with_timeout;
+
+/// null チェックを行い、非 null なら `Some(hwnd)` を返す。
+///
+/// Win32 API が返す `HWND` は null（フォーカスなし・失敗）を示すことがある。
+/// 境界でこの関数を使い、以降は `Option<HWND>` として処理する。
+pub fn non_null_hwnd(hwnd: HWND) -> Option<HWND> {
+    (!hwnd.0.is_null()).then_some(hwnd)
+}
 
 /// メインスレッドのメッセージキューにカスタムメッセージを POST する。
 ///
@@ -104,7 +58,7 @@ pub fn send_input_safe(inputs: &[INPUT]) -> u32 {
 #[derive(Debug, Clone, Copy)]
 pub struct GuiThreadResult {
     /// フォーカスを持つウィンドウ。null（フォーカスなし）の場合は `None`。
-    pub focused_hwnd: Option<ValidHwnd>,
+    pub focused_hwnd: Option<HWND>,
     /// ウィンドウが属するスレッド ID（0 = 取得失敗）
     pub thread_id: u32,
 }
@@ -122,7 +76,7 @@ pub struct GuiThreadResult {
 pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadResult {
     // HWND はポインタだが、スレッド間で安全に送信可能
     // （Win32 ウィンドウハンドルはプロセス内で有効なグローバルリソース）
-    struct SendableResult(Option<ValidHwnd>, u32);
+    struct SendableResult(Option<HWND>, u32);
     unsafe impl Send for SendableResult {}
 
     let result = run_with_timeout(timeout, || {
@@ -133,17 +87,17 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
         unsafe {
             if GetGUIThreadInfo(0, &raw mut info).is_ok() {
                 // hwndFocus が null なら hwndActive を使う
-                let hwnd = ValidHwnd::new(info.hwndFocus)
-                    .or_else(|| ValidHwnd::new(info.hwndActive));
+                let hwnd = non_null_hwnd(info.hwndFocus)
+                    .or_else(|| non_null_hwnd(info.hwndActive));
                 let tid = if let Some(h) = hwnd {
                     let mut pid = 0u32;
-                    GetWindowThreadProcessId(h.as_hwnd(), Some(&raw mut pid))
+                    GetWindowThreadProcessId(h, Some(&raw mut pid))
                 } else {
                     0
                 };
                 SendableResult(hwnd, tid)
             } else {
-                SendableResult(ValidHwnd::new(GetForegroundWindow()), 0)
+                SendableResult(non_null_hwnd(GetForegroundWindow()), 0)
             }
         }
     });
@@ -153,7 +107,7 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
         None => {
             // フォールバック: GetForegroundWindow は非ブロッキング
             GuiThreadResult {
-                focused_hwnd: ValidHwnd::new(unsafe { GetForegroundWindow() }),
+                focused_hwnd: non_null_hwnd(unsafe { GetForegroundWindow() }),
                 thread_id: 0,
             }
         }

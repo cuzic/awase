@@ -17,14 +17,8 @@
 
 use std::time::Duration;
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG};
-
-const WM_IME_CONTROL: u32 = 0x0283;
-const IMC_GETOPENSTATUS: usize = 0x0005;
-const IMC_GETCONVERSIONMODE: usize = 0x0001;
 
 /// 各観測点での IME 状態のスナップショット。
 ///
@@ -145,7 +139,7 @@ impl ImeDiagnosticSnapshot {
         // ── ImmGetDefaultIMEWnd ──
         let has_imm_bridge = unsafe {
             let hwnd = HWND(focus_hwnd_raw as *mut _);
-            !ImmGetDefaultIMEWnd(hwnd).0.is_null()
+            crate::imm::get_ime_wnd(hwnd).is_some()
         };
 
         // ── クロスプロセス IMC_GETOPENSTATUS / IMC_GETCONVERSIONMODE ──
@@ -217,38 +211,16 @@ impl ImeDiagnosticSnapshot {
 fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
     unsafe {
         let hwnd = HWND(focus_hwnd_raw as *mut _);
-        let Some(_) = crate::win32::ValidHwnd::new(hwnd) else {
+        let Some(_) = crate::win32::non_null_hwnd(hwnd) else {
             return (None, None);
         };
-        let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
-        if ime_wnd.0.is_null() {
+        let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
             return (None, None);
-        }
-
-        let mut open_result = 0usize;
-        let open_ok = SendMessageTimeoutW(
-            ime_wnd,
-            WM_IME_CONTROL,
-            WPARAM(IMC_GETOPENSTATUS),
-            LPARAM(0),
-            SMTO_ABORTIFHUNG,
-            50,
-            Some(&raw mut open_result),
-        );
-        let open = if open_ok.0 != 0 { Some(open_result != 0) } else { None };
-
-        let mut conv_result = 0usize;
-        let conv_ok = SendMessageTimeoutW(
-            ime_wnd,
-            WM_IME_CONTROL,
-            WPARAM(IMC_GETCONVERSIONMODE),
-            LPARAM(0),
-            SMTO_ABORTIFHUNG,
-            50,
-            Some(&raw mut conv_result),
-        );
-        let conv = if conv_ok.0 != 0 { Some(conv_result as u32) } else { None };
-
+        };
+        let open = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETOPENSTATUS, 0, 50)
+            .map(|v| v != 0);
+        let conv = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETCONVERSIONMODE, 0, 50)
+            .map(|v| v as u32);
         (open, conv)
     }
 }

@@ -131,6 +131,12 @@ pub struct RawKeyEvent {
     pub ime_relevance: ImeRelevance,
     /// 修飾キー分類（プラットフォーム層が設定、None = 修飾キーではない）
     pub modifier_key: Option<ModifierKey>,
+    /// フック時点でキャプチャした修飾キー状態スナップショット
+    ///
+    /// `GetAsyncKeyState` を replay 時ではなく capture 時に呼ぶことで、
+    /// OUTPUT_PENDING_QUEUE 経由の drain 時に modifier 状態が変化していても
+    /// 正しい文脈でイベントを再処理できる。
+    pub modifier_snapshot: crate::engine::ModifierState,
 }
 
 /// 出力アクション

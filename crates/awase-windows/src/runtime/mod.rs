@@ -98,22 +98,19 @@ pub fn is_force_tsf(
     false
 }
 
-/// `Preconditions` から `InputContext` を構築する。
+/// `Preconditions` と修飾キースナップショットから `InputContext` を構築する。
 ///
-/// 修飾キー判定は `GetAsyncKeyState` で取得した OS 実状態のみ使用する。
-pub fn build_input_context(preconditions: &Preconditions) -> InputContext {
-    let raw = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-    let modifiers = awase::engine::ModifierState {
-        ctrl: raw.ctrl,
-        alt: raw.alt,
-        shift: raw.shift,
-        win: raw.win,
-    };
+/// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
+/// タイマー等のイベント非同期パスでは呼び出し元が `read_os_modifiers()` で取得する。
+pub fn build_input_context(
+    preconditions: &Preconditions,
+    modifiers: &awase::engine::ModifierState,
+) -> InputContext {
     InputContext {
         ime_on: preconditions.ime_on,
         input_mode: preconditions.input_mode,
         is_japanese_ime: preconditions.is_japanese_ime,
-        modifiers,
+        modifiers: *modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
     }
@@ -278,7 +275,8 @@ pub struct Runtime {
 
 impl Runtime {
     fn build_ctx(&self) -> InputContext {
-        build_input_context(&self.platform_state.preconditions)
+        let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+        build_input_context(&self.platform_state.preconditions, &modifiers)
     }
 
     /// IME 関連の事前分類情報を sync key 設定で補完する
@@ -707,23 +705,17 @@ fn send_all_modifier_key_ups() {
 /// # Safety
 /// Win32 IMM API (`ImmGetContext`, `ImmNotifyIME`, `ImmReleaseContext`) を呼び出す。
 unsafe fn cancel_ime_composition() {
-    use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmNotifyIME, ImmReleaseContext};
+    use windows::Win32::UI::Input::Ime::{ImmNotifyIME, NOTIFY_IME_ACTION, NOTIFY_IME_INDEX};
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
-    let Some(valid) = crate::win32::ValidHwnd::new(GetForegroundWindow()) else {
+    let Some(hwnd) = crate::win32::non_null_hwnd(GetForegroundWindow()) else {
         return;
     };
-    let hwnd = valid.as_hwnd();
-
-    let himc = ImmGetContext(hwnd);
-    if himc.is_invalid() {
+    let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
         return;
-    }
-
-    use windows::Win32::UI::Input::Ime::{NOTIFY_IME_ACTION, NOTIFY_IME_INDEX};
+    };
     // NI_COMPOSITIONSTR = 0x15, CPS_CANCEL = 0x04
-    let _ = ImmNotifyIME(himc, NOTIFY_IME_ACTION(0x15), NOTIFY_IME_INDEX(0x04), 0);
-    let _ = ImmReleaseContext(hwnd, himc);
+    let _ = unsafe { ImmNotifyIME(ctx.himc(), NOTIFY_IME_ACTION(0x15), NOTIFY_IME_INDEX(0x04), 0) };
     log::debug!("Cancelled IME composition");
 }
 

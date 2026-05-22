@@ -24,9 +24,7 @@ pub unsafe fn learn_imm_capability_on_focus(
         return;
     }
 
-    use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
-    let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
-    if ime_wnd.0.is_null() {
+    if unsafe { crate::imm::get_ime_wnd(hwnd) }.is_none() {
         log::info!(
             "IMM capability: ImmGetDefaultIMEWnd=NULL, learning Broken (class={class_name})"
         );

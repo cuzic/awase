@@ -605,6 +605,7 @@ mod tests {
                 is_ime_control: false,
             },
             modifier_key: None,
+            modifier_snapshot: Default::default(),
         };
         let phys = PhysicalKeyState::empty();
 

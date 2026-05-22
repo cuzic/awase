@@ -481,6 +481,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         let vk = VkCode(vk_raw);
         let scan = ScanCode(kb.scanCode);
         let (key_classification, physical_pos) = classify_key(vk, scan, &ps.hook_config);
+        // フック時点の修飾キー状態を capture（drain 時の context 汚染防止）
+        let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
         let mut event = RawKeyEvent {
             vk_code: vk,
             scan_code: scan,
@@ -491,6 +493,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             physical_pos,
             ime_relevance: classify_ime_relevance(vk),
             modifier_key: classify_modifier(vk),
+            modifier_snapshot,
         };
 
         // Drop ps borrow — subsequent sections re-acquire app from APP
@@ -533,7 +536,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
 
                 // Flush engine pending keys
-                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions);
+                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions, &event.modifier_snapshot);
                 app.platform_state.hook.in_callback = false;
                 let decision = app.engine.on_command(
                     awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),

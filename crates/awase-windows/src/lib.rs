@@ -23,6 +23,7 @@ pub mod focus;
 pub mod hook;
 pub mod ime;
 pub mod ime_diagnostic;
+pub(crate) mod imm;
 pub mod ime_observations;
 pub mod observer;
 pub mod output;
@@ -170,7 +171,7 @@ pub unsafe fn reinject_key(event: &RawKeyEvent) {
     use crate::output::INJECTED_MARKER;
     use awase::types::KeyEventType;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
+        KEYBD_EVENT_FLAGS, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
         VIRTUAL_KEY,
     };
 
@@ -181,11 +182,11 @@ pub unsafe fn reinject_key(event: &RawKeyEvent) {
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(event.vk_code.0),
-                wScan: event.scan_code.0 as u16,
+                wScan: 0,
                 dwFlags: if is_keyup {
-                    KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE
+                    KEYEVENTF_KEYUP
                 } else {
-                    KEYEVENTF_SCANCODE
+                    KEYBD_EVENT_FLAGS(0)
                 },
                 time: 0,
                 dwExtraInfo: INJECTED_MARKER,

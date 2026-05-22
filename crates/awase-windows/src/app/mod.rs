@@ -213,11 +213,12 @@ pub(self) fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDi
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
             with_app(|app| {
+                let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
                 app.engine.on_command(
                     awase::engine::EngineCommand::SetNgramModel(model),
                     &runtime::build_input_context(
                         &app.platform_state.preconditions,
-                        &app.platform_state.modifier_timing,
+                        &modifiers,
                     ),
                 );
             });
@@ -394,6 +395,7 @@ fn reload_config() {
     }
 
     with_app(|app| {
+        let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
         app.engine.on_command(
             awase::engine::EngineCommand::UpdateFsmParams {
                 threshold_ms: config.general.simultaneous_threshold_ms,
@@ -402,7 +404,7 @@ fn reload_config() {
             },
             &runtime::build_input_context(
                 &app.platform_state.preconditions,
-                &app.platform_state.modifier_timing,
+                &modifiers,
             ),
         );
         app.executor.platform.output.set_mode(config.general.output_mode);
@@ -430,6 +432,7 @@ fn reload_config() {
             app.sync_toggle_keys = toggle.clone();
             app.sync_on_keys = on.clone();
             app.sync_off_keys = off.clone();
+            let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
             app.engine.on_command(
                 awase::engine::EngineCommand::ReloadKeys {
                     special: SpecialKeyCombos {
@@ -441,7 +444,7 @@ fn reload_config() {
                 },
                 &runtime::build_input_context(
                     &app.platform_state.preconditions,
-                    &app.platform_state.modifier_timing,
+                    &modifiers,
                 ),
             );
         });

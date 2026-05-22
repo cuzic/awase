@@ -11,10 +11,7 @@
 use awase::engine::InputModeState;
 use crate::{ImeForceOnGuard, Preconditions, ime_observations::{ImeObs, ImeObservations}};
 
-/// IME_CMODE_ROMAN ビット（0x0010）
-const IME_CMODE_ROMAN: u32 = 0x0010;
-/// IME_CMODE_NATIVE ビット（0x0001）
-const IME_CMODE_NATIVE: u32 = 0x0001;
+use crate::imm::{IME_CMODE_NATIVE, IME_CMODE_ROMAN};
 
 /// Win32 API を使って IME 状態を観測し、`Preconditions` と `ImeObservations` を更新する。
 ///

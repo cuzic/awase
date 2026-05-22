@@ -2,12 +2,12 @@
 
 use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetWindowLongW, GetWindowThreadProcessId, GWL_EXSTYLE, GWL_STYLE,
 };
 
 use super::msaa::msaa_classify;
+
 
 /// `WS_EX_NOIME` (0x0040_0000) — IME 入力を受け付けないウィンドウスタイル
 const WS_EX_NOIME: i32 = 0x0040_0000;
@@ -60,7 +60,7 @@ impl std::fmt::Display for ClassifyReason {
 /// deny-first（バイパスを優先）、allow は確信がある場合のみ。
 /// 判定不能なら `Undetermined` を返す。
 pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
-    if crate::win32::ValidHwnd::new(hwnd).is_none() {
+    if crate::win32::non_null_hwnd(hwnd).is_none() {
         return ClassifyResult {
             kind: FocusKind::NonText,
             reason: ClassifyReason::NullHwnd,
@@ -70,14 +70,7 @@ pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
     // 1. ImmGetContext — NULL でも NonText 確定にしない。
     // Windows 11 のメモ帳 (RichEditD2DPT) 等、TSF のみで IMM コンテキストを
     // 持たないテキストコントロールがあるため、Phase 2/3 に判断を委ねる。
-    let _has_imm_context = unsafe {
-        let himc = ImmGetContext(hwnd);
-        let valid = !himc.is_invalid();
-        if valid {
-            let _ = ImmReleaseContext(hwnd, himc);
-        }
-        valid
-    };
+    let _has_imm_context = unsafe { crate::imm::ImmContextGuard::new(hwnd).is_some() };
 
     // 2. WS_EX_NOIME ウィンドウスタイル
     let ex_style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) };

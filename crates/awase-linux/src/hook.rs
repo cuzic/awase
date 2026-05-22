@@ -267,6 +267,7 @@ impl EvdevInput {
                         physical_pos,
                         ime_relevance: classify_ime_relevance(keycode),
                         modifier_key: classify_modifier(keycode),
+                        modifier_snapshot: Default::default(),
                     };
 
                     log::trace!(

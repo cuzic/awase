@@ -407,7 +407,7 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    if crate::win32::ValidHwnd::new(hwnd).is_none() {
+    if crate::win32::non_null_hwnd(hwnd).is_none() {
         return;
     }
 

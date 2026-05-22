@@ -352,6 +352,7 @@ mod tests {
             physical_pos: None,
             ime_relevance: crate::types::ImeRelevance::default(),
             modifier_key,
+            modifier_snapshot: Default::default(),
         }
     }
 

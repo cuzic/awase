@@ -175,6 +175,7 @@ fn build_event(vk_raw: u16, event_type: KeyEventType, timestamp: u64) -> RawKeyE
         physical_pos: pos,
         ime_relevance: crate::types::ImeRelevance::default(),
         modifier_key: classify_modifier(vk),
+        modifier_snapshot: Default::default(),
     }
 }
 

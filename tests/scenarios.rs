@@ -48,8 +48,7 @@ fn ctx() -> InputContext {
         ime_on: true,
         input_mode: InputModeState::ObservedRomaji,
         is_japanese_ime: true,
-        modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },
-        os_modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },
+        modifiers: awase::engine::ModifierState::default(),
         left_thumb_down: None,
         right_thumb_down: None,
     }
@@ -129,6 +128,7 @@ fn key_down(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
         physical_pos: pos,
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
+        modifier_snapshot: Default::default(),
     }
 }
 
@@ -145,6 +145,7 @@ fn key_up(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
         physical_pos: pos,
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
+        modifier_snapshot: Default::default(),
     }
 }
 

@@ -34,7 +34,7 @@ impl<'a> KeyEventPipeline<'a> {
 
         let ctx = runtime::build_input_context(
             &self.app.platform_state.preconditions,
-            &self.app.platform_state.modifier_timing,
+            &event.modifier_snapshot,
         );
         let decision = self.app.engine.on_input(event, &ctx);
 

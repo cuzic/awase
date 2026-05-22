@@ -181,6 +181,7 @@ mod tests {
             physical_pos: pos,
             ime_relevance: ImeRelevance::default(),
             modifier_key: None,
+            modifier_snapshot: Default::default(),
         }
     }
 
