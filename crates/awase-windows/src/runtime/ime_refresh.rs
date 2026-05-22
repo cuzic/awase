@@ -1,7 +1,9 @@
 use awase::engine::{AssumedReason, EngineCommand, InputModeState};
+use awase::platform::PlatformRuntime;
 
 use super::ImmCapability;
 use super::Runtime;
+use crate::ImeForceOnGuard;
 
 // ── ImeReadStrategy ──
 
@@ -323,7 +325,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             && self.rt.engine.is_user_enabled()
             && self.rt.platform_state.preconditions.is_japanese_ime
             && self.rt.platform_state.preconditions.ime_on
-            && !self.rt.platform_state.preconditions.ime_force_on_guard
+            && !self.rt.platform_state.preconditions.ime_force_on_guard.is_active()
         {
             log::warn!(
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
@@ -331,7 +333,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             );
             let success = self.rt.executor.platform.set_ime_open(true);
             if success {
-                self.rt.platform_state.preconditions.ime_force_on_guard = true;
+                self.rt.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::BrokenAppBootstrap;
                 // miss_count はリセットしない。ガードが検出成功まで保護する。
             }
         }

@@ -8,11 +8,10 @@
 //! - [`probe_bridge`] — メッセージループ統合: OUTPUT_ACTIVE / OUTPUT_PENDING_QUEUE
 //! - [`cold_warmup`]  — cold-start ウォームアップシーケンス（Preamble/Eager/Non-eager 分解）
 
-pub mod cold_warmup;
+pub(crate) mod cold_warmup;
 pub mod observer;
 pub mod output;
 pub mod probe;
 pub mod probe_bridge;
 pub(crate) mod raw_literal;
 pub(crate) mod send;
-pub(crate) mod cold_warmup;

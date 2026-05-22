@@ -1,7 +1,7 @@
 mod ime_refresh;
 use ime_refresh::ImeRefreshPipeline;
 
-use awase::engine::{AssumedReason, Engine, EngineCommand, InputContext, InputModeState, TIMER_PENDING, TIMER_SPECULATIVE};
+use awase::engine::{Engine, EngineCommand, InputContext, InputModeState};
 use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
@@ -345,7 +345,6 @@ impl Runtime {
     /// # Safety
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
     unsafe fn detect_and_update_focus(&mut self) -> bool {
-        use crate::focus::classify;
         use crate::focus::hwnd_cache;
         use crate::focus::imm_learning;
         use crate::focus::kind_classifier;

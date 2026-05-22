@@ -13,7 +13,7 @@ pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
 use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key_input};
 
 pub(crate) mod sender;
-pub(crate) use sender::{InjectionMode, InjectionSender, OutputSession, UnicodeSender, VkSender, TsfSender};
+pub(crate) use sender::{InjectionMode, InjectionSender, OutputSession};
 
 /// 出力セッションを RAII で管理するガード。
 ///
