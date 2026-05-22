@@ -43,30 +43,27 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     success
 }
 
-/// TSF ネイティブアプリ（Chrome 等）向け IME ON/OFF フォールバック。
+/// TSF ネイティブアプリ（Chrome 等）向け IME トグルフォールバック。
 ///
-/// `WM_IME_CONTROL` が効かない TSF アプリに対して VK_IME_ON (0x16) / VK_IME_OFF (0x1A) を
-/// `SendInput` で送り、IME を指定状態にする。
+/// `WM_IME_CONTROL` が効かない TSF アプリに対して `SendInput(VK_KANJI)` で IME をトグルする。
 ///
-/// VK_KANJI（トグル）と違い**現在の IME 状態を知らずに呼べる**ため shadow_ime_on に依存しない。
+/// VK_KANJI はトグルキーのため **呼び出し元は shadow_ime_on != desired を事前確認すること**。
 /// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが再インターセプトしない
 /// （フック先頭の自己注入チェックで即パススルー、shadow toggle もスキップ）。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_directional_ime_vk(open: bool) {
+pub unsafe fn post_kanji_toggle_to_focused() {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    const VK_IME_ON: u16  = 0x16;
-    const VK_IME_OFF: u16 = 0x1A;
-    let vk = if open { VK_IME_ON } else { VK_IME_OFF };
+    const VK_KANJI: u16 = 0x19;
     let inputs = [
-        make_key_input_ex(vk, false, IME_KANJI_MARKER),
-        make_key_input_ex(vk, true,  IME_KANJI_MARKER),
+        make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER),
+        make_key_input_ex(VK_KANJI, true,  IME_KANJI_MARKER),
     ];
-    log::debug!("[ime-fallback] SendInput VK_IME_{} (0x{vk:02X}) for IME {}", if open { "ON" } else { "OFF" }, if open { "on" } else { "off" });
+    log::debug!("[ime-fallback] SendInput VK_KANJI (0x19) IME toggle");
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
     if sent == 0 {
-        log::warn!("[ime-fallback] SendInput(VK_IME_{}) failed", if open { "ON" } else { "OFF" });
+        log::warn!("[ime-fallback] SendInput(VK_KANJI) failed");
     }
 }
 

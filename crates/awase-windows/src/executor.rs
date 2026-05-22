@@ -537,7 +537,8 @@ impl DecisionExecutor {
                                 "set_ime_open({open}) failed — requesting IME refresh for resync"
                             );
                             // Chrome 等 IMM-broken クラスでは WM_IME_CONTROL が届かないため
-                            // VK_IME_ON/OFF（方向指定・非トグル）でフォールバックする。
+                            // VK_KANJI（トグル）でフォールバックする。
+                            // 送信前に shadow_ime_on を確認し、すでに目標状態なら送らない。
                             tsf_kanji_fallback = true;
                         }
                         // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
@@ -554,8 +555,13 @@ impl DecisionExecutor {
 
         if tsf_kanji_fallback {
             if let Some(open) = ime_set_open {
-                // VK_IME_ON/OFF は方向指定キーなので shadow_ime_on 参照不要。
-                unsafe { crate::ime::post_directional_ime_vk(open) };
+                let current = self.platform.output.shadow_ime_on();
+                if current != open {
+                    log::debug!("[ime-fallback] shadow={current} → desired={open}: SendInput VK_KANJI");
+                    unsafe { crate::ime::post_kanji_toggle_to_focused() };
+                } else {
+                    log::debug!("[ime-fallback] shadow={current} already matches desired={open}, skip VK_KANJI");
+                }
             }
         }
 
