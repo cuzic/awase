@@ -1,26 +1,88 @@
-// ブロッキング処理をワーカースレッドで実行し、async で結果を待つ。
-// sleep_ms(5) でポーリングするのでメインスレッドのメッセージループをブロックしない。
+//! ブロッキング処理をワーカースレッドで実行し、正規の Future として待つ。
+//!
+//! `winmsg_executor` の Waker は `PostMessageA` ベースでスレッドセーフなため、
+//! ワーカースレッドから `waker.wake()` を呼ぶとメインスレッドが即座に再 poll される。
+//! ポーリングによる遅延は発生しない。
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+
+struct OffloadState<T> {
+    result: Mutex<Option<T>>,
+    waker: Mutex<Option<Waker>>,
+    done: AtomicBool,
+}
+
+/// [`offload`] が返す Future。
+///
+/// 初回 poll でワーカースレッドを起動し、完了時に Waker 経由でメインスレッドを起こす。
+pub struct OffloadFuture<T> {
+    state: Arc<OffloadState<T>>,
+    spawned: bool,
+    f: Option<Box<dyn FnOnce() -> T + Send + 'static>>,
+}
+
+impl<T> std::fmt::Debug for OffloadFuture<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OffloadFuture")
+            .field("spawned", &self.spawned)
+            .field("done", &self.state.done.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
 #[allow(clippy::future_not_send)]
-pub async fn offload<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    use std::sync::{Arc, Mutex};
-    use std::sync::atomic::{AtomicBool, Ordering};
+impl<T: Send + 'static> Future for OffloadFuture<T> {
+    type Output = T;
 
-    let done = Arc::new(AtomicBool::new(false));
-    let result: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
+        let this = self.get_mut();
 
-    {
-        let done = Arc::clone(&done);
-        let result = Arc::clone(&result);
-        std::thread::spawn(move || {
-            *result.lock().unwrap() = Some(f());
-            done.store(true, Ordering::Release);
-        });
+        if this.state.done.load(Ordering::Acquire) {
+            let value = this.state.result.lock().unwrap().take().unwrap();
+            return Poll::Ready(value);
+        }
+
+        // Waker を保存（再 poll のたびに更新して古い Waker の残留を防ぐ）
+        *this.state.waker.lock().unwrap() = Some(cx.waker().clone());
+
+        // 初回 poll でワーカースレッドを起動
+        if !this.spawned {
+            this.spawned = true;
+            let f = this.f.take().expect("invariant: f is present before first spawn");
+            let state = Arc::clone(&this.state);
+            std::thread::spawn(move || {
+                let result = f();
+                *state.result.lock().unwrap() = Some(result);
+                state.done.store(true, Ordering::Release);
+                // PostMessageA でメインスレッドを即起床（winmsg_executor Waker はスレッドセーフ）
+                if let Some(waker) = state.waker.lock().unwrap().take() {
+                    waker.wake();
+                }
+            });
+        }
+
+        Poll::Pending
     }
+}
 
-    while !done.load(Ordering::Acquire) {
-        super::sleep_ms(5).await;
+/// ブロッキング処理をワーカースレッドで実行する Future を返す。
+///
+/// `winmsg_executor::spawn_local` 内で await すること。
+/// ワーカー完了時に Waker 経由でメインスレッドを即起床するため、
+/// ポーリングによる遅延は発生しない。
+#[must_use]
+pub fn offload<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> OffloadFuture<T> {
+    OffloadFuture {
+        state: Arc::new(OffloadState {
+            result: Mutex::new(None),
+            waker: Mutex::new(None),
+            done: AtomicBool::new(false),
+        }),
+        spawned: false,
+        f: Some(Box::new(f)),
     }
-
-    let value = result.lock().unwrap().take().unwrap();
-    value
 }
