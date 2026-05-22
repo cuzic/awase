@@ -471,12 +471,17 @@ impl Output {
         }
     }
 
-    /// IME ON/OFF のシャドウ状態を更新する。
+    /// IME ON/OFF の意図（未確認）を記録する。
     ///
-    /// `ImeEffect::SetOpen` 実行時および FocusChange 時に呼ぶ。
-    /// `send_eager_tsf_warmup()` が IME OFF 時に F2 を誤送信しないためのガード。
+    /// `apply_ime_open` 実行後（フォールバック含む）に呼ぶ。
+    /// IMM 実測値は `record_observation` を使うこと。
     pub fn notify_ime_open(&self, open: bool) {
         self.composition.notify_ime_open(open);
+    }
+
+    /// IMM 経由の実測値または GJI 観測で確認された IME 状態を記録する。
+    pub fn record_observation(&self, open: bool) {
+        self.composition.record_observation(open);
     }
 
     /// TSF composition context の事前ウォームアップ F2 を送信する。

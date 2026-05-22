@@ -142,8 +142,8 @@ pub struct CompositionState {
     cold_start_count: std::cell::Cell<u32>,
     /// NativeF2Consumed 時に即送信した eager warmup F2 の送信時刻（ms）。0 = 未送信
     eager_warmup_sent_ms: std::cell::Cell<u64>,
-    /// IME ON/OFF のシャドウ状態
-    shadow_ime_on: std::cell::Cell<bool>,
+    /// IME ON/OFF の確信度付き状態
+    belief: crate::tsf::belief::ImeBeliefStore,
     /// 最後に cold にマークされた理由
     last_cold_reason: std::cell::Cell<crate::output::ColdReason>,
     /// 最後に cold になった時点での `ms_since_last_send()` の値
@@ -160,7 +160,7 @@ impl CompositionState {
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(0),
             eager_warmup_sent_ms: std::cell::Cell::new(0),
-            shadow_ime_on: std::cell::Cell::new(false),
+            belief: crate::tsf::belief::ImeBeliefStore::new(),
             last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
             raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
@@ -217,13 +217,20 @@ impl CompositionState {
         self.eager_warmup_sent_ms.set(0);
         self.idle_ms_at_last_cold.set(self.ms_since_last_send());
         self.raw_tsf_literal_consecutive_count.set(0);
+        self.belief.invalidate_on_focus_change();
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
-    /// IME ON/OFF のシャドウ状態を更新する。
+    /// IME ON/OFF の意図（未確認）を記録する。
+    ///
+    /// `apply_ime_open` 実行後に呼ぶ。IMM 実測値は `record_observation` を使うこと。
     pub fn notify_ime_open(&self, open: bool) {
-        log::debug!("[composition] shadow_ime_on → {open}");
-        self.shadow_ime_on.set(open);
+        self.belief.record_intent(open);
+    }
+
+    /// IMM 経由の実測値または GJI 観測で確認された IME 状態を記録する。
+    pub fn record_observation(&self, open: bool) {
+        self.belief.record_observation(open);
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
@@ -274,10 +281,16 @@ impl CompositionState {
         n
     }
 
-    /// シャドウ IME ON 状態を返す。
+    /// IME ON/OFF の推測値を返す。Unknown の場合は false（IME OFF）を仮定する。
     #[must_use]
     pub fn shadow_ime_on(&self) -> bool {
-        self.shadow_ime_on.get()
+        self.belief.assume_or_false()
+    }
+
+    /// IME ON/OFF の確信度付き状態を返す。
+    #[must_use]
+    pub fn ime_belief(&self) -> crate::tsf::belief::ImeOpenBelief {
+        self.belief.current()
     }
 
     /// 最後に cold にマークされた理由を返す。

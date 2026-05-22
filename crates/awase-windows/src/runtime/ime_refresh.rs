@@ -356,12 +356,12 @@ impl<'a> ImeRefreshPipeline<'a> {
         }
         // フォーカス変更時は VK/TSF いずれも composition context が無効化される。
         log::debug!("[composition] focus change → marking cold");
-        // shadow_ime_on を最新の IME 状態に同期してから warmup 判定を行う。
+        // IMM 実測値で belief を Confirmed に確定してから warmup 判定を行う。
         self.rt
             .executor
             .platform
             .output
-            .notify_ime_open(self.rt.platform_state.preconditions.ime_on);
+            .record_observation(self.rt.platform_state.preconditions.ime_on);
         self.rt
             .executor
             .platform

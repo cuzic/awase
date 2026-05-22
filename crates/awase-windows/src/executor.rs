@@ -515,7 +515,7 @@ impl DecisionExecutor {
             return;
         }
 
-        let mut ime_set_open: Option<bool> = None;
+        let mut ime_set_open: Option<(bool, awase::platform::ImeOpenOutcome)> = None;
 
         {
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
@@ -536,7 +536,7 @@ impl DecisionExecutor {
                         }
                         // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
                         platform.post_ime_refresh();
-                        ime_set_open = Some(open);
+                        ime_set_open = Some((open, outcome));
                     }
                     ImeEffect::RequestRefresh => platform.post_ime_refresh(),
                 },
@@ -546,9 +546,22 @@ impl DecisionExecutor {
             }
         } // platform の借用をここで解放
 
-        if let Some(open) = ime_set_open {
-            // shadow_ime_on を IME 状態変化に追随させる。
-            self.platform.output.notify_ime_open(open);
+        if let Some((open, outcome)) = ime_set_open {
+            use awase::platform::ImeOpenOutcome;
+            // outcome に応じて確信度を分けて記録する。
+            match outcome {
+                ImeOpenOutcome::Applied => {
+                    // IMM が ACK した = 実測値として扱える
+                    self.platform.output.record_observation(open);
+                }
+                ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
+                    // VK_KANJI 送信済み or shadow 一致 = 意図として記録
+                    self.platform.output.notify_ime_open(open);
+                }
+                ImeOpenOutcome::Failed => {
+                    // 状態不明のまま（belief 更新しない）
+                }
+            }
             // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
             if open {
                 log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
