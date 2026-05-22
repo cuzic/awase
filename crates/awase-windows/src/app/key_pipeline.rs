@@ -174,7 +174,7 @@ impl<'a> KeyEventPipeline<'a> {
 /// fast_ime_probe_async の結果を app に適用する（with_app 内で呼ぶ）。
 /// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
 fn apply_focus_probe_to_app(
-    app: &mut awase_windows::Runtime,
+    app: &mut Runtime,
     probe: awase_windows::ime::FastImeProbeResult,
     probe_started_ms: u64,
     warmup_ms: u64,
@@ -229,7 +229,7 @@ fn apply_focus_probe_to_app(
             if effective {
                 app.platform_state.preconditions.ime_detect_miss_count = 0;
                 app.platform_state.preconditions.ime_force_on_guard =
-                    awase_windows::ImeForceOnGuard::Inactive;
+                    ImeForceOnGuard::Inactive;
             }
             app.platform_state
                 .apply_ime_observations(app.engine.is_user_enabled());
