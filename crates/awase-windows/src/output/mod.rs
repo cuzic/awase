@@ -281,6 +281,12 @@ pub struct Output {
     /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
     /// Probing または Bypass に遷移して保留キーを再処理する。
     pub tsf_gate: crate::tsf::gate::TsfGate,
+    /// pending_tsf プローブ進行中に受信した直接 VK を順序保証のため保留するキュー。
+    ///
+    /// `send_char_as_tsf` が Vk ブランチを通り `pending_tsf` が Some の場合に積み上げ、
+    /// `do_transmit_tsf` / `ChromeProbe` 完了後に romaji の直後に送出する。
+    /// これにより「F2 → ー → ba」→「F2 → ba → ー」の順序逆転バグを防ぐ。
+    deferred_vks_during_probe: std::cell::RefCell<Vec<(u16, bool)>>,
 }
 
 /// TSF/VK probe の現在フェーズ
@@ -360,6 +366,7 @@ impl Output {
             composition: crate::tsf::probe::CompositionState::new(),
             pending_tsf: std::cell::RefCell::new(None),
             tsf_gate: crate::tsf::gate::TsfGate::new(),
+            deferred_vks_during_probe: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -433,6 +440,7 @@ impl Output {
     /// 従来の `mark_composition_cold()` 呼び出しの代わりに使う（明示的なコールド化も同時に行う）。
     pub fn on_focus_changed(&self) {
         self.composition.on_focus_changed();
+        self.deferred_vks_during_probe.borrow_mut().clear();
     }
 
     /// 現在のフォーカス先が TSF 注入モードかどうかを返す。
@@ -920,6 +928,14 @@ impl Output {
             }
             CharResolution::Vk(vk, needs_shift) => {
                 log::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+                // probe 進行中は VK を後回しにして romaji との送信順序を保証する。
+                // 例: ば(probe中) + ー(VK0xBD) の場合、先に ba VKs を送ってから ー を送る。
+                // probe なしで直接送ると「F2 → ー → ba」→「ーば」の順序逆転が起きる。
+                if self.pending_tsf.borrow().is_some() {
+                    log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
+                    self.deferred_vks_during_probe.borrow_mut().push((vk, needs_shift));
+                    return;
+                }
                 let mut inputs = Vec::with_capacity(4);
                 if needs_shift {
                     inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
@@ -1201,9 +1217,37 @@ impl Output {
                 log::debug!("[tsf-probe] cold={cold_n} ChromeProbe 完了 → batched 送信");
                 let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
                 self.send_romaji_batch_immediate(&romaji, &chars);
+                self.send_deferred_probe_vks();
                 self.mark_composition_warm();
                 true
             }
+        }
+    }
+
+    /// probe 完了後に deferred_vks_during_probe を romaji の直後に送出する。
+    fn send_deferred_probe_vks(&self) {
+        let vks = std::mem::take(&mut *self.deferred_vks_during_probe.borrow_mut());
+        if vks.is_empty() {
+            return;
+        }
+        log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出", vks.len());
+        let mut inputs: Vec<INPUT> = Vec::with_capacity(vks.len() * 4);
+        for &(vk, needs_shift) in &vks {
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+            }
+            inputs.push(make_tsf_key_input(vk, false));
+            inputs.push(make_tsf_key_input(vk, true));
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+            }
+        }
+        // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of this call.
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
         }
     }
 
@@ -1246,6 +1290,7 @@ impl Output {
 
         let detector = crate::tsf::probe::LiteralDetector::new();
         let ze_bs_count = TsfSendPipeline::new(self).transmit(&romaji, &chars, &outcome);
+        self.send_deferred_probe_vks();
         self.mark_composition_warm();
 
         let gji_active = OBS_GJI_MONITOR_OK.load(Relaxed);
