@@ -278,81 +278,59 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
         runtime.executor.platform.output.flush_raw_tsf_literal_recovery();
     });
 
-    // in_with_app() 中に届いたキーを NICOLA で再処理する。
-    // pending キューより先に drain: 時系列上こちらが先に到着している。
-    {
-        let iwa_queue = awase_windows::INPUT_DEFER.take_iwa();
-        if !iwa_queue.is_empty() {
-            with_app(|app| {
-                for raw in iwa_queue {
-                    let vk = awase::types::VkCode(raw.vk_code);
-                    let scan = awase::types::ScanCode(raw.scan_code);
-                    let event_type = if raw.is_keydown {
-                        awase::types::KeyEventType::KeyDown
-                    } else {
-                        awase::types::KeyEventType::KeyUp
-                    };
-                    let (key_classification, physical_pos) =
-                        hook::classify_key(vk, scan, &app.platform_state.hook_config);
-                    let modifier_key = hook::classify_modifier(vk);
-                    let ime_relevance = hook::classify_ime_relevance(vk);
-                    let modifier_snapshot = unsafe {
-                        awase_windows::observer::focus_observer::read_os_modifiers()
-                    };
-                    let mut event = awase::types::RawKeyEvent {
-                        vk_code: vk,
-                        scan_code: scan,
-                        event_type,
-                        extra_info: raw.extra_info,
-                        timestamp: raw.timestamp,
-                        key_classification,
-                        physical_pos,
-                        ime_relevance,
-                        modifier_key,
-                        modifier_snapshot,
-                    };
-                    app.enrich_ime_relevance(&mut event);
-                    log::debug!(
-                        "[in-with-app-drain] replay vk=0x{:02X} {:?}",
-                        raw.vk_code,
-                        event_type,
-                    );
-                    on_key_event_impl(app, event);
-                }
-            });
-        }
-    }
+    // 両キュー（iwa + pending）を合流させて取り出す。
+    // take_all は iwa アイテムを classify して pending の先頭に連結して返す。
+    // with_app 内から呼ぶことで APP への読み取りアクセスが安全に行える。
+    let queue = with_app(|app| {
+        awase_windows::INPUT_DEFER.take_all(|raw| {
+            let vk = awase::types::VkCode(raw.vk_code);
+            let scan = awase::types::ScanCode(raw.scan_code);
+            let event_type = if raw.is_keydown {
+                awase::types::KeyEventType::KeyDown
+            } else {
+                awase::types::KeyEventType::KeyUp
+            };
+            let (key_classification, physical_pos) =
+                hook::classify_key(vk, scan, &app.platform_state.hook_config);
+            let modifier_key = hook::classify_modifier(vk);
+            let ime_relevance = hook::classify_ime_relevance(vk);
+            let modifier_snapshot = unsafe {
+                awase_windows::observer::focus_observer::read_os_modifiers()
+            };
+            let mut event = awase::types::RawKeyEvent {
+                vk_code: vk,
+                scan_code: scan,
+                event_type,
+                extra_info: raw.extra_info,
+                timestamp: raw.timestamp,
+                key_classification,
+                physical_pos,
+                ime_relevance,
+                modifier_key,
+                modifier_snapshot,
+            };
+            app.enrich_ime_relevance(&mut event);
+            log::debug!(
+                "[in-with-app-drain] classified vk=0x{:02X} {:?}",
+                raw.vk_code,
+                event_type,
+            );
+            Some(event)
+        })
+    }).unwrap_or_default();
 
-    let queue = awase_windows::INPUT_DEFER.take_pending();
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
         with_app(|app| {
-            // KeyDown のみキューに入っていて対応 KeyUp が無い場合、
-            // drain 後に NICOLA engine がそのキーを「押しっぱなし」と認識する。
-            // 次ユーザー入力と誤 combo になる（"しゅうせｌすいだけ" 等のバグ）。
-            // → replay 後に synthetic KeyUp を注入してエンジン状態をリセットする。
-            let mut synthetic_keyups: Vec<awase::types::RawKeyEvent> = Vec::new();
-            for ev in &queue {
-                use awase::types::KeyEventType;
-                if matches!(ev.event_type, KeyEventType::KeyDown) {
-                    let has_paired_keyup = queue.iter().any(|e| {
-                        e.vk_code == ev.vk_code
-                            && matches!(e.event_type, KeyEventType::KeyUp)
-                            && e.timestamp >= ev.timestamp
-                    });
-                    if !has_paired_keyup {
-                        let mut keyup = *ev;
-                        keyup.event_type = KeyEventType::KeyUp;
-                        synthetic_keyups.push(keyup);
-                        log::debug!(
-                            "[output-drain] vk=0x{:02X} KeyDown has no paired KeyUp in queue → will inject synthetic KeyUp",
-                            ev.vk_code.0,
-                        );
-                    }
-                }
+            let synthetic_keyups = synthesize_missing_keyups(&queue);
+            for syn in &synthetic_keyups {
+                log::debug!(
+                    "[output-drain] vk=0x{:02X} KeyDown has no paired KeyUp in queue → will inject synthetic KeyUp",
+                    syn.vk_code.0,
+                );
             }
 
-            for queued_event in queue {
+            for queued_event in &queue {
                 log::debug!(
                     "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
                     queued_event.vk_code.0,
@@ -361,7 +339,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                     now_us,
                     now_us.saturating_sub(queued_event.timestamp) / 1000,
                 );
-                on_key_event_impl(app, queued_event);
+                on_key_event_impl(app, *queued_event);
             }
 
             for keyup in synthetic_keyups {
@@ -373,6 +351,25 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
             }
         });
     }
+}
+
+/// キューの RawKeyEvent リストから、対応する KeyUp を持たない KeyDown に対して
+/// synthetic KeyUp を生成して返す。
+fn synthesize_missing_keyups(events: &[awase::types::RawKeyEvent]) -> Vec<awase::types::RawKeyEvent> {
+    use awase::types::KeyEventType;
+    events.iter()
+        .filter(|ev| matches!(ev.event_type, KeyEventType::KeyDown))
+        .filter(|ev| !events.iter().any(|e| {
+            e.vk_code == ev.vk_code
+                && matches!(e.event_type, KeyEventType::KeyUp)
+                && e.timestamp >= ev.timestamp
+        }))
+        .map(|ev| {
+            let mut keyup = *ev;
+            keyup.event_type = KeyEventType::KeyUp;
+            keyup
+        })
+        .collect()
 }
 
 /// TaskbarCreated ハンドラ（Explorer 再起動時にトレイアイコンを復元）

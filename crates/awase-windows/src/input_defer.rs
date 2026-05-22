@@ -1,8 +1,13 @@
 //! 入力遅延キュー — 複数の退避経路を 1 つの API に集約する。
 //!
-//! ## 保持する 2 本のキュー（Step 2 で 1 本に統合予定）
-//! - `iwa`（in_with_app）: `with_app` 再入中にフックから届いた生イベント（[`RawHookData`]）
-//! - `pending`：OUTPUT_ACTIVE 中・TsfGate drain 等の [`RawKeyEvent`]
+//! ## 内部構造（Step 2: 1 本の VecDeque に統合）
+//!
+//! `iwa`（in_with_app）は hook 再入のため classify 不可のまま `RawHookData` で保持し、
+//! `take_all(classify_fn)` 呼び出し時（WM_DRAIN_OUTPUT_QUEUE ハンドラ内、with_app 内）に
+//! `RawKeyEvent` へ変換してから `pending` と合流させる。
+//!
+//! - `iwa`: hook 再入中に到着した生イベント（`RawHookData`、classify は drain 時）
+//! - `pending`: OUTPUT_ACTIVE 中・TsfGate drain 等の classify 済みイベント（`RawKeyEvent`）
 
 use std::sync::Mutex;
 use awase::types::RawKeyEvent;
@@ -53,16 +58,28 @@ impl InputDeferQueue {
         }
     }
 
-    /// in_with_app キュー全体を取り出す（WM_DRAIN_OUTPUT_QUEUE ハンドラ専用）。
-    pub fn take_iwa(&self) -> Vec<RawHookData> {
-        let mut q = match self.iwa.lock() { Ok(q) => q, Err(e) => e.into_inner() };
-        std::mem::take(&mut *q)
-    }
-
-    /// pending キュー全体を取り出す（WM_DRAIN_OUTPUT_QUEUE ハンドラ専用）。
-    pub fn take_pending(&self) -> Vec<RawKeyEvent> {
-        let mut q = match self.pending.lock() { Ok(q) => q, Err(e) => e.into_inner() };
-        std::mem::take(&mut *q)
+    /// 両キューを合流させて返す（WM_DRAIN_OUTPUT_QUEUE ハンドラの `with_app` 内専用）。
+    ///
+    /// `classify_fn` は `RawHookData` を `RawKeyEvent` に変換する関数。
+    /// `with_app` 内から呼ぶこと（APP への読み取りアクセスが必要）。
+    /// iwa 側を先に並べ、時系列上の到着順を保持する。
+    pub fn take_all(&self, classify_fn: impl Fn(RawHookData) -> Option<RawKeyEvent>) -> Vec<RawKeyEvent> {
+        let iwa = {
+            let mut q = match self.iwa.lock() { Ok(q) => q, Err(e) => e.into_inner() };
+            std::mem::take(&mut *q)
+        };
+        let pending = {
+            let mut q = match self.pending.lock() { Ok(q) => q, Err(e) => e.into_inner() };
+            std::mem::take(&mut *q)
+        };
+        let mut result = Vec::with_capacity(iwa.len() + pending.len());
+        for raw in iwa {
+            if let Some(ev) = classify_fn(raw) {
+                result.push(ev);
+            }
+        }
+        result.extend(pending);
+        result
     }
 
     /// drain race 検出用（ノンブロッキング）。
