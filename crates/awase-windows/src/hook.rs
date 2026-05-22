@@ -592,7 +592,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // ── app を明示的に解放してから Engine コールバックを呼ぶ ──
         // callback 内部で with_app → APP.with_mut() が呼ばれるため、
         // ここで app を drop しないと &mut Runtime が二重に存在し UB となる。
-        drop(app);
+        let _ = app;
 
         // ── Engine コールバック呼び出し ──
         let result = KEY_EVENT_CALLBACK

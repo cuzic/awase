@@ -312,7 +312,6 @@ pub(crate) enum TsfProbePhase {
         detector: crate::tsf::probe::LiteralDetector,
         ze_bs_count: usize,
         deadline_ms: u64,
-        cold_n: u32,
     },
     /// Chrome/VK probe（F2 後の GJI 静止待ち）
     ChromeProbe {
@@ -760,56 +759,6 @@ impl Output {
         self.send_romaji_per_key(romaji);
     }
 
-    /// TSF Batched モード: 全文字を1回の SendInput にまとめて送信（TSF_MARKER 付き）
-    ///
-    /// WezTerm 等 TSF 直結アプリ向け。送信順序は Chrome Batched と同じく
-    /// 全文字の KeyDown を先に送り、その後全文字の KeyUp を送る
-    /// （重畳順: 例 "mu" → M↓ U↓ M↑ U↑）。
-    ///
-    /// Sequential（M↓M↑ then U↓U↑）では M↑ 到着時点で IME が 'm' を単独確定し
-    /// "mう" になる。重畳順では U↓ が M↑ より先に到達するため IME が "mu" を
-    /// ひとまとまりとして受け取り "む" に変換する。
-    /// TSF_MARKER を使うことで WezTerm の IME バイパスを回避する（INJECTED_MARKER
-    /// を使うと WezTerm が IME をスキップして PTY に直送してしまう）。
-    ///
-    /// # H1 cold-start 修正（案A: F2-only 先行バッチ）
-    ///
-    /// 旧実装では [F2↓F2↑ i↓i↑] を同一 SendInput バッチで送っていた。
-    /// WezTerm は TSF context の初期化を F2 受信後に非同期で行うため、
-    /// 同じバッチ内の 'i' が初期化完了前に処理され ASCII 'i' として出力される。
-    ///
-    /// 案A では F2-only バッチを先行送信し、WezTerm が F2 を処理して
-    /// TSF context を初期化するまで待機（probe loop）してからローマ字バッチを送る。
-    fn ensure_tsf_warm(&self) -> WarmupOutcome {
-        // composition_warm が false（コールド）のとき VK_DBE_HIRAGANA 先行バッチを送信する。
-        // タイムアウト: 前回送信から COMPOSITION_TIMEOUT_MS 以上経過した場合も warm 扱いしない。
-        let warm = self.is_composition_warm();
-        let elapsed = self.ms_since_last_send();
-        let session_expired = warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
-        let prepend_f2_warmup = !warm || session_expired;
-        log::debug!(
-            "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
-            fmt_ms(elapsed)
-        );
-
-        let cold_n = if prepend_f2_warmup {
-            self.execute_cold_warmup(session_expired, elapsed)
-        } else {
-            self.composition.cold_start_count()
-        };
-
-        let used_eager_path = self.composition.eager_warmup_sent_ms() != 0;
-        WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n }
-    }
-
-    /// TSF cold-start 時のウォームアップシーケンスを実行して cold-start シーケンス番号を返す。
-    ///
-    /// `ensure_tsf_warm` の `prepend_f2_warmup` ブランチを切り出したもの。
-    /// 実装は [`crate::tsf::cold_warmup::ColdWarmupSequence`] に委譲する。
-    fn execute_cold_warmup(&self, session_expired: bool, elapsed_ms: u64) -> u32 {
-        crate::tsf::cold_warmup::ColdWarmupSequence::new(self).run(session_expired, elapsed_ms)
-    }
-
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
     fn send_vk_runs(&self, chars: &[(u16, bool)], cold_n: u32) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -1187,12 +1136,12 @@ impl Output {
                 self.do_transmit_tsf(romaji, cold_n, prepend_f2_warmup, used_eager_path, guard)
             }
 
-            TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms, cold_n: _ } => {
+            TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms } => {
                 let Some(detection) = detector.check_now(deadline_ms) else {
                     *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
                         romaji, cold_n,
                         phase: TsfProbePhase::LiteralDetect {
-                            detector, ze_bs_count, deadline_ms, cold_n,
+                            detector, ze_bs_count, deadline_ms,
                         },
                         _guard: guard,
                     });
@@ -1293,7 +1242,7 @@ impl Output {
             *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
                 romaji,
                 cold_n,
-                phase: TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms, cold_n },
+                phase: TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms },
                 _guard: guard,
             });
             return false;
@@ -1314,13 +1263,12 @@ enum CharResolution<'a> {
     Unicode(char),
 }
 
-/// TSF 送信の 3 フェーズを管理するパイプライン。
+/// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
-/// - Phase 1 `warm_up`:  TSF composition context の初期化待ち（最大 1500ms）
-/// - Phase 2 `transmit`: VK または Unicode kana で romaji を WezTerm に送信
-/// - Phase 3 `verify`:   raw TSF literal 漏れを検出してリカバリをスケジュール
+/// - `transmit`: VK または Unicode kana で romaji を WezTerm に送信
 ///
-/// `send_romaji_as_tsf()` はこのパイプラインを呼び出す薄いラッパー。
+/// warm パス（`send_romaji_as_tsf` の non-cold ブランチ）と
+/// `do_transmit_tsf`（タイマー FSM からの遅延送信）が使用する。
 struct TsfSendPipeline<'a> {
     output: &'a Output,
 }
@@ -1330,44 +1278,7 @@ impl<'a> TsfSendPipeline<'a> {
         Self { output }
     }
 
-    fn run(&self, romaji: &str) {
-        use std::sync::atomic::Ordering::Relaxed;
-
-        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
-        if chars.is_empty() {
-            return;
-        }
-
-        // Phase 1: warmup
-        let outcome = self.output.ensure_tsf_warm();
-
-        // warmup 完了 → ローマ字送信開始 (GJI idle・IME conv 状態を記録)
-        {
-            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
-            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-            // SAFETY: IMM32 API; uses the foreground thread's IME context, valid during message loop.
-            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
-            log::debug!(
-                "[h1-send] cold={} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
-                 conv={} ROMAN={} NATIVE={}",
-                outcome.cold_n,
-                chars.len(),
-                conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv.map_or(false, |v| v & 0x0010 != 0),
-                conv.map_or(false, |v| v & 0x0001 != 0),
-            );
-        }
-
-        // Phase 2: transmit
-        let detector = crate::tsf::probe::LiteralDetector::new();
-        let ze_bs_count = self.transmit(romaji, &chars, &outcome);
-        self.output.mark_composition_warm();
-
-        // Phase 3: verify
-        self.verify(romaji, &outcome, detector, ze_bs_count);
-    }
-
-    /// Phase 2: VK run または Unicode kana を送信し、バックスペース数を返す。
+    /// VK run または Unicode kana を送信し、バックスペース数を返す。
     fn transmit(&self, romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
             KEYEVENTF_UNICODE, KEYEVENTF_KEYUP,
@@ -1428,58 +1339,6 @@ impl<'a> TsfSendPipeline<'a> {
         }
     }
 
-    /// Phase 3: raw TSF literal 検出と回収スケジュール。
-    fn verify(
-        &self,
-        romaji: &str,
-        outcome: &WarmupOutcome,
-        detector: crate::tsf::probe::LiteralDetector,
-        ze_bs_count: usize,
-    ) {
-        use std::sync::atomic::Ordering::Relaxed;
-        use crate::tsf::probe::DetectionResult;
-
-        let gji_active = crate::tsf::observer::OBS_GJI_MONITOR_OK.load(Relaxed);
-        if !outcome.prepend_f2_warmup || !gji_active {
-            return;
-        }
-
-        let t_send = crate::hook::current_tick_ms();
-        let detection = detector.detect(crate::timing::RAW_TSF_LITERAL_DETECT_MS);
-        let elapsed_ms = crate::hook::current_tick_ms().saturating_sub(t_send);
-
-        match detection {
-            DetectionResult::CompositionConfirmed => {
-                log::debug!(
-                    "[raw-tsf-literal] cold={} composition confirmed ({elapsed_ms}ms)",
-                    outcome.cold_n
-                );
-            }
-            DetectionResult::SuspectedLiteral => {
-                let consecutive = self.output.composition.consecutive_count();
-                if consecutive == 0 {
-                    log::warn!(
-                        "[raw-tsf-literal] cold={} raw TSF literal suspected \
-                        ({elapsed_ms}ms) \
-                        → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled + mark cold",
-                        outcome.cold_n,
-                    );
-                    crate::RAW_TSF_LITERAL.backs.store(ze_bs_count, Relaxed);
-                    *crate::RAW_TSF_LITERAL.romaji
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()) = romaji.to_string();
-                } else {
-                    log::warn!(
-                        "[raw-tsf-literal] cold={} consecutive raw-tsf-literal fire \
-                        (count={}) → likely false positive, giving up without backspace",
-                        outcome.cold_n,
-                        consecutive + 1,
-                    );
-                }
-                self.output.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-            }
-        }
-    }
 }
 
 /// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）

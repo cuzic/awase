@@ -37,7 +37,7 @@ impl PlatformRuntime for WindowsPlatform {
         self.output.send_keys(actions);
         // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
         if self.output.pending_tsf.borrow().is_some() {
-            self.timer.set(crate::TIMER_TSF_PROBE, std::time::Duration::from_millis(10));
+            self.timer.set(crate::TIMER_TSF_PROBE, Duration::from_millis(10));
         }
     }
 
