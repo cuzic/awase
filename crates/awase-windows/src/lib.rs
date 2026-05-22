@@ -102,17 +102,33 @@ pub static RAW_TSF_LITERAL: RawTsfLiteralPending = RawTsfLiteralPending::new();
 /// APP グローバル — シングルスレッド専用
 pub static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();
 
+// with_app の再入検出フラグ。
+// ネストした GetMessageA ループ（block_on 等）経由での再入を検出し、UB を回避する。
+std::thread_local! {
+    static IN_WITH_APP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// `APP` グローバルへの集約アクセスポイント。
 ///
 /// `APP.get_mut()` の呼び出しをすべてここに集約し、unsafe 契約を一元管理する。
 /// 呼び出し側では `unsafe` ブロックが不要になる。
 ///
+/// 再入を検出した場合は `log::error!` を出力して `None` を返す（UB を回避）。
+///
 /// # Safety (module-level contract)
 /// awase-windows はすべての呼び出しが Windows メッセージループスレッドからのみ行われる。
 /// この保証により `SingleThreadCell::with_mut` の unsafe 要件が満たされる。
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
-    // Safety: Windows メッセージループはシングルスレッドである
-    unsafe { APP.with_mut(f) }
+    let already_in = IN_WITH_APP.with(|flag| flag.replace(true));
+    if already_in {
+        log::error!("with_app re-entry detected — skipping to prevent UB (BUG: nested message pump?)");
+        debug_assert!(false, "with_app re-entry");
+        return None;
+    }
+    // Safety: Windows メッセージループはシングルスレッドであり、再入ガード済み
+    let result = unsafe { APP.with_mut(f) };
+    IN_WITH_APP.with(|flag| flag.set(false));
+    result
 }
 
 /// `APP` グローバルへの読み取り専用アクセスファサード。
