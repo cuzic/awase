@@ -295,9 +295,11 @@ impl CompositionState {
 
 // ── LiteralDetector ──
 
-/// raw-TSF-literal 検出セッション ID。新規検出開始時にインクリメントし、
-/// orphan タイムアウトタスクが古いセッションで副作用を起こさないようにする。
-static RAW_TSF_LITERAL_DETECT_SESSION: std::sync::atomic::AtomicU32 =
+/// raw-TSF-literal IO 検出のセッション ID。
+///
+/// `raw_tsf_literal_io_or_timeout_async` の polling ループが、新しい検出セッションの
+/// 開始を検知して即座に抜けるために使う。SHOW 版は `race_with_timeout` を使うため不要。
+static RAW_TSF_LITERAL_IO_SESSION: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
 /// `send_romaji_as_tsf` が文字を送信した直後に生成し、
@@ -386,24 +388,18 @@ pub(crate) fn wait_for_raw_tsf_literal_show(show_baseline: u32, timeout_ms: u32)
 async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
 
+    // COMPOSITION_PROBE_SEQ は observer が GJI SHOW イベントを受け取るたびにインクリメントし
+    // notify_all() を呼ぶ。race_with_timeout でタイムアウトと競走させることで、
+    // orphan タイムアウトタスクや session ガードが不要になる。
     let probe_baseline = crate::COMPOSITION_PROBE_SEQ.load(Relaxed);
-    let session = RAW_TSF_LITERAL_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
+    let got_event = win32_async::race_with_timeout(
+        timeout_ms,
+        win32_async::AtomicWatcher::new(&crate::COMPOSITION_PROBE_SEQ, probe_baseline),
+    )
+    .await;
 
-    // タイムアウトタスク: timeout_ms 後に COMPOSITION_PROBE_SEQ を +1 してウォッチャーを起こす。
-    // session チェックで古いセッション（orphan）の副作用を防ぐ。
-    win32_async::spawn_local(async move {
-        win32_async::sleep_ms(timeout_ms).await;
-        if RAW_TSF_LITERAL_DETECT_SESSION.load(Relaxed) == session {
-            crate::COMPOSITION_PROBE_SEQ.fetch_add(1, Relaxed);
-            win32_async::notify_all();
-        }
-    });
-
-    // 観測 (observation): COMPOSITION_PROBE_SEQ の変化を event-driven に待つ
-    win32_async::AtomicWatcher::new(&crate::COMPOSITION_PROBE_SEQ, probe_baseline).await;
-
-    // 集約 (reduce): OBS_GJI_CANDIDATE_SHOW_SEQ が変化していれば SHOW 検出
-    OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != show_baseline
+    // イベントが来た場合のみ SHOW シーケンスが進んでいるか確認する
+    got_event.is_some() && OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != show_baseline
 }
 
 /// GJI candidate window がすでに表示中の場合の raw TSF literal 検出。
@@ -424,11 +420,11 @@ async fn raw_tsf_literal_io_or_timeout_async(io_baseline: u64, timeout_ms: u32) 
     use std::sync::atomic::Ordering::Relaxed;
     const POLL_MS: u32 = 15;
 
-    let session = RAW_TSF_LITERAL_DETECT_SESSION.fetch_add(1, Relaxed) + 1;
+    let session = RAW_TSF_LITERAL_IO_SESSION.fetch_add(1, Relaxed) + 1;
     let deadline = crate::hook::current_tick_ms() + u64::from(timeout_ms);
 
     loop {
-        if RAW_TSF_LITERAL_DETECT_SESSION.load(Relaxed) != session {
+        if RAW_TSF_LITERAL_IO_SESSION.load(Relaxed) != session {
             return false;
         }
         let io_now = OBS_GJI_LAST_IO_MS.load(Relaxed);

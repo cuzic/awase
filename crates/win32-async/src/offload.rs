@@ -86,3 +86,17 @@ pub fn offload<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Off
         f: Some(Box::new(f)),
     }
 }
+
+/// タイムアウト付きでブロッキング処理をワーカースレッドで実行する Future を返す。
+///
+/// `ms` ミリ秒以内に完了すれば `Some(T)`、タイムアウトすれば `None` を返す。
+/// タイムアウト時はワーカースレッドがバックグラウンドで実行継続する点に注意。
+/// ワーカーが完了した時点で Waker 経由の wake が空振りするだけなので
+/// メモリリークは発生しないが、スレッドは完了まで保持される。
+#[must_use]
+pub fn offload_timeout<T: Send + 'static>(
+    ms: u32,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> impl Future<Output = Option<T>> {
+    crate::race_timeout::race_with_timeout(ms, offload(f))
+}

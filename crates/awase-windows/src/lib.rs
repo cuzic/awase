@@ -30,6 +30,7 @@ pub mod output;
 pub mod platform;
 pub mod runtime;
 pub mod scanmap;
+pub mod single_thread_cell;
 pub(crate) mod state;
 pub(crate) mod timing;
 pub mod timer;
@@ -39,7 +40,7 @@ pub mod vk;
 pub mod win32;
 
 pub use runtime::{LayoutEntry, Runtime};
-pub use win32_async::SingleThreadCell;
+pub use single_thread_cell::SingleThreadCell;
 
 use std::sync::atomic::AtomicBool;
 
