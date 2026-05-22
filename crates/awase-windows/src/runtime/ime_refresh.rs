@@ -373,6 +373,14 @@ impl<'a> ImeRefreshPipeline<'a> {
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by shadow_ime_on)"
         );
+
+        // shadow_ime_on=false の場合、新しいウィンドウの IME を明示的に OFF にする。
+        // Ctrl+無変換 は発火時点のウィンドウにしか set_ime_open を送らないため、
+        // 別ウィンドウに移動すると IME が ON のままになるのを防ぐ。
+        if !self.rt.executor.platform.output.shadow_ime_on() {
+            let _ = self.rt.executor.platform.set_ime_open(false);
+            log::debug!("[composition] FocusChange: set_ime_open(false) called (shadow OFF → enforce IME OFF on new window)");
+        }
     }
 
     // ── Phase 4: Engine に RefreshState（active 遷移検知）──
