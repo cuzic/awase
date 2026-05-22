@@ -18,6 +18,12 @@ pub const INJECTED_MARKER: usize = 0x4B45_594D;
 /// dwExtraInfo の値が異なることで TSF Sequential モードの識別に使う。
 pub const TSF_MARKER: usize = 0x4B45_5946;
 
+/// IME KANJI トグル注入マーカー（"KEYJ" = 0x4B45_594A）
+///
+/// Chrome 等の TSF ネイティブアプリ向け IME OFF フォールバックで使用。
+/// hook では再処理・shadow toggle を一切行わずそのままパススルーする。
+pub const IME_KANJI_MARKER: usize = 0x4B45_594A;
+
 /// IME composition context がコールド状態になった理由（診断ログ用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColdReason {

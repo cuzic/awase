@@ -4,10 +4,10 @@ use windows::Win32::UI::Input::Ime::{
     IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, MapVirtualKeyW, MAPVK_VK_TO_VSC,
+    GetKeyboardLayout, MapVirtualKeyW, MAPVK_VK_TO_VSC, SendInput, INPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
+    SendMessageTimeoutW, SMTO_ABORTIFHUNG,
 };
 
 use crate::imm::{
@@ -44,27 +44,26 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 
 /// TSF ネイティブアプリ（Chrome 等）向け IME OFF フォールバック。
 ///
-/// `WM_IME_CONTROL` が届かない TSF アプリに対して、フォアグラウンドウィンドウへ
-/// `VK_KANJI`（半角/全角キー）を `PostMessage` で送信し IME をトグル OFF する。
+/// `WM_IME_CONTROL` が効かない TSF アプリに対して `SendInput(VK_KANJI)` で IME をトグル OFF する。
 ///
-/// `PostMessage` は低レベルキーボードフックをバイパスするため awase が再インターセプトしない。
-/// VK_KANJI はトグルキーのため、Chrome の IME が ON のとき（IME OFF 要求時）のみ呼ぶこと。
+/// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが再インターセプトしない
+/// （フック先頭の自己注入チェックで即パススルー、shadow toggle もスキップ）。
+/// VK_KANJI はトグルキーのため Chrome の IME が ON のとき（IME OFF 要求時）のみ呼ぶこと。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_kanji_toggle_to_focused() {
-    let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0.is_null() {
-        log::debug!("[ime-fallback] post_kanji_toggle: no foreground window");
-        return;
+    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    const VK_KANJI: u16 = 0x19;
+    let inputs = [
+        make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER),
+        make_key_input_ex(VK_KANJI, true, IME_KANJI_MARKER),
+    ];
+    log::debug!("[ime-fallback] SendInput VK_KANJI (IME_KANJI_MARKER) for IME toggle-off");
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+    if sent == 0 {
+        log::warn!("[ime-fallback] SendInput(VK_KANJI) failed");
     }
-    const VK_KANJI: u32 = 0x19;
-    let scan = unsafe { MapVirtualKeyW(VK_KANJI, MAPVK_VK_TO_VSC) } as usize;
-    let lparam_down = LPARAM((1 | (scan << 16)) as isize);
-    let lparam_up = LPARAM((1 | (scan << 16) | (1 << 30) | (1 << 31)) as isize);
-    log::debug!("[ime-fallback] posting VK_KANJI to hwnd={hwnd:?} (IME toggle-off)");
-    let _ = unsafe { PostMessageW(Some(hwnd), WM_KEYDOWN, WPARAM(VK_KANJI as usize), lparam_down) };
-    let _ = unsafe { PostMessageW(Some(hwnd), WM_KEYUP, WPARAM(VK_KANJI as usize), lparam_up) };
 }
 
 /// 現在のフォアグラウンドウィンドウの IME 変換モード生値を返す（診断ログ専用）。
