@@ -167,6 +167,15 @@ impl CompositionState {
         }
     }
 
+    /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
+    ///
+    /// フォーカス遷移直後の最初のキーで呼ぶ。eager warmup タイムスタンプを消さないことで
+    /// non-eager 1500ms パスへの意図しない劣化を防ぐ。
+    pub fn suppress_warm_epoch(&self) {
+        self.composition_warm_epoch.set(0);
+        log::debug!("[composition] warm epoch suppressed (eager_warmup_sent_ms preserved)");
+    }
+
     /// IME composition context をコールド状態にマークする。
     pub fn mark_composition_cold(&self, reason: crate::output::ColdReason) {
         let idle_ms = self.ms_since_last_send();

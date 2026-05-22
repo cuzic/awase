@@ -50,12 +50,11 @@ impl<'a> KeyEventPipeline<'a> {
         }
         self.app.platform_state.focus_transition_pending = false;
 
-        // async probe が完了する前に最初のキーが来た場合、composition を即座に cold にする。
-        // これをしないと is_composition_warm() が前ウィンドウの stale な warm 状態を返し、
-        // F2 なしで send_romaji_as_tsf が実行されて TSF cold により文字が消える。
-        self.app.executor.platform.output.mark_composition_cold(
-            awase_windows::output::ColdReason::FocusChange,
-        );
+        // async probe が完了する前に最初のキーが来た場合、warm epoch を抑制して
+        // is_composition_warm() が前ウィンドウの stale な warm 状態を返さないようにする。
+        // eager_warmup_sent_ms は保持し、phase3_7 が送信した eager F2 のタイムスタンプを
+        // 消さないことで non-eager 1500ms パスへの劣化を防ぐ。
+        self.app.executor.platform.output.suppress_warm_epoch();
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();

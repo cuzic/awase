@@ -399,6 +399,13 @@ impl Output {
         self.composition.mark_composition_cold(reason);
     }
 
+    /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
+    ///
+    /// フォーカス遷移直後の最初のキーで呼ぶ。
+    pub fn suppress_warm_epoch(&self) {
+        self.composition.suppress_warm_epoch();
+    }
+
     /// IME composition context をウォーム状態にマークする。
     ///
     /// 直前の NICOLA 出力バッチで warmup F2 が正常に送信され、
