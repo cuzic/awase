@@ -58,11 +58,15 @@ impl InputDeferQueue {
         }
     }
 
-    /// 両キューを合流させて返す（WM_DRAIN_OUTPUT_QUEUE ハンドラの `with_app` 内専用）。
+    /// 両キューを合流させてタイムスタンプ昇順で返す（WM_DRAIN_OUTPUT_QUEUE ハンドラの `with_app` 内専用）。
     ///
     /// `classify_fn` は `RawHookData` を `RawKeyEvent` に変換する関数。
     /// `with_app` 内から呼ぶこと（APP への読み取りアクセスが必要）。
-    /// iwa 側を先に並べ、時系列上の到着順を保持する。
+    ///
+    /// iwa と pending はどちらが古いか不定なため、単純に先頭に置くのではなく
+    /// timestamp でソートして物理的な押下順を復元する。
+    /// （例: cold probe 中に L が pending 入り → probe 完了直前に A が iwa 入り →
+    ///   iwa 先頭だと A→L になってしまう「きうょ」バグの原因）
     pub fn take_all(&self, classify_fn: impl Fn(RawHookData) -> Option<RawKeyEvent>) -> Vec<RawKeyEvent> {
         let iwa = {
             let mut q = match self.iwa.lock() { Ok(q) => q, Err(e) => e.into_inner() };
@@ -79,6 +83,7 @@ impl InputDeferQueue {
             }
         }
         result.extend(pending);
+        result.sort_by_key(|ev| ev.timestamp);
         result
     }
 
