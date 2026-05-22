@@ -451,6 +451,18 @@ impl Output {
         resolve_injection_mode() == InjectionMode::Tsf
     }
 
+    /// 現在の TSF 準備状態を多次元スナップショットとして返す。
+    ///
+    /// ゲート状態・IME ON・注入モードを一つの型にまとめる。
+    /// 条件判定には返り値のメソッド（`can_warmup()` 等）を使う。
+    pub fn tsf_readiness(&self) -> awase::tsf::TsfReadiness {
+        awase::tsf::TsfReadiness {
+            gate: self.tsf_gate.state(),
+            ime_on: self.composition.shadow_ime_on(),
+            is_tsf_mode: self.is_tsf_mode(),
+        }
+    }
+
     /// IME ON/OFF のシャドウ状態を更新する。
     ///
     /// `ImeEffect::SetOpen` 実行時および FocusChange 時に呼ぶ。
@@ -472,7 +484,7 @@ impl Output {
     /// タイムスタンプを優先する）。これにより NativeF2Consumed 後も FocusChange 時刻から
     /// の経過時間で wait 計算ができ、長期アイドル後の TSF 初期化問題を解消する。
     pub fn send_eager_tsf_warmup(&self) {
-        if !self.composition.shadow_ime_on() || !self.is_tsf_mode() {
+        if !self.tsf_readiness().can_warmup() {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
