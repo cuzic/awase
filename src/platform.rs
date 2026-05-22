@@ -143,6 +143,19 @@ use std::time::Duration;
 
 use crate::types::{KeyAction, RawKeyEvent};
 
+/// `apply_ime_open` の実行結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImeOpenOutcome {
+    /// IMM 経由で確実に設定できた
+    Applied,
+    /// フォールバック（VK_KANJI 等）を送信済み。OS 処理完了まで不確定
+    FallbackSent,
+    /// shadow が既に目標状態のためスキップ
+    AlreadyMatched,
+    /// 設定に失敗（非日本語環境など）
+    Failed,
+}
+
 /// フォアグラウンドウィンドウ情報（プラットフォーム非依存）
 #[derive(Debug, Clone)]
 pub struct ForegroundInfo {
@@ -174,7 +187,21 @@ pub trait PlatformRuntime {
     // ── IME 制御 ──
 
     /// IME の ON/OFF を設定する。成功時 true を返す。
+    ///
+    /// 廃止予定: `apply_ime_open` を使うこと。
     fn set_ime_open(&mut self, open: bool) -> bool;
+
+    /// IME の ON/OFF を設定し、実行結果を返す。
+    ///
+    /// デフォルト実装は `set_ime_open` をラップする。
+    /// プラットフォーム実装はオーバーライドしてフォールバック戦略を組み込める。
+    fn apply_ime_open(&mut self, open: bool) -> ImeOpenOutcome {
+        if self.set_ime_open(open) {
+            ImeOpenOutcome::Applied
+        } else {
+            ImeOpenOutcome::Failed
+        }
+    }
 
     /// IME 状態キャッシュの非同期リフレッシュを要求する
     fn post_ime_refresh(&mut self);

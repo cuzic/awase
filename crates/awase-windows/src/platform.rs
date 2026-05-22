@@ -70,6 +70,29 @@ impl PlatformRuntime for WindowsPlatform {
         unsafe { crate::ime::set_ime_open_cross_process(open) }
     }
 
+    fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
+        use awase::platform::ImeOpenOutcome;
+        if let Some((_, class_name)) = self.focus.last_focus_info.as_ref() {
+            if crate::focus::classify::is_imm_bridge_broken(class_name) {
+                // VK_KANJI トグルフォールバック: shadow と目標が違う場合のみ送信
+                let current = self.output.shadow_ime_on();
+                if current != open {
+                    log::debug!("[apply-ime] shadow={current} → desired={open}: SendInput VK_KANJI");
+                    unsafe { crate::ime::post_kanji_toggle_to_focused() };
+                    return ImeOpenOutcome::FallbackSent;
+                } else {
+                    log::debug!("[apply-ime] shadow={current} already matches desired={open}, skip VK_KANJI");
+                    return ImeOpenOutcome::AlreadyMatched;
+                }
+            }
+        }
+        if unsafe { crate::ime::set_ime_open_cross_process(open) } {
+            ImeOpenOutcome::Applied
+        } else {
+            ImeOpenOutcome::Failed
+        }
+    }
+
     fn post_ime_refresh(&mut self) {
         // SetOpen 後の IME 状態反映に数十ms かかるため、即時ではなく
         // 統合タイマー経由で短い遅延後にリフレッシュする。

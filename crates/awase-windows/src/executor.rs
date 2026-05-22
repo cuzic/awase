@@ -516,7 +516,6 @@ impl DecisionExecutor {
         }
 
         let mut ime_set_open: Option<bool> = None;
-        let mut tsf_kanji_fallback = false;
 
         {
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
@@ -531,15 +530,9 @@ impl DecisionExecutor {
                 },
                 Effect::Ime(ie) => match ie {
                     ImeEffect::SetOpen(open) => {
-                        let success = platform.set_ime_open(open);
-                        if !success {
-                            log::warn!(
-                                "set_ime_open({open}) failed — requesting IME refresh for resync"
-                            );
-                            // Chrome 等 IMM-broken クラスでは WM_IME_CONTROL が届かないため
-                            // VK_KANJI（トグル）でフォールバックする。
-                            // 送信前に shadow_ime_on を確認し、すでに目標状態なら送らない。
-                            tsf_kanji_fallback = true;
+                        let outcome = platform.apply_ime_open(open);
+                        if outcome == awase::platform::ImeOpenOutcome::Failed {
+                            log::warn!("apply_ime_open({open}) failed");
                         }
                         // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
                         platform.post_ime_refresh();
@@ -552,18 +545,6 @@ impl DecisionExecutor {
                 },
             }
         } // platform の借用をここで解放
-
-        if tsf_kanji_fallback {
-            if let Some(open) = ime_set_open {
-                let current = self.platform.output.shadow_ime_on();
-                if current != open {
-                    log::debug!("[ime-fallback] shadow={current} → desired={open}: SendInput VK_KANJI");
-                    unsafe { crate::ime::post_kanji_toggle_to_focused() };
-                } else {
-                    log::debug!("[ime-fallback] shadow={current} already matches desired={open}, skip VK_KANJI");
-                }
-            }
-        }
 
         if let Some(open) = ime_set_open {
             // shadow_ime_on を IME 状態変化に追随させる。
