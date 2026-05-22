@@ -172,7 +172,8 @@ pub fn reinstall_hook() -> bool {
                 HOOK_HANDLE.set(new_handle);
                 // Update last_hook_activity_ms — with_app 再入回避のため直接アクセス
                 // SAFETY: reinstall_hook は TIMER_HOOK_WATCHDOG ハンドラから呼ばれ、常にメインスレッド。
-                if let Some(app) = unsafe { crate::APP.get_mut() } {
+                // 外側の unsafe ブロック内のため unsafe { } 不要。
+                if let Some(app) = crate::APP.get_mut() {
                     app.platform_state.last_hook_activity_ms = current_tick_ms();
                 }
                 log::info!("Keyboard hook reinstalled successfully");
