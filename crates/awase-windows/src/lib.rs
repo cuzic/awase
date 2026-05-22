@@ -137,6 +137,14 @@ pub const TIMER_HOOK_WATCHDOG: usize = 102;
 /// メッセージループをハングさせる恐れがある。2秒遅延して安全に復帰処理を行う。
 pub const TIMER_POWER_RESUME: usize = 103;
 
+/// ReinjectKey の output guard 解除待ちタイマー ID
+///
+/// SendInput 直後 50ms は OS キューに出力イベントが残っており、
+/// その間に passthrough キーを reinject すると IME composition が
+/// キャンセルされる race が起きる。
+/// block_on(sleep) を排除するため、SetTimer で待機してから drain_deferred を再実行する。
+pub const TIMER_OUTPUT_GUARD: usize = 104;
+
 /// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
 pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
 

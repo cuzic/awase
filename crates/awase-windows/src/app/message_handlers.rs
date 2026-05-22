@@ -16,8 +16,8 @@ use awase_windows::focus::cache::DetectionSource;
 use awase_windows::hook;
 use awase_windows::runtime;
 use awase_windows::{
-    Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_POWER_RESUME, with_app,
-    with_app_ref,
+    Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD,
+    TIMER_POWER_RESUME, with_app, with_app_ref,
 };
 use awase_windows::tray;
 
@@ -43,6 +43,9 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
             app.platform_state.focus_kind = FocusKind::Undetermined;
             app.schedule_ime_refresh(500);
+        }
+        Some(id) if id == TIMER_OUTPUT_GUARD => {
+            app.executor.on_output_guard_timer();
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
             use std::sync::atomic::AtomicU64;

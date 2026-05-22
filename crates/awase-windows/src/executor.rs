@@ -45,6 +45,9 @@ pub struct DecisionExecutor {
     /// WezTerm が F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
     /// KeyUp タイミングで F2 を送れば、Enter↓ は処理済みのため競合しない。
     pending_warmup_on_keyup: bool,
+    /// TIMER_OUTPUT_GUARD が発火待ちの間 true。
+    /// この間は drain_deferred が再入しても新規タイマーを二重登録しない。
+    guard_timer_active: bool,
 }
 
 impl DecisionExecutor {
@@ -55,6 +58,7 @@ impl DecisionExecutor {
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
             pending_warmup_on_keyup: false,
+            guard_timer_active: false,
         }
     }
 
@@ -89,11 +93,46 @@ impl DecisionExecutor {
         }
     }
 
-    /// `WM_EXECUTE_EFFECTS` ハンドラから呼ぶ。
+    /// `WM_EXECUTE_EFFECTS` ハンドラ、および `TIMER_OUTPUT_GUARD` タイマーから呼ぶ。
+    ///
+    /// キューの先頭が `ReinjectKey` かつ output guard 期間中の場合、
+    /// `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
+    /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
     pub fn drain_deferred(&mut self) {
+        const OUTPUT_GUARD_MS: u64 = 50;
         while let Some(effect) = self.queue.pop_front() {
+            if matches!(effect, Effect::Input(InputEffect::ReinjectKey(_))) {
+                let elapsed = self.platform.output.ms_since_last_send();
+                if elapsed < OUTPUT_GUARD_MS {
+                    let remaining = OUTPUT_GUARD_MS - elapsed;
+                    log::debug!(
+                        "[reinject-guard] output {elapsed}ms ago, suspending drain for {remaining}ms"
+                    );
+                    self.queue.push_front(effect);
+                    if !self.guard_timer_active {
+                        self.platform.timer.set(
+                            crate::TIMER_OUTPUT_GUARD,
+                            std::time::Duration::from_millis(remaining),
+                        );
+                        self.guard_timer_active = true;
+                    }
+                    return;
+                }
+            }
             self.execute_one(effect);
         }
+        // 全 Effect を消化: 先に WM_EXECUTE_EFFECTS が処理を完了した場合に guard timer を解除
+        if self.guard_timer_active {
+            self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
+            self.guard_timer_active = false;
+        }
+    }
+
+    /// `TIMER_OUTPUT_GUARD` 発火時に呼ぶ。guard フラグをクリアして drain を再試行する。
+    pub fn on_output_guard_timer(&mut self) {
+        self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
+        self.guard_timer_active = false;
+        self.drain_deferred();
     }
 
     /// キューに Effects が溜まっているか
@@ -430,22 +469,9 @@ impl DecisionExecutor {
     }
 
     fn execute_one(&mut self, effect: Effect) {
-        // ReinjectKey は output guard 期間を消化してから注入する必要があるため、
-        // 先にガード時間チェック + sleep を行ってからトレイト経由の処理に渡す。
+        // ReinjectKey の output guard チェックは drain_deferred で実施済み。
+        // ここではガード解除後のキーを reinject する。
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
-            const OUTPUT_GUARD_MS: u64 = 50;
-            let elapsed = self.platform.output.ms_since_last_send();
-            if elapsed < OUTPUT_GUARD_MS {
-                let remaining = OUTPUT_GUARD_MS - elapsed;
-                log::debug!(
-                    "[reinject-wait] sleeping {remaining}ms (output {elapsed}ms ago) before reinject(vk={:#04x})",
-                    event.vk_code.0,
-                );
-                // メッセージループを pump しながら待機する。
-                // この sleep を入れないと Ctrl/Enter が IME composition を cancel する
-                // race が残る (実測: SendInput 直後 9ms で race 発生)。
-                win32_async::block_on(win32_async::sleep_ms(remaining as u32));
-            }
             let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
             let dir = if is_key_down { "down" } else { "up" };
 
