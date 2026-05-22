@@ -337,21 +337,16 @@ impl Runtime {
         ImeRefreshPipeline::new(self).run();
     }
 
-    /// 現在のフォーカス先を検出し、focus_kind / app_kind を更新する。
-    ///
-    /// 前面プロセスが前回と異なる場合は `true` を返す（flush が必要）。
-    /// 同一プロセス内のフォーカス移動では `false` を返す（flush 不要）。
-    ///
-    /// # Safety
-    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-    unsafe fn detect_and_update_focus(&mut self) -> bool {
+    /// フォーカスプローブ結果を適用する（blocking なし、with_app 内で呼ぶ）。
+    /// detect_and_update_focus の fetch 部分を除いた apply のみ。
+    /// async drain 後に with_app 内で呼ぶ用途に使う。
+    pub fn apply_focus_probe_result(
+        &mut self,
+        probe: Option<crate::focus::probe::FocusProbe>,
+    ) -> bool {
         use crate::focus::hwnd_cache;
         use crate::focus::imm_learning;
         use crate::focus::kind_classifier;
-
-        // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
-        // 詳細は focus::probe::run_focus_probe() を参照。
-        let probe = unsafe { crate::focus::probe::run_focus_probe() };
 
         let Some(probe) = probe else {
             log::warn!("Focus probe timed out — skipping update this cycle");
@@ -369,8 +364,6 @@ impl Runtime {
         let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
 
         // ── Phase 2: IMM 能力キャッシュの初期学習 ──
-        // "IMM Broken" = IMM 状態クエリが信頼できない。VK 合成が必要とは限らない。
-        // WezTerm 等は ImmGetDefaultIMEWnd=NULL でも WM_CHAR (Unicode) を正しく処理する。
         imm_learning::learn_imm_capability_on_focus(
             &mut self.executor.platform.focus,
             hwnd,
@@ -379,7 +372,11 @@ impl Runtime {
         );
 
         if self.platform_state.app_kind != new_app_kind {
-            log::info!("AppKind changed: {:?} → {:?} (class={class_name})", self.platform_state.app_kind, new_app_kind);
+            log::info!(
+                "AppKind changed: {:?} → {:?} (class={class_name})",
+                self.platform_state.app_kind,
+                new_app_kind
+            );
             self.platform_state.app_kind = new_app_kind;
         }
 
@@ -397,7 +394,10 @@ impl Runtime {
 
         // focus_kind を更新
         if self.platform_state.focus_kind != kind {
-            log::debug!("Focus kind changed: {:?} → {kind:?} (reason={reason})", self.platform_state.focus_kind);
+            log::debug!(
+                "Focus kind changed: {:?} → {kind:?} (reason={reason})",
+                self.platform_state.focus_kind
+            );
             self.platform_state.focus_kind = kind;
         }
 
@@ -407,36 +407,41 @@ impl Runtime {
                 process_id,
                 class_name.clone(),
                 kind,
-                DetectionSource::Automatic,
+                crate::focus::cache::DetectionSource::Automatic,
             );
         }
 
         // 前面プロセスが変わったかチェック
-        let last_pid = self.executor.platform.focus.last_focus_info.as_ref().map(|(pid, _)| *pid);
+        let last_pid = self
+            .executor
+            .platform
+            .focus
+            .last_focus_info
+            .as_ref()
+            .map(|(pid, _)| *pid);
         let process_changed = last_pid.is_some_and(|last| last != process_id);
 
         // フォーカス離脱: 現在の preconditions を per-HWND キャッシュに保存
-        // （last_focus_info 更新前に行う — 更新後は古い HWND の情報が消える）
         if process_changed {
-            if let Some((old_pid, old_class)) = self.executor.platform.focus.last_focus_info.clone() {
+            if let Some((old_pid, old_class)) =
+                self.executor.platform.focus.last_focus_info.clone()
+            {
                 hwnd_cache::save_on_focus_leave(
                     &mut self.executor.platform.focus.hwnd_ime_cache,
                     old_pid,
                     old_class,
                     &self.platform_state.preconditions,
                 );
-
             }
         }
 
         // last_focus_info を更新
         self.executor.platform.focus.last_focus_info = Some((process_id, class_name.clone()));
 
-        // prev_conversion_mode をリセット（異なるウィンドウの conversion_mode を比較しない）
+        // prev_conversion_mode をリセット
         self.platform_state.preconditions.prev_conversion_mode = None;
 
         if process_changed {
-            // [診断] フォーカス切り替え時点の stale スナップショットを記録する。
             {
                 let pc = &self.platform_state.preconditions;
                 log::info!(
@@ -451,16 +456,10 @@ impl Runtime {
                 );
             }
 
-            // 診断用: フォアグラウンドプロセス変更時刻を記録
             self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
-            // composition_warm を epoch ベースで自動無効化（前ウィンドウの warm 状態を引き継がない）
             self.executor.platform.output.on_focus_changed();
-            // 前ウィンドウの IME 観測値をクリア（新しいウィンドウは独自の状態を持つ）
             self.platform_state.ime_observations.clear_on_focus_change();
 
-            // per-HWND キャッシュから新しいウィンドウの既知状態を即座に復元する。
-            // - キャッシュヒット: stale 窓がゼロになる（FocusProbe / ObserverPoll で確認・補正）
-            // - キャッシュミス: 今まで通り stale のまま probe を待つ
             hwnd_cache::restore_on_focus_enter(
                 &self.executor.platform.focus.hwnd_ime_cache,
                 process_id,
@@ -468,10 +467,6 @@ impl Runtime {
                 &mut self.platform_state.preconditions,
             );
 
-            // フォーカス変更時は IME 強制書き込みガードをリセットする。
-            // 新しいウィンドウは独自の IME 状態を持つ可能性があるため、
-            // 前のウィンドウで設定した状態を引きずらず、再検出から始める。
-            // miss_count もリセットして、新しいウィンドウで十分な猶予を与える。
             if self.platform_state.preconditions.ime_force_on_guard.is_active()
                 || self.platform_state.preconditions.ime_detect_miss_count > 0
             {
@@ -483,8 +478,7 @@ impl Runtime {
                 self.platform_state.preconditions.ime_detect_miss_count = 0;
             }
 
-            // UIA 非同期判定が必要かチェック（Undetermined の場合）
-            if kind == FocusKind::Undetermined {
+            if kind == awase::types::FocusKind::Undetermined {
                 if let Some(sender) = &self.executor.platform.focus.uia_sender {
                     let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
                 }
@@ -492,14 +486,40 @@ impl Runtime {
 
             true
         } else {
-            // 同一プロセス内: UIA 判定は必要に応じて
-            if kind == FocusKind::Undetermined {
+            if kind == awase::types::FocusKind::Undetermined {
                 if let Some(sender) = &self.executor.platform.focus.uia_sender {
                     let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
                 }
             }
             false
         }
+    }
+
+    /// 現在のフォーカス先を検出し、focus_kind / app_kind を更新する。
+    ///
+    /// 前面プロセスが前回と異なる場合は `true` を返す（flush が必要）。
+    /// 同一プロセス内のフォーカス移動では `false` を返す（flush 不要）。
+    ///
+    /// # Safety
+    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+    unsafe fn detect_and_update_focus(&mut self) -> bool {
+        // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
+        // 詳細は focus::probe::run_focus_probe() を参照。
+        let probe = unsafe { crate::focus::probe::run_focus_probe() };
+        self.apply_focus_probe_result(probe)
+    }
+
+    /// IME リフレッシュを非同期タスクとしてスポーン。
+    /// with_app の外でフェッチを行い、完了後に with_app で適用する。
+    pub fn spawn_ime_refresh(&mut self) {
+        self.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
+        win32_async::spawn_local(async {
+            let focus = crate::focus::probe::run_focus_probe_async().await;
+            let snap = crate::ime::detect_ime_state_async().await;
+            crate::with_app(|app| {
+                ImeRefreshPipeline::new(app).run_with_prefetched(focus, snap);
+            });
+        });
     }
 
     /// 統合 IME リフレッシュタイマーをスケジュール（リセット）する。

@@ -383,4 +383,81 @@ impl<'a> ImeRefreshPipeline<'a> {
         self.rt
             .schedule_ime_refresh(u64::from(self.rt.platform_state.ime_poll_interval_ms));
     }
+
+    /// pre-fetch 済みデータを使ってパイプラインを実行（blocking なし）。
+    /// spawn_local タスクから呼ぶ。
+    pub(super) fn run_with_prefetched(
+        mut self,
+        focus_probe: Option<crate::focus::probe::FocusProbe>,
+        ime_snap: crate::ime::ImeSnapshot,
+    ) {
+        let mut state = PipelineState {
+            focus_changed: false,
+            skip_imm_query: false,
+            miss_before: 0,
+        };
+
+        // Phase 1: apply pre-fetched focus
+        state.focus_changed = self.rt.apply_focus_probe_result(focus_probe);
+
+        // Phase 2.5, 2, 2.7
+        state.skip_imm_query = self.phase2_5_resolve_skip_imm_query();
+        if state.focus_changed {
+            self.phase2_notify_focus_changed(&state);
+        }
+        let strategy = self.phase2_7_decide_read_strategy(state.skip_imm_query);
+
+        match strategy {
+            ImeReadStrategy::SkipTyping => {}
+            ImeReadStrategy::Blacklist => {
+                self.apply_blacklist_ssot();
+            }
+            ImeReadStrategy::OsPoll => {
+                state.miss_before =
+                    self.rt.platform_state.preconditions.ime_detect_miss_count;
+
+                // [診断] apply_snapshot 前のスナップショット（差分検出用）
+                let ime_on_before_poll = self.rt.platform_state.preconditions.ime_on;
+                let input_mode_before_poll = self.rt.platform_state.preconditions.input_mode;
+
+                // Phase 3: apply pre-fetched IME snap
+                let now_ms = crate::hook::current_tick_ms();
+                crate::observer::ime_observer::apply_snapshot(
+                    &ime_snap,
+                    now_ms,
+                    &mut self.rt.platform_state.preconditions,
+                    &mut self.rt.platform_state.ime_observations,
+                );
+
+                let miss_after =
+                    self.rt.platform_state.preconditions.ime_detect_miss_count;
+
+                // observe() の生の結果を os_ime_on に記録（miss なし＝成功時のみ更新）
+                if miss_after == 0 {
+                    if let Some(obs) = &self.rt.platform_state.ime_observations.observer_poll {
+                        self.rt.platform_state.os_ime_on =
+                            Some(obs.value && self.rt.platform_state.preconditions.is_japanese_ime);
+                    }
+                }
+                self.rt
+                    .platform_state
+                    .apply_ime_observations(self.rt.engine.is_user_enabled());
+
+                self.log_poll_diff(
+                    ime_on_before_poll,
+                    input_mode_before_poll,
+                    state.miss_before,
+                    miss_after,
+                );
+                self.learn_imm_capability_from_result(state.miss_before, miss_after);
+                self.try_force_on_bootstrap();
+            }
+        }
+
+        if state.focus_changed {
+            self.phase3_7_post_focus_change_snapshot(&state);
+        }
+        self.phase4_notify_engine_refresh();
+        self.phase5_reschedule();
+    }
 }

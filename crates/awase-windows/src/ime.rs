@@ -287,6 +287,30 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
     }
 }
 
+/// `detect_ime_state` の async 版（ワーカースレッドで実行）
+#[allow(clippy::future_not_send)]
+pub async fn detect_ime_state_async() -> ImeSnapshot {
+    win32_async::offload(|| unsafe { detect_ime_state() }).await
+}
+
+/// `fast_ime_probe` の async 版（ワーカースレッドで実行）
+#[allow(clippy::future_not_send)]
+pub async fn fast_ime_probe_async() -> FastImeProbeResult {
+    win32_async::offload(|| unsafe { fast_ime_probe() }).await
+}
+
+/// `set_ime_open_cross_process` の async 版（ワーカースレッドで実行）
+#[allow(clippy::future_not_send)]
+pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
+    win32_async::offload(move || unsafe { set_ime_open_cross_process(open) }).await
+}
+
+/// `set_ime_romaji_mode` の async 版（ワーカースレッドで実行）
+#[allow(clippy::future_not_send)]
+pub async fn set_ime_romaji_mode_async() -> bool {
+    win32_async::offload(|| unsafe { set_ime_romaji_mode() }).await
+}
+
 /// 現在のキーボードレイアウトの言語情報を返す。
 ///
 /// Returns `(is_japanese, lang_id)` — 日本語レイアウトかどうかと言語 ID (下位16ビット)。

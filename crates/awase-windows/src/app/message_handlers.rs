@@ -28,13 +28,15 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
-            app.refresh_ime_state_cache();
+            // sync な部分（blocking なし）
             hook::sync_sent_to_engine(&mut app.platform_state.hook);
             if app.platform_state.ime_guard.active
                 || !app.platform_state.ime_guard.deferred_keys.is_empty()
             {
                 app.process_deferred_keys();
             }
+            // async タスクをスポーン（with_app を解放してから fetch）
+            app.spawn_ime_refresh();
         }
         Some(id) if id == TIMER_POWER_RESUME => {
             app.executor.platform.timer.kill(TIMER_POWER_RESUME);

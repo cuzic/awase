@@ -9,11 +9,11 @@ use std::sync::atomic::Ordering;
 use awase::engine::InputModeState;
 use awase::types::{RawKeyEvent, ShadowImeAction};
 use awase_windows::hook;
-use awase_windows::ime;
 use awase_windows::runtime;
 use awase_windows::hook::CallbackResult;
 use awase_windows::win32::{post_to_main_thread};
 use awase_windows::{ImeForceOnGuard, Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_PANIC_RESET};
+use win32_async;
 
 use super::RAPID_IME_TIMESTAMPS;
 
@@ -43,122 +43,35 @@ impl<'a> KeyEventPipeline<'a> {
         self.stage_execute(decision, &event)
     }
 
-    /// フォーカス切替直後の同期プローブ
+    /// フォーカス切替直後の非同期プローブ
     fn stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
         if !self.app.platform_state.focus_transition_pending {
             return;
         }
         self.app.platform_state.focus_transition_pending = false;
 
-        let ime_on_before_probe = self.app.platform_state.preconditions.ime_on;
-        let input_mode_before_probe = self.app.platform_state.preconditions.input_mode;
-        let probe_age_ms = hook::current_tick_ms()
-            .saturating_sub(self.app.platform_state.last_focus_change_ms);
-
-        // SAFETY: fast_ime_probe uses IMM32/Win32 APIs safe to call from the message-loop thread.
-        let probe = unsafe { ime::fast_ime_probe() };
-        self.app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
-
-        const WARMUP_GRACE_MS: u64 = 300;
-        const GJI_SETTLE_GRACE_MS: u64 = 300;
-        const SHADOW_GRACE_MS: u64 = 200;
-
-        let now_ms = hook::current_tick_ms();
-
+        // キャプチャ（async タスク内で使う）
+        let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
-        let warmup_elapsed = if warmup_ms > 0 { now_ms.saturating_sub(warmup_ms) } else { u64::MAX };
-        let sig1_warmup = warmup_elapsed < WARMUP_GRACE_MS;
-
-        let gji_last_io_ms = awase_windows::tsf::observer::OBS_GJI_LAST_IO_MS
-            .load(Ordering::Relaxed);
-        let gji_active_after_focus =
-            gji_last_io_ms > 0 && gji_last_io_ms >= self.app.platform_state.last_focus_change_ms;
-        let gji_idle_ms = if gji_last_io_ms > 0 { now_ms.saturating_sub(gji_last_io_ms) } else { u64::MAX };
-        let sig2_gji = gji_active_after_focus && gji_idle_ms < GJI_SETTLE_GRACE_MS;
-
+        let gji_last_io_ms =
+            awase_windows::tsf::observer::OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+        let last_focus_change_ms = self.app.platform_state.last_focus_change_ms;
         let shadow_on = self.app.executor.platform.output.shadow_ime_on();
-        let sig3_shadow = shadow_on && probe_age_ms < SHADOW_GRACE_MS;
 
-        let mut suppressed = false;
-        let mut suppress_reason = "";
-        if let Some(on) = probe.ime_on {
-            let effective = on && probe.is_japanese_ime;
-            if !effective && (sig1_warmup || sig2_gji || sig3_shadow) {
-                suppressed = true;
-                suppress_reason = if sig1_warmup { "warmup" } else if sig2_gji { "gji-io" } else { "shadow" };
-            } else {
-                self.app.platform_state.os_ime_on = Some(effective);
-                let ms = hook::current_tick_ms();
-                self.app.platform_state.ime_observations.focus_probe =
-                    Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
-                if effective {
-                    self.app.platform_state.preconditions.ime_detect_miss_count = 0;
-                    self.app.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
-                }
-                self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
-            }
-        }
-
-        if let Some(romaji) = probe.is_romaji {
-            let prev = self.app.platform_state.preconditions.input_mode.is_romaji_capable();
-            self.app.platform_state.preconditions.input_mode = if romaji {
-                InputModeState::ObservedRomaji
-            } else {
-                InputModeState::ObservedKana
-            };
-            if prev != romaji {
-                log::info!(
-                    "FocusProbe +{}ms: mode {} → {}",
-                    probe_age_ms,
-                    if prev { "romaji" } else { "kana" },
-                    if romaji { "romaji" } else { "kana" },
+        win32_async::spawn_local(async move {
+            let probe = awase_windows::ime::fast_ime_probe_async().await;
+            awase_windows::with_app(|app| {
+                apply_focus_probe_to_app(
+                    app,
+                    probe,
+                    probe_started_ms,
+                    warmup_ms,
+                    gji_last_io_ms,
+                    last_focus_change_ms,
+                    shadow_on,
                 );
-            }
-        }
-
-        let ime_on_after_probe = self.app.platform_state.preconditions.ime_on;
-        let input_mode_after_probe = self.app.platform_state.preconditions.input_mode;
-        let ime_on_suffix = if suppressed {
-            let detail = match suppress_reason {
-                "warmup" => format!("warmup:{warmup_elapsed}ms"),
-                "gji-io" => format!("gji-io:{gji_idle_ms}ms"),
-                _ => format!("shadow:{probe_age_ms}ms"),
-            };
-            format!("(suppressed:{detail})")
-        } else if probe.ime_on.is_none() {
-            "(stale)".to_string()
-        } else {
-            String::new()
-        };
-        log::info!(
-            "FocusProbe +{}ms: ime_on={}{} mode={:?}{} [gji_io={}ms sig1={sig1_warmup} sig2={sig2_gji} sig3={sig3_shadow}]",
-            probe_age_ms,
-            ime_on_after_probe,
-            ime_on_suffix,
-            input_mode_after_probe,
-            if probe.is_romaji.is_none() { "(stale)" } else { "" },
-            if gji_idle_ms == u64::MAX { "never".to_string() } else { gji_idle_ms.to_string() },
-        );
-        if suppressed {
-            log::debug!(
-                "FocusProbe: imc_open=false を抑制 (reason={suppress_reason}) — Engine deactivation を防止"
-            );
-        } else if probe.ime_on.is_none() {
-            log::warn!(
-                "FocusProbe: ime_on 未検出 — stale値 {} が ObserverPoll まで持続 \
-                 [probe_age={}ms, A/B判断: ime_on stale頻度を確認]",
-                ime_on_before_probe,
-                probe_age_ms,
-            );
-        }
-        if probe.is_romaji.is_none() {
-            log::warn!(
-                "FocusProbe: input_mode 未検出 — stale値 {:?} が ObserverPoll まで持続 \
-                 [probe_age={}ms, A/B判断: mode stale頻度を確認]",
-                input_mode_before_probe,
-                probe_age_ms,
-            );
-        }
+            });
+        });
     }
 
     /// Shadow IME トグル処理
@@ -255,5 +168,132 @@ impl<'a> KeyEventPipeline<'a> {
         }
 
         hook_result.callback
+    }
+}
+
+/// fast_ime_probe_async の結果を app に適用する（with_app 内で呼ぶ）。
+/// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
+fn apply_focus_probe_to_app(
+    app: &mut awase_windows::Runtime,
+    probe: awase_windows::ime::FastImeProbeResult,
+    probe_started_ms: u64,
+    warmup_ms: u64,
+    gji_last_io_ms: u64,
+    last_focus_change_ms: u64,
+    shadow_on: bool,
+) {
+    let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
+    let ime_on_before_probe = app.platform_state.preconditions.ime_on;
+    let input_mode_before_probe = app.platform_state.preconditions.input_mode;
+
+    app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
+
+    const WARMUP_GRACE_MS: u64 = 300;
+    const GJI_SETTLE_GRACE_MS: u64 = 300;
+    const SHADOW_GRACE_MS: u64 = 200;
+
+    let now_ms = hook::current_tick_ms();
+
+    let warmup_elapsed = if warmup_ms > 0 { now_ms.saturating_sub(warmup_ms) } else { u64::MAX };
+    let sig1_warmup = warmup_elapsed < WARMUP_GRACE_MS;
+
+    let gji_active_after_focus =
+        gji_last_io_ms > 0 && gji_last_io_ms >= last_focus_change_ms;
+    let gji_idle_ms = if gji_last_io_ms > 0 {
+        now_ms.saturating_sub(gji_last_io_ms)
+    } else {
+        u64::MAX
+    };
+    let sig2_gji = gji_active_after_focus && gji_idle_ms < GJI_SETTLE_GRACE_MS;
+
+    let sig3_shadow = shadow_on && probe_age_ms < SHADOW_GRACE_MS;
+
+    let mut suppressed = false;
+    let mut suppress_reason = "";
+    if let Some(on) = probe.ime_on {
+        let effective = on && probe.is_japanese_ime;
+        if !effective && (sig1_warmup || sig2_gji || sig3_shadow) {
+            suppressed = true;
+            suppress_reason = if sig1_warmup {
+                "warmup"
+            } else if sig2_gji {
+                "gji-io"
+            } else {
+                "shadow"
+            };
+        } else {
+            app.platform_state.os_ime_on = Some(effective);
+            let ms = hook::current_tick_ms();
+            app.platform_state.ime_observations.focus_probe =
+                Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
+            if effective {
+                app.platform_state.preconditions.ime_detect_miss_count = 0;
+                app.platform_state.preconditions.ime_force_on_guard =
+                    awase_windows::ImeForceOnGuard::Inactive;
+            }
+            app.platform_state
+                .apply_ime_observations(app.engine.is_user_enabled());
+        }
+    }
+
+    if let Some(romaji) = probe.is_romaji {
+        let prev = app.platform_state.preconditions.input_mode.is_romaji_capable();
+        app.platform_state.preconditions.input_mode = if romaji {
+            InputModeState::ObservedRomaji
+        } else {
+            InputModeState::ObservedKana
+        };
+        if prev != romaji {
+            log::info!(
+                "FocusProbe +{}ms: mode {} → {}",
+                probe_age_ms,
+                if prev { "romaji" } else { "kana" },
+                if romaji { "romaji" } else { "kana" },
+            );
+        }
+    }
+
+    let ime_on_after_probe = app.platform_state.preconditions.ime_on;
+    let input_mode_after_probe = app.platform_state.preconditions.input_mode;
+    let ime_on_suffix = if suppressed {
+        let detail = match suppress_reason {
+            "warmup" => format!("warmup:{warmup_elapsed}ms"),
+            "gji-io" => format!("gji-io:{gji_idle_ms}ms"),
+            _ => format!("shadow:{probe_age_ms}ms"),
+        };
+        format!("(suppressed:{detail})")
+    } else if probe.ime_on.is_none() {
+        "(stale)".to_string()
+    } else {
+        String::new()
+    };
+    log::info!(
+        "FocusProbe +{}ms: ime_on={}{} mode={:?}{} [gji_io={}ms sig1={sig1_warmup} sig2={sig2_gji} sig3={sig3_shadow}]",
+        probe_age_ms,
+        ime_on_after_probe,
+        ime_on_suffix,
+        input_mode_after_probe,
+        if probe.is_romaji.is_none() { "(stale)" } else { "" },
+        if gji_idle_ms == u64::MAX { "never".to_string() } else { gji_idle_ms.to_string() },
+    );
+    if suppressed {
+        log::debug!(
+            "FocusProbe: imc_open=false を抑制 (reason={suppress_reason}) — Engine deactivation を防止"
+        );
+    } else if probe.ime_on.is_none() {
+        log::warn!(
+            "FocusProbe: ime_on 未検出 — stale値 {} が ObserverPoll まで持続 \
+             [probe_age={}ms, A/B判断: ime_on stale頻度を確認]",
+            ime_on_before_probe,
+            probe_age_ms,
+        );
+    }
+    if probe.is_romaji.is_none() {
+        log::warn!(
+            "FocusProbe: input_mode 未検出 — stale値 {:?} が ObserverPoll まで持続 \
+             [probe_age={}ms, A/B判断: mode stale頻度を確認]",
+            input_mode_before_probe,
+            probe_age_ms,
+        );
     }
 }

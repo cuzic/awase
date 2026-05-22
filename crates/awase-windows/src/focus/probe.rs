@@ -7,10 +7,42 @@ pub struct FocusProbe {
     pub class_name: String,
 }
 
+// SAFETY: hwnd_addr は usize として保存しており、ポインタとして同期アクセスはしない。
+// process_id と class_name は自明に Send。
+unsafe impl Send for FocusProbe {}
+
 impl FocusProbe {
     pub fn hwnd(&self) -> HWND {
         HWND(self.hwnd_addr as *mut _)
     }
+}
+
+/// `run_focus_probe` の async 版。
+/// ワーカースレッドで実行し、メッセージループに制御を返しながら待つ。
+#[allow(clippy::future_not_send)]
+pub async fn run_focus_probe_async() -> Option<FocusProbe> {
+    win32_async::offload(move || {
+        let result = unsafe {
+            crate::win32::get_gui_thread_info_with_timeout(
+                std::time::Duration::from_millis(150),
+            )
+        };
+        let Some(hwnd) = result.focused_hwnd else {
+            return Some(FocusProbe {
+                hwnd_addr: 0,
+                process_id: 0,
+                class_name: String::new(),
+            });
+        };
+        let process_id = crate::focus::classify::get_window_process_id(hwnd);
+        let class_name = crate::focus::classify::get_class_name_string(hwnd);
+        Some(FocusProbe {
+            hwnd_addr: hwnd.0 as usize,
+            process_id,
+            class_name,
+        })
+    })
+    .await
 }
 
 /// Win32 タイムアウト付きフォアグラウンドウィンドウ情報取得。

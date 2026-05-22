@@ -159,3 +159,102 @@ pub unsafe fn observe(preconditions: &mut Preconditions, observations: &mut ImeO
         preconditions.ime_force_on_guard.is_active(),
     );
 }
+
+/// IME スナップショットを Preconditions / ImeObservations に適用する（純粋 sync）。
+/// observe() から blocking fetch 部分を分離したもの。async drain 後に with_app 内で呼ぶ。
+pub fn apply_snapshot(
+    snap: &crate::ime::ImeSnapshot,
+    now_ms: u64,
+    preconditions: &mut Preconditions,
+    observations: &mut ImeObservations,
+) {
+    // ── is_japanese_ime ──────────────────────────────────────────
+    if let Some(is_jp) = snap.is_japanese_ime {
+        preconditions.is_japanese_ime = is_jp;
+    }
+
+    let known_not_japanese = snap.is_japanese_ime == Some(false);
+    if known_not_japanese {
+        observations.observer_poll = Some(ImeObs { value: false, ms: now_ms });
+        preconditions.ime_detect_miss_count = 0;
+        preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
+    } else if let Some(on) = snap.ime_on {
+        observations.observer_poll = Some(ImeObs { value: on, ms: now_ms });
+        preconditions.ime_detect_miss_count = 0;
+        preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
+    } else if snap.is_tsf_native {
+        log::debug!(
+            "IME detection skipped (TSF-native window), preserving ime_on={}",
+            preconditions.ime_on
+        );
+    } else if preconditions.ime_force_on_guard.is_active() {
+        log::debug!(
+            "IME detection failed but force_on_guard active, preserving ime_on={}",
+            preconditions.ime_on
+        );
+    } else {
+        preconditions.ime_detect_miss_count =
+            preconditions.ime_detect_miss_count.saturating_add(1);
+        if preconditions.ime_detect_miss_count == crate::IME_DETECT_MISS_THRESHOLD {
+            log::warn!(
+                "IME detection failed {} consecutive times, will force IME ON",
+                preconditions.ime_detect_miss_count
+            );
+        }
+    }
+
+    // ── is_romaji ─────────────────────────────────────────────────
+    if preconditions.ime_force_on_guard.is_active() && snap.is_romaji.is_none() {
+        // guard 中かつ失敗: 維持
+    } else if let Some(romaji) = snap.is_romaji {
+        let prev = preconditions.input_mode.is_romaji_capable();
+        preconditions.input_mode = if romaji {
+            InputModeState::ObservedRomaji
+        } else {
+            InputModeState::ObservedKana
+        };
+        if prev != romaji {
+            log::info!(
+                "IME input method changed: {} → {}",
+                if !prev { "kana" } else { "romaji" },
+                if !romaji { "kana" } else { "romaji" },
+            );
+        }
+    } else if let Some(conv_mode) = snap.conversion_mode {
+        let curr_has_roman = conv_mode & IME_CMODE_ROMAN != 0;
+        let curr_has_native = conv_mode & IME_CMODE_NATIVE != 0;
+
+        if let Some(prev_conv) = preconditions.prev_conversion_mode {
+            let prev_had_roman = prev_conv & IME_CMODE_ROMAN != 0;
+            if prev_had_roman != curr_has_roman && curr_has_native {
+                let new_romaji = curr_has_roman;
+                let prev_romaji = preconditions.input_mode.is_romaji_capable();
+                if prev_romaji != new_romaji {
+                    log::info!(
+                        "IME input method changed (ROMAN bit transition): {} → {}",
+                        if !prev_romaji { "kana" } else { "romaji" },
+                        if !new_romaji { "kana" } else { "romaji" },
+                    );
+                    preconditions.input_mode = if new_romaji {
+                        InputModeState::ObservedRomaji
+                    } else {
+                        InputModeState::ObservedKana
+                    };
+                }
+            }
+        }
+    }
+
+    if let Some(conv_mode) = snap.conversion_mode {
+        preconditions.prev_conversion_mode = Some(conv_mode);
+    }
+
+    log::debug!(
+        "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
+        snap.is_japanese_ime,
+        snap.ime_on,
+        snap.is_romaji,
+        snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+        preconditions.ime_force_on_guard.is_active(),
+    );
+}
