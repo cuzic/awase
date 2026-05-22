@@ -276,6 +276,11 @@ pub struct Output {
     /// `advance_tsf_probe` がタイマーごとに状態を進める。
     /// `_guard` により OUTPUT_ACTIVE が保留期間中維持される。
     pub(crate) pending_tsf: std::cell::RefCell<Option<TsfProbeData>>,
+    /// フォーカス変更直後の TSF モード確定前にキーを一時保留するゲート。
+    ///
+    /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
+    /// Probing または Bypass に遷移して保留キーを再処理する。
+    pub tsf_gate: crate::tsf::gate::TsfGate,
 }
 
 /// TSF/VK probe の現在フェーズ
@@ -354,6 +359,7 @@ impl Output {
             symbol_to_vk: build_symbol_to_vk(),
             composition: crate::tsf::probe::CompositionState::new(),
             pending_tsf: std::cell::RefCell::new(None),
+            tsf_gate: crate::tsf::gate::TsfGate::new(),
         }
     }
 

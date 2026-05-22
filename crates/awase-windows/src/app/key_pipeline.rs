@@ -28,6 +28,12 @@ impl<'a> KeyEventPipeline<'a> {
         let mut event = event;
         self.app.enrich_ime_relevance(&mut event);
 
+        // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
+        // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
+        if self.app.executor.platform.output.tsf_gate.try_hold(event) {
+            return CallbackResult::Consumed;
+        }
+
         self.stage_focus_probe(&mut event);
         self.stage_shadow_ime_toggle(&event);
         self.stage_panic_reset_detect(&event);

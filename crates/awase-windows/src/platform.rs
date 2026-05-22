@@ -26,6 +26,7 @@ impl WindowsPlatform {
     pub fn advance_tsf_probe(&mut self) {
         if self.output.advance_tsf_probe() {
             self.timer.kill(crate::TIMER_TSF_PROBE);
+            self.output.tsf_gate.on_ready();
         }
     }
 }

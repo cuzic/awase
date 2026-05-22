@@ -412,6 +412,12 @@ unsafe extern "system" fn win_event_proc(
 
     with_app(|app| {
         app.platform_state.focus_transition_pending = true;
+        app.executor.platform.output.tsf_gate.on_focus_change();
+        // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
+        app.executor.platform.timer.set(
+            awase_windows::TIMER_TSF_GATE,
+            std::time::Duration::from_millis(awase_windows::tsf::gate::WARMUP_TIMEOUT_MS),
+        );
         let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
         app.schedule_ime_refresh(debounce_ms);
     });

@@ -529,6 +529,37 @@ impl Runtime {
             let snap = crate::ime::detect_ime_state_async().await;
             crate::with_app(|app| {
                 ImeRefreshPipeline::new(app).run_with_prefetched(focus, snap);
+
+                // run_with_prefetched 完了後: last_focus_info が更新済みのため
+                // is_force_tsf を直接読んで TsfGate を遷移させる。
+                // PendingWarmup 以外（Probing/Ready/Bypass）なら空 Vec が返る。
+                let is_tsf = app
+                    .executor
+                    .platform
+                    .focus
+                    .last_focus_info
+                    .as_ref()
+                    .is_some_and(|(pid, class)| {
+                        is_force_tsf(&app.executor.platform.focus.overrides, *pid, class)
+                    });
+                let held = if is_tsf {
+                    app.executor.platform.output.tsf_gate.on_tsf_confirmed()
+                } else {
+                    app.executor.platform.output.tsf_gate.on_bypass()
+                };
+                // PendingWarmup から遷移した場合のみ held が非空 or タイマー kill が必要。
+                // 500ms ポーリング等で再呼び出しされても on_tsf_confirmed/on_bypass は
+                // PendingWarmup 以外では空 Vec を返すため安全。
+                app.executor.platform.timer.kill(crate::TIMER_TSF_GATE);
+                if !held.is_empty() {
+                    log::debug!("[tsf-gate] draining {} held keys via OUTPUT_PENDING_QUEUE", held.len());
+                    let mut q = crate::OUTPUT_PENDING_QUEUE
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    q.extend(held);
+                    drop(q);
+                    crate::tsf::probe_bridge::post_drain_output_queue();
+                }
             });
         });
     }

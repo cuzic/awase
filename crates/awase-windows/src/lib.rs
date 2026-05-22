@@ -173,6 +173,12 @@ pub const TIMER_POWER_RESUME: usize = 103;
 /// 10ms 間隔で GJI 静止・NAMECHANGE・リテラル検出を行う。
 pub const TIMER_TSF_PROBE: usize = 105;
 
+/// TsfGate の PendingWarmup フォールバックタイマー ID
+///
+/// フォーカス変更後 `WARMUP_TIMEOUT_MS`（500ms）以内にプローブが完了しない場合、
+/// Bypass へ強制遷移して保留キーをドレインする。
+pub const TIMER_TSF_GATE: usize = 106;
+
 /// ReinjectKey の output guard 解除待ちタイマー ID
 ///
 /// SendInput 直後 50ms は OS キューに出力イベントが残っており、
