@@ -141,8 +141,10 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     fn phase2_7_decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
         const TYPING_IDLE_MS: u64 = 500;
+        let last_activity = self.rt.platform_state.last_hook_activity_ms
+            .max(crate::output::LAST_VK_OUTPUT_MS.load(std::sync::atomic::Ordering::Relaxed));
         let idle_ms = crate::hook::current_tick_ms()
-            .saturating_sub(self.rt.platform_state.last_hook_activity_ms);
+            .saturating_sub(last_activity);
         let is_typing = idle_ms < TYPING_IDLE_MS;
 
         if is_typing {

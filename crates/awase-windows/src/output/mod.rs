@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use awase::config::OutputMode;
 use awase::types::{AppKind, KeyAction, SpecialKey};
@@ -43,6 +44,13 @@ const VK_LSHIFT: u16 = 0xA0;
 pub(crate) fn fmt_ms(ms: u64) -> String {
     if ms == u64::MAX { "∞".to_owned() } else { ms.to_string() }
 }
+
+/// VK/TSF モードでの最終 SendInput 時刻（`mark_vk_output` が書き込む）。
+///
+/// `execute_one` → `send_keys` のコールスタックから `with_app` を呼ぶと再入 UB になるため、
+/// `last_hook_activity_ms` の代替として atomic に書き込む。
+/// 読み取り側では `last_hook_activity_ms.max(LAST_VK_OUTPUT_MS)` を使う。
+pub static LAST_VK_OUTPUT_MS: AtomicU64 = AtomicU64::new(0);
 
 
 
@@ -405,10 +413,11 @@ impl Output {
     /// 直後に IME ポーリングが走ると `last_hook_activity_ms` が更新前のまま
     /// アイドル判定を通過してしまう。送信直後に同期更新することで
     /// アイドルタイマーが正しくリセットされる。
+    ///
+    /// `with_app` は `execute_one` からの再入 UB を避けるため使用不可。
+    /// グローバル atomic に書き込み、読み取り側で `last_hook_activity_ms` と max を取る。
     fn mark_vk_output() {
-        crate::with_app(|app| {
-            app.platform_state.last_hook_activity_ms = crate::hook::current_tick_ms();
-        });
+        LAST_VK_OUTPUT_MS.store(crate::hook::current_tick_ms(), Ordering::Relaxed);
     }
 
     /// アクション列を順に実行する

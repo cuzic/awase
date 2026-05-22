@@ -170,10 +170,11 @@ pub fn reinstall_hook() -> bool {
         match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) {
             Ok(new_handle) => {
                 HOOK_HANDLE.set(new_handle);
-                // Update last_hook_activity_ms via APP
-                crate::with_app(|app| {
+                // Update last_hook_activity_ms — with_app 再入回避のため直接アクセス
+                // SAFETY: reinstall_hook は TIMER_HOOK_WATCHDOG ハンドラから呼ばれ、常にメインスレッド。
+                if let Some(app) = unsafe { crate::APP.get_mut() } {
                     app.platform_state.last_hook_activity_ms = current_tick_ms();
-                });
+                }
                 log::info!("Keyboard hook reinstalled successfully");
                 true
             }
@@ -399,11 +400,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
         // ── 自己注入チェック（無限ループ防止）──
         if kb.dwExtraInfo == INJECTED_MARKER || kb.dwExtraInfo == crate::output::TSF_MARKER {
-            // ハートビートは自己注入でも更新する（ping 応答のため）
-            crate::with_app(|app| {
+            // ハートビートは自己注入でも更新する（ping 応答のため）。
+            // with_app は SendMessageTimeoutW 経由でここが呼ばれた際に再入検出を返すため、
+            // APP.get_mut() を直接呼ぶ（hook は常にメインスレッドから呼ばれる）。
+            // SAFETY: hook_callback はメインスレッドのみで呼ばれる。
+            if let Some(app) = unsafe { crate::APP.get_mut() } {
                 app.platform_state.last_hook_activity_ms = current_tick_ms();
                 app.platform_state.hook_event_count += 1;
-            });
+            }
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         }
 
@@ -584,9 +588,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
         // Re-acquire platform_state for in_callback reset
         // (callback may have accessed APP.with_mut() internally)
-        crate::with_app(|app| {
+        // with_app は再入検出を返す可能性があるため APP.get_mut() を直接使う。
+        // SAFETY: hook_callback はメインスレッドのみで呼ばれる。
+        if let Some(app) = unsafe { crate::APP.get_mut() } {
             app.platform_state.hook.in_callback = false;
-        });
+        }
 
         // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）
         if matches!(route, KeyRoute::TrackOnly) {
