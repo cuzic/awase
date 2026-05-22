@@ -63,8 +63,8 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     let lparam_down = LPARAM((1 | (scan << 16)) as isize);
     let lparam_up = LPARAM((1 | (scan << 16) | (1 << 30) | (1 << 31)) as isize);
     log::debug!("[ime-fallback] posting VK_KANJI to hwnd={hwnd:?} (IME toggle-off)");
-    let _ = unsafe { PostMessageW(hwnd, WM_KEYDOWN, WPARAM(VK_KANJI as usize), lparam_down) };
-    let _ = unsafe { PostMessageW(hwnd, WM_KEYUP, WPARAM(VK_KANJI as usize), lparam_up) };
+    let _ = unsafe { PostMessageW(Some(hwnd), WM_KEYDOWN, WPARAM(VK_KANJI as usize), lparam_down) };
+    let _ = unsafe { PostMessageW(Some(hwnd), WM_KEYUP, WPARAM(VK_KANJI as usize), lparam_up) };
 }
 
 /// 現在のフォアグラウンドウィンドウの IME 変換モード生値を返す（診断ログ専用）。
