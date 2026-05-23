@@ -412,14 +412,14 @@ unsafe extern "system" fn win_event_proc(
     }
 
     with_app(|app| {
-        app.platform_state.focus_transition_pending = true;
+        app.platform_state.focus.focus_transition_pending = true;
         app.executor.platform.output.on_focus_change_tsf();
         // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
         app.executor.platform.timer.set(
             awase_windows::TIMER_TSF_GATE,
             std::time::Duration::from_millis(awase_windows::tsf::gate::WARMUP_TIMEOUT_MS),
         );
-        let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
+        let debounce_ms = u64::from(app.platform_state.focus.focus_debounce_ms);
         app.schedule_ime_refresh(debounce_ms);
     });
 }
@@ -617,7 +617,7 @@ pub(super) fn run_all() -> Result<()> {
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     with_app(|app| {
-        app.schedule_ime_refresh(u64::from(app.platform_state.ime_poll_interval_ms));
+        app.schedule_ime_refresh(u64::from(app.platform_state.focus.ime_poll_interval_ms));
         app.executor
             .platform
             .timer

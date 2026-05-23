@@ -49,6 +49,44 @@ impl ImeStateHub {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// FocusPlatformState
+// ────────────────────────────────────────────────────────────────────────────
+
+/// フォーカス追跡に関する Platform 層の状態を集約する構造体。
+///
+/// app_kind・focus_kind・focus_transition_pending・タイミング・ポーリング間隔を保持する。
+#[derive(Debug)]
+pub(crate) struct FocusPlatformState {
+    pub(crate) app_kind: AppKind,
+    pub(crate) focus_kind: FocusKind,
+    /// フォーカス切替直後フラグ。
+    ///
+    /// フォーカス変更を検知したときに `true` にセットされる。
+    /// 次のキーストローク到着時に同期プローブ（高速 IME 状態検出）を実行し、
+    /// preconditions を即座に更新してからキーを処理する。
+    /// これにより「古い preconditions でキーが処理される」ギャップを解消する。
+    pub(crate) focus_transition_pending: bool,
+    /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
+    /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
+    pub(crate) last_focus_change_ms: u64,
+    pub(crate) focus_debounce_ms: u32,
+    pub(crate) ime_poll_interval_ms: u32,
+}
+
+impl FocusPlatformState {
+    fn new() -> Self {
+        Self {
+            app_kind: AppKind::Win32,
+            focus_kind: FocusKind::Undetermined,
+            focus_transition_pending: false,
+            last_focus_change_ms: 0,
+            focus_debounce_ms: 50,
+            ime_poll_interval_ms: 500,
+        }
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // PlatformState
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -60,25 +98,13 @@ impl ImeStateHub {
 pub struct PlatformState {
     /// IME 観測・判断・preconditions 書き戻しを担う凝集ユニット。
     pub(crate) ime: ImeStateHub,
+    /// フォーカス追跡に関する状態を集約するユニット。
+    pub(crate) focus: FocusPlatformState,
     pub hook: HookRoutingState,
     pub hook_config: HookConfig,
-    pub focus_kind: FocusKind,
-    pub app_kind: AppKind,
     pub last_hook_activity_ms: u64,
     pub hook_event_count: u64,
-    pub focus_debounce_ms: u32,
-    pub ime_poll_interval_ms: u32,
     pub ime_guard: ImeGuardState,
-    /// フォーカス切替直後フラグ。
-    ///
-    /// フォーカス変更を検知したときに `true` にセットされる。
-    /// 次のキーストローク到着時に同期プローブ（高速 IME 状態検出）を実行し、
-    /// preconditions を即座に更新してからキーを処理する。
-    /// これにより「古い preconditions でキーが処理される」ギャップを解消する。
-    pub focus_transition_pending: bool,
-    /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
-    /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
-    pub last_focus_change_ms: u64,
 }
 
 impl PlatformState {
@@ -86,6 +112,7 @@ impl PlatformState {
     pub fn new() -> Self {
         Self {
             ime: ImeStateHub::new(),
+            focus: FocusPlatformState::new(),
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],
                 track_only_keys: [0u64; 4],
@@ -96,15 +123,9 @@ impl PlatformState {
                 left_thumb_vk: 0x1D,  // VK_NONCONVERT
                 right_thumb_vk: 0x1C, // VK_CONVERT
             },
-            focus_kind: FocusKind::Undetermined,
-            app_kind: AppKind::Win32,
             last_hook_activity_ms: 0,
             hook_event_count: 0,
-            focus_debounce_ms: 50,
-            ime_poll_interval_ms: 500,
             ime_guard: ImeGuardState { active: false, deferred_keys: Vec::new() },
-            focus_transition_pending: false,
-            last_focus_change_ms: 0,
         }
     }
 }

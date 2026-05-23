@@ -258,7 +258,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         miss_after: u32,
     ) {
         let age_ms = crate::hook::current_tick_ms()
-            .saturating_sub(self.rt.platform_state.last_focus_change_ms);
+            .saturating_sub(self.rt.platform_state.focus.last_focus_change_ms);
         if age_ms < 10_000 {
             let ime_on_after = self.rt.platform_state.ime_on();
             let input_mode_after = self.rt.platform_state.input_mode();
@@ -424,7 +424,7 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     fn phase5_reschedule(&mut self) {
         self.rt
-            .schedule_ime_refresh(u64::from(self.rt.platform_state.ime_poll_interval_ms));
+            .schedule_ime_refresh(u64::from(self.rt.platform_state.focus.ime_poll_interval_ms));
     }
 
     /// pre-fetch 済みデータを使ってパイプラインを実行（blocking なし）。

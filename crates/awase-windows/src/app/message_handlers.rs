@@ -43,7 +43,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             log::info!("Power resume recovery: reinstalling hook (lightweight)");
             hook::reinstall_hook();
             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-            app.platform_state.focus_kind = FocusKind::Undetermined;
+            app.platform_state.focus.focus_kind = FocusKind::Undetermined;
             app.schedule_ime_refresh(500);
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
@@ -201,12 +201,12 @@ pub(super) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
     } else {
         if app_kind_u8 != 0xFF {
             let app_kind = awase::types::AppKind::from_u8(app_kind_u8);
-            app.platform_state.app_kind = app_kind;
+            app.platform_state.focus.app_kind = app_kind;
             log::debug!("UIA AppKind update: {app_kind:?}");
         }
 
         if kind != FocusKind::Undetermined {
-            app.platform_state.focus_kind = kind;
+            app.platform_state.focus.focus_kind = kind;
 
             if let Some((pid, cls)) = app.executor.platform.focus.last_focus_info.as_ref() {
                 app.executor.platform.focus.cache.insert(

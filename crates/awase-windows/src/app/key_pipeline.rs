@@ -49,10 +49,10 @@ impl<'a> KeyEventPipeline<'a> {
 
     /// フォーカス切替直後の非同期プローブ
     fn stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
-        if !self.app.platform_state.focus_transition_pending {
+        if !self.app.platform_state.focus.focus_transition_pending {
             return;
         }
-        self.app.platform_state.focus_transition_pending = false;
+        self.app.platform_state.focus.focus_transition_pending = false;
 
         // async probe が完了する前に最初のキーが来た場合、warm epoch を抑制して
         // is_composition_warm() が前ウィンドウの stale な warm 状態を返さないようにする。
@@ -64,7 +64,7 @@ impl<'a> KeyEventPipeline<'a> {
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
         let gji_last_io_ms =
             awase_windows::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
-        let last_focus_change_ms = self.app.platform_state.last_focus_change_ms;
+        let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;
         let shadow_on = self.app.executor.platform.output.shadow_ime_on();
 
         win32_async::spawn_local(async move {

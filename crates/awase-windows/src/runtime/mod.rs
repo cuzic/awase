@@ -78,14 +78,14 @@ impl Runtime {
 
     /// output 層が注入モードを決定するために呼ぶ公開 API。
     ///
-    /// focus の `injection_hint()` と `platform_state.app_kind` を組み合わせて
+    /// focus の `injection_hint()` と `platform_state.focus.app_kind` を組み合わせて
     /// `InjectionHint` を返す。output 層はこのメソッドのみを呼び、
     /// focus/classify の内部型に直接アクセスしない。
     #[must_use]
     pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
         (
             self.executor.platform.focus.injection_hint(),
-            self.platform_state.app_kind,
+            self.platform_state.focus.app_kind,
         )
     }
 
@@ -203,13 +203,13 @@ impl Runtime {
             );
         }
 
-        if self.platform_state.app_kind != new_app_kind {
+        if self.platform_state.focus.app_kind != new_app_kind {
             log::info!(
                 "AppKind changed: {:?} → {:?} (class={class_name})",
-                self.platform_state.app_kind,
+                self.platform_state.focus.app_kind,
                 new_app_kind
             );
-            self.platform_state.app_kind = new_app_kind;
+            self.platform_state.focus.app_kind = new_app_kind;
         }
 
         // ── Phase 3: focus_kind を決定 ──
@@ -227,12 +227,12 @@ impl Runtime {
         let overridden = resolution.overridden;
 
         // focus_kind を更新
-        if self.platform_state.focus_kind != kind {
+        if self.platform_state.focus.focus_kind != kind {
             log::debug!(
                 "Focus kind changed: {:?} → {kind:?} (reason={reason})",
-                self.platform_state.focus_kind
+                self.platform_state.focus.focus_kind
             );
-            self.platform_state.focus_kind = kind;
+            self.platform_state.focus.focus_kind = kind;
         }
 
         // キャッシュ格納（オーバーライドでない場合のみ）
@@ -250,7 +250,7 @@ impl Runtime {
             let hint = self.executor.platform.focus.injection_hint();
             let new_mode = crate::output::types::resolve_injection_mode_from(
                 hint,
-                self.platform_state.app_kind,
+                self.platform_state.focus.app_kind,
             );
             self.executor.platform.output.update_injection_mode(new_mode);
         }
@@ -321,7 +321,7 @@ impl Runtime {
             self.platform_state.is_japanese_ime(),
         );
 
-        self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
+        self.platform_state.focus.last_focus_change_ms = crate::hook::current_tick_ms();
         self.executor.platform.output.on_focus_changed();
         self.platform_state.clear_ime_observations_on_focus_change();
 
@@ -372,7 +372,7 @@ impl Runtime {
 
         // phase3_7 (T≈270ms) より先に eager warmup F2 を送る。これにより打鍵時の cold path で
         // used_eager_path=true となり unicode fallback が有効になる（先頭文字欠け対策）。
-        if self.platform_state.focus_transition_pending {
+        if self.platform_state.focus.focus_transition_pending {
             self.executor.platform.output.send_eager_tsf_warmup();
         }
 
@@ -442,14 +442,14 @@ impl Runtime {
 
     /// 手動アプリオーバーライドのトグル処理
     pub fn toggle_app_override(&mut self) {
-        let current = self.platform_state.focus_kind;
+        let current = self.platform_state.focus.focus_kind;
         let new_kind = if current == FocusKind::TextInput {
             FocusKind::NonText
         } else {
             FocusKind::TextInput
         };
 
-        self.platform_state.focus_kind = new_kind;
+        self.platform_state.focus.focus_kind = new_kind;
 
         // Update learning cache
         if let Some((pid, cls)) = self.executor.platform.focus.last_focus_info.as_ref() {
