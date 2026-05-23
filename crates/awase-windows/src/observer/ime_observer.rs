@@ -181,6 +181,151 @@ pub unsafe fn poll_and_classify_ime(
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ime::ImeSnapshot;
+    use awase::engine::InputModeState;
+
+    fn default_snap() -> ImeSnapshot {
+        ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: None,
+            is_romaji: None,
+            conversion_mode: None,
+            is_tsf_native: false,
+        }
+    }
+
+    /// ケース 1: 日本語 IME + IME ON → observer_poll に Some(true) が記録される
+    #[test]
+    fn classify_returns_observer_poll_true_for_japanese_ime_on() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: Some(true),
+            ..default_snap()
+        };
+        let update = classify_ime_snapshot(
+            &snap,
+            1000,
+            false, // current_ime_on
+            false, // current_force_on_guard_active
+            InputModeState::Unknown,
+            None,
+        );
+        assert!(update.observer_poll.is_some());
+        assert_eq!(update.observer_poll.unwrap().value, true);
+    }
+
+    /// ケース 2: 日本語 IME + IME OFF → observer_poll に Some(false)
+    #[test]
+    fn classify_returns_observer_poll_false_for_japanese_ime_off() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: Some(false),
+            ..default_snap()
+        };
+        let update = classify_ime_snapshot(
+            &snap,
+            1000,
+            true,  // current_ime_on
+            false, // current_force_on_guard_active
+            InputModeState::Unknown,
+            None,
+        );
+        assert!(update.observer_poll.is_some());
+        assert_eq!(update.observer_poll.unwrap().value, false);
+    }
+
+    /// ケース 3: 非日本語 IME → observer_poll に Some(false)（non-Japanese → IME 不活性）
+    #[test]
+    fn classify_returns_observer_poll_false_for_non_japanese_ime() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: Some(false),
+            ime_on: None,
+            ..default_snap()
+        };
+        let update = classify_ime_snapshot(
+            &snap,
+            1000,
+            true,  // current_ime_on
+            false, // current_force_on_guard_active
+            InputModeState::Unknown,
+            None,
+        );
+        // known_not_japanese → (Some(false), false, true)
+        assert!(update.observer_poll.is_some());
+        assert_eq!(update.observer_poll.unwrap().value, false);
+        assert!(!update.increment_miss_count);
+        assert!(update.clear_force_on_guard);
+    }
+
+    /// ケース 4: IME 検出失敗（is_japanese_ime: None, not tsf, no guard) → miss_count インクリメント
+    #[test]
+    fn classify_increments_miss_count_on_detection_failure() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: None,
+            ime_on: None,
+            is_romaji: None,
+            conversion_mode: None,
+            is_tsf_native: false,
+        };
+        let update = classify_ime_snapshot(
+            &snap,
+            1000,
+            false, // current_ime_on
+            false, // current_force_on_guard_active（ガードなし）
+            InputModeState::Unknown,
+            None,
+        );
+        assert!(update.increment_miss_count);
+        assert!(update.observer_poll.is_none());
+    }
+
+    /// ケース 5: force_on_guard アクティブ時 → observer_poll が None、miss_count も増えない
+    #[test]
+    fn classify_skips_observer_poll_when_force_on_guard_active() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: None, // 検出失敗
+            ..default_snap()
+        };
+        let update = classify_ime_snapshot(
+            &snap,
+            1000,
+            true,  // current_ime_on
+            true,  // current_force_on_guard_active = true
+            InputModeState::Unknown,
+            None,
+        );
+        assert!(update.observer_poll.is_none());
+        assert!(!update.increment_miss_count);
+        assert!(!update.clear_force_on_guard);
+    }
+
+    /// ケース 6: TSF ネイティブウィンドウ → observer_poll が None、miss_count も増えない
+    #[test]
+    fn classify_skips_observer_poll_for_tsf_native_window() {
+        let snap = ImeSnapshot {
+            is_japanese_ime: Some(true),
+            ime_on: None, // TSF なので取得不能
+            is_tsf_native: true,
+            ..default_snap()
+        };
+        let update = classify_ime_snapshot(
+            &snap,
+            1000,
+            true,  // current_ime_on
+            false, // current_force_on_guard_active
+            InputModeState::Unknown,
+            None,
+        );
+        assert!(update.observer_poll.is_none());
+        assert!(!update.increment_miss_count);
+        assert!(!update.clear_force_on_guard);
+    }
+}
+
 /// IME スナップショットを `ImeUpdate` に変換する（純粋 sync）。
 ///
 /// `poll_and_classify_ime()` から blocking fetch 部分を分離したもの。async drain 後に with_app 内で呼ぶ。
