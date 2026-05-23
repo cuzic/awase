@@ -283,18 +283,17 @@ impl YabEditor {
 
 // ── eframe::App ──
 
-impl eframe::App for YabEditor {
-    #[allow(clippy::too_many_lines)]
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Process pending async file dialog results
+impl YabEditor {
+    fn drain_pending_async(&mut self) {
         if let Some(path) = self.pending_open.take() {
             self.load_from_path(&path);
         }
         if let Some(path) = self.pending_save_as.take() {
             self.write_to_path(&path);
         }
+    }
 
-        // Keyboard shortcuts
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
             self.do_save();
         }
@@ -311,8 +310,9 @@ impl eframe::App for YabEditor {
         if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
             self.do_reload();
         }
+    }
 
-        // ── ツールバー ──
+    fn show_toolbar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("開く").clicked() {
@@ -344,8 +344,9 @@ impl eframe::App for YabEditor {
                     });
             });
         });
+    }
 
-        // ── ステータスバー ──
+    fn show_status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let fname = self
@@ -376,8 +377,9 @@ impl eframe::App for YabEditor {
                 }
             });
         });
+    }
 
-        // ── 中央パネル ──
+    fn show_central_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             // 面タブ
             ui.horizontal(|ui| {
@@ -414,6 +416,16 @@ impl eframe::App for YabEditor {
                 self.draw_edit_panel(ui);
             });
         });
+    }
+}
+
+impl eframe::App for YabEditor {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_pending_async();
+        self.handle_shortcuts(ctx);
+        self.show_toolbar(ctx);
+        self.show_status_bar(ctx);
+        self.show_central_panel(ctx);
     }
 }
 
