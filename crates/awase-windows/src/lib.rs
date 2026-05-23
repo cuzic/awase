@@ -34,7 +34,6 @@ pub mod runtime;
 pub mod scanmap;
 pub mod single_thread_cell;
 pub(crate) mod state;
-pub(crate) mod timing;
 pub mod timer;
 pub mod tuning;
 pub mod tray;

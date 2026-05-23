@@ -267,14 +267,13 @@ impl<'a> ColdWarmupSequence<'a> {
                 );
                 // SAFETY: SendInput をメッセージループスレッドから呼ぶ。
                 let re_warmup_ms = unsafe { send_vk_dbe_hiragana_pair() };
-                const RE_WARMUP_MS: u64 = 500;
                 WarmupStarted {
                     probe: crate::tsf::probe::TsfReadinessJudge::new(
                         re_warmup_ms,
                         ctx.cold_n,
                         ctx.probe_min_ms,
                     ),
-                    total_max_ms: RE_WARMUP_MS,
+                    total_max_ms: crate::tuning::RE_WARMUP_MS,
                     needs_settle_check: false,
                     cold_reason: ctx.cold_reason,
                 }

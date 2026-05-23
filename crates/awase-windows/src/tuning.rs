@@ -27,12 +27,7 @@ pub const POST_IDLE_MARGIN_MS: u64 = 30;
 /// アプリでも IME が ON であると判断する。
 pub const GJI_CONFIRM_WINDOW_MS: u64 = 500;
 
-// === キャッシュ有効期限 ===
-
-/// フォーカス切り替え時の per-HWND IME 状態スナップショットの最大有効期間 (ms)。
-pub const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
-
-// === TSF warmup ===
+// === TSF warmup タイミング ===
 
 /// cold 発生前のアイドル時間がこれ以上なら「長期 idle」と判定する (ms)。
 ///
@@ -41,6 +36,43 @@ pub const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
 /// 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
 pub const LONG_IDLE_MS: u64 = 10_000;
 
+/// Composition タイムアウト (ms): 変換確定待機の最大時間。
+///
+/// warm 状態で elapsed がこれを超えた場合、composition が終了したと判断する。
+pub const COMPOSITION_TIMEOUT_MS: u64 = 2000;
+
+/// RAW TSF リテラル検出ウィンドウ (ms)。
+///
+/// warmup_sent_ms からこの時間内に TSF リテラル文字が来た場合、
+/// RAW TSF リテラルとして回収する。
+pub const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
+
+/// ProbeWithSettle フェーズでの再 warmup 最大待機時間 (ms)。
+///
+/// eager_re_warmup で F2 を送信してから GJI settled を待つ最大時間。
+pub const RE_WARMUP_MS: u64 = 500;
+
+/// GJI settled 判定後の第二プローブ最大待機時間 (ms)。
+///
+/// OBJ_NAMECHANGE 後に GJI が再び発火した場合の二次プローブ上限。
+pub const SETTLE_TIMEOUT_MS: u64 = 300;
+
+/// OBJ_NAMECHANGE 後の GJI 二次プローブ最大待機時間 (ms)。
+pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
+
+/// Chrome プローブ最小待機時間 (ms)。
+///
+/// F2 を SendMessageTimeout で送信後、TSF 応答を待つ最低時間。
+pub const CHROME_PROBE_MIN_MS: u64 = 20;
+
+/// Chrome プローブ最大待機時間 (ms)。
+pub const CHROME_PROBE_MAX_MS: u64 = 120;
+
+// === キャッシュ有効期限 ===
+
+/// フォーカス切り替え時の per-HWND IME 状態スナップショットの最大有効期間 (ms)。
+pub const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
+
 // === 観測失敗カウント ===
 
 /// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。
@@ -48,3 +80,36 @@ pub const LONG_IDLE_MS: u64 = 10_000;
 /// ポーリング間隔 500ms × 3 = 1.5秒。一時的な検出失敗は許容しつつ、
 /// 長時間の乖離（実際は IME OFF なのにキャッシュが ON のまま）を防ぐ。
 pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
+
+// === グレース・マージン ===
+
+/// TSF warmup 完了直後のグレース期間 (ms)。
+///
+/// warmup から WARMUP_GRACE_MS 以内に probe 結果が届いた場合、
+/// IME 状態変化によるフリップを抑制する。
+pub const WARMUP_GRACE_MS: u64 = 300;
+
+/// GJI 静止直後のグレース期間 (ms)。
+///
+/// フォーカス変更後に GJI I/O が発生し、最後の I/O からこの時間内なら
+/// probe 結果による IME 状態フリップを抑制する。
+pub const GJI_SETTLE_GRACE_MS: u64 = 300;
+
+/// シャドウ IME グレース期間 (ms)。
+///
+/// シャドウ IME が有効な状態で probe_age がこの時間内なら抑制する。
+pub const SHADOW_GRACE_MS: u64 = 200;
+
+/// 出力送信後の後続キー保護期間 (ms)。
+///
+/// SendInput 直後この時間は OS キューに出力イベントが残っているため、
+/// passthrough キーや ReinjectKey の処理を遅延させて race を防ぐ。
+pub const OUTPUT_GUARD_MS: u64 = 50;
+
+// === TSF GJI モニタ ===
+
+/// GJI I/O モニタスレッドのサンプリング間隔 (ms)。
+pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
+
+/// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
+pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
