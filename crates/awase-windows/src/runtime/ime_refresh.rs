@@ -378,12 +378,14 @@ impl<'a> ImeRefreshPipeline<'a> {
         }
         // フォーカス変更時は VK/TSF いずれも composition context が無効化される。
         log::debug!("[composition] focus change → marking cold");
-        // IMM 実測値で belief を Confirmed に確定してから warmup 判定を行う。
+        // フォーカス変更直後の IMM 実測値でラッチを初期化する。
+        // これにより KanjiToggleStrategy が次回 apply_ime_open を呼ぶまでの
+        // shadow_on に preconditions の最新値を使えるようになる。
         self.rt
             .executor
             .platform
             .output
-            .record_observation(self.rt.platform_state.preconditions.ime_on);
+            .set_ime_apply_latch(self.rt.platform_state.preconditions.ime_on);
         self.rt
             .executor
             .platform

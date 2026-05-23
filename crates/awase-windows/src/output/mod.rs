@@ -384,8 +384,8 @@ impl Output {
         self.composition.eager_warmup_sent_ms()
     }
 
-    /// シャドウ IME ON 状態を返す。
-    /// FocusChange / notify_ime_open() で更新される。
+    /// `apply_ime_open` が最後に設定した IME 状態を返す。
+    /// フォーカス変更直後など未設定の場合は false（OFF）を返す。
     #[must_use]
     pub fn shadow_ime_on(&self) -> bool {
         self.composition.shadow_ime_on()
@@ -474,14 +474,9 @@ impl Output {
     /// IME ON/OFF の意図（未確認）を記録する。
     ///
     /// `apply_ime_open` 実行後（フォールバック含む）に呼ぶ。
-    /// IMM 実測値は `record_observation` を使うこと。
-    pub fn notify_ime_open(&self, open: bool) {
-        self.composition.notify_ime_open(open);
-    }
-
-    /// IMM 経由の実測値または GJI 観測で確認された IME 状態を記録する。
-    pub fn record_observation(&self, open: bool) {
-        self.composition.record_observation(open);
+    /// `apply_ime_open` 完了後にラッチを更新する。
+    pub fn set_ime_apply_latch(&self, open: bool) {
+        self.composition.set_ime_apply_latch(open);
     }
 
     /// TSF composition context の事前ウォームアップ F2 を送信する。
@@ -1497,7 +1492,7 @@ impl awase::platform::CompositionOutput for Output {
     }
 
     fn notify_ime_open(&self, open: bool) {
-        self.notify_ime_open(open);
+        self.set_ime_apply_latch(open);
     }
 
     fn on_focus_changed(&self) {

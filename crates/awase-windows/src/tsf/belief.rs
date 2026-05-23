@@ -1,69 +1,51 @@
-//! IME ON/OFF 状態の確信度モデル。
+//! IME ON/OFF の行動層ラッチ。
 //!
-//! `shadow_ime_on: Cell<bool>` の代替。
-//! 推測値（Intended）と実測値（Confirmed）を型で区別し、不明状態（Unknown）も表現する。
+//! `apply_ime_open` が VK_KANJI や ImmSetOpenStatus を送った直後の値を保持し、
+//! `KanjiToggleStrategy` が「直前に何を送ったか」を知るために使う。
+//!
+//! ## 役割の限定
+//!
+//! これは「OS 側の現在 IME 状態」を追跡するものではない。
+//! OS 状態の SSOT は `preconditions.ime_on`（観測 → 判断の正規ルートで更新）。
+//! このラッチは `apply_ime_open` と次の judgement サイクルの間のギャップを埋めるだけ。
+//!
+//! ## ライフサイクル
+//!
+//! - `set(value)` — `apply_ime_open` 直後に呼ぶ
+//! - `invalidate()` — フォーカス変更時にクリア
+//! - `get_or(fallback)` — `KanjiToggleStrategy` が shadow_on を読むときに使う
 
-/// IME ON/OFF の確信度付き状態。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImeOpenBelief {
-    /// IMM 経由の実測値または GJI 観測で確認された状態
-    Confirmed(bool),
-    /// `apply_ime_open` で送信した意図（OS 到達は不確定）
-    Intended(bool),
-    /// 不明（起動直後・フォーカス変更直後など）
-    Unknown,
-}
-
-impl ImeOpenBelief {
-    /// 確信度にかかわらず bool 値を返す。Unknown は `None`。
-    pub fn assume(self) -> Option<bool> {
-        match self {
-            Self::Confirmed(v) | Self::Intended(v) => Some(v),
-            Self::Unknown => None,
-        }
-    }
-}
-
-/// IME ON/OFF の確信度付き状態を管理するストア。
+/// `apply_ime_open` の直前結果を保持する行動層ラッチ。
 #[derive(Debug)]
-pub struct ImeBeliefStore {
-    belief: std::cell::Cell<ImeOpenBelief>,
+pub struct ImeApplyLatch {
+    value: std::cell::Cell<Option<bool>>,
 }
 
-impl ImeBeliefStore {
+impl ImeApplyLatch {
     pub fn new() -> Self {
-        Self { belief: std::cell::Cell::new(ImeOpenBelief::Unknown) }
+        Self { value: std::cell::Cell::new(None) }
     }
 
-    /// IMM 経由の実測値または GJI 観測で確認された状態を記録する。
-    pub fn record_observation(&self, value: bool) {
-        log::debug!("[ime-belief] Confirmed({value})");
-        self.belief.set(ImeOpenBelief::Confirmed(value));
+    /// `apply_ime_open` の完了後に呼ぶ。
+    pub fn set(&self, value: bool) {
+        log::debug!("[ime-latch] set({value})");
+        self.value.set(Some(value));
     }
 
-    /// `apply_ime_open` 後の意図（OS 側での処理は不確定）を記録する。
-    pub fn record_intent(&self, value: bool) {
-        log::debug!("[ime-belief] Intended({value})");
-        self.belief.set(ImeOpenBelief::Intended(value));
+    /// フォーカス変更時にクリアする。
+    pub fn invalidate(&self) {
+        log::debug!("[ime-latch] invalidate (focus changed)");
+        self.value.set(None);
     }
 
-    /// フォーカス変更時に状態を Unknown に降格させる。
-    ///
-    /// 降格後に `record_observation` が呼ばれることで再確定する。
-    pub fn invalidate_on_focus_change(&self) {
-        log::debug!("[ime-belief] Unknown (focus changed)");
-        self.belief.set(ImeOpenBelief::Unknown);
+    /// ラッチ値を返す。未設定（フォーカス変更直後など）は `fallback` を使う。
+    pub fn get_or(&self, fallback: bool) -> bool {
+        self.value.get().unwrap_or(fallback)
     }
+}
 
-    /// 現在の確信度付き状態を返す。
-    pub fn current(&self) -> ImeOpenBelief {
-        self.belief.get()
-    }
-
-    /// bool 値を返す。Unknown の場合は `false`（IME OFF）を仮定する。
-    ///
-    /// 既存の `shadow_ime_on() -> bool` との互換性のために提供。
-    pub fn assume_or_false(&self) -> bool {
-        self.belief.get().assume().unwrap_or(false)
+impl Default for ImeApplyLatch {
+    fn default() -> Self {
+        Self::new()
     }
 }

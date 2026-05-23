@@ -548,19 +548,14 @@ impl DecisionExecutor {
 
         if let Some((open, outcome)) = ime_set_open {
             use awase::platform::ImeOpenOutcome;
-            // outcome に応じて確信度を分けて記録する。
+            // Chrome/VK_KANJI パスのみラッチを更新する。
+            // Applied（通常 IMM）はラッチ不要（KanjiToggleStrategy は Chrome 専用）。
+            // preconditions.ime_on の更新は key_pipeline の set_open_request 経由で完結している。
             match outcome {
-                ImeOpenOutcome::Applied => {
-                    // IMM が ACK した = 実測値として扱える
-                    self.platform.output.record_observation(open);
-                }
                 ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
-                    // VK_KANJI 送信済み or shadow 一致 = 意図として記録
-                    self.platform.output.notify_ime_open(open);
+                    self.platform.output.set_ime_apply_latch(open);
                 }
-                ImeOpenOutcome::Failed => {
-                    // 状態不明のまま（belief 更新しない）
-                }
+                ImeOpenOutcome::Applied | ImeOpenOutcome::Failed => {}
             }
             // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
             if open {

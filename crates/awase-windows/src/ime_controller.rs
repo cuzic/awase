@@ -13,7 +13,7 @@ use awase::platform::ImeOpenOutcome;
 pub struct ImeApplyContext<'a> {
     /// フォーカスウィンドウのクラス名
     pub class_name: &'a str,
-    /// 現在の shadow IME ON 状態（`ImeBeliefStore::assume_or_false()`）
+    /// 現在の shadow IME ON 状態（`Output::shadow_ime_on()` = `ImeApplyLatch::get_or(false)`）
     pub shadow_on: bool,
 }
 
