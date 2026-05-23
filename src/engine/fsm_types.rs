@@ -265,12 +265,13 @@ impl EngineState {
     /// # Panics
     ///
     /// `self` が `PendingChar` でない場合。
+    #[track_caller]
     #[must_use]
     pub fn expect_pending_char(self) -> PendingKey {
         if let Self::PendingChar(key) = self {
             key
         } else {
-            panic!("expected PendingChar, got {self:?}")
+            unreachable!("FSM invariant violation: expected PendingChar, got {self:?}")
         }
     }
 
@@ -279,12 +280,13 @@ impl EngineState {
     /// # Panics
     ///
     /// `self` が `PendingThumb` でない場合。
+    #[track_caller]
     #[must_use]
     pub fn expect_pending_thumb(self) -> PendingThumbData {
         if let Self::PendingThumb(thumb) = self {
             thumb
         } else {
-            panic!("expected PendingThumb, got {self:?}")
+            unreachable!("FSM invariant violation: expected PendingThumb, got {self:?}")
         }
     }
 
@@ -293,12 +295,13 @@ impl EngineState {
     /// # Panics
     ///
     /// `self` が `PendingCharThumb` でない場合。
+    #[track_caller]
     #[must_use]
     pub fn expect_pending_char_thumb(self) -> (PendingKey, PendingThumbData, bool) {
         if let Self::PendingCharThumb { char_key, thumb, char1_released } = self {
             (char_key, thumb, char1_released)
         } else {
-            panic!("expected PendingCharThumb, got {self:?}")
+            unreachable!("FSM invariant violation: expected PendingCharThumb, got {self:?}")
         }
     }
 
@@ -307,12 +310,13 @@ impl EngineState {
     /// # Panics
     ///
     /// `self` が `SpeculativeChar` でない場合。
+    #[track_caller]
     #[must_use]
     pub fn expect_speculative_char(self) -> PendingKey {
         if let Self::SpeculativeChar(key) = self {
             key
         } else {
-            panic!("expected SpeculativeChar, got {self:?}")
+            unreachable!("FSM invariant violation: expected SpeculativeChar, got {self:?}")
         }
     }
 }
