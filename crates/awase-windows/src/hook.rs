@@ -373,6 +373,19 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         }
 
+        // ── パニック連打検出（物理キー1回につき1回、自己注入を除く）──
+        // 再入・通常パスのどちらを経由しても物理押下を1度だけカウントする。
+        // 再入パスでは defer → replay が発生するため pipeline 側では数えない。
+        {
+            let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+            if is_keydown {
+                let vk = VkCode(kb.vkCode as u16);
+                if classify_ime_relevance(vk).may_change_ime {
+                    crate::panic_detect::record_ime_keydown(current_tick_ms());
+                }
+            }
+        }
+
         // ── with_app 再入ガード ──
         // SendMessageTimeoutW (cross-process IME 制御) がメッセージポンプを起動した場合、
         // このコールバックが再呼び出しされる。APP.get_mut() は IN_WITH_APP=true の間
@@ -397,10 +410,6 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 modifier_key: classify_modifier(vk),
                 modifier_snapshot,
             };
-            // パニック連打検出は再入中でも必ず実行する（操作不能時にリセットを確保）
-            if is_keydown && event.ime_relevance.may_change_ime {
-                crate::panic_detect::record_ime_keydown(current_tick_ms());
-            }
             log::debug!(
                 "[in-with-app] queuing vk=0x{:02X} {:?}",
                 vk.0,

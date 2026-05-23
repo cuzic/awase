@@ -26,7 +26,7 @@ use awase_windows::{
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
     WM_RELOAD_CONFIG, with_app,
 };
-use awase_windows::win32::post_to_main_thread_with;
+use awase_windows::win32::{post_to_main_thread, post_to_main_thread_with};
 
 // ── 定数 ──
 
@@ -318,7 +318,11 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
                 with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
             }
             WM_PANIC_RESET => {
-                with_app(|app| unsafe { message_handlers::handle_wm_panic_reset(app) });
+                // SendMessageTimeout の内部ポンプがここを呼んだとき with_app は再入中で None を返す。
+                // その場合リセットが消えないよう repost し、blocking op 完了後に再実行する。
+                if with_app(|app| unsafe { message_handlers::handle_wm_panic_reset(app) }).is_none() {
+                    post_to_main_thread(WM_PANIC_RESET);
+                }
             }
             WM_DUPLICATE_INSTANCE => {
                 with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
