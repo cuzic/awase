@@ -256,11 +256,12 @@ mod tests {
             InputModeState::Unknown,
             None,
         );
-        // known_not_japanese → (Some(false), false, true)
+        // known_not_japanese → (Some(false), false, true, true)
         assert!(update.observer_poll.is_some());
         assert_eq!(update.observer_poll.unwrap().value, false);
         assert!(!update.increment_miss_count);
-        assert!(update.clear_force_on_guard);
+        assert!(update.clear_force_on_broken_app_bootstrap);
+        assert!(update.clear_force_on_panic_reset);
     }
 
     /// ケース 4: IME 検出失敗（is_japanese_ime: None, not tsf, no guard) → miss_count インクリメント
@@ -303,7 +304,8 @@ mod tests {
         );
         assert!(update.observer_poll.is_none());
         assert!(!update.increment_miss_count);
-        assert!(!update.clear_force_on_guard);
+        assert!(!update.clear_force_on_broken_app_bootstrap);
+        assert!(!update.clear_force_on_panic_reset);
     }
 
     /// ケース 6: TSF ネイティブウィンドウ → observer_poll が None、miss_count も増えない
@@ -325,7 +327,8 @@ mod tests {
         );
         assert!(update.observer_poll.is_none());
         assert!(!update.increment_miss_count);
-        assert!(!update.clear_force_on_guard);
+        assert!(!update.clear_force_on_broken_app_bootstrap);
+        assert!(!update.clear_force_on_panic_reset);
     }
 }
 
