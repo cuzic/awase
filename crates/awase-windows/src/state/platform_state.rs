@@ -330,26 +330,26 @@ impl PlatformState {
             Some(crate::ime_observations::ImeObs { value, ms });
     }
 
-    /// `ImeObserverOutput` を `Preconditions` と `ImeObservations` に反映する。
+    /// `ImeUpdate` を `Preconditions` と `ImeObservations` に反映する。
     ///
     /// `observer::ime_observer::observe()` / `apply_snapshot()` の結果を受け取り、
-    /// `Preconditions` への書き込みをここに集約する。
-    pub fn apply_ime_observer_output(
+    /// `Preconditions` への書き込みをここに集約する。判断ロジックを持たない純粋適用関数。
+    pub fn apply_ime_update(
         &mut self,
-        out: &crate::observer::ime_observer::ImeObserverOutput,
+        update: &crate::observer::ime_observer::ImeUpdate,
     ) {
         // is_japanese_ime: 検出成功時のみ更新
-        if let Some(is_jp) = out.is_japanese_ime {
+        if let Some(is_jp) = update.is_japanese_ime {
             self.ime.preconditions.is_japanese_ime = is_jp;
         }
 
         // observer_poll スロット
-        if let Some(obs) = out.observer_poll {
+        if let Some(obs) = update.observer_poll {
             self.ime.ime_observations.observer_poll = Some(obs);
         }
 
         // miss_count
-        if out.increment_miss_count {
+        if update.increment_miss_count {
             self.ime.preconditions.ime_detect_miss_count =
                 self.ime.preconditions.ime_detect_miss_count.saturating_add(1);
             if self.ime.preconditions.ime_detect_miss_count == crate::IME_DETECT_MISS_THRESHOLD {
@@ -361,30 +361,21 @@ impl PlatformState {
         }
 
         // force_on_guard のリセット（検出成功時）
-        if out.clear_force_on_guard {
+        if update.clear_force_on_guard {
             self.ime.preconditions.ime_detect_miss_count = 0;
             self.ime.preconditions.force_on_broken_app_bootstrap = false;
             self.ime.preconditions.force_on_panic_reset = false;
         }
 
         // input_mode
-        if let Some(mode) = out.new_input_mode {
+        if let Some(mode) = update.new_input_mode {
             self.ime.preconditions.input_mode = mode;
         }
 
         // prev_conversion_mode
-        if let Some(conv) = out.new_prev_conversion_mode {
+        if let Some(conv) = update.new_prev_conversion_mode {
             self.ime.preconditions.prev_conversion_mode = Some(conv);
         }
-
-        log::debug!(
-            "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
-            out.snap_is_japanese_ime,
-            out.snap_ime_on,
-            out.snap_is_romaji,
-            out.snap_conversion_mode.map(|v| format!("0x{v:08X}")),
-            out.guard_was_active,
-        );
     }
 
     /// `hwnd_cache::restore_on_focus_enter()` の結果を `Preconditions` に反映する。

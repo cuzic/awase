@@ -505,7 +505,7 @@ impl Runtime {
                 self.platform_state.prev_conversion_mode(),
             )
         };
-        self.platform_state.apply_ime_observer_output(&observer_out);
+        self.platform_state.apply_ime_update(&observer_out);
         self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
         // Drain deferred keys from Platform guard
