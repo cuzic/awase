@@ -384,17 +384,12 @@ impl Runtime {
                 ImeRefreshPipeline::new(app).run_with_prefetched(focus, snap);
 
                 // run_with_prefetched 完了後: last_focus_info が更新済みのため
-                // is_force_tsf を直接読んで TsfGate を遷移させる。
+                // injection_hint を読んで TsfGate を遷移させる。
                 // PendingWarmup 以外（Probing/Ready/Bypass）なら空 Vec が返る。
-                let is_tsf = app
-                    .executor
-                    .platform
-                    .focus
-                    .last_focus_info
-                    .as_ref()
-                    .is_some_and(|(pid, class)| {
-                        app.executor.platform.focus.overrides.is_force_tsf(*pid, class)
-                    });
+                let is_tsf = matches!(
+                    app.executor.platform.focus.injection_hint(),
+                    InjectionHint::ForceTsf
+                );
                 let held = if is_tsf {
                     app.executor.platform.output.confirm_tsf()
                 } else {
@@ -553,7 +548,7 @@ impl Runtime {
         self.platform_state.apply_panic_reset();
         self.platform_state.hook.reset_routing();
         self.platform_state.hook.leave_callback();
-        self.platform_state.hook.set_suppress_ctrl_bypass(false);
+        self.platform_state.hook.set_ctrl_bypass_hold(false);
         self.platform_state.ime_guard.deactivate();
         self.platform_state.ime_guard.clear();
 

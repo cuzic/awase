@@ -240,15 +240,13 @@ fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
 /// 解決される注入モードのラベル文字列を返す（出力経路と同じロジックを参照する）。
 fn resolve_injection_mode_label() -> &'static str {
     use awase::types::AppKind;
+    use crate::focus::classifier::InjectionHint;
 
     crate::with_app_ref(|app| {
-        if let Some((pid, class)) = app.executor.platform.focus.last_focus_info.as_ref() {
-            if app.executor.platform.focus.overrides.is_force_tsf(*pid, class) {
-                return "Tsf";
-            }
-            if app.executor.platform.focus.overrides.is_force_vk(*pid, class) {
-                return "Vk";
-            }
+        match app.executor.platform.focus.injection_hint() {
+            InjectionHint::ForceTsf => return "Tsf",
+            InjectionHint::ForceVk => return "Vk",
+            InjectionHint::Default => {}
         }
         match app.platform_state.focus.app_kind {
             AppKind::TsfNative => "Vk",
