@@ -5,7 +5,7 @@ use crate::tsf::probe_bridge::OutputActiveGuard;
 ///
 /// `send_keys()` が `InjectionMode` ごとに match を繰り返す代わりに、
 /// このトレイトで一本化する。
-pub trait InjectionSender {
+pub(crate) trait InjectionSender {
     fn send_char(&self, ch: char);
     fn send_romaji(&self, romaji: &str);
     fn send_key_sequence(&self, s: &str) {
@@ -16,9 +16,9 @@ pub trait InjectionSender {
     fn mode_label(&self) -> &'static str;
 }
 
-pub struct UnicodeSender<'a>(pub &'a super::Output);
-pub struct VkSender<'a>(pub &'a super::Output);
-pub struct TsfSender<'a>(pub &'a super::Output);
+pub(crate) struct UnicodeSender<'a>(pub &'a super::Output);
+pub(crate) struct VkSender<'a>(pub &'a super::Output);
+pub(crate) struct TsfSender<'a>(pub &'a super::Output);
 
 impl InjectionSender for UnicodeSender<'_> {
     fn send_char(&self, ch: char) { self.0.send_unicode_char(ch); }
@@ -43,20 +43,21 @@ impl InjectionSender for TsfSender<'_> {
 /// - `begin()` で `InjectionMode` を解決し `OutputActiveGuard` を取得する
 /// - `sender()` で `InjectionSender` の動的ディスパッチオブジェクトを返す
 /// - Drop 時に Guard が `OUTPUT_GATE.active=false` + drain を自動実行する
-pub struct OutputSession<'a> {
+pub(crate) struct OutputSession<'a> {
     pub output: &'a super::Output,
     pub mode: InjectionMode,
+    #[allow(dead_code)]
     pub guard: OutputActiveGuard,
 }
 
 impl<'a> OutputSession<'a> {
-    pub fn begin(output: &'a super::Output) -> Self {
+    pub(crate) fn begin(output: &'a super::Output) -> Self {
         let mode = output.injection_mode;
         let guard = OutputActiveGuard::begin();
         Self { output, mode, guard }
     }
 
-    pub fn sender(&self) -> Box<dyn InjectionSender + '_> {
+    pub(crate) fn sender(&self) -> Box<dyn InjectionSender + '_> {
         match self.mode {
             InjectionMode::Unicode => Box::new(UnicodeSender(self.output)),
             InjectionMode::Vk     => Box::new(VkSender(self.output)),
@@ -64,7 +65,7 @@ impl<'a> OutputSession<'a> {
         }
     }
 
-    pub fn is_vk_mode(&self) -> bool {
+    pub(crate) fn is_vk_mode(&self) -> bool {
         self.mode != InjectionMode::Unicode
     }
 }

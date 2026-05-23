@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 /// # OutputGate vs TsfGate
 /// - `OutputGate`: `send_keys` 実行中に外部キー入力を defer するゲート（再入防止）。
 /// - `TsfGate` (in `probe.rs`): TSF warm-up 完了まで出力キューを保留するゲート。
-/// 両者は独立した目的を持ち、混同しないこと。
+///   両者は独立した目的を持ち、混同しないこと。
 ///
 /// ## 内部フィールド（クロススレッド共有）
 ///
@@ -25,7 +25,14 @@ pub struct OutputGate {
     pub(crate) last_vk_output_ms: AtomicU64,
 }
 
+impl Default for OutputGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OutputGate {
+    #[must_use] 
     pub const fn new() -> Self {
         Self {
             active: AtomicBool::new(false),

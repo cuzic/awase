@@ -74,7 +74,14 @@ pub struct TsfObservations {
     pub(super) gji_monitor_ok: AtomicBool,
 }
 
+impl Default for TsfObservations {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TsfObservations {
+    #[must_use] 
     pub const fn new() -> Self {
         Self {
             focus_namechange_seq:   AtomicU32::new(0),
@@ -125,7 +132,7 @@ impl TsfObservations {
     ///
     /// `with_tsf_obs` では `&TsfObservations` への参照しか渡せないため、
     /// `AtomicWatcher::new` に必要な `&AtomicU32` はこのメソッド経由で取得する。
-    pub fn composition_probe_seq_atomic(&self) -> &AtomicU32 {
+    pub const fn composition_probe_seq_atomic(&self) -> &AtomicU32 {
         &self.composition_probe_seq
     }
 }
@@ -177,7 +184,7 @@ fn find_gji_pid() -> Option<(u32, String)> {
 
     // SAFETY: `snapshot` は直上の `CreateToolhelp32Snapshot` が返した有効なハンドル。
     //         `entry` は `dwSize` を設定した有効な `PROCESSENTRY32W` 構造体。
-    if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+    if unsafe { Process32FirstW(snapshot, &raw mut entry) }.is_ok() {
         loop {
             let name_end = entry
                 .szExeFile
@@ -196,7 +203,7 @@ fn find_gji_pid() -> Option<(u32, String)> {
             }
             // SAFETY: `snapshot` は有効なスナップショットハンドル。
             //         `entry` は `Process32FirstW` で初期化済みの有効な構造体。
-            if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+            if unsafe { Process32NextW(snapshot, &raw mut entry) }.is_err() {
                 break;
             }
         }
@@ -210,9 +217,7 @@ fn find_gji_pid() -> Option<(u32, String)> {
         Some((pid, name)) => log::debug!("[gji-monitor] found GJI process: {name} pid={pid}"),
         None => {
             log::debug!(
-                "[gji-monitor] no GJI process found (searched prefixes: {:?}), google/japanese procs: {:?}",
-                GJI_PROCESS_PREFIXES,
-                google_procs,
+                "[gji-monitor] no GJI process found (searched prefixes: {GJI_PROCESS_PREFIXES:?}), google/japanese procs: {google_procs:?}",
             );
         }
     }
@@ -270,7 +275,7 @@ impl GjiMonitor {
         let mut counters = IO_COUNTERS::default();
         // SAFETY: `self.handle` は `try_attach` で `OpenProcess` が返した有効なハンドル。
         //         `counters` は `IO_COUNTERS::default()` で初期化された有効なバッファ。
-        if unsafe { GetProcessIoCounters(self.handle, &mut counters) }.is_err() {
+        if unsafe { GetProcessIoCounters(self.handle, &raw mut counters) }.is_err() {
             return false;
         }
         let changed = counters.ReadOperationCount != self.last_read_ops
@@ -285,7 +290,7 @@ impl GjiMonitor {
         true
     }
 
-    fn last_change_ms(&self) -> u64 {
+    const fn last_change_ms(&self) -> u64 {
         self.last_change_ms
     }
 }
@@ -307,13 +312,14 @@ impl Drop for GjiMonitor {
 /// GJI が再起動した場合は自動的に再接続する。
 /// 起動時に呼ぶこと（1 回のみ）。戻り値の [`win32_worker::WorkerThread`] を
 /// アプリ終了まで保持すること（drop 時にスレッドが停止・join される）。
+#[must_use] 
 pub fn start_monitor_thread() -> win32_worker::WorkerThread {
     win32_worker::WorkerThread::spawn("gji-io-monitor", |token| {
-        monitor_loop(token);
+        monitor_loop(&token);
     })
 }
 
-fn monitor_loop(token: win32_worker::ShutdownToken) {
+fn monitor_loop(token: &win32_worker::ShutdownToken) {
     log::info!("[gji-monitor] thread started");
 
     let mut monitor: Option<GjiMonitor> = None;
@@ -323,28 +329,25 @@ fn monitor_loop(token: win32_worker::ShutdownToken) {
         let now = crate::hook::current_tick_ms();
 
         if monitor.is_none() && now >= next_attach_ms {
-            match GjiMonitor::try_attach() {
-                Some(m) => {
-                    log::info!("[gji-monitor] attached to GJI process");
-                    TSF_OBS.gji_monitor_ok.store(true, Ordering::Relaxed);
-                    TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
-                    monitor = Some(m);
-                }
-                None => {
-                    TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
-                    next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
-                }
+            if let Some(m) = GjiMonitor::try_attach() {
+                log::info!("[gji-monitor] attached to GJI process");
+                TSF_OBS.gji_monitor_ok.store(true, Ordering::Relaxed);
+                TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
+                monitor = Some(m);
+            } else {
+                TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
+                next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
             }
         }
 
         if let Some(ref mut m) = monitor {
-            if !m.sample() {
+            if m.sample() {
+                TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
+            } else {
                 log::info!("[gji-monitor] GJI process exited, will re-attach");
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                 monitor = None;
                 next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
-            } else {
-                TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
             }
         }
 
@@ -495,6 +498,7 @@ fn hwnd_class_name(hwnd: HWND) -> String {
     //         `buf` は十分なサイズの有効な UTF-16 バッファ。
     let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
     if len > 0 {
+        #[allow(clippy::cast_sign_loss)]
         String::from_utf16_lossy(&buf[..len as usize])
     } else {
         String::new()

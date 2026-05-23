@@ -14,7 +14,7 @@ use awase::types::AppKind;
 /// 検知できないケース:
 /// - 言語バーのマウス操作による IME 切り替え
 /// - アプリ内の IME ボタンクリック
-/// しかし、これらは非常に稀なので割り切る。
+///   しかし、これらは非常に稀なので割り切る。
 pub const IMM_BRIDGE_BROKEN_CLASSES: &[&str] = &[
     // Chromium 系（Chrome, Edge, Brave, Opera 等）
     "Chrome_RenderWidgetHostHWND",
@@ -64,6 +64,7 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
 /// - `MozillaWindowClass`: Firefox（Chromium と同様の入力処理）
 /// - `Windows.UI.Core.CoreWindow` / `ApplicationFrameWindow` / `Windows.UI.Input.*`: UWP / XAML 系
 /// - その他: Win32 クラシック（ヒューリスティックで Chrome に昇格する場合あり）
+#[must_use] 
 pub fn detect_app_kind(class_name: &str) -> AppKind {
     let class_lower = class_name.to_ascii_lowercase();
     if class_lower.starts_with("chrome_") || class_lower == "mozillawindowclass" {

@@ -50,7 +50,8 @@ pub enum ColdReason {
 
 impl ColdReason {
     /// warmup 後の eager settle 待機時間 (ms)。long_idle=true のとき延長。
-    pub fn eager_settle_ms(self, long_idle: bool) -> u64 {
+    #[must_use] 
+    pub const fn eager_settle_ms(self, long_idle: bool) -> u64 {
         match self {
             Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 1500,
             Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
@@ -62,7 +63,8 @@ impl ColdReason {
     }
 
     /// VK_DBE_HIRAGANA 送信後の最小待機時間 (ms)（GJI I/O 観測開始前の固定待機）
-    pub fn probe_min_ms(self, long_idle: bool) -> u64 {
+    #[must_use] 
+    pub const fn probe_min_ms(self, long_idle: bool) -> u64 {
         match self {
             Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 300,
             Self::SessionExpired => 200,
@@ -75,12 +77,14 @@ impl ColdReason {
     }
 
     /// confirmation キー（composition 確定/キャンセル）かどうか
-    pub fn is_confirm_key(self) -> bool {
+    #[must_use] 
+    pub const fn is_confirm_key(self) -> bool {
         matches!(self, Self::PassthroughConfirmKey | Self::ReinjectConfirmKey)
     }
 
     /// fresh F2 再送 + settle が必要かどうか（IME 初期化系 cold reason）
-    pub fn requires_settle(self) -> bool {
+    #[must_use] 
+    pub const fn requires_settle(self) -> bool {
         matches!(self, Self::FocusChange | Self::NativeF2Consumed | Self::SetOpenTrue)
     }
 }
@@ -140,14 +144,17 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 ///
 /// `RAW_TSF_LITERAL.backs` に退避されたバックスペース数を読み取り、SendInput で送信する。
 /// drain キーの SendInput より先に呼ぶことで WezTerm への到着順を保証する。
+///
+/// # Panics
+/// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
 pub fn flush_raw_tsf_literal_backspaces() {
     use std::mem::size_of;
     use std::sync::atomic::Ordering::Relaxed;
+    const VK_BACK: u16 = 0x08;
     let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
     if n == 0 {
         return;
     }
-    const VK_BACK: u16 = 0x08;
     let backs: Vec<_> = (0..n)
         .flat_map(|_| [
             make_key_input_ex(VK_BACK, false, INJECTED_MARKER),

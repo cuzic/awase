@@ -17,6 +17,7 @@ pub use win32_async::run_with_timeout;
 ///
 /// Win32 API が返す `HWND` は null（フォーカスなし・失敗）を示すことがある。
 /// 境界でこの関数を使い、以降は `Option<HWND>` として処理する。
+#[must_use] 
 pub fn non_null_hwnd(hwnd: HWND) -> Option<HWND> {
     (!hwnd.0.is_null()).then_some(hwnd)
 }
@@ -53,6 +54,10 @@ pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
 }
 
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
+///
+/// # Panics
+/// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
+#[must_use]
 pub fn send_input_safe(inputs: &[INPUT]) -> u32 {
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
     // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。
@@ -77,8 +82,12 @@ pub struct GuiThreadResult {
 /// `run_with_timeout` でワーカースレッドで実行し、タイムアウト時は
 /// 非ブロッキングな `GetForegroundWindow` にフォールバックする。
 ///
+/// # Panics
+/// `GUITHREADINFO` のサイズが `u32` に収まらない場合（実際には起こらない）。
+///
 /// # Safety
 /// Win32 API を呼び出す。
+#[must_use]
 pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadResult {
     // HWND はポインタだが、スレッド間で安全に送信可能
     // （Win32 ウィンドウハンドルはプロセス内で有効なグローバルリソース）
@@ -98,12 +107,10 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
                 // hwndFocus が null なら hwndActive を使う
                 let hwnd = non_null_hwnd(info.hwndFocus)
                     .or_else(|| non_null_hwnd(info.hwndActive));
-                let tid = if let Some(h) = hwnd {
+                let tid = hwnd.map_or(0, |h| {
                     let mut pid = 0u32;
                     GetWindowThreadProcessId(h, Some(&raw mut pid))
-                } else {
-                    0
-                };
+                });
                 SendableResult(hwnd, tid)
             } else {
                 SendableResult(non_null_hwnd(GetForegroundWindow()), 0)

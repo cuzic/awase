@@ -38,6 +38,7 @@ struct AppStateView {
 /// すべてのフィールドが取得失敗を許容する `Option` または `bool`。
 /// クロスプロセスクエリは `run_with_timeout` で保護される。
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ImeDiagnosticSnapshot {
     /// 観測点の識別ラベル（例: "focus_change_done", "send_keys_pre"）
     pub label: &'static str,
@@ -81,11 +82,13 @@ impl ImeDiagnosticSnapshot {
     /// `crate::APP` グローバル経由で焦点情報・shadow 状態を読み取り、
     /// クロスプロセスクエリは 50ms タイムアウトで保護する。
     /// メインスレッドから呼ぶこと（APP の借用要件）。
+    #[must_use] 
     pub fn capture(label: &'static str) -> Self {
         let now = crate::hook::current_tick_ms();
 
         // ── shadow / app state を APP から取得 ──
         let view = crate::with_app_ref(|app| {
+            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
             let (pid, class) = app
                 .executor
                 .platform
@@ -110,7 +113,6 @@ impl ImeDiagnosticSnapshot {
 
             // フォーカス hwnd は last_focus_info に保存されない（pid/class のみ）
             // ため、現時点のフォアグラウンド hwnd を取得する。
-            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
             // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。
             let hwnd = unsafe { GetForegroundWindow() };
             let hwnd_raw = hwnd.0 as usize;

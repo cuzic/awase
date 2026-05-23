@@ -33,6 +33,7 @@ pub enum ShadowSource {
 /// 複数の観測ソースをマージした結果を保持する。特に `ime_on` は
 /// Engine に渡す判断用の意図値であり、観測ソースの優先度マージ結果である。
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Preconditions {
     /// IME ON/OFF の Engine 向け値。
     ///
@@ -86,7 +87,7 @@ pub struct Preconditions {
 
 impl Preconditions {
     /// `ime_on` と `ime_on_source` をまとめて更新する。
-    pub(in crate::state) fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
+    pub(in crate::state) const fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
         self.ime_on = value;
         self.ime_on_source = source;
     }
@@ -95,43 +96,43 @@ impl Preconditions {
 
     /// IME ON/OFF の Engine 向け優先度マージ値を返す。
     #[inline]
-    pub(crate) fn ime_on(&self) -> bool {
+    pub(crate) const fn ime_on(&self) -> bool {
         self.ime_on
     }
 
     /// `ime_on` を最後に更新したソースを返す。
     #[inline]
-    pub(crate) fn ime_on_source(&self) -> ShadowSource {
+    pub(crate) const fn ime_on_source(&self) -> ShadowSource {
         self.ime_on_source
     }
 
     /// 入力モードを返す。
     #[inline]
-    pub(crate) fn input_mode(&self) -> InputModeState {
+    pub(crate) const fn input_mode(&self) -> InputModeState {
         self.input_mode
     }
 
     /// 日本語 IME がアクティブかを返す。
     #[inline]
-    pub(crate) fn is_japanese_ime(&self) -> bool {
+    pub(crate) const fn is_japanese_ime(&self) -> bool {
         self.is_japanese_ime
     }
 
     /// 直前の conversion_mode を返す。
     #[inline]
-    pub(crate) fn prev_conversion_mode(&self) -> Option<u32> {
+    pub(crate) const fn prev_conversion_mode(&self) -> Option<u32> {
         self.prev_conversion_mode
     }
 
     /// IME 状態検出の連続失敗回数を返す。
     #[inline]
-    pub(crate) fn ime_detect_miss_count(&self) -> u32 {
+    pub(crate) const fn ime_detect_miss_count(&self) -> u32 {
         self.ime_detect_miss_count
     }
 
     /// いずれかの強制 ON ガードが立っているかを返す。
     #[inline]
-    pub(crate) fn is_force_on_guard_active(&self) -> bool {
+    pub(crate) const fn is_force_on_guard_active(&self) -> bool {
         self.force_on_broken_app_bootstrap || self.force_on_panic_reset
     }
 }

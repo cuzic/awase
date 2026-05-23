@@ -331,6 +331,7 @@ impl DecisionExecutor {
     /// Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。
     /// Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
     /// 副作用のみで CallbackResult は返さない。
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn handle_ctrl_up_recovery(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
@@ -386,6 +387,7 @@ impl DecisionExecutor {
     /// （WezTerm 内部で F2 がトグル動作をしている模様）。
     /// 物理 F2 を Consume し、次の NICOLA バッチの warmup F2 で一本化することで解消する。
     /// → output.rs の composition_warm ドキュメントの設計意図と一致。
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn try_native_f2_consume(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if raw_event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
@@ -449,6 +451,7 @@ impl DecisionExecutor {
 
     /// vk=0xF2 + KeyDown かつ non-TSF mode のとき mark_cold（Chrome/Win32 向け）。
     /// 副作用のみで CallbackResult は返さない。
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn handle_f2_non_tsf(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
@@ -462,7 +465,7 @@ impl DecisionExecutor {
 
     // ── 共通 ──
 
-    fn is_input_critical(effect: &Effect) -> bool {
+    const fn is_input_critical(effect: &Effect) -> bool {
         matches!(effect, Effect::Input(_) | Effect::Timer(_))
     }
 
@@ -567,6 +570,7 @@ impl DecisionExecutor {
     }
 
     /// latch 更新 + open==true の cold/warmup 処理。
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
         // 成功した場合はラッチを更新する（shadow_ime_on → send_eager_tsf_warmup ガードに使用）。

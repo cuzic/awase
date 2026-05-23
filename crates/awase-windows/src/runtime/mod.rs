@@ -14,7 +14,8 @@ pub use crate::focus::classifier::{AppKindClassifier, ImmCapability, InjectionHi
 ///
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
 /// タイマー等のイベント非同期パスでは呼び出し元が `read_os_modifiers()` で取得する。
-pub fn build_input_context(
+#[must_use] 
+pub const fn build_input_context(
     preconditions: &Preconditions,
     modifiers: &awase::engine::ModifierState,
 ) -> InputContext {
@@ -391,7 +392,7 @@ impl Runtime {
             let focus = crate::focus::probe::run_focus_probe_async().await;
             let snap = crate::ime::read_ime_state_full_async().await;
             let _ = crate::with_app(|app| {
-                ImeRefreshPipeline::new(app).run_with_prefetched(focus, snap);
+                ImeRefreshPipeline::new(app).run_with_prefetched(focus, &snap);
 
                 // run_with_prefetched 完了後: last_focus_info が更新済みのため
                 // injection_hint を読んで TsfGate を遷移させる。
@@ -611,7 +612,7 @@ fn send_all_modifier_key_ups() {
         })
         .collect();
 
-    crate::win32::send_input_safe(&inputs);
+    let _ = crate::win32::send_input_safe(&inputs);
     log::debug!("Sent KeyUp for all modifier keys");
 }
 

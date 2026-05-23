@@ -34,7 +34,7 @@ pub mod platform;
 pub mod runtime;
 pub mod scanmap;
 pub mod single_thread_cell;
-pub(crate) mod state;
+pub mod state;
 pub mod timer;
 pub mod tuning;
 pub mod tray;
@@ -124,16 +124,13 @@ pub static RUNTIME: SingleThreadCell<Runtime> = SingleThreadCell::new();
 #[must_use = "再入時は None を返す。消えてはいけないメッセージには with_app_or_repost を、\
 意図的に捨てる場合は `let _ = with_app(...)` を使うこと"]
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
-    match RUNTIME.try_borrow_mut() {
-        Some(mut guard) => guard.as_mut().map(f),
-        None => {
-            // SendMessage (cross-process IME) や block_on のネストメッセージループ経由で
-            // win_event_proc などの外部コールバックから再呼び出しされた場合。
-            // extern "system" FFI 境界を越えて panic を伝播させると UB になるため、
-            // ここでは警告に留めて None を返す。
-            log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
-            None
-        }
+    if let Some(mut guard) = RUNTIME.try_borrow_mut() { guard.as_mut().map(f) } else {
+        // SendMessage (cross-process IME) や block_on のネストメッセージループ経由で
+        // win_event_proc などの外部コールバックから再呼び出しされた場合。
+        // extern "system" FFI 境界を越えて panic を伝播させると UB になるため、
+        // ここでは警告に留めて None を返す。
+        log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
+        None
     }
 }
 
@@ -261,5 +258,5 @@ pub unsafe fn reinject_key(event: &RawKeyEvent) {
             },
         },
     };
-    win32::send_input_safe(&[input]);
+    let _ = win32::send_input_safe(&[input]);
 }

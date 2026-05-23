@@ -20,6 +20,7 @@ pub struct HwndImeSnapshot {
 ///
 /// 古いエントリ（[`crate::tuning::HWND_CACHE_MAX_AGE_MS`] を超えたもの）はこのタイミングで
 /// まとめて削除する。
+#[allow(clippy::implicit_hasher)]
 pub fn save_on_focus_leave(
     cache: &mut HashMap<(u32, String), HwndImeSnapshot>,
     old_pid: u32,
@@ -47,6 +48,8 @@ pub fn save_on_focus_leave(
 ///
 /// `Preconditions` を直接変更しない。呼び出し元（`PlatformState::apply_hwnd_cache_restore()`）
 /// が状態に反映すること。
+#[must_use]
+#[allow(clippy::implicit_hasher)]
 pub fn restore_on_focus_enter(
     cache: &HashMap<(u32, String), HwndImeSnapshot>,
     new_pid: u32,
@@ -70,8 +73,7 @@ pub fn restore_on_focus_enter(
         );
     } else {
         log::debug!(
-            "HwndCache: no entry for [{} {}], stale until FocusProbe",
-            new_pid, new_class,
+            "HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe",
         );
     }
     None

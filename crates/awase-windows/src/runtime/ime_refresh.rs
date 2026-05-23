@@ -32,14 +32,14 @@ pub(super) struct ImeRefreshPipeline<'a> {
 }
 
 impl<'a> ImeRefreshPipeline<'a> {
-    pub(super) fn new(rt: &'a mut Runtime) -> Self {
+    pub(super) const fn new(rt: &'a mut Runtime) -> Self {
         Self { rt }
     }
 
     pub(super) fn run(mut self) {
         let focus = self.stage_focus();
         let strategy = self.stage_strategy(&focus);
-        self.stage_observe(&focus, strategy);
+        self.stage_observe(&focus, &strategy);
         self.stage_notify();
     }
 
@@ -84,7 +84,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     // Phase 3.5: 未知 IMM-broken アプリ向け一時 force-ON（初回ブートストラップ）
     // Phase 3.7: 診断スナップショット（フォーカス変更後）
 
-    fn stage_observe(&mut self, focus: &FocusInfo, strategy: ImeReadStrategy) {
+    fn stage_observe(&mut self, focus: &FocusInfo, strategy: &ImeReadStrategy) {
         match strategy {
             ImeReadStrategy::SkipTyping => {
                 // タイピング中は何もしない
@@ -127,7 +127,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             .focus
             .last_focus_info
             .as_ref()
-            .map_or(false, |(_, class_name)| {
+            .is_some_and(|(_, class_name)| {
                 crate::focus::classify::is_imm_bridge_broken(class_name)
             })
     }
@@ -192,7 +192,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         // Chrome の IME が ON であると判断し preconditions.ime_on に反映する。
         {
             let now_ms = crate::hook::current_tick_ms();
-            let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
+            let last_io = crate::tsf::observer::with_tsf_obs(super::super::tsf::observer::TsfObservations::gji_last_io_ms);
             if last_io > 0 && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
                 log::debug!(
                     "[gji-poll] GJI I/O observed {}ms ago → observer_poll=true",
@@ -289,18 +289,14 @@ impl<'a> ImeRefreshPipeline<'a> {
                         String::new()
                     },
                     if mode_changed {
-                        format!("mode {:?} → {:?}", input_mode_before_poll, input_mode_after)
+                        format!("mode {input_mode_before_poll:?} → {input_mode_after:?}")
                     } else {
                         String::new()
                     },
                 );
             } else if miss_after > 0 {
                 log::debug!(
-                    "ObserverPoll +{}ms since focus: detection failed (miss={}), stale ime_on={} mode={:?}",
-                    age_ms,
-                    miss_after,
-                    ime_on_before_poll,
-                    input_mode_before_poll,
+                    "ObserverPoll +{age_ms}ms since focus: detection failed (miss={miss_after}), stale ime_on={ime_on_before_poll} mode={input_mode_before_poll:?}",
                 );
             }
         }
@@ -341,14 +337,13 @@ impl<'a> ImeRefreshPipeline<'a> {
                     .get(&class_name);
                 if prev != Some(ImmCapability::Broken) {
                     log::info!(
-                        "IMM capability learned: {class_name} → Broken (detection failed {} times)",
-                        miss_after
+                        "IMM capability learned: {class_name} → Broken (detection failed {miss_after} times)"
                     );
                     self.rt
                         .executor
                         .platform
                         .focus
-                        .learn_imm_capability(class_name.clone(), ImmCapability::Broken);
+                        .learn_imm_capability(class_name, ImmCapability::Broken);
                 }
             }
         }
@@ -442,7 +437,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     pub(super) fn run_with_prefetched(
         mut self,
         focus_probe: Option<crate::focus::probe::FocusSnapshot>,
-        ime_snap: crate::ime::ImeSnapshot,
+        ime_snap: &crate::ime::ImeSnapshot,
     ) {
         // Stage 1: フォーカス検出（pre-fetch 版）
         let focus_changed = self.rt.apply_focus_probe_result(focus_probe);
@@ -472,7 +467,7 @@ impl<'a> ImeRefreshPipeline<'a> {
                 let now_ms = crate::hook::current_tick_ms();
                 let observer_out = {
                     crate::observer::ime_observer::classify_fetched_snapshot(
-                        &ime_snap,
+                        ime_snap,
                         now_ms,
                         self.rt.platform_state.ime_on(),
                         self.rt.platform_state.is_force_on_guard_active(),

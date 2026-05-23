@@ -30,6 +30,7 @@ use crate::imm::{
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
+#[must_use] 
 pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     let gui_result = crate::win32::get_gui_thread_info_with_timeout(
         std::time::Duration::from_millis(150),
@@ -110,6 +111,7 @@ pub unsafe fn send_ime_mode_key(vk: u16) {
 ///
 /// # Safety
 /// Calls Win32 APIs.
+#[must_use] 
 pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す可能性があるが
     //         detect_ime_conversion_for_hwnd 内の non_null_hwnd チェックで処理される。
@@ -123,6 +125,7 @@ pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
 ///
 /// # Safety
 /// Calls Win32 APIs.
+#[must_use] 
 pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32> {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が `?` で None を返す。
     let hwnd = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() })?;
@@ -138,6 +141,7 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
 ///
 /// # Safety
 /// Calls Win32 APIs.
+#[must_use] 
 pub unsafe fn get_foreground_window_class() -> String {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
     //         早期リターンする。
@@ -158,6 +162,7 @@ pub unsafe fn get_foreground_window_class() -> String {
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
+#[must_use] 
 pub unsafe fn set_ime_romaji_mode() -> bool {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
     //         早期リターンする。
@@ -272,6 +277,7 @@ pub struct ImeSnapshot {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
+#[must_use] 
 pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> ImeSnapshot {
     // SAFETY: read_ime_state_full は unsafe fn であり、呼び出し元（本関数）が unsafe コンテキストを
     //         保証する。run_with_timeout はワーカースレッドで実行するが、Win32 IMM32 API は
@@ -296,6 +302,7 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use] 
 pub unsafe fn read_ime_state_full() -> ImeSnapshot {
     // 0. フォーカスウィンドウを一度解決して全クエリに使う。
     // GetGUIThreadInfo はフォアグラウンドスレッドがハングすると無期限ブロックするため
@@ -346,35 +353,32 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
     let conversion_mode = unsafe { detect_ime_conversion_for_hwnd(focused_hwnd) };
 
     // 4. Determine is_romaji from cross-process and direct check
-    let is_romaji = if let Some(conversion) = conversion_mode {
-        let is_native = conversion & IME_CMODE_NATIVE != 0;
-        let is_roman = conversion & IME_CMODE_ROMAN != 0;
-
-        if !is_native {
-            None
-        } else if is_roman {
-            Some(true)
-        } else {
-            // ROMAN フラグなし + NATIVE あり: 直接 API で二重チェック
-            // （一部 IME は ROMAN を返さないため）
+    let is_romaji = conversion_mode.map_or_else(
+        || {
+            // cross-process 失敗: direct のみで試行
             // SAFETY: detect_kana_for_hwnd は unsafe fn で、focused_hwnd は同上の条件を満たす。
-            let direct = unsafe { detect_kana_for_hwnd(focused_hwnd) };
-            log::debug!(
-                "read_ime_state_full: cross native={is_native} roman={is_roman}, direct_kana={direct:?}"
-            );
-            match direct {
-                Some(is_kana) => Some(!is_kana),
-                // direct が失敗: 判定不能（None を返し、前回値を維持する）。
-                // Zoom 等は romaji モードでも ROMAN ビットを報告しないため
-                // ここで Some(false) を返すと Engine が起動しなくなる。
-                None => None,
+            unsafe { detect_kana_for_hwnd(focused_hwnd) }.map(|is_kana| !is_kana)
+        },
+        |conversion| {
+            let is_native = conversion & IME_CMODE_NATIVE != 0;
+            let is_roman = conversion & IME_CMODE_ROMAN != 0;
+
+            if !is_native {
+                None
+            } else if is_roman {
+                Some(true)
+            } else {
+                // ROMAN フラグなし + NATIVE あり: 直接 API で二重チェック
+                // （一部 IME は ROMAN を返さないため）
+                // SAFETY: detect_kana_for_hwnd は unsafe fn で、focused_hwnd は同上の条件を満たす。
+                let direct = unsafe { detect_kana_for_hwnd(focused_hwnd) };
+                log::debug!(
+                    "read_ime_state_full: cross native={is_native} roman={is_roman}, direct_kana={direct:?}"
+                );
+                direct.map(|is_kana| !is_kana)
             }
-        }
-    } else {
-        // cross-process 失敗: direct のみで試行
-        // SAFETY: detect_kana_for_hwnd は unsafe fn で、focused_hwnd は同上の条件を満たす。
-        unsafe { detect_kana_for_hwnd(focused_hwnd) }.map(|is_kana| !is_kana)
-    };
+        },
+    );
 
     ImeSnapshot {
         is_japanese_ime: Some(is_japanese_ime),
@@ -443,6 +447,7 @@ pub fn keyboard_layout_info() -> (bool, u32) {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
+#[must_use] 
 pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     let (is_japanese_ime, _) = keyboard_layout_info();
 
@@ -523,6 +528,7 @@ fn is_transient_system_overlay(hwnd: HWND) -> bool {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
+#[must_use] 
 pub unsafe fn get_focused_hwnd() -> HWND {
     let gui =
         crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(30));
@@ -543,13 +549,14 @@ pub unsafe fn get_focused_hwnd() -> HWND {
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
+#[must_use]
 pub unsafe fn send_f2_via_sendmessage() -> bool {
+    const VK_DBE_HIRAGANA: u32 = 0xF2;
     // SAFETY: get_focused_hwnd は unsafe fn で GetForegroundWindow または GetGUIThreadInfo から
     //         HWND を返す。non_null_hwnd で NULL チェックを行い、NULL なら早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { get_focused_hwnd() }) else {
         return false;
     };
-    const VK_DBE_HIRAGANA: u32 = 0xF2;
     // SAFETY: MapVirtualKeyW はスレッドセーフで任意のスレッドから呼び出せる。
     //         VK_DBE_HIRAGANA (0xF2) は有効な仮想キーコードであり MAPVK_VK_TO_VSC は有効な変換タイプ。
     let scan = unsafe { MapVirtualKeyW(VK_DBE_HIRAGANA, MAPVK_VK_TO_VSC) };
@@ -599,6 +606,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
+#[must_use] 
 pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
     if crate::win32::non_null_hwnd(hwnd).is_none() {
         return false;
