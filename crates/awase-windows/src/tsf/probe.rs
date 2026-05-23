@@ -7,9 +7,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::tsf::observer::{
-    OBS_GJI_CANDIDATE_SHOW_SEQ, OBS_GJI_CANDIDATE_VISIBLE, OBS_GJI_LAST_IO_MS, OBS_GJI_MONITOR_OK,
-};
+use crate::tsf::observer::TSF_OBS;
 
 // ── TsfReadinessProbe ──
 
@@ -74,7 +72,7 @@ impl TsfReadinessProbe {
         let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
         let min_deadline = self.warmup_sent_ms.saturating_add(self.min_ms);
 
-        if !OBS_GJI_MONITOR_OK.load(Ordering::Relaxed) {
+        if !TSF_OBS.gji_monitor_ok.load(Ordering::Relaxed) {
             return now >= max_deadline;
         }
         if now < min_deadline {
@@ -83,7 +81,7 @@ impl TsfReadinessProbe {
         if now >= max_deadline {
             return true;
         }
-        let gji_io = OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+        let gji_io = TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
         let found_io_after_warmup = gji_io >= self.warmup_sent_ms;
         if found_io_after_warmup {
             let gji_idle = now.saturating_sub(gji_io);
@@ -333,9 +331,9 @@ impl LiteralDetector {
     pub fn new() -> Self {
         use std::sync::atomic::Ordering::Relaxed;
         Self {
-            gji_show_baseline: OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed),
-            io_baseline: OBS_GJI_LAST_IO_MS.load(Relaxed),
-            was_candidate_visible: OBS_GJI_CANDIDATE_VISIBLE.load(Relaxed),
+            gji_show_baseline: TSF_OBS.gji_candidate_show_seq.load(Relaxed),
+            io_baseline: TSF_OBS.gji_last_io_ms.load(Relaxed),
+            was_candidate_visible: TSF_OBS.gji_candidate_visible.load(Relaxed),
         }
     }
 
@@ -347,9 +345,9 @@ impl LiteralDetector {
         use std::sync::atomic::Ordering::Relaxed;
         let now = crate::hook::current_tick_ms();
         let confirmed = if self.was_candidate_visible {
-            OBS_GJI_LAST_IO_MS.load(Relaxed) != self.io_baseline
+            TSF_OBS.gji_last_io_ms.load(Relaxed) != self.io_baseline
         } else {
-            OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != self.gji_show_baseline
+            TSF_OBS.gji_candidate_show_seq.load(Relaxed) != self.gji_show_baseline
         };
         if confirmed {
             Some(DetectionResult::CompositionConfirmed)
@@ -381,7 +379,7 @@ impl LiteralDetector {
 
 /// cold start 後のローマ字送信で GJI candidate window が表示されるのを event-driven に待つ。
 ///
-/// - `show_baseline`: 送信直前の `OBS_GJI_CANDIDATE_SHOW_SEQ` の値
+/// - `show_baseline`: 送信直前の `TSF_OBS.gji_candidate_show_seq` の値
 /// - `timeout_ms`: タイムアウト (ms)
 /// - 戻り値: `true` = SHOW 検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
 pub(crate) fn wait_for_raw_tsf_literal_show(show_baseline: u32, timeout_ms: u32) -> bool {
@@ -391,31 +389,31 @@ pub(crate) fn wait_for_raw_tsf_literal_show(show_baseline: u32, timeout_ms: u32)
 async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u32) -> bool {
     use std::sync::atomic::Ordering::Relaxed;
 
-    // COMPOSITION_PROBE_SEQ は observer が GJI SHOW イベントを受け取るたびにインクリメントし
+    // TSF_OBS.composition_probe_seq は observer が GJI SHOW イベントを受け取るたびにインクリメントし
     // notify_all() を呼ぶ。race_with_timeout でタイムアウトと競走させることで、
     // orphan タイムアウトタスクや session ガードが不要になる。
-    let probe_baseline = crate::COMPOSITION_PROBE_SEQ.load(Relaxed);
+    let probe_baseline = crate::tsf::observer::TSF_OBS.composition_probe_seq.load(Relaxed);
     let got_event = win32_async::race_with_timeout(
         timeout_ms,
-        win32_async::AtomicWatcher::new(&crate::COMPOSITION_PROBE_SEQ, probe_baseline),
+        win32_async::AtomicWatcher::new(&crate::tsf::observer::TSF_OBS.composition_probe_seq, probe_baseline),
     )
     .await;
 
     // イベントが来た場合のみ SHOW シーケンスが進んでいるか確認する
-    got_event.is_some() && OBS_GJI_CANDIDATE_SHOW_SEQ.load(Relaxed) != show_baseline
+    got_event.is_some() && TSF_OBS.gji_candidate_show_seq.load(Relaxed) != show_baseline
 }
 
 /// GJI candidate window がすでに表示中の場合の raw TSF literal 検出。
-/// SHOW イベントは来ないため GJI I/O 変化（OBS_GJI_LAST_IO_MS）でポーリングする。
+/// SHOW イベントは来ないため GJI I/O 変化（TSF_OBS.gji_last_io_ms）でポーリングする。
 ///
-/// - `io_baseline`: 送信直前の `OBS_GJI_LAST_IO_MS` の値
+/// - `io_baseline`: 送信直前の `TSF_OBS.gji_last_io_ms` の値
 /// - `timeout_ms`: タイムアウト (ms)
 /// - 戻り値: `true` = I/O 変化検出（composition 成功）、`false` = timeout（raw TSF literal 疑い）
 pub(crate) fn wait_for_raw_tsf_literal_io(io_baseline: u64, timeout_ms: u32) -> bool {
     win32_async::block_on(raw_tsf_literal_io_or_timeout_async(io_baseline, timeout_ms))
 }
 
-/// [`wait_for_raw_tsf_literal_io`] の非同期実装。`OBS_GJI_LAST_IO_MS` をポーリングする。
+/// [`wait_for_raw_tsf_literal_io`] の非同期実装。`TSF_OBS.gji_last_io_ms` をポーリングする。
 ///
 /// GJI I/O モニタースレッドは 10ms 間隔でサンプリングするため、
 /// ポーリング間隔は 15ms に設定し、I/O 変化を確実に捕捉する。
@@ -430,7 +428,7 @@ async fn raw_tsf_literal_io_or_timeout_async(io_baseline: u64, timeout_ms: u32) 
         if RAW_TSF_LITERAL_IO_SESSION.load(Relaxed) != session {
             return false;
         }
-        let io_now = OBS_GJI_LAST_IO_MS.load(Relaxed);
+        let io_now = TSF_OBS.gji_last_io_ms.load(Relaxed);
         if io_now != io_baseline {
             return true;
         }
@@ -457,7 +455,7 @@ mod tests {
     #[test]
     fn probe_fallback_waits_total_max_ms() {
         let _g = TEST_LOCK.lock().unwrap();
-        OBS_GJI_MONITOR_OK.store(false, SeqCst);
+        TSF_OBS.gji_monitor_ok.store(false, SeqCst);
 
         let start = Instant::now();
         let now_ms = crate::hook::current_tick_ms();
@@ -481,8 +479,8 @@ mod tests {
         let warmup_ms = now_ms.saturating_sub(200);
         let io_ms = warmup_ms + 50;
 
-        OBS_GJI_MONITOR_OK.store(true, SeqCst);
-        OBS_GJI_LAST_IO_MS.store(io_ms, SeqCst);
+        TSF_OBS.gji_monitor_ok.store(true, SeqCst);
+        TSF_OBS.gji_last_io_ms.store(io_ms, SeqCst);
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(warmup_ms, 0, 0); // min_ms=0
@@ -500,8 +498,8 @@ mod tests {
         let now_ms = crate::hook::current_tick_ms();
 
         // GJI は settled 状態だが min_ms=80 のため phase1 で 80ms 待機する
-        OBS_GJI_MONITOR_OK.store(true, SeqCst);
-        OBS_GJI_LAST_IO_MS.store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
+        TSF_OBS.gji_monitor_ok.store(true, SeqCst);
+        TSF_OBS.gji_last_io_ms.store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 80); // min_ms=80
@@ -520,8 +518,8 @@ mod tests {
         let now_ms = crate::hook::current_tick_ms();
 
         // GJI I/O は warmup より前 → warmup 後に I/O なし → タイムアウト
-        OBS_GJI_MONITOR_OK.store(true, SeqCst);
-        OBS_GJI_LAST_IO_MS.store(now_ms.saturating_sub(5_000), SeqCst);
+        TSF_OBS.gji_monitor_ok.store(true, SeqCst);
+        TSF_OBS.gji_last_io_ms.store(now_ms.saturating_sub(5_000), SeqCst);
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 0); // min_ms=0

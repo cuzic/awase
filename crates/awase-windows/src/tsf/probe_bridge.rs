@@ -1,25 +1,70 @@
-//! 出力セッション統合 — OUTPUT_ACTIVE と Win32 メッセージループを橋渡し。
+//! 出力セッション統合 — OUTPUT_GATE と Win32 メッセージループを橋渡し。
 //!
 //! `send_keys()` の全期間を一つの出力セッションとして管理し、
 //! その間に到着した全キーを [`crate::input_defer::INPUT_DEFER`] に退避する。
 //! セッション終了後に `WM_DRAIN_OUTPUT_QUEUE` 経由でキーを順序保証付きで再配送する。
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-/// `send_keys()` の全期間にわたる出力セッションフラグ。
+/// 出力セッションのゲート状態（クロススレッド共有）。
 ///
-/// true の間、フックコールバックは APP.get_mut() を呼ばず Consumed を返す。
-/// キーイベントは [`crate::input_defer::INPUT_DEFER`] に退避され、セッション終了後に再配送される。
-/// これにより TSF 送信バッチより先にキーが WezTerm へ届く順序逆転と
-/// send_keys 実行中の APP re-entrancy を防ぐ。
-pub static OUTPUT_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// - `active`: true の間、フックコールバックはキーを INPUT_DEFER に退避する
+/// - `depth`: RAII Guard の参照カウント（0→1 で active=true、1→0 で active=false）
+/// - `last_vk_output_ms`: VK/TSF 最終 SendInput 時刻（with_app 再入回避のため atomic）
+pub struct OutputGate {
+    pub active: AtomicBool,
+    depth: AtomicU32,
+    pub last_vk_output_ms: AtomicU64,
+}
 
-/// OUTPUT_ACTIVE 解除後にキューされたキーを NICOLA へ再配送するカスタムメッセージ。
+impl OutputGate {
+    pub const fn new() -> Self {
+        Self {
+            active: AtomicBool::new(false),
+            depth: AtomicU32::new(0),
+            last_vk_output_ms: AtomicU64::new(0),
+        }
+    }
+}
+
+pub static OUTPUT_GATE: OutputGate = OutputGate::new();
+
+/// 出力セッションを RAII で管理するガード（参照カウント方式）。
+///
+/// `begin()` で深度をインクリメントし、深度 0→1 のとき `OUTPUT_GATE.active=true` をセット。
+/// Drop 時に深度をデクリメントし、深度 1→0 のとき `OUTPUT_GATE.active=false` + drain。
+///
+/// TSF probe 延期中は `TsfProbeData` がガードを保持し続けることで、
+/// `OutputSession` が drop しても `OUTPUT_GATE.active` が維持される。
+#[derive(Debug)]
+pub(crate) struct OutputActiveGuard;
+
+impl OutputActiveGuard {
+    pub(crate) fn begin() -> Self {
+        let prev = OUTPUT_GATE.depth.fetch_add(1, Ordering::AcqRel);
+        if prev == 0 {
+            OUTPUT_GATE.active.store(true, Ordering::Release);
+        }
+        Self
+    }
+}
+
+impl Drop for OutputActiveGuard {
+    fn drop(&mut self) {
+        let prev = OUTPUT_GATE.depth.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            OUTPUT_GATE.active.store(false, Ordering::Release);
+            post_drain_output_queue();
+        }
+    }
+}
+
+/// OUTPUT_GATE.active 解除後にキューされたキーを NICOLA へ再配送するカスタムメッセージ。
 ///
 /// `WM_APP + 18` = 0x8012
 pub const WM_DRAIN_OUTPUT_QUEUE: u32 = 0x8000 + 18;
 
-/// OUTPUT_ACTIVE 解除後に呼ぶ。キューに溜まったキーを再配送するメッセージを投げる。
+/// OUTPUT_GATE.active 解除後に呼ぶ。キューに溜まったキーを再配送するメッセージを投げる。
 pub(crate) fn post_drain_output_queue() {
     use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
     let _ = unsafe {

@@ -2,7 +2,7 @@
 //!
 //! ## 内部構造（単一キュー）
 //!
-//! すべての退避経路（hook 再入・OUTPUT_ACTIVE 中・TsfGate drain 等）は
+//! すべての退避経路（hook 再入・OUTPUT_GATE.active 中・TsfGate drain 等）は
 //! classify 済みの `RawKeyEvent` として同一キューに積む。
 //!
 //! hook 再入時のフック側でも `hook::HOOK_CONFIG` グローバルを使って
@@ -29,13 +29,13 @@ impl InputDeferQueue {
         if let Ok(mut q) = self.queue.lock() { q.push(event); }
     }
 
-    /// `OUTPUT_ACTIVE` = true のときフックから呼ぶ。
+    /// `OUTPUT_GATE.active` = true のときフックから呼ぶ。
     /// drain は `OutputActiveGuard::drop` が担うため post しない。
     pub fn defer_during_output(&self, event: RawKeyEvent) {
         if let Ok(mut q) = self.queue.lock() { q.push(event); }
     }
 
-    /// `with_app` 再入（OUTPUT_ACTIVE=false、classify 済み）で退避し drain を要求する。
+    /// `with_app` 再入（OUTPUT_GATE.active=false、classify 済み）で退避し drain を要求する。
     pub fn defer_during_with_app(&self, event: RawKeyEvent) {
         if let Ok(mut q) = self.queue.lock() { q.push(event); }
         crate::tsf::probe_bridge::post_drain_output_queue();

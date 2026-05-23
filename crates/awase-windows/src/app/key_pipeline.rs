@@ -65,7 +65,7 @@ impl<'a> KeyEventPipeline<'a> {
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
         let gji_last_io_ms =
-            awase_windows::tsf::observer::OBS_GJI_LAST_IO_MS.load(Ordering::Relaxed);
+            awase_windows::tsf::observer::TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
         let last_focus_change_ms = self.app.platform_state.last_focus_change_ms;
         let shadow_on = self.app.executor.platform.output.shadow_ime_on();
 

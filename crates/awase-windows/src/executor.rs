@@ -347,7 +347,7 @@ impl DecisionExecutor {
         }
     }
 
-    /// OUTPUT_ACTIVE が true / pending queue がある場合: Consume + reinject で順序保証する。
+    /// OUTPUT_GATE.active が true / pending queue がある場合: Consume + reinject で順序保証する。
     fn try_output_guard_defer(
         &mut self,
         raw_event: &RawKeyEvent,

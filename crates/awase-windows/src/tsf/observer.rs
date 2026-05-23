@@ -1,9 +1,9 @@
 //! observation 層 — GJI I/O モニタリングと WinEvent 由来の観測値を一元管理する。
 //!
 //! ここにあるグローバルは書き込み元が限定されている:
-//! - `GjiMonitor` バックグラウンドスレッド → `OBS_GJI_LAST_IO_MS`, `OBS_GJI_MONITOR_OK`
-//! - `observation_event_proc` → `OBS_GJI_CANDIDATE_VISIBLE`,
-//!   `OBS_GJI_CANDIDATE_SHOW_SEQ`, `OBS_FOCUS_NAMECHANGE_SEQ`, `COMPOSITION_PROBE_SEQ`
+//! - `GjiMonitor` バックグラウンドスレッド → `TSF_OBS.gji_last_io_ms`, `TSF_OBS.gji_monitor_ok`
+//! - `observation_event_proc` → `TSF_OBS.gji_candidate_visible`,
+//!   `TSF_OBS.gji_candidate_show_seq`, `TSF_OBS.focus_namechange_seq`, `TSF_OBS.composition_probe_seq`
 //!
 //! 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
 
@@ -22,45 +22,68 @@ use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
 };
 
-// ── WinEvent 由来の観測値（app.rs observation_event_proc → ロジックスレッド）──
+// ── TSF 観測値の集約構造体 ──
 
-/// `wait_for_tsf_cold_settle()` が OBJ_NAMECHANGE を early-exit シグナルとして使うカウンタ。
+/// TSF / GJI 観測値をまとめた構造体。
 ///
-/// `send_eager_tsf_warmup()` 呼び出し時に 0 にリセットされ、
-/// WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
-pub static OBS_FOCUS_NAMECHANGE_SEQ: AtomicU32 = AtomicU32::new(0);
-
-/// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
+/// 書き込み元:
+/// - `GjiMonitor` バックグラウンドスレッド → `gji_last_io_ms`, `gji_monitor_ok`
+/// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show_seq`,
+///   `focus_namechange_seq`, `composition_probe_seq`
 ///
-/// raw TSF literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
-/// GJI candidate window が開いた（composition 成功）、増えなければ literal ASCII の可能性。
-pub static OBS_GJI_CANDIDATE_SHOW_SEQ: AtomicU32 = AtomicU32::new(0);
+/// 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
+pub struct TsfObservations {
+    /// `wait_for_tsf_cold_settle()` が OBJ_NAMECHANGE を early-exit シグナルとして使うカウンタ。
+    ///
+    /// `send_eager_tsf_warmup()` 呼び出し時に 0 にリセットされ、
+    /// WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
+    pub focus_namechange_seq: AtomicU32,
 
-/// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうかのフラグ。
-///
-/// `EVENT_OBJECT_SHOW` で `true` に、`EVENT_OBJECT_HIDE` で `false` にセットされる。
-/// raw TSF literal 検出でウィンドウが既に表示中かを判定するために使用する。
-/// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
-pub static OBS_GJI_CANDIDATE_VISIBLE: AtomicBool = AtomicBool::new(false);
+    /// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
+    ///
+    /// raw TSF literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
+    /// GJI candidate window が開いた（composition 成功）、増えなければ literal ASCII の可能性。
+    pub gji_candidate_show_seq: AtomicU32,
 
-/// raw TSF literal 検出の汎用シグナル AtomicU32。
-///
-/// `OBS_GJI_CANDIDATE_SHOW_SEQ` が変化したとき（SHOW 発火）と
-/// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
-/// `output::raw_tsf_literal_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
-/// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
-pub static COMPOSITION_PROBE_SEQ: AtomicU32 = AtomicU32::new(0);
+    /// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうかのフラグ。
+    ///
+    /// `EVENT_OBJECT_SHOW` で `true` に、`EVENT_OBJECT_HIDE` で `false` にセットされる。
+    /// raw TSF literal 検出でウィンドウが既に表示中かを判定するために使用する。
+    /// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
+    pub gji_candidate_visible: AtomicBool,
 
-// ── GJI I/O 観測値（バックグラウンドスレッド → ロジックスレッド）──
+    /// raw TSF literal 検出の汎用シグナル AtomicU32。
+    ///
+    /// `gji_candidate_show_seq` が変化したとき（SHOW 発火）と
+    /// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
+    /// `output::raw_tsf_literal_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
+    /// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
+    pub composition_probe_seq: AtomicU32,
 
-/// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
-///
-/// バックグラウンドモニタースレッドが更新する。
-/// `send_romaji_as_tsf` や `TsfReadinessProbe` が参照する。
-pub static OBS_GJI_LAST_IO_MS: AtomicU64 = AtomicU64::new(0);
+    /// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
+    ///
+    /// バックグラウンドモニタースレッドが更新する。
+    /// `send_romaji_as_tsf` や `TsfReadinessProbe` が参照する。
+    pub gji_last_io_ms: AtomicU64,
 
-/// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
-pub static OBS_GJI_MONITOR_OK: AtomicBool = AtomicBool::new(false);
+    /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
+    pub gji_monitor_ok: AtomicBool,
+}
+
+impl TsfObservations {
+    pub const fn new() -> Self {
+        Self {
+            focus_namechange_seq:   AtomicU32::new(0),
+            gji_candidate_show_seq: AtomicU32::new(0),
+            gji_candidate_visible:  AtomicBool::new(false),
+            composition_probe_seq:  AtomicU32::new(0),
+            gji_last_io_ms:         AtomicU64::new(0),
+            gji_monitor_ok:         AtomicBool::new(false),
+        }
+    }
+}
+
+pub static TSF_OBS: TsfObservations = TsfObservations::new();
 
 
 // ── GJI プロセス発見 ──
@@ -210,7 +233,7 @@ impl Drop for GjiMonitor {
 
 /// GJI I/O モニタースレッドを起動する。
 ///
-/// 常駐し、`OBS_GJI_LAST_IO_MS` と `OBS_GJI_MONITOR_OK` を更新し続ける。
+/// 常駐し、`TSF_OBS.gji_last_io_ms` と `TSF_OBS.gji_monitor_ok` を更新し続ける。
 /// GJI が再起動した場合は自動的に再接続する。
 /// 起動時に呼ぶこと（1 回のみ）。戻り値の [`win32_worker::WorkerThread`] を
 /// アプリ終了まで保持すること（drop 時にスレッドが停止・join される）。
@@ -236,12 +259,12 @@ fn monitor_loop(token: win32_worker::ShutdownToken) {
             match GjiMonitor::try_attach() {
                 Some(m) => {
                     log::info!("[gji-monitor] attached to GJI process");
-                    OBS_GJI_MONITOR_OK.store(true, Ordering::Relaxed);
-                    OBS_GJI_LAST_IO_MS.store(m.last_change_ms(), Ordering::Relaxed);
+                    TSF_OBS.gji_monitor_ok.store(true, Ordering::Relaxed);
+                    TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
                     monitor = Some(m);
                 }
                 None => {
-                    OBS_GJI_MONITOR_OK.store(false, Ordering::Relaxed);
+                    TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                     next_attach_ms = now + REATTACH_INTERVAL_MS;
                 }
             }
@@ -250,11 +273,11 @@ fn monitor_loop(token: win32_worker::ShutdownToken) {
         if let Some(ref mut m) = monitor {
             if !m.sample() {
                 log::info!("[gji-monitor] GJI process exited, will re-attach");
-                OBS_GJI_MONITOR_OK.store(false, Ordering::Relaxed);
+                TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                 monitor = None;
                 next_attach_ms = now + REATTACH_INTERVAL_MS;
             } else {
-                OBS_GJI_LAST_IO_MS.store(m.last_change_ms(), Ordering::Relaxed);
+                TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
             }
         }
 
@@ -359,7 +382,7 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_NAMECHANGE => {
             let class = hwnd_class_name(hwnd);
             if class.contains("CASCADIA") {
-                let seq = OBS_FOCUS_NAMECHANGE_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                let seq = TSF_OBS.focus_namechange_seq.fetch_add(1, Ordering::Relaxed) + 1;
                 log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
                 win32_async::notify_all();
             }
@@ -367,11 +390,11 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_SHOW => {
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
-                OBS_GJI_CANDIDATE_VISIBLE.store(true, Ordering::Relaxed);
-                let seq = OBS_GJI_CANDIDATE_SHOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                TSF_OBS.gji_candidate_visible.store(true, Ordering::Relaxed);
+                let seq = TSF_OBS.gji_candidate_show_seq.fetch_add(1, Ordering::Relaxed) + 1;
                 // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
                 // AtomicWatcher で event-driven に待機する設計）
-                COMPOSITION_PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
+                TSF_OBS.composition_probe_seq.fetch_add(1, Ordering::Relaxed);
                 log::debug!("[gji-candidate] SHOW #{seq}");
                 win32_async::notify_all();
             }
@@ -379,7 +402,7 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_HIDE => {
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
-                OBS_GJI_CANDIDATE_VISIBLE.store(false, Ordering::Relaxed);
+                TSF_OBS.gji_candidate_visible.store(false, Ordering::Relaxed);
                 log::debug!("[gji-candidate] HIDE");
             }
         }

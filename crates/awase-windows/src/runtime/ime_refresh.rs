@@ -142,7 +142,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     fn phase2_7_decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
         const TYPING_IDLE_MS: u64 = 500;
         let last_activity = self.rt.platform_state.last_hook_activity_ms
-            .max(crate::output::LAST_VK_OUTPUT_MS.load(std::sync::atomic::Ordering::Relaxed));
+            .max(crate::tsf::probe_bridge::OUTPUT_GATE.last_vk_output_ms.load(std::sync::atomic::Ordering::Relaxed));
         let idle_ms = crate::hook::current_tick_ms()
             .saturating_sub(last_activity);
         let is_typing = idle_ms < TYPING_IDLE_MS;
@@ -168,13 +168,13 @@ impl<'a> ImeRefreshPipeline<'a> {
         log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
 
         // GJI I/O 観測を observer_poll 経由で judgement に流す（観測 → 判断の正規ルート）。
-        // バックグラウンドスレッドが OBS_GJI_LAST_IO_MS を更新していれば
+        // バックグラウンドスレッドが TSF_OBS.gji_last_io_ms を更新していれば
         // Chrome の IME が ON であると判断し preconditions.ime_on に反映する。
         {
             use std::sync::atomic::Ordering::Relaxed;
             const GJI_CONFIRM_WINDOW_MS: u64 = 500;
             let now_ms = crate::hook::current_tick_ms();
-            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
             if last_io > 0 && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
                 log::debug!(
                     "[gji-poll] GJI I/O observed {}ms ago → observer_poll=true",

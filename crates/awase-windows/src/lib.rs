@@ -53,7 +53,7 @@ pub use crate::state::{
     Preconditions, PlatformState, ShadowSource,
 };
 
-pub use crate::tsf::probe_bridge::{OUTPUT_ACTIVE, WM_DRAIN_OUTPUT_QUEUE};
+pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
 
 pub use crate::input_defer::{INPUT_DEFER, InputDeferQueue};
 
@@ -70,11 +70,8 @@ pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
 pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 
-// OBS_* グローバルは tsf/observer.rs で定義。後方互換のため re-export する。
-pub use crate::tsf::observer::{
-    COMPOSITION_PROBE_SEQ, OBS_FOCUS_NAMECHANGE_SEQ, OBS_GJI_CANDIDATE_SHOW_SEQ,
-    OBS_GJI_CANDIDATE_VISIBLE,
-};
+// TSF_OBS は tsf/observer.rs で定義。re-export する。
+pub use crate::tsf::observer::TSF_OBS;
 
 /// raw TSF literal 検出後の回収ペイロード。
 ///

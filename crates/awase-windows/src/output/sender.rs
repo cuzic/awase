@@ -50,7 +50,7 @@ pub(crate) enum InjectionMode {
 ///
 /// - `begin()` で `InjectionMode` を解決し `OutputActiveGuard` を取得する
 /// - `sender()` で `InjectionSender` の動的ディスパッチオブジェクトを返す
-/// - Drop 時に Guard が `OUTPUT_ACTIVE=false` + drain を自動実行する
+/// - Drop 時に Guard が `OUTPUT_GATE.active=false` + drain を自動実行する
 pub(crate) struct OutputSession<'a> {
     pub(crate) output: &'a super::Output,
     pub(crate) mode: InjectionMode,

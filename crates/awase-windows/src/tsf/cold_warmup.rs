@@ -247,7 +247,7 @@ impl<'a> ColdWarmupSequence<'a> {
                 }
             } else {
                 // eager_fresh_f2_then_probe: fresh F2 + probe
-                let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+                let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
                 let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
                 log::debug!(
                     "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start",

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{Ordering};
 
 use awase::config::OutputMode;
 use awase::types::{AppKind, KeyAction, SpecialKey};
@@ -16,37 +16,7 @@ use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key
 pub(crate) mod sender;
 pub(crate) use sender::{InjectionMode, OutputSession};
 
-/// 出力セッションを RAII で管理するガード（参照カウント方式）。
-///
-/// `begin()` で深度をインクリメントし、深度 0→1 のとき `OUTPUT_ACTIVE=true` をセット。
-/// Drop 時に深度をデクリメントし、深度 1→0 のとき `OUTPUT_ACTIVE=false` + drain。
-///
-/// TSF probe 延期中は `TsfProbeData` がガードを保持し続けることで、
-/// `OutputSession` が drop しても `OUTPUT_ACTIVE` が維持される。
-#[derive(Debug)]
-pub(crate) struct OutputActiveGuard;
-
-static OUTPUT_ACTIVE_DEPTH: AtomicU32 = AtomicU32::new(0);
-
-impl OutputActiveGuard {
-    pub(crate) fn begin() -> Self {
-        let prev = OUTPUT_ACTIVE_DEPTH.fetch_add(1, Ordering::AcqRel);
-        if prev == 0 {
-            crate::OUTPUT_ACTIVE.store(true, Ordering::Release);
-        }
-        Self
-    }
-}
-
-impl Drop for OutputActiveGuard {
-    fn drop(&mut self) {
-        let prev = OUTPUT_ACTIVE_DEPTH.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 {
-            crate::OUTPUT_ACTIVE.store(false, Ordering::Release);
-            crate::tsf::probe_bridge::post_drain_output_queue();
-        }
-    }
-}
+pub(crate) use crate::tsf::probe_bridge::OutputActiveGuard;
 
 /// VK_LSHIFT の仮想キーコード
 const VK_LSHIFT: u16 = 0xA0;
@@ -55,13 +25,6 @@ const VK_LSHIFT: u16 = 0xA0;
 pub(crate) fn fmt_ms(ms: u64) -> String {
     if ms == u64::MAX { "∞".to_owned() } else { ms.to_string() }
 }
-
-/// VK/TSF モードでの最終 SendInput 時刻（`mark_vk_output` が書き込む）。
-///
-/// `execute_one` → `send_keys` のコールスタックから `with_app` を呼ぶと再入 UB になるため、
-/// `last_hook_activity_ms` の代替として atomic に書き込む。
-/// 読み取り側では `last_hook_activity_ms.max(LAST_VK_OUTPUT_MS)` を使う。
-pub static LAST_VK_OUTPUT_MS: AtomicU64 = AtomicU64::new(0);
 
 
 
@@ -274,7 +237,7 @@ pub struct Output {
     ///
     /// `send_romaji_as_tsf` / `send_romaji_batched` が cold start 時に設定し、
     /// `advance_tsf_probe` がタイマーごとに状態を進める。
-    /// `_guard` により OUTPUT_ACTIVE が保留期間中維持される。
+    /// `_guard` により OUTPUT_GATE.active が保留期間中維持される。
     pub(crate) pending_tsf: std::cell::RefCell<Option<TsfProbeData>>,
     /// フォーカス変更直後の TSF モード確定前にキーを一時保留するゲート。
     ///
@@ -329,7 +292,7 @@ pub(crate) enum TsfProbePhase {
 ///
 /// `Output::pending_tsf` に格納し、TIMER_TSF_PROBE ハンドラが
 /// `advance_tsf_probe` を呼んで状態を進める。
-/// `_guard` によって OUTPUT_ACTIVE が維持される。
+/// `_guard` によって OUTPUT_GATE.active が維持される。
 pub(crate) struct TsfProbeData {
     pub romaji: String,
     pub cold_n: u32,
@@ -496,7 +459,7 @@ impl Output {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
-        crate::OBS_FOCUS_NAMECHANGE_SEQ.store(0, Ordering::Relaxed);
+        crate::tsf::observer::TSF_OBS.focus_namechange_seq.store(0, Ordering::Relaxed);
         // VK_DBE_HIRAGANA (F2) を送信: VK_IME_ON (0x16) は IME ON 状態をセットするだけで
         // TSF composition context の初期化をトリガーしない。WezTerm は物理 F2 受信時に
         // TSF composition を初期化するため、同等の VK_DBE_HIRAGANA を送る必要がある。
@@ -530,7 +493,7 @@ impl Output {
     /// `with_app` は `execute_one` からの再入 UB を避けるため使用不可。
     /// グローバル atomic に書き込み、読み取り側で `last_hook_activity_ms` と max を取る。
     fn mark_vk_output() {
-        LAST_VK_OUTPUT_MS.store(crate::hook::current_tick_ms(), Ordering::Relaxed);
+        crate::tsf::probe_bridge::OUTPUT_GATE.last_vk_output_ms.store(crate::hook::current_tick_ms(), Ordering::Relaxed);
     }
 
     /// アクション列を順に実行する
@@ -602,7 +565,7 @@ impl Output {
 
         // executor が「output in-flight」判定に使う送信時刻を記録する。
         self.mark_send();
-        // session ここで Drop → OutputActiveGuard::drop() → OUTPUT_ACTIVE=false + drain
+        // session ここで Drop → OutputActiveGuard::drop() → OUTPUT_GATE.active=false + drain
     }
 
     /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
@@ -857,7 +820,7 @@ impl Output {
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.iter().enumerate() {
-            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS
+            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms
                 .load(Relaxed);
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let vks: Vec<String> = run.iter().map(|&(v, s)| {
@@ -938,7 +901,7 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_n };
 
         {
-            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
@@ -958,7 +921,7 @@ impl Output {
         // Probing 状態の warm 投機送信: GJI 監視が有効なら LiteralDetect で検証する。
         // (1) raw TSF literal 検出と回復, (2) advance_tsf_probe が on_ready() を呼んで
         //     ゲートを Ready に進める、という 2 つの目的を兼ねる。
-        let gji_active = crate::tsf::observer::OBS_GJI_MONITOR_OK.load(Relaxed);
+        let gji_active = crate::tsf::observer::TSF_OBS.gji_monitor_ok.load(Relaxed);
         if self.tsf_gate.state() == crate::tsf::gate::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
@@ -1102,7 +1065,7 @@ impl Output {
     pub(crate) fn advance_tsf_probe(&self) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
         use crate::tsf::probe::DetectionResult;
-        use crate::tsf::observer::{OBS_GJI_LAST_IO_MS, OBS_GJI_MONITOR_OK};
+        use crate::tsf::observer::TSF_OBS;
 
         let Some(data) = self.pending_tsf.borrow_mut().take() else {
             return true;
@@ -1126,13 +1089,13 @@ impl Output {
                 log::debug!("[tsf-probe] cold={cold_n} GjiProbe 完了 ({elapsed}ms)");
 
                 if needs_settle_check {
-                    let gji_last = OBS_GJI_LAST_IO_MS.load(Relaxed);
+                    let gji_last = TSF_OBS.gji_last_io_ms.load(Relaxed);
                     let probe_settled = gji_last >= probe.warmup_sent_ms;
-                    let gji_monitor_ok = OBS_GJI_MONITOR_OK.load(Relaxed);
+                    let gji_monitor_ok = TSF_OBS.gji_monitor_ok.load(Relaxed);
                     let is_ime_init_cold = cold_reason.requires_settle();
                     if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
                         const SETTLE_TIMEOUT_MS: u64 = 300;
-                        let nc_baseline = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed);
+                        let nc_baseline = crate::tsf::observer::TSF_OBS.focus_namechange_seq.load(Relaxed);
                         let settle_reason = if !probe_settled {
                             "probe timeout"
                         } else {
@@ -1173,7 +1136,7 @@ impl Output {
                 prepend_f2_warmup, used_eager_path,
             } => {
                 let now = crate::hook::current_tick_ms();
-                let nc_fired = crate::OBS_FOCUS_NAMECHANGE_SEQ.load(Relaxed) != nc_baseline;
+                let nc_fired = crate::tsf::observer::TSF_OBS.focus_namechange_seq.load(Relaxed) != nc_baseline;
                 let timed_out = now >= deadline_ms;
 
                 if !nc_fired && !timed_out {
@@ -1312,7 +1275,7 @@ impl Output {
     /// GjiProbe / NameChangeWait / SecondaryGjiProbe 完了後の TSF 送信を実行する。
     ///
     /// LiteralDetect フェーズが必要なら pending_tsf にセットして `false` を返す。
-    /// 不要なら `true` を返す（guard がここで drop → OUTPUT_ACTIVE=false + drain）。
+    /// 不要なら `true` を返す（guard がここで drop → OUTPUT_GATE.active=false + drain）。
     fn do_transmit_tsf(
         &self,
         romaji: String,
@@ -1323,7 +1286,6 @@ impl Output {
         guard: OutputActiveGuard,
     ) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
-        use crate::tsf::observer::OBS_GJI_MONITOR_OK;
 
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
@@ -1333,7 +1295,7 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n };
 
         {
-            let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
+            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             // SAFETY: IMM32 API; called from message-loop thread.
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
@@ -1352,7 +1314,7 @@ impl Output {
         self.send_deferred_probe_vks_from(deferred_vks, true);
         self.mark_composition_warm();
 
-        let gji_active = OBS_GJI_MONITOR_OK.load(Relaxed);
+        let gji_active = crate::tsf::observer::TSF_OBS.gji_monitor_ok.load(Relaxed);
         if prepend_f2_warmup && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
@@ -1361,7 +1323,7 @@ impl Output {
                 TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms }, guard);
             return false;
         }
-        // guard drops here → OUTPUT_ACTIVE=false + drain
+        // guard drops here → OUTPUT_GATE.active=false + drain
         true
     }
 

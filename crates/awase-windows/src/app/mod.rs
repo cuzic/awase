@@ -259,19 +259,19 @@ fn check_keyboard_layout_on_change() {
 /// # Safety
 /// Win32 キーボードフックコールバックはメインスレッドで呼ばれる。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    if awase_windows::OUTPUT_ACTIVE.load(Ordering::Relaxed) {
+    if awase_windows::OUTPUT_GATE.active.load(Ordering::Relaxed) {
         log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
         awase_windows::INPUT_DEFER.defer_during_output(event);
         return CallbackResult::Consumed;
     }
-    // OUTPUT_ACTIVE=false だがキューに未 drain エントリがある場合、
+    // OUTPUT_GATE.active=false だがキューに未 drain エントリがある場合、
     // 対応 KeyDown が drain 待ちの間に KeyUp が届いた（drain race）。
     // drain で synthetic KeyUp が注入されるが、念のためログを残す。
     if matches!(event.event_type, awase::types::KeyEventType::KeyUp) {
         if let Some(len) = awase_windows::INPUT_DEFER.pending_len_nonblocking() {
             if len > 0 {
                 log::debug!(
-                    "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {len} item(s) (OUTPUT_ACTIVE=false)",
+                    "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {len} item(s) (OUTPUT_GATE.active=false)",
                     event.vk_code.0
                 );
             }

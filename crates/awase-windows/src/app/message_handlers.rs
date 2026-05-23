@@ -68,7 +68,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             static PING_SENT_AT: AtomicU64 = AtomicU64::new(0);
             let ping_sent = PING_SENT_AT.load(Ordering::Relaxed);
             let last_activity = app.platform_state.last_hook_activity_ms
-                .max(awase_windows::output::LAST_VK_OUTPUT_MS.load(Ordering::Relaxed));
+                .max(awase_windows::OUTPUT_GATE.last_vk_output_ms.load(Ordering::Relaxed));
 
             if ping_sent > 0 && last_activity < ping_sent {
                 let stale_ms = hook::current_tick_ms() - last_activity;
