@@ -397,6 +397,83 @@ pub struct ValidatedConfig {
 }
 
 impl AppConfig {
+    fn validate_thresholds(g: &mut GeneralConfig, w: &mut Vec<String>) {
+        if g.simultaneous_threshold_ms < 10 || g.simultaneous_threshold_ms > 500 {
+            w.push(format!(
+                "simultaneous_threshold_ms ({}) は 10-500 の範囲外です。100 にリセットします",
+                g.simultaneous_threshold_ms
+            ));
+            g.simultaneous_threshold_ms = 100;
+        }
+        if g.speculative_delay_ms > g.simultaneous_threshold_ms {
+            w.push(format!(
+                "speculative_delay_ms ({}) が threshold ({}) を超えています。30 にリセットします",
+                g.speculative_delay_ms, g.simultaneous_threshold_ms
+            ));
+            g.speculative_delay_ms = 30;
+        }
+    }
+
+    fn validate_layouts(g: &mut GeneralConfig, w: &mut Vec<String>) {
+        if g.layouts_dir.contains("..") {
+            w.push(format!("layouts_dir に '..' が含まれています: {}", g.layouts_dir));
+            g.layouts_dir = "layout".to_string();
+        }
+        if !g.default_layout.to_ascii_lowercase().ends_with(".yab") {
+            w.push(format!(
+                "default_layout は .yab で終わる必要があります: {}",
+                g.default_layout
+            ));
+        }
+    }
+
+    fn validate_thumb_keys(g: &GeneralConfig, w: &mut Vec<String>) {
+        if g.left_thumb_key == "Kana"
+            || g.left_thumb_key == "VK_KANA"
+            || g.right_thumb_key == "Kana"
+            || g.right_thumb_key == "VK_KANA"
+        {
+            w.push(
+                "Kana キーはロック型キーで KeyUp イベントが発生しません。\
+                 親指キーとしての使用は推奨しません。"
+                    .to_string(),
+            );
+        }
+    }
+
+    fn validate_linux_backend(g: &mut GeneralConfig, w: &mut Vec<String>) {
+        if !["evdev", "x11", "libinput"].contains(&g.linux_input_backend.as_str()) {
+            w.push(format!(
+                "linux_input_backend \"{}\" は不正です。evdev/x11/libinput のいずれかを指定してください。evdev にリセットします",
+                g.linux_input_backend
+            ));
+            g.linux_input_backend = "evdev".to_string();
+        }
+        if let Some(ref dev) = g.linux_evdev_device {
+            if !dev.starts_with("/dev/") {
+                w.push(format!(
+                    "linux_evdev_device \"{dev}\" は /dev/ で始まる必要があります。自動検出にリセットします"
+                ));
+                g.linux_evdev_device = None;
+            }
+        }
+    }
+
+    fn validate_app_override_entries(overrides: &AppOverrides, w: &mut Vec<String>) {
+        Self::check_override_list(&overrides.force_text, "force_text", w);
+        Self::check_override_list(&overrides.force_bypass, "force_bypass", w);
+        Self::check_override_list(&overrides.force_vk, "force_vk", w);
+        Self::check_override_list(&overrides.force_tsf, "force_tsf", w);
+    }
+
+    fn check_override_list(list: &[AppOverrideEntry], list_name: &str, w: &mut Vec<String>) {
+        for entry in list {
+            if entry.process.is_empty() || entry.class.is_empty() {
+                w.push(format!("app_overrides.{list_name} に空のエントリがあります"));
+            }
+        }
+    }
+
     /// 設定値を検証し、`ValidatedConfig` を返す。
     ///
     /// 不正な値がある場合は警告メッセージのリストと共に返す（厳密なエラーではなくデフォルト値にフォールバック）。
@@ -404,100 +481,13 @@ impl AppConfig {
     pub fn validate(self) -> (ValidatedConfig, Vec<String>) {
         let mut warnings = Vec::new();
         let mut general = self.general;
-
-        // threshold: 10..=500
-        if general.simultaneous_threshold_ms < 10 || general.simultaneous_threshold_ms > 500 {
-            warnings.push(format!(
-                "simultaneous_threshold_ms ({}) は 10-500 の範囲外です。100 にリセットします",
-                general.simultaneous_threshold_ms
-            ));
-            general.simultaneous_threshold_ms = 100;
-        }
-
-        // speculative_delay: 0..=threshold
-        if general.speculative_delay_ms > general.simultaneous_threshold_ms {
-            warnings.push(format!(
-                "speculative_delay_ms ({}) が threshold ({}) を超えています。30 にリセットします",
-                general.speculative_delay_ms, general.simultaneous_threshold_ms
-            ));
-            general.speculative_delay_ms = 30;
-        }
-
-        // layouts_dir: no path traversal
-        if general.layouts_dir.contains("..") {
-            warnings.push(format!(
-                "layouts_dir に '..' が含まれています: {}",
-                general.layouts_dir
-            ));
-            general.layouts_dir = "layout".to_string();
-        }
-
-        // default_layout: must end with .yab
-        if !general
-            .default_layout
-            .to_ascii_lowercase()
-            .ends_with(".yab")
-        {
-            warnings.push(format!(
-                "default_layout は .yab で終わる必要があります: {}",
-                general.default_layout
-            ));
-        }
-
-        // Kana キーはロック型キーで KeyUp が発生しないため親指キーとして非推奨
-        if general.left_thumb_key == "Kana"
-            || general.left_thumb_key == "VK_KANA"
-            || general.right_thumb_key == "Kana"
-            || general.right_thumb_key == "VK_KANA"
-        {
-            warnings.push(
-                "Kana キーはロック型キーで KeyUp イベントが発生しません。\
-                 親指キーとしての使用は推奨しません。"
-                    .to_string(),
-            );
-        }
-
-        // linux_input_backend: must be one of "evdev", "x11", "libinput"
-        if !["evdev", "x11", "libinput"].contains(&general.linux_input_backend.as_str()) {
-            warnings.push(format!(
-                "linux_input_backend \"{}\" は不正です。evdev/x11/libinput のいずれかを指定してください。evdev にリセットします",
-                general.linux_input_backend
-            ));
-            general.linux_input_backend = "evdev".to_string();
-        }
-
-        // linux_evdev_device: if specified, must start with "/dev/"
-        if let Some(ref dev) = general.linux_evdev_device {
-            if !dev.starts_with("/dev/") {
-                warnings.push(format!(
-                    "linux_evdev_device \"{dev}\" は /dev/ で始まる必要があります。自動検出にリセットします"
-                ));
-                general.linux_evdev_device = None;
-            }
-        }
-
-        // app_overrides: process names not empty
         let app_overrides = self.app_overrides;
-        for entry in &app_overrides.force_text {
-            if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("app_overrides.force_text に空のエントリがあります".to_string());
-            }
-        }
-        for entry in &app_overrides.force_bypass {
-            if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("app_overrides.force_bypass に空のエントリがあります".to_string());
-            }
-        }
-        for entry in &app_overrides.force_vk {
-            if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("app_overrides.force_vk に空のエントリがあります".to_string());
-            }
-        }
-        for entry in &app_overrides.force_tsf {
-            if entry.process.is_empty() || entry.class.is_empty() {
-                warnings.push("app_overrides.force_tsf に空のエントリがあります".to_string());
-            }
-        }
+
+        Self::validate_thresholds(&mut general, &mut warnings);
+        Self::validate_layouts(&mut general, &mut warnings);
+        Self::validate_thumb_keys(&general, &mut warnings);
+        Self::validate_linux_backend(&mut general, &mut warnings);
+        Self::validate_app_override_entries(&app_overrides, &mut warnings);
 
         (
             ValidatedConfig {
