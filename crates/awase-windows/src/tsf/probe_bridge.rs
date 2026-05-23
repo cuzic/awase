@@ -6,7 +6,14 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-/// 出力セッションのゲート状態（クロススレッド共有）。
+/// SendInput 出力中にキー入力を保留するゲート。
+///
+/// # OutputGate vs TsfGate
+/// - `OutputGate`: `send_keys` 実行中に外部キー入力を defer するゲート（再入防止）。
+/// - `TsfGate` (in `probe.rs`): TSF warm-up 完了まで出力キューを保留するゲート。
+/// 両者は独立した目的を持ち、混同しないこと。
+///
+/// ## 内部フィールド（クロススレッド共有）
 ///
 /// - `active`: true の間、フックコールバックはキーを INPUT_DEFER に退避する
 /// - `depth`: RAII Guard の参照カウント（0→1 で active=true、1→0 で active=false）

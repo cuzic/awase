@@ -195,7 +195,7 @@ pub struct Output {
 pub(crate) enum TsfProbePhase {
     /// GJI 静止待ち（TSF warmup 後または Chrome F2 後）
     GjiProbe {
-        probe: crate::tsf::probe::TsfReadinessJudge,
+        probe: crate::tsf::probe::TsfReadinessProbe,
         total_max_ms: u64,
         /// プローブ完了後に NAMECHANGE 確認が必要か（eager_probe_with_settle パスのみ true）
         needs_settle_check: bool,
@@ -215,7 +215,7 @@ pub(crate) enum TsfProbePhase {
     },
     /// GJI 二次プローブ（OBJ_NAMECHANGE 後）
     SecondaryGjiProbe {
-        probe: crate::tsf::probe::TsfReadinessJudge,
+        probe: crate::tsf::probe::TsfReadinessProbe,
         total_max_ms: u64,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
@@ -228,7 +228,7 @@ pub(crate) enum TsfProbePhase {
     },
     /// Chrome/VK probe（F2 後の GJI 静止待ち）
     ChromeProbe {
-        probe: crate::tsf::probe::TsfReadinessJudge,
+        probe: crate::tsf::probe::TsfReadinessProbe,
         total_max_ms: u64,
     },
 }
@@ -240,7 +240,7 @@ pub(crate) enum TsfProbePhase {
 /// `_guard` によって OUTPUT_GATE.active が維持される。
 pub(crate) struct TsfProbeData {
     pub romaji: String,
-    pub cold_n: u32,
+    pub cold_seq: u32,
     pub phase: TsfProbePhase,
     /// probe 進行中に受信した VK を保留するキュー。
     ///
@@ -266,7 +266,7 @@ struct WarmupOutcome {
     /// eager warmup パス（既存の F2 経由）を通ったか（Unicode 送信判定に使用）
     used_eager_path: bool,
     /// cold start シーケンス番号（ログ相関用）
-    cold_n: u32,
+    cold_seq: u32,
 }
 
 impl Output {
@@ -336,8 +336,8 @@ impl Output {
     /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
     ///
     /// フォーカス遷移直後の最初のキーで呼ぶ。
-    pub fn suppress_warm_epoch(&self) {
-        self.composition.suppress_warm_epoch();
+    pub fn reset_warm_epoch(&self) {
+        self.composition.reset_warm_epoch();
     }
 
     /// IME composition context をウォーム状態にマークする。
@@ -671,13 +671,13 @@ impl Output {
     fn put_back_probe(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         phase: TsfProbePhase,
         guard: OutputActiveGuard,
     ) {
         *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
-            romaji, cold_n, deferred_vks, phase, _guard: guard,
+            romaji, cold_seq, deferred_vks, phase, _guard: guard,
         });
     }
 
@@ -718,26 +718,26 @@ impl Output {
             // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
-            let cold_n = self.composition.increment_cold_start_count();
+            let cold_seq = self.composition.increment_cold_start_count();
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
-            log::debug!("[h1-window] cold={cold_n} class={win_class}");
+            log::debug!("[h1-window] cold={cold_seq} class={win_class}");
 
-            log::debug!("[h1-run] cold={cold_n} F2 via SendMessageTimeout");
+            log::debug!("[h1-run] cold={cold_seq} F2 via SendMessageTimeout");
             let f2_sent_ms = crate::hook::current_tick_ms();
             // SAFETY: sends WM_KEYDOWN/WM_KEYUP to the foreground window via SendMessageTimeout.
             let f2_ok = unsafe { crate::ime::send_f2_via_sendmessage() };
-            log::debug!("[h1-run] cold={cold_n} F2 SendMessageTimeout delivered={f2_ok}");
+            log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
 
             // ノンブロッキング Chrome プローブを開始
-            let probe = crate::tsf::probe::TsfReadinessJudge::new(
+            let probe = crate::tsf::probe::TsfReadinessProbe::new(
                 f2_sent_ms,
-                cold_n,
+                cold_seq,
                 crate::tuning::CHROME_PROBE_MIN_MS,
             );
             let guard = OutputActiveGuard::begin();
             *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
                 romaji: romaji.to_string(),
-                cold_n,
+                cold_seq,
                 deferred_vks: Vec::new(),
                 phase: TsfProbePhase::ChromeProbe { probe, total_max_ms: crate::tuning::CHROME_PROBE_MAX_MS },
                 _guard: guard,
@@ -791,7 +791,7 @@ impl Output {
     }
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
-    fn send_vk_runs(&self, chars: &[(u16, bool)], cold_n: u32) {
+    fn send_vk_runs(&self, chars: &[(u16, bool)], cold_seq: u32) {
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
@@ -814,7 +814,7 @@ impl Output {
                 if s { format!("S{v:02X}") } else { format!("{v:02X}") }
             }).collect();
             log::debug!(
-                "[h1-run] cold={cold_n} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
+                "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
                 vks.join(","),
             );
             let mut inputs = Vec::with_capacity(run.len() * 4);
@@ -861,11 +861,11 @@ impl Output {
             // ノンブロッキング warmup を開始して pending_tsf に保留
             let started = crate::tsf::cold_warmup::ColdWarmupSequence::new(self)
                 .run_start(session_expired, elapsed);
-            let cold_n = started.probe.cold_n;
+            let cold_seq = started.probe.cold_seq;
             let guard = OutputActiveGuard::begin();
             *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
                 romaji: romaji.to_string(),
-                cold_n,
+                cold_seq,
                 deferred_vks: Vec::new(),
                 phase: TsfProbePhase::GjiProbe {
                     probe: started.probe,
@@ -882,15 +882,15 @@ impl Output {
         }
 
         // warm パス: 即座に送信
-        let cold_n = self.composition.cold_start_count();
-        let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_n };
+        let cold_seq = self.composition.cold_start_count();
+        let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_seq };
 
         {
             let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
-                "[h1-send] cold={cold_n} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
+                "[h1-send] cold={cold_seq} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
                  conv={} ROMAN={} NATIVE={}",
                 chars.len(),
                 conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
@@ -913,7 +913,7 @@ impl Output {
             let guard = OutputActiveGuard::begin();
             self.put_back_probe(
                 romaji.to_string(),
-                cold_n,
+                cold_seq,
                 Vec::new(),
                 TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms },
                 guard,
@@ -1051,19 +1051,19 @@ impl Output {
         let Some(data) = self.pending_tsf.borrow_mut().take() else {
             return true;
         };
-        let TsfProbeData { romaji, cold_n, phase, deferred_vks, _guard: guard } = data;
+        let TsfProbeData { romaji, cold_seq, phase, deferred_vks, _guard: guard } = data;
 
         match phase {
             TsfProbePhase::GjiProbe { probe, total_max_ms, needs_settle_check, cold_reason, prepend_f2_warmup, used_eager_path } =>
-                self.advance_gji_probe(romaji, cold_n, deferred_vks, guard, probe, total_max_ms, needs_settle_check, cold_reason, prepend_f2_warmup, used_eager_path),
+                self.advance_gji_probe(romaji, cold_seq, deferred_vks, guard, probe, total_max_ms, needs_settle_check, cold_reason, prepend_f2_warmup, used_eager_path),
             TsfProbePhase::NameChangeWait { nc_baseline, deadline_ms, fresh_f2_ms, probe_settled, cold_reason, prepend_f2_warmup, used_eager_path } =>
-                self.advance_namechange_wait(romaji, cold_n, deferred_vks, guard, nc_baseline, deadline_ms, fresh_f2_ms, probe_settled, cold_reason, prepend_f2_warmup, used_eager_path),
+                self.advance_namechange_wait(romaji, cold_seq, deferred_vks, guard, nc_baseline, deadline_ms, fresh_f2_ms, probe_settled, cold_reason, prepend_f2_warmup, used_eager_path),
             TsfProbePhase::SecondaryGjiProbe { probe, total_max_ms, prepend_f2_warmup, used_eager_path } =>
-                self.advance_secondary_gji_probe(romaji, cold_n, deferred_vks, guard, probe, total_max_ms, prepend_f2_warmup, used_eager_path),
+                self.advance_secondary_gji_probe(romaji, cold_seq, deferred_vks, guard, probe, total_max_ms, prepend_f2_warmup, used_eager_path),
             TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms } =>
-                self.advance_literal_detect(romaji, cold_n, deferred_vks, guard, detector, ze_bs_count, deadline_ms),
+                self.advance_literal_detect(romaji, cold_seq, deferred_vks, guard, detector, ze_bs_count, deadline_ms),
             TsfProbePhase::ChromeProbe { probe, total_max_ms } =>
-                self.advance_chrome_probe(romaji, cold_n, deferred_vks, guard, probe, total_max_ms),
+                self.advance_chrome_probe(romaji, cold_seq, deferred_vks, guard, probe, total_max_ms),
         }
     }
 
@@ -1071,10 +1071,10 @@ impl Output {
     fn advance_gji_probe(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
-        probe: crate::tsf::probe::TsfReadinessJudge,
+        probe: crate::tsf::probe::TsfReadinessProbe,
         total_max_ms: u64,
         needs_settle_check: bool,
         cold_reason: ColdReason,
@@ -1084,7 +1084,7 @@ impl Output {
         use crate::tsf::observer::with_tsf_obs;
 
         if !probe.check_now(total_max_ms) {
-            self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::GjiProbe {
+            self.put_back_probe(romaji, cold_seq, deferred_vks, TsfProbePhase::GjiProbe {
                 probe, total_max_ms, needs_settle_check, cold_reason,
                 prepend_f2_warmup, used_eager_path,
             }, guard);
@@ -1092,7 +1092,7 @@ impl Output {
         }
 
         let elapsed = crate::hook::current_tick_ms().saturating_sub(probe.warmup_sent_ms);
-        log::debug!("[tsf-probe] cold={cold_n} GjiProbe 完了 ({elapsed}ms)");
+        log::debug!("[tsf-probe] cold={cold_seq} GjiProbe 完了 ({elapsed}ms)");
 
         if needs_settle_check {
             let gji_last = with_tsf_obs(|obs| obs.gji_last_io_ms());
@@ -1101,20 +1101,20 @@ impl Output {
             let is_ime_init_cold = cold_reason.requires_settle();
             if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
                 return self.start_namechange_wait(
-                    romaji, cold_n, deferred_vks, guard,
+                    romaji, cold_seq, deferred_vks, guard,
                     probe_settled, cold_reason, prepend_f2_warmup, used_eager_path,
                 );
             }
         }
 
-        self.do_transmit_tsf(romaji, cold_n, prepend_f2_warmup, used_eager_path, deferred_vks, guard)
+        self.do_transmit_tsf(romaji, cold_seq, prepend_f2_warmup, used_eager_path, deferred_vks, guard)
     }
 
     /// settle チェック失敗後に fresh F2 を送信して NameChangeWait フェーズへ遷移する。
     fn start_namechange_wait(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
         probe_settled: bool,
@@ -1127,7 +1127,7 @@ impl Output {
         let nc_baseline = with_tsf_obs(|obs| obs.focus_namechange_seq());
         let settle_reason = if !probe_settled { "probe timeout" } else { "NativeF2Consumed/SetOpenTrue" };
         log::debug!(
-            "[tsf-probe] cold={cold_n} {settle_reason} → fresh F2 + NameChangeWait (nc_seq={nc_baseline})"
+            "[tsf-probe] cold={cold_seq} {settle_reason} → fresh F2 + NameChangeWait (nc_seq={nc_baseline})"
         );
         const VK_DBE_HIRAGANA: u16 = 0xF2;
         let refresh = [
@@ -1143,7 +1143,7 @@ impl Output {
             );
         }
         let deadline_ms = fresh_f2_ms + crate::tuning::SETTLE_TIMEOUT_MS;
-        self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::NameChangeWait {
+        self.put_back_probe(romaji, cold_seq, deferred_vks, TsfProbePhase::NameChangeWait {
             nc_baseline, deadline_ms, fresh_f2_ms, probe_settled,
             cold_reason, prepend_f2_warmup, used_eager_path,
         }, guard);
@@ -1154,7 +1154,7 @@ impl Output {
     fn advance_namechange_wait(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
         nc_baseline: u32,
@@ -1172,7 +1172,7 @@ impl Output {
         let timed_out = now >= deadline_ms;
 
         if !nc_fired && !timed_out {
-            self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::NameChangeWait {
+            self.put_back_probe(romaji, cold_seq, deferred_vks, TsfProbePhase::NameChangeWait {
                 nc_baseline, deadline_ms, fresh_f2_ms, probe_settled,
                 cold_reason, prepend_f2_warmup, used_eager_path,
             }, guard);
@@ -1181,53 +1181,53 @@ impl Output {
 
         let elapsed = now.saturating_sub(fresh_f2_ms);
         log::debug!(
-            "[tsf-probe] cold={cold_n} NameChangeWait → nc_fired={nc_fired} timed_out={timed_out} ({elapsed}ms)"
+            "[tsf-probe] cold={cold_seq} NameChangeWait → nc_fired={nc_fired} timed_out={timed_out} ({elapsed}ms)"
         );
 
         if nc_fired && !probe_settled {
             log::debug!(
-                "[tsf-probe] cold={cold_n} OBJ_NAMECHANGE後 GJI 二次プローブ (max {}ms)",
+                "[tsf-probe] cold={cold_seq} OBJ_NAMECHANGE後 GJI 二次プローブ (max {}ms)",
                 crate::tuning::GJI_POST_NAMECHANGE_MS
             );
-            let probe = crate::tsf::probe::TsfReadinessJudge::new(fresh_f2_ms, cold_n, 0);
-            self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::SecondaryGjiProbe {
+            let probe = crate::tsf::probe::TsfReadinessProbe::new(fresh_f2_ms, cold_seq, 0);
+            self.put_back_probe(romaji, cold_seq, deferred_vks, TsfProbePhase::SecondaryGjiProbe {
                 probe, total_max_ms: crate::tuning::GJI_POST_NAMECHANGE_MS,
                 prepend_f2_warmup, used_eager_path,
             }, guard);
             return false;
         }
 
-        self.do_transmit_tsf(romaji, cold_n, prepend_f2_warmup, used_eager_path, deferred_vks, guard)
+        self.do_transmit_tsf(romaji, cold_seq, prepend_f2_warmup, used_eager_path, deferred_vks, guard)
     }
 
     /// SecondaryGjiProbe フェーズを1ステップ進める。
     fn advance_secondary_gji_probe(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
-        probe: crate::tsf::probe::TsfReadinessJudge,
+        probe: crate::tsf::probe::TsfReadinessProbe,
         total_max_ms: u64,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
     ) -> bool {
         if !probe.check_now(total_max_ms) {
-            self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::SecondaryGjiProbe {
+            self.put_back_probe(romaji, cold_seq, deferred_vks, TsfProbePhase::SecondaryGjiProbe {
                 probe, total_max_ms, prepend_f2_warmup, used_eager_path,
             }, guard);
             return false;
         }
         let elapsed = crate::hook::current_tick_ms().saturating_sub(probe.warmup_sent_ms);
-        log::debug!("[tsf-probe] cold={cold_n} SecondaryGjiProbe 完了 ({elapsed}ms)");
-        self.do_transmit_tsf(romaji, cold_n, prepend_f2_warmup, used_eager_path, deferred_vks, guard)
+        log::debug!("[tsf-probe] cold={cold_seq} SecondaryGjiProbe 完了 ({elapsed}ms)");
+        self.do_transmit_tsf(romaji, cold_seq, prepend_f2_warmup, used_eager_path, deferred_vks, guard)
     }
 
     /// LiteralDetect フェーズを1ステップ進める。
     fn advance_literal_detect(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
         detector: crate::tsf::probe::LiteralDetector,
@@ -1238,19 +1238,19 @@ impl Output {
         use crate::tsf::probe::DetectionResult;
 
         let Some(detection) = detector.check_now(deadline_ms) else {
-            self.put_back_probe(romaji, cold_n, deferred_vks,
+            self.put_back_probe(romaji, cold_seq, deferred_vks,
                 TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms }, guard);
             return false;
         };
         match detection {
             DetectionResult::CompositionConfirmed => {
-                log::debug!("[raw-tsf-literal] cold={cold_n} composition confirmed");
+                log::debug!("[raw-tsf-literal] cold={cold_seq} composition confirmed");
             }
             DetectionResult::SuspectedLiteral => {
                 let consecutive = self.composition.consecutive_count();
                 if consecutive == 0 {
                     log::warn!(
-                        "[raw-tsf-literal] cold={cold_n} raw TSF literal suspected \
+                        "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
                         → backspace ×{ze_bs_count} + re-send {romaji:?} scheduled \
                         + mark cold"
                     );
@@ -1260,7 +1260,7 @@ impl Output {
                         .unwrap_or_else(|e| e.into_inner()) = romaji;
                 } else {
                     log::warn!(
-                        "[raw-tsf-literal] cold={cold_n} consecutive raw-tsf-literal \
+                        "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
                         (count={}) → likely false positive, giving up",
                         consecutive + 1,
                     );
@@ -1277,18 +1277,18 @@ impl Output {
     fn advance_chrome_probe(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
-        probe: crate::tsf::probe::TsfReadinessJudge,
+        probe: crate::tsf::probe::TsfReadinessProbe,
         total_max_ms: u64,
     ) -> bool {
         if !probe.check_now(total_max_ms) {
-            self.put_back_probe(romaji, cold_n, deferred_vks,
+            self.put_back_probe(romaji, cold_seq, deferred_vks,
                 TsfProbePhase::ChromeProbe { probe, total_max_ms }, guard);
             return false;
         }
-        log::debug!("[tsf-probe] cold={cold_n} ChromeProbe 完了 → batched 送信");
+        log::debug!("[tsf-probe] cold={cold_seq} ChromeProbe 完了 → batched 送信");
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         self.send_romaji_batch_immediate(&romaji, &chars);
         self.send_deferred_probe_vks_from(deferred_vks, false);
@@ -1337,7 +1337,7 @@ impl Output {
     fn do_transmit_tsf(
         &self,
         romaji: String,
-        cold_n: u32,
+        cold_seq: u32,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
         deferred_vks: Vec<(u16, bool)>,
@@ -1348,7 +1348,7 @@ impl Output {
             return true;
         }
 
-        let outcome = WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n };
+        let outcome = WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_seq };
 
         {
             let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
@@ -1356,7 +1356,7 @@ impl Output {
             // SAFETY: IMM32 API; called from message-loop thread.
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
-                "[h1-send] cold={cold_n} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
+                "[h1-send] cold={cold_seq} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
                  conv={} ROMAN={} NATIVE={}",
                 chars.len(),
                 conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
@@ -1375,7 +1375,7 @@ impl Output {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
             // deferred_vks は send_deferred_probe_vks_from で既に drain 済み
-            self.put_back_probe(romaji, cold_n, Vec::new(),
+            self.put_back_probe(romaji, cold_seq, Vec::new(),
                 TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms }, guard);
             return false;
         }
@@ -1428,7 +1428,7 @@ impl<'a> TsfSendPipeline<'a> {
             let utf16 = kana.encode_utf16(&mut utf16_buf);
             log::debug!(
                 "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
-                outcome.cold_n, kana, kana as u32,
+                outcome.cold_seq, kana, kana as u32,
             );
             let mut inputs = Vec::with_capacity(utf16.len() * 2);
             for &code_unit in utf16.iter() {
@@ -1466,7 +1466,7 @@ impl<'a> TsfSendPipeline<'a> {
             }
             1
         } else {
-            self.output.send_vk_runs(chars, outcome.cold_n);
+            self.output.send_vk_runs(chars, outcome.cold_seq);
             chars.len()
         }
     }
