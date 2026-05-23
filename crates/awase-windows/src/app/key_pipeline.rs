@@ -151,6 +151,88 @@ impl<'a> KeyEventPipeline<'a> {
     }
 }
 
+/// フォーカスプローブの IME 更新抑制シグナルをまとめた値
+struct SuppressSignals {
+    sig1_warmup: bool,
+    sig2_gji: bool,
+    sig3_shadow: bool,
+    warmup_elapsed: u64,
+    gji_idle_ms: u64,
+}
+
+impl SuppressSignals {
+    fn any(&self) -> bool {
+        self.sig1_warmup || self.sig2_gji || self.sig3_shadow
+    }
+
+    fn primary_reason(&self) -> &'static str {
+        if self.sig1_warmup {
+            "warmup"
+        } else if self.sig2_gji {
+            "gji-io"
+        } else {
+            "shadow"
+        }
+    }
+}
+
+fn compute_suppress_signals(
+    now_ms: u64,
+    probe_age_ms: u64,
+    warmup_ms: u64,
+    gji_last_io_ms: u64,
+    last_focus_change_ms: u64,
+    shadow_on: bool,
+) -> SuppressSignals {
+    let warmup_elapsed = if warmup_ms > 0 {
+        now_ms.saturating_sub(warmup_ms)
+    } else {
+        u64::MAX
+    };
+    let sig1_warmup = warmup_elapsed < awase_windows::tuning::WARMUP_GRACE_MS;
+
+    let gji_active_after_focus = gji_last_io_ms > 0 && gji_last_io_ms >= last_focus_change_ms;
+    let gji_idle_ms = if gji_last_io_ms > 0 {
+        now_ms.saturating_sub(gji_last_io_ms)
+    } else {
+        u64::MAX
+    };
+    let sig2_gji = gji_active_after_focus && gji_idle_ms < awase_windows::tuning::GJI_SETTLE_GRACE_MS;
+
+    let sig3_shadow = shadow_on && probe_age_ms < awase_windows::tuning::SHADOW_GRACE_MS;
+
+    SuppressSignals { sig1_warmup, sig2_gji, sig3_shadow, warmup_elapsed, gji_idle_ms }
+}
+
+fn apply_effective_ime(app: &mut Runtime, effective: bool) {
+    let ms = hook::current_tick_ms();
+    app.platform_state.write_focus_probe(effective, ms);
+    if effective {
+        app.platform_state.reset_ime_detect_state();
+    }
+    app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
+}
+
+fn build_ime_on_suffix(
+    probe_ime_on: Option<bool>,
+    suppressed_reason: Option<&'static str>,
+    signals: &SuppressSignals,
+    probe_age_ms: u64,
+) -> String {
+    if let Some(reason) = suppressed_reason {
+        let detail = match reason {
+            "warmup" => format!("warmup:{}ms", signals.warmup_elapsed),
+            "gji-io" => format!("gji-io:{}ms", signals.gji_idle_ms),
+            _ => format!("shadow:{probe_age_ms}ms"),
+        };
+        format!("(suppressed:{detail})")
+    } else if probe_ime_on.is_none() {
+        "(stale)".to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// read_ime_state_fast_async の結果を app に適用する（with_app 内で呼ぶ）。
 /// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
 fn apply_focus_probe_to_app(
@@ -168,77 +250,48 @@ fn apply_focus_probe_to_app(
     app.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
 
     let now_ms = hook::current_tick_ms();
+    let signals = compute_suppress_signals(
+        now_ms, probe_age_ms, warmup_ms, gji_last_io_ms, last_focus_change_ms, shadow_on,
+    );
 
-    let warmup_elapsed = if warmup_ms > 0 { now_ms.saturating_sub(warmup_ms) } else { u64::MAX };
-    let sig1_warmup = warmup_elapsed < awase_windows::tuning::WARMUP_GRACE_MS;
-
-    let gji_active_after_focus =
-        gji_last_io_ms > 0 && gji_last_io_ms >= last_focus_change_ms;
-    let gji_idle_ms = if gji_last_io_ms > 0 {
-        now_ms.saturating_sub(gji_last_io_ms)
-    } else {
-        u64::MAX
-    };
-    let sig2_gji = gji_active_after_focus && gji_idle_ms < awase_windows::tuning::GJI_SETTLE_GRACE_MS;
-
-    let sig3_shadow = shadow_on && probe_age_ms < awase_windows::tuning::SHADOW_GRACE_MS;
-
-    let mut suppressed = false;
-    let mut suppress_reason = "";
-    if let Some(on) = probe.ime_on {
+    let suppressed_reason: Option<&'static str> = if let Some(on) = probe.ime_on {
         let effective = on && probe.is_japanese_ime;
-        if !effective && (sig1_warmup || sig2_gji || sig3_shadow) {
-            suppressed = true;
-            suppress_reason = if sig1_warmup {
-                "warmup"
-            } else if sig2_gji {
-                "gji-io"
-            } else {
-                "shadow"
-            };
+        if !effective && signals.any() {
+            Some(signals.primary_reason())
         } else {
-            let ms = hook::current_tick_ms();
-            app.platform_state.write_focus_probe(effective, ms);
-            if effective {
-                app.platform_state.reset_ime_detect_state();
-            }
-            app.platform_state
-                .apply_ime_observations(app.engine.is_user_enabled());
+            apply_effective_ime(app, effective);
+            None
         }
-    }
+    } else {
+        None
+    };
 
     let ime_on_after_probe = app.platform_state.ime_on();
     let input_mode_after_probe = app.platform_state.input_mode();
-    let ime_on_suffix = if suppressed {
-        let detail = match suppress_reason {
-            "warmup" => format!("warmup:{warmup_elapsed}ms"),
-            "gji-io" => format!("gji-io:{gji_idle_ms}ms"),
-            _ => format!("shadow:{probe_age_ms}ms"),
-        };
-        format!("(suppressed:{detail})")
-    } else if probe.ime_on.is_none() {
-        "(stale)".to_string()
-    } else {
-        String::new()
-    };
+    let ime_on_suffix = build_ime_on_suffix(probe.ime_on, suppressed_reason, &signals, probe_age_ms);
+
     log::info!(
-        "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={sig1_warmup} sig2={sig2_gji} sig3={sig3_shadow}]",
+        "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={} sig2={} sig3={}]",
         probe_age_ms,
         ime_on_after_probe,
         ime_on_suffix,
         input_mode_after_probe,
-        if gji_idle_ms == u64::MAX { "never".to_string() } else { gji_idle_ms.to_string() },
+        if signals.gji_idle_ms == u64::MAX { "never".to_string() } else { signals.gji_idle_ms.to_string() },
+        signals.sig1_warmup,
+        signals.sig2_gji,
+        signals.sig3_shadow,
     );
-    if suppressed {
-        log::debug!(
-            "FocusProbe: imc_open=false を抑制 (reason={suppress_reason}) — Engine deactivation を防止"
-        );
-    } else if probe.ime_on.is_none() {
-        log::warn!(
+
+    match suppressed_reason {
+        Some(reason) => log::debug!(
+            "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
+        ),
+        None if probe.ime_on.is_none() => log::warn!(
             "FocusProbe: ime_on 未検出 — stale値 {} が ObserverPoll まで持続 \
              [probe_age={}ms, A/B判断: ime_on stale頻度を確認]",
             ime_on_before_probe,
             probe_age_ms,
-        );
+        ),
+        None => {}
     }
 }
