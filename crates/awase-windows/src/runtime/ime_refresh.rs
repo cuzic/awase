@@ -307,9 +307,9 @@ impl<'a> ImeRefreshPipeline<'a> {
                     .executor
                     .platform
                     .focus
-                    .imm_capability_cache
+                    .imm_learning
                     .get(&class_name);
-                if prev != Some(&ImmCapability::Works) {
+                if prev != Some(ImmCapability::Works) {
                     log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
                     self.rt
                         .executor
@@ -326,9 +326,9 @@ impl<'a> ImeRefreshPipeline<'a> {
                     .executor
                     .platform
                     .focus
-                    .imm_capability_cache
+                    .imm_learning
                     .get(&class_name);
-                if prev != Some(&ImmCapability::Broken) {
+                if prev != Some(ImmCapability::Broken) {
                     log::info!(
                         "IMM capability learned: {class_name} → Broken (detection failed {} times)",
                         miss_after

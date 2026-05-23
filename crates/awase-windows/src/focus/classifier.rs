@@ -89,6 +89,49 @@ pub enum InjectionHint {
     Default,
 }
 
+// ── ImmCapabilityStore ──
+
+/// IMM 能力の学習・永続化を担う構造体。
+///
+/// `base_dir` を外から隠蔽し、`learn()` 一発でキャッシュ更新とファイル保存を行う。
+pub(crate) struct ImmCapabilityStore {
+    cache: std::collections::HashMap<String, ImmCapability>,
+    base_dir: std::path::PathBuf,
+}
+
+impl ImmCapabilityStore {
+    pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
+        let cache = load_imm_cache(&base_dir);
+        Self { cache, base_dir }
+    }
+
+    pub(crate) fn get(&self, class_name: &str) -> Option<ImmCapability> {
+        self.cache.get(class_name).copied()
+    }
+
+    pub(crate) fn contains_key(&self, class_name: &str) -> bool {
+        self.cache.contains_key(class_name)
+    }
+
+    pub(crate) fn learn(&mut self, class_name: String, cap: ImmCapability) {
+        self.cache.insert(class_name, cap);
+        save_imm_cache(&self.base_dir, &self.cache);
+    }
+
+    /// キャッシュをメモリとファイルの両方からクリアする。
+    pub(crate) fn clear(&mut self) -> usize {
+        let count = self.cache.len();
+        self.cache.clear();
+        let path = self.base_dir.join(IMM_CACHE_FILENAME);
+        if let Err(e) = std::fs::remove_file(&path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Failed to remove IMM cache file {}: {e}", path.display());
+            }
+        }
+        count
+    }
+}
+
 // ── AppKindClassifier ──
 
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
@@ -98,12 +141,10 @@ pub struct AppKindClassifier {
     pub(crate) overrides: AppOverrides,
     pub(crate) last_focus_info: Option<(u32, String)>,
     pub(crate) uia_sender: Option<std::sync::mpsc::Sender<super::uia::SendableHwnd>>,
-    /// class_name ごとの IMM ブリッジ能力キャッシュ。
-    pub(crate) imm_capability_cache: std::collections::HashMap<String, ImmCapability>,
+    /// IMM 能力の学習・永続化ストア。
+    pub(crate) imm_learning: ImmCapabilityStore,
     /// per-HWND IME 状態キャッシュ。
     pub(crate) hwnd_ime_cache: std::collections::HashMap<(u32, String), super::hwnd_cache::HwndImeSnapshot>,
-    /// キャッシュファイルの格納ディレクトリ
-    base_dir: std::path::PathBuf,
 }
 
 impl AppKindClassifier {
@@ -112,22 +153,19 @@ impl AppKindClassifier {
             .ok()
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
-        let imm_capability_cache = load_imm_cache(&base_dir);
         Self {
             cache: super::cache::FocusCache::new(),
             overrides,
             last_focus_info: None,
             uia_sender: None,
-            imm_capability_cache,
+            imm_learning: ImmCapabilityStore::new(base_dir),
             hwnd_ime_cache: std::collections::HashMap::new(),
-            base_dir,
         }
     }
 
     /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。
     pub fn learn_imm_capability(&mut self, class_name: String, cap: ImmCapability) {
-        self.imm_capability_cache.insert(class_name, cap);
-        save_imm_cache(&self.base_dir, &self.imm_capability_cache);
+        self.imm_learning.learn(class_name, cap);
     }
 
     pub fn set_uia_sender(

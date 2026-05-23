@@ -20,7 +20,7 @@ pub unsafe fn learn_imm_capability_on_focus(
     if new_app_kind != AppKind::Win32 {
         return;
     }
-    if classifier.imm_capability_cache.contains_key(class_name) {
+    if classifier.imm_learning.contains_key(class_name) {
         return;
     }
 

@@ -660,15 +660,8 @@ unsafe extern "system" fn tray_wnd_proc(
                 } else if cmd == cmd_settings() {
                     launch_settings_gui();
                 } else if cmd == cmd_clear_imm_cache() {
-                    let base_dir = std::env::current_exe()
-                        .ok()
-                        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
                     crate::with_app(|app| {
-                        let count = app.executor.platform.focus.imm_capability_cache.len();
-                        app.executor.platform.focus.imm_capability_cache.clear();
-                        if let Some(dir) = &base_dir {
-                            let _ = std::fs::remove_file(dir.join("imm_cache.toml"));
-                        }
+                        let count = app.executor.platform.focus.imm_learning.clear();
                         log::info!("IMM capability cache cleared ({count} entries)");
                         app.executor.platform.tray.show_balloon(
                             "awase",
