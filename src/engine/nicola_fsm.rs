@@ -1124,9 +1124,13 @@ impl NicolaFsm {
     }
 
     /// PendingThumb タイムアウト：親指キーを単独打鍵として確定する
-    fn timeout_pending_thumb(&mut self, vk_code: VkCode) -> Resp {
+    fn timeout_pending_thumb(&mut self, scan_code: ScanCode, vk_code: VkCode) -> Resp {
         let action = KeyAction::Key(vk_code);
-        self.update_history(record_output(ScanCode(u32::from(vk_code.0)), &action, None));
+        // scan_code には物理キーの実スキャンコードを使う。
+        // 以前は ScanCode(u32::from(vk_code.0)) という合成値を使っていたが、
+        // VK_CONVERT (VK=0x1C) の合成スキャンコードが Enter の物理スキャンコード (0x1C) と
+        // 衝突し、後から Enter KeyUp が来たときに誤って KeyUp(VK_CONVERT) が送出されていた。
+        self.update_history(record_output(scan_code, &action, None));
         self.build_response(vec![action], true, TimerIntent::CancelAll)
     }
 
@@ -1308,7 +1312,9 @@ impl NicolaFsm {
             EngineState::PendingChar(pending) => {
                 self.timeout_pending_char(pending.scan_code, pending.vk_code, pending.pos)
             }
-            EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(thumb.vk_code),
+            EngineState::PendingThumb(thumb) => {
+                self.timeout_pending_thumb(thumb.scan_code, thumb.vk_code)
+            }
             EngineState::PendingCharThumb { char_key, thumb, char1_released } => {
                 self.timeout_pending_char_thumb(
                     char_key.scan_code,

@@ -345,7 +345,6 @@ impl PendingKey {
 /// 保留中の親指キーデータ
 #[derive(Debug, Clone, Copy)]
 pub struct PendingThumbData {
-    #[allow(dead_code)] // KeyUp 追跡の将来拡張用
     pub scan_code: ScanCode,
     pub vk_code: VkCode,
     pub is_left: bool,
