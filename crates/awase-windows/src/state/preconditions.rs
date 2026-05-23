@@ -74,13 +74,13 @@ pub struct Preconditions {
     ///
     /// 未知アプリへの初回フォーカス時に `set_ime_open(true)` を呼んだ後、
     /// 次の `observe()` が即座に上書きしないよう 1 サイクルだけ保護する。
-    /// 次の IME 検出成功（`clear_force_on_guard=true`）で解除される。
+    /// 次の IME 検出成功（`ImeUpdate::clear_force_on_broken_app_bootstrap=true`）で解除される。
     pub(in crate::state) force_on_broken_app_bootstrap: bool,
     /// パニックリセット直後の上書き防止ガード。
     ///
     /// パニックリセットで `ime_on=true` を書き込んだ直後に `refresh_ime_state_cache`
     /// が走ると stale な `observe()` の結果に上書きされてしまう。これを防ぐ。
-    /// `apply_ime_update` で `clear_force_on_guard=true` のとき解除される。
+    /// `apply_ime_update` で `ImeUpdate::clear_force_on_panic_reset=true` のとき解除される。
     pub(in crate::state) force_on_panic_reset: bool,
 }
 
