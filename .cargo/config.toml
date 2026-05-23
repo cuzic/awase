@@ -1,0 +1,3 @@
+[alias]
+# 循環的複雑度を含む全 lint チェック（CI と同じ条件）
+cc = "clippy --lib -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity"

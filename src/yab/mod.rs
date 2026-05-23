@@ -292,11 +292,9 @@ fn parse_optional_face(
     model: KeyboardModel,
     context_msg: &'static str,
 ) -> Result<YabFace> {
-    if let Some(lines) = sections.get(&kind) {
-        parse_face(lines, model).context(context_msg)
-    } else {
-        Ok(YabFace::new())
-    }
+    sections
+        .get(&kind)
+        .map_or_else(|| Ok(YabFace::new()), |lines| parse_face(lines, model).context(context_msg))
 }
 
 /// `parse` のループ本体: 1行分の処理を行う。

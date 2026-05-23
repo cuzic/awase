@@ -27,7 +27,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --lib -- -A clippy::cargo_common_metadata -D warnings
+      - run: cargo clippy --lib -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity
 
   fmt:
     runs-on: ubuntu-latest
@@ -44,6 +44,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (awase-windows)
+        run: cargo clippy -p awase-windows -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity
 
       - name: Build awase.exe
         run: cargo build --release
