@@ -68,6 +68,31 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     }
 }
 
+/// IME モード切り替えキーを `SendInput` で送信する。
+///
+/// Engine ON/OFF 時に IME の入力モードを強制切り替えするために使う。
+/// 代表的な VK コード:
+/// - `0xF3` (VK_DBE_SBCSCHAR): 半角モード → Engine OFF 時
+/// - `0xF4` (VK_DBE_DBCSCHAR): 全角モード → Engine ON 時
+///
+/// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが
+/// 再インターセプトしない。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn send_ime_mode_key(vk: u16) {
+    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    let inputs = [
+        make_key_input_ex(vk, false, IME_KANJI_MARKER),
+        make_key_input_ex(vk, true,  IME_KANJI_MARKER),
+    ];
+    log::debug!("[ime-mode] SendInput vk=0x{vk:02X}");
+    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    if sent == 0 {
+        log::warn!("[ime-mode] SendInput(vk=0x{vk:02X}) failed");
+    }
+}
+
 /// 現在のフォアグラウンドウィンドウの IME 変換モード生値を返す（診断ログ専用）。
 ///
 /// ビット定義: NATIVE=0x0001 KATAKANA=0x0002 FULLSHAPE=0x0008 ROMAN=0x0010

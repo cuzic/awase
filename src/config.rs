@@ -261,6 +261,22 @@ pub struct KeysConfig {
     /// IME 検出設定
     #[serde(default)]
     pub ime_detect: ImeDetectConfig,
+
+    /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
+    ///
+    /// エンジンが有効になったとき、このキーを `SendInput` で送信して
+    /// IME を全角/ひらがなモードに切り替える。
+    /// デフォルト: `"VK_DBE_DBCSCHAR"` (0xF4 = 全角モード)
+    #[serde(default = "default_engine_on_ime_key")]
+    pub engine_on_ime_key: Option<String>,
+
+    /// Engine OFF 時に送信する IME モード切り替えキー（None で無効）
+    ///
+    /// エンジンが無効になったとき、このキーを `SendInput` で送信して
+    /// IME を半角/直接入力モードに切り替える。
+    /// デフォルト: `"VK_DBE_SBCSCHAR"` (0xF3 = 半角モード)
+    #[serde(default = "default_engine_off_ime_key")]
+    pub engine_off_ime_key: Option<String>,
 }
 
 impl Default for KeysConfig {
@@ -271,8 +287,18 @@ impl Default for KeysConfig {
             ime_on: default_ime_control_on_keys(),
             ime_off: default_ime_control_off_keys(),
             ime_detect: ImeDetectConfig::default(),
+            engine_on_ime_key: default_engine_on_ime_key(),
+            engine_off_ime_key: default_engine_off_ime_key(),
         }
     }
+}
+
+fn default_engine_on_ime_key() -> Option<String> {
+    Some("VK_DBE_DBCSCHAR".to_string())
+}
+
+fn default_engine_off_ime_key() -> Option<String> {
+    Some("VK_DBE_SBCSCHAR".to_string())
 }
 
 fn default_ime_toggle_keys() -> Vec<String> {

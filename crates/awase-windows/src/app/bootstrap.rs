@@ -316,6 +316,19 @@ pub(super) fn initialize_app(
     hook::set_thumb_vk_codes(&mut ps.hook_config, left_thumb_vk, right_thumb_vk);
     hook::update_hook_config(ps.hook_config);
 
+    let engine_on_ime_vk = config
+        .keys
+        .engine_on_ime_key
+        .as_deref()
+        .and_then(awase_windows::vk::vk_name_to_code)
+        .map(|v| v.0);
+    let engine_off_ime_vk = config
+        .keys
+        .engine_off_ime_key
+        .as_deref()
+        .and_then(awase_windows::vk::vk_name_to_code)
+        .map(|v| v.0);
+
     // SAFETY: APP.set() and RAPID_IME_TIMESTAMPS.set() are called once on the main thread before
     // the message loop starts; SingleThreadCell guarantees exclusive access.
     unsafe {
@@ -327,6 +340,8 @@ pub(super) fn initialize_app(
                     tray,
                     focus: runtime::AppKindClassifier::new(config.app_overrides.clone()),
                     timer: awase_windows::timer::Win32Timer::new(),
+                    engine_on_ime_vk,
+                    engine_off_ime_vk,
                 },
                 config.general.hook_mode,
             ),

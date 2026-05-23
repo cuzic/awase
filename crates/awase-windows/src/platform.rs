@@ -19,6 +19,10 @@ pub struct WindowsPlatform {
     pub tray: SystemTray,
     pub focus: AppKindClassifier,
     pub timer: Win32Timer,
+    /// Engine ON 時に送信する IME モード切り替え VK コード（None で無効）
+    pub engine_on_ime_vk: Option<u16>,
+    /// Engine OFF 時に送信する IME モード切り替え VK コード（None で無効）
+    pub engine_off_ime_vk: Option<u16>,
 }
 
 impl WindowsPlatform {
@@ -106,6 +110,15 @@ impl PlatformRuntime for WindowsPlatform {
             crate::TIMER_IME_REFRESH,
             Duration::from_millis(20),
         );
+    }
+
+    // ── Engine 状態変化時 IME モードキー送信 ──
+
+    pub fn send_engine_state_ime_key(&self, enabled: bool) {
+        let vk = if enabled { self.engine_on_ime_vk } else { self.engine_off_ime_vk };
+        if let Some(vk) = vk {
+            unsafe { crate::ime::send_ime_mode_key(vk) };
+        }
     }
 
     // ── トレイ ──
