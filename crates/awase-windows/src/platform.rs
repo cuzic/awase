@@ -29,6 +29,18 @@ impl WindowsPlatform {
             self.output.tsf_gate.on_ready();
         }
     }
+
+    /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
+    ///
+    /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` を呼ぶため
+    /// cold/warm どちらのパスでも `pending_tsf` に probe が積まれることがある。
+    /// `platform.send_keys` を経由しないため、ここでタイマー設定を補完する。
+    pub fn flush_raw_tsf_literal_recovery(&mut self) {
+        self.output.flush_raw_tsf_literal_recovery();
+        if self.output.pending_tsf.borrow().is_some() {
+            self.timer.set(crate::TIMER_TSF_PROBE, Duration::from_millis(10));
+        }
+    }
 }
 
 impl PlatformRuntime for WindowsPlatform {

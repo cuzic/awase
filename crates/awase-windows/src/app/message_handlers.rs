@@ -275,7 +275,7 @@ pub(super) unsafe fn handle_wm_command(wparam: WPARAM) {
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ
 pub(super) unsafe fn handle_wm_drain_output_queue() {
     with_app(|runtime| {
-        runtime.executor.platform.output.flush_raw_tsf_literal_recovery();
+        runtime.executor.platform.flush_raw_tsf_literal_recovery();
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
