@@ -167,9 +167,9 @@ impl<'a> ImeRefreshPipeline<'a> {
     fn apply_blacklist_ssot(&mut self) {
         log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
 
-        // Phase E: GJI I/O 観測を ImeBeliefStore に直結して Chrome の IME ON を確証化。
+        // GJI I/O 観測を observer_poll 経由で judgement に流す（観測 → 判断の正規ルート）。
         // バックグラウンドスレッドが OBS_GJI_LAST_IO_MS を更新していれば
-        // Chrome の IME が実際に ON であると判断し、belief を Confirmed(true) に昇格する。
+        // Chrome の IME が ON であると判断し preconditions.ime_on に反映する。
         {
             use std::sync::atomic::Ordering::Relaxed;
             const GJI_CONFIRM_WINDOW_MS: u64 = 500;
@@ -177,10 +177,14 @@ impl<'a> ImeRefreshPipeline<'a> {
             let last_io = crate::tsf::observer::OBS_GJI_LAST_IO_MS.load(Relaxed);
             if last_io > 0 && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
                 log::debug!(
-                    "[gji-belief] GJI I/O observed {}ms ago → record_observation(true)",
+                    "[gji-poll] GJI I/O observed {}ms ago → observer_poll=true",
                     now_ms.saturating_sub(last_io)
                 );
-                self.rt.executor.platform.output.record_observation(true);
+                self.rt.platform_state.write_observer_poll(
+                    true,
+                    now_ms,
+                    self.rt.engine.is_user_enabled(),
+                );
             }
         }
 

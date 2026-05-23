@@ -99,4 +99,15 @@ impl PlatformState {
             self.preconditions.set_ime_on(val, src);
         }
     }
+
+    /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
+    ///
+    /// 外部観測（GJI I/O 等）を `preconditions.ime_on` に反映する正規ルート。
+    /// 直接 `ime_observations.observer_poll` に書くのではなくこのメソッドを使うことで、
+    /// 「書いたら必ず judgement が走る」不変条件が保たれる。
+    pub fn write_observer_poll(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        self.ime_observations.observer_poll =
+            Some(crate::ime_observations::ImeObs { value, ms });
+        self.apply_ime_observations(user_enabled);
+    }
 }
