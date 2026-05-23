@@ -83,6 +83,18 @@ pub struct ResolvedAction {
     pub output: OutputUpdate,
 }
 
+impl ResolvedAction {
+    /// `ParseAction::ReduceAndContinue` に変換する。
+    #[must_use]
+    pub fn into_reduce_and_continue(self, remaining: ClassifiedEvent) -> ParseAction {
+        ParseAction::ReduceAndContinue {
+            actions: self.actions,
+            record: self.output,
+            remaining,
+        }
+    }
+}
+
 /// パーサーアクション: FSM の1ステップの判断結果。
 ///
 /// `timed_fsm::ParseAction` と同構造だが、タイマー指示に `TimerIntent` を使用する。
@@ -246,6 +258,62 @@ impl EngineState {
     #[must_use]
     pub const fn is_idle(&self) -> bool {
         matches!(self, Self::Idle)
+    }
+
+    /// `PendingChar` の内容を取り出す。他の状態ならパニック。
+    ///
+    /// # Panics
+    ///
+    /// `self` が `PendingChar` でない場合。
+    #[must_use]
+    pub fn expect_pending_char(self) -> PendingKey {
+        if let Self::PendingChar(key) = self {
+            key
+        } else {
+            panic!("expected PendingChar, got {self:?}")
+        }
+    }
+
+    /// `PendingThumb` の内容を取り出す。他の状態ならパニック。
+    ///
+    /// # Panics
+    ///
+    /// `self` が `PendingThumb` でない場合。
+    #[must_use]
+    pub fn expect_pending_thumb(self) -> PendingThumbData {
+        if let Self::PendingThumb(thumb) = self {
+            thumb
+        } else {
+            panic!("expected PendingThumb, got {self:?}")
+        }
+    }
+
+    /// `PendingCharThumb` の内容を取り出す。他の状態ならパニック。
+    ///
+    /// # Panics
+    ///
+    /// `self` が `PendingCharThumb` でない場合。
+    #[must_use]
+    pub fn expect_pending_char_thumb(self) -> (PendingKey, PendingThumbData, bool) {
+        if let Self::PendingCharThumb { char_key, thumb, char1_released } = self {
+            (char_key, thumb, char1_released)
+        } else {
+            panic!("expected PendingCharThumb, got {self:?}")
+        }
+    }
+
+    /// `SpeculativeChar` の内容を取り出す。他の状態ならパニック。
+    ///
+    /// # Panics
+    ///
+    /// `self` が `SpeculativeChar` でない場合。
+    #[must_use]
+    pub fn expect_speculative_char(self) -> PendingKey {
+        if let Self::SpeculativeChar(key) = self {
+            key
+        } else {
+            panic!("expected SpeculativeChar, got {self:?}")
+        }
     }
 }
 

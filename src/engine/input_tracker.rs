@@ -51,7 +51,7 @@ impl PhysicalKeyState {
     /// Platform 層の InputTracker が物理キー状態を追跡済みなので、
     /// Engine は InputContext からスナップショットを構築するだけでよい。
     #[must_use]
-    pub fn from_ctx(ctx: &InputContext, event: &RawKeyEvent) -> Self {
+    pub const fn from_ctx(ctx: &InputContext, event: &RawKeyEvent) -> Self {
         Self {
             classified: InputTracker::classify(event),
             modifiers: ctx.modifiers,
@@ -62,7 +62,7 @@ impl PhysicalKeyState {
 
     /// InputContext からタイマー用スナップショットを構築する（イベントなし）。
     #[must_use]
-    pub fn from_ctx_snapshot(ctx: &InputContext) -> Self {
+    pub const fn from_ctx_snapshot(ctx: &InputContext) -> Self {
         Self {
             classified: ClassifiedEvent {
                 key_class: KeyClass::Passthrough,

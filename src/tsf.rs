@@ -99,13 +99,13 @@ pub struct TsfGateMachine {
 impl TsfGateMachine {
     /// 初期状態 `Bypass` でステートマシンを生成する。
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { state: TsfGateState::Bypass }
     }
 
     /// 現在のステートを返す。
     #[must_use]
-    pub fn state(&self) -> TsfGateState {
+    pub const fn state(&self) -> TsfGateState {
         self.state
     }
 }
@@ -156,8 +156,7 @@ impl TimedStateMachine for TsfGateMachine {
     fn on_timeout(&mut self, _id: GateTimer) -> Response<GateAction, GateTimer> {
         if self.state == TsfGateState::PendingWarmup {
             log::warn!(
-                "[tsf-gate] WarmupTimeout: PendingWarmup が {}ms 継続 → Bypass にフォールバック",
-                WARMUP_TIMEOUT_MS
+                "[tsf-gate] WarmupTimeout: PendingWarmup が {WARMUP_TIMEOUT_MS}ms 継続 → Bypass にフォールバック"
             );
             self.state = TsfGateState::Bypass;
             Response::emit_one(GateAction::DrainHeld)
@@ -185,7 +184,7 @@ pub struct TsfGate {
 impl TsfGate {
     /// 初期状態 `Bypass` でゲートを生成する。
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             machine: TsfGateMachine::new(),
             held: Vec::new(),
@@ -194,7 +193,7 @@ impl TsfGate {
 
     /// 現在のステートを返す。
     #[must_use]
-    pub fn state(&self) -> TsfGateState {
+    pub const fn state(&self) -> TsfGateState {
         self.machine.state()
     }
 
@@ -337,7 +336,7 @@ impl TsfReadiness {
     /// `ime_on && is_tsf_mode` が満たされればゲート状態によらず送信する。
     /// `PendingWarmup` 中も warmup は送信可能（むしろ先行送信が目的）。
     #[must_use]
-    pub fn can_warmup(&self) -> bool {
+    pub const fn can_warmup(&self) -> bool {
         self.ime_on && self.is_tsf_mode
     }
 

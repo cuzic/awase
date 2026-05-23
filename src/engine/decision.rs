@@ -203,7 +203,7 @@ impl Decision {
     }
 
     #[must_use]
-    pub fn pass_through_with(effects: EffectVec) -> Self {
+    pub const fn pass_through_with(effects: EffectVec) -> Self {
         Self::PassThroughWith { effects }
     }
 
@@ -215,7 +215,7 @@ impl Decision {
     }
 
     #[must_use]
-    pub fn consumed_with(effects: EffectVec) -> Self {
+    pub const fn consumed_with(effects: EffectVec) -> Self {
         Self::Consume { effects }
     }
 

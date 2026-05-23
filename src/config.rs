@@ -156,6 +156,7 @@ fn default_layout() -> String {
     "nicola.yab".to_string()
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn default_ngram_file() -> Option<String> {
     Some("data/ngram_hiragana.csv.gz".to_string())
 }
@@ -293,10 +294,12 @@ impl Default for KeysConfig {
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn default_engine_on_ime_key() -> Option<String> {
     Some("VK_DBE_DBCSCHAR".to_string())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn default_engine_off_ime_key() -> Option<String> {
     Some("VK_DBE_SBCSCHAR".to_string())
 }

@@ -63,7 +63,7 @@ impl std::fmt::Debug for YabFace {
 }
 
 /// `PhysicalPos` を配列インデックスに変換する。範囲外なら `None`。
-const fn pos_to_index(pos: &PhysicalPos) -> Option<usize> {
+const fn pos_to_index(pos: PhysicalPos) -> Option<usize> {
     let r = pos.row as usize;
     let c = pos.col as usize;
     if r >= MAX_ROWS || c >= MAX_COLS {
@@ -84,7 +84,7 @@ impl YabFace {
     /// 指定位置の値を参照する。
     #[must_use]
     pub fn get(&self, pos: &PhysicalPos) -> Option<&YabValue> {
-        let idx = pos_to_index(pos)?;
+        let idx = pos_to_index(*pos)?;
         self.0[idx].as_ref()
     }
 
@@ -94,14 +94,14 @@ impl YabFace {
     ///
     /// `pos` が範囲外の場合パニックする。
     pub fn insert(&mut self, pos: PhysicalPos, value: YabValue) {
-        let idx = pos_to_index(&pos).expect("PhysicalPos out of range for YabFace");
+        let idx = pos_to_index(pos).expect("PhysicalPos out of range for YabFace");
         self.0[idx] = Some(value);
     }
 
     /// 指定位置にキーが定義されているか判定する。
     #[must_use]
     pub fn contains_key(&self, pos: &PhysicalPos) -> bool {
-        pos_to_index(pos).is_some_and(|idx| self.0[idx].is_some())
+        pos_to_index(*pos).is_some_and(|idx| self.0[idx].is_some())
     }
 
     /// 全値への可変イテレータ（`Some` エントリのみ）。
@@ -118,7 +118,7 @@ impl YabFace {
     /// キーが一つも定義されていないか判定する。
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.iter().all(|slot| Option::is_none(slot))
+        self.0.iter().all(Option::is_none)
     }
 }
 
@@ -394,7 +394,7 @@ impl YabLayout {
         out.push('\n');
 
         for (name, face) in &sections {
-            let _ = write!(out, "[{name}]\n");
+            let _ = writeln!(out, "[{name}]");
             out.push_str(&serialize_face(face, &row_sizes));
             out.push('\n');
         }
