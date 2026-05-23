@@ -467,103 +467,122 @@ impl DecisionExecutor {
     }
 
     fn execute_one(&mut self, effect: Effect) {
-        // ReinjectKey の output guard チェックは drain_deferred で実施済み。
-        // ここではガード解除後のキーを reinject する。
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
-            let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-            let dir = if is_key_down { "down" } else { "up" };
+            self.handle_reinject(event);
+            return;
+        }
+        if let Some((open, outcome)) = self.dispatch_effect(effect) {
+            self.post_apply_ime_open(open, outcome);
+        }
+    }
 
-            // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
-            // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
-            // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
-            if event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
-                if is_key_down {
-                    log::debug!(
-                        "[reinject-tsf] vk=0xf2 KeyDown TSF mode → consuming deferred F2 (no reinject), marking cold",
-                    );
-                    self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-                    // deferred F2 も即 eager warmup を送信する（passthrough 経路と同様）。
-                    self.platform.output.send_eager_tsf_warmup();
-                } else {
-                    log::debug!(
-                        "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
-                    );
-                }
-                return;
-            }
+    /// F2-TSF 特殊扱い + 通常 reinject + confirm キー後処理。
+    fn handle_reinject(&mut self, event: awase::types::RawKeyEvent) {
+        let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
+        let dir = if is_key_down { "down" } else { "up" };
 
-            log::debug!(
-                "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
-                event.vk_code.0,
-            );
-            {
-                let platform: &mut dyn PlatformRuntime = &mut self.platform;
-                platform.reinject_key(&event);
-            }
-            // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
-            // Backspace 等は composition を維持するためここでは対象外。
-            if is_key_down && matches!(event.vk_code.0, 0x20 | 0x0D | 0x1B) {
+        // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
+        // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
+        // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
+        if event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
+            if is_key_down {
                 log::debug!(
-                    "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
-                    event.vk_code.0,
+                    "[reinject-tsf] vk=0xf2 KeyDown TSF mode → consuming deferred F2 (no reinject), marking cold",
                 );
-                self.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+                self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+                // deferred F2 も即 eager warmup を送信する（passthrough 経路と同様）。
                 self.platform.output.send_eager_tsf_warmup();
+            } else {
+                log::debug!(
+                    "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
+                );
             }
             return;
         }
 
-        let mut ime_set_open: Option<(bool, awase::platform::ImeOpenOutcome)> = None;
-
+        log::debug!(
+            "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
+            event.vk_code.0,
+        );
         {
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
-            match effect {
-                Effect::Input(ie) => match ie {
-                    InputEffect::SendKeys(actions) => platform.send_keys(&actions),
-                    InputEffect::ReinjectKey(_) => unreachable!("handled above"),
-                },
-                Effect::Timer(te) => match te {
-                    TimerEffect::Set { id, duration } => platform.set_timer(id, duration),
-                    TimerEffect::Kill(id) => platform.kill_timer(id),
-                },
-                Effect::Ime(ie) => match ie {
-                    ImeEffect::SetOpen(open) => {
-                        let outcome = platform.apply_ime_open(open);
-                        if outcome == awase::platform::ImeOpenOutcome::Failed {
-                            log::warn!("apply_ime_open({open}) failed");
-                        }
-                        // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
-                        platform.post_ime_refresh();
-                        ime_set_open = Some((open, outcome));
-                    }
-                    ImeEffect::RequestRefresh => platform.post_ime_refresh(),
-                },
-                Effect::Ui(ue) => match ue {
-                    UiEffect::EngineStateChanged { enabled } => {
-                        platform.update_tray(enabled);
-                        platform.send_engine_state_ime_key(enabled);
-                    }
-                },
-            }
-        } // platform の借用をここで解放
+            platform.reinject_key(&event);
+        }
+        // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
+        // Backspace 等は composition を維持するためここでは対象外。
+        if is_key_down && matches!(event.vk_code.0, 0x20 | 0x0D | 0x1B) {
+            log::debug!(
+                "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
+                event.vk_code.0,
+            );
+            self.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+            self.platform.output.send_eager_tsf_warmup();
+        }
+    }
 
-        if let Some((open, outcome)) = ime_set_open {
-            use awase::platform::ImeOpenOutcome;
-            // 成功した場合はラッチを更新する（shadow_ime_on → send_eager_tsf_warmup ガードに使用）。
-            // Applied 後にラッチを更新しないと shadow_on が旧値 true のままになり、
-            // IME OFF 直後の Ctrl↑ で VK_DBE_HIRAGANA が送信されて IME が ON に戻るバグが発生する。
-            match outcome {
-                ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
-                    self.platform.output.set_ime_apply_latch(open);
+    /// Effect::* の match dispatch。ImeEffect::SetOpen の結果のみ Some で返す。
+    fn dispatch_effect(&mut self, effect: Effect) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
+        let platform: &mut dyn PlatformRuntime = &mut self.platform;
+        match effect {
+            Effect::Input(ie) => match ie {
+                InputEffect::SendKeys(actions) => {
+                    platform.send_keys(&actions);
+                    None
                 }
-                ImeOpenOutcome::Failed => {}
+                InputEffect::ReinjectKey(_) => unreachable!("handled in execute_one"),
+            },
+            Effect::Timer(te) => match te {
+                TimerEffect::Set { id, duration } => {
+                    platform.set_timer(id, duration);
+                    None
+                }
+                TimerEffect::Kill(id) => {
+                    platform.kill_timer(id);
+                    None
+                }
+            },
+            Effect::Ime(ie) => match ie {
+                ImeEffect::SetOpen(open) => {
+                    let outcome = platform.apply_ime_open(open);
+                    if outcome == awase::platform::ImeOpenOutcome::Failed {
+                        log::warn!("apply_ime_open({open}) failed");
+                    }
+                    // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
+                    platform.post_ime_refresh();
+                    Some((open, outcome))
+                }
+                ImeEffect::RequestRefresh => {
+                    platform.post_ime_refresh();
+                    None
+                }
+            },
+            Effect::Ui(ue) => match ue {
+                UiEffect::EngineStateChanged { enabled } => {
+                    platform.update_tray(enabled);
+                    platform.send_engine_state_ime_key(enabled);
+                    None
+                }
+            },
+        }
+    }
+
+    /// latch 更新 + open==true の cold/warmup 処理。
+    fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
+        use awase::platform::ImeOpenOutcome;
+        // 成功した場合はラッチを更新する（shadow_ime_on → send_eager_tsf_warmup ガードに使用）。
+        // Applied 後にラッチを更新しないと shadow_on が旧値 true のままになり、
+        // IME OFF 直後の Ctrl↑ で VK_DBE_HIRAGANA が送信されて IME が ON に戻るバグが発生する。
+        match outcome {
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
+                self.platform.output.set_ime_apply_latch(open);
             }
-            // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
-            if open {
-                log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-                self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-                self.platform.output.send_eager_tsf_warmup();
-            }
+            ImeOpenOutcome::Failed => {}
+        }
+        // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
+        if open {
+            log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
+            self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            self.platform.output.send_eager_tsf_warmup();
         }
     }
 }
