@@ -156,6 +156,8 @@ fn default_layout() -> String {
     "nicola.yab".to_string()
 }
 
+// serde の #[serde(default = "...")] はフィールド型と同じ型を返す関数を要求するため、
+// Option<String> フィールドのデフォルトは Option<String> を返す必要がある。
 #[allow(clippy::unnecessary_wraps)]
 fn default_ngram_file() -> Option<String> {
     Some("data/ngram_hiragana.csv.gz".to_string())
@@ -294,6 +296,8 @@ impl Default for KeysConfig {
     }
 }
 
+// serde の #[serde(default = "...")] はフィールド型と同じ型を返す関数を要求するため、
+// Option<String> フィールドのデフォルトは Option<String> を返す必要がある。
 #[allow(clippy::unnecessary_wraps)]
 fn default_engine_on_ime_key() -> Option<String> {
     Some("VK_DBE_DBCSCHAR".to_string())
