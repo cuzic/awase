@@ -81,7 +81,7 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
 
     let result = run_with_timeout(timeout, || {
         let mut info = GUITHREADINFO {
-            cbSize: u32::try_from(size_of::<GUITHREADINFO>()).unwrap(),
+            cbSize: u32::try_from(size_of::<GUITHREADINFO>()).expect("GUITHREADINFO size is a small constant that always fits in u32"),
             ..Default::default()
         };
         unsafe {
