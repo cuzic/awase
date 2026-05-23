@@ -210,11 +210,7 @@ impl NicolaFsm {
                 let mut actions = resolved.actions;
                 if char1_released {
                     // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
-                    if let Some(entry) = self.output_history.remove_by_scan(char_key.scan_code) {
-                        if let KeyAction::Key(vk) = entry.action {
-                            actions.push(KeyAction::KeyUp(vk));
-                        }
-                    }
+                    self.append_key_up_for(&mut actions, char_key.scan_code);
                 }
                 Response::emit(actions)
             }
@@ -341,6 +337,11 @@ impl NicolaFsm {
         Some((KeyAction::from(value), kana))
     }
 
+    /// `Face` に対応する面でキー位置を引き、仮名文字のみを返す。
+    fn lookup_kana_at(&self, pos: Option<PhysicalPos>, face: Face) -> Option<char> {
+        self.lookup_face(pos, self.get_face(face)).and_then(|(_, k)| k)
+    }
+
     /// `PendingCharThumb` 状態で char1+thumb を同時打鍵として解決し、アクション列と OutputUpdate を返す。
     ///
     /// 親指キーの物理押下状態を「消費」する。消費後は `active_thumb_face()` が `None` を
@@ -392,6 +393,17 @@ impl NicolaFsm {
 
     pub(crate) const fn enter_speculative_char(&mut self, key: PendingKey) {
         self.state = EngineState::SpeculativeChar(key);
+    }
+
+    /// output_history から `scan_code` のエントリを取り出し、Key(vk) なら KeyUp(vk) を `actions` に追記する。
+    ///
+    /// Char/Romaji は Down+Up 一括送信済みのため、Key(vk) のみが追記対象。
+    fn append_key_up_for(&mut self, actions: &mut Vec<KeyAction>, scan_code: ScanCode) {
+        if let Some(entry) = self.output_history.remove_by_scan(scan_code) {
+            if let KeyAction::Key(vk) = entry.action {
+                actions.push(KeyAction::KeyUp(vk));
+            }
+        }
     }
 
     /// アクション列・consumed フラグ・タイマー指示から `Response` を組み立てる
@@ -575,9 +587,7 @@ impl NicolaFsm {
             KeyClass::Passthrough => {
                 // Passthrough key (e.g. ENTER) arrived while a char is pending.
                 // Flush the pending char first so it reaches IME before the passthrough key.
-                let EngineState::PendingChar(pending) = self.state else {
-                    unreachable!("unexpected state: {:?}", self.state)
-                };
+                let pending = self.state.expect_pending_char();
                 log::debug!(
                     "[passthrough-flush] pending=PendingChar(vk={:#04x}) → flush, then reprocess passthrough_vk={:#04x} ts={}us",
                     pending.vk_code.0,
@@ -590,11 +600,7 @@ impl NicolaFsm {
                     pending.vk_code,
                     pending.pos,
                 );
-                ParseAction::ReduceAndContinue {
-                    actions: resolved.actions,
-                    record: resolved.output,
-                    remaining: *ev,
-                }
+                resolved.into_reduce_and_continue(*ev)
             }
         }
     }
@@ -607,9 +613,7 @@ impl NicolaFsm {
             KeyClass::Passthrough => {
                 // Passthrough key arrived while a thumb is pending.
                 // Flush the pending thumb first so it reaches IME before the passthrough key.
-                let EngineState::PendingThumb(thumb) = self.state else {
-                    unreachable!("unexpected state: {:?}", self.state)
-                };
+                let thumb = self.state.expect_pending_thumb();
                 log::debug!(
                     "[passthrough-flush] pending=PendingThumb(vk={:#04x}) → flush, then reprocess passthrough_vk={:#04x} ts={}us",
                     thumb.vk_code.0,
@@ -618,11 +622,7 @@ impl NicolaFsm {
                 );
                 self.go_idle();
                 let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
-                ParseAction::ReduceAndContinue {
-                    actions: resolved.actions,
-                    record: resolved.output,
-                    remaining: *ev,
-                }
+                resolved.into_reduce_and_continue(*ev)
             }
         }
     }
@@ -668,7 +668,6 @@ impl NicolaFsm {
     /// `RetractAndRecord` を使うことで、retract と record を `update_history()` で
     /// アトミックに処理し、この関数を副作用のない純粋な構築関数にする。
     fn retract_and_replace(
-        &self,
         pending: PendingKey,
         new_action: &KeyAction,
         kana: Option<char>,
@@ -697,9 +696,7 @@ impl NicolaFsm {
     /// 閾値超過時や親指面に定義がない場合は、投機出力は正しかったとみなし、
     /// Idle に戻って親指キーを新規イベントとして再処理する。
     fn step_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        let EngineState::SpeculativeChar(pending) = self.state else {
-            unreachable!("unexpected state: {:?}", self.state)
-        };
+        let pending = self.state.expect_speculative_char();
         let face = Face::from_thumb(ev.key_class);
 
         // Look up what the simultaneous keystroke would produce
@@ -714,7 +711,7 @@ impl NicolaFsm {
                 // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
                 self.consume_thumb(face);
                 self.go_idle();
-                return self.retract_and_replace(pending, &thumb_action, thumb_kana);
+                return Self::retract_and_replace(pending, &thumb_action, thumb_kana);
             }
             // Outside threshold → speculative was correct, process thumb as new key
         } else {
@@ -731,9 +728,7 @@ impl NicolaFsm {
 
     /// PendingChar + 親指キー → 同時打鍵候補（閾値内なら PendingCharThumb、超過なら flush+新規）
     fn step_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        let EngineState::PendingChar(pending) = self.state else {
-            unreachable!("unexpected state: {:?}", self.state)
-        };
+        let pending = self.state.expect_pending_char();
         // 親指面で保留文字キーの候補を取得し閾値を調整
         let candidate_face = Face::from_thumb(ev.key_class);
         let candidate = self.lookup_face(pending.pos, self.get_face(candidate_face));
@@ -762,33 +757,21 @@ impl NicolaFsm {
         self.go_idle();
         let resolved =
             self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
-        ParseAction::ReduceAndContinue {
-            actions: resolved.actions,
-            record: resolved.output,
-            remaining: *ev,
-        }
+        resolved.into_reduce_and_continue(*ev)
     }
 
     /// PendingChar + 文字キー → 前の保留を単独確定し、今回のキーを再処理
     fn step_pending_char_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        let EngineState::PendingChar(pending) = self.state else {
-            unreachable!("unexpected state: {:?}", self.state)
-        };
+        let pending = self.state.expect_pending_char();
         self.go_idle();
         let resolved =
             self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
-        ParseAction::ReduceAndContinue {
-            actions: resolved.actions,
-            record: resolved.output,
-            remaining: *ev,
-        }
+        resolved.into_reduce_and_continue(*ev)
     }
 
     /// PendingThumb + 文字キー → 同時打鍵候補（閾値内なら即時確定、超過なら flush+新規）
     fn step_pending_thumb_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        let EngineState::PendingThumb(thumb) = self.state else {
-            unreachable!("unexpected state: {:?}", self.state)
-        };
+        let thumb = self.state.expect_pending_thumb();
         // 親指面で到着文字キーの候補を取得し閾値を調整
         let pending_face = thumb.face();
         let candidate = self.lookup_face(ev.pos, self.get_face(pending_face));
@@ -814,25 +797,15 @@ impl NicolaFsm {
         // 時間超過 or 候補なし → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
-        ParseAction::ReduceAndContinue {
-            actions: resolved.actions,
-            record: resolved.output,
-            remaining: *ev,
-        }
+        resolved.into_reduce_and_continue(*ev)
     }
 
     /// PendingThumb + 親指キー → 前の保留を単独確定し、今回のキーを再処理
     fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        let EngineState::PendingThumb(thumb) = self.state else {
-            unreachable!("unexpected state: {:?}", self.state)
-        };
+        let thumb = self.state.expect_pending_thumb();
         self.go_idle();
         let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
-        ParseAction::ReduceAndContinue {
-            actions: resolved.actions,
-            record: resolved.output,
-            remaining: *ev,
-        }
+        resolved.into_reduce_and_continue(*ev)
     }
 
     /// OutputUpdate に基づいて出力履歴を更新する共通ヘルパー
@@ -897,11 +870,56 @@ impl NicolaFsm {
     /// IME に対して透明になる。Engine が無効な場合は hook 層で bypass されてここには
     /// 来ないので、Windows 全般での 無変換 / 変換 キー機能は引き続き使える。
     #[allow(clippy::unused_self)]
-    fn resolve_pending_thumb_as_single(&self, _vk_code: VkCode) -> ResolvedAction {
+    const fn resolve_pending_thumb_as_single(&self, _vk_code: VkCode) -> ResolvedAction {
         ResolvedAction {
             actions: vec![],
             output: OutputUpdate::None,
         }
+    }
+
+    /// 3 鍵仲裁で char1+thumb を優先するかを判定する（純粋関数）。
+    ///
+    /// char1 が既に離されていれば無条件で false（タイミング比較不要）。
+    /// それ以外は `TimingJudge::three_key_pairing` でタイミング + n-gram を総合判定。
+    fn compute_prefer_char1(
+        &self,
+        pending: &PendingKey,
+        thumb: &PendingThumbData,
+        ev: &ClassifiedEvent,
+        char1_released: bool,
+    ) -> bool {
+        if char1_released {
+            return false;
+        }
+        let thumb_face = thumb.face();
+        let judge = self.timing_judge();
+        let char1_thumb_kana = self.lookup_kana_at(pending.pos, thumb_face);
+        let char1_single_kana = self.lookup_kana_at(pending.pos, Face::Normal);
+        let char2_thumb_kana = self.lookup_kana_at(ev.pos, thumb_face);
+        judge.three_key_pairing(
+            pending.timestamp,
+            thumb.timestamp,
+            ev.timestamp,
+            char1_thumb_kana,
+            char1_single_kana,
+            char2_thumb_kana,
+        ) == timing::ThreeKeyResult::PairWithChar1
+    }
+
+    /// char1+thumb を同時打鍵として確定し、`remaining` を再処理する `ReduceAndContinue` を返す。
+    fn reduce_char_thumb_and_continue(
+        &mut self,
+        pending: PendingKey,
+        thumb_face: Face,
+        remaining: ClassifiedEvent,
+    ) -> ParseAction {
+        let resolved = self.resolve_char_thumb_as_simultaneous(
+            pending.scan_code,
+            pending.vk_code,
+            pending.pos,
+            thumb_face,
+        );
+        resolved.into_reduce_and_continue(remaining)
     }
 
     /// `PendingCharThumb` 状態で新しいキーが到着した場合の 3 鍵仲裁処理
@@ -915,95 +933,41 @@ impl NicolaFsm {
     /// タイミング差が小さいとき（どちらとも取れる場合）は n-gram スコアで
     /// より自然な日本語になるほうを選ぶ。
     fn step_pending_char_thumb_3key(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        let EngineState::PendingCharThumb {
-            char_key: pending,
-            thumb,
-            char1_released,
-        } = self.state
-        else {
-            unreachable!("unexpected state: {:?}", self.state)
-        };
+        let (pending, thumb, char1_released) = self.state.expect_pending_char_thumb();
+        let thumb_face = thumb.face();
         self.go_idle();
 
-        if !ev.key_class.is_thumb() {
-            // char2 到着 → 3 鍵仲裁
-            // char1 が既に離されていれば char1 は単独打鍵確定（タイミング比較不要）
-            let thumb_face = thumb.face();
-            let prefer_char1 = if char1_released {
-                false
-            } else {
-                let judge = self.timing_judge();
-                let char1_thumb_kana = self
-                    .lookup_face(pending.pos, self.get_face(thumb_face))
-                    .and_then(|(_, k)| k);
-                let char1_single_kana = self
-                    .lookup_face(pending.pos, self.get_face(Face::Normal))
-                    .and_then(|(_, k)| k);
-                let char2_thumb_kana = self
-                    .lookup_face(ev.pos, self.get_face(thumb_face))
-                    .and_then(|(_, k)| k);
-                judge.three_key_pairing(
-                    pending.timestamp,
-                    thumb.timestamp,
-                    ev.timestamp,
-                    char1_thumb_kana,
-                    char1_single_kana,
-                    char2_thumb_kana,
-                ) == timing::ThreeKeyResult::PairWithChar1
-            };
-
-            if prefer_char1 {
-                // char1+thumb = 同時打鍵、char2 は再処理
-                let resolved = self.resolve_char_thumb_as_simultaneous(
-                    pending.scan_code,
-                    pending.vk_code,
-                    pending.pos,
-                    thumb_face,
-                );
-                return ParseAction::ReduceAndContinue {
-                    actions: resolved.actions,
-                    record: resolved.output,
-                    remaining: *ev,
-                };
-            }
-            // char1 = 単独、char2+thumb = 同時打鍵
-            let char1_resolved = self.resolve_pending_char_as_single(
-                pending.scan_code,
-                pending.vk_code,
-                pending.pos,
-            );
-            if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(thumb_face)) {
-                // char1 の履歴を先に更新してから char2+thumb を確定
-                self.update_history(char1_resolved.output);
-                self.consume_thumb(thumb.face());
-                let mut all_actions = char1_resolved.actions;
-                all_actions.push(action.clone());
-                return ParseAction::Reduce {
-                    actions: all_actions,
-                    record: record_output(ev.scan_code, &action, kana),
-                    timer: TimerIntent::CancelAll,
-                };
-            }
-            // 親指面に char2 の定義がない場合は char1 を単独確定し、char2 を再処理
-            return ParseAction::ReduceAndContinue {
-                actions: char1_resolved.actions,
-                record: char1_resolved.output,
-                remaining: *ev,
-            };
+        // 新しい親指キーが来た → char1+thumb を同時打鍵として確定し、新しい親指を再処理
+        if ev.key_class.is_thumb() {
+            return self.reduce_char_thumb_and_continue(pending, thumb_face, *ev);
         }
-        // 親指キーが来た場合は char1+thumb を同時打鍵として確定し、
-        // 新しい親指キーを再処理
-        let resolved = self.resolve_char_thumb_as_simultaneous(
+
+        // char2 が来た → 3 鍵仲裁
+        if self.compute_prefer_char1(&pending, &thumb, ev, char1_released) {
+            // char1+thumb = 同時打鍵、char2 は再処理
+            return self.reduce_char_thumb_and_continue(pending, thumb_face, *ev);
+        }
+
+        // char1 = 単独、char2+thumb = 同時打鍵（または char2 単独）
+        let char1_resolved = self.resolve_pending_char_as_single(
             pending.scan_code,
             pending.vk_code,
             pending.pos,
-            thumb.face(),
         );
-        ParseAction::ReduceAndContinue {
-            actions: resolved.actions,
-            record: resolved.output,
-            remaining: *ev,
+        if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(thumb_face)) {
+            // char1 の履歴を先に更新してから char2+thumb を確定
+            self.update_history(char1_resolved.output);
+            self.consume_thumb(thumb_face);
+            let mut all_actions = char1_resolved.actions;
+            all_actions.push(action.clone());
+            return ParseAction::Reduce {
+                actions: all_actions,
+                record: record_output(ev.scan_code, &action, kana),
+                timer: TimerIntent::CancelAll,
+            };
         }
+        // 親指面に char2 の定義がない → char1 単独確定、char2 を再処理
+        char1_resolved.into_reduce_and_continue(*ev)
     }
 }
 
@@ -1050,16 +1014,9 @@ impl NicolaFsm {
 
     /// PendingCharThumb 状態で char1 または thumb が離された場合の処理
     fn handle_key_up_pending_char_thumb(&mut self, event: &RawKeyEvent) -> Resp {
-        let EngineState::PendingCharThumb {
-            char_key: pending,
-            thumb,
-            char1_released,
-        } = self.state
-        else {
-            unreachable!("unexpected state: {:?}", self.state)
-        };
+        let (pending, thumb, char1_released) = self.state.expect_pending_char_thumb();
 
-        // char1 が初めて離された場合: フラグを立てて待機継続。
+        // char1 の最初の KeyUp → フラグを立てて待機継続。
         // 後から char2 が来れば「char1 単独 + char2+thumb 同時」と確実に判定できる。
         if event.vk_code == pending.vk_code && !char1_released {
             self.state = EngineState::PendingCharThumb {
@@ -1070,7 +1027,6 @@ impl NicolaFsm {
             return self.build_response(vec![], true, TimerIntent::Keep);
         }
 
-        // thumb が離された、または char1_released 済みで char1 が再度離された:
         // char1+thumb を同時打鍵として確定する
         self.go_idle();
         let resolved = self.resolve_char_thumb_as_simultaneous(
@@ -1081,23 +1037,21 @@ impl NicolaFsm {
         );
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
-        if event.vk_code == pending.vk_code {
-            // char1 が離された（char1_released=true 済み）
-            if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
-                if let KeyAction::Key(vk) = entry.action {
-                    actions.push(KeyAction::KeyUp(vk));
-                }
-            }
+
+        // どの物理キーが離されたかに応じて char1 の KeyUp 追記を判定
+        let key_up_scan = if event.vk_code == pending.vk_code {
+            // char1 が再度離された (char1_released=true 済み)
+            Some(event.scan_code)
         } else if char1_released {
-            // thumb が離された。char1 は既に物理的に離されているため KeyUp も追加する。
-            if let Some(entry) = self.output_history.remove_by_scan(pending.scan_code) {
-                if let KeyAction::Key(vk) = entry.action {
-                    actions.push(KeyAction::KeyUp(vk));
-                }
-            }
+            // thumb が離された + char1 は既に物理的に離されている
+            Some(pending.scan_code)
+        } else {
+            // thumb が離された + char1 はまだ押下中 → KeyUp 不要
+            None
+        };
+        if let Some(scan) = key_up_scan {
+            self.append_key_up_for(&mut actions, scan);
         }
-        // thumb 側が離された場合: thumb KeyDown は consume 済みなので KeyUp も consume する
-        // （output_history には thumb のエントリはないため remove 不要）
         self.build_response(actions, true, TimerIntent::CancelAll)
     }
 
@@ -1125,11 +1079,7 @@ impl NicolaFsm {
         };
         self.update_history(resolved.output);
         let mut result = resolved.actions;
-        if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
-            if let KeyAction::Key(vk) = entry.action {
-                result.push(KeyAction::KeyUp(vk));
-            }
-        }
+        self.append_key_up_for(&mut result, event.scan_code);
         // Unicode 文字 (Char) は Down+Up 一括送信済みなので KeyUp 追加不要
         self.build_response(result, true, TimerIntent::CancelAll)
     }

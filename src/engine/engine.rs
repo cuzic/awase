@@ -5,7 +5,7 @@
 //!
 //! # 設計方針
 //!
-//! Engine は near-pure function として設計され��。
+//! Engine は near-pure function として設計されている。
 //! - 物理キー状態（修飾キー、親指キー）は Platform 層が InputTracker で追跡し、
 //!   InputContext 経由で毎回渡す
 //! - IME ガード（遷移中のキーバッファリング）は Platform 層が担当する
@@ -85,7 +85,7 @@ impl Engine {
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
     /// 各条件が false のとき対応する `InactiveReason` を返す。
     #[must_use]
-    pub fn compute_state(&self, ctx: &InputContext) -> ActivationState {
+    pub const fn compute_state(&self, ctx: &InputContext) -> ActivationState {
         if !self.adapter.is_enabled() {
             return ActivationState::Inactive(InactiveReason::UserDisabled);
         }
@@ -103,7 +103,7 @@ impl Engine {
 
     /// InputContext から実効状態を bool で返す（後方互換 API）。
     #[must_use]
-    pub fn compute_active(&self, ctx: &InputContext) -> bool {
+    pub const fn compute_active(&self, ctx: &InputContext) -> bool {
         self.compute_state(ctx).is_active()
     }
 
@@ -147,7 +147,7 @@ impl Engine {
     /// 処理フロー:
     /// 1. KeyUp 自動追跡
     /// 2. 特殊キー（エンジン ON/OFF + IME 制御）
-    /// 3. 実効状態チェッ��� + 遷移検知
+    /// 3. 実効状態チェック + 遷移検知
     /// 4. NicolaFsm 処理
     pub fn on_input(&mut self, event: RawKeyEvent, ctx: &InputContext) -> Decision {
         // Phase 0: KeyUp 自動追跡
@@ -200,7 +200,7 @@ impl Engine {
     /// 外部コマンドの統合エントリポイント。
     ///
     /// `toggle_engine`, `invalidate_engine_context`, `swap_layout` 等の個別メソッドを
-    /// 単一のデ���スパッチに集約する。
+    /// 単一のディスパッチに集約する。
     pub fn on_command(&mut self, cmd: EngineCommand, ctx: &InputContext) -> Decision {
         match cmd {
             EngineCommand::ToggleEngine => {
@@ -248,7 +248,7 @@ impl Engine {
         }
     }
 
-    /// フォーカス変更の観測結果を処理し、コン���キスト無効化等の Decision を返す。
+    /// フォーカス変更の観測結果を処理し、コンテキスト無効化等の Decision を返す。
     /// フォーカス変更（前面プロセス変更）の処理。
     ///
     /// デバウンス後に Platform 層が前面プロセスの変化を検出した場合のみ呼ばれる（ADR 028）。
@@ -290,7 +290,7 @@ impl Engine {
     }
 
     /// 前回の実効状態を直接設定する（テスト・初期化用）。
-    pub fn set_prev_active(&mut self, active: bool) {
+    pub const fn set_prev_active(&mut self, active: bool) {
         let state = if active {
             ActivationState::Active
         } else {
@@ -385,7 +385,7 @@ impl Engine {
     }
 
     /// `SpecialKeyMatch` に応じた状態変更と `Decision` 生成を行う副作用適用メソッド。
-    fn apply_special_key_match(&mut self, m: SpecialKeyMatch, ctx: &InputContext) -> Decision {
+    fn apply_special_key_match(&mut self, m: &SpecialKeyMatch, ctx: &InputContext) -> Decision {
         match m {
             SpecialKeyMatch::EngineOn => {
                 let old_active = self.compute_active(ctx);
@@ -421,7 +421,7 @@ impl Engine {
         event: &RawKeyEvent,
     ) -> Option<Decision> {
         let m = self.match_special_keys(ctx, event)?;
-        Some(self.apply_special_key_match(m, ctx))
+        Some(self.apply_special_key_match(&m, ctx))
     }
 
     /// キーコンボが修飾キー条件を含めてイベントに一致するか判定する。

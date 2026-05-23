@@ -25,3 +25,5 @@ all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
+# 他クレートのメタデータが揃うまで suppress（crates.io 公開前に外す）
+cargo_common_metadata = "allow"
