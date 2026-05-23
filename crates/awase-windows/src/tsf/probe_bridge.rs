@@ -28,7 +28,7 @@ impl OutputGate {
 
     /// `OUTPUT_GATE.active` の現在値を取得する。
     #[inline]
-    pub(crate) fn is_active(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
     }
 
@@ -40,7 +40,7 @@ impl OutputGate {
 
     /// `last_vk_output_ms` の現在値を取得する。
     #[inline]
-    pub(crate) fn last_vk_output_ms_val(&self) -> u64 {
+    pub fn last_vk_output_ms_val(&self) -> u64 {
         self.last_vk_output_ms.load(Ordering::Relaxed)
     }
 }

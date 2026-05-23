@@ -480,7 +480,7 @@ fn reload_config() {
     }
 
     with_app(|app| {
-        app.executor.platform.focus.overrides = config.app_overrides;
+        app.executor.platform.focus.overrides = awase_windows::focus::classifier::ForceOverrides::new(config.app_overrides);
         app.executor.platform.focus.cache = awase_windows::focus::cache::FocusCache::new();
     });
     log::info!("App overrides reloaded");

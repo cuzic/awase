@@ -49,21 +49,21 @@ impl ImeStateHub {
 ///
 /// app_kind・focus_kind・focus_transition_pending・タイミング・ポーリング間隔を保持する。
 #[derive(Debug)]
-pub(crate) struct FocusPlatformState {
-    pub(crate) app_kind: AppKind,
-    pub(crate) focus_kind: FocusKind,
+pub struct FocusPlatformState {
+    pub app_kind: AppKind,
+    pub focus_kind: FocusKind,
     /// フォーカス切替直後フラグ。
     ///
     /// フォーカス変更を検知したときに `true` にセットされる。
     /// 次のキーストローク到着時に同期プローブ（高速 IME 状態検出）を実行し、
     /// preconditions を即座に更新してからキーを処理する。
     /// これにより「古い preconditions でキーが処理される」ギャップを解消する。
-    pub(crate) focus_transition_pending: bool,
+    pub focus_transition_pending: bool,
     /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
     /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
-    pub(crate) last_focus_change_ms: u64,
-    pub(crate) focus_debounce_ms: u32,
-    pub(crate) ime_poll_interval_ms: u32,
+    pub last_focus_change_ms: u64,
+    pub focus_debounce_ms: u32,
+    pub ime_poll_interval_ms: u32,
 }
 
 impl FocusPlatformState {
@@ -92,7 +92,7 @@ pub struct PlatformState {
     /// IME 観測・判断・preconditions 書き戻しを担う凝集ユニット。
     pub(crate) ime: ImeStateHub,
     /// フォーカス追跡に関する状態を集約するユニット。
-    pub(crate) focus: FocusPlatformState,
+    pub focus: FocusPlatformState,
     pub hook: HookRoutingState,
     pub hook_config: HookConfig,
     pub last_hook_activity_ms: u64,
@@ -136,51 +136,51 @@ impl PlatformState {
     ///
     /// `build_input_context(&ps.preconditions(), …)` のような呼び出し用。
     #[inline]
-    pub(crate) fn preconditions(&self) -> &Preconditions {
+    pub fn preconditions(&self) -> &Preconditions {
         &self.ime.preconditions
     }
 
-    // ── Preconditions への pub(crate) 読み取りパススルー ──
+    // ── Preconditions への pub 読み取りパススルー ──
 
     /// IME が ON かどうかを返す。
     #[inline]
-    pub(crate) fn ime_on(&self) -> bool {
+    pub fn ime_on(&self) -> bool {
         self.ime.preconditions.ime_on()
     }
 
     /// `ime_on` を最後に更新したソースを返す。
     #[inline]
-    pub(crate) fn ime_on_source(&self) -> ShadowSource {
+    pub fn ime_on_source(&self) -> ShadowSource {
         self.ime.preconditions.ime_on_source()
     }
 
     /// 入力モードを返す。
     #[inline]
-    pub(crate) fn input_mode(&self) -> InputModeState {
+    pub fn input_mode(&self) -> InputModeState {
         self.ime.preconditions.input_mode()
     }
 
     /// 日本語 IME がアクティブかを返す。
     #[inline]
-    pub(crate) fn is_japanese_ime(&self) -> bool {
+    pub fn is_japanese_ime(&self) -> bool {
         self.ime.preconditions.is_japanese_ime()
     }
 
     /// 直前の conversion_mode を返す。
     #[inline]
-    pub(crate) fn prev_conversion_mode(&self) -> Option<u32> {
+    pub fn prev_conversion_mode(&self) -> Option<u32> {
         self.ime.preconditions.prev_conversion_mode()
     }
 
     /// IME 状態検出の連続失敗回数を返す。
     #[inline]
-    pub(crate) fn ime_detect_miss_count(&self) -> u32 {
+    pub fn ime_detect_miss_count(&self) -> u32 {
         self.ime.preconditions.ime_detect_miss_count()
     }
 
     /// いずれかの強制 ON ガードが立っているかを返す。
     #[inline]
-    pub(crate) fn is_force_on_guard_active(&self) -> bool {
+    pub fn is_force_on_guard_active(&self) -> bool {
         self.ime.preconditions.is_force_on_guard_active()
     }
 
@@ -188,44 +188,44 @@ impl PlatformState {
 
     /// `ime_on` を設定する（ソース付き）。
     #[inline]
-    pub(crate) fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
+    pub fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
         self.ime.preconditions.set_ime_on(value, source);
     }
 
     /// `input_mode` を設定する。
     #[inline]
-    pub(crate) fn set_input_mode(&mut self, mode: InputModeState) {
+    pub fn set_input_mode(&mut self, mode: InputModeState) {
         self.ime.preconditions.input_mode = mode;
     }
 
     /// `is_japanese_ime` を設定する。
     #[inline]
-    pub(crate) fn set_is_japanese_ime(&mut self, value: bool) {
+    pub fn set_is_japanese_ime(&mut self, value: bool) {
         self.ime.preconditions.is_japanese_ime = value;
     }
 
     /// `prev_conversion_mode` を設定する。
     #[inline]
-    pub(crate) fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
+    pub fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
         self.ime.preconditions.prev_conversion_mode = value;
     }
 
     /// `ime_detect_miss_count` をインクリメントする（saturating）。
     #[inline]
-    pub(crate) fn increment_ime_detect_miss_count(&mut self) {
+    pub fn increment_ime_detect_miss_count(&mut self) {
         self.ime.preconditions.ime_detect_miss_count =
             self.ime.preconditions.ime_detect_miss_count.saturating_add(1);
     }
 
     /// `ime_detect_miss_count` を 0 にリセットする。
     #[inline]
-    pub(crate) fn reset_ime_detect_miss_count(&mut self) {
+    pub fn reset_ime_detect_miss_count(&mut self) {
         self.ime.preconditions.ime_detect_miss_count = 0;
     }
 
     /// `force_on_broken_app_bootstrap` ガードをセットする。
     #[inline]
-    pub(crate) fn set_force_on_broken_app_bootstrap(&mut self) {
+    pub fn set_force_on_broken_app_bootstrap(&mut self) {
         self.ime.preconditions.force_on_broken_app_bootstrap = true;
     }
 
@@ -234,7 +234,7 @@ impl PlatformState {
     /// ユーザー操作（Shadow IME トグル・SetOpen 等）で「ユーザーが意図した状態」が
     /// 確定したときに呼ぶ。
     #[inline]
-    pub(crate) fn reset_ime_detect_state(&mut self) {
+    pub fn reset_ime_detect_state(&mut self) {
         self.ime.preconditions.ime_detect_miss_count = 0;
         self.ime.preconditions.force_on_broken_app_bootstrap = false;
         self.ime.preconditions.force_on_panic_reset = false;
@@ -245,7 +245,7 @@ impl PlatformState {
     /// input_mode / ime_on / is_japanese_ime / prev_conversion_mode /
     /// ime_detect_miss_count / force_on_broken_app_bootstrap / force_on_panic_reset をまとめて設定する。
     /// `ime_observations` もクリアして stale な観測値が残らないようにする。
-    pub(crate) fn apply_panic_reset(&mut self) {
+    pub fn apply_panic_reset(&mut self) {
         self.ime.preconditions.input_mode = InputModeState::ObservedRomaji;
         self.ime.preconditions.set_ime_on(true, ShadowSource::PanicReset);
         self.ime.preconditions.is_japanese_ime = true;
@@ -287,21 +287,21 @@ impl PlatformState {
     ///
     /// `Some(value)` = 最後に観測された値。`None` = 未観測。
     /// `is_japanese_ime` との AND 結果を `os_ime_on` 計算に使う。
-    pub(crate) fn observer_poll_value(&self) -> Option<bool> {
+    pub fn observer_poll_value(&self) -> Option<bool> {
         self.ime.ime_observations.observer_poll.as_ref().map(|obs| obs.value)
     }
 
     /// フォーカス変更時に `ime_observations` の全スロットをクリアする。
     ///
     /// `ImeObservations::clear_on_focus_change()` への委譲ラッパー。
-    pub(crate) fn clear_ime_observations_on_focus_change(&mut self) {
+    pub fn clear_ime_observations_on_focus_change(&mut self) {
         self.ime.ime_observations.clear_on_focus_change();
     }
 
     /// `sync_key` スロットに観測値を書き込む。
     ///
     /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
-    pub(crate) fn write_sync_key(&mut self, value: bool, ms: u64) {
+    pub fn write_sync_key(&mut self, value: bool, ms: u64) {
         self.ime.ime_observations.sync_key =
             Some(crate::ime_observations::ImeObs { value, ms });
     }
@@ -309,7 +309,7 @@ impl PlatformState {
     /// `physical_key` スロットに観測値を書き込む。
     ///
     /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
-    pub(crate) fn write_physical_key(&mut self, value: bool, ms: u64) {
+    pub fn write_physical_key(&mut self, value: bool, ms: u64) {
         self.ime.ime_observations.physical_key =
             Some(crate::ime_observations::ImeObs { value, ms });
     }
@@ -317,7 +317,7 @@ impl PlatformState {
     /// `set_open_request` スロットに観測値を書き込む。
     ///
     /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
-    pub(crate) fn write_set_open_request(&mut self, value: bool, ms: u64) {
+    pub fn write_set_open_request(&mut self, value: bool, ms: u64) {
         self.ime.ime_observations.set_open_request =
             Some(crate::ime_observations::ImeObs { value, ms });
     }
@@ -325,7 +325,7 @@ impl PlatformState {
     /// `focus_probe` スロットに観測値を書き込む。
     ///
     /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
-    pub(crate) fn write_focus_probe(&mut self, value: bool, ms: u64) {
+    pub fn write_focus_probe(&mut self, value: bool, ms: u64) {
         self.ime.ime_observations.focus_probe =
             Some(crate::ime_observations::ImeObs { value, ms });
     }

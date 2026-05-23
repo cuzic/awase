@@ -311,8 +311,8 @@ pub(super) fn initialize_app(
     right_thumb_vk: VkCode,
 ) {
     let mut ps = awase_windows::PlatformState::new();
-    ps.focus_debounce_ms = config.general.focus_debounce_ms;
-    ps.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+    ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
+    ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(&mut ps.hook_config, left_thumb_vk, right_thumb_vk);
     hook::update_hook_config(ps.hook_config);
 

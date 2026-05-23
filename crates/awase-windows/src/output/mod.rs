@@ -370,7 +370,7 @@ impl Output {
     /// フォーカス変更時に `tsf_gate` を `PendingWarmup` に遷移させる。
     ///
     /// 呼び出し後に `TIMER_TSF_GATE` を `WARMUP_TIMEOUT_MS` ms でセットすること。
-    pub(crate) fn on_focus_change_tsf(&mut self) {
+    pub fn on_focus_change_tsf(&mut self) {
         self.tsf_gate.on_focus_change();
     }
 
@@ -392,12 +392,12 @@ impl Output {
 
     /// `TIMER_TSF_GATE` タイムアウト時に呼ぶ。`Bypass` にフォールバックし、保留キーを返す。
     #[must_use]
-    pub(crate) fn on_tsf_warmup_timeout(&mut self) -> Vec<awase::types::RawKeyEvent> {
+    pub fn on_tsf_warmup_timeout(&mut self) -> Vec<awase::types::RawKeyEvent> {
         self.tsf_gate.on_warmup_timeout()
     }
 
     /// キーを `tsf_gate` で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
-    pub(crate) fn try_hold_key(&mut self, event: awase::types::RawKeyEvent) -> bool {
+    pub fn try_hold_key(&mut self, event: awase::types::RawKeyEvent) -> bool {
         self.tsf_gate.try_hold(event)
     }
 

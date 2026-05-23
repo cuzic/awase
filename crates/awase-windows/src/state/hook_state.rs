@@ -140,8 +140,8 @@ pub struct HookConfig {
 /// IME 遷移ガード状態（IME トグルキー押下中のキーバッファリング）
 #[derive(Debug)]
 pub struct ImeGuardState {
-    pub(crate) active: bool,
-    pub(crate) deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
+    pub active: bool,
+    pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
 }
 
 impl ImeGuardState {

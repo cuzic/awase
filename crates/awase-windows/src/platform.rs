@@ -15,10 +15,10 @@ use crate::tray::SystemTray;
 /// Windows 固有のプラットフォーム実装
 #[allow(missing_debug_implementations)]
 pub struct WindowsPlatform {
-    pub(crate) output: Output,
-    pub(crate) tray: SystemTray,
-    pub(crate) focus: AppKindClassifier,
-    pub(crate) timer: Win32Timer,
+    pub output: Output,
+    pub tray: SystemTray,
+    pub focus: AppKindClassifier,
+    pub timer: Win32Timer,
 }
 
 impl WindowsPlatform {

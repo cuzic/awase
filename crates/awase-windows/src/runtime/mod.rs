@@ -49,15 +49,15 @@ pub struct LayoutEntry {
 /// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
 #[allow(missing_debug_implementations)]
 pub struct Runtime {
-    pub(crate) engine: Engine,
-    pub(crate) executor: DecisionExecutor,
-    pub(crate) layouts: Vec<LayoutEntry>,
+    pub engine: Engine,
+    pub executor: DecisionExecutor,
+    pub layouts: Vec<LayoutEntry>,
     /// IME 同期キー（イベント事前分類用）
-    pub(crate) sync_toggle_keys: Vec<VkCode>,
-    pub(crate) sync_on_keys: Vec<VkCode>,
-    pub(crate) sync_off_keys: Vec<VkCode>,
+    pub sync_toggle_keys: Vec<VkCode>,
+    pub sync_on_keys: Vec<VkCode>,
+    pub sync_off_keys: Vec<VkCode>,
     /// Platform 層の全状態
-    pub(crate) platform_state: crate::PlatformState,
+    pub platform_state: crate::PlatformState,
 }
 
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
@@ -67,6 +67,7 @@ struct ClassifiedFocus {
     process_id: u32,
     class_name: String,
     kind: FocusKind,
+    #[allow(dead_code)]
     app_kind: awase::types::AppKind,
 }
 

@@ -96,12 +96,12 @@ pub enum InjectionHint {
 ///
 /// `AppOverrides` をラップし、is_force_tsf/vk/check_app_override を
 /// メソッドとして集約することで呼び出し側 API を統一する。
-pub(crate) struct ForceOverrides {
+pub struct ForceOverrides {
     inner: AppOverrides,
 }
 
 impl ForceOverrides {
-    pub(crate) fn new(overrides: AppOverrides) -> Self {
+    pub fn new(overrides: AppOverrides) -> Self {
         Self { inner: overrides }
     }
 
@@ -192,7 +192,7 @@ impl ForceOverrides {
 /// IMM 能力の学習・永続化を担う構造体。
 ///
 /// `base_dir` を外から隠蔽し、`learn()` 一発でキャッシュ更新とファイル保存を行う。
-pub(crate) struct ImmCapabilityStore {
+pub struct ImmCapabilityStore {
     cache: std::collections::HashMap<String, ImmCapability>,
     base_dir: std::path::PathBuf,
 }
@@ -235,14 +235,14 @@ impl ImmCapabilityStore {
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
 pub struct AppKindClassifier {
-    pub(crate) cache: super::cache::FocusCache,
-    pub(crate) overrides: ForceOverrides,
-    pub(crate) last_focus_info: Option<(u32, String)>,
-    pub(crate) uia_sender: Option<std::sync::mpsc::Sender<super::uia::SendableHwnd>>,
+    pub cache: super::cache::FocusCache,
+    pub overrides: ForceOverrides,
+    pub last_focus_info: Option<(u32, String)>,
+    pub uia_sender: Option<std::sync::mpsc::Sender<super::uia::SendableHwnd>>,
     /// IMM 能力の学習・永続化ストア。
-    pub(crate) imm_learning: ImmCapabilityStore,
+    pub imm_learning: ImmCapabilityStore,
     /// per-HWND IME 状態キャッシュ。
-    pub(crate) hwnd_ime_cache: std::collections::HashMap<(u32, String), super::hwnd_cache::HwndImeSnapshot>,
+    pub hwnd_ime_cache: std::collections::HashMap<(u32, String), super::hwnd_cache::HwndImeSnapshot>,
 }
 
 impl AppKindClassifier {
