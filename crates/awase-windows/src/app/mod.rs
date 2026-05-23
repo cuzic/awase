@@ -210,6 +210,7 @@ pub(self) fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDi
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
             let _ = with_app(|app| {
+                // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
                 let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
                 app.engine.on_command(
                     awase::engine::EngineCommand::SetNgramModel(model),
@@ -308,63 +309,88 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
 
         match msg.message {
             WM_TIMER => {
+                // SAFETY: WM_TIMER はメインスレッドのメッセージループからのみ呼ばれる。
+                //         wParam のタイマー ID はアプリケーション定義の定数で一意。
                 let _ = with_app(|app| unsafe {
                     let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
                     message_handlers::handle_wm_timer(app, logical_id, msg.wParam.0, &msg);
                 });
             }
             WM_EXECUTE_EFFECTS => {
+                // SAFETY: WM_EXECUTE_EFFECTS はメインスレッドのメッセージループからのみ配送される。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
             }
             WM_PANIC_RESET => {
                 // 再入中に消えないよう repost する（blocking op 完了後に再実行）
+                // SAFETY: WM_PANIC_RESET はメインスレッドのメッセージループからのみ配送される。
                 with_app_or_repost(WM_PANIC_RESET, |app| unsafe { message_handlers::handle_wm_panic_reset(app) });
             }
             WM_DUPLICATE_INSTANCE => {
+                // SAFETY: WM_DUPLICATE_INSTANCE はメインスレッドのメッセージループからのみ配送される。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
             }
             WM_IME_KEY_DETECTED => {
+                // SAFETY: WM_IME_KEY_DETECTED はメインスレッドのメッセージループからのみ配送される。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_ime_key_detected(app) });
             }
             WM_POWERBROADCAST => {
                 let pbt = msg.wParam.0;
+                // SAFETY: WM_POWERBROADCAST はメインスレッドのメッセージループからのみ配送される。
+                //         pbt は OS が設定する PBT_* 定数で安全。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_powerbroadcast(app, pbt) });
             }
             WM_WTSSESSION_CHANGE => {
                 let session_event = msg.wParam.0 as u32;
+                // SAFETY: WM_WTSSESSION_CHANGE はメインスレッドのメッセージループからのみ配送される。
+                //         hwnd は WTSRegisterSessionNotification で登録した有効なウィンドウハンドル。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wts_session_change(app, session_event) });
             }
             WM_INPUTLANGCHANGE => {
+                // SAFETY: WM_INPUTLANGCHANGE はメインスレッドのメッセージループからのみ配送される。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
             }
             WM_PROCESS_DEFERRED => {
+                // SAFETY: WM_PROCESS_DEFERRED はメインスレッドのメッセージループからのみ配送される。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_process_deferred(app) });
             }
             WM_FOCUS_KIND_UPDATE => {
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
+                // SAFETY: WM_FOCUS_KIND_UPDATE はメインスレッドのメッセージループからのみ配送される。
+                //         wparam/lparam の値はポスト元が正しく設定した FocusKind エンコード値。
                 with_app_or_repost_with(WM_FOCUS_KIND_UPDATE, wparam, lparam, |app| unsafe {
                     message_handlers::handle_wm_focus_kind_update(app, wparam, lparam);
                 });
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => {
+                // SAFETY: WM_HOTKEY はメインスレッドのメッセージループからのみ配送される。
+                //         wParam は RegisterHotKey で登録した HOTKEY_ID_TOGGLE と一致している。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => {
+                // SAFETY: WM_HOTKEY はメインスレッドのメッセージループからのみ配送される。
+                //         wParam は RegisterHotKey で登録した HOTKEY_ID_FOCUS_OVERRIDE と一致している。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_focus_override(app) });
             }
-            WM_APP => unsafe {
-                message_handlers::handle_wm_app_tray(msg.hwnd, msg.lParam);
+            WM_APP => {
+                // SAFETY: WM_APP はシステムトレイ通知用に定義したメッセージ。
+                //         msg.hwnd は有効なトレイ通知ウィンドウのハンドル。
+                unsafe { message_handlers::handle_wm_app_tray(msg.hwnd, msg.lParam); }
             },
             WM_RELOAD_CONFIG => {
                 message_handlers::handle_wm_reload_config();
             }
-            WM_COMMAND => unsafe {
-                message_handlers::handle_wm_command(msg.wParam);
+            WM_COMMAND => {
+                // SAFETY: WM_COMMAND はメインスレッドのメッセージループからのみ配送される。
+                //         wParam はトレイメニューの定義済みコマンド ID。
+                unsafe { message_handlers::handle_wm_command(msg.wParam); }
             },
-            WM_DRAIN_OUTPUT_QUEUE => unsafe {
-                message_handlers::handle_wm_drain_output_queue();
+            WM_DRAIN_OUTPUT_QUEUE => {
+                // SAFETY: WM_DRAIN_OUTPUT_QUEUE はメインスレッドのメッセージループからのみ配送される。
+                //         OUTPUT_GATE が非アクティブになったタイミングで post される。
+                unsafe { message_handlers::handle_wm_drain_output_queue(); }
             },
             m if m == taskbar_created_msg && taskbar_created_msg != 0 => {
+                // SAFETY: TaskbarCreated はシェルが再起動した際にブロードキャストされる登録済みメッセージ。
                 let _ = with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
             }
             _ => unsafe {
@@ -418,6 +444,7 @@ fn reload_config() {
     }
 
     let _ = with_app(|app| {
+        // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
         let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
         app.engine.on_command(
             awase::engine::EngineCommand::UpdateFsmParams {
@@ -455,6 +482,7 @@ fn reload_config() {
             app.sync_toggle_keys = toggle.clone();
             app.sync_on_keys = on.clone();
             app.sync_off_keys = off.clone();
+            // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
             let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
             app.engine.on_command(
                 awase::engine::EngineCommand::ReloadKeys {

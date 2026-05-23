@@ -102,13 +102,20 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
     #[allow(clippy::cast_sign_loss)] // OBJID_CLIENT (-4) is a Windows API convention
     let objid = OBJID_CLIENT as u32;
+    // SAFETY: hwnd は呼出元から渡された有効なウィンドウハンドル。
+    //         acc は AccessibleObjectFromWindow の出力ポインタであり、成功時に非 null が保証される。
     let ok = unsafe { AccessibleObjectFromWindow(hwnd, objid, &IAccessible::IID, &raw mut acc) };
     if ok.is_ok() && !acc.is_null() {
-        // Safety: AccessibleObjectFromWindow succeeded and acc is non-null
+        // SAFETY: AccessibleObjectFromWindow が成功し acc が非 null であることを直前で確認済み。
+        //         IAccessible::from_raw は COM の AddRef 済みポインタをラップする。
         let accessible: IAccessible = unsafe { IAccessible::from_raw(acc) };
         let child_self = VARIANT::from(0i32); // CHILDID_SELF
+        // SAFETY: accessible は有効な IAccessible COM インターフェース。
+        //         child_self は CHILDID_SELF (0) で IAccessible の規約に従った有効な引数。
         if let Ok(role) = unsafe { accessible.get_accRole(&child_self) } {
             #[allow(clippy::cast_sign_loss)] // MSAA role values are non-negative
+            // SAFETY: role は get_accRole が返した有効な VARIANT。
+            //         lVal フィールドへのアクセスは MSAA ロール値が VT_I4 型であることが仕様で保証される。
             let role_id = unsafe { role.Anonymous.Anonymous.Anonymous.lVal as u32 };
 
             if let Some(role) = MsaaRole::from_u32(role_id) {

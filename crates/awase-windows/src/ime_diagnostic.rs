@@ -111,6 +111,7 @@ impl ImeDiagnosticSnapshot {
             // フォーカス hwnd は last_focus_info に保存されない（pid/class のみ）
             // ため、現時点のフォアグラウンド hwnd を取得する。
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+            // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。
             let hwnd = unsafe { GetForegroundWindow() };
             let hwnd_raw = hwnd.0 as usize;
 
@@ -139,6 +140,8 @@ impl ImeDiagnosticSnapshot {
         });
 
         // ── HKL ──
+        // SAFETY: get_gui_thread_info_with_timeout は unsafe fn で内部で Win32 API を呼ぶ。
+        //         GetKeyboardLayout(tid) はフォアグラウンドスレッドの HKL を返す読み取り専用 API。
         let (hkl, hkl_lang_id, focus_thread_id) = unsafe {
             let gui = crate::win32::get_gui_thread_info_with_timeout(Duration::from_millis(100));
             let tid = gui.thread_id;
@@ -149,6 +152,8 @@ impl ImeDiagnosticSnapshot {
         };
 
         // ── ImmGetDefaultIMEWnd ──
+        // SAFETY: focus_hwnd_raw は直前の GetForegroundWindow が返した有効なウィンドウハンドル値。
+        //         get_ime_wnd は hwnd が null または無効でも None を返すだけで安全。
         let has_imm_bridge = unsafe {
             let hwnd = HWND(view.focus_hwnd_raw as *mut _);
             crate::imm::get_ime_wnd(hwnd).is_some()
@@ -221,6 +226,8 @@ impl ImeDiagnosticSnapshot {
 /// クロスプロセス IMC クエリ（`IMC_GETOPENSTATUS` / `IMC_GETCONVERSIONMODE`）。
 /// IMM bridge が NULL の場合は `(None, None)` を返す。
 fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
+    // SAFETY: focus_hwnd_raw はフォアグラウンドウィンドウの有効なハンドル値。
+    //         get_ime_wnd / send_ime_control は内部で SMTO_ABORTIFHUNG を使用し安全。
     unsafe {
         let hwnd = HWND(focus_hwnd_raw as *mut _);
         let Some(_) = crate::win32::non_null_hwnd(hwnd) else {

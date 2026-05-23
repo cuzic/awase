@@ -26,6 +26,8 @@ pub fn non_null_hwnd(hwnd: HWND) -> Option<HWND> {
 /// `PostMessageW(None, msg, WPARAM(0), LPARAM(0))` の簡潔なラッパー。
 /// `None` はメッセージループを持つスレッド（= メインスレッド）を意味する。
 pub fn post_to_main_thread(msg: u32) {
+    // SAFETY: None HWND は呼び出しスレッドのメッセージキューに投函することを意味する。
+    //         msg はプロセス定義のカスタムメッセージ ID で、パラメータは 0 で安全。
     let _ = unsafe {
         windows::Win32::UI::WindowsAndMessaging::PostMessageW(
             None,
@@ -38,6 +40,8 @@ pub fn post_to_main_thread(msg: u32) {
 
 /// メインスレッドのメッセージキューにパラメータ付きでカスタムメッセージを POST する。
 pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
+    // SAFETY: None HWND は呼び出しスレッドのメッセージキューに投函することを意味する。
+    //         msg はプロセス定義のカスタムメッセージ ID で、wparam/lparam は呼び出し元が設定した値。
     let _ = unsafe {
         windows::Win32::UI::WindowsAndMessaging::PostMessageW(
             None,
@@ -51,6 +55,8 @@ pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
 pub fn send_input_safe(inputs: &[INPUT]) -> u32 {
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
+    // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。
+    //         SendInput はスライスの範囲外を読まない。
     unsafe { SendInput(inputs, size) }
 }
 
@@ -84,6 +90,9 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
             cbSize: u32::try_from(size_of::<GUITHREADINFO>()).expect("GUITHREADINFO size is a small constant that always fits in u32"),
             ..Default::default()
         };
+        // SAFETY: info は cbSize を正しく設定したスタック上の有効な構造体。
+        //         GetGUIThreadInfo(0, ...) はフォアグラウンドスレッドの情報を取得する。
+        //         GetForegroundWindow / GetWindowThreadProcessId はどのスレッドからも安全に呼べる。
         unsafe {
             if GetGUIThreadInfo(0, &raw mut info).is_ok() {
                 // hwndFocus が null なら hwndActive を使う
@@ -106,6 +115,7 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
         Some(SendableResult(hwnd, tid)) => GuiThreadResult { focused_hwnd: hwnd, thread_id: tid },
         None => {
             // フォールバック: GetForegroundWindow は非ブロッキング
+            // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。
             GuiThreadResult {
                 focused_hwnd: non_null_hwnd(unsafe { GetForegroundWindow() }),
                 thread_id: 0,

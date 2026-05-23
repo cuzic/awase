@@ -3,18 +3,22 @@ use awase::config::OutputMode;
 use awase::types::{KeyAction, SpecialKey};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
+    SendInput, INPUT,
 };
 
 pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
-use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key_input};
+use crate::tsf::output::make_key_input_ex;
 
 pub(crate) mod types;
 pub(crate) mod sender;
 pub(crate) use sender::OutputSession;
 pub(crate) use types::InjectionMode;
+
+mod resolve;
+mod vk_send;
+use resolve::{ascii_to_vk, special_key_to_vk, build_symbol_to_vk, CharResolution};
+use vk_send::{make_key_input, TsfSendPipeline};
 
 pub(crate) use crate::tsf::probe_bridge::OutputActiveGuard;
 
@@ -731,6 +735,7 @@ impl Output {
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
             let cold_seq = self.composition.increment_cold_start_count();
+            // SAFETY: IMM32 API; フォアグラウンドウィンドウのクラス名取得で副作用なし。
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_seq} class={win_class}");
 
@@ -900,6 +905,7 @@ impl Output {
         {
             let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            // SAFETY: IMM32 API; メッセージループスレッドから呼ばれ、タイムアウト付きで安全。
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
                 "[h1-send] cold={cold_seq} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \

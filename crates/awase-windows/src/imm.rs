@@ -35,6 +35,8 @@ impl ImmContextGuard {
     /// # Safety
     /// `hwnd` は有効なウィンドウハンドルでなければならない。
     pub(crate) unsafe fn new(hwnd: HWND) -> Option<Self> {
+        // SAFETY: hwnd は呼出元でチェック済みの有効なウィンドウハンドル。
+        //         ImmReleaseContext は Drop で必ず呼ばれる RAII パターン。
         let himc = unsafe { ImmGetContext(hwnd) };
         if himc.is_invalid() { None } else { Some(Self { hwnd, himc }) }
     }
@@ -46,6 +48,8 @@ impl ImmContextGuard {
 
 impl Drop for ImmContextGuard {
     fn drop(&mut self) {
+        // SAFETY: self.hwnd と self.himc は new() で ImmGetContext が返した有効なペア。
+        //         ImmReleaseContext は ImmGetContext と必ず対になる RAII パターン。
         unsafe { let _ = ImmReleaseContext(self.hwnd, self.himc); }
     }
 }
@@ -59,6 +63,8 @@ impl Drop for ImmContextGuard {
 /// # Safety
 /// Win32 API を呼び出す。
 pub(crate) unsafe fn get_ime_wnd(hwnd: HWND) -> Option<HWND> {
+    // SAFETY: hwnd は呼出元でチェック済みの有効なウィンドウハンドル。
+    //         ImmGetDefaultIMEWnd は hwnd に対応する IME ウィンドウを返すだけで副作用なし。
     crate::win32::non_null_hwnd(unsafe { ImmGetDefaultIMEWnd(hwnd) })
 }
 
@@ -77,6 +83,9 @@ pub(crate) unsafe fn send_ime_control(
     timeout_ms: u32,
 ) -> Option<usize> {
     let mut result = 0usize;
+    // SAFETY: ime_wnd は呼出元が ImmGetDefaultIMEWnd で取得した有効な IME ウィンドウハンドル。
+    //         SMTO_ABORTIFHUNG によりハングしたスレッドで無期限にブロックしない。
+    //         result はスタック上の有効な usize でポインタ渡しが安全。
     let ok = unsafe {
         SendMessageTimeoutW(
             ime_wnd,
