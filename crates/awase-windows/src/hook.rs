@@ -563,7 +563,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     if is_self_injected(kb.dwExtraInfo) {
         // ハートビートは自己注入でも更新する（ping 応答のため）。
         // with_app 再入中の場合は try_with_mut が None を返してスキップする。
-        crate::APP.try_with_mut(|app| {
+        crate::RUNTIME.try_with_mut(|app| {
             app.platform_state.last_hook_activity_ms = current_tick_ms();
             app.platform_state.hook_event_count += 1;
         });
@@ -588,7 +588,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     }
 
     // ── APP からプラットフォーム状態を取得 ──
-    let mut app_borrow = match crate::APP.try_borrow_mut() {
+    let mut app_borrow = match crate::RUNTIME.try_borrow_mut() {
         Some(guard) => guard,
         None => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
     };
@@ -631,7 +631,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
         .map_or(CallbackResult::PassThrough, |callback| callback(event));
 
     // コールバック後に leave_callback を実行してフック再入ガードをリセット
-    crate::APP.try_with_mut(|app| {
+    crate::RUNTIME.try_with_mut(|app| {
         app.platform_state.hook.leave_callback();
     });
 

@@ -114,17 +114,17 @@ pub static RAW_TSF_LITERAL: RawTsfLiteralPending = RawTsfLiteralPending::new();
 // ── PlatformState: シングルスレッド上の全状態を集約 ──
 // PlatformState は crate::state::platform_state に移動済み。re-export は上部の pub use で行う。
 
-/// APP グローバル — シングルスレッド専用
-pub static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();
+/// RUNTIME グローバル — シングルスレッド専用
+pub static RUNTIME: SingleThreadCell<Runtime> = SingleThreadCell::new();
 
-/// `APP` グローバルへの集約アクセスポイント。
+/// `RUNTIME` グローバルへの集約アクセスポイント。
 ///
 /// `RefCell` の実行時借用チェックにより再入を安全に検出する。
 /// 再入を検出した場合は `log::warn!` を出力して `None` を返す（UB なし）。
 #[must_use = "再入時は None を返す。消えてはいけないメッセージには with_app_or_repost を、\
 意図的に捨てる場合は `let _ = with_app(...)` を使うこと"]
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
-    match APP.try_borrow_mut() {
+    match RUNTIME.try_borrow_mut() {
         Some(mut guard) => guard.as_mut().map(f),
         None => {
             // SendMessage (cross-process IME) や block_on のネストメッセージループ経由で
@@ -137,9 +137,9 @@ pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
     }
 }
 
-/// `APP` グローバルへの読み取り専用アクセスファサード。
+/// `RUNTIME` グローバルへの読み取り専用アクセスファサード。
 pub fn with_app_ref<R>(f: impl FnOnce(&Runtime) -> R) -> Option<R> {
-    APP.with(f)
+    RUNTIME.with(f)
 }
 
 /// `with_app` を呼び、再入で `None` が返った場合は `msg` を自スレッドのキューに再 post する。
@@ -160,13 +160,13 @@ pub fn with_app_or_repost_with(msg: u32, wparam: usize, lparam: isize, f: impl F
     }
 }
 
-/// `with_app` が現在アクティブかどうかを返す（APP が排他借用中かどうか）。
+/// `with_app` が現在アクティブかどうかを返す（RUNTIME が排他借用中かどうか）。
 ///
 /// フックコールバックが `SendMessageTimeoutW` 等のネストメッセージループ経由で
 /// 再呼び出しされた場合に `true` を返す。呼び出し元はキーを INPUT_DEFER に
 /// 退避してから処理を終える。
 pub fn in_with_app() -> bool {
-    APP.is_borrowed_mut()
+    RUNTIME.is_borrowed_mut()
 }
 
 /// 統合 IME リフレッシュタイマー ID
