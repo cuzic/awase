@@ -90,6 +90,8 @@ pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) 
 
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
 pub fn current_tick_ms() -> u64 {
+    // SAFETY: GetTickCount64 はどのスレッドからも安全に呼び出せるスレッドセーフな Win32 API。
+    //         引数なし・副作用なし・内部ロックにより安全性が保証される。
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
 
@@ -160,6 +162,9 @@ pub unsafe fn send_ping() {
 /// `SetWindowsHookExW` を再度呼んでハンドルを差し替えるだけ。
 /// UAC 昇格もプロセス再起動も不要。
 pub fn reinstall_hook() -> bool {
+    // SAFETY: HOOK_HANDLE はシングルスレッド専用セルであり、本関数はメインスレッドから
+    //         のみ呼ばれることが呼出元で保証されている。SetWindowsHookExW / UnhookWindowsHookEx
+    //         はグローバルフックハンドルの登録・解除に必要な Win32 API。
     unsafe {
         // 旧ハンドルがあれば念のため解除（既に無効な可能性あり）
         let old = *HOOK_HANDLE.get_mut();
@@ -214,6 +219,8 @@ static HOOK_CONFIG: SingleThreadCell<HookConfig> = SingleThreadCell::new(HookCon
 
 /// グローバル HOOK_CONFIG を更新する。bootstrap と thumb_vk 変更後に呼ぶ。
 pub fn update_hook_config(config: HookConfig) {
+    // SAFETY: HOOK_CONFIG はシングルスレッド専用セル。本関数はメインスレッドから
+    //         のみ呼ばれることが呼出元で保証されており、競合アクセスは発生しない。
     unsafe { HOOK_CONFIG.set(config); }
 }
 
@@ -286,6 +293,8 @@ enum KeyRoute {
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn sync_sent_to_engine(hook: &mut HookRoutingState) {
+    // SAFETY: sync_with_os_key_state は内部で GetAsyncKeyState を呼び出す。
+    //         呼出元の # Safety 節でメインスレッドからの呼び出しが保証されているため安全。
     unsafe { hook.sync_with_os_key_state() };
 }
 
@@ -309,6 +318,9 @@ pub struct HookGuard {
 
 impl Drop for HookGuard {
     fn drop(&mut self) {
+        // SAFETY: HookGuard は install_hook が返した唯一のインスタンスであり、
+        //         drop は1回だけ呼ばれる。HOOK_HANDLE はシングルスレッド専用セルで
+        //         メインスレッドからのみアクセスされることが構造的に保証されている。
         unsafe {
             let handle = *HOOK_HANDLE.get_mut();
             if !handle.0.is_null() {
@@ -328,6 +340,9 @@ impl Drop for HookGuard {
 pub fn install_hook(
     callback: Box<dyn FnMut(RawKeyEvent) -> CallbackResult>,
 ) -> windows::core::Result<HookGuard> {
+    // SAFETY: KEY_EVENT_CALLBACK と HOOK_HANDLE はシングルスレッド専用セル。
+    //         本関数はメインスレッドから1回のみ呼ばれることが呼出元で保証されており、
+    //         SetWindowsHookExW に渡す hook_callback は 'static な unsafe extern fn。
     unsafe {
         KEY_EVENT_CALLBACK.set(Some(callback));
 
@@ -541,6 +556,8 @@ fn is_self_injected(extra_info: usize) -> bool {
 unsafe fn defer_key_during_with_app(vk: VkCode, scan: ScanCode, is_keydown: bool, extra_info: usize) {
     let config = HOOK_CONFIG.get_mut();
     let (key_classification, physical_pos) = classify_key(vk, scan, config);
+    // SAFETY: read_os_modifiers は GetAsyncKeyState を呼び出す。
+    //         呼出元の # Safety 節でフックコールバック内からの呼び出しが保証されているため安全。
     let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
     let event = build_raw_key_event(vk, scan, is_keydown, extra_info, key_classification, physical_pos, modifier_snapshot);
     log::debug!("[in-with-app] queuing vk=0x{:02X} {:?}", vk.0, event.event_type);
@@ -605,6 +622,8 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // ── イベント構築と IME 事前分類補完（sync key 判定）──
     // フック時点の修飾キー状態を capture（drain 時の context 汚染防止）
     let (key_classification, physical_pos) = classify_key(vk, scan, &app.platform_state.hook_config);
+    // SAFETY: read_os_modifiers は GetAsyncKeyState を呼び出す。
+    //         本関数はフックコールバックから呼ばれるため、呼び出しコンテキストが保証されている。
     let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
     let mut event = build_raw_key_event(vk, scan, is_keydown, kb.dwExtraInfo, key_classification, physical_pos, modifier_snapshot);
     app.enrich_ime_relevance(&mut event);
@@ -651,6 +670,11 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
 /// キーイベントの処理先を `classify_route` で一元的に判定し、
 /// `HookRoutingState` のビットセットで KeyDown/KeyUp ペアを構造的に保証する。
 /// 状態は `APP.platform_state` から読み書きする。
+///
+/// # Safety
+/// OS から `WH_KEYBOARD_LL` フックコールバックとして呼び出される。
+/// `ncode`・`wparam`・`lparam` は OS が保証する有効な値であり、
+/// `HOOK_HANDLE` はシングルスレッド専用セルでメインスレッドからのみアクセスされる。
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hook_handle = *HOOK_HANDLE.get_mut();
     if ncode >= 0 {

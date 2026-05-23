@@ -170,6 +170,9 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
 /// COM が初期化済みのスレッドから呼び出すこと
 #[allow(unused_variables)] // hwnd はデバッグ用に保持
 pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassifyResult {
+    // SAFETY: automation は CoCreateInstance が返した有効な IUIAutomation COM オブジェクト。
+    //         GetFocusedElement は COM が初期化済みのスレッドから呼び出されることが
+    //         呼出元のコメントで保証されている。
     let element: IUIAutomationElement = match unsafe { automation.GetFocusedElement() } {
         Ok(el) => el,
         Err(e) => {
@@ -181,16 +184,24 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
         }
     };
 
+    // SAFETY: element は GetFocusedElement が返した有効な IUIAutomationElement COM オブジェクト。
+    //         COM は初期化済みであり、AddRef 済みのポインタを保持している。
     let app_kind = unsafe { resolve_app_kind(&element) };
 
+    // SAFETY: element は GetFocusedElement が返した有効な IUIAutomationElement COM オブジェクト。
+    //         COM は初期化済みであり、AddRef 済みのポインタを保持している。
     if let Some(kind) = unsafe { check_value_pattern(&element) } {
         return UiaClassifyResult { focus_kind: kind, app_kind };
     }
 
+    // SAFETY: element は GetFocusedElement が返した有効な IUIAutomationElement COM オブジェクト。
+    //         COM は初期化済みであり、AddRef 済みのポインタを保持している。
     if let Some(kind) = unsafe { check_text_pattern(&element) } {
         return UiaClassifyResult { focus_kind: kind, app_kind };
     }
 
+    // SAFETY: element は GetFocusedElement が返した有効な IUIAutomationElement COM オブジェクト。
+    //         COM は初期化済みであり、AddRef 済みのポインタを保持している。
     if let Some(kind) = unsafe { check_control_type(&element) } {
         return UiaClassifyResult { focus_kind: kind, app_kind };
     }
@@ -209,6 +220,9 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
 pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableHwnd>) {
     let (tx, rx) = mpsc::channel::<SendableHwnd>();
     let worker = win32_worker::WorkerThread::spawn("uia-worker", move |token| {
+        // SAFETY: CoInitializeEx はスレッド開始直後に一度だけ呼ばれる。
+        //         COINIT_APARTMENTTHREADED でシングルスレッドアパートメントを初期化し、
+        //         同スレッド内の COM 操作が安全に行えるようになる。
         unsafe {
             let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if hr.is_err() {
@@ -216,6 +230,9 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
             }
         }
 
+        // SAFETY: CoInitializeEx 呼び出し後に CoCreateInstance を実行する。
+        //         CLSCTX_INPROC_SERVER でインプロセスサーバーを指定し、
+        //         失敗時は ok() が None を返すため安全。
         let automation: Option<IUIAutomation> =
             unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() };
 
