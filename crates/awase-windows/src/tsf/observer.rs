@@ -32,6 +32,7 @@ use windows::Win32::System::Threading::{
 ///   `focus_namechange_seq`, `composition_probe_seq`
 ///
 /// 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
+#[derive(Debug)]
 pub struct TsfObservations {
     /// `wait_for_tsf_cold_settle()` が OBJ_NAMECHANGE を early-exit シグナルとして使うカウンタ。
     ///

@@ -127,6 +127,7 @@ unsafe fn input_site_fallback_matches(
 ///
 /// `AppOverrides` をラップし、injection_hint/check_app_override を
 /// メソッドとして集約することで呼び出し側 API を統一する。
+#[derive(Debug)]
 pub struct ForceOverrides {
     inner: AppOverrides,
 }
@@ -193,6 +194,7 @@ impl ForceOverrides {
 /// IMM 能力の学習・永続化を担う構造体。
 ///
 /// `base_dir` を外から隠蔽し、`learn()` 一発でキャッシュ更新とファイル保存を行う。
+#[derive(Debug)]
 pub struct ImmCapabilityStore {
     cache: std::collections::HashMap<String, ImmCapability>,
     base_dir: std::path::PathBuf,

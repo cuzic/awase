@@ -39,13 +39,13 @@ enum WarmupKind {
     /// `remaining == 0 &&  requires_settle`: F2 再送 + 500ms 待機（settle なし）
     ProbeWithSettle,
     /// `remaining > 0`: eager 起点でそのまま probe（NAMECHANGE 確認付き）
-    ReWarmup { remaining_ms: u64 },
+    ReWarmup { _remaining_ms: u64 },
 }
 
 impl WarmupKind {
     fn from_context(remaining: u64, requires_settle: bool) -> Self {
         if remaining > 0 {
-            Self::ReWarmup { remaining_ms: remaining }
+            Self::ReWarmup { _remaining_ms: remaining }
         } else if requires_settle {
             Self::ProbeWithSettle
         } else {
@@ -278,7 +278,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     cold_reason: ctx.cold_reason,
                 }
             }
-            WarmupKind::ReWarmup { remaining_ms: _ } => {
+            WarmupKind::ReWarmup { .. } => {
                 // eager_probe_with_settle: eager_ms 起点のプローブ（NAMECHANGE チェックが必要）
                 log::debug!(
                     "[h1-warmup] cold={} eager: elapsed={}ms → probe start (budget={}ms from warmup)",

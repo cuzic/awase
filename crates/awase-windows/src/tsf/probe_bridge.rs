@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 /// - `active`: true の間、フックコールバックはキーを INPUT_DEFER に退避する
 /// - `depth`: RAII Guard の参照カウント（0→1 で active=true、1→0 で active=false）
 /// - `last_vk_output_ms`: VK/TSF 最終 SendInput 時刻（with_app 再入回避のため atomic）
+#[derive(Debug)]
 pub struct OutputGate {
     pub(crate) active: AtomicBool,
     depth: AtomicU32,
