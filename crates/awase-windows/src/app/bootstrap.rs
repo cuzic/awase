@@ -417,7 +417,7 @@ unsafe extern "system" fn win_event_proc(
         // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
         app.executor.platform.timer.set(
             awase_windows::TIMER_TSF_GATE,
-            std::time::Duration::from_millis(awase_windows::tsf::gate::WARMUP_TIMEOUT_MS),
+            std::time::Duration::from_millis(awase_windows::tsf::WARMUP_TIMEOUT_MS),
         );
         let debounce_ms = u64::from(app.platform_state.focus.focus_debounce_ms);
         app.schedule_ime_refresh(debounce_ms);

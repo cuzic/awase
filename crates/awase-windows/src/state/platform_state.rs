@@ -16,13 +16,6 @@ use super::hook_state::{HookRoutingState, HookConfig, ImeGuardState};
 pub(crate) struct ImeStateHub {
     /// 環境前提条件（IME 状態・入力方式・日本語判定）
     pub(crate) preconditions: Preconditions,
-    /// OS probe / observe から得た生の IME ON/OFF 観測値（ユーザー意図とは別管理）。
-    ///
-    /// `fast_ime_probe` や `observe()` の生の結果をここに記録する。
-    /// `preconditions.ime_on`（engine_active の判断基準）とは意図的に分離してあり、
-    /// `user_enabled=true` のとき OS probe が false を返しても
-    /// engine を deactivate しないための根拠として使う。
-    pub(crate) os_ime_on: Option<bool>,
     /// 各ソースの最新観測値（Phase 2: 観測と判断の分離）。
     ///
     /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
@@ -42,7 +35,6 @@ impl ImeStateHub {
                 ime_detect_miss_count: 0,
                 ime_force_on_guard: ImeForceOnGuard::Inactive,
             },
-            os_ime_on: None,
             ime_observations: crate::ime_observations::ImeObservations::default(),
         }
     }
@@ -145,12 +137,6 @@ impl PlatformState {
     #[inline]
     pub(crate) fn preconditions(&self) -> &Preconditions {
         &self.ime.preconditions
-    }
-
-    /// `os_ime_on` を設定する。
-    #[inline]
-    pub(crate) fn set_os_ime_on(&mut self, value: Option<bool>) {
-        self.ime.os_ime_on = value;
     }
 
     // ── Preconditions への pub(crate) 読み取りパススルー ──
