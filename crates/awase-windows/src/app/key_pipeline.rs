@@ -54,7 +54,7 @@ impl<'a> KeyEventPipeline<'a> {
         // is_composition_warm() が前ウィンドウの stale な warm 状態を返さないようにする。
         // eager_warmup_sent_ms は保持し、phase3_7 が送信した eager F2 のタイムスタンプを
         // 消さないことで non-eager 1500ms パスへの劣化を防ぐ。
-        self.app.executor.platform.output.suppress_warm_epoch();
+        self.app.executor.platform.output.reset_warm_epoch();
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
@@ -126,7 +126,7 @@ impl<'a> KeyEventPipeline<'a> {
             self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
             self.app.platform_state.reset_ime_detect_state();
             self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
-            self.app.platform_state.hook.set_suppress_ctrl_bypass(true);
+            self.app.platform_state.hook.set_ctrl_bypass_hold(true);
             log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass suppressed");
         }
 
@@ -152,23 +152,23 @@ impl<'a> KeyEventPipeline<'a> {
 }
 
 /// フォーカスプローブの IME 更新抑制シグナルをまとめた値
-struct SuppressSignals {
-    sig1_warmup: bool,
-    sig2_gji: bool,
-    sig3_shadow: bool,
+struct FocusProbeGraceFlags {
+    warmup_grace_active: bool,
+    gji_grace_active: bool,
+    shadow_grace_active: bool,
     warmup_elapsed: u64,
     gji_idle_ms: u64,
 }
 
-impl SuppressSignals {
+impl FocusProbeGraceFlags {
     fn any(&self) -> bool {
-        self.sig1_warmup || self.sig2_gji || self.sig3_shadow
+        self.warmup_grace_active || self.gji_grace_active || self.shadow_grace_active
     }
 
     fn primary_reason(&self) -> &'static str {
-        if self.sig1_warmup {
+        if self.warmup_grace_active {
             "warmup"
-        } else if self.sig2_gji {
+        } else if self.gji_grace_active {
             "gji-io"
         } else {
             "shadow"
@@ -176,20 +176,20 @@ impl SuppressSignals {
     }
 }
 
-fn compute_suppress_signals(
+fn compute_focus_probe_grace(
     now_ms: u64,
     probe_age_ms: u64,
     warmup_ms: u64,
     gji_last_io_ms: u64,
     last_focus_change_ms: u64,
     shadow_on: bool,
-) -> SuppressSignals {
+) -> FocusProbeGraceFlags {
     let warmup_elapsed = if warmup_ms > 0 {
         now_ms.saturating_sub(warmup_ms)
     } else {
         u64::MAX
     };
-    let sig1_warmup = warmup_elapsed < awase_windows::tuning::WARMUP_GRACE_MS;
+    let warmup_grace_active = warmup_elapsed < awase_windows::tuning::WARMUP_GRACE_MS;
 
     let gji_active_after_focus = gji_last_io_ms > 0 && gji_last_io_ms >= last_focus_change_ms;
     let gji_idle_ms = if gji_last_io_ms > 0 {
@@ -197,11 +197,11 @@ fn compute_suppress_signals(
     } else {
         u64::MAX
     };
-    let sig2_gji = gji_active_after_focus && gji_idle_ms < awase_windows::tuning::GJI_SETTLE_GRACE_MS;
+    let gji_grace_active = gji_active_after_focus && gji_idle_ms < awase_windows::tuning::GJI_SETTLE_GRACE_MS;
 
-    let sig3_shadow = shadow_on && probe_age_ms < awase_windows::tuning::SHADOW_GRACE_MS;
+    let shadow_grace_active = shadow_on && probe_age_ms < awase_windows::tuning::SHADOW_GRACE_MS;
 
-    SuppressSignals { sig1_warmup, sig2_gji, sig3_shadow, warmup_elapsed, gji_idle_ms }
+    FocusProbeGraceFlags { warmup_grace_active, gji_grace_active, shadow_grace_active, warmup_elapsed, gji_idle_ms }
 }
 
 fn apply_effective_ime(app: &mut Runtime, effective: bool) {
@@ -216,7 +216,7 @@ fn apply_effective_ime(app: &mut Runtime, effective: bool) {
 fn build_ime_on_suffix(
     probe_ime_on: Option<bool>,
     suppressed_reason: Option<&'static str>,
-    signals: &SuppressSignals,
+    signals: &FocusProbeGraceFlags,
     probe_age_ms: u64,
 ) -> String {
     if let Some(reason) = suppressed_reason {
@@ -250,7 +250,7 @@ fn apply_focus_probe_to_app(
     app.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
 
     let now_ms = hook::current_tick_ms();
-    let signals = compute_suppress_signals(
+    let signals = compute_focus_probe_grace(
         now_ms, probe_age_ms, warmup_ms, gji_last_io_ms, last_focus_change_ms, shadow_on,
     );
 
@@ -277,9 +277,9 @@ fn apply_focus_probe_to_app(
         ime_on_suffix,
         input_mode_after_probe,
         if signals.gji_idle_ms == u64::MAX { "never".to_string() } else { signals.gji_idle_ms.to_string() },
-        signals.sig1_warmup,
-        signals.sig2_gji,
-        signals.sig3_shadow,
+        signals.warmup_grace_active,
+        signals.gji_grace_active,
+        signals.shadow_grace_active,
     );
 
     match suppressed_reason {
