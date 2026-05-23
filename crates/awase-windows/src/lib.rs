@@ -159,6 +159,24 @@ pub fn with_app_ref<R>(f: impl FnOnce(&Runtime) -> R) -> Option<R> {
     unsafe { APP.with(f) }
 }
 
+/// `with_app` を呼び、再入で `None` が返った場合は `msg` を自スレッドのキューに再 post する。
+///
+/// `WM_PANIC_RESET` のように「再入中に消えてはいけないメッセージ」に使う。
+pub fn with_app_or_repost(msg: u32, f: impl FnOnce(&mut Runtime)) {
+    if with_app(f).is_none() {
+        crate::win32::post_to_main_thread(msg);
+    }
+}
+
+/// `with_app_or_repost` の wparam / lparam 付きバリアント。
+///
+/// `WM_FOCUS_KIND_UPDATE` のようにパラメータを持つメッセージに使う。
+pub fn with_app_or_repost_with(msg: u32, wparam: usize, lparam: isize, f: impl FnOnce(&mut Runtime)) {
+    if with_app(f).is_none() {
+        crate::win32::post_to_main_thread_with(msg, wparam, lparam);
+    }
+}
+
 /// `with_app` が現在アクティブかどうかを返す。
 ///
 /// `hook_callback` が `SendMessageTimeoutW` 等のメッセージポンプ経由で再呼び出しされた際に
