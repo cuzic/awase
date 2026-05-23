@@ -1,7 +1,7 @@
 use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
-use super::preconditions::{ImeForceOnGuard, Preconditions, ShadowSource};
+use super::preconditions::{Preconditions, ShadowSource};
 use super::hook_state::{HookRoutingState, HookConfig, ImeGuardState};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -40,7 +40,8 @@ impl ImeStateHub {
                 is_japanese_ime: true, // デフォルト: 日本語
                 prev_conversion_mode: None,
                 ime_detect_miss_count: 0,
-                ime_force_on_guard: ImeForceOnGuard::Inactive,
+                force_on_broken_app_bootstrap: false,
+                force_on_panic_reset: false,
             },
             os_ime_on: None,
             ime_observations: crate::ime_observations::ImeObservations::default(),
@@ -191,10 +192,10 @@ impl PlatformState {
         self.ime.preconditions.ime_detect_miss_count()
     }
 
-    /// IME 強制 ON ガードフラグを返す。
+    /// いずれかの強制 ON ガードが立っているかを返す。
     #[inline]
-    pub(crate) fn ime_force_on_guard(&self) -> ImeForceOnGuard {
-        self.ime.preconditions.ime_force_on_guard()
+    pub(crate) fn is_force_on_guard_active(&self) -> bool {
+        self.ime.preconditions.is_force_on_guard_active()
     }
 
     // ── Preconditions への書き込みメソッド（`apply_*` / `write_*`）──
@@ -236,26 +237,27 @@ impl PlatformState {
         self.ime.preconditions.ime_detect_miss_count = 0;
     }
 
-    /// `ime_force_on_guard` を設定する。
+    /// `force_on_broken_app_bootstrap` ガードをセットする。
     #[inline]
-    pub(crate) fn set_ime_force_on_guard(&mut self, guard: ImeForceOnGuard) {
-        self.ime.preconditions.ime_force_on_guard = guard;
+    pub(crate) fn set_force_on_broken_app_bootstrap(&mut self) {
+        self.ime.preconditions.force_on_broken_app_bootstrap = true;
     }
 
-    /// `ime_detect_miss_count` と `ime_force_on_guard` を同時にリセットする。
+    /// `ime_detect_miss_count` と両強制 ON ガードを同時にリセットする。
     ///
     /// ユーザー操作（Shadow IME トグル・SetOpen 等）で「ユーザーが意図した状態」が
     /// 確定したときに呼ぶ。
     #[inline]
     pub(crate) fn reset_ime_detect_state(&mut self) {
         self.ime.preconditions.ime_detect_miss_count = 0;
-        self.ime.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
+        self.ime.preconditions.force_on_broken_app_bootstrap = false;
+        self.ime.preconditions.force_on_panic_reset = false;
     }
 
     /// panic_reset 向け全面リセット。
     ///
     /// input_mode / ime_on / is_japanese_ime / prev_conversion_mode /
-    /// ime_detect_miss_count / ime_force_on_guard をまとめて設定する。
+    /// ime_detect_miss_count / force_on_broken_app_bootstrap / force_on_panic_reset をまとめて設定する。
     /// `ime_observations` もクリアして stale な観測値が残らないようにする。
     pub(crate) fn apply_panic_reset(&mut self) {
         self.ime.preconditions.input_mode = InputModeState::ObservedRomaji;
@@ -263,7 +265,8 @@ impl PlatformState {
         self.ime.preconditions.is_japanese_ime = true;
         self.ime.preconditions.prev_conversion_mode = None;
         self.ime.preconditions.ime_detect_miss_count = 0;
-        self.ime.preconditions.ime_force_on_guard = ImeForceOnGuard::PanicResetProtect;
+        self.ime.preconditions.force_on_broken_app_bootstrap = false;
+        self.ime.preconditions.force_on_panic_reset = true;
         // パニックリセット後は全観測スロットをクリア:
         // stale な観測値が次の apply_ime_observations で即座に上書きするのを防ぐ。
         self.ime.ime_observations.clear_on_focus_change();
@@ -374,7 +377,8 @@ impl PlatformState {
         // force_on_guard のリセット（検出成功時）
         if out.clear_force_on_guard {
             self.ime.preconditions.ime_detect_miss_count = 0;
-            self.ime.preconditions.ime_force_on_guard = super::preconditions::ImeForceOnGuard::Inactive;
+            self.ime.preconditions.force_on_broken_app_bootstrap = false;
+            self.ime.preconditions.force_on_panic_reset = false;
         }
 
         // input_mode

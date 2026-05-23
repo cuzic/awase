@@ -305,7 +305,7 @@ impl Runtime {
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・ime_observations
-    /// クリア・hwnd_cache 復元・ime_force_on_guard リセット・UIA フォールバック）。
+    /// クリア・hwnd_cache 復元・force_on_guard リセット・UIA フォールバック）。
     /// `prev_pid` は `advance_focus_tracking` が返した直前のプロセス ID（ログ用）。
     fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
         use crate::focus::hwnd_cache;
@@ -334,11 +334,11 @@ impl Runtime {
             self.platform_state.apply_hwnd_cache_restore(cache_hit);
         }
 
-        if self.platform_state.ime_force_on_guard().is_active()
+        if self.platform_state.is_force_on_guard_active()
             || self.platform_state.ime_detect_miss_count() > 0
         {
             log::debug!(
-                "Focus changed: clearing ime_force_on_guard and detect_miss_count \
+                "Focus changed: clearing force_on_guard and detect_miss_count \
                  (new window may have different IME state)"
             );
             self.platform_state.reset_ime_detect_state();
@@ -500,7 +500,7 @@ impl Runtime {
         let observer_out = unsafe {
             crate::observer::ime_observer::observe(
                 self.platform_state.ime_on(),
-                self.platform_state.ime_force_on_guard(),
+                self.platform_state.is_force_on_guard_active(),
                 self.platform_state.input_mode(),
                 self.platform_state.prev_conversion_mode(),
             )

@@ -34,21 +34,6 @@ pub enum ShadowSource {
     HwndCache,
 }
 
-/// `ime_force_on_guard` の 2 用途を型レベルで区別する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ImeForceOnGuard {
-    #[default]
-    Inactive,
-    BrokenAppBootstrap,
-    PanicResetProtect,
-}
-
-impl ImeForceOnGuard {
-    pub fn is_active(self) -> bool {
-        self != Self::Inactive
-    }
-}
-
 /// 環境前提条件（IME 状態・入力方式・日本語判定）
 #[derive(Debug)]
 pub struct Preconditions {
@@ -83,21 +68,18 @@ pub struct Preconditions {
     /// 実際に増えるのは「**未知の IMM-broken アプリへの初回フォーカス時だけ**」。
     /// 閾値到達後 `ImmCapability::Broken` として学習されると、以降は発火しなくなる。
     pub(in crate::state) ime_detect_miss_count: u32,
-    /// IME 強制 ON 後のガードフラグ。2 つの独立した用途がある。
+    /// 起動直後の broken app 向け強制 IME ON ガード（Phase 3.5）。
     ///
-    /// ## 用途 A — 未知 IMM-broken アプリの初回ブートストラップ（Phase 3.5）
     /// 未知アプリへの初回フォーカス時に `set_ime_open(true)` を呼んだ後、
     /// 次の `observe()` が即座に上書きしないよう 1 サイクルだけ保護する。
-    /// 検出成功（または `ImmCapability::Broken` 学習完了）後にクリアされる。
+    /// 次の IME 検出成功（`clear_force_on_guard=true`）で解除される。
+    pub(in crate::state) force_on_broken_app_bootstrap: bool,
+    /// パニックリセット直後の上書き防止ガード。
     ///
-    /// ## 用途 B — `panic_reset()` 直後の上書き防止
     /// パニックリセットで `ime_on=true` を書き込んだ直後に `refresh_ime_state_cache`
     /// が走ると stale な `observe()` の結果に上書きされてしまう。これを防ぐ。
-    /// 次の検出成功時に自然にクリアされる。
-    ///
-    /// いずれも「awase が恒常的に SSOT になる」わけではなく、
-    /// **一時的な遷移期間中だけ OS 検出結果を無視する** という設計。
-    pub(in crate::state) ime_force_on_guard: ImeForceOnGuard,
+    /// `apply_ime_observer_output` で `clear_force_on_guard=true` のとき解除される。
+    pub(in crate::state) force_on_panic_reset: bool,
 }
 
 impl Preconditions {
@@ -145,9 +127,9 @@ impl Preconditions {
         self.ime_detect_miss_count
     }
 
-    /// IME 強制 ON ガードフラグを返す。
+    /// いずれかの強制 ON ガードが立っているかを返す。
     #[inline]
-    pub(crate) fn ime_force_on_guard(&self) -> ImeForceOnGuard {
-        self.ime_force_on_guard
+    pub(crate) fn is_force_on_guard_active(&self) -> bool {
+        self.force_on_broken_app_bootstrap || self.force_on_panic_reset
     }
 }
