@@ -43,7 +43,7 @@ enum WarmupKind {
 }
 
 impl WarmupKind {
-    fn from_context(remaining: u64, requires_settle: bool) -> Self {
+    const fn from_context(remaining: u64, requires_settle: bool) -> Self {
         if remaining > 0 {
             Self::ReWarmup { _remaining_ms: remaining }
         } else if requires_settle {
@@ -72,7 +72,7 @@ struct WarmupContext {
 /// 即座に実行できる部分（F2 送信等）は完了済み。
 /// 残りの待機はタイマー（TIMER_TSF_PROBE）で `TsfReadinessProbe::check_now` を
 /// ポーリングすることで行う。
-pub(crate) struct WarmupStarted {
+pub struct WarmupStarted {
     /// GJI 静止プローブ
     pub probe: crate::tsf::probe::TsfReadinessProbe,
     /// probe の最大待機時間 (ms, warmup_sent_ms 起点)
@@ -91,13 +91,13 @@ pub(crate) struct WarmupStarted {
 ///
 /// `run_start()` を呼ぶと即座に実行できる部分（F2 送信等）を行い [`WarmupStarted`] を返す。
 /// `run()` は旧来のブロッキング API（テスト互換用）。
-pub(crate) struct ColdWarmupSequence<'a> {
+pub struct ColdWarmupSequence<'a> {
     output: &'a Output,
 }
 
 impl<'a> ColdWarmupSequence<'a> {
     /// 新しいシーケンスを生成する。
-    pub(crate) fn new(output: &'a Output) -> Self {
+    pub const fn new(output: &'a Output) -> Self {
         Self { output }
     }
 
@@ -105,7 +105,7 @@ impl<'a> ColdWarmupSequence<'a> {
     ///
     /// 即座に実行できる部分（F2 送信、IMM32 設定等）を行い [`WarmupStarted`] を返す。
     /// 残りの GJI 静止待ちは TIMER_TSF_PROBE + `TsfReadinessProbe::check_now` で行う。
-    pub(crate) fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
+    pub fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
         let ctx = self.preamble(session_expired, elapsed_ms);
 
         if session_expired {
@@ -130,9 +130,9 @@ impl<'a> ColdWarmupSequence<'a> {
         );
 
         if use_eager {
-            self.run_eager_start(&ctx, eager_ms, eager_elapsed)
+            Self::run_eager_start(&ctx, eager_ms, eager_elapsed)
         } else {
-            self.run_non_eager_start(&ctx)
+            Self::run_non_eager_start(&ctx)
         }
     }
 
@@ -151,9 +151,9 @@ impl<'a> ColdWarmupSequence<'a> {
         log::debug!(
             "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
             conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-            conv_pre.map_or(false, |v| v & 0x0001 != 0),
-            conv_pre.map_or(false, |v| v & 0x0010 != 0),
-            conv_pre.map_or(false, |v| v & 0x0002 != 0),
+            conv_pre.is_some_and(|v| v & 0x0001 != 0),
+            conv_pre.is_some_and(|v| v & 0x0010 != 0),
+            conv_pre.is_some_and(|v| v & 0x0002 != 0),
         );
         // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
         // IMM32 経由で同期的にローマ字モードへ切り替え。
@@ -200,7 +200,7 @@ impl<'a> ColdWarmupSequence<'a> {
     }
 
     /// non-eager: F2×2 を送信して WarmupStarted を返す。
-    fn run_non_eager_start(&self, ctx: &WarmupContext) -> WarmupStarted {
+    fn run_non_eager_start(ctx: &WarmupContext) -> WarmupStarted {
         log::debug!(
             "[h1-warmup] cold={} non-eager: VK_DBE_HIRAGANA warmup+probe 送信",
             ctx.cold_seq
@@ -232,7 +232,7 @@ impl<'a> ColdWarmupSequence<'a> {
     }
 
     /// eager ノンブロッキック開始: パスを判定して F2 を送信し WarmupStarted を返す。
-    fn run_eager_start(&self, ctx: &WarmupContext, eager_ms: u64, eager_elapsed: u64) -> WarmupStarted {
+    fn run_eager_start(ctx: &WarmupContext, eager_ms: u64, eager_elapsed: u64) -> WarmupStarted {
         let remaining = ctx.eager_settle_ms.saturating_sub(eager_elapsed);
         let requires_settle = ctx.cold_reason.requires_settle();
         let kind = WarmupKind::from_context(remaining, requires_settle);
