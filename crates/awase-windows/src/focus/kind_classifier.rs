@@ -34,11 +34,7 @@ pub unsafe fn resolve_focus_kind(
     use crate::focus::classify;
 
     // 1. Config オーバーライドをチェック
-    if let Some(kind) = crate::focus::classifier::check_app_override(
-        &classifier.overrides,
-        process_id,
-        class_name,
-    ) {
+    if let Some(kind) = classifier.overrides.check_app_override(process_id, class_name) {
         return FocusKindResolution {
             kind,
             reason: "config override".to_string(),

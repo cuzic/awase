@@ -9,7 +9,6 @@ use crate::focus::cache::DetectionSource;
 use crate::Preconditions;
 
 pub use crate::focus::classifier::{AppKindClassifier, ImmCapability, InjectionHint};
-pub(crate) use crate::focus::classifier::{check_app_override, is_force_tsf, is_force_vk};
 
 /// `Preconditions` と修飾キースナップショットから `InputContext` を構築する。
 ///
@@ -393,7 +392,7 @@ impl Runtime {
                     .last_focus_info
                     .as_ref()
                     .is_some_and(|(pid, class)| {
-                        is_force_tsf(&app.executor.platform.focus.overrides, *pid, class)
+                        app.executor.platform.focus.overrides.is_force_tsf(*pid, class)
                     });
                 let held = if is_tsf {
                     app.executor.platform.output.confirm_tsf()

@@ -89,6 +89,104 @@ pub enum InjectionHint {
     Default,
 }
 
+// ── ForceOverrides ──
+
+/// アプリごとの注入モード・フォーカス種別オーバーライド設定を保持し、
+/// 判断ロジックを提供する構造体。
+///
+/// `AppOverrides` をラップし、is_force_tsf/vk/check_app_override を
+/// メソッドとして集約することで呼び出し側 API を統一する。
+pub(crate) struct ForceOverrides {
+    inner: AppOverrides,
+}
+
+impl ForceOverrides {
+    pub(crate) fn new(overrides: AppOverrides) -> Self {
+        Self { inner: overrides }
+    }
+
+    /// `force_tsf` リストにマッチするか。マッチ → TSF Sequential VK 注入。
+    ///
+    /// `Windows.UI.Input.InputSite.WindowClass` フォーカス時は GetForegroundWindow() で
+    /// トップレベルクラスを再マッチし、force_tsf 設定が InputSite でも機能するようにする。
+    pub(crate) fn is_force_tsf(&self, process_id: u32, class_name: &str) -> bool {
+        if self.inner.force_tsf.is_empty() {
+            return false;
+        }
+        let process_name = super::classify::get_process_name(process_id);
+        if self.inner.force_tsf.iter().any(|entry| {
+            entry.process.eq_ignore_ascii_case(&process_name)
+                && entry.class.eq_ignore_ascii_case(class_name)
+        }) {
+            return true;
+        }
+        if class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
+            let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+            if !fg_class.is_empty() && !fg_class.eq_ignore_ascii_case(class_name) {
+                let matched = self.inner.force_tsf.iter().any(|entry| {
+                    entry.process.eq_ignore_ascii_case(&process_name)
+                        && entry.class.eq_ignore_ascii_case(&fg_class)
+                });
+                log::debug!(
+                    "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
+                );
+                return matched;
+            }
+        }
+        false
+    }
+
+    /// `force_vk` リストにマッチするか。マッチ → VK Batched 注入。
+    pub(crate) fn is_force_vk(&self, process_id: u32, class_name: &str) -> bool {
+        if self.inner.force_vk.is_empty() {
+            return false;
+        }
+        let process_name = super::classify::get_process_name(process_id);
+        self.inner.force_vk.iter().any(|entry| {
+            entry.process.eq_ignore_ascii_case(&process_name)
+                && entry.class.eq_ignore_ascii_case(class_name)
+        })
+    }
+
+    /// `force_text` / `force_bypass` オーバーライドをチェックする。
+    pub(crate) fn check_app_override(
+        &self,
+        process_id: u32,
+        class_name: &str,
+    ) -> Option<awase::types::FocusKind> {
+        if self.inner.force_text.is_empty() && self.inner.force_bypass.is_empty() {
+            return None;
+        }
+        let process_name = super::classify::get_process_name(process_id);
+        for entry in &self.inner.force_text {
+            if entry.process.eq_ignore_ascii_case(&process_name)
+                && entry.class.eq_ignore_ascii_case(class_name)
+            {
+                return Some(awase::types::FocusKind::TextInput);
+            }
+        }
+        for entry in &self.inner.force_bypass {
+            if entry.process.eq_ignore_ascii_case(&process_name)
+                && entry.class.eq_ignore_ascii_case(class_name)
+            {
+                return Some(awase::types::FocusKind::NonText);
+            }
+        }
+        None
+    }
+
+    /// 注入ヒントを返す（is_force_tsf → ForceTsf、is_force_vk → ForceVk）。
+    pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
+        if self.is_force_tsf(process_id, class_name) {
+            return InjectionHint::ForceTsf;
+        }
+        if self.is_force_vk(process_id, class_name) {
+            return InjectionHint::ForceVk;
+        }
+        InjectionHint::Default
+    }
+}
+
 // ── ImmCapabilityStore ──
 
 /// IMM 能力の学習・永続化を担う構造体。
@@ -138,7 +236,7 @@ impl ImmCapabilityStore {
 #[allow(missing_debug_implementations)]
 pub struct AppKindClassifier {
     pub(crate) cache: super::cache::FocusCache,
-    pub(crate) overrides: AppOverrides,
+    pub(crate) overrides: ForceOverrides,
     pub(crate) last_focus_info: Option<(u32, String)>,
     pub(crate) uia_sender: Option<std::sync::mpsc::Sender<super::uia::SendableHwnd>>,
     /// IMM 能力の学習・永続化ストア。
@@ -155,7 +253,7 @@ impl AppKindClassifier {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         Self {
             cache: super::cache::FocusCache::new(),
-            overrides,
+            overrides: ForceOverrides::new(overrides),
             last_focus_info: None,
             uia_sender: None,
             imm_learning: ImmCapabilityStore::new(base_dir),
@@ -181,84 +279,7 @@ impl AppKindClassifier {
         let Some((pid, class)) = self.last_focus_info.as_ref() else {
             return InjectionHint::Default;
         };
-        if is_force_tsf(&self.overrides, *pid, class) {
-            return InjectionHint::ForceTsf;
-        }
-        if is_force_vk(&self.overrides, *pid, class) {
-            return InjectionHint::ForceVk;
-        }
-        InjectionHint::Default
+        self.overrides.injection_hint(*pid, class)
     }
 }
 
-// ── Override helper fns ──
-
-/// Config の force_text / force_bypass オーバーライドをチェックする。
-pub(crate) fn check_app_override(
-    overrides: &AppOverrides,
-    process_id: u32,
-    class_name: &str,
-) -> Option<awase::types::FocusKind> {
-    if overrides.force_text.is_empty() && overrides.force_bypass.is_empty() {
-        return None;
-    }
-    let process_name = super::classify::get_process_name(process_id);
-    for entry in &overrides.force_text {
-        if entry.process.eq_ignore_ascii_case(&process_name)
-            && entry.class.eq_ignore_ascii_case(class_name)
-        {
-            return Some(awase::types::FocusKind::TextInput);
-        }
-    }
-    for entry in &overrides.force_bypass {
-        if entry.process.eq_ignore_ascii_case(&process_name)
-            && entry.class.eq_ignore_ascii_case(class_name)
-        {
-            return Some(awase::types::FocusKind::NonText);
-        }
-    }
-    None
-}
-
-/// Config の `force_vk` オーバーライドに現在のフォーカス先がマッチするか判定する。
-pub fn is_force_vk(overrides: &AppOverrides, process_id: u32, class_name: &str) -> bool {
-    if overrides.force_vk.is_empty() {
-        return false;
-    }
-    let process_name = super::classify::get_process_name(process_id);
-    overrides.force_vk.iter().any(|entry| {
-        entry.process.eq_ignore_ascii_case(&process_name)
-            && entry.class.eq_ignore_ascii_case(class_name)
-    })
-}
-
-/// Config の `force_tsf` オーバーライドに現在のフォーカス先がマッチするか判定する。
-///
-/// `Windows.UI.Input.InputSite.WindowClass` フォーカス時は GetForegroundWindow() で
-/// トップレベルクラスを再マッチし、force_tsf 設定が InputSite でも機能するようにする。
-pub fn is_force_tsf(overrides: &AppOverrides, process_id: u32, class_name: &str) -> bool {
-    if overrides.force_tsf.is_empty() {
-        return false;
-    }
-    let process_name = super::classify::get_process_name(process_id);
-    if overrides.force_tsf.iter().any(|entry| {
-        entry.process.eq_ignore_ascii_case(&process_name)
-            && entry.class.eq_ignore_ascii_case(class_name)
-    }) {
-        return true;
-    }
-    if class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
-        let fg_class = unsafe { crate::ime::get_foreground_window_class() };
-        if !fg_class.is_empty() && !fg_class.eq_ignore_ascii_case(class_name) {
-            let matched = overrides.force_tsf.iter().any(|entry| {
-                entry.process.eq_ignore_ascii_case(&process_name)
-                    && entry.class.eq_ignore_ascii_case(&fg_class)
-            });
-            log::debug!(
-                "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
-            );
-            return matched;
-        }
-    }
-    false
-}
