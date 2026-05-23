@@ -14,6 +14,12 @@ pub struct SingleThreadCell<T>(RefCell<Option<T>>);
 // Safety: 実際のアクセスはメインスレッドからのみ行われる（上記ドキュメント参照）。
 unsafe impl<T> Sync for SingleThreadCell<T> {}
 
+impl<T> Default for SingleThreadCell<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> SingleThreadCell<T> {
     pub const fn new() -> Self {
         Self(RefCell::new(None))

@@ -93,8 +93,7 @@ impl PlatformRuntime for WindowsPlatform {
             .focus
             .last_focus_info
             .as_ref()
-            .map(|(_, c)| c.as_str())
-            .unwrap_or("");
+            .map_or("", |(_, c)| c.as_str());
         let ctx = crate::ime_controller::ImeApplyContext {
             class_name,
             shadow_on: self.output.shadow_ime_on(),

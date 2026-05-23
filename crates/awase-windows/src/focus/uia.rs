@@ -169,6 +169,7 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
 ///
 /// COM が初期化済みのスレッドから呼び出すこと
 #[allow(unused_variables)] // hwnd はデバッグ用に保持
+#[must_use] 
 pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassifyResult {
     // SAFETY: automation は CoCreateInstance が返した有効な IUIAutomation COM オブジェクト。
     //         GetFocusedElement は COM が初期化済みのスレッドから呼び出されることが
@@ -217,6 +218,7 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
 /// `FOCUS_KIND` を更新する。Phase 1-2 で `Undetermined` だったコントロールの解像度を上げる。
 ///
 /// 戻り値の `WorkerThread` をアプリ終了まで保持すること（drop 時に停止・join される）。
+#[must_use] 
 pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableHwnd>) {
     let (tx, rx) = mpsc::channel::<SendableHwnd>();
     let worker = win32_worker::WorkerThread::spawn("uia-worker", move |token| {

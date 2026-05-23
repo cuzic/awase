@@ -19,17 +19,18 @@ impl HookRoutingState {
     /// `ctrl_bypass_hold` フラグを設定する。
     ///
     /// IME 制御コンボ消費後に `true` をセットし、Ctrl KeyUp 時に `false` にリセットする。
-    pub fn set_ctrl_bypass_hold(&mut self, value: bool) {
+    pub const fn set_ctrl_bypass_hold(&mut self, value: bool) {
         self.ctrl_bypass_hold = value;
     }
 
     /// `ctrl_bypass_hold` フラグを読み取る。
-    pub fn ctrl_bypass_hold(&self) -> bool {
+    #[must_use] 
+    pub const fn ctrl_bypass_hold(&self) -> bool {
         self.ctrl_bypass_hold
     }
 
     /// VK を Engine 送信済みビットセットに記録する。
-    pub fn mark_engine_sent(&mut self, vk: u16) {
+    pub const fn mark_engine_sent(&mut self, vk: u16) {
         let idx = (vk as usize) / 64;
         let bit = 1u64 << ((vk as usize) % 64);
         if idx < 4 {
@@ -38,7 +39,7 @@ impl HookRoutingState {
     }
 
     /// VK を Engine 送信済みおよび TrackOnly 両ビットセットに記録する。
-    pub fn mark_track_only_sent(&mut self, vk: u16) {
+    pub const fn mark_track_only_sent(&mut self, vk: u16) {
         let idx = (vk as usize) / 64;
         let bit = 1u64 << ((vk as usize) % 64);
         if idx < 4 {
@@ -48,7 +49,7 @@ impl HookRoutingState {
     }
 
     /// VK を Engine 送信済み・TrackOnly 両ビットセットから削除する。
-    pub fn clear_engine_sent(&mut self, vk: u16) {
+    pub const fn clear_engine_sent(&mut self, vk: u16) {
         let idx = (vk as usize) / 64;
         let bit = 1u64 << ((vk as usize) % 64);
         if idx < 4 {
@@ -58,7 +59,8 @@ impl HookRoutingState {
     }
 
     /// VK が Engine 送信済みかどうかを返す。
-    pub fn is_engine_sent(&self, vk: u16) -> bool {
+    #[must_use] 
+    pub const fn is_engine_sent(&self, vk: u16) -> bool {
         let idx = (vk as usize) / 64;
         let bit = 1u64 << ((vk as usize) % 64);
         if idx >= 4 {
@@ -68,7 +70,8 @@ impl HookRoutingState {
     }
 
     /// VK が TrackOnly で記録されているかどうかを返す。
-    pub fn is_track_only(&self, vk: u16) -> bool {
+    #[must_use] 
+    pub const fn is_track_only(&self, vk: u16) -> bool {
         let idx = (vk as usize) / 64;
         let bit = 1u64 << ((vk as usize) % 64);
         if idx >= 4 {
@@ -78,23 +81,24 @@ impl HookRoutingState {
     }
 
     /// ルーティングビットセットを全クリアする（panic_reset 用）。
-    pub fn reset_routing(&mut self) {
+    pub const fn reset_routing(&mut self) {
         self.sent_to_engine = [0u64; 4];
         self.track_only_keys = [0u64; 4];
     }
 
     /// コールバック再入ガードを立てる。
-    pub fn enter_callback(&mut self) {
+    pub const fn enter_callback(&mut self) {
         self.in_callback = true;
     }
 
     /// コールバック再入ガードを下ろす。
-    pub fn leave_callback(&mut self) {
+    pub const fn leave_callback(&mut self) {
         self.in_callback = false;
     }
 
     /// コールバック再入ガードが立っているかどうかを返す。
-    pub fn is_in_callback(&self) -> bool {
+    #[must_use] 
+    pub const fn is_in_callback(&self) -> bool {
         self.in_callback
     }
 
@@ -146,17 +150,18 @@ pub struct ImeGateState {
 
 impl ImeGateState {
     /// IME ガードをアクティブにする。
-    pub fn activate(&mut self) {
+    pub const fn activate(&mut self) {
         self.active = true;
     }
 
     /// IME ガードを非アクティブにする。
-    pub fn deactivate(&mut self) {
+    pub const fn deactivate(&mut self) {
         self.active = false;
     }
 
     /// IME ガードがアクティブかどうかを返す。
-    pub fn is_active(&self) -> bool {
+    #[must_use] 
+    pub const fn is_active(&self) -> bool {
         self.active
     }
 
@@ -182,7 +187,8 @@ impl ImeGateState {
     }
 
     /// バッファにキーが残っているかどうかを返す。
-    pub fn has_deferred_keys(&self) -> bool {
+    #[must_use] 
+    pub const fn has_deferred_keys(&self) -> bool {
         !self.deferred_keys.is_empty()
     }
 

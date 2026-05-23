@@ -74,19 +74,16 @@ pub unsafe fn resolve_focus_kind(
             classify::classify_focus(hwnd)
         },
     );
-    match classify_result {
-        Some(result) => FocusKindResolution {
-            kind: result.kind,
-            reason: format!("{}", result.reason),
+    if let Some(result) = classify_result { FocusKindResolution {
+        kind: result.kind,
+        reason: format!("{}", result.reason),
+        overridden: false,
+    } } else {
+        log::warn!("classify_focus timed out for hwnd={hwnd:?}");
+        FocusKindResolution {
+            kind: FocusKind::Undetermined,
+            reason: "classify timeout".to_string(),
             overridden: false,
-        },
-        None => {
-            log::warn!("classify_focus timed out for hwnd={:?}", hwnd);
-            FocusKindResolution {
-                kind: FocusKind::Undetermined,
-                reason: "classify timeout".to_string(),
-                overridden: false,
-            }
         }
     }
 }

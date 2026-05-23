@@ -12,7 +12,8 @@ pub struct FocusSnapshot {
 unsafe impl Send for FocusSnapshot {}
 
 impl FocusSnapshot {
-    pub fn hwnd(&self) -> HWND {
+    #[must_use] 
+    pub const fn hwnd(&self) -> HWND {
         HWND(self.hwnd_addr as *mut _)
     }
 }
@@ -49,6 +50,7 @@ pub async fn run_focus_probe_async() -> Option<FocusSnapshot> {
 ///
 /// # Safety
 /// Win32 API (GetGUIThreadInfo, GetWindowThreadProcessId, GetClassNameW) を呼ぶ。
+#[must_use] 
 pub unsafe fn read_focus_snapshot() -> Option<FocusSnapshot> {
     crate::win32::run_with_timeout(
         std::time::Duration::from_millis(300),

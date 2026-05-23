@@ -18,6 +18,7 @@ pub enum DetectionSource {
 
 impl DetectionSource {
     /// ソースに応じた TTL（秒）
+    #[must_use] 
     pub const fn ttl_secs(self) -> u64 {
         match self {
             Self::Automatic | Self::UiaAsync => 300, // 5分
@@ -43,7 +44,14 @@ pub struct FocusCache {
     entries: HashMap<(u32, String), FocusCacheEntry>,
 }
 
+impl Default for FocusCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FocusCache {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -51,6 +59,7 @@ impl FocusCache {
     }
 
     /// キャッシュを検索する。未登録または期限切れなら `None` を返す。
+    #[must_use] 
     pub fn get(&self, process_id: u32, class_name: &str) -> Option<FocusKind> {
         let key = (process_id, class_name.to_string());
         self.entries.get(&key).and_then(|entry| {

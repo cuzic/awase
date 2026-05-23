@@ -112,7 +112,7 @@ impl ImeObservations {
     /// `focus_probe` と `observer_poll` はウィンドウ固有なのでクリアする。
     /// `physical_key` / `sync_key` / `set_open_request` は一撃なので
     /// 通常はすでにクリア済みだが、残っていればここでクリアする。
-    pub fn clear_on_focus_change(&mut self) {
+    pub const fn clear_on_focus_change(&mut self) {
         self.physical_key = None;
         self.sync_key = None;
         self.set_open_request = None;

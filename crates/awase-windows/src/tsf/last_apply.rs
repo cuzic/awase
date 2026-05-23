@@ -28,7 +28,7 @@ pub struct ImeApplyLatch {
 }
 
 impl ImeApplyLatch {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { value: std::cell::Cell::new(None) }
     }
 

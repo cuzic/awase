@@ -19,10 +19,17 @@ pub struct RapidPressTracker {
     count: usize,
 }
 
+impl Default for RapidPressTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RapidPressTracker {
     const THRESHOLD: usize = 3;
     const WINDOW_MS: u64 = 1000;
 
+    #[must_use] 
     pub const fn new() -> Self {
         Self {
             buf: [0; Self::THRESHOLD],
@@ -46,7 +53,7 @@ impl RapidPressTracker {
     }
 
     /// バッファをクリアする（発動後のリセット用）
-    pub fn clear(&mut self) {
+    pub const fn clear(&mut self) {
         self.buf = [0; Self::THRESHOLD];
         self.cursor = 0;
         self.count = 0;

@@ -27,7 +27,7 @@ impl<T, F: Future<Output = T>> Future for RaceWithTimeout<F> {
             return Poll::Ready(Some(v));
         }
         // タイムアウトしたら None を返す（SleepFuture::drop が KillTimer を呼ぶ）
-        if let Poll::Ready(()) = Pin::new(&mut self.sleep).poll(cx) {
+        if Pin::new(&mut self.sleep).poll(cx).is_ready() {
             return Poll::Ready(None);
         }
         Poll::Pending
@@ -46,7 +46,7 @@ impl<T, F: Future<Output = T>> Future for RaceWithTimeout<F> {
 ///
 /// [`offload`]: crate::offload
 /// [`offload_timeout`]: crate::offload_timeout
-#[must_use]
+#[must_use = "futures do nothing unless awaited"]
 pub fn race_with_timeout<T, F: Future<Output = T>>(ms: u32, fut: F) -> RaceWithTimeout<F> {
     RaceWithTimeout {
         inner: Box::pin(fut),

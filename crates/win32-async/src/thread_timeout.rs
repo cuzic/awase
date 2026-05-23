@@ -38,7 +38,7 @@ fn leak_thread(handle: JoinHandle<()>) {
 fn is_leaked_list_full() -> bool {
     LEAKED_THREADS
         .lock()
-        .map_or(false, |leaked| leaked.len() >= LEAKED_THREAD_MAX)
+        .is_ok_and(|leaked| leaked.len() >= LEAKED_THREAD_MAX)
 }
 
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
@@ -79,12 +79,12 @@ where
     match rx.recv_timeout(timeout) {
         Ok(result) => {
             let _ = handle.join();
-            return Some(result);
+            Some(result)
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             let _ = handle.join();
             log::error!("run_with_timeout: worker thread ended without result");
-            return None;
+            None
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             log::warn!(
@@ -92,7 +92,7 @@ where
                 timeout.as_millis()
             );
             leak_thread(handle);
-            return None;
+            None
         }
     }
 }

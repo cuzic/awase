@@ -525,6 +525,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
 /// # Returns
 ///
 /// メニュー項目の ID を返す。
+#[must_use] 
 pub const fn handle_tray_command(wparam: WPARAM) -> Option<u16> {
     let cmd = (wparam.0 & 0xFFFF) as u16;
     match cmd {
@@ -536,31 +537,37 @@ pub const fn handle_tray_command(wparam: WPARAM) -> Option<u16> {
 }
 
 /// メニューコマンド ID のアクセサ
+#[must_use] 
 pub const fn cmd_toggle() -> u16 {
     IDM_TOGGLE
 }
 
 /// メニューコマンド ID のアクセサ
+#[must_use] 
 pub const fn cmd_exit() -> u16 {
     IDM_EXIT
 }
 
 /// 配列選択メニュー項目のベース ID のアクセサ
+#[must_use] 
 pub const fn cmd_layout_base() -> u16 {
     IDM_LAYOUT_BASE
 }
 
 /// 設定メニューコマンド ID のアクセサ
+#[must_use] 
 pub const fn cmd_settings() -> u16 {
     IDM_SETTINGS
 }
 
 /// 管理者再起動メニューコマンド ID のアクセサ
+#[must_use] 
 pub const fn cmd_restart_admin() -> u16 {
     IDM_RESTART_ADMIN
 }
 
 /// IMM キャッシュクリアメニューコマンド ID のアクセサ
+#[must_use] 
 pub const fn cmd_clear_imm_cache() -> u16 {
     IDM_CLEAR_IMM_CACHE
 }
@@ -569,6 +576,7 @@ pub const fn cmd_clear_imm_cache() -> u16 {
 ///
 /// `shell32.dll` の `IsUserAnAdmin` を使用する。
 /// この API は非推奨だが、シンプルで `Win32_Security` feature を追加せずに使えるため採用。
+#[must_use] 
 pub fn is_elevated() -> bool {
     #[link(name = "shell32")]
     extern "system" {
@@ -682,7 +690,7 @@ unsafe extern "system" fn tray_wnd_proc(
                 if cmd == cmd_exit() {
                     PostQuitMessage(0);
                 } else if cmd == cmd_toggle() {
-                    let _ = crate::with_app(|app| app.toggle_engine());
+                    let _ = crate::with_app(super::runtime::Runtime::toggle_engine);
                 } else if cmd == cmd_settings() {
                     launch_settings_gui();
                 } else if cmd == cmd_clear_imm_cache() {

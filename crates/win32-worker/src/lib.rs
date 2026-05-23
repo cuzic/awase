@@ -64,6 +64,7 @@ impl ShutdownToken {
     }
 
     /// シャットダウンが既に通知されているか確認する（ノンブロッキング）。
+    #[must_use]
     pub fn is_shutdown(&self) -> bool {
         unsafe { WaitForSingleObject((self.0).0, 0) == WAIT_OBJECT_0 }
     }
@@ -130,7 +131,7 @@ impl Drop for WorkerThread {
 impl std::fmt::Debug for WorkerThread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerThread")
-            .field("running", &self.handle.as_ref().map_or(false, |h| !h.is_finished()))
+            .field("running", &self.handle.as_ref().is_some_and(|h| !h.is_finished()))
             .finish_non_exhaustive()
     }
 }

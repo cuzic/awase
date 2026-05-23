@@ -70,15 +70,13 @@ fn classify_poll_outcome(
         }
     } else if snap.is_tsf_native {
         log::debug!(
-            "IME detection skipped (TSF-native window), preserving ime_on={}",
-            current_ime_on
+            "IME detection skipped (TSF-native window), preserving ime_on={current_ime_on}"
         );
         PollOutcome { observer_poll: None, increment_miss_count: false,
             clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
     } else if guard_active {
         log::debug!(
-            "IME detection failed but force_on_guard active, preserving ime_on={}",
-            current_ime_on
+            "IME detection failed but force_on_guard active, preserving ime_on={current_ime_on}"
         );
         PollOutcome { observer_poll: None, increment_miss_count: false,
             clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
@@ -93,8 +91,8 @@ fn input_mode_from_romaji_flag(romaji: bool, current_input_mode: InputModeState)
     if prev != romaji {
         log::info!(
             "IME input method changed: {} → {}",
-            if !prev { "kana" } else { "romaji" },
-            if !romaji { "kana" } else { "romaji" },
+            if prev { "romaji" } else { "kana" },
+            if romaji { "romaji" } else { "kana" },
         );
     }
     if romaji { InputModeState::ObservedRomaji } else { InputModeState::ObservedKana }
@@ -119,8 +117,8 @@ fn input_mode_from_conversion(
     }
     log::info!(
         "IME input method changed (ROMAN bit transition): {} → {}",
-        if !prev_romaji { "kana" } else { "romaji" },
-        if !new_romaji { "kana" } else { "romaji" },
+        if prev_romaji { "romaji" } else { "kana" },
+        if new_romaji { "romaji" } else { "kana" },
     );
     Some(if new_romaji { InputModeState::ObservedRomaji } else { InputModeState::ObservedKana })
 }
@@ -129,6 +127,7 @@ fn input_mode_from_conversion(
 ///
 /// `Preconditions` への書き込みを一切行わない純粋関数。
 /// `poll_and_classify_ime()` と `classify_fetched_snapshot()` の共通ロジックを集約。
+#[must_use] 
 pub fn classify_ime_snapshot(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,
@@ -178,6 +177,7 @@ pub fn classify_ime_snapshot(
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use] 
 pub unsafe fn poll_and_classify_ime(
     current_ime_on: bool,
     current_force_on_guard_active: bool,
@@ -350,6 +350,7 @@ mod tests {
 ///
 /// `poll_and_classify_ime()` から blocking fetch 部分を分離したもの。async drain 後に with_app 内で呼ぶ。
 /// `Preconditions` を直接変更しない。
+#[must_use] 
 pub fn classify_fetched_snapshot(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,

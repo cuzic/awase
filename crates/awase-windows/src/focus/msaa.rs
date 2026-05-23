@@ -98,6 +98,7 @@ impl MsaaRole {
 /// テキスト入力ロール（Text, Document）なら TextInput、
 /// 非テキストロール（ツールバー、メニュー等）なら NonText、
 /// 判定不能なら Undetermined を返す。
+#[must_use] 
 pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
     #[allow(clippy::cast_sign_loss)] // OBJID_CLIENT (-4) is a Windows API convention

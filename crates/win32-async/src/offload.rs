@@ -59,7 +59,9 @@ impl<T: Send + 'static> Future for OffloadFuture<T> {
                 *state.result.lock().unwrap() = Some(result);
                 state.done.store(true, Ordering::Release);
                 // PostMessageA でメインスレッドを即起床（winmsg_executor Waker はスレッドセーフ）
-                if let Some(waker) = state.waker.lock().unwrap().take() {
+                // MutexGuard を先に drop してから wake() を呼ぶことでデッドロックを防ぐ
+                let waker = state.waker.lock().unwrap().take();
+                if let Some(waker) = waker {
                     waker.wake();
                 }
             });
@@ -93,7 +95,7 @@ pub fn offload<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Off
 /// タイムアウト時はワーカースレッドがバックグラウンドで実行継続する点に注意。
 /// ワーカーが完了した時点で Waker 経由の wake が空振りするだけなので
 /// メモリリークは発生しないが、スレッドは完了まで保持される。
-#[must_use]
+#[must_use = "futures do nothing unless awaited"]
 pub fn offload_timeout<T: Send + 'static>(
     ms: u32,
     f: impl FnOnce() -> T + Send + 'static,
