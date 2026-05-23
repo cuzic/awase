@@ -133,6 +133,8 @@ std::thread_local! {
 /// # Safety (module-level contract)
 /// awase-windows はすべての呼び出しが Windows メッセージループスレッドからのみ行われる。
 /// この保証により `SingleThreadCell::with_mut` の unsafe 要件が満たされる。
+#[must_use = "再入時は None を返す。消えてはいけないメッセージには with_app_or_repost を、\
+意図的に捨てる場合は `let _ = with_app(...)` を使うこと"]
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
     let already_in = IN_WITH_APP.with(|flag| flag.replace(true));
     if already_in {

@@ -65,7 +65,7 @@ impl<'a> KeyEventPipeline<'a> {
 
         win32_async::spawn_local(async move {
             let probe = awase_windows::ime::read_ime_state_fast_async().await;
-            awase_windows::with_app(|app| {
+            let _ = awase_windows::with_app(|app| {
                 apply_focus_probe_to_app(
                     app,
                     probe,

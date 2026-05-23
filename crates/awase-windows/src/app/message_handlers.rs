@@ -262,26 +262,26 @@ pub(super) unsafe fn handle_wm_command(wparam: WPARAM) {
         } else if cmd == tray::cmd_restart_admin() {
             tray::restart_as_admin();
         } else if cmd == tray::cmd_toggle() {
-            with_app(|app| app.toggle_engine());
+            let _ = with_app(|app| app.toggle_engine());
         } else if cmd == tray::cmd_exit() {
             PostQuitMessage(0);
         } else if cmd >= tray::cmd_layout_base() {
             let index = usize::from(cmd - tray::cmd_layout_base());
-            with_app(|app| app.switch_layout(index));
+            let _ = with_app(|app| app.switch_layout(index));
         }
     }
 }
 
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ
 pub(super) unsafe fn handle_wm_drain_output_queue() {
-    with_app(|runtime| {
+    let _ = with_app(|runtime| {
         runtime.executor.platform.flush_raw_tsf_literal_recovery();
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
     let queue = {
         let mut events = awase_windows::INPUT_DEFER.take_all();
-        with_app(|app| {
+        let _ = with_app(|app| {
             for ev in &mut events {
                 app.enrich_ime_relevance(ev);
                 log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code.0, ev.event_type);
@@ -292,7 +292,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
 
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
-        with_app(|app| {
+        let _ = with_app(|app| {
             let synthetic_keyups = synthesize_missing_keyups(&queue);
             for syn in &synthetic_keyups {
                 log::debug!(

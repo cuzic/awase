@@ -380,7 +380,7 @@ impl Runtime {
         win32_async::spawn_local(async {
             let focus = crate::focus::probe::run_focus_probe_async().await;
             let snap = crate::ime::read_ime_state_full_async().await;
-            crate::with_app(|app| {
+            let _ = crate::with_app(|app| {
                 ImeRefreshPipeline::new(app).run_with_prefetched(focus, snap);
 
                 // run_with_prefetched 完了後: last_focus_info が更新済みのため
