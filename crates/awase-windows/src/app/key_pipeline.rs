@@ -9,7 +9,7 @@ use awase_windows::hook;
 use awase_windows::runtime;
 use awase_windows::hook::CallbackResult;
 use awase_windows::win32::{post_to_main_thread};
-use awase_windows::{panic_detect, Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 use win32_async;
 
 /// キーイベント処理パイプライン
@@ -31,7 +31,6 @@ impl<'a> KeyEventPipeline<'a> {
 
         self.stage_focus_probe(&mut event);
         self.stage_shadow_ime_toggle(&event);
-        self.stage_panic_reset_detect(&event);
 
         let ctx = runtime::build_input_context(
             self.app.platform_state.preconditions(),
@@ -117,13 +116,6 @@ impl<'a> KeyEventPipeline<'a> {
                 );
             }
         }
-    }
-
-    /// パニックリセット検出
-    fn stage_panic_reset_detect(&mut self, event: &RawKeyEvent) {
-        if !event.ime_relevance.may_change_ime { return; }
-        if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) { return; }
-        panic_detect::record_ime_keydown(hook::current_tick_ms());
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
