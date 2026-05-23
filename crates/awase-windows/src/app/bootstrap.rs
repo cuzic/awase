@@ -320,13 +320,13 @@ pub(super) fn initialize_app(
         .keys
         .engine_on_ime_key
         .as_deref()
-        .and_then(awase_windows::vk::vk_name_to_code)
+        .and_then(vk_name_to_code)
         .map(|v| v.0);
     let engine_off_ime_vk = config
         .keys
         .engine_off_ime_key
         .as_deref()
-        .and_then(awase_windows::vk::vk_name_to_code)
+        .and_then(vk_name_to_code)
         .map(|v| v.0);
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。

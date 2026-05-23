@@ -19,7 +19,7 @@ pub(super) struct KeyEventPipeline<'a> {
 
 impl<'a> KeyEventPipeline<'a> {
     /// パイプラインを実行し、`CallbackResult` を返す
-    pub fn run(mut self, event: RawKeyEvent) -> CallbackResult {
+    pub(super) fn run(mut self, event: RawKeyEvent) -> CallbackResult {
         let mut event = event;
         self.app.enrich_ime_relevance(&mut event);
 

@@ -230,15 +230,15 @@ const ICON_SIZE: i32 = 16;
 /// BGRA カラー定義
 mod icon_color {
     /// 透明（背景）
-    pub const TRANSPARENT: u32 = 0x00_00_00_00;
+    pub(super) const TRANSPARENT: u32 = 0x00_00_00_00;
     /// ON 時のキーボード本体（青系）
-    pub const BODY_ON: u32 = 0xFF_D4_7B_2E;
+    pub(super) const BODY_ON: u32 = 0xFF_D4_7B_2E;
     /// OFF 時のキーボード本体（グレー）
-    pub const BODY_OFF: u32 = 0xFF_80_80_80;
+    pub(super) const BODY_OFF: u32 = 0xFF_80_80_80;
     /// ON 時のキートップ（明るいクリーム色）
-    pub const KEY_ON: u32 = 0xFF_FF_F0_E0;
+    pub(super) const KEY_ON: u32 = 0xFF_FF_F0_E0;
     /// OFF 時のキートップ（薄いグレー）
-    pub const KEY_OFF: u32 = 0xFF_C0_C0_C0;
+    pub(super) const KEY_OFF: u32 = 0xFF_C0_C0_C0;
 }
 
 /// キーボード本体の描画範囲
