@@ -487,8 +487,8 @@ impl Runtime {
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
         // Guard を解除
-        if self.platform_state.ime_guard.is_active() {
-            self.platform_state.ime_guard.deactivate();
+        if self.platform_state.ime_gate.is_active() {
+            self.platform_state.ime_gate.deactivate();
             log::debug!("IME guard OFF (process_deferred_keys)");
         }
 
@@ -504,8 +504,8 @@ impl Runtime {
         self.platform_state.apply_ime_update(&observer_out);
         self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
-        // Drain deferred keys from Platform guard
-        let keys = self.platform_state.ime_guard.drain_all();
+        // Drain deferred keys from Platform gate
+        let keys = self.platform_state.ime_gate.drain_all();
         if keys.is_empty() {
             return;
         }
@@ -549,8 +549,8 @@ impl Runtime {
         self.platform_state.hook.reset_routing();
         self.platform_state.hook.leave_callback();
         self.platform_state.hook.set_ctrl_bypass_hold(false);
-        self.platform_state.ime_guard.deactivate();
-        self.platform_state.ime_guard.clear();
+        self.platform_state.ime_gate.deactivate();
+        self.platform_state.ime_gate.clear();
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();
