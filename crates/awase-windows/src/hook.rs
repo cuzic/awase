@@ -170,12 +170,6 @@ pub fn reinstall_hook() -> bool {
         match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) {
             Ok(new_handle) => {
                 HOOK_HANDLE.set(new_handle);
-                // Update last_hook_activity_ms — with_app 再入回避のため直接アクセス
-                // SAFETY: reinstall_hook は TIMER_HOOK_WATCHDOG ハンドラから呼ばれ、常にメインスレッド。
-                // 外側の unsafe ブロック内のため unsafe { } 不要。
-                if let Some(app) = crate::APP.get_mut() {
-                    app.platform_state.last_hook_activity_ms = current_tick_ms();
-                }
                 log::info!("Keyboard hook reinstalled successfully");
                 true
             }
@@ -363,13 +357,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             || kb.dwExtraInfo == crate::tsf::output::IME_KANJI_MARKER
         {
             // ハートビートは自己注入でも更新する（ping 応答のため）。
-            // with_app は SendMessageTimeoutW 経由でここが呼ばれた際に再入検出を返すため、
-            // APP.get_mut() を直接呼ぶ（hook は常にメインスレッドから呼ばれる）。
-            // SAFETY: hook_callback はメインスレッドのみで呼ばれる。
-            if let Some(app) = unsafe { crate::APP.get_mut() } {
+            // with_app 再入中の場合は try_with_mut が None を返してスキップする。
+            crate::APP.try_with_mut(|app| {
                 app.platform_state.last_hook_activity_ms = current_tick_ms();
                 app.platform_state.hook_event_count += 1;
-            }
+            });
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         }
 
@@ -420,7 +412,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         }
 
         // ── APP からプラットフォーム状態を取得 ──
-        let Some(app) = crate::APP.get_mut() else {
+        let mut _app_guard = match crate::APP.try_borrow_mut() {
+            Some(guard) => guard,
+            None => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
+        };
+
+        {
+        let Some(app) = _app_guard.as_mut() else {
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         };
         let ps = &mut app.platform_state;
@@ -508,7 +506,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             modifier_snapshot,
         };
 
-        // Drop ps borrow — subsequent sections re-acquire app from APP
+        // ps ボローを解放して app への直接アクセスを可能にする
         let _ = ps;
 
         // ── IME 事前分類の補完（sync key 判定）──
@@ -587,10 +585,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             }
         }
 
-        // ── app を明示的に解放してから Engine コールバックを呼ぶ ──
-        // callback 内部で with_app → APP.with_mut() が呼ばれるため、
-        // ここで app を drop しないと &mut Runtime が二重に存在し UB となる。
-        let _ = app;
+        } // app ブロック終了 — _app_guard の RefMut は次の drop まで保持される
+
+        // ── RefMut を解放してから Engine コールバックを呼ぶ ──
+        // callback 内部で with_app が APP の借用を取得するため、先に解放する。
+        drop(_app_guard);
 
         // ── Engine コールバック呼び出し ──
         let result = KEY_EVENT_CALLBACK
@@ -598,13 +597,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             .as_mut()
             .map_or(CallbackResult::PassThrough, |callback| callback(event));
 
-        // Re-acquire platform_state for in_callback reset
-        // (callback may have accessed APP.with_mut() internally)
-        // with_app は再入検出を返す可能性があるため APP.get_mut() を直接使う。
-        // SAFETY: hook_callback はメインスレッドのみで呼ばれる。
-        if let Some(app) = unsafe { crate::APP.get_mut() } {
+        // コールバック後に leave_callback を実行してフック再入ガードをリセット
+        crate::APP.try_with_mut(|app| {
             app.platform_state.hook.leave_callback();
-        }
+        });
 
         // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）
         if matches!(route, KeyRoute::TrackOnly) {

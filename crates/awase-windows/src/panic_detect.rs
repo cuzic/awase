@@ -57,14 +57,13 @@ impl RapidPressTracker {
 ///
 /// `with_app` 再入中でも安全に呼べる。連打閾値に達したら `WM_PANIC_RESET` を post する。
 pub fn record_ime_keydown(now_ms: u64) {
-    // Safety: フックコールバックはメインスレッドのみ。SingleThreadCell の保証が満たされる。
-    unsafe {
-        if let Some(tracker) = RAPID_IME_TIMESTAMPS.get_mut() {
-            if tracker.push(now_ms) {
-                tracker.clear();
-                log::warn!("Rapid IME key press detected — requesting panic reset");
-                crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
-            }
+    // with_app 再入中でも安全に呼べる（try_with_mut は RefCell の借用を試み、
+    // 失敗した場合は何もせず返る）。
+    RAPID_IME_TIMESTAMPS.try_with_mut(|tracker| {
+        if tracker.push(now_ms) {
+            tracker.clear();
+            log::warn!("Rapid IME key press detected — requesting panic reset");
+            crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
         }
-    }
+    });
 }
