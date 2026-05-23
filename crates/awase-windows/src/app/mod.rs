@@ -24,9 +24,8 @@ use awase_windows::{
     Runtime, WM_DRAIN_OUTPUT_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
-    WM_RELOAD_CONFIG, with_app,
+    WM_RELOAD_CONFIG, with_app, with_app_or_repost, with_app_or_repost_with,
 };
-use awase_windows::win32::{post_to_main_thread, post_to_main_thread_with};
 
 // ── 定数 ──
 
@@ -318,11 +317,8 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
                 with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
             }
             WM_PANIC_RESET => {
-                // SendMessageTimeout の内部ポンプがここを呼んだとき with_app は再入中で None を返す。
-                // その場合リセットが消えないよう repost し、blocking op 完了後に再実行する。
-                if with_app(|app| unsafe { message_handlers::handle_wm_panic_reset(app) }).is_none() {
-                    post_to_main_thread(WM_PANIC_RESET);
-                }
+                // 再入中に消えないよう repost する（blocking op 完了後に再実行）
+                with_app_or_repost(WM_PANIC_RESET, |app| unsafe { message_handlers::handle_wm_panic_reset(app) });
             }
             WM_DUPLICATE_INSTANCE => {
                 with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
@@ -346,13 +342,9 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
             }
             WM_FOCUS_KIND_UPDATE => {
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
-                if with_app(|app| unsafe {
-                    message_handlers::handle_wm_focus_kind_update(app, wparam, lparam)
-                }).is_none() {
-                    // with_app 再入中（set_ime_open → SendMessage がメッセージポンプを起動した場合）。
-                    // 現在の with_app が完了するまでキューに戻す。
-                    post_to_main_thread_with(WM_FOCUS_KIND_UPDATE, wparam, lparam);
-                }
+                with_app_or_repost_with(WM_FOCUS_KIND_UPDATE, wparam, lparam, |app| unsafe {
+                    message_handlers::handle_wm_focus_kind_update(app, wparam, lparam);
+                });
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => {
                 with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
