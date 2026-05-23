@@ -221,6 +221,52 @@ pub fn update_hook_config(config: HookConfig) {
 static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) -> CallbackResult>>> =
     SingleThreadCell::new(None);
 
+/// Ctrl/Alt/Win の現在状態スナップショット（GetAsyncKeyState ベース）。
+#[derive(Debug, Clone, Copy)]
+struct OsModifiers {
+    ctrl: bool,
+    alt: bool,
+    win: bool,
+}
+
+/// GetAsyncKeyState で Ctrl/Alt/Win の現在の押下状態を読み取る。
+///
+/// # Safety
+/// `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
+unsafe fn read_hook_os_modifiers() -> OsModifiers {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    OsModifiers {
+        ctrl: (GetAsyncKeyState(0x11).cast_unsigned() & 0x8000) != 0,
+        alt:  (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0,
+        win:  (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
+           || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0,
+    }
+}
+
+/// KeyUp 専用ルート判定（KeyDown の判定に追随する）。
+fn classify_keyup_route(hook: &HookRoutingState, vk: u16) -> KeyRoute {
+    if hook.is_track_only(vk) {
+        return KeyRoute::TrackOnly;
+    }
+    if hook.is_engine_sent(vk) {
+        return KeyRoute::Engine;
+    }
+    KeyRoute::Bypass
+}
+
+/// Ctrl/Alt/Win が押されている間の非親指キーはショートカット → Bypass。
+///
+/// `suppress_ctrl_bypass` が有効な場合（IME 制御コンボ直後）は Ctrl を有効とみなさない。
+fn is_shortcut_bypass(mods: OsModifiers, hook: &HookRoutingState, config: &HookConfig, vk: u16) -> bool {
+    let effective_ctrl = mods.ctrl && !(hook.suppress_ctrl_bypass() && !mods.alt && !mods.win);
+    if effective_ctrl || mods.alt || mods.win {
+        if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
+            return true;
+        }
+    }
+    false
+}
+
 /// キーの処理先を決定する。
 ///
 /// Engine に送るか、OS にそのまま渡すかを一元的に判定する。
@@ -229,40 +275,15 @@ static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) ->
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
 unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, is_keydown: bool) -> KeyRoute {
-    // KeyUp は KeyDown の判定に従う（ペア保証）
     if !is_keydown {
-        if hook.is_track_only(vk) {
-            return KeyRoute::TrackOnly;
-        }
-        if hook.is_engine_sent(vk) {
-            return KeyRoute::Engine;
-        }
-        return KeyRoute::Bypass;
+        return classify_keyup_route(hook, vk);
     }
-
-    // KeyDown の分類
-    // Ctrl/Alt/Win 自体 → TrackOnly（Engine の InputTracker を更新するが OS には必ず通す）
     if is_non_shift_modifier(vk) {
         return KeyRoute::TrackOnly;
     }
-
-    // Ctrl/Alt/Win が押されている間のキーはショートカット → Bypass
-    // 例外1: 親指キーは Engine のコンボキー用
-    // 例外2: IME 制御コンボ直後の Ctrl はコンボで消費済み（suppress_ctrl_bypass）
-    {
-        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-        let ctrl = (GetAsyncKeyState(0x11).cast_unsigned() & 0x8000) != 0;
-        let alt = (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0;
-        let win = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
-            || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
-        let effective_ctrl = ctrl && !(hook.suppress_ctrl_bypass() && !alt && !win);
-        if effective_ctrl || alt || win {
-            if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
-                return KeyRoute::Bypass;
-            }
-        }
+    if is_shortcut_bypass(read_hook_os_modifiers(), hook, config, vk) {
+        return KeyRoute::Bypass;
     }
-
     KeyRoute::Engine
 }
 
@@ -339,6 +360,313 @@ pub fn install_hook(
     Ok(HookGuard { _private: () })
 }
 
+fn build_raw_key_event(
+    vk: VkCode,
+    scan: ScanCode,
+    is_keydown: bool,
+    extra_info: usize,
+    key_classification: KeyClassification,
+    physical_pos: Option<PhysicalPos>,
+    modifier_snapshot: awase::engine::ModifierState,
+) -> RawKeyEvent {
+    RawKeyEvent {
+        vk_code: vk,
+        scan_code: scan,
+        event_type: if is_keydown { KeyEventType::KeyDown } else { KeyEventType::KeyUp },
+        extra_info,
+        timestamp: now_timestamp(),
+        key_classification,
+        physical_pos,
+        ime_relevance: classify_ime_relevance(vk),
+        modifier_key: classify_modifier(vk),
+        modifier_snapshot,
+    }
+}
+
+/// 早期バイパス判定の結果
+enum EarlyDecision {
+    /// 即 CallNextHookEx（OS にパススルー）
+    BypassToOs,
+    /// 通常パイプラインへ
+    Continue { route: KeyRoute },
+}
+
+/// IME ガード処理の結果
+enum GuardOutcome {
+    /// CallNextHookEx（OS にパススルー）
+    PassThrough,
+    /// LRESULT(1)（消費済み）
+    Consumed,
+    /// ガード非該当 — Engine コールバックへ転送
+    Forward(RawKeyEvent),
+}
+
+/// ハートビート更新・早期バイパス・ルーティング・KeyDown/KeyUp 追跡・再入ガードを一括処理。
+///
+/// # Invariant
+/// `Continue` を返した場合は必ず `enter_callback()` を呼んでいる。
+/// 呼び出し元は対応する `leave_callback()` を保証すること。
+///
+/// # Safety
+/// 内部で `classify_route`（`GetAsyncKeyState`）を呼ぶ。フックコールバック内から呼ぶこと。
+unsafe fn classify_early_decision(
+    ps: &mut crate::PlatformState,
+    vk_raw: u16,
+    is_keydown: bool,
+) -> EarlyDecision {
+    ps.last_hook_activity_ms = current_tick_ms();
+    ps.hook_event_count += 1;
+
+    if !ps.input_mode().is_romaji_capable() {
+        return EarlyDecision::BypassToOs;
+    }
+    // フォーカスが NonText（システムウィンドウ、タスクバー等）の場合はバイパス。
+    // フォーカス切替時の中間ウィンドウで Engine が誤作動するのを防止。
+    if ps.focus.focus_kind == awase::types::FocusKind::NonText {
+        return EarlyDecision::BypassToOs;
+    }
+
+    // Ctrl KeyUp で suppress_ctrl_bypass を解除
+    if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.suppress_ctrl_bypass() {
+        ps.hook.set_suppress_ctrl_bypass(false);
+    }
+
+    let route = classify_route(&ps.hook, &ps.hook_config, vk_raw, is_keydown);
+
+    match route {
+        KeyRoute::Bypass => {
+            log::trace!(
+                "Hook: vk=0x{vk_raw:02X} {} → Bypass",
+                if is_keydown { "KeyDown" } else { "KeyUp" }
+            );
+            return EarlyDecision::BypassToOs;
+        }
+        KeyRoute::Engine | KeyRoute::TrackOnly => {
+            if is_keydown {
+                match route {
+                    KeyRoute::Engine => ps.hook.mark_engine_sent(vk_raw),
+                    KeyRoute::TrackOnly => ps.hook.mark_track_only_sent(vk_raw),
+                    KeyRoute::Bypass => unreachable!(),
+                }
+            } else {
+                ps.hook.clear_engine_sent(vk_raw);
+            }
+        }
+    }
+
+    if ps.hook.is_in_callback() {
+        return EarlyDecision::BypassToOs;
+    }
+    ps.hook.enter_callback();
+
+    EarlyDecision::Continue { route }
+}
+
+/// キーイベントのトレース/デバッグログを出力する。
+fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
+    log::trace!(
+        "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → {}",
+        event.vk_code.0,
+        event.scan_code.0,
+        event.event_type,
+        if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
+    );
+    // Passthrough class (Enter, Tab, Esc, 矢印キー等) は debug でも常時記録する。
+    // 通常の char / thumb は trace 止まり（ノイズ削減）だが、Passthrough は頻度が
+    // 低くかつ awase 出力との race condition 解析の鍵になるため debug で残す。
+    if matches!(event.key_classification, KeyClassification::Passthrough) {
+        log::debug!(
+            "[hook-passthrough] vk={:#04x} scan={:#06x} type={:?} route={}",
+            event.vk_code.0,
+            event.scan_code.0,
+            event.event_type,
+            if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
+        );
+    }
+}
+
+/// IME トグルガードのステートマシン処理。
+///
+/// # Invariant
+/// `PassThrough` または `Consumed` を返した場合は内部で `leave_callback()` を呼んでいる。
+/// `Forward` を返した場合は `leave_callback()` を呼ばない（Engine コールバック後に呼ぶ）。
+fn apply_ime_guard(
+    app: &mut crate::Runtime,
+    event: RawKeyEvent,
+    route: &KeyRoute,
+    vk_raw: u16,
+    is_keydown: bool,
+) -> GuardOutcome {
+    let is_sync_key = event.ime_relevance.is_sync_key;
+
+    // sync key KeyDown → ガードを起動、Engine の保留キーをフラッシュして PassThrough
+    if is_keydown && is_sync_key && !app.platform_state.ime_guard.is_active() {
+        app.platform_state.ime_guard.activate();
+        log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
+        let ctx = crate::runtime::build_input_context(
+            app.platform_state.preconditions(),
+            &event.modifier_snapshot,
+        );
+        app.platform_state.hook.leave_callback();
+        let decision = app.engine.on_command(
+            awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
+            &ctx,
+        );
+        app.executor.execute_from_loop(decision);
+        return GuardOutcome::PassThrough;
+    }
+
+    // sync key KeyUp → ガードを解除して PassThrough、遅延処理をリクエスト
+    if !is_keydown && is_sync_key && app.platform_state.ime_guard.is_active() {
+        app.platform_state.ime_guard.deactivate();
+        log::debug!("IME guard OFF (sync key vk=0x{:02X})", vk_raw);
+        app.platform_state.hook.leave_callback();
+        crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
+        return GuardOutcome::PassThrough;
+    }
+
+    // ガードが有効 → キーをバッファ（修飾キーは OS にパススルー）
+    if app.platform_state.ime_guard.is_active() {
+        // TrackOnly（Ctrl/Alt/Win）は OS にパススルー。
+        // バッファすると KeyUp が OS に届かず修飾キーが「押しっぱなし」になる。
+        if matches!(route, KeyRoute::TrackOnly) {
+            app.platform_state.hook.leave_callback();
+            return GuardOutcome::PassThrough;
+        }
+        let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
+        if app.platform_state.ime_guard.try_push(event, phys) {
+            log::trace!("IME guard: buffered key vk=0x{:02X}", vk_raw);
+        } else {
+            log::warn!("IME guard forced clear: buffer overflow");
+            app.platform_state.ime_guard.deactivate();
+        }
+        app.platform_state.hook.leave_callback();
+        return GuardOutcome::Consumed;
+    }
+
+    GuardOutcome::Forward(event)
+}
+
+/// 自己注入キーかどうかを判定する（無限ループ防止）。
+fn is_self_injected(extra_info: usize) -> bool {
+    extra_info == INJECTED_MARKER
+        || extra_info == crate::tsf::output::TSF_MARKER
+        || extra_info == crate::tsf::output::IME_KANJI_MARKER
+}
+
+/// with_app 再入中にキーイベントを INPUT_DEFER に退避する。
+///
+/// # Safety
+/// グローバルな `HOOK_CONFIG` へのアクセスおよび `read_os_modifiers` を呼ぶ。
+/// フックコールバック内から呼ぶこと。
+unsafe fn defer_key_during_with_app(vk: VkCode, scan: ScanCode, is_keydown: bool, extra_info: usize) {
+    let config = HOOK_CONFIG.get_mut();
+    let (key_classification, physical_pos) = classify_key(vk, scan, config);
+    let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+    let event = build_raw_key_event(vk, scan, is_keydown, extra_info, key_classification, physical_pos, modifier_snapshot);
+    log::debug!("[in-with-app] queuing vk=0x{:02X} {:?}", vk.0, event.event_type);
+    crate::INPUT_DEFER.defer_during_with_app(event);
+}
+
+/// `ncode >= 0` のフックイベントを処理する。
+///
+/// # Safety
+/// Win32 API（`CallNextHookEx` 等）を呼び出す。フックコールバック内から呼ぶこと。
+unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+    let vk_raw = kb.vkCode as u16;
+    let vk = VkCode(vk_raw);
+    let scan = ScanCode(kb.scanCode);
+    let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+
+    // ── 自己注入チェック（無限ループ防止）──
+    // in_with_app チェックより先に行う: 注入キーは常にパススルー。
+    if is_self_injected(kb.dwExtraInfo) {
+        // ハートビートは自己注入でも更新する（ping 応答のため）。
+        // with_app 再入中の場合は try_with_mut が None を返してスキップする。
+        crate::APP.try_with_mut(|app| {
+            app.platform_state.last_hook_activity_ms = current_tick_ms();
+            app.platform_state.hook_event_count += 1;
+        });
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+    }
+
+    // ── パニック連打検出（物理キー1回につき1回、自己注入を除く）──
+    // 再入・通常パスのどちらを経由しても物理押下を1度だけカウントする。
+    // 再入パスでは defer → replay が発生するため pipeline 側では数えない。
+    if is_keydown && classify_ime_relevance(vk).may_change_ime {
+        crate::panic_detect::record_ime_keydown(current_tick_ms());
+    }
+
+    // ── with_app 再入ガード ──
+    // SendMessageTimeoutW (cross-process IME 制御) がメッセージポンプを起動した場合、
+    // このコールバックが再呼び出しされる。APP.get_mut() は IN_WITH_APP=true の間
+    // 呼べないため（&mut Runtime が二重に存在し UB）、キーを INPUT_DEFER に
+    // 退避して drain 後に NICOLA で再処理する（CallNextHookEx での素通しは NICOLA バイパス）。
+    if crate::in_with_app() {
+        defer_key_during_with_app(vk, scan, is_keydown, kb.dwExtraInfo);
+        return LRESULT(1); // Consumed — NICOLA 処理後に drain で再配送
+    }
+
+    // ── APP からプラットフォーム状態を取得 ──
+    let mut app_borrow = match crate::APP.try_borrow_mut() {
+        Some(guard) => guard,
+        None => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
+    };
+    let Some(app) = app_borrow.as_mut() else {
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+    };
+
+    // ── 早期バイパス・ルーティング・再入ガード ──
+    let route = match classify_early_decision(&mut app.platform_state, vk_raw, is_keydown) {
+        EarlyDecision::BypassToOs => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
+        EarlyDecision::Continue { route } => route,
+    };
+
+    // ── イベント構築と IME 事前分類補完（sync key 判定）──
+    // フック時点の修飾キー状態を capture（drain 時の context 汚染防止）
+    let (key_classification, physical_pos) = classify_key(vk, scan, &app.platform_state.hook_config);
+    let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+    let mut event = build_raw_key_event(vk, scan, is_keydown, kb.dwExtraInfo, key_classification, physical_pos, modifier_snapshot);
+    app.enrich_ime_relevance(&mut event);
+    log_hook_event(&event, &route);
+
+    // ── IME トグルガード ──
+    let event = match apply_ime_guard(app, event, &route, vk_raw, is_keydown) {
+        GuardOutcome::PassThrough => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
+        GuardOutcome::Consumed    => return LRESULT(1),
+        GuardOutcome::Forward(ev) => ev,
+    };
+
+    // app ボローを解放して app_borrow を drop 可能にする（NLL）
+    let _ = app;
+
+    // ── RefMut を解放してから Engine コールバックを呼ぶ ──
+    // callback 内部で with_app が APP の借用を取得するため、先に解放する。
+    drop(app_borrow);
+
+    // ── Engine コールバック呼び出し ──
+    let result = KEY_EVENT_CALLBACK
+        .get_mut()
+        .as_mut()
+        .map_or(CallbackResult::PassThrough, |callback| callback(event));
+
+    // コールバック後に leave_callback を実行してフック再入ガードをリセット
+    crate::APP.try_with_mut(|app| {
+        app.platform_state.hook.leave_callback();
+    });
+
+    // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）
+    if matches!(route, KeyRoute::TrackOnly) {
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+    }
+
+    match result {
+        CallbackResult::Consumed => LRESULT(1),
+        CallbackResult::PassThrough => CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
+    }
+}
+
 /// WH_KEYBOARD_LL フックコールバック
 ///
 /// キーイベントの処理先を `classify_route` で一元的に判定し、
@@ -346,275 +674,9 @@ pub fn install_hook(
 /// 状態は `APP.platform_state` から読み書きする。
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hook_handle = *HOOK_HANDLE.get_mut();
-
     if ncode >= 0 {
-        let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-
-        // ── 自己注入チェック（無限ループ防止）──
-        // in_with_app チェックより先に行う: 注入キーは常にパススルー。
-        if kb.dwExtraInfo == INJECTED_MARKER
-            || kb.dwExtraInfo == crate::tsf::output::TSF_MARKER
-            || kb.dwExtraInfo == crate::tsf::output::IME_KANJI_MARKER
-        {
-            // ハートビートは自己注入でも更新する（ping 応答のため）。
-            // with_app 再入中の場合は try_with_mut が None を返してスキップする。
-            crate::APP.try_with_mut(|app| {
-                app.platform_state.last_hook_activity_ms = current_tick_ms();
-                app.platform_state.hook_event_count += 1;
-            });
-            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-        }
-
-        // ── パニック連打検出（物理キー1回につき1回、自己注入を除く）──
-        // 再入・通常パスのどちらを経由しても物理押下を1度だけカウントする。
-        // 再入パスでは defer → replay が発生するため pipeline 側では数えない。
-        {
-            let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            if is_keydown {
-                let vk = VkCode(kb.vkCode as u16);
-                if classify_ime_relevance(vk).may_change_ime {
-                    crate::panic_detect::record_ime_keydown(current_tick_ms());
-                }
-            }
-        }
-
-        // ── with_app 再入ガード ──
-        // SendMessageTimeoutW (cross-process IME 制御) がメッセージポンプを起動した場合、
-        // このコールバックが再呼び出しされる。APP.get_mut() は IN_WITH_APP=true の間
-        // 呼べないため（&mut Runtime が二重に存在し UB）、キーを INPUT_DEFER に
-        // 退避して drain 後に NICOLA で再処理する（CallNextHookEx での素通しは NICOLA バイパス）。
-        if crate::in_with_app() {
-            let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            let vk = VkCode(kb.vkCode as u16);
-            let scan = ScanCode(kb.scanCode);
-            let config = HOOK_CONFIG.get_mut();
-            let (key_classification, physical_pos) = classify_key(vk, scan, config);
-            let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-            let event = RawKeyEvent {
-                vk_code: vk,
-                scan_code: scan,
-                event_type: if is_keydown { KeyEventType::KeyDown } else { KeyEventType::KeyUp },
-                extra_info: kb.dwExtraInfo,
-                timestamp: now_timestamp(),
-                key_classification,
-                physical_pos,
-                ime_relevance: classify_ime_relevance(vk),
-                modifier_key: classify_modifier(vk),
-                modifier_snapshot,
-            };
-            log::debug!(
-                "[in-with-app] queuing vk=0x{:02X} {:?}",
-                vk.0,
-                event.event_type,
-            );
-            crate::INPUT_DEFER.defer_during_with_app(event);
-            return LRESULT(1); // Consumed — NICOLA 処理後に drain で再配送
-        }
-
-        // ── APP からプラットフォーム状態を取得 ──
-        let mut _app_guard = match crate::APP.try_borrow_mut() {
-            Some(guard) => guard,
-            None => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
-        };
-
-        {
-        let Some(app) = _app_guard.as_mut() else {
-            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-        };
-        let ps = &mut app.platform_state;
-
-        // ── ハートビート更新（ウォッチドッグ用）──
-        ps.last_hook_activity_ms = current_tick_ms();
-        ps.hook_event_count += 1;
-
-        // ── かな入力方式バイパス ──
-        if !ps.input_mode().is_romaji_capable() {
-            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-        }
-
-        // ── NonText ウィンドウバイパス ──
-        // フォーカスが NonText（システムウィンドウ、タスクバー等）の場合は
-        // Engine をバイパスして OS にそのまま通す。
-        // フォーカス切替時の中間ウィンドウで Engine が誤作動するのを防止。
-        if ps.focus.focus_kind == awase::types::FocusKind::NonText {
-            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-        }
-
-        let vk_raw = kb.vkCode as u16;
-        let is_keydown = matches!(
-            wparam.0 as u32,
-            WM_KEYDOWN | WM_SYSKEYDOWN
-        );
-
-        // Ctrl KeyUp で suppress_ctrl_bypass を解除
-        if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.suppress_ctrl_bypass() {
-            ps.hook.set_suppress_ctrl_bypass(false);
-        }
-
-        // ── 一元的なルーティング判定 ──
-        let route = classify_route(&ps.hook, &ps.hook_config, vk_raw, is_keydown);
-
-        match route {
-            KeyRoute::Bypass => {
-                log::trace!(
-                    "Hook: vk=0x{vk_raw:02X} {} → Bypass",
-                    if is_keydown { "KeyDown" } else { "KeyUp" }
-                );
-                return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-            }
-            KeyRoute::Engine | KeyRoute::TrackOnly => {
-                // KeyDown/KeyUp ペア追跡を更新
-                if is_keydown {
-                    match route {
-                        KeyRoute::Engine => ps.hook.mark_engine_sent(vk_raw),
-                        KeyRoute::TrackOnly => ps.hook.mark_track_only_sent(vk_raw),
-                        KeyRoute::Bypass => unreachable!(),
-                    }
-                } else {
-                    ps.hook.clear_engine_sent(vk_raw);
-                }
-            }
-        }
-
-        // ── 再入ガード ──
-        if ps.hook.is_in_callback() {
-            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-        }
-        ps.hook.enter_callback();
-
-        let event_type = if is_keydown {
-            KeyEventType::KeyDown
-        } else {
-            KeyEventType::KeyUp
-        };
-
-        let vk = VkCode(vk_raw);
-        let scan = ScanCode(kb.scanCode);
-        let (key_classification, physical_pos) = classify_key(vk, scan, &ps.hook_config);
-        // フック時点の修飾キー状態を capture（drain 時の context 汚染防止）
-        let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-        let mut event = RawKeyEvent {
-            vk_code: vk,
-            scan_code: scan,
-            event_type,
-            extra_info: kb.dwExtraInfo,
-            timestamp: now_timestamp(),
-            key_classification,
-            physical_pos,
-            ime_relevance: classify_ime_relevance(vk),
-            modifier_key: classify_modifier(vk),
-            modifier_snapshot,
-        };
-
-        // ps ボローを解放して app への直接アクセスを可能にする
-        let _ = ps;
-
-        // ── IME 事前分類の補完（sync key 判定）──
-        app.enrich_ime_relevance(&mut event);
-
-        log::trace!(
-            "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → {}",
-            event.vk_code.0,
-            event.scan_code.0,
-            event.event_type,
-            if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
-        );
-
-        // Passthrough class (Enter, Tab, Esc, 矢印キー等) は debug でも常時記録する。
-        // 通常の char / thumb は trace 止まり（ノイズ削減）だが、Passthrough は頻度が
-        // 低くかつ awase 出力との race condition 解析の鍵になるため debug で残す。
-        if matches!(
-            event.key_classification,
-            KeyClassification::Passthrough
-        ) {
-            log::debug!(
-                "[hook-passthrough] vk={:#04x} scan={:#06x} type={:?} route={}",
-                event.vk_code.0,
-                event.scan_code.0,
-                event.event_type,
-                if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
-            );
-        }
-
-        // ── IME トグルガード ──
-        {
-            let is_sync_key = event.ime_relevance.is_sync_key;
-
-            // sync key KeyDown → activate guard, flush Engine pending, PassThrough
-            if is_keydown && is_sync_key && !app.platform_state.ime_guard.is_active() {
-                app.platform_state.ime_guard.activate();
-                log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
-
-                // Flush engine pending keys
-                let ctx = crate::runtime::build_input_context(app.platform_state.preconditions(), &event.modifier_snapshot);
-                app.platform_state.hook.leave_callback();
-                let decision = app.engine.on_command(
-                    awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
-                    &ctx,
-                );
-                app.executor.execute_from_loop(decision);
-                return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-            }
-
-            // sync key KeyUp → deactivate guard, PassThrough, request deferred processing
-            if !is_keydown && is_sync_key && app.platform_state.ime_guard.is_active() {
-                app.platform_state.ime_guard.deactivate();
-                log::debug!("IME guard OFF (sync key vk=0x{:02X})", vk_raw);
-                app.platform_state.hook.leave_callback();
-                crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
-                return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-            }
-
-            // Guard active → buffer key (ただし修飾キーは OS にパススルー)
-            if app.platform_state.ime_guard.is_active() {
-                // TrackOnly（Ctrl/Alt/Win）は OS にパススルー。
-                // バッファすると KeyUp が OS に届かず修飾キーが「押しっぱなし」になる。
-                if matches!(route, KeyRoute::TrackOnly) {
-                    app.platform_state.hook.leave_callback();
-                    return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-                }
-                let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
-                if app.platform_state.ime_guard.try_push(event, phys) {
-                    log::trace!("IME guard: buffered key vk=0x{:02X}", vk_raw);
-                } else {
-                    log::warn!("IME guard forced clear: buffer overflow");
-                    app.platform_state.ime_guard.deactivate();
-                }
-                app.platform_state.hook.leave_callback();
-                return LRESULT(1); // Consumed
-            }
-        }
-
-        } // app ブロック終了 — _app_guard の RefMut は次の drop まで保持される
-
-        // ── RefMut を解放してから Engine コールバックを呼ぶ ──
-        // callback 内部で with_app が APP の借用を取得するため、先に解放する。
-        drop(_app_guard);
-
-        // ── Engine コールバック呼び出し ──
-        let result = KEY_EVENT_CALLBACK
-            .get_mut()
-            .as_mut()
-            .map_or(CallbackResult::PassThrough, |callback| callback(event));
-
-        // コールバック後に leave_callback を実行してフック再入ガードをリセット
-        crate::APP.try_with_mut(|app| {
-            app.platform_state.hook.leave_callback();
-        });
-
-        // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）
-        if matches!(route, KeyRoute::TrackOnly) {
-            return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-        }
-
-        match result {
-            CallbackResult::Consumed => {
-                return LRESULT(1);
-            }
-            CallbackResult::PassThrough => {}
-        }
+        return process_hook_event(hook_handle, ncode, wparam, lparam);
     }
-
     CallNextHookEx(Some(hook_handle), ncode, wparam, lparam)
 }
 
