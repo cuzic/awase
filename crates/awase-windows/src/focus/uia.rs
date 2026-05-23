@@ -49,7 +49,114 @@ fn classify_framework_app_kind(framework_id: &str) -> Option<AppKind> {
     }
 }
 
-/// UIA を使用してフォーカス中コントロールの種別を判定する
+/// `FrameworkId` から `AppKind` を推定する（CC≤3）
+///
+/// # Safety
+/// `element` は有効な COM オブジェクトでなければならない。
+unsafe fn resolve_app_kind(element: &IUIAutomationElement) -> Option<AppKind> {
+    match element.CurrentFrameworkId() {
+        Ok(fid) => {
+            let fid_str = fid.to_string();
+            let kind = classify_framework_app_kind(&fid_str);
+            log::debug!("UIA: FrameworkId=\"{fid_str}\" → app_kind={kind:?}");
+            kind
+        }
+        Err(e) => {
+            log::trace!("UIA: CurrentFrameworkId failed: {e:?}");
+            None
+        }
+    }
+}
+
+/// `ValuePattern` の `IsReadOnly` を確認して `FocusKind` を返す（CC≤4）
+///
+/// - `IsReadOnly=false` → `Some(TextInput)`
+/// - `IsReadOnly=true`  → `Some(NonText)`
+/// - パターン取得失敗・`IsReadOnly` 取得失敗 → `None`
+///
+/// # Safety
+/// `element` は有効な COM オブジェクトでなければならない。
+unsafe fn check_value_pattern(element: &IUIAutomationElement) -> Option<FocusKind> {
+    let pattern = element
+        .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+        .ok()?;
+    match pattern.CurrentIsReadOnly() {
+        Ok(read_only) if !read_only.as_bool() => {
+            log::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
+            Some(FocusKind::TextInput)
+        }
+        Ok(_) => {
+            log::debug!("UIA: ValuePattern(IsReadOnly=true) → NonText");
+            Some(FocusKind::NonText)
+        }
+        Err(_) => None,
+    }
+}
+
+/// `TextPattern` の有無を確認して `FocusKind` を返す（CC≤2）
+///
+/// - パターンあり → `Some(TextInput)`
+/// - パターンなし → `None`
+///
+/// # Safety
+/// `element` は有効な COM オブジェクトでなければならない。
+unsafe fn check_text_pattern(element: &IUIAutomationElement) -> Option<FocusKind> {
+    if element
+        .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
+        .is_ok()
+    {
+        log::debug!("UIA: TextPattern available → TextInput");
+        Some(FocusKind::TextInput)
+    } else {
+        None
+    }
+}
+
+/// `ControlType` からテキスト入力可否を判定して `FocusKind` を返す（CC≤4）
+///
+/// - `Edit` / `Document` → `Some(TextInput)`
+/// - 既知の非テキスト型   → `Some(NonText)`
+/// - それ以外・取得失敗   → `None`
+///
+/// # Safety
+/// `element` は有効な COM オブジェクトでなければならない。
+unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind> {
+    let control_type = element.CurrentControlType().ok()?;
+
+    if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
+        log::debug!("UIA: ControlType={control_type:?} → TextInput");
+        return Some(FocusKind::TextInput);
+    }
+
+    let non_text_types = [
+        UIA_ButtonControlTypeId,
+        UIA_MenuItemControlTypeId,
+        UIA_TreeItemControlTypeId,
+        UIA_ListItemControlTypeId,
+        UIA_TabControlTypeId,
+        UIA_TabItemControlTypeId,
+        UIA_ToolBarControlTypeId,
+        UIA_StatusBarControlTypeId,
+        UIA_ProgressBarControlTypeId,
+        UIA_SliderControlTypeId,
+        UIA_ScrollBarControlTypeId,
+        UIA_HyperlinkControlTypeId,
+        UIA_ImageControlTypeId,
+        UIA_MenuBarControlTypeId,
+        UIA_MenuControlTypeId,
+        UIA_TitleBarControlTypeId,
+        UIA_SeparatorControlTypeId,
+        UIA_TextControlTypeId,
+    ];
+    if non_text_types.contains(&control_type) {
+        log::debug!("UIA: ControlType={control_type:?} → NonText");
+        return Some(FocusKind::NonText);
+    }
+
+    None
+}
+
+/// UIA を使用してフォーカス中コントロールの種別を判定する（CC≤6）
 ///
 /// Pattern-first アプローチ:
 /// 1. `ValuePattern` → `IsReadOnly` で編集可能なテキストフィールドを検出
@@ -74,97 +181,22 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
         }
     };
 
-    // FrameworkId を取得して AppKind を判定
-    let app_kind = match unsafe { element.CurrentFrameworkId() } {
-        Ok(fid) => {
-            let fid_str = fid.to_string();
-            let kind = classify_framework_app_kind(&fid_str);
-            log::debug!("UIA: FrameworkId=\"{fid_str}\" → app_kind={kind:?}");
-            kind
-        }
-        Err(e) => {
-            log::trace!("UIA: CurrentFrameworkId failed: {e:?}");
-            None
-        }
-    };
+    let app_kind = unsafe { resolve_app_kind(&element) };
 
-    // マクロ的ヘルパー: FocusKind, app_kind をまとめて返す
-    macro_rules! result {
-        ($kind:expr) => {
-            UiaClassifyResult {
-                focus_kind: $kind,
-                app_kind,
-            }
-        };
+    if let Some(kind) = unsafe { check_value_pattern(&element) } {
+        return UiaClassifyResult { focus_kind: kind, app_kind };
     }
 
-    // 1. ValuePattern → IsReadOnly チェック
-    //    「編集可能な値を持つ」が最も強いシグナル
-    if let Ok(pattern) =
-        unsafe { element.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
-    {
-        match unsafe { pattern.CurrentIsReadOnly() } {
-            Ok(read_only) if !read_only.as_bool() => {
-                log::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
-                return result!(FocusKind::TextInput);
-            }
-            Ok(_) => {
-                log::debug!("UIA: ValuePattern(IsReadOnly=true) → NonText");
-                return result!(FocusKind::NonText);
-            }
-            Err(_) => {} // fall through
-        }
+    if let Some(kind) = unsafe { check_text_pattern(&element) } {
+        return UiaClassifyResult { focus_kind: kind, app_kind };
     }
 
-    // 2. TextPattern チェック
-    //    TextPattern をサポートする要素はテキスト編集能力を持つ
-    if unsafe {
-        element
-            .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
-            .is_ok()
-    } {
-        log::debug!("UIA: TextPattern available → TextInput");
-        return result!(FocusKind::TextInput);
+    if let Some(kind) = unsafe { check_control_type(&element) } {
+        return UiaClassifyResult { focus_kind: kind, app_kind };
     }
 
-    // 3. フォールバック: ControlType で確定的な非テキストコントロールを判別
-    if let Ok(control_type) = unsafe { element.CurrentControlType() } {
-        // テキスト入力系（補助的な確認のみ）
-        if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
-            log::debug!("UIA: ControlType={control_type:?} → TextInput");
-            return result!(FocusKind::TextInput);
-        }
-
-        // 非テキスト系
-        let non_text_types = [
-            UIA_ButtonControlTypeId,
-            UIA_MenuItemControlTypeId,
-            UIA_TreeItemControlTypeId,
-            UIA_ListItemControlTypeId,
-            UIA_TabControlTypeId,
-            UIA_TabItemControlTypeId,
-            UIA_ToolBarControlTypeId,
-            UIA_StatusBarControlTypeId,
-            UIA_ProgressBarControlTypeId,
-            UIA_SliderControlTypeId,
-            UIA_ScrollBarControlTypeId,
-            UIA_HyperlinkControlTypeId,
-            UIA_ImageControlTypeId,
-            UIA_MenuBarControlTypeId,
-            UIA_MenuControlTypeId,
-            UIA_TitleBarControlTypeId,
-            UIA_SeparatorControlTypeId,
-            UIA_TextControlTypeId,
-        ];
-        if non_text_types.contains(&control_type) {
-            log::debug!("UIA: ControlType={control_type:?} → NonText");
-            return result!(FocusKind::NonText);
-        }
-    }
-
-    // 4. 確定的なシグナルなし
     log::debug!("UIA: no definitive signal → Undetermined");
-    result!(FocusKind::Undetermined)
+    UiaClassifyResult { focus_kind: FocusKind::Undetermined, app_kind }
 }
 
 /// UIA 非同期判定ワーカースレッドを起動する
