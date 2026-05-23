@@ -364,26 +364,26 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
     let (is_japanese_ime, _) = keyboard_layout_info();
 
     if !is_japanese_ime {
-        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false), is_romaji: None };
+        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false) };
     }
 
     // GetForegroundWindow() はトップレベルウィンドウを返す。
     // detect_ime_state が使う GetGUIThreadInfo().hwndFocus（子ウィンドウ）と異なり、
     // トップレベル hwnd は TSF 互換ブリッジ経由で IMM32 API に応答できる場合が多い。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_romaji: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
     // Alt/Win キーなどで一時的に現れるシステム UI オーバーレイは imc_open=false を返すため
     // Engine が誤 deactivate される。ime_on=None（既存状態維持）を返して誤検出を防ぐ。
     if is_transient_system_overlay(hwnd) {
         log::debug!("fast_ime_probe: transient system overlay → ime_on=None (preserving state)");
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_romaji: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     }
 
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         // IMM ブリッジなし（Chrome/UWP 等）→ 検出不能
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_romaji: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
     let ime_on =
@@ -402,7 +402,7 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
         log::debug!("fast_ime_probe: conv=0x{conv:08X} native={is_native} roman={is_roman}");
     }
 
-    FastImeProbeResult { is_japanese_ime: true, ime_on, is_romaji: None }
+    FastImeProbeResult { is_japanese_ime: true, ime_on }
 }
 
 /// 高速プローブの結果
@@ -410,8 +410,6 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
 pub struct FastImeProbeResult {
     pub is_japanese_ime: bool,
     pub ime_on: Option<bool>,
-    /// ローマ字入力か（Some(true)=ローマ字, Some(false)=かな, None=検出不能）
-    pub is_romaji: Option<bool>,
 }
 
 /// IMM32 を使わず TSF ネイティブ動作するウィンドウクラスか判定する。

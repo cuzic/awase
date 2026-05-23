@@ -10,9 +10,12 @@
 
 pub(crate) mod belief;
 pub(crate) mod cold_warmup;
-pub mod gate;
 pub mod observer;
 pub mod output;
 pub mod probe;
 pub mod probe_bridge;
 pub(crate) mod send;
+
+pub use awase::tsf::{
+    GateAction, GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, WARMUP_TIMEOUT_MS,
+};
