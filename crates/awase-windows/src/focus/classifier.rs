@@ -125,7 +125,7 @@ unsafe fn input_site_fallback_matches(
 /// アプリごとの注入モード・フォーカス種別オーバーライド設定を保持し、
 /// 判断ロジックを提供する構造体。
 ///
-/// `AppOverrides` をラップし、is_force_tsf/vk/check_app_override を
+/// `AppOverrides` をラップし、injection_hint/check_app_override を
 /// メソッドとして集約することで呼び出し側 API を統一する。
 pub struct ForceOverrides {
     inner: AppOverrides,
@@ -134,49 +134,6 @@ pub struct ForceOverrides {
 impl ForceOverrides {
     pub fn new(overrides: AppOverrides) -> Self {
         Self { inner: overrides }
-    }
-
-    /// `force_tsf` リストにマッチするか。マッチ → TSF Sequential VK 注入。
-    ///
-    /// `Windows.UI.Input.InputSite.WindowClass` フォーカス時は GetForegroundWindow() で
-    /// トップレベルクラスを再マッチし、force_tsf 設定が InputSite でも機能するようにする。
-    pub(crate) fn is_force_tsf(&self, process_id: u32, class_name: &str) -> bool {
-        if self.inner.force_tsf.is_empty() {
-            return false;
-        }
-        let process_name = super::classify::get_process_name(process_id);
-        if self.inner.force_tsf.iter().any(|entry| {
-            entry.process.eq_ignore_ascii_case(&process_name)
-                && entry.class.eq_ignore_ascii_case(class_name)
-        }) {
-            return true;
-        }
-        if class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
-            let fg_class = unsafe { crate::ime::get_foreground_window_class() };
-            if !fg_class.is_empty() && !fg_class.eq_ignore_ascii_case(class_name) {
-                let matched = self.inner.force_tsf.iter().any(|entry| {
-                    entry.process.eq_ignore_ascii_case(&process_name)
-                        && entry.class.eq_ignore_ascii_case(&fg_class)
-                });
-                log::debug!(
-                    "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
-                );
-                return matched;
-            }
-        }
-        false
-    }
-
-    /// `force_vk` リストにマッチするか。マッチ → VK Batched 注入。
-    pub(crate) fn is_force_vk(&self, process_id: u32, class_name: &str) -> bool {
-        if self.inner.force_vk.is_empty() {
-            return false;
-        }
-        let process_name = super::classify::get_process_name(process_id);
-        self.inner.force_vk.iter().any(|entry| {
-            entry.process.eq_ignore_ascii_case(&process_name)
-                && entry.class.eq_ignore_ascii_case(class_name)
-        })
     }
 
     /// `force_text` / `force_bypass` オーバーライドをチェックする。
@@ -206,10 +163,9 @@ impl ForceOverrides {
         None
     }
 
-    /// 注入ヒントを返す（is_force_tsf → ForceTsf、is_force_vk → ForceVk）。
+    /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。
     ///
-    /// `process_name` の取得を1回にまとめるため、`is_force_tsf`/`is_force_vk` を
-    /// 直接呼ばずヘルパー関数経由で判定する。
+    /// `process_name` の取得を1回にまとめ、ヘルパー関数経由で判定する。
     pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
         if self.inner.force_tsf.is_empty() && self.inner.force_vk.is_empty() {
             return InjectionHint::Default;
