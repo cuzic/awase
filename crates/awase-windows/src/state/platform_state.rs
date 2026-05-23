@@ -360,11 +360,15 @@ impl PlatformState {
             }
         }
 
-        // force_on_guard のリセット（検出成功時）
-        if update.clear_force_on_guard {
-            self.ime.preconditions.ime_detect_miss_count = 0;
+        // force_on_broken_app_bootstrap のリセット（検出成功時）
+        if update.clear_force_on_broken_app_bootstrap {
             self.ime.preconditions.force_on_broken_app_bootstrap = false;
+        }
+
+        // force_on_panic_reset と miss_count のリセット（検出成功時）
+        if update.clear_force_on_panic_reset {
             self.ime.preconditions.force_on_panic_reset = false;
+            self.ime.preconditions.ime_detect_miss_count = 0;
         }
 
         // input_mode
