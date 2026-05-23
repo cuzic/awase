@@ -418,7 +418,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         ps.hook_event_count += 1;
 
         // ── かな入力方式バイパス ──
-        if !ps.preconditions.input_mode.is_romaji_capable() {
+        if !ps.input_mode().is_romaji_capable() {
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         }
 
@@ -536,7 +536,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
 
                 // Flush engine pending keys
-                let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions, &event.modifier_snapshot);
+                let ctx = crate::runtime::build_input_context(app.platform_state.preconditions(), &event.modifier_snapshot);
                 app.platform_state.hook.leave_callback();
                 let decision = app.engine.on_command(
                     awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),

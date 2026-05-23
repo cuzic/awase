@@ -37,7 +37,7 @@ impl<'a> KeyEventPipeline<'a> {
         self.stage_panic_reset_detect(&event);
 
         let ctx = runtime::build_input_context(
-            &self.app.platform_state.preconditions,
+            self.app.platform_state.preconditions(),
             &event.modifier_snapshot,
         );
         let decision = self.app.engine.on_input(event, &ctx);
@@ -227,7 +227,7 @@ fn apply_focus_probe_to_app(
                 "shadow"
             };
         } else {
-            app.platform_state.os_ime_on = Some(effective);
+            app.platform_state.set_os_ime_on(Some(effective));
             let ms = hook::current_tick_ms();
             app.platform_state.write_focus_probe(effective, ms);
             if effective {

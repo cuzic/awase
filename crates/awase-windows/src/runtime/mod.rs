@@ -74,7 +74,7 @@ struct ClassifiedFocus {
 impl Runtime {
     fn build_ctx(&self) -> InputContext {
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-        build_input_context(&self.platform_state.preconditions, &modifiers)
+        build_input_context(self.platform_state.preconditions(), &modifiers)
     }
 
     /// output 層が注入モードを決定するために呼ぶ公開 API。
@@ -290,7 +290,7 @@ impl Runtime {
                     &mut self.executor.platform.focus.hwnd_ime_cache,
                     old_pid,
                     old_class,
-                    &self.platform_state.preconditions,
+                    self.platform_state.preconditions(),
                 );
             }
         }

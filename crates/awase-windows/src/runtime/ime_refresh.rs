@@ -227,8 +227,9 @@ impl<'a> ImeRefreshPipeline<'a> {
         // observe() の生の結果を os_ime_on に記録（miss なし＝成功時のみ更新）
         if miss_after == 0 {
             if let Some(poll_val) = self.rt.platform_state.observer_poll_value() {
-                self.rt.platform_state.os_ime_on =
-                    Some(poll_val && self.rt.platform_state.is_japanese_ime());
+                self.rt.platform_state.set_os_ime_on(
+                    Some(poll_val && self.rt.platform_state.is_japanese_ime()),
+                );
             }
         }
         // observer_poll → preconditions.ime_on に優先度付き解決
@@ -480,8 +481,9 @@ impl<'a> ImeRefreshPipeline<'a> {
                 // observe() の生の結果を os_ime_on に記録（miss なし＝成功時のみ更新）
                 if miss_after == 0 {
                     if let Some(poll_val) = self.rt.platform_state.observer_poll_value() {
-                        self.rt.platform_state.os_ime_on =
-                            Some(poll_val && self.rt.platform_state.is_japanese_ime());
+                        self.rt.platform_state.set_os_ime_on(
+                            Some(poll_val && self.rt.platform_state.is_japanese_ime()),
+                        );
                     }
                 }
                 self.rt
