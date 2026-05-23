@@ -1491,7 +1491,7 @@ impl awase::platform::CompositionOutput for Output {
         self.mark_composition_cold(ColdReason::SetOpenTrue);
     }
 
-    fn notify_ime_open(&self, open: bool) {
+    fn set_ime_apply_latch(&self, open: bool) {
         self.set_ime_apply_latch(open);
     }
 

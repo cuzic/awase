@@ -130,8 +130,8 @@ pub trait CompositionOutput {
     /// IME ON/OFF 操作による composition context の cold 化を通知する。
     fn mark_cold_ime_toggle(&self);
 
-    /// IME の ON/OFF 状態変化を通知する（shadow 追跡用）。
-    fn notify_ime_open(&self, open: bool);
+    /// 最後に apply_ime_open に渡した値をラッチに記録する（shadow 追跡用）。
+    fn set_ime_apply_latch(&self, open: bool);
 
     /// フォーカス変更を通知する（epoch インクリメント）。
     fn on_focus_changed(&self);
