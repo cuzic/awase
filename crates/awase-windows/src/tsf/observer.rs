@@ -81,9 +81,27 @@ impl TsfObservations {
             gji_monitor_ok:         AtomicBool::new(false),
         }
     }
+
+    /// GJI 最終 I/O 変化時刻 (ms) を読み取る（Relaxed）。
+    pub fn gji_last_io_ms(&self) -> u64 {
+        self.gji_last_io_ms.load(Ordering::Relaxed)
+    }
+
+    /// GJI モニターが利用可能かを読み取る（Relaxed）。
+    pub fn gji_monitor_ok(&self) -> bool {
+        self.gji_monitor_ok.load(Ordering::Relaxed)
+    }
 }
 
-pub static TSF_OBS: TsfObservations = TsfObservations::new();
+/// `TSF_OBS` へのアクセスを一元化する accessor。
+///
+/// `key_pipeline.rs` 等の app 層から TSF グローバルへアクセスする際は
+/// 直接フィールド参照ではなくこの関数を使うこと。
+pub fn with_tsf_obs<R>(f: impl FnOnce(&TsfObservations) -> R) -> R {
+    f(&TSF_OBS)
+}
+
+pub(crate) static TSF_OBS: TsfObservations = TsfObservations::new();
 
 
 // ── GJI プロセス発見 ──

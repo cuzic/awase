@@ -211,12 +211,16 @@ impl<'a> ImeRefreshPipeline<'a> {
         let ime_on_before_poll = self.rt.platform_state.preconditions.ime_on;
         let input_mode_before_poll = self.rt.platform_state.preconditions.input_mode;
 
-        unsafe {
+        let observer_out = unsafe {
+            let pc = &self.rt.platform_state.preconditions;
             crate::observer::ime_observer::observe(
-                &mut self.rt.platform_state.preconditions,
-                &mut self.rt.platform_state.ime_observations,
-            );
-        }
+                pc.ime_on,
+                pc.ime_force_on_guard,
+                pc.input_mode,
+                pc.prev_conversion_mode,
+            )
+        };
+        self.rt.platform_state.apply_ime_observer_output(&observer_out);
 
         let miss_after = self.rt.platform_state.preconditions.ime_detect_miss_count;
 
@@ -460,12 +464,18 @@ impl<'a> ImeRefreshPipeline<'a> {
 
                 // Phase 3: apply pre-fetched IME snap
                 let now_ms = crate::hook::current_tick_ms();
-                crate::observer::ime_observer::apply_snapshot(
-                    &ime_snap,
-                    now_ms,
-                    &mut self.rt.platform_state.preconditions,
-                    &mut self.rt.platform_state.ime_observations,
-                );
+                let observer_out = {
+                    let pc = &self.rt.platform_state.preconditions;
+                    crate::observer::ime_observer::apply_snapshot(
+                        &ime_snap,
+                        now_ms,
+                        pc.ime_on,
+                        pc.ime_force_on_guard,
+                        pc.input_mode,
+                        pc.prev_conversion_mode,
+                    )
+                };
+                self.rt.platform_state.apply_ime_observer_output(&observer_out);
 
                 let miss_after =
                     self.rt.platform_state.preconditions.ime_detect_miss_count;

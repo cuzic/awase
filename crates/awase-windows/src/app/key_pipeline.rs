@@ -4,8 +4,6 @@
 //! フックコールバック本体から `KeyEventPipeline::run` を呼ぶことで
 //! 同じ動作をより読みやすい形で表現する。
 
-use std::sync::atomic::Ordering;
-
 use awase::engine::InputModeState;
 use awase::types::{RawKeyEvent, ShadowImeAction};
 use awase_windows::hook;
@@ -65,7 +63,7 @@ impl<'a> KeyEventPipeline<'a> {
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
         let gji_last_io_ms =
-            awase_windows::tsf::observer::TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
+            awase_windows::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
         let last_focus_change_ms = self.app.platform_state.last_focus_change_ms;
         let shadow_on = self.app.executor.platform.output.shadow_ime_on();
 
@@ -157,7 +155,7 @@ impl<'a> KeyEventPipeline<'a> {
             self.app.platform_state.preconditions.ime_detect_miss_count = 0;
             self.app.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
             self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
-            self.app.platform_state.hook.suppress_ctrl_bypass = true;
+            self.app.platform_state.hook.set_suppress_ctrl_bypass(true);
             log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass suppressed");
         }
 

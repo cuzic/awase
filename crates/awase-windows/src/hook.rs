@@ -266,7 +266,7 @@ unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, 
         let alt = (GetAsyncKeyState(0x12).cast_unsigned() & 0x8000) != 0;
         let win = (GetAsyncKeyState(0x5B).cast_unsigned() & 0x8000) != 0
             || (GetAsyncKeyState(0x5C).cast_unsigned() & 0x8000) != 0;
-        let effective_ctrl = ctrl && !(hook.suppress_ctrl_bypass && !alt && !win);
+        let effective_ctrl = ctrl && !(hook.suppress_ctrl_bypass() && !alt && !win);
         if effective_ctrl || alt || win {
             if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
                 return KeyRoute::Bypass;
@@ -494,8 +494,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         );
 
         // Ctrl KeyUp で suppress_ctrl_bypass を解除
-        if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.suppress_ctrl_bypass {
-            ps.hook.suppress_ctrl_bypass = false;
+        if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.suppress_ctrl_bypass() {
+            ps.hook.set_suppress_ctrl_bypass(false);
         }
 
         // ── 一元的なルーティング判定 ──

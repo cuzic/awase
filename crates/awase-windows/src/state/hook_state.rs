@@ -12,7 +12,21 @@ pub struct HookRoutingState {
     /// IME 制御コンボ直後の Ctrl バイパス抑制フラグ。
     /// Ctrl+Henkan/Muhenkan 消費後、Ctrl がまだ押されている間の文字キーを
     /// ショートカットとして Bypass しない。Ctrl KeyUp で解除。
-    pub suppress_ctrl_bypass: bool,
+    pub(super) suppress_ctrl_bypass: bool,
+}
+
+impl HookRoutingState {
+    /// `suppress_ctrl_bypass` フラグを設定する。
+    ///
+    /// IME 制御コンボ消費後に `true` をセットし、Ctrl KeyUp 時に `false` にリセットする。
+    pub fn set_suppress_ctrl_bypass(&mut self, value: bool) {
+        self.suppress_ctrl_bypass = value;
+    }
+
+    /// `suppress_ctrl_bypass` フラグを読み取る。
+    pub fn suppress_ctrl_bypass(&self) -> bool {
+        self.suppress_ctrl_bypass
+    }
 }
 
 /// フック設定（親指キー VK コード）

@@ -200,6 +200,20 @@ fn save_imm_cache(base_dir: &std::path::Path, cache: &std::collections::HashMap<
     }
 }
 
+/// output 層が注入モードを決定するために必要な、focus 層の公開セマンティクス。
+///
+/// `AppKindClassifier::injection_hint()` が返す型。
+/// output 層はこの型のみを参照し、focus 内部フィールドに直接アクセスしない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectionHint {
+    /// config の `force_tsf` エントリにマッチ → TSF Sequential VK 注入
+    ForceTsf,
+    /// config の `force_vk` エントリにマッチ → VK Batched 注入
+    ForceVk,
+    /// オーバーライドなし → AppKind に従って output 層が最終決定する
+    Default,
+}
+
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
 pub struct AppKindClassifier {
@@ -252,6 +266,25 @@ impl AppKindClassifier {
     ) {
         self.uia_sender = Some(sender);
     }
+
+    /// 現在のフォーカス先に対する注入ヒントを返す。
+    ///
+    /// output 層が `InjectionMode` を決定するために呼ぶ公開 API。
+    /// `overrides` と `last_focus_info` は focus 内部に隠蔽し、
+    /// output は返り値 (`InjectionHint`) のみに依存する。
+    #[must_use]
+    pub fn injection_hint(&self) -> InjectionHint {
+        let Some((pid, class)) = self.last_focus_info.as_ref() else {
+            return InjectionHint::Default;
+        };
+        if is_force_tsf(&self.overrides, *pid, class) {
+            return InjectionHint::ForceTsf;
+        }
+        if is_force_vk(&self.overrides, *pid, class) {
+            return InjectionHint::ForceVk;
+        }
+        InjectionHint::Default
+    }
 }
 
 /// アプリケーションランタイム。
@@ -277,6 +310,19 @@ impl Runtime {
     fn build_ctx(&self) -> InputContext {
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
         build_input_context(&self.platform_state.preconditions, &modifiers)
+    }
+
+    /// output 層が注入モードを決定するために呼ぶ公開 API。
+    ///
+    /// focus の `injection_hint()` と `platform_state.app_kind` を組み合わせて
+    /// `InjectionHint` を返す。output 層はこのメソッドのみを呼び、
+    /// focus/classify の内部型に直接アクセスしない。
+    #[must_use]
+    pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
+        (
+            self.executor.platform.focus.injection_hint(),
+            self.platform_state.app_kind,
+        )
     }
 
     /// IME 関連の事前分類情報を sync key 設定で補完する
@@ -464,12 +510,14 @@ impl Runtime {
             self.executor.platform.output.on_focus_changed();
             self.platform_state.ime_observations.clear_on_focus_change();
 
-            hwnd_cache::restore_on_focus_enter(
-                &self.executor.platform.focus.hwnd_ime_cache,
-                process_id,
-                &class_name,
-                &mut self.platform_state.preconditions,
-            );
+            {
+                let cache_hit = hwnd_cache::restore_on_focus_enter(
+                    &self.executor.platform.focus.hwnd_ime_cache,
+                    process_id,
+                    &class_name,
+                );
+                self.platform_state.apply_hwnd_cache_restore(cache_hit);
+            }
 
             if self.platform_state.preconditions.ime_force_on_guard.is_active()
                 || self.platform_state.preconditions.ime_detect_miss_count > 0
@@ -645,12 +693,16 @@ impl Runtime {
         }
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
-        unsafe {
+        let observer_out = unsafe {
+            let pc = &self.platform_state.preconditions;
             crate::observer::ime_observer::observe(
-                &mut self.platform_state.preconditions,
-                &mut self.platform_state.ime_observations,
-            );
-        }
+                pc.ime_on,
+                pc.ime_force_on_guard,
+                pc.input_mode,
+                pc.prev_conversion_mode,
+            )
+        };
+        self.platform_state.apply_ime_observer_output(&observer_out);
         self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
         // Drain deferred keys from Platform guard
@@ -703,7 +755,7 @@ impl Runtime {
         self.platform_state.hook.sent_to_engine = [0u64; 4];
         self.platform_state.hook.track_only_keys = [0u64; 4];
         self.platform_state.hook.in_callback = false;
-        self.platform_state.hook.suppress_ctrl_bypass = false;
+        self.platform_state.hook.set_suppress_ctrl_bypass(false);
         self.platform_state.ime_guard.active = false;
         self.platform_state.ime_guard.deferred_keys.clear();
 

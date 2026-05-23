@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use awase::engine::InputModeState;
 
-use crate::{Preconditions, ShadowSource};
+use crate::Preconditions;
 
 /// フォーカス切り替え時の IME 状態スナップショット（per-HWND キャッシュ用）
 #[derive(Debug, Clone, Copy)]
@@ -13,13 +13,6 @@ pub struct HwndImeSnapshot {
     pub input_mode: InputModeState,
     /// 記録時刻（GetTickCount64 ミリ秒）
     pub recorded_ms: u64,
-}
-
-/// キャッシュ参照の結果
-#[derive(Debug)]
-pub enum CacheOutcome {
-    Hit,
-    Miss,
 }
 
 /// キャッシュの最大有効期間（ミリ秒）
@@ -49,30 +42,28 @@ pub fn save_on_focus_leave(
     cache.insert((old_pid, old_class), snapshot);
 }
 
-/// フォーカス入場時にキャッシュから IME 状態を復元する。
+/// フォーカス入場時にキャッシュを参照し、有効なスナップショットを返す。
 ///
-/// キャッシュヒットかつ有効期限内の場合は `preconditions` を即座に更新し
-/// [`CacheOutcome::Hit`] を返す。
-/// キャッシュミスまたは期限切れの場合は `preconditions` を変更せず
-/// [`CacheOutcome::Miss`] を返す。
+/// キャッシュヒットかつ有効期限内の場合は `Some(HwndImeSnapshot)` を返す。
+/// キャッシュミスまたは期限切れの場合は `None` を返す。
+///
+/// `Preconditions` を直接変更しない。呼び出し元（`PlatformState::apply_hwnd_cache_restore()`）
+/// が状態に反映すること。
 pub fn restore_on_focus_enter(
     cache: &HashMap<(u32, String), HwndImeSnapshot>,
     new_pid: u32,
     new_class: &str,
-    preconditions: &mut Preconditions,
-) -> CacheOutcome {
+) -> Option<HwndImeSnapshot> {
     let cache_key = (new_pid, new_class.to_string());
     if let Some(&snapshot) = cache.get(&cache_key) {
         let age_ms = crate::hook::current_tick_ms()
             .saturating_sub(snapshot.recorded_ms);
         if age_ms <= HWND_CACHE_MAX_AGE_MS {
-            preconditions.set_ime_on(snapshot.ime_on, ShadowSource::HwndCache);
-            preconditions.input_mode = snapshot.input_mode;
             log::info!(
                 "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
                 new_pid, new_class, snapshot.ime_on, snapshot.input_mode, age_ms,
             );
-            return CacheOutcome::Hit;
+            return Some(snapshot);
         }
         log::info!(
             "HwndCache: stale [{} {}] ime_on={} mode={:?} ({}ms ago > {}ms) → FocusProbe 待ち",
@@ -85,5 +76,5 @@ pub fn restore_on_focus_enter(
             new_pid, new_class,
         );
     }
-    CacheOutcome::Miss
+    None
 }

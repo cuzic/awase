@@ -110,4 +110,73 @@ impl PlatformState {
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
     }
+
+    /// `ImeObserverOutput` を `Preconditions` と `ImeObservations` に反映する。
+    ///
+    /// `observer::ime_observer::observe()` / `apply_snapshot()` の結果を受け取り、
+    /// `Preconditions` への書き込みをここに集約する。
+    pub fn apply_ime_observer_output(
+        &mut self,
+        out: &crate::observer::ime_observer::ImeObserverOutput,
+    ) {
+        // is_japanese_ime: 検出成功時のみ更新
+        if let Some(is_jp) = out.is_japanese_ime {
+            self.preconditions.is_japanese_ime = is_jp;
+        }
+
+        // observer_poll スロット
+        if let Some(obs) = out.observer_poll {
+            self.ime_observations.observer_poll = Some(obs);
+        }
+
+        // miss_count
+        if out.increment_miss_count {
+            self.preconditions.ime_detect_miss_count =
+                self.preconditions.ime_detect_miss_count.saturating_add(1);
+            if self.preconditions.ime_detect_miss_count == crate::IME_DETECT_MISS_THRESHOLD {
+                log::warn!(
+                    "IME detection failed {} consecutive times, will force IME ON",
+                    self.preconditions.ime_detect_miss_count
+                );
+            }
+        }
+
+        // force_on_guard のリセット（検出成功時）
+        if out.clear_force_on_guard {
+            self.preconditions.ime_detect_miss_count = 0;
+            self.preconditions.ime_force_on_guard = super::preconditions::ImeForceOnGuard::Inactive;
+        }
+
+        // input_mode
+        if let Some(mode) = out.new_input_mode {
+            self.preconditions.input_mode = mode;
+        }
+
+        // prev_conversion_mode
+        if let Some(conv) = out.new_prev_conversion_mode {
+            self.preconditions.prev_conversion_mode = Some(conv);
+        }
+
+        log::debug!(
+            "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
+            out.snap_is_japanese_ime,
+            out.snap_ime_on,
+            out.snap_is_romaji,
+            out.snap_conversion_mode.map(|v| format!("0x{v:08X}")),
+            out.guard_was_active,
+        );
+    }
+
+    /// `hwnd_cache::restore_on_focus_enter()` の結果を `Preconditions` に反映する。
+    ///
+    /// キャッシュヒット（`Some`）の場合のみ適用する。`None` の場合は何もしない。
+    pub fn apply_hwnd_cache_restore(
+        &mut self,
+        snapshot: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
+    ) {
+        if let Some(snap) = snapshot {
+            self.preconditions.set_ime_on(snap.ime_on, ShadowSource::HwndCache);
+            self.preconditions.input_mode = snap.input_mode;
+        }
+    }
 }

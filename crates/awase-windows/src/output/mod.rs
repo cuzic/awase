@@ -3,6 +3,7 @@ use std::sync::atomic::{Ordering};
 
 use awase::config::OutputMode;
 use awase::types::{AppKind, KeyAction, SpecialKey};
+use crate::runtime::InjectionHint;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
@@ -28,63 +29,34 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 
 
 
-/// `resolve_injection_mode_from` に渡すコンテキスト。
-///
-/// APP グローバルから必要なフィールドだけを切り出すことで、
-/// ロジック部（`resolve_injection_mode_from`）を純粋関数としてテスト可能にする。
-pub(crate) struct InjectionModeContext<'a> {
-    /// 直前のフォーカス情報 (process_id, window_class)。未取得なら None。
-    pub focus_info: Option<(u32, &'a str)>,
-    /// config の app_overrides（force_tsf / force_vk / force_text / force_bypass）
-    pub overrides: &'a awase::config::AppOverrides,
-    /// 現在フォーカス中のアプリの種別（TSF ネイティブかどうか）
-    pub app_kind: AppKind,
-}
-
-/// `InjectionModeContext` から注入モードを決定する純粋関数。
-///
-/// APP グローバルへの直アクセスを持たないため、ユニットテストで直接呼び出せる。
+/// `InjectionHint` と `AppKind` から `InjectionMode` を決定する純粋関数。
 ///
 /// 優先順位:
-///   1. config の `app_overrides.force_tsf` にマッチ → Tsf
-///   2. config の `app_overrides.force_vk` にマッチ → Vk
-///   3. AppKind::TsfNative → Vk
-///   4. それ以外 (Win32 / Uwp) → Unicode
-fn resolve_injection_mode_from(ctx: &InjectionModeContext<'_>) -> InjectionMode {
-    if let Some((pid, class)) = ctx.focus_info {
-        if crate::runtime::is_force_tsf(ctx.overrides, pid, class) {
-            return InjectionMode::Tsf;
+///   1. `InjectionHint::ForceTsf` → Tsf
+///   2. `InjectionHint::ForceVk`  → Vk
+///   3. `AppKind::TsfNative`      → Vk
+///   4. それ以外 (Win32 / Uwp)   → Unicode
+fn resolve_injection_mode_from(hint: InjectionHint, app_kind: AppKind) -> InjectionMode {
+    match hint {
+        InjectionHint::ForceTsf => InjectionMode::Tsf,
+        InjectionHint::ForceVk  => InjectionMode::Vk,
+        InjectionHint::Default  => {
+            if app_kind == AppKind::TsfNative {
+                InjectionMode::Vk
+            } else {
+                InjectionMode::Unicode
+            }
         }
-        if crate::runtime::is_force_vk(ctx.overrides, pid, class) {
-            return InjectionMode::Vk;
-        }
-    }
-    if ctx.app_kind == AppKind::TsfNative {
-        InjectionMode::Vk
-    } else {
-        InjectionMode::Unicode
     }
 }
 
-/// APP グローバルから `InjectionModeContext` を構築して注入モードを返す薄いシム。
+/// APP グローバルの `Runtime::injection_hint()` を呼んで注入モードを返す薄いシム。
 ///
-/// APP への直アクセスはこの関数にのみ集約する。ロジック本体は
-/// `resolve_injection_mode_from` を参照のこと。
+/// focus/classify の内部型には依存しない。
 fn resolve_injection_mode() -> InjectionMode {
     crate::with_app_ref(|app| {
-        let focus_info = app
-            .executor
-            .platform
-            .focus
-            .last_focus_info
-            .as_ref()
-            .map(|(pid, class)| (*pid, class.as_str()));
-        let ctx = InjectionModeContext {
-            focus_info,
-            overrides: &app.executor.platform.focus.overrides,
-            app_kind: app.platform_state.app_kind,
-        };
-        resolve_injection_mode_from(&ctx)
+        let (hint, app_kind) = app.injection_hint();
+        resolve_injection_mode_from(hint, app_kind)
     })
     .unwrap_or(InjectionMode::Unicode)
 }
