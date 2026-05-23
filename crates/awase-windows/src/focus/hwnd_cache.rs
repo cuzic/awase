@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use awase::engine::InputModeState;
 
 use crate::Preconditions;
+use crate::tuning::HWND_CACHE_MAX_AGE_MS;
 
 /// フォーカス切り替え時の IME 状態スナップショット（per-HWND キャッシュ用）
 #[derive(Debug, Clone, Copy)]
@@ -15,12 +16,9 @@ pub struct HwndImeSnapshot {
     pub recorded_ms: u64,
 }
 
-/// キャッシュの最大有効期間（ミリ秒）
-pub const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
-
 /// フォーカス離脱時に preconditions を per-HWND キャッシュに保存する。
 ///
-/// 古いエントリ（`HWND_CACHE_MAX_AGE_MS` を超えたもの）はこのタイミングで
+/// 古いエントリ（[`crate::tuning::HWND_CACHE_MAX_AGE_MS`] を超えたもの）はこのタイミングで
 /// まとめて削除する。
 pub fn save_on_focus_leave(
     cache: &mut HashMap<(u32, String), HwndImeSnapshot>,

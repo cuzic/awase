@@ -87,7 +87,7 @@ impl ImeObservations {
         let fp_candidate = self.focus_probe.as_ref().and_then(|o| {
             let effective = o.value && is_japanese_ime;
             if effective || !user_enabled {
-                Some((o.ms, effective, ShadowSource::FocusProbe))
+                Some((o.ms, effective, ShadowSource::FocusSnapshot))
             } else {
                 None // user_enabled=true かつ false → スキップ
             }
@@ -188,7 +188,7 @@ mod tests {
         };
         let (val, src) = o.resolve_and_clear(false, false, true).unwrap();
         assert_eq!(val, false);
-        assert_eq!(src, ShadowSource::FocusProbe);
+        assert_eq!(src, ShadowSource::FocusSnapshot);
     }
 
     // 6. observer_poll=true でも is_japanese_ime=false なら effective=false
@@ -213,7 +213,7 @@ mod tests {
         };
         let (val, src) = o.resolve_and_clear(false, true, true).unwrap();
         assert_eq!(val, true);
-        assert_eq!(src, ShadowSource::FocusProbe);
+        assert_eq!(src, ShadowSource::FocusSnapshot);
     }
 
     // 8. clear_on_focus_change はすべてのフィールドをクリアする

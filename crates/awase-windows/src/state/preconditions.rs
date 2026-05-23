@@ -1,12 +1,5 @@
 use awase::engine::InputModeState;
 
-/// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。
-///
-/// ポーリング間隔 500ms × 3 = 1.5秒。一時的な検出失敗は許容しつつ、
-/// 長時間の乖離（実際は IME OFF なのにキャッシュが ON のまま）を防ぐ。
-pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
-
-
 /// `Preconditions.ime_on` を最後に更新したソース。
 ///
 /// Phase 2 の `ImeObservations + resolve()` で優先度判定に使用する準備として記録する。
@@ -24,8 +17,8 @@ pub enum ShadowSource {
     SetOpenRequest,
     /// IME observer ポーリング（バックグラウンド観測）
     ObserverPoll,
-    /// フォーカス変更直後の高速プローブ
-    FocusProbe,
+    /// フォーカス変更直後の高速スナップショット
+    FocusSnapshot,
     /// panic_reset（強制リセット）
     PanicReset,
     /// IMM broken アプリ切替補正（Chrome 等）
@@ -34,25 +27,19 @@ pub enum ShadowSource {
     HwndCache,
 }
 
-/// `ime_force_on_guard` の 2 用途を型レベルで区別する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ImeForceOnGuard {
-    #[default]
-    Inactive,
-    BrokenAppBootstrap,
-    PanicResetProtect,
-}
-
-impl ImeForceOnGuard {
-    pub fn is_active(self) -> bool {
-        self != Self::Inactive
-    }
-}
-
-/// 環境前提条件（IME 状態・入力方式・日本語判定）
+/// 環境前提条件（IME 状態・入力方式・日本語判定）。
+///
+/// 各フィールドは「OS の現在状態をそのまま保持するもの」ではなく、
+/// 複数の観測ソースをマージした結果を保持する。特に `ime_on` は
+/// Engine に渡す判断用の意図値であり、観測ソースの優先度マージ結果である。
 #[derive(Debug)]
 pub struct Preconditions {
-    /// IME が ON か（shadow 追跡含む、Observer ポーリングで実際の OS 状態に収束）
+    /// IME ON/OFF の Engine 向け値。
+    ///
+    /// OS から観測した生値ではなく、複数の観測ソース
+    /// （sync_key > physical_key > set_open_request > focus_probe / observer_poll）
+    /// の優先度マージ結果。`resolve_and_clear()` で確定し、Engine に渡される。
+    /// OS の現在状態を直接反映するとは限らない点に注意。
     pub(in crate::state) ime_on: bool,
     /// `ime_on` を最後に更新したソース（Phase 2 解決関数向けの診断情報）
     pub(in crate::state) ime_on_source: ShadowSource,
@@ -68,9 +55,9 @@ pub struct Preconditions {
     pub(in crate::state) prev_conversion_mode: Option<u32>,
     /// IME 状態検出の連続失敗回数。
     ///
-    /// `detect_ime_state()` が `ime_on = None` を返すたびにインクリメントされ、
+    /// `read_ime_state_full()` が `ime_on = None` を返すたびにインクリメントされ、
     /// 検出成功時またはシャドウ更新（ユーザー操作）時にリセットされる。
-    /// [`IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
+    /// [`crate::tuning::IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
     /// IME を強制 ON にして Engine の活性状態を維持する。
     ///
     /// ## 発火条件の実態
@@ -83,21 +70,18 @@ pub struct Preconditions {
     /// 実際に増えるのは「**未知の IMM-broken アプリへの初回フォーカス時だけ**」。
     /// 閾値到達後 `ImmCapability::Broken` として学習されると、以降は発火しなくなる。
     pub(in crate::state) ime_detect_miss_count: u32,
-    /// IME 強制 ON 後のガードフラグ。2 つの独立した用途がある。
+    /// 起動直後の broken app 向け強制 IME ON ガード（Phase 3.5）。
     ///
-    /// ## 用途 A — 未知 IMM-broken アプリの初回ブートストラップ（Phase 3.5）
     /// 未知アプリへの初回フォーカス時に `set_ime_open(true)` を呼んだ後、
     /// 次の `observe()` が即座に上書きしないよう 1 サイクルだけ保護する。
-    /// 検出成功（または `ImmCapability::Broken` 学習完了）後にクリアされる。
+    /// 次の IME 検出成功（`clear_force_on_guard=true`）で解除される。
+    pub(in crate::state) force_on_broken_app_bootstrap: bool,
+    /// パニックリセット直後の上書き防止ガード。
     ///
-    /// ## 用途 B — `panic_reset()` 直後の上書き防止
     /// パニックリセットで `ime_on=true` を書き込んだ直後に `refresh_ime_state_cache`
     /// が走ると stale な `observe()` の結果に上書きされてしまう。これを防ぐ。
-    /// 次の検出成功時に自然にクリアされる。
-    ///
-    /// いずれも「awase が恒常的に SSOT になる」わけではなく、
-    /// **一時的な遷移期間中だけ OS 検出結果を無視する** という設計。
-    pub(in crate::state) ime_force_on_guard: ImeForceOnGuard,
+    /// `apply_ime_update` で `clear_force_on_guard=true` のとき解除される。
+    pub(in crate::state) force_on_panic_reset: bool,
 }
 
 impl Preconditions {
@@ -109,7 +93,7 @@ impl Preconditions {
 
     // ── pub(crate) 読み取り getter ──
 
-    /// IME が ON かどうかを返す。
+    /// IME ON/OFF の Engine 向け優先度マージ値を返す。
     #[inline]
     pub(crate) fn ime_on(&self) -> bool {
         self.ime_on
@@ -145,9 +129,9 @@ impl Preconditions {
         self.ime_detect_miss_count
     }
 
-    /// IME 強制 ON ガードフラグを返す。
+    /// いずれかの強制 ON ガードが立っているかを返す。
     #[inline]
-    pub(crate) fn ime_force_on_guard(&self) -> ImeForceOnGuard {
-        self.ime_force_on_guard
+    pub(crate) fn is_force_on_guard_active(&self) -> bool {
+        self.force_on_broken_app_bootstrap || self.force_on_panic_reset
     }
 }

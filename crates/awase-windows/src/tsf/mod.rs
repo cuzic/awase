@@ -8,11 +8,14 @@
 //! - [`probe_bridge`] — メッセージループ統合: OUTPUT_GATE / WM_DRAIN_OUTPUT_QUEUE
 //! - [`cold_warmup`]  — cold-start ウォームアップシーケンス（Preamble/Eager/Non-eager 分解）
 
-pub(crate) mod belief;
+pub(crate) mod last_apply;
 pub(crate) mod cold_warmup;
-pub mod gate;
 pub mod observer;
 pub mod output;
 pub mod probe;
 pub mod probe_bridge;
 pub(crate) mod send;
+
+pub use awase::tsf::{
+    GateAction, GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, WARMUP_TIMEOUT_MS,
+};

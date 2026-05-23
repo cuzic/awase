@@ -1,7 +1,7 @@
 use windows::Win32::Foundation::HWND;
 
 #[derive(Debug)]
-pub struct FocusProbe {
+pub struct FocusSnapshot {
     hwnd_addr: usize,
     pub process_id: u32,
     pub class_name: String,
@@ -9,18 +9,18 @@ pub struct FocusProbe {
 
 // SAFETY: hwnd_addr は usize として保存しており、ポインタとして同期アクセスはしない。
 // process_id と class_name は自明に Send。
-unsafe impl Send for FocusProbe {}
+unsafe impl Send for FocusSnapshot {}
 
-impl FocusProbe {
+impl FocusSnapshot {
     pub fn hwnd(&self) -> HWND {
         HWND(self.hwnd_addr as *mut _)
     }
 }
 
-/// `run_focus_probe` の async 版。
+/// `read_focus_snapshot` の async 版。
 /// ワーカースレッドで実行し、メッセージループに制御を返しながら待つ。
 #[allow(clippy::future_not_send)]
-pub async fn run_focus_probe_async() -> Option<FocusProbe> {
+pub async fn run_focus_probe_async() -> Option<FocusSnapshot> {
     win32_async::offload(move || {
         let result = unsafe {
             crate::win32::get_gui_thread_info_with_timeout(
@@ -28,7 +28,7 @@ pub async fn run_focus_probe_async() -> Option<FocusProbe> {
             )
         };
         let Some(hwnd) = result.focused_hwnd else {
-            return Some(FocusProbe {
+            return Some(FocusSnapshot {
                 hwnd_addr: 0,
                 process_id: 0,
                 class_name: String::new(),
@@ -36,7 +36,7 @@ pub async fn run_focus_probe_async() -> Option<FocusProbe> {
         };
         let process_id = crate::focus::classify::get_window_process_id(hwnd);
         let class_name = crate::focus::classify::get_class_name_string(hwnd);
-        Some(FocusProbe {
+        Some(FocusSnapshot {
             hwnd_addr: hwnd.0 as usize,
             process_id,
             class_name,
@@ -49,7 +49,7 @@ pub async fn run_focus_probe_async() -> Option<FocusProbe> {
 ///
 /// # Safety
 /// Win32 API (GetGUIThreadInfo, GetWindowThreadProcessId, GetClassNameW) を呼ぶ。
-pub unsafe fn run_focus_probe() -> Option<FocusProbe> {
+pub unsafe fn read_focus_snapshot() -> Option<FocusSnapshot> {
     crate::win32::run_with_timeout(
         std::time::Duration::from_millis(300),
         || {
@@ -59,7 +59,7 @@ pub unsafe fn run_focus_probe() -> Option<FocusProbe> {
                 )
             };
             let Some(hwnd) = result.focused_hwnd else {
-                return FocusProbe {
+                return FocusSnapshot {
                     hwnd_addr: 0,
                     process_id: 0,
                     class_name: String::new(),
@@ -67,7 +67,7 @@ pub unsafe fn run_focus_probe() -> Option<FocusProbe> {
             };
             let process_id = crate::focus::classify::get_window_process_id(hwnd);
             let class_name = crate::focus::classify::get_class_name_string(hwnd);
-            FocusProbe {
+            FocusSnapshot {
                 hwnd_addr: hwnd.0 as usize,
                 process_id,
                 class_name,

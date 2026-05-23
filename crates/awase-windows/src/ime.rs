@@ -137,7 +137,7 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
     success
 }
 
-// ─── hwnd 指定版クロスプロセス検出（detect_ime_state 専用）─────
+// ─── hwnd 指定版クロスプロセス検出（read_ime_state_full 専用）─────
 
 unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
     crate::win32::non_null_hwnd(hwnd)?;
@@ -201,7 +201,7 @@ pub struct ImeSnapshot {
     pub is_tsf_native: bool,
 }
 
-/// `detect_ime_state` をワーカースレッドでタイムアウト付きで実行する。
+/// `read_ime_state_full` をワーカースレッドでタイムアウト付きで実行する。
 ///
 /// 複数のブロッキング IMM32 API（`ImmGetContext`, `ImmGetConversionStatus` 等）を
 /// 連鎖的に呼ぶため、メッセージループスレッドから直接呼ぶとハングする恐れがある。
@@ -209,9 +209,9 @@ pub struct ImeSnapshot {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-pub unsafe fn detect_ime_state_with_timeout(timeout: std::time::Duration) -> ImeSnapshot {
-    crate::win32::run_with_timeout(timeout, || unsafe { detect_ime_state() }).unwrap_or_else(|| {
-        log::warn!("detect_ime_state timed out, returning empty snapshot");
+pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> ImeSnapshot {
+    crate::win32::run_with_timeout(timeout, || unsafe { read_ime_state_full() }).unwrap_or_else(|| {
+        log::warn!("read_ime_state_full timed out, returning empty snapshot");
         ImeSnapshot {
             is_japanese_ime: None,
             ime_on: None,
@@ -230,7 +230,7 @@ pub unsafe fn detect_ime_state_with_timeout(timeout: std::time::Duration) -> Ime
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn detect_ime_state() -> ImeSnapshot {
+pub unsafe fn read_ime_state_full() -> ImeSnapshot {
     // 0. フォーカスウィンドウを一度解決して全クエリに使う。
     // GetGUIThreadInfo はフォアグラウンドスレッドがハングすると無期限ブロックするため
     // タイムアウト付きヘルパーを使用する。
@@ -253,10 +253,10 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
     // imc_open=false を返すが、これは IME が OFF であることを意味しない。
     {
         let class = crate::focus::classify::get_class_name_string(focused_hwnd);
-        log::debug!("detect_ime_state: focused_hwnd={focused_hwnd:?} class={class:?}");
+        log::debug!("read_ime_state_full: focused_hwnd={focused_hwnd:?} class={class:?}");
         if is_tsf_native_window(&class) {
             log::debug!(
-                "detect_ime_state: TSF-native window ({class}) → ime_on=None (preserving state)"
+                "read_ime_state_full: TSF-native window ({class}) → ime_on=None (preserving state)"
             );
             return ImeSnapshot {
                 is_japanese_ime: Some(is_japanese_ime),
@@ -288,7 +288,7 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
             // （一部 IME は ROMAN を返さないため）
             let direct = unsafe { detect_kana_for_hwnd(focused_hwnd) };
             log::debug!(
-                "detect_ime_state: cross native={is_native} roman={is_roman}, direct_kana={direct:?}"
+                "read_ime_state_full: cross native={is_native} roman={is_roman}, direct_kana={direct:?}"
             );
             match direct {
                 Some(is_kana) => Some(!is_kana),
@@ -312,16 +312,16 @@ pub unsafe fn detect_ime_state() -> ImeSnapshot {
     }
 }
 
-/// `detect_ime_state` の async 版（ワーカースレッドで実行）
+/// `read_ime_state_full` の async 版（ワーカースレッドで実行）
 #[allow(clippy::future_not_send)]
-pub async fn detect_ime_state_async() -> ImeSnapshot {
-    win32_async::offload(|| unsafe { detect_ime_state() }).await
+pub async fn read_ime_state_full_async() -> ImeSnapshot {
+    win32_async::offload(|| unsafe { read_ime_state_full() }).await
 }
 
-/// `fast_ime_probe` の async 版（ワーカースレッドで実行）
+/// `read_ime_state_fast` の async 版（ワーカースレッドで実行）
 #[allow(clippy::future_not_send)]
-pub async fn fast_ime_probe_async() -> FastImeProbeResult {
-    win32_async::offload(|| unsafe { fast_ime_probe() }).await
+pub async fn read_ime_state_fast_async() -> FastImeProbeResult {
+    win32_async::offload(|| unsafe { read_ime_state_fast() }).await
 }
 
 /// `set_ime_open_cross_process` の async 版（ワーカースレッドで実行）
@@ -360,37 +360,37 @@ pub fn keyboard_layout_info() -> (bool, u32) {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
+pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     let (is_japanese_ime, _) = keyboard_layout_info();
 
     if !is_japanese_ime {
-        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false), is_romaji: None };
+        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false) };
     }
 
     // GetForegroundWindow() はトップレベルウィンドウを返す。
-    // detect_ime_state が使う GetGUIThreadInfo().hwndFocus（子ウィンドウ）と異なり、
+    // read_ime_state_full が使う GetGUIThreadInfo().hwndFocus（子ウィンドウ）と異なり、
     // トップレベル hwnd は TSF 互換ブリッジ経由で IMM32 API に応答できる場合が多い。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_romaji: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
     // Alt/Win キーなどで一時的に現れるシステム UI オーバーレイは imc_open=false を返すため
     // Engine が誤 deactivate される。ime_on=None（既存状態維持）を返して誤検出を防ぐ。
     if is_transient_system_overlay(hwnd) {
-        log::debug!("fast_ime_probe: transient system overlay → ime_on=None (preserving state)");
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_romaji: None };
+        log::debug!("read_ime_state_fast: transient system overlay → ime_on=None (preserving state)");
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     }
 
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         // IMM ブリッジなし（Chrome/UWP 等）→ 検出不能
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_romaji: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
     let ime_on =
         unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 20) }
             .map(|v| v != 0);
 
-    // conversion mode → 診断ログのみ（is_romaji 更新は detect_ime_state に委ねる）
+    // conversion mode → 診断ログのみ（is_romaji 更新は read_ime_state_full に委ねる）
     // IMM32 ブリッジは WezTerm 等の TSF アプリでローマ字モードでも ROMAN ビットを
     // 報告しないことがある。ROMAN ビット不在を「かな入力」と断定するのは誤検出を招く。
     if let Some(conv) =
@@ -399,10 +399,10 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
         let conv = conv as u32;
         let is_native = conv & IME_CMODE_NATIVE != 0;
         let is_roman = conv & IME_CMODE_ROMAN != 0;
-        log::debug!("fast_ime_probe: conv=0x{conv:08X} native={is_native} roman={is_roman}");
+        log::debug!("read_ime_state_fast: conv=0x{conv:08X} native={is_native} roman={is_roman}");
     }
 
-    FastImeProbeResult { is_japanese_ime: true, ime_on, is_romaji: None }
+    FastImeProbeResult { is_japanese_ime: true, ime_on }
 }
 
 /// 高速プローブの結果
@@ -410,8 +410,6 @@ pub unsafe fn fast_ime_probe() -> FastImeProbeResult {
 pub struct FastImeProbeResult {
     pub is_japanese_ime: bool,
     pub ime_on: Option<bool>,
-    /// ローマ字入力か（Some(true)=ローマ字, Some(false)=かな, None=検出不能）
-    pub is_romaji: Option<bool>,
 }
 
 /// IMM32 を使わず TSF ネイティブ動作するウィンドウクラスか判定する。
@@ -432,7 +430,7 @@ fn is_tsf_native_window(class: &str) -> bool {
     )
 }
 
-/// `is_tsf_native_window` の HWND ラッパー（`fast_ime_probe` 用）。
+/// `is_tsf_native_window` の HWND ラッパー（`read_ime_state_fast` 用）。
 fn is_transient_system_overlay(hwnd: HWND) -> bool {
     is_tsf_native_window(&crate::focus::classify::get_class_name_string(hwnd))
 }

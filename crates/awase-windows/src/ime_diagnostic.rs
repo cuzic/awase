@@ -20,6 +20,19 @@ use std::time::Duration;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 
+/// `with_app_ref` クロージャの戻り値を保持する中間構造体。
+struct AppStateView {
+    focus_hwnd_raw: usize,
+    focus_pid: u32,
+    focus_class: String,
+    shadow_ime_on: bool,
+    shadow_is_romaji: bool,
+    shadow_is_japanese: bool,
+    injection_mode: &'static str,
+    ms_since_focus_change: Option<u64>,
+    ms_since_last_activity: Option<u64>,
+}
+
 /// 各観測点での IME 状態のスナップショット。
 ///
 /// すべてのフィールドが取得失敗を許容する `Option` または `bool`。
@@ -72,17 +85,7 @@ impl ImeDiagnosticSnapshot {
         let now = crate::hook::current_tick_ms();
 
         // ── shadow / app state を APP から取得 ──
-        let (
-            focus_hwnd_raw,
-            focus_pid,
-            focus_class,
-            shadow_ime_on,
-            shadow_is_romaji,
-            shadow_is_japanese,
-            injection_mode,
-            ms_since_focus_change,
-            ms_since_last_activity,
-        ) = crate::with_app_ref(|app| {
+        let view = crate::with_app_ref(|app| {
             let (pid, class) = app
                 .executor
                 .platform
@@ -111,19 +114,29 @@ impl ImeDiagnosticSnapshot {
             let hwnd = unsafe { GetForegroundWindow() };
             let hwnd_raw = hwnd.0 as usize;
 
-            (
-                hwnd_raw,
-                pid,
-                class,
-                app.platform_state.ime_on(),
-                app.platform_state.input_mode().is_romaji_capable(),
-                app.platform_state.is_japanese_ime(),
-                resolve_injection_mode_label(),
-                dt_focus,
-                dt_activity,
-            )
+            AppStateView {
+                focus_hwnd_raw: hwnd_raw,
+                focus_pid: pid,
+                focus_class: class,
+                shadow_ime_on: app.platform_state.ime_on(),
+                shadow_is_romaji: app.platform_state.input_mode().is_romaji_capable(),
+                shadow_is_japanese: app.platform_state.is_japanese_ime(),
+                injection_mode: resolve_injection_mode_label(),
+                ms_since_focus_change: dt_focus,
+                ms_since_last_activity: dt_activity,
+            }
         })
-        .unwrap_or((0, 0, String::new(), false, false, false, "Unknown", None, None));
+        .unwrap_or(AppStateView {
+            focus_hwnd_raw: 0,
+            focus_pid: 0,
+            focus_class: String::new(),
+            shadow_ime_on: false,
+            shadow_is_romaji: false,
+            shadow_is_japanese: false,
+            injection_mode: "Unknown",
+            ms_since_focus_change: None,
+            ms_since_last_activity: None,
+        });
 
         // ── HKL ──
         let (hkl, hkl_lang_id, focus_thread_id) = unsafe {
@@ -137,31 +150,31 @@ impl ImeDiagnosticSnapshot {
 
         // ── ImmGetDefaultIMEWnd ──
         let has_imm_bridge = unsafe {
-            let hwnd = HWND(focus_hwnd_raw as *mut _);
+            let hwnd = HWND(view.focus_hwnd_raw as *mut _);
             crate::imm::get_ime_wnd(hwnd).is_some()
         };
 
         // ── クロスプロセス IMC_GETOPENSTATUS / IMC_GETCONVERSIONMODE ──
-        let (imc_open_status, imc_conversion_mode) = capture_imc(focus_hwnd_raw);
+        let (imc_open_status, imc_conversion_mode) = capture_imc(view.focus_hwnd_raw);
 
         Self {
             label,
             timestamp_ms: now,
-            focus_hwnd_raw,
-            focus_pid,
-            focus_class,
+            focus_hwnd_raw: view.focus_hwnd_raw,
+            focus_pid: view.focus_pid,
+            focus_class: view.focus_class,
             focus_thread_id,
             hkl,
             hkl_lang_id,
             has_imm_bridge,
             imc_open_status,
             imc_conversion_mode,
-            shadow_ime_on,
-            shadow_is_romaji,
-            shadow_is_japanese,
-            injection_mode,
-            ms_since_focus_change,
-            ms_since_last_activity,
+            shadow_ime_on: view.shadow_ime_on,
+            shadow_is_romaji: view.shadow_is_romaji,
+            shadow_is_japanese: view.shadow_is_japanese,
+            injection_mode: view.injection_mode,
+            ms_since_focus_change: view.ms_since_focus_change,
+            ms_since_last_activity: view.ms_since_last_activity,
         }
     }
 

@@ -68,7 +68,7 @@ impl<'a> KeyEventPipeline<'a> {
         let shadow_on = self.app.executor.platform.output.shadow_ime_on();
 
         win32_async::spawn_local(async move {
-            let probe = awase_windows::ime::fast_ime_probe_async().await;
+            let probe = awase_windows::ime::read_ime_state_fast_async().await;
             awase_windows::with_app(|app| {
                 apply_focus_probe_to_app(
                     app,
@@ -176,7 +176,7 @@ impl<'a> KeyEventPipeline<'a> {
     }
 }
 
-/// fast_ime_probe_async の結果を app に適用する（with_app 内で呼ぶ）。
+/// read_ime_state_fast_async の結果を app に適用する（with_app 内で呼ぶ）。
 /// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
 fn apply_focus_probe_to_app(
     app: &mut Runtime,
@@ -189,7 +189,6 @@ fn apply_focus_probe_to_app(
 ) {
     let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
     let ime_on_before_probe = app.platform_state.ime_on();
-    let input_mode_before_probe = app.platform_state.input_mode();
 
     app.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
 
@@ -227,7 +226,6 @@ fn apply_focus_probe_to_app(
                 "shadow"
             };
         } else {
-            app.platform_state.set_os_ime_on(Some(effective));
             let ms = hook::current_tick_ms();
             app.platform_state.write_focus_probe(effective, ms);
             if effective {
@@ -235,23 +233,6 @@ fn apply_focus_probe_to_app(
             }
             app.platform_state
                 .apply_ime_observations(app.engine.is_user_enabled());
-        }
-    }
-
-    if let Some(romaji) = probe.is_romaji {
-        let prev = app.platform_state.input_mode().is_romaji_capable();
-        app.platform_state.set_input_mode(if romaji {
-            InputModeState::ObservedRomaji
-        } else {
-            InputModeState::ObservedKana
-        });
-        if prev != romaji {
-            log::info!(
-                "FocusProbe +{}ms: mode {} → {}",
-                probe_age_ms,
-                if prev { "romaji" } else { "kana" },
-                if romaji { "romaji" } else { "kana" },
-            );
         }
     }
 
@@ -270,12 +251,11 @@ fn apply_focus_probe_to_app(
         String::new()
     };
     log::info!(
-        "FocusProbe +{}ms: ime_on={}{} mode={:?}{} [gji_io={}ms sig1={sig1_warmup} sig2={sig2_gji} sig3={sig3_shadow}]",
+        "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={sig1_warmup} sig2={sig2_gji} sig3={sig3_shadow}]",
         probe_age_ms,
         ime_on_after_probe,
         ime_on_suffix,
         input_mode_after_probe,
-        if probe.is_romaji.is_none() { "(stale)" } else { "" },
         if gji_idle_ms == u64::MAX { "never".to_string() } else { gji_idle_ms.to_string() },
     );
     if suppressed {
@@ -287,14 +267,6 @@ fn apply_focus_probe_to_app(
             "FocusProbe: ime_on 未検出 — stale値 {} が ObserverPoll まで持続 \
              [probe_age={}ms, A/B判断: ime_on stale頻度を確認]",
             ime_on_before_probe,
-            probe_age_ms,
-        );
-    }
-    if probe.is_romaji.is_none() {
-        log::warn!(
-            "FocusProbe: input_mode 未検出 — stale値 {:?} が ObserverPoll まで持続 \
-             [probe_age={}ms, A/B判断: mode stale頻度を確認]",
-            input_mode_before_probe,
             probe_age_ms,
         );
     }

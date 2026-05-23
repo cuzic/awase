@@ -152,7 +152,7 @@ impl Runtime {
     /// async drain 後に with_app 内で呼ぶ用途に使う。
     pub fn apply_focus_probe_result(
         &mut self,
-        probe: Option<crate::focus::probe::FocusProbe>,
+        probe: Option<crate::focus::probe::FocusSnapshot>,
     ) -> bool {
         let Some(classified) = self.classify_focus_probe(probe) else {
             return false;
@@ -173,7 +173,7 @@ impl Runtime {
     /// None を返した場合は呼び出し元が early return すること。
     fn classify_focus_probe(
         &mut self,
-        probe: Option<crate::focus::probe::FocusProbe>,
+        probe: Option<crate::focus::probe::FocusSnapshot>,
     ) -> Option<ClassifiedFocus> {
         use crate::focus::imm_learning;
         use crate::focus::kind_classifier;
@@ -305,7 +305,7 @@ impl Runtime {
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・ime_observations
-    /// クリア・hwnd_cache 復元・ime_force_on_guard リセット・UIA フォールバック）。
+    /// クリア・hwnd_cache 復元・force_on_guard リセット・UIA フォールバック）。
     /// `prev_pid` は `advance_focus_tracking` が返した直前のプロセス ID（ログ用）。
     fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
         use crate::focus::hwnd_cache;
@@ -334,11 +334,11 @@ impl Runtime {
             self.platform_state.apply_hwnd_cache_restore(cache_hit);
         }
 
-        if self.platform_state.ime_force_on_guard().is_active()
+        if self.platform_state.is_force_on_guard_active()
             || self.platform_state.ime_detect_miss_count() > 0
         {
             log::debug!(
-                "Focus changed: clearing ime_force_on_guard and detect_miss_count \
+                "Focus changed: clearing force_on_guard and detect_miss_count \
                  (new window may have different IME state)"
             );
             self.platform_state.reset_ime_detect_state();
@@ -360,8 +360,8 @@ impl Runtime {
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
     unsafe fn detect_and_update_focus(&mut self) -> bool {
         // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
-        // 詳細は focus::probe::run_focus_probe() を参照。
-        let probe = unsafe { crate::focus::probe::run_focus_probe() };
+        // 詳細は focus::probe::read_focus_snapshot() を参照。
+        let probe = unsafe { crate::focus::probe::read_focus_snapshot() };
         self.apply_focus_probe_result(probe)
     }
 
@@ -378,7 +378,7 @@ impl Runtime {
 
         win32_async::spawn_local(async {
             let focus = crate::focus::probe::run_focus_probe_async().await;
-            let snap = crate::ime::detect_ime_state_async().await;
+            let snap = crate::ime::read_ime_state_full_async().await;
             crate::with_app(|app| {
                 ImeRefreshPipeline::new(app).run_with_prefetched(focus, snap);
 
@@ -498,14 +498,14 @@ impl Runtime {
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
         let observer_out = unsafe {
-            crate::observer::ime_observer::observe(
+            crate::observer::ime_observer::poll_and_classify_ime(
                 self.platform_state.ime_on(),
-                self.platform_state.ime_force_on_guard(),
+                self.platform_state.is_force_on_guard_active(),
                 self.platform_state.input_mode(),
                 self.platform_state.prev_conversion_mode(),
             )
         };
-        self.platform_state.apply_ime_observer_output(&observer_out);
+        self.platform_state.apply_ime_update(&observer_out);
         self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
         // Drain deferred keys from Platform guard

@@ -186,7 +186,7 @@ pub struct Output {
     ///
     /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
     /// Probing または Bypass に遷移して保留キーを再処理する。
-    pub(crate) tsf_gate: crate::tsf::gate::TsfGate,
+    pub(crate) tsf_gate: crate::tsf::TsfGate,
     /// フォーカス変更時に Runtime から push される注入モード。
     ///
     /// フォーカスが確定するたびに `update_injection_mode()` で更新される。
@@ -198,7 +198,7 @@ pub struct Output {
 pub(crate) enum TsfProbePhase {
     /// GJI 静止待ち（TSF warmup 後または Chrome F2 後）
     GjiProbe {
-        probe: crate::tsf::probe::TsfReadinessProbe,
+        probe: crate::tsf::probe::TsfReadinessJudge,
         total_max_ms: u64,
         /// プローブ完了後に NAMECHANGE 確認が必要か（eager_probe_with_settle パスのみ true）
         needs_settle_check: bool,
@@ -218,7 +218,7 @@ pub(crate) enum TsfProbePhase {
     },
     /// GJI 二次プローブ（OBJ_NAMECHANGE 後）
     SecondaryGjiProbe {
-        probe: crate::tsf::probe::TsfReadinessProbe,
+        probe: crate::tsf::probe::TsfReadinessJudge,
         total_max_ms: u64,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
@@ -231,7 +231,7 @@ pub(crate) enum TsfProbePhase {
     },
     /// Chrome/VK probe（F2 後の GJI 静止待ち）
     ChromeProbe {
-        probe: crate::tsf::probe::TsfReadinessProbe,
+        probe: crate::tsf::probe::TsfReadinessJudge,
         total_max_ms: u64,
     },
 }
@@ -284,7 +284,7 @@ impl Output {
             symbol_to_vk: build_symbol_to_vk(),
             composition: crate::tsf::probe::CompositionState::new(),
             pending_tsf: std::cell::RefCell::new(None),
-            tsf_gate: crate::tsf::gate::TsfGate::new(),
+            tsf_gate: crate::tsf::TsfGate::new(),
             injection_mode: InjectionMode::Unicode,
         }
     }
@@ -734,7 +734,7 @@ impl Output {
             // ノンブロッキング Chrome プローブを開始
             const CHROME_PROBE_MIN_MS: u64 = 20;
             const CHROME_PROBE_MAX_MS: u64 = 120;
-            let probe = crate::tsf::probe::TsfReadinessProbe::new(
+            let probe = crate::tsf::probe::TsfReadinessJudge::new(
                 f2_sent_ms,
                 cold_n,
                 CHROME_PROBE_MIN_MS,
@@ -912,7 +912,7 @@ impl Output {
         // (1) raw TSF literal 検出と回復, (2) advance_tsf_probe が on_ready() を呼んで
         //     ゲートを Ready に進める、という 2 つの目的を兼ねる。
         let gji_active = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_monitor_ok());
-        if self.tsf_gate.state() == crate::tsf::gate::TsfGateState::Probing && gji_active {
+        if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
             let guard = OutputActiveGuard::begin();
@@ -1150,7 +1150,7 @@ impl Output {
                          OBJ_NAMECHANGE後 GJI 二次プローブ (max {GJI_POST_NAMECHANGE_MS}ms)"
                     );
                     let probe =
-                        crate::tsf::probe::TsfReadinessProbe::new(fresh_f2_ms, cold_n, 0);
+                        crate::tsf::probe::TsfReadinessJudge::new(fresh_f2_ms, cold_n, 0);
                     self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::SecondaryGjiProbe {
                         probe, total_max_ms: GJI_POST_NAMECHANGE_MS,
                         prepend_f2_warmup, used_eager_path,
