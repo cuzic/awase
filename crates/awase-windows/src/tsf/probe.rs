@@ -123,13 +123,14 @@ impl TsfReadinessProbe {
     }
 }
 
-// ── CompositionState ──
+// ── WarmEpoch ──
 
-/// TSF composition context の warm/cold 状態を管理する。
+/// warmup epoch・送信タイミング・cold-start 回数を管理するサブ構造体。
 ///
-/// `Output` 構造体がこれをフィールドとして保持する。
+/// フォーカス epoch とウォーム epoch の組み合わせにより、
+/// フォーカス変更後の古いウォーム状態を自動無効化する。
 #[derive(Debug)]
-pub struct CompositionState {
+pub struct WarmEpoch {
     /// ウォーム状態の epoch（0 = cold）
     composition_warm_epoch: std::cell::Cell<u32>,
     /// フォーカスウィンドウの epoch（変更のたびにインクリメント）
@@ -140,17 +141,9 @@ pub struct CompositionState {
     cold_start_count: std::cell::Cell<u32>,
     /// NativeF2Consumed 時に即送信した eager warmup F2 の送信時刻（ms）。0 = 未送信
     eager_warmup_sent_ms: std::cell::Cell<u64>,
-    /// `apply_ime_open` の直前結果ラッチ（KanjiToggleStrategy の shadow_on 用）
-    latch: crate::tsf::belief::ImeApplyLatch,
-    /// 最後に cold にマークされた理由
-    last_cold_reason: std::cell::Cell<crate::output::ColdReason>,
-    /// 最後に cold になった時点での `ms_since_last_send()` の値
-    idle_ms_at_last_cold: std::cell::Cell<u64>,
-    /// `RawTsfLiteralRecovery` が連続で発火した回数
-    raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
 }
 
-impl CompositionState {
+impl WarmEpoch {
     pub fn new() -> Self {
         Self {
             composition_warm_epoch: std::cell::Cell::new(0),
@@ -158,76 +151,48 @@ impl CompositionState {
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(0),
             eager_warmup_sent_ms: std::cell::Cell::new(0),
-            latch: crate::tsf::belief::ImeApplyLatch::new(),
-            last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
-            idle_ms_at_last_cold: std::cell::Cell::new(0),
-            raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
         }
     }
 
     /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
-    ///
-    /// フォーカス遷移直後の最初のキーで呼ぶ。eager warmup タイムスタンプを消さないことで
-    /// non-eager 1500ms パスへの意図しない劣化を防ぐ。
     pub fn suppress_warm_epoch(&self) {
         self.composition_warm_epoch.set(0);
         log::debug!("[composition] warm epoch suppressed (eager_warmup_sent_ms preserved)");
     }
 
-    /// IME composition context をコールド状態にマークする。
-    pub fn mark_composition_cold(&self, reason: crate::output::ColdReason) {
-        let idle_ms = self.ms_since_last_send();
-        if reason == crate::output::ColdReason::RawTsfLiteralRecovery {
-            let n = self.raw_tsf_literal_consecutive_count.get() + 1;
-            self.raw_tsf_literal_consecutive_count.set(n);
-            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
-        } else {
-            self.raw_tsf_literal_consecutive_count.set(0);
-            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
-        }
+    /// ウォーム状態にマークする。
+    pub fn mark_warm(&self) {
+        let epoch = self.focus_epoch.get();
+        self.composition_warm_epoch.set(epoch);
+    }
+
+    /// コールド状態にマークする（epoch と eager_warmup_sent_ms をリセット）。
+    pub fn mark_cold(&self) {
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
-        self.last_cold_reason.set(reason);
-        self.idle_ms_at_last_cold.set(idle_ms);
     }
 
-    /// IME composition context をウォーム状態にマークする。
-    pub fn mark_composition_warm(&self) {
-        let epoch = self.focus_epoch.get();
-        log::debug!("[composition] marked warm (epoch={epoch}) → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
-        self.composition_warm_epoch.set(epoch);
-        self.raw_tsf_literal_consecutive_count.set(0);
-    }
-
-    /// 現在の composition_warm フラグを返す。
+    /// 現在 warm かどうかを返す。
     ///
     /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
-    pub fn is_composition_warm(&self) -> bool {
+    pub fn is_warm(&self) -> bool {
         let epoch = self.focus_epoch.get();
         self.composition_warm_epoch.get() == epoch && epoch != 0
     }
 
-    /// フォーカスウィンドウが変わったことを通知する。
-    pub fn on_focus_changed(&self) {
-        let new_epoch = self.focus_epoch.get().wrapping_add(1).max(1); // 0 は cold の番兵値なので skip
+    /// フォーカス変更時に epoch をインクリメントし、warm/eager 状態をリセットする。
+    ///
+    /// 戻り値: 新しい focus_epoch
+    pub fn on_focus_changed(&self) -> u32 {
+        let new_epoch = self.focus_epoch.get().wrapping_add(1).max(1);
         self.focus_epoch.set(new_epoch);
         self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
-        self.idle_ms_at_last_cold.set(self.ms_since_last_send());
-        self.raw_tsf_literal_consecutive_count.set(0);
-        self.latch.invalidate();
-        log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
-    }
-
-    /// `apply_ime_open` 完了後にラッチを更新する。
-    ///
-    /// `KanjiToggleStrategy` が次の `apply_ime_open` で shadow_on を読むために使う。
-    pub fn set_ime_apply_latch(&self, open: bool) {
-        self.latch.set(open);
+        new_epoch
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
-    /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
+    /// 一度も送信していない場合は `u64::MAX` を返す。
     #[must_use]
     pub fn ms_since_last_send(&self) -> u64 {
         let last = self.last_send_ms.get();
@@ -255,12 +220,6 @@ impl CompositionState {
         self.eager_warmup_sent_ms.set(ms);
     }
 
-    /// 最後に cold になった時点での idle 時間（ms）を返す。
-    #[must_use]
-    pub fn idle_ms_at_last_cold(&self) -> u64 {
-        self.idle_ms_at_last_cold.get()
-    }
-
     /// cold-start 発生回数を返す。
     #[must_use]
     pub fn cold_start_count(&self) -> u32 {
@@ -273,12 +232,63 @@ impl CompositionState {
         self.cold_start_count.set(n);
         n
     }
+}
 
-    /// `apply_ime_open` が最後に設定した値を返す。
-    /// フォーカス変更直後など未設定の場合は `fallback` を返す。
+impl Default for WarmEpoch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── ColdContext ──
+
+/// cold になった理由・idle 時間・連続 recovery 回数を保持するサブ構造体。
+#[derive(Debug)]
+pub struct ColdContext {
+    /// 最後に cold にマークされた理由
+    last_cold_reason: std::cell::Cell<crate::output::ColdReason>,
+    /// 最後に cold になった時点での idle 時間（ms）
+    idle_ms_at_last_cold: std::cell::Cell<u64>,
+    /// `RawTsfLiteralRecovery` が連続で発火した回数
+    raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
+}
+
+impl ColdContext {
+    pub fn new() -> Self {
+        Self {
+            last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
+            idle_ms_at_last_cold: std::cell::Cell::new(0),
+            raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
+        }
+    }
+
+    /// cold にマークされた理由と idle 時間を記録する。
+    pub fn record_cold(&self, reason: crate::output::ColdReason, idle_ms: u64) {
+        self.last_cold_reason.set(reason);
+        self.idle_ms_at_last_cold.set(idle_ms);
+    }
+
+    /// `RawTsfLiteralRecovery` 連続カウントをインクリメントして新値を返す。
+    pub fn increment_consecutive_count(&self) -> u32 {
+        let n = self.raw_tsf_literal_consecutive_count.get() + 1;
+        self.raw_tsf_literal_consecutive_count.set(n);
+        n
+    }
+
+    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
+    pub fn reset_consecutive_count(&self) {
+        self.raw_tsf_literal_consecutive_count.set(0);
+    }
+
+    /// 最後に cold になった時点での idle 時間（ms）を返す。
     #[must_use]
-    pub fn shadow_ime_on(&self) -> bool {
-        self.latch.get_or(false)
+    pub fn idle_ms_at_last_cold(&self) -> u64 {
+        self.idle_ms_at_last_cold.get()
+    }
+
+    /// `idle_ms_at_last_cold` を更新する。
+    pub fn set_idle_ms_at_last_cold(&self, ms: u64) {
+        self.idle_ms_at_last_cold.set(ms);
     }
 
     /// 最後に cold にマークされた理由を返す。
@@ -291,6 +301,154 @@ impl CompositionState {
     #[must_use]
     pub fn consecutive_count(&self) -> u32 {
         self.raw_tsf_literal_consecutive_count.get()
+    }
+}
+
+impl Default for ColdContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── CompositionState ──
+
+/// TSF composition context の warm/cold 状態を管理する。
+///
+/// `Output` 構造体がこれをフィールドとして保持する。
+/// 内部を 3 つの責務別サブ構造体に分割している:
+/// - `warm_epoch`: warmup epoch・送信タイミング・cold-start 回数
+/// - `cold_ctx`: cold の理由・idle 時間・連続 recovery 回数
+/// - `latch`: `apply_ime_open` の直前結果ラッチ（[`crate::tsf::belief::ImeApplyLatch`]）
+#[derive(Debug)]
+pub struct CompositionState {
+    /// warmup epoch・送信タイミング・cold-start 回数
+    pub warm_epoch: WarmEpoch,
+    /// cold の理由・idle 時間・連続 recovery 回数
+    pub cold_ctx: ColdContext,
+    /// `apply_ime_open` の直前結果ラッチ（KanjiToggleStrategy の shadow_on 用）
+    pub latch: crate::tsf::belief::ImeApplyLatch,
+}
+
+impl CompositionState {
+    pub fn new() -> Self {
+        Self {
+            warm_epoch: WarmEpoch::new(),
+            cold_ctx: ColdContext::new(),
+            latch: crate::tsf::belief::ImeApplyLatch::new(),
+        }
+    }
+
+    /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
+    ///
+    /// フォーカス遷移直後の最初のキーで呼ぶ。eager warmup タイムスタンプを消さないことで
+    /// non-eager 1500ms パスへの意図しない劣化を防ぐ。
+    pub fn suppress_warm_epoch(&self) {
+        self.warm_epoch.suppress_warm_epoch();
+    }
+
+    /// IME composition context をコールド状態にマークする。
+    pub fn mark_composition_cold(&self, reason: crate::output::ColdReason) {
+        let idle_ms = self.ms_since_last_send();
+        if reason == crate::output::ColdReason::RawTsfLiteralRecovery {
+            let n = self.cold_ctx.increment_consecutive_count();
+            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        } else {
+            self.cold_ctx.reset_consecutive_count();
+            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+        }
+        self.warm_epoch.mark_cold();
+        self.cold_ctx.record_cold(reason, idle_ms);
+    }
+
+    /// IME composition context をウォーム状態にマークする。
+    pub fn mark_composition_warm(&self) {
+        let epoch = self.warm_epoch.focus_epoch.get();
+        log::debug!("[composition] marked warm (epoch={epoch}) → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
+        self.warm_epoch.mark_warm();
+        self.cold_ctx.reset_consecutive_count();
+    }
+
+    /// 現在の composition_warm フラグを返す。
+    ///
+    /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
+    pub fn is_composition_warm(&self) -> bool {
+        self.warm_epoch.is_warm()
+    }
+
+    /// フォーカスウィンドウが変わったことを通知する。
+    pub fn on_focus_changed(&self) {
+        let idle_ms = self.ms_since_last_send();
+        let new_epoch = self.warm_epoch.on_focus_changed();
+        self.cold_ctx.set_idle_ms_at_last_cold(idle_ms);
+        self.cold_ctx.reset_consecutive_count();
+        self.latch.invalidate();
+        log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
+    }
+
+    /// `apply_ime_open` 完了後にラッチを更新する。
+    ///
+    /// `KanjiToggleStrategy` が次の `apply_ime_open` で shadow_on を読むために使う。
+    pub fn set_ime_apply_latch(&self, open: bool) {
+        self.latch.set(open);
+    }
+
+    /// 最後の `send_keys` 完了からの経過時間（ms）。
+    /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
+    #[must_use]
+    pub fn ms_since_last_send(&self) -> u64 {
+        self.warm_epoch.ms_since_last_send()
+    }
+
+    /// `last_send_ms` を現在時刻に更新する。
+    pub fn update_last_send_ms(&self) {
+        self.warm_epoch.update_last_send_ms();
+    }
+
+    /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
+    #[must_use]
+    pub fn eager_warmup_sent_ms(&self) -> u64 {
+        self.warm_epoch.eager_warmup_sent_ms()
+    }
+
+    /// eager warmup F2 の送信時刻をセットする。
+    pub fn set_eager_warmup_sent_ms(&self, ms: u64) {
+        self.warm_epoch.set_eager_warmup_sent_ms(ms);
+    }
+
+    /// 最後に cold になった時点での idle 時間（ms）を返す。
+    #[must_use]
+    pub fn idle_ms_at_last_cold(&self) -> u64 {
+        self.cold_ctx.idle_ms_at_last_cold()
+    }
+
+    /// cold-start 発生回数を返す。
+    #[must_use]
+    pub fn cold_start_count(&self) -> u32 {
+        self.warm_epoch.cold_start_count()
+    }
+
+    /// cold-start 発生回数をインクリメントして新値を返す。
+    pub fn increment_cold_start_count(&self) -> u32 {
+        self.warm_epoch.increment_cold_start_count()
+    }
+
+    /// `apply_ime_open` が最後に設定した値を返す。
+    /// フォーカス変更直後など未設定の場合は `false` を返す。
+    #[must_use]
+    pub fn shadow_ime_on(&self) -> bool {
+        self.latch.get_or(false)
+    }
+
+    /// 最後に cold にマークされた理由を返す。
+    #[must_use]
+    pub fn last_cold_reason(&self) -> crate::output::ColdReason {
+        self.cold_ctx.last_cold_reason()
+    }
+
+    /// `RawTsfLiteralRecovery` が連続で発火した回数を返す。
+    #[must_use]
+    pub fn consecutive_count(&self) -> u32 {
+        self.cold_ctx.consecutive_count()
     }
 }
 
