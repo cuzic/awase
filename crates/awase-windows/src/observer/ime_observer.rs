@@ -39,6 +39,92 @@ pub struct ImeUpdate {
     pub new_prev_conversion_mode: Option<u32>,
 }
 
+/// observer_poll/miss_count/force_on_guard の更新方針
+struct PollOutcome {
+    observer_poll: Option<ImeObs>,
+    increment_miss_count: bool,
+    clear_force_on_broken_app_bootstrap: bool,
+    clear_force_on_panic_reset: bool,
+}
+
+fn classify_poll_outcome(
+    snap: &crate::ime::ImeSnapshot,
+    now_ms: u64,
+    current_ime_on: bool,
+    guard_active: bool,
+) -> PollOutcome {
+    let known_not_japanese = snap.is_japanese_ime == Some(false);
+    if known_not_japanese {
+        PollOutcome {
+            observer_poll: Some(ImeObs { value: false, ms: now_ms }),
+            increment_miss_count: false,
+            clear_force_on_broken_app_bootstrap: true,
+            clear_force_on_panic_reset: true,
+        }
+    } else if let Some(on) = snap.ime_on {
+        PollOutcome {
+            observer_poll: Some(ImeObs { value: on, ms: now_ms }),
+            increment_miss_count: false,
+            clear_force_on_broken_app_bootstrap: true,
+            clear_force_on_panic_reset: true,
+        }
+    } else if snap.is_tsf_native {
+        log::debug!(
+            "IME detection skipped (TSF-native window), preserving ime_on={}",
+            current_ime_on
+        );
+        PollOutcome { observer_poll: None, increment_miss_count: false,
+            clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
+    } else if guard_active {
+        log::debug!(
+            "IME detection failed but force_on_guard active, preserving ime_on={}",
+            current_ime_on
+        );
+        PollOutcome { observer_poll: None, increment_miss_count: false,
+            clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
+    } else {
+        PollOutcome { observer_poll: None, increment_miss_count: true,
+            clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
+    }
+}
+
+fn input_mode_from_romaji_flag(romaji: bool, current_input_mode: InputModeState) -> InputModeState {
+    let prev = current_input_mode.is_romaji_capable();
+    if prev != romaji {
+        log::info!(
+            "IME input method changed: {} → {}",
+            if !prev { "kana" } else { "romaji" },
+            if !romaji { "kana" } else { "romaji" },
+        );
+    }
+    if romaji { InputModeState::ObservedRomaji } else { InputModeState::ObservedKana }
+}
+
+fn input_mode_from_conversion(
+    conv_mode: u32,
+    current_prev_conversion_mode: Option<u32>,
+    current_input_mode: InputModeState,
+) -> Option<InputModeState> {
+    let curr_has_roman = conv_mode & IME_CMODE_ROMAN != 0;
+    let curr_has_native = conv_mode & IME_CMODE_NATIVE != 0;
+    let prev_conv = current_prev_conversion_mode?;
+    let prev_had_roman = prev_conv & IME_CMODE_ROMAN != 0;
+    if !(prev_had_roman != curr_has_roman && curr_has_native) {
+        return None;
+    }
+    let new_romaji = curr_has_roman;
+    let prev_romaji = current_input_mode.is_romaji_capable();
+    if prev_romaji == new_romaji {
+        return None;
+    }
+    log::info!(
+        "IME input method changed (ROMAN bit transition): {} → {}",
+        if !prev_romaji { "kana" } else { "romaji" },
+        if !new_romaji { "kana" } else { "romaji" },
+    );
+    Some(if new_romaji { InputModeState::ObservedRomaji } else { InputModeState::ObservedKana })
+}
+
 /// `ImeSnapshot` と現在の `Preconditions` の読み取り専用ビューから更新命令を計算する。
 ///
 /// `Preconditions` への書き込みを一切行わない純粋関数。
@@ -52,90 +138,18 @@ pub fn classify_ime_snapshot(
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
 ) -> ImeUpdate {
-    let known_not_japanese = snap.is_japanese_ime == Some(false);
     let guard_active = current_force_on_guard_active;
+    let poll = classify_poll_outcome(snap, now_ms, current_ime_on, guard_active);
 
-    // ── observer_poll / miss_count / force_on_guard ──────────────────────────────
-    let (observer_poll, increment_miss_count, clear_force_on_broken_app_bootstrap, clear_force_on_panic_reset) =
-        if known_not_japanese {
-            // 非日本語KB確定: IME アクティブ不可
-            (Some(ImeObs { value: false, ms: now_ms }), false, true, true)
-        } else if let Some(on) = snap.ime_on {
-            // IME 状態検出成功
-            (Some(ImeObs { value: on, ms: now_ms }), false, true, true)
-        } else if snap.is_tsf_native {
-            // TSF ネイティブウィンドウ: 検出不能だが miss_count を増やさない
-            log::debug!(
-                "IME detection skipped (TSF-native window), preserving ime_on={}",
-                current_ime_on
-            );
-            (None, false, false, false)
-        } else if guard_active {
-            // 検出失敗かつガード中
-            log::debug!(
-                "IME detection failed but force_on_guard active, preserving ime_on={}",
-                current_ime_on
-            );
-            (None, false, false, false)
-        } else {
-            // 検出失敗: miss_count をインクリメント
-            (None, true, false, false)
-        };
-
-    // ── is_romaji / input_mode ────────────────────────────────────────────────────
     let new_input_mode = if guard_active && snap.is_romaji.is_none() {
-        // ガード中かつ検出失敗: input_mode を維持
         None
     } else if let Some(romaji) = snap.is_romaji {
-        let prev = current_input_mode.is_romaji_capable();
-        let new_mode = if romaji {
-            InputModeState::ObservedRomaji
-        } else {
-            InputModeState::ObservedKana
-        };
-        if prev != romaji {
-            log::info!(
-                "IME input method changed: {} → {}",
-                if !prev { "kana" } else { "romaji" },
-                if !romaji { "kana" } else { "romaji" },
-            );
-        }
-        Some(new_mode)
-    } else if let Some(conv_mode) = snap.conversion_mode {
-        let curr_has_roman = conv_mode & IME_CMODE_ROMAN != 0;
-        let curr_has_native = conv_mode & IME_CMODE_NATIVE != 0;
-
-        if let Some(prev_conv) = current_prev_conversion_mode {
-            let prev_had_roman = prev_conv & IME_CMODE_ROMAN != 0;
-            if prev_had_roman != curr_has_roman && curr_has_native {
-                let new_romaji = curr_has_roman;
-                let prev_romaji = current_input_mode.is_romaji_capable();
-                if prev_romaji != new_romaji {
-                    log::info!(
-                        "IME input method changed (ROMAN bit transition): {} → {}",
-                        if !prev_romaji { "kana" } else { "romaji" },
-                        if !new_romaji { "kana" } else { "romaji" },
-                    );
-                    Some(if new_romaji {
-                        InputModeState::ObservedRomaji
-                    } else {
-                        InputModeState::ObservedKana
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
+        Some(input_mode_from_romaji_flag(romaji, current_input_mode))
     } else {
-        None
+        snap.conversion_mode.and_then(|conv| {
+            input_mode_from_conversion(conv, current_prev_conversion_mode, current_input_mode)
+        })
     };
-
-    // conversion_mode を次回比較用に記録
-    let new_prev_conversion_mode = snap.conversion_mode;
 
     log::debug!(
         "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
@@ -148,12 +162,12 @@ pub fn classify_ime_snapshot(
 
     ImeUpdate {
         is_japanese_ime: snap.is_japanese_ime,
-        observer_poll,
-        increment_miss_count,
-        clear_force_on_broken_app_bootstrap,
-        clear_force_on_panic_reset,
+        observer_poll: poll.observer_poll,
+        increment_miss_count: poll.increment_miss_count,
+        clear_force_on_broken_app_bootstrap: poll.clear_force_on_broken_app_bootstrap,
+        clear_force_on_panic_reset: poll.clear_force_on_panic_reset,
         new_input_mode,
-        new_prev_conversion_mode,
+        new_prev_conversion_mode: snap.conversion_mode,
     }
 }
 
