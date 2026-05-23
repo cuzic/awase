@@ -22,6 +22,7 @@ pub(crate) use crate::tsf::probe_bridge::OutputActiveGuard;
 const VK_LSHIFT: u16 = 0xA0;
 
 /// `u64::MAX` は「未送信」を意味するセンチネル値。ログ表示用に "∞" に変換する。
+#[must_use]
 pub(crate) fn fmt_ms(ms: u64) -> String {
     if ms == u64::MAX { "∞".to_owned() } else { ms.to_string() }
 }
@@ -30,6 +31,7 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 
 
 /// ASCII 文字を対応する VK コードに変換する。
+#[must_use]
 const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     match ch {
         'a'..='z' => Some((0x41 + (ch as u16 - 'a' as u16), false)),
@@ -44,6 +46,7 @@ const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
 }
 
 /// SpecialKey を Windows VK コードに変換する
+#[must_use]
 const fn special_key_to_vk(sk: SpecialKey) -> u16 {
     match sk {
         SpecialKey::Backspace => 0x08, // VK_BACK
@@ -269,6 +272,11 @@ struct WarmupOutcome {
     cold_seq: u32,
 }
 
+/// 状態管理・キー送信・TSF プローブ FSM を含む主実装ブロック。
+///
+/// - 状態アクセサ（warmth、composition、injection_mode、TsfGate）
+/// - キー送信（`send_keys`、`send_romaji_*`、`send_char_*`、`send_unicode_char`）
+/// - ノンブロッキング TSF/Chrome プローブ FSM（`advance_tsf_probe` とその内部メソッド群）
 impl Output {
     pub fn new(mode: OutputMode) -> Self {
         // romaji_to_kana テーブルは UWP アプリ向けの Unicode フォールバックで
@@ -351,6 +359,7 @@ impl Output {
     /// 現在の composition_warm フラグを返す。
     ///
     /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
+    #[must_use]
     pub fn is_composition_warm(&self) -> bool {
         self.composition.is_composition_warm()
     }
@@ -410,6 +419,7 @@ impl Output {
     ///
     /// TSF モード（WezTerm 等）では物理 F2 の扱いが特殊なため、
     /// executor がこのメソッドで判定してキー処理を切り替える。
+    #[must_use]
     pub fn is_tsf_mode(&self) -> bool {
         self.injection_mode == InjectionMode::Tsf
     }
@@ -418,6 +428,7 @@ impl Output {
     ///
     /// ゲート状態・IME ON・注入モードを一つの型にまとめる。
     /// 条件判定には返り値のメソッド（`can_warmup()` 等）を使う。
+    #[must_use]
     pub fn tsf_readiness(&self) -> awase::tsf::TsfReadiness {
         awase::tsf::TsfReadiness {
             gate: self.tsf_gate.state(),
@@ -645,6 +656,7 @@ impl Output {
     }
 
     /// composition の温度状態を評価する。
+    #[must_use]
     fn assess_warmth(&self) -> WarmthContext {
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
@@ -926,6 +938,7 @@ impl Output {
     /// 文字の送信方法をルックアップテーブルで解決する。
     ///
     /// `send_char_as_tsf` / `send_char_as_vk` が共通で使う 3 段ルックアップ。
+    #[must_use]
     fn resolve_char(&self, ch: char) -> CharResolution<'_> {
         if let Some(romaji) = self.kana_to_romaji.get(&ch) {
             return CharResolution::Romaji(romaji);
@@ -1474,6 +1487,7 @@ impl<'a> TsfSendPipeline<'a> {
 }
 
 /// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
+#[must_use]
 const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
 }
@@ -1514,12 +1528,16 @@ impl awase::platform::CompositionOutput for Output {
     }
 }
 
-/// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
+/// raw TSF literal 検出・回収メソッド群。
 ///
-/// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
-/// cold 状態（RawTsfLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
-/// drain キーの前に呼ぶことで「backspace → raw TSF literal char → drain keys」の順を保証する。
+/// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼び出す。
+/// backspace 送信 → romaji 再送の順序を保証するため、drain keys より前に実行すること。
 impl Output {
+    /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。`flush_raw_tsf_literal_backspaces` の後に呼ぶこと。
+    ///
+    /// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
+    /// cold 状態（RawTsfLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
+    /// drain キーの前に呼ぶことで「backspace → raw TSF literal char → drain keys」の順を保証する。
     pub fn flush_raw_tsf_literal_romaji(&self) {
         let romaji = {
             let mut guard = crate::RAW_TSF_LITERAL.romaji
