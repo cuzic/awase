@@ -11,6 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
 };
 
+use crate::focus::class_names::is_tsf_native_window;
 use crate::imm::{
     IMC_GETCONVERSIONMODE, IMC_GETOPENSTATUS, IMC_SETCONVERSIONMODE, IMC_SETOPENSTATUS,
     IME_CMODE_NATIVE, IME_CMODE_ROMAN,
@@ -420,16 +421,6 @@ pub struct FastImeProbeResult {
 /// - Windows Terminal の InputSite 子ウィンドウ
 ///
 /// これらは `imc_open=false` を返すが IME が OFF であることを意味しない。
-fn is_tsf_native_window(class: &str) -> bool {
-    matches!(
-        class,
-        "Windows.UI.Core.CoreWindow"
-            | "XamlExplorerHostIslandWindow"
-            | "Windows.UI.Input.InputSite.WindowClass"
-            | "CASCADIA_HOSTING_WINDOW_CLASS"
-    )
-}
-
 /// `is_tsf_native_window` の HWND ラッパー（`read_ime_state_fast` 用）。
 fn is_transient_system_overlay(hwnd: HWND) -> bool {
     is_tsf_native_window(&crate::focus::classify::get_class_name_string(hwnd))

@@ -176,11 +176,44 @@ impl ForceOverrides {
     }
 
     /// 注入ヒントを返す（is_force_tsf → ForceTsf、is_force_vk → ForceVk）。
+    ///
+    /// `process_name` の取得を1回にまとめるため、`is_force_tsf`/`is_force_vk` を
+    /// 直接呼ばずインライン展開する。
     pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
-        if self.is_force_tsf(process_id, class_name) {
-            return InjectionHint::ForceTsf;
+        if self.inner.force_tsf.is_empty() && self.inner.force_vk.is_empty() {
+            return InjectionHint::Default;
         }
-        if self.is_force_vk(process_id, class_name) {
+        let process_name = super::classify::get_process_name(process_id);
+        // force_tsf チェック（is_force_tsf と同じロジック、InputSite フォールバック含む）
+        if !self.inner.force_tsf.is_empty() {
+            let matched = self.inner.force_tsf.iter().any(|entry| {
+                entry.process.eq_ignore_ascii_case(&process_name)
+                    && entry.class.eq_ignore_ascii_case(class_name)
+            });
+            if matched {
+                return InjectionHint::ForceTsf;
+            }
+            if class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
+                let fg_class = unsafe { crate::ime::get_foreground_window_class() };
+                if !fg_class.is_empty() && !fg_class.eq_ignore_ascii_case(class_name) {
+                    let matched = self.inner.force_tsf.iter().any(|entry| {
+                        entry.process.eq_ignore_ascii_case(&process_name)
+                            && entry.class.eq_ignore_ascii_case(&fg_class)
+                    });
+                    log::debug!(
+                        "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
+                    );
+                    if matched {
+                        return InjectionHint::ForceTsf;
+                    }
+                }
+            }
+        }
+        // force_vk チェック
+        if self.inner.force_vk.iter().any(|entry| {
+            entry.process.eq_ignore_ascii_case(&process_name)
+                && entry.class.eq_ignore_ascii_case(class_name)
+        }) {
             return InjectionHint::ForceVk;
         }
         InjectionHint::Default

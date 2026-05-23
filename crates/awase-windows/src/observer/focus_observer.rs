@@ -4,8 +4,9 @@
 //! `refresh_ime_state_cache` (runtime.rs) でデバウンス後に一括処理される。
 //! このモジュールは `detect_app_kind` と `read_os_modifiers` のみ提供する。
 
+pub use crate::focus::class_names::detect_app_kind;
+
 use awase::engine::ModifierState;
-use awase::types::AppKind;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
 /// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
@@ -23,22 +24,3 @@ pub unsafe fn read_os_modifiers() -> ModifierState {
     }
 }
 
-/// ウィンドウクラス名からアプリの UI フレームワーク種別を判定する。
-///
-/// - `Chrome_WidgetWin_1`: Chromium 系（Chrome, Edge, Electron, VS Code 等）
-/// - `MozillaWindowClass`: Firefox（Chromium と同様の入力処理）
-/// - `Windows.UI.Core.CoreWindow`: UWP / XAML 系
-/// - その他: Win32 クラシック（ヒューリスティックで Chrome に昇格する場合あり）
-pub fn detect_app_kind(class_name: &str) -> AppKind {
-    let class_lower = class_name.to_ascii_lowercase();
-    if class_lower.starts_with("chrome_") || class_lower == "mozillawindowclass" {
-        AppKind::TsfNative
-    } else if class_lower == "windows.ui.core.corewindow"
-        || class_lower == "applicationframewindow"
-        || class_lower.starts_with("windows.ui.input.")
-    {
-        AppKind::Uwp
-    } else {
-        AppKind::Win32
-    }
-}
