@@ -3,7 +3,7 @@
 /// 以前は `runtime::mod` に置かれていたが、focus 層に移動した（逆依存解消）。
 /// `runtime` は `pub use crate::focus::classifier::*` で後方互換性を維持する。
 
-use awase::config::AppOverrides;
+use awase::config::{AppOverrideEntry, AppOverrides};
 
 // ── IMM capability cache ──
 
@@ -87,6 +87,37 @@ pub enum InjectionHint {
     ForceVk,
     /// オーバーライドなし → AppKind に従って output 層が最終決定する
     Default,
+}
+
+// ── override-entry helpers ──
+
+/// `entries` の中に `(process_name, class_name)` にマッチするものがあるか。
+fn matches_override_entry(entries: &[AppOverrideEntry], process_name: &str, class_name: &str) -> bool {
+    entries.iter().any(|entry| {
+        entry.process.eq_ignore_ascii_case(process_name)
+            && entry.class.eq_ignore_ascii_case(class_name)
+    })
+}
+
+/// `Windows.UI.Input.InputSite.WindowClass` フォーカス時に前景ウィンドウのクラスを使って
+/// フォールバック判定する。マッチすれば `true`。
+unsafe fn input_site_fallback_matches(
+    entries: &[AppOverrideEntry],
+    class_name: &str,
+    process_name: &str,
+) -> bool {
+    if !class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
+        return false;
+    }
+    let fg_class = crate::ime::get_foreground_window_class();
+    if fg_class.is_empty() || fg_class.eq_ignore_ascii_case(class_name) {
+        return false;
+    }
+    let matched = matches_override_entry(entries, process_name, &fg_class);
+    log::debug!(
+        "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
+    );
+    matched
 }
 
 // ── ForceOverrides ──
@@ -178,42 +209,23 @@ impl ForceOverrides {
     /// 注入ヒントを返す（is_force_tsf → ForceTsf、is_force_vk → ForceVk）。
     ///
     /// `process_name` の取得を1回にまとめるため、`is_force_tsf`/`is_force_vk` を
-    /// 直接呼ばずインライン展開する。
+    /// 直接呼ばずヘルパー関数経由で判定する。
     pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
         if self.inner.force_tsf.is_empty() && self.inner.force_vk.is_empty() {
             return InjectionHint::Default;
         }
         let process_name = super::classify::get_process_name(process_id);
-        // force_tsf チェック（is_force_tsf と同じロジック、InputSite フォールバック含む）
+        // force_tsf チェック（InputSite フォールバック含む）
         if !self.inner.force_tsf.is_empty() {
-            let matched = self.inner.force_tsf.iter().any(|entry| {
-                entry.process.eq_ignore_ascii_case(&process_name)
-                    && entry.class.eq_ignore_ascii_case(class_name)
-            });
-            if matched {
+            if matches_override_entry(&self.inner.force_tsf, &process_name, class_name) {
                 return InjectionHint::ForceTsf;
             }
-            if class_name.eq_ignore_ascii_case("Windows.UI.Input.InputSite.WindowClass") {
-                let fg_class = unsafe { crate::ime::get_foreground_window_class() };
-                if !fg_class.is_empty() && !fg_class.eq_ignore_ascii_case(class_name) {
-                    let matched = self.inner.force_tsf.iter().any(|entry| {
-                        entry.process.eq_ignore_ascii_case(&process_name)
-                            && entry.class.eq_ignore_ascii_case(&fg_class)
-                    });
-                    log::debug!(
-                        "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
-                    );
-                    if matched {
-                        return InjectionHint::ForceTsf;
-                    }
-                }
+            if unsafe { input_site_fallback_matches(&self.inner.force_tsf, class_name, &process_name) } {
+                return InjectionHint::ForceTsf;
             }
         }
         // force_vk チェック
-        if self.inner.force_vk.iter().any(|entry| {
-            entry.process.eq_ignore_ascii_case(&process_name)
-                && entry.class.eq_ignore_ascii_case(class_name)
-        }) {
+        if matches_override_entry(&self.inner.force_vk, &process_name, class_name) {
             return InjectionHint::ForceVk;
         }
         InjectionHint::Default
