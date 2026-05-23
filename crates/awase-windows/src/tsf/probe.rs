@@ -317,7 +317,7 @@ impl Default for ColdContext {
 /// 内部を 3 つの責務別サブ構造体に分割している:
 /// - `warm_epoch`: warmup epoch・送信タイミング・cold-start 回数
 /// - `cold_ctx`: cold の理由・idle 時間・連続 recovery 回数
-/// - `latch`: `apply_ime_open` の直前結果ラッチ（[`crate::tsf::belief::ImeApplyLatch`]）
+/// - `latch`: `apply_ime_open` の直前結果ラッチ（[`crate::tsf::last_apply::ImeApplyLatch`]）
 #[derive(Debug)]
 pub struct CompositionState {
     /// warmup epoch・送信タイミング・cold-start 回数
@@ -325,7 +325,7 @@ pub struct CompositionState {
     /// cold の理由・idle 時間・連続 recovery 回数
     pub cold_ctx: ColdContext,
     /// `apply_ime_open` の直前結果ラッチ（KanjiToggleStrategy の shadow_on 用）
-    pub latch: crate::tsf::belief::ImeApplyLatch,
+    pub latch: crate::tsf::last_apply::ImeApplyLatch,
 }
 
 impl CompositionState {
@@ -333,7 +333,7 @@ impl CompositionState {
         Self {
             warm_epoch: WarmEpoch::new(),
             cold_ctx: ColdContext::new(),
-            latch: crate::tsf::belief::ImeApplyLatch::new(),
+            latch: crate::tsf::last_apply::ImeApplyLatch::new(),
         }
     }
 
