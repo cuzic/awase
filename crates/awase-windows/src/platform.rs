@@ -23,6 +23,9 @@ pub struct WindowsPlatform {
     pub engine_on_ime_vk: Option<u16>,
     /// Engine OFF 時に送信する IME モード切り替え VK コード（None で無効）
     pub engine_off_ime_vk: Option<u16>,
+    /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
+    /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
+    pub suppress_engine_state_key: bool,
 }
 
 impl WindowsPlatform {
@@ -114,6 +117,12 @@ impl PlatformRuntime for WindowsPlatform {
     // ── Engine 状態変化時 IME モードキー送信 ──
 
     fn send_engine_state_ime_key(&self, enabled: bool) {
+        if self.suppress_engine_state_key {
+            // ポーリング/フォーカス変化起因の遷移では VK を送らない。
+            // 送ると IME 状態が変わり → 次のポーリングでエンジンが逆転 → 無限ループになる。
+            log::debug!("[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})");
+            return;
+        }
         let vk = if enabled { self.engine_on_ime_vk } else { self.engine_off_ime_vk };
         if let Some(vk) = vk {
             unsafe { crate::ime::send_ime_mode_key(vk) };

@@ -342,6 +342,7 @@ pub(super) fn initialize_app(
                 timer: awase_windows::timer::Win32Timer::new(),
                 engine_on_ime_vk,
                 engine_off_ime_vk,
+                suppress_engine_state_key: false,
             },
             config.general.hook_mode,
         ),
