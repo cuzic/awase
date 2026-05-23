@@ -1,7 +1,7 @@
-/// フォーカス検出・注入モード決定に関する型定義モジュール。
-///
-/// 以前は `runtime::mod` に置かれていたが、focus 層に移動した（逆依存解消）。
-/// `runtime` は `pub use crate::focus::classifier::*` で後方互換性を維持する。
+//! フォーカス検出・注入モード決定に関する型定義モジュール。
+//!
+//! 以前は `runtime::mod` に置かれていたが、focus 層に移動した（逆依存解消）。
+//! `runtime` は `pub use crate::focus::classifier::*` で後方互換性を維持する。
 
 use awase::config::{AppOverrideEntry, AppOverrides};
 
@@ -22,9 +22,8 @@ pub enum ImmCapability {
 /// IMM 能力キャッシュをファイルから読み込む。
 fn load_imm_cache(base_dir: &std::path::Path) -> std::collections::HashMap<String, ImmCapability> {
     let path = base_dir.join(IMM_CACHE_FILENAME);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return std::collections::HashMap::new(),
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return std::collections::HashMap::new();
     };
     let table: toml::Table = match content.parse() {
         Ok(t) => t,
@@ -133,7 +132,8 @@ pub struct ForceOverrides {
 }
 
 impl ForceOverrides {
-    pub fn new(overrides: AppOverrides) -> Self {
+    #[must_use] 
+    pub const fn new(overrides: AppOverrides) -> Self {
         Self { inner: overrides }
     }
 
@@ -249,10 +249,11 @@ pub struct AppKindClassifier {
 }
 
 impl AppKindClassifier {
+    #[must_use] 
     pub fn new(overrides: AppOverrides) -> Self {
         let base_dir = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         Self {
             cache: super::cache::FocusCache::new(),

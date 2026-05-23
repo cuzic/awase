@@ -61,3 +61,5 @@ nursery = { level = "deny", priority = -1 }
 cargo_common_metadata = "allow"
 multiple_crate_versions = "allow"
 doc_markdown = "allow"
+# `unreachable_pub` (Rust lint) と矛盾するため allow: pub(crate) モジュール内の pub(crate) アイテムは両方が矛盾して fire する
+redundant_pub_crate = "allow"

@@ -107,7 +107,7 @@ pub(crate) fn run() -> Result<()> {
 // ── 共有ヘルパー（bootstrap + reload_config から使用）──
 
 /// 設定ファイルを読み込む
-pub(self) fn load_config() -> Result<AppConfig> {
+ fn load_config() -> Result<AppConfig> {
     let config_path = find_config_path()?;
     log::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
@@ -122,7 +122,7 @@ pub(self) fn load_config() -> Result<AppConfig> {
 }
 
 /// 設定ファイルのパスを探索する
-pub(self) fn find_config_path() -> Result<PathBuf> {
+ fn find_config_path() -> Result<PathBuf> {
     if let Some(path) = std::env::args().nth(1) {
         return Ok(PathBuf::from(path));
     }
@@ -137,7 +137,7 @@ pub(self) fn find_config_path() -> Result<PathBuf> {
 }
 
 /// 相対パスを実行ファイルのディレクトリ基準で解決する
-pub(self) fn resolve_relative(path: &str) -> PathBuf {
+ fn resolve_relative(path: &str) -> PathBuf {
     if Path::new(path).is_absolute() {
         return PathBuf::from(path);
     }
@@ -153,7 +153,7 @@ pub(self) fn resolve_relative(path: &str) -> PathBuf {
 }
 
 /// キーコンボ文字列のリストをパースし、失敗時は診断に警告を出す
-pub(self) fn parse_key_combos(
+ fn parse_key_combos(
     keys: &[String],
     label: &str,
     diag: &mut StartupDiagnostics,
@@ -172,7 +172,7 @@ pub(self) fn parse_key_combos(
 }
 
 /// IME sync キーの初期化（shadow IME 状態追跡用）
-pub(self) fn init_ime_sync_keys(
+ fn init_ime_sync_keys(
     ime_detect: &ImeDetectConfig,
     diag: &mut StartupDiagnostics,
 ) -> (Vec<VkCode>, Vec<VkCode>, Vec<VkCode>) {
@@ -197,7 +197,7 @@ pub(self) fn init_ime_sync_keys(
 }
 
 /// 検証済み設定で n-gram モデルのロード（オプション）
-pub(self) fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
+ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
     let Some(ref ngram_path) = config.general.ngram_file else {
         return;
     };
@@ -297,7 +297,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 
 // ── メッセージループ ──
 
-pub(self) fn run_message_loop(taskbar_created_msg: u32) {
+ fn run_message_loop(taskbar_created_msg: u32) {
     let mut msg = MSG::default();
 
     loop {
@@ -479,9 +479,9 @@ fn reload_config() {
         let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
         let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
         let _ = with_app(|app| {
-            app.sync_toggle_keys = toggle.clone();
-            app.sync_on_keys = on.clone();
-            app.sync_off_keys = off.clone();
+            app.sync_toggle_keys.clone_from(&toggle);
+            app.sync_on_keys.clone_from(&on);
+            app.sync_off_keys.clone_from(&off);
             // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
             let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
             app.engine.on_command(

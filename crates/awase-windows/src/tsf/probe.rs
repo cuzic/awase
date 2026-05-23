@@ -53,6 +53,7 @@ pub struct TsfReadinessProbe {
 }
 
 impl TsfReadinessProbe {
+    #[must_use] 
     pub const fn new(warmup_sent_ms: u64, cold_seq: u32, min_ms: u64) -> Self {
         Self {
             warmup_sent_ms,
@@ -93,9 +94,8 @@ impl TsfReadinessProbe {
                 let margin = max_deadline.saturating_sub(now).min(POST_IDLE_MARGIN_MS);
                 let since_settled = now.saturating_sub(settled_at);
                 return since_settled >= margin;
-            } else {
-                self.settled_at_ms.set(0); // GJI が再びアクティブになった
             }
+            self.settled_at_ms.set(0); // GJI が再びアクティブになった
         }
         false
     }
@@ -129,6 +129,7 @@ impl TsfReadinessProbe {
 /// フォーカス epoch とウォーム epoch の組み合わせにより、
 /// フォーカス変更後の古いウォーム状態を自動無効化する。
 #[derive(Debug)]
+#[allow(clippy::struct_field_names)]
 pub struct WarmEpoch {
     /// ウォーム状態の epoch（0 = cold）
     composition_warm_epoch: std::cell::Cell<u32>,
@@ -143,7 +144,8 @@ pub struct WarmEpoch {
 }
 
 impl WarmEpoch {
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             composition_warm_epoch: std::cell::Cell::new(0),
             focus_epoch: std::cell::Cell::new(1),
@@ -174,7 +176,7 @@ impl WarmEpoch {
     /// 現在 warm かどうかを返す。
     ///
     /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
-    pub fn is_warm(&self) -> bool {
+    pub const fn is_warm(&self) -> bool {
         let epoch = self.focus_epoch.get();
         self.composition_warm_epoch.get() == epoch && epoch != 0
     }
@@ -210,7 +212,7 @@ impl WarmEpoch {
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
     #[must_use]
-    pub fn eager_warmup_sent_ms(&self) -> u64 {
+    pub const fn eager_warmup_sent_ms(&self) -> u64 {
         self.eager_warmup_sent_ms.get()
     }
 
@@ -221,7 +223,7 @@ impl WarmEpoch {
 
     /// cold-start 発生回数を返す。
     #[must_use]
-    pub fn cold_start_count(&self) -> u32 {
+    pub const fn cold_start_count(&self) -> u32 {
         self.cold_start_count.get()
     }
 
@@ -253,7 +255,8 @@ pub struct ColdContext {
 }
 
 impl ColdContext {
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
@@ -281,7 +284,7 @@ impl ColdContext {
 
     /// 最後に cold になった時点での idle 時間（ms）を返す。
     #[must_use]
-    pub fn idle_ms_at_last_cold(&self) -> u64 {
+    pub const fn idle_ms_at_last_cold(&self) -> u64 {
         self.idle_ms_at_last_cold.get()
     }
 
@@ -292,13 +295,13 @@ impl ColdContext {
 
     /// 最後に cold にマークされた理由を返す。
     #[must_use]
-    pub fn last_cold_reason(&self) -> crate::output::ColdReason {
+    pub const fn last_cold_reason(&self) -> crate::output::ColdReason {
         self.last_cold_reason.get()
     }
 
     /// `RawTsfLiteralRecovery` が連続で発火した回数を返す。
     #[must_use]
-    pub fn consecutive_count(&self) -> u32 {
+    pub const fn consecutive_count(&self) -> u32 {
         self.raw_tsf_literal_consecutive_count.get()
     }
 }
@@ -328,8 +331,15 @@ pub struct CompositionState {
     pub latch: crate::tsf::last_apply::ImeApplyLatch,
 }
 
+impl Default for CompositionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CompositionState {
-    pub fn new() -> Self {
+    #[must_use] 
+    pub const fn new() -> Self {
         Self {
             warm_epoch: WarmEpoch::new(),
             cold_ctx: ColdContext::new(),
@@ -370,7 +380,7 @@ impl CompositionState {
     /// 現在の composition_warm フラグを返す。
     ///
     /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
-    pub fn is_composition_warm(&self) -> bool {
+    pub const fn is_composition_warm(&self) -> bool {
         self.warm_epoch.is_warm()
     }
 
@@ -405,7 +415,7 @@ impl CompositionState {
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
     #[must_use]
-    pub fn eager_warmup_sent_ms(&self) -> u64 {
+    pub const fn eager_warmup_sent_ms(&self) -> u64 {
         self.warm_epoch.eager_warmup_sent_ms()
     }
 
@@ -416,13 +426,13 @@ impl CompositionState {
 
     /// 最後に cold になった時点での idle 時間（ms）を返す。
     #[must_use]
-    pub fn idle_ms_at_last_cold(&self) -> u64 {
+    pub const fn idle_ms_at_last_cold(&self) -> u64 {
         self.cold_ctx.idle_ms_at_last_cold()
     }
 
     /// cold-start 発生回数を返す。
     #[must_use]
-    pub fn cold_start_count(&self) -> u32 {
+    pub const fn cold_start_count(&self) -> u32 {
         self.warm_epoch.cold_start_count()
     }
 
@@ -440,13 +450,13 @@ impl CompositionState {
 
     /// 最後に cold にマークされた理由を返す。
     #[must_use]
-    pub fn last_cold_reason(&self) -> crate::output::ColdReason {
+    pub const fn last_cold_reason(&self) -> crate::output::ColdReason {
         self.cold_ctx.last_cold_reason()
     }
 
     /// `RawTsfLiteralRecovery` が連続で発火した回数を返す。
     #[must_use]
-    pub fn consecutive_count(&self) -> u32 {
+    pub const fn consecutive_count(&self) -> u32 {
         self.cold_ctx.consecutive_count()
     }
 }
@@ -472,6 +482,12 @@ pub enum DetectionResult {
     CompositionConfirmed,
     /// raw TSF literal 疑い（IME をバイパスして ASCII が出力された）
     SuspectedLiteral,
+}
+
+impl Default for LiteralDetector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LiteralDetector {

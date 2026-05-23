@@ -105,7 +105,7 @@ pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
         "ask" => {
             if !autostart::is_registered() {
                 if autostart::ask_user() {
-                    autostart::register();
+                    let _ = autostart::register();
                     config.general.auto_start = "enabled".to_string();
                 } else {
                     config.general.auto_start = "disabled".to_string();
@@ -299,6 +299,7 @@ pub(super) fn register_session_notification() -> Result<WtsGuard> {
 }
 
 /// APP グローバルの初期化（PlatformState を含む）
+#[allow(clippy::too_many_arguments)]
 pub(super) fn initialize_app(
     engine: Engine,
     tray: SystemTray,
@@ -355,7 +356,7 @@ pub(super) fn initialize_app(
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
 pub(super) fn initialize_ime_cache() {
-    let _ = with_app(|app| app.refresh_ime_state_cache());
+    let _ = with_app(Runtime::refresh_ime_state_cache);
 }
 
 /// クリーンアップ処理（フック解除は HookGuard の Drop で行われる）
@@ -511,6 +512,7 @@ fn scan_layouts(
 /// アプリケーション全体の起動シーケンスを実行する。
 ///
 /// `app::run()` から呼ばれる唯一のエントリポイント。
+#[allow(clippy::too_many_lines)]
 pub(super) fn run_all() -> Result<()> {
     let debug_console = std::env::args().any(|a| a == "--debug");
     init_logging(debug_console);
@@ -582,9 +584,9 @@ pub(super) fn run_all() -> Result<()> {
     check_keyboard_layout(&mut diag);
     let system_tray = init_tray(&layout_names, &initial_layout_name, elevated)?;
 
-    let sync_toggle_keys = ime_sync_toggle.clone();
-    let sync_on_keys = ime_sync_on.clone();
-    let sync_off_keys = ime_sync_off.clone();
+    let sync_toggle_keys = ime_sync_toggle;
+    let sync_on_keys = ime_sync_on;
+    let sync_off_keys = ime_sync_off;
 
     let mut engine = Engine::new(
         fsm,

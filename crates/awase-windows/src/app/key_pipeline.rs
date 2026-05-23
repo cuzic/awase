@@ -10,14 +10,13 @@ use awase_windows::runtime;
 use awase_windows::hook::CallbackResult;
 use awase_windows::win32::{post_to_main_thread};
 use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
-use win32_async;
 
 /// キーイベント処理パイプライン
 pub(super) struct KeyEventPipeline<'a> {
     pub app: &'a mut Runtime,
 }
 
-impl<'a> KeyEventPipeline<'a> {
+impl KeyEventPipeline<'_> {
     /// パイプラインを実行し、`CallbackResult` を返す
     pub(super) fn run(mut self, event: RawKeyEvent) -> CallbackResult {
         let mut event = event;
@@ -59,7 +58,7 @@ impl<'a> KeyEventPipeline<'a> {
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
         let gji_last_io_ms =
-            awase_windows::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
+            awase_windows::tsf::observer::with_tsf_obs(awase_windows::tsf::observer::TsfObservations::gji_last_io_ms);
         let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;
         let shadow_on = self.app.executor.platform.output.shadow_ime_on();
 
@@ -161,11 +160,11 @@ struct FocusProbeGraceFlags {
 }
 
 impl FocusProbeGraceFlags {
-    fn any(&self) -> bool {
+    const fn any(&self) -> bool {
         self.warmup_grace_active || self.gji_grace_active || self.shadow_grace_active
     }
 
-    fn primary_reason(&self) -> &'static str {
+    const fn primary_reason(&self) -> &'static str {
         if self.warmup_grace_active {
             "warmup"
         } else if self.gji_grace_active {
@@ -176,7 +175,7 @@ impl FocusProbeGraceFlags {
     }
 }
 
-fn compute_focus_probe_grace(
+const fn compute_focus_probe_grace(
     now_ms: u64,
     probe_age_ms: u64,
     warmup_ms: u64,
@@ -213,6 +212,7 @@ fn apply_effective_ime(app: &mut Runtime, effective: bool) {
     app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
 }
 
+#[allow(clippy::option_if_let_else)]
 fn build_ime_on_suffix(
     probe_ime_on: Option<bool>,
     suppressed_reason: Option<&'static str>,
@@ -235,6 +235,7 @@ fn build_ime_on_suffix(
 
 /// read_ime_state_fast_async の結果を app に適用する（with_app 内で呼ぶ）。
 /// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
+#[allow(clippy::needless_pass_by_value, clippy::option_if_let_else)]
 fn apply_focus_probe_to_app(
     app: &mut Runtime,
     probe: awase_windows::ime::FastImeProbeResult,
@@ -287,10 +288,8 @@ fn apply_focus_probe_to_app(
             "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
         ),
         None if probe.ime_on.is_none() => log::warn!(
-            "FocusProbe: ime_on 未検出 — stale値 {} が ObserverPoll まで持続 \
-             [probe_age={}ms, A/B判断: ime_on stale頻度を確認]",
-            ime_on_before_probe,
-            probe_age_ms,
+            "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} が ObserverPoll まで持続 \
+             [probe_age={probe_age_ms}ms, A/B判断: ime_on stale頻度を確認]",
         ),
         None => {}
     }

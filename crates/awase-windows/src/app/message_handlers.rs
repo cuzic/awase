@@ -24,6 +24,7 @@ use awase_windows::tray;
 use super::{check_keyboard_layout_on_change, launch_settings, on_key_event_impl, reload_config};
 
 /// WM_TIMER ハンドラ
+#[allow(clippy::cognitive_complexity)]
 pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize>, _msg_wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     match logical_id {
@@ -262,7 +263,7 @@ pub(super) unsafe fn handle_wm_command(wparam: WPARAM) {
         } else if cmd == tray::cmd_restart_admin() {
             tray::restart_as_admin();
         } else if cmd == tray::cmd_toggle() {
-            let _ = with_app(|app| app.toggle_engine());
+            let _ = with_app(Runtime::toggle_engine);
         } else if cmd == tray::cmd_exit() {
             PostQuitMessage(0);
         } else if cmd >= tray::cmd_layout_base() {
