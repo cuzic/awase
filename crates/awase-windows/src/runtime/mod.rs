@@ -61,6 +61,16 @@ pub struct Runtime {
     pub(crate) platform_state: crate::PlatformState,
 }
 
+/// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
+/// このファイル内のみで使用する。
+struct ClassifiedFocus {
+    hwnd: windows::Win32::Foundation::HWND,
+    process_id: u32,
+    class_name: String,
+    kind: awase::types::FocusKind,
+    app_kind: awase::types::AppKind,
+}
+
 impl Runtime {
     fn build_ctx(&self) -> InputContext {
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
@@ -145,18 +155,38 @@ impl Runtime {
         &mut self,
         probe: Option<crate::focus::probe::FocusProbe>,
     ) -> bool {
-        use crate::focus::hwnd_cache;
+        let Some(classified) = self.classify_focus_probe(probe) else {
+            return false;
+        };
+        let (process_changed, prev_pid) = self.advance_focus_tracking(&classified);
+        if process_changed {
+            self.on_focus_process_changed(&classified, prev_pid);
+        } else if classified.kind == awase::types::FocusKind::Undetermined {
+            if let Some(sender) = &self.executor.platform.focus.uia_sender {
+                let _ = sender.send(crate::focus::uia::SendableHwnd(classified.hwnd));
+            }
+        }
+        process_changed
+    }
+
+    /// プローブ結果を検証・分類し、platform_state と injection_mode を更新する。
+    ///
+    /// None を返した場合は呼び出し元が early return すること。
+    fn classify_focus_probe(
+        &mut self,
+        probe: Option<crate::focus::probe::FocusProbe>,
+    ) -> Option<ClassifiedFocus> {
         use crate::focus::imm_learning;
         use crate::focus::kind_classifier;
 
         let Some(probe) = probe else {
             log::warn!("Focus probe timed out — skipping update this cycle");
-            return false;
+            return None;
         };
-
         if probe.process_id == 0 {
-            return false;
+            return None;
         }
+
         let hwnd = probe.hwnd();
         let process_id = probe.process_id;
         let class_name = probe.class_name;
@@ -216,7 +246,32 @@ impl Runtime {
             );
         }
 
-        // 前面プロセスが変わったかチェック
+        // injection_mode を push — focus + app_kind が確定したタイミングで output に通知する
+        {
+            let hint = self.executor.platform.focus.injection_hint();
+            let new_mode = crate::output::types::resolve_injection_mode_from(
+                hint,
+                self.platform_state.app_kind,
+            );
+            self.executor.platform.output.update_injection_mode(new_mode);
+        }
+
+        Some(ClassifiedFocus {
+            hwnd,
+            process_id,
+            class_name,
+            kind,
+            app_kind: new_app_kind,
+        })
+    }
+
+    /// last_focus_info を更新し、(process_changed, prev_pid) を返す。
+    ///
+    /// process_changed な場合は事前に `hwnd_cache::save_on_focus_leave` を呼び出す。
+    /// prev_pid は process_changed 時のみ Some になる（ログ用）。
+    fn advance_focus_tracking(&mut self, classified: &ClassifiedFocus) -> (bool, Option<u32>) {
+        use crate::focus::hwnd_cache;
+
         let last_pid = self
             .executor
             .platform
@@ -224,7 +279,7 @@ impl Runtime {
             .last_focus_info
             .as_ref()
             .map(|(pid, _)| *pid);
-        let process_changed = last_pid.is_some_and(|last| last != process_id);
+        let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
 
         // フォーカス離脱: 現在の preconditions を per-HWND キャッシュに保存
         if process_changed {
@@ -241,67 +296,59 @@ impl Runtime {
         }
 
         // last_focus_info を更新
-        self.executor.platform.focus.last_focus_info = Some((process_id, class_name.clone()));
-
-        // injection_mode を push — focus + app_kind が確定したタイミングで output に通知する
-        {
-            let hint = self.executor.platform.focus.injection_hint();
-            let new_mode = crate::output::types::resolve_injection_mode_from(hint, self.platform_state.app_kind);
-            self.executor.platform.output.update_injection_mode(new_mode);
-        }
+        self.executor.platform.focus.last_focus_info =
+            Some((classified.process_id, classified.class_name.clone()));
 
         // prev_conversion_mode をリセット
         self.platform_state.set_prev_conversion_mode(None);
 
-        if process_changed {
-            log::info!(
-                "FocusChange [{}→{}] {}: stale ime_on={}({:?}) mode={:?} japanese={}",
-                last_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
-                process_id,
-                class_name,
-                self.platform_state.ime_on(),
-                self.platform_state.ime_on_source(),
-                self.platform_state.input_mode(),
-                self.platform_state.is_japanese_ime(),
+        (process_changed, if process_changed { last_pid } else { None })
+    }
+
+    /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・ime_observations
+    /// クリア・hwnd_cache 復元・ime_force_on_guard リセット・UIA フォールバック）。
+    /// `prev_pid` は `advance_focus_tracking` が返した直前のプロセス ID（ログ用）。
+    fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
+        use crate::focus::hwnd_cache;
+
+        log::info!(
+            "FocusChange [{}→{}] {}: stale ime_on={}({:?}) mode={:?} japanese={}",
+            prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
+            classified.process_id,
+            classified.class_name,
+            self.platform_state.ime_on(),
+            self.platform_state.ime_on_source(),
+            self.platform_state.input_mode(),
+            self.platform_state.is_japanese_ime(),
+        );
+
+        self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
+        self.executor.platform.output.on_focus_changed();
+        self.platform_state.clear_ime_observations_on_focus_change();
+
+        {
+            let cache_hit = hwnd_cache::restore_on_focus_enter(
+                &self.executor.platform.focus.hwnd_ime_cache,
+                classified.process_id,
+                &classified.class_name,
             );
+            self.platform_state.apply_hwnd_cache_restore(cache_hit);
+        }
 
-            self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
-            self.executor.platform.output.on_focus_changed();
-            self.platform_state.clear_ime_observations_on_focus_change();
+        if self.platform_state.ime_force_on_guard().is_active()
+            || self.platform_state.ime_detect_miss_count() > 0
+        {
+            log::debug!(
+                "Focus changed: clearing ime_force_on_guard and detect_miss_count \
+                 (new window may have different IME state)"
+            );
+            self.platform_state.reset_ime_detect_state();
+        }
 
-            {
-                let cache_hit = hwnd_cache::restore_on_focus_enter(
-                    &self.executor.platform.focus.hwnd_ime_cache,
-                    process_id,
-                    &class_name,
-                );
-                self.platform_state.apply_hwnd_cache_restore(cache_hit);
+        if classified.kind == FocusKind::Undetermined {
+            if let Some(sender) = &self.executor.platform.focus.uia_sender {
+                let _ = sender.send(crate::focus::uia::SendableHwnd(classified.hwnd));
             }
-
-            if self.platform_state.ime_force_on_guard().is_active()
-                || self.platform_state.ime_detect_miss_count() > 0
-            {
-                log::debug!(
-                    "Focus changed: clearing ime_force_on_guard and detect_miss_count \
-                     (new window may have different IME state)"
-                );
-                self.platform_state.reset_ime_detect_state();
-            }
-
-            if kind == FocusKind::Undetermined {
-                if let Some(sender) = &self.executor.platform.focus.uia_sender {
-                    let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
-                }
-            }
-
-            true
-        } else {
-            if kind == FocusKind::Undetermined {
-                if let Some(sender) = &self.executor.platform.focus.uia_sender {
-                    let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
-                }
-            }
-            false
         }
     }
 
