@@ -36,6 +36,7 @@ pub mod single_thread_cell;
 pub(crate) mod state;
 pub(crate) mod timing;
 pub mod timer;
+pub mod tuning;
 pub mod tray;
 pub mod tsf;
 pub mod vk;
@@ -49,9 +50,10 @@ use std::sync::atomic::AtomicBool;
 use awase::types::RawKeyEvent;
 
 pub use crate::state::{
-    HookConfig, HookRoutingState, ImeForceOnGuard, ImeGuardState, IME_DETECT_MISS_THRESHOLD,
+    HookConfig, HookRoutingState, ImeForceOnGuard, ImeGuardState,
     Preconditions, PlatformState, ShadowSource,
 };
+pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
 pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
 

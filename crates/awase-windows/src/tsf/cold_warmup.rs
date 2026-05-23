@@ -22,18 +22,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
 
 use crate::output::Output;
 use crate::tsf::output::make_tsf_key_input;
+use crate::tuning::LONG_IDLE_MS;
 
 use super::send::send_vk_dbe_hiragana_pair;
 
 /// VK_DBE_HIRAGANA 仮想キーコード (F2 相当)
 const VK_DBE_HIRAGANA: u16 = 0xF2;
-
-/// cold 発生前のアイドル時間がこれ以上なら「長期 idle」と判定する (ms)。
-///
-/// 2-9s 程度の「考える・少し読む」では GJI セッションが生存しているため、
-/// 低すぎる閾値は NG（GJI I/O が発火せず probe が 1500ms でタイムアウトしてしまう）。
-/// 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
-const LONG_IDLE_MS: u64 = 10_000;
 
 /// eager パスの 3 分岐を表す enum。
 ///
@@ -59,7 +53,6 @@ impl WarmupKind {
         }
     }
 }
-
 /// `preamble()` が計算した warmup パラメータをまとめるコンテキスト。
 ///
 /// `run_eager` / `run_non_eager` 等の各サブメソッドに渡すことで引数を一本化する。
