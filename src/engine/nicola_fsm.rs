@@ -194,7 +194,7 @@ impl NicolaFsm {
             }
             EngineState::PendingThumb(thumb) => {
                 // 保留中の親指キーを単独確定
-                let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
+                let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions)
             }
@@ -621,7 +621,7 @@ impl NicolaFsm {
                     ev.timestamp,
                 );
                 self.go_idle();
-                let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
+                let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
                 resolved.into_reduce_and_continue(*ev)
             }
         }
@@ -796,7 +796,7 @@ impl NicolaFsm {
 
         // 時間超過 or 候補なし → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
-        let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
+        let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -804,7 +804,7 @@ impl NicolaFsm {
     fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let thumb = self.state.expect_pending_thumb();
         self.go_idle();
-        let resolved = self.resolve_pending_thumb_as_single(thumb.vk_code);
+        let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -869,8 +869,7 @@ impl NicolaFsm {
     /// したがって何も送出しない（suppress）。これにより親指の単独打鍵は完全に無視され、
     /// IME に対して透明になる。Engine が無効な場合は hook 層で bypass されてここには
     /// 来ないので、Windows 全般での 無変換 / 変換 キー機能は引き続き使える。
-    #[allow(clippy::unused_self)]
-    const fn resolve_pending_thumb_as_single(&self, _vk_code: VkCode) -> ResolvedAction {
+    const fn resolve_pending_thumb_as_single(_vk_code: VkCode) -> ResolvedAction {
         ResolvedAction {
             actions: vec![],
             output: OutputUpdate::None,
@@ -1063,7 +1062,7 @@ impl NicolaFsm {
             EngineState::PendingChar(pending) => {
                 self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos)
             }
-            EngineState::PendingThumb(thumb) => self.resolve_pending_thumb_as_single(thumb.vk_code),
+            EngineState::PendingThumb(thumb) => Self::resolve_pending_thumb_as_single(thumb.vk_code),
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
             | EngineState::SpeculativeChar(_) => {
