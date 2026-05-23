@@ -539,7 +539,10 @@ impl DecisionExecutor {
                     ImeEffect::RequestRefresh => platform.post_ime_refresh(),
                 },
                 Effect::Ui(ue) => match ue {
-                    UiEffect::EngineStateChanged { enabled } => platform.update_tray(enabled),
+                    UiEffect::EngineStateChanged { enabled } => {
+                        platform.update_tray(enabled);
+                        platform.send_engine_state_ime_key(enabled);
+                    }
                 },
             }
         } // platform の借用をここで解放
