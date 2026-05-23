@@ -180,6 +180,30 @@ const SPECIAL_KEYWORDS: &[(&str, SpecialKey)] = &[
     ("消", SpecialKey::Delete),
 ];
 
+/// シングルまたはダブルクォートで囲まれた文字列の内側を返す（len > 2 の場合のみ）。
+fn strip_paired_quote(s: &str) -> Option<&str> {
+    let is_single = s.starts_with('\'') && s.ends_with('\'');
+    let is_double = s.starts_with('"') && s.ends_with('"');
+    if (is_single || is_double) && s.len() > 2 {
+        Some(&s[1..s.len() - 1])
+    } else {
+        None
+    }
+}
+
+/// 全角 ASCII 文字列を半角変換し、Romaji または KeySequence として返す。
+fn classify_fullwidth(trimmed: &str) -> YabValue {
+    let half = convert_fullwidth_str(trimmed);
+    if half.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        YabValue::Romaji {
+            romaji: half,
+            kana: None,
+        }
+    } else {
+        YabValue::KeySequence(half)
+    }
+}
+
 /// 単一の CSV 値をパースして `YabValue` に変換する。
 fn parse_value(raw: &str) -> YabValue {
     let trimmed = raw.trim();
@@ -193,30 +217,14 @@ fn parse_value(raw: &str) -> YabValue {
         return YabValue::Special(*sk);
     }
 
-    // シングルクォートで囲まれたリテラル（例: '．'）
-    if trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() > 2 {
-        let inner = &trimmed[1..trimmed.len() - 1];
+    // クォートで囲まれたリテラル（シングル/ダブル両対応）
+    if let Some(inner) = strip_paired_quote(trimmed) {
         return YabValue::Literal(inner.to_string());
     }
 
-    // ダブルクォートで囲まれたリテラル（例: "？"）
-    if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() > 2 {
-        let inner = &trimmed[1..trimmed.len() - 1];
-        return YabValue::Literal(inner.to_string());
-    }
-
-    // 全角 ASCII 文字列 → 半角変換してローマ字として扱う
+    // 全角 ASCII 文字列 → 半角変換してローマ字 or キーシーケンスとして扱う
     if is_all_fullwidth_ascii(trimmed) {
-        let half = convert_fullwidth_str(trimmed);
-        // 半角変換後がアルファベットのみならローマ字
-        if half.chars().all(|ch| ch.is_ascii_alphabetic()) {
-            return YabValue::Romaji {
-                romaji: half,
-                kana: None,
-            };
-        }
-        // 数字や記号はキーシーケンス（IME がキーストロークを変換する）
-        return YabValue::KeySequence(half);
+        return classify_fullwidth(trimmed);
     }
 
     // それ以外はリテラルとして扱う
@@ -277,6 +285,75 @@ enum FaceKind {
     Shift,
 }
 
+/// 指定されたセクションが存在すれば `parse_face` を呼び、なければ空の `YabFace` を返す。
+fn parse_optional_face(
+    sections: &HashMap<FaceKind, Vec<String>>,
+    kind: FaceKind,
+    model: KeyboardModel,
+    context_msg: &'static str,
+) -> Result<YabFace> {
+    if let Some(lines) = sections.get(&kind) {
+        parse_face(lines, model).context(context_msg)
+    } else {
+        Ok(YabFace::new())
+    }
+}
+
+/// `parse` のループ本体: 1行分の処理を行う。
+fn process_yab_line(
+    line_num: usize,
+    line: &str,
+    name: &mut String,
+    current_section: &mut Option<FaceKind>,
+    current_lines: &mut Vec<String>,
+    sections: &mut HashMap<FaceKind, Vec<String>>,
+) -> Result<()> {
+    // 空行・コメント行はスキップ
+    if line.is_empty() || line.starts_with(';') {
+        return Ok(());
+    }
+
+    // セクションヘッダ
+    if line.starts_with('[') && line.ends_with(']') {
+        // 前のセクションを保存
+        if let Some(kind) = *current_section {
+            sections.insert(kind, std::mem::take(current_lines));
+        }
+
+        let section_name = &line[1..line.len() - 1];
+
+        // 最初のセクションの前に名前が未設定なら、セクション名を名前として使う
+        if name.is_empty() {
+            *name = section_name.to_string();
+        }
+
+        *current_section = classify_section(section_name);
+        current_lines.clear();
+        return Ok(());
+    }
+
+    // データ行（セクション内）
+    if current_section.is_some() {
+        current_lines.push(line.to_string());
+        return Ok(());
+    }
+
+    // セクション外のデータ行: 最初の非コメント・非セクション行を名前として扱う
+    if name.is_empty() {
+        *name = line.to_string();
+        return Ok(());
+    }
+
+    // セクション外の不明な行はエラー（名前行は許容済み）
+    if line != name.as_str() {
+        bail!(
+            "Line {}: unexpected data outside section: {line}",
+            line_num + 1
+        );
+    }
+    Ok(())
+}
+
 impl YabLayout {
     /// .yab 形式の文字列をパースして `YabLayout` を構築する。
     ///
@@ -292,51 +369,14 @@ impl YabLayout {
         let mut current_lines: Vec<String> = Vec::new();
 
         for (line_num, raw_line) in input.lines().enumerate() {
-            let line = raw_line.trim();
-
-            // 空行・コメント行はスキップ
-            if line.is_empty() || line.starts_with(';') {
-                continue;
-            }
-
-            // セクションヘッダ
-            if line.starts_with('[') && line.ends_with(']') {
-                // 前のセクションを保存
-                if let Some(kind) = current_section {
-                    sections.insert(kind, std::mem::take(&mut current_lines));
-                }
-
-                let section_name = &line[1..line.len() - 1];
-
-                // 最初のセクションの前に名前が未設定なら、ファイル名相当として
-                // セクション名から推測する（実際のファイルでは別途設定される場合がある）
-                if name.is_empty() {
-                    name = section_name.to_string();
-                }
-
-                current_section = classify_section(section_name);
-                current_lines.clear();
-                continue;
-            }
-
-            // データ行（セクション内）
-            if current_section.is_some() {
-                current_lines.push(line.to_string());
-            } else {
-                // セクション外のデータ行
-                // 名前の行として扱う（最初の非コメント・非セクション行）
-                if name.is_empty() {
-                    name = line.to_string();
-                }
-                // セクション外の不明な行は無視しない — エラーにする
-                // （ただし名前行は許容）
-                if !name.is_empty() && line != name {
-                    bail!(
-                        "Line {}: unexpected data outside section: {line}",
-                        line_num + 1
-                    );
-                }
-            }
+            process_yab_line(
+                line_num,
+                raw_line.trim(),
+                &mut name,
+                &mut current_section,
+                &mut current_lines,
+                &mut sections,
+            )?;
         }
 
         // 最後のセクションを保存
@@ -344,29 +384,10 @@ impl YabLayout {
             sections.insert(kind, current_lines);
         }
 
-        let normal = if let Some(lines) = sections.get(&FaceKind::Normal) {
-            parse_face(lines, model).context("Failed to parse normal face")?
-        } else {
-            YabFace::new()
-        };
-
-        let left_thumb = if let Some(lines) = sections.get(&FaceKind::LeftThumb) {
-            parse_face(lines, model).context("Failed to parse left thumb face")?
-        } else {
-            YabFace::new()
-        };
-
-        let right_thumb = if let Some(lines) = sections.get(&FaceKind::RightThumb) {
-            parse_face(lines, model).context("Failed to parse right thumb face")?
-        } else {
-            YabFace::new()
-        };
-
-        let shift = if let Some(lines) = sections.get(&FaceKind::Shift) {
-            parse_face(lines, model).context("Failed to parse shift face")?
-        } else {
-            YabFace::new()
-        };
+        let normal = parse_optional_face(&sections, FaceKind::Normal, model, "Failed to parse normal face")?;
+        let left_thumb = parse_optional_face(&sections, FaceKind::LeftThumb, model, "Failed to parse left thumb face")?;
+        let right_thumb = parse_optional_face(&sections, FaceKind::RightThumb, model, "Failed to parse right thumb face")?;
+        let shift = parse_optional_face(&sections, FaceKind::Shift, model, "Failed to parse shift face")?;
 
         Ok(Self {
             name,
