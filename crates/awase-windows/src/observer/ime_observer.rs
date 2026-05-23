@@ -1,4 +1,4 @@
-//! IME 状態の観測 — `detect_ime_state()` を呼び出して観測スナップショットを返す。
+//! IME 状態の観測 — `read_ime_state_full()` を呼び出して観測スナップショットを返す。
 //!
 //! ## 設計方針
 //!
@@ -17,7 +17,7 @@ use awase::engine::InputModeState;
 use crate::imm::{IME_CMODE_NATIVE, IME_CMODE_ROMAN};
 use crate::ime_observations::ImeObs;
 
-/// `observe()` / `compute_observer_output()` が返す観測結果。
+/// `poll_and_classify_ime()` / `classify_ime_snapshot()` が返す観測結果。
 ///
 /// `Preconditions` を直接変更せず、このスナップショットを返す。
 /// 呼び出し元（`PlatformState::apply_ime_observer_output()`）が状態に反映する。
@@ -50,8 +50,8 @@ pub struct ImeObserverOutput {
 /// `ImeSnapshot` と現在の `Preconditions` の読み取り専用ビューから観測結果を計算する。
 ///
 /// `Preconditions` への書き込みを行わない純粋関数。
-/// `observe()` と `apply_snapshot()` の共通ロジックを集約。
-pub fn compute_observer_output(
+/// `poll_and_classify_ime()` と `classify_fetched_snapshot()` の共通ロジックを集約。
+pub fn classify_ime_snapshot(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,
     // Preconditions の読み取り専用フィールド
@@ -169,17 +169,17 @@ pub fn compute_observer_output(
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn observe(
+pub unsafe fn poll_and_classify_ime(
     current_ime_on: bool,
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
 ) -> ImeObserverOutput {
-    // detect_ime_state は複数のブロッキング IMM32 API を連鎖呼び出しするため、
+    // read_ime_state_full は複数のブロッキング IMM32 API を連鎖呼び出しするため、
     // ワーカースレッドでタイムアウト付き実行する（メッセージループハング防止）。
-    let snap = crate::ime::detect_ime_state_with_timeout(std::time::Duration::from_millis(300));
+    let snap = crate::ime::read_ime_state_full_with_timeout(std::time::Duration::from_millis(300));
     let now_ms = crate::hook::current_tick_ms();
-    compute_observer_output(
+    classify_ime_snapshot(
         &snap,
         now_ms,
         current_ime_on,
@@ -191,9 +191,9 @@ pub unsafe fn observe(
 
 /// IME スナップショットを `ImeObserverOutput` に変換する（純粋 sync）。
 ///
-/// `observe()` から blocking fetch 部分を分離したもの。async drain 後に with_app 内で呼ぶ。
+/// `poll_and_classify_ime()` から blocking fetch 部分を分離したもの。async drain 後に with_app 内で呼ぶ。
 /// `Preconditions` を直接変更しない。
-pub fn apply_snapshot(
+pub fn classify_fetched_snapshot(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,
     current_ime_on: bool,
@@ -201,7 +201,7 @@ pub fn apply_snapshot(
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
 ) -> ImeObserverOutput {
-    compute_observer_output(
+    classify_ime_snapshot(
         snap,
         now_ms,
         current_ime_on,

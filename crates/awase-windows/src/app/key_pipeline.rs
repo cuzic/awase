@@ -68,7 +68,7 @@ impl<'a> KeyEventPipeline<'a> {
         let shadow_on = self.app.executor.platform.output.shadow_ime_on();
 
         win32_async::spawn_local(async move {
-            let probe = awase_windows::ime::fast_ime_probe_async().await;
+            let probe = awase_windows::ime::read_ime_state_fast_async().await;
             awase_windows::with_app(|app| {
                 apply_focus_probe_to_app(
                     app,
@@ -176,7 +176,7 @@ impl<'a> KeyEventPipeline<'a> {
     }
 }
 
-/// fast_ime_probe_async の結果を app に適用する（with_app 内で呼ぶ）。
+/// read_ime_state_fast_async の結果を app に適用する（with_app 内で呼ぶ）。
 /// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
 fn apply_focus_probe_to_app(
     app: &mut Runtime,

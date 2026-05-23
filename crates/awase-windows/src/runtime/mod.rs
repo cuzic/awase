@@ -152,7 +152,7 @@ impl Runtime {
     /// async drain 後に with_app 内で呼ぶ用途に使う。
     pub fn apply_focus_probe_result(
         &mut self,
-        probe: Option<crate::focus::probe::FocusProbe>,
+        probe: Option<crate::focus::probe::FocusSnapshot>,
     ) -> bool {
         let Some(classified) = self.classify_focus_probe(probe) else {
             return false;
@@ -173,7 +173,7 @@ impl Runtime {
     /// None を返した場合は呼び出し元が early return すること。
     fn classify_focus_probe(
         &mut self,
-        probe: Option<crate::focus::probe::FocusProbe>,
+        probe: Option<crate::focus::probe::FocusSnapshot>,
     ) -> Option<ClassifiedFocus> {
         use crate::focus::imm_learning;
         use crate::focus::kind_classifier;
@@ -360,8 +360,8 @@ impl Runtime {
     /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
     unsafe fn detect_and_update_focus(&mut self) -> bool {
         // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
-        // 詳細は focus::probe::run_focus_probe() を参照。
-        let probe = unsafe { crate::focus::probe::run_focus_probe() };
+        // 詳細は focus::probe::read_focus_snapshot() を参照。
+        let probe = unsafe { crate::focus::probe::read_focus_snapshot() };
         self.apply_focus_probe_result(probe)
     }
 
@@ -378,7 +378,7 @@ impl Runtime {
 
         win32_async::spawn_local(async {
             let focus = crate::focus::probe::run_focus_probe_async().await;
-            let snap = crate::ime::detect_ime_state_async().await;
+            let snap = crate::ime::read_ime_state_full_async().await;
             crate::with_app(|app| {
                 ImeRefreshPipeline::new(app).run_with_prefetched(focus, snap);
 
@@ -498,7 +498,7 @@ impl Runtime {
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
         let observer_out = unsafe {
-            crate::observer::ime_observer::observe(
+            crate::observer::ime_observer::poll_and_classify_ime(
                 self.platform_state.ime_on(),
                 self.platform_state.is_force_on_guard_active(),
                 self.platform_state.input_mode(),

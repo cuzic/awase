@@ -1,7 +1,7 @@
 //! TSF cold-start ウォームアップシーケンス。
 //!
 //! [`ColdWarmupSequence`] は F2 送信等の即時処理を行い [`WarmupStarted`] を返す。
-//! 残りの GJI 静止待ちは TIMER_TSF_PROBE + `TsfReadinessProbe::check_now` で行う。
+//! 残りの GJI 静止待ちは TIMER_TSF_PROBE + `TsfReadinessJudge::check_now` で行う。
 //!
 //! ## パス分岐
 //!
@@ -70,11 +70,11 @@ struct WarmupContext {
 /// `ColdWarmupSequence::run_start` の戻り値。
 ///
 /// 即座に実行できる部分（F2 送信等）は完了済み。
-/// 残りの待機はタイマー（TIMER_TSF_PROBE）で `TsfReadinessProbe::check_now` を
+/// 残りの待機はタイマー（TIMER_TSF_PROBE）で `TsfReadinessJudge::check_now` を
 /// ポーリングすることで行う。
 pub struct WarmupStarted {
     /// GJI 静止プローブ
-    pub probe: crate::tsf::probe::TsfReadinessProbe,
+    pub probe: crate::tsf::probe::TsfReadinessJudge,
     /// probe の最大待機時間 (ms, warmup_sent_ms 起点)
     pub total_max_ms: u64,
     /// プローブ完了後に NAMECHANGE 確認フェーズが必要かどうか
@@ -104,7 +104,7 @@ impl<'a> ColdWarmupSequence<'a> {
     /// ノンブロッキング版ウォームアップ開始。
     ///
     /// 即座に実行できる部分（F2 送信、IMM32 設定等）を行い [`WarmupStarted`] を返す。
-    /// 残りの GJI 静止待ちは TIMER_TSF_PROBE + `TsfReadinessProbe::check_now` で行う。
+    /// 残りの GJI 静止待ちは TIMER_TSF_PROBE + `TsfReadinessJudge::check_now` で行う。
     pub fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
         let ctx = self.preamble(session_expired, elapsed_ms);
 
@@ -220,7 +220,7 @@ impl<'a> ColdWarmupSequence<'a> {
         }
         let probe_sent_ms = crate::hook::current_tick_ms();
         WarmupStarted {
-            probe: crate::tsf::probe::TsfReadinessProbe::new(
+            probe: crate::tsf::probe::TsfReadinessJudge::new(
                 probe_sent_ms,
                 ctx.cold_n,
                 ctx.probe_min_ms,
@@ -249,7 +249,7 @@ impl<'a> ColdWarmupSequence<'a> {
                 // SAFETY: SendInput をメッセージループスレッドから呼ぶ。
                 let fresh_f2_ms = unsafe { send_vk_dbe_hiragana_pair() };
                 WarmupStarted {
-                    probe: crate::tsf::probe::TsfReadinessProbe::new(
+                    probe: crate::tsf::probe::TsfReadinessJudge::new(
                         fresh_f2_ms,
                         ctx.cold_n,
                         ctx.probe_min_ms,
@@ -269,7 +269,7 @@ impl<'a> ColdWarmupSequence<'a> {
                 let re_warmup_ms = unsafe { send_vk_dbe_hiragana_pair() };
                 const RE_WARMUP_MS: u64 = 500;
                 WarmupStarted {
-                    probe: crate::tsf::probe::TsfReadinessProbe::new(
+                    probe: crate::tsf::probe::TsfReadinessJudge::new(
                         re_warmup_ms,
                         ctx.cold_n,
                         ctx.probe_min_ms,
@@ -286,7 +286,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     ctx.cold_n, eager_elapsed, ctx.eager_settle_ms,
                 );
                 WarmupStarted {
-                    probe: crate::tsf::probe::TsfReadinessProbe::new(
+                    probe: crate::tsf::probe::TsfReadinessJudge::new(
                         eager_ms,
                         ctx.cold_n,
                         ctx.probe_min_ms,
