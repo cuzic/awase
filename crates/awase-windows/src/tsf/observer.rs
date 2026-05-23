@@ -66,7 +66,7 @@ pub struct TsfObservations {
     /// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
     ///
     /// バックグラウンドモニタースレッドが更新する。
-    /// `send_romaji_as_tsf` や `TsfReadinessProbe` が参照する。
+    /// `send_romaji_as_tsf` や `TsfReadinessJudge` が参照する。
     pub(super) gji_last_io_ms: AtomicU64,
 
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。

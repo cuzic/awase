@@ -332,7 +332,7 @@ impl PlatformState {
 
     /// `ImeObserverOutput` を `Preconditions` と `ImeObservations` に反映する。
     ///
-    /// `observer::ime_observer::observe()` / `apply_snapshot()` の結果を受け取り、
+    /// `observer::ime_observer::poll_and_classify_ime()` / `classify_fetched_snapshot()` の結果を受け取り、
     /// `Preconditions` への書き込みをここに集約する。
     pub fn apply_ime_observer_output(
         &mut self,

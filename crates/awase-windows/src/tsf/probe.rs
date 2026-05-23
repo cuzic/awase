@@ -1,6 +1,6 @@
 //! judgement 層 — 観測データから TSF 状態を推測する。
 //!
-//! - `TsfReadinessProbe`: GJI I/O 静止を待って「composition が受け付け可能か」を判定
+//! - `TsfReadinessJudge`: GJI I/O 静止を待って「composition が受け付け可能か」を判定
 //! - `CompositionState`: warm/cold epoch 管理（フォーカス変更で自動無効化）
 //! - `LiteralDetector`: 文字送信後に GJI 候補ウィンドウ変化を監視して
 //!   「composition が成功したか / raw literal が出力されたか」を判定
@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering;
 use crate::tsf::observer::TSF_OBS;
 use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 
-// ── TsfReadinessProbe ──
+// ── TsfReadinessJudge ──
 
 /// TSF composition readiness を観測し「ready になるまで待つ」プローブ。
 ///
@@ -41,7 +41,7 @@ use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 /// | SymbolVkSent | 30ms |
 /// | その他 | 100ms |
 #[derive(Debug)]
-pub struct TsfReadinessProbe {
+pub struct TsfReadinessJudge {
     /// VK_IME_ON を送信した時刻 (GetTickCount64 ms)。
     pub warmup_sent_ms: u64,
     /// ログ相関用 cold-start シーケンス番号。
@@ -52,7 +52,7 @@ pub struct TsfReadinessProbe {
     settled_at_ms: std::cell::Cell<u64>,
 }
 
-impl TsfReadinessProbe {
+impl TsfReadinessJudge {
     pub const fn new(warmup_sent_ms: u64, cold_n: u32, min_ms: u64) -> Self {
         Self {
             warmup_sent_ms,
@@ -616,7 +616,7 @@ mod tests {
 
         let start = Instant::now();
         let now_ms = crate::hook::current_tick_ms();
-        let probe = TsfReadinessProbe::new(now_ms, 0, 0);
+        let probe = TsfReadinessJudge::new(now_ms, 0, 0);
         probe.wait_until_ready(100);
 
         let elapsed = start.elapsed().as_millis();
@@ -640,7 +640,7 @@ mod tests {
         TSF_OBS.gji_last_io_ms.store(io_ms, SeqCst);
 
         let start = Instant::now();
-        let probe = TsfReadinessProbe::new(warmup_ms, 0, 0); // min_ms=0
+        let probe = TsfReadinessJudge::new(warmup_ms, 0, 0); // min_ms=0
         probe.wait_until_ready(1_000);
 
         let elapsed = start.elapsed().as_millis();
@@ -659,7 +659,7 @@ mod tests {
         TSF_OBS.gji_last_io_ms.store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
 
         let start = Instant::now();
-        let probe = TsfReadinessProbe::new(now_ms, 0, 80); // min_ms=80
+        let probe = TsfReadinessJudge::new(now_ms, 0, 80); // min_ms=80
         probe.wait_until_ready(300);
 
         let elapsed = start.elapsed().as_millis();
@@ -679,7 +679,7 @@ mod tests {
         TSF_OBS.gji_last_io_ms.store(now_ms.saturating_sub(5_000), SeqCst);
 
         let start = Instant::now();
-        let probe = TsfReadinessProbe::new(now_ms, 0, 0); // min_ms=0
+        let probe = TsfReadinessJudge::new(now_ms, 0, 0); // min_ms=0
         probe.wait_until_ready(120);
 
         let elapsed = start.elapsed().as_millis();

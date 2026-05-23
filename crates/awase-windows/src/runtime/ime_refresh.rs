@@ -231,7 +231,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         let input_mode_before_poll = self.rt.platform_state.input_mode();
 
         let observer_out = unsafe {
-            crate::observer::ime_observer::observe(
+            crate::observer::ime_observer::poll_and_classify_ime(
                 self.rt.platform_state.ime_on(),
                 self.rt.platform_state.is_force_on_guard_active(),
                 self.rt.platform_state.input_mode(),
@@ -441,7 +441,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     /// spawn_local タスクから呼ぶ。
     pub(super) fn run_with_prefetched(
         mut self,
-        focus_probe: Option<crate::focus::probe::FocusProbe>,
+        focus_probe: Option<crate::focus::probe::FocusSnapshot>,
         ime_snap: crate::ime::ImeSnapshot,
     ) {
         // Stage 1: フォーカス検出（pre-fetch 版）
@@ -464,14 +464,14 @@ impl<'a> ImeRefreshPipeline<'a> {
             ImeReadStrategy::OsPoll => {
                 let miss_before = self.rt.platform_state.ime_detect_miss_count();
 
-                // [診断] apply_snapshot 前のスナップショット（差分検出用）
+                // [診断] classify_fetched_snapshot 前のスナップショット（差分検出用）
                 let ime_on_before_poll = self.rt.platform_state.ime_on();
                 let input_mode_before_poll = self.rt.platform_state.input_mode();
 
                 // apply pre-fetched IME snap
                 let now_ms = crate::hook::current_tick_ms();
                 let observer_out = {
-                    crate::observer::ime_observer::apply_snapshot(
+                    crate::observer::ime_observer::classify_fetched_snapshot(
                         &ime_snap,
                         now_ms,
                         self.rt.platform_state.ime_on(),

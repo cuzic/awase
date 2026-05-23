@@ -17,8 +17,8 @@ pub enum ShadowSource {
     SetOpenRequest,
     /// IME observer ポーリング（バックグラウンド観測）
     ObserverPoll,
-    /// フォーカス変更直後の高速プローブ
-    FocusProbe,
+    /// フォーカス変更直後の高速スナップショット
+    FocusSnapshot,
     /// panic_reset（強制リセット）
     PanicReset,
     /// IMM broken アプリ切替補正（Chrome 等）
@@ -46,7 +46,7 @@ pub struct Preconditions {
     pub(in crate::state) prev_conversion_mode: Option<u32>,
     /// IME 状態検出の連続失敗回数。
     ///
-    /// `detect_ime_state()` が `ime_on = None` を返すたびにインクリメントされ、
+    /// `read_ime_state_full()` が `ime_on = None` を返すたびにインクリメントされ、
     /// 検出成功時またはシャドウ更新（ユーザー操作）時にリセットされる。
     /// [`crate::tuning::IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
     /// IME を強制 ON にして Engine の活性状態を維持する。
