@@ -29,7 +29,7 @@ use awase_windows::runtime;
 use awase_windows::tray;
 use awase_windows::tray::SystemTray;
 use awase_windows::{
-    LayoutEntry, Runtime, APP, ELEVATED, TIMER_HOOK_WATCHDOG, with_app, with_app_ref,
+    LayoutEntry, Runtime, RUNTIME, ELEVATED, TIMER_HOOK_WATCHDOG, with_app, with_app_ref,
 };
 
 use awase_windows::MAIN_THREAD_ID;
@@ -289,7 +289,7 @@ impl Drop for WtsGuard {
 /// セッション変更通知（画面ロック/アンロック）を登録する
 pub(super) fn register_session_notification() -> Result<WtsGuard> {
     let tray_hwnd = with_app_ref(|app| app.executor.platform.tray.hwnd())
-        .context("APP not initialized")?;
+        .context("RUNTIME not initialized")?;
     let ok = unsafe {
         super::WTSRegisterSessionNotification(tray_hwnd, super::NOTIFY_FOR_THIS_SESSION).as_bool()
     };
@@ -329,9 +329,9 @@ pub(super) fn initialize_app(
         .and_then(awase_windows::vk::vk_name_to_code)
         .map(|v| v.0);
 
-    // APP.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
+    // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
-    APP.set(Runtime {
+    RUNTIME.set(Runtime {
         engine,
         executor: executor::DecisionExecutor::new(
             platform::WindowsPlatform {
@@ -361,7 +361,7 @@ pub(super) fn initialize_ime_cache() {
 /// クリーンアップ処理（フック解除は HookGuard の Drop で行われる）
 pub(super) fn cleanup() {
     // cleanup() はメッセージループ終了後にメインスレッドから呼ばれる。
-    APP.clear();
+    RUNTIME.clear();
     log::info!("Exited cleanly.");
 }
 
