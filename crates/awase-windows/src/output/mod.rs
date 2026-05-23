@@ -1495,16 +1495,14 @@ impl awase::platform::CompositionOutput for Output {
         self.is_composition_warm()
     }
 
-    fn mark_cold_focus_change(&self) {
-        self.mark_composition_cold(ColdReason::FocusChange);
-    }
-
-    fn mark_cold_confirm_key(&self) {
-        self.mark_composition_cold(ColdReason::PassthroughConfirmKey);
-    }
-
-    fn mark_cold_ime_toggle(&self) {
-        self.mark_composition_cold(ColdReason::SetOpenTrue);
+    fn mark_cold(&self, reason: awase::platform::PlatformColdReason) {
+        use awase::platform::PlatformColdReason;
+        let cold_reason = match reason {
+            PlatformColdReason::FocusChange => ColdReason::FocusChange,
+            PlatformColdReason::ConfirmKey => ColdReason::PassthroughConfirmKey,
+            PlatformColdReason::ImeToggle => ColdReason::SetOpenTrue,
+        };
+        self.mark_composition_cold(cold_reason);
     }
 
     fn set_ime_apply_latch(&self, open: bool) {
