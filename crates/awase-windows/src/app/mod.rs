@@ -1,7 +1,6 @@
 mod bootstrap;
 mod key_pipeline;
 mod message_handlers;
-mod panic_detect;
 
 use std::path::{Path, PathBuf};
 
@@ -97,7 +96,7 @@ impl Drop for HotKeyGuard {
     }
 }
 
-use panic_detect::{RapidPressTracker, RAPID_IME_TIMESTAMPS};
+use awase_windows::panic_detect::{RapidPressTracker, RAPID_IME_TIMESTAMPS};
 
 // ── エントリポイント ──
 

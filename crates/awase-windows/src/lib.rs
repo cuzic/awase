@@ -29,6 +29,7 @@ pub mod ime_observations;
 pub mod input_defer;
 pub mod observer;
 pub mod output;
+pub mod panic_detect;
 pub mod platform;
 pub mod runtime;
 pub mod scanmap;

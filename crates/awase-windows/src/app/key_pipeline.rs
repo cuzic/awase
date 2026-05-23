@@ -9,10 +9,8 @@ use awase_windows::hook;
 use awase_windows::runtime;
 use awase_windows::hook::CallbackResult;
 use awase_windows::win32::{post_to_main_thread};
-use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_PANIC_RESET};
+use awase_windows::{panic_detect, Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 use win32_async;
-
-use super::RAPID_IME_TIMESTAMPS;
 
 /// キーイベント処理パイプライン
 pub(super) struct KeyEventPipeline<'a> {
@@ -123,23 +121,9 @@ impl<'a> KeyEventPipeline<'a> {
 
     /// パニックリセット検出
     fn stage_panic_reset_detect(&mut self, event: &RawKeyEvent) {
-        if !event.ime_relevance.may_change_ime {
-            return;
-        }
-        if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
-            return;
-        }
-        let now = hook::current_tick_ms();
-        // SAFETY: RAPID_IME_TIMESTAMPS is a SingleThreadCell; the hook callback runs on the main thread.
-        unsafe {
-            if let Some(tracker) = RAPID_IME_TIMESTAMPS.get_mut() {
-                if tracker.push(now) {
-                    tracker.clear();
-                    log::warn!("Rapid IME key press detected — requesting panic reset");
-                    post_to_main_thread(WM_PANIC_RESET);
-                }
-            }
-        }
+        if !event.ime_relevance.may_change_ime { return; }
+        if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) { return; }
+        panic_detect::record_ime_keydown(hook::current_tick_ms());
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）

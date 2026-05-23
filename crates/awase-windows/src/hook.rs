@@ -397,6 +397,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 modifier_key: classify_modifier(vk),
                 modifier_snapshot,
             };
+            // パニック連打検出は再入中でも必ず実行する（操作不能時にリセットを確保）
+            if is_keydown && event.ime_relevance.may_change_ime {
+                crate::panic_detect::record_ime_keydown(current_tick_ms());
+            }
             log::debug!(
                 "[in-with-app] queuing vk=0x{:02X} {:?}",
                 vk.0,
