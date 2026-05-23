@@ -238,7 +238,7 @@ impl<'a> ImeRefreshPipeline<'a> {
                 self.rt.platform_state.prev_conversion_mode(),
             )
         };
-        self.rt.platform_state.apply_ime_observer_output(&observer_out);
+        self.rt.platform_state.apply_ime_update(&observer_out);
 
         let miss_after = self.rt.platform_state.ime_detect_miss_count();
 
@@ -480,7 +480,7 @@ impl<'a> ImeRefreshPipeline<'a> {
                         self.rt.platform_state.prev_conversion_mode(),
                     )
                 };
-                self.rt.platform_state.apply_ime_observer_output(&observer_out);
+                self.rt.platform_state.apply_ime_update(&observer_out);
 
                 let miss_after = self.rt.platform_state.ime_detect_miss_count();
 

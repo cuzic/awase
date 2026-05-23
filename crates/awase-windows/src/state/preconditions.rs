@@ -71,7 +71,7 @@ pub struct Preconditions {
     ///
     /// パニックリセットで `ime_on=true` を書き込んだ直後に `refresh_ime_state_cache`
     /// が走ると stale な `observe()` の結果に上書きされてしまう。これを防ぐ。
-    /// `apply_ime_observer_output` で `clear_force_on_guard=true` のとき解除される。
+    /// `apply_ime_update` で `clear_force_on_guard=true` のとき解除される。
     pub(in crate::state) force_on_panic_reset: bool,
 }
 

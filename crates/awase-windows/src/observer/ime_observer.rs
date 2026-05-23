@@ -2,8 +2,8 @@
 //!
 //! ## 設計方針
 //!
-//! observer は観測値を `ImeObserverOutput` として返すのみで、`Preconditions` を直接
-//! 変更しない。状態への反映は `PlatformState::apply_ime_observer_output()` に一元化。
+//! observer は観測値を `ImeUpdate` として返すのみで、`Preconditions` を直接
+//! 変更しない。状態への反映は `PlatformState::apply_ime_update()` に一元化。
 //!
 //! ## 更新ポリシー
 //!
@@ -17,39 +17,29 @@ use awase::engine::InputModeState;
 use crate::imm::{IME_CMODE_NATIVE, IME_CMODE_ROMAN};
 use crate::ime_observations::ImeObs;
 
-/// `poll_and_classify_ime()` / `classify_ime_snapshot()` が返す観測結果。
+/// `classify_ime_snapshot()` が返す状態更新命令。
 ///
-/// `Preconditions` を直接変更せず、このスナップショットを返す。
-/// 呼び出し元（`PlatformState::apply_ime_observer_output()`）が状態に反映する。
+/// 副作用なし・純粋変換の結果を表す。
+/// 呼び出し元（`PlatformState::apply_ime_update()`）が状態に反映する。
 #[derive(Debug)]
-pub struct ImeObserverOutput {
+pub struct ImeUpdate {
     /// 検出された is_japanese_ime（`Some` のときのみ更新すべき）
     pub is_japanese_ime: Option<bool>,
     /// `observer_poll` スロットに書くべき値（`Some` のときのみ書く）
     pub observer_poll: Option<ImeObs>,
     /// miss_count を 1 インクリメントすべきか
     pub increment_miss_count: bool,
-    /// `ime_force_on_guard` を `Inactive` にリセットすべきか
+    /// `force_on_guard` 両フラグと miss_count をリセットすべきか（検出成功時）
     pub clear_force_on_guard: bool,
     /// `input_mode` に適用すべき新しい値（`Some` のときのみ更新すべき）
     pub new_input_mode: Option<InputModeState>,
     /// `prev_conversion_mode` に書くべき値（`Some` のときのみ更新すべき）
     pub new_prev_conversion_mode: Option<u32>,
-    /// ログ用: TSF ネイティブウィンドウだったか
-    pub is_tsf_native_skip: bool,
-    /// ログ用: force_on_guard によりスキップされたか
-    pub force_on_guard_skip: bool,
-    /// ログ用: IME snap の raw フィールド（デバッグ用）
-    pub snap_is_japanese_ime: Option<bool>,
-    pub snap_ime_on: Option<bool>,
-    pub snap_is_romaji: Option<bool>,
-    pub snap_conversion_mode: Option<u32>,
-    pub guard_was_active: bool,
 }
 
-/// `ImeSnapshot` と現在の `Preconditions` の読み取り専用ビューから観測結果を計算する。
+/// `ImeSnapshot` と現在の `Preconditions` の読み取り専用ビューから更新命令を計算する。
 ///
-/// `Preconditions` への書き込みを行わない純粋関数。
+/// `Preconditions` への書き込みを一切行わない純粋関数。
 /// `poll_and_classify_ime()` と `classify_fetched_snapshot()` の共通ロジックを集約。
 pub fn classify_ime_snapshot(
     snap: &crate::ime::ImeSnapshot,
@@ -59,35 +49,35 @@ pub fn classify_ime_snapshot(
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
-) -> ImeObserverOutput {
+) -> ImeUpdate {
     let known_not_japanese = snap.is_japanese_ime == Some(false);
     let guard_active = current_force_on_guard_active;
 
     // ── observer_poll / miss_count / force_on_guard ──────────────────────────────
-    let (observer_poll, increment_miss_count, clear_force_on_guard, is_tsf_native_skip, force_on_guard_skip) =
+    let (observer_poll, increment_miss_count, clear_force_on_guard) =
         if known_not_japanese {
             // 非日本語KB確定: IME アクティブ不可
-            (Some(ImeObs { value: false, ms: now_ms }), false, true, false, false)
+            (Some(ImeObs { value: false, ms: now_ms }), false, true)
         } else if let Some(on) = snap.ime_on {
             // IME 状態検出成功
-            (Some(ImeObs { value: on, ms: now_ms }), false, true, false, false)
+            (Some(ImeObs { value: on, ms: now_ms }), false, true)
         } else if snap.is_tsf_native {
             // TSF ネイティブウィンドウ: 検出不能だが miss_count を増やさない
             log::debug!(
                 "IME detection skipped (TSF-native window), preserving ime_on={}",
                 current_ime_on
             );
-            (None, false, false, true, false)
+            (None, false, false)
         } else if guard_active {
             // 検出失敗かつガード中
             log::debug!(
                 "IME detection failed but force_on_guard active, preserving ime_on={}",
                 current_ime_on
             );
-            (None, false, false, false, true)
+            (None, false, false)
         } else {
             // 検出失敗: miss_count をインクリメント
-            (None, true, false, false, false)
+            (None, true, false)
         };
 
     // ── is_romaji / input_mode ────────────────────────────────────────────────────
@@ -145,27 +135,29 @@ pub fn classify_ime_snapshot(
     // conversion_mode を次回比較用に記録
     let new_prev_conversion_mode = snap.conversion_mode;
 
-    ImeObserverOutput {
+    log::debug!(
+        "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
+        snap.is_japanese_ime,
+        snap.ime_on,
+        snap.is_romaji,
+        snap.conversion_mode.map(|v| format!("0x{v:08X}")),
+        guard_active,
+    );
+
+    ImeUpdate {
         is_japanese_ime: snap.is_japanese_ime,
         observer_poll,
         increment_miss_count,
         clear_force_on_guard,
         new_input_mode,
         new_prev_conversion_mode,
-        is_tsf_native_skip,
-        force_on_guard_skip,
-        snap_is_japanese_ime: snap.is_japanese_ime,
-        snap_ime_on: snap.ime_on,
-        snap_is_romaji: snap.is_romaji,
-        snap_conversion_mode: snap.conversion_mode,
-        guard_was_active: guard_active,
     }
 }
 
-/// Win32 API を使って IME 状態を観測し、`ImeObserverOutput` を返す。
+/// Win32 API を使って IME 状態を観測し、`ImeUpdate` を返す。
 ///
 /// `Preconditions` を直接変更しない。呼び出し元が
-/// `PlatformState::apply_ime_observer_output()` で状態に反映すること。
+/// `PlatformState::apply_ime_update()` で状態に反映すること。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
@@ -174,7 +166,7 @@ pub unsafe fn poll_and_classify_ime(
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
-) -> ImeObserverOutput {
+) -> ImeUpdate {
     // read_ime_state_full は複数のブロッキング IMM32 API を連鎖呼び出しするため、
     // ワーカースレッドでタイムアウト付き実行する（メッセージループハング防止）。
     let snap = crate::ime::read_ime_state_full_with_timeout(std::time::Duration::from_millis(300));
@@ -189,7 +181,7 @@ pub unsafe fn poll_and_classify_ime(
     )
 }
 
-/// IME スナップショットを `ImeObserverOutput` に変換する（純粋 sync）。
+/// IME スナップショットを `ImeUpdate` に変換する（純粋 sync）。
 ///
 /// `poll_and_classify_ime()` から blocking fetch 部分を分離したもの。async drain 後に with_app 内で呼ぶ。
 /// `Preconditions` を直接変更しない。
@@ -200,7 +192,7 @@ pub fn classify_fetched_snapshot(
     current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
-) -> ImeObserverOutput {
+) -> ImeUpdate {
     classify_ime_snapshot(
         snap,
         now_ms,
