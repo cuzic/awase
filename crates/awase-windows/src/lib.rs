@@ -142,10 +142,14 @@ pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
         log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
         return None;
     }
+    // panic 時にも IN_WITH_APP を確実に false に戻す RAII ガード
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) { IN_WITH_APP.with(|flag| flag.set(false)); }
+    }
+    let _guard = Guard;
     // Safety: Windows メッセージループはシングルスレッドであり、再入ガード済み
-    let result = unsafe { APP.with_mut(f) };
-    IN_WITH_APP.with(|flag| flag.set(false));
-    result
+    unsafe { APP.with_mut(f) }
 }
 
 /// `APP` グローバルへの読み取り専用アクセスファサード。

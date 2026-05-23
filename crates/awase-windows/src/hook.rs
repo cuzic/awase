@@ -402,8 +402,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 vk.0,
                 event.event_type,
             );
-            crate::INPUT_DEFER.push(event);
-            crate::tsf::probe_bridge::post_drain_output_queue();
+            crate::INPUT_DEFER.defer_during_with_app(event);
             return LRESULT(1); // Consumed — NICOLA 処理後に drain で再配送
         }
 

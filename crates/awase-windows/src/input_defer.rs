@@ -24,11 +24,6 @@ impl InputDeferQueue {
         Self { queue: Mutex::new(Vec::new()) }
     }
 
-    /// classify 済みイベントをキューに積む。drain は呼び出し元が担う。
-    pub fn push(&self, event: RawKeyEvent) {
-        if let Ok(mut q) = self.queue.lock() { q.push(event); }
-    }
-
     /// `OUTPUT_GATE.active` = true のときフックから呼ぶ。
     /// drain は `OutputActiveGuard::drop` が担うため post しない。
     pub fn defer_during_output(&self, event: RawKeyEvent) {
