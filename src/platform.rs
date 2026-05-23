@@ -97,6 +97,17 @@ pub trait ImeDetector {
 
 // ─── CompositionOutput Trait ─────────────────────────────────
 
+/// composition context が cold になる理由（プラットフォーム非依存）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformColdReason {
+    /// フォーカス変更
+    FocusChange,
+    /// Enter/Space/Escape（composition 確定・キャンセル）
+    ConfirmKey,
+    /// IME ON/OFF 操作
+    ImeToggle,
+}
+
 /// IME composition context を管理する抽象インターフェース。
 ///
 /// 各プラットフォーム（Windows TSF / macOS InputMethod / Linux IBus 等）が
@@ -104,12 +115,12 @@ pub trait ImeDetector {
 /// composition 状態を操作できる。
 ///
 /// # cold になるタイミング
-/// awase エンジンは以下のイベントで cold を通知する:
-/// - `mark_cold_focus_change`: フォーカス変更
-/// - `mark_cold_confirm_key`: Enter/Space/Escape（composition 確定・キャンセル）
-/// - `mark_cold_ime_toggle`: IME ON/OFF 操作
+/// awase エンジンは `mark_cold(reason)` で cold 化を通知する:
+/// - `PlatformColdReason::FocusChange`: フォーカス変更
+/// - `PlatformColdReason::ConfirmKey`: Enter/Space/Escape
+/// - `PlatformColdReason::ImeToggle`: IME ON/OFF 操作
 ///
-/// Windows TSF 実装は各メソッドを `ColdReason::FocusChange` 等にマップする。
+/// Windows TSF 実装は各 reason を `ColdReason::*` にマップする。
 /// macOS/Linux 実装は自身のセマンティクスに従って実装する。
 pub trait CompositionOutput {
     /// ローマ字文字列を composition 経由で送信する。
@@ -121,14 +132,8 @@ pub trait CompositionOutput {
     /// composition context が warm（受け付け可能）かどうかを返す。
     fn is_composition_warm(&self) -> bool;
 
-    /// フォーカス変更による composition context の cold 化を通知する。
-    fn mark_cold_focus_change(&self);
-
-    /// Enter/Space/Escape による composition 確定・キャンセルを通知する。
-    fn mark_cold_confirm_key(&self);
-
-    /// IME ON/OFF 操作による composition context の cold 化を通知する。
-    fn mark_cold_ime_toggle(&self);
+    /// composition context を cold 化する。
+    fn mark_cold(&self, reason: PlatformColdReason);
 
     /// 最後に apply_ime_open に渡した値をラッチに記録する（shadow 追跡用）。
     fn set_ime_apply_latch(&self, open: bool);
