@@ -25,7 +25,7 @@ pub const TIMER_PENDING: usize = 1;
 pub const TIMER_SPECULATIVE: usize = 2;
 
 /// AdaptiveTiming モードで連続打鍵と判定する閾値（マイクロ秒）
-pub const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
+pub(super) const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
 
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
@@ -63,7 +63,7 @@ fn romaji_of(action: &KeyAction) -> String {
 }
 
 /// `OutputUpdate::Record` を生成するヘルパー
-pub fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
+pub(super) fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
     OutputUpdate::Record(OutputRecord {
         scan_code,
         romaji: romaji_of(action),

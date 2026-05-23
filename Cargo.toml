@@ -27,6 +27,7 @@ smallvec = "1.15.1"
 unsafe_code = "warn"
 unused_qualifications = "warn"
 missing_debug_implementations = "warn"
+unreachable_pub = "warn"
 
 [lints.clippy]
 # 最大限厳しい lint グループを有効化

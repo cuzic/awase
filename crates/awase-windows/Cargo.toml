@@ -52,6 +52,7 @@ features = [
 unsafe_code = "warn"
 unused_qualifications = "warn"
 missing_debug_implementations = "warn"
+unreachable_pub = "warn"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
