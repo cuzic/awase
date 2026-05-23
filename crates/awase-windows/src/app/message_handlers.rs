@@ -30,8 +30,8 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         Some(id) if id == TIMER_IME_REFRESH => {
             // sync な部分（blocking なし）
             hook::sync_sent_to_engine(&mut app.platform_state.hook);
-            if app.platform_state.ime_guard.active
-                || !app.platform_state.ime_guard.deferred_keys.is_empty()
+            if app.platform_state.ime_gate.active
+                || !app.platform_state.ime_gate.deferred_keys.is_empty()
             {
                 app.process_deferred_keys();
             }
@@ -130,8 +130,8 @@ pub(super) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
 
 /// WM_IME_KEY_DETECTED ハンドラ
 pub(super) unsafe fn handle_wm_ime_key_detected(app: &mut Runtime) {
-    if app.platform_state.ime_guard.active
-        || !app.platform_state.ime_guard.deferred_keys.is_empty()
+    if app.platform_state.ime_gate.active
+        || !app.platform_state.ime_gate.deferred_keys.is_empty()
     {
         app.process_deferred_keys();
     } else {
