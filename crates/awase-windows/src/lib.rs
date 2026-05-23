@@ -6,7 +6,7 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
-    // SingleThreadCell は &self → &mut T を返すが、シングルスレッド保証下で安全
+    // hook.rs 内の局所 SingleThreadCell が &self → &mut T を使用（シングルスレッド保証下で安全）
     clippy::mut_from_ref,
     // コールバック型定義が複雑になるのは Win32 API の設計上避けられない
     clippy::type_complexity
@@ -117,48 +117,29 @@ pub static RAW_TSF_LITERAL: RawTsfLiteralPending = RawTsfLiteralPending::new();
 /// APP グローバル — シングルスレッド専用
 pub static APP: SingleThreadCell<Runtime> = SingleThreadCell::new();
 
-// with_app の再入検出フラグ。
-// ネストした GetMessageA ループ（block_on 等）経由での再入を検出し、UB を回避する。
-std::thread_local! {
-    static IN_WITH_APP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 /// `APP` グローバルへの集約アクセスポイント。
 ///
-/// `APP.get_mut()` の呼び出しをすべてここに集約し、unsafe 契約を一元管理する。
-/// 呼び出し側では `unsafe` ブロックが不要になる。
-///
-/// 再入を検出した場合は `log::error!` を出力して `None` を返す（UB を回避）。
-///
-/// # Safety (module-level contract)
-/// awase-windows はすべての呼び出しが Windows メッセージループスレッドからのみ行われる。
-/// この保証により `SingleThreadCell::with_mut` の unsafe 要件が満たされる。
+/// `RefCell` の実行時借用チェックにより再入を安全に検出する。
+/// 再入を検出した場合は `log::warn!` を出力して `None` を返す（UB なし）。
 #[must_use = "再入時は None を返す。消えてはいけないメッセージには with_app_or_repost を、\
 意図的に捨てる場合は `let _ = with_app(...)` を使うこと"]
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
-    let already_in = IN_WITH_APP.with(|flag| flag.replace(true));
-    if already_in {
-        // SendMessage (cross-process IME) や block_on のネストメッセージループ経由で
-        // win_event_proc などの外部コールバックから再呼び出しされた場合。
-        // debug_assert はここに置かない: win_event_proc は extern "system" FFI 境界であり、
-        // panic を FFI 越えに伝播させると UB / プロセスクラッシュになる。
-        log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
-        return None;
+    match APP.try_borrow_mut() {
+        Some(mut guard) => guard.as_mut().map(f),
+        None => {
+            // SendMessage (cross-process IME) や block_on のネストメッセージループ経由で
+            // win_event_proc などの外部コールバックから再呼び出しされた場合。
+            // extern "system" FFI 境界を越えて panic を伝播させると UB になるため、
+            // ここでは警告に留めて None を返す。
+            log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
+            None
+        }
     }
-    // panic 時にも IN_WITH_APP を確実に false に戻す RAII ガード
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) { IN_WITH_APP.with(|flag| flag.set(false)); }
-    }
-    let _guard = Guard;
-    // Safety: Windows メッセージループはシングルスレッドであり、再入ガード済み
-    unsafe { APP.with_mut(f) }
 }
 
 /// `APP` グローバルへの読み取り専用アクセスファサード。
 pub fn with_app_ref<R>(f: impl FnOnce(&Runtime) -> R) -> Option<R> {
-    // Safety: Windows メッセージループはシングルスレッドである
-    unsafe { APP.with(f) }
+    APP.with(f)
 }
 
 /// `with_app` を呼び、再入で `None` が返った場合は `msg` を自スレッドのキューに再 post する。
@@ -179,13 +160,13 @@ pub fn with_app_or_repost_with(msg: u32, wparam: usize, lparam: isize, f: impl F
     }
 }
 
-/// `with_app` が現在アクティブかどうかを返す。
+/// `with_app` が現在アクティブかどうかを返す（APP が排他借用中かどうか）。
 ///
-/// `hook_callback` が `SendMessageTimeoutW` 等のメッセージポンプ経由で再呼び出しされた際に
-/// `APP.get_mut()` を呼ぶと `&mut Runtime` が二重に存在し UB となる。
-/// このガードで早期リターンすることで UB を防ぐ。
+/// フックコールバックが `SendMessageTimeoutW` 等のネストメッセージループ経由で
+/// 再呼び出しされた場合に `true` を返す。呼び出し元はキーを INPUT_DEFER に
+/// 退避してから処理を終える。
 pub fn in_with_app() -> bool {
-    IN_WITH_APP.with(|flag| flag.get())
+    APP.is_borrowed_mut()
 }
 
 /// 統合 IME リフレッシュタイマー ID

@@ -329,30 +329,28 @@ pub(super) fn initialize_app(
         .and_then(awase_windows::vk::vk_name_to_code)
         .map(|v| v.0);
 
-    // SAFETY: APP.set() and RAPID_IME_TIMESTAMPS.set() are called once on the main thread before
-    // the message loop starts; SingleThreadCell guarantees exclusive access.
-    unsafe {
-        APP.set(Runtime {
-            engine,
-            executor: executor::DecisionExecutor::new(
-                platform::WindowsPlatform {
-                    output: Output::new(config.general.output_mode),
-                    tray,
-                    focus: runtime::AppKindClassifier::new(config.app_overrides.clone()),
-                    timer: awase_windows::timer::Win32Timer::new(),
-                    engine_on_ime_vk,
-                    engine_off_ime_vk,
-                },
-                config.general.hook_mode,
-            ),
-            layouts,
-            sync_toggle_keys,
-            sync_on_keys,
-            sync_off_keys,
-            platform_state: ps,
-        });
-        RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
-    }
+    // APP.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
+    // RefCell が排他借用中でないことは構造的に保証されている。
+    APP.set(Runtime {
+        engine,
+        executor: executor::DecisionExecutor::new(
+            platform::WindowsPlatform {
+                output: Output::new(config.general.output_mode),
+                tray,
+                focus: runtime::AppKindClassifier::new(config.app_overrides.clone()),
+                timer: awase_windows::timer::Win32Timer::new(),
+                engine_on_ime_vk,
+                engine_off_ime_vk,
+            },
+            config.general.hook_mode,
+        ),
+        layouts,
+        sync_toggle_keys,
+        sync_on_keys,
+        sync_off_keys,
+        platform_state: ps,
+    });
+    RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
 }
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
@@ -362,10 +360,8 @@ pub(super) fn initialize_ime_cache() {
 
 /// クリーンアップ処理（フック解除は HookGuard の Drop で行われる）
 pub(super) fn cleanup() {
-    // SAFETY: APP is a SingleThreadCell; cleanup() is called from the main thread after the message loop exits.
-    unsafe {
-        APP.clear();
-    }
+    // cleanup() はメッセージループ終了後にメインスレッドから呼ばれる。
+    APP.clear();
     log::info!("Exited cleanly.");
 }
 
