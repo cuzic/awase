@@ -249,7 +249,7 @@ pub unsafe fn reinject_key(event: &RawKeyEvent) {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(event.vk_code.0),
+                wVk: VIRTUAL_KEY(u16::from(event.vk_code)),
                 wScan: 0,
                 dwFlags: if is_keyup {
                     KEYEVENTF_KEYUP

@@ -524,12 +524,12 @@ impl Output {
                     self.send_key(special_key_to_vk(*sk), false);
                 }
                 KeyAction::Key(vk) => {
-                    log::debug!("  → Key(0x{:04X})", vk.0);
-                    self.send_key(vk.0, false);
+                    log::debug!("  → Key(0x{:04X})", u16::from(*vk));
+                    self.send_key(u16::from(*vk), false);
                 }
                 KeyAction::KeyUp(vk) => {
-                    log::debug!("  → KeyUp(0x{:04X})", vk.0);
-                    self.send_key(vk.0, true);
+                    log::debug!("  → KeyUp(0x{:04X})", u16::from(*vk));
+                    self.send_key(u16::from(*vk), true);
                 }
                 KeyAction::Char(ch) => {
                     log::debug!("  → Char('{ch}') via {}", sender.mode_label());

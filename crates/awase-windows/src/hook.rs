@@ -19,8 +19,8 @@ use awase::types::{
 pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
     use crate::vk;
 
-    let left_thumb = VkCode(config.left_thumb_vk);
-    let right_thumb = VkCode(config.right_thumb_vk);
+    let left_thumb = VkCode::new(config.left_thumb_vk);
+    let right_thumb = VkCode::new(config.right_thumb_vk);
 
     if vk == left_thumb {
         (KeyClassification::LeftThumb, None)
@@ -37,7 +37,7 @@ pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClas
 
 /// Windows VK コードから修飾キー分類を生成する
 pub const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
-    match vk.0 {
+    match vk.as_u16() {
         0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
         0x11 | 0xA2 | 0xA3 => Some(ModifierKey::Ctrl),
         0x12 | 0xA4 | 0xA5 => Some(ModifierKey::Alt),
@@ -445,8 +445,8 @@ unsafe fn decide_routing_with_tracking(
 fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
     log::trace!(
         "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → {}",
-        event.vk_code.0,
-        event.scan_code.0,
+        u16::from(event.vk_code),
+        u32::from(event.scan_code),
         event.event_type,
         if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
     );
@@ -456,8 +456,8 @@ fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
     if matches!(event.key_classification, KeyClassification::Passthrough) {
         log::debug!(
             "[hook-passthrough] vk={:#04x} scan={:#06x} type={:?} route={}",
-            event.vk_code.0,
-            event.scan_code.0,
+            u16::from(event.vk_code),
+            u32::from(event.scan_code),
             event.event_type,
             if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
         );
@@ -543,7 +543,7 @@ unsafe fn defer_key_during_with_app(vk: VkCode, scan: ScanCode, is_keydown: bool
     let (key_classification, physical_pos) = classify_key(vk, scan, config);
     let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
     let event = build_raw_key_event(vk, scan, is_keydown, extra_info, key_classification, physical_pos, modifier_snapshot);
-    log::debug!("[in-with-app] queuing vk=0x{:02X} {:?}", vk.0, event.event_type);
+    log::debug!("[in-with-app] queuing vk=0x{:02X} {:?}", u16::from(vk), event.event_type);
     crate::INPUT_DEFER.defer_during_with_app(event);
 }
 
@@ -554,8 +554,8 @@ unsafe fn defer_key_during_with_app(vk: VkCode, scan: ScanCode, is_keydown: bool
 unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
     let vk_raw = kb.vkCode as u16;
-    let vk = VkCode(vk_raw);
-    let scan = ScanCode(kb.scanCode);
+    let vk = VkCode::new(vk_raw);
+    let scan = ScanCode::new(kb.scanCode);
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
 
     // ── 自己注入チェック（無限ループ防止）──

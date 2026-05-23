@@ -147,8 +147,8 @@ mod tests {
 
     // ── このファイル固有の定数 ────────────────────────────────────────────────
 
-    const VK_RETURN: VkCode = VkCode(0x0D);
-    const SCAN_RETURN: ScanCode = ScanCode(0x1C);
+    const VK_RETURN: VkCode = VkCode::new(0x0D);
+    const SCAN_RETURN: ScanCode = ScanCode::new(0x1C);
 
     /// テスト用の FsmAdapter (Wait モード) を生成する。
     fn make_adapter() -> FsmAdapter {

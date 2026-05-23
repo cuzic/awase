@@ -58,7 +58,7 @@ impl ImeCoordinator {
             if is_sync_key {
                 // Set guard — next keys will be buffered
                 self.guard.set_guard(true);
-                log::debug!("IME toggle guard ON (vk=0x{:02X})", event.vk_code.0);
+                log::debug!("IME toggle guard ON (vk=0x{:02X})", u16::from(event.vk_code));
                 // Prepend any accumulated effects, then pass through
                 let all_effects = std::mem::take(effects);
                 // pass through: let IME process the toggle
@@ -76,7 +76,7 @@ impl ImeCoordinator {
             // Guard clear on KeyUp of sync key.
             if !is_key_down && event.ime_relevance.is_sync_key {
                 self.guard.set_guard(false);
-                log::debug!("IME toggle guard OFF (vk=0x{:02X})", event.vk_code.0);
+                log::debug!("IME toggle guard OFF (vk=0x{:02X})", u16::from(event.vk_code));
                 effects.push(Effect::Ime(ImeEffect::RequestRefresh));
                 // sync key の KeyUp は素通し（OS に IME トグルを処理させる）
                 let all_effects = std::mem::take(effects);
@@ -133,8 +133,8 @@ mod tests {
 
     fn make_event(event_type: KeyEventType) -> RawKeyEvent {
         RawKeyEvent {
-            vk_code: VkCode(0),
-            scan_code: ScanCode(0),
+            vk_code: VkCode::new(0),
+            scan_code: ScanCode::new(0),
             event_type,
             extra_info: 0,
             timestamp: 0,

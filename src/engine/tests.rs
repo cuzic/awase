@@ -17,32 +17,32 @@ type Resp = Response<KeyAction, usize>;
 //    SCAN_A, SCAN_S, SCAN_NONCONVERT, SCAN_CONVERT, POS_A, POS_S, lit(), make_layout() ──
 
 // VK code constants specific to this test file
-const VK_RETURN: VkCode = VkCode(0x0D);
-const VK_SHIFT: VkCode = VkCode(0x10);
-const VK_LSHIFT: VkCode = VkCode(0xA0);
-const VK_RSHIFT: VkCode = VkCode(0xA1);
-const VK_CTRL: VkCode = VkCode(0x11);
-const VK_LCTRL: VkCode = VkCode(0xA2);
-const VK_ALT: VkCode = VkCode(0x12);
-const VK_LALT: VkCode = VkCode(0xA4);
-const VK_D: VkCode = VkCode(0x44);
-const VK_F: VkCode = VkCode(0x46);
-const VK_C: VkCode = VkCode(0x43);
-const VK_V: VkCode = VkCode(0x56);
+const VK_RETURN: VkCode = VkCode::new(0x0D);
+const VK_SHIFT: VkCode = VkCode::new(0x10);
+const VK_LSHIFT: VkCode = VkCode::new(0xA0);
+const VK_RSHIFT: VkCode = VkCode::new(0xA1);
+const VK_CTRL: VkCode = VkCode::new(0x11);
+const VK_LCTRL: VkCode = VkCode::new(0xA2);
+const VK_ALT: VkCode = VkCode::new(0x12);
+const VK_LALT: VkCode = VkCode::new(0xA4);
+const VK_D: VkCode = VkCode::new(0x44);
+const VK_F: VkCode = VkCode::new(0x46);
+const VK_C: VkCode = VkCode::new(0x43);
+const VK_V: VkCode = VkCode::new(0x56);
 
 // Scan code constants specific to this test file
-const SCAN_D: ScanCode = ScanCode(0x20);
-const SCAN_F: ScanCode = ScanCode(0x21);
-const SCAN_C: ScanCode = ScanCode(0x2E);
-const SCAN_V: ScanCode = ScanCode(0x2F);
-const SCAN_RETURN: ScanCode = ScanCode(0x1C);
-const SCAN_SHIFT: ScanCode = ScanCode(0x2A);
-const SCAN_LSHIFT: ScanCode = ScanCode(0x2A);
-const SCAN_RSHIFT: ScanCode = ScanCode(0x36);
-const SCAN_CTRL: ScanCode = ScanCode(0x1D);
-const SCAN_LCTRL: ScanCode = ScanCode(0x1D);
-const SCAN_ALT: ScanCode = ScanCode(0x38);
-const SCAN_LALT: ScanCode = ScanCode(0x38);
+const SCAN_D: ScanCode = ScanCode::new(0x20);
+const SCAN_F: ScanCode = ScanCode::new(0x21);
+const SCAN_C: ScanCode = ScanCode::new(0x2E);
+const SCAN_V: ScanCode = ScanCode::new(0x2F);
+const SCAN_RETURN: ScanCode = ScanCode::new(0x1C);
+const SCAN_SHIFT: ScanCode = ScanCode::new(0x2A);
+const SCAN_LSHIFT: ScanCode = ScanCode::new(0x2A);
+const SCAN_RSHIFT: ScanCode = ScanCode::new(0x36);
+const SCAN_CTRL: ScanCode = ScanCode::new(0x1D);
+const SCAN_LCTRL: ScanCode = ScanCode::new(0x1D);
+const SCAN_ALT: ScanCode = ScanCode::new(0x38);
+const SCAN_LALT: ScanCode = ScanCode::new(0x38);
 
 /// PhysicalPos for D key (row=2, col=2)
 const POS_D: PhysicalPos = PhysicalPos::new(2, 2);
@@ -226,7 +226,7 @@ fn vk_to_scan(vk: VkCode) -> ScanCode {
         VK_LCTRL => SCAN_LCTRL,
         VK_ALT => SCAN_ALT,
         VK_LALT => SCAN_LALT,
-        _ => ScanCode(0),
+        _ => ScanCode::new(0),
     }
 }
 
@@ -984,7 +984,7 @@ fn test_nicola_state_stores_scan_code() {
     // Create a key event with a specific scan code
     let event = RawKeyEvent {
         vk_code: VK_A,
-        scan_code: ScanCode(0x1E), // A key scan code
+        scan_code: ScanCode::new(0x1E), // A key scan code
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 0,
@@ -1004,7 +1004,7 @@ fn test_nicola_state_stores_scan_code() {
     };
     assert_eq!(
         pending.scan_code,
-        ScanCode(0x1E),
+        ScanCode::new(0x1E),
         "scan_code should be preserved in pending_char"
     );
 }
@@ -1016,7 +1016,7 @@ fn test_pending_char_thumb_stores_char_scan() {
 
     let char_event = RawKeyEvent {
         vk_code: VK_A,
-        scan_code: ScanCode(0x1E),
+        scan_code: ScanCode::new(0x1E),
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 0,
@@ -1030,7 +1030,7 @@ fn test_pending_char_thumb_stores_char_scan() {
 
     let thumb_event = RawKeyEvent {
         vk_code: VK_CONVERT,
-        scan_code: ScanCode(0x79), // Convert key scan code
+        scan_code: ScanCode::new(0x79), // Convert key scan code
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: 30_000,
@@ -1048,7 +1048,7 @@ fn test_pending_char_thumb_stores_char_scan() {
     };
     assert_eq!(
         char_key.scan_code,
-        ScanCode(0x1E),
+        ScanCode::new(0x1E),
         "char_scan should be preserved in pending_char"
     );
 }
@@ -1208,8 +1208,8 @@ fn test_toggle_enabled_flushes_pending() {
 
 // ── IME 制御キーのフラッシュ＋パススルー ──
 
-const VK_KANJI: VkCode = VkCode(0x19); // 半角/全角キー
-const SCAN_KANJI: ScanCode = ScanCode(0x29);
+const VK_KANJI: VkCode = VkCode::new(0x19); // 半角/全角キー
+const SCAN_KANJI: ScanCode = ScanCode::new(0x29);
 
 #[test]
 fn test_ime_control_key_passes_through_from_idle() {
@@ -2564,7 +2564,7 @@ fn test_ngram_predictive_high_normal_score_uses_speculative() {
     // Seed output_history so that bigram ('あ', 'う') has a high score
     // Normal face for A key = 'う', left_thumb = 'を', right_thumb = 'ゔ'
     engine.output_history.push(OutputEntry {
-        scan_code: ScanCode(0),
+        scan_code: ScanCode::new(0),
         romaji: String::new(),
         kana: Some('あ'),
         action: KeyAction::Char('あ'),
@@ -2600,7 +2600,7 @@ fn test_ngram_predictive_high_thumb_score_uses_wait() {
 
     // Seed output_history so that thumb face kana has high score
     engine.output_history.push(OutputEntry {
-        scan_code: ScanCode(0),
+        scan_code: ScanCode::new(0),
         romaji: String::new(),
         kana: Some('あ'),
         action: KeyAction::Char('あ'),

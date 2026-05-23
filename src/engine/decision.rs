@@ -590,8 +590,8 @@ mod tests {
 
         let mut buf = KeyBuffer::new();
         let raw = RawKeyEvent {
-            vk_code: VkCode(0x41),
-            scan_code: crate::types::ScanCode(0x1E),
+            vk_code: VkCode::new(0x41),
+            scan_code: crate::types::ScanCode::new(0x1E),
             event_type: crate::types::KeyEventType::KeyDown,
             extra_info: 0,
             timestamp: 0,

@@ -91,8 +91,8 @@ mod tests {
 
     fn make_event(vk: u16, event_type: KeyEventType) -> RawKeyEvent {
         RawKeyEvent {
-            vk_code: VkCode(vk),
-            scan_code: ScanCode(0),
+            vk_code: VkCode::new(vk),
+            scan_code: ScanCode::new(0),
             event_type,
             extra_info: 0,
             timestamp: 0,
@@ -112,14 +112,14 @@ mod tests {
         lc.on_key_down_consumed(&event);
         assert_eq!(lc.active_count(), 1);
 
-        assert!(lc.on_key_up(VkCode(0x41)));
+        assert!(lc.on_key_up(VkCode::new(0x41)));
         assert_eq!(lc.active_count(), 0);
     }
 
     #[test]
     fn non_consumed_key_up_passes_through() {
         let mut lc = KeyLifecycle::new();
-        assert!(!lc.on_key_up(VkCode(0x41)));
+        assert!(!lc.on_key_up(VkCode::new(0x41)));
     }
 
     #[test]
@@ -153,8 +153,8 @@ mod tests {
         for evt in &flushed {
             assert_eq!(evt.event_type, KeyEventType::KeyUp);
         }
-        assert_eq!(flushed[0].vk_code, VkCode(0x41));
-        assert_eq!(flushed[1].vk_code, VkCode(0x42));
+        assert_eq!(flushed[0].vk_code, VkCode::new(0x41));
+        assert_eq!(flushed[1].vk_code, VkCode::new(0x42));
     }
 
     #[test]
@@ -162,7 +162,7 @@ mod tests {
         let mut lc = KeyLifecycle::new();
         // Consume key 0x41 but ask about 0x42
         lc.on_key_down_consumed(&make_event(0x41, KeyEventType::KeyDown));
-        assert!(!lc.on_key_up(VkCode(0x42)));
+        assert!(!lc.on_key_up(VkCode::new(0x42)));
         // 0x41 still active
         assert_eq!(lc.active_count(), 1);
     }
@@ -190,13 +190,13 @@ mod tests {
         // First cycle: consume then key_up
         lc.on_key_down_consumed(&event);
         assert_eq!(lc.active_count(), 1);
-        assert!(lc.on_key_up(VkCode(0x41)));
+        assert!(lc.on_key_up(VkCode::new(0x41)));
         assert_eq!(lc.active_count(), 0);
 
         // Second cycle: consume same key again
         lc.on_key_down_consumed(&event);
         assert_eq!(lc.active_count(), 1);
-        assert!(lc.on_key_up(VkCode(0x41)));
+        assert!(lc.on_key_up(VkCode::new(0x41)));
         assert_eq!(lc.active_count(), 0);
     }
 }

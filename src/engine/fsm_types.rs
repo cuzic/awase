@@ -411,8 +411,8 @@ mod tests {
 
     fn make_raw_key_event(event_type: KeyEventType, modifier_key: Option<ModifierKey>) -> RawKeyEvent {
         RawKeyEvent {
-            vk_code: VkCode(0x41),
-            scan_code: ScanCode(0x1E),
+            vk_code: VkCode::new(0x41),
+            scan_code: ScanCode::new(0x1E),
             event_type,
             extra_info: 0,
             timestamp: 1000,
@@ -646,8 +646,8 @@ mod tests {
 
     fn make_pending_key() -> PendingKey {
         PendingKey {
-            scan_code: ScanCode(0x1E),
-            vk_code: VkCode(0x41),
+            scan_code: ScanCode::new(0x1E),
+            vk_code: VkCode::new(0x41),
             pos: Some(PhysicalPos { row: 1, col: 2 }),
             timestamp: 1000,
         }
@@ -655,8 +655,8 @@ mod tests {
 
     fn make_pending_thumb_data(is_left: bool) -> PendingThumbData {
         PendingThumbData {
-            scan_code: ScanCode(0x39),
-            vk_code: VkCode(0x20),
+            scan_code: ScanCode::new(0x39),
+            vk_code: VkCode::new(0x20),
             is_left,
             timestamp: 2000,
         }
@@ -818,7 +818,7 @@ mod tests {
     fn output_update_record_variant() {
         use crate::types::KeyAction;
         let record = OutputRecord {
-            scan_code: ScanCode(0x1E),
+            scan_code: ScanCode::new(0x1E),
             romaji: "a".to_string(),
             kana: Some('あ'),
             action: KeyAction::Char('a'),
@@ -831,7 +831,7 @@ mod tests {
     fn output_update_retract_and_record_variant() {
         use crate::types::KeyAction;
         let record = OutputRecord {
-            scan_code: ScanCode(0x1E),
+            scan_code: ScanCode::new(0x1E),
             romaji: "ka".to_string(),
             kana: Some('か'),
             action: KeyAction::Romaji("ka".to_string()),
@@ -846,13 +846,13 @@ mod tests {
     fn output_record_clone() {
         use crate::types::KeyAction;
         let r = OutputRecord {
-            scan_code: ScanCode(42),
+            scan_code: ScanCode::new(42),
             romaji: "ni".to_string(),
             kana: Some('に'),
             action: KeyAction::Romaji("ni".to_string()),
         };
         let r2 = r.clone();
-        assert_eq!(r2.scan_code, ScanCode(42));
+        assert_eq!(r2.scan_code, ScanCode::new(42));
         assert_eq!(r2.romaji, "ni");
         assert_eq!(r2.kana, Some('に'));
     }
@@ -861,7 +861,7 @@ mod tests {
     fn output_record_no_kana() {
         use crate::types::KeyAction;
         let r = OutputRecord {
-            scan_code: ScanCode(1),
+            scan_code: ScanCode::new(1),
             romaji: String::new(),
             kana: None,
             action: KeyAction::Suppress,
@@ -874,8 +874,8 @@ mod tests {
     #[test]
     fn pending_key_with_pos() {
         let pk = make_pending_key();
-        assert_eq!(pk.scan_code, ScanCode(0x1E));
-        assert_eq!(pk.vk_code, VkCode(0x41));
+        assert_eq!(pk.scan_code, ScanCode::new(0x1E));
+        assert_eq!(pk.vk_code, VkCode::new(0x41));
         assert!(pk.pos.is_some());
         assert_eq!(pk.timestamp, 1000);
     }
@@ -883,8 +883,8 @@ mod tests {
     #[test]
     fn pending_key_without_pos() {
         let pk = PendingKey {
-            scan_code: ScanCode(0x01),
-            vk_code: VkCode(0x10),
+            scan_code: ScanCode::new(0x01),
+            vk_code: VkCode::new(0x10),
             pos: None,
             timestamp: 500,
         };
@@ -897,7 +897,7 @@ mod tests {
     fn pending_thumb_data_left() {
         let td = make_pending_thumb_data(true);
         assert!(td.is_left);
-        assert_eq!(td.vk_code, VkCode(0x20));
+        assert_eq!(td.vk_code, VkCode::new(0x20));
         assert_eq!(td.timestamp, 2000);
     }
 
@@ -914,8 +914,8 @@ mod tests {
         let ev = ClassifiedEvent {
             key_class: KeyClass::Char,
             pos: Some(PhysicalPos { row: 0, col: 3 }),
-            scan_code: ScanCode(0x20),
-            vk_code: VkCode(0x48),
+            scan_code: ScanCode::new(0x20),
+            vk_code: VkCode::new(0x48),
             timestamp: 3000,
             is_ime_control: false,
         };
@@ -929,8 +929,8 @@ mod tests {
         let ev = ClassifiedEvent {
             key_class: KeyClass::LeftThumb,
             pos: None,
-            scan_code: ScanCode(0x39),
-            vk_code: VkCode(0x20),
+            scan_code: ScanCode::new(0x39),
+            vk_code: VkCode::new(0x20),
             timestamp: 4000,
             is_ime_control: false,
         };
@@ -943,8 +943,8 @@ mod tests {
         let ev = ClassifiedEvent {
             key_class: KeyClass::Passthrough,
             pos: None,
-            scan_code: ScanCode(0x70),
-            vk_code: VkCode(0xF3),
+            scan_code: ScanCode::new(0x70),
+            vk_code: VkCode::new(0xF3),
             timestamp: 5000,
             is_ime_control: true,
         };
@@ -1033,8 +1033,8 @@ mod tests {
         let remaining = ClassifiedEvent {
             key_class: KeyClass::Char,
             pos: None,
-            scan_code: ScanCode(1),
-            vk_code: VkCode(1),
+            scan_code: ScanCode::new(1),
+            vk_code: VkCode::new(1),
             timestamp: 0,
             is_ime_control: false,
         };

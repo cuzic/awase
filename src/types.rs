@@ -5,7 +5,19 @@ pub type Timestamp = u64;
 ///
 /// Engine はこの値を直接検査しない。再注入・ログ出力等でプラットフォーム層に返すために保持する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VkCode(pub u16);
+pub struct VkCode(u16);
+
+impl VkCode {
+    #[must_use]
+    pub const fn new(v: u16) -> Self {
+        Self(v)
+    }
+
+    #[must_use]
+    pub const fn as_u16(self) -> u16 {
+        self.0
+    }
+}
 
 impl From<u16> for VkCode {
     fn from(v: u16) -> Self {
@@ -22,7 +34,19 @@ impl From<VkCode> for u16 {
 ///
 /// Engine はこの値を直接検査しない。プラットフォーム層が `PhysicalPos` に変換済み。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ScanCode(pub u32);
+pub struct ScanCode(u32);
+
+impl ScanCode {
+    #[must_use]
+    pub const fn new(v: u32) -> Self {
+        Self(v)
+    }
+
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
 
 impl From<u32> for ScanCode {
     fn from(v: u32) -> Self {

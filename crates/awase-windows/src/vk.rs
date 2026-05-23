@@ -54,7 +54,7 @@ impl ImeKeyKind {
     /// VK コードから `ImeKeyKind` への変換。該当しなければ `None`。
     #[must_use]
     pub const fn from_vk(vk: VkCode) -> Option<Self> {
-        match vk.0 {
+        match vk.as_u16() {
             0x15 => Some(Self::Kana),
             0x16 => Some(Self::ImeOn),
             0x17 => Some(Self::Junja),
@@ -91,14 +91,14 @@ pub const fn may_change_ime(vk_code: VkCode) -> bool {
     if is_ime_control(vk_code) {
         return true;
     }
-    matches!(vk_code.0, 0xF0..=0xF5)
+    matches!(vk_code.as_u16(), 0xF0..=0xF5)
 }
 
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
 #[must_use]
 pub const fn is_passthrough(vk_code: VkCode) -> bool {
     matches!(
-        vk_code.0,
+        vk_code.as_u16(),
         0x10 | 0x11 | 0x12 |
         0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5 |
         0x5B | 0x5C |
@@ -121,14 +121,14 @@ pub const fn is_passthrough(vk_code: VkCode) -> bool {
 /// IME 制御キーかどうかを判定する。
 #[must_use]
 pub const fn is_ime_control(vk_code: VkCode) -> bool {
-    matches!(vk_code.0, 0x15 | 0x16 | 0x17 | 0x19 | 0x1A | 0xE5)
+    matches!(vk_code.as_u16(), 0x15 | 0x16 | 0x17 | 0x19 | 0x1A | 0xE5)
 }
 
 /// IME コンテキストキーかどうかを判定する。
 #[must_use]
 pub const fn is_ime_context(vk_code: VkCode) -> bool {
     matches!(
-        vk_code.0,
+        vk_code.as_u16(),
         0x15 | 0x16 | 0x17 | 0x19 | 0x1A | 0x1C | 0x1D | 0xE5
     )
 }
@@ -138,9 +138,9 @@ pub const fn is_ime_context(vk_code: VkCode) -> bool {
 pub fn is_modifier_free_char(vk_code: VkCode, os_modifier_held: bool) -> bool {
     !is_ime_control(vk_code)
         && !is_passthrough(vk_code)
-        && vk_code != VkCode(0x1C)
-        && vk_code != VkCode(0x1D)
-        && vk_code != VkCode(0x08)
+        && vk_code != VkCode::new(0x1C)
+        && vk_code != VkCode::new(0x1D)
+        && vk_code != VkCode::new(0x08)
         && !os_modifier_held
 }
 
@@ -156,93 +156,93 @@ pub fn is_browser_or_electron_class(class_name: &str) -> bool {
 #[must_use]
 pub fn vk_name_to_code(name: &str) -> Option<VkCode> {
     match name {
-        "VK_A" => Some(VkCode(0x41)),
-        "VK_B" => Some(VkCode(0x42)),
-        "VK_C" => Some(VkCode(0x43)),
-        "VK_D" => Some(VkCode(0x44)),
-        "VK_E" => Some(VkCode(0x45)),
-        "VK_F" => Some(VkCode(0x46)),
-        "VK_G" => Some(VkCode(0x47)),
-        "VK_H" => Some(VkCode(0x48)),
-        "VK_I" => Some(VkCode(0x49)),
-        "VK_J" => Some(VkCode(0x4A)),
-        "VK_K" => Some(VkCode(0x4B)),
-        "VK_L" => Some(VkCode(0x4C)),
-        "VK_M" => Some(VkCode(0x4D)),
-        "VK_N" => Some(VkCode(0x4E)),
-        "VK_O" => Some(VkCode(0x4F)),
-        "VK_P" => Some(VkCode(0x50)),
-        "VK_Q" => Some(VkCode(0x51)),
-        "VK_R" => Some(VkCode(0x52)),
-        "VK_S" => Some(VkCode(0x53)),
-        "VK_T" => Some(VkCode(0x54)),
-        "VK_U" => Some(VkCode(0x55)),
-        "VK_V" => Some(VkCode(0x56)),
-        "VK_W" => Some(VkCode(0x57)),
-        "VK_X" => Some(VkCode(0x58)),
-        "VK_Y" => Some(VkCode(0x59)),
-        "VK_Z" => Some(VkCode(0x5A)),
-        "VK_0" => Some(VkCode(0x30)),
-        "VK_1" => Some(VkCode(0x31)),
-        "VK_2" => Some(VkCode(0x32)),
-        "VK_3" => Some(VkCode(0x33)),
-        "VK_4" => Some(VkCode(0x34)),
-        "VK_5" => Some(VkCode(0x35)),
-        "VK_6" => Some(VkCode(0x36)),
-        "VK_7" => Some(VkCode(0x37)),
-        "VK_8" => Some(VkCode(0x38)),
-        "VK_9" => Some(VkCode(0x39)),
-        "VK_OEM_PLUS" => Some(VkCode(0xBB)),
-        "VK_OEM_COMMA" => Some(VkCode(0xBC)),
-        "VK_OEM_MINUS" => Some(VkCode(0xBD)),
-        "VK_OEM_PERIOD" => Some(VkCode(0xBE)),
-        "VK_OEM_2" => Some(VkCode(0xBF)),
-        "VK_OEM_1" => Some(VkCode(0xBA)),
-        "VK_OEM_3" => Some(VkCode(0xC0)),
-        "VK_OEM_4" => Some(VkCode(0xDB)),
-        "VK_OEM_5" => Some(VkCode(0xDC)),
-        "VK_OEM_6" => Some(VkCode(0xDD)),
-        "VK_OEM_7" => Some(VkCode(0xDE)),
-        "VK_OEM_102" => Some(VkCode(0xE2)),
-        "VK_SPACE" => Some(VkCode(0x20)),
-        "VK_RETURN" => Some(VkCode(0x0D)),
-        "VK_TAB" => Some(VkCode(0x09)),
-        "VK_BACK" => Some(VkCode(0x08)),
-        "VK_ESCAPE" => Some(VkCode(0x1B)),
-        "VK_DELETE" => Some(VkCode(0x2E)),
-        "VK_CONVERT" | "Convert" | "変換" => Some(VkCode(0x1C)),
+        "VK_A" => Some(VkCode::new(0x41)),
+        "VK_B" => Some(VkCode::new(0x42)),
+        "VK_C" => Some(VkCode::new(0x43)),
+        "VK_D" => Some(VkCode::new(0x44)),
+        "VK_E" => Some(VkCode::new(0x45)),
+        "VK_F" => Some(VkCode::new(0x46)),
+        "VK_G" => Some(VkCode::new(0x47)),
+        "VK_H" => Some(VkCode::new(0x48)),
+        "VK_I" => Some(VkCode::new(0x49)),
+        "VK_J" => Some(VkCode::new(0x4A)),
+        "VK_K" => Some(VkCode::new(0x4B)),
+        "VK_L" => Some(VkCode::new(0x4C)),
+        "VK_M" => Some(VkCode::new(0x4D)),
+        "VK_N" => Some(VkCode::new(0x4E)),
+        "VK_O" => Some(VkCode::new(0x4F)),
+        "VK_P" => Some(VkCode::new(0x50)),
+        "VK_Q" => Some(VkCode::new(0x51)),
+        "VK_R" => Some(VkCode::new(0x52)),
+        "VK_S" => Some(VkCode::new(0x53)),
+        "VK_T" => Some(VkCode::new(0x54)),
+        "VK_U" => Some(VkCode::new(0x55)),
+        "VK_V" => Some(VkCode::new(0x56)),
+        "VK_W" => Some(VkCode::new(0x57)),
+        "VK_X" => Some(VkCode::new(0x58)),
+        "VK_Y" => Some(VkCode::new(0x59)),
+        "VK_Z" => Some(VkCode::new(0x5A)),
+        "VK_0" => Some(VkCode::new(0x30)),
+        "VK_1" => Some(VkCode::new(0x31)),
+        "VK_2" => Some(VkCode::new(0x32)),
+        "VK_3" => Some(VkCode::new(0x33)),
+        "VK_4" => Some(VkCode::new(0x34)),
+        "VK_5" => Some(VkCode::new(0x35)),
+        "VK_6" => Some(VkCode::new(0x36)),
+        "VK_7" => Some(VkCode::new(0x37)),
+        "VK_8" => Some(VkCode::new(0x38)),
+        "VK_9" => Some(VkCode::new(0x39)),
+        "VK_OEM_PLUS" => Some(VkCode::new(0xBB)),
+        "VK_OEM_COMMA" => Some(VkCode::new(0xBC)),
+        "VK_OEM_MINUS" => Some(VkCode::new(0xBD)),
+        "VK_OEM_PERIOD" => Some(VkCode::new(0xBE)),
+        "VK_OEM_2" => Some(VkCode::new(0xBF)),
+        "VK_OEM_1" => Some(VkCode::new(0xBA)),
+        "VK_OEM_3" => Some(VkCode::new(0xC0)),
+        "VK_OEM_4" => Some(VkCode::new(0xDB)),
+        "VK_OEM_5" => Some(VkCode::new(0xDC)),
+        "VK_OEM_6" => Some(VkCode::new(0xDD)),
+        "VK_OEM_7" => Some(VkCode::new(0xDE)),
+        "VK_OEM_102" => Some(VkCode::new(0xE2)),
+        "VK_SPACE" => Some(VkCode::new(0x20)),
+        "VK_RETURN" => Some(VkCode::new(0x0D)),
+        "VK_TAB" => Some(VkCode::new(0x09)),
+        "VK_BACK" => Some(VkCode::new(0x08)),
+        "VK_ESCAPE" => Some(VkCode::new(0x1B)),
+        "VK_DELETE" => Some(VkCode::new(0x2E)),
+        "VK_CONVERT" | "Convert" | "変換" => Some(VkCode::new(0x1C)),
         #[allow(clippy::match_same_arms)]
-        "VK_NONCONVERT" | "VK_MUHENKAN" | "Nonconvert" | "無変換" => Some(VkCode(0x1D)),
-        "VK_KANA" | "Kana" | "かな" | "カナ" => Some(VkCode(0x15)),
-        "VK_KANJI" | "Kanji" | "漢字" => Some(VkCode(0x19)),
-        "VK_IME_ON" | "ImeOn" | "IMEオン" => Some(VkCode(0x16)),
-        "VK_IME_OFF" | "ImeOff" | "IMEオフ" => Some(VkCode(0x1A)),
-        "VK_DBE_ALPHANUMERIC" => Some(VkCode(0xF0)),
-        "VK_DBE_KATAKANA" => Some(VkCode(0xF1)),
-        "VK_DBE_HIRAGANA" => Some(VkCode(0xF2)),
-        "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(VkCode(0xF3)),
-        "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(VkCode(0xF4)),
-        "VK_SHIFT" => Some(VkCode(0x10)),
-        "VK_CONTROL" => Some(VkCode(0x11)),
-        "VK_MENU" => Some(VkCode(0x12)),
-        "VK_LSHIFT" => Some(VkCode(0xA0)),
-        "VK_RSHIFT" => Some(VkCode(0xA1)),
-        "VK_LCONTROL" => Some(VkCode(0xA2)),
-        "VK_RCONTROL" => Some(VkCode(0xA3)),
-        "VK_LMENU" => Some(VkCode(0xA4)),
-        "VK_RMENU" => Some(VkCode(0xA5)),
-        "VK_F1" => Some(VkCode(0x70)),
-        "VK_F2" => Some(VkCode(0x71)),
-        "VK_F3" => Some(VkCode(0x72)),
-        "VK_F4" => Some(VkCode(0x73)),
-        "VK_F5" => Some(VkCode(0x74)),
-        "VK_F6" => Some(VkCode(0x75)),
-        "VK_F7" => Some(VkCode(0x76)),
-        "VK_F8" => Some(VkCode(0x77)),
-        "VK_F9" => Some(VkCode(0x78)),
-        "VK_F10" => Some(VkCode(0x79)),
-        "VK_F11" => Some(VkCode(0x7A)),
-        "VK_F12" => Some(VkCode(0x7B)),
+        "VK_NONCONVERT" | "VK_MUHENKAN" | "Nonconvert" | "無変換" => Some(VkCode::new(0x1D)),
+        "VK_KANA" | "Kana" | "かな" | "カナ" => Some(VkCode::new(0x15)),
+        "VK_KANJI" | "Kanji" | "漢字" => Some(VkCode::new(0x19)),
+        "VK_IME_ON" | "ImeOn" | "IMEオン" => Some(VkCode::new(0x16)),
+        "VK_IME_OFF" | "ImeOff" | "IMEオフ" => Some(VkCode::new(0x1A)),
+        "VK_DBE_ALPHANUMERIC" => Some(VkCode::new(0xF0)),
+        "VK_DBE_KATAKANA" => Some(VkCode::new(0xF1)),
+        "VK_DBE_HIRAGANA" => Some(VkCode::new(0xF2)),
+        "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(VkCode::new(0xF3)),
+        "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(VkCode::new(0xF4)),
+        "VK_SHIFT" => Some(VkCode::new(0x10)),
+        "VK_CONTROL" => Some(VkCode::new(0x11)),
+        "VK_MENU" => Some(VkCode::new(0x12)),
+        "VK_LSHIFT" => Some(VkCode::new(0xA0)),
+        "VK_RSHIFT" => Some(VkCode::new(0xA1)),
+        "VK_LCONTROL" => Some(VkCode::new(0xA2)),
+        "VK_RCONTROL" => Some(VkCode::new(0xA3)),
+        "VK_LMENU" => Some(VkCode::new(0xA4)),
+        "VK_RMENU" => Some(VkCode::new(0xA5)),
+        "VK_F1" => Some(VkCode::new(0x70)),
+        "VK_F2" => Some(VkCode::new(0x71)),
+        "VK_F3" => Some(VkCode::new(0x72)),
+        "VK_F4" => Some(VkCode::new(0x73)),
+        "VK_F5" => Some(VkCode::new(0x74)),
+        "VK_F6" => Some(VkCode::new(0x75)),
+        "VK_F7" => Some(VkCode::new(0x76)),
+        "VK_F8" => Some(VkCode::new(0x77)),
+        "VK_F9" => Some(VkCode::new(0x78)),
+        "VK_F10" => Some(VkCode::new(0x79)),
+        "VK_F11" => Some(VkCode::new(0x7A)),
+        "VK_F12" => Some(VkCode::new(0x7B)),
         _ => None,
     }
 }
@@ -312,7 +312,7 @@ pub fn parse_key_combo(s: &str) -> Option<awase::config::ParsedKeyCombo> {
 /// 親指キー（変換・無変換・スペース等）は含まない。
 #[must_use]
 pub const fn vk_to_pos(vk: VkCode) -> Option<awase::scanmap::PhysicalPos> {
-    let (row, col) = match vk.0 {
+    let (row, col) = match vk.as_u16() {
         // Row 0: number row (0x30..=0x39 → '0'..'9')
         0x31 => (0, 0),  // 1
         0x32 => (0, 1),  // 2

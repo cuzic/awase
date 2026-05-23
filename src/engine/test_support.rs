@@ -8,17 +8,17 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 
 // ── VK コード ──
 
-pub const VK_A: VkCode = VkCode(0x41);
-pub const VK_S: VkCode = VkCode(0x53);
-pub const VK_NONCONVERT: VkCode = VkCode(0x1D);
-pub const VK_CONVERT: VkCode = VkCode(0x1C);
+pub const VK_A: VkCode = VkCode::new(0x41);
+pub const VK_S: VkCode = VkCode::new(0x53);
+pub const VK_NONCONVERT: VkCode = VkCode::new(0x1D);
+pub const VK_CONVERT: VkCode = VkCode::new(0x1C);
 
 // ── スキャンコード ──
 
-pub const SCAN_A: ScanCode = ScanCode(0x1E);
-pub const SCAN_S: ScanCode = ScanCode(0x1F);
-pub const SCAN_NONCONVERT: ScanCode = ScanCode(0x7B);
-pub const SCAN_CONVERT: ScanCode = ScanCode(0x79);
+pub const SCAN_A: ScanCode = ScanCode::new(0x1E);
+pub const SCAN_S: ScanCode = ScanCode::new(0x1F);
+pub const SCAN_NONCONVERT: ScanCode = ScanCode::new(0x7B);
+pub const SCAN_CONVERT: ScanCode = ScanCode::new(0x79);
 
 // ── 物理位置 ──
 

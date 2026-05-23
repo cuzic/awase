@@ -195,7 +195,7 @@ impl DecisionExecutor {
                 log::debug!(
                     "[relay-flush] PassThroughWith: queue {} effect(s) + reinject(vk={:#04x} {})",
                     effects.len(),
-                    raw_event.vk_code.0,
+                    u16::from(raw_event.vk_code),
                     match raw_event.event_type {
                             awase::types::KeyEventType::KeyDown => "down",
                             awase::types::KeyEventType::KeyUp => "up",
@@ -252,7 +252,7 @@ impl DecisionExecutor {
 
         log::debug!(
             "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
-            raw_event.vk_code.0,
+            u16::from(raw_event.vk_code),
             if is_key_down { "down" } else { "up" },
             if in_flight_ms == u64::MAX { "never".to_string() } else { in_flight_ms.to_string() },
             has_pending,
@@ -284,7 +284,7 @@ impl DecisionExecutor {
         ) {
             log::debug!(
                 "[relay-passthrough] PassThrough idle: direct OS pass-through (vk={:#04x} {})",
-                raw_event.vk_code.0,
+                u16::from(raw_event.vk_code),
                 if is_key_down { "down" } else { "up" },
             );
         }
@@ -297,10 +297,11 @@ impl DecisionExecutor {
     /// （WezTerm が INJECTED↓ + physical↑ のペアを異常扱いする可能性を排除）
     fn try_keyup_symmetry(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && self.deferred_passthrough_vks.remove(&raw_event.vk_code.0) {
+        let raw_vk = u16::from(raw_event.vk_code);
+        if !is_key_down && self.deferred_passthrough_vks.remove(&raw_vk) {
             log::debug!(
                 "[relay-sym] PassThrough KeyUp vk={:#04x}: KeyDown was deferred → force reinject for symmetry",
-                raw_event.vk_code.0,
+                raw_vk,
             );
             self.queue.push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
             return Some(CallbackResult::Consumed);
@@ -315,13 +316,13 @@ impl DecisionExecutor {
     fn try_pending_warmup_on_keyup(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
-            && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B)
+            && matches!(u16::from(raw_event.vk_code), 0x20 | 0x0D | 0x1B)
             && self.pending_warmup_on_keyup
         {
             self.pending_warmup_on_keyup = false;
             log::debug!(
                 "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
-                raw_event.vk_code.0,
+                u16::from(raw_event.vk_code),
             );
             self.platform.output.send_eager_tsf_warmup();
         }
@@ -334,12 +335,12 @@ impl DecisionExecutor {
     fn handle_ctrl_up_recovery(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
-            && matches!(raw_event.vk_code.0, 0x11 | 0xA2 | 0xA3)
+            && matches!(u16::from(raw_event.vk_code), 0x11 | 0xA2 | 0xA3)
             && !self.platform.output.is_composition_warm()
         {
             log::debug!(
                 "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
-                raw_event.vk_code.0,
+                u16::from(raw_event.vk_code),
             );
             self.platform.output.send_eager_tsf_warmup();
         }
@@ -366,13 +367,13 @@ impl DecisionExecutor {
             };
             log::debug!(
                 "[relay-defer] PassThrough deferred: {reason}, reinject(vk={:#04x} {})",
-                raw_event.vk_code.0,
+                u16::from(raw_event.vk_code),
                 if is_key_down { "down" } else { "up" },
             );
             self.queue.push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
             // KeyDown を defer した場合は VK を記録して KeyUp も reinject に揃える。
             if is_key_down {
-                self.deferred_passthrough_vks.insert(raw_event.vk_code.0);
+                self.deferred_passthrough_vks.insert(u16::from(raw_event.vk_code));
             }
             return Some(CallbackResult::Consumed);
         }
@@ -388,7 +389,7 @@ impl DecisionExecutor {
     /// → output.rs の composition_warm ドキュメントの設計意図と一致。
     fn try_native_f2_consume(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if raw_event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
+        if u16::from(raw_event.vk_code) == 0xF2 && self.platform.output.is_tsf_mode() {
             if is_key_down {
                 log::debug!(
                     "[composition] vk=0xf2 passthrough TSF mode → consuming (prevent double-F2), marking cold",
@@ -413,7 +414,7 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
         // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-        if is_key_down && matches!(raw_event.vk_code.0, 0x20 | 0x0D | 0x1B) {
+        if is_key_down && matches!(u16::from(raw_event.vk_code), 0x20 | 0x0D | 0x1B) {
             let was_warm = self.platform.output.is_composition_warm();
             let is_tsf = self.platform.output.is_tsf_mode();
             if was_warm && is_tsf {
@@ -427,7 +428,7 @@ impl DecisionExecutor {
                 // Enter↓ が WezTerm で処理済みの後に F2 が届くため競合しない。
                 log::debug!(
                     "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
-                    raw_event.vk_code.0,
+                    u16::from(raw_event.vk_code),
                 );
                 self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                 self.pending_warmup_on_keyup = true;
@@ -437,7 +438,7 @@ impl DecisionExecutor {
                 self.pending_warmup_on_keyup = false;
                 log::debug!(
                     "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
-                    raw_event.vk_code.0,
+                    u16::from(raw_event.vk_code),
                 );
                 self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                 // 次打鍵が 305ms 以内でも文字化けしないよう即 F2 warmup を先行送信する。
@@ -452,7 +453,7 @@ impl DecisionExecutor {
     fn handle_f2_non_tsf(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
-        if raw_event.vk_code.0 == 0xF2 && is_key_down {
+        if u16::from(raw_event.vk_code) == 0xF2 && is_key_down {
             log::debug!(
                 "[composition] vk=0xf2 passthrough direct → marking cold",
             );
@@ -484,7 +485,7 @@ impl DecisionExecutor {
         // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
         // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
         // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
-        if event.vk_code.0 == 0xF2 && self.platform.output.is_tsf_mode() {
+        if u16::from(event.vk_code) == 0xF2 && self.platform.output.is_tsf_mode() {
             if is_key_down {
                 log::debug!(
                     "[reinject-tsf] vk=0xf2 KeyDown TSF mode → consuming deferred F2 (no reinject), marking cold",
@@ -502,7 +503,7 @@ impl DecisionExecutor {
 
         log::debug!(
             "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
-            event.vk_code.0,
+            u16::from(event.vk_code),
         );
         {
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
@@ -510,10 +511,10 @@ impl DecisionExecutor {
         }
         // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
         // Backspace 等は composition を維持するためここでは対象外。
-        if is_key_down && matches!(event.vk_code.0, 0x20 | 0x0D | 0x1B) {
+        if is_key_down && matches!(u16::from(event.vk_code), 0x20 | 0x0D | 0x1B) {
             log::debug!(
                 "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
-                event.vk_code.0,
+                u16::from(event.vk_code),
             );
             self.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.platform.output.send_eager_tsf_warmup();

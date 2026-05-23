@@ -112,10 +112,10 @@ impl UinputOutput {
                     self.send_key_press_release(code);
                 }
                 KeyAction::Key(vk) => {
-                    self.send_key_press_release(vk.0);
+                    self.send_key_press_release(u16::from(*vk));
                 }
                 KeyAction::KeyUp(vk) => {
-                    self.emit_key(vk.0, 0);
+                    self.emit_key(u16::from(*vk), 0);
                 }
                 KeyAction::Char(ch) => {
                     warn!(

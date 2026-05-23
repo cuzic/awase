@@ -6,7 +6,7 @@ use awase::types::ScanCode;
 /// Windows Set 1 スキャンコード → JIS キーボード物理位置
 #[must_use]
 pub const fn scan_to_pos(scan_code: ScanCode) -> Option<PhysicalPos> {
-    let (row, col) = match scan_code.0 {
+    let (row, col) = match scan_code.as_u32() {
         0x02 => (0, 0),
         0x03 => (0, 1),
         0x04 => (0, 2),
@@ -114,5 +114,5 @@ pub const fn pos_to_scan(pos: PhysicalPos) -> Option<ScanCode> {
         (3, 10) => 0x73,
         _ => return None,
     };
-    Some(ScanCode(raw))
+    Some(ScanCode::new(raw))
 }

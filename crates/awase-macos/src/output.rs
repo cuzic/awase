@@ -96,10 +96,10 @@ impl Output {
                     log::trace!("macOS output: SpecialKey({sk:?}) -> keycode 0x{_kc:02X}");
                 }
                 KeyAction::Key(vk) => {
-                    log::trace!("macOS output: Key(0x{:02X})", vk.0);
+                    log::trace!("macOS output: Key(0x{:02X})", u16::from(*vk));
                 }
                 KeyAction::KeyUp(vk) => {
-                    log::trace!("macOS output: KeyUp(0x{:02X})", vk.0);
+                    log::trace!("macOS output: KeyUp(0x{:02X})", u16::from(*vk));
                 }
                 KeyAction::Char(ch) => {
                     log::trace!("macOS output: Char('{ch}') via CGEvent::set_string");

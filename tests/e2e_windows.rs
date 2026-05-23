@@ -77,8 +77,8 @@ impl std::ops::DerefMut for TestHarness {
     }
 }
 
-const VK_NONCONVERT: VkCode = VkCode(0x1D);
-const VK_CONVERT: VkCode = VkCode(0x1C);
+const VK_NONCONVERT: VkCode = VkCode::new(0x1D);
+const VK_CONVERT: VkCode = VkCode::new(0x1C);
 
 /// Create a test engine
 fn make_test_engine(mode: ConfirmMode) -> TestHarness {
@@ -98,8 +98,8 @@ fn make_test_engine(mode: ConfirmMode) -> TestHarness {
 
 fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
     RawKeyEvent {
-        vk_code: VkCode(vk),
-        scan_code: ScanCode(scan),
+        vk_code: VkCode::new(vk),
+        scan_code: ScanCode::new(scan),
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: ts,
@@ -108,8 +108,8 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
 
 fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
     RawKeyEvent {
-        vk_code: VkCode(vk),
-        scan_code: ScanCode(scan),
+        vk_code: VkCode::new(vk),
+        scan_code: ScanCode::new(scan),
         event_type: KeyEventType::KeyUp,
         extra_info: 0,
         timestamp: ts,

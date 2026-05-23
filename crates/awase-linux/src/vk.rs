@@ -84,5 +84,5 @@ pub fn key_name_to_evdev(name: &str) -> Option<VkCode> {
 
         _ => return None,
     };
-    Some(VkCode(code))
+    Some(VkCode::new(code))
 }

@@ -284,7 +284,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
         let _ = with_app(|app| {
             for ev in &mut events {
                 app.enrich_ime_relevance(ev);
-                log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code.0, ev.event_type);
+                log::debug!("[drain] vk=0x{:02X} {:?}", u16::from(ev.vk_code), ev.event_type);
             }
         });
         events
@@ -297,14 +297,14 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
             for syn in &synthetic_keyups {
                 log::debug!(
                     "[output-drain] vk=0x{:02X} KeyDown has no paired KeyUp in queue → will inject synthetic KeyUp",
-                    syn.vk_code.0,
+                    u16::from(syn.vk_code),
                 );
             }
 
             for queued_event in &queue {
                 log::debug!(
                     "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
-                    queued_event.vk_code.0,
+                    u16::from(queued_event.vk_code),
                     queued_event.event_type,
                     queued_event.timestamp,
                     now_us,
@@ -316,7 +316,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
             for keyup in synthetic_keyups {
                 log::debug!(
                     "[output-drain] synthetic KeyUp vk=0x{:02X} (KeyDown replayed, KeyUp arrived before drain)",
-                    keyup.vk_code.0,
+                    u16::from(keyup.vk_code),
                 );
                 on_key_event_impl(app, keyup);
             }

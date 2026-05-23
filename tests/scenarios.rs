@@ -56,7 +56,7 @@ fn ctx() -> InputContext {
 
 /// VK code -> scan code (JIS keyboard) for scenario tests
 fn vk_to_scan(vk: VkCode) -> ScanCode {
-    ScanCode(match vk.0 {
+    ScanCode::new(match u16::from(vk) {
         0x41 => 0x1E, // A
         0x42 => 0x30, // B
         0x43 => 0x2E, // C
@@ -105,7 +105,7 @@ fn classify_key(vk: VkCode) -> (KeyClassification, Option<PhysicalPos>) {
 /// VK -> PhysicalPos mapping for test keys
 fn vk_to_pos(vk: VkCode) -> Option<PhysicalPos> {
     // Row/col positions matching nicola.yab layout
-    match vk.0 {
+    match u16::from(vk) {
         0x41 => Some(PhysicalPos::new(2, 0)), // A
         0x53 => Some(PhysicalPos::new(2, 1)), // S
         0x44 => Some(PhysicalPos::new(2, 2)), // D
@@ -149,9 +149,9 @@ fn key_up(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
     }
 }
 
-const VK_NONCONVERT: VkCode = VkCode(0x1D);
+const VK_NONCONVERT: VkCode = VkCode::new(0x1D);
 #[allow(dead_code)]
-const VK_CONVERT: VkCode = VkCode(0x1C);
+const VK_CONVERT: VkCode = VkCode::new(0x1C);
 
 /// Collect output text from a Decision's effects.
 fn collect_output(decision: &Decision) -> String {
@@ -187,7 +187,7 @@ fn scenario_single_chars_sequential() {
     let mut output = String::new();
     let mut t: Timestamp = 0;
 
-    let r = engine.on_input(key_down(VkCode(0x41), t), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x41), t), &ctx());
     output.push_str(&collect_output(&r));
     t += 120_000; // 120ms later (past threshold)
 
@@ -196,7 +196,7 @@ fn scenario_single_chars_sequential() {
     output.push_str(&collect_output(&r));
 
     // VK_S in normal face -> "si"
-    let r = engine.on_input(key_down(VkCode(0x53), t), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x53), t), &ctx());
     output.push_str(&collect_output(&r));
     t += 120_000;
 
@@ -214,7 +214,7 @@ fn scenario_thumb_shift_simultaneous() {
     let t: Timestamp = 0;
 
     let r1 = engine.on_input(key_down(VK_NONCONVERT, t), &ctx());
-    let r2 = engine.on_input(key_down(VkCode(0x41), t + 30_000), &ctx());
+    let r2 = engine.on_input(key_down(VkCode::new(0x41), t + 30_000), &ctx());
     let r3 = engine.on_timeout(TIMER_PENDING, &ctx());
 
     let output = format!(
@@ -233,13 +233,13 @@ fn scenario_rapid_sequence_pattern4() {
     let mut engine = make_nicola_engine();
     let mut output = String::new();
 
-    let r = engine.on_input(key_down(VkCode(0x41), 0), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x41), 0), &ctx());
     output.push_str(&collect_output(&r));
 
-    let r = engine.on_input(key_down(VkCode(0x53), 50_000), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x53), 50_000), &ctx());
     output.push_str(&collect_output(&r));
 
-    let r = engine.on_input(key_down(VkCode(0x44), 100_000), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x44), 100_000), &ctx());
     output.push_str(&collect_output(&r));
 
     let r = engine.on_timeout(TIMER_PENDING, &ctx());
@@ -259,13 +259,13 @@ fn scenario_continuous_shift() {
     let r = engine.on_input(key_down(VK_NONCONVERT, t), &ctx());
     output.push_str(&collect_output(&r));
 
-    let r = engine.on_input(key_down(VkCode(0x41), t + 30_000), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x41), t + 30_000), &ctx());
     output.push_str(&collect_output(&r));
 
     let r = engine.on_timeout(TIMER_PENDING, &ctx());
     output.push_str(&collect_output(&r));
 
-    let r = engine.on_input(key_down(VkCode(0x53), t + 200_000), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x53), t + 200_000), &ctx());
     output.push_str(&collect_output(&r));
 
     let r = engine.on_timeout(TIMER_PENDING, &ctx());
@@ -288,7 +288,7 @@ fn scenario_char_then_thumb_within_threshold() {
     let mut output = String::new();
     let t: Timestamp = 0;
 
-    let r = engine.on_input(key_down(VkCode(0x41), t), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x41), t), &ctx());
     output.push_str(&collect_output(&r));
 
     let r = engine.on_input(key_down(VK_NONCONVERT, t + 40_000), &ctx());
@@ -309,7 +309,7 @@ fn scenario_timeout_confirms_single_char() {
     // D = "te"
     let mut engine = make_nicola_engine();
 
-    let r = engine.on_input(key_down(VkCode(0x44), 0), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x44), 0), &ctx());
     let mut output = collect_output(&r);
 
     assert!(r.is_consumed(), "key_down should be consumed");
@@ -330,7 +330,7 @@ fn scenario_right_thumb_shift() {
     let r = engine.on_input(key_down(VK_CONVERT, t), &ctx());
     output.push_str(&collect_output(&r));
 
-    let r = engine.on_input(key_down(VkCode(0x53), t + 30_000), &ctx());
+    let r = engine.on_input(key_down(VkCode::new(0x53), t + 30_000), &ctx());
     output.push_str(&collect_output(&r));
 
     let r = engine.on_timeout(TIMER_PENDING, &ctx());

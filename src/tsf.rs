@@ -278,7 +278,7 @@ impl TsfGate {
         if self.held.len() >= HELD_MAX {
             log::warn!(
                 "[tsf-gate] held queue full (max={HELD_MAX}), dropping vk=0x{:02X} {:?}",
-                event.vk_code.0,
+                u16::from(event.vk_code),
                 event.event_type,
             );
             return true;
@@ -286,7 +286,7 @@ impl TsfGate {
         self.held.push(event);
         log::trace!(
             "[tsf-gate] held vk=0x{:02X} {:?} (total={})",
-            event.vk_code.0,
+            u16::from(event.vk_code),
             event.event_type,
             self.held.len(),
         );
@@ -587,8 +587,8 @@ mod tests {
         gate.machine.on_event(GateEvent::FocusChange); // PendingWarmup へ
 
         let dummy = RawKeyEvent {
-            vk_code: VkCode(0x41), // 'A'
-            scan_code: ScanCode(0x1E),
+            vk_code: VkCode::new(0x41), // 'A'
+            scan_code: ScanCode::new(0x1E),
             event_type: KeyEventType::KeyDown,
             extra_info: 0,
             timestamp: 0,

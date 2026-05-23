@@ -246,7 +246,7 @@ fn register_toggle_hotkey(hotkey_str: &str) -> Result<HotKeyGuard> {
             None,
             HOTKEY_ID_TOGGLE,
             HOT_KEY_MODIFIERS(modifiers),
-            u32::from(vk.0),
+            u32::from(u16::from(vk)),
         )
         .context(format!("Failed to register toggle hotkey: {hotkey_str}"))?;
     }

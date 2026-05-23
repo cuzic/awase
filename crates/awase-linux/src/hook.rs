@@ -253,8 +253,8 @@ impl EvdevInput {
                         _ => continue,
                     };
 
-                    let vk = VkCode(ev.code());
-                    let scan = ScanCode(keycode);
+                    let vk = VkCode::new(ev.code());
+                    let scan = ScanCode::new(keycode);
                     let (key_classification, physical_pos) = classify_key(keycode);
 
                     let raw_event = RawKeyEvent {

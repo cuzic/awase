@@ -125,9 +125,9 @@ mod tests {
     #[test]
     fn test_push_and_recent_kana() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "ka", Some('か')));
-        h.push(make_entry(ScanCode(31), "ki", Some('き')));
-        h.push(make_entry(ScanCode(32), "ku", Some('く')));
+        h.push(make_entry(ScanCode::new(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode::new(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode::new(32), "ku", Some('く')));
 
         let kana = h.recent_kana(3);
         assert_eq!(kana, vec!['か', 'き', 'く']);
@@ -136,11 +136,11 @@ mod tests {
     #[test]
     fn test_retract_last() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "ka", Some('か')));
-        h.push(make_entry(ScanCode(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode::new(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode::new(31), "ki", Some('き')));
 
         let retracted = h.retract_last().unwrap();
-        assert_eq!(retracted.scan_code, ScanCode(31));
+        assert_eq!(retracted.scan_code, ScanCode::new(31));
         assert_eq!(h.len(), 1);
     }
 
@@ -149,59 +149,59 @@ mod tests {
         let mut h = OutputHistory::new();
         assert_eq!(h.retract_bs_count(), 0);
 
-        h.push(make_entry(ScanCode(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode::new(30), "ka", Some('か')));
         assert_eq!(h.retract_bs_count(), 1);
 
-        h.push(make_entry(ScanCode(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode::new(31), "ki", Some('き')));
         assert_eq!(h.retract_bs_count(), 1);
 
-        h.push(make_entry(ScanCode(32), "ku", Some('く')));
+        h.push(make_entry(ScanCode::new(32), "ku", Some('く')));
         assert_eq!(h.retract_bs_count(), 1);
     }
 
     #[test]
     fn test_find_action_by_scan() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "ka", Some('か')));
-        h.push(make_entry(ScanCode(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode::new(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode::new(31), "ki", Some('き')));
 
-        let action = h.find_action_by_scan(ScanCode(30)).unwrap();
+        let action = h.find_action_by_scan(ScanCode::new(30)).unwrap();
         assert!(matches!(action, KeyAction::Romaji(r) if r == "ka"));
 
-        assert!(h.find_action_by_scan(ScanCode(99)).is_none());
+        assert!(h.find_action_by_scan(ScanCode::new(99)).is_none());
     }
 
     #[test]
     fn test_remove_by_scan() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "ka", Some('か')));
-        h.push(make_entry(ScanCode(31), "ki", Some('き')));
-        h.push(make_entry(ScanCode(32), "ku", Some('く')));
+        h.push(make_entry(ScanCode::new(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode::new(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode::new(32), "ku", Some('く')));
 
-        let removed = h.remove_by_scan(ScanCode(31)).unwrap();
+        let removed = h.remove_by_scan(ScanCode::new(31)).unwrap();
         assert_eq!(removed.romaji, "ki");
         assert_eq!(h.len(), 2);
 
         // Remaining entries should be scan_code 30 and 32
-        assert!(h.find_action_by_scan(ScanCode(30)).is_some());
-        assert!(h.find_action_by_scan(ScanCode(32)).is_some());
-        assert!(h.find_action_by_scan(ScanCode(31)).is_none());
+        assert!(h.find_action_by_scan(ScanCode::new(30)).is_some());
+        assert!(h.find_action_by_scan(ScanCode::new(32)).is_some());
+        assert!(h.find_action_by_scan(ScanCode::new(31)).is_none());
 
         // Removing non-existent scan_code returns None
-        assert!(h.remove_by_scan(ScanCode(99)).is_none());
+        assert!(h.remove_by_scan(ScanCode::new(99)).is_none());
     }
 
     #[test]
     fn test_display_text() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode::new(30), "ka", Some('か')));
         h.push(OutputEntry {
-            scan_code: ScanCode(50),
+            scan_code: ScanCode::new(50),
             romaji: "shift".to_string(),
             kana: None,
-            action: KeyAction::Key(VkCode(0)), // dummy platform key
+            action: KeyAction::Key(VkCode::new(0)), // dummy platform key
         });
-        h.push(make_entry(ScanCode(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode::new(31), "ki", Some('き')));
 
         assert_eq!(h.display_text(), "かき");
     }
@@ -209,8 +209,8 @@ mod tests {
     #[test]
     fn test_clear() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "ka", Some('か')));
-        h.push(make_entry(ScanCode(31), "ki", Some('き')));
+        h.push(make_entry(ScanCode::new(30), "ka", Some('か')));
+        h.push(make_entry(ScanCode::new(31), "ki", Some('き')));
 
         assert!(!h.is_empty());
         h.clear();
@@ -221,11 +221,11 @@ mod tests {
     #[test]
     fn test_recent_kana_ordering() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "a", Some('あ')));
-        h.push(make_entry(ScanCode(31), "i", Some('い')));
-        h.push(make_entry(ScanCode(32), "u", Some('う')));
-        h.push(make_entry(ScanCode(33), "e", Some('え')));
-        h.push(make_entry(ScanCode(34), "o", Some('お')));
+        h.push(make_entry(ScanCode::new(30), "a", Some('あ')));
+        h.push(make_entry(ScanCode::new(31), "i", Some('い')));
+        h.push(make_entry(ScanCode::new(32), "u", Some('う')));
+        h.push(make_entry(ScanCode::new(33), "e", Some('え')));
+        h.push(make_entry(ScanCode::new(34), "o", Some('お')));
 
         // recent_kana should return oldest-first order
         let kana = h.recent_kana(3);
@@ -235,9 +235,9 @@ mod tests {
     #[test]
     fn test_recent_kana_max_n() {
         let mut h = OutputHistory::new();
-        h.push(make_entry(ScanCode(30), "a", Some('あ')));
-        h.push(make_entry(ScanCode(31), "i", Some('い')));
-        h.push(make_entry(ScanCode(32), "u", Some('う')));
+        h.push(make_entry(ScanCode::new(30), "a", Some('あ')));
+        h.push(make_entry(ScanCode::new(31), "i", Some('い')));
+        h.push(make_entry(ScanCode::new(32), "u", Some('う')));
 
         // Requesting more than available returns all
         let kana = h.recent_kana(10);

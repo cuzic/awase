@@ -55,7 +55,7 @@ pub struct Engine {
     activation: ActivationController,
     /// NICOLA 親指シフトキーの VK コード（左・右）。
     /// IME ON/OFF コンボ判定時に除外するために使用。
-    /// VkCode(0) = 未設定。
+    /// VkCode::new(0) = 未設定。
     thumb_vks: (VkCode, VkCode),
 }
 
@@ -70,7 +70,7 @@ impl Engine {
             special_keys,
             lifecycle: KeyLifecycle::new(),
             activation: ActivationController::new(),
-            thumb_vks: (VkCode(0), VkCode(0)),
+            thumb_vks: (VkCode::new(0), VkCode::new(0)),
         }
     }
 

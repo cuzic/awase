@@ -18,8 +18,8 @@ use timed_fsm::Response;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const VK_NONCONVERT: VkCode = VkCode(0x1D);
-const VK_CONVERT: VkCode = VkCode(0x1C);
+const VK_NONCONVERT: VkCode = VkCode::new(0x1D);
+const VK_CONVERT: VkCode = VkCode::new(0x1C);
 
 /// Realistic VK codes used in test generation.
 const VK_POOL: &[u16] = &[
@@ -142,32 +142,34 @@ fn classify_vk(vk: VkCode) -> (KeyClassification, Option<PhysicalPos>) {
 }
 
 fn vk_to_pos(vk: VkCode) -> Option<PhysicalPos> {
-    match vk {
-        VkCode(0x41) => Some(PhysicalPos::new(2, 0)), // A
-        VkCode(0x53) => Some(PhysicalPos::new(2, 1)), // S
-        VkCode(0x44) => Some(PhysicalPos::new(2, 2)), // D
-        VkCode(0x46) => Some(PhysicalPos::new(2, 3)), // F
-        VkCode(0x43) => Some(PhysicalPos::new(3, 2)), // C
-        VkCode(0x56) => Some(PhysicalPos::new(3, 3)), // V
+    let raw = u16::from(vk);
+    match raw {
+        0x41 => Some(PhysicalPos::new(2, 0)), // A
+        0x53 => Some(PhysicalPos::new(2, 1)), // S
+        0x44 => Some(PhysicalPos::new(2, 2)), // D
+        0x46 => Some(PhysicalPos::new(2, 3)), // F
+        0x43 => Some(PhysicalPos::new(3, 2)), // C
+        0x56 => Some(PhysicalPos::new(3, 3)), // V
         _ => None,
     }
 }
 
 fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
-    match vk {
-        VkCode(0x10) | VkCode(0xA0) | VkCode(0xA1) => Some(ModifierKey::Shift),
-        VkCode(0x11) | VkCode(0xA2) => Some(ModifierKey::Ctrl),
-        VkCode(0x12) | VkCode(0xA4) => Some(ModifierKey::Alt),
+    let raw = u16::from(vk);
+    match raw {
+        0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
+        0x11 | 0xA2 => Some(ModifierKey::Ctrl),
+        0x12 | 0xA4 => Some(ModifierKey::Alt),
         _ => None,
     }
 }
 
 fn build_event(vk_raw: u16, event_type: KeyEventType, timestamp: u64) -> RawKeyEvent {
-    let vk = VkCode(vk_raw);
+    let vk = VkCode::new(vk_raw);
     let (kc, pos) = classify_vk(vk);
     RawKeyEvent {
         vk_code: vk,
-        scan_code: ScanCode(0),
+        scan_code: ScanCode::new(0),
         event_type,
         extra_info: 0,
         timestamp,

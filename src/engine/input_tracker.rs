@@ -35,8 +35,8 @@ impl PhysicalKeyState {
             classified: ClassifiedEvent {
                 key_class: KeyClass::Passthrough,
                 pos: None,
-                scan_code: ScanCode(0),
-                vk_code: VkCode(0),
+                scan_code: ScanCode::new(0),
+                vk_code: VkCode::new(0),
                 timestamp: 0,
                 is_ime_control: false,
             },
@@ -67,8 +67,8 @@ impl PhysicalKeyState {
             classified: ClassifiedEvent {
                 key_class: KeyClass::Passthrough,
                 pos: None,
-                scan_code: ScanCode(0),
-                vk_code: VkCode(0),
+                scan_code: ScanCode::new(0),
+                vk_code: VkCode::new(0),
                 timestamp: 0,
                 is_ime_control: false,
             },
@@ -135,8 +135,8 @@ impl InputTracker {
             classified: ClassifiedEvent {
                 key_class: KeyClass::Passthrough,
                 pos: None,
-                scan_code: ScanCode(0),
-                vk_code: VkCode(0),
+                scan_code: ScanCode::new(0),
+                vk_code: VkCode::new(0),
                 timestamp: 0,
                 is_ime_control: false,
             },
@@ -199,8 +199,8 @@ mod tests {
 
     fn make_event(event_type: KeyEventType) -> RawKeyEvent {
         RawKeyEvent {
-            vk_code: VkCode(0),
-            scan_code: ScanCode(0),
+            vk_code: VkCode::new(0),
+            scan_code: ScanCode::new(0),
             event_type,
             extra_info: 0,
             timestamp: 0,
@@ -251,14 +251,14 @@ mod tests {
         let mut tracker = InputTracker::new();
         let mut event = make_event(KeyEventType::KeyDown);
         event.key_classification = KeyClassification::Char;
-        event.vk_code = VkCode(0x41); // 'A'
-        event.scan_code = ScanCode(30);
+        event.vk_code = VkCode::new(0x41); // 'A'
+        event.scan_code = ScanCode::new(30);
         event.timestamp = 1000;
 
         let phys = tracker.process(&event);
         assert_eq!(phys.classified.key_class, KeyClass::Char);
-        assert_eq!(phys.classified.vk_code, VkCode(0x41));
-        assert_eq!(phys.classified.scan_code, ScanCode(30));
+        assert_eq!(phys.classified.vk_code, VkCode::new(0x41));
+        assert_eq!(phys.classified.scan_code, ScanCode::new(30));
         assert_eq!(phys.classified.timestamp, 1000);
     }
 
@@ -332,8 +332,8 @@ mod tests {
         let empty = PhysicalKeyState::empty();
         assert_eq!(empty.classified.key_class, KeyClass::Passthrough);
         assert!(empty.classified.pos.is_none());
-        assert_eq!(empty.classified.scan_code, ScanCode(0));
-        assert_eq!(empty.classified.vk_code, VkCode(0));
+        assert_eq!(empty.classified.scan_code, ScanCode::new(0));
+        assert_eq!(empty.classified.vk_code, VkCode::new(0));
         assert_eq!(empty.classified.timestamp, 0);
         assert!(!empty.classified.is_ime_control);
         assert!(!empty.modifiers.ctrl);
