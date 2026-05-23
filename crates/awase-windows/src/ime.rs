@@ -35,7 +35,13 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
         std::time::Duration::from_millis(150),
     );
     let Some(hwnd) = gui_result.focused_hwnd else { return false; };
+    // SAFETY: hwnd は get_gui_thread_info_with_timeout が返した有効なフォーカスウィンドウハンドル。
+    //         get_ime_wnd は内部で ImmGetDefaultIMEWnd を呼ぶ安全なラッパーであり、NULL を返す場合は
+    //         直後の `?` でショートサーキットするため問題ない。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else { return false; };
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
+    //         send_ime_control は SendMessageTimeoutW のラッパーであり、タイムアウト付きのため
+    //         相手プロセスがハングしても指定時間後に制御が戻る。
     let success = unsafe {
         crate::imm::send_ime_control(ime_wnd, IMC_SETOPENSTATUS, isize::from(open), 50)
     }
@@ -62,6 +68,8 @@ pub unsafe fn post_kanji_toggle_to_focused() {
         make_key_input_ex(VK_KANJI, true,  IME_KANJI_MARKER),
     ];
     log::debug!("[ime-fallback] SendInput VK_KANJI (0x19) IME toggle");
+    // SAFETY: inputs は正しく初期化された INPUT 配列であり、size_of::<INPUT>() は正確な構造体サイズを返す。
+    //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
     if sent == 0 {
         log::warn!("[ime-fallback] SendInput(VK_KANJI) failed");
@@ -87,6 +95,9 @@ pub unsafe fn send_ime_mode_key(vk: u16) {
         make_key_input_ex(vk, true,  IME_KANJI_MARKER),
     ];
     log::debug!("[ime-mode] SendInput vk=0x{vk:02X}");
+    // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT 配列であり、
+    //         size_of::<INPUT>() は正確な構造体サイズを返す。
+    //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
     if sent == 0 {
         log::warn!("[ime-mode] SendInput(vk=0x{vk:02X}) failed");
@@ -100,6 +111,8 @@ pub unsafe fn send_ime_mode_key(vk: u16) {
 /// # Safety
 /// Calls Win32 APIs.
 pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す可能性があるが
+    //         detect_ime_conversion_for_hwnd 内の non_null_hwnd チェックで処理される。
     detect_ime_conversion_for_hwnd(unsafe { GetForegroundWindow() })
 }
 
@@ -111,8 +124,12 @@ pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
 /// # Safety
 /// Calls Win32 APIs.
 pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32> {
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が `?` で None を返す。
     let hwnd = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() })?;
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
+    //         send_ime_control は SendMessageTimeoutW のラッパーで、timeout_ms 内に制御が戻ることが保証される。
     unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, timeout_ms) }
         .map(|v| v as u32)
 }
@@ -122,6 +139,8 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
 /// # Safety
 /// Calls Win32 APIs.
 pub unsafe fn get_foreground_window_class() -> String {
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
+    //         早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
         return "null".to_string();
     };
@@ -140,11 +159,16 @@ pub unsafe fn get_foreground_window_class() -> String {
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
 pub unsafe fn set_ime_romaji_mode() -> bool {
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
+    //         早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
         return false;
     };
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else { return false; };
 
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
+    //         タイムアウト 50ms 内に制御が戻ることが保証される。
     let Some(current) =
         (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
     else {
@@ -156,6 +180,8 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
         return true; // already romaji
     }
 
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
+    //         new_conv は取得した conv に IME_CMODE_ROMAN を OR したものであり有効な変換モード値。
     let success =
         unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50) }
             .is_some();
@@ -167,7 +193,10 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
 
 unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
     crate::win32::non_null_hwnd(hwnd)?;
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
+    //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
     let result = unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 50) }?;
     log::trace!("CrossProcess(hwndFocus): ime_wnd={ime_wnd:?} open={result}");
     Some(result != 0)
@@ -175,16 +204,24 @@ unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
 
 unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
     crate::win32::non_null_hwnd(hwnd)?;
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
+    //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
     unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) }
         .map(|v| v as u32)
 }
 
 unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
     crate::win32::non_null_hwnd(hwnd)?;
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    //         ImmContextGuard は ImmGetContext/ImmReleaseContext を RAII で管理し、
+    //         NULL HIMC を取得した場合は None を返す。
     let ctx = unsafe { crate::imm::ImmContextGuard::new(hwnd) }?;
     let mut conversion = IME_CONVERSION_MODE::default();
     let mut sentence = IME_SENTENCE_MODE::default();
+    // SAFETY: ctx.himc() は ImmContextGuard が保持する有効な HIMC。
+    //         conversion と sentence はスタック上の初期化済み変数へのポインタであり呼び出し中は有効。
     let ok = unsafe {
         ImmGetConversionStatus(ctx.himc(), Some(&raw mut conversion), Some(&raw mut sentence))
     };
@@ -236,6 +273,9 @@ pub struct ImeSnapshot {
 /// # Safety
 /// Win32 API を呼び出す。
 pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> ImeSnapshot {
+    // SAFETY: read_ime_state_full は unsafe fn であり、呼び出し元（本関数）が unsafe コンテキストを
+    //         保証する。run_with_timeout はワーカースレッドで実行するが、Win32 IMM32 API は
+    //         ワーカースレッドからも呼び出し可能。
     crate::win32::run_with_timeout(timeout, || unsafe { read_ime_state_full() }).unwrap_or_else(|| {
         log::warn!("read_ime_state_full timed out, returning empty snapshot");
         ImeSnapshot {
@@ -270,6 +310,8 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
 
     // 1. Keyboard layout → is_japanese_ime
     let is_japanese_ime = {
+        // SAFETY: GetKeyboardLayout はスレッドセーフで任意のスレッドから呼び出せる。
+        //         thread_id は get_gui_thread_info_with_timeout が返した値で 0（現在スレッド）も許容される。
         let hkl = unsafe { GetKeyboardLayout(thread_id) };
         let lang_id = (hkl.0 as u32) & 0xFFFF;
         lang_id == crate::vk::LANGID_JAPANESE
@@ -295,9 +337,12 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
     }
 
     // 2. Cross-process IME ON/OFF → ime_on (using focused hwnd)
+    // SAFETY: detect_ime_open_for_hwnd は unsafe fn で、focused_hwnd は get_gui_thread_info_with_timeout
+    //         が返した値（NULL の場合は HWND::default() にフォールバック済み）。NULL チェックは内部で行われる。
     let ime_on = unsafe { detect_ime_open_for_hwnd(focused_hwnd) };
 
     // 3. Cross-process conversion mode → is_romaji + conversion_mode (using focused hwnd)
+    // SAFETY: detect_ime_conversion_for_hwnd は unsafe fn で、focused_hwnd は同上の条件を満たす。
     let conversion_mode = unsafe { detect_ime_conversion_for_hwnd(focused_hwnd) };
 
     // 4. Determine is_romaji from cross-process and direct check
@@ -312,6 +357,7 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
         } else {
             // ROMAN フラグなし + NATIVE あり: 直接 API で二重チェック
             // （一部 IME は ROMAN を返さないため）
+            // SAFETY: detect_kana_for_hwnd は unsafe fn で、focused_hwnd は同上の条件を満たす。
             let direct = unsafe { detect_kana_for_hwnd(focused_hwnd) };
             log::debug!(
                 "read_ime_state_full: cross native={is_native} roman={is_roman}, direct_kana={direct:?}"
@@ -326,6 +372,7 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
         }
     } else {
         // cross-process 失敗: direct のみで試行
+        // SAFETY: detect_kana_for_hwnd は unsafe fn で、focused_hwnd は同上の条件を満たす。
         unsafe { detect_kana_for_hwnd(focused_hwnd) }.map(|is_kana| !is_kana)
     };
 
@@ -341,24 +388,32 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
 /// `read_ime_state_full` の async 版（ワーカースレッドで実行）
 #[allow(clippy::future_not_send)]
 pub async fn read_ime_state_full_async() -> ImeSnapshot {
+    // SAFETY: read_ime_state_full は unsafe fn。win32_async::offload はワーカースレッドで実行するが
+    //         IMM32 API はワーカースレッドからも呼び出し可能。
     win32_async::offload(|| unsafe { read_ime_state_full() }).await
 }
 
 /// `read_ime_state_fast` の async 版（ワーカースレッドで実行）
 #[allow(clippy::future_not_send)]
 pub async fn read_ime_state_fast_async() -> FastImeProbeResult {
+    // SAFETY: read_ime_state_fast は unsafe fn。win32_async::offload はワーカースレッドで実行するが
+    //         IMM32 API はワーカースレッドからも呼び出し可能。
     win32_async::offload(|| unsafe { read_ime_state_fast() }).await
 }
 
 /// `set_ime_open_cross_process` の async 版（ワーカースレッドで実行）
 #[allow(clippy::future_not_send)]
 pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
+    // SAFETY: set_ime_open_cross_process は unsafe fn。win32_async::offload はワーカースレッドで実行するが
+    //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
     win32_async::offload(move || unsafe { set_ime_open_cross_process(open) }).await
 }
 
 /// `set_ime_romaji_mode` の async 版（ワーカースレッドで実行）
 #[allow(clippy::future_not_send)]
 pub async fn set_ime_romaji_mode_async() -> bool {
+    // SAFETY: set_ime_romaji_mode は unsafe fn。win32_async::offload はワーカースレッドで実行するが
+    //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
     win32_async::offload(|| unsafe { set_ime_romaji_mode() }).await
 }
 
@@ -367,6 +422,8 @@ pub async fn set_ime_romaji_mode_async() -> bool {
 /// Returns `(is_japanese, lang_id)` — 日本語レイアウトかどうかと言語 ID (下位16ビット)。
 #[must_use]
 pub fn keyboard_layout_info() -> (bool, u32) {
+    // SAFETY: GetKeyboardLayout はスレッドセーフで任意のスレッドから呼び出せる。
+    //         引数 0 は現在のスレッドのキーボードレイアウトを取得することを意味し、常に有効。
     unsafe {
         let hkl = GetKeyboardLayout(0);
         let lang_id = hkl.0 as u32 & 0xFFFF;
@@ -396,6 +453,8 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // GetForegroundWindow() はトップレベルウィンドウを返す。
     // read_ime_state_full が使う GetGUIThreadInfo().hwndFocus（子ウィンドウ）と異なり、
     // トップレベル hwnd は TSF 互換ブリッジ経由で IMM32 API に応答できる場合が多い。
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
+    //         早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
         return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
@@ -407,11 +466,14 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     }
 
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         // IMM ブリッジなし（Chrome/UWP 等）→ 検出不能
         return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
+    //         タイムアウト 20ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
     let ime_on =
         unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 20) }
             .map(|v| v != 0);
@@ -419,6 +481,7 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // conversion mode → 診断ログのみ（is_romaji 更新は read_ime_state_full に委ねる）
     // IMM32 ブリッジは WezTerm 等の TSF アプリでローマ字モードでも ROMAN ビットを
     // 報告しないことがある。ROMAN ビット不在を「かな入力」と断定するのは誤検出を招く。
+    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。タイムアウト 20ms 付き。
     if let Some(conv) =
         unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 20) }
     {
@@ -463,6 +526,9 @@ fn is_transient_system_overlay(hwnd: HWND) -> bool {
 pub unsafe fn get_focused_hwnd() -> HWND {
     let gui =
         crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(30));
+    // SAFETY: GetForegroundWindow はスレッドセーフで任意のスレッドから呼び出せる。
+    //         focused_hwnd が None の場合のフォールバックとして使用するため、返り値が NULL の
+    //         可能性は呼び出し元が non_null_hwnd 等でチェックすること。
     gui.focused_hwnd.unwrap_or_else(|| unsafe { GetForegroundWindow() })
 }
 
@@ -478,14 +544,21 @@ pub unsafe fn get_focused_hwnd() -> HWND {
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
 pub unsafe fn send_f2_via_sendmessage() -> bool {
+    // SAFETY: get_focused_hwnd は unsafe fn で GetForegroundWindow または GetGUIThreadInfo から
+    //         HWND を返す。non_null_hwnd で NULL チェックを行い、NULL なら早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { get_focused_hwnd() }) else {
         return false;
     };
     const VK_DBE_HIRAGANA: u32 = 0xF2;
+    // SAFETY: MapVirtualKeyW はスレッドセーフで任意のスレッドから呼び出せる。
+    //         VK_DBE_HIRAGANA (0xF2) は有効な仮想キーコードであり MAPVK_VK_TO_VSC は有効な変換タイプ。
     let scan = unsafe { MapVirtualKeyW(VK_DBE_HIRAGANA, MAPVK_VK_TO_VSC) };
     let lparam_down = LPARAM(1_isize | (isize::try_from(scan).unwrap_or(0) << 16));
     let lparam_up = LPARAM(lparam_down.0 | (1 << 30) | (1_isize << 31));
     let mut result = 0usize;
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    //         result はスタック上の初期化済み変数へのポインタで呼び出し中は有効。
+    //         SMTO_ABORTIFHUNG + タイムアウト 100ms により応答なしプロセスでもブロックしない。
     let ok_down = unsafe {
         SendMessageTimeoutW(
             hwnd,
@@ -497,6 +570,9 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
             Some(&raw mut result),
         )
     };
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    //         result はスタック上の初期化済み変数へのポインタで呼び出し中は有効。
+    //         SMTO_ABORTIFHUNG + タイムアウト 100ms により応答なしプロセスでもブロックしない。
     let ok_up = unsafe {
         SendMessageTimeoutW(
             hwnd,
@@ -527,10 +603,16 @@ pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
     if crate::win32::non_null_hwnd(hwnd).is_none() {
         return false;
     }
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    //         ImmContextGuard は ImmGetContext/ImmReleaseContext を RAII で管理し、
+    //         NULL HIMC を取得した場合は None を返す。
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
         return false;
     };
     // GCS_COMPSTR = IME_COMPOSITION_STRING(0x0008): null バッファで呼ぶと composition string のバイト長を返す
+    // SAFETY: ctx.himc() は ImmContextGuard が保持する有効な HIMC。
+    //         lpBuf=None かつ dwBufLen=0 で呼ぶのは MSDN で明示的に許可されており
+    //         バッファオーバーフローの危険はない。
     let len = unsafe {
         ImmGetCompositionStringW(ctx.himc(), IME_COMPOSITION_STRING(0x0008_u32), None, 0)
     };
