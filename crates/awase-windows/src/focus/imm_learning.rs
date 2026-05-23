@@ -2,7 +2,7 @@
 
 use windows::Win32::Foundation::HWND;
 use awase::types::AppKind;
-use crate::runtime::{AppKindClassifier, ImmCapability};
+use crate::focus::classifier::{AppKindClassifier, ImmCapability};
 
 /// ImmGetDefaultIMEWnd=NULL の場合、そのアプリを Broken と記録する。
 ///

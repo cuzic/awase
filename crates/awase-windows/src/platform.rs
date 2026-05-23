@@ -8,7 +8,7 @@ use std::time::Duration;
 use awase::platform::PlatformRuntime;
 use awase::types::{KeyAction, RawKeyEvent};
 use crate::output::Output;
-use crate::runtime::AppKindClassifier;
+use crate::focus::classifier::AppKindClassifier;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 

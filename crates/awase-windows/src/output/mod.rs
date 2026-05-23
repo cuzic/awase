@@ -3,7 +3,7 @@ use std::sync::atomic::{Ordering};
 
 use awase::config::OutputMode;
 use awase::types::{AppKind, KeyAction, SpecialKey};
-use crate::runtime::InjectionHint;
+use crate::focus::classifier::InjectionHint;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
@@ -14,8 +14,10 @@ pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
 use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, make_tsf_key_input};
 
+pub(crate) mod types;
 pub(crate) mod sender;
-pub(crate) use sender::{InjectionMode, OutputSession};
+pub(crate) use sender::OutputSession;
+pub(crate) use types::InjectionMode;
 
 pub(crate) use crate::tsf::probe_bridge::OutputActiveGuard;
 
@@ -29,37 +31,6 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 
 
 
-/// `InjectionHint` と `AppKind` から `InjectionMode` を決定する純粋関数。
-///
-/// 優先順位:
-///   1. `InjectionHint::ForceTsf` → Tsf
-///   2. `InjectionHint::ForceVk`  → Vk
-///   3. `AppKind::TsfNative`      → Vk
-///   4. それ以外 (Win32 / Uwp)   → Unicode
-fn resolve_injection_mode_from(hint: InjectionHint, app_kind: AppKind) -> InjectionMode {
-    match hint {
-        InjectionHint::ForceTsf => InjectionMode::Tsf,
-        InjectionHint::ForceVk  => InjectionMode::Vk,
-        InjectionHint::Default  => {
-            if app_kind == AppKind::TsfNative {
-                InjectionMode::Vk
-            } else {
-                InjectionMode::Unicode
-            }
-        }
-    }
-}
-
-/// APP グローバルの `Runtime::injection_hint()` を呼んで注入モードを返す薄いシム。
-///
-/// focus/classify の内部型には依存しない。
-fn resolve_injection_mode() -> InjectionMode {
-    crate::with_app_ref(|app| {
-        let (hint, app_kind) = app.injection_hint();
-        resolve_injection_mode_from(hint, app_kind)
-    })
-    .unwrap_or(InjectionMode::Unicode)
-}
 
 /// ASCII 文字を対応する VK コードに変換する。
 const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
@@ -216,6 +187,11 @@ pub struct Output {
     /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
     /// Probing または Bypass に遷移して保留キーを再処理する。
     pub(crate) tsf_gate: crate::tsf::gate::TsfGate,
+    /// フォーカス変更時に Runtime から push される注入モード。
+    ///
+    /// フォーカスが確定するたびに `update_injection_mode()` で更新される。
+    /// `with_app_ref` によるグローバル読み取りを排除し、output 層を self-contained にする。
+    pub(crate) injection_mode: InjectionMode,
 }
 
 /// TSF/VK probe の現在フェーズ
@@ -309,7 +285,13 @@ impl Output {
             composition: crate::tsf::probe::CompositionState::new(),
             pending_tsf: std::cell::RefCell::new(None),
             tsf_gate: crate::tsf::gate::TsfGate::new(),
+            injection_mode: InjectionMode::Unicode,
         }
+    }
+
+    /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
+    pub(crate) fn update_injection_mode(&mut self, mode: InjectionMode) {
+        self.injection_mode = mode;
     }
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
@@ -432,7 +414,7 @@ impl Output {
     /// TSF モード（WezTerm 等）では物理 F2 の扱いが特殊なため、
     /// executor がこのメソッドで判定してキー処理を切り替える。
     pub fn is_tsf_mode(&self) -> bool {
-        resolve_injection_mode() == InjectionMode::Tsf
+        self.injection_mode == InjectionMode::Tsf
     }
 
     /// 現在の TSF 準備状態を多次元スナップショットとして返す。
@@ -596,7 +578,7 @@ impl Output {
 
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
     #[allow(clippy::unused_self)]
-    fn send_unicode_char(&self, ch: char) {
+    pub(super) fn send_unicode_char(&self, ch: char) {
         let mut utf16_buf = [0u16; 2];
         let utf16 = ch.encode_utf16(&mut utf16_buf);
 
@@ -706,7 +688,7 @@ impl Output {
     ///
     /// cold 時は F2 を先行送信してから GJI プローブを開始し（ノンブロッキング）、
     /// TIMER_TSF_PROBE が `ChromeProbe` フェーズを進めてローマ字を送信する。
-    fn send_romaji_batched(&self, romaji: &str) {
+    pub(super) fn send_romaji_batched(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
@@ -804,7 +786,7 @@ impl Output {
     ///
     /// IME を経由せず、ひらがなを直接テキストフィールドに挿入する。
     /// 変換テーブルにないローマ字は PerKey モードでフォールバック送信する。
-    fn send_romaji_as_unicode(&self, romaji: &str) {
+    pub(super) fn send_romaji_as_unicode(&self, romaji: &str) {
         if let Some(&kana) = self.romaji_to_kana.as_ref().and_then(|t| t.get(romaji)) {
             self.send_unicode_char(kana);
             return;
@@ -863,7 +845,7 @@ impl Output {
         }
     }
 
-    fn send_romaji_as_tsf(&self, romaji: &str) {
+    pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
@@ -964,7 +946,7 @@ impl Output {
     /// かな文字はローマ字に逆変換してから `send_romaji_as_tsf` で送信する。
     /// 記号は symbol_to_vk テーブルで直接 VK コードに変換する。
     /// マッチしない場合は Unicode 直接出力にフォールバックする。
-    fn send_char_as_tsf(&self, ch: char) {
+    pub(super) fn send_char_as_tsf(&self, ch: char) {
         match self.resolve_char(ch) {
             CharResolution::Romaji(romaji) => {
                 log::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
@@ -1025,7 +1007,7 @@ impl Output {
     /// 1. かな → ローマ字 VK（IME 経由で変換）
     /// 2. 記号 → マッピングテーブルの VK コード（IME が全角変換）
     /// 3. フォールバック → Unicode 直接出力
-    fn send_char_as_vk(&self, ch: char) {
+    pub(super) fn send_char_as_vk(&self, ch: char) {
         match self.resolve_char(ch) {
             CharResolution::Romaji(romaji) => {
                 log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
@@ -1430,9 +1412,7 @@ const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
 
 impl awase::platform::CompositionOutput for Output {
     fn send_romaji(&self, romaji: &str) {
-        // モード判定は resolve_injection_mode() が行う。
-        // 現状は TSF / VK Batched / Unicode の3モードを自動選択する。
-        match resolve_injection_mode() {
+        match self.injection_mode {
             InjectionMode::Vk => self.send_romaji_batched(romaji),
             InjectionMode::Tsf => self.send_romaji_as_tsf(romaji),
             InjectionMode::Unicode => self.send_romaji_as_unicode(romaji),

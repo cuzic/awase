@@ -1,7 +1,7 @@
 use awase::engine::{AssumedReason, EngineCommand, InputModeState};
 use awase::platform::PlatformRuntime;
 
-use super::ImmCapability;
+use crate::focus::classifier::ImmCapability;
 use super::Runtime;
 use crate::ImeForceOnGuard;
 

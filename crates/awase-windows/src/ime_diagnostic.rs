@@ -230,10 +230,10 @@ fn resolve_injection_mode_label() -> &'static str {
 
     crate::with_app_ref(|app| {
         if let Some((pid, class)) = app.executor.platform.focus.last_focus_info.as_ref() {
-            if crate::runtime::is_force_tsf(&app.executor.platform.focus.overrides, *pid, class) {
+            if crate::focus::classifier::is_force_tsf(&app.executor.platform.focus.overrides, *pid, class) {
                 return "Tsf";
             }
-            if crate::runtime::is_force_vk(&app.executor.platform.focus.overrides, *pid, class) {
+            if crate::focus::classifier::is_force_vk(&app.executor.platform.focus.overrides, *pid, class) {
                 return "Vk";
             }
         }

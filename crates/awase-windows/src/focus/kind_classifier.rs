@@ -5,7 +5,7 @@ use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
 
 use crate::executor::DecisionExecutor;
-use crate::runtime::AppKindClassifier;
+use crate::focus::classifier::AppKindClassifier;
 
 /// `resolve_focus_kind` の戻り値
 #[derive(Debug)]
@@ -34,7 +34,7 @@ pub unsafe fn resolve_focus_kind(
     use crate::focus::classify;
 
     // 1. Config オーバーライドをチェック
-    if let Some(kind) = crate::runtime::check_app_override(
+    if let Some(kind) = crate::focus::classifier::check_app_override(
         &classifier.overrides,
         process_id,
         class_name,

@@ -1,3 +1,6 @@
+use super::types::InjectionMode;
+use crate::tsf::probe_bridge::OutputActiveGuard;
+
 /// モード別出力ディスパッチのトレイト。
 ///
 /// `send_keys()` が `InjectionMode` ごとに match を繰り返す代わりに、
@@ -35,17 +38,6 @@ impl InjectionSender for TsfSender<'_> {
     fn mode_label(&self) -> &'static str { "VK Sequential (TSF)" }
 }
 
-/// 出力注入モード
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InjectionMode {
-    /// Unicode 直接注入（Win32/UWP デフォルト）
-    Unicode,
-    /// VK Batched 注入（Chrome/Edge/Electron — IME composition 経由）
-    Vk,
-    /// VK Sequential 注入（WezTerm — TSF 直結アプリ向け）
-    Tsf,
-}
-
 /// `send_keys()` 1回分の出力セッション。
 ///
 /// - `begin()` で `InjectionMode` を解決し `OutputActiveGuard` を取得する
@@ -54,13 +46,13 @@ pub(crate) enum InjectionMode {
 pub(crate) struct OutputSession<'a> {
     pub(crate) output: &'a super::Output,
     pub(crate) mode: InjectionMode,
-    pub(crate) _guard: super::OutputActiveGuard,
+    pub(crate) _guard: OutputActiveGuard,
 }
 
 impl<'a> OutputSession<'a> {
     pub(crate) fn begin(output: &'a super::Output) -> Self {
-        let mode = super::resolve_injection_mode();
-        let _guard = super::OutputActiveGuard::begin();
+        let mode = output.injection_mode;
+        let _guard = OutputActiveGuard::begin();
         Self { output, mode, _guard }
     }
 
