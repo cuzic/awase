@@ -60,6 +60,9 @@ impl SystemTray {
     ///
     /// ウィンドウクラスの登録、ウィンドウの作成、またはトレイアイコンの追加に失敗した場合
     pub fn new(enabled: bool, elevated: bool) -> Result<Self> {
+        // SAFETY: `RegisterClassW`・`CreateWindowExW`・`Shell_NotifyIconW` はいずれも
+        //         メインスレッドから呼ばれる Win32 UI API。`wc` や `nid` は直前に
+        //         正しく初期化された有効な構造体ポインタを渡している。
         unsafe {
             // ウィンドウクラス名を UTF-16 に変換
             let class_name_wide: Vec<u16> = WINDOW_CLASS_NAME
@@ -143,12 +146,16 @@ impl SystemTray {
         if let Some(icon) = create_keyboard_icon(enabled) {
             // 古いアイコンを破棄してから差し替え
             if !self.nid.hIcon.is_invalid() {
+                // SAFETY: `self.nid.hIcon` は `create_keyboard_icon` が返した有効な HICON。
+                //         `is_invalid()` チェック済みのため NULL でないことが保証されている。
                 unsafe {
                     let _ = DestroyIcon(self.nid.hIcon);
                 }
             }
             self.nid.hIcon = icon;
         }
+        // SAFETY: `self.nid` は `new()` で正しく初期化された有効な `NOTIFYICONDATAW`。
+        //         `self.hwnd` は生存中の有効なトレイウィンドウハンドル。
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
         }
@@ -168,6 +175,8 @@ impl SystemTray {
             &self.current_layout_name,
             self.elevated,
         );
+        // SAFETY: `self.nid` は `new()` で正しく初期化された有効な `NOTIFYICONDATAW`。
+        //         `self.hwnd` は生存中の有効なトレイウィンドウハンドル。
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
         }
@@ -181,6 +190,8 @@ impl SystemTray {
 
     /// Explorer 再起動時にトレイアイコンを再登録する
     pub fn recreate(&self) {
+        // SAFETY: `self.nid` は `new()` で正しく初期化された有効な `NOTIFYICONDATAW`。
+        //         Explorer 再起動後に再登録するため `NIM_ADD` を使用している。
         unsafe {
             let _ = Shell_NotifyIconW(NIM_ADD, &raw const self.nid);
         }
@@ -203,6 +214,8 @@ impl SystemTray {
         self.nid.uFlags = NIF_INFO;
         self.nid.dwInfoFlags = NIIF_INFO;
 
+        // SAFETY: `self.nid` は `new()` で正しく初期化された有効な `NOTIFYICONDATAW`。
+        //         `NIF_INFO` フラグを設定し `NIM_MODIFY` でバルーン通知を送信する。
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
         }
@@ -214,6 +227,8 @@ impl SystemTray {
 
 impl Drop for SystemTray {
     fn drop(&mut self) {
+        // SAFETY: `self.nid` と `self.hwnd` は `new()` で作成された有効な構造体とハンドル。
+        //         `Drop` は一度しか呼ばれず、`NIM_DELETE` でアイコン削除後にウィンドウを破棄する。
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &raw const self.nid);
             let _ = DestroyWindow(self.hwnd);
@@ -260,6 +275,10 @@ const SPACEBAR_X: std::ops::Range<usize> = 5..11;
 ///
 /// ON: 青系のキーボード、OFF: グレーのキーボード。
 fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndMessaging::HICON> {
+    // SAFETY: `CreateCompatibleDC`・`CreateDIBSection`・`CreateIconIndirect` は標準的な GDI 呼び出し。
+    //         `bits` ポインタは `CreateDIBSection` が保証する有効なピクセルバッファを指す。
+    //         `from_raw_parts_mut` の長さは `stride * stride`（16×16）で DIB バッファサイズと一致する。
+    //         全 GDI オブジェクトは関数末尾で `DeleteDC`・`DeleteObject` により解放される。
     unsafe {
         // DIB セクション（32bit ARGB）を作成
         let bmi = BITMAPINFO {
@@ -392,6 +411,9 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         return;
     }
 
+    // SAFETY: `hwnd` はシステムトレイ作成時に `CreateWindowExW` で得た有効なウィンドウハンドル。
+    //         `GetCursorPos`・`CreatePopupMenu`・`AppendMenuW`・`TrackPopupMenu`・`DestroyMenu` は
+    //         すべてメッセージループスレッドから呼ばれるため Win32 スレッド要件を満たす。
     unsafe {
         let mut point = windows::Win32::Foundation::POINT::default();
         let _ = GetCursorPos(&raw mut point);
@@ -552,6 +574,8 @@ pub fn is_elevated() -> bool {
     extern "system" {
         fn IsUserAnAdmin() -> i32;
     }
+    // SAFETY: `IsUserAnAdmin` は shell32.dll にリンクされた有効な外部関数。
+    //         引数なしで呼べる純粋なクエリ API であり副作用はない。
     unsafe { IsUserAnAdmin() != 0 }
 }
 
@@ -575,6 +599,8 @@ pub fn restart_as_admin() {
         .collect();
     let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
 
+    // SAFETY: `exe_wide` と `verb` は直上で NUL 終端済みの有効な UTF-16 文字列。
+    //         `PCWSTR` ポインタは `ShellExecuteW` 呼び出し中はスタック上に生存している。
     unsafe {
         let result = ShellExecuteW(
             None,

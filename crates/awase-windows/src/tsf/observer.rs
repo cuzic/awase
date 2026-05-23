@@ -162,6 +162,8 @@ fn is_gji_process(name: &str) -> bool {
 /// マッチしたプロセス名もあわせて返す。
 /// 見つからない場合は "Google" を含む全プロセスをデバッグログに出力する。
 fn find_gji_pid() -> Option<(u32, String)> {
+    // SAFETY: `TH32CS_SNAPPROCESS` フラグと PID=0（全プロセス対象）は有効な引数。
+    //         返されるハンドルは使用後に `CloseHandle` で必ず閉じる。
     let snapshot =
         unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
 
@@ -173,6 +175,8 @@ fn find_gji_pid() -> Option<(u32, String)> {
     let mut found = None;
     let mut google_procs: Vec<String> = Vec::new();
 
+    // SAFETY: `snapshot` は直上の `CreateToolhelp32Snapshot` が返した有効なハンドル。
+    //         `entry` は `dwSize` を設定した有効な `PROCESSENTRY32W` 構造体。
     if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
         loop {
             let name_end = entry
@@ -190,12 +194,16 @@ fn find_gji_pid() -> Option<(u32, String)> {
             if lower.contains("google") || lower.contains("japanese") {
                 google_procs.push(format!("{}({})", name, entry.th32ProcessID));
             }
+            // SAFETY: `snapshot` は有効なスナップショットハンドル。
+            //         `entry` は `Process32FirstW` で初期化済みの有効な構造体。
             if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
                 break;
             }
         }
     }
 
+    // SAFETY: `snapshot` は `CreateToolhelp32Snapshot` が返した有効なハンドル。
+    //         ループ終了後は二度使用しないため二重クローズにならない。
     let _ = unsafe { CloseHandle(snapshot) };
 
     match &found {
@@ -236,6 +244,9 @@ impl GjiMonitor {
     /// GJI converter プロセスに接続する。失敗したら None。
     fn try_attach() -> Option<Self> {
         let (pid, _name) = find_gji_pid()?;
+        // SAFETY: `pid` は `find_gji_pid` で発見した有効なプロセス ID。
+        //         `PROCESS_QUERY_INFORMATION` は I/O カウンタ取得に必要な最小権限。
+        //         返されるハンドルは `Drop` で `CloseHandle` される。
         let handle =
             unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) }.ok()?;
 
@@ -257,6 +268,8 @@ impl GjiMonitor {
     /// 返り値: プロセスが生存していれば `true`、死亡 or エラーなら `false`。
     fn sample(&mut self) -> bool {
         let mut counters = IO_COUNTERS::default();
+        // SAFETY: `self.handle` は `try_attach` で `OpenProcess` が返した有効なハンドル。
+        //         `counters` は `IO_COUNTERS::default()` で初期化された有効なバッファ。
         if unsafe { GetProcessIoCounters(self.handle, &mut counters) }.is_err() {
             return false;
         }
@@ -279,6 +292,8 @@ impl GjiMonitor {
 
 impl Drop for GjiMonitor {
     fn drop(&mut self) {
+        // SAFETY: `self.handle` は `try_attach` で `OpenProcess` が返した有効なハンドル。
+        //         `Drop` は一度しか呼ばれないため二重クローズにならない。
         let _ = unsafe { CloseHandle(self.handle) };
     }
 }
@@ -362,6 +377,8 @@ impl std::fmt::Debug for WinEventHookGuard {
 
 impl Drop for WinEventHookGuard {
     fn drop(&mut self) {
+        // SAFETY: `self.0` は `SetWinEventHook` が返した有効なフックハンドル。
+        //         `Drop` は一度しか呼ばれないため二重解除にならない。
         unsafe {
             let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(self.0);
         }
@@ -379,6 +396,9 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
     let mut hooks = Vec::new();
 
+    // SAFETY: `observation_event_proc` は `'static` な extern "system" fn ポインタ。
+    //         `WINEVENT_OUTOFCONTEXT` によりコールバックはメッセージループスレッドで実行される。
+    //         返されたフックは `WinEventHookGuard::drop` で `UnhookWinEvent` される。
     let nc_hook = unsafe {
         SetWinEventHook(
             EVENT_OBJECT_NAMECHANGE,
@@ -395,6 +415,9 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
         hooks.push(WinEventHookGuard(nc_hook));
     }
 
+    // SAFETY: `observation_event_proc` は `'static` な extern "system" fn ポインタ。
+    //         `WINEVENT_OUTOFCONTEXT` によりコールバックはメッセージループスレッドで実行される。
+    //         返されたフックは `WinEventHookGuard::drop` で `UnhookWinEvent` される。
     let show_hook = unsafe {
         SetWinEventHook(
             EVENT_OBJECT_SHOW,
@@ -468,6 +491,8 @@ fn hwnd_class_name(hwnd: HWND) -> String {
         return String::new();
     }
     let mut buf = [0u16; 128];
+    // SAFETY: `hwnd` は `non_null_hwnd` チェックで NULL でないことが確認済み。
+    //         `buf` は十分なサイズの有効な UTF-16 バッファ。
     let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
     if len > 0 {
         String::from_utf16_lossy(&buf[..len as usize])

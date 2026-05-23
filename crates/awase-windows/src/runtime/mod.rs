@@ -73,6 +73,8 @@ struct ClassifiedFocus {
 
 impl Runtime {
     fn build_ctx(&self) -> InputContext {
+        // SAFETY: `read_os_modifiers` は Win32 `GetKeyState` を呼ぶのみで副作用はない。
+        //         メインスレッドから呼ばれるため、スレッド要件を満たしている。
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
         build_input_context(self.platform_state.preconditions(), &modifiers)
     }
@@ -195,6 +197,9 @@ impl Runtime {
         let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
 
         // ── Phase 2: IMM 能力キャッシュの初期学習 ──
+        // SAFETY: `learn_imm_capability_on_focus` は Win32 IMM API を呼ぶ unsafe fn。
+        //         `hwnd` は `probe` から得た有効なウィンドウハンドルであり、
+        //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
         unsafe {
             imm_learning::learn_imm_capability_on_focus(
                 &mut self.executor.platform.focus,
@@ -214,6 +219,9 @@ impl Runtime {
         }
 
         // ── Phase 3: focus_kind を決定 ──
+        // SAFETY: `resolve_focus_kind` は Win32 API で HWND を問い合わせる unsafe fn。
+        //         `hwnd` と `process_id` はフォーカスプローブで確認済みの有効な値。
+        //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
         let resolution = unsafe {
             kind_classifier::resolve_focus_kind(
                 &self.executor.platform.focus,
@@ -362,6 +370,8 @@ impl Runtime {
     unsafe fn detect_and_update_focus(&mut self) -> bool {
         // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
         // 詳細は focus::probe::read_focus_snapshot() を参照。
+        // SAFETY: `read_focus_snapshot` は Win32 `GetForegroundWindow` 等を呼ぶ unsafe fn。
+        //         この関数自体が unsafe として宣言されており、メインスレッド呼び出しが前提。
         let probe = unsafe { crate::focus::probe::read_focus_snapshot() };
         self.apply_focus_probe_result(probe)
     }
@@ -493,6 +503,8 @@ impl Runtime {
         }
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
+        // SAFETY: `poll_and_classify_ime` は Win32 IMM API（`ImmGetContext` 等）を呼ぶ unsafe fn。
+        //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
         let observer_out = unsafe {
             crate::observer::ime_observer::poll_and_classify_ime(
                 self.platform_state.ime_on(),
@@ -531,6 +543,8 @@ impl Runtime {
         self.invalidate_engine_context(ContextChange::InputLanguageChanged);
 
         // 2. IME 未確定文字列をキャンセル → OFF → ON
+        // SAFETY: `cancel_ime_composition` は Win32 IMM API を呼ぶ unsafe fn。
+        //         `panic_reset` はメッセージループ上（メインスレッド）から呼ばれるため安全。
         unsafe { cancel_ime_composition() };
         self.executor.platform.set_ime_open(false);
         self.executor.platform.set_ime_open(true);
@@ -605,17 +619,25 @@ fn send_all_modifier_key_ups() {
 ///
 /// # Safety
 /// Win32 IMM API (`ImmGetContext`, `ImmNotifyIME`, `ImmReleaseContext`) を呼び出す。
+/// メインスレッドから呼ぶこと。
 unsafe fn cancel_ime_composition() {
     use windows::Win32::UI::Input::Ime::{ImmNotifyIME, NOTIFY_IME_ACTION, NOTIFY_IME_INDEX};
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
+    // SAFETY: `GetForegroundWindow` は呼び出し時点のフォアグラウンドウィンドウを返す安全なクエリ。
+    //         NULL の場合は `non_null_hwnd` が None を返すため early return する。
     let Some(hwnd) = crate::win32::non_null_hwnd(GetForegroundWindow()) else {
         return;
     };
+    // SAFETY: `hwnd` は直上で NULL でないことを確認済み。
+    //         `ImmContextGuard` は RAII で `ImmReleaseContext` を呼ぶため、
+    //         コンテキストリークは発生しない。
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
         return;
     };
     // NI_COMPOSITIONSTR = 0x15, CPS_CANCEL = 0x04
+    // SAFETY: `ctx.himc()` は `ImmContextGuard` が保持する有効な HIMC。
+    //         `NI_COMPOSITIONSTR`/`CPS_CANCEL` は未確定文字列キャンセルの標準的な呼び出し。
     let _ = unsafe { ImmNotifyIME(ctx.himc(), NOTIFY_IME_ACTION(0x15), NOTIFY_IME_INDEX(0x04), 0) };
     log::debug!("Cancelled IME composition");
 }
