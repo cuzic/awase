@@ -1,12 +1,5 @@
 use awase::engine::InputModeState;
 
-/// IME 状態検出の連続失敗がこの回数以上になると Engine を非活性にする。
-///
-/// ポーリング間隔 500ms × 3 = 1.5秒。一時的な検出失敗は許容しつつ、
-/// 長時間の乖離（実際は IME OFF なのにキャッシュが ON のまま）を防ぐ。
-pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
-
-
 /// `Preconditions.ime_on` を最後に更新したソース。
 ///
 /// Phase 2 の `ImeObservations + resolve()` で優先度判定に使用する準備として記録する。
@@ -70,7 +63,7 @@ pub struct Preconditions {
     ///
     /// `detect_ime_state()` が `ime_on = None` を返すたびにインクリメントされ、
     /// 検出成功時またはシャドウ更新（ユーザー操作）時にリセットされる。
-    /// [`IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
+    /// [`crate::tuning::IME_DETECT_MISS_THRESHOLD`] に達すると `refresh_ime_state_cache` が
     /// IME を強制 ON にして Engine の活性状態を維持する。
     ///
     /// ## 発火条件の実態

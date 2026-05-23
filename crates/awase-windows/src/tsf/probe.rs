@@ -8,6 +8,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::tsf::observer::TSF_OBS;
+use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 
 // ── TsfReadinessProbe ──
 
@@ -66,8 +67,6 @@ impl TsfReadinessProbe {
     /// `true` = 送信可能（GJI 静止 or タイムアウト）、`false` = まだ待機中。
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
     pub fn check_now(&self, total_max_ms: u64) -> bool {
-        const GJI_IDLE_MS: u64 = 80;
-        const POST_IDLE_MARGIN_MS: u64 = 30;
         let now = crate::hook::current_tick_ms();
         let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
         let min_deadline = self.warmup_sent_ms.saturating_add(self.min_ms);

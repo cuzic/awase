@@ -4,6 +4,7 @@ use awase::platform::PlatformRuntime;
 use crate::focus::classifier::ImmCapability;
 use super::Runtime;
 use crate::ImeForceOnGuard;
+use crate::tuning::{TYPING_IDLE_MS, GJI_CONFIRM_WINDOW_MS};
 
 // ── ImeReadStrategy ──
 
@@ -141,7 +142,6 @@ impl<'a> ImeRefreshPipeline<'a> {
     // IMM との SendMessage を一切行わない。
 
     fn phase2_7_decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
-        const TYPING_IDLE_MS: u64 = 500;
         let last_activity = self.rt.platform_state.last_hook_activity_ms
             .max(crate::tsf::probe_bridge::OUTPUT_GATE.last_vk_output_ms.load(std::sync::atomic::Ordering::Relaxed));
         let idle_ms = crate::hook::current_tick_ms()
@@ -172,7 +172,6 @@ impl<'a> ImeRefreshPipeline<'a> {
         // バックグラウンドスレッドが TSF_OBS.gji_last_io_ms を更新していれば
         // Chrome の IME が ON であると判断し preconditions.ime_on に反映する。
         {
-            const GJI_CONFIRM_WINDOW_MS: u64 = 500;
             let now_ms = crate::hook::current_tick_ms();
             let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
             if last_io > 0 && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
