@@ -3,7 +3,6 @@ use awase::platform::PlatformRuntime;
 
 use crate::focus::classifier::ImmCapability;
 use super::Runtime;
-use crate::ImeForceOnGuard;
 use crate::tuning::{TYPING_IDLE_MS, GJI_CONFIRM_WINDOW_MS};
 
 // ── ImeReadStrategy ──
@@ -214,7 +213,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         let observer_out = unsafe {
             crate::observer::ime_observer::observe(
                 self.rt.platform_state.ime_on(),
-                self.rt.platform_state.ime_force_on_guard(),
+                self.rt.platform_state.is_force_on_guard_active(),
                 self.rt.platform_state.input_mode(),
                 self.rt.platform_state.prev_conversion_mode(),
             )
@@ -345,7 +344,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             && self.rt.engine.is_user_enabled()
             && self.rt.platform_state.is_japanese_ime()
             && self.rt.platform_state.ime_on()
-            && !self.rt.platform_state.ime_force_on_guard().is_active()
+            && !self.rt.platform_state.is_force_on_guard_active()
         {
             log::warn!(
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
@@ -354,7 +353,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             let success = self.rt.executor.platform.set_ime_open(true);
             // success/failure 問わずガードをセット: IME 非対応ウィンドウ(DirectUIHWND 等)で
             // 失敗し続ける無限ループを防ぐ。ガードはフォーカス変更時に解除される。
-            self.rt.platform_state.set_ime_force_on_guard(ImeForceOnGuard::BrokenAppBootstrap);
+            self.rt.platform_state.set_force_on_broken_app_bootstrap();
             if !success {
                 log::warn!("set_ime_open failed (no IME window?) — guard set to suppress retry until focus change");
             }
@@ -460,7 +459,7 @@ impl<'a> ImeRefreshPipeline<'a> {
                         &ime_snap,
                         now_ms,
                         self.rt.platform_state.ime_on(),
-                        self.rt.platform_state.ime_force_on_guard(),
+                        self.rt.platform_state.is_force_on_guard_active(),
                         self.rt.platform_state.input_mode(),
                         self.rt.platform_state.prev_conversion_mode(),
                     )

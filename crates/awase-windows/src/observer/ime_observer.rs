@@ -56,12 +56,12 @@ pub fn compute_observer_output(
     now_ms: u64,
     // Preconditions の読み取り専用フィールド
     current_ime_on: bool,
-    current_ime_force_on_guard: crate::ImeForceOnGuard,
+    current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
 ) -> ImeObserverOutput {
     let known_not_japanese = snap.is_japanese_ime == Some(false);
-    let guard_active = current_ime_force_on_guard.is_active();
+    let guard_active = current_force_on_guard_active;
 
     // ── observer_poll / miss_count / force_on_guard ──────────────────────────────
     let (observer_poll, increment_miss_count, clear_force_on_guard, is_tsf_native_skip, force_on_guard_skip) =
@@ -171,7 +171,7 @@ pub fn compute_observer_output(
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn observe(
     current_ime_on: bool,
-    current_ime_force_on_guard: crate::ImeForceOnGuard,
+    current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
 ) -> ImeObserverOutput {
@@ -183,7 +183,7 @@ pub unsafe fn observe(
         &snap,
         now_ms,
         current_ime_on,
-        current_ime_force_on_guard,
+        current_force_on_guard_active,
         current_input_mode,
         current_prev_conversion_mode,
     )
@@ -197,7 +197,7 @@ pub fn apply_snapshot(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,
     current_ime_on: bool,
-    current_ime_force_on_guard: crate::ImeForceOnGuard,
+    current_force_on_guard_active: bool,
     current_input_mode: InputModeState,
     current_prev_conversion_mode: Option<u32>,
 ) -> ImeObserverOutput {
@@ -205,7 +205,7 @@ pub fn apply_snapshot(
         snap,
         now_ms,
         current_ime_on,
-        current_ime_force_on_guard,
+        current_force_on_guard_active,
         current_input_mode,
         current_prev_conversion_mode,
     )
