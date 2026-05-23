@@ -237,15 +237,10 @@ static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) ->
 unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, is_keydown: bool) -> KeyRoute {
     // KeyUp は KeyDown の判定に従う（ペア保証）
     if !is_keydown {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
-        if idx >= 4 {
-            return KeyRoute::Bypass;
-        }
-        if (hook.track_only_keys[idx] & bit) != 0 {
+        if hook.is_track_only(vk) {
             return KeyRoute::TrackOnly;
         }
-        if (hook.sent_to_engine[idx] & bit) != 0 {
+        if hook.is_engine_sent(vk) {
             return KeyRoute::Engine;
         }
         return KeyRoute::Bypass;
@@ -289,35 +284,6 @@ enum KeyRoute {
     Bypass,
 }
 
-/// SENT_TO_ENGINE ビットセットに Engine ルートで記録する
-fn mark_sent_to_engine(hook: &mut HookRoutingState, vk: u16) {
-    let idx = (vk as usize) / 64;
-    let bit = 1u64 << ((vk as usize) % 64);
-    if idx < 4 {
-        hook.sent_to_engine[idx] |= bit;
-    }
-}
-
-/// SENT_TO_ENGINE / TRACK_ONLY_KEYS ビットセットに TrackOnly ルートで記録する
-fn mark_sent_as_track_only(hook: &mut HookRoutingState, vk: u16) {
-    let idx = (vk as usize) / 64;
-    let bit = 1u64 << ((vk as usize) % 64);
-    if idx < 4 {
-        hook.sent_to_engine[idx] |= bit;
-        hook.track_only_keys[idx] |= bit;
-    }
-}
-
-/// SENT_TO_ENGINE / TRACK_ONLY_KEYS からキーを削除する
-fn clear_sent_to_engine(hook: &mut HookRoutingState, vk: u16) {
-    let idx = (vk as usize) / 64;
-    let bit = 1u64 << ((vk as usize) % 64);
-    if idx < 4 {
-        hook.sent_to_engine[idx] &= !bit;
-        hook.track_only_keys[idx] &= !bit;
-    }
-}
-
 /// SENT_TO_ENGINE ビットセットを OS のキー状態と同期する。
 ///
 /// `GetAsyncKeyState` で実際に押されていないのにビットが残っているキーをクリアする。
@@ -326,30 +292,7 @@ fn clear_sent_to_engine(hook: &mut HookRoutingState, vk: u16) {
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn sync_sent_to_engine(hook: &mut HookRoutingState) {
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-
-    let mut cleared = 0u32;
-    for idx in 0..4 {
-        if hook.sent_to_engine[idx] == 0 {
-            continue;
-        }
-        let mut remaining = hook.sent_to_engine[idx];
-        while remaining != 0 {
-            let bit_pos = remaining.trailing_zeros() as usize;
-            let vk = (idx * 64 + bit_pos) as i32;
-            let bit = 1u64 << bit_pos;
-            // OS でキーが離されている → ビットをクリア
-            if (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) == 0 {
-                hook.sent_to_engine[idx] &= !bit;
-                hook.track_only_keys[idx] &= !bit;
-                cleared += 1;
-            }
-            remaining &= remaining - 1;
-        }
-    }
-    if cleared > 0 {
-        log::debug!("sync_sent_to_engine: cleared {cleared} stale bit(s)");
-    }
+    unsafe { hook.sync_with_os_key_state() };
 }
 
 /// コールバックの戻り値
@@ -513,21 +456,21 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 // KeyDown/KeyUp ペア追跡を更新
                 if is_keydown {
                     match route {
-                        KeyRoute::Engine => mark_sent_to_engine(&mut ps.hook, vk_raw),
-                        KeyRoute::TrackOnly => mark_sent_as_track_only(&mut ps.hook, vk_raw),
+                        KeyRoute::Engine => ps.hook.mark_engine_sent(vk_raw),
+                        KeyRoute::TrackOnly => ps.hook.mark_track_only_sent(vk_raw),
                         KeyRoute::Bypass => unreachable!(),
                     }
                 } else {
-                    clear_sent_to_engine(&mut ps.hook, vk_raw);
+                    ps.hook.clear_engine_sent(vk_raw);
                 }
             }
         }
 
         // ── 再入ガード ──
-        if ps.hook.in_callback {
+        if ps.hook.is_in_callback() {
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         }
-        ps.hook.in_callback = true;
+        ps.hook.enter_callback();
 
         let event_type = if is_keydown {
             KeyEventType::KeyDown
@@ -588,13 +531,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             let is_sync_key = event.ime_relevance.is_sync_key;
 
             // sync key KeyDown → activate guard, flush Engine pending, PassThrough
-            if is_keydown && is_sync_key && !app.platform_state.ime_guard.active {
-                app.platform_state.ime_guard.active = true;
+            if is_keydown && is_sync_key && !app.platform_state.ime_guard.is_active() {
+                app.platform_state.ime_guard.activate();
                 log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
 
                 // Flush engine pending keys
                 let ctx = crate::runtime::build_input_context(&app.platform_state.preconditions, &event.modifier_snapshot);
-                app.platform_state.hook.in_callback = false;
+                app.platform_state.hook.leave_callback();
                 let decision = app.engine.on_command(
                     awase::engine::EngineCommand::InvalidateContext(awase::types::ContextChange::ImeOff),
                     &ctx,
@@ -604,31 +547,30 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             }
 
             // sync key KeyUp → deactivate guard, PassThrough, request deferred processing
-            if !is_keydown && is_sync_key && app.platform_state.ime_guard.active {
-                app.platform_state.ime_guard.active = false;
+            if !is_keydown && is_sync_key && app.platform_state.ime_guard.is_active() {
+                app.platform_state.ime_guard.deactivate();
                 log::debug!("IME guard OFF (sync key vk=0x{:02X})", vk_raw);
-                app.platform_state.hook.in_callback = false;
+                app.platform_state.hook.leave_callback();
                 crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
                 return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
             }
 
             // Guard active → buffer key (ただし修飾キーは OS にパススルー)
-            if app.platform_state.ime_guard.active {
+            if app.platform_state.ime_guard.is_active() {
                 // TrackOnly（Ctrl/Alt/Win）は OS にパススルー。
                 // バッファすると KeyUp が OS に届かず修飾キーが「押しっぱなし」になる。
                 if matches!(route, KeyRoute::TrackOnly) {
-                    app.platform_state.hook.in_callback = false;
+                    app.platform_state.hook.leave_callback();
                     return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
                 }
-                if app.platform_state.ime_guard.deferred_keys.len() < 10 {
-                    let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
-                    app.platform_state.ime_guard.deferred_keys.push((event, phys));
+                let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
+                if app.platform_state.ime_guard.try_push(event, phys) {
                     log::trace!("IME guard: buffered key vk=0x{:02X}", vk_raw);
                 } else {
                     log::warn!("IME guard forced clear: buffer overflow");
-                    app.platform_state.ime_guard.active = false;
+                    app.platform_state.ime_guard.deactivate();
                 }
-                app.platform_state.hook.in_callback = false;
+                app.platform_state.hook.leave_callback();
                 return LRESULT(1); // Consumed
             }
         }
@@ -649,7 +591,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // with_app は再入検出を返す可能性があるため APP.get_mut() を直接使う。
         // SAFETY: hook_callback はメインスレッドのみで呼ばれる。
         if let Some(app) = unsafe { crate::APP.get_mut() } {
-            app.platform_state.hook.in_callback = false;
+            app.platform_state.hook.leave_callback();
         }
 
         // TrackOnly: Engine の結果を無視して常に PassThrough（修飾キースタック防止）

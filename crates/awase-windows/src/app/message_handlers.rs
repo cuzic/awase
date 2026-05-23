@@ -54,7 +54,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.executor.platform.timer.kill(TIMER_TSF_GATE);
-            let held = app.executor.platform.output.tsf_gate.on_warmup_timeout();
+            let held = app.executor.platform.output.on_tsf_warmup_timeout();
             if !held.is_empty() {
                 log::debug!(
                     "[tsf-gate-timeout] draining {} held keys via INPUT_DEFER",
@@ -68,7 +68,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             static PING_SENT_AT: AtomicU64 = AtomicU64::new(0);
             let ping_sent = PING_SENT_AT.load(Ordering::Relaxed);
             let last_activity = app.platform_state.last_hook_activity_ms
-                .max(awase_windows::OUTPUT_GATE.last_vk_output_ms.load(Ordering::Relaxed));
+                .max(awase_windows::OUTPUT_GATE.last_vk_output_ms_val());
 
             if ping_sent > 0 && last_activity < ping_sent {
                 let stale_ms = hook::current_tick_ms() - last_activity;

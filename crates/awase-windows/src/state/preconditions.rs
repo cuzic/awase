@@ -53,16 +53,19 @@ impl ImeForceOnGuard {
 #[derive(Debug)]
 pub struct Preconditions {
     /// IME が ON か（shadow 追跡含む、Observer ポーリングで実際の OS 状態に収束）
-    pub ime_on: bool,
+    pub(in crate::state) ime_on: bool,
     /// `ime_on` を最後に更新したソース（Phase 2 解決関数向けの診断情報）
-    pub ime_on_source: ShadowSource,
+    pub(in crate::state) ime_on_source: ShadowSource,
     /// 入力モード（ローマ字 / かな / 不明）
-    pub input_mode: InputModeState,
+    ///
+    /// `hook.rs` がフックコールバック内で直接読み取るため `pub(crate)` とする。
+    /// 書き込みは `PlatformState::set_input_mode()` 経由で行うこと。
+    pub(crate) input_mode: InputModeState,
     /// 日本語 IME がアクティブか
-    pub is_japanese_ime: bool,
+    pub(in crate::state) is_japanese_ime: bool,
     /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
     /// None = まだ一度も取得できていない
-    pub prev_conversion_mode: Option<u32>,
+    pub(in crate::state) prev_conversion_mode: Option<u32>,
     /// IME 状態検出の連続失敗回数。
     ///
     /// `detect_ime_state()` が `ime_on = None` を返すたびにインクリメントされ、
@@ -79,7 +82,7 @@ pub struct Preconditions {
     ///
     /// 実際に増えるのは「**未知の IMM-broken アプリへの初回フォーカス時だけ**」。
     /// 閾値到達後 `ImmCapability::Broken` として学習されると、以降は発火しなくなる。
-    pub ime_detect_miss_count: u32,
+    pub(in crate::state) ime_detect_miss_count: u32,
     /// IME 強制 ON 後のガードフラグ。2 つの独立した用途がある。
     ///
     /// ## 用途 A — 未知 IMM-broken アプリの初回ブートストラップ（Phase 3.5）
@@ -94,13 +97,57 @@ pub struct Preconditions {
     ///
     /// いずれも「awase が恒常的に SSOT になる」わけではなく、
     /// **一時的な遷移期間中だけ OS 検出結果を無視する** という設計。
-    pub ime_force_on_guard: ImeForceOnGuard,
+    pub(in crate::state) ime_force_on_guard: ImeForceOnGuard,
 }
 
 impl Preconditions {
     /// `ime_on` と `ime_on_source` をまとめて更新する。
-    pub fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
+    pub(in crate::state) fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
         self.ime_on = value;
         self.ime_on_source = source;
+    }
+
+    // ── pub(crate) 読み取り getter ──
+
+    /// IME が ON かどうかを返す。
+    #[inline]
+    pub(crate) fn ime_on(&self) -> bool {
+        self.ime_on
+    }
+
+    /// `ime_on` を最後に更新したソースを返す。
+    #[inline]
+    pub(crate) fn ime_on_source(&self) -> ShadowSource {
+        self.ime_on_source
+    }
+
+    /// 入力モードを返す。
+    #[inline]
+    pub(crate) fn input_mode(&self) -> InputModeState {
+        self.input_mode
+    }
+
+    /// 日本語 IME がアクティブかを返す。
+    #[inline]
+    pub(crate) fn is_japanese_ime(&self) -> bool {
+        self.is_japanese_ime
+    }
+
+    /// 直前の conversion_mode を返す。
+    #[inline]
+    pub(crate) fn prev_conversion_mode(&self) -> Option<u32> {
+        self.prev_conversion_mode
+    }
+
+    /// IME 状態検出の連続失敗回数を返す。
+    #[inline]
+    pub(crate) fn ime_detect_miss_count(&self) -> u32 {
+        self.ime_detect_miss_count
+    }
+
+    /// IME 強制 ON ガードフラグを返す。
+    #[inline]
+    pub(crate) fn ime_force_on_guard(&self) -> ImeForceOnGuard {
+        self.ime_force_on_guard
     }
 }

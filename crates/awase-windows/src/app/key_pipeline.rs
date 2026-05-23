@@ -10,7 +10,7 @@ use awase_windows::hook;
 use awase_windows::runtime;
 use awase_windows::hook::CallbackResult;
 use awase_windows::win32::{post_to_main_thread};
-use awase_windows::{ImeForceOnGuard, Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_PANIC_RESET};
+use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_PANIC_RESET};
 use win32_async;
 
 use super::RAPID_IME_TIMESTAMPS;
@@ -28,7 +28,7 @@ impl<'a> KeyEventPipeline<'a> {
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
-        if self.app.executor.platform.output.tsf_gate.try_hold(event) {
+        if self.app.executor.platform.output.try_hold_key(event) {
             return CallbackResult::Consumed;
         }
 
@@ -89,34 +89,32 @@ impl<'a> KeyEventPipeline<'a> {
             return;
         }
         let sync_source = event.ime_relevance.sync_direction.map(|a| (a, ShadowSource::SyncKey));
-        let phys_source = if self.app.platform_state.preconditions.is_japanese_ime {
+        let phys_source = if self.app.platform_state.is_japanese_ime() {
             event.ime_relevance.shadow_action.map(|a| (a, ShadowSource::PhysicalImeKey))
         } else {
             None
         };
         let action_with_source = sync_source.or(phys_source);
         if let Some((action, source)) = action_with_source {
-            let current = self.app.platform_state.preconditions.ime_on;
+            let current = self.app.platform_state.ime_on();
             let new_val = match action {
                 ShadowImeAction::Toggle => !current,
                 ShadowImeAction::TurnOn => true,
                 ShadowImeAction::TurnOff => false,
             };
             let ms = hook::current_tick_ms();
-            let obs = awase_windows::ime_observations::ImeObs { value: new_val, ms };
             match source {
-                ShadowSource::SyncKey => self.app.platform_state.ime_observations.sync_key = Some(obs),
-                ShadowSource::PhysicalImeKey => self.app.platform_state.ime_observations.physical_key = Some(obs),
+                ShadowSource::SyncKey => self.app.platform_state.write_sync_key(new_val, ms),
+                ShadowSource::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms),
                 _ => {}
             }
             self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
-            if self.app.platform_state.preconditions.ime_on != current {
-                self.app.platform_state.preconditions.ime_detect_miss_count = 0;
-                self.app.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
+            if self.app.platform_state.ime_on() != current {
+                self.app.platform_state.reset_ime_detect_state();
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
                     if current { "ON" } else { "OFF" },
-                    if self.app.platform_state.preconditions.ime_on { "ON" } else { "OFF" },
+                    if self.app.platform_state.ime_on() { "ON" } else { "OFF" },
                     event.vk_code.0,
                     source,
                 );
@@ -149,11 +147,9 @@ impl<'a> KeyEventPipeline<'a> {
     fn stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             let ms = hook::current_tick_ms();
-            self.app.platform_state.ime_observations.set_open_request =
-                Some(awase_windows::ime_observations::ImeObs { value: new_ime_on, ms });
+            self.app.platform_state.write_set_open_request(new_ime_on, ms);
             self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
-            self.app.platform_state.preconditions.ime_detect_miss_count = 0;
-            self.app.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
+            self.app.platform_state.reset_ime_detect_state();
             self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
             self.app.platform_state.hook.set_suppress_ctrl_bypass(true);
             log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass suppressed");
@@ -192,10 +188,10 @@ fn apply_focus_probe_to_app(
     shadow_on: bool,
 ) {
     let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
-    let ime_on_before_probe = app.platform_state.preconditions.ime_on;
-    let input_mode_before_probe = app.platform_state.preconditions.input_mode;
+    let ime_on_before_probe = app.platform_state.ime_on();
+    let input_mode_before_probe = app.platform_state.input_mode();
 
-    app.platform_state.preconditions.is_japanese_ime = probe.is_japanese_ime;
+    app.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
 
     const WARMUP_GRACE_MS: u64 = 300;
     const GJI_SETTLE_GRACE_MS: u64 = 300;
@@ -233,12 +229,9 @@ fn apply_focus_probe_to_app(
         } else {
             app.platform_state.os_ime_on = Some(effective);
             let ms = hook::current_tick_ms();
-            app.platform_state.ime_observations.focus_probe =
-                Some(awase_windows::ime_observations::ImeObs { value: effective, ms });
+            app.platform_state.write_focus_probe(effective, ms);
             if effective {
-                app.platform_state.preconditions.ime_detect_miss_count = 0;
-                app.platform_state.preconditions.ime_force_on_guard =
-                    ImeForceOnGuard::Inactive;
+                app.platform_state.reset_ime_detect_state();
             }
             app.platform_state
                 .apply_ime_observations(app.engine.is_user_enabled());
@@ -246,12 +239,12 @@ fn apply_focus_probe_to_app(
     }
 
     if let Some(romaji) = probe.is_romaji {
-        let prev = app.platform_state.preconditions.input_mode.is_romaji_capable();
-        app.platform_state.preconditions.input_mode = if romaji {
+        let prev = app.platform_state.input_mode().is_romaji_capable();
+        app.platform_state.set_input_mode(if romaji {
             InputModeState::ObservedRomaji
         } else {
             InputModeState::ObservedKana
-        };
+        });
         if prev != romaji {
             log::info!(
                 "FocusProbe +{}ms: mode {} → {}",
@@ -262,8 +255,8 @@ fn apply_focus_probe_to_app(
         }
     }
 
-    let ime_on_after_probe = app.platform_state.preconditions.ime_on;
-    let input_mode_after_probe = app.platform_state.preconditions.input_mode;
+    let ime_on_after_probe = app.platform_state.ime_on();
+    let input_mode_after_probe = app.platform_state.input_mode();
     let ime_on_suffix = if suppressed {
         let detail = match suppress_reason {
             "warmup" => format!("warmup:{warmup_elapsed}ms"),

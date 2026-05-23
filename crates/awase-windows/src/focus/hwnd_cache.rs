@@ -29,8 +29,8 @@ pub fn save_on_focus_leave(
     preconditions: &Preconditions,
 ) {
     let snapshot = HwndImeSnapshot {
-        ime_on: preconditions.ime_on,
-        input_mode: preconditions.input_mode,
+        ime_on: preconditions.ime_on(),
+        input_mode: preconditions.input_mode(),
         recorded_ms: crate::hook::current_tick_ms(),
     };
     log::debug!(

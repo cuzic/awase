@@ -12,9 +12,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 /// - `depth`: RAII Guard の参照カウント（0→1 で active=true、1→0 で active=false）
 /// - `last_vk_output_ms`: VK/TSF 最終 SendInput 時刻（with_app 再入回避のため atomic）
 pub struct OutputGate {
-    pub active: AtomicBool,
+    pub(crate) active: AtomicBool,
     depth: AtomicU32,
-    pub last_vk_output_ms: AtomicU64,
+    pub(crate) last_vk_output_ms: AtomicU64,
 }
 
 impl OutputGate {
@@ -24,6 +24,24 @@ impl OutputGate {
             depth: AtomicU32::new(0),
             last_vk_output_ms: AtomicU64::new(0),
         }
+    }
+
+    /// `OUTPUT_GATE.active` の現在値を取得する。
+    #[inline]
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    /// VK/TSF 送信時刻を現在時刻（ms）で記録する。
+    #[inline]
+    pub(crate) fn mark_vk_output(&self, ms: u64) {
+        self.last_vk_output_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// `last_vk_output_ms` の現在値を取得する。
+    #[inline]
+    pub(crate) fn last_vk_output_ms_val(&self) -> u64 {
+        self.last_vk_output_ms.load(Ordering::Relaxed)
     }
 }
 

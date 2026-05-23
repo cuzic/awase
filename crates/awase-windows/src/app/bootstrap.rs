@@ -413,7 +413,7 @@ unsafe extern "system" fn win_event_proc(
 
     with_app(|app| {
         app.platform_state.focus_transition_pending = true;
-        app.executor.platform.output.tsf_gate.on_focus_change();
+        app.executor.platform.output.on_focus_change_tsf();
         // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
         app.executor.platform.timer.set(
             awase_windows::TIMER_TSF_GATE,

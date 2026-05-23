@@ -215,7 +215,7 @@ pub struct Output {
     ///
     /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
     /// Probing または Bypass に遷移して保留キーを再処理する。
-    pub tsf_gate: crate::tsf::gate::TsfGate,
+    pub(crate) tsf_gate: crate::tsf::gate::TsfGate,
 }
 
 /// TSF/VK probe の現在フェーズ
@@ -386,6 +386,47 @@ impl Output {
         // pending_tsf が Some の場合は probe と一緒にドロップされる。
     }
 
+    // ── TsfGate ラッパー ──────────────────────────────────────────────────
+
+    /// フォーカス変更時に `tsf_gate` を `PendingWarmup` に遷移させる。
+    ///
+    /// 呼び出し後に `TIMER_TSF_GATE` を `WARMUP_TIMEOUT_MS` ms でセットすること。
+    pub(crate) fn on_focus_change_tsf(&mut self) {
+        self.tsf_gate.on_focus_change();
+    }
+
+    /// TSF モード確定時に `tsf_gate` を `Probing` に遷移させ、保留キーを返す。
+    ///
+    /// 呼び出し後に `TIMER_TSF_GATE` を kill すること。
+    #[must_use]
+    pub(crate) fn confirm_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
+        self.tsf_gate.on_tsf_confirmed()
+    }
+
+    /// 非 TSF モード確定時に `tsf_gate` を `Bypass` に遷移させ、保留キーを返す。
+    ///
+    /// 呼び出し後に `TIMER_TSF_GATE` を kill すること。
+    #[must_use]
+    pub(crate) fn bypass_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
+        self.tsf_gate.on_bypass()
+    }
+
+    /// `TIMER_TSF_GATE` タイムアウト時に呼ぶ。`Bypass` にフォールバックし、保留キーを返す。
+    #[must_use]
+    pub(crate) fn on_tsf_warmup_timeout(&mut self) -> Vec<awase::types::RawKeyEvent> {
+        self.tsf_gate.on_warmup_timeout()
+    }
+
+    /// キーを `tsf_gate` で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
+    pub(crate) fn try_hold_key(&mut self, event: awase::types::RawKeyEvent) -> bool {
+        self.tsf_gate.try_hold(event)
+    }
+
+    /// TSF プローブ完了時に `tsf_gate` を `Probing` → `Ready` に遷移させる。
+    pub(crate) fn on_tsf_probe_ready(&mut self) {
+        self.tsf_gate.on_ready();
+    }
+
     /// 現在のフォーカス先が TSF 注入モードかどうかを返す。
     ///
     /// TSF モード（WezTerm 等）では物理 F2 の扱いが特殊なため、
@@ -431,7 +472,7 @@ impl Output {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
-        crate::tsf::observer::TSF_OBS.focus_namechange_seq.store(0, Ordering::Relaxed);
+        crate::tsf::observer::with_tsf_obs(|obs| obs.reset_focus_namechange_seq());
         // VK_DBE_HIRAGANA (F2) を送信: VK_IME_ON (0x16) は IME ON 状態をセットするだけで
         // TSF composition context の初期化をトリガーしない。WezTerm は物理 F2 受信時に
         // TSF composition を初期化するため、同等の VK_DBE_HIRAGANA を送る必要がある。
@@ -465,7 +506,7 @@ impl Output {
     /// `with_app` は `execute_one` からの再入 UB を避けるため使用不可。
     /// グローバル atomic に書き込み、読み取り側で `last_hook_activity_ms` と max を取る。
     fn mark_vk_output() {
-        crate::tsf::probe_bridge::OUTPUT_GATE.last_vk_output_ms.store(crate::hook::current_tick_ms(), Ordering::Relaxed);
+        crate::tsf::probe_bridge::OUTPUT_GATE.mark_vk_output(crate::hook::current_tick_ms());
     }
 
     /// アクション列を順に実行する
@@ -774,8 +815,6 @@ impl Output {
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
     fn send_vk_runs(&self, chars: &[(u16, bool)], cold_n: u32) {
-        use std::sync::atomic::Ordering::Relaxed;
-
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
@@ -792,8 +831,7 @@ impl Output {
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.iter().enumerate() {
-            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms
-                .load(Relaxed);
+            let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let vks: Vec<String> = run.iter().map(|&(v, s)| {
                 if s { format!("S{v:02X}") } else { format!("{v:02X}") }
@@ -826,8 +864,6 @@ impl Output {
     }
 
     fn send_romaji_as_tsf(&self, romaji: &str) {
-        use std::sync::atomic::Ordering::Relaxed;
-
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
@@ -873,7 +909,7 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_n };
 
         {
-            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
+            let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
@@ -893,7 +929,7 @@ impl Output {
         // Probing 状態の warm 投機送信: GJI 監視が有効なら LiteralDetect で検証する。
         // (1) raw TSF literal 検出と回復, (2) advance_tsf_probe が on_ready() を呼んで
         //     ゲートを Ready に進める、という 2 つの目的を兼ねる。
-        let gji_active = crate::tsf::observer::TSF_OBS.gji_monitor_ok.load(Relaxed);
+        let gji_active = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_monitor_ok());
         if self.tsf_gate.state() == crate::tsf::gate::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
@@ -1037,7 +1073,7 @@ impl Output {
     pub(crate) fn advance_tsf_probe(&self) -> bool {
         use std::sync::atomic::Ordering::Relaxed;
         use crate::tsf::probe::DetectionResult;
-        use crate::tsf::observer::TSF_OBS;
+        use crate::tsf::observer::with_tsf_obs;
 
         let Some(data) = self.pending_tsf.borrow_mut().take() else {
             return true;
@@ -1061,13 +1097,13 @@ impl Output {
                 log::debug!("[tsf-probe] cold={cold_n} GjiProbe 完了 ({elapsed}ms)");
 
                 if needs_settle_check {
-                    let gji_last = TSF_OBS.gji_last_io_ms.load(Relaxed);
+                    let gji_last = with_tsf_obs(|obs| obs.gji_last_io_ms());
                     let probe_settled = gji_last >= probe.warmup_sent_ms;
-                    let gji_monitor_ok = TSF_OBS.gji_monitor_ok.load(Relaxed);
+                    let gji_monitor_ok = with_tsf_obs(|obs| obs.gji_monitor_ok());
                     let is_ime_init_cold = cold_reason.requires_settle();
                     if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
                         const SETTLE_TIMEOUT_MS: u64 = 300;
-                        let nc_baseline = crate::tsf::observer::TSF_OBS.focus_namechange_seq.load(Relaxed);
+                        let nc_baseline = with_tsf_obs(|obs| obs.focus_namechange_seq());
                         let settle_reason = if !probe_settled {
                             "probe timeout"
                         } else {
@@ -1108,7 +1144,7 @@ impl Output {
                 prepend_f2_warmup, used_eager_path,
             } => {
                 let now = crate::hook::current_tick_ms();
-                let nc_fired = crate::tsf::observer::TSF_OBS.focus_namechange_seq.load(Relaxed) != nc_baseline;
+                let nc_fired = with_tsf_obs(|obs| obs.focus_namechange_seq()) != nc_baseline;
                 let timed_out = now >= deadline_ms;
 
                 if !nc_fired && !timed_out {
@@ -1257,8 +1293,6 @@ impl Output {
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
     ) -> bool {
-        use std::sync::atomic::Ordering::Relaxed;
-
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return true;
@@ -1267,7 +1301,7 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_n };
 
         {
-            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
+            let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             // SAFETY: IMM32 API; called from message-loop thread.
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
@@ -1286,7 +1320,7 @@ impl Output {
         self.send_deferred_probe_vks_from(deferred_vks, true);
         self.mark_composition_warm();
 
-        let gji_active = crate::tsf::observer::TSF_OBS.gji_monitor_ok.load(Relaxed);
+        let gji_active = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_monitor_ok());
         if prepend_f2_warmup && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::timing::RAW_TSF_LITERAL_DETECT_MS;

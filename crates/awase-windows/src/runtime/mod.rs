@@ -1,12 +1,12 @@
 mod ime_refresh;
 use ime_refresh::ImeRefreshPipeline;
 
-use awase::engine::{Engine, EngineCommand, InputContext, InputModeState};
+use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
-use crate::{ImeForceOnGuard, Preconditions};
+use crate::Preconditions;
 
 /// Config の force_text / force_bypass オーバーライドをチェックする。
 /// マッチした場合は強制される FocusKind を返す。
@@ -107,9 +107,9 @@ pub fn build_input_context(
     modifiers: &awase::engine::ModifierState,
 ) -> InputContext {
     InputContext {
-        ime_on: preconditions.ime_on,
-        input_mode: preconditions.input_mode,
-        is_japanese_ime: preconditions.is_japanese_ime,
+        ime_on: preconditions.ime_on(),
+        input_mode: preconditions.input_mode(),
+        is_japanese_ime: preconditions.is_japanese_ime(),
         modifiers: *modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
@@ -217,21 +217,21 @@ pub enum InjectionHint {
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
 #[allow(missing_debug_implementations)]
 pub struct AppKindClassifier {
-    pub cache: crate::focus::cache::FocusCache,
-    pub overrides: awase::config::AppOverrides,
-    pub last_focus_info: Option<(u32, String)>,
-    pub uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
+    pub(crate) cache: crate::focus::cache::FocusCache,
+    pub(crate) overrides: awase::config::AppOverrides,
+    pub(crate) last_focus_info: Option<(u32, String)>,
+    pub(crate) uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
     /// class_name ごとの IMM ブリッジ能力キャッシュ。
     /// 検出成功/失敗の実績に基づいて学習し、AppKind 判定に使う。
     /// ファイルに永続化される（起動時ロード、学習時セーブ）。
-    pub imm_capability_cache: std::collections::HashMap<String, ImmCapability>,
+    pub(crate) imm_capability_cache: std::collections::HashMap<String, ImmCapability>,
     /// per-HWND IME 状態キャッシュ。
     ///
     /// キー: `(process_id, class_name)` — HWND は再利用されるため class_name を合わせる。
     /// 値: フォーカスが離れた時点の IME 状態スナップショット。
     /// フォーカスが戻ったとき preconditions を即座に復元し、stale 窓をゼロにする。
     /// probe / poll が成功すれば自動的に上書き補正される。
-    pub hwnd_ime_cache: std::collections::HashMap<(u32, String), crate::focus::hwnd_cache::HwndImeSnapshot>,
+    pub(crate) hwnd_ime_cache: std::collections::HashMap<(u32, String), crate::focus::hwnd_cache::HwndImeSnapshot>,
     /// キャッシュファイルの格納ディレクトリ（実行ファイルと同じ場所）
     base_dir: std::path::PathBuf,
 }
@@ -295,15 +295,15 @@ impl AppKindClassifier {
 /// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
 #[allow(missing_debug_implementations)]
 pub struct Runtime {
-    pub engine: Engine,
-    pub executor: DecisionExecutor,
-    pub layouts: Vec<LayoutEntry>,
+    pub(crate) engine: Engine,
+    pub(crate) executor: DecisionExecutor,
+    pub(crate) layouts: Vec<LayoutEntry>,
     /// IME 同期キー（イベント事前分類用）
-    pub sync_toggle_keys: Vec<VkCode>,
-    pub sync_on_keys: Vec<VkCode>,
-    pub sync_off_keys: Vec<VkCode>,
+    pub(crate) sync_toggle_keys: Vec<VkCode>,
+    pub(crate) sync_on_keys: Vec<VkCode>,
+    pub(crate) sync_off_keys: Vec<VkCode>,
     /// Platform 層の全状態
-    pub platform_state: crate::PlatformState,
+    pub(crate) platform_state: crate::PlatformState,
 }
 
 impl Runtime {
@@ -489,26 +489,23 @@ impl Runtime {
         self.executor.platform.focus.last_focus_info = Some((process_id, class_name.clone()));
 
         // prev_conversion_mode をリセット
-        self.platform_state.preconditions.prev_conversion_mode = None;
+        self.platform_state.set_prev_conversion_mode(None);
 
         if process_changed {
-            {
-                let pc = &self.platform_state.preconditions;
-                log::info!(
-                    "FocusChange [{}→{}] {}: stale ime_on={}({:?}) mode={:?} japanese={}",
-                    last_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
-                    process_id,
-                    class_name,
-                    pc.ime_on,
-                    pc.ime_on_source,
-                    pc.input_mode,
-                    pc.is_japanese_ime,
-                );
-            }
+            log::info!(
+                "FocusChange [{}→{}] {}: stale ime_on={}({:?}) mode={:?} japanese={}",
+                last_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
+                process_id,
+                class_name,
+                self.platform_state.ime_on(),
+                self.platform_state.ime_on_source(),
+                self.platform_state.input_mode(),
+                self.platform_state.is_japanese_ime(),
+            );
 
             self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
             self.executor.platform.output.on_focus_changed();
-            self.platform_state.ime_observations.clear_on_focus_change();
+            self.platform_state.clear_ime_observations_on_focus_change();
 
             {
                 let cache_hit = hwnd_cache::restore_on_focus_enter(
@@ -519,15 +516,14 @@ impl Runtime {
                 self.platform_state.apply_hwnd_cache_restore(cache_hit);
             }
 
-            if self.platform_state.preconditions.ime_force_on_guard.is_active()
-                || self.platform_state.preconditions.ime_detect_miss_count > 0
+            if self.platform_state.ime_force_on_guard().is_active()
+                || self.platform_state.ime_detect_miss_count() > 0
             {
                 log::debug!(
                     "Focus changed: clearing ime_force_on_guard and detect_miss_count \
                      (new window may have different IME state)"
                 );
-                self.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
-                self.platform_state.preconditions.ime_detect_miss_count = 0;
+                self.platform_state.reset_ime_detect_state();
             }
 
             if kind == FocusKind::Undetermined {
@@ -591,9 +587,9 @@ impl Runtime {
                         is_force_tsf(&app.executor.platform.focus.overrides, *pid, class)
                     });
                 let held = if is_tsf {
-                    app.executor.platform.output.tsf_gate.on_tsf_confirmed()
+                    app.executor.platform.output.confirm_tsf()
                 } else {
-                    app.executor.platform.output.tsf_gate.on_bypass()
+                    app.executor.platform.output.bypass_tsf()
                 };
                 // PendingWarmup から遷移した場合のみ held が非空 or タイマー kill が必要。
                 // 500ms ポーリング等で再呼び出しされても on_tsf_confirmed/on_bypass は
@@ -687,26 +683,25 @@ impl Runtime {
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
         // Guard を解除
-        if self.platform_state.ime_guard.active {
-            self.platform_state.ime_guard.active = false;
+        if self.platform_state.ime_guard.is_active() {
+            self.platform_state.ime_guard.deactivate();
             log::debug!("IME guard OFF (process_deferred_keys)");
         }
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
         let observer_out = unsafe {
-            let pc = &self.platform_state.preconditions;
             crate::observer::ime_observer::observe(
-                pc.ime_on,
-                pc.ime_force_on_guard,
-                pc.input_mode,
-                pc.prev_conversion_mode,
+                self.platform_state.ime_on(),
+                self.platform_state.ime_force_on_guard(),
+                self.platform_state.input_mode(),
+                self.platform_state.prev_conversion_mode(),
             )
         };
         self.platform_state.apply_ime_observer_output(&observer_out);
         self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
         // Drain deferred keys from Platform guard
-        let keys: Vec<_> = self.platform_state.ime_guard.deferred_keys.drain(..).collect();
+        let keys = self.platform_state.ime_guard.drain_all();
         if keys.is_empty() {
             return;
         }
@@ -743,21 +738,15 @@ impl Runtime {
         crate::hook::reinstall_hook();
 
         // 5. PlatformState を全面リセット
-        self.platform_state.preconditions.input_mode = InputModeState::ObservedRomaji;
-        self.platform_state.preconditions.set_ime_on(true, crate::ShadowSource::PanicReset); // 安全側: ON
-        self.platform_state.preconditions.is_japanese_ime = true;
-        self.platform_state.preconditions.prev_conversion_mode = None;
-        self.platform_state.preconditions.ime_detect_miss_count = 0;
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
         // ime_on=true を stale な observe() 結果が即座に上書きしてしまう。
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
-        self.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::PanicResetProtect;
-        self.platform_state.hook.sent_to_engine = [0u64; 4];
-        self.platform_state.hook.track_only_keys = [0u64; 4];
-        self.platform_state.hook.in_callback = false;
+        self.platform_state.apply_panic_reset();
+        self.platform_state.hook.reset_routing();
+        self.platform_state.hook.leave_callback();
         self.platform_state.hook.set_suppress_ctrl_bypass(false);
-        self.platform_state.ime_guard.active = false;
-        self.platform_state.ime_guard.deferred_keys.clear();
+        self.platform_state.ime_guard.deactivate();
+        self.platform_state.ime_guard.clear();
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();

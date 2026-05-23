@@ -82,9 +82,9 @@ pub(crate) use crate::tsf::observer::with_tsf_obs;
 #[derive(Debug)]
 pub struct RawTsfLiteralPending {
     /// 送信すべきバックスペースの数
-    pub backs: std::sync::atomic::AtomicUsize,
+    pub(crate) backs: std::sync::atomic::AtomicUsize,
     /// 再送すべきローマ字文字列（空文字列 = 再送なし）
-    pub romaji: std::sync::Mutex<String>,
+    pub(crate) romaji: std::sync::Mutex<String>,
 }
 
 impl RawTsfLiteralPending {
@@ -93,6 +93,21 @@ impl RawTsfLiteralPending {
             backs: std::sync::atomic::AtomicUsize::new(0),
             romaji: std::sync::Mutex::new(String::new()),
         }
+    }
+
+    /// バックスペース数とローマ字を一括セットする。
+    pub fn set_pending(&self, backs: usize, romaji: String) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.backs.store(backs, Relaxed);
+        *self.romaji.lock().unwrap() = romaji;
+    }
+
+    /// バックスペース数とローマ字を一括取り出しする（backs は 0 にリセット、romaji は空にリセット）。
+    pub fn take_pending(&self) -> (usize, String) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let backs = self.backs.swap(0, Relaxed);
+        let romaji = std::mem::take(&mut *self.romaji.lock().unwrap());
+        (backs, romaji)
     }
 }
 

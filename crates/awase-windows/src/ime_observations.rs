@@ -35,15 +35,15 @@ pub struct ImeObs {
 #[derive(Debug, Default)]
 pub struct ImeObservations {
     /// config 由来の同期キー（最優先・一撃）
-    pub sync_key: Option<ImeObs>,
+    pub(crate) sync_key: Option<ImeObs>,
     /// 物理 IME キー押下（一撃）
-    pub physical_key: Option<ImeObs>,
+    pub(crate) physical_key: Option<ImeObs>,
     /// `ImeEffect::SetOpen` による強制設定（一撃）
-    pub set_open_request: Option<ImeObs>,
+    pub(crate) set_open_request: Option<ImeObs>,
     /// フォーカス変更直後の高速プローブ（永続）
-    pub focus_probe: Option<ImeObs>,
+    pub(crate) focus_probe: Option<ImeObs>,
     /// IME observer ポーリング（永続）
-    pub observer_poll: Option<ImeObs>,
+    pub(crate) observer_poll: Option<ImeObs>,
 }
 
 impl ImeObservations {

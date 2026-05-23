@@ -4,7 +4,6 @@ mod message_handlers;
 mod panic_detect;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use windows::Win32::Foundation::HWND;
@@ -259,7 +258,7 @@ fn check_keyboard_layout_on_change() {
 /// # Safety
 /// Win32 キーボードフックコールバックはメインスレッドで呼ばれる。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    if awase_windows::OUTPUT_GATE.active.load(Ordering::Relaxed) {
+    if awase_windows::OUTPUT_GATE.is_active() {
         log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
         awase_windows::INPUT_DEFER.defer_during_output(event);
         return CallbackResult::Consumed;

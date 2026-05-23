@@ -10,7 +10,7 @@ use super::hook_state::{HookRoutingState, HookConfig, ImeGuardState};
 /// `APP: SingleThreadCell<Runtime>` 経由で保持される。
 #[derive(Debug)]
 pub struct PlatformState {
-    pub preconditions: Preconditions,
+    pub(crate) preconditions: Preconditions,
     pub hook: HookRoutingState,
     pub hook_config: HookConfig,
     pub focus_kind: FocusKind,
@@ -40,7 +40,7 @@ pub struct PlatformState {
     /// 各ソースの最新観測値（Phase 2: 観測と判断の分離）。
     ///
     /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
-    pub ime_observations: crate::ime_observations::ImeObservations,
+    pub(crate) ime_observations: crate::ime_observations::ImeObservations,
 }
 
 impl PlatformState {
@@ -88,6 +88,120 @@ impl Default for PlatformState {
 }
 
 impl PlatformState {
+    // ── Preconditions への pub(crate) 読み取りパススルー ──
+
+    /// IME が ON かどうかを返す。
+    #[inline]
+    pub(crate) fn ime_on(&self) -> bool {
+        self.preconditions.ime_on()
+    }
+
+    /// `ime_on` を最後に更新したソースを返す。
+    #[inline]
+    pub(crate) fn ime_on_source(&self) -> ShadowSource {
+        self.preconditions.ime_on_source()
+    }
+
+    /// 入力モードを返す。
+    #[inline]
+    pub(crate) fn input_mode(&self) -> InputModeState {
+        self.preconditions.input_mode()
+    }
+
+    /// 日本語 IME がアクティブかを返す。
+    #[inline]
+    pub(crate) fn is_japanese_ime(&self) -> bool {
+        self.preconditions.is_japanese_ime()
+    }
+
+    /// 直前の conversion_mode を返す。
+    #[inline]
+    pub(crate) fn prev_conversion_mode(&self) -> Option<u32> {
+        self.preconditions.prev_conversion_mode()
+    }
+
+    /// IME 状態検出の連続失敗回数を返す。
+    #[inline]
+    pub(crate) fn ime_detect_miss_count(&self) -> u32 {
+        self.preconditions.ime_detect_miss_count()
+    }
+
+    /// IME 強制 ON ガードフラグを返す。
+    #[inline]
+    pub(crate) fn ime_force_on_guard(&self) -> ImeForceOnGuard {
+        self.preconditions.ime_force_on_guard()
+    }
+
+    // ── Preconditions への書き込みメソッド（`apply_*` / `write_*`）──
+
+    /// `ime_on` を設定する（ソース付き）。
+    #[inline]
+    pub(crate) fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
+        self.preconditions.set_ime_on(value, source);
+    }
+
+    /// `input_mode` を設定する。
+    #[inline]
+    pub(crate) fn set_input_mode(&mut self, mode: InputModeState) {
+        self.preconditions.input_mode = mode;
+    }
+
+    /// `is_japanese_ime` を設定する。
+    #[inline]
+    pub(crate) fn set_is_japanese_ime(&mut self, value: bool) {
+        self.preconditions.is_japanese_ime = value;
+    }
+
+    /// `prev_conversion_mode` を設定する。
+    #[inline]
+    pub(crate) fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
+        self.preconditions.prev_conversion_mode = value;
+    }
+
+    /// `ime_detect_miss_count` をインクリメントする（saturating）。
+    #[inline]
+    pub(crate) fn increment_ime_detect_miss_count(&mut self) {
+        self.preconditions.ime_detect_miss_count =
+            self.preconditions.ime_detect_miss_count.saturating_add(1);
+    }
+
+    /// `ime_detect_miss_count` を 0 にリセットする。
+    #[inline]
+    pub(crate) fn reset_ime_detect_miss_count(&mut self) {
+        self.preconditions.ime_detect_miss_count = 0;
+    }
+
+    /// `ime_force_on_guard` を設定する。
+    #[inline]
+    pub(crate) fn set_ime_force_on_guard(&mut self, guard: ImeForceOnGuard) {
+        self.preconditions.ime_force_on_guard = guard;
+    }
+
+    /// `ime_detect_miss_count` と `ime_force_on_guard` を同時にリセットする。
+    ///
+    /// ユーザー操作（Shadow IME トグル・SetOpen 等）で「ユーザーが意図した状態」が
+    /// 確定したときに呼ぶ。
+    #[inline]
+    pub(crate) fn reset_ime_detect_state(&mut self) {
+        self.preconditions.ime_detect_miss_count = 0;
+        self.preconditions.ime_force_on_guard = ImeForceOnGuard::Inactive;
+    }
+
+    /// panic_reset 向け全面リセット。
+    ///
+    /// input_mode / ime_on / is_japanese_ime / prev_conversion_mode /
+    /// ime_detect_miss_count / ime_force_on_guard をまとめて設定する。
+    pub(crate) fn apply_panic_reset(&mut self) {
+        self.preconditions.input_mode = InputModeState::ObservedRomaji;
+        self.preconditions.set_ime_on(true, ShadowSource::PanicReset);
+        self.preconditions.is_japanese_ime = true;
+        self.preconditions.prev_conversion_mode = None;
+        self.preconditions.ime_detect_miss_count = 0;
+        self.preconditions.ime_force_on_guard = ImeForceOnGuard::PanicResetProtect;
+    }
+}
+
+impl PlatformState {
     /// `ime_observations.resolve_and_clear()` を実行して `preconditions.ime_on` を更新する。
     ///
     /// 各観測ソースが値を書き込んだ直後に呼ぶ。これにより `preconditions.ime_on` は
@@ -109,6 +223,53 @@ impl PlatformState {
         self.ime_observations.observer_poll =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
+    }
+
+    /// `observer_poll` スロットの最新観測値を読み取る。
+    ///
+    /// `Some(value)` = 最後に観測された値。`None` = 未観測。
+    /// `is_japanese_ime` との AND 結果を `os_ime_on` 計算に使う。
+    pub(crate) fn observer_poll_value(&self) -> Option<bool> {
+        self.ime_observations.observer_poll.as_ref().map(|obs| obs.value)
+    }
+
+    /// フォーカス変更時に `ime_observations` の全スロットをクリアする。
+    ///
+    /// `ImeObservations::clear_on_focus_change()` への委譲ラッパー。
+    pub(crate) fn clear_ime_observations_on_focus_change(&mut self) {
+        self.ime_observations.clear_on_focus_change();
+    }
+
+    /// `sync_key` スロットに観測値を書き込む。
+    ///
+    /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
+    pub(crate) fn write_sync_key(&mut self, value: bool, ms: u64) {
+        self.ime_observations.sync_key =
+            Some(crate::ime_observations::ImeObs { value, ms });
+    }
+
+    /// `physical_key` スロットに観測値を書き込む。
+    ///
+    /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
+    pub(crate) fn write_physical_key(&mut self, value: bool, ms: u64) {
+        self.ime_observations.physical_key =
+            Some(crate::ime_observations::ImeObs { value, ms });
+    }
+
+    /// `set_open_request` スロットに観測値を書き込む。
+    ///
+    /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
+    pub(crate) fn write_set_open_request(&mut self, value: bool, ms: u64) {
+        self.ime_observations.set_open_request =
+            Some(crate::ime_observations::ImeObs { value, ms });
+    }
+
+    /// `focus_probe` スロットに観測値を書き込む。
+    ///
+    /// 書き込み後に `apply_ime_observations` を呼ぶことで judgement を走らせること。
+    pub(crate) fn write_focus_probe(&mut self, value: bool, ms: u64) {
+        self.ime_observations.focus_probe =
+            Some(crate::ime_observations::ImeObs { value, ms });
     }
 
     /// `ImeObserverOutput` を `Preconditions` と `ImeObservations` に反映する。

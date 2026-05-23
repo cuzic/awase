@@ -91,7 +91,6 @@ impl ImeDiagnosticSnapshot {
                 .as_ref()
                 .map_or((0u32, String::new()), |(p, c)| (*p, c.clone()));
 
-            let preconditions = &app.platform_state.preconditions;
             let focus_change_ms = app.platform_state.last_focus_change_ms;
             let activity_ms = app.platform_state.last_hook_activity_ms;
 
@@ -116,9 +115,9 @@ impl ImeDiagnosticSnapshot {
                 hwnd_raw,
                 pid,
                 class,
-                preconditions.ime_on,
-                preconditions.input_mode.is_romaji_capable(),
-                preconditions.is_japanese_ime,
+                app.platform_state.ime_on(),
+                app.platform_state.input_mode().is_romaji_capable(),
+                app.platform_state.is_japanese_ime(),
                 resolve_injection_mode_label(),
                 dt_focus,
                 dt_activity,

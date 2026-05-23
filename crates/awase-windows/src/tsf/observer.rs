@@ -37,20 +37,23 @@ pub struct TsfObservations {
     ///
     /// `send_eager_tsf_warmup()` 呼び出し時に 0 にリセットされ、
     /// WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
-    pub focus_namechange_seq: AtomicU32,
+    ///
+    /// 書き込み: `observation_event_proc`（NAMECHANGE イベント）, `send_eager_tsf_warmup`（リセット）
+    /// 読み取り: `with_tsf_obs()` 経由
+    pub(super) focus_namechange_seq: AtomicU32,
 
     /// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
     ///
     /// raw TSF literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
     /// GJI candidate window が開いた（composition 成功）、増えなければ literal ASCII の可能性。
-    pub gji_candidate_show_seq: AtomicU32,
+    pub(super) gji_candidate_show_seq: AtomicU32,
 
     /// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうかのフラグ。
     ///
     /// `EVENT_OBJECT_SHOW` で `true` に、`EVENT_OBJECT_HIDE` で `false` にセットされる。
     /// raw TSF literal 検出でウィンドウが既に表示中かを判定するために使用する。
     /// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
-    pub gji_candidate_visible: AtomicBool,
+    pub(super) gji_candidate_visible: AtomicBool,
 
     /// raw TSF literal 検出の汎用シグナル AtomicU32。
     ///
@@ -58,16 +61,16 @@ pub struct TsfObservations {
     /// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
     /// `output::raw_tsf_literal_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
     /// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
-    pub composition_probe_seq: AtomicU32,
+    pub(super) composition_probe_seq: AtomicU32,
 
     /// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
     ///
     /// バックグラウンドモニタースレッドが更新する。
     /// `send_romaji_as_tsf` や `TsfReadinessProbe` が参照する。
-    pub gji_last_io_ms: AtomicU64,
+    pub(super) gji_last_io_ms: AtomicU64,
 
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
-    pub gji_monitor_ok: AtomicBool,
+    pub(super) gji_monitor_ok: AtomicBool,
 }
 
 impl TsfObservations {
@@ -90,6 +93,39 @@ impl TsfObservations {
     /// GJI モニターが利用可能かを読み取る（Relaxed）。
     pub fn gji_monitor_ok(&self) -> bool {
         self.gji_monitor_ok.load(Ordering::Relaxed)
+    }
+
+    /// OBJ_NAMECHANGE カウンタを読み取る（Relaxed）。
+    pub fn focus_namechange_seq(&self) -> u32 {
+        self.focus_namechange_seq.load(Ordering::Relaxed)
+    }
+
+    /// OBJ_NAMECHANGE カウンタを 0 にリセットする（Relaxed）。
+    pub fn reset_focus_namechange_seq(&self) {
+        self.focus_namechange_seq.store(0, Ordering::Relaxed);
+    }
+
+    /// GJI candidate show イベントカウンタを読み取る（Relaxed）。
+    pub fn gji_candidate_show_seq(&self) -> u32 {
+        self.gji_candidate_show_seq.load(Ordering::Relaxed)
+    }
+
+    /// GJI candidate window が現在表示中かを読み取る（Relaxed）。
+    pub fn gji_candidate_visible(&self) -> bool {
+        self.gji_candidate_visible.load(Ordering::Relaxed)
+    }
+
+    /// raw TSF literal 検出用汎用シグナルを読み取る（Relaxed）。
+    pub fn composition_probe_seq(&self) -> u32 {
+        self.composition_probe_seq.load(Ordering::Relaxed)
+    }
+
+    /// raw TSF literal 検出用汎用シグナルへの参照を返す（`AtomicWatcher` 用）。
+    ///
+    /// `with_tsf_obs` では `&TsfObservations` への参照しか渡せないため、
+    /// `AtomicWatcher::new` に必要な `&AtomicU32` はこのメソッド経由で取得する。
+    pub fn composition_probe_seq_atomic(&self) -> &AtomicU32 {
+        &self.composition_probe_seq
     }
 }
 

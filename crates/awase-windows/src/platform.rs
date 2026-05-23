@@ -15,10 +15,10 @@ use crate::tray::SystemTray;
 /// Windows 固有のプラットフォーム実装
 #[allow(missing_debug_implementations)]
 pub struct WindowsPlatform {
-    pub output: Output,
-    pub tray: SystemTray,
-    pub focus: AppKindClassifier,
-    pub timer: Win32Timer,
+    pub(crate) output: Output,
+    pub(crate) tray: SystemTray,
+    pub(crate) focus: AppKindClassifier,
+    pub(crate) timer: Win32Timer,
 }
 
 impl WindowsPlatform {
@@ -26,7 +26,7 @@ impl WindowsPlatform {
     pub fn advance_tsf_probe(&mut self) {
         if self.output.advance_tsf_probe() {
             self.timer.kill(crate::TIMER_TSF_PROBE);
-            self.output.tsf_gate.on_ready();
+            self.output.on_tsf_probe_ready();
         }
     }
 

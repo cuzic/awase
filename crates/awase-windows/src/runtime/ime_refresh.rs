@@ -67,7 +67,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             }
             ImeReadStrategy::OsPoll => {
                 // Phase 3: IME 状態の再取得
-                state.miss_before = self.rt.platform_state.preconditions.ime_detect_miss_count;
+                state.miss_before = self.rt.platform_state.ime_detect_miss_count();
                 self.phase3_poll_and_learn(&mut state);
             }
         }
@@ -120,14 +120,15 @@ impl<'a> ImeRefreshPipeline<'a> {
         // engine が inactive になる。broken アプリでは入力モードを検出できないため、
         // ime_on=true のとき AssumedRomaji と仮定して補正する。
         if state.skip_imm_query
-            && self.rt.platform_state.preconditions.ime_on
-            && !self.rt.platform_state.preconditions.input_mode.is_romaji_capable()
+            && self.rt.platform_state.ime_on()
+            && !self.rt.platform_state.input_mode().is_romaji_capable()
         {
             log::info!(
                 "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
             );
-            self.rt.platform_state.preconditions.input_mode =
-                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken };
+            self.rt.platform_state.set_input_mode(
+                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
+            );
         }
         let ctx = self.rt.build_ctx();
         let decision = self.rt.engine.on_command(EngineCommand::FocusChanged, &ctx);
@@ -171,10 +172,9 @@ impl<'a> ImeRefreshPipeline<'a> {
         // バックグラウンドスレッドが TSF_OBS.gji_last_io_ms を更新していれば
         // Chrome の IME が ON であると判断し preconditions.ime_on に反映する。
         {
-            use std::sync::atomic::Ordering::Relaxed;
             const GJI_CONFIRM_WINDOW_MS: u64 = 500;
             let now_ms = crate::hook::current_tick_ms();
-            let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
+            let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
             if last_io > 0 && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
                 log::debug!(
                     "[gji-poll] GJI I/O observed {}ms ago → observer_poll=true",
@@ -189,17 +189,18 @@ impl<'a> ImeRefreshPipeline<'a> {
         }
 
         if self.rt.engine.is_user_enabled()
-            && self.rt.platform_state.preconditions.is_japanese_ime
-            && self.rt.platform_state.preconditions.ime_on
+            && self.rt.platform_state.is_japanese_ime()
+            && self.rt.platform_state.ime_on()
         {
             let _success = self.rt.executor.platform.set_ime_open(true);
             log::trace!("Blacklist SSOT write: ime_on=true (force-ON only)");
             // input_mode も SSOT として維持: IMM broken アプリでは検出不能のため
             // stale な ObservedKana が engine を無効化しないよう AssumedRomaji に補正する。
-            if !self.rt.platform_state.preconditions.input_mode.is_romaji_capable() {
+            if !self.rt.platform_state.input_mode().is_romaji_capable() {
                 log::info!("Blacklist SSOT: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-                self.rt.platform_state.preconditions.input_mode =
-                    InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken };
+                self.rt.platform_state.set_input_mode(
+                    InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
+                );
             }
         }
     }
@@ -208,27 +209,26 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     fn phase3_poll_and_learn(&mut self, state: &mut PipelineState) {
         // [診断] observe 前のスナップショット（差分検出用）
-        let ime_on_before_poll = self.rt.platform_state.preconditions.ime_on;
-        let input_mode_before_poll = self.rt.platform_state.preconditions.input_mode;
+        let ime_on_before_poll = self.rt.platform_state.ime_on();
+        let input_mode_before_poll = self.rt.platform_state.input_mode();
 
         let observer_out = unsafe {
-            let pc = &self.rt.platform_state.preconditions;
             crate::observer::ime_observer::observe(
-                pc.ime_on,
-                pc.ime_force_on_guard,
-                pc.input_mode,
-                pc.prev_conversion_mode,
+                self.rt.platform_state.ime_on(),
+                self.rt.platform_state.ime_force_on_guard(),
+                self.rt.platform_state.input_mode(),
+                self.rt.platform_state.prev_conversion_mode(),
             )
         };
         self.rt.platform_state.apply_ime_observer_output(&observer_out);
 
-        let miss_after = self.rt.platform_state.preconditions.ime_detect_miss_count;
+        let miss_after = self.rt.platform_state.ime_detect_miss_count();
 
         // observe() の生の結果を os_ime_on に記録（miss なし＝成功時のみ更新）
         if miss_after == 0 {
-            if let Some(obs) = &self.rt.platform_state.ime_observations.observer_poll {
+            if let Some(poll_val) = self.rt.platform_state.observer_poll_value() {
                 self.rt.platform_state.os_ime_on =
-                    Some(obs.value && self.rt.platform_state.preconditions.is_japanese_ime);
+                    Some(poll_val && self.rt.platform_state.is_japanese_ime());
             }
         }
         // observer_poll → preconditions.ime_on に優先度付き解決
@@ -259,8 +259,8 @@ impl<'a> ImeRefreshPipeline<'a> {
         let age_ms = crate::hook::current_tick_ms()
             .saturating_sub(self.rt.platform_state.last_focus_change_ms);
         if age_ms < 10_000 {
-            let ime_on_after = self.rt.platform_state.preconditions.ime_on;
-            let input_mode_after = self.rt.platform_state.preconditions.input_mode;
+            let ime_on_after = self.rt.platform_state.ime_on();
+            let input_mode_after = self.rt.platform_state.input_mode();
             let ime_changed = ime_on_before_poll != ime_on_after;
             let mode_changed = input_mode_before_poll != input_mode_after;
             if ime_changed || mode_changed {
@@ -272,7 +272,7 @@ impl<'a> ImeRefreshPipeline<'a> {
                             "ime_on {} → {}({:?}) ",
                             ime_on_before_poll,
                             ime_on_after,
-                            self.rt.platform_state.preconditions.ime_on_source,
+                            self.rt.platform_state.ime_on_source(),
                         )
                     } else {
                         String::new()
@@ -348,21 +348,21 @@ impl<'a> ImeRefreshPipeline<'a> {
     // ここに来るのは「既知でも TSF-native でもないアプリで detect が連続失敗した」
     // 場合だけ。shadow=ON なら SetOpen(true) を呼び engine を active のまま維持する。
     fn try_force_on_bootstrap(&mut self) {
-        if self.rt.platform_state.preconditions.ime_detect_miss_count
+        if self.rt.platform_state.ime_detect_miss_count()
             >= crate::IME_DETECT_MISS_THRESHOLD
             && self.rt.engine.is_user_enabled()
-            && self.rt.platform_state.preconditions.is_japanese_ime
-            && self.rt.platform_state.preconditions.ime_on
-            && !self.rt.platform_state.preconditions.ime_force_on_guard.is_active()
+            && self.rt.platform_state.is_japanese_ime()
+            && self.rt.platform_state.ime_on()
+            && !self.rt.platform_state.ime_force_on_guard().is_active()
         {
             log::warn!(
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
-                self.rt.platform_state.preconditions.ime_detect_miss_count
+                self.rt.platform_state.ime_detect_miss_count()
             );
             let success = self.rt.executor.platform.set_ime_open(true);
             // success/failure 問わずガードをセット: IME 非対応ウィンドウ(DirectUIHWND 等)で
             // 失敗し続ける無限ループを防ぐ。ガードはフォーカス変更時に解除される。
-            self.rt.platform_state.preconditions.ime_force_on_guard = ImeForceOnGuard::BrokenAppBootstrap;
+            self.rt.platform_state.set_ime_force_on_guard(ImeForceOnGuard::BrokenAppBootstrap);
             if !success {
                 log::warn!("set_ime_open failed (no IME window?) — guard set to suppress retry until focus change");
             }
@@ -389,7 +389,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             .executor
             .platform
             .output
-            .set_ime_apply_latch(self.rt.platform_state.preconditions.ime_on);
+            .set_ime_apply_latch(self.rt.platform_state.ime_on());
         self.rt
             .executor
             .platform
@@ -455,36 +455,33 @@ impl<'a> ImeRefreshPipeline<'a> {
                 self.apply_blacklist_ssot();
             }
             ImeReadStrategy::OsPoll => {
-                state.miss_before =
-                    self.rt.platform_state.preconditions.ime_detect_miss_count;
+                state.miss_before = self.rt.platform_state.ime_detect_miss_count();
 
                 // [診断] apply_snapshot 前のスナップショット（差分検出用）
-                let ime_on_before_poll = self.rt.platform_state.preconditions.ime_on;
-                let input_mode_before_poll = self.rt.platform_state.preconditions.input_mode;
+                let ime_on_before_poll = self.rt.platform_state.ime_on();
+                let input_mode_before_poll = self.rt.platform_state.input_mode();
 
                 // Phase 3: apply pre-fetched IME snap
                 let now_ms = crate::hook::current_tick_ms();
                 let observer_out = {
-                    let pc = &self.rt.platform_state.preconditions;
                     crate::observer::ime_observer::apply_snapshot(
                         &ime_snap,
                         now_ms,
-                        pc.ime_on,
-                        pc.ime_force_on_guard,
-                        pc.input_mode,
-                        pc.prev_conversion_mode,
+                        self.rt.platform_state.ime_on(),
+                        self.rt.platform_state.ime_force_on_guard(),
+                        self.rt.platform_state.input_mode(),
+                        self.rt.platform_state.prev_conversion_mode(),
                     )
                 };
                 self.rt.platform_state.apply_ime_observer_output(&observer_out);
 
-                let miss_after =
-                    self.rt.platform_state.preconditions.ime_detect_miss_count;
+                let miss_after = self.rt.platform_state.ime_detect_miss_count();
 
                 // observe() の生の結果を os_ime_on に記録（miss なし＝成功時のみ更新）
                 if miss_after == 0 {
-                    if let Some(obs) = &self.rt.platform_state.ime_observations.observer_poll {
+                    if let Some(poll_val) = self.rt.platform_state.observer_poll_value() {
                         self.rt.platform_state.os_ime_on =
-                            Some(obs.value && self.rt.platform_state.preconditions.is_japanese_ime);
+                            Some(poll_val && self.rt.platform_state.is_japanese_ime());
                     }
                 }
                 self.rt
