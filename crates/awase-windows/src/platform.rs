@@ -114,7 +114,7 @@ impl PlatformRuntime for WindowsPlatform {
 
     // ── Engine 状態変化時 IME モードキー送信 ──
 
-    pub fn send_engine_state_ime_key(&self, enabled: bool) {
+    fn send_engine_state_ime_key(&self, enabled: bool) {
         let vk = if enabled { self.engine_on_ime_vk } else { self.engine_off_ime_vk };
         if let Some(vk) = vk {
             unsafe { crate::ime::send_ime_mode_key(vk) };

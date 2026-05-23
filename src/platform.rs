@@ -222,6 +222,13 @@ pub trait PlatformRuntime {
     fn composition_output(&self) -> Option<&dyn CompositionOutput> {
         None
     }
+
+    // ── Engine 状態変化時 IME モードキー送信 ──
+
+    /// Engine ON/OFF 時に IME 制御キーを送信する。
+    ///
+    /// プラットフォームが IME モードキー送信をサポートしない場合は何もしない。
+    fn send_engine_state_ime_key(&self, _enabled: bool) {}
 }
 
 #[cfg(test)]
