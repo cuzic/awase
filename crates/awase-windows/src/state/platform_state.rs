@@ -2,7 +2,7 @@ use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
 use super::preconditions::{Preconditions, ShadowSource};
-use super::hook_state::{HookRoutingState, HookConfig, ImeGuardState};
+use super::hook_state::{HookRoutingState, HookConfig, ImeGateState};
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -97,7 +97,7 @@ pub struct PlatformState {
     pub hook_config: HookConfig,
     pub last_hook_activity_ms: u64,
     pub hook_event_count: u64,
-    pub ime_guard: ImeGuardState,
+    pub ime_gate: ImeGateState,
 }
 
 impl PlatformState {
@@ -110,7 +110,7 @@ impl PlatformState {
                 sent_to_engine: [0u64; 4],
                 track_only_keys: [0u64; 4],
                 in_callback: false,
-                suppress_ctrl_bypass: false,
+                ctrl_bypass_hold: false,
             },
             hook_config: HookConfig {
                 left_thumb_vk: 0x1D,  // VK_NONCONVERT
@@ -118,7 +118,7 @@ impl PlatformState {
             },
             last_hook_activity_ms: 0,
             hook_event_count: 0,
-            ime_guard: ImeGuardState { active: false, deferred_keys: Vec::new() },
+            ime_gate: ImeGateState { active: false, deferred_keys: Vec::new() },
         }
     }
 }
