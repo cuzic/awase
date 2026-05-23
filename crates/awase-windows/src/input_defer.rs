@@ -19,7 +19,14 @@ pub struct InputDeferQueue {
 
 pub static INPUT_DEFER: InputDeferQueue = InputDeferQueue::new();
 
+impl Default for InputDeferQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputDeferQueue {
+    #[must_use] 
     pub const fn new() -> Self {
         Self { queue: Mutex::new(Vec::new()) }
     }
@@ -54,11 +61,13 @@ impl InputDeferQueue {
     ///
     /// 取り出し後は `enrich_ime_relevance` を `with_app` 内で呼ぶこと。
     pub fn take_all(&self) -> Vec<RawKeyEvent> {
-        let mut q = match self.queue.lock() {
-            Ok(q) => q,
-            Err(e) => e.into_inner(),
+        let mut result = {
+            let mut q = match self.queue.lock() {
+                Ok(q) => q,
+                Err(e) => e.into_inner(),
+            };
+            std::mem::take(&mut *q)
         };
-        let mut result = std::mem::take(&mut *q);
         result.sort_by_key(|ev| ev.timestamp);
         result
     }

@@ -16,6 +16,7 @@ use awase::types::{
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
+#[must_use] 
 pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
     use crate::vk;
 
@@ -36,6 +37,7 @@ pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClas
 }
 
 /// Windows VK コードから修飾キー分類を生成する
+#[must_use] 
 pub const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
     match vk.0 {
         0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
@@ -60,6 +62,7 @@ const fn is_non_shift_modifier(vk: u16) -> bool {
 }
 
 /// Windows VK コードから IME 関連の事前分類情報を生成する
+#[must_use] 
 pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     use crate::vk;
 
@@ -83,12 +86,13 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
 }
 
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
-pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) {
+pub const fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) {
     config.left_thumb_vk = left.0;
     config.right_thumb_vk = right.0;
 }
 
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
+#[must_use] 
 pub fn current_tick_ms() -> u64 {
     // SAFETY: GetTickCount64 はどのスレッドからも安全に呼び出せるスレッドセーフな Win32 API。
     //         引数なし・副作用なし・内部ロックにより安全性が保証される。
@@ -99,6 +103,7 @@ pub fn current_tick_ms() -> u64 {
 ///
 /// `timeout_ms` 以内にフックコールバックが呼ばれていれば `true`。
 /// まだ一度も呼ばれていない場合も `true`（起動直後はキー入力がない）。
+#[must_use] 
 pub fn is_hook_responsive(ps: &crate::PlatformState, timeout_ms: u64) -> bool {
     let last = ps.last_hook_activity_ms;
     if last == 0 {
@@ -113,6 +118,9 @@ pub fn is_hook_responsive(ps: &crate::PlatformState, timeout_ms: u64) -> bool {
 /// `INJECTED_MARKER` 付きの VK_NONAME (0xFC) KeyDown+KeyUp を SendInput で送信する。
 /// フックが生きていればコールバックが呼ばれ、`last_hook_activity_ms` が更新される。
 /// フックが死んでいれば何も起きない。
+///
+/// # Panics
+/// `INPUT` 構造体のサイズが `i32` に収まらない場合（実際には発生しない）。
 ///
 /// # Safety
 /// Win32 API (`SendInput`) を呼び出す。メインスレッドから呼ぶこと。
@@ -229,7 +237,7 @@ static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) ->
     SingleThreadCell::new(None);
 
 /// KeyUp 専用ルート判定（KeyDown の判定に追随する）。
-fn classify_keyup_route(hook: &HookRoutingState, vk: u16) -> KeyRoute {
+const fn classify_keyup_route(hook: &HookRoutingState, vk: u16) -> KeyRoute {
     if hook.is_track_only(vk) {
         return KeyRoute::TrackOnly;
     }
@@ -242,13 +250,12 @@ fn classify_keyup_route(hook: &HookRoutingState, vk: u16) -> KeyRoute {
 /// Ctrl/Alt/Win が押されている間の非親指キーはショートカット → Bypass。
 ///
 /// `ctrl_bypass_hold` が有効な場合（IME 制御コンボ直後）は Ctrl を有効とみなさない。
-fn is_shortcut_bypass(mods: &awase::engine::fsm_types::ModifierState, hook: &HookRoutingState, config: &HookConfig, vk: u16) -> bool {
+const fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook: &HookRoutingState, config: HookConfig, vk: u16) -> bool {
     let effective_ctrl = mods.ctrl && !(hook.ctrl_bypass_hold() && !mods.alt && !mods.win);
-    if effective_ctrl || mods.alt || mods.win {
-        if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
+    if (effective_ctrl || mods.alt || mods.win)
+        && vk != config.left_thumb_vk && vk != config.right_thumb_vk {
             return true;
         }
-    }
     false
 }
 
@@ -259,7 +266,7 @@ fn is_shortcut_bypass(mods: &awase::engine::fsm_types::ModifierState, hook: &Hoo
 ///
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
-unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, is_keydown: bool) -> KeyRoute {
+unsafe fn classify_route(hook: &HookRoutingState, config: HookConfig, vk: u16, is_keydown: bool) -> KeyRoute {
     if !is_keydown {
         return classify_keyup_route(hook, vk);
     }
@@ -267,7 +274,7 @@ unsafe fn classify_route(hook: &HookRoutingState, config: &HookConfig, vk: u16, 
         return KeyRoute::TrackOnly;
     }
     let mods = crate::observer::focus_observer::read_os_modifiers();
-    if is_shortcut_bypass(&mods, hook, config, vk) {
+    if is_shortcut_bypass(mods, hook, config, vk) {
         return KeyRoute::Bypass;
     }
     KeyRoute::Engine
@@ -337,6 +344,9 @@ impl Drop for HookGuard {
 ///
 /// 返された `HookGuard` を保持している間フックが有効。
 /// ドロップ時に自動解除される。
+///
+/// # Errors
+/// `SetWindowsHookExW` が失敗した場合（OS エラー）。
 pub fn install_hook(
     callback: Box<dyn FnMut(RawKeyEvent) -> CallbackResult>,
 ) -> windows::core::Result<HookGuard> {
@@ -425,7 +435,7 @@ unsafe fn decide_routing_with_tracking(
         ps.hook.set_ctrl_bypass_hold(false);
     }
 
-    let route = classify_route(&ps.hook, &ps.hook_config, vk_raw, is_keydown);
+    let route = classify_route(&ps.hook, ps.hook_config, vk_raw, is_keydown);
 
     match route {
         KeyRoute::Bypass => {
@@ -496,7 +506,7 @@ fn apply_ime_gate(
     // sync key KeyDown → ガードを起動、Engine の保留キーをフラッシュして PassThrough
     if is_keydown && is_sync_key && !app.platform_state.ime_gate.is_active() {
         app.platform_state.ime_gate.activate();
-        log::debug!("IME guard ON (sync key vk=0x{:02X})", vk_raw);
+        log::debug!("IME guard ON (sync key vk=0x{vk_raw:02X})");
         let ctx = crate::runtime::build_input_context(
             app.platform_state.preconditions(),
             &event.modifier_snapshot,
@@ -513,7 +523,7 @@ fn apply_ime_gate(
     // sync key KeyUp → ガードを解除して PassThrough、遅延処理をリクエスト
     if !is_keydown && is_sync_key && app.platform_state.ime_gate.is_active() {
         app.platform_state.ime_gate.deactivate();
-        log::debug!("IME guard OFF (sync key vk=0x{:02X})", vk_raw);
+        log::debug!("IME guard OFF (sync key vk=0x{vk_raw:02X})");
         app.platform_state.hook.leave_callback();
         crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
         return RoutingOutcome::PassThrough;
@@ -529,7 +539,7 @@ fn apply_ime_gate(
         }
         let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
         if app.platform_state.ime_gate.try_push(event, phys) {
-            log::trace!("IME guard: buffered key vk=0x{:02X}", vk_raw);
+            log::trace!("IME guard: buffered key vk=0x{vk_raw:02X}");
         } else {
             log::warn!("IME guard forced clear: buffer overflow");
             app.platform_state.ime_gate.deactivate();
@@ -542,7 +552,7 @@ fn apply_ime_gate(
 }
 
 /// 自己注入キーかどうかを判定する（無限ループ防止）。
-fn is_self_injected(extra_info: usize) -> bool {
+const fn is_self_injected(extra_info: usize) -> bool {
     extra_info == INJECTED_MARKER
         || extra_info == crate::tsf::output::TSF_MARKER
         || extra_info == crate::tsf::output::IME_KANJI_MARKER
@@ -605,9 +615,8 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     }
 
     // ── APP からプラットフォーム状態を取得 ──
-    let mut app_borrow = match crate::RUNTIME.try_borrow_mut() {
-        Some(guard) => guard,
-        None => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
+    let Some(mut app_borrow) = crate::RUNTIME.try_borrow_mut() else {
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     };
     let Some(app) = app_borrow.as_mut() else {
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
@@ -685,6 +694,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
 
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）。診断用に公開。
+#[must_use] 
 pub fn now_timestamp_us() -> u64 {
     now_timestamp()
 }

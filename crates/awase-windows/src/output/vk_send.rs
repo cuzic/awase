@@ -26,24 +26,21 @@ pub(super) const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
 ///
 /// warm パス（`send_romaji_as_tsf` の non-cold ブランチ）と
 /// `do_transmit_tsf`（タイマー FSM からの遅延送信）が使用する。
-pub(super) struct TsfSendPipeline<'a> {
-    output: &'a Output,
-}
+pub(super) struct TsfSendPipeline;
 
-impl<'a> TsfSendPipeline<'a> {
-    pub(super) fn new(output: &'a Output) -> Self {
-        Self { output }
-    }
-
+impl TsfSendPipeline {
     /// VK run または Unicode kana を送信し、バックスペース数を返す。
-    pub(super) fn transmit(&self, romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
+    pub(super) fn transmit(romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
         let unicode_kana: Option<char> = if outcome.prepend_f2_warmup && outcome.used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
             None
         };
 
-        if let Some(kana) = unicode_kana {
+        unicode_kana.map_or_else(|| {
+            Output::send_vk_runs(chars, outcome.cold_seq);
+            chars.len()
+        }, |kana| {
             let mut utf16_buf = [0u16; 2];
             let utf16 = kana.encode_utf16(&mut utf16_buf);
             log::debug!(
@@ -85,10 +82,7 @@ impl<'a> TsfSendPipeline<'a> {
                 );
             }
             1
-        } else {
-            self.output.send_vk_runs(chars, outcome.cold_seq);
-            chars.len()
-        }
+        })
     }
 }
 
@@ -207,9 +201,9 @@ impl Output {
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_pre.map_or(false, |v| v & 0x0001 != 0),
-                conv_pre.map_or(false, |v| v & 0x0010 != 0),
-                conv_pre.map_or(false, |v| v & 0x0002 != 0),
+                conv_pre.is_some_and(|v| v & 0x0001 != 0),
+                conv_pre.is_some_and(|v| v & 0x0010 != 0),
+                conv_pre.is_some_and(|v| v & 0x0002 != 0),
             );
             // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
@@ -243,13 +237,13 @@ impl Output {
         }
 
         // warm パス: 即座にバッチ送信
-        self.send_romaji_batch_immediate(romaji, &chars);
+        Self::send_romaji_batch_immediate(romaji, &chars);
         self.mark_composition_warm();
     }
 
     /// ローマ字を即座にバッチ送信する（重畳順）。
     /// warm パスおよび `advance_tsf_probe` の ChromeProbe 完了時に呼ぶ。
-    pub(super) fn send_romaji_batch_immediate(&self, romaji: &str, chars: &[(u16, bool)]) {
+    pub(super) fn send_romaji_batch_immediate(romaji: &str, chars: &[(u16, bool)]) {
         let mut inputs = Vec::with_capacity(chars.len() * 4);
         for &(vk, needs_shift) in chars {
             if needs_shift {
@@ -287,7 +281,7 @@ impl Output {
     }
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
-    pub(super) fn send_vk_runs(&self, chars: &[(u16, bool)], cold_seq: u32) {
+    pub(super) fn send_vk_runs(chars: &[(u16, bool)], cold_seq: u32) {
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
@@ -304,7 +298,7 @@ impl Output {
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.iter().enumerate() {
-            let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
+            let last_io = crate::tsf::observer::with_tsf_obs(super::super::tsf::observer::TsfObservations::gji_last_io_ms);
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let vks: Vec<String> = run.iter().map(|&(v, s)| {
                 if s { format!("S{v:02X}") } else { format!("{v:02X}") }
@@ -382,7 +376,7 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_seq };
 
         {
-            let last_io = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_last_io_ms());
+            let last_io = crate::tsf::observer::with_tsf_obs(super::super::tsf::observer::TsfObservations::gji_last_io_ms);
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
@@ -390,19 +384,19 @@ impl Output {
                  conv={} ROMAN={} NATIVE={}",
                 chars.len(),
                 conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv.map_or(false, |v| v & 0x0010 != 0),
-                conv.map_or(false, |v| v & 0x0001 != 0),
+                conv.is_some_and(|v| v & 0x0010 != 0),
+                conv.is_some_and(|v| v & 0x0001 != 0),
             );
         }
 
         let detector = crate::tsf::probe::LiteralDetector::new();
-        let ze_bs_count = TsfSendPipeline::new(self).transmit(romaji, &chars, &outcome);
+        let ze_bs_count = TsfSendPipeline::transmit(romaji, &chars, &outcome);
         self.mark_composition_warm();
 
         // Probing 状態の warm 投機送信: GJI 監視が有効なら LiteralDetect で検証する。
         // (1) raw TSF literal 検出と回復, (2) advance_tsf_probe が on_ready() を呼んで
         //     ゲートを Ready に進める、という 2 つの目的を兼ねる。
-        let gji_active = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_monitor_ok());
+        let gji_active = crate::tsf::observer::with_tsf_obs(super::super::tsf::observer::TsfObservations::gji_monitor_ok);
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
@@ -531,13 +525,13 @@ impl Output {
     /// vks が空なら no-op。
     /// `use_tsf_marker` = true → TSF_MARKER（WezTerm TSF モード）
     ///                    false → INJECTED_MARKER（Chrome/VK モード）
-    pub(super) fn send_deferred_probe_vks_from(&self, vks: Vec<(u16, bool)>, use_tsf_marker: bool) {
+    pub(super) fn send_deferred_probe_vks_from(vks: &[(u16, bool)], use_tsf_marker: bool) {
         if vks.is_empty() {
             return;
         }
         log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})", vks.len());
         let mut inputs: Vec<INPUT> = Vec::with_capacity(vks.len() * 4);
-        for &(vk, needs_shift) in &vks {
+        for &(vk, needs_shift) in vks {
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
             }
