@@ -548,14 +548,14 @@ impl DecisionExecutor {
 
         if let Some((open, outcome)) = ime_set_open {
             use awase::platform::ImeOpenOutcome;
-            // Chrome/VK_KANJI パスのみラッチを更新する。
-            // Applied（通常 IMM）はラッチ不要（KanjiToggleStrategy は Chrome 専用）。
-            // preconditions.ime_on の更新は key_pipeline の set_open_request 経由で完結している。
+            // 成功した場合はラッチを更新する（shadow_ime_on → send_eager_tsf_warmup ガードに使用）。
+            // Applied 後にラッチを更新しないと shadow_on が旧値 true のままになり、
+            // IME OFF 直後の Ctrl↑ で VK_DBE_HIRAGANA が送信されて IME が ON に戻るバグが発生する。
             match outcome {
-                ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
+                ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
                     self.platform.output.set_ime_apply_latch(open);
                 }
-                ImeOpenOutcome::Applied | ImeOpenOutcome::Failed => {}
+                ImeOpenOutcome::Failed => {}
             }
             // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
             if open {
