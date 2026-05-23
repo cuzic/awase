@@ -9,9 +9,9 @@
 //! run_start()
 //!   └─ preamble()           : 診断ログ・IMM32 ローマ字モード設定・cold_n インクリメント
 //!      ├─ run_eager_start()  : eager warmup パス (eager_warmup_sent_ms != 0)
-//!      │    ├─ remaining == 0 かつ requires_settle → F2 再送 + WarmupStarted (GjiProbe)
-//!      │    ├─ remaining == 0 かつ !requires_settle → fresh F2 + WarmupStarted (GjiProbe)
-//!      │    └─ remaining > 0 → WarmupStarted (GjiProbe, needs_settle_check=true)
+//!      │    ├─ FreshF2        (remaining == 0 && !requires_settle) → F2 送信 + probe
+//!      │    ├─ ProbeWithSettle(remaining == 0 &&  requires_settle) → F2 再送 + 500ms 待機
+//!      │    └─ ReWarmup       (remaining > 0)                      → probe (NAMECHANGE 確認付き)
 //!      └─ run_non_eager_start(): F2×2 送信 + WarmupStarted (GjiProbe)
 //! ```
 
@@ -23,6 +23,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
 use crate::output::Output;
 use crate::tsf::output::make_tsf_key_input;
 
+use super::send::send_vk_dbe_hiragana_pair;
+
 /// VK_DBE_HIRAGANA 仮想キーコード (F2 相当)
 const VK_DBE_HIRAGANA: u16 = 0xF2;
 
@@ -32,6 +34,31 @@ const VK_DBE_HIRAGANA: u16 = 0xF2;
 /// 低すぎる閾値は NG（GJI I/O が発火せず probe が 1500ms でタイムアウトしてしまう）。
 /// 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
 const LONG_IDLE_MS: u64 = 10_000;
+
+/// eager パスの 3 分岐を表す enum。
+///
+/// `run_eager_start()` 内で `WarmupKind::from_context()` により生成し、
+/// `match` で各パスの処理を統一する。
+enum WarmupKind {
+    /// `remaining == 0 && !requires_settle`: 通常の fresh F2 → probe
+    FreshF2,
+    /// `remaining == 0 &&  requires_settle`: F2 再送 + 500ms 待機（settle なし）
+    ProbeWithSettle,
+    /// `remaining > 0`: eager 起点でそのまま probe（NAMECHANGE 確認付き）
+    ReWarmup { remaining_ms: u64 },
+}
+
+impl WarmupKind {
+    fn from_context(remaining: u64, requires_settle: bool) -> Self {
+        if remaining > 0 {
+            Self::ReWarmup { remaining_ms: remaining }
+        } else if requires_settle {
+            Self::ProbeWithSettle
+        } else {
+            Self::FreshF2
+        }
+    }
+}
 
 /// `preamble()` が計算した warmup パラメータをまとめるコンテキスト。
 ///
@@ -214,38 +241,11 @@ impl<'a> ColdWarmupSequence<'a> {
     /// eager ノンブロッキック開始: パスを判定して F2 を送信し WarmupStarted を返す。
     fn run_eager_start(&self, ctx: &WarmupContext, eager_ms: u64, eager_elapsed: u64) -> WarmupStarted {
         let remaining = ctx.eager_settle_ms.saturating_sub(eager_elapsed);
-        if remaining == 0 {
-            let needs_re_warmup = ctx.cold_reason.requires_settle();
-            if needs_re_warmup {
-                // eager_re_warmup: fresh F2 を送信して 500ms 待機
-                log::debug!(
-                    "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start",
-                    ctx.cold_n, ctx.eager_settle_ms,
-                );
-                let refresh_inputs = [
-                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                ];
-                // SAFETY: refresh_inputs is a valid array.
-                unsafe {
-                    SendInput(
-                        &refresh_inputs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
-                const RE_WARMUP_MS: u64 = 500;
-                let re_warmup_ms = crate::hook::current_tick_ms();
-                WarmupStarted {
-                    probe: crate::tsf::probe::TsfReadinessProbe::new(
-                        re_warmup_ms,
-                        ctx.cold_n,
-                        ctx.probe_min_ms,
-                    ),
-                    total_max_ms: RE_WARMUP_MS,
-                    needs_settle_check: false,
-                    cold_reason: ctx.cold_reason,
-                }
-            } else {
+        let requires_settle = ctx.cold_reason.requires_settle();
+        let kind = WarmupKind::from_context(remaining, requires_settle);
+
+        match kind {
+            WarmupKind::FreshF2 => {
                 // eager_fresh_f2_then_probe: fresh F2 + probe
                 let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
                 let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
@@ -253,18 +253,8 @@ impl<'a> ColdWarmupSequence<'a> {
                     "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start",
                     ctx.cold_n, ctx.eager_settle_ms,
                 );
-                let refresh_inputs = [
-                    make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                    make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                ];
-                let fresh_f2_ms = crate::hook::current_tick_ms();
-                // SAFETY: refresh_inputs is a valid array.
-                unsafe {
-                    SendInput(
-                        &refresh_inputs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
+                // SAFETY: SendInput をメッセージループスレッドから呼ぶ。
+                let fresh_f2_ms = unsafe { send_vk_dbe_hiragana_pair() };
                 WarmupStarted {
                     probe: crate::tsf::probe::TsfReadinessProbe::new(
                         fresh_f2_ms,
@@ -276,21 +266,42 @@ impl<'a> ColdWarmupSequence<'a> {
                     cold_reason: ctx.cold_reason,
                 }
             }
-        } else {
-            // eager_probe_with_settle: eager_ms 起点のプローブ（NAMECHANGE チェックが必要）
-            log::debug!(
-                "[h1-warmup] cold={} eager: elapsed={}ms → probe start (budget={}ms from warmup)",
-                ctx.cold_n, eager_elapsed, ctx.eager_settle_ms,
-            );
-            WarmupStarted {
-                probe: crate::tsf::probe::TsfReadinessProbe::new(
-                    eager_ms,
-                    ctx.cold_n,
-                    ctx.probe_min_ms,
-                ),
-                total_max_ms: ctx.eager_settle_ms,
-                needs_settle_check: true,
-                cold_reason: ctx.cold_reason,
+            WarmupKind::ProbeWithSettle => {
+                // eager_re_warmup: fresh F2 を送信して 500ms 待機
+                log::debug!(
+                    "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start",
+                    ctx.cold_n, ctx.eager_settle_ms,
+                );
+                // SAFETY: SendInput をメッセージループスレッドから呼ぶ。
+                let re_warmup_ms = unsafe { send_vk_dbe_hiragana_pair() };
+                const RE_WARMUP_MS: u64 = 500;
+                WarmupStarted {
+                    probe: crate::tsf::probe::TsfReadinessProbe::new(
+                        re_warmup_ms,
+                        ctx.cold_n,
+                        ctx.probe_min_ms,
+                    ),
+                    total_max_ms: RE_WARMUP_MS,
+                    needs_settle_check: false,
+                    cold_reason: ctx.cold_reason,
+                }
+            }
+            WarmupKind::ReWarmup { remaining_ms: _ } => {
+                // eager_probe_with_settle: eager_ms 起点のプローブ（NAMECHANGE チェックが必要）
+                log::debug!(
+                    "[h1-warmup] cold={} eager: elapsed={}ms → probe start (budget={}ms from warmup)",
+                    ctx.cold_n, eager_elapsed, ctx.eager_settle_ms,
+                );
+                WarmupStarted {
+                    probe: crate::tsf::probe::TsfReadinessProbe::new(
+                        eager_ms,
+                        ctx.cold_n,
+                        ctx.probe_min_ms,
+                    ),
+                    total_max_ms: ctx.eager_settle_ms,
+                    needs_settle_check: true,
+                    cold_reason: ctx.cold_reason,
+                }
             }
         }
     }
