@@ -649,7 +649,7 @@ impl Output {
         let warm = self.is_composition_warm();
         let elapsed = self.ms_since_last_send();
         let session_expired =
-            warm && elapsed < u64::MAX && elapsed > crate::timing::COMPOSITION_TIMEOUT_MS;
+            warm && elapsed < u64::MAX && elapsed > crate::tuning::COMPOSITION_TIMEOUT_MS;
         WarmthContext { warm, elapsed, session_expired, prepend_f2_warmup: !warm || session_expired }
     }
 
@@ -729,19 +729,17 @@ impl Output {
             log::debug!("[h1-run] cold={cold_n} F2 SendMessageTimeout delivered={f2_ok}");
 
             // ノンブロッキング Chrome プローブを開始
-            const CHROME_PROBE_MIN_MS: u64 = 20;
-            const CHROME_PROBE_MAX_MS: u64 = 120;
             let probe = crate::tsf::probe::TsfReadinessJudge::new(
                 f2_sent_ms,
                 cold_n,
-                CHROME_PROBE_MIN_MS,
+                crate::tuning::CHROME_PROBE_MIN_MS,
             );
             let guard = OutputActiveGuard::begin();
             *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
                 romaji: romaji.to_string(),
                 cold_n,
                 deferred_vks: Vec::new(),
-                phase: TsfProbePhase::ChromeProbe { probe, total_max_ms: CHROME_PROBE_MAX_MS },
+                phase: TsfProbePhase::ChromeProbe { probe, total_max_ms: crate::tuning::CHROME_PROBE_MAX_MS },
                 _guard: guard,
             });
             // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
@@ -911,7 +909,7 @@ impl Output {
         let gji_active = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_monitor_ok());
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
-                + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
+                + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
             let guard = OutputActiveGuard::begin();
             self.put_back_probe(
                 romaji.to_string(),
@@ -1081,7 +1079,6 @@ impl Output {
                     let gji_monitor_ok = with_tsf_obs(|obs| obs.gji_monitor_ok());
                     let is_ime_init_cold = cold_reason.requires_settle();
                     if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
-                        const SETTLE_TIMEOUT_MS: u64 = 300;
                         let nc_baseline = with_tsf_obs(|obs| obs.focus_namechange_seq());
                         let settle_reason = if !probe_settled {
                             "probe timeout"
@@ -1105,7 +1102,7 @@ impl Output {
                                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
                             );
                         }
-                        let deadline_ms = fresh_f2_ms + SETTLE_TIMEOUT_MS;
+                        let deadline_ms = fresh_f2_ms + crate::tuning::SETTLE_TIMEOUT_MS;
                         self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::NameChangeWait {
                             nc_baseline, deadline_ms, fresh_f2_ms, probe_settled,
                             cold_reason, prepend_f2_warmup, used_eager_path,
@@ -1141,15 +1138,14 @@ impl Output {
                 );
 
                 if nc_fired && !probe_settled {
-                    const GJI_POST_NAMECHANGE_MS: u64 = 300;
                     log::debug!(
                         "[tsf-probe] cold={cold_n} \
-                         OBJ_NAMECHANGE後 GJI 二次プローブ (max {GJI_POST_NAMECHANGE_MS}ms)"
+                         OBJ_NAMECHANGE後 GJI 二次プローブ (max {}ms)", crate::tuning::GJI_POST_NAMECHANGE_MS
                     );
                     let probe =
                         crate::tsf::probe::TsfReadinessJudge::new(fresh_f2_ms, cold_n, 0);
                     self.put_back_probe(romaji, cold_n, deferred_vks, TsfProbePhase::SecondaryGjiProbe {
-                        probe, total_max_ms: GJI_POST_NAMECHANGE_MS,
+                        probe, total_max_ms: crate::tuning::GJI_POST_NAMECHANGE_MS,
                         prepend_f2_warmup, used_eager_path,
                     }, guard);
                     return false;
@@ -1302,7 +1298,7 @@ impl Output {
         let gji_active = crate::tsf::observer::with_tsf_obs(|obs| obs.gji_monitor_ok());
         if prepend_f2_warmup && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
-                + crate::timing::RAW_TSF_LITERAL_DETECT_MS;
+                + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
             // deferred_vks は send_deferred_probe_vks_from で既に drain 済み
             self.put_back_probe(romaji, cold_n, Vec::new(),
                 TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms }, guard);

@@ -191,14 +191,10 @@ fn apply_focus_probe_to_app(
 
     app.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
 
-    const WARMUP_GRACE_MS: u64 = 300;
-    const GJI_SETTLE_GRACE_MS: u64 = 300;
-    const SHADOW_GRACE_MS: u64 = 200;
-
     let now_ms = hook::current_tick_ms();
 
     let warmup_elapsed = if warmup_ms > 0 { now_ms.saturating_sub(warmup_ms) } else { u64::MAX };
-    let sig1_warmup = warmup_elapsed < WARMUP_GRACE_MS;
+    let sig1_warmup = warmup_elapsed < awase_windows::tuning::WARMUP_GRACE_MS;
 
     let gji_active_after_focus =
         gji_last_io_ms > 0 && gji_last_io_ms >= last_focus_change_ms;
@@ -207,9 +203,9 @@ fn apply_focus_probe_to_app(
     } else {
         u64::MAX
     };
-    let sig2_gji = gji_active_after_focus && gji_idle_ms < GJI_SETTLE_GRACE_MS;
+    let sig2_gji = gji_active_after_focus && gji_idle_ms < awase_windows::tuning::GJI_SETTLE_GRACE_MS;
 
-    let sig3_shadow = shadow_on && probe_age_ms < SHADOW_GRACE_MS;
+    let sig3_shadow = shadow_on && probe_age_ms < awase_windows::tuning::SHADOW_GRACE_MS;
 
     let mut suppressed = false;
     let mut suppress_reason = "";

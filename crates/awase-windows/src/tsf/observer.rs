@@ -298,9 +298,6 @@ pub fn start_monitor_thread() -> win32_worker::WorkerThread {
 }
 
 fn monitor_loop(token: win32_worker::ShutdownToken) {
-    const SAMPLE_INTERVAL_MS: u32 = 10;
-    const REATTACH_INTERVAL_MS: u64 = 3_000;
-
     log::info!("[gji-monitor] thread started");
 
     let mut monitor: Option<GjiMonitor> = None;
@@ -319,7 +316,7 @@ fn monitor_loop(token: win32_worker::ShutdownToken) {
                 }
                 None => {
                     TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
-                    next_attach_ms = now + REATTACH_INTERVAL_MS;
+                    next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
                 }
             }
         }
@@ -329,13 +326,13 @@ fn monitor_loop(token: win32_worker::ShutdownToken) {
                 log::info!("[gji-monitor] GJI process exited, will re-attach");
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                 monitor = None;
-                next_attach_ms = now + REATTACH_INTERVAL_MS;
+                next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
             } else {
                 TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
             }
         }
 
-        if token.sleep_ms(SAMPLE_INTERVAL_MS).is_break() {
+        if token.sleep_ms(crate::tuning::GJI_SAMPLE_INTERVAL_MS).is_break() {
             log::info!("[gji-monitor] shutdown signal received, exiting");
             break;
         }
