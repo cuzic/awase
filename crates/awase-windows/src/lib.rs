@@ -72,10 +72,6 @@ pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
 pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 
-// TSF_OBS は tsf/observer.rs で定義。クレート内 re-export。
-// 外部クレートからの直接参照が不要なため pub(crate) とする。
-pub(crate) use crate::tsf::observer::TSF_OBS;
-pub(crate) use crate::tsf::observer::with_tsf_obs;
 
 /// raw TSF literal 検出後の回収ペイロード。
 ///

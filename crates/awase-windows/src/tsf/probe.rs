@@ -549,10 +549,10 @@ async fn raw_tsf_literal_show_or_timeout_async(show_baseline: u32, timeout_ms: u
     // TSF_OBS.composition_probe_seq は observer が GJI SHOW イベントを受け取るたびにインクリメントし
     // notify_all() を呼ぶ。race_with_timeout でタイムアウトと競走させることで、
     // orphan タイムアウトタスクや session ガードが不要になる。
-    let probe_baseline = crate::tsf::observer::TSF_OBS.composition_probe_seq.load(Relaxed);
+    let probe_baseline = TSF_OBS.composition_probe_seq.load(Relaxed);
     let got_event = win32_async::race_with_timeout(
         timeout_ms,
-        win32_async::AtomicWatcher::new(&crate::tsf::observer::TSF_OBS.composition_probe_seq, probe_baseline),
+        win32_async::AtomicWatcher::new(&TSF_OBS.composition_probe_seq, probe_baseline),
     )
     .await;
 

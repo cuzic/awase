@@ -426,7 +426,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // フォーカスが NonText（システムウィンドウ、タスクバー等）の場合は
         // Engine をバイパスして OS にそのまま通す。
         // フォーカス切替時の中間ウィンドウで Engine が誤作動するのを防止。
-        if ps.focus_kind == awase::types::FocusKind::NonText {
+        if ps.focus.focus_kind == awase::types::FocusKind::NonText {
             return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
         }
 

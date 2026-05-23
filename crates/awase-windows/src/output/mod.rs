@@ -1,9 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{Ordering};
-
 use awase::config::OutputMode;
-use awase::types::{AppKind, KeyAction, SpecialKey};
-use crate::focus::classifier::InjectionHint;
+use awase::types::{KeyAction, SpecialKey};
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,

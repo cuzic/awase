@@ -66,7 +66,7 @@ struct ClassifiedFocus {
     hwnd: windows::Win32::Foundation::HWND,
     process_id: u32,
     class_name: String,
-    kind: awase::types::FocusKind,
+    kind: FocusKind,
     app_kind: awase::types::AppKind,
 }
 
@@ -160,7 +160,7 @@ impl Runtime {
         let (process_changed, prev_pid) = self.advance_focus_tracking(&classified);
         if process_changed {
             self.on_focus_process_changed(&classified, prev_pid);
-        } else if classified.kind == awase::types::FocusKind::Undetermined {
+        } else if classified.kind == FocusKind::Undetermined {
             if let Some(sender) = &self.executor.platform.focus.uia_sender {
                 let _ = sender.send(crate::focus::uia::SendableHwnd(classified.hwnd));
             }
