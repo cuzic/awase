@@ -27,10 +27,19 @@ pub enum ShadowSource {
     HwndCache,
 }
 
-/// 環境前提条件（IME 状態・入力方式・日本語判定）
+/// 環境前提条件（IME 状態・入力方式・日本語判定）。
+///
+/// 各フィールドは「OS の現在状態をそのまま保持するもの」ではなく、
+/// 複数の観測ソースをマージした結果を保持する。特に `ime_on` は
+/// Engine に渡す判断用の意図値であり、観測ソースの優先度マージ結果である。
 #[derive(Debug)]
 pub struct Preconditions {
-    /// IME が ON か（shadow 追跡含む、Observer ポーリングで実際の OS 状態に収束）
+    /// IME ON/OFF の Engine 向け値。
+    ///
+    /// OS から観測した生値ではなく、複数の観測ソース
+    /// （sync_key > physical_key > set_open_request > focus_probe / observer_poll）
+    /// の優先度マージ結果。`resolve_and_clear()` で確定し、Engine に渡される。
+    /// OS の現在状態を直接反映するとは限らない点に注意。
     pub(in crate::state) ime_on: bool,
     /// `ime_on` を最後に更新したソース（Phase 2 解決関数向けの診断情報）
     pub(in crate::state) ime_on_source: ShadowSource,
@@ -84,7 +93,7 @@ impl Preconditions {
 
     // ── pub(crate) 読み取り getter ──
 
-    /// IME が ON かどうかを返す。
+    /// IME ON/OFF の Engine 向け優先度マージ値を返す。
     #[inline]
     pub(crate) fn ime_on(&self) -> bool {
         self.ime_on

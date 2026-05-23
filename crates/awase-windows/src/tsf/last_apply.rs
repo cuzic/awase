@@ -1,4 +1,4 @@
-//! IME ON/OFF の行動層ラッチ。
+//! `apply_ime_open` が OS に最後に送ったコマンド値を保持するラッチ。
 //!
 //! `apply_ime_open` が VK_KANJI や ImmSetOpenStatus を送った直後の値を保持し、
 //! `KanjiToggleStrategy` が「直前に何を送ったか」を知るために使う。
@@ -6,8 +6,10 @@
 //! ## 役割の限定
 //!
 //! これは「OS 側の現在 IME 状態」を追跡するものではない。
-//! OS 状態の SSOT は `preconditions.ime_on`（観測 → 判断の正規ルートで更新）。
-//! このラッチは `apply_ime_open` と次の judgement サイクルの間のギャップを埋めるだけ。
+//! `Preconditions.ime_on` は複数の観測ソースをマージした Engine 向け意図値であり、
+//! このラッチとは別物である。
+//! このラッチは `apply_ime_open` と次の judgement サイクルの間のギャップを埋める
+//! 診断・ログ用途の補助情報にすぎない。
 //!
 //! ## ライフサイクル
 //!
@@ -15,7 +17,11 @@
 //! - `invalidate()` — フォーカス変更時にクリア
 //! - `get_or(fallback)` — `KanjiToggleStrategy` が shadow_on を読むときに使う
 
-/// `apply_ime_open` の直前結果を保持する行動層ラッチ。
+/// `apply_ime_open()` で最後に OS に送ったコマンドの値を記録するラッチ。
+///
+/// `Preconditions.ime_on`（Engine の意図値）とは異なり、
+/// 実際に OS に送信した最後のコマンド値を保持する。
+/// 診断・ログ用途。
 #[derive(Debug)]
 pub struct ImeApplyLatch {
     value: std::cell::Cell<Option<bool>>,
