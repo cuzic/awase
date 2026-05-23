@@ -99,12 +99,11 @@ impl DecisionExecutor {
     /// `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
     pub fn drain_deferred(&mut self) {
-        const OUTPUT_GUARD_MS: u64 = 50;
         while let Some(effect) = self.queue.pop_front() {
             if matches!(effect, Effect::Input(InputEffect::ReinjectKey(_))) {
                 let elapsed = self.platform.output.ms_since_last_send();
-                if elapsed < OUTPUT_GUARD_MS {
-                    let remaining = OUTPUT_GUARD_MS - elapsed;
+                if elapsed < crate::tuning::OUTPUT_GUARD_MS {
+                    let remaining = crate::tuning::OUTPUT_GUARD_MS - elapsed;
                     log::debug!(
                         "[reinject-guard] output {elapsed}ms ago, suspending drain for {remaining}ms"
                     );
@@ -233,7 +232,6 @@ impl DecisionExecutor {
         // 「タスク → タスk」のような race が発生する。
         // 本ガードは「直近 N ms 以内の passthrough キーは pending と同様に
         // deferr して reinject 時に wait する」ことで race を構造的に解消する。
-        const OUTPUT_GUARD_MS: u64 = 50;
 
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
 
@@ -249,7 +247,7 @@ impl DecisionExecutor {
         self.handle_ctrl_up_recovery(raw_event);
 
         let in_flight_ms = self.platform.output.ms_since_last_send();
-        let output_in_flight = in_flight_ms < OUTPUT_GUARD_MS;
+        let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
         let has_pending = self.has_pending();
 
         log::debug!(
