@@ -357,7 +357,7 @@ pub(super) fn initialize_app(
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
 pub(super) fn initialize_ime_cache() {
-    with_app(|app| app.refresh_ime_state_cache());
+    let _ = with_app(|app| app.refresh_ime_state_cache());
 }
 
 /// クリーンアップ処理（フック解除は HookGuard の Drop で行われる）
@@ -426,7 +426,7 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    with_app(|app| {
+    let _ = with_app(|app| {
         app.platform_state.focus.focus_transition_pending = true;
         app.executor.platform.output.on_focus_change_tsf();
         // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
@@ -631,7 +631,7 @@ pub(super) fn run_all() -> Result<()> {
     let _obs_hook_guards = awase_windows::tsf::observer::install_observation_hooks();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
-    with_app(|app| {
+    let _ = with_app(|app| {
         app.schedule_ime_refresh(u64::from(app.platform_state.focus.ime_poll_interval_ms));
         app.executor
             .platform
@@ -641,7 +641,7 @@ pub(super) fn run_all() -> Result<()> {
 
     let (_uia_worker, uia_tx) = awase_windows::focus::uia::spawn_uia_worker();
     let _gji_worker = awase_windows::tsf::observer::start_monitor_thread();
-    with_app(|app| app.executor.platform.focus.set_uia_sender(uia_tx));
+    let _ = with_app(|app| app.executor.platform.focus.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
     initialize_ime_cache();

@@ -624,7 +624,7 @@ fn launch_settings_gui() {
 /// 設定画面起動エラーをログとバルーン通知で表示する。
 fn show_settings_error(msg: &str) {
     log::error!("Settings launch: {msg}");
-    crate::with_app(|app| app.executor.platform.tray.show_balloon("awase", msg));
+    let _ = crate::with_app(|app| app.executor.platform.tray.show_balloon("awase", msg));
 }
 
 /// トレイウィンドウプロシージャ
@@ -656,11 +656,11 @@ unsafe extern "system" fn tray_wnd_proc(
                 if cmd == cmd_exit() {
                     PostQuitMessage(0);
                 } else if cmd == cmd_toggle() {
-                    crate::with_app(|app| app.toggle_engine());
+                    let _ = crate::with_app(|app| app.toggle_engine());
                 } else if cmd == cmd_settings() {
                     launch_settings_gui();
                 } else if cmd == cmd_clear_imm_cache() {
-                    crate::with_app(|app| {
+                    let _ = crate::with_app(|app| {
                         let count = app.executor.platform.focus.imm_learning.clear();
                         log::info!("IMM capability cache cleared ({count} entries)");
                         app.executor.platform.tray.show_balloon(
@@ -672,7 +672,7 @@ unsafe extern "system" fn tray_wnd_proc(
                     restart_as_admin();
                 } else if cmd >= cmd_layout_base() {
                     let index = usize::from(cmd - cmd_layout_base());
-                    crate::with_app(|app| app.switch_layout(index));
+                    let _ = crate::with_app(|app| app.switch_layout(index));
                 }
             }
             LRESULT(0)

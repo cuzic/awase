@@ -73,7 +73,7 @@ impl StartupDiagnostics {
         for w in &self.warnings {
             log::info!("  - {w}");
         }
-        with_app(|app| {
+        let _ = with_app(|app| {
             app.executor.platform.tray.show_balloon(
                 "awase",
                 &format!("{}件の警告があります", self.warnings.len()),
@@ -209,7 +209,7 @@ pub(self) fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDi
     match NgramModel::from_file(&ngram_path, base_us, range_us, min_us, max_us) {
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
-            with_app(|app| {
+            let _ = with_app(|app| {
                 let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
                 app.engine.on_command(
                     awase::engine::EngineCommand::SetNgramModel(model),
@@ -240,7 +240,7 @@ fn check_keyboard_layout_on_change() {
                  Thumb-shift requires Japanese keyboard layout (106/109).",
             );
         }
-        with_app(|app| {
+        let _ = with_app(|app| {
             app.executor.platform.tray.show_balloon(
                 "awase",
                 "日本語キーボードレイアウトが検出されません。親指シフトが正常に動作しない可能性があります。",
@@ -308,37 +308,37 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
 
         match msg.message {
             WM_TIMER => {
-                with_app(|app| unsafe {
+                let _ = with_app(|app| unsafe {
                     let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
                     message_handlers::handle_wm_timer(app, logical_id, msg.wParam.0, &msg);
                 });
             }
             WM_EXECUTE_EFFECTS => {
-                with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
             }
             WM_PANIC_RESET => {
                 // 再入中に消えないよう repost する（blocking op 完了後に再実行）
                 with_app_or_repost(WM_PANIC_RESET, |app| unsafe { message_handlers::handle_wm_panic_reset(app) });
             }
             WM_DUPLICATE_INSTANCE => {
-                with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
             }
             WM_IME_KEY_DETECTED => {
-                with_app(|app| unsafe { message_handlers::handle_wm_ime_key_detected(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_ime_key_detected(app) });
             }
             WM_POWERBROADCAST => {
                 let pbt = msg.wParam.0;
-                with_app(|app| unsafe { message_handlers::handle_wm_powerbroadcast(app, pbt) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_powerbroadcast(app, pbt) });
             }
             WM_WTSSESSION_CHANGE => {
                 let session_event = msg.wParam.0 as u32;
-                with_app(|app| unsafe { message_handlers::handle_wts_session_change(app, session_event) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wts_session_change(app, session_event) });
             }
             WM_INPUTLANGCHANGE => {
-                with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
             }
             WM_PROCESS_DEFERRED => {
-                with_app(|app| unsafe { message_handlers::handle_wm_process_deferred(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_process_deferred(app) });
             }
             WM_FOCUS_KIND_UPDATE => {
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
@@ -347,10 +347,10 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
                 });
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => {
-                with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
             }
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => {
-                with_app(|app| unsafe { message_handlers::handle_wm_hotkey_focus_override(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_focus_override(app) });
             }
             WM_APP => unsafe {
                 message_handlers::handle_wm_app_tray(msg.hwnd, msg.lParam);
@@ -365,7 +365,7 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
                 message_handlers::handle_wm_drain_output_queue();
             },
             m if m == taskbar_created_msg && taskbar_created_msg != 0 => {
-                with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
+                let _ = with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
             }
             _ => unsafe {
                 // SAFETY: msg was filled by GetMessageW and is valid for the calling thread.
@@ -417,7 +417,7 @@ fn reload_config() {
         log::warn!("config: {w}");
     }
 
-    with_app(|app| {
+    let _ = with_app(|app| {
         let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
         app.engine.on_command(
             awase::engine::EngineCommand::UpdateFsmParams {
@@ -451,7 +451,7 @@ fn reload_config() {
         let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
         let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
         let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
-        with_app(|app| {
+        let _ = with_app(|app| {
             app.sync_toggle_keys = toggle.clone();
             app.sync_on_keys = on.clone();
             app.sync_off_keys = off.clone();
@@ -474,7 +474,7 @@ fn reload_config() {
         key_diag.report();
     }
 
-    with_app(|app| {
+    let _ = with_app(|app| {
         app.executor.platform.focus.overrides = awase_windows::focus::classifier::ForceOverrides::new(config.app_overrides);
         app.executor.platform.focus.cache = awase_windows::focus::cache::FocusCache::new();
     });
