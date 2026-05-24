@@ -44,7 +44,9 @@ pub mod tsf;
 pub mod vk;
 pub mod win32;
 
+#[allow(dead_code)]
 pub(crate) mod app;
+pub use app::run;
 
 pub use runtime::{LayoutEntry, Runtime};
 pub use single_thread_cell::SingleThreadCell;

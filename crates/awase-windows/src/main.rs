@@ -14,7 +14,7 @@ fn main() {}
 
 #[cfg(windows)]
 fn main() {
-    if let Err(e) = awase_windows::app::run() {
+    if let Err(e) = awase_windows::run() {
         eprintln!("Error: {e:#}");
         std::process::exit(1);
     }

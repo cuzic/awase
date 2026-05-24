@@ -100,7 +100,7 @@ use crate::panic_detect::{RapidPressTracker, RAPID_IME_TIMESTAMPS};
 // ── エントリポイント ──
 
 /// アプリケーションを起動する。
-pub(crate) fn run() -> Result<()> {
+pub fn run() -> Result<()> {
     bootstrap::run_all()
 }
 
