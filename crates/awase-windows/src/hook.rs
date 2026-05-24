@@ -489,12 +489,15 @@ fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
     }
 }
 
-/// IME トグルガードのステートマシン処理。
+/// sync key ガードのステートマシン処理。
+///
+/// sync key（Kanji/Henkan/Muhenkan 等）の KeyDown 直後から KeyUp までの間、
+/// 後続キーをバッファしておき、OS が IME 状態を切り替え終わってからまとめて再評価する。
 ///
 /// # Invariant
 /// `PassThrough` または `Consumed` を返した場合は内部で `leave_callback()` を呼んでいる。
 /// `Forward` を返した場合は `leave_callback()` を呼ばない（Engine コールバック後に呼ぶ）。
-fn apply_ime_gate(
+fn apply_sync_key_gate(
     app: &mut crate::Runtime,
     event: RawKeyEvent,
     route: &KeyRoute,
@@ -506,7 +509,7 @@ fn apply_ime_gate(
     // sync key KeyDown → ガードを起動、Engine の保留キーをフラッシュして PassThrough
     if is_keydown && is_sync_key && !app.platform_state.sync_key_gate.is_active() {
         app.platform_state.sync_key_gate.activate();
-        log::debug!("IME guard ON (sync key vk=0x{vk_raw:02X})");
+        log::debug!("sync-key guard ON (vk=0x{vk_raw:02X})");
         let ctx = crate::runtime::build_input_context(
             app.platform_state.preconditions(),
             &event.modifier_snapshot,
@@ -523,7 +526,7 @@ fn apply_ime_gate(
     // sync key KeyUp → ガードを解除して PassThrough、遅延処理をリクエスト
     if !is_keydown && is_sync_key && app.platform_state.sync_key_gate.is_active() {
         app.platform_state.sync_key_gate.deactivate();
-        log::debug!("IME guard OFF (sync key vk=0x{vk_raw:02X})");
+        log::debug!("sync-key guard OFF (vk=0x{vk_raw:02X})");
         app.platform_state.hook.leave_callback();
         crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
         return RoutingOutcome::PassThrough;
@@ -539,9 +542,9 @@ fn apply_ime_gate(
         }
         let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
         if app.platform_state.sync_key_gate.try_push(event, phys) {
-            log::trace!("IME guard: buffered key vk=0x{vk_raw:02X}");
+            log::trace!("sync-key guard: buffered key vk=0x{vk_raw:02X}");
         } else {
-            log::warn!("IME guard forced clear: buffer overflow");
+            log::warn!("sync-key guard forced clear: buffer overflow");
             app.platform_state.sync_key_gate.deactivate();
         }
         app.platform_state.hook.leave_callback();
@@ -638,8 +641,8 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     app.enrich_ime_relevance(&mut event);
     log_hook_event(&event, &route);
 
-    // ── IME トグルガード ──
-    let event = match apply_ime_gate(app, event, &route, vk_raw, is_keydown) {
+    // ── sync key ガード ──
+    let event = match apply_sync_key_gate(app, event, &route, vk_raw, is_keydown) {
         RoutingOutcome::PassThrough => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
         RoutingOutcome::Consumed    => return LRESULT(1),
         RoutingOutcome::Forward(ev) => ev,
