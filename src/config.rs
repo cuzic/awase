@@ -327,6 +327,19 @@ pub struct AppOverrideEntry {
     pub class: String,
 }
 
+/// `[[keymap]]` ショートカットインターセプトルール
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct KeymapRule {
+    /// プロセス名（省略=全アプリ、大文字小文字無視）
+    #[serde(default)]
+    pub app: Option<String>,
+    /// インターセプトするキーコンボ（例: "Ctrl+I"）
+    pub from: String,
+    /// 再注入するキー（例: "F7"）、省略=消費のみ
+    #[serde(default)]
+    pub to: Option<String>,
+}
+
 /// アプリ別の永続オーバーライド設定
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
@@ -356,6 +369,8 @@ pub struct AppConfig {
     pub keys: KeysConfig,
     #[serde(default)]
     pub app_overrides: AppOverrides,
+    #[serde(default)]
+    pub keymaps: Vec<KeymapRule>,
 }
 
 impl AppConfig {
@@ -394,6 +409,8 @@ pub struct ValidatedConfig {
     pub keys: KeysConfig,
     /// 検証済みのアプリ別オーバーライド
     pub app_overrides: AppOverrides,
+    /// キーマップインターセプトルール
+    pub keymaps: Vec<KeymapRule>,
 }
 
 impl AppConfig {
@@ -494,6 +511,7 @@ impl AppConfig {
                 general,
                 keys: self.keys,
                 app_overrides,
+                keymaps: self.keymaps,
             },
             warnings,
         )

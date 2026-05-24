@@ -7,6 +7,8 @@ pub struct HookRoutingState {
     pub(crate) sent_to_engine: [u64; 4],
     /// TrackOnly で送った KeyDown を記録するビットセット
     pub(crate) track_only_keys: [u64; 4],
+    /// キーマップでインターセプト消費済みの VK を記録するビットセット（KeyUp も消費するため）
+    pub(crate) intercept_consumed: [u64; 4],
     /// 再入ガード
     pub(crate) in_callback: bool,
     /// IME 制御コンボ直後の Ctrl バイパス抑制フラグ。
@@ -80,10 +82,33 @@ impl HookRoutingState {
         (self.track_only_keys[idx] & bit) != 0
     }
 
+    /// キーマップでインターセプト済みの VK を記録する。
+    pub const fn mark_intercept_consumed(&mut self, vk: u16) {
+        let idx = (vk as usize) / 64;
+        let bit = 1u64 << ((vk as usize) % 64);
+        if idx < 4 { self.intercept_consumed[idx] |= bit; }
+    }
+
+    /// VK がインターセプト消費済みかどうかを返す。
+    #[must_use]
+    pub const fn is_intercept_consumed(&self, vk: u16) -> bool {
+        let idx = (vk as usize) / 64;
+        let bit = 1u64 << ((vk as usize) % 64);
+        idx < 4 && (self.intercept_consumed[idx] & bit) != 0
+    }
+
+    /// インターセプト消費フラグをクリアする（KeyUp 処理後）。
+    pub const fn clear_intercept_consumed(&mut self, vk: u16) {
+        let idx = (vk as usize) / 64;
+        let bit = 1u64 << ((vk as usize) % 64);
+        if idx < 4 { self.intercept_consumed[idx] &= !bit; }
+    }
+
     /// ルーティングビットセットを全クリアする（panic_reset 用）。
     pub const fn reset_routing(&mut self) {
         self.sent_to_engine = [0u64; 4];
         self.track_only_keys = [0u64; 4];
+        self.intercept_consumed = [0u64; 4];
     }
 
     /// コールバック再入ガードを立てる。

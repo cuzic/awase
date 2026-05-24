@@ -253,6 +253,8 @@ pub struct AppKindClassifier {
     /// `last_focus_info` の更新と必ず同時に書き換える（`update_focus_info` 経由）。
     /// IMM-broken / TSF-native / Standard 判定が必要な全箇所から参照する SSOT。
     current_app_profile: AppImeProfile,
+    /// 現在フォーカス中のプロセス名（小文字、キーマップマッチング用）
+    pub current_process_name: String,
 }
 
 impl AppKindClassifier {
@@ -270,6 +272,7 @@ impl AppKindClassifier {
             imm_learning: ImmCapabilityStore::new(base_dir),
             hwnd_ime_cache: std::collections::HashMap::new(),
             current_app_profile: AppImeProfile::Standard,
+            current_process_name: String::new(),
         }
     }
 
@@ -283,6 +286,8 @@ impl AppKindClassifier {
     /// `last_focus_info` を生で書き換える代わりにこのメソッドを使うことで、
     /// `current_app_profile` キャッシュが必ず class_name と整合する。
     pub fn update_focus_info(&mut self, process_id: u32, class_name: String) {
+        let process_name = super::classify::get_process_name(process_id);
+        self.current_process_name = process_name.to_lowercase();
         self.current_app_profile = AppImeProfile::from_class_name(&class_name);
         self.last_focus_info = Some((process_id, class_name));
     }

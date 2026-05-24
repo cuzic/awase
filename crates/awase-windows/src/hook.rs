@@ -259,6 +259,43 @@ const fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook:
     false
 }
 
+/// キーマップルールに従い、修飾キーを一時解除してターゲットキーを注入する。
+///
+/// # Safety
+/// `SendInput` および `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
+unsafe fn send_keymap_reinject(send_vk: VkCode, mods: awase::engine::fsm_types::ModifierState) {
+    use crate::tsf::output::make_key_input_ex;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, SendInput,
+        VK_CONTROL, VK_LCONTROL, VK_SHIFT, VK_LSHIFT, VK_MENU, VK_LMENU,
+    };
+
+    let mut inputs = Vec::with_capacity(8);
+
+    if mods.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  INJECTED_MARKER)); }
+    if mods.shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  INJECTED_MARKER)); }
+    if mods.alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  INJECTED_MARKER)); }
+
+    inputs.push(make_key_input_ex(send_vk.0, false, INJECTED_MARKER));
+    inputs.push(make_key_input_ex(send_vk.0, true,  INJECTED_MARKER));
+
+    let still_ctrl  = mods.ctrl  && (GetAsyncKeyState(i32::from(VK_LCONTROL.0)) as u16 & 0x8000 != 0
+                                  || GetAsyncKeyState(i32::from(VK_CONTROL.0))  as u16 & 0x8000 != 0);
+    let still_shift = mods.shift && (GetAsyncKeyState(i32::from(VK_LSHIFT.0))   as u16 & 0x8000 != 0
+                                  || GetAsyncKeyState(i32::from(VK_SHIFT.0))    as u16 & 0x8000 != 0);
+    let still_alt   = mods.alt   && (GetAsyncKeyState(i32::from(VK_LMENU.0))    as u16 & 0x8000 != 0
+                                  || GetAsyncKeyState(i32::from(VK_MENU.0))     as u16 & 0x8000 != 0);
+
+    if still_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, false, INJECTED_MARKER)); }
+    if still_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   false, INJECTED_MARKER)); }
+    if still_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    false, INJECTED_MARKER)); }
+
+    if !inputs.is_empty() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
+        SendInput(&inputs, i32::try_from(size_of::<INPUT>()).unwrap_or(28));
+    }
+}
+
 /// キーの処理先を決定する。
 ///
 /// Engine に送るか、OS にそのまま渡すかを一元的に判定する。
@@ -393,6 +430,8 @@ enum EarlyRoutingDecision {
     BypassToOs,
     /// 通常パイプラインへ
     Continue { route: KeyRoute },
+    /// キーマップルールにより消費済み
+    ConsumedByKeymap,
 }
 
 /// IME ガード処理の結果
@@ -433,6 +472,28 @@ unsafe fn decide_routing_with_tracking(
     // Ctrl KeyUp で ctrl_bypass_hold を解除
     if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.ctrl_bypass_hold() {
         ps.hook.set_ctrl_bypass_hold(false);
+    }
+
+    // ── キーマップインターセプト ──
+    if is_keydown {
+        // SAFETY: read_os_modifiers は GetAsyncKeyState を呼ぶ。フックコールバック内のため安全。
+        let mods = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+        if let Some(send_vk) = crate::keymap::find_keymap_match(&ps.active_keymaps, VkCode(vk_raw), mods) {
+            ps.hook.mark_intercept_consumed(vk_raw);
+            if let Some(vk) = send_vk {
+                // SAFETY: SendInput + GetAsyncKeyState。フックコールバック内のため安全。
+                unsafe { send_keymap_reinject(vk, mods); }
+                log::info!("[keymap] vk=0x{vk_raw:02X} → send vk=0x{:02X}", vk.0);
+            } else {
+                log::info!("[keymap] vk=0x{vk_raw:02X} → consume");
+            }
+            return EarlyRoutingDecision::ConsumedByKeymap;
+        }
+    }
+    if !is_keydown && ps.hook.is_intercept_consumed(vk_raw) {
+        ps.hook.clear_intercept_consumed(vk_raw);
+        log::debug!("[keymap] vk=0x{vk_raw:02X} KeyUp consumed (paired with intercepted KeyDown)");
+        return EarlyRoutingDecision::ConsumedByKeymap;
     }
 
     let route = classify_route(&ps.hook, ps.hook_config, vk_raw, is_keydown);
@@ -628,6 +689,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // ── 早期バイパス・ルーティング・再入ガード ──
     let route = match decide_routing_with_tracking(&mut app.platform_state, vk_raw, is_keydown) {
         EarlyRoutingDecision::BypassToOs => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
+        EarlyRoutingDecision::ConsumedByKeymap => return LRESULT(1),
         EarlyRoutingDecision::Continue { route } => route,
     };
 
