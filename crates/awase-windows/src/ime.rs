@@ -66,7 +66,7 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_kanji_toggle_to_focused() {
+pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_SHIFT, VK_LSHIFT, VK_MENU, VK_LMENU,
@@ -77,12 +77,6 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     let held_ctrl  = unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0;
     let held_shift = unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0))   } as u16 & 0x8000 != 0;
     let held_alt   = unsafe { GetAsyncKeyState(i32::from(VK_MENU.0))    } as u16 & 0x8000 != 0;
-
-    // 候補ウィンドウが表示中の場合、bare VK_KANJI は候補を閉じるだけで IME トグルとして機能しない。
-    // VK_RETURN で現在の候補を確定（composition をコミット）してから VK_KANJI でトグルする。
-    // ESC はキャンセルになるため使わない。
-    let candidate_visible =
-        crate::tsf::observer::with_tsf_obs(|obs| obs.gji_candidate_visible());
 
     let mut inputs = Vec::with_capacity(10);
 

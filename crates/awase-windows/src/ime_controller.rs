@@ -24,6 +24,9 @@ pub(crate) struct ImeApplyContext<'a> {
     /// （`Output::last_applied_ime_on()` = `LastAppliedImeState::get_or(false)`）。
     /// IME 状態の SSOT ではない（SSOT は `Preconditions::ime_on()`）。
     pub shadow_on: bool,
+    /// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうか（`TsfObservations` から取得）。
+    /// 候補表示中は Chrome IME が確実に ON のため、shadow desync の上書き判断に使う。
+    pub candidate_visible: bool,
 }
 
 /// IME ON/OFF を実行する戦略インターフェース。
@@ -71,23 +74,21 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
 
     fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
         // 候補ウィンドウが表示中 → Chrome/Edge の IME は確実に ON。
-        // shadow が desync で false になっていても強制送信してデスクを修復する。
-        let candidate_visible =
-            crate::tsf::observer::with_tsf_obs(|obs| obs.gji_candidate_visible());
-        let effective_shadow = ctx.shadow_on || candidate_visible;
+        // shadow が desync で false になっていても強制送信して desync を修復する。
+        let effective_shadow = ctx.shadow_on || ctx.candidate_visible;
 
         if effective_shadow == open {
             log::debug!(
-                "[apply-ime] shadow={} candidate={candidate_visible} already matches desired={open}, skip VK_KANJI",
-                ctx.shadow_on
+                "[apply-ime] shadow={} candidate={} already matches desired={open}, skip VK_KANJI",
+                ctx.shadow_on, ctx.candidate_visible
             );
             ImeOpenOutcome::AlreadyMatched
         } else {
             log::debug!(
-                "[apply-ime] shadow={} candidate={candidate_visible} → desired={open}: SendInput VK_KANJI",
-                ctx.shadow_on
+                "[apply-ime] shadow={} candidate={} → desired={open}: SendInput VK_KANJI",
+                ctx.shadow_on, ctx.candidate_visible
             );
-            unsafe { crate::ime::post_kanji_toggle_to_focused() };
+            unsafe { crate::ime::post_kanji_toggle_to_focused(ctx.candidate_visible) };
             ImeOpenOutcome::FallbackSent
         }
     }

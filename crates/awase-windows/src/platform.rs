@@ -99,6 +99,7 @@ impl PlatformRuntime for WindowsPlatform {
             class_name,
             profile: self.focus.current_app_profile(),
             shadow_on: self.output.last_applied_ime_on(),
+            candidate_visible: crate::tsf::observer::with_tsf_obs(|obs| obs.gji_candidate_visible()),
         };
         CONTROLLER.apply(open, &ctx)
     }
