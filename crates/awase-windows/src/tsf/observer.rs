@@ -179,6 +179,46 @@ pub fn tsf_obs() -> &'static TsfObservations {
     &TSF_OBS
 }
 
+// ── output / observer 層向け名前付き API ──
+//
+// output/ は tsf_obs() を直接呼ばずこれらの関数を使うこと。
+// 各関数の名前が「何を読んでいるか」を呼び出し元で自明にする。
+
+/// GJI プロセスの最終 I/O 変化時刻 (ms) を返す。0 = 未観測。live 読み取り。
+pub(crate) fn gji_last_io_ms() -> u64 {
+    TSF_OBS.gji_last_io_ms.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// GJI モニターが利用可能かどうか。live 読み取り。
+pub(crate) fn gji_monitor_healthy() -> bool {
+    TSF_OBS.gji_monitor_ok.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// OBJ_NAMECHANGE カウンタのベースラインを取得する。
+///
+/// `SendInput` 等を呼ぶ前に取得し、完了後に `NamechangeBaseline::fired()` で
+/// 変化があったかを確認する。
+pub(crate) fn namechange_baseline() -> NamechangeBaseline {
+    NamechangeBaseline(TSF_OBS.focus_namechange_seq.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// OBJ_NAMECHANGE カウンタをリセットする（`send_eager_tsf_warmup` 用）。
+pub(crate) fn reset_namechange_seq() {
+    TSF_OBS.focus_namechange_seq.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// OBJ_NAMECHANGE カウンタのベースライン値。
+///
+/// `namechange_baseline()` で取得し、`fired()` で変化を検出する。
+pub(crate) struct NamechangeBaseline(u32);
+
+impl NamechangeBaseline {
+    /// ベースライン取得後にカウンタが変化したかどうかを返す。
+    pub(crate) fn fired(&self) -> bool {
+        TSF_OBS.focus_namechange_seq.load(std::sync::atomic::Ordering::Relaxed) != self.0
+    }
+}
+
 
 // ── GJI プロセス発見 ──
 
