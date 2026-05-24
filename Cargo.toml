@@ -1,6 +1,11 @@
 [workspace]
 members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos", "crates/awase-yab-editor", "crates/awase-settings"]
 
+[workspace.metadata.dylint]
+libraries = [
+    { path = "lints/no_vk_as_scan" },
+]
+
 [package]
 name = "awase"
 version = "0.1.0"
