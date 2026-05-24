@@ -322,13 +322,13 @@ pub(super) fn initialize_app(
         .engine_on_ime_key
         .as_deref()
         .and_then(vk_name_to_code)
-        .map(|v| v.0);
+        .map(u16::from);
     let engine_off_ime_vk = config
         .keys
         .engine_off_ime_key
         .as_deref()
         .and_then(vk_name_to_code)
-        .map(|v| v.0);
+        .map(u16::from);
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
