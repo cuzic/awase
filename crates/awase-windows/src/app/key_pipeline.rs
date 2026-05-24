@@ -111,10 +111,15 @@ impl KeyEventPipeline<'_> {
                 // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
                 // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
                 // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
+                //
+                // set_ime_open(false) の代わりに apply_ime_open(false) を使う。
+                // IMM-broken (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
+                // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
+                // ここでは latch が true のうちに apply_ime_open を呼ぶことで VK_KANJI が確実に送られる。
                 if !self.app.platform_state.ime_on() {
-                    let _ = self.app.executor.platform.set_ime_open(false);
+                    let _ = self.app.executor.platform.apply_ime_open(false);
                     self.app.executor.platform.output.set_ime_apply_latch(false);
-                    log::debug!("[shadow-toggle] ON→OFF: set_ime_open(false) + latch=false");
+                    log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) + latch=false");
                 }
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",

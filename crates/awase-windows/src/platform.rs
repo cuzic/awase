@@ -123,6 +123,16 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})");
             return;
         }
+        // IMM-broken (Chrome/Edge) は apply_ime_open による VK_KANJI トグルで制御する。
+        // VK_DBE_SBCSCHAR/DBCSCHAR を追加送信すると:
+        //   OFF 時: VK_KANJI でクローズ直後に VK_DBE_SBCSCHAR が IME を再オープンする恐れがある。
+        //   ON 時: VK_KANJI で開いた後に VK_DBE_DBCSCHAR を送ると全角カタカナモードになりかねない。
+        if let Some((_, class_name)) = self.focus.last_focus_info.as_ref() {
+            if crate::focus::classify::is_imm_bridge_broken(class_name) {
+                log::debug!("[engine-state-key] skipped (IMM-broken class={class_name}, VK_KANJI済み)");
+                return;
+            }
+        }
         let vk = if enabled { self.engine_on_ime_vk } else { self.engine_off_ime_vk };
         if let Some(vk) = vk {
             unsafe { crate::ime::send_ime_mode_key(vk) };
