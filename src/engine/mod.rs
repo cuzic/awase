@@ -17,6 +17,7 @@ pub mod output_history;
 pub mod timing;
 
 // Public re-exports
+pub use crate::platform::EffectOrigin;
 pub use decision::{
     ActivationState, AssumedReason, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
     ImeSyncKeys, InputContext, InputEffect, InputModeState, KeyBuffer, SpecialKeyCombos,

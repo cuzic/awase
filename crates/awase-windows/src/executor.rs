@@ -545,7 +545,7 @@ impl DecisionExecutor {
                 }
             },
             Effect::Ime(ie) => match ie {
-                ImeEffect::SetOpen(open) => {
+                ImeEffect::SetOpen { open, origin: _ } => {
                     let outcome = platform.apply_ime_open(open);
                     if outcome == awase::platform::ImeOpenOutcome::Failed {
                         log::warn!("apply_ime_open({open}) failed");

@@ -3907,7 +3907,7 @@ mod engine_integration_tests {
         assert!(d.is_consumed());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ime(ImeEffect::SetOpen(true))
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
         )));
     }
 
@@ -3931,7 +3931,7 @@ mod engine_integration_tests {
         assert!(d.is_consumed());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ime(ImeEffect::SetOpen(false))
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
         )));
     }
 
