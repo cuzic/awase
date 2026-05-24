@@ -12,13 +12,13 @@ use super::class_names::AppImeProfile;
 /// IMM 能力キャッシュファイル名（config.toml と同じディレクトリ）
 const IMM_CACHE_FILENAME: &str = "imm_cache.toml";
 
-/// IMM ブリッジの検出結果（class_name ごとにキャッシュ）
+/// IMM32 クロスプロセス制御能力の検出結果（class_name ごとにキャッシュ）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImmCapability {
-    /// IMM ブリッジが動作する（ImmGetOpenStatus が信頼できる値を返す）
+    /// IMM32 クロスプロセス制御が動作する（`ImmGetOpenStatus` が信頼できる値を返す）
     Works,
-    /// IMM ブリッジが動作しない（独自 TSF text store を持つアプリ）
-    Broken,
+    /// IMM32 クロスプロセス制御が使えない（独自 TSF text store を持つアプリ等）
+    Unavailable,
 }
 
 /// IMM 能力キャッシュをファイルから読み込む。
@@ -40,7 +40,7 @@ fn load_imm_cache(base_dir: &std::path::Path) -> std::collections::HashMap<Strin
             if let toml::Value::String(s) = value {
                 let cap = match s.as_str() {
                     "works" => ImmCapability::Works,
-                    "broken" => ImmCapability::Broken,
+                    "unavailable" | "broken" => ImmCapability::Unavailable, // "broken" は旧フォーマット互換
                     _ => continue,
                 };
                 cache.insert(class_name.clone(), cap);
@@ -60,7 +60,7 @@ fn save_imm_cache(base_dir: &std::path::Path, cache: &std::collections::HashMap<
     for (class_name, cap) in cache {
         let value = match cap {
             ImmCapability::Works => "works",
-            ImmCapability::Broken => "broken",
+            ImmCapability::Unavailable => "unavailable",
         };
         classes.insert(class_name.clone(), toml::Value::String(value.to_string()));
     }
@@ -251,7 +251,7 @@ pub struct AppKindClassifier {
     /// フォーカス中アプリの IME 制御プロファイル。
     ///
     /// `last_focus_info` の更新と必ず同時に書き換える（`update_focus_info` 経由）。
-    /// IMM-broken / TSF-native / Standard 判定が必要な全箇所から参照する SSOT。
+    /// Imm32Unavailable / TsfNative / Standard 判定が必要な全箇所から参照する SSOT。
     current_app_profile: AppImeProfile,
     /// 現在フォーカス中のプロセス名（小文字、キーマップマッチング用）
     pub current_process_name: String,

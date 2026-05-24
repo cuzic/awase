@@ -51,9 +51,9 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     success
 }
 
-/// TSF ネイティブアプリ（Chrome 等）向け IME トグルフォールバック。
+/// IMM32 クロスプロセス制御が使えないアプリ（Chrome/Edge 等）向け IME トグル実装。
 ///
-/// `WM_IME_CONTROL` が効かない TSF アプリに対して `SendInput(VK_KANJI)` で IME をトグルする。
+/// `WM_IME_CONTROL` が効かない `Imm32Unavailable` アプリに対して `SendInput(VK_KANJI)` で IME をトグルする。
 ///
 /// VK_KANJI はトグルキーのため **呼び出し元は last_applied_ime_on != desired を事前確認すること**。
 /// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが再インターセプトしない
@@ -515,8 +515,8 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // IMM/TSF いずれの経路でも IMC_GETOPENSTATUS が信頼できないアプリは
     // ime_on=None を返して shadow 状態に委ねる。
     // - TsfNative（Alt/Win 一時オーバーレイ等）: imc_open=false で Engine 誤 deactivate
-    // - ImmBroken（Chrome/Edge: Chrome_WidgetWin_1 等）: 常に 0 を返す
-    if !profile.can_read_imm_state() {
+    // - Imm32Unavailable（Chrome/Edge: Chrome_WidgetWin_1 等）: 常に 0 を返す
+    if !profile.can_read_imm32_open_status() {
         log::debug!(
             "read_ime_state_fast: profile={profile:?} class={class_name} → ime_on=None (shadow preserving)"
         );
@@ -550,7 +550,7 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
 
 /// 高速プローブの結果。
 ///
-/// IMM-broken / TSF-native の判定は `AppKindClassifier::current_app_profile` に集約されており
+/// `Imm32Unavailable` / `TsfNative` の判定は `AppKindClassifier::current_app_profile` に集約されており
 /// 本構造体には含まない。`ime_on=None` は「OS から信頼できる値を読めなかった」ことを意味する。
 #[derive(Debug)]
 pub struct FastImeProbeResult {

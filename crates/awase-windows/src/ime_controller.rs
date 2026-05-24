@@ -4,8 +4,8 @@
 //! `ImeController` + `ImeOpenStrategy` に分離する。
 //!
 //! # 戦略リスト（優先順）
-//! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（IMM-broken は skip）
-//! 2. `KanjiToggleStrategy`     — 汎用フォールバック（IMM-broken の主戦略 + ImmCross 失敗時の fallback）
+//! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
+//! 2. `KanjiToggleStrategy`     — 汎用フォールバック（Imm32Unavailable の主戦略 + ImmCross 失敗時の fallback）
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
 //! `ImeController` は `KanjiToggleStrategy` へフォールスルーする。
@@ -46,7 +46,7 @@ pub(crate) struct ImmCrossProcessStrategy;
 
 impl ImeOpenStrategy for ImmCrossProcessStrategy {
     fn is_applicable(&self, ctx: &ImeApplyContext<'_>) -> bool {
-        ctx.profile.can_use_imm_direct()
+        ctx.profile.can_use_imm32_cross_process()
     }
 
     fn apply(&self, open: bool, _ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
@@ -62,14 +62,14 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 
 /// `SendInput(VK_KANJI)` トグルを使うフォールバック戦略。
 ///
-/// Chrome 等 IMM-broken クラスでの主戦略、および `ImmCrossProcessStrategy` が
+/// Chrome 等 Imm32Unavailable クラスでの主戦略、および `ImmCrossProcessStrategy` が
 /// タイムアウト失敗した際の汎用フォールバックとして機能する。
 /// VK_KANJI はトグルキーのため shadow と目標が一致している場合は送信をスキップする。
 pub(crate) struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
     fn is_applicable(&self, _ctx: &ImeApplyContext<'_>) -> bool {
-        true // 汎用フォールバック: IMM-broken の主戦略 + ImmCross 失敗時の代替
+        true // 汎用フォールバック: Imm32Unavailable の主戦略 + ImmCross 失敗時の代替
     }
 
     fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {

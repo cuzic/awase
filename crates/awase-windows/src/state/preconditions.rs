@@ -64,11 +64,11 @@ pub struct Preconditions {
     /// Chrome / WezTerm / Windows Terminal など **既知の** アプリでは発火しない：
     /// - TSF native ウィンドウ（WezTerm, Windows Terminal）: `is_tsf_native` 分岐で
     ///   miss_count のインクリメントをスキップ
-    /// - `ImmCapability::Broken` 学習済みクラス: `skip_imm_query=true` で Phase 3 自体を迂回
+    /// - `ImmCapability::Unavailable` 学習済みクラス: `skip_imm_query=true` で Phase 3 自体を迂回
     /// - Chrome 等 IMM32 が動くアプリ: 検出が普通に成功するので count は増えない
     ///
-    /// 実際に増えるのは「**未知の IMM-broken アプリへの初回フォーカス時だけ**」。
-    /// 閾値到達後 `ImmCapability::Broken` として学習されると、以降は発火しなくなる。
+    /// 実際に増えるのは「**未知の Imm32Unavailable アプリへの初回フォーカス時だけ**」。
+    /// 閾値到達後 `ImmCapability::Unavailable` として学習されると、以降は発火しなくなる。
     pub(in crate::state) ime_detect_miss_count: u32,
     /// 起動直後の broken app 向け強制 IME ON ガード（Phase 3.5）。
     ///

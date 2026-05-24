@@ -81,7 +81,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     //
     // Phase 3: IME 状態の再取得
     // Phase 3.1: IMM 能力の学習
-    // Phase 3.5: 未知 IMM-broken アプリ向け一時 force-ON（初回ブートストラップ）
+    // Phase 3.5: 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
     // Phase 3.7: 診断スナップショット（フォーカス変更後）
 
     fn stage_observe(&mut self, focus: &FocusInfo, strategy: &ImeReadStrategy) {
@@ -121,7 +121,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     // ── IMM ブリッジ非対応クラスの判定 ──
 
     fn resolve_skip_imm_query(&self) -> bool {
-        // IMM API を直接呼べないアプリ（IMM-broken / TSF-native）では
+        // IMM32 クロスプロセス制御が使えないアプリ（Imm32Unavailable / TsfNative）では
         // クロスプロセス IMM 問い合わせ（WM_IME_CONTROL）が動作しないか、
         // 無期限ブロックする恐れがあるためスキップする。
         !self
@@ -130,7 +130,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             .platform
             .focus
             .current_app_profile()
-            .can_use_imm_direct()
+            .can_use_imm32_cross_process()
     }
 
     // ── フォーカス変更通知 ──
@@ -273,7 +273,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         // IMM 能力の学習
         self.learn_imm_capability_from_result(miss_before, miss_after);
 
-        // 未知 IMM-broken アプリ向け一時 force-ON（初回ブートストラップ）
+        // 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
         self.try_force_on_bootstrap();
     }
 
@@ -353,21 +353,21 @@ impl<'a> ImeRefreshPipeline<'a> {
                     .focus
                     .imm_learning
                     .get(&class_name);
-                if prev != Some(ImmCapability::Broken) {
+                if prev != Some(ImmCapability::Unavailable) {
                     log::info!(
-                        "IMM capability learned: {class_name} → Broken (detection failed {miss_after} times)"
+                        "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
                     );
                     self.rt
                         .executor
                         .platform
                         .focus
-                        .learn_imm_capability(class_name, ImmCapability::Broken);
+                        .learn_imm_capability(class_name, ImmCapability::Unavailable);
                 }
             }
         }
     }
 
-    /// 未知 IMM-broken アプリ向け一時 force-ON（初回ブートストラップ）
+    /// 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
     ///
     // ここに来るのは「既知でも TSF-native でもないアプリで detect が連続失敗した」
     // 場合だけ。shadow=ON なら SetOpen(true) を呼び engine を active のまま維持する。

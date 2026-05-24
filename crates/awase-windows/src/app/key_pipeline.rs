@@ -82,7 +82,7 @@ impl KeyEventPipeline<'_> {
     /// Shadow IME トグル処理
     ///
     /// IME ON/OFF が変化したら `true` を返す。`stage_execute` がこの値を見て
-    /// IMM-broken アプリで物理 IME キーを抑止すべきか判定する。
+    /// Imm32Unavailable アプリで物理 IME キーを抑止すべきか判定する。
     fn stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
         if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
             return false;
@@ -120,7 +120,7 @@ impl KeyEventPipeline<'_> {
         // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
         //
         // set_ime_open(false) の代わりに apply_ime_open(false) を使う。
-        // IMM-broken (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
+        // Imm32Unavailable (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
         // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
         // ここでは latch が true のうちに apply_ime_open を呼ぶことで VK_KANJI が確実に送られる。
         if !self.app.platform_state.ime_on() {
@@ -166,7 +166,7 @@ impl KeyEventPipeline<'_> {
         event: &RawKeyEvent,
         shadow_toggled: bool,
     ) -> CallbackResult {
-        // 物理 IME キー（VK_KANJI 等）を OS に届けないアプリ（IMM-broken: Chrome/Edge）で
+        // 物理 IME キー（VK_KANJI 等）を OS に届けないアプリ（Imm32Unavailable: Chrome/Edge）で
         // shadow が今変化した場合、apply_ime_open が VK_KANJI を送信済み。
         // 物理キーをそのまま届けると VK_KANJI + 物理キーの二重制御になるため抑止する。
         // PassThrough / PassThroughWith → Consume に変換して reinject/passthrough をスキップする。
@@ -181,11 +181,11 @@ impl KeyEventPipeline<'_> {
         let decision = if suppress_physical {
             match decision {
                 awase::engine::Decision::PassThrough => {
-                    log::debug!("[imm-broken] physical IME key consume (was PassThrough, double-send prevented)");
+                    log::debug!("[imm32-off] physical IME key consume (was PassThrough, double-send prevented)");
                     awase::engine::Decision::Consume { effects: vec![].into() }
                 }
                 awase::engine::Decision::PassThroughWith { effects } => {
-                    log::debug!("[imm-broken] physical IME key consume (was PassThroughWith, double-send prevented)");
+                    log::debug!("[imm32-off] physical IME key consume (was PassThroughWith, double-send prevented)");
                     awase::engine::Decision::Consume { effects }
                 }
                 other => other,

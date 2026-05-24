@@ -5,7 +5,8 @@
 
 use awase::types::AppKind;
 
-/// IMM ブリッジ（WM_IME_CONTROL）が動作しない、または不安定なウィンドウクラス。
+/// IMM32 クロスプロセス制御（`WM_IME_CONTROL` / `ImmSetOpenStatus`）が使えない
+/// または不安定なウィンドウクラス。
 ///
 /// これらのクラスにフォーカスがあるとき、`ImmGet*` / `SendMessage(WM_IME_CONTROL)` は
 /// 反応しなかったり無期限にブロックする恐れがあるため、IME 状態検出をスキップする。
@@ -15,7 +16,7 @@ use awase::types::AppKind;
 /// - 言語バーのマウス操作による IME 切り替え
 /// - アプリ内の IME ボタンクリック
 ///   しかし、これらは非常に稀なので割り切る。
-const IMM_BRIDGE_BROKEN_CLASSES: &[&str] = &[
+const IMM32_UNAVAILABLE_CLASSES: &[&str] = &[
     // Chromium 系（Chrome, Edge, Brave, Opera 等）
     "Chrome_RenderWidgetHostHWND",
     "Chrome_WidgetWin_0",
@@ -56,19 +57,21 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
 
 /// フォーカス中アプリの IME 制御プロファイル。
 ///
-/// 「Chrome/Edge 等は IMM API が効かない」「TSF ネイティブは VK_DBE_HIRAGANA が必要」
+/// 「Chrome/Edge 等は IMM32 クロスプロセス制御が使えない」
+/// 「WezTerm 等 TSF ネイティブは VK_DBE_HIRAGANA が必要」
 /// といったアプリ別の特性を 1 つの型に集約し、「クラス名で個別判定」の散在を防ぐ。
 /// フォーカス変更時に `from_class_name` で決定して
 /// `AppKindClassifier.current_app_profile` にキャッシュし、
 /// `current_app_profile()` メソッドで参照する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AppImeProfile {
-    /// 通常の IMM32 アプリ。IMM API 直接操作可能。
+    /// 通常の IMM32 アプリ。IMM32 クロスプロセス制御が使用可能。
     #[default]
     Standard,
-    /// Chrome/Edge 等。IMM API が効かず VK_KANJI で制御、物理キーを抑止する必要がある。
-    ImmBroken,
-    /// TSF ネイティブ（例: WezTerm/UWP）。`VK_DBE_HIRAGANA` + TSF probe が必要。
+    /// Chrome/Edge/UWP 等。IMM32 クロスプロセス制御が使えず VK_KANJI で制御する。
+    /// 物理 IME キーの二重送信を防ぐため抑止も必要。
+    Imm32Unavailable,
+    /// TSF ネイティブ（例: WezTerm/Windows Terminal）。`VK_DBE_HIRAGANA` + TSF probe が必要。
     TsfNative,
 }
 
@@ -76,16 +79,16 @@ impl AppImeProfile {
     /// クラス名からプロファイルを決定する。
     ///
     /// 優先順:
-    /// 1. IMM-broken クラス（Chrome/Edge/UWP/XAML/Console 系）→ `ImmBroken`
+    /// 1. IMM32 制御不可クラス（Chrome/Edge/UWP/XAML/Console 系）→ `Imm32Unavailable`
     /// 2. TSF ネイティブ専用クラス → `TsfNative`
     /// 3. その他 → `Standard`
     ///
-    /// 注: UWP/XAML/Console 系クラスは IMM-broken にも TSF-native にも該当するが、
-    /// IME 制御フロー（VK_KANJI + 物理キー抑止）を優先するため `ImmBroken` を返す。
+    /// 注: UWP/XAML/Console 系クラスは `Imm32Unavailable` にも TSF-native にも該当するが、
+    /// IME 制御フロー（VK_KANJI + 物理キー抑止）を優先するため `Imm32Unavailable` を返す。
     #[must_use]
     pub fn from_class_name(class_name: &str) -> Self {
-        if IMM_BRIDGE_BROKEN_CLASSES.contains(&class_name) {
-            Self::ImmBroken
+        if IMM32_UNAVAILABLE_CLASSES.contains(&class_name) {
+            Self::Imm32Unavailable
         } else if is_tsf_native_window(class_name) {
             Self::TsfNative
         } else {
@@ -93,40 +96,40 @@ impl AppImeProfile {
         }
     }
 
-    /// `IMM32` API で open/close を直接操作できるか。
+    /// IMM32 クロスプロセス制御（`ImmSetOpenStatus` / `WM_IME_CONTROL`）が使えるか。
     ///
     /// `false` のとき `WindowsPlatform::set_ime_open` や `ImmCrossProcessStrategy`
-    /// は `ImmSetOpenStatus`/`WM_IME_CONTROL` クロスプロセス呼び出しをスキップする。
+    /// は IMM32 クロスプロセス呼び出しをスキップする。
     #[must_use]
-    pub const fn can_use_imm_direct(&self) -> bool {
+    pub const fn can_use_imm32_cross_process(&self) -> bool {
         matches!(self, Self::Standard)
     }
 
     /// VK_KANJI トグルキーで IME を制御するか。
     ///
-    /// IMM-broken アプリ（Chrome/Edge 等）の主戦略。`KanjiToggleStrategy` が
+    /// `Imm32Unavailable`（Chrome/Edge 等）の主戦略。`KanjiToggleStrategy` が
     /// この値を `true` にしてフォールバックではなく主経路として VK_KANJI を送る。
     #[must_use]
     pub const fn uses_kanji_toggle(&self) -> bool {
-        matches!(self, Self::ImmBroken)
+        matches!(self, Self::Imm32Unavailable)
     }
 
     /// 物理 IME キー（VK_KANJI / 半角/全角 等）を OS に届けてよいか。
     ///
-    /// IMM-broken アプリでは `apply_ime_open` が VK_KANJI を送信済みなので、
+    /// `Imm32Unavailable` アプリでは `apply_ime_open` が VK_KANJI を送信済みなので、
     /// 物理キーをそのまま届けると二重制御になる。`false` のとき
     /// `KeyEventPipeline::stage_execute` は `Decision::Consume` に変換する。
     #[must_use]
     pub const fn should_pass_physical_key(&self) -> bool {
-        !matches!(self, Self::ImmBroken)
+        !matches!(self, Self::Imm32Unavailable)
     }
 
-    /// IMM で IME open 状態（IMC_GETOPENSTATUS）をクロスプロセス取得できるか。
+    /// IMM32 で IME open 状態（`IMC_GETOPENSTATUS`）をクロスプロセス取得できるか。
     ///
     /// `false` のとき `read_ime_state_fast` は `ime_on=None` を返し shadow 状態に委ねる。
-    /// IMM-broken / TSF-native ともに信頼できない。
+    /// `Imm32Unavailable` / `TsfNative` ともに IMM32 の状態値は信頼できない。
     #[must_use]
-    pub const fn can_read_imm_state(&self) -> bool {
+    pub const fn can_read_imm32_open_status(&self) -> bool {
         matches!(self, Self::Standard)
     }
 }

@@ -78,10 +78,10 @@ impl PlatformRuntime for WindowsPlatform {
     // ── IME ──
 
     fn set_ime_open(&mut self, open: bool) -> bool {
-        // IMM API で直接 open/close できないアプリ（IMM-broken / TSF-native）では
+        // IMM API で直接 open/close できないアプリ（Imm32Unavailable / TSF-native）では
         // get_gui_thread_info + send_ime_control が ~200ms タイムアウトしてブロックする。
         // 早期 return して IMM 経由のクロスプロセス呼び出しをスキップする。
-        if !self.focus.current_app_profile().can_use_imm_direct() {
+        if !self.focus.current_app_profile().can_use_imm32_cross_process() {
             return false;
         }
         unsafe { crate::ime::set_ime_open_cross_process(open) }
@@ -123,7 +123,7 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})");
             return;
         }
-        // VK_KANJI トグルで IME を制御するアプリ（IMM-broken: Chrome/Edge）では
+        // VK_KANJI トグルで IME を制御するアプリ（Imm32Unavailable: Chrome/Edge）では
         // apply_ime_open が既に VK_KANJI を送信済み。VK_DBE_SBCSCHAR/DBCSCHAR を追加送信すると:
         //   OFF 時: VK_KANJI でクローズ直後に VK_DBE_SBCSCHAR が IME を再オープンする恐れがある。
         //   ON 時: VK_KANJI で開いた後に VK_DBE_DBCSCHAR を送ると全角カタカナモードになりかねない。
