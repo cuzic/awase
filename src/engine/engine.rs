@@ -372,6 +372,8 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
+            log::debug!("[special-key] IME ON match: vk={:#04x} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code.0, modifiers.ctrl, modifiers.shift, modifiers.alt, event.extra_info);
             return Some(SpecialKeyMatch::ImeOn);
         }
         if self
@@ -380,6 +382,8 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
+            log::debug!("[special-key] IME OFF match: vk={:#04x} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code.0, modifiers.ctrl, modifiers.shift, modifiers.alt, event.extra_info);
             return Some(SpecialKeyMatch::ImeOff);
         }
 
