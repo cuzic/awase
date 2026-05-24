@@ -176,7 +176,7 @@ impl KeyEventPipeline<'_> {
             match decision {
                 awase::engine::Decision::PassThrough => {
                     log::debug!("[imm-broken] physical IME key consume (was PassThrough, double-send prevented)");
-                    awase::engine::Decision::Consume { effects: vec![] }
+                    awase::engine::Decision::Consume { effects: vec![].into() }
                 }
                 awase::engine::Decision::PassThroughWith { effects } => {
                     log::debug!("[imm-broken] physical IME key consume (was PassThroughWith, double-send prevented)");
