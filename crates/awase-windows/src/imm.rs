@@ -41,7 +41,7 @@ impl ImmContextGuard {
         if himc.is_invalid() { None } else { Some(Self { hwnd, himc }) }
     }
 
-    pub(crate) const fn himc(&self) -> HIMC {
+    pub(crate) fn himc(&self) -> HIMC {
         self.himc
     }
 }

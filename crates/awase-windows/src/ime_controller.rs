@@ -4,8 +4,11 @@
 //! `ImeController` + `ImeOpenStrategy` に分離する。
 //!
 //! # 戦略リスト（優先順）
-//! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け
-//! 2. `KanjiToggleStrategy`     — IMM-broken クラス（Chrome 等）向け
+//! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（IMM-broken は skip）
+//! 2. `KanjiToggleStrategy`     — 汎用フォールバック（IMM-broken の主戦略 + ImmCross 失敗時の fallback）
+//!
+//! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
+//! `ImeController` は `KanjiToggleStrategy` へフォールスルーする。
 
 use awase::platform::ImeOpenOutcome;
 
@@ -50,13 +53,14 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 
 /// `SendInput(VK_KANJI)` トグルを使うフォールバック戦略。
 ///
-/// Chrome 等 IMM-broken クラス向け。VK_KANJI はトグルキーのため
-/// shadow と目標が一致している場合は送信をスキップする。
+/// Chrome 等 IMM-broken クラスでの主戦略、および `ImmCrossProcessStrategy` が
+/// タイムアウト失敗した際の汎用フォールバックとして機能する。
+/// VK_KANJI はトグルキーのため shadow と目標が一致している場合は送信をスキップする。
 pub(crate) struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
-    fn is_applicable(&self, ctx: &ImeApplyContext<'_>) -> bool {
-        crate::focus::classify::is_imm_bridge_broken(ctx.class_name)
+    fn is_applicable(&self, _ctx: &ImeApplyContext<'_>) -> bool {
+        true // 汎用フォールバック: IMM-broken の主戦略 + ImmCross 失敗時の代替
     }
 
     fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
@@ -89,13 +93,20 @@ impl ImeController {
     }
 
     /// コンテキストに応じた戦略を選択して IME を設定する。
+    ///
+    /// 戦略が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の `SendMessageTimeout` タイムアウト）、
+    /// 次の適用可能な戦略にフォールスルーする。
     pub(crate) fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
         for strategy in self.strategies {
             if strategy.is_applicable(ctx) {
-                return strategy.apply(open, ctx);
+                let outcome = strategy.apply(open, ctx);
+                if outcome != ImeOpenOutcome::Failed {
+                    return outcome;
+                }
+                log::debug!("[apply-ime] strategy failed, trying next fallback");
             }
         }
-        log::warn!("[apply-ime] no applicable strategy for class={}", ctx.class_name);
+        log::warn!("[apply-ime] all strategies failed for class={}", ctx.class_name);
         ImeOpenOutcome::Failed
     }
 }
