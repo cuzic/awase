@@ -100,7 +100,7 @@ use awase_windows::panic_detect::{RapidPressTracker, RAPID_IME_TIMESTAMPS};
 // ── エントリポイント ──
 
 /// アプリケーションを起動する。
-pub fn run() -> Result<()> {
+pub(crate) fn run() -> Result<()> {
     bootstrap::run_all()
 }
 
@@ -378,7 +378,7 @@ pub(self) fn run_message_loop(taskbar_created_msg: u32) {
 // ── アプリケーション機能 ──
 
 /// 設定画面 (awase-settings) を起動する
-pub fn launch_settings() {
+pub(crate) fn launch_settings() {
     let names = if cfg!(windows) {
         vec!["awase-settings.exe"]
     } else {
