@@ -8,7 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::msaa::msaa_classify;
 
-pub use super::class_names::{IMM_BRIDGE_BROKEN_CLASSES, is_imm_bridge_broken};
+pub use super::class_names::AppImeProfile;
 
 /// `WS_EX_NOIME` (0x0040_0000) — IME 入力を受け付けないウィンドウスタイル
 const WS_EX_NOIME: i32 = 0x0040_0000;

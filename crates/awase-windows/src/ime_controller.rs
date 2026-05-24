@@ -12,11 +12,17 @@
 
 use awase::platform::ImeOpenOutcome;
 
+use crate::focus::class_names::AppImeProfile;
+
 /// 戦略が使用するフォーカス情報と現在の IME 状態。
 pub(crate) struct ImeApplyContext<'a> {
-    /// フォーカスウィンドウのクラス名
+    /// フォーカスウィンドウのクラス名（ログ用）
     pub class_name: &'a str,
-    /// 現在の shadow IME ON 状態（`Output::shadow_ime_on()` = `ImeApplyLatch::get_or(false)`）
+    /// フォーカス中アプリの IME 制御プロファイル
+    pub profile: AppImeProfile,
+    /// `apply_ime_open` が最後に OS に送ったコマンド値
+    /// （`Output::last_applied_ime_on()` = `LastAppliedImeState::get_or(false)`）。
+    /// IME 状態の SSOT ではない（SSOT は `Preconditions::ime_on()`）。
     pub shadow_on: bool,
 }
 
@@ -37,7 +43,7 @@ pub(crate) struct ImmCrossProcessStrategy;
 
 impl ImeOpenStrategy for ImmCrossProcessStrategy {
     fn is_applicable(&self, ctx: &ImeApplyContext<'_>) -> bool {
-        !crate::focus::classify::is_imm_bridge_broken(ctx.class_name)
+        ctx.profile.can_use_imm_direct()
     }
 
     fn apply(&self, open: bool, _ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {

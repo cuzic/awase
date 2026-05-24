@@ -78,13 +78,11 @@ impl PlatformRuntime for WindowsPlatform {
     // ── IME ──
 
     fn set_ime_open(&mut self, open: bool) -> bool {
-        // IMM ブリッジ非対応クラス（XamlExplorerHostIslandWindow 等）では
+        // IMM API で直接 open/close できないアプリ（IMM-broken / TSF-native）では
         // get_gui_thread_info + send_ime_control が ~200ms タイムアウトしてブロックする。
-        // これらのウィンドウには cross-process IMM 呼び出しが届かないためスキップする。
-        if let Some((_, class_name)) = self.focus.last_focus_info.as_ref() {
-            if crate::focus::classify::is_imm_bridge_broken(class_name) {
-                return false;
-            }
+        // 早期 return して IMM 経由のクロスプロセス呼び出しをスキップする。
+        if !self.focus.current_app_profile().can_use_imm_direct() {
+            return false;
         }
         unsafe { crate::ime::set_ime_open_cross_process(open) }
     }
@@ -99,7 +97,8 @@ impl PlatformRuntime for WindowsPlatform {
             .map_or("", |(_, c)| c.as_str());
         let ctx = crate::ime_controller::ImeApplyContext {
             class_name,
-            shadow_on: self.output.shadow_ime_on(),
+            profile: self.focus.current_app_profile(),
+            shadow_on: self.output.last_applied_ime_on(),
         };
         CONTROLLER.apply(open, &ctx)
     }
@@ -123,15 +122,14 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})");
             return;
         }
-        // IMM-broken (Chrome/Edge) は apply_ime_open による VK_KANJI トグルで制御する。
-        // VK_DBE_SBCSCHAR/DBCSCHAR を追加送信すると:
+        // VK_KANJI トグルで IME を制御するアプリ（IMM-broken: Chrome/Edge）では
+        // apply_ime_open が既に VK_KANJI を送信済み。VK_DBE_SBCSCHAR/DBCSCHAR を追加送信すると:
         //   OFF 時: VK_KANJI でクローズ直後に VK_DBE_SBCSCHAR が IME を再オープンする恐れがある。
         //   ON 時: VK_KANJI で開いた後に VK_DBE_DBCSCHAR を送ると全角カタカナモードになりかねない。
-        if let Some((_, class_name)) = self.focus.last_focus_info.as_ref() {
-            if crate::focus::classify::is_imm_bridge_broken(class_name) {
-                log::debug!("[engine-state-key] skipped (IMM-broken class={class_name}, VK_KANJI済み)");
-                return;
-            }
+        let profile = self.focus.current_app_profile();
+        if profile.uses_kanji_toggle() {
+            log::debug!("[engine-state-key] skipped (profile={profile:?}, VK_KANJI済み)");
+            return;
         }
         let vk = if enabled { self.engine_on_ime_vk } else { self.engine_off_ime_vk };
         if let Some(vk) = vk {

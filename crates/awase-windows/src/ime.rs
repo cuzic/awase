@@ -55,7 +55,7 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 ///
 /// `WM_IME_CONTROL` が効かない TSF アプリに対して `SendInput(VK_KANJI)` で IME をトグルする。
 ///
-/// VK_KANJI はトグルキーのため **呼び出し元は shadow_ime_on != desired を事前確認すること**。
+/// VK_KANJI はトグルキーのため **呼び出し元は last_applied_ime_on != desired を事前確認すること**。
 /// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが再インターセプトしない
 /// （フック先頭の自己注入チェックで即パススルー、shadow toggle もスキップ）。
 ///
@@ -452,7 +452,7 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     let (is_japanese_ime, _) = keyboard_layout_info();
 
     if !is_japanese_ime {
-        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false), is_imm_bridge_broken: false };
+        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false) };
     }
 
     // GetForegroundWindow() はトップレベルウィンドウを返す。
@@ -461,29 +461,27 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
     //         早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: false };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
     // クラス名を一度取得して both チェックで使い回す。
     let class_name = crate::focus::classify::get_class_name_string(hwnd);
+    let profile = crate::focus::classify::AppImeProfile::from_class_name(&class_name);
 
-    // Alt/Win キーなどで一時的に現れるシステム UI オーバーレイは imc_open=false を返すため
-    // Engine が誤 deactivate される。ime_on=None（既存状態維持）を返して誤検出を防ぐ。
-    if is_tsf_native_window(&class_name) {
-        log::debug!("read_ime_state_fast: transient system overlay → ime_on=None (preserving state)");
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: false };
-    }
-
-    // IMM-broken ウィンドウ（Chrome/Edge: Chrome_WidgetWin_1 等）は IMC_GETOPENSTATUS が常に 0、
-    // IME_CMODE_NATIVE も TSF 管理と非同期で信頼できない。ime_on=None で shadow 状態に委ねる。
-    if crate::focus::classify::is_imm_bridge_broken(&class_name) {
-        log::debug!("read_ime_state_fast: IMM-broken({class_name}) → ime_on=None (shadow preserving)");
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: true };
+    // IMM/TSF いずれの経路でも IMC_GETOPENSTATUS が信頼できないアプリは
+    // ime_on=None を返して shadow 状態に委ねる。
+    // - TsfNative（Alt/Win 一時オーバーレイ等）: imc_open=false で Engine 誤 deactivate
+    // - ImmBroken（Chrome/Edge: Chrome_WidgetWin_1 等）: 常に 0 を返す
+    if !profile.can_read_imm_state() {
+        log::debug!(
+            "read_ime_state_fast: profile={profile:?} class={class_name} → ime_on=None (shadow preserving)"
+        );
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     }
 
     // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: false };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
     let imc_open =
@@ -503,17 +501,17 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         log::debug!("read_ime_state_fast: conv=0x{conv:08X} native={is_native} roman={is_roman}");
     }
 
-    FastImeProbeResult { is_japanese_ime: true, ime_on: imc_open, is_imm_bridge_broken: false }
+    FastImeProbeResult { is_japanese_ime: true, ime_on: imc_open }
 }
 
-/// 高速プローブの結果
+/// 高速プローブの結果。
+///
+/// IMM-broken / TSF-native の判定は `AppKindClassifier::current_app_profile` に集約されており
+/// 本構造体には含まない。`ime_on=None` は「OS から信頼できる値を読めなかった」ことを意味する。
 #[derive(Debug)]
 pub struct FastImeProbeResult {
     pub is_japanese_ime: bool,
     pub ime_on: Option<bool>,
-    /// IMM-broken クラス（Chrome/Edge 等）かどうか。
-    /// true のとき ime_on は常に None（shadow 状態で管理）。
-    pub is_imm_bridge_broken: bool,
 }
 
 // ─── TSF probe helpers ────────────────────────────────────────

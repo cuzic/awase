@@ -15,10 +15,6 @@ use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS
 /// キーイベント処理パイプライン
 pub(super) struct KeyEventPipeline<'a> {
     pub app: &'a mut Runtime,
-    /// `apply_ime_open(false)` が IMM-broken ウィンドウ (Chrome/Edge) で VK_KANJI を送信した。
-    /// 物理キーをそのまま Chrome に届けると VK_KANJI + 物理キーの二重制御になるため、
-    /// `stage_execute` で Decision を Consume に変換して物理キーを消費する。
-    pub(super) should_consume_physical_key: bool,
 }
 
 impl KeyEventPipeline<'_> {
@@ -34,7 +30,7 @@ impl KeyEventPipeline<'_> {
         }
 
         self.stage_focus_probe(&mut event);
-        self.stage_shadow_ime_toggle(&event);
+        let shadow_toggled = self.stage_shadow_ime_toggle(&event);
 
         let ctx = runtime::build_input_context(
             self.app.platform_state.preconditions(),
@@ -44,7 +40,7 @@ impl KeyEventPipeline<'_> {
 
         self.stage_post_decision(&decision, &event);
 
-        self.stage_execute(decision, &event)
+        self.stage_execute(decision, &event, shadow_toggled)
     }
 
     /// フォーカス切替直後の非同期プローブ
@@ -65,7 +61,7 @@ impl KeyEventPipeline<'_> {
         let gji_last_io_ms =
             awase_windows::tsf::observer::with_tsf_obs(awase_windows::tsf::observer::TsfObservations::gji_last_io_ms);
         let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;
-        let shadow_on = self.app.executor.platform.output.shadow_ime_on();
+        let shadow_on = self.app.executor.platform.output.last_applied_ime_on();
 
         win32_async::spawn_local(async move {
             let probe = awase_windows::ime::read_ime_state_fast_async().await;
@@ -84,9 +80,12 @@ impl KeyEventPipeline<'_> {
     }
 
     /// Shadow IME トグル処理
-    fn stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) {
+    ///
+    /// IME ON/OFF が変化したら `true` を返す。`stage_execute` がこの値を見て
+    /// IMM-broken アプリで物理 IME キーを抑止すべきか判定する。
+    fn stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
         if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
-            return;
+            return false;
         }
         let sync_source = event.ime_relevance.sync_direction.map(|a| (a, ShadowSource::SyncKey));
         let phys_source = if self.app.platform_state.is_japanese_ime() {
@@ -95,58 +94,48 @@ impl KeyEventPipeline<'_> {
             None
         };
         let action_with_source = sync_source.or(phys_source);
-        if let Some((action, source)) = action_with_source {
-            let current = self.app.platform_state.ime_on();
-            let new_val = match action {
-                ShadowImeAction::Toggle => !current,
-                ShadowImeAction::TurnOn => true,
-                ShadowImeAction::TurnOff => false,
-            };
-            let ms = hook::current_tick_ms();
-            match source {
-                ShadowSource::SyncKey => self.app.platform_state.write_sync_key(new_val, ms),
-                ShadowSource::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms),
-                _ => {}
-            }
-            self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
-            if self.app.platform_state.ime_on() != current {
-                self.app.platform_state.reset_ime_detect_state();
+        let Some((action, source)) = action_with_source else { return false; };
 
-                // IMM-broken (Chrome/Edge) では ON↔OFF いずれの方向でも VK_KANJI で IME を制御する。
-                // ON→OFF: apply_ime_open(false) がここで VK_KANJI を送信する
-                // OFF→ON: ImeEffect::SetOpen(true) が executor 経由で VK_KANJI を送信する
-                // 物理キー (0xF3/0xF4) が Chrome に届くと VK_KANJI との二重トグルになるため消費する。
-                if self.app.executor.platform.focus.last_focus_info
-                    .as_ref()
-                    .is_some_and(|(_, cls)| awase_windows::focus::classify::is_imm_bridge_broken(cls))
-                {
-                    self.should_consume_physical_key = true;
-                    log::debug!("[shadow-toggle] IMM-broken: physical key flagged for consume (double-send prevention)");
-                }
-
-                // ON→OFF の場合、OS IME を明示的に OFF にする。
-                // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
-                // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
-                // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
-                //
-                // set_ime_open(false) の代わりに apply_ime_open(false) を使う。
-                // IMM-broken (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
-                // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
-                // ここでは latch が true のうちに apply_ime_open を呼ぶことで VK_KANJI が確実に送られる。
-                if !self.app.platform_state.ime_on() {
-                    let _ = self.app.executor.platform.apply_ime_open(false);
-                    self.app.executor.platform.output.set_ime_apply_latch(false);
-                    log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) + latch=false");
-                }
-                log::debug!(
-                    "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
-                    if current { "ON" } else { "OFF" },
-                    if self.app.platform_state.ime_on() { "ON" } else { "OFF" },
-                    event.vk_code.0,
-                    source,
-                );
-            }
+        let current = self.app.platform_state.ime_on();
+        let new_val = match action {
+            ShadowImeAction::Toggle => !current,
+            ShadowImeAction::TurnOn => true,
+            ShadowImeAction::TurnOff => false,
+        };
+        let ms = hook::current_tick_ms();
+        match source {
+            ShadowSource::SyncKey => self.app.platform_state.write_sync_key(new_val, ms),
+            ShadowSource::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms),
+            _ => {}
         }
+        self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
+        if self.app.platform_state.ime_on() == current {
+            return false;
+        }
+        self.app.platform_state.reset_ime_detect_state();
+
+        // ON→OFF の場合、OS IME を明示的に OFF にする。
+        // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
+        // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
+        // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
+        //
+        // set_ime_open(false) の代わりに apply_ime_open(false) を使う。
+        // IMM-broken (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
+        // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
+        // ここでは latch が true のうちに apply_ime_open を呼ぶことで VK_KANJI が確実に送られる。
+        if !self.app.platform_state.ime_on() {
+            let _ = self.app.executor.platform.apply_ime_open(false);
+            self.app.executor.platform.output.set_ime_apply_latch(false);
+            log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) + latch=false");
+        }
+        log::debug!(
+            "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
+            if current { "ON" } else { "OFF" },
+            if self.app.platform_state.ime_on() { "ON" } else { "OFF" },
+            event.vk_code.0,
+            source,
+        );
+        true
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
@@ -171,11 +160,25 @@ impl KeyEventPipeline<'_> {
     }
 
     /// Effects の実行（フックからキューに委譲）
-    fn stage_execute(self, decision: awase::engine::Decision, event: &RawKeyEvent) -> CallbackResult {
-        // IMM-broken (Chrome/Edge) で apply_ime_open が VK_KANJI を送信済みの場合、
-        // 物理 IME キーを Chrome に届けない（VK_KANJI + 物理キーの二重制御防止）。
+    fn stage_execute(
+        self,
+        decision: awase::engine::Decision,
+        event: &RawKeyEvent,
+        shadow_toggled: bool,
+    ) -> CallbackResult {
+        // 物理 IME キー（VK_KANJI 等）を OS に届けないアプリ（IMM-broken: Chrome/Edge）で
+        // shadow が今変化した場合、apply_ime_open が VK_KANJI を送信済み。
+        // 物理キーをそのまま届けると VK_KANJI + 物理キーの二重制御になるため抑止する。
         // PassThrough / PassThroughWith → Consume に変換して reinject/passthrough をスキップする。
-        let decision = if self.should_consume_physical_key {
+        let suppress_physical = shadow_toggled
+            && !self
+                .app
+                .executor
+                .platform
+                .focus
+                .current_app_profile()
+                .should_pass_physical_key();
+        let decision = if suppress_physical {
             match decision {
                 awase::engine::Decision::PassThrough => {
                     log::debug!("[imm-broken] physical IME key consume (was PassThrough, double-send prevented)");

@@ -121,15 +121,16 @@ impl<'a> ImeRefreshPipeline<'a> {
     // ── IMM ブリッジ非対応クラスの判定 ──
 
     fn resolve_skip_imm_query(&self) -> bool {
-        self.rt
+        // IMM API を直接呼べないアプリ（IMM-broken / TSF-native）では
+        // クロスプロセス IMM 問い合わせ（WM_IME_CONTROL）が動作しないか、
+        // 無期限ブロックする恐れがあるためスキップする。
+        !self
+            .rt
             .executor
             .platform
             .focus
-            .last_focus_info
-            .as_ref()
-            .is_some_and(|(_, class_name)| {
-                crate::focus::classify::is_imm_bridge_broken(class_name)
-            })
+            .current_app_profile()
+            .can_use_imm_direct()
     }
 
     // ── フォーカス変更通知 ──
@@ -405,9 +406,9 @@ impl<'a> ImeRefreshPipeline<'a> {
         }
         // フォーカス変更時は VK/TSF いずれも composition context が無効化される。
         log::debug!("[composition] focus change → marking cold");
-        // フォーカス変更直後の IMM 実測値でラッチを初期化する。
-        // これにより KanjiToggleStrategy が次回 apply_ime_open を呼ぶまでの
-        // shadow_on に preconditions の最新値を使えるようになる。
+        // フォーカス変更直後の IMM 実測値で last_applied ログを初期化する。
+        // これにより KanjiToggleStrategy が次回 apply_ime_open を呼ぶときに
+        // preconditions の最新値と比較して重複送信を回避できる。
         self.rt
             .executor
             .platform
@@ -422,15 +423,15 @@ impl<'a> ImeRefreshPipeline<'a> {
         // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
         self.rt.executor.platform.output.send_eager_tsf_warmup();
         log::debug!(
-            "[composition] FocusChange: send_eager_tsf_warmup called (guarded by shadow_ime_on)"
+            "[composition] FocusChange: send_eager_tsf_warmup called (guarded by last_applied_ime_on)"
         );
 
-        // shadow_ime_on=false の場合、新しいウィンドウの IME を明示的に OFF にする。
+        // last_applied_ime_on=false の場合、新しいウィンドウの IME を明示的に OFF にする。
         // Ctrl+無変換 は発火時点のウィンドウにしか set_ime_open を送らないため、
         // 別ウィンドウに移動すると IME が ON のままになるのを防ぐ。
-        if !self.rt.executor.platform.output.shadow_ime_on() {
+        if !self.rt.executor.platform.output.last_applied_ime_on() {
             let _ = self.rt.executor.platform.set_ime_open(false);
-            log::debug!("[composition] FocusChange: set_ime_open(false) called (shadow OFF → enforce IME OFF on new window)");
+            log::debug!("[composition] FocusChange: set_ime_open(false) called (last_applied OFF → enforce IME OFF on new window)");
         }
     }
 
