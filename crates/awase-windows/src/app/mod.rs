@@ -292,7 +292,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
 
 /// フックコールバックの本体。`KeyEventPipeline` に処理を委譲する。
 fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
-    key_pipeline::KeyEventPipeline { app }.run(event)
+    key_pipeline::KeyEventPipeline { app, should_consume_physical_key: false }.run(event)
 }
 
 // ── メッセージループ ──

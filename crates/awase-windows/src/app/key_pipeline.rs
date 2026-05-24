@@ -15,6 +15,10 @@ use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS
 /// キーイベント処理パイプライン
 pub(super) struct KeyEventPipeline<'a> {
     pub app: &'a mut Runtime,
+    /// `apply_ime_open(false)` が IMM-broken ウィンドウ (Chrome/Edge) で VK_KANJI を送信した。
+    /// 物理キーをそのまま Chrome に届けると VK_KANJI + 物理キーの二重制御になるため、
+    /// `stage_execute` で Decision を Consume に変換して物理キーを消費する。
+    should_consume_physical_key: bool,
 }
 
 impl KeyEventPipeline<'_> {
@@ -120,6 +124,16 @@ impl KeyEventPipeline<'_> {
                     let _ = self.app.executor.platform.apply_ime_open(false);
                     self.app.executor.platform.output.set_ime_apply_latch(false);
                     log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) + latch=false");
+                    // IMM-broken (Chrome/Edge) では apply_ime_open が VK_KANJI を送信済み。
+                    // 物理キー (0xF3 等) がこの後 Chrome に届くと二重トグルで IME が再開する。
+                    // stage_execute で Decision を Consume に変換して物理キーを消費する。
+                    if self.app.executor.platform.focus.last_focus_info
+                        .as_ref()
+                        .is_some_and(|(_, cls)| awase_windows::focus::classify::is_imm_bridge_broken(cls))
+                    {
+                        self.should_consume_physical_key = true;
+                        log::debug!("[shadow-toggle] IMM-broken: physical key flagged for consume (double-send prevention)");
+                    }
                 }
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
@@ -155,6 +169,25 @@ impl KeyEventPipeline<'_> {
 
     /// Effects の実行（フックからキューに委譲）
     fn stage_execute(self, decision: awase::engine::Decision, event: &RawKeyEvent) -> CallbackResult {
+        // IMM-broken (Chrome/Edge) で apply_ime_open が VK_KANJI を送信済みの場合、
+        // 物理 IME キーを Chrome に届けない（VK_KANJI + 物理キーの二重制御防止）。
+        // PassThrough / PassThroughWith → Consume に変換して reinject/passthrough をスキップする。
+        let decision = if self.should_consume_physical_key {
+            match decision {
+                awase::engine::Decision::PassThrough => {
+                    log::debug!("[imm-broken] physical IME key consume (was PassThrough, double-send prevented)");
+                    awase::engine::Decision::Consume { effects: vec![] }
+                }
+                awase::engine::Decision::PassThroughWith { effects } => {
+                    log::debug!("[imm-broken] physical IME key consume (was PassThroughWith, double-send prevented)");
+                    awase::engine::Decision::Consume { effects }
+                }
+                other => other,
+            }
+        } else {
+            decision
+        };
+
         let hook_result = self.app.executor.execute_from_hook(decision, event);
 
         if hook_result.has_pending {
