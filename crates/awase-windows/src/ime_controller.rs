@@ -13,7 +13,7 @@
 //! ## アーキテクチャ制約
 //! このモジュールは観測値を自ら読んではいけない。
 //! すべての観測値は `ImeControlView` 経由で受け取ること。
-//! `crate::tsf::observer::aggregator::*` / `TSF_OBS` への直接アクセス禁止。
+//! `crate::tsf::observer::tsf_obs()` の直接呼び出し禁止（スナップショット経由で受け取ること）。
 
 use awase::platform::ImeOpenOutcome;
 

@@ -139,36 +139,13 @@ impl TsfObservations {
 
 pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 
-/// 観測集約層向けの read/write API。
+/// `TsfObservations` グローバルへの参照を返す。
 ///
-/// 決定層（`ime_controller`, `app::key_pipeline` 等）から直接呼び出してはいけない。
-/// 観測値はスナップショット構造体（`ImeObservationSnapshot`, `FocusProbeSnapshot`）に
-/// 集約してから決定層へ渡すこと。
-pub mod aggregator {
-    use super::TSF_OBS;
-    use std::sync::atomic::Ordering::Relaxed;
-
-    pub fn gji_last_io_ms() -> u64 {
-        TSF_OBS.gji_last_io_ms.load(Relaxed)
-    }
-    pub fn gji_monitor_ok() -> bool {
-        TSF_OBS.gji_monitor_ok.load(std::sync::atomic::Ordering::Acquire)
-    }
-    pub fn gji_candidate_visible() -> bool {
-        TSF_OBS.gji_candidate_visible.load(Relaxed)
-    }
-    pub fn gji_candidate_show_seq() -> u32 {
-        TSF_OBS.gji_candidate_show_seq.load(Relaxed)
-    }
-    pub fn focus_namechange_seq() -> u32 {
-        TSF_OBS.focus_namechange_seq.load(Relaxed)
-    }
-    pub fn reset_focus_namechange_seq() {
-        TSF_OBS.focus_namechange_seq.store(0, Relaxed);
-    }
-    pub fn composition_probe_seq_atomic() -> &'static std::sync::atomic::AtomicU32 {
-        &TSF_OBS.composition_probe_seq
-    }
+/// `tsf/` 外から TSF/GJI 観測値を読む唯一の正規ルート。
+/// 判断層（`ime_controller` 等）は `ObservedState::capture_now()` 経由で読むこと。
+/// `output/` の live シーケンスカウンタ読み取りはこのアクセサを直接使う（スナップショット不可）。
+pub(crate) fn tsf_obs() -> &'static TsfObservations {
+    &TSF_OBS
 }
 
 

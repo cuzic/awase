@@ -213,7 +213,7 @@ struct FocusProbeSnapshot {
 impl FocusProbeSnapshot {
     fn capture() -> Self {
         Self {
-            gji_last_io_ms: awase_windows::tsf::observer::aggregator::gji_last_io_ms(),
+            gji_last_io_ms: awase_windows::tsf::observer::tsf_obs().gji_last_io_ms(),
         }
     }
 }

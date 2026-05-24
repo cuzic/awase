@@ -90,24 +90,30 @@ impl PlatformRuntime for WindowsPlatform {
     fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
         static CONTROLLER: crate::ime_controller::ImeController =
             crate::ime_controller::ImeController::new();
+        let view = self.build_ime_control_view();
+        CONTROLLER.apply(open, &view)
+    }
+
+    /// `apply_ime_open` 用の `ImeControlView` を構築する。
+    ///
+    /// `WindowsPlatform` が `focus`, `output` の両方を持つため、
+    /// 3 ソース（フォーカス分類・観測値・制御ログ）を一箇所で組み立てられる。
+    fn build_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
         let class_name = self
             .focus
             .last_focus_info
             .as_ref()
             .map_or("", |(_, c)| c.as_str());
-        let view = crate::state::ImeControlView {
+        crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
                 profile: self.focus.current_app_profile(),
             },
-            observed: crate::state::ObservedState {
-                candidate_visible: crate::tsf::observer::aggregator::gji_candidate_visible(),
-            },
+            observed: crate::state::ObservedState::capture_now(),
             control: crate::state::ControlLog {
                 shadow_on: self.output.last_applied_ime_on(),
             },
-        };
-        CONTROLLER.apply(open, &view)
+        }
     }
 
     fn post_ime_refresh(&mut self) {

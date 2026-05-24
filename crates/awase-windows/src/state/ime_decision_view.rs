@@ -23,11 +23,35 @@ pub(crate) struct FocusFacts<'a> {
 }
 
 /// OS から直接観測した揮発性状態（tick 境界でアトミックをロードしてスナップショット化）。
-#[derive(Clone, Copy)]
+///
+/// 判断層はこの型を通じて観測値を受け取ること。
+/// `crate::tsf::observer::tsf_obs()` を判断コードから直接呼んではいけない。
+/// スナップショット化が必要でない live 読み取り（`output/` のシーケンスカウンタ等）は
+/// `tsf_obs()` を直接使う別カテゴリであり、この型の対象外。
+#[derive(Clone, Copy, Default)]
 pub(crate) struct ObservedState {
     /// TSF/GJI: `GoogleJapaneseInputCandidateWindow` が現在表示中かどうか。
     /// EVENT_OBJECT_SHOW/HIDE で更新されるアトミック値のスナップショット。
     pub candidate_visible: bool,
+    /// GJI プロセスの最終 I/O 変化時刻 (ms)。0 = 未観測。
+    /// フォーカスプローブの grace 期間判定に使用する。
+    pub gji_last_io_ms: u64,
+    /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
+    pub gji_monitor_ok: bool,
+}
+
+impl ObservedState {
+    /// 現時点の TSF/GJI 観測値を全フィールドに一括ロードして返す（tick 境界スナップショット）。
+    ///
+    /// 判断サイトはこのメソッドで 1 回スナップショットを取り、以降は `&ObservedState` を参照する。
+    pub(crate) fn capture_now() -> Self {
+        let obs = crate::tsf::observer::tsf_obs();
+        Self {
+            candidate_visible: obs.gji_candidate_visible(),
+            gji_last_io_ms:    obs.gji_last_io_ms(),
+            gji_monitor_ok:    obs.gji_monitor_ok(),
+        }
+    }
 }
 
 /// `apply_ime_open` が最後に OS に送ったコマンド値（制御ログ）。
@@ -50,7 +74,7 @@ pub(crate) struct ControlLog {
 /// ## アーキテクチャ制約
 /// このビューを利用するコードは観測値を自ら読んではいけない。
 /// すべての観測値はこの型を通じて受け取ること。
-/// `crate::tsf::observer::aggregator::*` / `TSF_OBS` への直接アクセス禁止。
+/// `crate::tsf::observer::tsf_obs()` の直接呼び出し禁止（スナップショット経由で受け取ること）。
 #[derive(Clone, Copy)]
 pub(crate) struct ImeControlView<'a> {
     /// フォーカス分類（長期観測）
