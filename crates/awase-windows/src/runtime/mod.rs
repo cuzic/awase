@@ -494,7 +494,7 @@ impl Runtime {
     /// Sync key 後に遅延されたキーを再処理する。
     ///
     /// sync key で guard が起動された後、KeyUp で OS が IME を切り替えてから呼ばれる。
-    /// guard 解除 → IME 状態 refresh → バッファキー再処理。
+    /// guard 解除 → IME 状態 refresh → Engine 通知 → バッファキー再処理。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
         // Guard を解除
@@ -516,6 +516,27 @@ impl Runtime {
         };
         self.platform_state.apply_ime_update(&observer_out);
         self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
+
+        // ImeApplyLatch を OS 観測値に同期する。
+        // 物理 Kanji キー（sync key）は apply_ime_open を経由しないためラッチが更新されない。
+        // ラッチが stale なまま Engine が activate → SetOpen(true) → KanjiToggleStrategy が
+        // shadow_on(false) != desired(true) と判定して VK_KANJI を余分に送信し、
+        // Chrome では IME が逆転するバグを防ぐ。
+        let observed_ime_on = self.platform_state.ime_on();
+        self.executor.platform.output.set_ime_apply_latch(observed_ime_on);
+        log::debug!("[process-deferred] latch → {observed_ime_on} (sync with OS poll)");
+
+        // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。
+        // suppress_engine_state_key = true: sync key（Kanji 等）がすでに IME を正しい状態に
+        // 設定しているため、engine_on/off_ime_key（VK_DBE_DBCSCHAR 等）を追加送信しない。
+        // 送ると IME モードが ひらがな→全角英数 等に意図せず変わる可能性がある。
+        {
+            let ctx = self.build_ctx();
+            let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
+            self.executor.platform.suppress_engine_state_key = true;
+            self.executor.execute_from_loop(decision);
+            self.executor.platform.suppress_engine_state_key = false;
+        }
 
         // Drain deferred keys from Platform gate
         let keys = self.platform_state.ime_gate.drain_all();
