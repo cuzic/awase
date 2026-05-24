@@ -4,6 +4,7 @@
 //! フックコールバック本体から `KeyEventPipeline::run` を呼ぶことで
 //! 同じ動作をより読みやすい形で表現する。
 
+use awase::platform::PlatformRuntime;
 use awase::types::{RawKeyEvent, ShadowImeAction};
 use awase_windows::hook;
 use awase_windows::runtime;

@@ -9,16 +9,16 @@ use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFH
 
 // ─── IME 制御メッセージ・定数 ────────────────────────────────────
 
-pub const WM_IME_CONTROL: u32 = 0x0283;
-pub const IMC_GETOPENSTATUS: usize = 0x0005;
-pub const IMC_SETOPENSTATUS: usize = 0x0006;
-pub const IMC_GETCONVERSIONMODE: usize = 0x0001;
-pub const IMC_SETCONVERSIONMODE: usize = 0x0002;
+pub(crate) const WM_IME_CONTROL: u32 = 0x0283;
+pub(crate) const IMC_GETOPENSTATUS: usize = 0x0005;
+pub(crate) const IMC_SETOPENSTATUS: usize = 0x0006;
+pub(crate) const IMC_GETCONVERSIONMODE: usize = 0x0001;
+pub(crate) const IMC_SETCONVERSIONMODE: usize = 0x0002;
 
 /// ローマ字入力モードフラグ（0x0010）
-pub const IME_CMODE_ROMAN: u32 = 0x0010;
+pub(crate) const IME_CMODE_ROMAN: u32 = 0x0010;
 /// 日本語ネイティブ入力モードフラグ（0x0001）
-pub const IME_CMODE_NATIVE: u32 = 0x0001;
+pub(crate) const IME_CMODE_NATIVE: u32 = 0x0001;
 
 // ─── RAII コンテキストガード ─────────────────────────────────────
 
@@ -26,7 +26,7 @@ pub const IME_CMODE_NATIVE: u32 = 0x0001;
 ///
 /// `new()` で取得し、`Drop` で自動リリースする。
 /// `himc.is_invalid()` の場合は `None` を返す。
-pub struct ImmContextGuard {
+pub(crate) struct ImmContextGuard {
     hwnd: HWND,
     himc: HIMC,
 }
@@ -34,12 +34,12 @@ pub struct ImmContextGuard {
 impl ImmContextGuard {
     /// # Safety
     /// `hwnd` は有効なウィンドウハンドルでなければならない。
-    pub unsafe fn new(hwnd: HWND) -> Option<Self> {
+    pub(crate) unsafe fn new(hwnd: HWND) -> Option<Self> {
         let himc = unsafe { ImmGetContext(hwnd) };
         if himc.is_invalid() { None } else { Some(Self { hwnd, himc }) }
     }
 
-    pub fn himc(&self) -> HIMC {
+    pub(crate) fn himc(&self) -> HIMC {
         self.himc
     }
 }
@@ -58,7 +58,7 @@ impl Drop for ImmContextGuard {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-pub unsafe fn get_ime_wnd(hwnd: HWND) -> Option<HWND> {
+pub(crate) unsafe fn get_ime_wnd(hwnd: HWND) -> Option<HWND> {
     crate::win32::non_null_hwnd(unsafe { ImmGetDefaultIMEWnd(hwnd) })
 }
 
@@ -70,7 +70,7 @@ pub unsafe fn get_ime_wnd(hwnd: HWND) -> Option<HWND> {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-pub unsafe fn send_ime_control(
+pub(crate) unsafe fn send_ime_control(
     ime_wnd: HWND,
     cmd: usize,
     lparam: isize,

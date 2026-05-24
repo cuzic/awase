@@ -39,13 +39,13 @@ enum WarmupKind {
     /// `remaining == 0 &&  requires_settle`: F2 再送 + 500ms 待機（settle なし）
     ProbeWithSettle,
     /// `remaining > 0`: eager 起点でそのまま probe（NAMECHANGE 確認付き）
-    ReWarmup { remaining_ms: u64 },
+    ReWarmup,
 }
 
 impl WarmupKind {
     fn from_context(remaining: u64, requires_settle: bool) -> Self {
         if remaining > 0 {
-            Self::ReWarmup { remaining_ms: remaining }
+            Self::ReWarmup
         } else if requires_settle {
             Self::ProbeWithSettle
         } else {
@@ -72,7 +72,7 @@ struct WarmupContext {
 /// 即座に実行できる部分（F2 送信等）は完了済み。
 /// 残りの待機はタイマー（TIMER_TSF_PROBE）で `TsfReadinessProbe::check_now` を
 /// ポーリングすることで行う。
-pub struct WarmupStarted {
+pub(crate) struct WarmupStarted {
     /// GJI 静止プローブ
     pub probe: crate::tsf::probe::TsfReadinessProbe,
     /// probe の最大待機時間 (ms, warmup_sent_ms 起点)
@@ -91,13 +91,13 @@ pub struct WarmupStarted {
 ///
 /// `run_start()` を呼ぶと即座に実行できる部分（F2 送信等）を行い [`WarmupStarted`] を返す。
 /// `run()` は旧来のブロッキング API（テスト互換用）。
-pub struct ColdWarmupSequence<'a> {
+pub(crate) struct ColdWarmupSequence<'a> {
     output: &'a Output,
 }
 
 impl<'a> ColdWarmupSequence<'a> {
     /// 新しいシーケンスを生成する。
-    pub fn new(output: &'a Output) -> Self {
+    pub(crate) fn new(output: &'a Output) -> Self {
         Self { output }
     }
 
@@ -105,7 +105,7 @@ impl<'a> ColdWarmupSequence<'a> {
     ///
     /// 即座に実行できる部分（F2 送信、IMM32 設定等）を行い [`WarmupStarted`] を返す。
     /// 残りの GJI 静止待ちは TIMER_TSF_PROBE + `TsfReadinessProbe::check_now` で行う。
-    pub fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
+    pub(crate) fn run_start(&self, session_expired: bool, elapsed_ms: u64) -> WarmupStarted {
         let ctx = self.preamble(session_expired, elapsed_ms);
 
         if session_expired {
@@ -278,7 +278,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     cold_reason: ctx.cold_reason,
                 }
             }
-            WarmupKind::ReWarmup { remaining_ms: _ } => {
+            WarmupKind::ReWarmup => {
                 // eager_probe_with_settle: eager_ms 起点のプローブ（NAMECHANGE チェックが必要）
                 log::debug!(
                     "[h1-warmup] cold={} eager: elapsed={}ms → probe start (budget={}ms from warmup)",

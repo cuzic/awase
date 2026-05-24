@@ -13,7 +13,7 @@
 use awase::platform::ImeOpenOutcome;
 
 /// 戦略が使用するフォーカス情報と現在の IME 状態。
-pub struct ImeApplyContext<'a> {
+pub(crate) struct ImeApplyContext<'a> {
     /// フォーカスウィンドウのクラス名
     pub class_name: &'a str,
     /// 現在の shadow IME ON 状態（`Output::shadow_ime_on()` = `ImeApplyLatch::get_or(false)`）
@@ -21,7 +21,7 @@ pub struct ImeApplyContext<'a> {
 }
 
 /// IME ON/OFF を実行する戦略インターフェース。
-pub trait ImeOpenStrategy: Sync {
+pub(crate) trait ImeOpenStrategy: Sync {
     /// このコンテキストで戦略が有効かどうか。
     fn is_applicable(&self, ctx: &ImeApplyContext<'_>) -> bool;
     /// IME を指定状態に設定しその結果を返す。
@@ -33,7 +33,7 @@ pub trait ImeOpenStrategy: Sync {
 /// `ImmSetOpenStatus`（cross-process）を使う標準戦略。
 ///
 /// IMM-bridge が機能しているウィンドウにのみ適用可能。
-pub struct ImmCrossProcessStrategy;
+pub(crate) struct ImmCrossProcessStrategy;
 
 impl ImeOpenStrategy for ImmCrossProcessStrategy {
     fn is_applicable(&self, ctx: &ImeApplyContext<'_>) -> bool {
@@ -56,7 +56,7 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// Chrome 等 IMM-broken クラスでの主戦略、および `ImmCrossProcessStrategy` が
 /// タイムアウト失敗した際の汎用フォールバックとして機能する。
 /// VK_KANJI はトグルキーのため shadow と目標が一致している場合は送信をスキップする。
-pub struct KanjiToggleStrategy;
+pub(crate) struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
     fn is_applicable(&self, _ctx: &ImeApplyContext<'_>) -> bool {
@@ -78,7 +78,7 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
 // ── ImeController ────────────────────────────────────────────────
 
 /// 戦略リストを走査して最初の有効な戦略を選択・実行するコントローラ。
-pub struct ImeController {
+pub(crate) struct ImeController {
     strategies: [&'static dyn ImeOpenStrategy; 2],
 }
 
@@ -86,7 +86,7 @@ static IMM_STRATEGY: ImmCrossProcessStrategy = ImmCrossProcessStrategy;
 static KANJI_STRATEGY: KanjiToggleStrategy = KanjiToggleStrategy;
 
 impl ImeController {
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             strategies: [&IMM_STRATEGY, &KANJI_STRATEGY],
         }
@@ -96,7 +96,7 @@ impl ImeController {
     ///
     /// 戦略が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の `SendMessageTimeout` タイムアウト）、
     /// 次の適用可能な戦略にフォールスルーする。
-    pub fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
+    pub(crate) fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
         for strategy in self.strategies {
             if strategy.is_applicable(ctx) {
                 let outcome = strategy.apply(open, ctx);
