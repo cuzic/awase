@@ -17,10 +17,10 @@ use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
 use awase::types::{RawKeyEvent, VkCode};
 
-use awase_windows::hook::CallbackResult;
-use awase_windows::ime;
-use awase_windows::runtime;
-use awase_windows::{
+use crate::hook::CallbackResult;
+use crate::ime;
+use crate::runtime;
+use crate::{
     Runtime, WM_DRAIN_OUTPUT_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
@@ -95,7 +95,7 @@ impl Drop for HotKeyGuard {
     }
 }
 
-use awase_windows::panic_detect::{RapidPressTracker, RAPID_IME_TIMESTAMPS};
+use crate::panic_detect::{RapidPressTracker, RAPID_IME_TIMESTAMPS};
 
 // ── エントリポイント ──
 
@@ -161,7 +161,7 @@ pub(crate) fn run() -> Result<()> {
     let parsed: Vec<ParsedKeyCombo> = keys
         .iter()
         .filter_map(|s| {
-            awase_windows::vk::parse_key_combo(s).or_else(|| {
+            crate::vk::parse_key_combo(s).or_else(|| {
                 diag.warn(format!("{label} のパースに失敗しました: {s}"));
                 None
             })
@@ -179,7 +179,7 @@ pub(crate) fn run() -> Result<()> {
     let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<VkCode> {
         keys.iter()
             .filter_map(|s| {
-                awase_windows::vk::vk_name_to_code(s).or_else(|| {
+                crate::vk::vk_name_to_code(s).or_else(|| {
                     diag.warn(format!("keys.ime_detect.{label} のパースに失敗しました: {s}"));
                     None
                 })
@@ -211,7 +211,7 @@ pub(crate) fn run() -> Result<()> {
             log::info!("N-gram model loaded from {}", ngram_path.display());
             let _ = with_app(|app| {
                 // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
-                let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
+                let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
                 app.engine.on_command(
                     awase::engine::EngineCommand::SetNgramModel(model),
                     &runtime::build_input_context(
@@ -257,16 +257,16 @@ fn check_keyboard_layout_on_change() {
 /// # Safety
 /// Win32 キーボードフックコールバックはメインスレッドで呼ばれる。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    if awase_windows::OUTPUT_GATE.is_active() {
+    if crate::OUTPUT_GATE.is_active() {
         log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
-        awase_windows::INPUT_DEFER.defer_during_output(event);
+        crate::INPUT_DEFER.defer_during_output(event);
         return CallbackResult::Consumed;
     }
     // OUTPUT_GATE.active=false だがキューに未 drain エントリがある場合、
     // 対応 KeyDown が drain 待ちの間に KeyUp が届いた（drain race）。
     // drain で synthetic KeyUp が注入されるが、念のためログを残す。
     if matches!(event.event_type, awase::types::KeyEventType::KeyUp) {
-        if let Some(len) = awase_windows::INPUT_DEFER.pending_len_nonblocking() {
+        if let Some(len) = crate::INPUT_DEFER.pending_len_nonblocking() {
             if len > 0 {
                 log::debug!(
                     "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {len} item(s) (OUTPUT_GATE.active=false)",
@@ -285,7 +285,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             "[with-app-reentry] queuing vk=0x{:02X} {:?} (IN_WITH_APP, defer to drain)",
             event.vk_code.0, event.event_type,
         );
-        awase_windows::INPUT_DEFER.defer_during_with_app(event);
+        crate::INPUT_DEFER.defer_during_with_app(event);
         CallbackResult::Consumed
     })
 }
@@ -445,7 +445,7 @@ fn reload_config() {
 
     let _ = with_app(|app| {
         // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
-        let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
+        let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
         app.engine.on_command(
             awase::engine::EngineCommand::UpdateFsmParams {
                 threshold_ms: config.general.simultaneous_threshold_ms,
@@ -483,7 +483,7 @@ fn reload_config() {
             app.sync_on_keys.clone_from(&on);
             app.sync_off_keys.clone_from(&off);
             // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
-            let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
+            let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
             app.engine.on_command(
                 awase::engine::EngineCommand::ReloadKeys {
                     special: SpecialKeyCombos {
@@ -503,8 +503,8 @@ fn reload_config() {
     }
 
     let _ = with_app(|app| {
-        app.executor.platform.focus.overrides = awase_windows::focus::classifier::ForceOverrides::new(config.app_overrides);
-        app.executor.platform.focus.cache = awase_windows::focus::cache::FocusCache::new();
+        app.executor.platform.focus.overrides = crate::focus::classifier::ForceOverrides::new(config.app_overrides);
+        app.executor.platform.focus.cache = crate::focus::cache::FocusCache::new();
     });
     log::info!("App overrides reloaded");
     log::info!("Config reloaded successfully");

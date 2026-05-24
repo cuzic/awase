@@ -6,11 +6,11 @@
 
 use awase::platform::PlatformRuntime;
 use awase::types::{RawKeyEvent, ShadowImeAction};
-use awase_windows::hook;
-use awase_windows::runtime;
-use awase_windows::hook::CallbackResult;
-use awase_windows::win32::{post_to_main_thread};
-use awase_windows::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+use crate::hook;
+use crate::runtime;
+use crate::hook::CallbackResult;
+use crate::win32::{post_to_main_thread};
+use crate::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 
 /// キーイベント処理パイプライン
 pub(super) struct KeyEventPipeline<'a> {
@@ -58,14 +58,14 @@ impl KeyEventPipeline<'_> {
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
-        let obs = FocusProbeSnapshot::capture();
+        let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;
         let shadow_on = self.app.executor.platform.output.last_applied_ime_on();
 
         win32_async::spawn_local(async move {
-            let probe = awase_windows::ime::read_ime_state_fast_async().await;
-            let _ = awase_windows::with_app(|app| {
+            let probe = crate::ime::read_ime_state_fast_async().await;
+            let _ = crate::with_app(|app| {
                 apply_focus_probe_to_app(
                     app,
                     probe,
@@ -203,20 +203,6 @@ impl KeyEventPipeline<'_> {
     }
 }
 
-/// フォーカス変更直後の非同期プローブに渡すスナップショット。
-/// 観測値の読み取りは `capture()` に集約し、決定層はフィールドのみ参照する。
-struct FocusProbeSnapshot {
-    pub gji_last_io_ms: u64,
-}
-
-impl FocusProbeSnapshot {
-    fn capture() -> Self {
-        Self {
-            gji_last_io_ms: awase_windows::tsf::observer::tsf_obs().gji_last_io_ms(),
-        }
-    }
-}
-
 /// フォーカスプローブの IME 更新抑制シグナルをまとめた値
 struct FocusProbeGraceFlags {
     warmup_grace_active: bool,
@@ -255,7 +241,7 @@ const fn compute_focus_probe_grace(
     } else {
         u64::MAX
     };
-    let warmup_grace_active = warmup_elapsed < awase_windows::tuning::WARMUP_GRACE_MS;
+    let warmup_grace_active = warmup_elapsed < crate::tuning::WARMUP_GRACE_MS;
 
     let gji_active_after_focus = gji_last_io_ms > 0 && gji_last_io_ms >= last_focus_change_ms;
     let gji_idle_ms = if gji_last_io_ms > 0 {
@@ -263,9 +249,9 @@ const fn compute_focus_probe_grace(
     } else {
         u64::MAX
     };
-    let gji_grace_active = gji_active_after_focus && gji_idle_ms < awase_windows::tuning::GJI_SETTLE_GRACE_MS;
+    let gji_grace_active = gji_active_after_focus && gji_idle_ms < crate::tuning::GJI_SETTLE_GRACE_MS;
 
-    let shadow_grace_active = shadow_on && probe_age_ms < awase_windows::tuning::SHADOW_GRACE_MS;
+    let shadow_grace_active = shadow_on && probe_age_ms < crate::tuning::SHADOW_GRACE_MS;
 
     FocusProbeGraceFlags { warmup_grace_active, gji_grace_active, shadow_grace_active, warmup_elapsed, gji_idle_ms }
 }
@@ -304,7 +290,7 @@ fn build_ime_on_suffix(
 #[allow(clippy::needless_pass_by_value, clippy::option_if_let_else)]
 fn apply_focus_probe_to_app(
     app: &mut Runtime,
-    probe: awase_windows::ime::FastImeProbeResult,
+    probe: crate::ime::FastImeProbeResult,
     probe_started_ms: u64,
     warmup_ms: u64,
     gji_last_io_ms: u64,

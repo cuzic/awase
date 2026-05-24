@@ -12,14 +12,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use awase::types::{ContextChange, FocusKind};
-use awase_windows::focus::cache::DetectionSource;
-use awase_windows::hook;
-use awase_windows::runtime;
-use awase_windows::{
+use crate::focus::cache::DetectionSource;
+use crate::hook;
+use crate::runtime;
+use crate::{
     Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD,
     TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, with_app, with_app_ref,
 };
-use awase_windows::tray;
+use crate::tray;
 
 use super::{check_keyboard_layout_on_change, launch_settings, on_key_event_impl, reload_config};
 
@@ -61,7 +61,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
                     "[tsf-gate-timeout] draining {} held keys via INPUT_DEFER",
                     held.len()
                 );
-                awase_windows::INPUT_DEFER.replay_later(held);
+                crate::INPUT_DEFER.replay_later(held);
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
@@ -69,7 +69,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             static PING_SENT_AT: AtomicU64 = AtomicU64::new(0);
             let ping_sent = PING_SENT_AT.load(Ordering::Relaxed);
             let last_activity = app.platform_state.last_hook_activity_ms
-                .max(awase_windows::OUTPUT_GATE.last_vk_output_ms_val());
+                .max(crate::OUTPUT_GATE.last_vk_output_ms_val());
 
             if ping_sent > 0 && last_activity < ping_sent {
                 let stale_ms = hook::current_tick_ms() - last_activity;
@@ -94,7 +94,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         }
         Some(timer_id) => {
             log::debug!("WM_TIMER fired: logical_id={timer_id}");
-            let modifiers = unsafe { awase_windows::observer::focus_observer::read_os_modifiers() };
+            let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
             let ctx = runtime::build_input_context(
                 app.platform_state.belief(),
                 &modifiers,
@@ -281,7 +281,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
     let queue = {
-        let mut events = awase_windows::INPUT_DEFER.take_all();
+        let mut events = crate::INPUT_DEFER.take_all();
         let _ = with_app(|app| {
             for ev in &mut events {
                 app.enrich_ime_relevance(ev);
