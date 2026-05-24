@@ -1,11 +1,20 @@
 //! observation 層 — GJI I/O モニタリングと WinEvent 由来の観測値を一元管理する。
 //!
-//! ここにあるグローバルは書き込み元が限定されている:
+//! ## アクセス制御
+//!
+//! [`TSF_OBS`] は `pub(in crate::tsf)` のためこのモジュール外から直接アクセス不可（コンパイルエラー）。
+//! `tsf/` 外のコードは [`tsf_obs()`] 経由でのみ読み取れる。
+//!
+//! 判断層（`ime_controller` 等）は [`ObservedState::capture_now()`] 経由のスナップショットを使うこと。
+//! 直接 [`tsf_obs()`] を呼んではいけない（tick 境界外での非一貫観測の防止）。
+//!
+//! ## 書き込み元
+//!
 //! - `GjiMonitor` バックグラウンドスレッド → `TSF_OBS.gji_last_io_ms`, `TSF_OBS.gji_monitor_ok`
 //! - `observation_event_proc` → `TSF_OBS.gji_candidate_visible`,
 //!   `TSF_OBS.gji_candidate_show_seq`, `TSF_OBS.focus_namechange_seq`, `TSF_OBS.composition_probe_seq`
 //!
-//! 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
+//! [`ObservedState::capture_now()`]: crate::state::ime_decision_view::ObservedState::capture_now
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -137,13 +146,35 @@ impl TsfObservations {
     }
 }
 
+/// TSF/GJI 観測値グローバル。
+///
+/// ## アクセス制御（コンパイルガード）
+///
+/// `pub(in crate::tsf)` により `tsf/` 外からの直接アクセスはコンパイルエラーになる。
+/// `tsf/` 外（`output/`, `runtime/`, etc.）は必ず [`tsf_obs()`] 経由で読み取ること。
+///
+/// ## 書き込み元
+///
+/// - `GjiMonitor` バックグラウンドスレッド → `gji_last_io_ms`, `gji_monitor_ok`
+/// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show_seq`,
+///   `focus_namechange_seq`, `composition_probe_seq`
 pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 
 /// `TsfObservations` グローバルへの参照を返す。
 ///
 /// `tsf/` 外から TSF/GJI 観測値を読む唯一の正規ルート。
-/// 判断層（`ime_controller` 等）は `ObservedState::capture_now()` 経由で読むこと。
-/// `output/` の live シーケンスカウンタ読み取りはこのアクセサを直接使う（スナップショット不可）。
+///
+/// ## 呼び出し可能なレイヤー
+///
+/// - `output/` — action 層: live シーケンスカウンタ読み取り（スナップショット不可のため直読）
+/// - `runtime/` — observe/poll 層: IME リフレッシュ中の GJI I/O ガード判定
+/// - `state::ime_decision_view` — `ObservedState::capture_now()` の実装元
+/// - `app::key_pipeline` — フォーカスプローブ結果の構築
+///
+/// ## 呼び出し禁止レイヤー
+///
+/// 判断層（`ime_controller` 等）は `ObservedState::capture_now()` 経由のスナップショットを使うこと。
+/// `tsf_obs()` を直接呼ぶと tick 境界外での非一貫観測が混入する恐れがある。
 pub(crate) fn tsf_obs() -> &'static TsfObservations {
     &TSF_OBS
 }
