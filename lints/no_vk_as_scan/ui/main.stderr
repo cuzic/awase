@@ -1,0 +1,10 @@
+warning: constructing `ScanCode` from a `VkCode` value — these are separate numeric namespaces; their values coincidentally overlap
+  --> $DIR/main.rs:29:13
+   |
+LL |     let _ = ScanCode::new(u32::from(vk.as_u16())); //~ WARN constructing `ScanCode` from a `VkCode` value
+   |             ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(no_vk_as_scan)]` on by default
+
+warning: 1 warning emitted
+
