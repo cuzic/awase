@@ -452,7 +452,7 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     let (is_japanese_ime, _) = keyboard_layout_info();
 
     if !is_japanese_ime {
-        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false) };
+        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false), is_imm_bridge_broken: false };
     }
 
     // GetForegroundWindow() はトップレベルウィンドウを返す。
@@ -461,29 +461,36 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
     //         早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: false };
     };
+
+    // クラス名を一度取得して both チェックで使い回す。
+    let class_name = crate::focus::classify::get_class_name_string(hwnd);
 
     // Alt/Win キーなどで一時的に現れるシステム UI オーバーレイは imc_open=false を返すため
     // Engine が誤 deactivate される。ime_on=None（既存状態維持）を返して誤検出を防ぐ。
-    if is_transient_system_overlay(hwnd) {
+    if is_tsf_native_window(&class_name) {
         log::debug!("read_ime_state_fast: transient system overlay → ime_on=None (preserving state)");
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: false };
+    }
+
+    // IMM-broken ウィンドウ（Chrome/Edge: Chrome_WidgetWin_1 等）は IMC_GETOPENSTATUS が常に 0、
+    // IME_CMODE_NATIVE も TSF 管理と非同期で信頼できない。ime_on=None で shadow 状態に委ねる。
+    if crate::focus::classify::is_imm_bridge_broken(&class_name) {
+        log::debug!("read_ime_state_fast: IMM-broken({class_name}) → ime_on=None (shadow preserving)");
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: true };
     }
 
     // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
-        // IMM ブリッジなし（Chrome/UWP 等）→ 検出不能
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
+        return FastImeProbeResult { is_japanese_ime: true, ime_on: None, is_imm_bridge_broken: false };
     };
 
-    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
-    //         タイムアウト 20ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
-    let ime_on =
+    let imc_open =
         unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 20) }
             .map(|v| v != 0);
 
-    // conversion mode → 診断ログのみ（is_romaji 更新は read_ime_state_full に委ねる）
+    // 通常パス: conversion mode → 診断ログのみ（is_romaji 更新は read_ime_state_full に委ねる）
     // IMM32 ブリッジは WezTerm 等の TSF アプリでローマ字モードでも ROMAN ビットを
     // 報告しないことがある。ROMAN ビット不在を「かな入力」と断定するのは誤検出を招く。
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。タイムアウト 20ms 付き。
@@ -496,7 +503,7 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         log::debug!("read_ime_state_fast: conv=0x{conv:08X} native={is_native} roman={is_roman}");
     }
 
-    FastImeProbeResult { is_japanese_ime: true, ime_on }
+    FastImeProbeResult { is_japanese_ime: true, ime_on: imc_open, is_imm_bridge_broken: false }
 }
 
 /// 高速プローブの結果
@@ -504,19 +511,9 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
 pub struct FastImeProbeResult {
     pub is_japanese_ime: bool,
     pub ime_on: Option<bool>,
-}
-
-/// IMM32 を使わず TSF ネイティブ動作するウィンドウクラスか判定する。
-///
-/// 対象:
-/// - Alt/Win キーで一時表示されるシステム UI オーバーレイ（CoreWindow 等）
-/// - Windows Terminal の CASCADIA_HOSTING_WINDOW_CLASS
-/// - Windows Terminal の InputSite 子ウィンドウ
-///
-/// これらは `imc_open=false` を返すが IME が OFF であることを意味しない。
-/// `is_tsf_native_window` の HWND ラッパー（`read_ime_state_fast` 用）。
-fn is_transient_system_overlay(hwnd: HWND) -> bool {
-    is_tsf_native_window(&crate::focus::classify::get_class_name_string(hwnd))
+    /// IMM-broken クラス（Chrome/Edge 等）かどうか。
+    /// true のとき ime_on は常に None（shadow 状態で管理）。
+    pub is_imm_bridge_broken: bool,
 }
 
 // ─── TSF probe helpers ────────────────────────────────────────
