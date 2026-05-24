@@ -478,7 +478,7 @@ impl DecisionExecutor {
     }
 
     /// F2-TSF 特殊扱い + 通常 reinject + confirm キー後処理。
-    fn handle_reinject(&mut self, event: awase::types::RawKeyEvent) {
+    fn handle_reinject(&mut self, event: RawKeyEvent) {
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         let dir = if is_key_down { "down" } else { "up" };
 

@@ -84,8 +84,8 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
 
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
 pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) {
-    config.left_thumb_vk = left.0;
-    config.right_thumb_vk = right.0;
+    config.left_thumb_vk = u16::from(left);
+    config.right_thumb_vk = u16::from(right);
 }
 
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。

@@ -147,7 +147,7 @@ pub fn with_app_ref<R>(f: impl FnOnce(&Runtime) -> R) -> Option<R> {
 /// `WM_PANIC_RESET` のように「再入中に消えてはいけないメッセージ」に使う。
 pub fn with_app_or_repost(msg: u32, f: impl FnOnce(&mut Runtime)) {
     if with_app(f).is_none() {
-        crate::win32::post_to_main_thread(msg);
+        win32::post_to_main_thread(msg);
     }
 }
 
@@ -156,7 +156,7 @@ pub fn with_app_or_repost(msg: u32, f: impl FnOnce(&mut Runtime)) {
 /// `WM_FOCUS_KIND_UPDATE` のようにパラメータを持つメッセージに使う。
 pub fn with_app_or_repost_with(msg: u32, wparam: usize, lparam: isize, f: impl FnOnce(&mut Runtime)) {
     if with_app(f).is_none() {
-        crate::win32::post_to_main_thread_with(msg, wparam, lparam);
+        win32::post_to_main_thread_with(msg, wparam, lparam);
     }
 }
 
