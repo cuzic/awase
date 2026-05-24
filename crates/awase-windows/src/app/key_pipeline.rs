@@ -103,12 +103,12 @@ impl KeyEventPipeline<'_> {
             ShadowImeAction::TurnOff => false,
         };
         let ms = hook::current_tick_ms();
+        let user_enabled = self.app.engine.is_user_enabled();
         match source {
-            ShadowSource::SyncKey => self.app.platform_state.write_sync_key(new_val, ms),
-            ShadowSource::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms),
+            ShadowSource::SyncKey => self.app.platform_state.write_sync_key(new_val, ms, user_enabled),
+            ShadowSource::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms, user_enabled),
             _ => {}
         }
-        self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
         if self.app.platform_state.ime_on() == current {
             return false;
         }
@@ -142,8 +142,7 @@ impl KeyEventPipeline<'_> {
     fn stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             let ms = hook::current_tick_ms();
-            self.app.platform_state.write_set_open_request(new_ime_on, ms);
-            self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
+            self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
             self.app.platform_state.reset_ime_detect_state();
             self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
             self.app.platform_state.hook.set_ctrl_bypass_hold(true);
@@ -273,11 +272,10 @@ const fn compute_focus_probe_grace(
 
 fn apply_effective_ime(app: &mut Runtime, effective: bool) {
     let ms = hook::current_tick_ms();
-    app.platform_state.write_focus_probe(effective, ms);
     if effective {
         app.platform_state.reset_ime_detect_state();
     }
-    app.platform_state.apply_ime_observations(app.engine.is_user_enabled());
+    app.platform_state.write_focus_probe(effective, ms, app.engine.is_user_enabled());
 }
 
 #[allow(clippy::option_if_let_else)]

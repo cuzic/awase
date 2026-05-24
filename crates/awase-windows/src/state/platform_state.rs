@@ -293,8 +293,16 @@ impl PlatformState {
 impl PlatformState {
     /// `ime_observations.resolve_and_clear()` を実行して `belief.ime_on` を更新する。
     ///
-    /// 各観測ソースが値を書き込んだ直後に呼ぶ。これにより `belief.ime_on` は
-    /// 常に最新の観測値を反映する。
+    /// ## 呼び出し規約
+    ///
+    /// 通常は `write_*` ヘルパーや `apply_ime_update` が内部で呼ぶため、
+    /// 外部から直接呼ぶ必要はほとんどない。
+    ///
+    /// - `write_sync_key`, `write_physical_key`, `write_set_open_request`,
+    ///   `write_focus_probe`, `write_observer_poll` — 書き込みと同時に自動解決する。
+    /// - `apply_ime_update` — `ImeUpdate` の全フィールド適用後に自動解決する。
+    ///
+    /// 複数スロットを 1 tick 内で書き込みたい場合（将来の拡張）にのみ直接使用する。
     pub fn apply_ime_observations(&mut self, user_enabled: bool) {
         let current = self.ime.belief.ime_on;
         let is_japanese = self.ime.belief.is_japanese_ime;
@@ -323,37 +331,43 @@ impl PlatformState {
         self.ime.ime_observations.clear_on_focus_change();
     }
 
-    /// `sync_key` スロットに観測値を書き込む。
-    pub const fn write_sync_key(&mut self, value: bool, ms: u64) {
+    /// `sync_key` スロットに観測値を書き込み、即座に judgement を通す。
+    pub fn write_sync_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
         self.ime.ime_observations.sync_key =
             Some(crate::ime_observations::ImeObs { value, ms });
+        self.apply_ime_observations(user_enabled);
     }
 
-    /// `physical_key` スロットに観測値を書き込む。
-    pub const fn write_physical_key(&mut self, value: bool, ms: u64) {
+    /// `physical_key` スロットに観測値を書き込み、即座に judgement を通す。
+    pub fn write_physical_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
         self.ime.ime_observations.physical_key =
             Some(crate::ime_observations::ImeObs { value, ms });
+        self.apply_ime_observations(user_enabled);
     }
 
-    /// `set_open_request` スロットに観測値を書き込む。
-    pub const fn write_set_open_request(&mut self, value: bool, ms: u64) {
+    /// `set_open_request` スロットに観測値を書き込み、即座に judgement を通す。
+    pub fn write_set_open_request(&mut self, value: bool, ms: u64, user_enabled: bool) {
         self.ime.ime_observations.set_open_request =
             Some(crate::ime_observations::ImeObs { value, ms });
+        self.apply_ime_observations(user_enabled);
     }
 
-    /// `focus_probe` スロットに観測値を書き込む。
-    pub const fn write_focus_probe(&mut self, value: bool, ms: u64) {
+    /// `focus_probe` スロットに観測値を書き込み、即座に judgement を通す。
+    pub fn write_focus_probe(&mut self, value: bool, ms: u64, user_enabled: bool) {
         self.ime.ime_observations.focus_probe =
             Some(crate::ime_observations::ImeObs { value, ms });
+        self.apply_ime_observations(user_enabled);
     }
 
-    /// `ImeUpdate` を `ImeBelief` / `ImeRecoveryState` / `ImeObservations` に反映する。
+    /// `ImeUpdate` を `ImeBelief` / `ImeRecoveryState` / `ImeObservations` に反映し、
+    /// 即座に judgement を通す。
     ///
     /// `observer::ime_observer::poll_and_classify_ime()` / `classify_fetched_snapshot()` の結果を受け取り、
-    /// 状態への書き込みをここに集約する。判断ロジックを持たない純粋適用関数。
+    /// 状態への書き込みと解決をここに集約する。判断ロジックを持たない純粋適用関数。
     pub fn apply_ime_update(
         &mut self,
         update: &crate::observer::ime_observer::ImeUpdate,
+        user_enabled: bool,
     ) {
         // is_japanese_ime: 検出成功時のみ更新
         if let Some(is_jp) = update.is_japanese_ime {
@@ -397,6 +411,8 @@ impl PlatformState {
         if let Some(conv) = update.new_prev_conversion_mode {
             self.ime.belief.prev_conversion_mode = Some(conv);
         }
+
+        self.apply_ime_observations(user_enabled);
     }
 
     /// `hwnd_cache::restore_on_focus_enter()` の結果を `ImeBelief` に反映する。

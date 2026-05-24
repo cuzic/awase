@@ -315,12 +315,9 @@ impl<'a> ImeRefreshPipeline<'a> {
                 )
             }
         };
-        self.rt.platform_state.apply_ime_update(&observer_out);
+        self.rt.platform_state.apply_ime_update(&observer_out, self.rt.engine.is_user_enabled());
 
         let miss_after = self.rt.platform_state.ime_detect_miss_count();
-
-        // observer_poll → belief.ime_on に優先度付き解決
-        self.rt.platform_state.apply_ime_observations(self.rt.engine.is_user_enabled());
 
         self.log_poll_diff(
             ime_on_before_poll,

@@ -527,8 +527,7 @@ impl Runtime {
                 self.platform_state.prev_conversion_mode(),
             )
         };
-        self.platform_state.apply_ime_update(&observer_out);
-        self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
+        self.platform_state.apply_ime_update(&observer_out, self.engine.is_user_enabled());
 
         // LastAppliedImeState を OS 観測値に同期する。
         // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。
