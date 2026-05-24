@@ -175,7 +175,7 @@ pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 ///
 /// 判断層（`ime_controller` 等）は `ObservedState::capture_now()` 経由のスナップショットを使うこと。
 /// `tsf_obs()` を直接呼ぶと tick 境界外での非一貫観測が混入する恐れがある。
-pub(crate) fn tsf_obs() -> &'static TsfObservations {
+pub fn tsf_obs() -> &'static TsfObservations {
     &TSF_OBS
 }
 

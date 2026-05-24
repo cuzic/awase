@@ -152,7 +152,7 @@ impl WindowsPlatform {
     ///
     /// `WindowsPlatform` が `focus`, `output` の両方を持つため、
     /// 3 ソース（フォーカス分類・観測値・制御ログ）を一箇所で組み立てられる。
-    pub fn build_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
+    pub(crate) fn build_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
         let class_name = self
             .focus
             .last_focus_info

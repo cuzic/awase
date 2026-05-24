@@ -34,9 +34,11 @@ pub(crate) struct ObservedState {
     /// EVENT_OBJECT_SHOW/HIDE で更新されるアトミック値のスナップショット。
     pub candidate_visible: bool,
     /// GJI プロセスの最終 I/O 変化時刻 (ms)。0 = 未観測。
-    /// フォーカスプローブの grace 期間判定に使用する。
+    /// フォーカスプローブの grace 期間判定に使用する（将来の判断ロジック用）。
+    #[allow(dead_code)]
     pub gji_last_io_ms: u64,
-    /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
+    /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）（将来の判断ロジック用）。
+    #[allow(dead_code)]
     pub gji_monitor_ok: bool,
 }
 
