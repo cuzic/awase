@@ -81,6 +81,13 @@ pub struct TsfObservations {
 
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
+
+    /// GJI candidate が SHOW になってから次の `set_ime_apply_latch` 呼び出しまでの間に
+    /// 「shadow=OFF なのに候補ウィンドウが表示された（desync）」ことがあったかを記録するラッチ。
+    ///
+    /// `EVENT_OBJECT_SHOW` で `true` に、`reset_candidate_was_seen()` 呼び出し時に `false` にリセット。
+    /// `KanjiToggleStrategy` が shadow=false でも desync を検出して VK_KANJI を送れるようにする。
+    pub(super) candidate_was_seen: AtomicBool,
 }
 
 impl Default for TsfObservations {
@@ -90,7 +97,7 @@ impl Default for TsfObservations {
 }
 
 impl TsfObservations {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             focus_namechange_seq:   AtomicU32::new(0),
@@ -99,6 +106,7 @@ impl TsfObservations {
             composition_probe_seq:  AtomicU32::new(0),
             gji_last_io_ms:         AtomicU64::new(0),
             gji_monitor_ok:         AtomicBool::new(false),
+            candidate_was_seen:     AtomicBool::new(false),
         }
     }
 
@@ -205,6 +213,18 @@ pub(crate) fn namechange_baseline() -> NamechangeBaseline {
 /// OBJ_NAMECHANGE カウンタをリセットする（`send_eager_tsf_warmup` 用）。
 pub(crate) fn reset_namechange_seq() {
     TSF_OBS.focus_namechange_seq.store(0, Ordering::Relaxed);
+}
+
+/// GJI candidate が SHOW になってから次の `reset_candidate_was_seen()` まで `true`。
+///
+/// `KanjiToggleStrategy` が shadow=false でも desync を検出するために使う。
+pub(crate) fn candidate_was_seen() -> bool {
+    TSF_OBS.candidate_was_seen.load(Ordering::Relaxed)
+}
+
+/// `apply_ime_open` 後に `candidate_was_seen` フラグをリセットする。
+pub(crate) fn reset_candidate_was_seen() {
+    TSF_OBS.candidate_was_seen.store(false, Ordering::Relaxed);
 }
 
 /// OBJ_NAMECHANGE カウンタのベースライン値。
@@ -541,6 +561,7 @@ unsafe extern "system" fn observation_event_proc(
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
                 TSF_OBS.gji_candidate_visible.store(true, Ordering::Relaxed);
+                TSF_OBS.candidate_was_seen.store(true, Ordering::Relaxed);
                 let seq = TSF_OBS.gji_candidate_show_seq.fetch_add(1, Ordering::Relaxed) + 1;
                 // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
                 // AtomicWatcher で event-driven に待機する設計）

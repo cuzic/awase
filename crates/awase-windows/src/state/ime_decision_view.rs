@@ -40,6 +40,9 @@ pub(crate) struct ObservedState {
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）（将来の判断ロジック用）。
     #[allow(dead_code)]
     pub gji_monitor_ok: bool,
+    /// GJI candidate が SHOW になってから次の `apply_ime_open` 完了まで `true`。
+    /// `shadow=false` なのに candidate が表示された desync を `KanjiToggleStrategy` が検出するために使う。
+    pub candidate_was_seen: bool,
 }
 
 impl ObservedState {
@@ -49,9 +52,10 @@ impl ObservedState {
     pub(crate) fn capture_now() -> Self {
         let obs = crate::tsf::observer::tsf_obs();
         Self {
-            candidate_visible: obs.gji_candidate_visible(),
-            gji_last_io_ms:    obs.gji_last_io_ms(),
-            gji_monitor_ok:    obs.gji_monitor_ok(),
+            candidate_visible:  obs.gji_candidate_visible(),
+            gji_last_io_ms:     obs.gji_last_io_ms(),
+            gji_monitor_ok:     obs.gji_monitor_ok(),
+            candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
         }
     }
 }

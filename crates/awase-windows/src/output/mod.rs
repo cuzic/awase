@@ -313,6 +313,7 @@ impl Output {
     /// `apply_ime_open` 完了後にラッチを更新する。
     pub fn set_ime_apply_latch(&self, open: bool) {
         self.composition.set_ime_apply_latch(open);
+        crate::tsf::observer::reset_candidate_was_seen();
     }
 
     /// TSF composition context の事前ウォームアップ F2 を送信する。

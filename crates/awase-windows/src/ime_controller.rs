@@ -65,18 +65,25 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         // 候補ウィンドウが表示中 → Chrome/Edge の IME は確実に ON。
         // shadow が desync で false になっていても強制送信して desync を修復する。
-        let effective_shadow = view.control.shadow_on || view.observed.candidate_visible;
+        //
+        // candidate_was_seen: VK_KANJI が誤って OFF→ON トグルした場合の desync 検出ラッチ。
+        // 例: 新タブ(IME実態=OFF)でshadow=true(ステール) → VK_KANJI → 実態ON, shadow=false
+        //     → GJI candidate SHOW → candidate_was_seen=true
+        //     → 次の apply_ime_open(false) で shadow=false でも VK_KANJI を送れるようにする。
+        let effective_shadow = view.control.shadow_on
+            || view.observed.candidate_visible
+            || view.observed.candidate_was_seen;
 
         if effective_shadow == open {
             log::debug!(
-                "[apply-ime] shadow={} candidate={} already matches desired={open}, skip VK_KANJI",
-                view.control.shadow_on, view.observed.candidate_visible
+                "[apply-ime] shadow={} candidate={} was_seen={} already matches desired={open}, skip VK_KANJI",
+                view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen
             );
             ImeOpenOutcome::AlreadyMatched
         } else {
             log::debug!(
-                "[apply-ime] shadow={} candidate={} → desired={open}: SendInput VK_KANJI",
-                view.control.shadow_on, view.observed.candidate_visible
+                "[apply-ime] shadow={} candidate={} was_seen={} → desired={open}: SendInput VK_KANJI",
+                view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen
             );
             unsafe { crate::ime::post_kanji_toggle_to_focused(view.observed.candidate_visible) };
             ImeOpenOutcome::FallbackSent
