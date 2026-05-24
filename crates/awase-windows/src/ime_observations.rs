@@ -93,7 +93,8 @@ impl ImeObservations {
             }
         });
         let op_candidate = self.observer_poll.as_ref().map(|o| {
-            (o.ms, o.value && is_japanese_ime, ShadowSource::ObserverPoll)
+            let effective = o.value && is_japanese_ime;
+            (o.ms, effective, ShadowSource::ObserverPoll)
         });
 
         let winner = match (fp_candidate, op_candidate) {
@@ -225,6 +226,7 @@ mod tests {
             set_open_request: Some(obs(true, 3)),
             focus_probe: Some(obs(true, 4)),
             observer_poll: Some(obs(true, 5)),
+            ..Default::default()
         };
         o.clear_on_focus_change();
         assert!(o.resolve_and_clear(false, true, true).is_none());
