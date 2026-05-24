@@ -94,28 +94,6 @@ impl PlatformRuntime for WindowsPlatform {
         CONTROLLER.apply(open, &view)
     }
 
-    /// `apply_ime_open` 用の `ImeControlView` を構築する。
-    ///
-    /// `WindowsPlatform` が `focus`, `output` の両方を持つため、
-    /// 3 ソース（フォーカス分類・観測値・制御ログ）を一箇所で組み立てられる。
-    fn build_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
-        let class_name = self
-            .focus
-            .last_focus_info
-            .as_ref()
-            .map_or("", |(_, c)| c.as_str());
-        crate::state::ImeControlView {
-            focus: crate::state::FocusFacts {
-                class_name,
-                profile: self.focus.current_app_profile(),
-            },
-            observed: crate::state::ObservedState::capture_now(),
-            control: crate::state::ControlLog {
-                shadow_on: self.output.last_applied_ime_on(),
-            },
-        }
-    }
-
     fn post_ime_refresh(&mut self) {
         // SetOpen 後の IME 状態反映に数十ms かかるため、即時ではなく
         // 統合タイマー経由で短い遅延後にリフレッシュする。
@@ -166,5 +144,29 @@ impl PlatformRuntime for WindowsPlatform {
 
     fn composition_output(&self) -> Option<&dyn awase::platform::CompositionOutput> {
         Some(&self.output)
+    }
+}
+
+impl WindowsPlatform {
+    /// `apply_ime_open` 用の `ImeControlView` を構築する。
+    ///
+    /// `WindowsPlatform` が `focus`, `output` の両方を持つため、
+    /// 3 ソース（フォーカス分類・観測値・制御ログ）を一箇所で組み立てられる。
+    pub fn build_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
+        let class_name = self
+            .focus
+            .last_focus_info
+            .as_ref()
+            .map_or("", |(_, c)| c.as_str());
+        crate::state::ImeControlView {
+            focus: crate::state::FocusFacts {
+                class_name,
+                profile: self.focus.current_app_profile(),
+            },
+            observed: crate::state::ObservedState::capture_now(),
+            control: crate::state::ControlLog {
+                shadow_on: self.output.last_applied_ime_on(),
+            },
+        }
     }
 }
