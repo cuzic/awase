@@ -111,6 +111,19 @@ impl KeyEventPipeline<'_> {
             self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
             if self.app.platform_state.ime_on() != current {
                 self.app.platform_state.reset_ime_detect_state();
+
+                // IMM-broken (Chrome/Edge) では ON↔OFF いずれの方向でも VK_KANJI で IME を制御する。
+                // ON→OFF: apply_ime_open(false) がここで VK_KANJI を送信する
+                // OFF→ON: ImeEffect::SetOpen(true) が executor 経由で VK_KANJI を送信する
+                // 物理キー (0xF3/0xF4) が Chrome に届くと VK_KANJI との二重トグルになるため消費する。
+                if self.app.executor.platform.focus.last_focus_info
+                    .as_ref()
+                    .is_some_and(|(_, cls)| awase_windows::focus::classify::is_imm_bridge_broken(cls))
+                {
+                    self.should_consume_physical_key = true;
+                    log::debug!("[shadow-toggle] IMM-broken: physical key flagged for consume (double-send prevention)");
+                }
+
                 // ON→OFF の場合、OS IME を明示的に OFF にする。
                 // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
                 // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
@@ -124,16 +137,6 @@ impl KeyEventPipeline<'_> {
                     let _ = self.app.executor.platform.apply_ime_open(false);
                     self.app.executor.platform.output.set_ime_apply_latch(false);
                     log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) + latch=false");
-                    // IMM-broken (Chrome/Edge) では apply_ime_open が VK_KANJI を送信済み。
-                    // 物理キー (0xF3 等) がこの後 Chrome に届くと二重トグルで IME が再開する。
-                    // stage_execute で Decision を Consume に変換して物理キーを消費する。
-                    if self.app.executor.platform.focus.last_focus_info
-                        .as_ref()
-                        .is_some_and(|(_, cls)| awase_windows::focus::classify::is_imm_bridge_broken(cls))
-                    {
-                        self.should_consume_physical_key = true;
-                        log::debug!("[shadow-toggle] IMM-broken: physical key flagged for consume (double-send prevention)");
-                    }
                 }
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
