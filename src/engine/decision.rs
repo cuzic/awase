@@ -5,6 +5,7 @@ use std::time::Duration;
 use smallvec::{smallvec, SmallVec};
 
 use crate::config::ParsedKeyCombo;
+use crate::platform::EffectOrigin;
 use crate::types::{ContextChange, KeyAction, RawKeyEvent, Timestamp, VkCode};
 use crate::yab::YabLayout;
 
@@ -36,8 +37,12 @@ pub enum TimerEffect {
 /// IME 制御に関する副作用
 #[derive(Debug, Clone)]
 pub enum ImeEffect {
-    /// IME の ON/OFF を設定する
-    SetOpen(bool),
+    /// IME の ON/OFF を設定する。
+    ///
+    /// `origin` で「Engine の意図」か「観測同期」かを区別する。
+    /// Platform 側はこれを見てフォールバックキー送信（VK_KANJI 等）を
+    /// 適用するか判断できる。
+    SetOpen { open: bool, origin: EffectOrigin },
     /// IME 状態更新を要求する (PostMessageW)
     RequestRefresh,
 }
@@ -153,19 +158,28 @@ impl ActivationController {
 
     /// 新しい状態に遷移する。遷移が発生した場合に副作用 Effects を返す。
     ///
-    /// inactive → active: `Ime(SetOpen(true))` + `Ui(EngineStateChanged{true})`
-    /// active → inactive: `Ui(EngineStateChanged{false})`（flush は Engine 側）
+    /// inactive → active: `Ime(SetOpen { open: true, origin: EngineIntent })`
+    ///                    + `Ui(EngineStateChanged{true})`
+    /// active → inactive: `Ime(SetOpen { open: false, origin: EngineIntent })`
+    ///                    + `Ui(EngineStateChanged{false})`（flush は Engine 側）
     /// 同じ状態: 空の EffectVec
+    ///
+    /// 対称化の意図: 旧設計では active→inactive 時に SetOpen(false) を
+    /// 発行しなかったため、Platform 層（Windows）で `stage_shadow_ime_toggle`
+    /// による補正コードが必要だった。発生源を `EffectOrigin` で表現することで
+    /// Platform 側が「Engine の意図的な変更」を識別できるようにする。
     pub fn transition_to(&mut self, new_state: ActivationState) -> EffectVec {
         let was_active = self.prev.is_active();
         let now_active = new_state.is_active();
         let mut effects = EffectVec::new();
 
         if was_active != now_active {
-            if now_active {
-                // inactive → active: OS IME を強制的に開く（"nonaiyo" 問題対策）
-                effects.push(Effect::Ime(ImeEffect::SetOpen(true)));
-            }
+            // inactive → active: OS IME を強制的に開く（"nonaiyo" 問題対策）
+            // active → inactive: OS IME を強制的に閉じる（対称性のため）
+            effects.push(Effect::Ime(ImeEffect::SetOpen {
+                open: now_active,
+                origin: EffectOrigin::EngineIntent,
+            }));
             effects.push(Effect::Ui(UiEffect::EngineStateChanged {
                 enabled: now_active,
             }));
@@ -250,7 +264,7 @@ impl Decision {
             Self::PassThrough => return None,
         };
         for effect in effects {
-            if let Effect::Ime(ImeEffect::SetOpen(open)) = effect {
+            if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
                 return Some(*open);
             }
         }

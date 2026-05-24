@@ -6,6 +6,22 @@
 
 // ─── IME Types (platform-independent) ────────────────────────
 
+/// `ImeEffect` の発生源を示す。
+///
+/// Platform 側は `origin` を見て「Engine がキー入力を処理した結果として
+/// 意図的に IME 状態を変更する」のか「IME 観測値との同期（VK_KANJI 等の
+/// フォールバック送信は不要）」なのかを区別できる。
+///
+/// `suppress_engine_state_key` のような手続き的フラグを将来的に廃止する
+/// ための布石として導入される。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectOrigin {
+    /// Engine がキー入力を処理した結果として意図的に IME 状態を変更する
+    EngineIntent,
+    /// IME 観測値との同期（エンジン内部の状態同期、VK_KANJI 等は不要）
+    ObservationSync,
+}
+
 /// IME の変換モード（プラットフォーム非依存）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImeMode {

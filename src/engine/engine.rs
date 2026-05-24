@@ -16,6 +16,8 @@ use smallvec::smallvec;
 use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 
+use crate::platform::EffectOrigin;
+
 use super::decision::{
     ActivationController, ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
     InactiveReason, InputContext, InputEffect, SpecialKeyCombos,
@@ -405,11 +407,17 @@ impl Engine {
             }
             SpecialKeyMatch::ImeOn => {
                 log::info!("IME ON (key combo)");
-                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen(true))])
+                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen {
+                    open: true,
+                    origin: EffectOrigin::EngineIntent,
+                })])
             }
             SpecialKeyMatch::ImeOff => {
                 log::info!("IME OFF (key combo)");
-                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen(false))])
+                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen {
+                    open: false,
+                    origin: EffectOrigin::EngineIntent,
+                })])
             }
         }
     }
