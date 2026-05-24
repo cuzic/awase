@@ -310,6 +310,7 @@ pub(super) fn initialize_app(
     sync_off_keys: Vec<VkCode>,
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
+    all_keymaps: Vec<awase_windows::keymap::CompiledKeymap>,
 ) {
     let mut ps = awase_windows::PlatformState::new();
     ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
@@ -351,6 +352,7 @@ pub(super) fn initialize_app(
         sync_on_keys,
         sync_off_keys,
         platform_state: ps,
+        all_keymaps,
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
 }
@@ -600,6 +602,7 @@ pub(super) fn run_all() -> Result<()> {
     );
     engine.set_thumb_vks(left_thumb_vk, right_thumb_vk);
 
+    let compiled_keymaps = awase_windows::keymap::compile_keymaps(&config.keymaps);
     initialize_app(
         engine,
         system_tray,
@@ -610,6 +613,7 @@ pub(super) fn run_all() -> Result<()> {
         sync_off_keys,
         left_thumb_vk,
         right_thumb_vk,
+        compiled_keymaps,
     );
 
     init_ngram_validated(&config, &mut diag);

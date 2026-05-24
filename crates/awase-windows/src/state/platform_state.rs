@@ -99,6 +99,8 @@ pub struct PlatformState {
     pub hook_event_count: u64,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
+    /// 現在のフォーカスアプリに適用されるキーマップルール
+    pub active_keymaps: Vec<crate::keymap::CompiledKeymap>,
 }
 
 impl PlatformState {
@@ -111,6 +113,7 @@ impl PlatformState {
             hook: HookRoutingState {
                 sent_to_engine: [0u64; 4],
                 track_only_keys: [0u64; 4],
+                intercept_consumed: [0u64; 4],
                 in_callback: false,
                 ctrl_bypass_hold: false,
             },
@@ -121,6 +124,7 @@ impl PlatformState {
             last_hook_activity_ms: 0,
             hook_event_count: 0,
             sync_key_gate: SyncKeyGate { active: false, deferred_keys: Vec::new() },
+            active_keymaps: Vec::new(),
         }
     }
 }

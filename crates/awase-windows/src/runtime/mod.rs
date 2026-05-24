@@ -59,6 +59,8 @@ pub struct Runtime {
     pub sync_off_keys: Vec<VkCode>,
     /// Platform 層の全状態
     pub platform_state: crate::PlatformState,
+    /// 全キーマップルール（アプリフィルタ前）
+    pub all_keymaps: Vec<crate::keymap::CompiledKeymap>,
 }
 
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
@@ -336,6 +338,14 @@ impl Runtime {
         self.platform_state.focus.last_focus_change_ms = crate::hook::current_tick_ms();
         self.executor.platform.output.on_focus_changed();
         self.platform_state.clear_ime_observations_on_focus_change();
+
+        {
+            let process_name = &self.executor.platform.focus.current_process_name;
+            self.platform_state.active_keymaps =
+                crate::keymap::filter_active_keymaps(&self.all_keymaps, process_name);
+            log::debug!("[keymap] active rules updated: {} rule(s) for process={:?}",
+                self.platform_state.active_keymaps.len(), process_name);
+        }
 
         {
             let cache_hit = hwnd_cache::restore_on_focus_enter(
