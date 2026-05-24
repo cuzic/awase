@@ -50,7 +50,7 @@ use crate::types::RawKeyEvent;
 /// PendingWarmup フォールバックタイムアウト（ms）。
 pub const WARMUP_TIMEOUT_MS: u64 = 500;
 
-const HELD_MAX: usize = 32;
+const HELD_MAX: usize = 64;
 
 // ── イベント / アクション / タイマー ──────────────────────────────────────────
 
@@ -293,18 +293,18 @@ impl TsfGate {
     /// `true` = 保留（呼び出し元は `CallbackResult::Consumed` を返すこと）
     /// `false` = 通過（通常の処理を続行）
     ///
-    /// `PendingWarmup` 状態中のみ保留する。上限超過時はキーを破棄してログ警告を出す。
+    /// `PendingWarmup` 状態中のみ保留する。上限超過時はキーを通過させてログ警告を出す（入力ロスを防ぐ）。
     pub fn try_hold(&mut self, event: RawKeyEvent) -> bool {
         if self.machine.state() != TsfGateState::PendingWarmup {
             return false;
         }
         if self.held.len() >= HELD_MAX {
             log::warn!(
-                "[tsf-gate] held queue full (max={HELD_MAX}), dropping vk=0x{:02X} {:?}",
+                "[tsf-gate] held queue full (max={HELD_MAX}), passing through vk=0x{:02X} {:?}",
                 event.vk_code.0,
                 event.event_type,
             );
-            return true;
+            return false;
         }
         self.held.push(event);
         log::trace!(
