@@ -106,6 +106,15 @@ impl KeyEventPipeline<'_> {
             self.app.platform_state.apply_ime_observations(self.app.engine.is_user_enabled());
             if self.app.platform_state.ime_on() != current {
                 self.app.platform_state.reset_ime_detect_state();
+                // ON→OFF の場合、OS IME を明示的に OFF にする。
+                // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
+                // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
+                // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
+                if !self.app.platform_state.ime_on() {
+                    let _ = self.app.executor.platform.set_ime_open(false);
+                    self.app.executor.platform.output.set_ime_apply_latch(false);
+                    log::debug!("[shadow-toggle] ON→OFF: set_ime_open(false) + latch=false");
+                }
                 log::debug!(
                     "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
                     if current { "ON" } else { "OFF" },
