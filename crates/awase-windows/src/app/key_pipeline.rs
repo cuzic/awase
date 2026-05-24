@@ -18,7 +18,7 @@ pub(super) struct KeyEventPipeline<'a> {
     /// `apply_ime_open(false)` が IMM-broken ウィンドウ (Chrome/Edge) で VK_KANJI を送信した。
     /// 物理キーをそのまま Chrome に届けると VK_KANJI + 物理キーの二重制御になるため、
     /// `stage_execute` で Decision を Consume に変換して物理キーを消費する。
-    should_consume_physical_key: bool,
+    pub(super) should_consume_physical_key: bool,
 }
 
 impl KeyEventPipeline<'_> {
