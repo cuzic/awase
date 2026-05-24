@@ -504,8 +504,8 @@ fn apply_ime_gate(
     let is_sync_key = event.ime_relevance.is_sync_key;
 
     // sync key KeyDown → ガードを起動、Engine の保留キーをフラッシュして PassThrough
-    if is_keydown && is_sync_key && !app.platform_state.ime_gate.is_active() {
-        app.platform_state.ime_gate.activate();
+    if is_keydown && is_sync_key && !app.platform_state.sync_key_gate.is_active() {
+        app.platform_state.sync_key_gate.activate();
         log::debug!("IME guard ON (sync key vk=0x{vk_raw:02X})");
         let ctx = crate::runtime::build_input_context(
             app.platform_state.preconditions(),
@@ -521,8 +521,8 @@ fn apply_ime_gate(
     }
 
     // sync key KeyUp → ガードを解除して PassThrough、遅延処理をリクエスト
-    if !is_keydown && is_sync_key && app.platform_state.ime_gate.is_active() {
-        app.platform_state.ime_gate.deactivate();
+    if !is_keydown && is_sync_key && app.platform_state.sync_key_gate.is_active() {
+        app.platform_state.sync_key_gate.deactivate();
         log::debug!("IME guard OFF (sync key vk=0x{vk_raw:02X})");
         app.platform_state.hook.leave_callback();
         crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
@@ -530,7 +530,7 @@ fn apply_ime_gate(
     }
 
     // ガードが有効 → キーをバッファ（修飾キーは OS にパススルー）
-    if app.platform_state.ime_gate.is_active() {
+    if app.platform_state.sync_key_gate.is_active() {
         // TrackOnly（Ctrl/Alt/Win）は OS にパススルー。
         // バッファすると KeyUp が OS に届かず修飾キーが「押しっぱなし」になる。
         if matches!(route, KeyRoute::TrackOnly) {
@@ -538,11 +538,11 @@ fn apply_ime_gate(
             return RoutingOutcome::PassThrough;
         }
         let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
-        if app.platform_state.ime_gate.try_push(event, phys) {
+        if app.platform_state.sync_key_gate.try_push(event, phys) {
             log::trace!("IME guard: buffered key vk=0x{vk_raw:02X}");
         } else {
             log::warn!("IME guard forced clear: buffer overflow");
-            app.platform_state.ime_gate.deactivate();
+            app.platform_state.sync_key_gate.deactivate();
         }
         app.platform_state.hook.leave_callback();
         return RoutingOutcome::Consumed;

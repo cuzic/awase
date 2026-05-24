@@ -141,26 +141,48 @@ pub struct HookConfig {
     pub right_thumb_vk: u16,
 }
 
-/// IME 遷移ガード状態（IME トグルキー押下中のキーバッファリング）
+/// IME 同期キー（Henkan/Muhenkan/Kanji 等）押下後のキー保留バッファ。
+///
+/// # 役割
+///
+/// ユーザーが sync key を押した直後、OS が IME 状態を切り替える間に到着する後続キーを
+/// 一時的にバッファする。sync key KeyUp 後に `process_deferred_keys()` で
+/// IME 状態を再観測してから、バッファされたキーを新しい IME 状態で再処理する。
+///
+/// この処理はフックコールバック（`hook::apply_ime_gate`）で起動される。
+///
+/// # `TsfGate` との違い
+///
+/// `awase::tsf::TsfGate` はフォーカス変更後の TSF probe ウォームアップ用のステートマシンで、
+/// 別目的・別タイミング・別レイヤー（Engine 出力側）で動作する:
+///
+/// | | `SyncKeyGate`（本構造体） | [`TsfGate`](awase::tsf::TsfGate) |
+/// |--|--|--|
+/// | トリガー | sync key（IME ON/OFF キー）KeyDown | フォーカス変更 |
+/// | レイヤー | Platform 層（フックコールバック） | Output 層（TSF 注入直前） |
+/// | 解除タイミング | sync key KeyUp + IME 再観測完了 | TSF/Bypass モード確定 or 500ms タイムアウト |
+/// | 保留対象 | sync key 後に到着した全キー | フォーカス直後に到着した全キー |
+///
+/// 両者は独立に動作する（同時に active になることもある）。
 #[derive(Debug)]
-pub struct ImeGateState {
+pub struct SyncKeyGate {
     pub active: bool,
     pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
 }
 
-impl ImeGateState {
-    /// IME ガードをアクティブにする。
+impl SyncKeyGate {
+    /// ゲートをアクティブにする（sync key KeyDown 検出時）。
     pub const fn activate(&mut self) {
         self.active = true;
     }
 
-    /// IME ガードを非アクティブにする。
+    /// ゲートを非アクティブにする（sync key KeyUp 検出時 / IME 再観測後）。
     pub const fn deactivate(&mut self) {
         self.active = false;
     }
 
-    /// IME ガードがアクティブかどうかを返す。
-    #[must_use] 
+    /// ゲートがアクティブかどうかを返す。
+    #[must_use]
     pub const fn is_active(&self) -> bool {
         self.active
     }
@@ -187,7 +209,7 @@ impl ImeGateState {
     }
 
     /// バッファにキーが残っているかどうかを返す。
-    #[must_use] 
+    #[must_use]
     pub const fn has_deferred_keys(&self) -> bool {
         !self.deferred_keys.is_empty()
     }

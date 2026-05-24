@@ -9,7 +9,6 @@ use crate::types::{ContextChange, KeyAction, RawKeyEvent, Timestamp, VkCode};
 use crate::yab::YabLayout;
 
 use super::fsm_types::ModifierState;
-use super::input_tracker::PhysicalKeyState;
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
 
@@ -383,51 +382,6 @@ pub struct SpecialKeyCombos {
     pub ime_off: Vec<ParsedKeyCombo>,
 }
 
-/// キーイベントバッファ管理
-///
-/// フック → メッセージループ間のキーイベント遅延・バッファリングを管理する。
-/// OS 副作用は持たず、Engine メソッドがオーケストレーションを行う。
-#[derive(Debug)]
-pub struct KeyBuffer {
-    /// IME 制御キー直後のガードフラグ（true: 後続キーを遅延処理する）
-    pub ime_transition_guard: bool,
-    /// ガード中に遅延されたキーイベント + 物理キー状態のバッファ
-    pub deferred_keys: Vec<(RawKeyEvent, PhysicalKeyState)>,
-}
-
-impl Default for KeyBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl KeyBuffer {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            ime_transition_guard: false,
-            deferred_keys: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub const fn is_guarded(&self) -> bool {
-        self.ime_transition_guard
-    }
-
-    pub const fn set_guard(&mut self, on: bool) {
-        self.ime_transition_guard = on;
-    }
-
-    pub fn push_deferred(&mut self, event: RawKeyEvent, phys: PhysicalKeyState) {
-        self.deferred_keys.push((event, phys));
-    }
-
-    pub fn drain_deferred(&mut self) -> Vec<(RawKeyEvent, PhysicalKeyState)> {
-        std::mem::take(&mut self.deferred_keys)
-    }
-}
-
 /// Engine への外部コマンド
 #[derive(Debug)]
 pub enum EngineCommand {
@@ -566,55 +520,4 @@ mod tests {
         }
     }
 
-    // ── KeyBuffer ──
-
-    #[test]
-    fn key_buffer_new_starts_empty_and_not_guarded() {
-        let buf = KeyBuffer::new();
-        assert!(!buf.is_guarded());
-        assert!(buf.deferred_keys.is_empty());
-    }
-
-    #[test]
-    fn key_buffer_set_guard_is_guarded_round_trip() {
-        let mut buf = KeyBuffer::new();
-        buf.set_guard(true);
-        assert!(buf.is_guarded());
-        buf.set_guard(false);
-        assert!(!buf.is_guarded());
-    }
-
-    #[test]
-    fn key_buffer_push_and_drain_deferred() {
-        use crate::engine::input_tracker::PhysicalKeyState;
-
-        let mut buf = KeyBuffer::new();
-        let raw = RawKeyEvent {
-            vk_code: VkCode(0x41),
-            scan_code: crate::types::ScanCode(0x1E),
-            event_type: crate::types::KeyEventType::KeyDown,
-            extra_info: 0,
-            timestamp: 0,
-            key_classification: crate::types::KeyClassification::Char,
-            physical_pos: None,
-            ime_relevance: crate::types::ImeRelevance {
-                may_change_ime: false,
-                shadow_action: None,
-                is_sync_key: false,
-                sync_direction: None,
-                is_ime_control: false,
-            },
-            modifier_key: None,
-            modifier_snapshot: Default::default(),
-        };
-        let phys = PhysicalKeyState::empty();
-
-        buf.push_deferred(raw.clone(), phys);
-        buf.push_deferred(raw, phys);
-        assert_eq!(buf.deferred_keys.len(), 2);
-
-        let drained = buf.drain_deferred();
-        assert_eq!(drained.len(), 2);
-        assert!(buf.deferred_keys.is_empty());
-    }
 }

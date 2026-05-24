@@ -3,6 +3,20 @@
 //! フォーカス変更直後、TSF モードが確定するまでの間キーを一時保留する。
 //! Win32 API に依存しない純粋な状態機械 + キー保留ラッパーを定義する。
 //!
+//! ## `SyncKeyGate` との混同に注意
+//!
+//! 名前は似ているが [`TsfGate`] と `awase_windows::state::hook_state::SyncKeyGate` は
+//! 別目的・別トリガー・別レイヤーで動作する独立した仕組み:
+//!
+//! | | `TsfGate`（本モジュール） | `SyncKeyGate` |
+//! |--|--|--|
+//! | トリガー | フォーカス変更 | sync key（IME ON/OFF キー）KeyDown |
+//! | 解除条件 | TSF/Bypass モード確定 or 500ms タイムアウト | sync key KeyUp + IME 再観測完了 |
+//! | レイヤー | Output 層（TSF 注入直前） | Platform 層（フックコールバック） |
+//! | 保留対象 | フォーカス直後のキー | sync key 直後のキー |
+//!
+//! 両者は完全に独立で、同時に active になることもある。
+//!
 //! ## 2層構造
 //!
 //! - [`TsfGateMachine`]: timed-fsm ベースの純粋ステートマシン。副作用なし。テスト可能。
@@ -86,10 +100,15 @@ pub enum TsfGateState {
 
 // ── TsfGateMachine ──────────────────────────────────────────────────────────
 
-/// timed-fsm ベースの純粋ステートマシン。
+/// TSF ウォームアップ中のキー保留ステートマシン。
 ///
+/// フォーカス変更後、新しいウィンドウの TSF が準備完了するまでキーを保留する。
 /// 状態遷移ロジックのみを保持し、`RawKeyEvent` の保留は行わない。
 /// [`TimedStateMachine`] を実装しているため、プラットフォーム依存なしでテスト可能。
+///
+/// `awase_windows::state::hook_state::SyncKeyGate` とは異なる目的の仕組み:
+/// `TsfGate` は TSF probe のタイムアウト（500ms）をトリガーとするが、
+/// `SyncKeyGate` は sync key 直後のキー保留を担当する（モジュール doc 参照）。
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct TsfGateMachine {
@@ -169,6 +188,10 @@ impl TimedStateMachine for TsfGateMachine {
 // ── TsfGate ─────────────────────────────────────────────────────────────────
 
 /// `TsfGateMachine` にキー保留機能を追加したラッパー。
+///
+/// フォーカス変更後の TSF ウォームアップ中にキーを `held` バッファに蓄積し、
+/// TSF/Bypass モード確定時にまとめて返す。`awase_windows::state::hook_state::SyncKeyGate`
+/// （sync key 押下時のキー保留）とは別目的なので混同しないこと（モジュール doc 参照）。
 ///
 /// Win32 タイマー（`TIMER_TSF_GATE`）の Set/Kill は呼び出し元が担当する:
 /// - `on_focus_change()` 後 → `TIMER_TSF_GATE` を 500ms でセット
@@ -312,7 +335,7 @@ impl Default for TsfGate {
 /// | フィールド | 条件 | 情報源 |
 /// |-----------|------|--------|
 /// | `gate` | ゲートの状態 | `TsfGate::state()` |
-/// | `ime_on` | IME ON/OFF シャドウ | `composition.shadow_ime_on()` |
+/// | `ime_on` | IME ON/OFF シャドウ | `composition.last_applied_ime_on()` |
 /// | `is_tsf_mode` | 注入モードが TSF か | `resolve_injection_mode()` |
 ///
 /// # 構築

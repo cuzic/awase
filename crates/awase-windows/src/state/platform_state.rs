@@ -2,7 +2,7 @@ use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
 use super::preconditions::{Preconditions, ShadowSource};
-use super::hook_state::{HookRoutingState, HookConfig, ImeGateState};
+use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -97,7 +97,8 @@ pub struct PlatformState {
     pub hook_config: HookConfig,
     pub last_hook_activity_ms: u64,
     pub hook_event_count: u64,
-    pub ime_gate: ImeGateState,
+    /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
+    pub sync_key_gate: SyncKeyGate,
 }
 
 impl PlatformState {
@@ -119,7 +120,7 @@ impl PlatformState {
             },
             last_hook_activity_ms: 0,
             hook_event_count: 0,
-            ime_gate: ImeGateState { active: false, deferred_keys: Vec::new() },
+            sync_key_gate: SyncKeyGate { active: false, deferred_keys: Vec::new() },
         }
     }
 }
@@ -137,7 +138,7 @@ impl PlatformState {
     ///
     /// `build_input_context(&ps.preconditions(), …)` のような呼び出し用。
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub const fn preconditions(&self) -> &Preconditions {
         &self.ime.preconditions
     }

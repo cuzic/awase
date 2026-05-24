@@ -304,9 +304,11 @@ impl Runtime {
             }
         }
 
-        // last_focus_info を更新
-        self.executor.platform.focus.last_focus_info =
-            Some((classified.process_id, classified.class_name.clone()));
+        // last_focus_info と AppImeProfile キャッシュをアトミックに更新（IMM 制御の SSOT）。
+        self.executor
+            .platform
+            .focus
+            .update_focus_info(classified.process_id, classified.class_name.clone());
 
         // prev_conversion_mode をリセット
         self.platform_state.set_prev_conversion_mode(None);
@@ -499,8 +501,8 @@ impl Runtime {
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
         // Guard を解除
-        if self.platform_state.ime_gate.is_active() {
-            self.platform_state.ime_gate.deactivate();
+        if self.platform_state.sync_key_gate.is_active() {
+            self.platform_state.sync_key_gate.deactivate();
             log::debug!("IME guard OFF (process_deferred_keys)");
         }
 
@@ -518,14 +520,14 @@ impl Runtime {
         self.platform_state.apply_ime_update(&observer_out);
         self.platform_state.apply_ime_observations(self.engine.is_user_enabled());
 
-        // ImeApplyLatch を OS 観測値に同期する。
-        // 物理 Kanji キー（sync key）は apply_ime_open を経由しないためラッチが更新されない。
-        // ラッチが stale なまま Engine が activate → SetOpen(true) → KanjiToggleStrategy が
-        // shadow_on(false) != desired(true) と判定して VK_KANJI を余分に送信し、
+        // LastAppliedImeState を OS 観測値に同期する。
+        // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。
+        // last_applied が stale なまま Engine が activate → SetOpen(true) → KanjiToggleStrategy が
+        // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
         let observed_ime_on = self.platform_state.ime_on();
         self.executor.platform.output.set_ime_apply_latch(observed_ime_on);
-        log::debug!("[process-deferred] latch → {observed_ime_on} (sync with OS poll)");
+        log::debug!("[process-deferred] last_applied → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。
         // suppress_engine_state_key = true: sync key（Kanji 等）がすでに IME を正しい状態に
@@ -540,7 +542,7 @@ impl Runtime {
         }
 
         // Drain deferred keys from Platform gate
-        let keys = self.platform_state.ime_gate.drain_all();
+        let keys = self.platform_state.sync_key_gate.drain_all();
         if keys.is_empty() {
             return;
         }
@@ -586,8 +588,8 @@ impl Runtime {
         self.platform_state.hook.reset_routing();
         self.platform_state.hook.leave_callback();
         self.platform_state.hook.set_ctrl_bypass_hold(false);
-        self.platform_state.ime_gate.deactivate();
-        self.platform_state.ime_gate.clear();
+        self.platform_state.sync_key_gate.deactivate();
+        self.platform_state.sync_key_gate.clear();
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();

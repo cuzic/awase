@@ -9,7 +9,6 @@ pub mod decision;
 mod engine;
 mod fsm_adapter;
 pub mod fsm_types;
-pub mod ime_coordinator;
 pub mod input_tracker;
 pub mod key_lifecycle;
 mod nicola_fsm;
@@ -19,7 +18,7 @@ pub mod timing;
 // Public re-exports
 pub use decision::{
     ActivationState, AssumedReason, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
-    ImeSyncKeys, InputContext, InputEffect, InputModeState, KeyBuffer, SpecialKeyCombos,
+    ImeSyncKeys, InputContext, InputEffect, InputModeState, SpecialKeyCombos,
     TimerEffect, UiEffect,
 };
 pub use engine::Engine;
