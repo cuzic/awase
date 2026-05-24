@@ -573,8 +573,8 @@ impl DecisionExecutor {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
-        // 成功した場合はラッチを更新する（shadow_ime_on → send_eager_tsf_warmup ガードに使用）。
-        // Applied 後にラッチを更新しないと shadow_on が旧値 true のままになり、
+        // 成功した場合は last_applied を更新する（last_applied_ime_on → send_eager_tsf_warmup ガードに使用）。
+        // Applied 後に last_applied を更新しないと shadow_on が旧値 true のままになり、
         // IME OFF 直後の Ctrl↑ で VK_DBE_HIRAGANA が送信されて IME が ON に戻るバグが発生する。
         match outcome {
             ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {

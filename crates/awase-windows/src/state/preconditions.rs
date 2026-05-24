@@ -21,8 +21,6 @@ pub enum ShadowSource {
     FocusSnapshot,
     /// panic_reset（強制リセット）
     PanicReset,
-    /// IMM broken アプリ切替補正（Chrome 等）
-    ImmBrokenFix,
     /// per-HWND IME キャッシュからの復元（フォーカス切り替え時の即時復元）
     HwndCache,
 }
@@ -35,7 +33,8 @@ pub enum ShadowSource {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Preconditions {
-    /// IME ON/OFF の Engine 向け値。
+    /// OS の IME ON/OFF 状態のシャドウ値（Single Source of Truth）。
+    /// このフィールドのみを参照すること。`LastAppliedImeState` はキー送信ログであり IME 状態ではない。
     ///
     /// OS から観測した生値ではなく、複数の観測ソース
     /// （sync_key > physical_key > set_open_request > focus_probe / observer_poll）
@@ -76,12 +75,24 @@ pub struct Preconditions {
     /// 未知アプリへの初回フォーカス時に `set_ime_open(true)` を呼んだ後、
     /// 次の `observe()` が即座に上書きしないよう 1 サイクルだけ保護する。
     /// 次の IME 検出成功（`ImeUpdate::clear_force_on_broken_app_bootstrap=true`）で解除される。
+    ///
+    /// ## なぜ `force_on_panic_reset` と分けるのか
+    /// 両ガードは [`Self::is_force_on_guard_active`] では OR で扱われるが、
+    /// セット箇所と解除時の副作用が異なるため別フィールドにしている:
+    /// - セット箇所が異なる: 本フィールドは `try_force_on_bootstrap`（IMM 連続失敗時）、
+    ///   `force_on_panic_reset` は `apply_panic_reset`（緊急リセット）で立てる。
+    /// - 解除時の副作用が異なる: `force_on_panic_reset` の解除は `ime_detect_miss_count`
+    ///   も 0 にリセットする（`PlatformState::apply_ime_update` 参照）。
+    ///   本フィールドは miss_count を変更しない。
     pub(in crate::state) force_on_broken_app_bootstrap: bool,
     /// パニックリセット直後の上書き防止ガード。
     ///
     /// パニックリセットで `ime_on=true` を書き込んだ直後に `refresh_ime_state_cache`
     /// が走ると stale な `observe()` の結果に上書きされてしまう。これを防ぐ。
     /// `apply_ime_update` で `ImeUpdate::clear_force_on_panic_reset=true` のとき解除される。
+    ///
+    /// 解除時は `ime_detect_miss_count` も 0 にリセットされる
+    /// （broken_app_bootstrap 側との差分）。詳細は `force_on_broken_app_bootstrap` の doc を参照。
     pub(in crate::state) force_on_panic_reset: bool,
 }
 

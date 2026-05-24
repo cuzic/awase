@@ -173,11 +173,14 @@ impl Output {
         self.composition.eager_warmup_sent_ms()
     }
 
-    /// `apply_ime_open` が最後に設定した IME 状態を返す。
+    /// `apply_ime_open` が最後に OS に送信したコマンド値を返す。
     /// フォーカス変更直後など未設定の場合は false（OFF）を返す。
+    ///
+    /// これは IME 状態の SSOT ではない。SSOT は `PlatformState::ime_on()`。
+    /// 本メソッドは `KanjiToggleStrategy` の重複送信回避と診断専用。
     #[must_use]
-    pub fn shadow_ime_on(&self) -> bool {
-        self.composition.shadow_ime_on()
+    pub fn last_applied_ime_on(&self) -> bool {
+        self.composition.last_applied_ime_on()
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
@@ -299,7 +302,7 @@ impl Output {
     pub fn tsf_readiness(&self) -> awase::tsf::TsfReadiness {
         awase::tsf::TsfReadiness {
             gate: self.tsf_gate.state(),
-            ime_on: self.composition.shadow_ime_on(),
+            ime_on: self.composition.last_applied_ime_on(),
             is_tsf_mode: self.is_tsf_mode(),
         }
     }
@@ -319,7 +322,7 @@ impl Output {
     /// - NativeF2Consumed 直後: 物理 F2 の代替として送信（二重 F2 防止）
     /// - PassthroughConfirmKey / ReinjectConfirmKey 直後: Enter/Escape 後の次打鍵を warmup
     ///
-    /// `shadow_ime_on` が false（IME OFF）または TSF モード以外では何もしない。
+    /// `last_applied_ime_on` が false（IME OFF）または TSF モード以外では何もしない。
     ///
     /// `eager_warmup_sent_ms` は既に設定済みの場合は更新しない（FocusChange 側のより古い
     /// タイムスタンプを優先する）。これにより NativeF2Consumed 後も FocusChange 時刻から

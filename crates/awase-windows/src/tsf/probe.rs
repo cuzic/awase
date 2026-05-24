@@ -320,15 +320,18 @@ impl Default for ColdContext {
 /// 内部を 3 つの責務別サブ構造体に分割している:
 /// - `warm_epoch`: warmup epoch・送信タイミング・cold-start 回数
 /// - `cold_ctx`: cold の理由・idle 時間・連続 recovery 回数
-/// - `latch`: `apply_ime_open` の直前結果ラッチ（[`crate::tsf::last_apply::ImeApplyLatch`]）
+/// - `last_applied`: `apply_ime_open` の最終送信値ログ
+///   ([`crate::tsf::last_apply::LastAppliedImeState`])
 #[derive(Debug)]
 pub struct CompositionState {
     /// warmup epoch・送信タイミング・cold-start 回数
     pub warm_epoch: WarmEpoch,
     /// cold の理由・idle 時間・連続 recovery 回数
     pub cold_ctx: ColdContext,
-    /// `apply_ime_open` の直前結果ラッチ（KanjiToggleStrategy の shadow_on 用）
-    pub latch: crate::tsf::last_apply::ImeApplyLatch,
+    /// `apply_ime_open` の最終送信値ログ（KanjiToggleStrategy の重複送信回避用）。
+    ///
+    /// IME 状態の SSOT ではない（SSOT は `Preconditions.ime_on`）。
+    pub last_applied: crate::tsf::last_apply::LastAppliedImeState,
 }
 
 impl Default for CompositionState {
@@ -338,12 +341,12 @@ impl Default for CompositionState {
 }
 
 impl CompositionState {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             warm_epoch: WarmEpoch::new(),
             cold_ctx: ColdContext::new(),
-            latch: crate::tsf::last_apply::ImeApplyLatch::new(),
+            last_applied: crate::tsf::last_apply::LastAppliedImeState::new(),
         }
     }
 
@@ -390,15 +393,15 @@ impl CompositionState {
         let new_epoch = self.warm_epoch.on_focus_changed();
         self.cold_ctx.set_idle_ms_at_last_cold(idle_ms);
         self.cold_ctx.reset_consecutive_count();
-        self.latch.invalidate();
+        self.last_applied.invalidate();
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
-    /// `apply_ime_open` 完了後にラッチを更新する。
+    /// `apply_ime_open` 完了後に最終送信値ログを更新する。
     ///
-    /// `KanjiToggleStrategy` が次の `apply_ime_open` で shadow_on を読むために使う。
+    /// `KanjiToggleStrategy` が次の `apply_ime_open` で重複送信を避けるために使う。
     pub fn set_ime_apply_latch(&self, open: bool) {
-        self.latch.set(open);
+        self.last_applied.set(open);
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
@@ -441,11 +444,14 @@ impl CompositionState {
         self.warm_epoch.increment_cold_start_count()
     }
 
-    /// `apply_ime_open` が最後に設定した値を返す。
+    /// `apply_ime_open` が最後に OS に送信したコマンド値を返す。
     /// フォーカス変更直後など未設定の場合は `false` を返す。
+    ///
+    /// これは IME 状態の SSOT ではない。SSOT は `Preconditions::ime_on()`。
+    /// 本メソッドは `KanjiToggleStrategy` の重複送信回避と診断専用。
     #[must_use]
-    pub fn shadow_ime_on(&self) -> bool {
-        self.latch.get_or(false)
+    pub fn last_applied_ime_on(&self) -> bool {
+        self.last_applied.get_or(false)
     }
 
     /// 最後に cold にマークされた理由を返す。
