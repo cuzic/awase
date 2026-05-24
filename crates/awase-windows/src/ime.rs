@@ -62,7 +62,7 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 /// Ctrl/Shift/Alt が押下中の場合、VK_KANJI を bare（修飾なし）で届けるために先に KeyUp を注入し、
 /// 送信後も物理的に押下中の修飾キーは KeyDown で復元する。
 /// Chrome/Edge の候補ウィンドウ表示中は bare VK_KANJI でも IME トグルとして機能しないため、
-/// 候補が表示中のときは先に VK_ESCAPE で候補を閉じてから VK_KANJI を送信する。
+/// 候補が表示中のときは先に VK_RETURN で候補を確定（composition コミット）してから VK_KANJI を送信する。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
@@ -79,7 +79,8 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     let held_alt   = unsafe { GetAsyncKeyState(i32::from(VK_MENU.0))    } as u16 & 0x8000 != 0;
 
     // 候補ウィンドウが表示中の場合、bare VK_KANJI は候補を閉じるだけで IME トグルとして機能しない。
-    // ESC で先に候補を閉じて IME を通常変換モードに戻してから VK_KANJI でトグルする。
+    // VK_RETURN で現在の候補を確定（composition をコミット）してから VK_KANJI でトグルする。
+    // ESC はキャンセルになるため使わない。
     let candidate_visible =
         crate::tsf::observer::with_tsf_obs(|obs| obs.gji_candidate_visible());
 
@@ -91,9 +92,9 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     if held_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  IME_KANJI_MARKER)); }
 
     if candidate_visible {
-        const VK_ESCAPE: u16 = 0x1B;
-        inputs.push(make_key_input_ex(VK_ESCAPE, false, IME_KANJI_MARKER));
-        inputs.push(make_key_input_ex(VK_ESCAPE, true,  IME_KANJI_MARKER));
+        const VK_RETURN: u16 = 0x0D;
+        inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
     }
 
     inputs.push(make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER));
@@ -115,7 +116,7 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     log::debug!(
         "[ime-fallback] SendInput VK_KANJI (0x19) IME toggle \
          (mod-release: ctrl={held_ctrl} shift={held_shift} alt={held_alt}, \
-         candidate_esc={candidate_visible})"
+         candidate_return={candidate_visible})"
     );
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
     //         size_of::<INPUT>() は正確な構造体サイズを返す。
