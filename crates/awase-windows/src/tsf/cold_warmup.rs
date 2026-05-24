@@ -10,8 +10,8 @@
 //!   └─ preamble()           : 診断ログ・IMM32 ローマ字モード設定・cold_seq インクリメント
 //!      ├─ run_eager_start()  : eager warmup パス (eager_warmup_sent_ms != 0)
 //!      │    ├─ FreshF2        (remaining == 0 && !requires_settle) → F2 送信 + probe
-//!      │    ├─ ProbeWithSettle(remaining == 0 &&  requires_settle) → F2 再送 + 500ms 待機
-//!      │    └─ ReWarmup       (remaining > 0)                      → probe (NAMECHANGE 確認付き)
+//!      │    ├─ ReWarmup       (remaining == 0 &&  requires_settle) → F2 再送 + RE_WARMUP_MS 待機
+//!      │    └─ ProbeWithSettle(remaining > 0)                      → probe (NAMECHANGE 確認付き)
 //!      └─ run_non_eager_start(): F2×2 送信 + WarmupStarted (GjiProbe)
 //! ```
 
@@ -36,18 +36,18 @@ const VK_DBE_HIRAGANA: u16 = 0xF2;
 enum WarmupKind {
     /// `remaining == 0 && !requires_settle`: 通常の fresh F2 → probe
     FreshF2,
-    /// `remaining == 0 &&  requires_settle`: F2 再送 + 500ms 待機（settle なし）
-    ProbeWithSettle,
-    /// `remaining > 0`: eager 起点でそのまま probe（NAMECHANGE 確認付き）
+    /// `remaining == 0 &&  requires_settle`: F2 再送 + RE_WARMUP_MS 待機（settle なし）
     ReWarmup,
+    /// `remaining > 0`: eager 起点でそのまま probe（NAMECHANGE 確認付き）
+    ProbeWithSettle,
 }
 
 impl WarmupKind {
     const fn from_context(remaining: u64, requires_settle: bool) -> Self {
         if remaining > 0 {
-            Self::ReWarmup
-        } else if requires_settle {
             Self::ProbeWithSettle
+        } else if requires_settle {
+            Self::ReWarmup
         } else {
             Self::FreshF2
         }
@@ -259,8 +259,8 @@ impl<'a> ColdWarmupSequence<'a> {
                     cold_reason: ctx.cold_reason,
                 }
             }
-            WarmupKind::ProbeWithSettle => {
-                // eager_re_warmup: fresh F2 を送信して 500ms 待機
+            WarmupKind::ReWarmup => {
+                // eager_re_warmup: fresh F2 を送信して RE_WARMUP_MS 待機
                 log::debug!(
                     "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start",
                     ctx.cold_seq, ctx.eager_settle_ms,
@@ -278,7 +278,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     cold_reason: ctx.cold_reason,
                 }
             }
-            WarmupKind::ReWarmup => {
+            WarmupKind::ProbeWithSettle => {
                 // eager_probe_with_settle: eager_ms 起点のプローブ（NAMECHANGE チェックが必要）
                 log::debug!(
                     "[h1-warmup] cold={} eager: elapsed={}ms → probe start (budget={}ms from warmup)",
