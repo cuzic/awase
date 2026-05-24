@@ -12,34 +12,19 @@
 //!
 //! ## アーキテクチャ制約
 //! このモジュールは観測値を自ら読んではいけない。
-//! すべての観測値は `ImeObservationSnapshot` 経由で受け取ること。
+//! すべての観測値は `ImeControlView` 経由で受け取ること。
 //! `crate::tsf::observer::aggregator::*` / `TSF_OBS` への直接アクセス禁止。
 
 use awase::platform::ImeOpenOutcome;
 
-use crate::focus::class_names::AppImeProfile;
-
-/// 戦略が使用するフォーカス情報と現在の IME 状態。
-pub(crate) struct ImeObservationSnapshot<'a> {
-    /// フォーカスウィンドウのクラス名（ログ用）
-    pub class_name: &'a str,
-    /// フォーカス中アプリの IME 制御プロファイル
-    pub profile: AppImeProfile,
-    /// `apply_ime_open` が最後に OS に送ったコマンド値
-    /// （`Output::last_applied_ime_on()` = `LastAppliedImeState::get_or(false)`）。
-    /// IME 状態の SSOT ではない（SSOT は `Preconditions::ime_on()`）。
-    pub shadow_on: bool,
-    /// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうか（`TsfObservations` から取得）。
-    /// 候補表示中は Chrome IME が確実に ON のため、shadow desync の上書き判断に使う。
-    pub candidate_visible: bool,
-}
+use crate::state::ime_decision_view::ImeControlView;
 
 /// IME ON/OFF を実行する戦略インターフェース。
 pub(crate) trait ImeOpenStrategy: Sync {
     /// このコンテキストで戦略が有効かどうか。
-    fn is_applicable(&self, ctx: &ImeObservationSnapshot<'_>) -> bool;
+    fn is_applicable(&self, view: &ImeControlView<'_>) -> bool;
     /// IME を指定状態に設定しその結果を返す。
-    fn apply(&self, open: bool, ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome;
+    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome;
 }
 
 // ── ImmCrossProcessStrategy ──────────────────────────────────────
@@ -50,11 +35,11 @@ pub(crate) trait ImeOpenStrategy: Sync {
 pub(crate) struct ImmCrossProcessStrategy;
 
 impl ImeOpenStrategy for ImmCrossProcessStrategy {
-    fn is_applicable(&self, ctx: &ImeObservationSnapshot<'_>) -> bool {
-        ctx.profile.can_use_imm32_cross_process()
+    fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
+        view.focus.profile.can_use_imm32_cross_process()
     }
 
-    fn apply(&self, open: bool, _ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, _view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if unsafe { crate::ime::set_ime_open_cross_process(open) } {
             ImeOpenOutcome::Applied
         } else {
@@ -73,27 +58,27 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 pub(crate) struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
-    fn is_applicable(&self, _ctx: &ImeObservationSnapshot<'_>) -> bool {
+    fn is_applicable(&self, _view: &ImeControlView<'_>) -> bool {
         true // 汎用フォールバック: Imm32Unavailable の主戦略 + ImmCross 失敗時の代替
     }
 
-    fn apply(&self, open: bool, ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         // 候補ウィンドウが表示中 → Chrome/Edge の IME は確実に ON。
         // shadow が desync で false になっていても強制送信して desync を修復する。
-        let effective_shadow = ctx.shadow_on || ctx.candidate_visible;
+        let effective_shadow = view.control.shadow_on || view.observed.candidate_visible;
 
         if effective_shadow == open {
             log::debug!(
                 "[apply-ime] shadow={} candidate={} already matches desired={open}, skip VK_KANJI",
-                ctx.shadow_on, ctx.candidate_visible
+                view.control.shadow_on, view.observed.candidate_visible
             );
             ImeOpenOutcome::AlreadyMatched
         } else {
             log::debug!(
                 "[apply-ime] shadow={} candidate={} → desired={open}: SendInput VK_KANJI",
-                ctx.shadow_on, ctx.candidate_visible
+                view.control.shadow_on, view.observed.candidate_visible
             );
-            unsafe { crate::ime::post_kanji_toggle_to_focused(ctx.candidate_visible) };
+            unsafe { crate::ime::post_kanji_toggle_to_focused(view.observed.candidate_visible) };
             ImeOpenOutcome::FallbackSent
         }
     }
@@ -120,17 +105,17 @@ impl ImeController {
     ///
     /// 戦略が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の `SendMessageTimeout` タイムアウト）、
     /// 次の適用可能な戦略にフォールスルーする。
-    pub(crate) fn apply(&self, open: bool, ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome {
+    pub(crate) fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         for strategy in self.strategies {
-            if strategy.is_applicable(ctx) {
-                let outcome = strategy.apply(open, ctx);
+            if strategy.is_applicable(view) {
+                let outcome = strategy.apply(open, view);
                 if outcome != ImeOpenOutcome::Failed {
                     return outcome;
                 }
                 log::debug!("[apply-ime] strategy failed, trying next fallback");
             }
         }
-        log::warn!("[apply-ime] all strategies failed for class={}", ctx.class_name);
+        log::warn!("[apply-ime] all strategies failed for class={}", view.focus.class_name);
         ImeOpenOutcome::Failed
     }
 }

@@ -33,7 +33,7 @@ impl KeyEventPipeline<'_> {
         let shadow_toggled = self.stage_shadow_ime_toggle(&event);
 
         let ctx = runtime::build_input_context(
-            self.app.platform_state.preconditions(),
+            self.app.platform_state.belief(),
             &event.modifier_snapshot,
         );
         let decision = self.app.engine.on_input(event, &ctx);

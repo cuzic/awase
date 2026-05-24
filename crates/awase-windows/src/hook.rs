@@ -572,7 +572,7 @@ fn apply_sync_key_gate(
         app.platform_state.sync_key_gate.activate();
         log::debug!("sync-key guard ON (vk=0x{vk_raw:02X})");
         let ctx = crate::runtime::build_input_context(
-            app.platform_state.preconditions(),
+            app.platform_state.belief(),
             &event.modifier_snapshot,
         );
         app.platform_state.hook.leave_callback();

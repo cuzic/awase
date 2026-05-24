@@ -215,7 +215,7 @@ pub(crate) fn run() -> Result<()> {
                 app.engine.on_command(
                     awase::engine::EngineCommand::SetNgramModel(model),
                     &runtime::build_input_context(
-                        app.platform_state.preconditions(),
+                        app.platform_state.belief(),
                         &modifiers,
                     ),
                 );
@@ -453,7 +453,7 @@ fn reload_config() {
                 speculative_delay_ms: config.general.speculative_delay_ms,
             },
             &runtime::build_input_context(
-                app.platform_state.preconditions(),
+                app.platform_state.belief(),
                 &modifiers,
             ),
         );
@@ -494,7 +494,7 @@ fn reload_config() {
                     },
                 },
                 &runtime::build_input_context(
-                    app.platform_state.preconditions(),
+                    app.platform_state.belief(),
                     &modifiers,
                 ),
             );

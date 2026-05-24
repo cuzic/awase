@@ -6,23 +6,23 @@ use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
-use crate::Preconditions;
+use crate::ImeBelief;
 
 pub use crate::focus::classifier::{AppKindClassifier, ImmCapability, InjectionHint};
 
-/// `Preconditions` と修飾キースナップショットから `InputContext` を構築する。
+/// `ImeBelief` と修飾キースナップショットから `InputContext` を構築する。
 ///
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
 /// タイマー等のイベント非同期パスでは呼び出し元が `read_os_modifiers()` で取得する。
-#[must_use] 
+#[must_use]
 pub const fn build_input_context(
-    preconditions: &Preconditions,
+    belief: &ImeBelief,
     modifiers: &awase::engine::ModifierState,
 ) -> InputContext {
     InputContext {
-        ime_on: preconditions.ime_on(),
-        input_mode: preconditions.input_mode(),
-        is_japanese_ime: preconditions.is_japanese_ime(),
+        ime_on: belief.ime_on(),
+        input_mode: belief.input_mode(),
+        is_japanese_ime: belief.is_japanese_ime(),
         modifiers: *modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
@@ -79,7 +79,7 @@ impl Runtime {
         // SAFETY: `read_os_modifiers` は Win32 `GetKeyState` を呼ぶのみで副作用はない。
         //         メインスレッドから呼ばれるため、スレッド要件を満たしている。
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-        build_input_context(self.platform_state.preconditions(), &modifiers)
+        build_input_context(self.platform_state.belief(), &modifiers)
     }
 
     /// output 層が注入モードを決定するために呼ぶ公開 API。
@@ -292,7 +292,7 @@ impl Runtime {
             .map(|(pid, _)| *pid);
         let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
 
-        // フォーカス離脱: 現在の preconditions を per-HWND キャッシュに保存
+        // フォーカス離脱: 現在の belief を per-HWND キャッシュに保存
         if process_changed {
             if let Some((old_pid, old_class)) =
                 self.executor.platform.focus.last_focus_info.clone()
@@ -301,7 +301,7 @@ impl Runtime {
                     &mut self.executor.platform.focus.hwnd_ime_cache,
                     old_pid,
                     old_class,
-                    self.platform_state.preconditions(),
+                    self.platform_state.belief(),
                 );
             }
         }

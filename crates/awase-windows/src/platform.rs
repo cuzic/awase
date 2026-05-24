@@ -95,13 +95,19 @@ impl PlatformRuntime for WindowsPlatform {
             .last_focus_info
             .as_ref()
             .map_or("", |(_, c)| c.as_str());
-        let ctx = crate::ime_controller::ImeObservationSnapshot {
-            class_name,
-            profile: self.focus.current_app_profile(),
-            shadow_on: self.output.last_applied_ime_on(),
-            candidate_visible: crate::tsf::observer::aggregator::gji_candidate_visible(),
+        let view = crate::state::ImeControlView {
+            focus: crate::state::FocusFacts {
+                class_name,
+                profile: self.focus.current_app_profile(),
+            },
+            observed: crate::state::ObservedState {
+                candidate_visible: crate::tsf::observer::aggregator::gji_candidate_visible(),
+            },
+            control: crate::state::ControlLog {
+                shadow_on: self.output.last_applied_ime_on(),
+            },
         };
-        CONTROLLER.apply(open, &ctx)
+        CONTROLLER.apply(open, &view)
     }
 
     fn post_ime_refresh(&mut self) {
