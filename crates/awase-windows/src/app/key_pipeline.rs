@@ -58,8 +58,8 @@ impl KeyEventPipeline<'_> {
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
-        let gji_last_io_ms =
-            awase_windows::tsf::observer::with_tsf_obs(awase_windows::tsf::observer::TsfObservations::gji_last_io_ms);
+        let obs = FocusProbeSnapshot::capture();
+        let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;
         let shadow_on = self.app.executor.platform.output.last_applied_ime_on();
 
@@ -201,6 +201,20 @@ impl KeyEventPipeline<'_> {
         }
 
         hook_result.callback
+    }
+}
+
+/// フォーカス変更直後の非同期プローブに渡すスナップショット。
+/// 観測値の読み取りは `capture()` に集約し、決定層はフィールドのみ参照する。
+struct FocusProbeSnapshot {
+    pub gji_last_io_ms: u64,
+}
+
+impl FocusProbeSnapshot {
+    fn capture() -> Self {
+        Self {
+            gji_last_io_ms: awase_windows::tsf::observer::aggregator::gji_last_io_ms(),
+        }
     }
 }
 

@@ -95,11 +95,11 @@ impl PlatformRuntime for WindowsPlatform {
             .last_focus_info
             .as_ref()
             .map_or("", |(_, c)| c.as_str());
-        let ctx = crate::ime_controller::ImeApplyContext {
+        let ctx = crate::ime_controller::ImeObservationSnapshot {
             class_name,
             profile: self.focus.current_app_profile(),
             shadow_on: self.output.last_applied_ime_on(),
-            candidate_visible: crate::tsf::observer::with_tsf_obs(|obs| obs.gji_candidate_visible()),
+            candidate_visible: crate::tsf::observer::aggregator::gji_candidate_visible(),
         };
         CONTROLLER.apply(open, &ctx)
     }

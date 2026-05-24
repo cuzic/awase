@@ -9,13 +9,18 @@
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
 //! `ImeController` は `KanjiToggleStrategy` へフォールスルーする。
+//!
+//! ## アーキテクチャ制約
+//! このモジュールは観測値を自ら読んではいけない。
+//! すべての観測値は `ImeObservationSnapshot` 経由で受け取ること。
+//! `crate::tsf::observer::aggregator::*` / `TSF_OBS` への直接アクセス禁止。
 
 use awase::platform::ImeOpenOutcome;
 
 use crate::focus::class_names::AppImeProfile;
 
 /// 戦略が使用するフォーカス情報と現在の IME 状態。
-pub(crate) struct ImeApplyContext<'a> {
+pub(crate) struct ImeObservationSnapshot<'a> {
     /// フォーカスウィンドウのクラス名（ログ用）
     pub class_name: &'a str,
     /// フォーカス中アプリの IME 制御プロファイル
@@ -32,9 +37,9 @@ pub(crate) struct ImeApplyContext<'a> {
 /// IME ON/OFF を実行する戦略インターフェース。
 pub(crate) trait ImeOpenStrategy: Sync {
     /// このコンテキストで戦略が有効かどうか。
-    fn is_applicable(&self, ctx: &ImeApplyContext<'_>) -> bool;
+    fn is_applicable(&self, ctx: &ImeObservationSnapshot<'_>) -> bool;
     /// IME を指定状態に設定しその結果を返す。
-    fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome;
+    fn apply(&self, open: bool, ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome;
 }
 
 // ── ImmCrossProcessStrategy ──────────────────────────────────────
@@ -45,11 +50,11 @@ pub(crate) trait ImeOpenStrategy: Sync {
 pub(crate) struct ImmCrossProcessStrategy;
 
 impl ImeOpenStrategy for ImmCrossProcessStrategy {
-    fn is_applicable(&self, ctx: &ImeApplyContext<'_>) -> bool {
+    fn is_applicable(&self, ctx: &ImeObservationSnapshot<'_>) -> bool {
         ctx.profile.can_use_imm32_cross_process()
     }
 
-    fn apply(&self, open: bool, _ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, _ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome {
         if unsafe { crate::ime::set_ime_open_cross_process(open) } {
             ImeOpenOutcome::Applied
         } else {
@@ -68,11 +73,11 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 pub(crate) struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
-    fn is_applicable(&self, _ctx: &ImeApplyContext<'_>) -> bool {
+    fn is_applicable(&self, _ctx: &ImeObservationSnapshot<'_>) -> bool {
         true // 汎用フォールバック: Imm32Unavailable の主戦略 + ImmCross 失敗時の代替
     }
 
-    fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome {
         // 候補ウィンドウが表示中 → Chrome/Edge の IME は確実に ON。
         // shadow が desync で false になっていても強制送信して desync を修復する。
         let effective_shadow = ctx.shadow_on || ctx.candidate_visible;
@@ -115,7 +120,7 @@ impl ImeController {
     ///
     /// 戦略が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の `SendMessageTimeout` タイムアウト）、
     /// 次の適用可能な戦略にフォールスルーする。
-    pub(crate) fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
+    pub(crate) fn apply(&self, open: bool, ctx: &ImeObservationSnapshot<'_>) -> ImeOpenOutcome {
         for strategy in self.strategies {
             if strategy.is_applicable(ctx) {
                 let outcome = strategy.apply(open, ctx);

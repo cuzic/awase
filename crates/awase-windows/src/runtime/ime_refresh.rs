@@ -201,7 +201,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         // 移動直後でも observer_poll=true を書いてしまう（クロスウィンドウ汚染）。
         {
             let now_ms = crate::hook::current_tick_ms();
-            let last_io = crate::tsf::observer::with_tsf_obs(super::super::tsf::observer::TsfObservations::gji_last_io_ms);
+            let last_io = crate::tsf::observer::aggregator::gji_last_io_ms();
             let last_focus = self.rt.platform_state.focus.last_focus_change_ms;
             let gji_after_focus = last_io > last_focus;
             if last_io > 0 && gji_after_focus && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {

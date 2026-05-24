@@ -137,15 +137,39 @@ impl TsfObservations {
     }
 }
 
-/// `TSF_OBS` へのアクセスを一元化する accessor。
-///
-/// `key_pipeline.rs` 等の app 層から TSF グローバルへアクセスする際は
-/// 直接フィールド参照ではなくこの関数を使うこと。
-pub fn with_tsf_obs<R>(f: impl FnOnce(&TsfObservations) -> R) -> R {
-    f(&TSF_OBS)
-}
+pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 
-pub(crate) static TSF_OBS: TsfObservations = TsfObservations::new();
+/// 観測集約層向けの read/write API。
+///
+/// 決定層（`ime_controller`, `app::key_pipeline` 等）から直接呼び出してはいけない。
+/// 観測値はスナップショット構造体（`ImeObservationSnapshot`, `FocusProbeSnapshot`）に
+/// 集約してから決定層へ渡すこと。
+pub mod aggregator {
+    use super::TSF_OBS;
+    use std::sync::atomic::Ordering::Relaxed;
+
+    pub fn gji_last_io_ms() -> u64 {
+        TSF_OBS.gji_last_io_ms.load(Relaxed)
+    }
+    pub fn gji_monitor_ok() -> bool {
+        TSF_OBS.gji_monitor_ok.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn gji_candidate_visible() -> bool {
+        TSF_OBS.gji_candidate_visible.load(Relaxed)
+    }
+    pub fn gji_candidate_show_seq() -> u32 {
+        TSF_OBS.gji_candidate_show_seq.load(Relaxed)
+    }
+    pub fn focus_namechange_seq() -> u32 {
+        TSF_OBS.focus_namechange_seq.load(Relaxed)
+    }
+    pub fn reset_focus_namechange_seq() {
+        TSF_OBS.focus_namechange_seq.store(0, Relaxed);
+    }
+    pub fn composition_probe_seq_atomic() -> &'static std::sync::atomic::AtomicU32 {
+        &TSF_OBS.composition_probe_seq
+    }
+}
 
 
 // ── GJI プロセス発見 ──
