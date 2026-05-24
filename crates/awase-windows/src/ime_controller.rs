@@ -70,11 +70,23 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
     }
 
     fn apply(&self, open: bool, ctx: &ImeApplyContext<'_>) -> ImeOpenOutcome {
-        if ctx.shadow_on == open {
-            log::debug!("[apply-ime] shadow={} already matches desired={open}, skip VK_KANJI", ctx.shadow_on);
+        // 候補ウィンドウが表示中 → Chrome/Edge の IME は確実に ON。
+        // shadow が desync で false になっていても強制送信してデスクを修復する。
+        let candidate_visible =
+            crate::tsf::observer::with_tsf_obs(|obs| obs.gji_candidate_visible());
+        let effective_shadow = ctx.shadow_on || candidate_visible;
+
+        if effective_shadow == open {
+            log::debug!(
+                "[apply-ime] shadow={} candidate={candidate_visible} already matches desired={open}, skip VK_KANJI",
+                ctx.shadow_on
+            );
             ImeOpenOutcome::AlreadyMatched
         } else {
-            log::debug!("[apply-ime] shadow={} → desired={open}: SendInput VK_KANJI", ctx.shadow_on);
+            log::debug!(
+                "[apply-ime] shadow={} candidate={candidate_visible} → desired={open}: SendInput VK_KANJI",
+                ctx.shadow_on
+            );
             unsafe { crate::ime::post_kanji_toggle_to_focused() };
             ImeOpenOutcome::FallbackSent
         }
