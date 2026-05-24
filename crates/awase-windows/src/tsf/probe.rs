@@ -72,7 +72,7 @@ impl TsfReadinessProbe {
         let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
         let min_deadline = self.warmup_sent_ms.saturating_add(self.min_ms);
 
-        if !TSF_OBS.gji_monitor_ok.load(Ordering::Relaxed) {
+        if !TSF_OBS.gji_monitor_ok.load(Ordering::Acquire) {
             return now >= max_deadline;
         }
         if now < min_deadline {
@@ -91,9 +91,8 @@ impl TsfReadinessProbe {
                     self.settled_at_ms.set(now);
                     return false;
                 }
-                let margin = max_deadline.saturating_sub(now).min(POST_IDLE_MARGIN_MS);
                 let since_settled = now.saturating_sub(settled_at);
-                return since_settled >= margin;
+                return since_settled >= POST_IDLE_MARGIN_MS;
             }
             self.settled_at_ms.set(0); // GJI が再びアクティブになった
         }

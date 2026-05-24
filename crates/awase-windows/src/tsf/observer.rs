@@ -98,9 +98,9 @@ impl TsfObservations {
         self.gji_last_io_ms.load(Ordering::Relaxed)
     }
 
-    /// GJI モニターが利用可能かを読み取る（Relaxed）。
+    /// GJI モニターが利用可能かを読み取る（Acquire）。
     pub fn gji_monitor_ok(&self) -> bool {
-        self.gji_monitor_ok.load(Ordering::Relaxed)
+        self.gji_monitor_ok.load(Ordering::Acquire)
     }
 
     /// OBJ_NAMECHANGE カウンタを読み取る（Relaxed）。
@@ -331,8 +331,8 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
                 log::info!("[gji-monitor] attached to GJI process");
-                TSF_OBS.gji_monitor_ok.store(true, Ordering::Relaxed);
                 TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
+                TSF_OBS.gji_monitor_ok.store(true, Ordering::Release);
                 monitor = Some(m);
             } else {
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
