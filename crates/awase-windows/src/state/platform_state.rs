@@ -161,7 +161,10 @@ impl PlatformState {
         &self.ime.recovery
     }
 
-    // ── ImeBelief への pub 読み取りパススルー ──
+    // ── ImeBelief / ImeRecoveryState への便利読み取りメソッド ──
+    //
+    // `belief()` / `recovery()` を直接使っても同等だが、呼び出しサイトを短くするために置く。
+    // `build_input_context(&ps.belief(), …)` のような「構造体丸ごと」の渡し方は belief() を使う。
 
     /// IME が ON かどうかを返す。
     #[inline]
@@ -198,8 +201,6 @@ impl PlatformState {
         self.ime.belief.prev_conversion_mode()
     }
 
-    // ── ImeRecoveryState への pub 読み取りパススルー ──
-
     /// IME 状態検出の連続失敗回数を返す。
     #[inline]
     #[must_use]
@@ -215,12 +216,6 @@ impl PlatformState {
     }
 
     // ── ImeBelief への書き込みメソッド ──
-
-    /// `ime_on` を設定する（ソース付き）。
-    #[inline]
-    pub const fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
-        self.ime.belief.set_ime_on(value, source);
-    }
 
     /// `input_mode` を設定する。
     #[inline]
@@ -241,19 +236,6 @@ impl PlatformState {
     }
 
     // ── ImeRecoveryState への書き込みメソッド ──
-
-    /// `ime_detect_miss_count` をインクリメントする（saturating）。
-    #[inline]
-    pub const fn increment_ime_detect_miss_count(&mut self) {
-        self.ime.recovery.ime_detect_miss_count =
-            self.ime.recovery.ime_detect_miss_count.saturating_add(1);
-    }
-
-    /// `ime_detect_miss_count` を 0 にリセットする。
-    #[inline]
-    pub const fn reset_ime_detect_miss_count(&mut self) {
-        self.ime.recovery.ime_detect_miss_count = 0;
-    }
 
     /// `force_on_broken_app_bootstrap` ガードをセットする。
     #[inline]
@@ -318,12 +300,6 @@ impl PlatformState {
         self.ime.ime_observations.observer_poll =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
-    }
-
-    /// `observer_poll` スロットの最新観測値を読み取る。
-    #[must_use]
-    pub fn observer_poll_value(&self) -> Option<bool> {
-        self.ime.ime_observations.observer_poll.as_ref().map(|obs| obs.value)
     }
 
     /// フォーカス変更時に `ime_observations` の全スロットをクリアする。
