@@ -193,18 +193,32 @@ impl<'a> ImeRefreshPipeline<'a> {
         // GJI I/O 観測を observer_poll 経由で judgement に流す（観測 → 判断の正規ルート）。
         // バックグラウンドスレッドが TSF_OBS.gji_last_io_ms を更新していれば
         // Chrome の IME が ON であると判断し preconditions.ime_on に反映する。
+        //
+        // ガード: フォーカス変更より後の GJI I/O のみを採用する。
+        // 直前に WezTerm 等 TSF ウィンドウで IME を使っていた場合、フォーカス変更前の
+        // GJI I/O が GJI_CONFIRM_WINDOW_MS (500ms) 内に残っており、Chrome/Edge に
+        // 移動直後でも observer_poll=true を書いてしまう（クロスウィンドウ汚染）。
         {
             let now_ms = crate::hook::current_tick_ms();
             let last_io = crate::tsf::observer::with_tsf_obs(super::super::tsf::observer::TsfObservations::gji_last_io_ms);
-            if last_io > 0 && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
+            let last_focus = self.rt.platform_state.focus.last_focus_change_ms;
+            let gji_after_focus = last_io > last_focus;
+            if last_io > 0 && gji_after_focus && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
                 log::debug!(
-                    "[gji-poll] GJI I/O observed {}ms ago → observer_poll=true",
-                    now_ms.saturating_sub(last_io)
+                    "[gji-poll] GJI I/O observed {}ms ago (after focus+{}ms) → observer_poll=true",
+                    now_ms.saturating_sub(last_io),
+                    last_io.saturating_sub(last_focus),
                 );
                 self.rt.platform_state.write_observer_poll(
                     true,
                     now_ms,
                     self.rt.engine.is_user_enabled(),
+                );
+            } else if last_io > 0 && !gji_after_focus {
+                log::debug!(
+                    "[gji-poll] GJI I/O {}ms ago predates focus change ({}ms before focus) → skipped",
+                    now_ms.saturating_sub(last_io),
+                    last_focus.saturating_sub(last_io),
                 );
             }
         }

@@ -382,11 +382,12 @@ impl Runtime {
     pub fn spawn_ime_refresh(&mut self) {
         self.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
 
-        // phase3_7 (T≈270ms) より先に eager warmup F2 を送る。これにより打鍵時の cold path で
-        // used_eager_path=true となり unicode fallback が有効になる（先頭文字欠け対策）。
-        if self.platform_state.focus.focus_transition_pending {
-            self.executor.platform.output.send_eager_tsf_warmup();
-        }
+        // NOTE: ここで send_eager_tsf_warmup() を呼ばない。
+        // focus_transition_pending=true の時点では injection_mode が前ウィンドウ（WezTerm 等）
+        // の stale な Tsf のままであり、新しいウィンドウが Chrome/Edge の場合に誤って
+        // VK_DBE_HIRAGANA を送信して Chrome の IME を ON にしてしまうバグがあった。
+        // eager warmup は post_focus_change_snapshot (run_with_prefetched 内) で injection_mode
+        // 確定後に正しく送信される。
 
         win32_async::spawn_local(async {
             let focus = crate::focus::probe::run_focus_probe_async().await;
