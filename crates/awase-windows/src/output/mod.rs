@@ -324,9 +324,8 @@ impl Output {
     ///
     /// `last_applied_ime_on` が false（IME OFF）または TSF モード以外では何もしない。
     ///
-    /// `eager_warmup_sent_ms` は既に設定済みの場合は更新しない（FocusChange 側のより古い
-    /// タイムスタンプを優先する）。これにより NativeF2Consumed 後も FocusChange 時刻から
-    /// の経過時間で wait 計算ができ、長期アイドル後の TSF 初期化問題を解消する。
+    /// `eager_warmup_sent_ms` を現在時刻で更新する。NativeF2Consumed 等の前に
+    /// `mark_composition_cold` が呼ばれて 0 にリセットされるため二重更新は発生しない。
     pub fn send_eager_tsf_warmup(&self) {
         if !self.tsf_readiness().can_warmup() {
             return;
@@ -748,6 +747,11 @@ impl Output {
         deferred_vks: &[(u16, bool)],
         guard: OutputActiveGuard,
     ) -> bool {
+        // If gate is Bypass (non-TSF window), skip TSF injection
+        if self.tsf_gate.state() == crate::tsf::TsfGateState::Bypass {
+            log::debug!("[do-transmit] gate=Bypass, skipping TSF injection");
+            return true;
+        }
         let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return true;
