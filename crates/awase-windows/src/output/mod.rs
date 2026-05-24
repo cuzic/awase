@@ -75,7 +75,7 @@ pub(crate) enum TsfProbePhase {
     },
     /// OBJ_NAMECHANGE 待ち（GJI probe + needs_settle_check の次フェーズ）
     NameChangeWait {
-        nc_baseline: u32,
+        nc_baseline: crate::tsf::observer::NamechangeBaseline,
         deadline_ms: u64,
         fresh_f2_ms: u64,
         probe_settled: bool,
@@ -331,7 +331,7 @@ impl Output {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
-        crate::tsf::observer::tsf_obs().reset_focus_namechange_seq();
+        crate::tsf::observer::reset_namechange_seq();
         // VK_DBE_HIRAGANA (F2) を送信: VK_IME_ON (0x16) は IME ON 状態をセットするだけで
         // TSF composition context の初期化をトリガーしない。WezTerm は物理 F2 受信時に
         // TSF composition を初期化するため、同等の VK_DBE_HIRAGANA を送る必要がある。
@@ -528,9 +528,9 @@ impl Output {
         log::debug!("[tsf-probe] cold={cold_seq} GjiProbe 完了 ({elapsed}ms)");
 
         if needs_settle_check {
-            let gji_last = crate::tsf::observer::tsf_obs().gji_last_io_ms();
+            let gji_last = crate::tsf::observer::gji_last_io_ms();
             let probe_settled = gji_last >= probe.warmup_sent_ms;
-            let gji_monitor_ok = crate::tsf::observer::tsf_obs().gji_monitor_ok();
+            let gji_monitor_ok = crate::tsf::observer::gji_monitor_healthy();
             let is_ime_init_cold = cold_reason.requires_settle();
             if (!probe_settled || is_ime_init_cold) && gji_monitor_ok {
                 return self.start_namechange_wait(
@@ -558,10 +558,10 @@ impl Output {
     ) -> bool {
         const VK_DBE_HIRAGANA: u16 = 0xF2;
 
-        let nc_baseline = crate::tsf::observer::tsf_obs().focus_namechange_seq();
+        let nc_baseline = crate::tsf::observer::namechange_baseline();
         let settle_reason = if probe_settled { "NativeF2Consumed/SetOpenTrue" } else { "probe timeout" };
         log::debug!(
-            "[tsf-probe] cold={cold_seq} {settle_reason} → fresh F2 + NameChangeWait (nc_seq={nc_baseline})"
+            "[tsf-probe] cold={cold_seq} {settle_reason} → fresh F2 + NameChangeWait"
         );
         let refresh = [
             make_tsf_key_input(VK_DBE_HIRAGANA, false),
@@ -591,7 +591,7 @@ impl Output {
         cold_seq: u32,
         deferred_vks: Vec<(u16, bool)>,
         guard: OutputActiveGuard,
-        nc_baseline: u32,
+        nc_baseline: crate::tsf::observer::NamechangeBaseline,
         deadline_ms: u64,
         fresh_f2_ms: u64,
         probe_settled: bool,
@@ -600,7 +600,7 @@ impl Output {
         used_eager_path: bool,
     ) -> bool {
         let now = crate::hook::current_tick_ms();
-        let nc_fired = crate::tsf::observer::tsf_obs().focus_namechange_seq() != nc_baseline;
+        let nc_fired = nc_baseline.fired();
         let timed_out = now >= deadline_ms;
 
         if !nc_fired && !timed_out {
@@ -755,7 +755,7 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_seq };
 
         {
-            let last_io = crate::tsf::observer::tsf_obs().gji_last_io_ms();
+            let last_io = crate::tsf::observer::gji_last_io_ms();
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             // SAFETY: IMM32 API; called from message-loop thread.
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
@@ -774,7 +774,7 @@ impl Output {
         Self::send_deferred_probe_vks_from(deferred_vks, true);
         self.mark_composition_warm();
 
-        let gji_active = crate::tsf::observer::tsf_obs().gji_monitor_ok();
+        let gji_active = crate::tsf::observer::gji_monitor_healthy();
         if prepend_f2_warmup && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;

@@ -298,7 +298,7 @@ impl Output {
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.iter().enumerate() {
-            let last_io = crate::tsf::observer::tsf_obs().gji_last_io_ms();
+            let last_io = crate::tsf::observer::gji_last_io_ms();
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let vks: Vec<String> = run.iter().map(|&(v, s)| {
                 if s { format!("S{v:02X}") } else { format!("{v:02X}") }
@@ -376,7 +376,7 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_seq };
 
         {
-            let last_io = crate::tsf::observer::tsf_obs().gji_last_io_ms();
+            let last_io = crate::tsf::observer::gji_last_io_ms();
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
             log::debug!(
@@ -396,7 +396,7 @@ impl Output {
         // Probing 状態の warm 投機送信: GJI 監視が有効なら LiteralDetect で検証する。
         // (1) raw TSF literal 検出と回復, (2) advance_tsf_probe が on_ready() を呼んで
         //     ゲートを Ready に進める、という 2 つの目的を兼ねる。
-        let gji_active = crate::tsf::observer::tsf_obs().gji_monitor_ok();
+        let gji_active = crate::tsf::observer::gji_monitor_healthy();
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
