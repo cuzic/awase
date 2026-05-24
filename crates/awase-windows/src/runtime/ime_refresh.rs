@@ -5,6 +5,20 @@ use crate::focus::classifier::ImmCapability;
 use super::Runtime;
 use crate::tuning::{TYPING_IDLE_MS, GJI_CONFIRM_WINDOW_MS};
 
+// ── IoMode ──
+
+/// IME リフレッシュパイプラインの入出力モード。
+///
+/// - `Sync`: 同期モード。`detect_and_update_focus` + `poll_and_classify_ime` を直接呼ぶ。
+/// - `Prefetched`: pre-fetch 済みモード。`apply_focus_probe_result` + `classify_fetched_snapshot` を使う。
+enum IoMode<'m> {
+    Sync,
+    Prefetched {
+        focus: Option<crate::focus::probe::FocusSnapshot>,
+        ime: &'m crate::ime::ImeSnapshot,
+    },
+}
+
 // ── ImeReadStrategy ──
 
 /// IME 読み取り方針の決定結果
@@ -36,10 +50,31 @@ impl<'a> ImeRefreshPipeline<'a> {
         Self { rt }
     }
 
-    pub(super) fn run(mut self) {
-        let focus = self.stage_focus();
+    pub(super) fn run(self) {
+        self.execute(IoMode::Sync);
+    }
+
+    /// pre-fetch 済みデータを使ってパイプラインを実行（blocking なし）。
+    /// spawn_local タスクから呼ぶ。
+    pub(super) fn run_with_prefetched(
+        self,
+        focus_probe: Option<crate::focus::probe::FocusSnapshot>,
+        ime_snap: &crate::ime::ImeSnapshot,
+    ) {
+        self.execute(IoMode::Prefetched { focus: focus_probe, ime: ime_snap });
+    }
+
+    fn execute(mut self, mode: IoMode<'_>) {
+        // IoMode を分解して各ステージに必要な型として渡す。
+        // focus_probe: None = 同期取得、Some(x) = pre-fetch 済み
+        // ime_snap:    None = 同期ポーリング、Some(s) = pre-fetch 済みスナップショット
+        let (focus_probe, ime_snap) = match mode {
+            IoMode::Sync => (None, None),
+            IoMode::Prefetched { focus, ime } => (Some(focus), Some(ime)),
+        };
+        let focus = self.stage_focus(focus_probe);
         let strategy = self.stage_strategy(&focus);
-        self.stage_observe(&focus, &strategy);
+        self.stage_observe(&focus, &strategy, ime_snap);
         self.stage_notify();
     }
 
@@ -49,9 +84,15 @@ impl<'a> ImeRefreshPipeline<'a> {
     // Phase 2.5: IMM ブリッジ非対応クラスの判定（Phase 2 の前に実行する必要あり）
     // Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）
 
-    fn stage_focus(&mut self) -> FocusInfo {
+    fn stage_focus(
+        &mut self,
+        focus_probe: Option<Option<crate::focus::probe::FocusSnapshot>>,
+    ) -> FocusInfo {
         // Phase 1: フォーカス先の検出・分類
-        let focus_changed = unsafe { self.rt.detect_and_update_focus() };
+        let focus_changed = match focus_probe {
+            None => unsafe { self.rt.detect_and_update_focus() },
+            Some(probe) => self.rt.apply_focus_probe_result(probe),
+        };
 
         // Phase 2.5: IMM ブリッジ非対応クラスの判定
         //
@@ -84,7 +125,12 @@ impl<'a> ImeRefreshPipeline<'a> {
     // Phase 3.5: 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
     // Phase 3.7: 診断スナップショット（フォーカス変更後）
 
-    fn stage_observe(&mut self, focus: &FocusInfo, strategy: &ImeReadStrategy) {
+    fn stage_observe(
+        &mut self,
+        focus: &FocusInfo,
+        strategy: &ImeReadStrategy,
+        ime_snap: Option<&crate::ime::ImeSnapshot>,
+    ) {
         match strategy {
             ImeReadStrategy::SkipTyping => {
                 // タイピング中は何もしない
@@ -95,7 +141,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             ImeReadStrategy::OsPoll => {
                 // Phase 3: IME 状態の再取得
                 let miss_before = self.rt.platform_state.ime_detect_miss_count();
-                self.poll_and_learn(miss_before);
+                self.poll_and_learn(miss_before, ime_snap);
             }
         }
 
@@ -183,7 +229,7 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     // ── ブラックリストクラス: OS 読み取りをスキップ ──
     //
-    // preconditions.ime_on はシャドウ更新 (hook 経由) が直接書き換える。
+    // belief.ime_on はシャドウ更新 (hook 経由) が直接書き換える。
     // miss_count はインクリメントしない（既知の失敗なので「検出失敗」ではない）。
     //
     // 書き込みは「shadow が ON のときだけ」に限定する (ADR 029 の force-ON 原則)。
@@ -193,7 +239,7 @@ impl<'a> ImeRefreshPipeline<'a> {
 
         // GJI I/O 観測を observer_poll 経由で judgement に流す（観測 → 判断の正規ルート）。
         // バックグラウンドスレッドが TSF_OBS.gji_last_io_ms を更新していれば
-        // Chrome の IME が ON であると判断し preconditions.ime_on に反映する。
+        // Chrome の IME が ON であると判断し belief.ime_on に反映する。
         //
         // ガード: フォーカス変更より後の GJI I/O のみを採用する。
         // 直前に WezTerm 等 TSF ウィンドウで IME を使っていた場合、フォーカス変更前の
@@ -243,24 +289,37 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     // ── IME 状態のポーリングと学習 ──
 
-    fn poll_and_learn(&mut self, miss_before: u32) {
+    fn poll_and_learn(&mut self, miss_before: u32, ime_snap: Option<&crate::ime::ImeSnapshot>) {
         // [診断] observe 前のスナップショット（差分検出用）
         let ime_on_before_poll = self.rt.platform_state.ime_on();
         let input_mode_before_poll = self.rt.platform_state.input_mode();
 
-        let observer_out = unsafe {
-            crate::observer::ime_observer::poll_and_classify_ime(
-                self.rt.platform_state.ime_on(),
-                self.rt.platform_state.is_force_on_guard_active(),
-                self.rt.platform_state.input_mode(),
-                self.rt.platform_state.prev_conversion_mode(),
-            )
+        let observer_out = match ime_snap {
+            None => unsafe {
+                crate::observer::ime_observer::poll_and_classify_ime(
+                    self.rt.platform_state.ime_on(),
+                    self.rt.platform_state.is_force_on_guard_active(),
+                    self.rt.platform_state.input_mode(),
+                    self.rt.platform_state.prev_conversion_mode(),
+                )
+            },
+            Some(snap) => {
+                let now_ms = crate::hook::current_tick_ms();
+                crate::observer::ime_observer::classify_fetched_snapshot(
+                    snap,
+                    now_ms,
+                    self.rt.platform_state.ime_on(),
+                    self.rt.platform_state.is_force_on_guard_active(),
+                    self.rt.platform_state.input_mode(),
+                    self.rt.platform_state.prev_conversion_mode(),
+                )
+            }
         };
         self.rt.platform_state.apply_ime_update(&observer_out);
 
         let miss_after = self.rt.platform_state.ime_detect_miss_count();
 
-        // observer_poll → preconditions.ime_on に優先度付き解決
+        // observer_poll → belief.ime_on に優先度付き解決
         self.rt.platform_state.apply_ime_observations(self.rt.engine.is_user_enabled());
 
         self.log_poll_diff(
@@ -408,7 +467,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         log::debug!("[composition] focus change → marking cold");
         // フォーカス変更直後の IMM 実測値で last_applied ログを初期化する。
         // これにより KanjiToggleStrategy が次回 apply_ime_open を呼ぶときに
-        // preconditions の最新値と比較して重複送信を回避できる。
+        // belief の最新値と比較して重複送信を回避できる。
         self.rt
             .executor
             .platform
@@ -451,75 +510,5 @@ impl<'a> ImeRefreshPipeline<'a> {
     fn reschedule(&mut self) {
         self.rt
             .schedule_ime_refresh(u64::from(self.rt.platform_state.focus.ime_poll_interval_ms));
-    }
-
-    /// pre-fetch 済みデータを使ってパイプラインを実行（blocking なし）。
-    /// spawn_local タスクから呼ぶ。
-    pub(super) fn run_with_prefetched(
-        mut self,
-        focus_probe: Option<crate::focus::probe::FocusSnapshot>,
-        ime_snap: &crate::ime::ImeSnapshot,
-    ) {
-        // Stage 1: フォーカス検出（pre-fetch 版）
-        let focus_changed = self.rt.apply_focus_probe_result(focus_probe);
-        let skip_imm_query = self.resolve_skip_imm_query();
-        if focus_changed {
-            self.notify_focus_changed(skip_imm_query);
-        }
-        let focus = FocusInfo { focus_changed, skip_imm_query };
-
-        // Stage 2: 読み取り方針の決定
-        let strategy = self.stage_strategy(&focus);
-
-        // Stage 3: IME 状態の観測（pre-fetch 版）
-        match strategy {
-            ImeReadStrategy::SkipTyping => {}
-            ImeReadStrategy::Blacklist => {
-                self.apply_blacklist_ssot();
-            }
-            ImeReadStrategy::OsPoll => {
-                let miss_before = self.rt.platform_state.ime_detect_miss_count();
-
-                // [診断] classify_fetched_snapshot 前のスナップショット（差分検出用）
-                let ime_on_before_poll = self.rt.platform_state.ime_on();
-                let input_mode_before_poll = self.rt.platform_state.input_mode();
-
-                // apply pre-fetched IME snap
-                let now_ms = crate::hook::current_tick_ms();
-                let observer_out = {
-                    crate::observer::ime_observer::classify_fetched_snapshot(
-                        ime_snap,
-                        now_ms,
-                        self.rt.platform_state.ime_on(),
-                        self.rt.platform_state.is_force_on_guard_active(),
-                        self.rt.platform_state.input_mode(),
-                        self.rt.platform_state.prev_conversion_mode(),
-                    )
-                };
-                self.rt.platform_state.apply_ime_update(&observer_out);
-
-                let miss_after = self.rt.platform_state.ime_detect_miss_count();
-
-                self.rt
-                    .platform_state
-                    .apply_ime_observations(self.rt.engine.is_user_enabled());
-
-                self.log_poll_diff(
-                    ime_on_before_poll,
-                    input_mode_before_poll,
-                    miss_before,
-                    miss_after,
-                );
-                self.learn_imm_capability_from_result(miss_before, miss_after);
-                self.try_force_on_bootstrap();
-            }
-        }
-
-        if focus.focus_changed {
-            self.post_focus_change_snapshot(focus.skip_imm_query);
-        }
-
-        // Stage 4: Engine 通知と次回スケジュール
-        self.stage_notify();
     }
 }
