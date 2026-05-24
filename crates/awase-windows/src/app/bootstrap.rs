@@ -17,22 +17,22 @@ use awase::engine::{Engine, NicolaFsm};
 use awase::engine::SpecialKeyCombos;
 use awase::types::{RawKeyEvent, VkCode};
 use awase::yab::YabLayout;
-use awase_windows::vk::vk_name_to_code;
+use crate::vk::vk_name_to_code;
 
-use awase_windows::executor;
-use awase_windows::hook;
-use awase_windows::hook::CallbackResult;
-use awase_windows::ime;
-use awase_windows::output::Output;
-use awase_windows::platform;
-use awase_windows::runtime;
-use awase_windows::tray;
-use awase_windows::tray::SystemTray;
-use awase_windows::{
+use crate::executor;
+use crate::hook;
+use crate::hook::CallbackResult;
+use crate::ime;
+use crate::output::Output;
+use crate::platform;
+use crate::runtime;
+use crate::tray;
+use crate::tray::SystemTray;
+use crate::{
     LayoutEntry, Runtime, RUNTIME, ELEVATED, TIMER_HOOK_WATCHDOG, with_app, with_app_ref,
 };
 
-use awase_windows::MAIN_THREAD_ID;
+use crate::MAIN_THREAD_ID;
 
 use super::{
     HotKeyGuard, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RapidPressTracker,
@@ -99,7 +99,7 @@ pub(super) fn init_logging(debug_console: bool) {
 /// `auto_start` の値に応じて Task Scheduler への登録/解除を行う。
 /// "ask" の場合はダイアログで確認し、結果を config.toml に保存する。
 pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
-    use awase_windows::autostart;
+    use crate::autostart;
 
     match config.general.auto_start.as_str() {
         "ask" => {
@@ -238,7 +238,7 @@ pub(super) fn install_hooks_and_hotkeys_validated(
 
 /// トグルホットキーを登録する
 fn register_toggle_hotkey(hotkey_str: &str) -> Result<HotKeyGuard> {
-    let (modifiers, vk) = awase_windows::vk::parse_hotkey(hotkey_str)
+    let (modifiers, vk) = crate::vk::parse_hotkey(hotkey_str)
         .context(format!("Invalid toggle hotkey format: {hotkey_str}"))?;
     // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
     unsafe {
@@ -310,9 +310,9 @@ pub(super) fn initialize_app(
     sync_off_keys: Vec<VkCode>,
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
-    all_keymaps: Vec<awase_windows::keymap::CompiledKeymap>,
+    all_keymaps: Vec<crate::keymap::CompiledKeymap>,
 ) {
-    let mut ps = awase_windows::PlatformState::new();
+    let mut ps = crate::PlatformState::new();
     ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
     ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(&mut ps.hook_config, left_thumb_vk, right_thumb_vk);
@@ -340,7 +340,7 @@ pub(super) fn initialize_app(
                 output: Output::new(config.general.output_mode),
                 tray,
                 focus: runtime::AppKindClassifier::new(config.app_overrides.clone()),
-                timer: awase_windows::timer::Win32Timer::new(),
+                timer: crate::timer::Win32Timer::new(),
                 engine_on_ime_vk,
                 engine_off_ime_vk,
                 suppress_engine_state_key: false,
@@ -422,7 +422,7 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    if awase_windows::win32::non_null_hwnd(hwnd).is_none() {
+    if crate::win32::non_null_hwnd(hwnd).is_none() {
         return;
     }
 
@@ -431,8 +431,8 @@ unsafe extern "system" fn win_event_proc(
         app.executor.platform.output.on_focus_change_tsf();
         // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
         app.executor.platform.timer.set(
-            awase_windows::TIMER_TSF_GATE,
-            std::time::Duration::from_millis(awase_windows::tsf::WARMUP_TIMEOUT_MS),
+            crate::TIMER_TSF_GATE,
+            std::time::Duration::from_millis(crate::tsf::WARMUP_TIMEOUT_MS),
         );
         let debounce_ms = u64::from(app.platform_state.focus.focus_debounce_ms);
         app.schedule_ime_refresh(debounce_ms);
@@ -443,7 +443,7 @@ unsafe extern "system" fn win_event_proc(
 pub(super) fn install_ctrl_handler() -> Result<()> {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
         use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-        use awase_windows::{QUIT_REQUESTED, MAIN_THREAD_ID};
+        use crate::{QUIT_REQUESTED, MAIN_THREAD_ID};
         QUIT_REQUESTED.store(true, Ordering::SeqCst);
         let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
         if tid != 0 {
@@ -602,7 +602,7 @@ pub(super) fn run_all() -> Result<()> {
     );
     engine.set_thumb_vks(left_thumb_vk, right_thumb_vk);
 
-    let compiled_keymaps = awase_windows::keymap::compile_keymaps(&config.keymaps);
+    let compiled_keymaps = crate::keymap::compile_keymaps(&config.keymaps);
     initialize_app(
         engine,
         system_tray,
@@ -631,7 +631,7 @@ pub(super) fn run_all() -> Result<()> {
         log::warn!("{e}");
     }
     let _focus_hook_guard = install_focus_hook().map_err(|e| log::warn!("{e}")).ok();
-    let _obs_hook_guards = awase_windows::tsf::observer::install_observation_hooks();
+    let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     let _ = with_app(|app| {
@@ -642,8 +642,8 @@ pub(super) fn run_all() -> Result<()> {
             .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(10));
     });
 
-    let (_uia_worker, uia_tx) = awase_windows::focus::uia::spawn_uia_worker();
-    let _gji_worker = awase_windows::tsf::observer::start_monitor_thread();
+    let (_uia_worker, uia_tx) = crate::focus::uia::spawn_uia_worker();
+    let _gji_worker = crate::tsf::observer::start_monitor_thread();
     let _ = with_app(|app| app.executor.platform.focus.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
