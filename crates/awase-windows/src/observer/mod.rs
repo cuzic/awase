@@ -5,4 +5,5 @@
 //! Engine（lib クレート）は観測結果型のみを受け取り、Win32 API を一切呼ばない。
 
 pub mod focus_observer;
+pub mod gji_observer;
 pub mod ime_observer;

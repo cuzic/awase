@@ -3,7 +3,7 @@ use awase::platform::PlatformRuntime;
 
 use crate::focus::classifier::ImmCapability;
 use super::Runtime;
-use crate::tuning::{TYPING_IDLE_MS, GJI_CONFIRM_WINDOW_MS};
+use crate::tuning::TYPING_IDLE_MS;
 
 // ── IoMode ──
 
@@ -136,7 +136,15 @@ impl<'a> ImeRefreshPipeline<'a> {
                 // タイピング中は何もしない
             }
             ImeReadStrategy::Blacklist => {
-                self.apply_blacklist_ssot();
+                log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
+                let obs = crate::observer::gji_observer::observe_gji_after_focus(
+                    self.rt.platform_state.focus.last_focus_change_ms,
+                );
+                if let Some(v) = obs.observer_poll_value {
+                    self.rt.platform_state.write_observer_poll(
+                        v, obs.now_ms, self.rt.engine.is_user_enabled(),
+                    );
+                }
             }
             ImeReadStrategy::OsPoll => {
                 // Phase 3: IME 状態の再取得
@@ -157,6 +165,8 @@ impl<'a> ImeRefreshPipeline<'a> {
     // Phase 5: 次回ポーリングをスケジュール
 
     fn stage_notify(&mut self) {
+        // Phase 4a: IMM-broken アプリの force-ON（Blacklist パス専用）
+        self.apply_force_on_for_imm_broken();
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.notify_engine_refresh();
 
@@ -224,66 +234,6 @@ impl<'a> ImeRefreshPipeline<'a> {
             ImeReadStrategy::Blacklist
         } else {
             ImeReadStrategy::OsPoll
-        }
-    }
-
-    // ── ブラックリストクラス: OS 読み取りをスキップ ──
-    //
-    // belief.ime_on はシャドウ更新 (hook 経由) が直接書き換える。
-    // miss_count はインクリメントしない（既知の失敗なので「検出失敗」ではない）。
-    //
-    // 書き込みは「shadow が ON のときだけ」に限定する (ADR 029 の force-ON 原則)。
-
-    fn apply_blacklist_ssot(&mut self) {
-        log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
-
-        // GJI I/O 観測を observer_poll 経由で judgement に流す（観測 → 判断の正規ルート）。
-        // バックグラウンドスレッドが TSF_OBS.gji_last_io_ms を更新していれば
-        // Chrome の IME が ON であると判断し belief.ime_on に反映する。
-        //
-        // ガード: フォーカス変更より後の GJI I/O のみを採用する。
-        // 直前に WezTerm 等 TSF ウィンドウで IME を使っていた場合、フォーカス変更前の
-        // GJI I/O が GJI_CONFIRM_WINDOW_MS (500ms) 内に残っており、Chrome/Edge に
-        // 移動直後でも observer_poll=true を書いてしまう（クロスウィンドウ汚染）。
-        {
-            let now_ms = crate::hook::current_tick_ms();
-            let last_io = crate::tsf::observer::tsf_obs().gji_last_io_ms();
-            let last_focus = self.rt.platform_state.focus.last_focus_change_ms;
-            let gji_after_focus = last_io > last_focus;
-            if last_io > 0 && gji_after_focus && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
-                log::debug!(
-                    "[gji-poll] GJI I/O observed {}ms ago (after focus+{}ms) → observer_poll=true",
-                    now_ms.saturating_sub(last_io),
-                    last_io.saturating_sub(last_focus),
-                );
-                self.rt.platform_state.write_observer_poll(
-                    true,
-                    now_ms,
-                    self.rt.engine.is_user_enabled(),
-                );
-            } else if last_io > 0 && !gji_after_focus {
-                log::debug!(
-                    "[gji-poll] GJI I/O {}ms ago predates focus change ({}ms before focus) → skipped",
-                    now_ms.saturating_sub(last_io),
-                    last_focus.saturating_sub(last_io),
-                );
-            }
-        }
-
-        if self.rt.engine.is_user_enabled()
-            && self.rt.platform_state.is_japanese_ime()
-            && self.rt.platform_state.ime_on()
-        {
-            let _success = self.rt.executor.platform.set_ime_open(true);
-            log::trace!("Blacklist SSOT write: ime_on=true (force-ON only)");
-            // input_mode も SSOT として維持: IMM broken アプリでは検出不能のため
-            // stale な ObservedKana が engine を無効化しないよう AssumedRomaji に補正する。
-            if !self.rt.platform_state.input_mode().is_romaji_capable() {
-                log::info!("Blacklist SSOT: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-                self.rt.platform_state.set_input_mode(
-                    InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
-                );
-            }
         }
     }
 
@@ -488,6 +438,34 @@ impl<'a> ImeRefreshPipeline<'a> {
         if !self.rt.executor.platform.output.last_applied_ime_on() {
             let _ = self.rt.executor.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (last_applied OFF → enforce IME OFF on new window)");
+        }
+    }
+
+    // ── IMM-broken アプリの force-ON（Blacklist パス専用）──
+    //
+    // OS 側の IME が belief と乖離するのを防ぐ。
+    // Blacklist 以外のパスでは skip_imm_query=false なので re_check_predicate が false になる。
+
+    fn apply_force_on_for_imm_broken(&mut self) {
+        // Blacklist パス以外は何もしない（条件を再チェックして判断）
+        if !self.resolve_skip_imm_query() {
+            return;
+        }
+        if !(self.rt.engine.is_user_enabled()
+            && self.rt.platform_state.is_japanese_ime()
+            && self.rt.platform_state.ime_on())
+        {
+            return;
+        }
+        let _success = self.rt.executor.platform.set_ime_open(true);
+        log::trace!("Blacklist force-ON: set_ime_open(true)");
+        // input_mode も SSOT として維持: IMM broken アプリでは検出不能のため
+        // stale な ObservedKana が engine を無効化しないよう AssumedRomaji に補正する。
+        if !self.rt.platform_state.input_mode().is_romaji_capable() {
+            log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
+            self.rt.platform_state.set_input_mode(
+                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
+            );
         }
     }
 
