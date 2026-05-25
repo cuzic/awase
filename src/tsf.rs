@@ -45,7 +45,11 @@ use std::time::Duration;
 
 use timed_fsm::{Response, TimedStateMachine};
 
+use crate::gate::HoldingGate;
 use crate::types::RawKeyEvent;
+
+// 後方互換: 旧 `crate::tsf::GateAction` パスを維持する re-export。
+pub use crate::gate::GateAction;
 
 /// PendingWarmup フォールバックタイムアウト（ms）。
 pub const WARMUP_TIMEOUT_MS: u64 = 500;
@@ -66,14 +70,6 @@ pub enum GateEvent {
     BypassConfirmed,
     /// TSF プローブ（advance_tsf_probe）完了
     ProbeComplete,
-}
-
-/// TsfGate が発行するアクション。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::module_name_repetitions)]
-pub enum GateAction {
-    /// 保留キーをドレインすること（呼び出し元が `INPUT_DEFER.replay_later` を呼ぶ）
-    DrainHeld,
 }
 
 /// TsfGate のタイマー ID。
@@ -148,7 +144,7 @@ impl TimedStateMachine for TsfGateMachine {
             // どの状態でもフォーカス変更 → PendingWarmup
             (_, FocusChange) => {
                 self.state = TsfGateState::PendingWarmup;
-                Response::consume()
+                Response::emit_one(GateAction::InitiateHold)
                     .with_timer(GateTimer::WarmupTimeout, Duration::from_millis(WARMUP_TIMEOUT_MS))
             }
             // PendingWarmup + TSF 確定 → Probing + DrainHeld
@@ -200,8 +196,7 @@ impl TimedStateMachine for TsfGateMachine {
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct TsfGate {
-    machine: TsfGateMachine,
-    held: Vec<RawKeyEvent>,
+    inner: HoldingGate<TsfGateMachine, RawKeyEvent>,
 }
 
 impl TsfGate {
@@ -209,23 +204,23 @@ impl TsfGate {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            machine: TsfGateMachine::new(),
-            held: Vec::new(),
+            inner: HoldingGate::new(TsfGateMachine::new(), HELD_MAX),
         }
     }
 
     /// 現在のステートを返す。
     #[must_use]
     pub const fn state(&self) -> TsfGateState {
-        self.machine.state()
+        self.inner.machine.state()
     }
 
     /// フォーカス変更時に呼ぶ。`PendingWarmup` に遷移し `held` をクリアする。
     ///
     /// 呼び出し後に `TIMER_TSF_GATE` を `WARMUP_TIMEOUT_MS` ms でセットすること。
     pub fn on_focus_change(&mut self) {
-        let _ = self.machine.on_event(GateEvent::FocusChange);
-        self.held.clear();
+        // `InitiateHold` アクションを `HoldingGate` が受けて
+        // 自動的に held クリア + 保留モード ON を行う。
+        let _ = self.inner.on_event(GateEvent::FocusChange);
         log::debug!("[tsf-gate] focus change → PendingWarmup (held cleared)");
     }
 
@@ -236,16 +231,14 @@ impl TsfGate {
     /// すでに `Probing`/`Ready`/`Bypass` なら空 `Vec` を返す（再呼び出しされても safe）。
     #[must_use]
     pub fn on_tsf_confirmed(&mut self) -> Vec<RawKeyEvent> {
-        let resp = self.machine.on_event(GateEvent::TsfConfirmed);
-        if resp.actions.contains(&GateAction::DrainHeld) {
+        let (_, drained) = self.inner.on_event(GateEvent::TsfConfirmed);
+        if !drained.is_empty() {
             log::debug!(
                 "[tsf-gate] TSF confirmed → Probing (releasing {} held keys)",
-                self.held.len()
+                drained.len()
             );
-            std::mem::take(&mut self.held)
-        } else {
-            Vec::new()
         }
+        drained
     }
 
     /// 非 TSF モードと確定した場合に呼ぶ。
@@ -254,22 +247,20 @@ impl TsfGate {
     /// 呼び出し後に `TIMER_TSF_GATE` を kill すること。
     #[must_use]
     pub fn on_bypass(&mut self) -> Vec<RawKeyEvent> {
-        let resp = self.machine.on_event(GateEvent::BypassConfirmed);
-        if resp.actions.contains(&GateAction::DrainHeld) {
+        let (_, drained) = self.inner.on_event(GateEvent::BypassConfirmed);
+        if !drained.is_empty() {
             log::debug!(
                 "[tsf-gate] → Bypass (releasing {} held keys)",
-                self.held.len()
+                drained.len()
             );
-            std::mem::take(&mut self.held)
-        } else {
-            Vec::new()
         }
+        drained
     }
 
     /// TSF プローブ完了時に呼ぶ。`Probing` → `Ready` に遷移する。
     pub fn on_ready(&mut self) {
-        let _ = self.machine.on_event(GateEvent::ProbeComplete);
-        if self.machine.state() == TsfGateState::Ready {
+        let _ = self.inner.on_event(GateEvent::ProbeComplete);
+        if self.inner.machine.state() == TsfGateState::Ready {
             log::debug!("[tsf-gate] TSF probe complete → Ready");
         }
     }
@@ -280,12 +271,8 @@ impl TsfGate {
     /// 保留キーを返す。
     #[must_use]
     pub fn on_warmup_timeout(&mut self) -> Vec<RawKeyEvent> {
-        let resp = self.machine.on_timeout(GateTimer::WarmupTimeout);
-        if resp.actions.contains(&GateAction::DrainHeld) {
-            std::mem::take(&mut self.held)
-        } else {
-            Vec::new()
-        }
+        let (_, drained) = self.inner.on_timeout(GateTimer::WarmupTimeout);
+        drained
     }
 
     /// キーイベントをゲートで処理する。
@@ -295,25 +282,23 @@ impl TsfGate {
     ///
     /// `PendingWarmup` 状態中のみ保留する。上限超過時はキーを通過させてログ警告を出す（入力ロスを防ぐ）。
     pub fn try_hold(&mut self, event: RawKeyEvent) -> bool {
-        if self.machine.state() != TsfGateState::PendingWarmup {
+        if !self.inner.is_holding() {
             return false;
         }
-        if self.held.len() >= HELD_MAX {
-            log::warn!(
-                "[tsf-gate] held queue full (max={HELD_MAX}), passing through vk=0x{:02X} {:?}",
-                event.vk_code.0,
-                event.event_type,
+        let vk = event.vk_code.0;
+        let etype = event.event_type;
+        let ok = self.inner.try_hold(event);
+        if ok {
+            log::trace!(
+                "[tsf-gate] held vk=0x{vk:02X} {etype:?} (total={})",
+                self.inner.len(),
             );
-            return false;
+        } else {
+            log::warn!(
+                "[tsf-gate] held queue full (max={HELD_MAX}), passing through vk=0x{vk:02X} {etype:?}",
+            );
         }
-        self.held.push(event);
-        log::trace!(
-            "[tsf-gate] held vk=0x{:02X} {:?} (total={})",
-            event.vk_code.0,
-            event.event_type,
-            self.held.len(),
-        );
-        true
+        ok
     }
 }
 
@@ -607,7 +592,7 @@ mod tests {
         use crate::types::{ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, VkCode};
 
         let mut gate = TsfGate::new();
-        gate.machine.on_event(GateEvent::FocusChange); // PendingWarmup へ
+        gate.on_focus_change(); // PendingWarmup へ（HoldingGate 内部で holding=true）
 
         let dummy = RawKeyEvent {
             vk_code: VkCode(0x41), // 'A'
@@ -621,11 +606,10 @@ mod tests {
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
         };
-        gate.held.push(dummy);
+        assert!(gate.try_hold(dummy));
 
         let drained = gate.on_warmup_timeout();
         assert_eq!(drained.len(), 1);
-        assert!(gate.held.is_empty());
         assert_eq!(gate.state(), TsfGateState::Bypass);
     }
 

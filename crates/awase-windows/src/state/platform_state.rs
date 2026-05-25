@@ -130,7 +130,7 @@ impl PlatformState {
             },
             last_hook_activity_ms: 0,
             hook_event_count: 0,
-            sync_key_gate: SyncKeyGate { active: false, deferred_keys: Vec::new() },
+            sync_key_gate: SyncKeyGate::new(),
             active_keymaps: Vec::new(),
         }
     }

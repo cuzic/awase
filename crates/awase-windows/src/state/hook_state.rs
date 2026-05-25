@@ -1,3 +1,4 @@
+use awase::gate::{HoldingGate, SyncKeyGateEvent, SyncKeyGateMachine};
 use awase::types::RawKeyEvent;
 
 /// フックルーティング状態（キーペア追跡・再入ガード）
@@ -189,30 +190,57 @@ pub struct HookConfig {
 /// | 保留対象 | sync key 後に到着した全キー | フォーカス直後に到着した全キー |
 ///
 /// 両者は独立に動作する（同時に active になることもある）。
+type SyncKeyItem = (RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState);
+
+/// `SyncKeyGate` 内のバッファ最大件数。
+const SYNC_KEY_CAPACITY: usize = 10;
+
 #[derive(Debug)]
 pub struct SyncKeyGate {
-    pub active: bool,
-    pub deferred_keys: Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)>,
+    inner: HoldingGate<SyncKeyGateMachine, SyncKeyItem>,
+    /// `deactivate()` 時にドレインされたキーを `drain_all()` まで保持する。
+    ///
+    /// `deactivate()` は `HoldingGate` に `Deactivate` イベントを送り保留キーをドレインするが、
+    /// 旧 API では `deactivate()` と `drain_all()` が別タイミングで呼ばれていた。
+    /// その call site を維持するため、ドレイン結果は一度ここに stash しておき
+    /// `drain_all()` で取り出す。
+    pending_drain: Vec<SyncKeyItem>,
 }
 
 impl SyncKeyGate {
+    /// 初期状態（Inactive）でゲートを生成する。
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: HoldingGate::new(SyncKeyGateMachine::new(), SYNC_KEY_CAPACITY),
+            pending_drain: Vec::new(),
+        }
+    }
+
     /// ゲートをアクティブにする（sync key KeyDown 検出時）。
-    pub const fn activate(&mut self) {
-        self.active = true;
+    pub fn activate(&mut self) {
+        let _ = self.inner.on_event(SyncKeyGateEvent::Activate);
     }
 
     /// ゲートを非アクティブにする（sync key KeyUp 検出時 / IME 再観測後）。
-    pub const fn deactivate(&mut self) {
-        self.active = false;
+    ///
+    /// `HoldingGate` がドレインした保留キーは `pending_drain` に stash され、
+    /// 次の `drain_all()` で取り出される。
+    pub fn deactivate(&mut self) {
+        let (_, drained) = self.inner.on_event(SyncKeyGateEvent::Deactivate);
+        if !drained.is_empty() {
+            // すでに pending_drain にキーがある場合は連結（通常は起きないが安全のため）。
+            self.pending_drain.extend(drained);
+        }
     }
 
     /// ゲートがアクティブかどうかを返す。
     #[must_use]
     pub const fn is_active(&self) -> bool {
-        self.active
+        self.inner.is_holding()
     }
 
-    /// キーをバッファに追加する。10件キャップ超過時は `false` を返しガードを解除する。
+    /// キーをバッファに追加する。`SYNC_KEY_CAPACITY` 件キャップ超過時は `false` を返しガードを解除する。
     ///
     /// `false` が返った場合、呼び出し元はガードを強制解除すること。
     pub fn try_push(
@@ -220,27 +248,39 @@ impl SyncKeyGate {
         event: RawKeyEvent,
         phys: awase::engine::input_tracker::PhysicalKeyState,
     ) -> bool {
-        if self.deferred_keys.len() < 10 {
-            self.deferred_keys.push((event, phys));
-            true
-        } else {
-            false
-        }
+        self.inner.try_hold((event, phys))
     }
 
     /// バッファされた全キーを取り出して返す。
-    pub fn drain_all(&mut self) -> Vec<(RawKeyEvent, awase::engine::input_tracker::PhysicalKeyState)> {
-        self.deferred_keys.drain(..).collect()
+    ///
+    /// `deactivate()` 経由でドレイン済みのキー（`pending_drain`）と、
+    /// まだゲート内に残っているキー（`is_active()=true` のまま呼ばれた場合）を
+    /// すべて結合して返す。
+    pub fn drain_all(&mut self) -> Vec<SyncKeyItem> {
+        let mut result = std::mem::take(&mut self.pending_drain);
+        // ゲートが active のままなら、Deactivate イベントを送って残りもドレインする。
+        if self.inner.is_holding() {
+            let (_, drained) = self.inner.on_event(SyncKeyGateEvent::Deactivate);
+            result.extend(drained);
+        }
+        result
     }
 
     /// バッファにキーが残っているかどうかを返す。
     #[must_use]
-    pub const fn has_deferred_keys(&self) -> bool {
-        !self.deferred_keys.is_empty()
+    pub fn has_deferred_keys(&self) -> bool {
+        !self.pending_drain.is_empty() || !self.inner.is_empty()
     }
 
-    /// バッファをクリアする（panic_reset 用）。
+    /// バッファをクリアする（`panic_reset` 用）。
     pub fn clear(&mut self) {
-        self.deferred_keys.clear();
+        self.inner.clear();
+        self.pending_drain.clear();
+    }
+}
+
+impl Default for SyncKeyGate {
+    fn default() -> Self {
+        Self::new()
     }
 }

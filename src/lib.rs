@@ -1,5 +1,6 @@
 pub mod config;
 pub mod engine;
+pub mod gate;
 pub mod kana_table;
 pub mod ngram;
 pub mod platform;
