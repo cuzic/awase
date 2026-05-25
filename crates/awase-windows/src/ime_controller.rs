@@ -55,12 +55,17 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// GJI 専用の一方向 IME 制御戦略。
 ///
 /// VK_KANJI（トグル）の代わりに GJI 固有のキーを使うことで shadow desync の影響を排除する:
-/// - ON → F13（直接入力モード時にひらがなへ切り替え、既に ON なら no-op）
-/// - OFF → Ctrl+Shift+Delete（入力バッファ空のとき IME OFF、既に OFF なら no-op）
+/// - ON  → F13（DirectInput 時にひらがなへ切り替え、既に ON なら no-op）
+/// - OFF → F14（Precomposition/Composition/Conversion 時に IME OFF）
+///
+/// F13/F14 は実キーボードに存在しないためブラウザショートカットと衝突しない。
+/// GJI の config1.db に以下を登録することで有効になる:
+///   `DirectInput\tF13\tIMEOn`（デフォルト登録済み）
+///   `Precomposition\tF14\tIMEOff`
+///   `Composition\tF14\tIMEOff`
+///   `Conversion\tF14\tIMEOff`
 ///
 /// `gji_monitor_ok=true`（GJI プロセス検出済み）の場合のみ適用可能。
-/// GJI 以外の IME（MS-IME 等）では Ctrl+Shift+Delete がテキスト削除になる可能性があるため
-/// `KanjiToggleStrategy` へのフォールスルーで処理する。
 pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
@@ -78,9 +83,17 @@ impl ImeOpenStrategy for GjiDirectStrategy {
             log::debug!("[apply-ime] GJI direct: F13 (IME ON)");
             unsafe { crate::ime::post_gji_ime_on() };
         } else {
-            // IME OFF は常に送信（冪等）— shadow desync 時に VK_KANJI が逆トグルするバグを回避
+            // shadow が既に OFF なら F14 を送信しない（F14 は DirectInput でパススルーされるが
+            // 無害なキーのため必須ではない。送信省略で効率化）。
+            let effective_shadow = view.control.shadow_on
+                || view.observed.candidate_visible
+                || view.observed.candidate_was_seen;
+            if !effective_shadow {
+                log::debug!("[apply-ime] GJI direct: shadow OFF, skip F14");
+                return ImeOpenOutcome::AlreadyMatched;
+            }
             log::debug!(
-                "[apply-ime] GJI direct: Ctrl+Shift+Delete (IME OFF, candidate={})",
+                "[apply-ime] GJI direct: F14 (IME OFF, candidate={})",
                 view.observed.candidate_visible
             );
             unsafe { crate::ime::post_gji_ime_off(view.observed.candidate_visible) };
