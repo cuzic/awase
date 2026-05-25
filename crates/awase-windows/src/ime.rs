@@ -139,8 +139,8 @@ pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, GetKeyState,
         VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
-        VK_SHIFT,   VK_LSHIFT,  VK_RSHIFT,
-        VK_MENU,    VK_LMENU,   VK_RMENU,
+        VK_LSHIFT,  VK_RSHIFT,
+        VK_LMENU,   VK_RMENU,
     };
     const VK_KANJI: u16 = 0x19;
     const VK_RETURN: u16 = 0x0D;

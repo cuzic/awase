@@ -30,7 +30,7 @@ use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
 
 type VkSequence = Vec<(u16, bool)>;
-use crate::tsf::probe::{GjiProbeOutcome, LiteralDetector, TsfReadinessProbe};
+use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 
 /// 単調増加ミリ秒クロック。`tick_with_clock` でテスト可能なタイミング注入に使う。

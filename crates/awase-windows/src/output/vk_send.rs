@@ -364,7 +364,7 @@ impl Output {
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
-            let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+            let guard = OutputActiveGuard::begin();
             self.install_pending_tsf(TsfProbeMachine::new_literal_detect(
                 romaji,
                 cold_seq,

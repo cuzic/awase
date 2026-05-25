@@ -53,6 +53,7 @@ pub struct TsfReadinessProbe {
 }
 
 /// [`TsfReadinessProbe::check_now`] が `true` を返したときに合わせて返す観測スナップショット。
+#[derive(Debug)]
 pub struct GjiProbeOutcome {
     /// `warmup_sent_ms` からの経過時間（ms）
     pub elapsed_ms: u64,
