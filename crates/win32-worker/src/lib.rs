@@ -1,21 +1,40 @@
-//! Windows ネイティブのワーカースレッド管理クレート。
+//! RAII worker thread with Win32 Event-based graceful shutdown.
 //!
-//! # 概要
-//! `WorkerThread` は Windows の手動リセットイベントオブジェクトを使って
-//! ワーカースレッドに停止を通知する RAII ラッパー。
-//! Drop 時に自動でシャットダウンシグナルを送り、join する。
+//! [`WorkerThread`] wraps a background thread and a Win32 manual-reset event
+//! object. When the handle is dropped (or [`WorkerThread::shutdown`] is called
+//! explicitly), the event fires and the thread is joined — no leaked threads.
 //!
-//! # 使い方
-//! ```ignore
+//! The worker receives a [`ShutdownToken`] and calls [`ShutdownToken::sleep_ms`]
+//! instead of [`std::thread::sleep`]. The sleep returns [`ControlFlow::Break`]
+//! immediately when shutdown is signalled, so the thread can exit cleanly without
+//! waiting for the full sleep interval to expire.
+//!
+//! # Quick start
+//!
+//! ```no_run
+//! use win32_worker::WorkerThread;
+//!
 //! let worker = WorkerThread::spawn("my-worker", |token| {
 //!     loop {
-//!         do_work();
-//!         // thread::sleep の代わり: シャットダウン通知で早期に抜ける
-//!         if token.sleep_ms(10).is_break() { break; }
+//!         // ... do work ...
+//!
+//!         // Sleep for 100 ms, but wake immediately on shutdown.
+//!         if token.sleep_ms(100).is_break() {
+//!             break;
+//!         }
 //!     }
 //! });
-//! // worker が drop されると自動的に停止・join される
+//!
+//! // Dropping `worker` signals shutdown and joins the thread.
 //! ```
+//!
+//! # Why Win32 Event instead of `AtomicBool`?
+//!
+//! `WaitForSingleObject` with a manual-reset event gives **precise
+//! millisecond-level sleep interruption** without polling. With `AtomicBool` +
+//! `thread::sleep`, the earliest the thread can notice shutdown is after the
+//! current sleep interval expires. With [`ShutdownToken::sleep_ms`], the thread
+//! wakes within the OS timer resolution (typically ≤ 15 ms).
 
 #![cfg(windows)]
 #![allow(unsafe_code)]
@@ -27,11 +46,11 @@ use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 
-// ── 内部: Windows Event オブジェクトの Arc ラッパー ──
+// ── Internal: Arc wrapper for a Win32 Event handle ──
 
 struct EventHandle(HANDLE);
 
-// HANDLE はプロセス内グローバルリソースなのでスレッド間送信可能。
+// HANDLE is a process-global resource and safe to send across threads.
 unsafe impl Send for EventHandle {}
 unsafe impl Sync for EventHandle {}
 
@@ -41,19 +60,35 @@ impl Drop for EventHandle {
     }
 }
 
-// ── 公開 API ──
+// ── Public API ──
 
-/// ワーカースレッドに渡すシャットダウントークン。
+/// Shutdown notification token passed to the worker closure.
 ///
-/// `sleep_ms` でスリープしながらシャットダウン通知を待てる。
+/// Use [`sleep_ms`](Self::sleep_ms) instead of [`std::thread::sleep`] so the
+/// worker can be interrupted immediately when shutdown is requested.
+///
+/// `ShutdownToken` is [`Clone`], so it can be shared across helper functions
+/// or subtasks within the same worker thread.
 #[derive(Clone)]
 pub struct ShutdownToken(Arc<EventHandle>);
 
 impl ShutdownToken {
-    /// `ms` ミリ秒スリープする。
+    /// Sleep for `ms` milliseconds, or until shutdown is signalled.
     ///
-    /// シャットダウンが通知された場合は早期に `ControlFlow::Break(())` を返す。
-    /// タイムアウトした場合は `ControlFlow::Continue(())` を返す。
+    /// Returns [`ControlFlow::Break`]`(())` if shutdown was signalled before
+    /// the timeout elapsed, or [`ControlFlow::Continue`]`(())` on normal timeout.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use win32_worker::WorkerThread;
+    /// WorkerThread::spawn("example", |token| {
+    ///     loop {
+    ///         // work ...
+    ///         if token.sleep_ms(50).is_break() { break; }
+    ///     }
+    /// });
+    /// ```
     pub fn sleep_ms(&self, ms: u32) -> ControlFlow<()> {
         let result = unsafe { WaitForSingleObject((self.0).0, ms) };
         if result == WAIT_OBJECT_0 {
@@ -63,7 +98,18 @@ impl ShutdownToken {
         }
     }
 
-    /// シャットダウンが既に通知されているか確認する（ノンブロッキング）。
+    /// Returns `true` if shutdown has already been signalled (non-blocking).
+    ///
+    /// Useful for checking shutdown at the top of a loop that does not sleep:
+    ///
+    /// ```no_run
+    /// # use win32_worker::WorkerThread;
+    /// WorkerThread::spawn("checker", |token| {
+    ///     while !token.is_shutdown() {
+    ///         // fast poll work ...
+    ///     }
+    /// });
+    /// ```
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
         unsafe { WaitForSingleObject((self.0).0, 0) == WAIT_OBJECT_0 }
@@ -76,23 +122,41 @@ impl std::fmt::Debug for ShutdownToken {
     }
 }
 
-/// ワーカースレッドの RAII ハンドル。
+/// RAII handle for a named worker thread.
 ///
-/// Drop 時にシャットダウンイベントを発火し、スレッドの終了を join して待つ。
+/// Dropping this handle (or calling [`shutdown`](Self::shutdown)) signals the
+/// worker to stop and blocks until it has exited.
+///
+/// # Example
+///
+/// ```no_run
+/// use win32_worker::WorkerThread;
+///
+/// {
+///     let _worker = WorkerThread::spawn("poller", |token| {
+///         while token.sleep_ms(10).is_continue() {
+///             // poll every 10 ms
+///         }
+///     });
+///     // ... do other work ...
+/// } // _worker drops here → shutdown signalled → thread joined
+/// ```
 pub struct WorkerThread {
     event: Arc<EventHandle>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl WorkerThread {
-    /// 名前付きワーカースレッドを起動する。
+    /// Spawn a named worker thread.
     ///
-    /// `f` は [`ShutdownToken`] を受け取り、`token.sleep_ms()` で停止を検知できる。
+    /// `f` receives a [`ShutdownToken`] and should check it regularly via
+    /// [`ShutdownToken::sleep_ms`] or [`ShutdownToken::is_shutdown`].
     ///
     /// # Panics
-    /// `CreateEventW` または `thread::Builder::spawn` が失敗した場合。
+    ///
+    /// Panics if `CreateEventW` or `thread::Builder::spawn` fails.
     pub fn spawn(name: &str, f: impl FnOnce(ShutdownToken) + Send + 'static) -> Self {
-        // 手動リセット、初期状態は非シグナル
+        // Manual-reset event, initially non-signalled.
         let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
         assert!(!raw.is_null(), "CreateEventW failed");
 
@@ -107,9 +171,9 @@ impl WorkerThread {
         Self { event, handle: Some(handle) }
     }
 
-    /// シャットダウンを通知してスレッド終了を待つ。
+    /// Signal shutdown and join the thread.
     ///
-    /// Drop でも同じ処理が行われるが、明示的に呼ぶ場合に使う。
+    /// Equivalent to dropping the handle, but makes the intent explicit.
     pub fn shutdown(mut self) {
         self.do_shutdown();
     }

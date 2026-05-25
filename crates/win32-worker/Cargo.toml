@@ -2,6 +2,13 @@
 name = "win32-worker"
 version = "0.1.0"
 edition = "2021"
+description = "RAII worker thread with Win32 Event-based graceful shutdown"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cuzic/win32-worker"
+keywords = ["windows", "worker-thread", "shutdown", "win32", "threading"]
+categories = ["os::windows-apis", "concurrency"]
+readme = "README.md"
+rust-version = "1.61"
 
 [lib]
 name = "win32_worker"
@@ -24,6 +31,5 @@ missing_debug_implementations = "warn"
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
-cargo_common_metadata = "allow"
 multiple_crate_versions = "allow"
 doc_markdown = "allow"
