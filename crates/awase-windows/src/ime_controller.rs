@@ -65,7 +65,7 @@ pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.focus.profile.is_kanji_toggle_target() && view.observed.gji_monitor_ok
+        view.focus.profile.uses_kanji_toggle() && view.observed.gji_monitor_ok
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
