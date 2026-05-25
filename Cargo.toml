@@ -25,7 +25,7 @@ log = "0.4"
 env_logger = "0.11"
 anyhow = "1"
 flate2 = "1"
-timed-fsm = { path = "crates/timed-fsm" }
+timed-fsm = { path = "crates/timed-fsm", version = "0.2.0" }
 smallvec = "1.15.1"
 
 [lints.rust]
