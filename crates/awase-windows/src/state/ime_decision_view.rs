@@ -37,8 +37,8 @@ pub(crate) struct ObservedState {
     /// フォーカスプローブの grace 期間判定に使用する（将来の判断ロジック用）。
     #[allow(dead_code)]
     pub gji_last_io_ms: u64,
-    /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）（将来の判断ロジック用）。
-    #[allow(dead_code)]
+    /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
+    /// `GjiDirectStrategy` の `is_applicable` ゲートに使用する。
     pub gji_monitor_ok: bool,
     /// GJI candidate が SHOW になってから次の `apply_ime_open` 完了まで `true`。
     /// `shadow=false` なのに candidate が表示された desync を `KanjiToggleStrategy` が検出するために使う。

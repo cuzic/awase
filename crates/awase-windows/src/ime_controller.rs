@@ -5,10 +5,12 @@
 //!
 //! # 戦略リスト（優先順）
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
-//! 2. `KanjiToggleStrategy`     — 汎用フォールバック（Imm32Unavailable の主戦略 + ImmCross 失敗時の fallback）
+//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F13/Ctrl+Shift+Delete、shadow desync 耐性あり）
+//! 3. `KanjiToggleStrategy`     — 汎用フォールバック（非 GJI の Imm32Unavailable + ImmCross 失敗時）
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
-//! `ImeController` は `KanjiToggleStrategy` へフォールスルーする。
+//! `ImeController` は次の適用可能な戦略へフォールスルーする。
+//! GJI が検出されている場合は `GjiDirectStrategy` が `KanjiToggleStrategy` より先に選択される。
 //!
 //! ## アーキテクチャ制約
 //! このモジュールは観測値を自ら読んではいけない。
@@ -45,6 +47,45 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
         } else {
             ImeOpenOutcome::Failed
         }
+    }
+}
+
+// ── GjiDirectStrategy ────────────────────────────────────────────
+
+/// GJI 専用の一方向 IME 制御戦略。
+///
+/// VK_KANJI（トグル）の代わりに GJI 固有のキーを使うことで shadow desync の影響を排除する:
+/// - ON → F13（直接入力モード時にひらがなへ切り替え、既に ON なら no-op）
+/// - OFF → Ctrl+Shift+Delete（入力バッファ空のとき IME OFF、既に OFF なら no-op）
+///
+/// `gji_monitor_ok=true`（GJI プロセス検出済み）の場合のみ適用可能。
+/// GJI 以外の IME（MS-IME 等）では Ctrl+Shift+Delete がテキスト削除になる可能性があるため
+/// `KanjiToggleStrategy` へのフォールスルーで処理する。
+pub(crate) struct GjiDirectStrategy;
+
+impl ImeOpenStrategy for GjiDirectStrategy {
+    fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
+        view.focus.profile.is_kanji_toggle_target() && view.observed.gji_monitor_ok
+    }
+
+    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        if open {
+            if view.control.shadow_on {
+                // shadow が ON を示しており F13 は no-op と見込まれるためスキップ
+                log::debug!("[apply-ime] GJI direct: shadow ON, skip F13");
+                return ImeOpenOutcome::AlreadyMatched;
+            }
+            log::debug!("[apply-ime] GJI direct: F13 (IME ON)");
+            unsafe { crate::ime::post_gji_ime_on() };
+        } else {
+            // IME OFF は常に送信（冪等）— shadow desync 時に VK_KANJI が逆トグルするバグを回避
+            log::debug!(
+                "[apply-ime] GJI direct: Ctrl+Shift+Delete (IME OFF, candidate={})",
+                view.observed.candidate_visible
+            );
+            unsafe { crate::ime::post_gji_ime_off(view.observed.candidate_visible) };
+        }
+        ImeOpenOutcome::Applied
     }
 }
 
@@ -95,16 +136,17 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
 
 /// 戦略リストを走査して最初の有効な戦略を選択・実行するコントローラ。
 pub(crate) struct ImeController {
-    strategies: [&'static dyn ImeOpenStrategy; 2],
+    strategies: [&'static dyn ImeOpenStrategy; 3],
 }
 
 static IMM_STRATEGY: ImmCrossProcessStrategy = ImmCrossProcessStrategy;
+static GJI_STRATEGY: GjiDirectStrategy = GjiDirectStrategy;
 static KANJI_STRATEGY: KanjiToggleStrategy = KanjiToggleStrategy;
 
 impl ImeController {
     pub(crate) const fn new() -> Self {
         Self {
-            strategies: [&IMM_STRATEGY, &KANJI_STRATEGY],
+            strategies: [&IMM_STRATEGY, &GJI_STRATEGY, &KANJI_STRATEGY],
         }
     }
 

@@ -69,30 +69,67 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_SHIFT, VK_LSHIFT, VK_MENU, VK_LMENU,
+        GetAsyncKeyState, GetKeyState,
+        VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
+        VK_SHIFT, VK_LSHIFT, VK_RSHIFT,
+        VK_MENU, VK_LMENU, VK_RMENU,
     };
     const VK_KANJI: u16 = 0x19;
 
-    // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
+    // SAFETY: GetAsyncKeyState / GetKeyState はスレッドセーフで任意のスレッドから呼び出せる。
     let held_ctrl  = unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0;
     let held_shift = unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0))   } as u16 & 0x8000 != 0;
     let held_alt   = unsafe { GetAsyncKeyState(i32::from(VK_MENU.0))    } as u16 & 0x8000 != 0;
 
+    // 診断: L/R 個別キー状態を取得して Ctrl が左右どちらか特定する。
+    // GetAsyncKeyState = ハードウェア入力キュー上の現在状態（物理キー）。
+    // GetKeyState      = このスレッドのメッセージキューが最後に処理した状態（論理キー、SendInput 反映済み）。
+    // Edge が VK_KANJI 受信時に参照するのは GetKeyState に近い値のため両方を記録する。
+    let gas_lctrl  = unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0;
+    let gas_rctrl  = unsafe { GetAsyncKeyState(i32::from(VK_RCONTROL.0)) } as u16 & 0x8000 != 0;
+    let gks_ctrl   = unsafe { GetKeyState(i32::from(VK_CONTROL.0))       } as u16 & 0x8000 != 0;
+    let gks_lctrl  = unsafe { GetKeyState(i32::from(VK_LCONTROL.0))      } as u16 & 0x8000 != 0;
+    let gks_rctrl  = unsafe { GetKeyState(i32::from(VK_RCONTROL.0))      } as u16 & 0x8000 != 0;
+    let gas_lshift = unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0))   } as u16 & 0x8000 != 0;
+    let gas_rshift = unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0))   } as u16 & 0x8000 != 0;
+    let gas_lalt   = unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0))    } as u16 & 0x8000 != 0;
+    let gas_ralt   = unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0))    } as u16 & 0x8000 != 0;
+
+    log::debug!(
+        "[ime-fallback] key-state pre-send: \
+         ctrl(gas={held_ctrl} L={gas_lctrl} R={gas_rctrl}) \
+         gks(ctrl={gks_ctrl} L={gks_lctrl} R={gks_rctrl}) \
+         shift(gas={held_shift} L={gas_lshift} R={gas_rshift}) \
+         alt(gas={held_alt} L={gas_lalt} R={gas_ralt})"
+    );
+
     let mut inputs = Vec::with_capacity(10);
+    let mut seq_desc = String::new();
 
     // 押下中の修飾キーを VK_KANJI より先に解放する
-    if held_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  IME_KANJI_MARKER)); }
-    if held_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  IME_KANJI_MARKER)); }
-    if held_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  IME_KANJI_MARKER)); }
+    if held_ctrl  {
+        inputs.push(make_key_input_ex(VK_CONTROL.0, true,  IME_KANJI_MARKER));
+        seq_desc.push_str(&format!("ctrl-up(0x{:02X}) ", VK_CONTROL.0));
+    }
+    if held_shift {
+        inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  IME_KANJI_MARKER));
+        seq_desc.push_str(&format!("shift-up(0x{:02X}) ", VK_SHIFT.0));
+    }
+    if held_alt   {
+        inputs.push(make_key_input_ex(VK_MENU.0,    true,  IME_KANJI_MARKER));
+        seq_desc.push_str(&format!("alt-up(0x{:02X}) ", VK_MENU.0));
+    }
 
     if candidate_visible {
         const VK_RETURN: u16 = 0x0D;
         inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
         inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
+        seq_desc.push_str("ret-dn ret-up ");
     }
 
     inputs.push(make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER));
     inputs.push(make_key_input_ex(VK_KANJI, true,  IME_KANJI_MARKER));
+    seq_desc.push_str("kanji-dn kanji-up ");
 
     // まだ物理的に押下中の修飾キーを復元する
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
@@ -103,21 +140,174 @@ pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
     let still_alt   = held_alt   && (unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0))    } as u16 & 0x8000 != 0
                                   || unsafe { GetAsyncKeyState(i32::from(VK_MENU.0))     } as u16 & 0x8000 != 0);
 
-    if still_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, false, IME_KANJI_MARKER)); }
-    if still_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   false, IME_KANJI_MARKER)); }
-    if still_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    false, IME_KANJI_MARKER)); }
+    if still_ctrl  {
+        inputs.push(make_key_input_ex(VK_CONTROL.0, false, IME_KANJI_MARKER));
+        seq_desc.push_str(&format!("ctrl-dn(0x{:02X}) ", VK_CONTROL.0));
+    }
+    if still_shift {
+        inputs.push(make_key_input_ex(VK_SHIFT.0,   false, IME_KANJI_MARKER));
+        seq_desc.push_str(&format!("shift-dn(0x{:02X}) ", VK_SHIFT.0));
+    }
+    if still_alt   {
+        inputs.push(make_key_input_ex(VK_MENU.0,    false, IME_KANJI_MARKER));
+        seq_desc.push_str(&format!("alt-dn(0x{:02X}) ", VK_MENU.0));
+    }
 
     log::debug!(
-        "[ime-fallback] SendInput VK_KANJI (0x19) IME toggle \
-         (mod-release: ctrl={held_ctrl} shift={held_shift} alt={held_alt}, \
-         candidate_return={candidate_visible})"
+        "[ime-fallback] SendInput VK_KANJI toggle: \
+         release(ctrl={held_ctrl} shift={held_shift} alt={held_alt}) \
+         restore(ctrl={still_ctrl} shift={still_shift} alt={still_alt}) \
+         candidate={candidate_visible} seq=[{seq_desc}]total={} events",
+        inputs.len()
     );
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
     //         size_of::<INPUT>() は正確な構造体サイズを返す。
     //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-    if sent == 0 {
-        log::warn!("[ime-fallback] SendInput(VK_KANJI) failed");
+    if sent as usize != inputs.len() {
+        log::warn!("[ime-fallback] SendInput(VK_KANJI) sent {sent}/{} events", inputs.len());
+    }
+}
+
+/// GJI 専用 IME ON: F13 を送信してひらがなモードに切り替える。
+///
+/// GJI の直接入力モード（IME OFF 状態）で F13 を押すとひらがな入力に切り替わる。
+/// 既に ON の場合は no-op（冪等）。候補ウィンドウ表示中も no-op（入力は継続）。
+///
+/// VK_KANJI と異なりトグルではないため shadow desync の影響を受けない。
+/// F13 は実キーボードに存在しないためアプリ側 shortcut との衝突リスクがない。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn post_gji_ime_on() {
+    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState,
+        VK_CONTROL, VK_LCONTROL,
+        VK_SHIFT, VK_LSHIFT,
+        VK_MENU, VK_LMENU, VK_RMENU,
+    };
+    const VK_F13: u16 = 0x7C;
+
+    let held_ctrl  = unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0;
+    let held_shift = unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0))   } as u16 & 0x8000 != 0;
+    let held_alt   = unsafe { GetAsyncKeyState(i32::from(VK_MENU.0))    } as u16 & 0x8000 != 0;
+
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
+
+    // F13 は修飾なしで届ける
+    if held_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  IME_KANJI_MARKER)); }
+    if held_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  IME_KANJI_MARKER)); }
+    if held_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  IME_KANJI_MARKER)); }
+
+    inputs.push(make_key_input_ex(VK_F13, false, IME_KANJI_MARKER));
+    inputs.push(make_key_input_ex(VK_F13, true,  IME_KANJI_MARKER));
+
+    let still_ctrl  = held_ctrl  && (
+        unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0
+        || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0
+    );
+    let still_shift = held_shift && (
+        unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } as u16 & 0x8000 != 0
+    );
+    let still_alt   = held_alt   && (
+        unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } as u16 & 0x8000 != 0
+        || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0
+    );
+
+    if still_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, false, IME_KANJI_MARKER)); }
+    if still_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   false, IME_KANJI_MARKER)); }
+    if still_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    false, IME_KANJI_MARKER)); }
+
+    log::debug!(
+        "[gji-on] F13: release(ctrl={held_ctrl} shift={held_shift} alt={held_alt}) \
+         restore(ctrl={still_ctrl} shift={still_shift} alt={still_alt}) total={} events",
+        inputs.len()
+    );
+    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    if sent as usize != inputs.len() {
+        log::warn!("[gji-on] SendInput F13 sent {sent}/{}", inputs.len());
+    }
+}
+
+/// GJI 専用 IME OFF: Ctrl+Shift+Delete を送信して IME を無効化する。
+///
+/// GJI は入力文字がない状態で Ctrl+Shift+Delete を受け取ると IME を OFF にする（冪等）。
+/// 既に OFF の場合は no-op であるため、VK_KANJI トグルの shadow desync 問題が発生しない。
+///
+/// 候補ウィンドウ表示中は Ctrl+Shift+Delete が無効なため、先に VK_RETURN で
+/// composition をコミットしてからキーを送る。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn post_gji_ime_off(candidate_visible: bool) {
+    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState,
+        VK_CONTROL, VK_LCONTROL,
+        VK_SHIFT, VK_LSHIFT,
+        VK_MENU, VK_LMENU, VK_RMENU,
+    };
+    const VK_DELETE: u16 = 0x2E;
+    const VK_RETURN: u16 = 0x0D;
+
+    let held_ctrl  = unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0;
+    let held_shift = unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0))   } as u16 & 0x8000 != 0;
+    let held_alt   = unsafe { GetAsyncKeyState(i32::from(VK_MENU.0))    } as u16 & 0x8000 != 0;
+
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(14);
+
+    if candidate_visible {
+        // Ctrl+Return は Enter として機能しないことがあるため、全修飾を外してから VK_RETURN を送る
+        if held_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true, IME_KANJI_MARKER)); }
+        if held_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true, IME_KANJI_MARKER)); }
+        if held_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true, IME_KANJI_MARKER)); }
+        inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
+    } else {
+        // Alt のみ解放（Ctrl+Shift は Ctrl+Shift+Delete で必要）
+        if held_alt { inputs.push(make_key_input_ex(VK_MENU.0, true, IME_KANJI_MARKER)); }
+    }
+
+    // candidate_visible なら全修飾を解放済み → Ctrl+Shift を再注入
+    // そうでなければ Ctrl は保持中の可能性あり、Shift のみ注入が必要な場合が多い
+    let inject_ctrl  = !held_ctrl || candidate_visible;
+    let inject_shift = !held_shift || candidate_visible;
+
+    if inject_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, false, IME_KANJI_MARKER)); }
+    if inject_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   false, IME_KANJI_MARKER)); }
+    inputs.push(make_key_input_ex(VK_DELETE, false, IME_KANJI_MARKER));
+    inputs.push(make_key_input_ex(VK_DELETE, true,  IME_KANJI_MARKER));
+    if inject_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  IME_KANJI_MARKER)); }
+    if inject_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  IME_KANJI_MARKER)); }
+
+    let still_ctrl  = held_ctrl  && (
+        unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0
+        || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0
+    );
+    let still_shift = held_shift && (
+        unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } as u16 & 0x8000 != 0
+    );
+    let still_alt   = held_alt   && (
+        unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } as u16 & 0x8000 != 0
+        || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0
+    );
+
+    if still_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, false, IME_KANJI_MARKER)); }
+    if still_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   false, IME_KANJI_MARKER)); }
+    if still_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    false, IME_KANJI_MARKER)); }
+
+    log::debug!(
+        "[gji-off] Ctrl+Shift+Delete: candidate={candidate_visible} \
+         held(ctrl={held_ctrl} shift={held_shift} alt={held_alt}) \
+         inject(ctrl={inject_ctrl} shift={inject_shift}) \
+         restore(ctrl={still_ctrl} shift={still_shift} alt={still_alt}) \
+         total={} events",
+        inputs.len()
+    );
+    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    if sent as usize != inputs.len() {
+        log::warn!("[gji-off] SendInput Ctrl+Shift+Delete sent {sent}/{}", inputs.len());
     }
 }
 

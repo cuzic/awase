@@ -218,6 +218,20 @@ impl Output {
             let f2_ok = unsafe { crate::ime::send_f2_via_sendmessage() };
             log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
 
+            // SendMessageTimeout はウィンドウの wndproc に直接届くが TSF のキーストローク
+            // マネージャーを経由しないため、Chrome の composition context が初期化されない。
+            // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
+            // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
+            let f2_via_sendinput = [make_key_input(0xF2u16, false), make_key_input(0xF2u16, true)];
+            // SAFETY: f2_via_sendinput は関数呼び出し中有効なスタック配列。
+            unsafe {
+                SendInput(
+                    &f2_via_sendinput,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+            log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
+
             // ノンブロッキング Chrome プローブを開始
             let probe = crate::tsf::probe::TsfReadinessProbe::new(
                 f2_sent_ms,
@@ -525,33 +539,67 @@ impl Output {
     /// vks が空なら no-op。
     /// `use_tsf_marker` = true → TSF_MARKER（WezTerm TSF モード）
     ///                    false → INJECTED_MARKER（Chrome/VK モード）
+    ///
+    /// # 送信順序（コード順）
+    ///
+    /// `send_vk_runs` と同様に「全↓→全↑」のコード順で送信する。
+    /// シーケンシャル順（R↓R↑A↓A↑）では KEYEVENTF_UNICODE 送信直後に
+    /// 不完全ローマ字がリテラルコミットされる問題があるため、
+    /// コード順（R↓A↓R↑A↑）を使うことで IME が romaji ペアを正しく結合する。
+    ///
+    /// 同一 VK が連続する箇所（例 "nn"）ではオートリピート誤検出を避けるため
+    /// `send_vk_runs` と同様にランごとに分割して別 SendInput を使う。
     pub(super) fn send_deferred_probe_vks_from(vks: &[(u16, bool)], use_tsf_marker: bool) {
         if vks.is_empty() {
             return;
         }
         log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})", vks.len());
-        let mut inputs: Vec<INPUT> = Vec::with_capacity(vks.len() * 4);
-        for &(vk, needs_shift) in vks {
-            if needs_shift {
-                inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-            }
-            if use_tsf_marker {
-                inputs.push(make_tsf_key_input(vk, false));
-                inputs.push(make_tsf_key_input(vk, true));
-            } else {
-                inputs.push(make_key_input(vk, false));
-                inputs.push(make_key_input(vk, true));
-            }
-            if needs_shift {
-                inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+
+        // 同一 VK が連続する境界でランを分割する（send_vk_runs と同じロジック）。
+        let mut run_ends: Vec<usize> = Vec::new();
+        for i in 1..vks.len() {
+            if vks[i].0 == vks[i - 1].0 {
+                run_ends.push(i);
             }
         }
-        // SAFETY: inputs is a valid Vec<INPUT> whose contents live for this call.
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
+        run_ends.push(vks.len());
+
+        let mut run_start = 0;
+        for run_end in run_ends {
+            let run = &vks[run_start..run_end];
+            let mut inputs: Vec<INPUT> = Vec::with_capacity(run.len() * 4);
+
+            // 全↓（コード順前半）
+            for &(vk, needs_shift) in run {
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+                }
+                if use_tsf_marker {
+                    inputs.push(make_tsf_key_input(vk, false));
+                } else {
+                    inputs.push(make_key_input(vk, false));
+                }
+            }
+            // 全↑（コード順後半）
+            for &(vk, needs_shift) in run {
+                if use_tsf_marker {
+                    inputs.push(make_tsf_key_input(vk, true));
+                } else {
+                    inputs.push(make_key_input(vk, true));
+                }
+                if needs_shift {
+                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+                }
+            }
+
+            // SAFETY: inputs is a valid Vec<INPUT> whose contents live for this call.
+            unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
+            run_start = run_end;
         }
     }
 }
