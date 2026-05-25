@@ -198,23 +198,13 @@ const SYNC_KEY_CAPACITY: usize = 10;
 #[derive(Debug)]
 pub struct SyncKeyGate {
     inner: HoldingGate<SyncKeyGateMachine, SyncKeyItem>,
-    /// `deactivate()` 時にドレインされたキーを `drain_all()` まで保持する。
-    ///
-    /// `deactivate()` は `HoldingGate` に `Deactivate` イベントを送り保留キーをドレインするが、
-    /// 旧 API では `deactivate()` と `drain_all()` が別タイミングで呼ばれていた。
-    /// その call site を維持するため、ドレイン結果は一度ここに stash しておき
-    /// `drain_all()` で取り出す。
-    pending_drain: Vec<SyncKeyItem>,
 }
 
 impl SyncKeyGate {
     /// 初期状態（Inactive）でゲートを生成する。
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            inner: HoldingGate::new(SyncKeyGateMachine::new(), SYNC_KEY_CAPACITY),
-            pending_drain: Vec::new(),
-        }
+        Self { inner: HoldingGate::new(SyncKeyGateMachine::new(), SYNC_KEY_CAPACITY) }
     }
 
     /// ゲートをアクティブにする（sync key KeyDown 検出時）。
@@ -222,16 +212,9 @@ impl SyncKeyGate {
         let _ = self.inner.on_event(SyncKeyGateEvent::Activate);
     }
 
-    /// ゲートを非アクティブにする（sync key KeyUp 検出時 / IME 再観測後）。
-    ///
-    /// `HoldingGate` がドレインした保留キーは `pending_drain` に stash され、
-    /// 次の `drain_all()` で取り出される。
-    pub fn deactivate(&mut self) {
-        let (_, drained) = self.inner.on_event(SyncKeyGateEvent::Deactivate);
-        if !drained.is_empty() {
-            // すでに pending_drain にキーがある場合は連結（通常は起きないが安全のため）。
-            self.pending_drain.extend(drained);
-        }
+    /// ゲートを非アクティブにし、保留していたキーを返す（sync key KeyUp / IME 再観測後）。
+    pub fn deactivate(&mut self) -> Vec<SyncKeyItem> {
+        self.inner.on_event(SyncKeyGateEvent::Deactivate).1
     }
 
     /// ゲートがアクティブかどうかを返す。
@@ -251,31 +234,15 @@ impl SyncKeyGate {
         self.inner.try_hold((event, phys))
     }
 
-    /// バッファされた全キーを取り出して返す。
-    ///
-    /// `deactivate()` 経由でドレイン済みのキー（`pending_drain`）と、
-    /// まだゲート内に残っているキー（`is_active()=true` のまま呼ばれた場合）を
-    /// すべて結合して返す。
-    pub fn drain_all(&mut self) -> Vec<SyncKeyItem> {
-        let mut result = std::mem::take(&mut self.pending_drain);
-        // ゲートが active のままなら、Deactivate イベントを送って残りもドレインする。
-        if self.inner.is_holding() {
-            let (_, drained) = self.inner.on_event(SyncKeyGateEvent::Deactivate);
-            result.extend(drained);
-        }
-        result
-    }
-
     /// バッファにキーが残っているかどうかを返す。
     #[must_use]
     pub fn has_deferred_keys(&self) -> bool {
-        !self.pending_drain.is_empty() || !self.inner.is_empty()
+        !self.inner.is_empty()
     }
 
     /// バッファをクリアする（`panic_reset` 用）。
     pub fn clear(&mut self) {
         self.inner.clear();
-        self.pending_drain.clear();
     }
 }
 

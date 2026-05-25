@@ -510,11 +510,9 @@ impl Runtime {
     /// guard 解除 → IME 状態 refresh → Engine 通知 → バッファキー再処理。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
-        // Guard を解除
-        if self.platform_state.sync_key_gate.is_active() {
-            self.platform_state.sync_key_gate.deactivate();
-            log::debug!("IME guard OFF (process_deferred_keys)");
-        }
+        // Guard を解除し、保留キーを回収
+        let keys = self.platform_state.sync_key_gate.deactivate();
+        log::debug!("IME guard OFF (process_deferred_keys)");
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
         // SAFETY: `poll_and_classify_ime` は Win32 IMM API（`ImmGetContext` 等）を呼ぶ unsafe fn。
@@ -550,8 +548,6 @@ impl Runtime {
             self.executor.platform.suppress_engine_state_key = false;
         }
 
-        // Drain deferred keys from Platform gate
-        let keys = self.platform_state.sync_key_gate.drain_all();
         if keys.is_empty() {
             return;
         }
@@ -597,7 +593,6 @@ impl Runtime {
         self.platform_state.hook.reset_routing();
         self.platform_state.hook.leave_callback();
         self.platform_state.hook.set_ctrl_bypass_hold(false);
-        self.platform_state.sync_key_gate.deactivate();
         self.platform_state.sync_key_gate.clear();
 
         // 6. IME 状態を再取得
