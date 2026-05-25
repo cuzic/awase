@@ -262,19 +262,14 @@ pub unsafe fn post_gji_ime_off(candidate_visible: bool) {
 
     let mut inputs: Vec<INPUT> = Vec::with_capacity(10);
 
+    // Return/F14 は修飾なしで届ける（Ctrl+F14 は GJI に未登録のためパススルーされてしまう）
+    if held_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  IME_KANJI_MARKER)); }
+    if held_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  IME_KANJI_MARKER)); }
+    if held_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  IME_KANJI_MARKER)); }
+
     if candidate_visible {
-        // Return は修飾なしで届ける
-        if held_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  IME_KANJI_MARKER)); }
-        if held_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  IME_KANJI_MARKER)); }
-        if held_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  IME_KANJI_MARKER)); }
         inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
         inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
-        // F14 も修飾なしで届けるため、解放済みのまま続ける
-    } else {
-        // F14 は修飾なしで届ける（Ctrl+F14 は GJI に未登録のためパススルーされてしまう）
-        if held_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  IME_KANJI_MARKER)); }
-        if held_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  IME_KANJI_MARKER)); }
-        if held_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  IME_KANJI_MARKER)); }
     }
 
     inputs.push(make_key_input_ex(VK_F14, false, IME_KANJI_MARKER));
