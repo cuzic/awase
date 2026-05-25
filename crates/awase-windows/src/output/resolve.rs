@@ -4,7 +4,7 @@ use super::Output;
 
 /// ASCII 文字を対応する VK コードに変換する。
 #[must_use]
-pub(super) const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
+pub(crate) const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
     match ch {
         'a'..='z' => Some((0x41 + (ch as u16 - 'a' as u16), false)),
         'A'..='Z' => Some((0x41 + (ch as u16 - 'A' as u16), true)),

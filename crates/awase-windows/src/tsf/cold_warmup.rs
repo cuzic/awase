@@ -246,8 +246,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start",
                     ctx.cold_seq, ctx.eager_settle_ms,
                 );
-                // SAFETY: SendInput をメッセージループスレッドから呼ぶ。
-                let fresh_f2_ms = unsafe { send_vk_dbe_hiragana_pair() };
+                let fresh_f2_ms = send_vk_dbe_hiragana_pair();
                 WarmupStarted {
                     probe: crate::tsf::probe::TsfReadinessProbe::new(
                         fresh_f2_ms,
@@ -265,8 +264,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start",
                     ctx.cold_seq, ctx.eager_settle_ms,
                 );
-                // SAFETY: SendInput をメッセージループスレッドから呼ぶ。
-                let re_warmup_ms = unsafe { send_vk_dbe_hiragana_pair() };
+                let re_warmup_ms = send_vk_dbe_hiragana_pair();
                 WarmupStarted {
                     probe: crate::tsf::probe::TsfReadinessProbe::new(
                         re_warmup_ms,

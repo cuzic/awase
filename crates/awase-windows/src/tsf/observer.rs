@@ -12,12 +12,55 @@
 //!
 //! - `GjiMonitor` バックグラウンドスレッド → `TSF_OBS.gji_last_io_ms`, `TSF_OBS.gji_monitor_ok`
 //! - `observation_event_proc` → `TSF_OBS.gji_candidate_visible`,
-//!   `TSF_OBS.gji_candidate_show_seq`, `TSF_OBS.focus_namechange_seq`, `TSF_OBS.composition_probe_seq`
+//!   `TSF_OBS.gji_candidate_show`, `TSF_OBS.focus_namechange`, `TSF_OBS.composition_probe`
 //!
 //! [`ObservedState::capture_now()`]: crate::state::ime_decision_view::ObservedState::capture_now
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+
+// ── ChangeCounter ──────────────────────────────────────────────────────────
+
+/// 単調増加シーケンスカウンタ。変化検出パターンをカプセル化する。
+///
+/// 書き込み元は `notify()` で +1 し、読み取り元は `baseline()` → `has_changed()` のペアで変化を検出する。
+#[derive(Debug)]
+pub(in crate::tsf) struct ChangeCounter(AtomicU32);
+
+impl ChangeCounter {
+    pub(super) const fn new() -> Self {
+        Self(AtomicU32::new(0))
+    }
+
+    /// カウンタをインクリメントし、新しいシーケンス番号を返す。
+    pub(super) fn notify(&self) -> u32 {
+        self.0.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// 現在値をベースラインとして取得する。変化を検出したい時点の直前に呼ぶ。
+    pub(super) fn baseline(&self) -> Baseline {
+        Baseline(self.0.load(Ordering::Relaxed))
+    }
+
+    /// ベースライン取得後にカウンタが変化したかどうかを返す。
+    pub(super) fn has_changed(&self, b: &Baseline) -> bool {
+        self.0.load(Ordering::Relaxed) != b.0
+    }
+
+    /// カウンタを 0 にリセットする（ウォームアップ開始時等）。
+    pub(super) fn reset(&self) {
+        self.0.store(0, Ordering::Relaxed);
+    }
+
+    /// `AtomicWatcher` 等が直接参照できるよう内部 `AtomicU32` を返す。
+    pub(super) const fn atomic(&self) -> &AtomicU32 {
+        &self.0
+    }
+}
+
+/// [`ChangeCounter`] のベースライン値。
+#[derive(Debug, Clone, Copy)]
+pub(in crate::tsf) struct Baseline(u32);
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
@@ -37,26 +80,26 @@ use windows::Win32::System::Threading::{
 ///
 /// 書き込み元:
 /// - `GjiMonitor` バックグラウンドスレッド → `gji_last_io_ms`, `gji_monitor_ok`
-/// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show_seq`,
-///   `focus_namechange_seq`, `composition_probe_seq`
+/// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show`,
+///   `focus_namechange`, `composition_probe`
 ///
 /// 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
 #[derive(Debug)]
 pub struct TsfObservations {
     /// `wait_for_tsf_cold_settle()` が OBJ_NAMECHANGE を early-exit シグナルとして使うカウンタ。
     ///
-    /// `send_eager_tsf_warmup()` 呼び出し時に 0 にリセットされ、
+    /// `send_eager_tsf_warmup()` 呼び出し時にリセットされ、
     /// WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
     ///
     /// 書き込み: `observation_event_proc`（NAMECHANGE イベント）, `send_eager_tsf_warmup`（リセット）
-    /// 読み取り: `with_tsf_obs()` 経由
-    pub(super) focus_namechange_seq: AtomicU32,
+    /// 読み取り: `namechange_baseline()` / `NamechangeBaseline::fired()` 経由
+    pub(in crate::tsf) focus_namechange: ChangeCounter,
 
     /// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
     ///
     /// raw TSF literal 検出用: cold start ローマ字送信後にこのカウンタが増えれば
     /// GJI candidate window が開いた（composition 成功）、増えなければ literal ASCII の可能性。
-    pub(super) gji_candidate_show_seq: AtomicU32,
+    pub(in crate::tsf) gji_candidate_show: ChangeCounter,
 
     /// `GoogleJapaneseInputCandidateWindow` が現在表示中かどうかのフラグ。
     ///
@@ -65,13 +108,13 @@ pub struct TsfObservations {
     /// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
     pub(super) gji_candidate_visible: AtomicBool,
 
-    /// raw TSF literal 検出の汎用シグナル AtomicU32。
+    /// raw TSF literal 検出の汎用シグナル。
     ///
-    /// `gji_candidate_show_seq` が変化したとき（SHOW 発火）と
-    /// 検出タイムアウトタスクの両方が +1 してから `notify_all()` を呼ぶ。
+    /// `gji_candidate_show` が変化したとき（SHOW 発火）と
+    /// 検出タイムアウトタスクの両方が `notify()` を呼ぶ。
     /// `output::raw_tsf_literal_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
     /// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
-    pub(super) composition_probe_seq: AtomicU32,
+    pub(in crate::tsf) composition_probe: ChangeCounter,
 
     /// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
     ///
@@ -100,13 +143,13 @@ impl TsfObservations {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            focus_namechange_seq:   AtomicU32::new(0),
-            gji_candidate_show_seq: AtomicU32::new(0),
-            gji_candidate_visible:  AtomicBool::new(false),
-            composition_probe_seq:  AtomicU32::new(0),
-            gji_last_io_ms:         AtomicU64::new(0),
-            gji_monitor_ok:         AtomicBool::new(false),
-            candidate_was_seen:     AtomicBool::new(false),
+            focus_namechange:      ChangeCounter::new(),
+            gji_candidate_show:    ChangeCounter::new(),
+            gji_candidate_visible: AtomicBool::new(false),
+            composition_probe:     ChangeCounter::new(),
+            gji_last_io_ms:        AtomicU64::new(0),
+            gji_monitor_ok:        AtomicBool::new(false),
+            candidate_was_seen:    AtomicBool::new(false),
         }
     }
 
@@ -120,37 +163,16 @@ impl TsfObservations {
         self.gji_monitor_ok.load(Ordering::Acquire)
     }
 
-    /// OBJ_NAMECHANGE カウンタを読み取る（Relaxed）。
-    pub fn focus_namechange_seq(&self) -> u32 {
-        self.focus_namechange_seq.load(Ordering::Relaxed)
-    }
-
-    /// OBJ_NAMECHANGE カウンタを 0 にリセットする（Relaxed）。
-    pub fn reset_focus_namechange_seq(&self) {
-        self.focus_namechange_seq.store(0, Ordering::Relaxed);
-    }
-
-    /// GJI candidate show イベントカウンタを読み取る（Relaxed）。
-    pub fn gji_candidate_show_seq(&self) -> u32 {
-        self.gji_candidate_show_seq.load(Ordering::Relaxed)
-    }
-
     /// GJI candidate window が現在表示中かを読み取る（Relaxed）。
     pub fn gji_candidate_visible(&self) -> bool {
         self.gji_candidate_visible.load(Ordering::Relaxed)
     }
 
-    /// raw TSF literal 検出用汎用シグナルを読み取る（Relaxed）。
-    pub fn composition_probe_seq(&self) -> u32 {
-        self.composition_probe_seq.load(Ordering::Relaxed)
-    }
-
     /// raw TSF literal 検出用汎用シグナルへの参照を返す（`AtomicWatcher` 用）。
     ///
-    /// `with_tsf_obs` では `&TsfObservations` への参照しか渡せないため、
     /// `AtomicWatcher::new` に必要な `&AtomicU32` はこのメソッド経由で取得する。
-    pub const fn composition_probe_seq_atomic(&self) -> &AtomicU32 {
-        &self.composition_probe_seq
+    pub fn composition_probe_atomic(&self) -> &AtomicU32 {
+        self.composition_probe.atomic()
     }
 }
 
@@ -164,8 +186,8 @@ impl TsfObservations {
 /// ## 書き込み元
 ///
 /// - `GjiMonitor` バックグラウンドスレッド → `gji_last_io_ms`, `gji_monitor_ok`
-/// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show_seq`,
-///   `focus_namechange_seq`, `composition_probe_seq`
+/// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show`,
+///   `focus_namechange`, `composition_probe`
 pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 
 /// `TsfObservations` グローバルへの参照を返す。
@@ -207,12 +229,12 @@ pub(crate) fn gji_monitor_healthy() -> bool {
 /// `SendInput` 等を呼ぶ前に取得し、完了後に `NamechangeBaseline::fired()` で
 /// 変化があったかを確認する。
 pub(crate) fn namechange_baseline() -> NamechangeBaseline {
-    NamechangeBaseline(TSF_OBS.focus_namechange_seq.load(Ordering::Relaxed))
+    NamechangeBaseline(TSF_OBS.focus_namechange.baseline())
 }
 
 /// OBJ_NAMECHANGE カウンタをリセットする（`send_eager_tsf_warmup` 用）。
 pub(crate) fn reset_namechange_seq() {
-    TSF_OBS.focus_namechange_seq.store(0, Ordering::Relaxed);
+    TSF_OBS.focus_namechange.reset();
 }
 
 /// GJI candidate が SHOW になってから次の `reset_candidate_was_seen()` まで `true`。
@@ -230,12 +252,12 @@ pub(crate) fn reset_candidate_was_seen() {
 /// OBJ_NAMECHANGE カウンタのベースライン値。
 ///
 /// `namechange_baseline()` で取得し、`fired()` で変化を検出する。
-pub(crate) struct NamechangeBaseline(u32);
+pub(crate) struct NamechangeBaseline(Baseline);
 
 impl NamechangeBaseline {
     /// ベースライン取得後にカウンタが変化したかどうかを返す。
     pub(crate) fn fired(&self) -> bool {
-        TSF_OBS.focus_namechange_seq.load(Ordering::Relaxed) != self.0
+        TSF_OBS.focus_namechange.has_changed(&self.0)
     }
 }
 
@@ -552,7 +574,7 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_NAMECHANGE => {
             let class = hwnd_class_name(hwnd);
             if class.contains("CASCADIA") {
-                let seq = TSF_OBS.focus_namechange_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                let seq = TSF_OBS.focus_namechange.notify();
                 log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
                 win32_async::notify_all();
             }
@@ -562,10 +584,10 @@ unsafe extern "system" fn observation_event_proc(
             if class == GJI_CANDIDATE_CLASS {
                 TSF_OBS.gji_candidate_visible.store(true, Ordering::Relaxed);
                 TSF_OBS.candidate_was_seen.store(true, Ordering::Relaxed);
-                let seq = TSF_OBS.gji_candidate_show_seq.fetch_add(1, Ordering::Relaxed) + 1;
-                // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方で同じ atomic を +1 し
+                let seq = TSF_OBS.gji_candidate_show.notify();
+                // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方が
                 // AtomicWatcher で event-driven に待機する設計）
-                TSF_OBS.composition_probe_seq.fetch_add(1, Ordering::Relaxed);
+                TSF_OBS.composition_probe.notify();
                 log::debug!("[gji-candidate] SHOW #{seq}");
                 win32_async::notify_all();
             }

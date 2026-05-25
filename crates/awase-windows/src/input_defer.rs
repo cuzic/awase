@@ -12,9 +12,14 @@
 use std::sync::Mutex;
 use awase::types::RawKeyEvent;
 
-#[allow(missing_debug_implementations)]
 pub struct InputDeferQueue {
     queue: Mutex<Vec<RawKeyEvent>>,
+}
+
+impl std::fmt::Debug for InputDeferQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InputDeferQueue").finish_non_exhaustive()
+    }
 }
 
 pub static INPUT_DEFER: InputDeferQueue = InputDeferQueue::new();

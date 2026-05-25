@@ -24,9 +24,14 @@ use windows::Win32::UI::Accessibility::{
 /// `HWND` は `*mut c_void` を含むため `Send` を実装していないが、
 /// ウィンドウハンドルの値自体はスレッド間で安全に受け渡せる。
 /// UIA ワーカースレッドへの HWND 送信専用。
-#[allow(missing_debug_implementations)]
 #[derive(Clone, Copy)]
 pub struct SendableHwnd(pub HWND);
+
+impl std::fmt::Debug for SendableHwnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SendableHwnd").finish()
+    }
+}
 // Safety: HWND の値（ポインタ値）はスレッド間で安全に共有できる。
 // ウィンドウハンドルはプロセス内でグローバルに有効であり、
 // 別スレッドから参照しても問題ない。

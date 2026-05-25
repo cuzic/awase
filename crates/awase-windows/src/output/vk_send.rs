@@ -1,23 +1,90 @@
-use std::mem::size_of;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
 };
 use crate::tsf::output::{INJECTED_MARKER, make_key_input_ex, make_tsf_key_input, kana_for_romaji_static};
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use super::Output;
-use super::{WarmthContext, WarmupOutcome, TsfProbeData, TsfProbePhase, fmt_ms};
+use crate::tsf::probe_fsm::TsfProbeMachine;
+use super::{Output, VkSequence};
+use super::{WarmthContext, WarmupOutcome, fmt_ms};
 use super::resolve::{ascii_to_vk, CharResolution};
 
 /// VK_LSHIFT の仮想キーコード
 const VK_LSHIFT: u16 = 0xA0;
 
+/// VK_DBE_HIRAGANA (F2) の仮想キーコード
+const VK_DBE_HIRAGANA: u16 = 0xF2;
+
+/// VK_OEM_MINUS の仮想キーコード（長音符 `ー` に対応）
+const VK_OEM_MINUS: u16 = 0xBD;
+
 /// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
 #[must_use]
 pub(super) const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
+}
+
+/// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
+fn send_vk_pair(vk: u16, needs_shift: bool, use_tsf_marker: bool) {
+    let mut inputs = Vec::with_capacity(4);
+    if needs_shift {
+        inputs.push(make_key_input(VK_LSHIFT, false));
+    }
+    if use_tsf_marker {
+        inputs.push(make_tsf_key_input(vk, false));
+        inputs.push(make_tsf_key_input(vk, true));
+    } else {
+        inputs.push(make_key_input(vk, false));
+        inputs.push(make_key_input(vk, true));
+    }
+    if needs_shift {
+        inputs.push(make_key_input(VK_LSHIFT, true));
+    }
+    let _ = crate::win32::send_input_safe(&inputs);
+}
+
+/// `ch` を UTF-16 エンコードし、down/up ペアを `inputs` に追加する。
+///
+/// `marker` は `INJECTED_MARKER`（Unicode モード）または `TSF_MARKER`（TSF モード）。
+fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
+    let mut buf = [0u16; 2];
+    let utf16 = ch.encode_utf16(&mut buf);
+    for &cu in utf16.iter() {
+        inputs.push(INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0), wScan: cu,
+                dwFlags: KEYEVENTF_UNICODE, time: 0, dwExtraInfo: marker,
+            }},
+        });
+        inputs.push(INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0), wScan: cu,
+                dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time: 0, dwExtraInfo: marker,
+            }},
+        });
+    }
+}
+
+/// 同一 VK が連続する境界でランを分割する。
+///
+/// `send_vk_runs` と `send_deferred_probe_vks_from` 共通のヘルパー。
+/// IME のオートリピート誤検出を防ぐため、同一 VK が連続する箇所で区切る。
+fn split_vk_runs(vks: &[(u16, bool)]) -> Vec<&[(u16, bool)]> {
+    if vks.is_empty() { return vec![]; }
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for (i, w) in vks.windows(2).enumerate() {
+        if w[0].0 == w[1].0 {
+            runs.push(&vks[start..=i]);
+            start = i + 1;
+        }
+    }
+    runs.push(&vks[start..]);
+    runs
 }
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
@@ -26,11 +93,11 @@ pub(super) const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
 ///
 /// warm パス（`send_romaji_as_tsf` の non-cold ブランチ）と
 /// `do_transmit_tsf`（タイマー FSM からの遅延送信）が使用する。
-pub(super) struct TsfSendPipeline;
+pub(crate) struct TsfSendPipeline;
 
 impl TsfSendPipeline {
     /// VK run または Unicode kana を送信し、バックスペース数を返す。
-    pub(super) fn transmit(romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
+    pub(crate) fn transmit(romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
         let unicode_kana: Option<char> = if outcome.prepend_f2_warmup && outcome.used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
@@ -41,46 +108,13 @@ impl TsfSendPipeline {
             Output::send_vk_runs(chars, outcome.cold_seq);
             chars.len()
         }, |kana| {
-            let mut utf16_buf = [0u16; 2];
-            let utf16 = kana.encode_utf16(&mut utf16_buf);
             log::debug!(
                 "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
                 outcome.cold_seq, kana, kana as u32,
             );
-            let mut inputs = Vec::with_capacity(utf16.len() * 2);
-            for &code_unit in utf16.iter() {
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VIRTUAL_KEY(0),
-                            wScan: code_unit,
-                            dwFlags: KEYEVENTF_UNICODE,
-                            time: 0,
-                            dwExtraInfo: TSF_MARKER,
-                        },
-                    },
-                });
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VIRTUAL_KEY(0),
-                            wScan: code_unit,
-                            dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                            time: 0,
-                            dwExtraInfo: TSF_MARKER,
-                        },
-                    },
-                });
-            }
-            // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
+            let mut inputs = Vec::with_capacity(4);
+            push_unicode_char_inputs(&mut inputs, kana, TSF_MARKER);
+            let _ = crate::win32::send_input_safe(&inputs);
             1
         })
     }
@@ -88,58 +122,18 @@ impl TsfSendPipeline {
 
 impl Output {
     /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
     pub(super) fn send_key(&self, vk: u16, is_keyup: bool) {
         let input = make_key_input(vk, is_keyup);
-        // SAFETY: &[input] is a valid single-element slice for the duration of the call.
-        unsafe {
-            SendInput(
-                &[input],
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
+        let _ = crate::win32::send_input_safe(&[input]);
     }
 
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
     pub(super) fn send_unicode_char(&self, ch: char) {
-        let mut utf16_buf = [0u16; 2];
-        let utf16 = ch.encode_utf16(&mut utf16_buf);
-
-        let mut inputs = Vec::with_capacity(utf16.len() * 2);
-        for &code_unit in utf16.iter() {
-            inputs.push(INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VIRTUAL_KEY(0),
-                        wScan: code_unit,
-                        dwFlags: KEYEVENTF_UNICODE,
-                        time: 0,
-                        dwExtraInfo: INJECTED_MARKER,
-                    },
-                },
-            });
-            inputs.push(INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VIRTUAL_KEY(0),
-                        wScan: code_unit,
-                        dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                        time: 0,
-                        dwExtraInfo: INJECTED_MARKER,
-                    },
-                },
-            });
-        }
-        // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
+        let mut inputs = Vec::with_capacity(4);
+        push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     /// PerKey モード: 1文字ずつ個別の SendInput 呼び出し
@@ -147,26 +141,11 @@ impl Output {
     /// 各文字の KeyDown+KeyUp は1回の SendInput にまとめるが、
     /// 文字間は別の SendInput 呼び出しに分離する。
     /// 他のキーボードフックに処理時間を与える。
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
     pub(super) fn send_romaji_per_key(&self, romaji: &str) {
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
-                let mut inputs = Vec::with_capacity(4);
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, false));
-                }
-                inputs.push(make_key_input(vk, false));
-                inputs.push(make_key_input(vk, true));
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, true));
-                }
-                // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
-                unsafe {
-                    SendInput(
-                        &inputs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
+                send_vk_pair(vk, needs_shift, false);
             }
         }
     }
@@ -176,7 +155,7 @@ impl Output {
     /// cold 時は F2 を先行送信してから GJI プローブを開始し（ノンブロッキング）、
     /// TIMER_TSF_PROBE が `ChromeProbe` フェーズを進めてローマ字を送信する。
     pub(super) fn send_romaji_batched(&self, romaji: &str) {
-        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
         }
@@ -222,14 +201,8 @@ impl Output {
             // マネージャーを経由しないため、Chrome の composition context が初期化されない。
             // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
             // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
-            let f2_via_sendinput = [make_key_input(0xF2u16, false), make_key_input(0xF2u16, true)];
-            // SAFETY: f2_via_sendinput は関数呼び出し中有効なスタック配列。
-            unsafe {
-                SendInput(
-                    &f2_via_sendinput,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
+            let f2_via_sendinput = [make_key_input(VK_DBE_HIRAGANA, false), make_key_input(VK_DBE_HIRAGANA, true)];
+            let _ = crate::win32::send_input_safe(&f2_via_sendinput);
             log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
 
             // ノンブロッキング Chrome プローブを開始
@@ -239,13 +212,13 @@ impl Output {
                 crate::tuning::CHROME_PROBE_MIN_MS,
             );
             let guard = OutputActiveGuard::begin();
-            *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
-                romaji: romaji.to_string(),
+            self.install_pending_tsf(TsfProbeMachine::new_chrome(
+                romaji,
                 cold_seq,
-                deferred_vks: Vec::new(),
-                phase: TsfProbePhase::ChromeProbe { probe, total_max_ms: crate::tuning::CHROME_PROBE_MAX_MS },
-                _guard: guard,
-            });
+                probe,
+                crate::tuning::CHROME_PROBE_MAX_MS,
+                guard,
+            ));
             // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
             return;
         }
@@ -257,7 +230,7 @@ impl Output {
 
     /// ローマ字を即座にバッチ送信する（重畳順）。
     /// warm パスおよび `advance_tsf_probe` の ChromeProbe 完了時に呼ぶ。
-    pub(super) fn send_romaji_batch_immediate(romaji: &str, chars: &[(u16, bool)]) {
+    pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(u16, bool)]) {
         let mut inputs = Vec::with_capacity(chars.len() * 4);
         for &(vk, needs_shift) in chars {
             if needs_shift {
@@ -272,13 +245,7 @@ impl Output {
             }
         }
         log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", inputs.len());
-        // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
@@ -299,53 +266,38 @@ impl Output {
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
-        let mut runs: Vec<&[(u16, bool)]> = Vec::new();
-        let mut start = 0;
-        for i in 1..chars.len() {
-            if chars[i].0 == chars[i - 1].0 {
-                runs.push(&chars[start..i]);
-                start = i;
-            }
-        }
-        runs.push(&chars[start..]);
-
+        let runs = split_vk_runs(chars);
         let total_runs = runs.len();
 
-        for (run_idx, run) in runs.iter().enumerate() {
+        for (run_idx, run) in runs.into_iter().enumerate() {
             let last_io = crate::tsf::observer::gji_last_io_ms();
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-            let vks: Vec<String> = run.iter().map(|&(v, s)| {
-                if s { format!("S{v:02X}") } else { format!("{v:02X}") }
-            }).collect();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
-                vks.join(","),
+                run.iter()
+                    .map(|&(v, s)| if s { format!("S{v:02X}") } else { format!("{v:02X}") })
+                    .collect::<Vec<_>>()
+                    .join(","),
             );
             let mut inputs = Vec::with_capacity(run.len() * 4);
-            for &(vk, needs_shift) in *run {
+            for &(vk, needs_shift) in run {
                 if needs_shift {
                     inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
                 }
                 inputs.push(make_tsf_key_input(vk, false));
             }
-            for &(vk, needs_shift) in *run {
+            for &(vk, needs_shift) in run {
                 inputs.push(make_tsf_key_input(vk, true));
                 if needs_shift {
                     inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
                 }
             }
-            // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
+            let _ = crate::win32::send_input_safe(&inputs);
         }
     }
 
     pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
-        let chars: Vec<(u16, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
         }
@@ -367,25 +319,26 @@ impl Output {
                 .run_start(session_expired, elapsed);
             let cold_seq = started.probe.cold_seq;
             let guard = OutputActiveGuard::begin();
-            *self.pending_tsf.borrow_mut() = Some(TsfProbeData {
-                romaji: romaji.to_string(),
+            self.install_pending_tsf(TsfProbeMachine::new_gji(
+                romaji,
                 cold_seq,
-                deferred_vks: Vec::new(),
-                phase: TsfProbePhase::GjiProbe {
-                    probe: started.probe,
-                    total_max_ms: started.total_max_ms,
-                    needs_settle_check: started.needs_settle_check,
-                    cold_reason: started.cold_reason,
-                    prepend_f2_warmup,
-                    used_eager_path,
-                },
-                _guard: guard,
-            });
+                started.probe,
+                started.total_max_ms,
+                started.needs_settle_check,
+                started.cold_reason,
+                prepend_f2_warmup,
+                used_eager_path,
+                guard,
+            ));
             // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
             return;
         }
 
         // warm パス: 即座に送信
+        self.send_romaji_as_tsf_warm(romaji, &chars, used_eager_path);
+    }
+
+    fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence, used_eager_path: bool) {
         let cold_seq = self.composition.cold_start_count();
         let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_seq };
 
@@ -404,25 +357,25 @@ impl Output {
         }
 
         let detector = crate::tsf::probe::LiteralDetector::new();
-        let ze_bs_count = TsfSendPipeline::transmit(romaji, &chars, &outcome);
+        let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
         self.mark_composition_warm();
 
-        // Probing 状態の warm 投機送信: GJI 監視が有効なら LiteralDetect で検証する。
-        // (1) raw TSF literal 検出と回復, (2) advance_tsf_probe が on_ready() を呼んで
-        //     ゲートを Ready に進める、という 2 つの目的を兼ねる。
         let gji_active = crate::tsf::observer::gji_monitor_healthy();
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
             let deadline_ms = crate::hook::current_tick_ms()
                 + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
-            let guard = OutputActiveGuard::begin();
-            self.put_back_probe(
-                romaji.to_string(),
+            let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+            self.install_pending_tsf(TsfProbeMachine::new_literal_detect(
+                romaji,
                 cold_seq,
-                Vec::new(),
-                TsfProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms },
+                detector,
+                ze_bs_count,
+                deadline_ms,
                 guard,
-            );
+            ));
         } else {
+            // detector と ze_bs_count は Probing+GJI 健全パスでのみ使う。
+            // 他パスでは warm マーク済みで LiteralDetect 不要。
             let _ = (detector, ze_bs_count);
         }
     }
@@ -443,32 +396,16 @@ impl Output {
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する。
                 // 例: ば(probe中) + ー(VK0xBD) の場合、先に ba VKs を送ってから ー を送る。
                 // probe なしで直接送ると「F2 → ー → ba」→「ーば」の順序逆転が起きる。
-                if let Some(data) = self.pending_tsf.borrow_mut().as_mut() {
+                if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
-                    data.deferred_vks.push((vk, needs_shift));
                     return;
                 }
-                let mut inputs = Vec::with_capacity(4);
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-                }
-                inputs.push(make_tsf_key_input(vk, false));
-                inputs.push(make_tsf_key_input(vk, true));
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-                }
-                // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
-                unsafe {
-                    SendInput(
-                        &inputs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
+                send_vk_pair(vk, needs_shift, true);
                 // VK_OEM_MINUS (0xBD, no-shift) = '-' は GJI ローマ字モードで「ー」として
                 // composition に取り込まれる（composition context はリセットされない）。
                 // これらは warm 状態を維持し、次の romaji を warmup sleep なしで即送信する。
                 // その他の記号（句読点など）は composition を commit する可能性があるため cold にマーク。
-                let keeps_composition = vk == 0xBD && !needs_shift;
+                let keeps_composition = vk == VK_OEM_MINUS && !needs_shift;
                 if keeps_composition {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
                 } else {
@@ -506,27 +443,11 @@ impl Output {
                 log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する。
                 // 例: ば(ChromeProbe中) + ー(VK0xBD) の場合、先に ba VKs を送ってから ー を送る。
-                if let Some(data) = self.pending_tsf.borrow_mut().as_mut() {
+                if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
-                    data.deferred_vks.push((vk, needs_shift));
                     return;
                 }
-                let mut inputs = Vec::with_capacity(4);
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, false));
-                }
-                inputs.push(make_key_input(vk, false));
-                inputs.push(make_key_input(vk, true));
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, true));
-                }
-                // SAFETY: inputs is a valid Vec<INPUT> whose contents live for the duration of the call.
-                unsafe {
-                    SendInput(
-                        &inputs,
-                        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                    );
-                }
+                send_vk_pair(vk, needs_shift, false);
             }
             CharResolution::Unicode(ch) => {
                 log::debug!("    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
@@ -549,26 +470,14 @@ impl Output {
     ///
     /// 同一 VK が連続する箇所（例 "nn"）ではオートリピート誤検出を避けるため
     /// `send_vk_runs` と同様にランごとに分割して別 SendInput を使う。
-    pub(super) fn send_deferred_probe_vks_from(vks: &[(u16, bool)], use_tsf_marker: bool) {
+    pub(crate) fn send_deferred_probe_vks_from(vks: &[(u16, bool)], use_tsf_marker: bool) {
         if vks.is_empty() {
             return;
         }
         log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})", vks.len());
 
-        // 同一 VK が連続する境界でランを分割する（send_vk_runs と同じロジック）。
-        let mut run_ends: Vec<usize> = Vec::new();
-        for i in 1..vks.len() {
-            if vks[i].0 == vks[i - 1].0 {
-                run_ends.push(i);
-            }
-        }
-        run_ends.push(vks.len());
-
-        let mut run_start = 0;
-        for run_end in run_ends {
-            let run = &vks[run_start..run_end];
+        for run in split_vk_runs(vks) {
             let mut inputs: Vec<INPUT> = Vec::with_capacity(run.len() * 4);
-
             // 全↓（コード順前半）
             for &(vk, needs_shift) in run {
                 if needs_shift {
@@ -591,15 +500,7 @@ impl Output {
                     inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
                 }
             }
-
-            // SAFETY: inputs is a valid Vec<INPUT> whose contents live for this call.
-            unsafe {
-                SendInput(
-                    &inputs,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-            run_start = run_end;
+            let _ = crate::win32::send_input_safe(&inputs);
         }
     }
 }

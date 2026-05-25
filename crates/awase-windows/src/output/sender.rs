@@ -46,7 +46,7 @@ impl InjectionSender for TsfSender<'_> {
 pub(crate) struct OutputSession<'a> {
     pub output: &'a super::Output,
     pub mode: InjectionMode,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // RAII: Drop が OUTPUT_GATE.active=false を実行する
     pub guard: OutputActiveGuard,
 }
 

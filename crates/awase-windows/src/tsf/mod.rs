@@ -14,6 +14,7 @@ pub mod observer;
 pub mod output;
 pub mod probe;
 pub mod probe_bridge;
+pub(crate) mod probe_fsm;
 pub mod send;
 
 pub use awase::tsf::{

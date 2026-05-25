@@ -41,7 +41,6 @@ const WM_TRAY_CALLBACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP;
 pub const WINDOW_CLASS_NAME: &str = "awase_tray_window";
 
 /// システムトレイアイコン管理
-#[allow(missing_debug_implementations)]
 pub struct SystemTray {
     hwnd: HWND,
     nid: NOTIFYICONDATAW,
@@ -51,6 +50,12 @@ pub struct SystemTray {
     current_layout_name: String,
     /// 管理者権限で実行中かどうか
     elevated: bool,
+}
+
+impl std::fmt::Debug for SystemTray {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemTray").finish_non_exhaustive()
+    }
 }
 
 impl SystemTray {

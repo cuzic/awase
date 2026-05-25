@@ -58,7 +58,7 @@ pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
 /// # Panics
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
 #[must_use]
-pub fn send_input_safe(inputs: &[INPUT]) -> u32 {
+pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
     // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。
     //         SendInput はスライスの範囲外を読まない。

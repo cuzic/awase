@@ -238,7 +238,6 @@ impl ImmCapabilityStore {
 // ── AppKindClassifier ──
 
 /// フォーカス検出に関するシングルスレッド状態を集約する構造体
-#[allow(missing_debug_implementations)]
 pub struct AppKindClassifier {
     pub cache: super::cache::FocusCache,
     pub overrides: ForceOverrides,
@@ -255,6 +254,12 @@ pub struct AppKindClassifier {
     current_app_profile: AppImeProfile,
     /// 現在フォーカス中のプロセス名（小文字、キーマップマッチング用）
     pub current_process_name: String,
+}
+
+impl std::fmt::Debug for AppKindClassifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppKindClassifier").finish_non_exhaustive()
+    }
 }
 
 impl AppKindClassifier {

@@ -7,7 +7,7 @@
 
 use std::sync::atomic::Ordering;
 
-use crate::tsf::observer::TSF_OBS;
+use crate::tsf::observer::{Baseline, TSF_OBS};
 use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 
 // ── TsfReadinessProbe ──
@@ -52,8 +52,18 @@ pub struct TsfReadinessProbe {
     settled_at_ms: std::cell::Cell<u64>,
 }
 
+/// [`TsfReadinessProbe::check_now`] が `true` を返したときに合わせて返す観測スナップショット。
+pub struct GjiProbeOutcome {
+    /// `warmup_sent_ms` からの経過時間（ms）
+    pub elapsed_ms: u64,
+    /// warmup 後に GJI I/O が発生していたか（`gji_last_io_ms >= warmup_sent_ms`）
+    pub settled: bool,
+    /// GJI モニターが健全か
+    pub monitor_healthy: bool,
+}
+
 impl TsfReadinessProbe {
-    #[must_use] 
+    #[must_use]
     pub const fn new(warmup_sent_ms: u64, cold_seq: u32, min_ms: u64) -> Self {
         Self {
             warmup_sent_ms,
@@ -61,6 +71,24 @@ impl TsfReadinessProbe {
             min_ms,
             settled_at_ms: std::cell::Cell::new(0),
         }
+    }
+
+    /// タイマーポーリング用判定。完了時に settle 情報も返す。
+    ///
+    /// `None` = まだ待機中、`Some(outcome)` = 送信可能。
+    /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    pub fn check_outcome(&self, total_max_ms: u64) -> Option<GjiProbeOutcome> {
+        if !self.check_now(total_max_ms) {
+            return None;
+        }
+        let now = crate::hook::current_tick_ms();
+        let monitor_healthy = TSF_OBS.gji_monitor_ok.load(Ordering::Acquire);
+        let gji_last_io = TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
+        Some(GjiProbeOutcome {
+            elapsed_ms: now.saturating_sub(self.warmup_sent_ms),
+            settled: gji_last_io >= self.warmup_sent_ms,
+            monitor_healthy,
+        })
     }
 
     /// タイマーポーリング用ノンブロッキング判定。
@@ -472,8 +500,8 @@ impl CompositionState {
 /// GJI 候補ウィンドウの変化を監視して composition が成功したか判定する検出器。
 #[derive(Debug)]
 pub struct LiteralDetector {
-    /// 送信前の GJI 候補ウィンドウ SHOW シーケンス番号
-    gji_show_baseline: u32,
+    /// 送信前の GJI 候補ウィンドウ SHOW ベースライン
+    gji_show_baseline: Baseline,
     /// 送信前の GJI I/O タイムスタンプ
     io_baseline: u64,
     /// 送信前に候補ウィンドウが表示中だったか
@@ -502,7 +530,7 @@ impl LiteralDetector {
     pub fn new() -> Self {
         use std::sync::atomic::Ordering::Relaxed;
         Self {
-            gji_show_baseline: TSF_OBS.gji_candidate_show_seq.load(Relaxed),
+            gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
             io_baseline: TSF_OBS.gji_last_io_ms.load(Relaxed),
             was_candidate_visible: TSF_OBS.gji_candidate_visible.load(Relaxed),
         }
@@ -518,7 +546,7 @@ impl LiteralDetector {
         let confirmed = if self.was_candidate_visible {
             TSF_OBS.gji_last_io_ms.load(Relaxed) != self.io_baseline
         } else {
-            TSF_OBS.gji_candidate_show_seq.load(Relaxed) != self.gji_show_baseline
+            TSF_OBS.gji_candidate_show.has_changed(&self.gji_show_baseline)
         };
         if confirmed {
             Some(DetectionResult::CompositionConfirmed)

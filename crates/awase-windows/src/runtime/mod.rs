@@ -48,7 +48,6 @@ pub struct LayoutEntry {
 /// OS イベントの受け取り → Observer → Engine → Executor のパイプラインを駆動する。
 ///
 /// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
-#[allow(missing_debug_implementations)]
 pub struct Runtime {
     pub engine: Engine,
     pub executor: DecisionExecutor,
@@ -61,6 +60,12 @@ pub struct Runtime {
     pub platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
     pub all_keymaps: Vec<crate::keymap::CompiledKeymap>,
+}
+
+impl std::fmt::Debug for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runtime").finish_non_exhaustive()
+    }
 }
 
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。

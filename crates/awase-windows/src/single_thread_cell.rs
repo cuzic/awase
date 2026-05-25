@@ -8,8 +8,13 @@ use std::cell::{RefCell, RefMut};
 ///
 /// `UnsafeCell` ベースの旧実装と異なり、`RefCell` の実行時借用チェックにより
 /// 二重借用（再入）は UB ではなく安全な `None` 返却として扱われる。
-#[allow(missing_debug_implementations)]
 pub struct SingleThreadCell<T>(RefCell<Option<T>>);
+
+impl<T> std::fmt::Debug for SingleThreadCell<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SingleThreadCell").finish()
+    }
+}
 
 // Safety: 実際のアクセスはメインスレッドからのみ行われる（上記ドキュメント参照）。
 unsafe impl<T> Sync for SingleThreadCell<T> {}

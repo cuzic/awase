@@ -126,7 +126,7 @@ pub fn is_hook_responsive(ps: &crate::PlatformState, timeout_ms: u64) -> bool {
 /// Win32 API (`SendInput`) を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn send_ping() {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
         VIRTUAL_KEY,
     };
 
@@ -157,10 +157,7 @@ pub unsafe fn send_ping() {
             },
         },
     ];
-    SendInput(
-        &inputs,
-        i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-    );
+    let _ = crate::win32::send_input_safe(&inputs);
     log::trace!("Hook ping sent");
 }
 
@@ -266,7 +263,7 @@ const fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook:
 unsafe fn send_keymap_reinject(send_vk: VkCode, mods: awase::engine::fsm_types::ModifierState) {
     use crate::tsf::output::make_key_input_ex;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, SendInput,
+        GetAsyncKeyState,
         VK_CONTROL, VK_LCONTROL, VK_SHIFT, VK_LSHIFT, VK_MENU, VK_LMENU,
     };
 
@@ -291,8 +288,7 @@ unsafe fn send_keymap_reinject(send_vk: VkCode, mods: awase::engine::fsm_types::
     if still_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    false, INJECTED_MARKER)); }
 
     if !inputs.is_empty() {
-        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
-        SendInput(&inputs, i32::try_from(size_of::<INPUT>()).unwrap_or(28));
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 }
 

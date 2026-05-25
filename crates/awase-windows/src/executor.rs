@@ -29,7 +29,6 @@ pub struct HookResult {
     pub has_pending: bool,
 }
 
-#[allow(missing_debug_implementations)]
 pub struct DecisionExecutor {
     pub platform: WindowsPlatform,
     /// Effects キュー（FIFO 順序保証）
@@ -48,6 +47,12 @@ pub struct DecisionExecutor {
     /// TIMER_OUTPUT_GUARD が発火待ちの間 true。
     /// この間は drain_deferred が再入しても新規タイマーを二重登録しない。
     guard_timer_active: bool,
+}
+
+impl std::fmt::Debug for DecisionExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecisionExecutor").finish_non_exhaustive()
+    }
 }
 
 impl DecisionExecutor {

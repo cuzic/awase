@@ -73,6 +73,10 @@ pub static OUTPUT_GATE: OutputGate = OutputGate::new();
 pub(crate) struct OutputActiveGuard;
 
 impl OutputActiveGuard {
+    /// テスト専用: OUTPUT_GATE を変更しない NOOP ガード。
+    #[cfg(test)]
+    pub(crate) const fn noop_for_test() -> Self { Self }
+
     pub(crate) fn begin() -> Self {
         let prev = OUTPUT_GATE.depth.fetch_add(1, Ordering::AcqRel);
         if prev == 0 {

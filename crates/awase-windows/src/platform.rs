@@ -7,13 +7,13 @@ use std::time::Duration;
 
 use awase::platform::PlatformRuntime;
 use awase::types::{KeyAction, RawKeyEvent};
+
 use crate::output::Output;
 use crate::focus::classifier::AppKindClassifier;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
 /// Windows 固有のプラットフォーム実装
-#[allow(missing_debug_implementations)]
 pub struct WindowsPlatform {
     pub output: Output,
     pub tray: SystemTray,
@@ -28,13 +28,17 @@ pub struct WindowsPlatform {
     pub suppress_engine_state_key: bool,
 }
 
+impl std::fmt::Debug for WindowsPlatform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowsPlatform").finish_non_exhaustive()
+    }
+}
+
 impl WindowsPlatform {
-    /// TIMER_TSF_PROBE ハンドラ。pending_tsf フェーズを進め、完了したらタイマーを kill する。
+    /// TIMER_TSF_PROBE ハンドラ。`Output::step_probe` に委譲し、タイマー命令を実行する。
     pub fn advance_tsf_probe(&mut self) {
-        if self.output.advance_tsf_probe() {
-            self.timer.kill(crate::TIMER_TSF_PROBE);
-            self.output.on_tsf_probe_ready();
-        }
+        let cmd = self.output.step_probe();
+        self.apply_timer_command(cmd);
     }
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
@@ -44,8 +48,16 @@ impl WindowsPlatform {
     /// `platform.send_keys` を経由しないため、ここでタイマー設定を補完する。
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         self.output.flush_raw_tsf_literal_recovery();
-        if self.output.pending_tsf.borrow().is_some() {
-            self.timer.set(crate::TIMER_TSF_PROBE, Duration::from_millis(10));
+        if let Some(cmd) = self.output.pending_tsf_timer() {
+            self.apply_timer_command(cmd);
+        }
+    }
+
+    /// `TimerCommand` を受け取り、Win32 タイマー操作を実行する。
+    pub(crate) fn apply_timer_command(&mut self, cmd: crate::output::TimerCommand) {
+        match cmd {
+            crate::output::TimerCommand::Continue { id, delay } => self.timer.set(id, delay),
+            crate::output::TimerCommand::Kill { id } => self.timer.kill(id),
         }
     }
 }
@@ -56,8 +68,8 @@ impl PlatformRuntime for WindowsPlatform {
     fn send_keys(&mut self, actions: &[KeyAction]) {
         self.output.send_keys(actions);
         // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
-        if self.output.pending_tsf.borrow().is_some() {
-            self.timer.set(crate::TIMER_TSF_PROBE, Duration::from_millis(10));
+        if let Some(cmd) = self.output.pending_tsf_timer() {
+            self.apply_timer_command(cmd);
         }
     }
 
@@ -170,3 +182,4 @@ impl WindowsPlatform {
         }
     }
 }
+
