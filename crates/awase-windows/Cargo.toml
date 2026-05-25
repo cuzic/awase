@@ -24,6 +24,7 @@ path = "../win32-async"
 
 [target.'cfg(windows)'.dependencies.win32-worker]
 path = "../win32-worker"
+version = "0.1.0"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
