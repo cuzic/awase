@@ -8,13 +8,20 @@ use crate::response::{Response, TimerCommand};
 /// The runtime implements this trait to translate those commands into
 /// actual platform timer operations.
 ///
+/// # Invariant: `Set` resets an existing timer
+///
+/// Implementations **must** ensure that calling [`set_timer`](Self::set_timer)
+/// with an ID that already has an active timer **replaces** that timer rather
+/// than creating a second concurrent timer for the same ID. The new timer
+/// starts counting from the moment `set_timer` is called.
+///
 /// # Platform examples
 ///
 /// | Platform | `set_timer` | `kill_timer` |
 /// |----------|-------------|--------------|
-/// | Windows  | `SetTimer()` | `KillTimer()` |
-/// | Linux    | `timerfd_settime()` | `timerfd_settime(0)` |
-/// | macOS    | `CFRunLoopTimerSetNextFireDate()` | invalidate timer |
+/// | Windows  | `SetTimer()` (reuses the same `nIDEvent`) | `KillTimer()` |
+/// | Linux    | `timerfd_settime()` (overwrites existing armed state) | `timerfd_settime(0)` |
+/// | macOS    | `CFRunLoopTimerSetNextFireDate()` (adjusts fire date) | invalidate the `CFRunLoopTimerRef` |
 /// | Test     | record to `Vec` | record to `Vec` |
 pub trait TimerRuntime {
     /// The timer identifier type (must match the state machine's `TimerId`).
@@ -22,8 +29,8 @@ pub trait TimerRuntime {
 
     /// Start or restart a timer.
     ///
-    /// If a timer with the same ID is already active, it must be reset
-    /// to the new duration.
+    /// If a timer with the same ID is already active, it **must** be reset
+    /// to the new duration — only one timer per ID may be active at a time.
     fn set_timer(&mut self, id: Self::TimerId, duration: Duration);
 
     /// Stop an active timer. No-op if the timer is not active.
@@ -32,29 +39,50 @@ pub trait TimerRuntime {
 
 /// A runtime that can execute actions produced by the state machine.
 ///
+/// # Order guarantee
+///
+/// The `actions` slice passed to [`execute`](Self::execute) is always in the
+/// same order as they appear in [`Response::actions`](crate::Response::actions).
+/// Implementations **must** process them in order (first to last) to preserve
+/// the intended sequence of output events (e.g., modifier-down before
+/// character-down in a key injection scenario).
+///
 /// # Platform examples
 ///
 /// | Platform | Implementation |
 /// |----------|----------------|
 /// | Windows  | `SendInput()` for key injection |
 /// | Linux    | `uinput` write |
+/// | macOS    | `CGEventPost()` |
 /// | Test     | record to `Vec` |
 pub trait ActionExecutor {
     /// The action type (must match the state machine's `Action`).
     type Action;
 
-    /// Execute a batch of actions, in order.
+    /// Execute a batch of actions, in the order they appear in the slice.
     fn execute(&mut self, actions: &[Self::Action]);
 }
 
 /// Dispatch a [`Response`] to a runtime.
 ///
-/// Processes timer commands first, then executes actions.
-/// Returns the `consumed` flag from the response.
-///
 /// This is the primary integration point between the state machine
 /// (which is pure and side-effect-free) and the runtime (which
 /// performs actual I/O).
+///
+/// # Processing order
+///
+/// 1. **Timer commands** — all [`TimerCommand`]s in `response.timers`
+///    are processed in order via [`TimerRuntime::set_timer`] /
+///    [`TimerRuntime::kill_timer`].
+/// 2. **Actions** — if `response.actions` is non-empty,
+///    [`ActionExecutor::execute`] is called once with the full slice.
+///
+/// Timer commands are applied before actions so that a newly started
+/// timer cannot fire before the actions from the same transition have
+/// been executed (in single-threaded runtimes). In multi-threaded
+/// runtimes, callers are responsible for any necessary synchronization.
+///
+/// Returns the `consumed` flag from the response.
 ///
 /// # Example
 ///

@@ -9,6 +9,19 @@ use std::time::Duration;
 /// The state machine never executes side effects directly. The runtime
 /// reads the `Response` and performs the actual timer operations and
 /// action execution via [`dispatch`](crate::dispatch::dispatch).
+///
+/// # Three-field contract
+///
+/// | Field | Type | Meaning |
+/// |-------|------|---------|
+/// | `consumed` | `bool` | `true` → caller must **not** forward the event further; `false` → caller should pass it to the next handler |
+/// | `actions` | `Vec<A>` | Ordered list of output actions to execute; may be empty |
+/// | `timers` | `Vec<TimerCommand<T>>` | Ordered timer instructions (set/kill); processed before `actions` by [`dispatch`](crate::dispatch::dispatch) |
+///
+/// Build responses with the constructor methods ([`emit_one`](Self::emit_one),
+/// [`consume`](Self::consume), [`pass_through`](Self::pass_through)) and the
+/// chaining methods ([`with_timer`](Self::with_timer),
+/// [`with_kill_timer`](Self::with_kill_timer)).
 #[derive(Debug)]
 pub struct Response<A, T> {
     /// Whether the original event was consumed by the state machine.
@@ -36,12 +49,25 @@ pub struct Response<A, T> {
 /// Timer commands are part of the [`Response`] returned by state machine
 /// transitions. The runtime is responsible for translating these into
 /// actual platform timer operations.
+///
+/// # `Set` vs `Kill`
+///
+/// | Variant | When to use |
+/// |---------|-------------|
+/// | [`Set`](Self::Set) | Start a new timer **or** reset an existing one (e.g., restart the debounce window on every incoming event) |
+/// | [`Kill`](Self::Kill) | Cancel a pending timer that is no longer needed (e.g., a key was released before the chord window closed) |
+///
+/// `Set` with an ID that already has an active timer **resets** that
+/// timer — it does not create a second concurrent timer for the same ID.
+/// `Kill` for an ID with no active timer is a silent no-op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TimerCommand<T> {
     /// Start (or restart) a timer with the given ID and duration.
     ///
     /// If a timer with the same ID is already active, it is reset
-    /// to the new duration.
+    /// to the new duration. Use this to implement "restart the window
+    /// on every new event" patterns such as debounce or inactivity
+    /// timeouts.
     Set {
         /// Timer identifier.
         id: T,
@@ -51,7 +77,9 @@ pub enum TimerCommand<T> {
 
     /// Stop an active timer.
     ///
-    /// If no timer with this ID is active, this is a no-op.
+    /// If no timer with this ID is active, this is a no-op. Use this
+    /// when a subsequent event makes the pending timeout irrelevant
+    /// (e.g., the other chord key was released, so the window is moot).
     Kill {
         /// Timer identifier to stop.
         id: T,
@@ -61,7 +89,11 @@ pub enum TimerCommand<T> {
 // ── Builder methods ──────────────────────────────────────────
 
 impl<A, T> Response<A, T> {
-    /// Create a response that consumes the event and emits actions.
+    /// Create a response that consumes the event and emits multiple actions.
+    ///
+    /// Use this when a single transition produces two or more output actions
+    /// that need to be dispatched together (e.g., a chord that generates a
+    /// modifier keydown followed by a character keydown).
     #[must_use]
     pub const fn emit(actions: Vec<A>) -> Self {
         Self {
@@ -72,6 +104,9 @@ impl<A, T> Response<A, T> {
     }
 
     /// Create a response that consumes the event and emits a single action.
+    ///
+    /// Use this for the common case where exactly one output action is
+    /// produced (e.g., a confirmed debounce level, a recognized key stroke).
     #[must_use]
     pub fn emit_one(action: A) -> Self {
         Self {
@@ -81,10 +116,22 @@ impl<A, T> Response<A, T> {
         }
     }
 
-    /// Create a response that consumes the event but emits no actions.
+    /// Create a response that consumes the event but emits no actions yet.
     ///
-    /// Typically used when the state machine enters a pending state
-    /// and will emit actions later (on a subsequent event or timeout).
+    /// Use this when the state machine enters a pending (buffering) state
+    /// and will emit actions only on a later event or timeout — the
+    /// **timer-pending pattern**. Typically followed by
+    /// [`.with_timer(…)`](Self::with_timer) to start the decision window.
+    ///
+    /// ```
+    /// # use std::time::Duration;
+    /// # use timed_fsm::Response;
+    /// // Absorb the event and start a 50 ms window.
+    /// let r: Response<u8, ()> = Response::consume()
+    ///     .with_timer((), Duration::from_millis(50));
+    /// r.assert_consumed();
+    /// r.assert_timer_set(());
+    /// ```
     #[must_use]
     pub const fn consume() -> Self {
         Self {
@@ -96,8 +143,9 @@ impl<A, T> Response<A, T> {
 
     /// Create a response that does **not** consume the event.
     ///
-    /// The caller should propagate the event as if the state machine
-    /// did not exist.
+    /// Use this when this state machine does not handle the current event
+    /// and the caller should pass it to the next handler in the chain
+    /// (e.g., a key combination that is not part of this machine's grammar).
     #[must_use]
     pub const fn pass_through() -> Self {
         Self {
@@ -108,6 +156,11 @@ impl<A, T> Response<A, T> {
     }
 
     /// Add a timer set command to this response.
+    ///
+    /// This is a chainable builder method. It appends a
+    /// [`TimerCommand::Set`] with the given `id` and `duration`.
+    /// If a timer with the same ID is already running, the runtime
+    /// must reset it to the new duration.
     #[must_use]
     pub fn with_timer(mut self, id: T, duration: Duration) -> Self {
         self.timers.push(TimerCommand::Set { id, duration });
@@ -115,6 +168,10 @@ impl<A, T> Response<A, T> {
     }
 
     /// Add a timer kill command to this response.
+    ///
+    /// This is a chainable builder method. It appends a
+    /// [`TimerCommand::Kill`] for the given `id`. If no timer with
+    /// that ID is active, the runtime treats this as a no-op.
     #[must_use]
     pub fn with_kill_timer(mut self, id: T) -> Self {
         self.timers.push(TimerCommand::Kill { id });
