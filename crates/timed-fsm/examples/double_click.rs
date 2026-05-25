@@ -23,7 +23,7 @@ struct DoubleClickDetector {
 }
 
 impl DoubleClickDetector {
-    fn new(threshold: Duration) -> Self {
+    const fn new(threshold: Duration) -> Self {
         Self {
             state: ClickState::Idle,
             threshold,
@@ -36,7 +36,7 @@ impl TimedStateMachine for DoubleClickDetector {
     type Action = ClickOutput;
     type TimerId = ();
 
-    fn on_event(&mut self, _: ()) -> Response<ClickOutput, ()> {
+    fn on_event(&mut self, (): ()) -> Response<ClickOutput, ()> {
         match self.state {
             ClickState::Idle => {
                 // First click: wait for a possible second click
@@ -51,7 +51,7 @@ impl TimedStateMachine for DoubleClickDetector {
         }
     }
 
-    fn on_timeout(&mut self, _: ()) -> Response<ClickOutput, ()> {
+    fn on_timeout(&mut self, (): ()) -> Response<ClickOutput, ()> {
         match self.state {
             ClickState::WaitingForSecond => {
                 // No second click arrived: single click

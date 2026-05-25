@@ -13,7 +13,7 @@ struct Debounce {
 }
 
 impl Debounce {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             pending: None,
             confirmed: None,
@@ -37,7 +37,7 @@ impl TimedStateMachine for Debounce {
         Response::consume().with_timer((), Duration::from_millis(20))
     }
 
-    fn on_timeout(&mut self, _: ()) -> Response<bool, ()> {
+    fn on_timeout(&mut self, (): ()) -> Response<bool, ()> {
         match self.pending.take() {
             Some(level) => {
                 self.confirmed = Some(level);

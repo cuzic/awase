@@ -160,7 +160,7 @@ mod tests {
                 0 => {
                     // Reduce: emit sum of buffer
                     let sum: i32 = self.buffer.drain(..).sum();
-                    let count = if sum == 0 { 0 } else { 1 };
+                    let count = usize::from(sum != 0);
                     ParseAction::Reduce {
                         actions: if sum == 0 { vec![] } else { vec![sum] },
                         record: count,
@@ -215,7 +215,7 @@ mod tests {
         assert!(r.actions.is_empty());
     }
 
-    /// A parser that uses ReduceAndContinue.
+    /// A parser that uses `ReduceAndContinue`.
     /// On token 99, it reduces current buffer and re-processes token 0 (which triggers final reduce).
     struct SplitParser {
         buffer: Vec<i32>,
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn pass_through_after_reduce_and_continue_is_consumed() {
-        /// Parser that does ReduceAndContinue then the remaining token passes through.
+        /// Parser that does `ReduceAndContinue` then the remaining token passes through.
         struct RacParser;
 
         impl ShiftReduceParser for RacParser {
@@ -299,7 +299,7 @@ mod tests {
                 }
             }
 
-            fn on_reduce(&mut self, _: ()) {}
+            fn on_reduce(&mut self, (): ()) {}
         }
 
         let mut p = RacParser;
