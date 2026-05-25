@@ -1,6 +1,6 @@
 [package]
 name = "timed-fsm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A timed finite state machine framework where timer commands are declarative transition outputs"
 license = "MIT OR Apache-2.0"
