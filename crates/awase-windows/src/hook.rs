@@ -673,7 +673,12 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // ── パニック連打検出（物理キー1回につき1回、自己注入を除く）──
     // 再入・通常パスのどちらを経由しても物理押下を1度だけカウントする。
     // 再入パスでは defer → replay が発生するため pipeline 側では数えない。
-    if is_keydown && classify_ime_relevance(vk).may_change_ime {
+    // `may_change_ime` が拾わない 0x1C(VK_CONVERT)/0x1D(VK_NONCONVERT) も、
+    // ユーザ設定 ime_on/ime_off に登録されていればパニック連打として扱う。
+    if is_keydown
+        && (classify_ime_relevance(vk).may_change_ime
+            || crate::panic_detect::is_panic_trigger(vk_raw))
+    {
         crate::panic_detect::record_ime_keydown(current_tick_ms());
     }
 

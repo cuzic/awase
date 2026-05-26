@@ -478,6 +478,14 @@ fn reload_config() {
         let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
         let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
         let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
+        let mut panic_trigger_vks: Vec<u16> = ime_on
+            .iter()
+            .chain(ime_off.iter())
+            .map(|k| u16::from(k.vk))
+            .collect();
+        panic_trigger_vks.sort_unstable();
+        panic_trigger_vks.dedup();
+        crate::panic_detect::set_panic_trigger_vks(panic_trigger_vks);
         let _ = with_app(|app| {
             app.sync_toggle_keys.clone_from(&toggle);
             app.sync_on_keys.clone_from(&on);

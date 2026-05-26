@@ -11,6 +11,13 @@ use crate::SingleThreadCell;
 /// bootstrap で `.set(RapidPressTracker::new())` を呼ぶこと。
 pub static RAPID_IME_TIMESTAMPS: SingleThreadCell<RapidPressTracker> = SingleThreadCell::new();
 
+/// `ime_on` / `ime_off` 特殊キーに登録された VK のリスト。
+///
+/// `may_change_ime` が拾わない VK_CONVERT(0x1C) / VK_NONCONVERT(0x1D) を含む
+/// ユーザ設定のショートカット連打もパニック連打として扱うためのカスタムトリガー。
+/// bootstrap および config reload で `set_panic_trigger_vks` を呼んで更新する。
+pub static PANIC_TRIGGER_VKS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
+
 /// 連打検出用の軽量トラッカー
 #[derive(Debug)]
 pub struct RapidPressTracker {
@@ -73,4 +80,20 @@ pub fn record_ime_keydown(now_ms: u64) {
             crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
         }
     });
+}
+
+/// `vk` がユーザ設定の IME 制御ショートカット（ime_on / ime_off）に
+/// 登録された VK かを判定する。bootstrap 前は常に false。
+#[must_use]
+pub fn is_panic_trigger(vk: u16) -> bool {
+    PANIC_TRIGGER_VKS
+        .with(|vks| vks.contains(&vk))
+        .unwrap_or(false)
+}
+
+/// `ime_on` / `ime_off` 特殊キーの VK リストを更新する。
+///
+/// bootstrap 完了時と config reload 時に呼ぶ。重複は呼び出し側で除去すること。
+pub fn set_panic_trigger_vks(vks: Vec<u16>) {
+    PANIC_TRIGGER_VKS.set(vks);
 }
