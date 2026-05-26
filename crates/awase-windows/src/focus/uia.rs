@@ -268,8 +268,11 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
                         );
 
                         // メインスレッドに結果を送信
-                        // wParam: 下位 8 bit = FocusKind, 次の 8 bit = AppKind (0xFF = なし)
-                        let app_kind_val = result.app_kind.map_or(0xFF_usize, |k| k as u8 as usize);
+                        // wParam: 下位 8 bit = FocusKind, 次の 8 bit = AppKind (FOCUS_KIND_UPDATE_NO_APP_KIND = なし)
+                        let app_kind_val = result.app_kind.map_or(
+                            usize::from(crate::FOCUS_KIND_UPDATE_NO_APP_KIND),
+                            |k| k as u8 as usize,
+                        );
                         let wparam_val = (result.focus_kind as u8 as usize)
                             | (app_kind_val << 8);
                         crate::win32::post_to_main_thread_with(

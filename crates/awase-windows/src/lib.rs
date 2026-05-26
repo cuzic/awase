@@ -225,6 +225,11 @@ pub const WM_PROCESS_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 
 /// UIA 非同期判定完了通知用カスタムメッセージ
 pub const WM_FOCUS_KIND_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
+/// `WM_FOCUS_KIND_UPDATE` の wParam 上位 8bit が「AppKind 不明」を示すセンチネル値。
+///
+/// `Option<AppKind>` を `usize` の 1 byte に詰めるための都合で、`None` を 0xFF で表す。
+/// 受信側はこの値と一致したら `None` として扱う。
+pub const FOCUS_KIND_UPDATE_NO_APP_KIND: u8 = 0xFF;
 
 /// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
 pub const WM_IME_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
