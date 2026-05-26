@@ -44,8 +44,11 @@ struct SettingsApp {
     new_ime_detect_off_key: String,
     // Keymap rule add-buffers
     new_keymap_app: String,
-    new_keymap_from: String,
-    new_keymap_to: String,
+    new_keymap_from_ctrl: bool,
+    new_keymap_from_shift: bool,
+    new_keymap_from_alt: bool,
+    new_keymap_from_main: String,
+    new_keymap_to_main: String,
     // Preview cache: (layout filename, parsed result)
     preview_cache: Option<(String, Result<awase::yab::YabLayout, String>)>,
 }
@@ -76,8 +79,11 @@ impl SettingsApp {
             new_ime_detect_on_key: String::new(),
             new_ime_detect_off_key: String::new(),
             new_keymap_app: String::new(),
-            new_keymap_from: String::new(),
-            new_keymap_to: String::new(),
+            new_keymap_from_ctrl: false,
+            new_keymap_from_shift: false,
+            new_keymap_from_alt: false,
+            new_keymap_from_main: String::new(),
+            new_keymap_to_main: String::new(),
             preview_cache: None,
         }
     }
@@ -311,7 +317,8 @@ impl SettingsApp {
         ui.heading("ショートカット再割当");
         ui.label(
             "アプリ別にキー入力を別キーへ置き換えます。\n\
-             例: Ctrl+I を F7 に再割当（vim 系で Tab と区別したい場合等）。",
+             例: Ctrl+I を F7 に再割当（vim 系で Tab と区別したい場合等）。\n\
+             ※ to 側で修飾キー付きの送信は現状未対応です。",
         );
         ui.add_space(8.0);
 
@@ -321,52 +328,52 @@ impl SettingsApp {
             ui.label("  （ルールはまだ登録されていません）");
         } else {
             let mut rm = None;
-            egui::Grid::new("keymap_rules_grid")
-                .num_columns(4)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("アプリ");
-                    ui.label("from");
-                    ui.label("to");
-                    ui.label("");
-                    ui.end_row();
-                    for (i, rule) in self.config.keymaps.iter_mut().enumerate() {
-                        let mut app_buf = rule.app.clone().unwrap_or_default();
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut app_buf)
-                                    .desired_width(140.0)
-                                    .hint_text("全アプリ"),
-                            )
-                            .changed()
-                        {
-                            rule.app = if app_buf.is_empty() { None } else { Some(app_buf) };
-                        }
-                        ui.add(
-                            egui::TextEdit::singleline(&mut rule.from).desired_width(120.0),
-                        );
-                        let mut to_buf = rule.to.clone().unwrap_or_default();
-                        if ui
-                            .add(
-                                egui::TextEdit::singleline(&mut to_buf)
-                                    .desired_width(120.0)
-                                    .hint_text("（消費のみ）"),
-                            )
-                            .changed()
-                        {
-                            rule.to = if to_buf.is_empty() { None } else { Some(to_buf) };
-                        }
-                        if ui.small_button("x").clicked() {
-                            rm = Some(i);
-                        }
-                        ui.end_row();
+            for (i, rule) in self.config.keymaps.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    // App field
+                    let mut app_buf = rule.app.clone().unwrap_or_default();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut app_buf)
+                                .desired_width(120.0)
+                                .hint_text("全アプリ"),
+                        )
+                        .changed()
+                    {
+                        rule.app = if app_buf.is_empty() { None } else { Some(app_buf) };
+                    }
+
+                    // from: modifiers + main key
+                    let (mut ctrl, mut shift, mut alt, mut main) = parse_combo_str(&rule.from);
+                    let mut changed = false;
+                    changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
+                    changed |= ui.checkbox(&mut shift, "Shift").changed();
+                    changed |= ui.checkbox(&mut alt, "Alt").changed();
+                    if main_key_combo(ui, &format!("from_main_{i}"), &mut main) {
+                        changed = true;
+                    }
+                    if changed {
+                        rule.from = format_combo(ctrl, shift, alt, &main);
+                    }
+
+                    ui.label("→");
+
+                    // to: main key only
+                    let mut to_main = rule.to.clone().unwrap_or_default();
+                    if main_key_combo_optional(ui, &format!("to_main_{i}"), &mut to_main) {
+                        rule.to = if to_main.is_empty() { None } else { Some(to_main) };
+                    }
+
+                    if ui.small_button("x").clicked() {
+                        rm = Some(i);
                     }
                 });
+            }
             if let Some(i) = rm {
                 self.config.keymaps.remove(i);
             }
         }
-        ui.add_space(8.0);
+        ui.add_space(12.0);
 
         // New rule form
         ui.label("新規追加");
@@ -378,47 +385,52 @@ impl SettingsApp {
                 );
                 ui.add(
                     egui::TextEdit::singleline(&mut self.new_keymap_app)
-                        .desired_width(160.0)
+                        .desired_width(180.0)
                         .hint_text("vim.exe など（空欄=全アプリ）"),
                 );
                 ui.end_row();
-                ui.label("  from:").on_hover_text(
-                    "インターセプトするキー（例: Ctrl+I, Alt+Space, 変換）。",
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_keymap_from)
-                        .desired_width(160.0)
-                        .hint_text("Ctrl+I など"),
-                );
+
+                ui.label("  from:");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
+                    ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
+                    ui.checkbox(&mut self.new_keymap_from_alt, "Alt");
+                    main_key_combo(ui, "new_from_main", &mut self.new_keymap_from_main);
+                });
                 ui.end_row();
+
                 ui.label("  to:").on_hover_text(
-                    "再注入するキー（例: F7）。空欄ならキー消費のみ。\n\
-                     現状 to 側で修飾キー付きの送信は未対応です。",
+                    "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけ。",
                 );
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_keymap_to)
-                        .desired_width(160.0)
-                        .hint_text("F7 など（空欄=消費のみ）"),
-                );
+                main_key_combo_optional(ui, "new_to_main", &mut self.new_keymap_to_main);
                 ui.end_row();
             });
-        if ui.button("+追加").clicked() && !self.new_keymap_from.is_empty() {
+        if ui.button("+追加").clicked() && !self.new_keymap_from_main.is_empty() {
+            let from = format_combo(
+                self.new_keymap_from_ctrl,
+                self.new_keymap_from_shift,
+                self.new_keymap_from_alt,
+                &self.new_keymap_from_main,
+            );
             self.config.keymaps.push(awase::config::KeymapRule {
                 app: if self.new_keymap_app.is_empty() {
                     None
                 } else {
                     Some(self.new_keymap_app.clone())
                 },
-                from: self.new_keymap_from.clone(),
-                to: if self.new_keymap_to.is_empty() {
+                from,
+                to: if self.new_keymap_to_main.is_empty() {
                     None
                 } else {
-                    Some(self.new_keymap_to.clone())
+                    Some(self.new_keymap_to_main.clone())
                 },
             });
             self.new_keymap_app.clear();
-            self.new_keymap_from.clear();
-            self.new_keymap_to.clear();
+            self.new_keymap_from_ctrl = false;
+            self.new_keymap_from_shift = false;
+            self.new_keymap_from_alt = false;
+            self.new_keymap_from_main.clear();
+            self.new_keymap_to_main.clear();
         }
     }
 
@@ -656,6 +668,119 @@ fn key_list_ui(
             buf.clear();
         }
     });
+}
+
+/// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
+const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
+    ("A", "VK_A"), ("B", "VK_B"), ("C", "VK_C"), ("D", "VK_D"),
+    ("E", "VK_E"), ("F", "VK_F"), ("G", "VK_G"), ("H", "VK_H"),
+    ("I", "VK_I"), ("J", "VK_J"), ("K", "VK_K"), ("L", "VK_L"),
+    ("M", "VK_M"), ("N", "VK_N"), ("O", "VK_O"), ("P", "VK_P"),
+    ("Q", "VK_Q"), ("R", "VK_R"), ("S", "VK_S"), ("T", "VK_T"),
+    ("U", "VK_U"), ("V", "VK_V"), ("W", "VK_W"), ("X", "VK_X"),
+    ("Y", "VK_Y"), ("Z", "VK_Z"),
+    ("0", "VK_0"), ("1", "VK_1"), ("2", "VK_2"), ("3", "VK_3"), ("4", "VK_4"),
+    ("5", "VK_5"), ("6", "VK_6"), ("7", "VK_7"), ("8", "VK_8"), ("9", "VK_9"),
+    ("F1", "VK_F1"), ("F2", "VK_F2"), ("F3", "VK_F3"), ("F4", "VK_F4"),
+    ("F5", "VK_F5"), ("F6", "VK_F6"), ("F7", "VK_F7"), ("F8", "VK_F8"),
+    ("F9", "VK_F9"), ("F10", "VK_F10"), ("F11", "VK_F11"), ("F12", "VK_F12"),
+    ("Space", "VK_SPACE"),
+    ("Enter", "VK_RETURN"),
+    ("Tab", "VK_TAB"),
+    ("Esc", "VK_ESCAPE"),
+    ("Backspace", "VK_BACK"),
+    ("Delete", "VK_DELETE"),
+    ("変換", "変換"),
+    ("無変換", "無変換"),
+    ("かな", "かな"),
+    ("漢字", "漢字"),
+];
+
+/// 内部表記（"VK_I", "変換" 等）を表示名（"I", "変換"）に変換する。
+fn key_display_name(internal: &str) -> &str {
+    KEYMAP_MAIN_KEYS
+        .iter()
+        .find(|(_, v)| *v == internal)
+        .map_or(internal, |(d, _)| *d)
+}
+
+/// keymap rule の `from` 文字列を (Ctrl, Shift, Alt, main_internal) に分解する。
+/// パース失敗時は (false, false, false, "") を返す。
+fn parse_combo_str(s: &str) -> (bool, bool, bool, String) {
+    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
+    if parts.is_empty() {
+        return (false, false, false, String::new());
+    }
+    let (mut ctrl, mut shift, mut alt) = (false, false, false);
+    let mod_count = parts.len().saturating_sub(1);
+    for &part in &parts[..mod_count] {
+        match part {
+            "Ctrl" | "Control" => ctrl = true,
+            "Shift" => shift = true,
+            "Alt" => alt = true,
+            _ => {}
+        }
+    }
+    let main = (*parts.last().unwrap_or(&"")).to_string();
+    (ctrl, shift, alt, main)
+}
+
+/// 修飾キーと main key から keymap rule 用文字列を組み立てる。
+fn format_combo(ctrl: bool, shift: bool, alt: bool, main: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if ctrl { parts.push("Ctrl"); }
+    if shift { parts.push("Shift"); }
+    if alt { parts.push("Alt"); }
+    parts.push(main);
+    parts.join("+")
+}
+
+/// main key ドロップダウン（必須選択版）。変更時は true を返す。
+fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+    let display = key_display_name(current).to_string();
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() { "（未選択）" } else { &display })
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for (label, internal) in KEYMAP_MAIN_KEYS {
+                if ui
+                    .selectable_label(current == internal, *label)
+                    .clicked()
+                {
+                    *current = (*internal).to_string();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
+/// main key ドロップダウン（オプショナル版＝「消費のみ」選択肢付き）。変更時は true を返す。
+fn main_key_combo_optional(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+    let display = key_display_name(current).to_string();
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() { "（消費のみ）" } else { &display })
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_empty(), "（消費のみ）").clicked()
+                && !current.is_empty()
+            {
+                current.clear();
+                changed = true;
+            }
+            for (label, internal) in KEYMAP_MAIN_KEYS {
+                if ui
+                    .selectable_label(current == internal, *label)
+                    .clicked()
+                {
+                    *current = (*internal).to_string();
+                    changed = true;
+                }
+            }
+        });
+    changed
 }
 
 // ── Preview helpers ──
