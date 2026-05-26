@@ -132,18 +132,6 @@ impl AppImeProfile {
     pub const fn can_read_imm32_open_status(&self) -> bool {
         matches!(self, Self::Standard)
     }
-
-    /// VK_KANJI / F14 を bare で送る前に VK_RETURN で候補確定が必要か。
-    ///
-    /// Chrome/Edge の候補ウィンドウ表示中は bare VK_KANJI が IME トグルとして
-    /// 機能しないため、先に VK_RETURN で候補をコミットする必要がある。
-    /// それ以外のアプリ（wezterm 等の `Standard`、`TsfNative`）では、
-    /// 候補表示が GJI から観測されていても VK_RETURN が IME に消費されず、
-    /// 生 Enter として届く症状の原因になるため、このワークアラウンドは適用しない。
-    #[must_use]
-    pub const fn needs_candidate_commit_before_toggle(&self) -> bool {
-        matches!(self, Self::Imm32Unavailable)
-    }
 }
 
 /// ウィンドウクラス名からアプリの UI フレームワーク種別を判定する。
