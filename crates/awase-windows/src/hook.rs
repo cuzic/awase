@@ -671,6 +671,28 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // 呼べないため（&mut Runtime が二重に存在し UB）、キーを INPUT_DEFER に
     // 退避して drain 後に NICOLA で再処理する（CallNextHookEx での素通しは NICOLA バイパス）。
     if crate::in_with_app() {
+        // 例外: 修飾キー (Ctrl/Alt/Win) の KeyUp で、対応する Down が既に OS に通って
+        // いる場合は即 CallNextHookEx で OS に渡す。defer すると IMC_SETOPENSTATUS の
+        // 候補確定 waiting (実測 255ms) 中に OS が修飾キー保持と認識し続け、その間に
+        // 届いた後続キーが OS-level で Ctrl+key として解釈 → アプリでショートカット
+        // 暴発 (Ctrl 残留 → Ctrl+H 等)。
+        //
+        // pair 保持: GetAsyncKeyState で OS の物理キー状態を確認する。OS が Down 認識
+        // = Down が通っている → Up も passthrough して対称。OS が Up 認識 = Down も
+        // defer されている (rare path) → Up も defer して pair を保つ。
+        if !is_keydown && crate::vk::is_non_shift_modifier(vk) {
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+            // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
+            let os_holds_modifier = unsafe { GetAsyncKeyState(i32::from(vk.0)) } as u16 & 0x8000 != 0;
+            if os_holds_modifier {
+                log::debug!(
+                    "[in-with-app] modifier-up passthrough vk={:#04x} (OS holds → Down was passed, preserve pair)",
+                    vk.0,
+                );
+                return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+            }
+            // OS が Up 認識 → Down が defer 中 → Up も defer して drain で対称送信
+        }
         defer_key_during_with_app(vk, scan, is_keydown, kb.dwExtraInfo);
         return LRESULT(1); // Consumed — NICOLA 処理後に drain で再配送
     }
