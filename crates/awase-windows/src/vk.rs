@@ -6,6 +6,8 @@ use awase::types::{ModifierKey, VkCode};
 
 /// Windows 言語 ID: 日本語 (0x0411)
 pub const LANGID_JAPANESE: u32 = 0x0411;
+/// Windows 言語 ID: 英語 US (0x0409)
+pub const LANGID_ENGLISH_US: u32 = 0x0409;
 
 // ── VK コード定数 ────────────────────────────────────────
 //
@@ -28,6 +30,8 @@ pub const VK_CONVERT: VkCode = VkCode(0x1C);
 pub const VK_NONCONVERT: VkCode = VkCode(0x1D);
 pub const VK_SPACE: VkCode = VkCode(0x20);
 pub const VK_DELETE: VkCode = VkCode(0x2E);
+pub const VK_F11: VkCode = VkCode(0x7A);
+pub const VK_F12: VkCode = VkCode(0x7B);
 pub const VK_F13: VkCode = VkCode(0x7C);
 pub const VK_F14: VkCode = VkCode(0x7D);
 pub const VK_LSHIFT: VkCode = VkCode(0xA0);

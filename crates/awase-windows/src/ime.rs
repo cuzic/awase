@@ -750,7 +750,6 @@ pub unsafe fn get_focused_hwnd() -> HWND {
 /// Calls Win32 APIs. Must be called from the main thread.
 #[must_use]
 pub unsafe fn send_f2_via_sendmessage() -> bool {
-    const VK_DBE_HIRAGANA: u32 = 0xF2;
     // SAFETY: get_focused_hwnd は unsafe fn で GetForegroundWindow または GetGUIThreadInfo から
     //         HWND を返す。non_null_hwnd で NULL チェックを行い、NULL なら早期リターンする。
     let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { get_focused_hwnd() }) else {
@@ -758,7 +757,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
     };
     // SAFETY: MapVirtualKeyW はスレッドセーフで任意のスレッドから呼び出せる。
     //         VK_DBE_HIRAGANA (0xF2) は有効な仮想キーコードであり MAPVK_VK_TO_VSC は有効な変換タイプ。
-    let scan = unsafe { MapVirtualKeyW(VK_DBE_HIRAGANA, MAPVK_VK_TO_VSC) };
+    let scan = unsafe { MapVirtualKeyW(u32::from(crate::vk::VK_DBE_HIRAGANA.0), MAPVK_VK_TO_VSC) };
     let lparam_down = LPARAM(1_isize | (isize::try_from(scan).unwrap_or(0) << 16));
     let lparam_up = LPARAM(lparam_down.0 | (1 << 30) | (1_isize << 31));
     let mut result = 0usize;
@@ -769,7 +768,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
         SendMessageTimeoutW(
             hwnd,
             WM_KEYDOWN,
-            WPARAM(VK_DBE_HIRAGANA as usize),
+            WPARAM(crate::vk::VK_DBE_HIRAGANA.0 as usize),
             lparam_down,
             SMTO_ABORTIFHUNG,
             100,
@@ -783,7 +782,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
         SendMessageTimeoutW(
             hwnd,
             WM_KEYUP,
-            WPARAM(VK_DBE_HIRAGANA as usize),
+            WPARAM(crate::vk::VK_DBE_HIRAGANA.0 as usize),
             lparam_up,
             SMTO_ABORTIFHUNG,
             100,

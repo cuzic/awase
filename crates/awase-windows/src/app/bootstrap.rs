@@ -186,7 +186,7 @@ pub(super) fn check_keyboard_layout(diag: &mut StartupDiagnostics) {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
     log::info!("Keyboard layout: LANGID=0x{lang_id:04X}, Japanese={is_japanese}",);
     if !is_japanese {
-        if lang_id == 0x0409 {
+        if lang_id == crate::vk::LANGID_ENGLISH_US {
             diag.warn(
                 "英語キーボード(101/102)が検出されました。\
                  親指シフトには日本語キーボードレイアウト(106/109)が必要です。\
@@ -256,16 +256,14 @@ fn register_toggle_hotkey(hotkey_str: &str) -> Result<HotKeyGuard> {
 
 /// 手動アプリオーバーライドホットキー (Ctrl+Shift+F11) を登録する
 fn register_app_override_hotkey() -> Result<HotKeyGuard> {
-    const MOD_CONTROL: u32 = 0x0002;
-    const MOD_SHIFT: u32 = 0x0004;
-    const VK_F11: u32 = 0x7A;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_CONTROL, MOD_SHIFT};
     // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
     unsafe {
         RegisterHotKey(
             None,
             HOTKEY_ID_FOCUS_OVERRIDE,
-            HOT_KEY_MODIFIERS(MOD_CONTROL | MOD_SHIFT),
-            VK_F11,
+            MOD_CONTROL | MOD_SHIFT,
+            u32::from(crate::vk::VK_F11.0),
         )
         .context("Failed to register focus override hotkey: Ctrl+Shift+F11")?;
     }

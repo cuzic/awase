@@ -229,7 +229,7 @@ pub fn run() -> Result<()> {
 fn check_keyboard_layout_on_change() {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
     if !is_japanese {
-        if lang_id == 0x0409 {
+        if lang_id == crate::vk::LANGID_ENGLISH_US {
             log::warn!(
                 "Input language changed to English keyboard (101/102). \
                  Thumb-shift requires Japanese keyboard layout (106/109). \
