@@ -19,6 +19,14 @@ pub(crate) const IMC_SETCONVERSIONMODE: usize = 0x0002;
 pub(crate) const IME_CMODE_ROMAN: u32 = 0x0010;
 /// 日本語ネイティブ入力モードフラグ（0x0001）
 pub(crate) const IME_CMODE_NATIVE: u32 = 0x0001;
+/// カタカナ入力モードフラグ（0x0002）
+pub(crate) const IME_CMODE_KATAKANA: u32 = 0x0002;
+
+/// IME 変換モード生値が指定フラグを含むかどうかを返す（診断ログ等で使う）。
+#[must_use]
+pub(crate) const fn cmode_has(mode: u32, flag: u32) -> bool {
+    mode & flag != 0
+}
 
 // ─── RAII コンテキストガード ─────────────────────────────────────
 

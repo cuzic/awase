@@ -149,9 +149,9 @@ impl<'a> ColdWarmupSequence<'a> {
         log::debug!(
             "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
             conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-            conv_pre.is_some_and(|v| v & 0x0001 != 0),
-            conv_pre.is_some_and(|v| v & 0x0010 != 0),
-            conv_pre.is_some_and(|v| v & 0x0002 != 0),
+            conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+            conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+            conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
         );
         // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
         // IMM32 経由で同期的にローマ字モードへ切り替え。

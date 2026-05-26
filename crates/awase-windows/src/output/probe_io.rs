@@ -157,8 +157,8 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                                     || "none".to_string(),
                                     |v| format!("0x{v:08X}")
                                 ),
-                                conv.is_some_and(|v| v & 0x0010 != 0),
-                                conv.is_some_and(|v| v & 0x0001 != 0),
+                                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+                                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                             );
                         }
                         let gji_active = io.gji_monitor_healthy();

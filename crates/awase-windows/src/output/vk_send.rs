@@ -173,9 +173,9 @@ impl Output {
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_pre.is_some_and(|v| v & 0x0001 != 0),
-                conv_pre.is_some_and(|v| v & 0x0010 != 0),
-                conv_pre.is_some_and(|v| v & 0x0002 != 0),
+                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
             );
             // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
             unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
@@ -344,8 +344,8 @@ impl Output {
                  conv={} ROMAN={} NATIVE={}",
                 chars.len(),
                 conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv.is_some_and(|v| v & 0x0010 != 0),
-                conv.is_some_and(|v| v & 0x0001 != 0),
+                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
             );
         }
 
