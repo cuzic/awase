@@ -524,7 +524,7 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
         // SAFETY: GetKeyboardLayout はスレッドセーフで任意のスレッドから呼び出せる。
         //         thread_id は get_gui_thread_info_with_timeout が返した値で 0（現在スレッド）も許容される。
         let hkl = unsafe { GetKeyboardLayout(thread_id) };
-        let lang_id = (hkl.0 as u32) & 0xFFFF;
+        let lang_id = crate::imm::lang_id_from_hkl(hkl.0 as u32);
         lang_id == crate::vk::LANGID_JAPANESE
     };
 
@@ -634,7 +634,7 @@ pub fn keyboard_layout_info() -> (bool, u32) {
     //         引数 0 は現在のスレッドのキーボードレイアウトを取得することを意味し、常に有効。
     unsafe {
         let hkl = GetKeyboardLayout(0);
-        let lang_id = hkl.0 as u32 & 0xFFFF;
+        let lang_id = crate::imm::lang_id_from_hkl(hkl.0 as u32);
         (lang_id == crate::vk::LANGID_JAPANESE, lang_id)
     }
 }
@@ -815,12 +815,12 @@ pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
         return false;
     };
-    // GCS_COMPSTR = IME_COMPOSITION_STRING(0x0008): null バッファで呼ぶと composition string のバイト長を返す
+    // GCS_COMPSTR: null バッファで呼ぶと composition string のバイト長を返す
     // SAFETY: ctx.himc() は ImmContextGuard が保持する有効な HIMC。
     //         lpBuf=None かつ dwBufLen=0 で呼ぶのは MSDN で明示的に許可されており
     //         バッファオーバーフローの危険はない。
     let len = unsafe {
-        ImmGetCompositionStringW(ctx.himc(), IME_COMPOSITION_STRING(0x0008_u32), None, 0)
+        ImmGetCompositionStringW(ctx.himc(), IME_COMPOSITION_STRING(crate::imm::GCS_COMPSTR), None, 0)
     };
     len > 0
 }
@@ -846,18 +846,19 @@ pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
         snap.himc_null = true;
         return snap;
     };
-    // GCS_COMPSTR (0x0008): 現在 composition 中の文字列
-    snap.comp_str = unsafe { read_imm_string(ctx.himc(), 0x0008_u32) };
-    // GCS_RESULTSTR (0x0800): 確定済みの文字列
-    snap.result_str = unsafe { read_imm_string(ctx.himc(), 0x0800_u32) };
-    // GCS_COMPREADSTR (0x0001): composition の読み（ローマ字相当）
-    snap.comp_read_str = unsafe { read_imm_string(ctx.himc(), 0x0001_u32) };
-    // GCS_RESULTREADSTR (0x0200): 確定済みの読み
-    snap.result_read_str = unsafe { read_imm_string(ctx.himc(), 0x0200_u32) };
-    // GCS_CURSORPOS (0x0080): カーソル位置
-    snap.cursor_pos = unsafe { read_imm_i32(ctx.himc(), 0x0080_u32) };
-    // GCS_COMPATTR (0x0010): 各文字の属性（0=入力/1=変換中/2=変換済/3=固定）
-    snap.comp_attr_bytes = unsafe { read_imm_bytes(ctx.himc(), 0x0010_u32) };
+    use crate::imm::{GCS_COMPATTR, GCS_COMPREADSTR, GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTREADSTR, GCS_RESULTSTR};
+    // 現在 composition 中の文字列
+    snap.comp_str = unsafe { read_imm_string(ctx.himc(), GCS_COMPSTR) };
+    // 確定済みの文字列
+    snap.result_str = unsafe { read_imm_string(ctx.himc(), GCS_RESULTSTR) };
+    // composition の読み（ローマ字相当）
+    snap.comp_read_str = unsafe { read_imm_string(ctx.himc(), GCS_COMPREADSTR) };
+    // 確定済みの読み
+    snap.result_read_str = unsafe { read_imm_string(ctx.himc(), GCS_RESULTREADSTR) };
+    // カーソル位置
+    snap.cursor_pos = unsafe { read_imm_i32(ctx.himc(), GCS_CURSORPOS) };
+    // 各文字の属性（0=入力/1=変換中/2=変換済/3=固定）
+    snap.comp_attr_bytes = unsafe { read_imm_bytes(ctx.himc(), GCS_COMPATTR) };
     // ImmGetOpenStatus: IME 開閉状態
     // SAFETY: ctx.himc() は有効な HIMC。ImmGetOpenStatus はクラッシュしない読み取り API。
     snap.open_status = Some(unsafe { ImmGetOpenStatus(ctx.himc()).as_bool() });

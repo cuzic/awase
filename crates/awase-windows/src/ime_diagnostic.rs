@@ -149,7 +149,7 @@ impl ImeDiagnosticSnapshot {
             let tid = gui.thread_id;
             let layout = GetKeyboardLayout(tid);
             let hkl = layout.0 as u32;
-            let lang_id = hkl & 0xFFFF;
+            let lang_id = crate::imm::lang_id_from_hkl(hkl);
             (hkl, lang_id, tid)
         };
 

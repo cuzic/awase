@@ -22,6 +22,29 @@ pub(crate) const IME_CMODE_NATIVE: u32 = 0x0001;
 /// カタカナ入力モードフラグ（0x0002）
 pub(crate) const IME_CMODE_KATAKANA: u32 = 0x0002;
 
+// ─── GCS_* (ImmGetCompositionStringW のインデックス) ────────────────
+//
+// MSDN: <https://learn.microsoft.com/en-us/windows/win32/api/imm/nf-imm-immgetcompositionstringw>
+
+/// GCS_COMPREADSTR: composition の読み（ローマ字相当）
+pub(crate) const GCS_COMPREADSTR: u32 = 0x0001;
+/// GCS_COMPSTR: 現在 composition 中の文字列
+pub(crate) const GCS_COMPSTR: u32 = 0x0008;
+/// GCS_COMPATTR: 各文字の属性（0=入力 / 1=変換中 / 2=変換済 / 3=固定）
+pub(crate) const GCS_COMPATTR: u32 = 0x0010;
+/// GCS_CURSORPOS: カーソル位置
+pub(crate) const GCS_CURSORPOS: u32 = 0x0080;
+/// GCS_RESULTREADSTR: 確定済みの読み
+pub(crate) const GCS_RESULTREADSTR: u32 = 0x0200;
+/// GCS_RESULTSTR: 確定済みの文字列
+pub(crate) const GCS_RESULTSTR: u32 = 0x0800;
+
+/// HKL (`HKEYBOARDLAYOUT`) の下位 16bit から `LANGID` を抽出する。
+#[must_use]
+pub(crate) const fn lang_id_from_hkl(hkl: u32) -> u32 {
+    hkl & 0xFFFF
+}
+
 /// IME 変換モード生値が指定フラグを含むかどうかを返す（診断ログ等で使う）。
 #[must_use]
 pub(crate) const fn cmode_has(mode: u32, flag: u32) -> bool {
