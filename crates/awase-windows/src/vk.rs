@@ -7,6 +7,40 @@ use awase::types::VkCode;
 /// Windows 言語 ID: 日本語 (0x0411)
 pub const LANGID_JAPANESE: u32 = 0x0411;
 
+// ── VK コード定数 ────────────────────────────────────────
+//
+// 各ファイルに散らばっていた `const VK_FOO: u16 = 0x..` を
+// `VkCode` 型として集約。Windows API 境界では `.0` で剥がす。
+
+pub const VK_BACK: VkCode = VkCode(0x08);
+pub const VK_TAB: VkCode = VkCode(0x09);
+pub const VK_RETURN: VkCode = VkCode(0x0D);
+pub const VK_SHIFT: VkCode = VkCode(0x10);
+pub const VK_CONTROL: VkCode = VkCode(0x11);
+pub const VK_MENU: VkCode = VkCode(0x12);
+pub const VK_KANA: VkCode = VkCode(0x15);
+pub const VK_IME_ON: VkCode = VkCode(0x16);
+pub const VK_JUNJA: VkCode = VkCode(0x17);
+pub const VK_KANJI: VkCode = VkCode(0x19);
+pub const VK_IME_OFF: VkCode = VkCode(0x1A);
+pub const VK_ESCAPE: VkCode = VkCode(0x1B);
+pub const VK_CONVERT: VkCode = VkCode(0x1C);
+pub const VK_NONCONVERT: VkCode = VkCode(0x1D);
+pub const VK_SPACE: VkCode = VkCode(0x20);
+pub const VK_DELETE: VkCode = VkCode(0x2E);
+pub const VK_F13: VkCode = VkCode(0x7C);
+pub const VK_F14: VkCode = VkCode(0x7D);
+pub const VK_LSHIFT: VkCode = VkCode(0xA0);
+pub const VK_RSHIFT: VkCode = VkCode(0xA1);
+pub const VK_LCONTROL: VkCode = VkCode(0xA2);
+pub const VK_RCONTROL: VkCode = VkCode(0xA3);
+pub const VK_LMENU: VkCode = VkCode(0xA4);
+pub const VK_RMENU: VkCode = VkCode(0xA5);
+pub const VK_OEM_MINUS: VkCode = VkCode(0xBD);
+pub const VK_DBE_ALPHANUMERIC: VkCode = VkCode(0xF0);
+pub const VK_DBE_KATAKANA: VkCode = VkCode(0xF1);
+pub const VK_DBE_HIRAGANA: VkCode = VkCode(0xF2);
+
 // ── IME キー種別 ──────────────────────────────────────────
 
 /// IME の ON/OFF 状態を変更するキーの種別。
