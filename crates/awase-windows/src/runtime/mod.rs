@@ -424,9 +424,9 @@ impl Runtime {
                 } else {
                     app.executor.platform.output.bypass_tsf()
                 };
-                // PendingWarmup から遷移した場合のみ held が非空 or タイマー kill が必要。
-                // 500ms ポーリング等で再呼び出しされても on_tsf_confirmed/on_bypass は
-                // PendingWarmup 以外では空 Vec を返すため安全。
+                // confirm_tsf は PendingWarmup/Bypass → Probing、bypass_tsf は PendingWarmup/Probing → Bypass。
+                // Bypass から confirm_tsf を呼ぶのは WarmupTimeout 後に async タスクが遅れて完了した回復パス。
+                // すでに Probing/Ready なら空 Vec が返るため、500ms ポーリング等での再呼び出しも safe。
                 app.executor.platform.timer.kill(crate::TIMER_TSF_GATE);
                 if !held.is_empty() {
                     log::debug!("[tsf-gate] draining {} held keys via INPUT_DEFER", held.len());
