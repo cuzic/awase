@@ -403,4 +403,22 @@ impl PlatformState {
             self.ime.belief.input_mode = snap.input_mode;
         }
     }
+
+    /// TsfNative ウィンドウへのフォーカス入場時、`HwndCache` ミスで前ウィンドウから
+    /// carry over した `ime_on=false` を IME ON へ寄せ直す（Japanese 文脈の安全側既定）。
+    ///
+    /// TsfNative では IMM クロスプロセス取得もポーリングも skip されるため、
+    /// stale な `false` が ObserverPoll でも復旧せず Engine が活性化不能になる。
+    /// `false` の起源は別プロファイルでの SetOpenRequest/ObserverPoll であり、
+    /// 新ウィンドウの実態と一致する保証がない。日本語レイアウト時のみ実行する。
+    pub fn reset_stale_ime_on_for_tsf_native(&mut self) {
+        if !self.ime.belief.is_japanese_ime() || self.ime.belief.ime_on() {
+            return;
+        }
+        log::info!(
+            "TsfNative entry without cache: reset stale ime_on=false → true \
+             (Japanese layout, IME state untrackable in TSF-native)"
+        );
+        self.ime.belief.set_ime_on(true, ShadowSource::HwndCache);
+    }
 }

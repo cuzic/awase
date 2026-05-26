@@ -435,7 +435,16 @@ impl<'a> ImeRefreshPipeline<'a> {
         // last_applied_ime_on=false の場合、新しいウィンドウの IME を明示的に OFF にする。
         // Ctrl+無変換 は発火時点のウィンドウにしか set_ime_open を送らないため、
         // 別ウィンドウに移動すると IME が ON のままになるのを防ぐ。
-        if !self.rt.executor.platform.output.last_applied_ime_on() {
+        //
+        // ただし TsfNative プロファイル（Windows Terminal 等）は IMM クロスプロセス制御が
+        // 効かず set_ime_open(false) は no-op だが、shadow ime_on の carry over と相まって
+        // Engine が活性化不能の trap に陥る。TsfNative では runtime 側で stale をリセット
+        // するためここでは enforce OFF を skip し、新ウィンドウの状態に任せる。
+        let new_profile_is_tsf_native = matches!(
+            self.rt.executor.platform.focus.current_app_profile(),
+            crate::focus::classify::AppImeProfile::TsfNative,
+        );
+        if !self.rt.executor.platform.output.last_applied_ime_on() && !new_profile_is_tsf_native {
             let _ = self.rt.executor.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (last_applied OFF → enforce IME OFF on new window)");
         }

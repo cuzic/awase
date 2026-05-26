@@ -358,7 +358,20 @@ impl Runtime {
                 classified.process_id,
                 &classified.class_name,
             );
+            let cache_miss = cache_hit.is_none();
             self.platform_state.apply_hwnd_cache_restore(cache_hit);
+
+            // TsfNative プロファイル（Windows Terminal 等）への cache miss 入場では、
+            // 前ウィンドウの ime_on=false が carry over したまま IMM/poll で復旧できず
+            // Engine が活性化不能になる。stale を true へ寄せ直して trap を解く。
+            if cache_miss
+                && matches!(
+                    self.executor.platform.focus.current_app_profile(),
+                    crate::focus::classify::AppImeProfile::TsfNative,
+                )
+            {
+                self.platform_state.reset_stale_ime_on_for_tsf_native();
+            }
         }
 
         if self.platform_state.is_force_on_guard_active()
