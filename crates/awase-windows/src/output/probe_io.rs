@@ -173,10 +173,18 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                     }
                     TransmitTarget::Chrome => {
+                        // GJI モニター健全時のみ literal 検出を起動する。
+                        // 検出ベースラインは送信前に確定させること。
+                        let detector = io
+                            .gji_monitor_healthy()
+                            .then(crate::tsf::probe::LiteralDetector::new);
+                        let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, false);
                         io.mark_warm();
-                        return true;
+                        if machine.apply_transmit_done(ze_bs_count, detector) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -322,6 +330,27 @@ mod tests {
         assert!(io.transmit_chrome_called.get());
         assert!(io.mark_warm_called.get());
         assert!(!io.transmit_tsf_called.get());
+    }
+
+    #[test]
+    fn chrome_transmit_with_gji_healthy_installs_literal_detect() {
+        // GJI モニター健全時は Chrome バッチ送信後も LiteralDetect フェーズへ遷移し、
+        // Done を即返さないことで literal 検出のための再ティックを許可する。
+        let io = FakeProbeIo { gji_healthy: true, ..Default::default() };
+        let mut machine = make_chrome_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: false,
+            used_eager_path: false,
+            romaji: "ka".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Chrome,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(!done, "should not be Done — LiteralDetect phase pending");
+        assert!(io.transmit_chrome_called.get());
+        assert!(io.mark_warm_called.get());
+        assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
     #[test]
