@@ -260,6 +260,12 @@ impl NicolaFsm {
         self.enabled
     }
 
+    /// 診断用: 現在の FSM 状態を短い文字列で返す。
+    #[must_use]
+    pub fn debug_state_label(&self) -> String {
+        self.state.debug_label()
+    }
+
     /// エンジンの有効/無効を明示的に設定する。
     ///
     /// 現在の状態と同じ場合は何もしない。

@@ -286,6 +286,13 @@ impl Engine {
         self.adapter.is_enabled()
     }
 
+    /// 診断用: 現在の FSM 状態を短い文字列で返す。
+    /// `[engine-input]` ログで `on_input` 呼び出し前の状態を可視化するために使用。
+    #[must_use]
+    pub fn debug_state_label(&self) -> String {
+        self.adapter.debug_state_label()
+    }
+
     /// user_enabled を直接設定する（テスト・初期化用）
     pub fn set_user_enabled(&mut self, enabled: bool) {
         let _ = self.adapter.set_enabled(enabled);

@@ -260,6 +260,24 @@ impl EngineState {
         matches!(self, Self::Idle)
     }
 
+    /// 診断用: 状態を短い文字列で返す（[engine-input] ログ等で使用）。
+    #[must_use]
+    pub fn debug_label(&self) -> String {
+        match self {
+            Self::Idle => "Idle".to_string(),
+            Self::PendingChar(k) => format!("PendingChar(vk=0x{:02X})", k.vk_code.0),
+            Self::PendingThumb(t) => format!(
+                "PendingThumb(vk=0x{:02X},left={})",
+                t.vk_code.0, t.is_left
+            ),
+            Self::PendingCharThumb { char_key, thumb, char1_released } => format!(
+                "PendingCharThumb(char=0x{:02X},thumb=0x{:02X},left={},released={})",
+                char_key.vk_code.0, thumb.vk_code.0, thumb.is_left, char1_released
+            ),
+            Self::SpeculativeChar(k) => format!("SpeculativeChar(vk=0x{:02X})", k.vk_code.0),
+        }
+    }
+
     /// `PendingChar` の内容を取り出す。他の状態ならパニック。
     ///
     /// # Panics

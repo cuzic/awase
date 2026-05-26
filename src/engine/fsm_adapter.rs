@@ -89,6 +89,12 @@ impl FsmAdapter {
         self.fsm.is_enabled()
     }
 
+    /// 診断用: 現在の FSM 状態を短い文字列で返す。
+    #[must_use]
+    pub(super) fn debug_state_label(&self) -> String {
+        self.fsm.debug_state_label()
+    }
+
     // ── 内部メソッド ──
 
     /// timed-fsm Response → Effect リストに変換（consumed フラグは呼び出し側で判定）
