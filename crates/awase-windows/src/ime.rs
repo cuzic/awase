@@ -43,8 +43,11 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         send_ime_control は SendMessageTimeoutW のラッパーであり、タイムアウト付きのため
     //         相手プロセスがハングしても指定時間後に制御が戻る。
+    // タイムアウト 150ms: IME OFF (open=false) は composition tear-down と IME UI 隠蔽が走るため
+    // 50ms では時々取りこぼす（Ctrl+無変換 が「時々」効かない症状の原因）。Get 系の照会は短く
+    // 維持し、Set 系のみ余裕を持たせる。
     let success = unsafe {
-        crate::imm::send_ime_control(ime_wnd, IMC_SETOPENSTATUS, isize::from(open), 50)
+        crate::imm::send_ime_control(ime_wnd, IMC_SETOPENSTATUS, isize::from(open), 150)
     }
     .is_some();
     log::debug!("set_ime_open_cross_process: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success}");
