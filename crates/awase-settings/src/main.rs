@@ -8,6 +8,7 @@ const WM_RELOAD_CONFIG: u32 = 0x8000 + 10; // WM_APP = 0x8000
 enum Tab {
     Basic,
     Keys,
+    Keymap,
     ImeDetect,
     Preview,
     Advanced,
@@ -41,6 +42,10 @@ struct SettingsApp {
     new_ime_toggle_key: String,
     new_ime_detect_on_key: String,
     new_ime_detect_off_key: String,
+    // Keymap rule add-buffers
+    new_keymap_app: String,
+    new_keymap_from: String,
+    new_keymap_to: String,
     // Preview cache: (layout filename, parsed result)
     preview_cache: Option<(String, Result<awase::yab::YabLayout, String>)>,
 }
@@ -70,6 +75,9 @@ impl SettingsApp {
             new_ime_toggle_key: String::new(),
             new_ime_detect_on_key: String::new(),
             new_ime_detect_off_key: String::new(),
+            new_keymap_app: String::new(),
+            new_keymap_from: String::new(),
+            new_keymap_to: String::new(),
             preview_cache: None,
         }
     }
@@ -299,6 +307,121 @@ impl SettingsApp {
         });
     }
 
+    fn tab_keymap(&mut self, ui: &mut egui::Ui) {
+        ui.heading("ショートカット再割当");
+        ui.label(
+            "アプリ別にキー入力を別キーへ置き換えます。\n\
+             例: Ctrl+I を F7 に再割当（vim 系で Tab と区別したい場合等）。",
+        );
+        ui.add_space(8.0);
+
+        // Existing rules table
+        ui.label("登録済みルール");
+        if self.config.keymaps.is_empty() {
+            ui.label("  （ルールはまだ登録されていません）");
+        } else {
+            let mut rm = None;
+            egui::Grid::new("keymap_rules_grid")
+                .num_columns(4)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.label("アプリ");
+                    ui.label("from");
+                    ui.label("to");
+                    ui.label("");
+                    ui.end_row();
+                    for (i, rule) in self.config.keymaps.iter_mut().enumerate() {
+                        let mut app_buf = rule.app.clone().unwrap_or_default();
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut app_buf)
+                                    .desired_width(140.0)
+                                    .hint_text("全アプリ"),
+                            )
+                            .changed()
+                        {
+                            rule.app = if app_buf.is_empty() { None } else { Some(app_buf) };
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut rule.from).desired_width(120.0),
+                        );
+                        let mut to_buf = rule.to.clone().unwrap_or_default();
+                        if ui
+                            .add(
+                                egui::TextEdit::singleline(&mut to_buf)
+                                    .desired_width(120.0)
+                                    .hint_text("（消費のみ）"),
+                            )
+                            .changed()
+                        {
+                            rule.to = if to_buf.is_empty() { None } else { Some(to_buf) };
+                        }
+                        if ui.small_button("x").clicked() {
+                            rm = Some(i);
+                        }
+                        ui.end_row();
+                    }
+                });
+            if let Some(i) = rm {
+                self.config.keymaps.remove(i);
+            }
+        }
+        ui.add_space(8.0);
+
+        // New rule form
+        ui.label("新規追加");
+        egui::Grid::new("keymap_new_grid")
+            .num_columns(2)
+            .show(ui, |ui| {
+                ui.label("  アプリ:").on_hover_text(
+                    "対象プロセス名（例: vim.exe）。空欄で全アプリ対象。",
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_keymap_app)
+                        .desired_width(160.0)
+                        .hint_text("vim.exe など（空欄=全アプリ）"),
+                );
+                ui.end_row();
+                ui.label("  from:").on_hover_text(
+                    "インターセプトするキー（例: Ctrl+I, Alt+Space, 変換）。",
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_keymap_from)
+                        .desired_width(160.0)
+                        .hint_text("Ctrl+I など"),
+                );
+                ui.end_row();
+                ui.label("  to:").on_hover_text(
+                    "再注入するキー（例: F7）。空欄ならキー消費のみ。\n\
+                     現状 to 側で修飾キー付きの送信は未対応です。",
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_keymap_to)
+                        .desired_width(160.0)
+                        .hint_text("F7 など（空欄=消費のみ）"),
+                );
+                ui.end_row();
+            });
+        if ui.button("+追加").clicked() && !self.new_keymap_from.is_empty() {
+            self.config.keymaps.push(awase::config::KeymapRule {
+                app: if self.new_keymap_app.is_empty() {
+                    None
+                } else {
+                    Some(self.new_keymap_app.clone())
+                },
+                from: self.new_keymap_from.clone(),
+                to: if self.new_keymap_to.is_empty() {
+                    None
+                } else {
+                    Some(self.new_keymap_to.clone())
+                },
+            });
+            self.new_keymap_app.clear();
+            self.new_keymap_from.clear();
+            self.new_keymap_to.clear();
+        }
+    }
+
     fn tab_ime_detect(&mut self, ui: &mut egui::Ui) {
         ui.heading("IME 検出");
         ui.label("IME の ON/OFF 切り替えを検出するためのキー設定です。\n通常はデフォルトのままで問題ありません。\n半角/全角キーなど、IME を切り替えるキーを登録します。");
@@ -461,6 +584,7 @@ impl eframe::App for SettingsApp {
                 for (tab, label) in [
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
+                    (Tab::Keymap, "ショートカット"),
                     (Tab::ImeDetect, "IME 検出"),
                     (Tab::Preview, "プレビュー"),
                     (Tab::Advanced, "詳細設定"),
@@ -476,6 +600,7 @@ impl eframe::App for SettingsApp {
             egui::ScrollArea::vertical().show(ui, |ui| match self.active_tab {
                 Tab::Basic => self.tab_basic(ui),
                 Tab::Keys => self.tab_keys(ui),
+                Tab::Keymap => self.tab_keymap(ui),
                 Tab::ImeDetect => self.tab_ime_detect(ui),
                 Tab::Preview => self.tab_preview(ui),
                 Tab::Advanced => self.tab_advanced(ui),
