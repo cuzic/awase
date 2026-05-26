@@ -15,7 +15,7 @@ use awase::engine::{
     Decision, Effect, ImeEffect, InputEffect, TimerEffect, UiEffect,
 };
 use awase::platform::PlatformRuntime;
-use awase::types::RawKeyEvent;
+use awase::types::{RawKeyEvent, VkCode};
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
@@ -37,7 +37,7 @@ pub struct DecisionExecutor {
     hook_mode: HookMode,
     /// Reinject 経由で送った PassThrough KeyDown の VK 集合。
     /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
-    deferred_passthrough_vks: HashSet<u16>,
+    deferred_passthrough_vks: HashSet<VkCode>,
     /// warm+TSF Enter/Space/Escape KeyDown 後に KeyUp で eager warmup を送信するフラグ。
     ///
     /// hook callback 内では `SendInput(F2)` → `CallNextHookEx(Enter↓)` の順になり、
@@ -302,7 +302,7 @@ impl DecisionExecutor {
     /// （WezTerm が INJECTED↓ + physical↑ のペアを異常扱いする可能性を排除）
     fn try_keyup_symmetry(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && self.deferred_passthrough_vks.remove(&raw_event.vk_code.0) {
+        if !is_key_down && self.deferred_passthrough_vks.remove(&raw_event.vk_code) {
             log::debug!(
                 "[relay-sym] PassThrough KeyUp vk={:#04x}: KeyDown was deferred → force reinject for symmetry",
                 raw_event.vk_code.0,
@@ -378,7 +378,7 @@ impl DecisionExecutor {
             self.queue.push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
             // KeyDown を defer した場合は VK を記録して KeyUp も reinject に揃える。
             if is_key_down {
-                self.deferred_passthrough_vks.insert(raw_event.vk_code.0);
+                self.deferred_passthrough_vks.insert(raw_event.vk_code);
             }
             return Some(CallbackResult::Consumed);
         }

@@ -638,8 +638,11 @@ fn send_all_modifier_key_ups() {
     // VK_LSHIFT(0xA0), VK_RSHIFT(0xA1),
     // VK_LCONTROL(0xA2), VK_RCONTROL(0xA3),
     // VK_LMENU(0xA4), VK_RMENU(0xA5)
-    const MODIFIER_VKS: [u16; 11] = [
-        0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
+    use crate::vk::{VK_SHIFT, VK_CONTROL, VK_MENU, VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU};
+    use awase::types::VkCode;
+    const MODIFIER_VKS: [VkCode; 11] = [
+        VK_SHIFT, VK_CONTROL, VK_MENU, VkCode(0x5B), VkCode(0x5C),
+        VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU,
     ];
 
     let inputs: Vec<INPUT> = MODIFIER_VKS
@@ -648,7 +651,7 @@ fn send_all_modifier_key_ups() {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk),
+                    wVk: VIRTUAL_KEY(vk.0),
                     wScan: 0,
                     dwFlags: KEYEVENTF_KEYUP,
                     time: 0,

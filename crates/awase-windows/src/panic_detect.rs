@@ -25,7 +25,7 @@ pub static PANIC_TRIGGER_COMBOS: SingleThreadCell<Vec<PanicTriggerCombo>> = Sing
 /// パニック連打判定用のキー combo（`ParsedKeyCombo` のミラー）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanicTriggerCombo {
-    pub vk: u16,
+    pub vk: awase::types::VkCode,
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
@@ -98,7 +98,7 @@ pub fn record_ime_keydown(now_ms: u64) {
 /// `vk` + 現在の modifier 状態が、ユーザ設定の IME 制御ショートカット
 /// （ime_on / ime_off）の combo と一致するかを判定する。bootstrap 前は常に false。
 #[must_use]
-pub fn is_panic_trigger(vk: u16, ctrl: bool, shift: bool, alt: bool) -> bool {
+pub fn is_panic_trigger(vk: awase::types::VkCode, ctrl: bool, shift: bool, alt: bool) -> bool {
     PANIC_TRIGGER_COMBOS
         .with(|combos| {
             combos.iter().any(|c| {

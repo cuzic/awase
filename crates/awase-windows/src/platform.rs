@@ -20,9 +20,9 @@ pub struct WindowsPlatform {
     pub focus: AppKindClassifier,
     pub timer: Win32Timer,
     /// Engine ON 時に送信する IME モード切り替え VK コード（None で無効）
-    pub engine_on_ime_vk: Option<u16>,
+    pub engine_on_ime_vk: Option<awase::types::VkCode>,
     /// Engine OFF 時に送信する IME モード切り替え VK コード（None で無効）
-    pub engine_off_ime_vk: Option<u16>,
+    pub engine_off_ime_vk: Option<awase::types::VkCode>,
     /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
     /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
     pub suppress_engine_state_key: bool,

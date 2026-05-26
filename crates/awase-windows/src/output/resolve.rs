@@ -1,31 +1,31 @@
 use std::collections::HashMap;
-use awase::types::SpecialKey;
+use awase::types::{SpecialKey, VkCode};
 use super::Output;
 
 /// ASCII 文字を対応する VK コードに変換する。
 #[must_use]
-pub(crate) const fn ascii_to_vk(ch: char) -> Option<(u16, bool)> {
+pub(crate) const fn ascii_to_vk(ch: char) -> Option<(VkCode, bool)> {
     match ch {
-        'a'..='z' => Some((0x41 + (ch as u16 - 'a' as u16), false)),
-        'A'..='Z' => Some((0x41 + (ch as u16 - 'A' as u16), true)),
-        '0'..='9' => Some((0x30 + (ch as u16 - '0' as u16), false)),
-        '-' => Some((0xBD, false)),
-        '.' => Some((0xBE, false)),
-        ',' => Some((0xBC, false)),
-        '/' => Some((0xBF, false)),
+        'a'..='z' => Some((VkCode(0x41 + (ch as u16 - 'a' as u16)), false)),
+        'A'..='Z' => Some((VkCode(0x41 + (ch as u16 - 'A' as u16)), true)),
+        '0'..='9' => Some((VkCode(0x30 + (ch as u16 - '0' as u16)), false)),
+        '-' => Some((VkCode(0xBD), false)),
+        '.' => Some((VkCode(0xBE), false)),
+        ',' => Some((VkCode(0xBC), false)),
+        '/' => Some((VkCode(0xBF), false)),
         _ => None,
     }
 }
 
 /// SpecialKey を Windows VK コードに変換する
 #[must_use]
-pub(super) const fn special_key_to_vk(sk: SpecialKey) -> u16 {
+pub(super) const fn special_key_to_vk(sk: SpecialKey) -> VkCode {
     match sk {
-        SpecialKey::Backspace => 0x08, // VK_BACK
-        SpecialKey::Escape => 0x1B,    // VK_ESCAPE
-        SpecialKey::Enter => 0x0D,     // VK_RETURN
-        SpecialKey::Space => 0x20,     // VK_SPACE
-        SpecialKey::Delete => 0x2E,    // VK_DELETE
+        SpecialKey::Backspace => crate::vk::VK_BACK,
+        SpecialKey::Escape => crate::vk::VK_ESCAPE,
+        SpecialKey::Enter => crate::vk::VK_RETURN,
+        SpecialKey::Space => crate::vk::VK_SPACE,
+        SpecialKey::Delete => crate::vk::VK_DELETE,
     }
 }
 
@@ -34,7 +34,7 @@ pub(super) const fn special_key_to_vk(sk: SpecialKey) -> u16 {
 /// JIS キーボード + IME ひらがなモード前提。
 /// IME が有効な状態でこれらのキーストロークを送ると、
 /// 対応する全角記号が入力される。
-pub(super) fn build_symbol_to_vk() -> HashMap<char, (u16, bool)> {
+pub(super) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
     let entries: &[(char, u16, bool)] = &[
         // 句読点・括弧
         ('、', 0xBC, false),  // , (VK_OEM_COMMA)
@@ -130,7 +130,7 @@ pub(super) fn build_symbol_to_vk() -> HashMap<char, (u16, bool)> {
         ('`', 0xC0, true),   // Shift+@ (JIS)
         ('\\', 0xE2, false), // JIS: ＼
     ];
-    entries.iter().map(|&(ch, vk, shift)| (ch, (vk, shift))).collect()
+    entries.iter().map(|&(ch, vk, shift)| (ch, (VkCode(vk), shift))).collect()
 }
 
 /// `send_char_as_tsf` / `send_char_as_vk` 共通の文字解決結果。
@@ -138,7 +138,7 @@ pub(super) enum CharResolution<'a> {
     /// かな → ローマ字（VK / TSF 経由で IME に渡す）
     Romaji(&'a str),
     /// 記号 → (VK コード, Shift 要否)
-    Vk(u16, bool),
+    Vk(VkCode, bool),
     /// フォールバック（Unicode 直接出力）
     Unicode(char),
 }

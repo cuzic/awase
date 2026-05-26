@@ -9,7 +9,7 @@ use super::output::make_tsf_key_input;
 ///
 /// 送信後の時刻（`current_tick_ms` の値）を返す。
 pub(crate) fn send_vk_dbe_hiragana_pair() -> u64 {
-    const VK_DBE_HIRAGANA: u16 = 0xF2;
+    use crate::vk::VK_DBE_HIRAGANA;
     let inputs = [
         make_tsf_key_input(VK_DBE_HIRAGANA, false),
         make_tsf_key_input(VK_DBE_HIRAGANA, true),

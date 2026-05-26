@@ -7,6 +7,7 @@ use crate::output::{Output, VkSequence, WarmupOutcome};
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
 use crate::tsf::TsfGateState;
+use awase::types::VkCode;
 
 /// `dispatch_probe_actions` が要求する Win32 / 状態ミューテーション操作の抽象。
 ///
@@ -18,11 +19,11 @@ pub(crate) trait ProbeIo {
     /// GJI モニターが正常動作しているかどうかを返す。
     fn gji_monitor_healthy(&self) -> bool;
     /// TSF 送信パイプラインを実行し、backspace 相当数を返す。
-    fn transmit_tsf(&self, romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize;
+    fn transmit_tsf(&self, romaji: &str, chars: &[(VkCode, bool)], outcome: &WarmupOutcome) -> usize;
     /// Chrome バッチ送信を実行する。
-    fn transmit_chrome(&self, romaji: &str, chars: &[(u16, bool)]);
+    fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
     /// deferred VKs を送信する。`use_tsf_marker` = true → `TSF_MARKER`、false → `INJECTED_MARKER`。
-    fn send_deferred_vks(&self, vks: &[(u16, bool)], use_tsf_marker: bool);
+    fn send_deferred_vks(&self, vks: &[(VkCode, bool)], use_tsf_marker: bool);
     /// composition を warm にマークする。
     fn mark_warm(&self);
     /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、`(namechange_baseline, sent_ms)` を返す。
@@ -46,15 +47,15 @@ impl ProbeIo for Output {
         crate::tsf::observer::gji_monitor_healthy()
     }
 
-    fn transmit_tsf(&self, romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
+    fn transmit_tsf(&self, romaji: &str, chars: &[(VkCode, bool)], outcome: &WarmupOutcome) -> usize {
         crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
     }
 
-    fn transmit_chrome(&self, romaji: &str, chars: &[(u16, bool)]) {
+    fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]) {
         Output::send_romaji_batch_immediate(romaji, chars);
     }
 
-    fn send_deferred_vks(&self, vks: &[(u16, bool)], use_tsf_marker: bool) {
+    fn send_deferred_vks(&self, vks: &[(VkCode, bool)], use_tsf_marker: bool) {
         Output::send_deferred_probe_vks_from(vks, use_tsf_marker);
     }
 
@@ -63,7 +64,7 @@ impl ProbeIo for Output {
     }
 
     fn send_fresh_f2(&self) -> (NamechangeBaseline, u64) {
-        const VK_DBE_HIRAGANA: u16 = 0xF2;
+        use crate::vk::VK_DBE_HIRAGANA;
         let refresh = [
             crate::tsf::output::make_tsf_key_input(VK_DBE_HIRAGANA, false),
             crate::tsf::output::make_tsf_key_input(VK_DBE_HIRAGANA, true),
@@ -249,16 +250,16 @@ mod tests {
         fn transmit_tsf(
             &self,
             _romaji: &str,
-            _chars: &[(u16, bool)],
+            _chars: &[(VkCode, bool)],
             _outcome: &WarmupOutcome,
         ) -> usize {
             self.transmit_tsf_called.set(true);
             self.tsf_transmit_result
         }
-        fn transmit_chrome(&self, _romaji: &str, _chars: &[(u16, bool)]) {
+        fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
             self.transmit_chrome_called.set(true);
         }
-        fn send_deferred_vks(&self, _vks: &[(u16, bool)], _use_tsf_marker: bool) {
+        fn send_deferred_vks(&self, _vks: &[(VkCode, bool)], _use_tsf_marker: bool) {
             self.deferred_vks_called.set(true);
         }
         fn mark_warm(&self) {

@@ -80,10 +80,10 @@ impl HeldModifiers {
     /// 押下中の修飾キーを解放する `INPUT` イベントを追加する。
     fn push_release(&self, inputs: &mut Vec<INPUT>) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT, VK_MENU};
-        if self.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true, IME_KANJI_MARKER)); }
-        if self.shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true, IME_KANJI_MARKER)); }
-        if self.alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true, IME_KANJI_MARKER)); }
+        use crate::vk::{VK_CONTROL, VK_SHIFT, VK_MENU};
+        if self.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL, true, IME_KANJI_MARKER)); }
+        if self.shift { inputs.push(make_key_input_ex(VK_SHIFT,   true, IME_KANJI_MARKER)); }
+        if self.alt   { inputs.push(make_key_input_ex(VK_MENU,    true, IME_KANJI_MARKER)); }
     }
 
     /// 物理的にまだ押下中の修飾キーを復元する `INPUT` イベントを追加し、復元した状態を返す。
@@ -92,12 +92,12 @@ impl HeldModifiers {
     /// Win32 API を呼び出す。
     unsafe fn push_restore(&self, inputs: &mut Vec<INPUT>) -> Self {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use windows::Win32::UI::Input::KeyboardAndMouse::{
-            GetAsyncKeyState,
+        use crate::vk::{
             VK_CONTROL, VK_LCONTROL,
             VK_SHIFT,   VK_LSHIFT, VK_RSHIFT,
             VK_MENU,    VK_LMENU,  VK_RMENU,
         };
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
         let still = Self {
             ctrl:  self.ctrl  && (
                 unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0
@@ -112,9 +112,9 @@ impl HeldModifiers {
                 || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0
             ),
         };
-        if still.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, false, IME_KANJI_MARKER)); }
-        if still.shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   false, IME_KANJI_MARKER)); }
-        if still.alt   { inputs.push(make_key_input_ex(VK_MENU.0,    false, IME_KANJI_MARKER)); }
+        if still.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL, false, IME_KANJI_MARKER)); }
+        if still.shift { inputs.push(make_key_input_ex(VK_SHIFT,   false, IME_KANJI_MARKER)); }
+        if still.alt   { inputs.push(make_key_input_ex(VK_MENU,    false, IME_KANJI_MARKER)); }
         still
     }
 }
@@ -136,14 +136,13 @@ impl HeldModifiers {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, GetKeyState,
+    use crate::vk::{
         VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
         VK_LSHIFT,  VK_RSHIFT,
         VK_LMENU,   VK_RMENU,
+        VK_KANJI, VK_RETURN,
     };
-    const VK_KANJI: u16 = 0x19;
-    const VK_RETURN: u16 = 0x0D;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState};
 
     // SAFETY: GetAsyncKeyState / GetKeyState はスレッドセーフで任意のスレッドから呼び出せる。
     let held = unsafe { HeldModifiers::read() };
@@ -211,7 +210,7 @@ pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_on() {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    const VK_F13: u16 = 0x7C;
+    use crate::vk::VK_F13;
 
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
     let held = unsafe { HeldModifiers::read() };
@@ -252,8 +251,7 @@ pub unsafe fn post_gji_ime_on() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_off(candidate_visible: bool) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    const VK_F14: u16 = 0x7D;
-    const VK_RETURN: u16 = 0x0D;
+    use crate::vk::{VK_F14, VK_RETURN};
 
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
     let held = unsafe { HeldModifiers::read() };
@@ -295,7 +293,7 @@ pub unsafe fn post_gji_ime_off(candidate_visible: bool) {
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn send_ime_mode_key(vk: u16) {
+pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     let inputs = [
         make_key_input_ex(vk, false, IME_KANJI_MARKER),

@@ -322,14 +322,12 @@ pub(super) fn initialize_app(
         .keys
         .engine_on_ime_key
         .as_deref()
-        .and_then(vk_name_to_code)
-        .map(u16::from);
+        .and_then(vk_name_to_code);
     let engine_off_ime_vk = config
         .keys
         .engine_off_ime_key
         .as_deref()
-        .and_then(vk_name_to_code)
-        .map(u16::from);
+        .and_then(vk_name_to_code);
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
@@ -595,7 +593,7 @@ pub(super) fn run_all() -> Result<()> {
         .iter()
         .chain(ime_control_off_keys.iter())
         .map(|k| crate::panic_detect::PanicTriggerCombo {
-            vk: u16::from(k.vk),
+            vk: k.vk,
             ctrl: k.ctrl,
             shift: k.shift,
             alt: k.alt,

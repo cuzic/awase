@@ -482,7 +482,7 @@ fn reload_config() {
             .iter()
             .chain(ime_off.iter())
             .map(|k| crate::panic_detect::PanicTriggerCombo {
-                vk: u16::from(k.vk),
+                vk: k.vk,
                 ctrl: k.ctrl,
                 shift: k.shift,
                 alt: k.alt,

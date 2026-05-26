@@ -94,14 +94,14 @@ impl ColdReason {
 /// `wVk` を保持したまま `MapVirtualKeyW` で算出した `wScan` も設定する。
 /// `KEYEVENTF_SCANCODE` は付加しない（付加すると WezTerm が LLKHF_SCANCODE フラグ付き
 /// キーとして検出し IME をバイパスしてしまうため）。
-pub(crate) fn make_tsf_key_input(vk: u16, is_keyup: bool) -> INPUT {
-    let scan = unsafe { MapVirtualKeyW(u32::from(vk), MAPVK_VK_TO_VSC) as u16 };
+pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> INPUT {
+    let scan = unsafe { MapVirtualKeyW(u32::from(vk.0), MAPVK_VK_TO_VSC) as u16 };
     let flags = if is_keyup { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(vk),
+                wVk: VIRTUAL_KEY(vk.0),
                 wScan: scan,
                 dwFlags: flags,
                 time: 0,
@@ -112,12 +112,12 @@ pub(crate) fn make_tsf_key_input(vk: u16, is_keyup: bool) -> INPUT {
 }
 
 /// INPUT 構造体を作成するヘルパー（dwExtraInfo 指定版）
-pub(crate) const fn make_key_input_ex(vk: u16, is_keyup: bool, extra_info: usize) -> INPUT {
+pub(crate) const fn make_key_input_ex(vk: awase::types::VkCode, is_keyup: bool, extra_info: usize) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(vk),
+                wVk: VIRTUAL_KEY(vk.0),
                 wScan: 0,
                 dwFlags: if is_keyup {
                     KEYEVENTF_KEYUP
@@ -150,7 +150,7 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 pub fn flush_raw_tsf_literal_backspaces() {
     use std::mem::size_of;
     use std::sync::atomic::Ordering::Relaxed;
-    const VK_BACK: u16 = 0x08;
+    use crate::vk::VK_BACK;
     let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
     if n == 0 {
         return;

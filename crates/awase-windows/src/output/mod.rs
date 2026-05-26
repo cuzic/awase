@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 use awase::config::OutputMode;
-use awase::types::KeyAction;
+use awase::types::{KeyAction, VkCode};
 
 pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
@@ -24,7 +24,7 @@ pub(crate) use vk_send::TsfSendPipeline;
 pub(crate) use crate::tsf::probe_fsm::TsfProbeMachine;
 
 /// VK コード＋シフトフラグのペアを要素とする VK シーケンス型。
-pub(crate) type VkSequence = Vec<(u16, bool)>;
+pub(crate) type VkSequence = Vec<(VkCode, bool)>;
 
 /// `WindowsPlatform` へのタイマー操作指示。`Output::step_probe` / `pending_tsf_timer` が返す。
 ///
@@ -52,7 +52,7 @@ pub struct Output {
     /// Chrome VK モード用: かな→ローマ字逆引きテーブル
     kana_to_romaji: HashMap<char, String>,
     /// Chrome VK モード用: 記号→VK コードマッピング
-    symbol_to_vk: HashMap<char, (u16, bool)>,
+    symbol_to_vk: HashMap<char, (VkCode, bool)>,
     /// TSF composition context の warm/cold 状態管理。
     ///
     /// warm/cold epoch、last_send_ms、eager_warmup_sent_ms 等を集約する。
@@ -366,11 +366,11 @@ impl Output {
                 }
                 KeyAction::Key(vk) => {
                     log::debug!("  → Key(0x{:04X})", vk.0);
-                    self.send_key(vk.0, false);
+                    self.send_key(*vk, false);
                 }
                 KeyAction::KeyUp(vk) => {
                     log::debug!("  → KeyUp(0x{:04X})", vk.0);
-                    self.send_key(vk.0, true);
+                    self.send_key(*vk, true);
                 }
                 KeyAction::Char(ch) => {
                     log::debug!("  → Char('{ch}') via {}", sender.mode_label());
@@ -426,7 +426,7 @@ impl Output {
 
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
-    pub(super) fn defer_vk_if_probe_in_flight(&self, vk: u16, needs_shift: bool) -> bool {
+    pub(super) fn defer_vk_if_probe_in_flight(&self, vk: VkCode, needs_shift: bool) -> bool {
         if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
             machine.push_deferred(vk, needs_shift);
             true

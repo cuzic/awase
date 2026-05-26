@@ -1,5 +1,5 @@
 use awase::gate::{HoldingGate, SyncKeyGateEvent, SyncKeyGateMachine};
-use awase::types::RawKeyEvent;
+use awase::types::{RawKeyEvent, VkCode};
 
 /// 直近の Ctrl+key ショートカット Bypass からの「stale Ctrl」しきい値（マイクロ秒）。
 /// この時間内に親指キー (Henkan/Muhenkan) が到着した場合、Ctrl 修飾は
@@ -63,18 +63,18 @@ impl HookRoutingState {
     }
 
     /// VK を Engine 送信済みビットセットに記録する。
-    pub const fn mark_engine_sent(&mut self, vk: u16) {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    pub const fn mark_engine_sent(&mut self, vk: VkCode) {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         if idx < 4 {
             self.sent_to_engine[idx] |= bit;
         }
     }
 
     /// VK を Engine 送信済みおよび TrackOnly 両ビットセットに記録する。
-    pub const fn mark_track_only_sent(&mut self, vk: u16) {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    pub const fn mark_track_only_sent(&mut self, vk: VkCode) {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         if idx < 4 {
             self.sent_to_engine[idx] |= bit;
             self.track_only_keys[idx] |= bit;
@@ -82,9 +82,9 @@ impl HookRoutingState {
     }
 
     /// VK を Engine 送信済み・TrackOnly 両ビットセットから削除する。
-    pub const fn clear_engine_sent(&mut self, vk: u16) {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    pub const fn clear_engine_sent(&mut self, vk: VkCode) {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         if idx < 4 {
             self.sent_to_engine[idx] &= !bit;
             self.track_only_keys[idx] &= !bit;
@@ -92,10 +92,10 @@ impl HookRoutingState {
     }
 
     /// VK が Engine 送信済みかどうかを返す。
-    #[must_use] 
-    pub const fn is_engine_sent(&self, vk: u16) -> bool {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    #[must_use]
+    pub const fn is_engine_sent(&self, vk: VkCode) -> bool {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         if idx >= 4 {
             return false;
         }
@@ -103,10 +103,10 @@ impl HookRoutingState {
     }
 
     /// VK が TrackOnly で記録されているかどうかを返す。
-    #[must_use] 
-    pub const fn is_track_only(&self, vk: u16) -> bool {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    #[must_use]
+    pub const fn is_track_only(&self, vk: VkCode) -> bool {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         if idx >= 4 {
             return false;
         }
@@ -114,24 +114,24 @@ impl HookRoutingState {
     }
 
     /// キーマップでインターセプト済みの VK を記録する。
-    pub const fn mark_intercept_consumed(&mut self, vk: u16) {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    pub const fn mark_intercept_consumed(&mut self, vk: VkCode) {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         if idx < 4 { self.intercept_consumed[idx] |= bit; }
     }
 
     /// VK がインターセプト消費済みかどうかを返す。
     #[must_use]
-    pub const fn is_intercept_consumed(&self, vk: u16) -> bool {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    pub const fn is_intercept_consumed(&self, vk: VkCode) -> bool {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         idx < 4 && (self.intercept_consumed[idx] & bit) != 0
     }
 
     /// インターセプト消費フラグをクリアする（KeyUp 処理後）。
-    pub const fn clear_intercept_consumed(&mut self, vk: u16) {
-        let idx = (vk as usize) / 64;
-        let bit = 1u64 << ((vk as usize) % 64);
+    pub const fn clear_intercept_consumed(&mut self, vk: VkCode) {
+        let idx = (vk.0 as usize) / 64;
+        let bit = 1u64 << ((vk.0 as usize) % 64);
         if idx < 4 { self.intercept_consumed[idx] &= !bit; }
     }
 
@@ -193,8 +193,8 @@ impl HookRoutingState {
 /// フック設定（親指キー VK コード）
 #[derive(Debug, Copy, Clone)]
 pub struct HookConfig {
-    pub left_thumb_vk: u16,
-    pub right_thumb_vk: u16,
+    pub left_thumb_vk: VkCode,
+    pub right_thumb_vk: VkCode,
 }
 
 /// IME 同期キー（Henkan/Muhenkan/Kanji 等）押下後のキー保留バッファ。

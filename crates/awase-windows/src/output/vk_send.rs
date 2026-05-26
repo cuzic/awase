@@ -2,32 +2,25 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
 };
+use awase::types::VkCode;
 use crate::tsf::output::{INJECTED_MARKER, make_key_input_ex, make_tsf_key_input, kana_for_romaji_static};
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::TsfProbeMachine;
+use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS};
 use super::{Output, VkSequence};
 use super::{WarmthContext, WarmupOutcome, fmt_ms};
 use super::resolve::{ascii_to_vk, CharResolution};
 
-/// VK_LSHIFT の仮想キーコード
-const VK_LSHIFT: u16 = 0xA0;
-
-/// VK_DBE_HIRAGANA (F2) の仮想キーコード
-const VK_DBE_HIRAGANA: u16 = 0xF2;
-
-/// VK_OEM_MINUS の仮想キーコード（長音符 `ー` に対応）
-const VK_OEM_MINUS: u16 = 0xBD;
-
 /// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
 #[must_use]
-pub(super) const fn make_key_input(vk: u16, is_keyup: bool) -> INPUT {
+pub(super) const fn make_key_input(vk: VkCode, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
 }
 
 /// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
-fn send_vk_pair(vk: u16, needs_shift: bool, use_tsf_marker: bool) {
+fn send_vk_pair(vk: VkCode, needs_shift: bool, use_tsf_marker: bool) {
     let mut inputs = Vec::with_capacity(4);
     if needs_shift {
         inputs.push(make_key_input(VK_LSHIFT, false));
@@ -73,7 +66,7 @@ fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
 ///
 /// `send_vk_runs` と `send_deferred_probe_vks_from` 共通のヘルパー。
 /// IME のオートリピート誤検出を防ぐため、同一 VK が連続する箇所で区切る。
-fn split_vk_runs(vks: &[(u16, bool)]) -> Vec<&[(u16, bool)]> {
+fn split_vk_runs(vks: &[(VkCode, bool)]) -> Vec<&[(VkCode, bool)]> {
     if vks.is_empty() { return vec![]; }
     let mut runs = Vec::new();
     let mut start = 0;
@@ -97,7 +90,7 @@ pub(crate) struct TsfSendPipeline;
 
 impl TsfSendPipeline {
     /// VK run または Unicode kana を送信し、バックスペース数を返す。
-    pub(crate) fn transmit(romaji: &str, chars: &[(u16, bool)], outcome: &WarmupOutcome) -> usize {
+    pub(crate) fn transmit(romaji: &str, chars: &[(VkCode, bool)], outcome: &WarmupOutcome) -> usize {
         let unicode_kana: Option<char> = if outcome.prepend_f2_warmup && outcome.used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
@@ -123,7 +116,7 @@ impl TsfSendPipeline {
 impl Output {
     /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
     #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
-    pub(super) fn send_key(&self, vk: u16, is_keyup: bool) {
+    pub(super) fn send_key(&self, vk: VkCode, is_keyup: bool) {
         let input = make_key_input(vk, is_keyup);
         let _ = crate::win32::send_input_safe(&[input]);
     }
@@ -230,7 +223,7 @@ impl Output {
 
     /// ローマ字を即座にバッチ送信する（重畳順）。
     /// warm パスおよび `advance_tsf_probe` の ChromeProbe 完了時に呼ぶ。
-    pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(u16, bool)]) {
+    pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(VkCode, bool)]) {
         let mut inputs = Vec::with_capacity(chars.len() * 4);
         for &(vk, needs_shift) in chars {
             if needs_shift {
@@ -262,7 +255,7 @@ impl Output {
     }
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
-    pub(super) fn send_vk_runs(chars: &[(u16, bool)], cold_seq: u32) {
+    pub(super) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: u32) {
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
@@ -470,7 +463,7 @@ impl Output {
     ///
     /// 同一 VK が連続する箇所（例 "nn"）ではオートリピート誤検出を避けるため
     /// `send_vk_runs` と同様にランごとに分割して別 SendInput を使う。
-    pub(crate) fn send_deferred_probe_vks_from(vks: &[(u16, bool)], use_tsf_marker: bool) {
+    pub(crate) fn send_deferred_probe_vks_from(vks: &[(VkCode, bool)], use_tsf_marker: bool) {
         if vks.is_empty() {
             return;
         }

@@ -28,8 +28,9 @@
 
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
+use awase::types::VkCode;
 
-type VkSequence = Vec<(u16, bool)>;
+type VkSequence = Vec<(VkCode, bool)>;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 
@@ -231,12 +232,12 @@ impl TsfProbeMachine {
     pub(crate) fn cold_seq_hint(&self) -> u32 { self.cold_seq }
 
     /// probe 進行中に後続 VK を 1 つ蓄積する。
-    pub(crate) fn push_deferred(&mut self, vk: u16, needs_shift: bool) {
+    pub(crate) fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
         self.deferred_vks.push((vk, needs_shift));
     }
 
     /// probe 進行中に後続 VK を複数蓄積する。
-    pub(crate) fn extend_deferred(&mut self, vks: impl IntoIterator<Item = (u16, bool)>) {
+    pub(crate) fn extend_deferred(&mut self, vks: impl IntoIterator<Item = (VkCode, bool)>) {
         self.deferred_vks.extend(vks);
     }
 

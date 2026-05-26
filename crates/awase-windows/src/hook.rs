@@ -20,8 +20,8 @@ use awase::types::{
 pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
     use crate::vk;
 
-    let left_thumb = VkCode(config.left_thumb_vk);
-    let right_thumb = VkCode(config.right_thumb_vk);
+    let left_thumb = config.left_thumb_vk;
+    let right_thumb = config.right_thumb_vk;
 
     if vk == left_thumb {
         (KeyClassification::LeftThumb, None)
@@ -52,9 +52,9 @@ pub const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
 ///
 /// これらのキーは NICOLA 処理に関与しないため、Engine をバイパスして
 /// 常に OS に直接渡す。KeyDown/KeyUp ペアの保証により Ctrl スタックを防止する。
-const fn is_non_shift_modifier(vk: u16) -> bool {
+const fn is_non_shift_modifier(vk: VkCode) -> bool {
     matches!(
-        vk,
+        vk.0,
         0x11 | 0xA2 | 0xA3  // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
         | 0x12 | 0xA4 | 0xA5  // VK_MENU, VK_LMENU, VK_RMENU
         | 0x5B | 0x5C          // VK_LWIN, VK_RWIN
@@ -87,8 +87,8 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
 
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
 pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) {
-    config.left_thumb_vk = u16::from(left);
-    config.right_thumb_vk = u16::from(right);
+    config.left_thumb_vk = left;
+    config.right_thumb_vk = right;
 }
 
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
@@ -218,8 +218,8 @@ static HOOK_HANDLE: SingleThreadCell<HHOOK> = SingleThreadCell::new(HHOOK(std::p
 /// APP.get_mut() を呼べない状況でも classify_key が実行できるように、
 /// bootstrap 時（および thumb_vk 変更時）に更新する。
 static HOOK_CONFIG: SingleThreadCell<HookConfig> = SingleThreadCell::new(HookConfig {
-    left_thumb_vk: 0,
-    right_thumb_vk: 0,
+    left_thumb_vk: VkCode(0),
+    right_thumb_vk: VkCode(0),
 });
 
 /// グローバル HOOK_CONFIG を更新する。bootstrap と thumb_vk 変更後に呼ぶ。
@@ -234,7 +234,7 @@ static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) ->
     SingleThreadCell::new(None);
 
 /// KeyUp 専用ルート判定（KeyDown の判定に追随する）。
-const fn classify_keyup_route(hook: &HookRoutingState, vk: u16) -> KeyRoute {
+const fn classify_keyup_route(hook: &HookRoutingState, vk: VkCode) -> KeyRoute {
     if hook.is_track_only(vk) {
         return KeyRoute::TrackOnly;
     }
@@ -247,10 +247,10 @@ const fn classify_keyup_route(hook: &HookRoutingState, vk: u16) -> KeyRoute {
 /// Ctrl/Alt/Win が押されている間の非親指キーはショートカット → Bypass。
 ///
 /// `ctrl_bypass_hold` が有効な場合（IME 制御コンボ直後）は Ctrl を有効とみなさない。
-const fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook: &HookRoutingState, config: HookConfig, vk: u16) -> bool {
+const fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook: &HookRoutingState, config: HookConfig, vk: VkCode) -> bool {
     let effective_ctrl = mods.ctrl && !(hook.ctrl_bypass_hold() && !mods.alt && !mods.win);
     if (effective_ctrl || mods.alt || mods.win)
-        && vk != config.left_thumb_vk && vk != config.right_thumb_vk {
+        && vk.0 != config.left_thumb_vk.0 && vk.0 != config.right_thumb_vk.0 {
             return true;
         }
     false
@@ -262,19 +262,17 @@ const fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook:
 /// `SendInput` および `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
 unsafe fn send_keymap_reinject(send_vk: VkCode, mods: awase::engine::fsm_types::ModifierState) {
     use crate::tsf::output::make_key_input_ex;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState,
-        VK_CONTROL, VK_LCONTROL, VK_SHIFT, VK_LSHIFT, VK_MENU, VK_LMENU,
-    };
+    use crate::vk::{VK_CONTROL, VK_LCONTROL, VK_SHIFT, VK_LSHIFT, VK_MENU, VK_LMENU};
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
     let mut inputs = Vec::with_capacity(8);
 
-    if mods.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, true,  INJECTED_MARKER)); }
-    if mods.shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   true,  INJECTED_MARKER)); }
-    if mods.alt   { inputs.push(make_key_input_ex(VK_MENU.0,    true,  INJECTED_MARKER)); }
+    if mods.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL, true,  INJECTED_MARKER)); }
+    if mods.shift { inputs.push(make_key_input_ex(VK_SHIFT,   true,  INJECTED_MARKER)); }
+    if mods.alt   { inputs.push(make_key_input_ex(VK_MENU,    true,  INJECTED_MARKER)); }
 
-    inputs.push(make_key_input_ex(send_vk.0, false, INJECTED_MARKER));
-    inputs.push(make_key_input_ex(send_vk.0, true,  INJECTED_MARKER));
+    inputs.push(make_key_input_ex(send_vk, false, INJECTED_MARKER));
+    inputs.push(make_key_input_ex(send_vk, true,  INJECTED_MARKER));
 
     let still_ctrl  = mods.ctrl  && (GetAsyncKeyState(i32::from(VK_LCONTROL.0)) as u16 & 0x8000 != 0
                                   || GetAsyncKeyState(i32::from(VK_CONTROL.0))  as u16 & 0x8000 != 0);
@@ -283,9 +281,9 @@ unsafe fn send_keymap_reinject(send_vk: VkCode, mods: awase::engine::fsm_types::
     let still_alt   = mods.alt   && (GetAsyncKeyState(i32::from(VK_LMENU.0))    as u16 & 0x8000 != 0
                                   || GetAsyncKeyState(i32::from(VK_MENU.0))     as u16 & 0x8000 != 0);
 
-    if still_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL.0, false, INJECTED_MARKER)); }
-    if still_shift { inputs.push(make_key_input_ex(VK_SHIFT.0,   false, INJECTED_MARKER)); }
-    if still_alt   { inputs.push(make_key_input_ex(VK_MENU.0,    false, INJECTED_MARKER)); }
+    if still_ctrl  { inputs.push(make_key_input_ex(VK_CONTROL, false, INJECTED_MARKER)); }
+    if still_shift { inputs.push(make_key_input_ex(VK_SHIFT,   false, INJECTED_MARKER)); }
+    if still_alt   { inputs.push(make_key_input_ex(VK_MENU,    false, INJECTED_MARKER)); }
 
     if !inputs.is_empty() {
         let _ = crate::win32::send_input_safe(&inputs);
@@ -299,7 +297,7 @@ unsafe fn send_keymap_reinject(send_vk: VkCode, mods: awase::engine::fsm_types::
 ///
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
-unsafe fn classify_route(hook: &HookRoutingState, config: HookConfig, vk: u16, is_keydown: bool) -> KeyRoute {
+unsafe fn classify_route(hook: &HookRoutingState, config: HookConfig, vk: VkCode, is_keydown: bool) -> KeyRoute {
     if !is_keydown {
         return classify_keyup_route(hook, vk);
     }
@@ -450,7 +448,7 @@ enum RoutingOutcome {
 /// 内部で `classify_route`（`GetAsyncKeyState`）を呼ぶ。フックコールバック内から呼ぶこと。
 unsafe fn decide_routing_with_tracking(
     ps: &mut crate::PlatformState,
-    vk_raw: u16,
+    vk: VkCode,
     is_keydown: bool,
 ) -> EarlyRoutingDecision {
     ps.last_hook_activity_ms = current_tick_ms();
@@ -466,7 +464,7 @@ unsafe fn decide_routing_with_tracking(
     }
 
     // Ctrl KeyUp で ctrl_bypass_hold と stale-ctrl 観測タイムスタンプを解除
-    if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) {
+    if !is_keydown && matches!(vk.0, 0x11 | 0xA2 | 0xA3) {
         if ps.hook.ctrl_bypass_hold() {
             ps.hook.set_ctrl_bypass_hold(false);
         }
@@ -477,25 +475,25 @@ unsafe fn decide_routing_with_tracking(
     if is_keydown {
         // SAFETY: read_os_modifiers は GetAsyncKeyState を呼ぶ。フックコールバック内のため安全。
         let mods = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-        if let Some(send_vk) = crate::keymap::find_keymap_match(&ps.active_keymaps, VkCode(vk_raw), mods) {
-            ps.hook.mark_intercept_consumed(vk_raw);
-            if let Some(vk) = send_vk {
+        if let Some(send_vk) = crate::keymap::find_keymap_match(&ps.active_keymaps, vk, mods) {
+            ps.hook.mark_intercept_consumed(vk);
+            if let Some(target) = send_vk {
                 // SAFETY: SendInput + GetAsyncKeyState。フックコールバック内のため安全。
-                unsafe { send_keymap_reinject(vk, mods); }
-                log::info!("[keymap] vk=0x{vk_raw:02X} → send vk=0x{:02X}", vk.0);
+                unsafe { send_keymap_reinject(target, mods); }
+                log::info!("[keymap] vk=0x{:02X} → send vk=0x{:02X}", vk.0, target.0);
             } else {
-                log::info!("[keymap] vk=0x{vk_raw:02X} → consume");
+                log::info!("[keymap] vk=0x{:02X} → consume", vk.0);
             }
             return EarlyRoutingDecision::ConsumedByKeymap;
         }
     }
-    if !is_keydown && ps.hook.is_intercept_consumed(vk_raw) {
-        ps.hook.clear_intercept_consumed(vk_raw);
-        log::debug!("[keymap] vk=0x{vk_raw:02X} KeyUp consumed (paired with intercepted KeyDown)");
+    if !is_keydown && ps.hook.is_intercept_consumed(vk) {
+        ps.hook.clear_intercept_consumed(vk);
+        log::debug!("[keymap] vk=0x{:02X} KeyUp consumed (paired with intercepted KeyDown)", vk.0);
         return EarlyRoutingDecision::ConsumedByKeymap;
     }
 
-    let route = classify_route(&ps.hook, ps.hook_config, vk_raw, is_keydown);
+    let route = classify_route(&ps.hook, ps.hook_config, vk, is_keydown);
 
     match route {
         KeyRoute::Bypass => {
@@ -510,7 +508,8 @@ unsafe fn decide_routing_with_tracking(
                 }
             }
             log::trace!(
-                "Hook: vk=0x{vk_raw:02X} {} → Bypass",
+                "Hook: vk=0x{:02X} {} → Bypass",
+                vk.0,
                 if is_keydown { "KeyDown" } else { "KeyUp" }
             );
             return EarlyRoutingDecision::BypassToOs;
@@ -518,12 +517,12 @@ unsafe fn decide_routing_with_tracking(
         KeyRoute::Engine | KeyRoute::TrackOnly => {
             if is_keydown {
                 match route {
-                    KeyRoute::Engine => ps.hook.mark_engine_sent(vk_raw),
-                    KeyRoute::TrackOnly => ps.hook.mark_track_only_sent(vk_raw),
+                    KeyRoute::Engine => ps.hook.mark_engine_sent(vk),
+                    KeyRoute::TrackOnly => ps.hook.mark_track_only_sent(vk),
                     KeyRoute::Bypass => unreachable!(),
                 }
             } else {
-                ps.hook.clear_engine_sent(vk_raw);
+                ps.hook.clear_engine_sent(vk);
             }
         }
     }
@@ -571,7 +570,7 @@ fn apply_sync_key_gate(
     app: &mut crate::Runtime,
     event: RawKeyEvent,
     route: &KeyRoute,
-    vk_raw: u16,
+    vk: VkCode,
     is_keydown: bool,
 ) -> RoutingOutcome {
     let is_sync_key = event.ime_relevance.is_sync_key;
@@ -579,7 +578,7 @@ fn apply_sync_key_gate(
     // sync key KeyDown → ガードを起動、Engine の保留キーをフラッシュして PassThrough
     if is_keydown && is_sync_key && !app.platform_state.sync_key_gate.is_active() {
         app.platform_state.sync_key_gate.activate();
-        log::debug!("sync-key guard ON (vk=0x{vk_raw:02X})");
+        log::debug!("sync-key guard ON (vk=0x{:02X})", vk.0);
         let ctx = crate::runtime::build_input_context(
             app.platform_state.belief(),
             &event.modifier_snapshot,
@@ -596,7 +595,7 @@ fn apply_sync_key_gate(
     // sync key KeyUp → ガードを解除して PassThrough、遅延処理をリクエスト
     if !is_keydown && is_sync_key && app.platform_state.sync_key_gate.is_active() {
         app.platform_state.sync_key_gate.deactivate();
-        log::debug!("sync-key guard OFF (vk=0x{vk_raw:02X})");
+        log::debug!("sync-key guard OFF (vk=0x{:02X})", vk.0);
         app.platform_state.hook.leave_callback();
         crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
         return RoutingOutcome::PassThrough;
@@ -612,7 +611,7 @@ fn apply_sync_key_gate(
         }
         let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
         if app.platform_state.sync_key_gate.try_push(event, phys) {
-            log::trace!("sync-key guard: buffered key vk=0x{vk_raw:02X}");
+            log::trace!("sync-key guard: buffered key vk=0x{:02X}", vk.0);
         } else {
             log::warn!("sync-key guard forced clear: buffer overflow");
             app.platform_state.sync_key_gate.deactivate();
@@ -653,8 +652,7 @@ unsafe fn defer_key_during_with_app(vk: VkCode, scan: ScanCode, is_keydown: bool
 /// Win32 API（`CallNextHookEx` 等）を呼び出す。フックコールバック内から呼ぶこと。
 unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-    let vk_raw = kb.vkCode as u16;
-    let vk = VkCode(vk_raw);
+    let vk = VkCode(kb.vkCode as u16);
     let scan = ScanCode(kb.scanCode);
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
 
@@ -682,7 +680,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
             // SAFETY: read_os_modifiers は GetAsyncKeyState を呼ぶ。
             //         フックコールバック内のため安全。
             let mods = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-            crate::panic_detect::is_panic_trigger(vk_raw, mods.ctrl, mods.shift, mods.alt)
+            crate::panic_detect::is_panic_trigger(vk, mods.ctrl, mods.shift, mods.alt)
         };
         if triggers_panic {
             crate::panic_detect::record_ime_keydown(current_tick_ms());
@@ -708,7 +706,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     };
 
     // ── 早期バイパス・ルーティング・再入ガード ──
-    let route = match decide_routing_with_tracking(&mut app.platform_state, vk_raw, is_keydown) {
+    let route = match decide_routing_with_tracking(&mut app.platform_state, vk, is_keydown) {
         EarlyRoutingDecision::BypassToOs => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
         EarlyRoutingDecision::ConsumedByKeymap => return LRESULT(1),
         EarlyRoutingDecision::Continue { route } => route,
@@ -726,7 +724,8 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // Engine 側で Ctrl+無変換 → IME-OFF と誤マッチしない。
     if modifier_snapshot.ctrl && app.platform_state.hook.is_ctrl_stale(now_timestamp()) {
         log::debug!(
-            "[stale-ctrl] suppress ctrl modifier vk=0x{vk_raw:02X} {} (within {}us of last Ctrl+key bypass)",
+            "[stale-ctrl] suppress ctrl modifier vk=0x{:02X} {} (within {}us of last Ctrl+key bypass)",
+            vk.0,
             if is_keydown { "KeyDown" } else { "KeyUp" },
             crate::state::CTRL_STALE_THRESHOLD_US,
         );
@@ -737,7 +736,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     log_hook_event(&event, &route);
 
     // ── sync key ガード ──
-    let event = match apply_sync_key_gate(app, event, &route, vk_raw, is_keydown) {
+    let event = match apply_sync_key_gate(app, event, &route, vk, is_keydown) {
         RoutingOutcome::PassThrough => return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam),
         RoutingOutcome::Consumed    => return LRESULT(1),
         RoutingOutcome::Forward(ev) => ev,

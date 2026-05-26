@@ -25,9 +25,7 @@ use crate::tsf::output::make_tsf_key_input;
 use crate::tuning::LONG_IDLE_MS;
 
 use super::send::send_vk_dbe_hiragana_pair;
-
-/// VK_DBE_HIRAGANA 仮想キーコード (F2 相当)
-const VK_DBE_HIRAGANA: u16 = 0xF2;
+use crate::vk::VK_DBE_HIRAGANA;
 
 /// eager パスの 3 分岐を表す enum。
 ///
