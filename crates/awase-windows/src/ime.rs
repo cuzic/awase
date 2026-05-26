@@ -158,13 +158,13 @@ impl HeldModifiers {
 /// Ctrl/Shift/Alt が押下中の場合、VK_KANJI を bare（修飾なし）で届けるために先に KeyUp を注入し、
 /// 送信後も物理的に押下中の修飾キーは KeyDown で復元する。
 ///
-/// `commit_candidate_first=true` のときは VK_KANJI の前に VK_RETURN を送って
-/// 候補を確定（composition コミット）する。これは Chrome/Edge の候補ウィンドウ表示中に
-/// bare VK_KANJI が IME トグルとして機能しないことへのワークアラウンドのため、
-/// 適用判断はプロファイル（`AppImeProfile::needs_candidate_commit_before_toggle`）と
-/// 候補可視性の AND で呼び出し側が決定する。
-/// それ以外のアプリ（wezterm 等）で VK_RETURN を送ると IME に消費されず
-/// 生 Enter として届くため、`false` を渡すこと。
+/// `commit_candidate_first=true` のときは VK_KANJI の前に Ctrl+VK_RETURN を送って
+/// 候補を確定（composition コミット）する。候補ウィンドウ表示中に bare VK_KANJI が
+/// IME トグルとして機能しない（候補窓に吸われる）ことへのワークアラウンド。
+/// 適用判断は候補可視性 (`candidate_visible=true`) のみで呼び出し側が決定する。
+/// Ctrl+Enter にすることで、万一 IME に消費されずアプリへ漏れても wezterm 等で
+/// 生 Enter（改行）として届く副作用を最小化する（Ctrl+M = LF 相当だが多くの
+/// アプリで Ctrl+Enter は no-op もしくは別動作に割当て済み）。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
@@ -201,12 +201,17 @@ pub unsafe fn post_kanji_toggle_to_focused(commit_candidate_first: bool) {
         held.ctrl, held.shift, held.alt
     );
 
-    let mut inputs = Vec::with_capacity(10);
+    let mut inputs = Vec::with_capacity(12);
     held.push_release(&mut inputs);
 
     if commit_candidate_first {
-        inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
-        inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
+        // 候補確定は Ctrl+Enter で送る。bare VK_RETURN だと IME に消費されず
+        // 生 Enter としてアプリへ漏れた場合に「改行」事故になるため、Ctrl 修飾子を
+        // 付けてアプリ側で no-op になりやすくする。
+        inputs.push(make_key_input_ex(VK_LCONTROL, false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_RETURN,   false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_RETURN,   true,  IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_LCONTROL, true,  IME_KANJI_MARKER));
     }
     inputs.push(make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER));
     inputs.push(make_key_input_ex(VK_KANJI, true,  IME_KANJI_MARKER));
@@ -288,10 +293,12 @@ pub unsafe fn post_gji_ime_on() {
 /// F14 は実キーボードに存在せずブラウザショートカットとも衝突しないため、
 /// 旧実装の Ctrl+Shift+Delete（Edge の「閲覧履歴削除」ショートカットと衝突）を置き換える。
 ///
-/// `commit_candidate_first=true` のときは F14 の前に VK_RETURN で composition を
-/// コミットする（Chrome/Edge 向けワークアラウンド）。
-/// 適用判断は `post_kanji_toggle_to_focused` と同じく呼び出し側が
-/// プロファイルと候補可視性の AND で行う。
+/// `commit_candidate_first=true` のときは F14 の前に Ctrl+Enter で composition を
+/// コミットする。候補ウィンドウ表示中に F14 単独だと IME に届かない問題への
+/// ワークアラウンド。適用判断は `post_kanji_toggle_to_focused` と同じく呼び出し側が
+/// 候補可視性 (`candidate_visible=true`) のみで行う。
+/// Ctrl 修飾子を付けるのは bare VK_RETURN が IME を経由せずアプリへ漏れた際の
+/// 「改行」事故を最小化するため（`post_kanji_toggle_to_focused` と同じ理由）。
 /// GJI は DirectInput に F14 を登録していないため、IME が既に OFF の場合は
 /// F14 がアプリにパススルーされるが、F14 は無害（ブラウザショートカットなし）。
 ///
@@ -299,16 +306,19 @@ pub unsafe fn post_gji_ime_on() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_off(commit_candidate_first: bool) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    use crate::vk::{VK_F14, VK_RETURN};
+    use crate::vk::{VK_F14, VK_LCONTROL, VK_RETURN};
 
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
     let held = unsafe { HeldModifiers::read() };
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(10);
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(12);
 
     held.push_release(&mut inputs);
     if commit_candidate_first {
-        inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
-        inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
+        // 候補確定は Ctrl+Enter（IME 漏れ時の改行事故回避のため bare VK_RETURN は避ける）。
+        inputs.push(make_key_input_ex(VK_LCONTROL, false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_RETURN,   false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_RETURN,   true,  IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(VK_LCONTROL, true,  IME_KANJI_MARKER));
     }
     inputs.push(make_key_input_ex(VK_F14, false, IME_KANJI_MARKER));
     inputs.push(make_key_input_ex(VK_F14, true,  IME_KANJI_MARKER));

@@ -92,8 +92,10 @@ impl ImeOpenStrategy for GjiDirectStrategy {
                 log::debug!("[apply-ime] GJI direct: shadow OFF, skip F14");
                 return ImeOpenOutcome::AlreadyMatched;
             }
-            let commit_first = view.observed.candidate_visible
-                && view.focus.profile.needs_candidate_commit_before_toggle();
+            // 候補表示中は F14 単独だと IME に届かず IME OFF に失敗するため、
+            // Ctrl+Enter で候補確定してから F14 を送る。プロファイル種別に依存しない
+            // （Standard/wezterm でも IMC fail → 本経路は到達し得る）。
+            let commit_first = view.observed.candidate_visible;
             log::debug!(
                 "[apply-ime] GJI direct: F14 (IME OFF, candidate={} commit_first={})",
                 view.observed.candidate_visible, commit_first
@@ -137,8 +139,10 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
             );
             ImeOpenOutcome::AlreadyMatched
         } else {
-            let commit_first = view.observed.candidate_visible
-                && view.focus.profile.needs_candidate_commit_before_toggle();
+            // 候補表示中は VK_KANJI 単独だと IME に届かず（候補窓に吸われる）IME OFF に
+            // 失敗するため、Ctrl+Enter で候補確定してから VK_KANJI を送る。プロファイル
+            // 種別に依存しない（Standard/wezterm でも IMC fail → 本フォールバックは到達し得る）。
+            let commit_first = view.observed.candidate_visible;
             log::debug!(
                 "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} commit_first={} → desired={open}: SendInput VK_KANJI",
                 view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,
