@@ -244,6 +244,11 @@ pub(crate) fn candidate_was_seen() -> bool {
     TSF_OBS.candidate_was_seen.load(Ordering::Relaxed)
 }
 
+/// 現時点で GJI candidate window が可視かどうか。診断ログ用 live 読み取り。
+pub(crate) fn gji_candidate_visible_now() -> bool {
+    TSF_OBS.gji_candidate_visible.load(Ordering::Relaxed)
+}
+
 /// `apply_ime_open` 後に `candidate_was_seen` フラグをリセットする。
 pub(crate) fn reset_candidate_was_seen() {
     TSF_OBS.candidate_was_seen.store(false, Ordering::Relaxed);

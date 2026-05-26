@@ -30,27 +30,52 @@ use crate::imm::{
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
-#[must_use] 
+#[must_use]
 pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
+    let t0 = std::time::Instant::now();
     let gui_result = crate::win32::get_gui_thread_info_with_timeout(
         std::time::Duration::from_millis(150),
     );
-    let Some(hwnd) = gui_result.focused_hwnd else { return false; };
+    let gui_elapsed = t0.elapsed();
+    let Some(hwnd) = gui_result.focused_hwnd else {
+        log::debug!(
+            "set_ime_open_cross_process: open={open} gui_elapsed={}ms → no focused hwnd, abort",
+            gui_elapsed.as_millis()
+        );
+        return false;
+    };
     // SAFETY: hwnd は get_gui_thread_info_with_timeout が返した有効なフォーカスウィンドウハンドル。
     //         get_ime_wnd は内部で ImmGetDefaultIMEWnd を呼ぶ安全なラッパーであり、NULL を返す場合は
     //         直後の `?` でショートサーキットするため問題ない。
-    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else { return false; };
+    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
+        log::debug!(
+            "set_ime_open_cross_process: hwnd={hwnd:?} open={open} gui_elapsed={}ms → no IME wnd, abort",
+            gui_elapsed.as_millis()
+        );
+        return false;
+    };
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         send_ime_control は SendMessageTimeoutW のラッパーであり、タイムアウト付きのため
     //         相手プロセスがハングしても指定時間後に制御が戻る。
     // タイムアウト 150ms: IME OFF (open=false) は composition tear-down と IME UI 隠蔽が走るため
     // 50ms では時々取りこぼす（Ctrl+無変換 が「時々」効かない症状の原因）。Get 系の照会は短く
     // 維持し、Set 系のみ余裕を持たせる。
+    let t_send = std::time::Instant::now();
     let success = unsafe {
         crate::imm::send_ime_control(ime_wnd, IMC_SETOPENSTATUS, isize::from(open), 150)
     }
     .is_some();
-    log::debug!("set_ime_open_cross_process: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success}");
+    let send_elapsed = t_send.elapsed();
+    // 診断: Ctrl+無変換 で前文字消失調査用。タイムアウトに近いケースと partial commit の
+    // 関係を切り分けるため、GetGUIThreadInfo / send_ime_control の所要時間と現時点で
+    // observer 側が把握している candidate (composition 可視) を一緒に出す。
+    let candidate_visible = crate::tsf::observer::gji_candidate_visible_now();
+    log::debug!(
+        "set_ime_open_cross_process: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success} \
+         gui_elapsed={}ms send_elapsed={}ms candidate_visible={candidate_visible}",
+        gui_elapsed.as_millis(),
+        send_elapsed.as_millis()
+    );
     success
 }
 
@@ -201,7 +226,18 @@ pub unsafe fn post_kanji_toggle_to_focused(commit_candidate_first: bool) {
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
     //         size_of::<INPUT>() は正確な構造体サイズを返す。
     //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
+    // 診断: composition 中に VK_KANJI フォールバックが走ると partial commit / 文字消失の
+    // 原因になる仮説調査のため、SendInput 前後の candidate visibility を出す。
+    let candidate_pre = crate::tsf::observer::gji_candidate_visible_now();
+    let t_send = std::time::Instant::now();
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    let send_elapsed = t_send.elapsed();
+    let candidate_post = crate::tsf::observer::gji_candidate_visible_now();
+    log::debug!(
+        "[ime-fallback] SendInput VK_KANJI done: send_elapsed={}ms candidate_pre={candidate_pre} candidate_post={candidate_post} sent={sent}/{}",
+        send_elapsed.as_millis(),
+        inputs.len()
+    );
     if sent as usize != inputs.len() {
         log::warn!("[ime-fallback] SendInput(VK_KANJI) sent {sent}/{} events", inputs.len());
     }
