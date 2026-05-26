@@ -92,11 +92,13 @@ impl ImeOpenStrategy for GjiDirectStrategy {
                 log::debug!("[apply-ime] GJI direct: shadow OFF, skip F14");
                 return ImeOpenOutcome::AlreadyMatched;
             }
+            let commit_first = view.observed.candidate_visible
+                && view.focus.profile.needs_candidate_commit_before_toggle();
             log::debug!(
-                "[apply-ime] GJI direct: F14 (IME OFF, candidate={})",
-                view.observed.candidate_visible
+                "[apply-ime] GJI direct: F14 (IME OFF, candidate={} commit_first={})",
+                view.observed.candidate_visible, commit_first
             );
-            unsafe { crate::ime::post_gji_ime_off(view.observed.candidate_visible) };
+            unsafe { crate::ime::post_gji_ime_off(commit_first) };
         }
         ImeOpenOutcome::Applied
     }
@@ -135,11 +137,14 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
             );
             ImeOpenOutcome::AlreadyMatched
         } else {
+            let commit_first = view.observed.candidate_visible
+                && view.focus.profile.needs_candidate_commit_before_toggle();
             log::debug!(
-                "[apply-ime] shadow={} candidate={} was_seen={} → desired={open}: SendInput VK_KANJI",
-                view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen
+                "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} commit_first={} → desired={open}: SendInput VK_KANJI",
+                view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,
+                view.focus.profile, commit_first
             );
-            unsafe { crate::ime::post_kanji_toggle_to_focused(view.observed.candidate_visible) };
+            unsafe { crate::ime::post_kanji_toggle_to_focused(commit_first) };
             ImeOpenOutcome::FallbackSent
         }
     }

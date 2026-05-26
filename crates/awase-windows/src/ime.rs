@@ -129,12 +129,18 @@ impl HeldModifiers {
 ///
 /// Ctrl/Shift/Alt が押下中の場合、VK_KANJI を bare（修飾なし）で届けるために先に KeyUp を注入し、
 /// 送信後も物理的に押下中の修飾キーは KeyDown で復元する。
-/// Chrome/Edge の候補ウィンドウ表示中は bare VK_KANJI でも IME トグルとして機能しないため、
-/// 候補が表示中のときは先に VK_RETURN で候補を確定（composition コミット）してから VK_KANJI を送信する。
+///
+/// `commit_candidate_first=true` のときは VK_KANJI の前に VK_RETURN を送って
+/// 候補を確定（composition コミット）する。これは Chrome/Edge の候補ウィンドウ表示中に
+/// bare VK_KANJI が IME トグルとして機能しないことへのワークアラウンドのため、
+/// 適用判断はプロファイル（`AppImeProfile::needs_candidate_commit_before_toggle`）と
+/// 候補可視性の AND で呼び出し側が決定する。
+/// それ以外のアプリ（wezterm 等）で VK_RETURN を送ると IME に消費されず
+/// 生 Enter として届くため、`false` を渡すこと。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
+pub unsafe fn post_kanji_toggle_to_focused(commit_candidate_first: bool) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use crate::vk::{
         VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
@@ -170,7 +176,7 @@ pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
     let mut inputs = Vec::with_capacity(10);
     held.push_release(&mut inputs);
 
-    if candidate_visible {
+    if commit_candidate_first {
         inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
         inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
     }
@@ -184,7 +190,7 @@ pub unsafe fn post_kanji_toggle_to_focused(candidate_visible: bool) {
         "[ime-fallback] SendInput VK_KANJI toggle: \
          release(ctrl={} shift={} alt={}) \
          restore(ctrl={} shift={} alt={}) \
-         candidate={candidate_visible} total={} events",
+         commit_first={commit_candidate_first} total={} events",
         held.ctrl, held.shift, held.alt,
         still.ctrl, still.shift, still.alt,
         inputs.len()
@@ -243,13 +249,16 @@ pub unsafe fn post_gji_ime_on() {
 /// F14 は実キーボードに存在せずブラウザショートカットとも衝突しないため、
 /// 旧実装の Ctrl+Shift+Delete（Edge の「閲覧履歴削除」ショートカットと衝突）を置き換える。
 ///
-/// 候補ウィンドウ表示中は先に VK_RETURN で composition をコミットしてから F14 を送る。
+/// `commit_candidate_first=true` のときは F14 の前に VK_RETURN で composition を
+/// コミットする（Chrome/Edge 向けワークアラウンド）。
+/// 適用判断は `post_kanji_toggle_to_focused` と同じく呼び出し側が
+/// プロファイルと候補可視性の AND で行う。
 /// GJI は DirectInput に F14 を登録していないため、IME が既に OFF の場合は
 /// F14 がアプリにパススルーされるが、F14 は無害（ブラウザショートカットなし）。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_gji_ime_off(candidate_visible: bool) {
+pub unsafe fn post_gji_ime_off(commit_candidate_first: bool) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use crate::vk::{VK_F14, VK_RETURN};
 
@@ -258,7 +267,7 @@ pub unsafe fn post_gji_ime_off(candidate_visible: bool) {
     let mut inputs: Vec<INPUT> = Vec::with_capacity(10);
 
     held.push_release(&mut inputs);
-    if candidate_visible {
+    if commit_candidate_first {
         inputs.push(make_key_input_ex(VK_RETURN, false, IME_KANJI_MARKER));
         inputs.push(make_key_input_ex(VK_RETURN, true,  IME_KANJI_MARKER));
     }
@@ -267,7 +276,7 @@ pub unsafe fn post_gji_ime_off(candidate_visible: bool) {
     let still = unsafe { held.push_restore(&mut inputs) };
 
     log::debug!(
-        "[gji-off] F14: candidate={candidate_visible} \
+        "[gji-off] F14: commit_first={commit_candidate_first} \
          release(ctrl={} shift={} alt={}) \
          restore(ctrl={} shift={} alt={}) total={} events",
         held.ctrl, held.shift, held.alt,
