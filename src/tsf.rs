@@ -291,7 +291,7 @@ impl TsfGate {
         let etype = event.event_type;
         let ok = self.inner.try_hold(event);
         if ok {
-            log::trace!(
+            log::debug!(
                 "[tsf-gate] held vk=0x{vk:02X} {etype:?} (total={})",
                 self.inner.len(),
             );
