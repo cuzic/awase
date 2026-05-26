@@ -147,8 +147,9 @@ impl TimedStateMachine for TsfGateMachine {
                 Response::emit_one(GateAction::InitiateHold)
                     .with_timer(GateTimer::WarmupTimeout, Duration::from_millis(WARMUP_TIMEOUT_MS))
             }
-            // PendingWarmup + TSF 確定 → Probing + DrainHeld
-            (TsfGateState::PendingWarmup, TsfConfirmed) => {
+            // PendingWarmup/Bypass + TSF 確定 → Probing + DrainHeld
+            // Bypass からの遷移は WarmupTimeout 後に async タスクが遅れて confirm した回復パス。
+            (TsfGateState::PendingWarmup | Bypass, TsfConfirmed) => {
                 self.state = Probing;
                 Response::emit_one(GateAction::DrainHeld)
                     .with_kill_timer(GateTimer::WarmupTimeout)
@@ -226,9 +227,10 @@ impl TsfGate {
 
     /// TSF モードと確定した場合に呼ぶ。
     ///
-    /// `PendingWarmup` → `Probing` に遷移し、保留キーを返す。
+    /// `PendingWarmup` / `Bypass` → `Probing` に遷移し、保留キーを返す。
+    /// `Bypass` からの遷移は WarmupTimeout 後に async タスクが遅れて完了した場合の回復パス。
     /// 呼び出し後に `TIMER_TSF_GATE` を kill すること。
-    /// すでに `Probing`/`Ready`/`Bypass` なら空 `Vec` を返す（再呼び出しされても safe）。
+    /// すでに `Probing`/`Ready` なら空 `Vec` を返す（再呼び出しされても safe）。
     #[must_use]
     pub fn on_tsf_confirmed(&mut self) -> Vec<RawKeyEvent> {
         let (_, drained) = self.inner.on_event(GateEvent::TsfConfirmed);
@@ -551,6 +553,46 @@ mod tests {
         let r = m.on_event(GateEvent::BypassConfirmed);
         r.assert_pass_through();
         assert_state(&m, TsfGateState::Bypass);
+    }
+
+    // ── シナリオ E: タイムアウト後回復（WezTerm race condition 修正） ──────
+
+    /// E: WarmupTimeout → Bypass 後に async タスクが TsfConfirmed → Probing に回復する
+    ///
+    /// 再現シナリオ:
+    ///   T=0   FocusChange → PendingWarmup + TIMER_TSF_GATE(500ms)
+    ///   T=500 WarmupTimeout → Bypass（async タスクがまだ完了していない）
+    ///   T=600 async タスク完了 → TsfConfirmed → Probing（回復）
+    #[test]
+    fn scenario_e_bypass_tsf_confirmed_recovers_to_probing() {
+        let mut m = TsfGateMachine::new();
+        let _ = m.on_event(GateEvent::FocusChange);
+        assert_state(&m, TsfGateState::PendingWarmup);
+
+        // T=500ms: タイムアウト → Bypass
+        let _ = m.on_timeout(GateTimer::WarmupTimeout);
+        assert_state(&m, TsfGateState::Bypass);
+
+        // T=600ms: async タスク完了 → Probing に回復
+        let r = m.on_event(GateEvent::TsfConfirmed);
+        assert_state(&m, TsfGateState::Probing);
+        r.assert_consumed();
+        assert!(has_action(&r, GateAction::DrainHeld));
+        // 死んだタイマーへの Kill は no-op だが、コマンドとして発行されることを確認
+        assert!(timer_killed(&r));
+    }
+
+    /// E2: Bypass→Probing→Ready の完全な回復フロー
+    #[test]
+    fn scenario_e2_bypass_recovery_full_flow() {
+        let mut m = TsfGateMachine::new();
+        let _ = m.on_event(GateEvent::FocusChange);
+        let _ = m.on_timeout(GateTimer::WarmupTimeout); // → Bypass
+        let _ = m.on_event(GateEvent::TsfConfirmed);    // → Probing（回復）
+
+        let r = m.on_event(GateEvent::ProbeComplete);
+        assert_state(&m, TsfGateState::Ready);
+        r.assert_consumed();
     }
 
     // ── タイマーコマンドの詳細検証 ────────────────────────────────────────
