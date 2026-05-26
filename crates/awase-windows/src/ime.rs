@@ -300,21 +300,40 @@ pub unsafe fn post_gji_ime_off(commit_candidate_first: bool) {
 /// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが
 /// 再インターセプトしない。
 ///
+/// Ctrl/Shift/Alt が押下中の場合（例: ユーザが Ctrl+無変換 で IME OFF を指示し、
+/// その Ctrl がまだ OS に保持されている瞬間）、修飾なしで mode key を届けるために
+/// 先に KeyUp を注入し、送信後に物理的に押下中の修飾キーは KeyDown で復元する。
+/// これを行わないと OS/IME/アプリが `Ctrl+<mode key>` の組み合わせとして解釈し、
+/// 想定外のショートカット発火を招く（`post_kanji_toggle_to_focused` と同じ理由）。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    let inputs = [
-        make_key_input_ex(vk, false, IME_KANJI_MARKER),
-        make_key_input_ex(vk, true,  IME_KANJI_MARKER),
-    ];
-    log::debug!("[ime-mode] SendInput vk=0x{vk:02X}");
-    // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT 配列であり、
+
+    // SAFETY: GetAsyncKeyState はスレッドセーフ。
+    let held = unsafe { HeldModifiers::read() };
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
+    held.push_release(&mut inputs);
+    inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
+    inputs.push(make_key_input_ex(vk, true,  IME_KANJI_MARKER));
+    // SAFETY: GetAsyncKeyState はスレッドセーフ。
+    let still = unsafe { held.push_restore(&mut inputs) };
+
+    log::debug!(
+        "[ime-mode] SendInput vk=0x{vk:02X} \
+         release(ctrl={} shift={} alt={}) \
+         restore(ctrl={} shift={} alt={}) total={} events",
+        held.ctrl, held.shift, held.alt,
+        still.ctrl, still.shift, still.alt,
+        inputs.len()
+    );
+    // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
     //         size_of::<INPUT>() は正確な構造体サイズを返す。
     //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-    if sent == 0 {
-        log::warn!("[ime-mode] SendInput(vk=0x{vk:02X}) failed");
+    if sent as usize != inputs.len() {
+        log::warn!("[ime-mode] SendInput(vk=0x{vk:02X}) sent {sent}/{} events", inputs.len());
     }
 }
 

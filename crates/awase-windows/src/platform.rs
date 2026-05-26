@@ -125,6 +125,20 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})");
             return;
         }
+        // apply_ime_open（VK_KANJI or IMM クロスプロセス）が既に IME 状態を確定させている場合、
+        // 追加の mode key 送信は不要かつ有害。MS-IME は IME 閉時に VK_DBE_SBCSCHAR を受け取ると
+        // 半角英数モードで再オープンする挙動があり、Engine OFF / 実 IME ON の乖離を引き起こす。
+        //
+        // mode key 送信の本来の用途は「Engine 状態は変わったが IME open/close は変わらない」
+        // ケース（例: user_enabled トグルで IME はそのまま）に限定する。
+        let last_applied = self.output.last_applied_ime_on();
+        if last_applied == enabled {
+            log::debug!(
+                "[engine-state-key] skipped (apply_ime_open aligned ime={enabled}, profile={:?})",
+                self.focus.current_app_profile()
+            );
+            return;
+        }
         // VK_KANJI トグルで IME を制御するアプリ（Imm32Unavailable: Chrome/Edge）では
         // apply_ime_open が既に VK_KANJI を送信済み。VK_DBE_SBCSCHAR/DBCSCHAR を追加送信すると:
         //   OFF 時: VK_KANJI でクローズ直後に VK_DBE_SBCSCHAR が IME を再オープンする恐れがある。
