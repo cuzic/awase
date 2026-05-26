@@ -22,14 +22,14 @@ const VK_NONCONVERT: VkCode = VkCode(0x1D);
 const VK_CONVERT: VkCode = VkCode(0x1C);
 
 /// Realistic VK codes used in test generation.
-const VK_POOL: &[u16] = &[
-    0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, // A-H
-    0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, // I-P
-    0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, // Q-X
-    0x59, 0x5A, // Y-Z
-    0x1C, 0x1D, // Convert, Nonconvert (thumb)
-    0x10, 0x11, 0x12, // Shift, Ctrl, Alt
-    0x0D, 0x08, 0x20, // Enter, BS, Space
+const VK_POOL: &[VkCode] = &[
+    VkCode(0x41), VkCode(0x42), VkCode(0x43), VkCode(0x44), VkCode(0x45), VkCode(0x46), VkCode(0x47), VkCode(0x48), // A-H
+    VkCode(0x49), VkCode(0x4A), VkCode(0x4B), VkCode(0x4C), VkCode(0x4D), VkCode(0x4E), VkCode(0x4F), VkCode(0x50), // I-P
+    VkCode(0x51), VkCode(0x52), VkCode(0x53), VkCode(0x54), VkCode(0x55), VkCode(0x56), VkCode(0x57), VkCode(0x58), // Q-X
+    VkCode(0x59), VkCode(0x5A), // Y-Z
+    VkCode(0x1C), VkCode(0x1D), // Convert, Nonconvert (thumb)
+    VkCode(0x10), VkCode(0x11), VkCode(0x12), // Shift, Ctrl, Alt
+    VkCode(0x0D), VkCode(0x08), VkCode(0x20), // Enter, BS, Space
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -162,8 +162,7 @@ fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
     }
 }
 
-fn build_event(vk_raw: u16, event_type: KeyEventType, timestamp: u64) -> RawKeyEvent {
-    let vk = VkCode(vk_raw);
+fn build_event(vk: VkCode, event_type: KeyEventType, timestamp: u64) -> RawKeyEvent {
     let (kc, pos) = classify_vk(vk);
     RawKeyEvent {
         vk_code: vk,
@@ -181,7 +180,7 @@ fn build_event(vk_raw: u16, event_type: KeyEventType, timestamp: u64) -> RawKeyE
 
 // ── Strategies ──────────────────────────────────────────────────────────────
 
-fn arb_vk() -> impl Strategy<Value = u16> {
+fn arb_vk() -> impl Strategy<Value = VkCode> {
     prop::sample::select(VK_POOL)
 }
 
@@ -190,7 +189,7 @@ fn arb_event_type() -> impl Strategy<Value = KeyEventType> {
 }
 
 /// Generate a sequence of key events with monotonically increasing timestamps.
-fn arb_event_sequence(max_len: usize) -> impl Strategy<Value = Vec<(u16, KeyEventType, u64)>> {
+fn arb_event_sequence(max_len: usize) -> impl Strategy<Value = Vec<(VkCode, KeyEventType, u64)>> {
     prop::collection::vec((arb_vk(), arb_event_type(), 1u64..50_000u64), 1..max_len).prop_map(
         |mut events| {
             let mut ts: u64 = 1_000_000;

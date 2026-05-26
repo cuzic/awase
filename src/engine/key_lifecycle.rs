@@ -89,9 +89,9 @@ mod tests {
     use super::*;
     use crate::types::*;
 
-    fn make_event(vk: u16, event_type: KeyEventType) -> RawKeyEvent {
+    fn make_event(vk: VkCode, event_type: KeyEventType) -> RawKeyEvent {
         RawKeyEvent {
-            vk_code: VkCode(vk),
+            vk_code: vk,
             scan_code: ScanCode(0),
             event_type,
             extra_info: 0,
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn consumed_key_down_makes_key_up_consumed() {
         let mut lc = KeyLifecycle::new();
-        let event = make_event(0x41, KeyEventType::KeyDown);
+        let event = make_event(VkCode(0x41), KeyEventType::KeyDown);
 
         lc.on_key_down_consumed(&event);
         assert_eq!(lc.active_count(), 1);
@@ -125,8 +125,8 @@ mod tests {
     #[test]
     fn flush_returns_pending_key_ups() {
         let mut lc = KeyLifecycle::new();
-        lc.on_key_down_consumed(&make_event(0x10, KeyEventType::KeyDown));
-        lc.on_key_down_consumed(&make_event(0x41, KeyEventType::KeyDown));
+        lc.on_key_down_consumed(&make_event(VkCode(0x10), KeyEventType::KeyDown));
+        lc.on_key_down_consumed(&make_event(VkCode(0x41), KeyEventType::KeyDown));
 
         let flushed = lc.flush_pending_key_ups();
         assert_eq!(flushed.len(), 2);
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn duplicate_key_down_not_doubled() {
         let mut lc = KeyLifecycle::new();
-        let event = make_event(0x41, KeyEventType::KeyDown);
+        let event = make_event(VkCode(0x41), KeyEventType::KeyDown);
         lc.on_key_down_consumed(&event);
         lc.on_key_down_consumed(&event); // repeat
         assert_eq!(lc.active_count(), 1);
@@ -146,8 +146,8 @@ mod tests {
     #[test]
     fn flush_pending_key_ups_sets_event_type_to_keyup() {
         let mut lc = KeyLifecycle::new();
-        lc.on_key_down_consumed(&make_event(0x41, KeyEventType::KeyDown));
-        lc.on_key_down_consumed(&make_event(0x42, KeyEventType::KeyDown));
+        lc.on_key_down_consumed(&make_event(VkCode(0x41), KeyEventType::KeyDown));
+        lc.on_key_down_consumed(&make_event(VkCode(0x42), KeyEventType::KeyDown));
 
         let flushed = lc.flush_pending_key_ups();
         for evt in &flushed {
@@ -161,7 +161,7 @@ mod tests {
     fn on_key_up_for_never_consumed_returns_false() {
         let mut lc = KeyLifecycle::new();
         // Consume key 0x41 but ask about 0x42
-        lc.on_key_down_consumed(&make_event(0x41, KeyEventType::KeyDown));
+        lc.on_key_down_consumed(&make_event(VkCode(0x41), KeyEventType::KeyDown));
         assert!(!lc.on_key_up(VkCode(0x42)));
         // 0x41 still active
         assert_eq!(lc.active_count(), 1);
@@ -170,9 +170,9 @@ mod tests {
     #[test]
     fn multiple_keys_consumed_then_flushed() {
         let mut lc = KeyLifecycle::new();
-        lc.on_key_down_consumed(&make_event(0x10, KeyEventType::KeyDown)); // Shift
-        lc.on_key_down_consumed(&make_event(0x41, KeyEventType::KeyDown)); // A
-        lc.on_key_down_consumed(&make_event(0x42, KeyEventType::KeyDown)); // B
+        lc.on_key_down_consumed(&make_event(VkCode(0x10), KeyEventType::KeyDown)); // Shift
+        lc.on_key_down_consumed(&make_event(VkCode(0x41), KeyEventType::KeyDown)); // A
+        lc.on_key_down_consumed(&make_event(VkCode(0x42), KeyEventType::KeyDown)); // B
         assert_eq!(lc.active_count(), 3);
 
         let flushed = lc.flush_pending_key_ups();
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn consume_keyup_consume_same_key_again() {
         let mut lc = KeyLifecycle::new();
-        let event = make_event(0x41, KeyEventType::KeyDown);
+        let event = make_event(VkCode(0x41), KeyEventType::KeyDown);
 
         // First cycle: consume then key_up
         lc.on_key_down_consumed(&event);
