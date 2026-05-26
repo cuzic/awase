@@ -112,13 +112,14 @@ pub(crate) enum ProbePhase {
 }
 
 /// [`ProbeAction::Transmit`] の送信先。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransmitTarget {
     Tsf,
     Chrome,
 }
 
 /// ステートマシン → dispatcher 方向の宣言的アクション。
+#[derive(Debug)]
 pub(crate) enum ProbeAction {
     /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、完了したら
     /// [`TsfProbeMachine::apply_fresh_f2_sent`] を呼ぶ。
@@ -546,8 +547,8 @@ mod tests {
     #[test]
     fn push_deferred_appends_vk() {
         let mut machine = make_gji_machine();
-        machine.push_deferred(0x41, false);
-        machine.push_deferred(0x42, true);
+        machine.push_deferred(VkCode(0x41), false);
+        machine.push_deferred(VkCode(0x42), true);
         // deferred_vks は private だが Transmit action 経由で確認できる。
         // ここでは push_deferred が panic しないことを確認するだけで十分。
     }
@@ -555,7 +556,7 @@ mod tests {
     #[test]
     fn extend_deferred_appends_multiple_vks() {
         let mut machine = make_gji_machine();
-        machine.extend_deferred(vec![(0x41, false), (0x42, true), (0x43, false)]);
+        machine.extend_deferred(vec![(VkCode(0x41), false), (VkCode(0x42), true), (VkCode(0x43), false)]);
         // panic しないことを確認
     }
 }

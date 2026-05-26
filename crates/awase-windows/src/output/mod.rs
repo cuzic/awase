@@ -745,19 +745,19 @@ mod tests {
 
     #[test]
     fn test_ascii_to_vk_lowercase() {
-        assert_eq!(ascii_to_vk('a'), Some((0x41, false)));
-        assert_eq!(ascii_to_vk('z'), Some((0x5A, false)));
+        assert_eq!(ascii_to_vk('a'), Some((VkCode(0x41), false)));
+        assert_eq!(ascii_to_vk('z'), Some((VkCode(0x5A), false)));
     }
 
     #[test]
     fn test_ascii_to_vk_uppercase() {
-        assert_eq!(ascii_to_vk('A'), Some((0x41, true)));
+        assert_eq!(ascii_to_vk('A'), Some((VkCode(0x41), true)));
     }
 
     #[test]
     fn test_ascii_to_vk_digits() {
-        assert_eq!(ascii_to_vk('0'), Some((0x30, false)));
-        assert_eq!(ascii_to_vk('9'), Some((0x39, false)));
+        assert_eq!(ascii_to_vk('0'), Some((VkCode(0x30), false)));
+        assert_eq!(ascii_to_vk('9'), Some((VkCode(0x39), false)));
     }
 
     #[test]
