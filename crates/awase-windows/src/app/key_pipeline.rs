@@ -40,15 +40,32 @@ impl KeyEventPipeline<'_> {
         // event.timestamp はユーザー押下時刻(us)、now はエンジン入力到達時刻(us)。
         // delay_ms が大きいほど drain 経由（古い event_ts が遅延処理されている）。
         // state は on_input 直前の FSM 状態、pending_drain は INPUT_DEFER の未処理件数。
+        //
+        // Ctrl 残留調査用: modifier_snapshot は hook 時点 (capture 時) の Ctrl/Shift/Alt/Win、
+        // gas_ctrl は engine 入力到達時の `GetAsyncKeyState(VK_CONTROL)` 生値 (= OS が思う
+        // 物理 Ctrl)、extra は injection marker (0=物理キー、INJECTED/IME_KANJI_MARKER=自己注入)。
+        // この 3 つが揃うと「engine 認識/OS 認識/由来」が一行で判別でき、SendInput 後に
+        // OS 側 Ctrl がスタックしているか、modifier_snapshot が古い値で残っているかを切り分けられる。
         let now_us = hook::now_timestamp_us();
         let delay_ms = now_us.saturating_sub(event.timestamp) / 1000;
         let pending_drain = crate::INPUT_DEFER.pending_len_nonblocking().unwrap_or(0);
         let gate_active = crate::OUTPUT_GATE.is_active();
+        let mods = event.modifier_snapshot;
+        // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
+        let gas_ctrl = unsafe {
+            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+            GetAsyncKeyState(i32::from(crate::vk::VK_CONTROL.0)) as u16 & 0x8000 != 0
+        };
         log::debug!(
-            "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} pending_drain={} gate_active={}",
+            "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
+             mods(c={} s={} a={} w={}) gas_ctrl={} extra=0x{:X} \
+             pending_drain={} gate_active={}",
             event.vk_code, event.event_type, event.timestamp,
             delay_ms,
             self.app.engine.debug_state_label(),
+            mods.ctrl, mods.shift, mods.alt, mods.win,
+            gas_ctrl,
+            event.extra_info,
             pending_drain, gate_active,
         );
         let decision = self.app.engine.on_input(event, &ctx);
