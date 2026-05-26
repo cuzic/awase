@@ -1,8 +1,8 @@
 use std::mem::size_of;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetCompositionStringW, ImmGetConversionStatus, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
-    IME_SENTENCE_MODE,
+    ImmGetCompositionStringW, ImmGetConversionStatus, ImmGetOpenStatus, IME_COMPOSITION_STRING,
+    IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, MapVirtualKeyW, MAPVK_VK_TO_VSC, SendInput, INPUT,
@@ -807,7 +807,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-#[must_use] 
+#[must_use]
 pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
     if crate::win32::non_null_hwnd(hwnd).is_none() {
         return false;
@@ -826,4 +826,150 @@ pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
         ImmGetCompositionStringW(ctx.himc(), IME_COMPOSITION_STRING(0x0008_u32), None, 0)
     };
     len > 0
+}
+
+/// `ImmGetCompositionStringW` の各 index を読み取って診断用スナップショットを返す。
+///
+/// 部分リテラル検出の実験用。送信した romaji が composition に正しく入ったかを
+/// 観測するため、composition の各種情報および IME 状態を取得する。
+///
+/// 取得失敗時（HIMC NULL、API エラー、空など）は対応フィールドが None になる。
+/// Imm32Unavailable / TsfNative プロファイルでは `himc_null=true` となり全フィールドが None。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+#[must_use]
+pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
+    let mut snap = CompositionSnapshot::default();
+    if crate::win32::non_null_hwnd(hwnd).is_none() {
+        return snap;
+    }
+    // SAFETY: hwnd は non_null_hwnd で NULL チェック済み。
+    let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
+        snap.himc_null = true;
+        return snap;
+    };
+    // GCS_COMPSTR (0x0008): 現在 composition 中の文字列
+    snap.comp_str = unsafe { read_imm_string(ctx.himc(), 0x0008_u32) };
+    // GCS_RESULTSTR (0x0800): 確定済みの文字列
+    snap.result_str = unsafe { read_imm_string(ctx.himc(), 0x0800_u32) };
+    // GCS_COMPREADSTR (0x0001): composition の読み（ローマ字相当）
+    snap.comp_read_str = unsafe { read_imm_string(ctx.himc(), 0x0001_u32) };
+    // GCS_RESULTREADSTR (0x0200): 確定済みの読み
+    snap.result_read_str = unsafe { read_imm_string(ctx.himc(), 0x0200_u32) };
+    // GCS_CURSORPOS (0x0080): カーソル位置
+    snap.cursor_pos = unsafe { read_imm_i32(ctx.himc(), 0x0080_u32) };
+    // GCS_COMPATTR (0x0010): 各文字の属性（0=入力/1=変換中/2=変換済/3=固定）
+    snap.comp_attr_bytes = unsafe { read_imm_bytes(ctx.himc(), 0x0010_u32) };
+    // ImmGetOpenStatus: IME 開閉状態
+    // SAFETY: ctx.himc() は有効な HIMC。ImmGetOpenStatus はクラッシュしない読み取り API。
+    snap.open_status = Some(unsafe { ImmGetOpenStatus(ctx.himc()).as_bool() });
+    // ImmGetConversionStatus: 変換モード + 文節モード
+    let mut conv = IME_CONVERSION_MODE::default();
+    let mut sent = IME_SENTENCE_MODE::default();
+    // SAFETY: ctx.himc() は有効。書き込み先は both null でない（&raw mut）。
+    let ok = unsafe {
+        ImmGetConversionStatus(ctx.himc(), Some(&raw mut conv), Some(&raw mut sent))
+    };
+    if ok.as_bool() {
+        snap.conversion_mode = Some(conv.0);
+        snap.sentence_mode = Some(sent.0);
+    }
+    snap
+}
+
+/// `ImmGetCompositionStringW` で composition の各 index を文字列として読み取る。
+///
+/// 戻り値: 取得成功時は `Some(String)`、API エラー/長さ <=0 のときは `None`、長さ 0 は `Some("")`。
+unsafe fn read_imm_string(himc: windows::Win32::UI::Input::Ime::HIMC, index: u32) -> Option<String> {
+    // SAFETY: lpBuf=None かつ dwBufLen=0 で呼んでバイト長を取得する公式パターン。
+    let byte_len = unsafe {
+        ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0)
+    };
+    if byte_len < 0 {
+        return None;
+    }
+    let byte_len = byte_len as usize;
+    if byte_len == 0 {
+        return Some(String::new());
+    }
+    let mut buf = vec![0u16; byte_len.div_ceil(2)];
+    // SAFETY: buf は十分なサイズを確保済み。WCHAR バッファとして書き込まれる。
+    let written = unsafe {
+        ImmGetCompositionStringW(
+            himc,
+            IME_COMPOSITION_STRING(index),
+            Some(buf.as_mut_ptr().cast()),
+            u32::try_from(buf.len() * 2).unwrap_or(0),
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    let char_count = (written as usize) / 2;
+    Some(String::from_utf16_lossy(&buf[..char_count]))
+}
+
+/// `ImmGetCompositionStringW` で int (cursor pos など) を読み取る。
+unsafe fn read_imm_i32(himc: windows::Win32::UI::Input::Ime::HIMC, index: u32) -> Option<i32> {
+    // GCS_CURSORPOS / GCS_DELTASTART は LOWORD に値が入る。null バッファ呼び出しが値を返す。
+    let v = unsafe {
+        ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0)
+    };
+    if v < 0 { None } else { Some(v) }
+}
+
+/// `ImmGetCompositionStringW` で生バイト列（GCS_COMPATTR 等）を読み取る。
+unsafe fn read_imm_bytes(himc: windows::Win32::UI::Input::Ime::HIMC, index: u32) -> Option<Vec<u8>> {
+    // SAFETY: lpBuf=None / dwBufLen=0 でバイト長取得。
+    let byte_len = unsafe {
+        ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0)
+    };
+    if byte_len < 0 {
+        return None;
+    }
+    let byte_len = byte_len as usize;
+    if byte_len == 0 {
+        return Some(Vec::new());
+    }
+    let mut buf = vec![0u8; byte_len];
+    // SAFETY: buf は十分なサイズ。
+    let written = unsafe {
+        ImmGetCompositionStringW(
+            himc,
+            IME_COMPOSITION_STRING(index),
+            Some(buf.as_mut_ptr().cast()),
+            u32::try_from(buf.len()).unwrap_or(0),
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    buf.truncate(written as usize);
+    Some(buf)
+}
+
+/// 部分リテラル検出の実験用 composition スナップショット。
+#[derive(Debug, Default, Clone)]
+pub struct CompositionSnapshot {
+    /// HIMC が NULL だった（TSF native / Imm32Unavailable window の典型ケース）
+    pub himc_null: bool,
+    /// GCS_COMPSTR — 現在 composition 中の文字列
+    pub comp_str: Option<String>,
+    /// GCS_RESULTSTR — 確定済み文字列
+    pub result_str: Option<String>,
+    /// GCS_COMPREADSTR — composition の読み（ローマ字 / かな）
+    pub comp_read_str: Option<String>,
+    /// GCS_RESULTREADSTR — 確定済み文字列の読み
+    pub result_read_str: Option<String>,
+    /// GCS_CURSORPOS — カーソル位置
+    pub cursor_pos: Option<i32>,
+    /// GCS_COMPATTR — 各文字の属性バイト配列（0=Input/1=TargetConverted/2=Converted/3=Fixed/4=TargetNotConverted）
+    pub comp_attr_bytes: Option<Vec<u8>>,
+    /// ImmGetOpenStatus — IME 開閉状態
+    pub open_status: Option<bool>,
+    /// ImmGetConversionStatus の conversion mode（NATIVE / KATAKANA / FULLSHAPE / ROMAN 等のビットマスク）
+    pub conversion_mode: Option<u32>,
+    /// ImmGetConversionStatus の sentence mode（自動変換等のフラグ）
+    pub sentence_mode: Option<u32>,
 }

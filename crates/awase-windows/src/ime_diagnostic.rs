@@ -246,6 +246,86 @@ fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
     }
 }
 
+/// 部分リテラル検出の実験用 1 行ログ。
+///
+/// `composition confirmed` 直後など、composition の現在値を観測したいタイミングで呼ぶ。
+/// 取得した composition 文字列・result 文字列・cursor pos に加えて、現在のフォアグラウンド
+/// プロファイル（TsfNative / Imm32Unavailable / Standard）と shadow 状態を 1 行にまとめる。
+/// 各プロファイルでの IMM API 反応をログから比較するための観測点。
+pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    // SAFETY: GetForegroundWindow は安全な読み取り API。capture_composition_snapshot は
+    //         内部で non_null_hwnd / ImmContextGuard を使い NULL 入力にも対応する。
+    let (hwnd_raw, snap) = unsafe {
+        let hwnd = GetForegroundWindow();
+        (hwnd.0 as usize, crate::ime::capture_composition_snapshot(hwnd))
+    };
+
+    let view = crate::with_app_ref(|app| {
+        let class = app
+            .executor
+            .platform
+            .focus
+            .last_focus_info
+            .as_ref()
+            .map_or_else(String::new, |(_, c)| c.clone());
+        let profile = app.executor.platform.focus.current_app_profile();
+        (
+            class,
+            format!("{profile:?}"),
+            app.platform_state.ime_on(),
+            app.platform_state.is_japanese_ime(),
+        )
+    })
+    .unwrap_or((String::new(), "Unknown".to_string(), false, false));
+
+    let comp = snap
+        .comp_str
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |s| format!("{s:?}"));
+    let result = snap
+        .result_str
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |s| format!("{s:?}"));
+    let comp_read = snap
+        .comp_read_str
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |s| format!("{s:?}"));
+    let result_read = snap
+        .result_read_str
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |s| format!("{s:?}"));
+    let cursor = snap
+        .cursor_pos
+        .map_or_else(|| "-".to_string(), |c| c.to_string());
+    let attr = snap
+        .comp_attr_bytes
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |b| format!("{b:?}"));
+    let open = snap
+        .open_status
+        .map_or_else(|| "-".to_string(), |b| b.to_string());
+    let conv = snap
+        .conversion_mode
+        .map_or_else(|| "-".to_string(), |v| format!("{v:#06x}"));
+    let sent = snap
+        .sentence_mode
+        .map_or_else(|| "-".to_string(), |v| format!("{v:#06x}"));
+
+    log::info!(
+        "[comp-probe] {label} cold={cold_seq} hwnd={hwnd_raw:#x} profile={profile} class=\"{class}\" \
+         himc_null={himc_null} open={open} conv={conv} sent={sent} \
+         comp={comp} comp_read={comp_read} result={result} result_read={result_read} \
+         cursor={cursor} attr={attr} shadow_on={shadow_on} jp={jp}",
+        profile = view.1,
+        class = view.0,
+        himc_null = snap.himc_null,
+        shadow_on = view.2,
+        jp = view.3,
+    );
+}
+
 /// 解決される注入モードのラベル文字列を返す（出力経路と同じロジックを参照する）。
 fn resolve_injection_mode_label() -> &'static str {
     use awase::types::AppKind;

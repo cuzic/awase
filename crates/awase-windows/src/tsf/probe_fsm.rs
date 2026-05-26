@@ -354,9 +354,19 @@ impl TsfProbeMachine {
                 match detection {
                     DetectionResult::CompositionConfirmed => {
                         log::debug!("[raw-tsf-literal] cold={} composition confirmed", self.cold_seq);
+                        // 部分リテラル観測実験: composition の実際の文字列をログに残す。
+                        // GJI/各 IME / 各プロファイルでの IMM API 応答を比較するための観測点。
+                        crate::ime_diagnostic::log_composition_probe(
+                            self.cold_seq,
+                            "confirmed",
+                        );
                         NextStep::LiteralDone
                     }
                     DetectionResult::SuspectedLiteral => {
+                        crate::ime_diagnostic::log_composition_probe(
+                            self.cold_seq,
+                            "suspected",
+                        );
                         NextStep::LiteralSuspected { ze_bs_count: *ze_bs_count }
                     }
                 }
