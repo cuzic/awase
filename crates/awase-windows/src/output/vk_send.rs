@@ -198,18 +198,38 @@ impl Output {
             let _ = crate::win32::send_input_safe(&f2_via_sendinput);
             log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
 
-            // ノンブロッキング Chrome プローブを開始
+            // ノンブロッキング Chrome プローブを開始。
+            // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
+            // min/max を延長する（120ms では GJI が settle する前に timeout して literal
+            // 出力される回帰を抑制）。
+            let long_idle = self.composition.idle_ms_at_last_cold()
+                > crate::tuning::LONG_IDLE_MS;
+            let (probe_min_ms, probe_max_ms) = if long_idle {
+                (
+                    crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
+                    crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
+                )
+            } else {
+                (
+                    crate::tuning::CHROME_PROBE_MIN_MS,
+                    crate::tuning::CHROME_PROBE_MAX_MS,
+                )
+            };
+            log::debug!(
+                "[h1-probe] cold={cold_seq} long_idle={long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms",
+                self.composition.idle_ms_at_last_cold(),
+            );
             let probe = crate::tsf::probe::TsfReadinessProbe::new(
                 f2_sent_ms,
                 cold_seq,
-                crate::tuning::CHROME_PROBE_MIN_MS,
+                probe_min_ms,
             );
             let guard = OutputActiveGuard::begin();
             self.install_pending_tsf(TsfProbeMachine::new_chrome(
                 romaji,
                 cold_seq,
                 probe,
-                crate::tuning::CHROME_PROBE_MAX_MS,
+                probe_max_ms,
                 guard,
             ));
             // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
