@@ -258,7 +258,7 @@ fn check_keyboard_layout_on_change() {
 /// Win32 キーボードフックコールバックはメインスレッドで呼ばれる。
 unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
     if crate::OUTPUT_GATE.is_active() {
-        log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code.0, event.event_type);
+        log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code, event.event_type);
         crate::INPUT_DEFER.defer_during_output(event);
         return CallbackResult::Consumed;
     }
@@ -270,7 +270,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
             if len > 0 {
                 log::debug!(
                     "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {len} item(s) (OUTPUT_GATE.active=false)",
-                    event.vk_code.0
+                    event.vk_code
                 );
             }
         }
@@ -283,7 +283,7 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         // pending キューに退避して WM_DRAIN_OUTPUT_QUEUE で NICOLA に再配送する。
         log::debug!(
             "[with-app-reentry] queuing vk=0x{:02X} {:?} (IN_WITH_APP, defer to drain)",
-            event.vk_code.0, event.event_type,
+            event.vk_code, event.event_type,
         );
         crate::INPUT_DEFER.defer_during_with_app(event);
         CallbackResult::Consumed

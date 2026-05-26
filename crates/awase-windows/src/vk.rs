@@ -2,7 +2,7 @@
 //!
 //! Windows 固有の仮想キーコード判定関数群。
 
-use awase::types::VkCode;
+use awase::types::{ModifierKey, VkCode};
 
 /// Windows 言語 ID: 日本語 (0x0411)
 pub const LANGID_JAPANESE: u32 = 0x0411;
@@ -165,6 +165,49 @@ pub const fn is_ime_context(vk_code: VkCode) -> bool {
         vk_code.0,
         0x15 | 0x16 | 0x17 | 0x19 | 0x1A | 0x1C | 0x1D | 0xE5
     )
+}
+
+/// VK コードから修飾キー種別を返す（汎用 + 左右別）。
+///
+/// VK_SHIFT / VK_LSHIFT / VK_RSHIFT 等の左右別バリアントを全て吸収する。
+#[must_use]
+pub const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
+    match vk.0 {
+        0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
+        0x11 | 0xA2 | 0xA3 => Some(ModifierKey::Ctrl),
+        0x12 | 0xA4 | 0xA5 => Some(ModifierKey::Alt),
+        0x5B | 0x5C => Some(ModifierKey::Meta),
+        _ => None,
+    }
+}
+
+/// Shift 以外の修飾キー（Ctrl/Alt/Win）かどうかを判定する。
+///
+/// これらのキーは NICOLA 処理に関与しないため、Engine をバイパスして
+/// 常に OS に直接渡す。KeyDown/KeyUp ペアの保証により Ctrl スタックを防止する。
+#[must_use]
+pub const fn is_non_shift_modifier(vk: VkCode) -> bool {
+    matches!(
+        vk.0,
+        0x11 | 0xA2 | 0xA3  // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
+        | 0x12 | 0xA4 | 0xA5  // VK_MENU, VK_LMENU, VK_RMENU
+        | 0x5B | 0x5C          // VK_LWIN, VK_RWIN
+    )
+}
+
+/// Ctrl 系のいずれか（VK_CONTROL / VK_LCONTROL / VK_RCONTROL）かどうかを判定する。
+#[must_use]
+pub const fn is_ctrl_variant(vk: VkCode) -> bool {
+    matches!(vk.0, 0x11 | 0xA2 | 0xA3)
+}
+
+/// composition を確定／キャンセルするキー（Space / Enter / Escape）かどうかを判定する。
+///
+/// これらの KeyDown は IME composition を消費し終わらせるため、TSF
+/// warm/cold 状態管理上の特別扱いが必要（mark_cold + eager warmup）。
+#[must_use]
+pub const fn is_composition_confirm_key(vk: VkCode) -> bool {
+    matches!(vk.0, 0x20 | 0x0D | 0x1B)  // VK_SPACE, VK_RETURN, VK_ESCAPE
 }
 
 /// 修飾キー（Ctrl/Alt）が押されていない単独文字キーかどうかを判定する。

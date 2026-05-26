@@ -11,7 +11,7 @@ use crate::scanmap::scan_to_pos;
 use crate::{HookConfig, HookRoutingState};
 use awase::scanmap::PhysicalPos;
 use awase::types::{
-    ImeRelevance, KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode,
+    ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
     ShadowImeAction, Timestamp, VkCode,
 };
 
@@ -36,30 +36,8 @@ pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClas
     }
 }
 
-/// Windows VK コードから修飾キー分類を生成する
-#[must_use] 
-pub const fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
-    match vk.0 {
-        0x10 | 0xA0 | 0xA1 => Some(ModifierKey::Shift),
-        0x11 | 0xA2 | 0xA3 => Some(ModifierKey::Ctrl),
-        0x12 | 0xA4 | 0xA5 => Some(ModifierKey::Alt),
-        0x5B | 0x5C => Some(ModifierKey::Meta),
-        _ => None,
-    }
-}
-
-/// Shift 以外の修飾キー（Ctrl, Alt, Win）かどうかを判定する。
-///
-/// これらのキーは NICOLA 処理に関与しないため、Engine をバイパスして
-/// 常に OS に直接渡す。KeyDown/KeyUp ペアの保証により Ctrl スタックを防止する。
-const fn is_non_shift_modifier(vk: VkCode) -> bool {
-    matches!(
-        vk.0,
-        0x11 | 0xA2 | 0xA3  // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
-        | 0x12 | 0xA4 | 0xA5  // VK_MENU, VK_LMENU, VK_RMENU
-        | 0x5B | 0x5C          // VK_LWIN, VK_RWIN
-    )
-}
+/// Windows VK コードから修飾キー分類を生成する（`crate::vk::classify_modifier` の再エクスポート）。
+pub use crate::vk::classify_modifier;
 
 /// Windows VK コードから IME 関連の事前分類情報を生成する
 #[must_use] 
@@ -247,10 +225,10 @@ const fn classify_keyup_route(hook: &HookRoutingState, vk: VkCode) -> KeyRoute {
 /// Ctrl/Alt/Win が押されている間の非親指キーはショートカット → Bypass。
 ///
 /// `ctrl_bypass_hold` が有効な場合（IME 制御コンボ直後）は Ctrl を有効とみなさない。
-const fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook: &HookRoutingState, config: HookConfig, vk: VkCode) -> bool {
+fn is_shortcut_bypass(mods: awase::engine::fsm_types::ModifierState, hook: &HookRoutingState, config: HookConfig, vk: VkCode) -> bool {
     let effective_ctrl = mods.ctrl && !(hook.ctrl_bypass_hold() && !mods.alt && !mods.win);
     if (effective_ctrl || mods.alt || mods.win)
-        && vk.0 != config.left_thumb_vk.0 && vk.0 != config.right_thumb_vk.0 {
+        && vk != config.left_thumb_vk && vk != config.right_thumb_vk {
             return true;
         }
     false
@@ -301,7 +279,7 @@ unsafe fn classify_route(hook: &HookRoutingState, config: HookConfig, vk: VkCode
     if !is_keydown {
         return classify_keyup_route(hook, vk);
     }
-    if is_non_shift_modifier(vk) {
+    if crate::vk::is_non_shift_modifier(vk) {
         return KeyRoute::TrackOnly;
     }
     let mods = crate::observer::focus_observer::read_os_modifiers();
@@ -464,7 +442,7 @@ unsafe fn decide_routing_with_tracking(
     }
 
     // Ctrl KeyUp で ctrl_bypass_hold と stale-ctrl 観測タイムスタンプを解除
-    if !is_keydown && matches!(vk.0, 0x11 | 0xA2 | 0xA3) {
+    if !is_keydown && crate::vk::is_ctrl_variant(vk) {
         if ps.hook.ctrl_bypass_hold() {
             ps.hook.set_ctrl_bypass_hold(false);
         }
@@ -539,7 +517,7 @@ unsafe fn decide_routing_with_tracking(
 fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
     log::trace!(
         "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → {}",
-        event.vk_code.0,
+        event.vk_code,
         event.scan_code.0,
         event.event_type,
         if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
@@ -550,7 +528,7 @@ fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
     if matches!(event.key_classification, KeyClassification::Passthrough) {
         log::debug!(
             "[hook-passthrough] vk={:#04x} scan={:#06x} type={:?} route={}",
-            event.vk_code.0,
+            event.vk_code,
             event.scan_code.0,
             event.event_type,
             if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }

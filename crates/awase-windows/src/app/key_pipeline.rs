@@ -132,7 +132,7 @@ impl KeyEventPipeline<'_> {
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
             if self.app.platform_state.ime_on() { "ON" } else { "OFF" },
-            event.vk_code.0,
+            event.vk_code,
             source,
         );
         true
