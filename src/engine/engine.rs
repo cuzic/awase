@@ -11,8 +11,6 @@
 //! - IME ガード（遷移中のキーバッファリング）は Platform 層が担当する
 //! - Engine は InputContext のスナップショットだけで判断する（先読みしない）
 
-use smallvec::smallvec;
-
 use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 
@@ -341,6 +339,40 @@ impl Engine {
         }
     }
 
+    /// IME ON/OFF コンボキーに対する Decision を構築する。
+    ///
+    /// `open` を反映した擬似 `InputContext` で新 `ActivationState` を求め、
+    /// `ActivationController::transition_to` で `SetOpen + EngineStateChanged` を発行する。
+    /// 状態が遷移しない場合（例: `user_enabled=false` で既に Inactive）は
+    /// `SetOpen` のみを明示的に追加する（IME 制御の意図を Platform 層に伝えるため）。
+    ///
+    /// # 二重 enqueue 防止
+    ///
+    /// 旧実装は `SetOpen` のみを単独で emit していたため、Platform 層が
+    /// `find_ime_set_open` で `preconditions.ime_on` を即時更新 → 次の `on_input`
+    /// （Ctrl KeyUp 等の合成イベント）で `check_active_transition` が同じ状態変化を
+    /// 検出して再度 `SetOpen` を emit する二重 enqueue が発生していた。
+    ///
+    /// 本実装は `transition_to` で `activation.prev` を新状態に推進するため、
+    /// 次回の `check_active_transition` は no-op となり、構造的に重複を排除する。
+    fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
+        let pseudo_ctx = InputContext { ime_on: open, ..*ctx };
+        let new_state = self.compute_state(&pseudo_ctx);
+        let was_active = self.activation.current().is_active();
+        let now_active = new_state.is_active();
+
+        let mut effects = self.activation.transition_to(new_state);
+        if was_active == now_active {
+            // 状態遷移なし → transition_to は空 effects を返す。
+            // IME 制御の意図 (SetOpen) は明示的に追加する。
+            effects.push(Effect::Ime(ImeEffect::SetOpen {
+                open,
+                origin: EffectOrigin::EngineIntent,
+            }));
+        }
+        Decision::consumed_with(effects)
+    }
+
     /// 変換/無変換系の特殊キーのコンボマッチのみを行う純粋判定メソッド（副作用なし）。
     fn match_special_keys(&self, ctx: &InputContext, event: &RawKeyEvent) -> Option<SpecialKeyMatch> {
         let modifiers = ctx.modifiers;
@@ -418,17 +450,11 @@ impl Engine {
             }
             SpecialKeyMatch::ImeOn => {
                 log::info!("IME ON (key combo)");
-                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen {
-                    open: true,
-                    origin: EffectOrigin::EngineIntent,
-                })])
+                self.build_ime_set_open_decision(ctx, true)
             }
             SpecialKeyMatch::ImeOff => {
                 log::info!("IME OFF (key combo)");
-                Decision::consumed_with(smallvec![Effect::Ime(ImeEffect::SetOpen {
-                    open: false,
-                    origin: EffectOrigin::EngineIntent,
-                })])
+                self.build_ime_set_open_decision(ctx, false)
             }
         }
     }

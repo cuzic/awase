@@ -3935,6 +3935,118 @@ mod engine_integration_tests {
         )));
     }
 
+    // 二重 enqueue 回帰防止: IME OFF コンボ後の次キーで SetOpen が再発行されないこと。
+    //
+    // 旧実装は SpecialKeyMatch::ImeOff が SetOpen(false) のみ emit し、activation.prev を
+    // 更新しなかった。Platform 層が preconditions.ime_on=false を即時反映するため、
+    // 次の on_input（例: 合成された Ctrl KeyUp）で check_active_transition が同じ
+    // 状態変化を検出し SetOpen(false) を再 emit していた。
+    //
+    // 現実装は build_ime_set_open_decision が activation.prev を新状態に推進するため、
+    // 次回の transition_to は no-op となる。
+    #[test]
+    fn ime_off_combo_does_not_double_emit_set_open_on_next_input() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d1 = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        let setopen_count_1 = count_set_open_effects(&d1);
+        assert_eq!(setopen_count_1, 1, "first on_input should emit exactly 1 SetOpen");
+
+        // Platform 層は SetOpen を見て preconditions.ime_on=false を反映する。
+        // 次の on_input は新しい ctx (ime_on=false) で呼ばれる。
+        let d2 = engine.on_input(Ev::up(VK_CTRL).at(110).build(), &ime_off_ctx());
+        let setopen_count_2 = count_set_open_effects(&d2);
+        assert_eq!(
+            setopen_count_2, 0,
+            "next on_input must NOT re-emit SetOpen (activation.prev should have been advanced)"
+        );
+    }
+
+    // 同じく IME ON コンボ後の重複防止。
+    #[test]
+    fn ime_on_combo_does_not_double_emit_set_open_on_next_input() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d1 = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_off_ctx());
+        let setopen_count_1 = count_set_open_effects(&d1);
+        assert_eq!(setopen_count_1, 1, "first on_input should emit exactly 1 SetOpen");
+
+        let d2 = engine.on_input(Ev::up(VK_CTRL).at(110).build(), &ime_on_ctx());
+        let setopen_count_2 = count_set_open_effects(&d2);
+        assert_eq!(
+            setopen_count_2, 0,
+            "next on_input must NOT re-emit SetOpen (activation.prev should have been advanced)"
+        );
+    }
+
+    // user_enabled=false で既に Inactive の状態で IME OFF コンボを受けたとき、
+    // ActivationController の遷移は発生しないが、IME 制御の意図を Platform に伝えるため
+    // SetOpen(false) は明示的に発行される必要がある。
+    #[test]
+    fn ime_off_combo_emits_set_open_even_when_already_inactive() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+        engine.set_user_enabled(false); // Inactive 状態に
+        engine.set_prev_active(false);   // activation.prev も同期
+
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert_eq!(
+            count_set_open_effects(&d), 1,
+            "SetOpen must be emitted even when activation state didn't change"
+        );
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    fn count_set_open_effects(decision: &Decision) -> usize {
+        let effects = match decision {
+            Decision::Consume { effects } | Decision::PassThroughWith { effects } => effects,
+            Decision::PassThrough => return 0,
+        };
+        effects
+            .iter()
+            .filter(|e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
+            .count()
+    }
+
     #[test]
     fn special_key_not_triggered_on_key_up() {
         let combo = ParsedKeyCombo {
