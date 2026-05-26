@@ -144,6 +144,18 @@ impl DecisionExecutor {
         !self.queue.is_empty()
     }
 
+    /// drain 経路 (`WM_DRAIN_OUTPUT_QUEUE`) 専用: PassThrough を OS に届けるための
+    /// `ReinjectKey` を末尾にキューイングする。
+    ///
+    /// 通常 hook 経路では PassThrough は `CallNextHookEx` で OS に直接届く。
+    /// しかし in_with_app 中に `INPUT_DEFER` へ Consumed として退避されたキーは
+    /// drain で engine に replay されたあと `CallbackResult::PassThrough` が
+    /// 返っても hook 経路に戻らないため、明示的に SendInput で送出する必要がある。
+    pub fn enqueue_reinject(&mut self, event: RawKeyEvent) {
+        self.queue
+            .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
+    }
+
     // ── Filter モード ──
 
     fn execute_filter(&mut self, decision: Decision) -> HookResult {

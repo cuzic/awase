@@ -14,10 +14,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use awase::types::{ContextChange, FocusKind};
 use crate::focus::cache::DetectionSource;
 use crate::hook;
+use crate::hook::CallbackResult;
 use crate::runtime;
+use crate::win32::post_to_main_thread;
 use crate::{
     Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD,
-    TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, with_app, with_app_ref,
+    TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
+    with_app, with_app_ref,
 };
 use crate::tray;
 
@@ -307,6 +310,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
 
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
+        let mut any_reinject = false;
         let _ = with_app(|app| {
             let synthetic_keyups = synthesize_missing_keyups(&queue);
             for syn in &synthetic_keyups {
@@ -325,7 +329,15 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                     now_us,
                     now_us.saturating_sub(queued_event.timestamp) / 1000,
                 );
-                on_key_event_impl(app, *queued_event);
+                let result = on_key_event_impl(app, *queued_event);
+                if matches!(result, CallbackResult::PassThrough) {
+                    log::debug!(
+                        "[output-drain] PassThrough → enqueue ReinjectKey vk=0x{:02X} {:?} (drain has no hook→OS path)",
+                        queued_event.vk_code, queued_event.event_type,
+                    );
+                    app.executor.enqueue_reinject(*queued_event);
+                    any_reinject = true;
+                }
             }
 
             for keyup in synthetic_keyups {
@@ -333,9 +345,24 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                     "[output-drain] synthetic KeyUp vk=0x{:02X} (KeyDown replayed, KeyUp arrived before drain)",
                     keyup.vk_code,
                 );
-                on_key_event_impl(app, keyup);
+                let result = on_key_event_impl(app, keyup);
+                if matches!(result, CallbackResult::PassThrough) {
+                    log::debug!(
+                        "[output-drain] synthetic PassThrough → enqueue ReinjectKey vk=0x{:02X} KeyUp",
+                        keyup.vk_code,
+                    );
+                    app.executor.enqueue_reinject(keyup);
+                    any_reinject = true;
+                }
             }
         });
+        // drain 中に PassThrough → reinject へ昇格させた key がある場合、
+        // executor キューを実際に流すために `WM_EXECUTE_EFFECTS` を要求する。
+        // on_key_event_impl 単独経路では has_pending が false の場合に通知が
+        // 飛ばないため、明示的に post する。
+        if any_reinject {
+            post_to_main_thread(WM_EXECUTE_EFFECTS);
+        }
     }
 }
 
