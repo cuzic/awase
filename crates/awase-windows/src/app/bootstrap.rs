@@ -591,14 +591,17 @@ pub(super) fn run_all() -> Result<()> {
     let sync_on_keys = ime_sync_on;
     let sync_off_keys = ime_sync_off;
 
-    let mut panic_trigger_vks: Vec<u16> = ime_control_on_keys
+    let panic_trigger_combos: Vec<crate::panic_detect::PanicTriggerCombo> = ime_control_on_keys
         .iter()
         .chain(ime_control_off_keys.iter())
-        .map(|k| u16::from(k.vk))
+        .map(|k| crate::panic_detect::PanicTriggerCombo {
+            vk: u16::from(k.vk),
+            ctrl: k.ctrl,
+            shift: k.shift,
+            alt: k.alt,
+        })
         .collect();
-    panic_trigger_vks.sort_unstable();
-    panic_trigger_vks.dedup();
-    crate::panic_detect::set_panic_trigger_vks(panic_trigger_vks);
+    crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
 
     let mut engine = Engine::new(
         fsm,

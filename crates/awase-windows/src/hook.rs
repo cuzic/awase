@@ -674,12 +674,19 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // 再入・通常パスのどちらを経由しても物理押下を1度だけカウントする。
     // 再入パスでは defer → replay が発生するため pipeline 側では数えない。
     // `may_change_ime` が拾わない 0x1C(VK_CONVERT)/0x1D(VK_NONCONVERT) も、
-    // ユーザ設定 ime_on/ime_off に登録されていればパニック連打として扱う。
-    if is_keydown
-        && (classify_ime_relevance(vk).may_change_ime
-            || crate::panic_detect::is_panic_trigger(vk_raw))
-    {
-        crate::panic_detect::record_ime_keydown(current_tick_ms());
+    // ユーザ設定 ime_on/ime_off の combo（modifier 一致まで含む）と一致すれば
+    // パニック連打として扱う。modifier まで見ないと NICOLA 親指キーの単打を
+    // 誤検知してしまうため。
+    if is_keydown {
+        let triggers_panic = classify_ime_relevance(vk).may_change_ime || {
+            // SAFETY: read_os_modifiers は GetAsyncKeyState を呼ぶ。
+            //         フックコールバック内のため安全。
+            let mods = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+            crate::panic_detect::is_panic_trigger(vk_raw, mods.ctrl, mods.shift, mods.alt)
+        };
+        if triggers_panic {
+            crate::panic_detect::record_ime_keydown(current_tick_ms());
+        }
     }
 
     // ── with_app 再入ガード ──

@@ -11,12 +11,25 @@ use crate::SingleThreadCell;
 /// bootstrap で `.set(RapidPressTracker::new())` を呼ぶこと。
 pub static RAPID_IME_TIMESTAMPS: SingleThreadCell<RapidPressTracker> = SingleThreadCell::new();
 
-/// `ime_on` / `ime_off` 特殊キーに登録された VK のリスト。
+/// `ime_on` / `ime_off` 特殊キーに登録されたショートカットの combo リスト。
 ///
 /// `may_change_ime` が拾わない VK_CONVERT(0x1C) / VK_NONCONVERT(0x1D) を含む
 /// ユーザ設定のショートカット連打もパニック連打として扱うためのカスタムトリガー。
-/// bootstrap および config reload で `set_panic_trigger_vks` を呼んで更新する。
-pub static PANIC_TRIGGER_VKS: SingleThreadCell<Vec<u16>> = SingleThreadCell::new();
+/// bootstrap および config reload で `set_panic_trigger_combos` を呼んで更新する。
+///
+/// VK 単体ではなく combo（vk + ctrl/shift/alt）で保持するのは、`変換` / `無変換`
+/// 等の親指キーが NICOLA タイピング用としても使われる場合に、modifier 無しの
+/// 単打を誤って panic 連打として数えてしまうのを防ぐため。
+pub static PANIC_TRIGGER_COMBOS: SingleThreadCell<Vec<PanicTriggerCombo>> = SingleThreadCell::new();
+
+/// パニック連打判定用のキー combo（`ParsedKeyCombo` のミラー）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanicTriggerCombo {
+    pub vk: u16,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
 
 /// 連打検出用の軽量トラッカー
 #[derive(Debug)]
@@ -82,18 +95,22 @@ pub fn record_ime_keydown(now_ms: u64) {
     });
 }
 
-/// `vk` がユーザ設定の IME 制御ショートカット（ime_on / ime_off）に
-/// 登録された VK かを判定する。bootstrap 前は常に false。
+/// `vk` + 現在の modifier 状態が、ユーザ設定の IME 制御ショートカット
+/// （ime_on / ime_off）の combo と一致するかを判定する。bootstrap 前は常に false。
 #[must_use]
-pub fn is_panic_trigger(vk: u16) -> bool {
-    PANIC_TRIGGER_VKS
-        .with(|vks| vks.contains(&vk))
+pub fn is_panic_trigger(vk: u16, ctrl: bool, shift: bool, alt: bool) -> bool {
+    PANIC_TRIGGER_COMBOS
+        .with(|combos| {
+            combos.iter().any(|c| {
+                c.vk == vk && c.ctrl == ctrl && c.shift == shift && c.alt == alt
+            })
+        })
         .unwrap_or(false)
 }
 
-/// `ime_on` / `ime_off` 特殊キーの VK リストを更新する。
+/// `ime_on` / `ime_off` 特殊キーの combo リストを更新する。
 ///
 /// bootstrap 完了時と config reload 時に呼ぶ。重複は呼び出し側で除去すること。
-pub fn set_panic_trigger_vks(vks: Vec<u16>) {
-    PANIC_TRIGGER_VKS.set(vks);
+pub fn set_panic_trigger_combos(combos: Vec<PanicTriggerCombo>) {
+    PANIC_TRIGGER_COMBOS.set(combos);
 }
