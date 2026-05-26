@@ -17,6 +17,16 @@ impl From<VkCode> for u16 {
         v.0
     }
 }
+impl core::fmt::UpperHex for VkCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::UpperHex::fmt(&self.0, f)
+    }
+}
+impl core::fmt::LowerHex for VkCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
 
 /// プラットフォーム固有のスキャンコード（Windows Set 1, macOS keycode, Linux evdev keycode）
 ///
@@ -32,6 +42,16 @@ impl From<u32> for ScanCode {
 impl From<ScanCode> for u32 {
     fn from(v: ScanCode) -> Self {
         v.0
+    }
+}
+impl core::fmt::UpperHex for ScanCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::UpperHex::fmt(&self.0, f)
+    }
+}
+impl core::fmt::LowerHex for ScanCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::LowerHex::fmt(&self.0, f)
     }
 }
 
