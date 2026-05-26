@@ -352,6 +352,13 @@ impl DecisionExecutor {
     }
 
     /// OUTPUT_GATE.active が true / pending queue がある場合: Consume + reinject で順序保証する。
+    ///
+    /// 例外: 修飾キー (Ctrl/Alt/Win) の KeyUp を defer すると、reinject まで OS は
+    /// 修飾キーが押されたままと認識し、その間に届く次キーが Ctrl+key 等のショートカット
+    /// として誤発火する (Ctrl 残留 → Ctrl+H 暴発)。pair 保持の責務は `try_keyup_symmetry`
+    /// が `deferred_passthrough_vks` でカバー済みのため、ここに到達した修飾 Up は
+    /// 必ず Down が defer されていない (即 passthrough されている) 状態なので、
+    /// Up も即 passthrough しても pair は崩れない。
     fn try_output_guard_defer(
         &mut self,
         raw_event: &RawKeyEvent,
@@ -360,6 +367,11 @@ impl DecisionExecutor {
         has_pending: bool,
     ) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
+        if !is_key_down && crate::vk::is_non_shift_modifier(raw_event.vk_code) {
+            // 修飾 Up は defer しない (Ctrl 残留窓を作らない)。
+            // Down が defer されたケースは try_keyup_symmetry が先に捕捉している。
+            return None;
+        }
         if has_pending || output_in_flight {
             // pending effects または output in-flight 中の passthrough は
             // Consume + reinject 経由で順序保証する。
