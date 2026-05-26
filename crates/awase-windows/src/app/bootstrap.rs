@@ -410,11 +410,24 @@ unsafe extern "system" fn win_event_proc(
     _event_thread: u32,
     _event_time: u32,
 ) {
+    use std::sync::atomic::{AtomicIsize, Ordering as AtomicOrdering};
+
     if event != EVENT_OBJECT_FOCUS {
         return;
     }
 
     if crate::win32::non_null_hwnd(hwnd).is_none() {
+        return;
+    }
+
+    // 同一 HWND からの連続 EVENT_OBJECT_FOCUS は Chrome / UWP の子オブジェクト由来で
+    // 数 ms 間隔で多発する。毎回 TsfGate を PendingWarmup に巻き戻すと、
+    // ユーザーが押下した文字キーが held queue ごと破棄されて入力ロスする
+    // （特に Chrome で文字入力不能になる症状）。
+    // HWND が変わっていない場合は早期 return する。
+    static LAST_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
+    let hwnd_isize = hwnd.0 as isize;
+    if LAST_FOCUS_HWND.swap(hwnd_isize, AtomicOrdering::Relaxed) == hwnd_isize {
         return;
     }
 
