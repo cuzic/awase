@@ -14,6 +14,19 @@ enum Tab {
     Advanced,
 }
 
+/// キー入力キャプチャの対象。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureTarget {
+    /// 既存ルールの from 全体（修飾+主キー）
+    ExistingFrom(usize),
+    /// 既存ルールの to 主キー
+    ExistingTo(usize),
+    /// 新規ルールの from 全体
+    NewFrom,
+    /// 新規ルールの to 主キー
+    NewTo,
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -49,6 +62,8 @@ struct SettingsApp {
     new_keymap_from_alt: bool,
     new_keymap_from_main: String,
     new_keymap_to_main: String,
+    // Keymap capture mode (None = not capturing)
+    capturing: Option<CaptureTarget>,
     // Preview cache: (layout filename, parsed result)
     preview_cache: Option<(String, Result<awase::yab::YabLayout, String>)>,
 }
@@ -84,6 +99,7 @@ impl SettingsApp {
             new_keymap_from_alt: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
+            capturing: None,
             preview_cache: None,
         }
     }
@@ -115,6 +131,78 @@ impl SettingsApp {
             Err(e) => self.status = format!("読み込み失敗: {e}"),
         }
     }
+
+    /// キャプチャモード中に押されたキーを処理する。
+    fn process_keymap_capture(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.capturing else { return };
+        let captured: Option<CapturedKey> = ctx.input(|i| {
+            for ev in &i.events {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = ev
+                {
+                    // 修飾キーなしの Esc はキャンセル扱い（Ctrl+Esc 等は通常のキーとして捕捉）
+                    if *key == egui::Key::Escape && modifiers.is_none() {
+                        return Some(CapturedKey::Cancel);
+                    }
+                    if let Some(internal) = egui_key_to_internal(*key) {
+                        return Some(CapturedKey::Key {
+                            internal: internal.to_string(),
+                            ctrl: modifiers.ctrl,
+                            shift: modifiers.shift,
+                            alt: modifiers.alt,
+                        });
+                    }
+                }
+            }
+            None
+        });
+
+        let Some(captured) = captured else { return };
+        match captured {
+            CapturedKey::Cancel => {
+                self.capturing = None;
+            }
+            CapturedKey::Key { internal, ctrl, shift, alt } => {
+                match target {
+                    CaptureTarget::ExistingFrom(i) => {
+                        if let Some(rule) = self.config.keymaps.get_mut(i) {
+                            rule.from = format_combo(ctrl, shift, alt, &internal);
+                        }
+                    }
+                    CaptureTarget::ExistingTo(i) => {
+                        if let Some(rule) = self.config.keymaps.get_mut(i) {
+                            rule.to = Some(internal);
+                        }
+                    }
+                    CaptureTarget::NewFrom => {
+                        self.new_keymap_from_ctrl = ctrl;
+                        self.new_keymap_from_shift = shift;
+                        self.new_keymap_from_alt = alt;
+                        self.new_keymap_from_main = internal;
+                    }
+                    CaptureTarget::NewTo => {
+                        self.new_keymap_to_main = internal;
+                    }
+                }
+                self.capturing = None;
+            }
+        }
+    }
+}
+
+/// `process_keymap_capture` の内部結果型。
+enum CapturedKey {
+    Cancel,
+    Key {
+        internal: String,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    },
 }
 
 // ── Tab methods ──
@@ -319,9 +407,13 @@ impl SettingsApp {
             "アプリ別にキー入力を別キーへ置き換えます。\n\
              例: Ctrl+I を F7 に再割当（vim 系で Tab と区別したい場合等）。\n\
              ※ 記号キーの表示は JIS 配列基準です（US 配列では別の文字に対応）。\n\
-             ※ to 側で修飾キー付きの送信は現状未対応です。",
+             ※ to 側で修飾キー付きの送信は現状未対応です。\n\
+             ※ ⌨ ボタンを押した後にキーを押すと自動で設定されます（Esc で取消）。",
         );
         ui.add_space(8.0);
+
+        // local copy of capturing to avoid borrow-conflict with self.config.keymaps below
+        let mut capturing = self.capturing;
 
         // Existing rules table
         ui.label("登録済みルール");
@@ -344,7 +436,7 @@ impl SettingsApp {
                         rule.app = if app_buf.is_empty() { None } else { Some(app_buf) };
                     }
 
-                    // from: modifiers + main key
+                    // from: modifiers + main key + capture button
                     let (mut ctrl, mut shift, mut alt, mut main) = parse_combo_str(&rule.from);
                     let mut changed = false;
                     changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
@@ -353,17 +445,21 @@ impl SettingsApp {
                     if main_key_combo(ui, &format!("from_main_{i}"), &mut main) {
                         changed = true;
                     }
+                    let from_target = CaptureTarget::ExistingFrom(i);
+                    capture_button(ui, &mut capturing, from_target);
                     if changed {
                         rule.from = format_combo(ctrl, shift, alt, &main);
                     }
 
                     ui.label("→");
 
-                    // to: main key only
+                    // to: main key only + capture button
                     let mut to_main = rule.to.clone().unwrap_or_default();
                     if main_key_combo_optional(ui, &format!("to_main_{i}"), &mut to_main) {
                         rule.to = if to_main.is_empty() { None } else { Some(to_main) };
                     }
+                    let to_target = CaptureTarget::ExistingTo(i);
+                    capture_button(ui, &mut capturing, to_target);
 
                     if ui.small_button("x").clicked() {
                         rm = Some(i);
@@ -397,15 +493,20 @@ impl SettingsApp {
                     ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
                     ui.checkbox(&mut self.new_keymap_from_alt, "Alt");
                     main_key_combo(ui, "new_from_main", &mut self.new_keymap_from_main);
+                    capture_button(ui, &mut capturing, CaptureTarget::NewFrom);
                 });
                 ui.end_row();
 
                 ui.label("  to:").on_hover_text(
                     "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけ。",
                 );
-                main_key_combo_optional(ui, "new_to_main", &mut self.new_keymap_to_main);
+                ui.horizontal(|ui| {
+                    main_key_combo_optional(ui, "new_to_main", &mut self.new_keymap_to_main);
+                    capture_button(ui, &mut capturing, CaptureTarget::NewTo);
+                });
                 ui.end_row();
             });
+        self.capturing = capturing;
         if ui.button("+追加").clicked() && !self.new_keymap_from_main.is_empty() {
             let from = format_combo(
                 self.new_keymap_from_ctrl,
@@ -588,6 +689,12 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Keymap capture: drain key events while capturing
+        if self.capturing.is_some() {
+            self.process_keymap_capture(ctx);
+            ctx.request_repaint();
+        }
+
         // Side panel for tab selection
         egui::SidePanel::left("tab_panel")
             .resizable(false)
@@ -789,6 +896,62 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
             }
         });
     changed
+}
+
+/// キー入力キャプチャボタン。クリックでこの target をキャプチャ対象に設定し、
+/// 既にこの target がキャプチャ中なら「待機中」ラベルを表示する。
+fn capture_button(
+    ui: &mut egui::Ui,
+    capturing: &mut Option<CaptureTarget>,
+    target: CaptureTarget,
+) {
+    let is_active = *capturing == Some(target);
+    let label = if is_active { "⌨ 待機…" } else { "⌨" };
+    if ui
+        .selectable_label(is_active, label)
+        .on_hover_text("クリック後にキーを押すと自動入力されます (Esc で取消)")
+        .clicked()
+    {
+        *capturing = if is_active { None } else { Some(target) };
+    }
+}
+
+/// egui のキー名を内部 VK 名に変換する。マップ対象外は None。
+///
+/// OEM 記号（Comma/Period/Slash 等）と PrintScreen/IME 系キーは
+/// JIS/US 配列差や egui 未対応のため、キャプチャ非対応とする（ドロップダウン経由で設定）。
+fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
+    use egui::Key;
+    Some(match key {
+        Key::A => "VK_A", Key::B => "VK_B", Key::C => "VK_C", Key::D => "VK_D",
+        Key::E => "VK_E", Key::F => "VK_F", Key::G => "VK_G", Key::H => "VK_H",
+        Key::I => "VK_I", Key::J => "VK_J", Key::K => "VK_K", Key::L => "VK_L",
+        Key::M => "VK_M", Key::N => "VK_N", Key::O => "VK_O", Key::P => "VK_P",
+        Key::Q => "VK_Q", Key::R => "VK_R", Key::S => "VK_S", Key::T => "VK_T",
+        Key::U => "VK_U", Key::V => "VK_V", Key::W => "VK_W", Key::X => "VK_X",
+        Key::Y => "VK_Y", Key::Z => "VK_Z",
+        Key::Num0 => "VK_0", Key::Num1 => "VK_1", Key::Num2 => "VK_2",
+        Key::Num3 => "VK_3", Key::Num4 => "VK_4", Key::Num5 => "VK_5",
+        Key::Num6 => "VK_6", Key::Num7 => "VK_7", Key::Num8 => "VK_8",
+        Key::Num9 => "VK_9",
+        Key::F1 => "VK_F1", Key::F2 => "VK_F2", Key::F3 => "VK_F3",
+        Key::F4 => "VK_F4", Key::F5 => "VK_F5", Key::F6 => "VK_F6",
+        Key::F7 => "VK_F7", Key::F8 => "VK_F8", Key::F9 => "VK_F9",
+        Key::F10 => "VK_F10", Key::F11 => "VK_F11", Key::F12 => "VK_F12",
+        Key::Space => "VK_SPACE",
+        Key::Enter => "VK_RETURN",
+        Key::Tab => "VK_TAB",
+        // Escape はキャンセル扱いのため、修飾キー付きの場合のみ捕捉される
+        Key::Escape => "VK_ESCAPE",
+        Key::Backspace => "VK_BACK",
+        Key::Delete => "VK_DELETE",
+        Key::Insert => "VK_INSERT",
+        Key::Home => "VK_HOME",
+        Key::End => "VK_END",
+        Key::PageUp => "VK_PRIOR",
+        Key::PageDown => "VK_NEXT",
+        _ => return None,
+    })
 }
 
 /// main key ドロップダウン（オプショナル版＝「消費のみ」選択肢付き）。変更時は true を返す。
