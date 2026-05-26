@@ -123,6 +123,7 @@ impl PlatformState {
                 intercept_consumed: [0u64; 4],
                 in_callback: false,
                 ctrl_bypass_hold: false,
+                last_ctrl_bypass_keydown_us: None,
             },
             hook_config: HookConfig {
                 left_thumb_vk: 0x1D,  // VK_NONCONVERT

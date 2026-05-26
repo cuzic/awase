@@ -465,9 +465,12 @@ unsafe fn decide_routing_with_tracking(
         return EarlyRoutingDecision::BypassToOs;
     }
 
-    // Ctrl KeyUp で ctrl_bypass_hold を解除
-    if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) && ps.hook.ctrl_bypass_hold() {
-        ps.hook.set_ctrl_bypass_hold(false);
+    // Ctrl KeyUp で ctrl_bypass_hold と stale-ctrl 観測タイムスタンプを解除
+    if !is_keydown && matches!(vk_raw, 0x11 | 0xA2 | 0xA3) {
+        if ps.hook.ctrl_bypass_hold() {
+            ps.hook.set_ctrl_bypass_hold(false);
+        }
+        ps.hook.clear_ctrl_bypass_keydown();
     }
 
     // ── キーマップインターセプト ──
@@ -496,6 +499,16 @@ unsafe fn decide_routing_with_tracking(
 
     match route {
         KeyRoute::Bypass => {
+            // Ctrl 修飾でのバイパス（Ctrl+key shortcut）を観測したら timestamp を記録。
+            // 直後の親指キー (Henkan/Muhenkan) が Ctrl release 遅延で先着しても
+            // Engine 側で Ctrl+無変換 → IME-OFF と誤マッチさせないため。
+            if is_keydown {
+                // SAFETY: read_os_modifiers は GetAsyncKeyState を呼ぶ。フックコールバック内のため安全。
+                let mods = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+                if mods.ctrl {
+                    ps.hook.record_ctrl_bypass_keydown(now_timestamp());
+                }
+            }
             log::trace!(
                 "Hook: vk=0x{vk_raw:02X} {} → Bypass",
                 if is_keydown { "KeyDown" } else { "KeyUp" }
@@ -694,7 +707,19 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     let (key_classification, physical_pos) = classify_key(vk, scan, &app.platform_state.hook_config);
     // SAFETY: read_os_modifiers は GetAsyncKeyState を呼び出す。
     //         本関数はフックコールバックから呼ばれるため、呼び出しコンテキストが保証されている。
-    let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+    let mut modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+    // 直近の Ctrl+key ショートカット Bypass 観測から閾値内の場合、
+    // Ctrl release 遅延による Ctrl 状態は stale とみなして Engine 視点では落とす。
+    // これにより Ctrl+I 直後に親指キー (Henkan/Muhenkan) が先着しても
+    // Engine 側で Ctrl+無変換 → IME-OFF と誤マッチしない。
+    if modifier_snapshot.ctrl && app.platform_state.hook.is_ctrl_stale(now_timestamp()) {
+        log::debug!(
+            "[stale-ctrl] suppress ctrl modifier vk=0x{vk_raw:02X} {} (within {}us of last Ctrl+key bypass)",
+            if is_keydown { "KeyDown" } else { "KeyUp" },
+            crate::state::CTRL_STALE_THRESHOLD_US,
+        );
+        modifier_snapshot.ctrl = false;
+    }
     let mut event = build_raw_key_event(vk, scan, is_keydown, kb.dwExtraInfo, key_classification, physical_pos, modifier_snapshot);
     app.enrich_ime_relevance(&mut event);
     log_hook_event(&event, &route);
