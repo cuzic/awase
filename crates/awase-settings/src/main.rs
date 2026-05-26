@@ -408,7 +408,8 @@ impl SettingsApp {
              例: Ctrl+I を F7 に再割当（vim 系で Tab と区別したい場合等）。\n\
              ※ 記号キーの表示は JIS 配列基準です（US 配列では別の文字に対応）。\n\
              ※ to 側で修飾キー付きの送信は現状未対応です。\n\
-             ※ ⌨ ボタンを押した後にキーを押すと自動で設定されます（Esc で取消）。",
+             ※ ⌨ ボタンを押した後にキーを押すと自動で設定されます（Esc で取消）。\n\
+             ※ キャプチャは JIS 配列前提。`:` `@` `^` `_` や IME キーはドロップダウンから設定してください。",
         );
         ui.add_space(8.0);
 
@@ -918,8 +919,13 @@ fn capture_button(
 
 /// egui のキー名を内部 VK 名に変換する。マップ対象外は None。
 ///
-/// OEM 記号（Comma/Period/Slash 等）と PrintScreen/IME 系キーは
-/// JIS/US 配列差や egui 未対応のため、キャプチャ非対応とする（ドロップダウン経由で設定）。
+/// OEM 記号は JIS 配列前提でマッピング:
+/// `;` (Semicolon) → VK_OEM_PLUS、`¥` (Backslash) → VK_OEM_5 など。
+/// US 配列では VK 対応が異なるため、捕捉結果が期待と違う場合は
+/// ドロップダウンから直接選択すること。
+///
+/// PrintScreen と IME 系キー（変換/無変換/漢字/かな/英数 等）は
+/// egui に対応する Key 変種が無いため、引き続きドロップダウン専用。
 fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
     use egui::Key;
     Some(match key {
@@ -950,6 +956,15 @@ fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
         Key::End => "VK_END",
         Key::PageUp => "VK_PRIOR",
         Key::PageDown => "VK_NEXT",
+        // OEM 記号キー（JIS 配列前提）
+        Key::Comma => "VK_OEM_COMMA",
+        Key::Period => "VK_OEM_PERIOD",
+        Key::Slash => "VK_OEM_2",
+        Key::Minus => "VK_OEM_MINUS",
+        Key::Semicolon => "VK_OEM_PLUS",
+        Key::OpenBracket => "VK_OEM_4",
+        Key::CloseBracket => "VK_OEM_6",
+        Key::Backslash => "VK_OEM_5",
         _ => return None,
     })
 }
