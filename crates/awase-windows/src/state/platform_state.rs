@@ -410,16 +410,135 @@ impl PlatformState {
     ///
     /// TsfNative では IMM クロスプロセス取得もポーリングも skip されるため、
     /// stale な `false` が ObserverPoll でも復旧せず Engine が活性化不能になる。
-    /// `false` の起源は別プロファイルでの SetOpenRequest/ObserverPoll であり、
-    /// 新ウィンドウの実態と一致する保証がない。日本語レイアウト時のみ実行する。
+    /// 日本語レイアウト時のみ実行する。
+    ///
+    /// # 4 層モデルとの整合: Layer 1 観測を尊重する
+    ///
+    /// 本処理は Layer 2 (`ImeBelief`) を直接書き換える「ヒューリスティック修復」だが、
+    /// `belief.ime_on=false` の出所が Layer 1 の検証済み観測やユーザ明示操作である場合、
+    /// その値を上書きするとユーザ意図に反した IME ON 発火を招く
+    /// （例: ユーザが Ctrl+無変換 で IME OFF した直後に Windows Terminal へ切替）。
+    ///
+    /// よって `ime_on_source` を確認し、以下の「Layer 1 由来の信頼できる false」は保護する:
+    /// - `ObserverPoll`    : IMM クロスプロセス読みで verified
+    /// - `PhysicalImeKey`  : ユーザの直接操作（半角/全角等）
+    /// - `SyncKey`         : config 由来の同期キー（ユーザ設定）
+    /// - `SetOpenRequest`  : Engine の判断（special-key 等、ユーザ起点）
+    /// - `FocusSnapshot`   : フォーカス変更直後のフレッシュなプローブ
+    ///
+    /// 上書き対象は「観測由来でない値」のみ:
+    /// - `Init`       : 起動時の既定値（通常は ON 初期化なので発火しない）
+    /// - `HwndCache`  : 別 HWND キャッシュからの復元（本関数は cache miss 時のみ呼ばれるため
+    ///   実際には到達しないが、再入時の保護として記載）
+    /// - `PanicReset` : 強制リセット由来
     pub fn reset_stale_ime_on_for_tsf_native(&mut self) {
         if !self.ime.belief.is_japanese_ime() || self.ime.belief.ime_on() {
             return;
         }
+        let source = self.ime.belief.ime_on_source();
+        if Self::is_layer1_verified_source(source) {
+            log::debug!(
+                "TsfNative entry: preserving ime_on=false (source={source:?}, Layer 1 verified/explicit)"
+            );
+            return;
+        }
         log::info!(
             "TsfNative entry without cache: reset stale ime_on=false → true \
-             (Japanese layout, IME state untrackable in TSF-native)"
+             (source={source:?}, Japanese layout, IME state untrackable in TSF-native)"
         );
         self.ime.belief.set_ime_on(true, ShadowSource::HwndCache);
+    }
+
+    /// `ime_on` の出所が Layer 1 の検証済み観測またはユーザ明示操作かを返す。
+    ///
+    /// `true` のとき、その `ime_on` 値は Layer 2 ヒューリスティックで上書きしてはならない
+    /// （`reset_stale_ime_on_for_tsf_native` 等の保護判定で使用）。
+    const fn is_layer1_verified_source(source: ShadowSource) -> bool {
+        matches!(
+            source,
+            ShadowSource::ObserverPoll
+                | ShadowSource::PhysicalImeKey
+                | ShadowSource::SyncKey
+                | ShadowSource::SetOpenRequest
+                | ShadowSource::FocusSnapshot
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ps_with_belief(ime_on: bool, source: ShadowSource, is_japanese: bool) -> PlatformState {
+        let mut ps = PlatformState::new();
+        ps.ime.belief.ime_on = ime_on;
+        ps.ime.belief.ime_on_source = source;
+        ps.ime.belief.is_japanese_ime = is_japanese;
+        ps
+    }
+
+    // Layer 1 由来の検証済み false は保護される（4 層モデル尊重）。
+    // ユーザが直前に Ctrl+無変換 等で IME OFF した状態が、TsfNative ウィンドウへの
+    // 切替で勝手に ON に戻されてはいけない。
+    #[test]
+    fn reset_stale_preserves_observer_poll_false() {
+        let mut ps = ps_with_belief(false, ShadowSource::ObserverPoll, true);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.belief.ime_on());
+        assert_eq!(ps.ime.belief.ime_on_source(), ShadowSource::ObserverPoll);
+    }
+
+    #[test]
+    fn reset_stale_preserves_physical_key_false() {
+        let mut ps = ps_with_belief(false, ShadowSource::PhysicalImeKey, true);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.belief.ime_on());
+    }
+
+    #[test]
+    fn reset_stale_preserves_sync_key_false() {
+        let mut ps = ps_with_belief(false, ShadowSource::SyncKey, true);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.belief.ime_on());
+    }
+
+    #[test]
+    fn reset_stale_preserves_set_open_request_false() {
+        let mut ps = ps_with_belief(false, ShadowSource::SetOpenRequest, true);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.belief.ime_on());
+    }
+
+    #[test]
+    fn reset_stale_preserves_focus_snapshot_false() {
+        let mut ps = ps_with_belief(false, ShadowSource::FocusSnapshot, true);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.belief.ime_on());
+    }
+
+    // 観測由来でない false (PanicReset) は従来通り上書きされる。
+    #[test]
+    fn reset_stale_overrides_panic_reset_false() {
+        let mut ps = ps_with_belief(false, ShadowSource::PanicReset, true);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(ps.ime.belief.ime_on());
+        assert_eq!(ps.ime.belief.ime_on_source(), ShadowSource::HwndCache);
+    }
+
+    // 既に ON なら何もしない（早期 return）。
+    #[test]
+    fn reset_stale_noop_when_already_on() {
+        let mut ps = ps_with_belief(true, ShadowSource::ObserverPoll, true);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(ps.ime.belief.ime_on());
+        assert_eq!(ps.ime.belief.ime_on_source(), ShadowSource::ObserverPoll);
+    }
+
+    // 非日本語レイアウトでは何もしない。
+    #[test]
+    fn reset_stale_noop_when_not_japanese() {
+        let mut ps = ps_with_belief(false, ShadowSource::PanicReset, false);
+        ps.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.belief.ime_on());
     }
 }
