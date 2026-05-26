@@ -263,16 +263,15 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         return CallbackResult::Consumed;
     }
     // OUTPUT_GATE.active=false だがキューに未 drain エントリがある場合、
-    // 対応 KeyDown が drain 待ちの間に KeyUp が届いた（drain race）。
-    // drain で synthetic KeyUp が注入されるが、念のためログを残す。
-    if matches!(event.event_type, awase::types::KeyEventType::KeyUp) {
-        if let Some(len) = crate::INPUT_DEFER.pending_len_nonblocking() {
-            if len > 0 {
-                log::debug!(
-                    "[drain-race] vk=0x{:02X} KeyUp arrived while drain queue has {len} item(s) (OUTPUT_GATE.active=false)",
-                    event.vk_code
-                );
-            }
+    // OUTPUT_GATE 解除と drain ハンドラ実行のギャップ期間にキーが届いた状態。
+    // この期間に届く KeyDown は drain 前にインライン処理されてしまうため、
+    // 「しゃちょう→しちゃ…」のような順序逆転を引き起こす。KeyUp/KeyDown 共に記録。
+    if let Some(len) = crate::INPUT_DEFER.pending_len_nonblocking() {
+        if len > 0 {
+            log::debug!(
+                "[drain-race] vk=0x{:02X} {:?} arrived while drain queue has {len} item(s) (OUTPUT_GATE.active=false)",
+                event.vk_code, event.event_type,
+            );
         }
     }
     with_app(|app| on_key_event_impl(app, event)).unwrap_or_else(|| {

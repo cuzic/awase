@@ -36,6 +36,21 @@ impl KeyEventPipeline<'_> {
             self.app.platform_state.belief(),
             &event.modifier_snapshot,
         );
+        // [engine-input] order-bug 調査用: drain と inline の処理順序を可視化する。
+        // event.timestamp はユーザー押下時刻(us)、now はエンジン入力到達時刻(us)。
+        // delay_ms が大きいほど drain 経由（古い event_ts が遅延処理されている）。
+        // state は on_input 直前の FSM 状態、pending_drain は INPUT_DEFER の未処理件数。
+        let now_us = hook::now_timestamp_us();
+        let delay_ms = now_us.saturating_sub(event.timestamp) / 1000;
+        let pending_drain = crate::INPUT_DEFER.pending_len_nonblocking().unwrap_or(0);
+        let gate_active = crate::OUTPUT_GATE.is_active();
+        log::debug!(
+            "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} pending_drain={} gate_active={}",
+            event.vk_code, event.event_type, event.timestamp,
+            delay_ms,
+            self.app.engine.debug_state_label(),
+            pending_drain, gate_active,
+        );
         let decision = self.app.engine.on_input(event, &ctx);
 
         self.stage_post_decision(&decision, &event);
