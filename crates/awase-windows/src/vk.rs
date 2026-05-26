@@ -243,6 +243,12 @@ pub fn vk_name_to_code(name: &str) -> Option<VkCode> {
         "VK_F10" => Some(VkCode(0x79)),
         "VK_F11" => Some(VkCode(0x7A)),
         "VK_F12" => Some(VkCode(0x7B)),
+        "VK_HOME" => Some(VkCode(0x24)),
+        "VK_END" => Some(VkCode(0x23)),
+        "VK_PRIOR" => Some(VkCode(0x21)),
+        "VK_NEXT" => Some(VkCode(0x22)),
+        "VK_INSERT" => Some(VkCode(0x2D)),
+        "VK_SNAPSHOT" => Some(VkCode(0x2C)),
         _ => None,
     }
 }
