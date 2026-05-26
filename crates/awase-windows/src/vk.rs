@@ -337,21 +337,19 @@ pub fn vk_name_to_code(name: &str) -> Option<VkCode> {
 /// ホットキー文字列をパースして修飾キーフラグと仮想キーコードに変換する。
 #[must_use]
 pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
-    const MOD_ALT: u32 = 0x0001;
-    const MOD_CONTROL: u32 = 0x0002;
-    const MOD_SHIFT: u32 = 0x0004;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT};
 
     let parts: Vec<&str> = s.split('+').map(str::trim).collect();
     if parts.is_empty() {
         return None;
     }
 
-    let mut modifiers: u32 = 0;
+    let mut modifiers = 0u32;
     for &part in &parts[..parts.len() - 1] {
         match part {
-            "Ctrl" | "Control" => modifiers |= MOD_CONTROL,
-            "Shift" => modifiers |= MOD_SHIFT,
-            "Alt" => modifiers |= MOD_ALT,
+            "Ctrl" | "Control" => modifiers |= MOD_CONTROL.0,
+            "Shift" => modifiers |= MOD_SHIFT.0,
+            "Alt" => modifiers |= MOD_ALT.0,
             _ => return None,
         }
     }

@@ -474,12 +474,9 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
 
 // ── WinEvent 観察フック ──
 
-/// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
-const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
-
-const EVENT_OBJECT_SHOW: u32 = 0x8002;
-const EVENT_OBJECT_HIDE: u32 = 0x8003;
-const EVENT_OBJECT_NAMECHANGE: u32 = 0x800C;
+use windows::Win32::UI::WindowsAndMessaging::{
+    EVENT_OBJECT_HIDE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW, WINEVENT_OUTOFCONTEXT,
+};
 
 const GJI_CANDIDATE_CLASS: &str = "GoogleJapaneseInputCandidateWindow";
 

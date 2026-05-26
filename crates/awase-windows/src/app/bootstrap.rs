@@ -365,11 +365,7 @@ pub(super) fn cleanup() {
     log::info!("Exited cleanly.");
 }
 
-/// `WINEVENT_OUTOFCONTEXT` (0x0000) — コールバックをメッセージループで実行
-const WINEVENT_OUTOFCONTEXT: u32 = 0x0000;
-
-/// `EVENT_OBJECT_FOCUS` (0x8005) — フォーカス変更イベント
-const EVENT_OBJECT_FOCUS: u32 = 0x8005;
+use windows::Win32::UI::WindowsAndMessaging::{EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT};
 
 /// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
 pub(super) struct WinEventHookGuard(pub(super) windows::Win32::UI::Accessibility::HWINEVENTHOOK);
