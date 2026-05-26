@@ -318,6 +318,7 @@ impl SettingsApp {
         ui.label(
             "アプリ別にキー入力を別キーへ置き換えます。\n\
              例: Ctrl+I を F7 に再割当（vim 系で Tab と区別したい場合等）。\n\
+             ※ 記号キーの表示は JIS 配列基準です（US 配列では別の文字に対応）。\n\
              ※ to 側で修飾キー付きの送信は現状未対応です。",
         );
         ui.add_space(8.0);
@@ -671,7 +672,11 @@ fn key_list_ui(
 }
 
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
+///
+/// 記号キーの表示ラベルは JIS 配列基準（VK_OEM_PLUS=「;」, VK_OEM_3=「@」 等）。
+/// US 配列では同じ VK が別の文字に対応するため、ツールチップで補足する。
 const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
+    // アルファベット
     ("A", "VK_A"), ("B", "VK_B"), ("C", "VK_C"), ("D", "VK_D"),
     ("E", "VK_E"), ("F", "VK_F"), ("G", "VK_G"), ("H", "VK_H"),
     ("I", "VK_I"), ("J", "VK_J"), ("K", "VK_K"), ("L", "VK_L"),
@@ -679,21 +684,45 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     ("Q", "VK_Q"), ("R", "VK_R"), ("S", "VK_S"), ("T", "VK_T"),
     ("U", "VK_U"), ("V", "VK_V"), ("W", "VK_W"), ("X", "VK_X"),
     ("Y", "VK_Y"), ("Z", "VK_Z"),
+    // 数字
     ("0", "VK_0"), ("1", "VK_1"), ("2", "VK_2"), ("3", "VK_3"), ("4", "VK_4"),
     ("5", "VK_5"), ("6", "VK_6"), ("7", "VK_7"), ("8", "VK_8"), ("9", "VK_9"),
+    // 記号キー（JIS 配列）
+    (";",  "VK_OEM_PLUS"),
+    (":",  "VK_OEM_1"),
+    (",",  "VK_OEM_COMMA"),
+    ("-",  "VK_OEM_MINUS"),
+    (".",  "VK_OEM_PERIOD"),
+    ("/",  "VK_OEM_2"),
+    ("@",  "VK_OEM_3"),
+    ("[",  "VK_OEM_4"),
+    ("¥",  "VK_OEM_5"),
+    ("]",  "VK_OEM_6"),
+    ("^",  "VK_OEM_7"),
+    ("_",  "VK_OEM_102"),
+    // ファンクションキー
     ("F1", "VK_F1"), ("F2", "VK_F2"), ("F3", "VK_F3"), ("F4", "VK_F4"),
     ("F5", "VK_F5"), ("F6", "VK_F6"), ("F7", "VK_F7"), ("F8", "VK_F8"),
     ("F9", "VK_F9"), ("F10", "VK_F10"), ("F11", "VK_F11"), ("F12", "VK_F12"),
-    ("Space", "VK_SPACE"),
-    ("Enter", "VK_RETURN"),
-    ("Tab", "VK_TAB"),
-    ("Esc", "VK_ESCAPE"),
+    // 制御キー
+    ("Space",     "VK_SPACE"),
+    ("Enter",     "VK_RETURN"),
+    ("Tab",       "VK_TAB"),
+    ("Esc",       "VK_ESCAPE"),
     ("Backspace", "VK_BACK"),
-    ("Delete", "VK_DELETE"),
-    ("変換", "変換"),
-    ("無変換", "無変換"),
-    ("かな", "かな"),
-    ("漢字", "漢字"),
+    ("Delete",    "VK_DELETE"),
+    // IME 関連
+    ("変換",     "変換"),
+    ("無変換",   "無変換"),
+    ("かな",     "かな"),
+    ("漢字",     "漢字"),
+    ("IMEオン",  "VK_IME_ON"),
+    ("IMEオフ",  "VK_IME_OFF"),
+    ("英数",     "VK_DBE_ALPHANUMERIC"),
+    ("カタカナ", "VK_DBE_KATAKANA"),
+    ("ひらがな", "VK_DBE_HIRAGANA"),
+    ("半角",     "VK_DBE_SBCSCHAR"),
+    ("全角",     "VK_DBE_DBCSCHAR"),
 ];
 
 /// 内部表記（"VK_I", "変換" 等）を表示名（"I", "変換"）に変換する。
