@@ -140,9 +140,13 @@ pub(super) unsafe fn handle_wm_ime_key_detected(app: &mut Runtime) {
     }
 }
 
-/// WM_POWERBROADCAST ハンドラ
+/// WM_POWERBROADCAST ハンドラ。
+///
+/// PBT_APMRESUMESUSPEND (7) と PBT_APMRESUMEAUTOMATIC (18) の両方を resume と
+/// みなす（ユーザ操作 / 自動復帰の両方をカバー）。
 pub(super) unsafe fn handle_wm_powerbroadcast(app: &mut Runtime, pbt: usize) {
-    if pbt == 0x12 || pbt == 0x07 {
+    use windows::Win32::UI::WindowsAndMessaging::{PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND};
+    if pbt == PBT_APMRESUMESUSPEND as usize || pbt == PBT_APMRESUMEAUTOMATIC as usize {
         log::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
         app.executor.platform.timer.kill(TIMER_IME_REFRESH);
         app.executor.platform.timer.set(
@@ -200,7 +204,7 @@ pub(super) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
     if GetGUIThreadInfo(0, &raw mut info).is_ok() && info.hwndFocus != result_hwnd {
         log::debug!("UIA result for stale hwnd, ignoring");
     } else {
-        if app_kind_u8 != 0xFF {
+        if app_kind_u8 != crate::FOCUS_KIND_UPDATE_NO_APP_KIND {
             let app_kind = awase::types::AppKind::from_u8(app_kind_u8);
             app.platform_state.focus.app_kind = app_kind;
             log::debug!("UIA AppKind update: {app_kind:?}");
