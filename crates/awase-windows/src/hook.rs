@@ -1,4 +1,5 @@
 use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -60,10 +61,23 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     }
 }
 
+/// RUNTIME 借用なしで classify_key を呼ぶために親指 VK を AtomicU32 にキャッシュする。
+/// 上位 16bit = left_thumb_vk、下位 16bit = right_thumb_vk。
+static CACHED_THUMB_VKS: AtomicU32 = AtomicU32::new(0);
+
+fn cached_hook_config() -> HookConfig {
+    let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
+    HookConfig {
+        left_thumb_vk:  VkCode((packed >> 16) as u16),
+        right_thumb_vk: VkCode(packed as u16),
+    }
+}
+
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
 pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) {
     config.left_thumb_vk = left;
     config.right_thumb_vk = right;
+    CACHED_THUMB_VKS.store(((left.0 as u32) << 16) | right.0 as u32, Ordering::Release);
 }
 
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
@@ -647,6 +661,22 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // `try_borrow_mut` が None を返すため、ここで CallNextHookEx に落として OS に
     // 素通しする (defer + replay の代わりに passthrough)。
     let Some(mut app_borrow) = crate::RUNTIME.try_borrow_mut() else {
+        // OUTPUT_GATE が active なら output 進行中。RUNTIME 借用状態に関わらず
+        // INPUT_DEFER に退避して drain 後に正しく NICOLA 処理する。
+        // （probe タイマー・send_keys など OutputActiveGuard を持つ全パスが対象）
+        if crate::OUTPUT_GATE.is_active() {
+            let config = cached_hook_config();
+            let (key_classification, physical_pos) = classify_key(vk, scan, &config);
+            // SAFETY: GetAsyncKeyState はフックコールバック内から呼ぶため安全。
+            let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+            let event = build_raw_key_event(vk, scan, is_keydown, kb.dwExtraInfo, key_classification, physical_pos, modifier_snapshot);
+            crate::INPUT_DEFER.defer_during_output(event);
+            log::debug!(
+                "[hook-reentrant-deferred] vk={:#04X} {} OUTPUT_GATE active → INPUT_DEFER に退避",
+                vk, if is_keydown { "KeyDown" } else { "KeyUp" }
+            );
+            return LRESULT(1);
+        }
         log::warn!(
             "[hook-reentrant] vk={:#04X} {}: RUNTIME already borrowed → silent passthrough",
             vk, if is_keydown { "KeyDown" } else { "KeyUp" }
