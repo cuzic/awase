@@ -178,6 +178,13 @@ pub enum KeyAction {
     KeySequence(String),
 }
 
+impl KeyAction {
+    /// `Romaji` バリアントからローマ字文字列を返す。他のバリアントは空文字列。
+    pub fn romaji(&self) -> &str {
+        if let Self::Romaji(s) = self { s } else { "" }
+    }
+}
+
 /// コンテキスト無効化の理由（ログ・デバッグ用）
 #[derive(Debug, Clone, Copy)]
 pub enum ContextChange {

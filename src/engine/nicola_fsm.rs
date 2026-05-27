@@ -53,20 +53,11 @@ pub(crate) fn yab_value_to_action(value: &YabValue) -> KeyAction {
     KeyAction::from(value)
 }
 
-/// `KeyAction` からローマ字文字列を抽出するヘルパー
-fn romaji_of(action: &KeyAction) -> String {
-    if let KeyAction::Romaji(s) = action {
-        s.clone()
-    } else {
-        String::new()
-    }
-}
-
 /// `OutputUpdate::Record` を生成するヘルパー
 pub(super) fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
     OutputUpdate::Record(OutputRecord {
         scan_code,
-        romaji: romaji_of(action),
+        romaji: action.romaji().to_owned(),
         kana,
         action: action.clone(),
     })
@@ -686,7 +677,7 @@ impl NicolaFsm {
             actions,
             record: OutputUpdate::RetractAndRecord(OutputRecord {
                 scan_code: pending.scan_code,
-                romaji: romaji_of(new_action),
+                romaji: new_action.romaji().to_owned(),
                 kana,
                 action: new_action.clone(),
             }),
