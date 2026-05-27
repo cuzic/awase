@@ -64,6 +64,7 @@ pub(in crate::tsf) struct Baseline(u32);
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
+use crate::win32::HwndExt as _;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -607,11 +608,11 @@ unsafe extern "system" fn observation_event_proc(
 
 /// HWND のウィンドウクラス名を取得する。
 fn hwnd_class_name(hwnd: HWND) -> String {
-    if crate::win32::non_null_hwnd(hwnd).is_none() {
+    if hwnd.non_null().is_none() {
         return String::new();
     }
     let mut buf = [0u16; 128];
-    // SAFETY: `hwnd` は `non_null_hwnd` チェックで NULL でないことが確認済み。
+    // SAFETY: `hwnd` は `non_null()` チェックで NULL でないことが確認済み。
     //         `buf` は十分なサイズの有効な UTF-16 バッファ。
     let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
     if len > 0 {

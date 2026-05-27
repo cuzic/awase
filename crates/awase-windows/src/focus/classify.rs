@@ -7,6 +7,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::msaa::msaa_classify;
+use crate::win32::HwndExt as _;
 
 pub use super::class_names::AppImeProfile;
 
@@ -62,7 +63,7 @@ impl std::fmt::Display for ClassifyReason {
 /// 判定不能なら `Undetermined` を返す。
 #[must_use] 
 pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
-    if crate::win32::non_null_hwnd(hwnd).is_none() {
+    if hwnd.non_null().is_none() {
         return ClassifyResult {
             kind: FocusKind::NonText,
             reason: ClassifyReason::NullHwnd,

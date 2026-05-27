@@ -18,6 +18,7 @@ use awase::engine::SpecialKeyCombos;
 use awase::types::VkCode;
 use awase::yab::YabLayout;
 use crate::vk::VkCodeExt;
+use crate::win32::HwndExt as _;
 
 use crate::executor;
 use crate::hook;
@@ -410,7 +411,7 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    if crate::win32::non_null_hwnd(hwnd).is_none() {
+    if hwnd.non_null().is_none() {
         return;
     }
 

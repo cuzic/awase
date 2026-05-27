@@ -16,6 +16,7 @@ use crate::imm::{
     IMC_GETCONVERSIONMODE, IMC_GETOPENSTATUS, IMC_SETCONVERSIONMODE, IMC_SETOPENSTATUS,
     IME_CMODE_NATIVE, IME_CMODE_ROMAN,
 };
+use crate::win32::HwndExt as _;
 
 // ─── Cross-process IME 設定 ───────────────────────────────────
 
@@ -395,7 +396,7 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
 #[must_use] 
 pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す可能性があるが
-    //         detect_ime_conversion_for_hwnd 内の non_null_hwnd チェックで処理される。
+    //         detect_ime_conversion_for_hwnd 内の non_null() チェックで処理される。
     detect_ime_conversion_for_hwnd(unsafe { GetForegroundWindow() })
 }
 
@@ -408,9 +409,9 @@ pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
 /// Calls Win32 APIs.
 #[must_use] 
 pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32> {
-    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が `?` で None を返す。
-    let hwnd = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() })?;
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が `?` で None を返す。
+    let hwnd = unsafe { GetForegroundWindow() }.non_null()?;
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         send_ime_control は SendMessageTimeoutW のラッパーで、timeout_ms 内に制御が戻ることが保証される。
@@ -424,9 +425,9 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
 /// Calls Win32 APIs.
 #[must_use] 
 pub unsafe fn get_foreground_window_class() -> String {
-    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が None を返し
     //         早期リターンする。
-    let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
+    let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
         return "null".to_string();
     };
     let class = crate::focus::classify::get_class_name_string(hwnd);
@@ -445,12 +446,12 @@ pub unsafe fn get_foreground_window_class() -> String {
 /// Calls Win32 APIs. Must be called from the main thread.
 #[must_use] 
 pub unsafe fn set_ime_romaji_mode() -> bool {
-    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が None を返し
     //         早期リターンする。
-    let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
+    let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
         return false;
     };
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else { return false; };
 
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
@@ -478,8 +479,8 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
 // ─── hwnd 指定版クロスプロセス検出（read_ime_state_full 専用）─────
 
 unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
-    crate::win32::non_null_hwnd(hwnd)?;
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    hwnd.non_null()?;
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
@@ -489,8 +490,8 @@ unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
 }
 
 unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
-    crate::win32::non_null_hwnd(hwnd)?;
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    hwnd.non_null()?;
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
@@ -499,8 +500,8 @@ unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
 }
 
 unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
-    crate::win32::non_null_hwnd(hwnd)?;
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    hwnd.non_null()?;
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     //         ImmContextGuard は ImmGetContext/ImmReleaseContext を RAII で管理し、
     //         NULL HIMC を取得した場合は None を返す。
     let ctx = unsafe { crate::imm::ImmContextGuard::new(hwnd) }?;
@@ -760,9 +761,9 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // GetForegroundWindow() はトップレベルウィンドウを返す。
     // read_ime_state_full が使う GetGUIThreadInfo().hwndFocus（子ウィンドウ）と異なり、
     // トップレベル hwnd は TSF 互換ブリッジ経由で IMM32 API に応答できる場合が多い。
-    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null_hwnd が None を返し
+    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が None を返し
     //         早期リターンする。
-    let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { GetForegroundWindow() }) else {
+    let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
         return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
 
@@ -781,7 +782,7 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     }
 
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
     };
@@ -831,7 +832,7 @@ pub unsafe fn get_focused_hwnd() -> HWND {
         crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(30));
     // SAFETY: GetForegroundWindow はスレッドセーフで任意のスレッドから呼び出せる。
     //         focused_hwnd が None の場合のフォールバックとして使用するため、返り値が NULL の
-    //         可能性は呼び出し元が non_null_hwnd 等でチェックすること。
+    //         可能性は呼び出し元が non_null() 等でチェックすること。
     gui.focused_hwnd.unwrap_or_else(|| unsafe { GetForegroundWindow() })
 }
 
@@ -849,8 +850,8 @@ pub unsafe fn get_focused_hwnd() -> HWND {
 #[must_use]
 pub unsafe fn send_f2_via_sendmessage() -> bool {
     // SAFETY: get_focused_hwnd は unsafe fn で GetForegroundWindow または GetGUIThreadInfo から
-    //         HWND を返す。non_null_hwnd で NULL チェックを行い、NULL なら早期リターンする。
-    let Some(hwnd) = crate::win32::non_null_hwnd(unsafe { get_focused_hwnd() }) else {
+    //         HWND を返す。non_null() で NULL チェックを行い、NULL なら早期リターンする。
+    let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
         return false;
     };
     // SAFETY: MapVirtualKeyW はスレッドセーフで任意のスレッドから呼び出せる。
@@ -859,7 +860,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
     let lparam_down = LPARAM(1_isize | (isize::try_from(scan).unwrap_or(0) << 16));
     let lparam_up = LPARAM(lparam_down.0 | (1 << 30) | (1_isize << 31));
     let mut result = 0usize;
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     //         result はスタック上の初期化済み変数へのポインタで呼び出し中は有効。
     //         SMTO_ABORTIFHUNG + タイムアウト 100ms により応答なしプロセスでもブロックしない。
     let ok_down = unsafe {
@@ -873,7 +874,7 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
             Some(&raw mut result),
         )
     };
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     //         result はスタック上の初期化済み変数へのポインタで呼び出し中は有効。
     //         SMTO_ABORTIFHUNG + タイムアウト 100ms により応答なしプロセスでもブロックしない。
     let ok_up = unsafe {
@@ -904,10 +905,10 @@ pub unsafe fn send_f2_via_sendmessage() -> bool {
 /// Win32 API を呼び出す。
 #[must_use]
 pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
-    if crate::win32::non_null_hwnd(hwnd).is_none() {
+    if hwnd.non_null().is_none() {
         return false;
     }
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済みの有効なウィンドウハンドル。
+    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     //         ImmContextGuard は ImmGetContext/ImmReleaseContext を RAII で管理し、
     //         NULL HIMC を取得した場合は None を返す。
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
@@ -936,10 +937,10 @@ pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
 #[must_use]
 pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
     let mut snap = CompositionSnapshot::default();
-    if crate::win32::non_null_hwnd(hwnd).is_none() {
+    if hwnd.non_null().is_none() {
         return snap;
     }
-    // SAFETY: hwnd は non_null_hwnd で NULL チェック済み。
+    // SAFETY: hwnd は non_null() で NULL チェック済み。
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
         snap.himc_null = true;
         return snap;

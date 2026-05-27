@@ -29,13 +29,6 @@ impl HwndExt for HWND {
     }
 }
 
-/// null チェックを行い、非 null なら `Some(hwnd)` を返す。
-#[must_use]
-#[deprecated(note = "hwnd.non_null() を使ってください（HwndExt トレイト）")]
-pub fn non_null_hwnd(hwnd: HWND) -> Option<HWND> {
-    hwnd.non_null()
-}
-
 /// メインスレッドのメッセージキューにカスタムメッセージを POST する。
 ///
 /// `PostMessageW(None, msg, WPARAM(0), LPARAM(0))` の簡潔なラッパー。
@@ -119,15 +112,15 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
         unsafe {
             if GetGUIThreadInfo(0, &raw mut info).is_ok() {
                 // hwndFocus が null なら hwndActive を使う
-                let hwnd = non_null_hwnd(info.hwndFocus)
-                    .or_else(|| non_null_hwnd(info.hwndActive));
+                let hwnd = info.hwndFocus.non_null()
+                    .or_else(|| info.hwndActive.non_null());
                 let tid = hwnd.map_or(0, |h| {
                     let mut pid = 0u32;
                     GetWindowThreadProcessId(h, Some(&raw mut pid))
                 });
                 SendableResult(hwnd, tid)
             } else {
-                SendableResult(non_null_hwnd(GetForegroundWindow()), 0)
+                SendableResult(GetForegroundWindow().non_null(), 0)
             }
         }
     });
@@ -138,7 +131,7 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
             // フォールバック: GetForegroundWindow は非ブロッキング
             // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。
             GuiThreadResult {
-                focused_hwnd: non_null_hwnd(unsafe { GetForegroundWindow() }),
+                focused_hwnd: unsafe { GetForegroundWindow() }.non_null(),
                 thread_id: 0,
             }
         }

@@ -94,9 +94,10 @@ impl Drop for ImmContextGuard {
 /// # Safety
 /// Win32 API を呼び出す。
 pub(crate) unsafe fn get_ime_wnd(hwnd: HWND) -> Option<HWND> {
+    use crate::win32::HwndExt as _;
     // SAFETY: hwnd は呼出元でチェック済みの有効なウィンドウハンドル。
     //         ImmGetDefaultIMEWnd は hwnd に対応する IME ウィンドウを返すだけで副作用なし。
-    crate::win32::non_null_hwnd(unsafe { ImmGetDefaultIMEWnd(hwnd) })
+    unsafe { ImmGetDefaultIMEWnd(hwnd) }.non_null()
 }
 
 // ─── クロスプロセス IME コントロール ─────────────────────────────

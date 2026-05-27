@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+use crate::win32::HwndExt as _;
 
 /// `with_app_ref` クロージャの戻り値を保持する中間構造体。
 struct AppStateView {
@@ -239,7 +240,7 @@ fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
         //         ワーカースレッドからも安全に呼び出せる。
         unsafe {
             let hwnd = HWND(focus_hwnd_raw as *mut _);
-            let Some(_) = crate::win32::non_null_hwnd(hwnd) else {
+            let Some(_) = hwnd.non_null() else {
                 return (None, None);
             };
             let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
@@ -265,7 +266,7 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     // SAFETY: GetForegroundWindow は安全な読み取り API。capture_composition_snapshot は
-    //         内部で non_null_hwnd / ImmContextGuard を使い NULL 入力にも対応する。
+    //         内部で non_null() / ImmContextGuard を使い NULL 入力にも対応する。
     let (hwnd_raw, snap) = unsafe {
         let hwnd = GetForegroundWindow();
         (hwnd.0 as usize, crate::ime::capture_composition_snapshot(hwnd))

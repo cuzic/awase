@@ -5,6 +5,7 @@ use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
+use crate::win32::HwndExt as _;
 use crate::ImeBelief;
 
 pub use crate::focus::classifier::{AppKindClassifier, ImmCapability, InjectionHint};
@@ -690,8 +691,8 @@ unsafe fn cancel_ime_composition() {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     // SAFETY: `GetForegroundWindow` は呼び出し時点のフォアグラウンドウィンドウを返す安全なクエリ。
-    //         NULL の場合は `non_null_hwnd` が None を返すため early return する。
-    let Some(hwnd) = crate::win32::non_null_hwnd(GetForegroundWindow()) else {
+    //         NULL の場合は `non_null()` が None を返すため early return する。
+    let Some(hwnd) = GetForegroundWindow().non_null() else {
         return;
     };
     // SAFETY: `hwnd` は直上で NULL でないことを確認済み。
