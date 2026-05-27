@@ -554,6 +554,12 @@ impl DecisionExecutor {
 
     /// Effect::* の match dispatch。ImeEffect::SetOpen の結果のみ Some で返す。
     fn dispatch_effect(&mut self, effect: Effect) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
+        // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
+        // 先に処理する（後段の `let platform = &mut self.platform` が `self.platform`
+        // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
+        if let Effect::Ime(ImeEffect::SetOpen { open, origin: _ }) = effect {
+            return self.dispatch_ime_set_open(open);
+        }
         let platform: &mut dyn PlatformRuntime = &mut self.platform;
         match effect {
             Effect::Input(ie) => match ie {
@@ -574,15 +580,7 @@ impl DecisionExecutor {
                 }
             },
             Effect::Ime(ie) => match ie {
-                ImeEffect::SetOpen { open, origin: _ } => {
-                    let outcome = platform.apply_ime_open(open);
-                    if outcome == awase::platform::ImeOpenOutcome::Failed {
-                        log::warn!("apply_ime_open({open}) failed");
-                    }
-                    // 成功/失敗に関わらず refresh をスケジュール（安全ネット + 定期ポーリング復帰）。
-                    platform.post_ime_refresh();
-                    Some((open, outcome))
-                }
+                ImeEffect::SetOpen { .. } => unreachable!("handled above"),
                 ImeEffect::RequestRefresh => {
                     platform.post_ime_refresh();
                     None
@@ -595,6 +593,66 @@ impl DecisionExecutor {
                     None
                 }
             },
+        }
+    }
+
+    /// `ImeEffect::SetOpen` の専用 dispatch。
+    ///
+    /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能な場合は
+    /// `set_ime_open_cross_process_async` を `win32_async::spawn_local` で async 実行する
+    /// (`SendMessageTimeoutW` 由来の `with_app` 再入を回避するため)。
+    /// それ以外（GjiDirect / KanjiToggle 経路）はキー注入のみで非ブロッキングなため
+    /// 既存の同期 chain を維持する。
+    ///
+    /// async 経路では同期 outcome を返せないため `None` を返し、latch 更新
+    /// (`post_apply_ime_open`) と `post_ime_refresh` を spawn_local 内で完了させる。
+    fn dispatch_ime_set_open(
+        &mut self,
+        open: bool,
+    ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
+        let imm_first = {
+            let view = self.platform.build_ime_control_view();
+            crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view)
+        };
+        if imm_first {
+            // ── async path (ImmCross が選ばれるアプリ) ──
+            // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
+            // INPUT_DEFER へ退避され、SetOpen 進行中に新キーが engine に届かない。
+            // guard は spawn_local 内の async move 末尾で drop され、その時点で OUTPUT_GATE
+            // が解除されて drain がキックされる。
+            let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+            win32_async::spawn_local(async move {
+                let ok = crate::ime::set_ime_open_cross_process_async(open).await;
+                let outcome = if ok {
+                    awase::platform::ImeOpenOutcome::Applied
+                } else {
+                    log::debug!("[apply-ime] ImmCross failed (async), trying fallback");
+                    crate::with_app(|app| {
+                        let view = app.executor.platform.build_ime_control_view();
+                        crate::ime_controller::CONTROLLER.apply_skipping_imm(open, &view)
+                    })
+                    .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                };
+                let _ = crate::with_app(|app| {
+                    if outcome == awase::platform::ImeOpenOutcome::Failed {
+                        log::warn!("apply_ime_open({open}) failed (async)");
+                    }
+                    app.executor.post_apply_ime_open(open, outcome);
+                    let platform: &mut dyn PlatformRuntime = &mut app.executor.platform;
+                    platform.post_ime_refresh();
+                });
+                drop(guard);
+            });
+            None
+        } else {
+            // ── sync path (Chrome / GJI 経路) — 既存挙動 ──
+            let platform: &mut dyn PlatformRuntime = &mut self.platform;
+            let outcome = platform.apply_ime_open(open);
+            if outcome == awase::platform::ImeOpenOutcome::Failed {
+                log::warn!("apply_ime_open({open}) failed");
+            }
+            platform.post_ime_refresh();
+            Some((open, outcome))
         }
     }
 
