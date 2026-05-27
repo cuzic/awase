@@ -21,58 +21,6 @@ pub enum ImmCapability {
     Unavailable,
 }
 
-/// IMM 能力キャッシュをファイルから読み込む。
-fn load_imm_cache(base_dir: &std::path::Path) -> std::collections::HashMap<String, ImmCapability> {
-    let path = base_dir.join(IMM_CACHE_FILENAME);
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return std::collections::HashMap::new();
-    };
-    let table: toml::Table = match content.parse() {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!("Failed to parse {}: {e}", path.display());
-            return std::collections::HashMap::new();
-        }
-    };
-    let mut cache = std::collections::HashMap::new();
-    if let Some(toml::Value::Table(classes)) = table.get("classes") {
-        for (class_name, value) in classes {
-            if let toml::Value::String(s) = value {
-                let cap = match s.as_str() {
-                    "works" => ImmCapability::Works,
-                    "unavailable" | "broken" => ImmCapability::Unavailable, // "broken" は旧フォーマット互換
-                    _ => continue,
-                };
-                cache.insert(class_name.clone(), cap);
-            }
-        }
-    }
-    if !cache.is_empty() {
-        log::info!("Loaded IMM capability cache: {} entries from {}", cache.len(), path.display());
-    }
-    cache
-}
-
-/// IMM 能力キャッシュをファイルに書き出す。
-fn save_imm_cache(base_dir: &std::path::Path, cache: &std::collections::HashMap<String, ImmCapability>) {
-    let path = base_dir.join(IMM_CACHE_FILENAME);
-    let mut classes = toml::Table::new();
-    for (class_name, cap) in cache {
-        let value = match cap {
-            ImmCapability::Works => "works",
-            ImmCapability::Unavailable => "unavailable",
-        };
-        classes.insert(class_name.clone(), toml::Value::String(value.to_string()));
-    }
-    let mut root = toml::Table::new();
-    root.insert("classes".to_string(), toml::Value::Table(classes));
-    let content = toml::to_string_pretty(&root).unwrap_or_default();
-    if let Err(e) = std::fs::write(&path, content) {
-        log::warn!("Failed to save IMM cache to {}: {e}", path.display());
-    } else {
-        log::debug!("Saved IMM capability cache: {} entries to {}", cache.len(), path.display());
-    }
-}
 
 // ── InjectionHint ──
 
@@ -204,7 +152,7 @@ pub struct ImmCapabilityStore {
 
 impl ImmCapabilityStore {
     pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
-        let cache = load_imm_cache(&base_dir);
+        let cache = Self::load(&base_dir);
         Self { cache, base_dir }
     }
 
@@ -218,7 +166,58 @@ impl ImmCapabilityStore {
 
     pub(crate) fn learn(&mut self, class_name: String, cap: ImmCapability) {
         self.cache.insert(class_name, cap);
-        save_imm_cache(&self.base_dir, &self.cache);
+        self.save();
+    }
+
+    fn load(base_dir: &std::path::Path) -> std::collections::HashMap<String, ImmCapability> {
+        let path = base_dir.join(IMM_CACHE_FILENAME);
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return std::collections::HashMap::new();
+        };
+        let table: toml::Table = match content.parse() {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("Failed to parse {}: {e}", path.display());
+                return std::collections::HashMap::new();
+            }
+        };
+        let mut cache = std::collections::HashMap::new();
+        if let Some(toml::Value::Table(classes)) = table.get("classes") {
+            for (class_name, value) in classes {
+                if let toml::Value::String(s) = value {
+                    let cap = match s.as_str() {
+                        "works" => ImmCapability::Works,
+                        "unavailable" | "broken" => ImmCapability::Unavailable, // "broken" は旧フォーマット互換
+                        _ => continue,
+                    };
+                    cache.insert(class_name.clone(), cap);
+                }
+            }
+        }
+        if !cache.is_empty() {
+            log::info!("Loaded IMM capability cache: {} entries from {}", cache.len(), path.display());
+        }
+        cache
+    }
+
+    fn save(&self) {
+        let path = self.base_dir.join(IMM_CACHE_FILENAME);
+        let mut classes = toml::Table::new();
+        for (class_name, cap) in &self.cache {
+            let value = match cap {
+                ImmCapability::Works => "works",
+                ImmCapability::Unavailable => "unavailable",
+            };
+            classes.insert(class_name.clone(), toml::Value::String(value.to_string()));
+        }
+        let mut root = toml::Table::new();
+        root.insert("classes".to_string(), toml::Value::Table(classes));
+        let content = toml::to_string_pretty(&root).unwrap_or_default();
+        if let Err(e) = std::fs::write(&path, content) {
+            log::warn!("Failed to save IMM cache to {}: {e}", path.display());
+        } else {
+            log::debug!("Saved IMM capability cache: {} entries to {}", self.cache.len(), path.display());
+        }
     }
 
     /// キャッシュをメモリとファイルの両方からクリアする。
