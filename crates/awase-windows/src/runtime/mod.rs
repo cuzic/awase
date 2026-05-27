@@ -673,6 +673,10 @@ fn send_all_modifier_key_ups() {
         })
         .collect();
 
+    // OutputActiveGuard: SendInput 実行中にユーザーキーが届いた場合、
+    // フックが RUNTIME 借用中（panic_reset の with_app 内）で再入しないよう
+    // OUTPUT_GATE.active=true で INPUT_DEFER に退避する。
+    let _guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
     let _ = crate::win32::send_input_safe(&inputs);
     log::debug!("Sent KeyUp for all modifier keys");
 }
