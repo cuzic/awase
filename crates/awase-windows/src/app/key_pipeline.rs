@@ -101,8 +101,7 @@ impl KeyEventPipeline<'_> {
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
             let _ = crate::with_app(|app| {
-                apply_focus_probe_to_app(
-                    app,
+                app.apply_focus_probe(
                     probe,
                     probe_started_ms,
                     warmup_ms,
@@ -316,12 +315,14 @@ const fn compute_focus_probe_grace(
     FocusProbeGraceFlags { warmup_grace_active, gji_grace_active, shadow_grace_active, warmup_elapsed, gji_idle_ms }
 }
 
-fn apply_effective_ime(app: &mut Runtime, effective: bool) {
-    let ms = hook::current_tick_ms();
-    if effective {
-        app.platform_state.reset_ime_detect_state();
+impl Runtime {
+    fn apply_effective_ime(&mut self, effective: bool) {
+        let ms = hook::current_tick_ms();
+        if effective {
+            self.platform_state.reset_ime_detect_state();
+        }
+        self.platform_state.write_focus_probe(effective, ms, self.engine.is_user_enabled());
     }
-    app.platform_state.write_focus_probe(effective, ms, app.engine.is_user_enabled());
 }
 
 #[allow(clippy::option_if_let_else)]
@@ -345,64 +346,66 @@ fn build_ime_on_suffix(
     }
 }
 
-/// read_ime_state_fast_async の結果を app に適用する（with_app 内で呼ぶ）。
-/// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
-#[allow(clippy::needless_pass_by_value, clippy::option_if_let_else)]
-fn apply_focus_probe_to_app(
-    app: &mut Runtime,
-    probe: crate::ime::FastImeProbeResult,
-    probe_started_ms: u64,
-    warmup_ms: u64,
-    gji_last_io_ms: u64,
-    last_focus_change_ms: u64,
-    shadow_on: bool,
-) {
-    let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
-    let ime_on_before_probe = app.platform_state.ime_on();
+impl Runtime {
+    /// read_ime_state_fast_async の結果を self に適用する（with_app 内で呼ぶ）。
+    /// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
+    #[allow(clippy::needless_pass_by_value, clippy::option_if_let_else)]
+    fn apply_focus_probe(
+        &mut self,
+        probe: crate::ime::FastImeProbeResult,
+        probe_started_ms: u64,
+        warmup_ms: u64,
+        gji_last_io_ms: u64,
+        last_focus_change_ms: u64,
+        shadow_on: bool,
+    ) {
+        let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
+        let ime_on_before_probe = self.platform_state.ime_on();
 
-    app.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
+        self.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
 
-    let now_ms = hook::current_tick_ms();
-    let signals = compute_focus_probe_grace(
-        now_ms, probe_age_ms, warmup_ms, gji_last_io_ms, last_focus_change_ms, shadow_on,
-    );
+        let now_ms = hook::current_tick_ms();
+        let signals = compute_focus_probe_grace(
+            now_ms, probe_age_ms, warmup_ms, gji_last_io_ms, last_focus_change_ms, shadow_on,
+        );
 
-    let suppressed_reason: Option<&'static str> = if let Some(on) = probe.ime_on {
-        let effective = on && probe.is_japanese_ime;
-        if !effective && signals.any() {
-            Some(signals.primary_reason())
+        let suppressed_reason: Option<&'static str> = if let Some(on) = probe.ime_on {
+            let effective = on && probe.is_japanese_ime;
+            if !effective && signals.any() {
+                Some(signals.primary_reason())
+            } else {
+                self.apply_effective_ime(effective);
+                None
+            }
         } else {
-            apply_effective_ime(app, effective);
             None
+        };
+
+        let ime_on_after_probe = self.platform_state.ime_on();
+        let input_mode_after_probe = self.platform_state.input_mode();
+        let ime_on_suffix = build_ime_on_suffix(probe.ime_on, suppressed_reason, &signals, probe_age_ms);
+
+        log::info!(
+            "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={} sig2={} sig3={}]",
+            probe_age_ms,
+            ime_on_after_probe,
+            ime_on_suffix,
+            input_mode_after_probe,
+            if signals.gji_idle_ms == u64::MAX { "never".to_string() } else { signals.gji_idle_ms.to_string() },
+            signals.warmup_grace_active,
+            signals.gji_grace_active,
+            signals.shadow_grace_active,
+        );
+
+        match suppressed_reason {
+            Some(reason) => log::debug!(
+                "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
+            ),
+            None if probe.ime_on.is_none() => log::warn!(
+                "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} が ObserverPoll まで持続 \
+                 [probe_age={probe_age_ms}ms, A/B判断: ime_on stale頻度を確認]",
+            ),
+            None => {}
         }
-    } else {
-        None
-    };
-
-    let ime_on_after_probe = app.platform_state.ime_on();
-    let input_mode_after_probe = app.platform_state.input_mode();
-    let ime_on_suffix = build_ime_on_suffix(probe.ime_on, suppressed_reason, &signals, probe_age_ms);
-
-    log::info!(
-        "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={} sig2={} sig3={}]",
-        probe_age_ms,
-        ime_on_after_probe,
-        ime_on_suffix,
-        input_mode_after_probe,
-        if signals.gji_idle_ms == u64::MAX { "never".to_string() } else { signals.gji_idle_ms.to_string() },
-        signals.warmup_grace_active,
-        signals.gji_grace_active,
-        signals.shadow_grace_active,
-    );
-
-    match suppressed_reason {
-        Some(reason) => log::debug!(
-            "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
-        ),
-        None if probe.ime_on.is_none() => log::warn!(
-            "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} が ObserverPoll まで持続 \
-             [probe_age={probe_age_ms}ms, A/B判断: ime_on stale頻度を確認]",
-        ),
-        None => {}
     }
 }
