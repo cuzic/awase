@@ -143,32 +143,56 @@ pub struct YabLayout {
     pub shift: YabFace,
 }
 
-/// 全角文字を半角文字に変換する。
-/// 全角 ASCII 範囲 (U+FF01..U+FF5E) に該当する場合、対応する半角文字を返す。
-fn fullwidth_to_halfwidth(ch: char) -> Option<char> {
-    let cp = u32::from(ch);
-    // 全角 ASCII: U+FF01 ('！') .. U+FF5E ('～')
-    // 対応する半角: U+0021 ('!') .. U+007E ('~')
-    if (0xFF01..=0xFF5E).contains(&cp) {
-        char::from_u32(cp - 0xFEE0)
-    } else {
-        None
+/// 全角↔半角変換のキャラクタ拡張。
+trait FullwidthCharExt {
+    /// 全角 ASCII 範囲 (U+FF01..U+FF5E) なら対応する半角文字を返す。
+    fn to_halfwidth_ascii(self) -> Option<char>;
+}
+
+impl FullwidthCharExt for char {
+    fn to_halfwidth_ascii(self) -> Option<char> {
+        let cp = u32::from(self);
+        // 全角 ASCII: U+FF01 ('！') .. U+FF5E ('～')
+        // 対応する半角: U+0021 ('!') .. U+007E ('~')
+        if (0xFF01..=0xFF5E).contains(&cp) {
+            char::from_u32(cp - 0xFEE0)
+        } else {
+            None
+        }
     }
 }
 
-/// 全角文字列を半角文字列に変換する。
-/// 各文字について全角→半角変換を試み、変換できない文字はそのまま残す。
-fn convert_fullwidth_str(s: &str) -> String {
-    s.chars()
-        .map(|ch| fullwidth_to_halfwidth(ch).unwrap_or(ch))
-        .collect()
+/// 全角↔半角変換の文字列拡張。
+trait FullwidthStrExt {
+    fn to_halfwidth_str(&self) -> String;
+    fn to_fullwidth_str(&self) -> String;
+    fn is_all_fullwidth_ascii(&self) -> bool;
 }
 
-/// 文字列が全角 ASCII 文字のみで構成されているかを判定する。
-fn is_all_fullwidth_ascii(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|ch| (0xFF01..=0xFF5E).contains(&u32::from(ch)))
+impl FullwidthStrExt for str {
+    fn to_halfwidth_str(&self) -> String {
+        self.chars().map(|ch| ch.to_halfwidth_ascii().unwrap_or(ch)).collect()
+    }
+
+    fn to_fullwidth_str(&self) -> String {
+        self.chars()
+            .map(|ch| {
+                let cp = u32::from(ch);
+                // 半角 ASCII: U+0021 ('!') .. U+007E ('~')
+                // 対応する全角: U+FF01 ('！') .. U+FF5E ('～')
+                if (0x0021..=0x007E).contains(&cp) {
+                    char::from_u32(cp + 0xFEE0).unwrap_or(ch)
+                } else {
+                    ch
+                }
+            })
+            .collect()
+    }
+
+    fn is_all_fullwidth_ascii(&self) -> bool {
+        !self.is_empty()
+            && self.chars().all(|ch| (0xFF01..=0xFF5E).contains(&u32::from(ch)))
+    }
 }
 
 /// 特殊キーワードと対応する `SpecialKey` のテーブル
@@ -193,7 +217,7 @@ fn strip_paired_quote(s: &str) -> Option<&str> {
 
 /// 全角 ASCII 文字列を半角変換し、Romaji または KeySequence として返す。
 fn classify_fullwidth(trimmed: &str) -> YabValue {
-    let half = convert_fullwidth_str(trimmed);
+    let half = trimmed.to_halfwidth_str();
     if half.chars().all(|ch| ch.is_ascii_alphabetic()) {
         YabValue::Romaji {
             romaji: half,
@@ -223,7 +247,7 @@ fn parse_value(raw: &str) -> YabValue {
     }
 
     // 全角 ASCII 文字列 → 半角変換してローマ字 or キーシーケンスとして扱う
-    if is_all_fullwidth_ascii(trimmed) {
+    if trimmed.is_all_fullwidth_ascii() {
         return classify_fullwidth(trimmed);
     }
 
@@ -433,33 +457,17 @@ impl YabLayout {
     }
 }
 
-/// 半角 ASCII 文字列を全角文字列に変換する（`convert_fullwidth_str` の逆変換）。
-fn halfwidth_to_fullwidth(s: &str) -> String {
-    s.chars()
-        .map(|ch| {
-            let cp = u32::from(ch);
-            // 半角 ASCII: U+0021 ('!') .. U+007E ('~')
-            // 対応する全角: U+FF01 ('！') .. U+FF5E ('～')
-            if (0x0021..=0x007E).contains(&cp) {
-                char::from_u32(cp + 0xFEE0).unwrap_or(ch)
-            } else {
-                ch
-            }
-        })
-        .collect()
-}
-
 /// `YabValue` を .yab テキスト形式に変換する。
 fn serialize_value(value: &YabValue) -> String {
     match value {
-        YabValue::Romaji { romaji, .. } => halfwidth_to_fullwidth(romaji),
+        YabValue::Romaji { romaji, .. } => romaji.to_fullwidth_str(),
         YabValue::Literal(s) => {
             // Literal は常にクォート付きでシリアライズする
             format!("'{s}'")
         }
         YabValue::KeySequence(s) => {
             // KeySequence は全角クォート無しでシリアライズする
-            halfwidth_to_fullwidth(s)
+            s.to_fullwidth_str()
         }
         YabValue::Special(SpecialKey::Backspace) => "後".to_string(),
         YabValue::Special(SpecialKey::Escape) => "逃".to_string(),

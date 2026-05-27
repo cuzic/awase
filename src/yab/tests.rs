@@ -1,40 +1,40 @@
 use super::*;
 
-// ── 全角→半角変換テスト ──
+// ── 全角↔半角変換テスト ──
 
 #[test]
 fn fullwidth_alpha_to_halfwidth() {
-    assert_eq!(fullwidth_to_halfwidth('ａ'), Some('a'));
-    assert_eq!(fullwidth_to_halfwidth('ｚ'), Some('z'));
-    assert_eq!(fullwidth_to_halfwidth('Ａ'), Some('A'));
-    assert_eq!(fullwidth_to_halfwidth('Ｚ'), Some('Z'));
+    assert_eq!('ａ'.to_halfwidth_ascii(), Some('a'));
+    assert_eq!('ｚ'.to_halfwidth_ascii(), Some('z'));
+    assert_eq!('Ａ'.to_halfwidth_ascii(), Some('A'));
+    assert_eq!('Ｚ'.to_halfwidth_ascii(), Some('Z'));
 }
 
 #[test]
 fn fullwidth_digit_to_halfwidth() {
-    assert_eq!(fullwidth_to_halfwidth('０'), Some('0'));
-    assert_eq!(fullwidth_to_halfwidth('９'), Some('9'));
+    assert_eq!('０'.to_halfwidth_ascii(), Some('0'));
+    assert_eq!('９'.to_halfwidth_ascii(), Some('9'));
 }
 
 #[test]
 fn fullwidth_symbol_to_halfwidth() {
-    assert_eq!(fullwidth_to_halfwidth('！'), Some('!'));
-    assert_eq!(fullwidth_to_halfwidth('？'), Some('?'));
-    assert_eq!(fullwidth_to_halfwidth('＃'), Some('#'));
+    assert_eq!('！'.to_halfwidth_ascii(), Some('!'));
+    assert_eq!('？'.to_halfwidth_ascii(), Some('?'));
+    assert_eq!('＃'.to_halfwidth_ascii(), Some('#'));
 }
 
 #[test]
 fn non_fullwidth_returns_none() {
-    assert_eq!(fullwidth_to_halfwidth('a'), None);
-    assert_eq!(fullwidth_to_halfwidth('あ'), None);
+    assert_eq!('a'.to_halfwidth_ascii(), None);
+    assert_eq!('あ'.to_halfwidth_ascii(), None);
 }
 
 #[test]
 fn fullwidth_string_conversion() {
-    assert_eq!(convert_fullwidth_str("ｋａ"), "ka");
-    assert_eq!(convert_fullwidth_str("ｓｉ"), "si");
-    assert_eq!(convert_fullwidth_str("Ａ"), "A");
-    assert_eq!(convert_fullwidth_str("１２３"), "123");
+    assert_eq!("ｋａ".to_halfwidth_str(), "ka");
+    assert_eq!("ｓｉ".to_halfwidth_str(), "si");
+    assert_eq!("Ａ".to_halfwidth_str(), "A");
+    assert_eq!("１２３".to_halfwidth_str(), "123");
 }
 
 // ── parse_value テスト ──
@@ -500,7 +500,7 @@ fn test_fullwidth_digits_and_symbols() {
     assert_eq!(parse_value("＃"), YabValue::KeySequence("#".to_string()));
     assert_eq!(parse_value("＆"), YabValue::KeySequence("&".to_string()));
     // 全角の範囲外端の文字
-    assert_eq!(fullwidth_to_halfwidth('～'), Some('~')); // U+FF5E -> '~'
+    assert_eq!('～'.to_halfwidth_ascii(), Some('~')); // U+FF5E -> '~'
 }
 
 // ── 不明セクション名テスト ──
@@ -569,32 +569,32 @@ fn test_load_nicola_yab_file() {
     );
 }
 
-// ── halfwidth_to_fullwidth テスト ──
+// ── to_fullwidth_str テスト ──
 
 #[test]
 fn test_halfwidth_to_fullwidth_alpha() {
-    assert_eq!(halfwidth_to_fullwidth("ka"), "ｋａ");
-    assert_eq!(halfwidth_to_fullwidth("si"), "ｓｉ");
-    assert_eq!(halfwidth_to_fullwidth("A"), "Ａ");
-    assert_eq!(halfwidth_to_fullwidth("Z"), "Ｚ");
+    assert_eq!("ka".to_fullwidth_str(), "ｋａ");
+    assert_eq!("si".to_fullwidth_str(), "ｓｉ");
+    assert_eq!("A".to_fullwidth_str(), "Ａ");
+    assert_eq!("Z".to_fullwidth_str(), "Ｚ");
 }
 
 #[test]
 fn test_halfwidth_to_fullwidth_digits() {
-    assert_eq!(halfwidth_to_fullwidth("123"), "１２３");
-    assert_eq!(halfwidth_to_fullwidth("0"), "０");
+    assert_eq!("123".to_fullwidth_str(), "１２３");
+    assert_eq!("0".to_fullwidth_str(), "０");
 }
 
 #[test]
 fn test_halfwidth_to_fullwidth_symbols() {
-    assert_eq!(halfwidth_to_fullwidth("!"), "！");
-    assert_eq!(halfwidth_to_fullwidth("#"), "＃");
-    assert_eq!(halfwidth_to_fullwidth("~"), "～");
+    assert_eq!("!".to_fullwidth_str(), "！");
+    assert_eq!("#".to_fullwidth_str(), "＃");
+    assert_eq!("~".to_fullwidth_str(), "～");
 }
 
 #[test]
 fn test_halfwidth_to_fullwidth_empty() {
-    assert_eq!(halfwidth_to_fullwidth(""), "");
+    assert_eq!("".to_fullwidth_str(), "");
 }
 
 // ── serialize_value テスト ──
