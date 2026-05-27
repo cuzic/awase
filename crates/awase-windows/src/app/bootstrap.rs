@@ -145,7 +145,7 @@ pub(super) fn init_engine_validated(
     ))?;
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
-    let layouts = scan_layouts(&layouts_dir, diag)?;
+    let layouts = LayoutEntry::scan_all(&layouts_dir, diag)?;
     let layout_names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
     log::info!("Available layouts: {layout_names:?}");
 
@@ -458,57 +458,59 @@ pub(super) fn install_ctrl_handler() -> Result<()> {
     Ok(())
 }
 
-/// layouts_dir 内の *.yab を全てスキャンして配列一覧を構築する
-fn scan_layouts(
-    layouts_dir: &Path,
-    diag: &mut StartupDiagnostics,
-) -> Result<Vec<LayoutEntry>> {
-    let mut layouts = Vec::new();
+impl LayoutEntry {
+    /// layouts_dir 内の *.yab を全てスキャンして配列一覧を構築する
+    pub(super) fn scan_all(
+        layouts_dir: &Path,
+        diag: &mut StartupDiagnostics,
+    ) -> Result<Vec<Self>> {
+        let mut layouts = Vec::new();
 
-    if !layouts_dir.is_dir() {
-        diag.warn(format!(
-            "レイアウトディレクトリが見つかりません: {}",
-            layouts_dir.display()
-        ));
-        return Ok(layouts);
-    }
+        if !layouts_dir.is_dir() {
+            diag.warn(format!(
+                "レイアウトディレクトリが見つかりません: {}",
+                layouts_dir.display()
+            ));
+            return Ok(layouts);
+        }
 
-    let entries = std::fs::read_dir(layouts_dir).with_context(|| {
-        format!(
-            "Failed to read layouts directory: {}",
-            layouts_dir.display()
-        )
-    })?;
+        let entries = std::fs::read_dir(layouts_dir).with_context(|| {
+            format!(
+                "Failed to read layouts directory: {}",
+                layouts_dir.display()
+            )
+        })?;
 
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "yab") {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => match YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis)
-                {
-                    Ok(yab) => {
-                        let yab = yab.resolve_kana();
-                        log::info!("Discovered layout: {} ({})", yab.name, path.display());
-                        layouts.push(LayoutEntry {
-                            name: yab.name.clone(),
-                            layout: yab,
-                        });
-                    }
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "yab") {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => match YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis)
+                    {
+                        Ok(yab) => {
+                            let yab = yab.resolve_kana();
+                            log::info!("Discovered layout: {} ({})", yab.name, path.display());
+                            layouts.push(Self {
+                                name: yab.name.clone(),
+                                layout: yab,
+                            });
+                        }
+                        Err(e) => {
+                            diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
+                        }
+                    },
                     Err(e) => {
                         diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
                     }
-                },
-                Err(e) => {
-                    diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
                 }
             }
         }
+
+        layouts.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(layouts)
     }
-
-    layouts.sort_by(|a, b| a.name.cmp(&b.name));
-
-    Ok(layouts)
 }
 
 /// アプリケーション全体の起動シーケンスを実行する。
