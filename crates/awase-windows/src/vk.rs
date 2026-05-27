@@ -42,9 +42,12 @@ pub const VK_RCONTROL: VkCode = VkCode(0xA3);
 pub const VK_LMENU: VkCode = VkCode(0xA4);
 pub const VK_RMENU: VkCode = VkCode(0xA5);
 pub const VK_OEM_MINUS: VkCode = VkCode(0xBD);
+pub const VK_LWIN:   VkCode = VkCode(0x5B);
+pub const VK_RWIN:   VkCode = VkCode(0x5C);
 pub const VK_DBE_ALPHANUMERIC: VkCode = VkCode(0xF0);
 pub const VK_DBE_KATAKANA: VkCode = VkCode(0xF1);
 pub const VK_DBE_HIRAGANA: VkCode = VkCode(0xF2);
+pub const VK_NONAME: VkCode = VkCode(0xFC);
 
 // ── IME キー種別 ──────────────────────────────────────────
 

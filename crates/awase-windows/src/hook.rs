@@ -105,13 +105,13 @@ pub unsafe fn send_ping() {
         VIRTUAL_KEY,
     };
 
-    let vk_noname = 0xFC_u16; // VK_NONAME — 何も入力されない無害なキー
+    // VK_NONAME — 何も入力されない無害なキー
     let inputs = [
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk_noname),
+                    wVk: VIRTUAL_KEY(crate::vk::VK_NONAME.0),
                     wScan: 0,
                     dwFlags: KEYBD_EVENT_FLAGS(0),
                     time: 0,
@@ -123,7 +123,7 @@ pub unsafe fn send_ping() {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk_noname),
+                    wVk: VIRTUAL_KEY(crate::vk::VK_NONAME.0),
                     wScan: 0,
                     dwFlags: KEYEVENTF_KEYUP,
                     time: 0,

@@ -126,8 +126,8 @@ impl PlatformState {
                 last_ctrl_bypass_keydown_us: None,
             },
             hook_config: HookConfig {
-                left_thumb_vk: awase::types::VkCode(0x1D),  // VK_NONCONVERT
-                right_thumb_vk: awase::types::VkCode(0x1C), // VK_CONVERT
+                left_thumb_vk: crate::vk::VK_NONCONVERT,
+                right_thumb_vk: crate::vk::VK_CONVERT,
             },
             last_hook_activity_ms: 0,
             hook_event_count: 0,
