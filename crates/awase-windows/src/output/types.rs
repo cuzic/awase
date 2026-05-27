@@ -12,22 +12,24 @@ pub(crate) enum InjectionMode {
     Tsf,
 }
 
-/// `InjectionHint` と `AppKind` から `InjectionMode` を決定する純粋関数。
+/// `InjectionHint` と `AppKind` から `InjectionMode` を決定する。
 ///
 /// 優先順位:
 ///   1. `InjectionHint::ForceTsf` → Tsf
 ///   2. `InjectionHint::ForceVk`  → Vk
 ///   3. `AppKind::TsfNative`      → Vk
 ///   4. それ以外 (Win32 / Uwp)   → Unicode
-pub(crate) fn resolve_injection_mode_from(hint: InjectionHint, app_kind: AppKind) -> InjectionMode {
-    match hint {
-        InjectionHint::ForceTsf => InjectionMode::Tsf,
-        InjectionHint::ForceVk  => InjectionMode::Vk,
-        InjectionHint::Default  => {
-            if app_kind == AppKind::TsfNative {
-                InjectionMode::Vk
-            } else {
-                InjectionMode::Unicode
+impl From<(InjectionHint, AppKind)> for InjectionMode {
+    fn from((hint, app_kind): (InjectionHint, AppKind)) -> Self {
+        match hint {
+            InjectionHint::ForceTsf => Self::Tsf,
+            InjectionHint::ForceVk  => Self::Vk,
+            InjectionHint::Default  => {
+                if app_kind == AppKind::TsfNative {
+                    Self::Vk
+                } else {
+                    Self::Unicode
+                }
             }
         }
     }

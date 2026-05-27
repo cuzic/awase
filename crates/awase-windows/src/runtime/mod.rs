@@ -264,9 +264,8 @@ impl Runtime {
         // injection_mode を push — focus + app_kind が確定したタイミングで output に通知する
         {
             let hint = self.executor.platform.focus.injection_hint();
-            let new_mode = crate::output::types::resolve_injection_mode_from(
-                hint,
-                self.platform_state.focus.app_kind,
+            let new_mode = crate::output::types::InjectionMode::from(
+                (hint, self.platform_state.focus.app_kind),
             );
             self.executor.platform.output.update_injection_mode(new_mode);
         }
