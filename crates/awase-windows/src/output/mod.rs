@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use std::time::Duration;
 use awase::config::OutputMode;
+use awase::kana_table::KanaTable;
 use awase::types::{KeyAction, VkCode};
 
 pub use crate::tsf::output::ColdReason;
@@ -47,10 +47,8 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 /// SendInput によるキー注入を行うモジュール
 pub struct Output {
     mode: OutputMode,
-    /// Unicode モード用: ローマ字→ひらがな変換テーブル
-    romaji_to_kana: Option<HashMap<String, char>>,
-    /// Chrome VK モード用: かな→ローマ字逆引きテーブル
-    kana_to_romaji: HashMap<char, String>,
+    /// ローマ字↔かな双方向テーブル（Unicode モード・Chrome VK モード両用）
+    kana_table: KanaTable,
     /// Chrome VK モード用: 記号→VK コードマッピング
     symbol_to_vk: HashMap<char, (VkCode, bool)>,
     /// TSF composition context の warm/cold 状態管理。
@@ -107,13 +105,9 @@ pub(crate) struct WarmupOutcome {
 /// - ノンブロッキング TSF/Chrome プローブ FSM（`advance_tsf_probe` とその内部メソッド群）
 impl Output {
     pub fn new(mode: OutputMode) -> Self {
-        // romaji_to_kana テーブルは UWP アプリ向けの Unicode フォールバックで
-        // 常に必要なので、設定に関わらず構築する。
-        let romaji_to_kana = Some(awase::kana_table::build_romaji_to_kana());
         Self {
             mode,
-            romaji_to_kana,
-            kana_to_romaji: awase::kana_table::build_kana_to_romaji(),
+            kana_table: KanaTable::build(),
             symbol_to_vk: build_symbol_to_vk(),
             composition: crate::tsf::probe::CompositionState::new(),
             pending_tsf: std::cell::RefCell::new(None),
@@ -310,10 +304,6 @@ impl Output {
     /// 出力モードを変更する
     pub fn set_mode(&mut self, mode: OutputMode) {
         self.mode = mode;
-        if mode == OutputMode::Unicode {
-            self.romaji_to_kana
-                .get_or_insert_with(awase::kana_table::build_romaji_to_kana);
-        }
     }
 
     /// VK/TSF 出力後に「最終キー活動時刻」を同期更新する。

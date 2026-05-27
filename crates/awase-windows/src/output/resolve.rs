@@ -30,7 +30,7 @@ impl Output {
     /// `send_char_as_tsf` / `send_char_as_vk` が共通で使う 3 段ルックアップ。
     #[must_use]
     pub(super) fn resolve_char(&self, ch: char) -> CharResolution<'_> {
-        if let Some(romaji) = self.kana_to_romaji.get(&ch) {
+        if let Some(romaji) = self.kana_table.romaji_for_kana(ch) {
             return CharResolution::Romaji(romaji);
         }
         if let Some(&(vk, shift)) = self.symbol_to_vk.get(&ch) {

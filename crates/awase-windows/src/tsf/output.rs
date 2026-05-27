@@ -134,10 +134,9 @@ pub(crate) const fn make_key_input_ex(vk: awase::types::VkCode, is_keyup: bool, 
 /// ローマ字文字列に対応するひらがな文字を返す静的ルックアップ。
 /// OnceLock で初回のみテーブルを構築し、以降は参照を返す。
 pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
-    use std::collections::HashMap;
     use std::sync::OnceLock;
-    static TABLE: OnceLock<HashMap<String, char>> = OnceLock::new();
-    TABLE.get_or_init(awase::kana_table::build_romaji_to_kana).get(romaji).copied()
+    static TABLE: OnceLock<awase::kana_table::KanaTable> = OnceLock::new();
+    TABLE.get_or_init(awase::kana_table::KanaTable::build).kana_for_romaji(romaji)
 }
 
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。

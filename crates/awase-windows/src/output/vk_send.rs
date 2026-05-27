@@ -293,7 +293,7 @@ impl Output {
     /// IME を経由せず、ひらがなを直接テキストフィールドに挿入する。
     /// 変換テーブルにないローマ字は PerKey モードでフォールバック送信する。
     pub(super) fn send_romaji_as_unicode(&self, romaji: &str) {
-        if let Some(&kana) = self.romaji_to_kana.as_ref().and_then(|t| t.get(romaji)) {
+        if let Some(kana) = self.kana_table.kana_for_romaji(romaji) {
             self.send_unicode_char(kana);
             return;
         }
