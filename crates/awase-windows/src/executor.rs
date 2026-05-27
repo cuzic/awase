@@ -14,7 +14,7 @@ use awase::config::HookMode;
 use awase::engine::{
     Decision, Effect, ImeEffect, InputEffect, TimerEffect, UiEffect,
 };
-use awase::platform::PlatformRuntime;
+use awase::platform::{EffectOrigin, PlatformRuntime};
 use awase::types::{RawKeyEvent, VkCode};
 
 use crate::hook::CallbackResult;
@@ -581,8 +581,8 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform = &mut self.platform` が `self.platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        if let Effect::Ime(ImeEffect::SetOpen { open, origin: _ }) = effect {
-            return self.dispatch_ime_set_open(open);
+        if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
+            return self.dispatch_ime_set_open(open, origin);
         }
         let platform: &mut dyn PlatformRuntime = &mut self.platform;
         match effect {
@@ -633,6 +633,7 @@ impl DecisionExecutor {
     fn dispatch_ime_set_open(
         &mut self,
         open: bool,
+        origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         let imm_first = {
             let view = self.platform.build_ime_control_view();
@@ -669,7 +670,27 @@ impl DecisionExecutor {
             });
             None
         } else {
-            // ── sync path (Chrome / GJI 経路) — 既存挙動 ──
+            // ── sync path (Chrome / GJI 経路) ──
+            //
+            // EngineIntent (Ctrl+無変換 等、ユーザーの明示的操作) かつ kanji-toggle プロファイル
+            // (Chrome/Edge 等 Imm32Unavailable) の場合、shadow state が desync していても
+            // VK_KANJI / F14 を確実に送信するため latch を !open に強制する。
+            //
+            // 背景: フォーカス変更直後や awase 起動時に Chrome の実 IME 状態が unknown になり、
+            // last_applied_ime_on=false のまま Chrome の IME が ON になっていることがある。
+            // この状態で KanjiToggle/GjiDirect が shadow=desired と判断してスキップし、
+            // Ctrl+無変換 が効かなくなる。
+            // ユーザーの明示的操作では shadow desync を無視して必ず送信することで対処する。
+            if origin == EffectOrigin::EngineIntent {
+                let profile = self.platform.focus.current_app_profile();
+                if profile.uses_kanji_toggle() {
+                    self.platform.output.set_ime_apply_latch(!open);
+                    log::debug!(
+                        "[dispatch-ime] EngineIntent+kanji-toggle: override latch={} → force VK_KANJI/F14",
+                        !open
+                    );
+                }
+            }
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
             let outcome = platform.apply_ime_open(open);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
