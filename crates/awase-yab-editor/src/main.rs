@@ -1,9 +1,8 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
-use awase::kana_table::build_romaji_to_kana;
+use awase::kana_table::KanaTable;
 use awase::scanmap::{KeyboardModel, PhysicalPos};
 use awase::types::SpecialKey;
 use awase::yab::{YabFace, YabLayout, YabValue};
@@ -50,7 +49,7 @@ struct YabEditor {
     edit_kind: ValueKind,
     edit_value: String,
     edit_special_idx: usize,
-    romaji_table: HashMap<String, char>,
+    kana_table: KanaTable,
     file_path: Option<PathBuf>,
     file_path_buf: String,
     modified: bool,
@@ -101,7 +100,7 @@ impl YabEditor {
             edit_kind: ValueKind::None,
             edit_value: String::new(),
             edit_special_idx: 0,
-            romaji_table: build_romaji_to_kana(),
+            kana_table: KanaTable::build(),
             file_path: fp,
             file_path_buf: path_str,
             modified: false,
@@ -166,7 +165,7 @@ impl YabEditor {
                 if romaji.is_empty() {
                     YabValue::None
                 } else {
-                    let kana = self.romaji_table.get(&romaji).copied();
+                    let kana = self.kana_table.kana_for_romaji(&romaji);
                     YabValue::Romaji { romaji, kana }
                 }
             }
@@ -542,13 +541,9 @@ impl YabEditor {
                     }
                 });
                 let preview: String = self
-                    .romaji_table
-                    .get(self.edit_value.trim())
-                    .map_or_else(|| "（未対応）".to_string(), |c| {
-                        let mut s = String::new();
-                        s.push(*c);
-                        s
-                    });
+                    .kana_table
+                    .kana_for_romaji(self.edit_value.trim())
+                    .map_or_else(|| "（未対応）".to_string(), |c| c.to_string());
                 ui.horizontal(|ui| {
                     ui.label("かな変換:");
                     ui.label(
