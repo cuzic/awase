@@ -139,6 +139,12 @@ impl Output {
         self.composition.last_applied_ime_on()
     }
 
+    /// 最後の `apply_ime_open` 完了時刻（ms）を返す。未設定は 0。
+    #[must_use]
+    pub fn last_applied_ime_on_ms(&self) -> u64 {
+        self.composition.last_applied_ime_on_ms()
+    }
+
     /// 最後の `send_keys` 完了からの経過時間（ms）。
     /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]

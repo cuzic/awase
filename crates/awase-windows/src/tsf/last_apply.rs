@@ -25,28 +25,36 @@
 #[derive(Debug)]
 pub struct LastAppliedImeState {
     value: std::cell::Cell<Option<bool>>,
+    applied_ms: std::cell::Cell<u64>,
 }
 
 impl LastAppliedImeState {
     pub const fn new() -> Self {
-        Self { value: std::cell::Cell::new(None) }
+        Self { value: std::cell::Cell::new(None), applied_ms: std::cell::Cell::new(0) }
     }
 
     /// `apply_ime_open` の完了後に呼ぶ。
     pub fn set(&self, value: bool) {
         log::debug!("[last-applied-ime] set({value})");
         self.value.set(Some(value));
+        self.applied_ms.set(crate::hook::current_tick_ms());
     }
 
     /// フォーカス変更時にクリアする。
     pub fn invalidate(&self) {
         log::debug!("[last-applied-ime] invalidate (focus changed)");
         self.value.set(None);
+        self.applied_ms.set(0);
     }
 
     /// 記録値を返す。未設定（フォーカス変更直後など）は `fallback` を使う。
     pub fn get_or(&self, fallback: bool) -> bool {
         self.value.get().unwrap_or(fallback)
+    }
+
+    /// 最後の `set` 呼び出し時刻（ms）を返す。未設定は 0。
+    pub fn applied_ms(&self) -> u64 {
+        self.applied_ms.get()
     }
 }
 

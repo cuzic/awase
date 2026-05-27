@@ -482,6 +482,12 @@ impl CompositionState {
         self.last_applied.get_or(false)
     }
 
+    /// 最後の `apply_ime_open` 完了時刻（ms）を返す。未設定は 0。
+    #[must_use]
+    pub fn last_applied_ime_on_ms(&self) -> u64 {
+        self.last_applied.applied_ms()
+    }
+
     /// 最後に cold にマークされた理由を返す。
     #[must_use]
     pub const fn last_cold_reason(&self) -> crate::output::ColdReason {

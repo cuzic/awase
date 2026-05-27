@@ -688,11 +688,28 @@ impl DecisionExecutor {
             if origin == EffectOrigin::EngineIntent {
                 let profile = self.platform.focus.current_app_profile();
                 if !profile.can_use_imm32_cross_process() {
-                    self.platform.output.set_ime_apply_latch(!open);
-                    log::debug!(
-                        "[dispatch-ime] EngineIntent+no-imm32 (profile={:?}): override latch={} → force VK_KANJI/F14",
-                        profile, !open
-                    );
+                    // KeyDown (Phase1) と KeyUp (Phase2 エンジン起動) が同じ方向の
+                    // EngineIntent を短時間に二回送ると VK_KANJI がトグルして逆になる。
+                    // 直前 300ms 以内に同方向を送信済みの場合はラッチ強制をスキップする。
+                    let last_ms = self.platform.output.last_applied_ime_on_ms();
+                    let now_ms = crate::hook::current_tick_ms();
+                    let same_dir_recently = self.platform.output.last_applied_ime_on() == open
+                        && last_ms > 0
+                        && now_ms.saturating_sub(last_ms) < 300;
+                    if same_dir_recently {
+                        log::debug!(
+                            "[dispatch-ime] EngineIntent+no-imm32 (profile={:?}): skip latch force \
+                             (same dir={open} sent {}ms ago)",
+                            profile,
+                            now_ms.saturating_sub(last_ms)
+                        );
+                    } else {
+                        self.platform.output.set_ime_apply_latch(!open);
+                        log::debug!(
+                            "[dispatch-ime] EngineIntent+no-imm32 (profile={:?}): override latch={} → force VK_KANJI/F14",
+                            profile, !open
+                        );
+                    }
                 }
             }
             let platform: &mut dyn PlatformRuntime = &mut self.platform;
