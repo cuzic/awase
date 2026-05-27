@@ -106,7 +106,7 @@ pub struct PlatformState {
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
     /// 現在のフォーカスアプリに適用されるキーマップルール
-    pub active_keymaps: Vec<crate::keymap::CompiledKeymap>,
+    pub active_keymaps: crate::keymap::KeymapTable,
 }
 
 impl PlatformState {
@@ -125,7 +125,7 @@ impl PlatformState {
             },
             last_hook_activity_ms: 0,
             sync_key_gate: SyncKeyGate::new(),
-            active_keymaps: Vec::new(),
+            active_keymaps: crate::keymap::KeymapTable::default(),
         }
     }
 }

@@ -58,7 +58,7 @@ pub struct Runtime {
     /// Platform 層の全状態
     pub platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
-    pub all_keymaps: Vec<crate::keymap::CompiledKeymap>,
+    pub all_keymaps: crate::keymap::KeymapTable,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -340,7 +340,7 @@ impl Runtime {
         {
             let process_name = &self.executor.platform.focus.current_process_name;
             self.platform_state.active_keymaps =
-                crate::keymap::filter_active_keymaps(&self.all_keymaps, process_name);
+                self.all_keymaps.filter_active(process_name);
             log::debug!("[keymap] active rules updated: {} rule(s) for process={:?}",
                 self.platform_state.active_keymaps.len(), process_name);
         }

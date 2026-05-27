@@ -303,7 +303,7 @@ pub(super) fn initialize_app(
     sync_off_keys: Vec<VkCode>,
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
-    all_keymaps: Vec<crate::keymap::CompiledKeymap>,
+    all_keymaps: crate::keymap::KeymapTable,
 ) {
     let mut ps = crate::PlatformState::new();
     ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
@@ -613,7 +613,7 @@ pub(super) fn run_all() -> Result<()> {
     );
     engine.set_thumb_vks(left_thumb_vk, right_thumb_vk);
 
-    let compiled_keymaps = crate::keymap::compile_keymaps(&config.keymaps);
+    let compiled_keymaps = crate::keymap::KeymapTable::new(&config.keymaps);
     initialize_app(
         engine,
         system_tray,
