@@ -2,7 +2,8 @@
 //!
 //! evdev の `VirtualDevice` を使って、キーイベントを `/dev/uinput` 経由で注入する。
 
-use awase::types::{KeyAction, SpecialKey};
+use awase::engine::{Decision, Effect, InputEffect, TimerEffect};
+use awase::types::{KeyAction, KeyEventType, SpecialKey, VkCode};
 use evdev::{uinput::VirtualDeviceBuilder, AttributeSet, EventType, InputEvent, Key};
 use log::warn;
 
@@ -126,6 +127,21 @@ impl UinputOutput {
                 KeyAction::Romaji(s) => {
                     self.send_romaji(s);
                 }
+                KeyAction::KeySequence(s) => {
+                    for ch in s.chars() {
+                        if let Some((code, needs_shift)) = ascii_to_evdev(ch) {
+                            if needs_shift {
+                                self.emit_key(KEY_LEFTSHIFT, 1);
+                            }
+                            self.send_key_press_release(code);
+                            if needs_shift {
+                                self.emit_key(KEY_LEFTSHIFT, 0);
+                            }
+                        } else {
+                            warn!("KeySequence char '{ch}' has no evdev keycode mapping, skipping");
+                        }
+                    }
+                }
                 KeyAction::Suppress => {}
             }
         }
@@ -158,6 +174,63 @@ impl UinputOutput {
                 }
             } else {
                 warn!("Romaji char '{ch}' has no evdev keycode mapping, skipping");
+            }
+        }
+    }
+
+    /// `Decision` を実行し、副作用を uinput デバイスに反映する。
+    pub fn execute_decision(&mut self, decision: &Decision, vk: VkCode, event_type: KeyEventType) {
+        match decision {
+            Decision::PassThrough => {
+                // Device is grabbed, so we must re-inject the key via uinput
+                self.reinject(vk, event_type);
+            }
+            Decision::PassThroughWith { effects } => {
+                self.reinject(vk, event_type);
+                self.execute_effects(effects);
+            }
+            Decision::Consume { effects } => {
+                self.execute_effects(effects);
+            }
+        }
+    }
+
+    /// パススルーキーを uinput 経由で再注入する。
+    fn reinject(&mut self, vk: VkCode, event_type: KeyEventType) {
+        match event_type {
+            KeyEventType::KeyDown => {
+                self.send_keys(&[KeyAction::Key(vk)]);
+            }
+            KeyEventType::KeyUp => {
+                self.send_keys(&[KeyAction::KeyUp(vk)]);
+            }
+        }
+    }
+
+    /// `Effect` リストを順に実行する。
+    pub fn execute_effects(&mut self, effects: &[Effect]) {
+        for effect in effects {
+            match effect {
+                Effect::Input(InputEffect::SendKeys(actions)) => {
+                    self.send_keys(actions);
+                }
+                Effect::Input(InputEffect::ReinjectKey(raw_event)) => {
+                    self.reinject(raw_event.vk_code, raw_event.event_type);
+                }
+                Effect::Timer(TimerEffect::Set { id, duration }) => {
+                    log::debug!(
+                        "Timer set request: id={id}, duration={duration:?} (not yet implemented)"
+                    );
+                }
+                Effect::Timer(TimerEffect::Kill(id)) => {
+                    log::debug!("Timer kill request: id={id} (not yet implemented)");
+                }
+                Effect::Ime(ime_effect) => {
+                    log::debug!("IME effect: {ime_effect:?} (not yet implemented)");
+                }
+                Effect::Ui(ui_effect) => {
+                    log::debug!("UI effect: {ui_effect:?}");
+                }
             }
         }
     }

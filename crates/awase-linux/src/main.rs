@@ -2,10 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use awase::config::AppConfig;
-use awase::engine::{
-    Decision, Effect, Engine, InputContext, InputEffect, NicolaFsm, SpecialKeyCombos,
-    TimerEffect,
-};
+use awase::engine::{Engine, InputContext, InputModeState, NicolaFsm, SpecialKeyCombos};
 use awase::scanmap::KeyboardModel;
 use awase::yab::YabLayout;
 
@@ -116,7 +113,7 @@ fn main() -> Result<()> {
 
         let ctx = InputContext {
             ime_on: true, // Assume IME ON for now
-            is_romaji: true,
+            input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
             modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },
             left_thumb_down: None,
@@ -124,78 +121,10 @@ fn main() -> Result<()> {
         };
         let decision = engine.on_input(event, &ctx);
 
-        execute_decision(&decision, &mut output, vk, event_type);
+        output.execute_decision(&decision, vk, event_type);
 
         true // continue loop
     })?;
 
     Ok(())
-}
-
-/// `Decision` を実行し、副作用を uinput デバイスに反映する。
-fn execute_decision(
-    decision: &Decision,
-    output: &mut UinputOutput,
-    vk: awase::types::VkCode,
-    event_type: awase::types::KeyEventType,
-) {
-    match decision {
-        Decision::PassThrough => {
-            // Device is grabbed, so we must re-inject the key via uinput
-            reinject_key(output, vk, event_type);
-        }
-        Decision::PassThroughWith { effects } => {
-            reinject_key(output, vk, event_type);
-            execute_effects(effects, output);
-        }
-        Decision::Consume { effects } => {
-            execute_effects(effects, output);
-        }
-    }
-}
-
-/// パススルーキーを uinput 経由で再注入する。
-fn reinject_key(
-    output: &mut UinputOutput,
-    vk: awase::types::VkCode,
-    event_type: awase::types::KeyEventType,
-) {
-    use awase::types::{KeyAction, KeyEventType};
-
-    match event_type {
-        KeyEventType::KeyDown => {
-            output.send_keys(&[KeyAction::Key(vk)]);
-        }
-        KeyEventType::KeyUp => {
-            output.send_keys(&[KeyAction::KeyUp(vk)]);
-        }
-    }
-}
-
-/// `Effect` リストを順に実行する。
-fn execute_effects(effects: &[Effect], output: &mut UinputOutput) {
-    for effect in effects {
-        match effect {
-            Effect::Input(InputEffect::SendKeys(actions)) => {
-                output.send_keys(actions);
-            }
-            Effect::Input(InputEffect::ReinjectKey(raw_event)) => {
-                reinject_key(output, raw_event.vk_code, raw_event.event_type);
-            }
-            Effect::Timer(TimerEffect::Set { id, duration }) => {
-                log::debug!(
-                    "Timer set request: id={id}, duration={duration:?} (not yet implemented)"
-                );
-            }
-            Effect::Timer(TimerEffect::Kill(id)) => {
-                log::debug!("Timer kill request: id={id} (not yet implemented)");
-            }
-            Effect::Ime(ime_effect) => {
-                log::debug!("IME effect: {ime_effect:?} (not yet implemented)");
-            }
-            Effect::Ui(ui_effect) => {
-                log::debug!("UI effect: {ui_effect:?}");
-            }
-        }
-    }
 }
