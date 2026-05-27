@@ -28,17 +28,6 @@ impl KanaTable {
     }
 }
 
-/// ローマ字→ひらがな逆引きテーブルを構築する（n-gram スコアリング用）。
-///
-/// 訓令式ローマ字を基本とし、ヘボン式の一部（"fu"→'ふ' 等）も含む。
-/// 拗音（"kya" 等）は n-gram のバイグラム文脈で先頭文字が重要なため、
-/// 代表文字（'き' 等）にマッピングする。
-#[allow(clippy::too_many_lines)]
-#[must_use]
-pub fn build_romaji_to_kana() -> HashMap<String, char> {
-    build_romaji_map()
-}
-
 fn build_romaji_map() -> HashMap<String, char> {
     let entries: &[(&str, char)] = &[
         // 母音
@@ -179,17 +168,6 @@ fn build_romaji_map() -> HashMap<String, char> {
     entries.iter().map(|&(k, v)| (k.to_string(), v)).collect()
 }
 
-/// かな→ローマ字の逆引きテーブルを構築する。
-///
-/// `build_romaji_to_kana` の逆方向マッピング。
-/// 同一かなに複数のローマ字が対応する場合、最も短いものを採用する。
-/// 拗音の代表文字マッピング（"kya"→'き' 等）は基本マッピング（"ki"→'き'）より
-/// 長いため自動的に除外される。
-#[must_use]
-pub fn build_kana_to_romaji() -> HashMap<char, String> {
-    build_reverse_map(&build_romaji_map())
-}
-
 fn build_reverse_map(forward: &HashMap<String, char>) -> HashMap<char, String> {
     let mut reverse: HashMap<char, String> = HashMap::with_capacity(forward.len());
     for (romaji, &kana) in forward {
@@ -211,74 +189,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_romaji_to_kana_non_empty() {
-        let table = build_romaji_to_kana();
-        assert!(!table.is_empty());
+    fn kana_table_non_empty() {
+        let t = KanaTable::build();
+        assert!(t.kana_for_romaji("a").is_some());
     }
 
     #[test]
     fn vowel_mappings() {
-        let table = build_romaji_to_kana();
-        assert_eq!(table.get("a"), Some(&'あ'));
-        assert_eq!(table.get("i"), Some(&'い'));
-        assert_eq!(table.get("u"), Some(&'う'));
-        assert_eq!(table.get("e"), Some(&'え'));
-        assert_eq!(table.get("o"), Some(&'お'));
+        let t = KanaTable::build();
+        assert_eq!(t.kana_for_romaji("a"), Some('あ'));
+        assert_eq!(t.kana_for_romaji("i"), Some('い'));
+        assert_eq!(t.kana_for_romaji("u"), Some('う'));
+        assert_eq!(t.kana_for_romaji("e"), Some('え'));
+        assert_eq!(t.kana_for_romaji("o"), Some('お'));
     }
 
     #[test]
     fn common_romaji_mappings() {
-        let table = build_romaji_to_kana();
-        assert_eq!(table.get("ka"), Some(&'か'));
-        assert_eq!(table.get("si"), Some(&'し'));
-        assert_eq!(table.get("tu"), Some(&'つ'));
-        assert_eq!(table.get("nn"), Some(&'ん'));
+        let t = KanaTable::build();
+        assert_eq!(t.kana_for_romaji("ka"), Some('か'));
+        assert_eq!(t.kana_for_romaji("si"), Some('し'));
+        assert_eq!(t.kana_for_romaji("tu"), Some('つ'));
+        assert_eq!(t.kana_for_romaji("nn"), Some('ん'));
     }
 
     #[test]
     fn nicola_special_romaji() {
-        let table = build_romaji_to_kana();
-        assert_eq!(table.get("wo"), Some(&'を'));
-        assert_eq!(table.get("vu"), Some(&'ゔ'));
+        let t = KanaTable::build();
+        assert_eq!(t.kana_for_romaji("wo"), Some('を'));
+        assert_eq!(t.kana_for_romaji("vu"), Some('ゔ'));
     }
 
     #[test]
     fn fu_and_hu_both_map_to_fu() {
-        let table = build_romaji_to_kana();
-        assert_eq!(table.get("fu"), Some(&'ふ'));
-        assert_eq!(table.get("hu"), Some(&'ふ'));
+        let t = KanaTable::build();
+        assert_eq!(t.kana_for_romaji("fu"), Some('ふ'));
+        assert_eq!(t.kana_for_romaji("hu"), Some('ふ'));
     }
 
     #[test]
     fn youon_maps_to_representative_char() {
-        let table = build_romaji_to_kana();
-        assert_eq!(table.get("kya"), Some(&'き'));
-        assert_eq!(table.get("sya"), Some(&'し'));
-        assert_eq!(table.get("nya"), Some(&'に'));
+        let t = KanaTable::build();
+        assert_eq!(t.kana_for_romaji("kya"), Some('き'));
+        assert_eq!(t.kana_for_romaji("sya"), Some('し'));
+        assert_eq!(t.kana_for_romaji("nya"), Some('に'));
     }
 
-    // ── kana_to_romaji (逆引き) ──
+    // ── romaji_for_kana (逆引き) ──
 
     #[test]
     fn kana_to_romaji_basic() {
-        let table = build_kana_to_romaji();
-        assert_eq!(table.get(&'あ'), Some(&"a".to_string()));
-        assert_eq!(table.get(&'か'), Some(&"ka".to_string()));
-        assert_eq!(table.get(&'ん'), Some(&"nn".to_string()));
+        let t = KanaTable::build();
+        assert_eq!(t.romaji_for_kana('あ'), Some("a"));
+        assert_eq!(t.romaji_for_kana('か'), Some("ka"));
+        assert_eq!(t.romaji_for_kana('ん'), Some("nn"));
     }
 
     #[test]
     fn kana_to_romaji_prefers_shorter() {
-        let table = build_kana_to_romaji();
+        let t = KanaTable::build();
         // 'き' has "ki" (2) and "kya"/"kyu"/"kyo" (3) → "ki" wins
-        assert_eq!(table.get(&'き'), Some(&"ki".to_string()));
-        assert_eq!(table.get(&'し'), Some(&"si".to_string()));
+        assert_eq!(t.romaji_for_kana('き'), Some("ki"));
+        assert_eq!(t.romaji_for_kana('し'), Some("si"));
     }
 
     #[test]
     fn kana_to_romaji_dakuon() {
-        let table = build_kana_to_romaji();
-        assert_eq!(table.get(&'が'), Some(&"ga".to_string()));
-        assert_eq!(table.get(&'ぱ'), Some(&"pa".to_string()));
+        let t = KanaTable::build();
+        assert_eq!(t.romaji_for_kana('が'), Some("ga"));
+        assert_eq!(t.romaji_for_kana('ぱ'), Some("pa"));
     }
 }
