@@ -168,35 +168,12 @@ impl Output {
             } else {
                 log::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
             }
-            // SAFETY: IMM32 API; uses the foreground thread's IME context.
-            let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
-            log::debug!(
-                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
-                conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
-                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
-                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
-            );
-            // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
-            unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
 
             let cold_seq = self.composition.increment_cold_start_count();
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_seq} class={win_class}");
 
-            log::debug!("[h1-run] cold={cold_seq} F2 via SendMessageTimeout");
             let f2_sent_ms = crate::hook::current_tick_ms();
-            // SAFETY: sends WM_KEYDOWN/WM_KEYUP to the foreground window via SendMessageTimeout.
-            let f2_ok = unsafe { crate::ime::send_f2_via_sendmessage() };
-            log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
-
-            // SendMessageTimeout はウィンドウの wndproc に直接届くが TSF のキーストローク
-            // マネージャーを経由しないため、Chrome の composition context が初期化されない。
-            // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
-            // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
-            let f2_via_sendinput = [make_key_input(VK_DBE_HIRAGANA, false), make_key_input(VK_DBE_HIRAGANA, true)];
-            let _ = crate::win32::send_input_safe(&f2_via_sendinput);
-            log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
 
             // ノンブロッキング Chrome プローブを開始。
             // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
@@ -219,20 +196,70 @@ impl Output {
                 "[h1-probe] cold={cold_seq} long_idle={long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms",
                 self.composition.idle_ms_at_last_cold(),
             );
-            let probe = crate::tsf::probe::TsfReadinessProbe::new(
-                f2_sent_ms,
-                cold_seq,
-                probe_min_ms,
-            );
+
+            // SendMessageTimeoutW 系の同期呼び出し (set_ime_romaji_mode + send_f2_via_sendmessage)
+            // を with_app の外で実行するため、async タスクへオフロードする。
+            // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックが
+            // キーを INPUT_DEFER に退避し、cold start シーケンスと race しないようにする。
+            // guard は TsfProbeMachine に move されて probe 完了まで保持される。
             let guard = OutputActiveGuard::begin();
-            self.install_pending_tsf(TsfProbeMachine::new_chrome(
-                romaji,
-                cold_seq,
-                probe,
-                probe_max_ms,
-                guard,
-            ));
-            // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
+            let romaji_owned: String = romaji.to_string();
+
+            win32_async::spawn_local(async move {
+                // 診断: pre-send IME conversion mode（旧 [cold-diag] log）
+                let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
+                log::debug!(
+                    "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+                    conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                    conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                    conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+                    conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
+                );
+
+                // IMC_SETCONVERSIONMODE を ROMAN に揃えてから SendInput でローマ字を送ることで
+                // カナ出力化けを防ぐ。await でワーカースレッドに完全委譲しているので順序は保たれる。
+                let _ = crate::ime::set_ime_romaji_mode_async().await;
+
+                log::debug!("[h1-run] cold={cold_seq} F2 via SendMessageTimeout");
+                let f2_ok = crate::ime::send_f2_via_sendmessage_async().await;
+                log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
+
+                // SendMessageTimeout はウィンドウの wndproc に直接届くが TSF のキーストローク
+                // マネージャーを経由しないため、Chrome の composition context が初期化されない。
+                // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
+                // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
+                let f2_via_sendinput = [
+                    make_key_input(VK_DBE_HIRAGANA, false),
+                    make_key_input(VK_DBE_HIRAGANA, true),
+                ];
+                let _ = crate::win32::send_input_safe(&f2_via_sendinput);
+                log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
+
+                // probe を install。guard は TsfProbeMachine に move されて probe 完了まで保持される。
+                let probe = crate::tsf::probe::TsfReadinessProbe::new(
+                    f2_sent_ms,
+                    cold_seq,
+                    probe_min_ms,
+                );
+                let _ = crate::with_app(|app| {
+                    app.executor.platform.output.install_pending_tsf(
+                        TsfProbeMachine::new_chrome(
+                            &romaji_owned,
+                            cold_seq,
+                            probe,
+                            probe_max_ms,
+                            guard,
+                        ),
+                    );
+                    // 同期パスでは WindowsPlatform::send_keys 完了後に pending_tsf_timer() が
+                    // TIMER_TSF_PROBE を起動するが、async パスでは send_keys は既に return 済み。
+                    // ここで明示的にタイマーを起動する。
+                    if let Some(cmd) = app.executor.platform.output.pending_tsf_timer() {
+                        app.executor.platform.apply_timer_command(cmd);
+                    }
+                });
+            });
+
             return;
         }
 
@@ -356,17 +383,23 @@ impl Output {
         let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_seq };
 
         {
+            // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
+            // with_app 再入を避けるため async タスクへオフロードする (Step 3)。
+            // ログ出力タイミングが数 ms 遅れるが診断用途のため許容。
             let last_io = crate::tsf::observer::gji_last_io_ms();
             let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
-            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
-            log::debug!(
-                "[h1-send] cold={cold_seq} romaji={romaji:?} chars={} gji_idle={gji_idle}ms \
-                 conv={} ROMAN={} NATIVE={}",
-                chars.len(),
-                conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
-                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
-            );
+            let romaji_owned: String = romaji.to_string();
+            let chars_len = chars.len();
+            win32_async::spawn_local(async move {
+                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
+                log::debug!(
+                    "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} gji_idle={gji_idle}ms \
+                     conv={} ROMAN={} NATIVE={}",
+                    conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                );
+            });
         }
 
         let detector = crate::tsf::probe::LiteralDetector::new();
