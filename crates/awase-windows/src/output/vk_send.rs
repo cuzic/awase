@@ -19,66 +19,6 @@ pub(super) const fn make_key_input(vk: VkCode, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
 }
 
-/// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
-fn send_vk_pair(vk: VkCode, needs_shift: bool, use_tsf_marker: bool) {
-    let mut inputs = Vec::with_capacity(4);
-    if needs_shift {
-        inputs.push(make_key_input(VK_LSHIFT, false));
-    }
-    if use_tsf_marker {
-        inputs.push(make_tsf_key_input(vk, false));
-        inputs.push(make_tsf_key_input(vk, true));
-    } else {
-        inputs.push(make_key_input(vk, false));
-        inputs.push(make_key_input(vk, true));
-    }
-    if needs_shift {
-        inputs.push(make_key_input(VK_LSHIFT, true));
-    }
-    let _ = crate::win32::send_input_safe(&inputs);
-}
-
-/// `ch` を UTF-16 エンコードし、down/up ペアを `inputs` に追加する。
-///
-/// `marker` は `INJECTED_MARKER`（Unicode モード）または `TSF_MARKER`（TSF モード）。
-fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
-    let mut buf = [0u16; 2];
-    let utf16 = ch.encode_utf16(&mut buf);
-    for &cu in utf16.iter() {
-        inputs.push(INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 { ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(0), wScan: cu,
-                dwFlags: KEYEVENTF_UNICODE, time: 0, dwExtraInfo: marker,
-            }},
-        });
-        inputs.push(INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 { ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(0), wScan: cu,
-                dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time: 0, dwExtraInfo: marker,
-            }},
-        });
-    }
-}
-
-/// 同一 VK が連続する境界でランを分割する。
-///
-/// `send_vk_runs` と `send_deferred_probe_vks_from` 共通のヘルパー。
-/// IME のオートリピート誤検出を防ぐため、同一 VK が連続する箇所で区切る。
-fn split_vk_runs(vks: &[(VkCode, bool)]) -> Vec<&[(VkCode, bool)]> {
-    if vks.is_empty() { return vec![]; }
-    let mut runs = Vec::new();
-    let mut start = 0;
-    for (i, w) in vks.windows(2).enumerate() {
-        if w[0].0 == w[1].0 {
-            runs.push(&vks[start..=i]);
-            start = i + 1;
-        }
-    }
-    runs.push(&vks[start..]);
-    runs
-}
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
@@ -106,7 +46,7 @@ impl TsfSendPipeline {
                 outcome.cold_seq, kana, kana as u32,
             );
             let mut inputs = Vec::with_capacity(4);
-            push_unicode_char_inputs(&mut inputs, kana, TSF_MARKER);
+            Output::push_unicode_char_inputs(&mut inputs, kana, TSF_MARKER);
             let _ = crate::win32::send_input_safe(&inputs);
             1
         })
@@ -125,7 +65,7 @@ impl Output {
     #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
     pub(super) fn send_unicode_char(&self, ch: char) {
         let mut inputs = Vec::with_capacity(4);
-        push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
+        Self::push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
         let _ = crate::win32::send_input_safe(&inputs);
     }
 
@@ -138,7 +78,7 @@ impl Output {
     pub(super) fn send_romaji_per_key(&self, romaji: &str) {
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
-                send_vk_pair(vk, needs_shift, false);
+                Self::send_vk_pair(vk, needs_shift, false);
             }
         }
     }
@@ -306,7 +246,7 @@ impl Output {
         // 同一 VK が連続する箇所（例 "nn"）でバッチに N↓N↓N↑N↑ を含めると、IME が
         // 2 つ目の N↓ をオートリピートと判定して破棄してしまう。
         // 同一 VK が連続する境界で run を分割し、各 run を別の SendInput で送る。
-        let runs = split_vk_runs(chars);
+        let runs = Self::split_vk_runs(chars);
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.into_iter().enumerate() {
@@ -446,7 +386,7 @@ impl Output {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
-                send_vk_pair(vk, needs_shift, true);
+                Self::send_vk_pair(vk, needs_shift, true);
                 // VK_OEM_MINUS (0xBD, no-shift) = '-' は GJI ローマ字モードで「ー」として
                 // composition に取り込まれる（composition context はリセットされない）。
                 // これらは warm 状態を維持し、次の romaji を warmup sleep なしで即送信する。
@@ -493,7 +433,7 @@ impl Output {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
-                send_vk_pair(vk, needs_shift, false);
+                Self::send_vk_pair(vk, needs_shift, false);
             }
             CharResolution::Unicode(ch) => {
                 log::debug!("    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
@@ -548,5 +488,65 @@ impl Output {
             }
             let _ = crate::win32::send_input_safe(&inputs);
         }
+    }
+
+    /// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
+    fn send_vk_pair(vk: VkCode, needs_shift: bool, use_tsf_marker: bool) {
+        let mut inputs = Vec::with_capacity(4);
+        if needs_shift {
+            inputs.push(make_key_input(VK_LSHIFT, false));
+        }
+        if use_tsf_marker {
+            inputs.push(make_tsf_key_input(vk, false));
+            inputs.push(make_tsf_key_input(vk, true));
+        } else {
+            inputs.push(make_key_input(vk, false));
+            inputs.push(make_key_input(vk, true));
+        }
+        if needs_shift {
+            inputs.push(make_key_input(VK_LSHIFT, true));
+        }
+        let _ = crate::win32::send_input_safe(&inputs);
+    }
+
+    /// `ch` を UTF-16 エンコードし、down/up ペアを `inputs` に追加する。
+    ///
+    /// `marker` は `INJECTED_MARKER`（Unicode モード）または `TSF_MARKER`（TSF モード）。
+    fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
+        let mut buf = [0u16; 2];
+        let utf16 = ch.encode_utf16(&mut buf);
+        for &cu in utf16.iter() {
+            inputs.push(INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 { ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0), wScan: cu,
+                    dwFlags: KEYEVENTF_UNICODE, time: 0, dwExtraInfo: marker,
+                }},
+            });
+            inputs.push(INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 { ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0), wScan: cu,
+                    dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time: 0, dwExtraInfo: marker,
+                }},
+            });
+        }
+    }
+
+    /// 同一 VK が連続する境界でランを分割する。
+    ///
+    /// IME のオートリピート誤検出を防ぐため、同一 VK が連続する箇所で区切る。
+    fn split_vk_runs(vks: &[(VkCode, bool)]) -> Vec<&[(VkCode, bool)]> {
+        if vks.is_empty() { return vec![]; }
+        let mut runs = Vec::new();
+        let mut start = 0;
+        for (i, w) in vks.windows(2).enumerate() {
+            if w[0].0 == w[1].0 {
+                runs.push(&vks[start..=i]);
+                start = i + 1;
+            }
+        }
+        runs.push(&vks[start..]);
+        runs
     }
 }
