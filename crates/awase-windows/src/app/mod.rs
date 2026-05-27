@@ -344,7 +344,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 // SAFETY: lParam は Box::into_raw(Box::new(RawKeyEvent)) のポインタ。
                 //         RawKeyEvent は Copy なので値をコピーして Box をドロップする。
                 let event = unsafe {
-                    *Box::from_raw(msg.lParam.0 as *mut awase::types::RawKeyEvent)
+                    *Box::from_raw(msg.lParam.0 as *mut RawKeyEvent)
                 };
                 // パニック連打検出（フックスレッドから移動）
                 if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {

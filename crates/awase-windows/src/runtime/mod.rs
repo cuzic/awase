@@ -613,10 +613,7 @@ impl Runtime {
         // 3. 全修飾キーの KeyUp を送信（スタック解消）
         send_all_modifier_key_ups();
 
-        // 4. フック再インストール（OS に無言削除されていた場合のリカバリ）
-        crate::hook::reinstall_hook();
-
-        // 5. PlatformState を全面リセット
+        // 4. PlatformState を全面リセット
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
         // ime_on=true を stale な observe() 結果が即座に上書きしてしまう。
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。

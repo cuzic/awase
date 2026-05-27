@@ -224,7 +224,7 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
         })
         .map_err(|e| {
             log::error!("Failed to spawn awase-hook thread: {e}");
-            windows::core::Error::from_win32()
+            windows::core::Error::from_thread()
         })?;
 
     // フックスレッドが SetWindowsHookExW を完了するまでスピン待機
@@ -237,7 +237,7 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
     if hook_tid == u32::MAX {
         // SetWindowsHookExW がフックスレッド内で失敗
         let _ = thread.join();
-        return Err(windows::core::Error::from_win32());
+        return Err(windows::core::Error::from_thread());
     }
 
     log::info!("Keyboard hook installed in dedicated thread (tid={hook_tid})");
