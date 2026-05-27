@@ -9,6 +9,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::output::INJECTED_MARKER;
+
+/// Alt 物理押下中または WM_SYSKEYDOWN コンテキスト（メニューモード）を示すフラグ
+const LLKHF_ALTDOWN: u32 = 0x20;
 use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
@@ -306,7 +309,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let config = cached_hook_config();
     let (key_classification, physical_pos) = classify_key(vk, scan, &config);
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
-    let modifier_snapshot = crate::observer::focus_observer::read_os_modifiers();
+    let mut modifier_snapshot = crate::observer::focus_observer::read_os_modifiers();
+    // Alt 物理押下中またはメニューモード（WM_SYSKEYDOWN コンテキスト）のキーは変換しない
+    if kb.flags.0 & LLKHF_ALTDOWN != 0 {
+        modifier_snapshot.alt = true;
+    }
     let event = build_raw_key_event(
         vk, scan, is_keydown, kb.dwExtraInfo,
         key_classification, physical_pos, modifier_snapshot,
