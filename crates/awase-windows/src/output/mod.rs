@@ -365,11 +365,11 @@ impl Output {
                     self.send_key(special_key_to_vk(*sk), false);
                 }
                 KeyAction::Key(vk) => {
-                    log::debug!("  → Key(0x{:04X})", vk.0);
+                    log::debug!("  → Key({vk:#06X})");
                     self.send_key(*vk, false);
                 }
                 KeyAction::KeyUp(vk) => {
-                    log::debug!("  → KeyUp(0x{:04X})", vk.0);
+                    log::debug!("  → KeyUp({vk:#06X})");
                     self.send_key(*vk, true);
                 }
                 KeyAction::Char(ch) => {

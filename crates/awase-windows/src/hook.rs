@@ -442,16 +442,16 @@ unsafe fn decide_routing_with_tracking(
             if let Some(target) = send_vk {
                 // SAFETY: SendInput + GetAsyncKeyState。フックコールバック内のため安全。
                 unsafe { send_keymap_reinject(target, mods); }
-                log::info!("[keymap] vk=0x{:02X} → send vk=0x{:02X}", vk.0, target.0);
+                log::info!("[keymap] vk={vk:#04X} → send vk={target:#04X}");
             } else {
-                log::info!("[keymap] vk=0x{:02X} → consume", vk.0);
+                log::info!("[keymap] vk={vk:#04X} → consume");
             }
             return EarlyRoutingDecision::ConsumedByKeymap;
         }
     }
     if !is_keydown && ps.hook.is_intercept_consumed(vk) {
         ps.hook.clear_intercept_consumed(vk);
-        log::debug!("[keymap] vk=0x{:02X} KeyUp consumed (paired with intercepted KeyDown)", vk.0);
+        log::debug!("[keymap] vk={vk:#04X} KeyUp consumed (paired with intercepted KeyDown)");
         return EarlyRoutingDecision::ConsumedByKeymap;
     }
 
@@ -470,8 +470,7 @@ unsafe fn decide_routing_with_tracking(
                 }
             }
             log::trace!(
-                "Hook: vk=0x{:02X} {} → Bypass",
-                vk.0,
+                "Hook: vk={vk:#04X} {} → Bypass",
                 if is_keydown { "KeyDown" } else { "KeyUp" }
             );
             return EarlyRoutingDecision::BypassToOs;
@@ -500,9 +499,9 @@ unsafe fn decide_routing_with_tracking(
 /// キーイベントのトレース/デバッグログを出力する。
 fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
     log::trace!(
-        "Hook: vk=0x{:02X} scan=0x{:04X} type={:?} → {}",
+        "Hook: vk={:#04X} scan={:#06X} type={:?} → {}",
         event.vk_code,
-        event.scan_code.0,
+        event.scan_code,
         event.event_type,
         if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
     );
@@ -513,7 +512,7 @@ fn log_hook_event(event: &RawKeyEvent, route: &KeyRoute) {
         log::debug!(
             "[hook-passthrough] vk={:#04x} scan={:#06x} type={:?} route={}",
             event.vk_code,
-            event.scan_code.0,
+            event.scan_code,
             event.event_type,
             if matches!(route, KeyRoute::TrackOnly) { "TrackOnly" } else { "Engine" }
         );
@@ -540,7 +539,7 @@ fn apply_sync_key_gate(
     // sync key KeyDown → ガードを起動、Engine の保留キーをフラッシュして PassThrough
     if is_keydown && is_sync_key && !app.platform_state.sync_key_gate.is_active() {
         app.platform_state.sync_key_gate.activate();
-        log::debug!("sync-key guard ON (vk=0x{:02X})", vk.0);
+        log::debug!("sync-key guard ON (vk={vk:#04X})");
         let ctx = crate::runtime::build_input_context(
             app.platform_state.belief(),
             &event.modifier_snapshot,
@@ -557,7 +556,7 @@ fn apply_sync_key_gate(
     // sync key KeyUp → ガードを解除して PassThrough、遅延処理をリクエスト
     if !is_keydown && is_sync_key && app.platform_state.sync_key_gate.is_active() {
         app.platform_state.sync_key_gate.deactivate();
-        log::debug!("sync-key guard OFF (vk=0x{:02X})", vk.0);
+        log::debug!("sync-key guard OFF (vk={vk:#04X})");
         app.platform_state.hook.leave_callback();
         crate::win32::post_to_main_thread(crate::WM_PROCESS_DEFERRED);
         return RoutingOutcome::PassThrough;
@@ -573,7 +572,7 @@ fn apply_sync_key_gate(
         }
         let phys = awase::engine::input_tracker::PhysicalKeyState::empty();
         if app.platform_state.sync_key_gate.try_push(event, phys) {
-            log::trace!("sync-key guard: buffered key vk=0x{:02X}", vk.0);
+            log::trace!("sync-key guard: buffered key vk={vk:#04X}");
         } else {
             log::warn!("sync-key guard forced clear: buffer overflow");
             app.platform_state.sync_key_gate.deactivate();
@@ -669,8 +668,7 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // Engine 側で Ctrl+無変換 → IME-OFF と誤マッチしない。
     if modifier_snapshot.ctrl && app.platform_state.hook.is_ctrl_stale(now_timestamp()) {
         log::debug!(
-            "[stale-ctrl] suppress ctrl modifier vk=0x{:02X} {} (within {}us of last Ctrl+key bypass)",
-            vk.0,
+            "[stale-ctrl] suppress ctrl modifier vk={vk:#04X} {} (within {}us of last Ctrl+key bypass)",
             if is_keydown { "KeyDown" } else { "KeyUp" },
             crate::state::CTRL_STALE_THRESHOLD_US,
         );
