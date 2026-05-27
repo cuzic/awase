@@ -53,15 +53,6 @@ pub(crate) fn yab_value_to_action(value: &YabValue) -> KeyAction {
     KeyAction::from(value)
 }
 
-/// `OutputUpdate::Record` を生成するヘルパー
-pub(super) fn record_output(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> OutputUpdate {
-    OutputUpdate::Record(OutputRecord {
-        scan_code,
-        romaji: action.romaji().to_owned(),
-        kana,
-        action: action.clone(),
-    })
-}
 
 /// 配列変換エンジン（状態機械 + 同時打鍵判定）
 #[allow(missing_debug_implementations)]
@@ -353,7 +344,7 @@ impl NicolaFsm {
         if let Some((action, kana)) = self.lookup_face(char_pos, self.get_face(thumb_face)) {
             // 親指キーを「消費」: 同じ物理押下で後続キーがシフトされないようにする
             self.consume_thumb(thumb_face);
-            let output = record_output(char_scan, &action, kana);
+            let output = OutputUpdate::record(char_scan, &action, kana);
             ResolvedAction {
                 actions: vec![action],
                 output,
@@ -513,7 +504,7 @@ impl NicolaFsm {
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(Face::Shift)) {
             ParseAction::Reduce {
                 actions: vec![action.clone()],
-                record: record_output(ev.scan_code, &action, kana),
+                record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::CancelAll,
             }
         } else {
@@ -566,7 +557,7 @@ impl NicolaFsm {
             self.consume_thumb(face);
             ParseAction::Reduce {
                 actions: vec![action.clone()],
-                record: record_output(ev.scan_code, &action, kana),
+                record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::CancelAll,
             }
         } else {
@@ -785,7 +776,7 @@ impl NicolaFsm {
                 self.go_idle();
                 return ParseAction::Reduce {
                     actions: vec![action.clone()],
-                    record: record_output(ev.scan_code, &action, kana),
+                    record: OutputUpdate::record(ev.scan_code, &action, kana),
                     timer: TimerIntent::CancelAll,
                 };
             }
@@ -837,7 +828,7 @@ impl NicolaFsm {
         pos: Option<PhysicalPos>,
     ) -> ResolvedAction {
         if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
-            let output = record_output(scan_code, &action, kana);
+            let output = OutputUpdate::record(scan_code, &action, kana);
             ResolvedAction {
                 actions: vec![action],
                 output,
@@ -847,7 +838,7 @@ impl NicolaFsm {
             // Some(Suppress) を返すため、ここには来ない）。
             // 配列定義外のキー → Key(vk_code) でそのまま通す
             let action = KeyAction::Key(vk_code);
-            let output = record_output(scan_code, &action, None);
+            let output = OutputUpdate::record(scan_code, &action, None);
             ResolvedAction {
                 actions: vec![action],
                 output,
@@ -958,7 +949,7 @@ impl NicolaFsm {
             all_actions.push(action.clone());
             return ParseAction::Reduce {
                 actions: all_actions,
-                record: record_output(ev.scan_code, &action, kana),
+                record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::CancelAll,
             };
         }
@@ -1108,14 +1099,14 @@ impl NicolaFsm {
         pos: Option<PhysicalPos>,
     ) -> Resp {
         if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
-            self.update_history(record_output(scan_code, &action, kana));
+            self.update_history(OutputUpdate::record(scan_code, &action, kana));
             self.build_response(vec![action], true, TimerIntent::CancelAll)
         } else {
             // Normal face に定義なし（yab に明示的に '無' がある場合は lookup_face が
             // Some(Suppress) を返すため、ここには来ない）。
             // 配列定義外のキー → Key(vk_code) でそのまま通す
             let action = KeyAction::Key(vk_code);
-            self.update_history(record_output(scan_code, &action, None));
+            self.update_history(OutputUpdate::record(scan_code, &action, None));
             self.build_response(vec![action], true, TimerIntent::CancelAll)
         }
     }
@@ -1127,7 +1118,7 @@ impl NicolaFsm {
         // 以前は ScanCode(u32::from(vk_code.0)) という合成値を使っていたが、
         // VK_CONVERT (VK=0x1C) の合成スキャンコードが Enter の物理スキャンコード (0x1C) と
         // 衝突し、後から Enter KeyUp が来たときに誤って KeyUp(VK_CONVERT) が送出されていた。
-        self.update_history(record_output(scan_code, &action, None));
+        self.update_history(OutputUpdate::record(scan_code, &action, None));
         self.build_response(vec![action], true, TimerIntent::CancelAll)
     }
 
@@ -1173,7 +1164,7 @@ impl NicolaFsm {
                     self.enter_speculative_char(pending);
                     // Emit the speculative output + set TIMER_PENDING for remaining time
                     let remaining_us = self.threshold_us.saturating_sub(self.speculative_delay_us);
-                    self.update_history(record_output(pending.scan_code, &action, kana));
+                    self.update_history(OutputUpdate::record(pending.scan_code, &action, kana));
                     self.build_response(
                         vec![action],
                         true,

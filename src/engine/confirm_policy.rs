@@ -7,9 +7,9 @@
 use crate::config::ConfirmMode;
 
 use super::fsm_types::{
-    ClassifiedEvent, Face, ParseAction, PendingKey, PendingThumbData, TimerIntent,
+    ClassifiedEvent, Face, OutputUpdate, ParseAction, PendingKey, PendingThumbData, TimerIntent,
 };
-use super::nicola_fsm::{record_output, NicolaFsm, CONTINUOUS_KEYSTROKE_THRESHOLD_US};
+use super::nicola_fsm::{NicolaFsm, CONTINUOUS_KEYSTROKE_THRESHOLD_US};
 
 impl NicolaFsm {
     /// 確定モードに応じた保留処理へディスパッチ
@@ -58,7 +58,7 @@ impl NicolaFsm {
             // Output immediately + set timer for the threshold window
             ParseAction::Reduce {
                 actions: vec![action.clone()],
-                record: record_output(ev.scan_code, &action, kana),
+                record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::Pending,
             }
         } else {

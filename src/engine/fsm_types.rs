@@ -224,6 +224,18 @@ pub enum OutputUpdate {
     None,
 }
 
+impl OutputUpdate {
+    /// `Record` バリアントを構築するコンストラクタ。
+    pub fn record(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> Self {
+        Self::Record(OutputRecord {
+            scan_code,
+            romaji: action.romaji().to_owned(),
+            kana,
+            action: action.clone(),
+        })
+    }
+}
+
 /// on_key_down の前段でエンジン処理をバイパスする理由
 #[derive(Debug, Clone, Copy)]
 pub enum BypassReason {
