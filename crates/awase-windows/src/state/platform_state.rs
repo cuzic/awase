@@ -25,6 +25,12 @@ pub(crate) struct ImeStateHub {
     ///
     /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
     pub(crate) ime_observations: crate::ime_observations::ImeObservations,
+    /// IME OFF 要求後の観測値抑制タイムスタンプ（0 = 非アクティブ）。
+    ///
+    /// `write_set_open_request(false)` でセットされ、この ms 値を超えると失効する。
+    /// ガード中は `ObserverPoll` / `FocusSnapshot` が belief を true に戻すのを防ぐ。
+    /// `write_set_open_request(true)` / `write_sync_key(true)` / `write_physical_key(true)` でクリアされる。
+    pub(crate) ime_off_guard_until_ms: u64,
 }
 
 impl ImeStateHub {
@@ -44,6 +50,7 @@ impl ImeStateHub {
                 force_on_panic_reset: false,
             },
             ime_observations: crate::ime_observations::ImeObservations::default(),
+            ime_off_guard_until_ms: 0,
         }
     }
 }
@@ -260,9 +267,9 @@ impl PlatformState {
         self.ime.recovery.ime_detect_miss_count = 0;
         self.ime.recovery.force_on_broken_app_bootstrap = false;
         self.ime.recovery.force_on_panic_reset = true;
-        // パニックリセット後は全観測スロットをクリア:
-        // stale な観測値が次の apply_ime_observations で即座に上書きするのを防ぐ。
+        // パニックリセット後は全観測スロットと IME OFF ガードをクリア。
         self.ime.ime_observations.clear_on_focus_change();
+        self.ime.ime_off_guard_until_ms = 0;
     }
 }
 
@@ -283,8 +290,31 @@ impl PlatformState {
         let current = self.ime.belief.ime_on;
         let is_japanese = self.ime.belief.is_japanese_ime;
         if let Some((val, src)) = self.ime.ime_observations.resolve_and_clear(current, user_enabled, is_japanese) {
+            // IME OFF ガード中は ObserverPoll / FocusSnapshot による true への変更を抑制する。
+            // SetOpen(false) 直後の in-flight async タスクが LINE 等のアプリの実 IME 状態 (ON) を
+            // stale な観測として書き戻し、Engine を再アクティベートするのを防ぐ。
+            // 明示的操作 (SyncKey / PhysicalImeKey / SetOpenRequest, Priority 1-3) はガードを通過させる。
+            if val
+                && matches!(src, ShadowSource::ObserverPoll | ShadowSource::FocusSnapshot)
+                && self.is_ime_off_guarded()
+            {
+                log::debug!(
+                    "[ime_off_guard] belief→true blocked (src={:?}, remaining={}ms)",
+                    src,
+                    self.ime.ime_off_guard_until_ms
+                        .saturating_sub(crate::hook::current_tick_ms()),
+                );
+                return;
+            }
             self.ime.belief.set_ime_on(val, src);
         }
+    }
+
+    /// IME OFF ガードがアクティブか（`write_set_open_request(false)` 後の抑制期間中）を返す。
+    #[inline]
+    fn is_ime_off_guarded(&self) -> bool {
+        let guard = self.ime.ime_off_guard_until_ms;
+        guard > 0 && crate::hook::current_tick_ms() < guard
     }
 
     /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
@@ -303,6 +333,10 @@ impl PlatformState {
 
     /// `sync_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_sync_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        if value {
+            // 明示的な IME ON 操作: IME OFF ガードを解除する。
+            self.ime.ime_off_guard_until_ms = 0;
+        }
         self.ime.ime_observations.sync_key =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
@@ -310,6 +344,10 @@ impl PlatformState {
 
     /// `physical_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_physical_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        if value {
+            // 明示的な IME ON 操作: IME OFF ガードを解除する。
+            self.ime.ime_off_guard_until_ms = 0;
+        }
         self.ime.ime_observations.physical_key =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
@@ -317,6 +355,16 @@ impl PlatformState {
 
     /// `set_open_request` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_set_open_request(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        if !value {
+            // IME OFF 要求: 1000ms 間 ObserverPoll / FocusSnapshot による belief=true への
+            // 戻りを抑制する。SetOpen(false) 直後の in-flight async タスクが stale な
+            // observer_poll=true で Engine を再アクティベートするのを防ぐ。
+            self.ime.ime_off_guard_until_ms = ms.saturating_add(1000);
+            log::debug!("[ime_off_guard] set (until +1000ms from now)");
+        } else {
+            // IME ON 要求: ガードを解除して正常な観測更新を再開する。
+            self.ime.ime_off_guard_until_ms = 0;
+        }
         self.ime.ime_observations.set_open_request =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
