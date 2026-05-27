@@ -1,25 +1,13 @@
 use awase::gate::{HoldingGate, SyncKeyGateEvent, SyncKeyGateMachine};
 use awase::types::{RawKeyEvent, VkCode};
 
-/// 直近の Ctrl+key ショートカット Bypass からの「stale Ctrl」しきい値（マイクロ秒）。
-/// この時間内に親指キー (Henkan/Muhenkan) が到着した場合、Ctrl 修飾は
-/// Ctrl release 遅延によるタイミング干渉とみなして無視する。
-pub const CTRL_STALE_THRESHOLD_US: u64 = 50_000;
-
 /// フックルーティング状態
 #[derive(Debug)]
 pub struct HookRoutingState {
-    /// キーマップでインターセプト消費済みの VK を記録するビットセット（KeyUp も消費するため）
-    pub(crate) intercept_consumed: [u64; 4],
     /// IME 制御コンボ直後の Ctrl バイパス抑制フラグ。
     /// Ctrl+Henkan/Muhenkan 消費後、Ctrl がまだ押されている間の文字キーを
     /// ショートカットとして Bypass しない。Ctrl KeyUp で解除。
     pub(crate) ctrl_bypass_hold: bool,
-    /// 直近の Ctrl+key ショートカット Bypass の KeyDown タイムスタンプ（マイクロ秒）。
-    /// Ctrl+I 等のショートカット直後に Ctrl release より先に親指キーが入った場合、
-    /// Engine 側の Ctrl+無変換 → IME-OFF 誤マッチを抑制するための観測点。
-    /// Ctrl KeyUp でクリア。
-    pub(crate) last_ctrl_bypass_keydown_us: Option<u64>,
 }
 
 impl HookRoutingState {
@@ -34,53 +22,6 @@ impl HookRoutingState {
     #[must_use]
     pub const fn ctrl_bypass_hold(&self) -> bool {
         self.ctrl_bypass_hold
-    }
-
-    /// 直近の Ctrl+key Bypass KeyDown タイムスタンプを記録する。
-    pub const fn record_ctrl_bypass_keydown(&mut self, ts_us: u64) {
-        self.last_ctrl_bypass_keydown_us = Some(ts_us);
-    }
-
-    /// 直近の Ctrl+key Bypass KeyDown タイムスタンプをクリアする（Ctrl KeyUp 時）。
-    pub const fn clear_ctrl_bypass_keydown(&mut self) {
-        self.last_ctrl_bypass_keydown_us = None;
-    }
-
-    /// 現在時刻 `now_us` がしきい値以内に Ctrl Bypass KeyDown を観測しているか。
-    /// 真なら、続いて来た親指キーの Ctrl 修飾は stale とみなして無視すべき。
-    #[must_use]
-    pub const fn is_ctrl_stale(&self, now_us: u64) -> bool {
-        match self.last_ctrl_bypass_keydown_us {
-            Some(ts) => now_us.saturating_sub(ts) < CTRL_STALE_THRESHOLD_US,
-            None => false,
-        }
-    }
-
-    /// キーマップでインターセプト済みの VK を記録する。
-    pub const fn mark_intercept_consumed(&mut self, vk: VkCode) {
-        let idx = (vk.0 as usize) / 64;
-        let bit = 1u64 << ((vk.0 as usize) % 64);
-        if idx < 4 { self.intercept_consumed[idx] |= bit; }
-    }
-
-    /// VK がインターセプト消費済みかどうかを返す。
-    #[must_use]
-    pub const fn is_intercept_consumed(&self, vk: VkCode) -> bool {
-        let idx = (vk.0 as usize) / 64;
-        let bit = 1u64 << ((vk.0 as usize) % 64);
-        idx < 4 && (self.intercept_consumed[idx] & bit) != 0
-    }
-
-    /// インターセプト消費フラグをクリアする（KeyUp 処理後）。
-    pub const fn clear_intercept_consumed(&mut self, vk: VkCode) {
-        let idx = (vk.0 as usize) / 64;
-        let bit = 1u64 << ((vk.0 as usize) % 64);
-        if idx < 4 { self.intercept_consumed[idx] &= !bit; }
-    }
-
-    /// intercept_consumed ビットセットを全クリアする（panic_reset 用）。
-    pub const fn reset_routing(&mut self) {
-        self.intercept_consumed = [0u64; 4];
     }
 }
 

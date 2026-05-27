@@ -103,7 +103,6 @@ pub struct PlatformState {
     pub hook: HookRoutingState,
     pub hook_config: HookConfig,
     pub last_hook_activity_ms: u64,
-    pub hook_event_count: u64,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
     /// 現在のフォーカスアプリに適用されるキーマップルール
@@ -118,16 +117,13 @@ impl PlatformState {
             ime: ImeStateHub::new(),
             focus: FocusPlatformState::new(),
             hook: HookRoutingState {
-                intercept_consumed: [0u64; 4],
                 ctrl_bypass_hold: false,
-                last_ctrl_bypass_keydown_us: None,
             },
             hook_config: HookConfig {
                 left_thumb_vk: crate::vk::VK_NONCONVERT,
                 right_thumb_vk: crate::vk::VK_CONVERT,
             },
             last_hook_activity_ms: 0,
-            hook_event_count: 0,
             sync_key_gate: SyncKeyGate::new(),
             active_keymaps: Vec::new(),
         }

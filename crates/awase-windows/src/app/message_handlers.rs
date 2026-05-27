@@ -30,7 +30,6 @@ use super::{check_keyboard_layout_on_change, launch_settings, on_key_event_impl,
 pub(super) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
     // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
     app.platform_state.last_hook_activity_ms = hook::current_tick_ms();
-    app.platform_state.hook_event_count += 1;
 
     // NonText フォーカス（タスクバー等）はすべて OS にパススルー
     if app.platform_state.focus.focus_kind == FocusKind::NonText {
