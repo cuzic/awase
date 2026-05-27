@@ -4,7 +4,6 @@
 //! フックコールバック本体から `KeyEventPipeline::run` を呼ぶことで
 //! 同じ動作をより読みやすい形で表現する。
 
-use awase::platform::PlatformRuntime;
 use awase::types::{RawKeyEvent, ShadowImeAction};
 use crate::hook;
 use crate::runtime;
@@ -151,14 +150,39 @@ impl KeyEventPipeline<'_> {
         // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
         // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
         //
-        // set_ime_open(false) の代わりに apply_ime_open(false) を使う。
         // Imm32Unavailable (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
         // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
-        // ここでは latch が true のうちに apply_ime_open を呼ぶことで VK_KANJI が確実に送られる。
+        // ここでは latch が true のうちに strategy chain を起動することで VK_KANJI が
+        // 確実に送られる。
+        //
+        // IMM クロスプロセス対応アプリ (WezTerm 等の TSF mode) は SendMessageTimeoutW を
+        // 含む sync `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こす
+        // ため、async に spawn_local + OutputActiveGuard で dispatch する。
+        // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
         if !self.app.platform_state.ime_on() {
-            let _ = self.app.executor.platform.apply_ime_open(false);
+            let view = self.app.executor.platform.build_ime_control_view();
+            let imm_first =
+                crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
+            if imm_first {
+                let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+                win32_async::spawn_local(async move {
+                    let ok = crate::ime::set_ime_open_cross_process_async(false).await;
+                    if !ok {
+                        log::debug!(
+                            "[shadow-toggle] ImmCross failed (async), trying fallback"
+                        );
+                        let _ = crate::with_app(|app| {
+                            let view = app.executor.platform.build_ime_control_view();
+                            crate::ime_controller::CONTROLLER.apply_skipping_imm(false, &view)
+                        });
+                    }
+                    drop(guard);
+                });
+            } else {
+                let _ = crate::ime_controller::CONTROLLER.apply(false, &view);
+            }
             self.app.executor.platform.output.set_ime_apply_latch(false);
-            log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) + latch=false");
+            log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + latch=false");
         }
         log::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",

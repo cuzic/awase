@@ -227,23 +227,32 @@ impl ImeDiagnosticSnapshot {
 
 /// クロスプロセス IMC クエリ（`IMC_GETOPENSTATUS` / `IMC_GETCONVERSIONMODE`）。
 /// IMM bridge が NULL の場合は `(None, None)` を返す。
+///
+/// SendMessageTimeoutW を含むためメインスレッドで直接実行すると `with_app` 再入の
+/// 原因になる。`run_with_timeout` でワーカースレッドへ offload し、メインスレッドの
+/// メッセージポンプを止めて待つことで再入を回避する (run_with_timeout 自体は
+/// thread::spawn + recv で待機し、メッセージ pump を行わない)。
 fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
-    // SAFETY: focus_hwnd_raw はフォアグラウンドウィンドウの有効なハンドル値。
-    //         get_ime_wnd / send_ime_control は内部で SMTO_ABORTIFHUNG を使用し安全。
-    unsafe {
-        let hwnd = HWND(focus_hwnd_raw as *mut _);
-        let Some(_) = crate::win32::non_null_hwnd(hwnd) else {
-            return (None, None);
-        };
-        let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
-            return (None, None);
-        };
-        let open = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETOPENSTATUS, 0, 50)
-            .map(|v| v != 0);
-        let conv = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETCONVERSIONMODE, 0, 50)
-            .map(|v| v as u32);
-        (open, conv)
-    }
+    crate::win32::run_with_timeout(Duration::from_millis(150), move || {
+        // SAFETY: focus_hwnd_raw はフォアグラウンドウィンドウの有効なハンドル値。
+        //         get_ime_wnd / send_ime_control は内部で SMTO_ABORTIFHUNG を使用し
+        //         ワーカースレッドからも安全に呼び出せる。
+        unsafe {
+            let hwnd = HWND(focus_hwnd_raw as *mut _);
+            let Some(_) = crate::win32::non_null_hwnd(hwnd) else {
+                return (None, None);
+            };
+            let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
+                return (None, None);
+            };
+            let open = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETOPENSTATUS, 0, 50)
+                .map(|v| v != 0);
+            let conv = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETCONVERSIONMODE, 0, 50)
+                .map(|v| v as u32);
+            (open, conv)
+        }
+    })
+    .unwrap_or((None, None))
 }
 
 /// 部分リテラル検出の実験用 1 行ログ。
