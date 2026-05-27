@@ -538,20 +538,30 @@ impl DecisionExecutor {
             "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
             event.vk_code,
         );
-        {
-            let platform: &mut dyn PlatformRuntime = &mut self.platform;
-            platform.reinject_key(&event);
-        }
-        // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
-        // Backspace 等は composition を維持するためここでは対象外。
-        if is_key_down && event.vk_code.is_composition_confirm_key() {
-            log::debug!(
-                "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
-                event.vk_code,
-            );
-            self.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
-            self.platform.output.send_eager_tsf_warmup();
-        }
+        // OutputActiveGuard を先に取得してから spawn_local で SendInput を RUNTIME 借用外に移す。
+        // RUNTIME 借用中に SendInput を呼ぶと WH_KEYBOARD_LL フックが再入し、ユーザーキーが
+        // NICOLA 処理をスキップして素通しになる（「いが l になった」バグの原因）。
+        // spawn_local 実行中にユーザーキーが届いても OUTPUT_GATE.active=true で INPUT_DEFER
+        // に退避され、guard drop 後に drain されて正しく NICOLA 処理される。
+        let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+        let vk_code = event.vk_code;
+        win32_async::spawn_local(async move {
+            // SAFETY: spawn_local はメインスレッドのメッセージループで実行される。
+            unsafe { crate::reinject_key(&event) };
+            // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
+            // Backspace 等は composition を維持するためここでは対象外。
+            if is_key_down && vk_code.is_composition_confirm_key() {
+                let _ = crate::with_app(|app| {
+                    log::debug!(
+                        "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
+                        vk_code,
+                    );
+                    app.executor.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+                    app.executor.platform.output.send_eager_tsf_warmup();
+                });
+            }
+            drop(guard);
+        });
     }
 
     /// Effect::* の match dispatch。ImeEffect::SetOpen の結果のみ Some で返す。
