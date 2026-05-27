@@ -92,8 +92,8 @@
 //!
 //! // Both keys pressed in sequence → chord.
 //! let mut p = ChordParser::new();
-//! let _ = timed_fsm::parse(&mut p, Key::A);  // Shift
-//! let r = timed_fsm::parse(&mut p, Key::B);  // Reduce → Chord
+//! let _ = p.parse(Key::A);  // Shift
+//! let r = p.parse(Key::B);  // Reduce → Chord
 //! assert_eq!(r.actions, vec![Out::Chord]);
 //! ```
 
@@ -233,8 +233,8 @@ pub enum ParseAction<A, Token, T, R = ()> {
 /// }
 ///
 /// let mut p = MyParser { pending_shift: false };
-/// let _ = timed_fsm::parse(&mut p, Key::Shift);   // Shift
-/// let r = timed_fsm::parse(&mut p, Key::A);       // Reduce
+/// let _ = p.parse(Key::Shift);   // Shift
+/// let r = p.parse(Key::A);       // Reduce
 /// assert_eq!(r.actions, vec!["ShiftA".to_string()]);
 /// ```
 pub trait ShiftReduceParser {
@@ -265,83 +265,72 @@ pub trait ShiftReduceParser {
     /// maintain reduce-count statistics, history logs, or any per-reduce state
     /// that should not live inside `decide`.
     fn on_reduce(&mut self, record: Self::ReduceRecord);
-}
 
-/// Process a token through a shift-reduce parser, producing a [`Response`].
-///
-/// # Loop semantics
-///
-/// The driver loop calls [`ShiftReduceParser::decide`] on the current token.
-/// Depending on the result:
-///
-/// | Result | Actions accumulated | `on_reduce` called | Next iteration |
-/// |--------|--------------------|--------------------|----------------|
-/// | `Shift` | — | No | Return immediately |
-/// | `Reduce` | Yes | Yes | Return immediately |
-/// | `ReduceAndContinue` | Yes | Yes | Loop with `remaining` |
-/// | `PassThrough` | — | No | Return immediately |
-///
-/// # `consumed` semantics
-///
-/// The returned `Response::consumed` flag is `true` if any of the
-/// following is true:
-///
-/// - The terminal action was `Shift` or `Reduce` (event was handled), **or**
-/// - At least one [`ReduceAndContinue`](ParseAction::ReduceAndContinue) step
-///   accumulated actions before a `PassThrough` was reached.
-///
-/// The second case means that even if the final `PassThrough` would normally
-/// mean "not consumed," the event is still considered consumed because the
-/// parser did useful work in earlier iterations of the loop.
-///
-/// # Termination
-///
-/// The loop always terminates because every path through `decide` either
-/// returns a terminal variant (`Shift`, `Reduce`, `PassThrough`) — which
-/// causes an immediate `return` — or returns `ReduceAndContinue` with a
-/// new token. The new token is always a value that already existed in the
-/// caller's token stream; the grammar must ensure no cycle exists (e.g.,
-/// a token that always `ReduceAndContinue`s into itself). In practice,
-/// the `remaining` token is typically processed via a different match arm
-/// that does not produce another `ReduceAndContinue`.
-pub fn parse<P>(parser: &mut P, initial: P::Token) -> Response<P::Action, P::TimerId>
-where
-    P: ShiftReduceParser,
-{
-    let mut actions: Vec<P::Action> = Vec::new();
-    let mut current = Some(initial);
+    /// Process a token through this parser, producing a [`Response`].
+    ///
+    /// # Loop semantics
+    ///
+    /// The driver loop calls [`decide`](Self::decide) on the current token.
+    /// Depending on the result:
+    ///
+    /// | Result | Actions accumulated | `on_reduce` called | Next iteration |
+    /// |--------|--------------------|--------------------|----------------|
+    /// | `Shift` | — | No | Return immediately |
+    /// | `Reduce` | Yes | Yes | Return immediately |
+    /// | `ReduceAndContinue` | Yes | Yes | Loop with `remaining` |
+    /// | `PassThrough` | — | No | Return immediately |
+    ///
+    /// # `consumed` semantics
+    ///
+    /// The returned `Response::consumed` flag is `true` if any of the
+    /// following is true:
+    ///
+    /// - The terminal action was `Shift` or `Reduce` (event was handled), **or**
+    /// - At least one [`ReduceAndContinue`](ParseAction::ReduceAndContinue) step
+    ///   accumulated actions before a `PassThrough` was reached.
+    ///
+    /// # Termination
+    ///
+    /// The loop always terminates because every path through `decide` either
+    /// returns a terminal variant (`Shift`, `Reduce`, `PassThrough`) — which
+    /// causes an immediate `return` — or returns `ReduceAndContinue` with a
+    /// new token. The grammar must ensure no cycle exists.
+    fn parse(&mut self, initial: Self::Token) -> Response<Self::Action, Self::TimerId> {
+        let mut actions: Vec<Self::Action> = Vec::new();
+        let mut current = Some(initial);
 
-    while let Some(token) = current.take() {
-        match parser.decide(&token) {
-            ParseAction::Shift { timers } => {
-                return build_response(actions, true, timers);
-            }
-            ParseAction::Reduce {
-                actions: output,
-                record,
-                timers,
-            } => {
-                actions.extend(output);
-                parser.on_reduce(record);
-                return build_response(actions, true, timers);
-            }
-            ParseAction::ReduceAndContinue {
-                actions: output,
-                record,
-                remaining,
-            } => {
-                actions.extend(output);
-                parser.on_reduce(record);
-                current = Some(remaining);
-            }
-            ParseAction::PassThrough { timers } => {
-                let consumed = !actions.is_empty();
-                return build_response(actions, consumed, timers);
+        while let Some(token) = current.take() {
+            match self.decide(&token) {
+                ParseAction::Shift { timers } => {
+                    return build_response(actions, true, timers);
+                }
+                ParseAction::Reduce {
+                    actions: output,
+                    record,
+                    timers,
+                } => {
+                    actions.extend(output);
+                    self.on_reduce(record);
+                    return build_response(actions, true, timers);
+                }
+                ParseAction::ReduceAndContinue {
+                    actions: output,
+                    record,
+                    remaining,
+                } => {
+                    actions.extend(output);
+                    self.on_reduce(record);
+                    current = Some(remaining);
+                }
+                ParseAction::PassThrough { timers } => {
+                    let consumed = !actions.is_empty();
+                    return build_response(actions, consumed, timers);
+                }
             }
         }
-    }
 
-    unreachable!("parse loop must terminate via Shift, Reduce, or PassThrough")
+        unreachable!("parse loop must terminate via Shift, Reduce, or PassThrough")
+    }
 }
 
 fn build_response<A, T>(
@@ -418,7 +407,7 @@ mod tests {
     #[test]
     fn shift_buffers_and_returns_consumed() {
         let mut p = SumParser::new();
-        let r = parse(&mut p, 5);
+        let r = p.parse(5);
         assert!(r.consumed);
         assert!(r.actions.is_empty());
         assert_eq!(r.timers.len(), 1);
@@ -430,7 +419,7 @@ mod tests {
     fn reduce_emits_sum() {
         let mut p = SumParser::new();
         p.buffer = vec![3, 7];
-        let r = parse(&mut p, 0);
+        let r = p.parse(0);
         assert!(r.consumed);
         assert_eq!(r.actions, vec![10]);
         r.assert_timer_kill(0);
@@ -440,7 +429,7 @@ mod tests {
     #[test]
     fn pass_through_not_consumed() {
         let mut p = SumParser::new();
-        let r = parse(&mut p, -1);
+        let r = p.parse(-1);
         assert!(!r.consumed);
         assert!(r.actions.is_empty());
     }
@@ -500,7 +489,7 @@ mod tests {
         let mut p = SplitParser::new();
         p.buffer = vec![1, 2, 3];
 
-        let r = parse(&mut p, 99);
+        let r = p.parse(99);
         assert!(r.consumed);
         assert_eq!(r.actions, vec!["split:3".to_string(), "done".to_string()]);
         // on_reduce called twice (once for ReduceAndContinue, once for Reduce)
@@ -533,7 +522,7 @@ mod tests {
         }
 
         let mut p = RacParser;
-        let r = parse(&mut p, 1);
+        let r = p.parse(1);
         // Has accumulated actions from the ReduceAndContinue, so consumed is true
         assert!(r.consumed);
         assert_eq!(r.actions, vec!["first"]);

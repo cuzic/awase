@@ -1,6 +1,6 @@
 //! NicolaFsm: 同時打鍵判定 FSM（timed-fsm ベース）
 
-use timed_fsm::Response;
+use timed_fsm::{Response, ShiftReduceParser};
 
 use crate::config::ConfirmMode;
 use crate::engine::input_tracker::PhysicalKeyState;
@@ -435,7 +435,7 @@ impl NicolaFsm {
 type TieredParseAction = timed_fsm::ParseAction<KeyAction, ClassifiedEvent, usize, OutputUpdate>;
 
 // ── ShiftReduceParser 実装 ──
-impl timed_fsm::ShiftReduceParser for NicolaFsm {
+impl ShiftReduceParser for NicolaFsm {
     type Action = KeyAction;
     type Token = ClassifiedEvent;
     type TimerId = usize;
@@ -502,7 +502,7 @@ impl NicolaFsm {
             return self.handle_bypass(&ev);
         }
 
-        timed_fsm::parse(self, ev)
+        self.parse(ev)
     }
 
     /// 状態とイベントに基づいてアクションを決定し、状態遷移を行う

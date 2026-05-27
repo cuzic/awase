@@ -232,5 +232,5 @@ mod response;
 
 pub use dispatch::{ActionExecutor, TimerRuntime};
 pub use machine::TimedStateMachine;
-pub use parser::{parse, ParseAction, ShiftReduceParser};
+pub use parser::{ParseAction, ShiftReduceParser};
 pub use response::{Response, TimerCommand};
