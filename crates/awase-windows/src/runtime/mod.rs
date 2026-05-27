@@ -282,11 +282,9 @@ impl Runtime {
 
     /// last_focus_info を更新し、(process_changed, prev_pid) を返す。
     ///
-    /// process_changed な場合は事前に `hwnd_cache::save_on_focus_leave` を呼び出す。
+    /// process_changed な場合は事前に `hwnd_ime_cache.save()` を呼び出す。
     /// prev_pid は process_changed 時のみ Some になる（ログ用）。
     fn advance_focus_tracking(&mut self, classified: &ClassifiedFocus) -> (bool, Option<u32>) {
-        use crate::focus::hwnd_cache;
-
         let last_pid = self
             .executor
             .platform
@@ -301,8 +299,7 @@ impl Runtime {
             if let Some((old_pid, old_class)) =
                 self.executor.platform.focus.last_focus_info.clone()
             {
-                hwnd_cache::save_on_focus_leave(
-                    &mut self.executor.platform.focus.hwnd_ime_cache,
+                self.executor.platform.focus.hwnd_ime_cache.save(
                     old_pid,
                     old_class,
                     self.platform_state.belief(),
@@ -326,8 +323,6 @@ impl Runtime {
     /// クリア・hwnd_cache 復元・force_on_guard リセット・UIA フォールバック）。
     /// `prev_pid` は `advance_focus_tracking` が返した直前のプロセス ID（ログ用）。
     fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
-        use crate::focus::hwnd_cache;
-
         log::info!(
             "FocusChange [{}→{}] {}: stale ime_on={}({:?}) mode={:?} japanese={}",
             prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
@@ -352,8 +347,7 @@ impl Runtime {
         }
 
         {
-            let cache_hit = hwnd_cache::restore_on_focus_enter(
-                &self.executor.platform.focus.hwnd_ime_cache,
+            let cache_hit = self.executor.platform.focus.hwnd_ime_cache.restore(
                 classified.process_id,
                 &classified.class_name,
             );

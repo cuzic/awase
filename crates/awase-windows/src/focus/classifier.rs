@@ -246,7 +246,7 @@ pub struct AppKindClassifier {
     /// IMM 能力の学習・永続化ストア。
     pub imm_learning: ImmCapabilityStore,
     /// per-HWND IME 状態キャッシュ。
-    pub hwnd_ime_cache: std::collections::HashMap<(u32, String), super::hwnd_cache::HwndImeSnapshot>,
+    pub hwnd_ime_cache: super::hwnd_cache::HwndImeCache,
     /// フォーカス中アプリの IME 制御プロファイル。
     ///
     /// `last_focus_info` の更新と必ず同時に書き換える（`update_focus_info` 経由）。
@@ -275,7 +275,7 @@ impl AppKindClassifier {
             last_focus_info: None,
             uia_sender: None,
             imm_learning: ImmCapabilityStore::new(base_dir),
-            hwnd_ime_cache: std::collections::HashMap::new(),
+            hwnd_ime_cache: super::hwnd_cache::HwndImeCache::new(),
             current_app_profile: AppImeProfile::Standard,
             current_process_name: String::new(),
         }
