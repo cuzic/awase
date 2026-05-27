@@ -427,6 +427,17 @@ impl Runtime {
                 let held = if is_tsf {
                     app.executor.platform.output.confirm_tsf()
                 } else {
+                    // BypassConfirmed（非TSFウィンドウ確定）: warmup_grace を無視して
+                    // ime_on を false に強制する。
+                    //
+                    // apply_focus_probe が WARMUP_GRACE_MS(300ms) の抑制で ime_on=true を
+                    // 保持したまま bypass_tsf() に到達した場合、以降のキーが NICOLA 変換
+                    // されてしまい Win+X メニュー等の1文字ショートカットが届かなくなる。
+                    // 非TSFウィンドウには日本語IMEが存在しないため grace 抑制は不要であり、
+                    // ここで ime_on=false を確定させる。
+                    let ms = crate::hook::current_tick_ms();
+                    let user_enabled = app.engine.is_user_enabled();
+                    app.platform_state.write_focus_probe(false, ms, user_enabled);
                     app.executor.platform.output.bypass_tsf()
                 };
                 // confirm_tsf は PendingWarmup/Bypass → Probing、bypass_tsf は PendingWarmup/Probing → Bypass。
