@@ -74,7 +74,8 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn reinject_key(&mut self, event: &RawKeyEvent) {
-        unsafe { crate::reinject_key(event) };
+        use crate::RawKeyEventExt as _;
+        unsafe { event.reinject() };
     }
 
     // ── タイマー ──

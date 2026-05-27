@@ -462,7 +462,7 @@ impl Output {
         }
         log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})", vks.len());
 
-        for run in split_vk_runs(vks) {
+        for run in Self::split_vk_runs(vks) {
             let mut inputs: Vec<INPUT> = Vec::with_capacity(run.len() * 4);
             // 全↓（コード順前半）
             for &(vk, needs_shift) in run {

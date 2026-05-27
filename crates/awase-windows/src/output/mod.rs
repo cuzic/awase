@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 use awase::config::OutputMode;
 use awase::kana_table::KanaTable;
