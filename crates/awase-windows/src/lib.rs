@@ -72,6 +72,9 @@ pub use crate::input_defer::{INPUT_DEFER, InputDeferQueue};
 /// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
 pub static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// エンジンスレッド ID（フックスレッドから WM_KEY_FROM_HOOK を送るため）
+pub(crate) static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// Ctrl+C 受信フラグ
 pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
@@ -236,6 +239,12 @@ pub const WM_PANIC_RESET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP 
 /// 既存インスタンスはこのメッセージを受けるとタスクトレイにバルーン通知を表示し、
 /// ユーザーに「すでに起動している」ことを知らせる。
 pub const WM_DUPLICATE_INSTANCE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 17;
+
+/// フックスレッドからエンジンスレッドへのキーイベント転送メッセージ
+///
+/// lParam は `Box::into_raw(Box::new(RawKeyEvent))` のポインタ。
+/// 受信側は `unsafe { *Box::from_raw(lParam.0 as *mut RawKeyEvent) }` で消費する。
+pub const WM_KEY_FROM_HOOK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 19;
 
 /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
 ///

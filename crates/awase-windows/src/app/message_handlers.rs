@@ -26,6 +26,26 @@ use crate::tray;
 
 use super::{check_keyboard_layout_on_change, launch_settings, on_key_event_impl, reload_config};
 
+/// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
+pub(super) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
+    // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
+    app.platform_state.last_hook_activity_ms = hook::current_tick_ms();
+    app.platform_state.hook_event_count += 1;
+
+    // NonText フォーカス（タスクバー等）はすべて OS にパススルー
+    if app.platform_state.focus.focus_kind == FocusKind::NonText {
+        app.executor.enqueue_reinject(event);
+        post_to_main_thread(WM_EXECUTE_EFFECTS);
+        return;
+    }
+
+    let result = on_key_event_impl(app, event);
+    if matches!(result, CallbackResult::PassThrough) {
+        app.executor.enqueue_reinject(event);
+        post_to_main_thread(WM_EXECUTE_EFFECTS);
+    }
+}
+
 /// WM_TIMER ハンドラ
 #[allow(clippy::cognitive_complexity)]
 pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize>, _msg_wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
@@ -71,7 +91,8 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             use std::sync::atomic::AtomicU64;
             static PING_SENT_AT: AtomicU64 = AtomicU64::new(0);
             let ping_sent = PING_SENT_AT.load(Ordering::Relaxed);
-            let last_activity = app.platform_state.last_hook_activity_ms
+            // フックスレッド分離後は HOOK_ALIVE_TICK_MS（ping 応答含む全コールバック）を使用
+            let last_activity = hook::HOOK_ALIVE_TICK_MS.load(Ordering::Relaxed)
                 .max(crate::OUTPUT_GATE.last_vk_output_ms_val());
 
             if ping_sent > 0 && last_activity < ping_sent {

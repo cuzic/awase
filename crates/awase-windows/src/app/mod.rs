@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
     WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
@@ -23,8 +24,8 @@ use crate::runtime;
 use crate::{
     Runtime, WM_DRAIN_OUTPUT_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
-    WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_PANIC_RESET, WM_PROCESS_DEFERRED,
-    WM_RELOAD_CONFIG, with_app, with_app_or_repost, with_app_or_repost_with,
+    WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
+    WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG, with_app, with_app_or_repost, with_app_or_repost_with,
 };
 
 // ── 定数 ──
@@ -298,6 +299,13 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
 // ── メッセージループ ──
 
  fn run_message_loop(taskbar_created_msg: u32) {
+    // フックスレッドへエンジンスレッド TID を公開（WM_KEY_FROM_HOOK の送信先）
+    // SAFETY: GetCurrentThreadId は常に成功し副作用もない。
+    crate::ENGINE_THREAD_ID.store(
+        unsafe { GetCurrentThreadId() },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     let mut msg = MSG::default();
 
     loop {
@@ -370,6 +378,34 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 // SAFETY: WM_HOTKEY はメインスレッドのメッセージループからのみ配送される。
                 //         wParam は RegisterHotKey で登録した HOTKEY_ID_FOCUS_OVERRIDE と一致している。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_focus_override(app) });
+            }
+            WM_KEY_FROM_HOOK => {
+                // フックスレッドから転送された物理キーイベント
+                // SAFETY: lParam は Box::into_raw(Box::new(RawKeyEvent)) のポインタ。
+                //         RawKeyEvent は Copy なので値をコピーして Box をドロップする。
+                let event = unsafe {
+                    *Box::from_raw(msg.lParam.0 as *mut awase::types::RawKeyEvent)
+                };
+                // パニック連打検出（フックスレッドから移動）
+                if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
+                    let mods = event.modifier_snapshot;
+                    let triggers = crate::hook::classify_ime_relevance(event.vk_code).may_change_ime
+                        || crate::panic_detect::is_panic_trigger(
+                            event.vk_code, mods.ctrl, mods.shift, mods.alt,
+                        );
+                    if triggers {
+                        crate::panic_detect::record_ime_keydown(crate::hook::current_tick_ms());
+                    }
+                }
+                if crate::OUTPUT_GATE.is_active() {
+                    crate::INPUT_DEFER.defer_during_output(event);
+                } else {
+                    let result = with_app(|app| message_handlers::handle_wm_key_from_hook(app, event));
+                    // with_app が None（稀な再入）: defer して drain 要求
+                    if result.is_none() {
+                        crate::INPUT_DEFER.defer_during_with_app(event);
+                    }
+                }
             }
             WM_APP => {
                 // SAFETY: WM_APP はシステムトレイ通知用に定義したメッセージ。

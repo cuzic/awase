@@ -1,10 +1,11 @@
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
-    WM_KEYDOWN, WM_SYSKEYDOWN,
+    CallNextHookEx, DispatchMessageW, GetMessageW, MSG, PostThreadMessageW,
+    SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
+    WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
 };
 
 use crate::output::INJECTED_MARKER;
@@ -64,6 +65,16 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
 /// RUNTIME 借用なしで classify_key を呼ぶために親指 VK を AtomicU32 にキャッシュする。
 /// 上位 16bit = left_thumb_vk、下位 16bit = right_thumb_vk。
 static CACHED_THUMB_VKS: AtomicU32 = AtomicU32::new(0);
+
+/// フックコールバックの最終活動タイムスタンプ（ウォッチドッグ用、クロススレッド対応）
+///
+/// 自己注入キー（ping 応答）も含む全コールバックで更新する。
+/// `app.platform_state.last_hook_activity_ms` は物理キーのみ更新するのと対照的。
+pub static HOOK_ALIVE_TICK_MS: AtomicU64 = AtomicU64::new(0);
+
+/// install_hook がフックスレッドからの TID 通知を待つスロット
+/// 0 = 待機中、u32::MAX = SetWindowsHookExW 失敗、それ以外 = フックスレッド TID
+static HOOK_TID_INIT_SLOT: AtomicU32 = AtomicU32::new(0);
 
 fn cached_hook_config() -> HookConfig {
     let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
@@ -152,33 +163,11 @@ pub unsafe fn send_ping() {
 
 /// フックを再登録する（OS に無言で削除された場合の自動復旧用）。
 ///
-/// コールバックは既にグローバルに保持されているため、
-/// `SetWindowsHookExW` を再度呼んでハンドルを差し替えるだけ。
-/// UAC 昇格もプロセス再起動も不要。
+/// フックスレッド分離後は engine thread からの reinstall は不要。
+/// Commit 3 で完全削除予定。
 pub fn reinstall_hook() -> bool {
-    // SAFETY: HOOK_HANDLE はシングルスレッド専用セルであり、本関数はメインスレッドから
-    //         のみ呼ばれることが呼出元で保証されている。SetWindowsHookExW / UnhookWindowsHookEx
-    //         はグローバルフックハンドルの登録・解除に必要な Win32 API。
-    unsafe {
-        // 旧ハンドルがあれば念のため解除（既に無効な可能性あり）
-        let old = *HOOK_HANDLE.get_mut();
-        if !old.0.is_null() {
-            let _ = UnhookWindowsHookEx(old);
-        }
-
-        match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) {
-            Ok(new_handle) => {
-                HOOK_HANDLE.set(new_handle);
-                log::info!("Keyboard hook reinstalled successfully");
-                true
-            }
-            Err(e) => {
-                log::error!("Failed to reinstall keyboard hook: {e}");
-                HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
-                false
-            }
-        }
-    }
+    log::debug!("reinstall_hook() skipped (dedicated hook thread architecture)");
+    true
 }
 
 /// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
@@ -321,52 +310,114 @@ pub enum CallbackResult {
 
 /// フック解除を保証する RAII ガード
 ///
-/// スコープを抜けると自動的に `UnhookWindowsHookEx` を呼び出し、
-/// コールバックもクリアする。
-#[derive(Debug)]
+/// ドロップ時にフックスレッドへ WM_QUIT を送信し、
+/// スレッド終了（および UnhookWindowsHookEx）を待機する。
 pub struct HookGuard {
-    _private: (), // 外部から直接構築させない
+    hook_thread_id: u32,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for HookGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HookGuard")
+            .field("hook_thread_id", &self.hook_thread_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for HookGuard {
     fn drop(&mut self) {
-        // SAFETY: HookGuard は install_hook が返した唯一のインスタンスであり、
-        //         drop は1回だけ呼ばれる。HOOK_HANDLE はシングルスレッド専用セルで
-        //         メインスレッドからのみアクセスされることが構造的に保証されている。
+        // フックスレッドに WM_QUIT を送り、GetMessageW ループを終了させる。
+        // フックスレッド側で UnhookWindowsHookEx を実行してから終了する。
+        // SAFETY: hook_thread_id はフックスレッドの有効な TID。
         unsafe {
-            let handle = *HOOK_HANDLE.get_mut();
-            if !handle.0.is_null() {
-                let _ = UnhookWindowsHookEx(handle);
-                HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
-                log::info!("Keyboard hook uninstalled");
-            }
-            KEY_EVENT_CALLBACK.set(None);
+            let _ = PostThreadMessageW(
+                self.hook_thread_id,
+                WM_QUIT,
+                WPARAM(0),
+                LPARAM(0),
+            );
         }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        log::info!("Keyboard hook uninstalled");
     }
 }
 
-/// フックを登録する
+/// フックを専用スレッドに登録する。
 ///
-/// 返された `HookGuard` を保持している間フックが有効。
-/// ドロップ時に自動解除される。
+/// スポーンした "awase-hook" スレッドが `SetWindowsHookExW` を完了するまで
+/// スピン待機してから返る。返された `HookGuard` を保持している間フックが有効。
+/// ドロップ時にフックスレッドを終了させる。
 ///
 /// # Errors
-/// `SetWindowsHookExW` が失敗した場合（OS エラー）。
-pub fn install_hook(
-    callback: Box<dyn FnMut(RawKeyEvent) -> CallbackResult>,
-) -> windows::core::Result<HookGuard> {
-    // SAFETY: KEY_EVENT_CALLBACK と HOOK_HANDLE はシングルスレッド専用セル。
-    //         本関数はメインスレッドから1回のみ呼ばれることが呼出元で保証されており、
-    //         SetWindowsHookExW に渡す hook_callback は 'static な unsafe extern fn。
-    unsafe {
-        KEY_EVENT_CALLBACK.set(Some(callback));
+/// スレッドのスポーン失敗、または `SetWindowsHookExW` が失敗した場合。
+pub fn install_hook() -> windows::core::Result<HookGuard> {
+    // 多重呼び出し対策: スロットをリセット
+    HOOK_TID_INIT_SLOT.store(0, Ordering::SeqCst);
 
-        let handle = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0)?;
-        HOOK_HANDLE.set(handle);
+    let thread = std::thread::Builder::new()
+        .name("awase-hook".into())
+        .spawn(|| {
+            let hook_result = unsafe {
+                SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0)
+            };
+            match hook_result {
+                Ok(hook) => {
+                    // SAFETY: HOOK_HANDLE はこのスレッドのみがアクセスする。
+                    unsafe { HOOK_HANDLE.set(hook); }
+                    let tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+                    HOOK_TID_INIT_SLOT.store(tid, Ordering::Release);
 
-        log::info!("Keyboard hook installed successfully");
+                    // 軽量メッセージポンプ（WH_KEYBOARD_LL フック用）
+                    let mut msg = MSG::default();
+                    loop {
+                        // SAFETY: msg は有効なスタック上の MSG。
+                        let ret = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
+                        if ret.0 <= 0 { break; }
+                        // SAFETY: msg は GetMessageW が充填した有効な値。
+                        unsafe { DispatchMessageW(&raw const msg); }
+                    }
+
+                    // ループ終了（WM_QUIT 受信）: フックを解除
+                    // SAFETY: HOOK_HANDLE はこのスレッドのみがアクセスする。
+                    unsafe {
+                        let h = *HOOK_HANDLE.get_mut();
+                        if !h.0.is_null() {
+                            let _ = UnhookWindowsHookEx(h);
+                            HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
+                        }
+                    }
+                    log::info!("Keyboard hook thread exiting cleanly");
+                }
+                Err(e) => {
+                    log::error!("SetWindowsHookExW failed in hook thread: {e}");
+                    // u32::MAX でエラーを通知
+                    HOOK_TID_INIT_SLOT.store(u32::MAX, Ordering::Release);
+                }
+            }
+        })
+        .map_err(|e| {
+            log::error!("Failed to spawn awase-hook thread: {e}");
+            windows::core::Error::from_win32()
+        })?;
+
+    // フックスレッドが SetWindowsHookExW を完了するまでスピン待機
+    let hook_tid = loop {
+        let t = HOOK_TID_INIT_SLOT.load(Ordering::Acquire);
+        if t != 0 { break t; }
+        std::hint::spin_loop();
+    };
+
+    if hook_tid == u32::MAX {
+        // SetWindowsHookExW がフックスレッド内で失敗
+        let _ = thread.join();
+        return Err(windows::core::Error::from_win32());
     }
-    Ok(HookGuard { _private: () })
+
+    log::info!("Keyboard hook installed in dedicated thread (tid={hook_tid})");
+    Ok(HookGuard { hook_thread_id: hook_tid, thread: Some(thread) })
 }
 
 fn build_raw_key_event(
@@ -657,31 +708,33 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // ワーカースレッドに offload する設計に移行したため、awase 自身の経路では再入が
     // 発生しなくなった (Step 1〜5d 完了)。
     //
-    // 万一 3rd-party フックチェーン経由でメッセージポンプが走り再入した場合は
-    // `try_borrow_mut` が None を返すため、ここで CallNextHookEx に落として OS に
-    // 素通しする (defer + replay の代わりに passthrough)。
+    // それでも WM_TIMER ハンドラ等が RUNTIME を保持している瞬間に物理キーが届くと
+    // `try_borrow_mut` が None を返す。この時点まで到達したキーは上流の
+    // is_self_injected チェック (line 624) を通過済みなので物理ユーザーキーが保証される。
+    // OUTPUT_GATE active/inactive を問わず INPUT_DEFER に退避し、RUNTIME が解放された後に
+    // NICOLA エンジンで正しく処理する。
     let Some(mut app_borrow) = crate::RUNTIME.try_borrow_mut() else {
-        // OUTPUT_GATE が active なら output 進行中。RUNTIME 借用状態に関わらず
-        // INPUT_DEFER に退避して drain 後に正しく NICOLA 処理する。
-        // （probe タイマー・send_keys など OutputActiveGuard を持つ全パスが対象）
+        let config = cached_hook_config();
+        let (key_classification, physical_pos) = classify_key(vk, scan, &config);
+        // SAFETY: GetAsyncKeyState はフックコールバック内から呼ぶため安全。
+        let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+        let event = build_raw_key_event(vk, scan, is_keydown, kb.dwExtraInfo, key_classification, physical_pos, modifier_snapshot);
         if crate::OUTPUT_GATE.is_active() {
-            let config = cached_hook_config();
-            let (key_classification, physical_pos) = classify_key(vk, scan, &config);
-            // SAFETY: GetAsyncKeyState はフックコールバック内から呼ぶため安全。
-            let modifier_snapshot = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-            let event = build_raw_key_event(vk, scan, is_keydown, kb.dwExtraInfo, key_classification, physical_pos, modifier_snapshot);
+            // OUTPUT_GATE active: OutputActiveGuard::drop が drain を担う
             crate::INPUT_DEFER.defer_during_output(event);
             log::debug!(
-                "[hook-reentrant-deferred] vk={:#04X} {} OUTPUT_GATE active → INPUT_DEFER に退避",
+                "[hook-reentrant] vk={:#04X} {} OUTPUT_GATE active → INPUT_DEFER に退避",
                 vk, if is_keydown { "KeyDown" } else { "KeyUp" }
             );
-            return LRESULT(1);
+        } else {
+            // OUTPUT_GATE inactive (WM_TIMER 等が RUNTIME を保持): drain を明示要求
+            crate::INPUT_DEFER.defer_during_with_app(event);
+            log::debug!(
+                "[hook-reentrant] vk={:#04X} {} RUNTIME borrowed → INPUT_DEFER + drain 要求",
+                vk, if is_keydown { "KeyDown" } else { "KeyUp" }
+            );
         }
-        log::warn!(
-            "[hook-reentrant] vk={:#04X} {}: RUNTIME already borrowed → silent passthrough",
-            vk, if is_keydown { "KeyDown" } else { "KeyUp" }
-        );
-        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+        return LRESULT(1);
     };
     let Some(app) = app_borrow.as_mut() else {
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
@@ -752,34 +805,59 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     }
 }
 
-/// WH_KEYBOARD_LL フックコールバック
+/// WH_KEYBOARD_LL フックコールバック（専用フックスレッド上で動作）
 ///
-/// キーイベントの処理先を `classify_route` で一元的に判定し、
-/// `HookRoutingState` のビットセットで KeyDown/KeyUp ペアを構造的に保証する。
-/// 状態は `APP.platform_state` から読み書きする。
+/// 全ての物理キーを消費し `PostThreadMessageW` でエンジンスレッドに転送する。
+/// 自己注入キー（INJECTED_MARKER 等）は `CallNextHookEx` で OS に通す。
+/// RUNTIME には一切触れないため、再入バグが構造的に発生しない。
 ///
 /// # Safety
 /// OS から `WH_KEYBOARD_LL` フックコールバックとして呼び出される。
-/// `ncode`・`wparam`・`lparam` は OS が保証する有効な値であり、
-/// `HOOK_HANDLE` はシングルスレッド専用セルでメインスレッドからのみアクセスされる。
+/// フックスレッドの GetMessageW ループ内でのみ呼ばれる。
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // ウォッチドッグ用タイムスタンプを更新（自己注入キーも含む全コールバック）
+    HOOK_ALIVE_TICK_MS.store(current_tick_ms(), Ordering::Relaxed);
+
     let hook_handle = *HOOK_HANDLE.get_mut();
-    if ncode >= 0 {
-        let t0 = current_tick_ms();
-        let result = process_hook_event(hook_handle, ncode, wparam, lparam);
-        let elapsed = current_tick_ms() - t0;
-        if elapsed >= 30 {
-            let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-            log::warn!(
-                "[hook-slow] vk={:#04X} {} took {}ms (LowLevelHooksTimeout risk)",
-                kb.vkCode,
-                if matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN) { "dn" } else { "up" },
-                elapsed,
-            );
-        }
-        return result;
+    if ncode < 0 {
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     }
-    CallNextHookEx(Some(hook_handle), ncode, wparam, lparam)
+
+    let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+
+    // 自己注入キー（SendInput with INJECTED_MARKER 等）は OS にそのまま通す
+    if is_self_injected(kb.dwExtraInfo) {
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+    }
+
+    let vk = VkCode(kb.vkCode as u16);
+    let scan = ScanCode(kb.scanCode);
+    let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+    let config = cached_hook_config();
+    let (key_classification, physical_pos) = classify_key(vk, scan, &config);
+    // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
+    let modifier_snapshot = crate::observer::focus_observer::read_os_modifiers();
+    let event = build_raw_key_event(
+        vk, scan, is_keydown, kb.dwExtraInfo,
+        key_classification, physical_pos, modifier_snapshot,
+    );
+
+    let engine_tid = crate::ENGINE_THREAD_ID.load(Ordering::Relaxed);
+    if engine_tid != 0 {
+        let ptr = Box::into_raw(Box::new(event));
+        // SAFETY: engine_tid は run_message_loop 先頭で設定された有効なスレッド TID。
+        if PostThreadMessageW(
+            engine_tid,
+            crate::WM_KEY_FROM_HOOK,
+            WPARAM(0),
+            LPARAM(ptr as isize),
+        ).is_err() {
+            // PostThreadMessageW 失敗（キュー満杯等）: メモリリークを防ぐため即座に回収
+            let _ = Box::from_raw(ptr);
+            log::warn!("[hook] PostThreadMessageW failed vk={vk:#04X}");
+        }
+    }
+    LRESULT(1) // 常に消費（engine thread が PassThrough 判定して reinject する）
 }
 
 

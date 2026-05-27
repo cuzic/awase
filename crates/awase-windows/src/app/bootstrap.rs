@@ -15,13 +15,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use awase::config::ValidatedConfig;
 use awase::engine::{Engine, NicolaFsm};
 use awase::engine::SpecialKeyCombos;
-use awase::types::{RawKeyEvent, VkCode};
+use awase::types::VkCode;
 use awase::yab::YabLayout;
 use crate::vk::vk_name_to_code;
 
 use crate::executor;
 use crate::hook;
-use crate::hook::CallbackResult;
 use crate::ime;
 use crate::output::Output;
 use crate::platform;
@@ -221,11 +220,7 @@ pub(super) fn init_tray(
 pub(super) fn install_hooks_and_hotkeys_validated(
     config: &ValidatedConfig,
 ) -> Result<(hook::HookGuard, Option<HotKeyGuard>, Option<HotKeyGuard>)> {
-    let callback = Box::new(|event: RawKeyEvent| -> CallbackResult {
-        // SAFETY: on_key_event_callback accesses APP via SingleThreadCell; hook callbacks run on the main thread.
-        unsafe { super::on_key_event_callback(event) }
-    });
-    let guard = hook::install_hook(callback).context("Failed to install keyboard hook")?;
+    let guard = hook::install_hook().context("Failed to install keyboard hook")?;
 
     let toggle_guard = config
         .general
