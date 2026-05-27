@@ -7,39 +7,41 @@ use std::time::Duration;
 /// 次の `run_with_timeout` 呼び出し時に完了済みのものを刈り取る（GC）。
 /// 永久にブロックする API を叩いたスレッドは `is_finished()` が false のままなので
 /// GC できない。そのため上限を設け、満杯なら新規 spawn を拒否してリソース暴走を防ぐ。
-static LEAKED_THREADS: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
+struct LeakedThreadPool {
+    threads: Mutex<Vec<JoinHandle<()>>>,
+    max: usize,
+}
 
-/// 孤児スレッドの最大許容数。これを超えると `run_with_timeout` は spawn せず即 `None` を返す。
-const LEAKED_THREAD_MAX: usize = 8;
+impl LeakedThreadPool {
+    const fn new(max: usize) -> Self {
+        Self { threads: Mutex::new(Vec::new()), max }
+    }
 
-fn reap_leaked_threads() {
-    let Ok(mut leaked) = LEAKED_THREADS.lock() else {
-        return;
-    };
-    let before = leaked.len();
-    leaked.retain(|h| !h.is_finished());
-    let reaped = before - leaked.len();
-    if reaped > 0 {
-        log::debug!(
-            "Reaped {reaped} finished leaked worker threads ({} remaining)",
-            leaked.len()
-        );
+    fn reap(&self) {
+        let Ok(mut leaked) = self.threads.lock() else { return };
+        let before = leaked.len();
+        leaked.retain(|h| !h.is_finished());
+        let reaped = before - leaked.len();
+        if reaped > 0 {
+            log::debug!(
+                "Reaped {reaped} finished leaked worker threads ({} remaining)",
+                leaked.len()
+            );
+        }
+    }
+
+    fn leak(&self, handle: JoinHandle<()>) {
+        let Ok(mut leaked) = self.threads.lock() else { return };
+        leaked.push(handle);
+        log::warn!("Leaked worker thread (now {} in list)", leaked.len());
+    }
+
+    fn is_full(&self) -> bool {
+        self.threads.lock().is_ok_and(|leaked| leaked.len() >= self.max)
     }
 }
 
-fn leak_thread(handle: JoinHandle<()>) {
-    let Ok(mut leaked) = LEAKED_THREADS.lock() else {
-        return;
-    };
-    leaked.push(handle);
-    log::warn!("Leaked worker thread (now {} in list)", leaked.len());
-}
-
-fn is_leaked_list_full() -> bool {
-    LEAKED_THREADS
-        .lock()
-        .is_ok_and(|leaked| leaked.len() >= LEAKED_THREAD_MAX)
-}
+static LEAKED_THREADS: LeakedThreadPool = LeakedThreadPool::new(8);
 
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
 ///
@@ -60,12 +62,13 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    reap_leaked_threads();
+    LEAKED_THREADS.reap();
 
-    if is_leaked_list_full() {
+    if LEAKED_THREADS.is_full() {
         log::error!(
-            "Leaked thread list is full ({LEAKED_THREAD_MAX}), refusing to spawn new worker. \
-             A Win32 API is persistently blocking."
+            "Leaked thread list is full ({}), refusing to spawn new worker. \
+             A Win32 API is persistently blocking.",
+            LEAKED_THREADS.max
         );
         return None;
     }
@@ -91,7 +94,7 @@ where
                 "run_with_timeout: worker thread exceeded {}ms, leaked for later GC",
                 timeout.as_millis()
             );
-            leak_thread(handle);
+            LEAKED_THREADS.leak(handle);
             None
         }
     }
