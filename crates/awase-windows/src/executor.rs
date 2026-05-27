@@ -20,6 +20,7 @@ use awase::types::{RawKeyEvent, VkCode};
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
 use crate::vk::VkCodeExt;
+use crate::RawKeyEventExt as _;
 
 /// `execute_from_hook` の戻り値。
 #[derive(Debug)]
@@ -547,7 +548,7 @@ impl DecisionExecutor {
         let vk_code = event.vk_code;
         win32_async::spawn_local(async move {
             // SAFETY: spawn_local はメインスレッドのメッセージループで実行される。
-            unsafe { crate::reinject_key(&event) };
+            unsafe { event.reinject() };
             // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
             // Backspace 等は composition を維持するためここでは対象外。
             if is_key_down && vk_code.is_composition_confirm_key() {

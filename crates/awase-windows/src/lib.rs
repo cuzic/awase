@@ -246,37 +246,44 @@ pub const WM_DUPLICATE_INSTANCE: u32 = windows::Win32::UI::WindowsAndMessaging::
 /// 受信側は `unsafe { *Box::from_raw(lParam.0 as *mut RawKeyEvent) }` で消費する。
 pub const WM_KEY_FROM_HOOK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 19;
 
-/// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）
-///
-/// INJECTED_MARKER 付きなのでフックに再捕捉されない。
-///
-/// # Safety
-/// Win32 API (`send_input_safe`) を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn reinject_key(event: &RawKeyEvent) {
-    use crate::output::INJECTED_MARKER;
-    use awase::types::KeyEventType;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        KEYBD_EVENT_FLAGS, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        VIRTUAL_KEY,
-    };
+/// `RawKeyEvent` の SendInput 再注入ヘルパー。
+pub trait RawKeyEventExt {
+    /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）。
+    ///
+    /// INJECTED_MARKER 付きなのでフックに再捕捉されない。
+    ///
+    /// # Safety
+    /// Win32 API (`send_input_safe`) を呼び出す。メインスレッドから呼ぶこと。
+    unsafe fn reinject(&self);
+}
 
-    let is_keyup = matches!(event.event_type, KeyEventType::KeyUp);
+impl RawKeyEventExt for RawKeyEvent {
+    unsafe fn reinject(&self) {
+        use crate::output::INJECTED_MARKER;
+        use awase::types::KeyEventType;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            KEYBD_EVENT_FLAGS, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+            VIRTUAL_KEY,
+        };
 
-    let input = INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(event.vk_code.0),
-                wScan: 0,
-                dwFlags: if is_keyup {
-                    KEYEVENTF_KEYUP
-                } else {
-                    KEYBD_EVENT_FLAGS(0)
+        let is_keyup = matches!(self.event_type, KeyEventType::KeyUp);
+
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(self.vk_code.0),
+                    wScan: 0,
+                    dwFlags: if is_keyup {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: INJECTED_MARKER,
                 },
-                time: 0,
-                dwExtraInfo: INJECTED_MARKER,
             },
-        },
-    };
-    let _ = win32::send_input_safe(&[input]);
+        };
+        let _ = win32::send_input_safe(&[input]);
+    }
 }
