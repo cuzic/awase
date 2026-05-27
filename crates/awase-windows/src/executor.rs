@@ -670,24 +670,28 @@ impl DecisionExecutor {
             });
             None
         } else {
-            // ── sync path (Chrome / GJI 経路) ──
+            // ── sync path (Chrome / GJI 経路 / TsfNative 経路) ──
             //
-            // EngineIntent (Ctrl+無変換 等、ユーザーの明示的操作) かつ kanji-toggle プロファイル
-            // (Chrome/Edge 等 Imm32Unavailable) の場合、shadow state が desync していても
-            // VK_KANJI / F14 を確実に送信するため latch を !open に強制する。
+            // EngineIntent (Ctrl+無変換 等、ユーザーの明示的操作) かつ ImmCross が使えない
+            // プロファイル (Imm32Unavailable: Chrome/Edge 等、TsfNative: LINE XAML 入力等) の場合、
+            // shadow state が desync していても VK_KANJI / F14 を確実に送信するため
+            // latch を !open に強制する。
             //
-            // 背景: フォーカス変更直後や awase 起動時に Chrome の実 IME 状態が unknown になり、
-            // last_applied_ime_on=false のまま Chrome の IME が ON になっていることがある。
+            // 背景: フォーカス変更直後や awase 起動時に実 IME 状態が unknown になり、
+            // last_applied_ime_on=false のまま IME が ON になっていることがある。
             // この状態で KanjiToggle/GjiDirect が shadow=desired と判断してスキップし、
             // Ctrl+無変換 が効かなくなる。
             // ユーザーの明示的操作では shadow desync を無視して必ず送信することで対処する。
+            //
+            // TsfNative (LINE の Windows.UI.Input.InputSite.WindowClass 等) でも
+            // KanjiToggle がフォールバックとして使われるため同様の desync 対策が必要。
             if origin == EffectOrigin::EngineIntent {
                 let profile = self.platform.focus.current_app_profile();
-                if profile.uses_kanji_toggle() {
+                if !profile.can_use_imm32_cross_process() {
                     self.platform.output.set_ime_apply_latch(!open);
                     log::debug!(
-                        "[dispatch-ime] EngineIntent+kanji-toggle: override latch={} → force VK_KANJI/F14",
-                        !open
+                        "[dispatch-ime] EngineIntent+no-imm32 (profile={:?}): override latch={} → force VK_KANJI/F14",
+                        profile, !open
                     );
                 }
             }
