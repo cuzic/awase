@@ -172,15 +172,6 @@ pub fn with_app_or_repost_with(msg: u32, wparam: usize, lparam: isize, f: impl F
     }
 }
 
-/// `with_app` が現在アクティブかどうかを返す（RUNTIME が排他借用中かどうか）。
-///
-/// フックコールバックが `SendMessageTimeoutW` 等のネストメッセージループ経由で
-/// 再呼び出しされた場合に `true` を返す。呼び出し元はキーを INPUT_DEFER に
-/// 退避してから処理を終える。
-pub fn in_with_app() -> bool {
-    RUNTIME.is_borrowed_mut()
-}
-
 /// 統合 IME リフレッシュタイマー ID
 ///
 /// フォーカスデバウンス (50ms) と定期ポーリング (500ms) を統合。

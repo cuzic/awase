@@ -191,22 +191,6 @@ impl<T> SingleThreadCell<T> {
 /// グローバルなフックハンドル（構造的に必要: OS コールバックから参照）
 static HOOK_HANDLE: SingleThreadCell<HHOOK> = SingleThreadCell::new(HHOOK(std::ptr::null_mut()));
 
-/// hook_callback が in_with_app 時に使うフック設定のグローバルコピー。
-///
-/// APP.get_mut() を呼べない状況でも classify_key が実行できるように、
-/// bootstrap 時（および thumb_vk 変更時）に更新する。
-static HOOK_CONFIG: SingleThreadCell<HookConfig> = SingleThreadCell::new(HookConfig {
-    left_thumb_vk: VkCode(0),
-    right_thumb_vk: VkCode(0),
-});
-
-/// グローバル HOOK_CONFIG を更新する。bootstrap と thumb_vk 変更後に呼ぶ。
-pub fn update_hook_config(config: HookConfig) {
-    // SAFETY: HOOK_CONFIG はシングルスレッド専用セル。本関数はメインスレッドから
-    //         のみ呼ばれることが呼出元で保証されており、競合アクセスは発生しない。
-    unsafe { HOOK_CONFIG.set(config); }
-}
-
 /// フックコールバックで使うコールバック関数（構造的に必要: OS コールバックから参照）
 static KEY_EVENT_CALLBACK: SingleThreadCell<Option<Box<dyn FnMut(RawKeyEvent) -> CallbackResult>>> =
     SingleThreadCell::new(None);

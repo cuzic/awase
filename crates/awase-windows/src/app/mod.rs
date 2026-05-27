@@ -275,13 +275,14 @@ unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
         }
     }
     with_app(|app| on_key_event_impl(app, event)).unwrap_or_else(|| {
-        // with_app 再入中（set_ime_open_cross_process の SendMessageTimeoutW が
-        // メッセージポンプを起動し、その間にハードウェアキーが届いた場合）。
+        // with_app 再入セーフネット。awase 自身の SendMessageTimeoutW は全て async
+        // 化済み (Step 1〜5e) のため通常経路では発火しないが、3rd-party フックチェーンが
+        // メッセージポンプを行うなど稀な再入経路の対策として残す。
         // PassThrough にすると NICOLA 文字キー（F=け、U=ち など）が MS-IME に
-        // ラテン文字として届き文字化けする。
-        // pending キューに退避して WM_DRAIN_OUTPUT_QUEUE で NICOLA に再配送する。
+        // ラテン文字として届き文字化けするため、pending キューに退避して
+        // WM_DRAIN_OUTPUT_QUEUE で NICOLA に再配送する。
         log::debug!(
-            "[with-app-reentry] queuing vk=0x{:02X} {:?} (IN_WITH_APP, defer to drain)",
+            "[with-app-reentry] queuing vk=0x{:02X} {:?} (defer to drain)",
             event.vk_code, event.event_type,
         );
         crate::INPUT_DEFER.defer_during_with_app(event);

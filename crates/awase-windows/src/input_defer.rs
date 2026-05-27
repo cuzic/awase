@@ -2,12 +2,15 @@
 //!
 //! ## 内部構造（単一キュー）
 //!
-//! すべての退避経路（hook 再入・OUTPUT_GATE.active 中・TsfGate drain 等）は
+//! すべての退避経路（OUTPUT_GATE.active 中・TsfGate drain・with_app 再入セーフネット等）は
 //! classify 済みの `RawKeyEvent` として同一キューに積む。
-//!
-//! hook 再入時のフック側でも `hook::HOOK_CONFIG` グローバルを使って
-//! 直接 classify するため、drain 時の classify クロージャは不要になった。
 //! `enrich_ime_relevance`（sync key 判定）のみ drain 側で `with_app` 内に実行する。
+//!
+//! ## defer_during_with_app の現在の役割
+//!
+//! `in_with_app` 再入ガードは Step 5e で hook.rs から削除済み。本 API は
+//! `on_key_event_callback` で `with_app` が None を返した場合のセーフネットとして
+//! 残してある（3rd-party フックチェーンが message pump を行った場合の rare path）。
 
 use std::sync::Mutex;
 use awase::types::RawKeyEvent;
@@ -42,7 +45,8 @@ impl InputDeferQueue {
         if let Ok(mut q) = self.queue.lock() { q.push(event); }
     }
 
-    /// `with_app` 再入（OUTPUT_GATE.active=false、classify 済み）で退避し drain を要求する。
+    /// `with_app` 再入セーフネット (3rd-party フック message pump 等の rare path 用)。
+    /// event は classify 済み。OUTPUT_GATE.active=false なので drain も明示的に要求する。
     pub fn defer_during_with_app(&self, event: RawKeyEvent) {
         if let Ok(mut q) = self.queue.lock() { q.push(event); }
         crate::tsf::probe_bridge::post_drain_output_queue();

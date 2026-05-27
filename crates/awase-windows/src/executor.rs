@@ -148,9 +148,10 @@ impl DecisionExecutor {
     /// `ReinjectKey` を末尾にキューイングする。
     ///
     /// 通常 hook 経路では PassThrough は `CallNextHookEx` で OS に直接届く。
-    /// しかし in_with_app 中に `INPUT_DEFER` へ Consumed として退避されたキーは
-    /// drain で engine に replay されたあと `CallbackResult::PassThrough` が
-    /// 返っても hook 経路に戻らないため、明示的に SendInput で送出する必要がある。
+    /// しかし OUTPUT_GATE active 期間や with_app 再入セーフネットで `INPUT_DEFER` へ
+    /// Consumed として退避されたキーは drain で engine に replay されたあと
+    /// `CallbackResult::PassThrough` が返っても hook 経路に戻らないため、
+    /// 明示的に SendInput で送出する必要がある。
     pub fn enqueue_reinject(&mut self, event: RawKeyEvent) {
         self.queue
             .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
