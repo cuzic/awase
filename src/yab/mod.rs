@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use anyhow::{bail, Context, Result};
 
-use crate::kana_table::build_romaji_to_kana;
+use crate::kana_table::KanaTable;
 use crate::scanmap::{KeyboardModel, PhysicalPos};
 
 // Re-export SpecialKey for backward compatibility (previously defined here)
@@ -424,7 +424,7 @@ impl YabLayout {
     /// ローマ字→かな逆引きテーブルを使い、各 `YabValue::Romaji` の `kana` フィールドを解決する。
     #[must_use]
     pub fn resolve_kana(mut self) -> Self {
-        let table = build_romaji_to_kana();
+        let table = KanaTable::build();
         resolve_face_kana(&mut self.normal, &table);
         resolve_face_kana(&mut self.left_thumb, &table);
         resolve_face_kana(&mut self.right_thumb, &table);
@@ -491,14 +491,14 @@ fn serialize_face(face: &YabFace, row_sizes: &[usize; 4]) -> String {
 }
 
 /// `YabFace` 内の全 `YabValue::Romaji` の `kana` フィールドをテーブルから解決する。
-fn resolve_face_kana(face: &mut YabFace, table: &HashMap<String, char>) {
+fn resolve_face_kana(face: &mut YabFace, table: &KanaTable) {
     for value in face.values_mut() {
         if let YabValue::Romaji {
             ref romaji,
             ref mut kana,
         } = value
         {
-            *kana = table.get(romaji.as_str()).copied();
+            *kana = table.kana_for_romaji(romaji);
         }
     }
 }

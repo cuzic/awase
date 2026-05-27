@@ -1,5 +1,33 @@
 use std::collections::HashMap;
 
+/// ローマ字↔かな双方向ルックアップテーブル。
+///
+/// `build()` で両方向を一括構築し、`kana_for_romaji` / `romaji_for_kana` で参照する。
+#[derive(Debug)]
+pub struct KanaTable {
+    romaji_to_kana: HashMap<String, char>,
+    kana_to_romaji: HashMap<char, String>,
+}
+
+impl KanaTable {
+    /// 両方向テーブルを構築する。
+    pub fn build() -> Self {
+        let romaji_to_kana = build_romaji_map();
+        let kana_to_romaji = build_reverse_map(&romaji_to_kana);
+        Self { romaji_to_kana, kana_to_romaji }
+    }
+
+    /// ローマ字に対応するかな文字を返す。
+    pub fn kana_for_romaji(&self, romaji: &str) -> Option<char> {
+        self.romaji_to_kana.get(romaji).copied()
+    }
+
+    /// かな文字に対応するローマ字を返す。
+    pub fn romaji_for_kana(&self, kana: char) -> Option<&str> {
+        self.kana_to_romaji.get(&kana).map(String::as_str)
+    }
+}
+
 /// ローマ字→ひらがな逆引きテーブルを構築する（n-gram スコアリング用）。
 ///
 /// 訓令式ローマ字を基本とし、ヘボン式の一部（"fu"→'ふ' 等）も含む。
@@ -8,6 +36,10 @@ use std::collections::HashMap;
 #[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn build_romaji_to_kana() -> HashMap<String, char> {
+    build_romaji_map()
+}
+
+fn build_romaji_map() -> HashMap<String, char> {
     let entries: &[(&str, char)] = &[
         // 母音
         ("a", 'あ'),
@@ -155,9 +187,12 @@ pub fn build_romaji_to_kana() -> HashMap<String, char> {
 /// 長いため自動的に除外される。
 #[must_use]
 pub fn build_kana_to_romaji() -> HashMap<char, String> {
-    let forward = build_romaji_to_kana();
+    build_reverse_map(&build_romaji_map())
+}
+
+fn build_reverse_map(forward: &HashMap<String, char>) -> HashMap<char, String> {
     let mut reverse: HashMap<char, String> = HashMap::with_capacity(forward.len());
-    for (romaji, &kana) in &forward {
+    for (romaji, &kana) in forward {
         reverse
             .entry(kana)
             .and_modify(|existing| {
