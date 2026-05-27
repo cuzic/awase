@@ -143,23 +143,27 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         let outcome =
                             WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_seq };
                         {
+                            // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
+                            // with_app 再入を避けるため async タスクへオフロードする (Step 3)。
+                            // ログ出力タイミングが数 ms 遅れるが診断用途のため許容。
                             let last_io = crate::tsf::observer::gji_last_io_ms();
                             let gji_idle =
                                 crate::hook::current_tick_ms().saturating_sub(last_io);
-                            // SAFETY: IMM32 API; called from message-loop thread.
-                            let conv =
-                                unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
-                            log::debug!(
-                                "[h1-send] cold={cold_seq} romaji={romaji:?} chars={} \
-                                 gji_idle={gji_idle}ms conv={} ROMAN={} NATIVE={}",
-                                chars.len(),
-                                conv.map_or_else(
-                                    || "none".to_string(),
-                                    |v| format!("0x{v:08X}")
-                                ),
-                                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
-                                conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
-                            );
+                            let romaji_owned: String = romaji.clone();
+                            let chars_len = chars.len();
+                            win32_async::spawn_local(async move {
+                                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
+                                log::debug!(
+                                    "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} \
+                                     gji_idle={gji_idle}ms conv={} ROMAN={} NATIVE={}",
+                                    conv.map_or_else(
+                                        || "none".to_string(),
+                                        |v| format!("0x{v:08X}")
+                                    ),
+                                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+                                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                                );
+                            });
                         }
                         let gji_active = io.gji_monitor_healthy();
                         let needs_literal = prepend_f2_warmup && gji_active;
