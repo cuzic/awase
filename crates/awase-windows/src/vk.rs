@@ -225,6 +225,35 @@ pub fn is_modifier_free_char(vk_code: VkCode, os_modifier_held: bool) -> bool {
         && !os_modifier_held
 }
 
+/// Windows VK 分類メソッドを `VkCode` にメソッドとして追加する拡張トレイト。
+pub trait VkCodeExt {
+    fn is_passthrough(self) -> bool;
+    fn is_ime_control(self) -> bool;
+    fn is_ime_context(self) -> bool;
+    fn is_non_shift_modifier(self) -> bool;
+    fn is_ctrl_variant(self) -> bool;
+    fn is_composition_confirm_key(self) -> bool;
+    fn is_modifier_free_char(self, os_modifier_held: bool) -> bool;
+    fn may_change_ime(self) -> bool;
+    fn classify_modifier(self) -> Option<ModifierKey>;
+    fn ime_kind(self) -> Option<ImeKeyKind>;
+    fn to_pos(self) -> Option<awase::scanmap::PhysicalPos>;
+}
+
+impl VkCodeExt for VkCode {
+    fn is_passthrough(self) -> bool          { is_passthrough(self) }
+    fn is_ime_control(self) -> bool          { is_ime_control(self) }
+    fn is_ime_context(self) -> bool          { is_ime_context(self) }
+    fn is_non_shift_modifier(self) -> bool   { is_non_shift_modifier(self) }
+    fn is_ctrl_variant(self) -> bool         { is_ctrl_variant(self) }
+    fn is_composition_confirm_key(self) -> bool { is_composition_confirm_key(self) }
+    fn is_modifier_free_char(self, held: bool) -> bool { is_modifier_free_char(self, held) }
+    fn may_change_ime(self) -> bool          { may_change_ime(self) }
+    fn classify_modifier(self) -> Option<ModifierKey> { classify_modifier(self) }
+    fn ime_kind(self) -> Option<ImeKeyKind>  { ImeKeyKind::from_vk(self) }
+    fn to_pos(self) -> Option<awase::scanmap::PhysicalPos> { vk_to_pos(self) }
+}
+
 /// ブラウザ系・Electron 系のウィンドウクラスかどうかを判定する。
 #[must_use]
 pub fn is_browser_or_electron_class(class_name: &str) -> bool {

@@ -19,6 +19,7 @@ use awase::types::{RawKeyEvent, VkCode};
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
+use crate::vk::VkCodeExt;
 
 /// `execute_from_hook` の戻り値。
 #[derive(Debug)]
@@ -333,7 +334,7 @@ impl DecisionExecutor {
     fn try_pending_warmup_on_keyup(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
-            && crate::vk::is_composition_confirm_key(raw_event.vk_code)
+            && raw_event.vk_code.is_composition_confirm_key()
             && self.pending_warmup_on_keyup
         {
             self.pending_warmup_on_keyup = false;
@@ -353,7 +354,7 @@ impl DecisionExecutor {
     fn handle_ctrl_up_recovery(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
-            && crate::vk::is_ctrl_variant(raw_event.vk_code)
+            && raw_event.vk_code.is_ctrl_variant()
             && !self.platform.output.is_composition_warm()
         {
             log::debug!(
@@ -380,7 +381,7 @@ impl DecisionExecutor {
         has_pending: bool,
     ) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && crate::vk::is_non_shift_modifier(raw_event.vk_code) {
+        if !is_key_down && raw_event.vk_code.is_non_shift_modifier() {
             // 修飾 Up は defer しない (Ctrl 残留窓を作らない)。
             // Down が defer されたケースは try_keyup_symmetry が先に捕捉している。
             return None;
@@ -445,7 +446,7 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
         // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-        if is_key_down && crate::vk::is_composition_confirm_key(raw_event.vk_code) {
+        if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
             let was_warm = self.platform.output.is_composition_warm();
             let is_tsf = self.platform.output.is_tsf_mode();
             if was_warm && is_tsf {
@@ -543,7 +544,7 @@ impl DecisionExecutor {
         }
         // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
         // Backspace 等は composition を維持するためここでは対象外。
-        if is_key_down && crate::vk::is_composition_confirm_key(event.vk_code) {
+        if is_key_down && event.vk_code.is_composition_confirm_key() {
             log::debug!(
                 "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
                 event.vk_code,

@@ -16,9 +16,9 @@ use awase::types::{
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
-#[must_use] 
+#[must_use]
 pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
-    use crate::vk;
+    use crate::vk::VkCodeExt;
 
     let left_thumb = config.left_thumb_vk;
     let right_thumb = config.right_thumb_vk;
@@ -27,7 +27,7 @@ pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClas
         (KeyClassification::LeftThumb, None)
     } else if vk == right_thumb {
         (KeyClassification::RightThumb, None)
-    } else if vk::is_passthrough(vk) {
+    } else if vk.is_passthrough() {
         (KeyClassification::Passthrough, None)
     } else if let Some(pos) = scan_to_pos(scan) {
         (KeyClassification::Char, Some(pos))
@@ -36,15 +36,12 @@ pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClas
     }
 }
 
-/// Windows VK コードから修飾キー分類を生成する（`crate::vk::classify_modifier` の再エクスポート）。
-pub use crate::vk::classify_modifier;
-
 /// Windows VK コードから IME 関連の事前分類情報を生成する
-#[must_use] 
+#[must_use]
 pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
-    use crate::vk;
+    use crate::vk::{self, VkCodeExt};
 
-    let ime_key = vk::ImeKeyKind::from_vk(vk);
+    let ime_key = vk.ime_kind();
     let shadow_action = ime_key.map(|k| match k.shadow_effect() {
         vk::ShadowImeEffect::TurnOn => ShadowImeAction::TurnOn,
         vk::ShadowImeEffect::TurnOff => ShadowImeAction::TurnOff,
@@ -55,11 +52,11 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     // when it has access to the config. This function only classifies
     // hardware-level IME properties.
     ImeRelevance {
-        may_change_ime: ime_key.is_some() || vk::may_change_ime(vk),
+        may_change_ime: ime_key.is_some() || vk.may_change_ime(),
         shadow_action,
         is_sync_key: false,   // set by runtime with config
         sync_direction: None, // set by runtime with config
-        is_ime_control: vk::is_ime_control(vk),
+        is_ime_control: vk.is_ime_control(),
     }
 }
 
@@ -260,10 +257,11 @@ unsafe fn send_keymap_reinject(send_vk: VkCode, mods: awase::engine::fsm_types::
 /// # Safety
 /// `GetAsyncKeyState` を呼び出す。フックコールバック内から呼ぶこと。
 unsafe fn classify_route(hook: &HookRoutingState, config: HookConfig, vk: VkCode, is_keydown: bool) -> KeyRoute {
+    use crate::vk::VkCodeExt;
     if !is_keydown {
         return classify_keyup_route(hook, vk);
     }
-    if crate::vk::is_non_shift_modifier(vk) {
+    if vk.is_non_shift_modifier() {
         return KeyRoute::TrackOnly;
     }
     let mods = crate::observer::focus_observer::read_os_modifiers();
@@ -366,6 +364,7 @@ fn build_raw_key_event(
     physical_pos: Option<PhysicalPos>,
     modifier_snapshot: awase::engine::ModifierState,
 ) -> RawKeyEvent {
+    use crate::vk::VkCodeExt;
     RawKeyEvent {
         vk_code: vk,
         scan_code: scan,
@@ -375,7 +374,7 @@ fn build_raw_key_event(
         key_classification,
         physical_pos,
         ime_relevance: classify_ime_relevance(vk),
-        modifier_key: classify_modifier(vk),
+        modifier_key: vk.classify_modifier(),
         modifier_snapshot,
     }
 }
@@ -413,6 +412,7 @@ unsafe fn decide_routing_with_tracking(
     vk: VkCode,
     is_keydown: bool,
 ) -> EarlyRoutingDecision {
+    use crate::vk::VkCodeExt;
     ps.last_hook_activity_ms = current_tick_ms();
     ps.hook_event_count += 1;
 
@@ -426,7 +426,7 @@ unsafe fn decide_routing_with_tracking(
     }
 
     // Ctrl KeyUp で ctrl_bypass_hold と stale-ctrl 観測タイムスタンプを解除
-    if !is_keydown && crate::vk::is_ctrl_variant(vk) {
+    if !is_keydown && vk.is_ctrl_variant() {
         if ps.hook.ctrl_bypass_hold() {
             ps.hook.set_ctrl_bypass_hold(false);
         }
