@@ -262,19 +262,17 @@ pub(super) fn handle_wm_reload_config() {
 
 /// WM_COMMAND ハンドラ
 pub(super) unsafe fn handle_wm_command(wparam: WPARAM) {
-    if let Some(cmd) = tray::handle_tray_command(wparam) {
-        if cmd == tray::cmd_settings() {
-            launch_settings();
-        } else if cmd == tray::cmd_restart_admin() {
-            tray::restart_as_admin();
-        } else if cmd == tray::cmd_toggle() {
+    match tray::handle_tray_command(wparam) {
+        Some(tray::TrayCommand::Settings) => launch_settings(),
+        Some(tray::TrayCommand::RestartAdmin) => tray::restart_as_admin(),
+        Some(tray::TrayCommand::Toggle) => {
             let _ = with_app(Runtime::toggle_engine);
-        } else if cmd == tray::cmd_exit() {
-            PostQuitMessage(0);
-        } else if cmd >= tray::cmd_layout_base() {
-            let index = usize::from(cmd - tray::cmd_layout_base());
+        }
+        Some(tray::TrayCommand::Exit) => PostQuitMessage(0),
+        Some(tray::TrayCommand::SelectLayout(index)) => {
             let _ = with_app(|app| app.switch_layout(index));
         }
+        Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }
 

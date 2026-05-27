@@ -31,6 +31,18 @@ const IDM_EXIT: u16 = 1002;
 /// 配列選択メニュー項目のベース ID
 const IDM_LAYOUT_BASE: u16 = 100;
 
+/// トレイメニューから選択されたコマンド
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayCommand {
+    Toggle,
+    Exit,
+    Settings,
+    RestartAdmin,
+    ClearImmCache,
+    /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
+    SelectLayout(usize),
+}
+
 /// トレイアイコン ID
 const TRAY_ICON_ID: u32 = 1;
 
@@ -525,56 +537,21 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
     }
 }
 
-/// トレイウィンドウの `WM_COMMAND` を処理する
-///
-/// # Returns
-///
-/// メニュー項目の ID を返す。
-#[must_use] 
-pub const fn handle_tray_command(wparam: WPARAM) -> Option<u16> {
+/// `WM_COMMAND` の `WPARAM` からトレイコマンドを解釈する。
+#[must_use]
+pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
     let cmd = (wparam.0 & 0xFFFF) as u16;
     match cmd {
-        IDM_SETTINGS | IDM_RESTART_ADMIN | IDM_CLEAR_IMM_CACHE | IDM_TOGGLE | IDM_EXIT => Some(cmd),
-        // 配列選択メニュー項目 (IDM_LAYOUT_BASE 以上の範囲)
-        _ if cmd >= IDM_LAYOUT_BASE && cmd < IDM_TOGGLE => Some(cmd),
+        IDM_TOGGLE => Some(TrayCommand::Toggle),
+        IDM_EXIT => Some(TrayCommand::Exit),
+        IDM_SETTINGS => Some(TrayCommand::Settings),
+        IDM_RESTART_ADMIN => Some(TrayCommand::RestartAdmin),
+        IDM_CLEAR_IMM_CACHE => Some(TrayCommand::ClearImmCache),
+        c if c >= IDM_LAYOUT_BASE && c < IDM_TOGGLE => {
+            Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
+        }
         _ => None,
     }
-}
-
-/// メニューコマンド ID のアクセサ
-#[must_use] 
-pub const fn cmd_toggle() -> u16 {
-    IDM_TOGGLE
-}
-
-/// メニューコマンド ID のアクセサ
-#[must_use] 
-pub const fn cmd_exit() -> u16 {
-    IDM_EXIT
-}
-
-/// 配列選択メニュー項目のベース ID のアクセサ
-#[must_use] 
-pub const fn cmd_layout_base() -> u16 {
-    IDM_LAYOUT_BASE
-}
-
-/// 設定メニューコマンド ID のアクセサ
-#[must_use] 
-pub const fn cmd_settings() -> u16 {
-    IDM_SETTINGS
-}
-
-/// 管理者再起動メニューコマンド ID のアクセサ
-#[must_use] 
-pub const fn cmd_restart_admin() -> u16 {
-    IDM_RESTART_ADMIN
-}
-
-/// IMM キャッシュクリアメニューコマンド ID のアクセサ
-#[must_use] 
-pub const fn cmd_clear_imm_cache() -> u16 {
-    IDM_CLEAR_IMM_CACHE
 }
 
 /// 現在のプロセスが管理者権限で実行中かどうかを判定する。
@@ -690,15 +667,13 @@ unsafe extern "system" fn tray_wnd_proc(
             LRESULT(0)
         }
         WM_COMMAND => {
-            // メニュー選択 → メインのメッセージループに転送
-            if let Some(cmd) = handle_tray_command(wparam) {
-                if cmd == cmd_exit() {
-                    PostQuitMessage(0);
-                } else if cmd == cmd_toggle() {
+            match handle_tray_command(wparam) {
+                Some(TrayCommand::Exit) => PostQuitMessage(0),
+                Some(TrayCommand::Toggle) => {
                     let _ = crate::with_app(super::runtime::Runtime::toggle_engine);
-                } else if cmd == cmd_settings() {
-                    launch_settings_gui();
-                } else if cmd == cmd_clear_imm_cache() {
+                }
+                Some(TrayCommand::Settings) => launch_settings_gui(),
+                Some(TrayCommand::ClearImmCache) => {
                     let _ = crate::with_app(|app| {
                         let count = app.executor.platform.focus.imm_learning.clear();
                         log::info!("IMM capability cache cleared ({count} entries)");
@@ -707,12 +682,12 @@ unsafe extern "system" fn tray_wnd_proc(
                             &format!("学習キャッシュをクリアしました（{count}件）"),
                         );
                     });
-                } else if cmd == cmd_restart_admin() {
-                    restart_as_admin();
-                } else if cmd >= cmd_layout_base() {
-                    let index = usize::from(cmd - cmd_layout_base());
+                }
+                Some(TrayCommand::RestartAdmin) => restart_as_admin(),
+                Some(TrayCommand::SelectLayout(index)) => {
                     let _ = crate::with_app(|app| app.switch_layout(index));
                 }
+                None => {}
             }
             LRESULT(0)
         }
