@@ -3,6 +3,7 @@
 use awase::config::{KeymapRule, ParsedKeyCombo};
 use awase::engine::fsm_types::ModifierState;
 use awase::types::VkCode;
+use crate::vk::VkCodeExt;
 
 /// `[[keymap]]` ルールの実行時表現
 #[derive(Debug, Clone)]
@@ -33,8 +34,8 @@ impl KeymapTable {
                 continue;
             };
             let send_vk = if let Some(to) = &rule.to {
-                let resolved = crate::vk::vk_name_to_code(to)
-                    .or_else(|| crate::vk::vk_name_to_code(&format!("VK_{to}")))
+                let resolved = VkCode::from_name(to)
+                    .or_else(|| VkCode::from_name(&format!("VK_{to}")))
                     .or_else(|| crate::vk::parse_key_combo(to).map(|c| c.vk));
                 match resolved {
                     Some(vk) => Some(vk),

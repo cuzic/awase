@@ -19,6 +19,7 @@ use awase::ngram::NgramModel;
 use awase::types::{RawKeyEvent, VkCode};
 
 use crate::hook::CallbackResult;
+use crate::vk::VkCodeExt;
 use crate::ime;
 use crate::runtime;
 use crate::{
@@ -180,7 +181,7 @@ pub fn run() -> Result<()> {
     let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<VkCode> {
         keys.iter()
             .filter_map(|s| {
-                crate::vk::vk_name_to_code(s).or_else(|| {
+                VkCode::from_name(s).or_else(|| {
                     diag.warn(format!("keys.ime_detect.{label} のパースに失敗しました: {s}"));
                     None
                 })

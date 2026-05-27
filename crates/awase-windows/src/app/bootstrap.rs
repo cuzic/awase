@@ -17,7 +17,7 @@ use awase::engine::{Engine, NicolaFsm};
 use awase::engine::SpecialKeyCombos;
 use awase::types::VkCode;
 use awase::yab::YabLayout;
-use crate::vk::vk_name_to_code;
+use crate::vk::VkCodeExt;
 
 use crate::executor;
 use crate::hook;
@@ -135,11 +135,11 @@ pub(super) fn init_engine_validated(
     VkCode,
     VkCode,
 )> {
-    let left_thumb_vk = vk_name_to_code(&config.general.left_thumb_key).context(format!(
+    let left_thumb_vk = VkCode::from_name(&config.general.left_thumb_key).context(format!(
         "Unknown VK name: {}",
         config.general.left_thumb_key
     ))?;
-    let right_thumb_vk = vk_name_to_code(&config.general.right_thumb_key).context(format!(
+    let right_thumb_vk = VkCode::from_name(&config.general.right_thumb_key).context(format!(
         "Unknown VK name: {}",
         config.general.right_thumb_key
     ))?;
@@ -314,12 +314,12 @@ pub(super) fn initialize_app(
         .keys
         .engine_on_ime_key
         .as_deref()
-        .and_then(vk_name_to_code);
+        .and_then(VkCode::from_name);
     let engine_off_ime_vk = config
         .keys
         .engine_off_ime_key
         .as_deref()
-        .and_then(vk_name_to_code);
+        .and_then(VkCode::from_name);
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。

@@ -242,6 +242,8 @@ pub trait VkCodeExt {
     fn classify_modifier(self) -> Option<ModifierKey>;
     fn ime_kind(self) -> Option<ImeKeyKind>;
     fn to_pos(self) -> Option<awase::scanmap::PhysicalPos>;
+    /// キー名（"VK_A" 等）から VkCode を解決する。
+    fn from_name(name: &str) -> Option<Self> where Self: Sized;
 }
 
 impl VkCodeExt for VkCode {
@@ -256,6 +258,8 @@ impl VkCodeExt for VkCode {
     fn classify_modifier(self) -> Option<ModifierKey> { classify_modifier(self) }
     fn ime_kind(self) -> Option<ImeKeyKind>  { ImeKeyKind::from_vk(self) }
     fn to_pos(self) -> Option<awase::scanmap::PhysicalPos> { vk_to_pos(self) }
+    #[allow(deprecated)]
+    fn from_name(name: &str) -> Option<Self> { vk_name_to_code(name) }
 }
 
 /// ブラウザ系・Electron 系のウィンドウクラスかどうかを判定する。
@@ -268,6 +272,7 @@ pub fn is_browser_or_electron_class(class_name: &str) -> bool {
 
 /// 仮想キーコード名（"VK_A" 等）を実際の VkCode 値に変換する
 #[must_use]
+#[deprecated(note = "VkCode::from_name(name) を使ってください（VkCodeExt トレイト）")]
 pub fn vk_name_to_code(name: &str) -> Option<VkCode> {
     match name {
         "VK_A" => Some(VkCode(0x41)),
@@ -388,7 +393,7 @@ pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
     }
 
     let key_name = format!("VK_{}", parts.last()?);
-    let vk = vk_name_to_code(&key_name)?;
+    let vk = VkCode::from_name(&key_name)?;
 
     Some((modifiers, vk))
 }
@@ -414,7 +419,7 @@ pub fn parse_key_combo(s: &str) -> Option<awase::config::ParsedKeyCombo> {
     }
 
     let key_name = *parts.last()?;
-    let vk = vk_name_to_code(key_name)?;
+    let vk = VkCode::from_name(key_name)?;
 
     Some(awase::config::ParsedKeyCombo {
         ctrl,
