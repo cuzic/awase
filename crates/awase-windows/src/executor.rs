@@ -106,8 +106,14 @@ impl DecisionExecutor {
     /// `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
     pub fn drain_deferred(&mut self) {
+        // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
+        // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
+        // Win が 150ms 以上 OS 側でスタックし、後続のショートカットが Win+key と
+        // 誤解釈されるため、先頭の reinject が guard を通過したら残りはまとめて送出する。
+        let mut reinject_guard_passed = false;
         while let Some(effect) = self.queue.pop_front() {
-            if matches!(effect, Effect::Input(InputEffect::ReinjectKey(_))) {
+            let is_reinject = matches!(effect, Effect::Input(InputEffect::ReinjectKey(_)));
+            if is_reinject && !reinject_guard_passed {
                 let elapsed = self.platform.output.ms_since_last_send();
                 if elapsed < crate::tuning::OUTPUT_GUARD_MS {
                     let remaining = crate::tuning::OUTPUT_GUARD_MS - elapsed;
@@ -124,6 +130,11 @@ impl DecisionExecutor {
                     }
                     return;
                 }
+                reinject_guard_passed = true;
+            } else if !is_reinject {
+                // NICOLA 出力など reinject 以外の effect は mark_send を呼ぶので
+                // 次の reinject には再びガードを適用する。
+                reinject_guard_passed = false;
             }
             self.execute_one(effect);
         }
