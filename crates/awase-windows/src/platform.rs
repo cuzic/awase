@@ -100,10 +100,8 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
-        static CONTROLLER: crate::ime_controller::ImeController =
-            crate::ime_controller::ImeController::new();
         let view = self.build_ime_control_view();
-        CONTROLLER.apply(open, &view)
+        crate::ime_controller::CONTROLLER.apply(open, &view)
     }
 
     fn post_ime_refresh(&mut self) {

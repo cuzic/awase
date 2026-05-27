@@ -177,7 +177,34 @@ impl ImeController {
     /// 戦略が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の `SendMessageTimeout` タイムアウト）、
     /// 次の適用可能な戦略にフォールスルーする。
     pub(crate) fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        for strategy in self.strategies {
+        Self::apply_iter(&self.strategies, open, view)
+    }
+
+    /// `ImmCrossProcessStrategy` を除いた戦略リストで IME を設定する。
+    ///
+    /// async 化された IMM クロスプロセス経路が `Failed` を返した後のフォールバック用。
+    /// `strategies[0]` (IMM) をスキップして GJI / KanjiToggle のみで再試行する。
+    pub(crate) fn apply_skipping_imm(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        Self::apply_iter(&self.strategies[1..], open, view)
+    }
+
+    /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能か。
+    ///
+    /// dispatch 側で「async 経路 (IMM)」と「sync 経路 (GJI/Kanji)」を branch するための判定。
+    /// `strategies` の構築順 (`new` で IMM が index 0) に依存する。
+    pub(crate) fn imm_cross_is_first_applicable(&self, view: &ImeControlView<'_>) -> bool {
+        self.strategies
+            .iter()
+            .position(|s| s.is_applicable(view))
+            .is_some_and(|idx| idx == 0)
+    }
+
+    fn apply_iter(
+        strategies: &[&'static dyn ImeOpenStrategy],
+        open: bool,
+        view: &ImeControlView<'_>,
+    ) -> ImeOpenOutcome {
+        for strategy in strategies {
             if strategy.is_applicable(view) {
                 let outcome = strategy.apply(open, view);
                 if outcome != ImeOpenOutcome::Failed {
@@ -190,3 +217,10 @@ impl ImeController {
         ImeOpenOutcome::Failed
     }
 }
+
+/// モジュール公開のコントローラインスタンス。
+///
+/// `WindowsPlatform::apply_ime_open` と `DecisionExecutor::dispatch_effect` の
+/// async branch 経路の双方から参照される（ImmCross が first applicable かどうかで
+/// async / sync 経路を切り替えるため、両所で同じインスタンスを共有する必要がある）。
+pub(crate) static CONTROLLER: ImeController = ImeController::new();
