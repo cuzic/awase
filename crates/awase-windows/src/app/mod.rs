@@ -251,46 +251,6 @@ fn check_keyboard_layout_on_change() {
     }
 }
 
-// ── フックコールバック ──
-
-/// フックコールバック。
-///
-/// # Safety
-/// Win32 キーボードフックコールバックはメインスレッドで呼ばれる。
-unsafe fn on_key_event_callback(event: RawKeyEvent) -> CallbackResult {
-    if crate::OUTPUT_GATE.is_active() {
-        log::debug!("[output-active] queuing vk=0x{:02X} {:?}", event.vk_code, event.event_type);
-        crate::INPUT_DEFER.defer_during_output(event);
-        return CallbackResult::Consumed;
-    }
-    // OUTPUT_GATE.active=false だがキューに未 drain エントリがある場合、
-    // OUTPUT_GATE 解除と drain ハンドラ実行のギャップ期間にキーが届いた状態。
-    // この期間に届く KeyDown は drain 前にインライン処理されてしまうため、
-    // 「しゃちょう→しちゃ…」のような順序逆転を引き起こす。KeyUp/KeyDown 共に記録。
-    if let Some(len) = crate::INPUT_DEFER.pending_len_nonblocking() {
-        if len > 0 {
-            log::debug!(
-                "[drain-race] vk=0x{:02X} {:?} arrived while drain queue has {len} item(s) (OUTPUT_GATE.active=false)",
-                event.vk_code, event.event_type,
-            );
-        }
-    }
-    with_app(|app| on_key_event_impl(app, event)).unwrap_or_else(|| {
-        // with_app 再入セーフネット。awase 自身の SendMessageTimeoutW は全て async
-        // 化済み (Step 1〜5e) のため通常経路では発火しないが、3rd-party フックチェーンが
-        // メッセージポンプを行うなど稀な再入経路の対策として残す。
-        // PassThrough にすると NICOLA 文字キー（F=け、U=ち など）が MS-IME に
-        // ラテン文字として届き文字化けするため、pending キューに退避して
-        // WM_DRAIN_OUTPUT_QUEUE で NICOLA に再配送する。
-        log::debug!(
-            "[with-app-reentry] queuing vk=0x{:02X} {:?} (defer to drain)",
-            event.vk_code, event.event_type,
-        );
-        crate::INPUT_DEFER.defer_during_with_app(event);
-        CallbackResult::Consumed
-    })
-}
-
 /// フックコールバックの本体。`KeyEventPipeline` に処理を委譲する。
 fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
     key_pipeline::KeyEventPipeline { app }.run(event)
@@ -401,10 +361,7 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                     crate::INPUT_DEFER.defer_during_output(event);
                 } else {
                     let result = with_app(|app| message_handlers::handle_wm_key_from_hook(app, event));
-                    // with_app が None（稀な再入）: defer して drain 要求
-                    if result.is_none() {
-                        crate::INPUT_DEFER.defer_during_with_app(event);
-                    }
+                    debug_assert!(result.is_some(), "with_app re-entry in WM_KEY_FROM_HOOK");
                 }
             }
             WM_APP => {

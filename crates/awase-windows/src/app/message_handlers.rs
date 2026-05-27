@@ -52,8 +52,6 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
-            // sync な部分（blocking なし）
-            hook::sync_sent_to_engine(&mut app.platform_state.hook);
             if app.platform_state.sync_key_gate.is_active()
                 || app.platform_state.sync_key_gate.has_deferred_keys()
             {
@@ -64,8 +62,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         }
         Some(id) if id == TIMER_POWER_RESUME => {
             app.executor.platform.timer.kill(TIMER_POWER_RESUME);
-            log::info!("Power resume recovery: reinstalling hook (lightweight)");
-            hook::reinstall_hook();
+            log::info!("Power resume recovery");
             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
             app.platform_state.focus.focus_kind = FocusKind::Undetermined;
             app.schedule_ime_refresh(500);
@@ -88,33 +85,14 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
-            use std::sync::atomic::AtomicU64;
-            static PING_SENT_AT: AtomicU64 = AtomicU64::new(0);
-            let ping_sent = PING_SENT_AT.load(Ordering::Relaxed);
-            // フックスレッド分離後は HOOK_ALIVE_TICK_MS（ping 応答含む全コールバック）を使用
-            let last_activity = hook::HOOK_ALIVE_TICK_MS.load(Ordering::Relaxed)
-                .max(crate::OUTPUT_GATE.last_vk_output_ms_val());
-
-            if ping_sent > 0 && last_activity < ping_sent {
-                let stale_ms = hook::current_tick_ms() - last_activity;
-                log::error!(
-                    "Hook watchdog: ping not received (last activity {stale_ms}ms ago) — reinstalling"
-                );
-                if hook::reinstall_hook() {
-                    app.executor.platform.tray.show_balloon(
-                        "awase",
-                        "キーボードフックを自動復旧しました",
-                    );
-                } else {
-                    app.executor.platform.tray.show_balloon(
-                        "awase",
-                        "フック復旧に失敗しました。再起動してください。",
-                    );
-                }
+            let last_activity = hook::HOOK_ALIVE_TICK_MS.load(Ordering::Relaxed);
+            let now = hook::current_tick_ms();
+            let stale_ms = now.saturating_sub(last_activity);
+            if stale_ms > 5000 {
+                log::warn!("Hook watchdog: no activity for {stale_ms}ms");
+            } else {
+                log::trace!("Hook watchdog: last activity {stale_ms}ms ago");
             }
-
-            PING_SENT_AT.store(hook::current_tick_ms(), Ordering::Relaxed);
-            hook::send_ping();
         }
         Some(timer_id) => {
             log::debug!("WM_TIMER fired: logical_id={timer_id}");

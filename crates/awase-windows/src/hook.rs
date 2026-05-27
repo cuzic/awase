@@ -10,7 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::output::INJECTED_MARKER;
 use crate::scanmap::scan_to_pos;
-use crate::{HookConfig, HookRoutingState};
+use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
 use awase::types::{
     ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
@@ -100,62 +100,6 @@ pub fn current_tick_ms() -> u64 {
 }
 
 
-/// フックの生存確認用 ping を送信する。
-///
-/// `INJECTED_MARKER` 付きの VK_NONAME (0xFC) KeyDown+KeyUp を SendInput で送信する。
-/// フックが生きていればコールバックが呼ばれ、`last_hook_activity_ms` が更新される。
-/// フックが死んでいれば何も起きない。
-///
-/// # Panics
-/// `INPUT` 構造体のサイズが `i32` に収まらない場合（実際には発生しない）。
-///
-/// # Safety
-/// Win32 API (`SendInput`) を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn send_ping() {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-        VIRTUAL_KEY,
-    };
-
-    // VK_NONAME — 何も入力されない無害なキー
-    let inputs = [
-        INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(crate::vk::VK_NONAME.0),
-                    wScan: 0,
-                    dwFlags: KEYBD_EVENT_FLAGS(0),
-                    time: 0,
-                    dwExtraInfo: INJECTED_MARKER,
-                },
-            },
-        },
-        INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(crate::vk::VK_NONAME.0),
-                    wScan: 0,
-                    dwFlags: KEYEVENTF_KEYUP,
-                    time: 0,
-                    dwExtraInfo: INJECTED_MARKER,
-                },
-            },
-        },
-    ];
-    let _ = crate::win32::send_input_safe(&inputs);
-    log::trace!("Hook ping sent");
-}
-
-/// フックを再登録する（OS に無言で削除された場合の自動復旧用）。
-///
-/// フックスレッド分離後は engine thread からの reinstall は不要。
-/// Commit 3 で完全削除予定。
-pub fn reinstall_hook() -> bool {
-    log::debug!("reinstall_hook() skipped (dedicated hook thread architecture)");
-    true
-}
 
 /// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
 struct SingleThreadCell<T>(UnsafeCell<T>);
@@ -179,18 +123,6 @@ impl<T> SingleThreadCell<T> {
 static HOOK_HANDLE: SingleThreadCell<HHOOK> = SingleThreadCell::new(HHOOK(std::ptr::null_mut()));
 
 
-/// SENT_TO_ENGINE ビットセットを OS のキー状態と同期する。
-///
-/// `GetAsyncKeyState` で実際に押されていないのにビットが残っているキーをクリアする。
-/// 500ms ポーリングで呼び出すことで、KeyUp 取りこぼしによるゴミを回収する。
-///
-/// # Safety
-/// `GetAsyncKeyState` を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn sync_sent_to_engine(hook: &mut HookRoutingState) {
-    // SAFETY: sync_with_os_key_state は内部で GetAsyncKeyState を呼び出す。
-    //         呼出元の # Safety 節でメインスレッドからの呼び出しが保証されているため安全。
-    unsafe { hook.sync_with_os_key_state() };
-}
 
 /// コールバックの戻り値
 #[derive(Debug)]
