@@ -75,6 +75,20 @@ impl KeyEventPipeline<'_> {
 
         self.stage_post_decision(&decision, &event);
 
+        // ctrl_bypass_hold 安全策: Phase 2 で SetOpen が生成されなかった場合でも
+        // Ctrl 系 KeyUp で bypass を解除する。
+        // (Phase 2 が既に Inactive を認識して SetOpen を省略するケースへの対処)
+        if self.app.platform_state.hook.ctrl_bypass_hold()
+            && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+            && crate::vk::is_ctrl_variant(event.vk_code)
+        {
+            self.app.platform_state.hook.set_ctrl_bypass_hold(false);
+            log::debug!(
+                "[ctrl-bypass] ctrl_bypass_hold cleared (Ctrl KeyUp vk=0x{:02X}, no SetOpen in decision)",
+                event.vk_code
+            );
+        }
+
         self.stage_execute(decision, &event, shadow_toggled)
     }
 
@@ -200,12 +214,30 @@ impl KeyEventPipeline<'_> {
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
     fn stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
-            let ms = hook::current_tick_ms();
-            self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
-            self.app.platform_state.reset_ime_detect_state();
-            self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
-            self.app.platform_state.hook.set_ctrl_bypass_hold(true);
-            log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass suppressed");
+            let is_key_up = !matches!(event.event_type, awase::types::KeyEventType::KeyDown);
+            if self.app.platform_state.hook.ctrl_bypass_hold() {
+                // ctrl_bypass_hold 中の二次 SetOpen: Ctrl KeyUp が Phase 2 Active→Inactive
+                // 遷移を起こして生成した SetOpen。write_set_open_request を再呼び出しすると
+                // Priority-3(set_open_request) が消費済みのため stale observer_poll が belief を
+                // 上書きし、直後の TIMER_IME_REFRESH で engine が再アクティブ化する。
+                // スキップして belief(=false) を安定させる。KeyUp 到達で bypass 期間を終了。
+                self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
+                if is_key_up {
+                    self.app.platform_state.hook.set_ctrl_bypass_hold(false);
+                }
+                log::debug!(
+                    "IME control: ctrl_bypass_hold active → skip write_set_open_request({new_ime_on}), \
+                     bypass {}",
+                    if is_key_up { "cleared" } else { "hold" }
+                );
+            } else {
+                let ms = hook::current_tick_ms();
+                self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
+                self.app.platform_state.reset_ime_detect_state();
+                self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
+                self.app.platform_state.hook.set_ctrl_bypass_hold(true);
+                log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass suppressed");
+            }
         }
 
         if !decision.is_consumed()
