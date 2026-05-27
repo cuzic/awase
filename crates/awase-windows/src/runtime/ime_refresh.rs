@@ -389,12 +389,14 @@ impl<'a> ImeRefreshPipeline<'a> {
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                 self.rt.platform_state.ime_detect_miss_count()
             );
-            let success = self.rt.executor.platform.set_ime_open(true);
-            // success/failure 問わずガードをセット: IME 非対応ウィンドウ(DirectUIHWND 等)で
-            // 失敗し続ける無限ループを防ぐ。ガードはフォーカス変更時に解除される。
+            let dispatched = self.rt.executor.platform.set_ime_open(true);
+            // dispatched=true は IMM クロスプロセス対応アプリで async ジョブを起動した意味。
+            // 実 SendMessage の成否は spawn_local 内に閉じる。
+            // IME 非対応ウィンドウ(DirectUIHWND 等) で失敗し続ける無限ループを防ぐため、
+            // 結果に関わらずガードをセットする（フォーカス変更時に解除）。
             self.rt.platform_state.set_force_on_broken_app_bootstrap();
-            if !success {
-                log::warn!("set_ime_open failed (no IME window?) — guard set to suppress retry until focus change");
+            if !dispatched {
+                log::warn!("set_ime_open dispatched=false (profile not IMM-capable) — guard set to suppress retry until focus change");
             }
         }
     }

@@ -2,7 +2,6 @@ mod ime_refresh;
 use ime_refresh::ImeRefreshPipeline;
 
 use awase::engine::{Engine, EngineCommand, InputContext};
-use awase::platform::PlatformRuntime;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
@@ -594,8 +593,22 @@ impl Runtime {
         // SAFETY: `cancel_ime_composition` は Win32 IMM API を呼ぶ unsafe fn。
         //         `panic_reset` はメッセージループ上（メインスレッド）から呼ばれるため安全。
         unsafe { cancel_ime_composition() };
-        self.executor.platform.set_ime_open(false);
-        self.executor.platform.set_ime_open(true);
+        // OFF → ON を順序保証付きで実行する。`WindowsPlatform::set_ime_open` は
+        // 内部で spawn_local して fire-and-forget するため、2 連発で呼ぶと async race で
+        // 順序が逆転しうる (true→false の終端で IME OFF のまま残るリスク)。単一の
+        // spawn_local タスク内で 2 回 await する形にして OFF → ON を直列化する。
+        if self
+            .executor
+            .platform
+            .focus
+            .current_app_profile()
+            .can_use_imm32_cross_process()
+        {
+            win32_async::spawn_local(async {
+                let _ = crate::ime::set_ime_open_cross_process_async(false).await;
+                let _ = crate::ime::set_ime_open_cross_process_async(true).await;
+            });
+        }
 
         // 3. 全修飾キーの KeyUp を送信（スタック解消）
         send_all_modifier_key_ups();

@@ -96,7 +96,15 @@ impl PlatformRuntime for WindowsPlatform {
         if !self.focus.current_app_profile().can_use_imm32_cross_process() {
             return false;
         }
-        unsafe { crate::ime::set_ime_open_cross_process(open) }
+        // `set_ime_open_cross_process` は SendMessageTimeoutW を含むため、メインスレッドで
+        // 同期実行すると `with_app` 再入トリガーになる。ワーカースレッドに offload する
+        // async ラッパーを spawn_local で fire-and-forget する。
+        // 戻り値の semantics は「dispatch 成功」(= profile 互換) に変更。実際の SendMessage
+        // 結果は呼び出し側に届かない（旧 API の sync bool に依存していた診断ログは廃止）。
+        win32_async::spawn_local(async move {
+            let _ = crate::ime::set_ime_open_cross_process_async(open).await;
+        });
+        true
     }
 
     fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
