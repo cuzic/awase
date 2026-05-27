@@ -63,78 +63,80 @@ pub trait ActionExecutor {
     fn execute(&mut self, actions: &[Self::Action]);
 }
 
-/// Dispatch a [`Response`] to a runtime.
-///
-/// This is the primary integration point between the state machine
-/// (which is pure and side-effect-free) and the runtime (which
-/// performs actual I/O).
-///
-/// # Processing order
-///
-/// 1. **Timer commands** — all [`TimerCommand`]s in `response.timers`
-///    are processed in order via [`TimerRuntime::set_timer`] /
-///    [`TimerRuntime::kill_timer`].
-/// 2. **Actions** — if `response.actions` is non-empty,
-///    [`ActionExecutor::execute`] is called once with the full slice.
-///
-/// Timer commands are applied before actions so that a newly started
-/// timer cannot fire before the actions from the same transition have
-/// been executed (in single-threaded runtimes). In multi-threaded
-/// runtimes, callers are responsible for any necessary synchronization.
-///
-/// Returns the `consumed` flag from the response.
-///
-/// # Example
-///
-/// ```
-/// use std::time::Duration;
-/// use timed_fsm::{Response, dispatch, TimerRuntime, ActionExecutor};
-///
-/// struct MockTimers(Vec<String>);
-/// impl TimerRuntime for MockTimers {
-///     type TimerId = u8;
-///     fn set_timer(&mut self, id: u8, dur: Duration) {
-///         self.0.push(format!("set({id}, {dur:?})"));
-///     }
-///     fn kill_timer(&mut self, id: u8) {
-///         self.0.push(format!("kill({id})"));
-///     }
-/// }
-///
-/// struct MockExecutor(Vec<i32>);
-/// impl ActionExecutor for MockExecutor {
-///     type Action = i32;
-///     fn execute(&mut self, actions: &[i32]) {
-///         self.0.extend_from_slice(actions);
-///     }
-/// }
-///
-/// let response = Response::emit_one(42)
-///     .with_timer(1, Duration::from_millis(100));
-///
-/// let mut timers = MockTimers(vec![]);
-/// let mut executor = MockExecutor(vec![]);
-/// let consumed = dispatch(&response, &mut timers, &mut executor);
-///
-/// assert!(consumed);
-/// assert_eq!(executor.0, vec![42]);
-/// assert_eq!(timers.0.len(), 1);
-/// ```
-pub fn dispatch<A, T: Copy + Eq + core::fmt::Debug>(
-    response: &Response<A, T>,
-    timers: &mut impl TimerRuntime<TimerId = T>,
-    executor: &mut impl ActionExecutor<Action = A>,
-) -> bool {
-    for cmd in &response.timers {
-        match *cmd {
-            TimerCommand::Set { id, duration } => timers.set_timer(id, duration),
-            TimerCommand::Kill { id } => timers.kill_timer(id),
+impl<A, T: Copy + Eq + core::fmt::Debug> Response<A, T> {
+    /// Dispatch this response to a runtime.
+    ///
+    /// This is the primary integration point between the state machine
+    /// (which is pure and side-effect-free) and the runtime (which
+    /// performs actual I/O).
+    ///
+    /// # Processing order
+    ///
+    /// 1. **Timer commands** — all [`TimerCommand`]s in `self.timers`
+    ///    are processed in order via [`TimerRuntime::set_timer`] /
+    ///    [`TimerRuntime::kill_timer`].
+    /// 2. **Actions** — if `self.actions` is non-empty,
+    ///    [`ActionExecutor::execute`] is called once with the full slice.
+    ///
+    /// Timer commands are applied before actions so that a newly started
+    /// timer cannot fire before the actions from the same transition have
+    /// been executed (in single-threaded runtimes). In multi-threaded
+    /// runtimes, callers are responsible for any necessary synchronization.
+    ///
+    /// Returns the `consumed` flag from the response.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use timed_fsm::{Response, TimerRuntime, ActionExecutor};
+    ///
+    /// struct MockTimers(Vec<String>);
+    /// impl TimerRuntime for MockTimers {
+    ///     type TimerId = u8;
+    ///     fn set_timer(&mut self, id: u8, dur: Duration) {
+    ///         self.0.push(format!("set({id}, {dur:?})"));
+    ///     }
+    ///     fn kill_timer(&mut self, id: u8) {
+    ///         self.0.push(format!("kill({id})"));
+    ///     }
+    /// }
+    ///
+    /// struct MockExecutor(Vec<i32>);
+    /// impl ActionExecutor for MockExecutor {
+    ///     type Action = i32;
+    ///     fn execute(&mut self, actions: &[i32]) {
+    ///         self.0.extend_from_slice(actions);
+    ///     }
+    /// }
+    ///
+    /// let response = Response::emit_one(42)
+    ///     .with_timer(1u8, Duration::from_millis(100));
+    ///
+    /// let mut timers = MockTimers(vec![]);
+    /// let mut executor = MockExecutor(vec![]);
+    /// let consumed = response.dispatch(&mut timers, &mut executor);
+    ///
+    /// assert!(consumed);
+    /// assert_eq!(executor.0, vec![42]);
+    /// assert_eq!(timers.0.len(), 1);
+    /// ```
+    pub fn dispatch(
+        &self,
+        timers: &mut impl TimerRuntime<TimerId = T>,
+        executor: &mut impl ActionExecutor<Action = A>,
+    ) -> bool {
+        for cmd in &self.timers {
+            match *cmd {
+                TimerCommand::Set { id, duration } => timers.set_timer(id, duration),
+                TimerCommand::Kill { id } => timers.kill_timer(id),
+            }
         }
+        if !self.actions.is_empty() {
+            executor.execute(&self.actions);
+        }
+        self.consumed
     }
-    if !response.actions.is_empty() {
-        executor.execute(&response.actions);
-    }
-    response.consumed
 }
 
 #[cfg(test)]
@@ -168,7 +170,7 @@ mod tests {
 
         let mut timers = RecordTimers(vec![]);
         let mut executor = RecordActions(vec![]);
-        let consumed = dispatch(&response, &mut timers, &mut executor);
+        let consumed = response.dispatch(&mut timers, &mut executor);
 
         assert!(consumed);
         assert_eq!(timers.0.len(), 2);
@@ -180,7 +182,7 @@ mod tests {
         let response: Response<&str, u8> = Response::pass_through();
         let mut timers = RecordTimers(vec![]);
         let mut executor = RecordActions(vec![]);
-        let consumed = dispatch(&response, &mut timers, &mut executor);
+        let consumed = response.dispatch(&mut timers, &mut executor);
 
         assert!(!consumed);
         assert!(timers.0.is_empty());
@@ -193,7 +195,7 @@ mod tests {
             Response::consume().with_timer(0, Duration::from_millis(50));
         let mut timers = RecordTimers(vec![]);
         let mut executor = RecordActions(vec![]);
-        let consumed = dispatch(&response, &mut timers, &mut executor);
+        let consumed = response.dispatch(&mut timers, &mut executor);
 
         assert!(consumed);
         assert_eq!(timers.0.len(), 1);

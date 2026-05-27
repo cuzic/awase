@@ -29,11 +29,11 @@
 //! | [`TimedStateMachine`] | Trait your state machine implements |
 //! | [`Response<A, T>`] | Transition result: actions + timer commands + consumed flag |
 //! | [`TimerCommand<T>`] | Declarative instruction to set or kill a named timer |
-//! | [`dispatch`] | Connects a pure `Response` to runtime side effects |
+//! | [`Response::dispatch`] | Connects a pure `Response` to runtime side effects |
 //! | [`TimerRuntime`] | Trait for platform timer integration (Windows/Linux/macOS/test) |
 //! | [`ActionExecutor`] | Trait for executing output actions in order |
 //! | [`ShiftReduceParser`] | Extension for token-buffering grammars with timer support |
-//! | [`parse`] | Main loop for a [`ShiftReduceParser`] |
+//! | [`ShiftReduceParser::parse`] | Main loop for a [`ShiftReduceParser`] |
 //!
 //! # Quick start
 //!
@@ -121,11 +121,11 @@
 //! # Connecting to a runtime
 //!
 //! At the boundary with the OS, implement [`TimerRuntime`] and
-//! [`ActionExecutor`], then call [`dispatch`] after every transition.
+//! [`ActionExecutor`], then call [`Response::dispatch`] after every transition.
 //!
 //! ```
 //! use std::time::Duration;
-//! use timed_fsm::{Response, TimerRuntime, ActionExecutor, dispatch};
+//! use timed_fsm::{Response, TimerRuntime, ActionExecutor};
 //!
 //! // Minimal in-memory timer stub for illustration.
 //! struct MyTimers;
@@ -150,7 +150,7 @@
 //!
 //! // In your event loop:
 //! let response = Response::<bool, ()>::emit_one(true);
-//! let consumed = dispatch(&response, &mut MyTimers, &mut MyExecutor);
+//! let consumed = response.dispatch(&mut MyTimers, &mut MyExecutor);
 //! assert!(consumed);
 //! ```
 //!
@@ -230,7 +230,7 @@ mod machine;
 pub mod parser;
 mod response;
 
-pub use dispatch::{dispatch, ActionExecutor, TimerRuntime};
+pub use dispatch::{ActionExecutor, TimerRuntime};
 pub use machine::TimedStateMachine;
 pub use parser::{parse, ParseAction, ShiftReduceParser};
 pub use response::{Response, TimerCommand};
