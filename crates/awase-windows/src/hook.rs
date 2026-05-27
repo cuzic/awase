@@ -68,8 +68,7 @@ static CACHED_THUMB_VKS: AtomicU32 = AtomicU32::new(0);
 
 /// フックコールバックの最終活動タイムスタンプ（ウォッチドッグ用、クロススレッド対応）
 ///
-/// 自己注入キー（ping 応答）も含む全コールバックで更新する。
-/// `app.platform_state.last_hook_activity_ms` は物理キーのみ更新するのと対照的。
+/// 自己注入キー含む全コールバックで更新する。エンジンスレッドの watchdog がここを読む。
 pub static HOOK_ALIVE_TICK_MS: AtomicU64 = AtomicU64::new(0);
 
 /// install_hook がフックスレッドからの TID 通知を待つスロット

@@ -118,10 +118,7 @@ impl PlatformState {
             ime: ImeStateHub::new(),
             focus: FocusPlatformState::new(),
             hook: HookRoutingState {
-                sent_to_engine: [0u64; 4],
-                track_only_keys: [0u64; 4],
                 intercept_consumed: [0u64; 4],
-                in_callback: false,
                 ctrl_bypass_hold: false,
                 last_ctrl_bypass_keydown_us: None,
             },

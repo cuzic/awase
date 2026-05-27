@@ -622,7 +622,6 @@ impl Runtime {
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
         self.platform_state.apply_panic_reset();
         self.platform_state.hook.reset_routing();
-        self.platform_state.hook.leave_callback();
         self.platform_state.hook.set_ctrl_bypass_hold(false);
         self.platform_state.sync_key_gate.clear();
 
