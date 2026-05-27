@@ -702,6 +702,27 @@ pub async fn set_ime_romaji_mode_async() -> bool {
     win32_async::offload(|| unsafe { set_ime_romaji_mode() }).await
 }
 
+/// `send_f2_via_sendmessage` の async 版（ワーカースレッドで実行）
+///
+/// メインスレッドの `with_app` 再入を避けるため、`SendMessageTimeoutW` (×2) を
+/// ワーカースレッドで実行する。メッセージループは await 中も継続する。
+#[allow(clippy::future_not_send)]
+pub async fn send_f2_via_sendmessage_async() -> bool {
+    // SAFETY: send_f2_via_sendmessage は unsafe fn。win32_async::offload はワーカースレッドで実行するが
+    //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
+    win32_async::offload(|| unsafe { send_f2_via_sendmessage() }).await
+}
+
+/// `get_ime_conversion_mode_raw_timeout` の async 版（ワーカースレッドで実行）
+///
+/// 診断ログ用途で、`with_app` 再入を避けるためにワーカースレッドへオフロードする。
+#[allow(clippy::future_not_send)]
+pub async fn get_ime_conversion_mode_raw_timeout_async(timeout_ms: u32) -> Option<u32> {
+    // SAFETY: get_ime_conversion_mode_raw_timeout は unsafe fn。win32_async::offload はワーカースレッドで実行するが
+    //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
+    win32_async::offload(move || unsafe { get_ime_conversion_mode_raw_timeout(timeout_ms) }).await
+}
+
 /// 現在のキーボードレイアウトの言語情報を返す。
 ///
 /// Returns `(is_japanese, lang_id)` — 日本語レイアウトかどうかと言語 ID (下位16ビット)。
