@@ -13,13 +13,27 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// `win32_async::run_with_timeout` の re-export。
 pub use win32_async::run_with_timeout;
 
+/// `HWND` の null チェック拡張トレイト。
+pub trait HwndExt {
+    /// null なら `None`、非 null なら `Some(self)` を返す。
+    ///
+    /// Win32 API が返す `HWND` は null（フォーカスなし・失敗）を示すことがある。
+    /// 境界でこのメソッドを使い、以降は `Option<HWND>` として処理する。
+    #[must_use]
+    fn non_null(self) -> Option<HWND>;
+}
+
+impl HwndExt for HWND {
+    fn non_null(self) -> Option<HWND> {
+        (!self.0.is_null()).then_some(self)
+    }
+}
+
 /// null チェックを行い、非 null なら `Some(hwnd)` を返す。
-///
-/// Win32 API が返す `HWND` は null（フォーカスなし・失敗）を示すことがある。
-/// 境界でこの関数を使い、以降は `Option<HWND>` として処理する。
-#[must_use] 
+#[must_use]
+#[deprecated(note = "hwnd.non_null() を使ってください（HwndExt トレイト）")]
 pub fn non_null_hwnd(hwnd: HWND) -> Option<HWND> {
-    (!hwnd.0.is_null()).then_some(hwnd)
+    hwnd.non_null()
 }
 
 /// メインスレッドのメッセージキューにカスタムメッセージを POST する。
