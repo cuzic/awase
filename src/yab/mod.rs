@@ -73,6 +73,32 @@ const fn pos_to_index(pos: PhysicalPos) -> Option<usize> {
     }
 }
 
+impl YabValue {
+    /// 単一の CSV 値をパースして `YabValue` に変換する。
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        let trimmed = raw.trim();
+
+        if trimmed.is_empty() || trimmed == "無" {
+            return YabValue::None;
+        }
+
+        if let Some((_, sk)) = SPECIAL_KEYWORDS.iter().find(|(k, _)| *k == trimmed) {
+            return YabValue::Special(*sk);
+        }
+
+        if let Some(inner) = strip_paired_quote(trimmed) {
+            return YabValue::Literal(inner.to_string());
+        }
+
+        if trimmed.is_all_fullwidth_ascii() {
+            return classify_fullwidth(trimmed);
+        }
+
+        YabValue::Literal(trimmed.to_string())
+    }
+}
+
 impl YabFace {
     /// 空の面を作成する。
     #[must_use]
@@ -228,33 +254,6 @@ fn classify_fullwidth(trimmed: &str) -> YabValue {
     }
 }
 
-/// 単一の CSV 値をパースして `YabValue` に変換する。
-fn parse_value(raw: &str) -> YabValue {
-    let trimmed = raw.trim();
-
-    if trimmed.is_empty() || trimmed == "無" {
-        return YabValue::None;
-    }
-
-    // 特殊キーワードをテーブルルックアップで処理
-    if let Some((_, sk)) = SPECIAL_KEYWORDS.iter().find(|(k, _)| *k == trimmed) {
-        return YabValue::Special(*sk);
-    }
-
-    // クォートで囲まれたリテラル（シングル/ダブル両対応）
-    if let Some(inner) = strip_paired_quote(trimmed) {
-        return YabValue::Literal(inner.to_string());
-    }
-
-    // 全角 ASCII 文字列 → 半角変換してローマ字 or キーシーケンスとして扱う
-    if trimmed.is_all_fullwidth_ascii() {
-        return classify_fullwidth(trimmed);
-    }
-
-    // それ以外はリテラルとして扱う
-    YabValue::Literal(trimmed.to_string())
-}
-
 /// セクションの 4 行分の CSV データを `YabFace` にパースする。
 fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
     if lines.len() != 4 {
@@ -275,7 +274,7 @@ fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
         }
 
         for (col, val) in values.iter().enumerate() {
-            let yab_val = parse_value(val);
+            let yab_val = YabValue::parse(val);
             let row_u8 = u8::try_from(row).expect("row index always fits in u8");
             let col_u8 = u8::try_from(col).expect("col index always fits in u8");
             let pos = PhysicalPos::new(row_u8, col_u8);

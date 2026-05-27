@@ -41,44 +41,44 @@ fn fullwidth_string_conversion() {
 
 #[test]
 fn parse_value_none() {
-    assert_eq!(parse_value("無"), YabValue::None);
-    assert_eq!(parse_value(""), YabValue::None);
-    assert_eq!(parse_value("  "), YabValue::None);
+    assert_eq!(YabValue::parse("無"), YabValue::None);
+    assert_eq!(YabValue::parse(""), YabValue::None);
+    assert_eq!(YabValue::parse("  "), YabValue::None);
 }
 
 #[test]
 fn parse_value_special_keys() {
-    assert_eq!(parse_value("後"), YabValue::Special(SpecialKey::Backspace));
-    assert_eq!(parse_value("逃"), YabValue::Special(SpecialKey::Escape));
-    assert_eq!(parse_value("入"), YabValue::Special(SpecialKey::Enter));
-    assert_eq!(parse_value("空"), YabValue::Special(SpecialKey::Space));
-    assert_eq!(parse_value("消"), YabValue::Special(SpecialKey::Delete));
+    assert_eq!(YabValue::parse("後"), YabValue::Special(SpecialKey::Backspace));
+    assert_eq!(YabValue::parse("逃"), YabValue::Special(SpecialKey::Escape));
+    assert_eq!(YabValue::parse("入"), YabValue::Special(SpecialKey::Enter));
+    assert_eq!(YabValue::parse("空"), YabValue::Special(SpecialKey::Space));
+    assert_eq!(YabValue::parse("消"), YabValue::Special(SpecialKey::Delete));
 }
 
 #[test]
 fn parse_value_single_quoted_literal() {
-    assert_eq!(parse_value("'．'"), YabValue::Literal("．".to_string()));
-    assert_eq!(parse_value("'ー'"), YabValue::Literal("ー".to_string()));
+    assert_eq!(YabValue::parse("'．'"), YabValue::Literal("．".to_string()));
+    assert_eq!(YabValue::parse("'ー'"), YabValue::Literal("ー".to_string()));
 }
 
 #[test]
 fn parse_value_fullwidth_romaji() {
     assert_eq!(
-        parse_value("ｋａ"),
+        YabValue::parse("ｋａ"),
         YabValue::Romaji {
             romaji: "ka".to_string(),
             kana: None
         }
     );
     assert_eq!(
-        parse_value("ｓｉ"),
+        YabValue::parse("ｓｉ"),
         YabValue::Romaji {
             romaji: "si".to_string(),
             kana: None
         }
     );
     assert_eq!(
-        parse_value("ｗｏ"),
+        YabValue::parse("ｗｏ"),
         YabValue::Romaji {
             romaji: "wo".to_string(),
             kana: None
@@ -89,14 +89,14 @@ fn parse_value_fullwidth_romaji() {
 #[test]
 fn parse_value_fullwidth_uppercase() {
     assert_eq!(
-        parse_value("Ａ"),
+        YabValue::parse("Ａ"),
         YabValue::Romaji {
             romaji: "A".to_string(),
             kana: None
         }
     );
     assert_eq!(
-        parse_value("Ｂ"),
+        YabValue::parse("Ｂ"),
         YabValue::Romaji {
             romaji: "B".to_string(),
             kana: None
@@ -106,19 +106,19 @@ fn parse_value_fullwidth_uppercase() {
 
 #[test]
 fn parse_value_fullwidth_digit() {
-    assert_eq!(parse_value("１"), YabValue::KeySequence("1".to_string()));
-    assert_eq!(parse_value("２"), YabValue::KeySequence("2".to_string()));
+    assert_eq!(YabValue::parse("１"), YabValue::KeySequence("1".to_string()));
+    assert_eq!(YabValue::parse("２"), YabValue::KeySequence("2".to_string()));
 }
 
 #[test]
 fn parse_value_fullwidth_symbol() {
-    assert_eq!(parse_value("！"), YabValue::KeySequence("!".to_string()));
+    assert_eq!(YabValue::parse("！"), YabValue::KeySequence("!".to_string()));
 }
 
 #[test]
 fn parse_value_double_quoted_literal() {
-    assert_eq!(parse_value("\"？\""), YabValue::Literal("？".to_string()));
-    assert_eq!(parse_value("\"！\""), YabValue::Literal("！".to_string()));
+    assert_eq!(YabValue::parse("\"？\""), YabValue::Literal("？".to_string()));
+    assert_eq!(YabValue::parse("\"！\""), YabValue::Literal("！".to_string()));
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn parse_value_key_sequence_round_trip() {
     let val = YabValue::KeySequence("?".to_string());
     let serialized = serialize_value(&val);
     assert_eq!(serialized, "？");
-    let parsed = parse_value(&serialized);
+    let parsed = YabValue::parse(&serialized);
     assert_eq!(parsed, YabValue::KeySequence("?".to_string()));
 }
 
@@ -494,11 +494,11 @@ fn test_parse_layout_missing_sections() {
 #[test]
 fn test_fullwidth_digits_and_symbols() {
     // 全角数字はキーシーケンスになる
-    assert_eq!(parse_value("３"), YabValue::KeySequence("3".to_string()));
-    assert_eq!(parse_value("７"), YabValue::KeySequence("7".to_string()));
+    assert_eq!(YabValue::parse("３"), YabValue::KeySequence("3".to_string()));
+    assert_eq!(YabValue::parse("７"), YabValue::KeySequence("7".to_string()));
     // 全角記号もキーシーケンスになる
-    assert_eq!(parse_value("＃"), YabValue::KeySequence("#".to_string()));
-    assert_eq!(parse_value("＆"), YabValue::KeySequence("&".to_string()));
+    assert_eq!(YabValue::parse("＃"), YabValue::KeySequence("#".to_string()));
+    assert_eq!(YabValue::parse("＆"), YabValue::KeySequence("&".to_string()));
     // 全角の範囲外端の文字
     assert_eq!('～'.to_halfwidth_ascii(), Some('~')); // U+FF5E -> '~'
 }
