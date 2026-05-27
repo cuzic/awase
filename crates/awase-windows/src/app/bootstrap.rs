@@ -655,7 +655,7 @@ pub(super) fn run_all() -> Result<()> {
         app.executor
             .platform
             .timer
-            .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(10));
+            .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(3));
     });
 
     let (_uia_worker, uia_tx) = crate::focus::uia::spawn_uia_worker();

@@ -25,6 +25,10 @@ impl KeyEventPipeline<'_> {
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
         if self.app.executor.platform.output.try_hold_key(event) {
+            log::debug!(
+                "[tsf-gate-hold] vk=0x{:02X} {:?} held by TsfGate (PendingWarmup)",
+                event.vk_code, event.event_type
+            );
             return CallbackResult::Consumed;
         }
 

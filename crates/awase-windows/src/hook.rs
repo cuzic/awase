@@ -489,6 +489,10 @@ unsafe fn decide_routing_with_tracking(
     }
 
     if ps.hook.is_in_callback() {
+        log::warn!(
+            "[hook-callback-reentrant] vk={:#04X} {}: in_callback already set → BypassToOs",
+            vk, if is_keydown { "KeyDown" } else { "KeyUp" }
+        );
         return EarlyRoutingDecision::BypassToOs;
     }
     ps.hook.enter_callback();
@@ -643,6 +647,10 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
     // `try_borrow_mut` が None を返すため、ここで CallNextHookEx に落として OS に
     // 素通しする (defer + replay の代わりに passthrough)。
     let Some(mut app_borrow) = crate::RUNTIME.try_borrow_mut() else {
+        log::warn!(
+            "[hook-reentrant] vk={:#04X} {}: RUNTIME already borrowed → silent passthrough",
+            vk, if is_keydown { "KeyDown" } else { "KeyUp" }
+        );
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     };
     let Some(app) = app_borrow.as_mut() else {
@@ -727,7 +735,19 @@ unsafe fn process_hook_event(hook_handle: HHOOK, ncode: i32, wparam: WPARAM, lpa
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hook_handle = *HOOK_HANDLE.get_mut();
     if ncode >= 0 {
-        return process_hook_event(hook_handle, ncode, wparam, lparam);
+        let t0 = current_tick_ms();
+        let result = process_hook_event(hook_handle, ncode, wparam, lparam);
+        let elapsed = current_tick_ms() - t0;
+        if elapsed >= 30 {
+            let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            log::warn!(
+                "[hook-slow] vk={:#04X} {} took {}ms (LowLevelHooksTimeout risk)",
+                kb.vkCode,
+                if matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN) { "dn" } else { "up" },
+                elapsed,
+            );
+        }
+        return result;
     }
     CallNextHookEx(Some(hook_handle), ncode, wparam, lparam)
 }
