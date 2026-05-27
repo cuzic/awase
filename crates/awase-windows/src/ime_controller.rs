@@ -83,18 +83,10 @@ impl ImeOpenStrategy for GjiDirectStrategy {
             log::debug!("[apply-ime] GJI direct: F13 (IME ON)");
             unsafe { crate::ime::post_gji_ime_on() };
         } else {
-            // shadow が既に OFF なら F14 を送信しない（F14 は DirectInput でパススルーされるが
-            // 無害なキーのため必須ではない。送信省略で効率化）。
-            let effective_shadow = view.control.shadow_on
-                || view.observed.candidate_visible
-                || view.observed.candidate_was_seen;
-            if !effective_shadow {
-                log::debug!("[apply-ime] GJI direct: shadow OFF, skip F14");
-                return ImeOpenOutcome::AlreadyMatched;
-            }
-            // 候補表示中は F14 単独だと IME に届かず IME OFF に失敗するため、
-            // Ctrl+Enter で候補確定してから F14 を送る。プロファイル種別に依存しない
-            // （Standard/wezterm でも IMC fail → 本経路は到達し得る）。
+            // F14 は GJI の DirectInput 状態でパススルーされ idempotent なため、
+            // shadow チェックなしで常に送信する。VK_KANJI と異なりトグルではないため
+            // shadow desync の影響を受けない。
+            // 候補表示中は F14 単独だと IME に届かないため Ctrl+Enter で確定してから送る。
             let commit_first = view.observed.candidate_visible;
             log::debug!(
                 "[apply-ime] GJI direct: F14 (IME OFF, candidate={} commit_first={})",
