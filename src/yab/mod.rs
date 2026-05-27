@@ -162,6 +162,40 @@ impl YabFace {
     pub fn is_empty(&self) -> bool {
         self.0.iter().all(Option::is_none)
     }
+
+    /// .yab テキストの CSV 行に変換する。
+    #[must_use]
+    pub fn serialize(&self, row_sizes: &[usize; 4]) -> String {
+        let mut lines = Vec::new();
+        for (row, &cols) in row_sizes.iter().enumerate() {
+            let mut values = Vec::with_capacity(cols);
+            for col in 0..cols {
+                let pos = PhysicalPos::new(
+                    u8::try_from(row).expect("row < MAX_ROWS fits u8"),
+                    u8::try_from(col).expect("col < MAX_COLS fits u8"),
+                );
+                match self.get(&pos) {
+                    Some(val) => values.push(val.serialize()),
+                    None => values.push("無".to_string()),
+                }
+            }
+            lines.push(values.join(","));
+        }
+        lines.join("\n")
+    }
+
+    /// 全 `YabValue::Romaji` の `kana` フィールドをテーブルから解決する。
+    pub fn resolve_kana(&mut self, table: &KanaTable) {
+        for value in self.values_mut() {
+            if let YabValue::Romaji {
+                ref romaji,
+                ref mut kana,
+            } = value
+            {
+                *kana = table.kana_for_romaji(romaji);
+            }
+        }
+    }
 }
 
 impl Default for YabFace {
@@ -453,7 +487,7 @@ impl YabLayout {
 
         for (name, face) in &sections {
             let _ = writeln!(out, "[{name}]");
-            out.push_str(&serialize_face(face, &row_sizes));
+            out.push_str(&face.serialize(&row_sizes));
             out.push('\n');
         }
 
@@ -464,44 +498,11 @@ impl YabLayout {
     #[must_use]
     pub fn resolve_kana(mut self) -> Self {
         let table = KanaTable::build();
-        resolve_face_kana(&mut self.normal, &table);
-        resolve_face_kana(&mut self.left_thumb, &table);
-        resolve_face_kana(&mut self.right_thumb, &table);
-        resolve_face_kana(&mut self.shift, &table);
+        self.normal.resolve_kana(&table);
+        self.left_thumb.resolve_kana(&table);
+        self.right_thumb.resolve_kana(&table);
+        self.shift.resolve_kana(&table);
         self
-    }
-}
-
-/// `YabFace` を .yab テキストの CSV 行に変換する。
-fn serialize_face(face: &YabFace, row_sizes: &[usize; 4]) -> String {
-    let mut lines = Vec::new();
-    for (row, &cols) in row_sizes.iter().enumerate() {
-        let mut values = Vec::with_capacity(cols);
-        for col in 0..cols {
-            let pos = PhysicalPos::new(
-            u8::try_from(row).expect("row < MAX_ROWS fits u8"),
-            u8::try_from(col).expect("col < MAX_COLS fits u8"),
-        );
-            match face.get(&pos) {
-                Some(val) => values.push(val.serialize()),
-                None => values.push("無".to_string()),
-            }
-        }
-        lines.push(values.join(","));
-    }
-    lines.join("\n")
-}
-
-/// `YabFace` 内の全 `YabValue::Romaji` の `kana` フィールドをテーブルから解決する。
-fn resolve_face_kana(face: &mut YabFace, table: &KanaTable) {
-    for value in face.values_mut() {
-        if let YabValue::Romaji {
-            ref romaji,
-            ref mut kana,
-        } = value
-        {
-            *kana = table.kana_for_romaji(romaji);
-        }
     }
 }
 
