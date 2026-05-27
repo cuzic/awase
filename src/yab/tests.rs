@@ -124,7 +124,7 @@ fn parse_value_double_quoted_literal() {
 #[test]
 fn parse_value_key_sequence_round_trip() {
     let val = YabValue::KeySequence("?".to_string());
-    let serialized = serialize_value(&val);
+    let serialized = val.serialize();
     assert_eq!(serialized, "？");
     let parsed = YabValue::parse(&serialized);
     assert_eq!(parsed, YabValue::KeySequence("?".to_string()));
@@ -605,62 +605,53 @@ fn test_serialize_value_romaji() {
         romaji: "ka".to_string(),
         kana: None,
     };
-    assert_eq!(serialize_value(&val), "ｋａ");
+    assert_eq!(val.serialize(), "ｋａ");
 }
 
 #[test]
 fn test_serialize_value_literal_unicode() {
     let val = YabValue::Literal("ー".to_string());
-    assert_eq!(serialize_value(&val), "'ー'");
+    assert_eq!(val.serialize(), "'ー'");
 }
 
 #[test]
 fn test_serialize_value_literal_ascii_digit() {
     // Literal は常にクォート付き
     let val = YabValue::Literal("1".to_string());
-    assert_eq!(serialize_value(&val), "'1'");
+    assert_eq!(val.serialize(), "'1'");
 }
 
 #[test]
 fn test_serialize_value_literal_ascii_symbol() {
     // Literal は常にクォート付き
     let val = YabValue::Literal("!".to_string());
-    assert_eq!(serialize_value(&val), "'!'");
+    assert_eq!(val.serialize(), "'!'");
 }
 
 #[test]
 fn test_serialize_value_key_sequence_digit() {
     let val = YabValue::KeySequence("1".to_string());
-    assert_eq!(serialize_value(&val), "１");
+    assert_eq!(val.serialize(), "１");
 }
 
 #[test]
 fn test_serialize_value_key_sequence_symbol() {
     let val = YabValue::KeySequence("!".to_string());
-    assert_eq!(serialize_value(&val), "！");
+    assert_eq!(val.serialize(), "！");
 }
 
 #[test]
 fn test_serialize_value_special_keys() {
-    assert_eq!(
-        serialize_value(&YabValue::Special(SpecialKey::Backspace)),
-        "後"
-    );
-    assert_eq!(
-        serialize_value(&YabValue::Special(SpecialKey::Escape)),
-        "逃"
-    );
-    assert_eq!(serialize_value(&YabValue::Special(SpecialKey::Enter)), "入");
-    assert_eq!(serialize_value(&YabValue::Special(SpecialKey::Space)), "空");
-    assert_eq!(
-        serialize_value(&YabValue::Special(SpecialKey::Delete)),
-        "消"
-    );
+    assert_eq!(YabValue::Special(SpecialKey::Backspace).serialize(), "後");
+    assert_eq!(YabValue::Special(SpecialKey::Escape).serialize(), "逃");
+    assert_eq!(YabValue::Special(SpecialKey::Enter).serialize(), "入");
+    assert_eq!(YabValue::Special(SpecialKey::Space).serialize(), "空");
+    assert_eq!(YabValue::Special(SpecialKey::Delete).serialize(), "消");
 }
 
 #[test]
 fn test_serialize_value_none() {
-    assert_eq!(serialize_value(&YabValue::None), "無");
+    assert_eq!(YabValue::None.serialize(), "無");
 }
 
 // ── serialize round-trip テスト ──

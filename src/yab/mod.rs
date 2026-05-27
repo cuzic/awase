@@ -97,6 +97,22 @@ impl YabValue {
 
         YabValue::Literal(trimmed.to_string())
     }
+
+    /// `YabValue` を .yab テキスト形式に変換する。
+    #[must_use]
+    pub fn serialize(&self) -> String {
+        match self {
+            YabValue::Romaji { romaji, .. } => romaji.to_fullwidth_str(),
+            YabValue::Literal(s) => format!("'{s}'"),
+            YabValue::KeySequence(s) => s.to_fullwidth_str(),
+            YabValue::Special(SpecialKey::Backspace) => "後".to_string(),
+            YabValue::Special(SpecialKey::Escape) => "逃".to_string(),
+            YabValue::Special(SpecialKey::Enter) => "入".to_string(),
+            YabValue::Special(SpecialKey::Space) => "空".to_string(),
+            YabValue::Special(SpecialKey::Delete) => "消".to_string(),
+            YabValue::None => "無".to_string(),
+        }
+    }
 }
 
 impl YabFace {
@@ -456,27 +472,6 @@ impl YabLayout {
     }
 }
 
-/// `YabValue` を .yab テキスト形式に変換する。
-fn serialize_value(value: &YabValue) -> String {
-    match value {
-        YabValue::Romaji { romaji, .. } => romaji.to_fullwidth_str(),
-        YabValue::Literal(s) => {
-            // Literal は常にクォート付きでシリアライズする
-            format!("'{s}'")
-        }
-        YabValue::KeySequence(s) => {
-            // KeySequence は全角クォート無しでシリアライズする
-            s.to_fullwidth_str()
-        }
-        YabValue::Special(SpecialKey::Backspace) => "後".to_string(),
-        YabValue::Special(SpecialKey::Escape) => "逃".to_string(),
-        YabValue::Special(SpecialKey::Enter) => "入".to_string(),
-        YabValue::Special(SpecialKey::Space) => "空".to_string(),
-        YabValue::Special(SpecialKey::Delete) => "消".to_string(),
-        YabValue::None => "無".to_string(),
-    }
-}
-
 /// `YabFace` を .yab テキストの CSV 行に変換する。
 fn serialize_face(face: &YabFace, row_sizes: &[usize; 4]) -> String {
     let mut lines = Vec::new();
@@ -488,7 +483,7 @@ fn serialize_face(face: &YabFace, row_sizes: &[usize; 4]) -> String {
             u8::try_from(col).expect("col < MAX_COLS fits u8"),
         );
             match face.get(&pos) {
-                Some(val) => values.push(serialize_value(val)),
+                Some(val) => values.push(val.serialize()),
                 None => values.push("無".to_string()),
             }
         }
