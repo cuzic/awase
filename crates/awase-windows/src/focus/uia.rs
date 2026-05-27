@@ -44,16 +44,6 @@ pub struct UiaClassifyResult {
     pub app_kind: Option<AppKind>,
 }
 
-/// UIA `FrameworkId` から `AppKind` を推定する
-fn classify_framework_app_kind(framework_id: &str) -> Option<AppKind> {
-    match framework_id {
-        "Win32" | "WinForm" => Some(AppKind::Win32),
-        "DirectUI" | "XAML" | "WPF" => Some(AppKind::Uwp),
-        // Chrome/Electron は FrameworkId が空文字列のことが多い → class name で判定済み
-        _ => None,
-    }
-}
-
 /// `FrameworkId` から `AppKind` を推定する（CC≤3）
 ///
 /// # Safety
@@ -62,7 +52,11 @@ unsafe fn resolve_app_kind(element: &IUIAutomationElement) -> Option<AppKind> {
     match element.CurrentFrameworkId() {
         Ok(fid) => {
             let fid_str = fid.to_string();
-            let kind = classify_framework_app_kind(&fid_str);
+            let kind = match fid_str.as_str() {
+                "Win32" | "WinForm" => Some(AppKind::Win32),
+                "DirectUI" | "XAML" | "WPF" => Some(AppKind::Uwp),
+                _ => None,
+            };
             log::debug!("UIA: FrameworkId=\"{fid_str}\" → app_kind={kind:?}");
             kind
         }
