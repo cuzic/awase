@@ -143,19 +143,27 @@ impl<'a> ColdWarmupSequence<'a> {
             log::debug!("[tsf-warmup] cold → F2-only先行バッチ (案A)");
         }
 
-        // H4/H5 判定: pre-send で ROMAN=true なら IMM32 は正しいが TSF が無視している。
-        // SAFETY: IMM32 API; uses the foreground thread's IME context, valid during message loop.
-        let conv_pre = unsafe { crate::ime::get_ime_conversion_mode_raw() };
-        log::debug!(
-            "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
-            conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-            conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
-            conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
-            conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
-        );
-        // SAFETY: IMM32 API; sets conversion mode on the foreground window's IME context.
-        // IMM32 経由で同期的にローマ字モードへ切り替え。
-        unsafe { let _ = crate::ime::set_ime_romaji_mode(); }
+        // 診断ログ (get_ime_conversion_mode_raw) と IMM32 ローマ字モード設定
+        // (set_ime_romaji_mode) は SendMessageTimeoutW を呼ぶため、メインスレッドで
+        // 同期実行すると `with_app` 再入の原因になる。ワーカースレッドに offload する
+        // async ラッパーを spawn_local で起動して退避する。
+        //
+        // 順序保証: 本パスの直後の SendInput は F2 (VK_DBE_HIRAGANA) のみで、
+        // romaji 文字は含まない。実 romaji 送信は TIMER_TSF_PROBE 完了後の probe
+        // ハンドリング経由で行われる (probe_min_ms ≥ 50ms 待機)。
+        // worker-thread SendMessageTimeoutW は通常 10ms 以内に完了するため、
+        // ROMAN ビット設定は実 romaji 送信より先に完了する。
+        win32_async::spawn_local(async {
+            let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
+            log::debug!(
+                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+                conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
+                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
+                conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
+            );
+            let _ = crate::ime::set_ime_romaji_mode_async().await;
+        });
 
         let cold_seq = self.output.composition.increment_cold_start_count();
 
