@@ -12,9 +12,9 @@
 
 use std::time::Instant;
 
-use super::ime_event::ChordKind;
+use super::ime_event::{ChordKind, HwndId};
 
-/// 入力 transaction の種別 (Step 4 では Chord のみ、Step 5 で FocusTransition 追加予定)。
+/// 入力 transaction の種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputBarrier {
     /// Ctrl+IME chord (Ctrl+無変換 / Ctrl+変換 等)
@@ -27,6 +27,17 @@ pub enum InputBarrier {
         started_seq: u64,
         started_at: Instant,
     },
+
+    /// フォーカス変更直後の遷移 transaction (Step 5)。
+    ///
+    /// この期間中、外部観測 (focus_probe / observer_poll) は信頼度を下げて扱う。
+    /// `focus_settle_ms` (AppImePolicy 由来) 経過 or 最初のキー入力で解除。
+    FocusTransition {
+        to_hwnd: HwndId,
+        started_seq: u64,
+        started_at: Instant,
+        settle_until: Instant,
+    },
 }
 
 impl InputBarrier {
@@ -36,11 +47,18 @@ impl InputBarrier {
         matches!(self, Self::CtrlImeChord { .. })
     }
 
+    /// この barrier が FocusTransition であるかを返す。
+    #[must_use]
+    pub const fn is_focus_transition(&self) -> bool {
+        matches!(self, Self::FocusTransition { .. })
+    }
+
     /// この barrier の chord kind を返す (CtrlImeChord 以外は None)。
     #[must_use]
     pub const fn chord_kind(&self) -> Option<ChordKind> {
         match self {
             Self::CtrlImeChord { kind, .. } => Some(*kind),
+            Self::FocusTransition { .. } => None,
         }
     }
 }

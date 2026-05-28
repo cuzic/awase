@@ -105,10 +105,21 @@ impl KeyEventPipeline<'_> {
 
     /// フォーカス切替直後の非同期プローブ
     fn stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
-        if !self.app.platform_state.focus.focus_transition_pending {
+        // Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換。
+        // 最初のキー入力で barrier を consume する (one-shot 動作維持)。
+        if !self
+            .app
+            .platform_state
+            .ime
+            .shadow_model
+            .input_barrier
+            .as_ref()
+            .is_some_and(|b| b.is_focus_transition())
+        {
             return;
         }
-        self.app.platform_state.focus.focus_transition_pending = false;
+        // 消費 (旧 = false にセット)
+        self.app.platform_state.ime.shadow_model.input_barrier = None;
 
         // async probe が完了する前に最初のキーが来た場合、warm epoch を抑制して
         // is_composition_warm() が前ウィンドウの stale な warm 状態を返さないようにする。

@@ -167,8 +167,8 @@ impl ImeModel {
                     envelope.time.seq,
                 );
             }
-            ImeEvent::FocusChanged { profile, .. } => {
-                // Step 1.5: policy 確定 → observation 評価の順序ルール。
+            ImeEvent::FocusChanged { profile, to, .. } => {
+                // Step 1.5/5: policy 確定 → observation 評価の順序ルール。
                 // FocusChanged を受けた時点で policy を更新し、以降の observation は
                 // 新しい policy で評価される。
                 self.app_policy = AppImePolicy::from_profile(profile);
@@ -176,6 +176,16 @@ impl ImeModel {
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
                 self.observations.clear_on_focus_change();
+                // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。
+                // settle_until は AppImePolicy.focus_settle_ms 由来。
+                let settle_until = envelope.time.monotonic
+                    + std::time::Duration::from_millis(self.app_policy.focus_settle_ms);
+                self.input_barrier = Some(InputBarrier::FocusTransition {
+                    to_hwnd: to,
+                    started_seq: envelope.time.seq,
+                    started_at: envelope.time.monotonic,
+                    settle_until,
+                });
             }
             ImeEvent::ChordStarted { kind } => {
                 // Step 4: chord transaction を開始。barrier を立てる。

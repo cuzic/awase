@@ -92,18 +92,13 @@ impl ImeStateHub {
 
 /// フォーカス追跡に関する Platform 層の状態を集約する構造体。
 ///
-/// app_kind・focus_kind・focus_transition_pending・タイミング・ポーリング間隔を保持する。
+/// app_kind・focus_kind・タイミング・ポーリング間隔を保持する。
+///
+/// Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換済。
 #[derive(Debug)]
 pub struct FocusPlatformState {
     pub app_kind: AppKind,
     pub focus_kind: FocusKind,
-    /// フォーカス切替直後フラグ。
-    ///
-    /// フォーカス変更を検知したときに `true` にセットされる。
-    /// 次のキーストローク到着時に同期プローブ（高速 IME 状態検出）を実行し、
-    /// belief を即座に更新してからキーを処理する。
-    /// これにより「古い belief でキーが処理される」ギャップを解消する。
-    pub focus_transition_pending: bool,
     /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
     /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
     pub last_focus_change_ms: u64,
@@ -116,7 +111,6 @@ impl FocusPlatformState {
         Self {
             app_kind: AppKind::Win32,
             focus_kind: FocusKind::Undetermined,
-            focus_transition_pending: false,
             last_focus_change_ms: 0,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
