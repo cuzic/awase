@@ -700,6 +700,18 @@ impl DecisionExecutor {
             // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
             // → 楽観的に last_applied を更新して send_engine_state_ime_key をスキップさせる。
             self.platform.output.set_ime_apply_latch(open);
+            // ImmCross は set_ime_open_cross_process(open) 完了後に VK_DBE_DBCSCHAR(0xF4)/
+            // VK_DBE_SBCSCHAR(0xF3) KeyUp をシステムワイドに注入する。
+            // LINE/Qt 等はこの KeyUp を受け取ると逆方向の IME キーを生成して
+            // shadow toggle を反転させるため、KeyUp を抑止する。
+            {
+                let suppress_vk = if open {
+                    crate::vk::VK_DBE_DBCSCHAR // 0xF4: LINE/Qt が VK_F3 Down を生成する原因
+                } else {
+                    crate::vk::VK_DBE_SBCSCHAR // 0xF3
+                };
+                self.register_shadow_toggle_suppress(suppress_vk);
+            }
             log::debug!(
                 "[dispatch-ime] ImmCross async: optimistic last_applied={open} \
                  (suppress send_engine_state_ime_key, prevent spurious VK_F3/F4 from app IME)"

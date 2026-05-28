@@ -47,6 +47,8 @@ pub const VK_RWIN:   VkCode = VkCode(0x5C);
 pub const VK_DBE_ALPHANUMERIC: VkCode = VkCode(0xF0);
 pub const VK_DBE_KATAKANA: VkCode = VkCode(0xF1);
 pub const VK_DBE_HIRAGANA: VkCode = VkCode(0xF2);
+pub const VK_DBE_SBCSCHAR: VkCode = VkCode(0xF3);
+pub const VK_DBE_DBCSCHAR: VkCode = VkCode(0xF4);
 pub const VK_NONAME: VkCode = VkCode(0xFC);
 
 // ── IME キー種別 ──────────────────────────────────────────
