@@ -95,9 +95,9 @@ impl ImeModel {
     /// `desired_open` を `force_guards` で override した最終値 (Step 6)。
     ///
     /// guard が active なら `true` を強制、そうでなければ `desired_open` をそのまま。
-    /// `effective_state()` の `ime_target_open` がこれを使う想定。
+    /// Phase 3d 以降は `PlatformState::ime_on()` の SSOT。
     #[must_use]
-    pub fn effective_open(&self) -> bool {
+    pub const fn effective_open(&self) -> bool {
         self.force_guards.effective_open(self.desired_open)
     }
 }

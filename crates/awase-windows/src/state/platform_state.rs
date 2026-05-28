@@ -188,10 +188,20 @@ impl PlatformState {
     // `belief()` を直接使っても同等だが、呼び出しサイトを短くするために置く。
     // `build_input_context(&ps.belief(), …)` のような「構造体丸ごと」の渡し方は belief() を使う。
 
-    /// IME が ON かどうかを返す。
+    /// IME が ON かどうかを返す (Phase 3d: shadow_model.effective_open() を SSOT に昇格)。
+    ///
+    /// 旧 `belief.ime_on` は引き続き `apply_ime_observations()` で維持されており、
+    /// shadow_model との不一致は decisive log で記録する (緊急ロールバック判断材料)。
     #[inline]
     #[must_use]
     pub const fn ime_on(&self) -> bool {
+        self.ime.shadow_model.effective_open()
+    }
+
+    /// 旧 belief.ime_on (Phase 3d 移行期間の互換アクセサ、diagnostic 用)。
+    #[inline]
+    #[must_use]
+    pub const fn belief_ime_on(&self) -> bool {
         self.ime.belief.ime_on()
     }
 

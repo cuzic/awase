@@ -84,7 +84,7 @@ impl ForceGuardSet {
     /// guard が active なら true (= force-on)、そうでなければ desired をそのまま。
     /// ChatGPT 推奨の `effective_open()` パターン。
     #[must_use]
-    pub fn effective_open(&self, desired_open: bool) -> bool {
+    pub const fn effective_open(&self, desired_open: bool) -> bool {
         if self.requires_on() { true } else { desired_open }
     }
 }
