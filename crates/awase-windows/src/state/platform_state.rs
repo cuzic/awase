@@ -3,8 +3,9 @@ use awase::types::{AppKind, FocusKind};
 
 use super::belief::{ImeBelief, ImeRecoveryState, ShadowSource};
 use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
-use super::ime_event::{ImeEvent, IntentSource};
+use super::ime_event::{ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
+use super::ime_model::{DiffSeverity, ImeEffectiveState, ImeModel};
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -40,6 +41,12 @@ pub(crate) struct ImeStateHub {
     ///
     /// 現状は記録のみ。Shadow Reducer 移行 (Step 1) 以降で本番判定に使う予定。
     pub(crate) event_log: ImeEventLog,
+
+    /// Shadow IME モデル (Step 1)。
+    ///
+    /// 既存 `belief` と並走し、`apply_ime_observations()` 後に diff を比較する。
+    /// 本番判定にはまだ使わない。
+    pub(crate) shadow_model: ImeModel,
 }
 
 impl ImeStateHub {
@@ -61,7 +68,24 @@ impl ImeStateHub {
             ime_observations: crate::ime_observations::ImeObservations::default(),
             last_explicit_intent: None,
             event_log: ImeEventLog::default(),
+            shadow_model: ImeModel::default(),
         }
+    }
+}
+
+impl ImeStateHub {
+    /// Event を log に記録し、shadow_model にも reduce する (Step 1)。
+    ///
+    /// `event_log.record()` だけを呼ぶより、こちらを使うと record + reduce が
+    /// 同一 envelope で進む。write_* メソッドはこちらを使う。
+    pub(crate) fn dispatch_event(&mut self, event: ImeEvent) {
+        let event_for_reduce = event.clone();
+        let time = self.event_log.record(event);
+        let envelope = ImeEventEnvelope {
+            time,
+            event: event_for_reduce,
+        };
+        self.shadow_model.reduce(&envelope);
     }
 }
 
@@ -269,7 +293,7 @@ impl PlatformState {
     ///
     /// belief / recovery のすべてのフィールドをまとめて設定する。
     /// `ime_observations` もクリアして stale な観測値が残らないようにする。
-    pub const fn apply_panic_reset(&mut self) {
+    pub fn apply_panic_reset(&mut self) {
         self.ime.belief.input_mode = InputModeState::ObservedRomaji;
         self.ime.belief.set_ime_on(true, ShadowSource::PanicReset);
         self.ime.belief.is_japanese_ime = true;
@@ -280,6 +304,13 @@ impl PlatformState {
         // パニックリセット後は全観測スロットと明示的意図をクリア。
         self.ime.ime_observations.clear_on_focus_change();
         self.ime.last_explicit_intent = None;
+        // Step 1: shadow_model も初期状態に戻す (desired_open=true, last_intent/obs クリア)。
+        // event_log は履歴保持のためリセットしない (panic 前後の流れが追えるよう)。
+        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: true,
+            source: IntentSource::Recovery,
+        });
+        self.ime.shadow_model.last_observation = None;
     }
 }
 
@@ -341,6 +372,33 @@ impl PlatformState {
             );
             self.ime.belief.set_ime_on(val, src);
         }
+        // Step 1: Shadow Reducer の effective state と既存 belief を比較し diff log を出力。
+        // 本番判定には影響しない (shadow_model の値は使わない)。
+        self.log_shadow_diff_if_any();
+    }
+
+    /// Shadow Reducer (Step 1) の effective state と既存 belief の diff を log 出力。
+    /// 1 週間モニタで Expected / Suspicious / Regression を分類する材料にする。
+    fn log_shadow_diff_if_any(&self) {
+        let old_ime_on = self.ime.belief.ime_on;
+        let new_effective = self.ime.shadow_model.effective_state();
+        let Some(severity) =
+            ImeEffectiveState::classify_diff(old_ime_on, new_effective.ime_target_open)
+        else {
+            return;
+        };
+        let last_intent = self.ime.shadow_model.last_intent.as_ref();
+        let last_obs = self.ime.shadow_model.last_observation.as_ref();
+        log::debug!(
+            "[shadow-diff seq~{}] severity={:?} old.ime_on={} new.target={} \
+             last_intent={:?} last_obs={:?}",
+            self.ime.event_log.next_seq().saturating_sub(1),
+            severity,
+            old_ime_on,
+            new_effective.ime_target_open,
+            last_intent.map(|i| (i.target, i.source, i.at_seq)),
+            last_obs.map(|o| (o.open, o.source, o.confidence, o.at_seq)),
+        );
     }
 
     /// 最後の明示的 IME 操作の意図を返す（ログ・診断用）。
@@ -352,7 +410,7 @@ impl PlatformState {
     ///
     /// 外部観測（GJI I/O 等）を `belief.ime_on` に反映する正規ルート。
     pub fn write_observer_poll(&mut self, value: bool, ms: u64, user_enabled: bool) {
-        self.ime.event_log.record(ImeEvent::ObserverReported {
+        self.ime.dispatch_event(ImeEvent::ObserverReported {
             open: value,
             source: super::ime_event::ObservationSource::ObserverPoll,
             hwnd: super::ime_event::HwndId::NULL,
@@ -367,12 +425,16 @@ impl PlatformState {
     pub fn clear_ime_observations_on_focus_change(&mut self) {
         self.ime.ime_observations.clear_on_focus_change();
         self.ime.last_explicit_intent = None;
+        // Step 1: shadow_model の last_intent / observation も clear。
+        // desired_open は維持 (フォーカス変更でユーザー意図を捨てない)。
+        self.ime.shadow_model.last_intent = None;
+        self.ime.shadow_model.last_observation = None;
         log::debug!("[explicit-intent] cleared (focus change)");
     }
 
     /// `sync_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_sync_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
-        self.ime.event_log.record(ImeEvent::UserImeSetIntent {
+        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::SyncKey,
         });
@@ -384,7 +446,7 @@ impl PlatformState {
 
     /// `physical_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_physical_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
-        self.ime.event_log.record(ImeEvent::UserImeSetIntent {
+        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::PhysicalImeKey,
         });
@@ -403,7 +465,7 @@ impl PlatformState {
             self.ime.ime_observations.observer_poll.map(|o| o.value),
             self.ime.ime_observations.focus_probe.map(|o| o.value),
         );
-        self.ime.event_log.record(ImeEvent::UserImeSetIntent {
+        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::Command,
         });
@@ -415,7 +477,7 @@ impl PlatformState {
 
     /// `focus_probe` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_focus_probe(&mut self, value: bool, ms: u64, user_enabled: bool) {
-        self.ime.event_log.record(ImeEvent::ObserverReported {
+        self.ime.dispatch_event(ImeEvent::ObserverReported {
             open: value,
             source: super::ime_event::ObservationSource::FocusProbe,
             hwnd: super::ime_event::HwndId::NULL,

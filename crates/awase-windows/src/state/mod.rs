@@ -16,3 +16,4 @@ pub(crate) use ime_decision_view::{ControlLog, FocusFacts, ImeControlView, Obser
 
 pub mod ime_event;
 pub mod ime_event_log;
+pub mod ime_model;
