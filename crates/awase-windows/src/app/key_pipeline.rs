@@ -273,20 +273,28 @@ impl KeyEventPipeline<'_> {
         event: &RawKeyEvent,
         shadow_toggled: bool,
     ) -> CallbackResult {
-        // 物理 IME キー（VK_KANJI 等）を OS に届けないアプリ（Imm32Unavailable: Chrome/Edge）で
-        // shadow が今変化した場合、apply_ime_open が VK_KANJI を送信済み。
-        // 物理キーをそのまま届けると VK_KANJI + 物理キーの二重制御になるため抑止する。
-        // PassThrough / PassThroughWith → Consume に変換して reinject/passthrough をスキップする。
+        // 物理 IME キー（VK_KANJI 等）の Consume 条件:
+        // - Imm32Unavailable (Chrome/Edge): VK_KANJI を SendInput 済み → 物理キー二重送信を防ぐ
+        // - ImmCross (LINE/Qt): set_ime_open_cross_process で IME 制御済み → 物理 KANJI を渡すと
+        //   アプリ側 IME が反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
+        //   (IME-ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデルにする。
+        // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
         let profile = self.app.executor.platform.focus.current_app_profile();
-        let suppress_physical = shadow_toggled && !profile.should_pass_physical_key();
+        let suppress_physical = shadow_toggled
+            && (!profile.should_pass_physical_key() || profile.can_use_imm32_cross_process());
         let decision = if suppress_physical {
+            let reason = if profile.can_use_imm32_cross_process() {
+                "imm-cross"
+            } else {
+                "imm32-off"
+            };
             match decision {
                 awase::engine::Decision::PassThrough => {
-                    log::debug!("[imm32-off] physical IME key consume (was PassThrough, double-send prevented)");
+                    log::debug!("[{reason}] physical IME key consume (was PassThrough)");
                     awase::engine::Decision::Consume { effects: vec![].into() }
                 }
                 awase::engine::Decision::PassThroughWith { effects } => {
-                    log::debug!("[imm32-off] physical IME key consume (was PassThroughWith, double-send prevented)");
+                    log::debug!("[{reason}] physical IME key consume (was PassThroughWith)");
                     awase::engine::Decision::Consume { effects }
                 }
                 other => other,
