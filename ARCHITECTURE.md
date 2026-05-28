@@ -149,3 +149,8 @@ cargo test -p timed-fsm           # timed-fsm フレームワークテスト
 | [029](docs/adr/029-ime-detection-resilience.md) | IME 検出の耐障害性と SSOT 設計 |
 | [030](docs/adr/030-tsf-three-layer-architecture.md) | TSF 状態管理の 3 層分離アーキテクチャ |
 | [031](docs/adr/031-win32-async-crate.md) | win32-async クレートの設計 |
+| [032](docs/adr/032-ime-state-reducer-4-layer-model.md) | IME 状態モデルの 4 階層 reducer アーキテクチャ |
+
+開発者ガイド: [docs/layer-boundaries.md](docs/layer-boundaries.md) に
+レイヤー境界ルール集（A〜E カテゴリ、計 13 項目）を集約している。
+PR レビューと定期 audit のチェックリストとして使う。
