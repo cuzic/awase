@@ -10,6 +10,7 @@
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
 use super::app_ime_policy::AppImePolicy;
+use super::force_guard::{DriftMonitor, ForceGuardSet};
 use super::ime_event::{ChordKind, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
@@ -38,6 +39,14 @@ pub struct ImeModel {
     /// 旧 `ctrl_bypass_hold: bool` の置換。
     pub input_barrier: Option<InputBarrier>,
 
+    /// 発火後の force-on ガード集合 (Step 6)。
+    /// 旧 `ImeRecoveryState::force_on_*` 2 つの bool を `ForceGuardSet` に統合。
+    pub force_guards: ForceGuardSet,
+
+    /// 発火前の観測失敗カウンタ (Step 6)。
+    /// 旧 `ImeRecoveryState::ime_detect_miss_count` の責務分離。
+    pub drift_monitor: DriftMonitor,
+
     /// reduce 呼び出し回数。診断用。
     pub reduce_count: u64,
 }
@@ -59,6 +68,8 @@ impl ImeModel {
             observations: ObservationStore::default(),
             app_policy: AppImePolicy::standard(),
             input_barrier: None,
+            force_guards: ForceGuardSet::default(),
+            drift_monitor: DriftMonitor::default(),
             reduce_count: 0,
         }
     }
@@ -68,6 +79,15 @@ impl ImeModel {
     #[must_use]
     pub const fn is_ctrl_ime_chord_active(&self) -> bool {
         matches!(self.input_barrier, Some(InputBarrier::CtrlImeChord { .. }))
+    }
+
+    /// `desired_open` を `force_guards` で override した最終値 (Step 6)。
+    ///
+    /// guard が active なら `true` を強制、そうでなければ `desired_open` をそのまま。
+    /// `effective_state()` の `ime_target_open` がこれを使う想定。
+    #[must_use]
+    pub fn effective_open(&self) -> bool {
+        self.force_guards.effective_open(self.desired_open)
     }
 }
 
