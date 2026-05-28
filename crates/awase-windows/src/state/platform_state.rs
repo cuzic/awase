@@ -3,6 +3,8 @@ use awase::types::{AppKind, FocusKind};
 
 use super::belief::{ImeBelief, ImeRecoveryState, ShadowSource};
 use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
+use super::ime_event::{ImeEvent, IntentSource};
+use super::ime_event_log::ImeEventLog;
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -33,6 +35,11 @@ pub(crate) struct ImeStateHub {
     /// `ObserverPoll` / `FocusSnapshot` がこの意図と矛盾する値で belief を上書きしようと
     /// した場合にブロックする。`None` のとき（フォーカス変更直後など）は観測値をそのまま採用。
     pub(crate) last_explicit_intent: Option<bool>,
+
+    /// IME 状態変更 event のリングバッファ (Step 0)。
+    ///
+    /// 現状は記録のみ。Shadow Reducer 移行 (Step 1) 以降で本番判定に使う予定。
+    pub(crate) event_log: ImeEventLog,
 }
 
 impl ImeStateHub {
@@ -53,6 +60,7 @@ impl ImeStateHub {
             },
             ime_observations: crate::ime_observations::ImeObservations::default(),
             last_explicit_intent: None,
+            event_log: ImeEventLog::default(),
         }
     }
 }
@@ -344,6 +352,12 @@ impl PlatformState {
     ///
     /// 外部観測（GJI I/O 等）を `belief.ime_on` に反映する正規ルート。
     pub fn write_observer_poll(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        self.ime.event_log.record(ImeEvent::ObserverReported {
+            open: value,
+            source: super::ime_event::ObservationSource::ObserverPoll,
+            hwnd: super::ime_event::HwndId::NULL,
+            confidence: super::ime_event::ObservationConfidence::Medium,
+        });
         self.ime.ime_observations.observer_poll =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
@@ -358,6 +372,10 @@ impl PlatformState {
 
     /// `sync_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_sync_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        self.ime.event_log.record(ImeEvent::UserImeSetIntent {
+            target: value,
+            source: IntentSource::SyncKey,
+        });
         self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.sync_key =
             Some(crate::ime_observations::ImeObs { value, ms });
@@ -366,6 +384,10 @@ impl PlatformState {
 
     /// `physical_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_physical_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        self.ime.event_log.record(ImeEvent::UserImeSetIntent {
+            target: value,
+            source: IntentSource::PhysicalImeKey,
+        });
         self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.physical_key =
             Some(crate::ime_observations::ImeObs { value, ms });
@@ -381,6 +403,10 @@ impl PlatformState {
             self.ime.ime_observations.observer_poll.map(|o| o.value),
             self.ime.ime_observations.focus_probe.map(|o| o.value),
         );
+        self.ime.event_log.record(ImeEvent::UserImeSetIntent {
+            target: value,
+            source: IntentSource::Command,
+        });
         self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.set_open_request =
             Some(crate::ime_observations::ImeObs { value, ms });
@@ -389,6 +415,12 @@ impl PlatformState {
 
     /// `focus_probe` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_focus_probe(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        self.ime.event_log.record(ImeEvent::ObserverReported {
+            open: value,
+            source: super::ime_event::ObservationSource::FocusProbe,
+            hwnd: super::ime_event::HwndId::NULL,
+            confidence: super::ime_event::ObservationConfidence::Medium,
+        });
         self.ime.ime_observations.focus_probe =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);

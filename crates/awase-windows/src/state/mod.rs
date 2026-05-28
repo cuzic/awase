@@ -13,3 +13,6 @@ pub use platform_state::PlatformState;
 
 pub(crate) mod ime_decision_view;
 pub(crate) use ime_decision_view::{ControlLog, FocusFacts, ImeControlView, ObservedState};
+
+pub mod ime_event;
+pub mod ime_event_log;
