@@ -68,6 +68,8 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
             app.executor.on_output_guard_timer();
+            // Phase 3b: drain 中に発火した sync IME apply の event を dispatch する。
+            app.flush_sync_apply_events();
         }
         Some(id) if id == TIMER_TSF_PROBE => {
             app.executor.platform.advance_tsf_probe();
@@ -115,6 +117,8 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
 /// WM_EXECUTE_EFFECTS ハンドラ
 pub(super) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     app.executor.drain_deferred();
+    // Phase 3b: drain 中に発火した sync IME apply の event を dispatch する。
+    app.flush_sync_apply_events();
 }
 
 /// WM_PANIC_RESET ハンドラ

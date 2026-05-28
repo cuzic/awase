@@ -222,7 +222,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         let decision = self.rt.engine.on_command(EngineCommand::FocusChanged, &ctx);
         // フォーカス変化起因の状態遷移では engine_state_ime_key を送らない（フィードバックループ防止）。
         self.rt.executor.platform.suppress_engine_state_key = true;
-        self.rt.executor.execute_from_loop(decision);
+        self.rt.execute_decision(decision);
         self.rt.executor.platform.suppress_engine_state_key = false;
     }
 
@@ -506,7 +506,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         let decision = self.rt.engine.on_command(EngineCommand::RefreshState, &ctx);
         // ポーリング起因の状態遷移では engine_state_ime_key を送らない（フィードバックループ防止）。
         self.rt.executor.platform.suppress_engine_state_key = true;
-        self.rt.executor.execute_from_loop(decision);
+        self.rt.execute_decision(decision);
         self.rt.executor.platform.suppress_engine_state_key = false;
     }
 

@@ -130,14 +130,56 @@ impl Runtime {
 
     /// Decision の副作用を実行する（メッセージループ用）。
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        self.executor.execute_from_loop(decision)
+        let result = self.executor.execute_from_loop(decision);
+        self.flush_sync_apply_events();
+        result
+    }
+
+    /// `DecisionExecutor` の sync IME apply outcome を排出し、
+    /// `shadow_model.pending` の generation に一致するもののみ
+    /// `ImeApplySucceeded` / `ImeApplyFailed` を dispatch する。
+    ///
+    /// async path (ImmCross) は spawn_local 内で直接 dispatch するためここを経由しない。
+    /// generation 照合は [[feedback_generation_check_for_async_apply]] 参照。
+    pub fn flush_sync_apply_events(&mut self) {
+        use awase::platform::ImeOpenOutcome;
+        use crate::state::ime_event::{ApplyError, ImeEvent};
+        let outcomes = self.executor.drain_sync_apply_outcomes();
+        for (target, outcome) in outcomes {
+            let Some(generation) = self
+                .platform_state
+                .ime
+                .shadow_model
+                .pending
+                .as_ref()
+                .map(|p| p.generation)
+            else {
+                // pending がない経路 (toggle_engine / refresh_ime_state_cache /
+                // process_deferred_keys 等) は ImeApplyRequested を出していないため
+                // Succeeded/Failed も出さない。
+                continue;
+            };
+            let event = match outcome {
+                ImeOpenOutcome::Applied
+                | ImeOpenOutcome::FallbackSent
+                | ImeOpenOutcome::AlreadyMatched => {
+                    ImeEvent::ImeApplySucceeded { target, generation }
+                }
+                ImeOpenOutcome::Failed => ImeEvent::ImeApplyFailed {
+                    target,
+                    generation,
+                    error: ApplyError::CrossProcessFailed,
+                },
+            };
+            self.platform_state.ime.dispatch_event(event);
+        }
     }
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
-        self.executor.execute_from_loop(decision);
+        self.execute_decision(decision);
     }
 
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
@@ -146,7 +188,7 @@ impl Runtime {
         let decision = self
             .engine
             .on_command(EngineCommand::InvalidateContext(reason), &ctx);
-        self.executor.execute_from_loop(decision);
+        self.execute_decision(decision);
     }
 
     /// IME 状態とフォーカス状態を一括で再観測し、Engine に通知する。
@@ -494,7 +536,7 @@ impl Runtime {
         let decision = self
             .engine
             .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &self.build_ctx());
-        self.executor.execute_from_loop(decision);
+        self.execute_decision(decision);
 
         self.executor.platform.tray.set_layout_name(&name);
 
@@ -587,7 +629,7 @@ impl Runtime {
             let ctx = self.build_ctx();
             let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
             self.executor.platform.suppress_engine_state_key = true;
-            self.executor.execute_from_loop(decision);
+            self.execute_decision(decision);
             self.executor.platform.suppress_engine_state_key = false;
         }
 
@@ -601,7 +643,7 @@ impl Runtime {
             // Build fresh context with updated preconditions
             let ctx = self.build_ctx();
             let decision = self.engine.on_input(event, &ctx);
-            self.executor.execute_from_loop(decision);
+            self.execute_decision(decision);
         }
     }
 

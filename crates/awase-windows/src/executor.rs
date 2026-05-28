@@ -49,6 +49,12 @@ pub struct DecisionExecutor {
     /// TIMER_OUTPUT_GUARD が発火待ちの間 true。
     /// この間は drain_deferred が再入しても新規タイマーを二重登録しない。
     guard_timer_active: bool,
+    /// sync IME apply の outcome キュー。`DecisionExecutor` は `PlatformState` に
+    /// アクセスできないため、sync path では Apply outcome をここに溜めておき、
+    /// 呼び出し側 (`Runtime::flush_sync_apply_events`) が `shadow_model` へ
+    /// `ImeApplySucceeded`/`ImeApplyFailed` event を dispatch する。
+    /// async path (ImmCross) は `with_app` 経由で直接 dispatch するためここは経由しない。
+    sync_apply_outcomes: Vec<(bool, awase::platform::ImeOpenOutcome)>,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -66,7 +72,16 @@ impl DecisionExecutor {
             deferred_passthrough_vks: HashSet::new(),
             pending_warmup_on_keyup: false,
             guard_timer_active: false,
+            sync_apply_outcomes: Vec::new(),
         }
+    }
+
+    /// sync IME apply outcomes をすべて取り出す。
+    /// `Runtime` 側で event dispatch (generation 照合付き) するために呼ぶ。
+    pub fn drain_sync_apply_outcomes(
+        &mut self,
+    ) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
+        std::mem::take(&mut self.sync_apply_outcomes)
     }
 
     /// フックコールバックから呼ぶ。
@@ -519,6 +534,10 @@ impl DecisionExecutor {
         }
         if let Some((open, outcome)) = self.dispatch_effect(effect) {
             self.post_apply_ime_open(open, outcome);
+            // Phase 3b: sync path で ImeApplySucceeded/Failed event を dispatch するため、
+            // outcome を caller (Runtime::flush_sync_apply_events) に伝達する。
+            // async path (ImmCross) は spawn_local 内で直接 dispatch するためここを経由しない。
+            self.sync_apply_outcomes.push((open, outcome));
         }
     }
 

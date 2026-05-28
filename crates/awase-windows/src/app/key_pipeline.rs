@@ -367,6 +367,8 @@ impl KeyEventPipeline<'_> {
         };
 
         let hook_result = self.app.executor.execute_from_hook(decision, event);
+        // Phase 3b: sync IME apply の Succeeded/Failed event を generation 照合で dispatch する。
+        self.app.flush_sync_apply_events();
 
         if hook_result.has_pending {
             post_to_main_thread(WM_EXECUTE_EFFECTS);
