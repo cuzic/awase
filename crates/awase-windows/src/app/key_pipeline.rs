@@ -235,15 +235,25 @@ impl KeyEventPipeline<'_> {
                 self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
                 self.app.platform_state.reset_ime_detect_state();
                 self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
-                // ctrl_bypass_hold は IME OFF 要求（Ctrl+無変換等）のみセットする。
+                // ctrl_bypass_hold は Ctrl 押下中の IME OFF 要求（Ctrl+無変換等）のみセットする。
+                // KANJI（Ctrl なし）でセットすると解除条件（Ctrl KeyUp）に合致せず永続し、
+                // 後続 KANJI で write_set_open_request が常にスキップされ SSOT 不整合になる。
+                // → IME-ON Engine-OFF 状態の原因。
                 // IME ON（エンジンアクティベーション）でセットすると、後続の Ctrl+無変換
                 // IME OFF で write_set_open_request がスキップされ belief が true のまま残る。
                 // 20ms 検証タイマーの notify_engine_refresh が belief=true で engine を
                 // 再アクティブ化→ IME が再 ON される。
-                if !new_ime_on {
+                if !new_ime_on && event.modifier_snapshot.ctrl {
                     self.app.platform_state.hook.set_ctrl_bypass_hold(true);
                 }
-                log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass {}", if !new_ime_on { "suppressed" } else { "not set (IME ON)" });
+                let bypass_state = if !new_ime_on && event.modifier_snapshot.ctrl {
+                    "suppressed (Ctrl combo)"
+                } else if !new_ime_on {
+                    "not set (KANJI/no Ctrl)"
+                } else {
+                    "not set (IME ON)"
+                };
+                log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass {bypass_state}");
             }
         }
 
