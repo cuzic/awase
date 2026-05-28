@@ -87,6 +87,14 @@ impl ImeStateHub {
         };
         self.shadow_model.reduce(&envelope);
     }
+
+    /// Step 2A: shadow_model から派生した explicit_intent。
+    ///
+    /// 旧 `last_explicit_intent` フィールドと並走する compat 値。
+    /// Step 2B で旧フィールドを削除する際に、これがそのまま正規 API になる。
+    pub(crate) fn last_explicit_intent_compat(&self) -> Option<bool> {
+        self.shadow_model.last_intent.as_ref().map(|i| i.target)
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -310,6 +318,9 @@ impl PlatformState {
             target: true,
             source: IntentSource::Recovery,
         });
+        // Step 2A: panic_reset 後は last_intent も clear (旧 last_explicit_intent=None と整合)。
+        // desired_open=true は dispatch_event で設定済み、intent ガードは効かせない。
+        self.ime.shadow_model.last_intent = None;
         self.ime.shadow_model.last_observation = None;
     }
 }
@@ -348,7 +359,9 @@ impl PlatformState {
             // 明示的操作（SyncKey / PhysicalImeKey / SetOpenRequest, Priority 1-3）は
             // intent スロットを直接更新するので、ここには到達しない。
             if matches!(src, ShadowSource::ObserverPoll | ShadowSource::FocusSnapshot) {
-                if let Some(intent) = self.ime.last_explicit_intent {
+                // Step 2A: intent guard を shadow_model 由来の compat 値で判定。
+                // 旧フィールド last_explicit_intent との diff は explicit_intent() で log 済み。
+                if let Some(intent) = self.ime.last_explicit_intent_compat() {
                     if val != intent {
                         log::debug!(
                             "[explicit-intent] belief→{val} blocked (intent={intent}, src={src:?})"
@@ -402,8 +415,20 @@ impl PlatformState {
     }
 
     /// 最後の明示的 IME 操作の意図を返す（ログ・診断用）。
+    ///
+    /// Step 2A: shadow_model 由来の値を返す。
+    /// 旧 `last_explicit_intent` フィールドとの diff があれば log に記録する。
     pub fn explicit_intent(&self) -> Option<bool> {
-        self.ime.last_explicit_intent
+        let compat = self.ime.last_explicit_intent_compat();
+        if self.ime.last_explicit_intent != compat {
+            log::debug!(
+                "[explicit-intent-diff seq~{}] field={:?} compat={:?}",
+                self.ime.event_log.next_seq().saturating_sub(1),
+                self.ime.last_explicit_intent,
+                compat,
+            );
+        }
+        compat
     }
 
     /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
