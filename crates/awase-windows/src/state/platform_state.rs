@@ -323,22 +323,25 @@ impl PlatformState {
                     self.ime.ime_intent_guard_until_ms
                         .saturating_sub(crate::hook::current_tick_ms()),
                 );
-                // ガードが IME ON 方向 (guard_on=true) かつ false 観測をブロックした場合、
-                // スロット自体もクリアしてガード失効後の stale deactivation を防ぐ。
-                // 例: OsPoll アプリで ImmCross が効かず observer_poll=false が書かれ続けても、
-                // ガード内でブロックした瞬間にスロットを消去することで +1000ms 後の誤 deactivation が消える。
-                if self.ime.ime_intent_guard_on {
-                    match src {
-                        ShadowSource::ObserverPoll => {
-                            log::debug!("[ime_intent_guard] clear stale observer_poll=false (guard active, prevent post-guard deactivation)");
-                            self.ime.ime_observations.observer_poll = None;
-                        }
-                        ShadowSource::FocusSnapshot => {
-                            log::debug!("[ime_intent_guard] clear stale focus_probe=false (guard active, prevent post-guard deactivation)");
-                            self.ime.ime_observations.focus_probe = None;
-                        }
-                        _ => {}
+                // ガード中にブロックした観測スロットを即座にクリアしてガード失効後の stale flip を防ぐ。
+                // IME ON ガード (guard_on=true): false 観測をクリア → +1000ms 後の誤 deactivation を防止。
+                // IME OFF ガード (guard_on=false): true 観測をクリア → +1000ms 後の誤 re-activation を防止。
+                match src {
+                    ShadowSource::ObserverPoll => {
+                        log::debug!(
+                            "[ime_intent_guard] clear stale observer_poll={val} (guard_on={}, prevent post-guard flip)",
+                            self.ime.ime_intent_guard_on,
+                        );
+                        self.ime.ime_observations.observer_poll = None;
                     }
+                    ShadowSource::FocusSnapshot => {
+                        log::debug!(
+                            "[ime_intent_guard] clear stale focus_probe={val} (guard_on={}, prevent post-guard flip)",
+                            self.ime.ime_intent_guard_on,
+                        );
+                        self.ime.ime_observations.focus_probe = None;
+                    }
+                    _ => {}
                 }
                 return;
             }
@@ -360,6 +363,11 @@ impl PlatformState {
     /// IME ON 方向のガードがアクティブか（`notify_engine_refresh` の診断用）。
     pub fn is_ime_on_intent_guarded(&self) -> bool {
         self.ime.ime_intent_guard_on && self.is_ime_intent_guarded()
+    }
+
+    /// IME OFF 方向のガードがアクティブか（`notify_engine_refresh` の診断用）。
+    pub fn is_ime_off_intent_guarded(&self) -> bool {
+        !self.ime.ime_intent_guard_on && self.is_ime_intent_guarded()
     }
 
     /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
