@@ -204,20 +204,63 @@ fn scenario_7_panic_reset_then_stale_poll_does_not_corrupt() {
     assert!(model.observations.drift.is_some(), "drift は記録される");
 }
 
-// ── シナリオ 8: stale async apply が newer intent を壊さない ─────
+// ── シナリオ 8: stale async apply が newer intent を壊さない (最重要) ─────
 
 #[test]
-#[ignore = "Step 7 で ApplyRequested/Succeeded を実装後に有効化"]
 fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
-    // 期待 sequence (Step 7 実装後):
     // T1: apply true requested generation=10
-    // T2: user intent false generation=11
-    // T3: apply true succeeded generation=10 ← stale
+    // T2: user intent false (gen は user side では別管理)
+    // T3: apply true succeeded generation=10 ← stale (newer intent 後の old apply 完了)
     //
     // 期待:
-    // - model.desired_open == false (generation=11 の intent が勝つ)
-    // - model.applied_open == None (gen=10 success は無視)
-    todo!("Step 7 で実装");
+    // - desired_open == false (T2 の intent が勝つ)
+    // - applied_open == None (gen=10 の success は無視)
+    let model = run_reducer(vec![
+        ImeEvent::ImeApplyRequested {
+            target: true,
+            generation: 10,
+        },
+        user_intent(false, IntentSource::PhysicalImeKey),
+        // 新しい intent で別の apply が発生 (gen=11) して pending を上書きする想定
+        ImeEvent::ImeApplyRequested {
+            target: false,
+            generation: 11,
+        },
+        // 古い gen=10 の success が遅れて到着
+        ImeEvent::ImeApplySucceeded {
+            target: true,
+            generation: 10,
+        },
+    ]);
+    assert_eq!(
+        model.desired_open, false,
+        "newer intent (gen=11) が勝つ"
+    );
+    assert_eq!(
+        model.applied_open, None,
+        "stale gen=10 の success は無視 (generation 照合)"
+    );
+    assert!(
+        model.pending.is_some(),
+        "gen=11 の pending はまだ生きている"
+    );
+}
+
+#[test]
+fn apply_succeeded_with_matching_generation_updates_applied() {
+    // 正常系: 同 generation の success で applied_open がセットされる
+    let model = run_reducer(vec![
+        ImeEvent::ImeApplyRequested {
+            target: true,
+            generation: 5,
+        },
+        ImeEvent::ImeApplySucceeded {
+            target: true,
+            generation: 5,
+        },
+    ]);
+    assert_eq!(model.applied_open, Some(true));
+    assert!(model.pending.is_none(), "成功後 pending clear");
 }
 
 // ── 追加: ドリフト追跡の動作確認 ──────────────────────────────

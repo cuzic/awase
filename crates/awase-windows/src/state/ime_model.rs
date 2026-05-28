@@ -14,6 +14,7 @@ use super::force_guard::{DriftMonitor, ForceGuardSet};
 use super::ime_event::{ChordKind, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
+use super::transition::ImeTransition;
 
 /// Shadow IME モデル。最終形 (Phase 3 完了時) ではこれが SSOT になる予定。
 ///
@@ -47,6 +48,14 @@ pub struct ImeModel {
     /// 旧 `ImeRecoveryState::ime_detect_miss_count` の責務分離。
     pub drift_monitor: DriftMonitor,
 
+    /// OS への apply 進行中の transition (Step 7)。
+    /// 旧 `ImeEffect::SetOpen` (Layer 3) + 楽観的 latch を統合。
+    pub pending: Option<ImeTransition>,
+
+    /// 最後に actuator が成功させた IME 開閉状態 (Step 7)。
+    /// 旧 `last_applied_ime_on` (Layer 4) の置換。`None` は未適用。
+    pub applied_open: Option<bool>,
+
     /// reduce 呼び出し回数。診断用。
     pub reduce_count: u64,
 }
@@ -70,6 +79,8 @@ impl ImeModel {
             input_barrier: None,
             force_guards: ForceGuardSet::default(),
             drift_monitor: DriftMonitor::default(),
+            pending: None,
+            applied_open: None,
             reduce_count: 0,
         }
     }
@@ -222,11 +233,38 @@ impl ImeModel {
                 // Step 4: chord transaction を終了。barrier を解除。
                 self.input_barrier = None;
             }
-            // 以下は Step 6/7 で実装。
-            ImeEvent::ImeApplyRequested { .. }
-            | ImeEvent::ImeApplySucceeded { .. }
-            | ImeEvent::ImeApplyFailed { .. }
-            | ImeEvent::DriftDetected { .. } => {}
+            ImeEvent::ImeApplyRequested { target, generation } => {
+                // Step 7: pending transition を立てる。
+                // 実際の timeout / actuator 詳細は呼び出し元 (Phase 3 cleanup) が
+                // 個別 dispatch で渡す想定。Step 7 では最低限の placeholder。
+                self.pending = Some(ImeTransition {
+                    target,
+                    generation,
+                    requested_at: envelope.time.monotonic,
+                    actuator: self.app_policy.actuator_kind,
+                    optimistic_applied: false,
+                    timeout_at: envelope.time.monotonic + std::time::Duration::from_millis(1000),
+                });
+            }
+            ImeEvent::ImeApplySucceeded { target, generation } => {
+                // Step 7: **必須** generation 照合で stale apply を排除。
+                // pending の generation と一致しなければ無視する。
+                if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
+                    self.applied_open = Some(target);
+                    self.pending = None;
+                }
+                // 一致しない場合は何もしない (stale → 無視)
+            }
+            ImeEvent::ImeApplyFailed { generation, .. } => {
+                // 同じく generation 照合
+                if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
+                    self.pending = None;
+                }
+            }
+            ImeEvent::DriftDetected { .. } => {
+                // Step 7 では reducer 側で扱わない (Phase 3 cleanup で
+                // observation_store.update_drift と統合予定)
+            }
         }
     }
 
