@@ -567,6 +567,8 @@ impl Runtime {
         // Chrome では IME が逆転するバグを防ぐ。
         let observed_ime_on = self.platform_state.ime_on();
         self.executor.platform.output.set_ime_apply_latch(observed_ime_on);
+        // Phase 3c: shadow_model.applied_open へ mirror
+        self.platform_state.ime.mirror_applied_open(observed_ime_on);
         log::debug!("[process-deferred] last_applied → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。

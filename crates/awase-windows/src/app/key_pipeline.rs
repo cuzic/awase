@@ -221,6 +221,8 @@ impl KeyEventPipeline<'_> {
                 let _ = crate::ime_controller::CONTROLLER.apply(false, &view);
             }
             self.app.executor.platform.output.set_ime_apply_latch(false);
+            // Phase 3c: shadow_model.applied_open へ mirror
+            self.app.platform_state.ime.mirror_applied_open(false);
             log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + latch=false");
         }
         log::debug!(

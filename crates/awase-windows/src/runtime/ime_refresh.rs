@@ -428,11 +428,14 @@ impl<'a> ImeRefreshPipeline<'a> {
         // フォーカス変更直後の IMM 実測値で last_applied ログを初期化する。
         // これにより KanjiToggleStrategy が次回 apply_ime_open を呼ぶときに
         // belief の最新値と比較して重複送信を回避できる。
+        let ime_on_now = self.rt.platform_state.ime_on();
         self.rt
             .executor
             .platform
             .output
-            .set_ime_apply_latch(self.rt.platform_state.ime_on());
+            .set_ime_apply_latch(ime_on_now);
+        // Phase 3c: shadow_model.applied_open へ mirror
+        self.rt.platform_state.ime.mirror_applied_open(ime_on_now);
         self.rt
             .executor
             .platform

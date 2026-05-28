@@ -73,6 +73,22 @@ impl ImeStateHub {
     pub(crate) fn last_explicit_intent_compat(&self) -> Option<bool> {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
     }
+
+    /// Phase 3c: applied_open の mirror 設定。
+    ///
+    /// 既存 `Output::set_ime_apply_latch` 呼び出しサイトで platform_state にアクセスできる
+    /// 場合、この関数も同時に呼び出して shadow_model.applied_open を同期する。
+    /// executor 内部 (PlatformState 非アクセス) のみ async path で
+    /// ImeApplySucceeded event 経由で更新される。
+    pub(crate) fn mirror_applied_open(&mut self, value: bool) {
+        self.shadow_model.applied_open = Some(value);
+        // 同じ apply が完了した扱いなので pending も clear
+        if let Some(p) = &self.shadow_model.pending {
+            if p.target == value {
+                self.shadow_model.pending = None;
+            }
+        }
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
