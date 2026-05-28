@@ -57,7 +57,7 @@ use awase::types::RawKeyEvent;
 
 pub use crate::state::{
     HookConfig, HookRoutingState,
-    ImeBelief, ImeRecoveryState, PlatformState, ShadowSource,
+    ImeBelief, PlatformState, ShadowSource,
 };
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 

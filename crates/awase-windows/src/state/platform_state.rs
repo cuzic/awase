@@ -1,7 +1,7 @@
 use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
-use super::belief::{ImeBelief, ImeRecoveryState, ShadowSource};
+use super::belief::{ImeBelief, ShadowSource};
 use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
 use super::ime_event::{ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
@@ -16,27 +16,21 @@ use super::ime_model::{ImeEffectiveState, ImeModel};
 /// `PlatformState` から IME 関連フィールドを切り出すことで、
 /// 「観測」「フォーカス状態」「フック設定」の混在を解消する。
 ///
-/// - `belief`   : 観測値から導出した現在の IME 状態（Tick ごとに更新）
-/// - `recovery` : IME 回復ロジック用 FSM 状態（複数 Tick にまたがる累積値）
+/// - `belief`        : 観測値から導出した現在の IME 状態（Tick ごとに更新）
+/// - `shadow_model`  : 新モデル (Phase 1-3 で導入)。force_guards / drift_monitor を持つ
 #[derive(Debug)]
 pub(crate) struct ImeStateHub {
     /// 観測値から導出した現在の IME 状態への「信念」
     pub(crate) belief: ImeBelief,
-    /// IME 回復ロジック用 FSM 累積状態
-    pub(crate) recovery: ImeRecoveryState,
     /// 各ソースの最新観測値（Phase 2: 観測と判断の分離）。
     ///
     /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
     pub(crate) ime_observations: crate::ime_observations::ImeObservations,
     /// IME 状態変更 event のリングバッファ (Step 0)。
-    ///
-    /// 現状は記録のみ。Shadow Reducer 移行 (Step 1) 以降で本番判定に使う予定。
     pub(crate) event_log: ImeEventLog,
 
-    /// Shadow IME モデル (Step 1)。
-    ///
-    /// 既存 `belief` と並走し、`apply_ime_observations()` 後に diff を比較する。
-    /// 本番判定にはまだ使わない。
+    /// Shadow IME モデル (Step 1)。Phase 3a で recovery 統合済。
+    /// force_guards / drift_monitor を持つ SSOT。
     pub(crate) shadow_model: ImeModel,
 }
 
@@ -50,11 +44,6 @@ impl ImeStateHub {
                 input_mode: InputModeState::ObservedRomaji, // デフォルト: ローマ字入力
                 is_japanese_ime: true,                     // デフォルト: 日本語
                 prev_conversion_mode: None,
-            },
-            recovery: ImeRecoveryState {
-                ime_detect_miss_count: 0,
-                force_on_broken_app_bootstrap: false,
-                force_on_panic_reset: false,
             },
             ime_observations: crate::ime_observations::ImeObservations::default(),
             event_log: ImeEventLog::default(),
@@ -178,16 +167,9 @@ impl PlatformState {
         &self.ime.belief
     }
 
-    /// `ImeRecoveryState` への共有参照を返す。
-    #[inline]
-    #[must_use]
-    pub const fn recovery(&self) -> &ImeRecoveryState {
-        &self.ime.recovery
-    }
-
-    // ── ImeBelief / ImeRecoveryState への便利読み取りメソッド ──
+    // ── ImeBelief への便利読み取りメソッド ──
     //
-    // `belief()` / `recovery()` を直接使っても同等だが、呼び出しサイトを短くするために置く。
+    // `belief()` を直接使っても同等だが、呼び出しサイトを短くするために置く。
     // `build_input_context(&ps.belief(), …)` のような「構造体丸ごと」の渡し方は belief() を使う。
 
     /// IME が ON かどうかを返す。
@@ -225,18 +207,18 @@ impl PlatformState {
         self.ime.belief.prev_conversion_mode()
     }
 
-    /// IME 状態検出の連続失敗回数を返す。
+    /// IME 状態検出の連続失敗回数を返す (Phase 3a: shadow_model.drift_monitor 由来)。
     #[inline]
     #[must_use]
     pub const fn ime_detect_miss_count(&self) -> u32 {
-        self.ime.recovery.ime_detect_miss_count()
+        self.ime.shadow_model.drift_monitor.consecutive_miss_count
     }
 
-    /// いずれかの強制 ON ガードが立っているかを返す。
+    /// いずれかの強制 ON ガードが立っているかを返す (Phase 3a: shadow_model.force_guards 由来)。
     #[inline]
     #[must_use]
-    pub const fn is_force_on_guard_active(&self) -> bool {
-        self.ime.recovery.is_force_on_guard_active()
+    pub fn is_force_on_guard_active(&self) -> bool {
+        self.ime.shadow_model.force_guards.requires_on()
     }
 
     // ── ImeBelief への書き込みメソッド ──
@@ -259,23 +241,28 @@ impl PlatformState {
         self.ime.belief.prev_conversion_mode = value;
     }
 
-    // ── ImeRecoveryState への書き込みメソッド ──
+    // ── ForceGuardSet / DriftMonitor への書き込みメソッド (Phase 3a) ──
 
-    /// `force_on_broken_app_bootstrap` ガードをセットする。
+    /// `BrokenAppBootstrap` ガードをセットする。
     #[inline]
-    pub const fn set_force_on_broken_app_bootstrap(&mut self) {
-        self.ime.recovery.force_on_broken_app_bootstrap = true;
+    pub fn set_force_on_broken_app_bootstrap(&mut self) {
+        self.ime.shadow_model.force_guards.add(
+            super::force_guard::ForceGuard {
+                reason: super::force_guard::ForceOnReason::BrokenAppBootstrap,
+                expires_at: None,
+                generation: self.ime.event_log.next_seq(),
+            },
+        );
     }
 
-    /// `ime_detect_miss_count` と両強制 ON ガードを同時にリセットする。
+    /// drift_monitor を reset し、すべての force-on ガードを解除する。
     ///
     /// ユーザー操作（Shadow IME トグル・SetOpen 等）で「ユーザーが意図した状態」が
     /// 確定したときに呼ぶ。
     #[inline]
-    pub const fn reset_ime_detect_state(&mut self) {
-        self.ime.recovery.ime_detect_miss_count = 0;
-        self.ime.recovery.force_on_broken_app_bootstrap = false;
-        self.ime.recovery.force_on_panic_reset = false;
+    pub fn reset_ime_detect_state(&mut self) {
+        self.ime.shadow_model.drift_monitor.record_success();
+        self.ime.shadow_model.force_guards.guards.clear();
     }
 
     /// panic_reset 向け全面リセット。
@@ -287,9 +274,14 @@ impl PlatformState {
         self.ime.belief.set_ime_on(true, ShadowSource::PanicReset);
         self.ime.belief.is_japanese_ime = true;
         self.ime.belief.prev_conversion_mode = None;
-        self.ime.recovery.ime_detect_miss_count = 0;
-        self.ime.recovery.force_on_broken_app_bootstrap = false;
-        self.ime.recovery.force_on_panic_reset = true;
+        // Phase 3a: drift_monitor + force_guards に置換
+        self.ime.shadow_model.drift_monitor.record_success();
+        self.ime.shadow_model.force_guards.guards.clear();
+        self.ime.shadow_model.force_guards.add(super::force_guard::ForceGuard {
+            reason: super::force_guard::ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: self.ime.event_log.next_seq(),
+        });
         // パニックリセット後は全観測スロットと明示的意図をクリア。
         self.ime.ime_observations.clear_on_focus_change();
         // Step 2B: shadow_model を直接 reset (event 記録は残しつつ intent はクリア)。
@@ -495,27 +487,32 @@ impl PlatformState {
             self.ime.ime_observations.observer_poll = Some(obs);
         }
 
-        // miss_count
+        // miss_count (Phase 3a: drift_monitor 経由)
         if update.increment_miss_count {
-            self.ime.recovery.ime_detect_miss_count =
-                self.ime.recovery.ime_detect_miss_count.saturating_add(1);
-            if self.ime.recovery.ime_detect_miss_count == crate::IME_DETECT_MISS_THRESHOLD {
+            self.ime.shadow_model.drift_monitor.record_miss(std::time::Instant::now());
+            let miss = self.ime.shadow_model.drift_monitor.consecutive_miss_count;
+            if miss == crate::IME_DETECT_MISS_THRESHOLD {
                 log::warn!(
-                    "IME detection failed {} consecutive times, will force IME ON",
-                    self.ime.recovery.ime_detect_miss_count
+                    "IME detection failed {miss} consecutive times, will force IME ON"
                 );
             }
         }
 
-        // force_on_broken_app_bootstrap のリセット（検出成功時）
+        // force_on_broken_app_bootstrap のリセット（検出成功時、Phase 3a: ForceGuardSet 経由）
         if update.clear_force_on_broken_app_bootstrap {
-            self.ime.recovery.force_on_broken_app_bootstrap = false;
+            self.ime
+                .shadow_model
+                .force_guards
+                .remove(super::force_guard::ForceOnReason::BrokenAppBootstrap);
         }
 
-        // force_on_panic_reset と miss_count のリセット（検出成功時）
+        // force_on_panic_reset と miss_count のリセット（検出成功時、Phase 3a）
         if update.clear_force_on_panic_reset {
-            self.ime.recovery.force_on_panic_reset = false;
-            self.ime.recovery.ime_detect_miss_count = 0;
+            self.ime
+                .shadow_model
+                .force_guards
+                .remove(super::force_guard::ForceOnReason::PanicReset);
+            self.ime.shadow_model.drift_monitor.record_success();
         }
 
         // input_mode

@@ -146,54 +146,6 @@ impl ImeBelief {
     }
 }
 
-/// Layer 2 付随: IME 回復ロジック用の FSM 累積状態。
-///
-/// 複数 tick にまたがって蓄積される状態であり、現在の観測値だけから
-/// 再構築できない。`ImeBelief`（tick ごとに更新される導出値）とは分離して管理する。
-///
-/// ## 各フィールドの役割
-///
-/// - `ime_detect_miss_count`: 連続検出失敗カウンタ。閾値到達で force-ON を発火。
-/// - `force_on_broken_app_bootstrap`: 未知 Imm32Unavailable アプリへの初回フォーカス時に
-///   IME が OFF 扱いになるのを防ぐ 1 サイクルガード。
-/// - `force_on_panic_reset`: パニックリセット直後に stale な poll 結果で
-///   `ime_on=true` が上書きされるのを防ぐガード。
-///
-/// 両ガードは [`ImeRecoveryState::is_force_on_guard_active`] で OR 判定される。
-/// セット箇所と解除時の副作用が異なるため別フィールドにしている
-/// （詳細は各フィールドの doc を参照）。
-#[derive(Debug)]
-pub struct ImeRecoveryState {
-    /// IME 状態検出の連続失敗回数。
-    ///
-    /// `read_ime_state_full()` が `ime_on = None` を返すたびにインクリメントされ、
-    /// 検出成功時またはユーザー操作（`reset_ime_detect_state`）でリセットされる。
-    /// [`crate::IME_DETECT_MISS_THRESHOLD`] 到達で force-ON を発火する。
-    pub(in crate::state) ime_detect_miss_count: u32,
-    /// Imm32Unavailable アプリ向け強制 IME ON ガード。
-    ///
-    /// `try_force_on_bootstrap` でセット。
-    /// 次の検出成功（`ImeUpdate::clear_force_on_broken_app_bootstrap=true`）で解除。
-    /// 解除時に `ime_detect_miss_count` は変更しない。
-    pub(in crate::state) force_on_broken_app_bootstrap: bool,
-    /// パニックリセット直後の上書き防止ガード。
-    ///
-    /// `apply_panic_reset` でセット。
-    /// `apply_ime_update` で `ImeUpdate::clear_force_on_panic_reset=true` のとき解除。
-    /// 解除時は `ime_detect_miss_count` も 0 にリセットされる（bootstrap 側との差分）。
-    pub(in crate::state) force_on_panic_reset: bool,
-}
-
-impl ImeRecoveryState {
-    /// IME 状態検出の連続失敗回数を返す。
-    #[inline]
-    pub(crate) const fn ime_detect_miss_count(&self) -> u32 {
-        self.ime_detect_miss_count
-    }
-
-    /// いずれかの強制 ON ガードが立っているかを返す。
-    #[inline]
-    pub(crate) const fn is_force_on_guard_active(&self) -> bool {
-        self.force_on_broken_app_bootstrap || self.force_on_panic_reset
-    }
-}
+// Phase 3a: ImeRecoveryState は削除。
+// 後継は state/force_guard.rs の ForceGuardSet + DriftMonitor を
+// shadow_model 経由で参照する PlatformState のアクセサ。
