@@ -645,6 +645,19 @@ impl DecisionExecutor {
             // INPUT_DEFER へ退避され、SetOpen 進行中に新キーが engine に届かない。
             // guard は spawn_local 内の async move 末尾で drop され、その時点で OUTPUT_GATE
             // が解除されて drain がキックされる。
+            //
+            // 同一エフェクトバッチ内で直後に処理される UiEffect::EngineStateChanged →
+            // send_engine_state_ime_key が last_applied_ime_on を見て VK_F4/VK_F3 を
+            // 送信するかを決める。async 完了前は last_applied が旧値のままなので
+            // 「不整合あり→モードキー送信」と判断されてしまう。
+            // LINE/Qt 等の ImmCross アプリはこの VK_F4 Up に対して VK_F3 Down を
+            // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
+            // → 楽観的に last_applied を更新して send_engine_state_ime_key をスキップさせる。
+            self.platform.output.set_ime_apply_latch(open);
+            log::debug!(
+                "[dispatch-ime] ImmCross async: optimistic last_applied={open} \
+                 (suppress send_engine_state_ime_key, prevent spurious VK_F3/F4 from app IME)"
+            );
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             win32_async::spawn_local(async move {
                 let ok = crate::ime::set_ime_open_cross_process_async(open).await;
@@ -733,7 +746,11 @@ impl DecisionExecutor {
             ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
                 self.platform.output.set_ime_apply_latch(open);
             }
-            ImeOpenOutcome::Failed => {}
+            ImeOpenOutcome::Failed => {
+                // ImmCross async パスで楽観的に set_ime_apply_latch(open) した場合のロールバック。
+                // Failed なら実際の IME 状態は !open のまま。
+                self.platform.output.set_ime_apply_latch(!open);
+            }
         }
         // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
         if open {
