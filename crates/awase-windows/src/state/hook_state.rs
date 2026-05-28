@@ -1,28 +1,13 @@
 use awase::gate::{HoldingGate, SyncKeyGateEvent, SyncKeyGateMachine};
 use awase::types::{RawKeyEvent, VkCode};
 
-/// フックルーティング状態
-#[derive(Debug)]
+/// フックルーティング状態 (Step 4 で ctrl_bypass_hold 削除後、空構造体)。
+///
+/// 今後 hook routing 関連のフィールドが増えたら追加する。
+/// ctrl_bypass_hold は `shadow_model.input_barrier::CtrlImeChord` に置換済み。
+#[derive(Debug, Default)]
 pub struct HookRoutingState {
-    /// IME 制御コンボ直後の Ctrl バイパス抑制フラグ。
-    /// Ctrl+Henkan/Muhenkan 消費後、Ctrl がまだ押されている間の文字キーを
-    /// ショートカットとして Bypass しない。Ctrl KeyUp で解除。
-    pub(crate) ctrl_bypass_hold: bool,
-}
-
-impl HookRoutingState {
-    /// `ctrl_bypass_hold` フラグを設定する。
-    ///
-    /// IME 制御コンボ消費後に `true` をセットし、Ctrl KeyUp 時に `false` にリセットする。
-    pub const fn set_ctrl_bypass_hold(&mut self, value: bool) {
-        self.ctrl_bypass_hold = value;
-    }
-
-    /// `ctrl_bypass_hold` フラグを読み取る。
-    #[must_use]
-    pub const fn ctrl_bypass_hold(&self) -> bool {
-        self.ctrl_bypass_hold
-    }
+    // 将来の hook routing 用予約
 }
 
 /// フック設定（親指キー VK コード）

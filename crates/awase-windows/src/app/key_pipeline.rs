@@ -75,16 +75,27 @@ impl KeyEventPipeline<'_> {
 
         self.stage_post_decision(&decision, &event);
 
-        // ctrl_bypass_hold 安全策: Phase 2 で SetOpen が生成されなかった場合でも
-        // Ctrl 系 KeyUp で bypass を解除する。
+        // Step 4 安全策: Phase 2 で SetOpen が生成されなかった場合でも
+        // Ctrl 系 KeyUp で chord barrier を解除する (ChordEnded dispatch)。
         // (Phase 2 が既に Inactive を認識して SetOpen を省略するケースへの対処)
-        if self.app.platform_state.hook.ctrl_bypass_hold()
+        if self.app.platform_state.ime.shadow_model.is_ctrl_ime_chord_active()
             && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
-            self.app.platform_state.hook.set_ctrl_bypass_hold(false);
+            let kind = self
+                .app
+                .platform_state
+                .ime
+                .shadow_model
+                .input_barrier
+                .and_then(|b| b.chord_kind())
+                .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
+            self.app
+                .platform_state
+                .ime
+                .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
             log::debug!(
-                "[ctrl-bypass] ctrl_bypass_hold cleared (Ctrl KeyUp vk=0x{:02X}, no SetOpen in decision)",
+                "[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{:02X}, no SetOpen in decision)",
                 event.vk_code
             );
         }
@@ -215,45 +226,58 @@ impl KeyEventPipeline<'_> {
     fn stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             let is_key_up = !matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-            if self.app.platform_state.hook.ctrl_bypass_hold() {
-                // ctrl_bypass_hold 中の二次 SetOpen: Ctrl KeyUp が Phase 2 Active→Inactive
-                // 遷移を起こして生成した SetOpen。write_set_open_request を再呼び出しすると
-                // Priority-3(set_open_request) が消費済みのため stale observer_poll が belief を
+            if self.app.platform_state.ime.shadow_model.is_ctrl_ime_chord_active() {
+                // Step 4: CtrlImeChord transaction 中の二次 SetOpen を filter する。
+                // Ctrl KeyUp が Phase 2 Active→Inactive 遷移を起こして生成した SetOpen を
+                // 再 write すると Priority-3 が消費済みのため stale observer_poll が belief を
                 // 上書きし、直後の TIMER_IME_REFRESH で engine が再アクティブ化する。
-                // スキップして belief(=false) を安定させる。KeyUp 到達で bypass 期間を終了。
+                // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
                 self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
                 if is_key_up {
-                    self.app.platform_state.hook.set_ctrl_bypass_hold(false);
+                    let kind = self
+                        .app
+                        .platform_state
+                        .ime
+                        .shadow_model
+                        .input_barrier
+                        .and_then(|b| b.chord_kind())
+                        .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
+                    self.app
+                        .platform_state
+                        .ime
+                        .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
                 }
                 log::debug!(
-                    "IME control: ctrl_bypass_hold active → skip write_set_open_request({new_ime_on}), \
-                     bypass {}",
-                    if is_key_up { "cleared" } else { "hold" }
+                    "IME control: chord barrier active → skip write_set_open_request({new_ime_on}), \
+                     chord {}",
+                    if is_key_up { "ended" } else { "held" }
                 );
             } else {
                 let ms = hook::current_tick_ms();
                 self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
                 self.app.platform_state.reset_ime_detect_state();
                 self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
-                // ctrl_bypass_hold は Ctrl 押下中の IME OFF 要求（Ctrl+無変換等）のみセットする。
-                // KANJI（Ctrl なし）でセットすると解除条件（Ctrl KeyUp）に合致せず永続し、
-                // 後続 KANJI で write_set_open_request が常にスキップされ SSOT 不整合になる。
-                // → IME-ON Engine-OFF 状態の原因。
-                // IME ON（エンジンアクティベーション）でセットすると、後続の Ctrl+無変換
-                // IME OFF で write_set_open_request がスキップされ belief が true のまま残る。
-                // 20ms 検証タイマーの notify_engine_refresh が belief=true で engine を
-                // 再アクティブ化→ IME が再 ON される。
+                // Step 4: Ctrl 押下中の IME OFF 要求（Ctrl+無変換等）で ChordStarted を dispatch。
+                // KANJI（Ctrl なし）では dispatch しない: ChordEnded のトリガが Ctrl KeyUp なので
+                // ペアにならず永続する事故を防ぐ。
+                // IME ON 要求では dispatch しない: 後続の Ctrl+無変換 IME OFF で
+                // write_set_open_request がスキップされ belief が true のまま残る事故を防ぐ。
                 if !new_ime_on && event.modifier_snapshot.ctrl {
-                    self.app.platform_state.hook.set_ctrl_bypass_hold(true);
+                    self.app
+                        .platform_state
+                        .ime
+                        .dispatch_event(crate::state::ime_event::ImeEvent::ChordStarted {
+                            kind: crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff,
+                        });
                 }
-                let bypass_state = if !new_ime_on && event.modifier_snapshot.ctrl {
-                    "suppressed (Ctrl combo)"
+                let chord_state = if !new_ime_on && event.modifier_snapshot.ctrl {
+                    "started (Ctrl combo)"
                 } else if !new_ime_on {
-                    "not set (KANJI/no Ctrl)"
+                    "not started (KANJI/no Ctrl)"
                 } else {
-                    "not set (IME ON)"
+                    "not started (IME ON)"
                 };
-                log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, ctrl bypass {bypass_state}");
+                log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, chord {chord_state}");
             }
         }
 

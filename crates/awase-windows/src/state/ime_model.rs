@@ -10,7 +10,8 @@
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
 use super::app_ime_policy::AppImePolicy;
-use super::ime_event::{ImeEvent, ImeEventEnvelope, IntentSource};
+use super::ime_event::{ChordKind, ImeEvent, ImeEventEnvelope, IntentSource};
+use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
 
 /// Shadow IME モデル。最終形 (Phase 3 完了時) ではこれが SSOT になる予定。
@@ -33,6 +34,10 @@ pub struct ImeModel {
     /// FocusChanged event で更新される。
     pub app_policy: AppImePolicy,
 
+    /// 入力 chord 等の一時 transaction (Step 4)。
+    /// 旧 `ctrl_bypass_hold: bool` の置換。
+    pub input_barrier: Option<InputBarrier>,
+
     /// reduce 呼び出し回数。診断用。
     pub reduce_count: u64,
 }
@@ -53,8 +58,16 @@ impl ImeModel {
             last_intent: None,
             observations: ObservationStore::default(),
             app_policy: AppImePolicy::standard(),
+            input_barrier: None,
             reduce_count: 0,
         }
+    }
+
+    /// 現在 CtrlImeChord transaction が active か。
+    /// `stage_post_decision` が二次 SetOpen を filter するかどうかの判断材料。
+    #[must_use]
+    pub const fn is_ctrl_ime_chord_active(&self) -> bool {
+        matches!(self.input_barrier, Some(InputBarrier::CtrlImeChord { .. }))
     }
 }
 
@@ -164,12 +177,25 @@ impl ImeModel {
                 self.last_intent = None;
                 self.observations.clear_on_focus_change();
             }
-            // 以下は Step 4 以降で実装。Step 1.5 では無視。
+            ImeEvent::ChordStarted { kind } => {
+                // Step 4: chord transaction を開始。barrier を立てる。
+                // CtrlMuhenkanImeOff/CtrlHenkanImeOn から target を導出。
+                let target = matches!(kind, ChordKind::CtrlHenkanImeOn);
+                self.input_barrier = Some(InputBarrier::CtrlImeChord {
+                    target,
+                    kind,
+                    started_seq: envelope.time.seq,
+                    started_at: envelope.time.monotonic,
+                });
+            }
+            ImeEvent::ChordEnded { .. } => {
+                // Step 4: chord transaction を終了。barrier を解除。
+                self.input_barrier = None;
+            }
+            // 以下は Step 6/7 で実装。
             ImeEvent::ImeApplyRequested { .. }
             | ImeEvent::ImeApplySucceeded { .. }
             | ImeEvent::ImeApplyFailed { .. }
-            | ImeEvent::ChordStarted { .. }
-            | ImeEvent::ChordEnded { .. }
             | ImeEvent::DriftDetected { .. } => {}
         }
     }

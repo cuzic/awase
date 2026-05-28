@@ -19,3 +19,4 @@ pub mod ime_event_log;
 pub mod ime_model;
 pub mod app_ime_policy;
 pub mod observation_store;
+pub mod input_barrier;

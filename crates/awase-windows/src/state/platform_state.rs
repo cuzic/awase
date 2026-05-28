@@ -154,9 +154,7 @@ impl PlatformState {
         Self {
             ime: ImeStateHub::new(),
             focus: FocusPlatformState::new(),
-            hook: HookRoutingState {
-                ctrl_bypass_hold: false,
-            },
+            hook: HookRoutingState::default(),
             hook_config: HookConfig {
                 left_thumb_vk: crate::vk::VK_NONCONVERT,
                 right_thumb_vk: crate::vk::VK_CONVERT,

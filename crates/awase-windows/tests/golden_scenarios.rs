@@ -24,8 +24,8 @@ use std::time::Instant;
 
 use awase_windows::focus::class_names::AppImeProfile;
 use awase_windows::state::ime_event::{
-    EventTime, HwndId, ImeEvent, ImeEventEnvelope, IntentSource, ObservationConfidence,
-    ObservationSource,
+    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, IntentSource,
+    ObservationConfidence, ObservationSource,
 };
 use awase_windows::state::ime_model::ImeModel;
 
@@ -95,24 +95,44 @@ fn scenario_1_line_qt_kanji_on_off() {
 // ── シナリオ 2: Ctrl+無変換 直後の Ctrl KeyUp で再アクティベートしない ─
 
 #[test]
-#[ignore = "Step 4 で ChordStarted/Ended Barrier を実装後に有効化"]
 fn scenario_2_ctrl_muhenkan_does_not_reactivate_on_ctrl_keyup() {
-    // 期待 sequence (Step 4 実装後):
-    // 1. ChordStarted { kind: CtrlMuhenkanImeOff }
-    // 2. UserImeSetIntent { target: false, source: SyncKey }
-    // 3. ObserverReported { open: true, ... } ← stale
-    // 4. ChordEnded { ... }
-    //
-    // 期待: model.desired_open == false (stale observer に override されない)
-    todo!("Step 4 で実装");
+    // Ctrl+無変換 IME OFF → chord 中の stale observer は desired を壊さない
+    let model = run_reducer(vec![
+        ImeEvent::ChordStarted {
+            kind: ChordKind::CtrlMuhenkanImeOff,
+        },
+        user_intent(false, IntentSource::SyncKey),
+        // chord 中の stale observer (Ctrl KeyUp 由来等)
+        observer_reported(true, ObservationSource::ObserverPoll),
+        ImeEvent::ChordEnded {
+            kind: ChordKind::CtrlMuhenkanImeOff,
+        },
+    ]);
+    assert!(!model.desired_open, "Ctrl+無変換 IME OFF が維持される");
+    assert!(
+        model.input_barrier.is_none(),
+        "ChordEnded で barrier が clear"
+    );
 }
 
 // ── シナリオ 3: Ctrl+変換 IME-ON が直後に解除されない ─────────
 
 #[test]
-#[ignore = "Step 4 で ChordStarted/Ended Barrier を実装後に有効化"]
 fn scenario_3_ctrl_henkan_does_not_deactivate_immediately() {
-    todo!("Step 4 で実装");
+    let model = run_reducer(vec![
+        // 前提: IME OFF 状態
+        user_intent(false, IntentSource::PhysicalImeKey),
+        // Ctrl+変換 IME ON
+        ImeEvent::ChordStarted {
+            kind: ChordKind::CtrlHenkanImeOn,
+        },
+        user_intent(true, IntentSource::SyncKey),
+        observer_reported(false, ObservationSource::ObserverPoll), // stale
+        ImeEvent::ChordEnded {
+            kind: ChordKind::CtrlHenkanImeOn,
+        },
+    ]);
+    assert!(model.desired_open, "Ctrl+変換 IME ON が維持される");
 }
 
 // ── シナリオ 4: Chrome/Edge no-imm32 で IME OFF ──────────────
