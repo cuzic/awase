@@ -277,14 +277,8 @@ impl KeyEventPipeline<'_> {
         // shadow が今変化した場合、apply_ime_open が VK_KANJI を送信済み。
         // 物理キーをそのまま届けると VK_KANJI + 物理キーの二重制御になるため抑止する。
         // PassThrough / PassThroughWith → Consume に変換して reinject/passthrough をスキップする。
-        let suppress_physical = shadow_toggled
-            && !self
-                .app
-                .executor
-                .platform
-                .focus
-                .current_app_profile()
-                .should_pass_physical_key();
+        let profile = self.app.executor.platform.focus.current_app_profile();
+        let suppress_physical = shadow_toggled && !profile.should_pass_physical_key();
         let decision = if suppress_physical {
             match decision {
                 awase::engine::Decision::PassThrough => {
@@ -300,6 +294,18 @@ impl KeyEventPipeline<'_> {
         } else {
             decision
         };
+
+        // ImmCross アプリ（LINE/Qt 等）: shadow_toggle を発火させた IME KeyDown の
+        // 対応 KeyUp を後で Consume するため登録する。
+        // LINE 等は VK_F4 Up（KANJI 物理リリース）を受け取ると spurious VK_F3 Down を
+        // 生成し shadow toggle が ON→OFF に反転、IME-ON Engine-OFF 状態になる。
+        // suppress_physical（Imm32Unavailable）の場合は KeyDown 自体を Consume 済みのため
+        // KeyUp も届かない想定だが、ImmCross（Standard）では KeyDown を reinject しており
+        // KeyUp の抑止が別途必要。
+        let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
+        if shadow_toggled && is_key_down && profile.can_use_imm32_cross_process() {
+            self.app.executor.register_shadow_toggle_suppress(event.vk_code);
+        }
 
         let hook_result = self.app.executor.execute_from_hook(decision, event);
 
