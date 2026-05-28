@@ -28,15 +28,6 @@ pub(crate) struct ImeStateHub {
     ///
     /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
     pub(crate) ime_observations: crate::ime_observations::ImeObservations,
-    /// 最後の明示的 IME 操作の意図。
-    ///
-    /// `write_physical_key` / `write_sync_key` / `write_set_open_request` がセットし、
-    /// フォーカス変更・`apply_panic_reset` でクリアされる。
-    ///
-    /// `ObserverPoll` / `FocusSnapshot` がこの意図と矛盾する値で belief を上書きしようと
-    /// した場合にブロックする。`None` のとき（フォーカス変更直後など）は観測値をそのまま採用。
-    pub(crate) last_explicit_intent: Option<bool>,
-
     /// IME 状態変更 event のリングバッファ (Step 0)。
     ///
     /// 現状は記録のみ。Shadow Reducer 移行 (Step 1) 以降で本番判定に使う予定。
@@ -66,7 +57,6 @@ impl ImeStateHub {
                 force_on_panic_reset: false,
             },
             ime_observations: crate::ime_observations::ImeObservations::default(),
-            last_explicit_intent: None,
             event_log: ImeEventLog::default(),
             shadow_model: ImeModel::default(),
         }
@@ -88,10 +78,9 @@ impl ImeStateHub {
         self.shadow_model.reduce(&envelope);
     }
 
-    /// Step 2A: shadow_model から派生した explicit_intent。
+    /// shadow_model から派生した最新の explicit intent。
     ///
-    /// 旧 `last_explicit_intent` フィールドと並走する compat 値。
-    /// Step 2B で旧フィールドを削除する際に、これがそのまま正規 API になる。
+    /// (Step 2B 以降の SSOT。Priority 4-5 observer による上書きを block する根拠。)
     pub(crate) fn last_explicit_intent_compat(&self) -> Option<bool> {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
     }
@@ -311,15 +300,11 @@ impl PlatformState {
         self.ime.recovery.force_on_panic_reset = true;
         // パニックリセット後は全観測スロットと明示的意図をクリア。
         self.ime.ime_observations.clear_on_focus_change();
-        self.ime.last_explicit_intent = None;
-        // Step 1: shadow_model も初期状態に戻す (desired_open=true, last_intent/obs クリア)。
-        // event_log は履歴保持のためリセットしない (panic 前後の流れが追えるよう)。
+        // Step 2B: shadow_model を直接 reset (event 記録は残しつつ intent はクリア)。
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: true,
             source: IntentSource::Recovery,
         });
-        // Step 2A: panic_reset 後は last_intent も clear (旧 last_explicit_intent=None と整合)。
-        // desired_open=true は dispatch_event で設定済み、intent ガードは効かせない。
         self.ime.shadow_model.last_intent = None;
         self.ime.shadow_model.last_observation = None;
     }
@@ -359,8 +344,7 @@ impl PlatformState {
             // 明示的操作（SyncKey / PhysicalImeKey / SetOpenRequest, Priority 1-3）は
             // intent スロットを直接更新するので、ここには到達しない。
             if matches!(src, ShadowSource::ObserverPoll | ShadowSource::FocusSnapshot) {
-                // Step 2A: intent guard を shadow_model 由来の compat 値で判定。
-                // 旧フィールド last_explicit_intent との diff は explicit_intent() で log 済み。
+                // intent guard: shadow_model.last_intent 由来の compat 値で判定。
                 if let Some(intent) = self.ime.last_explicit_intent_compat() {
                     if val != intent {
                         log::debug!(
@@ -381,7 +365,7 @@ impl PlatformState {
             }
             log::debug!(
                 "[apply-obs] belief update: {}→{} src={:?} intent={:?}",
-                current, val, src, self.ime.last_explicit_intent,
+                current, val, src, self.ime.last_explicit_intent_compat(),
             );
             self.ime.belief.set_ime_on(val, src);
         }
@@ -416,19 +400,9 @@ impl PlatformState {
 
     /// 最後の明示的 IME 操作の意図を返す（ログ・診断用）。
     ///
-    /// Step 2A: shadow_model 由来の値を返す。
-    /// 旧 `last_explicit_intent` フィールドとの diff があれば log に記録する。
+    /// 最後の明示的 IME 操作の意図を返す (Step 2B: shadow_model.last_intent 由来)。
     pub fn explicit_intent(&self) -> Option<bool> {
-        let compat = self.ime.last_explicit_intent_compat();
-        if self.ime.last_explicit_intent != compat {
-            log::debug!(
-                "[explicit-intent-diff seq~{}] field={:?} compat={:?}",
-                self.ime.event_log.next_seq().saturating_sub(1),
-                self.ime.last_explicit_intent,
-                compat,
-            );
-        }
-        compat
+        self.ime.last_explicit_intent_compat()
     }
 
     /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
@@ -449,8 +423,7 @@ impl PlatformState {
     /// フォーカス変更時に `ime_observations` の全スロットと明示的意図をクリアする。
     pub fn clear_ime_observations_on_focus_change(&mut self) {
         self.ime.ime_observations.clear_on_focus_change();
-        self.ime.last_explicit_intent = None;
-        // Step 1: shadow_model の last_intent / observation も clear。
+        // Step 2B: shadow_model の last_intent / observation を clear (SSOT)。
         // desired_open は維持 (フォーカス変更でユーザー意図を捨てない)。
         self.ime.shadow_model.last_intent = None;
         self.ime.shadow_model.last_observation = None;
@@ -463,7 +436,6 @@ impl PlatformState {
             target: value,
             source: IntentSource::SyncKey,
         });
-        self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.sync_key =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
@@ -475,7 +447,6 @@ impl PlatformState {
             target: value,
             source: IntentSource::PhysicalImeKey,
         });
-        self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.physical_key =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
@@ -494,7 +465,6 @@ impl PlatformState {
             target: value,
             source: IntentSource::Command,
         });
-        self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.set_open_request =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
