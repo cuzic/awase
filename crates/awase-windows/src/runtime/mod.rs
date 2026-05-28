@@ -336,6 +336,17 @@ impl Runtime {
 
         self.platform_state.focus.last_focus_change_ms = crate::hook::current_tick_ms();
         self.executor.platform.output.on_focus_changed();
+        // Step 1.5: FocusChanged event を dispatch して shadow_model の AppImePolicy を更新する。
+        // 順序: policy 確定 → observation clear → 以降の observation は新 policy で評価される。
+        let new_profile = self.executor.platform.focus.current_app_profile();
+        let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
+        self.platform_state
+            .ime
+            .dispatch_event(crate::state::ime_event::ImeEvent::FocusChanged {
+                from: None, // 旧 hwnd は別途追跡可能だが Step 1.5 では None
+                to: new_hwnd,
+                profile: new_profile,
+            });
         self.platform_state.clear_ime_observations_on_focus_change();
 
         {

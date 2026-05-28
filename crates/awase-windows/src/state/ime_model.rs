@@ -9,14 +9,15 @@
 //! 2. **Observer は `desired_open` を直接壊せない** (last_observed に記録するのみ)
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
+use super::app_ime_policy::AppImePolicy;
 use super::ime_event::{
     ImeEvent, ImeEventEnvelope, IntentSource, ObservationConfidence, ObservationSource,
 };
 
 /// Shadow IME モデル。最終形 (Phase 3 完了時) ではこれが SSOT になる予定。
 ///
-/// Step 1 時点では desired_open と最低限の観測記録のみを持つ。
-/// AppImePolicy / pending transition / barrier / force guard は後続 Step で追加。
+/// Step 1.5 時点: desired_open + 最低限の観測記録 + 現フォーカスアプリの policy。
+/// pending transition / barrier / force guard は後続 Step で追加。
 #[derive(Debug)]
 pub struct ImeModel {
     /// awase が IME をこうしたい状態。UserIntent のみが書き換える。
@@ -27,6 +28,10 @@ pub struct ImeModel {
 
     /// 直近の外部観測 (Step 3 で ObservationStore に拡張予定)
     pub last_observation: Option<RecordedObservation>,
+
+    /// 現フォーカスアプリの IME 制御ポリシー (Step 1.5)。
+    /// FocusChanged event で更新される。
+    pub app_policy: AppImePolicy,
 
     /// reduce 呼び出し回数。診断用。
     pub reduce_count: u64,
@@ -55,6 +60,7 @@ impl ImeModel {
             desired_open: true,
             last_intent: None,
             last_observation: None,
+            app_policy: AppImePolicy::standard(),
             reduce_count: 0,
         }
     }
@@ -146,11 +152,20 @@ impl ImeModel {
                     at_seq: envelope.time.seq,
                 });
             }
-            // 以下は Step 1.5 以降で実装。Step 1 では無視。
+            ImeEvent::FocusChanged { profile, .. } => {
+                // Step 1.5: policy 確定 → observation 評価の順序ルール。
+                // FocusChanged を受けた時点で policy を更新し、以降の observation は
+                // 新しい policy で評価される。
+                self.app_policy = AppImePolicy::from_profile(profile);
+                // フォーカス変更で intent / observation は clear する
+                // (旧アプリの観測値が新アプリで有効と勘違いされないため)
+                self.last_intent = None;
+                self.last_observation = None;
+            }
+            // 以下は Step 4 以降で実装。Step 1.5 では無視。
             ImeEvent::ImeApplyRequested { .. }
             | ImeEvent::ImeApplySucceeded { .. }
             | ImeEvent::ImeApplyFailed { .. }
-            | ImeEvent::FocusChanged { .. }
             | ImeEvent::ChordStarted { .. }
             | ImeEvent::ChordEnded { .. }
             | ImeEvent::DriftDetected { .. } => {}
