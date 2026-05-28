@@ -25,17 +25,14 @@ pub(crate) struct ImeStateHub {
     ///
     /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
     pub(crate) ime_observations: crate::ime_observations::ImeObservations,
-    /// IME 明示指示後の観測値抑制タイムスタンプ（0 = 非アクティブ）。
+    /// 最後の明示的 IME 操作の意図。
     ///
-    /// `write_set_open_request` / `write_sync_key` / `write_physical_key` でセットされ、
-    /// この ms 値を超えると失効する。ガード中は `ObserverPoll` / `FocusSnapshot` が
-    /// `ime_intent_guard_on` と矛盾する値で belief を上書きするのを防ぐ。
+    /// `write_physical_key` / `write_sync_key` / `write_set_open_request` がセットし、
+    /// フォーカス変更・`apply_panic_reset` でクリアされる。
     ///
-    /// - IME OFF 要求 (guard_on=false): observer=true をブロック
-    /// - IME ON 要求 (guard_on=true): observer=false をブロック
-    pub(crate) ime_intent_guard_until_ms: u64,
-    /// ガード中に保護する IME 状態（`write_set_open_request` 等の `value` と同じ）。
-    pub(crate) ime_intent_guard_on: bool,
+    /// `ObserverPoll` / `FocusSnapshot` がこの意図と矛盾する値で belief を上書きしようと
+    /// した場合にブロックする。`None` のとき（フォーカス変更直後など）は観測値をそのまま採用。
+    pub(crate) last_explicit_intent: Option<bool>,
 }
 
 impl ImeStateHub {
@@ -55,8 +52,7 @@ impl ImeStateHub {
                 force_on_panic_reset: false,
             },
             ime_observations: crate::ime_observations::ImeObservations::default(),
-            ime_intent_guard_until_ms: 0,
-            ime_intent_guard_on: false,
+            last_explicit_intent: None,
         }
     }
 }
@@ -273,9 +269,9 @@ impl PlatformState {
         self.ime.recovery.ime_detect_miss_count = 0;
         self.ime.recovery.force_on_broken_app_bootstrap = false;
         self.ime.recovery.force_on_panic_reset = true;
-        // パニックリセット後は全観測スロットと IME 指示ガードをクリア。
+        // パニックリセット後は全観測スロットと明示的意図をクリア。
         self.ime.ime_observations.clear_on_focus_change();
-        self.ime.ime_intent_guard_until_ms = 0;
+        self.ime.last_explicit_intent = None;
     }
 }
 
@@ -307,67 +303,41 @@ impl PlatformState {
             current, is_japanese, user_enabled,
         );
         if let Some((val, src)) = self.ime.ime_observations.resolve_and_clear(current, user_enabled, is_japanese) {
-            // IME 明示指示後のガード中は ObserverPoll / FocusSnapshot が指示と矛盾する値で
-            // belief を上書きするのを防ぐ。
-            //   - IME OFF 後 (guard_on=false): observer=true をブロック（stale ON で再アクティベート防止）
-            //   - IME ON 後 (guard_on=true): observer=false をブロック（LINE 等の処理遅延で即座に非活性化防止）
-            // 明示的操作 (SyncKey / PhysicalImeKey / SetOpenRequest, Priority 1-3) はガードを通過させる。
-            if val != self.ime.ime_intent_guard_on
-                && matches!(src, ShadowSource::ObserverPoll | ShadowSource::FocusSnapshot)
-                && self.is_ime_intent_guarded()
-            {
-                log::debug!(
-                    "[ime_intent_guard] belief→{val} blocked (intent={}, src={:?}, remaining={}ms)",
-                    self.ime.ime_intent_guard_on,
-                    src,
-                    self.ime.ime_intent_guard_until_ms
-                        .saturating_sub(crate::hook::current_tick_ms()),
-                );
-                // ガード中にブロックした観測スロットを即座にクリアしてガード失効後の stale flip を防ぐ。
-                // IME ON ガード (guard_on=true): false 観測をクリア → +1000ms 後の誤 deactivation を防止。
-                // IME OFF ガード (guard_on=false): true 観測をクリア → +1000ms 後の誤 re-activation を防止。
-                match src {
-                    ShadowSource::ObserverPoll => {
+            // ObserverPoll / FocusSnapshot が明示的意図と矛盾する値を返した場合はブロックする。
+            // タイマーではなく「最後の明示的操作の意図」を根拠にするため、
+            // フォーカス変更でクリアされるまで有効（時間切れなし）。
+            // 明示的操作（SyncKey / PhysicalImeKey / SetOpenRequest, Priority 1-3）は
+            // intent スロットを直接更新するので、ここには到達しない。
+            if matches!(src, ShadowSource::ObserverPoll | ShadowSource::FocusSnapshot) {
+                if let Some(intent) = self.ime.last_explicit_intent {
+                    if val != intent {
                         log::debug!(
-                            "[ime_intent_guard] clear stale observer_poll={val} (guard_on={}, prevent post-guard flip)",
-                            self.ime.ime_intent_guard_on,
+                            "[explicit-intent] belief→{val} blocked (intent={intent}, src={src:?})"
                         );
-                        self.ime.ime_observations.observer_poll = None;
+                        match src {
+                            ShadowSource::ObserverPoll => {
+                                self.ime.ime_observations.observer_poll = None;
+                            }
+                            ShadowSource::FocusSnapshot => {
+                                self.ime.ime_observations.focus_probe = None;
+                            }
+                            _ => {}
+                        }
+                        return;
                     }
-                    ShadowSource::FocusSnapshot => {
-                        log::debug!(
-                            "[ime_intent_guard] clear stale focus_probe={val} (guard_on={}, prevent post-guard flip)",
-                            self.ime.ime_intent_guard_on,
-                        );
-                        self.ime.ime_observations.focus_probe = None;
-                    }
-                    _ => {}
                 }
-                return;
             }
             log::debug!(
-                "[apply-obs] belief update: {}→{} src={:?} guard_on={} guarded={}",
-                current, val, src, self.ime.ime_intent_guard_on, self.is_ime_intent_guarded(),
+                "[apply-obs] belief update: {}→{} src={:?} intent={:?}",
+                current, val, src, self.ime.last_explicit_intent,
             );
             self.ime.belief.set_ime_on(val, src);
         }
     }
 
-    /// IME 明示指示ガードがアクティブかを返す。
-    #[inline]
-    fn is_ime_intent_guarded(&self) -> bool {
-        let guard = self.ime.ime_intent_guard_until_ms;
-        guard > 0 && crate::hook::current_tick_ms() < guard
-    }
-
-    /// IME ON 方向のガードがアクティブか（`notify_engine_refresh` の診断用）。
-    pub fn is_ime_on_intent_guarded(&self) -> bool {
-        self.ime.ime_intent_guard_on && self.is_ime_intent_guarded()
-    }
-
-    /// IME OFF 方向のガードがアクティブか（`notify_engine_refresh` の診断用）。
-    pub fn is_ime_off_intent_guarded(&self) -> bool {
-        !self.ime.ime_intent_guard_on && self.is_ime_intent_guarded()
+    /// 最後の明示的 IME 操作の意図を返す（ログ・診断用）。
+    pub fn explicit_intent(&self) -> Option<bool> {
+        self.ime.last_explicit_intent
     }
 
     /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
@@ -379,14 +349,16 @@ impl PlatformState {
         self.apply_ime_observations(user_enabled);
     }
 
-    /// フォーカス変更時に `ime_observations` の全スロットをクリアする。
-    pub const fn clear_ime_observations_on_focus_change(&mut self) {
+    /// フォーカス変更時に `ime_observations` の全スロットと明示的意図をクリアする。
+    pub fn clear_ime_observations_on_focus_change(&mut self) {
         self.ime.ime_observations.clear_on_focus_change();
+        self.ime.last_explicit_intent = None;
+        log::debug!("[explicit-intent] cleared (focus change)");
     }
 
     /// `sync_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_sync_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
-        self.set_ime_intent_guard(value, ms);
+        self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.sync_key =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
@@ -394,7 +366,7 @@ impl PlatformState {
 
     /// `physical_key` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_physical_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
-        self.set_ime_intent_guard(value, ms);
+        self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.physical_key =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
@@ -409,24 +381,10 @@ impl PlatformState {
             self.ime.ime_observations.observer_poll.map(|o| o.value),
             self.ime.ime_observations.focus_probe.map(|o| o.value),
         );
-        self.set_ime_intent_guard(value, ms);
+        self.ime.last_explicit_intent = Some(value);
         self.ime.ime_observations.set_open_request =
             Some(crate::ime_observations::ImeObs { value, ms });
         self.apply_ime_observations(user_enabled);
-    }
-
-    /// IME 明示指示ガードをセットする。
-    ///
-    /// `write_set_open_request` / `write_sync_key` / `write_physical_key` から呼ばれる。
-    /// 1000ms 間、ObserverPoll / FocusSnapshot が `value` と矛盾する観測で belief を
-    /// 上書きするのをブロックする。
-    #[inline]
-    fn set_ime_intent_guard(&mut self, value: bool, ms: u64) {
-        self.ime.ime_intent_guard_until_ms = ms.saturating_add(1000);
-        self.ime.ime_intent_guard_on = value;
-        log::debug!(
-            "[ime_intent_guard] set (intent={value}, until +1000ms from now)"
-        );
     }
 
     /// `focus_probe` スロットに観測値を書き込み、即座に judgement を通す。
