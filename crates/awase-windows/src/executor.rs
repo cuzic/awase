@@ -678,6 +678,35 @@ impl DecisionExecutor {
                     if outcome == awase::platform::ImeOpenOutcome::Failed {
                         log::warn!("apply_ime_open({open}) failed (async)");
                     }
+                    // Phase 3b: ImeApplySucceeded/Failed event を dispatch して
+                    // shadow_model.applied_open / pending を generation 照合で更新する。
+                    let pending_gen = app
+                        .platform_state
+                        .ime
+                        .shadow_model
+                        .pending
+                        .as_ref()
+                        .map(|p| p.generation);
+                    if let Some(generation) = pending_gen {
+                        let event = match outcome {
+                            awase::platform::ImeOpenOutcome::Applied
+                            | awase::platform::ImeOpenOutcome::FallbackSent
+                            | awase::platform::ImeOpenOutcome::AlreadyMatched => {
+                                crate::state::ime_event::ImeEvent::ImeApplySucceeded {
+                                    target: open,
+                                    generation,
+                                }
+                            }
+                            awase::platform::ImeOpenOutcome::Failed => {
+                                crate::state::ime_event::ImeEvent::ImeApplyFailed {
+                                    target: open,
+                                    generation,
+                                    error: crate::state::ime_event::ApplyError::CrossProcessFailed,
+                                }
+                            }
+                        };
+                        app.platform_state.ime.dispatch_event(event);
+                    }
                     app.executor.post_apply_ime_open(open, outcome);
                     let platform: &mut dyn PlatformRuntime = &mut app.executor.platform;
                     platform.post_ime_refresh();

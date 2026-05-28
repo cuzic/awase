@@ -268,6 +268,17 @@ impl KeyEventPipeline<'_> {
                 self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
                 self.app.platform_state.reset_ime_detect_state();
                 self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
+
+                // Phase 3b: ImeApplyRequested event を dispatch して shadow_model.pending を
+                // 更新する。generation は event_log.next_seq() を使う (event の seq とも一致)。
+                let generation = self.app.platform_state.ime.event_log.next_seq();
+                self.app.platform_state.ime.dispatch_event(
+                    crate::state::ime_event::ImeEvent::ImeApplyRequested {
+                        target: new_ime_on,
+                        generation,
+                    },
+                );
+
                 // Step 4: Ctrl 押下中の IME OFF 要求（Ctrl+無変換等）で ChordStarted を dispatch。
                 // KANJI（Ctrl なし）では dispatch しない: ChordEnded のトリガが Ctrl KeyUp なので
                 // ペアにならず永続する事故を防ぐ。
