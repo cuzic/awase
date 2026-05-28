@@ -14,13 +14,17 @@ pub use crate::focus::classifier::{AppKindClassifier, ImmCapability, InjectionHi
 ///
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
 /// タイマー等のイベント非同期パスでは呼び出し元が `read_os_modifiers()` で取得する。
+///
+/// Phase 3d: `ime_on` は呼び出し元が `platform_state.ime_on()` (shadow_model.effective_open) を
+/// 評価して渡す。`belief` からは入力モード等の追加情報のみ取得する。
 #[must_use]
 pub const fn build_input_context(
+    ime_on: bool,
     belief: &ImeBelief,
     modifiers: &awase::engine::ModifierState,
 ) -> InputContext {
     InputContext {
-        ime_on: belief.ime_on(),
+        ime_on,
         input_mode: belief.input_mode(),
         is_japanese_ime: belief.is_japanese_ime(),
         modifiers: *modifiers,
@@ -84,7 +88,11 @@ impl Runtime {
         // SAFETY: `read_os_modifiers` は Win32 `GetKeyState` を呼ぶのみで副作用はない。
         //         メインスレッドから呼ばれるため、スレッド要件を満たしている。
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-        build_input_context(self.platform_state.belief(), &modifiers)
+        build_input_context(
+            self.platform_state.ime_on(),
+            self.platform_state.belief(),
+            &modifiers,
+        )
     }
 
     /// output 層が注入モードを決定するために呼ぶ公開 API。

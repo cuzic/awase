@@ -97,6 +97,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             log::debug!("WM_TIMER fired: logical_id={timer_id}");
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
             let ctx = runtime::build_input_context(
+                app.platform_state.ime_on(),
                 app.platform_state.belief(),
                 &modifiers,
             );
