@@ -273,15 +273,23 @@ impl KeyEventPipeline<'_> {
         event: &RawKeyEvent,
         shadow_toggled: bool,
     ) -> CallbackResult {
-        // 物理 IME キー（VK_KANJI 等）の Consume 条件:
-        // - Imm32Unavailable (Chrome/Edge): VK_KANJI を SendInput 済み → 物理キー二重送信を防ぐ
-        // - ImmCross (LINE/Qt): set_ime_open_cross_process で IME 制御済み → 物理 KANJI を渡すと
-        //   アプリ側 IME が反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
-        //   (IME-ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデルにする。
+        // 物理 IME キー（VK_KANJI / VK_F3 / VK_F4 等）の Consume 条件:
+        // - Imm32Unavailable (Chrome/Edge): KeyDown のみ。VK_KANJI を SendInput 済みなので
+        //   物理キーをそのまま届けると二重制御になる。
+        // - ImmCross (LINE/Qt): KeyDown も KeyUp も Consume。set_ime_open_cross_process で
+        //   IME 制御済みのため、物理キーや IMM 注入の KeyUp をアプリに渡すと内部 IME ハンドラが
+        //   反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
+        //   (IME-ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデル。
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
         let profile = self.app.executor.platform.focus.current_app_profile();
-        let suppress_physical = shadow_toggled
-            && (!profile.should_pass_physical_key() || profile.can_use_imm32_cross_process());
+        let is_kanji_event = event.ime_relevance.shadow_action.is_some();
+        let suppress_physical = if profile.can_use_imm32_cross_process() {
+            // ImmCross: KANJI 関連 VK は Down/Up 共に Consume（spurious 連鎖を構造的に遮断）
+            is_kanji_event
+        } else {
+            // Imm32Unavailable: 従来通り shadow_toggle 発火時のみ
+            shadow_toggled && !profile.should_pass_physical_key()
+        };
         let decision = if suppress_physical {
             let reason = if profile.can_use_imm32_cross_process() {
                 "imm-cross"
@@ -290,11 +298,17 @@ impl KeyEventPipeline<'_> {
             };
             match decision {
                 awase::engine::Decision::PassThrough => {
-                    log::debug!("[{reason}] physical IME key consume (was PassThrough)");
+                    log::debug!(
+                        "[{reason}] KANJI key consume vk={:#04x} {:?} (was PassThrough)",
+                        event.vk_code, event.event_type
+                    );
                     awase::engine::Decision::Consume { effects: vec![].into() }
                 }
                 awase::engine::Decision::PassThroughWith { effects } => {
-                    log::debug!("[{reason}] physical IME key consume (was PassThroughWith)");
+                    log::debug!(
+                        "[{reason}] KANJI key consume vk={:#04x} {:?} (was PassThroughWith)",
+                        event.vk_code, event.event_type
+                    );
                     awase::engine::Decision::Consume { effects }
                 }
                 other => other,
@@ -302,27 +316,6 @@ impl KeyEventPipeline<'_> {
         } else {
             decision
         };
-
-        // ImmCross アプリ（LINE/Qt 等）: shadow_toggle を発火させた IME KeyDown の
-        // 対応 KeyUp を後で Consume するため登録する。
-        // suppress_physical（Imm32Unavailable）の場合は KeyDown 自体を Consume 済みのため
-        // KeyUp も届かない想定だが、ImmCross（Standard）では KeyDown を reinject しており
-        // KeyUp の抑止が別途必要。
-        //
-        // ON→OFF（VK_F3 Down）の場合、VK_F4 Up（KANJI 物理リリースの対の Key）も suppress する。
-        // LINE/Qt は VK_F4 Up を受け取ると spurious VK_F3 Down → VK_F3 Up → VK_F4 Down を
-        // 生成する。このチェーンにより VK_F4 Down が shadow toggle OFF→ON を発火させ
-        // SetOpen(true) がエフェクトキューに積まれ、ImmCross(true) が ImmCross(false) より後に
-        // 完了して LINE の IME が ON に戻る（IME-ON Engine-OFF 永続状態）。
-        // VK_F4 Up を LINE に届かないようにすることでチェーン全体を断つ。
-        let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-        if shadow_toggled && is_key_down && profile.can_use_imm32_cross_process() {
-            self.app.executor.register_shadow_toggle_suppress(event.vk_code);
-            // ON→OFF: shadow key は VK_F3、物理リリース対は VK_F4 Up → suppress
-            if !self.app.platform_state.ime_on() {
-                self.app.executor.register_shadow_toggle_suppress(crate::vk::VK_DBE_DBCSCHAR);
-            }
-        }
 
         let hook_result = self.app.executor.execute_from_hook(decision, event);
 

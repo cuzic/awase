@@ -40,12 +40,6 @@ pub struct DecisionExecutor {
     /// Reinject 経由で送った PassThrough KeyDown の VK 集合。
     /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
     deferred_passthrough_vks: HashSet<VkCode>,
-    /// shadow_toggle を発火させた IME キー (VK_F3/VK_F4 等) の VK 集合（ImmCross アプリ専用）。
-    ///
-    /// ImmCross アプリ（LINE/Qt 等）は物理 VK_F4 Up を受け取ると spurious VK_F3 Down を生成し、
-    /// shadow toggle が ON→OFF に反転して IME-ON Engine-OFF 状態になる。
-    /// この集合に VK が入っている間、対応する KeyUp を Consume して LINE に届かないようにする。
-    shadow_toggle_suppressed_vks: HashSet<VkCode>,
     /// warm+TSF Enter/Space/Escape KeyDown 後に KeyUp で eager warmup を送信するフラグ。
     ///
     /// hook callback 内では `SendInput(F2)` → `CallNextHookEx(Enter↓)` の順になり、
@@ -70,7 +64,6 @@ impl DecisionExecutor {
             queue: VecDeque::new(),
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
-            shadow_toggle_suppressed_vks: HashSet::new(),
             pending_warmup_on_keyup: false,
             guard_timer_active: false,
         }
@@ -257,20 +250,6 @@ impl DecisionExecutor {
         }
     }
 
-    /// ImmCross アプリで shadow_toggle を発火させた IME KeyDown の VK を登録する。
-    ///
-    /// 対応する KeyUp が `handle_passthrough` に到達したとき `try_shadow_suppressed_keyup`
-    /// が Consume し、アプリ（LINE 等）に届かないようにする。
-    /// LINE/Qt は VK_F4 Up を受け取ると spurious VK_F3 Down を生成して
-    /// shadow toggle を ON→OFF に反転させるため、この抑止が必要。
-    pub fn register_shadow_toggle_suppress(&mut self, vk: VkCode) {
-        log::debug!(
-            "[shadow-sup] register vk={:#04x}: suppress paired KeyUp (ImmCross spurious response prevention)",
-            vk,
-        );
-        self.shadow_toggle_suppressed_vks.insert(vk);
-    }
-
     // ── PassThrough サブハンドラ ──
 
     /// `Decision::PassThrough` アーム全体を処理する。
@@ -286,13 +265,6 @@ impl DecisionExecutor {
         // deferr して reinject 時に wait する」ことで race を構造的に解消する。
 
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-
-        // 0. Shadow-suppressed KeyUp: ImmCross アプリで shadow_toggle を発火させた IME キーの
-        //    KeyUp を Consume する。LINE/Qt 等はこの KeyUp に反応して spurious VK_F3 Down を
-        //    生成し shadow toggle が ON→OFF に反転する（IME-ON Engine-OFF の原因）。
-        if let Some(result) = self.try_shadow_suppressed_keyup(raw_event) {
-            return result;
-        }
 
         // 1. KeyUp 対称性: deferred KeyDown の VK は KeyUp も reinject に揃える。
         if let Some(result) = self.try_keyup_symmetry(raw_event) {
@@ -349,24 +321,6 @@ impl DecisionExecutor {
         }
 
         CallbackResult::PassThrough
-    }
-
-    /// shadow_toggle 抑止 KeyUp: ImmCross アプリで登録された IME KeyDown の対応 KeyUp を Consume。
-    ///
-    /// LINE/Qt 等は VK_F4 Up を受け取ると spurious VK_F3 Down（extra=0x0）を生成し、
-    /// shadow toggle が ON→OFF に反転して IME-ON Engine-OFF 状態になる。
-    /// `register_shadow_toggle_suppress` で登録された VK の KeyUp を Consume することで
-    /// LINE への VK_F4/F3 Up 到達を防ぐ。
-    fn try_shadow_suppressed_keyup(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && self.shadow_toggle_suppressed_vks.remove(&raw_event.vk_code) {
-            log::debug!(
-                "[shadow-sup] KeyUp vk={:#04x}: shadow-suppressed → Consume (prevent ImmCross app spurious VK_F3)",
-                raw_event.vk_code,
-            );
-            return Some(CallbackResult::Consumed);
-        }
-        None
     }
 
     /// KeyUp: 対応する KeyDown を reinject 経由で送っていた場合、
@@ -700,21 +654,12 @@ impl DecisionExecutor {
             // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
             // → 楽観的に last_applied を更新して send_engine_state_ime_key をスキップさせる。
             self.platform.output.set_ime_apply_latch(open);
-            // ImmCross は set_ime_open_cross_process(open) 完了後に VK_DBE_DBCSCHAR(0xF4)/
-            // VK_DBE_SBCSCHAR(0xF3) KeyUp をシステムワイドに注入する。
-            // LINE/Qt 等はこの KeyUp を受け取ると逆方向の IME キーを生成して
-            // shadow toggle を反転させるため、KeyUp を抑止する。
-            {
-                let suppress_vk = if open {
-                    crate::vk::VK_DBE_DBCSCHAR // 0xF4: LINE/Qt が VK_F3 Down を生成する原因
-                } else {
-                    crate::vk::VK_DBE_SBCSCHAR // 0xF3
-                };
-                self.register_shadow_toggle_suppress(suppress_vk);
-            }
+            // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
+            // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
+            // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは latch 更新のみ。
             log::debug!(
                 "[dispatch-ime] ImmCross async: optimistic last_applied={open} \
-                 (suppress send_engine_state_ime_key, prevent spurious VK_F3/F4 from app IME)"
+                 (suppress send_engine_state_ime_key)"
             );
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             win32_async::spawn_local(async move {
