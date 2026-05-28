@@ -5,7 +5,7 @@ use super::belief::{ImeBelief, ImeRecoveryState, ShadowSource};
 use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
 use super::ime_event::{ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
-use super::ime_model::{DiffSeverity, ImeEffectiveState, ImeModel};
+use super::ime_model::{ImeEffectiveState, ImeModel};
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -306,7 +306,7 @@ impl PlatformState {
             source: IntentSource::Recovery,
         });
         self.ime.shadow_model.last_intent = None;
-        self.ime.shadow_model.last_observation = None;
+        self.ime.shadow_model.observations.clear_on_focus_change();
     }
 }
 
@@ -385,16 +385,16 @@ impl PlatformState {
             return;
         };
         let last_intent = self.ime.shadow_model.last_intent.as_ref();
-        let last_obs = self.ime.shadow_model.last_observation.as_ref();
+        let drift_seq = self.ime.shadow_model.observations.drift.map(|d| d.first_drift_seq);
         log::debug!(
             "[shadow-diff seq~{}] severity={:?} old.ime_on={} new.target={} \
-             last_intent={:?} last_obs={:?}",
+             last_intent={:?} drift_seq={:?}",
             self.ime.event_log.next_seq().saturating_sub(1),
             severity,
             old_ime_on,
             new_effective.ime_target_open,
             last_intent.map(|i| (i.target, i.source, i.at_seq)),
-            last_obs.map(|o| (o.open, o.source, o.confidence, o.at_seq)),
+            drift_seq,
         );
     }
 
@@ -423,10 +423,10 @@ impl PlatformState {
     /// フォーカス変更時に `ime_observations` の全スロットと明示的意図をクリアする。
     pub fn clear_ime_observations_on_focus_change(&mut self) {
         self.ime.ime_observations.clear_on_focus_change();
-        // Step 2B: shadow_model の last_intent / observation を clear (SSOT)。
+        // Step 3: shadow_model の last_intent / observations を clear (SSOT)。
         // desired_open は維持 (フォーカス変更でユーザー意図を捨てない)。
         self.ime.shadow_model.last_intent = None;
-        self.ime.shadow_model.last_observation = None;
+        self.ime.shadow_model.observations.clear_on_focus_change();
         log::debug!("[explicit-intent] cleared (focus change)");
     }
 

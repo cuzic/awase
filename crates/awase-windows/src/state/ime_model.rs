@@ -10,13 +10,12 @@
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
 use super::app_ime_policy::AppImePolicy;
-use super::ime_event::{
-    ImeEvent, ImeEventEnvelope, IntentSource, ObservationConfidence, ObservationSource,
-};
+use super::ime_event::{ImeEvent, ImeEventEnvelope, IntentSource};
+use super::observation_store::{ImeObservation, ObservationStore};
 
 /// Shadow IME モデル。最終形 (Phase 3 完了時) ではこれが SSOT になる予定。
 ///
-/// Step 1.5 時点: desired_open + 最低限の観測記録 + 現フォーカスアプリの policy。
+/// Step 3 時点: desired_open + last_intent + observations (per-source + drift) + policy。
 /// pending transition / barrier / force guard は後続 Step で追加。
 #[derive(Debug)]
 pub struct ImeModel {
@@ -26,8 +25,9 @@ pub struct ImeModel {
     /// 直近のユーザー意図 (intent guard 等の判断材料)
     pub last_intent: Option<RecordedIntent>,
 
-    /// 直近の外部観測 (Step 3 で ObservationStore に拡張予定)
-    pub last_observation: Option<RecordedObservation>,
+    /// 観測値ストア (Step 3) — per-source + suspicious + drift。
+    /// reducer の judge 材料: 鮮度・合意・乖離継続時間。
+    pub observations: ObservationStore,
 
     /// 現フォーカスアプリの IME 制御ポリシー (Step 1.5)。
     /// FocusChanged event で更新される。
@@ -44,22 +44,14 @@ pub struct RecordedIntent {
     pub at_seq: u64,
 }
 
-#[derive(Debug, Clone)]
-pub struct RecordedObservation {
-    pub open: bool,
-    pub source: ObservationSource,
-    pub confidence: ObservationConfidence,
-    pub at_seq: u64,
-}
-
 impl ImeModel {
     /// 既存 `ImeBelief` の初期値 (`ime_on=true`) に合わせる。
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             desired_open: true,
             last_intent: None,
-            last_observation: None,
+            observations: ObservationStore::default(),
             app_policy: AppImePolicy::standard(),
             reduce_count: 0,
         }
@@ -117,7 +109,7 @@ impl ImeModel {
     /// Event を反映する。
     ///
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
-    /// Observer は `last_observation` に記録するだけで desired を壊さない。
+    /// Observer は `observations` に記録するだけで desired を壊さない。
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         self.reduce_count = self.reduce_count.wrapping_add(1);
         match envelope.event {
@@ -142,15 +134,25 @@ impl ImeModel {
                 open,
                 source,
                 confidence,
-                ..
+                hwnd,
             } => {
                 // 絶対ルール: Observer は desired_open を直接書き換えない
-                self.last_observation = Some(RecordedObservation {
+                self.observations.record(ImeObservation {
                     open,
                     source,
+                    at: envelope.time.monotonic,
+                    recorded_seq: envelope.time.seq,
+                    hwnd,
                     confidence,
-                    at_seq: envelope.time.seq,
+                    expires_at: None,
                 });
+                // drift 追跡 (desired と observed の乖離)
+                self.observations.update_drift(
+                    self.desired_open,
+                    open,
+                    envelope.time.monotonic,
+                    envelope.time.seq,
+                );
             }
             ImeEvent::FocusChanged { profile, .. } => {
                 // Step 1.5: policy 確定 → observation 評価の順序ルール。
@@ -160,7 +162,7 @@ impl ImeModel {
                 // フォーカス変更で intent / observation は clear する
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
-                self.last_observation = None;
+                self.observations.clear_on_focus_change();
             }
             // 以下は Step 4 以降で実装。Step 1.5 では無視。
             ImeEvent::ImeApplyRequested { .. }
@@ -187,7 +189,9 @@ impl ImeModel {
 
 #[cfg(test)]
 mod tests {
-    use super::super::ime_event::{EventTime, HwndId};
+    use super::super::ime_event::{
+        EventTime, HwndId, ObservationConfidence, ObservationSource,
+    };
     use super::*;
     use std::time::Instant;
 
@@ -248,7 +252,16 @@ mod tests {
             },
         ));
         assert!(model.desired_open, "observer は desired を壊さない");
-        assert_eq!(model.last_observation.as_ref().unwrap().open, false);
+        assert_eq!(
+            model
+                .observations
+                .per_source
+                .observer_poll
+                .as_ref()
+                .unwrap()
+                .open,
+            false
+        );
     }
 
     #[test]
