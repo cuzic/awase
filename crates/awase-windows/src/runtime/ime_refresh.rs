@@ -22,6 +22,7 @@ enum IoMode<'m> {
 // ── ImeReadStrategy ──
 
 /// IME 読み取り方針の決定結果
+#[derive(Debug)]
 enum ImeReadStrategy {
     /// タイピング中 — IMM/TSF を一切呼ばない
     SkipTyping,
@@ -131,6 +132,12 @@ impl<'a> ImeRefreshPipeline<'a> {
         strategy: &ImeReadStrategy,
         ime_snap: Option<&crate::ime::ImeSnapshot>,
     ) {
+        log::debug!(
+            "[stage-observe] strategy={:?} belief_on={} guard_on_intent={}",
+            strategy,
+            self.rt.platform_state.ime_on(),
+            self.rt.platform_state.is_ime_on_intent_guarded(),
+        );
         match strategy {
             ImeReadStrategy::SkipTyping => {
                 // タイピング中は何もしない
@@ -139,6 +146,10 @@ impl<'a> ImeRefreshPipeline<'a> {
                 log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
                 let obs = crate::observer::gji_observer::observe_gji_after_focus(
                     self.rt.platform_state.focus.last_focus_change_ms,
+                );
+                log::debug!(
+                    "[stage-observe] gji_result={:?}",
+                    obs.observer_poll_value
                 );
                 if let Some(v) = obs.observer_poll_value {
                     self.rt.platform_state.write_observer_poll(
@@ -484,6 +495,11 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     fn notify_engine_refresh(&mut self) {
         let ctx = self.rt.build_ctx();
+        let guard_on = self.rt.platform_state.is_ime_on_intent_guarded();
+        log::debug!(
+            "[notify-refresh] ctx.ime_on={} ctx.is_jp={} guard_on_intent={}",
+            ctx.ime_on, ctx.is_japanese_ime, guard_on,
+        );
         let decision = self.rt.engine.on_command(EngineCommand::RefreshState, &ctx);
         // ポーリング起因の状態遷移では engine_state_ime_key を送らない（フィードバックループ防止）。
         self.rt.executor.platform.suppress_engine_state_key = true;

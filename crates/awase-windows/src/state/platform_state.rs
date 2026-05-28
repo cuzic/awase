@@ -295,6 +295,17 @@ impl PlatformState {
     pub fn apply_ime_observations(&mut self, user_enabled: bool) {
         let current = self.ime.belief.ime_on;
         let is_japanese = self.ime.belief.is_japanese_ime;
+        let obs = &self.ime.ime_observations;
+        log::trace!(
+            "[apply-obs] slots: sync={:?} phys={:?} req={:?} fp={:?} op={:?} \
+             belief_on={} is_jp={} user_en={}",
+            obs.sync_key.map(|o| o.value),
+            obs.physical_key.map(|o| o.value),
+            obs.set_open_request.map(|o| o.value),
+            obs.focus_probe.map(|o| o.value),
+            obs.observer_poll.map(|o| o.value),
+            current, is_japanese, user_enabled,
+        );
         if let Some((val, src)) = self.ime.ime_observations.resolve_and_clear(current, user_enabled, is_japanese) {
             // IME 明示指示後のガード中は ObserverPoll / FocusSnapshot が指示と矛盾する値で
             // belief を上書きするのを防ぐ。
@@ -314,6 +325,10 @@ impl PlatformState {
                 );
                 return;
             }
+            log::debug!(
+                "[apply-obs] belief update: {}→{} src={:?} guard_on={} guarded={}",
+                current, val, src, self.ime.ime_intent_guard_on, self.is_ime_intent_guarded(),
+            );
             self.ime.belief.set_ime_on(val, src);
         }
     }
@@ -323,6 +338,11 @@ impl PlatformState {
     fn is_ime_intent_guarded(&self) -> bool {
         let guard = self.ime.ime_intent_guard_until_ms;
         guard > 0 && crate::hook::current_tick_ms() < guard
+    }
+
+    /// IME ON 方向のガードがアクティブか（`notify_engine_refresh` の診断用）。
+    pub fn is_ime_on_intent_guarded(&self) -> bool {
+        self.ime.ime_intent_guard_on && self.is_ime_intent_guarded()
     }
 
     /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
@@ -357,6 +377,13 @@ impl PlatformState {
 
     /// `set_open_request` スロットに観測値を書き込み、即座に judgement を通す。
     pub fn write_set_open_request(&mut self, value: bool, ms: u64, user_enabled: bool) {
+        log::debug!(
+            "[write-set-open-req] value={value} user_en={user_enabled} \
+             belief_on={} op={:?} fp={:?}",
+            self.ime.belief.ime_on,
+            self.ime.ime_observations.observer_poll.map(|o| o.value),
+            self.ime.ime_observations.focus_probe.map(|o| o.value),
+        );
         self.set_ime_intent_guard(value, ms);
         self.ime.ime_observations.set_open_request =
             Some(crate::ime_observations::ImeObs { value, ms });
