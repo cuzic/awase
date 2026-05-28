@@ -323,6 +323,23 @@ impl PlatformState {
                     self.ime.ime_intent_guard_until_ms
                         .saturating_sub(crate::hook::current_tick_ms()),
                 );
+                // ガードが IME ON 方向 (guard_on=true) かつ false 観測をブロックした場合、
+                // スロット自体もクリアしてガード失効後の stale deactivation を防ぐ。
+                // 例: OsPoll アプリで ImmCross が効かず observer_poll=false が書かれ続けても、
+                // ガード内でブロックした瞬間にスロットを消去することで +1000ms 後の誤 deactivation が消える。
+                if self.ime.ime_intent_guard_on {
+                    match src {
+                        ShadowSource::ObserverPoll => {
+                            log::debug!("[ime_intent_guard] clear stale observer_poll=false (guard active, prevent post-guard deactivation)");
+                            self.ime.ime_observations.observer_poll = None;
+                        }
+                        ShadowSource::FocusSnapshot => {
+                            log::debug!("[ime_intent_guard] clear stale focus_probe=false (guard active, prevent post-guard deactivation)");
+                            self.ime.ime_observations.focus_probe = None;
+                        }
+                        _ => {}
+                    }
+                }
                 return;
             }
             log::debug!(

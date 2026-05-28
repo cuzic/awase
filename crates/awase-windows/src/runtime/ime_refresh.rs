@@ -494,12 +494,20 @@ impl<'a> ImeRefreshPipeline<'a> {
     // ── Engine 通知 ──
 
     fn notify_engine_refresh(&mut self) {
-        let ctx = self.rt.build_ctx();
+        let mut ctx = self.rt.build_ctx();
         let guard_on = self.rt.platform_state.is_ime_on_intent_guarded();
         log::debug!(
             "[notify-refresh] ctx.ime_on={} ctx.is_jp={} guard_on_intent={}",
             ctx.ime_on, ctx.is_japanese_ime, guard_on,
         );
+        // IME ON 指示のガードがアクティブな場合、ctx.ime_on が false でもエンジンが
+        // 誤って非活性化しないよう true に上書きする。
+        // 背景: OsPoll アプリ(Win32)で ImmCross が処理遅延または失敗した場合、
+        // ポーリングが false を返しても belief が true のうちは engine を Active に保つ。
+        if guard_on && !ctx.ime_on {
+            log::debug!("[notify-refresh] IME ON guard active: overriding ctx.ime_on=false → true");
+            ctx.ime_on = true;
+        }
         let decision = self.rt.engine.on_command(EngineCommand::RefreshState, &ctx);
         // ポーリング起因の状態遷移では engine_state_ime_key を送らない（フィードバックループ防止）。
         self.rt.executor.platform.suppress_engine_state_key = true;
