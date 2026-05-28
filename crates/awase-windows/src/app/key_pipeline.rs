@@ -297,14 +297,23 @@ impl KeyEventPipeline<'_> {
 
         // ImmCross アプリ（LINE/Qt 等）: shadow_toggle を発火させた IME KeyDown の
         // 対応 KeyUp を後で Consume するため登録する。
-        // LINE 等は VK_F4 Up（KANJI 物理リリース）を受け取ると spurious VK_F3 Down を
-        // 生成し shadow toggle が ON→OFF に反転、IME-ON Engine-OFF 状態になる。
         // suppress_physical（Imm32Unavailable）の場合は KeyDown 自体を Consume 済みのため
         // KeyUp も届かない想定だが、ImmCross（Standard）では KeyDown を reinject しており
         // KeyUp の抑止が別途必要。
+        //
+        // ON→OFF（VK_F3 Down）の場合、VK_F4 Up（KANJI 物理リリースの対の Key）も suppress する。
+        // LINE/Qt は VK_F4 Up を受け取ると spurious VK_F3 Down → VK_F3 Up → VK_F4 Down を
+        // 生成する。このチェーンにより VK_F4 Down が shadow toggle OFF→ON を発火させ
+        // SetOpen(true) がエフェクトキューに積まれ、ImmCross(true) が ImmCross(false) より後に
+        // 完了して LINE の IME が ON に戻る（IME-ON Engine-OFF 永続状態）。
+        // VK_F4 Up を LINE に届かないようにすることでチェーン全体を断つ。
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         if shadow_toggled && is_key_down && profile.can_use_imm32_cross_process() {
             self.app.executor.register_shadow_toggle_suppress(event.vk_code);
+            // ON→OFF: shadow key は VK_F3、物理リリース対は VK_F4 Up → suppress
+            if !self.app.platform_state.ime_on() {
+                self.app.executor.register_shadow_toggle_suppress(crate::vk::VK_DBE_DBCSCHAR);
+            }
         }
 
         let hook_result = self.app.executor.execute_from_hook(decision, event);
