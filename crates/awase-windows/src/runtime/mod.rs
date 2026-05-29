@@ -417,13 +417,28 @@ impl Runtime {
             // TsfNative プロファイル（Windows Terminal 等）への cache miss 入場では、
             // 前ウィンドウの ime_on=false が carry over したまま IMM/poll で復旧できず
             // Engine が活性化不能になる。stale を true へ寄せ直して trap を解く。
+            //
+            // ただし直近 10 秒以内に物理 IME キー / sync キーで明示的に IME OFF にしていた
+            // 場合は、ユーザーの意図を尊重してリセットをスキップする。
+            // Edge 等で Chrome_Widget → TsfNative サブウィンドウへフォーカスが移った際に
+            // stale reset が IME ON へ戻してしまいフォーム送信が起きるバグを防ぐ。
             if cache_miss
                 && matches!(
                     self.executor.platform.focus.current_app_profile(),
                     crate::focus::classify::AppImeProfile::TsfNative,
                 )
             {
-                self.platform_state.reset_stale_ime_on_for_tsf_native();
+                let now_ms = crate::hook::current_tick_ms();
+                let last_off_ms = self.platform_state.last_explicit_ime_off_ms;
+                let elapsed = now_ms.saturating_sub(last_off_ms);
+                if last_off_ms > 0 && elapsed < 10_000 {
+                    log::debug!(
+                        "[focus] TsfNative cache-miss: skip reset_stale — explicit IME-OFF {}ms ago",
+                        elapsed
+                    );
+                } else {
+                    self.platform_state.reset_stale_ime_on_for_tsf_native();
+                }
             }
         }
 

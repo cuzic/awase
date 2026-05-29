@@ -137,6 +137,9 @@ pub struct PlatformState {
     pub sync_key_gate: SyncKeyGate,
     /// 現在のフォーカスアプリに適用されるキーマップルール
     pub active_keymaps: crate::keymap::KeymapTable,
+    /// 直近に物理 IME キー or sync キーで IME OFF にした時刻 (ms, GetTickCount 系)。
+    /// 0 = 未設定。TsfNative 入場時の reset_stale スキップ判定に使う。
+    pub last_explicit_ime_off_ms: u64,
 }
 
 impl PlatformState {
@@ -154,6 +157,7 @@ impl PlatformState {
             last_hook_activity_ms: 0,
             sync_key_gate: SyncKeyGate::new(),
             active_keymaps: crate::keymap::KeymapTable::default(),
+            last_explicit_ime_off_ms: 0,
         }
     }
 }
@@ -321,7 +325,10 @@ impl PlatformState {
     }
 
     /// 同期キー由来の意図を shadow_model へ dispatch する。
-    pub fn write_sync_key(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
+    pub fn write_sync_key(&mut self, value: bool, ms: u64, _user_enabled: bool) {
+        if !value {
+            self.last_explicit_ime_off_ms = ms;
+        }
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::SyncKey,
@@ -329,7 +336,10 @@ impl PlatformState {
     }
 
     /// 物理 IME キー由来の意図を shadow_model へ dispatch する。
-    pub fn write_physical_key(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
+    pub fn write_physical_key(&mut self, value: bool, ms: u64, _user_enabled: bool) {
+        if !value {
+            self.last_explicit_ime_off_ms = ms;
+        }
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::PhysicalImeKey,
