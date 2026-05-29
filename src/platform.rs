@@ -245,8 +245,10 @@ pub trait PlatformRuntime {
 
     /// Engine ON/OFF 時に IME 制御キーを送信する。
     ///
+    /// `applied` は直前に apply された IME 開閉状態（executor の `applied_snapshot` から渡す）。
+    /// `Some(v)` で `v == enabled` なら apply_ime_open 済みとして mode key 送信をスキップできる。
     /// プラットフォームが IME モードキー送信をサポートしない場合は何もしない。
-    fn send_engine_state_ime_key(&self, _enabled: bool) {}
+    fn send_engine_state_ime_key(&self, _enabled: bool, _applied: Option<bool>) {}
 }
 
 #[cfg(test)]

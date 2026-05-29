@@ -640,6 +640,8 @@ impl DecisionExecutor {
         if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
             return self.dispatch_ime_set_open(open, origin);
         }
+        // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
+        let applied_for_engine_key = self.applied_snapshot.map(|(v, _)| v);
         let platform: &mut dyn PlatformRuntime = &mut self.platform;
         match effect {
             Effect::Input(ie) => match ie {
@@ -669,7 +671,7 @@ impl DecisionExecutor {
             Effect::Ui(ue) => match ue {
                 UiEffect::EngineStateChanged { enabled } => {
                     platform.update_tray(enabled);
-                    platform.send_engine_state_ime_key(enabled);
+                    platform.send_engine_state_ime_key(enabled, applied_for_engine_key);
                     None
                 }
             },

@@ -125,7 +125,7 @@ impl PlatformRuntime for WindowsPlatform {
 
     // ── Engine 状態変化時 IME モードキー送信 ──
 
-    fn send_engine_state_ime_key(&self, enabled: bool) {
+    fn send_engine_state_ime_key(&self, enabled: bool, applied: Option<bool>) {
         if self.suppress_engine_state_key {
             // ポーリング/フォーカス変化起因の遷移では VK を送らない。
             // 送ると IME 状態が変わり → 次のポーリングでエンジンが逆転 → 無限ループになる。
@@ -138,7 +138,7 @@ impl PlatformRuntime for WindowsPlatform {
         //
         // mode key 送信の本来の用途は「Engine 状態は変わったが IME open/close は変わらない」
         // ケース（例: user_enabled トグルで IME はそのまま）に限定する。
-        let last_applied = self.output.last_applied_ime_on();
+        let last_applied = applied.unwrap_or_else(|| self.output.last_applied_ime_on());
         if last_applied == enabled {
             log::debug!(
                 "[engine-state-key] skipped (apply_ime_open aligned ime={enabled}, profile={:?})",
