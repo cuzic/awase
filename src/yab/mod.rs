@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use itertools::Itertools as _;
+
 use anyhow::{bail, Context, Result};
 
 use crate::kana_table::KanaTable;
@@ -166,22 +168,22 @@ impl YabFace {
     /// .yab テキストの CSV 行に変換する。
     #[must_use]
     pub fn serialize(&self, row_sizes: &[usize; 4]) -> String {
-        let mut lines = Vec::new();
-        for (row, &cols) in row_sizes.iter().enumerate() {
-            let mut values = Vec::with_capacity(cols);
-            for col in 0..cols {
-                let pos = PhysicalPos::new(
-                    u8::try_from(row).expect("row < MAX_ROWS fits u8"),
-                    u8::try_from(col).expect("col < MAX_COLS fits u8"),
-                );
-                match self.get(&pos) {
-                    Some(val) => values.push(val.serialize()),
-                    None => values.push("無".to_string()),
-                }
-            }
-            lines.push(values.join(","));
-        }
-        lines.join("\n")
+        row_sizes
+            .iter()
+            .enumerate()
+            .map(|(row, &cols)| {
+                (0..cols)
+                    .map(|col| {
+                        let pos = PhysicalPos::new(
+                            u8::try_from(row).expect("row < MAX_ROWS fits u8"),
+                            u8::try_from(col).expect("col < MAX_COLS fits u8"),
+                        );
+                        self.get(&pos)
+                            .map_or_else(|| "無".to_string(), YabValue::serialize)
+                    })
+                    .join(",")
+            })
+            .join("\n")
     }
 
     /// 全 `YabValue::Romaji` の `kana` フィールドをテーブルから解決する。
