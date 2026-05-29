@@ -14,7 +14,7 @@ PR レビューと定期的な audit のチェックリストとして使う。
 
 ### A-1: lib (`awase`) は OS 非依存
 
-**ルール**: `crates/awase/src/` は Windows / macOS / Linux のいずれにも依存しない。
+**ルール**: `src/` は Windows / macOS / Linux のいずれにも依存しない。
 
 **Why**: ADR-019。macOS/Linux 対応のため lib を OS API 非依存に保つ。
 
@@ -25,13 +25,13 @@ PR レビューと定期的な audit のチェックリストとして使う。
 
 **検出**:
 ```sh
-grep -rn "windows::\|core_foundation\|libc::" crates/awase/src/
+grep -rn "windows::\|core_foundation\|libc::" src/
 ```
 期待: ゼロ件（cfg(target_os) 経由でも禁止）
 
 ### A-2: Engine は事前分類のみ参照
 
-**ルール**: `crates/awase/src/engine/` は `RawKeyEvent` のフィールドのうち
+**ルール**: `src/engine/` は `RawKeyEvent` のフィールドのうち
 `KeyClassification` / `ImeRelevance` / `PhysicalPos` / `ModifierKey` のみ参照。
 `vk_code` / `scan_code` は等値比較のみ可。
 
@@ -45,7 +45,7 @@ Engine は内容を「読む」だけ。
 
 **検出**:
 ```sh
-grep -rnE "vk_code\.0|VK_[A-Z]+" crates/awase/src/engine/
+grep -rnE "vk_code\.0|VK_[A-Z]+" src/engine/
 ```
 期待: 等値比較とフィールド参照のみ。
 
@@ -63,6 +63,8 @@ grep -rnE "vk_code\.0|VK_[A-Z]+" crates/awase/src/engine/
 - `runtime/`
 - `executor.rs`
 - `tsf/probe_bridge.rs` (メッセージループ統合)
+- `tray/` (システムトレイ menu UI — UI lifecycle 操作はオーケストレーターが担う正当用途)
+- `ime_diagnostic.rs` (診断 surface、read-only — 状態の読み取り表示のみで書き換えなし)
 - spawn_local closure 内 (async path で再エントリ回避のため必須)
 
 **Why**: ADR-004 (AppState orchestrator)。`crate::APP` の読み書きを集約し、
@@ -74,7 +76,7 @@ grep -rnE "vk_code\.0|VK_[A-Z]+" crates/awase/src/engine/
 **検出**:
 ```sh
 grep -rn "with_app\|crate::APP\|APP\.with" crates/awase-windows/src/ \
-  | grep -v "app/\|runtime/\|executor\.rs\|tsf/probe_bridge\.rs\|spawn_local"
+  | grep -v "app/\|runtime/\|executor\.rs\|tsf/probe_bridge\.rs\|tray/\|ime_diagnostic\.rs\|spawn_local"
 ```
 期待: ゼロ件（spawn_local 内の with_app は別途確認）。
 
@@ -226,7 +228,10 @@ grep -rn "ctrl_bypass_hold\|focus_transition_pending\|shadow_toggle_suppressed\|
 ```sh
 grep -rn "self\.shadow_model\.reduce\|model\.reduce" crates/awase-windows/src/
 ```
-期待: `ImeStateHub::dispatch_event` 内の 1 箇所のみ。
+期待: `PlatformState::reduce_with_envelope` 内の 1 箇所のみ。
+
+確認箇所:
+- `crates/awase-windows/src/state/platform_state.rs::reduce_with_envelope` (唯一の reduce 呼出)
 
 ---
 
@@ -289,9 +294,9 @@ with_app の外に出す。
 **検出**:
 ```sh
 grep -rn "SendMessageTimeoutW\|SendMessage\b" crates/awase-windows/src/ \
-  | grep -v "ime\.rs\|tests/\|//"
+  | grep -v "imm\.rs\|ime\.rs\|tests/\|//"
 ```
-期待: `ime.rs` の async wrapper 内のみ。
+期待: `imm.rs` (低レベル `send_ime_control` WM_IME_CONTROL ラッパ) または `ime.rs` の async wrapper 内のみ。
 
 ---
 
@@ -301,11 +306,11 @@ grep -rn "SendMessageTimeoutW\|SendMessage\b" crates/awase-windows/src/ \
 
 ```sh
 # カテゴリ A
-grep -rn "windows::\|core_foundation\|libc::" crates/awase/src/
-grep -rnE "vk_code\.0|VK_[A-Z]+" crates/awase/src/engine/
+grep -rn "windows::\|core_foundation\|libc::" src/
+grep -rnE "vk_code\.0|VK_[A-Z]+" src/engine/
 
 # カテゴリ B
-grep -rn "with_app\|crate::APP" crates/awase-windows/src/ | grep -v "app/\|runtime/\|executor\.rs\|tsf/probe_bridge\.rs"
+grep -rn "with_app\|crate::APP" crates/awase-windows/src/ | grep -v "app/\|runtime/\|executor\.rs\|tsf/probe_bridge\.rs\|tray/\|ime_diagnostic\.rs"
 grep -rn "tsf_obs()" crates/awase-windows/src/output/
 grep -rn "TSF_OBS" crates/awase-windows/src/
 
@@ -320,7 +325,7 @@ grep -rn "ctrl_bypass_hold\|focus_transition_pending\|shadow_toggle_suppressed\|
 grep -rnE "0x[0-9a-fA-F]{2,4}" crates/awase-windows/src/ | grep -v "vk\.rs\|tests/\|^\s*//"
 
 # カテゴリ E
-grep -rn "SendMessageTimeoutW" crates/awase-windows/src/ | grep -v "ime\.rs"
+grep -rn "SendMessageTimeoutW" crates/awase-windows/src/ | grep -v "imm\.rs\|ime\.rs"
 ```
 
 ### 違反候補の分類
