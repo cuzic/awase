@@ -107,6 +107,21 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
     (down_at != 0).then(|| current_tick_ms().saturating_sub(down_at))
 }
 
+/// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
+///
+/// 用途: `Ctrl↓ → I↓ I↑ → 無変換↓` のような「Ctrl が既に他キーで consume された」
+/// パターンを検知し、無変換↓ で Ctrl+無変換 IME-OFF を即発火せず 50ms 救済窓を設けるため。
+/// 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは false のままなので、即時 IME-OFF できる。
+///
+/// Ctrl↓/Ctrl↑ で false にリセットされる。
+static CTRL_CONSUMED_SINCE_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// 直近の物理 Ctrl 押下以降に他の VK KeyDown を観測したか返す。
+#[must_use]
+pub fn ctrl_consumed_since_down() -> bool {
+    CTRL_CONSUMED_SINCE_DOWN.load(Ordering::Relaxed)
+}
+
 fn cached_hook_config() -> HookConfig {
     let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
     HookConfig {
@@ -348,6 +363,17 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             0
         };
         slot.store(new_value, Ordering::Relaxed);
+    }
+    // Ctrl consumption tracking
+    if crate::vk::is_ctrl_variant(vk) {
+        // Ctrl↓/Ctrl↑ どちらでも consumption をリセット（次の Ctrl 押下から再計測）
+        CTRL_CONSUMED_SINCE_DOWN.store(false, Ordering::Relaxed);
+    } else if is_keydown {
+        let ctrl_held = is_physical_key_down(crate::vk::VK_LCONTROL)
+            || is_physical_key_down(crate::vk::VK_RCONTROL);
+        if ctrl_held {
+            CTRL_CONSUMED_SINCE_DOWN.store(true, Ordering::Relaxed);
+        }
     }
     let config = cached_hook_config();
     let (key_classification, physical_pos) = classify_key(vk, scan, &config);
