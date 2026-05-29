@@ -674,7 +674,7 @@ pub(super) fn run_all() -> Result<()> {
 
     let (_uia_worker, uia_tx) = crate::focus::uia::spawn_uia_worker();
     let _gji_worker = crate::tsf::observer::start_monitor_thread();
-    let _ = with_app(|app| app.executor.platform.focus.set_uia_sender(uia_tx));
+    let _ = with_app(|app| app.executor.platform.set_focus_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
     initialize_ime_cache();

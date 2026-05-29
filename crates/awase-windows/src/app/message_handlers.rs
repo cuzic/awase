@@ -236,14 +236,7 @@ pub(super) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
         if kind != FocusKind::Undetermined {
             app.platform_state.focus.focus_kind = kind;
 
-            if let Some((pid, cls)) = app.executor.platform.focus.last_focus_info.as_ref() {
-                app.executor.platform.focus.cache.insert(
-                    *pid,
-                    cls.clone(),
-                    kind,
-                    DetectionSource::UiaAsync,
-                );
-            }
+            app.executor.platform.cache_focus_kind_if_focused(kind, DetectionSource::UiaAsync);
             if kind == FocusKind::NonText {
                 app.invalidate_engine_context(ContextChange::FocusChanged);
             }
