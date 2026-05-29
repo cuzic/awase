@@ -373,6 +373,15 @@ impl Engine {
         Decision::consumed_with(effects)
     }
 
+    /// 与えられたイベントが IME-OFF コンボキーにマッチするかを副作用なしで返す。
+    ///
+    /// Platform 層が「即時 IME-OFF か 50ms 救済窓 か」を判断するための先読み用 API。
+    /// 状態は何も変更しないので `&self`。
+    #[must_use]
+    pub fn matches_ime_off(&self, ctx: &InputContext, event: &RawKeyEvent) -> bool {
+        matches!(self.match_special_keys(ctx, event), Some(SpecialKeyMatch::ImeOff))
+    }
+
     /// 変換/無変換系の特殊キーのコンボマッチのみを行う純粋判定メソッド（副作用なし）。
     fn match_special_keys(&self, ctx: &InputContext, event: &RawKeyEvent) -> Option<SpecialKeyMatch> {
         let modifiers = ctx.modifiers;
