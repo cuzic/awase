@@ -113,7 +113,18 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_seq} class={win_class}");
 
-            let f2_sent_ms = crate::hook::current_tick_ms();
+            // F2NonTsf: 物理 F2 がすでに Chrome の composition context を初期化済み。
+            // プログラム的な F2 送信（SendMessageTimeout + SendInput）をスキップし、
+            // 物理 F2 の時刻を probe 基準点として使うことで Chrome が 3 回 F2 を受け取る
+            // バグ（「かんりのつごう → kaんりのつごう」）を防ぐ。
+            let cold_reason = self.composition.last_cold_reason();
+            let skip_f2_send = cold_reason == ColdReason::F2NonTsf;
+            let cold_marked_ms = self.composition.cold_marked_ms();
+            let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
+                cold_marked_ms
+            } else {
+                crate::hook::current_tick_ms()
+            };
 
             // ノンブロッキング Chrome プローブを開始。
             // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
@@ -133,7 +144,7 @@ impl Output {
                 )
             };
             log::debug!(
-                "[h1-probe] cold={cold_seq} long_idle={long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms",
+                "[h1-probe] cold={cold_seq} long_idle={long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms skip_f2={skip_f2_send}",
                 self.composition.idle_ms_at_last_cold(),
             );
 
@@ -156,24 +167,30 @@ impl Output {
                     conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
                 );
 
-                // IMC_SETCONVERSIONMODE を ROMAN に揃えてから SendInput でローマ字を送ることで
-                // カナ出力化けを防ぐ。await でワーカースレッドに完全委譲しているので順序は保たれる。
-                let _ = crate::ime::set_ime_romaji_mode_async().await;
+                if skip_f2_send {
+                    // 物理 F2 が Chrome の composition context を既に初期化済みのため
+                    // プログラム的な F2 送信をスキップする。probe は cold_marked_ms 基準で待機。
+                    log::debug!("[h1-run] cold={cold_seq} F2NonTsf: skip programmatic F2 (physical F2 at f2_sent_ms={f2_sent_ms})");
+                } else {
+                    // IMC_SETCONVERSIONMODE を ROMAN に揃えてから SendInput でローマ字を送ることで
+                    // カナ出力化けを防ぐ。await でワーカースレッドに完全委譲しているので順序は保たれる。
+                    let _ = crate::ime::set_ime_romaji_mode_async().await;
 
-                log::debug!("[h1-run] cold={cold_seq} F2 via SendMessageTimeout");
-                let f2_ok = crate::ime::send_f2_via_sendmessage_async().await;
-                log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
+                    log::debug!("[h1-run] cold={cold_seq} F2 via SendMessageTimeout");
+                    let f2_ok = crate::ime::send_f2_via_sendmessage_async().await;
+                    log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
 
-                // SendMessageTimeout はウィンドウの wndproc に直接届くが TSF のキーストローク
-                // マネージャーを経由しないため、Chrome の composition context が初期化されない。
-                // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
-                // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
-                let f2_via_sendinput = [
-                    make_key_input(VK_DBE_HIRAGANA, false),
-                    make_key_input(VK_DBE_HIRAGANA, true),
-                ];
-                let _ = crate::win32::send_input_safe(&f2_via_sendinput);
-                log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
+                    // SendMessageTimeout はウィンドウの wndproc に直接届くが TSF のキーストローク
+                    // マネージャーを経由しないため、Chrome の composition context が初期化されない。
+                    // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
+                    // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
+                    let f2_via_sendinput = [
+                        make_key_input(VK_DBE_HIRAGANA, false),
+                        make_key_input(VK_DBE_HIRAGANA, true),
+                    ];
+                    let _ = crate::win32::send_input_safe(&f2_via_sendinput);
+                    log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
+                }
 
                 // probe を install。guard は TsfProbeMachine に move されて probe 完了まで保持される。
                 let probe = crate::tsf::probe::TsfReadinessProbe::new(
