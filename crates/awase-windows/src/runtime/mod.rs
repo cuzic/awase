@@ -131,20 +131,20 @@ impl Runtime {
     /// Decision の副作用を実行する（メッセージループ用）。
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
         let result = self.executor.execute_from_loop(decision);
-        self.flush_sync_apply_events();
+        self.flush_pending_apply_events();
         result
     }
 
-    /// `DecisionExecutor` の sync IME apply outcome を排出し、
+    /// `DecisionExecutor` の sync path pending apply events を排出し、
     /// `shadow_model.pending` の generation に一致するもののみ
     /// `ImeApplySucceeded` / `ImeApplyFailed` を dispatch する。
     ///
     /// async path (ImmCross) は spawn_local 内で直接 dispatch するためここを経由しない。
     /// generation 照合は [[feedback_generation_check_for_async_apply]] 参照。
-    pub fn flush_sync_apply_events(&mut self) {
+    pub fn flush_pending_apply_events(&mut self) {
         use crate::state::ime_event::ImeEvent;
-        let outcomes = self.executor.drain_sync_apply_outcomes();
-        for (target, outcome) in outcomes {
+        let events = self.executor.drain_pending_apply_events();
+        for pending in events {
             let Some(generation) = self
                 .platform_state
                 .ime
@@ -158,7 +158,8 @@ impl Runtime {
                 // Succeeded/Failed も出さない。
                 continue;
             };
-            let event = ImeEvent::from_apply_outcome(target, outcome, generation);
+            let event =
+                ImeEvent::from_apply_outcome(pending.target, pending.outcome, generation);
             self.platform_state.ime.dispatch_event(event);
         }
     }

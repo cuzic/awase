@@ -52,12 +52,9 @@ pub struct DecisionExecutor {
     /// drain は「slot を先に試す → 通過したら queue に進む」の 2 段構え。
     /// queue 本体は常に純粋 FIFO で `push_back` / `pop_front` のみ。
     guard_held: Option<Effect>,
-    /// sync IME apply の outcome キュー。`DecisionExecutor` は `PlatformState` に
-    /// アクセスできないため、sync path では Apply outcome をここに溜めておき、
-    /// 呼び出し側 (`Runtime::flush_sync_apply_events`) が `shadow_model` へ
-    /// `ImeApplySucceeded`/`ImeApplyFailed` event を dispatch する。
-    /// async path (ImmCross) は `with_app` 経由で直接 dispatch するためここは経由しない。
-    sync_apply_outcomes: Vec<(bool, awase::platform::ImeOpenOutcome)>,
+    /// sync path の apply outcome を `Runtime::flush_pending_apply_events` で
+    /// dispatch するための pending record。詳細は `PendingApplyEvent` 参照。
+    pending_apply_events: Vec<crate::state::ime_event::PendingApplyEvent>,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -75,16 +72,16 @@ impl DecisionExecutor {
             deferred_passthrough_vks: HashSet::new(),
             pending_warmup_on_keyup: false,
             guard_held: None,
-            sync_apply_outcomes: Vec::new(),
+            pending_apply_events: Vec::new(),
         }
     }
 
-    /// sync IME apply outcomes をすべて取り出す。
+    /// sync path の pending apply events をすべて取り出す。
     /// `Runtime` 側で event dispatch (generation 照合付き) するために呼ぶ。
-    pub fn drain_sync_apply_outcomes(
+    pub fn drain_pending_apply_events(
         &mut self,
-    ) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
-        std::mem::take(&mut self.sync_apply_outcomes)
+    ) -> Vec<crate::state::ime_event::PendingApplyEvent> {
+        std::mem::take(&mut self.pending_apply_events)
     }
 
     /// フックコールバックから呼ぶ。
@@ -566,9 +563,11 @@ impl DecisionExecutor {
         if let Some((open, outcome)) = self.dispatch_effect(effect) {
             self.post_apply_ime_open(open, outcome);
             // Phase 3b: sync path で ImeApplySucceeded/Failed event を dispatch するため、
-            // outcome を caller (Runtime::flush_sync_apply_events) に伝達する。
+            // outcome を caller (Runtime::flush_pending_apply_events) に伝達する。
             // async path (ImmCross) は spawn_local 内で直接 dispatch するためここを経由しない。
-            self.sync_apply_outcomes.push((open, outcome));
+            self.pending_apply_events.push(
+                crate::state::ime_event::PendingApplyEvent { target: open, outcome },
+            );
         }
     }
 
