@@ -684,9 +684,13 @@ impl DecisionExecutor {
         open: bool,
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
-        let imm_first = {
+        let (imm_first, shadow_on, applied_at_ms) = {
             let view = self.platform.build_ime_control_view(None);
-            crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view)
+            (
+                crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view),
+                view.control.shadow_on,
+                view.control.applied_at_ms,
+            )
         };
         if imm_first {
             // ── async path (ImmCross が選ばれるアプリ) ──
@@ -775,31 +779,29 @@ impl DecisionExecutor {
                 if !profile.can_use_imm32_cross_process()
                     && !crate::tsf::observer::gji_monitor_healthy()
                 {
-                    let last_ms = self.platform.output.last_applied_ime_on_ms();
                     let now_ms = crate::hook::current_tick_ms();
                     // SetOpen(false): 「確認済み OFF」なら永続スキップ。
-                    //   applied_ms > 0 = フォーカス変更後に実 apply が 1 回以上完了 = 信頼できる。
-                    //   applied_ms == 0 = フォーカス変更直後のプリシンクのみ = 不確定なので override 許可。
+                    //   applied_at_ms > 0 = フォーカス変更後に実 apply が 1 回以上完了 = 信頼できる。
+                    //   applied_at_ms == 0 = フォーカス変更直後のプリシンクのみ = 不確定なので override 許可。
                     //   これにより定常状態で Ctrl+無変換 を複数回押しても VK_KANJI が重複送信されず、
                     //   IME が OFF → ON と誤トグルするバグを防ぐ。
                     // SetOpen(true): 300ms ウィンドウを維持。
                     //   KeyDown+KeyUp 二重送信を防ぎつつ、フォーカス変更後 Ctrl+変換 の再試行を許容。
                     let skip_override = if !open {
                         // OFF 方向: 実 apply 確認済みなら永続スキップ
-                        self.platform.output.last_applied_ime_on() == open
-                            && last_ms > 0
+                        shadow_on == open && applied_at_ms > 0
                     } else {
                         // ON 方向: 300ms ウィンドウ (従来動作)
-                        self.platform.output.last_applied_ime_on() == open
-                            && last_ms > 0
-                            && now_ms.saturating_sub(last_ms) < 300
+                        shadow_on == open
+                            && applied_at_ms > 0
+                            && now_ms.saturating_sub(applied_at_ms) < 300
                     };
                     if skip_override {
                         log::debug!(
                             "[dispatch-ime] KanjiToggle (profile={:?}): skip latch force \
                              (confirmed dir={open}, applied {}ms ago)",
                             profile,
-                            now_ms.saturating_sub(last_ms)
+                            now_ms.saturating_sub(applied_at_ms)
                         );
                     } else {
                         self.platform.output.set_ime_apply_latch(!open);
