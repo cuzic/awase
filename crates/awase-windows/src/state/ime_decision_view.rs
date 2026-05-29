@@ -62,7 +62,8 @@ impl ObservedState {
 
 /// `apply_ime_open` が最後に OS に送ったコマンド値（制御ログ）。
 ///
-/// 真の観測値ではない。`ImeBelief.ime_on`（SSOT）とは別物。
+/// 真の観測値ではない。`ImeModel.applied_open / applied_at_ms`（SSOT）から
+/// 各 apply サイクルの先頭で pre-fetch されるスナップショット。
 /// VK_KANJI がトグルキーであるため、重複送信を避けるために参照する。
 #[derive(Clone, Copy)]
 pub(crate) struct ControlLog {
