@@ -277,7 +277,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         );
 
         // IMM 能力の学習
-        self.learn_imm_capability_from_result(miss_before, miss_after);
+        self.rt.learn_imm_capability_from_miss(miss_before, miss_after);
 
         // 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
         self.try_force_on_bootstrap();
@@ -325,52 +325,6 @@ impl<'a> ImeRefreshPipeline<'a> {
             }
         }
         let _ = miss_before; // suppress unused warning if logging is compiled out
-    }
-
-    /// 検出結果に基づいて class_name ごとの IMM 能力をキャッシュ。
-    fn learn_imm_capability_from_result(&mut self, miss_before: u32, miss_after: u32) {
-        if let Some((_, class_name)) = self.rt.executor.platform.focus.last_focus_info.as_ref() {
-            let class_name = class_name.clone();
-            if miss_after == 0 && miss_before > 0 {
-                // 検出成功: IMM ブリッジが動作している
-                let prev = self
-                    .rt
-                    .executor
-                    .platform
-                    .focus
-                    .imm_learning
-                    .get(&class_name);
-                if prev != Some(ImmCapability::Works) {
-                    log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
-                    self.rt
-                        .executor
-                        .platform
-                        .focus
-                        .learn_imm_capability(class_name, ImmCapability::Works);
-                }
-            } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
-                && miss_before < crate::IME_DETECT_MISS_THRESHOLD
-            {
-                // 閾値到達: IMM ブリッジが壊れている
-                let prev = self
-                    .rt
-                    .executor
-                    .platform
-                    .focus
-                    .imm_learning
-                    .get(&class_name);
-                if prev != Some(ImmCapability::Unavailable) {
-                    log::info!(
-                        "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
-                    );
-                    self.rt
-                        .executor
-                        .platform
-                        .focus
-                        .learn_imm_capability(class_name, ImmCapability::Unavailable);
-                }
-            }
-        }
     }
 
     /// 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）

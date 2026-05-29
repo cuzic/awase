@@ -119,6 +119,32 @@ impl Runtime {
         self.executor.platform.focus.current_app_profile().can_use_imm32_cross_process()
     }
 
+    /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
+    pub fn learn_imm_capability_from_miss(&mut self, miss_before: u32, miss_after: u32) {
+        use crate::focus::classifier::ImmCapability;
+        let Some((_, class_name)) = self.executor.platform.focus.last_focus_info.as_ref() else {
+            return;
+        };
+        let class_name = class_name.clone();
+        if miss_after == 0 && miss_before > 0 {
+            let prev = self.executor.platform.focus.imm_learning.get(&class_name);
+            if prev != Some(ImmCapability::Works) {
+                log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
+                self.executor.platform.focus.learn_imm_capability(class_name, ImmCapability::Works);
+            }
+        } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
+            && miss_before < crate::IME_DETECT_MISS_THRESHOLD
+        {
+            let prev = self.executor.platform.focus.imm_learning.get(&class_name);
+            if prev != Some(ImmCapability::Unavailable) {
+                log::info!(
+                    "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
+                );
+                self.executor.platform.focus.learn_imm_capability(class_name, ImmCapability::Unavailable);
+            }
+        }
+    }
+
     /// IME 関連の事前分類情報を sync key 設定で補完する
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         let vk = event.vk_code;
