@@ -204,7 +204,7 @@ impl KeyEventPipeline<'_> {
         let warmup_ms = self.app.executor.platform.eager_warmup_sent_ms();
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
-        let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;
+        let last_focus_change_ms = self.app.platform_state.last_focus_change_ms;
         let shadow_on = self.app.platform_state.ime.shadow_model.applied_open.unwrap_or(false);
 
         win32_async::spawn_local(async move {

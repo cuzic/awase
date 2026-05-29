@@ -102,14 +102,14 @@ impl Runtime {
 
     /// output 層が注入モードを決定するために呼ぶ公開 API。
     ///
-    /// focus の `injection_hint()` と `platform_state.focus.app_kind` を組み合わせて
+    /// focus の `injection_hint()` と `platform_state.app_kind` を組み合わせて
     /// `InjectionHint` を返す。output 層はこのメソッドのみを呼び、
     /// focus/classify の内部型に直接アクセスしない。
     #[must_use]
     pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
         (
             self.executor.platform.injection_hint(),
-            self.platform_state.focus.app_kind,
+            self.platform_state.app_kind,
         )
     }
 
@@ -276,7 +276,7 @@ impl Runtime {
         {
             let hint = self.executor.platform.injection_hint();
             let new_mode = crate::output::types::InjectionMode::from(
-                (hint, self.platform_state.focus.app_kind),
+                (hint, self.platform_state.app_kind),
             );
             self.executor.platform.update_injection_mode(new_mode);
         }
@@ -329,13 +329,13 @@ impl Runtime {
             );
         }
 
-        if self.platform_state.focus.app_kind != new_app_kind {
+        if self.platform_state.app_kind != new_app_kind {
             log::info!(
                 "AppKind changed: {:?} → {:?} (class={class_name})",
-                self.platform_state.focus.app_kind,
+                self.platform_state.app_kind,
                 new_app_kind
             );
-            self.platform_state.focus.app_kind = new_app_kind;
+            self.platform_state.app_kind = new_app_kind;
         }
 
         // ── Phase 3: focus_kind を決定 ──
@@ -355,12 +355,12 @@ impl Runtime {
         let overridden = resolution.overridden;
 
         // focus_kind を更新
-        if self.platform_state.focus.focus_kind != kind {
+        if self.platform_state.focus_kind != kind {
             log::debug!(
                 "Focus kind changed: {:?} → {kind:?} (reason={reason})",
-                self.platform_state.focus.focus_kind
+                self.platform_state.focus_kind
             );
-            self.platform_state.focus.focus_kind = kind;
+            self.platform_state.focus_kind = kind;
         }
 
         // キャッシュ格納（オーバーライドでない場合のみ）
@@ -434,7 +434,7 @@ impl Runtime {
             self.platform_state.is_japanese_ime(),
         );
 
-        self.platform_state.focus.last_focus_change_ms = crate::hook::current_tick_ms();
+        self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
         self.executor.platform.notify_focus_changed();
         // Step 1.5: FocusChanged event を dispatch して shadow_model の AppImePolicy を更新する。
         // 順序: policy 確定 → observation clear → 以降の observation は新 policy で評価される。
@@ -622,7 +622,7 @@ impl Runtime {
 
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
-        self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
+        self.schedule_ime_refresh(u64::from(self.platform_state.ime_poll_interval_ms));
     }
 
     /// Blacklist アプリ（Chrome 等）で IME belief が ON のとき OS に force-ON を送る。
@@ -689,14 +689,14 @@ impl Runtime {
 
     /// 手動アプリオーバーライドのトグル処理
     pub fn toggle_app_override(&mut self) {
-        let current = self.platform_state.focus.focus_kind;
+        let current = self.platform_state.focus_kind;
         let new_kind = if current == FocusKind::TextInput {
             FocusKind::NonText
         } else {
             FocusKind::TextInput
         };
 
-        self.platform_state.focus.focus_kind = new_kind;
+        self.platform_state.focus_kind = new_kind;
 
         // Update learning cache
         if self.executor.platform.focus.is_focused() {

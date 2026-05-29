@@ -144,7 +144,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             ImeReadStrategy::Blacklist => {
                 log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
                 let obs = crate::observer::gji_observer::observe_gji_after_focus(
-                    self.rt.platform_state.focus.last_focus_change_ms,
+                    self.rt.platform_state.last_focus_change_ms,
                 );
                 log::debug!(
                     "[stage-observe] gji_result={:?}",
@@ -291,7 +291,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         miss_after: u32,
     ) {
         let age_ms = crate::hook::current_tick_ms()
-            .saturating_sub(self.rt.platform_state.focus.last_focus_change_ms);
+            .saturating_sub(self.rt.platform_state.last_focus_change_ms);
         if age_ms < 10_000 {
             let ime_on_after = self.rt.platform_state.ime_on();
             let input_mode_after = self.rt.platform_state.input_mode();

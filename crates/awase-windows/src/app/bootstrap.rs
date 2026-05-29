@@ -307,8 +307,8 @@ pub(super) fn initialize_app(
     all_keymaps: crate::keymap::KeymapTable,
 ) {
     let mut ps = crate::PlatformState::new();
-    ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
-    ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+    ps.focus_debounce_ms = config.general.focus_debounce_ms;
+    ps.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(&mut ps.hook_config, left_thumb_vk, right_thumb_vk);
 
     let engine_on_ime_vk = config
@@ -460,7 +460,7 @@ unsafe extern "system" fn win_event_proc(
             crate::TIMER_TSF_GATE,
             std::time::Duration::from_millis(crate::tsf::WARMUP_TIMEOUT_MS),
         );
-        let debounce_ms = u64::from(app.platform_state.focus.focus_debounce_ms);
+        let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
         app.schedule_ime_refresh(debounce_ms);
     });
 }
@@ -675,7 +675,7 @@ pub(super) fn run_all() -> Result<()> {
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     let _ = with_app(|app| {
-        app.schedule_ime_refresh(u64::from(app.platform_state.focus.ime_poll_interval_ms));
+        app.schedule_ime_refresh(u64::from(app.platform_state.ime_poll_interval_ms));
         app.executor
             .platform
             .timer

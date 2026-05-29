@@ -32,7 +32,7 @@ pub(super) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
     app.platform_state.last_hook_activity_ms = hook::current_tick_ms();
 
     // NonText フォーカス（タスクバー等）はすべて OS にパススルー
-    if app.platform_state.focus.focus_kind == FocusKind::NonText {
+    if app.platform_state.focus_kind == FocusKind::NonText {
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
         return;
@@ -63,7 +63,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
             app.executor.platform.timer.kill(TIMER_POWER_RESUME);
             log::info!("Power resume recovery");
             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-            app.platform_state.focus.focus_kind = FocusKind::Undetermined;
+            app.platform_state.focus_kind = FocusKind::Undetermined;
             app.schedule_ime_refresh(500);
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
@@ -229,12 +229,12 @@ pub(super) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
     } else {
         if app_kind_u8 != crate::FOCUS_KIND_UPDATE_NO_APP_KIND {
             let app_kind = awase::types::AppKind::from_u8(app_kind_u8);
-            app.platform_state.focus.app_kind = app_kind;
+            app.platform_state.app_kind = app_kind;
             log::debug!("UIA AppKind update: {app_kind:?}");
         }
 
         if kind != FocusKind::Undetermined {
-            app.platform_state.focus.focus_kind = kind;
+            app.platform_state.focus_kind = kind;
 
             if app.executor.platform.focus.is_focused() {
                 let pid = app.executor.platform.focus.pid;

@@ -96,7 +96,7 @@ impl ImeDiagnosticSnapshot {
                 (0u32, String::new())
             };
 
-            let focus_change_ms = app.platform_state.focus.last_focus_change_ms;
+            let focus_change_ms = app.platform_state.last_focus_change_ms;
             let activity_ms = app.platform_state.last_hook_activity_ms;
 
             let dt_focus = if focus_change_ms == 0 {
@@ -339,7 +339,7 @@ fn resolve_injection_mode_label() -> &'static str {
             InjectionHint::ForceVk => return "Vk",
             InjectionHint::Default => {}
         }
-        match app.platform_state.focus.app_kind {
+        match app.platform_state.app_kind {
             AppKind::TsfNative => "Vk",
             _ => "Unicode",
         }

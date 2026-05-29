@@ -92,38 +92,6 @@ impl ImeStateHub {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// FocusPlatformState
-// ────────────────────────────────────────────────────────────────────────────
-
-/// フォーカス追跡に関する Platform 層の状態を集約する構造体。
-///
-/// app_kind・focus_kind・タイミング・ポーリング間隔を保持する。
-///
-/// Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換済。
-#[derive(Debug)]
-pub struct FocusPlatformState {
-    pub app_kind: AppKind,
-    pub focus_kind: FocusKind,
-    /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
-    /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
-    pub last_focus_change_ms: u64,
-    pub focus_debounce_ms: u32,
-    pub ime_poll_interval_ms: u32,
-}
-
-impl FocusPlatformState {
-    const fn new() -> Self {
-        Self {
-            app_kind: AppKind::Win32,
-            focus_kind: FocusKind::Undetermined,
-            last_focus_change_ms: 0,
-            focus_debounce_ms: 50,
-            ime_poll_interval_ms: 500,
-        }
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
 // PlatformState
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -135,8 +103,14 @@ impl FocusPlatformState {
 pub struct PlatformState {
     /// IME 観測・判断・belief 書き戻しを担う凝集ユニット。
     pub(crate) ime: ImeStateHub,
-    /// フォーカス追跡に関する状態を集約するユニット。
-    pub focus: FocusPlatformState,
+    // ── フォーカス追跡フィールド（旧 FocusPlatformState から直接展開）──
+    pub app_kind: AppKind,
+    pub focus_kind: FocusKind,
+    /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
+    /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
+    pub last_focus_change_ms: u64,
+    pub focus_debounce_ms: u32,
+    pub ime_poll_interval_ms: u32,
     pub hook: HookRoutingState,
     pub hook_config: HookConfig,
     pub last_hook_activity_ms: u64,
@@ -155,7 +129,11 @@ impl PlatformState {
     pub fn new() -> Self {
         Self {
             ime: ImeStateHub::new(),
-            focus: FocusPlatformState::new(),
+            app_kind: AppKind::Win32,
+            focus_kind: FocusKind::Undetermined,
+            last_focus_change_ms: 0,
+            focus_debounce_ms: 50,
+            ime_poll_interval_ms: 500,
             hook: HookRoutingState::default(),
             hook_config: HookConfig {
                 left_thumb_vk: crate::vk::VK_NONCONVERT,
