@@ -258,13 +258,15 @@ impl Output {
 
     /// 現在の TSF 準備状態を多次元スナップショットとして返す。
     ///
-    /// ゲート状態・IME ON・注入モードを一つの型にまとめる。
+    /// `applied_ime_on`: 呼び出し元が知っている「最後に apply された IME 開閉状態」。
+    /// executor は `applied_snapshot` から渡す。非 executor 呼び出し元は
+    /// `Some(self.composition.last_applied_ime_on())` を渡すか `None` でフォールバック。
     /// 条件判定には返り値のメソッド（`can_warmup()` 等）を使う。
     #[must_use]
-    pub fn tsf_readiness(&self) -> awase::tsf::TsfReadiness {
+    pub fn tsf_readiness(&self, applied_ime_on: Option<bool>) -> awase::tsf::TsfReadiness {
         awase::tsf::TsfReadiness {
             gate: self.tsf_gate.state(),
-            ime_on: self.composition.last_applied_ime_on(),
+            ime_on: applied_ime_on.unwrap_or_else(|| self.composition.last_applied_ime_on()),
             is_tsf_mode: self.is_tsf_mode(),
         }
     }
@@ -285,12 +287,13 @@ impl Output {
     /// - NativeF2Consumed 直後: 物理 F2 の代替として送信（二重 F2 防止）
     /// - PassthroughConfirmKey / ReinjectConfirmKey 直後: Enter/Escape 後の次打鍵を warmup
     ///
-    /// `last_applied_ime_on` が false（IME OFF）または TSF モード以外では何もしない。
+    /// `applied_ime_on`: 呼び出し元が知っている IME 開閉状態。`None` で latch にフォールバック。
+    /// 値が false（IME OFF）または TSF モード以外では何もしない。
     ///
     /// `eager_warmup_sent_ms` を現在時刻で更新する。NativeF2Consumed 等の前に
     /// `mark_composition_cold` が呼ばれて 0 にリセットされるため二重更新は発生しない。
-    pub fn send_eager_tsf_warmup(&self) {
-        if !self.tsf_readiness().can_warmup() {
+    pub fn send_eager_tsf_warmup(&self, applied_ime_on: Option<bool>) {
+        if !self.tsf_readiness(applied_ime_on).can_warmup() {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）

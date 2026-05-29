@@ -437,7 +437,9 @@ impl<'a> ImeRefreshPipeline<'a> {
             .mark_composition_cold(crate::output::ColdReason::FocusChange);
 
         // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
-        self.rt.executor.platform.output.send_eager_tsf_warmup();
+        // mirror_applied_open 直後なので ImeModel の applied_open を使う。
+        let applied_open = self.rt.platform_state.ime.shadow_model.applied_open;
+        self.rt.executor.platform.output.send_eager_tsf_warmup(applied_open);
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
         );

@@ -404,7 +404,7 @@ impl DecisionExecutor {
                 "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
                 raw_event.vk_code,
             );
-            self.platform.output.send_eager_tsf_warmup();
+            self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -423,7 +423,7 @@ impl DecisionExecutor {
                 "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
                 raw_event.vk_code,
             );
-            self.platform.output.send_eager_tsf_warmup();
+            self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -491,7 +491,7 @@ impl DecisionExecutor {
                 self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
                 // 物理 F2 消費直後に warmup F2 を即送信。WezTerm の TSF context
                 // 初期化がユーザーの次キーストロークまでに完了するよう先行させる。
-                self.platform.output.send_eager_tsf_warmup();
+                self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
             } else {
                 log::debug!(
                     "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -537,7 +537,7 @@ impl DecisionExecutor {
                 self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                 // 次打鍵が 305ms 以内でも文字化けしないよう即 F2 warmup を先行送信する。
                 // IME OFF の場合は send_eager_tsf_warmup が内部でガードする。
-                self.platform.output.send_eager_tsf_warmup();
+                self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
             }
         }
     }
@@ -593,7 +593,7 @@ impl DecisionExecutor {
                 );
                 self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
                 // deferred F2 も即 eager warmup を送信する（passthrough 経路と同様）。
-                self.platform.output.send_eager_tsf_warmup();
+                self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
             } else {
                 log::debug!(
                     "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -625,7 +625,8 @@ impl DecisionExecutor {
                         vk_code,
                     );
                     app.executor.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
-                    app.executor.platform.output.send_eager_tsf_warmup();
+                    let applied = app.executor.applied_snapshot.map(|(v, _)| v);
+                    app.executor.platform.output.send_eager_tsf_warmup(applied);
                 });
             }
             drop(guard);
@@ -864,7 +865,7 @@ impl DecisionExecutor {
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-            self.platform.output.send_eager_tsf_warmup();
+            self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
