@@ -135,7 +135,17 @@ impl Runtime {
 
     /// Decision の副作用を実行する（メッセージループ用）。
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let result = self.executor.execute_from_loop(decision);
+        let pre_applied = {
+            let sm = &self.platform_state.ime.shadow_model;
+            sm.applied_open.map(|v| (v, sm.applied_at_ms))
+        };
+        let result = self.executor.execute_from_loop(decision, pre_applied);
+        let post_applied = self.executor.applied_snapshot;
+        if post_applied != pre_applied {
+            if let Some((v, ts)) = post_applied {
+                self.platform_state.ime.mirror_applied_open_with_ts(v, ts);
+            }
+        }
         self.flush_pending_apply_events();
         result
     }

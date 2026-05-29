@@ -49,6 +49,12 @@ pub struct DecisionExecutor {
     /// sync path の apply outcome を `Runtime::flush_pending_apply_events` で
     /// dispatch するための pending record。詳細は `PendingApplyEvent` 参照。
     pending_apply_events: Vec<crate::state::ime_event::PendingApplyEvent>,
+    /// 直近の apply 済み IME 状態スナップショット (value, timestamp_ms)。
+    ///
+    /// decision サイクル開始時に `ImeModel.applied_open/applied_at_ms` から pre-fetch され、
+    /// バッチ内の `SetOpen` 処理後に即時更新される（intra-batch ordering 用）。
+    /// `ImeModel` が SSOT; これはバッチ内 communication channel 兼 cross-decision cache。
+    pub(crate) applied_snapshot: Option<(bool, u64)>,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -66,6 +72,7 @@ impl DecisionExecutor {
             deferred_passthrough_vks: HashSet::new(),
             guard_held: None,
             pending_apply_events: Vec::new(),
+            applied_snapshot: None,
         }
     }
 
@@ -82,7 +89,13 @@ impl DecisionExecutor {
     /// - Filter モード: 入出力系は即座実行、重い処理は遅延。PassThrough を OS に返す。
     /// - Relay モード: 全 Effects をキューに入れ、PassThrough キーも ReinjectKey に変換。
     ///   常に Consumed を返す。
-    pub fn execute_from_hook(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
+    pub fn execute_from_hook(
+        &mut self,
+        decision: Decision,
+        raw_event: &RawKeyEvent,
+        applied: Option<(bool, u64)>,
+    ) -> HookResult {
+        self.applied_snapshot = applied;
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(decision),
             HookMode::Relay => self.execute_relay(decision, raw_event),
@@ -90,7 +103,8 @@ impl DecisionExecutor {
     }
 
     /// メッセージループから呼ぶ。全 Effects を即座に実行する。
-    pub fn execute_from_loop(&mut self, decision: Decision) -> CallbackResult {
+    pub fn execute_from_loop(&mut self, decision: Decision, applied: Option<(bool, u64)>) -> CallbackResult {
+        self.applied_snapshot = applied;
         let (consumed, effects) = match decision {
             Decision::PassThrough => return CallbackResult::PassThrough,
             Decision::PassThroughWith { effects } => (false, effects),
@@ -390,7 +404,7 @@ impl DecisionExecutor {
                 "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
                 raw_event.vk_code,
             );
-            self.platform.send_eager_warmup();
+            self.platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -409,7 +423,7 @@ impl DecisionExecutor {
                 "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
                 raw_event.vk_code,
             );
-            self.platform.send_eager_warmup();
+            self.platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -473,7 +487,7 @@ impl DecisionExecutor {
             if is_key_down {
                 // 物理 F2 消費時の composition 状態更新を platform に委譲する。
                 // mark_cold(NativeF2Consumed) + eager warmup を platform 内で処理。
-                self.platform.on_passthrough_key(raw_event.vk_code, true);
+                self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
             } else {
                 log::debug!(
                     "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -492,7 +506,7 @@ impl DecisionExecutor {
         // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
         // mark_cold / pending_warmup_on_keyup / eager warmup は platform に委譲する。
         if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            self.platform.on_passthrough_key(raw_event.vk_code, true);
+            self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -504,7 +518,7 @@ impl DecisionExecutor {
         // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
         // mark_cold(F2NonTsf) を platform に委譲する。
         if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && is_key_down {
-            self.platform.on_passthrough_key(raw_event.vk_code, true);
+            self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -541,7 +555,7 @@ impl DecisionExecutor {
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA && self.platform.is_tsf_mode() {
             if is_key_down {
                 // mark_cold(NativeF2Consumed) + eager warmup を platform に委譲する。
-                self.platform.on_reinject_key(event.vk_code, true);
+                self.platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
             } else {
                 log::debug!(
                     "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -569,7 +583,8 @@ impl DecisionExecutor {
             // mark_cold(ReinjectConfirmKey) + eager warmup を platform に委譲する。
             if is_key_down && vk_code.is_composition_confirm_key() {
                 let _ = crate::with_app(|app| {
-                    app.executor.platform.on_reinject_key(vk_code, true);
+                    let applied_ime_on = app.executor.applied_snapshot.map(|(v, _)| v);
+                    app.executor.platform.on_reinject_key(vk_code, true, applied_ime_on);
                 });
             }
             drop(guard);
@@ -585,7 +600,7 @@ impl DecisionExecutor {
             return self.dispatch_ime_set_open(open, origin);
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
-        let applied_for_engine_key = self.platform.applied_snapshot.map(|(v, _)| v);
+        let applied_for_engine_key = self.applied_snapshot.map(|(v, _)| v);
         let platform: &mut dyn PlatformRuntime = &mut self.platform;
         match effect {
             Effect::Input(ie) => match ie {
@@ -638,7 +653,7 @@ impl DecisionExecutor {
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         let (imm_first, shadow_on, applied_at_ms) = {
-            let view = self.platform.build_ime_control_view(self.platform.applied_snapshot);
+            let view = self.platform.build_ime_control_view(self.applied_snapshot);
             (
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view),
                 view.control.shadow_on,
@@ -659,7 +674,7 @@ impl DecisionExecutor {
             // LINE/Qt 等の ImmCross アプリはこの VK_F4 Up に対して VK_F3 Down を
             // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
             // → 楽観的に applied_snapshot を更新して send_engine_state_ime_key をスキップさせる。
-            self.platform.applied_snapshot = Some((open, 0));
+            self.applied_snapshot = Some((open, 0));
             // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
             // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
             // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
@@ -727,7 +742,7 @@ impl DecisionExecutor {
             // GJI が起動している場合は GjiDirectStrategy (F13/F14) が選ばれるため override 不要。
             // F14 は shadow に関わらず常に送信される (べき等)。F13 も GjiDirectStrategy が自前で
             // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
-            let mut apply_context = self.platform.applied_snapshot;
+            let mut apply_context = self.applied_snapshot;
             if origin == EffectOrigin::EngineIntent {
                 let profile = self.platform.focus.current_app_profile();
                 if !profile.can_use_imm32_cross_process()
@@ -778,9 +793,15 @@ impl DecisionExecutor {
         }
     }
 
-    /// `applied_snapshot` + latch 更新・open==true の cold/warmup 処理を platform に委譲する。
+    /// executor.applied_snapshot 更新・open==true の cold/warmup 処理を platform に委譲する。
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
+        use awase::platform::ImeOpenOutcome;
+        let effective = match outcome {
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
+            ImeOpenOutcome::Failed => !open,
+        };
+        self.applied_snapshot = Some((effective, crate::hook::current_tick_ms()));
         self.platform.on_ime_applied(open, outcome);
     }
 }

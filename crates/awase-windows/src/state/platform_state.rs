@@ -72,8 +72,16 @@ impl ImeStateHub {
     /// ImeModel アクセス可能なサイトで `set_ime_apply_latch` の代わりに呼ぶ。
     /// executor 内部 (PlatformState 非アクセス) は ImeApplySucceeded event 経由で更新される。
     pub(crate) fn mirror_applied_open(&mut self, value: bool) {
+        self.mirror_applied_open_with_ts(value, crate::hook::current_tick_ms());
+    }
+
+    /// `applied_open / applied_at_ms` を指定タイムスタンプで更新する。
+    ///
+    /// `ts = 0` は「楽観的未確認」（ImmCross async 送信直後など）を表す。
+    /// `applied_at_ms > 0` が「apply 確認済み」の条件なので skip_override 等の判定に影響する。
+    pub(crate) fn mirror_applied_open_with_ts(&mut self, value: bool, ts: u64) {
         self.shadow_model.applied_open = Some(value);
-        self.shadow_model.applied_at_ms = crate::hook::current_tick_ms();
+        self.shadow_model.applied_at_ms = ts;
         // 同じ apply が完了した扱いなので pending も clear
         if let Some(p) = &self.shadow_model.pending {
             if p.target == value {

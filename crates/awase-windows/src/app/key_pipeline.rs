@@ -440,7 +440,20 @@ impl KeyEventPipeline<'_> {
             decision
         };
 
-        let hook_result = self.app.executor.execute_from_hook(decision, event);
+        // ImeModel から applied snapshot を pre-fetch して executor に渡す。
+        // executor は intra-batch 更新でこの値を書き換えることがある（ImmCross 楽観更新等）。
+        let pre_applied = {
+            let sm = &self.app.platform_state.ime.shadow_model;
+            sm.applied_open.map(|v| (v, sm.applied_at_ms))
+        };
+        let hook_result = self.app.executor.execute_from_hook(decision, event, pre_applied);
+        // executor が applied_snapshot を変更した場合（ImmCross 楽観更新等）、ImeModel に write-back。
+        let post_applied = self.app.executor.applied_snapshot;
+        if post_applied != pre_applied {
+            if let Some((v, ts)) = post_applied {
+                self.app.platform_state.ime.mirror_applied_open_with_ts(v, ts);
+            }
+        }
         // Phase 3b: sync IME apply の Succeeded/Failed event を generation 照合で dispatch する。
         self.app.flush_pending_apply_events();
 

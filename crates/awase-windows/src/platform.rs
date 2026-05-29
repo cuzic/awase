@@ -26,12 +26,6 @@ pub struct WindowsPlatform {
     /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
     /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
     pub suppress_engine_state_key: bool,
-    /// executor が最後に apply した IME 状態スナップショット (value, timestamp_ms)。
-    ///
-    /// `on_ime_applied` / `send_eager_warmup` が参照する SSOT。
-    /// `send_engine_state_ime_key` / `send_eager_tsf_warmup` に明示的に渡すことで
-    /// `Output::composition` への hidden 読み込みを排除する。
-    pub(crate) applied_snapshot: Option<(bool, u64)>,
     /// warm+TSF Enter/Space/Escape KeyDown 後に KeyUp で eager warmup を送信するフラグ。
     ///
     /// hook callback 内では `SendInput(F2)` → `CallNextHookEx(Enter↓)` の順になり、
@@ -49,12 +43,12 @@ impl std::fmt::Debug for WindowsPlatform {
 impl WindowsPlatform {
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
 
-    /// `applied_snapshot` を使った eager warmup 送信（executor 内部用）。
-    pub(crate) fn send_eager_warmup(&self) {
-        self.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+    /// `applied_ime_on` を指定して eager warmup を送信する。
+    pub(crate) fn send_eager_warmup(&self, applied_ime_on: Option<bool>) {
+        self.output.send_eager_tsf_warmup(applied_ime_on);
     }
 
-    /// 外部から `applied_ime_on` を指定して eager warmup を送信する（ime_refresh 等用）。
+    /// フォーカス変更時の eager warmup（ime_refresh 等から呼ぶ）。
     pub(crate) fn send_eager_warmup_with(&self, applied_ime_on: Option<bool>) {
         self.output.send_eager_tsf_warmup(applied_ime_on);
     }
@@ -201,7 +195,7 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
-        let view = self.build_ime_control_view_latch();
+        let view = self.build_ime_control_view(None);
         crate::ime_controller::CONTROLLER.apply(open, &view)
     }
 
@@ -287,30 +281,29 @@ impl PlatformRuntime for WindowsPlatform {
 
     fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
-        match outcome {
-            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
-                let ts = crate::hook::current_tick_ms();
-                self.applied_snapshot = Some((open, ts));
-            }
-            ImeOpenOutcome::Failed => {
-                let ts = crate::hook::current_tick_ms();
-                self.applied_snapshot = Some((!open, ts));
-            }
-        }
+        let effective = match outcome {
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
+            ImeOpenOutcome::Failed => !open,
+        };
         crate::tsf::observer::reset_candidate_was_seen();
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-            self.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+            self.output.send_eager_tsf_warmup(Some(effective));
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output.mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
         }
     }
 
-    fn on_passthrough_key(&mut self, vk: awase::types::VkCode, is_keydown: bool) {
+    fn on_passthrough_key(
+        &mut self,
+        vk: awase::types::VkCode,
+        is_keydown: bool,
+        applied_ime_on: Option<bool>,
+    ) {
         use crate::vk::VkCodeExt as _;
-        let applied = self.applied_snapshot.map(|(v, _)| v);
+        let applied = applied_ime_on;
 
         // F2 in TSF mode keydown: NativeF2Consumed (consume decision は executor 側で行う)
         if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
@@ -352,9 +345,14 @@ impl PlatformRuntime for WindowsPlatform {
         }
     }
 
-    fn on_reinject_key(&mut self, vk: awase::types::VkCode, is_keydown: bool) {
+    fn on_reinject_key(
+        &mut self,
+        vk: awase::types::VkCode,
+        is_keydown: bool,
+        applied_ime_on: Option<bool>,
+    ) {
         use crate::vk::VkCodeExt as _;
-        let applied = self.applied_snapshot.map(|(v, _)| v);
+        let applied = applied_ime_on;
 
         if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
             log::debug!(
@@ -380,7 +378,7 @@ impl WindowsPlatform {
     /// `apply_ime_open` 用の `ImeControlView` を構築する。
     ///
     /// `applied` には呼び出し元が持つ `ImeModel.applied_open` と `applied_at_ms` のペアを渡す。
-    /// `None` を渡した場合は `LastAppliedImeState`（latch）の値で補完する（移行期間中のみ）。
+    /// `None` を渡した場合は `(false, 0)`（未適用）として扱う。
     pub(crate) fn build_ime_control_view(
         &self,
         applied: Option<(bool, u64)>,
@@ -390,11 +388,7 @@ impl WindowsPlatform {
             .last_focus_info
             .as_ref()
             .map_or("", |(_, c)| c.as_str());
-        let (shadow_on, applied_at_ms) = applied
-            .unwrap_or_else(|| (
-                self.applied_snapshot.map_or(false, |(v, _)| v),
-                self.applied_snapshot.map_or(0, |(_, t)| t),
-            ));
+        let (shadow_on, applied_at_ms) = applied.unwrap_or((false, 0));
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
@@ -406,11 +400,6 @@ impl WindowsPlatform {
                 applied_at_ms,
             },
         }
-    }
-
-    /// `apply_ime_open` トレイトメソッドから呼ぶ内部ヘルパー（latch 経由のフォールバック）。
-    fn build_ime_control_view_latch(&self) -> crate::state::ImeControlView<'_> {
-        self.build_ime_control_view(None)
     }
 
     /// `applied` を明示的に渡す `apply_ime_open` 実装。
