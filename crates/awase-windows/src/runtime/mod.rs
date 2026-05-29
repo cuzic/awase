@@ -213,6 +213,18 @@ impl Runtime {
             return false;
         };
         let (process_changed, prev_pid) = self.advance_focus_tracking(&classified);
+        // injection_mode を push — advance_focus_tracking() で last_focus_info が更新された後に
+        // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
+        // classify_focus_probe() 内では last_focus_info が前ウィンドウのままであり、
+        // ForceTsf を取得できず injection_mode=Vk になって send_eager_tsf_warmup() が
+        // can_warmup()=false のまま失敗するバグを修正する。
+        {
+            let hint = self.executor.platform.focus.injection_hint();
+            let new_mode = crate::output::types::InjectionMode::from(
+                (hint, self.platform_state.focus.app_kind),
+            );
+            self.executor.platform.output.update_injection_mode(new_mode);
+        }
         if process_changed {
             self.on_focus_process_changed(&classified, prev_pid);
         } else if classified.kind == FocusKind::Undetermined {
@@ -223,8 +235,9 @@ impl Runtime {
         process_changed
     }
 
-    /// プローブ結果を検証・分類し、platform_state と injection_mode を更新する。
+    /// プローブ結果を検証・分類し、platform_state (app_kind / focus_kind) を更新する。
     ///
+    /// injection_mode の更新は `apply_focus_probe_result` が `advance_focus_tracking` 後に行う。
     /// None を返した場合は呼び出し元が early return すること。
     fn classify_focus_probe(
         &mut self,
@@ -306,15 +319,6 @@ impl Runtime {
             );
         }
 
-        // injection_mode を push — focus + app_kind が確定したタイミングで output に通知する
-        {
-            let hint = self.executor.platform.focus.injection_hint();
-            let new_mode = crate::output::types::InjectionMode::from(
-                (hint, self.platform_state.focus.app_kind),
-            );
-            self.executor.platform.output.update_injection_mode(new_mode);
-        }
-
         Some(ClassifiedFocus {
             hwnd,
             process_id,
@@ -346,7 +350,8 @@ impl Runtime {
                 self.executor.platform.focus.hwnd_ime_cache.save(
                     old_pid,
                     old_class,
-                    self.platform_state.belief(),
+                    self.platform_state.ime_on(),
+                    self.platform_state.input_mode(),
                 );
             }
         }
@@ -368,12 +373,12 @@ impl Runtime {
     /// `prev_pid` は `advance_focus_tracking` が返した直前のプロセス ID（ログ用）。
     fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
         log::info!(
-            "FocusChange [{}→{}] {}: stale ime_on={}({:?}) mode={:?} japanese={}",
+            "FocusChange [{}→{}] {}: stale ime_on={} intent={:?} mode={:?} japanese={}",
             prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
             classified.process_id,
             classified.class_name,
             self.platform_state.ime_on(),
-            self.platform_state.ime_on_source(),
+            self.platform_state.explicit_intent(),
             self.platform_state.input_mode(),
             self.platform_state.is_japanese_ime(),
         );
