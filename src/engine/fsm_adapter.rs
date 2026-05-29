@@ -135,6 +135,7 @@ impl FsmAdapter {
 mod tests {
     use std::time::Duration;
 
+    use itertools::{Either, Itertools as _};
     use timed_fsm::Response;
 
     use crate::config::ConfirmMode;
@@ -341,15 +342,14 @@ mod tests {
         let effects = FsmAdapter::response_to_effects(resp);
         // timer commands come first, then actions
         assert!(effects.len() >= 3);
-        let timer_effects: Vec<_> = effects
+        let (timer_effects, input_effects): (Vec<_>, Vec<_>) = effects
             .iter()
-            .filter(|e| matches!(e, Effect::Timer(_)))
-            .collect();
+            .filter(|e| matches!(e, Effect::Timer(_) | Effect::Input(_)))
+            .partition_map(|e| match e {
+                Effect::Timer(_) => Either::Left(e),
+                _ => Either::Right(e),
+            });
         assert_eq!(timer_effects.len(), 2);
-        let input_effects: Vec<_> = effects
-            .iter()
-            .filter(|e| matches!(e, Effect::Input(_)))
-            .collect();
         assert_eq!(input_effects.len(), 1);
     }
 
