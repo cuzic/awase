@@ -42,7 +42,7 @@ impl ImeEventLog {
             monotonic: Instant::now(),
             tick_ms: crate::hook::current_tick_ms(),
         };
-        self.next_seq = self.next_seq.wrapping_add(1);
+        self.next_seq += 1;
 
         log::trace!(
             "[ime-event seq={}] {:?}",
@@ -51,7 +51,13 @@ impl ImeEventLog {
 
         let envelope = ImeEventEnvelope { time, event };
         if self.buffer.len() == self.capacity {
-            self.buffer.pop_front();
+            let dropped = self.buffer.pop_front();
+            if let Some(env) = &dropped {
+                log::trace!(
+                    "[ime-event-log] capacity={} reached, dropping oldest seq={}",
+                    self.capacity, env.time.seq,
+                );
+            }
         }
         self.buffer.push_back(envelope);
         time
@@ -79,6 +85,14 @@ impl ImeEventLog {
     /// 直近 `n` 件の event を新しい順に返す。
     pub fn recent(&self, n: usize) -> impl Iterator<Item = &ImeEventEnvelope> {
         self.buffer.iter().rev().take(n)
+    }
+
+    /// 直近 `n` 件を新しい順に `Vec` で返す。
+    ///
+    /// テスト / snapshot 用。`recent` の `Iterator` 版より allocation が必要。
+    #[must_use]
+    pub fn recent_vec(&self, n: usize) -> Vec<&ImeEventEnvelope> {
+        self.recent(n).collect()
     }
 
     /// 全 event を古い順に返す (デバッグ用、性能に注意)。
@@ -137,6 +151,16 @@ mod tests {
         }
         let recent_seqs: Vec<u64> = log.recent(3).map(|e| e.time.seq).collect();
         assert_eq!(recent_seqs, vec![4, 3, 2]);
+    }
+
+    #[test]
+    fn recent_vec_returns_newest_first() {
+        let mut log = ImeEventLog::new(10);
+        for _ in 0..5 {
+            log.record(intent(true));
+        }
+        let recent: Vec<u64> = log.recent_vec(3).iter().map(|e| e.time.seq).collect();
+        assert_eq!(recent, vec![4, 3, 2]);
     }
 
     #[test]
