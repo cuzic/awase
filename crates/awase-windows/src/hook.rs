@@ -85,12 +85,26 @@ static HOOK_TID_INIT_SLOT: AtomicU32 = AtomicU32::new(0);
 /// SendInput の影響も受けるため、物理状態の判定には使えない。
 static PHYSICAL_KEY_STATE: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
 
+/// VK ごとの物理 KeyDown 時刻（`current_tick_ms` 値）。0 = 押下されていない。
+///
+/// 用途: 「Shift をどれくらい長く押しているか」で再注入の要否を判断する。
+/// 短押し（例: 200ms 未満）では Ctrl+I 直後の無変換 で IME-OFF 誤発火を
+/// 避けるため修飾解放を生かし、長押しでのみ OS state を物理状態に再同期する。
+static PHYSICAL_KEY_DOWN_AT_MS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+
 /// 物理 VK が押下中かを返す。SendInput では更新されないため信頼できる物理状態。
 #[must_use]
 pub fn is_physical_key_down(vk: VkCode) -> bool {
     PHYSICAL_KEY_STATE
         .get(vk.0 as usize)
         .is_some_and(|s| s.load(Ordering::Relaxed))
+}
+
+/// 物理 VK の押下経過時間（ms）。押下されていなければ `None`。
+#[must_use]
+pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
+    let down_at = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize)?.load(Ordering::Relaxed);
+    (down_at != 0).then(|| current_tick_ms().saturating_sub(down_at))
 }
 
 fn cached_hook_config() -> HookConfig {
@@ -323,6 +337,17 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
     if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {
         slot.store(is_keydown, Ordering::Relaxed);
+    }
+    if let Some(slot) = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize) {
+        // 同一 VK の auto-repeat KeyDown では down_at を上書きしない
+        // （長押し判定が常に「直前」へリセットされてしまうため）。
+        let new_value = if is_keydown {
+            let prev = slot.load(Ordering::Relaxed);
+            if prev == 0 { current_tick_ms() } else { prev }
+        } else {
+            0
+        };
+        slot.store(new_value, Ordering::Relaxed);
     }
     let config = cached_hook_config();
     let (key_classification, physical_pos) = classify_key(vk, scan, &config);
