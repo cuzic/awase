@@ -355,21 +355,21 @@ impl Default for ColdContext {
 /// TSF composition context の warm/cold 状態を管理する。
 ///
 /// `Output` 構造体がこれをフィールドとして保持する。
-/// 内部を 3 つの責務別サブ構造体に分割している:
+/// 内部を責務別サブ構造体に分割している:
 /// - `warm_epoch`: warmup epoch・送信タイミング・cold-start 回数
 /// - `cold_ctx`: cold の理由・idle 時間・連続 recovery 回数
-/// - `last_applied`: `apply_ime_open` の最終送信値ログ
-///   ([`crate::tsf::last_apply::LastAppliedImeState`])
+/// - `applied_open` / `applied_at_ms`: `apply_ime_open` の最終送信値ログ
 #[derive(Debug)]
 pub struct CompositionState {
     /// warmup epoch・送信タイミング・cold-start 回数
     pub warm_epoch: WarmEpoch,
     /// cold の理由・idle 時間・連続 recovery 回数
     pub cold_ctx: ColdContext,
-    /// `apply_ime_open` の最終送信値ログ（KanjiToggleStrategy の重複送信回避用）。
-    ///
-    /// IME 状態の SSOT ではない（SSOT は `Preconditions.ime_on`）。
-    pub last_applied: crate::tsf::last_apply::LastAppliedImeState,
+    /// `apply_ime_open` が最後に OS に送ったコマンド値。
+    /// `None` はフォーカス変更後に実 apply がまだない不確定状態。
+    applied_open: std::cell::Cell<Option<bool>>,
+    /// 最後の `apply_ime_open` 完了時刻 (ms)。0 = 未確認（フォーカス変更後）。
+    applied_at_ms: std::cell::Cell<u64>,
 }
 
 impl Default for CompositionState {
@@ -384,7 +384,8 @@ impl CompositionState {
         Self {
             warm_epoch: WarmEpoch::new(),
             cold_ctx: ColdContext::new(),
-            last_applied: crate::tsf::last_apply::LastAppliedImeState::new(),
+            applied_open: std::cell::Cell::new(None),
+            applied_at_ms: std::cell::Cell::new(0),
         }
     }
 
@@ -433,7 +434,8 @@ impl CompositionState {
         // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
         self.cold_ctx.record_cold(crate::output::ColdReason::FocusChange, idle_ms);
         self.cold_ctx.reset_consecutive_count();
-        self.last_applied.invalidate();
+        self.applied_open.set(None);
+        self.applied_at_ms.set(0);
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
 
@@ -441,15 +443,9 @@ impl CompositionState {
     ///
     /// `KanjiToggleStrategy` が次の `apply_ime_open` で重複送信を避けるために使う。
     pub fn set_ime_apply_latch(&self, open: bool) {
-        self.last_applied.set(open);
-    }
-
-    /// フォーカス変更後プリシンク用。value のみ更新し `applied_ms` は変えない。
-    ///
-    /// `desired=false` の pre-sync に使う。`applied_ms == 0` を維持することで
-    /// 「フォーカス変更後に実 apply がまだない」状態を保持する。
-    pub fn soft_set_ime_apply_latch(&self, open: bool) {
-        self.last_applied.soft_set(open);
+        log::debug!("[last-applied-ime] set({open})");
+        self.applied_open.set(Some(open));
+        self.applied_at_ms.set(crate::hook::current_tick_ms());
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
@@ -499,13 +495,13 @@ impl CompositionState {
     /// 本メソッドは `KanjiToggleStrategy` の重複送信回避と診断専用。
     #[must_use]
     pub fn last_applied_ime_on(&self) -> bool {
-        self.last_applied.get_or(false)
+        self.applied_open.get().unwrap_or(false)
     }
 
     /// 最後の `apply_ime_open` 完了時刻（ms）を返す。未設定は 0。
     #[must_use]
     pub fn last_applied_ime_on_ms(&self) -> u64 {
-        self.last_applied.applied_ms()
+        self.applied_at_ms.get()
     }
 
     /// 最後に cold にマークされた理由を返す。

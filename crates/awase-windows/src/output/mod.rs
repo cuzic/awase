@@ -269,22 +269,13 @@ impl Output {
         }
     }
 
-    /// IME ON/OFF の意図（未確認）を記録する。
+    /// `apply_ime_open` 完了後に最終送信値ログを更新する。
     ///
-    /// `apply_ime_open` 実行後（フォールバック含む）に呼ぶ。
-    /// `apply_ime_open` 完了後にラッチを更新する。
+    /// executor 経由 (ImeModel 非アクセス) のサイトから呼ぶ。
+    /// ImeModel アクセス可能なサイトは `ImeState::mirror_applied_open` を使うこと。
     pub fn set_ime_apply_latch(&self, open: bool) {
         self.composition.set_ime_apply_latch(open);
         crate::tsf::observer::reset_candidate_was_seen();
-    }
-
-    /// フォーカス変更後プリシンク専用。value のみ更新し `applied_ms` は変えない。
-    ///
-    /// `desired=false` の pre-sync に使う。`applied_ms == 0` を維持することで
-    /// 「フォーカス変更後に実 apply がまだない不確定状態」を表し、
-    /// 初回 Ctrl+無変換 で latch 強制が発火できるようにする。
-    pub fn soft_set_ime_apply_latch(&self, open: bool) {
-        self.composition.soft_set_ime_apply_latch(open);
     }
 
     /// TSF composition context の事前ウォームアップ F2 を送信する。
@@ -515,10 +506,6 @@ impl awase::platform::CompositionOutput for Output {
             PlatformColdReason::ImeToggle => ColdReason::SetOpenTrue,
         };
         self.mark_composition_cold(cold_reason);
-    }
-
-    fn set_ime_apply_latch(&self, open: bool) {
-        self.set_ime_apply_latch(open);
     }
 
     fn on_focus_changed(&self) {

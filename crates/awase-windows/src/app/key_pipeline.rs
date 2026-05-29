@@ -205,7 +205,7 @@ impl KeyEventPipeline<'_> {
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;
-        let shadow_on = self.app.executor.platform.output.last_applied_ime_on();
+        let shadow_on = self.app.platform_state.ime.shadow_model.applied_open.unwrap_or(false);
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;

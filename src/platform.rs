@@ -151,9 +151,6 @@ pub trait CompositionOutput {
     /// composition context を cold 化する。
     fn mark_cold(&self, reason: PlatformColdReason);
 
-    /// 最後に apply_ime_open に渡した値をラッチに記録する（shadow 追跡用）。
-    fn set_ime_apply_latch(&self, open: bool);
-
     /// フォーカス変更を通知する（epoch インクリメント）。
     fn on_focus_changed(&self);
 }

@@ -439,10 +439,10 @@ impl<'a> ImeRefreshPipeline<'a> {
         // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
         self.rt.executor.platform.output.send_eager_tsf_warmup();
         log::debug!(
-            "[composition] FocusChange: send_eager_tsf_warmup called (guarded by last_applied_ime_on)"
+            "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
         );
 
-        // last_applied_ime_on=false の場合、新しいウィンドウの IME を明示的に OFF にする。
+        // applied_open=false (or None) の場合、新しいウィンドウの IME を明示的に OFF にする。
         // Ctrl+無変換 は発火時点のウィンドウにしか set_ime_open を送らないため、
         // 別ウィンドウに移動すると IME が ON のままになるのを防ぐ。
         //
@@ -454,9 +454,10 @@ impl<'a> ImeRefreshPipeline<'a> {
             self.rt.executor.platform.focus.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         );
-        if !self.rt.executor.platform.output.last_applied_ime_on() && !new_profile_is_tsf_native {
+        let applied_ime_on = self.rt.platform_state.ime.shadow_model.applied_open.unwrap_or(false);
+        if !applied_ime_on && !new_profile_is_tsf_native {
             let _ = self.rt.executor.platform.set_ime_open(false);
-            log::debug!("[composition] FocusChange: set_ime_open(false) called (last_applied OFF → enforce IME OFF on new window)");
+            log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
         }
     }
 
