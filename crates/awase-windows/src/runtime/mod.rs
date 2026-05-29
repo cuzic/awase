@@ -459,14 +459,15 @@ impl Runtime {
         ) {
             let ime_on_now = self.platform_state.ime_on();
             if ime_on_now {
-                self.executor.platform.output.set_ime_apply_latch(true);
+                self.platform_state.ime.mirror_applied_open(true);
                 log::debug!(
-                    "[focus] TsfNative hard pre-sync latch=true (prevent spurious VK_KANJI from SetOpen(true))"
+                    "[focus] TsfNative hard pre-sync applied=true (prevent spurious VK_KANJI from SetOpen(true))"
                 );
             } else {
-                self.executor.platform.output.soft_set_ime_apply_latch(false);
+                // soft presync: applied_open = None のまま（applied_at_ms = 0 = 不確定）
+                // → 初回 Ctrl+無変換 で latch 強制が発火できるようにする
                 log::debug!(
-                    "[focus] TsfNative soft pre-sync value=false (applied_ms=0, allow override on first Ctrl+無変換)"
+                    "[focus] TsfNative soft pre-sync: applied_open=None (allow override on first Ctrl+無変換)"
                 );
             }
         }
@@ -659,10 +660,8 @@ impl Runtime {
         // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
         let observed_ime_on = self.platform_state.ime_on();
-        self.executor.platform.output.set_ime_apply_latch(observed_ime_on);
-        // Phase 3c: shadow_model.applied_open へ mirror
         self.platform_state.ime.mirror_applied_open(observed_ime_on);
-        log::debug!("[process-deferred] last_applied → {observed_ime_on} (sync with OS poll)");
+        log::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。
         // suppress_engine_state_key = true: sync key（Kanji 等）がすでに IME を正しい状態に

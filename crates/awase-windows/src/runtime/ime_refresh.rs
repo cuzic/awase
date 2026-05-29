@@ -429,12 +429,6 @@ impl<'a> ImeRefreshPipeline<'a> {
         // これにより KanjiToggleStrategy が次回 apply_ime_open を呼ぶときに
         // belief の最新値と比較して重複送信を回避できる。
         let ime_on_now = self.rt.platform_state.ime_on();
-        self.rt
-            .executor
-            .platform
-            .output
-            .set_ime_apply_latch(ime_on_now);
-        // Phase 3c: shadow_model.applied_open へ mirror
         self.rt.platform_state.ime.mirror_applied_open(ime_on_now);
         self.rt
             .executor
