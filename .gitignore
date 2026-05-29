@@ -9,6 +9,8 @@ Cargo.lock
 jawiki-*.json.gz
 claude.md
 libscanmap.rlib
+rust_out
+librust_out.rlib
 mise.toml
 data/ngram_hiragana.toml
 logs/
