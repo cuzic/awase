@@ -278,16 +278,19 @@ pub struct ColdContext {
     last_cold_reason: std::cell::Cell<crate::output::ColdReason>,
     /// 最後に cold になった時点での idle 時間（ms）
     idle_ms_at_last_cold: std::cell::Cell<u64>,
+    /// 最後に cold にマークされた時刻（GetTickCount64 ms）。0 = 未設定。
+    cold_marked_ms: std::cell::Cell<u64>,
     /// `RawTsfLiteralRecovery` が連続で発火した回数
     raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
 }
 
 impl ColdContext {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
+            cold_marked_ms: std::cell::Cell::new(0),
             raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
         }
     }
@@ -296,6 +299,7 @@ impl ColdContext {
     pub fn record_cold(&self, reason: crate::output::ColdReason, idle_ms: u64) {
         self.last_cold_reason.set(reason);
         self.idle_ms_at_last_cold.set(idle_ms);
+        self.cold_marked_ms.set(crate::hook::current_tick_ms());
     }
 
     /// `RawTsfLiteralRecovery` 連続カウントをインクリメントして新値を返す。
@@ -319,6 +323,12 @@ impl ColdContext {
     /// `idle_ms_at_last_cold` を更新する。
     pub fn set_idle_ms_at_last_cold(&self, ms: u64) {
         self.idle_ms_at_last_cold.set(ms);
+    }
+
+    /// 最後に cold にマークされた時刻（ms）を返す。0 = 未設定。
+    #[must_use]
+    pub const fn cold_marked_ms(&self) -> u64 {
+        self.cold_marked_ms.get()
     }
 
     /// 最後に cold にマークされた理由を返す。
@@ -419,7 +429,9 @@ impl CompositionState {
     pub fn on_focus_changed(&self) {
         let idle_ms = self.ms_since_last_send();
         let new_epoch = self.warm_epoch.on_focus_changed();
-        self.cold_ctx.set_idle_ms_at_last_cold(idle_ms);
+        // FocusChange で last_cold_reason を更新し、F2NonTsf などの前回理由が
+        // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
+        self.cold_ctx.record_cold(crate::output::ColdReason::FocusChange, idle_ms);
         self.cold_ctx.reset_consecutive_count();
         self.last_applied.invalidate();
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
@@ -492,6 +504,12 @@ impl CompositionState {
     #[must_use]
     pub const fn last_cold_reason(&self) -> crate::output::ColdReason {
         self.cold_ctx.last_cold_reason()
+    }
+
+    /// 最後に cold にマークされた時刻（ms）を返す。0 = 未設定。
+    #[must_use]
+    pub const fn cold_marked_ms(&self) -> u64 {
+        self.cold_ctx.cold_marked_ms()
     }
 
     /// `RawTsfLiteralRecovery` が連続で発火した回数を返す。
