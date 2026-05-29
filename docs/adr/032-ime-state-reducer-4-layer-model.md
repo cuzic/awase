@@ -112,6 +112,7 @@ crates/awase-windows/src/state/
 | 3d-1 | `bade255` | PlatformState::ime_on() を shadow_model.effective_open() に切替 |
 | 3d-2 | `75719b0` | build_input_context() を ime_on 引数化、Engine 判断を shadow SSOT 化 |
 | 3b-sync | `fffb522` | sync IME apply path に ImeApplySucceeded/Failed event dispatch 補完 |
+| 3b-record | `33257fb` / `c6b143c` | `PendingApplyEvent` struct 化、`ImeEvent::from_apply_outcome` で sync/async path の event 変換を 1 箇所に集約 |
 
 ## 結果
 
@@ -155,10 +156,37 @@ crates/awase-windows/src/state/
 | `crates/awase-windows/src/executor.rs` | dispatch_ime_set_open の async/sync 分岐 |
 | `crates/awase-windows/src/runtime/mod.rs` | flush_sync_apply_events helper |
 
+### Phase 3 完了後の構造的補強
+
+| トピック | コミット | 内容 |
+|----------|---------|------|
+| Sync apply record 化 | `33257fb` | `PendingApplyEvent` struct を `state/ime_event.rs` に追加し、`Vec<(bool, ImeOpenOutcome)>` の named field 化。 `DecisionExecutor` が `PlatformState` を持たない設計を保ったまま sync path の event dispatch を可能にする |
+| Outcome → Event 集約 | `c6b143c` | `ImeEvent::from_apply_outcome(target, outcome, generation)` を single source of truth として導入。 sync/async path で重複していた `match` arm を統合 |
+| Layer-boundaries 整備 | `a897e3a` / `abe268c` / `09c52d6` | 6 設計原則を `docs/layer-boundaries.md` のカテゴリ C-1〜C-6 として grep 検出可能化（PR レビューチェックリスト） |
+| Audit 分類用語 | `abe268c` | 違反候補を `Violation` / `Transitional` / `Comment-only` に三分類するルール明文化 |
+
+これにより ADR-032 の 6 設計原則は「文書だけのルール」ではなく
+**grep 一発で audit できる実コード上の禁則** となった。
+
+### sync/async 両 path で generation 照合が必須となる理由
+
+非同期 IME apply の完了 event は、別の transition (新しい
+`pending`) を破壊する race が常に存在する。 具体例:
+
+1. T=0 ms: `desired_open=true` を dispatch、`pending.generation=N`
+2. T=10ms: 別経路から `desired_open=false` を dispatch、`pending.generation=N+1`
+3. T=15ms: T=0 の async apply が完了 → `ImeApplySucceeded { generation: N }`
+4. ❌ 照合せず `applied_open = true` にすると、新しい意図 (N+1) を上書き
+
+`Runtime::flush_pending_apply_events` は `shadow_model.pending.generation`
+と outcome の generation を照合し、 一致するもののみ reduce する。
+([[feedback_generation_check_for_async_apply]])
+
 ## 関連 ADR / ドキュメント
 
+- [ADR-021](021-deferred-effect-execution.md) — Effect 遅延実行（`PendingApplyEvent` の所有者）
 - [ADR-026](026-preconditions-and-key-routing.md) — Preconditions と key routing
 - [ADR-027](027-ime-state-refresh-and-control.md) — IME 状態 refresh と制御
 - [ADR-029](029-ime-detection-resilience.md) — IME 検出の耐障害性と SSOT
 - [ADR-030](030-tsf-three-layer-architecture.md) — TSF 3 層分離
-- [docs/layer-boundaries.md](../layer-boundaries.md) — 現行レイヤー境界ルール集
+- [docs/layer-boundaries.md](../layer-boundaries.md) — 6 設計原則を grep audit 化したルール集
