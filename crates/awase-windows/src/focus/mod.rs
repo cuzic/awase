@@ -7,6 +7,7 @@ pub mod cache;
 pub mod class_names;
 pub mod classifier;
 pub mod classify;
+pub mod current;
 pub mod hwnd_cache;
 pub mod imm_learning;
 pub mod kind_classifier;

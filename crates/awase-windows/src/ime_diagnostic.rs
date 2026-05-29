@@ -90,12 +90,11 @@ impl ImeDiagnosticSnapshot {
         // ── shadow / app state を APP から取得 ──
         let view = crate::with_app_ref(|app| {
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-            let (pid, class) = app
-                .executor
-                .platform
-                .focus_last_info
-                .as_ref()
-                .map_or((0u32, String::new()), |(p, c)| (*p, c.clone()));
+            let (pid, class) = if app.executor.platform.focus.is_focused() {
+                (app.executor.platform.focus.pid, app.executor.platform.focus.class_name.clone())
+            } else {
+                (0u32, String::new())
+            };
 
             let focus_change_ms = app.platform_state.focus.last_focus_change_ms;
             let activity_ms = app.platform_state.last_hook_activity_ms;
@@ -272,12 +271,7 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
     };
 
     let view = crate::with_app_ref(|app| {
-        let class = app
-            .executor
-            .platform
-            .focus_last_info
-            .as_ref()
-            .map_or_else(String::new, |(_, c)| c.clone());
+        let class = app.executor.platform.focus.class_name.clone();
         let profile = app.executor.platform.current_app_profile();
         (
             class,

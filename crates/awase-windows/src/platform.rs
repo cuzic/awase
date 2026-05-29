@@ -11,6 +11,7 @@ use awase::types::{KeyAction, RawKeyEvent};
 use crate::output::Output;
 use crate::focus::classifier::{ForceOverrides, ImmCapabilityStore, InjectionHint};
 use crate::focus::class_names::AppImeProfile;
+use crate::focus::current::CurrentFocus;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
@@ -29,16 +30,13 @@ pub struct WindowsPlatform {
     // ── フォーカス検出フィールド群（旧 AppKindClassifier）──
     pub focus_cache: crate::focus::cache::FocusCache,
     pub focus_overrides: ForceOverrides,
-    pub focus_last_info: Option<(u32, String)>,
+    /// 現在フォーカス中のウィンドウ情報（pid / class_name / app_profile / process_name）。
+    pub focus: CurrentFocus,
     pub focus_uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
     /// IMM 能力の学習・永続化ストア。
     pub imm_learning: ImmCapabilityStore,
     /// per-HWND IME 状態キャッシュ。
     pub hwnd_ime_cache: crate::focus::hwnd_cache::HwndImeCache,
-    /// フォーカス中アプリの IME 制御プロファイル。
-    pub app_profile: AppImeProfile,
-    /// 現在フォーカス中のプロセス名（小文字、キーマップマッチング用）
-    pub process_name: String,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -389,10 +387,11 @@ impl WindowsPlatform {
         &self,
         applied: Option<(bool, u64)>,
     ) -> crate::state::ImeControlView<'_> {
-        let class_name = self
-            .focus_last_info
-            .as_ref()
-            .map_or("", |(_, c)| c.as_str());
+        let class_name = if self.focus.is_focused() {
+            self.focus.class_name.as_str()
+        } else {
+            ""
+        };
         let (shadow_on, applied_at_ms) = applied.unwrap_or((false, 0));
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
@@ -425,25 +424,22 @@ impl WindowsPlatform {
 
     /// フォーカス中アプリの IME 制御プロファイルを返す。
     #[must_use]
-    pub const fn current_app_profile(&self) -> AppImeProfile {
-        self.app_profile
+    pub fn current_app_profile(&self) -> AppImeProfile {
+        self.focus.app_profile
     }
 
     /// 現在のフォーカス先に対する注入ヒントを返す。
     #[must_use]
     pub fn injection_hint(&self) -> InjectionHint {
-        let Some((pid, class)) = self.focus_last_info.as_ref() else {
+        if !self.focus.is_focused() {
             return InjectionHint::Default;
-        };
-        self.focus_overrides.injection_hint(*pid, class)
+        }
+        self.focus_overrides.injection_hint(self.focus.pid, &self.focus.class_name)
     }
 
     /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
     pub fn update_focus_info(&mut self, process_id: u32, class_name: String) {
-        let process_name = crate::focus::classify::get_process_name(process_id);
-        self.process_name = process_name.to_lowercase();
-        self.app_profile = AppImeProfile::from_class_name(&class_name);
-        self.focus_last_info = Some((process_id, class_name));
+        self.focus.update(process_id, class_name);
     }
 
     /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。

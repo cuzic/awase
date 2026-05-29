@@ -363,7 +363,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         // Engine が活性化不能の trap に陥る。TsfNative では runtime 側で stale をリセット
         // するためここでは enforce OFF を skip し、新ウィンドウの状態に任せる。
         let new_profile_is_tsf_native = matches!(
-            self.rt.executor.platform.focus.current_app_profile(),
+            self.rt.executor.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         );
         let applied_ime_on = self.rt.platform_state.ime.shadow_model.applied_open.unwrap_or(false);

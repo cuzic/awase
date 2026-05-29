@@ -122,10 +122,10 @@ impl Runtime {
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
     pub fn learn_imm_capability_from_miss(&mut self, miss_before: u32, miss_after: u32) {
         use crate::focus::classifier::ImmCapability;
-        let Some((_, class_name)) = self.executor.platform.focus_last_info.as_ref() else {
+        if !self.executor.platform.focus.is_focused() {
             return;
-        };
-        let class_name = class_name.clone();
+        }
+        let class_name = self.executor.platform.focus.class_name.clone();
         if miss_after == 0 && miss_before > 0 {
             let prev = self.executor.platform.imm_learning.get(&class_name);
             if prev != Some(ImmCapability::Works) {
@@ -387,19 +387,18 @@ impl Runtime {
     /// process_changed な場合は事前に `hwnd_ime_cache.save()` を呼び出す。
     /// prev_pid は process_changed 時のみ Some になる（ログ用）。
     fn advance_focus_tracking(&mut self, classified: &ClassifiedFocus) -> (bool, Option<u32>) {
-        let last_pid = self
-            .executor
-            .platform
-            .focus_last_info
-            .as_ref()
-            .map(|(pid, _)| *pid);
+        let last_pid = if self.executor.platform.focus.is_focused() {
+            Some(self.executor.platform.focus.pid)
+        } else {
+            None
+        };
         let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
 
         // フォーカス離脱: 現在の belief を per-HWND キャッシュに保存
         if process_changed {
-            if let Some((old_pid, old_class)) =
-                self.executor.platform.focus_last_info.clone()
-            {
+            if self.executor.platform.focus.is_focused() {
+                let old_pid = self.executor.platform.focus.pid;
+                let old_class = self.executor.platform.focus.class_name.clone();
                 self.executor.platform.hwnd_ime_cache.save(
                     old_pid,
                     old_class,
@@ -451,7 +450,7 @@ impl Runtime {
         self.platform_state.clear_ime_observations_on_focus_change();
 
         {
-            let process_name = &self.executor.platform.process_name;
+            let process_name = &self.executor.platform.focus.process_name;
             self.platform_state.active_keymaps =
                 self.all_keymaps.filter_active(process_name);
             log::debug!("[keymap] active rules updated: {} rule(s) for process={:?}",
@@ -700,10 +699,12 @@ impl Runtime {
         self.platform_state.focus.focus_kind = new_kind;
 
         // Update learning cache
-        if let Some((pid, cls)) = self.executor.platform.focus_last_info.as_ref() {
+        if self.executor.platform.focus.is_focused() {
+            let pid = self.executor.platform.focus.pid;
+            let cls = self.executor.platform.focus.class_name.clone();
             self.executor.platform.focus_cache.insert(
-                *pid,
-                cls.clone(),
+                pid,
+                cls,
                 new_kind,
                 DetectionSource::UserOverride,
             );
