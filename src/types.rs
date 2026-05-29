@@ -269,6 +269,8 @@ impl FocusKind {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools as _;
+
     use super::*;
 
     // ── AppKind ──
@@ -316,10 +318,12 @@ mod tests {
             KeyClassification::RightThumb,
             KeyClassification::Passthrough,
         ];
-        for (i, a) in variants.iter().enumerate() {
-            for (j, b) in variants.iter().enumerate() {
-                assert_eq!(i == j, a == b);
-            }
+        for ((i, a), (j, b)) in variants
+            .iter()
+            .enumerate()
+            .cartesian_product(variants.iter().enumerate())
+        {
+            assert_eq!(i == j, a == b);
         }
     }
 
@@ -356,10 +360,12 @@ mod tests {
             SpecialKey::Delete,
         ];
         assert_eq!(variants.len(), 5);
-        for (i, a) in variants.iter().enumerate() {
-            for (j, b) in variants.iter().enumerate() {
-                assert_eq!(i == j, a == b);
-            }
+        for ((i, a), (j, b)) in variants
+            .iter()
+            .enumerate()
+            .cartesian_product(variants.iter().enumerate())
+        {
+            assert_eq!(i == j, a == b);
         }
     }
 
@@ -374,10 +380,12 @@ mod tests {
             ModifierKey::Meta,
         ];
         assert_eq!(variants.len(), 4);
-        for (i, a) in variants.iter().enumerate() {
-            for (j, b) in variants.iter().enumerate() {
-                assert_eq!(i == j, a == b);
-            }
+        for ((i, a), (j, b)) in variants
+            .iter()
+            .enumerate()
+            .cartesian_product(variants.iter().enumerate())
+        {
+            assert_eq!(i == j, a == b);
         }
     }
 
@@ -391,10 +399,12 @@ mod tests {
             ShadowImeAction::Toggle,
         ];
         assert_eq!(variants.len(), 3);
-        for (i, a) in variants.iter().enumerate() {
-            for (j, b) in variants.iter().enumerate() {
-                assert_eq!(i == j, a == b);
-            }
+        for ((i, a), (j, b)) in variants
+            .iter()
+            .enumerate()
+            .cartesian_product(variants.iter().enumerate())
+        {
+            assert_eq!(i == j, a == b);
         }
     }
 }
