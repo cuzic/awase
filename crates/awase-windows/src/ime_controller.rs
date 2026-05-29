@@ -91,7 +91,7 @@ impl ImeOpenStrategy for GjiDirectStrategy {
                 "[apply-ime] GJI direct: F14 (IME OFF, candidate={})",
                 view.observed.candidate_visible,
             );
-            unsafe { crate::ime::post_gji_ime_off(false) };
+            unsafe { crate::ime::post_gji_ime_off() };
         }
         ImeOpenOutcome::Applied
     }
@@ -139,7 +139,7 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
                 view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,
                 view.focus.profile,
             );
-            unsafe { crate::ime::post_kanji_toggle_to_focused(false) };
+            unsafe { crate::ime::post_kanji_toggle_to_focused() };
             ImeOpenOutcome::FallbackSent
         }
     }
