@@ -1,7 +1,6 @@
 use awase::engine::{AssumedReason, EngineCommand, InputModeState};
 use awase::platform::PlatformRuntime;
 
-use crate::focus::classifier::ImmCapability;
 use super::Runtime;
 use crate::tuning::TYPING_IDLE_MS;
 
@@ -177,7 +176,7 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     fn stage_notify(&mut self) {
         // Phase 4a: IMM-broken アプリの force-ON（Blacklist パス専用）
-        self.apply_force_on_for_imm_broken();
+        self.rt.apply_force_on_for_imm_broken();
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.notify_engine_refresh();
         // Phase 4b: desired ≠ observed ドリフト補正（ImmCross アプリ向け）
@@ -371,34 +370,6 @@ impl<'a> ImeRefreshPipeline<'a> {
         if !applied_ime_on && !new_profile_is_tsf_native {
             let _ = self.rt.executor.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
-        }
-    }
-
-    // ── IMM-broken アプリの force-ON（Blacklist パス専用）──
-    //
-    // OS 側の IME が belief と乖離するのを防ぐ。
-    // Blacklist 以外のパスでは skip_imm_query=false なので re_check_predicate が false になる。
-
-    fn apply_force_on_for_imm_broken(&mut self) {
-        // Blacklist パス以外は何もしない（条件を再チェックして判断）
-        if !self.resolve_skip_imm_query() {
-            return;
-        }
-        if !(self.rt.engine.is_user_enabled()
-            && self.rt.platform_state.is_japanese_ime()
-            && self.rt.platform_state.ime_on())
-        {
-            return;
-        }
-        let _success = self.rt.executor.platform.set_ime_open(true);
-        log::trace!("Blacklist force-ON: set_ime_open(true)");
-        // input_mode も SSOT として維持: IMM broken アプリでは検出不能のため
-        // stale な ObservedKana が engine を無効化しないよう AssumedRomaji に補正する。
-        if !self.rt.platform_state.input_mode().is_romaji_capable() {
-            log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-            self.rt.platform_state.set_input_mode(
-                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
-            );
         }
     }
 

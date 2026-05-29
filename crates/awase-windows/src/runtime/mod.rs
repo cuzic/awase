@@ -629,6 +629,30 @@ impl Runtime {
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
     }
 
+    /// Blacklist アプリ（Chrome 等）で IME belief が ON のとき OS に force-ON を送る。
+    ///
+    /// IMM クロスプロセスが使えるアプリ（通常 IMM アプリ）では何もしない。
+    pub fn apply_force_on_for_imm_broken(&mut self) {
+        if self.can_use_imm32_cross_process() {
+            return;
+        }
+        if !(self.engine.is_user_enabled()
+            && self.platform_state.is_japanese_ime()
+            && self.platform_state.ime_on())
+        {
+            return;
+        }
+        let _success = self.executor.platform.set_ime_open(true);
+        log::trace!("Blacklist force-ON: set_ime_open(true)");
+        if !self.platform_state.input_mode().is_romaji_capable() {
+            use awase::engine::{AssumedReason, InputModeState};
+            log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
+            self.platform_state.set_input_mode(
+                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
+            );
+        }
+    }
+
     /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したとき、一時 force-ON を試みる。
     pub fn try_force_on_bootstrap(&mut self) {
         if self.platform_state.ime_detect_miss_count() >= crate::IME_DETECT_MISS_THRESHOLD
