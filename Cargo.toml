@@ -27,6 +27,7 @@ anyhow = "1"
 flate2 = "1"
 timed-fsm = { path = "crates/timed-fsm", version = "0.2.0" }
 smallvec = "1.15.1"
+itertools = "0.13"
 
 [lints.rust]
 unsafe_code = "warn"
