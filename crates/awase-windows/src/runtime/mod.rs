@@ -598,6 +598,11 @@ impl Runtime {
         );
     }
 
+    /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
+    pub fn reschedule_ime_refresh(&mut self) {
+        self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
+    }
+
     /// 配列を動的に切り替える
     pub fn switch_layout(&mut self, index: usize) {
         let Some(entry) = self.layouts.get(index) else {

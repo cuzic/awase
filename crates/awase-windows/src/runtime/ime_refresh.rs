@@ -551,7 +551,6 @@ impl<'a> ImeRefreshPipeline<'a> {
     // ── 次回ポーリングのスケジュール ──
 
     fn reschedule(&mut self) {
-        self.rt
-            .schedule_ime_refresh(u64::from(self.rt.platform_state.focus.ime_poll_interval_ms));
+        self.rt.reschedule_ime_refresh();
     }
 }
