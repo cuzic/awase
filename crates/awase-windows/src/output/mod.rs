@@ -584,6 +584,7 @@ mod tests {
         assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(false), 500);
         assert_eq!(ColdReason::F2NonTsf.eager_settle_ms(false), 500);
         assert_eq!(ColdReason::RawTsfLiteralRecovery.eager_settle_ms(false), 500);
+        assert_eq!(ColdReason::SetOpenFalse.eager_settle_ms(false), 500);
     }
 
     #[test]
@@ -594,6 +595,7 @@ mod tests {
         // 他は不変
         assert_eq!(ColdReason::SessionExpired.eager_settle_ms(true), 500);
         assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(true), 500);
+        assert_eq!(ColdReason::SetOpenFalse.eager_settle_ms(true), 500);
     }
 
     #[test]
@@ -608,6 +610,7 @@ mod tests {
         assert_eq!(ColdReason::SymbolVkSent.probe_min_ms(false), 30);
         assert_eq!(ColdReason::F2NonTsf.probe_min_ms(false), 100);
         assert_eq!(ColdReason::RawTsfLiteralRecovery.probe_min_ms(false), 100);
+        assert_eq!(ColdReason::SetOpenFalse.probe_min_ms(false), 100);
     }
 
     #[test]
@@ -617,6 +620,7 @@ mod tests {
         assert!(!ColdReason::FocusChange.is_confirm_key());
         assert!(!ColdReason::SessionExpired.is_confirm_key());
         assert!(!ColdReason::RawTsfLiteralRecovery.is_confirm_key());
+        assert!(!ColdReason::SetOpenFalse.is_confirm_key());
     }
 
     #[test]
@@ -627,6 +631,7 @@ mod tests {
         assert!(!ColdReason::PassthroughConfirmKey.requires_settle());
         assert!(!ColdReason::SessionExpired.requires_settle());
         assert!(!ColdReason::RawTsfLiteralRecovery.requires_settle());
+        assert!(!ColdReason::SetOpenFalse.requires_settle());
     }
 
     // ── Output 状態管理テスト ───────────────────────────────────────────────────

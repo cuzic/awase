@@ -820,10 +820,16 @@ impl DecisionExecutor {
             }
         }
         // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
+        // IME OFF 時も cold にマークする: warm のまま放置すると Enter/Space/Escape が
+        // warm+TSF パスに流れ、GJI に composition がない状態でアプリへ漏れる
+        // （LINE 等でメッセージ送信につながる）。
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
             self.platform.output.send_eager_tsf_warmup();
+        } else {
+            log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
+            self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
         }
     }
 }

@@ -32,6 +32,8 @@ pub enum ColdReason {
     FocusChange,
     /// `ImeEffect::SetOpen(true)` 実行後
     SetOpenTrue,
+    /// `ImeEffect::SetOpen(false)` 実行後（IME OFF → composition context 無効化）
+    SetOpenFalse,
     /// 物理 F2 (VK_DBE_HIRAGANA) をフックで Consume（TSF モード）
     NativeF2Consumed,
     /// Space/Enter/Escape のパススルー
@@ -50,7 +52,7 @@ pub enum ColdReason {
 
 impl ColdReason {
     /// warmup 後の eager settle 待機時間 (ms)。long_idle=true のとき延長。
-    #[must_use] 
+    #[must_use]
     pub const fn eager_settle_ms(self, long_idle: bool) -> u64 {
         match self {
             Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 1500,
@@ -58,12 +60,12 @@ impl ColdReason {
                 if long_idle { 1500 } else { 500 }
             }
             Self::SessionExpired | Self::SymbolVkSent | Self::F2NonTsf
-            | Self::RawTsfLiteralRecovery => 500,
+            | Self::RawTsfLiteralRecovery | Self::SetOpenFalse => 500,
         }
     }
 
     /// VK_DBE_HIRAGANA 送信後の最小待機時間 (ms)（GJI I/O 観測開始前の固定待機）
-    #[must_use] 
+    #[must_use]
     pub const fn probe_min_ms(self, long_idle: bool) -> u64 {
         match self {
             Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 300,
@@ -72,18 +74,18 @@ impl ColdReason {
                 if long_idle { 300 } else { 50 }
             }
             Self::SymbolVkSent => 30,
-            Self::F2NonTsf | Self::RawTsfLiteralRecovery => 100,
+            Self::F2NonTsf | Self::RawTsfLiteralRecovery | Self::SetOpenFalse => 100,
         }
     }
 
     /// confirmation キー（composition 確定/キャンセル）かどうか
-    #[must_use] 
+    #[must_use]
     pub const fn is_confirm_key(self) -> bool {
         matches!(self, Self::PassthroughConfirmKey | Self::ReinjectConfirmKey)
     }
 
     /// fresh F2 再送 + settle が必要かどうか（IME 初期化系 cold reason）
-    #[must_use] 
+    #[must_use]
     pub const fn requires_settle(self) -> bool {
         matches!(self, Self::FocusChange | Self::NativeF2Consumed | Self::SetOpenTrue)
     }
