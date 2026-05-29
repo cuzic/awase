@@ -9,19 +9,21 @@ pub use crate::focus::class_names::detect_app_kind;
 use awase::engine::ModifierState;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
+use crate::vk::{VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
+
 /// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-#[must_use] 
+#[must_use]
 pub unsafe fn read_os_modifiers() -> ModifierState {
     // GetAsyncKeyState: 最上位ビットが 1 なら押下中
     let pressed = |vk: i32| -> bool { (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) != 0 };
     ModifierState {
-        ctrl: pressed(0x11),                 // VK_CONTROL
-        alt: pressed(0x12),                  // VK_MENU
-        shift: pressed(0x10),                // VK_SHIFT
-        win: pressed(0x5B) || pressed(0x5C), // VK_LWIN / VK_RWIN
+        ctrl:  pressed(VK_CONTROL.0 as i32),
+        alt:   pressed(VK_MENU.0 as i32),
+        shift: pressed(VK_SHIFT.0 as i32),
+        win:   pressed(VK_LWIN.0 as i32) || pressed(VK_RWIN.0 as i32),
     }
 }
 
