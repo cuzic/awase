@@ -1,3 +1,4 @@
+use itertools::Itertools as _;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
@@ -270,7 +271,6 @@ impl Output {
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
                 run.iter()
                     .map(|&(v, s)| if s { format!("S{v:02X}") } else { format!("{v:02X}") })
-                    .collect::<Vec<_>>()
                     .join(","),
             );
             let mut inputs = Vec::with_capacity(run.len() * 4);
