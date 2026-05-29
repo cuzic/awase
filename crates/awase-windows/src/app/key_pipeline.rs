@@ -404,7 +404,7 @@ impl KeyEventPipeline<'_> {
         //   反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
         //   (IME-ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデル。
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
-        let profile = self.app.executor.platform.current_app_profile();
+        let profile = self.app.executor.platform.focus.current_app_profile();
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
         let suppress_physical = if profile.can_use_imm32_cross_process() {
             // ImmCross: KANJI 関連 VK は Down/Up 共に Consume（spurious 連鎖を構造的に遮断）

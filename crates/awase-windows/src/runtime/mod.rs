@@ -108,7 +108,7 @@ impl Runtime {
     #[must_use]
     pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
         (
-            self.executor.platform.focus_injection_hint(),
+            self.executor.platform.focus.injection_hint(),
             self.platform_state.focus.app_kind,
         )
     }
@@ -116,12 +116,33 @@ impl Runtime {
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
     #[must_use]
     pub fn can_use_imm32_cross_process(&self) -> bool {
-        self.executor.platform.current_app_profile().can_use_imm32_cross_process()
+        self.executor.platform.focus.current_app_profile().can_use_imm32_cross_process()
     }
 
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
     pub fn learn_imm_capability_from_miss(&mut self, miss_before: u32, miss_after: u32) {
-        self.executor.platform.learn_imm_capability_from_miss(miss_before, miss_after);
+        use crate::focus::classifier::ImmCapability;
+        let Some((_, class_name)) = self.executor.platform.focus.last_focus_info.as_ref() else {
+            return;
+        };
+        let class_name = class_name.clone();
+        if miss_after == 0 && miss_before > 0 {
+            let prev = self.executor.platform.focus.imm_learning.get(&class_name);
+            if prev != Some(ImmCapability::Works) {
+                log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
+                self.executor.platform.focus.learn_imm_capability(class_name, ImmCapability::Works);
+            }
+        } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
+            && miss_before < crate::IME_DETECT_MISS_THRESHOLD
+        {
+            let prev = self.executor.platform.focus.imm_learning.get(&class_name);
+            if prev != Some(ImmCapability::Unavailable) {
+                log::info!(
+                    "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
+                );
+                self.executor.platform.focus.learn_imm_capability(class_name, ImmCapability::Unavailable);
+            }
+        }
     }
 
     /// IME 関連の事前分類情報を sync key 設定で補完する
@@ -253,7 +274,7 @@ impl Runtime {
         // ForceTsf を取得できず injection_mode=Vk になって send_eager_tsf_warmup() が
         // can_warmup()=false のまま失敗するバグを修正する。
         {
-            let hint = self.executor.platform.focus_injection_hint();
+            let hint = self.executor.platform.focus.injection_hint();
             let new_mode = crate::output::types::InjectionMode::from(
                 (hint, self.platform_state.focus.app_kind),
             );
@@ -262,7 +283,9 @@ impl Runtime {
         if process_changed {
             self.on_focus_process_changed(&classified, prev_pid);
         } else if classified.kind == FocusKind::Undetermined {
-            self.executor.platform.send_uia_hwnd(classified.hwnd);
+            if let Some(sender) = &self.executor.platform.focus.uia_sender {
+                let _ = sender.send(crate::focus::uia::SendableHwnd(classified.hwnd));
+            }
         }
         process_changed
     }
@@ -343,7 +366,7 @@ impl Runtime {
 
         // キャッシュ格納（オーバーライドでない場合のみ）
         if !overridden {
-            self.executor.platform.insert_focus_cache(
+            self.executor.platform.focus.cache.insert(
                 process_id,
                 class_name.clone(),
                 kind,
@@ -365,18 +388,34 @@ impl Runtime {
     /// process_changed な場合は事前に `hwnd_ime_cache.save()` を呼び出す。
     /// prev_pid は process_changed 時のみ Some になる（ログ用）。
     fn advance_focus_tracking(&mut self, classified: &ClassifiedFocus) -> (bool, Option<u32>) {
-        let last_pid = self.executor.platform.focus_last_pid();
+        let last_pid = self
+            .executor
+            .platform
+            .focus
+            .last_focus_info
+            .as_ref()
+            .map(|(pid, _)| *pid);
         let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
 
         // フォーカス離脱: 現在の belief を per-HWND キャッシュに保存
         if process_changed {
-            let ime_on = self.platform_state.ime_on();
-            let input_mode = self.platform_state.input_mode();
-            self.executor.platform.save_current_hwnd_ime_snapshot(ime_on, input_mode);
+            if let Some((old_pid, old_class)) =
+                self.executor.platform.focus.last_focus_info.clone()
+            {
+                self.executor.platform.focus.hwnd_ime_cache.save(
+                    old_pid,
+                    old_class,
+                    self.platform_state.ime_on(),
+                    self.platform_state.input_mode(),
+                );
+            }
         }
 
         // last_focus_info と AppImeProfile キャッシュをアトミックに更新（IMM 制御の SSOT）。
-        self.executor.platform.update_focus_info(classified.process_id, classified.class_name.clone());
+        self.executor
+            .platform
+            .focus
+            .update_focus_info(classified.process_id, classified.class_name.clone());
 
         // prev_conversion_mode をリセット
         self.platform_state.set_prev_conversion_mode(None);
@@ -403,7 +442,7 @@ impl Runtime {
         self.executor.platform.notify_focus_changed();
         // Step 1.5: FocusChanged event を dispatch して shadow_model の AppImePolicy を更新する。
         // 順序: policy 確定 → observation clear → 以降の observation は新 policy で評価される。
-        let new_profile = self.executor.platform.current_app_profile();
+        let new_profile = self.executor.platform.focus.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
         self.platform_state
             .ime
@@ -415,7 +454,7 @@ impl Runtime {
         self.platform_state.clear_ime_observations_on_focus_change();
 
         {
-            let process_name = self.executor.platform.focus_process_name();
+            let process_name = &self.executor.platform.focus.current_process_name;
             self.platform_state.active_keymaps =
                 self.all_keymaps.filter_active(process_name);
             log::debug!("[keymap] active rules updated: {} rule(s) for process={:?}",
@@ -423,7 +462,7 @@ impl Runtime {
         }
 
         {
-            let cache_hit = self.executor.platform.restore_hwnd_ime_snapshot(
+            let cache_hit = self.executor.platform.focus.hwnd_ime_cache.restore(
                 classified.process_id,
                 &classified.class_name,
             );
@@ -440,7 +479,7 @@ impl Runtime {
             // stale reset が IME ON へ戻してしまいフォーム送信が起きるバグを防ぐ。
             if cache_miss
                 && matches!(
-                    self.executor.platform.current_app_profile(),
+                    self.executor.platform.focus.current_app_profile(),
                     crate::focus::classify::AppImeProfile::TsfNative,
                 )
             {
@@ -470,7 +509,7 @@ impl Runtime {
         //   フォーカス先の IME が ON だった場合に初回 Ctrl+無変換 で確実に VK_KANJI を送れる。
         //   実 apply 後は applied_ms > 0 となり「確認済み OFF」として永続スキップ。
         if matches!(
-            self.executor.platform.current_app_profile(),
+            self.executor.platform.focus.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         ) {
             let ime_on_now = self.platform_state.ime_on();
@@ -499,7 +538,9 @@ impl Runtime {
         }
 
         if classified.kind == FocusKind::Undetermined {
-            self.executor.platform.send_uia_hwnd(classified.hwnd);
+            if let Some(sender) = &self.executor.platform.focus.uia_sender {
+                let _ = sender.send(crate::focus::uia::SendableHwnd(classified.hwnd));
+            }
         }
     }
 
@@ -541,7 +582,7 @@ impl Runtime {
                 // injection_hint を読んで TsfGate を遷移させる。
                 // PendingWarmup 以外（Probing/Ready/Bypass）なら空 Vec が返る。
                 let is_tsf = matches!(
-                    app.executor.platform.focus_injection_hint(),
+                    app.executor.platform.focus.injection_hint(),
                     InjectionHint::ForceTsf
                 );
                 let held = if is_tsf {
@@ -662,7 +703,14 @@ impl Runtime {
         self.platform_state.focus.focus_kind = new_kind;
 
         // Update learning cache
-        self.executor.platform.cache_focus_kind_if_focused(new_kind, DetectionSource::UserOverride);
+        if let Some((pid, cls)) = self.executor.platform.focus.last_focus_info.as_ref() {
+            self.executor.platform.focus.cache.insert(
+                *pid,
+                cls.clone(),
+                new_kind,
+                DetectionSource::UserOverride,
+            );
+        }
 
         // If demoted to NonText, flush engine pending
         if new_kind == FocusKind::NonText {

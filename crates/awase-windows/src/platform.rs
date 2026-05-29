@@ -42,10 +42,9 @@ impl WindowsPlatform {
         self.output.send_eager_tsf_warmup(applied_ime_on);
     }
 
-    /// composition を cold にして eager warmup を送信する。
-    fn cold_and_warmup(&self, reason: crate::output::ColdReason, applied: Option<bool>) {
-        self.output.mark_composition_cold(reason);
-        self.output.send_eager_tsf_warmup(applied);
+    /// フォーカス変更時の eager warmup（ime_refresh 等から呼ぶ）。
+    pub(crate) fn send_eager_warmup_with(&self, applied_ime_on: Option<bool>) {
+        self.output.send_eager_tsf_warmup(applied_ime_on);
     }
 
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
@@ -283,7 +282,8 @@ impl PlatformRuntime for WindowsPlatform {
         crate::tsf::observer::reset_candidate_was_seen();
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-            self.cold_and_warmup(crate::output::ColdReason::SetOpenTrue, Some(effective));
+            self.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            self.output.send_eager_tsf_warmup(Some(effective));
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output.mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
@@ -304,25 +304,28 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!(
                 "[composition] vk=0xf2 passthrough TSF mode → marking cold (NativeF2Consumed)",
             );
-            self.cold_and_warmup(crate::output::ColdReason::NativeF2Consumed, applied);
+            self.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.output.send_eager_tsf_warmup(applied);
             return false;
         }
 
         // Confirm key keydown: warm+TSF なら KeyUp まで eager warmup を遅延する
         if is_keydown && vk.is_composition_confirm_key() {
-            let deferred = self.output.is_composition_warm() && self.output.is_tsf_mode();
-            self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-            if deferred {
+            let was_warm = self.output.is_composition_warm();
+            let is_tsf = self.output.is_tsf_mode();
+            if was_warm && is_tsf {
                 log::debug!(
                     "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
                     vk,
                 );
+                self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                 return true; // warmup deferred to KeyUp
             }
             log::debug!(
                 "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
                 vk,
             );
+            self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
             self.output.send_eager_tsf_warmup(applied);
             return false;
         }
@@ -348,7 +351,8 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!(
                 "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
             );
-            self.cold_and_warmup(crate::output::ColdReason::NativeF2Consumed, applied);
+            self.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.output.send_eager_tsf_warmup(applied);
             return;
         }
 
@@ -357,139 +361,13 @@ impl PlatformRuntime for WindowsPlatform {
                 "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
                 vk,
             );
-            self.cold_and_warmup(crate::output::ColdReason::ReinjectConfirmKey, applied);
+            self.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+            self.output.send_eager_tsf_warmup(applied);
         }
     }
 }
 
 impl WindowsPlatform {
-    // ── Focus 委譲メソッド ─────────────────────────────────────────────────
-
-    /// フォーカス中アプリの IME 制御プロファイルを返す。
-    pub(crate) fn current_app_profile(&self) -> crate::focus::class_names::AppImeProfile {
-        self.focus.current_app_profile()
-    }
-
-    /// 現在のフォーカス先に対する注入ヒントを返す。
-    pub(crate) fn focus_injection_hint(&self) -> crate::focus::classifier::InjectionHint {
-        self.focus.injection_hint()
-    }
-
-    /// IMM 能力キャッシュをクリアし、削除したエントリ数を返す。
-    pub(crate) fn clear_imm_learning(&mut self) -> usize {
-        self.focus.imm_learning.clear()
-    }
-
-    /// UIA sender を設定する（bootstrap 用）。
-    pub(crate) fn set_focus_uia_sender(
-        &mut self,
-        sender: std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>,
-    ) {
-        self.focus.set_uia_sender(sender);
-    }
-
-    /// アプリオーバーライド設定をリセットする（設定リロード用）。
-    pub(crate) fn reset_focus_overrides(&mut self, overrides: awase::config::AppOverrides) {
-        self.focus.overrides = crate::focus::classifier::ForceOverrides::new(overrides);
-    }
-
-    /// フォーカスキャッシュをクリアする（設定リロード用）。
-    pub(crate) fn reset_focus_cache(&mut self) {
-        self.focus.cache = crate::focus::cache::FocusCache::new();
-    }
-
-    /// `last_focus_info` の PID を返す（未フォーカス時は `None`）。
-    pub(crate) fn focus_last_pid(&self) -> Option<u32> {
-        self.focus.last_focus_info.as_ref().map(|(pid, _)| *pid)
-    }
-
-    /// `last_focus_info` が `Some` なら focus_kind をキャッシュに格納する。
-    pub(crate) fn cache_focus_kind_if_focused(
-        &mut self,
-        kind: awase::types::FocusKind,
-        source: crate::focus::cache::DetectionSource,
-    ) {
-        if let Some((pid, cls)) = self.focus.last_focus_info.clone() {
-            self.focus.cache.insert(pid, cls, kind, source);
-        }
-    }
-
-    /// 指定した `(pid, class_name)` で focus_kind をキャッシュに格納する。
-    pub(crate) fn insert_focus_cache(
-        &mut self,
-        pid: u32,
-        class_name: String,
-        kind: awase::types::FocusKind,
-        source: crate::focus::cache::DetectionSource,
-    ) {
-        self.focus.cache.insert(pid, class_name, kind, source);
-    }
-
-    /// `last_focus_info` の IME 状態スナップショットを `hwnd_ime_cache` に保存する。
-    pub(crate) fn save_current_hwnd_ime_snapshot(
-        &mut self,
-        ime_on: bool,
-        input_mode: awase::engine::InputModeState,
-    ) {
-        if let Some((old_pid, old_class)) = self.focus.last_focus_info.clone() {
-            self.focus.hwnd_ime_cache.save(old_pid, old_class, ime_on, input_mode);
-        }
-    }
-
-    /// `hwnd_ime_cache` からスナップショットを復元する。
-    pub(crate) fn restore_hwnd_ime_snapshot(
-        &self,
-        pid: u32,
-        class_name: &str,
-    ) -> Option<crate::focus::hwnd_cache::HwndImeSnapshot> {
-        self.focus.hwnd_ime_cache.restore(pid, class_name)
-    }
-
-    /// フォーカス情報（`last_focus_info` と `AppImeProfile` キャッシュ）をアトミックに更新する。
-    pub(crate) fn update_focus_info(&mut self, process_id: u32, class_name: String) {
-        self.focus.update_focus_info(process_id, class_name);
-    }
-
-    /// UIA スレッドに HWND を送信する（`uia_sender` が `Some` の場合のみ）。
-    pub(crate) fn send_uia_hwnd(&self, hwnd: windows::Win32::Foundation::HWND) {
-        if let Some(sender) = &self.focus.uia_sender {
-            let _ = sender.send(crate::focus::uia::SendableHwnd(hwnd));
-        }
-    }
-
-    /// フォーカス中プロセス名を返す。
-    pub(crate) fn focus_process_name(&self) -> &str {
-        &self.focus.current_process_name
-    }
-
-    /// IMM 検出ミス数に基づいてクラス名単位の IMM 能力をキャッシュに記録する。
-    pub(crate) fn learn_imm_capability_from_miss(&mut self, miss_before: u32, miss_after: u32) {
-        use crate::focus::classifier::ImmCapability;
-        let Some((_, class_name)) = self.focus.last_focus_info.as_ref() else {
-            return;
-        };
-        let class_name = class_name.clone();
-        if miss_after == 0 && miss_before > 0 {
-            let prev = self.focus.imm_learning.get(&class_name);
-            if prev != Some(ImmCapability::Works) {
-                log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
-                self.focus.learn_imm_capability(class_name, ImmCapability::Works);
-            }
-        } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
-            && miss_before < crate::IME_DETECT_MISS_THRESHOLD
-        {
-            let prev = self.focus.imm_learning.get(&class_name);
-            if prev != Some(ImmCapability::Unavailable) {
-                log::info!(
-                    "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
-                );
-                self.focus.learn_imm_capability(class_name, ImmCapability::Unavailable);
-            }
-        }
-    }
-
-    // ── ImeControlView ─────────────────────────────────────────────────────
-
     /// `apply_ime_open` 用の `ImeControlView` を構築する。
     ///
     /// `applied` には呼び出し元が持つ `ImeModel.applied_open` と `applied_at_ms` のペアを渡す。
