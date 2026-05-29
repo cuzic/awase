@@ -91,6 +91,20 @@ pub const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
 /// 長時間の乖離（実際は IME OFF なのにキャッシュが ON のまま）を防ぐ。
 pub const IME_DETECT_MISS_THRESHOLD: u32 = 3;
 
+// === ドリフト補正 ===
+
+/// `desired` と `observed` の乖離がこの時間以上続いた場合にドリフト補正を発動する (ms)。
+///
+/// ポーリング間隔 500ms より小さい値にすると、ドリフト検出後の次のポーリング
+/// （drift_duration ≈ 500ms）で確実に補正が発動する。
+/// 短すぎるとフォーカス変化直後の一時的なズレで誤発動するため 400ms とする。
+pub const DRIFT_CORRECTION_THRESHOLD_MS: u64 = 400;
+
+/// ドリフト補正の「信頼できる観測」として許可する最大観測年齢 (ms)。
+///
+/// この時間より古い観測値は stale とみなしてドリフト補正の根拠として使わない。
+pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
+
 // === グレース・マージン ===
 
 /// TSF warmup 完了直後のグレース期間 (ms)。

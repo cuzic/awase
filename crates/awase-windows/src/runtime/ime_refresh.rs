@@ -180,7 +180,8 @@ impl<'a> ImeRefreshPipeline<'a> {
         self.apply_force_on_for_imm_broken();
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.notify_engine_refresh();
-
+        // Phase 4b: desired ≠ observed ドリフト補正（ImmCross アプリ向け）
+        self.apply_drift_correction();
         // Phase 5: 次回ポーリングをスケジュール
         self.reschedule();
     }
@@ -485,6 +486,65 @@ impl<'a> ImeRefreshPipeline<'a> {
                 InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
             );
         }
+    }
+
+    // ── ドリフト補正 ──
+    //
+    // desired ≠ observed が DRIFT_CORRECTION_THRESHOLD_MS 以上続いた場合、
+    // ImmCross 経由で set_ime_open(desired) を再送する。
+    //
+    // 対象: IMM32 クロスプロセス対応アプリ（LINE 等 ImmCross）。
+    //   Blacklist アプリは apply_force_on_for_imm_broken が担当するため除外。
+    //   TsfNative アプリは can_use_imm32_cross_process=false で set_ime_open が no-op。
+
+    fn check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
+        let sm = &self.rt.platform_state.ime.shadow_model;
+        let desired = sm.desired_open;
+
+        // 乖離継続時間が閾値未満なら補正しない
+        let dur = sm.observations.drift_duration(now)?;
+        if dur.as_millis() < u128::from(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS) {
+            return None;
+        }
+
+        // 最も信頼できる観測値が stale でなく desired と一致しているなら補正不要
+        let max_age = std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS);
+        let trusted = sm.observations.most_recent_trusted(now)?;
+        if trusted.age(now) > max_age {
+            return None;
+        }
+        if trusted.open == desired {
+            return None;
+        }
+
+        Some((desired, trusted.open, dur.as_millis() as u64))
+    }
+
+    fn apply_drift_correction(&mut self) {
+        // Blacklist パスは apply_force_on_for_imm_broken が担当
+        if self.resolve_skip_imm_query() {
+            return;
+        }
+        // エンジン無効 / 非日本語 IME は補正しない
+        if !self.rt.engine.is_user_enabled() || !self.rt.platform_state.is_japanese_ime() {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let Some((desired, observed, duration_ms)) = self.check_drift_correction(now) else {
+            return;
+        };
+
+        log::warn!(
+            "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
+             → set_ime_open({desired})"
+        );
+        self.rt.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::DriftDetected { desired, observed, duration_ms },
+        );
+        let _ = self.rt.executor.platform.set_ime_open(desired);
+        // ts=0 = 楽観的未確認: ImmCross async と同じ扱い。skip_override は applied_at_ms=0 で無効化済み。
+        self.rt.platform_state.ime.mirror_applied_open_with_ts(desired, 0);
     }
 
     // ── Engine 通知 ──

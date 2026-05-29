@@ -269,9 +269,12 @@ impl ImeModel {
                     self.pending = None;
                 }
             }
-            ImeEvent::DriftDetected { .. } => {
-                // Step 7 では reducer 側で扱わない (Phase 3 cleanup で
-                // observation_store.update_drift と統合予定)
+            ImeEvent::DriftDetected { desired, .. } => {
+                // skip_override を無効化する: applied_at_ms = 0 にリセットすることで
+                // 次の SetOpen(desired) が「確認済み apply がない」扱いになり skip されなくなる。
+                // applied_open は desired に合わせて楽観的にセット（ImmCross async 送信と同じ扱い）。
+                self.applied_open = Some(desired);
+                self.applied_at_ms = 0;
             }
         }
     }
