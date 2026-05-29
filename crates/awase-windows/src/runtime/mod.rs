@@ -447,16 +447,28 @@ impl Runtime {
         // on_focus_changed() がラッチを無効化（false）したままだと、
         // dispatch_ime_set_open の override-latch 判定が spurious VK_KANJI を LINE に
         // 送信してしまい IME がトグルされる（フォーム送信誤動作等）。
-        // post_focus_change_snapshot より前に desired_open を反映させて防ぐ。
+        //
+        // desired=true (IME ON): hard pre-sync (applied_ms=now) で SetOpen(true) を抑止。
+        //   300ms 後に override が再度可能になり、Ctrl+変換 で再試行できる。
+        // desired=false (IME OFF): soft pre-sync (applied_ms=0 維持) で、
+        //   フォーカス先の IME が ON だった場合に初回 Ctrl+無変換 で確実に VK_KANJI を送れる。
+        //   実 apply 後は applied_ms > 0 となり「確認済み OFF」として永続スキップ。
         if matches!(
             self.executor.platform.focus.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         ) {
             let ime_on_now = self.platform_state.ime_on();
-            self.executor.platform.output.set_ime_apply_latch(ime_on_now);
-            log::debug!(
-                "[focus] TsfNative pre-sync latch={ime_on_now} (prevent spurious VK_KANJI from notify_focus_changed)"
-            );
+            if ime_on_now {
+                self.executor.platform.output.set_ime_apply_latch(true);
+                log::debug!(
+                    "[focus] TsfNative hard pre-sync latch=true (prevent spurious VK_KANJI from SetOpen(true))"
+                );
+            } else {
+                self.executor.platform.output.soft_set_ime_apply_latch(false);
+                log::debug!(
+                    "[focus] TsfNative soft pre-sync value=false (applied_ms=0, allow override on first Ctrl+無変換)"
+                );
+            }
         }
 
         if self.platform_state.is_force_on_guard_active()

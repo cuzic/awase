@@ -13,9 +13,14 @@
 //!
 //! ## ライフサイクル
 //!
-//! - `set(value)` — `apply_ime_open` 直後に呼ぶ
+//! - `set(value)` — `apply_ime_open` 直後に呼ぶ（`applied_ms` を更新）
+//! - `soft_set(value)` — フォーカス変更後プリシンク用（value のみ更新、`applied_ms` は 0 のまま）
 //! - `invalidate()` — フォーカス変更時にクリア
 //! - `get_or(fallback)` — `KanjiToggleStrategy` が直前送信値を読むときに使う
+//!
+//! `applied_ms > 0` は「フォーカス変更後に実 apply が 1 回以上完了した」ことを示す。
+//! `soft_set` のみ呼ばれた状態（プリシンクのみ）は `applied_ms == 0` となり、
+//! latch の信頼度が「実 apply 確認済み」と区別される。
 
 /// `apply_ime_open()` が最後に OS に送ったコマンド値を記録するログ。
 ///
@@ -38,6 +43,16 @@ impl LastAppliedImeState {
         log::debug!("[last-applied-ime] set({value})");
         self.value.set(Some(value));
         self.applied_ms.set(crate::hook::current_tick_ms());
+    }
+
+    /// フォーカス変更後プリシンク用。value のみ更新し `applied_ms` は変えない。
+    ///
+    /// `applied_ms == 0` を維持することで「フォーカス変更後に実 apply がまだない不確定状態」
+    /// を示す。`desired=false` のプリシンク（新ウィンドウで IME が ON の可能性あり）に使う。
+    pub fn soft_set(&self, value: bool) {
+        log::debug!("[last-applied-ime] soft_set({value}) (pre-sync, applied_ms unchanged)");
+        self.value.set(Some(value));
+        // applied_ms は更新しない: 0 のまま → 「未確認」状態を維持
     }
 
     /// フォーカス変更時にクリアする。

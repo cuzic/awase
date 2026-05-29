@@ -768,18 +768,29 @@ impl DecisionExecutor {
             if origin == EffectOrigin::EngineIntent {
                 let profile = self.platform.focus.current_app_profile();
                 if !profile.can_use_imm32_cross_process() {
-                    // KeyDown (Phase1) と KeyUp (Phase2 エンジン起動) が同じ方向の
-                    // EngineIntent を短時間に二回送ると VK_KANJI がトグルして逆になる。
-                    // 直前 300ms 以内に同方向を送信済みの場合はラッチ強制をスキップする。
                     let last_ms = self.platform.output.last_applied_ime_on_ms();
                     let now_ms = crate::hook::current_tick_ms();
-                    let same_dir_recently = self.platform.output.last_applied_ime_on() == open
-                        && last_ms > 0
-                        && now_ms.saturating_sub(last_ms) < 300;
-                    if same_dir_recently {
+                    // SetOpen(false): 「確認済み OFF」なら永続スキップ。
+                    //   applied_ms > 0 = フォーカス変更後に実 apply が 1 回以上完了 = 信頼できる。
+                    //   applied_ms == 0 = フォーカス変更直後のプリシンクのみ = 不確定なので override 許可。
+                    //   これにより定常状態で Ctrl+無変換 を複数回押しても VK_KANJI が重複送信されず、
+                    //   IME が OFF → ON と誤トグルするバグを防ぐ。
+                    // SetOpen(true): 300ms ウィンドウを維持。
+                    //   KeyDown+KeyUp 二重送信を防ぎつつ、フォーカス変更後 Ctrl+変換 の再試行を許容。
+                    let skip_override = if !open {
+                        // OFF 方向: 実 apply 確認済みなら永続スキップ
+                        self.platform.output.last_applied_ime_on() == open
+                            && last_ms > 0
+                    } else {
+                        // ON 方向: 300ms ウィンドウ (従来動作)
+                        self.platform.output.last_applied_ime_on() == open
+                            && last_ms > 0
+                            && now_ms.saturating_sub(last_ms) < 300
+                    };
+                    if skip_override {
                         log::debug!(
                             "[dispatch-ime] EngineIntent+no-imm32 (profile={:?}): skip latch force \
-                             (same dir={open} sent {}ms ago)",
+                             (confirmed dir={open}, applied {}ms ago)",
                             profile,
                             now_ms.saturating_sub(last_ms)
                         );

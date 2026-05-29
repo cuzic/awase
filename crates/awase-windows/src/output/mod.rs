@@ -278,6 +278,15 @@ impl Output {
         crate::tsf::observer::reset_candidate_was_seen();
     }
 
+    /// フォーカス変更後プリシンク専用。value のみ更新し `applied_ms` は変えない。
+    ///
+    /// `desired=false` の pre-sync に使う。`applied_ms == 0` を維持することで
+    /// 「フォーカス変更後に実 apply がまだない不確定状態」を表し、
+    /// 初回 Ctrl+無変換 で latch 強制が発火できるようにする。
+    pub fn soft_set_ime_apply_latch(&self, open: bool) {
+        self.composition.soft_set_ime_apply_latch(open);
+    }
+
     /// TSF composition context の事前ウォームアップ F2 を送信する。
     ///
     /// 以下のタイミングで呼ぶ:

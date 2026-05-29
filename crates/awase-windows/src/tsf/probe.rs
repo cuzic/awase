@@ -444,6 +444,14 @@ impl CompositionState {
         self.last_applied.set(open);
     }
 
+    /// フォーカス変更後プリシンク用。value のみ更新し `applied_ms` は変えない。
+    ///
+    /// `desired=false` の pre-sync に使う。`applied_ms == 0` を維持することで
+    /// 「フォーカス変更後に実 apply がまだない」状態を保持する。
+    pub fn soft_set_ime_apply_latch(&self, open: bool) {
+        self.last_applied.soft_set(open);
+    }
+
     /// 最後の `send_keys` 完了からの経過時間（ms）。
     /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]
