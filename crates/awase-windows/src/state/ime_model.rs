@@ -56,6 +56,10 @@ pub struct ImeModel {
     /// 旧 `last_applied_ime_on` (Layer 4) の置換。`None` は未適用。
     pub applied_open: Option<bool>,
 
+    /// 最後に actuator が成功した時刻 (ms)。0 = 未確認（フォーカス変更後 / soft presync）。
+    /// `applied_ms > 0` は「フォーカス変更後に実 apply が 1 回以上完了した」ことを示す。
+    pub applied_at_ms: u64,
+
     /// reduce 呼び出し回数。診断用。
     pub reduce_count: u64,
 }
@@ -81,6 +85,7 @@ impl ImeModel {
             drift_monitor: DriftMonitor::default(),
             pending: None,
             applied_open: None,
+            applied_at_ms: 0,
             reduce_count: 0,
         }
     }
@@ -203,10 +208,12 @@ impl ImeModel {
                 // FocusChanged を受けた時点で policy を更新し、以降の observation は
                 // 新しい policy で評価される。
                 self.app_policy = AppImePolicy::from_profile(profile);
-                // フォーカス変更で intent / observation は clear する
+                // フォーカス変更で intent / observation / applied は clear する
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
                 self.observations.clear_on_focus_change();
+                self.applied_open = None;
+                self.applied_at_ms = 0;
                 // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。
                 // settle_until は AppImePolicy.focus_settle_ms 由来。
                 let settle_until = envelope.time.monotonic
@@ -251,6 +258,7 @@ impl ImeModel {
                 // pending の generation と一致しなければ無視する。
                 if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
                     self.applied_open = Some(target);
+                    self.applied_at_ms = envelope.time.tick_ms;
                     self.pending = None;
                 }
                 // 一致しない場合は何もしない (stale → 無視)
