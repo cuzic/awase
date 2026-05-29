@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -77,6 +77,21 @@ pub static HOOK_ALIVE_TICK_MS: AtomicU64 = AtomicU64::new(0);
 /// install_hook がフックスレッドからの TID 通知を待つスロット
 /// 0 = 待機中、u32::MAX = SetWindowsHookExW 失敗、それ以外 = フックスレッド TID
 static HOOK_TID_INIT_SLOT: AtomicU32 = AtomicU32::new(0);
+
+/// VK ごとの物理押下状態。non-self-injected な KeyDown/KeyUp で更新する。
+///
+/// 用途: `send_vk_pair` が合成 `LSHIFT↑` を送ったあと、OS state を物理状態に
+/// 再同期するために物理 Shift が押下中か判定する。`GetAsyncKeyState` は
+/// SendInput の影響も受けるため、物理状態の判定には使えない。
+static PHYSICAL_KEY_STATE: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
+
+/// 物理 VK が押下中かを返す。SendInput では更新されないため信頼できる物理状態。
+#[must_use]
+pub fn is_physical_key_down(vk: VkCode) -> bool {
+    PHYSICAL_KEY_STATE
+        .get(vk.0 as usize)
+        .is_some_and(|s| s.load(Ordering::Relaxed))
+}
 
 fn cached_hook_config() -> HookConfig {
     let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
@@ -306,6 +321,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let vk = VkCode(kb.vkCode as u16);
     let scan = ScanCode(kb.scanCode);
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+    if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {
+        slot.store(is_keydown, Ordering::Relaxed);
+    }
     let config = cached_hook_config();
     let (key_classification, physical_pos) = classify_key(vk, scan, &config);
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
