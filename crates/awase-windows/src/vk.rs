@@ -264,12 +264,6 @@ impl VkCodeExt for VkCode {
     fn from_name(name: &str) -> Option<Self> { vk_name_to_code(name) }
 }
 
-/// ブラウザ系・Electron 系のウィンドウクラスかどうかを判定する。
-#[must_use]
-pub fn is_browser_or_electron_class(class_name: &str) -> bool {
-    class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass"
-}
-
 // ── キー名解決（config パース用）──
 
 /// 仮想キーコード名（"VK_A" 等）を実際の VkCode 値に変換する

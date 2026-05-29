@@ -134,6 +134,15 @@ impl AppImeProfile {
     }
 }
 
+/// ブラウザ系・Electron 系のトップレベルウィンドウクラスかどうかを判定する。
+///
+/// Chrome 系（Chrome/Edge/Brave/Electron 等）および Firefox が対象。
+/// IME 制御経路の選択（VK_KANJI 戦略 vs IMM32）に使用する。
+#[must_use]
+pub fn is_chromium_widget(class_name: &str) -> bool {
+    class_name == "Chrome_WidgetWin_1" || class_name == "MozillaWindowClass"
+}
+
 /// ウィンドウクラス名からアプリの UI フレームワーク種別を判定する。
 ///
 /// - `Chrome_*`: Chromium 系（Chrome, Edge, Electron, VS Code 等）
