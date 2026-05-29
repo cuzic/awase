@@ -113,6 +113,12 @@ impl Runtime {
         )
     }
 
+    /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
+    #[must_use]
+    pub fn can_use_imm32_cross_process(&self) -> bool {
+        self.executor.platform.focus.current_app_profile().can_use_imm32_cross_process()
+    }
+
     /// IME 関連の事前分類情報を sync key 設定で補完する
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         let vk = event.vk_code;
@@ -728,13 +734,7 @@ impl Runtime {
         // 内部で spawn_local して fire-and-forget するため、2 連発で呼ぶと async race で
         // 順序が逆転しうる (true→false の終端で IME OFF のまま残るリスク)。単一の
         // spawn_local タスク内で 2 回 await する形にして OFF → ON を直列化する。
-        if self
-            .executor
-            .platform
-            .focus
-            .current_app_profile()
-            .can_use_imm32_cross_process()
-        {
+        if self.can_use_imm32_cross_process() {
             win32_async::spawn_local(async {
                 let _ = crate::ime::set_ime_open_cross_process_async(false).await;
                 let _ = crate::ime::set_ime_open_cross_process_async(true).await;

@@ -189,16 +189,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     // ── IMM ブリッジ非対応クラスの判定 ──
 
     fn resolve_skip_imm_query(&self) -> bool {
-        // IMM32 クロスプロセス制御が使えないアプリ（Imm32Unavailable / TsfNative）では
-        // クロスプロセス IMM 問い合わせ（WM_IME_CONTROL）が動作しないか、
-        // 無期限ブロックする恐れがあるためスキップする。
-        !self
-            .rt
-            .executor
-            .platform
-            .focus
-            .current_app_profile()
-            .can_use_imm32_cross_process()
+        !self.rt.can_use_imm32_cross_process()
     }
 
     // ── フォーカス変更通知 ──
@@ -433,7 +424,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
         // mirror_applied_open 直後なので ImeModel の applied_open を使う。
         let applied_open = self.rt.platform_state.ime.shadow_model.applied_open;
-        self.rt.executor.platform.send_eager_warmup_with(applied_open);
+        self.rt.executor.platform.send_eager_warmup(applied_open);
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
         );
