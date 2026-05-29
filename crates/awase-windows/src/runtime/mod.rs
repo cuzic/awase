@@ -142,8 +142,7 @@ impl Runtime {
     /// async path (ImmCross) は spawn_local 内で直接 dispatch するためここを経由しない。
     /// generation 照合は [[feedback_generation_check_for_async_apply]] 参照。
     pub fn flush_sync_apply_events(&mut self) {
-        use awase::platform::ImeOpenOutcome;
-        use crate::state::ime_event::{ApplyError, ImeEvent};
+        use crate::state::ime_event::ImeEvent;
         let outcomes = self.executor.drain_sync_apply_outcomes();
         for (target, outcome) in outcomes {
             let Some(generation) = self
@@ -159,18 +158,7 @@ impl Runtime {
                 // Succeeded/Failed も出さない。
                 continue;
             };
-            let event = match outcome {
-                ImeOpenOutcome::Applied
-                | ImeOpenOutcome::FallbackSent
-                | ImeOpenOutcome::AlreadyMatched => {
-                    ImeEvent::ImeApplySucceeded { target, generation }
-                }
-                ImeOpenOutcome::Failed => ImeEvent::ImeApplyFailed {
-                    target,
-                    generation,
-                    error: ApplyError::CrossProcessFailed,
-                },
-            };
+            let event = ImeEvent::from_apply_outcome(target, outcome, generation);
             self.platform_state.ime.dispatch_event(event);
         }
     }

@@ -738,23 +738,9 @@ impl DecisionExecutor {
                         .as_ref()
                         .map(|p| p.generation);
                     if let Some(generation) = pending_gen {
-                        let event = match outcome {
-                            awase::platform::ImeOpenOutcome::Applied
-                            | awase::platform::ImeOpenOutcome::FallbackSent
-                            | awase::platform::ImeOpenOutcome::AlreadyMatched => {
-                                crate::state::ime_event::ImeEvent::ImeApplySucceeded {
-                                    target: open,
-                                    generation,
-                                }
-                            }
-                            awase::platform::ImeOpenOutcome::Failed => {
-                                crate::state::ime_event::ImeEvent::ImeApplyFailed {
-                                    target: open,
-                                    generation,
-                                    error: crate::state::ime_event::ApplyError::CrossProcessFailed,
-                                }
-                            }
-                        };
+                        let event = crate::state::ime_event::ImeEvent::from_apply_outcome(
+                            open, outcome, generation,
+                        );
                         app.platform_state.ime.dispatch_event(event);
                     }
                     app.executor.post_apply_ime_open(open, outcome);

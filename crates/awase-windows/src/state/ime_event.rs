@@ -187,6 +187,30 @@ pub enum ImeEvent {
     },
 }
 
+impl ImeEvent {
+    /// `apply_ime_open` の outcome を Succeeded/Failed event に変換する。
+    /// sync path (`Runtime::flush_sync_apply_events`) と async path (executor.rs の
+    /// spawn_local 内) の両方で使う single source of truth。
+    #[must_use]
+    pub fn from_apply_outcome(
+        target: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: u64,
+    ) -> Self {
+        use awase::platform::ImeOpenOutcome;
+        match outcome {
+            ImeOpenOutcome::Applied
+            | ImeOpenOutcome::FallbackSent
+            | ImeOpenOutcome::AlreadyMatched => Self::ImeApplySucceeded { target, generation },
+            ImeOpenOutcome::Failed => Self::ImeApplyFailed {
+                target,
+                generation,
+                error: ApplyError::CrossProcessFailed,
+            },
+        }
+    }
+}
+
 /// Event log に積まれる envelope。時刻情報と event 本体をまとめる。
 #[derive(Debug, Clone)]
 pub struct ImeEventEnvelope {
