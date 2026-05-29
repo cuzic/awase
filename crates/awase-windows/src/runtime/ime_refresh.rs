@@ -280,7 +280,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         self.rt.learn_imm_capability_from_miss(miss_before, miss_after);
 
         // 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
-        self.try_force_on_bootstrap();
+        self.rt.try_force_on_bootstrap();
     }
 
     /// [診断] フォーカス変更から 10 秒以内で状態が変わった場合にログ出力。
@@ -325,34 +325,6 @@ impl<'a> ImeRefreshPipeline<'a> {
             }
         }
         let _ = miss_before; // suppress unused warning if logging is compiled out
-    }
-
-    /// 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
-    ///
-    // ここに来るのは「既知でも TSF-native でもないアプリで detect が連続失敗した」
-    // 場合だけ。shadow=ON なら SetOpen(true) を呼び engine を active のまま維持する。
-    fn try_force_on_bootstrap(&mut self) {
-        if self.rt.platform_state.ime_detect_miss_count()
-            >= crate::IME_DETECT_MISS_THRESHOLD
-            && self.rt.engine.is_user_enabled()
-            && self.rt.platform_state.is_japanese_ime()
-            && self.rt.platform_state.ime_on()
-            && !self.rt.platform_state.is_force_on_guard_active()
-        {
-            log::warn!(
-                "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
-                self.rt.platform_state.ime_detect_miss_count()
-            );
-            let dispatched = self.rt.executor.platform.set_ime_open(true);
-            // dispatched=true は IMM クロスプロセス対応アプリで async ジョブを起動した意味。
-            // 実 SendMessage の成否は spawn_local 内に閉じる。
-            // IME 非対応ウィンドウ(DirectUIHWND 等) で失敗し続ける無限ループを防ぐため、
-            // 結果に関わらずガードをセットする（フォーカス変更時に解除）。
-            self.rt.platform_state.set_force_on_broken_app_bootstrap();
-            if !dispatched {
-                log::warn!("set_ime_open dispatched=false (profile not IMM-capable) — guard set to suppress retry until focus change");
-            }
-        }
     }
 
     // ── 診断スナップショット（フォーカス変更確定直後）──

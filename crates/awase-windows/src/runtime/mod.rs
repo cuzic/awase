@@ -629,6 +629,26 @@ impl Runtime {
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
     }
 
+    /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したとき、一時 force-ON を試みる。
+    pub fn try_force_on_bootstrap(&mut self) {
+        if self.platform_state.ime_detect_miss_count() >= crate::IME_DETECT_MISS_THRESHOLD
+            && self.engine.is_user_enabled()
+            && self.platform_state.is_japanese_ime()
+            && self.platform_state.ime_on()
+            && !self.platform_state.is_force_on_guard_active()
+        {
+            log::warn!(
+                "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
+                self.platform_state.ime_detect_miss_count()
+            );
+            let dispatched = self.executor.platform.set_ime_open(true);
+            self.platform_state.set_force_on_broken_app_bootstrap();
+            if !dispatched {
+                log::warn!("set_ime_open dispatched=false (profile not IMM-capable) — guard set to suppress retry until focus change");
+            }
+        }
+    }
+
     /// 配列を動的に切り替える
     pub fn switch_layout(&mut self, index: usize) {
         let Some(entry) = self.layouts.get(index) else {
