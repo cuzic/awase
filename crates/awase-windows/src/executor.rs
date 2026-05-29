@@ -46,9 +46,12 @@ pub struct DecisionExecutor {
     /// WezTerm が F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
     /// KeyUp タイミングで F2 を送れば、Enter↓ は処理済みのため競合しない。
     pending_warmup_on_keyup: bool,
-    /// TIMER_OUTPUT_GUARD が発火待ちの間 true。
-    /// この間は drain_deferred が再入しても新規タイマーを二重登録しない。
-    guard_timer_active: bool,
+    /// OUTPUT_GUARD で park した 1 個分の Effect スロット。
+    ///
+    /// 不変条件: `guard_held.is_some()` ⟺ `TIMER_OUTPUT_GUARD` が登録済み。
+    /// drain は「slot を先に試す → 通過したら queue に進む」の 2 段構え。
+    /// queue 本体は常に純粋 FIFO で `push_back` / `pop_front` のみ。
+    guard_held: Option<Effect>,
     /// sync IME apply の outcome キュー。`DecisionExecutor` は `PlatformState` に
     /// アクセスできないため、sync path では Apply outcome をここに溜めておき、
     /// 呼び出し側 (`Runtime::flush_sync_apply_events`) が `shadow_model` へ
@@ -71,7 +74,7 @@ impl DecisionExecutor {
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
             pending_warmup_on_keyup: false,
-            guard_timer_active: false,
+            guard_held: None,
             sync_apply_outcomes: Vec::new(),
         }
     }
@@ -117,8 +120,8 @@ impl DecisionExecutor {
 
     /// `WM_EXECUTE_EFFECTS` ハンドラ、および `TIMER_OUTPUT_GUARD` タイマーから呼ぶ。
     ///
-    /// キューの先頭が `ReinjectKey` かつ output guard 期間中の場合、
-    /// `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
+    /// `guard_held` に park 済みの Effect があれば最初にそれを試し、
+    /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
     pub fn drain_deferred(&mut self) {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
@@ -126,23 +129,32 @@ impl DecisionExecutor {
         // Win が 150ms 以上 OS 側でスタックし、後続のショートカットが Win+key と
         // 誤解釈されるため、先頭の reinject が guard を通過したら残りはまとめて送出する。
         let mut reinject_guard_passed = false;
+
+        // 1) 前回 park した Effect があれば最初に試す。
+        //    guard 解除済みなら execute_one してから queue に進む (batching を継続)。
+        if let Some(effect) = self.guard_held.take() {
+            if let Some(remaining) = self.output_guard_remaining() {
+                log::debug!(
+                    "[reinject-guard] held effect, output {}ms ago, suspending for {remaining}ms",
+                    crate::tuning::OUTPUT_GUARD_MS - remaining,
+                );
+                self.park_in_guard(effect, remaining);
+                return;
+            }
+            self.execute_one(effect);
+            reinject_guard_passed = true;
+        }
+
+        // 2) queue を FIFO で drain。
         while let Some(effect) = self.queue.pop_front() {
             let is_reinject = matches!(effect, Effect::Input(InputEffect::ReinjectKey(_)));
             if is_reinject && !reinject_guard_passed {
-                let elapsed = self.platform.output.ms_since_last_send();
-                if elapsed < crate::tuning::OUTPUT_GUARD_MS {
-                    let remaining = crate::tuning::OUTPUT_GUARD_MS - elapsed;
+                if let Some(remaining) = self.output_guard_remaining() {
                     log::debug!(
-                        "[reinject-guard] output {elapsed}ms ago, suspending drain for {remaining}ms"
+                        "[reinject-guard] output {}ms ago, suspending drain for {remaining}ms",
+                        crate::tuning::OUTPUT_GUARD_MS - remaining,
                     );
-                    self.queue.push_front(effect);
-                    if !self.guard_timer_active {
-                        self.platform.timer.set(
-                            crate::TIMER_OUTPUT_GUARD,
-                            std::time::Duration::from_millis(remaining),
-                        );
-                        self.guard_timer_active = true;
-                    }
+                    self.park_in_guard(effect, remaining);
                     return;
                 }
                 reinject_guard_passed = true;
@@ -153,23 +165,42 @@ impl DecisionExecutor {
             }
             self.execute_one(effect);
         }
-        // 全 Effect を消化: 先に WM_EXECUTE_EFFECTS が処理を完了した場合に guard timer を解除
-        if self.guard_timer_active {
+
+        // 全 Effect を消化: lingering な timer を kill (no-op if not registered)。
+        if self.guard_held.is_none() {
             self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
-            self.guard_timer_active = false;
         }
     }
 
-    /// `TIMER_OUTPUT_GUARD` 発火時に呼ぶ。guard フラグをクリアして drain を再試行する。
+    /// `TIMER_OUTPUT_GUARD` 発火時に呼ぶ。timer を kill して drain を再試行する。
     pub fn on_output_guard_timer(&mut self) {
         self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
-        self.guard_timer_active = false;
         self.drain_deferred();
     }
 
-    /// キューに Effects が溜まっているか
+    /// queue または guard slot に Effect が残っているか
     pub fn has_pending(&self) -> bool {
-        !self.queue.is_empty()
+        !self.queue.is_empty() || self.guard_held.is_some()
+    }
+
+    /// output guard 期間中なら残り ms を返す。期間外なら None。
+    fn output_guard_remaining(&self) -> Option<u64> {
+        let elapsed = self.platform.output.ms_since_last_send();
+        if elapsed < crate::tuning::OUTPUT_GUARD_MS {
+            Some(crate::tuning::OUTPUT_GUARD_MS - elapsed)
+        } else {
+            None
+        }
+    }
+
+    /// Effect を guard slot に park し、TIMER_OUTPUT_GUARD を再設定する。
+    /// 再設定は idempotent (remaining は last_send からの相対時刻基準で計算される)。
+    fn park_in_guard(&mut self, effect: Effect, remaining: u64) {
+        self.guard_held = Some(effect);
+        self.platform.timer.set(
+            crate::TIMER_OUTPUT_GUARD,
+            std::time::Duration::from_millis(remaining),
+        );
     }
 
     /// drain 経路 (`WM_DRAIN_OUTPUT_QUEUE`) 専用: PassThrough を OS に届けるための
