@@ -109,7 +109,7 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
-        let view = self.build_ime_control_view();
+        let view = self.build_ime_control_view_latch();
         crate::ime_controller::CONTROLLER.apply(open, &view)
     }
 
@@ -183,14 +183,19 @@ impl PlatformRuntime for WindowsPlatform {
 impl WindowsPlatform {
     /// `apply_ime_open` 用の `ImeControlView` を構築する。
     ///
-    /// `WindowsPlatform` が `focus`, `output` の両方を持つため、
-    /// 3 ソース（フォーカス分類・観測値・制御ログ）を一箇所で組み立てられる。
-    pub(crate) fn build_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
+    /// `applied` には呼び出し元が持つ `ImeModel.applied_open` と `applied_at_ms` のペアを渡す。
+    /// `None` を渡した場合は `LastAppliedImeState`（latch）の値で補完する（移行期間中のみ）。
+    pub(crate) fn build_ime_control_view(
+        &self,
+        applied: Option<(bool, u64)>,
+    ) -> crate::state::ImeControlView<'_> {
         let class_name = self
             .focus
             .last_focus_info
             .as_ref()
             .map_or("", |(_, c)| c.as_str());
+        let (shadow_on, applied_at_ms) = applied
+            .unwrap_or_else(|| (self.output.last_applied_ime_on(), self.output.last_applied_ime_on_ms()));
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
@@ -198,9 +203,15 @@ impl WindowsPlatform {
             },
             observed: crate::state::ObservedState::capture_now(),
             control: crate::state::ControlLog {
-                shadow_on: self.output.last_applied_ime_on(),
+                shadow_on,
+                applied_at_ms,
             },
         }
+    }
+
+    /// `apply_ime_open` トレイトメソッドから呼ぶ内部ヘルパー（latch 経由のフォールバック）。
+    fn build_ime_control_view_latch(&self) -> crate::state::ImeControlView<'_> {
+        self.build_ime_control_view(None)
     }
 }
 

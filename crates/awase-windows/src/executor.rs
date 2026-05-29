@@ -685,7 +685,7 @@ impl DecisionExecutor {
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         let imm_first = {
-            let view = self.platform.build_ime_control_view();
+            let view = self.platform.build_ime_control_view(None);
             crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view)
         };
         if imm_first {
@@ -718,7 +718,9 @@ impl DecisionExecutor {
                 } else {
                     log::debug!("[apply-ime] ImmCross failed (async), trying fallback");
                     crate::with_app(|app| {
-                        let view = app.executor.platform.build_ime_control_view();
+                        let applied = app.platform_state.ime.shadow_model.applied_open
+                            .map(|v| (v, app.platform_state.ime.shadow_model.applied_at_ms));
+                        let view = app.executor.platform.build_ime_control_view(applied);
                         crate::ime_controller::CONTROLLER.apply_skipping_imm(open, &view)
                     })
                     .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
