@@ -287,10 +287,11 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
     // この間に届く inline キーが drain 待ちキーを追い越して [engine-input] に流れていないか
     // タイムスタンプで突き合わせるための起点ログ。
     let drain_start_us = hook::now_timestamp_us();
-    let queue_len_initial = crate::INPUT_DEFER.pending_len_nonblocking().unwrap_or(0);
+    let queue_len_initial = crate::INPUT_DEFER.pending_len_nonblocking();
     log::debug!(
         "[drain-start] now={}us queue_len={}",
-        drain_start_us, queue_len_initial
+        drain_start_us,
+        queue_len_initial.map_or("?".to_owned(), |n| n.to_string()),
     );
 
     let _ = with_app(|runtime| {

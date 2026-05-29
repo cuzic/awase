@@ -52,7 +52,7 @@ impl KeyEventPipeline<'_> {
         // OS 側 Ctrl がスタックしているか、modifier_snapshot が古い値で残っているかを切り分けられる。
         let now_us = hook::now_timestamp_us();
         let delay_ms = now_us.saturating_sub(event.timestamp) / 1000;
-        let pending_drain = crate::INPUT_DEFER.pending_len_nonblocking().unwrap_or(0);
+        let pending_drain = crate::INPUT_DEFER.pending_len_nonblocking();
         let gate_active = crate::OUTPUT_GATE.is_active();
         let mods = event.modifier_snapshot;
         // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
@@ -70,7 +70,8 @@ impl KeyEventPipeline<'_> {
             mods.ctrl, mods.shift, mods.alt, mods.win,
             gas_ctrl,
             event.extra_info,
-            pending_drain, gate_active,
+            pending_drain.map_or("?".to_owned(), |n| n.to_string()),
+            gate_active,
         );
         let decision = self.app.engine.on_input(event, &ctx);
 

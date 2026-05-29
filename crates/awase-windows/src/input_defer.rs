@@ -32,8 +32,13 @@ impl InputDeferQueue {
 
     /// `OUTPUT_GATE.active` = true のときフックから呼ぶ。
     /// drain は `OutputActiveGuard::drop` が担うため post しない。
+    /// poison でも復元してキー欠落を防ぐ。
     pub fn defer_during_output(&self, event: RawKeyEvent) {
-        if let Ok(mut q) = self.queue.lock() { q.push(event); }
+        let mut q = match self.queue.lock() {
+            Ok(q) => q,
+            Err(e) => e.into_inner(),
+        };
+        q.push(event);
     }
 
     /// TsfGate・タイムアウト等から保留キーをまとめて再投入する。空でも安全（no-op）。
@@ -66,6 +71,7 @@ impl InputDeferQueue {
     }
 
     /// drain race 検出用（ノンブロッキング）。
+    /// `None` = ロック競合中で不明。呼び出し側は保守的に pending ありとして扱うこと。
     pub fn pending_len_nonblocking(&self) -> Option<usize> {
         self.queue.try_lock().ok().map(|q| q.len())
     }
