@@ -17,8 +17,8 @@ use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 use crate::platform::EffectOrigin;
 
 use super::decision::{
-    ActivationController, ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
-    InactiveReason, InputContext, InputEffect, SpecialKeyCombos,
+    ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
+    InactiveReason, InputContext, InputEffect, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
@@ -51,8 +51,8 @@ pub struct Engine {
     special_keys: SpecialKeyCombos,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
-    /// 実効状態の遷移検知・SetOpen/UiEffect 発行を集約する
-    activation: ActivationController,
+    /// 直前の実効状態（遷移検知用）
+    prev_activation: ActivationState,
     /// NICOLA 親指シフトキーの VK コード（左・右）。
     /// IME ON/OFF コンボ判定時に除外するために使用。
     /// VkCode(0) = 未設定。
@@ -69,7 +69,7 @@ impl Engine {
             adapter: FsmAdapter::new(fsm),
             special_keys,
             lifecycle: KeyLifecycle::new(),
-            activation: ActivationController::new(),
+            prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             thumb_vks: (VkCode(0), VkCode(0)),
         }
     }
@@ -108,10 +108,9 @@ impl Engine {
     }
 
     /// 実効状態の遷移を検知し、必要な Effect（flush, UI 通知）を返す。
-    /// `ActivationController` を更新する。
     fn check_active_transition(&mut self, ctx: &InputContext) -> EffectVec {
         let new_state = self.compute_state(ctx);
-        let was_active = self.activation.current().is_active();
+        let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
         let mut effects = EffectVec::new();
 
@@ -136,9 +135,31 @@ impl Engine {
             );
         }
 
-        // ActivationController が SetOpen(true) + UiEffect を発行し、prev を更新する
-        let transition_effects = self.activation.transition_to(new_state);
+        let transition_effects = self.transition_activation(new_state);
         effects.extend(transition_effects);
+        effects
+    }
+
+    /// 実効状態を新しい状態に遷移させ、変化があった場合に SetOpen + UiEffect を返す。
+    ///
+    /// inactive → active: OS IME を強制的に開く（"nonaiyo" 問題対策）
+    /// active → inactive: OS IME を強制的に閉じる（対称性のため）
+    /// 同じ状態: 空の EffectVec
+    fn transition_activation(&mut self, new_state: ActivationState) -> EffectVec {
+        let was_active = self.prev_activation.is_active();
+        let now_active = new_state.is_active();
+        let mut effects = EffectVec::new();
+
+        if was_active != now_active {
+            effects.push(Effect::Ime(ImeEffect::SetOpen {
+                open: now_active,
+                origin: EffectOrigin::EngineIntent,
+            }));
+            effects.push(Effect::Ui(UiEffect::EngineStateChanged {
+                enabled: now_active,
+            }));
+            self.prev_activation = new_state;
+        }
         effects
     }
 
@@ -298,20 +319,16 @@ impl Engine {
 
     /// 前回の実効状態を直接設定する（テスト・初期化用）。
     pub const fn set_prev_active(&mut self, active: bool) {
-        let state = if active {
+        self.prev_activation = if active {
             ActivationState::Active
         } else {
             ActivationState::Inactive(InactiveReason::UserDisabled)
         };
-        self.activation.set(state);
     }
 
     // ── 内部メソッド ──
 
     /// user_enabled 変更後の active 遷移を Decision に反映する。
-    ///
-    /// `old_active != new_active` のときのみ `EngineStateChanged` を push し、
-    /// `ActivationController` を更新する。
     fn apply_active_transition(
         &mut self,
         old_active: bool,
@@ -319,20 +336,19 @@ impl Engine {
         decision: &mut Decision,
     ) {
         if old_active != new_active {
-            // activation.prev を呼び出し時点の実際の状態に同期してから遷移させる
-            let old_state = if old_active {
+            // prev_activation を呼び出し時点の実際の状態に同期してから遷移させる
+            self.prev_activation = if old_active {
                 ActivationState::Active
             } else {
                 ActivationState::Inactive(InactiveReason::UserDisabled)
             };
-            self.activation.set(old_state);
 
             let new_state = if new_active {
                 ActivationState::Active
             } else {
                 ActivationState::Inactive(InactiveReason::UserDisabled)
             };
-            let effects = self.activation.transition_to(new_state);
+            let effects = self.transition_activation(new_state);
             for e in effects {
                 decision.push_effect(e);
             }
@@ -342,7 +358,7 @@ impl Engine {
     /// IME ON/OFF コンボキーに対する Decision を構築する。
     ///
     /// `open` を反映した擬似 `InputContext` で新 `ActivationState` を求め、
-    /// `ActivationController::transition_to` で `SetOpen + EngineStateChanged` を発行する。
+    /// `transition_activation` で `SetOpen + EngineStateChanged` を発行する。
     /// 状態が遷移しない場合（例: `user_enabled=false` で既に Inactive）は
     /// `SetOpen` のみを明示的に追加する（IME 制御の意図を Platform 層に伝えるため）。
     ///
@@ -353,17 +369,17 @@ impl Engine {
     /// （Ctrl KeyUp 等の合成イベント）で `check_active_transition` が同じ状態変化を
     /// 検出して再度 `SetOpen` を emit する二重 enqueue が発生していた。
     ///
-    /// 本実装は `transition_to` で `activation.prev` を新状態に推進するため、
+    /// 本実装は `transition_activation` で `prev_activation` を新状態に推進するため、
     /// 次回の `check_active_transition` は no-op となり、構造的に重複を排除する。
     fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
         let pseudo_ctx = InputContext { ime_on: open, ..*ctx };
         let new_state = self.compute_state(&pseudo_ctx);
-        let was_active = self.activation.current().is_active();
+        let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
 
-        let mut effects = self.activation.transition_to(new_state);
+        let mut effects = self.transition_activation(new_state);
         if was_active == now_active {
-            // 状態遷移なし → transition_to は空 effects を返す。
+            // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。
             effects.push(Effect::Ime(ImeEffect::SetOpen {
                 open,

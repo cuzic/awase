@@ -3170,7 +3170,7 @@ fn test_update_history_record() {
     let mut engine = make_engine();
     assert!(engine.output_history.is_empty());
 
-    engine.update_history(OutputUpdate::Record(OutputRecord {
+    engine.update_history(OutputUpdate::Record(OutputEntry {
         scan_code: SCAN_A,
         romaji: "ka".to_string(),
         kana: Some('か'),
@@ -3185,7 +3185,7 @@ fn test_update_history_retract_and_record() {
     let mut engine = make_engine();
 
     // First, record an entry
-    engine.update_history(OutputUpdate::Record(OutputRecord {
+    engine.update_history(OutputUpdate::Record(OutputEntry {
         scan_code: SCAN_A,
         romaji: "u".to_string(),
         kana: Some('う'),
@@ -3194,7 +3194,7 @@ fn test_update_history_retract_and_record() {
     assert_eq!(engine.output_history.len(), 1);
 
     // Now retract and record a new entry
-    engine.update_history(OutputUpdate::RetractAndRecord(OutputRecord {
+    engine.update_history(OutputUpdate::RetractAndRecord(OutputEntry {
         scan_code: SCAN_A,
         romaji: "vu".to_string(),
         kana: Some('ゔ'),

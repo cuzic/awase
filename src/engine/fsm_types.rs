@@ -201,25 +201,16 @@ pub enum IdleIntent {
     ConfirmMode,
 }
 
-/// 出力履歴に記録する 1 件分のデータ
-#[derive(Debug, Clone)]
-pub struct OutputRecord {
-    pub scan_code: ScanCode,
-    pub romaji: String,
-    pub kana: Option<char>,
-    pub action: KeyAction,
-}
-
 /// 出力履歴の更新指示。
 #[derive(Debug, Clone)]
 pub enum OutputUpdate {
     /// 出力を記録する。
-    Record(OutputRecord),
+    Record(crate::engine::output_history::OutputEntry),
     /// 最後の出力を取り消して新しい出力を記録する。
     ///
     /// `retract_and_replace()` が使用する: BACKSPACE + 新文字を出力しつつ、
     /// 履歴を retract + record として `update_history()` でアトミックに更新する。
-    RetractAndRecord(OutputRecord),
+    RetractAndRecord(crate::engine::output_history::OutputEntry),
     /// 変更なし。
     None,
 }
@@ -227,7 +218,7 @@ pub enum OutputUpdate {
 impl OutputUpdate {
     /// `Record` バリアントを構築するコンストラクタ。
     pub fn record(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> Self {
-        Self::Record(OutputRecord {
+        Self::Record(crate::engine::output_history::OutputEntry {
             scan_code,
             romaji: action.romaji().to_owned(),
             kana,
@@ -849,57 +840,30 @@ mod tests {
 
     #[test]
     fn output_update_record_variant() {
+        use crate::engine::output_history::OutputEntry;
         use crate::types::KeyAction;
-        let record = OutputRecord {
+        let entry = OutputEntry {
             scan_code: ScanCode(0x1E),
             romaji: "a".to_string(),
             kana: Some('あ'),
             action: KeyAction::Char('a'),
         };
-        let u = OutputUpdate::Record(record);
+        let u = OutputUpdate::Record(entry);
         assert!(matches!(u, OutputUpdate::Record(_)));
     }
 
     #[test]
     fn output_update_retract_and_record_variant() {
+        use crate::engine::output_history::OutputEntry;
         use crate::types::KeyAction;
-        let record = OutputRecord {
+        let entry = OutputEntry {
             scan_code: ScanCode(0x1E),
             romaji: "ka".to_string(),
             kana: Some('か'),
             action: KeyAction::Romaji("ka".to_string()),
         };
-        let u = OutputUpdate::RetractAndRecord(record);
+        let u = OutputUpdate::RetractAndRecord(entry);
         assert!(matches!(u, OutputUpdate::RetractAndRecord(_)));
-    }
-
-    // ── OutputRecord ──────────────────────────────────────────
-
-    #[test]
-    fn output_record_clone() {
-        use crate::types::KeyAction;
-        let r = OutputRecord {
-            scan_code: ScanCode(42),
-            romaji: "ni".to_string(),
-            kana: Some('に'),
-            action: KeyAction::Romaji("ni".to_string()),
-        };
-        let r2 = r.clone();
-        assert_eq!(r2.scan_code, ScanCode(42));
-        assert_eq!(r2.romaji, "ni");
-        assert_eq!(r2.kana, Some('に'));
-    }
-
-    #[test]
-    fn output_record_no_kana() {
-        use crate::types::KeyAction;
-        let r = OutputRecord {
-            scan_code: ScanCode(1),
-            romaji: String::new(),
-            kana: None,
-            action: KeyAction::Suppress,
-        };
-        assert!(r.kana.is_none());
     }
 
     // ── PendingKey ────────────────────────────────────────────

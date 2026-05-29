@@ -13,7 +13,7 @@ use crate::types::{
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::fsm_types::{
-    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, OutputRecord,
+    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass,
     OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
 };
 use super::timing;
@@ -666,7 +666,7 @@ impl NicolaFsm {
         ];
         ParseAction::Reduce {
             actions,
-            record: OutputUpdate::RetractAndRecord(OutputRecord {
+            record: OutputUpdate::RetractAndRecord(OutputEntry {
                 scan_code: pending.scan_code,
                 romaji: new_action.romaji().to_owned(),
                 kana,
@@ -799,22 +799,12 @@ impl NicolaFsm {
     /// OutputUpdate に基づいて出力履歴を更新する共通ヘルパー
     pub(crate) fn update_history(&mut self, output: OutputUpdate) {
         match output {
-            OutputUpdate::Record(rec) => {
-                self.output_history.push(OutputEntry {
-                    scan_code: rec.scan_code,
-                    romaji: rec.romaji,
-                    kana: rec.kana,
-                    action: rec.action,
-                });
+            OutputUpdate::Record(entry) => {
+                self.output_history.push(entry);
             }
-            OutputUpdate::RetractAndRecord(rec) => {
+            OutputUpdate::RetractAndRecord(entry) => {
                 self.output_history.retract_last();
-                self.output_history.push(OutputEntry {
-                    scan_code: rec.scan_code,
-                    romaji: rec.romaji,
-                    kana: rec.kana,
-                    action: rec.action,
-                });
+                self.output_history.push(entry);
             }
             OutputUpdate::None => {}
         }

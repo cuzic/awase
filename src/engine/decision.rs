@@ -6,7 +6,7 @@ use smallvec::{smallvec, SmallVec};
 
 use crate::config::ParsedKeyCombo;
 use crate::platform::EffectOrigin;
-use crate::types::{ContextChange, KeyAction, RawKeyEvent, Timestamp, VkCode};
+use crate::types::{ContextChange, KeyAction, RawKeyEvent, Timestamp};
 use crate::yab::YabLayout;
 
 use super::fsm_types::ModifierState;
@@ -123,75 +123,6 @@ impl ActivationState {
             }
             _ => ContextChange::ImeOff,
         }
-    }
-}
-
-/// 実効状態遷移の検出・副作用発行を集約する。
-///
-/// 旧 `Engine::check_active_transition` + `Engine::apply_active_transition`
-/// の2系統を一本化する。`Engine` が内部で保持し、active 遷移に関する
-/// SetOpen(true) と UiEffect 発行をここに集約する。
-///
-/// flush と KeyLifecycle 操作は Engine 側が担う（FsmAdapter 依存のため）。
-#[derive(Debug)]
-pub struct ActivationController {
-    prev: ActivationState,
-}
-
-impl ActivationController {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            prev: ActivationState::Inactive(InactiveReason::UserDisabled),
-        }
-    }
-
-    #[must_use]
-    pub const fn current(&self) -> ActivationState {
-        self.prev
-    }
-
-    /// テスト・初期化用に prev を直接設定する。
-    pub const fn set(&mut self, state: ActivationState) {
-        self.prev = state;
-    }
-
-    /// 新しい状態に遷移する。遷移が発生した場合に副作用 Effects を返す。
-    ///
-    /// inactive → active: `Ime(SetOpen { open: true, origin: EngineIntent })`
-    ///                    + `Ui(EngineStateChanged{true})`
-    /// active → inactive: `Ime(SetOpen { open: false, origin: EngineIntent })`
-    ///                    + `Ui(EngineStateChanged{false})`（flush は Engine 側）
-    /// 同じ状態: 空の EffectVec
-    ///
-    /// 対称化の意図: 旧設計では active→inactive 時に SetOpen(false) を
-    /// 発行しなかったため、Platform 層（Windows）で `stage_shadow_ime_toggle`
-    /// による補正コードが必要だった。発生源を `EffectOrigin` で表現することで
-    /// Platform 側が「Engine の意図的な変更」を識別できるようにする。
-    pub fn transition_to(&mut self, new_state: ActivationState) -> EffectVec {
-        let was_active = self.prev.is_active();
-        let now_active = new_state.is_active();
-        let mut effects = EffectVec::new();
-
-        if was_active != now_active {
-            // inactive → active: OS IME を強制的に開く（"nonaiyo" 問題対策）
-            // active → inactive: OS IME を強制的に閉じる（対称性のため）
-            effects.push(Effect::Ime(ImeEffect::SetOpen {
-                open: now_active,
-                origin: EffectOrigin::EngineIntent,
-            }));
-            effects.push(Effect::Ui(UiEffect::EngineStateChanged {
-                enabled: now_active,
-            }));
-            self.prev = new_state;
-        }
-        effects
-    }
-}
-
-impl Default for ActivationController {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -377,14 +308,6 @@ impl InputContext {
     pub const fn is_romaji(&self) -> bool {
         self.input_mode.is_romaji_capable()
     }
-}
-
-/// IME 同期キー（トグル・ON・OFF）を集約する構造体
-#[derive(Debug)]
-pub struct ImeSyncKeys {
-    pub toggle: Vec<VkCode>,
-    pub on: Vec<VkCode>,
-    pub off: Vec<VkCode>,
 }
 
 /// エンジン切替・IME 制御の特殊キーコンボを集約する構造体。
