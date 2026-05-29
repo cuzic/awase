@@ -335,6 +335,8 @@ pub(super) fn initialize_app(
                 engine_on_ime_vk,
                 engine_off_ime_vk,
                 suppress_engine_state_key: false,
+                applied_snapshot: None,
+                pending_warmup_on_keyup: false,
             },
             config.general.hook_mode,
         ),
@@ -444,7 +446,7 @@ unsafe extern "system" fn win_event_proc(
                     settle_until: now + std::time::Duration::from_millis(settle),
                 });
         }
-        app.executor.platform.output.on_focus_change_tsf();
+        app.executor.platform.on_focus_change_tsf();
         // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
         app.executor.platform.timer.set(
             crate::TIMER_TSF_GATE,

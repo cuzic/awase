@@ -37,7 +37,7 @@ impl KeyEventPipeline<'_> {
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
-        if self.app.executor.platform.output.try_hold_key(event) {
+        if self.app.executor.platform.try_hold_key(event) {
             log::debug!(
                 "[tsf-gate-hold] vk=0x{:02X} {:?} held by TsfGate (PendingWarmup)",
                 event.vk_code, event.event_type
@@ -198,10 +198,10 @@ impl KeyEventPipeline<'_> {
         // is_composition_warm() が前ウィンドウの stale な warm 状態を返さないようにする。
         // eager_warmup_sent_ms は保持し、phase3_7 が送信した eager F2 のタイムスタンプを
         // 消さないことで non-eager 1500ms パスへの劣化を防ぐ。
-        self.app.executor.platform.output.reset_warm_epoch();
+        self.app.executor.platform.reset_warm_epoch();
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
-        let warmup_ms = self.app.executor.platform.output.eager_warmup_sent_ms();
+        let warmup_ms = self.app.executor.platform.eager_warmup_sent_ms();
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.app.platform_state.focus.last_focus_change_ms;

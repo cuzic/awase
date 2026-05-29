@@ -76,7 +76,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.executor.platform.timer.kill(TIMER_TSF_GATE);
-            let held = app.executor.platform.output.on_tsf_warmup_timeout();
+            let held = app.executor.platform.on_tsf_warmup_timeout();
             if !held.is_empty() {
                 log::debug!(
                     "[tsf-gate-timeout] draining {} held keys via INPUT_DEFER",

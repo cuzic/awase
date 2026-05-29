@@ -40,12 +40,6 @@ pub struct DecisionExecutor {
     /// Reinject 経由で送った PassThrough KeyDown の VK 集合。
     /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
     deferred_passthrough_vks: HashSet<VkCode>,
-    /// warm+TSF Enter/Space/Escape KeyDown 後に KeyUp で eager warmup を送信するフラグ。
-    ///
-    /// hook callback 内では `SendInput(F2)` → `CallNextHookEx(Enter↓)` の順になり、
-    /// WezTerm が F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
-    /// KeyUp タイミングで F2 を送れば、Enter↓ は処理済みのため競合しない。
-    pending_warmup_on_keyup: bool,
     /// OUTPUT_GUARD で park した 1 個分の Effect スロット。
     ///
     /// 不変条件: `guard_held.is_some()` ⟺ `TIMER_OUTPUT_GUARD` が登録済み。
@@ -55,12 +49,6 @@ pub struct DecisionExecutor {
     /// sync path の apply outcome を `Runtime::flush_pending_apply_events` で
     /// dispatch するための pending record。詳細は `PendingApplyEvent` 参照。
     pending_apply_events: Vec<crate::state::ime_event::PendingApplyEvent>,
-    /// executor が最後に apply した IME 状態スナップショット (value, timestamp_ms)。
-    ///
-    /// `ImeModel` 非アクセスの executor が「自分が知っている apply 状態」を保持する。
-    /// `send_engine_state_ime_key` / `send_eager_tsf_warmup` に明示的に渡すことで
-    /// `Output::composition` への hidden 読み込みを排除する。
-    applied_snapshot: Option<(bool, u64)>,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -76,10 +64,8 @@ impl DecisionExecutor {
             queue: VecDeque::new(),
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
-            pending_warmup_on_keyup: false,
             guard_held: None,
             pending_apply_events: Vec::new(),
-            applied_snapshot: None,
         }
     }
 
@@ -189,7 +175,7 @@ impl DecisionExecutor {
 
     /// output guard 期間中なら残り ms を返す。期間外なら None。
     fn output_guard_remaining(&self) -> Option<u64> {
-        let elapsed = self.platform.output.ms_since_last_send();
+        let elapsed = self.platform.output_in_flight_ms();
         if elapsed < crate::tuning::OUTPUT_GUARD_MS {
             Some(crate::tuning::OUTPUT_GUARD_MS - elapsed)
         } else {
@@ -327,7 +313,7 @@ impl DecisionExecutor {
         // 3. Ctrl↑ cold recovery: eager_warmup_sent_ms をリセット。
         self.handle_ctrl_up_recovery(raw_event);
 
-        let in_flight_ms = self.platform.output.ms_since_last_send();
+        let in_flight_ms = self.platform.output_in_flight_ms();
         let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
         let has_pending = self.has_pending();
 
@@ -397,14 +383,14 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
             && raw_event.vk_code.is_composition_confirm_key()
-            && self.pending_warmup_on_keyup
+            && self.platform.pending_warmup_on_keyup
         {
-            self.pending_warmup_on_keyup = false;
+            self.platform.pending_warmup_on_keyup = false;
             log::debug!(
                 "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
                 raw_event.vk_code,
             );
-            self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+            self.platform.send_eager_warmup();
         }
     }
 
@@ -417,13 +403,13 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
             && raw_event.vk_code.is_ctrl_variant()
-            && !self.platform.output.is_composition_warm()
+            && !self.platform.is_composition_warm()
         {
             log::debug!(
                 "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
                 raw_event.vk_code,
             );
-            self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+            self.platform.send_eager_warmup();
         }
     }
 
@@ -483,15 +469,11 @@ impl DecisionExecutor {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn try_native_f2_consume(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && self.platform.output.is_tsf_mode() {
+        if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && self.platform.is_tsf_mode() {
             if is_key_down {
-                log::debug!(
-                    "[composition] vk=0xf2 passthrough TSF mode → consuming (prevent double-F2), marking cold",
-                );
-                self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-                // 物理 F2 消費直後に warmup F2 を即送信。WezTerm の TSF context
-                // 初期化がユーザーの次キーストロークまでに完了するよう先行させる。
-                self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+                // 物理 F2 消費時の composition 状態更新を platform に委譲する。
+                // mark_cold(NativeF2Consumed) + eager warmup を platform 内で処理。
+                self.platform.on_passthrough_key(raw_event.vk_code, true);
             } else {
                 log::debug!(
                     "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -508,37 +490,9 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
         // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
+        // mark_cold / pending_warmup_on_keyup / eager warmup は platform に委譲する。
         if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            let was_warm = self.platform.output.is_composition_warm();
-            let is_tsf = self.platform.output.is_tsf_mode();
-            if was_warm && is_tsf {
-                // 変換確定/取消 (TSF composition active 中の Enter/Space/Escape):
-                // cold にするが eager F2 は KeyDown では送らない。
-                // hook callback 内で SendInput(F2) すると CallNextHookEx(Enter↓) より
-                // 先に F2 が WezTerm に届き、IME 確定前に composition を壊して
-                // Enter が PTY に素通りする。
-                // 代わりに対応 KeyUp タイミングで eager F2 を送信する
-                // (pending_warmup_on_keyup フラグで追跡)。
-                // Enter↓ が WezTerm で処理済みの後に F2 が届くため競合しない。
-                log::debug!(
-                    "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
-                    raw_event.vk_code,
-                );
-                self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-                self.pending_warmup_on_keyup = true;
-            } else {
-                // cold または non-TSF: mark cold + eager F2 warmup
-                // 直前の warm+TSF フラグがあれば解除（別キーが確定を引き継いだ）
-                self.pending_warmup_on_keyup = false;
-                log::debug!(
-                    "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
-                    raw_event.vk_code,
-                );
-                self.platform.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-                // 次打鍵が 305ms 以内でも文字化けしないよう即 F2 warmup を先行送信する。
-                // IME OFF の場合は send_eager_tsf_warmup が内部でガードする。
-                self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
-            }
+            self.platform.on_passthrough_key(raw_event.vk_code, true);
         }
     }
 
@@ -548,11 +502,9 @@ impl DecisionExecutor {
     fn handle_f2_non_tsf(&mut self, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
+        // mark_cold(F2NonTsf) を platform に委譲する。
         if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && is_key_down {
-            log::debug!(
-                "[composition] vk=0xf2 passthrough direct → marking cold",
-            );
-            self.platform.output.mark_composition_cold(crate::output::ColdReason::F2NonTsf);
+            self.platform.on_passthrough_key(raw_event.vk_code, true);
         }
     }
 
@@ -586,14 +538,10 @@ impl DecisionExecutor {
         // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
         // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
         // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
-        if event.vk_code == crate::vk::VK_DBE_HIRAGANA && self.platform.output.is_tsf_mode() {
+        if event.vk_code == crate::vk::VK_DBE_HIRAGANA && self.platform.is_tsf_mode() {
             if is_key_down {
-                log::debug!(
-                    "[reinject-tsf] vk=0xf2 KeyDown TSF mode → consuming deferred F2 (no reinject), marking cold",
-                );
-                self.platform.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-                // deferred F2 も即 eager warmup を送信する（passthrough 経路と同様）。
-                self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+                // mark_cold(NativeF2Consumed) + eager warmup を platform に委譲する。
+                self.platform.on_reinject_key(event.vk_code, true);
             } else {
                 log::debug!(
                     "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -618,15 +566,10 @@ impl DecisionExecutor {
             unsafe { event.reinject() };
             // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
             // Backspace 等は composition を維持するためここでは対象外。
+            // mark_cold(ReinjectConfirmKey) + eager warmup を platform に委譲する。
             if is_key_down && vk_code.is_composition_confirm_key() {
                 let _ = crate::with_app(|app| {
-                    log::debug!(
-                        "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
-                        vk_code,
-                    );
-                    app.executor.platform.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
-                    let applied = app.executor.applied_snapshot.map(|(v, _)| v);
-                    app.executor.platform.output.send_eager_tsf_warmup(applied);
+                    app.executor.platform.on_reinject_key(vk_code, true);
                 });
             }
             drop(guard);
@@ -642,7 +585,7 @@ impl DecisionExecutor {
             return self.dispatch_ime_set_open(open, origin);
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
-        let applied_for_engine_key = self.applied_snapshot.map(|(v, _)| v);
+        let applied_for_engine_key = self.platform.applied_snapshot.map(|(v, _)| v);
         let platform: &mut dyn PlatformRuntime = &mut self.platform;
         match effect {
             Effect::Input(ie) => match ie {
@@ -695,7 +638,7 @@ impl DecisionExecutor {
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         let (imm_first, shadow_on, applied_at_ms) = {
-            let view = self.platform.build_ime_control_view(self.applied_snapshot);
+            let view = self.platform.build_ime_control_view(self.platform.applied_snapshot);
             (
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view),
                 view.control.shadow_on,
@@ -716,7 +659,7 @@ impl DecisionExecutor {
             // LINE/Qt 等の ImmCross アプリはこの VK_F4 Up に対して VK_F3 Down を
             // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
             // → 楽観的に applied_snapshot を更新して send_engine_state_ime_key をスキップさせる。
-            self.applied_snapshot = Some((open, 0));
+            self.platform.applied_snapshot = Some((open, 0));
             // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
             // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
             // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
@@ -784,7 +727,7 @@ impl DecisionExecutor {
             // GJI が起動している場合は GjiDirectStrategy (F13/F14) が選ばれるため override 不要。
             // F14 は shadow に関わらず常に送信される (べき等)。F13 も GjiDirectStrategy が自前で
             // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
-            let mut apply_context = self.applied_snapshot;
+            let mut apply_context = self.platform.applied_snapshot;
             if origin == EffectOrigin::EngineIntent {
                 let profile = self.platform.focus.current_app_profile();
                 if !profile.can_use_imm32_cross_process()
@@ -835,40 +778,9 @@ impl DecisionExecutor {
         }
     }
 
-    /// `applied_snapshot` + latch 更新・open==true の cold/warmup 処理。
+    /// `applied_snapshot` + latch 更新・open==true の cold/warmup 処理を platform に委譲する。
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
-        use awase::platform::ImeOpenOutcome;
-        // 成功した場合は applied_snapshot を更新する。
-        // Applied 後に更新しないと shadow_on が旧値 true のままになり、
-        // IME OFF 直後の Ctrl↑ で VK_DBE_HIRAGANA が送信されて IME が ON に戻るバグが発生する。
-        // latch (CompositionState.applied_open) も合わせて更新: Output 経由の非 executor
-        // 呼び出し元 (vk_send, cold_warmup) が last_applied_ime_on() で読む。
-        match outcome {
-            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
-                let ts = crate::hook::current_tick_ms();
-                self.applied_snapshot = Some((open, ts));
-                self.platform.output.set_ime_apply_latch(open);
-            }
-            ImeOpenOutcome::Failed => {
-                // ImmCross async パスで楽観的に applied_snapshot = Some((open, 0)) した場合のロールバック。
-                // Failed なら実際の IME 状態は !open のまま。
-                let ts = crate::hook::current_tick_ms();
-                self.applied_snapshot = Some((!open, ts));
-                self.platform.output.set_ime_apply_latch(!open);
-            }
-        }
-        // IME ON 直後の最初の composition が cold start にならないよう cold にマークする。
-        // IME OFF 時も cold にマークする: warm のまま放置すると Enter/Space/Escape が
-        // warm+TSF パスに流れ、GJI に composition がない状態でアプリへ漏れる
-        // （LINE 等でメッセージ送信につながる）。
-        if open {
-            log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-            self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-            self.platform.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
-        } else {
-            log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
-            self.platform.output.mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
-        }
+        self.platform.on_ime_applied(open, outcome);
     }
 }

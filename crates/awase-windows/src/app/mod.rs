@@ -453,7 +453,7 @@ fn reload_config() {
                 &modifiers,
             ),
         );
-        app.executor.platform.output.set_mode(config.general.output_mode);
+        app.executor.platform.set_output_mode(config.general.output_mode);
         log::info!(
             "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
             config.general.simultaneous_threshold_ms,

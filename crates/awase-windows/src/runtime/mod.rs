@@ -223,7 +223,7 @@ impl Runtime {
             let new_mode = crate::output::types::InjectionMode::from(
                 (hint, self.platform_state.focus.app_kind),
             );
-            self.executor.platform.output.update_injection_mode(new_mode);
+            self.executor.platform.update_injection_mode(new_mode);
         }
         if process_changed {
             self.on_focus_process_changed(&classified, prev_pid);
@@ -384,7 +384,7 @@ impl Runtime {
         );
 
         self.platform_state.focus.last_focus_change_ms = crate::hook::current_tick_ms();
-        self.executor.platform.output.on_focus_changed();
+        self.executor.platform.notify_focus_changed();
         // Step 1.5: FocusChanged event を dispatch して shadow_model の AppImePolicy を更新する。
         // 順序: policy 確定 → observation clear → 以降の observation は新 policy で評価される。
         let new_profile = self.executor.platform.focus.current_app_profile();
@@ -531,7 +531,7 @@ impl Runtime {
                     InjectionHint::ForceTsf
                 );
                 let held = if is_tsf {
-                    app.executor.platform.output.confirm_tsf()
+                    app.executor.platform.confirm_tsf()
                 } else {
                     // BypassConfirmed（非TSFウィンドウ確定）: warmup_grace を無視して
                     // ime_on を false に強制する。
@@ -544,7 +544,7 @@ impl Runtime {
                     let ms = crate::hook::current_tick_ms();
                     let user_enabled = app.engine.is_user_enabled();
                     app.platform_state.write_focus_probe(false, ms, user_enabled);
-                    app.executor.platform.output.bypass_tsf()
+                    app.executor.platform.bypass_tsf()
                 };
                 // confirm_tsf は PendingWarmup/Bypass → Probing、bypass_tsf は PendingWarmup/Probing → Bypass。
                 // Bypass から confirm_tsf を呼ぶのは WarmupTimeout 後に async タスクが遅れて完了した回復パス。

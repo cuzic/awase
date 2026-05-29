@@ -249,6 +249,41 @@ pub trait PlatformRuntime {
     /// `Some(v)` で `v == enabled` なら apply_ime_open 済みとして mode key 送信をスキップできる。
     /// プラットフォームが IME モードキー送信をサポートしない場合は何もしない。
     fn send_engine_state_ime_key(&self, _enabled: bool, _applied: Option<bool>) {}
+
+    // ── composition state クエリ / フック ──
+
+    /// 最後のキー出力からの経過時間 (ms) を返す。一度も送信していなければ `u64::MAX`。
+    fn output_in_flight_ms(&self) -> u64 {
+        u64::MAX
+    }
+
+    /// TSF composition context が warm 状態かどうかを返す。
+    fn is_composition_warm(&self) -> bool {
+        false
+    }
+
+    /// 現在のフォーカスウィンドウが TSF 注入モードかどうかを返す。
+    fn is_tsf_mode(&self) -> bool {
+        false
+    }
+
+    /// IME apply 完了後の platform 状態更新フック。
+    ///
+    /// `applied_snapshot` 更新・latch・mark_cold・eager warmup を platform 内で処理する。
+    /// executor は outcome を受け取ったら必ずこのメソッドを呼ぶこと。
+    fn on_ime_applied(&mut self, _open: bool, _outcome: ImeOpenOutcome) {}
+
+    /// キー通過（パススルー）時の composition 状態更新フック。
+    ///
+    /// F2+TSF mark_cold、confirm キーの mark_cold / pending_warmup_on_keyup、
+    /// F2 非 TSF mark_cold を platform 内で処理する。
+    /// executor がキーを OS に通す直前（late path — output_guard_defer チェック後）に呼ぶ。
+    fn on_passthrough_key(&mut self, _vk: crate::types::VkCode, _is_keydown: bool) {}
+
+    /// キー再注入時の composition 状態更新フック。
+    ///
+    /// F2-TSF deferred / confirm キー reinject の mark_cold + eager warmup を処理する。
+    fn on_reinject_key(&mut self, _vk: crate::types::VkCode, _is_keydown: bool) {}
 }
 
 #[cfg(test)]

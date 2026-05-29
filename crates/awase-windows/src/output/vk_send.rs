@@ -199,7 +199,10 @@ impl Output {
                     probe_min_ms,
                 );
                 let _ = crate::with_app(|app| {
-                    app.executor.platform.output.install_pending_tsf(
+                    // 同期パスでは WindowsPlatform::send_keys 完了後に pending_tsf_timer() が
+                    // TIMER_TSF_PROBE を起動するが、async パスでは send_keys は既に return 済み。
+                    // install_pending_tsf_and_set_timer で probe インストールとタイマー起動を一括実行する。
+                    app.executor.platform.install_pending_tsf_and_set_timer(
                         TsfProbeMachine::new_chrome(
                             &romaji_owned,
                             cold_seq,
@@ -208,12 +211,6 @@ impl Output {
                             guard,
                         ),
                     );
-                    // 同期パスでは WindowsPlatform::send_keys 完了後に pending_tsf_timer() が
-                    // TIMER_TSF_PROBE を起動するが、async パスでは send_keys は既に return 済み。
-                    // ここで明示的にタイマーを起動する。
-                    if let Some(cmd) = app.executor.platform.output.pending_tsf_timer() {
-                        app.executor.platform.apply_timer_command(cmd);
-                    }
                 });
             });
 

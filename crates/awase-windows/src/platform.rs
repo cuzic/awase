@@ -26,6 +26,18 @@ pub struct WindowsPlatform {
     /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
     /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
     pub suppress_engine_state_key: bool,
+    /// executor が最後に apply した IME 状態スナップショット (value, timestamp_ms)。
+    ///
+    /// `on_ime_applied` / `send_eager_warmup` が参照する SSOT。
+    /// `send_engine_state_ime_key` / `send_eager_tsf_warmup` に明示的に渡すことで
+    /// `Output::composition` への hidden 読み込みを排除する。
+    pub(crate) applied_snapshot: Option<(bool, u64)>,
+    /// warm+TSF Enter/Space/Escape KeyDown 後に KeyUp で eager warmup を送信するフラグ。
+    ///
+    /// hook callback 内では `SendInput(F2)` → `CallNextHookEx(Enter↓)` の順になり、
+    /// WezTerm が F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
+    /// KeyUp タイミングで F2 を送れば、Enter↓ は処理済みのため競合しない。
+    pub(crate) pending_warmup_on_keyup: bool,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -35,6 +47,86 @@ impl std::fmt::Debug for WindowsPlatform {
 }
 
 impl WindowsPlatform {
+    // ── Output 委譲メソッド ──────────────────────────────────────────────────
+
+    /// `applied_snapshot` を使った eager warmup 送信（executor 内部用）。
+    pub(crate) fn send_eager_warmup(&self) {
+        self.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+    }
+
+    /// 外部から `applied_ime_on` を指定して eager warmup を送信する（ime_refresh 等用）。
+    pub(crate) fn send_eager_warmup_with(&self, applied_ime_on: Option<bool>) {
+        self.output.send_eager_tsf_warmup(applied_ime_on);
+    }
+
+    /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
+    pub(crate) fn mark_composition_cold_focus_change(&self) {
+        self.output.mark_composition_cold(crate::output::ColdReason::FocusChange);
+    }
+
+    /// フォーカス変更時に injection_mode を更新する（runtime 用）。
+    pub(crate) fn update_injection_mode(&mut self, mode: crate::output::types::InjectionMode) {
+        self.output.update_injection_mode(mode);
+    }
+
+    /// フォーカス変更を Output に通知し、warm epoch をリセットする（runtime 用）。
+    pub(crate) fn notify_focus_changed(&self) {
+        self.output.on_focus_changed();
+    }
+
+    /// TSF モード確定時に TsfGate を Probing に遷移させ、保留キーを返す（runtime 用）。
+    pub(crate) fn confirm_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
+        self.output.confirm_tsf()
+    }
+
+    /// 非 TSF モード確定時に TsfGate を Bypass に遷移させ、保留キーを返す（runtime 用）。
+    pub(crate) fn bypass_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
+        self.output.bypass_tsf()
+    }
+
+    /// フォーカス変更時に TsfGate を PendingWarmup に遷移させる（bootstrap 用）。
+    pub(crate) fn on_focus_change_tsf(&mut self) {
+        self.output.on_focus_change_tsf();
+    }
+
+    /// TIMER_TSF_GATE タイムアウト時に TsfGate を Bypass にフォールバックし、保留キーを返す。
+    pub(crate) fn on_tsf_warmup_timeout(&mut self) -> Vec<awase::types::RawKeyEvent> {
+        self.output.on_tsf_warmup_timeout()
+    }
+
+    /// キーを TsfGate で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
+    pub(crate) fn try_hold_key(&mut self, event: awase::types::RawKeyEvent) -> bool {
+        self.output.try_hold_key(event)
+    }
+
+    /// `composition_warm_epoch` のみリセットする（フォーカス遷移直後の最初キー用）。
+    pub(crate) fn reset_warm_epoch(&self) {
+        self.output.reset_warm_epoch();
+    }
+
+    /// eager warmup F2 を送信した時刻 (ms) を返す。0 = 未送信。
+    pub(crate) fn eager_warmup_sent_ms(&self) -> u64 {
+        self.output.eager_warmup_sent_ms()
+    }
+
+    /// 出力モードを切り替える（設定変更時）。
+    pub(crate) fn set_output_mode(&mut self, mode: awase::config::OutputMode) {
+        self.output.set_mode(mode);
+    }
+
+    /// pending_tsf をインストールし、TIMER_TSF_PROBE を起動する（vk_send async パス用）。
+    pub(crate) fn install_pending_tsf_and_set_timer(
+        &mut self,
+        machine: crate::output::TsfProbeMachine,
+    ) {
+        self.output.install_pending_tsf(machine);
+        if let Some(cmd) = self.output.pending_tsf_timer() {
+            self.apply_timer_command(cmd);
+        }
+    }
+
+    // ── TIMER_TSF_PROBE / raw TSF literal ─────────────────────────────────
+
     /// TIMER_TSF_PROBE ハンドラ。`Output::step_probe` に委譲し、タイマー命令を実行する。
     pub fn advance_tsf_probe(&mut self) {
         let cmd = self.output.step_probe();
@@ -177,6 +269,111 @@ impl PlatformRuntime for WindowsPlatform {
 
     fn composition_output(&self) -> Option<&dyn awase::platform::CompositionOutput> {
         Some(&self.output)
+    }
+
+    // ── composition state クエリ / フック ──
+
+    fn output_in_flight_ms(&self) -> u64 {
+        self.output.ms_since_last_send()
+    }
+
+    fn is_composition_warm(&self) -> bool {
+        self.output.is_composition_warm()
+    }
+
+    fn is_tsf_mode(&self) -> bool {
+        self.output.is_tsf_mode()
+    }
+
+    fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
+        use awase::platform::ImeOpenOutcome;
+        match outcome {
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
+                let ts = crate::hook::current_tick_ms();
+                self.applied_snapshot = Some((open, ts));
+                self.output.set_ime_apply_latch(open);
+            }
+            ImeOpenOutcome::Failed => {
+                let ts = crate::hook::current_tick_ms();
+                self.applied_snapshot = Some((!open, ts));
+                self.output.set_ime_apply_latch(!open);
+            }
+        }
+        if open {
+            log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
+            self.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            self.output.send_eager_tsf_warmup(self.applied_snapshot.map(|(v, _)| v));
+        } else {
+            log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
+            self.output.mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
+        }
+    }
+
+    fn on_passthrough_key(&mut self, vk: awase::types::VkCode, is_keydown: bool) {
+        use crate::vk::VkCodeExt as _;
+        let applied = self.applied_snapshot.map(|(v, _)| v);
+
+        // F2 in TSF mode keydown: NativeF2Consumed (consume decision は executor 側で行う)
+        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
+            log::debug!(
+                "[composition] vk=0xf2 passthrough TSF mode → marking cold (NativeF2Consumed)",
+            );
+            self.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.output.send_eager_tsf_warmup(applied);
+            return;
+        }
+
+        // Confirm key keydown
+        if is_keydown && vk.is_composition_confirm_key() {
+            let was_warm = self.output.is_composition_warm();
+            let is_tsf = self.output.is_tsf_mode();
+            if was_warm && is_tsf {
+                log::debug!(
+                    "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
+                    vk,
+                );
+                self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+                self.pending_warmup_on_keyup = true;
+            } else {
+                self.pending_warmup_on_keyup = false;
+                log::debug!(
+                    "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
+                    vk,
+                );
+                self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+                self.output.send_eager_tsf_warmup(applied);
+            }
+            return;
+        }
+
+        // F2 non-TSF mode keydown
+        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown {
+            log::debug!("[composition] vk=0xf2 passthrough direct → marking cold");
+            self.output.mark_composition_cold(crate::output::ColdReason::F2NonTsf);
+        }
+    }
+
+    fn on_reinject_key(&mut self, vk: awase::types::VkCode, is_keydown: bool) {
+        use crate::vk::VkCodeExt as _;
+        let applied = self.applied_snapshot.map(|(v, _)| v);
+
+        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
+            log::debug!(
+                "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
+            );
+            self.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.output.send_eager_tsf_warmup(applied);
+            return;
+        }
+
+        if is_keydown && vk.is_composition_confirm_key() {
+            log::debug!(
+                "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
+                vk,
+            );
+            self.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+            self.output.send_eager_tsf_warmup(applied);
+        }
     }
 }
 

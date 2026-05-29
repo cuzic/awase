@@ -430,16 +430,12 @@ impl<'a> ImeRefreshPipeline<'a> {
         // belief の最新値と比較して重複送信を回避できる。
         let ime_on_now = self.rt.platform_state.ime_on();
         self.rt.platform_state.ime.mirror_applied_open(ime_on_now);
-        self.rt
-            .executor
-            .platform
-            .output
-            .mark_composition_cold(crate::output::ColdReason::FocusChange);
+        self.rt.executor.platform.mark_composition_cold_focus_change();
 
         // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
         // mirror_applied_open 直後なので ImeModel の applied_open を使う。
         let applied_open = self.rt.platform_state.ime.shadow_model.applied_open;
-        self.rt.executor.platform.output.send_eager_tsf_warmup(applied_open);
+        self.rt.executor.platform.send_eager_warmup_with(applied_open);
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
         );
