@@ -26,12 +26,6 @@ pub struct WindowsPlatform {
     /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
     /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
     pub suppress_engine_state_key: bool,
-    /// warm+TSF Enter/Space/Escape KeyDown 後に KeyUp で eager warmup を送信するフラグ。
-    ///
-    /// hook callback 内では `SendInput(F2)` → `CallNextHookEx(Enter↓)` の順になり、
-    /// WezTerm が F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
-    /// KeyUp タイミングで F2 を送れば、Enter↓ は処理済みのため競合しない。
-    pub(crate) pending_warmup_on_keyup: bool,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -301,7 +295,7 @@ impl PlatformRuntime for WindowsPlatform {
         vk: awase::types::VkCode,
         is_keydown: bool,
         applied_ime_on: Option<bool>,
-    ) {
+    ) -> bool {
         use crate::vk::VkCodeExt as _;
         let applied = applied_ime_on;
 
@@ -312,10 +306,10 @@ impl PlatformRuntime for WindowsPlatform {
             );
             self.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.output.send_eager_tsf_warmup(applied);
-            return;
+            return false;
         }
 
-        // Confirm key keydown
+        // Confirm key keydown: warm+TSF なら KeyUp まで eager warmup を遅延する
         if is_keydown && vk.is_composition_confirm_key() {
             let was_warm = self.output.is_composition_warm();
             let is_tsf = self.output.is_tsf_mode();
@@ -325,17 +319,15 @@ impl PlatformRuntime for WindowsPlatform {
                     vk,
                 );
                 self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-                self.pending_warmup_on_keyup = true;
-            } else {
-                self.pending_warmup_on_keyup = false;
-                log::debug!(
-                    "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
-                    vk,
-                );
-                self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-                self.output.send_eager_tsf_warmup(applied);
+                return true; // warmup deferred to KeyUp
             }
-            return;
+            log::debug!(
+                "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
+                vk,
+            );
+            self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+            self.output.send_eager_tsf_warmup(applied);
+            return false;
         }
 
         // F2 non-TSF mode keydown
@@ -343,6 +335,7 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[composition] vk=0xf2 passthrough direct → marking cold");
             self.output.mark_composition_cold(crate::output::ColdReason::F2NonTsf);
         }
+        false
     }
 
     fn on_reinject_key(

@@ -55,6 +55,11 @@ pub struct DecisionExecutor {
     /// バッチ内の `SetOpen` 処理後に即時更新される（intra-batch ordering 用）。
     /// `ImeModel` が SSOT; これはバッチ内 communication channel 兼 cross-decision cache。
     pub(crate) applied_snapshot: Option<(bool, u64)>,
+    /// warm+TSF の confirm キー KeyDown 後に KeyUp で eager warmup を送信するフラグ。
+    ///
+    /// `on_passthrough_key` が `true` を返したとき KeyDown 側でセットされ、
+    /// `try_pending_warmup_on_keyup` の KeyUp タイミングでクリアして warmup を送信する。
+    pending_warmup_on_keyup: bool,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -73,6 +78,7 @@ impl DecisionExecutor {
             guard_held: None,
             pending_apply_events: Vec::new(),
             applied_snapshot: None,
+            pending_warmup_on_keyup: false,
         }
     }
 
@@ -397,9 +403,9 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
             && raw_event.vk_code.is_composition_confirm_key()
-            && self.platform.pending_warmup_on_keyup
+            && self.pending_warmup_on_keyup
         {
-            self.platform.pending_warmup_on_keyup = false;
+            self.pending_warmup_on_keyup = false;
             log::debug!(
                 "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
                 raw_event.vk_code,
@@ -487,7 +493,7 @@ impl DecisionExecutor {
             if is_key_down {
                 // 物理 F2 消費時の composition 状態更新を platform に委譲する。
                 // mark_cold(NativeF2Consumed) + eager warmup を platform 内で処理。
-                self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+                let _ = self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
             } else {
                 log::debug!(
                     "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -504,9 +510,10 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
         // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-        // mark_cold / pending_warmup_on_keyup / eager warmup は platform に委譲する。
+        // mark_cold / eager warmup は platform に委譲する。戻り値が true なら warmup を KeyUp へ遅延。
         if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+            let deferred = self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+            self.pending_warmup_on_keyup = deferred;
         }
     }
 
@@ -518,7 +525,7 @@ impl DecisionExecutor {
         // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
         // mark_cold(F2NonTsf) を platform に委譲する。
         if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && is_key_down {
-            self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+            let _ = self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
         }
     }
 

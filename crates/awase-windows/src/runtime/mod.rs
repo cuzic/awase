@@ -134,6 +134,19 @@ impl Runtime {
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
+    /// `suppress_engine_state_key = true` で囲んで decision を実行する。
+    ///
+    /// ポーリング / フォーカス変化起因の RefreshState で使う。
+    /// Kanji 等の sync key がすでに IME を正しい状態にしているとき、
+    /// `engine_on/off_ime_key`（VK_DBE_DBCSCHAR 等）を追加送信してしまう
+    /// フィードバックループを防ぐ。
+    pub fn execute_decision_suppressed(&mut self, decision: awase::engine::Decision) -> CallbackResult {
+        self.executor.platform.suppress_engine_state_key = true;
+        let result = self.execute_decision(decision);
+        self.executor.platform.suppress_engine_state_key = false;
+        result
+    }
+
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
         let pre_applied = {
             let sm = &self.platform_state.ime.shadow_model;
@@ -680,9 +693,7 @@ impl Runtime {
         {
             let ctx = self.build_ctx();
             let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
-            self.executor.platform.suppress_engine_state_key = true;
-            self.execute_decision(decision);
-            self.executor.platform.suppress_engine_state_key = false;
+            self.execute_decision_suppressed(decision);
         }
 
         if keys.is_empty() {

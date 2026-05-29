@@ -335,7 +335,6 @@ pub(super) fn initialize_app(
                 engine_on_ime_vk,
                 engine_off_ime_vk,
                 suppress_engine_state_key: false,
-                pending_warmup_on_keyup: false,
             },
             config.general.hook_mode,
         ),

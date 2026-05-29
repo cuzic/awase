@@ -275,17 +275,18 @@ pub trait PlatformRuntime {
 
     /// キー通過（パススルー）時の composition 状態更新フック。
     ///
-    /// F2+TSF mark_cold、confirm キーの mark_cold / pending_warmup_on_keyup、
-    /// F2 非 TSF mark_cold を platform 内で処理する。
+    /// F2+TSF mark_cold、confirm キー KeyDown の mark_cold を処理する。
     /// executor がキーを OS に通す直前（late path — output_guard_defer チェック後）に呼ぶ。
     ///
+    /// 戻り値: `true` なら KeyUp タイミングで eager warmup を送るべき（warmup deferred）。
     /// `applied_ime_on`: executor が保持する最後の apply 済み IME 状態。eager warmup 判定に使う。
     fn on_passthrough_key(
         &mut self,
         _vk: crate::types::VkCode,
         _is_keydown: bool,
         _applied_ime_on: Option<bool>,
-    ) {
+    ) -> bool {
+        false
     }
 
     /// キー再注入時の composition 状態更新フック。

@@ -221,10 +221,7 @@ impl<'a> ImeRefreshPipeline<'a> {
         }
         let ctx = self.rt.build_ctx();
         let decision = self.rt.engine.on_command(EngineCommand::FocusChanged, &ctx);
-        // フォーカス変化起因の状態遷移では engine_state_ime_key を送らない（フィードバックループ防止）。
-        self.rt.executor.platform.suppress_engine_state_key = true;
-        self.rt.execute_decision(decision);
-        self.rt.executor.platform.suppress_engine_state_key = false;
+        self.rt.execute_decision_suppressed(decision);
     }
 
     // ── 読み取り方針の決定 ──
@@ -557,10 +554,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             self.rt.platform_state.explicit_intent(),
         );
         let decision = self.rt.engine.on_command(EngineCommand::RefreshState, &ctx);
-        // ポーリング起因の状態遷移では engine_state_ime_key を送らない（フィードバックループ防止）。
-        self.rt.executor.platform.suppress_engine_state_key = true;
-        self.rt.execute_decision(decision);
-        self.rt.executor.platform.suppress_engine_state_key = false;
+        self.rt.execute_decision_suppressed(decision);
     }
 
     // ── 次回ポーリングのスケジュール ──
