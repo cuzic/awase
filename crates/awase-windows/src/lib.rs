@@ -27,7 +27,6 @@ pub mod keymap;
 pub(crate) mod ime_controller;
 pub mod ime_diagnostic;
 pub(crate) mod imm;
-pub mod ime_observations;
 pub mod input_defer;
 pub mod observer;
 pub mod output;
@@ -57,7 +56,7 @@ use awase::types::RawKeyEvent;
 
 pub use crate::state::{
     HookConfig, HookRoutingState,
-    ImeBelief, PlatformState, ShadowSource,
+    ImeBelief, PlatformState,
 };
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 

@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use awase::engine::InputModeState;
 
-use crate::ImeBelief;
 use crate::tuning::HWND_CACHE_MAX_AGE_MS;
 
 /// フォーカス切り替え時の IME 状態スナップショット（per-HWND キャッシュ用）
@@ -27,14 +26,20 @@ impl HwndImeCache {
         Self(HashMap::new())
     }
 
-    /// フォーカス離脱時に belief を保存する。
+    /// フォーカス離脱時に IME 状態を保存する。
     ///
     /// 古いエントリ（[`crate::tuning::HWND_CACHE_MAX_AGE_MS`] を超えたもの）は
     /// このタイミングでまとめて削除する。
-    pub fn save(&mut self, old_pid: u32, old_class: String, belief: &ImeBelief) {
+    pub fn save(
+        &mut self,
+        old_pid: u32,
+        old_class: String,
+        ime_on: bool,
+        input_mode: InputModeState,
+    ) {
         let snapshot = HwndImeSnapshot {
-            ime_on: belief.ime_on(),
-            input_mode: belief.input_mode(),
+            ime_on,
+            input_mode,
             recorded_ms: crate::hook::current_tick_ms(),
         };
         log::debug!(

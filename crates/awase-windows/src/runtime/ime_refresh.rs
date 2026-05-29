@@ -315,10 +315,10 @@ impl<'a> ImeRefreshPipeline<'a> {
                     age_ms,
                     if ime_changed {
                         format!(
-                            "ime_on {} → {}({:?}) ",
+                            "ime_on {} → {}(intent={:?}) ",
                             ime_on_before_poll,
                             ime_on_after,
-                            self.rt.platform_state.ime_on_source(),
+                            self.rt.platform_state.explicit_intent(),
                         )
                     } else {
                         String::new()

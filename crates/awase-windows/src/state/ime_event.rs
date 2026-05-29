@@ -13,7 +13,6 @@
 
 use std::time::Instant;
 
-use super::belief::ShadowSource;
 use crate::focus::class_names::AppImeProfile;
 
 /// HWND の Send-safe な表現 (raw pointer 値を usize で保持)。
@@ -60,20 +59,10 @@ pub enum IntentSource {
     Command,
     /// 復旧措置 (panic_reset 等)
     Recovery,
+    /// per-HWND IME キャッシュ復元 (前回 focus 時の意図を再現)
+    HwndCache,
 }
 
-impl IntentSource {
-    /// 既存の `ShadowSource` からの変換 (Step 0-2 の compat 用)。
-    pub const fn from_shadow_source(src: ShadowSource) -> Option<Self> {
-        match src {
-            ShadowSource::SyncKey => Some(Self::SyncKey),
-            ShadowSource::PhysicalImeKey => Some(Self::PhysicalImeKey),
-            ShadowSource::SetOpenRequest => Some(Self::Command),
-            ShadowSource::PanicReset => Some(Self::Recovery),
-            _ => None,
-        }
-    }
-}
 
 /// Observation のソース (外部観測の種類)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,17 +79,6 @@ pub enum ObservationSource {
     Tsf,
     /// per-HWND IME キャッシュからの復元
     HwndCache,
-}
-
-impl ObservationSource {
-    pub const fn from_shadow_source(src: ShadowSource) -> Option<Self> {
-        match src {
-            ShadowSource::FocusSnapshot => Some(Self::FocusProbe),
-            ShadowSource::ObserverPoll => Some(Self::ObserverPoll),
-            ShadowSource::HwndCache => Some(Self::HwndCache),
-            _ => None,
-        }
-    }
 }
 
 /// 観測の信頼度。reducer が profile 別に judge する際に使う。
@@ -238,40 +216,6 @@ mod tests {
     fn hwnd_id_null_check() {
         assert!(HwndId::NULL.is_null());
         assert!(!HwndId(0x1234).is_null());
-    }
-
-    #[test]
-    fn intent_source_from_shadow_source() {
-        assert_eq!(
-            IntentSource::from_shadow_source(ShadowSource::SyncKey),
-            Some(IntentSource::SyncKey)
-        );
-        assert_eq!(
-            IntentSource::from_shadow_source(ShadowSource::PhysicalImeKey),
-            Some(IntentSource::PhysicalImeKey)
-        );
-        assert_eq!(
-            IntentSource::from_shadow_source(ShadowSource::SetOpenRequest),
-            Some(IntentSource::Command)
-        );
-        assert_eq!(
-            IntentSource::from_shadow_source(ShadowSource::ObserverPoll),
-            None,
-            "observer は intent ではない"
-        );
-    }
-
-    #[test]
-    fn observation_source_from_shadow_source() {
-        assert_eq!(
-            ObservationSource::from_shadow_source(ShadowSource::FocusSnapshot),
-            Some(ObservationSource::FocusProbe)
-        );
-        assert_eq!(
-            ObservationSource::from_shadow_source(ShadowSource::SyncKey),
-            None,
-            "sync は observation ではない"
-        );
     }
 
     #[test]

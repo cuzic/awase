@@ -9,7 +9,16 @@ use crate::hook;
 use crate::runtime;
 use crate::hook::CallbackResult;
 use crate::win32::{post_to_main_thread};
-use crate::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+
+/// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
+#[derive(Debug, Clone, Copy)]
+enum IntentKind {
+    /// config 由来の同期キー
+    SyncKey,
+    /// 物理 KANJI キー
+    PhysicalImeKey,
+}
 
 /// キーイベント処理パイプライン
 pub(super) struct KeyEventPipeline<'a> {
@@ -221,14 +230,15 @@ impl KeyEventPipeline<'_> {
         if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
             return false;
         }
-        let sync_source = event.ime_relevance.sync_direction.map(|a| (a, ShadowSource::SyncKey));
-        let phys_source = if self.app.platform_state.is_japanese_ime() {
-            event.ime_relevance.shadow_action.map(|a| (a, ShadowSource::PhysicalImeKey))
+        // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
+        let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
+            Some((a, IntentKind::SyncKey))
+        } else if self.app.platform_state.is_japanese_ime() {
+            event.ime_relevance.shadow_action.map(|a| (a, IntentKind::PhysicalImeKey))
         } else {
             None
         };
-        let action_with_source = sync_source.or(phys_source);
-        let Some((action, source)) = action_with_source else { return false; };
+        let Some((action, kind)) = intent_kind else { return false; };
 
         let current = self.app.platform_state.ime_on();
         let new_val = match action {
@@ -238,10 +248,9 @@ impl KeyEventPipeline<'_> {
         };
         let ms = hook::current_tick_ms();
         let user_enabled = self.app.engine.is_user_enabled();
-        match source {
-            ShadowSource::SyncKey => self.app.platform_state.write_sync_key(new_val, ms, user_enabled),
-            ShadowSource::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms, user_enabled),
-            _ => {}
+        match kind {
+            IntentKind::SyncKey => self.app.platform_state.write_sync_key(new_val, ms, user_enabled),
+            IntentKind::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms, user_enabled),
         }
         if self.app.platform_state.ime_on() == current {
             return false;
@@ -294,7 +303,7 @@ impl KeyEventPipeline<'_> {
             if current { "ON" } else { "OFF" },
             if self.app.platform_state.ime_on() { "ON" } else { "OFF" },
             event.vk_code,
-            source,
+            kind,
         );
         true
     }

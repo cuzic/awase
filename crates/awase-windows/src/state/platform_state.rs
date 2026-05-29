@@ -1,36 +1,32 @@
 use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
-use super::belief::{ImeBelief, ShadowSource};
+use super::belief::ImeBelief;
 use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
 use super::ime_event::{ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
-use super::ime_model::{ImeEffectiveState, ImeModel};
+use super::ime_model::ImeModel;
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
 // ────────────────────────────────────────────────────────────────────────────
 
-/// IME 観測・判断・belief 書き戻しを担う凝集ユニット。
+/// IME 観測・判断を担う凝集ユニット。
 ///
 /// `PlatformState` から IME 関連フィールドを切り出すことで、
 /// 「観測」「フォーカス状態」「フック設定」の混在を解消する。
 ///
-/// - `belief`        : 観測値から導出した現在の IME 状態（Tick ごとに更新）
-/// - `shadow_model`  : 新モデル (Phase 1-3 で導入)。force_guards / drift_monitor を持つ
+/// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode（IME ON/OFF 自体は shadow_model が SSOT）
+/// - `shadow_model`  : IME ON/OFF と force_guards / drift_monitor を持つ SSOT
 #[derive(Debug)]
 pub(crate) struct ImeStateHub {
-    /// 観測値から導出した現在の IME 状態への「信念」
+    /// input_mode・is_japanese_ime・prev_conversion_mode を保持する。
     pub(crate) belief: ImeBelief,
-    /// 各ソースの最新観測値（Phase 2: 観測と判断の分離）。
-    ///
-    /// `ime_on` の最終値は `ImeObservations::resolve_and_clear()` で一括決定される。
-    pub(crate) ime_observations: crate::ime_observations::ImeObservations,
     /// IME 状態変更 event のリングバッファ (Step 0)。
     pub(crate) event_log: ImeEventLog,
 
     /// Shadow IME モデル (Step 1)。Phase 3a で recovery 統合済。
-    /// force_guards / drift_monitor を持つ SSOT。
+    /// IME ON/OFF (desired_open / applied_open) と force_guards / drift_monitor を持つ SSOT。
     pub(crate) shadow_model: ImeModel,
 }
 
@@ -39,13 +35,10 @@ impl ImeStateHub {
     pub(crate) fn new() -> Self {
         Self {
             belief: ImeBelief {
-                ime_on: true,                              // 安全側: ON で初期化
-                ime_on_source: ShadowSource::Init,
                 input_mode: InputModeState::ObservedRomaji, // デフォルト: ローマ字入力
                 is_japanese_ime: true,                     // デフォルト: 日本語
                 prev_conversion_mode: None,
             },
-            ime_observations: crate::ime_observations::ImeObservations::default(),
             event_log: ImeEventLog::default(),
             shadow_model: ImeModel::default(),
         }
@@ -188,28 +181,11 @@ impl PlatformState {
     // `belief()` を直接使っても同等だが、呼び出しサイトを短くするために置く。
     // `build_input_context(&ps.belief(), …)` のような「構造体丸ごと」の渡し方は belief() を使う。
 
-    /// IME が ON かどうかを返す (Phase 3d: shadow_model.effective_open() を SSOT に昇格)。
-    ///
-    /// 旧 `belief.ime_on` は引き続き `apply_ime_observations()` で維持されており、
-    /// shadow_model との不一致は decisive log で記録する (緊急ロールバック判断材料)。
+    /// IME が ON かどうかを返す (Phase 3e: shadow_model.effective_open() が SSOT)。
     #[inline]
     #[must_use]
     pub const fn ime_on(&self) -> bool {
         self.ime.shadow_model.effective_open()
-    }
-
-    /// 旧 belief.ime_on (Phase 3d 移行期間の互換アクセサ、diagnostic 用)。
-    #[inline]
-    #[must_use]
-    pub const fn belief_ime_on(&self) -> bool {
-        self.ime.belief.ime_on()
-    }
-
-    /// `ime_on` を最後に更新したソースを返す。
-    #[inline]
-    #[must_use]
-    pub const fn ime_on_source(&self) -> ShadowSource {
-        self.ime.belief.ime_on_source()
     }
 
     /// 入力モードを返す。
@@ -293,11 +269,9 @@ impl PlatformState {
 
     /// panic_reset 向け全面リセット。
     ///
-    /// belief / recovery のすべてのフィールドをまとめて設定する。
-    /// `ime_observations` もクリアして stale な観測値が残らないようにする。
+    /// belief (input_mode, is_japanese_ime, prev_conversion_mode) と shadow_model を初期化する。
     pub fn apply_panic_reset(&mut self) {
         self.ime.belief.input_mode = InputModeState::ObservedRomaji;
-        self.ime.belief.set_ime_on(true, ShadowSource::PanicReset);
         self.ime.belief.is_japanese_ime = true;
         self.ime.belief.prev_conversion_mode = None;
         // Phase 3a: drift_monitor + force_guards に置換
@@ -308,8 +282,6 @@ impl PlatformState {
             expires_at: None,
             generation: self.ime.event_log.next_seq(),
         });
-        // パニックリセット後は全観測スロットと明示的意図をクリア。
-        self.ime.ime_observations.clear_on_focus_change();
         // Step 2B: shadow_model を直接 reset (event 記録は残しつつ intent はクリア)。
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: true,
@@ -321,196 +293,89 @@ impl PlatformState {
 }
 
 impl PlatformState {
-    /// `ime_observations.resolve_and_clear()` を実行して `belief.ime_on` を更新する。
-    ///
-    /// ## 呼び出し規約
-    ///
-    /// 通常は `write_*` ヘルパーや `apply_ime_update` が内部で呼ぶため、
-    /// 外部から直接呼ぶ必要はほとんどない。
-    ///
-    /// - `write_sync_key`, `write_physical_key`, `write_set_open_request`,
-    ///   `write_focus_probe`, `write_observer_poll` — 書き込みと同時に自動解決する。
-    /// - `apply_ime_update` — `ImeUpdate` の全フィールド適用後に自動解決する。
-    ///
-    /// 複数スロットを 1 tick 内で書き込みたい場合（将来の拡張）にのみ直接使用する。
-    pub fn apply_ime_observations(&mut self, user_enabled: bool) {
-        let current = self.ime.belief.ime_on;
-        let is_japanese = self.ime.belief.is_japanese_ime;
-        let obs = &self.ime.ime_observations;
-        log::trace!(
-            "[apply-obs] slots: sync={:?} phys={:?} req={:?} fp={:?} op={:?} \
-             belief_on={} is_jp={} user_en={}",
-            obs.sync_key.map(|o| o.value),
-            obs.physical_key.map(|o| o.value),
-            obs.set_open_request.map(|o| o.value),
-            obs.focus_probe.map(|o| o.value),
-            obs.observer_poll.map(|o| o.value),
-            current, is_japanese, user_enabled,
-        );
-        if let Some((val, src)) = self.ime.ime_observations.resolve_and_clear(current, user_enabled, is_japanese) {
-            // ObserverPoll / FocusSnapshot が明示的意図と矛盾する値を返した場合はブロックする。
-            // タイマーではなく「最後の明示的操作の意図」を根拠にするため、
-            // フォーカス変更でクリアされるまで有効（時間切れなし）。
-            // 明示的操作（SyncKey / PhysicalImeKey / SetOpenRequest, Priority 1-3）は
-            // intent スロットを直接更新するので、ここには到達しない。
-            if matches!(src, ShadowSource::ObserverPoll | ShadowSource::FocusSnapshot) {
-                // intent guard: shadow_model.last_intent 由来の compat 値で判定。
-                if let Some(intent) = self.ime.last_explicit_intent_compat() {
-                    if val != intent {
-                        log::debug!(
-                            "[explicit-intent] belief→{val} blocked (intent={intent}, src={src:?})"
-                        );
-                        match src {
-                            ShadowSource::ObserverPoll => {
-                                self.ime.ime_observations.observer_poll = None;
-                            }
-                            ShadowSource::FocusSnapshot => {
-                                self.ime.ime_observations.focus_probe = None;
-                            }
-                            _ => {}
-                        }
-                        return;
-                    }
-                }
-            }
-            log::debug!(
-                "[apply-obs] belief update: {}→{} src={:?} intent={:?}",
-                current, val, src, self.ime.last_explicit_intent_compat(),
-            );
-            self.ime.belief.set_ime_on(val, src);
-        }
-        // Step 1: Shadow Reducer の effective state と既存 belief を比較し diff log を出力。
-        // 本番判定には影響しない (shadow_model の値は使わない)。
-        self.log_shadow_diff_if_any();
-    }
-
-    /// Shadow Reducer (Step 1) の effective state と既存 belief の diff を log 出力。
-    /// 1 週間モニタで Expected / Suspicious / Regression を分類する材料にする。
-    fn log_shadow_diff_if_any(&self) {
-        let old_ime_on = self.ime.belief.ime_on;
-        let new_effective = self.ime.shadow_model.effective_state();
-        let Some(severity) =
-            ImeEffectiveState::classify_diff(old_ime_on, new_effective.ime_target_open)
-        else {
-            return;
-        };
-        let last_intent = self.ime.shadow_model.last_intent.as_ref();
-        let drift_seq = self.ime.shadow_model.observations.drift.map(|d| d.first_drift_seq);
-        log::debug!(
-            "[shadow-diff seq~{}] severity={:?} old.ime_on={} new.target={} \
-             last_intent={:?} drift_seq={:?}",
-            self.ime.event_log.next_seq().saturating_sub(1),
-            severity,
-            old_ime_on,
-            new_effective.ime_target_open,
-            last_intent.map(|i| (i.target, i.source, i.at_seq)),
-            drift_seq,
-        );
-    }
-
     /// 最後の明示的 IME 操作の意図を返す（ログ・診断用）。
     ///
-    /// 最後の明示的 IME 操作の意図を返す (Step 2B: shadow_model.last_intent 由来)。
+    /// shadow_model.last_intent.target を返す。
     pub fn explicit_intent(&self) -> Option<bool> {
         self.ime.last_explicit_intent_compat()
     }
 
-    /// `observer_poll` スロットに観測値を書き込み、即座に judgement を通す。
+    /// `observer_poll` 観測を shadow_model へ dispatch する。
     ///
-    /// 外部観測（GJI I/O 等）を `belief.ime_on` に反映する正規ルート。
-    pub fn write_observer_poll(&mut self, value: bool, ms: u64, user_enabled: bool) {
+    /// 外部観測（GJI I/O 等）の正規ルート。`user_enabled` / `ms` は現状未使用だが、
+    /// 既存呼び出しサイトの API 互換のため引数は保持する。
+    pub fn write_observer_poll(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
         self.ime.dispatch_event(ImeEvent::ObserverReported {
             open: value,
             source: super::ime_event::ObservationSource::ObserverPoll,
             hwnd: super::ime_event::HwndId::NULL,
             confidence: super::ime_event::ObservationConfidence::Medium,
         });
-        self.ime.ime_observations.observer_poll =
-            Some(crate::ime_observations::ImeObs { value, ms });
-        self.apply_ime_observations(user_enabled);
     }
 
-    /// フォーカス変更時に `ime_observations` の全スロットと明示的意図をクリアする。
+    /// フォーカス変更時に shadow_model の last_intent / observations を clear する。
     pub fn clear_ime_observations_on_focus_change(&mut self) {
-        self.ime.ime_observations.clear_on_focus_change();
-        // Step 3: shadow_model の last_intent / observations を clear (SSOT)。
-        // desired_open は維持 (フォーカス変更でユーザー意図を捨てない)。
         self.ime.shadow_model.last_intent = None;
         self.ime.shadow_model.observations.clear_on_focus_change();
         log::debug!("[explicit-intent] cleared (focus change)");
     }
 
-    /// `sync_key` スロットに観測値を書き込み、即座に judgement を通す。
-    pub fn write_sync_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
+    /// 同期キー由来の意図を shadow_model へ dispatch する。
+    pub fn write_sync_key(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::SyncKey,
         });
-        self.ime.ime_observations.sync_key =
-            Some(crate::ime_observations::ImeObs { value, ms });
-        self.apply_ime_observations(user_enabled);
     }
 
-    /// `physical_key` スロットに観測値を書き込み、即座に judgement を通す。
-    pub fn write_physical_key(&mut self, value: bool, ms: u64, user_enabled: bool) {
+    /// 物理 IME キー由来の意図を shadow_model へ dispatch する。
+    pub fn write_physical_key(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::PhysicalImeKey,
         });
-        self.ime.ime_observations.physical_key =
-            Some(crate::ime_observations::ImeObs { value, ms });
-        self.apply_ime_observations(user_enabled);
     }
 
-    /// `set_open_request` スロットに観測値を書き込み、即座に judgement を通す。
-    pub fn write_set_open_request(&mut self, value: bool, ms: u64, user_enabled: bool) {
-        log::debug!(
-            "[write-set-open-req] value={value} user_en={user_enabled} \
-             belief_on={} op={:?} fp={:?}",
-            self.ime.belief.ime_on,
-            self.ime.ime_observations.observer_poll.map(|o| o.value),
-            self.ime.ime_observations.focus_probe.map(|o| o.value),
-        );
+    /// Engine の SetOpen 要求由来の意図を shadow_model へ dispatch する。
+    pub fn write_set_open_request(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: value,
             source: IntentSource::Command,
         });
-        self.ime.ime_observations.set_open_request =
-            Some(crate::ime_observations::ImeObs { value, ms });
-        self.apply_ime_observations(user_enabled);
     }
 
-    /// `focus_probe` スロットに観測値を書き込み、即座に judgement を通す。
-    pub fn write_focus_probe(&mut self, value: bool, ms: u64, user_enabled: bool) {
+    /// フォーカス変更直後の同期プローブ観測を shadow_model へ dispatch する。
+    pub fn write_focus_probe(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
         self.ime.dispatch_event(ImeEvent::ObserverReported {
             open: value,
             source: super::ime_event::ObservationSource::FocusProbe,
             hwnd: super::ime_event::HwndId::NULL,
             confidence: super::ime_event::ObservationConfidence::Medium,
         });
-        self.ime.ime_observations.focus_probe =
-            Some(crate::ime_observations::ImeObs { value, ms });
-        self.apply_ime_observations(user_enabled);
     }
 
-    /// `ImeUpdate` を `ImeBelief` / `ImeRecoveryState` / `ImeObservations` に反映し、
-    /// 即座に judgement を通す。
+    /// `ImeUpdate` を shadow_model / belief (is_japanese_ime, input_mode, prev_conversion_mode) に反映する。
     ///
     /// `observer::ime_observer::poll_and_classify_ime()` / `classify_fetched_snapshot()` の結果を受け取り、
-    /// 状態への書き込みと解決をここに集約する。判断ロジックを持たない純粋適用関数。
+    /// 状態への書き込みをここに集約する。判断ロジックを持たない純粋適用関数。
     pub fn apply_ime_update(
         &mut self,
         update: &crate::observer::ime_observer::ImeUpdate,
-        user_enabled: bool,
+        _user_enabled: bool,
     ) {
         // is_japanese_ime: 検出成功時のみ更新
         if let Some(is_jp) = update.is_japanese_ime {
             self.ime.belief.is_japanese_ime = is_jp;
         }
 
-        // observer_poll スロット
+        // observer_poll 観測 → shadow_model へ dispatch
         if let Some(obs) = update.observer_poll {
-            self.ime.ime_observations.observer_poll = Some(obs);
+            self.ime.dispatch_event(ImeEvent::ObserverReported {
+                open: obs.value,
+                source: super::ime_event::ObservationSource::ObserverPoll,
+                hwnd: super::ime_event::HwndId::NULL,
+                confidence: super::ime_event::ObservationConfidence::Medium,
+            });
         }
 
         // miss_count (Phase 3a: drift_monitor 経由)
@@ -550,80 +415,59 @@ impl PlatformState {
         if let Some(conv) = update.new_prev_conversion_mode {
             self.ime.belief.prev_conversion_mode = Some(conv);
         }
-
-        self.apply_ime_observations(user_enabled);
     }
 
-    /// `hwnd_cache::restore_on_focus_enter()` の結果を `ImeBelief` に反映する。
+    /// `hwnd_cache::restore_on_focus_enter()` の結果を shadow_model に反映する。
     ///
     /// キャッシュヒット（`Some`）の場合のみ適用する。`None` の場合は何もしない。
-    pub const fn apply_hwnd_cache_restore(
+    /// per-HWND キャッシュは「前回 focus 時のユーザ意図」を保存しているため、
+    /// `UserImeSetIntent { source: HwndCache }` として dispatch する。
+    pub fn apply_hwnd_cache_restore(
         &mut self,
         snapshot: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
     ) {
         if let Some(snap) = snapshot {
-            self.ime.belief.set_ime_on(snap.ime_on, ShadowSource::HwndCache);
+            self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
+                target: snap.ime_on,
+                source: IntentSource::HwndCache,
+            });
             self.ime.belief.input_mode = snap.input_mode;
         }
     }
 
     /// TsfNative ウィンドウへのフォーカス入場時、`HwndCache` ミスで前ウィンドウから
-    /// carry over した `ime_on=false` を IME ON へ寄せ直す（Japanese 文脈の安全側既定）。
+    /// carry over した `desired_open=false` を IME ON へ寄せ直す（Japanese 文脈の安全側既定）。
     ///
     /// TsfNative では IMM クロスプロセス取得もポーリングも skip されるため、
     /// stale な `false` が ObserverPoll でも復旧せず Engine が活性化不能になる。
     /// 日本語レイアウト時のみ実行する。
     ///
-    /// # 4 層モデルとの整合: Layer 1 観測を尊重する
+    /// # 4 層モデルとの整合: フレッシュな intent は尊重する
     ///
-    /// 本処理は Layer 2 (`ImeBelief`) を直接書き換える「ヒューリスティック修復」だが、
-    /// `belief.ime_on=false` の出所が Layer 1 の検証済み観測やユーザ明示操作である場合、
-    /// その値を上書きするとユーザ意図に反した IME ON 発火を招く
-    /// （例: ユーザが Ctrl+無変換 で IME OFF した直後に Windows Terminal へ切替）。
-    ///
-    /// よって `ime_on_source` を確認し、以下の「Layer 1 由来の信頼できる false」は保護する:
-    /// - `ObserverPoll`    : IMM クロスプロセス読みで verified
-    /// - `PhysicalImeKey`  : ユーザの直接操作（半角/全角等）
-    /// - `SyncKey`         : config 由来の同期キー（ユーザ設定）
-    /// - `SetOpenRequest`  : Engine の判断（special-key 等、ユーザ起点）
-    /// - `FocusSnapshot`   : フォーカス変更直後のフレッシュなプローブ
-    ///
-    /// 上書き対象は「観測由来でない値」のみ:
-    /// - `Init`       : 起動時の既定値（通常は ON 初期化なので発火しない）
-    /// - `HwndCache`  : 別 HWND キャッシュからの復元（本関数は cache miss 時のみ呼ばれるため
-    ///   実際には到達しないが、再入時の保護として記載）
-    /// - `PanicReset` : 強制リセット由来
+    /// `FocusChanged` event は `last_intent` を clear するが `desired_open` は保持する。
+    /// よって本関数が呼ばれた時点で `last_intent.is_none()` なら、その `false` は前ウィンドウ
+    /// からの carry over でしかありえない（cache miss なので HwndCache 由来の intent もない）。
+    /// その場合のみ ON へ寄せ直す。`last_intent.is_some()` なら現フォーカス文脈の新しい
+    /// 意図（HwndCache 経由含む）なので保護する。
     pub fn reset_stale_ime_on_for_tsf_native(&mut self) {
-        if !self.ime.belief.is_japanese_ime() || self.ime.belief.ime_on() {
+        if !self.ime.belief.is_japanese_ime() || self.ime_on() {
             return;
         }
-        let source = self.ime.belief.ime_on_source();
-        if Self::is_layer1_verified_source(source) {
+        if let Some(intent) = self.ime.shadow_model.last_intent.as_ref() {
             log::debug!(
-                "TsfNative entry: preserving ime_on=false (source={source:?}, Layer 1 verified/explicit)"
+                "TsfNative entry: preserving ime_on=false (intent source={:?})",
+                intent.source
             );
             return;
         }
         log::info!(
             "TsfNative entry without cache: reset stale ime_on=false → true \
-             (source={source:?}, Japanese layout, IME state untrackable in TSF-native)"
+             (no intent, Japanese layout, IME state untrackable in TSF-native)"
         );
-        self.ime.belief.set_ime_on(true, ShadowSource::HwndCache);
-    }
-
-    /// `ime_on` の出所が Layer 1 の検証済み観測またはユーザ明示操作かを返す。
-    ///
-    /// `true` のとき、その `ime_on` 値は Layer 2 ヒューリスティックで上書きしてはならない
-    /// （`reset_stale_ime_on_for_tsf_native` 等の保護判定で使用）。
-    const fn is_layer1_verified_source(source: ShadowSource) -> bool {
-        matches!(
-            source,
-            ShadowSource::ObserverPoll
-                | ShadowSource::PhysicalImeKey
-                | ShadowSource::SyncKey
-                | ShadowSource::SetOpenRequest
-                | ShadowSource::FocusSnapshot
-        )
+        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: true,
+            source: IntentSource::Recovery,
+        });
     }
 }
 
@@ -631,76 +475,85 @@ impl PlatformState {
 mod tests {
     use super::*;
 
-    fn ps_with_belief(ime_on: bool, source: ShadowSource, is_japanese: bool) -> PlatformState {
+    /// shadow_model を直接設定するヘルパ:
+    /// `set_intent=Some(target)` なら UserImeSetIntent を dispatch し last_intent を設定する。
+    /// `set_intent=None` なら desired_open のみ直接書き換え、last_intent は空のままにする
+    /// (focus 変更後の carry-over シナリオを模擬)。
+    fn ps_with_shadow(
+        desired_open: bool,
+        set_intent: Option<IntentSource>,
+        is_japanese: bool,
+    ) -> PlatformState {
         let mut ps = PlatformState::new();
-        ps.ime.belief.ime_on = ime_on;
-        ps.ime.belief.ime_on_source = source;
         ps.ime.belief.is_japanese_ime = is_japanese;
+        if let Some(source) = set_intent {
+            ps.ime.dispatch_event(ImeEvent::UserImeSetIntent {
+                target: desired_open,
+                source,
+            });
+        } else {
+            ps.ime.shadow_model.desired_open = desired_open;
+            ps.ime.shadow_model.last_intent = None;
+        }
         ps
     }
 
-    // Layer 1 由来の検証済み false は保護される（4 層モデル尊重）。
+    // フレッシュな intent が backing する false は保護される。
     // ユーザが直前に Ctrl+無変換 等で IME OFF した状態が、TsfNative ウィンドウへの
     // 切替で勝手に ON に戻されてはいけない。
     #[test]
-    fn reset_stale_preserves_observer_poll_false() {
-        let mut ps = ps_with_belief(false, ShadowSource::ObserverPoll, true);
+    fn reset_stale_preserves_intent_backed_false_sync_key() {
+        let mut ps = ps_with_shadow(false, Some(IntentSource::SyncKey), true);
         ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.belief.ime_on());
-        assert_eq!(ps.ime.belief.ime_on_source(), ShadowSource::ObserverPoll);
+        assert!(!ps.ime_on());
     }
 
     #[test]
-    fn reset_stale_preserves_physical_key_false() {
-        let mut ps = ps_with_belief(false, ShadowSource::PhysicalImeKey, true);
+    fn reset_stale_preserves_intent_backed_false_physical_key() {
+        let mut ps = ps_with_shadow(false, Some(IntentSource::PhysicalImeKey), true);
         ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.belief.ime_on());
+        assert!(!ps.ime_on());
     }
 
     #[test]
-    fn reset_stale_preserves_sync_key_false() {
-        let mut ps = ps_with_belief(false, ShadowSource::SyncKey, true);
+    fn reset_stale_preserves_intent_backed_false_command() {
+        let mut ps = ps_with_shadow(false, Some(IntentSource::Command), true);
         ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.belief.ime_on());
+        assert!(!ps.ime_on());
     }
 
     #[test]
-    fn reset_stale_preserves_set_open_request_false() {
-        let mut ps = ps_with_belief(false, ShadowSource::SetOpenRequest, true);
+    fn reset_stale_preserves_intent_backed_false_hwnd_cache() {
+        let mut ps = ps_with_shadow(false, Some(IntentSource::HwndCache), true);
         ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.belief.ime_on());
+        assert!(!ps.ime_on());
     }
 
+    // last_intent=None (前ウィンドウからの carry-over) は ON へ寄せ直す。
     #[test]
-    fn reset_stale_preserves_focus_snapshot_false() {
-        let mut ps = ps_with_belief(false, ShadowSource::FocusSnapshot, true);
+    fn reset_stale_overrides_carry_over_false() {
+        let mut ps = ps_with_shadow(false, None, true);
         ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.belief.ime_on());
-    }
-
-    // 観測由来でない false (PanicReset) は従来通り上書きされる。
-    #[test]
-    fn reset_stale_overrides_panic_reset_false() {
-        let mut ps = ps_with_belief(false, ShadowSource::PanicReset, true);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(ps.ime.belief.ime_on());
-        assert_eq!(ps.ime.belief.ime_on_source(), ShadowSource::HwndCache);
+        assert!(ps.ime_on());
+        assert_eq!(
+            ps.ime.shadow_model.last_intent.as_ref().map(|i| i.source),
+            Some(IntentSource::Recovery),
+        );
     }
 
     // 既に ON なら何もしない（早期 return）。
     #[test]
     fn reset_stale_noop_when_already_on() {
-        let mut ps = ps_with_belief(true, ShadowSource::ObserverPoll, true);
+        let mut ps = ps_with_shadow(true, Some(IntentSource::SyncKey), true);
         ps.reset_stale_ime_on_for_tsf_native();
-        assert!(ps.ime.belief.ime_on());
-        assert_eq!(ps.ime.belief.ime_on_source(), ShadowSource::ObserverPoll);
+        assert!(ps.ime_on());
     }
 
     // 非日本語レイアウトでは何もしない。
     #[test]
     fn reset_stale_noop_when_not_japanese() {
-        let mut ps = ps_with_belief(false, ShadowSource::PanicReset, false);
+        let mut ps = ps_with_shadow(false, None, false);
         ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.belief.ime_on());
+        assert!(!ps.ime_on());
     }
 }

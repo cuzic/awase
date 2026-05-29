@@ -15,7 +15,13 @@
 
 use awase::engine::InputModeState;
 use crate::imm::{IME_CMODE_NATIVE, IME_CMODE_ROMAN};
-use crate::ime_observations::ImeObs;
+
+/// Observer が返す単一観測 (値 + タイムスタンプ)。
+#[derive(Debug, Clone, Copy)]
+pub struct ImeObs {
+    pub value: bool,
+    pub ms: u64,
+}
 
 /// `classify_ime_snapshot()` が返す状態更新命令。
 ///

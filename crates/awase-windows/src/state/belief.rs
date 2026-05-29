@@ -1,99 +1,35 @@
-//! IME 状態の「信念」と回復 FSM 状態。
+//! IME 補助状態（input_mode / is_japanese_ime / prev_conversion_mode）。
 //!
-//! # IME 状態の 4 層モデル
-//!
-//! このシステムの IME 状態は 4 つの概念的な層に分かれる。
-//! 各層は独立したデータ型を持ち、目的が異なる。
+//! # IME 状態の 3 層モデル（Phase 3e 以降）
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │ Layer 1: 生観測スロット (ImeObservations)                    │
-//! │  sync_key > physical_key > set_open_request                 │
-//! │  > focus_probe > observer_poll                              │
-//! │  各ソースが書き込み → resolve_and_clear() で消費される       │
+//! │ Layer 1: 生観測 event (ImeEvent::ObserverReported)           │
+//! │  各ソース (ObserverPoll / FocusProbe / Gji / Tsf / HwndCache) │
+//! │  は ImeEvent を dispatch する。shadow_model.reduce() が記録。  │
 //! └────────────────────┬────────────────────────────────────────┘
-//!                      │ resolve_and_clear() + apply_ime_observations()
+//!                      │ reduce() → observations.record()
 //! ┌────────────────────▼────────────────────────────────────────┐
-//! │ Layer 2: Engine 入力用 belief (ImeBelief.ime_on)            │
-//! │  優先度マージ済みの値。Engine::on_input() に渡す SSOT。      │
-//! │  「OS の現在状態」ではなく「Engine が前提とすべき状態」。    │
-//! └────────────────────┬────────────────────────────────────────┘
-//!                      │ Engine の判断結果
-//! ┌────────────────────▼────────────────────────────────────────┐
-//! │ Layer 3: Engine 出力 (ImeEffect::SetOpen / is_user_enabled) │
-//! │  Engine が「IME を ON/OFF したい」と決定した結果。           │
+//! │ Layer 2: shadow_model.desired_open / effective_open()       │
+//! │  Engine が前提とすべき IME 状態の SSOT。                     │
+//! │  UserImeSetIntent / UserImeToggleIntent のみが書き換え可能。 │
 //! └────────────────────┬────────────────────────────────────────┘
 //!                      │ apply_ime_open() → OS に送信
 //! ┌────────────────────▼────────────────────────────────────────┐
-//! │ Layer 4: 制御ログ (Output::last_applied_ime_on)             │
-//! │  最後に OS に送ったコマンド値。観測値ではない。              │
-//! │  VK_KANJI の重複送信防止にのみ使用する。                    │
+//! │ Layer 3: 制御ログ (Output::last_applied_ime_on)             │
+//! │  最後に OS に送ったコマンド値。VK_KANJI 重複送信防止専用。   │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! ## よくある混同
-//!
-//! - **`ImeBelief.ime_on` ≠ OS の現在 IME 状態**: フォーカス変更直後や
-//!   Imm32Unavailable アプリでは OS 実態と乖離することがある。
-//!   これは設計上許容された誤差であり、ポーリングで収束する。
-//! - **`last_applied_ime_on` ≠ `ImeBelief.ime_on`**: 前者は「送ったコマンド」、
-//!   後者は「Engine が前提とする状態」。desync はありうる（それを検出するのが
-//!   `KanjiToggleStrategy` の `candidate_visible` による補正）。
+//! `ImeBelief` は IME ON/OFF 自体は持たず、補助的な属性（input_mode 等）のみを保持する。
 
 use awase::engine::InputModeState;
 
-/// `ImeBelief.ime_on` を最後に更新したソース（診断用）。
+/// IME 補助状態 (input_mode / is_japanese_ime / prev_conversion_mode)。
 ///
-/// どの Layer 1 スロットが `resolve_and_clear()` で勝ったかを記録する。
-/// 現時点では診断・ログ用途のみ（動作への影響なし）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ShadowSource {
-    /// 初期化値（まだ一度も観測されていない）
-    #[default]
-    Init,
-    /// 物理 IME キー押下（半角/全角等）— ユーザーの明示的操作
-    PhysicalImeKey,
-    /// config 由来の同期キー（sync_direction）
-    SyncKey,
-    /// `ImeEffect::SetOpen`（Engine の判断による強制設定）
-    SetOpenRequest,
-    /// IME observer ポーリング（バックグラウンド観測）
-    ObserverPoll,
-    /// フォーカス変更直後の高速スナップショット
-    FocusSnapshot,
-    /// panic_reset（強制リセット）
-    PanicReset,
-    /// per-HWND IME キャッシュからの復元（フォーカス切り替え時の即時復元）
-    HwndCache,
-}
-
-/// Layer 2: 観測値から導出した Engine 入力用の IME 状態。
-///
-/// `ImeObservations` の優先度スロットを `resolve_and_clear()` でマージした結果を
-/// 保持する。Engine::on_input() に渡す入力コンテキストの SSOT。
-///
-/// ## `ime_on` の意味
-///
-/// `ime_on` は「OS の現在状態」ではなく「Engine が前提とすべき状態」である。
-/// フォーカス変更直後や Imm32Unavailable アプリでは OS 実態と一時的に乖離するが、
-/// それは設計上許容された誤差（ポーリングで収束する）。
-///
-/// Layer 4 の `Output::last_applied_ime_on`（制御ログ）とも異なる。
-/// 詳細は [`crate::state::belief`] モジュールドキュメントの 4 層モデルを参照。
-///
-/// ## FSM 累積状態との分離
-///
-/// 複数 tick にまたがる累積状態（miss_count, force_on ガード等）は
-/// [`ImeRecoveryState`] に分離されている。
+/// IME ON/OFF 自体は [`crate::state::ime_model::ImeModel`] の `desired_open` が SSOT。
 #[derive(Debug)]
 pub struct ImeBelief {
-    /// Layer 2 の SSOT。複数観測ソースの優先度マージ結果。
-    ///
-    /// 優先度順: sync_key > physical_key > set_open_request > focus_probe > observer_poll。
-    /// `resolve_and_clear()` で確定し、`apply_ime_observations()` 経由で更新される。
-    pub(in crate::state) ime_on: bool,
-    /// `ime_on` を最後に更新した Layer 1 スロット（診断情報）
-    pub(in crate::state) ime_on_source: ShadowSource,
     /// 入力モード（ローマ字 / かな / 不明）
     ///
     /// `hook.rs` がフックコールバック内で直接読み取るため `pub(crate)` とする。
@@ -107,26 +43,6 @@ pub struct ImeBelief {
 }
 
 impl ImeBelief {
-    /// `ime_on` と `ime_on_source` をまとめて更新する。
-    pub(in crate::state) const fn set_ime_on(&mut self, value: bool, source: ShadowSource) {
-        self.ime_on = value;
-        self.ime_on_source = source;
-    }
-
-    // ── pub(crate) 読み取り getter ──
-
-    /// Engine 入力用の IME ON/OFF 優先度マージ値を返す（Layer 2 SSOT）。
-    #[inline]
-    pub(crate) const fn ime_on(&self) -> bool {
-        self.ime_on
-    }
-
-    /// `ime_on` を最後に更新したソースを返す。
-    #[inline]
-    pub(crate) const fn ime_on_source(&self) -> ShadowSource {
-        self.ime_on_source
-    }
-
     /// 入力モードを返す。
     #[inline]
     pub(crate) const fn input_mode(&self) -> InputModeState {
@@ -145,7 +61,3 @@ impl ImeBelief {
         self.prev_conversion_mode
     }
 }
-
-// Phase 3a: ImeRecoveryState は削除。
-// 後継は state/force_guard.rs の ForceGuardSet + DriftMonitor を
-// shadow_model 経由で参照する PlatformState のアクセサ。
