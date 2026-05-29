@@ -203,6 +203,14 @@ pub const TIMER_TSF_PROBE: usize = 105;
 /// Bypass へ強制遷移して保留キーをドレインする。
 pub const TIMER_TSF_GATE: usize = 106;
 
+/// Ctrl+無変換 IME-OFF ミスタイプ救済の先読みタイマー ID。
+///
+/// `Ctrl↓ → I↓ I↑ → 無変換↓` のように Ctrl が他キーを consume 済みで
+/// Ctrl+無変換 が届いたとき、即 IME-OFF せず 50ms 待機する。タイマー満了で
+/// 元の Ctrl 付き event を engine に渡し IME-OFF を発火する。途中で Ctrl↑ が
+/// 来た場合は救済として ctrl=false に書き換えてから engine に渡す。
+pub const TIMER_IME_OFF_RESCUE: usize = 107;
+
 /// ReinjectKey の output guard 解除待ちタイマー ID
 ///
 /// SendInput 直後 50ms は OS キューに出力イベントが残っており、

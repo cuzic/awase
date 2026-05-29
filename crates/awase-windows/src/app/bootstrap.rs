@@ -344,6 +344,7 @@ pub(super) fn initialize_app(
         sync_off_keys,
         platform_state: ps,
         all_keymaps,
+        pending_ime_off_rescue: None,
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
 }

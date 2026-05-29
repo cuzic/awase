@@ -14,6 +14,10 @@ use crate::{Runtime, ShadowSource, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 /// キーイベント処理パイプライン
 pub(super) struct KeyEventPipeline<'a> {
     pub app: &'a mut Runtime,
+    /// true の場合、Ctrl+無変換 IME-OFF 救済窓の defer 判定をスキップする。
+    /// 救済窓内の保留 event を replay する際に true でネスト呼び出しし、
+    /// 再 defer による無限ループを防ぐ。
+    pub skip_rescue_defer: bool,
 }
 
 impl KeyEventPipeline<'_> {
@@ -30,6 +34,42 @@ impl KeyEventPipeline<'_> {
                 event.vk_code, event.event_type
             );
             return CallbackResult::Consumed;
+        }
+
+        // Phase A: 既存の pending IME-OFF rescue を解決する。
+        // 現在 event が Ctrl↑ なら救済（無変換 を ctrl=false で発火）、
+        // それ以外なら救済中止（原 event を発火 → IME-OFF）。
+        // どちらの場合も skip_rescue_defer=true でネスト pipeline 呼び出しし、
+        // 再 defer による無限ループを防ぐ。
+        if let Some(pending_event) = self.app.pending_ime_off_rescue.take() {
+            self.app.executor.platform.timer.kill(crate::TIMER_IME_OFF_RESCUE);
+            let is_ctrl_up = matches!(event.event_type, awase::types::KeyEventType::KeyUp)
+                && crate::vk::is_ctrl_variant(event.vk_code);
+            let dispatched = if is_ctrl_up {
+                let mut rescued = pending_event;
+                rescued.modifier_snapshot.ctrl = false;
+                log::info!(
+                    "[ime-off-rescue] Ctrl↑ within 50ms → 無変換 vk=0x{:02X} を ctrl=false で発火",
+                    rescued.vk_code
+                );
+                rescued
+            } else {
+                log::info!(
+                    "[ime-off-rescue] non-Ctrl↑ event 到着 → 保留 vk=0x{:02X} を IME-OFF として発火",
+                    pending_event.vk_code
+                );
+                pending_event
+            };
+            let inner_result = KeyEventPipeline {
+                app: &mut *self.app,
+                skip_rescue_defer: true,
+            }.run(dispatched);
+            // PassThrough なら reinject + WM_EXECUTE_EFFECTS（フックコールバックと同じ後処理）
+            if matches!(inner_result, CallbackResult::PassThrough) {
+                self.app.executor.enqueue_reinject(dispatched);
+                post_to_main_thread(WM_EXECUTE_EFFECTS);
+            }
+            // 続けて現在 event を通常処理する
         }
 
         self.stage_focus_probe(&mut event);
@@ -73,6 +113,28 @@ impl KeyEventPipeline<'_> {
             pending_drain.map_or("?".to_owned(), |n| n.to_string()),
             gate_active,
         );
+        // Phase B: Ctrl+無変換 IME-OFF ミスタイプ救済の defer 判定。
+        // 「Ctrl↓ → 他キー consume → 無変換↓」の並びなら 50ms 救済窓を設けて defer する。
+        // 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは ctrl_consumed_since_down=false なので
+        // ここを通過せず engine が即 IME-OFF を発火する。
+        if !self.skip_rescue_defer
+            && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+            && event.modifier_snapshot.ctrl
+            && hook::ctrl_consumed_since_down()
+            && self.app.engine.matches_ime_off(&ctx, &event)
+        {
+            log::debug!(
+                "[ime-off-rescue] vk=0x{:02X} を 50ms 保留 (Ctrl consumed)",
+                event.vk_code
+            );
+            self.app.pending_ime_off_rescue = Some(event);
+            self.app.executor.platform.timer.set(
+                crate::TIMER_IME_OFF_RESCUE,
+                std::time::Duration::from_millis(50),
+            );
+            return CallbackResult::Consumed;
+        }
+
         let decision = self.app.engine.on_input(event, &ctx);
 
         self.stage_post_decision(&decision, &event);

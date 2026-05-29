@@ -255,7 +255,7 @@ fn check_keyboard_layout_on_change() {
 
 /// フックコールバックの本体。`KeyEventPipeline` に処理を委譲する。
 fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
-    key_pipeline::KeyEventPipeline { app }.run(event)
+    key_pipeline::KeyEventPipeline { app, skip_rescue_defer: false }.run(event)
 }
 
 // ── メッセージループ ──
