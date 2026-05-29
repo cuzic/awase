@@ -213,5 +213,19 @@ impl WindowsPlatform {
     fn build_ime_control_view_latch(&self) -> crate::state::ImeControlView<'_> {
         self.build_ime_control_view(None)
     }
+
+    /// `applied` を明示的に渡す `apply_ime_open` 実装。
+    ///
+    /// executor が `ImeControlView` の `shadow_on` / `applied_at_ms` を
+    /// `applied_snapshot` から直接提供するために使う。
+    /// `None` を渡すと `build_ime_control_view_latch()` のフォールバックと同じ動作になる。
+    pub(crate) fn apply_ime_open_with_applied(
+        &mut self,
+        open: bool,
+        applied: Option<(bool, u64)>,
+    ) -> awase::platform::ImeOpenOutcome {
+        let view = self.build_ime_control_view(applied);
+        crate::ime_controller::CONTROLLER.apply(open, &view)
+    }
 }
 

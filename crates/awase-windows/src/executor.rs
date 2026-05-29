@@ -55,6 +55,12 @@ pub struct DecisionExecutor {
     /// sync path の apply outcome を `Runtime::flush_pending_apply_events` で
     /// dispatch するための pending record。詳細は `PendingApplyEvent` 参照。
     pending_apply_events: Vec<crate::state::ime_event::PendingApplyEvent>,
+    /// executor が最後に apply した IME 状態スナップショット (value, timestamp_ms)。
+    ///
+    /// `ImeModel` 非アクセスの executor が「自分が知っている apply 状態」を保持する。
+    /// `send_engine_state_ime_key` / `send_eager_tsf_warmup` に明示的に渡すことで
+    /// `Output::composition` への hidden 読み込みを排除する。
+    applied_snapshot: Option<(bool, u64)>,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -73,6 +79,7 @@ impl DecisionExecutor {
             pending_warmup_on_keyup: false,
             guard_held: None,
             pending_apply_events: Vec::new(),
+            applied_snapshot: None,
         }
     }
 
@@ -685,7 +692,7 @@ impl DecisionExecutor {
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         let (imm_first, shadow_on, applied_at_ms) = {
-            let view = self.platform.build_ime_control_view(None);
+            let view = self.platform.build_ime_control_view(self.applied_snapshot);
             (
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view),
                 view.control.shadow_on,
@@ -700,18 +707,18 @@ impl DecisionExecutor {
             // が解除されて drain がキックされる。
             //
             // 同一エフェクトバッチ内で直後に処理される UiEffect::EngineStateChanged →
-            // send_engine_state_ime_key が last_applied_ime_on を見て VK_F4/VK_F3 を
-            // 送信するかを決める。async 完了前は last_applied が旧値のままなので
+            // send_engine_state_ime_key が applied_snapshot を見て VK_F4/VK_F3 を
+            // 送信するかを決める。async 完了前は applied_snapshot が旧値のままなので
             // 「不整合あり→モードキー送信」と判断されてしまう。
             // LINE/Qt 等の ImmCross アプリはこの VK_F4 Up に対して VK_F3 Down を
             // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
-            // → 楽観的に last_applied を更新して send_engine_state_ime_key をスキップさせる。
-            self.platform.output.set_ime_apply_latch(open);
+            // → 楽観的に applied_snapshot を更新して send_engine_state_ime_key をスキップさせる。
+            self.applied_snapshot = Some((open, 0));
             // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
             // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
-            // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは latch 更新のみ。
+            // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
             log::debug!(
-                "[dispatch-ime] ImmCross async: optimistic last_applied={open} \
+                "[dispatch-ime] ImmCross async: optimistic applied_snapshot={open} \
                  (suppress send_engine_state_ime_key)"
             );
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
@@ -761,19 +768,20 @@ impl DecisionExecutor {
             // EngineIntent (Ctrl+無変換 等、ユーザーの明示的操作) かつ ImmCross が使えない
             // プロファイル (Imm32Unavailable: Chrome/Edge 等、TsfNative: LINE XAML 入力等) の場合、
             // shadow state が desync していても VK_KANJI / F14 を確実に送信するため
-            // latch を !open に強制する。
+            // apply_context を !open に override する。
             //
             // 背景: フォーカス変更直後や awase 起動時に実 IME 状態が unknown になり、
-            // last_applied_ime_on=false のまま IME が ON になっていることがある。
+            // applied_snapshot=None または false のまま IME が ON になっていることがある。
             // この状態で KanjiToggle/GjiDirect が shadow=desired と判断してスキップし、
             // Ctrl+無変換 が効かなくなる。
             // ユーザーの明示的操作では shadow desync を無視して必ず送信することで対処する。
             //
             // TsfNative (LINE の Windows.UI.Input.InputSite.WindowClass 等) でも
             // KanjiToggle がフォールバックとして使われるため同様の desync 対策が必要。
-            // GJI が起動している場合は GjiDirectStrategy (F13/F14) が選ばれるため latch override 不要。
+            // GJI が起動している場合は GjiDirectStrategy (F13/F14) が選ばれるため override 不要。
             // F14 は shadow に関わらず常に送信される (べき等)。F13 も GjiDirectStrategy が自前で
             // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
+            let mut apply_context = self.applied_snapshot;
             if origin == EffectOrigin::EngineIntent {
                 let profile = self.platform.focus.current_app_profile();
                 if !profile.can_use_imm32_cross_process()
@@ -798,44 +806,52 @@ impl DecisionExecutor {
                     };
                     if skip_override {
                         log::debug!(
-                            "[dispatch-ime] KanjiToggle (profile={:?}): skip latch force \
+                            "[dispatch-ime] KanjiToggle (profile={:?}): skip override \
                              (confirmed dir={open}, applied {}ms ago)",
                             profile,
                             now_ms.saturating_sub(applied_at_ms)
                         );
                     } else {
-                        self.platform.output.set_ime_apply_latch(!open);
+                        // override: apply_ime_open_with_applied に現在 state=!open と見せて
+                        // KanjiToggle が必ず VK_KANJI を送信するようにする
+                        apply_context = Some((!open, 0));
                         log::debug!(
-                            "[dispatch-ime] KanjiToggle (profile={:?}): override latch={} → force VK_KANJI",
+                            "[dispatch-ime] KanjiToggle (profile={:?}): override context={} → force VK_KANJI",
                             profile, !open
                         );
                     }
                 }
             }
-            let platform: &mut dyn PlatformRuntime = &mut self.platform;
-            let outcome = platform.apply_ime_open(open);
+            let outcome = self.platform.apply_ime_open_with_applied(open, apply_context);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 log::warn!("apply_ime_open({open}) failed");
             }
+            let platform: &mut dyn PlatformRuntime = &mut self.platform;
             platform.post_ime_refresh();
             Some((open, outcome))
         }
     }
 
-    /// latch 更新 + open==true の cold/warmup 処理。
+    /// `applied_snapshot` + latch 更新・open==true の cold/warmup 処理。
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
-        // 成功した場合は last_applied を更新する（last_applied_ime_on → send_eager_tsf_warmup ガードに使用）。
-        // Applied 後に last_applied を更新しないと shadow_on が旧値 true のままになり、
+        // 成功した場合は applied_snapshot を更新する。
+        // Applied 後に更新しないと shadow_on が旧値 true のままになり、
         // IME OFF 直後の Ctrl↑ で VK_DBE_HIRAGANA が送信されて IME が ON に戻るバグが発生する。
+        // latch (CompositionState.applied_open) も合わせて更新: Output 経由の非 executor
+        // 呼び出し元 (vk_send, cold_warmup) が last_applied_ime_on() で読む。
         match outcome {
             ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
+                let ts = crate::hook::current_tick_ms();
+                self.applied_snapshot = Some((open, ts));
                 self.platform.output.set_ime_apply_latch(open);
             }
             ImeOpenOutcome::Failed => {
-                // ImmCross async パスで楽観的に set_ime_apply_latch(open) した場合のロールバック。
+                // ImmCross async パスで楽観的に applied_snapshot = Some((open, 0)) した場合のロールバック。
                 // Failed なら実際の IME 状態は !open のまま。
+                let ts = crate::hook::current_tick_ms();
+                self.applied_snapshot = Some((!open, ts));
                 self.platform.output.set_ime_apply_latch(!open);
             }
         }
