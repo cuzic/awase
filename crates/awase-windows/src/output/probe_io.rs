@@ -6,6 +6,7 @@
 use crate::output::{Output, VkSequence, WarmupOutcome};
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
+use crate::tsf::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
 use awase::types::VkCode;
 
@@ -23,7 +24,7 @@ pub(crate) trait ProbeIo {
     /// Chrome バッチ送信を実行する。
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
     /// deferred VKs を送信する。`use_tsf_marker` = true → `TSF_MARKER`、false → `INJECTED_MARKER`。
-    fn send_deferred_vks(&self, vks: &[(VkCode, bool)], use_tsf_marker: bool);
+    fn send_deferred_vks(&self, vks: &[DeferredVk], use_tsf_marker: bool);
     /// composition を warm にマークする。
     fn mark_warm(&self);
     /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、`(namechange_baseline, sent_ms)` を返す。
@@ -55,8 +56,9 @@ impl ProbeIo for Output {
         Output::send_romaji_batch_immediate(romaji, chars);
     }
 
-    fn send_deferred_vks(&self, vks: &[(VkCode, bool)], use_tsf_marker: bool) {
-        Output::send_deferred_probe_vks_from(vks, use_tsf_marker);
+    fn send_deferred_vks(&self, vks: &[DeferredVk], use_tsf_marker: bool) {
+        let pairs: Vec<(VkCode, bool)> = vks.iter().map(|d| (d.vk, d.needs_shift)).collect();
+        Output::send_deferred_probe_vks_from(&pairs, use_tsf_marker);
     }
 
     fn mark_warm(&self) {
@@ -271,7 +273,7 @@ mod tests {
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
             self.transmit_chrome_called.set(true);
         }
-        fn send_deferred_vks(&self, _vks: &[(VkCode, bool)], _use_tsf_marker: bool) {
+        fn send_deferred_vks(&self, _vks: &[DeferredVk], _use_tsf_marker: bool) {
             self.deferred_vks_called.set(true);
         }
         fn mark_warm(&self) {

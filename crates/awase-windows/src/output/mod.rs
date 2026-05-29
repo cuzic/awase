@@ -22,7 +22,7 @@ pub(crate) use resolve::ascii_to_vk as resolve_ascii_to_vk;
 /// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
 pub(crate) use vk_send::TsfSendPipeline;
 
-pub(crate) use crate::tsf::probe_fsm::TsfProbeMachine;
+pub(crate) use crate::tsf::probe_fsm::{DeferredVk, TsfProbeMachine};
 
 /// VK コード＋シフトフラグのペアを要素とする VK シーケンス型。
 pub(crate) type VkSequence = Vec<(VkCode, bool)>;
@@ -412,7 +412,11 @@ impl Output {
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_if_probe_in_flight(&self, romaji: &str) -> bool {
         if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
-            let vks: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
+            let vks: Vec<DeferredVk> = romaji
+                .chars()
+                .filter_map(ascii_to_vk)
+                .map(|(vk, needs_shift)| DeferredVk { vk, needs_shift })
+                .collect();
             log::debug!("[tsf] probe in flight → deferred {} VK(s) for {:?}", vks.len(), romaji);
             machine.extend_deferred(vks);
             true

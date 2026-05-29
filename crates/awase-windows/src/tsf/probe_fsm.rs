@@ -30,7 +30,12 @@ use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
 use awase::types::VkCode;
 
-type VkSequence = Vec<(VkCode, bool)>;
+/// probe 進行中に蓄積する後続 VK。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeferredVk {
+    pub(crate) vk: VkCode,
+    pub(crate) needs_shift: bool,
+}
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 
@@ -134,7 +139,7 @@ pub(crate) enum ProbeAction {
         prepend_f2_warmup: bool,
         used_eager_path: bool,
         romaji: String,
-        deferred_vks: VkSequence,
+        deferred_vks: Vec<DeferredVk>,
         target: TransmitTarget,
     },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
@@ -153,7 +158,7 @@ pub(crate) struct TsfProbeMachine {
     /// ログ相関番号
     cold_seq: u32,
     /// probe 進行中に蓄積された後続 VK
-    deferred_vks: VkSequence,
+    deferred_vks: Vec<DeferredVk>,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`
     _guard: OutputActiveGuard,
     /// 送信コンテキスト（`enter_transmit_*` で `ProbeAction` に畳み込む）
@@ -234,11 +239,11 @@ impl TsfProbeMachine {
 
     /// probe 進行中に後続 VK を 1 つ蓄積する。
     pub(crate) fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        self.deferred_vks.push((vk, needs_shift));
+        self.deferred_vks.push(DeferredVk { vk, needs_shift });
     }
 
     /// probe 進行中に後続 VK を複数蓄積する。
-    pub(crate) fn extend_deferred(&mut self, vks: impl IntoIterator<Item = (VkCode, bool)>) {
+    pub(crate) fn extend_deferred(&mut self, vks: impl IntoIterator<Item = DeferredVk>) {
         self.deferred_vks.extend(vks);
     }
 
@@ -556,7 +561,11 @@ mod tests {
     #[test]
     fn extend_deferred_appends_multiple_vks() {
         let mut machine = make_gji_machine();
-        machine.extend_deferred(vec![(VkCode(0x41), false), (VkCode(0x42), true), (VkCode(0x43), false)]);
+        machine.extend_deferred(vec![
+            DeferredVk { vk: VkCode(0x41), needs_shift: false },
+            DeferredVk { vk: VkCode(0x42), needs_shift: true },
+            DeferredVk { vk: VkCode(0x43), needs_shift: false },
+        ]);
         // panic しないことを確認
     }
 }
