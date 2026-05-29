@@ -19,7 +19,8 @@
 //! - `tick()` / `apply_*` は副作用なし。状態のみ更新し [`ProbeAction`] を返す。
 //! - SendInput / mark_warm / mark_cold / RAW_TSF_LITERAL 操作は dispatcher 側で実行する
 //!   (`platform.rs::dispatch_probe_actions`)。
-//! - `romaji` / `deferred_vks` は [`ProbeAction::Transmit`] 生成時に `std::mem::take` で move する
+//! - `romaji` / `deferred_vks` は `SendState` として各 phase variant に埋め込まれており、
+//!   `ProbeAction::Transmit` 生成時に `take_current_send_for_transmit` で move する
 //!   （clone コストを避ける）。
 //! - 環境観測（`gji_last_io_ms`, `gji_monitor_healthy`）は `TsfReadinessProbe::check_outcome`
 //!   内で完結させ、`tick()` は受け取った [`GjiProbeOutcome`] のみを参照する。
@@ -64,7 +65,7 @@ struct ProbeContext {
 enum NextStep {
     /// 現フェーズで継続待機（actions なし）
     Wait,
-    /// `WaitingForCallback { probe_settled: Some(_) }` へ遷移し `SendFreshF2` を emit
+    /// `WaitingForCallback(FreshF2Sent { .. })` へ遷移し `SendFreshF2` を emit
     EmitSendFreshF2 { probe_settled: bool },
     /// `enter_transmit_tsf()` を呼ぶ
     TransmitTsf,
@@ -88,6 +89,30 @@ pub(crate) enum ProbeKind {
     Chrome,
 }
 
+/// multi-tick にわたって蓄積する送信データ。
+///
+/// `ProbePhase` の各 variant に埋め込まれ、phase が単独所有する。
+/// `Clone` は derive しない（所有権移動のみ許可）。
+#[derive(Debug, Default)]
+pub(crate) struct SendState {
+    pub(crate) romaji: String,
+    pub(crate) deferred_vks: Vec<DeferredVk>,
+}
+
+impl SendState {
+    fn new(romaji: &str) -> Self {
+        Self { romaji: romaji.to_string(), deferred_vks: Vec::new() }
+    }
+}
+
+/// [`ProbePhase::WaitingForCallback`] の内部状態。
+pub(crate) enum WaitingFor {
+    /// `apply_fresh_f2_sent` 待ち（SendFreshF2 パス）。
+    FreshF2Sent { probe_settled: bool, send: SendState },
+    /// `apply_transmit_done` 待ち（Transmit(Tsf) パス）。
+    TransmitDone,
+}
+
 /// プローブ FSM の現在フェーズ。
 pub(crate) enum ProbePhase {
     /// GJI 静止待ち / Chrome F2 後の静止待ち（`kind` で区別）。
@@ -95,24 +120,24 @@ pub(crate) enum ProbePhase {
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         kind: ProbeKind,
+        send: SendState,
     },
     /// dispatcher コールバック（`apply_fresh_f2_sent` / `apply_transmit_done`）待ち。
-    ///
-    /// `probe_settled = Some(_)` → `apply_fresh_f2_sent` 待ち（SendFreshF2 パス）。
-    /// `probe_settled = None`    → `apply_transmit_done` 待ち（Transmit(Tsf) パス）。
-    WaitingForCallback { probe_settled: Option<bool> },
+    WaitingForCallback(WaitingFor),
     /// OBJ_NAMECHANGE 待ち（GjiInitial probe + needs_settle_check の次フェーズ）。
     NameChangeWait {
         nc_baseline: NamechangeBaseline,
         deadline_ms: u64,
         fresh_f2_ms: u64,
         probe_settled: bool,
+        send: SendState,
     },
     /// raw TSF literal 検出待ち（TSF 送信後の verify フェーズ）。
     LiteralDetect {
         detector: LiteralDetector,
         ze_bs_count: usize,
         deadline_ms: u64,
+        send: SendState,
     },
 }
 
@@ -153,12 +178,8 @@ pub(crate) enum ProbeAction {
 /// `pending_tsf` (`RefCell<Option<TsfProbeMachine>>`) に格納し、
 /// `TIMER_TSF_PROBE` ハンドラが `tick()` で 1 ステップ進める。
 pub(crate) struct TsfProbeMachine {
-    /// 送信するローマ字（`Transmit` 時に `std::mem::take`）
-    romaji: String,
     /// ログ相関番号
     cold_seq: u32,
-    /// probe 進行中に蓄積された後続 VK
-    deferred_vks: Vec<DeferredVk>,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`
     _guard: OutputActiveGuard,
     /// 送信コンテキスト（`enter_transmit_*` で `ProbeAction` に畳み込む）
@@ -182,15 +203,14 @@ impl TsfProbeMachine {
         guard: OutputActiveGuard,
     ) -> Self {
         Self {
-            romaji: romaji.to_string(),
             cold_seq,
-            deferred_vks: Vec::new(),
             _guard: guard,
             ctx: ProbeContext { prepend_f2_warmup, used_eager_path },
             phase: ProbePhase::Probing {
                 probe,
                 total_max_ms,
                 kind: ProbeKind::GjiInitial { needs_settle_check, cold_reason },
+                send: SendState::new(romaji),
             },
         }
     }
@@ -204,12 +224,15 @@ impl TsfProbeMachine {
         guard: OutputActiveGuard,
     ) -> Self {
         Self {
-            romaji: romaji.to_string(),
             cold_seq,
-            deferred_vks: Vec::new(),
             _guard: guard,
             ctx: ProbeContext { prepend_f2_warmup: false, used_eager_path: false },
-            phase: ProbePhase::Probing { probe, total_max_ms, kind: ProbeKind::Chrome },
+            phase: ProbePhase::Probing {
+                probe,
+                total_max_ms,
+                kind: ProbeKind::Chrome,
+                send: SendState::new(romaji),
+            },
         }
     }
 
@@ -225,12 +248,15 @@ impl TsfProbeMachine {
         guard: OutputActiveGuard,
     ) -> Self {
         Self {
-            romaji: romaji.to_string(),
             cold_seq,
-            deferred_vks: Vec::new(),
             _guard: guard,
             ctx: ProbeContext { prepend_f2_warmup: false, used_eager_path: false },
-            phase: ProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms },
+            phase: ProbePhase::LiteralDetect {
+                detector,
+                ze_bs_count,
+                deadline_ms,
+                send: SendState::new(romaji),
+            },
         }
     }
 
@@ -239,12 +265,56 @@ impl TsfProbeMachine {
 
     /// probe 進行中に後続 VK を 1 つ蓄積する。
     pub(crate) fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        self.deferred_vks.push(DeferredVk { vk, needs_shift });
+        if let Some(send) = self.current_send_mut() {
+            send.deferred_vks.push(DeferredVk { vk, needs_shift });
+        } else {
+            log::warn!(
+                "[tsf-probe] cold={} push_deferred dropped: phase has no SendState (label={})",
+                self.cold_seq,
+                self.phase_label_internal()
+            );
+        }
     }
 
     /// probe 進行中に後続 VK を複数蓄積する。
     pub(crate) fn extend_deferred(&mut self, vks: impl IntoIterator<Item = DeferredVk>) {
-        self.deferred_vks.extend(vks);
+        let collected: Vec<DeferredVk> = vks.into_iter().collect();
+        if let Some(send) = self.current_send_mut() {
+            send.deferred_vks.extend(collected);
+        } else {
+            log::warn!(
+                "[tsf-probe] cold={} extend_deferred dropped {} VK(s): phase has no SendState (label={})",
+                self.cold_seq,
+                collected.len(),
+                self.phase_label_internal()
+            );
+        }
+    }
+
+    /// 現フェーズの `SendState` への可変参照を返す。`TransmitDone` フェーズは `None`。
+    fn current_send_mut(&mut self) -> Option<&mut SendState> {
+        match &mut self.phase {
+            ProbePhase::Probing { send, .. } => Some(send),
+            ProbePhase::NameChangeWait { send, .. } => Some(send),
+            ProbePhase::LiteralDetect { send, .. } => Some(send),
+            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
+            ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
+        }
+    }
+
+    /// フェーズ名文字列（内部用）。
+    fn phase_label_internal(&self) -> &'static str {
+        match &self.phase {
+            ProbePhase::Probing { .. } => "Probing",
+            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { .. }) => {
+                "WaitingForCallback(FreshF2Sent)"
+            }
+            ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => {
+                "WaitingForCallback(TransmitDone)"
+            }
+            ProbePhase::NameChangeWait { .. } => "NameChangeWait",
+            ProbePhase::LiteralDetect { .. } => "LiteralDetect",
+        }
     }
 
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。フェーズを 1 ステップ進める。
@@ -259,31 +329,38 @@ impl TsfProbeMachine {
     ///
     /// `inspect_phase` で副作用なしに次の遷移先を決定し、
     /// その後 `&self` を解放してから状態変化を適用する。
-    /// `std::mem::replace` + 全フィールド書き戻しパターンを排除している。
     pub(crate) fn tick_with_clock<C: Clock>(&mut self, clock: &C) -> Vec<ProbeAction> {
         match self.inspect_phase(clock) {
             NextStep::Wait => vec![],
             NextStep::EmitSendFreshF2 { probe_settled } => {
-                self.phase = ProbePhase::WaitingForCallback { probe_settled: Some(probe_settled) };
+                let send = self.take_send_for_fresh_f2();
+                self.phase =
+                    ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { probe_settled, send });
                 vec![ProbeAction::SendFreshF2 { cold_seq: self.cold_seq, probe_settled }]
             }
             NextStep::TransmitTsf => self.enter_transmit_tsf(),
             NextStep::TransmitChrome => self.enter_transmit_chrome(),
             NextStep::StartSecondaryProbe { fresh_f2_ms } => {
+                let send = self.take_send_for_secondary_probe();
                 let probe = TsfReadinessProbe::new(fresh_f2_ms, self.cold_seq, 0);
                 self.phase = ProbePhase::Probing {
                     probe,
                     total_max_ms: crate::tuning::GJI_POST_NAMECHANGE_MS,
                     kind: ProbeKind::GjiSecondary,
+                    send,
                 };
                 vec![]
             }
             NextStep::LiteralDone => vec![ProbeAction::Done],
             NextStep::LiteralSuspected { ze_bs_count } => {
-                let romaji = std::mem::take(&mut self.romaji);
+                let romaji = self.take_romaji_from_literal_detect();
                 // ※「consecutive_count」のチェック (false-positive 抑制) は dispatcher 側で行う。
                 vec![
-                    ProbeAction::RawTsfLiteralRecovery { cold_seq: self.cold_seq, backs: ze_bs_count, romaji },
+                    ProbeAction::RawTsfLiteralRecovery {
+                        cold_seq: self.cold_seq,
+                        backs: ze_bs_count,
+                        romaji,
+                    },
                     ProbeAction::Done,
                 ]
             }
@@ -293,7 +370,7 @@ impl TsfProbeMachine {
     /// 現フェーズを検査して次の遷移先を返す。副作用なし（`&self` のみ使用）。
     fn inspect_phase<C: Clock>(&self, clock: &C) -> NextStep {
         match &self.phase {
-            ProbePhase::Probing { probe, total_max_ms, kind } => {
+            ProbePhase::Probing { probe, total_max_ms, kind, .. } => {
                 let Some(outcome) = probe.check_outcome(*total_max_ms) else {
                     return NextStep::Wait;
                 };
@@ -328,9 +405,9 @@ impl TsfProbeMachine {
                 }
             }
 
-            ProbePhase::WaitingForCallback { .. } => NextStep::Wait,
+            ProbePhase::WaitingForCallback(_) => NextStep::Wait,
 
-            ProbePhase::NameChangeWait { nc_baseline, deadline_ms, fresh_f2_ms, probe_settled } => {
+            ProbePhase::NameChangeWait { nc_baseline, deadline_ms, fresh_f2_ms, probe_settled, .. } => {
                 let now = clock.now_ms();
                 let nc_fired = nc_baseline.fired();
                 let timed_out = now >= *deadline_ms;
@@ -353,7 +430,7 @@ impl TsfProbeMachine {
                 }
             }
 
-            ProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms } => {
+            ProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms, .. } => {
                 use crate::tsf::probe::DetectionResult;
                 let Some(detection) = detector.check_now(*deadline_ms) else {
                     return NextStep::Wait;
@@ -390,23 +467,28 @@ impl TsfProbeMachine {
     /// テスト専用: 現在フェーズの文字列ラベルを返す。
     #[cfg(test)]
     pub(crate) fn phase_label(&self) -> &'static str {
-        match &self.phase {
-            ProbePhase::Probing { .. } => "Probing",
-            ProbePhase::WaitingForCallback { .. } => "WaitingForCallback",
-            ProbePhase::NameChangeWait { .. } => "NameChangeWait",
-            ProbePhase::LiteralDetect { .. } => "LiteralDetect",
-        }
+        self.phase_label_internal()
     }
 
     /// dispatcher が `SendFreshF2` を実行した後に呼ぶ。
-    /// `WaitingForCallback { probe_settled: Some(_) }` → `NameChangeWait` へ遷移する。
+    /// `WaitingForCallback(FreshF2Sent { .. })` → `NameChangeWait` へ遷移する。
     pub(crate) fn apply_fresh_f2_sent(&mut self, nc_baseline: NamechangeBaseline, fresh_f2_ms: u64) {
-        let ProbePhase::WaitingForCallback { probe_settled: Some(probe_settled) } = self.phase else {
-            log::warn!(
-                "[tsf-probe] cold={} apply_fresh_f2_sent: unexpected phase",
-                self.cold_seq
-            );
-            return;
+        let phase = std::mem::replace(
+            &mut self.phase,
+            ProbePhase::WaitingForCallback(WaitingFor::TransmitDone),
+        );
+        let (probe_settled, send) = match phase {
+            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { probe_settled, send }) => {
+                (probe_settled, send)
+            }
+            other => {
+                log::warn!(
+                    "[tsf-probe] cold={} apply_fresh_f2_sent: unexpected phase",
+                    self.cold_seq
+                );
+                self.phase = other;
+                return;
+            }
         };
         let deadline_ms = fresh_f2_ms + crate::tuning::SETTLE_TIMEOUT_MS;
         self.phase = ProbePhase::NameChangeWait {
@@ -414,6 +496,7 @@ impl TsfProbeMachine {
             deadline_ms,
             fresh_f2_ms,
             probe_settled,
+            send,
         };
     }
 
@@ -425,13 +508,19 @@ impl TsfProbeMachine {
     /// `false` を返した場合は `LiteralDetect` フェーズへ遷移し、タイマーを継続する。
     pub(crate) fn apply_transmit_done(
         &mut self,
+        romaji: String,
         ze_bs_count: usize,
         detector: Option<LiteralDetector>,
     ) -> bool {
         if let Some(detector) = detector {
             let deadline_ms =
                 crate::hook::current_tick_ms() + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
-            self.phase = ProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms };
+            self.phase = ProbePhase::LiteralDetect {
+                detector,
+                ze_bs_count,
+                deadline_ms,
+                send: SendState { romaji, deferred_vks: Vec::new() },
+            };
             false
         } else {
             true
@@ -439,31 +528,93 @@ impl TsfProbeMachine {
     }
 
     fn enter_transmit_tsf(&mut self) -> Vec<ProbeAction> {
-        let romaji = std::mem::take(&mut self.romaji);
-        let deferred_vks = std::mem::take(&mut self.deferred_vks);
-        self.phase = ProbePhase::WaitingForCallback { probe_settled: None };
+        let send = self.take_current_send_for_transmit();
+        let cold_seq = self.cold_seq;
+        let ctx = self.ctx;
+        self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
         vec![ProbeAction::Transmit {
-            cold_seq: self.cold_seq,
-            prepend_f2_warmup: self.ctx.prepend_f2_warmup,
-            used_eager_path: self.ctx.used_eager_path,
-            romaji,
-            deferred_vks,
+            cold_seq,
+            prepend_f2_warmup: ctx.prepend_f2_warmup,
+            used_eager_path: ctx.used_eager_path,
+            romaji: send.romaji,
+            deferred_vks: send.deferred_vks,
             target: TransmitTarget::Tsf,
         }]
     }
 
     fn enter_transmit_chrome(&mut self) -> Vec<ProbeAction> {
-        let romaji = std::mem::take(&mut self.romaji);
-        let deferred_vks = std::mem::take(&mut self.deferred_vks);
-        self.phase = ProbePhase::WaitingForCallback { probe_settled: None };
+        let send = self.take_current_send_for_transmit();
+        let cold_seq = self.cold_seq;
+        self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
         vec![ProbeAction::Transmit {
-            cold_seq: self.cold_seq,
+            cold_seq,
             prepend_f2_warmup: false,
             used_eager_path: false,
-            romaji,
-            deferred_vks,
+            romaji: send.romaji,
+            deferred_vks: send.deferred_vks,
             target: TransmitTarget::Chrome,
         }]
+    }
+
+    /// `Transmit` action 生成時に現フェーズから `SendState` を取り出す。
+    fn take_current_send_for_transmit(&mut self) -> SendState {
+        match &mut self.phase {
+            ProbePhase::Probing { send, .. } => std::mem::take(send),
+            ProbePhase::NameChangeWait { send, .. } => std::mem::take(send),
+            _ => {
+                log::warn!(
+                    "[tsf-probe] cold={} enter_transmit_* called from unexpected phase {}",
+                    self.cold_seq,
+                    self.phase_label_internal()
+                );
+                SendState::default()
+            }
+        }
+    }
+
+    /// `EmitSendFreshF2` 遷移時に `Probing` フェーズから `SendState` を取り出す。
+    fn take_send_for_fresh_f2(&mut self) -> SendState {
+        match &mut self.phase {
+            ProbePhase::Probing { send, .. } => std::mem::take(send),
+            _ => {
+                log::warn!(
+                    "[tsf-probe] cold={} take_send_for_fresh_f2 unexpected phase {}",
+                    self.cold_seq,
+                    self.phase_label_internal()
+                );
+                SendState::default()
+            }
+        }
+    }
+
+    /// `StartSecondaryProbe` 遷移時に `NameChangeWait` フェーズから `SendState` を取り出す。
+    fn take_send_for_secondary_probe(&mut self) -> SendState {
+        match &mut self.phase {
+            ProbePhase::NameChangeWait { send, .. } => std::mem::take(send),
+            _ => {
+                log::warn!(
+                    "[tsf-probe] cold={} take_send_for_secondary_probe unexpected phase {}",
+                    self.cold_seq,
+                    self.phase_label_internal()
+                );
+                SendState::default()
+            }
+        }
+    }
+
+    /// `LiteralSuspected` 遷移時に `LiteralDetect` フェーズから `romaji` を取り出す。
+    fn take_romaji_from_literal_detect(&mut self) -> String {
+        match &mut self.phase {
+            ProbePhase::LiteralDetect { send, .. } => std::mem::take(&mut send.romaji),
+            _ => {
+                log::warn!(
+                    "[tsf-probe] cold={} take_romaji_from_literal_detect unexpected phase {}",
+                    self.cold_seq,
+                    self.phase_label_internal()
+                );
+                String::new()
+            }
+        }
     }
 }
 
@@ -494,6 +645,7 @@ mod tests {
             deadline_ms,
             fresh_f2_ms: 0,
             probe_settled,
+            send: SendState::default(),
         }
     }
 
@@ -540,11 +692,11 @@ mod tests {
     #[test]
     fn waiting_for_callback_is_no_op() {
         let mut machine = make_gji_machine();
-        machine.force_phase_for_test(ProbePhase::WaitingForCallback { probe_settled: None });
+        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::TransmitDone));
 
         let actions = machine.tick_with_clock(&MockClock(0));
         assert!(actions.is_empty(), "WaitingForCallback は空 Vec を返すべき");
-        assert_eq!(machine.phase_label(), "WaitingForCallback");
+        assert_eq!(machine.phase_label(), "WaitingForCallback(TransmitDone)");
     }
 
     // ── push_deferred / extend_deferred テスト ───────────────────────────────
@@ -567,5 +719,24 @@ mod tests {
             DeferredVk { vk: VkCode(0x43), needs_shift: false },
         ]);
         // panic しないことを確認
+    }
+
+    // ── regression: literal_suspected 経路で romaji が保持されるか ────────────
+
+    #[test]
+    fn literal_suspected_carries_romaji_through_transmit_to_recovery() {
+        let guard = OutputActiveGuard::noop_for_test();
+        let detector = crate::tsf::probe::LiteralDetector::new();
+        let mut machine = TsfProbeMachine::new_literal_detect(
+            "a", 0, detector, 1, 0, guard,
+        );
+        let actions = machine.tick_with_clock(&MockClock(1000));
+        match &actions[..] {
+            [ProbeAction::RawTsfLiteralRecovery { romaji, backs, .. }, ProbeAction::Done] => {
+                assert_eq!(romaji, "a", "literal suspected 経路で romaji が空になってはいけない");
+                assert_eq!(*backs, 1);
+            }
+            other => panic!("unexpected actions: {other:?}"),
+        }
     }
 }

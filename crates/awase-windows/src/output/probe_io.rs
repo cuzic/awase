@@ -174,7 +174,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, true);
                         io.mark_warm();
-                        if machine.apply_transmit_done(ze_bs_count, detector) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector) {
                             return true;
                         }
                     }
@@ -188,7 +188,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, false);
                         io.mark_warm();
-                        if machine.apply_transmit_done(ze_bs_count, detector) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector) {
                             return true;
                         }
                     }
