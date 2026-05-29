@@ -83,16 +83,15 @@ impl ImeOpenStrategy for GjiDirectStrategy {
             log::debug!("[apply-ime] GJI direct: F13 (IME ON)");
             unsafe { crate::ime::post_gji_ime_on() };
         } else {
-            // F14 は GJI の DirectInput 状態でパススルーされ idempotent なため、
-            // shadow チェックなしで常に送信する。VK_KANJI と異なりトグルではないため
-            // shadow desync の影響を受けない。
-            // 候補表示中は F14 単独だと IME に届かないため Ctrl+Enter で確定してから送る。
-            let commit_first = view.observed.candidate_visible;
+            // F14 は GJI config で Conversion\tF14\tIMEOff が登録されているため、
+            // 候補ウィンドウ表示中でも直接 F14 を送れば IME OFF になる。
+            // Ctrl+Enter で候補確定→F14 の2段構えは不要かつ Chrome フォーム送信を
+            // 引き起こす副作用があるため送らない。
             log::debug!(
-                "[apply-ime] GJI direct: F14 (IME OFF, candidate={} commit_first={})",
-                view.observed.candidate_visible, commit_first
+                "[apply-ime] GJI direct: F14 (IME OFF, candidate={})",
+                view.observed.candidate_visible,
             );
-            unsafe { crate::ime::post_gji_ime_off(commit_first) };
+            unsafe { crate::ime::post_gji_ime_off(false) };
         }
         ImeOpenOutcome::Applied
     }
@@ -131,16 +130,16 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
             );
             ImeOpenOutcome::AlreadyMatched
         } else {
-            // 候補表示中は VK_KANJI 単独だと IME に届かず（候補窓に吸われる）IME OFF に
-            // 失敗するため、Ctrl+Enter で候補確定してから VK_KANJI を送る。プロファイル
-            // 種別に依存しない（Standard/wezterm でも IMC fail → 本フォールバックは到達し得る）。
-            let commit_first = view.observed.candidate_visible;
+            // 候補表示中は VK_KANJI が候補窓に吸われて IME OFF に失敗する可能性があるが、
+            // Ctrl+Enter で事前に候補確定する方式は Chrome フォームを送信してしまうため廃止。
+            // GJI 環境では GjiDirectStrategy が先行して処理するため、ここには GJI 以外か
+            // GJI 失敗時のみ到達する。VK_KANJI をそのまま送り、稀に候補窓に吸われる場合は許容する。
             log::debug!(
-                "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} commit_first={} → desired={open}: SendInput VK_KANJI",
+                "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} → desired={open}: SendInput VK_KANJI",
                 view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,
-                view.focus.profile, commit_first
+                view.focus.profile,
             );
-            unsafe { crate::ime::post_kanji_toggle_to_focused(commit_first) };
+            unsafe { crate::ime::post_kanji_toggle_to_focused(false) };
             ImeOpenOutcome::FallbackSent
         }
     }
