@@ -358,18 +358,12 @@ impl Default for ColdContext {
 /// 内部を責務別サブ構造体に分割している:
 /// - `warm_epoch`: warmup epoch・送信タイミング・cold-start 回数
 /// - `cold_ctx`: cold の理由・idle 時間・連続 recovery 回数
-/// - `applied_open` / `applied_at_ms`: `apply_ime_open` の最終送信値ログ
 #[derive(Debug)]
 pub struct CompositionState {
     /// warmup epoch・送信タイミング・cold-start 回数
     pub warm_epoch: WarmEpoch,
     /// cold の理由・idle 時間・連続 recovery 回数
     pub cold_ctx: ColdContext,
-    /// `apply_ime_open` が最後に OS に送ったコマンド値。
-    /// `None` はフォーカス変更後に実 apply がまだない不確定状態。
-    applied_open: std::cell::Cell<Option<bool>>,
-    /// 最後の `apply_ime_open` 完了時刻 (ms)。0 = 未確認（フォーカス変更後）。
-    applied_at_ms: std::cell::Cell<u64>,
 }
 
 impl Default for CompositionState {
@@ -384,8 +378,6 @@ impl CompositionState {
         Self {
             warm_epoch: WarmEpoch::new(),
             cold_ctx: ColdContext::new(),
-            applied_open: std::cell::Cell::new(None),
-            applied_at_ms: std::cell::Cell::new(0),
         }
     }
 
@@ -434,18 +426,7 @@ impl CompositionState {
         // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
         self.cold_ctx.record_cold(crate::output::ColdReason::FocusChange, idle_ms);
         self.cold_ctx.reset_consecutive_count();
-        self.applied_open.set(None);
-        self.applied_at_ms.set(0);
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
-    }
-
-    /// `apply_ime_open` 完了後に最終送信値ログを更新する。
-    ///
-    /// `KanjiToggleStrategy` が次の `apply_ime_open` で重複送信を避けるために使う。
-    pub fn set_ime_apply_latch(&self, open: bool) {
-        log::debug!("[last-applied-ime] set({open})");
-        self.applied_open.set(Some(open));
-        self.applied_at_ms.set(crate::hook::current_tick_ms());
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
@@ -486,22 +467,6 @@ impl CompositionState {
     /// cold-start 発生回数をインクリメントして新値を返す。
     pub fn increment_cold_start_count(&self) -> u32 {
         self.warm_epoch.increment_cold_start_count()
-    }
-
-    /// `apply_ime_open` が最後に OS に送信したコマンド値を返す。
-    /// フォーカス変更直後など未設定の場合は `false` を返す。
-    ///
-    /// これは IME 状態の SSOT ではない。SSOT は `Preconditions::ime_on()`。
-    /// 本メソッドは `KanjiToggleStrategy` の重複送信回避と診断専用。
-    #[must_use]
-    pub fn last_applied_ime_on(&self) -> bool {
-        self.applied_open.get().unwrap_or(false)
-    }
-
-    /// 最後の `apply_ime_open` 完了時刻（ms）を返す。未設定は 0。
-    #[must_use]
-    pub fn last_applied_ime_on_ms(&self) -> u64 {
-        self.applied_at_ms.get()
     }
 
     /// 最後に cold にマークされた理由を返す。

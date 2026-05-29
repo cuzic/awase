@@ -111,7 +111,7 @@ impl<'a> ColdWarmupSequence<'a> {
                 "[h1-warmup] cold={} session expired → fresh VK_DBE_HIRAGANA 送信 (500ms待機を強制)",
                 ctx.cold_seq
             );
-            self.output.send_eager_tsf_warmup(Some(self.output.composition.last_applied_ime_on()));
+            self.output.send_eager_tsf_warmup(None);
         }
 
         let eager_ms = self.output.composition.eager_warmup_sent_ms();

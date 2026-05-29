@@ -410,7 +410,7 @@ impl Output {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
                 } else {
                     self.mark_composition_cold(ColdReason::SymbolVkSent);
-                    self.send_eager_tsf_warmup(Some(self.composition.last_applied_ime_on()));
+                    self.send_eager_tsf_warmup(None);
                 }
             }
             CharResolution::Unicode(ch) => {

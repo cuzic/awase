@@ -230,7 +230,7 @@ impl PlatformRuntime for WindowsPlatform {
         //
         // mode key 送信の本来の用途は「Engine 状態は変わったが IME open/close は変わらない」
         // ケース（例: user_enabled トグルで IME はそのまま）に限定する。
-        let last_applied = applied.unwrap_or_else(|| self.output.last_applied_ime_on());
+        let last_applied = applied.unwrap_or(false);
         if last_applied == enabled {
             log::debug!(
                 "[engine-state-key] skipped (apply_ime_open aligned ime={enabled}, profile={:?})",
@@ -291,14 +291,13 @@ impl PlatformRuntime for WindowsPlatform {
             ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => {
                 let ts = crate::hook::current_tick_ms();
                 self.applied_snapshot = Some((open, ts));
-                self.output.set_ime_apply_latch(open);
             }
             ImeOpenOutcome::Failed => {
                 let ts = crate::hook::current_tick_ms();
                 self.applied_snapshot = Some((!open, ts));
-                self.output.set_ime_apply_latch(!open);
             }
         }
+        crate::tsf::observer::reset_candidate_was_seen();
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
@@ -392,7 +391,10 @@ impl WindowsPlatform {
             .as_ref()
             .map_or("", |(_, c)| c.as_str());
         let (shadow_on, applied_at_ms) = applied
-            .unwrap_or_else(|| (self.output.last_applied_ime_on(), self.output.last_applied_ime_on_ms()));
+            .unwrap_or_else(|| (
+                self.applied_snapshot.map_or(false, |(v, _)| v),
+                self.applied_snapshot.map_or(0, |(_, t)| t),
+            ));
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,

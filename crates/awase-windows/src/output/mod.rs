@@ -129,22 +129,6 @@ impl Output {
         self.composition.eager_warmup_sent_ms()
     }
 
-    /// `apply_ime_open` が最後に OS に送信したコマンド値を返す。
-    /// フォーカス変更直後など未設定の場合は false（OFF）を返す。
-    ///
-    /// これは IME 状態の SSOT ではない。SSOT は `PlatformState::ime_on()`。
-    /// 本メソッドは `KanjiToggleStrategy` の重複送信回避と診断専用。
-    #[must_use]
-    pub fn last_applied_ime_on(&self) -> bool {
-        self.composition.last_applied_ime_on()
-    }
-
-    /// 最後の `apply_ime_open` 完了時刻（ms）を返す。未設定は 0。
-    #[must_use]
-    pub fn last_applied_ime_on_ms(&self) -> u64 {
-        self.composition.last_applied_ime_on_ms()
-    }
-
     /// 最後の `send_keys` 完了からの経過時間（ms）。
     /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]
@@ -259,25 +243,15 @@ impl Output {
     /// 現在の TSF 準備状態を多次元スナップショットとして返す。
     ///
     /// `applied_ime_on`: 呼び出し元が知っている「最後に apply された IME 開閉状態」。
-    /// executor は `applied_snapshot` から渡す。非 executor 呼び出し元は
-    /// `Some(self.composition.last_applied_ime_on())` を渡すか `None` でフォールバック。
+    /// executor は `applied_snapshot` から渡す。不明な場合は `None`（`false` として扱われる）。
     /// 条件判定には返り値のメソッド（`can_warmup()` 等）を使う。
     #[must_use]
     pub fn tsf_readiness(&self, applied_ime_on: Option<bool>) -> awase::tsf::TsfReadiness {
         awase::tsf::TsfReadiness {
             gate: self.tsf_gate.state(),
-            ime_on: applied_ime_on.unwrap_or_else(|| self.composition.last_applied_ime_on()),
+            ime_on: applied_ime_on.unwrap_or(false),
             is_tsf_mode: self.is_tsf_mode(),
         }
-    }
-
-    /// `apply_ime_open` 完了後に最終送信値ログを更新する。
-    ///
-    /// executor 経由 (ImeModel 非アクセス) のサイトから呼ぶ。
-    /// ImeModel アクセス可能なサイトは `ImeState::mirror_applied_open` を使うこと。
-    pub fn set_ime_apply_latch(&self, open: bool) {
-        self.composition.set_ime_apply_latch(open);
-        crate::tsf::observer::reset_candidate_was_seen();
     }
 
     /// TSF composition context の事前ウォームアップ F2 を送信する。
