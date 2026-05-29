@@ -8,7 +8,7 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::TsfProbeMachine;
-use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS};
+use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS, VK_RSHIFT};
 use super::{Output, VkSequence};
 use super::{WarmthContext, WarmupOutcome, fmt_ms};
 use super::resolve::{ascii_to_vk, CharResolution};
@@ -491,8 +491,16 @@ impl Output {
     }
 
     /// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
+    ///
+    /// 末尾の合成 `LSHIFT↑` は、Ctrl+I 無変換 高速タイピング時に Ctrl 解放前に NONCONVERT が
+    /// 来ると IME-OFF が誤発火する不具合を防ぐため、修飾キーを毎回解放する設計。その副作用で
+    /// Shift+1 連打などでは 2 回目以降 `GetAsyncKeyState(VK_SHIFT)=0` となり engine が
+    /// modifier_snapshot 経由で shift 面を見なくなり「！」→「1」になる。物理 Shift が
+    /// 押下中のときに限り `LSHIFT↓` を再注入して OS state を物理状態へ再同期する
+    /// （SendInput は `GetAsyncKeyState` を上書きする一方、`hook::is_physical_key_down` は
+    /// 物理イベントだけで更新されるので信頼できる）。
     fn send_vk_pair(vk: VkCode, needs_shift: bool, use_tsf_marker: bool) {
-        let mut inputs = Vec::with_capacity(4);
+        let mut inputs = Vec::with_capacity(5);
         if needs_shift {
             inputs.push(make_key_input(VK_LSHIFT, false));
         }
@@ -505,6 +513,11 @@ impl Output {
         }
         if needs_shift {
             inputs.push(make_key_input(VK_LSHIFT, true));
+            if crate::hook::is_physical_key_down(VK_LSHIFT)
+                || crate::hook::is_physical_key_down(VK_RSHIFT)
+            {
+                inputs.push(make_key_input(VK_LSHIFT, false));
+            }
         }
         let _ = crate::win32::send_input_safe(&inputs);
     }
