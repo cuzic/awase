@@ -511,8 +511,8 @@ fn reload_config() {
     }
 
     let _ = with_app(|app| {
-        app.executor.platform.focus.overrides = crate::focus::classifier::ForceOverrides::new(config.app_overrides);
-        app.executor.platform.focus.cache = crate::focus::cache::FocusCache::new();
+        app.executor.platform.focus_overrides = crate::focus::classifier::ForceOverrides::new(config.app_overrides);
+        app.executor.platform.focus_cache = crate::focus::cache::FocusCache::new();
     });
     log::info!("App overrides reloaded");
     log::info!("Config reloaded successfully");

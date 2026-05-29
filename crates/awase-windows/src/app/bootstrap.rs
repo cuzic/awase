@@ -322,6 +322,11 @@ pub(super) fn initialize_app(
         .as_deref()
         .and_then(VkCode::from_name);
 
+    let base_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
     RUNTIME.set(Runtime {
@@ -330,11 +335,18 @@ pub(super) fn initialize_app(
             platform::WindowsPlatform {
                 output: Output::new(config.general.output_mode),
                 tray,
-                focus: runtime::AppKindClassifier::new(config.app_overrides.clone()),
                 timer: crate::timer::Win32Timer::new(),
                 engine_on_ime_vk,
                 engine_off_ime_vk,
                 suppress_engine_state_key: false,
+                focus_cache: crate::focus::cache::FocusCache::new(),
+                focus_overrides: crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
+                focus_last_info: None,
+                focus_uia_sender: None,
+                imm_learning: crate::focus::classifier::ImmCapabilityStore::new(base_dir),
+                hwnd_ime_cache: crate::focus::hwnd_cache::HwndImeCache::new(),
+                app_profile: crate::focus::class_names::AppImeProfile::Standard,
+                process_name: String::new(),
             },
             config.general.hook_mode,
         ),
@@ -674,7 +686,7 @@ pub(super) fn run_all() -> Result<()> {
 
     let (_uia_worker, uia_tx) = crate::focus::uia::spawn_uia_worker();
     let _gji_worker = crate::tsf::observer::start_monitor_thread();
-    let _ = with_app(|app| app.executor.platform.focus.set_uia_sender(uia_tx));
+    let _ = with_app(|app| app.executor.platform.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
     initialize_ime_cache();

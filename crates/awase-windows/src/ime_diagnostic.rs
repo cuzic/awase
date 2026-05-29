@@ -93,8 +93,7 @@ impl ImeDiagnosticSnapshot {
             let (pid, class) = app
                 .executor
                 .platform
-                .focus
-                .last_focus_info
+                .focus_last_info
                 .as_ref()
                 .map_or((0u32, String::new()), |(p, c)| (*p, c.clone()));
 
@@ -276,11 +275,10 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
         let class = app
             .executor
             .platform
-            .focus
-            .last_focus_info
+            .focus_last_info
             .as_ref()
             .map_or_else(String::new, |(_, c)| c.clone());
-        let profile = app.executor.platform.focus.current_app_profile();
+        let profile = app.executor.platform.current_app_profile();
         (
             class,
             format!("{profile:?}"),
@@ -342,7 +340,7 @@ fn resolve_injection_mode_label() -> &'static str {
     use crate::focus::classifier::InjectionHint;
 
     crate::with_app_ref(|app| {
-        match app.executor.platform.focus.injection_hint() {
+        match app.executor.platform.injection_hint() {
             InjectionHint::ForceTsf => return "Tsf",
             InjectionHint::ForceVk => return "Vk",
             InjectionHint::Default => {}

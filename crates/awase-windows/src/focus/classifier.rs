@@ -5,8 +5,6 @@
 
 use awase::config::{AppOverrideEntry, AppOverrides};
 
-use super::class_names::AppImeProfile;
-
 // ── IMM capability cache ──
 
 /// IMM 能力キャッシュファイル名（config.toml と同じディレクトリ）
@@ -234,90 +232,4 @@ impl ImmCapabilityStore {
     }
 }
 
-// ── AppKindClassifier ──
-
-/// フォーカス検出に関するシングルスレッド状態を集約する構造体
-pub struct AppKindClassifier {
-    pub cache: super::cache::FocusCache,
-    pub overrides: ForceOverrides,
-    pub last_focus_info: Option<(u32, String)>,
-    pub uia_sender: Option<std::sync::mpsc::Sender<super::uia::SendableHwnd>>,
-    /// IMM 能力の学習・永続化ストア。
-    pub imm_learning: ImmCapabilityStore,
-    /// per-HWND IME 状態キャッシュ。
-    pub hwnd_ime_cache: super::hwnd_cache::HwndImeCache,
-    /// フォーカス中アプリの IME 制御プロファイル。
-    ///
-    /// `last_focus_info` の更新と必ず同時に書き換える（`update_focus_info` 経由）。
-    /// Imm32Unavailable / TsfNative / Standard 判定が必要な全箇所から参照する SSOT。
-    current_app_profile: AppImeProfile,
-    /// 現在フォーカス中のプロセス名（小文字、キーマップマッチング用）
-    pub current_process_name: String,
-}
-
-impl std::fmt::Debug for AppKindClassifier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AppKindClassifier").finish_non_exhaustive()
-    }
-}
-
-impl AppKindClassifier {
-    #[must_use]
-    pub fn new(overrides: AppOverrides) -> Self {
-        let base_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        Self {
-            cache: super::cache::FocusCache::new(),
-            overrides: ForceOverrides::new(overrides),
-            last_focus_info: None,
-            uia_sender: None,
-            imm_learning: ImmCapabilityStore::new(base_dir),
-            hwnd_ime_cache: super::hwnd_cache::HwndImeCache::new(),
-            current_app_profile: AppImeProfile::Standard,
-            current_process_name: String::new(),
-        }
-    }
-
-    /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。
-    pub fn learn_imm_capability(&mut self, class_name: String, cap: ImmCapability) {
-        self.imm_learning.learn(class_name, cap);
-    }
-
-    /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
-    ///
-    /// `last_focus_info` を生で書き換える代わりにこのメソッドを使うことで、
-    /// `current_app_profile` キャッシュが必ず class_name と整合する。
-    pub fn update_focus_info(&mut self, process_id: u32, class_name: String) {
-        let process_name = super::classify::get_process_name(process_id);
-        self.current_process_name = process_name.to_lowercase();
-        self.current_app_profile = AppImeProfile::from_class_name(&class_name);
-        self.last_focus_info = Some((process_id, class_name));
-    }
-
-    /// フォーカス中アプリの IME 制御プロファイルを返す。
-    ///
-    /// フォーカス未取得 (`last_focus_info=None`) のときは `Standard` を返す。
-    #[must_use]
-    pub const fn current_app_profile(&self) -> AppImeProfile {
-        self.current_app_profile
-    }
-
-    pub fn set_uia_sender(
-        &mut self,
-        sender: std::sync::mpsc::Sender<super::uia::SendableHwnd>,
-    ) {
-        self.uia_sender = Some(sender);
-    }
-
-    /// 現在のフォーカス先に対する注入ヒントを返す。
-    #[must_use]
-    pub fn injection_hint(&self) -> InjectionHint {
-        let Some((pid, class)) = self.last_focus_info.as_ref() else {
-            return InjectionHint::Default;
-        };
-        self.overrides.injection_hint(*pid, class)
-    }
-}
 

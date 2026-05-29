@@ -1,6 +1,6 @@
 //! Windows 実装の `PlatformRuntime`。
 //!
-//! `Output`, `SystemTray`, `AppKindClassifier`, `Win32Timer` を束ね、
+//! `Output`, `SystemTray`, フォーカス検出フィールド群, `Win32Timer` を束ね、
 //! `PlatformRuntime` トレイトを実装する。
 
 use std::time::Duration;
@@ -9,7 +9,8 @@ use awase::platform::PlatformRuntime;
 use awase::types::{KeyAction, RawKeyEvent};
 
 use crate::output::Output;
-use crate::focus::classifier::AppKindClassifier;
+use crate::focus::classifier::{ForceOverrides, ImmCapabilityStore, InjectionHint};
+use crate::focus::class_names::AppImeProfile;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
@@ -17,7 +18,6 @@ use crate::tray::SystemTray;
 pub struct WindowsPlatform {
     pub output: Output,
     pub tray: SystemTray,
-    pub focus: AppKindClassifier,
     pub timer: Win32Timer,
     /// Engine ON 時に送信する IME モード切り替え VK コード（None で無効）
     pub engine_on_ime_vk: Option<awase::types::VkCode>,
@@ -26,6 +26,19 @@ pub struct WindowsPlatform {
     /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
     /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
     pub suppress_engine_state_key: bool,
+    // ── フォーカス検出フィールド群（旧 AppKindClassifier）──
+    pub focus_cache: crate::focus::cache::FocusCache,
+    pub focus_overrides: ForceOverrides,
+    pub focus_last_info: Option<(u32, String)>,
+    pub focus_uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
+    /// IMM 能力の学習・永続化ストア。
+    pub imm_learning: ImmCapabilityStore,
+    /// per-HWND IME 状態キャッシュ。
+    pub hwnd_ime_cache: crate::focus::hwnd_cache::HwndImeCache,
+    /// フォーカス中アプリの IME 制御プロファイル。
+    pub app_profile: AppImeProfile,
+    /// 現在フォーカス中のプロセス名（小文字、キーマップマッチング用）
+    pub process_name: String,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -174,7 +187,7 @@ impl PlatformRuntime for WindowsPlatform {
         // IMM API で直接 open/close できないアプリ（Imm32Unavailable / TSF-native）では
         // get_gui_thread_info + send_ime_control が ~200ms タイムアウトしてブロックする。
         // 早期 return して IMM 経由のクロスプロセス呼び出しをスキップする。
-        if !self.focus.current_app_profile().can_use_imm32_cross_process() {
+        if !self.current_app_profile().can_use_imm32_cross_process() {
             return false;
         }
         // `set_ime_open_cross_process` は SendMessageTimeoutW を含むため、メインスレッドで
@@ -222,7 +235,7 @@ impl PlatformRuntime for WindowsPlatform {
         if last_applied == enabled {
             log::debug!(
                 "[engine-state-key] skipped (apply_ime_open aligned ime={enabled}, profile={:?})",
-                self.focus.current_app_profile()
+                self.current_app_profile()
             );
             return;
         }
@@ -230,7 +243,7 @@ impl PlatformRuntime for WindowsPlatform {
         // apply_ime_open が既に VK_KANJI を送信済み。VK_DBE_SBCSCHAR/DBCSCHAR を追加送信すると:
         //   OFF 時: VK_KANJI でクローズ直後に VK_DBE_SBCSCHAR が IME を再オープンする恐れがある。
         //   ON 時: VK_KANJI で開いた後に VK_DBE_DBCSCHAR を送ると全角カタカナモードになりかねない。
-        let profile = self.focus.current_app_profile();
+        let profile = self.current_app_profile();
         if profile.uses_kanji_toggle() {
             log::debug!("[engine-state-key] skipped (profile={profile:?}, VK_KANJI済み)");
             return;
@@ -377,15 +390,14 @@ impl WindowsPlatform {
         applied: Option<(bool, u64)>,
     ) -> crate::state::ImeControlView<'_> {
         let class_name = self
-            .focus
-            .last_focus_info
+            .focus_last_info
             .as_ref()
             .map_or("", |(_, c)| c.as_str());
         let (shadow_on, applied_at_ms) = applied.unwrap_or((false, 0));
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
-                profile: self.focus.current_app_profile(),
+                profile: self.current_app_profile(),
             },
             observed: crate::state::ObservedState::capture_now(),
             control: crate::state::ControlLog {
@@ -407,6 +419,44 @@ impl WindowsPlatform {
     ) -> awase::platform::ImeOpenOutcome {
         let view = self.build_ime_control_view(applied);
         crate::ime_controller::CONTROLLER.apply(open, &view)
+    }
+
+    // ── 旧 AppKindClassifier メソッド群 ──
+
+    /// フォーカス中アプリの IME 制御プロファイルを返す。
+    #[must_use]
+    pub const fn current_app_profile(&self) -> AppImeProfile {
+        self.app_profile
+    }
+
+    /// 現在のフォーカス先に対する注入ヒントを返す。
+    #[must_use]
+    pub fn injection_hint(&self) -> InjectionHint {
+        let Some((pid, class)) = self.focus_last_info.as_ref() else {
+            return InjectionHint::Default;
+        };
+        self.focus_overrides.injection_hint(*pid, class)
+    }
+
+    /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
+    pub fn update_focus_info(&mut self, process_id: u32, class_name: String) {
+        let process_name = crate::focus::classify::get_process_name(process_id);
+        self.process_name = process_name.to_lowercase();
+        self.app_profile = AppImeProfile::from_class_name(&class_name);
+        self.focus_last_info = Some((process_id, class_name));
+    }
+
+    /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。
+    pub fn learn_imm_capability(&mut self, class_name: String, cap: crate::focus::classifier::ImmCapability) {
+        self.imm_learning.learn(class_name, cap);
+    }
+
+    /// UIA ワーカーへの送信チャネルを設定する。
+    pub fn set_uia_sender(
+        &mut self,
+        sender: std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>,
+    ) {
+        self.focus_uia_sender = Some(sender);
     }
 }
 

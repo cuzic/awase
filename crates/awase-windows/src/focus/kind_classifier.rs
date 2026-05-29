@@ -4,9 +4,6 @@ use awase::engine::{TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
 
-use crate::executor::DecisionExecutor;
-use crate::focus::classifier::AppKindClassifier;
-
 /// `resolve_focus_kind` の戻り値
 #[derive(Debug)]
 pub struct FocusKindResolution {
@@ -25,8 +22,7 @@ pub struct FocusKindResolution {
 /// # Safety
 /// タイムアウト付きワーカースレッドから Win32 API を呼び出す。
 pub unsafe fn resolve_focus_kind(
-    classifier: &AppKindClassifier,
-    executor: &DecisionExecutor,
+    platform: &crate::platform::WindowsPlatform,
     process_id: u32,
     class_name: &str,
     hwnd: HWND,
@@ -34,7 +30,7 @@ pub unsafe fn resolve_focus_kind(
     use crate::focus::classify;
 
     // 1. Config オーバーライドをチェック
-    if let Some(kind) = classifier.overrides.check_app_override(process_id, class_name) {
+    if let Some(kind) = platform.focus_overrides.check_app_override(process_id, class_name) {
         return FocusKindResolution {
             kind,
             reason: "config override".to_string(),
@@ -43,7 +39,7 @@ pub unsafe fn resolve_focus_kind(
     }
 
     // 2. キャッシュヒットをチェック
-    if let Some(cached) = classifier.cache.get(process_id, class_name) {
+    if let Some(cached) = platform.focus_cache.get(process_id, class_name) {
         return FocusKindResolution {
             kind: cached,
             reason: "cache hit".to_string(),
@@ -53,7 +49,7 @@ pub unsafe fn resolve_focus_kind(
 
     // 3. エンジンタイマー活性中はスキップ
     let engine_timer_active = {
-        let timer = &executor.platform.timer;
+        let timer = &platform.timer;
         timer.is_active(TIMER_PENDING) || timer.is_active(TIMER_SPECULATIVE)
     };
     if engine_timer_active {

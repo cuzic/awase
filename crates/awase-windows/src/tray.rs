@@ -675,7 +675,7 @@ unsafe extern "system" fn tray_wnd_proc(
                 Some(TrayCommand::Settings) => launch_settings_gui(),
                 Some(TrayCommand::ClearImmCache) => {
                     let _ = crate::with_app(|app| {
-                        let count = app.executor.platform.focus.imm_learning.clear();
+                        let count = app.executor.platform.imm_learning.clear();
                         log::info!("IMM capability cache cleared ({count} entries)");
                         app.executor.platform.tray.show_balloon(
                             "awase",

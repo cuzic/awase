@@ -2,7 +2,7 @@
 
 use windows::Win32::Foundation::HWND;
 use awase::types::AppKind;
-use crate::focus::classifier::{AppKindClassifier, ImmCapability};
+use crate::focus::classifier::ImmCapability;
 
 /// ImmGetDefaultIMEWnd=NULL の場合、そのアプリの IMM32 制御を `Unavailable` と記録する。
 ///
@@ -12,7 +12,7 @@ use crate::focus::classifier::{AppKindClassifier, ImmCapability};
 /// # Safety
 /// Win32 API (`ImmGetDefaultIMEWnd`) を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn learn_imm_capability_on_focus(
-    classifier: &mut AppKindClassifier,
+    platform: &mut crate::platform::WindowsPlatform,
     hwnd: HWND,
     class_name: &str,
     new_app_kind: AppKind,
@@ -20,7 +20,7 @@ pub unsafe fn learn_imm_capability_on_focus(
     if new_app_kind != AppKind::Win32 {
         return;
     }
-    if classifier.imm_learning.contains_key(class_name) {
+    if platform.imm_learning.contains_key(class_name) {
         return;
     }
 
@@ -28,6 +28,6 @@ pub unsafe fn learn_imm_capability_on_focus(
         log::info!(
             "IMM32 capability: ImmGetDefaultIMEWnd=NULL, learning Unavailable (class={class_name})"
         );
-        classifier.learn_imm_capability(class_name.to_string(), ImmCapability::Unavailable);
+        platform.learn_imm_capability(class_name.to_string(), ImmCapability::Unavailable);
     }
 }
