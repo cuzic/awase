@@ -765,9 +765,14 @@ impl DecisionExecutor {
             //
             // TsfNative (LINE の Windows.UI.Input.InputSite.WindowClass 等) でも
             // KanjiToggle がフォールバックとして使われるため同様の desync 対策が必要。
+            // GJI が起動している場合は GjiDirectStrategy (F13/F14) が選ばれるため latch override 不要。
+            // F14 は shadow に関わらず常に送信される (べき等)。F13 も GjiDirectStrategy が自前で
+            // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
             if origin == EffectOrigin::EngineIntent {
                 let profile = self.platform.focus.current_app_profile();
-                if !profile.can_use_imm32_cross_process() {
+                if !profile.can_use_imm32_cross_process()
+                    && !crate::tsf::observer::gji_monitor_healthy()
+                {
                     let last_ms = self.platform.output.last_applied_ime_on_ms();
                     let now_ms = crate::hook::current_tick_ms();
                     // SetOpen(false): 「確認済み OFF」なら永続スキップ。
@@ -789,7 +794,7 @@ impl DecisionExecutor {
                     };
                     if skip_override {
                         log::debug!(
-                            "[dispatch-ime] EngineIntent+no-imm32 (profile={:?}): skip latch force \
+                            "[dispatch-ime] KanjiToggle (profile={:?}): skip latch force \
                              (confirmed dir={open}, applied {}ms ago)",
                             profile,
                             now_ms.saturating_sub(last_ms)
@@ -797,7 +802,7 @@ impl DecisionExecutor {
                     } else {
                         self.platform.output.set_ime_apply_latch(!open);
                         log::debug!(
-                            "[dispatch-ime] EngineIntent+no-imm32 (profile={:?}): override latch={} → force VK_KANJI/F14",
+                            "[dispatch-ime] KanjiToggle (profile={:?}): override latch={} → force VK_KANJI",
                             profile, !open
                         );
                     }
