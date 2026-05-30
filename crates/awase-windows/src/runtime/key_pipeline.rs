@@ -1,14 +1,13 @@
 //! キーイベント処理パイプライン
 //!
 //! `on_key_event_impl` の処理を段階的に分割したもの。
-//! フックコールバック本体から `KeyEventPipeline::run` を呼ぶことで
+//! フックコールバック本体から `Runtime::process_key_event` を呼ぶことで
 //! 同じ動作をより読みやすい形で表現する。
 
 use awase::types::{RawKeyEvent, ShadowImeAction};
 use crate::hook;
-use crate::runtime;
 use crate::hook::CallbackResult;
-use crate::win32::{post_to_main_thread};
+use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
@@ -20,24 +19,19 @@ enum IntentKind {
     PhysicalImeKey,
 }
 
-/// キーイベント処理パイプライン
-pub(super) struct KeyEventPipeline<'a> {
-    pub app: &'a mut Runtime,
-    /// true の場合、Ctrl+無変換 IME-OFF 救済窓の defer 判定をスキップする。
-    /// 救済窓内の保留 event を replay する際に true でネスト呼び出しし、
-    /// 再 defer による無限ループを防ぐ。
-    pub skip_rescue_defer: bool,
-}
+impl Runtime {
+    /// キーイベント処理エントリポイント
+    pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
+        self.kp_run_inner(event, false)
+    }
 
-impl KeyEventPipeline<'_> {
-    /// パイプラインを実行し、`CallbackResult` を返す
-    pub(super) fn run(mut self, event: RawKeyEvent) -> CallbackResult {
-        let mut event = event;
-        self.app.enrich_ime_relevance(&mut event);
+    /// パイプライン実装。`skip_rescue_defer=true` で救済窓 defer をスキップ。
+    fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
+        self.enrich_ime_relevance(&mut event);
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
-        if self.app.executor.platform.try_hold_key(event) {
+        if self.executor.platform.try_hold_key(event) {
             log::debug!(
                 "[tsf-gate-hold] vk=0x{:02X} {:?} held by TsfGate (PendingWarmup)",
                 event.vk_code, event.event_type
@@ -48,9 +42,9 @@ impl KeyEventPipeline<'_> {
         // Phase A: 既存の pending IME-OFF rescue を解決する。
         // 現在 event が Ctrl↑ なら保留キーを破棄（thumb shift 防止）、
         // それ以外なら救済中止（原 event を発火 → IME-OFF）。
-        // Ctrl↑ 以外は skip_rescue_defer=true でネスト pipeline 呼び出しし、
+        // Ctrl↑ 以外は skip_rescue_defer=true でネスト呼び出しし、
         // 再 defer による無限ループを防ぐ。
-        if let Some(pending_event) = self.app.take_ime_off_rescue_pending() {
+        if let Some(pending_event) = self.take_ime_off_rescue_pending() {
             let is_ctrl_up = matches!(event.event_type, awase::types::KeyEventType::KeyUp)
                 && crate::vk::is_ctrl_variant(event.vk_code);
             if is_ctrl_up {
@@ -67,25 +61,22 @@ impl KeyEventPipeline<'_> {
                     "[ime-off-rescue] non-Ctrl↑ event 到着 → 保留 vk=0x{:02X} を IME-OFF として発火",
                     pending_event.vk_code
                 );
-                let inner_result = KeyEventPipeline {
-                    app: &mut *self.app,
-                    skip_rescue_defer: true,
-                }.run(pending_event);
+                let inner_result = self.kp_run_inner(pending_event, true);
                 // PassThrough なら reinject + WM_EXECUTE_EFFECTS（フックコールバックと同じ後処理）
                 if matches!(inner_result, CallbackResult::PassThrough) {
-                    self.app.executor.enqueue_reinject(pending_event);
+                    self.executor.enqueue_reinject(pending_event);
                     post_to_main_thread(WM_EXECUTE_EFFECTS);
                 }
                 // 続けて現在 event を通常処理する
             }
         }
 
-        self.stage_focus_probe(&mut event);
-        let shadow_toggled = self.stage_shadow_ime_toggle(&event);
+        self.kp_stage_focus_probe(&mut event);
+        let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
 
-        let ctx = runtime::build_input_context(
-            self.app.platform_state.ime_on(),
-            self.app.platform_state.belief(),
+        let ctx = super::build_input_context(
+            self.platform_state.ime_on(),
+            self.platform_state.belief(),
             &event.modifier_snapshot,
         );
         // [engine-input] order-bug 調査用: drain と inline の処理順序を可視化する。
@@ -119,7 +110,7 @@ impl KeyEventPipeline<'_> {
              pending_drain={} gate_active={}",
             event.vk_code, event.event_type, event.timestamp,
             delay_ms,
-            self.app.engine.debug_state_label(),
+            self.engine.debug_state_label(),
             mods.ctrl, mods.shift, mods.alt, mods.win,
             gas_ctrl,
             phys_ctrl,
@@ -138,36 +129,35 @@ impl KeyEventPipeline<'_> {
         // 「Ctrl↓ → 他キー consume → 無変換↓」の並びなら 50ms 救済窓を設けて defer する。
         // 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは ctrl_consumed_since_down=false なので
         // ここを通過せず engine が即 IME-OFF を発火する。
-        if !self.skip_rescue_defer
+        if !skip_rescue_defer
             && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && event.modifier_snapshot.ctrl
             && hook::ctrl_consumed_since_down()
-            && self.app.engine.matches_ime_off(&ctx, &event)
+            && self.engine.matches_ime_off(&ctx, &event)
         {
             log::debug!(
                 "[ime-off-rescue] vk=0x{:02X} を 50ms 保留 (Ctrl consumed)",
                 event.vk_code
             );
-            self.app.set_ime_off_rescue_pending(event);
+            self.set_ime_off_rescue_pending(event);
             return CallbackResult::Consumed;
         }
 
-        let decision = self.app.engine.on_input(event, &ctx);
+        let decision = self.engine.on_input(event, &ctx);
 
-        self.stage_post_decision(&decision, &event);
+        self.kp_stage_post_decision(&decision, &event);
 
         // Step 4 安全策: Phase 2 で SetOpen が生成されなかった場合でも
         // Ctrl 系 KeyUp で chord barrier を解除する (ChordEnded dispatch)。
         // (Phase 2 が既に Inactive を認識して SetOpen を省略するケースへの対処)
-        if self.app.platform_state.ime.is_ctrl_ime_chord_active()
+        if self.platform_state.ime.is_ctrl_ime_chord_active()
             && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
-            let kind = self.app.platform_state.ime
+            let kind = self.platform_state.ime
                 .active_chord_kind()
                 .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
-            self.app
-                .platform_state
+            self.platform_state
                 .ime
                 .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
             log::debug!(
@@ -176,25 +166,25 @@ impl KeyEventPipeline<'_> {
             );
         }
 
-        self.stage_execute(decision, &event, shadow_toggled)
+        self.kp_stage_execute(decision, &event, shadow_toggled)
     }
 
     /// フォーカス切替直後の非同期プローブ
-    fn stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
+    fn kp_stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
         // Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換。
         // 最初のキー入力で barrier を consume する (one-shot 動作維持)。
-        if !self.app.platform_state.ime.consume_focus_barrier() {
+        if !self.platform_state.ime.consume_focus_barrier() {
             return;
         }
 
-        self.app.executor.platform.on_focus_probe_started();
+        self.executor.platform.on_focus_probe_started();
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
-        let warmup_ms = self.app.executor.platform.eager_warmup_sent_ms();
+        let warmup_ms = self.executor.platform.eager_warmup_sent_ms();
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
-        let last_focus_change_ms = self.app.platform_state.last_focus_change_ms;
-        let shadow_on = self.app.platform_state.ime.applied_open_or_default();
+        let last_focus_change_ms = self.platform_state.last_focus_change_ms;
+        let shadow_on = self.platform_state.ime.applied_open_or_default();
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
@@ -213,38 +203,38 @@ impl KeyEventPipeline<'_> {
 
     /// Shadow IME トグル処理
     ///
-    /// IME ON/OFF が変化したら `true` を返す。`stage_execute` がこの値を見て
+    /// IME ON/OFF が変化したら `true` を返す。`kp_stage_execute` がこの値を見て
     /// Imm32Unavailable アプリで物理 IME キーを抑止すべきか判定する。
-    fn stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
+    fn kp_stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
         if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
             return false;
         }
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))
-        } else if self.app.platform_state.is_japanese_ime() {
+        } else if self.platform_state.is_japanese_ime() {
             event.ime_relevance.shadow_action.map(|a| (a, IntentKind::PhysicalImeKey))
         } else {
             None
         };
         let Some((action, kind)) = intent_kind else { return false; };
 
-        let current = self.app.platform_state.ime_on();
+        let current = self.platform_state.ime_on();
         let new_val = match action {
             ShadowImeAction::Toggle => !current,
             ShadowImeAction::TurnOn => true,
             ShadowImeAction::TurnOff => false,
         };
         let ms = hook::current_tick_ms();
-        let user_enabled = self.app.engine.is_user_enabled();
+        let user_enabled = self.engine.is_user_enabled();
         match kind {
-            IntentKind::SyncKey => self.app.platform_state.write_sync_key(new_val, ms, user_enabled),
-            IntentKind::PhysicalImeKey => self.app.platform_state.write_physical_key(new_val, ms, user_enabled),
+            IntentKind::SyncKey => self.platform_state.write_sync_key(new_val, ms, user_enabled),
+            IntentKind::PhysicalImeKey => self.platform_state.write_physical_key(new_val, ms, user_enabled),
         }
-        if self.app.platform_state.ime_on() == current {
+        if self.platform_state.ime_on() == current {
             return false;
         }
-        self.app.platform_state.on_shadow_ime_toggled();
+        self.platform_state.on_shadow_ime_toggled();
 
         // ON→OFF の場合、OS IME を明示的に OFF にする。
         // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
@@ -260,13 +250,13 @@ impl KeyEventPipeline<'_> {
         // 含む sync `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こす
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
         // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
-        if !self.app.platform_state.ime_on() {
-            let view = self.app.shadow_ime_control_view();
+        if !self.platform_state.ime_on() {
+            let view = self.shadow_ime_control_view();
             let imm_first =
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
             if imm_first {
                 // 楽観的 C: async 完了前から ImeModel を OFF に同期する。
-                self.app.platform_state.ime.mirror_applied_open(false);
+                self.platform_state.ime.mirror_applied_open(false);
                 let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
                 win32_async::spawn_local(async move {
                     let ok = crate::ime::set_ime_open_cross_process_async(false).await;
@@ -298,14 +288,14 @@ impl KeyEventPipeline<'_> {
             } else {
                 let outcome = crate::ime_controller::CONTROLLER.apply(false, &view);
                 // B+C+D(noop)+E
-                self.app.on_ime_apply_complete(false, outcome);
+                self.on_ime_apply_complete(false, outcome);
             }
             log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false");
         }
         log::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
-            if self.app.platform_state.ime_on() { "ON" } else { "OFF" },
+            if self.platform_state.ime_on() { "ON" } else { "OFF" },
             event.vk_code,
             kind,
         );
@@ -313,22 +303,21 @@ impl KeyEventPipeline<'_> {
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
-    fn stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
+    fn kp_stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             let is_key_up = !matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-            if self.app.platform_state.ime.is_ctrl_ime_chord_active() {
+            if self.platform_state.ime.is_ctrl_ime_chord_active() {
                 // Step 4: CtrlImeChord transaction 中の二次 SetOpen を filter する。
                 // Ctrl KeyUp が Phase 2 Active→Inactive 遷移を起こして生成した SetOpen を
                 // 再 write すると Priority-3 が消費済みのため stale observer_poll が belief を
                 // 上書きし、直後の TIMER_IME_REFRESH で engine が再アクティブ化する。
                 // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
-                self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
+                self.executor.platform.timer.kill(TIMER_IME_REFRESH);
                 if is_key_up {
-                    let kind = self.app.platform_state.ime
+                    let kind = self.platform_state.ime
                         .active_chord_kind()
                         .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
-                    self.app
-                        .platform_state
+                    self.platform_state
                         .ime
                         .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
                 }
@@ -339,14 +328,14 @@ impl KeyEventPipeline<'_> {
                 );
             } else {
                 let ms = hook::current_tick_ms();
-                self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
-                self.app.platform_state.on_set_open_requested();
-                self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
+                self.platform_state.write_set_open_request(new_ime_on, ms, self.engine.is_user_enabled());
+                self.platform_state.on_set_open_requested();
+                self.executor.platform.timer.kill(TIMER_IME_REFRESH);
 
                 // Phase 3b: ImeApplyRequested event を dispatch して shadow_model.pending を
                 // 更新する。generation は event_log.next_seq() を使う (event の seq とも一致)。
-                let generation = self.app.platform_state.ime.event_log.next_seq();
-                self.app.platform_state.ime.dispatch_event(
+                let generation = self.platform_state.ime.event_log.next_seq();
+                self.platform_state.ime.dispatch_event(
                     crate::state::ime_event::ImeEvent::ImeApplyRequested {
                         target: new_ime_on,
                         generation,
@@ -359,8 +348,7 @@ impl KeyEventPipeline<'_> {
                 // IME ON 要求では dispatch しない: 後続の Ctrl+無変換 IME OFF で
                 // write_set_open_request がスキップされ belief が true のまま残る事故を防ぐ。
                 if !new_ime_on && event.modifier_snapshot.ctrl {
-                    self.app
-                        .platform_state
+                    self.platform_state
                         .ime
                         .dispatch_event(crate::state::ime_event::ImeEvent::ChordStarted {
                             kind: crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff,
@@ -381,14 +369,14 @@ impl KeyEventPipeline<'_> {
             && event.ime_relevance.may_change_ime
             && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
         {
-            self.app.schedule_ime_refresh(20);
+            self.schedule_ime_refresh(20);
             log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
     }
 
     /// Effects の実行（フックからキューに委譲）
-    fn stage_execute(
-        self,
+    fn kp_stage_execute(
+        &mut self,
         decision: awase::engine::Decision,
         event: &RawKeyEvent,
         shadow_toggled: bool,
@@ -401,7 +389,7 @@ impl KeyEventPipeline<'_> {
         //   反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
         //   (IME-ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデル。
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
-        let profile = self.app.executor.platform.current_app_profile();
+        let profile = self.executor.platform.current_app_profile();
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
         let suppress_physical = if profile.can_use_imm32_cross_process() {
             // ImmCross: KANJI 関連 VK は Down/Up 共に Consume（spurious 連鎖を構造的に遮断）
@@ -439,11 +427,11 @@ impl KeyEventPipeline<'_> {
 
         // ImeModel から applied snapshot を pre-fetch して executor に渡す。
         // executor は intra-batch 更新でこの値を書き換えることがある（ImmCross 楽観更新等）。
-        let pre_applied = self.app.platform_state.ime.applied_pair();
-        let result = self.app.executor.execute_from_hook(decision, event, pre_applied);
+        let pre_applied = self.platform_state.ime.applied_pair();
+        let result = self.executor.execute_from_hook(decision, event, pre_applied);
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
-        self.app.dispatch_outcomes(result.sync_outcomes);
+        self.dispatch_outcomes(result.sync_outcomes);
 
         if result.has_pending {
             post_to_main_thread(WM_EXECUTE_EFFECTS);
@@ -539,7 +527,7 @@ fn build_ime_on_suffix(
 
 impl Runtime {
     /// read_ime_state_fast_async の結果を self に適用する（with_app 内で呼ぶ）。
-    /// stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
+    /// kp_stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
     #[allow(clippy::needless_pass_by_value, clippy::option_if_let_else)]
     fn apply_focus_probe(
         &mut self,
