@@ -695,14 +695,31 @@ impl DecisionExecutor {
                 let outcome = if ok {
                     awase::platform::ImeOpenOutcome::Applied
                 } else {
-                    log::debug!("[apply-ime] ImmCross failed (async), trying fallback");
-                    crate::with_app(|app| {
-                        let applied = app.platform_state.ime.shadow_model.applied_open
-                            .map(|v| (v, app.platform_state.ime.shadow_model.applied_at_ms));
-                        let view = app.executor.platform.build_ime_control_view(applied);
-                        crate::ime_controller::CONTROLLER.apply_skipping_imm(open, &view)
-                    })
-                    .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                    // ImmCross failed (e.g. composition commit racing with SetOpen).
+                    // Before sending VK_KANJI toggle, verify the actual IME state: if the IME
+                    // already reached the desired state during the ImmCross timeout window
+                    // (e.g. GJI candidate dismiss settled the IME), skip the toggle to prevent
+                    // the spurious OFF→ON re-toggle that causes the ~500ms drift correction.
+                    let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
+                    if actual == Some(open) {
+                        log::debug!(
+                            "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
+                             already matches desired={open}, skip fallback"
+                        );
+                        awase::platform::ImeOpenOutcome::AlreadyMatched
+                    } else {
+                        log::debug!(
+                            "[apply-ime] ImmCross failed (async), trying fallback \
+                             (actual ime_on={actual:?})"
+                        );
+                        crate::with_app(|app| {
+                            let applied = app.platform_state.ime.shadow_model.applied_open
+                                .map(|v| (v, app.platform_state.ime.shadow_model.applied_at_ms));
+                            let view = app.executor.platform.build_ime_control_view(applied);
+                            crate::ime_controller::CONTROLLER.apply_skipping_imm(open, &view)
+                        })
+                        .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                    }
                 };
                 let _ = crate::with_app(|app| {
                     if outcome == awase::platform::ImeOpenOutcome::Failed {
