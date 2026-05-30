@@ -126,7 +126,7 @@ pub struct TsfObservations {
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
-    /// GJI candidate が SHOW になってから次の `set_ime_apply_latch` 呼び出しまでの間に
+    /// GJI candidate が SHOW になってから次の `on_ime_applied` 呼び出しまでの間に
     /// 「shadow=OFF なのに候補ウィンドウが表示された（desync）」ことがあったかを記録するラッチ。
     ///
     /// `EVENT_OBJECT_SHOW` で `true` に、`reset_candidate_was_seen()` 呼び出し時に `false` にリセット。
