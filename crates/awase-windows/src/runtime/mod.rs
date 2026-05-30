@@ -1,5 +1,5 @@
 mod ime_refresh;
-use ime_refresh::ImeRefreshPipeline;
+mod key_pipeline;
 
 use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
@@ -271,7 +271,7 @@ impl Runtime {
     ///
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn refresh_ime_state_cache(&mut self) {
-        ImeRefreshPipeline::new(self).run();
+        self.run_ime_refresh();
     }
 
     /// フォーカスプローブ結果を適用する（blocking なし、with_app 内で呼ぶ）。
@@ -587,7 +587,7 @@ impl Runtime {
             let focus = crate::focus::probe::run_focus_probe_async().await;
             let snap = crate::ime::read_ime_state_full_async().await;
             let _ = crate::with_app(|app| {
-                ImeRefreshPipeline::new(app).run_with_prefetched(focus, &snap);
+                app.run_ime_refresh_with_prefetched(focus, &snap);
 
                 // run_with_prefetched 完了後: last_focus_info が更新済みのため
                 // injection_hint を読んで TsfGate を遷移させる。
