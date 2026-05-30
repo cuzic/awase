@@ -85,8 +85,6 @@ struct ClassifiedFocus {
     process_id: u32,
     class_name: String,
     kind: FocusKind,
-    #[allow(dead_code)]
-    app_kind: awase::types::AppKind,
 }
 
 impl Runtime {
@@ -396,7 +394,6 @@ impl Runtime {
             process_id,
             class_name,
             kind,
-            app_kind: new_app_kind,
         })
     }
 

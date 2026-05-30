@@ -169,7 +169,7 @@ fn classify_test_key(
     _scan: ScanCode,
 ) -> (
     crate::types::KeyClassification,
-    Option<crate::scanmap::PhysicalPos>,
+    Option<PhysicalPos>,
 ) {
     use crate::types::KeyClassification;
 
@@ -185,7 +185,7 @@ fn classify_test_key(
 }
 
 /// テスト用: VK → PhysicalPos 直接マッピング（scan_to_pos を使わない）
-fn test_vk_to_pos(vk: VkCode) -> Option<crate::scanmap::PhysicalPos> {
+fn test_vk_to_pos(vk: VkCode) -> Option<PhysicalPos> {
     use crate::scanmap::PhysicalPos;
     match vk {
         VK_A => Some(PhysicalPos::new(2, 0)),
@@ -991,7 +991,7 @@ fn test_nicola_state_stores_scan_code() {
         ime_relevance: crate::types::ImeRelevance::default(),
         modifier_key: None,
         key_classification: crate::types::KeyClassification::Char,
-        physical_pos: Some(crate::scanmap::PhysicalPos::new(2, 0)),
+        physical_pos: Some(PhysicalPos::new(2, 0)),
         modifier_snapshot: Default::default(),
     };
 
@@ -1023,7 +1023,7 @@ fn test_pending_char_thumb_stores_char_scan() {
         ime_relevance: crate::types::ImeRelevance::default(),
         modifier_key: None,
         key_classification: crate::types::KeyClassification::Char,
-        physical_pos: Some(crate::scanmap::PhysicalPos::new(2, 0)),
+        physical_pos: Some(PhysicalPos::new(2, 0)),
         modifier_snapshot: Default::default(),
     };
     engine.on_event(char_event);
@@ -1082,7 +1082,7 @@ fn test_yab_value_to_action_special() {
     let action = yab_value_to_action(&YabValue::Special(SpecialKey::Backspace));
     assert!(matches!(
         action,
-        KeyAction::SpecialKey(crate::types::SpecialKey::Backspace)
+        KeyAction::SpecialKey(SpecialKey::Backspace)
     ));
 }
 
@@ -1628,7 +1628,7 @@ fn test_special_value_in_layout() {
     r.assert_consumed();
     assert!(matches!(
         r.actions[0],
-        KeyAction::SpecialKey(crate::types::SpecialKey::Backspace)
+        KeyAction::SpecialKey(SpecialKey::Backspace)
     ));
 
     // SpecialKey actions are atomic (down+up in one shot).
@@ -3481,7 +3481,7 @@ mod fsm_adapter_tests {
 [bigram]
 "あり" = 1.5
 "#;
-        let model = crate::ngram::NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000)
+        let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000)
             .unwrap();
         adapter.set_ngram_model(model);
     }

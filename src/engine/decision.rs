@@ -68,7 +68,6 @@ pub enum Effect {
 
 /// Engine の実効有効状態（3値）。
 ///
-/// 旧 `Engine::prev_active: bool` を置き換える。
 /// `Pending` を導入することで「フォーカス変更直後の観測待ち」を
 /// false に落とさずに表現できる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,9 +239,8 @@ impl Decision {
 
 /// 入力方式の確度付き状態。
 ///
-/// 旧 `InputContext.is_romaji: bool` を置き換える。
 /// `bool` では「観測値」と「IMM broken アプリ向け仮定値」を区別できず、
-/// Chrome 等で stale な false に上書きされる問題があった。
+/// Chrome 等で stale な false に上書きされる問題があるため確度を保持する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputModeState {
     /// IMM クエリ等でローマ字入力と確認できた

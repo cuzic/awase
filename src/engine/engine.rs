@@ -364,12 +364,7 @@ impl Engine {
     ///
     /// # 二重 enqueue 防止
     ///
-    /// 旧実装は `SetOpen` のみを単独で emit していたため、Platform 層が
-    /// `find_ime_set_open` で `preconditions.ime_on` を即時更新 → 次の `on_input`
-    /// （Ctrl KeyUp 等の合成イベント）で `check_active_transition` が同じ状態変化を
-    /// 検出して再度 `SetOpen` を emit する二重 enqueue が発生していた。
-    ///
-    /// 本実装は `transition_activation` で `prev_activation` を新状態に推進するため、
+    /// `transition_activation` で `prev_activation` を新状態に推進するため、
     /// 次回の `check_active_transition` は no-op となり、構造的に重複を排除する。
     fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
         let pseudo_ctx = InputContext { ime_on: open, ..*ctx };
