@@ -33,49 +33,38 @@ enum ImeReadStrategy {
 
 // ── FocusInfo ──
 
-/// stage_focus() の戻り値: フォーカス検出結果
+/// ir_stage_focus() の戻り値: フォーカス検出結果
 struct FocusInfo {
     focus_changed: bool,
     skip_imm_query: bool,
 }
 
-// ── ImeRefreshPipeline ──
+// ── IME リフレッシュ（impl Runtime） ──
 
-pub(super) struct ImeRefreshPipeline<'a> {
-    rt: &'a mut Runtime,
-}
-
-impl<'a> ImeRefreshPipeline<'a> {
-    pub(super) const fn new(rt: &'a mut Runtime) -> Self {
-        Self { rt }
-    }
-
-    pub(super) fn run(self) {
-        self.execute(IoMode::Sync);
+impl Runtime {
+    pub(super) fn run_ime_refresh(&mut self) {
+        self.ir_execute(IoMode::Sync);
     }
 
     /// pre-fetch 済みデータを使ってパイプラインを実行（blocking なし）。
     /// spawn_local タスクから呼ぶ。
-    pub(super) fn run_with_prefetched(
-        self,
+    pub(super) fn run_ime_refresh_with_prefetched(
+        &mut self,
         focus_probe: Option<crate::focus::probe::FocusSnapshot>,
         ime_snap: &crate::ime::ImeSnapshot,
     ) {
-        self.execute(IoMode::Prefetched { focus: focus_probe, ime: ime_snap });
+        self.ir_execute(IoMode::Prefetched { focus: focus_probe, ime: ime_snap });
     }
 
-    fn execute(mut self, mode: IoMode<'_>) {
-        // IoMode を分解して各ステージに必要な型として渡す。
-        // focus_probe: None = 同期取得、Some(x) = pre-fetch 済み
-        // ime_snap:    None = 同期ポーリング、Some(s) = pre-fetch 済みスナップショット
+    fn ir_execute(&mut self, mode: IoMode<'_>) {
         let (focus_probe, ime_snap) = match mode {
             IoMode::Sync => (None, None),
             IoMode::Prefetched { focus, ime } => (Some(focus), Some(ime)),
         };
-        let focus = self.stage_focus(focus_probe);
-        let strategy = self.stage_strategy(&focus);
-        self.stage_observe(&focus, &strategy, ime_snap);
-        self.stage_notify();
+        let focus = self.ir_stage_focus(focus_probe);
+        let strategy = self.ir_stage_strategy(&focus);
+        self.ir_stage_observe(&focus, &strategy, ime_snap);
+        self.ir_stage_notify();
     }
 
     // ── Stage 1: フォーカス検出 ──
@@ -84,14 +73,13 @@ impl<'a> ImeRefreshPipeline<'a> {
     // Phase 2.5: IMM ブリッジ非対応クラスの判定（Phase 2 の前に実行する必要あり）
     // Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）
 
-    fn stage_focus(
+    fn ir_stage_focus(
         &mut self,
         focus_probe: Option<Option<crate::focus::probe::FocusSnapshot>>,
     ) -> FocusInfo {
-        // Phase 1: フォーカス先の検出・分類
         let focus_changed = match focus_probe {
-            None => unsafe { self.rt.detect_and_update_focus() },
-            Some(probe) => self.rt.apply_focus_probe_result(probe),
+            None => unsafe { self.detect_and_update_focus() },
+            Some(probe) => self.apply_focus_probe_result(probe),
         };
 
         // Phase 2.5: IMM ブリッジ非対応クラスの判定
@@ -102,11 +90,11 @@ impl<'a> ImeRefreshPipeline<'a> {
         //
         // FocusChanged で build_ctx() が呼ばれる際、input_mode が stale な ObservedKana だと
         // engine が inactive になってしまうため、先に補正する。
-        let skip_imm_query = self.resolve_skip_imm_query();
+        let skip_imm_query = self.ir_resolve_skip_imm_query();
 
         // Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）
         if focus_changed {
-            self.notify_focus_changed(skip_imm_query);
+            self.ir_notify_focus_changed(skip_imm_query);
         }
 
         FocusInfo { focus_changed, skip_imm_query }
@@ -114,8 +102,8 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     // ── Stage 2: 読み取り方針の決定 ──
 
-    fn stage_strategy(&self, focus: &FocusInfo) -> ImeReadStrategy {
-        self.decide_read_strategy(focus.skip_imm_query)
+    fn ir_stage_strategy(&self, focus: &FocusInfo) -> ImeReadStrategy {
+        self.ir_decide_read_strategy(focus.skip_imm_query)
     }
 
     // ── Stage 3: IME 状態の観測 ──
@@ -125,7 +113,7 @@ impl<'a> ImeRefreshPipeline<'a> {
     // Phase 3.5: 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
     // Phase 3.7: 診断スナップショット（フォーカス変更後）
 
-    fn stage_observe(
+    fn ir_stage_observe(
         &mut self,
         focus: &FocusInfo,
         strategy: &ImeReadStrategy,
@@ -134,38 +122,32 @@ impl<'a> ImeRefreshPipeline<'a> {
         log::debug!(
             "[stage-observe] strategy={:?} belief_on={} explicit_intent={:?}",
             strategy,
-            self.rt.platform_state.ime_on(),
-            self.rt.platform_state.explicit_intent(),
+            self.platform_state.ime_on(),
+            self.platform_state.explicit_intent(),
         );
         match strategy {
-            ImeReadStrategy::SkipTyping => {
-                // タイピング中は何もしない
-            }
+            ImeReadStrategy::SkipTyping => {}
             ImeReadStrategy::Blacklist => {
                 log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
                 let obs = crate::observer::gji_observer::observe_gji_after_focus(
-                    self.rt.platform_state.last_focus_change_ms,
+                    self.platform_state.last_focus_change_ms,
                 );
-                log::debug!(
-                    "[stage-observe] gji_result={:?}",
-                    obs.observer_poll_value
-                );
+                log::debug!("[stage-observe] gji_result={:?}", obs.observer_poll_value);
                 if let Some(v) = obs.observer_poll_value {
-                    self.rt.platform_state.write_observer_poll(
-                        v, obs.now_ms, self.rt.engine.is_user_enabled(),
+                    self.platform_state.write_observer_poll(
+                        v, obs.now_ms, self.engine.is_user_enabled(),
                     );
                 }
             }
             ImeReadStrategy::OsPoll => {
-                // Phase 3: IME 状態の再取得
-                let miss_before = self.rt.platform_state.ime_detect_miss_count();
-                self.poll_and_learn(miss_before, ime_snap);
+                let miss_before = self.platform_state.ime_detect_miss_count();
+                self.ir_poll_and_learn(miss_before, ime_snap);
             }
         }
 
         // Phase 3.7: 診断スナップショット（フォーカス変更確定直後）
         if focus.focus_changed {
-            self.post_focus_change_snapshot(focus.skip_imm_query);
+            self.ir_post_focus_change_snapshot(focus.skip_imm_query);
         }
     }
 
@@ -174,44 +156,44 @@ impl<'a> ImeRefreshPipeline<'a> {
     // Phase 4: Engine に RefreshState（active 遷移検知）
     // Phase 5: 次回ポーリングをスケジュール
 
-    fn stage_notify(&mut self) {
+    fn ir_stage_notify(&mut self) {
         // Phase 4a: IMM-broken アプリの force-ON（Blacklist パス専用）
-        self.rt.apply_force_on_for_imm_broken();
+        self.apply_force_on_for_imm_broken();
         // Phase 4: Engine に RefreshState（active 遷移検知）
-        self.notify_engine_refresh();
+        self.ir_notify_engine_refresh();
         // Phase 4b: desired ≠ observed ドリフト補正（ImmCross アプリ向け）
-        self.apply_drift_correction();
+        self.ir_apply_drift_correction();
         // Phase 5: 次回ポーリングをスケジュール
-        self.reschedule();
+        self.reschedule_ime_refresh();
     }
 
     // ── IMM ブリッジ非対応クラスの判定 ──
 
-    fn resolve_skip_imm_query(&self) -> bool {
-        !self.rt.can_use_imm32_cross_process()
+    fn ir_resolve_skip_imm_query(&self) -> bool {
+        !self.can_use_imm32_cross_process()
     }
 
     // ── フォーカス変更通知 ──
 
-    fn notify_focus_changed(&mut self, skip_imm_query: bool) {
+    fn ir_notify_focus_changed(&mut self, skip_imm_query: bool) {
         // IMM broken アプリ（Chrome 等）に切り替わった際に input_mode が
         // 前ウィンドウの stale な ObservedKana を引き継いでいると、FocusChanged の ctx で
         // engine が inactive になる。broken アプリでは入力モードを検出できないため、
         // ime_on=true のとき AssumedRomaji と仮定して補正する。
         if skip_imm_query
-            && self.rt.platform_state.ime_on()
-            && !self.rt.platform_state.input_mode().is_romaji_capable()
+            && self.platform_state.ime_on()
+            && !self.platform_state.input_mode().is_romaji_capable()
         {
             log::info!(
                 "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
             );
-            self.rt.platform_state.set_input_mode(
+            self.platform_state.set_input_mode(
                 InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
             );
         }
-        let ctx = self.rt.build_ctx();
-        let decision = self.rt.engine.on_command(EngineCommand::FocusChanged, &ctx);
-        self.rt.execute_decision_suppressed(decision);
+        let ctx = self.build_ctx();
+        let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
+        self.execute_decision_suppressed(decision);
     }
 
     // ── 読み取り方針の決定 ──
@@ -219,11 +201,10 @@ impl<'a> ImeRefreshPipeline<'a> {
     // 最後のキー活動（物理キー押下 または VK/TSF 出力）から TYPING_IDLE_MS 以内は
     // IMM との SendMessage を一切行わない。
 
-    fn decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
-        let last_activity = self.rt.platform_state.last_hook_activity_ms
+    fn ir_decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
+        let last_activity = self.platform_state.last_hook_activity_ms
             .max(crate::tsf::probe_bridge::OUTPUT_GATE.last_vk_output_ms.load(std::sync::atomic::Ordering::Relaxed));
-        let idle_ms = crate::hook::current_tick_ms()
-            .saturating_sub(last_activity);
+        let idle_ms = crate::hook::current_tick_ms().saturating_sub(last_activity);
         let is_typing = idle_ms < TYPING_IDLE_MS;
 
         if is_typing {
@@ -232,8 +213,8 @@ impl<'a> ImeRefreshPipeline<'a> {
             // タイピングアイドルガードを回避して OsPoll を先行させる。
             // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
             let explicit_verify = !skip_imm_query
-                && self.rt.platform_state.explicit_intent().is_some()
-                && self.rt.platform_state.ime.has_applied_state();
+                && self.platform_state.explicit_intent().is_some()
+                && self.platform_state.ime.has_applied_state();
             if !explicit_verify {
                 log::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
                 return ImeReadStrategy::SkipTyping;
@@ -252,18 +233,17 @@ impl<'a> ImeRefreshPipeline<'a> {
 
     // ── IME 状態のポーリングと学習 ──
 
-    fn poll_and_learn(&mut self, miss_before: u32, ime_snap: Option<&crate::ime::ImeSnapshot>) {
-        // [診断] observe 前のスナップショット（差分検出用）
-        let ime_on_before_poll = self.rt.platform_state.ime_on();
-        let input_mode_before_poll = self.rt.platform_state.input_mode();
+    fn ir_poll_and_learn(&mut self, miss_before: u32, ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        let ime_on_before_poll = self.platform_state.ime_on();
+        let input_mode_before_poll = self.platform_state.input_mode();
 
         let observer_out = match ime_snap {
             None => unsafe {
                 crate::observer::ime_observer::poll_and_classify_ime(
-                    self.rt.platform_state.ime_on(),
-                    self.rt.platform_state.is_force_on_guard_active(),
-                    self.rt.platform_state.input_mode(),
-                    self.rt.platform_state.prev_conversion_mode(),
+                    self.platform_state.ime_on(),
+                    self.platform_state.is_force_on_guard_active(),
+                    self.platform_state.input_mode(),
+                    self.platform_state.prev_conversion_mode(),
                 )
             },
             Some(snap) => {
@@ -271,33 +251,25 @@ impl<'a> ImeRefreshPipeline<'a> {
                 crate::observer::ime_observer::classify_fetched_snapshot(
                     snap,
                     now_ms,
-                    self.rt.platform_state.ime_on(),
-                    self.rt.platform_state.is_force_on_guard_active(),
-                    self.rt.platform_state.input_mode(),
-                    self.rt.platform_state.prev_conversion_mode(),
+                    self.platform_state.ime_on(),
+                    self.platform_state.is_force_on_guard_active(),
+                    self.platform_state.input_mode(),
+                    self.platform_state.prev_conversion_mode(),
                 )
             }
         };
-        self.rt.platform_state.apply_ime_update(&observer_out, self.rt.engine.is_user_enabled());
+        self.platform_state.apply_ime_update(&observer_out, self.engine.is_user_enabled());
 
-        let miss_after = self.rt.platform_state.ime_detect_miss_count();
+        let miss_after = self.platform_state.ime_detect_miss_count();
 
-        self.log_poll_diff(
-            ime_on_before_poll,
-            input_mode_before_poll,
-            miss_before,
-            miss_after,
-        );
+        self.ir_log_poll_diff(ime_on_before_poll, input_mode_before_poll, miss_before, miss_after);
 
-        // IMM 能力の学習
-        self.rt.learn_imm_capability_from_miss(miss_before, miss_after);
-
-        // 未知 Imm32Unavailable アプリ向け一時 force-ON（初回ブートストラップ）
-        self.rt.try_force_on_bootstrap();
+        self.learn_imm_capability_from_miss(miss_before, miss_after);
+        self.try_force_on_bootstrap();
     }
 
     /// [診断] フォーカス変更から 10 秒以内で状態が変わった場合にログ出力。
-    fn log_poll_diff(
+    fn ir_log_poll_diff(
         &self,
         ime_on_before_poll: bool,
         input_mode_before_poll: InputModeState,
@@ -305,10 +277,10 @@ impl<'a> ImeRefreshPipeline<'a> {
         miss_after: u32,
     ) {
         let age_ms = crate::hook::current_tick_ms()
-            .saturating_sub(self.rt.platform_state.last_focus_change_ms);
+            .saturating_sub(self.platform_state.last_focus_change_ms);
         if age_ms < 10_000 {
-            let ime_on_after = self.rt.platform_state.ime_on();
-            let input_mode_after = self.rt.platform_state.input_mode();
+            let ime_on_after = self.platform_state.ime_on();
+            let input_mode_after = self.platform_state.input_mode();
             let ime_changed = ime_on_before_poll != ime_on_after;
             let mode_changed = input_mode_before_poll != input_mode_after;
             if ime_changed || mode_changed {
@@ -320,7 +292,7 @@ impl<'a> ImeRefreshPipeline<'a> {
                             "ime_on {} → {}(intent={:?}) ",
                             ime_on_before_poll,
                             ime_on_after,
-                            self.rt.platform_state.explicit_intent(),
+                            self.platform_state.explicit_intent(),
                         )
                     } else {
                         String::new()
@@ -337,52 +309,33 @@ impl<'a> ImeRefreshPipeline<'a> {
                 );
             }
         }
-        let _ = miss_before; // suppress unused warning if logging is compiled out
+        let _ = miss_before;
     }
 
     // ── 診断スナップショット（フォーカス変更確定直後）──
-    //
-    // フォーカス変更が確定した直後の IME 状態を 1 行ログに吐き出す。
-    // ウィンドウ切替直後の cold-start 不具合を解析するための観測点。
 
-    fn post_focus_change_snapshot(&mut self, skip_imm_query: bool) {
-        // IMM ブリッジ非対応クラスでは capture_imc / get_gui_thread_info がタイムアウト
-        // して ~150ms ブロックするため診断をスキップする。
+    fn ir_post_focus_change_snapshot(&mut self, skip_imm_query: bool) {
         if !skip_imm_query {
             crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
         }
-        // フォーカス変更時は VK/TSF いずれも composition context が無効化される。
         log::debug!("[composition] focus change → marking cold");
-        // フォーカス変更直後の IMM 実測値で last_applied ログを初期化する。
-        // これにより KanjiToggleStrategy が次回 apply_ime_open を呼ぶときに
-        // belief の最新値と比較して重複送信を回避できる。
-        let ime_on_now = self.rt.platform_state.ime_on();
-        self.rt.platform_state.ime.mirror_applied_open(ime_on_now);
-        self.rt.executor.platform.mark_composition_cold_focus_change();
+        let ime_on_now = self.platform_state.ime_on();
+        self.platform_state.ime.mirror_applied_open(ime_on_now);
+        self.executor.platform.mark_composition_cold_focus_change();
 
-        // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
-        // mirror_applied_open 直後なので ImeModel の applied_open を使う。
-        let applied_open = self.rt.platform_state.ime.applied_open();
-        self.rt.executor.platform.send_eager_warmup(applied_open);
+        let applied_open = self.platform_state.ime.applied_open();
+        self.executor.platform.send_eager_warmup(applied_open);
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
         );
 
-        // applied_open=false (or None) の場合、新しいウィンドウの IME を明示的に OFF にする。
-        // Ctrl+無変換 は発火時点のウィンドウにしか set_ime_open を送らないため、
-        // 別ウィンドウに移動すると IME が ON のままになるのを防ぐ。
-        //
-        // ただし TsfNative プロファイル（Windows Terminal 等）は IMM クロスプロセス制御が
-        // 効かず set_ime_open(false) は no-op だが、shadow ime_on の carry over と相まって
-        // Engine が活性化不能の trap に陥る。TsfNative では runtime 側で stale をリセット
-        // するためここでは enforce OFF を skip し、新ウィンドウの状態に任せる。
         let new_profile_is_tsf_native = matches!(
-            self.rt.executor.platform.current_app_profile(),
+            self.executor.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         );
-        let applied_ime_on = self.rt.platform_state.ime.applied_open_or_default();
+        let applied_ime_on = self.platform_state.ime.applied_open_or_default();
         if !applied_ime_on && !new_profile_is_tsf_native {
-            let _ = self.rt.executor.platform.set_ime_open(false);
+            let _ = self.executor.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
         }
     }
@@ -396,23 +349,21 @@ impl<'a> ImeRefreshPipeline<'a> {
     //   Blacklist アプリは apply_force_on_for_imm_broken が担当するため除外。
     //   TsfNative アプリは can_use_imm32_cross_process=false で set_ime_open が no-op。
 
-    fn check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
-        let explicit_intent = self.rt.platform_state.explicit_intent();
-        self.rt.platform_state.ime.check_drift_correction(now, explicit_intent)
+    fn ir_check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
+        let explicit_intent = self.platform_state.explicit_intent();
+        self.platform_state.ime.check_drift_correction(now, explicit_intent)
     }
 
-    fn apply_drift_correction(&mut self) {
-        // Blacklist パスは apply_force_on_for_imm_broken が担当
-        if self.resolve_skip_imm_query() {
+    fn ir_apply_drift_correction(&mut self) {
+        if self.ir_resolve_skip_imm_query() {
             return;
         }
-        // エンジン無効 / 非日本語 IME は補正しない
-        if !self.rt.engine.is_user_enabled() || !self.rt.platform_state.is_japanese_ime() {
+        if !self.engine.is_user_enabled() || !self.platform_state.is_japanese_ime() {
             return;
         }
 
         let now = std::time::Instant::now();
-        let Some((desired, observed, duration_ms)) = self.check_drift_correction(now) else {
+        let Some((desired, observed, duration_ms)) = self.ir_check_drift_correction(now) else {
             return;
         };
 
@@ -420,30 +371,23 @@ impl<'a> ImeRefreshPipeline<'a> {
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
              → set_ime_open({desired})"
         );
-        self.rt.platform_state.ime.dispatch_event(
+        self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::DriftDetected { desired, observed, duration_ms },
         );
-        let _ = self.rt.executor.platform.set_ime_open(desired);
-        // ts=0 = 楽観的未確認: ImmCross async と同じ扱い。skip_override は applied_at_ms=0 で無効化済み。
-        self.rt.platform_state.ime.mirror_applied_open_with_ts(desired, 0);
+        let _ = self.executor.platform.set_ime_open(desired);
+        self.platform_state.ime.mirror_applied_open_with_ts(desired, 0);
     }
 
     // ── Engine 通知 ──
 
-    fn notify_engine_refresh(&mut self) {
-        let ctx = self.rt.build_ctx();
+    fn ir_notify_engine_refresh(&mut self) {
+        let ctx = self.build_ctx();
         log::debug!(
             "[notify-refresh] ctx.ime_on={} ctx.is_jp={} explicit_intent={:?}",
             ctx.ime_on, ctx.is_japanese_ime,
-            self.rt.platform_state.explicit_intent(),
+            self.platform_state.explicit_intent(),
         );
-        let decision = self.rt.engine.on_command(EngineCommand::RefreshState, &ctx);
-        self.rt.execute_decision_suppressed(decision);
-    }
-
-    // ── 次回ポーリングのスケジュール ──
-
-    fn reschedule(&mut self) {
-        self.rt.reschedule_ime_refresh();
+        let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
+        self.execute_decision_suppressed(decision);
     }
 }
