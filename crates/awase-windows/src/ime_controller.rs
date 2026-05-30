@@ -5,12 +5,17 @@
 //!
 //! # 戦略リスト（優先順）
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
-//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F13/Ctrl+Shift+Delete、shadow desync 耐性あり）
-//! 3. `KanjiToggleStrategy`     — 汎用フォールバック（非 GJI の Imm32Unavailable + ImmCross 失敗時）
+//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F13/F14）。**全プロファイル**で適用可能
+//! 3. `KanjiToggleStrategy`     — 最終フォールバック。GJI 非検出時の MS-IME 環境向け
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
 //! `ImeController` は次の適用可能な戦略へフォールスルーする。
-//! GJI が検出されている場合は `GjiDirectStrategy` が `KanjiToggleStrategy` より先に選択される。
+//! GJI が検出されている場合は `GjiDirectStrategy` が全プロファイルで `KanjiToggleStrategy` より優先される。
+//!
+//! ## GJI 前提の設計方針
+//! F13/F14 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
+//! GJI 稼働中はアプリ種別に関わらず GJI を使うことで VK_KANJI トグルアーティファクトを回避できる。
+//! GJI が起動していない環境（MS-IME 等）では `KanjiToggleStrategy` が引き続き機能する。
 //!
 //! ## アーキテクチャ制約
 //! このモジュールは観測値を自ら読んではいけない。
@@ -52,13 +57,16 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 
 // ── GjiDirectStrategy ────────────────────────────────────────────
 
-/// GJI 専用の一方向 IME 制御戦略。
+/// GJI を使った一方向 IME 制御戦略。
 ///
 /// VK_KANJI（トグル）の代わりに GJI 固有のキーを使うことで shadow desync の影響を排除する:
 /// - ON  → F13（DirectInput 時にひらがなへ切り替え、既に ON なら no-op）
 /// - OFF → F14（Precomposition/Composition/Conversion 時に IME OFF）
 ///
+/// F13/F14 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
+/// Standard / Imm32Unavailable / TsfNative **全プロファイル**で利用できる。
 /// F13/F14 は実キーボードに存在しないためブラウザショートカットと衝突しない。
+///
 /// GJI の config1.db に以下を登録することで有効になる:
 ///   `DirectInput\tF13\tIMEOn`（デフォルト登録済み）
 ///   `Precomposition\tF14\tIMEOff`
@@ -66,11 +74,12 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 ///   `Conversion\tF14\tIMEOff`
 ///
 /// `gji_monitor_ok=true`（GJI プロセス検出済み）の場合のみ適用可能。
+/// GJI が起動していない環境では `KanjiToggleStrategy`（MS-IME 向け）がフォールバックする。
 pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.focus.profile.uses_kanji_toggle() && view.observed.gji_monitor_ok
+        view.observed.gji_monitor_ok
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
@@ -99,10 +108,9 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 
 // ── KanjiToggleStrategy ──────────────────────────────────────────
 
-/// `SendInput(VK_KANJI)` トグルを使うフォールバック戦略。
+/// `SendInput(VK_KANJI)` トグルを使う最終フォールバック戦略（MS-IME 向け）。
 ///
-/// Chrome 等 Imm32Unavailable クラスでの主戦略、および `ImmCrossProcessStrategy` が
-/// タイムアウト失敗した際の汎用フォールバックとして機能する。
+/// GJI が起動していない環境（MS-IME 等）での全プロファイル共通フォールバック。
 /// VK_KANJI はトグルキーのため shadow と目標が一致している場合は送信をスキップする。
 pub(crate) struct KanjiToggleStrategy;
 
