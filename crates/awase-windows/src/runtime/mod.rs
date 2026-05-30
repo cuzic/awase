@@ -722,8 +722,7 @@ impl Runtime {
         self.refresh_ime_state_cache();
 
         // 7. バルーン通知
-        self.executor
-            .platform
+        self.platform
             .tray
             .show_balloon("awase", "状態をリセットしました");
     }
