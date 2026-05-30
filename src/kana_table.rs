@@ -1,12 +1,12 @@
-use std::collections::HashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 /// ローマ字↔かな双方向ルックアップテーブル。
 ///
 /// `build()` で両方向を一括構築し、`kana_for_romaji` / `romaji_for_kana` で参照する。
 #[derive(Debug)]
 pub struct KanaTable {
-    romaji_to_kana: HashMap<String, char>,
-    kana_to_romaji: HashMap<char, String>,
+    romaji_to_kana: FxHashMap<String, char>,
+    kana_to_romaji: FxHashMap<char, String>,
 }
 
 impl KanaTable {
@@ -28,7 +28,7 @@ impl KanaTable {
     }
 }
 
-fn build_romaji_map() -> HashMap<String, char> {
+fn build_romaji_map() -> FxHashMap<String, char> {
     let entries: &[(&str, char)] = &[
         // 母音
         ("a", 'あ'),
@@ -168,8 +168,9 @@ fn build_romaji_map() -> HashMap<String, char> {
     entries.iter().map(|&(k, v)| (k.to_string(), v)).collect()
 }
 
-fn build_reverse_map(forward: &HashMap<String, char>) -> HashMap<char, String> {
-    let mut reverse: HashMap<char, String> = HashMap::with_capacity(forward.len());
+fn build_reverse_map(forward: &FxHashMap<String, char>) -> FxHashMap<char, String> {
+    let mut reverse: FxHashMap<char, String> =
+        FxHashMap::with_capacity_and_hasher(forward.len(), FxBuildHasher);
     for (romaji, &kana) in forward {
         reverse
             .entry(kana)

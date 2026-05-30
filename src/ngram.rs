@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -10,9 +10,9 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct NgramModel {
     /// 2-gram frequency: (prev_char, current_char) -> log-probability score
-    bigram: HashMap<(char, char), f32>,
+    bigram: FxHashMap<(char, char), f32>,
     /// 3-gram frequency: (2-back, 1-back, current) -> log-probability score
-    trigram: HashMap<(char, char, char), f32>,
+    trigram: FxHashMap<(char, char, char), f32>,
     /// Base threshold in microseconds
     base_threshold_us: u64,
     /// Adjustment range in microseconds (+/-)
@@ -33,8 +33,8 @@ impl NgramModel {
         max_threshold_us: u64,
     ) -> Self {
         Self {
-            bigram: HashMap::new(),
-            trigram: HashMap::new(),
+            bigram: FxHashMap::default(),
+            trigram: FxHashMap::default(),
             base_threshold_us,
             adjustment_range_us,
             min_threshold_us,
@@ -112,8 +112,8 @@ impl NgramModel {
         min_threshold_us: u64,
         max_threshold_us: u64,
     ) -> anyhow::Result<Self> {
-        let mut bigram = HashMap::new();
-        let mut trigram = HashMap::new();
+        let mut bigram = FxHashMap::default();
+        let mut trigram = FxHashMap::default();
 
         for line in csv.lines() {
             let line = line.trim();
@@ -178,7 +178,7 @@ impl NgramModel {
     ) -> anyhow::Result<Self> {
         let table: toml::Value = toml_str.parse()?;
 
-        let mut bigram = HashMap::new();
+        let mut bigram = FxHashMap::default();
         if let Some(bi_table) = table.get("bigram").and_then(toml::Value::as_table) {
             for (key, value) in bi_table {
                 let chars: Vec<char> = key.chars().collect();
@@ -199,7 +199,7 @@ impl NgramModel {
             }
         }
 
-        let mut trigram = HashMap::new();
+        let mut trigram = FxHashMap::default();
         if let Some(tri_table) = table.get("trigram").and_then(toml::Value::as_table) {
             for (key, value) in tri_table {
                 let chars: Vec<char> = key.chars().collect();
