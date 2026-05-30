@@ -9,7 +9,7 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::TsfProbeMachine;
-use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS, VK_RSHIFT};
+use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS};
 use super::{Output, VkSequence};
 use super::{WarmthContext, WarmupOutcome, fmt_ms};
 use super::resolve::{ascii_to_vk, CharResolution};

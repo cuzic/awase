@@ -211,7 +211,7 @@ impl ImeStateHub {
         self.mirror_applied_open_with_ts(effective, ts);
 
         if let Some(generation) = self.shadow_model.pending_generation() {
-            let event = super::ime_event::ImeEvent::from_apply_outcome(open, outcome, generation);
+            let event = ImeEvent::from_apply_outcome(open, outcome, generation);
             self.dispatch_event(event);
         }
     }
@@ -452,7 +452,7 @@ impl PlatformState {
         self.ime.dispatch_event(ImeEvent::ObserverReported {
             open: value,
             source: super::ime_event::ObservationSource::ObserverPoll,
-            hwnd: super::ime_event::HwndId::NULL,
+            hwnd: HwndId::NULL,
             confidence: super::ime_event::ObservationConfidence::Medium,
         });
     }
@@ -492,7 +492,7 @@ impl PlatformState {
         self.ime.dispatch_event(ImeEvent::ObserverReported {
             open: value,
             source: super::ime_event::ObservationSource::FocusProbe,
-            hwnd: super::ime_event::HwndId::NULL,
+            hwnd: HwndId::NULL,
             confidence: super::ime_event::ObservationConfidence::Medium,
         });
     }
@@ -516,7 +516,7 @@ impl PlatformState {
             self.ime.dispatch_event(ImeEvent::ObserverReported {
                 open: obs.value,
                 source: super::ime_event::ObservationSource::ObserverPoll,
-                hwnd: super::ime_event::HwndId::NULL,
+                hwnd: HwndId::NULL,
                 confidence: super::ime_event::ObservationConfidence::Medium,
             });
         }
