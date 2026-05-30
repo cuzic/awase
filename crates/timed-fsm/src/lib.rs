@@ -225,11 +225,13 @@
 //!
 //! `timed-fsm` has no runtime dependencies beyond `std`.
 
+pub mod clock;
 mod dispatch;
 mod machine;
 pub mod parser;
 mod response;
 
+pub use clock::{Clock, ManualClock, MonotonicClock};
 pub use dispatch::{ActionExecutor, TimerRuntime};
 pub use machine::TimedStateMachine;
 pub use parser::{ParseAction, ShiftReduceParser};

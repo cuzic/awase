@@ -39,13 +39,12 @@ pub(crate) struct DeferredVk {
 }
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-
-/// 単調増加ミリ秒クロック。`tick_with_clock` でテスト可能なタイミング注入に使う。
-pub(crate) trait Clock {
-    fn now_ms(&self) -> u64;
-}
+use timed_fsm::Clock;
 
 /// 本番クロック: `crate::hook::current_tick_ms()` に委譲する。
+///
+/// `deadline_ms` は `current_tick_ms()` 起点で計算されるため、
+/// `MonotonicClock` と混在させると epoch がずれる。
 pub(crate) struct SystemClock;
 impl Clock for SystemClock {
     fn now_ms(&self) -> u64 { crate::hook::current_tick_ms() }
@@ -623,10 +622,7 @@ mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
 
-    struct MockClock(u64);
-    impl Clock for MockClock {
-        fn now_ms(&self) -> u64 { self.0 }
-    }
+    use timed_fsm::ManualClock;
 
     fn make_gji_machine() -> TsfProbeMachine {
         let guard = OutputActiveGuard::noop_for_test();
@@ -656,7 +652,7 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(make_namechange_wait(1000, false));
 
-        let actions = machine.tick_with_clock(&MockClock(500)); // now < deadline
+        let actions = machine.tick_with_clock(&ManualClock(500)); // now < deadline
         assert!(actions.is_empty(), "待機中は空 Vec を返すべき");
         assert_eq!(machine.phase_label(), "NameChangeWait");
     }
@@ -666,7 +662,7 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(make_namechange_wait(500, true)); // settled=true
 
-        let actions = machine.tick_with_clock(&MockClock(1000)); // now >= deadline
+        let actions = machine.tick_with_clock(&ManualClock(1000)); // now >= deadline
         assert!(!actions.is_empty(), "タイムアウト後は action を emit するべき");
         assert!(
             matches!(actions[0], ProbeAction::Transmit { target: TransmitTarget::Tsf, .. }),
@@ -680,7 +676,7 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(make_namechange_wait(500, false));
 
-        let actions = machine.tick_with_clock(&MockClock(1000));
+        let actions = machine.tick_with_clock(&ManualClock(1000));
         assert!(
             matches!(actions[0], ProbeAction::Transmit { target: TransmitTarget::Tsf, .. }),
             "タイムアウト(unsettled)でも Transmit(Tsf) を emit するべき",
@@ -694,7 +690,7 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::TransmitDone));
 
-        let actions = machine.tick_with_clock(&MockClock(0));
+        let actions = machine.tick_with_clock(&ManualClock(0));
         assert!(actions.is_empty(), "WaitingForCallback は空 Vec を返すべき");
         assert_eq!(machine.phase_label(), "WaitingForCallback(TransmitDone)");
     }
@@ -730,7 +726,7 @@ mod tests {
         let mut machine = TsfProbeMachine::new_literal_detect(
             "a", 0, detector, 1, 0, guard,
         );
-        let actions = machine.tick_with_clock(&MockClock(1000));
+        let actions = machine.tick_with_clock(&ManualClock(1000));
         match &actions[..] {
             [ProbeAction::RawTsfLiteralRecovery { romaji, backs, .. }, ProbeAction::Done] => {
                 assert_eq!(romaji, "a", "literal suspected 経路で romaji が空になってはいけない");
