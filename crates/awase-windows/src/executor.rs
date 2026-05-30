@@ -719,9 +719,8 @@ impl DecisionExecutor {
                              (actual ime_on={actual:?})"
                         );
                         crate::with_app(|app| {
-                            let applied = app.platform_state.ime.shadow_model.applied_pair();
-                            let view = app.executor.platform.build_ime_control_view(applied);
-                            crate::ime_controller::CONTROLLER.apply_skipping_imm(open, &view)
+                            crate::ime_controller::CONTROLLER
+                                .apply_skipping_imm(open, &app.shadow_ime_control_view())
                         })
                         .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
                     }

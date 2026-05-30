@@ -250,6 +250,13 @@ impl Runtime {
         }
     }
 
+    /// 現在の shadow model から `ImeControlView` を構築する。
+    pub(crate) fn shadow_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
+        self.executor.platform.build_ime_control_view(
+            self.platform_state.ime.shadow_model.applied_pair(),
+        )
+    }
+
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
         let ctx = self.build_ctx();

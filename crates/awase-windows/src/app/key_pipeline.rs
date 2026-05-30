@@ -263,8 +263,7 @@ impl KeyEventPipeline<'_> {
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
         // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
         if !self.app.platform_state.ime_on() {
-            let applied = self.app.platform_state.ime.shadow_model.applied_pair();
-            let view = self.app.executor.platform.build_ime_control_view(applied);
+            let view = self.app.shadow_ime_control_view();
             let imm_first =
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
             if imm_first {
@@ -280,9 +279,8 @@ impl KeyEventPipeline<'_> {
                             "[shadow-toggle] ImmCross failed (async), trying fallback"
                         );
                         crate::with_app(|app| {
-                            let applied = app.platform_state.ime.shadow_model.applied_pair();
-                            let view = app.executor.platform.build_ime_control_view(applied);
-                            crate::ime_controller::CONTROLLER.apply_skipping_imm(false, &view)
+                            crate::ime_controller::CONTROLLER
+                                .apply_skipping_imm(false, &app.shadow_ime_control_view())
                         }).unwrap_or(awase::platform::ImeOpenOutcome::Failed)
                     };
                     // B+C(ts更新)+D(noop)+E
