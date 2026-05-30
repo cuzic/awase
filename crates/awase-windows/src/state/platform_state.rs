@@ -7,7 +7,6 @@ use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSour
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
 use super::input_barrier::InputBarrier;
-use super::observation_store::ImeObservation;
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -155,24 +154,67 @@ impl ImeStateHub {
         self.shadow_model.applied_pair()
     }
 
-    // ── Pending transition ──
+    // ── Desired state / drift correction ──
 
-    pub(crate) fn pending_generation(&self) -> Option<u64> {
-        self.shadow_model.pending_generation()
+    /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を返す。
+    ///
+    /// 戻り値: `Some((desired, observed, duration_ms))` — 補正が必要な場合
+    /// `explicit_intent`: `PlatformState::explicit_intent()` の値をそのまま渡す。
+    pub(crate) fn check_drift_correction(
+        &self,
+        now: std::time::Instant,
+        explicit_intent: Option<bool>,
+    ) -> Option<(bool, bool, u64)> {
+        let desired = self.shadow_model.desired_open;
+
+        let dur = self.shadow_model.observations.drift_duration(now)?;
+        let threshold = if explicit_intent == Some(desired) {
+            0
+        } else {
+            u128::from(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+        };
+        if dur.as_millis() < threshold {
+            return None;
+        }
+
+        let max_age = std::time::Duration::from_millis(
+            crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS,
+        );
+        let trusted = self.shadow_model.observations.most_recent_trusted(now)?;
+        if trusted.age(now) > max_age {
+            return None;
+        }
+        if trusted.open == desired {
+            return None;
+        }
+
+        Some((desired, trusted.open, dur.as_millis() as u64))
     }
 
-    // ── Desired state and drift ──
+    /// IME apply 完了を記録する（C: mirror + D: generation 照合 dispatch）。
+    ///
+    /// `mirror_applied_open_with_ts` と `pending_generation` チェックを一体化し、
+    /// 呼び出し元が generation を個別に取得する必要をなくす。
+    pub(crate) fn record_ime_apply_result(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        ts: u64,
+    ) {
+        use awase::platform::ImeOpenOutcome;
+        let effective = match outcome {
+            ImeOpenOutcome::Applied
+            | ImeOpenOutcome::FallbackSent
+            | ImeOpenOutcome::AlreadyMatched => open,
+            ImeOpenOutcome::Failed => !open,
+            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
+        };
+        self.mirror_applied_open_with_ts(effective, ts);
 
-    pub(crate) fn desired_open(&self) -> bool {
-        self.shadow_model.desired_open
-    }
-
-    pub(crate) fn drift_duration(&self, now: std::time::Instant) -> Option<std::time::Duration> {
-        self.shadow_model.observations.drift_duration(now)
-    }
-
-    pub(crate) fn most_recent_trusted(&self, now: std::time::Instant) -> Option<&ImeObservation> {
-        self.shadow_model.observations.most_recent_trusted(now)
+        if let Some(generation) = self.shadow_model.pending_generation() {
+            let event = super::ime_event::ImeEvent::from_apply_outcome(open, outcome, generation);
+            self.dispatch_event(event);
+        }
     }
 }
 
