@@ -46,18 +46,16 @@ impl std::fmt::Debug for YabFace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // HashMap 風の出力を生成
         let mut map = f.debug_map();
-        for row in 0..MAX_ROWS {
-            for col in 0..MAX_COLS {
-                let idx = row * MAX_COLS + col;
-                if let Some(ref val) = self.0[idx] {
-                    map.entry(
-                        &PhysicalPos::new(
-                            u8::try_from(row).expect("row < MAX_ROWS fits u8"),
-                            u8::try_from(col).expect("col < MAX_COLS fits u8"),
-                        ),
-                        val,
-                    );
-                }
+        for (row, col) in (0..MAX_ROWS).cartesian_product(0..MAX_COLS) {
+            let idx = row * MAX_COLS + col;
+            if let Some(ref val) = self.0[idx] {
+                map.entry(
+                    &PhysicalPos::new(
+                        u8::try_from(row).expect("row < MAX_ROWS fits u8"),
+                        u8::try_from(col).expect("col < MAX_COLS fits u8"),
+                    ),
+                    val,
+                );
             }
         }
         map.finish()
