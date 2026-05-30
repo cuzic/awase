@@ -3,7 +3,7 @@
   <Product Id="*"
            Name="awase"
            Language="1041"
-           Version="0.1.0"
+           Version="$(var.Version)"
            Manufacturer="awase"
            UpgradeCode="7A8B9C0D-1234-5678-9ABC-DEF012345678">
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />

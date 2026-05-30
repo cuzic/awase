@@ -107,7 +107,7 @@ jobs:
         shell: cmd
         run: |
           set PATH=%PATH%;C:\Program Files (x86)\WiX Toolset v3.14\bin
-          candle.exe wix\main.wxs -out wix\main.wixobj
+          candle.exe wix\main.wxs -dVersion=0.1.0 -out wix\main.wixobj
           light.exe wix\main.wixobj -out awase-0.1.0-x64.msi -ext WixUIExtension
 
       - name: Upload MSI

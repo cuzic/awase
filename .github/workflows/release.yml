@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Extract version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Build awase.exe
+        run: cargo build --release
+
+      - name: Build awase-settings.exe
+        run: cargo build --release --features gui --bin awase-settings
+
+      - name: Prepare distribution
+        shell: bash
+        run: |
+          mkdir -p dist/layout dist/data dist/scripts
+          cp target/release/awase.exe dist/
+          cp target/release/awase-settings.exe dist/
+          cp config.toml dist/
+          cp layout/*.yab dist/layout/
+          cp data/*.csv.gz dist/data/ 2>/dev/null || true
+          cp data/*.toml dist/data/ 2>/dev/null || true
+          cp scripts/run-e2e.ps1 dist/scripts/
+          cp scripts/install.ps1 dist/
+          cp scripts/uninstall.ps1 dist/
+          cp README.md dist/
+          for f in LICENSE*; do [ -e "$f" ] && cp "$f" dist/; done
+
+      - name: Create ZIP archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/* -DestinationPath "awase-${{ env.VERSION }}-x64.zip"
+
+      - name: Install WiX Toolset
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Build MSI
+        shell: cmd
+        run: |
+          set PATH=%PATH%;C:\Program Files (x86)\WiX Toolset v3.14\bin
+          candle.exe wix\main.wxs -dVersion=${{ env.VERSION }} -out wix\main.wixobj
+          light.exe wix\main.wixobj -out "awase-${{ env.VERSION }}-x64.msi" -ext WixUIExtension
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            awase-${{ env.VERSION }}-x64.zip
+            awase-${{ env.VERSION }}-x64.msi
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
