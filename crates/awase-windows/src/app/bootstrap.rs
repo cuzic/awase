@@ -441,18 +441,13 @@ unsafe extern "system" fn win_event_proc(
         // 実際の barrier 設定は FocusChanged event 経由で行う (runtime/mod.rs)。
         // ここでは旧 pending=true 相当の動作を維持するため、すぐに FocusTransition を立てる。
         // (FocusChanged event の dispatch まで少しタイムラグがある場合に備えた safety net)
-        if app.platform_state.ime.shadow_model.input_barrier.is_none() {
-            let now = std::time::Instant::now();
-            let settle =
-                app.platform_state.ime.shadow_model.app_policy.focus_settle_ms;
-            app.platform_state.ime.shadow_model.input_barrier =
-                Some(crate::state::input_barrier::InputBarrier::FocusTransition {
-                    to_hwnd: crate::state::ime_event::HwndId(hwnd_isize as usize),
-                    started_seq: app.platform_state.ime.event_log.next_seq(),
-                    started_at: now,
-                    settle_until: now + std::time::Duration::from_millis(settle),
-                });
-        }
+        let now = std::time::Instant::now();
+        let started_seq = app.platform_state.ime.event_log.next_seq();
+        app.platform_state.ime.try_set_focus_transition_barrier(
+            crate::state::ime_event::HwndId(hwnd_isize as usize),
+            started_seq,
+            now,
+        );
         app.executor.platform.on_focus_change_tsf();
         // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
         app.executor.platform.timer.set(
