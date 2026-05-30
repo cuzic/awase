@@ -28,7 +28,7 @@ pub struct WindowsPlatform {
     /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
     pub suppress_engine_state_key: bool,
     /// フォーカス追跡の全状態（ウィンドウ情報・判定キャッシュ・IME キャッシュ等）。
-    pub focus: FocusTracker,
+    pub(crate) focus: FocusTracker,
 }
 
 impl std::fmt::Debug for WindowsPlatform {

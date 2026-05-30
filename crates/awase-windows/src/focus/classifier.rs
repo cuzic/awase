@@ -158,10 +158,6 @@ impl ImmCapabilityStore {
         self.cache.get(class_name).copied()
     }
 
-    pub(crate) fn contains_key(&self, class_name: &str) -> bool {
-        self.cache.contains_key(class_name)
-    }
-
     pub(crate) fn learn(&mut self, class_name: String, cap: ImmCapability) {
         self.cache.insert(class_name, cap);
         self.save();
