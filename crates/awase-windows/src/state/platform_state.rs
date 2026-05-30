@@ -3,9 +3,11 @@ use awase::types::{AppKind, FocusKind};
 
 use super::belief::ImeBelief;
 use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
-use super::ime_event::{ImeEvent, ImeEventEnvelope, IntentSource};
+use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
+use super::input_barrier::InputBarrier;
+use super::observation_store::ImeObservation;
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -27,7 +29,7 @@ pub(crate) struct ImeStateHub {
 
     /// Shadow IME モデル (Step 1)。Phase 3a で recovery 統合済。
     /// IME ON/OFF (desired_open / applied_open) と force_guards / observe_miss_monitor を持つ SSOT。
-    pub(crate) shadow_model: ImeModel,
+    shadow_model: ImeModel,
 }
 
 impl ImeStateHub {
@@ -88,6 +90,104 @@ impl ImeStateHub {
                 self.shadow_model.pending = None;
             }
         }
+    }
+
+    // ── Chord barrier ──
+
+    pub(crate) const fn is_ctrl_ime_chord_active(&self) -> bool {
+        self.shadow_model.is_ctrl_ime_chord_active()
+    }
+
+    pub(crate) fn active_chord_kind(&self) -> Option<ChordKind> {
+        self.shadow_model.active_chord_kind()
+    }
+
+    // ── Input barrier ──
+
+    /// フォーカス遷移 barrier が pending なら消費して true を返す。
+    pub(crate) fn consume_focus_barrier(&mut self) -> bool {
+        if self.shadow_model.is_focus_transition_pending() {
+            self.shadow_model.input_barrier = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// input_barrier を無条件クリアする（panic reset・フォーカス変更確定等）。
+    pub(crate) fn clear_input_barrier(&mut self) {
+        self.shadow_model.input_barrier = None;
+    }
+
+    /// FocusTransition barrier が未設定なら設定する。
+    pub(crate) fn try_set_focus_transition_barrier(
+        &mut self,
+        to_hwnd: HwndId,
+        started_seq: u64,
+        started_at: std::time::Instant,
+    ) {
+        if self.shadow_model.input_barrier.is_none() {
+            let settle = self.shadow_model.app_policy.focus_settle_ms;
+            self.shadow_model.input_barrier = Some(InputBarrier::FocusTransition {
+                to_hwnd,
+                started_seq,
+                started_at,
+                settle_until: started_at + std::time::Duration::from_millis(settle),
+            });
+        }
+    }
+
+    // ── Applied state ──
+
+    pub(crate) fn applied_open(&self) -> Option<bool> {
+        self.shadow_model.applied_open
+    }
+
+    pub(crate) fn applied_open_or_default(&self) -> bool {
+        self.shadow_model.applied_open.unwrap_or(false)
+    }
+
+    pub(crate) fn has_applied_state(&self) -> bool {
+        self.shadow_model.applied_open.is_some()
+    }
+
+    pub(crate) fn applied_pair(&self) -> Option<(bool, u64)> {
+        self.shadow_model.applied_pair()
+    }
+
+    // ── Pending transition ──
+
+    pub(crate) fn pending_generation(&self) -> Option<u64> {
+        self.shadow_model.pending_generation()
+    }
+
+    // ── Desired state and drift ──
+
+    pub(crate) fn desired_open(&self) -> bool {
+        self.shadow_model.desired_open
+    }
+
+    pub(crate) fn drift_duration(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        self.shadow_model.observations.drift_duration(now)
+    }
+
+    pub(crate) fn most_recent_trusted(&self, now: std::time::Instant) -> Option<&ImeObservation> {
+        self.shadow_model.observations.most_recent_trusted(now)
+    }
+}
+
+#[cfg(test)]
+impl ImeStateHub {
+    pub(crate) fn set_desired_open_for_test(&mut self, value: bool) {
+        self.shadow_model.desired_open = value;
+    }
+
+    pub(crate) fn clear_last_intent_for_test(&mut self) {
+        self.shadow_model.last_intent = None;
+    }
+
+    pub(crate) fn last_intent_source(&self) -> Option<IntentSource> {
+        self.shadow_model.last_intent.as_ref().map(|i| i.source)
     }
 }
 
@@ -494,8 +594,8 @@ mod tests {
                 source,
             });
         } else {
-            ps.ime.shadow_model.desired_open = desired_open;
-            ps.ime.shadow_model.last_intent = None;
+            ps.ime.set_desired_open_for_test(desired_open);
+            ps.ime.clear_last_intent_for_test();
         }
         ps
     }
@@ -538,7 +638,7 @@ mod tests {
         ps.reset_stale_ime_on_for_tsf_native();
         assert!(ps.ime_on());
         assert_eq!(
-            ps.ime.shadow_model.last_intent.as_ref().map(|i| i.source),
+            ps.ime.last_intent_source(),
             Some(IntentSource::Recovery),
         );
     }
