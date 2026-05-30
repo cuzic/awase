@@ -3,12 +3,12 @@
 //! 旧 `ImeRecoveryState` を 2 つの責務に分解する：
 //!
 //! - `ForceGuardSet`: 発火後の guard 集合 (`effective_open()` を override する)
-//! - `DriftMonitor`: 発火前の観測カウンタ
+//! - `ObserveMissMonitor`: 発火前の観測失敗カウンタ（Observer が `None` を返した連続回数）
 //!
 //! ## 関係性
 //!
 //! ```text
-//! DriftMonitor → 閾値到達 → ForceGuardSet に ForceGuard を追加
+//! ObserveMissMonitor → 閾値到達 → ForceGuardSet に ForceGuard を追加
 //! ```
 //!
 //! ## 重要な原則
@@ -103,13 +103,13 @@ impl ForceGuardSet {
 /// 旧 `ImeRecoveryState::ime_detect_miss_count` の責務分離版。
 /// 閾値到達で `ForceGuardSet` に `ForceOnReason::DetectMissThreshold` を追加する流れ。
 #[derive(Debug, Default, Clone)]
-pub struct DriftMonitor {
+pub struct ObserveMissMonitor {
     pub consecutive_miss_count: u32,
     pub first_miss_at: Option<Instant>,
     pub last_miss_at: Option<Instant>,
 }
 
-impl DriftMonitor {
+impl ObserveMissMonitor {
     /// 観測失敗を 1 件計上する。
     pub fn record_miss(&mut self, now: Instant) {
         if self.consecutive_miss_count == 0 {
@@ -194,8 +194,8 @@ mod tests {
     }
 
     #[test]
-    fn drift_monitor_counts_misses() {
-        let mut d = DriftMonitor::default();
+    fn observe_miss_monitor_counts_misses() {
+        let mut d = ObserveMissMonitor::default();
         let t0 = Instant::now();
         d.record_miss(t0);
         d.record_miss(t0);

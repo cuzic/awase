@@ -17,7 +17,7 @@ use super::ime_model::ImeModel;
 /// 「観測」「フォーカス状態」「フック設定」の混在を解消する。
 ///
 /// - `belief`        : input_mode / is_japanese_ime / prev_conversion_mode（IME ON/OFF 自体は shadow_model が SSOT）
-/// - `shadow_model`  : IME ON/OFF と force_guards / drift_monitor を持つ SSOT
+/// - `shadow_model`  : IME ON/OFF と force_guards / observe_miss_monitor を持つ SSOT
 #[derive(Debug)]
 pub(crate) struct ImeStateHub {
     /// input_mode・is_japanese_ime・prev_conversion_mode を保持する。
@@ -26,7 +26,7 @@ pub(crate) struct ImeStateHub {
     pub(crate) event_log: ImeEventLog,
 
     /// Shadow IME モデル (Step 1)。Phase 3a で recovery 統合済。
-    /// IME ON/OFF (desired_open / applied_open) と force_guards / drift_monitor を持つ SSOT。
+    /// IME ON/OFF (desired_open / applied_open) と force_guards / observe_miss_monitor を持つ SSOT。
     pub(crate) shadow_model: ImeModel,
 }
 
@@ -198,11 +198,11 @@ impl PlatformState {
         self.ime.belief.prev_conversion_mode()
     }
 
-    /// IME 状態検出の連続失敗回数を返す (Phase 3a: shadow_model.drift_monitor 由来)。
+    /// IME 状態検出の連続失敗回数を返す (Phase 3a: shadow_model.observe_miss_monitor 由来)。
     #[inline]
     #[must_use]
     pub const fn ime_detect_miss_count(&self) -> u32 {
-        self.ime.shadow_model.drift_monitor.consecutive_miss_count
+        self.ime.shadow_model.observe_miss_monitor.consecutive_miss_count
     }
 
     /// いずれかの強制 ON ガードが立っているかを返す (Phase 3a: shadow_model.force_guards 由来)。
@@ -232,7 +232,7 @@ impl PlatformState {
         self.ime.belief.prev_conversion_mode = value;
     }
 
-    // ── ForceGuardSet / DriftMonitor への書き込みメソッド (Phase 3a) ──
+    // ── ForceGuardSet / ObserveMissMonitor への書き込みメソッド (Phase 3a) ──
 
     /// `BrokenAppBootstrap` ガードをセットする。
     #[inline]
@@ -246,13 +246,13 @@ impl PlatformState {
         );
     }
 
-    /// drift_monitor を reset し、すべての force-on ガードを解除する。
+    /// observe_miss_monitor を reset し、すべての force-on ガードを解除する。
     ///
     /// ユーザー操作（Shadow IME トグル・SetOpen 等）で「ユーザーが意図した状態」が
     /// 確定したときに呼ぶ。
     #[inline]
     pub fn reset_ime_detect_state(&mut self) {
-        self.ime.shadow_model.drift_monitor.record_success();
+        self.ime.shadow_model.observe_miss_monitor.record_success();
         self.ime.shadow_model.force_guards.guards.clear();
     }
 
@@ -277,8 +277,8 @@ impl PlatformState {
         self.ime.belief.input_mode = InputModeState::ObservedRomaji;
         self.ime.belief.is_japanese_ime = true;
         self.ime.belief.prev_conversion_mode = None;
-        // Phase 3a: drift_monitor + force_guards に置換
-        self.ime.shadow_model.drift_monitor.record_success();
+        // Phase 3a: observe_miss_monitor + force_guards に置換
+        self.ime.shadow_model.observe_miss_monitor.record_success();
         self.ime.shadow_model.force_guards.guards.clear();
         self.ime.shadow_model.force_guards.add(super::force_guard::ForceGuard {
             reason: super::force_guard::ForceOnReason::PanicReset,
@@ -380,10 +380,10 @@ impl PlatformState {
             });
         }
 
-        // miss_count (Phase 3a: drift_monitor 経由)
+        // miss_count (Phase 3a: observe_miss_monitor 経由)
         if update.increment_miss_count {
-            self.ime.shadow_model.drift_monitor.record_miss(std::time::Instant::now());
-            let miss = self.ime.shadow_model.drift_monitor.consecutive_miss_count;
+            self.ime.shadow_model.observe_miss_monitor.record_miss(std::time::Instant::now());
+            let miss = self.ime.shadow_model.observe_miss_monitor.consecutive_miss_count;
             if miss == crate::IME_DETECT_MISS_THRESHOLD {
                 log::warn!(
                     "IME detection failed {miss} consecutive times, will force IME ON"
@@ -405,7 +405,7 @@ impl PlatformState {
                 .shadow_model
                 .force_guards
                 .remove(super::force_guard::ForceOnReason::PanicReset);
-            self.ime.shadow_model.drift_monitor.record_success();
+            self.ime.shadow_model.observe_miss_monitor.record_success();
         }
 
         // input_mode

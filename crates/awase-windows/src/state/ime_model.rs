@@ -10,7 +10,7 @@
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
 use super::app_ime_policy::AppImePolicy;
-use super::force_guard::{DriftMonitor, ForceGuardSet};
+use super::force_guard::{ObserveMissMonitor, ForceGuardSet};
 use super::ime_event::{ChordKind, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
@@ -46,7 +46,7 @@ pub struct ImeModel {
 
     /// 発火前の観測失敗カウンタ (Step 6)。
     /// 旧 `ImeRecoveryState::ime_detect_miss_count` の責務分離。
-    pub drift_monitor: DriftMonitor,
+    pub observe_miss_monitor: ObserveMissMonitor,
 
     /// OS への apply 進行中の transition (Step 7)。
     /// 旧 `ImeEffect::SetOpen` (Layer 3) + 楽観的 latch を統合。
@@ -82,7 +82,7 @@ impl ImeModel {
             app_policy: AppImePolicy::standard(),
             input_barrier: None,
             force_guards: ForceGuardSet::default(),
-            drift_monitor: DriftMonitor::default(),
+            observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
             applied_open: None,
             applied_at_ms: 0,
@@ -217,8 +217,8 @@ impl ImeModel {
                 self.applied_at_ms = 0;
                 // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
                 self.force_guards.clear_for_focus_change();
-                // drift_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
-                self.drift_monitor.record_success();
+                // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
+                self.observe_miss_monitor.record_success();
                 // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。
                 // settle_until は AppImePolicy.focus_settle_ms 由来。
                 let settle_until = envelope.time.monotonic
@@ -417,17 +417,17 @@ mod tests {
     }
 
     #[test]
-    fn focus_change_resets_drift_monitor() {
+    fn focus_change_resets_observe_miss_monitor() {
         let mut model = ImeModel::new();
         let t = Instant::now();
-        model.drift_monitor.record_miss(t);
-        model.drift_monitor.record_miss(t);
-        model.drift_monitor.record_miss(t);
-        assert!(model.drift_monitor.exceeds(3));
+        model.observe_miss_monitor.record_miss(t);
+        model.observe_miss_monitor.record_miss(t);
+        model.observe_miss_monitor.record_miss(t);
+        assert!(model.observe_miss_monitor.exceeds(3));
 
         model.reduce(&focus_changed_event(2));
 
-        assert!(!model.drift_monitor.exceeds(1), "focus change で drift_monitor がリセットされる");
+        assert!(!model.observe_miss_monitor.exceeds(1), "focus change で observe_miss_monitor がリセットされる");
     }
 
     #[test]
