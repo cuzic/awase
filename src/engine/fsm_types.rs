@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use smallvec::SmallVec;
+
 use crate::scanmap::PhysicalPos;
 use crate::types::{KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
 
@@ -79,7 +81,7 @@ impl Face {
 /// resolve_* メソッドの戻り値：アクション列と出力履歴の更新指示
 #[derive(Debug)]
 pub struct ResolvedAction {
-    pub actions: Vec<KeyAction>,
+    pub actions: SmallVec<[KeyAction; 2]>,
     pub output: OutputUpdate,
 }
 
@@ -105,13 +107,13 @@ pub enum ParseAction {
     Shift { timer: TimerIntent },
     /// パターンを認識して出力を生成する。
     Reduce {
-        actions: Vec<KeyAction>,
+        actions: SmallVec<[KeyAction; 2]>,
         record: OutputUpdate,
         timer: TimerIntent,
     },
     /// パターンを部分認識し、出力を生成してから残りのトークンを再処理する。
     ReduceAndContinue {
-        actions: Vec<KeyAction>,
+        actions: SmallVec<[KeyAction; 2]>,
         record: OutputUpdate,
         remaining: ClassifiedEvent,
     },
@@ -983,7 +985,7 @@ mod tests {
     #[test]
     fn resolved_action_empty_actions() {
         let ra = ResolvedAction {
-            actions: vec![],
+            actions: smallvec::smallvec![],
             output: OutputUpdate::None,
         };
         assert!(ra.actions.is_empty());
@@ -993,7 +995,7 @@ mod tests {
     fn resolved_action_with_actions() {
         use crate::types::KeyAction;
         let ra = ResolvedAction {
-            actions: vec![KeyAction::Char('a'), KeyAction::Suppress],
+            actions: smallvec::smallvec![KeyAction::Char('a'), KeyAction::Suppress],
             output: OutputUpdate::None,
         };
         assert_eq!(ra.actions.len(), 2);
@@ -1011,7 +1013,7 @@ mod tests {
     fn parse_action_reduce_variant() {
         use crate::types::KeyAction;
         let pa = ParseAction::Reduce {
-            actions: vec![KeyAction::Char('b')],
+            actions: smallvec::smallvec![KeyAction::Char('b')],
             record: OutputUpdate::None,
             timer: TimerIntent::CancelAll,
         };
@@ -1036,7 +1038,7 @@ mod tests {
             is_ime_control: false,
         };
         let pa = ParseAction::ReduceAndContinue {
-            actions: vec![KeyAction::Suppress],
+            actions: smallvec::smallvec![KeyAction::Suppress],
             record: OutputUpdate::None,
             remaining,
         };

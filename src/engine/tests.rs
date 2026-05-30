@@ -1,3 +1,5 @@
+use smallvec::smallvec;
+
 use super::*;
 use super::test_support::*;
 use crate::config::ConfirmMode;
@@ -3107,7 +3109,7 @@ fn test_collect_output_no_retraction() {
 fn test_build_response_cancel_all_timers() {
     let engine = make_engine();
     let resp = engine.build_response(
-        vec![KeyAction::Romaji("ka".to_string())],
+        smallvec![KeyAction::Romaji("ka".to_string())],
         true,
         TimerIntent::CancelAll,
     );
@@ -3128,7 +3130,7 @@ fn test_build_response_cancel_all_timers() {
 #[test]
 fn test_build_response_pending_sets_timer() {
     let engine = make_engine();
-    let resp = engine.build_response(vec![], true, TimerIntent::Pending);
+    let resp = engine.build_response(smallvec![], true, TimerIntent::Pending);
     resp.assert_consumed();
     assert!(resp.actions.is_empty(), "Pending should have no actions");
     resp.assert_timer_set(TIMER_PENDING);
@@ -3139,7 +3141,7 @@ fn test_build_response_pending_sets_timer() {
 fn test_build_response_speculative_wait_sets_timer() {
     let engine = make_engine();
     let resp = engine.build_response(
-        vec![KeyAction::Romaji("u".to_string())],
+        smallvec![KeyAction::Romaji("u".to_string())],
         true,
         TimerIntent::SpeculativeWait,
     );
@@ -3153,7 +3155,7 @@ fn test_build_response_speculative_wait_sets_timer() {
 fn test_build_response_phase2_transition() {
     let engine = make_engine();
     let resp = engine.build_response(
-        vec![KeyAction::Romaji("ka".to_string())],
+        smallvec![KeyAction::Romaji("ka".to_string())],
         true,
         TimerIntent::Phase2Transition {
             remaining_us: 50_000,

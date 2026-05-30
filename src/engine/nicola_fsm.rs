@@ -1,5 +1,6 @@
 //! NicolaFsm: 同時打鍵判定 FSM（timed-fsm ベース）
 
+use smallvec::{SmallVec, smallvec};
 use timed_fsm::{Response, ShiftReduceParser};
 
 use crate::config::ConfirmMode;
@@ -172,13 +173,13 @@ impl NicolaFsm {
                     pending.pos,
                 );
                 self.update_history(resolved.output);
-                Response::emit(resolved.actions)
+                Response::emit(resolved.actions.into_vec())
             }
             EngineState::PendingThumb(thumb) => {
                 // 保留中の親指キーを単独確定
                 let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
                 self.update_history(resolved.output);
-                Response::emit(resolved.actions)
+                Response::emit(resolved.actions.into_vec())
             }
             EngineState::PendingCharThumb { char_key, thumb, char1_released } => {
                 // 文字+親指を同時打鍵として確定
@@ -194,7 +195,7 @@ impl NicolaFsm {
                     // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
                     self.append_key_up_for(&mut actions, char_key.scan_code);
                 }
-                Response::emit(actions)
+                Response::emit(actions.into_vec())
             }
             EngineState::SpeculativeChar(_) => {
                 // 既に投機出力済み → 出力は正しかったとみなす。何も追加しない。
@@ -346,7 +347,7 @@ impl NicolaFsm {
             self.consume_thumb(thumb_face);
             let output = OutputUpdate::record(char_scan, &action, kana);
             ResolvedAction {
-                actions: vec![action],
+                actions: smallvec![action],
                 output,
             }
         } else {
@@ -386,7 +387,7 @@ impl NicolaFsm {
     /// output_history から `scan_code` のエントリを取り出し、Key(vk) なら KeyUp(vk) を `actions` に追記する。
     ///
     /// Char/Romaji は Down+Up 一括送信済みのため、Key(vk) のみが追記対象。
-    fn append_key_up_for(&mut self, actions: &mut Vec<KeyAction>, scan_code: ScanCode) {
+    fn append_key_up_for(&mut self, actions: &mut SmallVec<[KeyAction; 2]>, scan_code: ScanCode) {
         if let Some(entry) = self.output_history.remove_by_scan(scan_code) {
             if let KeyAction::Key(vk) = entry.action {
                 actions.push(KeyAction::KeyUp(vk));
@@ -397,7 +398,7 @@ impl NicolaFsm {
     /// アクション列・consumed フラグ・タイマー指示から `Response` を組み立てる
     pub(crate) fn build_response(
         &self,
-        actions: Vec<KeyAction>,
+        actions: SmallVec<[KeyAction; 2]>,
         consumed: bool,
         timer: TimerIntent,
     ) -> Resp {
@@ -406,7 +407,7 @@ impl NicolaFsm {
         } else if actions.is_empty() {
             Response::pass_through()
         } else {
-            Response::emit(actions)
+            Response::emit(actions.into_vec())
         };
         response.timers = self.timer_cmds(timer);
         response
@@ -434,7 +435,7 @@ impl ShiftReduceParser for NicolaFsm {
                 record,
                 timer,
             } => TieredParseAction::Reduce {
-                actions,
+                actions: actions.into_vec(),
                 record,
                 timers: self.timer_cmds(timer),
             },
@@ -443,7 +444,7 @@ impl ShiftReduceParser for NicolaFsm {
                 record,
                 remaining,
             } => TieredParseAction::ReduceAndContinue {
-                actions,
+                actions: actions.into_vec(),
                 record,
                 remaining,
             },
@@ -503,7 +504,7 @@ impl NicolaFsm {
     fn shift_face_reduce(&self, ev: &ClassifiedEvent) -> ParseAction {
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(Face::Shift)) {
             ParseAction::Reduce {
-                actions: vec![action.clone()],
+                actions: smallvec![action.clone()],
                 record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::CancelAll,
             }
@@ -556,7 +557,7 @@ impl NicolaFsm {
             // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
             self.consume_thumb(face);
             ParseAction::Reduce {
-                actions: vec![action.clone()],
+                actions: smallvec![action.clone()],
                 record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::CancelAll,
             }
@@ -628,7 +629,7 @@ impl NicolaFsm {
                 // SpeculativeChar + Char: speculative was correct, go Idle and re-loop
                 self.go_idle();
                 ParseAction::ReduceAndContinue {
-                    actions: vec![],
+                    actions: SmallVec::new(),
                     record: OutputUpdate::None,
                     remaining: *ev,
                 }
@@ -637,7 +638,7 @@ impl NicolaFsm {
                 // Speculative char was already sent to IME; just go idle and pass through.
                 self.go_idle();
                 ParseAction::ReduceAndContinue {
-                    actions: vec![],
+                    actions: SmallVec::new(),
                     record: OutputUpdate::None,
                     remaining: *ev,
                 }
@@ -660,7 +661,7 @@ impl NicolaFsm {
         new_action: &KeyAction,
         kana: Option<char>,
     ) -> ParseAction {
-        let actions = vec![
+        let actions = smallvec![
             KeyAction::SpecialKey(SpecialKey::Backspace),
             new_action.clone(),
         ];
@@ -708,7 +709,7 @@ impl NicolaFsm {
         // Go idle and re-process the thumb key
         self.go_idle();
         ParseAction::ReduceAndContinue {
-            actions: vec![],
+            actions: SmallVec::new(),
             record: OutputUpdate::None,
             remaining: *ev,
         }
@@ -775,7 +776,7 @@ impl NicolaFsm {
                 self.consume_thumb(thumb.face());
                 self.go_idle();
                 return ParseAction::Reduce {
-                    actions: vec![action.clone()],
+                    actions: smallvec![action.clone()],
                     record: OutputUpdate::record(ev.scan_code, &action, kana),
                     timer: TimerIntent::CancelAll,
                 };
@@ -820,7 +821,7 @@ impl NicolaFsm {
         if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
             let output = OutputUpdate::record(scan_code, &action, kana);
             ResolvedAction {
-                actions: vec![action],
+                actions: smallvec![action],
                 output,
             }
         } else {
@@ -830,7 +831,7 @@ impl NicolaFsm {
             let action = KeyAction::Key(vk_code);
             let output = OutputUpdate::record(scan_code, &action, None);
             ResolvedAction {
-                actions: vec![action],
+                actions: smallvec![action],
                 output,
             }
         }
@@ -847,9 +848,9 @@ impl NicolaFsm {
     /// したがって何も送出しない（suppress）。これにより親指の単独打鍵は完全に無視され、
     /// IME に対して透明になる。Engine が無効な場合は hook 層で bypass されてここには
     /// 来ないので、Windows 全般での 無変換 / 変換 キー機能は引き続き使える。
-    const fn resolve_pending_thumb_as_single(_vk_code: VkCode) -> ResolvedAction {
+    fn resolve_pending_thumb_as_single(_vk_code: VkCode) -> ResolvedAction {
         ResolvedAction {
-            actions: vec![],
+            actions: SmallVec::new(),
             output: OutputUpdate::None,
         }
     }
@@ -1001,7 +1002,7 @@ impl NicolaFsm {
                 thumb,
                 char1_released: true,
             };
-            return self.build_response(vec![], true, TimerIntent::Keep);
+            return self.build_response(SmallVec::new(), true, TimerIntent::Keep);
         }
 
         // char1+thumb を同時打鍵として確定する
@@ -1049,7 +1050,7 @@ impl NicolaFsm {
                     self.state
                 );
                 ResolvedAction {
-                    actions: vec![],
+                    actions: SmallVec::new(),
                     output: OutputUpdate::None,
                 }
             }
@@ -1067,10 +1068,10 @@ impl NicolaFsm {
             return match entry.action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）
                 KeyAction::Char(_) | KeyAction::Romaji(_) => {
-                    self.build_response(vec![KeyAction::Suppress], true, TimerIntent::CancelAll)
+                    self.build_response(smallvec![KeyAction::Suppress], true, TimerIntent::CancelAll)
                 }
                 KeyAction::Key(vk) => {
-                    self.build_response(vec![KeyAction::KeyUp(vk)], true, TimerIntent::CancelAll)
+                    self.build_response(smallvec![KeyAction::KeyUp(vk)], true, TimerIntent::CancelAll)
                 }
                 _ => Response::pass_through(),
             };
@@ -1090,14 +1091,14 @@ impl NicolaFsm {
     ) -> Resp {
         if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
             self.update_history(OutputUpdate::record(scan_code, &action, kana));
-            self.build_response(vec![action], true, TimerIntent::CancelAll)
+            self.build_response(smallvec![action], true, TimerIntent::CancelAll)
         } else {
             // Normal face に定義なし（yab に明示的に '無' がある場合は lookup_face が
             // Some(Suppress) を返すため、ここには来ない）。
             // 配列定義外のキー → Key(vk_code) でそのまま通す
             let action = KeyAction::Key(vk_code);
             self.update_history(OutputUpdate::record(scan_code, &action, None));
-            self.build_response(vec![action], true, TimerIntent::CancelAll)
+            self.build_response(smallvec![action], true, TimerIntent::CancelAll)
         }
     }
 
@@ -1109,7 +1110,7 @@ impl NicolaFsm {
         // VK_CONVERT (VK=0x1C) の合成スキャンコードが Enter の物理スキャンコード (0x1C) と
         // 衝突し、後から Enter KeyUp が来たときに誤って KeyUp(VK_CONVERT) が送出されていた。
         self.update_history(OutputUpdate::record(scan_code, &action, None));
-        self.build_response(vec![action], true, TimerIntent::CancelAll)
+        self.build_response(smallvec![action], true, TimerIntent::CancelAll)
     }
 
     /// PendingCharThumb タイムアウト：char1+thumb を同時打鍵として確定する
@@ -1156,7 +1157,7 @@ impl NicolaFsm {
                     let remaining_us = self.threshold_us.saturating_sub(self.speculative_delay_us);
                     self.update_history(OutputUpdate::record(pending.scan_code, &action, kana));
                     self.build_response(
-                        vec![action],
+                        smallvec![action],
                         true,
                         TimerIntent::Phase2Transition { remaining_us },
                     )

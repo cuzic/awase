@@ -4,6 +4,8 @@
 //! Idle 状態で文字キーまたは親指キーが到着したとき、
 //! `ConfirmMode` に応じて保留・投機出力・即時確定を選択する。
 
+use smallvec::smallvec;
+
 use crate::config::ConfirmMode;
 
 use super::fsm_types::{
@@ -57,7 +59,7 @@ impl NicolaFsm {
             self.enter_speculative_char(PendingKey::from_event(ev));
             // Output immediately + set timer for the threshold window
             ParseAction::Reduce {
-                actions: vec![action.clone()],
+                actions: smallvec![action.clone()],
                 record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::Pending,
             }
