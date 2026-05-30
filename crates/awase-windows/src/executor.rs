@@ -751,7 +751,7 @@ impl DecisionExecutor {
             // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
             let mut apply_context = self.applied_snapshot;
             if origin == EffectOrigin::EngineIntent {
-                let profile = self.platform.focus.current_app_profile();
+                let profile = self.platform.current_app_profile();
                 if !profile.can_use_imm32_cross_process()
                     && !crate::tsf::observer::gji_monitor_healthy()
                 {
