@@ -507,16 +507,11 @@ impl Output {
     /// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
     ///
     /// 末尾の合成 `LSHIFT↑` は、Ctrl+I 無変換 高速タイピング時に Ctrl 解放前に NONCONVERT が
-    /// 来ると IME-OFF が誤発火する不具合を防ぐため、修飾キーを毎回解放する設計。その副作用で
-    /// Shift+1 連打などでは 2 回目以降 `GetAsyncKeyState(VK_SHIFT)=0` となり engine が
-    /// modifier_snapshot 経由で shift 面を見なくなり「！」→「1」になる。
-    ///
-    /// 両立のため、物理 Shift が **長押し** されているとき（`SHIFT_RESTORE_HELD_MS` 以上）のみ
-    /// `LSHIFT↓` を再注入して OS state を物理状態へ再同期する。短押し（連続シンボル入力等の
-    /// 非意図的シフト残り）では合成 `↑` の修飾解放効果をそのまま生かし、後続の Ctrl+I+無変換
-    /// 系チョードに干渉しないようにする。
+    /// 来ると IME-OFF が誤発火する不具合を防ぐため、修飾キーを毎回解放する設計。
+    /// modifier_snapshot の Shift 判定は `PHYSICAL_KEY_STATE` ベースのため、
+    /// この合成 `↑` が OS state を汚染しても engine 側の shift 面判定には影響しない。
     fn send_vk_pair(vk: VkCode, needs_shift: bool, use_tsf_marker: bool) {
-        let mut inputs = Vec::with_capacity(5);
+        let mut inputs = Vec::with_capacity(4);
         if needs_shift {
             inputs.push(make_key_input(VK_LSHIFT, false));
         }
@@ -529,25 +524,8 @@ impl Output {
         }
         if needs_shift {
             inputs.push(make_key_input(VK_LSHIFT, true));
-            if Self::shift_should_be_restored() {
-                inputs.push(make_key_input(VK_LSHIFT, false));
-            }
         }
         let _ = crate::win32::send_input_safe(&inputs);
-    }
-
-    /// `SHIFT_RESTORE_HELD_MS` 以上 LSHIFT/RSHIFT のいずれかが物理保持中かを判定する。
-    fn shift_should_be_restored() -> bool {
-        /// 短押し境界（ms）。人間の反応で Shift を押してから次のキーが届くまでは
-        /// 概ね 150ms 以上かかるため、それ未満は「無意識の修飾残り」と見て再注入しない。
-        /// 一方 Shift+! 連打のように 1 が押された時点で Shift が 150ms 以上保持されていれば
-        /// 「意図的に保持中」として OS state を物理状態へ再同期する。
-        const SHIFT_RESTORE_HELD_MS: u64 = 100;
-        let long = |vk| {
-            crate::hook::physical_key_held_ms(vk)
-                .is_some_and(|ms| ms >= SHIFT_RESTORE_HELD_MS)
-        };
-        long(VK_LSHIFT) || long(VK_RSHIFT)
     }
 
     /// `ch` を UTF-16 エンコードし、down/up ペアを `inputs` に追加する。
