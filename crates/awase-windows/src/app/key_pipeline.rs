@@ -159,11 +159,11 @@ impl KeyEventPipeline<'_> {
         // Step 4 安全策: Phase 2 で SetOpen が生成されなかった場合でも
         // Ctrl 系 KeyUp で chord barrier を解除する (ChordEnded dispatch)。
         // (Phase 2 が既に Inactive を認識して SetOpen を省略するケースへの対処)
-        if self.app.platform_state.ime.shadow_model.is_ctrl_ime_chord_active()
+        if self.app.platform_state.ime.is_ctrl_ime_chord_active()
             && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
-            let kind = self.app.platform_state.ime.shadow_model
+            let kind = self.app.platform_state.ime
                 .active_chord_kind()
                 .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
             self.app
@@ -183,11 +183,9 @@ impl KeyEventPipeline<'_> {
     fn stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
         // Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換。
         // 最初のキー入力で barrier を consume する (one-shot 動作維持)。
-        if !self.app.platform_state.ime.shadow_model.is_focus_transition_pending() {
+        if !self.app.platform_state.ime.consume_focus_barrier() {
             return;
         }
-        // 消費 (旧 = false にセット)
-        self.app.platform_state.ime.shadow_model.input_barrier = None;
 
         self.app.executor.platform.on_focus_probe_started();
         // キャプチャ（async タスク内で使う）
@@ -196,7 +194,7 @@ impl KeyEventPipeline<'_> {
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.app.platform_state.last_focus_change_ms;
-        let shadow_on = self.app.platform_state.ime.shadow_model.applied_open.unwrap_or(false);
+        let shadow_on = self.app.platform_state.ime.applied_open_or_default();
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
@@ -318,7 +316,7 @@ impl KeyEventPipeline<'_> {
     fn stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             let is_key_up = !matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-            if self.app.platform_state.ime.shadow_model.is_ctrl_ime_chord_active() {
+            if self.app.platform_state.ime.is_ctrl_ime_chord_active() {
                 // Step 4: CtrlImeChord transaction 中の二次 SetOpen を filter する。
                 // Ctrl KeyUp が Phase 2 Active→Inactive 遷移を起こして生成した SetOpen を
                 // 再 write すると Priority-3 が消費済みのため stale observer_poll が belief を
@@ -326,7 +324,7 @@ impl KeyEventPipeline<'_> {
                 // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
                 self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
                 if is_key_up {
-                    let kind = self.app.platform_state.ime.shadow_model
+                    let kind = self.app.platform_state.ime
                         .active_chord_kind()
                         .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
                     self.app
@@ -441,10 +439,7 @@ impl KeyEventPipeline<'_> {
 
         // ImeModel から applied snapshot を pre-fetch して executor に渡す。
         // executor は intra-batch 更新でこの値を書き換えることがある（ImmCross 楽観更新等）。
-        let pre_applied = {
-            let sm = &self.app.platform_state.ime.shadow_model;
-            sm.applied_open.map(|v| (v, sm.applied_at_ms))
-        };
+        let pre_applied = self.app.platform_state.ime.applied_pair();
         let result = self.app.executor.execute_from_hook(decision, event, pre_applied);
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
