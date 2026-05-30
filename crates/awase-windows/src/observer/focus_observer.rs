@@ -9,9 +9,13 @@ pub use crate::focus::class_names::detect_app_kind;
 use awase::engine::ModifierState;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-use crate::vk::{VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT};
+use crate::vk::{VK_CONTROL, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RSHIFT, VK_RWIN};
 
-/// `GetAsyncKeyState` で現在の修飾キー状態を取得する。
+/// 現在の修飾キー状態を取得する。
+///
+/// Shift のみ `PHYSICAL_KEY_STATE`（SendInput 非影響）を使う。
+/// `send_vk_pair` が合成 `LSHIFT↑` を送った後も物理 Shift 押下中なら `shift=true` を返すため。
+/// Ctrl/Alt/Win は SendInput で操作されないため `GetAsyncKeyState` で問題ない。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
@@ -22,7 +26,9 @@ pub unsafe fn read_os_modifiers() -> ModifierState {
     ModifierState {
         ctrl:  pressed(VK_CONTROL.0 as i32),
         alt:   pressed(VK_MENU.0 as i32),
-        shift: pressed(VK_SHIFT.0 as i32),
+        // Shift は物理状態を直接参照（GetAsyncKeyState は SendInput の LSHIFT↑ で汚染される）
+        shift: crate::hook::is_physical_key_down(VK_LSHIFT)
+            || crate::hook::is_physical_key_down(VK_RSHIFT),
         win:   pressed(VK_LWIN.0 as i32) || pressed(VK_RWIN.0 as i32),
     }
 }
