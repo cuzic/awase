@@ -205,9 +205,7 @@ pub fn run() -> Result<()> {
     match NgramModel::from_file(&ngram_path, base_us, range_us, min_us, max_us) {
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
-            let _ = with_app(|app| {
-                app.send_engine_command(awase::engine::EngineCommand::SetNgramModel(model));
-            });
+            let _ = with_app(|app| app.set_ngram_model(model));
         }
         Err(e) => diag.warn(format!("n-gramモデル解析失敗: {e}")),
     }
@@ -262,8 +260,7 @@ pub(crate) fn check_keyboard_layout_on_change() {
                 // SAFETY: WM_TIMER はメインスレッドのメッセージループからのみ呼ばれる。
                 //         wParam のタイマー ID はアプリケーション定義の定数で一意。
                 let _ = with_app(|app| unsafe {
-                    let logical_id = app.resolve_timer(msg.wParam.0);
-                    message_handlers::handle_wm_timer(app, logical_id, msg.wParam.0, &msg);
+                    message_handlers::handle_wm_timer(app, msg.wParam.0, &msg);
                 });
             }
             WM_EXECUTE_EFFECTS => {
@@ -431,63 +428,32 @@ pub(crate) fn reload_config() {
         log::warn!("config: {w}");
     }
 
-    let _ = with_app(|app| {
-        app.send_engine_command(awase::engine::EngineCommand::UpdateFsmParams {
-            threshold_ms: config.general.simultaneous_threshold_ms,
-            confirm_mode: config.general.confirm_mode,
-            speculative_delay_ms: config.general.speculative_delay_ms,
-        });
-        app.set_output_mode(config.general.output_mode);
-        log::info!(
-            "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
-            config.general.simultaneous_threshold_ms,
-            config.general.confirm_mode,
-            config.general.speculative_delay_ms,
-            config.general.output_mode,
-        );
-    });
-
     let mut reload_diag = StartupDiagnostics::new();
     init_ngram_validated(&config, &mut reload_diag);
     reload_diag.report();
 
-    {
-        let mut key_diag = StartupDiagnostics::new();
-        let engine_on = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut key_diag);
-        let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut key_diag);
-        let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
-        let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
-        let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
-        let panic_trigger_combos: Vec<crate::panic_detect::PanicTriggerCombo> = ime_on
-            .iter()
-            .chain(ime_off.iter())
-            .map(|k| crate::panic_detect::PanicTriggerCombo {
-                vk: k.vk,
-                ctrl: k.ctrl,
-                shift: k.shift,
-                alt: k.alt,
-            })
-            .collect();
-        crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
-        let _ = with_app(|app| {
-            app.set_sync_keys(toggle, on, off);
-            app.send_engine_command(awase::engine::EngineCommand::ReloadKeys {
-                special: SpecialKeyCombos {
-                    engine_on,
-                    engine_off,
-                    ime_on,
-                    ime_off,
-                },
-            });
-        });
-        key_diag.report();
-    }
+    let mut key_diag = StartupDiagnostics::new();
+    let engine_on = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut key_diag);
+    let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut key_diag);
+    let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
+    let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
+    let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
+    let panic_trigger_combos: Vec<crate::panic_detect::PanicTriggerCombo> = ime_on
+        .iter()
+        .chain(ime_off.iter())
+        .map(|k| crate::panic_detect::PanicTriggerCombo {
+            vk: k.vk,
+            ctrl: k.ctrl,
+            shift: k.shift,
+            alt: k.alt,
+        })
+        .collect();
+    crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
+    key_diag.report();
 
+    let special_keys = SpecialKeyCombos { engine_on, engine_off, ime_on, ime_off };
     let _ = with_app(|app| {
-        app.reset_focus_classification(
-            crate::focus::classifier::ForceOverrides::new(config.app_overrides),
-        );
+        app.apply_config_update(&config, special_keys, toggle, on, off);
     });
-    log::info!("App overrides reloaded");
     log::info!("Config reloaded successfully");
 }

@@ -658,7 +658,7 @@ pub(super) fn run_all() -> Result<()> {
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     let _ = with_app(|app| {
-        app.schedule_ime_refresh(app.ime_poll_interval_ms());
+        app.reschedule_ime_refresh();
         app.start_hook_watchdog();
     });
 
