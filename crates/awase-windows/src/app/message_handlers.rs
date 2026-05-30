@@ -68,9 +68,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
             let outcomes = app.executor.on_output_guard_timer();
-            for (open, outcome) in outcomes {
-                app.on_ime_apply_complete(open, outcome);
-            }
+            app.dispatch_outcomes(outcomes);
         }
         Some(id) if id == TIMER_TSF_PROBE => {
             app.executor.platform.advance_tsf_probe();
@@ -134,9 +132,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
 /// WM_EXECUTE_EFFECTS ハンドラ
 pub(super) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     let outcomes = app.executor.drain_deferred();
-    for (open, outcome) in outcomes {
-        app.on_ime_apply_complete(open, outcome);
-    }
+    app.dispatch_outcomes(outcomes);
 }
 
 /// WM_PANIC_RESET ハンドラ

@@ -201,9 +201,7 @@ impl Runtime {
             sm.applied_open.map(|v| (v, sm.applied_at_ms))
         };
         let (callback, sync_outcomes) = self.executor.execute_from_loop(decision, pre_applied);
-        for (open, outcome) in sync_outcomes {
-            self.on_ime_apply_complete(open, outcome);
-        }
+        self.dispatch_outcomes(sync_outcomes);
         callback
     }
 
@@ -243,6 +241,13 @@ impl Runtime {
 
         // E: IME 状態ポーリングをスケジュール
         self.executor.platform.post_ime_refresh();
+    }
+
+    /// sync path の outcome リストを一括 dispatch する。
+    pub fn dispatch_outcomes(&mut self, outcomes: Vec<(bool, awase::platform::ImeOpenOutcome)>) {
+        for (open, outcome) in outcomes {
+            self.on_ime_apply_complete(open, outcome);
+        }
     }
 
     /// エンジンの有効/無効を切り替え、Decision を実行する

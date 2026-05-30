@@ -442,9 +442,7 @@ impl KeyEventPipeline<'_> {
         let result = self.app.executor.execute_from_hook(decision, event, pre_applied);
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
-        for (open, outcome) in result.sync_outcomes {
-            self.app.on_ime_apply_complete(open, outcome);
-        }
+        self.app.dispatch_outcomes(result.sync_outcomes);
 
         if result.has_pending {
             post_to_main_thread(WM_EXECUTE_EFFECTS);
