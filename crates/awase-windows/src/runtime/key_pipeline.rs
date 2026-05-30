@@ -37,7 +37,7 @@ impl Runtime {
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
-        if self.executor.platform.try_hold_key(event) {
+        if self.platform.try_hold_key(event) {
             log::debug!(
                 "[tsf-gate-hold] vk=0x{:02X} {:?} held by TsfGate (PendingWarmup)",
                 event.vk_code, event.event_type
@@ -183,10 +183,10 @@ impl Runtime {
             return;
         }
 
-        self.executor.platform.on_focus_probe_started();
+        self.platform.on_focus_probe_started();
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
-        let warmup_ms = self.executor.platform.eager_warmup_sent_ms();
+        let warmup_ms = self.platform.eager_warmup_sent_ms();
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.platform_state.last_focus_change_ms;
@@ -318,7 +318,7 @@ impl Runtime {
                 // 再 write すると Priority-3 が消費済みのため stale observer_poll が belief を
                 // 上書きし、直後の TIMER_IME_REFRESH で engine が再アクティブ化する。
                 // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
-                self.executor.platform.timer.kill(TIMER_IME_REFRESH);
+                self.platform.timer.kill(TIMER_IME_REFRESH);
                 if is_key_up {
                     let kind = self.platform_state.ime
                         .active_chord_kind()
@@ -336,7 +336,7 @@ impl Runtime {
                 let ms = hook::current_tick_ms();
                 self.platform_state.write_set_open_request(new_ime_on, ms, self.engine.is_user_enabled());
                 self.platform_state.on_set_open_requested();
-                self.executor.platform.timer.kill(TIMER_IME_REFRESH);
+                self.platform.timer.kill(TIMER_IME_REFRESH);
 
                 // Phase 3b: ImeApplyRequested event を dispatch して shadow_model.pending を
                 // 更新する。generation は event_log.next_seq() を使う (event の seq とも一致)。
@@ -395,7 +395,7 @@ impl Runtime {
         //   反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
         //   (IME-ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデル。
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
-        let profile = self.executor.platform.current_app_profile();
+        let profile = self.platform.current_app_profile();
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
         let suppress_physical = if profile.can_use_imm32_cross_process() {
             // ImmCross: KANJI 関連 VK は Down/Up 共に Consume（spurious 連鎖を構造的に遮断）
@@ -434,7 +434,7 @@ impl Runtime {
         // ImeModel から applied snapshot を pre-fetch して executor に渡す。
         // executor は intra-batch 更新でこの値を書き換えることがある（ImmCross 楽観更新等）。
         let pre_applied = self.platform_state.ime.applied_pair();
-        let result = self.executor.execute_from_hook(decision, event, pre_applied);
+        let result = self.executor.execute_from_hook(&mut self.platform, decision, event, pre_applied);
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
         self.dispatch_outcomes(result.sync_outcomes);

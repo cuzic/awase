@@ -22,9 +22,10 @@ use crate::platform::WindowsPlatform;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
 
+
 /// `execute_from_hook` の戻り値。
 #[derive(Debug)]
-pub struct BatchResult {
+pub(crate) struct BatchResult {
     /// OS に返す consume/passthrough 判定
     pub callback: CallbackResult,
     /// true なら `PostMessage(WM_EXECUTE_EFFECTS)` でメッセージループに通知が必要
@@ -34,8 +35,7 @@ pub struct BatchResult {
     pub sync_outcomes: Vec<(bool, awase::platform::ImeOpenOutcome)>,
 }
 
-pub struct DecisionExecutor {
-    pub platform: WindowsPlatform,
+pub(crate) struct DecisionExecutor {
     /// Effects キュー（FIFO 順序保証）
     queue: VecDeque<Effect>,
     /// フックの動作モード
@@ -69,9 +69,8 @@ impl std::fmt::Debug for DecisionExecutor {
 }
 
 impl DecisionExecutor {
-    pub fn new(platform: WindowsPlatform, hook_mode: HookMode) -> Self {
+    pub(crate) fn new(hook_mode: HookMode) -> Self {
         Self {
-            platform,
             queue: VecDeque::new(),
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
@@ -86,22 +85,24 @@ impl DecisionExecutor {
     /// - Filter モード: 入出力系は即座実行、重い処理は遅延。PassThrough を OS に返す。
     /// - Relay モード: 全 Effects をキューに入れ、PassThrough キーも ReinjectKey に変換。
     ///   常に Consumed を返す。
-    pub fn execute_from_hook(
+    pub(crate) fn execute_from_hook(
         &mut self,
+        platform: &mut WindowsPlatform,
         decision: Decision,
         raw_event: &RawKeyEvent,
         applied: Option<(bool, u64)>,
     ) -> BatchResult {
         self.applied_snapshot = applied;
         match self.hook_mode {
-            HookMode::Filter => self.execute_filter(decision),
-            HookMode::Relay => self.execute_relay(decision, raw_event),
+            HookMode::Filter => self.execute_filter(platform, decision),
+            HookMode::Relay => self.execute_relay(platform, decision, raw_event),
         }
     }
 
     /// メッセージループから呼ぶ。全 Effects を即座に実行する。
-    pub fn execute_from_loop(
+    pub(crate) fn execute_from_loop(
         &mut self,
+        platform: &mut WindowsPlatform,
         decision: Decision,
         applied: Option<(bool, u64)>,
     ) -> (CallbackResult, Vec<(bool, awase::platform::ImeOpenOutcome)>) {
@@ -114,7 +115,7 @@ impl DecisionExecutor {
 
         let mut sync_outcomes = Vec::new();
         for effect in effects {
-            if let Some(o) = self.execute_one(effect) {
+            if let Some(o) = self.execute_one(platform, effect) {
                 sync_outcomes.push(o);
             }
         }
@@ -128,7 +129,7 @@ impl DecisionExecutor {
     /// `guard_held` に park 済みの Effect があれば最初にそれを試し、
     /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
-    pub fn drain_deferred(&mut self) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
+    pub(crate) fn drain_deferred(&mut self, platform: &mut WindowsPlatform) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
         // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
         // Win が 150ms 以上 OS 側でスタックし、後続のショートカットが Win+key と
@@ -139,17 +140,15 @@ impl DecisionExecutor {
         // 1) 前回 park した Effect があれば最初に試す。
         //    guard 解除済みなら execute_one してから queue に進む (batching を継続)。
         if let Some(effect) = self.guard_held.take() {
-            if let Some(remaining) = self.output_guard_remaining() {
+            if let Some(remaining) = self.output_guard_remaining(platform) {
                 log::debug!(
                     "[reinject-guard] held effect, output {}ms ago, suspending for {remaining}ms",
                     crate::tuning::OUTPUT_GUARD_MS - remaining,
                 );
-                self.park_in_guard(effect, remaining);
+                self.park_in_guard(platform, effect, remaining);
                 return sync_outcomes;
             }
-            if let Some(o) = self.execute_one(effect) {
-                sync_outcomes.push(o);
-            }
+            if let Some(o) = self.execute_one(platform, effect) { sync_outcomes.push(o); }
             reinject_guard_passed = true;
         }
 
@@ -157,12 +156,12 @@ impl DecisionExecutor {
         while let Some(effect) = self.queue.pop_front() {
             let is_reinject = matches!(effect, Effect::Input(InputEffect::ReinjectKey(_)));
             if is_reinject && !reinject_guard_passed {
-                if let Some(remaining) = self.output_guard_remaining() {
+                if let Some(remaining) = self.output_guard_remaining(platform) {
                     log::debug!(
                         "[reinject-guard] output {}ms ago, suspending drain for {remaining}ms",
                         crate::tuning::OUTPUT_GUARD_MS - remaining,
                     );
-                    self.park_in_guard(effect, remaining);
+                    self.park_in_guard(platform, effect, remaining);
                     return sync_outcomes;
                 }
                 reinject_guard_passed = true;
@@ -171,33 +170,31 @@ impl DecisionExecutor {
                 // 次の reinject には再びガードを適用する。
                 reinject_guard_passed = false;
             }
-            if let Some(o) = self.execute_one(effect) {
-                sync_outcomes.push(o);
-            }
+            if let Some(o) = self.execute_one(platform, effect) { sync_outcomes.push(o); }
         }
 
         // 全 Effect を消化: lingering な timer を kill (no-op if not registered)。
         if self.guard_held.is_none() {
-            self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
+            platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
         }
 
         sync_outcomes
     }
 
     /// `TIMER_OUTPUT_GUARD` 発火時に呼ぶ。timer を kill して drain を再試行する。
-    pub fn on_output_guard_timer(&mut self) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
-        self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
-        self.drain_deferred()
+    pub(crate) fn on_output_guard_timer(&mut self, platform: &mut WindowsPlatform) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
+        platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
+        self.drain_deferred(platform)
     }
 
     /// queue または guard slot に Effect が残っているか
-    pub fn has_pending(&self) -> bool {
+    pub(crate) fn has_pending(&self) -> bool {
         !self.queue.is_empty() || self.guard_held.is_some()
     }
 
     /// output guard 期間中なら残り ms を返す。期間外なら None。
-    fn output_guard_remaining(&self) -> Option<u64> {
-        let elapsed = self.platform.output_in_flight_ms();
+    fn output_guard_remaining(&self, platform: &WindowsPlatform) -> Option<u64> {
+        let elapsed = platform.output_in_flight_ms();
         if elapsed < crate::tuning::OUTPUT_GUARD_MS {
             Some(crate::tuning::OUTPUT_GUARD_MS - elapsed)
         } else {
@@ -207,9 +204,9 @@ impl DecisionExecutor {
 
     /// Effect を guard slot に park し、TIMER_OUTPUT_GUARD を再設定する。
     /// 再設定は idempotent (remaining は last_send からの相対時刻基準で計算される)。
-    fn park_in_guard(&mut self, effect: Effect, remaining: u64) {
+    fn park_in_guard(&mut self, platform: &mut WindowsPlatform, effect: Effect, remaining: u64) {
         self.guard_held = Some(effect);
-        self.platform.timer.set(
+        platform.timer.set(
             crate::TIMER_OUTPUT_GUARD,
             std::time::Duration::from_millis(remaining),
         );
@@ -223,14 +220,14 @@ impl DecisionExecutor {
     /// Consumed として退避されたキーは drain で engine に replay されたあと
     /// `CallbackResult::PassThrough` が返っても hook 経路に戻らないため、
     /// 明示的に SendInput で送出する必要がある。
-    pub fn enqueue_reinject(&mut self, event: RawKeyEvent) {
+    pub(crate) fn enqueue_reinject(&mut self, event: RawKeyEvent) {
         self.queue
             .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
     }
 
     // ── Filter モード ──
 
-    fn execute_filter(&mut self, decision: Decision) -> BatchResult {
+    fn execute_filter(&mut self, platform: &mut WindowsPlatform, decision: Decision) -> BatchResult {
         let (consumed, effects) = match decision {
             Decision::PassThrough => {
                 return BatchResult {
@@ -246,9 +243,8 @@ impl DecisionExecutor {
         let mut sync_outcomes = Vec::new();
         for effect in effects {
             if Self::is_input_critical(&effect) {
-                if let Some(o) = self.execute_one(effect) {
-                    sync_outcomes.push(o);
-                }
+                // Ime/Ui effects are not critical → they go to queue, never reach execute_one here.
+                if let Some(o) = self.execute_one(platform, effect) { sync_outcomes.push(o); }
             } else {
                 self.queue.push_back(effect);
             }
@@ -275,10 +271,10 @@ impl DecisionExecutor {
     // Win キー等のシステム動作を壊さず、INJECTED フラグ問題も回避する。
     // flush を伴う PassThrough のみ Consume して順序を保証する。
 
-    fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> BatchResult {
+    fn execute_relay(&mut self, platform: &mut WindowsPlatform, decision: Decision, raw_event: &RawKeyEvent) -> BatchResult {
         match decision {
             Decision::PassThrough => {
-                let callback = self.handle_passthrough(raw_event);
+                let callback = self.handle_passthrough(platform, raw_event);
                 BatchResult {
                     has_pending: self.has_pending(),
                     callback,
@@ -322,7 +318,7 @@ impl DecisionExecutor {
     ///
     /// 各 `try_*` / `handle_*` を早期 return チェーンで呼び出し、
     /// 全チェックを通過した場合は OS に PassThrough を返す。
-    fn handle_passthrough(&mut self, raw_event: &RawKeyEvent) -> CallbackResult {
+    fn handle_passthrough(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) -> CallbackResult {
         // awase の SendInput 出力直後 N ms は、OS キュー → アプリ → IME の pipeline で
         // 出力イベントが処理中。この間に user passthrough キー (Enter / Ctrl /
         // Backspace 等) が割り込むと IME composition が cancel され
@@ -338,12 +334,12 @@ impl DecisionExecutor {
         }
 
         // 2. warm+TSF Enter/Space/Esc KeyUp: 保留 eager warmup を送信。
-        self.try_pending_warmup_on_keyup(raw_event);
+        self.try_pending_warmup_on_keyup(platform, raw_event);
 
         // 3. Ctrl↑ cold recovery: eager_warmup_sent_ms をリセット。
-        self.handle_ctrl_up_recovery(raw_event);
+        self.handle_ctrl_up_recovery(platform, raw_event);
 
-        let in_flight_ms = self.platform.output_in_flight_ms();
+        let in_flight_ms = platform.output_in_flight_ms();
         let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
         let has_pending = self.has_pending();
 
@@ -362,15 +358,15 @@ impl DecisionExecutor {
         }
 
         // 5. F2 + TSF mode: 物理 F2 を Consume（double-F2 防止）。
-        if let Some(result) = self.try_native_f2_consume(raw_event) {
+        if let Some(result) = self.try_native_f2_consume(platform, raw_event) {
             return result;
         }
 
         // 6. Space/Enter/Esc KeyDown: warm+TSF または cold の composition 確定処理。
-        self.handle_confirm_key_passthrough(raw_event);
+        self.handle_confirm_key_passthrough(platform, raw_event);
 
         // 7. F2 + KeyDown + non-TSF: mark_cold（Chrome/Win32 向け）。
-        self.handle_f2_non_tsf(raw_event);
+        self.handle_f2_non_tsf(platform, raw_event);
 
         // Effects なし → 直接 OS に通す
         // Passthrough 系の VK (Enter, Esc, Tab 等) は awase 出力との
@@ -409,7 +405,7 @@ impl DecisionExecutor {
     /// KeyDown 時は SendInput(F2) → CallNextHookEx(Enter↓) の順になり WezTerm が
     /// F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
     /// KeyUp タイミングでは Enter↓ が既に処理済みのため F2 との競合なし。
-    fn try_pending_warmup_on_keyup(&mut self, raw_event: &RawKeyEvent) {
+    fn try_pending_warmup_on_keyup(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
             && raw_event.vk_code.is_composition_confirm_key()
@@ -420,7 +416,7 @@ impl DecisionExecutor {
                 "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
                 raw_event.vk_code,
             );
-            self.platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
+            platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -429,17 +425,17 @@ impl DecisionExecutor {
     /// Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
     /// 副作用のみで CallbackResult は返さない。
     #[allow(clippy::needless_pass_by_ref_mut)]
-    fn handle_ctrl_up_recovery(&mut self, raw_event: &RawKeyEvent) {
+    fn handle_ctrl_up_recovery(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
             && raw_event.vk_code.is_ctrl_variant()
-            && !self.platform.is_composition_warm()
+            && !platform.is_composition_warm()
         {
             log::debug!(
                 "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
                 raw_event.vk_code,
             );
-            self.platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
+            platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -497,13 +493,13 @@ impl DecisionExecutor {
     /// 物理 F2 を Consume し、次の NICOLA バッチの warmup F2 で一本化することで解消する。
     /// → output.rs の composition_warm ドキュメントの設計意図と一致。
     #[allow(clippy::needless_pass_by_ref_mut)]
-    fn try_native_f2_consume(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
+    fn try_native_f2_consume(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && self.platform.is_tsf_mode() {
+        if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && platform.is_tsf_mode() {
             if is_key_down {
                 // 物理 F2 消費時の composition 状態更新を platform に委譲する。
                 // mark_cold(NativeF2Consumed) + eager warmup を platform 内で処理。
-                let _ = self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+                let _ = platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
             } else {
                 log::debug!(
                     "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -516,13 +512,13 @@ impl DecisionExecutor {
 
     /// Space/Enter/Esc KeyDown の直接 passthrough: warm+TSF または cold の composition 確定処理。
     /// 副作用のみで CallbackResult は返さない。
-    fn handle_confirm_key_passthrough(&mut self, raw_event: &RawKeyEvent) {
+    fn handle_confirm_key_passthrough(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
         // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
         // mark_cold / eager warmup は platform に委譲する。戻り値が true なら warmup を KeyUp へ遅延。
         if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            let deferred = self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+            let deferred = platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
             self.pending_warmup_on_keyup = deferred;
         }
     }
@@ -530,12 +526,12 @@ impl DecisionExecutor {
     /// vk=0xF2 + KeyDown かつ non-TSF mode のとき mark_cold（Chrome/Win32 向け）。
     /// 副作用のみで CallbackResult は返さない。
     #[allow(clippy::needless_pass_by_ref_mut)]
-    fn handle_f2_non_tsf(&mut self, raw_event: &RawKeyEvent) {
+    fn handle_f2_non_tsf(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
         // mark_cold(F2NonTsf) を platform に委譲する。
         if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && is_key_down {
-            let _ = self.platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+            let _ = platform.on_passthrough_key(raw_event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
         }
     }
 
@@ -545,30 +541,29 @@ impl DecisionExecutor {
         matches!(effect, Effect::Input(_) | Effect::Timer(_))
     }
 
-    fn execute_one(&mut self, effect: Effect) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
+    fn execute_one(&mut self, platform: &mut WindowsPlatform, effect: Effect) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
-            self.handle_reinject(event);
+            self.handle_reinject(platform, event);
             return None;
         }
-        if let Some((open, outcome)) = self.dispatch_effect(effect) {
+        self.dispatch_effect(platform, effect).map(|(open, outcome)| {
             self.update_intra_batch_applied(open, outcome);
-            return Some((open, outcome));
-        }
-        None
+            (open, outcome)
+        })
     }
 
     /// F2-TSF 特殊扱い + 通常 reinject + confirm キー後処理。
-    fn handle_reinject(&mut self, event: RawKeyEvent) {
+    fn handle_reinject(&mut self, platform: &mut WindowsPlatform, event: RawKeyEvent) {
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         let dir = if is_key_down { "down" } else { "up" };
 
         // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
         // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
         // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
-        if event.vk_code == crate::vk::VK_DBE_HIRAGANA && self.platform.is_tsf_mode() {
+        if event.vk_code == crate::vk::VK_DBE_HIRAGANA && platform.is_tsf_mode() {
             if is_key_down {
                 // mark_cold(NativeF2Consumed) + eager warmup を platform に委譲する。
-                self.platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+                platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
             } else {
                 log::debug!(
                     "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -581,68 +576,69 @@ impl DecisionExecutor {
             "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
             event.vk_code,
         );
+
+        // 案 2a: Space/Enter/Escape (confirm key) KeyDown の composition 後処理を spawn 前に実行する。
+        // OUTPUT_GATE.active=true 中は新たなキーが INPUT_DEFER に退避されるため、
+        // on_reinject_key を reinject() の前後どちらで呼んでも観測可能な差がない。
+        // これにより spawn_local 内の with_app 呼び出しを除去できる。
+        if is_key_down && event.vk_code.is_composition_confirm_key() {
+            platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+        }
+
         // OutputActiveGuard を先に取得してから spawn_local で SendInput を RUNTIME 借用外に移す。
         // RUNTIME 借用中に SendInput を呼ぶと WH_KEYBOARD_LL フックが再入し、ユーザーキーが
         // NICOLA 処理をスキップして素通しになる（「いが l になった」バグの原因）。
         // spawn_local 実行中にユーザーキーが届いても OUTPUT_GATE.active=true で INPUT_DEFER
         // に退避され、guard drop 後に drain されて正しく NICOLA 処理される。
         let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
-        let vk_code = event.vk_code;
         win32_async::spawn_local(async move {
             // SAFETY: spawn_local はメインスレッドのメッセージループで実行される。
             unsafe { event.reinject() };
-            // Space/Enter/Escape の reinject (KeyDown) は composition を確定・キャンセルする。
-            // Backspace 等は composition を維持するためここでは対象外。
-            // mark_cold(ReinjectConfirmKey) + eager warmup を platform に委譲する。
-            if is_key_down && vk_code.is_composition_confirm_key() {
-                let _ = crate::with_app(|app| {
-                    app.on_reinject_composition_confirm_key(vk_code);
-                });
-            }
             drop(guard);
         });
     }
 
-    /// Effect::* の match dispatch。ImeEffect::SetOpen の結果のみ Some で返す。
-    fn dispatch_effect(&mut self, effect: Effect) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
+    /// Effect::* の match dispatch。
+    /// ImeEffect::SetOpen の sync 経路は `Some(..)`、async 経路は `None`（spawn 済み）。
+    fn dispatch_effect(&mut self, platform: &mut WindowsPlatform, effect: Effect) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
-        // 先に処理する（後段の `let platform = &mut self.platform` が `self.platform`
+        // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
         if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
-            return self.dispatch_ime_set_open(open, origin);
+            return self.dispatch_ime_set_open(platform, open, origin);
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
         let applied_for_engine_key = self.applied_snapshot.map(|(v, _)| v);
-        let platform: &mut dyn PlatformRuntime = &mut self.platform;
+        let platform_rt: &mut dyn PlatformRuntime = platform;
         match effect {
             Effect::Input(ie) => match ie {
                 InputEffect::SendKeys(actions) => {
-                    platform.send_keys(&actions);
+                    platform_rt.send_keys(&actions);
                     None
                 }
                 InputEffect::ReinjectKey(_) => unreachable!("handled in execute_one"),
             },
             Effect::Timer(te) => match te {
                 TimerEffect::Set { id, duration } => {
-                    platform.set_timer(id, duration);
+                    platform_rt.set_timer(id, duration);
                     None
                 }
                 TimerEffect::Kill(id) => {
-                    platform.kill_timer(id);
+                    platform_rt.kill_timer(id);
                     None
                 }
             },
             Effect::Ime(ie) => match ie {
                 ImeEffect::SetOpen { .. } => unreachable!("handled above"),
                 ImeEffect::RequestRefresh => {
-                    platform.post_ime_refresh();
+                    platform_rt.post_ime_refresh();
                     None
                 }
             },
             Effect::Ui(ue) => match ue {
                 UiEffect::EngineStateChanged { enabled } => {
-                    platform.update_tray(enabled);
-                    platform.send_engine_state_ime_key(enabled, applied_for_engine_key);
+                    platform_rt.update_tray(enabled);
+                    platform_rt.send_engine_state_ime_key(enabled, applied_for_engine_key);
                     None
                 }
             },
@@ -652,20 +648,17 @@ impl DecisionExecutor {
     /// `ImeEffect::SetOpen` の専用 dispatch。
     ///
     /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能な場合は
-    /// `set_ime_open_cross_process_async` を `win32_async::spawn_local` で async 実行する
-    /// (`SendMessageTimeoutW` 由来の `with_app` 再入を回避するため)。
+    /// `win32_async::spawn_local` で非同期実行し `None` を返す（spawn 済み）。
     /// それ以外（GjiDirect / KanjiToggle 経路）はキー注入のみで非ブロッキングなため
-    /// 既存の同期 chain を維持する。
-    ///
-    /// async 経路では同期 outcome を返せないため `None` を返し、latch 更新
-    /// (`post_apply_ime_open`) と `post_ime_refresh` を spawn_local 内で完了させる。
+    /// 既存の同期 chain を維持し、`Some(..)` を返す。
     fn dispatch_ime_set_open(
         &mut self,
+        platform: &mut WindowsPlatform,
         open: bool,
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         let (imm_first, shadow_on, applied_at_ms) = {
-            let view = self.platform.build_ime_control_view(self.applied_snapshot);
+            let view = platform.build_ime_control_view(self.applied_snapshot);
             (
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view),
                 view.control.shadow_on,
@@ -676,8 +669,6 @@ impl DecisionExecutor {
             // ── async path (ImmCross が選ばれるアプリ) ──
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
             // INPUT_DEFER へ退避され、SetOpen 進行中に新キーが engine に届かない。
-            // guard は spawn_local 内の async move 末尾で drop され、その時点で OUTPUT_GATE
-            // が解除されて drain がキックされる。
             //
             // 同一エフェクトバッチ内で直後に処理される UiEffect::EngineStateChanged →
             // send_engine_state_ime_key が applied_snapshot を見て VK_F4/VK_F3 を
@@ -700,11 +691,8 @@ impl DecisionExecutor {
                 let outcome = if ok {
                     awase::platform::ImeOpenOutcome::Applied
                 } else {
-                    // ImmCross failed (e.g. composition commit racing with SetOpen).
-                    // Before sending VK_KANJI toggle, verify the actual IME state: if the IME
-                    // already reached the desired state during the ImmCross timeout window
-                    // (e.g. GJI candidate dismiss settled the IME), skip the toggle to prevent
-                    // the spurious OFF→ON re-toggle that causes the ~500ms drift correction.
+                    // SAFETY: `read_ime_state_fast` は Win32 IMM API を呼ぶ。
+                    //         spawn_local はメインスレッドのメッセージループで実行される。
                     let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
                     if actual == Some(open) {
                         log::debug!(
@@ -754,7 +742,7 @@ impl DecisionExecutor {
             // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
             let mut apply_context = self.applied_snapshot;
             if origin == EffectOrigin::EngineIntent {
-                let profile = self.platform.current_app_profile();
+                let profile = platform.current_app_profile();
                 if !profile.can_use_imm32_cross_process()
                     && !crate::tsf::observer::gji_monitor_healthy()
                 {
@@ -793,7 +781,7 @@ impl DecisionExecutor {
                     }
                 }
             }
-            let outcome = self.platform.apply_ime_open_with_applied(open, apply_context);
+            let outcome = platform.apply_ime_open_with_applied(open, apply_context);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 log::warn!("apply_ime_open({open}) failed");
             }

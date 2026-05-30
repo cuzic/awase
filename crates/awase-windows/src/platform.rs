@@ -8,10 +8,10 @@ use std::time::Duration;
 use awase::platform::PlatformRuntime;
 use awase::types::{KeyAction, RawKeyEvent};
 
-use crate::output::Output;
-use crate::focus::classifier::{ForceOverrides, ImmCapabilityStore, InjectionHint};
 use crate::focus::class_names::AppImeProfile;
-use crate::focus::current::CurrentFocus;
+use crate::focus::classifier::{ImmCapability, InjectionHint};
+use crate::focus::tracker::FocusTracker;
+use crate::output::Output;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
@@ -27,16 +27,8 @@ pub struct WindowsPlatform {
     /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
     /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
     pub suppress_engine_state_key: bool,
-    // ── フォーカス検出フィールド群（旧 AppKindClassifier）──
-    pub focus_cache: crate::focus::cache::FocusCache,
-    pub focus_overrides: ForceOverrides,
-    /// 現在フォーカス中のウィンドウ情報（pid / class_name / app_profile / process_name）。
-    pub focus: CurrentFocus,
-    pub focus_uia_sender: Option<std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>>,
-    /// IMM 能力の学習・永続化ストア。
-    pub imm_learning: ImmCapabilityStore,
-    /// per-HWND IME 状態キャッシュ。
-    pub hwnd_ime_cache: crate::focus::hwnd_cache::HwndImeCache,
+    /// フォーカス追跡の全状態（ウィンドウ情報・判定キャッシュ・IME キャッシュ等）。
+    pub focus: FocusTracker,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -430,7 +422,7 @@ impl WindowsPlatform {
         applied: Option<(bool, u64)>,
     ) -> crate::state::ImeControlView<'_> {
         let class_name = if self.focus.is_focused() {
-            self.focus.class_name.as_str()
+            self.focus.class_name()
         } else {
             ""
         };
@@ -449,10 +441,6 @@ impl WindowsPlatform {
     }
 
     /// `applied` を明示的に渡す `apply_ime_open` 実装。
-    ///
-    /// executor が `ImeControlView` の `shadow_on` / `applied_at_ms` を
-    /// `applied_snapshot` から直接提供するために使う。
-    /// `None` を渡すと `build_ime_control_view_latch()` のフォールバックと同じ動作になる。
     pub(crate) fn apply_ime_open_with_applied(
         &mut self,
         open: bool,
@@ -462,21 +450,18 @@ impl WindowsPlatform {
         crate::ime_controller::CONTROLLER.apply(open, &view)
     }
 
-    // ── 旧 AppKindClassifier メソッド群 ──
+    // ── フォーカス委譲メソッド ──
 
     /// フォーカス中アプリの IME 制御プロファイルを返す。
     #[must_use]
     pub fn current_app_profile(&self) -> AppImeProfile {
-        self.focus.app_profile
+        self.focus.current_profile()
     }
 
     /// 現在のフォーカス先に対する注入ヒントを返す。
     #[must_use]
     pub fn injection_hint(&self) -> InjectionHint {
-        if !self.focus.is_focused() {
-            return InjectionHint::Default;
-        }
-        self.focus_overrides.injection_hint(self.focus.pid, &self.focus.class_name)
+        self.focus.injection_hint()
     }
 
     /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
@@ -485,8 +470,8 @@ impl WindowsPlatform {
     }
 
     /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。
-    pub fn learn_imm_capability(&mut self, class_name: String, cap: crate::focus::classifier::ImmCapability) {
-        self.imm_learning.learn(class_name, cap);
+    pub fn learn_imm_capability(&mut self, class_name: String, cap: ImmCapability) {
+        self.focus.learn_imm_capability(class_name, cap);
     }
 
     /// UIA ワーカーへの送信チャネルを設定する。
@@ -494,7 +479,7 @@ impl WindowsPlatform {
         &mut self,
         sender: std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>,
     ) {
-        self.focus_uia_sender = Some(sender);
+        self.focus.set_uia_sender(sender);
     }
 }
 

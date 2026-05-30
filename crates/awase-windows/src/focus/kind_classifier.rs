@@ -30,7 +30,7 @@ pub unsafe fn resolve_focus_kind(
     use crate::focus::classify;
 
     // 1. Config オーバーライドをチェック
-    if let Some(kind) = platform.focus_overrides.check_app_override(process_id, class_name) {
+    if let Some(kind) = platform.focus.override_check(process_id, class_name) {
         return FocusKindResolution {
             kind,
             reason: "config override".to_string(),
@@ -39,7 +39,7 @@ pub unsafe fn resolve_focus_kind(
     }
 
     // 2. キャッシュヒットをチェック
-    if let Some(cached) = platform.focus_cache.get(process_id, class_name) {
+    if let Some(cached) = platform.focus.cache_get(process_id, class_name) {
         return FocusKindResolution {
             kind: cached,
             reason: "cache hit".to_string(),

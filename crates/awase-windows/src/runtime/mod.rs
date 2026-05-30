@@ -1,3 +1,5 @@
+pub(crate) mod executor;
+mod focus_tracking;
 mod ime_refresh;
 mod key_pipeline;
 pub(crate) mod message_handlers;
@@ -9,6 +11,7 @@ use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCod
 
 use crate::focus::cache::DetectionSource;
 use awase::platform::PlatformRuntime as _;
+use crate::platform::WindowsPlatform;
 use crate::win32::HwndExt as _;
 use crate::ImeBelief;
 
@@ -38,7 +41,7 @@ pub const fn build_input_context(
 }
 use awase::yab::YabLayout;
 
-use crate::executor::DecisionExecutor;
+use executor::DecisionExecutor;
 use crate::hook::CallbackResult;
 
 // ── LayoutEntry（名前付きレイアウトエントリ）──
@@ -59,6 +62,7 @@ pub struct LayoutEntry {
 pub struct Runtime {
     engine: Engine,
     executor: DecisionExecutor,
+    pub platform: WindowsPlatform,
     layouts: Vec<LayoutEntry>,
     /// IME 同期キー（イベント事前分類用）
     sync_toggle_keys: Vec<VkCode>,
@@ -79,15 +83,6 @@ impl std::fmt::Debug for Runtime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Runtime").finish_non_exhaustive()
     }
-}
-
-/// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
-/// このファイル内のみで使用する。
-struct ClassifiedFocus {
-    hwnd: windows::Win32::Foundation::HWND,
-    process_id: u32,
-    class_name: String,
-    kind: FocusKind,
 }
 
 /// `ime_diagnostic` が必要とする Runtime の読み取り専用スナップショット。
@@ -122,7 +117,7 @@ impl Runtime {
     #[must_use]
     pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
         (
-            self.executor.platform.injection_hint(),
+            self.platform.injection_hint(),
             self.platform_state.app_kind,
         )
     }
@@ -130,31 +125,31 @@ impl Runtime {
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
     #[must_use]
     pub fn can_use_imm32_cross_process(&self) -> bool {
-        self.executor.platform.current_app_profile().can_use_imm32_cross_process()
+        self.platform.current_app_profile().can_use_imm32_cross_process()
     }
 
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
     pub fn learn_imm_capability_from_miss(&mut self, miss_before: u32, miss_after: u32) {
         use crate::focus::classifier::ImmCapability;
-        if !self.executor.platform.focus.is_focused() {
+        if !self.platform.focus.is_focused() {
             return;
         }
-        let class_name = self.executor.platform.focus.class_name.clone();
+        let class_name = self.platform.focus.class_name().to_owned();
         if miss_after == 0 && miss_before > 0 {
-            let prev = self.executor.platform.imm_learning.get(&class_name);
+            let prev = self.platform.focus.imm_capability(&class_name);
             if prev != Some(ImmCapability::Works) {
                 log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
-                self.executor.platform.learn_imm_capability(class_name, ImmCapability::Works);
+                self.platform.learn_imm_capability(class_name, ImmCapability::Works);
             }
         } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
             && miss_before < crate::IME_DETECT_MISS_THRESHOLD
         {
-            let prev = self.executor.platform.imm_learning.get(&class_name);
+            let prev = self.platform.focus.imm_capability(&class_name);
             if prev != Some(ImmCapability::Unavailable) {
                 log::info!(
                     "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
                 );
-                self.executor.platform.learn_imm_capability(class_name, ImmCapability::Unavailable);
+                self.platform.learn_imm_capability(class_name, ImmCapability::Unavailable);
             }
         }
     }
@@ -187,7 +182,7 @@ impl Runtime {
     /// `engine_on/off_ime_key`（VK_DBE_DBCSCHAR 等）を追加送信してしまう
     /// フィードバックループを防ぐ。
     pub fn execute_decision_suppressed(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let _guard = self.executor.platform.suppress_engine_state_key_guard();
+        let _guard = self.platform.suppress_engine_state_key_guard();
         self.execute_decision(decision)
     }
 
@@ -195,7 +190,7 @@ impl Runtime {
     ///
     /// `.take()` と `timer.kill()` は常にペアで呼ぶ必要があるため一元化する。
     pub fn take_ime_off_rescue_pending(&mut self) -> Option<RawKeyEvent> {
-        self.executor.platform.timer.kill(crate::TIMER_IME_OFF_RESCUE);
+        self.platform.timer.kill(crate::TIMER_IME_OFF_RESCUE);
         self.pending_ime_off_rescue.take()
     }
 
@@ -204,7 +199,7 @@ impl Runtime {
     /// `.pending = Some(event)` と `timer.set()` は常にペアで呼ぶ必要があるため一元化する。
     pub fn set_ime_off_rescue_pending(&mut self, event: RawKeyEvent) {
         self.pending_ime_off_rescue = Some(event);
-        self.executor.platform.timer.set(
+        self.platform.timer.set(
             crate::TIMER_IME_OFF_RESCUE,
             std::time::Duration::from_millis(50),
         );
@@ -212,7 +207,7 @@ impl Runtime {
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
         let pre_applied = self.platform_state.ime.applied_pair();
-        let (callback, sync_outcomes) = self.executor.execute_from_loop(decision, pre_applied);
+        let (callback, sync_outcomes) = self.executor.execute_from_loop(&mut self.platform, decision, pre_applied);
         self.dispatch_outcomes(sync_outcomes);
         callback
     }
@@ -233,13 +228,13 @@ impl Runtime {
         }
 
         // B: composition warm/cold 更新
-        self.executor.platform.on_ime_applied(open, outcome);
+        self.platform.on_ime_applied(open, outcome);
 
         // C+D: ImeModel write-back + generation 照合 dispatch
         self.platform_state.ime.record_ime_apply_result(open, outcome, crate::hook::current_tick_ms());
 
         // E: IME 状態ポーリングをスケジュール
-        self.executor.platform.post_ime_refresh();
+        self.platform.post_ime_refresh();
     }
 
     /// sync path の outcome リストを一括 dispatch する。
@@ -251,7 +246,7 @@ impl Runtime {
 
     /// 現在の shadow model から `ImeControlView` を構築する。
     pub(crate) fn shadow_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
-        self.executor.platform.build_ime_control_view(
+        self.platform.build_ime_control_view(
             self.platform_state.ime.applied_pair(),
         )
     }
@@ -289,307 +284,10 @@ impl Runtime {
         self.run_ime_refresh();
     }
 
-    /// フォーカスプローブ結果を適用する（blocking なし、with_app 内で呼ぶ）。
-    /// detect_and_update_focus の fetch 部分を除いた apply のみ。
-    /// async drain 後に with_app 内で呼ぶ用途に使う。
-    pub fn apply_focus_probe_result(
-        &mut self,
-        probe: Option<crate::focus::probe::FocusSnapshot>,
-    ) -> bool {
-        let Some(classified) = self.classify_focus_probe(probe) else {
-            return false;
-        };
-        let (process_changed, prev_pid) = self.advance_focus_tracking(&classified);
-        // injection_mode を push — advance_focus_tracking() で last_focus_info が更新された後に
-        // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
-        // classify_focus_probe() 内では last_focus_info が前ウィンドウのままであり、
-        // ForceTsf を取得できず injection_mode=Vk になって send_eager_tsf_warmup() が
-        // can_warmup()=false のまま失敗するバグを修正する。
-        {
-            let hint = self.executor.platform.injection_hint();
-            let new_mode = crate::output::types::InjectionMode::from(
-                (hint, self.platform_state.app_kind),
-            );
-            self.executor.platform.update_injection_mode(new_mode);
-        }
-        if process_changed {
-            self.on_focus_process_changed(&classified, prev_pid);
-        } else if classified.kind == FocusKind::Undetermined {
-            if let Some(sender) = &self.executor.platform.focus_uia_sender {
-                let _ = sender.send(crate::focus::uia::SendableHwnd(classified.hwnd));
-            }
-        }
-        process_changed
-    }
-
-    /// プローブ結果を検証・分類し、platform_state (app_kind / focus_kind) を更新する。
-    ///
-    /// injection_mode の更新は `apply_focus_probe_result` が `advance_focus_tracking` 後に行う。
-    /// None を返した場合は呼び出し元が early return すること。
-    fn classify_focus_probe(
-        &mut self,
-        probe: Option<crate::focus::probe::FocusSnapshot>,
-    ) -> Option<ClassifiedFocus> {
-        use crate::focus::imm_learning;
-        use crate::focus::kind_classifier;
-
-        let Some(probe) = probe else {
-            log::warn!("Focus probe timed out — skipping update this cycle");
-            return None;
-        };
-        if probe.process_id == 0 {
-            return None;
-        }
-
-        let hwnd = probe.hwnd();
-        let process_id = probe.process_id;
-        let class_name = probe.class_name;
-
-        // app_kind を更新
-        let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
-
-        // ── Phase 2: IMM 能力キャッシュの初期学習 ──
-        // SAFETY: `learn_imm_capability_on_focus` は Win32 IMM API を呼ぶ unsafe fn。
-        //         `hwnd` は `probe` から得た有効なウィンドウハンドルであり、
-        //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
-        unsafe {
-            imm_learning::learn_imm_capability_on_focus(
-                &mut self.executor.platform,
-                hwnd,
-                &class_name,
-                new_app_kind,
-            );
-        }
-
-        if self.platform_state.app_kind != new_app_kind {
-            log::info!(
-                "AppKind changed: {:?} → {:?} (class={class_name})",
-                self.platform_state.app_kind,
-                new_app_kind
-            );
-            self.platform_state.app_kind = new_app_kind;
-        }
-
-        // ── Phase 3: focus_kind を決定 ──
-        // SAFETY: `resolve_focus_kind` は Win32 API で HWND を問い合わせる unsafe fn。
-        //         `hwnd` と `process_id` はフォーカスプローブで確認済みの有効な値。
-        //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
-        let resolution = unsafe {
-            kind_classifier::resolve_focus_kind(
-                &self.executor.platform,
-                process_id,
-                &class_name,
-                hwnd,
-            )
-        };
-        let kind = resolution.kind;
-        let reason = resolution.reason;
-        let overridden = resolution.overridden;
-
-        // focus_kind を更新
-        if self.platform_state.focus_kind != kind {
-            log::debug!(
-                "Focus kind changed: {:?} → {kind:?} (reason={reason})",
-                self.platform_state.focus_kind
-            );
-            self.platform_state.focus_kind = kind;
-        }
-
-        // キャッシュ格納（オーバーライドでない場合のみ）
-        if !overridden {
-            self.executor.platform.focus_cache.insert(
-                process_id,
-                class_name.clone(),
-                kind,
-                DetectionSource::Automatic,
-            );
-        }
-
-        Some(ClassifiedFocus {
-            hwnd,
-            process_id,
-            class_name,
-            kind,
-        })
-    }
-
-    /// last_focus_info を更新し、(process_changed, prev_pid) を返す。
-    ///
-    /// process_changed な場合は事前に `hwnd_ime_cache.save()` を呼び出す。
-    /// prev_pid は process_changed 時のみ Some になる（ログ用）。
-    fn advance_focus_tracking(&mut self, classified: &ClassifiedFocus) -> (bool, Option<u32>) {
-        let last_pid = if self.executor.platform.focus.is_focused() {
-            Some(self.executor.platform.focus.pid)
-        } else {
-            None
-        };
-        let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
-
-        // フォーカス離脱: 現在の belief を per-HWND キャッシュに保存
-        if process_changed {
-            if self.executor.platform.focus.is_focused() {
-                let old_pid = self.executor.platform.focus.pid;
-                let old_class = self.executor.platform.focus.class_name.clone();
-                self.executor.platform.hwnd_ime_cache.save(
-                    old_pid,
-                    old_class,
-                    self.platform_state.ime_on(),
-                    self.platform_state.input_mode(),
-                );
-            }
-        }
-
-        // focus_last_info と AppImeProfile キャッシュをアトミックに更新（IMM 制御の SSOT）。
-        self.executor
-            .platform
-            .update_focus_info(classified.process_id, classified.class_name.clone());
-
-        // prev_conversion_mode をリセット
-        self.platform_state.set_prev_conversion_mode(None);
-
-        (process_changed, if process_changed { last_pid } else { None })
-    }
-
-    /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・ime_observations
-    /// クリア・hwnd_cache 復元・force_on_guard リセット・UIA フォールバック）。
-    /// `prev_pid` は `advance_focus_tracking` が返した直前のプロセス ID（ログ用）。
-    fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
-        log::info!(
-            "FocusChange [{}→{}] {}: stale ime_on={} intent={:?} mode={:?} japanese={}",
-            prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
-            classified.process_id,
-            classified.class_name,
-            self.platform_state.ime_on(),
-            self.platform_state.explicit_intent(),
-            self.platform_state.input_mode(),
-            self.platform_state.is_japanese_ime(),
-        );
-
-        self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
-        self.executor.platform.notify_focus_changed();
-        // Step 1.5: FocusChanged event を dispatch して shadow_model の AppImePolicy を更新する。
-        // 順序: policy 確定 → observation clear → 以降の observation は新 policy で評価される。
-        let new_profile = self.executor.platform.current_app_profile();
-        let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
-        self.platform_state
-            .ime
-            .dispatch_event(crate::state::ime_event::ImeEvent::FocusChanged {
-                from: None, // 旧 hwnd は別途追跡可能だが Step 1.5 では None
-                to: new_hwnd,
-                profile: new_profile,
-            });
-
-        {
-            let process_name = &self.executor.platform.focus.process_name;
-            self.platform_state.active_keymaps =
-                self.all_keymaps.filter_active(process_name);
-            log::debug!("[keymap] active rules updated: {} rule(s) for process={:?}",
-                self.platform_state.active_keymaps.len(), process_name);
-        }
-
-        {
-            let cache_hit = self.executor.platform.hwnd_ime_cache.restore(
-                classified.process_id,
-                &classified.class_name,
-            );
-            let cache_miss = cache_hit.is_none();
-            self.platform_state.apply_hwnd_cache_restore(cache_hit);
-
-            // TsfNative プロファイル（Windows Terminal 等）への cache miss 入場では、
-            // 前ウィンドウの ime_on=false が carry over したまま IMM/poll で復旧できず
-            // Engine が活性化不能になる。stale を true へ寄せ直して trap を解く。
-            //
-            // ただし直近 10 秒以内に物理 IME キー / sync キーで明示的に IME OFF にしていた
-            // 場合は、ユーザーの意図を尊重してリセットをスキップする。
-            // Edge 等で Chrome_Widget → TsfNative サブウィンドウへフォーカスが移った際に
-            // stale reset が IME ON へ戻してしまいフォーム送信が起きるバグを防ぐ。
-            if cache_miss
-                && matches!(
-                    self.executor.platform.current_app_profile(),
-                    crate::focus::classify::AppImeProfile::TsfNative,
-                )
-            {
-                let now_ms = crate::hook::current_tick_ms();
-                let last_off_ms = self.platform_state.last_explicit_ime_off_ms;
-                let elapsed = now_ms.saturating_sub(last_off_ms);
-                if last_off_ms > 0 && elapsed < 10_000 {
-                    log::debug!(
-                        "[focus] TsfNative cache-miss: skip reset_stale — explicit IME-OFF {}ms ago",
-                        elapsed
-                    );
-                } else {
-                    self.platform_state.reset_stale_ime_on_for_tsf_native();
-                }
-            }
-        }
-
-        // TsfNative アプリ（LINE / Windows Terminal 等）では直後に呼ばれる
-        // notify_focus_changed でエンジンが SetOpen(true, EngineIntent) を発行する。
-        // on_focus_changed() がラッチを無効化（false）したままだと、
-        // dispatch_ime_set_open の override-latch 判定が spurious VK_KANJI を LINE に
-        // 送信してしまい IME がトグルされる（フォーム送信誤動作等）。
-        //
-        // desired=true (IME ON): hard pre-sync (applied_ms=now) で SetOpen(true) を抑止。
-        //   300ms 後に override が再度可能になり、Ctrl+変換 で再試行できる。
-        // desired=false (IME OFF): soft pre-sync (applied_ms=0 維持) で、
-        //   フォーカス先の IME が ON だった場合に初回 Ctrl+無変換 で確実に VK_KANJI を送れる。
-        //   実 apply 後は applied_ms > 0 となり「確認済み OFF」として永続スキップ。
-        if matches!(
-            self.executor.platform.current_app_profile(),
-            crate::focus::classify::AppImeProfile::TsfNative,
-        ) {
-            let ime_on_now = self.platform_state.ime_on();
-            if ime_on_now {
-                self.platform_state.ime.mirror_applied_open(true);
-                log::debug!(
-                    "[focus] TsfNative hard pre-sync applied=true (prevent spurious VK_KANJI from SetOpen(true))"
-                );
-            } else {
-                // soft presync: applied_open = None のまま（applied_at_ms = 0 = 不確定）
-                // → 初回 Ctrl+無変換 で latch 強制が発火できるようにする
-                log::debug!(
-                    "[focus] TsfNative soft pre-sync: applied_open=None (allow override on first Ctrl+無変換)"
-                );
-            }
-        }
-
-        if self.platform_state.is_force_on_guard_active()
-            || self.platform_state.ime_detect_miss_count() > 0
-        {
-            log::debug!(
-                "Focus changed: clearing force_on_guard and detect_miss_count \
-                 (new window may have different IME state)"
-            );
-            self.platform_state.reset_ime_detect_state();
-        }
-
-        if classified.kind == FocusKind::Undetermined {
-            if let Some(sender) = &self.executor.platform.focus_uia_sender {
-                let _ = sender.send(crate::focus::uia::SendableHwnd(classified.hwnd));
-            }
-        }
-    }
-
-    /// 現在のフォーカス先を検出し、focus_kind / app_kind を更新する。
-    ///
-    /// 前面プロセスが前回と異なる場合は `true` を返す（flush が必要）。
-    /// 同一プロセス内のフォーカス移動では `false` を返す（flush 不要）。
-    ///
-    /// # Safety
-    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-    unsafe fn detect_and_update_focus(&mut self) -> bool {
-        // フォーカス検出全体をワーカースレッドでタイムアウト付き実行する。
-        // 詳細は focus::probe::read_focus_snapshot() を参照。
-        // SAFETY: `read_focus_snapshot` は Win32 `GetForegroundWindow` 等を呼ぶ unsafe fn。
-        //         この関数自体が unsafe として宣言されており、メインスレッド呼び出しが前提。
-        let probe = unsafe { crate::focus::probe::read_focus_snapshot() };
-        self.apply_focus_probe_result(probe)
-    }
-
     /// IME リフレッシュを非同期タスクとしてスポーン。
     /// with_app の外でフェッチを行い、完了後に with_app で適用する。
     pub fn spawn_ime_refresh(&mut self) {
-        self.executor.platform.timer.kill(crate::TIMER_IME_REFRESH);
+        self.platform.timer.kill(crate::TIMER_IME_REFRESH);
 
         // NOTE: ここで send_eager_tsf_warmup() を呼ばない。
         // focus_transition_pending=true の時点では injection_mode が前ウィンドウ（WezTerm 等）
@@ -603,38 +301,7 @@ impl Runtime {
             let snap = crate::ime::read_ime_state_full_async().await;
             let _ = crate::with_app(|app| {
                 app.run_ime_refresh_with_prefetched(focus, &snap);
-
-                // run_with_prefetched 完了後: last_focus_info が更新済みのため
-                // injection_hint を読んで TsfGate を遷移させる。
-                // PendingWarmup 以外（Probing/Ready/Bypass）なら空 Vec が返る。
-                let is_tsf = matches!(
-                    app.executor.platform.injection_hint(),
-                    InjectionHint::ForceTsf
-                );
-                let held = if is_tsf {
-                    app.executor.platform.confirm_tsf()
-                } else {
-                    // BypassConfirmed（非TSFウィンドウ確定）: warmup_grace を無視して
-                    // ime_on を false に強制する。
-                    //
-                    // apply_focus_probe が WARMUP_GRACE_MS(300ms) の抑制で ime_on=true を
-                    // 保持したまま bypass_tsf() に到達した場合、以降のキーが NICOLA 変換
-                    // されてしまい Win+X メニュー等の1文字ショートカットが届かなくなる。
-                    // 非TSFウィンドウには日本語IMEが存在しないため grace 抑制は不要であり、
-                    // ここで ime_on=false を確定させる。
-                    let ms = crate::hook::current_tick_ms();
-                    let user_enabled = app.engine.is_user_enabled();
-                    app.platform_state.write_focus_probe(false, ms, user_enabled);
-                    app.executor.platform.bypass_tsf()
-                };
-                // confirm_tsf は PendingWarmup/Bypass → Probing、bypass_tsf は PendingWarmup/Probing → Bypass。
-                // Bypass から confirm_tsf を呼ぶのは WarmupTimeout 後に async タスクが遅れて完了した回復パス。
-                // すでに Probing/Ready なら空 Vec が返るため、500ms ポーリング等での再呼び出しも safe。
-                app.executor.platform.timer.kill(crate::TIMER_TSF_GATE);
-                if !held.is_empty() {
-                    log::debug!("[tsf-gate] draining {} held keys via INPUT_DEFER", held.len());
-                    crate::INPUT_DEFER.replay_later(held);
-                }
+                app.settle_tsf_gate_after_refresh();
             });
         });
     }
@@ -644,7 +311,7 @@ impl Runtime {
     /// 既存のタイマーをキャンセルして `delay_ms` 後に再設定する。
     /// フォーカス変更(50ms) / ポーリング(500ms) / 即時(0ms) を統一的に扱う。
     pub fn schedule_ime_refresh(&mut self, delay_ms: u64) {
-        self.executor.platform.timer.set(
+        self.platform.timer.set(
             crate::TIMER_IME_REFRESH,
             std::time::Duration::from_millis(delay_ms),
         );
@@ -653,6 +320,35 @@ impl Runtime {
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
         self.schedule_ime_refresh(u64::from(self.platform_state.ime_poll_interval_ms));
+    }
+
+    /// `spawn_ime_refresh` の async タスク内で IME リフレッシュ後に TsfGate を遷移させる。
+    ///
+    /// `run_ime_refresh_with_prefetched` 完了後に呼ぶ。`last_focus_info` が更新済みのため
+    /// `injection_hint` を読んで正しい TsfGate 状態に遷移できる。
+    fn settle_tsf_gate_after_refresh(&mut self) {
+        // PendingWarmup 以外（Probing/Ready/Bypass）なら空 Vec が返る。
+        // confirm_tsf は PendingWarmup/Bypass → Probing、bypass_tsf は PendingWarmup/Probing → Bypass。
+        let is_tsf = matches!(
+            self.platform.injection_hint(),
+            InjectionHint::ForceTsf
+        );
+        let held = if is_tsf {
+            self.platform.confirm_tsf()
+        } else {
+            // BypassConfirmed（非TSFウィンドウ確定）: warmup_grace を無視して ime_on=false に確定。
+            // apply_focus_probe が WARMUP_GRACE_MS(300ms) の抑制で ime_on=true を保持したまま
+            // bypass_tsf() に到達すると Win+X 等の1文字ショートカットが NICOLA 変換される。
+            let ms = crate::hook::current_tick_ms();
+            let user_enabled = self.engine.is_user_enabled();
+            self.platform_state.write_focus_probe(false, ms, user_enabled);
+            self.platform.bypass_tsf()
+        };
+        self.platform.timer.kill(crate::TIMER_TSF_GATE);
+        if !held.is_empty() {
+            log::debug!("[tsf-gate] draining {} held keys via INPUT_DEFER", held.len());
+            crate::INPUT_DEFER.replay_later(held);
+        }
     }
 
     /// Blacklist アプリ（Chrome 等）で IME belief が ON のとき OS に force-ON を送る。
@@ -668,7 +364,7 @@ impl Runtime {
         {
             return;
         }
-        let _success = self.executor.platform.set_ime_open(true);
+        let _success = self.platform.set_ime_open(true);
         log::trace!("Blacklist force-ON: set_ime_open(true)");
         if !self.platform_state.input_mode().is_romaji_capable() {
             use awase::engine::{AssumedReason, InputModeState};
@@ -691,7 +387,7 @@ impl Runtime {
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                 self.platform_state.ime_detect_miss_count()
             );
-            let dispatched = self.executor.platform.set_ime_open(true);
+            let dispatched = self.platform.set_ime_open(true);
             self.platform_state.set_force_on_broken_app_bootstrap();
             if !dispatched {
                 log::warn!("set_ime_open dispatched=false (profile not IMM-capable) — guard set to suppress retry until focus change");
@@ -712,7 +408,7 @@ impl Runtime {
             .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &self.build_ctx());
         self.execute_decision(decision);
 
-        self.executor.platform.tray.set_layout_name(&name);
+        self.platform.tray.set_layout_name(&name);
 
         log::info!("Switched layout to: {name}");
     }
@@ -729,10 +425,10 @@ impl Runtime {
         self.platform_state.focus_kind = new_kind;
 
         // Update learning cache
-        if self.executor.platform.focus.is_focused() {
-            let pid = self.executor.platform.focus.pid;
-            let cls = self.executor.platform.focus.class_name.clone();
-            self.executor.platform.focus_cache.insert(
+        if self.platform.focus.is_focused() {
+            let pid = self.platform.focus.pid();
+            let cls = self.platform.focus.class_name().to_owned();
+            self.platform.focus.cache_insert(
                 pid,
                 cls,
                 new_kind,
@@ -746,7 +442,7 @@ impl Runtime {
         }
 
         // バルーン通知を表示
-        self.executor.platform.tray.show_balloon(
+        self.platform.tray.show_balloon(
             "awase",
             if new_kind == FocusKind::TextInput {
                 "テキスト入力モードに切り替えました"
@@ -826,6 +522,7 @@ impl Runtime {
     pub(crate) fn new(
         engine: Engine,
         executor: DecisionExecutor,
+        platform: WindowsPlatform,
         layouts: Vec<LayoutEntry>,
         sync_toggle_keys: Vec<VkCode>,
         sync_on_keys: Vec<VkCode>,
@@ -836,6 +533,7 @@ impl Runtime {
         Self {
             engine,
             executor,
+            platform,
             layouts,
             sync_toggle_keys,
             sync_on_keys,
@@ -853,7 +551,7 @@ impl Runtime {
 
     /// トレイアイコンの HWND を返す。
     pub(crate) fn tray_hwnd(&self) -> windows::Win32::Foundation::HWND {
-        self.executor.platform.tray.hwnd()
+        self.platform.tray.hwnd()
     }
 
     /// ウィンドウフォーカス変更イベントを処理する（`win_event_proc` から呼ぶ）。
@@ -863,8 +561,8 @@ impl Runtime {
         now: std::time::Instant,
     ) {
         self.platform_state.ime.try_set_focus_transition_barrier(hwnd_id, now);
-        self.executor.platform.on_focus_change_tsf();
-        self.executor.platform.timer.set(
+        self.platform.on_focus_change_tsf();
+        self.platform.timer.set(
             crate::TIMER_TSF_GATE,
             std::time::Duration::from_millis(crate::tsf::WARMUP_TIMEOUT_MS),
         );
@@ -874,7 +572,7 @@ impl Runtime {
 
     /// フックウォッチドッグタイマーを起動する（3 秒）。
     pub(crate) fn start_hook_watchdog(&mut self) {
-        self.executor.platform.timer.set(
+        self.platform.timer.set(
             crate::TIMER_HOOK_WATCHDOG,
             std::time::Duration::from_secs(3),
         );
@@ -885,17 +583,17 @@ impl Runtime {
         &mut self,
         tx: std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>,
     ) {
-        self.executor.platform.set_uia_sender(tx);
+        self.platform.set_uia_sender(tx);
     }
 
     /// システムトレイのバルーン通知を表示する。
     pub(crate) fn show_tray_balloon(&mut self, title: &str, text: &str) {
-        self.executor.platform.tray.show_balloon(title, text);
+        self.platform.tray.show_balloon(title, text);
     }
 
     /// IMM 能力学習キャッシュをクリアして削除件数を返す。
     pub(crate) fn clear_imm_learning(&mut self) -> usize {
-        self.executor.platform.imm_learning.clear()
+        self.platform.focus.clear_imm_learning()
     }
 
     /// TSF プローブマシンをインストールしてタイマーを起動する（async 送信パス用）。
@@ -903,7 +601,7 @@ impl Runtime {
         &mut self,
         machine: crate::output::TsfProbeMachine,
     ) {
-        self.executor.platform.install_pending_tsf_and_set_timer(machine);
+        self.platform.install_pending_tsf_and_set_timer(machine);
     }
 
     /// async パスの IME apply 完了処理（executor 更新 + on_ime_apply_complete）。
@@ -916,18 +614,12 @@ impl Runtime {
         self.on_ime_apply_complete(open, outcome);
     }
 
-    /// async パスで reinject 後に composition 確定キーの後処理を行う。
-    pub(crate) fn on_reinject_composition_confirm_key(&mut self, vk_code: VkCode) {
-        let applied_ime_on = self.executor.applied_snapshot.map(|(v, _)| v);
-        self.executor.platform.on_reinject_key(vk_code, true, applied_ime_on);
-    }
-
     /// 診断画面が必要とする状態を一括スナップショットとして返す。
     pub(crate) fn diagnostic_snapshot(&self) -> RuntimeDiagnosticSnapshot {
-        let (focus_pid, focus_class) = if self.executor.platform.focus.is_focused() {
+        let (focus_pid, focus_class) = if self.platform.focus.is_focused() {
             (
-                self.executor.platform.focus.pid,
-                self.executor.platform.focus.class_name.clone(),
+                self.platform.focus.pid(),
+                self.platform.focus.class_name().to_owned(),
             )
         } else {
             (0, String::new())
@@ -940,7 +632,7 @@ impl Runtime {
             shadow_is_japanese: self.platform_state.is_japanese_ime(),
             last_focus_change_ms: self.platform_state.last_focus_change_ms,
             last_hook_activity_ms: self.platform_state.last_hook_activity_ms,
-            app_profile: format!("{:?}", self.executor.platform.current_app_profile()),
+            app_profile: format!("{:?}", self.platform.current_app_profile()),
         }
     }
 
@@ -965,14 +657,15 @@ impl Runtime {
             },
             &ctx,
         );
-        self.executor.platform.set_output_mode(config.general.output_mode);
+        self.platform.set_output_mode(config.general.output_mode);
         self.sync_toggle_keys = sync_toggle;
         self.sync_on_keys = sync_on;
         self.sync_off_keys = sync_off;
         let _ = self.engine.on_command(EngineCommand::ReloadKeys { special: special_keys }, &ctx);
-        self.executor.platform.focus_overrides =
-            crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone());
-        self.executor.platform.focus_cache = crate::focus::cache::FocusCache::new();
+        self.platform.focus.reset_overrides(
+            crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
+        );
+        self.platform.focus.cache_reset();
         log::info!(
             "Config applied: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
             config.general.simultaneous_threshold_ms,

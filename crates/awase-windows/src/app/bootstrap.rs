@@ -20,7 +20,7 @@ use awase::yab::YabLayout;
 use crate::vk::VkCodeExt;
 use crate::win32::HwndExt as _;
 
-use crate::executor;
+use crate::runtime::executor;
 use crate::hook;
 use crate::ime;
 use crate::output::Output;
@@ -330,23 +330,20 @@ pub(super) fn initialize_app(
     // RefCell が排他借用中でないことは構造的に保証されている。
     RUNTIME.set(Runtime::new(
         engine,
-        executor::DecisionExecutor::new(
-            platform::WindowsPlatform {
-                output: Output::new(config.general.output_mode),
-                tray,
-                timer: crate::timer::Win32Timer::new(),
-                engine_on_ime_vk,
-                engine_off_ime_vk,
-                suppress_engine_state_key: false,
-                focus_cache: crate::focus::cache::FocusCache::new(),
-                focus_overrides: crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
-                focus: crate::focus::current::CurrentFocus::unfocused(),
-                focus_uia_sender: None,
-                imm_learning: crate::focus::classifier::ImmCapabilityStore::new(base_dir),
-                hwnd_ime_cache: crate::focus::hwnd_cache::HwndImeCache::new(),
-            },
-            config.general.hook_mode,
-        ),
+        executor::DecisionExecutor::new(config.general.hook_mode),
+        platform::WindowsPlatform {
+            output: Output::new(config.general.output_mode),
+            tray,
+            timer: crate::timer::Win32Timer::new(),
+            engine_on_ime_vk,
+            engine_off_ime_vk,
+            suppress_engine_state_key: false,
+            focus: crate::focus::tracker::FocusTracker::new(
+                crate::focus::cache::FocusCache::new(),
+                crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
+                crate::focus::classifier::ImmCapabilityStore::new(base_dir),
+            ),
+        },
         layouts,
         sync_toggle_keys,
         sync_on_keys,

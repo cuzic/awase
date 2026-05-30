@@ -48,7 +48,7 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
 #[allow(clippy::cognitive_complexity)]
 pub(crate) unsafe fn handle_wm_timer(app: &mut Runtime, wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
-    let logical_id = app.executor.platform.timer.resolve(wparam);
+    let logical_id = app.platform.timer.resolve(wparam);
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
             if app.platform_state.sync_key_gate.is_active()
@@ -60,22 +60,22 @@ pub(crate) unsafe fn handle_wm_timer(app: &mut Runtime, wparam: usize, msg: &win
             app.spawn_ime_refresh();
         }
         Some(id) if id == TIMER_POWER_RESUME => {
-            app.executor.platform.timer.kill(TIMER_POWER_RESUME);
+            app.platform.timer.kill(TIMER_POWER_RESUME);
             log::info!("Power resume recovery");
             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
             app.platform_state.focus_kind = FocusKind::Undetermined;
             app.schedule_ime_refresh(500);
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
-            let outcomes = app.executor.on_output_guard_timer();
+            let outcomes = app.executor.on_output_guard_timer(&mut app.platform);
             app.dispatch_outcomes(outcomes);
         }
         Some(id) if id == TIMER_TSF_PROBE => {
-            app.executor.platform.advance_tsf_probe();
+            app.platform.advance_tsf_probe();
         }
         Some(id) if id == TIMER_TSF_GATE => {
-            app.executor.platform.timer.kill(TIMER_TSF_GATE);
-            let held = app.executor.platform.on_tsf_warmup_timeout();
+            app.platform.timer.kill(TIMER_TSF_GATE);
+            let held = app.platform.on_tsf_warmup_timeout();
             if !held.is_empty() {
                 log::debug!(
                     "[tsf-gate-timeout] draining {} held keys via INPUT_DEFER",
@@ -128,7 +128,7 @@ pub(crate) unsafe fn handle_wm_timer(app: &mut Runtime, wparam: usize, msg: &win
 
 /// WM_EXECUTE_EFFECTS ハンドラ
 pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
-    let outcomes = app.executor.drain_deferred();
+    let outcomes = app.executor.drain_deferred(&mut app.platform);
     app.dispatch_outcomes(outcomes);
 }
 
@@ -140,8 +140,7 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
 /// WM_DUPLICATE_INSTANCE ハンドラ
 pub(crate) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
     log::info!("Duplicate instance notification received");
-    app.executor
-        .platform
+    app.platform
         .tray
         .show_balloon("awase", "awase はすでに起動しています");
 }
@@ -165,8 +164,8 @@ pub(crate) unsafe fn handle_wm_powerbroadcast(app: &mut Runtime, pbt: usize) {
     use windows::Win32::UI::WindowsAndMessaging::{PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND};
     if pbt == PBT_APMRESUMESUSPEND as usize || pbt == PBT_APMRESUMEAUTOMATIC as usize {
         log::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
-        app.executor.platform.timer.kill(TIMER_IME_REFRESH);
-        app.executor.platform.timer.set(
+        app.platform.timer.kill(TIMER_IME_REFRESH);
+        app.platform.timer.set(
             TIMER_POWER_RESUME,
             std::time::Duration::from_secs(3),
         );
@@ -184,8 +183,8 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
         }
         WTS_SESSION_UNLOCK => {
             log::info!("Session unlocked, scheduling deferred recovery");
-            app.executor.platform.timer.kill(TIMER_IME_REFRESH);
-            app.executor.platform.timer.set(
+            app.platform.timer.kill(TIMER_IME_REFRESH);
+            app.platform.timer.set(
                 TIMER_POWER_RESUME,
                 std::time::Duration::from_secs(3),
             );
@@ -230,10 +229,10 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
         if kind != FocusKind::Undetermined {
             app.platform_state.focus_kind = kind;
 
-            if app.executor.platform.focus.is_focused() {
-                let pid = app.executor.platform.focus.pid;
-                let cls = app.executor.platform.focus.class_name.clone();
-                app.executor.platform.focus_cache.insert(
+            if app.platform.focus.is_focused() {
+                let pid = app.platform.focus.pid();
+                let cls = app.platform.focus.class_name().to_owned();
+                app.platform.focus.cache_insert(
                     pid,
                     cls,
                     kind,
@@ -308,7 +307,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     );
 
     let _ = with_app(|runtime| {
-        runtime.executor.platform.flush_raw_tsf_literal_recovery();
+        runtime.platform.flush_raw_tsf_literal_recovery();
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
@@ -419,5 +418,5 @@ fn synthesize_missing_keyups(events: &[awase::types::RawKeyEvent]) -> Vec<awase:
 /// TaskbarCreated ハンドラ（Explorer 再起動時にトレイアイコンを復元）
 pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
     log::info!("Explorer restarted, re-registering tray icon");
-    app.executor.platform.tray.recreate();
+    app.platform.tray.recreate();
 }

@@ -13,4 +13,5 @@ pub mod imm_learning;
 pub mod kind_classifier;
 pub mod msaa;
 pub mod probe;
+pub(crate) mod tracker;
 pub mod uia;

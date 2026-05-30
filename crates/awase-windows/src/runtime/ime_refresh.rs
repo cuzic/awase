@@ -321,21 +321,21 @@ impl Runtime {
         log::debug!("[composition] focus change → marking cold");
         let ime_on_now = self.platform_state.ime_on();
         self.platform_state.ime.mirror_applied_open(ime_on_now);
-        self.executor.platform.mark_composition_cold_focus_change();
+        self.platform.mark_composition_cold_focus_change();
 
         let applied_open = self.platform_state.ime.applied_open();
-        self.executor.platform.send_eager_warmup(applied_open);
+        self.platform.send_eager_warmup(applied_open);
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
         );
 
         let new_profile_is_tsf_native = matches!(
-            self.executor.platform.current_app_profile(),
+            self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         );
         let applied_ime_on = self.platform_state.ime.applied_open_or_default();
         if !applied_ime_on && !new_profile_is_tsf_native {
-            let _ = self.executor.platform.set_ime_open(false);
+            let _ = self.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
         }
     }
@@ -374,7 +374,7 @@ impl Runtime {
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::DriftDetected { desired, observed, duration_ms },
         );
-        let _ = self.executor.platform.set_ime_open(desired);
+        let _ = self.platform.set_ime_open(desired);
         self.platform_state.ime.mirror_applied_open_with_ts(desired, 0);
     }
 

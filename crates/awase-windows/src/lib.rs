@@ -19,7 +19,6 @@
 //! すべての Win32 API 依存コードを集約する。
 
 pub mod autostart;
-pub mod executor;
 pub mod focus;
 pub mod hook;
 pub mod ime;
