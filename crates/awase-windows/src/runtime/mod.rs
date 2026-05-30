@@ -2,7 +2,9 @@ mod ime_refresh;
 mod key_pipeline;
 pub(crate) mod message_handlers;
 
-use awase::engine::{Engine, EngineCommand, InputContext};
+use awase::config::ValidatedConfig;
+use awase::engine::{Engine, EngineCommand, InputContext, SpecialKeyCombos};
+use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
@@ -86,6 +88,18 @@ struct ClassifiedFocus {
     process_id: u32,
     class_name: String,
     kind: FocusKind,
+}
+
+/// `ime_diagnostic` が必要とする Runtime の読み取り専用スナップショット。
+pub(crate) struct RuntimeDiagnosticSnapshot {
+    pub focus_pid: u32,
+    pub focus_class: String,
+    pub shadow_ime_on: bool,
+    pub shadow_is_romaji: bool,
+    pub shadow_is_japanese: bool,
+    pub last_focus_change_ms: u64,
+    pub last_hook_activity_ms: u64,
+    pub app_profile: String,
 }
 
 impl Runtime {
@@ -903,81 +917,70 @@ impl Runtime {
         self.executor.platform.on_reinject_key(vk_code, true, applied_ime_on);
     }
 
-    /// 診断用: フォーカス中プロセスの (pid, class_name) を返す。
-    pub(crate) fn diagnostic_focus_info(&self) -> (u32, String) {
-        if self.executor.platform.focus.is_focused() {
-            (self.executor.platform.focus.pid, self.executor.platform.focus.class_name.clone())
+    /// 診断画面が必要とする状態を一括スナップショットとして返す。
+    pub(crate) fn diagnostic_snapshot(&self) -> RuntimeDiagnosticSnapshot {
+        let (focus_pid, focus_class) = if self.executor.platform.focus.is_focused() {
+            (
+                self.executor.platform.focus.pid,
+                self.executor.platform.focus.class_name.clone(),
+            )
         } else {
             (0, String::new())
+        };
+        RuntimeDiagnosticSnapshot {
+            focus_pid,
+            focus_class,
+            shadow_ime_on: self.platform_state.ime_on(),
+            shadow_is_romaji: self.platform_state.input_mode().is_romaji_capable(),
+            shadow_is_japanese: self.platform_state.is_japanese_ime(),
+            last_focus_change_ms: self.platform_state.last_focus_change_ms,
+            last_hook_activity_ms: self.platform_state.last_hook_activity_ms,
+            app_profile: format!("{:?}", self.executor.platform.current_app_profile()),
         }
     }
 
-    /// 診断用: shadow 状態の (ime_on, is_romaji, is_japanese) を返す。
-    pub(crate) fn diagnostic_shadow_state(&self) -> (bool, bool, bool) {
-        (
-            self.platform_state.ime_on(),
-            self.platform_state.input_mode().is_romaji_capable(),
-            self.platform_state.is_japanese_ime(),
-        )
-    }
-
-    /// 診断用: 直近フォーカス変更タイムスタンプ（ミリ秒）を返す。
-    pub(crate) fn last_focus_change_ms(&self) -> u64 {
-        self.platform_state.last_focus_change_ms
-    }
-
-    /// 診断用: 直近フックアクティビティタイムスタンプ（ミリ秒）を返す。
-    pub(crate) fn last_hook_activity_ms(&self) -> u64 {
-        self.platform_state.last_hook_activity_ms
-    }
-
-    /// 診断用: フォーカスクラス名と AppImeProfile を返す。
-    pub(crate) fn diagnostic_app_profile(&self) -> (String, String) {
-        let class = self.executor.platform.focus.class_name.clone();
-        let profile = format!("{:?}", self.executor.platform.current_app_profile());
-        (class, profile)
-    }
-
-    /// Win32 タイマー wParam を論理タイマー ID に解決する。
-    pub(crate) fn resolve_timer(&self, wparam: usize) -> Option<usize> {
-        self.executor.platform.timer.resolve(wparam)
-    }
-
-    /// エンジンに設定コマンドを送信する（Decision は破棄）。
-    pub(crate) fn send_engine_command(&mut self, cmd: EngineCommand) {
+    /// 設定リロード時に Runtime の全パラメータを一括更新する。
+    ///
+    /// FSM パラメータ・出力モード・同期キー・特殊キーコンボ・
+    /// アプリオーバーライドをアトミックに適用する。
+    pub(crate) fn apply_config_update(
+        &mut self,
+        config: &ValidatedConfig,
+        special_keys: SpecialKeyCombos,
+        sync_toggle: Vec<VkCode>,
+        sync_on: Vec<VkCode>,
+        sync_off: Vec<VkCode>,
+    ) {
         let ctx = self.build_ctx();
-        let _ = self.engine.on_command(cmd, &ctx);
-    }
-
-    /// 出力モードを変更する。
-    pub(crate) fn set_output_mode(&mut self, mode: awase::config::OutputMode) {
-        self.executor.platform.set_output_mode(mode);
-    }
-
-    /// IME 同期キーリストを更新する。
-    pub(crate) fn set_sync_keys(
-        &mut self,
-        toggle: Vec<VkCode>,
-        on: Vec<VkCode>,
-        off: Vec<VkCode>,
-    ) {
-        self.sync_toggle_keys = toggle;
-        self.sync_on_keys = on;
-        self.sync_off_keys = off;
-    }
-
-    /// アプリ別フォーカス分類のオーバーライドとキャッシュをリセットする。
-    pub(crate) fn reset_focus_classification(
-        &mut self,
-        overrides: crate::focus::classifier::ForceOverrides,
-    ) {
-        self.executor.platform.focus_overrides = overrides;
+        let _ = self.engine.on_command(
+            EngineCommand::UpdateFsmParams {
+                threshold_ms: config.general.simultaneous_threshold_ms,
+                confirm_mode: config.general.confirm_mode,
+                speculative_delay_ms: config.general.speculative_delay_ms,
+            },
+            &ctx,
+        );
+        self.executor.platform.set_output_mode(config.general.output_mode);
+        self.sync_toggle_keys = sync_toggle;
+        self.sync_on_keys = sync_on;
+        self.sync_off_keys = sync_off;
+        let _ = self.engine.on_command(EngineCommand::ReloadKeys { special: special_keys }, &ctx);
+        self.executor.platform.focus_overrides =
+            crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone());
         self.executor.platform.focus_cache = crate::focus::cache::FocusCache::new();
+        log::info!(
+            "Config applied: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
+            config.general.simultaneous_threshold_ms,
+            config.general.confirm_mode,
+            config.general.speculative_delay_ms,
+            config.general.output_mode,
+        );
     }
 
-    /// IME ポーリング間隔（ミリ秒）を返す。
-    pub(crate) fn ime_poll_interval_ms(&self) -> u64 {
-        u64::from(self.platform_state.ime_poll_interval_ms)
+    /// n-gram モデルをエンジンに適用する。
+    pub(crate) fn set_ngram_model(&mut self, model: NgramModel) {
+        let ctx = self.build_ctx();
+        let _ = self.engine.on_command(EngineCommand::SetNgramModel(model), &ctx);
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。
