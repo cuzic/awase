@@ -46,8 +46,9 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
 
 /// WM_TIMER ハンドラ
 #[allow(clippy::cognitive_complexity)]
-pub(crate) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize>, _msg_wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
+pub(crate) unsafe fn handle_wm_timer(app: &mut Runtime, wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
+    let logical_id = app.executor.platform.timer.resolve(wparam);
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
             if app.platform_state.sync_key_gate.is_active()
