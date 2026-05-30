@@ -62,6 +62,15 @@ impl ForceGuardSet {
         self.guards.retain(|g| !g.is_expired(now));
     }
 
+    /// フォーカス変更時にすべての guard を解除する。
+    ///
+    /// force_guard は旧フォーカスアプリの文脈で発火したものであり、
+    /// 新しいアプリには引き継ぐべきでない。ProfilePolicy 由来のものも
+    /// FocusChanged で app_policy が更新されるため再評価が必要。
+    pub fn clear_for_focus_change(&mut self) {
+        self.guards.clear();
+    }
+
     /// 指定 reason の guard を追加する (既存があれば置換)。
     pub fn add(&mut self, guard: ForceGuard) {
         self.guards.retain(|g| g.reason != guard.reason);

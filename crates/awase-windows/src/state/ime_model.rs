@@ -208,13 +208,17 @@ impl ImeModel {
                 // FocusChanged を受けた時点で policy を更新し、以降の observation は
                 // 新しい policy で評価される。
                 self.app_policy = AppImePolicy::from_profile(profile);
-                // フォーカス変更で intent / observation / applied は clear する
+                // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
                 self.observations.clear_on_focus_change();
                 log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied_open = None;
                 self.applied_at_ms = 0;
+                // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
+                self.force_guards.clear_for_focus_change();
+                // drift_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
+                self.drift_monitor.record_success();
                 // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。
                 // settle_until は AppImePolicy.focus_settle_ms 由来。
                 let settle_until = envelope.time.monotonic
@@ -299,6 +303,8 @@ mod tests {
         EventTime, HwndId, ObservationConfidence, ObservationSource,
     };
     use super::*;
+    use crate::focus::class_names::AppImeProfile;
+    use crate::state::force_guard::{ForceGuard, ForceOnReason};
     use std::time::Instant;
 
     fn envelope(seq: u64, event: ImeEvent) -> ImeEventEnvelope {
@@ -382,5 +388,62 @@ mod tests {
             ImeEffectiveState::classify_diff(true, false),
             Some(DiffSeverity::Suspicious)
         );
+    }
+
+    fn focus_changed_event(seq: u64) -> ImeEventEnvelope {
+        envelope(
+            seq,
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId::NULL,
+                profile: AppImeProfile::Standard,
+            },
+        )
+    }
+
+    #[test]
+    fn focus_change_clears_force_guards() {
+        let mut model = ImeModel::new();
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::BrokenAppBootstrap,
+            expires_at: None,
+            generation: 1,
+        });
+        assert!(model.force_guards.requires_on());
+
+        model.reduce(&focus_changed_event(2));
+
+        assert!(!model.force_guards.requires_on(), "focus change で force guard が解除される");
+    }
+
+    #[test]
+    fn focus_change_resets_drift_monitor() {
+        let mut model = ImeModel::new();
+        let t = Instant::now();
+        model.drift_monitor.record_miss(t);
+        model.drift_monitor.record_miss(t);
+        model.drift_monitor.record_miss(t);
+        assert!(model.drift_monitor.exceeds(3));
+
+        model.reduce(&focus_changed_event(2));
+
+        assert!(!model.drift_monitor.exceeds(1), "focus change で drift_monitor がリセットされる");
+    }
+
+    #[test]
+    fn focus_change_does_not_clear_desired_open() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: IntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(model.desired_open);
+
+        model.reduce(&focus_changed_event(2));
+
+        assert!(model.desired_open, "focus change は desired_open を変えない");
     }
 }
