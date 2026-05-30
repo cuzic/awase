@@ -233,7 +233,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
             let explicit_verify = !skip_imm_query
                 && self.rt.platform_state.explicit_intent().is_some()
-                && self.rt.platform_state.ime.shadow_model.applied_open.is_some();
+                && self.rt.platform_state.ime.has_applied_state();
             if !explicit_verify {
                 log::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
                 return ImeReadStrategy::SkipTyping;
@@ -362,7 +362,7 @@ impl<'a> ImeRefreshPipeline<'a> {
 
         // TSF モード（WezTerm 等）かつ IME ON の場合、FocusChange 直後に F2 pre-warmup を送信する。
         // mirror_applied_open 直後なので ImeModel の applied_open を使う。
-        let applied_open = self.rt.platform_state.ime.shadow_model.applied_open;
+        let applied_open = self.rt.platform_state.ime.applied_open();
         self.rt.executor.platform.send_eager_warmup(applied_open);
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
@@ -380,7 +380,7 @@ impl<'a> ImeRefreshPipeline<'a> {
             self.rt.executor.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         );
-        let applied_ime_on = self.rt.platform_state.ime.shadow_model.applied_open.unwrap_or(false);
+        let applied_ime_on = self.rt.platform_state.ime.applied_open_or_default();
         if !applied_ime_on && !new_profile_is_tsf_native {
             let _ = self.rt.executor.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
@@ -397,12 +397,11 @@ impl<'a> ImeRefreshPipeline<'a> {
     //   TsfNative アプリは can_use_imm32_cross_process=false で set_ime_open が no-op。
 
     fn check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
-        let sm = &self.rt.platform_state.ime.shadow_model;
-        let desired = sm.desired_open;
+        let desired = self.rt.platform_state.ime.desired_open();
 
         // 乖離継続時間が閾値未満なら補正しない
         // 明示的 IME 操作が pending の場合は閾値をゼロにして即時補正する
-        let dur = sm.observations.drift_duration(now)?;
+        let dur = self.rt.platform_state.ime.drift_duration(now)?;
         let threshold = if self.rt.platform_state.explicit_intent() == Some(desired) {
             0
         } else {
@@ -414,7 +413,7 @@ impl<'a> ImeRefreshPipeline<'a> {
 
         // 最も信頼できる観測値が stale でなく desired と一致しているなら補正不要
         let max_age = std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS);
-        let trusted = sm.observations.most_recent_trusted(now)?;
+        let trusted = self.rt.platform_state.ime.most_recent_trusted(now)?;
         if trusted.age(now) > max_age {
             return None;
         }
