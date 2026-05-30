@@ -108,19 +108,32 @@ impl KeyEventPipeline<'_> {
             use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
             GetAsyncKeyState(i32::from(crate::vk::VK_CONTROL.0)) as u16 & 0x8000 != 0
         };
+        // phys_ctrl は PHYSICAL_KEY_STATE (SendInput 非影響) での Ctrl 押下状態。
+        // gas_ctrl と乖離する場合、synthetic KeyUp が SendInput されて
+        // GetAsyncKeyState が汚染されている可能性がある。
+        let phys_ctrl = hook::is_physical_key_down(crate::vk::VK_LCONTROL)
+            || hook::is_physical_key_down(crate::vk::VK_RCONTROL);
         log::debug!(
             "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
-             mods(c={} s={} a={} w={}) gas_ctrl={} extra=0x{:X} \
+             mods(c={} s={} a={} w={}) gas_ctrl={} phys_ctrl={} extra=0x{:X} \
              pending_drain={} gate_active={}",
             event.vk_code, event.event_type, event.timestamp,
             delay_ms,
             self.app.engine.debug_state_label(),
             mods.ctrl, mods.shift, mods.alt, mods.win,
             gas_ctrl,
+            phys_ctrl,
             event.extra_info,
             pending_drain.map_or("?".to_owned(), |n| n.to_string()),
             gate_active,
         );
+        if !mods.ctrl && phys_ctrl {
+            log::warn!(
+                "[engine-input] CTRL MISMATCH: mods.ctrl=false だが phys_ctrl=true (vk=0x{:02X} {:?}) \
+                 → synthetic Ctrl↑ が GetAsyncKeyState を汚染した可能性がある",
+                event.vk_code, event.event_type,
+            );
+        }
         // Phase B: Ctrl+無変換 IME-OFF ミスタイプ救済の defer 判定。
         // 「Ctrl↓ → 他キー consume → 無変換↓」の並びなら 50ms 救済窓を設けて defer する。
         // 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは ctrl_consumed_since_down=false なので

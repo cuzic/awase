@@ -340,6 +340,22 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                     "[output-drain] vk=0x{:02X} KeyDown has no paired KeyUp in queue → will inject synthetic KeyUp",
                     syn.vk_code,
                 );
+                // Ctrl 系 modifier に対して synthetic KeyUp を生成しようとしているのに
+                // PHYSICAL_KEY_STATE がまだ押下中を示す場合、その synthetic Ctrl↑ が
+                // SendInput されると GetAsyncKeyState が汚染され、後続キーで
+                // modifier_snapshot.ctrl=false になるバグを引き起こす可能性がある。
+                if crate::vk::is_ctrl_variant(syn.vk_code) {
+                    let phys_l = hook::is_physical_key_down(crate::vk::VK_LCONTROL);
+                    let phys_r = hook::is_physical_key_down(crate::vk::VK_RCONTROL);
+                    if phys_l || phys_r {
+                        log::warn!(
+                            "[output-drain] SYNTHETIC CTRL↑ WHILE HELD: vk=0x{:02X} の synthetic KeyUp を生成するが \
+                             PHYSICAL_KEY_STATE は Ctrl 押下中 (L={phys_l} R={phys_r}) \
+                             → GetAsyncKeyState 汚染により後続キーで Ctrl が認識されない可能性",
+                            syn.vk_code,
+                        );
+                    }
+                }
             }
 
             for queued_event in &queue {
