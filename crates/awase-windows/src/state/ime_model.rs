@@ -105,6 +105,30 @@ impl ImeModel {
     pub const fn effective_open(&self) -> bool {
         self.force_guards.effective_open(self.desired_open)
     }
+
+    /// `applied_open` と `applied_at_ms` のペアを返す。`Platform::build_ime_control_view` に渡す用。
+    #[must_use]
+    pub fn applied_pair(&self) -> Option<(bool, u64)> {
+        self.applied_open.map(|v| (v, self.applied_at_ms))
+    }
+
+    /// `pending` transition の generation を返す。apply 完了 event の照合用。
+    #[must_use]
+    pub fn pending_generation(&self) -> Option<u64> {
+        self.pending.as_ref().map(|p| p.generation)
+    }
+
+    /// 現在の `input_barrier` が持つ chord kind を返す。
+    #[must_use]
+    pub fn active_chord_kind(&self) -> Option<ChordKind> {
+        self.input_barrier.and_then(|b| b.chord_kind())
+    }
+
+    /// フォーカス切替直後の one-shot barrier が pending かどうか。
+    #[must_use]
+    pub fn is_focus_transition_pending(&self) -> bool {
+        self.input_barrier.as_ref().is_some_and(|b| b.is_focus_transition())
+    }
 }
 
 impl Default for ImeModel {
