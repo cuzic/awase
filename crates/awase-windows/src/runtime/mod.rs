@@ -200,44 +200,49 @@ impl Runtime {
             let sm = &self.platform_state.ime.shadow_model;
             sm.applied_open.map(|v| (v, sm.applied_at_ms))
         };
-        let result = self.executor.execute_from_loop(decision, pre_applied);
-        let post_applied = self.executor.applied_snapshot;
-        if post_applied != pre_applied {
-            if let Some((v, ts)) = post_applied {
-                self.platform_state.ime.mirror_applied_open_with_ts(v, ts);
-            }
+        let (callback, sync_outcomes) = self.executor.execute_from_loop(decision, pre_applied);
+        for (open, outcome) in sync_outcomes {
+            self.on_ime_apply_complete(open, outcome);
         }
-        self.flush_pending_apply_events();
-        result
+        callback
     }
 
-    /// `DecisionExecutor` の sync path pending apply events を排出し、
-    /// `shadow_model.pending` の generation に一致するもののみ
-    /// `ImeApplySucceeded` / `ImeApplyFailed` を dispatch する。
+    /// IME apply 完了後の後処理 SSOT。sync / async 両経路から呼ばれる。
     ///
-    /// async path (ImmCross) は spawn_local 内で直接 dispatch するためここを経由しない。
-    /// generation 照合は [[feedback_generation_check_for_async_apply]] 参照。
-    pub fn flush_pending_apply_events(&mut self) {
+    /// - D: generation 照合で `ImeApplySucceeded` / `ImeApplyFailed` を dispatch
+    /// - E: `post_ime_refresh` で IME 状態ポーリングをスケジュール
+    ///
+    /// sync 経路では `execute_one` が `post_apply_ime_open`（B）を済ませた後、
+    /// 呼び出し元が sync_outcomes ループ経由でここへ来る。
+    /// async 経路では spawn_local 内で B を済ませた後に直接呼ばれる。
+    pub fn on_ime_apply_complete(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
+        use awase::platform::{ImeOpenOutcome, PlatformRuntime as _};
         use crate::state::ime_event::ImeEvent;
-        let events = self.executor.drain_pending_apply_events();
-        for pending in events {
-            let Some(generation) = self
-                .platform_state
-                .ime
-                .shadow_model
-                .pending
-                .as_ref()
-                .map(|p| p.generation)
-            else {
-                // pending がない経路 (toggle_engine / refresh_ime_state_cache /
-                // process_deferred_keys 等) は ImeApplyRequested を出していないため
-                // Succeeded/Failed も出さない。
-                continue;
-            };
-            let event =
-                ImeEvent::from_apply_outcome(pending.target, pending.outcome, generation);
+
+        if outcome == ImeOpenOutcome::UnsafeToToggle {
+            return;
+        }
+
+        let effective = match outcome {
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
+            ImeOpenOutcome::Failed => !open,
+            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
+        };
+
+        // B: composition warm/cold 更新
+        self.executor.platform.on_ime_applied(open, outcome);
+
+        // C: ImeModel write-back（applied_open / applied_at_ms）
+        self.platform_state.ime.mirror_applied_open_with_ts(effective, crate::hook::current_tick_ms());
+
+        // D: generation 照合で ImeApplySucceeded/Failed を dispatch
+        if let Some(generation) = self.platform_state.ime.shadow_model.pending_generation() {
+            let event = ImeEvent::from_apply_outcome(open, outcome, generation);
             self.platform_state.ime.dispatch_event(event);
         }
+
+        // E: IME 状態ポーリングをスケジュール
+        self.executor.platform.post_ime_refresh();
     }
 
     /// エンジンの有効/無効を切り替え、Decision を実行する

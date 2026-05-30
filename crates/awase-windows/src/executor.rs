@@ -24,11 +24,14 @@ use crate::RawKeyEventExt as _;
 
 /// `execute_from_hook` の戻り値。
 #[derive(Debug)]
-pub struct HookResult {
+pub struct BatchResult {
     /// OS に返す consume/passthrough 判定
     pub callback: CallbackResult,
     /// true なら `PostMessage(WM_EXECUTE_EFFECTS)` でメッセージループに通知が必要
     pub has_pending: bool,
+    /// sync path の SetOpen 完了リスト。
+    /// async path は spawn_local 内で on_ime_apply_complete を直接呼ぶため含まない。
+    pub sync_outcomes: Vec<(bool, awase::platform::ImeOpenOutcome)>,
 }
 
 pub struct DecisionExecutor {
@@ -46,9 +49,6 @@ pub struct DecisionExecutor {
     /// drain は「slot を先に試す → 通過したら queue に進む」の 2 段構え。
     /// queue 本体は常に純粋 FIFO で `push_back` / `pop_front` のみ。
     guard_held: Option<Effect>,
-    /// sync path の apply outcome を `Runtime::flush_pending_apply_events` で
-    /// dispatch するための pending record。詳細は `PendingApplyEvent` 参照。
-    pending_apply_events: Vec<crate::state::ime_event::PendingApplyEvent>,
     /// 直近の apply 済み IME 状態スナップショット (value, timestamp_ms)。
     ///
     /// decision サイクル開始時に `ImeModel.applied_open/applied_at_ms` から pre-fetch され、
@@ -76,18 +76,9 @@ impl DecisionExecutor {
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
             guard_held: None,
-            pending_apply_events: Vec::new(),
             applied_snapshot: None,
             pending_warmup_on_keyup: false,
         }
-    }
-
-    /// sync path の pending apply events をすべて取り出す。
-    /// `Runtime` 側で event dispatch (generation 照合付き) するために呼ぶ。
-    pub fn drain_pending_apply_events(
-        &mut self,
-    ) -> Vec<crate::state::ime_event::PendingApplyEvent> {
-        std::mem::take(&mut self.pending_apply_events)
     }
 
     /// フックコールバックから呼ぶ。
@@ -100,7 +91,7 @@ impl DecisionExecutor {
         decision: Decision,
         raw_event: &RawKeyEvent,
         applied: Option<(bool, u64)>,
-    ) -> HookResult {
+    ) -> BatchResult {
         self.applied_snapshot = applied;
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(decision),
@@ -109,23 +100,27 @@ impl DecisionExecutor {
     }
 
     /// メッセージループから呼ぶ。全 Effects を即座に実行する。
-    pub fn execute_from_loop(&mut self, decision: Decision, applied: Option<(bool, u64)>) -> CallbackResult {
+    pub fn execute_from_loop(
+        &mut self,
+        decision: Decision,
+        applied: Option<(bool, u64)>,
+    ) -> (CallbackResult, Vec<(bool, awase::platform::ImeOpenOutcome)>) {
         self.applied_snapshot = applied;
         let (consumed, effects) = match decision {
-            Decision::PassThrough => return CallbackResult::PassThrough,
+            Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),
             Decision::Consume { effects } => (true, effects),
         };
 
+        let mut sync_outcomes = Vec::new();
         for effect in effects {
-            self.execute_one(effect);
+            if let Some(o) = self.execute_one(effect) {
+                sync_outcomes.push(o);
+            }
         }
 
-        if consumed {
-            CallbackResult::Consumed
-        } else {
-            CallbackResult::PassThrough
-        }
+        let callback = if consumed { CallbackResult::Consumed } else { CallbackResult::PassThrough };
+        (callback, sync_outcomes)
     }
 
     /// `WM_EXECUTE_EFFECTS` ハンドラ、および `TIMER_OUTPUT_GUARD` タイマーから呼ぶ。
@@ -133,11 +128,12 @@ impl DecisionExecutor {
     /// `guard_held` に park 済みの Effect があれば最初にそれを試し、
     /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
-    pub fn drain_deferred(&mut self) {
+    pub fn drain_deferred(&mut self) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
         // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
         // Win が 150ms 以上 OS 側でスタックし、後続のショートカットが Win+key と
         // 誤解釈されるため、先頭の reinject が guard を通過したら残りはまとめて送出する。
+        let mut sync_outcomes = Vec::new();
         let mut reinject_guard_passed = false;
 
         // 1) 前回 park した Effect があれば最初に試す。
@@ -149,9 +145,11 @@ impl DecisionExecutor {
                     crate::tuning::OUTPUT_GUARD_MS - remaining,
                 );
                 self.park_in_guard(effect, remaining);
-                return;
+                return sync_outcomes;
             }
-            self.execute_one(effect);
+            if let Some(o) = self.execute_one(effect) {
+                sync_outcomes.push(o);
+            }
             reinject_guard_passed = true;
         }
 
@@ -165,7 +163,7 @@ impl DecisionExecutor {
                         crate::tuning::OUTPUT_GUARD_MS - remaining,
                     );
                     self.park_in_guard(effect, remaining);
-                    return;
+                    return sync_outcomes;
                 }
                 reinject_guard_passed = true;
             } else if !is_reinject {
@@ -173,19 +171,23 @@ impl DecisionExecutor {
                 // 次の reinject には再びガードを適用する。
                 reinject_guard_passed = false;
             }
-            self.execute_one(effect);
+            if let Some(o) = self.execute_one(effect) {
+                sync_outcomes.push(o);
+            }
         }
 
         // 全 Effect を消化: lingering な timer を kill (no-op if not registered)。
         if self.guard_held.is_none() {
             self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
         }
+
+        sync_outcomes
     }
 
     /// `TIMER_OUTPUT_GUARD` 発火時に呼ぶ。timer を kill して drain を再試行する。
-    pub fn on_output_guard_timer(&mut self) {
+    pub fn on_output_guard_timer(&mut self) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
         self.platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
-        self.drain_deferred();
+        self.drain_deferred()
     }
 
     /// queue または guard slot に Effect が残っているか
@@ -228,33 +230,38 @@ impl DecisionExecutor {
 
     // ── Filter モード ──
 
-    fn execute_filter(&mut self, decision: Decision) -> HookResult {
+    fn execute_filter(&mut self, decision: Decision) -> BatchResult {
         let (consumed, effects) = match decision {
             Decision::PassThrough => {
-                return HookResult {
+                return BatchResult {
                     callback: CallbackResult::PassThrough,
                     has_pending: self.has_pending(),
+                    sync_outcomes: Vec::new(),
                 }
             }
             Decision::PassThroughWith { effects } => (false, effects),
             Decision::Consume { effects } => (true, effects),
         };
 
+        let mut sync_outcomes = Vec::new();
         for effect in effects {
             if Self::is_input_critical(&effect) {
-                self.execute_one(effect);
+                if let Some(o) = self.execute_one(effect) {
+                    sync_outcomes.push(o);
+                }
             } else {
                 self.queue.push_back(effect);
             }
         }
 
-        HookResult {
+        BatchResult {
             callback: if consumed {
                 CallbackResult::Consumed
             } else {
                 CallbackResult::PassThrough
             },
             has_pending: self.has_pending(),
+            sync_outcomes,
         }
     }
 
@@ -268,13 +275,14 @@ impl DecisionExecutor {
     // Win キー等のシステム動作を壊さず、INJECTED フラグ問題も回避する。
     // flush を伴う PassThrough のみ Consume して順序を保証する。
 
-    fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> HookResult {
+    fn execute_relay(&mut self, decision: Decision, raw_event: &RawKeyEvent) -> BatchResult {
         match decision {
             Decision::PassThrough => {
                 let callback = self.handle_passthrough(raw_event);
-                HookResult {
+                BatchResult {
                     has_pending: self.has_pending(),
                     callback,
+                    sync_outcomes: Vec::new(),
                 }
             }
             Decision::PassThroughWith { mut effects } => {
@@ -290,17 +298,19 @@ impl DecisionExecutor {
                 );
                 effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
                 self.queue.extend(effects);
-                HookResult {
+                BatchResult {
                     callback: CallbackResult::Consumed,
                     has_pending: true,
+                    sync_outcomes: Vec::new(),
                 }
             }
             Decision::Consume { effects } => {
                 // Engine が消費 → Effects をキューに入れる
                 self.queue.extend(effects);
-                HookResult {
+                BatchResult {
                     callback: CallbackResult::Consumed,
                     has_pending: self.has_pending(),
+                    sync_outcomes: Vec::new(),
                 }
             }
         }
@@ -535,20 +545,16 @@ impl DecisionExecutor {
         matches!(effect, Effect::Input(_) | Effect::Timer(_))
     }
 
-    fn execute_one(&mut self, effect: Effect) {
+    fn execute_one(&mut self, effect: Effect) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
             self.handle_reinject(event);
-            return;
+            return None;
         }
         if let Some((open, outcome)) = self.dispatch_effect(effect) {
-            self.post_apply_ime_open(open, outcome);
-            // Phase 3b: sync path で ImeApplySucceeded/Failed event を dispatch するため、
-            // outcome を caller (Runtime::flush_pending_apply_events) に伝達する。
-            // async path (ImmCross) は spawn_local 内で直接 dispatch するためここを経由しない。
-            self.pending_apply_events.push(
-                crate::state::ime_event::PendingApplyEvent { target: open, outcome },
-            );
+            self.update_intra_batch_applied(open, outcome);
+            return Some((open, outcome));
         }
+        None
     }
 
     /// F2-TSF 特殊扱い + 通常 reinject + confirm キー後処理。
@@ -713,8 +719,7 @@ impl DecisionExecutor {
                              (actual ime_on={actual:?})"
                         );
                         crate::with_app(|app| {
-                            let applied = app.platform_state.ime.shadow_model.applied_open
-                                .map(|v| (v, app.platform_state.ime.shadow_model.applied_at_ms));
+                            let applied = app.platform_state.ime.shadow_model.applied_pair();
                             let view = app.executor.platform.build_ime_control_view(applied);
                             crate::ime_controller::CONTROLLER.apply_skipping_imm(open, &view)
                         })
@@ -725,24 +730,8 @@ impl DecisionExecutor {
                     if outcome == awase::platform::ImeOpenOutcome::Failed {
                         log::warn!("apply_ime_open({open}) failed (async)");
                     }
-                    // Phase 3b: ImeApplySucceeded/Failed event を dispatch して
-                    // shadow_model.applied_open / pending を generation 照合で更新する。
-                    let pending_gen = app
-                        .platform_state
-                        .ime
-                        .shadow_model
-                        .pending
-                        .as_ref()
-                        .map(|p| p.generation);
-                    if let Some(generation) = pending_gen {
-                        let event = crate::state::ime_event::ImeEvent::from_apply_outcome(
-                            open, outcome, generation,
-                        );
-                        app.platform_state.ime.dispatch_event(event);
-                    }
-                    app.executor.post_apply_ime_open(open, outcome);
-                    let platform: &mut dyn PlatformRuntime = &mut app.executor.platform;
-                    platform.post_ime_refresh();
+                    app.executor.update_intra_batch_applied(open, outcome);
+                    app.on_ime_apply_complete(open, outcome);
                 });
                 drop(guard);
             });
@@ -811,17 +800,21 @@ impl DecisionExecutor {
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 log::warn!("apply_ime_open({open}) failed");
             }
-            let platform: &mut dyn PlatformRuntime = &mut self.platform;
-            platform.post_ime_refresh();
             Some((open, outcome))
         }
     }
 
-    /// executor.applied_snapshot 更新・open==true の cold/warmup 処理を platform に委譲する。
+    /// intra-batch の applied_snapshot のみを更新する。
+    ///
+    /// B（`on_ime_applied`）は `Runtime::on_ime_apply_complete` に委譲済み。
+    /// UnsafeToToggle は送信していないので更新しない。
     #[allow(clippy::needless_pass_by_ref_mut)]
-    fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
+    pub(crate) fn update_intra_batch_applied(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+    ) {
         use awase::platform::ImeOpenOutcome;
-        // UnsafeToToggle: 送信しなかったので applied_snapshot も on_ime_applied も更新しない
         if outcome == ImeOpenOutcome::UnsafeToToggle {
             return;
         }
@@ -831,6 +824,5 @@ impl DecisionExecutor {
             ImeOpenOutcome::UnsafeToToggle => unreachable!(),
         };
         self.applied_snapshot = Some((effective, crate::hook::current_tick_ms()));
-        self.platform.on_ime_applied(open, outcome);
     }
 }

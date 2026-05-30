@@ -150,13 +150,8 @@ impl KeyEventPipeline<'_> {
             && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
-            let kind = self
-                .app
-                .platform_state
-                .ime
-                .shadow_model
-                .input_barrier
-                .and_then(|b| b.chord_kind())
+            let kind = self.app.platform_state.ime.shadow_model
+                .active_chord_kind()
                 .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
             self.app
                 .platform_state
@@ -175,15 +170,7 @@ impl KeyEventPipeline<'_> {
     fn stage_focus_probe(&mut self, _event: &mut RawKeyEvent) {
         // Step 5: focus_transition_pending: bool は InputBarrier::FocusTransition に置換。
         // 最初のキー入力で barrier を consume する (one-shot 動作維持)。
-        if !self
-            .app
-            .platform_state
-            .ime
-            .shadow_model
-            .input_barrier
-            .as_ref()
-            .is_some_and(|b| b.is_focus_transition())
-        {
+        if !self.app.platform_state.ime.shadow_model.is_focus_transition_pending() {
             return;
         }
         // 消費 (旧 = false にセット)
@@ -263,32 +250,39 @@ impl KeyEventPipeline<'_> {
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
         // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
         if !self.app.platform_state.ime_on() {
-            let applied = self.app.platform_state.ime.shadow_model.applied_open
-                .map(|v| (v, self.app.platform_state.ime.shadow_model.applied_at_ms));
+            let applied = self.app.platform_state.ime.shadow_model.applied_pair();
             let view = self.app.executor.platform.build_ime_control_view(applied);
             let imm_first =
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
             if imm_first {
+                // 楽観的 C: async 完了前から ImeModel を OFF に同期する。
+                self.app.platform_state.ime.mirror_applied_open(false);
                 let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
                 win32_async::spawn_local(async move {
                     let ok = crate::ime::set_ime_open_cross_process_async(false).await;
-                    if !ok {
+                    let outcome = if ok {
+                        awase::platform::ImeOpenOutcome::Applied
+                    } else {
                         log::debug!(
                             "[shadow-toggle] ImmCross failed (async), trying fallback"
                         );
-                        let _ = crate::with_app(|app| {
-                            let applied = app.platform_state.ime.shadow_model.applied_open
-                                .map(|v| (v, app.platform_state.ime.shadow_model.applied_at_ms));
+                        crate::with_app(|app| {
+                            let applied = app.platform_state.ime.shadow_model.applied_pair();
                             let view = app.executor.platform.build_ime_control_view(applied);
                             crate::ime_controller::CONTROLLER.apply_skipping_imm(false, &view)
-                        });
-                    }
+                        }).unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                    };
+                    // B+C(ts更新)+D(noop)+E
+                    let _ = crate::with_app(|app| {
+                        app.on_ime_apply_complete(false, outcome);
+                    });
                     drop(guard);
                 });
             } else {
-                let _ = crate::ime_controller::CONTROLLER.apply(false, &view);
+                let outcome = crate::ime_controller::CONTROLLER.apply(false, &view);
+                // B+C+D(noop)+E
+                self.app.on_ime_apply_complete(false, outcome);
             }
-            self.app.platform_state.ime.mirror_applied_open(false);
             log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false");
         }
         log::debug!(
@@ -313,13 +307,8 @@ impl KeyEventPipeline<'_> {
                 // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
                 self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
                 if is_key_up {
-                    let kind = self
-                        .app
-                        .platform_state
-                        .ime
-                        .shadow_model
-                        .input_barrier
-                        .and_then(|b| b.chord_kind())
+                    let kind = self.app.platform_state.ime.shadow_model
+                        .active_chord_kind()
                         .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
                     self.app
                         .platform_state
@@ -437,22 +426,18 @@ impl KeyEventPipeline<'_> {
             let sm = &self.app.platform_state.ime.shadow_model;
             sm.applied_open.map(|v| (v, sm.applied_at_ms))
         };
-        let hook_result = self.app.executor.execute_from_hook(decision, event, pre_applied);
-        // executor が applied_snapshot を変更した場合（ImmCross 楽観更新等）、ImeModel に write-back。
-        let post_applied = self.app.executor.applied_snapshot;
-        if post_applied != pre_applied {
-            if let Some((v, ts)) = post_applied {
-                self.app.platform_state.ime.mirror_applied_open_with_ts(v, ts);
-            }
+        let result = self.app.executor.execute_from_hook(decision, event, pre_applied);
+        // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
+        // Filter mode では IME effects がキューへ委譲されるため通常は空。
+        for (open, outcome) in result.sync_outcomes {
+            self.app.on_ime_apply_complete(open, outcome);
         }
-        // Phase 3b: sync IME apply の Succeeded/Failed event を generation 照合で dispatch する。
-        self.app.flush_pending_apply_events();
 
-        if hook_result.has_pending {
+        if result.has_pending {
             post_to_main_thread(WM_EXECUTE_EFFECTS);
         }
 
-        hook_result.callback
+        result.callback
     }
 }
 

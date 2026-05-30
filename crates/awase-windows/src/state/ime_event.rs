@@ -169,8 +169,7 @@ pub enum ImeEvent {
 
 impl ImeEvent {
     /// `apply_ime_open` の outcome を Succeeded/Failed event に変換する。
-    /// sync path (`Runtime::flush_pending_apply_events`) と async path (executor.rs の
-    /// spawn_local 内) の両方で使う single source of truth。
+    /// sync / async 両経路で使う single source of truth。
     #[must_use]
     pub fn from_apply_outcome(
         target: bool,
@@ -194,18 +193,6 @@ impl ImeEvent {
             },
         }
     }
-}
-
-/// `apply_ime_open` の outcome を main thread で dispatch するための pending record。
-///
-/// `DecisionExecutor` は `PlatformState` にアクセスできないため、sync path では
-/// outcome をここに溜めて `Runtime::flush_pending_apply_events` で
-/// `shadow_model.pending.generation` と照合して event に変換する。
-/// async path (ImmCross の spawn_local) は `with_app` 内で直接 dispatch するため経由しない。
-#[derive(Debug, Clone, Copy)]
-pub struct PendingApplyEvent {
-    pub target: bool,
-    pub outcome: awase::platform::ImeOpenOutcome,
 }
 
 /// Event log に積まれる envelope。時刻情報と event 本体をまとめる。
