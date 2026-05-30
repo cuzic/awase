@@ -88,37 +88,24 @@ impl ImeDiagnosticSnapshot {
         let now = crate::hook::current_tick_ms();
 
         // ── shadow / app state を APP から取得 ──
-        let view = crate::with_app_ref(|app| {
+        // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。
+        let hwnd_raw = unsafe {
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-            let (pid, class) = app.diagnostic_focus_info();
-            let focus_change_ms = app.last_focus_change_ms();
-            let activity_ms = app.last_hook_activity_ms();
-
-            let dt_focus = if focus_change_ms == 0 {
-                None
-            } else {
-                Some(now.saturating_sub(focus_change_ms))
-            };
-            let dt_activity = if activity_ms == 0 {
-                None
-            } else {
-                Some(now.saturating_sub(activity_ms))
-            };
-
-            // フォーカス hwnd は last_focus_info に保存されない（pid/class のみ）
-            // ため、現時点のフォアグラウンド hwnd を取得する。
-            // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。
-            let hwnd = unsafe { GetForegroundWindow() };
-            let hwnd_raw = hwnd.0 as usize;
-
-            let (shadow_ime_on, shadow_is_romaji, shadow_is_japanese) = app.diagnostic_shadow_state();
+            GetForegroundWindow().0 as usize
+        };
+        let snap = crate::with_app_ref(|app| app.diagnostic_snapshot());
+        let view = snap.map(|s| {
+            let dt_focus = (s.last_focus_change_ms > 0)
+                .then(|| now.saturating_sub(s.last_focus_change_ms));
+            let dt_activity = (s.last_hook_activity_ms > 0)
+                .then(|| now.saturating_sub(s.last_hook_activity_ms));
             AppStateView {
                 focus_hwnd_raw: hwnd_raw,
-                focus_pid: pid,
-                focus_class: class,
-                shadow_ime_on,
-                shadow_is_romaji,
-                shadow_is_japanese,
+                focus_pid: s.focus_pid,
+                focus_class: s.focus_class,
+                shadow_ime_on: s.shadow_ime_on,
+                shadow_is_romaji: s.shadow_is_romaji,
+                shadow_is_japanese: s.shadow_is_japanese,
                 injection_mode: resolve_injection_mode_label(),
                 ms_since_focus_change: dt_focus,
                 ms_since_last_activity: dt_activity,
@@ -266,12 +253,18 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
         (hwnd.0 as usize, crate::ime::capture_composition_snapshot(hwnd))
     };
 
-    let view = crate::with_app_ref(|app| {
-        let (class, profile) = app.diagnostic_app_profile();
-        let (ime_on, _, is_japanese) = app.diagnostic_shadow_state();
-        (class, profile, ime_on, is_japanese)
-    })
-    .unwrap_or((String::new(), "Unknown".to_string(), false, false));
+    let diag = crate::with_app_ref(|app| app.diagnostic_snapshot())
+        .unwrap_or_else(|| crate::runtime::RuntimeDiagnosticSnapshot {
+            focus_pid: 0,
+            focus_class: String::new(),
+            shadow_ime_on: false,
+            shadow_is_romaji: false,
+            shadow_is_japanese: false,
+            last_focus_change_ms: 0,
+            last_hook_activity_ms: 0,
+            app_profile: "Unknown".to_string(),
+        });
+    let view = (diag.focus_class, diag.app_profile, diag.shadow_ime_on, diag.shadow_is_japanese);
 
     let comp = snap
         .comp_str
