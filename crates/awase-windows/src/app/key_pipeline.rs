@@ -46,38 +46,38 @@ impl KeyEventPipeline<'_> {
         }
 
         // Phase A: 既存の pending IME-OFF rescue を解決する。
-        // 現在 event が Ctrl↑ なら救済（無変換 を ctrl=false で発火）、
+        // 現在 event が Ctrl↑ なら保留キーを破棄（thumb shift 防止）、
         // それ以外なら救済中止（原 event を発火 → IME-OFF）。
-        // どちらの場合も skip_rescue_defer=true でネスト pipeline 呼び出しし、
+        // Ctrl↑ 以外は skip_rescue_defer=true でネスト pipeline 呼び出しし、
         // 再 defer による無限ループを防ぐ。
         if let Some(pending_event) = self.app.take_ime_off_rescue_pending() {
             let is_ctrl_up = matches!(event.event_type, awase::types::KeyEventType::KeyUp)
                 && crate::vk::is_ctrl_variant(event.vk_code);
-            let dispatched = if is_ctrl_up {
-                let mut rescued = pending_event;
-                rescued.modifier_snapshot.ctrl = false;
+            if is_ctrl_up {
+                // Ctrl↑ within 50ms: 「Ctrl+他キー中の誤打 無変換」を破棄する。
+                // ctrl=false で発火すると NICOLA FSM が PendingThumb に入り thumb shift に
+                // 化けてしまうため、無変換を消費する（IME-OFF も発火しない）。
                 log::info!(
-                    "[ime-off-rescue] Ctrl↑ within 50ms → 無変換 vk=0x{:02X} を ctrl=false で発火",
-                    rescued.vk_code
+                    "[ime-off-rescue] Ctrl↑ within 50ms → 無変換 vk=0x{:02X} を破棄（thumb shift 防止）",
+                    pending_event.vk_code
                 );
-                rescued
+                // 続けて現在 event (Ctrl↑) を通常処理する
             } else {
                 log::info!(
                     "[ime-off-rescue] non-Ctrl↑ event 到着 → 保留 vk=0x{:02X} を IME-OFF として発火",
                     pending_event.vk_code
                 );
-                pending_event
-            };
-            let inner_result = KeyEventPipeline {
-                app: &mut *self.app,
-                skip_rescue_defer: true,
-            }.run(dispatched);
-            // PassThrough なら reinject + WM_EXECUTE_EFFECTS（フックコールバックと同じ後処理）
-            if matches!(inner_result, CallbackResult::PassThrough) {
-                self.app.executor.enqueue_reinject(dispatched);
-                post_to_main_thread(WM_EXECUTE_EFFECTS);
+                let inner_result = KeyEventPipeline {
+                    app: &mut *self.app,
+                    skip_rescue_defer: true,
+                }.run(pending_event);
+                // PassThrough なら reinject + WM_EXECUTE_EFFECTS（フックコールバックと同じ後処理）
+                if matches!(inner_result, CallbackResult::PassThrough) {
+                    self.app.executor.enqueue_reinject(pending_event);
+                    post_to_main_thread(WM_EXECUTE_EFFECTS);
+                }
+                // 続けて現在 event を通常処理する
             }
-            // 続けて現在 event を通常処理する
         }
 
         self.stage_focus_probe(&mut event);

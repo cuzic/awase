@@ -364,6 +364,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         };
         slot.store(new_value, Ordering::Relaxed);
     }
+    // CTRL_CONSUMED チェックと classify_key で共用するため先に取得する。
+    let config = cached_hook_config();
     // Ctrl consumption tracking
     if crate::vk::is_ctrl_variant(vk) {
         // Ctrl↓/Ctrl↑ どちらでも consumption をリセット（次の Ctrl 押下から再計測）
@@ -372,10 +374,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         let ctrl_held = is_physical_key_down(crate::vk::VK_LCONTROL)
             || is_physical_key_down(crate::vk::VK_RCONTROL);
         if ctrl_held {
-            CTRL_CONSUMED_SINCE_DOWN.store(true, Ordering::Relaxed);
+            // 親指キー自身は "Ctrl consumed" に含めない。
+            // Ctrl+無変換 を直接押したとき(他キーなし) rescue が誤発動しないようにするため。
+            if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
+                CTRL_CONSUMED_SINCE_DOWN.store(true, Ordering::Relaxed);
+            }
         }
     }
-    let config = cached_hook_config();
     let (key_classification, physical_pos) = classify_key(vk, scan, &config);
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
     let mut modifier_snapshot = crate::observer::focus_observer::read_os_modifiers();
