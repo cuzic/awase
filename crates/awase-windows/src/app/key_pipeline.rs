@@ -275,13 +275,21 @@ impl KeyEventPipeline<'_> {
                     let outcome = if ok {
                         awase::platform::ImeOpenOutcome::Applied
                     } else {
-                        log::debug!(
-                            "[shadow-toggle] ImmCross failed (async), trying fallback"
-                        );
-                        crate::with_app(|app| {
-                            crate::ime_controller::CONTROLLER
-                                .apply_skipping_imm(false, &app.shadow_ime_control_view())
-                        }).unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                        let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
+                        if actual == Some(false) {
+                            log::debug!(
+                                "[shadow-toggle] ImmCross failed but actual=OFF already, skip fallback"
+                            );
+                            awase::platform::ImeOpenOutcome::AlreadyMatched
+                        } else {
+                            log::debug!(
+                                "[shadow-toggle] ImmCross failed (async, actual={actual:?}), trying fallback"
+                            );
+                            crate::with_app(|app| {
+                                crate::ime_controller::CONTROLLER
+                                    .apply_skipping_imm(false, &app.shadow_ime_control_view())
+                            }).unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                        }
                     };
                     // B+C(ts更新)+D(noop)+E
                     let _ = crate::with_app(|app| {
