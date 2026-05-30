@@ -24,7 +24,7 @@ use crate::{
 };
 use crate::tray;
 
-use super::{check_keyboard_layout_on_change, key_pipeline, launch_settings, on_key_event_impl, reload_config};
+use super::{check_keyboard_layout_on_change, launch_settings, on_key_event_impl, reload_config};
 
 /// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
 pub(super) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
@@ -90,10 +90,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
                     "[ime-off-rescue] 50ms timer expired → 保留 vk=0x{:02X} を IME-OFF として発火",
                     pending_event.vk_code
                 );
-                let result = key_pipeline::KeyEventPipeline {
-                    app,
-                    skip_rescue_defer: true,
-                }.run(pending_event);
+                let result = app.replay_ime_off_rescue_event(pending_event);
                 if matches!(result, CallbackResult::PassThrough) {
                     app.executor.enqueue_reinject(pending_event);
                     post_to_main_thread(WM_EXECUTE_EFFECTS);

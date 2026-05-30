@@ -25,6 +25,12 @@ impl Runtime {
         self.kp_run_inner(event, false)
     }
 
+    /// TIMER_IME_OFF_RESCUE 満了時の再処理エントリポイント。
+    /// 救済窓 defer をスキップして即時処理する（無限ループ防止）。
+    pub(crate) fn replay_ime_off_rescue_event(&mut self, event: RawKeyEvent) -> CallbackResult {
+        self.kp_run_inner(event, true)
+    }
+
     /// パイプライン実装。`skip_rescue_defer=true` で救済窓 defer をスキップ。
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
         self.enrich_ime_relevance(&mut event);
