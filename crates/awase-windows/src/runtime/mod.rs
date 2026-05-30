@@ -196,10 +196,7 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let pre_applied = {
-            let sm = &self.platform_state.ime.shadow_model;
-            sm.applied_open.map(|v| (v, sm.applied_at_ms))
-        };
+        let pre_applied = self.platform_state.ime.applied_pair();
         let (callback, sync_outcomes) = self.executor.execute_from_loop(decision, pre_applied);
         self.dispatch_outcomes(sync_outcomes);
         callback
@@ -234,7 +231,7 @@ impl Runtime {
         self.platform_state.ime.mirror_applied_open_with_ts(effective, crate::hook::current_tick_ms());
 
         // D: generation 照合で ImeApplySucceeded/Failed を dispatch
-        if let Some(generation) = self.platform_state.ime.shadow_model.pending_generation() {
+        if let Some(generation) = self.platform_state.ime.pending_generation() {
             let event = ImeEvent::from_apply_outcome(open, outcome, generation);
             self.platform_state.ime.dispatch_event(event);
         }
@@ -253,7 +250,7 @@ impl Runtime {
     /// 現在の shadow model から `ImeControlView` を構築する。
     pub(crate) fn shadow_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
         self.executor.platform.build_ime_control_view(
-            self.platform_state.ime.shadow_model.applied_pair(),
+            self.platform_state.ime.applied_pair(),
         )
     }
 
@@ -854,7 +851,7 @@ impl Runtime {
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
         self.platform_state.apply_panic_reset();
         // Step 4: chord barrier も clear (旧 ctrl_bypass_hold 相当)
-        self.platform_state.ime.shadow_model.input_barrier = None;
+        self.platform_state.ime.clear_input_barrier();
         self.platform_state.sync_key_gate.clear();
 
         // 6. IME 状態を再取得
