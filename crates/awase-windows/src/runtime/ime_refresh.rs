@@ -397,31 +397,8 @@ impl<'a> ImeRefreshPipeline<'a> {
     //   TsfNative アプリは can_use_imm32_cross_process=false で set_ime_open が no-op。
 
     fn check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
-        let desired = self.rt.platform_state.ime.desired_open();
-
-        // 乖離継続時間が閾値未満なら補正しない
-        // 明示的 IME 操作が pending の場合は閾値をゼロにして即時補正する
-        let dur = self.rt.platform_state.ime.drift_duration(now)?;
-        let threshold = if self.rt.platform_state.explicit_intent() == Some(desired) {
-            0
-        } else {
-            u128::from(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
-        };
-        if dur.as_millis() < threshold {
-            return None;
-        }
-
-        // 最も信頼できる観測値が stale でなく desired と一致しているなら補正不要
-        let max_age = std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS);
-        let trusted = self.rt.platform_state.ime.most_recent_trusted(now)?;
-        if trusted.age(now) > max_age {
-            return None;
-        }
-        if trusted.open == desired {
-            return None;
-        }
-
-        Some((desired, trusted.open, dur.as_millis() as u64))
+        let explicit_intent = self.rt.platform_state.explicit_intent();
+        self.rt.platform_state.ime.check_drift_correction(now, explicit_intent)
     }
 
     fn apply_drift_correction(&mut self) {

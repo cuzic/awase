@@ -212,29 +212,16 @@ impl Runtime {
     /// async 経路では spawn_local 内で B を済ませた後に直接呼ばれる。
     pub fn on_ime_apply_complete(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::{ImeOpenOutcome, PlatformRuntime as _};
-        use crate::state::ime_event::ImeEvent;
 
         if outcome == ImeOpenOutcome::UnsafeToToggle {
             return;
         }
 
-        let effective = match outcome {
-            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
-            ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
-        };
-
         // B: composition warm/cold 更新
         self.executor.platform.on_ime_applied(open, outcome);
 
-        // C: ImeModel write-back（applied_open / applied_at_ms）
-        self.platform_state.ime.mirror_applied_open_with_ts(effective, crate::hook::current_tick_ms());
-
-        // D: generation 照合で ImeApplySucceeded/Failed を dispatch
-        if let Some(generation) = self.platform_state.ime.pending_generation() {
-            let event = ImeEvent::from_apply_outcome(open, outcome, generation);
-            self.platform_state.ime.dispatch_event(event);
-        }
+        // C+D: ImeModel write-back + generation 照合 dispatch
+        self.platform_state.ime.record_ime_apply_result(open, outcome, crate::hook::current_tick_ms());
 
         // E: IME 状態ポーリングをスケジュール
         self.executor.platform.post_ime_refresh();
