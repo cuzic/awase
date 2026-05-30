@@ -227,9 +227,23 @@ impl<'a> ImeRefreshPipeline<'a> {
         let is_typing = idle_ms < TYPING_IDLE_MS;
 
         if is_typing {
-            log::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
-            ImeReadStrategy::SkipTyping
-        } else if skip_imm_query {
+            // Ctrl+無変換 等の明示的 IME 操作後、実際に OS 状態が変化したか即時検証する。
+            // ImmCross async が "成功" 扱いでも組み合わせ中は IME が閉じないことがあるため、
+            // タイピングアイドルガードを回避して OsPoll を先行させる。
+            // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
+            let explicit_verify = !skip_imm_query
+                && self.rt.platform_state.explicit_intent().is_some()
+                && self.rt.platform_state.ime.shadow_model.applied_open.is_some();
+            if !explicit_verify {
+                log::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
+                return ImeReadStrategy::SkipTyping;
+            }
+            log::debug!(
+                "Explicit intent: bypassing typing-idle guard for IME verify (idle={idle_ms}ms)"
+            );
+        }
+
+        if skip_imm_query {
             ImeReadStrategy::Blacklist
         } else {
             ImeReadStrategy::OsPoll
@@ -387,8 +401,14 @@ impl<'a> ImeRefreshPipeline<'a> {
         let desired = sm.desired_open;
 
         // 乖離継続時間が閾値未満なら補正しない
+        // 明示的 IME 操作が pending の場合は閾値をゼロにして即時補正する
         let dur = sm.observations.drift_duration(now)?;
-        if dur.as_millis() < u128::from(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS) {
+        let threshold = if self.rt.platform_state.explicit_intent() == Some(desired) {
+            0
+        } else {
+            u128::from(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+        };
+        if dur.as_millis() < threshold {
             return None;
         }
 
