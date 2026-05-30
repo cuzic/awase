@@ -59,7 +59,7 @@ pub struct LayoutEntry {
 pub struct Runtime {
     engine: Engine,
     executor: DecisionExecutor,
-    pub(crate) layouts: Vec<LayoutEntry>,
+    layouts: Vec<LayoutEntry>,
     /// IME 同期キー（イベント事前分類用）
     sync_toggle_keys: Vec<VkCode>,
     sync_on_keys: Vec<VkCode>,
@@ -844,6 +844,11 @@ impl Runtime {
             all_keymaps,
             pending_ime_off_rescue: None,
         }
+    }
+
+    /// 利用可能なレイアウト名の一覧を返す（トレイメニュー表示用）。
+    pub(crate) fn layout_names(&self) -> Vec<String> {
+        self.layouts.iter().map(|e| e.name.clone()).collect()
     }
 
     /// トレイアイコンの HWND を返す。

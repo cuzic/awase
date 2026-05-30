@@ -658,10 +658,8 @@ unsafe extern "system" fn tray_wnd_proc(
         WM_TRAY_CALLBACK => {
             // Shell からのトレイコールバック → メインのメッセージループに転送
             // PostMessage ではなく直接処理する（同じスレッドなので安全）
-            let layout_names: Vec<String> = crate::with_app_ref(|app| {
-                app.layouts.iter().map(|e| e.name.clone()).collect()
-            })
-            .unwrap_or_default();
+            let layout_names: Vec<String> =
+                crate::with_app_ref(|app| app.layout_names()).unwrap_or_default();
             let elevated = crate::ELEVATED.load(std::sync::atomic::Ordering::Relaxed);
             handle_tray_message(hwnd, lparam, &layout_names, elevated);
             LRESULT(0)
