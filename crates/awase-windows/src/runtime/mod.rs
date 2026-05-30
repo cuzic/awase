@@ -55,22 +55,22 @@ pub struct LayoutEntry {
 ///
 /// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
 pub struct Runtime {
-    pub engine: Engine,
-    pub executor: DecisionExecutor,
-    pub layouts: Vec<LayoutEntry>,
+    engine: Engine,
+    executor: DecisionExecutor,
+    pub(crate) layouts: Vec<LayoutEntry>,
     /// IME 同期キー（イベント事前分類用）
-    pub sync_toggle_keys: Vec<VkCode>,
-    pub sync_on_keys: Vec<VkCode>,
-    pub sync_off_keys: Vec<VkCode>,
+    sync_toggle_keys: Vec<VkCode>,
+    sync_on_keys: Vec<VkCode>,
+    sync_off_keys: Vec<VkCode>,
     /// Platform 層の全状態
-    pub platform_state: crate::PlatformState,
+    platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
-    pub all_keymaps: crate::keymap::KeymapTable,
+    all_keymaps: crate::keymap::KeymapTable,
     /// Ctrl+無変換 IME-OFF 救済窓中に保留している event。
     ///
     /// `TIMER_IME_OFF_RESCUE` 満了で IME-OFF 発火、Ctrl↑ 到達で ctrl=false に書き換えて発火。
     /// `Some` 中に他のキーが到着したら救済中止して原 event を engine に渡す。
-    pub pending_ime_off_rescue: Option<RawKeyEvent>,
+    pending_ime_off_rescue: Option<RawKeyEvent>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -803,6 +803,181 @@ impl Runtime {
             let decision = self.engine.on_input(event, &ctx);
             self.execute_decision(decision);
         }
+    }
+
+    // ── app/ 境界 API（private フィールドへのアクセスを app/ に許可しない）──
+
+    /// Runtime を初期化して返す。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        engine: Engine,
+        executor: DecisionExecutor,
+        layouts: Vec<LayoutEntry>,
+        sync_toggle_keys: Vec<VkCode>,
+        sync_on_keys: Vec<VkCode>,
+        sync_off_keys: Vec<VkCode>,
+        platform_state: crate::PlatformState,
+        all_keymaps: crate::keymap::KeymapTable,
+    ) -> Self {
+        Self {
+            engine,
+            executor,
+            layouts,
+            sync_toggle_keys,
+            sync_on_keys,
+            sync_off_keys,
+            platform_state,
+            all_keymaps,
+            pending_ime_off_rescue: None,
+        }
+    }
+
+    /// トレイアイコンの HWND を返す。
+    pub(crate) fn tray_hwnd(&self) -> windows::Win32::Foundation::HWND {
+        self.executor.platform.tray.hwnd()
+    }
+
+    /// ウィンドウフォーカス変更イベントを処理する（`win_event_proc` から呼ぶ）。
+    pub(crate) fn on_window_focus_event(
+        &mut self,
+        hwnd_id: crate::state::ime_event::HwndId,
+        now: std::time::Instant,
+    ) {
+        self.platform_state.ime.try_set_focus_transition_barrier(hwnd_id, now);
+        self.executor.platform.on_focus_change_tsf();
+        self.executor.platform.timer.set(
+            crate::TIMER_TSF_GATE,
+            std::time::Duration::from_millis(crate::tsf::WARMUP_TIMEOUT_MS),
+        );
+        let debounce_ms = u64::from(self.platform_state.focus_debounce_ms);
+        self.schedule_ime_refresh(debounce_ms);
+    }
+
+    /// フックウォッチドッグタイマーを起動する（3 秒）。
+    pub(crate) fn start_hook_watchdog(&mut self) {
+        self.executor.platform.timer.set(
+            crate::TIMER_HOOK_WATCHDOG,
+            std::time::Duration::from_secs(3),
+        );
+    }
+
+    /// UIA ワーカースレッドへの送信チャネルを登録する。
+    pub(crate) fn set_uia_sender(
+        &mut self,
+        tx: std::sync::mpsc::Sender<crate::focus::uia::SendableHwnd>,
+    ) {
+        self.executor.platform.set_uia_sender(tx);
+    }
+
+    /// システムトレイのバルーン通知を表示する。
+    pub(crate) fn show_tray_balloon(&mut self, title: &str, text: &str) {
+        self.executor.platform.tray.show_balloon(title, text);
+    }
+
+    /// IMM 能力学習キャッシュをクリアして削除件数を返す。
+    pub(crate) fn clear_imm_learning(&mut self) -> usize {
+        self.executor.platform.imm_learning.clear()
+    }
+
+    /// TSF プローブマシンをインストールしてタイマーを起動する（async 送信パス用）。
+    pub(crate) fn install_pending_tsf_and_set_timer(
+        &mut self,
+        machine: crate::output::TsfProbeMachine,
+    ) {
+        self.executor.platform.install_pending_tsf_and_set_timer(machine);
+    }
+
+    /// async パスの IME apply 完了処理（executor 更新 + on_ime_apply_complete）。
+    pub(crate) fn on_async_ime_apply_complete(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+    ) {
+        self.executor.update_intra_batch_applied(open, outcome);
+        self.on_ime_apply_complete(open, outcome);
+    }
+
+    /// async パスで reinject 後に composition 確定キーの後処理を行う。
+    pub(crate) fn on_reinject_composition_confirm_key(&mut self, vk_code: VkCode) {
+        let applied_ime_on = self.executor.applied_snapshot.map(|(v, _)| v);
+        self.executor.platform.on_reinject_key(vk_code, true, applied_ime_on);
+    }
+
+    /// 診断用: フォーカス中プロセスの (pid, class_name) を返す。
+    pub(crate) fn diagnostic_focus_info(&self) -> (u32, String) {
+        if self.executor.platform.focus.is_focused() {
+            (self.executor.platform.focus.pid, self.executor.platform.focus.class_name.clone())
+        } else {
+            (0, String::new())
+        }
+    }
+
+    /// 診断用: shadow 状態の (ime_on, is_romaji, is_japanese) を返す。
+    pub(crate) fn diagnostic_shadow_state(&self) -> (bool, bool, bool) {
+        (
+            self.platform_state.ime_on(),
+            self.platform_state.input_mode().is_romaji_capable(),
+            self.platform_state.is_japanese_ime(),
+        )
+    }
+
+    /// 診断用: 直近フォーカス変更タイムスタンプ（ミリ秒）を返す。
+    pub(crate) fn last_focus_change_ms(&self) -> u64 {
+        self.platform_state.last_focus_change_ms
+    }
+
+    /// 診断用: 直近フックアクティビティタイムスタンプ（ミリ秒）を返す。
+    pub(crate) fn last_hook_activity_ms(&self) -> u64 {
+        self.platform_state.last_hook_activity_ms
+    }
+
+    /// 診断用: フォーカスクラス名と AppImeProfile を返す。
+    pub(crate) fn diagnostic_app_profile(&self) -> (String, String) {
+        let class = self.executor.platform.focus.class_name.clone();
+        let profile = format!("{:?}", self.executor.platform.current_app_profile());
+        (class, profile)
+    }
+
+    /// Win32 タイマー wParam を論理タイマー ID に解決する。
+    pub(crate) fn resolve_timer(&self, wparam: usize) -> Option<usize> {
+        self.executor.platform.timer.resolve(wparam)
+    }
+
+    /// エンジンに設定コマンドを送信する（Decision は破棄）。
+    pub(crate) fn send_engine_command(&mut self, cmd: EngineCommand) {
+        let ctx = self.build_ctx();
+        let _ = self.engine.on_command(cmd, &ctx);
+    }
+
+    /// 出力モードを変更する。
+    pub(crate) fn set_output_mode(&mut self, mode: awase::config::OutputMode) {
+        self.executor.platform.set_output_mode(mode);
+    }
+
+    /// IME 同期キーリストを更新する。
+    pub(crate) fn set_sync_keys(
+        &mut self,
+        toggle: Vec<VkCode>,
+        on: Vec<VkCode>,
+        off: Vec<VkCode>,
+    ) {
+        self.sync_toggle_keys = toggle;
+        self.sync_on_keys = on;
+        self.sync_off_keys = off;
+    }
+
+    /// アプリ別フォーカス分類のオーバーライドとキャッシュをリセットする。
+    pub(crate) fn reset_focus_classification(
+        &mut self,
+        overrides: crate::focus::classifier::ForceOverrides,
+    ) {
+        self.executor.platform.focus_overrides = overrides;
+        self.executor.platform.focus_cache = crate::focus::cache::FocusCache::new();
+    }
+
+    /// IME ポーリング間隔（ミリ秒）を返す。
+    pub(crate) fn ime_poll_interval_ms(&self) -> u64 {
+        u64::from(self.platform_state.ime_poll_interval_ms)
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。
