@@ -256,6 +256,20 @@ impl PlatformState {
         self.ime.shadow_model.force_guards.guards.clear();
     }
 
+    /// Shadow IME トグルによって IME 状態が実際に変化したときに呼ぶ。
+    ///
+    /// 意図的なトグル後は drift 検出カウンタを無効化する。
+    pub fn on_shadow_ime_toggled(&mut self) {
+        self.reset_ime_detect_state();
+    }
+
+    /// SetOpen リクエストを shadow_model に書き込んだときに呼ぶ。
+    ///
+    /// Engine が IME ON/OFF を要求した直後は drift 検出カウンタを無効化する。
+    pub fn on_set_open_requested(&mut self) {
+        self.reset_ime_detect_state();
+    }
+
     /// panic_reset 向け全面リセット。
     ///
     /// belief (input_mode, is_japanese_ime, prev_conversion_mode) と shadow_model を初期化する。
@@ -300,13 +314,6 @@ impl PlatformState {
             hwnd: super::ime_event::HwndId::NULL,
             confidence: super::ime_event::ObservationConfidence::Medium,
         });
-    }
-
-    /// フォーカス変更時に shadow_model の last_intent / observations を clear する。
-    pub fn clear_ime_observations_on_focus_change(&mut self) {
-        self.ime.shadow_model.last_intent = None;
-        self.ime.shadow_model.observations.clear_on_focus_change();
-        log::debug!("[explicit-intent] cleared (focus change)");
     }
 
     /// 同期キー由来の意図を shadow_model へ dispatch する。

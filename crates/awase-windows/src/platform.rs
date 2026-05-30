@@ -45,6 +45,31 @@ impl std::fmt::Debug for WindowsPlatform {
     }
 }
 
+/// [`WindowsPlatform::suppress_engine_state_key`] を `true` にし、Drop で `false` に戻す RAII ガード。
+///
+/// パニック時も含めてフラグが必ずリセットされることを保証する。
+/// [`WindowsPlatform::suppress_engine_state_key_guard`] 経由で取得する。
+pub(crate) struct SuppressEngineStateKeyGuard(*mut bool);
+
+impl SuppressEngineStateKeyGuard {
+    fn new(platform: &mut WindowsPlatform) -> Self {
+        let ptr = std::ptr::addr_of_mut!(platform.suppress_engine_state_key);
+        // SAFETY: ptr は platform の有効なフィールドを指し、
+        //         このガードはシングルスレッドのメインループ内でのみ使用される。
+        unsafe { *ptr = true; }
+        Self(ptr)
+    }
+}
+
+impl Drop for SuppressEngineStateKeyGuard {
+    fn drop(&mut self) {
+        // SAFETY: ポインタはシングルスレッドのメインループ内でのみ使用される。
+        //         WindowsPlatform は APP (SingleThreadCell) が保持しており、
+        //         with_app の外側では Drop しないことが保証されている。
+        unsafe { *self.0 = false; }
+    }
+}
+
 impl WindowsPlatform {
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
 
@@ -74,12 +99,12 @@ impl WindowsPlatform {
     }
 
     /// TSF モード確定時に TsfGate を Probing に遷移させ、保留キーを返す（runtime 用）。
-    pub(crate) fn confirm_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
+    pub(crate) fn confirm_tsf(&mut self) -> Vec<RawKeyEvent> {
         self.output.confirm_tsf()
     }
 
     /// 非 TSF モード確定時に TsfGate を Bypass に遷移させ、保留キーを返す（runtime 用）。
-    pub(crate) fn bypass_tsf(&mut self) -> Vec<awase::types::RawKeyEvent> {
+    pub(crate) fn bypass_tsf(&mut self) -> Vec<RawKeyEvent> {
         self.output.bypass_tsf()
     }
 
@@ -89,18 +114,33 @@ impl WindowsPlatform {
     }
 
     /// TIMER_TSF_GATE タイムアウト時に TsfGate を Bypass にフォールバックし、保留キーを返す。
-    pub(crate) fn on_tsf_warmup_timeout(&mut self) -> Vec<awase::types::RawKeyEvent> {
+    pub(crate) fn on_tsf_warmup_timeout(&mut self) -> Vec<RawKeyEvent> {
         self.output.on_tsf_warmup_timeout()
     }
 
     /// キーを TsfGate で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
-    pub(crate) fn try_hold_key(&mut self, event: awase::types::RawKeyEvent) -> bool {
+    pub(crate) fn try_hold_key(&mut self, event: RawKeyEvent) -> bool {
         self.output.try_hold_key(event)
     }
 
     /// `composition_warm_epoch` のみリセットする（フォーカス遷移直後の最初キー用）。
     pub(crate) fn reset_warm_epoch(&self) {
         self.output.reset_warm_epoch();
+    }
+
+    /// フォーカス切替後の最初キー到達で async probe を開始するときに呼ぶ。
+    ///
+    /// async probe が完了する前にキーが来た場合、前ウィンドウの stale な warm 状態を
+    /// 返さないよう warm epoch を抑制する。
+    pub(crate) fn on_focus_probe_started(&self) {
+        self.reset_warm_epoch();
+    }
+
+    /// `suppress_engine_state_key = true` のスコープを RAII で管理する。
+    ///
+    /// 返されたガードが Drop されると `false` に戻る。パニック時も保証。
+    pub(crate) fn suppress_engine_state_key_guard(&mut self) -> SuppressEngineStateKeyGuard {
+        SuppressEngineStateKeyGuard::new(self)
     }
 
     /// eager warmup F2 を送信した時刻 (ms) を返す。0 = 未送信。
@@ -290,6 +330,8 @@ impl PlatformRuntime for WindowsPlatform {
             ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
         };
+        // IME 状態が変化したので GJI 候補ウィンドウの「見た」フラグをリセットする。
+        // これをリセットしないと次の composition 検出で desync と誤判定される。
         crate::tsf::observer::reset_candidate_was_seen();
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");

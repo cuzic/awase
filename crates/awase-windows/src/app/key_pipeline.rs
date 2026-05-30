@@ -50,8 +50,7 @@ impl KeyEventPipeline<'_> {
         // それ以外なら救済中止（原 event を発火 → IME-OFF）。
         // どちらの場合も skip_rescue_defer=true でネスト pipeline 呼び出しし、
         // 再 defer による無限ループを防ぐ。
-        if let Some(pending_event) = self.app.pending_ime_off_rescue.take() {
-            self.app.executor.platform.timer.kill(crate::TIMER_IME_OFF_RESCUE);
+        if let Some(pending_event) = self.app.take_ime_off_rescue_pending() {
             let is_ctrl_up = matches!(event.event_type, awase::types::KeyEventType::KeyUp)
                 && crate::vk::is_ctrl_variant(event.vk_code);
             let dispatched = if is_ctrl_up {
@@ -136,11 +135,7 @@ impl KeyEventPipeline<'_> {
                 "[ime-off-rescue] vk=0x{:02X} を 50ms 保留 (Ctrl consumed)",
                 event.vk_code
             );
-            self.app.pending_ime_off_rescue = Some(event);
-            self.app.executor.platform.timer.set(
-                crate::TIMER_IME_OFF_RESCUE,
-                std::time::Duration::from_millis(50),
-            );
+            self.app.set_ime_off_rescue_pending(event);
             return CallbackResult::Consumed;
         }
 
@@ -194,11 +189,7 @@ impl KeyEventPipeline<'_> {
         // 消費 (旧 = false にセット)
         self.app.platform_state.ime.shadow_model.input_barrier = None;
 
-        // async probe が完了する前に最初のキーが来た場合、warm epoch を抑制して
-        // is_composition_warm() が前ウィンドウの stale な warm 状態を返さないようにする。
-        // eager_warmup_sent_ms は保持し、phase3_7 が送信した eager F2 のタイムスタンプを
-        // 消さないことで non-eager 1500ms パスへの劣化を防ぐ。
-        self.app.executor.platform.reset_warm_epoch();
+        self.app.executor.platform.on_focus_probe_started();
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.app.executor.platform.eager_warmup_sent_ms();
@@ -255,7 +246,7 @@ impl KeyEventPipeline<'_> {
         if self.app.platform_state.ime_on() == current {
             return false;
         }
-        self.app.platform_state.reset_ime_detect_state();
+        self.app.platform_state.on_shadow_ime_toggled();
 
         // ON→OFF の場合、OS IME を明示的に OFF にする。
         // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
@@ -343,7 +334,7 @@ impl KeyEventPipeline<'_> {
             } else {
                 let ms = hook::current_tick_ms();
                 self.app.platform_state.write_set_open_request(new_ime_on, ms, self.app.engine.is_user_enabled());
-                self.app.platform_state.reset_ime_detect_state();
+                self.app.platform_state.on_set_open_requested();
                 self.app.executor.platform.timer.kill(TIMER_IME_REFRESH);
 
                 // Phase 3b: ImeApplyRequested event を dispatch して shadow_model.pending を

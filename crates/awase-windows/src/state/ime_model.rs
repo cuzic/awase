@@ -212,6 +212,7 @@ impl ImeModel {
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
                 self.observations.clear_on_focus_change();
+                log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied_open = None;
                 self.applied_at_ms = 0;
                 // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。

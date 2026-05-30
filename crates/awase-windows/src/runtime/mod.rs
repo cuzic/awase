@@ -5,6 +5,7 @@ use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
+use awase::platform::PlatformRuntime as _;
 use crate::win32::HwndExt as _;
 use crate::ImeBelief;
 
@@ -173,10 +174,27 @@ impl Runtime {
     /// `engine_on/off_ime_key`（VK_DBE_DBCSCHAR 等）を追加送信してしまう
     /// フィードバックループを防ぐ。
     pub fn execute_decision_suppressed(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        self.executor.platform.suppress_engine_state_key = true;
-        let result = self.execute_decision(decision);
-        self.executor.platform.suppress_engine_state_key = false;
-        result
+        let _guard = self.executor.platform.suppress_engine_state_key_guard();
+        self.execute_decision(decision)
+    }
+
+    /// `pending_ime_off_rescue` を取り出し、`TIMER_IME_OFF_RESCUE` をキャンセルする。
+    ///
+    /// `.take()` と `timer.kill()` は常にペアで呼ぶ必要があるため一元化する。
+    pub fn take_ime_off_rescue_pending(&mut self) -> Option<awase::types::RawKeyEvent> {
+        self.executor.platform.timer.kill(crate::TIMER_IME_OFF_RESCUE);
+        self.pending_ime_off_rescue.take()
+    }
+
+    /// `pending_ime_off_rescue` をセットし、`TIMER_IME_OFF_RESCUE` を起動する。
+    ///
+    /// `.pending = Some(event)` と `timer.set()` は常にペアで呼ぶ必要があるため一元化する。
+    pub fn set_ime_off_rescue_pending(&mut self, event: awase::types::RawKeyEvent) {
+        self.pending_ime_off_rescue = Some(event);
+        self.executor.platform.timer.set(
+            crate::TIMER_IME_OFF_RESCUE,
+            std::time::Duration::from_millis(50),
+        );
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
@@ -447,7 +465,6 @@ impl Runtime {
                 to: new_hwnd,
                 profile: new_profile,
             });
-        self.platform_state.clear_ime_observations_on_focus_change();
 
         {
             let process_name = &self.executor.platform.focus.process_name;
