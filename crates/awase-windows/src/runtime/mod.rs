@@ -181,7 +181,7 @@ impl Runtime {
     /// `pending_ime_off_rescue` を取り出し、`TIMER_IME_OFF_RESCUE` をキャンセルする。
     ///
     /// `.take()` と `timer.kill()` は常にペアで呼ぶ必要があるため一元化する。
-    pub fn take_ime_off_rescue_pending(&mut self) -> Option<awase::types::RawKeyEvent> {
+    pub fn take_ime_off_rescue_pending(&mut self) -> Option<RawKeyEvent> {
         self.executor.platform.timer.kill(crate::TIMER_IME_OFF_RESCUE);
         self.pending_ime_off_rescue.take()
     }
@@ -189,7 +189,7 @@ impl Runtime {
     /// `pending_ime_off_rescue` をセットし、`TIMER_IME_OFF_RESCUE` を起動する。
     ///
     /// `.pending = Some(event)` と `timer.set()` は常にペアで呼ぶ必要があるため一元化する。
-    pub fn set_ime_off_rescue_pending(&mut self, event: awase::types::RawKeyEvent) {
+    pub fn set_ime_off_rescue_pending(&mut self, event: RawKeyEvent) {
         self.pending_ime_off_rescue = Some(event);
         self.executor.platform.timer.set(
             crate::TIMER_IME_OFF_RESCUE,

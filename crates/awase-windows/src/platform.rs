@@ -78,11 +78,6 @@ impl WindowsPlatform {
         self.output.send_eager_tsf_warmup(applied_ime_on);
     }
 
-    /// フォーカス変更時の eager warmup（ime_refresh 等から呼ぶ）。
-    pub(crate) fn send_eager_warmup_with(&self, applied_ime_on: Option<bool>) {
-        self.output.send_eager_tsf_warmup(applied_ime_on);
-    }
-
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
     pub(crate) fn mark_composition_cold_focus_change(&self) {
         self.output.mark_composition_cold(crate::output::ColdReason::FocusChange);

@@ -25,7 +25,6 @@ use crate::hook;
 use crate::ime;
 use crate::output::Output;
 use crate::platform;
-use crate::runtime;
 use crate::tray;
 use crate::tray::SystemTray;
 use crate::{
@@ -324,8 +323,8 @@ pub(super) fn initialize_app(
 
     let base_dir = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
