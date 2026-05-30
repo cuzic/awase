@@ -821,9 +821,14 @@ impl DecisionExecutor {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn post_apply_ime_open(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
+        // UnsafeToToggle: 送信しなかったので applied_snapshot も on_ime_applied も更新しない
+        if outcome == ImeOpenOutcome::UnsafeToToggle {
+            return;
+        }
         let effective = match outcome {
             ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
+            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
         };
         self.applied_snapshot = Some((effective, crate::hook::current_tick_ms()));
         self.platform.on_ime_applied(open, outcome);

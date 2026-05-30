@@ -108,6 +108,8 @@ pub enum ApplyError {
     Timeout,
     /// クロスプロセス IMM 呼び出し失敗
     CrossProcessFailed,
+    /// トグル操作が unsafe（shadow 信頼度不足・focus 直後等）で送信しなかった
+    UnsafeToToggle,
     /// その他
     Other,
 }
@@ -184,6 +186,11 @@ impl ImeEvent {
                 target,
                 generation,
                 error: ApplyError::CrossProcessFailed,
+            },
+            ImeOpenOutcome::UnsafeToToggle => Self::ImeApplyFailed {
+                target,
+                generation,
+                error: ApplyError::UnsafeToToggle,
             },
         }
     }

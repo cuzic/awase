@@ -321,9 +321,14 @@ impl PlatformRuntime for WindowsPlatform {
 
     fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
+        // UnsafeToToggle: 送信しなかったので何もしない（executor 側で早期リターン済みだが念のため）
+        if outcome == ImeOpenOutcome::UnsafeToToggle {
+            return;
+        }
         let effective = match outcome {
             ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
+            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
         };
         // IME 状態が変化したので GJI 候補ウィンドウの「見た」フラグをリセットする。
         // これをリセットしないと次の composition 検出で desync と誤判定される。
