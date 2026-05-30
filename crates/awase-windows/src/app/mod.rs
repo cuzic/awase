@@ -18,7 +18,6 @@ use awase::types::{RawKeyEvent, VkCode};
 
 use crate::vk::VkCodeExt;
 use crate::ime;
-use crate::runtime;
 use crate::runtime::message_handlers;
 use crate::{
     WM_DRAIN_OUTPUT_QUEUE,
@@ -74,10 +73,7 @@ impl StartupDiagnostics {
             log::info!("  - {w}");
         }
         let _ = with_app(|app| {
-            app.executor.platform.tray.show_balloon(
-                "awase",
-                &format!("{}件の警告があります", self.warnings.len()),
-            );
+            app.show_tray_balloon("awase", &format!("{}件の警告があります", self.warnings.len()));
         });
     }
 }
@@ -210,16 +206,7 @@ pub fn run() -> Result<()> {
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
             let _ = with_app(|app| {
-                // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
-                let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-                app.engine.on_command(
-                    awase::engine::EngineCommand::SetNgramModel(model),
-                    &runtime::build_input_context(
-                        app.platform_state.ime_on(),
-                        app.platform_state.belief(),
-                        &modifiers,
-                    ),
-                );
+                app.send_engine_command(awase::engine::EngineCommand::SetNgramModel(model));
             });
         }
         Err(e) => diag.warn(format!("n-gramモデル解析失敗: {e}")),
@@ -243,7 +230,7 @@ pub(crate) fn check_keyboard_layout_on_change() {
             );
         }
         let _ = with_app(|app| {
-            app.executor.platform.tray.show_balloon(
+            app.show_tray_balloon(
                 "awase",
                 "日本語キーボードレイアウトが検出されません。親指シフトが正常に動作しない可能性があります。",
             );
@@ -275,7 +262,7 @@ pub(crate) fn check_keyboard_layout_on_change() {
                 // SAFETY: WM_TIMER はメインスレッドのメッセージループからのみ呼ばれる。
                 //         wParam のタイマー ID はアプリケーション定義の定数で一意。
                 let _ = with_app(|app| unsafe {
-                    let logical_id = app.executor.platform.timer.resolve(msg.wParam.0);
+                    let logical_id = app.resolve_timer(msg.wParam.0);
                     message_handlers::handle_wm_timer(app, logical_id, msg.wParam.0, &msg);
                 });
             }
@@ -445,21 +432,12 @@ pub(crate) fn reload_config() {
     }
 
     let _ = with_app(|app| {
-        // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
-        let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-        app.engine.on_command(
-            awase::engine::EngineCommand::UpdateFsmParams {
-                threshold_ms: config.general.simultaneous_threshold_ms,
-                confirm_mode: config.general.confirm_mode,
-                speculative_delay_ms: config.general.speculative_delay_ms,
-            },
-            &runtime::build_input_context(
-                app.platform_state.ime_on(),
-                app.platform_state.belief(),
-                &modifiers,
-            ),
-        );
-        app.executor.platform.set_output_mode(config.general.output_mode);
+        app.send_engine_command(awase::engine::EngineCommand::UpdateFsmParams {
+            threshold_ms: config.general.simultaneous_threshold_ms,
+            confirm_mode: config.general.confirm_mode,
+            speculative_delay_ms: config.general.speculative_delay_ms,
+        });
+        app.set_output_mode(config.general.output_mode);
         log::info!(
             "Engine parameters updated: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
             config.general.simultaneous_threshold_ms,
@@ -492,33 +470,23 @@ pub(crate) fn reload_config() {
             .collect();
         crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
         let _ = with_app(|app| {
-            app.sync_toggle_keys.clone_from(&toggle);
-            app.sync_on_keys.clone_from(&on);
-            app.sync_off_keys.clone_from(&off);
-            // SAFETY: GetAsyncKeyState はどのスレッドからも安全に呼べる。
-            let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-            app.engine.on_command(
-                awase::engine::EngineCommand::ReloadKeys {
-                    special: SpecialKeyCombos {
-                        engine_on,
-                        engine_off,
-                        ime_on,
-                        ime_off,
-                    },
+            app.set_sync_keys(toggle, on, off);
+            app.send_engine_command(awase::engine::EngineCommand::ReloadKeys {
+                special: SpecialKeyCombos {
+                    engine_on,
+                    engine_off,
+                    ime_on,
+                    ime_off,
                 },
-                &runtime::build_input_context(
-                    app.platform_state.ime_on(),
-                    app.platform_state.belief(),
-                    &modifiers,
-                ),
-            );
+            });
         });
         key_diag.report();
     }
 
     let _ = with_app(|app| {
-        app.executor.platform.focus_overrides = crate::focus::classifier::ForceOverrides::new(config.app_overrides);
-        app.executor.platform.focus_cache = crate::focus::cache::FocusCache::new();
+        app.reset_focus_classification(
+            crate::focus::classifier::ForceOverrides::new(config.app_overrides),
+        );
     });
     log::info!("App overrides reloaded");
     log::info!("Config reloaded successfully");

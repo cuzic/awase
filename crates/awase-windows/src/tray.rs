@@ -640,7 +640,7 @@ fn launch_settings_gui() {
 /// 設定画面起動エラーをログとバルーン通知で表示する。
 fn show_settings_error(msg: &str) {
     log::error!("Settings launch: {msg}");
-    let _ = crate::with_app(|app| app.executor.platform.tray.show_balloon("awase", msg));
+    let _ = crate::with_app(|app| app.show_tray_balloon("awase", msg));
 }
 
 /// トレイウィンドウプロシージャ
@@ -675,9 +675,9 @@ unsafe extern "system" fn tray_wnd_proc(
                 Some(TrayCommand::Settings) => launch_settings_gui(),
                 Some(TrayCommand::ClearImmCache) => {
                     let _ = crate::with_app(|app| {
-                        let count = app.executor.platform.imm_learning.clear();
+                        let count = app.clear_imm_learning();
                         log::info!("IMM capability cache cleared ({count} entries)");
-                        app.executor.platform.tray.show_balloon(
+                        app.show_tray_balloon(
                             "awase",
                             &format!("学習キャッシュをクリアしました（{count}件）"),
                         );

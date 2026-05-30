@@ -596,8 +596,7 @@ impl DecisionExecutor {
             // mark_cold(ReinjectConfirmKey) + eager warmup を platform に委譲する。
             if is_key_down && vk_code.is_composition_confirm_key() {
                 let _ = crate::with_app(|app| {
-                    let applied_ime_on = app.executor.applied_snapshot.map(|(v, _)| v);
-                    app.executor.platform.on_reinject_key(vk_code, true, applied_ime_on);
+                    app.on_reinject_composition_confirm_key(vk_code);
                 });
             }
             drop(guard);
@@ -729,8 +728,7 @@ impl DecisionExecutor {
                     if outcome == awase::platform::ImeOpenOutcome::Failed {
                         log::warn!("apply_ime_open({open}) failed (async)");
                     }
-                    app.executor.update_intra_batch_applied(open, outcome);
-                    app.on_ime_apply_complete(open, outcome);
+                    app.on_async_ime_apply_complete(open, outcome);
                 });
                 drop(guard);
             });

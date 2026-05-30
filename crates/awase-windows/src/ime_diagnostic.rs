@@ -90,14 +90,9 @@ impl ImeDiagnosticSnapshot {
         // ── shadow / app state を APP から取得 ──
         let view = crate::with_app_ref(|app| {
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-            let (pid, class) = if app.executor.platform.focus.is_focused() {
-                (app.executor.platform.focus.pid, app.executor.platform.focus.class_name.clone())
-            } else {
-                (0u32, String::new())
-            };
-
-            let focus_change_ms = app.platform_state.last_focus_change_ms;
-            let activity_ms = app.platform_state.last_hook_activity_ms;
+            let (pid, class) = app.diagnostic_focus_info();
+            let focus_change_ms = app.last_focus_change_ms();
+            let activity_ms = app.last_hook_activity_ms();
 
             let dt_focus = if focus_change_ms == 0 {
                 None
@@ -116,13 +111,14 @@ impl ImeDiagnosticSnapshot {
             let hwnd = unsafe { GetForegroundWindow() };
             let hwnd_raw = hwnd.0 as usize;
 
+            let (shadow_ime_on, shadow_is_romaji, shadow_is_japanese) = app.diagnostic_shadow_state();
             AppStateView {
                 focus_hwnd_raw: hwnd_raw,
                 focus_pid: pid,
                 focus_class: class,
-                shadow_ime_on: app.platform_state.ime_on(),
-                shadow_is_romaji: app.platform_state.input_mode().is_romaji_capable(),
-                shadow_is_japanese: app.platform_state.is_japanese_ime(),
+                shadow_ime_on,
+                shadow_is_romaji,
+                shadow_is_japanese,
                 injection_mode: resolve_injection_mode_label(),
                 ms_since_focus_change: dt_focus,
                 ms_since_last_activity: dt_activity,
@@ -271,14 +267,9 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
     };
 
     let view = crate::with_app_ref(|app| {
-        let class = app.executor.platform.focus.class_name.clone();
-        let profile = app.executor.platform.current_app_profile();
-        (
-            class,
-            format!("{profile:?}"),
-            app.platform_state.ime_on(),
-            app.platform_state.is_japanese_ime(),
-        )
+        let (class, profile) = app.diagnostic_app_profile();
+        let (ime_on, _, is_japanese) = app.diagnostic_shadow_state();
+        (class, profile, ime_on, is_japanese)
     })
     .unwrap_or((String::new(), "Unknown".to_string(), false, false));
 
@@ -334,12 +325,13 @@ fn resolve_injection_mode_label() -> &'static str {
     use crate::focus::classifier::InjectionHint;
 
     crate::with_app_ref(|app| {
-        match app.executor.platform.injection_hint() {
+        let (hint, app_kind) = app.injection_hint();
+        match hint {
             InjectionHint::ForceTsf => return "Tsf",
             InjectionHint::ForceVk => return "Vk",
             InjectionHint::Default => {}
         }
-        match app.platform_state.app_kind {
+        match app_kind {
             AppKind::TsfNative => "Vk",
             _ => "Unicode",
         }

@@ -28,7 +28,7 @@ use crate::platform;
 use crate::tray;
 use crate::tray::SystemTray;
 use crate::{
-    LayoutEntry, Runtime, RUNTIME, ELEVATED, TIMER_HOOK_WATCHDOG, with_app, with_app_ref,
+    LayoutEntry, Runtime, RUNTIME, ELEVATED, with_app, with_app_ref,
 };
 
 use crate::MAIN_THREAD_ID;
@@ -281,7 +281,7 @@ impl Drop for WtsGuard {
 
 /// セッション変更通知（画面ロック/アンロック）を登録する
 pub(super) fn register_session_notification() -> Result<WtsGuard> {
-    let tray_hwnd = with_app_ref(|app| app.executor.platform.tray.hwnd())
+    let tray_hwnd = with_app_ref(|app| app.tray_hwnd())
         .context("RUNTIME not initialized")?;
     let ok = unsafe {
         super::WTSRegisterSessionNotification(tray_hwnd, super::NOTIFY_FOR_THIS_SESSION).as_bool()
@@ -328,9 +328,9 @@ pub(super) fn initialize_app(
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
-    RUNTIME.set(Runtime {
+    RUNTIME.set(Runtime::new(
         engine,
-        executor: executor::DecisionExecutor::new(
+        executor::DecisionExecutor::new(
             platform::WindowsPlatform {
                 output: Output::new(config.general.output_mode),
                 tray,
@@ -351,10 +351,9 @@ pub(super) fn initialize_app(
         sync_toggle_keys,
         sync_on_keys,
         sync_off_keys,
-        platform_state: ps,
+        ps,
         all_keymaps,
-        pending_ime_off_rescue: None,
-    });
+    ));
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
 }
 
@@ -442,18 +441,10 @@ unsafe extern "system" fn win_event_proc(
         // ここでは旧 pending=true 相当の動作を維持するため、すぐに FocusTransition を立てる。
         // (FocusChanged event の dispatch まで少しタイムラグがある場合に備えた safety net)
         let now = std::time::Instant::now();
-        app.platform_state.ime.try_set_focus_transition_barrier(
+        app.on_window_focus_event(
             crate::state::ime_event::HwndId(hwnd_isize as usize),
             now,
         );
-        app.executor.platform.on_focus_change_tsf();
-        // TsfGate フォールバックタイマー: 500ms 以内にプローブが来なければ Bypass へ
-        app.executor.platform.timer.set(
-            crate::TIMER_TSF_GATE,
-            std::time::Duration::from_millis(crate::tsf::WARMUP_TIMEOUT_MS),
-        );
-        let debounce_ms = u64::from(app.platform_state.focus_debounce_ms);
-        app.schedule_ime_refresh(debounce_ms);
     });
 }
 
@@ -667,16 +658,13 @@ pub(super) fn run_all() -> Result<()> {
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     let _ = with_app(|app| {
-        app.schedule_ime_refresh(u64::from(app.platform_state.ime_poll_interval_ms));
-        app.executor
-            .platform
-            .timer
-            .set(TIMER_HOOK_WATCHDOG, std::time::Duration::from_secs(3));
+        app.schedule_ime_refresh(app.ime_poll_interval_ms());
+        app.start_hook_watchdog();
     });
 
     let (_uia_worker, uia_tx) = crate::focus::uia::spawn_uia_worker();
     let _gji_worker = crate::tsf::observer::start_monitor_thread();
-    let _ = with_app(|app| app.executor.platform.set_uia_sender(uia_tx));
+    let _ = with_app(|app| app.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
     initialize_ime_cache();
