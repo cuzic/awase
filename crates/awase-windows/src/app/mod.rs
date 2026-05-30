@@ -1,5 +1,4 @@
 mod bootstrap;
-mod key_pipeline;
 mod message_handlers;
 
 use std::path::{Path, PathBuf};
@@ -253,9 +252,9 @@ fn check_keyboard_layout_on_change() {
     }
 }
 
-/// フックコールバックの本体。`KeyEventPipeline` に処理を委譲する。
+/// フックコールバックの本体。キーイベント処理パイプラインに委譲する。
 fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
-    key_pipeline::KeyEventPipeline { app, skip_rescue_defer: false }.run(event)
+    app.process_key_event(event)
 }
 
 // ── メッセージループ ──
