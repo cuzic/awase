@@ -1,7 +1,7 @@
 //! WM_* メッセージハンドラ
 //!
 //! `run_message_loop` の `match msg.message` 各 arm を関数として切り出したもの。
-//! すべて `pub(super)` で `app/mod.rs` からのみ呼ばれる。
+//! すべて `pub(crate)` で `app/mod.rs` からのみ呼ばれる。
 
 use std::mem::size_of;
 use std::sync::atomic::Ordering;
@@ -15,7 +15,6 @@ use awase::types::{ContextChange, FocusKind};
 use crate::focus::cache::DetectionSource;
 use crate::hook;
 use crate::hook::CallbackResult;
-use crate::runtime;
 use crate::win32::post_to_main_thread;
 use crate::{
     Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD,
@@ -24,10 +23,10 @@ use crate::{
 };
 use crate::tray;
 
-use super::{check_keyboard_layout_on_change, launch_settings, on_key_event_impl, reload_config};
+use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
 
 /// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
-pub(super) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
+pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
     // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
     app.platform_state.last_hook_activity_ms = hook::current_tick_ms();
 
@@ -38,7 +37,7 @@ pub(super) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
         return;
     }
 
-    let result = on_key_event_impl(app, event);
+    let result = app.process_key_event(event);
     if matches!(result, CallbackResult::PassThrough) {
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
@@ -47,7 +46,7 @@ pub(super) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
 
 /// WM_TIMER ハンドラ
 #[allow(clippy::cognitive_complexity)]
-pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize>, _msg_wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
+pub(crate) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize>, _msg_wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
@@ -110,7 +109,7 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
         Some(timer_id) => {
             log::debug!("WM_TIMER fired: logical_id={timer_id}");
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
-            let ctx = runtime::build_input_context(
+            let ctx = super::build_input_context(
                 app.platform_state.ime_on(),
                 app.platform_state.belief(),
                 &modifiers,
@@ -127,18 +126,18 @@ pub(super) unsafe fn handle_wm_timer(app: &mut Runtime, logical_id: Option<usize
 }
 
 /// WM_EXECUTE_EFFECTS ハンドラ
-pub(super) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     let outcomes = app.executor.drain_deferred();
     app.dispatch_outcomes(outcomes);
 }
 
 /// WM_PANIC_RESET ハンドラ
-pub(super) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
     app.panic_reset();
 }
 
 /// WM_DUPLICATE_INSTANCE ハンドラ
-pub(super) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
     log::info!("Duplicate instance notification received");
     app.executor
         .platform
@@ -147,7 +146,7 @@ pub(super) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
 }
 
 /// WM_IME_KEY_DETECTED ハンドラ
-pub(super) unsafe fn handle_wm_ime_key_detected(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_ime_key_detected(app: &mut Runtime) {
     if app.platform_state.sync_key_gate.is_active()
         || app.platform_state.sync_key_gate.has_deferred_keys()
     {
@@ -161,7 +160,7 @@ pub(super) unsafe fn handle_wm_ime_key_detected(app: &mut Runtime) {
 ///
 /// PBT_APMRESUMESUSPEND (7) と PBT_APMRESUMEAUTOMATIC (18) の両方を resume と
 /// みなす（ユーザ操作 / 自動復帰の両方をカバー）。
-pub(super) unsafe fn handle_wm_powerbroadcast(app: &mut Runtime, pbt: usize) {
+pub(crate) unsafe fn handle_wm_powerbroadcast(app: &mut Runtime, pbt: usize) {
     use windows::Win32::UI::WindowsAndMessaging::{PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND};
     if pbt == PBT_APMRESUMESUSPEND as usize || pbt == PBT_APMRESUMEAUTOMATIC as usize {
         log::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
@@ -174,7 +173,7 @@ pub(super) unsafe fn handle_wm_powerbroadcast(app: &mut Runtime, pbt: usize) {
 }
 
 /// WM_WTSSESSION_CHANGE ハンドラ
-pub(super) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event: u32) {
+pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event: u32) {
     const WTS_SESSION_LOCK: u32 = 7;
     const WTS_SESSION_UNLOCK: u32 = 8;
     match session_event {
@@ -195,7 +194,7 @@ pub(super) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
 }
 
 /// WM_INPUTLANGCHANGE ハンドラ
-pub(super) unsafe fn handle_wm_inputlangchange(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_inputlangchange(app: &mut Runtime) {
     log::info!("Input language changed, flushing pending state");
     app.invalidate_engine_context(ContextChange::InputLanguageChanged);
     app.refresh_ime_state_cache();
@@ -203,12 +202,12 @@ pub(super) unsafe fn handle_wm_inputlangchange(app: &mut Runtime) {
 }
 
 /// WM_PROCESS_DEFERRED ハンドラ
-pub(super) unsafe fn handle_wm_process_deferred(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_process_deferred(app: &mut Runtime) {
     app.process_deferred_keys();
 }
 
 /// WM_FOCUS_KIND_UPDATE ハンドラ
-pub(super) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usize, lparam: isize) {
+pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usize, lparam: isize) {
     let kind_u8 = wparam as u8;
     let app_kind_u8 = (wparam >> 8) as u8;
     let result_hwnd = HWND(lparam as *mut _);
@@ -248,17 +247,17 @@ pub(super) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
 }
 
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_TOGGLE)
-pub(super) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
     app.toggle_engine();
 }
 
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_FOCUS_OVERRIDE)
-pub(super) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
+pub(crate) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
     app.toggle_app_override();
 }
 
 /// WM_APP (トレイメッセージ) ハンドラ
-pub(super) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
+pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
     log::debug!("WM_APP received: hwnd={:?} lparam=0x{:016X}", hwnd, lparam.0);
     let layout_names: Vec<String> = with_app_ref(|app| {
         app.layouts.iter().map(|e| e.name.clone()).collect()
@@ -273,13 +272,13 @@ pub(super) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
 }
 
 /// WM_RELOAD_CONFIG ハンドラ
-pub(super) fn handle_wm_reload_config() {
+pub(crate) fn handle_wm_reload_config() {
     log::info!("Config reload requested via WM_RELOAD_CONFIG");
     reload_config();
 }
 
 /// WM_COMMAND ハンドラ
-pub(super) unsafe fn handle_wm_command(wparam: WPARAM) {
+pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
     match tray::handle_tray_command(wparam) {
         Some(tray::TrayCommand::Settings) => launch_settings(),
         Some(tray::TrayCommand::RestartAdmin) => tray::restart_as_admin(),
@@ -295,7 +294,7 @@ pub(super) unsafe fn handle_wm_command(wparam: WPARAM) {
 }
 
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ
-pub(super) unsafe fn handle_wm_drain_output_queue() {
+pub(crate) unsafe fn handle_wm_drain_output_queue() {
     // [drain-start] order-bug 調査用: OUTPUT_GATE 解除から drain 開始までのギャップを観測する。
     // この間に届く inline キーが drain 待ちキーを追い越して [engine-input] に流れていないか
     // タイムスタンプで突き合わせるための起点ログ。
@@ -360,7 +359,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                     now_us,
                     now_us.saturating_sub(queued_event.timestamp) / 1000,
                 );
-                let result = on_key_event_impl(app, *queued_event);
+                let result = app.process_key_event(*queued_event);
                 if matches!(result, CallbackResult::PassThrough) {
                     log::debug!(
                         "[output-drain] PassThrough → enqueue ReinjectKey vk=0x{:02X} {:?} (drain has no hook→OS path)",
@@ -376,7 +375,7 @@ pub(super) unsafe fn handle_wm_drain_output_queue() {
                     "[output-drain] synthetic KeyUp vk=0x{:02X} (KeyDown replayed, KeyUp arrived before drain)",
                     keyup.vk_code,
                 );
-                let result = on_key_event_impl(app, keyup);
+                let result = app.process_key_event(keyup);
                 if matches!(result, CallbackResult::PassThrough) {
                     log::debug!(
                         "[output-drain] synthetic PassThrough → enqueue ReinjectKey vk=0x{:02X} KeyUp",
@@ -417,7 +416,7 @@ fn synthesize_missing_keyups(events: &[awase::types::RawKeyEvent]) -> Vec<awase:
 }
 
 /// TaskbarCreated ハンドラ（Explorer 再起動時にトレイアイコンを復元）
-pub(super) unsafe fn handle_taskbar_created(app: &mut Runtime) {
+pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
     log::info!("Explorer restarted, re-registering tray icon");
     app.executor.platform.tray.recreate();
 }

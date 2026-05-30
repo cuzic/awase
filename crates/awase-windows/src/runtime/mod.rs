@@ -1,5 +1,6 @@
 mod ime_refresh;
 mod key_pipeline;
+pub(crate) mod message_handlers;
 
 use awase::engine::{Engine, EngineCommand, InputContext};
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};

@@ -1,5 +1,4 @@
 mod bootstrap;
-mod message_handlers;
 
 use std::path::{Path, PathBuf};
 
@@ -17,12 +16,12 @@ use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
 use awase::types::{RawKeyEvent, VkCode};
 
-use crate::hook::CallbackResult;
 use crate::vk::VkCodeExt;
 use crate::ime;
 use crate::runtime;
+use crate::runtime::message_handlers;
 use crate::{
-    Runtime, WM_DRAIN_OUTPUT_QUEUE,
+    WM_DRAIN_OUTPUT_QUEUE,
     WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
     WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
     WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG, with_app, with_app_or_repost, with_app_or_repost_with,
@@ -228,7 +227,7 @@ pub fn run() -> Result<()> {
 }
 
 /// `WM_INPUTLANGCHANGE` 時にキーボードレイアウトを検証する（message_handlers から呼ばれる）
-fn check_keyboard_layout_on_change() {
+pub(crate) fn check_keyboard_layout_on_change() {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
     if !is_japanese {
         if lang_id == crate::vk::LANGID_ENGLISH_US {
@@ -250,11 +249,6 @@ fn check_keyboard_layout_on_change() {
             );
         });
     }
-}
-
-/// フックコールバックの本体。キーイベント処理パイプラインに委譲する。
-fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
-    app.process_key_event(event)
 }
 
 // ── メッセージループ ──
@@ -436,7 +430,7 @@ pub(crate) fn launch_settings() {
 }
 
 /// 設定ファイルを再読み込みし、エンジンのパラメータを更新する
-fn reload_config() {
+pub(crate) fn reload_config() {
     let raw_config = match load_config() {
         Ok(c) => c,
         Err(e) => {
