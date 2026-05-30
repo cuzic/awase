@@ -362,8 +362,21 @@ fn on_key_event_impl(app: &mut Runtime, event: RawKeyEvent) -> CallbackResult {
                 if crate::OUTPUT_GATE.is_active() {
                     crate::INPUT_DEFER.defer_during_output(event);
                 } else {
-                    let result = with_app(|app| message_handlers::handle_wm_key_from_hook(app, event));
-                    debug_assert!(result.is_some(), "with_app re-entry in WM_KEY_FROM_HOOK");
+                    // 競合条件の修正: フックスレッドは OUTPUT_GATE active 中に WM_KEY_FROM_HOOK
+                    // を POST する。メインスレッドが処理する頃には OUTPUT_GATE が false になっているが、
+                    // WM_DRAIN_OUTPUT_QUEUE よりも WM_KEY_FROM_HOOK が先にキューに入っている場合、
+                    // drain が Ctrl↑ を executor に追加する前に K↑/A↓ が直接 executor.queue に
+                    // 入ってしまい、reinject 順序が Ctrl↑ < K↑/A↓ となって Ctrl+key 誤発火する。
+                    // INPUT_DEFER に pending があれば drain と同じ順序で処理させるため defer する。
+                    let has_pending_drain = crate::INPUT_DEFER
+                        .pending_len_nonblocking()
+                        .map_or(true, |n| n > 0);
+                    if has_pending_drain {
+                        crate::INPUT_DEFER.replay_later(std::iter::once(event));
+                    } else {
+                        let result = with_app(|app| message_handlers::handle_wm_key_from_hook(app, event));
+                        debug_assert!(result.is_some(), "with_app re-entry in WM_KEY_FROM_HOOK");
+                    }
                 }
             }
             WM_APP => {
