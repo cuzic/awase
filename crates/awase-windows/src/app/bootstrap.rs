@@ -442,10 +442,8 @@ unsafe extern "system" fn win_event_proc(
         // ここでは旧 pending=true 相当の動作を維持するため、すぐに FocusTransition を立てる。
         // (FocusChanged event の dispatch まで少しタイムラグがある場合に備えた safety net)
         let now = std::time::Instant::now();
-        let started_seq = app.platform_state.ime.event_log.next_seq();
         app.platform_state.ime.try_set_focus_transition_barrier(
             crate::state::ime_event::HwndId(hwnd_isize as usize),
-            started_seq,
             now,
         );
         app.executor.platform.on_focus_change_tsf();

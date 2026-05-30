@@ -122,14 +122,13 @@ impl ImeStateHub {
     pub(crate) fn try_set_focus_transition_barrier(
         &mut self,
         to_hwnd: HwndId,
-        started_seq: u64,
         started_at: std::time::Instant,
     ) {
         if self.shadow_model.input_barrier.is_none() {
             let settle = self.shadow_model.app_policy.focus_settle_ms;
             self.shadow_model.input_barrier = Some(InputBarrier::FocusTransition {
                 to_hwnd,
-                started_seq,
+                started_seq: self.event_log.next_seq(),
                 started_at,
                 settle_until: started_at + std::time::Duration::from_millis(settle),
             });
