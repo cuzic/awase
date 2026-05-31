@@ -24,11 +24,11 @@ pub unsafe fn read_os_modifiers() -> ModifierState {
     // GetAsyncKeyState: 最上位ビットが 1 なら押下中
     let pressed = |vk: i32| -> bool { (GetAsyncKeyState(vk).cast_unsigned() & 0x8000) != 0 };
     ModifierState {
-        ctrl: pressed(VK_CONTROL.0 as i32),
-        alt: pressed(VK_MENU.0 as i32),
+        ctrl: pressed(i32::from(VK_CONTROL.0)),
+        alt: pressed(i32::from(VK_MENU.0)),
         // Shift は物理状態を直接参照（GetAsyncKeyState は SendInput の LSHIFT↑ で汚染される）
         shift: crate::hook::is_physical_key_down(VK_LSHIFT)
             || crate::hook::is_physical_key_down(VK_RSHIFT),
-        win: pressed(VK_LWIN.0 as i32) || pressed(VK_RWIN.0 as i32),
+        win: pressed(i32::from(VK_LWIN.0)) || pressed(i32::from(VK_RWIN.0)),
     }
 }

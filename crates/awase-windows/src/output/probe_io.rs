@@ -63,12 +63,12 @@ impl ProbeIo for Output {
     }
 
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]) {
-        Output::send_romaji_batch_immediate(romaji, chars);
+        Self::send_romaji_batch_immediate(romaji, chars);
     }
 
     fn send_deferred_vks(&self, vks: &[DeferredVk], use_tsf_marker: bool) {
         let pairs: Vec<(VkCode, bool)> = vks.iter().map(|d| (d.vk, d.needs_shift)).collect();
-        Output::send_deferred_probe_vks_from(&pairs, use_tsf_marker);
+        Self::send_deferred_probe_vks_from(&pairs, use_tsf_marker);
     }
 
     fn mark_warm(&self) {

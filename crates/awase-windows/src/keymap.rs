@@ -37,13 +37,11 @@ impl KeymapTable {
                 let resolved = VkCode::from_name(to)
                     .or_else(|| VkCode::from_name(&format!("VK_{to}")))
                     .or_else(|| crate::vk::parse_key_combo(to).map(|c| c.vk));
-                match resolved {
-                    Some(vk) => Some(vk),
-                    None => {
-                        log::warn!("[keymap] 'to' のパース失敗: {:?}", to);
-                        continue;
-                    }
-                }
+                let Some(vk) = resolved else {
+                    log::warn!("[keymap] 'to' のパース失敗: {:?}", to);
+                    continue;
+                };
+                Some(vk)
             } else {
                 None
             };
@@ -58,6 +56,7 @@ impl KeymapTable {
 
     /// 現在のプロセスに適用されるルールをフィルタして新しい `KeymapTable` を返す。
     /// `app = None` のルールは全アプリに適用。
+    #[must_use]
     pub fn filter_active(&self, process_name: &str) -> Self {
         let lower = process_name.to_lowercase();
         Self(
@@ -75,6 +74,7 @@ impl KeymapTable {
 
     /// アクティブなルールから一致するものを探す。
     /// 戻り値: None=マッチなし, Some(None)=消費のみ, Some(Some(vk))=送信キー
+    #[must_use]
     pub fn find_match(&self, vk: VkCode, mods: ModifierState) -> Option<Option<VkCode>> {
         self.0
             .iter()
@@ -87,10 +87,12 @@ impl KeymapTable {
             .map(|r| r.send_vk)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }

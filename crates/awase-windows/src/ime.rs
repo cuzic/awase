@@ -171,6 +171,8 @@ impl HeldModifiers {
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+// 変数名が意図的に似ているため similar_names を抑制する（gas_lctrl/gks_lctrl 等）。
+#[allow(clippy::similar_names)]
 pub unsafe fn post_kanji_toggle_to_focused() {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use crate::vk::{
@@ -183,8 +185,6 @@ pub unsafe fn post_kanji_toggle_to_focused() {
 
     // 診断: L/R 個別キー状態（VK_KANJI 受信時の Edge 挙動把握用）
     // GetAsyncKeyState = 物理キー状態、GetKeyState = メッセージキュー処理済み状態。
-    // 変数名が意図的に似ているため similar_names を抑制する。
-    #[allow(clippy::similar_names)]
     let (
         gas_lctrl,
         gas_rctrl,
@@ -978,6 +978,9 @@ pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
 /// Win32 API を呼び出す。
 #[must_use]
 pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
+    use crate::imm::{
+        GCS_COMPATTR, GCS_COMPREADSTR, GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTREADSTR, GCS_RESULTSTR,
+    };
     let mut snap = CompositionSnapshot::default();
     if hwnd.non_null().is_none() {
         return snap;
@@ -986,9 +989,6 @@ pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
         snap.himc_null = true;
         return snap;
-    };
-    use crate::imm::{
-        GCS_COMPATTR, GCS_COMPREADSTR, GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTREADSTR, GCS_RESULTSTR,
     };
     // 現在 composition 中の文字列
     snap.comp_str = unsafe { read_imm_string(ctx.himc(), GCS_COMPSTR) };
@@ -1031,7 +1031,7 @@ unsafe fn read_imm_string(
     if byte_len < 0 {
         return None;
     }
-    let byte_len = byte_len as usize;
+    let byte_len = usize::try_from(byte_len).unwrap_or(0);
     if byte_len == 0 {
         return Some(String::new());
     }
@@ -1048,7 +1048,7 @@ unsafe fn read_imm_string(
     if written <= 0 {
         return None;
     }
-    let char_count = (written as usize) / 2;
+    let char_count = usize::try_from(written).unwrap_or(0) / 2;
     Some(String::from_utf16_lossy(&buf[..char_count]))
 }
 
@@ -1074,7 +1074,7 @@ unsafe fn read_imm_bytes(
     if byte_len < 0 {
         return None;
     }
-    let byte_len = byte_len as usize;
+    let byte_len = usize::try_from(byte_len).unwrap_or(0);
     if byte_len == 0 {
         return Some(Vec::new());
     }
@@ -1091,7 +1091,7 @@ unsafe fn read_imm_bytes(
     if written <= 0 {
         return None;
     }
-    buf.truncate(written as usize);
+    buf.truncate(usize::try_from(written).unwrap_or(0));
     Some(buf)
 }
 

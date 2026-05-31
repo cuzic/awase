@@ -93,9 +93,20 @@ impl ImeDiagnosticSnapshot {
             use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
             GetForegroundWindow().0 as usize
         };
-        let snap = crate::with_app_ref(|app| app.diagnostic_snapshot());
-        let view = snap
-            .map(|s| {
+        let snap = crate::with_app_ref(crate::runtime::Runtime::diagnostic_snapshot);
+        let view = snap.map_or(
+            AppStateView {
+                focus_hwnd_raw: 0,
+                focus_pid: 0,
+                focus_class: String::new(),
+                shadow_ime_on: false,
+                shadow_is_romaji: false,
+                shadow_is_japanese: false,
+                injection_mode: "Unknown",
+                ms_since_focus_change: None,
+                ms_since_last_activity: None,
+            },
+            |s| {
                 let dt_focus = (s.last_focus_change_ms > 0)
                     .then(|| now.saturating_sub(s.last_focus_change_ms));
                 let dt_activity = (s.last_hook_activity_ms > 0)
@@ -111,18 +122,8 @@ impl ImeDiagnosticSnapshot {
                     ms_since_focus_change: dt_focus,
                     ms_since_last_activity: dt_activity,
                 }
-            })
-            .unwrap_or(AppStateView {
-                focus_hwnd_raw: 0,
-                focus_pid: 0,
-                focus_class: String::new(),
-                shadow_ime_on: false,
-                shadow_is_romaji: false,
-                shadow_is_japanese: false,
-                injection_mode: "Unknown",
-                ms_since_focus_change: None,
-                ms_since_last_activity: None,
-            });
+            },
+        );
 
         // ── HKL ──
         // SAFETY: get_gui_thread_info_with_timeout は unsafe fn で内部で Win32 API を呼ぶ。
@@ -259,18 +260,19 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
         )
     };
 
-    let diag = crate::with_app_ref(|app| app.diagnostic_snapshot()).unwrap_or_else(|| {
-        crate::runtime::RuntimeDiagnosticSnapshot {
-            focus_pid: 0,
-            focus_class: String::new(),
-            shadow_ime_on: false,
-            shadow_is_romaji: false,
-            shadow_is_japanese: false,
-            last_focus_change_ms: 0,
-            last_hook_activity_ms: 0,
-            app_profile: "Unknown".to_string(),
-        }
-    });
+    let diag =
+        crate::with_app_ref(crate::runtime::Runtime::diagnostic_snapshot).unwrap_or_else(|| {
+            crate::runtime::RuntimeDiagnosticSnapshot {
+                focus_pid: 0,
+                focus_class: String::new(),
+                shadow_ime_on: false,
+                shadow_is_romaji: false,
+                shadow_is_japanese: false,
+                last_focus_change_ms: 0,
+                last_hook_activity_ms: 0,
+                app_profile: "Unknown".to_string(),
+            }
+        });
     let view = (
         diag.focus_class,
         diag.app_profile,

@@ -76,7 +76,7 @@ impl ImmContextGuard {
         }
     }
 
-    pub(crate) fn himc(&self) -> HIMC {
+    pub(crate) const fn himc(&self) -> HIMC {
         self.himc
     }
 }
