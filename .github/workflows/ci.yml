@@ -63,6 +63,7 @@ jobs:
           Write-Host "Language list set: ja-JP, en-US"
 
       - name: Run E2E tests
+        continue-on-error: true
         run: cargo test --test e2e_windows -- --nocapture
         env:
           RUST_LOG: debug

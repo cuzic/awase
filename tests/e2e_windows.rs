@@ -633,7 +633,12 @@ unsafe fn send_char_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, ch: cha
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_CHAR};
 
-    SendMessageW(edit_hwnd, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(0)));
+    SendMessageW(
+        edit_hwnd,
+        WM_CHAR,
+        Some(WPARAM(ch as usize)),
+        Some(LPARAM(0)),
+    );
     log::debug!("SendMessage WM_CHAR: '{ch}' to {:?}", edit_hwnd);
     pump_messages();
 }
@@ -644,8 +649,18 @@ unsafe fn send_keydown_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, vk: 
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_KEYDOWN, WM_KEYUP};
 
-    SendMessageW(edit_hwnd, WM_KEYDOWN, Some(WPARAM(vk as usize)), Some(LPARAM(0)));
-    SendMessageW(edit_hwnd, WM_KEYUP, Some(WPARAM(vk as usize)), Some(LPARAM(0)));
+    SendMessageW(
+        edit_hwnd,
+        WM_KEYDOWN,
+        Some(WPARAM(vk as usize)),
+        Some(LPARAM(0)),
+    );
+    SendMessageW(
+        edit_hwnd,
+        WM_KEYUP,
+        Some(WPARAM(vk as usize)),
+        Some(LPARAM(0)),
+    );
     log::debug!(
         "SendMessage WM_KEYDOWN+UP: vk=0x{vk:02X} to {:?}",
         edit_hwnd
