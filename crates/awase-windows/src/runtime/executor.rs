@@ -440,11 +440,7 @@ impl DecisionExecutor {
     /// KeyDown 時は SendInput(F2) → CallNextHookEx(Enter↓) の順になり WezTerm が
     /// F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
     /// KeyUp タイミングでは Enter↓ が既に処理済みのため F2 との競合なし。
-    fn try_pending_warmup_on_keyup(
-        &mut self,
-        platform: &WindowsPlatform,
-        raw_event: &RawKeyEvent,
-    ) {
+    fn try_pending_warmup_on_keyup(&mut self, platform: &WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down
             && raw_event.vk_code.is_composition_confirm_key()
@@ -723,7 +719,7 @@ impl DecisionExecutor {
     /// 既存の同期 chain を維持し、`Some(..)` を返す。
     fn dispatch_ime_set_open(
         &mut self,
-        platform: &mut WindowsPlatform,
+        platform: &WindowsPlatform,
         open: bool,
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {

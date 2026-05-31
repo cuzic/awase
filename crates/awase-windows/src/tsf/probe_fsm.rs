@@ -627,7 +627,9 @@ impl TsfProbeMachine {
     /// `Transmit` action 生成時に現フェーズから `SendState` を取り出す。
     fn take_current_send_for_transmit(&mut self) -> SendState {
         match &mut self.phase {
-            ProbePhase::Probing { send, .. } | ProbePhase::NameChangeWait { send, .. } => std::mem::take(send),
+            ProbePhase::Probing { send, .. } | ProbePhase::NameChangeWait { send, .. } => {
+                std::mem::take(send)
+            }
             _ => {
                 log::warn!(
                     "[tsf-probe] cold={} enter_transmit_* called from unexpected phase {}",

@@ -435,7 +435,6 @@ unsafe extern "system" fn win_event_proc(
     }
 
     let hwnd_isize = hwnd.0 as isize;
-    let hwnd_usize = hwnd.0 as usize; // HWND is a pointer, always valid as usize
     if LAST_FOCUS_HWND.swap(hwnd_isize, AtomicOrdering::Relaxed) == hwnd_isize {
         return;
     }
@@ -446,7 +445,9 @@ unsafe extern "system" fn win_event_proc(
         // ここでは旧 pending=true 相当の動作を維持するため、すぐに FocusTransition を立てる。
         // (FocusChanged event の dispatch まで少しタイムラグがある場合に備えた safety net)
         let now = std::time::Instant::now();
-        app.on_window_focus_event(crate::state::ime_event::HwndId(hwnd_usize), now);
+        // HWND is a pointer value; cast to usize is valid
+        #[allow(clippy::cast_sign_loss)]
+        app.on_window_focus_event(crate::state::ime_event::HwndId(hwnd_isize as usize), now);
     });
 }
 
