@@ -17,8 +17,11 @@
 
 use awase::config::ConfirmMode;
 use awase::engine::input_tracker::InputTracker;
-use awase::engine::NicolaFsm;
-use awase::types::{ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, VkCode};
+use awase::engine::{ModifierState, NicolaFsm};
+use awase::types::{
+    ContextChange, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
+    VkCode,
+};
 use awase::yab::YabLayout;
 
 use std::sync::Mutex;
@@ -46,10 +49,10 @@ fn load_test_layout() -> YabLayout {
     YabLayout::parse(&yab_content).expect("layout should parse")
 }
 
-/// テスト用ハーネス: InputTracker + Engine を統合
+/// テスト用ハーネス: InputTracker + NicolaFsm を統合
 struct TestHarness {
     tracker: InputTracker,
-    engine: Engine,
+    engine: NicolaFsm,
 }
 
 impl TestHarness {
@@ -65,14 +68,14 @@ impl TestHarness {
 }
 
 impl std::ops::Deref for TestHarness {
-    type Target = Engine;
-    fn deref(&self) -> &Engine {
+    type Target = NicolaFsm;
+    fn deref(&self) -> &NicolaFsm {
         &self.engine
     }
 }
 
 impl std::ops::DerefMut for TestHarness {
-    fn deref_mut(&mut self) -> &mut Engine {
+    fn deref_mut(&mut self) -> &mut NicolaFsm {
         &mut self.engine
     }
 }
@@ -84,7 +87,7 @@ const VK_CONVERT: VkCode = VkCode(0x1C);
 fn make_test_engine(mode: ConfirmMode) -> TestHarness {
     let layout = load_test_layout();
     TestHarness {
-        tracker: InputTracker::new(VK_NONCONVERT, VK_CONVERT),
+        tracker: InputTracker::new(),
         engine: NicolaFsm::new(
             layout,
             VK_NONCONVERT,
@@ -96,6 +99,30 @@ fn make_test_engine(mode: ConfirmMode) -> TestHarness {
     }
 }
 
+/// VK コードからキー分類を推定する（テスト用）
+fn classify_vk(vk: u16) -> KeyClassification {
+    match vk {
+        // 左親指キー (VK_NONCONVERT)
+        0x1D => KeyClassification::LeftThumb,
+        // 右親指キー (VK_CONVERT)
+        0x1C => KeyClassification::RightThumb,
+        // 修飾キー・特殊キー → Passthrough
+        0x11 // VK_CONTROL
+        | 0x12 // VK_MENU (Alt)
+        | 0x10 // VK_SHIFT
+        | 0x5B | 0x5C // VK_LWIN / VK_RWIN
+        | 0x1B // VK_ESCAPE
+        | 0x08 // VK_BACK
+        | 0x09 // VK_TAB
+        | 0x0D // VK_RETURN
+        | 0x2E // VK_DELETE
+        | 0x70..=0x7F // Fキー (F1–F16)
+        => KeyClassification::Passthrough,
+        // その他はすべて文字キー
+        _ => KeyClassification::Char,
+    }
+}
+
 fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
     RawKeyEvent {
         vk_code: VkCode(vk),
@@ -103,6 +130,11 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         event_type: KeyEventType::KeyDown,
         extra_info: 0,
         timestamp: ts,
+        key_classification: classify_vk(vk),
+        physical_pos: None,
+        ime_relevance: ImeRelevance::default(),
+        modifier_key: None,
+        modifier_snapshot: ModifierState::default(),
     }
 }
 
@@ -113,6 +145,11 @@ fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         event_type: KeyEventType::KeyUp,
         extra_info: 0,
         timestamp: ts,
+        key_classification: classify_vk(vk),
+        physical_pos: None,
+        ime_relevance: ImeRelevance::default(),
+        modifier_key: None,
+        modifier_snapshot: ModifierState::default(),
     }
 }
 
@@ -252,7 +289,7 @@ fn e2e_engine_speculative_mode() {
     let has_bs = r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(vk) if *vk == 0x08));
+        .any(|a| matches!(a, KeyAction::Key(vk) if vk.0 == 0x08));
     log::info!("Has BS for retraction: {}", has_bs);
     assert!(has_bs, "speculative retraction should include BS");
 }
@@ -450,7 +487,7 @@ impl TestEditWindow {
         let hwnd = match hwnd {
             Ok(h) if h != HWND::default() => h,
             Ok(_) => {
-                let err = windows::core::Error::from_win32();
+                let err = windows::core::Error::from_thread();
                 log::error!("CreateWindowExW returned null HWND: {:?}", err);
                 return None;
             }
@@ -479,7 +516,7 @@ impl TestEditWindow {
         let edit_hwnd = match edit_hwnd {
             Ok(h) if h != HWND::default() => h,
             Ok(_) => {
-                let err = windows::core::Error::from_win32();
+                let err = windows::core::Error::from_thread();
                 log::error!("CreateWindowExW(EDIT) returned null HWND: {:?}", err);
                 let _ = DestroyWindow(hwnd);
                 return None;
@@ -652,7 +689,7 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
     log::debug!("SendInput: vk=0x{vk:02X} scan=0x{scan:02X} sent={sent}");
 
     if sent == 0 {
-        let err = windows::core::Error::from_win32();
+        let err = windows::core::Error::from_thread();
         log::error!("SendInput failed! Error: {:?}", err);
     }
 
@@ -931,7 +968,7 @@ unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bo
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
-        let err = windows::core::Error::from_win32();
+        let err = windows::core::Error::from_thread();
         log::warn!("ImmGetContext failed for hwnd={:?}: {:?}", hwnd, err);
         return false;
     }
@@ -946,7 +983,7 @@ unsafe fn get_ime_open(hwnd: windows::Win32::Foundation::HWND) -> bool {
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetOpenStatus, ImmReleaseContext};
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
-        let err = windows::core::Error::from_win32();
+        let err = windows::core::Error::from_thread();
         log::warn!(
             "ImmGetContext failed (get_ime_open) for hwnd={:?}: {:?}",
             hwnd,
@@ -1339,7 +1376,7 @@ fn e2e_speculative_retraction_then_normal() {
     let has_bs = r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(vk) if *vk == 0x08));
+        .any(|a| matches!(a, KeyAction::Key(vk) if vk.0 == 0x08));
     assert!(has_bs, "retraction should have BS");
 
     // Key 2: normal speculative (fresh start)
