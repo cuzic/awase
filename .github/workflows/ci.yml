@@ -49,7 +49,7 @@ jobs:
         run: cargo clippy -p awase-windows -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity
 
       - name: Build awase.exe
-        run: cargo build --release
+        run: cargo build --release -p awase-windows
 
       - name: Build awase-settings.exe
         run: cargo build --release -p awase-settings
