@@ -23,6 +23,7 @@ use awase::types::{
     VkCode,
 };
 use awase::yab::YabLayout;
+use awase::KeyboardModel;
 
 use std::sync::Mutex;
 
@@ -46,7 +47,7 @@ fn init_test_logging() {
 fn load_test_layout() -> YabLayout {
     let yab_content =
         std::fs::read_to_string("layout/nicola.yab").expect("layout/nicola.yab should exist");
-    YabLayout::parse(&yab_content).expect("layout should parse")
+    YabLayout::parse(&yab_content, KeyboardModel::Jis).expect("layout should parse")
 }
 
 /// テスト用ハーネス: InputTracker + NicolaFsm を統合
@@ -479,9 +480,9 @@ impl TestEditWindow {
             0,
             400,
             300,
-            HWND::default(),
             None,
-            HINSTANCE::default(),
+            None,
+            None,
             None,
         );
         let hwnd = match hwnd {
@@ -508,9 +509,9 @@ impl TestEditWindow {
             10,
             360,
             30,
-            hwnd,
+            Some(hwnd),
             None,
-            HINSTANCE::default(),
+            None,
             None,
         );
         let edit_hwnd = match edit_hwnd {
@@ -535,7 +536,7 @@ impl TestEditWindow {
         // Show window and set focus
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
-        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(edit_hwnd);
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(edit_hwnd));
 
         // Process messages to complete rendering
         pump_messages();
@@ -583,8 +584,8 @@ impl TestEditWindow {
         SendMessageW(
             self.edit_hwnd,
             WM_SETTEXT,
-            windows::Win32::Foundation::WPARAM(0),
-            windows::Win32::Foundation::LPARAM(empty.as_ptr() as isize),
+            Some(windows::Win32::Foundation::WPARAM(0)),
+            Some(windows::Win32::Foundation::LPARAM(empty.as_ptr() as isize)),
         );
     }
 
@@ -593,7 +594,7 @@ impl TestEditWindow {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
         use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
         let _ = SetForegroundWindow(self.hwnd);
-        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(self.edit_hwnd);
+        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.edit_hwnd));
         pump_messages();
 
         let fg = GetForegroundWindow();
@@ -620,10 +621,9 @@ impl Drop for TestEditWindow {
 
 /// Process pending window messages
 unsafe fn pump_messages() {
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::*;
     let mut msg = MSG::default();
-    while PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE).as_bool() {
+    while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
         DispatchMessageW(&msg);
     }
 }
@@ -633,7 +633,7 @@ unsafe fn send_char_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, ch: cha
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_CHAR};
 
-    SendMessageW(edit_hwnd, WM_CHAR, WPARAM(ch as usize), LPARAM(0));
+    SendMessageW(edit_hwnd, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(0)));
     log::debug!("SendMessage WM_CHAR: '{ch}' to {:?}", edit_hwnd);
     pump_messages();
 }
@@ -644,8 +644,8 @@ unsafe fn send_keydown_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, vk: 
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_KEYDOWN, WM_KEYUP};
 
-    SendMessageW(edit_hwnd, WM_KEYDOWN, WPARAM(vk as usize), LPARAM(0));
-    SendMessageW(edit_hwnd, WM_KEYUP, WPARAM(vk as usize), LPARAM(0));
+    SendMessageW(edit_hwnd, WM_KEYDOWN, Some(WPARAM(vk as usize)), Some(LPARAM(0)));
+    SendMessageW(edit_hwnd, WM_KEYUP, Some(WPARAM(vk as usize)), Some(LPARAM(0)));
     log::debug!(
         "SendMessage WM_KEYDOWN+UP: vk=0x{vk:02X} to {:?}",
         edit_hwnd
