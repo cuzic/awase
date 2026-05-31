@@ -75,8 +75,8 @@ pub struct ShutdownToken(Arc<EventHandle>);
 impl ShutdownToken {
     /// Sleep for `ms` milliseconds, or until shutdown is signalled.
     ///
-    /// Returns [`ControlFlow::Break`]`(())` if shutdown was signalled before
-    /// the timeout elapsed, or [`ControlFlow::Continue`]`(())` on normal timeout.
+    /// Returns [`ControlFlow::Break(())`] if shutdown was signalled before
+    /// the timeout elapsed, or [`ControlFlow::Continue(())`] on normal timeout.
     ///
     /// # Example
     ///
