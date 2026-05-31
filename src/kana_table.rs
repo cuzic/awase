@@ -11,6 +11,7 @@ pub struct KanaTable {
 
 impl KanaTable {
     /// 両方向テーブルを構築する。
+    #[must_use]
     pub fn build() -> Self {
         let romaji_to_kana = build_romaji_map();
         let kana_to_romaji = build_reverse_map(&romaji_to_kana);
@@ -18,6 +19,7 @@ impl KanaTable {
     }
 
     /// ローマ字に対応するかな文字を返す。
+    #[must_use]
     pub fn kana_for_romaji(&self, romaji: &str) -> Option<char> {
         self.romaji_to_kana.get(romaji).copied()
     }
@@ -28,6 +30,7 @@ impl KanaTable {
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn build_romaji_map() -> FxHashMap<String, char> {
     let entries: &[(&str, char)] = &[
         // 母音

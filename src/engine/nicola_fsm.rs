@@ -1168,7 +1168,7 @@ impl NicolaFsm {
             }
             // Other states shouldn't have TIMER_SPECULATIVE active
             other => {
-                log::warn!("TIMER_SPECULATIVE fired in unexpected state: {other:?}",);
+                log::warn!("TIMER_SPECULATIVE fired in unexpected state: {other:?}");
                 Response::pass_through().with_kill_timer(TIMER_SPECULATIVE)
             }
         }

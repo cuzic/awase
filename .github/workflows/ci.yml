@@ -52,7 +52,7 @@ jobs:
         run: cargo build --release
 
       - name: Build awase-settings.exe
-        run: cargo build --release --features gui --bin awase-settings
+        run: cargo build --release -p awase-settings
 
       - name: Install Japanese IME
         shell: pwsh

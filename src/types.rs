@@ -180,6 +180,7 @@ pub enum KeyAction {
 
 impl KeyAction {
     /// `Romaji` バリアントからローマ字文字列を返す。他のバリアントは空文字列。
+    #[must_use]
     pub fn romaji(&self) -> &str {
         if let Self::Romaji(s) = self { s } else { "" }
     }

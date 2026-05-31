@@ -80,37 +80,37 @@ impl YabValue {
         let trimmed = raw.trim();
 
         if trimmed.is_empty() || trimmed == "無" {
-            return YabValue::None;
+            return Self::None;
         }
 
         if let Some((_, sk)) = SPECIAL_KEYWORDS.iter().find(|(k, _)| *k == trimmed) {
-            return YabValue::Special(*sk);
+            return Self::Special(*sk);
         }
 
         if let Some(inner) = strip_paired_quote(trimmed) {
-            return YabValue::Literal(inner.to_string());
+            return Self::Literal(inner.to_string());
         }
 
         if trimmed.is_all_fullwidth_ascii() {
             return classify_fullwidth(trimmed);
         }
 
-        YabValue::Literal(trimmed.to_string())
+        Self::Literal(trimmed.to_string())
     }
 
     /// `YabValue` を .yab テキスト形式に変換する。
     #[must_use]
     pub fn serialize(&self) -> String {
         match self {
-            YabValue::Romaji { romaji, .. } => romaji.to_fullwidth_str(),
-            YabValue::Literal(s) => format!("'{s}'"),
-            YabValue::KeySequence(s) => s.to_fullwidth_str(),
-            YabValue::Special(SpecialKey::Backspace) => "後".to_string(),
-            YabValue::Special(SpecialKey::Escape) => "逃".to_string(),
-            YabValue::Special(SpecialKey::Enter) => "入".to_string(),
-            YabValue::Special(SpecialKey::Space) => "空".to_string(),
-            YabValue::Special(SpecialKey::Delete) => "消".to_string(),
-            YabValue::None => "無".to_string(),
+            Self::Romaji { romaji, .. } => romaji.to_fullwidth_str(),
+            Self::Literal(s) => format!("'{s}'"),
+            Self::KeySequence(s) => s.to_fullwidth_str(),
+            Self::Special(SpecialKey::Backspace) => "後".to_string(),
+            Self::Special(SpecialKey::Escape) => "逃".to_string(),
+            Self::Special(SpecialKey::Enter) => "入".to_string(),
+            Self::Special(SpecialKey::Space) => "空".to_string(),
+            Self::Special(SpecialKey::Delete) => "消".to_string(),
+            Self::None => "無".to_string(),
         }
     }
 }
@@ -164,6 +164,10 @@ impl YabFace {
     }
 
     /// .yab テキストの CSV 行に変換する。
+    ///
+    /// # Panics
+    ///
+    /// `row_sizes` の列数が `u8::MAX` を超える場合パニックするが、実際には起こらない。
     #[must_use]
     pub fn serialize(&self, row_sizes: &[usize; 4]) -> String {
         row_sizes
@@ -231,7 +235,7 @@ impl FullwidthCharExt for char {
         // 全角 ASCII: U+FF01 ('！') .. U+FF5E ('～')
         // 対応する半角: U+0021 ('!') .. U+007E ('~')
         if (0xFF01..=0xFF5E).contains(&cp) {
-            char::from_u32(cp - 0xFEE0)
+            Self::from_u32(cp - 0xFEE0)
         } else {
             None
         }

@@ -219,6 +219,7 @@ pub enum OutputUpdate {
 
 impl OutputUpdate {
     /// `Record` バリアントを構築するコンストラクタ。
+    #[must_use]
     pub fn record(scan_code: ScanCode, action: &KeyAction, kana: Option<char>) -> Self {
         Self::Record(crate::engine::output_history::OutputEntry {
             scan_code,
