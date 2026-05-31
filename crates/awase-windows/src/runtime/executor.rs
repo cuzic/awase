@@ -442,7 +442,7 @@ impl DecisionExecutor {
     /// KeyUp タイミングでは Enter↓ が既に処理済みのため F2 との競合なし。
     fn try_pending_warmup_on_keyup(
         &mut self,
-        platform: &mut WindowsPlatform,
+        platform: &WindowsPlatform,
         raw_event: &RawKeyEvent,
     ) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
@@ -615,7 +615,7 @@ impl DecisionExecutor {
     }
 
     /// F2-TSF 特殊扱い + 通常 reinject + confirm キー後処理。
-    fn handle_reinject(&mut self, platform: &mut WindowsPlatform, event: RawKeyEvent) {
+    fn handle_reinject(&self, platform: &mut WindowsPlatform, event: RawKeyEvent) {
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         let dir = if is_key_down { "down" } else { "up" };
 

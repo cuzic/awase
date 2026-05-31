@@ -232,6 +232,7 @@ pub fn is_modifier_free_char(vk_code: VkCode, os_modifier_held: bool) -> bool {
 }
 
 /// Windows VK 分類メソッドを `VkCode` にメソッドとして追加する拡張トレイト。
+#[allow(clippy::wrong_self_convention)]
 pub trait VkCodeExt {
     fn is_passthrough(self) -> bool;
     fn is_ime_control(self) -> bool;

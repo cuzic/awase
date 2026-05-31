@@ -120,6 +120,7 @@ impl Runtime {
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
+    #[allow(clippy::missing_const_for_fn)]
     #[must_use]
     pub fn can_use_imm32_cross_process(&self) -> bool {
         self.platform

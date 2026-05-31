@@ -138,7 +138,7 @@ impl FocusTracker {
     /// フォーカス入場時に新ウィンドウの IME 状態キャッシュを復元する。
     ///
     /// `self.current` の pid / class_name を使うため、`update()` の後に呼ぶこと。
-    pub(crate) fn restore_ime_state(&mut self) -> Option<HwndImeSnapshot> {
+    pub(crate) fn restore_ime_state(&self) -> Option<HwndImeSnapshot> {
         self.hwnd_ime_cache
             .restore(self.current.pid, &self.current.class_name)
     }

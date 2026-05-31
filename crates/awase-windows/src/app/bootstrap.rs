@@ -184,7 +184,7 @@ fn select_default_layout(layouts: &[LayoutEntry], config: &ValidatedConfig) -> (
 /// キーボードレイアウトが日本語(106/109)かどうかを検証し、警告を出す
 pub(super) fn check_keyboard_layout(diag: &mut StartupDiagnostics) {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
-    log::info!("Keyboard layout: LANGID=0x{lang_id:04X}, Japanese={is_japanese}",);
+    log::info!("Keyboard layout: LANGID=0x{lang_id:04X}, Japanese={is_japanese}");
     if !is_japanese {
         if lang_id == crate::vk::LANGID_ENGLISH_US {
             diag.warn(
@@ -287,6 +287,7 @@ impl Drop for WtsGuard {
 }
 
 /// セッション変更通知（画面ロック/アンロック）を登録する
+#[allow(clippy::redundant_closure_for_method_calls)]
 pub(super) fn register_session_notification() -> Result<WtsGuard> {
     let tray_hwnd = with_app_ref(|app| app.tray_hwnd()).context("RUNTIME not initialized")?;
     let ok = unsafe {
@@ -418,6 +419,12 @@ unsafe extern "system" fn win_event_proc(
     _event_time: u32,
 ) {
     use std::sync::atomic::{AtomicIsize, Ordering as AtomicOrdering};
+    // 同一 HWND からの連続 EVENT_OBJECT_FOCUS は Chrome / UWP の子オブジェクト由来で
+    // 数 ms 間隔で多発する。毎回 TsfGate を PendingWarmup に巻き戻すと、
+    // ユーザーが押下した文字キーが held queue ごと破棄されて入力ロスする
+    // （特に Chrome で文字入力不能になる症状）。
+    // HWND が変わっていない場合は早期 return する。
+    static LAST_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
 
     if event != EVENT_OBJECT_FOCUS {
         return;
@@ -427,13 +434,8 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    // 同一 HWND からの連続 EVENT_OBJECT_FOCUS は Chrome / UWP の子オブジェクト由来で
-    // 数 ms 間隔で多発する。毎回 TsfGate を PendingWarmup に巻き戻すと、
-    // ユーザーが押下した文字キーが held queue ごと破棄されて入力ロスする
-    // （特に Chrome で文字入力不能になる症状）。
-    // HWND が変わっていない場合は早期 return する。
-    static LAST_FOCUS_HWND: AtomicIsize = AtomicIsize::new(0);
     let hwnd_isize = hwnd.0 as isize;
+    let hwnd_usize = hwnd.0 as usize; // HWND is a pointer, always valid as usize
     if LAST_FOCUS_HWND.swap(hwnd_isize, AtomicOrdering::Relaxed) == hwnd_isize {
         return;
     }
@@ -444,7 +446,7 @@ unsafe extern "system" fn win_event_proc(
         // ここでは旧 pending=true 相当の動作を維持するため、すぐに FocusTransition を立てる。
         // (FocusChanged event の dispatch まで少しタイムラグがある場合に備えた safety net)
         let now = std::time::Instant::now();
-        app.on_window_focus_event(crate::state::ime_event::HwndId(hwnd_isize as usize), now);
+        app.on_window_focus_event(crate::state::ime_event::HwndId(hwnd_usize), now);
     });
 }
 

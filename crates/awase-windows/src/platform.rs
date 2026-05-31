@@ -144,6 +144,7 @@ impl WindowsPlatform {
     }
 
     /// 出力モードを切り替える（設定変更時）。
+    #[allow(clippy::missing_const_for_fn)]
     pub(crate) fn set_output_mode(&mut self, mode: awase::config::OutputMode) {
         self.output.set_mode(mode);
     }
@@ -461,7 +462,7 @@ impl WindowsPlatform {
 
     /// `applied` を明示的に渡す `apply_ime_open` 実装。
     pub(crate) fn apply_ime_open_with_applied(
-        &mut self,
+        &self,
         open: bool,
         applied: Option<(bool, u64)>,
     ) -> awase::platform::ImeOpenOutcome {

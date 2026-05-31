@@ -139,6 +139,7 @@ const SUSPICIOUS_CAPACITY: usize = 8;
 
 impl ObservationStore {
     /// 観測値を per_source に記録する。
+    #[allow(clippy::missing_const_for_fn)]
     pub fn record(&mut self, obs: ImeObservation) {
         self.per_source.set(obs.source, obs);
     }

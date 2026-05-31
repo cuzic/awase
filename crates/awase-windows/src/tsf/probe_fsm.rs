@@ -324,8 +324,8 @@ impl TsfProbeMachine {
         match &mut self.phase {
             ProbePhase::Probing { send, .. }
             | ProbePhase::NameChangeWait { send, .. }
-            | ProbePhase::LiteralDetect { send, .. } => Some(send),
-            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
+            | ProbePhase::LiteralDetect { send, .. }
+            | ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
         }
     }
@@ -401,6 +401,7 @@ impl TsfProbeMachine {
     }
 
     /// 現フェーズを検査して次の遷移先を返す。副作用なし（`&self` のみ使用）。
+    #[allow(clippy::too_many_lines)]
     fn inspect_phase<C: Clock>(&self, clock: &C) -> NextStep {
         match &self.phase {
             ProbePhase::Probing {
@@ -626,8 +627,7 @@ impl TsfProbeMachine {
     /// `Transmit` action 生成時に現フェーズから `SendState` を取り出す。
     fn take_current_send_for_transmit(&mut self) -> SendState {
         match &mut self.phase {
-            ProbePhase::Probing { send, .. } => std::mem::take(send),
-            ProbePhase::NameChangeWait { send, .. } => std::mem::take(send),
+            ProbePhase::Probing { send, .. } | ProbePhase::NameChangeWait { send, .. } => std::mem::take(send),
             _ => {
                 log::warn!(
                     "[tsf-probe] cold={} enter_transmit_* called from unexpected phase {}",
@@ -641,46 +641,43 @@ impl TsfProbeMachine {
 
     /// `EmitSendFreshF2` 遷移時に `Probing` フェーズから `SendState` を取り出す。
     fn take_send_for_fresh_f2(&mut self) -> SendState {
-        match &mut self.phase {
-            ProbePhase::Probing { send, .. } => std::mem::take(send),
-            _ => {
-                log::warn!(
-                    "[tsf-probe] cold={} take_send_for_fresh_f2 unexpected phase {}",
-                    self.cold_seq,
-                    self.phase_label_internal()
-                );
-                SendState::default()
-            }
+        if let ProbePhase::Probing { send, .. } = &mut self.phase {
+            std::mem::take(send)
+        } else {
+            log::warn!(
+                "[tsf-probe] cold={} take_send_for_fresh_f2 unexpected phase {}",
+                self.cold_seq,
+                self.phase_label_internal()
+            );
+            SendState::default()
         }
     }
 
     /// `StartSecondaryProbe` 遷移時に `NameChangeWait` フェーズから `SendState` を取り出す。
     fn take_send_for_secondary_probe(&mut self) -> SendState {
-        match &mut self.phase {
-            ProbePhase::NameChangeWait { send, .. } => std::mem::take(send),
-            _ => {
-                log::warn!(
-                    "[tsf-probe] cold={} take_send_for_secondary_probe unexpected phase {}",
-                    self.cold_seq,
-                    self.phase_label_internal()
-                );
-                SendState::default()
-            }
+        if let ProbePhase::NameChangeWait { send, .. } = &mut self.phase {
+            std::mem::take(send)
+        } else {
+            log::warn!(
+                "[tsf-probe] cold={} take_send_for_secondary_probe unexpected phase {}",
+                self.cold_seq,
+                self.phase_label_internal()
+            );
+            SendState::default()
         }
     }
 
     /// `LiteralSuspected` 遷移時に `LiteralDetect` フェーズから `romaji` を取り出す。
     fn take_romaji_from_literal_detect(&mut self) -> String {
-        match &mut self.phase {
-            ProbePhase::LiteralDetect { send, .. } => std::mem::take(&mut send.romaji),
-            _ => {
-                log::warn!(
-                    "[tsf-probe] cold={} take_romaji_from_literal_detect unexpected phase {}",
-                    self.cold_seq,
-                    self.phase_label_internal()
-                );
-                String::new()
-            }
+        if let ProbePhase::LiteralDetect { send, .. } = &mut self.phase {
+            std::mem::take(&mut send.romaji)
+        } else {
+            log::warn!(
+                "[tsf-probe] cold={} take_romaji_from_literal_detect unexpected phase {}",
+                self.cold_seq,
+                self.phase_label_internal()
+            );
+            String::new()
         }
     }
 }

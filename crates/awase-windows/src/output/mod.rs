@@ -397,35 +397,35 @@ impl Output {
     /// probe 進行中なら romaji を VK 列に変換して deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_if_probe_in_flight(&self, romaji: &str) -> bool {
-        self.pending_tsf
-            .borrow_mut()
-            .as_mut()
-            .map_or(false, |machine| {
-                let vks: Vec<DeferredVk> = romaji
-                    .chars()
-                    .filter_map(ascii_to_vk)
-                    .map(|(vk, needs_shift)| DeferredVk { vk, needs_shift })
-                    .collect();
-                log::debug!(
-                    "[tsf] probe in flight → deferred {} VK(s) for {:?}",
-                    vks.len(),
-                    romaji
-                );
-                machine.extend_deferred(vks);
-                true
-            })
+        let mut borrowed = self.pending_tsf.borrow_mut();
+        if let Some(machine) = borrowed.as_mut() {
+            let vks: Vec<DeferredVk> = romaji
+                .chars()
+                .filter_map(ascii_to_vk)
+                .map(|(vk, needs_shift)| DeferredVk { vk, needs_shift })
+                .collect();
+            log::debug!(
+                "[tsf] probe in flight → deferred {} VK(s) for {:?}",
+                vks.len(),
+                romaji
+            );
+            machine.extend_deferred(vks);
+            true
+        } else {
+            false
+        }
     }
 
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_vk_if_probe_in_flight(&self, vk: VkCode, needs_shift: bool) -> bool {
-        self.pending_tsf
-            .borrow_mut()
-            .as_mut()
-            .map_or(false, |machine| {
-                machine.push_deferred(vk, needs_shift);
-                true
-            })
+        let mut borrowed = self.pending_tsf.borrow_mut();
+        if let Some(machine) = borrowed.as_mut() {
+            machine.push_deferred(vk, needs_shift);
+            true
+        } else {
+            false
+        }
     }
 
     /// TIMER_TSF_PROBE ハンドラから呼ぶ。probe を 1 ステップ進め、タイマー命令を返す。

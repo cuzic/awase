@@ -100,6 +100,9 @@ use crate::panic_detect::{RapidPressTracker, RAPID_IME_TIMESTAMPS};
 // ── エントリポイント ──
 
 /// アプリケーションを起動する。
+///
+/// # Errors
+/// 初期化に失敗した場合、またはメッセージループが正常に終了しなかった場合はエラーを返す。
 pub fn run() -> Result<()> {
     bootstrap::run_all()
 }
@@ -246,6 +249,7 @@ pub(crate) fn check_keyboard_layout_on_change() {
 
 // ── メッセージループ ──
 
+#[allow(clippy::too_many_lines)]
 fn run_message_loop(taskbar_created_msg: u32) {
     // フックスレッドへエンジンスレッド TID を公開（WM_KEY_FROM_HOOK の送信先）
     // SAFETY: GetCurrentThreadId は常に成功し副作用もない。
@@ -279,7 +283,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // 再入中に消えないよう repost する（blocking op 完了後に再実行）
                 // SAFETY: WM_PANIC_RESET はメインスレッドのメッセージループからのみ配送される。
                 with_app_or_repost(WM_PANIC_RESET, |app| unsafe {
-                    message_handlers::handle_wm_panic_reset(app)
+                    message_handlers::handle_wm_panic_reset(app);
                 });
             }
             WM_DUPLICATE_INSTANCE => {
@@ -304,7 +308,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // SAFETY: WM_WTSSESSION_CHANGE はメインスレッドのメッセージループからのみ配送される。
                 //         hwnd は WTSRegisterSessionNotification で登録した有効なウィンドウハンドル。
                 let _ = with_app(|app| unsafe {
-                    message_handlers::handle_wts_session_change(app, session_event)
+                    message_handlers::handle_wts_session_change(app, session_event);
                 });
             }
             WM_INPUTLANGCHANGE => {
@@ -333,7 +337,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // SAFETY: WM_HOTKEY はメインスレッドのメッセージループからのみ配送される。
                 //         wParam は RegisterHotKey で登録した HOTKEY_ID_FOCUS_OVERRIDE と一致している。
                 let _ = with_app(|app| unsafe {
-                    message_handlers::handle_wm_hotkey_focus_override(app)
+                    message_handlers::handle_wm_hotkey_focus_override(app);
                 });
             }
             WM_KEY_FROM_HOOK => {
@@ -367,7 +371,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     // INPUT_DEFER に pending があれば drain と同じ順序で処理させるため defer する。
                     let has_pending_drain = crate::INPUT_DEFER
                         .pending_len_nonblocking()
-                        .map_or(true, |n| n > 0);
+                        .is_none_or(|n| n > 0);
                     if has_pending_drain {
                         crate::INPUT_DEFER.replay_later(std::iter::once(event));
                     } else {
