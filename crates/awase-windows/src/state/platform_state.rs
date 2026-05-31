@@ -141,7 +141,7 @@ impl ImeStateHub {
         self.shadow_model.applied_open
     }
 
-    pub(crate) const fn applied_open_or_default(&self) -> bool {
+    pub(crate) fn applied_open_or_default(&self) -> bool {
         self.shadow_model.applied_open.unwrap_or(false)
     }
 
