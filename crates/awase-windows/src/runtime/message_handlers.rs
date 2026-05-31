@@ -293,6 +293,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
 }
 
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ
+#[expect(clippy::cognitive_complexity)]
 pub(crate) unsafe fn handle_wm_drain_output_queue() {
     // [drain-start] order-bug 調査用: OUTPUT_GATE 解除から drain 開始までのギャップを観測する。
     // この間に届く inline キーが drain 待ちキーを追い越して [engine-input] に流れていないか
@@ -302,7 +303,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     log::debug!(
         "[drain-start] now={}us queue_len={}",
         drain_start_us,
-        queue_len_initial.map_or("?".to_owned(), |n| n.to_string()),
+        queue_len_initial.map_or_else(|| "?".to_owned(), |n| n.to_string()),
     );
 
     let _ = with_app(|runtime| {

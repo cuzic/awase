@@ -287,7 +287,7 @@ impl TsfProbeMachine {
     }
 
     /// ログ用 cold_seq 参照（上書き警告等で使う）。
-    pub(crate) fn cold_seq_hint(&self) -> u32 {
+    pub(crate) const fn cold_seq_hint(&self) -> u32 {
         self.cold_seq
     }
 
@@ -320,18 +320,18 @@ impl TsfProbeMachine {
     }
 
     /// 現フェーズの `SendState` への可変参照を返す。`TransmitDone` フェーズは `None`。
-    fn current_send_mut(&mut self) -> Option<&mut SendState> {
+    const fn current_send_mut(&mut self) -> Option<&mut SendState> {
         match &mut self.phase {
-            ProbePhase::Probing { send, .. } => Some(send),
-            ProbePhase::NameChangeWait { send, .. } => Some(send),
-            ProbePhase::LiteralDetect { send, .. } => Some(send),
+            ProbePhase::Probing { send, .. }
+            | ProbePhase::NameChangeWait { send, .. }
+            | ProbePhase::LiteralDetect { send, .. } => Some(send),
             ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
         }
     }
 
     /// フェーズ名文字列（内部用）。
-    fn phase_label_internal(&self) -> &'static str {
+    const fn phase_label_internal(&self) -> &'static str {
         match &self.phase {
             ProbePhase::Probing { .. } => "Probing",
             ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { .. }) => {

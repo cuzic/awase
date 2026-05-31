@@ -53,7 +53,7 @@ pub struct SyncKeyGate {
 impl SyncKeyGate {
     /// 初期状態（Inactive）でゲートを生成する。
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             inner: HoldingGate::new(SyncKeyGateMachine::new(), SYNC_KEY_CAPACITY),
         }
@@ -88,7 +88,7 @@ impl SyncKeyGate {
 
     /// バッファにキーが残っているかどうかを返す。
     #[must_use]
-    pub fn has_deferred_keys(&self) -> bool {
+    pub const fn has_deferred_keys(&self) -> bool {
         !self.inner.is_empty()
     }
 

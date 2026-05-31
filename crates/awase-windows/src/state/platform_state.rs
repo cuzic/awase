@@ -80,7 +80,7 @@ impl ImeStateHub {
     ///
     /// `ts = 0` は「楽観的未確認」（ImmCross async 送信直後など）を表す。
     /// `applied_at_ms > 0` が「apply 確認済み」の条件なので skip_override 等の判定に影響する。
-    pub(crate) fn mirror_applied_open_with_ts(&mut self, value: bool, ts: u64) {
+    pub(crate) const fn mirror_applied_open_with_ts(&mut self, value: bool, ts: u64) {
         self.shadow_model.applied_open = Some(value);
         self.shadow_model.applied_at_ms = ts;
         // 同じ apply が完了した扱いなので pending も clear
@@ -114,7 +114,7 @@ impl ImeStateHub {
     }
 
     /// input_barrier を無条件クリアする（panic reset・フォーカス変更確定等）。
-    pub(crate) fn clear_input_barrier(&mut self) {
+    pub(crate) const fn clear_input_barrier(&mut self) {
         self.shadow_model.input_barrier = None;
     }
 
@@ -137,15 +137,15 @@ impl ImeStateHub {
 
     // ── Applied state ──
 
-    pub(crate) fn applied_open(&self) -> Option<bool> {
+    pub(crate) const fn applied_open(&self) -> Option<bool> {
         self.shadow_model.applied_open
     }
 
-    pub(crate) fn applied_open_or_default(&self) -> bool {
+    pub(crate) const fn applied_open_or_default(&self) -> bool {
         self.shadow_model.applied_open.unwrap_or(false)
     }
 
-    pub(crate) fn has_applied_state(&self) -> bool {
+    pub(crate) const fn has_applied_state(&self) -> bool {
         self.shadow_model.applied_open.is_some()
     }
 
@@ -351,7 +351,7 @@ impl PlatformState {
     /// いずれかの強制 ON ガードが立っているかを返す (Phase 3a: shadow_model.force_guards 由来)。
     #[inline]
     #[must_use]
-    pub fn is_force_on_guard_active(&self) -> bool {
+    pub const fn is_force_on_guard_active(&self) -> bool {
         self.ime.shadow_model.force_guards.requires_on()
     }
 
@@ -446,6 +446,7 @@ impl PlatformState {
     /// 最後の明示的 IME 操作の意図を返す（ログ・診断用）。
     ///
     /// shadow_model.last_intent.target を返す。
+    #[must_use]
     pub fn explicit_intent(&self) -> Option<bool> {
         self.ime.last_explicit_intent_compat()
     }

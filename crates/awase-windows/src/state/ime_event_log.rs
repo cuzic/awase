@@ -44,7 +44,7 @@ impl ImeEventLog {
         };
         self.next_seq += 1;
 
-        log::trace!("[ime-event seq={}] {:?}", time.seq, event,);
+        log::trace!("[ime-event seq={}] {:?}", time.seq, event);
 
         let envelope = ImeEventEnvelope { time, event };
         if self.buffer.len() == self.capacity {

@@ -38,7 +38,7 @@ impl KeymapTable {
                     .or_else(|| VkCode::from_name(&format!("VK_{to}")))
                     .or_else(|| crate::vk::parse_key_combo(to).map(|c| c.vk));
                 let Some(vk) = resolved else {
-                    log::warn!("[keymap] 'to' のパース失敗: {:?}", to);
+                    log::warn!("[keymap] 'to' のパース失敗: {to:?}");
                     continue;
                 };
                 Some(vk)
@@ -65,7 +65,7 @@ impl KeymapTable {
                 .filter(|r| {
                     r.app
                         .as_deref()
-                        .map_or(true, |a| lower.starts_with(a) || lower == a)
+                        .is_none_or(|a| lower.starts_with(a) || lower == a)
                 })
                 .cloned()
                 .collect(),
@@ -88,12 +88,12 @@ impl KeymapTable {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 }

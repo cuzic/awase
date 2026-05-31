@@ -290,7 +290,7 @@ impl Output {
     }
 
     /// 出力モードを変更する
-    pub fn set_mode(&mut self, mode: OutputMode) {
+    pub const fn set_mode(&mut self, mode: OutputMode) {
         self.mode = mode;
     }
 
@@ -397,33 +397,35 @@ impl Output {
     /// probe 進行中なら romaji を VK 列に変換して deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_if_probe_in_flight(&self, romaji: &str) -> bool {
-        if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
-            let vks: Vec<DeferredVk> = romaji
-                .chars()
-                .filter_map(ascii_to_vk)
-                .map(|(vk, needs_shift)| DeferredVk { vk, needs_shift })
-                .collect();
-            log::debug!(
-                "[tsf] probe in flight → deferred {} VK(s) for {:?}",
-                vks.len(),
-                romaji
-            );
-            machine.extend_deferred(vks);
-            true
-        } else {
-            false
-        }
+        self.pending_tsf
+            .borrow_mut()
+            .as_mut()
+            .map_or(false, |machine| {
+                let vks: Vec<DeferredVk> = romaji
+                    .chars()
+                    .filter_map(ascii_to_vk)
+                    .map(|(vk, needs_shift)| DeferredVk { vk, needs_shift })
+                    .collect();
+                log::debug!(
+                    "[tsf] probe in flight → deferred {} VK(s) for {:?}",
+                    vks.len(),
+                    romaji
+                );
+                machine.extend_deferred(vks);
+                true
+            })
     }
 
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_vk_if_probe_in_flight(&self, vk: VkCode, needs_shift: bool) -> bool {
-        if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
-            machine.push_deferred(vk, needs_shift);
-            true
-        } else {
-            false
-        }
+        self.pending_tsf
+            .borrow_mut()
+            .as_mut()
+            .map_or(false, |machine| {
+                machine.push_deferred(vk, needs_shift);
+                true
+            })
     }
 
     /// TIMER_TSF_PROBE ハンドラから呼ぶ。probe を 1 ステップ進め、タイマー命令を返す。
@@ -522,6 +524,7 @@ impl Output {
     /// `RawTsfLiteralRecovery` 処理で `consecutive == 0` のときのみ呼ぶ。
     /// `flush_raw_tsf_literal_backspaces` と `flush_raw_tsf_literal_romaji` の read 側と
     /// ここの write 側を `Output` に集約し、dispatcher が直接グローバルを触らないようにする。
+    #[allow(clippy::unused_self)]
     pub(crate) fn record_raw_tsf_literal(&self, backs: usize, romaji: String) {
         use std::sync::atomic::Ordering::Relaxed;
         crate::RAW_TSF_LITERAL.backs.store(backs, Relaxed);

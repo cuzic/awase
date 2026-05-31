@@ -115,7 +115,7 @@ pub struct ObserveMissMonitor {
 
 impl ObserveMissMonitor {
     /// 観測失敗を 1 件計上する。
-    pub fn record_miss(&mut self, now: Instant) {
+    pub const fn record_miss(&mut self, now: Instant) {
         if self.consecutive_miss_count == 0 {
             self.first_miss_at = Some(now);
         }
@@ -124,7 +124,7 @@ impl ObserveMissMonitor {
     }
 
     /// 観測成功で counter を reset する。
-    pub fn record_success(&mut self) {
+    pub const fn record_success(&mut self) {
         self.consecutive_miss_count = 0;
         self.first_miss_at = None;
         self.last_miss_at = None;

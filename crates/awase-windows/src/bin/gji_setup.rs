@@ -133,12 +133,18 @@ fn encode_varint2(value: usize) -> Result<[u8; 2], String> {
             "new block length {value} exceeds 2-byte protobuf varint capacity (16383)"
         ));
     }
-    Ok([(value & 0x7F) as u8 | 0x80, ((value >> 7) & 0x7F) as u8])
+    Ok([
+        u8::try_from(value & 0x7F).unwrap_or(0x7F) | 0x80,
+        u8::try_from((value >> 7) & 0x7F).unwrap_or(0x7F),
+    ])
 }
+
+/// `patch` の戻り値型エイリアス: `Ok(None)` = パッチ不要、`Ok(Some((bytes, names)))` = パッチ済み。
+type PatchResult = Result<Option<(Vec<u8>, Vec<&'static str>)>, String>;
 
 /// 不足エントリを末尾に追加したバイト列と追加したエントリ名を返す。
 /// すでに全エントリが存在する場合は `Ok(None)`。
-fn patch(data: &[u8]) -> Result<Option<(Vec<u8>, Vec<&'static str>)>, String> {
+fn patch(data: &[u8]) -> PatchResult {
     let (varint_offset, block_start, block_length) = find_block(data)?;
 
     let block_end = block_start

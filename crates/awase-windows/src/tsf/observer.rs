@@ -43,7 +43,7 @@ impl ChangeCounter {
     }
 
     /// ベースライン取得後にカウンタが変化したかどうかを返す。
-    pub(super) fn has_changed(&self, b: &Baseline) -> bool {
+    pub(super) fn has_changed(&self, b: Baseline) -> bool {
         self.0.load(Ordering::Relaxed) != b.0
     }
 
@@ -171,7 +171,7 @@ impl TsfObservations {
     /// raw TSF literal 検出用汎用シグナルへの参照を返す（`AtomicWatcher` 用）。
     ///
     /// `AtomicWatcher::new` に必要な `&AtomicU32` はこのメソッド経由で取得する。
-    pub fn composition_probe_atomic(&self) -> &AtomicU32 {
+    pub const fn composition_probe_atomic(&self) -> &AtomicU32 {
         self.composition_probe.atomic()
     }
 }
@@ -262,7 +262,7 @@ pub(crate) struct NamechangeBaseline(Baseline);
 impl NamechangeBaseline {
     /// ベースライン取得後にカウンタが変化したかどうかを返す。
     pub(crate) fn fired(&self) -> bool {
-        TSF_OBS.focus_namechange.has_changed(&self.0)
+        TSF_OBS.focus_namechange.has_changed(self.0)
     }
 }
 

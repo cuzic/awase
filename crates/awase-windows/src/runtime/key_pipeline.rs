@@ -32,6 +32,8 @@ impl Runtime {
     }
 
     /// パイプライン実装。`skip_rescue_defer=true` で救済窓 defer をスキップ。
+    #[expect(clippy::cognitive_complexity)]
+    #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
         self.enrich_ime_relevance(&mut event);
 
@@ -104,7 +106,7 @@ impl Runtime {
         // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
         let gas_ctrl = unsafe {
             use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-            GetAsyncKeyState(i32::from(crate::vk::VK_CONTROL.0)) as u16 & 0x8000 != 0
+            GetAsyncKeyState(i32::from(crate::vk::VK_CONTROL.0)) < 0
         };
         // phys_ctrl は PHYSICAL_KEY_STATE (SendInput 非影響) での Ctrl 押下状態。
         // gas_ctrl と乖離する場合、synthetic KeyUp が SendInput されて
@@ -127,7 +129,7 @@ impl Runtime {
             gas_ctrl,
             phys_ctrl,
             event.extra_info,
-            pending_drain.map_or("?".to_owned(), |n| n.to_string()),
+            pending_drain.map_or_else(|| "?".to_owned(), |n| n.to_string()),
             gate_active,
         );
         if !mods.ctrl && phys_ctrl {
@@ -252,7 +254,7 @@ impl Runtime {
                 .write_sync_key(new_val, ms, user_enabled),
             IntentKind::PhysicalImeKey => {
                 self.platform_state
-                    .write_physical_key(new_val, ms, user_enabled)
+                    .write_physical_key(new_val, ms, user_enabled);
             }
         }
         if self.platform_state.ime_on() == current {
@@ -457,7 +459,9 @@ impl Runtime {
                     );
                     awase::engine::Decision::Consume { effects }
                 }
-                other => other,
+                awase::engine::Decision::Consume { effects } => {
+                    awase::engine::Decision::Consume { effects }
+                }
             }
         } else {
             decision

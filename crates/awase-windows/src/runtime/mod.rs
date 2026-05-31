@@ -529,7 +529,7 @@ impl Runtime {
 
     /// Runtime を初期化して返す。
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub(crate) const fn new(
         engine: Engine,
         executor: DecisionExecutor,
         platform: WindowsPlatform,
@@ -560,7 +560,7 @@ impl Runtime {
     }
 
     /// トレイアイコンの HWND を返す。
-    pub(crate) fn tray_hwnd(&self) -> windows::Win32::Foundation::HWND {
+    pub(crate) const fn tray_hwnd(&self) -> windows::Win32::Foundation::HWND {
         self.platform.tray.hwnd()
     }
 

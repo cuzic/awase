@@ -212,8 +212,7 @@ impl Runtime {
                 let elapsed = now_ms.saturating_sub(last_off_ms);
                 if last_off_ms > 0 && elapsed < 10_000 {
                     log::debug!(
-                        "[focus] TsfNative cache-miss: skip reset_stale — explicit IME-OFF {}ms ago",
-                        elapsed
+                        "[focus] TsfNative cache-miss: skip reset_stale — explicit IME-OFF {elapsed}ms ago",
                     );
                 } else {
                     self.platform_state.reset_stale_ime_on_for_tsf_native();

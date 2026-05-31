@@ -557,7 +557,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_SETTINGS => Some(TrayCommand::Settings),
         IDM_RESTART_ADMIN => Some(TrayCommand::RestartAdmin),
         IDM_CLEAR_IMM_CACHE => Some(TrayCommand::ClearImmCache),
-        c if c >= IDM_LAYOUT_BASE && c < IDM_TOGGLE => {
+        c if (IDM_LAYOUT_BASE..IDM_TOGGLE).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
         _ => None,
@@ -669,7 +669,7 @@ unsafe extern "system" fn tray_wnd_proc(
             // Shell からのトレイコールバック → メインのメッセージループに転送
             // PostMessage ではなく直接処理する（同じスレッドなので安全）
             let layout_names: Vec<String> =
-                crate::with_app_ref(|app| app.layout_names()).unwrap_or_default();
+                crate::with_app_ref(crate::Runtime::layout_names).unwrap_or_default();
             let elevated = crate::ELEVATED.load(std::sync::atomic::Ordering::Relaxed);
             handle_tray_message(hwnd, lparam, &layout_names, elevated);
             LRESULT(0)

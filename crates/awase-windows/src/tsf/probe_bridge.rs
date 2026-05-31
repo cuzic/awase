@@ -98,7 +98,7 @@ impl Drop for OutputActiveGuard {
             let pending = crate::INPUT_DEFER.pending_len_nonblocking();
             log::debug!(
                 "[output-gate] deactivated (depth 1→0), pending_drain={} → post WM_DRAIN_OUTPUT_QUEUE",
-                pending.map_or("?".to_owned(), |n| n.to_string()),
+                pending.map_or_else(|| "?".to_owned(), |n| n.to_string()),
             );
             post_drain_output_queue();
         }

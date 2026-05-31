@@ -543,7 +543,7 @@ impl LiteralDetector {
         } else {
             TSF_OBS
                 .gji_candidate_show
-                .has_changed(&self.gji_show_baseline)
+                .has_changed(self.gji_show_baseline)
         };
         if confirmed {
             Some(DetectionResult::CompositionConfirmed)

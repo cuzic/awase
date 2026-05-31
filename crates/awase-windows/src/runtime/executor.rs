@@ -130,6 +130,7 @@ impl DecisionExecutor {
     /// `guard_held` に park 済みの Effect があれば最初にそれを試し、
     /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
+    #[allow(clippy::useless_let_if_seq)]
     pub(crate) fn drain_deferred(
         &mut self,
         platform: &mut WindowsPlatform,
@@ -204,6 +205,7 @@ impl DecisionExecutor {
     }
 
     /// output guard 期間中なら残り ms を返す。期間外なら None。
+    #[allow(clippy::unused_self)]
     fn output_guard_remaining(&self, platform: &WindowsPlatform) -> Option<u64> {
         let elapsed = platform.output_in_flight_ms();
         if elapsed < crate::tuning::OUTPUT_GUARD_MS {
@@ -822,14 +824,14 @@ impl DecisionExecutor {
                     //   IME が OFF → ON と誤トグルするバグを防ぐ。
                     // SetOpen(true): 300ms ウィンドウを維持。
                     //   KeyDown+KeyUp 二重送信を防ぎつつ、フォーカス変更後 Ctrl+変換 の再試行を許容。
-                    let skip_override = if !open {
-                        // OFF 方向: 実 apply 確認済みなら永続スキップ
-                        shadow_on == open && applied_at_ms > 0
-                    } else {
+                    let skip_override = if open {
                         // ON 方向: 300ms ウィンドウ (従来動作)
                         shadow_on == open
                             && applied_at_ms > 0
                             && now_ms.saturating_sub(applied_at_ms) < 300
+                    } else {
+                        // OFF 方向: 実 apply 確認済みなら永続スキップ
+                        shadow_on == open && applied_at_ms > 0
                     };
                     if skip_override {
                         log::debug!(

@@ -129,7 +129,7 @@ impl ImeModel {
     pub fn is_focus_transition_pending(&self) -> bool {
         self.input_barrier
             .as_ref()
-            .is_some_and(|b| b.is_focus_transition())
+            .is_some_and(InputBarrier::is_focus_transition)
     }
 }
 
@@ -170,7 +170,7 @@ impl ImeEffectiveState {
     /// Step 1 では完全な policy が無いため、observer による上書きが起きうる
     /// シナリオは `Suspicious` 扱いとして 1 週間モニタで実態を見る。
     #[must_use]
-    pub fn classify_diff(old_ime_on: bool, new_target: bool) -> Option<DiffSeverity> {
+    pub const fn classify_diff(old_ime_on: bool, new_target: bool) -> Option<DiffSeverity> {
         if old_ime_on == new_target {
             return None;
         }
@@ -281,7 +281,7 @@ impl ImeModel {
                     requested_at: envelope.time.monotonic,
                     actuator: self.app_policy.actuator_kind,
                     optimistic_applied: false,
-                    timeout_at: envelope.time.monotonic + std::time::Duration::from_millis(1000),
+                    timeout_at: envelope.time.monotonic + std::time::Duration::from_secs(1),
                 });
             }
             ImeEvent::ImeApplySucceeded { target, generation } => {

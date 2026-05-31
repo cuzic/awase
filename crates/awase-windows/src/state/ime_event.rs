@@ -25,6 +25,7 @@ pub struct HwndId(pub usize);
 impl HwndId {
     pub const NULL: Self = Self(0);
 
+    #[must_use]
     pub const fn is_null(self) -> bool {
         self.0 == 0
     }
@@ -170,7 +171,7 @@ impl ImeEvent {
     /// `apply_ime_open` の outcome を Succeeded/Failed event に変換する。
     /// sync / async 両経路で使う single source of truth。
     #[must_use]
-    pub fn from_apply_outcome(
+    pub const fn from_apply_outcome(
         target: bool,
         outcome: awase::platform::ImeOpenOutcome,
         generation: u64,

@@ -81,7 +81,10 @@ impl WindowsPlatform {
     }
 
     /// フォーカス変更時に injection_mode を更新する（runtime 用）。
-    pub(crate) fn update_injection_mode(&mut self, mode: crate::output::types::InjectionMode) {
+    pub(crate) const fn update_injection_mode(
+        &mut self,
+        mode: crate::output::types::InjectionMode,
+    ) {
         self.output.update_injection_mode(mode);
     }
 
@@ -136,7 +139,7 @@ impl WindowsPlatform {
     }
 
     /// eager warmup F2 を送信した時刻 (ms) を返す。0 = 未送信。
-    pub(crate) fn eager_warmup_sent_ms(&self) -> u64 {
+    pub(crate) const fn eager_warmup_sent_ms(&self) -> u64 {
         self.output.eager_warmup_sent_ms()
     }
 
@@ -374,16 +377,14 @@ impl PlatformRuntime for WindowsPlatform {
             let is_tsf = self.output.is_tsf_mode();
             if was_warm && is_tsf {
                 log::debug!(
-                    "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
-                    vk,
+                    "[composition] passthrough vk={vk:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
                 );
                 self.output
                     .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                 return true; // warmup deferred to KeyUp
             }
             log::debug!(
-                "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
-                vk,
+                "[composition] passthrough vk={vk:#04x} KeyDown → marking cold + eager warmup",
             );
             self.output
                 .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
@@ -421,8 +422,7 @@ impl PlatformRuntime for WindowsPlatform {
 
         if is_keydown && vk.is_composition_confirm_key() {
             log::debug!(
-                "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
-                vk,
+                "[composition] reinject KeyDown vk={vk:#04x} → marking cold + eager warmup",
             );
             self.output
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
@@ -473,7 +473,7 @@ impl WindowsPlatform {
 
     /// フォーカス中アプリの IME 制御プロファイルを返す。
     #[must_use]
-    pub fn current_app_profile(&self) -> AppImeProfile {
+    pub const fn current_app_profile(&self) -> AppImeProfile {
         self.focus.current_profile()
     }
 

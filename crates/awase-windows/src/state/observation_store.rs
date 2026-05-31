@@ -61,7 +61,7 @@ pub struct PerSourceObservations {
 impl PerSourceObservations {
     /// 指定ソースの最新値を返す
     #[must_use]
-    pub fn get(&self, source: ObservationSource) -> Option<&ImeObservation> {
+    pub const fn get(&self, source: ObservationSource) -> Option<&ImeObservation> {
         match source {
             ObservationSource::FocusProbe => self.focus_probe.as_ref(),
             ObservationSource::ObserverPoll => self.observer_poll.as_ref(),
@@ -73,7 +73,7 @@ impl PerSourceObservations {
     }
 
     /// 指定ソースの最新値をセットする
-    pub fn set(&mut self, source: ObservationSource, obs: ImeObservation) {
+    pub const fn set(&mut self, source: ObservationSource, obs: ImeObservation) {
         match source {
             ObservationSource::FocusProbe => self.focus_probe = Some(obs),
             ObservationSource::ObserverPoll => self.observer_poll = Some(obs),
@@ -99,7 +99,7 @@ impl PerSourceObservations {
     }
 
     /// 全ソースを clear する (フォーカス変更時用)
-    pub fn clear_all(&mut self) {
+    pub const fn clear_all(&mut self) {
         self.focus_probe = None;
         self.observer_poll = None;
         self.gji = None;
@@ -162,7 +162,7 @@ impl ObservationStore {
     ///
     /// `observed` が `desired` と一致する場合は drift を clear。
     /// 不一致が継続するなら drift を保持し続ける (started_at は更新しない)。
-    pub fn update_drift(&mut self, desired: bool, observed: bool, now: Instant, seq: u64) {
+    pub const fn update_drift(&mut self, desired: bool, observed: bool, now: Instant, seq: u64) {
         if desired == observed {
             self.drift = None;
             return;

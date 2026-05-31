@@ -95,7 +95,7 @@ pub(crate) struct ColdWarmupSequence<'a> {
 
 impl<'a> ColdWarmupSequence<'a> {
     /// 新しいシーケンスを生成する。
-    pub(crate) fn new(output: &'a Output) -> Self {
+    pub(crate) const fn new(output: &'a Output) -> Self {
         Self { output }
     }
 
