@@ -52,11 +52,11 @@ impl FocusTracker {
 
     // ── クエリ ──────────────────────────────────────────────────────────────
 
-    pub(crate) fn is_focused(&self) -> bool {
+    pub(crate) const fn is_focused(&self) -> bool {
         self.current.is_focused()
     }
 
-    pub(crate) fn pid(&self) -> u32 {
+    pub(crate) const fn pid(&self) -> u32 {
         self.current.pid
     }
 
@@ -68,7 +68,7 @@ impl FocusTracker {
         &self.current.process_name
     }
 
-    pub(crate) fn current_profile(&self) -> crate::focus::class_names::AppImeProfile {
+    pub(crate) const fn current_profile(&self) -> crate::focus::class_names::AppImeProfile {
         self.current.app_profile
     }
 

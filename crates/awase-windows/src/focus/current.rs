@@ -17,7 +17,8 @@ pub struct CurrentFocus {
 }
 
 impl CurrentFocus {
-    pub fn unfocused() -> Self {
+    #[must_use]
+    pub const fn unfocused() -> Self {
         Self {
             pid: 0,
             class_name: String::new(),
@@ -36,6 +37,7 @@ impl CurrentFocus {
     }
 
     /// フォーカスが確立されているか（`pid != 0`）。
+    #[must_use]
     pub const fn is_focused(&self) -> bool {
         self.pid != 0
     }

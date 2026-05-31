@@ -98,9 +98,9 @@ impl HeldModifiers {
             GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
         };
         Self {
-            ctrl: unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0,
-            shift: unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } as u16 & 0x8000 != 0,
-            alt: unsafe { GetAsyncKeyState(i32::from(VK_MENU.0)) } as u16 & 0x8000 != 0,
+            ctrl: unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } < 0,
+            shift: unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } < 0,
+            alt: unsafe { GetAsyncKeyState(i32::from(VK_MENU.0)) } < 0,
         }
     }
 
@@ -131,14 +131,14 @@ impl HeldModifiers {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
         let still = Self {
             ctrl: self.ctrl
-                && (unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0
-                    || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0),
+                && (unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } < 0
+                    || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } < 0),
             shift: self.shift
-                && (unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } as u16 & 0x8000 != 0
-                    || unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } as u16 & 0x8000 != 0),
+                && (unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } < 0
+                    || unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } < 0),
             alt: self.alt
-                && (unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } as u16 & 0x8000 != 0
-                    || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0),
+                && (unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } < 0
+                    || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } < 0),
         };
         if still.ctrl {
             inputs.push(make_key_input_ex(VK_CONTROL, false, IME_KANJI_MARKER));
@@ -183,15 +183,29 @@ pub unsafe fn post_kanji_toggle_to_focused() {
 
     // 診断: L/R 個別キー状態（VK_KANJI 受信時の Edge 挙動把握用）
     // GetAsyncKeyState = 物理キー状態、GetKeyState = メッセージキュー処理済み状態。
-    let gas_lctrl = unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0;
-    let gas_rctrl = unsafe { GetAsyncKeyState(i32::from(VK_RCONTROL.0)) } as u16 & 0x8000 != 0;
-    let gks_ctrl = unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0;
-    let gks_lctrl = unsafe { GetKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0;
-    let gks_rctrl = unsafe { GetKeyState(i32::from(VK_RCONTROL.0)) } as u16 & 0x8000 != 0;
-    let gas_lshift = unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } as u16 & 0x8000 != 0;
-    let gas_rshift = unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } as u16 & 0x8000 != 0;
-    let gas_lalt = unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } as u16 & 0x8000 != 0;
-    let gas_ralt = unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0;
+    // 変数名が意図的に似ているため similar_names を抑制する。
+    #[allow(clippy::similar_names)]
+    let (
+        gas_lctrl,
+        gas_rctrl,
+        gks_ctrl,
+        gks_lctrl,
+        gks_rctrl,
+        gas_lshift,
+        gas_rshift,
+        gas_lalt,
+        gas_ralt,
+    ) = (
+        unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } < 0,
+        unsafe { GetAsyncKeyState(i32::from(VK_RCONTROL.0)) } < 0,
+        unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0,
+        unsafe { GetKeyState(i32::from(VK_LCONTROL.0)) } < 0,
+        unsafe { GetKeyState(i32::from(VK_RCONTROL.0)) } < 0,
+        unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } < 0,
+        unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } < 0,
+        unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } < 0,
+        unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } < 0,
+    );
     log::debug!(
         "[ime-fallback] key-state pre-send: \
          ctrl(gas={} L={gas_lctrl} R={gas_rctrl}) \

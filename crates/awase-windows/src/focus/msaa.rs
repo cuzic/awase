@@ -136,7 +136,7 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
                 }
             }
 
-            log::debug!("MSAA: role={role_id} → Undetermined (not in allow/deny list)",);
+            log::debug!("MSAA: role={role_id} → Undetermined (not in allow/deny list)");
         }
     }
 

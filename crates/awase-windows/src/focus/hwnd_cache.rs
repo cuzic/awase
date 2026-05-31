@@ -22,6 +22,7 @@ pub struct HwndImeSnapshot {
 pub struct HwndImeCache(HashMap<(u32, String), HwndImeSnapshot>);
 
 impl HwndImeCache {
+    #[must_use]
     pub fn new() -> Self {
         Self(HashMap::new())
     }
@@ -85,7 +86,7 @@ impl HwndImeCache {
                 HWND_CACHE_MAX_AGE_MS,
             );
         } else {
-            log::debug!("HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe",);
+            log::debug!("HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe");
         }
         None
     }
