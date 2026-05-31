@@ -17,8 +17,8 @@ use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 use crate::platform::EffectOrigin;
 
 use super::decision::{
-    ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
-    InactiveReason, InputContext, InputEffect, SpecialKeyCombos, UiEffect,
+    ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InactiveReason,
+    InputContext, InputEffect, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
@@ -61,10 +61,7 @@ pub struct Engine {
 
 impl Engine {
     #[must_use]
-    pub const fn new(
-        fsm: NicolaFsm,
-        special_keys: SpecialKeyCombos,
-    ) -> Self {
+    pub const fn new(fsm: NicolaFsm, special_keys: SpecialKeyCombos) -> Self {
         Self {
             adapter: FsmAdapter::new(fsm),
             special_keys,
@@ -126,7 +123,11 @@ impl Engine {
             }
             log::info!(
                 "Engine {} (ime={}, romaji={}, japanese={}, user={}, reason={:?})",
-                if now_active { "activated" } else { "deactivated" },
+                if now_active {
+                    "activated"
+                } else {
+                    "deactivated"
+                },
                 ctx.ime_on,
                 ctx.input_mode.is_romaji_capable(),
                 ctx.is_japanese_ime,
@@ -275,10 +276,7 @@ impl Engine {
     /// デバウンス後に Platform 層が前面プロセスの変化を検出した場合のみ呼ばれる（ADR 028）。
     /// focus_kind / app_kind / last_focus_info / キャッシュの更新は Platform 層で完了済み。
     /// Engine は pending flush と lifecycle 整合のみ担当する。
-    fn handle_focus_changed(
-        &mut self,
-        ctx: &InputContext,
-    ) -> Decision {
+    fn handle_focus_changed(&mut self, ctx: &InputContext) -> Decision {
         let mut effects = EffectVec::new();
 
         // アプリ切替: 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
@@ -367,7 +365,10 @@ impl Engine {
     /// `transition_activation` で `prev_activation` を新状態に推進するため、
     /// 次回の `check_active_transition` は no-op となり、構造的に重複を排除する。
     fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
-        let pseudo_ctx = InputContext { ime_on: open, ..*ctx };
+        let pseudo_ctx = InputContext {
+            ime_on: open,
+            ..*ctx
+        };
         let new_state = self.compute_state(&pseudo_ctx);
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
@@ -390,11 +391,18 @@ impl Engine {
     /// 状態は何も変更しないので `&self`。
     #[must_use]
     pub fn matches_ime_off(&self, ctx: &InputContext, event: &RawKeyEvent) -> bool {
-        matches!(self.match_special_keys(ctx, event), Some(SpecialKeyMatch::ImeOff))
+        matches!(
+            self.match_special_keys(ctx, event),
+            Some(SpecialKeyMatch::ImeOff)
+        )
     }
 
     /// 変換/無変換系の特殊キーのコンボマッチのみを行う純粋判定メソッド（副作用なし）。
-    fn match_special_keys(&self, ctx: &InputContext, event: &RawKeyEvent) -> Option<SpecialKeyMatch> {
+    fn match_special_keys(
+        &self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<SpecialKeyMatch> {
         let modifiers = ctx.modifiers;
 
         // エンジン ON/OFF コンボキー — user_enabled のみ変更
@@ -431,8 +439,14 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            log::debug!("[special-key] IME ON match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
-                event.vk_code, modifiers.ctrl, modifiers.shift, modifiers.alt, event.extra_info);
+            log::debug!(
+                "[special-key] IME ON match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code,
+                modifiers.ctrl,
+                modifiers.shift,
+                modifiers.alt,
+                event.extra_info
+            );
             return Some(SpecialKeyMatch::ImeOn);
         }
         if self
@@ -441,8 +455,14 @@ impl Engine {
             .iter()
             .any(|k| Self::matches_key_combo(*k, event, modifiers))
         {
-            log::debug!("[special-key] IME OFF match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
-                event.vk_code, modifiers.ctrl, modifiers.shift, modifiers.alt, event.extra_info);
+            log::debug!(
+                "[special-key] IME OFF match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code,
+                modifiers.ctrl,
+                modifiers.shift,
+                modifiers.alt,
+                event.extra_info
+            );
             return Some(SpecialKeyMatch::ImeOff);
         }
 
@@ -480,11 +500,7 @@ impl Engine {
     }
 
     /// 変換/無変換系の特殊キーを一括チェックし、一致した場合は状態変更して結果を返す。
-    fn check_special_keys(
-        &mut self,
-        ctx: &InputContext,
-        event: &RawKeyEvent,
-    ) -> Option<Decision> {
+    fn check_special_keys(&mut self, ctx: &InputContext, event: &RawKeyEvent) -> Option<Decision> {
         let m = self.match_special_keys(ctx, event)?;
         Some(self.apply_special_key_match(&m, ctx))
     }

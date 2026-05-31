@@ -251,7 +251,9 @@ trait FullwidthStrExt {
 
 impl FullwidthStrExt for str {
     fn to_halfwidth_str(&self) -> String {
-        self.chars().map(|ch| ch.to_halfwidth_ascii().unwrap_or(ch)).collect()
+        self.chars()
+            .map(|ch| ch.to_halfwidth_ascii().unwrap_or(ch))
+            .collect()
     }
 
     fn to_fullwidth_str(&self) -> String {
@@ -271,7 +273,9 @@ impl FullwidthStrExt for str {
 
     fn is_all_fullwidth_ascii(&self) -> bool {
         !self.is_empty()
-            && self.chars().all(|ch| (0xFF01..=0xFF5E).contains(&u32::from(ch)))
+            && self
+                .chars()
+                .all(|ch| (0xFF01..=0xFF5E).contains(&u32::from(ch)))
     }
 }
 
@@ -369,9 +373,10 @@ fn parse_optional_face(
     model: KeyboardModel,
     context_msg: &'static str,
 ) -> Result<YabFace> {
-    sections
-        .get(&kind)
-        .map_or_else(|| Ok(YabFace::new()), |lines| parse_face(lines, model).context(context_msg))
+    sections.get(&kind).map_or_else(
+        || Ok(YabFace::new()),
+        |lines| parse_face(lines, model).context(context_msg),
+    )
 }
 
 /// `parse` のループ本体: 1行分の処理を行う。
@@ -459,10 +464,30 @@ impl YabLayout {
             sections.insert(kind, current_lines);
         }
 
-        let normal = parse_optional_face(&sections, FaceKind::Normal, model, "Failed to parse normal face")?;
-        let left_thumb = parse_optional_face(&sections, FaceKind::LeftThumb, model, "Failed to parse left thumb face")?;
-        let right_thumb = parse_optional_face(&sections, FaceKind::RightThumb, model, "Failed to parse right thumb face")?;
-        let shift = parse_optional_face(&sections, FaceKind::Shift, model, "Failed to parse shift face")?;
+        let normal = parse_optional_face(
+            &sections,
+            FaceKind::Normal,
+            model,
+            "Failed to parse normal face",
+        )?;
+        let left_thumb = parse_optional_face(
+            &sections,
+            FaceKind::LeftThumb,
+            model,
+            "Failed to parse left thumb face",
+        )?;
+        let right_thumb = parse_optional_face(
+            &sections,
+            FaceKind::RightThumb,
+            model,
+            "Failed to parse right thumb face",
+        )?;
+        let shift = parse_optional_face(
+            &sections,
+            FaceKind::Shift,
+            model,
+            "Failed to parse shift face",
+        )?;
 
         Ok(Self {
             name,

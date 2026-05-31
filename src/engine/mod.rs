@@ -19,13 +19,12 @@ pub mod timing;
 pub use crate::platform::EffectOrigin;
 pub use decision::{
     ActivationState, AssumedReason, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
-    InputContext, InputEffect, InputModeState, SpecialKeyCombos,
-    TimerEffect, UiEffect,
+    InputContext, InputEffect, InputModeState, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 pub use engine::Engine;
 pub use fsm_types::{
-    ClassifiedEvent, EngineState, KeyClass, ModifierState, OutputUpdate, ParseAction,
-    PendingKey, PendingThumbData, TimerIntent,
+    ClassifiedEvent, EngineState, KeyClass, ModifierState, OutputUpdate, ParseAction, PendingKey,
+    PendingThumbData, TimerIntent,
 };
 pub use key_lifecycle::KeyLifecycle;
 pub use nicola_fsm::NicolaFsm;

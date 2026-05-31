@@ -53,7 +53,10 @@ impl Runtime {
         focus_probe: Option<crate::focus::probe::FocusSnapshot>,
         ime_snap: &crate::ime::ImeSnapshot,
     ) {
-        self.ir_execute(IoMode::Prefetched { focus: focus_probe, ime: ime_snap });
+        self.ir_execute(IoMode::Prefetched {
+            focus: focus_probe,
+            ime: ime_snap,
+        });
     }
 
     fn ir_execute(&mut self, mode: IoMode<'_>) {
@@ -97,7 +100,10 @@ impl Runtime {
             self.ir_notify_focus_changed(skip_imm_query);
         }
 
-        FocusInfo { focus_changed, skip_imm_query }
+        FocusInfo {
+            focus_changed,
+            skip_imm_query,
+        }
     }
 
     // ── Stage 2: 読み取り方針の決定 ──
@@ -135,7 +141,9 @@ impl Runtime {
                 log::debug!("[stage-observe] gji_result={:?}", obs.observer_poll_value);
                 if let Some(v) = obs.observer_poll_value {
                     self.platform_state.write_observer_poll(
-                        v, obs.now_ms, self.engine.is_user_enabled(),
+                        v,
+                        obs.now_ms,
+                        self.engine.is_user_enabled(),
                     );
                 }
             }
@@ -187,9 +195,10 @@ impl Runtime {
             log::info!(
                 "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
             );
-            self.platform_state.set_input_mode(
-                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
-            );
+            self.platform_state
+                .set_input_mode(InputModeState::AssumedRomaji {
+                    reason: AssumedReason::ImmBridgeBroken,
+                });
         }
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
@@ -202,8 +211,11 @@ impl Runtime {
     // IMM との SendMessage を一切行わない。
 
     fn ir_decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
-        let last_activity = self.platform_state.last_hook_activity_ms
-            .max(crate::tsf::probe_bridge::OUTPUT_GATE.last_vk_output_ms.load(std::sync::atomic::Ordering::Relaxed));
+        let last_activity = self.platform_state.last_hook_activity_ms.max(
+            crate::tsf::probe_bridge::OUTPUT_GATE
+                .last_vk_output_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+        );
         let idle_ms = crate::hook::current_tick_ms().saturating_sub(last_activity);
         let is_typing = idle_ms < TYPING_IDLE_MS;
 
@@ -258,11 +270,17 @@ impl Runtime {
                 )
             }
         };
-        self.platform_state.apply_ime_update(&observer_out, self.engine.is_user_enabled());
+        self.platform_state
+            .apply_ime_update(&observer_out, self.engine.is_user_enabled());
 
         let miss_after = self.platform_state.ime_detect_miss_count();
 
-        self.ir_log_poll_diff(ime_on_before_poll, input_mode_before_poll, miss_before, miss_after);
+        self.ir_log_poll_diff(
+            ime_on_before_poll,
+            input_mode_before_poll,
+            miss_before,
+            miss_after,
+        );
 
         self.learn_imm_capability_from_miss(miss_before, miss_after);
         self.try_force_on_bootstrap();
@@ -276,8 +294,8 @@ impl Runtime {
         miss_before: u32,
         miss_after: u32,
     ) {
-        let age_ms = crate::hook::current_tick_ms()
-            .saturating_sub(self.platform_state.last_focus_change_ms);
+        let age_ms =
+            crate::hook::current_tick_ms().saturating_sub(self.platform_state.last_focus_change_ms);
         if age_ms < 10_000 {
             let ime_on_after = self.platform_state.ime_on();
             let input_mode_after = self.platform_state.input_mode();
@@ -351,7 +369,9 @@ impl Runtime {
 
     fn ir_check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
         let explicit_intent = self.platform_state.explicit_intent();
-        self.platform_state.ime.check_drift_correction(now, explicit_intent)
+        self.platform_state
+            .ime
+            .check_drift_correction(now, explicit_intent)
     }
 
     fn ir_apply_drift_correction(&mut self) {
@@ -371,11 +391,17 @@ impl Runtime {
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
              → set_ime_open({desired})"
         );
-        self.platform_state.ime.dispatch_event(
-            crate::state::ime_event::ImeEvent::DriftDetected { desired, observed, duration_ms },
-        );
+        self.platform_state
+            .ime
+            .dispatch_event(crate::state::ime_event::ImeEvent::DriftDetected {
+                desired,
+                observed,
+                duration_ms,
+            });
         let _ = self.platform.set_ime_open(desired);
-        self.platform_state.ime.mirror_applied_open_with_ts(desired, 0);
+        self.platform_state
+            .ime
+            .mirror_applied_open_with_ts(desired, 0);
     }
 
     // ── Engine 通知 ──
@@ -384,7 +410,8 @@ impl Runtime {
         let ctx = self.build_ctx();
         log::debug!(
             "[notify-refresh] ctx.ime_on={} ctx.is_jp={} explicit_intent={:?}",
-            ctx.ime_on, ctx.is_japanese_ime,
+            ctx.ime_on,
+            ctx.is_japanese_ime,
             self.platform_state.explicit_intent(),
         );
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);

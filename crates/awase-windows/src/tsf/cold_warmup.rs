@@ -116,8 +116,11 @@ impl<'a> ColdWarmupSequence<'a> {
 
         let eager_ms = self.output.composition.eager_warmup_sent_ms();
         let now_ms = crate::hook::current_tick_ms();
-        let eager_elapsed =
-            if eager_ms != 0 { now_ms.saturating_sub(eager_ms) } else { u64::MAX };
+        let eager_elapsed = if eager_ms != 0 {
+            now_ms.saturating_sub(eager_ms)
+        } else {
+            u64::MAX
+        };
         let use_eager = eager_ms != 0;
 
         log::debug!(
@@ -202,7 +205,12 @@ impl<'a> ColdWarmupSequence<'a> {
             self.output.composition.idle_ms_at_last_cold()
         );
 
-        WarmupContext { cold_seq, eager_settle_ms, probe_min_ms, cold_reason }
+        WarmupContext {
+            cold_seq,
+            eager_settle_ms,
+            probe_min_ms,
+            cold_reason,
+        }
     }
 
     /// non-eager: F2×2 を送信して WarmupStarted を返す。
@@ -250,7 +258,8 @@ impl<'a> ColdWarmupSequence<'a> {
                 let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
                 log::debug!(
                     "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start",
-                    ctx.cold_seq, ctx.eager_settle_ms,
+                    ctx.cold_seq,
+                    ctx.eager_settle_ms,
                 );
                 let fresh_f2_ms = send_vk_dbe_hiragana_pair();
                 WarmupStarted {
@@ -268,7 +277,8 @@ impl<'a> ColdWarmupSequence<'a> {
                 // eager_re_warmup: fresh F2 を送信して RE_WARMUP_MS 待機
                 log::debug!(
                     "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start",
-                    ctx.cold_seq, ctx.eager_settle_ms,
+                    ctx.cold_seq,
+                    ctx.eager_settle_ms,
                 );
                 let re_warmup_ms = send_vk_dbe_hiragana_pair();
                 WarmupStarted {
@@ -302,4 +312,3 @@ impl<'a> ColdWarmupSequence<'a> {
         }
     }
 }
-

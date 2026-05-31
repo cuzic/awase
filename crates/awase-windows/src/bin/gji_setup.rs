@@ -57,11 +57,7 @@ fn main() -> ExitCode {
             }
             match fs::write(&path, &patched) {
                 Ok(()) => {
-                    println!(
-                        "patched: {} bytes -> {} bytes",
-                        data.len(),
-                        patched.len()
-                    );
+                    println!("patched: {} bytes -> {} bytes", data.len(), patched.len());
                     for entry in &added {
                         println!("  added: {}", entry.trim_end());
                     }
@@ -168,11 +164,7 @@ fn patch(data: &[u8]) -> Result<Option<(Vec<u8>, Vec<&'static str>)>, String> {
         return Ok(None);
     }
 
-    let new_bytes: Vec<u8> = missing
-        .iter()
-        .flat_map(|s| s.as_bytes())
-        .copied()
-        .collect();
+    let new_bytes: Vec<u8> = missing.iter().flat_map(|s| s.as_bytes()).copied().collect();
     let new_length = block_length + new_bytes.len();
     let new_varint = encode_varint2(new_length)?;
 
@@ -180,7 +172,7 @@ fn patch(data: &[u8]) -> Result<Option<(Vec<u8>, Vec<&'static str>)>, String> {
     result.extend_from_slice(&data[..block_end]);
     result.extend_from_slice(&new_bytes);
     result.extend_from_slice(&data[block_end..]);
-    result[varint_offset]     = new_varint[0];
+    result[varint_offset] = new_varint[0];
     result[varint_offset + 1] = new_varint[1];
 
     Ok(Some((result, missing)))

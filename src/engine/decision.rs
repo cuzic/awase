@@ -114,12 +114,8 @@ impl ActivationState {
     #[must_use]
     pub const fn to_context_change(self) -> ContextChange {
         match self {
-            Self::Inactive(InactiveReason::UserDisabled) => {
-                ContextChange::EngineDisabled
-            }
-            Self::Inactive(InactiveReason::NonTextFocus) => {
-                ContextChange::FocusChanged
-            }
+            Self::Inactive(InactiveReason::UserDisabled) => ContextChange::EngineDisabled,
+            Self::Inactive(InactiveReason::NonTextFocus) => ContextChange::FocusChanged,
             _ => ContextChange::ImeOff,
         }
     }
@@ -327,9 +323,7 @@ pub enum EngineCommand {
     /// 配列を切り替える
     SwapLayout(YabLayout),
     /// 特殊キーコンボを再読み込みする
-    ReloadKeys {
-        special: SpecialKeyCombos,
-    },
+    ReloadKeys { special: SpecialKeyCombos },
     /// FSM パラメータを更新する
     UpdateFsmParams {
         threshold_ms: u32,
@@ -454,5 +448,4 @@ mod tests {
             other => panic!("expected PassThroughWith, got {:?}", other),
         }
     }
-
 }

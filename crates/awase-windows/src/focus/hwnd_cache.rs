@@ -44,10 +44,14 @@ impl HwndImeCache {
         };
         log::debug!(
             "HwndCache: save [{} {}] ime_on={} mode={:?}",
-            old_pid, old_class, snapshot.ime_on, snapshot.input_mode,
+            old_pid,
+            old_class,
+            snapshot.ime_on,
+            snapshot.input_mode,
         );
         let now_ms = snapshot.recorded_ms;
-        self.0.retain(|_, v| now_ms.saturating_sub(v.recorded_ms) <= HWND_CACHE_MAX_AGE_MS);
+        self.0
+            .retain(|_, v| now_ms.saturating_sub(v.recorded_ms) <= HWND_CACHE_MAX_AGE_MS);
         self.0.insert((old_pid, old_class), snapshot);
     }
 
@@ -59,24 +63,29 @@ impl HwndImeCache {
     pub fn restore(&self, new_pid: u32, new_class: &str) -> Option<HwndImeSnapshot> {
         let cache_key = (new_pid, new_class.to_string());
         if let Some(&snapshot) = self.0.get(&cache_key) {
-            let age_ms = crate::hook::current_tick_ms()
-                .saturating_sub(snapshot.recorded_ms);
+            let age_ms = crate::hook::current_tick_ms().saturating_sub(snapshot.recorded_ms);
             if age_ms <= HWND_CACHE_MAX_AGE_MS {
                 log::info!(
                     "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
-                    new_pid, new_class, snapshot.ime_on, snapshot.input_mode, age_ms,
+                    new_pid,
+                    new_class,
+                    snapshot.ime_on,
+                    snapshot.input_mode,
+                    age_ms,
                 );
                 return Some(snapshot);
             }
             log::info!(
                 "HwndCache: stale [{} {}] ime_on={} mode={:?} ({}ms ago > {}ms) → FocusProbe 待ち",
-                new_pid, new_class, snapshot.ime_on, snapshot.input_mode,
-                age_ms, HWND_CACHE_MAX_AGE_MS,
+                new_pid,
+                new_class,
+                snapshot.ime_on,
+                snapshot.input_mode,
+                age_ms,
+                HWND_CACHE_MAX_AGE_MS,
             );
         } else {
-            log::debug!(
-                "HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe",
-            );
+            log::debug!("HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe",);
         }
         None
     }

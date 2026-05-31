@@ -150,7 +150,7 @@ pub fn is_chromium_widget(class_name: &str) -> bool {
 /// - `MozillaWindowClass`: Firefox（Chromium と同様の入力処理）
 /// - `Windows.UI.Core.CoreWindow` / `ApplicationFrameWindow` / `Windows.UI.Input.*`: UWP / XAML 系
 /// - その他: Win32 クラシック（ヒューリスティックで Chrome に昇格する場合あり）
-#[must_use] 
+#[must_use]
 pub fn detect_app_kind(class_name: &str) -> AppKind {
     let class_lower = class_name.to_ascii_lowercase();
     if class_lower.starts_with("chrome_") || class_lower == "mozillawindowclass" {

@@ -63,7 +63,6 @@ pub enum IntentSource {
     HwndCache,
 }
 
-
 /// Observation のソース (外部観測の種類)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObservationSource {

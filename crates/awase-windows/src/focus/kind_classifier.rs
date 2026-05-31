@@ -63,18 +63,18 @@ pub unsafe fn resolve_focus_kind(
 
     // 4. classify_focus をワーカースレッドで実行
     let hwnd_addr = hwnd.0 as usize;
-    let classify_result = crate::win32::run_with_timeout(
-        std::time::Duration::from_millis(300),
-        move || {
+    let classify_result =
+        crate::win32::run_with_timeout(std::time::Duration::from_millis(300), move || {
             let hwnd = HWND(hwnd_addr as *mut _);
             classify::classify_focus(hwnd)
-        },
-    );
-    if let Some(result) = classify_result { FocusKindResolution {
-        kind: result.kind,
-        reason: format!("{}", result.reason),
-        overridden: false,
-    } } else {
+        });
+    if let Some(result) = classify_result {
+        FocusKindResolution {
+            kind: result.kind,
+            reason: format!("{}", result.reason),
+            overridden: false,
+        }
+    } else {
         log::warn!("classify_focus timed out for hwnd={hwnd:?}");
         FocusKindResolution {
             kind: FocusKind::Undetermined,

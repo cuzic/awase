@@ -313,8 +313,15 @@ fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndM
 
         let dc = CreateCompatibleDC(None);
         let mut bits = std::ptr::null_mut();
-        let color_bmp =
-            CreateDIBSection(Some(dc), &raw const bmi, DIB_RGB_COLORS, &raw mut bits, None, 0).ok()?;
+        let color_bmp = CreateDIBSection(
+            Some(dc),
+            &raw const bmi,
+            DIB_RGB_COLORS,
+            &raw mut bits,
+            None,
+            0,
+        )
+        .ok()?;
         let mask_bmp = CreateDIBSection(
             Some(dc),
             &raw const bmi,
@@ -422,7 +429,10 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
     #[allow(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
 
-    log::debug!("Tray message: event=0x{event:04X} lparam=0x{:016X}", lparam.0);
+    log::debug!(
+        "Tray message: event=0x{event:04X} lparam=0x{:016X}",
+        lparam.0
+    );
 
     if event != WM_RBUTTONUP {
         return;
@@ -558,7 +568,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
 ///
 /// `shell32.dll` の `IsUserAnAdmin` を使用する。
 /// この API は非推奨だが、シンプルで `Win32_Security` feature を追加せずに使えるため採用。
-#[must_use] 
+#[must_use]
 pub fn is_elevated() -> bool {
     #[link(name = "shell32")]
     extern "system" {

@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
 use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
-    WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
+    DispatchMessageW, GetMessageW, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE,
+    WM_POWERBROADCAST, WM_TIMER,
 };
 
 use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};
@@ -16,14 +16,13 @@ use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
 use awase::types::{RawKeyEvent, VkCode};
 
-use crate::vk::VkCodeExt;
 use crate::ime;
 use crate::runtime::message_handlers;
+use crate::vk::VkCodeExt;
 use crate::{
-    WM_DRAIN_OUTPUT_QUEUE,
-    WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
-    WM_DUPLICATE_INSTANCE, WM_IME_KEY_DETECTED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
-    WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG, with_app, with_app_or_repost, with_app_or_repost_with,
+    with_app, with_app_or_repost, with_app_or_repost_with, WM_DRAIN_OUTPUT_QUEUE,
+    WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED,
+    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -55,7 +54,9 @@ struct StartupDiagnostics {
 
 impl StartupDiagnostics {
     const fn new() -> Self {
-        Self { warnings: Vec::new() }
+        Self {
+            warnings: Vec::new(),
+        }
     }
 
     fn warn(&mut self, msg: impl Into<String>) {
@@ -73,7 +74,10 @@ impl StartupDiagnostics {
             log::info!("  - {w}");
         }
         let _ = with_app(|app| {
-            app.show_tray_balloon("awase", &format!("{}件の警告があります", self.warnings.len()));
+            app.show_tray_balloon(
+                "awase",
+                &format!("{}件の警告があります", self.warnings.len()),
+            );
         });
     }
 }
@@ -103,7 +107,7 @@ pub fn run() -> Result<()> {
 // ── 共有ヘルパー（bootstrap + reload_config から使用）──
 
 /// 設定ファイルを読み込む
- fn load_config() -> Result<AppConfig> {
+fn load_config() -> Result<AppConfig> {
     let config_path = find_config_path()?;
     log::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
@@ -118,7 +122,7 @@ pub fn run() -> Result<()> {
 }
 
 /// 設定ファイルのパスを探索する
- fn find_config_path() -> Result<PathBuf> {
+fn find_config_path() -> Result<PathBuf> {
     if let Some(path) = std::env::args().nth(1) {
         return Ok(PathBuf::from(path));
     }
@@ -133,7 +137,7 @@ pub fn run() -> Result<()> {
 }
 
 /// 相対パスを実行ファイルのディレクトリ基準で解決する
- fn resolve_relative(path: &str) -> PathBuf {
+fn resolve_relative(path: &str) -> PathBuf {
     if Path::new(path).is_absolute() {
         return PathBuf::from(path);
     }
@@ -149,7 +153,7 @@ pub fn run() -> Result<()> {
 }
 
 /// キーコンボ文字列のリストをパースし、失敗時は診断に警告を出す
- fn parse_key_combos(
+fn parse_key_combos(
     keys: &[String],
     label: &str,
     diag: &mut StartupDiagnostics,
@@ -168,7 +172,7 @@ pub fn run() -> Result<()> {
 }
 
 /// IME sync キーの初期化（shadow IME 状態追跡用）
- fn init_ime_sync_keys(
+fn init_ime_sync_keys(
     ime_detect: &ImeDetectConfig,
     diag: &mut StartupDiagnostics,
 ) -> (Vec<VkCode>, Vec<VkCode>, Vec<VkCode>) {
@@ -176,7 +180,9 @@ pub fn run() -> Result<()> {
         keys.iter()
             .filter_map(|s| {
                 VkCode::from_name(s).or_else(|| {
-                    diag.warn(format!("keys.ime_detect.{label} のパースに失敗しました: {s}"));
+                    diag.warn(format!(
+                        "keys.ime_detect.{label} のパースに失敗しました: {s}"
+                    ));
                     None
                 })
             })
@@ -187,13 +193,15 @@ pub fn run() -> Result<()> {
     let off = parse_vk_list(&ime_detect.off, "off");
     log::info!(
         "IME detect keys: toggle={:?} on={:?} off={:?}",
-        ime_detect.toggle, ime_detect.on, ime_detect.off,
+        ime_detect.toggle,
+        ime_detect.on,
+        ime_detect.off,
     );
     (toggle, on, off)
 }
 
 /// 検証済み設定で n-gram モデルのロード（オプション）
- fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
+fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
     let Some(ref ngram_path) = config.general.ngram_file else {
         return;
     };
@@ -238,7 +246,7 @@ pub(crate) fn check_keyboard_layout_on_change() {
 
 // ── メッセージループ ──
 
- fn run_message_loop(taskbar_created_msg: u32) {
+fn run_message_loop(taskbar_created_msg: u32) {
     // フックスレッドへエンジンスレッド TID を公開（WM_KEY_FROM_HOOK の送信先）
     // SAFETY: GetCurrentThreadId は常に成功し副作用もない。
     crate::ENGINE_THREAD_ID.store(
@@ -270,27 +278,34 @@ pub(crate) fn check_keyboard_layout_on_change() {
             WM_PANIC_RESET => {
                 // 再入中に消えないよう repost する（blocking op 完了後に再実行）
                 // SAFETY: WM_PANIC_RESET はメインスレッドのメッセージループからのみ配送される。
-                with_app_or_repost(WM_PANIC_RESET, |app| unsafe { message_handlers::handle_wm_panic_reset(app) });
+                with_app_or_repost(WM_PANIC_RESET, |app| unsafe {
+                    message_handlers::handle_wm_panic_reset(app)
+                });
             }
             WM_DUPLICATE_INSTANCE => {
                 // SAFETY: WM_DUPLICATE_INSTANCE はメインスレッドのメッセージループからのみ配送される。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
+                let _ =
+                    with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
             }
             WM_IME_KEY_DETECTED => {
                 // SAFETY: WM_IME_KEY_DETECTED はメインスレッドのメッセージループからのみ配送される。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_ime_key_detected(app) });
+                let _ =
+                    with_app(|app| unsafe { message_handlers::handle_wm_ime_key_detected(app) });
             }
             WM_POWERBROADCAST => {
                 let pbt = msg.wParam.0;
                 // SAFETY: WM_POWERBROADCAST はメインスレッドのメッセージループからのみ配送される。
                 //         pbt は OS が設定する PBT_* 定数で安全。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_powerbroadcast(app, pbt) });
+                let _ =
+                    with_app(|app| unsafe { message_handlers::handle_wm_powerbroadcast(app, pbt) });
             }
             WM_WTSSESSION_CHANGE => {
                 let session_event = msg.wParam.0 as u32;
                 // SAFETY: WM_WTSSESSION_CHANGE はメインスレッドのメッセージループからのみ配送される。
                 //         hwnd は WTSRegisterSessionNotification で登録した有効なウィンドウハンドル。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wts_session_change(app, session_event) });
+                let _ = with_app(|app| unsafe {
+                    message_handlers::handle_wts_session_change(app, session_event)
+                });
             }
             WM_INPUTLANGCHANGE => {
                 // SAFETY: WM_INPUTLANGCHANGE はメインスレッドのメッセージループからのみ配送される。
@@ -298,7 +313,8 @@ pub(crate) fn check_keyboard_layout_on_change() {
             }
             WM_PROCESS_DEFERRED => {
                 // SAFETY: WM_PROCESS_DEFERRED はメインスレッドのメッセージループからのみ配送される。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_process_deferred(app) });
+                let _ =
+                    with_app(|app| unsafe { message_handlers::handle_wm_process_deferred(app) });
             }
             WM_FOCUS_KIND_UPDATE => {
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
@@ -316,21 +332,25 @@ pub(crate) fn check_keyboard_layout_on_change() {
             WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => {
                 // SAFETY: WM_HOTKEY はメインスレッドのメッセージループからのみ配送される。
                 //         wParam は RegisterHotKey で登録した HOTKEY_ID_FOCUS_OVERRIDE と一致している。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_focus_override(app) });
+                let _ = with_app(|app| unsafe {
+                    message_handlers::handle_wm_hotkey_focus_override(app)
+                });
             }
             WM_KEY_FROM_HOOK => {
                 // フックスレッドから転送された物理キーイベント
                 // SAFETY: lParam は Box::into_raw(Box::new(RawKeyEvent)) のポインタ。
                 //         RawKeyEvent は Copy なので値をコピーして Box をドロップする。
-                let event = unsafe {
-                    *Box::from_raw(msg.lParam.0 as *mut RawKeyEvent)
-                };
+                let event = unsafe { *Box::from_raw(msg.lParam.0 as *mut RawKeyEvent) };
                 // パニック連打検出（フックスレッドから移動）
                 if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
                     let mods = event.modifier_snapshot;
-                    let triggers = crate::hook::classify_ime_relevance(event.vk_code).may_change_ime
+                    let triggers = crate::hook::classify_ime_relevance(event.vk_code)
+                        .may_change_ime
                         || crate::panic_detect::is_panic_trigger(
-                            event.vk_code, mods.ctrl, mods.shift, mods.alt,
+                            event.vk_code,
+                            mods.ctrl,
+                            mods.shift,
+                            mods.alt,
                         );
                     if triggers {
                         crate::panic_detect::record_ime_keydown(crate::hook::current_tick_ms());
@@ -351,7 +371,8 @@ pub(crate) fn check_keyboard_layout_on_change() {
                     if has_pending_drain {
                         crate::INPUT_DEFER.replay_later(std::iter::once(event));
                     } else {
-                        let result = with_app(|app| message_handlers::handle_wm_key_from_hook(app, event));
+                        let result =
+                            with_app(|app| message_handlers::handle_wm_key_from_hook(app, event));
                         debug_assert!(result.is_some(), "with_app re-entry in WM_KEY_FROM_HOOK");
                     }
                 }
@@ -359,21 +380,27 @@ pub(crate) fn check_keyboard_layout_on_change() {
             WM_APP => {
                 // SAFETY: WM_APP はシステムトレイ通知用に定義したメッセージ。
                 //         msg.hwnd は有効なトレイ通知ウィンドウのハンドル。
-                unsafe { message_handlers::handle_wm_app_tray(msg.hwnd, msg.lParam); }
-            },
+                unsafe {
+                    message_handlers::handle_wm_app_tray(msg.hwnd, msg.lParam);
+                }
+            }
             WM_RELOAD_CONFIG => {
                 message_handlers::handle_wm_reload_config();
             }
             WM_COMMAND => {
                 // SAFETY: WM_COMMAND はメインスレッドのメッセージループからのみ配送される。
                 //         wParam はトレイメニューの定義済みコマンド ID。
-                unsafe { message_handlers::handle_wm_command(msg.wParam); }
-            },
+                unsafe {
+                    message_handlers::handle_wm_command(msg.wParam);
+                }
+            }
             WM_DRAIN_OUTPUT_QUEUE => {
                 // SAFETY: WM_DRAIN_OUTPUT_QUEUE はメインスレッドのメッセージループからのみ配送される。
                 //         OUTPUT_GATE が非アクティブになったタイミングで post される。
-                unsafe { message_handlers::handle_wm_drain_output_queue(); }
-            },
+                unsafe {
+                    message_handlers::handle_wm_drain_output_queue();
+                }
+            }
             m if m == taskbar_created_msg && taskbar_created_msg != 0 => {
                 // SAFETY: TaskbarCreated はシェルが再起動した際にブロードキャストされる登録済みメッセージ。
                 let _ = with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
@@ -451,7 +478,12 @@ pub(crate) fn reload_config() {
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
     key_diag.report();
 
-    let special_keys = SpecialKeyCombos { engine_on, engine_off, ime_on, ime_off };
+    let special_keys = SpecialKeyCombos {
+        engine_on,
+        engine_off,
+        ime_on,
+        ime_off,
+    };
     let _ = with_app(|app| {
         app.apply_config_update(&config, special_keys, toggle, on, off);
     });

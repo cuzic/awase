@@ -10,10 +10,10 @@ use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
-use awase::platform::PlatformRuntime as _;
 use crate::platform::WindowsPlatform;
 use crate::win32::HwndExt as _;
 use crate::ImeBelief;
+use awase::platform::PlatformRuntime as _;
 
 pub use crate::focus::classifier::{ImmCapability, InjectionHint};
 
@@ -41,8 +41,8 @@ pub const fn build_input_context(
 }
 use awase::yab::YabLayout;
 
-use executor::DecisionExecutor;
 use crate::hook::CallbackResult;
+use executor::DecisionExecutor;
 
 // ── LayoutEntry（名前付きレイアウトエントリ）──
 
@@ -116,16 +116,15 @@ impl Runtime {
     /// focus/classify の内部型に直接アクセスしない。
     #[must_use]
     pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
-        (
-            self.platform.injection_hint(),
-            self.platform_state.app_kind,
-        )
+        (self.platform.injection_hint(), self.platform_state.app_kind)
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
     #[must_use]
     pub fn can_use_imm32_cross_process(&self) -> bool {
-        self.platform.current_app_profile().can_use_imm32_cross_process()
+        self.platform
+            .current_app_profile()
+            .can_use_imm32_cross_process()
     }
 
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
@@ -139,7 +138,8 @@ impl Runtime {
             let prev = self.platform.focus.imm_capability(&class_name);
             if prev != Some(ImmCapability::Works) {
                 log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
-                self.platform.learn_imm_capability(class_name, ImmCapability::Works);
+                self.platform
+                    .learn_imm_capability(class_name, ImmCapability::Works);
             }
         } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
             && miss_before < crate::IME_DETECT_MISS_THRESHOLD
@@ -149,7 +149,8 @@ impl Runtime {
                 log::info!(
                     "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
                 );
-                self.platform.learn_imm_capability(class_name, ImmCapability::Unavailable);
+                self.platform
+                    .learn_imm_capability(class_name, ImmCapability::Unavailable);
             }
         }
     }
@@ -181,7 +182,10 @@ impl Runtime {
     /// Kanji 等の sync key がすでに IME を正しい状態にしているとき、
     /// `engine_on/off_ime_key`（VK_DBE_DBCSCHAR 等）を追加送信してしまう
     /// フィードバックループを防ぐ。
-    pub fn execute_decision_suppressed(&mut self, decision: awase::engine::Decision) -> CallbackResult {
+    pub fn execute_decision_suppressed(
+        &mut self,
+        decision: awase::engine::Decision,
+    ) -> CallbackResult {
         let _guard = self.platform.suppress_engine_state_key_guard();
         self.execute_decision(decision)
     }
@@ -207,7 +211,9 @@ impl Runtime {
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
         let pre_applied = self.platform_state.ime.applied_pair();
-        let (callback, sync_outcomes) = self.executor.execute_from_loop(&mut self.platform, decision, pre_applied);
+        let (callback, sync_outcomes) =
+            self.executor
+                .execute_from_loop(&mut self.platform, decision, pre_applied);
         self.dispatch_outcomes(sync_outcomes);
         callback
     }
@@ -231,7 +237,11 @@ impl Runtime {
         self.platform.on_ime_applied(open, outcome);
 
         // C+D: ImeModel write-back + generation 照合 dispatch
-        self.platform_state.ime.record_ime_apply_result(open, outcome, crate::hook::current_tick_ms());
+        self.platform_state.ime.record_ime_apply_result(
+            open,
+            outcome,
+            crate::hook::current_tick_ms(),
+        );
 
         // E: IME 状態ポーリングをスケジュール
         self.platform.post_ime_refresh();
@@ -246,9 +256,8 @@ impl Runtime {
 
     /// 現在の shadow model から `ImeControlView` を構築する。
     pub(crate) fn shadow_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
-        self.platform.build_ime_control_view(
-            self.platform_state.ime.applied_pair(),
-        )
+        self.platform
+            .build_ime_control_view(self.platform_state.ime.applied_pair())
     }
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
@@ -329,10 +338,7 @@ impl Runtime {
     fn settle_tsf_gate_after_refresh(&mut self) {
         // PendingWarmup 以外（Probing/Ready/Bypass）なら空 Vec が返る。
         // confirm_tsf は PendingWarmup/Bypass → Probing、bypass_tsf は PendingWarmup/Probing → Bypass。
-        let is_tsf = matches!(
-            self.platform.injection_hint(),
-            InjectionHint::ForceTsf
-        );
+        let is_tsf = matches!(self.platform.injection_hint(), InjectionHint::ForceTsf);
         let held = if is_tsf {
             self.platform.confirm_tsf()
         } else {
@@ -341,12 +347,16 @@ impl Runtime {
             // bypass_tsf() に到達すると Win+X 等の1文字ショートカットが NICOLA 変換される。
             let ms = crate::hook::current_tick_ms();
             let user_enabled = self.engine.is_user_enabled();
-            self.platform_state.write_focus_probe(false, ms, user_enabled);
+            self.platform_state
+                .write_focus_probe(false, ms, user_enabled);
             self.platform.bypass_tsf()
         };
         self.platform.timer.kill(crate::TIMER_TSF_GATE);
         if !held.is_empty() {
-            log::debug!("[tsf-gate] draining {} held keys via INPUT_DEFER", held.len());
+            log::debug!(
+                "[tsf-gate] draining {} held keys via INPUT_DEFER",
+                held.len()
+            );
             crate::INPUT_DEFER.replay_later(held);
         }
     }
@@ -369,9 +379,10 @@ impl Runtime {
         if !self.platform_state.input_mode().is_romaji_capable() {
             use awase::engine::{AssumedReason, InputModeState};
             log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-            self.platform_state.set_input_mode(
-                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
-            );
+            self.platform_state
+                .set_input_mode(InputModeState::AssumedRomaji {
+                    reason: AssumedReason::ImmBridgeBroken,
+                });
         }
     }
 
@@ -403,9 +414,10 @@ impl Runtime {
         };
 
         let name = entry.name.clone();
-        let decision = self
-            .engine
-            .on_command(EngineCommand::SwapLayout(entry.layout.clone()), &self.build_ctx());
+        let decision = self.engine.on_command(
+            EngineCommand::SwapLayout(entry.layout.clone()),
+            &self.build_ctx(),
+        );
         self.execute_decision(decision);
 
         self.platform.tray.set_layout_name(&name);
@@ -428,12 +440,9 @@ impl Runtime {
         if self.platform.focus.is_focused() {
             let pid = self.platform.focus.pid();
             let cls = self.platform.focus.class_name().to_owned();
-            self.platform.focus.cache_insert(
-                pid,
-                cls,
-                new_kind,
-                DetectionSource::UserOverride,
-            );
+            self.platform
+                .focus
+                .cache_insert(pid, cls, new_kind, DetectionSource::UserOverride);
         }
 
         // If demoted to NonText, flush engine pending
@@ -480,7 +489,8 @@ impl Runtime {
                 self.platform_state.prev_conversion_mode(),
             )
         };
-        self.platform_state.apply_ime_update(&observer_out, self.engine.is_user_enabled());
+        self.platform_state
+            .apply_ime_update(&observer_out, self.engine.is_user_enabled());
 
         // LastAppliedImeState を OS 観測値に同期する。
         // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。
@@ -560,7 +570,9 @@ impl Runtime {
         hwnd_id: crate::state::ime_event::HwndId,
         now: std::time::Instant,
     ) {
-        self.platform_state.ime.try_set_focus_transition_barrier(hwnd_id, now);
+        self.platform_state
+            .ime
+            .try_set_focus_transition_barrier(hwnd_id, now);
         self.platform.on_focus_change_tsf();
         self.platform.timer.set(
             crate::TIMER_TSF_GATE,
@@ -661,10 +673,17 @@ impl Runtime {
         self.sync_toggle_keys = sync_toggle;
         self.sync_on_keys = sync_on;
         self.sync_off_keys = sync_off;
-        let _ = self.engine.on_command(EngineCommand::ReloadKeys { special: special_keys }, &ctx);
-        self.platform.focus.reset_overrides(
-            crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
+        let _ = self.engine.on_command(
+            EngineCommand::ReloadKeys {
+                special: special_keys,
+            },
+            &ctx,
         );
+        self.platform
+            .focus
+            .reset_overrides(crate::focus::classifier::ForceOverrides::new(
+                config.app_overrides.clone(),
+            ));
         self.platform.focus.cache_reset();
         log::info!(
             "Config applied: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
@@ -678,7 +697,9 @@ impl Runtime {
     /// n-gram モデルをエンジンに適用する。
     pub(crate) fn set_ngram_model(&mut self, model: NgramModel) {
         let ctx = self.build_ctx();
-        let _ = self.engine.on_command(EngineCommand::SetNgramModel(model), &ctx);
+        let _ = self
+            .engine
+            .on_command(EngineCommand::SetNgramModel(model), &ctx);
     }
 
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。
@@ -742,10 +763,22 @@ fn send_all_modifier_key_ups() {
     // VK_LSHIFT(0xA0), VK_RSHIFT(0xA1),
     // VK_LCONTROL(0xA2), VK_RCONTROL(0xA3),
     // VK_LMENU(0xA4), VK_RMENU(0xA5)
-    use crate::vk::{VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN, VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU};
+    use crate::vk::{
+        VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU,
+        VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    };
     const MODIFIER_VKS: [VkCode; 11] = [
-        VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN,
-        VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU,
+        VK_SHIFT,
+        VK_CONTROL,
+        VK_MENU,
+        VK_LWIN,
+        VK_RWIN,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_LMENU,
+        VK_RMENU,
     ];
 
     let inputs: Vec<INPUT> = MODIFIER_VKS
@@ -795,7 +828,13 @@ unsafe fn cancel_ime_composition() {
     // NI_COMPOSITIONSTR = 0x15, CPS_CANCEL = 0x04
     // SAFETY: `ctx.himc()` は `ImmContextGuard` が保持する有効な HIMC。
     //         `NI_COMPOSITIONSTR`/`CPS_CANCEL` は未確定文字列キャンセルの標準的な呼び出し。
-    let _ = unsafe { ImmNotifyIME(ctx.himc(), NOTIFY_IME_ACTION(0x15), NOTIFY_IME_INDEX(0x04), 0) };
+    let _ = unsafe {
+        ImmNotifyIME(
+            ctx.himc(),
+            NOTIFY_IME_ACTION(0x15),
+            NOTIFY_IME_INDEX(0x04),
+            0,
+        )
+    };
     log::debug!("Cancelled IME composition");
 }
-

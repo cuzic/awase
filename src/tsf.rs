@@ -115,7 +115,9 @@ impl TsfGateMachine {
     /// 初期状態 `Bypass` でステートマシンを生成する。
     #[must_use]
     pub const fn new() -> Self {
-        Self { state: TsfGateState::Bypass }
+        Self {
+            state: TsfGateState::Bypass,
+        }
     }
 
     /// 現在のステートを返す。
@@ -144,21 +146,21 @@ impl TimedStateMachine for TsfGateMachine {
             // どの状態でもフォーカス変更 → PendingWarmup
             (_, FocusChange) => {
                 self.state = TsfGateState::PendingWarmup;
-                Response::emit_one(GateAction::InitiateHold)
-                    .with_timer(GateTimer::WarmupTimeout, Duration::from_millis(WARMUP_TIMEOUT_MS))
+                Response::emit_one(GateAction::InitiateHold).with_timer(
+                    GateTimer::WarmupTimeout,
+                    Duration::from_millis(WARMUP_TIMEOUT_MS),
+                )
             }
             // PendingWarmup/Bypass + TSF 確定 → Probing + DrainHeld
             // Bypass からの遷移は WarmupTimeout 後に async タスクが遅れて confirm した回復パス。
             (TsfGateState::PendingWarmup | Bypass, TsfConfirmed) => {
                 self.state = Probing;
-                Response::emit_one(GateAction::DrainHeld)
-                    .with_kill_timer(GateTimer::WarmupTimeout)
+                Response::emit_one(GateAction::DrainHeld).with_kill_timer(GateTimer::WarmupTimeout)
             }
             // PendingWarmup/Probing + Bypass 確定 → Bypass + DrainHeld
             (TsfGateState::PendingWarmup | Probing, BypassConfirmed) => {
                 self.state = Bypass;
-                Response::emit_one(GateAction::DrainHeld)
-                    .with_kill_timer(GateTimer::WarmupTimeout)
+                Response::emit_one(GateAction::DrainHeld).with_kill_timer(GateTimer::WarmupTimeout)
             }
             // Probing + プローブ完了 → Ready
             (Probing, ProbeComplete) => {
@@ -398,15 +400,26 @@ mod tests {
     }
 
     fn timer_set(resp: &Response<GateAction, GateTimer>) -> bool {
-        resp.timers
-            .iter()
-            .any(|t| matches!(t, TimerCommand::Set { id: GateTimer::WarmupTimeout, .. }))
+        resp.timers.iter().any(|t| {
+            matches!(
+                t,
+                TimerCommand::Set {
+                    id: GateTimer::WarmupTimeout,
+                    ..
+                }
+            )
+        })
     }
 
     fn timer_killed(resp: &Response<GateAction, GateTimer>) -> bool {
-        resp.timers
-            .iter()
-            .any(|t| matches!(t, TimerCommand::Kill { id: GateTimer::WarmupTimeout }))
+        resp.timers.iter().any(|t| {
+            matches!(
+                t,
+                TimerCommand::Kill {
+                    id: GateTimer::WarmupTimeout
+                }
+            )
+        })
     }
 
     // ── シナリオ A: 正常フロー (TSF アプリ) ────────────────────────────────
@@ -588,7 +601,7 @@ mod tests {
         let mut m = TsfGateMachine::new();
         let _ = m.on_event(GateEvent::FocusChange);
         let _ = m.on_timeout(GateTimer::WarmupTimeout); // → Bypass
-        let _ = m.on_event(GateEvent::TsfConfirmed);    // → Probing（回復）
+        let _ = m.on_event(GateEvent::TsfConfirmed); // → Probing（回復）
 
         let r = m.on_event(GateEvent::ProbeComplete);
         assert_state(&m, TsfGateState::Ready);
@@ -602,7 +615,13 @@ mod tests {
         let mut m = TsfGateMachine::new();
         let r = m.on_event(GateEvent::FocusChange);
         let set_cmd = r.timers.iter().find(|t| {
-            matches!(t, TimerCommand::Set { id: GateTimer::WarmupTimeout, .. })
+            matches!(
+                t,
+                TimerCommand::Set {
+                    id: GateTimer::WarmupTimeout,
+                    ..
+                }
+            )
         });
         let set_cmd = set_cmd.expect("Set コマンドが存在するべき");
         if let TimerCommand::Set { duration, .. } = *set_cmd {
@@ -631,7 +650,9 @@ mod tests {
     #[test]
     fn gate_wrapper_on_warmup_timeout_drains_held() {
         use crate::engine::ModifierState;
-        use crate::types::{ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, VkCode};
+        use crate::types::{
+            ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, VkCode,
+        };
 
         let mut gate = TsfGate::new();
         gate.on_focus_change(); // PendingWarmup へ（HoldingGate 内部で holding=true）
@@ -658,7 +679,11 @@ mod tests {
     // ── TsfReadiness のテスト ─────────────────────────────────────────────
 
     fn readiness(gate: TsfGateState, ime_on: bool, is_tsf_mode: bool) -> TsfReadiness {
-        TsfReadiness { gate, ime_on, is_tsf_mode }
+        TsfReadiness {
+            gate,
+            ime_on,
+            is_tsf_mode,
+        }
     }
 
     /// can_warmup: ime_on && is_tsf_mode が必要十分条件

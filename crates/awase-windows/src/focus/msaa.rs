@@ -1,10 +1,10 @@
 //! Phase 2: MSAA (IAccessible) によるロールベース判定
 
 use awase::types::FocusKind;
+use windows::core::Interface;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
-use windows::core::Interface;
 
 use super::classify::{ClassifyReason, ClassifyResult};
 
@@ -98,7 +98,7 @@ impl MsaaRole {
 /// テキスト入力ロール（Text, Document）なら TextInput、
 /// 非テキストロール（ツールバー、メニュー等）なら NonText、
 /// 判定不能なら Undetermined を返す。
-#[must_use] 
+#[must_use]
 pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
     #[allow(clippy::cast_sign_loss)] // OBJID_CLIENT (-4) is a Windows API convention
@@ -111,8 +111,8 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
         //         IAccessible::from_raw は COM の AddRef 済みポインタをラップする。
         let accessible: IAccessible = unsafe { IAccessible::from_raw(acc) };
         let child_self = VARIANT::from(0i32); // CHILDID_SELF
-        // SAFETY: accessible は有効な IAccessible COM インターフェース。
-        //         child_self は CHILDID_SELF (0) で IAccessible の規約に従った有効な引数。
+                                              // SAFETY: accessible は有効な IAccessible COM インターフェース。
+                                              //         child_self は CHILDID_SELF (0) で IAccessible の規約に従った有効な引数。
         if let Ok(role) = unsafe { accessible.get_accRole(&child_self) } {
             #[allow(clippy::cast_sign_loss)] // MSAA role values are non-negative
             // SAFETY: role は get_accRole が返した有効な VARIANT。

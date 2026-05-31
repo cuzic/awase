@@ -1,21 +1,21 @@
-use std::collections::HashMap;
-use std::time::Duration;
 use awase::config::OutputMode;
 use awase::kana_table::KanaTable;
 use awase::types::{KeyAction, VkCode};
+use std::collections::HashMap;
+use std::time::Duration;
 
 pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
 
-pub(crate) mod types;
 pub mod sender;
+pub(crate) mod types;
 pub(crate) use sender::OutputSession;
 pub(crate) use types::InjectionMode;
 
+pub(crate) mod probe_io;
 mod resolve;
 mod vk_send;
-pub(crate) mod probe_io;
-use resolve::{ascii_to_vk, special_key_to_vk, build_symbol_to_vk};
+use resolve::{ascii_to_vk, build_symbol_to_vk, special_key_to_vk};
 
 /// 公開ヘルパー: ASCII → VK 変換（`platform.rs` の dispatcher 用）。
 pub(crate) use resolve::ascii_to_vk as resolve_ascii_to_vk;
@@ -42,7 +42,11 @@ pub(crate) enum TimerCommand {
 /// `u64::MAX` は「未送信」を意味するセンチネル値。ログ表示用に "∞" に変換する。
 #[must_use]
 pub(crate) fn fmt_ms(ms: u64) -> String {
-    if ms == u64::MAX { "∞".to_owned() } else { ms.to_string() }
+    if ms == u64::MAX {
+        "∞".to_owned()
+    } else {
+        ms.to_string()
+    }
 }
 
 /// SendInput によるキー注入を行うモジュール
@@ -382,7 +386,12 @@ impl Output {
         let elapsed = self.ms_since_last_send();
         let session_expired =
             warm && elapsed < u64::MAX && elapsed > crate::tuning::COMPOSITION_TIMEOUT_MS;
-        WarmthContext { warm, elapsed, session_expired, prepend_f2_warmup: !warm || session_expired }
+        WarmthContext {
+            warm,
+            elapsed,
+            session_expired,
+            prepend_f2_warmup: !warm || session_expired,
+        }
     }
 
     /// probe 進行中なら romaji を VK 列に変換して deferred_vks に追記し true を返す。
@@ -394,7 +403,11 @@ impl Output {
                 .filter_map(ascii_to_vk)
                 .map(|(vk, needs_shift)| DeferredVk { vk, needs_shift })
                 .collect();
-            log::debug!("[tsf] probe in flight → deferred {} VK(s) for {:?}", vks.len(), romaji);
+            log::debug!(
+                "[tsf] probe in flight → deferred {} VK(s) for {:?}",
+                vks.len(),
+                romaji
+            );
             machine.extend_deferred(vks);
             true
         } else {
@@ -420,13 +433,17 @@ impl Output {
     pub(crate) fn step_probe(&mut self) -> TimerCommand {
         let machine = self.pending_tsf.borrow_mut().take();
         let Some(mut machine) = machine else {
-            return TimerCommand::Kill { id: crate::TIMER_TSF_PROBE };
+            return TimerCommand::Kill {
+                id: crate::TIMER_TSF_PROBE,
+            };
         };
         let actions = machine.tick();
         let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
         if done {
             self.on_tsf_probe_ready();
-            TimerCommand::Kill { id: crate::TIMER_TSF_PROBE }
+            TimerCommand::Kill {
+                id: crate::TIMER_TSF_PROBE,
+            }
         } else {
             *self.pending_tsf.borrow_mut() = Some(machine);
             TimerCommand::Continue {
@@ -443,18 +460,23 @@ impl Output {
     pub(super) fn install_pending_tsf(&self, machine: TsfProbeMachine) {
         let mut slot = self.pending_tsf.borrow_mut();
         if slot.is_some() {
-            log::warn!("[tsf-probe] overwriting in-flight probe with new probe cold={}",
-                machine.cold_seq_hint());
+            log::warn!(
+                "[tsf-probe] overwriting in-flight probe with new probe cold={}",
+                machine.cold_seq_hint()
+            );
         }
         *slot = Some(machine);
     }
 
     /// pending_tsf が Some なら継続タイマー命令を返す。`send_keys` 完了後の補完に使う。
     pub(crate) fn pending_tsf_timer(&self) -> Option<TimerCommand> {
-        self.pending_tsf.borrow().is_some().then_some(TimerCommand::Continue {
-            id: crate::TIMER_TSF_PROBE,
-            delay: Duration::from_millis(10),
-        })
+        self.pending_tsf
+            .borrow()
+            .is_some()
+            .then_some(TimerCommand::Continue {
+                id: crate::TIMER_TSF_PROBE,
+                delay: Duration::from_millis(10),
+            })
     }
 }
 
@@ -516,7 +538,8 @@ impl Output {
     /// drain キーの前に呼ぶことで「backspace → raw TSF literal char → drain keys」の順を保証する。
     pub fn flush_raw_tsf_literal_romaji(&self) {
         let romaji = {
-            let mut guard = crate::RAW_TSF_LITERAL.romaji
+            let mut guard = crate::RAW_TSF_LITERAL
+                .romaji
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             std::mem::take(&mut *guard)
@@ -539,7 +562,6 @@ impl Output {
 
 pub use crate::tsf::output::flush_raw_tsf_literal_backspaces;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -551,19 +573,28 @@ mod tests {
         assert_eq!(ColdReason::FocusChange.eager_settle_ms(false), 1500);
         assert_eq!(ColdReason::NativeF2Consumed.eager_settle_ms(false), 1500);
         assert_eq!(ColdReason::SetOpenTrue.eager_settle_ms(false), 1500);
-        assert_eq!(ColdReason::PassthroughConfirmKey.eager_settle_ms(false), 500);
+        assert_eq!(
+            ColdReason::PassthroughConfirmKey.eager_settle_ms(false),
+            500
+        );
         assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(false), 500);
         assert_eq!(ColdReason::SessionExpired.eager_settle_ms(false), 500);
         assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(false), 500);
         assert_eq!(ColdReason::F2NonTsf.eager_settle_ms(false), 500);
-        assert_eq!(ColdReason::RawTsfLiteralRecovery.eager_settle_ms(false), 500);
+        assert_eq!(
+            ColdReason::RawTsfLiteralRecovery.eager_settle_ms(false),
+            500
+        );
         assert_eq!(ColdReason::SetOpenFalse.eager_settle_ms(false), 500);
     }
 
     #[test]
     fn cold_reason_eager_settle_ms_long_idle() {
         // long_idle=true → ConfirmKey 系のみ延長
-        assert_eq!(ColdReason::PassthroughConfirmKey.eager_settle_ms(true), 1500);
+        assert_eq!(
+            ColdReason::PassthroughConfirmKey.eager_settle_ms(true),
+            1500
+        );
         assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(true), 1500);
         // 他は不変
         assert_eq!(ColdReason::SessionExpired.eager_settle_ms(true), 500);
@@ -623,9 +654,15 @@ mod tests {
     fn output_mark_warm_then_cold() {
         let o = make_output();
         o.mark_composition_warm();
-        assert!(o.is_composition_warm(), "should be warm after mark_composition_warm");
+        assert!(
+            o.is_composition_warm(),
+            "should be warm after mark_composition_warm"
+        );
         o.mark_composition_cold(ColdReason::FocusChange);
-        assert!(!o.is_composition_warm(), "should be cold after mark_composition_cold");
+        assert!(
+            !o.is_composition_warm(),
+            "should be cold after mark_composition_cold"
+        );
     }
 
     #[test]
@@ -634,7 +671,10 @@ mod tests {
         o.mark_composition_warm();
         assert!(o.is_composition_warm());
         o.on_focus_changed();
-        assert!(!o.is_composition_warm(), "focus change should invalidate warm state");
+        assert!(
+            !o.is_composition_warm(),
+            "focus change should invalidate warm state"
+        );
     }
 
     #[test]
@@ -643,7 +683,10 @@ mod tests {
         o.mark_composition_warm();
         o.on_focus_changed();
         o.mark_composition_warm();
-        assert!(o.is_composition_warm(), "can warm again after focus change + re-warm");
+        assert!(
+            o.is_composition_warm(),
+            "can warm again after focus change + re-warm"
+        );
     }
 
     #[test]
@@ -663,7 +706,11 @@ mod tests {
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         assert_eq!(o.composition.consecutive_count(), 2);
         o.mark_composition_cold(ColdReason::FocusChange);
-        assert_eq!(o.composition.consecutive_count(), 0, "non-recovery cold should reset count");
+        assert_eq!(
+            o.composition.consecutive_count(),
+            0,
+            "non-recovery cold should reset count"
+        );
     }
 
     #[test]
@@ -673,7 +720,11 @@ mod tests {
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         assert_eq!(o.composition.consecutive_count(), 2);
         o.mark_composition_warm();
-        assert_eq!(o.composition.consecutive_count(), 0, "warm should reset consecutive count");
+        assert_eq!(
+            o.composition.consecutive_count(),
+            0,
+            "warm should reset consecutive count"
+        );
     }
 
     #[test]
@@ -682,7 +733,11 @@ mod tests {
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         assert_eq!(o.composition.consecutive_count(), 1);
         o.on_focus_changed();
-        assert_eq!(o.composition.consecutive_count(), 0, "focus change should reset consecutive count");
+        assert_eq!(
+            o.composition.consecutive_count(),
+            0,
+            "focus change should reset consecutive count"
+        );
     }
 
     #[test]
@@ -691,7 +746,10 @@ mod tests {
         o.mark_composition_cold(ColdReason::SessionExpired);
         assert_eq!(o.composition.last_cold_reason(), ColdReason::SessionExpired);
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.composition.last_cold_reason(), ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(
+            o.composition.last_cold_reason(),
+            ColdReason::RawTsfLiteralRecovery
+        );
     }
 
     // ── RAW_TSF_LITERAL グローバル構造体テスト ──────────────────────────────────

@@ -8,36 +8,31 @@ use std::sync::atomic::Ordering;
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, HOT_KEY_MODIFIERS,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, HOT_KEY_MODIFIERS};
 
-use awase::config::ValidatedConfig;
-use awase::engine::{Engine, NicolaFsm};
-use awase::engine::SpecialKeyCombos;
-use awase::types::VkCode;
-use awase::yab::YabLayout;
 use crate::vk::VkCodeExt;
 use crate::win32::HwndExt as _;
+use awase::config::ValidatedConfig;
+use awase::engine::SpecialKeyCombos;
+use awase::engine::{Engine, NicolaFsm};
+use awase::types::VkCode;
+use awase::yab::YabLayout;
 
-use crate::runtime::executor;
 use crate::hook;
 use crate::ime;
 use crate::output::Output;
 use crate::platform;
+use crate::runtime::executor;
 use crate::tray;
 use crate::tray::SystemTray;
-use crate::{
-    LayoutEntry, Runtime, RUNTIME, ELEVATED, with_app, with_app_ref,
-};
+use crate::{with_app, with_app_ref, LayoutEntry, Runtime, ELEVATED, RUNTIME};
 
 use crate::MAIN_THREAD_ID;
 
 use super::{
-    HotKeyGuard, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RapidPressTracker,
-    RAPID_IME_TIMESTAMPS, StartupDiagnostics, WM_DUPLICATE_INSTANCE,
     find_config_path, init_ime_sync_keys, init_ngram_validated, load_config, parse_key_combos,
-    resolve_relative, run_message_loop,
+    resolve_relative, run_message_loop, HotKeyGuard, RapidPressTracker, StartupDiagnostics,
+    HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
 /// ログ初期化
@@ -63,9 +58,8 @@ pub(super) fn init_logging(debug_console: bool) {
             const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
             let _ = AttachConsole(ATTACH_PARENT_PROCESS);
         }
-        let mut builder = env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("debug"),
-        );
+        let mut builder =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
         builder.format_timestamp_millis();
         builder.target(env_logger::Target::Stderr);
         builder.init();
@@ -166,7 +160,14 @@ pub(super) fn init_engine_validated(
         config.general.speculative_delay_ms,
     );
 
-    Ok((engine, layouts, layout_names, initial_layout_name, left_thumb_vk, right_thumb_vk))
+    Ok((
+        engine,
+        layouts,
+        layout_names,
+        initial_layout_name,
+        left_thumb_vk,
+        right_thumb_vk,
+    ))
 }
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
@@ -226,8 +227,14 @@ pub(super) fn install_hooks_and_hotkeys_validated(
         .general
         .engine_toggle_hotkey
         .as_ref()
-        .and_then(|hotkey_str| register_toggle_hotkey(hotkey_str).map_err(|e| log::warn!("{e}")).ok());
-    let app_override_guard = register_app_override_hotkey().map_err(|e| log::warn!("{e}")).ok();
+        .and_then(|hotkey_str| {
+            register_toggle_hotkey(hotkey_str)
+                .map_err(|e| log::warn!("{e}"))
+                .ok()
+        });
+    let app_override_guard = register_app_override_hotkey()
+        .map_err(|e| log::warn!("{e}"))
+        .ok();
     Ok((guard, toggle_guard, app_override_guard))
 }
 
@@ -281,8 +288,7 @@ impl Drop for WtsGuard {
 
 /// セッション変更通知（画面ロック/アンロック）を登録する
 pub(super) fn register_session_notification() -> Result<WtsGuard> {
-    let tray_hwnd = with_app_ref(|app| app.tray_hwnd())
-        .context("RUNTIME not initialized")?;
+    let tray_hwnd = with_app_ref(|app| app.tray_hwnd()).context("RUNTIME not initialized")?;
     let ok = unsafe {
         super::WTSRegisterSessionNotification(tray_hwnd, super::NOTIFY_FOR_THIS_SESSION).as_bool()
     };
@@ -438,18 +444,15 @@ unsafe extern "system" fn win_event_proc(
         // ここでは旧 pending=true 相当の動作を維持するため、すぐに FocusTransition を立てる。
         // (FocusChanged event の dispatch まで少しタイムラグがある場合に備えた safety net)
         let now = std::time::Instant::now();
-        app.on_window_focus_event(
-            crate::state::ime_event::HwndId(hwnd_isize as usize),
-            now,
-        );
+        app.on_window_focus_event(crate::state::ime_event::HwndId(hwnd_isize as usize), now);
     });
 }
 
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
 pub(super) fn install_ctrl_handler() -> Result<()> {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
+        use crate::{MAIN_THREAD_ID, QUIT_REQUESTED};
         use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-        use crate::{QUIT_REQUESTED, MAIN_THREAD_ID};
         QUIT_REQUESTED.store(true, Ordering::SeqCst);
         let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
         if tid != 0 {
@@ -467,10 +470,7 @@ pub(super) fn install_ctrl_handler() -> Result<()> {
 
 impl LayoutEntry {
     /// layouts_dir 内の *.yab を全てスキャンして配列一覧を構築する
-    pub(super) fn scan_all(
-        layouts_dir: &Path,
-        diag: &mut StartupDiagnostics,
-    ) -> Result<Vec<Self>> {
+    pub(super) fn scan_all(layouts_dir: &Path, diag: &mut StartupDiagnostics) -> Result<Vec<Self>> {
         let mut layouts = Vec::new();
 
         if !layouts_dir.is_dir() {
@@ -493,20 +493,21 @@ impl LayoutEntry {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "yab") {
                 match std::fs::read_to_string(&path) {
-                    Ok(content) => match YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis)
-                    {
-                        Ok(yab) => {
-                            let yab = yab.resolve_kana();
-                            log::info!("Discovered layout: {} ({})", yab.name, path.display());
-                            layouts.push(Self {
-                                name: yab.name.clone(),
-                                layout: yab,
-                            });
+                    Ok(content) => {
+                        match YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis) {
+                            Ok(yab) => {
+                                let yab = yab.resolve_kana();
+                                log::info!("Discovered layout: {} ({})", yab.name, path.display());
+                                layouts.push(Self {
+                                    name: yab.name.clone(),
+                                    layout: yab,
+                                });
+                            }
+                            Err(e) => {
+                                diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
+                            }
                         }
-                        Err(e) => {
-                            diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
-                        }
-                    },
+                    }
                     Err(e) => {
                         diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
                     }
@@ -589,9 +590,12 @@ pub(super) fn run_all() -> Result<()> {
         init_engine_validated(&config, &mut diag)?;
     let engine_on_keys = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
     let engine_off_keys = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
-    let ime_control_on_keys = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut diag);
-    let ime_control_off_keys = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut diag);
-    let (ime_sync_toggle, ime_sync_on, ime_sync_off) = init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
+    let ime_control_on_keys =
+        parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut diag);
+    let ime_control_off_keys =
+        parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut diag);
+    let (ime_sync_toggle, ime_sync_on, ime_sync_off) =
+        init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
     check_keyboard_layout(&mut diag);
     let system_tray = init_tray(&layout_names, &initial_layout_name, elevated)?;
 
@@ -663,15 +667,17 @@ pub(super) fn run_all() -> Result<()> {
     let _gji_worker = crate::tsf::observer::start_monitor_thread();
     let _ = with_app(|app| app.set_uia_sender(uia_tx));
 
-    let _wts_guard = register_session_notification().map_err(|e| log::warn!("{e}")).ok();
+    let _wts_guard = register_session_notification()
+        .map_err(|e| log::warn!("{e}"))
+        .ok();
     initialize_ime_cache();
 
     // Explorer 再起動時にトレイアイコンを復元するため TaskbarCreated メッセージを登録
     // SAFETY: RegisterWindowMessageW with a valid wide string literal.
     let taskbar_created_msg = unsafe {
-        windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(
-            windows::core::w!("TaskbarCreated"),
-        )
+        windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW(windows::core::w!(
+            "TaskbarCreated"
+        ))
     };
 
     run_message_loop(taskbar_created_msg);

@@ -11,7 +11,7 @@ const TASK_NAME: &str = "awase";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Task Scheduler にログオン時自動起動タスクを登録する
-#[must_use] 
+#[must_use]
 pub fn register() -> bool {
     let exe = std::env::current_exe().ok();
     let Some(exe_path) = exe.as_ref().and_then(|p| p.to_str()) else {
@@ -43,7 +43,7 @@ pub fn register() -> bool {
 }
 
 /// Task Scheduler から自動起動タスクを削除する
-#[must_use] 
+#[must_use]
 pub fn unregister() -> bool {
     let output = Command::new("schtasks")
         .args(["/delete", "/tn", TASK_NAME, "/f"])
@@ -63,7 +63,7 @@ pub fn unregister() -> bool {
 }
 
 /// タスクが登録済みかどうかを確認する
-#[must_use] 
+#[must_use]
 pub fn is_registered() -> bool {
     Command::new("schtasks")
         .args(["/query", "/tn", TASK_NAME])
@@ -74,7 +74,7 @@ pub fn is_registered() -> bool {
 
 /// ユーザーにダイアログで自動起動を確認する
 /// Returns: true = Yes, false = No
-#[must_use] 
+#[must_use]
 pub fn ask_user() -> bool {
     use windows::core::w;
     use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, IDYES, MB_ICONQUESTION, MB_YESNO};

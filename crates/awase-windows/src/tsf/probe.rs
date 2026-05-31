@@ -172,7 +172,7 @@ pub struct WarmEpoch {
 }
 
 impl WarmEpoch {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             composition_warm_epoch: std::cell::Cell::new(0),
@@ -424,7 +424,8 @@ impl CompositionState {
         let new_epoch = self.warm_epoch.on_focus_changed();
         // FocusChange で last_cold_reason を更新し、F2NonTsf などの前回理由が
         // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
-        self.cold_ctx.record_cold(crate::output::ColdReason::FocusChange, idle_ms);
+        self.cold_ctx
+            .record_cold(crate::output::ColdReason::FocusChange, idle_ms);
         self.cold_ctx.reset_consecutive_count();
         log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
     }
@@ -540,7 +541,9 @@ impl LiteralDetector {
         let confirmed = if self.was_candidate_visible {
             TSF_OBS.gji_last_io_ms.load(Relaxed) != self.io_baseline
         } else {
-            TSF_OBS.gji_candidate_show.has_changed(&self.gji_show_baseline)
+            TSF_OBS
+                .gji_candidate_show
+                .has_changed(&self.gji_show_baseline)
         };
         if confirmed {
             Some(DetectionResult::CompositionConfirmed)
@@ -599,7 +602,10 @@ mod tests {
 
         let elapsed = start.elapsed().as_millis();
         // 即 settled（margin = POST_IDLE_MARGIN_MS = 30ms 以内）
-        assert!(elapsed < 150, "should settle quickly (idle>80ms), got {elapsed}ms");
+        assert!(
+            elapsed < 150,
+            "should settle quickly (idle>80ms), got {elapsed}ms"
+        );
     }
 
     /// phase1: min_ms が経過するまで probe は I/O 観測を信頼しない
@@ -610,7 +616,9 @@ mod tests {
 
         // GJI は settled 状態だが min_ms=80 のため phase1 で 80ms 待機する
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
-        TSF_OBS.gji_last_io_ms.store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
+        TSF_OBS
+            .gji_last_io_ms
+            .store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 80); // min_ms=80
@@ -630,7 +638,9 @@ mod tests {
 
         // GJI I/O は warmup より前 → warmup 後に I/O なし → タイムアウト
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
-        TSF_OBS.gji_last_io_ms.store(now_ms.saturating_sub(5_000), SeqCst);
+        TSF_OBS
+            .gji_last_io_ms
+            .store(now_ms.saturating_sub(5_000), SeqCst);
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 0); // min_ms=0

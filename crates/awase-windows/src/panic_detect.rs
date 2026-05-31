@@ -49,7 +49,7 @@ impl RapidPressTracker {
     const THRESHOLD: usize = 3;
     const WINDOW_MS: u64 = 1000;
 
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             buf: [0; Self::THRESHOLD],
@@ -101,9 +101,9 @@ pub fn record_ime_keydown(now_ms: u64) {
 pub fn is_panic_trigger(vk: awase::types::VkCode, ctrl: bool, shift: bool, alt: bool) -> bool {
     PANIC_TRIGGER_COMBOS
         .with(|combos| {
-            combos.iter().any(|c| {
-                c.vk == vk && c.ctrl == ctrl && c.shift == shift && c.alt == alt
-            })
+            combos
+                .iter()
+                .any(|c| c.vk == vk && c.ctrl == ctrl && c.shift == shift && c.alt == alt)
         })
         .unwrap_or(false)
 }

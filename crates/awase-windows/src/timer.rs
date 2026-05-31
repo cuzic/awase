@@ -17,7 +17,7 @@ pub struct Win32Timer {
 }
 
 impl Win32Timer {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             to_os: HashMap::new(),
@@ -53,7 +53,7 @@ impl Win32Timer {
     }
 
     /// `WM_TIMER` の `wParam` から論理タイマー ID を解決する。
-    #[must_use] 
+    #[must_use]
     pub fn resolve(&self, wparam: usize) -> Option<usize> {
         self.to_logical.get(&wparam).copied()
     }

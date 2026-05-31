@@ -168,7 +168,7 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
 ///
 /// COM が初期化済みのスレッドから呼び出すこと
 #[allow(unused_variables)] // hwnd はデバッグ用に保持
-#[must_use] 
+#[must_use]
 pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassifyResult {
     // SAFETY: automation は CoCreateInstance が返した有効な IUIAutomation COM オブジェクト。
     //         GetFocusedElement は COM が初期化済みのスレッドから呼び出されることが
@@ -191,23 +191,35 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
     // SAFETY: element は GetFocusedElement が返した有効な IUIAutomationElement COM オブジェクト。
     //         COM は初期化済みであり、AddRef 済みのポインタを保持している。
     if let Some(kind) = unsafe { check_value_pattern(&element) } {
-        return UiaClassifyResult { focus_kind: kind, app_kind };
+        return UiaClassifyResult {
+            focus_kind: kind,
+            app_kind,
+        };
     }
 
     // SAFETY: element は GetFocusedElement が返した有効な IUIAutomationElement COM オブジェクト。
     //         COM は初期化済みであり、AddRef 済みのポインタを保持している。
     if let Some(kind) = unsafe { check_text_pattern(&element) } {
-        return UiaClassifyResult { focus_kind: kind, app_kind };
+        return UiaClassifyResult {
+            focus_kind: kind,
+            app_kind,
+        };
     }
 
     // SAFETY: element は GetFocusedElement が返した有効な IUIAutomationElement COM オブジェクト。
     //         COM は初期化済みであり、AddRef 済みのポインタを保持している。
     if let Some(kind) = unsafe { check_control_type(&element) } {
-        return UiaClassifyResult { focus_kind: kind, app_kind };
+        return UiaClassifyResult {
+            focus_kind: kind,
+            app_kind,
+        };
     }
 
     log::debug!("UIA: no definitive signal → Undetermined");
-    UiaClassifyResult { focus_kind: FocusKind::Undetermined, app_kind }
+    UiaClassifyResult {
+        focus_kind: FocusKind::Undetermined,
+        app_kind,
+    }
 }
 
 /// UIA 非同期判定ワーカースレッドを起動する
@@ -217,7 +229,7 @@ pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassify
 /// `FOCUS_KIND` を更新する。Phase 1-2 で `Undetermined` だったコントロールの解像度を上げる。
 ///
 /// 戻り値の `WorkerThread` をアプリ終了まで保持すること（drop 時に停止・join される）。
-#[must_use] 
+#[must_use]
 pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableHwnd>) {
     let (tx, rx) = mpsc::channel::<SendableHwnd>();
     let worker = win32_worker::WorkerThread::spawn("uia-worker", move |token| {
@@ -251,8 +263,8 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
                     // GetFocusedElement はシステムのフォーカス要素を取得するため hwnd を直接使用しない。
                     // hwnd は WM_FOCUS_KIND_UPDATE の LPARAM で返し、メインスレッド側で検証に使う。
                     let result = uia_classify_focus(&automation, hwnd);
-                    let has_info = result.focus_kind != FocusKind::Undetermined
-                        || result.app_kind.is_some();
+                    let has_info =
+                        result.focus_kind != FocusKind::Undetermined || result.app_kind.is_some();
 
                     if has_info {
                         log::debug!(
@@ -263,12 +275,12 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
 
                         // メインスレッドに結果を送信
                         // wParam: 下位 8 bit = FocusKind, 次の 8 bit = AppKind (FOCUS_KIND_UPDATE_NO_APP_KIND = なし)
-                        let app_kind_val = result.app_kind.map_or(
-                            usize::from(crate::FOCUS_KIND_UPDATE_NO_APP_KIND),
-                            |k| k as u8 as usize,
-                        );
-                        let wparam_val = (result.focus_kind as u8 as usize)
-                            | (app_kind_val << 8);
+                        let app_kind_val = result
+                            .app_kind
+                            .map_or(usize::from(crate::FOCUS_KIND_UPDATE_NO_APP_KIND), |k| {
+                                k as u8 as usize
+                            });
+                        let wparam_val = (result.focus_kind as u8 as usize) | (app_kind_val << 8);
                         crate::win32::post_to_main_thread_with(
                             crate::WM_FOCUS_KIND_UPDATE,
                             wparam_val,

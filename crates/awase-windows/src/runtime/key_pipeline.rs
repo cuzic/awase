@@ -4,11 +4,11 @@
 //! フックコールバック本体から `Runtime::process_key_event` を呼ぶことで
 //! 同じ動作をより読みやすい形で表現する。
 
-use awase::types::{RawKeyEvent, ShadowImeAction};
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+use awase::types::{RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
@@ -40,7 +40,8 @@ impl Runtime {
         if self.platform.try_hold_key(event) {
             log::debug!(
                 "[tsf-gate-hold] vk=0x{:02X} {:?} held by TsfGate (PendingWarmup)",
-                event.vk_code, event.event_type
+                event.vk_code,
+                event.event_type
             );
             return CallbackResult::Consumed;
         }
@@ -114,10 +115,15 @@ impl Runtime {
             "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
              mods(c={} s={} a={} w={}) gas_ctrl={} phys_ctrl={} extra=0x{:X} \
              pending_drain={} gate_active={}",
-            event.vk_code, event.event_type, event.timestamp,
+            event.vk_code,
+            event.event_type,
+            event.timestamp,
             delay_ms,
             self.engine.debug_state_label(),
-            mods.ctrl, mods.shift, mods.alt, mods.win,
+            mods.ctrl,
+            mods.shift,
+            mods.alt,
+            mods.win,
             gas_ctrl,
             phys_ctrl,
             event.extra_info,
@@ -160,7 +166,9 @@ impl Runtime {
             && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
-            let kind = self.platform_state.ime
+            let kind = self
+                .platform_state
+                .ime
                 .active_chord_kind()
                 .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
             self.platform_state
@@ -219,11 +227,16 @@ impl Runtime {
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))
         } else if self.platform_state.is_japanese_ime() {
-            event.ime_relevance.shadow_action.map(|a| (a, IntentKind::PhysicalImeKey))
+            event
+                .ime_relevance
+                .shadow_action
+                .map(|a| (a, IntentKind::PhysicalImeKey))
         } else {
             None
         };
-        let Some((action, kind)) = intent_kind else { return false; };
+        let Some((action, kind)) = intent_kind else {
+            return false;
+        };
 
         let current = self.platform_state.ime_on();
         let new_val = match action {
@@ -234,8 +247,13 @@ impl Runtime {
         let ms = hook::current_tick_ms();
         let user_enabled = self.engine.is_user_enabled();
         match kind {
-            IntentKind::SyncKey => self.platform_state.write_sync_key(new_val, ms, user_enabled),
-            IntentKind::PhysicalImeKey => self.platform_state.write_physical_key(new_val, ms, user_enabled),
+            IntentKind::SyncKey => self
+                .platform_state
+                .write_sync_key(new_val, ms, user_enabled),
+            IntentKind::PhysicalImeKey => {
+                self.platform_state
+                    .write_physical_key(new_val, ms, user_enabled)
+            }
         }
         if self.platform_state.ime_on() == current {
             return false;
@@ -258,8 +276,7 @@ impl Runtime {
         // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
         if !self.platform_state.ime_on() {
             let view = self.shadow_ime_control_view();
-            let imm_first =
-                crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
+            let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
             if imm_first {
                 // 楽観的 C: async 完了前から ImeModel を OFF に同期する。
                 self.platform_state.ime.mirror_applied_open(false);
@@ -282,7 +299,8 @@ impl Runtime {
                             crate::with_app(|app| {
                                 crate::ime_controller::CONTROLLER
                                     .apply_skipping_imm(false, &app.shadow_ime_control_view())
-                            }).unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                            })
+                            .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
                         }
                     };
                     // B+C(ts更新)+D(noop)+E
@@ -301,7 +319,11 @@ impl Runtime {
         log::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
-            if self.platform_state.ime_on() { "ON" } else { "OFF" },
+            if self.platform_state.ime_on() {
+                "ON"
+            } else {
+                "OFF"
+            },
             event.vk_code,
             kind,
         );
@@ -320,7 +342,9 @@ impl Runtime {
                 // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
                 self.platform.timer.kill(TIMER_IME_REFRESH);
                 if is_key_up {
-                    let kind = self.platform_state.ime
+                    let kind = self
+                        .platform_state
+                        .ime
                         .active_chord_kind()
                         .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
                     self.platform_state
@@ -334,7 +358,11 @@ impl Runtime {
                 );
             } else {
                 let ms = hook::current_tick_ms();
-                self.platform_state.write_set_open_request(new_ime_on, ms, self.engine.is_user_enabled());
+                self.platform_state.write_set_open_request(
+                    new_ime_on,
+                    ms,
+                    self.engine.is_user_enabled(),
+                );
                 self.platform_state.on_set_open_requested();
                 self.platform.timer.kill(TIMER_IME_REFRESH);
 
@@ -354,11 +382,11 @@ impl Runtime {
                 // IME ON 要求では dispatch しない: 後続の Ctrl+無変換 IME OFF で
                 // write_set_open_request がスキップされ belief が true のまま残る事故を防ぐ。
                 if !new_ime_on && event.modifier_snapshot.ctrl {
-                    self.platform_state
-                        .ime
-                        .dispatch_event(crate::state::ime_event::ImeEvent::ChordStarted {
+                    self.platform_state.ime.dispatch_event(
+                        crate::state::ime_event::ImeEvent::ChordStarted {
                             kind: crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff,
-                        });
+                        },
+                    );
                 }
                 let chord_state = if !new_ime_on && event.modifier_snapshot.ctrl {
                     "started (Ctrl combo)"
@@ -414,14 +442,18 @@ impl Runtime {
                 awase::engine::Decision::PassThrough => {
                     log::debug!(
                         "[{reason}] KANJI key consume vk={:#04x} {:?} (was PassThrough)",
-                        event.vk_code, event.event_type
+                        event.vk_code,
+                        event.event_type
                     );
-                    awase::engine::Decision::Consume { effects: vec![].into() }
+                    awase::engine::Decision::Consume {
+                        effects: vec![].into(),
+                    }
                 }
                 awase::engine::Decision::PassThroughWith { effects } => {
                     log::debug!(
                         "[{reason}] KANJI key consume vk={:#04x} {:?} (was PassThroughWith)",
-                        event.vk_code, event.event_type
+                        event.vk_code,
+                        event.event_type
                     );
                     awase::engine::Decision::Consume { effects }
                 }
@@ -434,7 +466,9 @@ impl Runtime {
         // ImeModel から applied snapshot を pre-fetch して executor に渡す。
         // executor は intra-batch 更新でこの値を書き換えることがある（ImmCross 楽観更新等）。
         let pre_applied = self.platform_state.ime.applied_pair();
-        let result = self.executor.execute_from_hook(&mut self.platform, decision, event, pre_applied);
+        let result =
+            self.executor
+                .execute_from_hook(&mut self.platform, decision, event, pre_applied);
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
         self.dispatch_outcomes(result.sync_outcomes);
@@ -493,11 +527,18 @@ const fn compute_focus_probe_grace(
     } else {
         u64::MAX
     };
-    let gji_grace_active = gji_active_after_focus && gji_idle_ms < crate::tuning::GJI_SETTLE_GRACE_MS;
+    let gji_grace_active =
+        gji_active_after_focus && gji_idle_ms < crate::tuning::GJI_SETTLE_GRACE_MS;
 
     let shadow_grace_active = shadow_on && probe_age_ms < crate::tuning::SHADOW_GRACE_MS;
 
-    FocusProbeGraceFlags { warmup_grace_active, gji_grace_active, shadow_grace_active, warmup_elapsed, gji_idle_ms }
+    FocusProbeGraceFlags {
+        warmup_grace_active,
+        gji_grace_active,
+        shadow_grace_active,
+        warmup_elapsed,
+        gji_idle_ms,
+    }
 }
 
 impl Runtime {
@@ -506,7 +547,8 @@ impl Runtime {
         if effective {
             self.platform_state.reset_ime_detect_state();
         }
-        self.platform_state.write_focus_probe(effective, ms, self.engine.is_user_enabled());
+        self.platform_state
+            .write_focus_probe(effective, ms, self.engine.is_user_enabled());
     }
 }
 
@@ -547,11 +589,17 @@ impl Runtime {
         let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
         let ime_on_before_probe = self.platform_state.ime_on();
 
-        self.platform_state.set_is_japanese_ime(probe.is_japanese_ime);
+        self.platform_state
+            .set_is_japanese_ime(probe.is_japanese_ime);
 
         let now_ms = hook::current_tick_ms();
         let signals = compute_focus_probe_grace(
-            now_ms, probe_age_ms, warmup_ms, gji_last_io_ms, last_focus_change_ms, shadow_on,
+            now_ms,
+            probe_age_ms,
+            warmup_ms,
+            gji_last_io_ms,
+            last_focus_change_ms,
+            shadow_on,
         );
 
         let suppressed_reason: Option<&'static str> = if let Some(on) = probe.ime_on {
@@ -568,7 +616,8 @@ impl Runtime {
 
         let ime_on_after_probe = self.platform_state.ime_on();
         let input_mode_after_probe = self.platform_state.input_mode();
-        let ime_on_suffix = build_ime_on_suffix(probe.ime_on, suppressed_reason, &signals, probe_age_ms);
+        let ime_on_suffix =
+            build_ime_on_suffix(probe.ime_on, suppressed_reason, &signals, probe_age_ms);
 
         log::info!(
             "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={} sig2={} sig3={}]",
@@ -576,7 +625,11 @@ impl Runtime {
             ime_on_after_probe,
             ime_on_suffix,
             input_mode_after_probe,
-            if signals.gji_idle_ms == u64::MAX { "never".to_string() } else { signals.gji_idle_ms.to_string() },
+            if signals.gji_idle_ms == u64::MAX {
+                "never".to_string()
+            } else {
+                signals.gji_idle_ms.to_string()
+            },
             signals.warmup_grace_active,
             signals.gji_grace_active,
             signals.shadow_grace_active,

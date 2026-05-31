@@ -61,7 +61,7 @@ impl std::fmt::Display for ClassifyReason {
 ///
 /// deny-first（バイパスを優先）、allow は確信がある場合のみ。
 /// 判定不能なら `Undetermined` を返す。
-#[must_use] 
+#[must_use]
 pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
     if hwnd.non_null().is_none() {
         return ClassifyResult {
@@ -147,7 +147,7 @@ pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
 }
 
 /// ウィンドウハンドルからクラス名を取得する
-#[must_use] 
+#[must_use]
 pub fn get_class_name_string(hwnd: HWND) -> String {
     let mut class_buf = [0u16; 256];
     // SAFETY: hwnd は呼出元から渡された値。class_buf はスタック上の有効なバッファで、
@@ -162,7 +162,7 @@ pub fn get_class_name_string(hwnd: HWND) -> String {
 }
 
 /// ウィンドウハンドルからプロセス ID を取得する
-#[must_use] 
+#[must_use]
 pub fn get_window_process_id(hwnd: HWND) -> u32 {
     let mut pid: u32 = 0;
     // SAFETY: hwnd は呼出元から渡された値。pid はスタック上の u32 変数で有効なポインタ。
@@ -172,7 +172,7 @@ pub fn get_window_process_id(hwnd: HWND) -> u32 {
 }
 
 /// プロセス ID から実行ファイル名を取得する
-#[must_use] 
+#[must_use]
 pub fn get_process_name(process_id: u32) -> String {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{

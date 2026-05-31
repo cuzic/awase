@@ -15,7 +15,10 @@ impl KanaTable {
     pub fn build() -> Self {
         let romaji_to_kana = build_romaji_map();
         let kana_to_romaji = build_reverse_map(&romaji_to_kana);
-        Self { romaji_to_kana, kana_to_romaji }
+        Self {
+            romaji_to_kana,
+            kana_to_romaji,
+        }
     }
 
     /// ローマ字に対応するかな文字を返す。

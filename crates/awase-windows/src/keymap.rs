@@ -1,9 +1,9 @@
 //! `[[keymap]]` ルールのコンパイル済み表現とマッチング
 
+use crate::vk::VkCodeExt;
 use awase::config::{KeymapRule, ParsedKeyCombo};
 use awase::engine::fsm_types::ModifierState;
 use awase::types::VkCode;
-use crate::vk::VkCodeExt;
 
 /// `[[keymap]]` ルールの実行時表現
 #[derive(Debug, Clone)]
@@ -63,7 +63,11 @@ impl KeymapTable {
         Self(
             self.0
                 .iter()
-                .filter(|r| r.app.as_deref().map_or(true, |a| lower.starts_with(a) || lower == a))
+                .filter(|r| {
+                    r.app
+                        .as_deref()
+                        .map_or(true, |a| lower.starts_with(a) || lower == a)
+                })
                 .cloned()
                 .collect(),
         )

@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, MSG, PostThreadMessageW,
-    SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, WH_KEYBOARD_LL,
-    WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN,
+    CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
+    UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_QUIT,
+    WM_SYSKEYDOWN,
 };
 
 use crate::output::INJECTED_MARKER;
@@ -16,13 +16,17 @@ use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
 use awase::types::{
-    ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
-    ShadowImeAction, Timestamp, VkCode,
+    ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, ShadowImeAction,
+    Timestamp, VkCode,
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
 #[must_use]
-pub fn classify_key(vk: VkCode, scan: ScanCode, config: &HookConfig) -> (KeyClassification, Option<PhysicalPos>) {
+pub fn classify_key(
+    vk: VkCode,
+    scan: ScanCode,
+    config: &HookConfig,
+) -> (KeyClassification, Option<PhysicalPos>) {
     use crate::vk::VkCodeExt;
 
     let left_thumb = config.left_thumb_vk;
@@ -103,7 +107,9 @@ pub fn is_physical_key_down(vk: VkCode) -> bool {
 /// 物理 VK の押下経過時間（ms）。押下されていなければ `None`。
 #[must_use]
 pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
-    let down_at = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize)?.load(Ordering::Relaxed);
+    let down_at = PHYSICAL_KEY_DOWN_AT_MS
+        .get(vk.0 as usize)?
+        .load(Ordering::Relaxed);
     (down_at != 0).then(|| current_tick_ms().saturating_sub(down_at))
 }
 
@@ -125,7 +131,7 @@ pub fn ctrl_consumed_since_down() -> bool {
 fn cached_hook_config() -> HookConfig {
     let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
     HookConfig {
-        left_thumb_vk:  VkCode((packed >> 16) as u16),
+        left_thumb_vk: VkCode((packed >> 16) as u16),
         right_thumb_vk: VkCode(packed as u16),
     }
 }
@@ -138,14 +144,12 @@ pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) 
 }
 
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
-#[must_use] 
+#[must_use]
 pub fn current_tick_ms() -> u64 {
     // SAFETY: GetTickCount64 はどのスレッドからも安全に呼び出せるスレッドセーフな Win32 API。
     //         引数なし・副作用なし・内部ロックにより安全性が保証される。
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
-
-
 
 /// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
 struct SingleThreadCell<T>(UnsafeCell<T>);
@@ -167,8 +171,6 @@ impl<T> SingleThreadCell<T> {
 
 /// グローバルなフックハンドル（構造的に必要: OS コールバックから参照）
 static HOOK_HANDLE: SingleThreadCell<HHOOK> = SingleThreadCell::new(HHOOK(std::ptr::null_mut()));
-
-
 
 /// コールバックの戻り値
 #[derive(Debug)]
@@ -202,12 +204,7 @@ impl Drop for HookGuard {
         // フックスレッド側で UnhookWindowsHookEx を実行してから終了する。
         // SAFETY: hook_thread_id はフックスレッドの有効な TID。
         unsafe {
-            let _ = PostThreadMessageW(
-                self.hook_thread_id,
-                WM_QUIT,
-                WPARAM(0),
-                LPARAM(0),
-            );
+            let _ = PostThreadMessageW(self.hook_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
         }
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -231,13 +228,14 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
     let thread = std::thread::Builder::new()
         .name("awase-hook".into())
         .spawn(|| {
-            let hook_result = unsafe {
-                SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0)
-            };
+            let hook_result =
+                unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) };
             match hook_result {
                 Ok(hook) => {
                     // SAFETY: HOOK_HANDLE はこのスレッドのみがアクセスする。
-                    unsafe { HOOK_HANDLE.set(hook); }
+                    unsafe {
+                        HOOK_HANDLE.set(hook);
+                    }
                     let tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
                     HOOK_TID_INIT_SLOT.store(tid, Ordering::Release);
 
@@ -246,9 +244,13 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
                     loop {
                         // SAFETY: msg は有効なスタック上の MSG。
                         let ret = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
-                        if ret.0 <= 0 { break; }
+                        if ret.0 <= 0 {
+                            break;
+                        }
                         // SAFETY: msg は GetMessageW が充填した有効な値。
-                        unsafe { DispatchMessageW(&raw const msg); }
+                        unsafe {
+                            DispatchMessageW(&raw const msg);
+                        }
                     }
 
                     // ループ終了（WM_QUIT 受信）: フックを解除
@@ -277,7 +279,9 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
     // フックスレッドが SetWindowsHookExW を完了するまでスピン待機
     let hook_tid = loop {
         let t = HOOK_TID_INIT_SLOT.load(Ordering::Acquire);
-        if t != 0 { break t; }
+        if t != 0 {
+            break t;
+        }
         std::hint::spin_loop();
     };
 
@@ -288,7 +292,10 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
     }
 
     log::info!("Keyboard hook installed in dedicated thread (tid={hook_tid})");
-    Ok(HookGuard { hook_thread_id: hook_tid, thread: Some(thread) })
+    Ok(HookGuard {
+        hook_thread_id: hook_tid,
+        thread: Some(thread),
+    })
 }
 
 fn build_raw_key_event(
@@ -304,7 +311,11 @@ fn build_raw_key_event(
     RawKeyEvent {
         vk_code: vk,
         scan_code: scan,
-        event_type: if is_keydown { KeyEventType::KeyDown } else { KeyEventType::KeyUp },
+        event_type: if is_keydown {
+            KeyEventType::KeyDown
+        } else {
+            KeyEventType::KeyUp
+        },
         extra_info,
         timestamp: now_timestamp(),
         key_classification,
@@ -358,7 +369,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // （長押し判定が常に「直前」へリセットされてしまうため）。
         let new_value = if is_keydown {
             let prev = slot.load(Ordering::Relaxed);
-            if prev == 0 { current_tick_ms() } else { prev }
+            if prev == 0 {
+                current_tick_ms()
+            } else {
+                prev
+            }
         } else {
             0
         };
@@ -389,8 +404,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         modifier_snapshot.alt = true;
     }
     let event = build_raw_key_event(
-        vk, scan, is_keydown, kb.dwExtraInfo,
-        key_classification, physical_pos, modifier_snapshot,
+        vk,
+        scan,
+        is_keydown,
+        kb.dwExtraInfo,
+        key_classification,
+        physical_pos,
+        modifier_snapshot,
     );
 
     let engine_tid = crate::ENGINE_THREAD_ID.load(Ordering::Relaxed);
@@ -402,7 +422,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             crate::WM_KEY_FROM_HOOK,
             WPARAM(0),
             LPARAM(ptr as isize),
-        ).is_err() {
+        )
+        .is_err()
+        {
             // PostThreadMessageW 失敗（キュー満杯等）: メモリリークを防ぐため即座に回収
             let _ = Box::from_raw(ptr);
             log::warn!("[hook] PostThreadMessageW failed vk={vk:#04X}");
@@ -411,9 +433,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     LRESULT(1) // 常に消費（engine thread が PassThrough 判定して reinject する）
 }
 
-
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）。診断用に公開。
-#[must_use] 
+#[must_use]
 pub fn now_timestamp_us() -> u64 {
     now_timestamp()
 }

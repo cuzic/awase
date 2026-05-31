@@ -2,7 +2,7 @@ use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
 use super::belief::ImeBelief;
-use super::hook_state::{HookRoutingState, HookConfig, SyncKeyGate};
+use super::hook_state::{HookConfig, HookRoutingState, SyncKeyGate};
 use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
@@ -37,7 +37,7 @@ impl ImeStateHub {
         Self {
             belief: ImeBelief {
                 input_mode: InputModeState::ObservedRomaji, // デフォルト: ローマ字入力
-                is_japanese_ime: true,                     // デフォルト: 日本語
+                is_japanese_ime: true,                      // デフォルト: 日本語
                 prev_conversion_mode: None,
             },
             event_log: ImeEventLog::default(),
@@ -176,9 +176,8 @@ impl ImeStateHub {
             return None;
         }
 
-        let max_age = std::time::Duration::from_millis(
-            crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS,
-        );
+        let max_age =
+            std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS);
         let trusted = self.shadow_model.observations.most_recent_trusted(now)?;
         if trusted.age(now) > max_age {
             return None;
@@ -343,7 +342,10 @@ impl PlatformState {
     #[inline]
     #[must_use]
     pub const fn ime_detect_miss_count(&self) -> u32 {
-        self.ime.shadow_model.observe_miss_monitor.consecutive_miss_count
+        self.ime
+            .shadow_model
+            .observe_miss_monitor
+            .consecutive_miss_count
     }
 
     /// いずれかの強制 ON ガードが立っているかを返す (Phase 3a: shadow_model.force_guards 由来)。
@@ -378,13 +380,14 @@ impl PlatformState {
     /// `BrokenAppBootstrap` ガードをセットする。
     #[inline]
     pub fn set_force_on_broken_app_bootstrap(&mut self) {
-        self.ime.shadow_model.force_guards.add(
-            super::force_guard::ForceGuard {
+        self.ime
+            .shadow_model
+            .force_guards
+            .add(super::force_guard::ForceGuard {
                 reason: super::force_guard::ForceOnReason::BrokenAppBootstrap,
                 expires_at: None,
                 generation: self.ime.event_log.next_seq(),
-            },
-        );
+            });
     }
 
     /// observe_miss_monitor を reset し、すべての force-on ガードを解除する。
@@ -421,11 +424,14 @@ impl PlatformState {
         // Phase 3a: observe_miss_monitor + force_guards に置換
         self.ime.shadow_model.observe_miss_monitor.record_success();
         self.ime.shadow_model.force_guards.guards.clear();
-        self.ime.shadow_model.force_guards.add(super::force_guard::ForceGuard {
-            reason: super::force_guard::ForceOnReason::PanicReset,
-            expires_at: None,
-            generation: self.ime.event_log.next_seq(),
-        });
+        self.ime
+            .shadow_model
+            .force_guards
+            .add(super::force_guard::ForceGuard {
+                reason: super::force_guard::ForceOnReason::PanicReset,
+                expires_at: None,
+                generation: self.ime.event_log.next_seq(),
+            });
         // Step 2B: shadow_model を直接 reset (event 記録は残しつつ intent はクリア)。
         self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
             target: true,
@@ -523,12 +529,17 @@ impl PlatformState {
 
         // miss_count (Phase 3a: observe_miss_monitor 経由)
         if update.increment_miss_count {
-            self.ime.shadow_model.observe_miss_monitor.record_miss(std::time::Instant::now());
-            let miss = self.ime.shadow_model.observe_miss_monitor.consecutive_miss_count;
+            self.ime
+                .shadow_model
+                .observe_miss_monitor
+                .record_miss(std::time::Instant::now());
+            let miss = self
+                .ime
+                .shadow_model
+                .observe_miss_monitor
+                .consecutive_miss_count;
             if miss == crate::IME_DETECT_MISS_THRESHOLD {
-                log::warn!(
-                    "IME detection failed {miss} consecutive times, will force IME ON"
-                );
+                log::warn!("IME detection failed {miss} consecutive times, will force IME ON");
             }
         }
 
@@ -678,10 +689,7 @@ mod tests {
         let mut ps = ps_with_shadow(false, None, true);
         ps.reset_stale_ime_on_for_tsf_native();
         assert!(ps.ime_on());
-        assert_eq!(
-            ps.ime.last_intent_source(),
-            Some(IntentSource::Recovery),
-        );
+        assert_eq!(ps.ime.last_intent_source(), Some(IntentSource::Recovery),);
     }
 
     // 既に ON なら何もしない（早期 return）。

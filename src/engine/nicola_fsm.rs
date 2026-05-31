@@ -1,6 +1,6 @@
 //! NicolaFsm: 同時打鍵判定 FSM（timed-fsm ベース）
 
-use smallvec::{SmallVec, smallvec};
+use smallvec::{smallvec, SmallVec};
 use timed_fsm::{Response, ShiftReduceParser};
 
 use crate::config::ConfirmMode;
@@ -14,8 +14,8 @@ use crate::types::{
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::fsm_types::{
-    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass,
-    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
+    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, OutputUpdate,
+    ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
 };
 use super::timing;
 
@@ -53,7 +53,6 @@ impl From<&YabValue> for KeyAction {
 pub(crate) fn yab_value_to_action(value: &YabValue) -> KeyAction {
     KeyAction::from(value)
 }
-
 
 /// 配列変換エンジン（状態機械 + 同時打鍵判定）
 #[allow(missing_debug_implementations)]
@@ -181,7 +180,11 @@ impl NicolaFsm {
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions.into_vec())
             }
-            EngineState::PendingCharThumb { char_key, thumb, char1_released } => {
+            EngineState::PendingCharThumb {
+                char_key,
+                thumb,
+                char1_released,
+            } => {
                 // 文字+親指を同時打鍵として確定
                 let resolved = self.resolve_char_thumb_as_simultaneous(
                     char_key.scan_code,
@@ -328,7 +331,8 @@ impl NicolaFsm {
 
     /// `Face` に対応する面でキー位置を引き、仮名文字のみを返す。
     fn lookup_kana_at(&self, pos: Option<PhysicalPos>, face: Face) -> Option<char> {
-        self.lookup_face(pos, self.get_face(face)).and_then(|(_, k)| k)
+        self.lookup_face(pos, self.get_face(face))
+            .and_then(|(_, k)| k)
     }
 
     /// `PendingCharThumb` 状態で char1+thumb を同時打鍵として解決し、アクション列と OutputUpdate を返す。
@@ -377,7 +381,11 @@ impl NicolaFsm {
     }
 
     const fn enter_pending_char_thumb(&mut self, char_key: PendingKey, thumb: PendingThumbData) {
-        self.state = EngineState::PendingCharThumb { char_key, thumb, char1_released: false };
+        self.state = EngineState::PendingCharThumb {
+            char_key,
+            thumb,
+            char1_released: false,
+        };
     }
 
     pub(crate) const fn enter_speculative_char(&mut self, key: PendingKey) {
@@ -927,11 +935,8 @@ impl NicolaFsm {
         }
 
         // char1 = 単独、char2+thumb = 同時打鍵（または char2 単独）
-        let char1_resolved = self.resolve_pending_char_as_single(
-            pending.scan_code,
-            pending.vk_code,
-            pending.pos,
-        );
+        let char1_resolved =
+            self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(thumb_face)) {
             // char1 の履歴を先に更新してから char2+thumb を確定
             self.update_history(char1_resolved.output);
@@ -955,7 +960,10 @@ impl NicolaFsm {
         // phys.classified は on_key_down 側で使用済み
 
         // PendingCharThumb 状態での KeyUp 処理
-        if let EngineState::PendingCharThumb { char_key, thumb, .. } = self.state {
+        if let EngineState::PendingCharThumb {
+            char_key, thumb, ..
+        } = self.state
+        {
             if event.vk_code == char_key.vk_code || event.vk_code == thumb.vk_code {
                 return self.handle_key_up_pending_char_thumb(event);
             }
@@ -1041,7 +1049,9 @@ impl NicolaFsm {
             EngineState::PendingChar(pending) => {
                 self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos)
             }
-            EngineState::PendingThumb(thumb) => Self::resolve_pending_thumb_as_single(thumb.vk_code),
+            EngineState::PendingThumb(thumb) => {
+                Self::resolve_pending_thumb_as_single(thumb.vk_code)
+            }
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
             | EngineState::SpeculativeChar(_) => {
@@ -1067,12 +1077,16 @@ impl NicolaFsm {
         if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
             return match entry.action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）
-                KeyAction::Char(_) | KeyAction::Romaji(_) => {
-                    self.build_response(smallvec![KeyAction::Suppress], true, TimerIntent::CancelAll)
-                }
-                KeyAction::Key(vk) => {
-                    self.build_response(smallvec![KeyAction::KeyUp(vk)], true, TimerIntent::CancelAll)
-                }
+                KeyAction::Char(_) | KeyAction::Romaji(_) => self.build_response(
+                    smallvec![KeyAction::Suppress],
+                    true,
+                    TimerIntent::CancelAll,
+                ),
+                KeyAction::Key(vk) => self.build_response(
+                    smallvec![KeyAction::KeyUp(vk)],
+                    true,
+                    TimerIntent::CancelAll,
+                ),
                 _ => Response::pass_through(),
             };
         }
@@ -1205,10 +1219,8 @@ impl NicolaFsm {
         let Some(pos) = pos else {
             return false;
         };
-        let has_output = |face: &YabFace| {
-            face.get(&pos)
-                .is_some_and(|v| !matches!(v, YabValue::None))
-        };
+        let has_output =
+            |face: &YabFace| face.get(&pos).is_some_and(|v| !matches!(v, YabValue::None));
         has_output(self.get_face(Face::Normal))
             || has_output(self.get_face(Face::LeftThumb))
             || has_output(self.get_face(Face::RightThumb))
@@ -1294,15 +1306,17 @@ impl NicolaFsm {
             EngineState::PendingThumb(thumb) => {
                 self.timeout_pending_thumb(thumb.scan_code, thumb.vk_code)
             }
-            EngineState::PendingCharThumb { char_key, thumb, char1_released } => {
-                self.timeout_pending_char_thumb(
-                    char_key.scan_code,
-                    char_key.vk_code,
-                    char_key.pos,
-                    thumb.face(),
-                    char1_released,
-                )
-            }
+            EngineState::PendingCharThumb {
+                char_key,
+                thumb,
+                char1_released,
+            } => self.timeout_pending_char_thumb(
+                char_key.scan_code,
+                char_key.vk_code,
+                char_key.pos,
+                thumb.face(),
+                char1_released,
+            ),
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
             EngineState::SpeculativeChar(_) => Response::consume().with_kill_timer(TIMER_PENDING),
         }

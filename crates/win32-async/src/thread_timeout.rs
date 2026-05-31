@@ -14,11 +14,16 @@ struct LeakedThreadPool {
 
 impl LeakedThreadPool {
     const fn new(max: usize) -> Self {
-        Self { threads: Mutex::new(Vec::new()), max }
+        Self {
+            threads: Mutex::new(Vec::new()),
+            max,
+        }
     }
 
     fn reap(&self) {
-        let Ok(mut leaked) = self.threads.lock() else { return };
+        let Ok(mut leaked) = self.threads.lock() else {
+            return;
+        };
         let before = leaked.len();
         leaked.retain(|h| !h.is_finished());
         let reaped = before - leaked.len();
@@ -31,13 +36,17 @@ impl LeakedThreadPool {
     }
 
     fn leak(&self, handle: JoinHandle<()>) {
-        let Ok(mut leaked) = self.threads.lock() else { return };
+        let Ok(mut leaked) = self.threads.lock() else {
+            return;
+        };
         leaked.push(handle);
         log::warn!("Leaked worker thread (now {} in list)", leaked.len());
     }
 
     fn is_full(&self) -> bool {
-        self.threads.lock().is_ok_and(|leaked| leaked.len() >= self.max)
+        self.threads
+            .lock()
+            .is_ok_and(|leaked| leaked.len() >= self.max)
     }
 }
 

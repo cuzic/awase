@@ -52,7 +52,10 @@ impl<T: Send + 'static> Future for OffloadFuture<T> {
         // 初回 poll でワーカースレッドを起動
         if !this.spawned {
             this.spawned = true;
-            let f = this.f.take().expect("invariant: f is present before first spawn");
+            let f = this
+                .f
+                .take()
+                .expect("invariant: f is present before first spawn");
             let state = Arc::clone(&this.state);
             std::thread::spawn(move || {
                 let result = f();

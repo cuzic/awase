@@ -166,7 +166,12 @@ impl SettingsApp {
             CapturedKey::Cancel => {
                 self.capturing = None;
             }
-            CapturedKey::Key { internal, ctrl, shift, alt } => {
+            CapturedKey::Key {
+                internal,
+                ctrl,
+                shift,
+                alt,
+            } => {
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
                         if let Some(rule) = self.config.keymaps.get_mut(i) {
@@ -434,7 +439,11 @@ impl SettingsApp {
                         )
                         .changed()
                     {
-                        rule.app = if app_buf.is_empty() { None } else { Some(app_buf) };
+                        rule.app = if app_buf.is_empty() {
+                            None
+                        } else {
+                            Some(app_buf)
+                        };
                     }
 
                     // from: modifiers + main key + capture button
@@ -457,7 +466,11 @@ impl SettingsApp {
                     // to: main key only + capture button
                     let mut to_main = rule.to.clone().unwrap_or_default();
                     if main_key_combo_optional(ui, &format!("to_main_{i}"), &mut to_main) {
-                        rule.to = if to_main.is_empty() { None } else { Some(to_main) };
+                        rule.to = if to_main.is_empty() {
+                            None
+                        } else {
+                            Some(to_main)
+                        };
                     }
                     let to_target = CaptureTarget::ExistingTo(i);
                     capture_button(ui, &mut capturing, to_target);
@@ -478,9 +491,8 @@ impl SettingsApp {
         egui::Grid::new("keymap_new_grid")
             .num_columns(2)
             .show(ui, |ui| {
-                ui.label("  アプリ:").on_hover_text(
-                    "対象プロセス名（例: vim.exe）。空欄で全アプリ対象。",
-                );
+                ui.label("  アプリ:")
+                    .on_hover_text("対象プロセス名（例: vim.exe）。空欄で全アプリ対象。");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.new_keymap_app)
                         .desired_width(180.0)
@@ -498,9 +510,8 @@ impl SettingsApp {
                 });
                 ui.end_row();
 
-                ui.label("  to:").on_hover_text(
-                    "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけ。",
-                );
+                ui.label("  to:")
+                    .on_hover_text("再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけ。");
                 ui.horizontal(|ui| {
                     main_key_combo_optional(ui, "new_to_main", &mut self.new_keymap_to_main);
                     capture_button(ui, &mut capturing, CaptureTarget::NewTo);
@@ -593,11 +604,14 @@ impl SettingsApp {
             .as_ref()
             .map_or(true, |(cached_name, _)| cached_name != &layout_file);
         if need_reload {
-            self.preview_cache = Some((layout_file.clone(), load_layout_for_preview(
-                &self.config.general.layouts_dir,
-                &layout_file,
-                &self.config.general.keyboard_model,
-            )));
+            self.preview_cache = Some((
+                layout_file.clone(),
+                load_layout_for_preview(
+                    &self.config.general.layouts_dir,
+                    &layout_file,
+                    &self.config.general.keyboard_model,
+                ),
+            ));
         }
 
         match self.preview_cache.as_ref().map(|(_, r)| r) {
@@ -785,58 +799,94 @@ fn key_list_ui(
 /// US 配列では同じ VK が別の文字に対応するため、ツールチップで補足する。
 const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     // アルファベット
-    ("A", "VK_A"), ("B", "VK_B"), ("C", "VK_C"), ("D", "VK_D"),
-    ("E", "VK_E"), ("F", "VK_F"), ("G", "VK_G"), ("H", "VK_H"),
-    ("I", "VK_I"), ("J", "VK_J"), ("K", "VK_K"), ("L", "VK_L"),
-    ("M", "VK_M"), ("N", "VK_N"), ("O", "VK_O"), ("P", "VK_P"),
-    ("Q", "VK_Q"), ("R", "VK_R"), ("S", "VK_S"), ("T", "VK_T"),
-    ("U", "VK_U"), ("V", "VK_V"), ("W", "VK_W"), ("X", "VK_X"),
-    ("Y", "VK_Y"), ("Z", "VK_Z"),
+    ("A", "VK_A"),
+    ("B", "VK_B"),
+    ("C", "VK_C"),
+    ("D", "VK_D"),
+    ("E", "VK_E"),
+    ("F", "VK_F"),
+    ("G", "VK_G"),
+    ("H", "VK_H"),
+    ("I", "VK_I"),
+    ("J", "VK_J"),
+    ("K", "VK_K"),
+    ("L", "VK_L"),
+    ("M", "VK_M"),
+    ("N", "VK_N"),
+    ("O", "VK_O"),
+    ("P", "VK_P"),
+    ("Q", "VK_Q"),
+    ("R", "VK_R"),
+    ("S", "VK_S"),
+    ("T", "VK_T"),
+    ("U", "VK_U"),
+    ("V", "VK_V"),
+    ("W", "VK_W"),
+    ("X", "VK_X"),
+    ("Y", "VK_Y"),
+    ("Z", "VK_Z"),
     // 数字
-    ("0", "VK_0"), ("1", "VK_1"), ("2", "VK_2"), ("3", "VK_3"), ("4", "VK_4"),
-    ("5", "VK_5"), ("6", "VK_6"), ("7", "VK_7"), ("8", "VK_8"), ("9", "VK_9"),
+    ("0", "VK_0"),
+    ("1", "VK_1"),
+    ("2", "VK_2"),
+    ("3", "VK_3"),
+    ("4", "VK_4"),
+    ("5", "VK_5"),
+    ("6", "VK_6"),
+    ("7", "VK_7"),
+    ("8", "VK_8"),
+    ("9", "VK_9"),
     // 記号キー（JIS 配列）
-    (";",  "VK_OEM_PLUS"),
-    (":",  "VK_OEM_1"),
-    (",",  "VK_OEM_COMMA"),
-    ("-",  "VK_OEM_MINUS"),
-    (".",  "VK_OEM_PERIOD"),
-    ("/",  "VK_OEM_2"),
-    ("@",  "VK_OEM_3"),
-    ("[",  "VK_OEM_4"),
-    ("¥",  "VK_OEM_5"),
-    ("]",  "VK_OEM_6"),
-    ("^",  "VK_OEM_7"),
-    ("_",  "VK_OEM_102"),
+    (";", "VK_OEM_PLUS"),
+    (":", "VK_OEM_1"),
+    (",", "VK_OEM_COMMA"),
+    ("-", "VK_OEM_MINUS"),
+    (".", "VK_OEM_PERIOD"),
+    ("/", "VK_OEM_2"),
+    ("@", "VK_OEM_3"),
+    ("[", "VK_OEM_4"),
+    ("¥", "VK_OEM_5"),
+    ("]", "VK_OEM_6"),
+    ("^", "VK_OEM_7"),
+    ("_", "VK_OEM_102"),
     // ファンクションキー
-    ("F1", "VK_F1"), ("F2", "VK_F2"), ("F3", "VK_F3"), ("F4", "VK_F4"),
-    ("F5", "VK_F5"), ("F6", "VK_F6"), ("F7", "VK_F7"), ("F8", "VK_F8"),
-    ("F9", "VK_F9"), ("F10", "VK_F10"), ("F11", "VK_F11"), ("F12", "VK_F12"),
+    ("F1", "VK_F1"),
+    ("F2", "VK_F2"),
+    ("F3", "VK_F3"),
+    ("F4", "VK_F4"),
+    ("F5", "VK_F5"),
+    ("F6", "VK_F6"),
+    ("F7", "VK_F7"),
+    ("F8", "VK_F8"),
+    ("F9", "VK_F9"),
+    ("F10", "VK_F10"),
+    ("F11", "VK_F11"),
+    ("F12", "VK_F12"),
     // 制御キー
-    ("Space",       "VK_SPACE"),
-    ("Enter",       "VK_RETURN"),
-    ("Tab",         "VK_TAB"),
-    ("Esc",         "VK_ESCAPE"),
-    ("Backspace",   "VK_BACK"),
-    ("Delete",      "VK_DELETE"),
-    ("Insert",      "VK_INSERT"),
-    ("Home",        "VK_HOME"),
-    ("End",         "VK_END"),
-    ("PgUp",        "VK_PRIOR"),
-    ("PgDn",        "VK_NEXT"),
+    ("Space", "VK_SPACE"),
+    ("Enter", "VK_RETURN"),
+    ("Tab", "VK_TAB"),
+    ("Esc", "VK_ESCAPE"),
+    ("Backspace", "VK_BACK"),
+    ("Delete", "VK_DELETE"),
+    ("Insert", "VK_INSERT"),
+    ("Home", "VK_HOME"),
+    ("End", "VK_END"),
+    ("PgUp", "VK_PRIOR"),
+    ("PgDn", "VK_NEXT"),
     ("PrintScreen", "VK_SNAPSHOT"),
     // IME 関連
-    ("変換",     "変換"),
-    ("無変換",   "無変換"),
-    ("かな",     "かな"),
-    ("漢字",     "漢字"),
-    ("IMEオン",  "VK_IME_ON"),
-    ("IMEオフ",  "VK_IME_OFF"),
-    ("英数",     "VK_DBE_ALPHANUMERIC"),
+    ("変換", "変換"),
+    ("無変換", "無変換"),
+    ("かな", "かな"),
+    ("漢字", "漢字"),
+    ("IMEオン", "VK_IME_ON"),
+    ("IMEオフ", "VK_IME_OFF"),
+    ("英数", "VK_DBE_ALPHANUMERIC"),
     ("カタカナ", "VK_DBE_KATAKANA"),
     ("ひらがな", "VK_DBE_HIRAGANA"),
-    ("半角",     "VK_DBE_SBCSCHAR"),
-    ("全角",     "VK_DBE_DBCSCHAR"),
+    ("半角", "VK_DBE_SBCSCHAR"),
+    ("全角", "VK_DBE_DBCSCHAR"),
 ];
 
 /// 内部表記（"VK_I", "変換" 等）を表示名（"I", "変換"）に変換する。
@@ -871,9 +921,15 @@ fn parse_combo_str(s: &str) -> (bool, bool, bool, String) {
 /// 修飾キーと main key から keymap rule 用文字列を組み立てる。
 fn format_combo(ctrl: bool, shift: bool, alt: bool, main: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
-    if ctrl { parts.push("Ctrl"); }
-    if shift { parts.push("Shift"); }
-    if alt { parts.push("Alt"); }
+    if ctrl {
+        parts.push("Ctrl");
+    }
+    if shift {
+        parts.push("Shift");
+    }
+    if alt {
+        parts.push("Alt");
+    }
     parts.push(main);
     parts.join("+")
 }
@@ -883,14 +939,15 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
-        .selected_text(if current.is_empty() { "（未選択）" } else { &display })
+        .selected_text(if current.is_empty() {
+            "（未選択）"
+        } else {
+            &display
+        })
         .width(110.0)
         .show_ui(ui, |ui| {
             for (label, internal) in KEYMAP_MAIN_KEYS {
-                if ui
-                    .selectable_label(current == internal, *label)
-                    .clicked()
-                {
+                if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
                 }
@@ -901,11 +958,7 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
 
 /// キー入力キャプチャボタン。クリックでこの target をキャプチャ対象に設定し、
 /// 既にこの target がキャプチャ中なら「待機中」ラベルを表示する。
-fn capture_button(
-    ui: &mut egui::Ui,
-    capturing: &mut Option<CaptureTarget>,
-    target: CaptureTarget,
-) {
+fn capture_button(ui: &mut egui::Ui, capturing: &mut Option<CaptureTarget>, target: CaptureTarget) {
     let is_active = *capturing == Some(target);
     let label = if is_active { "⌨ 待機…" } else { "⌨" };
     if ui
@@ -929,21 +982,54 @@ fn capture_button(
 fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
     use egui::Key;
     Some(match key {
-        Key::A => "VK_A", Key::B => "VK_B", Key::C => "VK_C", Key::D => "VK_D",
-        Key::E => "VK_E", Key::F => "VK_F", Key::G => "VK_G", Key::H => "VK_H",
-        Key::I => "VK_I", Key::J => "VK_J", Key::K => "VK_K", Key::L => "VK_L",
-        Key::M => "VK_M", Key::N => "VK_N", Key::O => "VK_O", Key::P => "VK_P",
-        Key::Q => "VK_Q", Key::R => "VK_R", Key::S => "VK_S", Key::T => "VK_T",
-        Key::U => "VK_U", Key::V => "VK_V", Key::W => "VK_W", Key::X => "VK_X",
-        Key::Y => "VK_Y", Key::Z => "VK_Z",
-        Key::Num0 => "VK_0", Key::Num1 => "VK_1", Key::Num2 => "VK_2",
-        Key::Num3 => "VK_3", Key::Num4 => "VK_4", Key::Num5 => "VK_5",
-        Key::Num6 => "VK_6", Key::Num7 => "VK_7", Key::Num8 => "VK_8",
+        Key::A => "VK_A",
+        Key::B => "VK_B",
+        Key::C => "VK_C",
+        Key::D => "VK_D",
+        Key::E => "VK_E",
+        Key::F => "VK_F",
+        Key::G => "VK_G",
+        Key::H => "VK_H",
+        Key::I => "VK_I",
+        Key::J => "VK_J",
+        Key::K => "VK_K",
+        Key::L => "VK_L",
+        Key::M => "VK_M",
+        Key::N => "VK_N",
+        Key::O => "VK_O",
+        Key::P => "VK_P",
+        Key::Q => "VK_Q",
+        Key::R => "VK_R",
+        Key::S => "VK_S",
+        Key::T => "VK_T",
+        Key::U => "VK_U",
+        Key::V => "VK_V",
+        Key::W => "VK_W",
+        Key::X => "VK_X",
+        Key::Y => "VK_Y",
+        Key::Z => "VK_Z",
+        Key::Num0 => "VK_0",
+        Key::Num1 => "VK_1",
+        Key::Num2 => "VK_2",
+        Key::Num3 => "VK_3",
+        Key::Num4 => "VK_4",
+        Key::Num5 => "VK_5",
+        Key::Num6 => "VK_6",
+        Key::Num7 => "VK_7",
+        Key::Num8 => "VK_8",
         Key::Num9 => "VK_9",
-        Key::F1 => "VK_F1", Key::F2 => "VK_F2", Key::F3 => "VK_F3",
-        Key::F4 => "VK_F4", Key::F5 => "VK_F5", Key::F6 => "VK_F6",
-        Key::F7 => "VK_F7", Key::F8 => "VK_F8", Key::F9 => "VK_F9",
-        Key::F10 => "VK_F10", Key::F11 => "VK_F11", Key::F12 => "VK_F12",
+        Key::F1 => "VK_F1",
+        Key::F2 => "VK_F2",
+        Key::F3 => "VK_F3",
+        Key::F4 => "VK_F4",
+        Key::F5 => "VK_F5",
+        Key::F6 => "VK_F6",
+        Key::F7 => "VK_F7",
+        Key::F8 => "VK_F8",
+        Key::F9 => "VK_F9",
+        Key::F10 => "VK_F10",
+        Key::F11 => "VK_F11",
+        Key::F12 => "VK_F12",
         Key::Space => "VK_SPACE",
         Key::Enter => "VK_RETURN",
         Key::Tab => "VK_TAB",
@@ -974,20 +1060,23 @@ fn main_key_combo_optional(ui: &mut egui::Ui, id: &str, current: &mut String) ->
     let display = key_display_name(current).to_string();
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
-        .selected_text(if current.is_empty() { "（消費のみ）" } else { &display })
+        .selected_text(if current.is_empty() {
+            "（消費のみ）"
+        } else {
+            &display
+        })
         .width(110.0)
         .show_ui(ui, |ui| {
-            if ui.selectable_label(current.is_empty(), "（消費のみ）").clicked()
+            if ui
+                .selectable_label(current.is_empty(), "（消費のみ）")
+                .clicked()
                 && !current.is_empty()
             {
                 current.clear();
                 changed = true;
             }
             for (label, internal) in KEYMAP_MAIN_KEYS {
-                if ui
-                    .selectable_label(current == internal, *label)
-                    .clicked()
-                {
+                if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
                 }
@@ -1019,8 +1108,7 @@ fn load_layout_for_preview(
         std::path::PathBuf::from(layouts_dir)
     };
     let path = dir.join(layout_file);
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let model = match keyboard_model {
         "us" => awase::scanmap::KeyboardModel::Us,
         _ => awase::scanmap::KeyboardModel::Jis,
@@ -1042,10 +1130,7 @@ fn draw_face_grid(ui: &mut egui::Ui, face: &awase::yab::YabFace, id_suffix: &str
                 }
                 for col_idx in 0..col_count {
                     let pos = awase::scanmap::PhysicalPos::new(row_idx as u8, col_idx as u8);
-                    let label = face
-                        .get(&pos)
-                        .map(yab_value_display)
-                        .unwrap_or_default();
+                    let label = face.get(&pos).map(yab_value_display).unwrap_or_default();
                     let (rect, _response) = ui.allocate_exact_size(key_size, egui::Sense::hover());
                     ui.painter().rect_stroke(
                         rect,

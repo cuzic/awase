@@ -433,7 +433,10 @@ impl AppConfig {
 
     fn validate_layouts(g: &mut GeneralConfig, w: &mut Vec<String>) {
         if g.layouts_dir.contains("..") {
-            w.push(format!("layouts_dir に '..' が含まれています: {}", g.layouts_dir));
+            w.push(format!(
+                "layouts_dir に '..' が含まれています: {}",
+                g.layouts_dir
+            ));
             g.layouts_dir = "layout".to_string();
         }
         if !g.default_layout.to_ascii_lowercase().ends_with(".yab") {
@@ -486,7 +489,9 @@ impl AppConfig {
     fn check_override_list(list: &[AppOverrideEntry], list_name: &str, w: &mut Vec<String>) {
         for entry in list {
             if entry.process.is_empty() || entry.class.is_empty() {
-                w.push(format!("app_overrides.{list_name} に空のエントリがあります"));
+                w.push(format!(
+                    "app_overrides.{list_name} に空のエントリがあります"
+                ));
             }
         }
     }
@@ -641,10 +646,7 @@ force_vk = [
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.app_overrides.force_vk.len(), 1);
-        assert_eq!(
-            config.app_overrides.force_vk[0].process,
-            "wezterm-gui.exe"
-        );
+        assert_eq!(config.app_overrides.force_vk[0].process, "wezterm-gui.exe");
         assert_eq!(
             config.app_overrides.force_vk[0].class,
             "org.wezfurlong.wezterm"

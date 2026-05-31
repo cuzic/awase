@@ -5,8 +5,8 @@ use awase::engine::{
 };
 use awase::scanmap::{KeyboardModel, PhysicalPos};
 use awase::types::{
-    ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent,
-    ScanCode, Timestamp, VkCode,
+    ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, Timestamp,
+    VkCode,
 };
 use awase::yab::YabLayout;
 
@@ -15,8 +15,8 @@ use awase::yab::YabLayout;
 fn make_nicola_engine() -> Engine {
     let config = AppConfig::load(std::path::Path::new("config.toml")).unwrap();
 
-    let content = std::fs::read_to_string("layout/nicola.yab")
-        .expect("Failed to read layout/nicola.yab");
+    let content =
+        std::fs::read_to_string("layout/nicola.yab").expect("Failed to read layout/nicola.yab");
     let layout =
         YabLayout::parse(&content, KeyboardModel::Jis).expect("Failed to parse .yab layout");
 

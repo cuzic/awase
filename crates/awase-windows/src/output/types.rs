@@ -1,5 +1,5 @@
-use awase::types::AppKind;
 use crate::focus::classifier::InjectionHint;
+use awase::types::AppKind;
 
 /// 出力注入モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,8 +23,8 @@ impl From<(InjectionHint, AppKind)> for InjectionMode {
     fn from((hint, app_kind): (InjectionHint, AppKind)) -> Self {
         match hint {
             InjectionHint::ForceTsf => Self::Tsf,
-            InjectionHint::ForceVk  => Self::Vk,
-            InjectionHint::Default  => {
+            InjectionHint::ForceVk => Self::Vk,
+            InjectionHint::Default => {
                 if app_kind == AppKind::TsfNative {
                     Self::Vk
                 } else {

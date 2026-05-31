@@ -10,7 +10,7 @@
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
 use super::app_ime_policy::AppImePolicy;
-use super::force_guard::{ObserveMissMonitor, ForceGuardSet};
+use super::force_guard::{ForceGuardSet, ObserveMissMonitor};
 use super::ime_event::{ChordKind, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
@@ -127,7 +127,9 @@ impl ImeModel {
     /// フォーカス切替直後の one-shot barrier が pending かどうか。
     #[must_use]
     pub fn is_focus_transition_pending(&self) -> bool {
-        self.input_barrier.as_ref().is_some_and(|b| b.is_focus_transition())
+        self.input_barrier
+            .as_ref()
+            .is_some_and(|b| b.is_focus_transition())
     }
 }
 
@@ -323,9 +325,7 @@ impl ImeModel {
 
 #[cfg(test)]
 mod tests {
-    use super::super::ime_event::{
-        EventTime, HwndId, ObservationConfidence, ObservationSource,
-    };
+    use super::super::ime_event::{EventTime, HwndId, ObservationConfidence, ObservationSource};
     use super::*;
     use crate::focus::class_names::AppImeProfile;
     use crate::state::force_guard::{ForceGuard, ForceOnReason};
@@ -437,7 +437,10 @@ mod tests {
 
         model.reduce(&focus_changed_event(2));
 
-        assert!(!model.force_guards.requires_on(), "focus change で force guard が解除される");
+        assert!(
+            !model.force_guards.requires_on(),
+            "focus change で force guard が解除される"
+        );
     }
 
     #[test]
@@ -451,7 +454,10 @@ mod tests {
 
         model.reduce(&focus_changed_event(2));
 
-        assert!(!model.observe_miss_monitor.exceeds(1), "focus change で observe_miss_monitor がリセットされる");
+        assert!(
+            !model.observe_miss_monitor.exceeds(1),
+            "focus change で observe_miss_monitor がリセットされる"
+        );
     }
 
     #[test]
@@ -468,6 +474,9 @@ mod tests {
 
         model.reduce(&focus_changed_event(2));
 
-        assert!(model.desired_open, "focus change は desired_open を変えない");
+        assert!(
+            model.desired_open,
+            "focus change は desired_open を変えない"
+        );
     }
 }

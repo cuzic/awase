@@ -51,9 +51,9 @@ impl ObservedState {
     pub(crate) fn capture_now() -> Self {
         let obs = crate::tsf::observer::tsf_obs();
         Self {
-            candidate_visible:  obs.gji_candidate_visible(),
-            gji_last_io_ms:     obs.gji_last_io_ms(),
-            gji_monitor_ok:     obs.gji_monitor_ok(),
+            candidate_visible: obs.gji_candidate_visible(),
+            gji_last_io_ms: obs.gji_last_io_ms(),
+            gji_monitor_ok: obs.gji_monitor_ok(),
             candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
         }
     }

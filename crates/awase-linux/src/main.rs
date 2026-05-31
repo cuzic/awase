@@ -115,7 +115,12 @@ fn main() -> Result<()> {
             ime_on: true, // Assume IME ON for now
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
-            modifiers: awase::engine::ModifierState { ctrl: false, alt: false, shift: false, win: false },
+            modifiers: awase::engine::ModifierState {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                win: false,
+            },
             left_thumb_down: None,
             right_thumb_down: None,
         };

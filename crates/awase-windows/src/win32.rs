@@ -103,7 +103,8 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
 
     let result = run_with_timeout(timeout, || {
         let mut info = GUITHREADINFO {
-            cbSize: u32::try_from(size_of::<GUITHREADINFO>()).expect("GUITHREADINFO size is a small constant that always fits in u32"),
+            cbSize: u32::try_from(size_of::<GUITHREADINFO>())
+                .expect("GUITHREADINFO size is a small constant that always fits in u32"),
             ..Default::default()
         };
         // SAFETY: info は cbSize を正しく設定したスタック上の有効な構造体。
@@ -112,7 +113,9 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
         unsafe {
             if GetGUIThreadInfo(0, &raw mut info).is_ok() {
                 // hwndFocus が null なら hwndActive を使う
-                let hwnd = info.hwndFocus.non_null()
+                let hwnd = info
+                    .hwndFocus
+                    .non_null()
                     .or_else(|| info.hwndActive.non_null());
                 let tid = hwnd.map_or(0, |h| {
                     let mut pid = 0u32;
@@ -126,7 +129,10 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
     });
 
     match result {
-        Some(SendableResult(hwnd, tid)) => GuiThreadResult { focused_hwnd: hwnd, thread_id: tid },
+        Some(SendableResult(hwnd, tid)) => GuiThreadResult {
+            focused_hwnd: hwnd,
+            thread_id: tid,
+        },
         None => {
             // フォールバック: GetForegroundWindow は非ブロッキング
             // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。

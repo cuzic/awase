@@ -1,7 +1,7 @@
 use smallvec::smallvec;
 
-use super::*;
 use super::test_support::*;
+use super::*;
 use crate::config::ConfirmMode;
 use crate::engine::nicola_fsm::yab_value_to_action;
 use crate::engine::output_history::OutputEntry;
@@ -169,10 +169,7 @@ impl EvBuilder {
 fn classify_test_key(
     vk: VkCode,
     _scan: ScanCode,
-) -> (
-    crate::types::KeyClassification,
-    Option<PhysicalPos>,
-) {
+) -> (crate::types::KeyClassification, Option<PhysicalPos>) {
     use crate::types::KeyClassification;
 
     if vk == VK_NONCONVERT {
@@ -702,7 +699,10 @@ fn test_three_key_key_up_char_resolves_simultaneous() {
     // char1 離鍵: 待機（何も出力しない）
     let result = engine.on_event(Ev::up(VK_A).build());
     result.assert_consumed();
-    assert!(result.actions.is_empty(), "char1 release should not emit immediately");
+    assert!(
+        result.actions.is_empty(),
+        "char1 release should not emit immediately"
+    );
 
     // thumb 離鍵: 同時打鍵として確定
     let result2 = engine.on_event(Ev::up(VK_CONVERT).build());
@@ -926,7 +926,10 @@ fn test_continuous_shift_after_pending_char_thumb_key_up() {
     // char1 KeyUp → 待機（何も出力しない）
     let r = engine.on_event(Ev::up(VK_A).at(t + 60_000).build());
     r.assert_consumed();
-    assert!(r.actions.is_empty(), "char1 release should not emit immediately");
+    assert!(
+        r.actions.is_empty(),
+        "char1 release should not emit immediately"
+    );
 
     // thumb KeyUp → 同時打鍵として確定
     let r = engine.on_event(Ev::up(VK_NONCONVERT).at(t + 80_000).build());
@@ -1451,7 +1454,10 @@ fn test_key_up_pending_char_thumb_resolves_char() {
     // KeyUp of D: 待機（何も出力しない）
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
-    assert!(r.actions.is_empty(), "char1 release should not emit immediately");
+    assert!(
+        r.actions.is_empty(),
+        "char1 release should not emit immediately"
+    );
 
     // thumb KeyUp: resolve char1+thumb → D not in left_thumb → fallback to normal → Char('て')
     let r = engine.on_event(Ev::up(VK_NONCONVERT).build());
@@ -1474,7 +1480,10 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
     // KeyUp of D → 待機（何も出力しない）
     let r = engine.on_event(Ev::up(VK_D).build());
     r.assert_consumed();
-    assert!(r.actions.is_empty(), "char1 release should not emit immediately");
+    assert!(
+        r.actions.is_empty(),
+        "char1 release should not emit immediately"
+    );
 
     // thumb KeyUp → resolve: D NOT in left_thumb → Key(VK_D), char1 released → KeyUp(VK_D) も追加
     let r = engine.on_event(Ev::up(VK_NONCONVERT).build());
@@ -3483,8 +3492,7 @@ mod fsm_adapter_tests {
 [bigram]
 "あり" = 1.5
 "#;
-        let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000)
-            .unwrap();
+        let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
         adapter.set_ngram_model(model);
     }
 
@@ -3525,8 +3533,8 @@ mod engine_integration_tests {
     use super::*;
     use crate::config::{ConfirmMode, ParsedKeyCombo};
     use crate::engine::decision::{
-        Decision, Effect, EngineCommand, ImeEffect, InputContext,
-        InputEffect, SpecialKeyCombos, UiEffect,
+        Decision, Effect, EngineCommand, ImeEffect, InputContext, InputEffect, SpecialKeyCombos,
+        UiEffect,
     };
     use crate::engine::engine::Engine;
     use crate::engine::nicola_fsm::NicolaFsm;
@@ -3561,7 +3569,12 @@ mod engine_integration_tests {
             ime_on: true,
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
-            modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
+            modifiers: ModifierState {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                win: false,
+            },
             left_thumb_down: None,
             right_thumb_down: None,
         }
@@ -3572,7 +3585,12 @@ mod engine_integration_tests {
             ime_on: false,
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
-            modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
+            modifiers: ModifierState {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                win: false,
+            },
             left_thumb_down: None,
             right_thumb_down: None,
         }
@@ -3630,7 +3648,14 @@ mod engine_integration_tests {
     #[test]
     fn on_input_char_key_not_romaji_passes_through() {
         let mut engine = make_test_engine();
-        let kana_ctx = InputContext { ime_on: true, input_mode: InputModeState::ObservedKana, is_japanese_ime: true, modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
+        let kana_ctx = InputContext {
+            ime_on: true,
+            input_mode: InputModeState::ObservedKana,
+            is_japanese_ime: true,
+            modifiers: ModifierState::default(),
+            left_thumb_down: None,
+            right_thumb_down: None,
+        };
         let d = engine.on_input(Ev::down(VK_A).at(100).build(), &kana_ctx);
         assert!(
             !d.is_consumed(),
@@ -3734,7 +3759,10 @@ mod engine_integration_tests {
     fn on_command_invalidate_context() {
         let mut engine = make_test_engine();
         engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());
-        let d = engine.on_command(EngineCommand::InvalidateContext(ContextChange::ImeOff), &ime_on_ctx());
+        let d = engine.on_command(
+            EngineCommand::InvalidateContext(ContextChange::ImeOff),
+            &ime_on_ctx(),
+        );
         assert!(d.is_consumed());
     }
 
@@ -3797,20 +3825,26 @@ mod engine_integration_tests {
     #[test]
     fn on_command_update_fsm_params() {
         let mut engine = make_test_engine();
-        let d = engine.on_command(EngineCommand::UpdateFsmParams {
-            threshold_ms: 200,
-            confirm_mode: ConfirmMode::Speculative,
-            speculative_delay_ms: 50,
-        }, &ime_on_ctx());
+        let d = engine.on_command(
+            EngineCommand::UpdateFsmParams {
+                threshold_ms: 200,
+                confirm_mode: ConfirmMode::Speculative,
+                speculative_delay_ms: 50,
+            },
+            &ime_on_ctx(),
+        );
         assert!(!d.is_consumed());
     }
 
     #[test]
     fn on_command_reload_keys() {
         let mut engine = make_test_engine();
-        let d = engine.on_command(EngineCommand::ReloadKeys {
-            special: empty_special_keys(),
-        }, &ime_on_ctx());
+        let d = engine.on_command(
+            EngineCommand::ReloadKeys {
+                special: empty_special_keys(),
+            },
+            &ime_on_ctx(),
+        );
         assert!(!d.is_consumed());
     }
 
@@ -3964,7 +3998,10 @@ mod engine_integration_tests {
 
         let d1 = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
         let setopen_count_1 = count_set_open_effects(&d1);
-        assert_eq!(setopen_count_1, 1, "first on_input should emit exactly 1 SetOpen");
+        assert_eq!(
+            setopen_count_1, 1,
+            "first on_input should emit exactly 1 SetOpen"
+        );
 
         // Platform 層は SetOpen を見て preconditions.ime_on=false を反映する。
         // 次の on_input は新しい ctx (ime_on=false) で呼ばれる。
@@ -3995,7 +4032,10 @@ mod engine_integration_tests {
 
         let d1 = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_off_ctx());
         let setopen_count_1 = count_set_open_effects(&d1);
-        assert_eq!(setopen_count_1, 1, "first on_input should emit exactly 1 SetOpen");
+        assert_eq!(
+            setopen_count_1, 1,
+            "first on_input should emit exactly 1 SetOpen"
+        );
 
         let d2 = engine.on_input(Ev::up(VK_CTRL).at(110).build(), &ime_on_ctx());
         let setopen_count_2 = count_set_open_effects(&d2);
@@ -4024,12 +4064,13 @@ mod engine_integration_tests {
         };
         let mut engine = make_engine_with_special(special);
         engine.set_user_enabled(false); // Inactive 状態に
-        engine.set_prev_active(false);   // activation.prev も同期
+        engine.set_prev_active(false); // activation.prev も同期
 
         let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
         assert!(d.is_consumed());
         assert_eq!(
-            count_set_open_effects(&d), 1,
+            count_set_open_effects(&d),
+            1,
             "SetOpen must be emitted even when activation state didn't change"
         );
         assert!(has_effect(&d, |e| matches!(
@@ -4108,7 +4149,10 @@ mod engine_integration_tests {
 
         // RefreshState → Platform updated atomic → ctx reflects ime_on=true
         let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
-        assert!(engine.compute_active(&ime_on_ctx()), "preconditions met → active");
+        assert!(
+            engine.compute_active(&ime_on_ctx()),
+            "preconditions met → active"
+        );
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
@@ -4165,7 +4209,14 @@ mod engine_integration_tests {
         assert!(engine.compute_active(&ime_on_ctx()));
 
         // Platform updated is_japanese_ime=false in ctx
-        let not_japanese_ctx = InputContext { ime_on: true, input_mode: InputModeState::ObservedRomaji, is_japanese_ime: false, modifiers: ModifierState::default(), left_thumb_down: None, right_thumb_down: None };
+        let not_japanese_ctx = InputContext {
+            ime_on: true,
+            input_mode: InputModeState::ObservedRomaji,
+            is_japanese_ime: false,
+            modifiers: ModifierState::default(),
+            left_thumb_down: None,
+            right_thumb_down: None,
+        };
         let d = engine.on_command(EngineCommand::RefreshState, &not_japanese_ctx);
         assert!(!engine.compute_active(&not_japanese_ctx));
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
@@ -4469,7 +4520,10 @@ mod engine_integration_tests {
 
         // Focus change with IME ON should not activate (user disabled)
         let d = engine.on_command(EngineCommand::FocusChanged, &ime_on_ctx());
-        assert!(!engine.compute_active(&ime_on_ctx()), "user disabled → still inactive");
+        assert!(
+            !engine.compute_active(&ime_on_ctx()),
+            "user disabled → still inactive"
+        );
         assert!(!has_effect(&d, |e| matches!(
             e,
             Effect::Ui(UiEffect::EngineStateChanged { .. })

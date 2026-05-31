@@ -183,7 +183,11 @@ impl ImeController {
     ///
     /// async 化された IMM クロスプロセス経路が `Failed` を返した後のフォールバック用。
     /// `strategies[0]` (IMM) をスキップして GJI / KanjiToggle のみで再試行する。
-    pub(crate) fn apply_skipping_imm(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    pub(crate) fn apply_skipping_imm(
+        &self,
+        open: bool,
+        view: &ImeControlView<'_>,
+    ) -> ImeOpenOutcome {
         Self::apply_iter(&self.strategies[1..], open, view)
     }
 
@@ -212,7 +216,10 @@ impl ImeController {
                 log::debug!("[apply-ime] strategy failed, trying next fallback");
             }
         }
-        log::warn!("[apply-ime] all strategies failed for class={}", view.focus.class_name);
+        log::warn!(
+            "[apply-ime] all strategies failed for class={}",
+            view.focus.class_name
+        );
         ImeOpenOutcome::Failed
     }
 }

@@ -17,9 +17,9 @@
 
 use std::time::Duration;
 
+use crate::win32::HwndExt as _;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
-use crate::win32::HwndExt as _;
 
 /// `with_app_ref` クロージャの戻り値を保持する中間構造体。
 struct AppStateView {
@@ -83,7 +83,7 @@ impl ImeDiagnosticSnapshot {
     /// `crate::APP` グローバル経由で焦点情報・shadow 状態を読み取り、
     /// クロスプロセスクエリは 50ms タイムアウトで保護する。
     /// メインスレッドから呼ぶこと（APP の借用要件）。
-    #[must_use] 
+    #[must_use]
     pub fn capture(label: &'static str) -> Self {
         let now = crate::hook::current_tick_ms();
 
@@ -94,34 +94,35 @@ impl ImeDiagnosticSnapshot {
             GetForegroundWindow().0 as usize
         };
         let snap = crate::with_app_ref(|app| app.diagnostic_snapshot());
-        let view = snap.map(|s| {
-            let dt_focus = (s.last_focus_change_ms > 0)
-                .then(|| now.saturating_sub(s.last_focus_change_ms));
-            let dt_activity = (s.last_hook_activity_ms > 0)
-                .then(|| now.saturating_sub(s.last_hook_activity_ms));
-            AppStateView {
-                focus_hwnd_raw: hwnd_raw,
-                focus_pid: s.focus_pid,
-                focus_class: s.focus_class,
-                shadow_ime_on: s.shadow_ime_on,
-                shadow_is_romaji: s.shadow_is_romaji,
-                shadow_is_japanese: s.shadow_is_japanese,
-                injection_mode: resolve_injection_mode_label(),
-                ms_since_focus_change: dt_focus,
-                ms_since_last_activity: dt_activity,
-            }
-        })
-        .unwrap_or(AppStateView {
-            focus_hwnd_raw: 0,
-            focus_pid: 0,
-            focus_class: String::new(),
-            shadow_ime_on: false,
-            shadow_is_romaji: false,
-            shadow_is_japanese: false,
-            injection_mode: "Unknown",
-            ms_since_focus_change: None,
-            ms_since_last_activity: None,
-        });
+        let view = snap
+            .map(|s| {
+                let dt_focus = (s.last_focus_change_ms > 0)
+                    .then(|| now.saturating_sub(s.last_focus_change_ms));
+                let dt_activity = (s.last_hook_activity_ms > 0)
+                    .then(|| now.saturating_sub(s.last_hook_activity_ms));
+                AppStateView {
+                    focus_hwnd_raw: hwnd_raw,
+                    focus_pid: s.focus_pid,
+                    focus_class: s.focus_class,
+                    shadow_ime_on: s.shadow_ime_on,
+                    shadow_is_romaji: s.shadow_is_romaji,
+                    shadow_is_japanese: s.shadow_is_japanese,
+                    injection_mode: resolve_injection_mode_label(),
+                    ms_since_focus_change: dt_focus,
+                    ms_since_last_activity: dt_activity,
+                }
+            })
+            .unwrap_or(AppStateView {
+                focus_hwnd_raw: 0,
+                focus_pid: 0,
+                focus_class: String::new(),
+                shadow_ime_on: false,
+                shadow_is_romaji: false,
+                shadow_is_japanese: false,
+                injection_mode: "Unknown",
+                ms_since_focus_change: None,
+                ms_since_last_activity: None,
+            });
 
         // ── HKL ──
         // SAFETY: get_gui_thread_info_with_timeout は unsafe fn で内部で Win32 API を呼ぶ。
@@ -180,9 +181,10 @@ impl ImeDiagnosticSnapshot {
         let dt_act = self
             .ms_since_last_activity
             .map_or_else(|| "-".to_string(), |d| format!("{d}"));
-        let imc_open = self
-            .imc_open_status
-            .map_or_else(|| "-".to_string(), |o| if o { "true" } else { "false" }.to_string());
+        let imc_open = self.imc_open_status.map_or_else(
+            || "-".to_string(),
+            |o| if o { "true" } else { "false" }.to_string(),
+        );
 
         log::debug!(
             "[ime-diag] label={label} t={t} hwnd={hwnd:#x} pid={pid} tid={tid} class=\"{class}\" \
@@ -229,8 +231,9 @@ fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
             };
             let open = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETOPENSTATUS, 0, 50)
                 .map(|v| v != 0);
-            let conv = crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETCONVERSIONMODE, 0, 50)
-                .map(|v| v as u32);
+            let conv =
+                crate::imm::send_ime_control(ime_wnd, crate::imm::IMC_GETCONVERSIONMODE, 0, 50)
+                    .map(|v| v as u32);
             (open, conv)
         }
     })
@@ -250,11 +253,14 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
     //         内部で non_null() / ImmContextGuard を使い NULL 入力にも対応する。
     let (hwnd_raw, snap) = unsafe {
         let hwnd = GetForegroundWindow();
-        (hwnd.0 as usize, crate::ime::capture_composition_snapshot(hwnd))
+        (
+            hwnd.0 as usize,
+            crate::ime::capture_composition_snapshot(hwnd),
+        )
     };
 
-    let diag = crate::with_app_ref(|app| app.diagnostic_snapshot())
-        .unwrap_or_else(|| crate::runtime::RuntimeDiagnosticSnapshot {
+    let diag = crate::with_app_ref(|app| app.diagnostic_snapshot()).unwrap_or_else(|| {
+        crate::runtime::RuntimeDiagnosticSnapshot {
             focus_pid: 0,
             focus_class: String::new(),
             shadow_ime_on: false,
@@ -263,8 +269,14 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
             last_focus_change_ms: 0,
             last_hook_activity_ms: 0,
             app_profile: "Unknown".to_string(),
-        });
-    let view = (diag.focus_class, diag.app_profile, diag.shadow_ime_on, diag.shadow_is_japanese);
+        }
+    });
+    let view = (
+        diag.focus_class,
+        diag.app_profile,
+        diag.shadow_ime_on,
+        diag.shadow_is_japanese,
+    );
 
     let comp = snap
         .comp_str
@@ -314,8 +326,8 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
 
 /// 解決される注入モードのラベル文字列を返す（出力経路と同じロジックを参照する）。
 fn resolve_injection_mode_label() -> &'static str {
-    use awase::types::AppKind;
     use crate::focus::classifier::InjectionHint;
+    use awase::types::AppKind;
 
     crate::with_app_ref(|app| {
         let (hint, app_kind) = app.injection_hint();

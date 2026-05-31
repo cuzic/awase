@@ -2,8 +2,8 @@
 //!
 //! Windows 固有の仮想キーコード判定関数群。
 
-use std::collections::HashMap;
 use awase::types::{ModifierKey, VkCode};
+use std::collections::HashMap;
 
 /// Windows 言語 ID: 日本語 (0x0411)
 pub const LANGID_JAPANESE: u32 = 0x0411;
@@ -42,8 +42,8 @@ pub const VK_RCONTROL: VkCode = VkCode(0xA3);
 pub const VK_LMENU: VkCode = VkCode(0xA4);
 pub const VK_RMENU: VkCode = VkCode(0xA5);
 pub const VK_OEM_MINUS: VkCode = VkCode(0xBD);
-pub const VK_LWIN:   VkCode = VkCode(0x5B);
-pub const VK_RWIN:   VkCode = VkCode(0x5C);
+pub const VK_LWIN: VkCode = VkCode(0x5B);
+pub const VK_RWIN: VkCode = VkCode(0x5C);
 pub const VK_DBE_ALPHANUMERIC: VkCode = VkCode(0xF0);
 pub const VK_DBE_KATAKANA: VkCode = VkCode(0xF1);
 pub const VK_DBE_HIRAGANA: VkCode = VkCode(0xF2);
@@ -201,7 +201,7 @@ pub const fn is_non_shift_modifier(vk: VkCode) -> bool {
         vk.0,
         0x11 | 0xA2 | 0xA3  // VK_CONTROL, VK_LCONTROL, VK_RCONTROL
         | 0x12 | 0xA4 | 0xA5  // VK_MENU, VK_LMENU, VK_RMENU
-        | 0x5B | 0x5C          // VK_LWIN, VK_RWIN
+        | 0x5B | 0x5C // VK_LWIN, VK_RWIN
     )
 }
 
@@ -217,7 +217,7 @@ pub const fn is_ctrl_variant(vk: VkCode) -> bool {
 /// warm/cold 状態管理上の特別扱いが必要（mark_cold + eager warmup）。
 #[must_use]
 pub const fn is_composition_confirm_key(vk: VkCode) -> bool {
-    matches!(vk.0, 0x20 | 0x0D | 0x1B)  // VK_SPACE, VK_RETURN, VK_ESCAPE
+    matches!(vk.0, 0x20 | 0x0D | 0x1B) // VK_SPACE, VK_RETURN, VK_ESCAPE
 }
 
 /// 修飾キー（Ctrl/Alt）が押されていない単独文字キーかどうかを判定する。
@@ -245,23 +245,49 @@ pub trait VkCodeExt {
     fn ime_kind(self) -> Option<ImeKeyKind>;
     fn to_pos(self) -> Option<awase::scanmap::PhysicalPos>;
     /// キー名（"VK_A" 等）から VkCode を解決する。
-    fn from_name(name: &str) -> Option<Self> where Self: Sized;
+    fn from_name(name: &str) -> Option<Self>
+    where
+        Self: Sized;
 }
 
 impl VkCodeExt for VkCode {
-    fn is_passthrough(self) -> bool          { is_passthrough(self) }
-    fn is_ime_control(self) -> bool          { is_ime_control(self) }
-    fn is_ime_context(self) -> bool          { is_ime_context(self) }
-    fn is_non_shift_modifier(self) -> bool   { is_non_shift_modifier(self) }
-    fn is_ctrl_variant(self) -> bool         { is_ctrl_variant(self) }
-    fn is_composition_confirm_key(self) -> bool { is_composition_confirm_key(self) }
-    fn is_modifier_free_char(self, held: bool) -> bool { is_modifier_free_char(self, held) }
-    fn may_change_ime(self) -> bool          { may_change_ime(self) }
-    fn classify_modifier(self) -> Option<ModifierKey> { classify_modifier(self) }
-    fn ime_kind(self) -> Option<ImeKeyKind>  { ImeKeyKind::from_vk(self) }
-    fn to_pos(self) -> Option<awase::scanmap::PhysicalPos> { vk_to_pos(self) }
+    fn is_passthrough(self) -> bool {
+        is_passthrough(self)
+    }
+    fn is_ime_control(self) -> bool {
+        is_ime_control(self)
+    }
+    fn is_ime_context(self) -> bool {
+        is_ime_context(self)
+    }
+    fn is_non_shift_modifier(self) -> bool {
+        is_non_shift_modifier(self)
+    }
+    fn is_ctrl_variant(self) -> bool {
+        is_ctrl_variant(self)
+    }
+    fn is_composition_confirm_key(self) -> bool {
+        is_composition_confirm_key(self)
+    }
+    fn is_modifier_free_char(self, held: bool) -> bool {
+        is_modifier_free_char(self, held)
+    }
+    fn may_change_ime(self) -> bool {
+        may_change_ime(self)
+    }
+    fn classify_modifier(self) -> Option<ModifierKey> {
+        classify_modifier(self)
+    }
+    fn ime_kind(self) -> Option<ImeKeyKind> {
+        ImeKeyKind::from_vk(self)
+    }
+    fn to_pos(self) -> Option<awase::scanmap::PhysicalPos> {
+        vk_to_pos(self)
+    }
     #[allow(deprecated)]
-    fn from_name(name: &str) -> Option<Self> { vk_name_to_code(name) }
+    fn from_name(name: &str) -> Option<Self> {
+        vk_name_to_code(name)
+    }
 }
 
 // ── キー名解決（config パース用）──
@@ -518,43 +544,43 @@ pub(crate) const fn ascii_to_vk(ch: char) -> Option<(VkCode, bool)> {
 pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
     let entries: &[(char, u16, bool)] = &[
         // 句読点・括弧
-        ('、', 0xBC, false),  // , (VK_OEM_COMMA)
-        ('。', 0xBE, false),  // . (VK_OEM_PERIOD)
-        ('・', 0xBF, false),  // / (VK_OEM_2)
-        ('「', 0xDB, false),  // [ (VK_OEM_4)
-        ('」', 0xDD, false),  // ] (VK_OEM_6)
+        ('、', 0xBC, false), // , (VK_OEM_COMMA)
+        ('。', 0xBE, false), // . (VK_OEM_PERIOD)
+        ('・', 0xBF, false), // / (VK_OEM_2)
+        ('「', 0xDB, false), // [ (VK_OEM_4)
+        ('」', 0xDD, false), // ] (VK_OEM_6)
         // 長音・記号
-        ('ー', 0xBD, false),  // - (VK_OEM_MINUS)
-        ('～', 0xDE, true),   // Shift+^ (VK_OEM_7, JIS)
+        ('ー', 0xBD, false), // - (VK_OEM_MINUS)
+        ('～', 0xDE, true),  // Shift+^ (VK_OEM_7, JIS)
         // 全角 ASCII 記号
-        ('？', 0xBF, true),   // Shift+/
-        ('！', 0x31, true),   // Shift+1
-        ('＃', 0x33, true),   // Shift+3
-        ('＄', 0x34, true),   // Shift+4
-        ('％', 0x35, true),   // Shift+5
-        ('＆', 0x36, true),   // Shift+6
-        ('（', 0x38, true),   // Shift+8
-        ('）', 0x39, true),   // Shift+9
-        ('＝', 0xBD, true),   // Shift+- (JIS: =)
-        ('＋', 0xBB, true),   // Shift+; (VK_OEM_PLUS, JIS: +)
-        ('＊', 0xBA, true),   // Shift+: (VK_OEM_1, JIS: *)
-        ('＜', 0xBC, true),   // Shift+,
-        ('＞', 0xBE, true),   // Shift+.
-        ('＠', 0xC0, false),  // @ (VK_OEM_3, JIS)
-        ('｛', 0xDB, true),   // Shift+[
-        ('｝', 0xDD, true),   // Shift+]
-        ('＿', 0xE2, true),   // Shift+＼ (JIS: _)
-        ('｜', 0xDC, true),   // Shift+¥ (JIS: |)
-        ('"', 0x32, true),    // Shift+2 (JIS: ")
-        ('＂', 0x32, true),   // 全角" → Shift+2
-        ('；', 0xBB, false),  // ; (VK_OEM_PLUS, JIS: ;)
-        ('：', 0xBA, false),  // : (VK_OEM_1, JIS: :)
-        ('－', 0xBD, false),  // - (VK_OEM_MINUS) 全角ハイフンマイナス
-        ('／', 0xBF, false),  // / (VK_OEM_2)
-        ('＾', 0xDE, false),  // ^ (VK_OEM_7, JIS)
-        ('｀', 0xC0, true),   // Shift+@ (JIS: `)
-        ('＇', 0x37, true),   // Shift+7 (JIS: ')
-        ('＼', 0xE2, false),  // ＼ (VK_OEM_102, JIS)
+        ('？', 0xBF, true),  // Shift+/
+        ('！', 0x31, true),  // Shift+1
+        ('＃', 0x33, true),  // Shift+3
+        ('＄', 0x34, true),  // Shift+4
+        ('％', 0x35, true),  // Shift+5
+        ('＆', 0x36, true),  // Shift+6
+        ('（', 0x38, true),  // Shift+8
+        ('）', 0x39, true),  // Shift+9
+        ('＝', 0xBD, true),  // Shift+- (JIS: =)
+        ('＋', 0xBB, true),  // Shift+; (VK_OEM_PLUS, JIS: +)
+        ('＊', 0xBA, true),  // Shift+: (VK_OEM_1, JIS: *)
+        ('＜', 0xBC, true),  // Shift+,
+        ('＞', 0xBE, true),  // Shift+.
+        ('＠', 0xC0, false), // @ (VK_OEM_3, JIS)
+        ('｛', 0xDB, true),  // Shift+[
+        ('｝', 0xDD, true),  // Shift+]
+        ('＿', 0xE2, true),  // Shift+＼ (JIS: _)
+        ('｜', 0xDC, true),  // Shift+¥ (JIS: |)
+        ('"', 0x32, true),   // Shift+2 (JIS: ")
+        ('＂', 0x32, true),  // 全角" → Shift+2
+        ('；', 0xBB, false), // ; (VK_OEM_PLUS, JIS: ;)
+        ('：', 0xBA, false), // : (VK_OEM_1, JIS: :)
+        ('－', 0xBD, false), // - (VK_OEM_MINUS) 全角ハイフンマイナス
+        ('／', 0xBF, false), // / (VK_OEM_2)
+        ('＾', 0xDE, false), // ^ (VK_OEM_7, JIS)
+        ('｀', 0xC0, true),  // Shift+@ (JIS: `)
+        ('＇', 0x37, true),  // Shift+7 (JIS: ')
+        ('＼', 0xE2, false), // ＼ (VK_OEM_102, JIS)
         // 全角数字
         ('０', 0x30, false),
         ('１', 0x31, false),
@@ -578,18 +604,18 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
         ('8', 0x38, false),
         ('9', 0x39, false),
         // 半角 ASCII 記号
-        ('!', 0x31, true),   // Shift+1
-        ('"', 0x32, true),   // Shift+2 (JIS)
-        ('#', 0x33, true),   // Shift+3
-        ('$', 0x34, true),   // Shift+4
-        ('%', 0x35, true),   // Shift+5
-        ('&', 0x36, true),   // Shift+6
-        ('\'', 0x37, true),  // Shift+7 (JIS)
-        ('(', 0x38, true),   // Shift+8
-        (')', 0x39, true),   // Shift+9
-        ('?', 0xBF, true),   // Shift+/
+        ('!', 0x31, true),  // Shift+1
+        ('"', 0x32, true),  // Shift+2 (JIS)
+        ('#', 0x33, true),  // Shift+3
+        ('$', 0x34, true),  // Shift+4
+        ('%', 0x35, true),  // Shift+5
+        ('&', 0x36, true),  // Shift+6
+        ('\'', 0x37, true), // Shift+7 (JIS)
+        ('(', 0x38, true),  // Shift+8
+        (')', 0x39, true),  // Shift+9
+        ('?', 0xBF, true),  // Shift+/
         ('-', 0xBD, false),
-        ('=', 0xBD, true),   // Shift+- (JIS)
+        ('=', 0xBD, true), // Shift+- (JIS)
         ('.', 0xBE, false),
         (',', 0xBC, false),
         ('/', 0xBF, false),
@@ -611,5 +637,8 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
         ('`', 0xC0, true),   // Shift+@ (JIS)
         ('\\', 0xE2, false), // JIS: ＼
     ];
-    entries.iter().map(|&(ch, vk, shift)| (ch, (VkCode(vk), shift))).collect()
+    entries
+        .iter()
+        .map(|&(ch, vk, shift)| (ch, (VkCode(vk), shift)))
+        .collect()
 }

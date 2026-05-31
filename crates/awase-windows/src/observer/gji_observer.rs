@@ -25,7 +25,10 @@ pub(crate) fn observe_gji_after_focus(last_focus_change_ms: u64) -> GjiBlacklist
             now_ms.saturating_sub(last_io),
             last_io.saturating_sub(last_focus_change_ms),
         );
-        GjiBlacklistObservation { observer_poll_value: Some(true), now_ms }
+        GjiBlacklistObservation {
+            observer_poll_value: Some(true),
+            now_ms,
+        }
     } else {
         if last_io > 0 && !gji_after_focus {
             log::debug!(
@@ -34,6 +37,9 @@ pub(crate) fn observe_gji_after_focus(last_focus_change_ms: u64) -> GjiBlacklist
                 last_focus_change_ms.saturating_sub(last_io),
             );
         }
-        GjiBlacklistObservation { observer_poll_value: None, now_ms }
+        GjiBlacklistObservation {
+            observer_poll_value: None,
+            now_ms,
+        }
     }
 }

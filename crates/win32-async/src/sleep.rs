@@ -20,12 +20,7 @@ thread_local! {
 /// SetTimer コールバック: タイマー ID に対応する Waker を起こす。
 /// `DispatchMessageW` が WM_TIMER を dispatch したときに呼ばれる。
 #[allow(unsafe_code)]
-unsafe extern "system" fn timer_proc(
-    _hwnd: HWND,
-    _msg: u32,
-    event_id: usize,
-    _dw_time: u32,
-) {
+unsafe extern "system" fn timer_proc(_hwnd: HWND, _msg: u32, event_id: usize, _dw_time: u32) {
     PENDING_WAKERS.with(|wakers| {
         if let Some(waker) = wakers.borrow_mut().remove(&event_id) {
             waker.wake();
@@ -40,7 +35,11 @@ unsafe extern "system" fn timer_proc(
 /// 動いているスレッド上で await すること。
 #[must_use]
 pub const fn sleep_ms(ms: u32) -> SleepFuture {
-    SleepFuture { ms, timer_id: None, done: false }
+    SleepFuture {
+        ms,
+        timer_id: None,
+        done: false,
+    }
 }
 
 /// [`sleep_ms`] が返す Future。
@@ -96,7 +95,9 @@ impl Drop for SleepFuture {
     #[allow(unsafe_code)]
     fn drop(&mut self) {
         if let (Some(timer_id), false) = (self.timer_id, self.done) {
-            unsafe { KillTimer(ptr::null_mut(), timer_id); }
+            unsafe {
+                KillTimer(ptr::null_mut(), timer_id);
+            }
             PENDING_WAKERS.with(|w| {
                 w.borrow_mut().remove(&timer_id);
             });
@@ -115,7 +116,10 @@ mod tests {
         let start = Instant::now();
         winmsg_executor::block_on(sleep_ms(50));
         let elapsed = start.elapsed().as_millis();
-        assert!(elapsed >= 30, "sleep_ms(50) completed too early: {elapsed}ms");
+        assert!(
+            elapsed >= 30,
+            "sleep_ms(50) completed too early: {elapsed}ms"
+        );
         assert!(elapsed < 500, "sleep_ms(50) took too long: {elapsed}ms");
     }
 

@@ -168,7 +168,10 @@ impl WorkerThread {
             .spawn(move || f(token))
             .unwrap_or_else(|e| panic!("failed to spawn worker thread '{name}': {e}"));
 
-        Self { event, handle: Some(handle) }
+        Self {
+            event,
+            handle: Some(handle),
+        }
     }
 
     /// Signal shutdown and join the thread.
@@ -195,7 +198,10 @@ impl Drop for WorkerThread {
 impl std::fmt::Debug for WorkerThread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WorkerThread")
-            .field("running", &self.handle.as_ref().is_some_and(|h| !h.is_finished()))
+            .field(
+                "running",
+                &self.handle.as_ref().is_some_and(|h| !h.is_finished()),
+            )
             .finish_non_exhaustive()
     }
 }

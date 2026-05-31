@@ -9,9 +9,7 @@ use crate::engine::fsm_types::EngineState;
 use crate::engine::input_tracker::InputTracker;
 use crate::engine::nicola_fsm::{NicolaFsm, TIMER_PENDING};
 use crate::scanmap::PhysicalPos;
-use crate::types::{
-    KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode,
-};
+use crate::types::{KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode};
 use crate::yab::{YabFace, YabLayout, YabValue};
 
 use timed_fsm::Response;
@@ -23,13 +21,40 @@ const VK_CONVERT: VkCode = VkCode(0x1C);
 
 /// Realistic VK codes used in test generation.
 const VK_POOL: &[VkCode] = &[
-    VkCode(0x41), VkCode(0x42), VkCode(0x43), VkCode(0x44), VkCode(0x45), VkCode(0x46), VkCode(0x47), VkCode(0x48), // A-H
-    VkCode(0x49), VkCode(0x4A), VkCode(0x4B), VkCode(0x4C), VkCode(0x4D), VkCode(0x4E), VkCode(0x4F), VkCode(0x50), // I-P
-    VkCode(0x51), VkCode(0x52), VkCode(0x53), VkCode(0x54), VkCode(0x55), VkCode(0x56), VkCode(0x57), VkCode(0x58), // Q-X
-    VkCode(0x59), VkCode(0x5A), // Y-Z
-    VkCode(0x1C), VkCode(0x1D), // Convert, Nonconvert (thumb)
-    VkCode(0x10), VkCode(0x11), VkCode(0x12), // Shift, Ctrl, Alt
-    VkCode(0x0D), VkCode(0x08), VkCode(0x20), // Enter, BS, Space
+    VkCode(0x41),
+    VkCode(0x42),
+    VkCode(0x43),
+    VkCode(0x44),
+    VkCode(0x45),
+    VkCode(0x46),
+    VkCode(0x47),
+    VkCode(0x48), // A-H
+    VkCode(0x49),
+    VkCode(0x4A),
+    VkCode(0x4B),
+    VkCode(0x4C),
+    VkCode(0x4D),
+    VkCode(0x4E),
+    VkCode(0x4F),
+    VkCode(0x50), // I-P
+    VkCode(0x51),
+    VkCode(0x52),
+    VkCode(0x53),
+    VkCode(0x54),
+    VkCode(0x55),
+    VkCode(0x56),
+    VkCode(0x57),
+    VkCode(0x58), // Q-X
+    VkCode(0x59),
+    VkCode(0x5A), // Y-Z
+    VkCode(0x1C),
+    VkCode(0x1D), // Convert, Nonconvert (thumb)
+    VkCode(0x10),
+    VkCode(0x11),
+    VkCode(0x12), // Shift, Ctrl, Alt
+    VkCode(0x0D),
+    VkCode(0x08),
+    VkCode(0x20), // Enter, BS, Space
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -122,7 +147,12 @@ fn ime_on_ctx() -> InputContext {
         ime_on: true,
         input_mode: InputModeState::ObservedRomaji,
         is_japanese_ime: true,
-        modifiers: crate::engine::fsm_types::ModifierState { ctrl: false, alt: false, shift: false, win: false },
+        modifiers: crate::engine::fsm_types::ModifierState {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+        },
         left_thumb_down: None,
         right_thumb_down: None,
     }

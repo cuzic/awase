@@ -193,11 +193,23 @@ mod tests {
     }
 
     fn key_down_char(vk: VkCode, scan: ScanCode, pos: PhysicalPos) -> RawKeyEvent {
-        make_event(vk, scan, KeyEventType::KeyDown, KeyClassification::Char, Some(pos))
+        make_event(
+            vk,
+            scan,
+            KeyEventType::KeyDown,
+            KeyClassification::Char,
+            Some(pos),
+        )
     }
 
     fn key_down_passthrough(vk: VkCode, scan: ScanCode) -> RawKeyEvent {
-        make_event(vk, scan, KeyEventType::KeyDown, KeyClassification::Passthrough, None)
+        make_event(
+            vk,
+            scan,
+            KeyEventType::KeyDown,
+            KeyClassification::Passthrough,
+            None,
+        )
     }
 
     fn key_down_left_thumb() -> RawKeyEvent {
@@ -232,7 +244,10 @@ mod tests {
     fn response_to_decision_consumed_no_effects() {
         let resp: Response<KeyAction, usize> = Response::consume();
         let decision = FsmAdapter::response_to_decision(resp);
-        assert!(decision.is_consumed(), "consumed response should yield Consume decision");
+        assert!(
+            decision.is_consumed(),
+            "consumed response should yield Consume decision"
+        );
         match decision {
             Decision::Consume { effects } => assert!(effects.is_empty()),
             other => panic!("expected Consume, got {:?}", other),
@@ -243,8 +258,7 @@ mod tests {
     #[test]
     fn response_to_decision_consumed_with_timer_set() {
         let dur = Duration::from_millis(50);
-        let resp: Response<KeyAction, usize> =
-            Response::consume().with_timer(1usize, dur);
+        let resp: Response<KeyAction, usize> = Response::consume().with_timer(1usize, dur);
         let decision = FsmAdapter::response_to_decision(resp);
         assert!(decision.is_consumed());
         match decision {
@@ -315,8 +329,7 @@ mod tests {
     /// consumed=false, タイマー Kill あり → PassThroughWith
     #[test]
     fn response_to_decision_pass_through_with_timer() {
-        let resp: Response<KeyAction, usize> =
-            Response::pass_through().with_kill_timer(3usize);
+        let resp: Response<KeyAction, usize> = Response::pass_through().with_kill_timer(3usize);
         let decision = FsmAdapter::response_to_decision(resp);
         assert!(!decision.is_consumed());
         match decision {
@@ -437,7 +450,10 @@ mod tests {
         let event = key_down_passthrough(VK_RETURN, SCAN_RETURN);
         let phys = empty_phys();
         let decision = adapter.on_event(event, &phys);
-        assert!(!decision.is_consumed(), "passthrough key should not be consumed");
+        assert!(
+            !decision.is_consumed(),
+            "passthrough key should not be consumed"
+        );
         assert!(matches!(decision, Decision::PassThrough));
     }
 
@@ -450,7 +466,10 @@ mod tests {
         let event = key_down_char(VK_A, SCAN_A, POS_A);
         let phys = empty_phys();
         let decision = adapter.on_event(event, &phys);
-        assert!(!decision.is_consumed(), "char key while disabled should pass through");
+        assert!(
+            !decision.is_consumed(),
+            "char key while disabled should pass through"
+        );
     }
 
     // ── on_event: 通常文字キー押下（Wait モード）→ 保留 → Consume ────────────
@@ -514,7 +533,10 @@ mod tests {
         match decision {
             Decision::Consume { effects } => {
                 let has_send_keys = effects.iter().any(|e| matches!(e, Effect::Input(_)));
-                assert!(has_send_keys, "flush with pending should produce SendKeys effect");
+                assert!(
+                    has_send_keys,
+                    "flush with pending should produce SendKeys effect"
+                );
             }
             other => panic!("expected Consume, got {:?}", other),
         }
@@ -534,21 +556,20 @@ mod tests {
 
         // 1回目は actions を含む
         let has_keys_1 = match &d1 {
-            Decision::Consume { effects } => {
-                effects.iter().any(|e| matches!(e, Effect::Input(_)))
-            }
+            Decision::Consume { effects } => effects.iter().any(|e| matches!(e, Effect::Input(_))),
             _ => false,
         };
         // 2回目は既に Idle なので actions は空
         let has_keys_2 = match &d2 {
-            Decision::Consume { effects } => {
-                effects.iter().any(|e| matches!(e, Effect::Input(_)))
-            }
+            Decision::Consume { effects } => effects.iter().any(|e| matches!(e, Effect::Input(_))),
             _ => false,
         };
 
         assert!(has_keys_1, "first flush should emit actions");
-        assert!(!has_keys_2, "second flush (idle) should not re-emit actions");
+        assert!(
+            !has_keys_2,
+            "second flush (idle) should not re-emit actions"
+        );
     }
 
     // ── flush_to_effects ──────────────────────────────────────────────────────
@@ -563,7 +584,10 @@ mod tests {
             .iter()
             .filter(|e| matches!(e, Effect::Timer(TimerEffect::Kill(_))))
             .count();
-        assert_eq!(kill_count, 2, "flush from idle should produce 2 timer kill effects");
+        assert_eq!(
+            kill_count, 2,
+            "flush from idle should produce 2 timer kill effects"
+        );
     }
 
     #[test]
@@ -605,7 +629,10 @@ mod tests {
         match decision {
             Decision::Consume { effects } => {
                 let has_send_keys = effects.iter().any(|e| matches!(e, Effect::Input(_)));
-                assert!(has_send_keys, "swap_layout should flush pending key as action");
+                assert!(
+                    has_send_keys,
+                    "swap_layout should flush pending key as action"
+                );
             }
             other => panic!("expected Consume, got {:?}", other),
         }
@@ -690,7 +717,10 @@ mod tests {
         match decision {
             Decision::Consume { effects } => {
                 let has_action = effects.iter().any(|e| matches!(e, Effect::Input(_)));
-                assert!(has_action, "simultaneous thumb+char should emit action immediately");
+                assert!(
+                    has_action,
+                    "simultaneous thumb+char should emit action immediately"
+                );
             }
             other => panic!("expected Consume, got {:?}", other),
         }

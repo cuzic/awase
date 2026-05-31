@@ -184,7 +184,8 @@ impl ObservationStore {
     /// 乖離継続時間を返す
     #[must_use]
     pub fn drift_duration(&self, now: Instant) -> Option<Duration> {
-        self.drift.map(|d| now.saturating_duration_since(d.started_at))
+        self.drift
+            .map(|d| now.saturating_duration_since(d.started_at))
     }
 
     /// 最も信頼できる観測値を返す (confidence 優先、同 confidence なら新しい方)。
@@ -274,7 +275,11 @@ mod tests {
         // 同じ desired/observed で再 update → started_at 維持
         let t1 = t0 + Duration::from_millis(50);
         s.update_drift(true, false, t1, 101);
-        assert_eq!(s.drift.unwrap().first_drift_seq, 100, "first_drift_seq 維持");
+        assert_eq!(
+            s.drift.unwrap().first_drift_seq,
+            100,
+            "first_drift_seq 維持"
+        );
 
         // desired と observed が一致 → drift clear
         s.update_drift(true, true, t1, 102);

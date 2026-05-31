@@ -59,9 +59,7 @@ impl OutputHistory {
     #[must_use]
     pub fn recent_kana(&self, n: usize) -> Vec<char> {
         let mut result: Vec<char> = Vec::with_capacity(n.min(self.entries.len()));
-        result.extend(
-            self.entries.iter().rev().filter_map(|e| e.kana).take(n),
-        );
+        result.extend(self.entries.iter().rev().filter_map(|e| e.kana).take(n));
         result.reverse();
         result
     }

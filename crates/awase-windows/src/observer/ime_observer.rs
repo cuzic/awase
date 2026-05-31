@@ -13,8 +13,8 @@
 //!
 //! `None` を「偽」として扱ってはならない。
 
-use awase::engine::InputModeState;
 use crate::imm::{IME_CMODE_NATIVE, IME_CMODE_ROMAN};
+use awase::engine::InputModeState;
 
 /// Observer が返す単一観測 (値 + タイムスタンプ)。
 #[derive(Debug, Clone, Copy)]
@@ -63,14 +63,20 @@ impl crate::ime::ImeSnapshot {
         let known_not_japanese = self.is_japanese_ime == Some(false);
         if known_not_japanese {
             PollOutcome {
-                observer_poll: Some(ImeObs { value: false, ms: now_ms }),
+                observer_poll: Some(ImeObs {
+                    value: false,
+                    ms: now_ms,
+                }),
                 increment_miss_count: false,
                 clear_force_on_broken_app_bootstrap: true,
                 clear_force_on_panic_reset: true,
             }
         } else if let Some(on) = self.ime_on {
             PollOutcome {
-                observer_poll: Some(ImeObs { value: on, ms: now_ms }),
+                observer_poll: Some(ImeObs {
+                    value: on,
+                    ms: now_ms,
+                }),
                 increment_miss_count: false,
                 clear_force_on_broken_app_bootstrap: true,
                 clear_force_on_panic_reset: true,
@@ -79,21 +85,36 @@ impl crate::ime::ImeSnapshot {
             log::debug!(
                 "IME detection skipped (TSF-native window), preserving ime_on={current_ime_on}"
             );
-            PollOutcome { observer_poll: None, increment_miss_count: false,
-                clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
+            PollOutcome {
+                observer_poll: None,
+                increment_miss_count: false,
+                clear_force_on_broken_app_bootstrap: false,
+                clear_force_on_panic_reset: false,
+            }
         } else if guard_active {
             log::debug!(
                 "IME detection failed but force_on_guard active, preserving ime_on={current_ime_on}"
             );
-            PollOutcome { observer_poll: None, increment_miss_count: false,
-                clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
+            PollOutcome {
+                observer_poll: None,
+                increment_miss_count: false,
+                clear_force_on_broken_app_bootstrap: false,
+                clear_force_on_panic_reset: false,
+            }
         } else {
-            PollOutcome { observer_poll: None, increment_miss_count: true,
-                clear_force_on_broken_app_bootstrap: false, clear_force_on_panic_reset: false }
+            PollOutcome {
+                observer_poll: None,
+                increment_miss_count: true,
+                clear_force_on_broken_app_bootstrap: false,
+                clear_force_on_panic_reset: false,
+            }
         }
     }
 
-    fn input_mode_from_romaji_flag(&self, current_input_mode: InputModeState) -> Option<InputModeState> {
+    fn input_mode_from_romaji_flag(
+        &self,
+        current_input_mode: InputModeState,
+    ) -> Option<InputModeState> {
         let romaji = self.is_romaji?;
         let prev = current_input_mode.is_romaji_capable();
         if prev != romaji {
@@ -103,7 +124,11 @@ impl crate::ime::ImeSnapshot {
                 if romaji { "romaji" } else { "kana" },
             );
         }
-        Some(if romaji { InputModeState::ObservedRomaji } else { InputModeState::ObservedKana })
+        Some(if romaji {
+            InputModeState::ObservedRomaji
+        } else {
+            InputModeState::ObservedKana
+        })
     }
 
     fn input_mode_from_conversion(
@@ -129,7 +154,11 @@ impl crate::ime::ImeSnapshot {
             if prev_romaji { "romaji" } else { "kana" },
             if new_romaji { "romaji" } else { "kana" },
         );
-        Some(if new_romaji { InputModeState::ObservedRomaji } else { InputModeState::ObservedKana })
+        Some(if new_romaji {
+            InputModeState::ObservedRomaji
+        } else {
+            InputModeState::ObservedKana
+        })
     }
 }
 
@@ -137,7 +166,7 @@ impl crate::ime::ImeSnapshot {
 ///
 /// `Preconditions` への書き込みを一切行わない純粋関数。
 /// `poll_and_classify_ime()` と `classify_fetched_snapshot()` の共通ロジックを集約。
-#[must_use] 
+#[must_use]
 pub fn classify_ime_snapshot(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,
@@ -154,7 +183,9 @@ pub fn classify_ime_snapshot(
         None
     } else {
         snap.input_mode_from_romaji_flag(current_input_mode)
-            .or_else(|| snap.input_mode_from_conversion(current_prev_conversion_mode, current_input_mode))
+            .or_else(|| {
+                snap.input_mode_from_conversion(current_prev_conversion_mode, current_input_mode)
+            })
     };
 
     log::debug!(
@@ -184,7 +215,7 @@ pub fn classify_ime_snapshot(
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-#[must_use] 
+#[must_use]
 pub unsafe fn poll_and_classify_ime(
     current_ime_on: bool,
     current_force_on_guard_active: bool,
@@ -318,8 +349,8 @@ mod tests {
         let update = classify_ime_snapshot(
             &snap,
             1000,
-            true,  // current_ime_on
-            true,  // current_force_on_guard_active = true
+            true, // current_ime_on
+            true, // current_force_on_guard_active = true
             InputModeState::Unknown,
             None,
         );
@@ -357,7 +388,7 @@ mod tests {
 ///
 /// `poll_and_classify_ime()` から blocking fetch 部分を分離したもの。async drain 後に with_app 内で呼ぶ。
 /// `Preconditions` を直接変更しない。
-#[must_use] 
+#[must_use]
 pub fn classify_fetched_snapshot(
     snap: &crate::ime::ImeSnapshot,
     now_ms: u64,

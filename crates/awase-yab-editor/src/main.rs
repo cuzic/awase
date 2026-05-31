@@ -296,14 +296,10 @@ impl YabEditor {
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
             self.do_save();
         }
-        if ctx.input(|i| {
-            i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::O)
-        }) {
+        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::O)) {
             self.do_open_dialog();
         }
-        if ctx.input(|i| {
-            i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S)
-        }) {
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S)) {
             self.do_save_as_dialog();
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
@@ -468,12 +464,11 @@ impl YabEditor {
                     };
 
                     let tip = cell_tooltip(value, pos);
-                    let btn = egui::Button::new(
-                        egui::RichText::new(display).monospace().size(14.0),
-                    )
-                    .fill(bg_color)
-                    .stroke(stroke)
-                    .min_size(egui::vec2(40.0, 34.0));
+                    let btn =
+                        egui::Button::new(egui::RichText::new(display).monospace().size(14.0))
+                            .fill(bg_color)
+                            .stroke(stroke)
+                            .min_size(egui::vec2(40.0, 34.0));
 
                     if ui.add(btn).on_hover_text(tip).clicked() {
                         clicked_pos = Some(pos);
@@ -621,9 +616,7 @@ fn cell_display(value: Option<&YabValue>) -> String {
         Some(YabValue::Romaji { kana: Some(ch), .. }) => ch.to_string(),
         Some(YabValue::Romaji { romaji, .. }) if romaji.len() <= 3 => romaji.clone(),
         Some(YabValue::Romaji { romaji, .. }) => format!("{}.", &romaji[..2]),
-        Some(YabValue::Literal(s) | YabValue::KeySequence(s))
-            if s.chars().count() <= 2 =>
-        {
+        Some(YabValue::Literal(s) | YabValue::KeySequence(s)) if s.chars().count() <= 2 => {
             s.clone()
         }
         Some(YabValue::Literal(s) | YabValue::KeySequence(s)) => {
@@ -651,11 +644,14 @@ const fn cell_color(value: Option<&YabValue>) -> egui::Color32 {
 fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
     let kind_str = match value {
         Some(YabValue::Romaji { romaji, kana }) => {
-            let kana_str = kana.map_or_else(|| "なし".to_string(), |c| {
-                let mut s = String::new();
-                s.push(c);
-                s
-            });
+            let kana_str = kana.map_or_else(
+                || "なし".to_string(),
+                |c| {
+                    let mut s = String::new();
+                    s.push(c);
+                    s
+                },
+            );
             format!("ローマ字: {romaji}  かな: {kana_str}")
         }
         Some(YabValue::Literal(s)) => format!("リテラル: {s}"),

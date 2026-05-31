@@ -5,7 +5,7 @@ use windows::Win32::UI::Input::Ime::{
     IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, MapVirtualKeyW, MAPVK_VK_TO_VSC, SendInput, INPUT,
+    GetKeyboardLayout, MapVirtualKeyW, SendInput, INPUT, MAPVK_VK_TO_VSC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
@@ -34,9 +34,8 @@ use crate::win32::HwndExt as _;
 #[must_use]
 pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     let t0 = std::time::Instant::now();
-    let gui_result = crate::win32::get_gui_thread_info_with_timeout(
-        std::time::Duration::from_millis(150),
-    );
+    let gui_result =
+        crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(150));
     let gui_elapsed = t0.elapsed();
     let Some(hwnd) = gui_result.focused_hwnd else {
         log::debug!(
@@ -62,10 +61,9 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     // 50ms では時々取りこぼす（Ctrl+無変換 が「時々」効かない症状の原因）。Get 系の照会は短く
     // 維持し、Set 系のみ余裕を持たせる。
     let t_send = std::time::Instant::now();
-    let success = unsafe {
-        crate::imm::send_ime_control(ime_wnd, IMC_SETOPENSTATUS, isize::from(open), 150)
-    }
-    .is_some();
+    let success =
+        unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETOPENSTATUS, isize::from(open), 150) }
+            .is_some();
     let send_elapsed = t_send.elapsed();
     // 診断: Ctrl+無変換 で前文字消失調査用。タイムアウトに近いケースと partial commit の
     // 関係を切り分けるため、GetGUIThreadInfo / send_ime_control の所要時間と現時点で
@@ -85,9 +83,9 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 /// `SendInput` で修飾なしキーを届ける際の解放・復元シーケンス構築に使う。
 /// 3つの IME キー送信関数（VK_KANJI / F13 / F14）が同じパターンを共有する。
 struct HeldModifiers {
-    ctrl:  bool,
+    ctrl: bool,
     shift: bool,
-    alt:   bool,
+    alt: bool,
 }
 
 impl HeldModifiers {
@@ -97,22 +95,28 @@ impl HeldModifiers {
     /// Win32 API を呼び出す。
     unsafe fn read() -> Self {
         use windows::Win32::UI::Input::KeyboardAndMouse::{
-            GetAsyncKeyState, VK_CONTROL, VK_SHIFT, VK_MENU,
+            GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
         };
         Self {
-            ctrl:  unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0,
-            shift: unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0))   } as u16 & 0x8000 != 0,
-            alt:   unsafe { GetAsyncKeyState(i32::from(VK_MENU.0))    } as u16 & 0x8000 != 0,
+            ctrl: unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0,
+            shift: unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } as u16 & 0x8000 != 0,
+            alt: unsafe { GetAsyncKeyState(i32::from(VK_MENU.0)) } as u16 & 0x8000 != 0,
         }
     }
 
     /// 押下中の修飾キーを解放する `INPUT` イベントを追加する。
     fn push_release(&self, inputs: &mut Vec<INPUT>) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use crate::vk::{VK_CONTROL, VK_SHIFT, VK_MENU};
-        if self.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL, true, IME_KANJI_MARKER)); }
-        if self.shift { inputs.push(make_key_input_ex(VK_SHIFT,   true, IME_KANJI_MARKER)); }
-        if self.alt   { inputs.push(make_key_input_ex(VK_MENU,    true, IME_KANJI_MARKER)); }
+        use crate::vk::{VK_CONTROL, VK_MENU, VK_SHIFT};
+        if self.ctrl {
+            inputs.push(make_key_input_ex(VK_CONTROL, true, IME_KANJI_MARKER));
+        }
+        if self.shift {
+            inputs.push(make_key_input_ex(VK_SHIFT, true, IME_KANJI_MARKER));
+        }
+        if self.alt {
+            inputs.push(make_key_input_ex(VK_MENU, true, IME_KANJI_MARKER));
+        }
     }
 
     /// 物理的にまだ押下中の修飾キーを復元する `INPUT` イベントを追加し、復元した状態を返す。
@@ -122,28 +126,29 @@ impl HeldModifiers {
     unsafe fn push_restore(&self, inputs: &mut Vec<INPUT>) -> Self {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{
-            VK_CONTROL, VK_LCONTROL,
-            VK_SHIFT,   VK_LSHIFT, VK_RSHIFT,
-            VK_MENU,    VK_LMENU,  VK_RMENU,
+            VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RMENU, VK_RSHIFT, VK_SHIFT,
         };
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
         let still = Self {
-            ctrl:  self.ctrl  && (
-                unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0
-                || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0))  } as u16 & 0x8000 != 0
-            ),
-            shift: self.shift && (
-                unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } as u16 & 0x8000 != 0
-                || unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } as u16 & 0x8000 != 0
-            ),
-            alt:   self.alt   && (
-                unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } as u16 & 0x8000 != 0
-                || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0
-            ),
+            ctrl: self.ctrl
+                && (unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0
+                    || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0),
+            shift: self.shift
+                && (unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } as u16 & 0x8000 != 0
+                    || unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } as u16 & 0x8000 != 0),
+            alt: self.alt
+                && (unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } as u16 & 0x8000 != 0
+                    || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0),
         };
-        if still.ctrl  { inputs.push(make_key_input_ex(VK_CONTROL, false, IME_KANJI_MARKER)); }
-        if still.shift { inputs.push(make_key_input_ex(VK_SHIFT,   false, IME_KANJI_MARKER)); }
-        if still.alt   { inputs.push(make_key_input_ex(VK_MENU,    false, IME_KANJI_MARKER)); }
+        if still.ctrl {
+            inputs.push(make_key_input_ex(VK_CONTROL, false, IME_KANJI_MARKER));
+        }
+        if still.shift {
+            inputs.push(make_key_input_ex(VK_SHIFT, false, IME_KANJI_MARKER));
+        }
+        if still.alt {
+            inputs.push(make_key_input_ex(VK_MENU, false, IME_KANJI_MARKER));
+        }
         still
     }
 }
@@ -169,10 +174,7 @@ impl HeldModifiers {
 pub unsafe fn post_kanji_toggle_to_focused() {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use crate::vk::{
-        VK_CONTROL, VK_LCONTROL, VK_RCONTROL,
-        VK_LSHIFT,  VK_RSHIFT,
-        VK_LMENU,   VK_RMENU,
-        VK_KANJI,
+        VK_CONTROL, VK_KANJI, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState};
 
@@ -181,28 +183,30 @@ pub unsafe fn post_kanji_toggle_to_focused() {
 
     // 診断: L/R 個別キー状態（VK_KANJI 受信時の Edge 挙動把握用）
     // GetAsyncKeyState = 物理キー状態、GetKeyState = メッセージキュー処理済み状態。
-    let gas_lctrl  = unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0;
-    let gas_rctrl  = unsafe { GetAsyncKeyState(i32::from(VK_RCONTROL.0)) } as u16 & 0x8000 != 0;
-    let gks_ctrl   = unsafe { GetKeyState(i32::from(VK_CONTROL.0))       } as u16 & 0x8000 != 0;
-    let gks_lctrl  = unsafe { GetKeyState(i32::from(VK_LCONTROL.0))      } as u16 & 0x8000 != 0;
-    let gks_rctrl  = unsafe { GetKeyState(i32::from(VK_RCONTROL.0))      } as u16 & 0x8000 != 0;
-    let gas_lshift = unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0))   } as u16 & 0x8000 != 0;
-    let gas_rshift = unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0))   } as u16 & 0x8000 != 0;
-    let gas_lalt   = unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0))    } as u16 & 0x8000 != 0;
-    let gas_ralt   = unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0))    } as u16 & 0x8000 != 0;
+    let gas_lctrl = unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0;
+    let gas_rctrl = unsafe { GetAsyncKeyState(i32::from(VK_RCONTROL.0)) } as u16 & 0x8000 != 0;
+    let gks_ctrl = unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } as u16 & 0x8000 != 0;
+    let gks_lctrl = unsafe { GetKeyState(i32::from(VK_LCONTROL.0)) } as u16 & 0x8000 != 0;
+    let gks_rctrl = unsafe { GetKeyState(i32::from(VK_RCONTROL.0)) } as u16 & 0x8000 != 0;
+    let gas_lshift = unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } as u16 & 0x8000 != 0;
+    let gas_rshift = unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } as u16 & 0x8000 != 0;
+    let gas_lalt = unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } as u16 & 0x8000 != 0;
+    let gas_ralt = unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } as u16 & 0x8000 != 0;
     log::debug!(
         "[ime-fallback] key-state pre-send: \
          ctrl(gas={} L={gas_lctrl} R={gas_rctrl}) \
          gks(ctrl={gks_ctrl} L={gks_lctrl} R={gks_rctrl}) \
          shift(gas={} L={gas_lshift} R={gas_rshift}) \
          alt(gas={} L={gas_lalt} R={gas_ralt})",
-        held.ctrl, held.shift, held.alt
+        held.ctrl,
+        held.shift,
+        held.alt
     );
 
     let mut inputs = Vec::with_capacity(8);
     held.push_release(&mut inputs);
     inputs.push(make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(VK_KANJI, true,  IME_KANJI_MARKER));
+    inputs.push(make_key_input_ex(VK_KANJI, true, IME_KANJI_MARKER));
 
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
     let still = unsafe { held.push_restore(&mut inputs) };
@@ -211,8 +215,12 @@ pub unsafe fn post_kanji_toggle_to_focused() {
         "[ime-fallback] SendInput VK_KANJI toggle: \
          release(ctrl={} shift={} alt={}) \
          restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl, held.shift, held.alt,
-        still.ctrl, still.shift, still.alt,
+        held.ctrl,
+        held.shift,
+        held.alt,
+        still.ctrl,
+        still.shift,
+        still.alt,
         inputs.len()
     );
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
@@ -229,7 +237,10 @@ pub unsafe fn post_kanji_toggle_to_focused() {
         inputs.len()
     );
     if sent as usize != inputs.len() {
-        log::warn!("[ime-fallback] SendInput(VK_KANJI) sent {sent}/{} events", inputs.len());
+        log::warn!(
+            "[ime-fallback] SendInput(VK_KANJI) sent {sent}/{} events",
+            inputs.len()
+        );
     }
 }
 
@@ -253,14 +264,18 @@ pub unsafe fn post_gji_ime_on() {
 
     held.push_release(&mut inputs);
     inputs.push(make_key_input_ex(VK_F13, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(VK_F13, true,  IME_KANJI_MARKER));
+    inputs.push(make_key_input_ex(VK_F13, true, IME_KANJI_MARKER));
     let still = unsafe { held.push_restore(&mut inputs) };
 
     log::debug!(
         "[gji-on] F13: release(ctrl={} shift={} alt={}) \
          restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl, held.shift, held.alt,
-        still.ctrl, still.shift, still.alt,
+        held.ctrl,
+        held.shift,
+        held.alt,
+        still.ctrl,
+        still.shift,
+        still.alt,
         inputs.len()
     );
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec。
@@ -295,14 +310,18 @@ pub unsafe fn post_gji_ime_off() {
 
     held.push_release(&mut inputs);
     inputs.push(make_key_input_ex(VK_F14, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(VK_F14, true,  IME_KANJI_MARKER));
+    inputs.push(make_key_input_ex(VK_F14, true, IME_KANJI_MARKER));
     let still = unsafe { held.push_restore(&mut inputs) };
 
     log::debug!(
         "[gji-off] F14: release(ctrl={} shift={} alt={}) \
          restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl, held.shift, held.alt,
-        still.ctrl, still.shift, still.alt,
+        held.ctrl,
+        held.shift,
+        held.alt,
+        still.ctrl,
+        still.shift,
+        still.alt,
         inputs.len()
     );
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec。
@@ -338,7 +357,7 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
     held.push_release(&mut inputs);
     inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(vk, true,  IME_KANJI_MARKER));
+    inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
     // SAFETY: GetAsyncKeyState はスレッドセーフ。
     let still = unsafe { held.push_restore(&mut inputs) };
 
@@ -346,8 +365,12 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
         "[ime-mode] SendInput vk=0x{vk:02X} \
          release(ctrl={} shift={} alt={}) \
          restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl, held.shift, held.alt,
-        still.ctrl, still.shift, still.alt,
+        held.ctrl,
+        held.shift,
+        held.alt,
+        still.ctrl,
+        still.shift,
+        still.alt,
         inputs.len()
     );
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
@@ -355,7 +378,10 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
     let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
-        log::warn!("[ime-mode] SendInput(vk=0x{vk:02X}) sent {sent}/{} events", inputs.len());
+        log::warn!(
+            "[ime-mode] SendInput(vk=0x{vk:02X}) sent {sent}/{} events",
+            inputs.len()
+        );
     }
 }
 
@@ -365,7 +391,7 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
 ///
 /// # Safety
 /// Calls Win32 APIs.
-#[must_use] 
+#[must_use]
 pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す可能性があるが
     //         detect_ime_conversion_for_hwnd 内の non_null() チェックで処理される。
@@ -379,7 +405,7 @@ pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
 ///
 /// # Safety
 /// Calls Win32 APIs.
-#[must_use] 
+#[must_use]
 pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32> {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が `?` で None を返す。
     let hwnd = unsafe { GetForegroundWindow() }.non_null()?;
@@ -395,7 +421,7 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
 ///
 /// # Safety
 /// Calls Win32 APIs.
-#[must_use] 
+#[must_use]
 pub unsafe fn get_foreground_window_class() -> String {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が None を返し
     //         早期リターンする。
@@ -403,7 +429,11 @@ pub unsafe fn get_foreground_window_class() -> String {
         return "null".to_string();
     };
     let class = crate::focus::classify::get_class_name_string(hwnd);
-    if class.is_empty() { "unknown".to_string() } else { class }
+    if class.is_empty() {
+        "unknown".to_string()
+    } else {
+        class
+    }
 }
 
 /// クロスプロセスで IME をローマ字モードに設定する。
@@ -416,7 +446,7 @@ pub unsafe fn get_foreground_window_class() -> String {
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
-#[must_use] 
+#[must_use]
 pub unsafe fn set_ime_romaji_mode() -> bool {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が None を返し
     //         早期リターンする。
@@ -424,7 +454,9 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
         return false;
     };
     // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
-    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else { return false; };
+    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
+        return false;
+    };
 
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 内に制御が戻ることが保証される。
@@ -441,9 +473,10 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
 
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         new_conv は取得した conv に IME_CMODE_ROMAN を OR したものであり有効な変換モード値。
-    let success =
-        unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50) }
-            .is_some();
+    let success = unsafe {
+        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
+    }
+    .is_some();
     log::debug!("[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success}");
     success
 }
@@ -467,8 +500,7 @@ unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
-    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) }
-        .map(|v| v as u32)
+    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) }.map(|v| v as u32)
 }
 
 unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
@@ -482,7 +514,11 @@ unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
     // SAFETY: ctx.himc() は ImmContextGuard が保持する有効な HIMC。
     //         conversion と sentence はスタック上の初期化済み変数へのポインタであり呼び出し中は有効。
     let ok = unsafe {
-        ImmGetConversionStatus(ctx.himc(), Some(&raw mut conversion), Some(&raw mut sentence))
+        ImmGetConversionStatus(
+            ctx.himc(),
+            Some(&raw mut conversion),
+            Some(&raw mut sentence),
+        )
     };
     if !ok.as_bool() {
         return None;
@@ -531,21 +567,23 @@ pub struct ImeSnapshot {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-#[must_use] 
+#[must_use]
 pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> ImeSnapshot {
     // SAFETY: read_ime_state_full は unsafe fn であり、呼び出し元（本関数）が unsafe コンテキストを
     //         保証する。run_with_timeout はワーカースレッドで実行するが、Win32 IMM32 API は
     //         ワーカースレッドからも呼び出し可能。
-    crate::win32::run_with_timeout(timeout, || unsafe { read_ime_state_full() }).unwrap_or_else(|| {
-        log::warn!("read_ime_state_full timed out, returning empty snapshot");
-        ImeSnapshot {
-            is_japanese_ime: None,
-            ime_on: None,
-            is_romaji: None,
-            conversion_mode: None,
-            is_tsf_native: false,
-        }
-    })
+    crate::win32::run_with_timeout(timeout, || unsafe { read_ime_state_full() }).unwrap_or_else(
+        || {
+            log::warn!("read_ime_state_full timed out, returning empty snapshot");
+            ImeSnapshot {
+                is_japanese_ime: None,
+                ime_on: None,
+                is_romaji: None,
+                conversion_mode: None,
+                is_tsf_native: false,
+            }
+        },
+    )
 }
 
 /// OS API を呼び出して IME 状態を一括取得する。
@@ -556,14 +594,13 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-#[must_use] 
+#[must_use]
 pub unsafe fn read_ime_state_full() -> ImeSnapshot {
     // 0. フォーカスウィンドウを一度解決して全クエリに使う。
     // GetGUIThreadInfo はフォアグラウンドスレッドがハングすると無期限ブロックするため
     // タイムアウト付きヘルパーを使用する。
-    let result = crate::win32::get_gui_thread_info_with_timeout(
-        std::time::Duration::from_millis(200),
-    );
+    let result =
+        crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(200));
     // None（フォーカスウィンドウ不明）の場合は HWND::default() にフォールバックする。
     // detect_ime_open_for_hwnd 等は null HWND を適切に処理して None を返す。
     let focused_hwnd = result.focused_hwnd.unwrap_or_default();
@@ -722,12 +759,15 @@ pub fn keyboard_layout_info() -> (bool, u32) {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-#[must_use] 
+#[must_use]
 pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     let (is_japanese_ime, _) = keyboard_layout_info();
 
     if !is_japanese_ime {
-        return FastImeProbeResult { is_japanese_ime: false, ime_on: Some(false) };
+        return FastImeProbeResult {
+            is_japanese_ime: false,
+            ime_on: Some(false),
+        };
     }
 
     // GetForegroundWindow() はトップレベルウィンドウを返す。
@@ -736,7 +776,10 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が None を返し
     //         早期リターンする。
     let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
+        return FastImeProbeResult {
+            is_japanese_ime: true,
+            ime_on: None,
+        };
     };
 
     // クラス名を一度取得して both チェックで使い回す。
@@ -751,17 +794,22 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         log::debug!(
             "read_ime_state_fast: profile={profile:?} class={class_name} → ime_on=None (shadow preserving)"
         );
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
+        return FastImeProbeResult {
+            is_japanese_ime: true,
+            ime_on: None,
+        };
     }
 
     // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
-        return FastImeProbeResult { is_japanese_ime: true, ime_on: None };
+        return FastImeProbeResult {
+            is_japanese_ime: true,
+            ime_on: None,
+        };
     };
 
     let imc_open =
-        unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 20) }
-            .map(|v| v != 0);
+        unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 20) }.map(|v| v != 0);
 
     // 通常パス: conversion mode → 診断ログのみ（is_romaji 更新は read_ime_state_full に委ねる）
     // IMM32 ブリッジは WezTerm 等の TSF アプリでローマ字モードでも ROMAN ビットを
@@ -776,7 +824,10 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         log::debug!("read_ime_state_fast: conv=0x{conv:08X} native={is_native} roman={is_roman}");
     }
 
-    FastImeProbeResult { is_japanese_ime: true, ime_on: imc_open }
+    FastImeProbeResult {
+        is_japanese_ime: true,
+        ime_on: imc_open,
+    }
 }
 
 /// 高速プローブの結果。
@@ -798,14 +849,14 @@ pub struct FastImeProbeResult {
 ///
 /// # Safety
 /// Win32 API を呼び出す。
-#[must_use] 
+#[must_use]
 pub unsafe fn get_focused_hwnd() -> HWND {
-    let gui =
-        crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(30));
+    let gui = crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(30));
     // SAFETY: GetForegroundWindow はスレッドセーフで任意のスレッドから呼び出せる。
     //         focused_hwnd が None の場合のフォールバックとして使用するため、返り値が NULL の
     //         可能性は呼び出し元が non_null() 等でチェックすること。
-    gui.focused_hwnd.unwrap_or_else(|| unsafe { GetForegroundWindow() })
+    gui.focused_hwnd
+        .unwrap_or_else(|| unsafe { GetForegroundWindow() })
 }
 
 /// VK_DBE_HIRAGANA (F2) を `SendMessageTimeoutW` でフォーカスウィンドウの wndproc に直接届ける。
@@ -891,7 +942,12 @@ pub unsafe fn check_tsf_composition_active(hwnd: HWND) -> bool {
     //         lpBuf=None かつ dwBufLen=0 で呼ぶのは MSDN で明示的に許可されており
     //         バッファオーバーフローの危険はない。
     let len = unsafe {
-        ImmGetCompositionStringW(ctx.himc(), IME_COMPOSITION_STRING(crate::imm::GCS_COMPSTR), None, 0)
+        ImmGetCompositionStringW(
+            ctx.himc(),
+            IME_COMPOSITION_STRING(crate::imm::GCS_COMPSTR),
+            None,
+            0,
+        )
     };
     len > 0
 }
@@ -917,7 +973,9 @@ pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
         snap.himc_null = true;
         return snap;
     };
-    use crate::imm::{GCS_COMPATTR, GCS_COMPREADSTR, GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTREADSTR, GCS_RESULTSTR};
+    use crate::imm::{
+        GCS_COMPATTR, GCS_COMPREADSTR, GCS_COMPSTR, GCS_CURSORPOS, GCS_RESULTREADSTR, GCS_RESULTSTR,
+    };
     // 現在 composition 中の文字列
     snap.comp_str = unsafe { read_imm_string(ctx.himc(), GCS_COMPSTR) };
     // 確定済みの文字列
@@ -937,9 +995,8 @@ pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
     let mut conv = IME_CONVERSION_MODE::default();
     let mut sent = IME_SENTENCE_MODE::default();
     // SAFETY: ctx.himc() は有効。書き込み先は both null でない（&raw mut）。
-    let ok = unsafe {
-        ImmGetConversionStatus(ctx.himc(), Some(&raw mut conv), Some(&raw mut sent))
-    };
+    let ok =
+        unsafe { ImmGetConversionStatus(ctx.himc(), Some(&raw mut conv), Some(&raw mut sent)) };
     if ok.as_bool() {
         snap.conversion_mode = Some(conv.0);
         snap.sentence_mode = Some(sent.0);
@@ -950,11 +1007,13 @@ pub unsafe fn capture_composition_snapshot(hwnd: HWND) -> CompositionSnapshot {
 /// `ImmGetCompositionStringW` で composition の各 index を文字列として読み取る。
 ///
 /// 戻り値: 取得成功時は `Some(String)`、API エラー/長さ <=0 のときは `None`、長さ 0 は `Some("")`。
-unsafe fn read_imm_string(himc: windows::Win32::UI::Input::Ime::HIMC, index: u32) -> Option<String> {
+unsafe fn read_imm_string(
+    himc: windows::Win32::UI::Input::Ime::HIMC,
+    index: u32,
+) -> Option<String> {
     // SAFETY: lpBuf=None かつ dwBufLen=0 で呼んでバイト長を取得する公式パターン。
-    let byte_len = unsafe {
-        ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0)
-    };
+    let byte_len =
+        unsafe { ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0) };
     if byte_len < 0 {
         return None;
     }
@@ -982,18 +1041,22 @@ unsafe fn read_imm_string(himc: windows::Win32::UI::Input::Ime::HIMC, index: u32
 /// `ImmGetCompositionStringW` で int (cursor pos など) を読み取る。
 unsafe fn read_imm_i32(himc: windows::Win32::UI::Input::Ime::HIMC, index: u32) -> Option<i32> {
     // GCS_CURSORPOS / GCS_DELTASTART は LOWORD に値が入る。null バッファ呼び出しが値を返す。
-    let v = unsafe {
-        ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0)
-    };
-    if v < 0 { None } else { Some(v) }
+    let v = unsafe { ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0) };
+    if v < 0 {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 /// `ImmGetCompositionStringW` で生バイト列（GCS_COMPATTR 等）を読み取る。
-unsafe fn read_imm_bytes(himc: windows::Win32::UI::Input::Ime::HIMC, index: u32) -> Option<Vec<u8>> {
+unsafe fn read_imm_bytes(
+    himc: windows::Win32::UI::Input::Ime::HIMC,
+    index: u32,
+) -> Option<Vec<u8>> {
     // SAFETY: lpBuf=None / dwBufLen=0 でバイト長取得。
-    let byte_len = unsafe {
-        ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0)
-    };
+    let byte_len =
+        unsafe { ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(index), None, 0) };
     if byte_len < 0 {
         return None;
     }

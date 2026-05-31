@@ -59,7 +59,10 @@ impl<T> SingleThreadCell<T> {
     ///
     /// 既に借用中の場合は `None` を返す（UB なし）。
     pub fn try_with_mut<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
-        self.0.try_borrow_mut().ok().and_then(|mut g| g.as_mut().map(f))
+        self.0
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut g| g.as_mut().map(f))
     }
 
     /// 値への可変借用を試みる。

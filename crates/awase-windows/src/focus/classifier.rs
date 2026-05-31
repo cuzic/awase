@@ -19,7 +19,6 @@ pub enum ImmCapability {
     Unavailable,
 }
 
-
 // ── InjectionHint ──
 
 /// output 層が注入モードを決定するために必要な、focus 層の公開セマンティクス。
@@ -39,7 +38,11 @@ pub enum InjectionHint {
 // ── override-entry helpers ──
 
 /// `entries` の中に `(process_name, class_name)` にマッチするものがあるか。
-fn matches_override_entry(entries: &[AppOverrideEntry], process_name: &str, class_name: &str) -> bool {
+fn matches_override_entry(
+    entries: &[AppOverrideEntry],
+    process_name: &str,
+    class_name: &str,
+) -> bool {
     entries.iter().any(|entry| {
         entry.process.eq_ignore_ascii_case(process_name)
             && entry.class.eq_ignore_ascii_case(class_name)
@@ -80,7 +83,7 @@ pub struct ForceOverrides {
 }
 
 impl ForceOverrides {
-    #[must_use] 
+    #[must_use]
     pub const fn new(overrides: AppOverrides) -> Self {
         Self { inner: overrides }
     }
@@ -125,7 +128,9 @@ impl ForceOverrides {
             if matches_override_entry(&self.inner.force_tsf, &process_name, class_name) {
                 return InjectionHint::ForceTsf;
             }
-            if unsafe { input_site_fallback_matches(&self.inner.force_tsf, class_name, &process_name) } {
+            if unsafe {
+                input_site_fallback_matches(&self.inner.force_tsf, class_name, &process_name)
+            } {
                 return InjectionHint::ForceTsf;
             }
         }
@@ -189,7 +194,11 @@ impl ImmCapabilityStore {
             }
         }
         if !cache.is_empty() {
-            log::info!("Loaded IMM capability cache: {} entries from {}", cache.len(), path.display());
+            log::info!(
+                "Loaded IMM capability cache: {} entries from {}",
+                cache.len(),
+                path.display()
+            );
         }
         cache
     }
@@ -210,7 +219,11 @@ impl ImmCapabilityStore {
         if let Err(e) = std::fs::write(&path, content) {
             log::warn!("Failed to save IMM cache to {}: {e}", path.display());
         } else {
-            log::debug!("Saved IMM capability cache: {} entries to {}", self.cache.len(), path.display());
+            log::debug!(
+                "Saved IMM capability cache: {} entries to {}",
+                self.cache.len(),
+                path.display()
+            );
         }
     }
 
@@ -227,5 +240,3 @@ impl ImmCapabilityStore {
         count
     }
 }
-
-

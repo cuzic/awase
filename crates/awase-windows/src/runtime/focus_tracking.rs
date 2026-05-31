@@ -3,8 +3,8 @@
 //! ウィンドウフォーカス変化の検出・分類・後処理を担う。
 //! 親モジュール（`runtime/mod.rs`）のフィールドに `self.*` でアクセスできる。
 
-use awase::types::FocusKind;
 use crate::focus::cache::DetectionSource;
+use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
 
 use super::Runtime;
@@ -33,15 +33,16 @@ impl Runtime {
         // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
         {
             let hint = self.platform.injection_hint();
-            let new_mode = crate::output::types::InjectionMode::from(
-                (hint, self.platform_state.app_kind),
-            );
+            let new_mode =
+                crate::output::types::InjectionMode::from((hint, self.platform_state.app_kind));
             self.platform.update_injection_mode(new_mode);
         }
         if process_changed {
             self.on_focus_process_changed(&classified, prev_pid);
         } else if classified.kind == FocusKind::Undetermined {
-            self.platform.focus.try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
+            self.platform
+                .focus
+                .try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
         }
         process_changed
     }
@@ -96,12 +97,7 @@ impl Runtime {
         //         `hwnd` と `process_id` はフォーカスプローブで確認済みの有効な値。
         //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
         let resolution = unsafe {
-            kind_classifier::resolve_focus_kind(
-                &self.platform,
-                process_id,
-                &class_name,
-                hwnd,
-            )
+            kind_classifier::resolve_focus_kind(&self.platform, process_id, &class_name, hwnd)
         };
         let kind = resolution.kind;
         let reason = resolution.reason;
@@ -155,7 +151,10 @@ impl Runtime {
 
         self.platform_state.set_prev_conversion_mode(None);
 
-        (process_changed, if process_changed { last_pid } else { None })
+        (
+            process_changed,
+            if process_changed { last_pid } else { None },
+        )
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。
@@ -185,10 +184,12 @@ impl Runtime {
 
         {
             let process_name = self.platform.focus.process_name().to_owned();
-            self.platform_state.active_keymaps =
-                self.all_keymaps.filter_active(&process_name);
-            log::debug!("[keymap] active rules updated: {} rule(s) for process={:?}",
-                self.platform_state.active_keymaps.len(), process_name);
+            self.platform_state.active_keymaps = self.all_keymaps.filter_active(&process_name);
+            log::debug!(
+                "[keymap] active rules updated: {} rule(s) for process={:?}",
+                self.platform_state.active_keymaps.len(),
+                process_name
+            );
         }
 
         {
@@ -248,7 +249,9 @@ impl Runtime {
         }
 
         if classified.kind == FocusKind::Undetermined {
-            self.platform.focus.try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
+            self.platform
+                .focus
+                .try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
         }
     }
 

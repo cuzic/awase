@@ -7,21 +7,18 @@ use std::mem::size_of;
 use std::sync::atomic::Ordering;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO};
 
-use awase::types::{ContextChange, FocusKind};
 use crate::focus::cache::DetectionSource;
 use crate::hook;
 use crate::hook::CallbackResult;
+use crate::tray;
 use crate::win32::post_to_main_thread;
 use crate::{
-    Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD,
-    TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
-    with_app, with_app_ref,
+    with_app, with_app_ref, Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH,
+    TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
 };
-use crate::tray;
+use awase::types::{ContextChange, FocusKind};
 
 use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
 
@@ -46,7 +43,11 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
 
 /// WM_TIMER ハンドラ
 #[allow(clippy::cognitive_complexity)]
-pub(crate) unsafe fn handle_wm_timer(app: &mut Runtime, wparam: usize, msg: &windows::Win32::UI::WindowsAndMessaging::MSG) {
+pub(crate) unsafe fn handle_wm_timer(
+    app: &mut Runtime,
+    wparam: usize,
+    msg: &windows::Win32::UI::WindowsAndMessaging::MSG,
+) {
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     let logical_id = app.platform.timer.resolve(wparam);
     match logical_id {
@@ -165,10 +166,9 @@ pub(crate) unsafe fn handle_wm_powerbroadcast(app: &mut Runtime, pbt: usize) {
     if pbt == PBT_APMRESUMESUSPEND as usize || pbt == PBT_APMRESUMEAUTOMATIC as usize {
         log::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
         app.platform.timer.kill(TIMER_IME_REFRESH);
-        app.platform.timer.set(
-            TIMER_POWER_RESUME,
-            std::time::Duration::from_secs(3),
-        );
+        app.platform
+            .timer
+            .set(TIMER_POWER_RESUME, std::time::Duration::from_secs(3));
     }
 }
 
@@ -184,10 +184,9 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
         WTS_SESSION_UNLOCK => {
             log::info!("Session unlocked, scheduling deferred recovery");
             app.platform.timer.kill(TIMER_IME_REFRESH);
-            app.platform.timer.set(
-                TIMER_POWER_RESUME,
-                std::time::Duration::from_secs(3),
-            );
+            app.platform
+                .timer
+                .set(TIMER_POWER_RESUME, std::time::Duration::from_secs(3));
         }
         _ => {}
     }
@@ -232,12 +231,9 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
             if app.platform.focus.is_focused() {
                 let pid = app.platform.focus.pid();
                 let cls = app.platform.focus.class_name().to_owned();
-                app.platform.focus.cache_insert(
-                    pid,
-                    cls,
-                    kind,
-                    DetectionSource::UiaAsync,
-                );
+                app.platform
+                    .focus
+                    .cache_insert(pid, cls, kind, DetectionSource::UiaAsync);
             }
             if kind == FocusKind::NonText {
                 app.invalidate_engine_context(ContextChange::FocusChanged);
@@ -258,11 +254,14 @@ pub(crate) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
 
 /// WM_APP (トレイメッセージ) ハンドラ
 pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
-    log::debug!("WM_APP received: hwnd={:?} lparam=0x{:016X}", hwnd, lparam.0);
-    let layout_names: Vec<String> = with_app_ref(|app| {
-        app.layouts.iter().map(|e| e.name.clone()).collect()
-    })
-    .unwrap_or_default();
+    log::debug!(
+        "WM_APP received: hwnd={:?} lparam=0x{:016X}",
+        hwnd,
+        lparam.0
+    );
+    let layout_names: Vec<String> =
+        with_app_ref(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
+            .unwrap_or_default();
     tray::handle_tray_message(
         hwnd,
         lparam,
@@ -398,15 +397,20 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
 
 /// キューの RawKeyEvent リストから、対応する KeyUp を持たない KeyDown に対して
 /// synthetic KeyUp を生成して返す。
-fn synthesize_missing_keyups(events: &[awase::types::RawKeyEvent]) -> Vec<awase::types::RawKeyEvent> {
+fn synthesize_missing_keyups(
+    events: &[awase::types::RawKeyEvent],
+) -> Vec<awase::types::RawKeyEvent> {
     use awase::types::KeyEventType;
-    events.iter()
+    events
+        .iter()
         .filter(|ev| matches!(ev.event_type, KeyEventType::KeyDown))
-        .filter(|ev| !events.iter().any(|e| {
-            e.vk_code == ev.vk_code
-                && matches!(e.event_type, KeyEventType::KeyUp)
-                && e.timestamp >= ev.timestamp
-        }))
+        .filter(|ev| {
+            !events.iter().any(|e| {
+                e.vk_code == ev.vk_code
+                    && matches!(e.event_type, KeyEventType::KeyUp)
+                    && e.timestamp >= ev.timestamp
+            })
+        })
         .map(|ev| {
             let mut keyup = *ev;
             keyup.event_type = KeyEventType::KeyUp;

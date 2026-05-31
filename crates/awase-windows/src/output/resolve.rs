@@ -1,6 +1,6 @@
-use awase::types::{SpecialKey, VkCode};
 use super::Output;
 pub(crate) use crate::vk::{ascii_to_vk, build_symbol_to_vk};
+use awase::types::{SpecialKey, VkCode};
 
 /// SpecialKey を Windows VK コードに変換する
 #[must_use]

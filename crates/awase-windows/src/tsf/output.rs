@@ -57,10 +57,17 @@ impl ColdReason {
         match self {
             Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 1500,
             Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
-                if long_idle { 1500 } else { 500 }
+                if long_idle {
+                    1500
+                } else {
+                    500
+                }
             }
-            Self::SessionExpired | Self::SymbolVkSent | Self::F2NonTsf
-            | Self::RawTsfLiteralRecovery | Self::SetOpenFalse => 500,
+            Self::SessionExpired
+            | Self::SymbolVkSent
+            | Self::F2NonTsf
+            | Self::RawTsfLiteralRecovery
+            | Self::SetOpenFalse => 500,
         }
     }
 
@@ -71,7 +78,11 @@ impl ColdReason {
             Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 300,
             Self::SessionExpired => 200,
             Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
-                if long_idle { 300 } else { 50 }
+                if long_idle {
+                    300
+                } else {
+                    50
+                }
             }
             Self::SymbolVkSent => 30,
             Self::F2NonTsf | Self::RawTsfLiteralRecovery | Self::SetOpenFalse => 100,
@@ -87,7 +98,10 @@ impl ColdReason {
     /// fresh F2 再送 + settle が必要かどうか（IME 初期化系 cold reason）
     #[must_use]
     pub const fn requires_settle(self) -> bool {
-        matches!(self, Self::FocusChange | Self::NativeF2Consumed | Self::SetOpenTrue)
+        matches!(
+            self,
+            Self::FocusChange | Self::NativeF2Consumed | Self::SetOpenTrue
+        )
     }
 }
 
@@ -98,7 +112,11 @@ impl ColdReason {
 /// キーとして検出し IME をバイパスしてしまうため）。
 pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> INPUT {
     let scan = unsafe { MapVirtualKeyW(u32::from(vk.0), MAPVK_VK_TO_VSC) as u16 };
-    let flags = if is_keyup { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
+    let flags = if is_keyup {
+        KEYEVENTF_KEYUP
+    } else {
+        KEYBD_EVENT_FLAGS(0)
+    };
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -114,7 +132,11 @@ pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> IN
 }
 
 /// INPUT 構造体を作成するヘルパー（dwExtraInfo 指定版）
-pub(crate) const fn make_key_input_ex(vk: awase::types::VkCode, is_keyup: bool, extra_info: usize) -> INPUT {
+pub(crate) const fn make_key_input_ex(
+    vk: awase::types::VkCode,
+    is_keyup: bool,
+    extra_info: usize,
+) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -150,18 +172,20 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 /// # Panics
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
 pub fn flush_raw_tsf_literal_backspaces() {
+    use crate::vk::VK_BACK;
     use std::mem::size_of;
     use std::sync::atomic::Ordering::Relaxed;
-    use crate::vk::VK_BACK;
     let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
     if n == 0 {
         return;
     }
     let backs: Vec<_> = (0..n)
-        .flat_map(|_| [
-            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
-            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
-        ])
+        .flat_map(|_| {
+            [
+                make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+                make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+            ]
+        })
         .collect();
     log::debug!("[raw-tsf-literal] flush backspace ×{n}");
     unsafe {

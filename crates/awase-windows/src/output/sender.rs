@@ -21,21 +21,39 @@ pub(crate) struct VkSender<'a>(pub &'a super::Output);
 pub(crate) struct TsfSender<'a>(pub &'a super::Output);
 
 impl InjectionSender for UnicodeSender<'_> {
-    fn send_char(&self, ch: char) { self.0.send_unicode_char(ch); }
-    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_as_unicode(romaji); }
-    fn mode_label(&self) -> &'static str { "Unicode" }
+    fn send_char(&self, ch: char) {
+        self.0.send_unicode_char(ch);
+    }
+    fn send_romaji(&self, romaji: &str) {
+        self.0.send_romaji_as_unicode(romaji);
+    }
+    fn mode_label(&self) -> &'static str {
+        "Unicode"
+    }
 }
 
 impl InjectionSender for VkSender<'_> {
-    fn send_char(&self, ch: char) { self.0.send_char_as_vk(ch); }
-    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_batched(romaji); }
-    fn mode_label(&self) -> &'static str { "VK Batched (Chrome)" }
+    fn send_char(&self, ch: char) {
+        self.0.send_char_as_vk(ch);
+    }
+    fn send_romaji(&self, romaji: &str) {
+        self.0.send_romaji_batched(romaji);
+    }
+    fn mode_label(&self) -> &'static str {
+        "VK Batched (Chrome)"
+    }
 }
 
 impl InjectionSender for TsfSender<'_> {
-    fn send_char(&self, ch: char) { self.0.send_char_as_tsf(ch); }
-    fn send_romaji(&self, romaji: &str) { self.0.send_romaji_as_tsf(romaji); }
-    fn mode_label(&self) -> &'static str { "VK Sequential (TSF)" }
+    fn send_char(&self, ch: char) {
+        self.0.send_char_as_tsf(ch);
+    }
+    fn send_romaji(&self, romaji: &str) {
+        self.0.send_romaji_as_tsf(romaji);
+    }
+    fn mode_label(&self) -> &'static str {
+        "VK Sequential (TSF)"
+    }
 }
 
 /// `send_keys()` 1回分の出力セッション。
@@ -54,14 +72,18 @@ impl<'a> OutputSession<'a> {
     pub(crate) fn begin(output: &'a super::Output) -> Self {
         let mode = output.injection_mode;
         let guard = OutputActiveGuard::begin();
-        Self { output, mode, guard }
+        Self {
+            output,
+            mode,
+            guard,
+        }
     }
 
     pub(crate) fn sender(&self) -> Box<dyn InjectionSender + '_> {
         match self.mode {
             InjectionMode::Unicode => Box::new(UnicodeSender(self.output)),
-            InjectionMode::Vk     => Box::new(VkSender(self.output)),
-            InjectionMode::Tsf    => Box::new(TsfSender(self.output)),
+            InjectionMode::Vk => Box::new(VkSender(self.output)),
+            InjectionMode::Tsf => Box::new(TsfSender(self.output)),
         }
     }
 

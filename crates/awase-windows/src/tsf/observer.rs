@@ -62,14 +62,13 @@ impl ChangeCounter {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::tsf) struct Baseline(u32);
 
+use crate::win32::HwndExt as _;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
-use crate::win32::HwndExt as _;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-    TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
@@ -144,13 +143,13 @@ impl TsfObservations {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            focus_namechange:      ChangeCounter::new(),
-            gji_candidate_show:    ChangeCounter::new(),
+            focus_namechange: ChangeCounter::new(),
+            gji_candidate_show: ChangeCounter::new(),
             gji_candidate_visible: AtomicBool::new(false),
-            composition_probe:     ChangeCounter::new(),
-            gji_last_io_ms:        AtomicU64::new(0),
-            gji_monitor_ok:        AtomicBool::new(false),
-            candidate_was_seen:    AtomicBool::new(false),
+            composition_probe: ChangeCounter::new(),
+            gji_last_io_ms: AtomicU64::new(0),
+            gji_monitor_ok: AtomicBool::new(false),
+            candidate_was_seen: AtomicBool::new(false),
         }
     }
 
@@ -267,22 +266,22 @@ impl NamechangeBaseline {
     }
 }
 
-
 // ── GJI プロセス発見 ──
 
 /// GJI Converter プロセスのプレフィックス候補（大文字小文字無視）。
 /// バージョンによりプロセス名が異なるため複数候補を持つ。
 /// Converter プロセスのみを対象にする（Renderer/CacheService は除外）。
 const GJI_PROCESS_PREFIXES: &[&str] = &[
-    "GoogleIMEJaConverter",          // 現行バージョン
-    "GoogleJapaneseInputConverter",  // 旧バージョン
+    "GoogleIMEJaConverter",         // 現行バージョン
+    "GoogleJapaneseInputConverter", // 旧バージョン
 ];
 
 /// プロセス名が GJI 関連かどうか判定する。
 fn is_gji_process(name: &str) -> bool {
-    GJI_PROCESS_PREFIXES
-        .iter()
-        .any(|prefix| name.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()))
+    GJI_PROCESS_PREFIXES.iter().any(|prefix| {
+        name.to_ascii_lowercase()
+            .starts_with(&prefix.to_ascii_lowercase())
+    })
 }
 
 /// プロセス一覧から GJI converter の PID を探す。
@@ -291,8 +290,7 @@ fn is_gji_process(name: &str) -> bool {
 fn find_gji_pid() -> Option<(u32, String)> {
     // SAFETY: `TH32CS_SNAPPROCESS` フラグと PID=0（全プロセス対象）は有効な引数。
     //         返されるハンドルは使用後に `CloseHandle` で必ず閉じる。
-    let snapshot =
-        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
 
     let mut entry = PROCESSENTRY32W {
         dwSize: size_of::<PROCESSENTRY32W>() as u32,
@@ -372,8 +370,7 @@ impl GjiMonitor {
         // SAFETY: `pid` は `find_gji_pid` で発見した有効なプロセス ID。
         //         `PROCESS_QUERY_INFORMATION` は I/O カウンタ取得に必要な最小権限。
         //         返されるハンドルは `Drop` で `CloseHandle` される。
-        let handle =
-            unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) }.ok()?;
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, false, pid) }.ok()?;
 
         let now_ms = crate::hook::current_tick_ms();
         let mut monitor = Self {
@@ -423,7 +420,6 @@ impl Drop for GjiMonitor {
     }
 }
 
-
 // ── バックグラウンドモニタースレッド ──
 
 /// GJI I/O モニタースレッドを起動する。
@@ -432,7 +428,7 @@ impl Drop for GjiMonitor {
 /// GJI が再起動した場合は自動的に再接続する。
 /// 起動時に呼ぶこと（1 回のみ）。戻り値の [`win32_worker::WorkerThread`] を
 /// アプリ終了まで保持すること（drop 時にスレッドが停止・join される）。
-#[must_use] 
+#[must_use]
 pub fn start_monitor_thread() -> win32_worker::WorkerThread {
     win32_worker::WorkerThread::spawn("gji-io-monitor", |token| {
         monitor_loop(&token);
@@ -451,7 +447,9 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
                 log::info!("[gji-monitor] attached to GJI process");
-                TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
+                TSF_OBS
+                    .gji_last_io_ms
+                    .store(m.last_change_ms(), Ordering::Relaxed);
                 TSF_OBS.gji_monitor_ok.store(true, Ordering::Release);
                 monitor = Some(m);
             } else {
@@ -462,7 +460,9 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
 
         if let Some(ref mut m) = monitor {
             if m.sample() {
-                TSF_OBS.gji_last_io_ms.store(m.last_change_ms(), Ordering::Relaxed);
+                TSF_OBS
+                    .gji_last_io_ms
+                    .store(m.last_change_ms(), Ordering::Relaxed);
             } else {
                 log::info!("[gji-monitor] GJI process exited, will re-attach");
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
@@ -471,7 +471,10 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
             }
         }
 
-        if token.sleep_ms(crate::tuning::GJI_SAMPLE_INTERVAL_MS).is_break() {
+        if token
+            .sleep_ms(crate::tuning::GJI_SAMPLE_INTERVAL_MS)
+            .is_break()
+        {
             log::info!("[gji-monitor] shutdown signal received, exiting");
             break;
         }
@@ -491,7 +494,9 @@ pub struct WinEventHookGuard(pub HWINEVENTHOOK);
 
 impl std::fmt::Debug for WinEventHookGuard {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("WinEventHookGuard").field(&self.0 .0).finish()
+        f.debug_tuple("WinEventHookGuard")
+            .field(&self.0 .0)
+            .finish()
     }
 }
 
@@ -525,7 +530,8 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
             EVENT_OBJECT_NAMECHANGE,
             None,
             Some(observation_event_proc),
-            0, 0,
+            0,
+            0,
             WINEVENT_OUTOFCONTEXT,
         )
     };
@@ -544,14 +550,17 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
             EVENT_OBJECT_HIDE, // SHOW(0x8002)〜HIDE(0x8003) の両方を捕捉
             None,
             Some(observation_event_proc),
-            0, 0,
+            0,
+            0,
             WINEVENT_OUTOFCONTEXT,
         )
     };
     if show_hook.is_invalid() {
         log::warn!("[obs-hook] failed to install OBJECT_SHOW/HIDE hook");
     } else {
-        log::info!("[obs-hook] OBJECT_SHOW/HIDE hook installed (GJI candidate window visibility tracking)");
+        log::info!(
+            "[obs-hook] OBJECT_SHOW/HIDE hook installed (GJI candidate window visibility tracking)"
+        );
         hooks.push(WinEventHookGuard(show_hook));
     }
 
@@ -598,7 +607,9 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_HIDE => {
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
-                TSF_OBS.gji_candidate_visible.store(false, Ordering::Relaxed);
+                TSF_OBS
+                    .gji_candidate_visible
+                    .store(false, Ordering::Relaxed);
                 log::debug!("[gji-candidate] HIDE");
             }
         }

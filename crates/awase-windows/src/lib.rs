@@ -22,11 +22,11 @@ pub mod autostart;
 pub mod focus;
 pub mod hook;
 pub mod ime;
-pub mod keymap;
 pub(crate) mod ime_controller;
 pub mod ime_diagnostic;
 pub(crate) mod imm;
 pub mod input_defer;
+pub mod keymap;
 pub mod observer;
 pub mod output;
 pub mod panic_detect;
@@ -36,9 +36,9 @@ pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
 pub mod timer;
-pub mod tuning;
 pub mod tray;
 pub mod tsf;
+pub mod tuning;
 pub mod vk;
 pub mod win32;
 
@@ -53,15 +53,12 @@ use std::sync::atomic::AtomicBool;
 
 use awase::types::RawKeyEvent;
 
-pub use crate::state::{
-    HookConfig, HookRoutingState,
-    ImeBelief, PlatformState,
-};
+pub use crate::state::{HookConfig, HookRoutingState, ImeBelief, PlatformState};
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
 pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
 
-pub use crate::input_defer::{INPUT_DEFER, InputDeferQueue};
+pub use crate::input_defer::{InputDeferQueue, INPUT_DEFER};
 
 // ── クロススレッド共有グローバル状態 ──
 //
@@ -71,14 +68,14 @@ pub use crate::input_defer::{INPUT_DEFER, InputDeferQueue};
 pub static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// エンジンスレッド ID（フックスレッドから WM_KEY_FROM_HOOK を送るため）
-pub(crate) static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub(crate) static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
 /// Ctrl+C 受信フラグ
 pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
 pub static ELEVATED: AtomicBool = AtomicBool::new(false);
-
 
 /// raw TSF literal 検出後の回収ペイロード。
 ///
@@ -143,7 +140,9 @@ pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
             // win_event_proc などの外部コールバックから再呼び出しされた場合。
             // extern "system" FFI 境界を越えて panic を伝播させると UB になるため、
             // ここでは警告に留めて None を返す。
-            log::warn!("with_app re-entry detected — returning None (caller should re-post if needed)");
+            log::warn!(
+                "with_app re-entry detected — returning None (caller should re-post if needed)"
+            );
             None
         },
         |mut guard| guard.as_mut().map(f),
@@ -167,7 +166,12 @@ pub fn with_app_or_repost(msg: u32, f: impl FnOnce(&mut Runtime)) {
 /// `with_app_or_repost` の wparam / lparam 付きバリアント。
 ///
 /// `WM_FOCUS_KIND_UPDATE` のようにパラメータを持つメッセージに使う。
-pub fn with_app_or_repost_with(msg: u32, wparam: usize, lparam: isize, f: impl FnOnce(&mut Runtime)) {
+pub fn with_app_or_repost_with(
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+    f: impl FnOnce(&mut Runtime),
+) {
     if with_app(f).is_none() {
         win32::post_to_main_thread_with(msg, wparam, lparam);
     }
@@ -268,7 +272,7 @@ impl RawKeyEventExt for RawKeyEvent {
         use crate::output::INJECTED_MARKER;
         use awase::types::KeyEventType;
         use windows::Win32::UI::Input::KeyboardAndMouse::{
-            KEYBD_EVENT_FLAGS, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
             VIRTUAL_KEY,
         };
 

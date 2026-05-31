@@ -3,10 +3,10 @@
 //! すべての退避経路は classify 済みの `RawKeyEvent` として同一キューに積む。
 //! `enrich_ime_relevance`（sync key 判定）のみ drain 側で `with_app` 内に実行する。
 
+use awase::types::RawKeyEvent;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use awase::types::RawKeyEvent;
 
 pub struct InputDeferQueue {
     queue: Mutex<VecDeque<RawKeyEvent>>,
@@ -85,7 +85,9 @@ impl InputDeferQueue {
         if dropped > 0 {
             log::warn!(
                 "[input-defer] drain after overflow: took {}, dropped {} (cap={})",
-                result.len(), dropped, Self::MAX_CAPACITY,
+                result.len(),
+                dropped,
+                Self::MAX_CAPACITY,
             );
         }
         result
@@ -172,11 +174,7 @@ mod tests {
             q.defer_during_output(evt(i));
         }
         // replay_later で追加 3 件 → 先頭 3 件が drop
-        let extra = vec![
-            evt(10_000),
-            evt(10_001),
-            evt(10_002),
-        ];
+        let extra = vec![evt(10_000), evt(10_001), evt(10_002)];
         q.replay_later(extra);
         let out = q.take_all();
         assert_eq!(out.len(), InputDeferQueue::MAX_CAPACITY);

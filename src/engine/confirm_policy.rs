@@ -128,7 +128,9 @@ impl NicolaFsm {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fsm_types::{ClassifiedEvent, EngineState, KeyClass, ParseAction, TimerIntent};
+    use super::super::fsm_types::{
+        ClassifiedEvent, EngineState, KeyClass, ParseAction, TimerIntent,
+    };
     use super::super::nicola_fsm::NicolaFsm;
     use super::super::test_support::*;
     use crate::config::ConfirmMode;
@@ -290,7 +292,12 @@ mod tests {
         let ev = char_ev(VK_A, SCAN_A, Some(POS_UNKNOWN));
         let action = fsm.idle_speculative(&ev);
         assert!(
-            matches!(action, ParseAction::PassThrough { timer: TimerIntent::Keep }),
+            matches!(
+                action,
+                ParseAction::PassThrough {
+                    timer: TimerIntent::Keep
+                }
+            ),
             "Speculative + unknown pos should PassThrough(Keep), got {action:?}"
         );
     }

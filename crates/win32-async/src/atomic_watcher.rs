@@ -63,8 +63,8 @@ pub fn notify_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{atomic::Ordering, Arc};
     use std::sync::atomic::AtomicU32;
+    use std::sync::{atomic::Ordering, Arc};
 
     /// すでに値が変化していれば即 Poll::Ready を返す
     #[test]

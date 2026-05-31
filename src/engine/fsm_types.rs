@@ -272,11 +272,14 @@ impl EngineState {
         match self {
             Self::Idle => "Idle".to_string(),
             Self::PendingChar(k) => format!("PendingChar(vk=0x{:02X})", k.vk_code.0),
-            Self::PendingThumb(t) => format!(
-                "PendingThumb(vk=0x{:02X},left={})",
-                t.vk_code.0, t.is_left
-            ),
-            Self::PendingCharThumb { char_key, thumb, char1_released } => format!(
+            Self::PendingThumb(t) => {
+                format!("PendingThumb(vk=0x{:02X},left={})", t.vk_code.0, t.is_left)
+            }
+            Self::PendingCharThumb {
+                char_key,
+                thumb,
+                char1_released,
+            } => format!(
                 "PendingCharThumb(char=0x{:02X},thumb=0x{:02X},left={},released={})",
                 char_key.vk_code.0, thumb.vk_code.0, thumb.is_left, char1_released
             ),
@@ -322,7 +325,12 @@ impl EngineState {
     #[track_caller]
     #[must_use]
     pub fn expect_pending_char_thumb(self) -> (PendingKey, PendingThumbData, bool) {
-        if let Self::PendingCharThumb { char_key, thumb, char1_released } = self {
+        if let Self::PendingCharThumb {
+            char_key,
+            thumb,
+            char1_released,
+        } = self
+        {
             (char_key, thumb, char1_released)
         } else {
             unreachable!("FSM invariant violation: expected PendingCharThumb, got {self:?}")
@@ -436,7 +444,10 @@ mod tests {
 
     // ── ヘルパー ──────────────────────────────────────────────
 
-    fn make_raw_key_event(event_type: KeyEventType, modifier_key: Option<ModifierKey>) -> RawKeyEvent {
+    fn make_raw_key_event(
+        event_type: KeyEventType,
+        modifier_key: Option<ModifierKey>,
+    ) -> RawKeyEvent {
         RawKeyEvent {
             vk_code: VkCode(0x41),
             scan_code: ScanCode(0x1E),
@@ -565,9 +576,18 @@ mod tests {
     fn timer_intent_cancel_all_kills_both_timers() {
         let cmds = TimerIntent::CancelAll.to_commands(50_000, 30_000);
         let kills = find_kill_ids(&cmds);
-        assert!(kills.contains(&TIMER_PENDING), "TIMER_PENDING should be killed");
-        assert!(kills.contains(&TIMER_SPECULATIVE), "TIMER_SPECULATIVE should be killed");
-        assert!(find_set_commands(&cmds).is_empty(), "no Set commands expected");
+        assert!(
+            kills.contains(&TIMER_PENDING),
+            "TIMER_PENDING should be killed"
+        );
+        assert!(
+            kills.contains(&TIMER_SPECULATIVE),
+            "TIMER_SPECULATIVE should be killed"
+        );
+        assert!(
+            find_set_commands(&cmds).is_empty(),
+            "no Set commands expected"
+        );
     }
 
     #[test]
@@ -632,7 +652,10 @@ mod tests {
         let cmds = TimerIntent::Phase2Transition { remaining_us }.to_commands(50_000, 20_000);
         let kills = find_kill_ids(&cmds);
         assert!(kills.contains(&TIMER_SPECULATIVE));
-        assert!(!kills.contains(&TIMER_PENDING), "TIMER_PENDING should NOT be killed in Phase2");
+        assert!(
+            !kills.contains(&TIMER_PENDING),
+            "TIMER_PENDING should NOT be killed in Phase2"
+        );
         let sets = find_set_commands(&cmds);
         assert_eq!(sets.len(), 1);
         let (id, dur) = sets[0];
@@ -642,7 +665,10 @@ mod tests {
 
     #[test]
     fn timer_intent_phase2_transition_command_count() {
-        let cmds = TimerIntent::Phase2Transition { remaining_us: 10_000 }.to_commands(50_000, 20_000);
+        let cmds = TimerIntent::Phase2Transition {
+            remaining_us: 10_000,
+        }
+        .to_commands(50_000, 20_000);
         assert_eq!(cmds.len(), 2);
     }
 
@@ -732,38 +758,68 @@ mod tests {
 
     #[test]
     fn modifier_state_is_os_modifier_held_none_held() {
-        let ms = ModifierState { ctrl: false, alt: false, shift: false, win: false };
+        let ms = ModifierState {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: false,
+        };
         assert!(!ms.is_os_modifier_held());
     }
 
     #[test]
     fn modifier_state_is_os_modifier_held_shift_only_is_false() {
         // Shift alone does NOT count as an OS modifier
-        let ms = ModifierState { ctrl: false, alt: false, shift: true, win: false };
+        let ms = ModifierState {
+            ctrl: false,
+            alt: false,
+            shift: true,
+            win: false,
+        };
         assert!(!ms.is_os_modifier_held());
     }
 
     #[test]
     fn modifier_state_is_os_modifier_held_ctrl() {
-        let ms = ModifierState { ctrl: true, alt: false, shift: false, win: false };
+        let ms = ModifierState {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            win: false,
+        };
         assert!(ms.is_os_modifier_held());
     }
 
     #[test]
     fn modifier_state_is_os_modifier_held_alt() {
-        let ms = ModifierState { ctrl: false, alt: true, shift: false, win: false };
+        let ms = ModifierState {
+            ctrl: false,
+            alt: true,
+            shift: false,
+            win: false,
+        };
         assert!(ms.is_os_modifier_held());
     }
 
     #[test]
     fn modifier_state_is_os_modifier_held_win() {
-        let ms = ModifierState { ctrl: false, alt: false, shift: false, win: true };
+        let ms = ModifierState {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            win: true,
+        };
         assert!(ms.is_os_modifier_held());
     }
 
     #[test]
     fn modifier_state_is_os_modifier_held_all_held() {
-        let ms = ModifierState { ctrl: true, alt: true, shift: true, win: true };
+        let ms = ModifierState {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            win: true,
+        };
         assert!(ms.is_os_modifier_held());
     }
 
@@ -780,7 +836,12 @@ mod tests {
 
     #[test]
     fn modifier_state_update_ctrl_up() {
-        let mut ms = ModifierState { ctrl: true, alt: false, shift: false, win: false };
+        let mut ms = ModifierState {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            win: false,
+        };
         let ev = make_raw_key_event(KeyEventType::KeyUp, Some(ModifierKey::Ctrl));
         ms.update(&ev);
         assert!(!ms.ctrl);
@@ -812,7 +873,12 @@ mod tests {
 
     #[test]
     fn modifier_state_update_non_modifier_key_no_change() {
-        let mut ms = ModifierState { ctrl: true, alt: true, shift: true, win: true };
+        let mut ms = ModifierState {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            win: true,
+        };
         let ev = make_raw_key_event(KeyEventType::KeyDown, None);
         ms.update(&ev);
         // None の modifier_key では何も変化しない
@@ -824,7 +890,12 @@ mod tests {
 
     #[test]
     fn modifier_state_update_shift_up_only_clears_shift() {
-        let mut ms = ModifierState { ctrl: true, alt: true, shift: true, win: true };
+        let mut ms = ModifierState {
+            ctrl: true,
+            alt: true,
+            shift: true,
+            win: true,
+        };
         let ev = make_raw_key_event(KeyEventType::KeyUp, Some(ModifierKey::Shift));
         ms.update(&ev);
         assert!(ms.ctrl);
@@ -1006,7 +1077,9 @@ mod tests {
 
     #[test]
     fn parse_action_shift_variant() {
-        let pa = ParseAction::Shift { timer: TimerIntent::Keep };
+        let pa = ParseAction::Shift {
+            timer: TimerIntent::Keep,
+        };
         assert!(matches!(pa, ParseAction::Shift { .. }));
     }
 
@@ -1023,7 +1096,9 @@ mod tests {
 
     #[test]
     fn parse_action_pass_through_variant() {
-        let pa = ParseAction::PassThrough { timer: TimerIntent::Keep };
+        let pa = ParseAction::PassThrough {
+            timer: TimerIntent::Keep,
+        };
         assert!(matches!(pa, ParseAction::PassThrough { .. }));
     }
 

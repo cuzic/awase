@@ -48,7 +48,9 @@ impl SuppressEngineStateKeyGuard {
         let ptr = std::ptr::addr_of_mut!(platform.suppress_engine_state_key);
         // SAFETY: ptr は platform の有効なフィールドを指し、
         //         このガードはシングルスレッドのメインループ内でのみ使用される。
-        unsafe { *ptr = true; }
+        unsafe {
+            *ptr = true;
+        }
         Self(ptr)
     }
 }
@@ -58,7 +60,9 @@ impl Drop for SuppressEngineStateKeyGuard {
         // SAFETY: ポインタはシングルスレッドのメインループ内でのみ使用される。
         //         WindowsPlatform は APP (SingleThreadCell) が保持しており、
         //         with_app の外側では Drop しないことが保証されている。
-        unsafe { *self.0 = false; }
+        unsafe {
+            *self.0 = false;
+        }
     }
 }
 
@@ -72,7 +76,8 @@ impl WindowsPlatform {
 
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
     pub(crate) fn mark_composition_cold_focus_change(&self) {
-        self.output.mark_composition_cold(crate::output::ColdReason::FocusChange);
+        self.output
+            .mark_composition_cold(crate::output::ColdReason::FocusChange);
     }
 
     /// フォーカス変更時に injection_mode を更新する（runtime 用）。
@@ -235,10 +240,8 @@ impl PlatformRuntime for WindowsPlatform {
         // SetOpen 後の IME 状態反映に数十ms かかるため、即時ではなく
         // 統合タイマー経由で短い遅延後にリフレッシュする。
         // guard が active なら後続キーはバッファされるので安全。
-        self.timer.set(
-            crate::TIMER_IME_REFRESH,
-            Duration::from_millis(20),
-        );
+        self.timer
+            .set(crate::TIMER_IME_REFRESH, Duration::from_millis(20));
     }
 
     // ── Engine 状態変化時 IME モードキー送信 ──
@@ -247,7 +250,9 @@ impl PlatformRuntime for WindowsPlatform {
         if self.suppress_engine_state_key {
             // ポーリング/フォーカス変化起因の遷移では VK を送らない。
             // 送ると IME 状態が変わり → 次のポーリングでエンジンが逆転 → 無限ループになる。
-            log::debug!("[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})");
+            log::debug!(
+                "[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})"
+            );
             return;
         }
         // apply_ime_open（VK_KANJI or IMM クロスプロセス）が既に IME 状態を確定させている場合、
@@ -273,7 +278,11 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[engine-state-key] skipped (profile={profile:?}, VK_KANJI済み)");
             return;
         }
-        let vk = if enabled { self.engine_on_ime_vk } else { self.engine_off_ime_vk };
+        let vk = if enabled {
+            self.engine_on_ime_vk
+        } else {
+            self.engine_off_ime_vk
+        };
         if let Some(vk) = vk {
             unsafe { crate::ime::send_ime_mode_key(vk) };
         }
@@ -318,7 +327,9 @@ impl PlatformRuntime for WindowsPlatform {
             return;
         }
         let effective = match outcome {
-            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched => open,
+            ImeOpenOutcome::Applied
+            | ImeOpenOutcome::FallbackSent
+            | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
             ImeOpenOutcome::UnsafeToToggle => unreachable!(),
         };
@@ -327,11 +338,13 @@ impl PlatformRuntime for WindowsPlatform {
         crate::tsf::observer::reset_candidate_was_seen();
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-            self.output.mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
             self.output.send_eager_tsf_warmup(Some(effective));
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
-            self.output.mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
         }
     }
 
@@ -349,7 +362,8 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!(
                 "[composition] vk=0xf2 passthrough TSF mode → marking cold (NativeF2Consumed)",
             );
-            self.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.output.send_eager_tsf_warmup(applied);
             return false;
         }
@@ -363,14 +377,16 @@ impl PlatformRuntime for WindowsPlatform {
                     "[composition] passthrough vk={:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
                     vk,
                 );
-                self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+                self.output
+                    .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
                 return true; // warmup deferred to KeyUp
             }
             log::debug!(
                 "[composition] passthrough vk={:#04x} KeyDown → marking cold + eager warmup",
                 vk,
             );
-            self.output.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
             self.output.send_eager_tsf_warmup(applied);
             return false;
         }
@@ -378,7 +394,8 @@ impl PlatformRuntime for WindowsPlatform {
         // F2 non-TSF mode keydown
         if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown {
             log::debug!("[composition] vk=0xf2 passthrough direct → marking cold");
-            self.output.mark_composition_cold(crate::output::ColdReason::F2NonTsf);
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::F2NonTsf);
         }
         false
     }
@@ -396,7 +413,8 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!(
                 "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
             );
-            self.output.mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.output.send_eager_tsf_warmup(applied);
             return;
         }
@@ -406,7 +424,8 @@ impl PlatformRuntime for WindowsPlatform {
                 "[composition] reinject KeyDown vk={:#04x} → marking cold + eager warmup",
                 vk,
             );
-            self.output.mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.output.send_eager_tsf_warmup(applied);
         }
     }
@@ -482,4 +501,3 @@ impl WindowsPlatform {
         self.focus.set_uia_sender(sender);
     }
 }
-

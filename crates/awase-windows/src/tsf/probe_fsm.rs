@@ -47,7 +47,9 @@ use timed_fsm::Clock;
 /// `MonotonicClock` と混在させると epoch がずれる。
 pub(crate) struct SystemClock;
 impl Clock for SystemClock {
-    fn now_ms(&self) -> u64 { crate::hook::current_tick_ms() }
+    fn now_ms(&self) -> u64 {
+        crate::hook::current_tick_ms()
+    }
 }
 
 /// プローブ全体で不変の送信コンテキスト（TSF パスのみ意味を持つ）。
@@ -81,7 +83,10 @@ enum NextStep {
 /// [`ProbePhase::Probing`] の完了後アクションを区別するタグ。
 pub(crate) enum ProbeKind {
     /// 初回 GJI probe。settle check が必要な場合あり。
-    GjiInitial { needs_settle_check: bool, cold_reason: ColdReason },
+    GjiInitial {
+        needs_settle_check: bool,
+        cold_reason: ColdReason,
+    },
     /// OBJ_NAMECHANGE 後の二次 GJI probe。settle check なし。
     GjiSecondary,
     /// Chrome F2 probe。完了後 `Transmit(Chrome)` を emit。
@@ -100,14 +105,20 @@ pub(crate) struct SendState {
 
 impl SendState {
     fn new(romaji: &str) -> Self {
-        Self { romaji: romaji.to_string(), deferred_vks: Vec::new() }
+        Self {
+            romaji: romaji.to_string(),
+            deferred_vks: Vec::new(),
+        }
     }
 }
 
 /// [`ProbePhase::WaitingForCallback`] の内部状態。
 pub(crate) enum WaitingFor {
     /// `apply_fresh_f2_sent` 待ち（SendFreshF2 パス）。
-    FreshF2Sent { probe_settled: bool, send: SendState },
+    FreshF2Sent {
+        probe_settled: bool,
+        send: SendState,
+    },
     /// `apply_transmit_done` 待ち（Transmit(Tsf) パス）。
     TransmitDone,
 }
@@ -167,7 +178,11 @@ pub(crate) enum ProbeAction {
         target: TransmitTarget,
     },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
-    RawTsfLiteralRecovery { cold_seq: u32, backs: usize, romaji: String },
+    RawTsfLiteralRecovery {
+        cold_seq: u32,
+        backs: usize,
+        romaji: String,
+    },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
@@ -204,11 +219,17 @@ impl TsfProbeMachine {
         Self {
             cold_seq,
             _guard: guard,
-            ctx: ProbeContext { prepend_f2_warmup, used_eager_path },
+            ctx: ProbeContext {
+                prepend_f2_warmup,
+                used_eager_path,
+            },
             phase: ProbePhase::Probing {
                 probe,
                 total_max_ms,
-                kind: ProbeKind::GjiInitial { needs_settle_check, cold_reason },
+                kind: ProbeKind::GjiInitial {
+                    needs_settle_check,
+                    cold_reason,
+                },
                 send: SendState::new(romaji),
             },
         }
@@ -225,7 +246,10 @@ impl TsfProbeMachine {
         Self {
             cold_seq,
             _guard: guard,
-            ctx: ProbeContext { prepend_f2_warmup: false, used_eager_path: false },
+            ctx: ProbeContext {
+                prepend_f2_warmup: false,
+                used_eager_path: false,
+            },
             phase: ProbePhase::Probing {
                 probe,
                 total_max_ms,
@@ -249,7 +273,10 @@ impl TsfProbeMachine {
         Self {
             cold_seq,
             _guard: guard,
-            ctx: ProbeContext { prepend_f2_warmup: false, used_eager_path: false },
+            ctx: ProbeContext {
+                prepend_f2_warmup: false,
+                used_eager_path: false,
+            },
             phase: ProbePhase::LiteralDetect {
                 detector,
                 ze_bs_count,
@@ -260,7 +287,9 @@ impl TsfProbeMachine {
     }
 
     /// ログ用 cold_seq 参照（上書き警告等で使う）。
-    pub(crate) fn cold_seq_hint(&self) -> u32 { self.cold_seq }
+    pub(crate) fn cold_seq_hint(&self) -> u32 {
+        self.cold_seq
+    }
 
     /// probe 進行中に後続 VK を 1 つ蓄積する。
     pub(crate) fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
@@ -333,9 +362,14 @@ impl TsfProbeMachine {
             NextStep::Wait => vec![],
             NextStep::EmitSendFreshF2 { probe_settled } => {
                 let send = self.take_send_for_fresh_f2();
-                self.phase =
-                    ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { probe_settled, send });
-                vec![ProbeAction::SendFreshF2 { cold_seq: self.cold_seq, probe_settled }]
+                self.phase = ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
+                    probe_settled,
+                    send,
+                });
+                vec![ProbeAction::SendFreshF2 {
+                    cold_seq: self.cold_seq,
+                    probe_settled,
+                }]
             }
             NextStep::TransmitTsf => self.enter_transmit_tsf(),
             NextStep::TransmitChrome => self.enter_transmit_chrome(),
@@ -369,20 +403,31 @@ impl TsfProbeMachine {
     /// 現フェーズを検査して次の遷移先を返す。副作用なし（`&self` のみ使用）。
     fn inspect_phase<C: Clock>(&self, clock: &C) -> NextStep {
         match &self.phase {
-            ProbePhase::Probing { probe, total_max_ms, kind, .. } => {
+            ProbePhase::Probing {
+                probe,
+                total_max_ms,
+                kind,
+                ..
+            } => {
                 let Some(outcome) = probe.check_outcome(*total_max_ms) else {
                     return NextStep::Wait;
                 };
                 match kind {
-                    ProbeKind::GjiInitial { needs_settle_check, cold_reason } => {
+                    ProbeKind::GjiInitial {
+                        needs_settle_check,
+                        cold_reason,
+                    } => {
                         log::debug!(
                             "[tsf-probe] cold={} GjiProbe 完了 ({}ms)",
-                            self.cold_seq, outcome.elapsed_ms
+                            self.cold_seq,
+                            outcome.elapsed_ms
                         );
                         if *needs_settle_check {
                             let is_ime_init_cold = cold_reason.requires_settle();
                             if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
-                                return NextStep::EmitSendFreshF2 { probe_settled: outcome.settled };
+                                return NextStep::EmitSendFreshF2 {
+                                    probe_settled: outcome.settled,
+                                };
                             }
                         }
                         NextStep::TransmitTsf
@@ -390,14 +435,16 @@ impl TsfProbeMachine {
                     ProbeKind::GjiSecondary => {
                         log::debug!(
                             "[tsf-probe] cold={} SecondaryGjiProbe 完了 ({}ms)",
-                            self.cold_seq, outcome.elapsed_ms
+                            self.cold_seq,
+                            outcome.elapsed_ms
                         );
                         NextStep::TransmitTsf
                     }
                     ProbeKind::Chrome => {
                         log::debug!(
                             "[tsf-probe] cold={} ChromeProbe 完了 → batched 送信 ({}ms)",
-                            self.cold_seq, outcome.elapsed_ms
+                            self.cold_seq,
+                            outcome.elapsed_ms
                         );
                         NextStep::TransmitChrome
                     }
@@ -406,7 +453,13 @@ impl TsfProbeMachine {
 
             ProbePhase::WaitingForCallback(_) => NextStep::Wait,
 
-            ProbePhase::NameChangeWait { nc_baseline, deadline_ms, fresh_f2_ms, probe_settled, .. } => {
+            ProbePhase::NameChangeWait {
+                nc_baseline,
+                deadline_ms,
+                fresh_f2_ms,
+                probe_settled,
+                ..
+            } => {
                 let now = clock.now_ms();
                 let nc_fired = nc_baseline.fired();
                 let timed_out = now >= *deadline_ms;
@@ -421,36 +474,43 @@ impl TsfProbeMachine {
                 if nc_fired && !probe_settled {
                     log::debug!(
                         "[tsf-probe] cold={} OBJ_NAMECHANGE後 GJI 二次プローブ (max {}ms)",
-                        self.cold_seq, crate::tuning::GJI_POST_NAMECHANGE_MS
+                        self.cold_seq,
+                        crate::tuning::GJI_POST_NAMECHANGE_MS
                     );
-                    NextStep::StartSecondaryProbe { fresh_f2_ms: *fresh_f2_ms }
+                    NextStep::StartSecondaryProbe {
+                        fresh_f2_ms: *fresh_f2_ms,
+                    }
                 } else {
                     NextStep::TransmitTsf
                 }
             }
 
-            ProbePhase::LiteralDetect { detector, ze_bs_count, deadline_ms, .. } => {
+            ProbePhase::LiteralDetect {
+                detector,
+                ze_bs_count,
+                deadline_ms,
+                ..
+            } => {
                 use crate::tsf::probe::DetectionResult;
                 let Some(detection) = detector.check_now(*deadline_ms) else {
                     return NextStep::Wait;
                 };
                 match detection {
                     DetectionResult::CompositionConfirmed => {
-                        log::debug!("[raw-tsf-literal] cold={} composition confirmed", self.cold_seq);
+                        log::debug!(
+                            "[raw-tsf-literal] cold={} composition confirmed",
+                            self.cold_seq
+                        );
                         // 部分リテラル観測実験: composition の実際の文字列をログに残す。
                         // GJI/各 IME / 各プロファイルでの IMM API 応答を比較するための観測点。
-                        crate::ime_diagnostic::log_composition_probe(
-                            self.cold_seq,
-                            "confirmed",
-                        );
+                        crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
                         NextStep::LiteralDone
                     }
                     DetectionResult::SuspectedLiteral => {
-                        crate::ime_diagnostic::log_composition_probe(
-                            self.cold_seq,
-                            "suspected",
-                        );
-                        NextStep::LiteralSuspected { ze_bs_count: *ze_bs_count }
+                        crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
+                        NextStep::LiteralSuspected {
+                            ze_bs_count: *ze_bs_count,
+                        }
                     }
                 }
             }
@@ -471,15 +531,20 @@ impl TsfProbeMachine {
 
     /// dispatcher が `SendFreshF2` を実行した後に呼ぶ。
     /// `WaitingForCallback(FreshF2Sent { .. })` → `NameChangeWait` へ遷移する。
-    pub(crate) fn apply_fresh_f2_sent(&mut self, nc_baseline: NamechangeBaseline, fresh_f2_ms: u64) {
+    pub(crate) fn apply_fresh_f2_sent(
+        &mut self,
+        nc_baseline: NamechangeBaseline,
+        fresh_f2_ms: u64,
+    ) {
         let phase = std::mem::replace(
             &mut self.phase,
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone),
         );
         let (probe_settled, send) = match phase {
-            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { probe_settled, send }) => {
-                (probe_settled, send)
-            }
+            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
+                probe_settled,
+                send,
+            }) => (probe_settled, send),
             other => {
                 log::warn!(
                     "[tsf-probe] cold={} apply_fresh_f2_sent: unexpected phase",
@@ -518,7 +583,10 @@ impl TsfProbeMachine {
                 detector,
                 ze_bs_count,
                 deadline_ms,
-                send: SendState { romaji, deferred_vks: Vec::new() },
+                send: SendState {
+                    romaji,
+                    deferred_vks: Vec::new(),
+                },
             };
             false
         } else {
@@ -628,9 +696,15 @@ mod tests {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = TsfReadinessProbe::new(0, 0, 0);
         TsfProbeMachine::new_gji(
-            "ka", 0, probe, 0, false,
+            "ka",
+            0,
+            probe,
+            0,
+            false,
             ColdReason::FocusChange,
-            false, false, guard,
+            false,
+            false,
+            guard,
         )
     }
 
@@ -663,9 +737,18 @@ mod tests {
         machine.force_phase_for_test(make_namechange_wait(500, true)); // settled=true
 
         let actions = machine.tick_with_clock(&ManualClock(1000)); // now >= deadline
-        assert!(!actions.is_empty(), "タイムアウト後は action を emit するべき");
         assert!(
-            matches!(actions[0], ProbeAction::Transmit { target: TransmitTarget::Tsf, .. }),
+            !actions.is_empty(),
+            "タイムアウト後は action を emit するべき"
+        );
+        assert!(
+            matches!(
+                actions[0],
+                ProbeAction::Transmit {
+                    target: TransmitTarget::Tsf,
+                    ..
+                }
+            ),
             "タイムアウト時は Transmit(Tsf) を emit するべき: {actions:?}",
         );
     }
@@ -678,7 +761,13 @@ mod tests {
 
         let actions = machine.tick_with_clock(&ManualClock(1000));
         assert!(
-            matches!(actions[0], ProbeAction::Transmit { target: TransmitTarget::Tsf, .. }),
+            matches!(
+                actions[0],
+                ProbeAction::Transmit {
+                    target: TransmitTarget::Tsf,
+                    ..
+                }
+            ),
             "タイムアウト(unsettled)でも Transmit(Tsf) を emit するべき",
         );
     }
@@ -710,9 +799,18 @@ mod tests {
     fn extend_deferred_appends_multiple_vks() {
         let mut machine = make_gji_machine();
         machine.extend_deferred(vec![
-            DeferredVk { vk: VkCode(0x41), needs_shift: false },
-            DeferredVk { vk: VkCode(0x42), needs_shift: true },
-            DeferredVk { vk: VkCode(0x43), needs_shift: false },
+            DeferredVk {
+                vk: VkCode(0x41),
+                needs_shift: false,
+            },
+            DeferredVk {
+                vk: VkCode(0x42),
+                needs_shift: true,
+            },
+            DeferredVk {
+                vk: VkCode(0x43),
+                needs_shift: false,
+            },
         ]);
         // panic しないことを確認
     }
@@ -723,13 +821,14 @@ mod tests {
     fn literal_suspected_carries_romaji_through_transmit_to_recovery() {
         let guard = OutputActiveGuard::noop_for_test();
         let detector = crate::tsf::probe::LiteralDetector::new();
-        let mut machine = TsfProbeMachine::new_literal_detect(
-            "a", 0, detector, 1, 0, guard,
-        );
+        let mut machine = TsfProbeMachine::new_literal_detect("a", 0, detector, 1, 0, guard);
         let actions = machine.tick_with_clock(&ManualClock(1000));
         match &actions[..] {
             [ProbeAction::RawTsfLiteralRecovery { romaji, backs, .. }, ProbeAction::Done] => {
-                assert_eq!(romaji, "a", "literal suspected 経路で romaji が空になってはいけない");
+                assert_eq!(
+                    romaji, "a",
+                    "literal suspected 経路で romaji が空になってはいけない"
+                );
                 assert_eq!(*backs, 1);
             }
             other => panic!("unexpected actions: {other:?}"),

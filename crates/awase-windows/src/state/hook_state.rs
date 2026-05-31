@@ -54,7 +54,9 @@ impl SyncKeyGate {
     /// 初期状態（Inactive）でゲートを生成する。
     #[must_use]
     pub fn new() -> Self {
-        Self { inner: HoldingGate::new(SyncKeyGateMachine::new(), SYNC_KEY_CAPACITY) }
+        Self {
+            inner: HoldingGate::new(SyncKeyGateMachine::new(), SYNC_KEY_CAPACITY),
+        }
     }
 
     /// ゲートをアクティブにする（sync key KeyDown 検出時）。

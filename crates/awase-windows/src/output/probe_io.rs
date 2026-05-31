@@ -20,7 +20,12 @@ pub(crate) trait ProbeIo {
     /// GJI モニターが正常動作しているかどうかを返す。
     fn gji_monitor_healthy(&self) -> bool;
     /// TSF 送信パイプラインを実行し、backspace 相当数を返す。
-    fn transmit_tsf(&self, romaji: &str, chars: &[(VkCode, bool)], outcome: &WarmupOutcome) -> usize;
+    fn transmit_tsf(
+        &self,
+        romaji: &str,
+        chars: &[(VkCode, bool)],
+        outcome: &WarmupOutcome,
+    ) -> usize;
     /// Chrome バッチ送信を実行する。
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
     /// deferred VKs を送信する。`use_tsf_marker` = true → `TSF_MARKER`、false → `INJECTED_MARKER`。
@@ -48,7 +53,12 @@ impl ProbeIo for Output {
         crate::tsf::observer::gji_monitor_healthy()
     }
 
-    fn transmit_tsf(&self, romaji: &str, chars: &[(VkCode, bool)], outcome: &WarmupOutcome) -> usize {
+    fn transmit_tsf(
+        &self,
+        romaji: &str,
+        chars: &[(VkCode, bool)],
+        outcome: &WarmupOutcome,
+    ) -> usize {
         crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
     }
 
@@ -99,8 +109,8 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
     initial_actions: Vec<crate::tsf::probe_fsm::ProbeAction>,
     io: &I,
 ) -> bool {
-    use std::collections::VecDeque;
     use crate::tsf::probe_fsm::{ProbeAction, TransmitTarget};
+    use std::collections::VecDeque;
 
     let mut queue: VecDeque<ProbeAction> = initial_actions.into();
 
@@ -108,7 +118,10 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
         match action {
             ProbeAction::Done => return true,
 
-            ProbeAction::SendFreshF2 { cold_seq, probe_settled } => {
+            ProbeAction::SendFreshF2 {
+                cold_seq,
+                probe_settled,
+            } => {
                 let settle_reason = if probe_settled {
                     "NativeF2Consumed/SetOpenTrue"
                 } else {
@@ -142,19 +155,22 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         if chars.is_empty() {
                             return true;
                         }
-                        let outcome =
-                            WarmupOutcome { prepend_f2_warmup, used_eager_path, cold_seq };
+                        let outcome = WarmupOutcome {
+                            prepend_f2_warmup,
+                            used_eager_path,
+                            cold_seq,
+                        };
                         {
                             // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
                             // with_app 再入を避けるため async タスクへオフロードする (Step 3)。
                             // ログ出力タイミングが数 ms 遅れるが診断用途のため許容。
                             let last_io = crate::tsf::observer::gji_last_io_ms();
-                            let gji_idle =
-                                crate::hook::current_tick_ms().saturating_sub(last_io);
+                            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
                             let romaji_owned: String = romaji.clone();
                             let chars_len = chars.len();
                             win32_async::spawn_local(async move {
-                                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
+                                let conv =
+                                    crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
                                 log::debug!(
                                     "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} \
                                      gji_idle={gji_idle}ms conv={} ROMAN={} NATIVE={}",
@@ -169,8 +185,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                         let gji_active = io.gji_monitor_healthy();
                         let needs_literal = prepend_f2_warmup && gji_active;
-                        let detector = needs_literal
-                            .then(crate::tsf::probe::LiteralDetector::new);
+                        let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, true);
                         io.mark_warm();
@@ -195,7 +210,11 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                 }
             }
 
-            ProbeAction::RawTsfLiteralRecovery { cold_seq, backs, romaji } => {
+            ProbeAction::RawTsfLiteralRecovery {
+                cold_seq,
+                backs,
+                romaji,
+            } => {
                 let consecutive = io.consecutive_count();
                 if consecutive == 0 {
                     log::warn!(
@@ -221,8 +240,8 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tsf::probe_fsm::{ProbeAction, TransmitTarget};
     use crate::tsf::probe_bridge::OutputActiveGuard;
+    use crate::tsf::probe_fsm::{ProbeAction, TransmitTarget};
     use std::cell::Cell;
 
     /// テスト用フェイク ProbeIo。Win32 副作用を no-op にし、呼び出しをフラグで記録する。
@@ -259,8 +278,12 @@ mod tests {
     }
 
     impl ProbeIo for FakeProbeIo {
-        fn gate_is_bypass(&self) -> bool { self.bypass }
-        fn gji_monitor_healthy(&self) -> bool { self.gji_healthy }
+        fn gate_is_bypass(&self) -> bool {
+            self.bypass
+        }
+        fn gji_monitor_healthy(&self) -> bool {
+            self.gji_healthy
+        }
         fn transmit_tsf(
             &self,
             _romaji: &str,
@@ -283,7 +306,9 @@ mod tests {
             self.send_fresh_f2_called.set(true);
             (crate::tsf::observer::namechange_baseline(), 0)
         }
-        fn consecutive_count(&self) -> u32 { self.consecutive }
+        fn consecutive_count(&self) -> u32 {
+            self.consecutive
+        }
         fn set_raw_literal(&self, _backs: usize, _romaji: String) {
             self.set_raw_literal_called.set(true);
         }
@@ -302,9 +327,15 @@ mod tests {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
         crate::tsf::probe_fsm::TsfProbeMachine::new_gji(
-            "ka", 0, probe, 0, false,
+            "ka",
+            0,
+            probe,
+            0,
+            false,
             crate::tsf::output::ColdReason::FocusChange,
-            false, false, guard,
+            false,
+            false,
+            guard,
         )
     }
 
@@ -342,7 +373,10 @@ mod tests {
     fn chrome_transmit_with_gji_healthy_installs_literal_detect() {
         // GJI モニター健全時は Chrome バッチ送信後も LiteralDetect フェーズへ遷移し、
         // Done を即返さないことで literal 検出のための再ティックを許可する。
-        let io = FakeProbeIo { gji_healthy: true, ..Default::default() };
+        let io = FakeProbeIo {
+            gji_healthy: true,
+            ..Default::default()
+        };
         let mut machine = make_chrome_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
@@ -361,7 +395,10 @@ mod tests {
 
     #[test]
     fn tsf_transmit_bypass_returns_true_without_transmit() {
-        let io = FakeProbeIo { bypass: true, ..Default::default() };
+        let io = FakeProbeIo {
+            bypass: true,
+            ..Default::default()
+        };
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
@@ -416,7 +453,10 @@ mod tests {
 
     #[test]
     fn raw_tsf_literal_recovery_skips_set_literal_when_consecutive() {
-        let io = FakeProbeIo { consecutive: 1, ..Default::default() };
+        let io = FakeProbeIo {
+            consecutive: 1,
+            ..Default::default()
+        };
         let mut machine = make_gji_machine();
         let actions = vec![
             ProbeAction::RawTsfLiteralRecovery {
@@ -428,7 +468,10 @@ mod tests {
         ];
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(done);
-        assert!(!io.set_raw_literal_called.get(), "should skip set when consecutive > 0");
+        assert!(
+            !io.set_raw_literal_called.get(),
+            "should skip set when consecutive > 0"
+        );
         assert!(io.mark_cold_raw_tsf_called.get(), "should always mark cold");
     }
 
@@ -436,7 +479,10 @@ mod tests {
     fn send_fresh_f2_action_calls_send_fresh_f2() {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::SendFreshF2 { cold_seq: 0, probe_settled: false }];
+        let actions = vec![ProbeAction::SendFreshF2 {
+            cold_seq: 0,
+            probe_settled: false,
+        }];
         // SendFreshF2 は apply_fresh_f2_sent を呼ぶだけで Done を emit しない。
         // 返値は false（queue が空になり Done なし）。
         let done = dispatch_probe_actions(&mut machine, actions, &io);

@@ -76,7 +76,8 @@ impl FocusTracker {
         if !self.current.is_focused() {
             return InjectionHint::Default;
         }
-        self.overrides.injection_hint(self.current.pid, &self.current.class_name)
+        self.overrides
+            .injection_hint(self.current.pid, &self.current.class_name)
     }
 
     // ── フォーカス更新 ──────────────────────────────────────────────────────
@@ -138,7 +139,8 @@ impl FocusTracker {
     ///
     /// `self.current` の pid / class_name を使うため、`update()` の後に呼ぶこと。
     pub(crate) fn restore_ime_state(&mut self) -> Option<HwndImeSnapshot> {
-        self.hwnd_ime_cache.restore(self.current.pid, &self.current.class_name)
+        self.hwnd_ime_cache
+            .restore(self.current.pid, &self.current.class_name)
     }
 
     // ── IMM 能力学習 ─────────────────────────────────────────────────────────

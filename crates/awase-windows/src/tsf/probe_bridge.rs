@@ -32,7 +32,7 @@ impl Default for OutputGate {
 }
 
 impl OutputGate {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             active: AtomicBool::new(false),
@@ -75,7 +75,9 @@ pub(crate) struct OutputActiveGuard;
 impl OutputActiveGuard {
     /// テスト専用: OUTPUT_GATE を変更しない NOOP ガード。
     #[cfg(test)]
-    pub(crate) const fn noop_for_test() -> Self { Self }
+    pub(crate) const fn noop_for_test() -> Self {
+        Self
+    }
 
     pub(crate) fn begin() -> Self {
         let prev = OUTPUT_GATE.depth.fetch_add(1, Ordering::AcqRel);

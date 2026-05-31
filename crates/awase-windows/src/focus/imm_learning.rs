@@ -1,8 +1,8 @@
 //! IMM32 クロスプロセス制御能力の学習（ImmGetDefaultIMEWnd による初回判定）
 
-use windows::Win32::Foundation::HWND;
-use awase::types::AppKind;
 use crate::focus::classifier::ImmCapability;
+use awase::types::AppKind;
+use windows::Win32::Foundation::HWND;
 
 /// ImmGetDefaultIMEWnd=NULL の場合、そのアプリの IMM32 制御を `Unavailable` と記録する。
 ///

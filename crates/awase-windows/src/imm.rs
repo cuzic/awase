@@ -4,7 +4,7 @@
 //! `ime.rs` / `ime_diagnostic.rs` / `observer/ime_observer.rs` に分散していた重複を集約。
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::Input::Ime::{HIMC, ImmGetContext, ImmGetDefaultIMEWnd, ImmReleaseContext};
+use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetDefaultIMEWnd, ImmReleaseContext, HIMC};
 use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG};
 
 // ─── IME 制御メッセージ・定数 ────────────────────────────────────
@@ -69,7 +69,11 @@ impl ImmContextGuard {
         // SAFETY: hwnd は呼出元でチェック済みの有効なウィンドウハンドル。
         //         ImmReleaseContext は Drop で必ず呼ばれる RAII パターン。
         let himc = unsafe { ImmGetContext(hwnd) };
-        if himc.is_invalid() { None } else { Some(Self { hwnd, himc }) }
+        if himc.is_invalid() {
+            None
+        } else {
+            Some(Self { hwnd, himc })
+        }
     }
 
     pub(crate) fn himc(&self) -> HIMC {
@@ -81,7 +85,9 @@ impl Drop for ImmContextGuard {
     fn drop(&mut self) {
         // SAFETY: self.hwnd と self.himc は new() で ImmGetContext が返した有効なペア。
         //         ImmReleaseContext は ImmGetContext と必ず対になる RAII パターン。
-        unsafe { let _ = ImmReleaseContext(self.hwnd, self.himc); }
+        unsafe {
+            let _ = ImmReleaseContext(self.hwnd, self.himc);
+        }
     }
 }
 

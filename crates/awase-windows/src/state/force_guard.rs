@@ -94,7 +94,11 @@ impl ForceGuardSet {
     /// ChatGPT 推奨の `effective_open()` パターン。
     #[must_use]
     pub const fn effective_open(&self, desired_open: bool) -> bool {
-        if self.requires_on() { true } else { desired_open }
+        if self.requires_on() {
+            true
+        } else {
+            desired_open
+        }
     }
 }
 

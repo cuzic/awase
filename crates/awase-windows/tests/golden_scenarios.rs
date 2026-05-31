@@ -24,8 +24,8 @@ use std::time::Instant;
 
 use awase_windows::focus::class_names::AppImeProfile;
 use awase_windows::state::ime_event::{
-    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, IntentSource,
-    ObservationConfidence, ObservationSource,
+    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, IntentSource, ObservationConfidence,
+    ObservationSource,
 };
 use awase_windows::state::ime_model::ImeModel;
 
@@ -232,10 +232,7 @@ fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
             generation: 10,
         },
     ]);
-    assert_eq!(
-        model.desired_open, false,
-        "newer intent (gen=11) が勝つ"
-    );
+    assert_eq!(model.desired_open, false, "newer intent (gen=11) が勝つ");
     assert_eq!(
         model.applied_open, None,
         "stale gen=10 の success は無視 (generation 照合)"

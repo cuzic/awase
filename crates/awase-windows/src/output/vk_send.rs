@@ -1,25 +1,25 @@
-use itertools::Itertools as _;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
-};
-use awase::types::VkCode;
-use crate::tsf::output::{INJECTED_MARKER, make_key_input_ex, make_tsf_key_input, kana_for_romaji_static};
+use super::resolve::{ascii_to_vk, CharResolution};
+use super::{fmt_ms, WarmthContext, WarmupOutcome};
+use super::{Output, VkSequence};
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
+use crate::tsf::output::{
+    kana_for_romaji_static, make_key_input_ex, make_tsf_key_input, INJECTED_MARKER,
+};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::TsfProbeMachine;
 use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS};
-use super::{Output, VkSequence};
-use super::{WarmthContext, WarmupOutcome, fmt_ms};
-use super::resolve::{ascii_to_vk, CharResolution};
+use awase::types::VkCode;
+use itertools::Itertools as _;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
+};
 
 /// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
 #[must_use]
 pub(super) const fn make_key_input(vk: VkCode, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
 }
-
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
@@ -31,26 +31,35 @@ pub(crate) struct TsfSendPipeline;
 
 impl TsfSendPipeline {
     /// VK run または Unicode kana を送信し、バックスペース数を返す。
-    pub(crate) fn transmit(romaji: &str, chars: &[(VkCode, bool)], outcome: &WarmupOutcome) -> usize {
+    pub(crate) fn transmit(
+        romaji: &str,
+        chars: &[(VkCode, bool)],
+        outcome: &WarmupOutcome,
+    ) -> usize {
         let unicode_kana: Option<char> = if outcome.prepend_f2_warmup && outcome.used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
             None
         };
 
-        unicode_kana.map_or_else(|| {
-            Output::send_vk_runs(chars, outcome.cold_seq);
-            chars.len()
-        }, |kana| {
-            log::debug!(
-                "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
-                outcome.cold_seq, kana, kana as u32,
-            );
-            let mut inputs = Vec::with_capacity(4);
-            Output::push_unicode_char_inputs(&mut inputs, kana, TSF_MARKER);
-            let _ = crate::win32::send_input_safe(&inputs);
-            1
-        })
+        unicode_kana.map_or_else(
+            || {
+                Output::send_vk_runs(chars, outcome.cold_seq);
+                chars.len()
+            },
+            |kana| {
+                log::debug!(
+                    "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
+                    outcome.cold_seq,
+                    kana,
+                    kana as u32,
+                );
+                let mut inputs = Vec::with_capacity(4);
+                Output::push_unicode_char_inputs(&mut inputs, kana, TSF_MARKER);
+                let _ = crate::win32::send_input_safe(&inputs);
+                1
+            },
+        )
     }
 }
 
@@ -94,15 +103,21 @@ impl Output {
             return;
         }
 
-        let WarmthContext { warm, elapsed, session_expired, prepend_f2_warmup } =
-            self.assess_warmth();
+        let WarmthContext {
+            warm,
+            elapsed,
+            session_expired,
+            prepend_f2_warmup,
+        } = self.assess_warmth();
         log::debug!(
             "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
             fmt_ms(elapsed)
         );
 
         if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji) { return; }
+            if self.defer_if_probe_in_flight(romaji) {
+                return;
+            }
 
             if session_expired {
                 log::debug!("[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
@@ -131,8 +146,7 @@ impl Output {
             // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
             // min/max を延長する（120ms では GJI が settle する前に timeout して literal
             // 出力される回帰を抑制）。
-            let long_idle = self.composition.idle_ms_at_last_cold()
-                > crate::tuning::LONG_IDLE_MS;
+            let long_idle = self.composition.idle_ms_at_last_cold() > crate::tuning::LONG_IDLE_MS;
             let (probe_min_ms, probe_max_ms) = if long_idle {
                 (
                     crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
@@ -163,9 +177,11 @@ impl Output {
                 log::debug!(
                     "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
                     conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
-                    conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                    conv_pre
+                        .is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                     conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
-                    conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
+                    conv_pre
+                        .is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
                 );
 
                 if skip_f2_send {
@@ -190,28 +206,25 @@ impl Output {
                         make_key_input(VK_DBE_HIRAGANA, true),
                     ];
                     let _ = crate::win32::send_input_safe(&f2_via_sendinput);
-                    log::debug!("[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)");
+                    log::debug!(
+                        "[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)"
+                    );
                 }
 
                 // probe を install。guard は TsfProbeMachine に move されて probe 完了まで保持される。
-                let probe = crate::tsf::probe::TsfReadinessProbe::new(
-                    f2_sent_ms,
-                    cold_seq,
-                    probe_min_ms,
-                );
+                let probe =
+                    crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
                 let _ = crate::with_app(|app| {
                     // 同期パスでは WindowsPlatform::send_keys 完了後に pending_tsf_timer() が
                     // TIMER_TSF_PROBE を起動するが、async パスでは send_keys は既に return 済み。
                     // install_pending_tsf_and_set_timer で probe インストールとタイマー起動を一括実行する。
-                    app.install_pending_tsf_and_set_timer(
-                        TsfProbeMachine::new_chrome(
-                            &romaji_owned,
-                            cold_seq,
-                            probe,
-                            probe_max_ms,
-                            guard,
-                        ),
-                    );
+                    app.install_pending_tsf_and_set_timer(TsfProbeMachine::new_chrome(
+                        &romaji_owned,
+                        cold_seq,
+                        probe,
+                        probe_max_ms,
+                        guard,
+                    ));
                 });
             });
 
@@ -270,7 +283,11 @@ impl Output {
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
                 run.iter()
-                    .map(|&(v, s)| if s { format!("S{v:02X}") } else { format!("{v:02X}") })
+                    .map(|&(v, s)| if s {
+                        format!("S{v:02X}")
+                    } else {
+                        format!("{v:02X}")
+                    })
                     .join(","),
             );
             let mut inputs = Vec::with_capacity(run.len() * 4);
@@ -296,8 +313,12 @@ impl Output {
             return;
         }
 
-        let WarmthContext { warm, elapsed, session_expired, prepend_f2_warmup } =
-            self.assess_warmth();
+        let WarmthContext {
+            warm,
+            elapsed,
+            session_expired,
+            prepend_f2_warmup,
+        } = self.assess_warmth();
         let used_eager_path = self.composition.eager_warmup_sent_ms() != 0;
 
         log::debug!(
@@ -306,7 +327,9 @@ impl Output {
         );
 
         if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji) { return; }
+            if self.defer_if_probe_in_flight(romaji) {
+                return;
+            }
 
             // ノンブロッキング warmup を開始して pending_tsf に保留
             let started = crate::tsf::cold_warmup::ColdWarmupSequence::new(self)
@@ -334,7 +357,11 @@ impl Output {
 
     fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence, used_eager_path: bool) {
         let cold_seq = self.composition.cold_start_count();
-        let outcome = WarmupOutcome { prepend_f2_warmup: false, used_eager_path, cold_seq };
+        let outcome = WarmupOutcome {
+            prepend_f2_warmup: false,
+            used_eager_path,
+            cold_seq,
+        };
 
         {
             // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
@@ -362,8 +389,8 @@ impl Output {
 
         let gji_active = crate::tsf::observer::gji_monitor_healthy();
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
-            let deadline_ms = crate::hook::current_tick_ms()
-                + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
+            let deadline_ms =
+                crate::hook::current_tick_ms() + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
             let guard = OutputActiveGuard::begin();
             self.install_pending_tsf(TsfProbeMachine::new_literal_detect(
                 romaji,
@@ -414,7 +441,10 @@ impl Output {
                 }
             }
             CharResolution::Unicode(ch) => {
-                log::debug!("    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
+                log::debug!(
+                    "    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode",
+                    ch as u32
+                );
                 self.send_unicode_char(ch);
             }
         }
@@ -450,7 +480,10 @@ impl Output {
                 Self::send_vk_pair(vk, needs_shift, false);
             }
             CharResolution::Unicode(ch) => {
-                log::debug!("    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode", ch as u32);
+                log::debug!(
+                    "    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode",
+                    ch as u32
+                );
                 self.send_unicode_char(ch);
             }
         }
@@ -474,7 +507,10 @@ impl Output {
         if vks.is_empty() {
             return;
         }
-        log::debug!("[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})", vks.len());
+        log::debug!(
+            "[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})",
+            vks.len()
+        );
 
         for run in Self::split_vk_runs(vks) {
             let mut inputs: Vec<INPUT> = Vec::with_capacity(run.len() * 4);
@@ -537,17 +573,27 @@ impl Output {
         for &cu in utf16.iter() {
             inputs.push(INPUT {
                 r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 { ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(0), wScan: cu,
-                    dwFlags: KEYEVENTF_UNICODE, time: 0, dwExtraInfo: marker,
-                }},
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: VIRTUAL_KEY(0),
+                        wScan: cu,
+                        dwFlags: KEYEVENTF_UNICODE,
+                        time: 0,
+                        dwExtraInfo: marker,
+                    },
+                },
             });
             inputs.push(INPUT {
                 r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 { ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(0), wScan: cu,
-                    dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time: 0, dwExtraInfo: marker,
-                }},
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: VIRTUAL_KEY(0),
+                        wScan: cu,
+                        dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                        time: 0,
+                        dwExtraInfo: marker,
+                    },
+                },
             });
         }
     }
@@ -556,7 +602,9 @@ impl Output {
     ///
     /// IME のオートリピート誤検出を防ぐため、同一 VK が連続する箇所で区切る。
     fn split_vk_runs(vks: &[(VkCode, bool)]) -> Vec<&[(VkCode, bool)]> {
-        if vks.is_empty() { return vec![]; }
+        if vks.is_empty() {
+            return vec![];
+        }
         let mut runs = Vec::new();
         let mut start = 0;
         for (i, w) in vks.windows(2).enumerate() {
