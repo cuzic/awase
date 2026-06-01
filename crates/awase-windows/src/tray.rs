@@ -14,9 +14,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, ICONINFO, MF_STRING, SW_SHOWNORMAL,
-    TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_DESTROY, WM_RBUTTONUP, WNDCLASSW,
-    WS_OVERLAPPEDWINDOW,
+    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_SEPARATOR,
+    MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_DESTROY,
+    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use anyhow::{Context, Result};
@@ -43,6 +43,23 @@ pub enum TrayCommand {
     GjiSetup,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
+}
+
+/// 文字列メニュー項目を追加するヘルパー。
+///
+/// # Safety
+/// `hmenu` は有効なポップアップメニューハンドルでなければならない。
+unsafe fn append_menu_item(hmenu: HMENU, id: u16, label: &str) {
+    let text = crate::win32::to_wide(label);
+    let _ = unsafe { AppendMenuW(hmenu, MF_STRING, usize::from(id), PCWSTR(text.as_ptr())) };
+}
+
+/// セパレータを追加するヘルパー。
+///
+/// # Safety
+/// `hmenu` は有効なポップアップメニューハンドルでなければならない。
+unsafe fn append_menu_sep(hmenu: HMENU) {
+    let _ = unsafe { AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null()) };
 }
 
 /// トレイアイコン ID
@@ -449,85 +466,26 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             return;
         }
 
-        // 配列選択メニュー項目を追加
+        // 配列選択
         for (i, name) in layout_names.iter().enumerate() {
             let text = crate::win32::to_wide(name);
             let id = usize::from(IDM_LAYOUT_BASE) + i;
             let _ = AppendMenuW(hmenu, MF_STRING, id, PCWSTR(text.as_ptr()));
         }
-
-        // 配列が複数ある場合はセパレータを追加
         if !layout_names.is_empty() {
-            let _ = AppendMenuW(
-                hmenu,
-                windows::Win32::UI::WindowsAndMessaging::MF_SEPARATOR,
-                0,
-                PCWSTR::null(),
-            );
+            append_menu_sep(hmenu);
         }
 
-        // 設定メニュー項目を追加
-        let settings_text = crate::win32::to_wide("設定...");
-        let _ = AppendMenuW(
-            hmenu,
-            MF_STRING,
-            usize::from(IDM_SETTINGS),
-            PCWSTR(settings_text.as_ptr()),
-        );
-
-        // IMM キャッシュクリア
-        let clear_cache_text = crate::win32::to_wide("学習キャッシュをクリア");
-        let _ = AppendMenuW(
-            hmenu,
-            MF_STRING,
-            usize::from(IDM_CLEAR_IMM_CACHE),
-            PCWSTR(clear_cache_text.as_ptr()),
-        );
-
-        // GJI セットアップ
-        let gji_text = crate::win32::to_wide("Google 日本語入力のセットアップ");
-        let _ = AppendMenuW(
-            hmenu,
-            MF_STRING,
-            usize::from(IDM_GJI_SETUP),
-            PCWSTR(gji_text.as_ptr()),
-        );
-
-        // 管理者として再起動（未昇格時のみ表示）
+        append_menu_item(hmenu, IDM_SETTINGS, "設定...");
+        append_menu_item(hmenu, IDM_CLEAR_IMM_CACHE, "学習キャッシュをクリア");
+        append_menu_item(hmenu, IDM_GJI_SETUP, "Google 日本語入力のセットアップ");
         if !elevated {
-            let admin_text = crate::win32::to_wide("管理者として再起動");
-            let _ = AppendMenuW(
-                hmenu,
-                MF_STRING,
-                usize::from(IDM_RESTART_ADMIN),
-                PCWSTR(admin_text.as_ptr()),
-            );
+            append_menu_item(hmenu, IDM_RESTART_ADMIN, "管理者として再起動");
         }
 
-        // セパレータ
-        let _ = AppendMenuW(
-            hmenu,
-            windows::Win32::UI::WindowsAndMessaging::MF_SEPARATOR,
-            0,
-            PCWSTR::null(),
-        );
-
-        // メニュー項目を追加
-        let toggle_text = crate::win32::to_wide("有効/無効切替");
-        let exit_text = crate::win32::to_wide("終了");
-
-        let _ = AppendMenuW(
-            hmenu,
-            MF_STRING,
-            usize::from(IDM_TOGGLE),
-            PCWSTR(toggle_text.as_ptr()),
-        );
-        let _ = AppendMenuW(
-            hmenu,
-            MF_STRING,
-            usize::from(IDM_EXIT),
-            PCWSTR(exit_text.as_ptr()),
-        );
+        append_menu_sep(hmenu);
+        append_menu_item(hmenu, IDM_TOGGLE, "有効/無効切替");
+        append_menu_item(hmenu, IDM_EXIT, "終了");
 
         // メニュー表示前にウィンドウをフォアグラウンドにする（メニューが閉じるために必要）
         let _ = SetForegroundWindow(hwnd);
