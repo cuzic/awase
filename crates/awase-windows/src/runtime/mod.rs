@@ -212,10 +212,11 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let pre_applied = self.platform_state.ime.applied_pair();
-        let (callback, sync_outcomes) =
-            self.executor
-                .execute_from_loop(&mut self.platform, decision, pre_applied);
+        let (callback, sync_outcomes) = self.executor.execute_from_loop(
+            &mut self.platform,
+            &self.platform_state.ime,
+            decision,
+        );
         self.dispatch_outcomes(sync_outcomes);
         callback
     }

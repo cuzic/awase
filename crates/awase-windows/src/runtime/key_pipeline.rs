@@ -467,12 +467,12 @@ impl Runtime {
             decision
         };
 
-        // ImeModel から applied snapshot を pre-fetch して executor に渡す。
-        // executor は intra-batch 更新でこの値を書き換えることがある（ImmCross 楽観更新等）。
-        let pre_applied = self.platform_state.ime.applied_pair();
-        let result =
-            self.executor
-                .execute_from_hook(&mut self.platform, decision, event, pre_applied);
+        let result = self.executor.execute_from_hook(
+            &mut self.platform,
+            &self.platform_state.ime,
+            decision,
+            event,
+        );
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
         self.dispatch_outcomes(result.sync_outcomes);

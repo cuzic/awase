@@ -17,6 +17,7 @@ use awase::types::{RawKeyEvent, VkCode};
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
+use crate::state::ImeStateHub;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
 
@@ -55,7 +56,7 @@ pub(crate) struct DecisionExecutor {
     /// decision サイクル開始時に `ImeModel.applied_open/applied_at_ms` から pre-fetch され、
     /// バッチ内の `SetOpen` 処理後に即時更新される（intra-batch ordering 用）。
     /// `ImeModel` が SSOT; これはバッチ内 communication channel 兼 cross-decision cache。
-    pub(crate) applied_snapshot: Option<(bool, u64)>,
+    applied_snapshot: Option<(bool, u64)>,
     /// warm+TSF の confirm キー KeyDown 後に KeyUp で eager warmup を送信するフラグ。
     ///
     /// `on_passthrough_key` が `true` を返したとき KeyDown 側でセットされ、
@@ -89,11 +90,11 @@ impl DecisionExecutor {
     pub(crate) fn execute_from_hook(
         &mut self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
         decision: Decision,
         raw_event: &RawKeyEvent,
-        applied: Option<(bool, u64)>,
     ) -> BatchResult {
-        self.applied_snapshot = applied;
+        self.applied_snapshot = ime.applied_pair();
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(platform, decision),
             HookMode::Relay => self.execute_relay(platform, decision, raw_event),
@@ -104,10 +105,10 @@ impl DecisionExecutor {
     pub(crate) fn execute_from_loop(
         &mut self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
         decision: Decision,
-        applied: Option<(bool, u64)>,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
-        self.applied_snapshot = applied;
+        self.applied_snapshot = ime.applied_pair();
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),
