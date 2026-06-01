@@ -1,4 +1,6 @@
 use rustc_hash::FxHashMap;
+
+type YabSections = FxHashMap<FaceKind, Vec<String>>;
 use std::fmt::Write as _;
 
 use itertools::Itertools as _;
@@ -368,7 +370,7 @@ enum FaceKind {
 
 /// 指定されたセクションが存在すれば `parse_face` を呼び、なければ空の `YabFace` を返す。
 fn parse_optional_face(
-    sections: &FxHashMap<FaceKind, Vec<String>>,
+    sections: &YabSections,
     kind: FaceKind,
     model: KeyboardModel,
     context_msg: &'static str,
@@ -386,7 +388,7 @@ fn process_yab_line(
     name: &mut String,
     current_section: &mut Option<FaceKind>,
     current_lines: &mut Vec<String>,
-    sections: &mut FxHashMap<FaceKind, Vec<String>>,
+    sections: &mut YabSections,
 ) -> Result<()> {
     // 空行・コメント行はスキップ
     if line.is_empty() || line.starts_with(';') {
@@ -444,7 +446,7 @@ impl YabLayout {
     /// フォーマットが不正な場合や必須セクションが欠落している場合にエラーを返す。
     pub fn parse(input: &str, model: KeyboardModel) -> Result<Self> {
         let mut name = String::new();
-        let mut sections: FxHashMap<FaceKind, Vec<String>> = FxHashMap::default();
+        let mut sections: YabSections = FxHashMap::default();
         let mut current_section: Option<FaceKind> = None;
         let mut current_lines: Vec<String> = Vec::new();
 
