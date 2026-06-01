@@ -403,70 +403,8 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        let modifiers = ctx.modifiers;
-
-        // エンジン ON/OFF コンボキー — user_enabled のみ変更
-        if !self.adapter.is_enabled()
-            && self
-                .special_keys
-                .engine_on
-                .iter()
-                .any(|k| Self::matches_key_combo(*k, event, modifiers))
-        {
-            return Some(SpecialKeyMatch::EngineOn);
-        }
-        if self.adapter.is_enabled()
-            && self
-                .special_keys
-                .engine_off
-                .iter()
-                .any(|k| Self::matches_key_combo(*k, event, modifiers))
-        {
-            return Some(SpecialKeyMatch::EngineOff);
-        }
-
-        // IME 制御キー（エンジン状態に関わらずチェック）
-        // shadow 更新は Platform 層の責務（SetOpen Effect 処理時にアトミック反転）
-        //
-        // 注: 以前は thumb_vks のキーを除外するガードがあったが、
-        // ModifierTiming の grace 猶予廃止（OS 実状態のみ使用）により
-        // 誤マッチリスクが解消されたため除去。
-        // Ctrl+無変換 = ime_off デフォルトが親指キー (VK_NONCONVERT) と重複しても
-        // OS 実状態で Ctrl を確認するため誤判定しない。
-        if self
-            .special_keys
-            .ime_on
-            .iter()
-            .any(|k| Self::matches_key_combo(*k, event, modifiers))
-        {
-            log::debug!(
-                "[special-key] IME ON match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
-                event.vk_code,
-                modifiers.ctrl,
-                modifiers.shift,
-                modifiers.alt,
-                event.extra_info
-            );
-            return Some(SpecialKeyMatch::ImeOn);
-        }
-        if self
-            .special_keys
-            .ime_off
-            .iter()
-            .any(|k| Self::matches_key_combo(*k, event, modifiers))
-        {
-            log::debug!(
-                "[special-key] IME OFF match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
-                event.vk_code,
-                modifiers.ctrl,
-                modifiers.shift,
-                modifiers.alt,
-                event.extra_info
-            );
-            return Some(SpecialKeyMatch::ImeOff);
-        }
-
-        None
+        self.special_keys
+            .match_event(event, ctx.modifiers, self.adapter.is_enabled())
     }
 
     /// `SpecialKeyMatch` に応じた状態変更と `Decision` 生成を行う副作用適用メソッド。
@@ -505,15 +443,79 @@ impl Engine {
         Some(self.apply_special_key_match(&m, ctx))
     }
 
-    /// キーコンボが修飾キー条件を含めてイベントに一致するか判定する。
-    fn matches_key_combo(
-        combo: ParsedKeyCombo,
+}
+
+fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent, modifiers: ModifierState) -> bool {
+    event.vk_code == combo.vk
+        && combo.ctrl == modifiers.ctrl
+        && combo.shift == modifiers.shift
+        && combo.alt == modifiers.alt
+}
+
+impl SpecialKeyCombos {
+    /// エンジン有効状態を考慮したうえでコンボマッチを行い、最初に一致した種別を返す。
+    ///
+    /// 副作用なし。`engine_enabled` は `adapter.is_enabled()` の値を渡すこと。
+    fn match_event(
+        &self,
         event: &RawKeyEvent,
         modifiers: ModifierState,
-    ) -> bool {
-        if event.vk_code != combo.vk {
-            return false;
+        engine_enabled: bool,
+    ) -> Option<SpecialKeyMatch> {
+        // エンジン ON/OFF コンボキー — user_enabled のみ変更
+        if !engine_enabled
+            && self
+                .engine_on
+                .iter()
+                .any(|k| matches_key_combo(*k, event, modifiers))
+        {
+            return Some(SpecialKeyMatch::EngineOn);
         }
-        combo.ctrl == modifiers.ctrl && combo.shift == modifiers.shift && combo.alt == modifiers.alt
+        if engine_enabled
+            && self
+                .engine_off
+                .iter()
+                .any(|k| matches_key_combo(*k, event, modifiers))
+        {
+            return Some(SpecialKeyMatch::EngineOff);
+        }
+
+        // IME 制御キー（エンジン状態に関わらずチェック）
+        //
+        // 注: 以前は thumb_vks のキーを除外するガードがあったが、
+        // ModifierTiming の grace 猶予廃止（OS 実状態のみ使用）により
+        // 誤マッチリスクが解消されたため除去。
+        if self
+            .ime_on
+            .iter()
+            .any(|k| matches_key_combo(*k, event, modifiers))
+        {
+            log::debug!(
+                "[special-key] IME ON match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code,
+                modifiers.ctrl,
+                modifiers.shift,
+                modifiers.alt,
+                event.extra_info
+            );
+            return Some(SpecialKeyMatch::ImeOn);
+        }
+        if self
+            .ime_off
+            .iter()
+            .any(|k| matches_key_combo(*k, event, modifiers))
+        {
+            log::debug!(
+                "[special-key] IME OFF match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code,
+                modifiers.ctrl,
+                modifiers.shift,
+                modifiers.alt,
+                event.extra_info
+            );
+            return Some(SpecialKeyMatch::ImeOff);
+        }
+
+        None
     }
 }
