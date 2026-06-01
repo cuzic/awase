@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use smallvec::{smallvec, SmallVec};
+use smallvec::SmallVec;
 
 use crate::config::ParsedKeyCombo;
 use crate::platform::EffectOrigin;
@@ -116,7 +116,12 @@ impl ActivationState {
         match self {
             Self::Inactive(InactiveReason::UserDisabled) => ContextChange::EngineDisabled,
             Self::Inactive(InactiveReason::NonTextFocus) => ContextChange::FocusChanged,
-            _ => ContextChange::ImeOff,
+            Self::Inactive(InactiveReason::ImeOff)
+            | Self::Inactive(InactiveReason::NotRomajiInput)
+            | Self::Inactive(InactiveReason::NotJapaneseIme) => ContextChange::ImeOff,
+            Self::Active | Self::Pending(_) => {
+                panic!("to_context_change called on non-inactive state")
+            }
         }
     }
 }
@@ -164,21 +169,9 @@ impl Decision {
         matches!(self, Self::Consume { .. })
     }
 
-    /// effects に追加する。PassThrough なら Consume に昇格。
+    /// effects に追加する。PassThrough なら PassThroughWith に昇格。
     pub fn push_effect(&mut self, effect: Effect) {
-        match self {
-            Self::Consume { effects } | Self::PassThroughWith { effects } => {
-                effects.push(effect);
-            }
-            Self::PassThrough => {
-                // PassThrough に effect を足すと PassThroughWith になる（Consume ではない）。
-                // Consume にすると元のキーイベントが OS に渡らなくなり、
-                // IME ON/OFF キーが奪われて 2回押しが必要になる等の不具合を引き起こす。
-                *self = Self::PassThroughWith {
-                    effects: smallvec![effect],
-                };
-            }
-        }
+        self.effects_mut().push(effect);
     }
 
     /// Effects 内に `ImeEffect::SetOpen` があればその値を返す。
@@ -210,7 +203,7 @@ impl Decision {
         *effects = new_effects;
     }
 
-    /// effects への可変参照。PassThrough なら Consume に昇格して空 EffectVec を返す。
+    /// effects への可変参照。PassThrough なら PassThroughWith に昇格して空 EffectVec を返す。
     #[must_use]
     pub fn effects_mut(&mut self) -> &mut EffectVec {
         match self {
@@ -340,6 +333,8 @@ pub enum EngineCommand {
 
 #[cfg(test)]
 mod tests {
+    use smallvec::smallvec;
+
     use super::*;
 
     fn test_effect() -> Effect {
