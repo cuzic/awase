@@ -1,14 +1,17 @@
 //! GJI (Google Japanese Input) config1.db パッチツール
 //!
-//! GJI の config1.db に F14 キーバインドを追加する。
+//! GJI の config1.db に F13/F14 キーバインドを追加する。
 //!
 //! 追加エントリ:
+//!   Precomposition  F13  IMEOn
 //!   Precomposition  F14  IMEOff
+//!   Composition     F13  IMEOn
 //!   Composition     F14  IMEOff
+//!   Conversion      F13  IMEOn
 //!   Conversion      F14  IMEOff
 //!
-//! これにより awase が Ctrl+Shift+Delete の代わりに F14 で IME OFF を制御できるようになる。
-//! F14 は実キーボードに存在せず、ブラウザショートカットとも衝突しない。
+//! これにより awase が F13 で IME ON、F14 で IME OFF を制御できるようになる。
+//! F13/F14 は実キーボードに存在せず、ブラウザショートカットとも衝突しない。
 //!
 //! 使用法:
 //!   awase-gji-setup              # デフォルトパス自動検出
@@ -19,8 +22,11 @@ use std::{fs, path::PathBuf, process::ExitCode};
 const MARKER: &[u8] = b"status\tkey\tcommand\n";
 
 const ENTRIES: &[&str] = &[
+    "Precomposition\tF13\tIMEOn\n",
     "Precomposition\tF14\tIMEOff\n",
+    "Composition\tF13\tIMEOn\n",
     "Composition\tF14\tIMEOff\n",
+    "Conversion\tF13\tIMEOn\n",
     "Conversion\tF14\tIMEOff\n",
 ];
 
@@ -202,13 +208,14 @@ mod tests {
 
     #[test]
     fn patch_adds_missing_entries() {
-        let db = make_test_db("DirectInput\tF13\tIMEOn\n");
-        let result = patch(&db).unwrap().unwrap();
-        let (patched, added) = result;
-        assert_eq!(added.len(), 3);
-        let text = std::str::from_utf8(&patched).unwrap();
+        let db = make_test_db("DirectInput\tF15\tIMEOn\n");
+        let (patched, added) = patch(&db).unwrap().unwrap();
+        assert_eq!(added.len(), 6);
         for entry in ENTRIES {
-            assert!(text.contains(entry), "missing: {entry}");
+            assert!(
+                patched.windows(entry.len()).any(|w| w == entry.as_bytes()),
+                "missing: {entry}"
+            );
         }
     }
 
@@ -221,9 +228,10 @@ mod tests {
 
     #[test]
     fn patch_adds_only_missing() {
-        let db = make_test_db("Precomposition\tF14\tIMEOff\n");
+        let db = make_test_db("Precomposition\tF13\tIMEOn\nPrecomposition\tF14\tIMEOff\n");
         let (_, added) = patch(&db).unwrap().unwrap();
-        assert_eq!(added.len(), 2);
+        assert_eq!(added.len(), 4);
+        assert!(!added.contains(&"Precomposition\tF13\tIMEOn\n"));
         assert!(!added.contains(&"Precomposition\tF14\tIMEOff\n"));
     }
 
