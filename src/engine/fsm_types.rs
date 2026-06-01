@@ -48,6 +48,20 @@ pub struct ClassifiedEvent {
     pub is_ime_control: bool,
 }
 
+impl ClassifiedEvent {
+    /// タイマー用ダミーイベント（イベントなしスナップショット構築に使う）
+    pub const fn dummy() -> Self {
+        Self {
+            key_class: KeyClass::Passthrough,
+            pos: None,
+            scan_code: ScanCode(0),
+            vk_code: VkCode(0),
+            timestamp: 0,
+            is_ime_control: false,
+        }
+    }
+}
+
 /// 配列の面を表す列挙型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Face {

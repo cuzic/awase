@@ -166,11 +166,7 @@ impl NicolaFsm {
             }
             EngineState::PendingChar(pending) => {
                 // 保留中の文字キーを通常面で単独確定
-                let resolved = self.resolve_pending_char_as_single(
-                    pending.scan_code,
-                    pending.vk_code,
-                    pending.pos,
-                );
+                let resolved = self.resolve_pending_char_as_single(&pending);
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions.into_vec())
             }
@@ -186,12 +182,7 @@ impl NicolaFsm {
                 char1_released,
             } => {
                 // 文字+親指を同時打鍵として確定
-                let resolved = self.resolve_char_thumb_as_simultaneous(
-                    char_key.scan_code,
-                    char_key.vk_code,
-                    char_key.pos,
-                    thumb.face(),
-                );
+                let resolved = self.resolve_char_thumb_as_simultaneous(&char_key, thumb.face());
                 self.update_history(resolved.output);
                 let mut actions = resolved.actions;
                 if char1_released {
@@ -341,22 +332,20 @@ impl NicolaFsm {
     /// 返すようになり、後続のキーが同じ親指押下で二重にシフトされるのを防ぐ。
     fn resolve_char_thumb_as_simultaneous(
         &mut self,
-        char_scan: ScanCode,
-        char_vk: VkCode,
-        char_pos: Option<PhysicalPos>,
+        char_key: &PendingKey,
         thumb_face: Face,
     ) -> ResolvedAction {
-        if let Some((action, kana)) = self.lookup_face(char_pos, self.get_face(thumb_face)) {
+        if let Some((action, kana)) = self.lookup_face(char_key.pos, self.get_face(thumb_face)) {
             // 親指キーを「消費」: 同じ物理押下で後続キーがシフトされないようにする
             self.consume_thumb(thumb_face);
-            let output = OutputUpdate::record(char_scan, &action, kana);
+            let output = OutputUpdate::record(char_key.scan_code, &action, kana);
             ResolvedAction {
                 actions: smallvec![action],
                 output,
             }
         } else {
             // 親指面に定義がない場合は文字キーを単独確定
-            self.resolve_pending_char_as_single(char_scan, char_vk, char_pos)
+            self.resolve_pending_char_as_single(char_key)
         }
     }
 
@@ -592,11 +581,7 @@ impl NicolaFsm {
                     ev.timestamp,
                 );
                 self.go_idle();
-                let resolved = self.resolve_pending_char_as_single(
-                    pending.scan_code,
-                    pending.vk_code,
-                    pending.pos,
-                );
+                let resolved = self.resolve_pending_char_as_single(&pending);
                 resolved.into_reduce_and_continue(*ev)
             }
         }
@@ -752,8 +737,7 @@ impl NicolaFsm {
 
         // 時間超過 → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
-        let resolved =
-            self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
+        let resolved = self.resolve_pending_char_as_single(&pending);
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -761,8 +745,7 @@ impl NicolaFsm {
     fn step_pending_char_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let pending = self.state.expect_pending_char();
         self.go_idle();
-        let resolved =
-            self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
+        let resolved = self.resolve_pending_char_as_single(&pending);
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -820,14 +803,9 @@ impl NicolaFsm {
     }
 
     /// 保留中の文字キーを単独打鍵として解決し、アクション列と OutputUpdate を返す
-    fn resolve_pending_char_as_single(
-        &self,
-        scan_code: ScanCode,
-        vk_code: VkCode,
-        pos: Option<PhysicalPos>,
-    ) -> ResolvedAction {
-        if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
-            let output = OutputUpdate::record(scan_code, &action, kana);
+    fn resolve_pending_char_as_single(&self, pending: &PendingKey) -> ResolvedAction {
+        if let Some((action, kana)) = self.lookup_face(pending.pos, self.get_face(Face::Normal)) {
+            let output = OutputUpdate::record(pending.scan_code, &action, kana);
             ResolvedAction {
                 actions: smallvec![action],
                 output,
@@ -836,8 +814,8 @@ impl NicolaFsm {
             // Normal face に定義なし（yab に明示的に '無' がある場合は lookup_face が
             // Some(Suppress) を返すため、ここには来ない）。
             // 配列定義外のキー → Key(vk_code) でそのまま通す
-            let action = KeyAction::Key(vk_code);
-            let output = OutputUpdate::record(scan_code, &action, None);
+            let action = KeyAction::Key(pending.vk_code);
+            let output = OutputUpdate::record(pending.scan_code, &action, None);
             ResolvedAction {
                 actions: smallvec![action],
                 output,
@@ -899,12 +877,7 @@ impl NicolaFsm {
         thumb_face: Face,
         remaining: ClassifiedEvent,
     ) -> ParseAction {
-        let resolved = self.resolve_char_thumb_as_simultaneous(
-            pending.scan_code,
-            pending.vk_code,
-            pending.pos,
-            thumb_face,
-        );
+        let resolved = self.resolve_char_thumb_as_simultaneous(&pending, thumb_face);
         resolved.into_reduce_and_continue(remaining)
     }
 
@@ -935,8 +908,7 @@ impl NicolaFsm {
         }
 
         // char1 = 単独、char2+thumb = 同時打鍵（または char2 単独）
-        let char1_resolved =
-            self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos);
+        let char1_resolved = self.resolve_pending_char_as_single(&pending);
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(thumb_face)) {
             // char1 の履歴を先に更新してから char2+thumb を確定
             self.update_history(char1_resolved.output);
@@ -1015,12 +987,7 @@ impl NicolaFsm {
 
         // char1+thumb を同時打鍵として確定する
         self.go_idle();
-        let resolved = self.resolve_char_thumb_as_simultaneous(
-            pending.scan_code,
-            pending.vk_code,
-            pending.pos,
-            thumb.face(),
-        );
+        let resolved = self.resolve_char_thumb_as_simultaneous(&pending, thumb.face());
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
 
@@ -1047,7 +1014,7 @@ impl NicolaFsm {
 
         let resolved = match old_state {
             EngineState::PendingChar(pending) => {
-                self.resolve_pending_char_as_single(pending.scan_code, pending.vk_code, pending.pos)
+                self.resolve_pending_char_as_single(&pending)
             }
             EngineState::PendingThumb(thumb) => {
                 Self::resolve_pending_thumb_as_single(thumb.vk_code)
@@ -1130,19 +1097,16 @@ impl NicolaFsm {
     /// PendingCharThumb タイムアウト：char1+thumb を同時打鍵として確定する
     fn timeout_pending_char_thumb(
         &mut self,
-        char_scan: ScanCode,
-        char_vk: VkCode,
-        char_pos: Option<PhysicalPos>,
+        char_key: &PendingKey,
         thumb_face: Face,
         char1_released: bool,
     ) -> Resp {
-        let resolved =
-            self.resolve_char_thumb_as_simultaneous(char_scan, char_vk, char_pos, thumb_face);
+        let resolved = self.resolve_char_thumb_as_simultaneous(char_key, thumb_face);
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
         if char1_released {
             // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
-            if let Some(entry) = self.output_history.remove_by_scan(char_scan) {
+            if let Some(entry) = self.output_history.remove_by_scan(char_key.scan_code) {
                 if let KeyAction::Key(vk) = entry.action {
                     actions.push(KeyAction::KeyUp(vk));
                 }
@@ -1310,13 +1274,7 @@ impl NicolaFsm {
                 char_key,
                 thumb,
                 char1_released,
-            } => self.timeout_pending_char_thumb(
-                char_key.scan_code,
-                char_key.vk_code,
-                char_key.pos,
-                thumb.face(),
-                char1_released,
-            ),
+            } => self.timeout_pending_char_thumb(&char_key, thumb.face(), char1_released),
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
             EngineState::SpeculativeChar(_) => Response::consume().with_kill_timer(TIMER_PENDING),
         }

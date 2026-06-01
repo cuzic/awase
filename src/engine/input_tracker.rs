@@ -64,14 +64,7 @@ impl PhysicalKeyState {
     #[must_use]
     pub const fn from_ctx_snapshot(ctx: &InputContext) -> Self {
         Self {
-            classified: ClassifiedEvent {
-                key_class: KeyClass::Passthrough,
-                pos: None,
-                scan_code: ScanCode(0),
-                vk_code: VkCode(0),
-                timestamp: 0,
-                is_ime_control: false,
-            },
+            classified: ClassifiedEvent::dummy(),
             modifiers: ctx.modifiers,
             left_thumb_down: ctx.left_thumb_down,
             right_thumb_down: ctx.right_thumb_down,
@@ -132,14 +125,7 @@ impl InputTracker {
     #[must_use]
     pub const fn snapshot(&self) -> PhysicalKeyState {
         PhysicalKeyState {
-            classified: ClassifiedEvent {
-                key_class: KeyClass::Passthrough,
-                pos: None,
-                scan_code: ScanCode(0),
-                vk_code: VkCode(0),
-                timestamp: 0,
-                is_ime_control: false,
-            },
+            classified: ClassifiedEvent::dummy(),
             modifiers: self.modifiers,
             left_thumb_down: self.left_thumb_down,
             right_thumb_down: self.right_thumb_down,
