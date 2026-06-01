@@ -158,7 +158,11 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                         let outcome = WarmupOutcome {
                             prepend_f2_warmup,
-                            used_eager_path,
+                            // deferred VKs がある場合は Unicode kana パスを使わず VK ローマ字で送る。
+                            // KEYEVENTF_UNICODE 直後に VK ストロークを送ると WezTerm/IME が
+                            // N キーをリテラル 'n' として扱い "の" が "nお" になるバグを防ぐ
+                            // （"このあたり" → "こnおあたり"）。
+                            used_eager_path: used_eager_path && deferred_vks.is_empty(),
                             cold_seq,
                         };
                         {
