@@ -654,7 +654,7 @@ fn show_settings_error(msg: &str) {
 /// 確認ダイアログを出してから config1.db パッチ → kill → 再起動の順に処理する。
 fn handle_gji_setup() {
     use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDCANCEL, IDOK, MB_ICONINFORMATION, MB_OKCANCEL,
+        MessageBoxW, IDCANCEL, MB_ICONINFORMATION, MB_OKCANCEL,
     };
 
     let caption = crate::win32::to_wide("Google 日本語入力のセットアップ");
