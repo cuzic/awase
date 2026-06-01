@@ -20,6 +20,9 @@ use crate::platform::WindowsPlatform;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
 
+/// IME apply の sync 完了 1 件分。`(open: bool, outcome: ImeOpenOutcome)` のエイリアス。
+pub(crate) type ImeApplyPair = (bool, awase::platform::ImeOpenOutcome);
+
 /// `execute_from_hook` の戻り値。
 #[derive(Debug)]
 pub(crate) struct BatchResult {
@@ -29,7 +32,7 @@ pub(crate) struct BatchResult {
     pub has_pending: bool,
     /// sync path の SetOpen 完了リスト。
     /// async path は spawn_local 内で on_ime_apply_complete を直接呼ぶため含まない。
-    pub sync_outcomes: Vec<(bool, awase::platform::ImeOpenOutcome)>,
+    pub sync_outcomes: Vec<ImeApplyPair>,
 }
 
 pub(crate) struct DecisionExecutor {
@@ -102,7 +105,7 @@ impl DecisionExecutor {
         platform: &mut WindowsPlatform,
         decision: Decision,
         applied: Option<(bool, u64)>,
-    ) -> (CallbackResult, Vec<(bool, awase::platform::ImeOpenOutcome)>) {
+    ) -> (CallbackResult, Vec<ImeApplyPair>) {
         self.applied_snapshot = applied;
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
@@ -134,7 +137,7 @@ impl DecisionExecutor {
     pub(crate) fn drain_deferred(
         &mut self,
         platform: &mut WindowsPlatform,
-    ) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
+    ) -> Vec<ImeApplyPair> {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
         // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
         // Win が 150ms 以上 OS 側でスタックし、後続のショートカットが Win+key と
@@ -194,7 +197,7 @@ impl DecisionExecutor {
     pub(crate) fn on_output_guard_timer(
         &mut self,
         platform: &mut WindowsPlatform,
-    ) -> Vec<(bool, awase::platform::ImeOpenOutcome)> {
+    ) -> Vec<ImeApplyPair> {
         platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
         self.drain_deferred(platform)
     }

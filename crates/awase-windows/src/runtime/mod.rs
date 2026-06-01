@@ -11,6 +11,7 @@ use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCod
 
 use crate::focus::cache::DetectionSource;
 use crate::platform::WindowsPlatform;
+use crate::runtime::executor::ImeApplyPair;
 use crate::win32::HwndExt as _;
 use crate::ImeBelief;
 use awase::platform::PlatformRuntime as _;
@@ -249,7 +250,7 @@ impl Runtime {
     }
 
     /// sync path の outcome リストを一括 dispatch する。
-    pub fn dispatch_outcomes(&mut self, outcomes: Vec<(bool, awase::platform::ImeOpenOutcome)>) {
+    pub fn dispatch_outcomes(&mut self, outcomes: Vec<ImeApplyPair>) {
         for (open, outcome) in outcomes {
             self.on_ime_apply_complete(open, outcome);
         }
