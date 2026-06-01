@@ -161,14 +161,8 @@ fn find_gji_pid() -> Option<u32> {
 /// `HKLM\SOFTWARE\Google\Google Japanese Input` の `InstalledPath` 値を読み、
 /// `GoogleIMEJaConverter.exe` を付加して返す。
 pub fn get_gji_exe_path() -> Option<PathBuf> {
-    let subkey: Vec<u16> = "SOFTWARE\\Google\\Google Japanese Input"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let value_name: Vec<u16> = "InstalledPath"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    let subkey = crate::win32::to_wide("SOFTWARE\\Google\\Google Japanese Input");
+    let value_name = crate::win32::to_wide("InstalledPath");
 
     let mut buf = vec![0u16; 512];
     let mut buf_bytes = u32::try_from(buf.len() * 2).unwrap_or(u32::MAX);

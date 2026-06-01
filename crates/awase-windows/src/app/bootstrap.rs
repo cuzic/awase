@@ -545,10 +545,7 @@ pub(super) fn run_all() -> Result<()> {
             Ok(handle) => {
                 if GetLastError() == ERROR_ALREADY_EXISTS {
                     log::error!("Another instance of awase is already running. Exiting.");
-                    let class_wide: Vec<u16> = tray::WINDOW_CLASS_NAME
-                        .encode_utf16()
-                        .chain(std::iter::once(0))
-                        .collect();
+                    let class_wide = crate::win32::to_wide(tray::WINDOW_CLASS_NAME);
                     if let Ok(existing) = FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null()) {
                         if !existing.is_invalid() {
                             let _ = PostMessageW(

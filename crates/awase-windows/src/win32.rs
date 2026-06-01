@@ -72,6 +72,14 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
     unsafe { SendInput(inputs, size) }
 }
 
+/// `&str` を NUL 終端 UTF-16 `Vec<u16>` に変換する。
+///
+/// Win32 API に渡す `PCWSTR` を作るときの定型句を集約する。
+#[must_use]
+pub fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 /// `GetGUIThreadInfo` の結果
 #[derive(Debug, Clone, Copy)]
 pub struct GuiThreadResult {

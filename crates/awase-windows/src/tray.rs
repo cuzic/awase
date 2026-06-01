@@ -84,10 +84,7 @@ impl SystemTray {
         //         正しく初期化された有効な構造体ポインタを渡している。
         unsafe {
             // ウィンドウクラス名を UTF-16 に変換
-            let class_name_wide: Vec<u16> = WINDOW_CLASS_NAME
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let class_name_wide = crate::win32::to_wide(WINDOW_CLASS_NAME);
 
             let wc = WNDCLASSW {
                 style: CS_HREDRAW | CS_VREDRAW,
@@ -220,12 +217,12 @@ impl SystemTray {
     /// バルーン通知を表示する
     pub fn show_balloon(&mut self, title: &str, message: &str) {
         // szInfoTitle に UTF-16 タイトルをコピー
-        let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let title_wide = crate::win32::to_wide(title);
         let title_len = title_wide.len().min(self.nid.szInfoTitle.len());
         self.nid.szInfoTitle[..title_len].copy_from_slice(&title_wide[..title_len]);
 
         // szInfo に UTF-16 メッセージをコピー
-        let msg_wide: Vec<u16> = message.encode_utf16().chain(std::iter::once(0)).collect();
+        let msg_wide = crate::win32::to_wide(message);
         let msg_len = msg_wide.len().min(self.nid.szInfo.len());
         self.nid.szInfo[..msg_len].copy_from_slice(&msg_wide[..msg_len]);
 
@@ -418,7 +415,7 @@ fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str, elev
         format!("NICOLA: OFF ({layout_name}){admin_suffix}")
     };
 
-    let tip_wide: Vec<u16> = tip.encode_utf16().chain(std::iter::once(0)).collect();
+    let tip_wide = crate::win32::to_wide(&tip);
     let len = tip_wide.len().min(nid.szTip.len());
     nid.szTip[..len].copy_from_slice(&tip_wide[..len]);
 }
@@ -454,7 +451,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
 
         // 配列選択メニュー項目を追加
         for (i, name) in layout_names.iter().enumerate() {
-            let text: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            let text = crate::win32::to_wide(name);
             let id = usize::from(IDM_LAYOUT_BASE) + i;
             let _ = AppendMenuW(hmenu, MF_STRING, id, PCWSTR(text.as_ptr()));
         }
@@ -470,7 +467,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         }
 
         // 設定メニュー項目を追加
-        let settings_text: Vec<u16> = "設定...".encode_utf16().chain(std::iter::once(0)).collect();
+        let settings_text = crate::win32::to_wide("設定...");
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,
@@ -479,10 +476,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         );
 
         // IMM キャッシュクリア
-        let clear_cache_text: Vec<u16> = "学習キャッシュをクリア"
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let clear_cache_text = crate::win32::to_wide("学習キャッシュをクリア");
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,
@@ -491,10 +485,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         );
 
         // GJI セットアップ
-        let gji_text: Vec<u16> = "Google 日本語入力のセットアップ"
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let gji_text = crate::win32::to_wide("Google 日本語入力のセットアップ");
         let _ = AppendMenuW(
             hmenu,
             MF_STRING,
@@ -504,10 +495,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
 
         // 管理者として再起動（未昇格時のみ表示）
         if !elevated {
-            let admin_text: Vec<u16> = "管理者として再起動"
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
+            let admin_text = crate::win32::to_wide("管理者として再起動");
             let _ = AppendMenuW(
                 hmenu,
                 MF_STRING,
@@ -525,11 +513,8 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         );
 
         // メニュー項目を追加
-        let toggle_text: Vec<u16> = "有効/無効切替"
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-        let exit_text: Vec<u16> = "終了".encode_utf16().chain(std::iter::once(0)).collect();
+        let toggle_text = crate::win32::to_wide("有効/無効切替");
+        let exit_text = crate::win32::to_wide("終了");
 
         let _ = AppendMenuW(
             hmenu,
@@ -607,12 +592,8 @@ pub fn restart_as_admin() {
         }
     };
 
-    let exe_wide: Vec<u16> = exe
-        .to_string_lossy()
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let verb: Vec<u16> = "runas".encode_utf16().chain(std::iter::once(0)).collect();
+    let exe_wide = crate::win32::to_wide(&exe.to_string_lossy());
+    let verb = crate::win32::to_wide("runas");
 
     // SAFETY: `exe_wide` と `verb` は直上で NUL 終端済みの有効な UTF-16 文字列。
     //         `PCWSTR` ポインタは `ShellExecuteW` 呼び出し中はスタック上に生存している。
@@ -676,20 +657,14 @@ fn handle_gji_setup() {
         MessageBoxW, IDCANCEL, IDOK, MB_ICONINFORMATION, MB_OKCANCEL,
     };
 
-    let caption: Vec<u16> = "Google 日本語入力のセットアップ"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let message: Vec<u16> = concat!(
+    let caption = crate::win32::to_wide("Google 日本語入力のセットアップ");
+    let message = crate::win32::to_wide(concat!(
         "Google 日本語入力に F13/F14 キーバインドを追加します。\r\n\r\n",
         "  F13 → IME ON\r\n",
         "  F14 → IME OFF\r\n\r\n",
         "設定を適用するため Google 日本語入力を再起動します。\r\n",
         "よろしいですか？"
-    )
-    .encode_utf16()
-    .chain(std::iter::once(0))
-    .collect();
+    ));
 
     // SAFETY: `MessageBoxW` は有効な NUL 終端 UTF-16 文字列ポインタを受け取る標準的な呼び出し。
     let response = unsafe {
