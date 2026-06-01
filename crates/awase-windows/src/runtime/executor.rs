@@ -43,12 +43,13 @@ pub(crate) struct DecisionExecutor {
     /// Reinject 経由で送った PassThrough KeyDown の VK 集合。
     /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
     deferred_passthrough_vks: HashSet<VkCode>,
-    /// OUTPUT_GUARD で park した 1 個分の Effect スロット。
+    /// OUTPUT_GUARD で park した ReinjectKey イベント。
     ///
     /// 不変条件: `guard_held.is_some()` ⟺ `TIMER_OUTPUT_GUARD` が登録済み。
     /// drain は「slot を先に試す → 通過したら queue に進む」の 2 段構え。
     /// queue 本体は常に純粋 FIFO で `push_back` / `pop_front` のみ。
-    guard_held: Option<Effect>,
+    /// `RawKeyEvent` 型にすることで「ReinjectKey 以外が park される」コンパイルエラーになる。
+    guard_held: Option<RawKeyEvent>,
     /// 直近の apply 済み IME 状態スナップショット (value, timestamp_ms)。
     ///
     /// decision サイクル開始時に `ImeModel.applied_open/applied_at_ms` から pre-fetch され、
@@ -145,17 +146,18 @@ impl DecisionExecutor {
         let mut sync_outcomes = Vec::new();
         let mut reinject_guard_passed = false;
 
-        // 1) 前回 park した Effect があれば最初に試す。
+        // 1) 前回 park した ReinjectKey があれば最初に試す。
         //    guard 解除済みなら execute_one してから queue に進む (batching を継続)。
-        if let Some(effect) = self.guard_held.take() {
+        if let Some(event) = self.guard_held.take() {
             if let Some(remaining) = self.output_guard_remaining(platform) {
                 log::debug!(
-                    "[reinject-guard] held effect, output {}ms ago, suspending for {remaining}ms",
+                    "[reinject-guard] held event, output {}ms ago, suspending for {remaining}ms",
                     crate::tuning::OUTPUT_GUARD_MS - remaining,
                 );
-                self.park_in_guard(platform, effect, remaining);
+                self.park_in_guard(platform, event, remaining);
                 return sync_outcomes;
             }
+            let effect = Effect::Input(InputEffect::ReinjectKey(event));
             if let Some(o) = self.execute_one(platform, effect) {
                 sync_outcomes.push(o);
             }
@@ -171,7 +173,10 @@ impl DecisionExecutor {
                         "[reinject-guard] output {}ms ago, suspending drain for {remaining}ms",
                         crate::tuning::OUTPUT_GUARD_MS - remaining,
                     );
-                    self.park_in_guard(platform, effect, remaining);
+                    let Effect::Input(InputEffect::ReinjectKey(event)) = effect else {
+                        unreachable!("is_reinject was true")
+                    };
+                    self.park_in_guard(platform, event, remaining);
                     return sync_outcomes;
                 }
                 reinject_guard_passed = true;
@@ -218,10 +223,10 @@ impl DecisionExecutor {
         }
     }
 
-    /// Effect を guard slot に park し、TIMER_OUTPUT_GUARD を再設定する。
+    /// ReinjectKey イベントを guard slot に park し、TIMER_OUTPUT_GUARD を再設定する。
     /// 再設定は idempotent (remaining は last_send からの相対時刻基準で計算される)。
-    fn park_in_guard(&mut self, platform: &mut WindowsPlatform, effect: Effect, remaining: u64) {
-        self.guard_held = Some(effect);
+    fn park_in_guard(&mut self, platform: &mut WindowsPlatform, event: RawKeyEvent, remaining: u64) {
+        self.guard_held = Some(event);
         platform.timer.set(
             crate::TIMER_OUTPUT_GUARD,
             std::time::Duration::from_millis(remaining),
