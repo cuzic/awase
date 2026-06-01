@@ -28,8 +28,9 @@ use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 /// - `last_io >= warmup_ms`（warmup 後に GJI I/O が発生した）かつ
 ///   80ms 静止 → settled → `POST_IDLE_MARGIN_MS` 待機後に送信
 /// - `last_io < warmup_ms`（warmup 後に I/O なし）→ GJI は既に正常状態と推定、
-///   max_deadline 到達まで待機継続（万が一 I/O が来れば settled 検出に切り替え）
-/// - `now >= max_deadline` → タイムアウト（フォールバック）
+///   min_ms 経過済みなので即解放
+///   （WezTerm 等 F2 に応じて GJI I/O を出さないアプリでは常にこのパス）
+/// - `now >= max_deadline` → タイムアウト（フォールバック、通常は到達しない）
 ///
 /// ## `min_ms` の目安（ColdReason 別）
 ///
@@ -125,7 +126,8 @@ impl TsfReadinessProbe {
             }
             self.settled_at_ms.set(0); // GJI が再びアクティブになった
         }
-        false
+        // warmup 後に GJI I/O が来ていない = GJI は既に正常状態 → min_ms 経過済みで即解放
+        true
     }
 
     /// GJI が settled になるまでポーリング待機する。
@@ -625,18 +627,19 @@ mod tests {
         probe.wait_until_ready(300);
 
         let elapsed = start.elapsed().as_millis();
-        // min_ms=80 の phase1 wait + phase2 timeout(no io after warmup)=300ms
-        // → 最低 60ms 以上はかかる
+        // min_ms=80 の phase1 wait 後に即解放（I/O なし → 正常状態）
+        // → 60ms 以上 200ms 以内に完了するはず
         assert!(elapsed >= 60, "phase1 min_wait not respected: {elapsed}ms");
+        assert!(elapsed < 200, "should release at ~80ms, not wait full 300ms: {elapsed}ms");
     }
 
-    /// warmup 後に GJI I/O が発生しない場合 max_deadline でタイムアウト
+    /// warmup 後に GJI I/O が発生しない場合は min_ms 経過後に即解放（WezTerm 等の正常ケース）
     #[test]
-    fn probe_phase2_times_out_when_no_io_after_warmup() {
+    fn probe_phase2_ready_immediately_when_no_io_after_warmup() {
         let _g = TEST_LOCK.lock().unwrap();
         let now_ms = crate::hook::current_tick_ms();
 
-        // GJI I/O は warmup より前 → warmup 後に I/O なし → タイムアウト
+        // GJI I/O は warmup より前 → warmup 後に I/O なし → 既に正常状態 → min_ms 経過で即解放
         TSF_OBS.gji_monitor_ok.store(true, SeqCst);
         TSF_OBS
             .gji_last_io_ms
@@ -644,10 +647,10 @@ mod tests {
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 0); // min_ms=0
-        probe.wait_until_ready(120);
+        probe.wait_until_ready(1_000);
 
         let elapsed = start.elapsed().as_millis();
-        assert!(elapsed >= 80, "should timeout at ~120ms, got {elapsed}ms");
-        assert!(elapsed < 500, "exceeded max by too much: {elapsed}ms");
+        // min_ms=0 なので即解放（1000ms タイムアウトを待たない）
+        assert!(elapsed < 100, "should release immediately, got {elapsed}ms");
     }
 }
