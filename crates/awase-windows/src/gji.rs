@@ -258,3 +258,57 @@ pub fn run_gji_setup() -> Result<bool, String> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_db(extra: &str) -> Vec<u8> {
+        let block = format!("{}{extra}", std::str::from_utf8(MARKER).unwrap());
+        let len = block.len();
+        let varint = [(len & 0x7F) as u8 | 0x80, ((len >> 7) & 0x7F) as u8];
+        let mut data = vec![0u8; 2];
+        data[0] = varint[0];
+        data[1] = varint[1];
+        data.extend_from_slice(block.as_bytes());
+        data
+    }
+
+    #[test]
+    fn patch_adds_missing_entries() {
+        let db = make_test_db("DirectInput\tF15\tIMEOn\n");
+        let (patched, added) = patch(&db).unwrap().unwrap();
+        assert_eq!(added.len(), 6);
+        for entry in ENTRIES {
+            assert!(
+                patched.windows(entry.len()).any(|w| w == entry.as_bytes()),
+                "missing: {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn patch_skips_when_all_present() {
+        let existing = ENTRIES.join("");
+        let db = make_test_db(&existing);
+        assert!(patch(&db).unwrap().is_none());
+    }
+
+    #[test]
+    fn patch_adds_only_missing() {
+        let db = make_test_db("Precomposition\tF13\tIMEOn\nPrecomposition\tF14\tIMEOff\n");
+        let (_, added) = patch(&db).unwrap().unwrap();
+        assert_eq!(added.len(), 4);
+        assert!(!added.contains(&"Precomposition\tF13\tIMEOn\n"));
+        assert!(!added.contains(&"Precomposition\tF14\tIMEOff\n"));
+    }
+
+    #[test]
+    fn varint_roundtrip() {
+        for v in [128usize, 5274, 5345, 16383] {
+            let [b0, b1] = encode_varint2(v).unwrap();
+            let decoded = ((b0 & 0x7F) as usize) | (((b1 & 0x7F) as usize) << 7);
+            assert_eq!(decoded, v, "roundtrip failed for {v}");
+        }
+    }
+}
