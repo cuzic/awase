@@ -336,12 +336,14 @@ impl Runtime {
     fn kp_stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             let is_key_up = !matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-            if self.platform_state.ime.is_ctrl_ime_chord_active() {
-                // Step 4: CtrlImeChord transaction 中の二次 SetOpen を filter する。
+            let chord_active = self.platform_state.ime.is_ctrl_ime_chord_active();
+            if chord_active && !new_ime_on {
+                // Step 4: CtrlImeChord transaction 中の二次 IME OFF SetOpen を filter する。
                 // Ctrl KeyUp が Phase 2 Active→Inactive 遷移を起こして生成した SetOpen を
                 // 再 write すると Priority-3 が消費済みのため stale observer_poll が belief を
                 // 上書きし、直後の TIMER_IME_REFRESH で engine が再アクティブ化する。
                 // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
+                // (IME ON 要求は chord を即時終了して通常処理する: 下の else ブランチを参照)
                 self.platform.timer.kill(TIMER_IME_REFRESH);
                 if is_key_up {
                     let kind = self
@@ -359,6 +361,22 @@ impl Runtime {
                     if is_key_up { "ended" } else { "held" }
                 );
             } else {
+                if chord_active {
+                    // Ctrl+変換 IME ON が Ctrl+無変換 chord 中に到着: chord を即時終了して通常処理する。
+                    // chord を持続させると Ctrl↑ まで IME ON 要求が宙に浮くのではなく、
+                    // ここで明示的に終了することで後続の Ctrl↑ が二重 ChordEnded を起こさない。
+                    let kind = self
+                        .platform_state
+                        .ime
+                        .active_chord_kind()
+                        .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
+                    self.platform_state
+                        .ime
+                        .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
+                    log::debug!(
+                        "IME control: IME ON request during chord → ChordEnded, processing normally"
+                    );
+                }
                 let ms = hook::current_tick_ms();
                 self.platform_state.write_set_open_request(
                     new_ime_on,
