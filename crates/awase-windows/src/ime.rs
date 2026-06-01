@@ -269,34 +269,8 @@ pub unsafe fn post_kanji_toggle_to_focused() {
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_on() {
-    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    use crate::vk::VK_F13;
-
-    // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
-    let held = unsafe { HeldModifiers::read() };
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
-
-    held.push_release(&mut inputs);
-    inputs.push(make_key_input_ex(VK_F13, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(VK_F13, true, IME_KANJI_MARKER));
-    let still = unsafe { held.push_restore(&mut inputs) };
-
-    log::debug!(
-        "[gji-on] F13: release(ctrl={} shift={} alt={}) \
-         restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl,
-        held.shift,
-        held.alt,
-        still.ctrl,
-        still.shift,
-        still.alt,
-        inputs.len()
-    );
-    // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec。
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-    if sent as usize != inputs.len() {
-        log::warn!("[gji-on] SendInput F13 sent {sent}/{}", inputs.len());
-    }
+    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
+    unsafe { send_ime_mode_key(crate::vk::VK_F13) }
 }
 
 /// GJI 専用 IME OFF: F14 を送信して IME を無効化する。
@@ -315,34 +289,8 @@ pub unsafe fn post_gji_ime_on() {
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_off() {
-    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    use crate::vk::VK_F14;
-
-    // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
-    let held = unsafe { HeldModifiers::read() };
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
-
-    held.push_release(&mut inputs);
-    inputs.push(make_key_input_ex(VK_F14, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(VK_F14, true, IME_KANJI_MARKER));
-    let still = unsafe { held.push_restore(&mut inputs) };
-
-    log::debug!(
-        "[gji-off] F14: release(ctrl={} shift={} alt={}) \
-         restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl,
-        held.shift,
-        held.alt,
-        still.ctrl,
-        still.shift,
-        still.alt,
-        inputs.len()
-    );
-    // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec。
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-    if sent as usize != inputs.len() {
-        log::warn!("[gji-off] SendInput F14 sent {sent}/{}", inputs.len());
-    }
+    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
+    unsafe { send_ime_mode_key(crate::vk::VK_F14) }
 }
 
 /// IME モード切り替えキーを `SendInput` で送信する。
