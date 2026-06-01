@@ -288,6 +288,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::SelectLayout(index)) => {
             let _ = with_app(|app| app.switch_layout(index));
         }
+        Some(tray::TrayCommand::GjiSetup) => tray::handle_gji_setup(),
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }

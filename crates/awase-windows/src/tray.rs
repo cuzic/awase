@@ -610,7 +610,7 @@ fn show_settings_error(msg: &str) {
 /// GJI セットアップをトレイメニューから実行する。
 ///
 /// 確認ダイアログを出してから config1.db パッチ → kill → 再起動の順に処理する。
-fn handle_gji_setup() {
+pub(crate) fn handle_gji_setup() {
     use windows::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, IDCANCEL, MB_ICONINFORMATION, MB_OKCANCEL,
     };

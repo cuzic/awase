@@ -17,7 +17,7 @@ use awase::types::{RawKeyEvent, VkCode};
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
-use crate::state::ImeStateHub;
+use crate::state::platform_state::ImeStateHub;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
 
