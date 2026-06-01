@@ -51,7 +51,7 @@ fn main() -> ExitCode {
 
     match patch(&data) {
         Ok(None) => {
-            println!("already up-to-date: all F14 entries are present");
+            println!("already up-to-date: all F13/F14 entries are present");
             ExitCode::SUCCESS
         }
         Ok(Some((patched, added))) => {
@@ -61,7 +61,7 @@ fn main() -> ExitCode {
             } else {
                 println!("backup: {}", backup.display());
             }
-            match fs::write(&path, &patched) {
+            match fs::write(&path, patched.as_slice()) {
                 Ok(()) => {
                     println!("patched: {} bytes -> {} bytes", data.len(), patched.len());
                     for entry in &added {
@@ -87,7 +87,7 @@ fn resolve_path() -> Result<PathBuf, String> {
     if let Some(arg) = args.next() {
         return Ok(PathBuf::from(arg));
     }
-    default_path().ok_or_else(|| {
+    default_config_path().ok_or_else(|| {
         "cannot determine default path; LOCALAPPDATA not set. \
          Specify path explicitly: awase-gji-setup <path>"
             .to_string()
@@ -95,7 +95,7 @@ fn resolve_path() -> Result<PathBuf, String> {
 }
 
 /// `%LOCALAPPDATA%\..\LocalLow\Google\Google Japanese Input\config1.db`
-fn default_path() -> Option<PathBuf> {
+fn default_config_path() -> Option<PathBuf> {
     let local = std::env::var("LOCALAPPDATA").ok()?;
     Some(
         PathBuf::from(local)
@@ -107,8 +107,6 @@ fn default_path() -> Option<PathBuf> {
     )
 }
 
-/// キーバインドブロックの位置と長さを返す。
-/// 戻り値: (varint_offset, block_start, block_length)
 fn find_block(data: &[u8]) -> Result<(usize, usize, usize), String> {
     let block_start = data
         .windows(MARKER.len())
@@ -145,11 +143,8 @@ fn encode_varint2(value: usize) -> Result<[u8; 2], String> {
     ])
 }
 
-/// `patch` の戻り値型エイリアス: `Ok(None)` = パッチ不要、`Ok(Some((bytes, names)))` = パッチ済み。
 type PatchResult = Result<Option<(Vec<u8>, Vec<&'static str>)>, String>;
 
-/// 不足エントリを末尾に追加したバイト列と追加したエントリ名を返す。
-/// すでに全エントリが存在する場合は `Ok(None)`。
 fn patch(data: &[u8]) -> PatchResult {
     let (varint_offset, block_start, block_length) = find_block(data)?;
 
@@ -195,11 +190,10 @@ mod tests {
     use super::*;
 
     fn make_test_db(extra: &str) -> Vec<u8> {
-        // varint(len) + block
         let block = format!("{}{extra}", std::str::from_utf8(MARKER).unwrap());
         let len = block.len();
         let varint = [(len & 0x7F) as u8 | 0x80, ((len >> 7) & 0x7F) as u8];
-        let mut data = vec![0u8; 2]; // dummy prefix
+        let mut data = vec![0u8; 2];
         data[0] = varint[0];
         data[1] = varint[1];
         data.extend_from_slice(block.as_bytes());
@@ -237,10 +231,7 @@ mod tests {
 
     #[test]
     fn varint_roundtrip() {
-        for v in [0usize, 127, 128, 5274, 5345, 16383] {
-            if v < 128 {
-                continue; // 1-byte case, not covered by encode_varint2
-            }
+        for v in [128usize, 5274, 5345, 16383] {
             let [b0, b1] = encode_varint2(v).unwrap();
             let decoded = ((b0 & 0x7F) as usize) | (((b1 & 0x7F) as usize) << 7);
             assert_eq!(decoded, v, "roundtrip failed for {v}");

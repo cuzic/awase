@@ -25,6 +25,7 @@ use anyhow::{Context, Result};
 const IDM_SETTINGS: u16 = 50;
 const IDM_RESTART_ADMIN: u16 = 51;
 const IDM_CLEAR_IMM_CACHE: u16 = 52;
+const IDM_GJI_SETUP: u16 = 53;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -39,6 +40,7 @@ pub enum TrayCommand {
     Settings,
     RestartAdmin,
     ClearImmCache,
+    GjiSetup,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
 }
@@ -488,6 +490,18 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             PCWSTR(clear_cache_text.as_ptr()),
         );
 
+        // GJI セットアップ
+        let gji_text: Vec<u16> = "Google 日本語入力のセットアップ"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let _ = AppendMenuW(
+            hmenu,
+            MF_STRING,
+            usize::from(IDM_GJI_SETUP),
+            PCWSTR(gji_text.as_ptr()),
+        );
+
         // 管理者として再起動（未昇格時のみ表示）
         if !elevated {
             let admin_text: Vec<u16> = "管理者として再起動"
@@ -557,6 +571,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_SETTINGS => Some(TrayCommand::Settings),
         IDM_RESTART_ADMIN => Some(TrayCommand::RestartAdmin),
         IDM_CLEAR_IMM_CACHE => Some(TrayCommand::ClearImmCache),
+        IDM_GJI_SETUP => Some(TrayCommand::GjiSetup),
         c if (IDM_LAYOUT_BASE..IDM_TOGGLE).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
@@ -653,6 +668,100 @@ fn show_settings_error(msg: &str) {
     let _ = crate::with_app(|app| app.show_tray_balloon("awase", msg));
 }
 
+/// GJI セットアップをトレイメニューから実行する。
+///
+/// 確認ダイアログを出してから config1.db パッチ → kill → 再起動の順に処理する。
+fn handle_gji_setup() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDCANCEL, IDOK, MB_ICONINFORMATION, MB_OKCANCEL,
+    };
+
+    let caption: Vec<u16> = "Google 日本語入力のセットアップ"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let message: Vec<u16> = concat!(
+        "Google 日本語入力に F13/F14 キーバインドを追加します。\r\n\r\n",
+        "  F13 → IME ON\r\n",
+        "  F14 → IME OFF\r\n\r\n",
+        "設定を適用するため Google 日本語入力を再起動します。\r\n",
+        "よろしいですか？"
+    )
+    .encode_utf16()
+    .chain(std::iter::once(0))
+    .collect();
+
+    // SAFETY: `MessageBoxW` は有効な NUL 終端 UTF-16 文字列ポインタを受け取る標準的な呼び出し。
+    let response = unsafe {
+        MessageBoxW(
+            None,
+            windows::core::PCWSTR(message.as_ptr()),
+            windows::core::PCWSTR(caption.as_ptr()),
+            MB_OKCANCEL | MB_ICONINFORMATION,
+        )
+    };
+
+    if response == IDCANCEL {
+        return;
+    }
+
+    match crate::gji::run_gji_setup() {
+        Err(e) => {
+            log::error!("GJI setup failed: {e}");
+            let _ = crate::with_app(|app| {
+                app.show_tray_balloon("awase — セットアップ失敗", &e);
+            });
+            return;
+        }
+        Ok(false) => {
+            let _ = crate::with_app(|app| {
+                app.show_tray_balloon(
+                    "awase — セットアップ済み",
+                    "すでに F13/F14 キーバインドが設定されています",
+                );
+            });
+            return;
+        }
+        Ok(true) => {
+            log::info!("GJI config patched successfully");
+        }
+    }
+
+    // GJI 実行ファイルパスをレジストリから取得して再起動
+    match crate::gji::get_gji_exe_path() {
+        None => {
+            log::warn!("GJI exe path not found in registry — skipping restart");
+            let _ = crate::with_app(|app| {
+                app.show_tray_balloon(
+                    "awase — セットアップ完了",
+                    "F13/F14 キーバインドを追加しました。\nGoogle 日本語入力を手動で再起動してください。",
+                );
+            });
+        }
+        Some(exe) => match crate::gji::kill_and_restart_gji(&exe) {
+            Ok(()) => {
+                let _ = crate::with_app(|app| {
+                    app.show_tray_balloon(
+                        "awase — セットアップ完了",
+                        "F13/F14 キーバインドを追加し、Google 日本語入力を再起動しました。",
+                    );
+                });
+            }
+            Err(e) => {
+                log::error!("GJI restart failed: {e}");
+                let _ = crate::with_app(|app| {
+                    app.show_tray_balloon(
+                        "awase — セットアップ完了（再起動失敗）",
+                        &format!(
+                            "F13/F14 キーバインドを追加しましたが、再起動に失敗しました:\n{e}"
+                        ),
+                    );
+                });
+            }
+        },
+    }
+}
+
 /// トレイウィンドウプロシージャ
 ///
 /// Shell はトレイコールバックメッセージ（WM_TRAY_CALLBACK）をこのウィンドウに
@@ -692,6 +801,7 @@ unsafe extern "system" fn tray_wnd_proc(
                     });
                 }
                 Some(TrayCommand::RestartAdmin) => restart_as_admin(),
+                Some(TrayCommand::GjiSetup) => handle_gji_setup(),
                 Some(TrayCommand::SelectLayout(index)) => {
                     let _ = crate::with_app(|app| app.switch_layout(index));
                 }
