@@ -1155,19 +1155,30 @@ impl NicolaFsm {
 
 // ── バイパス ──
 impl NicolaFsm {
-    /// 現在押下中かつ未消費の親指キーに対応するシフト面を返す。
+    /// 親指キーが消費済み（同時打鍵に使用済み）かどうかを返す。
     ///
-    /// 消費済みかどうかはタイムスタンプの一致で判定する。物理状態が変われば
-    /// （新しい KeyDown や KeyUp）自動的に不一致になるため、明示的なリセット不要。
-    fn active_thumb_face(&self) -> Option<Face> {
-        let left_consumed = self.phys.left_thumb_down.is_some()
-            && self.left_thumb_consumed == self.phys.left_thumb_down;
-        let right_consumed = self.phys.right_thumb_down.is_some()
-            && self.right_thumb_consumed == self.phys.right_thumb_down;
+    /// 消費タイムスタンプが現在の物理押下と一致すれば消費済み。
+    /// 物理状態が変わると自動的に不一致になるため、明示的なリセットは不要。
+    fn is_thumb_consumed(&self, face: Face) -> bool {
+        match face {
+            Face::LeftThumb => {
+                self.phys.left_thumb_down.is_some()
+                    && self.left_thumb_consumed == self.phys.left_thumb_down
+            }
+            Face::RightThumb => {
+                self.phys.right_thumb_down.is_some()
+                    && self.right_thumb_consumed == self.phys.right_thumb_down
+            }
+            Face::Normal | Face::Shift => false,
+        }
+    }
 
-        if self.phys.left_thumb_down.is_some() && !left_consumed {
+    /// 現在押下中かつ未消費の親指キーに対応するシフト面を返す。
+    fn active_thumb_face(&self) -> Option<Face> {
+        if self.phys.left_thumb_down.is_some() && !self.is_thumb_consumed(Face::LeftThumb) {
             Some(Face::LeftThumb)
-        } else if self.phys.right_thumb_down.is_some() && !right_consumed {
+        } else if self.phys.right_thumb_down.is_some() && !self.is_thumb_consumed(Face::RightThumb)
+        {
             Some(Face::RightThumb)
         } else {
             None
