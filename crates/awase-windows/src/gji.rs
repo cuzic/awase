@@ -8,7 +8,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
+    RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
 
