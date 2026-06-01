@@ -290,7 +290,15 @@ file = "layout/nicola-jis.yab"    # やまぶき互換 .yab ファイル
 
 ---
 
-## 13. ADR 一覧
+## 13. Windows API 制約・落とし穴
+
+開発中の実機確認・バグ修正の試行錯誤から得た知見（IME 制御のアプリ別制約、TSF cold start、フック再入、非同期 race condition など）は別ドキュメントにまとめています。
+
+→ [windows-api-constraints.md](windows-api-constraints.md)
+
+---
+
+## 14. ADR 一覧
 
 主要な設計判断の記録は `docs/adr/` に格納しています。
 
