@@ -314,3 +314,13 @@ file = "layout/nicola-jis.yab"    # やまぶき互換 .yab ファイル
 | 019 | lib クレートのプラットフォーム非依存化 |
 | 030 | TSF 状態管理の3層分離アーキテクチャ |
 | 032 | IME 状態モデルの4階層 reducer アーキテクチャ |
+| 033 | AppImeProfile — アプリ別 IME API 互換性分類 |
+| 034 | GJI Direct Strategy — Google 日本語入力との協調設計 |
+| 035 | DecisionExecutor の純粋状態機械化 |
+| 036 | Runtime フィールド境界 API |
+| 037 | キーマップ再割当設計 |
+| 038 | ForceGuardSet / DriftMonitor 型分解 |
+| 039 | TSF_OBS アクセス制御の5フェーズ段階的強化 |
+| 040 | 大規模リファクタリングの段階的遷移戦略 |
+| 041 | フック再入時の修飾キー整合性保証 |
+| 042 | Clock トレイト抽象化と timed-fsm のテスト可能性 |
