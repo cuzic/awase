@@ -551,7 +551,14 @@ impl Output {
             return;
         }
         log::debug!("[raw-tsf-literal] re-sending raw TSF literal romaji={romaji:?}");
-        self.send_romaji_as_tsf(&romaji);
+        // Bypass (Chrome) では send_romaji_as_tsf が GJI probe (TransmitTarget::Tsf) を
+        // 起動するが、Chrome は gate=Bypass のため dispatch_probe_actions でスキップされる。
+        // Chrome バッチパス (TransmitTarget::Chrome) を使うことで正しく再送できる。
+        if self.tsf_gate.state() == awase::TsfGateState::Bypass {
+            self.send_romaji_batched(&romaji);
+        } else {
+            self.send_romaji_as_tsf(&romaji);
+        }
     }
 
     /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送。
