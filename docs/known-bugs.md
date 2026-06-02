@@ -1,154 +1,192 @@
 # awase 既知の不具合
 
-> 最終更新: 2026-05-15
+> 最終更新: 2026-06-02
 
 ---
 
-## BUG-01: TSF cold-start — 最初の1文字がリテラル ASCII になる (WezTerm)
+## 実装アーキテクチャ概要（2026-06-02 時点）
 
-**症状:** WezTerm でひらがな入力の最初の1文字が文字化けしてリテラル ASCII になる。
-例: 「あいうえお」と打つと「aいうえお」「kおれ」「nい」のようになる。
+旧実装（固定 sleep / IMM32 ポーリング）は以下に全面置き換え済み。
 
-**原因:** WezTerm は TSF (Text Services Framework) native app であり、F2 (VK_DBE_HIRAGANA) を受信してから TSF composition context の初期化を非同期で行う。この初期化には実測 ~305ms かかることがある。awase の romaji SendInput バッチが初期化完了前に到達すると、1文字目が IME を通らずリテラル ASCII として PTY に直送される。
+| 要素 | 役割 |
+|---|---|
+| `TsfReadinessProbe` | GJI I/O 静止を監視し「composition 受け付け可能か」を判定 |
+| `TsfProbeMachine` | probe FSM。`GjiInitial / GjiSecondary / Chrome` フェーズを 10ms tick で進行 |
+| `ColdWarmupSequence` | WezTerm TSF cold-start の F2 送信・probe 起動シーケンス |
+| `LiteralDetector` | 送信後に GJI SHOW を監視して composition 成否を判定 |
+| `ColdReason` | cold になった理由。`eager_settle_ms()` / `probe_min_ms()` で探索予算を決定 |
 
-**現在の対策:** `send_eager_tsf_warmup()` — cold になったタイミングで即座に F2 を送信し、timestamp を記録する。`send_romaji_as_tsf()` が cold を検出したとき:
-- `eager_elapsed >= 500ms` → 即送信（TSF は確実に初期化済み）
-- `eager_elapsed < 500ms` → `500ms - elapsed` だけ sleep してから送信
-- eager warmup なし（Enter/Escape 直後）→ F2 送信 + 40ms sleep
+GJI (Google Japanese Input / 候補ウィンドウ) の I/O を `GjiMonitor` バックグラウンドスレッドで監視し、
+`TSF_OBS.gji_last_io_ms` に記録する。probe はこの timestamp を参照して GJI が settled かどうか判断する。
 
-**cold になるトリガー:**
+---
 
-| ColdReason | 発生タイミング | eager warmup |
+## BUG-01: TSF cold-start — probe バジェット超過で1文字目がリテラルになる (WezTerm)
+
+**症状:** WezTerm でひらがな入力の最初の1文字がリテラル ASCII になる。
+例: `かんきょうへんすう` → `kあんきょうへんすう`
+
+**原因:** WezTerm は TSF native app。F2 (VK_DBE_HIRAGANA) 受信後、TSF composition context の
+初期化に実測 ~300–936ms かかることがある。awase の romaji SendInput がこの初期化完了前に届くと
+1文字目が IME を通らずリテラルになる。
+
+**現在の対策:** `ColdWarmupSequence` + `TsfProbeMachine (GjiInitial)` によるノンブロッキング probe。
+`eager_settle_ms`（最大バジェット）を `ColdReason` × `long_idle` の組み合わせで決定する:
+
+| ColdReason | short idle | long idle (>10s) |
 |---|---|---|
-| `FocusChange` | ウィンドウ切り替え | ✅ 即送信 |
-| `PassthroughConfirmKey` | Enter/Escape/Space 直接通過 | ✅ 即送信 |
-| `ReinjectConfirmKey` | Enter/Escape/Space reinject | ✅ 即送信 |
-| `NativeF2Consumed` | 物理 F2 キー押下 | ✅ 即送信 |
-| `SetOpenTrue` | IME OFF→ON トグル | ❌ なし（40ms sleep） |
-| `SymbolVkSent` | 記号 VK 送信後 | ❌ なし（40ms sleep） |
-| `SessionExpired` | 2000ms 沈黙後の次打鍵 | ❌ なし（40ms sleep） |
-| `F2NonTsf` | Chrome/Win32 での F2 通過 | ❌ なし（40ms sleep） |
+| `FocusChange` / `SetOpenTrue` / `NativeF2Consumed` | 1500ms | 2000ms |
+| `PassthroughConfirmKey` / `ReinjectConfirmKey` | 500ms | 1500ms |
+| その他 (`SessionExpired`, `SymbolVkSent` 等) | 500ms | 500ms |
+
+probe 中に GJI が settled になれば早期解放される（タイムアウト待ちにならない）。
 
 **残存リスク:**
-- 500ms の閾値は実測 305ms に余裕を持たせたものだが、マシン負荷が高い場合や別アプリ起動直後に WezTerm へフォーカスが当たるケースなど、500ms を超える初期化時間が発生する可能性がある。
-- `SetOpenTrue` / `SymbolVkSent` / `SessionExpired` は eager warmup なし（40ms sleep）のため、高速タイピストには不十分な可能性がある。
+- バジェット値は実測ベースの経験値。非常に高負荷な環境では超過する可能性がある。
+- `NameChangeWait` での OBJ_NAMECHANGE タイムアウトが長期 idle 時に延長されるが、
+  TSF 初期化が残余バジェット全体を超えた場合はリテラル出力が発生しうる。
 
-**関連ファイル:** `output.rs:send_romaji_as_tsf()`, `output.rs:send_eager_tsf_warmup()`, `executor.rs`, `runtime.rs`
+**関連ファイル:** `tsf/cold_warmup.rs`, `tsf/probe_fsm.rs`, `tsf/probe.rs`, `tsf/output.rs`
 
----
-
-## BUG-02: Chrome cold-start — 最初の1文字がリテラル ASCII になる (Chrome/Edge/Electron)
-
-**症状:** BUG-01 と同様だが Chrome/Edge/Electron (VK Batched モード) で発生する。
-
-**原因:** Chrome も F2 受信後の IME 初期化が非同期。BUG-01 と同じ構造。
-
-**現在の対策:** `send_romaji_batched()` — F2-only バッチを先行送信した後、IMM32 conversion mode API (`get_ime_conversion_mode_raw_timeout(10ms)`) を最大 15 回ポーリングして Chrome が F2 を処理済みか確認してからローマ字バッチを送信する。
-
-**WezTerm と異なる点:** Chrome は IMM32 HIMC を持つため IMM32 API による検出が可能。WezTerm は TSF native のため同じ手法が使えない（→ BUG-03 参照）。
-
-**残存リスク:** ポーリング間隔 10ms × 最大 15 回 = 最大 150ms 待機。Chrome の応答が 150ms を超える場合（重負荷時）は文字化けが発生しうる。
-
-**関連ファイル:** `output.rs:send_romaji_batched()`
+**修正履歴:**
+- `8b90725`: long idle (>10s) 時の `FocusChange` / `SetOpenTrue` / `NativeF2Consumed` バジェットを
+  1500ms → 2000ms に拡張（`かんきょうへんすうは → kあんきょうへんすうは` バグ修正）
 
 ---
 
-## BUG-03: WezTerm で ImmGetCompositionStringW が常に 0 を返す
+## BUG-02: Chrome cold-start — probe タイミング想定外で1文字目がリテラルになる
 
-**症状:** WezTerm の TSF warm 状態を IMM32 API で検出できない。
+**症状:** Chrome (VK Batched モード) でひらがな入力の最初の1文字がリテラル ASCII になる。
+例: `という` → `toいう`
 
-**原因:** WezTerm は TSF native app であり、TSF composition string を IMM32 HIMC に propagate しない。そのため `ImmGetCompositionStringW(himc, GCS_COMPSTR, ...)` は TSF composition が active でも常に 0 を返す。
+**原因:** Chrome は F2 受信後に composition context を非同期初期化する。
+`ChromeProbe` フェーズは F2 送信時刻 (`f2_sent_ms`) を起点に `probe_min_ms` だけ待機してから
+`found_io_after_warmup=false`（Chrome は F2 だけでは GJI I/O を出さない）で即解放するため、
+min_ms が短すぎると Chrome の初期化完了前に T+O バッチが届いてリテラルになる。
 
-**影響:** probe-and-retry アプローチ（warm 検出後に romaji 送信）は WezTerm では機能しない。実際に試みたところ（commit 558c39f → b643bac で削除）、最大 952ms の待機の後 fallback 送信になるだけで、検出には使えないことが確認された。
+**現在の対策:** `probe_min_ms` を以下の3段階で切り替える。
 
-**回避策:** なし。固定 sleep ベースの戦略（BUG-01 参照）に依存している。
+| 状況 | probe_min_ms | probe_max_ms | 定数名 |
+|---|---|---|---|
+| 通常（short idle） | 20ms | 120ms | `CHROME_PROBE_MIN/MAX_MS` |
+| keyboard long idle (>10s) | 200ms | 500ms | `CHROME_PROBE_LONG_IDLE_MIN/MAX_MS` |
+| 物理 F2 (F2NonTsf) + GJI long idle (>10s) | 350ms | 500ms | `CHROME_PROBE_F2_GJI_IDLE_MIN_MS` |
 
----
+物理 F2 (F2NonTsf) の場合は `cold_marked_ms`（物理 F2 の時刻）を probe 基準点とし、
+プログラム的 F2 の三重送信バグ（`かんりのつごう → kaんりのつごう`）を防ぐ。
 
-## BUG-04: WinEvent IME フック (IME_START/CHANGE/END) が WezTerm で発火しない可能性
+**残存リスク:**
+- 「keyboard short idle かつ GJI short idle」の条件下で Chrome が 20ms より長く必要とする
+  ケースが存在する場合は対応できていない。
+- `long_idle && skip_f2_send=true`（keyboard >10s + 物理 F2）のとき `probe_min_ms=200ms` が
+  適用されるが、これが不十分かどうか未検証。
 
-**症状:** `SetWinEventHook(EVENT_OBJECT_IME_START / CHANGE / END)` で TSF composition の開始・変化・終了を検出しようとしているが、WezTerm が実際にこれらのイベントを発行するか未検証。
+**関連ファイル:** `output/vk_send.rs`, `tsf/probe_fsm.rs`, `tuning.rs`
 
-**原因:** WezTerm は TSF native app。IME_START 等の WinEvent は IMM32 ベースのアプリが発行するものであり、TSF native app では発行されない可能性がある。
-
-**影響:** composition 開始をイベントで検出して warmup を判断する戦略が機能しない可能性。
-
-**確認方法:** awase の `[ime-event]` ログを見て `IME_START / IME_CHANGE / IME_END` が出力されているか確認する。
-
----
-
-## BUG-05: session timeout (2000ms) の閾値が任意値
-
-**症状:** 前回 SendInput から 2000ms 以上経過した後の最初の打鍵で cold-start と同じ経路（F2 warmup 再送信）が走る。
-
-**原因:** composition context は時間経過で無効化される可能性があるが、正確な timeout 時間は不明のため 2000ms を保守的な閾値として設定している。
-
-**残存リスク:** 
-- 2000ms より短い時間でも context が失効するケースがあれば文字化けが起きうる（例: 500ms 沈黙後の入力再開）。
-- 2000ms より長い時間でも context が維持されるなら不要な warmup F2 が送信されて UX が悪化する。
-
-**理想:** TSF 側から composition context の有効性をイベントで通知してもらう仕組みが必要だが、WezTerm が IME_END 等を発行しない（BUG-04）ため現状は固定閾値に頼っている。
-
----
-
-## BUG-06: EAGER_SETTLE_MS = 500ms が全環境で十分かどうか不明
-
-**症状:** 特定の環境（低スペック PC、起動直後の WezTerm、重負荷時）で 500ms を超える TSF 初期化時間が発生した場合、eager warmup ありでも1文字目が文字化けする可能性がある。
-
-**原因:** 実測値は ~305ms だが、保守的に 500ms としている。OS 環境やタスクスケジューラの状況によって変動する可能性がある。
-
-**回避策:** なし。TSF 初期化完了を検出する API が存在しない（BUG-03・BUG-04）ため、閾値の調整以外に対処法がない。
+**修正履歴:**
+- `b101153`: Chrome keyboard long idle 時に `CHROME_PROBE_LONG_IDLE_MIN/MAX_MS` を導入
+  （`こ → ko` バグ修正）
+- `79134f5`: 物理 F2 + GJI long idle 時に `CHROME_PROBE_F2_GJI_IDLE_MIN_MS=350ms` を導入
+  （`という → toいう` バグ修正、GJI が12秒休眠後に Chrome の composition context 再初期化に
+  ~326ms 必要だった事例）
 
 ---
 
-## BUG-07: 物理 F2 と warmup F2 の二重送信による IME モード反転リスク
+## BUG-03: LiteralDetect 偽陽性（false positive CompositionConfirmed）
 
-**症状:** WezTerm で物理 F2 を押した直後に NICOLA 文字を入力すると、IME モードが OFF に反転して英字入力になってしまう可能性がある。
+**症状:** T+O がリテラル ASCII として出力されたにもかかわらず `CompositionConfirmed` と判定され、
+BS リカバリが発動しない。結果: `to` + `いう` のように最初の1文字がリテラルのまま残る。
 
-**原因:** TSF モードでは awase が物理 F2 を Consume し（二重 F2 防止）、次の romaji バッチに warmup F2 を含める設計。しかし、物理 F2 を Consume する前に eager warmup F2 が既に送信されていた場合、実質的に F2 が2回 WezTerm に届いて IME が toggle（ON→OFF）する可能性がある。
+**原因:** `LiteralDetector::check_now` は `was_candidate_visible=false` のとき
+`gji_candidate_show.has_changed(baseline)` で判定する。T+O 送信後に Chrome が composition mode に
+移行して GJI SHOW が発火した場合、T+O 自体の composition 成否に関わらず `CompositionConfirmed`
+と判定される。これは BUG-02 の「物理 F2 後の Chrome 初期化遅延」と組み合わさって発生する。
 
-**現在の対策:** `NativeF2Consumed` 時に `eager_warmup_sent_ms` を上書きしない（既存のタイムスタンプを維持）。
+**現在の対策:** BUG-02 の probe timing 延長により、T+O 送信前に Chrome の初期化を待つことで
+LiteralDetect が偽陽性になる状況自体を減らしている。
 
-**残存リスク:** レースコンディション（物理 F2 処理と eager warmup F2 のタイミングのずれ）が完全に排除できているか不明。
+**SuspectedLiteral 方向の誤検出抑制:** `consecutive_count` チェックにより2回連続
+`SuspectedLiteral` が出た場合は false positive とみなして BS リカバリを抑制する
+（`probe_io.rs` の `RawTsfLiteralRecovery` dispatcher 参照）。
+
+**残存リスク:**
+- 偽陽性 CompositionConfirmed が発生した場合（BUG-02 の対策をすり抜けた場合）に
+  BS リカバリが発動しないため、リテラル文字がそのまま残る。
+- Chrome 以外のアプリでも同様の GJI SHOW タイミング問題が起きる可能性がある。
+
+**関連ファイル:** `tsf/probe.rs` (`LiteralDetector`), `output/probe_io.rs`
 
 ---
 
-## BUG-08: focus_epoch のオーバーフロー
+## BUG-04: GJI モニター切断時のフォールバック
 
-**症状:** 理論上の問題。u32::MAX 回ウィンドウ切り替えを行うと `focus_epoch` がオーバーフローして 1 に戻る（0 は cold の番兵値のためスキップ）。このタイミングで前のウィンドウの `composition_warm_epoch` と一致した場合、stale な warm 状態が有効と誤判定される。
+**症状:** GJI モニタースレッドが切断（`gji_monitor_ok=false`）している場合、
+probe は GJI 観測を行わず `max_deadline` に達したら送信するフォールバックに移行する。
+また LiteralDetect も起動しない。
 
-**原因:** `output.rs:on_focus_changed()` で `focus_epoch.wrapping_add(1).max(1)` を使用。
+**原因:** `TsfReadinessProbe::check_now` 冒頭の判定:
+```rust
+if !TSF_OBS.gji_monitor_ok.load(Acquire) {
+    return now >= max_deadline;
+}
+```
+GJI が使えない場合は固定タイムアウト待ちになる（BUG-01 の旧実装と同等の挙動）。
+
+**影響:**
+- probe の品質が低下し、タイムアウト超過が常態化する。
+- LiteralDetect が無効化されるため、literal 出力が発生しても BS リカバリが走らない。
+
+**GJI 再アタッチ:** `GjiMonitor` は切断後 `GJI_REATTACH_INTERVAL_MS=3000ms` ごとに
+再アタッチを試みる。
+
+**関連ファイル:** `tsf/probe.rs`, `tsf/observer.rs` (`GjiMonitor`), `tuning.rs`
+
+---
+
+## BUG-05: SessionExpired 閾値 (2000ms) が任意値
+
+**症状:** 前回 SendInput から `COMPOSITION_TIMEOUT_MS=2000ms` 以上経過した後の最初の打鍵で
+`SessionExpired` cold-start が発動し F2 warmup が再送信される。
+
+**原因:** composition context が時間経過でいつ無効化されるか Windows API から通知されないため、
+保守的な固定値 2000ms を閾値として設定している。
+
+**残存リスク:**
+- 2000ms より短い時間でも context が失効するアプリが存在する場合、文字化けが起きうる。
+- 逆に 2000ms より長く維持されるアプリでは不要な warmup F2 が送信される（UX 悪化）。
+
+**関連ファイル:** `output/mod.rs` (`assess_warmth`), `tuning.rs`
+
+---
+
+## BUG-06: focus_epoch のオーバーフロー
+
+**症状:** u32::MAX 回ウィンドウ切り替えを行うと `focus_epoch` がオーバーフローして 1 に戻る。
+このタイミングで前のウィンドウの `composition_warm_epoch` と一致した場合、
+stale な warm 状態が有効と誤判定される。
+
+**原因:** `on_focus_changed()` で `focus_epoch.wrapping_add(1).max(1)` を使用。
 
 **実用上の影響:** u32::MAX ≈ 42億回の切り替えが必要なため、実用上は発生しない。
 
----
-
-## BUG-09: SetOpenTrue / SymbolVkSent / SessionExpired で eager warmup なし
-
-**症状:** 以下の cold トリガーでは eager warmup が行われず、F2 + 40ms sleep のみ。高速タイピストには不足する可能性がある。
-
-- `SetOpenTrue`: IME OFF→ON 切り替え直後（半角/全角キー）
-- `SymbolVkSent`: 記号を VK で送信した後（TSF context がリセットされる可能性）
-- `SessionExpired`: 2000ms 沈黙後の再入力
-
-**原因:** これらのタイミングでは eager warmup の送信タイミングと次打鍵のタイミングの関係が不定であり、FocusChange / Enter 後とは異なる扱いになっている。
-
-**影響度:** 中程度。`SetOpenTrue` は IME toggle 直後なので次打鍵まで自然な間隔があることが多い。`SymbolVkSent` は記号の直後に日本語を打つケース。
+**関連ファイル:** `tsf/probe.rs` (`WarmEpoch`)
 
 ---
 
 ## デバッグ方法
 
-ログ出力（`RUST_LOG=debug` または awase の設定でデバッグログを有効化）で以下のキーワードを確認する:
+ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
 
 | ログキーワード | 意味 |
 |---|---|
-| `[tsf-warmup]` | TSF cold-start warmup の送受信 |
-| `[vk-warmup]` | Chrome VK cold-start warmup |
-| `[h1-warmup]` | TSF 固定 sleep warmup の詳細 |
-| `[h1-probe]` | Chrome VK probe ループの詳細 |
-| `[composition]` | warm/cold マーク変更 |
-| `[tsf-eager-warmup]` | eager warmup F2 の送信 |
-| `[ime-event]` | WinEvent IME_START/CHANGE/END |
-| `session expired` | session timeout による強制 warmup |
-| `cold=N` | cold-start 発生回数（セッション識別用） |
+| `[composition] marked cold reason=X idle=Yms` | cold-start 発生。reason と idle 時間を確認 |
+| `[h1-probe] cold=N long_idle=B f2_gji_long_idle=B idle_at_cold=Xms min=Yms max=Zms` | Chrome probe パラメータ |
+| `[h1-warmup] cold=N eager_settle_ms=Xms probe_min_ms=Yms reason=Z` | WezTerm TSF probe パラメータ |
+| `[tsf-probe] cold=N ChromeProbe 完了 → batched 送信 (Xms)` | Chrome probe 完了・経過時間 |
+| `[tsf-probe] cold=N GjiProbe 完了 (Xms, gji_idle=Yms, settled=B)` | GJI probe 完了 |
+| `[tsf-probe] cold=N NameChangeWait → nc_fired=B timed_out=B` | NameChangeWait 状態 |
+| `[raw-tsf-literal] cold=N composition confirmed` | LiteralDetect: 正常 composition 判定 |
+| `[raw-tsf-literal] cold=N raw TSF literal suspected → BS ×N` | LiteralDetect: literal 疑い → リカバリ |
+| `[gji-candidate] SHOW #N` / `HIDE` | GJI 候補ウィンドウ表示/非表示 |
+| `[gji-poll] GJI I/O Xms ago predates focus change` | GJI が focus change より前に静止 |
+| `[composition] marked warm (epoch=N)` | probe 完了・warm 確定 |
