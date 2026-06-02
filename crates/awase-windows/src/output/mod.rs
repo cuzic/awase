@@ -554,7 +554,7 @@ impl Output {
         // Bypass (Chrome) では send_romaji_as_tsf が GJI probe (TransmitTarget::Tsf) を
         // 起動するが、Chrome は gate=Bypass のため dispatch_probe_actions でスキップされる。
         // Chrome バッチパス (TransmitTarget::Chrome) を使うことで正しく再送できる。
-        if self.tsf_gate.state() == awase::TsfGateState::Bypass {
+        if self.tsf_gate.state() == crate::tsf::TsfGateState::Bypass {
             self.send_romaji_batched(&romaji);
         } else {
             self.send_romaji_as_tsf(&romaji);
