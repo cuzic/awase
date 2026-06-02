@@ -488,6 +488,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 const GJI_CANDIDATE_CLASS: &str = "GoogleJapaneseInputCandidateWindow";
+const MSCTFIME_UI_CLASS: &str = "MSCTFIME UI";
+
+// EVENT_OBJECT_IME_SHOW/HIDE/CHANGE (0x8027–0x8029) は windows crate には定義がないため
+// 生の値で定義する。GJI TSF モードでは発火しないが Chrome ホスト側から発火するか検証用。
+const EVENT_OBJECT_IME_SHOW: u32 = 0x8027;
+const EVENT_OBJECT_IME_HIDE: u32 = 0x8028;
+const EVENT_OBJECT_IME_CHANGE: u32 = 0x8029;
 
 /// `SetWinEventHook` の RAII ガード。Drop 時に `UnhookWinEvent` を呼ぶ。
 pub struct WinEventHookGuard(pub HWINEVENTHOOK);
@@ -564,6 +571,29 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
         hooks.push(WinEventHookGuard(show_hook));
     }
 
+    // SAFETY: `observation_event_proc` は `'static` な extern "system" fn ポインタ。
+    //         `WINEVENT_OUTOFCONTEXT` によりコールバックはメッセージループスレッドで実行される。
+    //         返されたフックは `WinEventHookGuard::drop` で `UnhookWinEvent` される。
+    let ime_hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_IME_SHOW,
+            EVENT_OBJECT_IME_CHANGE, // SHOW(0x8027)〜CHANGE(0x8029) の全 IME イベントを捕捉
+            None,
+            Some(observation_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if ime_hook.is_invalid() {
+        log::warn!("[obs-hook] failed to install EVENT_OBJECT_IME_* hook");
+    } else {
+        log::info!(
+            "[obs-hook] EVENT_OBJECT_IME_SHOW/HIDE/CHANGE hook installed (Chrome TSF composition context probe)"
+        );
+        hooks.push(WinEventHookGuard(ime_hook));
+    }
+
     hooks
 }
 
@@ -602,6 +632,8 @@ unsafe extern "system" fn observation_event_proc(
                 TSF_OBS.composition_probe.notify();
                 log::debug!("[gji-candidate] SHOW #{seq}");
                 win32_async::notify_all();
+            } else if class == MSCTFIME_UI_CLASS {
+                log::debug!("[tsf-ime-ui] SHOW hwnd={:?}", hwnd.0);
             }
         }
         EVENT_OBJECT_HIDE => {
@@ -611,7 +643,21 @@ unsafe extern "system" fn observation_event_proc(
                     .gji_candidate_visible
                     .store(false, Ordering::Relaxed);
                 log::debug!("[gji-candidate] HIDE");
+            } else if class == MSCTFIME_UI_CLASS {
+                log::debug!("[tsf-ime-ui] HIDE hwnd={:?}", hwnd.0);
             }
+        }
+        EVENT_OBJECT_IME_SHOW => {
+            let class = hwnd_class_name(hwnd);
+            log::debug!("[ime-obj] IME_SHOW class={class} hwnd={:?}", hwnd.0);
+        }
+        EVENT_OBJECT_IME_HIDE => {
+            let class = hwnd_class_name(hwnd);
+            log::debug!("[ime-obj] IME_HIDE class={class} hwnd={:?}", hwnd.0);
+        }
+        EVENT_OBJECT_IME_CHANGE => {
+            let class = hwnd_class_name(hwnd);
+            log::debug!("[ime-obj] IME_CHANGE class={class} hwnd={:?}", hwnd.0);
         }
         _ => {}
     }
