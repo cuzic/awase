@@ -147,9 +147,22 @@ impl Output {
             // min/max を延長する（120ms では GJI が settle する前に timeout して literal
             // 出力される回帰を抑制）。
             let long_idle = self.composition.idle_ms_at_last_cold() > crate::tuning::LONG_IDLE_MS;
+            // 物理 F2 (skip_f2_send=true) かつ GJI が長期 idle の場合: Chrome の composition
+            // context 再初期化に ~326ms 要するケースを確認。keyboard idle が短くても
+            // GJI が休眠していれば長いプローブ min_ms が必要。
+            let f2_gji_long_idle = skip_f2_send && {
+                let gji_last_io = crate::tsf::observer::gji_last_io_ms();
+                crate::hook::current_tick_ms().saturating_sub(gji_last_io)
+                    > crate::tuning::LONG_IDLE_MS
+            };
             let (probe_min_ms, probe_max_ms) = if long_idle {
                 (
                     crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
+                    crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
+                )
+            } else if f2_gji_long_idle {
+                (
+                    crate::tuning::CHROME_PROBE_F2_GJI_IDLE_MIN_MS,
                     crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
                 )
             } else {
@@ -159,7 +172,7 @@ impl Output {
                 )
             };
             log::debug!(
-                "[h1-probe] cold={cold_seq} long_idle={long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms skip_f2={skip_f2_send}",
+                "[h1-probe] cold={cold_seq} long_idle={long_idle} f2_gji_long_idle={f2_gji_long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms skip_f2={skip_f2_send}",
                 self.composition.idle_ms_at_last_cold(),
             );
 
