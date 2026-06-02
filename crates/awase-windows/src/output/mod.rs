@@ -600,7 +600,11 @@ mod tests {
 
     #[test]
     fn cold_reason_eager_settle_ms_long_idle() {
-        // long_idle=true → ConfirmKey 系のみ延長
+        // FocusChange 系: long_idle で 1500→2000ms
+        assert_eq!(ColdReason::FocusChange.eager_settle_ms(true), 2000);
+        assert_eq!(ColdReason::NativeF2Consumed.eager_settle_ms(true), 2000);
+        assert_eq!(ColdReason::SetOpenTrue.eager_settle_ms(true), 2000);
+        // ConfirmKey 系: long_idle で 500→1500ms
         assert_eq!(
             ColdReason::PassthroughConfirmKey.eager_settle_ms(true),
             1500

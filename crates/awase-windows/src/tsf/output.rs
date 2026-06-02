@@ -55,7 +55,13 @@ impl ColdReason {
     #[must_use]
     pub const fn eager_settle_ms(self, long_idle: bool) -> u64 {
         match self {
-            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 1500,
+            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => {
+                if long_idle {
+                    2000
+                } else {
+                    1500
+                }
+            }
             Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
                 if long_idle {
                     1500

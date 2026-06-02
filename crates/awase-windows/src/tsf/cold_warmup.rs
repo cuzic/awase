@@ -182,11 +182,19 @@ impl<'a> ColdWarmupSequence<'a> {
         //     awase が物理キーを消費して VK_DBE_HIRAGANA を代わりに送るため、
         //     GJI から見ると FocusChange 相当の TSF 再初期化が発生しうる。
         //     実測で候補窓出現まで 1031ms かかることがあるため 1500ms を上限とする。
+        //     長期 idle 後は WezTerm 等で TSF 初期化がさらに遅延するため 2000ms に拡張する。
         //   PassthroughConfirmKey / ReinjectConfirmKey + long_idle:
         //     Enter/Space/Escape 後でも長期 idle 後は GJI セッションがリセットされ、
         //     500ms のバジェットでは不足する（kおのじしょう バグ）。1500ms に拡張する。
         //   その他（Enter/Space/記号等）: composition 再突入のみ → 500ms
-        if cold_reason.is_confirm_key() && long_idle {
+        if cold_reason.requires_settle() && long_idle {
+            log::debug!(
+                "[h1-warmup] cold={cold_seq} {:?} + long idle \
+                 ({}ms) → eager_settle_ms=2000ms",
+                cold_reason,
+                self.output.composition.idle_ms_at_last_cold()
+            );
+        } else if cold_reason.is_confirm_key() && long_idle {
             log::debug!(
                 "[h1-warmup] cold={cold_seq} PassthroughConfirmKey/ReinjectConfirmKey + long idle \
                  ({}ms) → eager_settle_ms=1500ms",
