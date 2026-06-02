@@ -62,6 +62,8 @@ pub struct GjiProbeOutcome {
     pub settled: bool,
     /// GJI モニターが健全か
     pub monitor_healthy: bool,
+    /// プローブ完了時点での GJI 無通信時間（`now - gji_last_io_ms`、ms）
+    pub gji_idle_ms: u64,
 }
 
 impl TsfReadinessProbe {
@@ -86,10 +88,12 @@ impl TsfReadinessProbe {
         let now = crate::hook::current_tick_ms();
         let monitor_healthy = TSF_OBS.gji_monitor_ok.load(Ordering::Acquire);
         let gji_last_io = TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed);
+        let gji_idle_ms = now.saturating_sub(gji_last_io);
         Some(GjiProbeOutcome {
             elapsed_ms: now.saturating_sub(self.warmup_sent_ms),
             settled: gji_last_io >= self.warmup_sent_ms,
             monitor_healthy,
+            gji_idle_ms,
         })
     }
 
