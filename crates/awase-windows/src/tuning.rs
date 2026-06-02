@@ -92,6 +92,17 @@ pub const CHROME_PROBE_LONG_IDLE_MAX_MS: u64 = 500;
 /// されるまで待機する（probe は物理 F2 時刻起点）。
 pub const CHROME_PROBE_F2_GJI_IDLE_MIN_MS: u64 = 350;
 
+/// F2NonTsf cold start で物理 F2 送信からこの時間以上経過した場合、
+/// Chrome の TSF composition context が失効した可能性があるため
+/// programmatic F2 を再送する（ms）。
+///
+/// 背景: Chrome は F2 受信後 ~326ms で composition context を初期化するが、
+/// 一定時間キー入力がないと context が失効する（実測: 1688ms で失効確認）。
+/// 失効後のバッチ送信では最初のキーが literal になるバグが発生する
+/// （例: まぁ → mあぁ）。1200ms 超過時に programmatic F2 を再送することで
+/// context を確実に再初期化する。
+pub const F2_STALE_MS: u64 = 1200;
+
 // === キャッシュ有効期限 ===
 
 /// フォーカス切り替え時の per-HWND IME 状態スナップショットの最大有効期間 (ms)。

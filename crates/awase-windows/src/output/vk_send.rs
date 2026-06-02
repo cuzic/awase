@@ -133,9 +133,15 @@ impl Output {
             // プログラム的な F2 送信（SendMessageTimeout + SendInput）をスキップし、
             // 物理 F2 の時刻を probe 基準点として使うことで Chrome が 3 回 F2 を受け取る
             // バグ（「かんりのつごう → kaんりのつごう」）を防ぐ。
+            // ただし F2 から F2_STALE_MS 以上経過した場合は context が失効している
+            // 可能性があるため、F2NonTsf を無効化して programmatic F2 を再送する。
             let cold_reason = self.composition.last_cold_reason();
-            let skip_f2_send = cold_reason == ColdReason::F2NonTsf;
             let cold_marked_ms = self.composition.cold_marked_ms();
+            let f2_stale = cold_reason == ColdReason::F2NonTsf
+                && cold_marked_ms != 0
+                && crate::hook::current_tick_ms().saturating_sub(cold_marked_ms)
+                    > crate::tuning::F2_STALE_MS;
+            let skip_f2_send = cold_reason == ColdReason::F2NonTsf && !f2_stale;
             let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
                 cold_marked_ms
             } else {
@@ -171,8 +177,16 @@ impl Output {
                     crate::tuning::CHROME_PROBE_MAX_MS,
                 )
             };
+            if f2_stale {
+                let elapsed = crate::hook::current_tick_ms().saturating_sub(cold_marked_ms);
+                log::debug!(
+                    "[h1-probe] cold={cold_seq} F2NonTsf stale ({elapsed}ms > F2_STALE_MS={}) \
+                     → programmatic F2 を再送",
+                    crate::tuning::F2_STALE_MS
+                );
+            }
             log::debug!(
-                "[h1-probe] cold={cold_seq} long_idle={long_idle} f2_gji_long_idle={f2_gji_long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms skip_f2={skip_f2_send}",
+                "[h1-probe] cold={cold_seq} long_idle={long_idle} f2_gji_long_idle={f2_gji_long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms skip_f2={skip_f2_send} f2_stale={f2_stale}",
                 self.composition.idle_ms_at_last_cold(),
             );
 
