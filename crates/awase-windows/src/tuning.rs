@@ -70,7 +70,12 @@ pub const CHROME_PROBE_MAX_MS: u64 = 120;
 
 /// 長期 idle (`idle_ms_at_last_cold > LONG_IDLE_MS`) cold start 時の Chrome プローブ
 /// 最小待機時間 (ms)。GJI が長期 idle 後に reinit に要する時間を見越して延長する。
-pub const CHROME_PROBE_LONG_IDLE_MIN_MS: u64 = 100;
+///
+/// Chrome TSF は GJI I/O を出さないため probe は min_ms 経過後に即発火する。
+/// 実測で Chrome が F2 受信後 composition context を再初期化するのに ~114ms 必要なケースを
+/// 確認（probe は f2_sent_ms 起点なので async overhead ~7ms を差し引くと実効 ~107ms）。
+/// 200ms に設定することで十分な余裕を確保する。
+pub const CHROME_PROBE_LONG_IDLE_MIN_MS: u64 = 200;
 
 /// 長期 idle 時の Chrome プローブ最大待機時間 (ms)。
 ///
