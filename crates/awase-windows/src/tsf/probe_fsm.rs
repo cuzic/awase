@@ -67,7 +67,7 @@ enum NextStep {
     /// 現フェーズで継続待機（actions なし）
     Wait,
     /// `WaitingForCallback(FreshF2Sent { .. })` へ遷移し `SendFreshF2` を emit
-    EmitSendFreshF2 { probe_settled: bool },
+    EmitSendFreshF2 { probe_settled: bool, remaining_ms: u64 },
     /// `enter_transmit_tsf()` を呼ぶ
     TransmitTsf,
     /// `enter_transmit_chrome()` を呼ぶ
@@ -117,6 +117,9 @@ pub(crate) enum WaitingFor {
     /// `apply_fresh_f2_sent` 待ち（SendFreshF2 パス）。
     FreshF2Sent {
         probe_settled: bool,
+        /// GjiProbe 完了時点での残余バジェット（ms）。
+        /// `probe_settled=false`（GJI 休止）時の NameChangeWait タイムアウト計算に使う。
+        remaining_ms: u64,
         send: SendState,
     },
     /// `apply_transmit_done` 待ち（Transmit(Tsf) パス）。
@@ -360,10 +363,14 @@ impl TsfProbeMachine {
     pub(crate) fn tick_with_clock<C: Clock>(&mut self, clock: &C) -> Vec<ProbeAction> {
         match self.inspect_phase(clock) {
             NextStep::Wait => vec![],
-            NextStep::EmitSendFreshF2 { probe_settled } => {
+            NextStep::EmitSendFreshF2 {
+                probe_settled,
+                remaining_ms,
+            } => {
                 let send = self.take_send_for_fresh_f2();
                 self.phase = ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
                     probe_settled,
+                    remaining_ms,
                     send,
                 });
                 vec![ProbeAction::SendFreshF2 {
@@ -426,8 +433,11 @@ impl TsfProbeMachine {
                         if *needs_settle_check {
                             let is_ime_init_cold = cold_reason.requires_settle();
                             if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
+                                let remaining_ms =
+                                    total_max_ms.saturating_sub(outcome.elapsed_ms);
                                 return NextStep::EmitSendFreshF2 {
                                     probe_settled: outcome.settled,
+                                    remaining_ms,
                                 };
                             }
                         }
@@ -541,11 +551,12 @@ impl TsfProbeMachine {
             &mut self.phase,
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone),
         );
-        let (probe_settled, send) = match phase {
+        let (probe_settled, remaining_ms, send) = match phase {
             ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
                 probe_settled,
+                remaining_ms,
                 send,
-            }) => (probe_settled, send),
+            }) => (probe_settled, remaining_ms, send),
             other => {
                 log::warn!(
                     "[tsf-probe] cold={} apply_fresh_f2_sent: unexpected phase",
@@ -555,7 +566,21 @@ impl TsfProbeMachine {
                 return;
             }
         };
-        let deadline_ms = fresh_f2_ms + crate::tuning::SETTLE_TIMEOUT_MS;
+        // GJI が休止状態（probe_settled=false）のとき、WezTerm は TSF 初期化に
+        // より長い時間を要することがある（実測 ~936ms）。残余バジェットを上限として
+        // 最低 SETTLE_TIMEOUT_MS は待機する。
+        // GJI が直前まで活発だった場合（probe_settled=true）は OBJ_NAMECHANGE が
+        // すぐに届くため、従来の SETTLE_TIMEOUT_MS のままでよい。
+        let timeout_ms = if probe_settled {
+            crate::tuning::SETTLE_TIMEOUT_MS
+        } else {
+            remaining_ms.max(crate::tuning::SETTLE_TIMEOUT_MS)
+        };
+        let deadline_ms = fresh_f2_ms + timeout_ms;
+        log::debug!(
+            "[tsf-probe] cold={} NameChangeWait deadline {}ms (probe_settled={probe_settled}, remaining={remaining_ms}ms)",
+            self.cold_seq, timeout_ms
+        );
         self.phase = ProbePhase::NameChangeWait {
             nc_baseline,
             deadline_ms,
