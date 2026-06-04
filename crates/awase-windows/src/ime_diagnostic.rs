@@ -213,10 +213,11 @@ impl ImeDiagnosticSnapshot {
 /// クロスプロセス IMC クエリ（`IMC_GETOPENSTATUS` / `IMC_GETCONVERSIONMODE`）。
 /// IMM bridge が NULL の場合は `(None, None)` を返す。
 ///
-/// SendMessageTimeoutW を含むためメインスレッドで直接実行すると `with_app` 再入の
-/// 原因になる。`run_with_timeout` でワーカースレッドへ offload し、メインスレッドの
-/// メッセージポンプを止めて待つことで再入を回避する (run_with_timeout 自体は
-/// thread::spawn + recv で待機し、メッセージ pump を行わない)。
+/// SendMessageTimeoutW を含むため、メインスレッドで直接呼ぶと `RUNTIME` 借用中に
+/// メッセージポンプが走り、フックの `try_borrow_mut()` が失敗してキーがパススルーされる。
+/// `run_with_timeout` でワーカースレッドへ offload し、メインスレッドを `recv()` で
+/// ブロックすることでメッセージポンプを防ぐ（`run_with_timeout` 自体は
+/// `thread::spawn + recv` で待機し、メッセージ pump を行わない）。
 fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
     crate::win32::run_with_timeout(Duration::from_millis(150), move || {
         // SAFETY: focus_hwnd_raw はフォアグラウンドウィンドウの有効なハンドル値。
