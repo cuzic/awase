@@ -2,6 +2,7 @@ use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
 use super::belief::ImeBelief;
+use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::{HookConfig, HookRoutingState, SyncKeyGate};
 use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
@@ -224,6 +225,148 @@ impl ImeStateHub {
     }
 }
 
+// ── IME 操作ロジック ─────────────────────────────────────────────────────────
+//
+// PlatformState から委譲されるメソッド群。shadow_model / belief / event_log への
+// 書き込みはすべてここに集約し、PlatformState からは直接 shadow_model を触らない。
+
+impl ImeStateHub {
+    /// `BrokenAppBootstrap` force-on ガードを追加する。
+    pub(crate) fn set_force_on_broken_app_bootstrap(&mut self) {
+        self.shadow_model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::BrokenAppBootstrap,
+            expires_at: None,
+            generation: self.event_log.next_seq(),
+        });
+    }
+
+    /// observe_miss_monitor をリセットし、すべての force-on ガードを解除する。
+    ///
+    /// ユーザー操作（IME トグル・SetOpen 等）で「意図した状態」が確定したときに呼ぶ。
+    pub(crate) fn reset_detect_state(&mut self) {
+        self.shadow_model.observe_miss_monitor.record_success();
+        self.shadow_model.force_guards.guards.clear();
+    }
+
+    /// IME トグルが実際に適用されたことを記録する。
+    pub(crate) fn on_ime_toggled(&mut self) {
+        self.reset_detect_state();
+    }
+
+    /// Engine の SetOpen リクエスト直後に呼ぶ。
+    pub(crate) fn on_set_open_requested(&mut self) {
+        self.reset_detect_state();
+    }
+
+    /// panic_reset 向け全面リセット。
+    ///
+    /// belief・shadow_model を初期化し `PanicReset` force guard を立てる。
+    pub(crate) fn apply_panic_reset(&mut self) {
+        self.belief.input_mode = awase::engine::InputModeState::ObservedRomaji;
+        self.belief.is_japanese_ime = true;
+        self.belief.prev_conversion_mode = None;
+        self.shadow_model.observe_miss_monitor.record_success();
+        self.shadow_model.force_guards.guards.clear();
+        self.shadow_model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: self.event_log.next_seq(),
+        });
+        self.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: true,
+            source: IntentSource::Recovery,
+        });
+        self.shadow_model.last_intent = None;
+        self.shadow_model.observations.clear_on_focus_change();
+    }
+
+    /// `ImeUpdate` を belief / shadow_model に反映する。
+    ///
+    /// `observer::ime_observer::poll_and_classify_ime()` の結果を受け取り、
+    /// 状態への書き込みをここに集約する。判断ロジックを持たない純粋適用関数。
+    pub(crate) fn apply_ime_update(
+        &mut self,
+        update: &crate::observer::ime_observer::ImeUpdate,
+    ) {
+        if let Some(is_jp) = update.is_japanese_ime {
+            self.belief.is_japanese_ime = is_jp;
+        }
+        if let Some(obs) = update.observer_poll {
+            self.dispatch_event(ImeEvent::ObserverReported {
+                open: obs.value,
+                source: super::ime_event::ObservationSource::ObserverPoll,
+                hwnd: HwndId::NULL,
+                confidence: super::ime_event::ObservationConfidence::Medium,
+            });
+        }
+        if update.increment_miss_count {
+            self.shadow_model
+                .observe_miss_monitor
+                .record_miss(std::time::Instant::now());
+            let miss = self.shadow_model.observe_miss_monitor.consecutive_miss_count;
+            if miss == crate::IME_DETECT_MISS_THRESHOLD {
+                log::warn!("IME detection failed {miss} consecutive times, will force IME ON");
+            }
+        }
+        if update.clear_force_on_broken_app_bootstrap {
+            self.shadow_model
+                .force_guards
+                .remove(ForceOnReason::BrokenAppBootstrap);
+        }
+        if update.clear_force_on_panic_reset {
+            self.shadow_model
+                .force_guards
+                .remove(ForceOnReason::PanicReset);
+            self.shadow_model.observe_miss_monitor.record_success();
+        }
+        if let Some(mode) = update.new_input_mode {
+            self.belief.input_mode = mode;
+        }
+        if let Some(conv) = update.new_prev_conversion_mode {
+            self.belief.prev_conversion_mode = Some(conv);
+        }
+    }
+
+    /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。
+    pub(crate) fn apply_hwnd_cache_restore(
+        &mut self,
+        snapshot: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
+    ) {
+        if let Some(snap) = snapshot {
+            self.dispatch_event(ImeEvent::UserImeSetIntent {
+                target: snap.ime_on,
+                source: IntentSource::HwndCache,
+            });
+            self.belief.input_mode = snap.input_mode;
+        }
+    }
+
+    /// TsfNative 入場時に stale な `desired_open=false` を IME ON へ寄せ直す。
+    ///
+    /// 日本語レイアウトかつ `last_intent` がない（前ウィンドウからの carry-over）
+    /// 場合のみ実行する。`last_intent` があれば現フォーカス文脈の意図として保護する。
+    pub(crate) fn reset_stale_ime_on_for_tsf_native(&mut self) {
+        if !self.belief.is_japanese_ime() || self.shadow_model.effective_open() {
+            return;
+        }
+        if let Some(intent) = self.shadow_model.last_intent.as_ref() {
+            log::debug!(
+                "TsfNative entry: preserving ime_on=false (intent source={:?})",
+                intent.source
+            );
+            return;
+        }
+        log::info!(
+            "TsfNative entry without cache: reset stale ime_on=false → true \
+             (no intent, Japanese layout, IME state untrackable in TSF-native)"
+        );
+        self.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: true,
+            source: IntentSource::Recovery,
+        });
+    }
+}
+
 #[cfg(test)]
 impl ImeStateHub {
     pub(crate) fn set_desired_open_for_test(&mut self, value: bool) {
@@ -385,68 +528,31 @@ impl PlatformState {
 
     // ── ForceGuardSet / ObserveMissMonitor への書き込みメソッド (Phase 3a) ──
 
-    /// `BrokenAppBootstrap` ガードをセットする。
+    /// `BrokenAppBootstrap` force-on ガードをセットする。
     #[inline]
     pub fn set_force_on_broken_app_bootstrap(&mut self) {
-        self.ime
-            .shadow_model
-            .force_guards
-            .add(super::force_guard::ForceGuard {
-                reason: super::force_guard::ForceOnReason::BrokenAppBootstrap,
-                expires_at: None,
-                generation: self.ime.event_log.next_seq(),
-            });
+        self.ime.set_force_on_broken_app_bootstrap();
     }
 
     /// observe_miss_monitor を reset し、すべての force-on ガードを解除する。
-    ///
-    /// ユーザー操作（Shadow IME トグル・SetOpen 等）で「ユーザーが意図した状態」が
-    /// 確定したときに呼ぶ。
     #[inline]
     pub fn reset_ime_detect_state(&mut self) {
-        self.ime.shadow_model.observe_miss_monitor.record_success();
-        self.ime.shadow_model.force_guards.guards.clear();
+        self.ime.reset_detect_state();
     }
 
     /// Shadow IME トグルによって IME 状態が実際に変化したときに呼ぶ。
-    ///
-    /// 意図的なトグル後は drift 検出カウンタを無効化する。
     pub fn on_shadow_ime_toggled(&mut self) {
-        self.reset_ime_detect_state();
+        self.ime.on_ime_toggled();
     }
 
     /// SetOpen リクエストを shadow_model に書き込んだときに呼ぶ。
-    ///
-    /// Engine が IME ON/OFF を要求した直後は drift 検出カウンタを無効化する。
     pub fn on_set_open_requested(&mut self) {
-        self.reset_ime_detect_state();
+        self.ime.on_set_open_requested();
     }
 
     /// panic_reset 向け全面リセット。
-    ///
-    /// belief (input_mode, is_japanese_ime, prev_conversion_mode) と shadow_model を初期化する。
     pub fn apply_panic_reset(&mut self) {
-        self.ime.belief.input_mode = InputModeState::ObservedRomaji;
-        self.ime.belief.is_japanese_ime = true;
-        self.ime.belief.prev_conversion_mode = None;
-        // Phase 3a: observe_miss_monitor + force_guards に置換
-        self.ime.shadow_model.observe_miss_monitor.record_success();
-        self.ime.shadow_model.force_guards.guards.clear();
-        self.ime
-            .shadow_model
-            .force_guards
-            .add(super::force_guard::ForceGuard {
-                reason: super::force_guard::ForceOnReason::PanicReset,
-                expires_at: None,
-                generation: self.ime.event_log.next_seq(),
-            });
-        // Step 2B: shadow_model を直接 reset (event 記録は残しつつ intent はクリア)。
-        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: true,
-            source: IntentSource::Recovery,
-        });
-        self.ime.shadow_model.last_intent = None;
-        self.ime.shadow_model.observations.clear_on_focus_change();
+        self.ime.apply_panic_reset();
     }
 }
 
@@ -512,125 +618,26 @@ impl PlatformState {
         });
     }
 
-    /// `ImeUpdate` を shadow_model / belief (is_japanese_ime, input_mode, prev_conversion_mode) に反映する。
-    ///
-    /// `observer::ime_observer::poll_and_classify_ime()` / `classify_fetched_snapshot()` の結果を受け取り、
-    /// 状態への書き込みをここに集約する。判断ロジックを持たない純粋適用関数。
+    /// `ImeUpdate` を belief / shadow_model に反映する。
     pub fn apply_ime_update(
         &mut self,
         update: &crate::observer::ime_observer::ImeUpdate,
         _user_enabled: bool,
     ) {
-        // is_japanese_ime: 検出成功時のみ更新
-        if let Some(is_jp) = update.is_japanese_ime {
-            self.ime.belief.is_japanese_ime = is_jp;
-        }
-
-        // observer_poll 観測 → shadow_model へ dispatch
-        if let Some(obs) = update.observer_poll {
-            self.ime.dispatch_event(ImeEvent::ObserverReported {
-                open: obs.value,
-                source: super::ime_event::ObservationSource::ObserverPoll,
-                hwnd: HwndId::NULL,
-                confidence: super::ime_event::ObservationConfidence::Medium,
-            });
-        }
-
-        // miss_count (Phase 3a: observe_miss_monitor 経由)
-        if update.increment_miss_count {
-            self.ime
-                .shadow_model
-                .observe_miss_monitor
-                .record_miss(std::time::Instant::now());
-            let miss = self
-                .ime
-                .shadow_model
-                .observe_miss_monitor
-                .consecutive_miss_count;
-            if miss == crate::IME_DETECT_MISS_THRESHOLD {
-                log::warn!("IME detection failed {miss} consecutive times, will force IME ON");
-            }
-        }
-
-        // force_on_broken_app_bootstrap のリセット（検出成功時、Phase 3a: ForceGuardSet 経由）
-        if update.clear_force_on_broken_app_bootstrap {
-            self.ime
-                .shadow_model
-                .force_guards
-                .remove(super::force_guard::ForceOnReason::BrokenAppBootstrap);
-        }
-
-        // force_on_panic_reset と miss_count のリセット（検出成功時、Phase 3a）
-        if update.clear_force_on_panic_reset {
-            self.ime
-                .shadow_model
-                .force_guards
-                .remove(super::force_guard::ForceOnReason::PanicReset);
-            self.ime.shadow_model.observe_miss_monitor.record_success();
-        }
-
-        // input_mode
-        if let Some(mode) = update.new_input_mode {
-            self.ime.belief.input_mode = mode;
-        }
-
-        // prev_conversion_mode
-        if let Some(conv) = update.new_prev_conversion_mode {
-            self.ime.belief.prev_conversion_mode = Some(conv);
-        }
+        self.ime.apply_ime_update(update);
     }
 
-    /// `hwnd_cache::restore_on_focus_enter()` の結果を shadow_model に反映する。
-    ///
-    /// キャッシュヒット（`Some`）の場合のみ適用する。`None` の場合は何もしない。
-    /// per-HWND キャッシュは「前回 focus 時のユーザ意図」を保存しているため、
-    /// `UserImeSetIntent { source: HwndCache }` として dispatch する。
+    /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。
     pub fn apply_hwnd_cache_restore(
         &mut self,
         snapshot: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
     ) {
-        if let Some(snap) = snapshot {
-            self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
-                target: snap.ime_on,
-                source: IntentSource::HwndCache,
-            });
-            self.ime.belief.input_mode = snap.input_mode;
-        }
+        self.ime.apply_hwnd_cache_restore(snapshot);
     }
 
-    /// TsfNative ウィンドウへのフォーカス入場時、`HwndCache` ミスで前ウィンドウから
-    /// carry over した `desired_open=false` を IME ON へ寄せ直す（Japanese 文脈の安全側既定）。
-    ///
-    /// TsfNative では IMM クロスプロセス取得もポーリングも skip されるため、
-    /// stale な `false` が ObserverPoll でも復旧せず Engine が活性化不能になる。
-    /// 日本語レイアウト時のみ実行する。
-    ///
-    /// # 4 層モデルとの整合: フレッシュな intent は尊重する
-    ///
-    /// `FocusChanged` event は `last_intent` を clear するが `desired_open` は保持する。
-    /// よって本関数が呼ばれた時点で `last_intent.is_none()` なら、その `false` は前ウィンドウ
-    /// からの carry over でしかありえない（cache miss なので HwndCache 由来の intent もない）。
-    /// その場合のみ ON へ寄せ直す。`last_intent.is_some()` なら現フォーカス文脈の新しい
-    /// 意図（HwndCache 経由含む）なので保護する。
+    /// TsfNative 入場時に stale な `desired_open=false` を IME ON へ寄せ直す。
     pub fn reset_stale_ime_on_for_tsf_native(&mut self) {
-        if !self.ime.belief.is_japanese_ime() || self.ime_on() {
-            return;
-        }
-        if let Some(intent) = self.ime.shadow_model.last_intent.as_ref() {
-            log::debug!(
-                "TsfNative entry: preserving ime_on=false (intent source={:?})",
-                intent.source
-            );
-            return;
-        }
-        log::info!(
-            "TsfNative entry without cache: reset stale ime_on=false → true \
-             (no intent, Japanese layout, IME state untrackable in TSF-native)"
-        );
-        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: true,
-            source: IntentSource::Recovery,
-        });
+        self.ime.reset_stale_ime_on_for_tsf_native();
     }
 }
 
