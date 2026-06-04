@@ -330,25 +330,9 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
             let synthetic_keyups = synthesize_missing_keyups(&queue);
             for syn in &synthetic_keyups {
                 log::debug!(
-                    "[output-drain] vk=0x{:02X} KeyDown has no paired KeyUp in queue → will inject synthetic KeyUp",
+                    "[output-drain] vk=0x{:02X} KeyDown は物理解放済みで KeyUp が未到着 → synthetic KeyUp を注入",
                     syn.vk_code,
                 );
-                // Ctrl 系 modifier に対して synthetic KeyUp を生成しようとしているのに
-                // PHYSICAL_KEY_STATE がまだ押下中を示す場合、その synthetic Ctrl↑ が
-                // SendInput されると GetAsyncKeyState が汚染され、後続キーで
-                // modifier_snapshot.ctrl=false になるバグを引き起こす可能性がある。
-                if crate::vk::is_ctrl_variant(syn.vk_code) {
-                    let phys_l = hook::is_physical_key_down(crate::vk::VK_LCONTROL);
-                    let phys_r = hook::is_physical_key_down(crate::vk::VK_RCONTROL);
-                    if phys_l || phys_r {
-                        log::warn!(
-                            "[output-drain] SYNTHETIC CTRL↑ WHILE HELD: vk=0x{:02X} の synthetic KeyUp を生成するが \
-                             PHYSICAL_KEY_STATE は Ctrl 押下中 (L={phys_l} R={phys_r}) \
-                             → GetAsyncKeyState 汚染により後続キーで Ctrl が認識されない可能性",
-                            syn.vk_code,
-                        );
-                    }
-                }
             }
 
             for queued_event in &queue {
@@ -399,6 +383,11 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
 
 /// キューの RawKeyEvent リストから、対応する KeyUp を持たない KeyDown に対して
 /// synthetic KeyUp を生成して返す。
+///
+/// ただし PHYSICAL_KEY_STATE がそのキーをまだ押下中と示す場合は生成しない。
+/// 物理 KeyUp は必ず後から届くため、先行して synthetic Up を注入すると
+/// OS の修飾キー状態が実際の押下状態と乖離する（例: Alt を押したまま
+/// Tab 連打でウィンドウを順送りしようとしても Alt が即解放される）。
 fn synthesize_missing_keyups(
     events: &[awase::types::RawKeyEvent],
 ) -> Vec<awase::types::RawKeyEvent> {
@@ -407,6 +396,15 @@ fn synthesize_missing_keyups(
         .iter()
         .filter(|ev| matches!(ev.event_type, KeyEventType::KeyDown))
         .filter(|ev| {
+            // 物理的にまだ押されているキーは合成しない。
+            // KeyUp は必ず後続の drain で届くので OS 状態に矛盾は生じない。
+            if hook::is_physical_key_down(ev.vk_code) {
+                log::debug!(
+                    "[output-drain] vk=0x{:02X} KeyDown は物理押下中 → synthetic KeyUp をスキップ",
+                    ev.vk_code,
+                );
+                return false;
+            }
             !events.iter().any(|e| {
                 e.vk_code == ev.vk_code
                     && matches!(e.event_type, KeyEventType::KeyUp)
