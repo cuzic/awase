@@ -64,8 +64,14 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// - OFF → F14（Precomposition/Composition/Conversion 時に IME OFF）
 ///
 /// F13/F14 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
-/// Standard / Imm32Unavailable / TsfNative **全プロファイル**で利用できる。
+/// Standard / Imm32Unavailable **全プロファイル**で利用できる。
 /// F13/F14 は実キーボードに存在しないためブラウザショートカットと衝突しない。
+///
+/// **例外: `TsfNative` プロファイル（WezTerm / Windows Terminal 等）**
+/// これらの VT ターミナルエミュレータは F13 を ESC[25~、F14 を ESC[26~ という
+/// VT エスケープシーケンスに変換するため、SendInput(F13/F14) が意図しない `~` 入力を引き起こす。
+/// TsfNative では GJI direct をスキップし `KanjiToggleStrategy`（VK_KANJI）にフォールバックする。
+/// VK_KANJI はターミナルエミュレータでは VT シーケンスに変換されないため安全。
 ///
 /// GJI の config1.db に以下を登録することで有効になる:
 ///   `DirectInput\tF13\tIMEOn`（デフォルト登録済み）
@@ -80,6 +86,10 @@ pub(crate) struct GjiDirectStrategy;
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
         view.observed.gji_monitor_ok
+            && !matches!(
+                view.focus.profile,
+                crate::focus::class_names::AppImeProfile::TsfNative
+            )
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {

@@ -42,6 +42,10 @@ const IMM32_UNAVAILABLE_CLASSES: &[&str] = &[
 /// - XamlExplorerHostIslandWindow: XAML ホスト
 /// - Windows.UI.Input.InputSite.WindowClass: Windows Terminal の InputSite 子ウィンドウ
 /// - CASCADIA_HOSTING_WINDOW_CLASS: Cascadia（Windows Terminal 上位ホスト）
+/// - org.wezfurlong.wezterm: WezTerm（独自 TSF 実装、himc_null=true）
+///
+/// 注: IMM32_UNAVAILABLE_CLASSES より後に評価されるため、同クラスが両方に含まれる場合は
+/// Imm32Unavailable が優先される（`from_class_name` 参照）。
 #[must_use]
 pub fn is_tsf_native_window(class_name: &str) -> bool {
     matches!(
@@ -50,6 +54,7 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
             | "XamlExplorerHostIslandWindow"
             | "Windows.UI.Input.InputSite.WindowClass"
             | "CASCADIA_HOSTING_WINDOW_CLASS"
+            | "org.wezfurlong.wezterm"
     )
 }
 
