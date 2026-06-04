@@ -170,6 +170,84 @@ GJI の composition 動作の実際の挙動に依存した最適化。削除す
 
 ---
 
+## カテゴリ 6: アプリ固有バグ対応系
+
+### 6-A. Ctrl↑ で `eager_warmup_sent_ms` をリセット
+
+**場所:** `crates/awase-windows/src/runtime/executor.rs:467-479`
+
+**内容:** Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。Ctrl↑ 後に composition が cold 状態であれば `eager_warmup_sent_ms` をリセットし、GJI recovery 時間（500ms）を Ctrl↑ 起点で再計測する。
+
+**症状:** Ctrl を離した直後にひらがなを入力すると「この → kおの」になる。
+
+**判定: 削除不可**（WezTerm × GJI の実際の挙動への対応）
+
+---
+
+### 6-B. KeyUp INJECTED_MARKER 対称性
+
+**場所:** `crates/awase-windows/src/runtime/executor.rs:431-443`
+
+**内容:** KeyDown を reinject（`INJECTED_MARKER` 付き）で送った場合、対応する KeyUp も reinject で揃える。WezTerm が `INJECTED↓ + physical↑` という非対称ペアを異常扱いする可能性を排除するため。
+
+**判定: 削除不可**（WezTerm の INJECTED キーペア対称性要件への対応）
+
+---
+
+### 6-C. Shadow desync 時の EngineIntent 強制送信
+
+**場所:** `crates/awase-windows/src/runtime/executor.rs:800-840`
+
+**内容:** フォーカス変更直後や起動時に実 IME 状態が unknown になり、`applied_snapshot=None` のまま IME が ON になっていることがある。この状態で `KanjiToggle/GjiDirect` が「`shadow=desired` → スキップ」してしまい Ctrl+無変換 が効かなくなる。ユーザーの明示的操作（`EngineIntent`）では shadow desync を無視して必ず送信することで対処する。
+
+スキップ判定は方向で異なる:
+- `SetOpen(false)` 方向: `applied_at_ms > 0`（実 apply 確認済み）なら永続スキップ → 定常状態での VK_KANJI 二重送信防止
+- `SetOpen(true)` 方向: 300ms ウィンドウ → KeyDown+KeyUp 二重送信防止
+
+**判定: 削除不可**（ImmCross 非対応アプリ×フォーカス変更直後の状態不定への対応）
+
+---
+
+### 6-D. `spawn_ime_refresh` での eager warmup スキップ
+
+**場所:** `crates/awase-windows/src/runtime/mod.rs:303-309`
+
+**内容:** `focus_transition_pending=true` の時点では `injection_mode` が前ウィンドウ（WezTerm 等）の stale な `Tsf` のまま。このまま `send_eager_tsf_warmup()` を呼ぶと、フォーカス先が Chrome/Edge の場合に誤って `VK_DBE_HIRAGANA` を送信して Chrome の IME を ON にしてしまう。eager warmup は `run_with_prefetched` 内で `injection_mode` 確定後に送る。
+
+**判定: 削除不可**（フォーカス遷移中の stale `injection_mode` による Chrome IME 誤 ON への対応）
+
+---
+
+### 6-E. 物理 KANJI キー後の `mirror_applied_open`
+
+**場所:** `crates/awase-windows/src/runtime/mod.rs:498-504`
+
+**内容:** 物理 KANJI キーは `apply_ime_open` を経由しないため `last_applied` が更新されない。このまま Engine が activate → `SetOpen(true)` → `KanjiToggleStrategy` が `last_applied(false) != desired(true)` と判定して VK_KANJI を余分に送信し、Chrome で IME が逆転する。`process_deferred_effects` 完了後に OS 観測値で `mirror_applied_open` を呼び同期する。
+
+**判定: 削除不可**（物理 KANJI キーが `apply_ime_open` を迂回することへの対応）
+
+---
+
+### 6-F. `F2NonTsf` での programmatic F2 スキップ
+
+**場所:** `crates/awase-windows/src/output/vk_send.rs:132-144`
+
+**内容:** ユーザーが物理 F2 を押して Chrome の composition context が初期化済みの場合、プログラム的な F2 送信（`SendMessageTimeout + SendInput`）をスキップする。スキップしないと Chrome が F2 を 3 回受け取り composition がリセットされ「かんりのつごう → kaんりのつごう」になる。ただし物理 F2 から `F2_STALE_MS`（1200ms）経過後は context が失効している可能性があるため programmatic F2 を再送する。
+
+**判定: 削除不可**（Chrome が F2 を重複受信すると composition をリセットする実際の挙動への対応）
+
+---
+
+### 6-G. KEYEVENTF_UNICODE + VK 混在によるリテラル化バグ回避
+
+**場所:** `crates/awase-windows/src/output/probe_io.rs:162-165`
+
+**内容:** `KEYEVENTF_UNICODE` 直後に VK ストロークを送ると、WezTerm/IME が N キーをリテラル `'n'` として扱い「のあたり → nおあたり」になる。deferred_vks がある場合は Unicode kana パスを使わず VK ローマ字パスで送ることで回避する。
+
+**判定: 削除不可**（WezTerm + IME の Unicode/VK 混在送信時の実際の挙動への対応）
+
+---
+
 ## 対処済みアクション一覧
 
 | コミット | 内容 |
