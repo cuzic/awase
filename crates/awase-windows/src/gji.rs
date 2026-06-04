@@ -10,7 +10,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::Registry::{
     RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
 };
-use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+use windows::Win32::System::Threading::{
+    OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+};
 
 // ── キーバインドパッチ ──
 
@@ -201,12 +203,14 @@ pub fn get_gji_exe_path() -> Option<PathBuf> {
 /// - GJI が起動していない場合は kill をスキップして再起動のみ行う
 pub fn kill_and_restart_gji(exe_path: &std::path::Path) -> Result<(), String> {
     if let Some(pid) = find_gji_pid() {
-        // SAFETY: PID は直前の列挙で得た有効な値。PROCESS_TERMINATE 権限で開く。
-        //         TerminateProcess 後すぐ CloseHandle してリークを防ぐ。
+        // SAFETY: PID は直前の列挙で得た有効な値。PROCESS_TERMINATE | PROCESS_SYNCHRONIZE で開く。
+        //         WaitForSingleObject でプロセス消滅を確認してから CloseHandle する。
         unsafe {
-            match OpenProcess(PROCESS_TERMINATE, false, pid) {
+            match OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid) {
                 Ok(h) => {
                     let _ = TerminateProcess(h, 1);
+                    // TerminateProcess は非同期。プロセス消滅を最大 5 秒待ってから再起動する。
+                    let _ = WaitForSingleObject(h, 5_000);
                     let _ = CloseHandle(h);
                     log::info!("GJI process {pid} terminated");
                 }
@@ -215,8 +219,6 @@ pub fn kill_and_restart_gji(exe_path: &std::path::Path) -> Result<(), String> {
                 }
             }
         }
-        // 少し待ってからプロセスが消えるのを待つ（kill は非同期）
-        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
     match std::process::Command::new(exe_path).spawn() {
