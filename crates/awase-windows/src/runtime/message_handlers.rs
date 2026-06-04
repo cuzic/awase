@@ -327,14 +327,6 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         let now_us = hook::now_timestamp_us();
         let mut any_reinject = false;
         let _ = with_app(|app| {
-            let synthetic_keyups = synthesize_missing_keyups(&queue);
-            for syn in &synthetic_keyups {
-                log::debug!(
-                    "[output-drain] vk=0x{:02X} KeyDown は物理解放済みで KeyUp が未到着 → synthetic KeyUp を注入",
-                    syn.vk_code,
-                );
-            }
-
             for queued_event in &queue {
                 log::debug!(
                     "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
@@ -354,22 +346,6 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
                     any_reinject = true;
                 }
             }
-
-            for keyup in synthetic_keyups {
-                log::debug!(
-                    "[output-drain] synthetic KeyUp vk=0x{:02X} (KeyDown replayed, KeyUp arrived before drain)",
-                    keyup.vk_code,
-                );
-                let result = app.process_key_event(keyup);
-                if matches!(result, CallbackResult::PassThrough) {
-                    log::debug!(
-                        "[output-drain] synthetic PassThrough → enqueue ReinjectKey vk=0x{:02X} KeyUp",
-                        keyup.vk_code,
-                    );
-                    app.executor.enqueue_reinject(keyup);
-                    any_reinject = true;
-                }
-            }
         });
         // drain 中に PassThrough → reinject へ昇格させた key がある場合、
         // executor キューを実際に流すために `WM_EXECUTE_EFFECTS` を要求する。
@@ -379,44 +355,6 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
             post_to_main_thread(WM_EXECUTE_EFFECTS);
         }
     }
-}
-
-/// キューの RawKeyEvent リストから、対応する KeyUp を持たない KeyDown に対して
-/// synthetic KeyUp を生成して返す。
-///
-/// ただし PHYSICAL_KEY_STATE がそのキーをまだ押下中と示す場合は生成しない。
-/// 物理 KeyUp は必ず後から届くため、先行して synthetic Up を注入すると
-/// OS の修飾キー状態が実際の押下状態と乖離する（例: Alt を押したまま
-/// Tab 連打でウィンドウを順送りしようとしても Alt が即解放される）。
-fn synthesize_missing_keyups(
-    events: &[awase::types::RawKeyEvent],
-) -> Vec<awase::types::RawKeyEvent> {
-    use awase::types::KeyEventType;
-    events
-        .iter()
-        .filter(|ev| matches!(ev.event_type, KeyEventType::KeyDown))
-        .filter(|ev| {
-            // 物理的にまだ押されているキーは合成しない。
-            // KeyUp は必ず後続の drain で届くので OS 状態に矛盾は生じない。
-            if hook::is_physical_key_down(ev.vk_code) {
-                log::debug!(
-                    "[output-drain] vk=0x{:02X} KeyDown は物理押下中 → synthetic KeyUp をスキップ",
-                    ev.vk_code,
-                );
-                return false;
-            }
-            !events.iter().any(|e| {
-                e.vk_code == ev.vk_code
-                    && matches!(e.event_type, KeyEventType::KeyUp)
-                    && e.timestamp >= ev.timestamp
-            })
-        })
-        .map(|ev| {
-            let mut keyup = *ev;
-            keyup.event_type = KeyEventType::KeyUp;
-            keyup
-        })
-        .collect()
 }
 
 /// TaskbarCreated ハンドラ（Explorer 再起動時にトレイアイコンを復元）
