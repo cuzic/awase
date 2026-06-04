@@ -31,8 +31,6 @@ pub struct ImeTransition {
     pub requested_at: Instant,
     /// 使用 actuator
     pub actuator: ImeActuatorKind,
-    /// 楽観的に latch 済みか (ImmCross async でよく使う)
-    pub optimistic_applied: bool,
     /// この transition のタイムアウト時刻
     pub timeout_at: Instant,
 }
@@ -58,7 +56,6 @@ mod tests {
             generation: 10,
             requested_at: t0,
             actuator: ImeActuatorKind::ImmCross,
-            optimistic_applied: true,
             timeout_at: t0 + Duration::from_millis(100),
         };
         assert!(!trans.is_timed_out(t0));

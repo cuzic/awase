@@ -25,8 +25,6 @@ pub enum ForceOnReason {
     BrokenAppBootstrap,
     /// panic_reset 直後の stale poll 上書き防止
     PanicReset,
-    /// 連続検出失敗カウンタが閾値に到達
-    DetectMissThreshold,
     /// AppImePolicy が常時 force-on を要求
     ProfilePolicy,
 }
@@ -105,7 +103,7 @@ impl ForceGuardSet {
 /// Drift detection 用の連続観測失敗カウンタ。
 ///
 /// 旧 `ImeRecoveryState::ime_detect_miss_count` の責務分離版。
-/// 閾値到達で `ForceGuardSet` に `ForceOnReason::DetectMissThreshold` を追加する流れ。
+/// 閾値到達で `Runtime::try_force_on_bootstrap()` が `BrokenAppBootstrap` guard を追加する。
 #[derive(Debug, Default, Clone)]
 pub struct ObserveMissMonitor {
     pub consecutive_miss_count: u32,
