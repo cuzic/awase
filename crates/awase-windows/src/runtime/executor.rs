@@ -51,12 +51,12 @@ pub(crate) struct DecisionExecutor {
     /// queue 本体は常に純粋 FIFO で `push_back` / `pop_front` のみ。
     /// `RawKeyEvent` 型にすることで「ReinjectKey 以外が park される」コンパイルエラーになる。
     guard_held: Option<RawKeyEvent>,
-    /// 直近の apply 済み IME 状態スナップショット (value, timestamp_ms)。
+    /// 直近の apply 済み IME 状態の確信度スナップショット。
     ///
-    /// decision サイクル開始時に `ImeModel.applied_open/applied_at_ms` から pre-fetch され、
+    /// decision サイクル開始時に `ImeModel.applied_state()` から pre-fetch され、
     /// バッチ内の `SetOpen` 処理後に即時更新される（intra-batch ordering 用）。
     /// `ImeModel` が SSOT; これはバッチ内 communication channel 兼 cross-decision cache。
-    applied_snapshot: Option<(bool, u64)>,
+    applied_snapshot: crate::state::AppliedImeState,
     /// warm+TSF の confirm キー KeyDown 後に KeyUp で eager warmup を送信するフラグ。
     ///
     /// `on_passthrough_key` が `true` を返したとき KeyDown 側でセットされ、
@@ -77,7 +77,7 @@ impl DecisionExecutor {
             hook_mode,
             deferred_passthrough_vks: HashSet::new(),
             guard_held: None,
-            applied_snapshot: None,
+            applied_snapshot: crate::state::AppliedImeState::Unknown,
             pending_warmup_on_keyup: false,
         }
     }
@@ -94,7 +94,7 @@ impl DecisionExecutor {
         decision: Decision,
         raw_event: &RawKeyEvent,
     ) -> BatchResult {
-        self.applied_snapshot = ime.applied_pair();
+        self.applied_snapshot = ime.applied_state();
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(platform, decision),
             HookMode::Relay => self.execute_relay(platform, decision, raw_event),
@@ -108,7 +108,7 @@ impl DecisionExecutor {
         ime: &ImeStateHub,
         decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
-        self.applied_snapshot = ime.applied_pair();
+        self.applied_snapshot = ime.applied_state();
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),
@@ -460,7 +460,7 @@ impl DecisionExecutor {
                 "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
                 raw_event.vk_code,
             );
-            platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
+            platform.send_eager_warmup(self.applied_snapshot.applied_open());
         }
     }
 
@@ -476,7 +476,7 @@ impl DecisionExecutor {
                 "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
                 raw_event.vk_code,
             );
-            platform.send_eager_warmup(self.applied_snapshot.map(|(v, _)| v));
+            platform.send_eager_warmup(self.applied_snapshot.applied_open());
         }
     }
 
@@ -548,7 +548,7 @@ impl DecisionExecutor {
                 let _ = platform.on_passthrough_key(
                     raw_event.vk_code,
                     true,
-                    self.applied_snapshot.map(|(v, _)| v),
+                    self.applied_snapshot.applied_open(),
                 );
             } else {
                 log::debug!(
@@ -575,7 +575,7 @@ impl DecisionExecutor {
             let deferred = platform.on_passthrough_key(
                 raw_event.vk_code,
                 true,
-                self.applied_snapshot.map(|(v, _)| v),
+                self.applied_snapshot.applied_open(),
             );
             self.pending_warmup_on_keyup = deferred;
         }
@@ -592,7 +592,7 @@ impl DecisionExecutor {
             let _ = platform.on_passthrough_key(
                 raw_event.vk_code,
                 true,
-                self.applied_snapshot.map(|(v, _)| v),
+                self.applied_snapshot.applied_open(),
             );
         }
     }
@@ -633,7 +633,7 @@ impl DecisionExecutor {
                 platform.on_reinject_key(
                     event.vk_code,
                     true,
-                    self.applied_snapshot.map(|(v, _)| v),
+                    self.applied_snapshot.applied_open(),
                 );
             } else {
                 log::debug!(
@@ -653,7 +653,7 @@ impl DecisionExecutor {
         // on_reinject_key を reinject() の前後どちらで呼んでも観測可能な差がない。
         // これにより spawn_local 内の with_app 呼び出しを除去できる。
         if is_key_down && event.vk_code.is_composition_confirm_key() {
-            platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.map(|(v, _)| v));
+            platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.applied_open());
         }
 
         // OutputActiveGuard を先に取得してから spawn_local で SendInput を RUNTIME 借用外に移す。
@@ -683,7 +683,7 @@ impl DecisionExecutor {
             return self.dispatch_ime_set_open(platform, open, origin);
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
-        let applied_for_engine_key = self.applied_snapshot.map(|(v, _)| v);
+        let applied_for_engine_key = self.applied_snapshot.applied_open();
         let platform_rt: &mut dyn PlatformRuntime = platform;
         match effect {
             Effect::Input(ie) => match ie {
@@ -732,12 +732,11 @@ impl DecisionExecutor {
         open: bool,
         origin: EffectOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
-        let (imm_first, shadow_on, applied_at_ms) = {
-            let view = platform.build_ime_control_view(self.applied_snapshot);
+        let (imm_first, shadow_on) = {
+            let view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
             (
                 crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view),
                 view.control.shadow_on,
-                view.control.applied_at_ms,
             )
         };
         if imm_first {
@@ -752,7 +751,7 @@ impl DecisionExecutor {
             // LINE/Qt 等の ImmCross アプリはこの VK_F4 Up に対して VK_F3 Down を
             // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
             // → 楽観的に applied_snapshot を更新して send_engine_state_ime_key をスキップさせる。
-            self.applied_snapshot = Some((open, 0));
+            self.applied_snapshot = crate::state::AppliedImeState::Optimistic(open);
             // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
             // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
             // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
@@ -815,48 +814,27 @@ impl DecisionExecutor {
             // GJI が起動している場合は GjiDirectStrategy (F13/F14) が選ばれるため override 不要。
             // F14 は shadow に関わらず常に送信される (べき等)。F13 も GjiDirectStrategy が自前で
             // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
-            let mut apply_context = self.applied_snapshot;
-            if origin == EffectOrigin::EngineIntent {
-                let profile = platform.current_app_profile();
-                if !profile.can_use_imm32_cross_process()
-                    && !crate::tsf::observer::gji_monitor_healthy()
-                {
-                    let now_ms = crate::hook::current_tick_ms();
-                    // SetOpen(false): 「確認済み OFF」なら永続スキップ。
-                    //   applied_at_ms > 0 = フォーカス変更後に実 apply が 1 回以上完了 = 信頼できる。
-                    //   applied_at_ms == 0 = フォーカス変更直後のプリシンクのみ = 不確定なので override 許可。
-                    //   これにより定常状態で Ctrl+無変換 を複数回押しても VK_KANJI が重複送信されず、
-                    //   IME が OFF → ON と誤トグルするバグを防ぐ。
-                    // SetOpen(true): 300ms ウィンドウを維持。
-                    //   KeyDown+KeyUp 二重送信を防ぎつつ、フォーカス変更後 Ctrl+変換 の再試行を許容。
-                    let skip_override = if open {
-                        // ON 方向: 300ms ウィンドウ (従来動作)
-                        shadow_on == open
-                            && applied_at_ms > 0
-                            && now_ms.saturating_sub(applied_at_ms) < 300
-                    } else {
-                        // OFF 方向: 実 apply 確認済みなら永続スキップ
-                        shadow_on == open && applied_at_ms > 0
-                    };
-                    if skip_override {
-                        log::debug!(
-                            "[dispatch-ime] KanjiToggle (profile={:?}): skip override \
-                             (confirmed dir={open}, applied {}ms ago)",
-                            profile,
-                            now_ms.saturating_sub(applied_at_ms)
-                        );
-                    } else {
-                        // override: apply_ime_open_with_applied に現在 state=!open と見せて
-                        // KanjiToggle が必ず VK_KANJI を送信するようにする
-                        apply_context = Some((!open, 0));
-                        log::debug!(
-                            "[dispatch-ime] KanjiToggle (profile={:?}): override context={} → force VK_KANJI",
-                            profile, !open
-                        );
-                    }
-                }
-            }
-            let outcome = platform.apply_ime_open_with_applied(open, apply_context);
+            let profile = platform.current_app_profile();
+            let now_ms = crate::hook::current_tick_ms();
+            let apply_context = if kanji_needs_context_override(
+                open,
+                self.applied_snapshot,
+                shadow_on,
+                origin == EffectOrigin::EngineIntent,
+                profile.can_use_imm32_cross_process(),
+                crate::tsf::observer::gji_monitor_healthy(),
+                now_ms,
+            ) {
+                log::debug!(
+                    "[dispatch-ime] KanjiToggle (profile={:?}): context override \
+                     ({} → VK_KANJI 強制送信, 6-C desync 対策)",
+                    profile, !open
+                );
+                crate::state::AppliedImeState::Optimistic(!open)
+            } else {
+                self.applied_snapshot
+            };
+            let outcome = platform.apply_ime_open_with_applied(open, apply_context.to_pair());
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 log::warn!("apply_ime_open({open}) failed");
             }
@@ -885,6 +863,156 @@ impl DecisionExecutor {
             ImeOpenOutcome::Failed => !open,
             ImeOpenOutcome::UnsafeToToggle => unreachable!(),
         };
-        self.applied_snapshot = Some((effective, crate::hook::current_tick_ms()));
+        self.applied_snapshot = crate::state::AppliedImeState::Confirmed {
+            open: effective,
+            at_ms: crate::hook::current_tick_ms(),
+        };
+    }
+}
+
+// ── KanjiToggle apply 判断ロジック（純粋関数） ───────────────────────────────
+
+/// KanjiToggle の apply_context を `!open` に上書きすべきか判断する。
+///
+/// `true` を返した場合、呼び出し側は apply_context を `Optimistic(!open)` に
+/// 差し替える。これにより Controller は `shadow_on != open` と判断して
+/// VK_KANJI を必ず送信する（workaround 6-C）。
+/// `false` の場合は apply_context をそのまま使い、Controller が
+/// `shadow_on == open` なら自然にスキップする。
+///
+/// OS 呼び出しを一切含まないため単体テスト可能。
+///
+/// # 背景（workaround 6-C）
+/// ImmCross 非対応アプリ（Chrome/WezTerm 等）ではフォーカス変更直後に
+/// shadow desync が発生する。この状態でユーザーが Ctrl+無変換を押すと
+/// shadow が既に desired と一致しているとして VK_KANJI が送られず
+/// IME 操作が無視される。EngineIntent では desync を無視して強制送信する。
+///
+/// # 引数
+/// - `desired_open`: 目標 IME 状態
+/// - `applied`: 現在の apply 確信度スナップショット
+/// - `shadow_on`: shadow model が示す現在の IME 状態
+/// - `is_engine_intent`: EngineIntent（ユーザー明示的操作）か否か
+/// - `can_imm32_cross_process`: IMM32 クロスプロセス制御が利用可能か
+/// - `gji_monitor_healthy`: GJI モニターが健全か（GJI 稼働中は override 不要）
+/// - `now_ms`: 現在時刻 (GetTickCount64 ms)
+pub(crate) fn kanji_needs_context_override(
+    desired_open: bool,
+    applied: crate::state::AppliedImeState,
+    shadow_on: bool,
+    is_engine_intent: bool,
+    can_imm32_cross_process: bool,
+    gji_monitor_healthy: bool,
+    now_ms: u64,
+) -> bool {
+    // override が必要な条件: EngineIntent かつ IMM32/GJI で確認できないプロファイル
+    if !is_engine_intent || can_imm32_cross_process || gji_monitor_healthy {
+        return false;
+    }
+
+    // Confirmed かつ shadow が一致している場合のみ override 不要（安全なスキップ）。
+    // Unknown / Optimistic は desync の可能性があるため override する。
+    let confirmed_at_ms = applied.confirmed_at_ms();
+    let safely_confirmed = if desired_open {
+        // ON 方向: 300ms ウィンドウ内（KeyDown+KeyUp 二重送信防止）
+        shadow_on == desired_open
+            && applied.is_confirmed()
+            && now_ms.saturating_sub(confirmed_at_ms) < 300
+    } else {
+        // OFF 方向: 永続スキップ（VK_KANJI 重複送信防止）
+        shadow_on == desired_open && applied.is_confirmed()
+    };
+
+    !safely_confirmed
+}
+
+/// `kanji_needs_context_override` および `AppliedImeState` の unit tests。
+///
+/// `awase-windows` クレートは `#![cfg(windows)]` で囲まれているため
+/// Windows 実機でのみ実行される。
+#[cfg(test)]
+mod tests {
+    use super::kanji_needs_context_override;
+    use crate::state::AppliedImeState;
+
+    /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で呼ぶヘルパー
+    fn chrome_intent(desired: bool, applied: AppliedImeState, shadow_on: bool, now_ms: u64) -> bool {
+        kanji_needs_context_override(desired, applied, shadow_on, true, false, false, now_ms)
+    }
+
+    // workaround 6-C ケース 1: フォーカス直後 (Unknown) → override 必要
+    #[test]
+    fn override_when_unknown() {
+        assert!(chrome_intent(false, AppliedImeState::Unknown, false, 1000));
+    }
+
+    // workaround 6-C ケース 2: Optimistic のみ（ImmCross async 事前更新）→ override 必要
+    #[test]
+    fn override_when_optimistic_only() {
+        assert!(chrome_intent(false, AppliedImeState::Optimistic(false), false, 1000));
+    }
+
+    // ケース 3: Confirmed OFF + 目標 OFF → 永続スキップ（override 不要）
+    #[test]
+    fn no_override_when_confirmed_off_desired_off() {
+        assert!(!chrome_intent(false, AppliedImeState::Confirmed { open: false, at_ms: 500 }, false, 1000));
+    }
+
+    // ケース 4: Confirmed + 目標 ON + 300ms 以内 → override 不要（KeyDown+KeyUp 二重送信防止）
+    #[test]
+    fn no_override_when_confirmed_within_300ms() {
+        assert!(!chrome_intent(true, AppliedImeState::Confirmed { open: false, at_ms: 800 }, true, 1000));
+    }
+
+    // ケース 5: Confirmed + 300ms 超過 → override 必要（再試行許容）
+    #[test]
+    fn override_when_confirmed_over_300ms() {
+        assert!(chrome_intent(true, AppliedImeState::Confirmed { open: false, at_ms: 500 }, true, 1000));
+    }
+
+    // ケース 6: IMM32 使用可 → override 不要
+    #[test]
+    fn no_override_when_imm32_available() {
+        assert!(!kanji_needs_context_override(false, AppliedImeState::Unknown, false, true, true, false, 1000));
+    }
+
+    // ケース 7: GJI 健全 → override 不要
+    #[test]
+    fn no_override_when_gji_healthy() {
+        assert!(!kanji_needs_context_override(false, AppliedImeState::Unknown, false, true, false, true, 1000));
+    }
+
+    // ケース 8: EngineIntent でない → override 不要
+    #[test]
+    fn no_override_when_not_engine_intent() {
+        assert!(!kanji_needs_context_override(false, AppliedImeState::Unknown, false, false, false, false, 1000));
+    }
+
+    // ケース 9: Confirmed ON + 目標 ON → 永続スキップ（override 不要）
+    #[test]
+    fn no_override_when_confirmed_on_desired_on() {
+        assert!(!chrome_intent(true, AppliedImeState::Confirmed { open: true, at_ms: 500 }, true, 100_000));
+    }
+
+    // AppliedImeState ヘルパーメソッドのテスト
+    #[test]
+    fn applied_ime_state_to_pair() {
+        assert_eq!(AppliedImeState::Unknown.to_pair(), None);
+        assert_eq!(AppliedImeState::Optimistic(true).to_pair(), Some((true, 0)));
+        assert_eq!(AppliedImeState::Confirmed { open: false, at_ms: 42 }.to_pair(), Some((false, 42)));
+    }
+
+    #[test]
+    fn applied_ime_state_applied_open() {
+        assert_eq!(AppliedImeState::Unknown.applied_open(), None);
+        assert_eq!(AppliedImeState::Optimistic(true).applied_open(), Some(true));
+        assert_eq!(AppliedImeState::Confirmed { open: false, at_ms: 1 }.applied_open(), Some(false));
+    }
+
+    #[test]
+    fn applied_ime_state_is_confirmed() {
+        assert!(!AppliedImeState::Unknown.is_confirmed());
+        assert!(!AppliedImeState::Optimistic(true).is_confirmed());
+        assert!(AppliedImeState::Confirmed { open: true, at_ms: 1 }.is_confirmed());
     }
 }

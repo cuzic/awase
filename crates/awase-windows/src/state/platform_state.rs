@@ -76,13 +76,17 @@ impl ImeStateHub {
         self.mirror_applied_open_with_ts(value, crate::hook::current_tick_ms());
     }
 
-    /// `applied_open / applied_at_ms` を指定タイムスタンプで更新する。
+    /// `applied` を指定タイムスタンプで更新する。
     ///
-    /// `ts = 0` は「楽観的未確認」（ImmCross async 送信直後など）を表す。
-    /// `applied_at_ms > 0` が「apply 確認済み」の条件なので skip_override 等の判定に影響する。
-    pub(crate) const fn mirror_applied_open_with_ts(&mut self, value: bool, ts: u64) {
-        self.shadow_model.applied_open = Some(value);
-        self.shadow_model.applied_at_ms = ts;
+    /// `ts = 0` → `Optimistic`（ImmCross async 送信直後など、楽観的未確認）
+    /// `ts > 0` → `Confirmed`（実 apply 完了後）
+    pub(crate) fn mirror_applied_open_with_ts(&mut self, value: bool, ts: u64) {
+        use crate::state::ime_model::AppliedImeState;
+        self.shadow_model.applied = if ts == 0 {
+            AppliedImeState::Optimistic(value)
+        } else {
+            AppliedImeState::Confirmed { open: value, at_ms: ts }
+        };
         // 同じ apply が完了した扱いなので pending も clear
         if let Some(p) = &self.shadow_model.pending {
             if p.target == value {
@@ -137,16 +141,20 @@ impl ImeStateHub {
 
     // ── Applied state ──
 
-    pub(crate) const fn applied_open(&self) -> Option<bool> {
-        self.shadow_model.applied_open
+    pub(crate) fn applied_state(&self) -> crate::state::ime_model::AppliedImeState {
+        self.shadow_model.applied_state()
+    }
+
+    pub(crate) fn applied_open(&self) -> Option<bool> {
+        self.shadow_model.applied.applied_open()
     }
 
     pub(crate) fn applied_open_or_default(&self) -> bool {
-        self.shadow_model.applied_open.unwrap_or(false)
+        self.shadow_model.applied.applied_open().unwrap_or(false)
     }
 
-    pub(crate) const fn has_applied_state(&self) -> bool {
-        self.shadow_model.applied_open.is_some()
+    pub(crate) fn has_applied_state(&self) -> bool {
+        self.shadow_model.applied != crate::state::ime_model::AppliedImeState::Unknown
     }
 
     pub(crate) fn applied_pair(&self) -> Option<(bool, u64)> {

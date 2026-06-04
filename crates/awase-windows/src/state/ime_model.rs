@@ -16,6 +16,58 @@ use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
 use super::transition::ImeTransition;
 
+// ── AppliedImeState ──────────────────────────────────────────────────────────
+
+/// IME apply 結果の確信度。
+///
+/// `Option<(bool, u64)>` + センチネル値 `ts=0` で表現していた3状態を型で明示する。
+/// - `Unknown`   : フォーカス直後・起動時。実 IME 状態が不明。
+/// - `Optimistic`: ImmCross async の楽観的事前更新。OS 未確認。
+/// - `Confirmed` : 実 apply 完了・確認済み。旧 `applied_at_ms > 0` に相当。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppliedImeState {
+    #[default]
+    Unknown,
+    Optimistic(bool),
+    Confirmed { open: bool, at_ms: u64 },
+}
+
+impl AppliedImeState {
+    /// `build_ime_control_view` 互換の `Option<(bool, u64)>` に変換する。
+    #[must_use]
+    pub const fn to_pair(self) -> Option<(bool, u64)> {
+        match self {
+            Self::Unknown => None,
+            Self::Optimistic(open) => Some((open, 0)),
+            Self::Confirmed { open, at_ms } => Some((open, at_ms)),
+        }
+    }
+
+    /// apply 済みの open 値を返す（Optimistic も含む）。Unknown は None。
+    #[must_use]
+    pub const fn applied_open(self) -> Option<bool> {
+        match self {
+            Self::Unknown => None,
+            Self::Optimistic(open) | Self::Confirmed { open, .. } => Some(open),
+        }
+    }
+
+    /// 確認済み (`Confirmed`) かどうか。
+    #[must_use]
+    pub const fn is_confirmed(self) -> bool {
+        matches!(self, Self::Confirmed { .. })
+    }
+
+    /// `Confirmed { open, at_ms }` の `at_ms` を返す。それ以外は 0。
+    #[must_use]
+    pub const fn confirmed_at_ms(self) -> u64 {
+        match self {
+            Self::Confirmed { at_ms, .. } => at_ms,
+            _ => 0,
+        }
+    }
+}
+
 /// Shadow IME モデル。最終形 (Phase 3 完了時) ではこれが SSOT になる予定。
 ///
 /// Step 3 時点: desired_open + last_intent + observations (per-source + drift) + policy。
@@ -52,13 +104,9 @@ pub struct ImeModel {
     /// 旧 `ImeEffect::SetOpen` (Layer 3) + 楽観的 latch を統合。
     pub pending: Option<ImeTransition>,
 
-    /// 最後に actuator が成功させた IME 開閉状態 (Step 7)。
-    /// 旧 `last_applied_ime_on` (Layer 4) の置換。`None` は未適用。
-    pub applied_open: Option<bool>,
-
-    /// 最後に actuator が成功した時刻 (ms)。0 = 未確認（フォーカス変更後 / soft presync）。
-    /// `applied_ms > 0` は「フォーカス変更後に実 apply が 1 回以上完了した」ことを示す。
-    pub applied_at_ms: u64,
+    /// 最後に actuator が成功させた IME 開閉状態の確信度 (Step 7)。
+    /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
+    pub applied: AppliedImeState,
 
     /// reduce 呼び出し回数。診断用。
     pub reduce_count: u64,
@@ -84,8 +132,7 @@ impl ImeModel {
             force_guards: ForceGuardSet::default(),
             observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
-            applied_open: None,
-            applied_at_ms: 0,
+            applied: AppliedImeState::Unknown,
             reduce_count: 0,
         }
     }
@@ -106,10 +153,16 @@ impl ImeModel {
         self.force_guards.effective_open(self.desired_open)
     }
 
-    /// `applied_open` と `applied_at_ms` のペアを返す。`Platform::build_ime_control_view` に渡す用。
+    /// `AppliedImeState` を返す。executor の applied_snapshot 同期用。
     #[must_use]
-    pub fn applied_pair(&self) -> Option<(bool, u64)> {
-        self.applied_open.map(|v| (v, self.applied_at_ms))
+    pub const fn applied_state(&self) -> AppliedImeState {
+        self.applied
+    }
+
+    /// `build_ime_control_view` 互換の `Option<(bool, u64)>` を返す。
+    #[must_use]
+    pub const fn applied_pair(&self) -> Option<(bool, u64)> {
+        self.applied.to_pair()
     }
 
     /// `pending` transition の generation を返す。apply 完了 event の照合用。
@@ -239,8 +292,7 @@ impl ImeModel {
                 self.last_intent = None;
                 self.observations.clear_on_focus_change();
                 log::debug!("[explicit-intent] cleared (focus change)");
-                self.applied_open = None;
-                self.applied_at_ms = 0;
+                self.applied = AppliedImeState::Unknown;
                 // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
                 self.force_guards.clear_for_focus_change();
                 // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
@@ -280,7 +332,6 @@ impl ImeModel {
                     generation,
                     requested_at: envelope.time.monotonic,
                     actuator: self.app_policy.actuator_kind,
-                    optimistic_applied: false,
                     timeout_at: envelope.time.monotonic + std::time::Duration::from_secs(1),
                 });
             }
@@ -288,8 +339,7 @@ impl ImeModel {
                 // Step 7: **必須** generation 照合で stale apply を排除。
                 // pending の generation と一致しなければ無視する。
                 if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
-                    self.applied_open = Some(target);
-                    self.applied_at_ms = envelope.time.tick_ms;
+                    self.applied = AppliedImeState::Confirmed { open: target, at_ms: envelope.time.tick_ms };
                     self.pending = None;
                 }
                 // 一致しない場合は何もしない (stale → 無視)
@@ -301,11 +351,10 @@ impl ImeModel {
                 }
             }
             ImeEvent::DriftDetected { desired, .. } => {
-                // skip_override を無効化する: applied_at_ms = 0 にリセットすることで
+                // skip_override を無効化する: Optimistic にリセットすることで
                 // 次の SetOpen(desired) が「確認済み apply がない」扱いになり skip されなくなる。
-                // applied_open は desired に合わせて楽観的にセット（ImmCross async 送信と同じ扱い）。
-                self.applied_open = Some(desired);
-                self.applied_at_ms = 0;
+                // applied は desired に合わせて楽観的にセット（ImmCross async 送信と同じ扱い）。
+                self.applied = AppliedImeState::Optimistic(desired);
             }
         }
     }

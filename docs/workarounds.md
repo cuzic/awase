@@ -254,3 +254,88 @@ GJI の composition 動作の実際の挙動に依存した最適化。削除す
 |---|---|
 | `2f4c766` | `gji.rs`: `thread::sleep(500ms)` → `WaitForSingleObject(5000ms)` に置換 |
 | `3306ff7` | `ime_diagnostic.rs`: `capture_imc` コメントを「RUNTIME 借用中のメッセージポンプ防止」に更新 |
+
+---
+
+## アーキテクチャ改善調査結果（2026-06-04）
+
+workarounds の根本原因を3つに分類し、各々の改善可能性を調査した結果を記録する。
+
+---
+
+### 問題 A: "Send & Infer" アーキテクチャ（影の状態管理）
+
+**該当ワークアラウンド:** 6-C, 6-E
+
+**調査結果: ImmCross パスは既に "Send & Confirm" 実装済み**
+
+`executor.rs` の ImmCross async パスは送信失敗時に `read_ime_state_fast()` で実際の IME 状態を確認してからフォールバックを決定する。Standard IMM32 アプリ（LINE 等）向けには既に確認付き送信が実装されている。
+
+**Chrome/WezTerm では原理的に不可能**
+
+`read_ime_state_fast()` が `None` を返すアプリが存在する:
+
+| プロファイル | 理由 |
+|---|---|
+| Imm32Unavailable (Chrome/Edge) | IMM32 クロスプロセス API が使えない |
+| TsfNative (WezTerm) | TSF native のため HIMC が NULL |
+
+これらのアプリに対して実際の IME 状態を問い合わせる手段が OS の API として存在しない。  
+**6-C と 6-E は Chrome/WezTerm 向けの不可避な最小対処であり、削除できない。**
+
+**小改善の余地（未実装）**
+
+Standard IMM32 アプリに限り、フォーカス変更直後に即時 `read_ime_state_fast()` を呼ぶことで 6-C の desync ウィンドウを縮小できる。現在は `TYPING_IDLE_MS`（500ms）後のポーリングのみ。
+
+---
+
+### 問題 B: コンポジションコンテキストの不透明性
+
+**該当ワークアラウンド:** 1-1, 6-A, 3-2（warm 維持）
+
+GJI のコンポジション状態（cold/warm）を外部から直接観測できないため、タイムスタンプ＋GJI I/O 監視で推測している。以下の代替案を調査したが、いずれも実現不可能または試験済みで棄却された。
+
+**案1: WM_IME_STARTCOMPOSITION フック**
+
+`SetWinEventHook(WINEVENT_OUTOFCONTEXT)` で `EVENT_OBJECT_IME_SHOW/HIDE/CHANGE`（0x8027–0x8029）を傍受しコンポジション開始・終了を検出する試み。
+
+- **結果: GJI TSF モードでは発火しないことを実機確認済み**（コミット `817c9bb`、`6099179`、`bd63026` の段階的調査）
+- `OBJID_WINDOW` フィルタを外して全イベントをダンプしても GJI TSF モードでは発火せず
+- `WH_CALLWNDPROC` による DLL インジェクションはウイルス対策ソフトの誤検知リスクがあり採用できない
+
+**案2: ImmGetCompositionString クロスプロセスクエリ**
+
+フォアグラウンドウィンドウの HIMC から `GCS_COMPSTR` を読み取り、コンポジション文字列の有無で warm/cold を判定する。probe-and-retry として実装・実験済み。
+
+- **結果: WezTerm は TSF native app のため常に 0 を返し cold/warm 検出が不可能**（コミット `b643bac`）
+- 最悪 952ms の遅延が発生したため固定 sleep に戻した
+- `capture_composition_snapshot` による診断実験も実施（コミット `640aad2`）、「TsfNative/Imm32Unavailable では HIMC NULL で全フィールド None」を確認
+
+**案3: GJI IPC 盗聴（named pipe 等）**
+
+GJI プロセスと TSF DLL 間の独自 IPC を傍受してコンポジション状態を取得する。
+
+- **結果: 採用せず** — proprietary バイナリプロトコルのリバースエンジニアリングが必要で GJI バージョンアップで即死するリスクが高い
+- 現在の `GetProcessIoCounters` ベースの `GjiMonitor` + `TsfReadinessProbe` が、DLL なしで実質的に同等の観測を実現している
+
+**結論:** 現行の GJI I/O 監視アプローチが外部から利用可能な最良の手段。1-1・6-A・3-2 は削除できない。
+
+---
+
+### 問題 C: アプリ固有挙動の散在
+
+**該当ワークアラウンド:** 3-1, 6-B, 6-F, 6-G
+
+アプリ固有の動作知識（Chrome の F2 重複・WezTerm の Unicode+VK 混在等）が `vk_send.rs`・`probe_io.rs`・`tuning.rs` に条件として散在している。
+
+**設計案: `AppDeliveryProfile`**
+
+以下のフィールドを持つ型を `output/delivery_profile.rs` に新設し、フォーカス変更時に `InjectionMode` から構築する:
+
+- `physical_f2_valid_ms: u64` — 物理 F2 の有効期間（Chrome 6-F）
+- `unicode_vk_interleave_safe: bool` — Unicode+VK 混在の安全性（WezTerm 6-G）
+- `vk_probe: VkProbeParams` — Chrome probe タイミング3パターン
+
+**評価:** 純粋なリファクタリングでバグは減らない。変更対象は 2 箇所のみ（`vk_send.rs` の条件、`probe_io.rs` の条件）。新規アプリ対応の機会に「ついでに」実施するのが適切。
+
+詳細設計は **ADR-043** (`docs/adr/043-app-delivery-profile.md`) を参照。

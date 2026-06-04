@@ -19,6 +19,7 @@ pub mod force_guard;
 pub mod ime_event;
 pub mod ime_event_log;
 pub mod ime_model;
+pub(crate) use ime_model::AppliedImeState;
 pub mod input_barrier;
 pub mod observation_store;
 pub mod transition;
