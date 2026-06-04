@@ -262,7 +262,7 @@ impl ImeStateHub {
     ///
     /// belief・shadow_model を初期化し `PanicReset` force guard を立てる。
     pub(crate) fn apply_panic_reset(&mut self) {
-        self.belief.input_mode = awase::engine::InputModeState::ObservedRomaji;
+        self.belief.input_mode = InputModeState::ObservedRomaji;
         self.belief.is_japanese_ime = true;
         self.belief.prev_conversion_mode = None;
         self.shadow_model.observe_miss_monitor.record_success();

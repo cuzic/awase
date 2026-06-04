@@ -61,16 +61,13 @@ impl ObservedState {
 
 /// `apply_ime_open` が最後に OS に送ったコマンド値（制御ログ）。
 ///
-/// 真の観測値ではない。`ImeModel.applied_open / applied_at_ms`（SSOT）から
+/// 真の観測値ではない。`ImeModel.applied_open`（SSOT）から
 /// 各 apply サイクルの先頭で pre-fetch されるスナップショット。
 /// VK_KANJI がトグルキーであるため、重複送信を避けるために参照する。
 #[derive(Clone, Copy)]
 pub(crate) struct ControlLog {
     /// `apply_ime_open` が最後に OS に送ったコマンド値。
     pub shadow_on: bool,
-    /// 最後の apply 完了時刻 (ms)。0 = 未確認（フォーカス変更後 / soft presync）。
-    /// `applied_at_ms > 0` は「フォーカス変更後に実 apply が 1 回以上完了した」を示す。
-    pub applied_at_ms: u64,
 }
 
 /// `apply_ime_open` / `ImeOpenStrategy` 用の統一スナップショットビュー。

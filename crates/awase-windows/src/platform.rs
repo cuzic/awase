@@ -435,7 +435,7 @@ impl PlatformRuntime for WindowsPlatform {
 impl WindowsPlatform {
     /// `apply_ime_open` 用の `ImeControlView` を構築する。
     ///
-    /// `applied` には呼び出し元が持つ `ImeModel.applied_open` と `applied_at_ms` のペアを渡す。
+    /// `applied` には呼び出し元が持つ `ImeModel.applied_pair()` の戻り値を渡す。
     /// `None` を渡した場合は `(false, 0)`（未適用）として扱う。
     pub(crate) fn build_ime_control_view(
         &self,
@@ -446,17 +446,14 @@ impl WindowsPlatform {
         } else {
             ""
         };
-        let (shadow_on, applied_at_ms) = applied.unwrap_or((false, 0));
+        let (shadow_on, _applied_at_ms) = applied.unwrap_or((false, 0));
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
                 profile: self.current_app_profile(),
             },
             observed: crate::state::ObservedState::capture_now(),
-            control: crate::state::ControlLog {
-                shadow_on,
-                applied_at_ms,
-            },
+            control: crate::state::ControlLog { shadow_on },
         }
     }
 

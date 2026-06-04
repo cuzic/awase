@@ -628,8 +628,8 @@ pub(crate) fn handle_gji_setup() {
     let response = unsafe {
         MessageBoxW(
             None,
-            windows::core::PCWSTR(message.as_ptr()),
-            windows::core::PCWSTR(caption.as_ptr()),
+            PCWSTR(message.as_ptr()),
+            PCWSTR(caption.as_ptr()),
             MB_OKCANCEL | MB_ICONINFORMATION,
         )
     };
