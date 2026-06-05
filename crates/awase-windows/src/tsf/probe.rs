@@ -402,7 +402,13 @@ impl CompositionState {
             let n = self.cold_ctx.increment_consecutive_count();
             log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         } else {
-            self.cold_ctx.reset_consecutive_count();
+            // consecutive_count はフォーカス変更時のみリセット。
+            // PassthroughConfirmKey / ReinjectConfirmKey / SymbolVkSent 等の通常タイピング操作では
+            // リセットしないことで「GJI 非対応ウィンドウでスペースを押すたびに BS が発動する」
+            // false positive ループを防ぐ。
+            if reason == crate::output::ColdReason::FocusChange {
+                self.cold_ctx.reset_consecutive_count();
+            }
             log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         }
         self.warm_epoch.mark_cold();
