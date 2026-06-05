@@ -529,8 +529,35 @@ impl LayoutEntry {
 /// `app::run()` から呼ばれる唯一のエントリポイント。
 #[allow(clippy::too_many_lines)]
 pub(super) fn run_all() -> Result<()> {
-    let debug_console = std::env::args().any(|a| a == "--debug");
+    let args: Vec<String> = std::env::args().collect();
+    let debug_console = args.iter().any(|a| a == "--debug");
     init_logging(debug_console);
+
+    // --exit-after <SECS>: デバッグ用タイムアウト自動終了
+    let exit_after_secs: Option<u64> = args
+        .windows(2)
+        .find(|w| w[0] == "--exit-after")
+        .and_then(|w| w[1].parse().ok());
+    if let Some(secs) = exit_after_secs {
+        log::info!("--exit-after {secs}s: {secs} 秒後に自動終了します");
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+            log::info!("--exit-after タイムアウト ({secs}s) → 終了");
+            use crate::{MAIN_THREAD_ID, QUIT_REQUESTED};
+            use std::sync::atomic::Ordering;
+            use windows::Win32::System::Threading::GetCurrentThreadId;
+            use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
+            use windows::Win32::Foundation::{LPARAM, WPARAM};
+            QUIT_REQUESTED.store(true, Ordering::SeqCst);
+            let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
+            if tid != 0 {
+                // SAFETY: tid は起動時に格納した有効なスレッド ID。
+                unsafe { let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0)); }
+            } else {
+                std::process::exit(0);
+            }
+        });
+    }
 
     // 多重起動防止: Named Mutex で既存インスタンスをチェック
     // SAFETY: CreateMutexW, FindWindowW, PostMessageW, CloseHandle are standard Win32 calls.
