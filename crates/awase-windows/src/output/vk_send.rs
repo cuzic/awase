@@ -443,7 +443,11 @@ impl Output {
             .saturating_sub(crate::tsf::observer::gji_last_io_ms())
             >= crate::tuning::LONG_IDLE_MS;
         let gji_active = crate::tsf::observer::gji_monitor_healthy();
-        if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active && !gji_long_idle {
+        if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing
+            && gji_active
+            && !gji_long_idle
+            && self.composition.consecutive_count() < crate::tuning::CONSECUTIVE_LITERAL_SKIP
+        {
             let deadline_ms =
                 crate::hook::current_tick_ms() + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
             let guard = OutputActiveGuard::begin();

@@ -162,3 +162,10 @@ pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
 
 /// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
 pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
+
+/// raw-tsf-literal false positive と判断するまでの連続回数。
+///
+/// consecutive_count がこれ以上になった場合、LiteralDetect をスキップして
+/// warm を維持する。WezTerm 等 TSF native app では composition が作られないため
+/// LiteralDetect が常に false positive になる。3 回連続したら以降はスキップする。
+pub const CONSECUTIVE_LITERAL_SKIP: u32 = 3;

@@ -218,7 +218,10 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                         let gji_active = io.gji_monitor_healthy();
                         let needs_literal =
-                            prepend_f2_warmup && gji_active && !io.gji_long_idle();
+                            prepend_f2_warmup
+                            && gji_active
+                            && !io.gji_long_idle()
+                            && io.consecutive_count() < crate::tuning::CONSECUTIVE_LITERAL_SKIP;
                         let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, true);
