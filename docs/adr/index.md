@@ -23,6 +23,9 @@
 | [040](040-incremental-refactor-strategy.md) | 大規模リファクタリングの段階的遷移戦略 | 採用済み |
 | [041](041-hook-reentry-modifier-consistency.md) | フック再入時の修飾キー整合性保証 | 採用済み |
 | [042](042-clock-trait-timed-fsm.md) | Clock トレイト抽象化と timed-fsm のテスト可能性 | 採用済み |
+| [043](043-app-delivery-profile.md) | アプリ配信プロファイル設計 | 採用済み |
+| [044](044-applied-ime-state-confidence.md) | AppliedImeState と decide_kanji_apply — 保守性改善 | 採用済み |
+| [045](045-dead-field-detection-policy.md) | Dead Field 検出方針とプレースホルダーフィールド禁止原則 | 採用済み |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
