@@ -331,14 +331,10 @@ impl Runtime {
 
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
-        // TsfNative アプリ（Windows Terminal, WezTerm 等）では IME 状態が shadow model の SSOT。
-        // explicit_intent が確定している間は OS ポーリングで得られる情報がないため、
-        // 500ms ループを止める。次の poll はフォーカス変更か may_change_ime キーで再開する。
-        if matches!(
-            self.platform.current_app_profile(),
-            crate::focus::class_names::AppImeProfile::TsfNative
-        ) && self.platform_state.ime.explicit_intent().is_some()
-        {
+        // explicit_intent が確定している間は継続ポーリング不要。
+        // 状態は awase が管理しており外部変化は事実上ない。
+        // 再開トリガー: フォーカス変更（explicit_intent クリア）/ may_change_ime キー（20ms）
+        if self.platform_state.ime.explicit_intent().is_some() {
             return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.ime_poll_interval_ms));
