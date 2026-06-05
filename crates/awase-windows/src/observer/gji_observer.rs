@@ -6,8 +6,6 @@ use crate::tuning::GJI_CONFIRM_WINDOW_MS;
 pub(crate) struct GjiBlacklistObservation {
     /// `observer_poll` スロットに書き込むべき値。`None` = 書き込み不要。
     pub observer_poll_value: Option<bool>,
-    /// 観測時刻 (ms)
-    pub now_ms: u64,
 }
 
 /// IMM-broken クラス（Chrome/Edge 等）向け GJI I/O 観測。
@@ -27,7 +25,6 @@ pub(crate) fn observe_gji_after_focus(last_focus_change_ms: u64) -> GjiBlacklist
         );
         GjiBlacklistObservation {
             observer_poll_value: Some(true),
-            now_ms,
         }
     } else {
         if last_io > 0 && !gji_after_focus {
@@ -39,7 +36,6 @@ pub(crate) fn observe_gji_after_focus(last_focus_change_ms: u64) -> GjiBlacklist
         }
         GjiBlacklistObservation {
             observer_poll_value: None,
-            now_ms,
         }
     }
 }
