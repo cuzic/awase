@@ -84,8 +84,8 @@ impl Runtime {
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
 
         let ctx = super::build_input_context(
-            self.platform_state.ime_on(),
-            self.platform_state.belief(),
+            self.platform_state.ime.effective_open(),
+            &self.platform_state.ime.belief,
             &event.modifier_snapshot,
         );
         // [engine-input] order-bug 調査用: drain と inline の処理順序を可視化する。
@@ -200,7 +200,7 @@ impl Runtime {
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.platform_state.last_focus_change_ms;
-        let shadow_on = self.platform_state.ime.applied_open_or_default();
+        let shadow_on = self.platform_state.ime.model().applied.applied_open().unwrap_or(false);
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
@@ -228,7 +228,7 @@ impl Runtime {
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))
-        } else if self.platform_state.is_japanese_ime() {
+        } else if self.platform_state.ime.belief.is_japanese_ime() {
             event
                 .ime_relevance
                 .shadow_action
@@ -240,27 +240,20 @@ impl Runtime {
             return false;
         };
 
-        let current = self.platform_state.ime_on();
+        let current = self.platform_state.ime.effective_open();
         let new_val = match action {
             ShadowImeAction::Toggle => !current,
             ShadowImeAction::TurnOn => true,
             ShadowImeAction::TurnOff => false,
         };
-        let ms = hook::current_tick_ms();
-        let user_enabled = self.engine.is_user_enabled();
         match kind {
-            IntentKind::SyncKey => self
-                .platform_state
-                .write_sync_key(new_val, ms, user_enabled),
-            IntentKind::PhysicalImeKey => {
-                self.platform_state
-                    .write_physical_key(new_val, ms, user_enabled);
-            }
+            IntentKind::SyncKey => self.platform_state.ime.write_sync_key(new_val),
+            IntentKind::PhysicalImeKey => self.platform_state.ime.write_physical_key(new_val),
         }
-        if self.platform_state.ime_on() == current {
+        if self.platform_state.ime.effective_open() == current {
             return false;
         }
-        self.platform_state.on_shadow_ime_toggled();
+        self.platform_state.ime.on_ime_toggled();
 
         // ON→OFF の場合、OS IME を明示的に OFF にする。
         // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
@@ -276,7 +269,7 @@ impl Runtime {
         // 含む sync `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こす
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
         // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
-        if !self.platform_state.ime_on() {
+        if !self.platform_state.ime.effective_open() {
             let view = self.shadow_ime_control_view();
             let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
             if imm_first {
@@ -321,7 +314,7 @@ impl Runtime {
         log::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
-            if self.platform_state.ime_on() {
+            if self.platform_state.ime.effective_open() {
                 "ON"
             } else {
                 "OFF"
@@ -377,13 +370,8 @@ impl Runtime {
                         "IME control: IME ON request during chord → ChordEnded, processing normally"
                     );
                 }
-                let ms = hook::current_tick_ms();
-                self.platform_state.write_set_open_request(
-                    new_ime_on,
-                    ms,
-                    self.engine.is_user_enabled(),
-                );
-                self.platform_state.on_set_open_requested();
+                self.platform_state.ime.write_set_open_request(new_ime_on);
+                self.platform_state.ime.on_set_open_requested();
                 self.platform.timer.kill(TIMER_IME_REFRESH);
 
                 // Phase 3b: ImeApplyRequested event を dispatch して shadow_model.pending を
@@ -565,12 +553,10 @@ const fn compute_focus_probe_grace(
 
 impl Runtime {
     fn apply_effective_ime(&mut self, effective: bool) {
-        let ms = hook::current_tick_ms();
         if effective {
-            self.platform_state.reset_ime_detect_state();
+            self.platform_state.ime.reset_detect_state();
         }
-        self.platform_state
-            .write_focus_probe(effective, ms, self.engine.is_user_enabled());
+        self.platform_state.ime.write_focus_probe(effective);
     }
 }
 
@@ -609,10 +595,9 @@ impl Runtime {
         shadow_on: bool,
     ) {
         let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
-        let ime_on_before_probe = self.platform_state.ime_on();
+        let ime_on_before_probe = self.platform_state.ime.effective_open();
 
-        self.platform_state
-            .set_is_japanese_ime(probe.is_japanese_ime);
+        self.platform_state.ime.set_is_japanese_ime(probe.is_japanese_ime);
 
         let now_ms = hook::current_tick_ms();
         let signals = compute_focus_probe_grace(
@@ -636,8 +621,8 @@ impl Runtime {
             None
         };
 
-        let ime_on_after_probe = self.platform_state.ime_on();
-        let input_mode_after_probe = self.platform_state.input_mode();
+        let ime_on_after_probe = self.platform_state.ime.effective_open();
+        let input_mode_after_probe = self.platform_state.ime.belief.input_mode();
         let ime_on_suffix =
             build_ime_on_suffix(probe.ime_on, suppressed_reason, &signals, probe_age_ms);
 

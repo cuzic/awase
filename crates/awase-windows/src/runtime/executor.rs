@@ -94,7 +94,7 @@ impl DecisionExecutor {
         decision: Decision,
         raw_event: &RawKeyEvent,
     ) -> BatchResult {
-        self.applied_snapshot = ime.applied_state();
+        self.applied_snapshot = ime.model().applied;
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(platform, decision),
             HookMode::Relay => self.execute_relay(platform, decision, raw_event),
@@ -108,7 +108,7 @@ impl DecisionExecutor {
         ime: &ImeStateHub,
         decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
-        self.applied_snapshot = ime.applied_state();
+        self.applied_snapshot = ime.model().applied;
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),

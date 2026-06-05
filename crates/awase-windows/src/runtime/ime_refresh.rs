@@ -129,8 +129,8 @@ impl Runtime {
         log::debug!(
             "[stage-observe] strategy={:?} belief_on={} explicit_intent={:?}",
             strategy,
-            self.platform_state.ime_on(),
-            self.platform_state.explicit_intent(),
+            self.platform_state.ime.effective_open(),
+            self.platform_state.ime.explicit_intent(),
         );
         match strategy {
             ImeReadStrategy::SkipTyping => {}
@@ -141,15 +141,11 @@ impl Runtime {
                 );
                 log::debug!("[stage-observe] gji_result={:?}", obs.observer_poll_value);
                 if let Some(v) = obs.observer_poll_value {
-                    self.platform_state.write_observer_poll(
-                        v,
-                        obs.now_ms,
-                        self.engine.is_user_enabled(),
-                    );
+                    self.platform_state.ime.write_observer_poll(v);
                 }
             }
             ImeReadStrategy::OsPoll => {
-                let miss_before = self.platform_state.ime_detect_miss_count();
+                let miss_before = self.platform_state.ime.detect_miss_count();
                 self.ir_poll_and_learn(miss_before, ime_snap);
             }
         }
@@ -190,16 +186,14 @@ impl Runtime {
         // engine が inactive になる。broken アプリでは入力モードを検出できないため、
         // ime_on=true のとき AssumedRomaji と仮定して補正する。
         if skip_imm_query
-            && self.platform_state.ime_on()
-            && !self.platform_state.input_mode().is_romaji_capable()
+            && self.platform_state.ime.effective_open()
+            && !self.platform_state.ime.belief.input_mode().is_romaji_capable()
         {
             log::info!(
                 "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
             );
-            self.platform_state
-                .set_input_mode(InputModeState::AssumedRomaji {
-                    reason: AssumedReason::ImmBridgeBroken,
-                });
+            self.platform_state.ime.belief.input_mode =
+                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken };
         }
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
@@ -226,8 +220,9 @@ impl Runtime {
             // タイピングアイドルガードを回避して OsPoll を先行させる。
             // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
             let explicit_verify = !skip_imm_query
-                && self.platform_state.explicit_intent().is_some()
-                && self.platform_state.ime.has_applied_state();
+                && self.platform_state.ime.explicit_intent().is_some()
+                && self.platform_state.ime.model().applied
+                    != crate::state::ime_model::AppliedImeState::Unknown;
             if !explicit_verify {
                 log::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
                 return ImeReadStrategy::SkipTyping;
@@ -247,16 +242,16 @@ impl Runtime {
     // ── IME 状態のポーリングと学習 ──
 
     fn ir_poll_and_learn(&mut self, miss_before: u32, ime_snap: Option<&crate::ime::ImeSnapshot>) {
-        let ime_on_before_poll = self.platform_state.ime_on();
-        let input_mode_before_poll = self.platform_state.input_mode();
+        let ime_on_before_poll = self.platform_state.ime.effective_open();
+        let input_mode_before_poll = self.platform_state.ime.belief.input_mode();
 
         let observer_out = match ime_snap {
             None => unsafe {
                 crate::observer::ime_observer::poll_and_classify_ime(
-                    self.platform_state.ime_on(),
-                    self.platform_state.is_force_on_guard_active(),
-                    self.platform_state.input_mode(),
-                    self.platform_state.prev_conversion_mode(),
+                    self.platform_state.ime.effective_open(),
+                    self.platform_state.ime.is_force_on_guard_active(),
+                    self.platform_state.ime.belief.input_mode(),
+                    self.platform_state.ime.belief.prev_conversion_mode(),
                 )
             },
             Some(snap) => {
@@ -264,17 +259,16 @@ impl Runtime {
                 crate::observer::ime_observer::classify_fetched_snapshot(
                     snap,
                     now_ms,
-                    self.platform_state.ime_on(),
-                    self.platform_state.is_force_on_guard_active(),
-                    self.platform_state.input_mode(),
-                    self.platform_state.prev_conversion_mode(),
+                    self.platform_state.ime.effective_open(),
+                    self.platform_state.ime.is_force_on_guard_active(),
+                    self.platform_state.ime.belief.input_mode(),
+                    self.platform_state.ime.belief.prev_conversion_mode(),
                 )
             }
         };
-        self.platform_state
-            .apply_ime_update(&observer_out, self.engine.is_user_enabled());
+        self.platform_state.ime.apply_ime_update(&observer_out);
 
-        let miss_after = self.platform_state.ime_detect_miss_count();
+        let miss_after = self.platform_state.ime.detect_miss_count();
 
         self.ir_log_poll_diff(
             ime_on_before_poll,
@@ -298,8 +292,8 @@ impl Runtime {
         let age_ms =
             crate::hook::current_tick_ms().saturating_sub(self.platform_state.last_focus_change_ms);
         if age_ms < 10_000 {
-            let ime_on_after = self.platform_state.ime_on();
-            let input_mode_after = self.platform_state.input_mode();
+            let ime_on_after = self.platform_state.ime.effective_open();
+            let input_mode_after = self.platform_state.ime.belief.input_mode();
             let ime_changed = ime_on_before_poll != ime_on_after;
             let mode_changed = input_mode_before_poll != input_mode_after;
             if ime_changed || mode_changed {
@@ -311,7 +305,7 @@ impl Runtime {
                             "ime_on {} → {}(intent={:?}) ",
                             ime_on_before_poll,
                             ime_on_after,
-                            self.platform_state.explicit_intent(),
+                            self.platform_state.ime.explicit_intent(),
                         )
                     } else {
                         String::new()
@@ -338,11 +332,11 @@ impl Runtime {
             crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
         }
         log::debug!("[composition] focus change → marking cold");
-        let ime_on_now = self.platform_state.ime_on();
+        let ime_on_now = self.platform_state.ime.effective_open();
         self.platform_state.ime.mirror_applied_open(ime_on_now);
         self.platform.mark_composition_cold_focus_change();
 
-        let applied_open = self.platform_state.ime.applied_open();
+        let applied_open = self.platform_state.ime.model().applied.applied_open();
         self.platform.send_eager_warmup(applied_open);
         log::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
@@ -352,7 +346,7 @@ impl Runtime {
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         );
-        let applied_ime_on = self.platform_state.ime.applied_open_or_default();
+        let applied_ime_on = self.platform_state.ime.model().applied.applied_open().unwrap_or(false);
         if !applied_ime_on && !new_profile_is_tsf_native {
             let _ = self.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
@@ -369,7 +363,7 @@ impl Runtime {
     //   TsfNative アプリは can_use_imm32_cross_process=false で set_ime_open が no-op。
 
     fn ir_check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
-        let explicit_intent = self.platform_state.explicit_intent();
+        let explicit_intent = self.platform_state.ime.explicit_intent();
         self.platform_state
             .ime
             .check_drift_correction(now, explicit_intent)
@@ -379,7 +373,7 @@ impl Runtime {
         if self.ir_resolve_skip_imm_query() {
             return;
         }
-        if !self.engine.is_user_enabled() || !self.platform_state.is_japanese_ime() {
+        if !self.engine.is_user_enabled() || !self.platform_state.ime.belief.is_japanese_ime() {
             return;
         }
 
@@ -413,7 +407,7 @@ impl Runtime {
             "[notify-refresh] ctx.ime_on={} ctx.is_jp={} explicit_intent={:?}",
             ctx.ime_on,
             ctx.is_japanese_ime,
-            self.platform_state.explicit_intent(),
+            self.platform_state.ime.explicit_intent(),
         );
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
         self.execute_decision_suppressed(decision);
