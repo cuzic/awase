@@ -545,7 +545,6 @@ pub(super) fn run_all() -> Result<()> {
             log::info!("--exit-after タイムアウト ({secs}s) → 終了");
             use crate::{MAIN_THREAD_ID, QUIT_REQUESTED};
             use std::sync::atomic::Ordering;
-            use windows::Win32::System::Threading::GetCurrentThreadId;
             use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
             use windows::Win32::Foundation::{LPARAM, WPARAM};
             QUIT_REQUESTED.store(true, Ordering::SeqCst);
