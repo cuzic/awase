@@ -108,6 +108,9 @@ impl Output {
                     log::trace!("macOS output: Romaji(\"{s}\")");
                 }
                 KeyAction::Suppress => {}
+                KeyAction::KeySequence(s) => {
+                    log::trace!("macOS output: KeySequence(\"{s}\")");
+                }
             }
         }
     }
