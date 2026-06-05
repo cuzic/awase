@@ -18,8 +18,6 @@
 
 use std::time::Instant;
 
-use super::app_ime_policy::ImeActuatorKind;
-
 /// OS への apply transaction。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImeTransition {
@@ -27,10 +25,6 @@ pub struct ImeTransition {
     pub target: bool,
     /// 世代 ID (apply 要求ごとに increment、stale 照合に使う)
     pub generation: u64,
-    /// 要求時刻 (タイムアウト判定用)
-    pub requested_at: Instant,
-    /// 使用 actuator
-    pub actuator: ImeActuatorKind,
     /// この transition のタイムアウト時刻
     pub timeout_at: Instant,
 }
@@ -54,8 +48,6 @@ mod tests {
         let trans = ImeTransition {
             target: true,
             generation: 10,
-            requested_at: t0,
-            actuator: ImeActuatorKind::ImmCross,
             timeout_at: t0 + Duration::from_millis(100),
         };
         assert!(!trans.is_timed_out(t0));

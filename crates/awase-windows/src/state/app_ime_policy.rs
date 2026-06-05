@@ -22,33 +22,11 @@ pub struct AppImePolicy {
     /// LINE/Qt / Chrome/Edge ともに `true`。WezTerm は `false`。
     pub owns_physical_kanji: bool,
 
-    /// フォーカス変更直後の observer false をどう扱うか。
-    pub observer_false_on_focus: ObservationFalsePolicy,
-
     /// IME 制御の actuator 種別 (ImmCross / VK_KANJI / TSF / Standard)。
     pub actuator_kind: ImeActuatorKind,
 
     /// フォーカス変更後、observer を信頼できるようになるまでの待ち時間 (ms)。
     pub focus_settle_ms: u64,
-
-    /// observer_poll の役割。
-    ///
-    /// 旧モデルでは observer が belief を直接書き換えていたが、
-    /// 新モデル (Step 3 以降) では `HealthChecker` に格下げする。
-    pub observer_poll_role: ObserverPollRole,
-}
-
-/// フォーカス変更直後の observer false 観測をどう扱うか。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ObservationFalsePolicy {
-    /// そのまま採用 (Standard アプリ等の通常動作)
-    Accept,
-    /// `focus_settle_ms` 経過まで無視
-    IgnoreDuringFocusSettle,
-    /// pending transition 中は無視
-    IgnoreWhilePending,
-    /// 連続 N 回確認できるまで採用しない
-    RequireRepeatedConfirmation { count: u8 },
 }
 
 /// IME 制御 actuator の種別。
@@ -64,18 +42,6 @@ pub enum ImeActuatorKind {
     Standard,
 }
 
-/// observer_poll の役割。
-///
-/// 旧モデル: ObserverPoll は belief.ime_on を直接書き換える権限を持っていた。
-/// 新モデル (Step 3 以降): HealthChecker に格下げし、drift 検出のみ行う。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ObserverPollRole {
-    /// 旧モデル: belief を上書きできる
-    AuthoritativeWriter,
-    /// 新モデル: drift 検出のみ、desired を壊さない
-    HealthChecker,
-}
-
 impl AppImePolicy {
     /// `AppImeProfile` から派生する。
     ///
@@ -87,26 +53,20 @@ impl AppImePolicy {
             AppImeProfile::Standard => Self {
                 // Standard も IMM32 クロスプロセスが使えるため、ImmCross 同様に awase が所有
                 owns_physical_kanji: true,
-                observer_false_on_focus: ObservationFalsePolicy::Accept,
                 actuator_kind: ImeActuatorKind::ImmCross,
                 focus_settle_ms: 100,
-                observer_poll_role: ObserverPollRole::AuthoritativeWriter,
             },
             AppImeProfile::Imm32Unavailable => Self {
                 owns_physical_kanji: true,
-                observer_false_on_focus: ObservationFalsePolicy::IgnoreDuringFocusSettle,
                 actuator_kind: ImeActuatorKind::Imm32Unavailable,
                 // Chrome/Edge は GJI/IMM が信頼できないので settle 長め
                 focus_settle_ms: 500,
-                observer_poll_role: ObserverPollRole::AuthoritativeWriter,
             },
             AppImeProfile::TsfNative => Self {
                 // WezTerm 等は TSF が KANJI を正しく処理するため通す
                 owns_physical_kanji: false,
-                observer_false_on_focus: ObservationFalsePolicy::IgnoreWhilePending,
                 actuator_kind: ImeActuatorKind::TsfNative,
                 focus_settle_ms: 200,
-                observer_poll_role: ObserverPollRole::AuthoritativeWriter,
             },
         }
     }

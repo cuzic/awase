@@ -113,7 +113,6 @@ pub struct ImeModel {
 pub struct RecordedIntent {
     pub target: bool,
     pub source: IntentSource,
-    pub at_seq: u64,
     pub at_ms: u64,
 }
 
@@ -189,47 +188,6 @@ impl Default for ImeModel {
     }
 }
 
-/// Reducer が比較・公開する "最終的な判断結果"。
-///
-/// `old_belief.ime_on` と `new_model.desired_open` を直接比較するのは意味論が違うため、
-/// reducer / engine が最終的に判断する値同士を比較する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ImeEffectiveState {
-    /// Engine を活性化すべきか (desired_open + policy + user_enabled から導出)
-    pub engine_should_be_active: bool,
-    /// OS IME へ適用すべき開閉状態
-    pub ime_target_open: bool,
-    /// OS への apply が必要か (Step 7 で意味を持つ、Step 1 では未使用)
-    pub apply_needed: bool,
-}
-
-/// Diff log の重大度。Step 1 中の 1 週間モニタで分類する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffSeverity {
-    /// 既知の許容範囲 (focus 直後等)。カウントのみ。
-    Expected,
-    /// 説明が必要。調査して Expected または Regression に分類する。
-    Suspicious,
-    /// 修正必須。次 Step に進む前に解消する。
-    Regression,
-}
-
-impl ImeEffectiveState {
-    /// 旧 belief との diff を分類する。
-    ///
-    /// Step 1 では完全な policy が無いため、observer による上書きが起きうる
-    /// シナリオは `Suspicious` 扱いとして 1 週間モニタで実態を見る。
-    #[must_use]
-    pub const fn classify_diff(old_ime_on: bool, new_target: bool) -> Option<DiffSeverity> {
-        if old_ime_on == new_target {
-            return None;
-        }
-        // Step 1: 全 diff を Suspicious として記録。
-        // Step 1.5 (AppImePolicy) 導入後に Expected/Regression の細分化を行う。
-        Some(DiffSeverity::Suspicious)
-    }
-}
-
 impl ImeModel {
     /// Event を反映する。
     ///
@@ -243,7 +201,6 @@ impl ImeModel {
                 self.last_intent = Some(RecordedIntent {
                     target,
                     source,
-                    at_seq: envelope.time.seq,
                     at_ms: envelope.time.tick_ms,
                 });
             }
@@ -252,7 +209,6 @@ impl ImeModel {
                 self.last_intent = Some(RecordedIntent {
                     target,
                     source,
-                    at_seq: envelope.time.seq,
                     at_ms: envelope.time.tick_ms,
                 });
             }
@@ -267,7 +223,6 @@ impl ImeModel {
                     open,
                     source,
                     at: envelope.time.monotonic,
-                    recorded_seq: envelope.time.seq,
                     hwnd,
                     confidence,
                     expires_at: None,
@@ -277,7 +232,6 @@ impl ImeModel {
                     self.desired_open,
                     open,
                     envelope.time.monotonic,
-                    envelope.time.seq,
                 );
             }
             ImeEvent::FocusChanged { profile, to, .. } => {
@@ -328,8 +282,6 @@ impl ImeModel {
                 self.pending = Some(ImeTransition {
                     target,
                     generation,
-                    requested_at: envelope.time.monotonic,
-                    actuator: self.app_policy.actuator_kind,
                     timeout_at: envelope.time.monotonic + std::time::Duration::from_secs(1),
                 });
             }
@@ -357,17 +309,6 @@ impl ImeModel {
         }
     }
 
-    /// 最終的な判断結果を返す (Step 1 では desired_open を直訳)。
-    ///
-    /// AppImePolicy / engine_active / pending が揃う Step 7 でこのロジックは充実する。
-    #[must_use]
-    pub const fn effective_state(&self) -> ImeEffectiveState {
-        ImeEffectiveState {
-            engine_should_be_active: self.desired_open,
-            ime_target_open: self.desired_open,
-            apply_needed: false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -444,20 +385,6 @@ mod tests {
                 .unwrap()
                 .open,
             false
-        );
-    }
-
-    #[test]
-    fn diff_severity_match_returns_none() {
-        assert_eq!(ImeEffectiveState::classify_diff(true, true), None);
-        assert_eq!(ImeEffectiveState::classify_diff(false, false), None);
-    }
-
-    #[test]
-    fn diff_severity_mismatch_returns_suspicious() {
-        assert_eq!(
-            ImeEffectiveState::classify_diff(true, false),
-            Some(DiffSeverity::Suspicious)
         );
     }
 

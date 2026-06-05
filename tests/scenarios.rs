@@ -132,25 +132,7 @@ fn key_down(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
     }
 }
 
-#[allow(dead_code)]
-fn key_up(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
-    let (kc, pos) = classify_key(vk);
-    RawKeyEvent {
-        vk_code: vk,
-        scan_code: vk_to_scan(vk),
-        event_type: KeyEventType::KeyUp,
-        extra_info: 0,
-        timestamp: ts,
-        key_classification: kc,
-        physical_pos: pos,
-        ime_relevance: ImeRelevance::default(),
-        modifier_key: None,
-        modifier_snapshot: Default::default(),
-    }
-}
-
 const VK_NONCONVERT: VkCode = VkCode(0x1D);
-#[allow(dead_code)]
 const VK_CONVERT: VkCode = VkCode(0x1C);
 
 /// Collect output text from a Decision's effects.

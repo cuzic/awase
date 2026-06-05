@@ -643,31 +643,6 @@ unsafe fn send_char_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, ch: cha
     pump_messages();
 }
 
-/// Send a key event directly to the Edit control (WM_KEYDOWN + WM_KEYUP)
-#[allow(dead_code)]
-unsafe fn send_keydown_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, vk: u16) {
-    use windows::Win32::Foundation::{LPARAM, WPARAM};
-    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_KEYDOWN, WM_KEYUP};
-
-    SendMessageW(
-        edit_hwnd,
-        WM_KEYDOWN,
-        Some(WPARAM(vk as usize)),
-        Some(LPARAM(0)),
-    );
-    SendMessageW(
-        edit_hwnd,
-        WM_KEYUP,
-        Some(WPARAM(vk as usize)),
-        Some(LPARAM(0)),
-    );
-    log::debug!(
-        "SendMessage WM_KEYDOWN+UP: vk=0x{vk:02X} to {:?}",
-        edit_hwnd
-    );
-    pump_messages();
-}
-
 /// Send a keystroke via SendInput (bypasses hooks, goes to foreground window)
 unsafe fn send_key_to_edit(vk: u16, scan: u16) {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;

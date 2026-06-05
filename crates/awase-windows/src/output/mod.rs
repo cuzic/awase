@@ -87,9 +87,7 @@ impl std::fmt::Debug for Output {
 
 /// `assess_warmth` の戻り値。composition の温度状態をまとめる。
 pub(super) struct WarmthContext {
-    pub warm: bool,
     pub elapsed: u64,
-    pub session_expired: bool,
     pub prepend_f2_warmup: bool,
 }
 
@@ -387,9 +385,7 @@ impl Output {
         let session_expired =
             warm && elapsed < u64::MAX && elapsed > crate::tuning::COMPOSITION_TIMEOUT_MS;
         WarmthContext {
-            warm,
             elapsed,
-            session_expired,
             prepend_f2_warmup: !warm || session_expired,
         }
     }

@@ -23,8 +23,6 @@ pub struct ImeObservation {
     pub source: ObservationSource,
     /// 観測タイムスタンプ (鮮度・経過時間計算用)
     pub at: Instant,
-    /// 生んだ event の seq 番号 (同一 ms 内の決定論的順序付け + event log 参照)
-    pub recorded_seq: u64,
     /// どのウィンドウで観測したか (フォーカス変更後の stale 検出用)
     pub hwnd: HwndId,
     /// 観測の信頼度 (profile 別の judge に使う)
@@ -112,10 +110,7 @@ impl PerSourceObservations {
 /// desired と observed の乖離追跡 (DriftDetected event の根拠)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImeDrift {
-    pub desired: bool,
-    pub observed: bool,
     pub started_at: Instant,
-    pub first_drift_seq: u64,
 }
 
 /// 観測値ストア (Step 3 の SSOT)。
@@ -129,13 +124,9 @@ pub struct ImeDrift {
 #[derive(Debug, Default, Clone)]
 pub struct ObservationStore {
     pub per_source: PerSourceObservations,
-    /// 「最新だが採用しなかった」観測 (focus 直後の false 等)。デバッグ用、最大 8 件。
-    pub suspicious: Vec<ImeObservation>,
     /// desired との乖離追跡
     pub drift: Option<ImeDrift>,
 }
-
-const SUSPICIOUS_CAPACITY: usize = 8;
 
 impl ObservationStore {
     /// 観測値を per_source に記録する。
@@ -144,18 +135,9 @@ impl ObservationStore {
         self.per_source.set(obs.source, obs);
     }
 
-    /// 「採用しなかった」観測値を suspicious に追加する (調査用)。
-    pub fn record_suspicious(&mut self, obs: ImeObservation) {
-        if self.suspicious.len() >= SUSPICIOUS_CAPACITY {
-            self.suspicious.remove(0);
-        }
-        self.suspicious.push(obs);
-    }
-
-    /// 全ソースを clear する (フォーカス変更時用)。drift と suspicious も clear。
+    /// 全ソースを clear する (フォーカス変更時用)。drift も clear。
     pub fn clear_on_focus_change(&mut self) {
         self.per_source.clear_all();
-        self.suspicious.clear();
         self.drift = None;
     }
 
@@ -163,22 +145,13 @@ impl ObservationStore {
     ///
     /// `observed` が `desired` と一致する場合は drift を clear。
     /// 不一致が継続するなら drift を保持し続ける (started_at は更新しない)。
-    pub const fn update_drift(&mut self, desired: bool, observed: bool, now: Instant, seq: u64) {
+    pub const fn update_drift(&mut self, desired: bool, observed: bool, now: Instant) {
         if desired == observed {
             self.drift = None;
             return;
         }
-        if let Some(existing) = self.drift.as_mut() {
-            // 既存の drift を継続 (start_at / first_drift_seq は維持)
-            existing.desired = desired;
-            existing.observed = observed;
-        } else {
-            self.drift = Some(ImeDrift {
-                desired,
-                observed,
-                started_at: now,
-                first_drift_seq: seq,
-            });
+        if self.drift.is_none() {
+            self.drift = Some(ImeDrift { started_at: now });
         }
     }
 
@@ -232,12 +205,11 @@ impl ObservationStore {
 mod tests {
     use super::*;
 
-    fn obs(open: bool, source: ObservationSource, at: Instant, seq: u64) -> ImeObservation {
+    fn obs(open: bool, source: ObservationSource, at: Instant) -> ImeObservation {
         ImeObservation {
             open,
             source,
             at,
-            recorded_seq: seq,
             hwnd: HwndId::NULL,
             confidence: ObservationConfidence::Medium,
             expires_at: None,
@@ -248,7 +220,7 @@ mod tests {
     fn per_source_get_and_set() {
         let mut p = PerSourceObservations::default();
         let now = Instant::now();
-        let o = obs(true, ObservationSource::Gji, now, 1);
+        let o = obs(true, ObservationSource::Gji, now);
         p.set(ObservationSource::Gji, o);
         assert_eq!(p.get(ObservationSource::Gji).map(|x| x.open), Some(true));
         assert_eq!(p.get(ObservationSource::Tsf), None);
@@ -258,7 +230,7 @@ mod tests {
     fn store_record_and_clear() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
-        s.record(obs(true, ObservationSource::ObserverPoll, now, 1));
+        s.record(obs(true, ObservationSource::ObserverPoll, now));
         assert!(s.per_source.observer_poll.is_some());
         s.clear_on_focus_change();
         assert!(s.per_source.observer_poll.is_none());
@@ -269,21 +241,17 @@ mod tests {
         let mut s = ObservationStore::default();
         let t0 = Instant::now();
         // desired=true, observed=false → drift 開始
-        s.update_drift(true, false, t0, 100);
+        s.update_drift(true, false, t0);
         assert!(s.drift.is_some());
-        assert_eq!(s.drift.unwrap().first_drift_seq, 100);
+        assert_eq!(s.drift.unwrap().started_at, t0);
 
         // 同じ desired/observed で再 update → started_at 維持
         let t1 = t0 + Duration::from_millis(50);
-        s.update_drift(true, false, t1, 101);
-        assert_eq!(
-            s.drift.unwrap().first_drift_seq,
-            100,
-            "first_drift_seq 維持"
-        );
+        s.update_drift(true, false, t1);
+        assert_eq!(s.drift.unwrap().started_at, t0, "started_at 維持");
 
         // desired と observed が一致 → drift clear
-        s.update_drift(true, true, t1, 102);
+        s.update_drift(true, true, t1);
         assert!(s.drift.is_none());
     }
 
@@ -291,9 +259,9 @@ mod tests {
     fn most_recent_trusted_by_confidence() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
-        let mut low = obs(true, ObservationSource::FocusProbe, now, 1);
+        let mut low = obs(true, ObservationSource::FocusProbe, now);
         low.confidence = ObservationConfidence::Low;
-        let mut high = obs(false, ObservationSource::ImmGetOpenStatus, now, 2);
+        let mut high = obs(false, ObservationSource::ImmGetOpenStatus, now);
         high.confidence = ObservationConfidence::High;
         s.record(low);
         s.record(high);
@@ -310,13 +278,13 @@ mod tests {
         let now = Instant::now();
         let window = Duration::from_millis(500);
 
-        s.record(obs(true, ObservationSource::ObserverPoll, now, 1));
+        s.record(obs(true, ObservationSource::ObserverPoll, now));
         assert_eq!(s.consensus(window, now), None, "1 ソースでは合意なし");
 
-        s.record(obs(true, ObservationSource::Gji, now, 2));
+        s.record(obs(true, ObservationSource::Gji, now));
         assert_eq!(s.consensus(window, now), Some(true), "2 ソース合意");
 
-        s.record(obs(false, ObservationSource::Tsf, now, 3));
+        s.record(obs(false, ObservationSource::Tsf, now));
         assert_eq!(s.consensus(window, now), None, "意見が分かれたら合意なし");
     }
 
@@ -324,7 +292,7 @@ mod tests {
     fn expired_observation_excluded() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
-        let mut o = obs(true, ObservationSource::Gji, now, 1);
+        let mut o = obs(true, ObservationSource::Gji, now);
         o.expires_at = Some(now);
         s.record(o);
         assert_eq!(s.most_recent_trusted(now), None, "expire 済みは除外");
