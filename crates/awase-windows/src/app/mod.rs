@@ -126,8 +126,14 @@ fn load_config() -> Result<AppConfig> {
 
 /// 設定ファイルのパスを探索する
 fn find_config_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::args().nth(1) {
-        return Ok(PathBuf::from(path));
+    // `--flag` / `--flag value` 形式をスキップし、最初の非フラグ引数をパスとして扱う
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg.starts_with("--") {
+            let _ = args.next(); // value をスキップ
+            continue;
+        }
+        return Ok(PathBuf::from(arg));
     }
     let resolved = resolve_relative("config.toml");
     if resolved.exists() {
