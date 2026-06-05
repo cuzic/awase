@@ -104,8 +104,8 @@ impl Runtime {
         //         メインスレッドから呼ばれるため、スレッド要件を満たしている。
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
         build_input_context(
-            self.platform_state.ime_on(),
-            self.platform_state.belief(),
+            self.platform_state.ime.effective_open(),
+            &self.platform_state.ime.belief,
             &modifiers,
         )
     }
@@ -260,7 +260,7 @@ impl Runtime {
     /// 現在の shadow model から `ImeControlView` を構築する。
     pub(crate) fn shadow_ime_control_view(&self) -> crate::state::ImeControlView<'_> {
         self.platform
-            .build_ime_control_view(self.platform_state.ime.applied_pair())
+            .build_ime_control_view(self.platform_state.ime.model().applied_pair())
     }
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
@@ -348,10 +348,7 @@ impl Runtime {
             // BypassConfirmed（非TSFウィンドウ確定）: warmup_grace を無視して ime_on=false に確定。
             // apply_focus_probe が WARMUP_GRACE_MS(300ms) の抑制で ime_on=true を保持したまま
             // bypass_tsf() に到達すると Win+X 等の1文字ショートカットが NICOLA 変換される。
-            let ms = crate::hook::current_tick_ms();
-            let user_enabled = self.engine.is_user_enabled();
-            self.platform_state
-                .write_focus_probe(false, ms, user_enabled);
+            self.platform_state.ime.write_focus_probe(false);
             self.platform.bypass_tsf()
         };
         self.platform.timer.kill(crate::TIMER_TSF_GATE);
@@ -372,37 +369,35 @@ impl Runtime {
             return;
         }
         if !(self.engine.is_user_enabled()
-            && self.platform_state.is_japanese_ime()
-            && self.platform_state.ime_on())
+            && self.platform_state.ime.belief.is_japanese_ime()
+            && self.platform_state.ime.effective_open())
         {
             return;
         }
         let _success = self.platform.set_ime_open(true);
         log::trace!("Blacklist force-ON: set_ime_open(true)");
-        if !self.platform_state.input_mode().is_romaji_capable() {
+        if !self.platform_state.ime.belief.input_mode().is_romaji_capable() {
             use awase::engine::{AssumedReason, InputModeState};
             log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-            self.platform_state
-                .set_input_mode(InputModeState::AssumedRomaji {
-                    reason: AssumedReason::ImmBridgeBroken,
-                });
+            self.platform_state.ime.belief.input_mode =
+                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken };
         }
     }
 
     /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したとき、一時 force-ON を試みる。
     pub fn try_force_on_bootstrap(&mut self) {
-        if self.platform_state.ime_detect_miss_count() >= crate::IME_DETECT_MISS_THRESHOLD
+        if self.platform_state.ime.detect_miss_count() >= crate::IME_DETECT_MISS_THRESHOLD
             && self.engine.is_user_enabled()
-            && self.platform_state.is_japanese_ime()
-            && self.platform_state.ime_on()
-            && !self.platform_state.is_force_on_guard_active()
+            && self.platform_state.ime.belief.is_japanese_ime()
+            && self.platform_state.ime.effective_open()
+            && !self.platform_state.ime.is_force_on_guard_active()
         {
             log::warn!(
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
-                self.platform_state.ime_detect_miss_count()
+                self.platform_state.ime.detect_miss_count()
             );
             let dispatched = self.platform.set_ime_open(true);
-            self.platform_state.set_force_on_broken_app_bootstrap();
+            self.platform_state.ime.set_force_on_broken_app_bootstrap();
             if !dispatched {
                 log::warn!("set_ime_open dispatched=false (profile not IMM-capable) — guard set to suppress retry until focus change");
             }
@@ -486,21 +481,20 @@ impl Runtime {
         //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
         let observer_out = unsafe {
             crate::observer::ime_observer::poll_and_classify_ime(
-                self.platform_state.ime_on(),
-                self.platform_state.is_force_on_guard_active(),
-                self.platform_state.input_mode(),
-                self.platform_state.prev_conversion_mode(),
+                self.platform_state.ime.effective_open(),
+                self.platform_state.ime.is_force_on_guard_active(),
+                self.platform_state.ime.belief.input_mode(),
+                self.platform_state.ime.belief.prev_conversion_mode(),
             )
         };
-        self.platform_state
-            .apply_ime_update(&observer_out, self.engine.is_user_enabled());
+        self.platform_state.ime.apply_ime_update(&observer_out);
 
         // LastAppliedImeState を OS 観測値に同期する。
         // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。
         // last_applied が stale なまま Engine が activate → SetOpen(true) → KanjiToggleStrategy が
         // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
-        let observed_ime_on = self.platform_state.ime_on();
+        let observed_ime_on = self.platform_state.ime.effective_open();
         self.platform_state.ime.mirror_applied_open(observed_ime_on);
         log::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
@@ -642,9 +636,9 @@ impl Runtime {
         RuntimeDiagnosticSnapshot {
             focus_pid,
             focus_class,
-            shadow_ime_on: self.platform_state.ime_on(),
-            shadow_is_romaji: self.platform_state.input_mode().is_romaji_capable(),
-            shadow_is_japanese: self.platform_state.is_japanese_ime(),
+            shadow_ime_on: self.platform_state.ime.effective_open(),
+            shadow_is_romaji: self.platform_state.ime.belief.input_mode().is_romaji_capable(),
+            shadow_is_japanese: self.platform_state.ime.belief.is_japanese_ime(),
             last_focus_change_ms: self.platform_state.last_focus_change_ms,
             last_hook_activity_ms: self.platform_state.last_hook_activity_ms,
             app_profile: format!("{:?}", self.platform.current_app_profile()),
@@ -673,6 +667,8 @@ impl Runtime {
             &ctx,
         );
         self.platform.set_output_mode(config.general.output_mode);
+        self.platform_state.focus_debounce_ms = config.general.focus_debounce_ms;
+        self.platform_state.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.sync_toggle_keys = sync_toggle;
         self.sync_on_keys = sync_on;
         self.sync_off_keys = sync_off;
@@ -737,7 +733,7 @@ impl Runtime {
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
         // ime_on=true を stale な observe() 結果が即座に上書きしてしまう。
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
-        self.platform_state.apply_panic_reset();
+        self.platform_state.ime.apply_panic_reset();
         // Step 4: chord barrier も clear (旧 ctrl_bypass_hold 相当)
         self.platform_state.ime.clear_input_barrier();
         self.platform_state.sync_key_gate.clear();
