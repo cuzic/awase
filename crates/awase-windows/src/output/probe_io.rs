@@ -143,6 +143,12 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                 );
                 let (nc_baseline, fresh_f2_ms) = io.send_fresh_f2();
                 machine.apply_fresh_f2_sent(nc_baseline, fresh_f2_ms);
+                // gji_long_idle 時は NameChangeWait をスキップして即 TransmitTsf へ。
+                // unicode TSF (KEYEVENTF_UNICODE) は IME モード非依存のため
+                // OBJ_NAMECHANGE によるモード確認待機が不要。
+                if io.gji_long_idle() {
+                    queue.extend(machine.skip_namechange_wait());
+                }
             }
 
             ProbeAction::Transmit {
@@ -169,17 +175,21 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                         let outcome = WarmupOutcome {
                             prepend_f2_warmup,
-                            // nc_fired=false（NameChangeWait タイムアウト）の場合は TSF レイヤーの
-                            // IME モード切替が未確認。VK ローマ字で送ると katakana 等の誤モードで
-                            // "ki" がリテラル出力される。Unicode TSF パスへフォールバックして回避。
+                            // nc_fired=true: IME モード確認済み（OBJ_NAMECHANGE 受信）。
+                            //   通常は deferred_vks.is_empty() を守り、
+                            //   KEYEVENTF_UNICODE 直後の N VK で "の" が "nお" になる
+                            //   WezTerm バグを防ぐ。
+                            //   gji_long_idle 時は IME モード依存の VK ローマ字を避けるため
+                            //   deferred_vks が空なら unicode TSF を優先する。
                             //
-                            // nc_fired=true の場合は通常通り deferred_vks.is_empty() を守り、
-                            // KEYEVENTF_UNICODE 直後に N VK を送ると "の" が "nお" になる
-                            // WezTerm バグを防ぐ。
+                            // nc_fired=false: NameChangeWait タイムアウトまたは gji_long_idle スキップ。
+                            //   IME モード切替未確認。VK ローマ字で送ると katakana 等で誤出力になる。
+                            //   gji_long_idle: unicode TSF を強制（IME モード非依存）。
+                            //   非 long_idle: used_eager_path のまま（8d38b2d の挙動を維持）。
                             used_eager_path: if nc_fired {
-                                used_eager_path && deferred_vks.is_empty()
+                                (used_eager_path || io.gji_long_idle()) && deferred_vks.is_empty()
                             } else {
-                                used_eager_path
+                                used_eager_path || io.gji_long_idle()
                             },
                             cold_seq,
                         };
@@ -282,6 +292,8 @@ mod tests {
         send_fresh_f2_called: Cell<bool>,
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
+        /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
+        last_used_eager_path: Cell<bool>,
     }
 
     impl Default for FakeProbeIo {
@@ -299,6 +311,7 @@ mod tests {
                 send_fresh_f2_called: Cell::new(false),
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
+                last_used_eager_path: Cell::new(false),
             }
         }
     }
@@ -317,9 +330,10 @@ mod tests {
             &self,
             _romaji: &str,
             _chars: &[(VkCode, bool)],
-            _outcome: &WarmupOutcome,
+            outcome: &WarmupOutcome,
         ) -> usize {
             self.transmit_tsf_called.set(true);
+            self.last_used_eager_path.set(outcome.used_eager_path);
             self.tsf_transmit_result
         }
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
@@ -577,5 +591,74 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(!done);
         assert!(io.send_fresh_f2_called.get());
+    }
+
+    #[test]
+    fn send_fresh_f2_with_gji_long_idle_skips_namechange_wait_and_transmits() {
+        // gji_long_idle 時は SendFreshF2 の直後に NameChangeWait をスキップして
+        // 同一ディスパッチコール内で TransmitTsf まで進む。
+        // 340ms の OBJ_NAMECHANGE 待機を排除し、コールドスタート遅延を ~60ms に削減する。
+        use crate::tsf::probe_fsm::{ProbePhase, WaitingFor};
+        let io = FakeProbeIo {
+            gji_long_idle: true,
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        // apply_fresh_f2_sent が機能するよう、FreshF2Sent フェーズへ強制移行する。
+        let send = Box::new(crate::tsf::probe_fsm::SendState {
+            romaji: "ka".to_string(),
+            deferred_vks: vec![],
+        });
+        machine.force_phase_for_test(ProbePhase::WaitingForCallback(
+            WaitingFor::FreshF2Sent {
+                probe_settled: false,
+                gji_idle_ms: 15_000,
+                remaining_ms: 0,
+                send,
+                guard: OutputActiveGuard::noop_for_test(),
+            },
+        ));
+        let actions = vec![ProbeAction::SendFreshF2 {
+            cold_seq: 0,
+            probe_settled: false,
+        }];
+        // gji_long_idle=true のとき、同一ディスパッチで NameChangeWait をスキップして
+        // TransmitTsf まで実行される（返値 true = Done）。
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done, "gji_long_idle: NameChangeWait をスキップして同一コールで Done になるべき");
+        assert!(io.send_fresh_f2_called.get());
+        assert!(io.transmit_tsf_called.get(), "TransmitTsf が実行されるべき");
+        assert!(
+            io.last_used_eager_path.get(),
+            "gji_long_idle: used_eager_path が true に強制されるべき（unicode TSF）"
+        );
+        assert!(io.mark_warm_called.get());
+    }
+
+    #[test]
+    fn nc_not_fired_with_gji_long_idle_forces_unicode_tsf() {
+        // nc_fired=false（NameChangeWait タイムアウトまたはスキップ）かつ gji_long_idle のとき、
+        // used_eager_path=false でも unicode TSF（used_eager_path=true）が強制される。
+        let io = FakeProbeIo {
+            gji_long_idle: true,
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: false, // eager warmup なしのコールドスタート
+            nc_fired: false,
+            romaji: "ka".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done);
+        assert!(io.transmit_tsf_called.get());
+        assert!(
+            io.last_used_eager_path.get(),
+            "gji_long_idle: nc_fired=false でも used_eager_path が true になるべき（unicode TSF 強制）"
+        );
     }
 }

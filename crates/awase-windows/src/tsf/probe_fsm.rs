@@ -638,6 +638,27 @@ impl TsfProbeMachine {
         }
     }
 
+    /// gji_long_idle 時に NameChangeWait をスキップして直接 TransmitTsf へ進む。
+    ///
+    /// `apply_fresh_f2_sent` の直後に呼ぶこと。`nc_fired=false` として TransmitTsf を emit する。
+    /// 呼び出し元 (`dispatch_probe_actions`) で `used_eager_path || gji_long_idle` として
+    /// unicode TSF が強制される。
+    pub(crate) fn skip_namechange_wait(&mut self) -> Vec<ProbeAction> {
+        if !matches!(self.phase, ProbePhase::NameChangeWait { .. }) {
+            log::warn!(
+                "[tsf-probe] cold={} skip_namechange_wait: unexpected phase {}",
+                self.cold_seq,
+                self.phase_label()
+            );
+            return vec![];
+        }
+        log::debug!(
+            "[tsf-probe] cold={} gji_long_idle → NameChangeWait スキップ (nc_fired=false, unicode TSF 強制)",
+            self.cold_seq
+        );
+        self.enter_transmit_tsf(false)
+    }
+
     fn enter_transmit_tsf(&mut self, nc_fired: bool) -> Vec<ProbeAction> {
         let send = self.take_current_send_for_transmit();
         let cold_seq = self.cold_seq;
