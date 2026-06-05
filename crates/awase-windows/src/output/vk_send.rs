@@ -414,8 +414,14 @@ impl Output {
         let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
         self.mark_composition_warm();
 
+        // GJI が LONG_IDLE_MS 以上静止している場合（WezTerm 等 TSF ネイティブ app）は
+        // LiteralDetector が常にタイムアウト → SuspectedLiteral の false positive になる。
+        // GJI 長期静止時は composition が TSF で正常に処理されたと見なして LiteralDetect をスキップ。
+        let gji_long_idle = crate::hook::current_tick_ms()
+            .saturating_sub(crate::tsf::observer::gji_last_io_ms())
+            >= crate::tuning::LONG_IDLE_MS;
         let gji_active = crate::tsf::observer::gji_monitor_healthy();
-        if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active {
+        if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing && gji_active && !gji_long_idle {
             let deadline_ms =
                 crate::hook::current_tick_ms() + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
             let guard = OutputActiveGuard::begin();
