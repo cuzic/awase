@@ -648,7 +648,7 @@ impl TsfProbeMachine {
             log::warn!(
                 "[tsf-probe] cold={} skip_namechange_wait: unexpected phase {}",
                 self.cold_seq,
-                self.phase_label()
+                self.phase_label_internal()
             );
             return vec![];
         }
