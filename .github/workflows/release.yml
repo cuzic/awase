@@ -54,6 +54,12 @@ jobs:
         run: |
           Compress-Archive -Path dist/* -DestinationPath "awase-${{ env.VERSION }}-x64.zip"
 
+      - name: Compute ZIP SHA256
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash "awase-${{ env.VERSION }}-x64.zip" -Algorithm SHA256).Hash.ToLower()
+          "ZIP_SHA256=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Install WiX Toolset
         run: choco install wixtoolset -y --no-progress
 
@@ -72,3 +78,40 @@ jobs:
             awase-${{ env.VERSION }}-x64.msi
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Update Scoop manifest
+        shell: pwsh
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          if (-not $env:SCOOP_BUCKET_TOKEN) {
+            Write-Host "SCOOP_BUCKET_TOKEN not set, skipping Scoop manifest update"
+            exit 0
+          }
+          $version = "${{ env.VERSION }}"
+          $hash = "${{ env.ZIP_SHA256 }}"
+          $url = "https://github.com/cuzic/awase/releases/download/v${version}/awase-${version}-x64.zip"
+
+          git clone "https://x-access-token:$env:SCOOP_BUCKET_TOKEN@github.com/cuzic/scoop-awase.git" scoop-awase
+
+          $manifest = [ordered]@{
+            version     = $version
+            description = "A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond"
+            homepage    = "https://github.com/cuzic/awase"
+            license     = "MIT OR Apache-2.0"
+            url         = $url
+            hash        = "sha256:$hash"
+            bin         = @("awase.exe")
+            shortcuts   = @(, @("awase-settings.exe", "Awase Settings"))
+            persist     = @("config.toml", "layout", "data")
+          }
+          New-Item -ItemType Directory -Force -Path "scoop-awase/bucket" | Out-Null
+          $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath "scoop-awase/bucket/awase.json" -Encoding utf8NoBOM
+
+          Push-Location scoop-awase
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add bucket/awase.json
+          git commit -m "Update awase to v${version}"
+          git push
+          Pop-Location
