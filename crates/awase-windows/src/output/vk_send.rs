@@ -36,10 +36,19 @@ impl TsfSendPipeline {
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        let unicode_kana: Option<char> = if outcome.prepend_f2_warmup && outcome.used_eager_path {
-            kana_for_romaji_static(romaji)
+        // cold パスかつ eager warmup あり → unicode TSF（既存）
+        // warm パス（prepend_f2_warmup=false）→ ひらがなとして判明している場合のみ unicode TSF
+        //   未確定文字（VK romaji の途中）がなく直接 codepoint が分かるため、
+        //   B↓A↓B↑A↑ VK 送信による「b」チラつきを回避できる。
+        // cold パスかつ eager なし → VK のまま（F2 ウォームアップ未完のため）
+        let unicode_kana: Option<char> = if outcome.prepend_f2_warmup {
+            if outcome.used_eager_path {
+                kana_for_romaji_static(romaji)
+            } else {
+                None
+            }
         } else {
-            None
+            kana_for_romaji_static(romaji)
         };
 
         let t_send = crate::hook::current_tick_ms();
