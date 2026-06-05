@@ -437,8 +437,14 @@ impl Runtime {
             // ImmCross: KANJI 関連 VK は Down/Up 共に Consume（spurious 連鎖を構造的に遮断）
             is_kanji_event
         } else {
-            // Imm32Unavailable: 従来通り shadow_toggle 発火時のみ
-            shadow_toggled && !profile.should_pass_physical_key()
+            // Imm32Unavailable: KeyDown は shadow_toggle 発火時のみ Consume。
+            // KeyUp は KANJI 関連なら常に Consume。
+            // 理由: 0xF3 KeyUp を OS に通すと OS IME が 0xF4 KeyDown を生成し、
+            // shadow_toggle が OFF→ON に反転する（Ctrl+無変換後の IME-ON 戻り現象）。
+            is_kanji_event
+                && !profile.should_pass_physical_key()
+                && (shadow_toggled
+                    || matches!(event.event_type, awase::types::KeyEventType::KeyUp))
         };
         let decision = if suppress_physical {
             let reason = if profile.can_use_imm32_cross_process() {
