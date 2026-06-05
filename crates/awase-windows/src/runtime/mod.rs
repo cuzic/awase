@@ -331,10 +331,15 @@ impl Runtime {
 
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
-        // explicit_intent が確定している間は継続ポーリング不要。
-        // 状態は awase が管理しており外部変化は事実上ない。
-        // 再開トリガー: フォーカス変更（explicit_intent クリア）/ may_change_ime キー（20ms）
-        if self.platform_state.ime.explicit_intent().is_some() {
+        // TsfNative は read_ime_state_full が常に None、GJI も predates-focus-change でスキップ。
+        // explicit_intent の有無に関わらずポーリングで得られる情報がないため常に停止する。
+        // explicit_intent が確定している他プロファイルも同様に停止。
+        // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）
+        let is_tsf_native = matches!(
+            self.platform.current_app_profile(),
+            crate::focus::class_names::AppImeProfile::TsfNative
+        );
+        if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
             return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.ime_poll_interval_ms));
