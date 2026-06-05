@@ -526,37 +526,37 @@ mod tests {
     #[test]
     fn reset_stale_preserves_intent_backed_false_sync_key() {
         let mut ps = ps_with_shadow(false, Some(IntentSource::SyncKey), true);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime_on());
+        ps.ime.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.effective_open());
     }
 
     #[test]
     fn reset_stale_preserves_intent_backed_false_physical_key() {
         let mut ps = ps_with_shadow(false, Some(IntentSource::PhysicalImeKey), true);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime_on());
+        ps.ime.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.effective_open());
     }
 
     #[test]
     fn reset_stale_preserves_intent_backed_false_command() {
         let mut ps = ps_with_shadow(false, Some(IntentSource::Command), true);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime_on());
+        ps.ime.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.effective_open());
     }
 
     #[test]
     fn reset_stale_preserves_intent_backed_false_hwnd_cache() {
         let mut ps = ps_with_shadow(false, Some(IntentSource::HwndCache), true);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime_on());
+        ps.ime.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.effective_open());
     }
 
     // last_intent=None (前ウィンドウからの carry-over) は ON へ寄せ直す。
     #[test]
     fn reset_stale_overrides_carry_over_false() {
         let mut ps = ps_with_shadow(false, None, true);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(ps.ime_on());
+        ps.ime.reset_stale_ime_on_for_tsf_native();
+        assert!(ps.ime.effective_open());
         assert_eq!(ps.ime.last_intent_source(), Some(IntentSource::Recovery),);
     }
 
@@ -564,15 +564,15 @@ mod tests {
     #[test]
     fn reset_stale_noop_when_already_on() {
         let mut ps = ps_with_shadow(true, Some(IntentSource::SyncKey), true);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(ps.ime_on());
+        ps.ime.reset_stale_ime_on_for_tsf_native();
+        assert!(ps.ime.effective_open());
     }
 
     // 非日本語レイアウトでは何もしない。
     #[test]
     fn reset_stale_noop_when_not_japanese() {
         let mut ps = ps_with_shadow(false, None, false);
-        ps.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime_on());
+        ps.ime.reset_stale_ime_on_for_tsf_native();
+        assert!(!ps.ime.effective_open());
     }
 }

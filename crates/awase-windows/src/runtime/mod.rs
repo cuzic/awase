@@ -23,8 +23,8 @@ pub use crate::focus::classifier::{ImmCapability, InjectionHint};
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
 /// タイマー等のイベント非同期パスでは呼び出し元が `read_os_modifiers()` で取得する。
 ///
-/// Phase 3d: `ime_on` は呼び出し元が `platform_state.ime_on()` (shadow_model.effective_open) を
-/// 評価して渡す。`belief` からは入力モード等の追加情報のみ取得する。
+/// `ime_on` は呼び出し元が `platform_state.ime.effective_open()` を評価して渡す。
+/// `belief` からは入力モード等の追加情報のみ取得する。
 #[must_use]
 pub const fn build_input_context(
     ime_on: bool,

@@ -112,8 +112,8 @@ pub(crate) unsafe fn handle_wm_timer(
             log::debug!("WM_TIMER fired: logical_id={timer_id}");
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
             let ctx = super::build_input_context(
-                app.platform_state.ime_on(),
-                app.platform_state.belief(),
+                app.platform_state.ime.effective_open(),
+                &app.platform_state.ime.belief,
                 &modifiers,
             );
             let decision = app.engine.on_timeout(timer_id, &ctx);

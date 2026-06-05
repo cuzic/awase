@@ -141,15 +141,15 @@ impl Runtime {
 
         if process_changed {
             self.platform.focus.save_ime_state(
-                self.platform_state.ime_on(),
-                self.platform_state.input_mode(),
+                self.platform_state.ime.effective_open(),
+                self.platform_state.ime.belief.input_mode(),
             );
         }
 
         self.platform
             .update_focus_info(classified.process_id, classified.class_name.clone());
 
-        self.platform_state.set_prev_conversion_mode(None);
+        self.platform_state.ime.set_prev_conversion_mode(None);
 
         (
             process_changed,
@@ -164,10 +164,10 @@ impl Runtime {
             prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
             classified.process_id,
             classified.class_name,
-            self.platform_state.ime_on(),
-            self.platform_state.explicit_intent(),
-            self.platform_state.input_mode(),
-            self.platform_state.is_japanese_ime(),
+            self.platform_state.ime.effective_open(),
+            self.platform_state.ime.explicit_intent(),
+            self.platform_state.ime.belief.input_mode(),
+            self.platform_state.ime.belief.is_japanese_ime(),
         );
 
         self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
@@ -195,7 +195,7 @@ impl Runtime {
         {
             let cache_hit = self.platform.focus.restore_ime_state();
             let cache_miss = cache_hit.is_none();
-            self.platform_state.apply_hwnd_cache_restore(cache_hit);
+            self.platform_state.ime.apply_hwnd_cache_restore(cache_hit);
 
             // TsfNative プロファイルへの cache miss 入場では、前ウィンドウの ime_on=false が
             // carry over したまま IMM/poll で復旧できず Engine が活性化不能になる。
@@ -208,14 +208,14 @@ impl Runtime {
                 )
             {
                 let now_ms = crate::hook::current_tick_ms();
-                let last_off_ms = self.platform_state.last_explicit_ime_off_ms;
+                let last_off_ms = self.platform_state.ime.last_explicit_off_ms();
                 let elapsed = now_ms.saturating_sub(last_off_ms);
                 if last_off_ms > 0 && elapsed < 10_000 {
                     log::debug!(
                         "[focus] TsfNative cache-miss: skip reset_stale — explicit IME-OFF {elapsed}ms ago",
                     );
                 } else {
-                    self.platform_state.reset_stale_ime_on_for_tsf_native();
+                    self.platform_state.ime.reset_stale_ime_on_for_tsf_native();
                 }
             }
         }
@@ -224,7 +224,7 @@ impl Runtime {
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         ) {
-            let ime_on_now = self.platform_state.ime_on();
+            let ime_on_now = self.platform_state.ime.effective_open();
             if ime_on_now {
                 self.platform_state.ime.mirror_applied_open(true);
                 log::debug!(
@@ -237,14 +237,14 @@ impl Runtime {
             }
         }
 
-        if self.platform_state.is_force_on_guard_active()
-            || self.platform_state.ime_detect_miss_count() > 0
+        if self.platform_state.ime.is_force_on_guard_active()
+            || self.platform_state.ime.detect_miss_count() > 0
         {
             log::debug!(
                 "Focus changed: clearing force_on_guard and detect_miss_count \
                  (new window may have different IME state)"
             );
-            self.platform_state.reset_ime_detect_state();
+            self.platform_state.ime.reset_detect_state();
         }
 
         if classified.kind == FocusKind::Undetermined {

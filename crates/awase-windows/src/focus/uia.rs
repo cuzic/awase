@@ -167,9 +167,8 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
 /// Chrome/WPF/UWP など Win32 クラス名では判定できないコントロールに有効。
 ///
 /// COM が初期化済みのスレッドから呼び出すこと
-#[allow(unused_variables)] // hwnd はデバッグ用に保持
 #[must_use]
-pub fn uia_classify_focus(automation: &IUIAutomation, hwnd: HWND) -> UiaClassifyResult {
+pub fn uia_classify_focus(automation: &IUIAutomation, _hwnd: HWND) -> UiaClassifyResult {
     // SAFETY: automation は CoCreateInstance が返した有効な IUIAutomation COM オブジェクト。
     //         GetFocusedElement は COM が初期化済みのスレッドから呼び出されることが
     //         呼出元のコメントで保証されている。
