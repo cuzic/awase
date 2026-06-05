@@ -137,9 +137,7 @@ fn cached_hook_config() -> HookConfig {
 }
 
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
-pub fn set_thumb_vk_codes(config: &mut HookConfig, left: VkCode, right: VkCode) {
-    config.left_thumb_vk = left;
-    config.right_thumb_vk = right;
+pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
     CACHED_THUMB_VKS.store(
         (u32::from(left.0) << 16) | u32::from(right.0),
         Ordering::Release,

@@ -3,7 +3,7 @@ use awase::types::{AppKind, FocusKind};
 
 use super::belief::ImeBelief;
 use super::force_guard::{ForceGuard, ForceOnReason};
-use super::hook_state::{HookConfig, HookRoutingState, SyncKeyGate};
+use super::hook_state::SyncKeyGate;
 use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSource};
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
@@ -65,7 +65,7 @@ impl ImeStateHub {
     /// shadow_model から派生した最新の explicit intent。
     ///
     /// (Step 2B 以降の SSOT。Priority 4-5 observer による上書きを block する根拠。)
-    pub(crate) fn last_explicit_intent_compat(&self) -> Option<bool> {
+    pub(crate) fn explicit_intent(&self) -> Option<bool> {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
     }
 
@@ -140,26 +140,36 @@ impl ImeStateHub {
         }
     }
 
-    // ── Applied state ──
+    // ── Explicit intent timing ──
 
-    pub(crate) fn applied_state(&self) -> crate::state::ime_model::AppliedImeState {
-        self.shadow_model.applied_state()
+    /// 最後に明示的 IME-OFF（target=false）を行った時刻 (tick_ms)。
+    ///
+    /// `last_intent` が `target=false` であればその `at_ms` を返す。
+    /// 未設定・target=true の場合は 0 を返す。
+    pub(crate) fn last_explicit_off_ms(&self) -> u64 {
+        match &self.shadow_model.last_intent {
+            Some(i) if !i.target => i.at_ms,
+            _ => 0,
+        }
     }
 
-    pub(crate) fn applied_open(&self) -> Option<bool> {
-        self.shadow_model.applied.applied_open()
+    pub(crate) fn effective_open(&self) -> bool {
+        self.shadow_model.effective_open()
     }
 
-    pub(crate) fn applied_open_or_default(&self) -> bool {
-        self.shadow_model.applied.applied_open().unwrap_or(false)
+    pub(crate) fn detect_miss_count(&self) -> u32 {
+        self.shadow_model.observe_miss_monitor.consecutive_miss_count
     }
 
-    pub(crate) fn has_applied_state(&self) -> bool {
-        self.shadow_model.applied != crate::state::ime_model::AppliedImeState::Unknown
+    pub(crate) fn is_force_on_guard_active(&self) -> bool {
+        self.shadow_model.force_guards.requires_on()
     }
 
-    pub(crate) fn applied_pair(&self) -> Option<(bool, u64)> {
-        self.shadow_model.applied_pair()
+    /// `ImeModel` への読み取り専用アクセス。
+    ///
+    /// 書き込みはすべて `dispatch_event()` 経由とすること。
+    pub(crate) fn model(&self) -> &ImeModel {
+        &self.shadow_model
     }
 
     // ── Desired state / drift correction ──
@@ -365,6 +375,55 @@ impl ImeStateHub {
             source: IntentSource::Recovery,
         });
     }
+
+    pub(crate) fn set_is_japanese_ime(&mut self, value: bool) {
+        self.belief.is_japanese_ime = value;
+    }
+
+    pub(crate) fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
+        self.belief.prev_conversion_mode = value;
+    }
+
+    // ── イベント dispatch ヘルパ ──
+
+    pub(crate) fn write_observer_poll(&mut self, value: bool) {
+        self.dispatch_event(ImeEvent::ObserverReported {
+            open: value,
+            source: super::ime_event::ObservationSource::ObserverPoll,
+            hwnd: HwndId::NULL,
+            confidence: super::ime_event::ObservationConfidence::Medium,
+        });
+    }
+
+    pub(crate) fn write_sync_key(&mut self, value: bool) {
+        self.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: value,
+            source: IntentSource::SyncKey,
+        });
+    }
+
+    pub(crate) fn write_physical_key(&mut self, value: bool) {
+        self.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: value,
+            source: IntentSource::PhysicalImeKey,
+        });
+    }
+
+    pub(crate) fn write_set_open_request(&mut self, value: bool) {
+        self.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: value,
+            source: IntentSource::Command,
+        });
+    }
+
+    pub(crate) fn write_focus_probe(&mut self, value: bool) {
+        self.dispatch_event(ImeEvent::ObserverReported {
+            open: value,
+            source: super::ime_event::ObservationSource::FocusProbe,
+            hwnd: HwndId::NULL,
+            confidence: super::ime_event::ObservationConfidence::Medium,
+        });
+    }
 }
 
 #[cfg(test)]
@@ -402,16 +461,11 @@ pub struct PlatformState {
     pub last_focus_change_ms: u64,
     pub focus_debounce_ms: u32,
     pub ime_poll_interval_ms: u32,
-    pub hook: HookRoutingState,
-    pub hook_config: HookConfig,
     pub last_hook_activity_ms: u64,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
     /// 現在のフォーカスアプリに適用されるキーマップルール
     pub active_keymaps: crate::keymap::KeymapTable,
-    /// 直近に物理 IME キー or sync キーで IME OFF にした時刻 (ms, GetTickCount 系)。
-    /// 0 = 未設定。TsfNative 入場時の reset_stale スキップ判定に使う。
-    pub last_explicit_ime_off_ms: u64,
 }
 
 impl PlatformState {
@@ -425,15 +479,9 @@ impl PlatformState {
             last_focus_change_ms: 0,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
-            hook: HookRoutingState::default(),
-            hook_config: HookConfig {
-                left_thumb_vk: crate::vk::VK_NONCONVERT,
-                right_thumb_vk: crate::vk::VK_CONVERT,
-            },
             last_hook_activity_ms: 0,
             sync_key_gate: SyncKeyGate::new(),
             active_keymaps: crate::keymap::KeymapTable::default(),
-            last_explicit_ime_off_ms: 0,
         }
     }
 }
@@ -444,202 +492,6 @@ impl Default for PlatformState {
     }
 }
 
-impl PlatformState {
-    // ── ImeStateHub への参照アクセサ ──
-
-    /// `ImeBelief` への共有参照を返す。
-    ///
-    /// `build_input_context(&ps.belief(), …)` のような呼び出し用。
-    #[inline]
-    #[must_use]
-    pub const fn belief(&self) -> &ImeBelief {
-        &self.ime.belief
-    }
-
-    // ── ImeBelief への便利読み取りメソッド ──
-    //
-    // `belief()` を直接使っても同等だが、呼び出しサイトを短くするために置く。
-    // `build_input_context(&ps.belief(), …)` のような「構造体丸ごと」の渡し方は belief() を使う。
-
-    /// IME が ON かどうかを返す (Phase 3e: shadow_model.effective_open() が SSOT)。
-    #[inline]
-    #[must_use]
-    pub const fn ime_on(&self) -> bool {
-        self.ime.shadow_model.effective_open()
-    }
-
-    /// 入力モードを返す。
-    #[inline]
-    #[must_use]
-    pub const fn input_mode(&self) -> InputModeState {
-        self.ime.belief.input_mode()
-    }
-
-    /// 日本語 IME がアクティブかを返す。
-    #[inline]
-    #[must_use]
-    pub const fn is_japanese_ime(&self) -> bool {
-        self.ime.belief.is_japanese_ime()
-    }
-
-    /// 直前の conversion_mode を返す。
-    #[inline]
-    #[must_use]
-    pub const fn prev_conversion_mode(&self) -> Option<u32> {
-        self.ime.belief.prev_conversion_mode()
-    }
-
-    /// IME 状態検出の連続失敗回数を返す (Phase 3a: shadow_model.observe_miss_monitor 由来)。
-    #[inline]
-    #[must_use]
-    pub const fn ime_detect_miss_count(&self) -> u32 {
-        self.ime
-            .shadow_model
-            .observe_miss_monitor
-            .consecutive_miss_count
-    }
-
-    /// いずれかの強制 ON ガードが立っているかを返す (Phase 3a: shadow_model.force_guards 由来)。
-    #[inline]
-    #[must_use]
-    pub const fn is_force_on_guard_active(&self) -> bool {
-        self.ime.shadow_model.force_guards.requires_on()
-    }
-
-    // ── ImeBelief への書き込みメソッド ──
-
-    /// `input_mode` を設定する。
-    #[inline]
-    pub const fn set_input_mode(&mut self, mode: InputModeState) {
-        self.ime.belief.input_mode = mode;
-    }
-
-    /// `is_japanese_ime` を設定する。
-    #[inline]
-    pub const fn set_is_japanese_ime(&mut self, value: bool) {
-        self.ime.belief.is_japanese_ime = value;
-    }
-
-    /// `prev_conversion_mode` を設定する。
-    #[inline]
-    pub const fn set_prev_conversion_mode(&mut self, value: Option<u32>) {
-        self.ime.belief.prev_conversion_mode = value;
-    }
-
-    // ── ForceGuardSet / ObserveMissMonitor への書き込みメソッド (Phase 3a) ──
-
-    /// `BrokenAppBootstrap` force-on ガードをセットする。
-    #[inline]
-    pub fn set_force_on_broken_app_bootstrap(&mut self) {
-        self.ime.set_force_on_broken_app_bootstrap();
-    }
-
-    /// observe_miss_monitor を reset し、すべての force-on ガードを解除する。
-    #[inline]
-    pub fn reset_ime_detect_state(&mut self) {
-        self.ime.reset_detect_state();
-    }
-
-    /// Shadow IME トグルによって IME 状態が実際に変化したときに呼ぶ。
-    pub fn on_shadow_ime_toggled(&mut self) {
-        self.ime.on_ime_toggled();
-    }
-
-    /// SetOpen リクエストを shadow_model に書き込んだときに呼ぶ。
-    pub fn on_set_open_requested(&mut self) {
-        self.ime.on_set_open_requested();
-    }
-
-    /// panic_reset 向け全面リセット。
-    pub fn apply_panic_reset(&mut self) {
-        self.ime.apply_panic_reset();
-    }
-}
-
-impl PlatformState {
-    /// 最後の明示的 IME 操作の意図を返す（ログ・診断用）。
-    ///
-    /// shadow_model.last_intent.target を返す。
-    #[must_use]
-    pub fn explicit_intent(&self) -> Option<bool> {
-        self.ime.last_explicit_intent_compat()
-    }
-
-    /// `observer_poll` 観測を shadow_model へ dispatch する。
-    ///
-    /// 外部観測（GJI I/O 等）の正規ルート。`user_enabled` / `ms` は現状未使用だが、
-    /// 既存呼び出しサイトの API 互換のため引数は保持する。
-    pub fn write_observer_poll(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
-        self.ime.dispatch_event(ImeEvent::ObserverReported {
-            open: value,
-            source: super::ime_event::ObservationSource::ObserverPoll,
-            hwnd: HwndId::NULL,
-            confidence: super::ime_event::ObservationConfidence::Medium,
-        });
-    }
-
-    /// 同期キー由来の意図を shadow_model へ dispatch する。
-    pub fn write_sync_key(&mut self, value: bool, ms: u64, _user_enabled: bool) {
-        if !value {
-            self.last_explicit_ime_off_ms = ms;
-        }
-        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: value,
-            source: IntentSource::SyncKey,
-        });
-    }
-
-    /// 物理 IME キー由来の意図を shadow_model へ dispatch する。
-    pub fn write_physical_key(&mut self, value: bool, ms: u64, _user_enabled: bool) {
-        if !value {
-            self.last_explicit_ime_off_ms = ms;
-        }
-        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: value,
-            source: IntentSource::PhysicalImeKey,
-        });
-    }
-
-    /// Engine の SetOpen 要求由来の意図を shadow_model へ dispatch する。
-    pub fn write_set_open_request(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
-        self.ime.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: value,
-            source: IntentSource::Command,
-        });
-    }
-
-    /// フォーカス変更直後の同期プローブ観測を shadow_model へ dispatch する。
-    pub fn write_focus_probe(&mut self, value: bool, _ms: u64, _user_enabled: bool) {
-        self.ime.dispatch_event(ImeEvent::ObserverReported {
-            open: value,
-            source: super::ime_event::ObservationSource::FocusProbe,
-            hwnd: HwndId::NULL,
-            confidence: super::ime_event::ObservationConfidence::Medium,
-        });
-    }
-
-    /// `ImeUpdate` を belief / shadow_model に反映する。
-    pub fn apply_ime_update(
-        &mut self,
-        update: &crate::observer::ime_observer::ImeUpdate,
-        _user_enabled: bool,
-    ) {
-        self.ime.apply_ime_update(update);
-    }
-
-    /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。
-    pub fn apply_hwnd_cache_restore(
-        &mut self,
-        snapshot: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
-    ) {
-        self.ime.apply_hwnd_cache_restore(snapshot);
-    }
-
-    /// TsfNative 入場時に stale な `desired_open=false` を IME ON へ寄せ直す。
-    pub fn reset_stale_ime_on_for_tsf_native(&mut self) {
-        self.ime.reset_stale_ime_on_for_tsf_native();
-    }
-}
 
 #[cfg(test)]
 mod tests {

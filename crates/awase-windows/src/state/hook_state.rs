@@ -1,15 +1,6 @@
 use awase::gate::{HoldingGate, SyncKeyGateEvent, SyncKeyGateMachine};
 use awase::types::{RawKeyEvent, VkCode};
 
-/// フックルーティング状態 (Step 4 で ctrl_bypass_hold 削除後、空構造体)。
-///
-/// 今後 hook routing 関連のフィールドが増えたら追加する。
-/// ctrl_bypass_hold は `shadow_model.input_barrier::CtrlImeChord` に置換済み。
-#[derive(Debug, Default)]
-pub struct HookRoutingState {
-    // 将来の hook routing 用予約
-}
-
 /// フック設定（親指キー VK コード）
 #[derive(Debug, Copy, Clone)]
 pub struct HookConfig {

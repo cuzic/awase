@@ -54,7 +54,7 @@ use std::sync::atomic::AtomicBool;
 
 use awase::types::RawKeyEvent;
 
-pub use crate::state::{HookConfig, HookRoutingState, ImeBelief, PlatformState};
+pub use crate::state::{HookConfig, ImeBelief, PlatformState};
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
 pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
