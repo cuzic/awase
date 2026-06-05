@@ -107,9 +107,6 @@ pub struct ImeModel {
     /// 最後に actuator が成功させた IME 開閉状態の確信度 (Step 7)。
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
-
-    /// reduce 呼び出し回数。診断用。
-    pub reduce_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +114,7 @@ pub struct RecordedIntent {
     pub target: bool,
     pub source: IntentSource,
     pub at_seq: u64,
+    pub at_ms: u64,
 }
 
 impl ImeModel {
@@ -133,7 +131,6 @@ impl ImeModel {
             observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
             applied: AppliedImeState::Unknown,
-            reduce_count: 0,
         }
     }
 
@@ -239,7 +236,6 @@ impl ImeModel {
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
     /// Observer は `observations` に記録するだけで desired を壊さない。
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
-        self.reduce_count = self.reduce_count.wrapping_add(1);
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {
                 let target = !self.desired_open;
@@ -248,6 +244,7 @@ impl ImeModel {
                     target,
                     source,
                     at_seq: envelope.time.seq,
+                    at_ms: envelope.time.tick_ms,
                 });
             }
             ImeEvent::UserImeSetIntent { target, source } => {
@@ -256,6 +253,7 @@ impl ImeModel {
                     target,
                     source,
                     at_seq: envelope.time.seq,
+                    at_ms: envelope.time.tick_ms,
                 });
             }
             ImeEvent::ObserverReported {
