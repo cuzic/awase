@@ -414,7 +414,10 @@ impl CompositionState {
         let epoch = self.warm_epoch.focus_epoch.get();
         log::debug!("[composition] marked warm (epoch={epoch}) → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
         self.warm_epoch.mark_warm();
-        self.cold_ctx.reset_consecutive_count();
+        // NOTE: consecutive_count はリセットしない。
+        // warm になっても連続 RawTsfLiteralRecovery のカウントを保持することで
+        // ChromeProbe → warm → 再検出 の無限ループを防ぐ。
+        // カウントのリセットはフォーカス変更時にのみ行われる。
     }
 
     /// 現在の composition_warm フラグを返す。
