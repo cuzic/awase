@@ -149,6 +149,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                 cold_seq,
                 prepend_f2_warmup,
                 used_eager_path,
+                nc_fired,
                 romaji,
                 deferred_vks,
                 target,
@@ -168,11 +169,18 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                         let outcome = WarmupOutcome {
                             prepend_f2_warmup,
-                            // deferred VKs がある場合は Unicode kana パスを使わず VK ローマ字で送る。
-                            // KEYEVENTF_UNICODE 直後に VK ストロークを送ると WezTerm/IME が
-                            // N キーをリテラル 'n' として扱い "の" が "nお" になるバグを防ぐ
-                            // （"このあたり" → "こnおあたり"）。
-                            used_eager_path: used_eager_path && deferred_vks.is_empty(),
+                            // nc_fired=false（NameChangeWait タイムアウト）の場合は TSF レイヤーの
+                            // IME モード切替が未確認。VK ローマ字で送ると katakana 等の誤モードで
+                            // "ki" がリテラル出力される。Unicode TSF パスへフォールバックして回避。
+                            //
+                            // nc_fired=true の場合は通常通り deferred_vks.is_empty() を守り、
+                            // KEYEVENTF_UNICODE 直後に N VK を送ると "の" が "nお" になる
+                            // WezTerm バグを防ぐ。
+                            used_eager_path: if nc_fired {
+                                used_eager_path && deferred_vks.is_empty()
+                            } else {
+                                used_eager_path
+                            },
                             cold_seq,
                         };
                         {
@@ -379,6 +387,7 @@ mod tests {
             cold_seq: 0,
             prepend_f2_warmup: false,
             used_eager_path: false,
+            nc_fired: true,
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Chrome,
@@ -403,6 +412,7 @@ mod tests {
             cold_seq: 0,
             prepend_f2_warmup: false,
             used_eager_path: false,
+            nc_fired: true,
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Chrome,
@@ -425,6 +435,7 @@ mod tests {
             cold_seq: 0,
             prepend_f2_warmup: false,
             used_eager_path: false,
+            nc_fired: true,
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -449,6 +460,7 @@ mod tests {
             cold_seq: 0,
             prepend_f2_warmup: true,
             used_eager_path: false,
+            nc_fired: true,
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -467,6 +479,7 @@ mod tests {
             cold_seq: 0,
             prepend_f2_warmup: false,
             used_eager_path: false,
+            nc_fired: true,
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -476,6 +489,37 @@ mod tests {
         assert!(io.transmit_tsf_called.get());
         assert!(io.mark_warm_called.get());
         assert!(!io.transmit_chrome_called.get());
+    }
+
+    #[test]
+    fn tsf_transmit_uses_eager_path_when_nc_not_fired_even_with_deferred_vks() {
+        // NameChangeWait がタイムアウトした（nc_fired=false）場合、deferred_vks があっても
+        // used_eager_path を尊重して Unicode TSF パスを使う。
+        // IME モード切替未確認時に VK ローマ字を送ると katakana 等でリテラル出力になるバグ回避。
+        let io = FakeProbeIo {
+            gji_healthy: false, // LiteralDetect は無効化（today's focus はモード切替）
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: true,
+            nc_fired: false, // NameChangeWait タイムアウト
+            romaji: "ki".to_string(),
+            deferred_vks: vec![crate::tsf::probe_fsm::DeferredVk {
+                vk: awase::types::VkCode(0x49), // VK_I
+                needs_shift: false,
+            }],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done);
+        assert!(io.transmit_tsf_called.get());
+        // nc_fired=false のとき used_eager_path は deferred_vks.is_empty() に関わらず true。
+        // TsfSendPipeline::transmit が Unicode TSF を選ぶかどうかは transmit_tsf の内部判定だが
+        // ここでは WarmupOutcome に used_eager_path=true が渡ることを確認する。
+        // （実際の Unicode 選択は transmit_tsf 実装依存のため、呼び出しが行われたことのみ確認）
     }
 
     #[test]

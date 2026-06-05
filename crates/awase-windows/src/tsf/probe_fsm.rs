@@ -69,7 +69,7 @@ enum NextStep {
     /// `WaitingForCallback(FreshF2Sent { .. })` へ遷移し `SendFreshF2` を emit
     EmitSendFreshF2 { probe_settled: bool, gji_idle_ms: u64, remaining_ms: u64 },
     /// `enter_transmit_tsf()` を呼ぶ
-    TransmitTsf,
+    TransmitTsf { nc_fired: bool },
     /// `enter_transmit_chrome()` を呼ぶ
     TransmitChrome,
     /// `NameChangeWait` → `Probing(GjiSecondary)` へ遷移（fresh_f2_ms を引き継ぐ）
@@ -179,6 +179,11 @@ pub(crate) enum ProbeAction {
         cold_seq: u32,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
+        /// NameChangeWait を経由した場合に OBJ_NAMECHANGE が発火したかどうか。
+        ///
+        /// `false` の場合（タイムアウト）は TSF レイヤーの IME モード切替が未確認のため、
+        /// `deferred_vks` が存在しても Unicode TSF パスへのフォールバックを許可する。
+        nc_fired: bool,
         romaji: String,
         deferred_vks: Vec<DeferredVk>,
         target: TransmitTarget,
@@ -383,7 +388,7 @@ impl TsfProbeMachine {
                     probe_settled,
                 }]
             }
-            NextStep::TransmitTsf => self.enter_transmit_tsf(),
+            NextStep::TransmitTsf { nc_fired } => self.enter_transmit_tsf(nc_fired),
             NextStep::TransmitChrome => self.enter_transmit_chrome(),
             NextStep::StartSecondaryProbe { fresh_f2_ms } => {
                 let send = self.take_send_for_secondary_probe();
@@ -449,7 +454,7 @@ impl TsfProbeMachine {
                                 };
                             }
                         }
-                        NextStep::TransmitTsf
+                        NextStep::TransmitTsf { nc_fired: true }
                     }
                     ProbeKind::GjiSecondary => {
                         log::debug!(
@@ -457,7 +462,8 @@ impl TsfProbeMachine {
                             self.cold_seq,
                             outcome.elapsed_ms
                         );
-                        NextStep::TransmitTsf
+                        // GjiSecondary は NameChange 発火後の二次プローブなので nc_fired=true。
+                        NextStep::TransmitTsf { nc_fired: true }
                     }
                     ProbeKind::Chrome => {
                         log::debug!(
@@ -500,7 +506,9 @@ impl TsfProbeMachine {
                         fresh_f2_ms: *fresh_f2_ms,
                     }
                 } else {
-                    NextStep::TransmitTsf
+                    // nc_fired=false（タイムアウト）の場合は IME モード切替が未確認。
+                    // nc_fired=true && probe_settled=true は上の if に入らないのでここに来る。
+                    NextStep::TransmitTsf { nc_fired }
                 }
             }
 
@@ -630,7 +638,7 @@ impl TsfProbeMachine {
         }
     }
 
-    fn enter_transmit_tsf(&mut self) -> Vec<ProbeAction> {
+    fn enter_transmit_tsf(&mut self, nc_fired: bool) -> Vec<ProbeAction> {
         let send = self.take_current_send_for_transmit();
         let cold_seq = self.cold_seq;
         let ctx = self.ctx;
@@ -639,6 +647,7 @@ impl TsfProbeMachine {
             cold_seq,
             prepend_f2_warmup: ctx.prepend_f2_warmup,
             used_eager_path: ctx.used_eager_path,
+            nc_fired,
             romaji: send.romaji,
             deferred_vks: send.deferred_vks,
             target: TransmitTarget::Tsf,
@@ -653,6 +662,7 @@ impl TsfProbeMachine {
             cold_seq,
             prepend_f2_warmup: false,
             used_eager_path: false,
+            nc_fired: true,
             romaji: send.romaji,
             deferred_vks: send.deferred_vks,
             target: TransmitTarget::Chrome,
@@ -799,10 +809,11 @@ mod tests {
                 actions[0],
                 ProbeAction::Transmit {
                     target: TransmitTarget::Tsf,
+                    nc_fired: false, // タイムアウトなので nc_fired=false が必須
                     ..
                 }
             ),
-            "タイムアウト(unsettled)でも Transmit(Tsf) を emit するべき",
+            "タイムアウト(unsettled)でも Transmit(Tsf) を emit するべき。nc_fired=false: {actions:?}",
         );
     }
 
