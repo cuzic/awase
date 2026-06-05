@@ -19,6 +19,10 @@ pub(crate) trait ProbeIo {
     fn gate_is_bypass(&self) -> bool;
     /// GJI モニターが正常動作しているかどうかを返す。
     fn gji_monitor_healthy(&self) -> bool;
+    /// GJI が LONG_IDLE_MS 以上静止しているかどうかを返す。
+    ///
+    /// `true` のとき LiteralDetect は常に false positive になるためスキップする。
+    fn gji_long_idle(&self) -> bool;
     /// TSF 送信パイプラインを実行し、backspace 相当数を返す。
     fn transmit_tsf(
         &self,
@@ -51,6 +55,12 @@ impl ProbeIo for Output {
 
     fn gji_monitor_healthy(&self) -> bool {
         crate::tsf::observer::gji_monitor_healthy()
+    }
+
+    fn gji_long_idle(&self) -> bool {
+        crate::hook::current_tick_ms()
+            .saturating_sub(crate::tsf::observer::gji_last_io_ms())
+            >= crate::tuning::LONG_IDLE_MS
     }
 
     fn transmit_tsf(
@@ -189,7 +199,8 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             });
                         }
                         let gji_active = io.gji_monitor_healthy();
-                        let needs_literal = prepend_f2_warmup && gji_active;
+                        let needs_literal =
+                            prepend_f2_warmup && gji_active && !io.gji_long_idle();
                         let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, true);
@@ -253,6 +264,7 @@ mod tests {
     struct FakeProbeIo {
         bypass: bool,
         gji_healthy: bool,
+        gji_long_idle: bool,
         tsf_transmit_result: usize,
         consecutive: u32,
         transmit_tsf_called: Cell<bool>,
@@ -269,6 +281,7 @@ mod tests {
             Self {
                 bypass: false,
                 gji_healthy: false,
+                gji_long_idle: false,
                 tsf_transmit_result: 1,
                 consecutive: 0,
                 transmit_tsf_called: Cell::new(false),
@@ -288,6 +301,9 @@ mod tests {
         }
         fn gji_monitor_healthy(&self) -> bool {
             self.gji_healthy
+        }
+        fn gji_long_idle(&self) -> bool {
+            self.gji_long_idle
         }
         fn transmit_tsf(
             &self,
@@ -417,6 +433,30 @@ mod tests {
         assert!(done);
         assert!(!io.transmit_tsf_called.get());
         assert!(!io.mark_warm_called.get());
+    }
+
+    #[test]
+    fn tsf_transmit_skips_literal_detect_when_gji_long_idle() {
+        // GJI が長期静止（WezTerm 等）のとき LiteralDetect を入れないことで
+        // false positive による BS 送信ループを防ぐ。
+        let io = FakeProbeIo {
+            gji_healthy: true,
+            gji_long_idle: true,
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: false,
+            romaji: "ka".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done, "should be Done — LiteralDetect must be skipped when GJI is long-idle");
+        assert!(io.transmit_tsf_called.get());
+        assert!(io.mark_warm_called.get());
     }
 
     #[test]
