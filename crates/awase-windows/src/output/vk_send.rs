@@ -42,6 +42,17 @@ impl TsfSendPipeline {
             None
         };
 
+        let t_send = crate::hook::current_tick_ms();
+        log::debug!(
+            "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (prepend_f2={} eager={})",
+            outcome.cold_seq,
+            romaji,
+            if unicode_kana.is_some() { "unicode" } else { "vk-run" },
+            t_send,
+            outcome.prepend_f2_warmup,
+            outcome.used_eager_path,
+        );
+
         unicode_kana.map_or_else(
             || {
                 Output::send_vk_runs(chars, outcome.cold_seq);
@@ -383,7 +394,9 @@ impl Output {
     }
 
     fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence, used_eager_path: bool) {
+        let t_warm = crate::hook::current_tick_ms();
         let cold_seq = self.composition.cold_start_count();
+        log::debug!("[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={}ms", t_warm);
         let outcome = WarmupOutcome {
             prepend_f2_warmup: false,
             used_eager_path,

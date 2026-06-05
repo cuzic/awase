@@ -433,12 +433,14 @@ impl Output {
     /// `WindowsPlatform::advance_tsf_probe` はこの戻り値を `apply_timer_command` に渡すだけでよい。
     /// pending_tsf の有無とタイマー kill/set の判断はここで完結する。
     pub(crate) fn step_probe(&mut self) -> TimerCommand {
+        let tick_t = crate::hook::current_tick_ms();
         let machine = self.pending_tsf.borrow_mut().take();
         let Some(mut machine) = machine else {
             return TimerCommand::Kill {
                 id: crate::TIMER_TSF_PROBE,
             };
         };
+        log::debug!("[tsf-probe-tick] cold={} t={}ms", machine.cold_seq_hint(), tick_t);
         let actions = machine.tick();
         let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
         if done {
