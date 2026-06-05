@@ -40,6 +40,11 @@ pub(crate) trait ProbeIo {
     ///
     /// ベースラインは SendInput **前**に取得すること（送信中の NAMECHANGE を見逃さないため）。
     fn send_fresh_f2(&self) -> (NamechangeBaseline, u64);
+    /// TSF モード（WezTerm 等 ForceTsf アプリ）かどうかを返す。
+    ///
+    /// `true` のとき LiteralDetect は IMM composition context が存在しないため
+    /// 常に false positive になる。スキップして warm を維持する。
+    fn is_tsf_mode(&self) -> bool;
     /// 連続 raw TSF literal 回数を返す。
     fn consecutive_count(&self) -> u32;
     /// `RAW_TSF_LITERAL` グローバルを設定する（`consecutive == 0` のときのみ呼ばれる）。
@@ -95,6 +100,10 @@ impl ProbeIo for Output {
         let _ = crate::win32::send_input_safe(&refresh);
         let fresh_f2_ms = crate::hook::current_tick_ms();
         (nc_baseline, fresh_f2_ms)
+    }
+
+    fn is_tsf_mode(&self) -> bool {
+        self.is_tsf_mode()
     }
 
     fn consecutive_count(&self) -> u32 {
@@ -221,7 +230,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             prepend_f2_warmup
                             && gji_active
                             && !io.gji_long_idle()
-                            && io.consecutive_count() < crate::tuning::CONSECUTIVE_LITERAL_SKIP;
+                            && !io.is_tsf_mode();
                         let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, true);
@@ -286,6 +295,7 @@ mod tests {
         bypass: bool,
         gji_healthy: bool,
         gji_long_idle: bool,
+        tsf_mode: bool,
         tsf_transmit_result: usize,
         consecutive: u32,
         transmit_tsf_called: Cell<bool>,
@@ -305,6 +315,7 @@ mod tests {
                 bypass: false,
                 gji_healthy: false,
                 gji_long_idle: false,
+                tsf_mode: false,
                 tsf_transmit_result: 1,
                 consecutive: 0,
                 transmit_tsf_called: Cell::new(false),
@@ -328,6 +339,9 @@ mod tests {
         }
         fn gji_long_idle(&self) -> bool {
             self.gji_long_idle
+        }
+        fn is_tsf_mode(&self) -> bool {
+            self.tsf_mode
         }
         fn transmit_tsf(
             &self,

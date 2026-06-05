@@ -446,7 +446,7 @@ impl Output {
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing
             && gji_active
             && !gji_long_idle
-            && self.composition.consecutive_count() < crate::tuning::CONSECUTIVE_LITERAL_SKIP
+            && !self.is_tsf_mode()
         {
             let deadline_ms =
                 crate::hook::current_tick_ms() + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
