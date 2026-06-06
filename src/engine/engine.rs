@@ -77,6 +77,12 @@ impl Engine {
         self.thumb_vks = (left, right);
     }
 
+    /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
+    /// `VkCode(0)` を渡すと機能を無効にする。
+    pub fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
+        self.adapter.set_engine_off_triple_vk(vk);
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
@@ -216,7 +222,15 @@ impl Engine {
             return self.adapter.flush(ContextChange::ImeOff);
         }
 
-        self.adapter.on_timeout(timer_id, &phys)
+        let decision = self.adapter.on_timeout(timer_id, &phys);
+
+        // ソロ連打によるエンジン OFF トリガー
+        if self.adapter.take_engine_off_requested() {
+            log::info!("Engine OFF triggered by consecutive solo key presses");
+            return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
+        }
+
+        decision
     }
 
     /// 外部コマンドの統合エントリポイント。

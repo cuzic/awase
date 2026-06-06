@@ -13,6 +13,7 @@ use crate::types::{
 };
 use crate::yab::{YabFace, YabLayout, YabValue};
 
+use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
     BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, OutputUpdate,
     ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
@@ -27,6 +28,12 @@ pub const TIMER_SPECULATIVE: usize = 2;
 
 /// AdaptiveTiming モードで連続打鍵と判定する閾値（マイクロ秒）
 pub(super) const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
+
+/// ソロ連打トリガーの連打間隔上限（マイクロ秒）
+const SOLO_TRIPLE_TIMEOUT_US: u64 = 400_000;
+
+/// ソロ連打でエンジン OFF を発動する必要連打回数
+const SOLO_TRIPLE_COUNT: u32 = 3;
 
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
@@ -98,6 +105,15 @@ pub struct NicolaFsm {
 
     /// 消費済み右親指キーの押下タイムスタンプ（左と同様）。
     pub(crate) right_thumb_consumed: Option<Timestamp>,
+
+    /// ソロ確定の連続回数を追跡する汎用カウンター。
+    solo_counter: ConsecutiveSoloCounter,
+
+    /// ソロ N 連打でエンジン OFF を発動するキー（VkCode(0) = 機能無効）。
+    engine_off_triple_vk: VkCode,
+
+    /// triple 連打でのエンジン OFF 要求フラグ（1ショット）。
+    engine_off_requested: bool,
 }
 
 // ── 公開 API ──
@@ -125,6 +141,9 @@ impl NicolaFsm {
             phys: PhysicalKeyState::empty(),
             left_thumb_consumed: None,
             right_thumb_consumed: None,
+            solo_counter: ConsecutiveSoloCounter::new(SOLO_TRIPLE_TIMEOUT_US),
+            engine_off_triple_vk: VkCode(0),
+            engine_off_requested: false,
         }
     }
 
@@ -197,9 +216,10 @@ impl NicolaFsm {
             }
         };
 
-        // タイミング状態もリセット
+        // タイミング状態・ソロ連打カウンターもリセット
         self.last_key_timestamp = None;
         self.last_key_gap_us = None;
+        self.solo_counter.reset();
 
         if !was_idle {
             log::info!(
@@ -256,6 +276,17 @@ impl NicolaFsm {
     }
 
     /// 同時打鍵判定の閾値を更新する（ミリ秒指定）。
+    /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
+    /// `VkCode(0)` を渡すと機能を無効にする。
+    pub fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
+        self.engine_off_triple_vk = vk;
+    }
+
+    /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
+    pub(super) fn take_engine_off_requested(&mut self) -> bool {
+        std::mem::take(&mut self.engine_off_requested)
+    }
+
     pub fn set_threshold_ms(&mut self, ms: u32) {
         self.threshold_us = u64::from(ms) * 1000;
     }
@@ -1084,7 +1115,25 @@ impl NicolaFsm {
     }
 
     /// PendingThumb タイムアウト：親指キーを単独打鍵として確定する
-    fn timeout_pending_thumb(&mut self, scan_code: ScanCode, vk_code: VkCode) -> Resp {
+    fn timeout_pending_thumb(
+        &mut self,
+        scan_code: ScanCode,
+        vk_code: VkCode,
+        timestamp: Timestamp,
+    ) -> Resp {
+        // ソロ連打によるエンジン OFF トリガーチェック
+        if self.engine_off_triple_vk.0 != 0 && vk_code == self.engine_off_triple_vk {
+            let count = self.solo_counter.record(vk_code, timestamp);
+            if count >= SOLO_TRIPLE_COUNT {
+                self.solo_counter.reset();
+                self.engine_off_requested = true;
+                // N 回目は suppress（OS への VK 送出を防ぐ）
+                return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
+            }
+        } else {
+            self.solo_counter.reset();
+        }
+
         let action = KeyAction::Key(vk_code);
         // scan_code には物理キーの実スキャンコードを使う。
         // 以前は ScanCode(u32::from(vk_code.0)) という合成値を使っていたが、
@@ -1279,7 +1328,7 @@ impl NicolaFsm {
                 self.timeout_pending_char(pending.scan_code, pending.vk_code, pending.pos)
             }
             EngineState::PendingThumb(thumb) => {
-                self.timeout_pending_thumb(thumb.scan_code, thumb.vk_code)
+                self.timeout_pending_thumb(thumb.scan_code, thumb.vk_code, thumb.timestamp)
             }
             EngineState::PendingCharThumb {
                 char_key,

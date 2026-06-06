@@ -265,6 +265,13 @@ pub struct KeysConfig {
     #[serde(default)]
     pub ime_detect: ImeDetectConfig,
 
+    /// ソロ3連打でエンジン OFF するキー（None または空文字列で無効）
+    ///
+    /// モディファイア不要のキー名を1つ指定する（"VK_NONCONVERT" 等）。
+    /// Ctrl スタック等でホットキーが効かなくなった場合の緊急回復用。
+    #[serde(default = "default_engine_off_solo_triple")]
+    pub engine_off_solo_triple: Option<String>,
+
     /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
     ///
     /// エンジンが有効になったとき、このキーを `SendInput` で送信して
@@ -290,6 +297,7 @@ impl Default for KeysConfig {
             ime_on: default_ime_control_on_keys(),
             ime_off: default_ime_control_off_keys(),
             ime_detect: ImeDetectConfig::default(),
+            engine_off_solo_triple: default_engine_off_solo_triple(),
             engine_on_ime_key: default_engine_on_ime_key(),
             engine_off_ime_key: default_engine_off_ime_key(),
         }
@@ -298,6 +306,11 @@ impl Default for KeysConfig {
 
 // serde の #[serde(default = "...")] はフィールド型と同じ型を返す関数を要求するため、
 // Option<String> フィールドのデフォルトは Option<String> を返す必要がある。
+#[allow(clippy::unnecessary_wraps)]
+fn default_engine_off_solo_triple() -> Option<String> {
+    Some("VK_NONCONVERT".to_string())
+}
+
 #[allow(clippy::unnecessary_wraps)]
 fn default_engine_on_ime_key() -> Option<String> {
     Some("VK_DBE_DBCSCHAR".to_string())

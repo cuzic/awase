@@ -4,6 +4,7 @@
 //! - `NicolaFsm`: 同時打鍵判定 FSM（timed-fsm ベース）
 
 mod confirm_policy;
+pub mod consecutive_counter;
 pub mod decision;
 #[allow(clippy::module_inception)]
 mod engine;

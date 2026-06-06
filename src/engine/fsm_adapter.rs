@@ -83,6 +83,16 @@ impl FsmAdapter {
         self.fsm.set_ngram_model(model);
     }
 
+    /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
+    pub(super) fn set_engine_off_triple_vk(&mut self, vk: crate::types::VkCode) {
+        self.fsm.set_engine_off_triple_vk(vk);
+    }
+
+    /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
+    pub(super) fn take_engine_off_requested(&mut self) -> bool {
+        self.fsm.take_engine_off_requested()
+    }
+
     /// エンジンが有効かどうかを返す。
     #[must_use]
     pub(super) const fn is_enabled(&self) -> bool {
