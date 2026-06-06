@@ -351,19 +351,19 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // SAFETY: lParam は Box::into_raw(Box::new(RawKeyEvent)) のポインタ。
                 //         RawKeyEvent は Copy なので値をコピーして Box をドロップする。
                 let event = unsafe { *Box::from_raw(msg.lParam.0 as *mut RawKeyEvent) };
-                // パニック連打検出（フックスレッドから移動）
+                // パニックリセット検出: IME-OFF→ON→OFF の交互シーケンスのみ発動
                 if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
                     let mods = event.modifier_snapshot;
-                    let triggers = crate::hook::classify_ime_relevance(event.vk_code)
-                        .may_change_ime
-                        || crate::panic_detect::is_panic_trigger(
-                            event.vk_code,
-                            mods.ctrl,
-                            mods.shift,
-                            mods.alt,
+                    if let Some(is_on) = crate::panic_detect::get_panic_trigger_direction(
+                        event.vk_code,
+                        mods.ctrl,
+                        mods.shift,
+                        mods.alt,
+                    ) {
+                        crate::panic_detect::record_ime_keydown(
+                            is_on,
+                            crate::hook::current_tick_ms(),
                         );
-                    if triggers {
-                        crate::panic_detect::record_ime_keydown(crate::hook::current_tick_ms());
                     }
                 }
                 if crate::OUTPUT_GATE.is_active() {
@@ -477,13 +477,20 @@ pub(crate) fn reload_config() {
     let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
     let panic_trigger_combos: Vec<crate::panic_detect::PanicTriggerCombo> = ime_on
         .iter()
-        .chain(ime_off.iter())
         .map(|k| crate::panic_detect::PanicTriggerCombo {
             vk: k.vk,
             ctrl: k.ctrl,
             shift: k.shift,
             alt: k.alt,
+            is_on: true,
         })
+        .chain(ime_off.iter().map(|k| crate::panic_detect::PanicTriggerCombo {
+            vk: k.vk,
+            ctrl: k.ctrl,
+            shift: k.shift,
+            alt: k.alt,
+            is_on: false,
+        }))
         .collect();
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
     key_diag.report();

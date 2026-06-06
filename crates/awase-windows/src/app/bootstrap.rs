@@ -631,13 +631,20 @@ pub(super) fn run_all() -> Result<()> {
 
     let panic_trigger_combos: Vec<crate::panic_detect::PanicTriggerCombo> = ime_control_on_keys
         .iter()
-        .chain(ime_control_off_keys.iter())
         .map(|k| crate::panic_detect::PanicTriggerCombo {
             vk: k.vk,
             ctrl: k.ctrl,
             shift: k.shift,
             alt: k.alt,
+            is_on: true,
         })
+        .chain(ime_control_off_keys.iter().map(|k| crate::panic_detect::PanicTriggerCombo {
+            vk: k.vk,
+            ctrl: k.ctrl,
+            shift: k.shift,
+            alt: k.alt,
+            is_on: false,
+        }))
         .collect();
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
 
@@ -651,6 +658,21 @@ pub(super) fn run_all() -> Result<()> {
         },
     );
     engine.set_thumb_vks(left_thumb_vk, right_thumb_vk);
+
+    if let Some(vk) = config
+        .keys
+        .engine_off_solo_triple
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| {
+            crate::vk::vk_name_to_code(s).or_else(|| {
+                diag.warn(&format!("Unknown key name for engine_off_solo_triple: {s}"));
+                None
+            })
+        })
+    {
+        engine.set_engine_off_triple_vk(vk);
+    }
 
     let compiled_keymaps = crate::keymap::KeymapTable::new(&config.keymaps);
     initialize_app(

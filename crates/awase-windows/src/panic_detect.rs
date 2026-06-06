@@ -5,7 +5,7 @@
 
 use crate::SingleThreadCell;
 
-/// IME 関連キー押下のタイムスタンプ（循環バッファ）。
+/// IME 関連キー押下の履歴（循環バッファ）。
 ///
 /// フックコールバックはメインスレッドで実行されるため `SingleThreadCell` で十分。
 /// bootstrap で `.set(RapidPressTracker::new())` を呼ぶこと。
@@ -13,28 +13,30 @@ pub static RAPID_IME_TIMESTAMPS: SingleThreadCell<RapidPressTracker> = SingleThr
 
 /// `ime_on` / `ime_off` 特殊キーに登録されたショートカットの combo リスト。
 ///
-/// `may_change_ime` が拾わない VK_CONVERT(0x1C) / VK_NONCONVERT(0x1D) を含む
-/// ユーザ設定のショートカット連打もパニック連打として扱うためのカスタムトリガー。
-/// bootstrap および config reload で `set_panic_trigger_combos` を呼んで更新する。
-///
 /// VK 単体ではなく combo（vk + ctrl/shift/alt）で保持するのは、`変換` / `無変換`
 /// 等の親指キーが NICOLA タイピング用としても使われる場合に、modifier 無しの
-/// 単打を誤って panic 連打として数えてしまうのを防ぐため。
+/// 単打を誤って panic シーケンスとして数えてしまうのを防ぐため。
 pub static PANIC_TRIGGER_COMBOS: SingleThreadCell<Vec<PanicTriggerCombo>> = SingleThreadCell::new();
 
-/// パニック連打判定用のキー combo（`ParsedKeyCombo` のミラー）。
+/// パニックリセット判定用のキー combo（`ParsedKeyCombo` のミラー）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanicTriggerCombo {
     pub vk: awase::types::VkCode,
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
+    /// true = IME-ON ショートカット、false = IME-OFF ショートカット
+    pub is_on: bool,
 }
 
-/// 連打検出用の軽量トラッカー
+/// シーケンス検出用の軽量トラッカー。
+///
+/// 「IME-OFF → IME-ON → IME-OFF」の交互シーケンスが `WINDOW_MS` 以内に
+/// 完結したときだけ `true` を返す。同一キーの連打では発動しない。
 #[derive(Debug)]
 pub struct RapidPressTracker {
-    buf: [u64; 3],
+    /// 直近3エントリ: (is_on, timestamp_ms)
+    buf: [(bool, u64); 3],
     cursor: usize,
     count: usize,
 }
@@ -47,20 +49,21 @@ impl Default for RapidPressTracker {
 
 impl RapidPressTracker {
     const THRESHOLD: usize = 3;
-    const WINDOW_MS: u64 = 1000;
+    /// シーケンス全体の時間窓（ms）。意図的な操作には十分、偶発的連打では収まりにくい。
+    const WINDOW_MS: u64 = 2000;
 
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            buf: [0; Self::THRESHOLD],
+            buf: [(false, 0); Self::THRESHOLD],
             cursor: 0,
             count: 0,
         }
     }
 
-    /// タイムスタンプを記録し、連打が検出されたら `true` を返す。
-    pub fn push(&mut self, now_ms: u64) -> bool {
-        self.buf[self.cursor] = now_ms;
+    /// キー押下を記録し、OFF→ON→OFF シーケンスが検出されたら `true` を返す。
+    pub fn push(&mut self, is_on: bool, now_ms: u64) -> bool {
+        self.buf[self.cursor] = (is_on, now_ms);
         self.cursor = (self.cursor + 1) % Self::THRESHOLD;
         if self.count < Self::THRESHOLD {
             self.count += 1;
@@ -68,26 +71,31 @@ impl RapidPressTracker {
         if self.count < Self::THRESHOLD {
             return false;
         }
-        let oldest = *self.buf.iter().min().unwrap_or(&0);
-        now_ms.saturating_sub(oldest) < Self::WINDOW_MS
+        // cursor は「次に書き込むスロット」= 最古エントリのインデックス
+        let oldest = self.buf[self.cursor];
+        let middle = self.buf[(self.cursor + 1) % Self::THRESHOLD];
+        let newest = self.buf[(self.cursor + 2) % Self::THRESHOLD];
+        // OFF → ON → OFF のシーケンスかつ全体が WINDOW_MS 以内
+        let is_off_on_off = !oldest.0 && middle.0 && !newest.0;
+        let within_window = now_ms.saturating_sub(oldest.1) < Self::WINDOW_MS;
+        is_off_on_off && within_window
     }
 
     /// バッファをクリアする（発動後のリセット用）
     pub const fn clear(&mut self) {
-        self.buf = [0; Self::THRESHOLD];
+        self.buf = [(false, 0); Self::THRESHOLD];
         self.cursor = 0;
         self.count = 0;
     }
 }
 
-/// IME 関連キー KeyDown をパニック連打カウンタに記録する。
+/// IME ショートカット KeyDown をシーケンスカウンタに記録する。
 ///
-/// `with_app` 再入中でも安全に呼べる。連打閾値に達したら `WM_PANIC_RESET` を post する。
-pub fn record_ime_keydown(now_ms: u64) {
-    // with_app 再入中でも安全に呼べる（try_with_mut は RefCell の借用を試み、
-    // 失敗した場合は何もせず返る）。
+/// `with_app` 再入中でも安全に呼べる。OFF→ON→OFF シーケンスが完結したら
+/// `WM_PANIC_RESET` を post する。
+pub fn record_ime_keydown(is_on: bool, now_ms: u64) {
     RAPID_IME_TIMESTAMPS.try_with_mut(|tracker| {
-        if tracker.push(now_ms) {
+        if tracker.push(is_on, now_ms) {
             tracker.clear();
             log::warn!("Rapid IME key press detected — requesting panic reset");
             crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
@@ -95,17 +103,24 @@ pub fn record_ime_keydown(now_ms: u64) {
     });
 }
 
-/// `vk` + 現在の modifier 状態が、ユーザ設定の IME 制御ショートカット
-/// （ime_on / ime_off）の combo と一致するかを判定する。bootstrap 前は常に false。
+/// `vk` + modifier が IME-ON/OFF ショートカットに一致する場合、`is_on` 値を返す。
+///
+/// 一致しなければ `None`。bootstrap 前は常に `None`。
 #[must_use]
-pub fn is_panic_trigger(vk: awase::types::VkCode, ctrl: bool, shift: bool, alt: bool) -> bool {
+pub fn get_panic_trigger_direction(
+    vk: awase::types::VkCode,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+) -> Option<bool> {
     PANIC_TRIGGER_COMBOS
         .with(|combos| {
             combos
                 .iter()
-                .any(|c| c.vk == vk && c.ctrl == ctrl && c.shift == shift && c.alt == alt)
+                .find(|c| c.vk == vk && c.ctrl == ctrl && c.shift == shift && c.alt == alt)
+                .map(|c| c.is_on)
         })
-        .unwrap_or(false)
+        .flatten()
 }
 
 /// `ime_on` / `ime_off` 特殊キーの combo リストを更新する。
