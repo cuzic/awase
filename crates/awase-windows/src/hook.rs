@@ -12,6 +12,8 @@ use crate::output::INJECTED_MARKER;
 
 /// Alt 物理押下中または WM_SYSKEYDOWN コンテキスト（メニューモード）を示すフラグ
 const LLKHF_ALTDOWN: u32 = 0x20;
+/// SendInput / keybd_event 等で注入されたイベントを示すフラグ
+const LLKHF_INJECTED: u32 = 0x10;
 use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
@@ -362,23 +364,29 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let vk = VkCode(kb.vkCode as u16);
     let scan = ScanCode(kb.scanCode);
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-    if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {
-        slot.store(is_keydown, Ordering::Relaxed);
-    }
-    if let Some(slot) = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize) {
-        // 同一 VK の auto-repeat KeyDown では down_at を上書きしない
-        // （長押し判定が常に「直前」へリセットされてしまうため）。
-        let new_value = if is_keydown {
-            let prev = slot.load(Ordering::Relaxed);
-            if prev == 0 {
-                current_tick_ms()
+    // PHYSICAL_KEY_STATE はハードウェア由来のイベントのみで更新する。
+    // LLKHF_INJECTED 付き（X サーバー・他ツールの synthetic）はスキップし、
+    // stuck modifier による汚染を防ぐ。自前の synthetic は上の is_self_injected で既に除外済み。
+    let is_injected = (kb.flags.0 & LLKHF_INJECTED) != 0;
+    if !is_injected {
+        if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {
+            slot.store(is_keydown, Ordering::Relaxed);
+        }
+        if let Some(slot) = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize) {
+            // 同一 VK の auto-repeat KeyDown では down_at を上書きしない
+            // （長押し判定が常に「直前」へリセットされてしまうため）。
+            let new_value = if is_keydown {
+                let prev = slot.load(Ordering::Relaxed);
+                if prev == 0 {
+                    current_tick_ms()
+                } else {
+                    prev
+                }
             } else {
-                prev
-            }
-        } else {
-            0
-        };
-        slot.store(new_value, Ordering::Relaxed);
+                0
+            };
+            slot.store(new_value, Ordering::Relaxed);
+        }
     }
     // CTRL_CONSUMED チェックと classify_key で共用するため先に取得する。
     let config = cached_hook_config();
