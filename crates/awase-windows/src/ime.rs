@@ -128,17 +128,20 @@ impl HeldModifiers {
         use crate::vk::{
             VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RMENU, VK_RSHIFT, VK_SHIFT,
         };
-        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        // GetAsyncKeyState は直前に注入した synthetic Ctrl↑ の影響を受けるため、
+        // SendInput 非影響の物理キー状態 (PHYSICAL_KEY_STATE) で判定する。
+        // これにより Ctrl+W 等のショートカットを押したまま IME キーが注入された場合でも
+        // Ctrl が正しく復元され、Chrome へ Ctrl+W が届く。
         let still = Self {
             ctrl: self.ctrl
-                && (unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } < 0
-                    || unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } < 0),
+                && (crate::hook::is_physical_key_down(VK_LCONTROL)
+                    || crate::hook::is_physical_key_down(crate::vk::VK_RCONTROL)),
             shift: self.shift
-                && (unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } < 0
-                    || unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } < 0),
+                && (crate::hook::is_physical_key_down(VK_LSHIFT)
+                    || crate::hook::is_physical_key_down(VK_RSHIFT)),
             alt: self.alt
-                && (unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } < 0
-                    || unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } < 0),
+                && (crate::hook::is_physical_key_down(VK_LMENU)
+                    || crate::hook::is_physical_key_down(VK_RMENU)),
         };
         if still.ctrl {
             inputs.push(make_key_input_ex(VK_CONTROL, false, IME_KANJI_MARKER));
