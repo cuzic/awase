@@ -89,18 +89,19 @@ struct HeldModifiers {
 }
 
 impl HeldModifiers {
-    /// `GetAsyncKeyState` で現在の物理押下状態を読み取る。
+    /// 物理キー状態 (`PHYSICAL_KEY_STATE`) で修飾キーの押下状態を読み取る。
     ///
-    /// # Safety
-    /// Win32 API を呼び出す。
-    unsafe fn read() -> Self {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{
-            GetAsyncKeyState, VK_CONTROL, VK_MENU, VK_SHIFT,
-        };
+    /// `GetAsyncKeyState` は直前に注入した synthetic KeyUp の影響を受けて汚染される場合があるため、
+    /// SendInput 非影響の物理キー状態で読み取ることで CTRL MISMATCH を防ぐ。
+    fn read() -> Self {
+        use crate::vk::{VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_RCONTROL, VK_RMENU, VK_RSHIFT};
         Self {
-            ctrl: unsafe { GetAsyncKeyState(i32::from(VK_CONTROL.0)) } < 0,
-            shift: unsafe { GetAsyncKeyState(i32::from(VK_SHIFT.0)) } < 0,
-            alt: unsafe { GetAsyncKeyState(i32::from(VK_MENU.0)) } < 0,
+            ctrl: crate::hook::is_physical_key_down(VK_LCONTROL)
+                || crate::hook::is_physical_key_down(VK_RCONTROL),
+            shift: crate::hook::is_physical_key_down(VK_LSHIFT)
+                || crate::hook::is_physical_key_down(VK_RSHIFT),
+            alt: crate::hook::is_physical_key_down(VK_LMENU)
+                || crate::hook::is_physical_key_down(VK_RMENU),
         }
     }
 
@@ -183,8 +184,7 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState};
 
-    // SAFETY: GetAsyncKeyState / GetKeyState はスレッドセーフで任意のスレッドから呼び出せる。
-    let held = unsafe { HeldModifiers::read() };
+    let held = HeldModifiers::read();
 
     // 診断: L/R 個別キー状態（VK_KANJI 受信時の Edge 挙動把握用）
     // GetAsyncKeyState = 物理キー状態、GetKeyState = メッセージキュー処理済み状態。
@@ -317,13 +317,12 @@ pub unsafe fn post_gji_ime_off() {
 pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
 
-    // SAFETY: GetAsyncKeyState はスレッドセーフ。
-    let held = unsafe { HeldModifiers::read() };
+    let held = HeldModifiers::read();
     let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
     held.push_release(&mut inputs);
     inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
     inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
-    // SAFETY: GetAsyncKeyState はスレッドセーフ。
+    // SAFETY: push_restore は Win32 SendInput を呼ぶ。
     let still = unsafe { held.push_restore(&mut inputs) };
 
     log::debug!(
