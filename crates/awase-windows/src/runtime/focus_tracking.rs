@@ -174,6 +174,10 @@ impl Runtime {
         self.platform.notify_focus_changed();
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
+        // FocusChanged dispatch の前に保存する。
+        // dispatch_event(FocusChanged) が last_intent = None にクリアするため、
+        // その後では last_explicit_off_ms() = 0 になってしまいガードが機能しない。
+        let pre_focus_explicit_off_ms = self.platform_state.ime.last_explicit_off_ms();
         self.platform_state
             .ime
             .dispatch_event(crate::state::ime_event::ImeEvent::FocusChanged {
@@ -208,7 +212,9 @@ impl Runtime {
                 )
             {
                 let now_ms = crate::hook::current_tick_ms();
-                let last_off_ms = self.platform_state.ime.last_explicit_off_ms();
+                // pre_focus_explicit_off_ms を使う: FocusChanged が last_intent を
+                // クリア済みのため dispatch 後に last_explicit_off_ms() を呼ぶと 0 になる。
+                let last_off_ms = pre_focus_explicit_off_ms;
                 let elapsed = now_ms.saturating_sub(last_off_ms);
                 if last_off_ms > 0 && elapsed < 10_000 {
                     log::debug!(
