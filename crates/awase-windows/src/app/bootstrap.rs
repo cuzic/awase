@@ -664,8 +664,8 @@ pub(super) fn run_all() -> Result<()> {
         .engine_off_solo_triple
         .as_deref()
         .filter(|s| !s.is_empty())
-        .and_then(|s| {
-            crate::vk::vk_name_to_code(s).or_else(|| {
+        .and_then(|s: &str| {
+            VkCode::from_name(s).or_else(|| {
                 diag.warn(&format!("Unknown key name for engine_off_solo_triple: {s}"));
                 None
             })
