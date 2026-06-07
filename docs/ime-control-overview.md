@@ -1,6 +1,6 @@
 # IME 制御 アーキテクチャ概要
 
-> 最終更新: 2026-05-29  
+> 最終更新: 2026-06-07  
 > 対象: awase Windows 実装（`crates/awase-windows/src/`）
 
 ---
@@ -210,9 +210,15 @@ ImmCross が `Applied` を返した場合も同様に後続戦略はスキップ
 
 | AppImeProfile | 対象アプリ | 使用戦略 |
 |---------------|------------|----------|
-| `Standard` | WezTerm, メモ帳, etc. | ImmCross → GJI → KANJI |
+| `Standard` | メモ帳, etc. | ImmCross → GJI → KANJI |
 | `Imm32Unavailable` | Chrome, Edge | GJI → KANJI |
-| `TsfNative` | UWP アプリ等 | TSF 経由 |
+| `TsfNative` | WezTerm, Windows Terminal, UWP | GJI → KANJI（※要 Nop バインド） |
+
+> **TsfNative での GJI 利用:** `ImmGetDefaultIMEWnd` が NULL を返すため ImmCross は使えない。
+> GJI の TSF text service (ITfKeyEventSink) が F14 を消費することを実機確認済み。
+> ただし F14 が VT シーケンス（ESC[26~）としてターミナルに漏れないよう、
+> アプリ側で F13/F14 を Nop/unbound に設定することが必須。
+> 設定方法は [ADR-034](adr/034-gji-direct-strategy.md#tsfnative) 参照。
 
 ### AppImeProfile と AppImePolicy の責務分離
 
@@ -235,10 +241,14 @@ Profile ではなく Policy で表現する:
 LINE = Standard（AppImeProfile）+ owns_physical_kanji=true（AppImePolicy）
 ```
 
-### KanjiToggleStrategy の confidence gate
+### KanjiToggleStrategy の confidence gate と 300ms ウィンドウ
 
 VK_KANJI はトグル操作であり**冪等ではない**。F13/F14（GJI）や IMM32 SetOpen と異なり、
 shadow が stale な状態で送ると意図と逆方向に反転する。
+
+`kanji_needs_context_override`（`executor.rs`）が送信可否を判断する。
+ON/OFF 両方向とも「shadow 一致 + Confirmed + 300ms 以内」の場合のみスキップ。
+300ms 超過後はスリープ復帰後の desync 修正のため再送を許可する。
 
 現在の実装では `effective_shadow`（shadow || candidate_visible || candidate_was_seen）を
 guard として使っているが、以下の条件が揃ったときのみ安全に使える:
@@ -399,7 +409,33 @@ spurious な連鎖反応が起きるアプリ群。
 VK_KANJI を送る場合は `IME_KANJI_MARKER` を付けて自己注入として識別し、
 フック側で素通りさせる。
 
-### 5-4. Ctrl+無変換 IME-OFF 救済機構
+### 5-4. TsfNative アプリ（WezTerm / Windows Terminal）
+
+TsfNative アプリは `ImmGetContext` が NULL を返し、`ImmGetDefaultIMEWnd` も NULL になるため
+ImmCross が使えない。GJI の TSF text service (ITfKeyEventSink) が F14 を消費することを実機確認し、
+2026-06-07 より `GjiDirectStrategy` の TsfNative 除外を撤廃した。
+
+**制約:** F14 を SendInput すると VT ターミナルが ESC[26~ として解釈するため、
+アプリ側で F13/F14 を Nop に設定する必要がある（設定しないと `~` がターミナルに入力される）。
+
+**設定（WezTerm）:**
+```lua
+config.keys = {
+  { key = 'F13', mods = '', action = wezterm.action.Nop },
+  { key = 'F14', mods = '', action = wezterm.action.Nop },
+}
+```
+
+**設定（Windows Terminal）:**
+```json
+{ "command": "unbound", "keys": "f13" },
+{ "command": "unbound", "keys": "f14" }
+```
+
+GJI が TSF 層で F14 を消費しない場合は `Applied` を返すが IME は変わらず、
+KanjiToggle へのフォールスルーも起きない。動作不良の場合は TsfNative 除外に戻すこと。
+
+### 5-5. Ctrl+無変換 IME-OFF 救済機構
 
 LINE 等で `Ctrl+無変換` を押したとき、Ctrl を早く離すと
 親指シフトキーとして誤認識されるバグへの対策。

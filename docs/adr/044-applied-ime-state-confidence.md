@@ -139,12 +139,17 @@ pub(crate) enum KanjiApplyDecision {
 |---|---|---|---|---|---|---|
 | 1 | Unknown | EngineIntent | false | false | ForceApply | フォーカス直後 desync（6-C 主ケース）|
 | 2 | Optimistic(false) | EngineIntent | false | false | ForceApply | 楽観更新のみ = 不確定 |
-| 3 | Confirmed{false,500} | EngineIntent | false | false | Skip | 確認済み OFF + 目標 OFF → 永続スキップ |
+| 3a | Confirmed{false,900} | EngineIntent | false | false | Skip | 確認済み OFF + 目標 OFF + 300ms 以内（now=1000）→ 二重送信防止 |
+| 3b | Confirmed{false,500} | EngineIntent | false | false | ForceApply | 確認済み OFF + 目標 OFF + 300ms 超過（now=1000）→ desync 修正のため再送許可 |
 | 4 | Confirmed{false,800} | EngineIntent | false | false | Skip | 確認済み + 300ms 以内（now=1000）|
 | 5 | Confirmed{false,500} | EngineIntent | false | false | ForceApply | 300ms 超過（now=1000）→ 再試行許容 |
 | 6 | Unknown | EngineIntent | true | false | Apply | IMM32 使用可 → override 不要 |
 | 7 | Unknown | EngineIntent | false | true | Apply | GJI 健全 → override 不要 |
 | 8 | Unknown | AutoApply | false | false | Apply | EngineIntent でない → override 不要 |
+
+> **注記（2026-06-07 変更）:** OFF 方向の `safely_confirmed` が「永続スキップ」から「300ms ウィンドウ」に変更された。
+> スリープ復帰後に実 IME 状態と shadow が乖離し、1 回目の VK_KANJI が逆方向トグル（OFF→ON）になった場合、
+> 2 回目の Ctrl+無変換 で desync を修正できるようにするため。ON/OFF 両方向が同一ロジックに統合された。
 
 ## 実装順序
 
