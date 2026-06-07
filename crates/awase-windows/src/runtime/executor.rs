@@ -910,18 +910,15 @@ pub(crate) fn kanji_needs_context_override(
         return false;
     }
 
-    // Confirmed かつ shadow が一致している場合のみ override 不要（安全なスキップ）。
-    // Unknown / Optimistic は desync の可能性があるため override する。
+    // Confirmed かつ shadow が一致し 300ms 以内の場合のみ override 不要。
+    // - Unknown / Optimistic は desync の可能性があるため override する。
+    // - 300ms 超過後は再送を許可する: スリープ復帰後に VK_KANJI が逆方向トグル
+    //   (実 IME が既に OFF → ON) になった際、2 回目以降の Ctrl+無変換で desync を修正できる。
+    //   ON 方向も同様（KeyDown+KeyUp 二重送信防止の 300ms ウィンドウ）。
     let confirmed_at_ms = applied.confirmed_at_ms();
-    let safely_confirmed = if desired_open {
-        // ON 方向: 300ms ウィンドウ内（KeyDown+KeyUp 二重送信防止）
-        shadow_on == desired_open
-            && applied.is_confirmed()
-            && now_ms.saturating_sub(confirmed_at_ms) < 300
-    } else {
-        // OFF 方向: 永続スキップ（VK_KANJI 重複送信防止）
-        shadow_on == desired_open && applied.is_confirmed()
-    };
+    let safely_confirmed = shadow_on == desired_open
+        && applied.is_confirmed()
+        && now_ms.saturating_sub(confirmed_at_ms) < 300;
 
     !safely_confirmed
 }
@@ -952,10 +949,16 @@ mod tests {
         assert!(chrome_intent(false, AppliedImeState::Optimistic(false), false, 1000));
     }
 
-    // ケース 3: Confirmed OFF + 目標 OFF → 永続スキップ（override 不要）
+    // ケース 3a: Confirmed OFF + 目標 OFF + 300ms 以内 → スキップ（二重送信防止）
     #[test]
-    fn no_override_when_confirmed_off_desired_off() {
-        assert!(!chrome_intent(false, AppliedImeState::Confirmed { open: false, at_ms: 500 }, false, 1000));
+    fn no_override_when_confirmed_off_within_300ms() {
+        assert!(!chrome_intent(false, AppliedImeState::Confirmed { open: false, at_ms: 900 }, false, 1000));
+    }
+
+    // ケース 3b: Confirmed OFF + 目標 OFF + 300ms 超過 → 送信（desync 修正のため再送許可）
+    #[test]
+    fn override_when_confirmed_off_over_300ms() {
+        assert!(chrome_intent(false, AppliedImeState::Confirmed { open: false, at_ms: 500 }, false, 1000));
     }
 
     // ケース 4: Confirmed + 目標 ON + 300ms 以内 → override 不要（KeyDown+KeyUp 二重送信防止）
