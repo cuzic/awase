@@ -199,7 +199,18 @@ impl Output {
     /// フォーカス変更時に `tsf_gate` を `PendingWarmup` に遷移させる。
     ///
     /// 呼び出し後に `TIMER_TSF_GATE` を `WARMUP_TIMEOUT_MS` ms でセットすること。
+    ///
+    /// Chrome/Edge は複数の focus イベントを連続発生させる（タブ・アドレスバー・コンテンツ等）。
+    /// すでに `PendingWarmup` 中なら `on_focus_change()` を呼ばず held バッファを保持する。
+    /// 呼び出し元がタイマーをリセットするため warmup 期間は延長されるが、
+    /// Ctrl+T 等のショートカットが複数回のフォーカスイベントで消去されることを防ぐ。
     pub fn on_focus_change_tsf(&mut self) {
+        if self.tsf_gate.state() == crate::tsf::TsfGateState::PendingWarmup {
+            log::debug!(
+                "[tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)"
+            );
+            return;
+        }
         self.tsf_gate.on_focus_change();
     }
 
