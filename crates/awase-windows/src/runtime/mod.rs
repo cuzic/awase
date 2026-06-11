@@ -78,6 +78,9 @@ pub struct Runtime {
     /// `TIMER_IME_OFF_RESCUE` 満了で IME-OFF 発火、Ctrl↑ 到達で ctrl=false に書き換えて発火。
     /// `Some` 中に他のキーが到着したら救済中止して原 event を engine に渡す。
     pending_ime_off_rescue: Option<RawKeyEvent>,
+    /// OUTPUT_GATE active 中に発火したエンジンタイマー（TIMER_PENDING / TIMER_SPECULATIVE）の
+    /// 論理 ID リスト。drain 完了後に `handle_wm_drain_output_queue` が replay する。
+    pub(crate) deferred_engine_timers: Vec<usize>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -99,7 +102,7 @@ pub(crate) struct RuntimeDiagnosticSnapshot {
 }
 
 impl Runtime {
-    fn build_ctx(&self) -> InputContext {
+    pub(crate) fn build_ctx(&self) -> InputContext {
         // SAFETY: `read_os_modifiers` は Win32 `GetKeyState` を呼ぶのみで副作用はない。
         //         メインスレッドから呼ばれるため、スレッド要件を満たしている。
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
@@ -559,6 +562,7 @@ impl Runtime {
             platform_state,
             all_keymaps,
             pending_ime_off_rescue: None,
+            deferred_engine_timers: Vec::new(),
         }
     }
 

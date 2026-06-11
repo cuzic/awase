@@ -110,21 +110,21 @@ pub(crate) unsafe fn handle_wm_timer(
         }
         Some(timer_id) => {
             log::debug!("WM_TIMER fired: logical_id={timer_id}");
-            // OUTPUT_GATE active 中はエンジンタイマー（TIMER_PENDING/TIMER_SPECULATIVE）を延期する。
+            // OUTPUT_GATE active 中はエンジンタイマー（TIMER_PENDING/TIMER_SPECULATIVE）を
+            // drain 後に延期する。
             // OUTPUT_GATE active 期間中、後続キー（親指キー等）は INPUT_DEFER にキューされる。
-            // このとき PendingChar タイマーをそのまま発火させると、chord パートナー（親指キー）が
+            // PendingChar タイマーをそのまま発火させると、chord パートナー（親指キー）が
             // drain で処理される前に PendingChar → Idle 遷移が完了してしまい、
-            // NICOLA 同時打鍵判定が失敗する（例: K+右親指 = の → が き になる）。
-            // 30ms 再アームして drain 完了後にタイマーが発火するよう調整する。
-            // drain 処理中に chord パートナーが検出されれば engine が KillTimer を出すため
-            // 再アームタイマーはキャンセルされ、余分な文字は出力されない。
+            // NICOLA 同時打鍵判定が失敗する（例: K+右親指 = の が き になる）。
+            // WM_DRAIN_OUTPUT_QUEUE はユーザー定義メッセージのため WM_TIMER より優先度が高く、
+            // drain は必ず再アームタイマーより先に実行される。drain で chord パートナーが
+            // 処理されれば engine が Kill(timer_id) を出すため、replay 時に is_active=false と
+            // なりスキップされる。
             if crate::OUTPUT_GATE.is_active() {
                 log::debug!(
-                    "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} を 30ms 延期"
+                    "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} を drain 後に延期"
                 );
-                app.platform
-                    .timer
-                    .set(timer_id, std::time::Duration::from_millis(30));
+                app.deferred_engine_timers.push(timer_id);
                 return;
             }
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
@@ -372,6 +372,28 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
             post_to_main_thread(WM_EXECUTE_EFFECTS);
         }
     }
+
+    // OUTPUT_GATE active 中に発火した TIMER_PENDING/TIMER_SPECULATIVE を drain 完了後に replay する。
+    // drain で chord パートナー（親指キー等）が処理されて Kill(timer_id) が発行されていた場合は
+    // is_active=false となり replay をスキップする（余分な文字が出力されない）。
+    let _ = with_app(|app| {
+        let deferred = std::mem::take(&mut app.deferred_engine_timers);
+        if deferred.is_empty() {
+            return;
+        }
+        let ctx = app.build_ctx();
+        for timer_id in deferred {
+            if app.platform.timer.is_active(timer_id) {
+                log::debug!("[deferred-timer] drain 後に replay logical_id={timer_id}");
+                let decision = app.engine.on_timeout(timer_id, &ctx);
+                app.execute_decision(decision);
+            } else {
+                log::debug!(
+                    "[deferred-timer] logical_id={timer_id} は drain 中に Kill 済み → skip"
+                );
+            }
+        }
+    });
 }
 
 /// TaskbarCreated ハンドラ（Explorer 再起動時にトレイアイコンを復元）
