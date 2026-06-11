@@ -172,14 +172,15 @@ impl Output {
             // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
             // min/max を延長する（120ms では GJI が settle する前に timeout して literal
             // 出力される回帰を抑制）。
-            let long_idle = self.composition.idle_ms_at_last_cold() > crate::tuning::LONG_IDLE_MS;
+            let long_idle =
+                self.composition.idle_ms_at_last_cold() > crate::tuning::CHROME_LONG_IDLE_MS;
             // 物理 F2 (skip_f2_send=true) かつ GJI が長期 idle の場合: Chrome の composition
             // context 再初期化に ~326ms 要するケースを確認。keyboard idle が短くても
             // GJI が休眠していれば長いプローブ min_ms が必要。
             let f2_gji_long_idle = skip_f2_send && {
                 let gji_last_io = crate::tsf::observer::gji_last_io_ms();
                 crate::hook::current_tick_ms().saturating_sub(gji_last_io)
-                    > crate::tuning::LONG_IDLE_MS
+                    > crate::tuning::CHROME_LONG_IDLE_MS
             };
             let (probe_min_ms, probe_max_ms) = if long_idle {
                 (

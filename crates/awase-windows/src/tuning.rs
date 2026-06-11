@@ -31,16 +31,22 @@ pub const GJI_CONFIRM_WINDOW_MS: u64 = 500;
 
 /// cold 発生前のアイドル時間がこれ以上なら「長期 idle」と判定する (ms)。
 ///
-/// Chrome VK パスでは この閾値を超えると Chrome プローブ最小待機時間が
-/// 20ms → 200ms に延長される。実測で idle=6312ms 後に Chrome TSF の
-/// composition context 再初期化に ~145ms かかる事例があり (cold=1040)、
-/// 20ms probe では "ko" が raw text として出力される不具合が発生した。
-/// 5000ms に設定することで 5s 以上の idle 後 cold start を長期 idle 扱いにする。
+/// 2-9s 程度の「考える・少し読む」では GJI セッションが生存しているため、
+/// 低すぎる閾値は NG（GJI I/O が発火せず probe が 1500ms でタイムアウトしてしまう）。
+/// 10s 以上の長期 idle（矢印キーナビゲーション等）では GJI セッションリセットが確実。
 ///
-/// TSF/GJI パス（WezTerm 等）では、この閾値以上の GJI idle で延長タイムアウトを使用する。
-/// 5s 程度の GJI idle なら GJI セッションが生存していることも多いが、
-/// 延長タイムアウトは GJI I/O 受信時に早期完了するため実害はない。
-pub const LONG_IDLE_MS: u64 = 5_000;
+/// Chrome VK パス固有のアイドル判定は `CHROME_LONG_IDLE_MS` を参照のこと。
+pub const LONG_IDLE_MS: u64 = 10_000;
+
+/// Chrome VK パスでの「長期 idle」判定閾値 (ms)。
+///
+/// この閾値を超えると Chrome プローブ最小待機時間が 20ms → 200ms に延長される。
+/// 実測で idle=6312ms 後に Chrome TSF の composition context 再初期化に ~145ms かかる
+/// 事例があり (cold=1040)、20ms probe では "ko" が raw text として出力された。
+/// 5000ms に設定することで 5s 以上の idle 後の cold start に 200ms 余裕を確保する。
+///
+/// TSF/GJI パス（WezTerm 等）は GJI セッション生存期間に依存するため `LONG_IDLE_MS` を使用する。
+pub const CHROME_LONG_IDLE_MS: u64 = 5_000;
 
 /// Composition タイムアウト (ms): 変換確定待機の最大時間。
 ///
