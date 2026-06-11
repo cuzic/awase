@@ -21,14 +21,18 @@ use crate::runtime::message_handlers;
 use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_DRAIN_OUTPUT_QUEUE,
-    WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED,
-    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
+    WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
+    WM_IME_KEY_DETECTED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
 
 /// 有効/無効切り替えホットキー ID
 const HOTKEY_ID_TOGGLE: i32 = 1;
+
+/// ジャーナルダンプトリガートラッカー（メインスレッド専用）
+static DUMP_TRIGGER: crate::SingleThreadCell<crate::journal::DumpTriggerTracker> =
+    crate::SingleThreadCell::new();
 
 /// 手動フォーカスオーバーライドホットキー ID (Ctrl+Shift+F11)
 const HOTKEY_ID_FOCUS_OVERRIDE: i32 = 2;
@@ -346,6 +350,9 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     message_handlers::handle_wm_hotkey_focus_override(app);
                 });
             }
+            WM_DUMP_JOURNAL => {
+                let _ = with_app(|app| message_handlers::handle_wm_dump_journal(app));
+            }
             WM_KEY_FROM_HOOK => {
                 // フックスレッドから転送された物理キーイベント
                 // SAFETY: lParam は Box::into_raw(Box::new(RawKeyEvent)) のポインタ。
@@ -364,6 +371,13 @@ fn run_message_loop(taskbar_created_msg: u32) {
                             is_on,
                             crate::hook::current_tick_ms(),
                         );
+                    }
+                    // ジャーナルダンプトリガー: Alt+変換→Alt+無変換 を 2 回連続
+                    let fired = DUMP_TRIGGER.try_with_mut(|t| {
+                        t.push(event.vk_code.0, mods.alt, crate::hook::current_tick_ms())
+                    });
+                    if fired == Some(true) {
+                        crate::win32::post_to_main_thread(WM_DUMP_JOURNAL);
                     }
                 }
                 if crate::OUTPUT_GATE.is_active() {

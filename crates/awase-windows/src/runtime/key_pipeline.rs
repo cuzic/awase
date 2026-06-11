@@ -157,7 +157,18 @@ impl Runtime {
             return CallbackResult::Consumed;
         }
 
+        let state_before = self.engine.debug_state_label();
         let decision = self.engine.on_input(event, &ctx);
+        let state_after = self.engine.debug_state_label();
+        self.platform_state.ime.journal.record(
+            crate::journal::JournalEntry::KeyInput {
+                event: crate::journal::KeyEventSummary::from_raw(&event),
+                state_before,
+                state_after,
+                decision: crate::journal::DecisionKind::from_decision(&decision),
+            },
+            crate::hook::current_tick_ms(),
+        );
 
         self.kp_stage_post_decision(&decision, &event);
 

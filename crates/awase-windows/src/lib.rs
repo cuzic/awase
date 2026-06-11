@@ -19,6 +19,7 @@
 //! すべての Win32 API 依存コードを集約する。
 
 pub mod autostart;
+pub mod journal;
 pub mod focus;
 pub mod gji;
 pub mod hook;
@@ -256,6 +257,9 @@ pub const WM_DUPLICATE_INSTANCE: u32 = windows::Win32::UI::WindowsAndMessaging::
 /// lParam は `Box::into_raw(Box::new(RawKeyEvent))` のポインタ。
 /// 受信側は `unsafe { *Box::from_raw(lParam.0 as *mut RawKeyEvent) }` で消費する。
 pub const WM_KEY_FROM_HOOK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 19;
+
+/// ジャーナルダンプ要求（Alt+変換→Alt+無変換 ×2 でフックから post）
+pub const WM_DUMP_JOURNAL: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 20;
 
 /// `RawKeyEvent` の SendInput 再注入ヘルパー。
 pub trait RawKeyEventExt {

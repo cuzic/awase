@@ -8,6 +8,7 @@ use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSour
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
 use super::input_barrier::InputBarrier;
+use crate::journal::{JournalEntry, UnifiedJournal};
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -26,6 +27,8 @@ pub(crate) struct ImeStateHub {
     pub(crate) belief: ImeBelief,
     /// IME 状態変更 event のリングバッファ (Step 0)。
     pub(crate) event_log: ImeEventLog,
+    /// 統合ジャーナル: エンジン + IME 両イベントを記録する。
+    pub(crate) journal: UnifiedJournal,
 
     /// Shadow IME モデル (Step 1)。Phase 3a で recovery 統合済。
     /// IME ON/OFF (desired_open / applied_open) と force_guards / observe_miss_monitor を持つ SSOT。
@@ -42,6 +45,7 @@ impl ImeStateHub {
                 prev_conversion_mode: None,
             },
             event_log: ImeEventLog::default(),
+            journal: UnifiedJournal::default(),
             shadow_model: ImeModel::default(),
         }
     }
@@ -53,6 +57,7 @@ impl ImeStateHub {
     /// `event_log.record()` だけを呼ぶより、こちらを使うと record + reduce が
     /// 同一 envelope で進む。write_* メソッドはこちらを使う。
     pub(crate) fn dispatch_event(&mut self, event: ImeEvent) {
+        let description = format!("{event:?}");
         let event_for_reduce = event.clone();
         let time = self.event_log.record(event);
         let envelope = ImeEventEnvelope {
@@ -60,6 +65,8 @@ impl ImeStateHub {
             event: event_for_reduce,
         };
         self.shadow_model.reduce(&envelope);
+        self.journal
+            .record(JournalEntry::ImeEvent { description }, time.tick_ms);
     }
 
     /// shadow_model から派生した最新の explicit intent。

@@ -133,7 +133,17 @@ pub(crate) unsafe fn handle_wm_timer(
                 &app.platform_state.ime.belief,
                 &modifiers,
             );
+            let state_before = app.engine.debug_state_label();
             let decision = app.engine.on_timeout(timer_id, &ctx);
+            let state_after = app.engine.debug_state_label();
+            app.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::TimerFired {
+                    timer_id,
+                    state_before,
+                    state_after,
+                },
+                crate::hook::current_tick_ms(),
+            );
             app.execute_decision(decision);
         }
         None => {
@@ -400,4 +410,24 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
 pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
     log::info!("Explorer restarted, re-registering tray icon");
     app.platform.tray.recreate();
+}
+
+/// WM_DUMP_JOURNAL ハンドラ（Alt+変換→Alt+無変換 ×2 でトリガー）
+pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
+    app.platform_state.ime.journal.record(
+        crate::journal::JournalEntry::DumpTriggered,
+        crate::hook::current_tick_ms(),
+    );
+    match app.platform_state.ime.journal.dump_to_file() {
+        Ok(path) => {
+            log::info!("[journal] ダンプ完了: {}", path.display());
+            app.platform.tray.show_balloon(
+                "awase journal",
+                &format!("ダンプ完了: {}", path.display()),
+            );
+        }
+        Err(e) => {
+            log::error!("[journal] ダンプ失敗: {e}");
+        }
+    }
 }

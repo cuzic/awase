@@ -32,7 +32,8 @@ use crate::MAIN_THREAD_ID;
 use super::{
     find_config_path, init_ime_sync_keys, init_ngram_validated, load_config, parse_key_combos,
     resolve_relative, run_message_loop, HotKeyGuard, RapidPressTracker, StartupDiagnostics,
-    HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
+    DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS,
+    WM_DUPLICATE_INSTANCE,
 };
 
 /// ログ初期化
@@ -359,6 +360,7 @@ pub(super) fn initialize_app(
         all_keymaps,
     ));
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
+    DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());
 }
 
 /// 起動時に IME 状態キャッシュを初期化する（Unknown → 実際の値）。
