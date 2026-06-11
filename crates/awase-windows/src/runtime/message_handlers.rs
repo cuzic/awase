@@ -110,6 +110,23 @@ pub(crate) unsafe fn handle_wm_timer(
         }
         Some(timer_id) => {
             log::debug!("WM_TIMER fired: logical_id={timer_id}");
+            // OUTPUT_GATE active 中はエンジンタイマー（TIMER_PENDING/TIMER_SPECULATIVE）を延期する。
+            // OUTPUT_GATE active 期間中、後続キー（親指キー等）は INPUT_DEFER にキューされる。
+            // このとき PendingChar タイマーをそのまま発火させると、chord パートナー（親指キー）が
+            // drain で処理される前に PendingChar → Idle 遷移が完了してしまい、
+            // NICOLA 同時打鍵判定が失敗する（例: K+右親指 = の → が き になる）。
+            // 30ms 再アームして drain 完了後にタイマーが発火するよう調整する。
+            // drain 処理中に chord パートナーが検出されれば engine が KillTimer を出すため
+            // 再アームタイマーはキャンセルされ、余分な文字は出力されない。
+            if crate::OUTPUT_GATE.is_active() {
+                log::debug!(
+                    "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} を 30ms 延期"
+                );
+                app.platform
+                    .timer
+                    .set(timer_id, std::time::Duration::from_millis(30));
+                return;
+            }
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
             let ctx = super::build_input_context(
                 app.platform_state.ime.effective_open(),
