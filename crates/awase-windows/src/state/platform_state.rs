@@ -65,8 +65,7 @@ impl ImeStateHub {
             event: event_for_reduce,
         };
         self.shadow_model.reduce(&envelope);
-        self.journal
-            .record(JournalEntry::ImeEvent { description }, time.tick_ms);
+        self.journal.record(JournalEntry::ImeEvent { description });
     }
 
     /// shadow_model から派生した最新の explicit intent。

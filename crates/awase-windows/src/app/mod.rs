@@ -373,9 +373,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         );
                     }
                     // ジャーナルダンプトリガー: Alt+変換→Alt+無変換 を 2 回連続
-                    let fired = DUMP_TRIGGER.try_with_mut(|t| {
-                        t.push(event.vk_code.0, mods.alt, crate::hook::current_tick_ms())
-                    });
+                    let fired = DUMP_TRIGGER.try_with_mut(|t| t.push(event.vk_code.0, mods.alt));
                     if fired == Some(true) {
                         crate::win32::post_to_main_thread(WM_DUMP_JOURNAL);
                     }

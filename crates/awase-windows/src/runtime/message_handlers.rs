@@ -142,7 +142,6 @@ pub(crate) unsafe fn handle_wm_timer(
                     state_before,
                     state_after,
                 },
-                crate::hook::current_tick_ms(),
             );
             app.execute_decision(decision);
         }
@@ -414,10 +413,10 @@ pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
 
 /// WM_DUMP_JOURNAL ハンドラ（Alt+変換→Alt+無変換 ×2 でトリガー）
 pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
-    app.platform_state.ime.journal.record(
-        crate::journal::JournalEntry::DumpTriggered,
-        crate::hook::current_tick_ms(),
-    );
+    app.platform_state
+        .ime
+        .journal
+        .record(crate::journal::JournalEntry::DumpTriggered);
     match app.platform_state.ime.journal.dump_to_file() {
         Ok(path) => {
             log::info!("[journal] ダンプ完了: {}", path.display());

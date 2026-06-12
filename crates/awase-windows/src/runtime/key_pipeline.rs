@@ -167,7 +167,6 @@ impl Runtime {
                 state_after,
                 decision: crate::journal::DecisionKind::from_decision(&decision),
             },
-            crate::hook::current_tick_ms(),
         );
 
         self.kp_stage_post_decision(&decision, &event);
