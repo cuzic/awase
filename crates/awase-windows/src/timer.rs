@@ -63,6 +63,13 @@ impl Win32Timer {
     pub fn is_active(&self, logical_id: usize) -> bool {
         self.to_os.contains_key(&logical_id)
     }
+
+    /// 指定の論理 ID に対応する現在の OS タイマー ID を返す。
+    /// drain 後の deferred timer replay で「同一インスタンスか」を照合するために使う。
+    #[must_use]
+    pub fn current_os_id(&self, logical_id: usize) -> Option<usize> {
+        self.to_os.get(&logical_id).copied()
+    }
 }
 
 impl Default for Win32Timer {

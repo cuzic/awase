@@ -79,8 +79,10 @@ pub struct Runtime {
     /// `Some` 中に他のキーが到着したら救済中止して原 event を engine に渡す。
     pending_ime_off_rescue: Option<RawKeyEvent>,
     /// OUTPUT_GATE active 中に発火したエンジンタイマー（TIMER_PENDING / TIMER_SPECULATIVE）の
-    /// 論理 ID リスト。drain 完了後に `handle_wm_drain_output_queue` が replay する。
-    pub(crate) deferred_engine_timers: Vec<usize>,
+    /// (logical_id, os_id) リスト。drain 完了後に `handle_wm_drain_output_queue` が replay する。
+    /// os_id を一緒に保存することで、drain 中に元のタイマーが kill → 別の新規タイマーが
+    /// セットされた場合に誤って新タイマーを発火させないよう照合できる。
+    pub(crate) deferred_engine_timers: Vec<(usize, usize)>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -562,7 +564,7 @@ impl Runtime {
             platform_state,
             all_keymaps,
             pending_ime_off_rescue: None,
-            deferred_engine_timers: Vec::new(),
+            deferred_engine_timers: Vec::<(usize, usize)>::new(),
         }
     }
 

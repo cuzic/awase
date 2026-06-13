@@ -122,9 +122,9 @@ pub(crate) unsafe fn handle_wm_timer(
             // なりスキップされる。
             if crate::OUTPUT_GATE.is_active() {
                 log::debug!(
-                    "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} を drain 後に延期"
+                    "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} (os_id={wparam}) を drain 後に延期"
                 );
-                app.deferred_engine_timers.push(timer_id);
+                app.deferred_engine_timers.push((timer_id, wparam));
                 return;
             }
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
@@ -384,21 +384,28 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
 
     // OUTPUT_GATE active 中に発火した TIMER_PENDING/TIMER_SPECULATIVE を drain 完了後に replay する。
     // drain で chord パートナー（親指キー等）が処理されて Kill(timer_id) が発行されていた場合は
-    // is_active=false となり replay をスキップする（余分な文字が出力されない）。
+    // current_os_id が変化（または None）となり replay をスキップする。
+    //
+    // os_id 照合が重要な理由:
+    //   drain 中に「古いタイマー kill → 新タイマー set」が起きると logical_id は
+    //   is_active=true のままだが、それは別の文字に属する新規タイマーである。
+    //   新規タイマーを deferred replay で早期発火させると文字順が狂う
+    //   （例: というのは → とはいうの）。os_id 照合でこれを防ぐ。
     let _ = with_app(|app| {
         let deferred = std::mem::take(&mut app.deferred_engine_timers);
         if deferred.is_empty() {
             return;
         }
         let ctx = app.build_ctx();
-        for timer_id in deferred {
-            if app.platform.timer.is_active(timer_id) {
-                log::debug!("[deferred-timer] drain 後に replay logical_id={timer_id}");
+        for (timer_id, os_id) in deferred {
+            let current = app.platform.timer.current_os_id(timer_id);
+            if current == Some(os_id) {
+                log::debug!("[deferred-timer] drain 後に replay logical_id={timer_id} (os_id={os_id})");
                 let decision = app.engine.on_timeout(timer_id, &ctx);
                 app.execute_decision(decision);
             } else {
                 log::debug!(
-                    "[deferred-timer] logical_id={timer_id} は drain 中に Kill 済み → skip"
+                    "[deferred-timer] logical_id={timer_id} (os_id={os_id}) は drain 中に変化 (current={current:?}) → skip"
                 );
             }
         }
