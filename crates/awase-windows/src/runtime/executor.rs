@@ -136,10 +136,7 @@ impl DecisionExecutor {
     /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
     #[allow(clippy::useless_let_if_seq)]
-    pub(crate) fn drain_deferred(
-        &mut self,
-        platform: &mut WindowsPlatform,
-    ) -> Vec<ImeApplyPair> {
+    pub(crate) fn drain_deferred(&mut self, platform: &mut WindowsPlatform) -> Vec<ImeApplyPair> {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
         // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
         // Win が 150ms 以上 OS 側でスタックし、後続のショートカットが Win+key と
@@ -226,7 +223,12 @@ impl DecisionExecutor {
 
     /// ReinjectKey イベントを guard slot に park し、TIMER_OUTPUT_GUARD を再設定する。
     /// 再設定は idempotent (remaining は last_send からの相対時刻基準で計算される)。
-    fn park_in_guard(&mut self, platform: &mut WindowsPlatform, event: RawKeyEvent, remaining: u64) {
+    fn park_in_guard(
+        &mut self,
+        platform: &mut WindowsPlatform,
+        event: RawKeyEvent,
+        remaining: u64,
+    ) {
         self.guard_held = Some(event);
         platform.timer.set(
             crate::TIMER_OUTPUT_GUARD,
@@ -334,12 +336,27 @@ impl DecisionExecutor {
                 }
             }
             Decision::Consume { effects } => {
-                // Engine が消費 → Effects をキューに入れる
-                self.queue.extend(effects);
+                // Engine が消費 → Timer は即時実行（platform timer state を常に最新に保つ）、
+                // それ以外はキューに入れる。
+                //
+                // Timer を即時実行しない場合、drain 中に Kill/Set がキューに積まれたまま
+                // platform の current_os_id が更新されず、deferred_engine_timers の
+                // os_id 照合が stale なタイマーを有効と誤判定して早期発火する
+                // （例: PendingChar(S)→PendingChar(D) 遷移後に古い S のタイマーが発火）。
+                let mut sync_outcomes = Vec::new();
+                for effect in effects {
+                    if matches!(effect, Effect::Timer(_)) {
+                        if let Some(o) = self.execute_one(platform, effect) {
+                            sync_outcomes.push(o);
+                        }
+                    } else {
+                        self.queue.push(effect);
+                    }
+                }
                 BatchResult {
                     callback: CallbackResult::Consumed,
                     has_pending: self.has_pending(),
-                    sync_outcomes: Vec::new(),
+                    sync_outcomes,
                 }
             }
         }
@@ -630,11 +647,7 @@ impl DecisionExecutor {
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA && platform.is_tsf_mode() {
             if is_key_down {
                 // mark_cold(NativeF2Consumed) + eager warmup を platform に委譲する。
-                platform.on_reinject_key(
-                    event.vk_code,
-                    true,
-                    self.applied_snapshot.applied_open(),
-                );
+                platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.applied_open());
             } else {
                 log::debug!(
                     "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -828,7 +841,8 @@ impl DecisionExecutor {
                 log::debug!(
                     "[dispatch-ime] KanjiToggle (profile={:?}): context override \
                      ({} → VK_KANJI 強制送信, 6-C desync 対策)",
-                    profile, !open
+                    profile,
+                    !open
                 );
                 crate::state::AppliedImeState::Optimistic(!open)
             } else {
@@ -933,7 +947,12 @@ mod tests {
     use crate::state::AppliedImeState;
 
     /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で呼ぶヘルパー
-    fn chrome_intent(desired: bool, applied: AppliedImeState, shadow_on: bool, now_ms: u64) -> bool {
+    fn chrome_intent(
+        desired: bool,
+        applied: AppliedImeState,
+        shadow_on: bool,
+        now_ms: u64,
+    ) -> bool {
         kanji_needs_context_override(desired, applied, shadow_on, true, false, false, now_ms)
     }
 
@@ -946,55 +965,124 @@ mod tests {
     // workaround 6-C ケース 2: Optimistic のみ（ImmCross async 事前更新）→ override 必要
     #[test]
     fn override_when_optimistic_only() {
-        assert!(chrome_intent(false, AppliedImeState::Optimistic(false), false, 1000));
+        assert!(chrome_intent(
+            false,
+            AppliedImeState::Optimistic(false),
+            false,
+            1000
+        ));
     }
 
     // ケース 3a: Confirmed OFF + 目標 OFF + 300ms 以内 → スキップ（二重送信防止）
     #[test]
     fn no_override_when_confirmed_off_within_300ms() {
-        assert!(!chrome_intent(false, AppliedImeState::Confirmed { open: false, at_ms: 900 }, false, 1000));
+        assert!(!chrome_intent(
+            false,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 900
+            },
+            false,
+            1000
+        ));
     }
 
     // ケース 3b: Confirmed OFF + 目標 OFF + 300ms 超過 → 送信（desync 修正のため再送許可）
     #[test]
     fn override_when_confirmed_off_over_300ms() {
-        assert!(chrome_intent(false, AppliedImeState::Confirmed { open: false, at_ms: 500 }, false, 1000));
+        assert!(chrome_intent(
+            false,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 500
+            },
+            false,
+            1000
+        ));
     }
 
     // ケース 4: Confirmed + 目標 ON + 300ms 以内 → override 不要（KeyDown+KeyUp 二重送信防止）
     #[test]
     fn no_override_when_confirmed_within_300ms() {
-        assert!(!chrome_intent(true, AppliedImeState::Confirmed { open: false, at_ms: 800 }, true, 1000));
+        assert!(!chrome_intent(
+            true,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 800
+            },
+            true,
+            1000
+        ));
     }
 
     // ケース 5: Confirmed + 300ms 超過 → override 必要（再試行許容）
     #[test]
     fn override_when_confirmed_over_300ms() {
-        assert!(chrome_intent(true, AppliedImeState::Confirmed { open: false, at_ms: 500 }, true, 1000));
+        assert!(chrome_intent(
+            true,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 500
+            },
+            true,
+            1000
+        ));
     }
 
     // ケース 6: IMM32 使用可 → override 不要
     #[test]
     fn no_override_when_imm32_available() {
-        assert!(!kanji_needs_context_override(false, AppliedImeState::Unknown, false, true, true, false, 1000));
+        assert!(!kanji_needs_context_override(
+            false,
+            AppliedImeState::Unknown,
+            false,
+            true,
+            true,
+            false,
+            1000
+        ));
     }
 
     // ケース 7: GJI 健全 → override 不要
     #[test]
     fn no_override_when_gji_healthy() {
-        assert!(!kanji_needs_context_override(false, AppliedImeState::Unknown, false, true, false, true, 1000));
+        assert!(!kanji_needs_context_override(
+            false,
+            AppliedImeState::Unknown,
+            false,
+            true,
+            false,
+            true,
+            1000
+        ));
     }
 
     // ケース 8: EngineIntent でない → override 不要
     #[test]
     fn no_override_when_not_engine_intent() {
-        assert!(!kanji_needs_context_override(false, AppliedImeState::Unknown, false, false, false, false, 1000));
+        assert!(!kanji_needs_context_override(
+            false,
+            AppliedImeState::Unknown,
+            false,
+            false,
+            false,
+            false,
+            1000
+        ));
     }
 
     // ケース 9: Confirmed ON + 目標 ON → 永続スキップ（override 不要）
     #[test]
     fn no_override_when_confirmed_on_desired_on() {
-        assert!(!chrome_intent(true, AppliedImeState::Confirmed { open: true, at_ms: 500 }, true, 100_000));
+        assert!(!chrome_intent(
+            true,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 500
+            },
+            true,
+            100_000
+        ));
     }
 
     // AppliedImeState ヘルパーメソッドのテスト
@@ -1002,20 +1090,38 @@ mod tests {
     fn applied_ime_state_to_pair() {
         assert_eq!(AppliedImeState::Unknown.to_pair(), None);
         assert_eq!(AppliedImeState::Optimistic(true).to_pair(), Some((true, 0)));
-        assert_eq!(AppliedImeState::Confirmed { open: false, at_ms: 42 }.to_pair(), Some((false, 42)));
+        assert_eq!(
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 42
+            }
+            .to_pair(),
+            Some((false, 42))
+        );
     }
 
     #[test]
     fn applied_ime_state_applied_open() {
         assert_eq!(AppliedImeState::Unknown.applied_open(), None);
         assert_eq!(AppliedImeState::Optimistic(true).applied_open(), Some(true));
-        assert_eq!(AppliedImeState::Confirmed { open: false, at_ms: 1 }.applied_open(), Some(false));
+        assert_eq!(
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 1
+            }
+            .applied_open(),
+            Some(false)
+        );
     }
 
     #[test]
     fn applied_ime_state_is_confirmed() {
         assert!(!AppliedImeState::Unknown.is_confirmed());
         assert!(!AppliedImeState::Optimistic(true).is_confirmed());
-        assert!(AppliedImeState::Confirmed { open: true, at_ms: 1 }.is_confirmed());
+        assert!(AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 1
+        }
+        .is_confirmed());
     }
 }
