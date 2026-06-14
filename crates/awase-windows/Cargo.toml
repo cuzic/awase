@@ -11,9 +11,6 @@ path = "src/lib.rs"
 name = "awase"
 path = "src/main.rs"
 
-[[bin]]
-name = "awase-gji-setup"
-path = "src/bin/gji_setup.rs"
 
 [dependencies]
 awase = { path = "../.." }
