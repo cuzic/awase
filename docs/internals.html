@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>内部動作の解説 — awase（合わせ）</title>
+<meta name="description" content="awase がどうやって親指シフトを実現しているか。キーボードフック・同時打鍵判定・IME 制御の仕組みを技術的に解説します。">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#2563EB;
+  --accent-light:#3B82F6;
+  --bg:#ffffff;
+  --bg-alt:#F8FAFC;
+  --text:#1E293B;
+  --text-secondary:#475569;
+  --border:#E2E8F0;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
+  --section-gap:4.5rem;
+  --green:#16a34a;
+  --red:#dc2626;
+  --purple:#7c3aed;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0F172A;
+    --bg-alt:#1E293B;
+    --text:#E2E8F0;
+    --text-secondary:#94A3B8;
+    --border:#334155;
+    --card-shadow:0 1px 3px rgba(0,0,0,0.3),0 1px 2px rgba(0,0,0,0.2);
+    --green:#4ade80;
+    --red:#f87171;
+    --purple:#a78bfa;
+  }
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  line-height:1.8;
+  color:var(--text);
+  background:var(--bg);
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:780px;margin:0 auto;padding:0 1.5rem}
+
+/* Nav */
+.site-nav{
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  padding:0.75rem 1.5rem;
+}
+.site-nav .inner{
+  max-width:780px;
+  margin:0 auto;
+  display:flex;
+  align-items:center;
+  gap:1.5rem;
+}
+.site-nav .brand{font-weight:700;font-size:1rem;color:var(--text)}
+.site-nav a{font-size:0.92rem;color:var(--text-secondary)}
+.site-nav a:hover{color:var(--accent);text-decoration:none}
+.site-nav a.active{color:var(--accent);font-weight:600}
+
+/* Page header */
+.page-header{
+  padding:3.5rem 1.5rem 2.5rem;
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  text-align:center;
+}
+.page-header h1{
+  font-size:2rem;
+  font-weight:800;
+  letter-spacing:-0.02em;
+  color:var(--text);
+}
+.page-header p{
+  font-size:1rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+  max-width:560px;
+  margin-left:auto;
+  margin-right:auto;
+}
+
+/* TOC */
+.toc{
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.4rem 1.8rem;
+  margin-bottom:3rem;
+}
+.toc h2{
+  font-size:0.85rem;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:0.08em;
+  color:var(--text-secondary);
+  margin-bottom:0.8rem;
+}
+.toc ol{
+  padding-left:1.4em;
+  color:var(--text-secondary);
+  font-size:0.93rem;
+}
+.toc li{margin-bottom:0.25rem}
+.toc a{color:var(--accent)}
+
+/* Sections */
+section{padding:var(--section-gap) 0}
+section:nth-child(even){background:var(--bg-alt)}
+
+h2.sec{
+  font-size:1.5rem;
+  font-weight:800;
+  color:var(--text);
+  margin-bottom:0.4rem;
+  line-height:1.3;
+}
+.sec-num{
+  font-size:0.85rem;
+  font-weight:600;
+  color:var(--accent);
+  display:block;
+  margin-bottom:0.3rem;
+  letter-spacing:0.05em;
+}
+.sec-lead{
+  color:var(--text-secondary);
+  font-size:0.98rem;
+  margin-bottom:2rem;
+  border-bottom:1px solid var(--border);
+  padding-bottom:1.2rem;
+}
+
+p.body{
+  color:var(--text-secondary);
+  font-size:0.97rem;
+  margin-bottom:1.2rem;
+  line-height:1.9;
+}
+h3.sub{
+  font-size:1.05rem;
+  font-weight:700;
+  color:var(--text);
+  margin:2rem 0 0.6rem;
+}
+
+/* Diagram boxes */
+.diagram{
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.83rem;
+  line-height:1.7;
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.2rem 1.5rem;
+  margin:1.4rem 0;
+  overflow-x:auto;
+  white-space:pre;
+  color:var(--text);
+}
+
+/* Callout */
+.callout{
+  border-left:4px solid var(--accent);
+  background:var(--bg-alt);
+  border-radius:0 8px 8px 0;
+  padding:0.9rem 1.2rem;
+  margin:1.4rem 0;
+  font-size:0.93rem;
+  color:var(--text-secondary);
+}
+.callout strong{color:var(--text)}
+.callout.green{border-color:var(--green)}
+.callout.red{border-color:var(--red)}
+.callout.purple{border-color:var(--purple)}
+
+/* Comparison table */
+.cmp-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:0.91rem;
+  margin:1.2rem 0;
+}
+.cmp-table th,.cmp-table td{
+  padding:0.6rem 0.9rem;
+  border:1px solid var(--border);
+  text-align:left;
+}
+.cmp-table th{
+  background:var(--bg-alt);
+  font-weight:600;
+  color:var(--text);
+}
+.cmp-table td{color:var(--text-secondary)}
+
+/* Strategy cards */
+.strategy-stack{display:flex;flex-direction:column;gap:0.6rem;margin:1.2rem 0}
+.strategy-card{
+  display:flex;
+  align-items:flex-start;
+  gap:1rem;
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:1rem 1.2rem;
+  background:var(--bg);
+}
+.strategy-num{
+  flex-shrink:0;
+  width:2rem;
+  height:2rem;
+  border-radius:50%;
+  background:var(--accent);
+  color:#fff;
+  font-weight:800;
+  font-size:0.9rem;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.strategy-body h4{
+  font-size:0.97rem;
+  font-weight:700;
+  color:var(--text);
+  margin-bottom:0.25rem;
+}
+.strategy-body p{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  line-height:1.6;
+}
+.strategy-body .for{
+  font-size:0.8rem;
+  color:var(--accent);
+  font-weight:600;
+  margin-top:0.3rem;
+}
+
+/* Footer */
+footer{
+  text-align:center;
+  padding:2.5rem 1.5rem;
+  border-top:1px solid var(--border);
+  color:var(--text-secondary);
+  font-size:0.9rem;
+  background:var(--bg-alt);
+}
+footer p{margin-bottom:0.3rem}
+
+/* Responsive */
+@media(max-width:640px){
+  .page-header{padding:2.5rem 1.5rem 1.8rem}
+  .page-header h1{font-size:1.5rem}
+  section{padding:2.5rem 0}
+  h2.sec{font-size:1.25rem}
+  .diagram{font-size:0.75rem}
+}
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav class="site-nav">
+  <div class="inner">
+    <span class="brand">awase（合わせ）</span>
+    <a href="index.html">トップ</a>
+    <a href="usage.html">使い方</a>
+    <a href="internals.html" class="active">内部動作</a>
+    <a href="https://github.com/cuzic/awase">GitHub</a>
+  </div>
+</nav>
+
+<!-- Page header -->
+<div class="page-header">
+  <h1>内部動作の解説</h1>
+  <p>「なぜ awase は難しいアプリでも動くのか」を、コードなしで技術的に説明します。</p>
+</div>
+
+<!-- Main content -->
+<section>
+<div class="container">
+
+  <!-- TOC -->
+  <div class="toc">
+    <h2>目次</h2>
+    <ol>
+      <li><a href="#hook">キーを横取りする仕組み — キーボードフック</a></li>
+      <li><a href="#relay">すべてのキーを再注入する — リレーモード</a></li>
+      <li><a href="#fsm">「同時押し」をどう判定するか — 状態機械とタイマー</a></li>
+      <li><a href="#ngram">日本語の統計で誤判定を防ぐ — n-gram モデル</a></li>
+      <li><a href="#shadow">見えない IME 状態を追いかける — shadow モデル</a></li>
+      <li><a href="#strategy">アプリごとに制御方式が違う理由</a></li>
+      <li><a href="#chrome">Chrome / Edge がとくに難しい理由</a></li>
+      <li><a href="#coldstart">最初の1文字が化ける — TSF cold-start 問題</a></li>
+    </ol>
+  </div>
+
+  <!-- Section 1 -->
+  <span class="sec-num" id="hook">01</span>
+  <h2 class="sec">キーを横取りする仕組み — キーボードフック</h2>
+  <p class="sec-lead">awase はキーボードドライバとアプリケーションの「間」に割り込んでいます。</p>
+
+  <p class="body">
+    Windows にはキーボードの入力を全アプリの手前で受け取れる仕組みがあります。
+    <strong>ローレベルキーボードフック（WH_KEYBOARD_LL）</strong>と呼ばれるもので、
+    物理キーが押されるたびに awase が最初に通知を受け取れます。
+  </p>
+
+  <div class="diagram">
+物理キーボード
+    │  キー押下
+    ▼
+【 awase のフック 】  ← ここで全キーを最初に受け取る
+    │
+    ├─ 親指シフトに関係するキー → awase が処理を引き受ける
+    │
+    └─ 関係ないキー → そのまま通過させる
+    │
+    ▼
+Windows / アプリケーション</div>
+
+  <p class="body">
+    ただし「横取り」には制限があります。処理に手間取ると Windows がフックを強制解除してしまうのです。
+    awase はすべての判断をできるだけ素早く終わらせ、重い処理は別スレッドに渡すことで
+    この制限に対応しています。また解除された場合も自動で再登録します。
+  </p>
+
+  <div class="callout">
+    <strong>DLL インジェクションとの違い：</strong>
+    他の親指シフトツールの一部は、アプリのプロセスに直接コードを埋め込む「DLL インジェクション」を使います。
+    より深いところに入り込めますが、ウイルス対策ソフトに誤検知されやすくなります。
+    awase はこの方法を使わず、Windows の標準 API だけで動作します。
+  </div>
+
+  <!-- Section 2 -->
+  <span class="sec-num" id="relay" style="margin-top:3rem;display:block">02</span>
+  <h2 class="sec">すべてのキーを再注入する — リレーモード</h2>
+  <p class="sec-lead">awase は一度すべてのキーを飲み込み、処理後に送り直します。</p>
+
+  <p class="body">
+    通常のキーボードフックには2つの動作モードがあります。
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th></th>
+      <th>フィルターモード</th>
+      <th>リレーモード（awase のデフォルト）</th>
+    </tr>
+    <tr>
+      <td>動作</td>
+      <td>関係するキーだけ横取り、他は素通し</td>
+      <td>すべてのキーをいったん飲み込み、処理後に送り直す</td>
+    </tr>
+    <tr>
+      <td>他フックとの共存</td>
+      <td>順番によっては競合</td>
+      <td>再注入なので他のフックにもキーが届く</td>
+    </tr>
+    <tr>
+      <td>安定性</td>
+      <td>タイミングに依存しやすい</td>
+      <td>FIFO キューで順番が保証される</td>
+    </tr>
+  </table>
+
+  <p class="body">
+    リレーモードでは、awase はキーを受け取ったら必ず自分で送り直す必要があります。
+    このとき「自分が送ったキーを自分でまた受け取る」という無限ループが起きないよう、
+    再注入したキーには目印（マーカー）を付けてフックで素通りさせています。
+  </p>
+
+  <!-- Section 3 -->
+  <span class="sec-num" id="fsm" style="margin-top:3rem;display:block">03</span>
+  <h2 class="sec">「同時押し」をどう判定するか — 状態機械とタイマー</h2>
+  <p class="sec-lead">親指シフトの核心は「2つのキーが同時に押された」と判断する部分です。</p>
+
+  <p class="body">
+    NICOLA 親指シフトでは、文字キーと親指キーが100ms以内に重なったとき「同時打鍵」と判定します。
+    しかしコンピュータには「同時」という概念がなく、必ずどちらかが先に来ます。
+    しかも高速タイピングでは、前の親指キーを離す前に次の文字キーが来ることもあります。
+  </p>
+
+  <div class="diagram">
+例: 「が（文字キー: A + 右親指キー）」を入力するとき
+
+ケース1（文字が先）:
+  A↓ ─── A↑
+          右親指↓ ─ 右親指↑
+  ↑ここ 100ms 以内なら「が」
+
+ケース2（親指が先）:
+  右親指↓ ─── 右親指↑
+     A↓ ─── A↑
+     ↑ここ 100ms 以内なら「が」
+
+ケース3（高速タイピングで親指が残る）:
+  右親指↓ ──────────────────── 右親指↑
+              A↓ ─ A↑  B↓ ─ B↑
+              ↑「が」  ↑「ぎ」（Bが右親指と重なっているが意図は？）</div>
+
+  <p class="body">
+    これを解決するのが <strong>状態機械（FSM: Finite State Machine）</strong> と
+    <strong>タイマー</strong> の組み合わせです。
+    awase はキーが来るたびに「現在の状態」と「キーの種類」から次の状態へ遷移し、
+    どこかのタイミングで「これは同時打鍵だ」または「これは単独打鍵だ」と確定させます。
+  </p>
+
+  <div class="diagram">
+状態機械のイメージ（简略版）:
+
+  待機中
+    │ 文字キー↓
+    ▼
+  文字キー保留中 ─── タイムアウト（100ms）→ 単独文字として出力
+    │ 親指キー↓（100ms以内）
+    ▼
+  両方押し中 ─── 親指キー↑ → シフト文字として出力
+    │ 文字キー↑
+    ▼
+  親指キーのみ押し中 → 次の文字キーを待つ</div>
+
+  <p class="body">
+    ケース3のような「親指キーを押したまま複数の文字を打つ」場合も、状態機械が適切に追跡します。
+    「あの親指↓は今の文字に対応するのか、それとも前の文字の残りか」を履歴から判断します。
+  </p>
+
+  <div class="callout">
+    <strong>確定モードとは：</strong>
+    「いつ出力を確定するか」の戦略です。タイムアウトまで待つ（<code>wait</code>）、
+    とりあえず出力してシフトキーが来たら差し替える（<code>speculative</code>）など5種類あり、
+    タイピングスタイルに合わせて選べます。
+  </div>
+
+  <!-- Section 4 -->
+  <span class="sec-num" id="ngram" style="margin-top:3rem;display:block">04</span>
+  <h2 class="sec">日本語の統計で誤判定を防ぐ — n-gram モデル</h2>
+  <p class="sec-lead">タイミングだけでは決められないとき、「日本語として自然か」で判断します。</p>
+
+  <p class="body">
+    高速タイピングでは、「か」を単独で打ちたいのに親指キーが微妙にかぶって
+    「が」になってしまうことがあります。タイムアウトを短くすれば速く打てますが、
+    同時打鍵の認識率が下がります。長くすれば正確になりますが遅くなります。
+  </p>
+
+  <p class="body">
+    awase の <code>ngram_predictive</code> モードはこのジレンマを別の角度から解決します。
+    タイミングが境界線上にあるとき、
+    <strong>「かとがのどちらが日本語として自然に続くか」を統計で判断</strong>するのです。
+  </p>
+
+  <div class="callout green">
+    <strong>例：</strong>「よかった」と打つとき、「か」の直後に親指キーが来た場合。
+    「よかった」は自然な日本語ですが「よがった」は一般的ではありません。
+    前後の文字の連なりを確率として持つ「n-gram コーパス」を参照し、「か」を選びます。
+  </div>
+
+  <p class="body">
+    このコーパスは大量の日本語テキストから学習した統計データです。
+    「ひらがな2文字の組み合わせがどれだけ頻繁に現れるか」を数値化したもので、
+    awase に同梱されています。
+  </p>
+
+  <!-- Section 5 -->
+  <span class="sec-num" id="shadow" style="margin-top:3rem;display:block">05</span>
+  <h2 class="sec">見えない IME 状態を追いかける — shadow モデル</h2>
+  <p class="sec-lead">「今 IME は ON なのか OFF なのか」を awase はどうやって知るのか。</p>
+
+  <p class="body">
+    親指シフト入力を有効にするには「IME が ON の状態」が必要です。
+    しかし Windows の IME 状態は、外部のプログラムから確実に取得できない場合があります。
+    特に Google 日本語入力では、内部状態を正確に読み取る公開 API がありません。
+  </p>
+
+  <h3 class="sub">3つの「状態」を区別して管理する</h3>
+
+  <p class="body">
+    awase はひとつの IME 状態ではなく、<strong>3つの異なる「状態」</strong>を管理しています。
+  </p>
+
+  <div class="diagram">
+┌─────────────────────────────────────────────────┐
+│ desired（ユーザーの意図）                         │
+│   Ctrl+変換 → ON にしたい                        │
+│   Ctrl+無変換 → OFF にしたい                     │
+└─────────────────────────┬───────────────────────┘
+                          │ 指示
+                          ▼
+┌─────────────────────────────────────────────────┐
+│ applied（最後に適用した結果）                     │
+│   「ON にするコマンドを送って、確認が取れた」     │
+└─────────────────────────┬───────────────────────┘
+                          │ 観測で照合
+                          ▼
+┌─────────────────────────────────────────────────┐
+│ observed（実際に OS/IME から観測した状態）        │
+│   定期ポーリングや観察から得た実態                │
+└─────────────────────────────────────────────────┘</div>
+
+  <p class="body">
+    「意図」と「実態」がずれることがあります。たとえばアプリ切り替え時に
+    アプリ側が独自に IME を OFF にすることがあります。
+    awase はこのずれを定期的な観測（ポーリング）で検出し、
+    ずれていれば自動的に修正します。
+  </p>
+
+  <h3 class="sub">冪等な制御とは</h3>
+
+  <p class="body">
+    従来の親指シフトツールの多くは「IME をトグルする」という方式を使っていました。
+    「今 ON なら OFF に、OFF なら ON に」という操作です。
+    この方式の弱点は、現在の状態を正確に知らないと意図と逆になることです。
+  </p>
+
+  <p class="body">
+    awase は「IME を <strong>ON にする</strong>」「IME を <strong>OFF にする</strong>」という
+    <strong>冪等（べきとう）な操作</strong>を使います。
+    何回実行しても結果が変わらない操作です。
+    もし状態がずれていても「ON にする」を実行すれば必ず ON になります。
+  </p>
+
+  <div class="callout">
+    <strong>冪等とは：</strong> 電灯のスイッチで例えると、「押すたびに ON/OFF が切り替わる」
+    のがトグル（従来方式）。「このボタンを押すと必ず ON になる」のが冪等（awase の方式）です。
+    状態を知らなくてよいので、ずれが起きても必ず意図通りになります。
+  </div>
+
+  <!-- Section 6 -->
+  <span class="sec-num" id="strategy" style="margin-top:3rem;display:block">06</span>
+  <h2 class="sec">アプリごとに制御方式が違う理由</h2>
+  <p class="sec-lead">「IME を ON にしてください」という指示の届け方が、アプリによって異なります。</p>
+
+  <p class="body">
+    Windows のアプリが IME と通信する方法は大きく2種類あります。
+    古い <strong>IMM32</strong> という仕組みと、新しい <strong>TSF（Text Services Framework）</strong> です。
+    さらに Google 日本語入力は独自の内部構造を持ちます。
+    awase はアプリの種類を自動判定し、3段階の制御方式を試みます。
+  </p>
+
+  <div class="strategy-stack">
+    <div class="strategy-card">
+      <div class="strategy-num">1</div>
+      <div class="strategy-body">
+        <h4>IMM32 クロスプロセス制御</h4>
+        <p>アプリの IME ウィンドウに直接「ON にしてください」というメッセージを送る。
+        最も確実な方法で、成功すれば即座に状態が変わったことを確認できます。</p>
+        <p class="for">対象: メモ帳・ワードなど一般的なアプリ</p>
+      </div>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-num">2</div>
+      <div class="strategy-body">
+        <h4>Google 日本語入力 直接制御（F13/F14）</h4>
+        <p>Google 日本語入力に専用のキー（F13 で「ひらがなモードへ」、F14 で「IME OFF」）を送る。
+        冪等な操作なので、何度送っても意図通りになります。</p>
+        <p class="for">対象: Google 日本語入力が起動しているすべてのアプリ</p>
+      </div>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-num">3</div>
+      <div class="strategy-body">
+        <h4>KANJI キートグル（最終手段）</h4>
+        <p>半角/全角キー（VK_KANJI）を送って IME を切り替える。
+        トグル操作なので現在の状態を正確に把握していないと意図と逆になる危険があります。
+        awase は shadow モデルで状態を確認してから送信します。</p>
+        <p class="for">対象: 上記2方式が使えない場合のフォールバック</p>
+      </div>
+    </div>
+  </div>
+
+  <p class="body">
+    戦略1が成功すれば戦略2・3は試みません。戦略1が失敗したら戦略2を試みます。
+    こうしてアプリの種類に関係なく確実に制御できます。
+  </p>
+
+  <div class="callout purple">
+    <strong>LINE・Qt アプリの特殊ケース：</strong>
+    LINE などの Qt ベースアプリは、IME に関するキー（半角/全角など）を受け取ると
+    独自の IME 状態遷移を始めてしまいます。
+    awase は LINE に対して「物理的な IME キーを一切通さない」という方針を取り、
+    IMM32 クロスプロセス制御だけで IME を操作します。
+  </div>
+
+  <!-- Section 7 -->
+  <span class="sec-num" id="chrome" style="margin-top:3rem;display:block">07</span>
+  <h2 class="sec">Chrome / Edge がとくに難しい理由</h2>
+  <p class="sec-lead">Chrome は複数のプロセスが協調するため、通常の方法が通じません。</p>
+
+  <p class="body">
+    Chrome や Edge は「マルチプロセス」アーキテクチャを採用しています。
+    表示を担当するプロセス、ネットワークを担当するプロセス、入力を担当するプロセスが
+    分離して動作します。
+  </p>
+
+  <p class="body">
+    IMM32 の「アプリの IME ウィンドウに直接メッセージを送る」方法は、
+    送り先と受け取り先が同じプロセスにいることを前提としています。
+    Chrome ではこれが当てはまらず、方法1（IMM32 制御）が使えません。
+  </p>
+
+  <div class="diagram">
+Chrome のプロセス構成（简略）:
+
+┌──────────────────────────────────────┐
+│ ブラウザプロセス（フレーム・UI）      │
+│   ↕ IMM32 通信できない              │
+│ レンダラープロセス（ページ表示）     │← IME はここと通信
+│   ↕ IPC                            │
+│ ネットワークプロセス ...             │
+└──────────────────────────────────────┘
+  awase から直接 IME ウィンドウに
+  届けられない</div>
+
+  <p class="body">
+    そこで awase は方法2の「Google 日本語入力への F13/F14 送信」に頼ります。
+    Google 日本語入力の内部プロセスに直接届くため、Chrome のプロセス構成に関係なく動作します。
+  </p>
+
+  <h3 class="sub">GJI I/O 監視でタイミングを合わせる</h3>
+
+  <p class="body">
+    さらに Chrome には別の難問があります。
+    IME がキーを受け取れる状態（TSF composition context）になるまでに、
+    数百ミリ秒かかることがあるのです。この準備ができる前に文字キーが届くと、
+    文字化けが起きます。
+  </p>
+
+  <p class="body">
+    awase は Google 日本語入力のディスクアクセス（I/O）をバックグラウンドで監視しています。
+    Google 日本語入力が「静止」したタイミングを「準備完了」のサインとみなし、
+    そこから文字を送信します。
+  </p>
+
+  <div class="callout green">
+    <strong>なぜ I/O 監視が有効なのか：</strong>
+    Google 日本語入力は辞書参照などにファイル読み書きを行います。
+    IME の composition context が確立されると内部処理が落ち着き、I/O が静かになります。
+    DLL インジェクションなどの侵襲的手法を使わずに「内部の準備状態」を外から推測する方法です。
+  </div>
+
+  <!-- Section 8 -->
+  <span class="sec-num" id="coldstart" style="margin-top:3rem;display:block">08</span>
+  <h2 class="sec">最初の1文字が化ける — TSF cold-start 問題</h2>
+  <p class="sec-lead">TSF アプリでは「入力を受け付ける準備」に時間がかかります。</p>
+
+  <p class="body">
+    Windows Terminal・WezTerm などの TSF ネイティブアプリや Chrome で、
+    「こ」と打ったつもりが「ko」と出る現象が起きることがあります。
+    これは「TSF cold-start 問題」と呼ばれます。
+  </p>
+
+  <h3 class="sub">なぜ起きるのか</h3>
+
+  <p class="body">
+    TSF アプリは「composition context」という入力バッファを持っています。
+    アプリを起動した直後、または IME ON に切り替えた直後は、
+    このバッファの初期化に数百ミリ秒かかります。
+    初期化が完了する前にローマ字キー（「k」「o」）が届くと、
+    IME がそれを変換できず英字のまま出力してしまいます。
+  </p>
+
+  <div class="diagram">
+cold-start の発生タイムライン:
+
+0ms    IME ON に切り替え
+       「こ」を打ち始める: K↓ K↑
+50ms   O↓ O↑
+100ms  （composition context 初期化完了）← ここまでに届いたキーは変換されない
+
+結果: 「ko」が英字で出力される</div>
+
+  <h3 class="sub">awase の解決策</h3>
+
+  <p class="body">
+    awase は「確定キー（Enter やスペース）が押された直後」や
+    「長時間入力がなかった後」に warmup 処理を行います。
+    composition context をあらかじめ活性化しておく「予熱」です。
+    次の文字が来るまでの空き時間を使って準備を済ませ、cold-start を未然に防ぎます。
+  </p>
+
+  <p class="body">
+    それでも予測できないタイミングで cold-start が起きた場合も、
+    awase は GJI I/O 監視で「準備できた」タイミングを検知してから文字を送るため、
+    化けが起きにくくなっています。
+  </p>
+
+  <div class="callout">
+    <strong>WezTerm での注意：</strong>
+    WezTerm はターミナルエミュレータとして F13/F14 を別の用途に使おうとします。
+    awase が Google 日本語入力に送る F14 がターミナルに漏れると「~」が入力されてしまいます。
+    WezTerm の設定ファイルで F13/F14 を「何もしない」にバインドする必要があります（<a href="usage.html">使い方ページ</a>参照）。
+  </div>
+
+</div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p><a href="index.html">トップページ</a> | <a href="usage.html">使い方</a> | <a href="https://github.com/cuzic/awase">GitHub</a></p>
+  <p>License: MIT / Apache 2.0</p>
+  <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
+</footer>
+
+</body>
+</html>
