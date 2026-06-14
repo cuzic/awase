@@ -26,7 +26,7 @@
          各コンポーネントは HKCU レジストリキーを KeyPath にする。
          また ICE64 対策として各ディレクトリに RemoveFolder を追加する。 -->
     <ComponentGroup Id="ProductComponents" Directory="INSTALLDIR">
-      <Component Id="MainExe" Guid="*">
+      <Component Id="MainExe" Guid="FEE4643D-BD1C-4FBA-A6F0-3422691909C5">
         <File Source="dist\awase.exe" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="MainExe"
                        Type="string" Value="" KeyPath="yes" />
@@ -37,12 +37,12 @@
                        Value="[INSTALLDIR]awase.exe" />
         <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall" />
       </Component>
-      <Component Id="SettingsExe" Guid="*">
+      <Component Id="SettingsExe" Guid="83280E86-7973-43A3-84E9-A4B51E47751B">
         <File Source="dist\awase-settings.exe" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="SettingsExe"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
-      <Component Id="ConfigFile" Guid="*" NeverOverwrite="yes">
+      <Component Id="ConfigFile" Guid="57E95F1F-4785-40B7-A4E7-16613080C938" NeverOverwrite="yes">
         <File Source="dist\config.toml" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="ConfigFile"
                        Type="string" Value="" KeyPath="yes" />
@@ -51,7 +51,7 @@
 
     <!-- Layout files -->
     <ComponentGroup Id="LayoutFiles" Directory="LayoutDir">
-      <Component Id="NicolaYab" Guid="*">
+      <Component Id="NicolaYab" Guid="9690990E-0D11-425B-B60C-AF23D5E87226">
         <File Source="dist\layout\nicola.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaYab"
                        Type="string" Value="" KeyPath="yes" />
@@ -61,7 +61,7 @@
 
     <!-- Data files -->
     <ComponentGroup Id="DataFiles" Directory="DataDir">
-      <Component Id="NgramData" Guid="*">
+      <Component Id="NgramData" Guid="DCF4BA85-03F3-4EC7-BF17-D870682FFF5E">
         <File Source="dist\data\ngram_hiragana.csv.gz" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NgramData"
                        Type="string" Value="" KeyPath="yes" />
@@ -71,7 +71,7 @@
 
     <!-- Start Menu shortcuts -->
     <ComponentGroup Id="Shortcuts" Directory="ApplicationProgramsFolder">
-      <Component Id="AppShortcut" Guid="*">
+      <Component Id="AppShortcut" Guid="4C391571-272A-41C6-8F88-043A88758E89">
         <Shortcut Id="AwaseShortcut" Name="awase" Target="[INSTALLDIR]awase.exe" WorkingDirectory="INSTALLDIR" />
         <Shortcut Id="SettingsShortcut" Name="awase Settings" Target="[INSTALLDIR]awase-settings.exe" WorkingDirectory="INSTALLDIR" />
         <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
