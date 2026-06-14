@@ -610,7 +610,21 @@ force_bypass = [
     </div>
 
     <div class="card">
-      <h3>4. エンジンがおかしくなったときのリセット</h3>
+      <h3>4. WezTerm で使う場合</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
+        awase は Google 日本語入力に F13/F14 を送って IME を制御しますが、WezTerm はこれらのキーを
+        VT シーケンスとしてシェルに転送しようとします。そのままでは <code>~</code> などが誤入力されるため、
+        WezTerm の設定で F13/F14 を何もしないキーとして登録する必要があります。
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:0.4rem"><code>~/.wezterm.lua</code> に以下を追加：</p>
+      <div class="code-block">config.keys = {
+  { key = 'F13', mods = '', action = wezterm.action.Nop },
+  { key = 'F14', mods = '', action = wezterm.action.Nop },
+}</div>
+    </div>
+
+    <div class="card">
+      <h3>5. エンジンがおかしくなったときのリセット</h3>
       <ul>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>変換</kbd> でエンジン ON を明示的に指定</li>
         <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME ON を明示的に指定</li>
