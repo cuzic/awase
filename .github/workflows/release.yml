@@ -28,7 +28,7 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Build awase.exe
-        run: cargo build --release
+        run: cargo build --release -p awase-windows
 
       - name: Build awase-settings.exe
         run: cargo build --release -p awase-settings
