@@ -638,6 +638,22 @@ footer p{margin-bottom:0.3rem}
         <p class="faq-q">NICOLA 以外の配列は使えますか？</p>
         <p class="faq-a">.yab 形式の配列定義ファイルを作成すれば、任意の配列を定義できます。</p>
       </div>
+      <div class="faq-item">
+        <p class="faq-q">Chrome で入力すると最初の1文字だけ英字で出てくることがありました</p>
+        <p class="faq-a">TSF cold-start 問題です。Chrome は IME の composition context を初期化するのに数百ミリ秒かかることがあり、その完了前にローマ字が届くと「こ → ko」「か → kあ」のように文字が化けます。awase は Google 日本語入力の I/O アクティビティを監視して composition の準備完了を検知し、タイミングを自動的に合わせて送信します。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">高速タイピングで文字の順番がおかしくなることがありました</p>
+        <p class="faq-a">TSF 出力処理の完了を待っている間にキーが溜まり、処理再開後に誤った順序で出力されるバグです。例えば「というのは」と打ったつもりが「とはいうの」になるケースが知られていました。awase はタイマーイベントのインスタンスを厳密に識別することでこの問題を解決し、どんな速度で打っても正しい順序で出力します。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">WezTerm などターミナルで1文字目だけ英字になることがありました</p>
+        <p class="faq-a">TSF ネイティブアプリでは、変換確定キー（Enter・スペース）を押した直後に composition context がリセットされます。awase はこのリセットを検知して warmup 処理を行い、次の文字入力までに確実に TSF を ready 状態にします。長時間入力がなかった後の最初の1文字も正しく入力できます。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">IME の ON/OFF 切り替えが2回目以降効かなくなることがありました</p>
+        <p class="faq-a">awase が内部で持つ「IME の状態」と実際の OS の状態がずれてしまい、「もう切り替え済み」と誤判定してしまうケースです。awase はフォーカス変化・アプリ切り替えのたびに IME の実態を再観測し、shadow モデルと照合することでずれを継続的に修正します。</p>
+      </div>
     </div>
   </div>
 </section>
