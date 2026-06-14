@@ -22,34 +22,50 @@
       </Directory>
     </Directory>
 
+    <!-- perUser インストールでは File を KeyPath にできない（ICE38）。
+         各コンポーネントは HKCU レジストリキーを KeyPath にする。
+         また ICE64 対策として各ディレクトリに RemoveFolder を追加する。 -->
     <ComponentGroup Id="ProductComponents" Directory="INSTALLDIR">
       <Component Id="MainExe" Guid="*">
-        <File Source="dist\awase.exe" KeyPath="yes" />
+        <File Source="dist\awase.exe" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="MainExe"
+                       Type="string" Value="" KeyPath="yes" />
         <RegistryValue Root="HKCU"
                        Key="Software\Microsoft\Windows\CurrentVersion\Run"
                        Name="awase"
                        Type="string"
                        Value="[INSTALLDIR]awase.exe" />
+        <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall" />
       </Component>
       <Component Id="SettingsExe" Guid="*">
-        <File Source="dist\awase-settings.exe" KeyPath="yes" />
+        <File Source="dist\awase-settings.exe" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="SettingsExe"
+                       Type="string" Value="" KeyPath="yes" />
       </Component>
       <Component Id="ConfigFile" Guid="*" NeverOverwrite="yes">
-        <File Source="dist\config.toml" KeyPath="yes" />
+        <File Source="dist\config.toml" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="ConfigFile"
+                       Type="string" Value="" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 
     <!-- Layout files -->
     <ComponentGroup Id="LayoutFiles" Directory="LayoutDir">
       <Component Id="NicolaYab" Guid="*">
-        <File Source="dist\layout\nicola.yab" KeyPath="yes" />
+        <File Source="dist\layout\nicola.yab" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaYab"
+                       Type="string" Value="" KeyPath="yes" />
+        <RemoveFolder Id="RemoveLayoutDir" Directory="LayoutDir" On="uninstall" />
       </Component>
     </ComponentGroup>
 
     <!-- Data files -->
     <ComponentGroup Id="DataFiles" Directory="DataDir">
       <Component Id="NgramData" Guid="*">
-        <File Source="dist\data\ngram_hiragana.csv.gz" KeyPath="yes" />
+        <File Source="dist\data\ngram_hiragana.csv.gz" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NgramData"
+                       Type="string" Value="" KeyPath="yes" />
+        <RemoveFolder Id="RemoveDataDir" Directory="DataDir" On="uninstall" />
       </Component>
     </ComponentGroup>
 
@@ -59,7 +75,8 @@
         <Shortcut Id="AwaseShortcut" Name="awase" Target="[INSTALLDIR]awase.exe" WorkingDirectory="INSTALLDIR" />
         <Shortcut Id="SettingsShortcut" Name="awase Settings" Target="[INSTALLDIR]awase-settings.exe" WorkingDirectory="INSTALLDIR" />
         <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
-        <RegistryValue Root="HKCU" Key="Software\awase" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="installed"
+                       Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 
