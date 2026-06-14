@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>使い方 — awase（合わせ）</title>
+<meta name="description" content="awase のキーボードショートカット・トレイアイコン操作・設定ファイルの使い方ガイド。">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#2563EB;
+  --accent-light:#3B82F6;
+  --bg:#ffffff;
+  --bg-alt:#F8FAFC;
+  --text:#1E293B;
+  --text-secondary:#475569;
+  --border:#E2E8F0;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
+  --section-gap:4rem;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0F172A;
+    --bg-alt:#1E293B;
+    --text:#E2E8F0;
+    --text-secondary:#94A3B8;
+    --border:#334155;
+    --card-shadow:0 1px 3px rgba(0,0,0,0.3),0 1px 2px rgba(0,0,0,0.2);
+  }
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  line-height:1.7;
+  color:var(--text);
+  background:var(--bg);
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:860px;margin:0 auto;padding:0 1.5rem}
+
+/* Site nav */
+.site-nav{
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  padding:0.75rem 1.5rem;
+}
+.site-nav .inner{
+  max-width:860px;
+  margin:0 auto;
+  display:flex;
+  align-items:center;
+  gap:1.5rem;
+}
+.site-nav .brand{
+  font-weight:700;
+  font-size:1rem;
+  color:var(--text);
+}
+.site-nav a{font-size:0.92rem;color:var(--text-secondary)}
+.site-nav a:hover{color:var(--accent);text-decoration:none}
+.site-nav a.active{color:var(--accent);font-weight:600}
+
+/* Page header */
+.page-header{
+  padding:3.5rem 1.5rem 2.5rem;
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  text-align:center;
+}
+.page-header h1{
+  font-size:2rem;
+  font-weight:800;
+  letter-spacing:-0.02em;
+  color:var(--text);
+}
+.page-header p{
+  font-size:1rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+}
+
+/* Sections */
+section{padding:var(--section-gap) 0}
+section:nth-child(even){background:var(--bg-alt)}
+.section-title{
+  font-size:1.4rem;
+  font-weight:700;
+  color:var(--text);
+  margin-bottom:0.5rem;
+}
+.section-lead{
+  color:var(--text-secondary);
+  margin-bottom:2rem;
+  font-size:0.95rem;
+}
+
+/* kbd style */
+kbd{
+  display:inline-block;
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.82rem;
+  font-weight:600;
+  padding:0.15rem 0.55rem;
+  border:1.5px solid var(--border);
+  border-bottom-width:3px;
+  border-radius:5px;
+  background:var(--bg);
+  color:var(--text);
+  white-space:nowrap;
+  box-shadow:0 1px 0 var(--border);
+}
+
+/* Shortcut table */
+.sc-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:0.93rem;
+}
+.sc-table thead th{
+  text-align:left;
+  padding:0.55rem 0.9rem;
+  border-bottom:2px solid var(--border);
+  font-weight:600;
+  color:var(--text);
+  white-space:nowrap;
+}
+.sc-table tbody td{
+  padding:0.7rem 0.9rem;
+  border-bottom:1px solid var(--border);
+  color:var(--text-secondary);
+  vertical-align:top;
+}
+.sc-table tbody td:first-child{
+  white-space:nowrap;
+}
+.sc-table tbody tr:last-child td{border-bottom:none}
+
+/* Mode table */
+.mode-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:0.93rem;
+  max-width:560px;
+}
+.mode-table th,.mode-table td{
+  padding:0.6rem 0.9rem;
+  border:1px solid var(--border);
+  text-align:center;
+}
+.mode-table th{
+  font-weight:600;
+  color:var(--text);
+  background:var(--bg-alt);
+}
+.mode-table td{color:var(--text-secondary)}
+.mode-on{color:#16a34a;font-weight:600}
+.mode-off{color:#dc2626;font-weight:600}
+.mode-result{
+  color:var(--accent);
+  font-weight:600;
+  font-size:0.9rem;
+}
+
+/* Section card */
+.card{
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.8rem;
+  box-shadow:var(--card-shadow);
+  margin-bottom:1.2rem;
+}
+.card h3{
+  font-size:1.05rem;
+  font-weight:700;
+  margin-bottom:0.8rem;
+  color:var(--text);
+}
+.card ul{
+  padding-left:1.4em;
+  color:var(--text-secondary);
+}
+.card li{margin-bottom:0.35rem;font-size:0.93rem}
+
+/* code */
+code,.code-block{
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.88rem;
+}
+.code-block{
+  display:block;
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:0.8rem 1.2rem;
+  margin:0.8rem 0;
+  overflow-x:auto;
+  color:var(--text);
+  white-space:pre;
+}
+.note{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+  padding:0.6rem 0.9rem;
+  border-left:3px solid var(--accent-light);
+  background:var(--bg-alt);
+  border-radius:0 6px 6px 0;
+}
+
+/* category label */
+.cat{
+  display:inline-block;
+  font-size:0.72rem;
+  font-weight:700;
+  padding:0.1rem 0.45rem;
+  border-radius:4px;
+  margin-bottom:0.2rem;
+  letter-spacing:0.02em;
+}
+.cat-ime{background:#dbeafe;color:#1d4ed8}
+.cat-engine{background:#dcfce7;color:#166534}
+.cat-system{background:#f3e8ff;color:#7e22ce}
+.cat-thumb{background:#fff7ed;color:#9a3412}
+@media(prefers-color-scheme:dark){
+  .cat-ime{background:#1e3a5f;color:#93c5fd}
+  .cat-engine{background:#14532d;color:#86efac}
+  .cat-system{background:#3b0764;color:#d8b4fe}
+  .cat-thumb{background:#431407;color:#fdba74}
+}
+
+/* Footer */
+footer{
+  text-align:center;
+  padding:2.5rem 1.5rem;
+  border-top:1px solid var(--border);
+  color:var(--text-secondary);
+  font-size:0.9rem;
+  background:var(--bg-alt);
+}
+footer p{margin-bottom:0.3rem}
+
+/* Responsive */
+@media(max-width:640px){
+  .page-header{padding:2.5rem 1.5rem 1.8rem}
+  .page-header h1{font-size:1.5rem}
+  section{padding:2.5rem 0}
+  .sc-table thead th:last-child,.sc-table tbody td:last-child{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- Site nav -->
+<nav class="site-nav">
+  <div class="inner">
+    <span class="brand">awase（合わせ）</span>
+    <a href="index.html">トップ</a>
+    <a href="usage.html" class="active">使い方</a>
+    <a href="https://github.com/cuzic/awase">GitHub</a>
+  </div>
+</nav>
+
+<!-- Page header -->
+<div class="page-header">
+  <h1>使い方</h1>
+  <p>キーボードショートカット・トレイ操作・配列切り替え・設定ファイル・ログのリファレンス</p>
+</div>
+
+<!-- 入力モードの仕組み -->
+<section>
+  <div class="container">
+    <h2 class="section-title">入力モードの仕組み</h2>
+    <p class="section-lead">awase は「IME の状態」と「エンジンの状態」の組み合わせで動作を切り替えます。</p>
+
+    <table class="mode-table">
+      <thead>
+        <tr>
+          <th>IME</th>
+          <th>エンジン</th>
+          <th>動作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mode-on">ON</td>
+          <td class="mode-on">ON</td>
+          <td class="mode-result">親指シフト（NICOLA）入力</td>
+        </tr>
+        <tr>
+          <td class="mode-on">ON</td>
+          <td class="mode-off">OFF</td>
+          <td>通常 IME 入力（ローマ字変換）</td>
+        </tr>
+        <tr>
+          <td class="mode-off">OFF</td>
+          <td>どちらでも</td>
+          <td>英字直接入力（エンジンは自動停止）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="note" style="margin-top:1.2rem">
+      IME が OFF のときはエンジンが自動的に停止するため、パスワード欄などでも誤動作しません。
+    </p>
+  </div>
+</section>
+
+<!-- キーボードショートカット -->
+<section>
+  <div class="container">
+    <h2 class="section-title">キーボードショートカット</h2>
+    <p class="section-lead">デフォルト設定でのショートカット一覧です。<code>config.toml</code> で変更できます。</p>
+
+    <table class="sc-table">
+      <thead>
+        <tr>
+          <th>カテゴリ</th>
+          <th>キー</th>
+          <th>動作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>変換</kbd></td>
+          <td>IME を ON にする（冪等 — 既に ON なら何も起きない）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>無変換</kbd></td>
+          <td>IME を OFF にする（冪等 — 既に OFF なら何も起きない）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-engine">エンジン</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>変換</kbd></td>
+          <td>NICOLA エンジンを ON にする（親指シフト入力を有効化）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-engine">エンジン</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>無変換</kbd></td>
+          <td>NICOLA エンジンを OFF にする（ローマ字入力に切り替え）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-engine">エンジン</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F12</kbd></td>
+          <td>エンジンの ON/OFF をトグル（グローバルホットキー、<code>config.toml</code> で変更可）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-system">システム</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F11</kbd></td>
+          <td>現在のウィンドウのフォーカス判定を強制上書き（テキスト入力 ↔ バイパスを切替）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-thumb">親指シフト</span></td>
+          <td><kbd>変換</kbd></td>
+          <td>右親指シフトキー（エンジン ON 中、他のキーと同時押しで NICOLA 判定）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-thumb">親指シフト</span></td>
+          <td><kbd>無変換</kbd></td>
+          <td>左親指シフトキー（エンジン ON 中、他のキーと同時押しで NICOLA 判定）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td><kbd>半角/全角</kbd></td>
+          <td>IME の ON/OFF をトグル（Windows 標準の動作）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="note" style="margin-top:1.2rem">
+      <strong>冪等な IME 制御について：</strong>
+      <kbd>Ctrl</kbd>+<kbd>変換</kbd> は「IME を ON にする」という操作です。従来のトグル方式と異なり、現在の状態がずれていても必ず意図した結果になります。
+      エンジン ON/OFF とは独立して動作します。
+    </p>
+  </div>
+</section>
+
+<!-- トレイアイコン -->
+<section>
+  <div class="container">
+    <h2 class="section-title">トレイアイコン操作</h2>
+    <p class="section-lead">タスクバー右端のシステムトレイに awase アイコンが常駐します。</p>
+
+    <div class="card">
+      <h3>右クリックメニュー</h3>
+      <ul>
+        <li><strong>配列選択</strong> — <code>layouts_dir</code> 内の .yab ファイルを一覧表示。選択するとレイアウトが即座に切り替わります</li>
+        <li><strong>有効/無効切替</strong> — エンジンの ON/OFF をトグルします（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd> と同じ操作）</li>
+        <li><strong>Google 日本語入力のセットアップ</strong> — Google 日本語入力に F13/F14 キーバインドを自動追加します。<strong>初回インストール時に必ず実行してください</strong></li>
+        <li><strong>管理者として再起動</strong> — UAC で昇格して awase を再起動します。管理者権限を要求するアプリ（一部のゲームなど）でも動作するようになります</li>
+        <li><strong>設定...</strong> — 設定画面を開きます</li>
+        <li><strong>終了</strong> — awase を終了します</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>アイコンの見方</h3>
+      <ul>
+        <li>アイコンが通常表示のとき — エンジン ON（親指シフト入力が有効）</li>
+        <li>アイコンがグレーアウトしているとき — エンジン OFF（通常入力）</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- config.toml -->
+<section>
+  <div class="container">
+    <h2 class="section-title">config.toml の主要設定</h2>
+    <p class="section-lead">awase の動作は <code>config.toml</code> で細かく調整できます。</p>
+
+    <div class="card">
+      <h3>ショートカットのカスタマイズ</h3>
+      <div class="code-block"># エンジン ON キー（NICOLA 入力を有効にするキー）
+engine_on_keys = ["Ctrl+Shift+VK_CONVERT"]
+
+# エンジン OFF キー（NICOLA 入力を無効にするキー）
+engine_off_keys = ["Ctrl+Shift+VK_NONCONVERT"]
+
+# IME ON キー（IME を ON にするキー）
+ime_on_keys = ["Ctrl+VK_CONVERT"]
+
+# IME OFF キー（IME を OFF にするキー）
+ime_off_keys = ["Ctrl+VK_NONCONVERT"]
+
+# エンジン ON/OFF トグルのグローバルホットキー
+engine_toggle_hotkey = "Ctrl+Shift+F12"</div>
+      <p class="note">複数のキーを割り当てるには配列に追加してください: <code>["Ctrl+Shift+VK_CONVERT", "Ctrl+F8"]</code></p>
+    </div>
+
+    <div class="card">
+      <h3>同時打鍵の判定</h3>
+      <div class="code-block">[general]
+# 同時打鍵の判定閾値（ミリ秒）。NICOLA 規格標準は 100ms。
+simultaneous_threshold_ms = 100
+
+# 確定モードの選択
+#   ngram_predictive  - n-gram 予測で投機/待機を動的切替（推奨）
+#   wait              - タイムアウトまで保留（最も正確）
+#   speculative       - 即時出力（最速）
+#   two_phase         - 短い待機→投機出力→差し替え
+#   adaptive_timing   - 打鍵速度に応じて閾値を自動調整
+confirm_mode = "ngram_predictive"</div>
+    </div>
+
+    <div class="card">
+      <h3>親指キーのカスタマイズ</h3>
+      <div class="code-block">[general]
+# 左親指キー（VK コード名）
+left_thumb_key = "VK_NONCONVERT"    # 無変換キー
+
+# 右親指キー（VK コード名）
+right_thumb_key = "VK_CONVERT"      # 変換キー</div>
+    </div>
+
+    <div class="card">
+      <h3>キーボードモデルと出力方式</h3>
+      <div class="code-block">[general]
+# キーボードモデル（JIS キーボードを使っている場合はデフォルトで OK）
+# keyboard_model = "jis"   # JIS キーボード（デフォルト）
+# keyboard_model = "us"    # US キーボード
+
+# ローマ字出力の送信方式（通常は変更不要）
+#   unicode  - ひらがなを直接送信（IME 不要、推奨）
+#   per_key  - 1文字ずつ SendInput（他フックとの互換性重視）
+#   batched  - 全文字を1回の SendInput
+output_mode = "unicode"</div>
+      <p class="note">新しい Microsoft IME（Windows 10 20H1 以降）では <code>unicode</code> モードを推奨します。<code>per_key</code> / <code>batched</code> では入力が正しく処理されない場合があります。</p>
+    </div>
+
+    <div class="card">
+      <h3>自動起動の設定</h3>
+      <div class="code-block">[general]
+# Windows ログオン時に自動起動する
+#   "enabled"  - 自動起動を有効にする
+#   "disabled" - 自動起動を無効にする
+#   "ask"      - 初回起動時にダイアログで確認する（デフォルト）
+auto_start = "enabled"</div>
+      <p class="note"><strong>Windows 11 をお使いの場合：</strong> スタートアップフォルダからの起動が失敗することがあります。その場合はタスクスケジューラで「ログオン時」トリガーのタスクを作成するか、レジストリの <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> に登録してください。</p>
+    </div>
+
+    <div class="card">
+      <h3>特定ウィンドウの動作オーバーライド</h3>
+      <div class="code-block">[focus_overrides]
+# 特定アプリでテキスト入力を強制する
+force_text = [
+    { process = "myapp.exe", class = "MyWindowClass" },
+]
+
+# 特定アプリでエンジンを完全スキップする
+force_bypass = [
+    { process = "SearchHost.exe", class = "SearchHost" },
+]</div>
+      <p class="note">スタートメニューや検索バーで誤動作する場合は <code>force_bypass</code> に追加してください。</p>
+    </div>
+  </div>
+</section>
+
+<!-- レイアウト (.yab) の切り替え -->
+<section>
+  <div class="container">
+    <h2 class="section-title">レイアウト（.yab）の切り替え</h2>
+    <p class="section-lead">親指シフト配列は .yab ファイルで定義されています。複数の配列を使い分けることができます。</p>
+
+    <div class="card">
+      <h3>切り替え方法</h3>
+      <ul>
+        <li><strong>トレイアイコン右クリック → 配列選択</strong> — 最も手軽な方法。即座に切り替わります</li>
+        <li><strong>設定画面「基本設定」タブ</strong> — レイアウトのドロップダウンで選択 → 「適用」</li>
+        <li><strong>config.toml を編集</strong> — <code>default_layout = "nicola.yab"</code> でデフォルトを変更</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>カスタム配列を追加する</h3>
+      <ol style="padding-left:1.4em;color:var(--text-secondary)">
+        <li style="margin-bottom:0.4rem">新しい <code>.yab</code> ファイルを <code>config.toml</code> の <code>layouts_dir</code> に指定したフォルダに配置します（デフォルトは <code>config/</code>）</li>
+        <li style="margin-bottom:0.4rem">設定画面「基本設定」タブの「再スキャン」ボタンを押します</li>
+        <li>ドロップダウンに新しい配列が表示されるので選択して「適用」します</li>
+      </ol>
+      <p class="note" style="margin-top:0.8rem">.yab 形式の詳細は <a href="https://github.com/cuzic/awase">GitHub</a> の README を参照してください。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ログ・デバッグ -->
+<section>
+  <div class="container">
+    <h2 class="section-title">ログ・デバッグ</h2>
+    <p class="section-lead">動作がおかしいときはログを確認してください。</p>
+
+    <div class="card">
+      <h3>ログファイルの場所</h3>
+      <ul>
+        <li>通常起動時：<code>awase.exe</code> と同じフォルダの <strong><code>awase.log</code></strong>（起動のたびに追記されます）</li>
+        <li>Scoop でインストールした場合：<code>%USERPROFILE%\scoop\apps\awase\current\awase.log</code></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>デバッグモードで起動する</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">詳細なログが必要な場合はコマンドプロンプトからデバッグモードで起動します。</p>
+      <div class="code-block">awase.exe --debug</div>
+      <p class="note">または環境変数 <code>RUST_LOG=debug</code> を設定してから起動しても同じです。</p>
+    </div>
+  </div>
+</section>
+
+<!-- アンインストール -->
+<section>
+  <div class="container">
+    <h2 class="section-title">アンインストール</h2>
+
+    <div class="card">
+      <h3>MSI インストーラー版</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">Windows の「設定 → アプリ」または「コントロールパネル → プログラムのアンインストール」から <strong>awase</strong> を選択してアンインストールします。</p>
+    </div>
+
+    <div class="card">
+      <h3>Scoop 版</h3>
+      <div class="code-block">scoop uninstall awase</div>
+    </div>
+
+    <div class="card">
+      <h3>ZIP 版（ポータブル）</h3>
+      <ol style="padding-left:1.4em;color:var(--text-secondary)">
+        <li style="margin-bottom:0.4rem">トレイアイコンを右クリック → 「終了」で awase を終了します</li>
+        <li style="margin-bottom:0.4rem">自動起動を設定している場合はタスクスケジューラから「awase」タスクを削除します</li>
+        <li>解凍したフォルダごと削除します</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- 初期設定の手順 -->
+<section>
+  <div class="container">
+    <h2 class="section-title">初期設定の手順</h2>
+    <p class="section-lead">初めて使うときの推奨手順です。</p>
+
+    <div class="card">
+      <h3>1. 起動確認</h3>
+      <ul>
+        <li>awase を起動するとシステムトレイにアイコンが表示されます</li>
+        <li>テキストエディタなどを開き、メモ帳などに入力テストを行います</li>
+        <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME ON → 親指シフト入力が開始します</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>2. 確定モードの調整</h3>
+      <ul>
+        <li>まず <code>confirm_mode = "ngram_predictive"</code>（推奨）で試す</li>
+        <li>誤変換が多い場合は <code>"wait"</code> に変更（正確だがやや遅め）</li>
+        <li>高速タイピングで違和感がある場合は <code>"adaptive_timing"</code> を試す</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>3. Chrome / Edge での入力がうまくいかない場合</h3>
+      <ul>
+        <li>Google 日本語入力を使用していることを確認します（awase は Google 日本語入力に最適化されています）</li>
+        <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME を ON にしてから入力を始めます</li>
+        <li>最初の1文字だけ英字になる場合は awase が自動的に修正します（TSF cold-start 対応）</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>4. エンジンがおかしくなったときのリセット</h3>
+      <ul>
+        <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>変換</kbd> でエンジン ON を明示的に指定</li>
+        <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME ON を明示的に指定</li>
+        <li>それでも解決しない場合はトレイアイコンを右クリック → 「有効/無効切替」でトグルする</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p><a href="index.html">トップページ</a> | <a href="https://github.com/cuzic/awase">GitHub</a></p>
+  <p>License: MIT / Apache 2.0</p>
+  <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
+</footer>
+
+</body>
+</html>
