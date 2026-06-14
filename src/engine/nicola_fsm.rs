@@ -278,7 +278,7 @@ impl NicolaFsm {
     /// 同時打鍵判定の閾値を更新する（ミリ秒指定）。
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
     /// `VkCode(0)` を渡すと機能を無効にする。
-    pub fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
+    pub const fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
         self.engine_off_triple_vk = vk;
     }
 
@@ -986,6 +986,12 @@ impl NicolaFsm {
             return self.handle_key_up_pending(event);
         }
 
+        // OS modifier (Ctrl/Alt/Win) 保持中: on_key_down と対称にバイパス。
+        // output_history に古いエントリが残っていても誤 Suppress しない。
+        if self.phys.modifiers.is_os_modifier_held() {
+            return Response::pass_through();
+        }
+
         // output_history から対応する注入済みキーを探してリリース
         self.handle_key_up_active(event)
     }
@@ -1044,9 +1050,7 @@ impl NicolaFsm {
         let old_state = std::mem::replace(&mut self.state, EngineState::Idle);
 
         let resolved = match old_state {
-            EngineState::PendingChar(pending) => {
-                self.resolve_pending_char_as_single(&pending)
-            }
+            EngineState::PendingChar(pending) => self.resolve_pending_char_as_single(&pending),
             EngineState::PendingThumb(thumb) => {
                 Self::resolve_pending_thumb_as_single(thumb.vk_code)
             }
