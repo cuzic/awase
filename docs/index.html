@@ -455,12 +455,12 @@ footer p{margin-bottom:0.3rem}
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
         <h3>Google 日本語入力</h3>
-        <p>F13/F14 による直接 IME 制御で、VK_KANJI トグルのアーティファクトなしに IME ON/OFF を切り替えます。</p>
+        <p>Google 日本語入力の内部動作に合わせた専用の制御方式で、IME ON/OFF を確実かつ副作用なく切り替えます。</p>
       </div>
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
         <h3>LINE / Qt アプリ</h3>
-        <p>Ctrl+無変換 による IME-OFF が正確に機能します。誤タイプ救済機能で意図しない IME-OFF も防ぎます。</p>
+        <p>LINE が内部で行う IME 状態遷移を推測し、意図通りの IME ON/OFF 切り替えを実現します。Qt ベースのアプリ全般に対応しています。</p>
       </div>
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
@@ -620,7 +620,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">IME は何に対応していますか？</p>
-        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。Google 日本語入力は F13/F14 による直接制御で特に安定しています。</p>
+        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。Google 日本語入力は専用の制御方式により特に安定して動作します。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">他のキーリマッパー（AutoHotKey 等）と併用できますか？</p>
