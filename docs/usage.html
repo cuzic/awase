@@ -209,6 +209,13 @@ code,.code-block{
   border-radius:0 6px 6px 0;
 }
 
+/* Settings tab table */
+.tab-table{width:100%;border-collapse:collapse;font-size:0.91rem;margin:0.8rem 0}
+.tab-table th,.tab-table td{padding:0.55rem 0.85rem;border:1px solid var(--border);vertical-align:top}
+.tab-table th{background:var(--bg-alt);font-weight:600;color:var(--text);white-space:nowrap}
+.tab-table td{color:var(--text-secondary)}
+.tab-table td:first-child{white-space:nowrap;color:var(--text);font-weight:500}
+
 /* category label */
 .cat{
   display:inline-block;
@@ -407,6 +414,93 @@ footer p{margin-bottom:0.3rem}
   </div>
 </section>
 
+<!-- 設定画面 -->
+<section>
+  <div class="container">
+    <h2 class="section-title">設定画面（awase-settings）</h2>
+    <p class="section-lead">トレイアイコン右クリック → 「設定...」で開きます。変更後は「適用」ボタンで保存・即時反映されます。</p>
+
+    <div class="card">
+      <h3>基本設定タブ</h3>
+      <table class="tab-table">
+        <tr><th>項目</th><th>説明</th></tr>
+        <tr><td>キーボードモデル</td><td>JIS（日本語配列）または US（英語配列）を選択</td></tr>
+        <tr><td>同時打鍵閾値</td><td>同時打鍵と判定する時間幅（ms）。NICOLA 規格標準は 100ms</td></tr>
+        <tr><td>確定モード</td><td>文字の確定タイミング。下表参照</td></tr>
+        <tr><td>投機出力待機</td><td>two_phase / adaptive_timing 使用時の投機出力までの待機時間（ms）</td></tr>
+        <tr><td>出力モード</td><td>Unicode（推奨）・PerKey・Batched。通常は Unicode のまま</td></tr>
+        <tr><td>フックモード</td><td>Relay（推奨・安定）または Filter（低遅延）</td></tr>
+        <tr><td>自動起動</td><td>Windows ログオン時に自動起動するかどうか</td></tr>
+        <tr><td>レイアウト</td><td>使用する .yab 配列ファイルの選択。「再スキャン」で一覧を更新</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>確定モードの選択肢</h3>
+      <table class="tab-table">
+        <tr><th>モード</th><th>動作</th><th>向いている人</th></tr>
+        <tr><td>wait</td><td>タイムアウトまで保留してから確定。最も正確</td><td>ゆっくり正確に打ちたい方</td></tr>
+        <tr><td>speculative</td><td>即時出力し、同時打鍵なら差し替え。最速だが一瞬ちらつく</td><td>速度最優先の方</td></tr>
+        <tr><td>two_phase</td><td>短い待機後に投機出力。wait と speculative の中間</td><td>バランス重視の方</td></tr>
+        <tr><td>adaptive_timing</td><td>連続打鍵中は wait、途切れたら投機。速度に自動適応</td><td>打鍵速度にムラがある方</td></tr>
+        <tr><td>ngram_predictive</td><td>n-gram 統計で投機/待機を動的判断。文脈を使って精度向上</td><td>最も賢い判定を使いたい方（推奨）</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>キー設定タブ</h3>
+      <table class="tab-table">
+        <tr><th>項目</th><th>説明</th></tr>
+        <tr><td>左親指キー</td><td>左親指シフトキーに使うキー（デフォルト: VK_NONCONVERT = 無変換）</td></tr>
+        <tr><td>右親指キー</td><td>右親指シフトキーに使うキー（デフォルト: VK_CONVERT = 変換）</td></tr>
+        <tr><td>エンジン ON キー</td><td>NICOLA エンジンを ON にするキー。複数登録可</td></tr>
+        <tr><td>エンジン OFF キー</td><td>NICOLA エンジンを OFF にするキー。複数登録可</td></tr>
+        <tr><td>IME ON キー</td><td>IME を ON にするキー（冪等）。複数登録可</td></tr>
+        <tr><td>IME OFF キー</td><td>IME を OFF にするキー（冪等）。複数登録可</td></tr>
+        <tr><td>エンジン切替ホットキー</td><td>グローバルホットキーでエンジン ON/OFF をトグル</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>IME 検出タブ</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">awase が IME 状態の変化を把握するためのキー設定です。通常はデフォルトのままで問題ありません。</p>
+      <table class="tab-table">
+        <tr><th>項目</th><th>説明</th></tr>
+        <tr><td>トグルキー</td><td>OS が IME ON/OFF をトグルするキー（例: 半角/全角）</td></tr>
+        <tr><td>ON キー</td><td>OS が IME を ON にするキー</td></tr>
+        <tr><td>OFF キー</td><td>OS が IME を OFF にするキー</td></tr>
+      </table>
+      <p class="note" style="margin-top:0.7rem">「デフォルトに戻す」ボタンで標準設定に戻せます。</p>
+    </div>
+
+    <div class="card">
+      <h3>アプリ別設定タブ</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">プロセス名とウィンドウクラス名の組み合わせで、アプリごとに動作を上書きします。</p>
+      <table class="tab-table">
+        <tr><th>設定種別</th><th>説明</th><th>用途例</th></tr>
+        <tr><td>テキスト入力として強制</td><td>自動判定に関わらず常に NICOLA 入力を有効にする</td><td>誤ってバイパスされるアプリ</td></tr>
+        <tr><td>バイパスとして強制</td><td>常にエンジンを無効にする</td><td>スタートメニュー、パスワードマネージャー</td></tr>
+        <tr><td>VK 出力モードとして強制</td><td>ローマ字を VK キーストロークで送信する</td><td>Chrome・Edge・Electron ベースのアプリ</td></tr>
+        <tr><td>TSF 出力モードとして強制</td><td>TSF ネイティブモードで送信する</td><td>WezTerm など TSF 直結アプリ</td></tr>
+      </table>
+      <p class="note" style="margin-top:0.7rem">プロセス名・クラス名は <code>awase.exe --debug</code> で起動したときのログで確認できます。</p>
+    </div>
+
+    <div class="card">
+      <h3>詳細設定タブ</h3>
+      <table class="tab-table">
+        <tr><th>項目</th><th>説明</th></tr>
+        <tr><td>n-gram ファイル</td><td>n-gram 統計データのパス（.csv.gz または .toml）。ngram_predictive モードで使用</td></tr>
+        <tr><td>n-gram 調整幅</td><td>n-gram 予測で同時打鍵閾値を調整する幅（ms）</td></tr>
+        <tr><td>n-gram 最小/最大閾値</td><td>n-gram 予測で調整される閾値の下限・上限（ms）</td></tr>
+        <tr><td>フォーカスデバウンス</td><td>Alt+Tab 連続操作時の誤検知を防ぐ待機時間（ms）</td></tr>
+        <tr><td>IME ポーリング間隔</td><td>マウスで言語バーを操作したときなどの変化を検出する周期（ms）</td></tr>
+        <tr><td>レイアウトディレクトリ</td><td>.yab ファイルを置くフォルダのパス</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
 <!-- config.toml -->
 <section>
   <div class="container">
@@ -496,6 +590,35 @@ force_bypass = [
     { process = "SearchHost.exe", class = "SearchHost" },
 ]</div>
       <p class="note">スタートメニューや検索バーで誤動作する場合は <code>force_bypass</code> に追加してください。</p>
+    </div>
+
+    <div class="card">
+      <h3>アプリ別の出力モード上書き</h3>
+      <div class="code-block">[focus_overrides]
+# VK キーストロークで送信する（Chrome / Edge / VS Code 等 Electron ベースのアプリ）
+force_vk = [
+    { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
+    { process = "code.exe",    class = "Chrome_RenderWidgetHostHWND" },
+]
+
+# TSF ネイティブモードで送信する（WezTerm 等）
+force_tsf = [
+    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+]</div>
+    </div>
+
+    <div class="card">
+      <h3>IME 検出キーの手動設定</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">通常は自動検出で十分ですが、特殊なキーボードや IME を使う場合に手動設定します。</p>
+      <div class="code-block">[ime_sync]
+# IME ON/OFF をトグルするキー（例: 半角/全角）
+# toggle = ["VK_KANJI"]
+
+# IME を直接 ON にするキー
+# on = ["VK_DBE_HIRAGANA"]
+
+# IME を直接 OFF にするキー
+# off = ["VK_DBE_SBCSCHAR"]</div>
     </div>
   </div>
 </section>
