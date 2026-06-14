@@ -616,11 +616,14 @@ force_bypass = [
         VT シーケンスとしてシェルに転送しようとします。そのままでは <code>~</code> などが誤入力されるため、
         WezTerm の設定で F13/F14 を何もしないキーとして登録する必要があります。
       </p>
-      <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:0.4rem"><code>~/.wezterm.lua</code> に以下を追加：</p>
+      <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:0.4rem"><strong>WezTerm</strong> — <code>~/.wezterm.lua</code> に以下を追加：</p>
       <div class="code-block">config.keys = {
   { key = 'F13', mods = '', action = wezterm.action.Nop },
   { key = 'F14', mods = '', action = wezterm.action.Nop },
 }</div>
+      <p style="color:var(--text-secondary);font-size:0.88rem;margin:0.8rem 0 0.4rem"><strong>Windows Terminal</strong> — <code>settings.json</code> の <code>"actions"</code> に以下を追加：</p>
+      <div class="code-block">{ "command": "unbound", "keys": "f13" },
+{ "command": "unbound", "keys": "f14" }</div>
     </div>
 
     <div class="card">
