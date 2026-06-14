@@ -350,7 +350,7 @@ impl DecisionExecutor {
                             sync_outcomes.push(o);
                         }
                     } else {
-                        self.queue.push(effect);
+                        self.queue.push_back(effect);
                     }
                 }
                 BatchResult {
