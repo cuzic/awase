@@ -620,7 +620,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">IME は何に対応していますか？</p>
-        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。Google 日本語入力は専用の制御方式により特に安定して動作します。</p>
+        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。従来ツールでは Google 日本語入力が IME の状態を正しく返さないという API 制限のため対応が困難でしたが、awase は独自の shadow モデルで状態を追跡するため、専用の制御方式により安定して動作します。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">他のキーリマッパー（AutoHotKey 等）と併用できますか？</p>
@@ -628,7 +628,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">スリープ復帰後に動かなくなりませんか？</p>
-        <p class="faq-a">スリープ復帰・スクリーンロック解除時に自動でフックを再登録します。また定期的なヘルスチェックで異常を検知し、自動復旧します。</p>
+        <p class="faq-a">スリープ復帰・スクリーンロック解除時に自動でフックを再登録します。また定期的なヘルスチェックで異常を検知し、自動復旧します。Windows Update 後も動作に影響しにくい設計にしており、OS の文字出力方式の内部変更に依存しない実装を採用しています。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">パスワード入力画面で誤動作しませんか？</p>
@@ -641,6 +641,10 @@ footer p{margin-bottom:0.3rem}
       <div class="faq-item">
         <p class="faq-q">Chrome で入力すると最初の1文字だけ英字で出てくることがありました</p>
         <p class="faq-a">TSF cold-start 問題です。Chrome は IME の composition context を初期化するのに数百ミリ秒かかることがあり、その完了前にローマ字が届くと「こ → ko」「か → kあ」のように文字が化けます。awase は Google 日本語入力の I/O アクティビティを監視して composition の準備完了を検知し、タイミングを自動的に合わせて送信します。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">速く打つとシフトが隣のキーに響いて濁点になることがありました</p>
+        <p class="faq-a">やまぶきR・紅皿など従来ツールで広く報告されていた問題です。親指シフトキーを離すタイミングが次のキー入力に重なると、意図しない同時打鍵と判定されて濁音や別の文字が出てしまいます。「ゆっくり打てば誤動作しない」という状況が生まれていました。awase は n-gram 統計モデルを使って「日本語として自然かどうか」を判断するため、タイミングが多少ずれても正しく判定できます。確定モードも 5 種類から選べるため、自分のタイピング速度に合わせた調整も可能です。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">高速タイピングで文字の順番がおかしくなることがありました</p>
