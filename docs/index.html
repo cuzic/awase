@@ -620,7 +620,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">IME は何に対応していますか？</p>
-        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。従来ツールでは Google 日本語入力が IME の状態を正しく返さないという API 制限のため対応が困難でしたが、awase は独自の shadow モデルで状態を追跡するため、専用の制御方式により安定して動作します。</p>
+        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。従来ツールの多くは「トグルキー」で IME を切り替えるため、現在の状態を正確に把握していないと意図と逆の状態になってしまうという根本的な問題がありました。Google 日本語入力はとくに現在の IME 状態を外部から正しく取得できないため、この問題が起きやすい IME でした。awase は「IME を ON にする」「IME を OFF にする」という冪等な操作で制御するため、状態がずれていても常に意図した結果になります。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">他のキーリマッパー（AutoHotKey 等）と併用できますか？</p>
