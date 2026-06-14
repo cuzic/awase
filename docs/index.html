@@ -471,6 +471,38 @@ footer p{margin-bottom:0.3rem}
   </div>
 </section>
 
+<!-- Why awase works -->
+<section>
+  <div class="container">
+    <h2 class="section-title">なぜ awase は動くのか</h2>
+    <p class="section-lead">従来ツールとの根本的な違いは「内部状態を外部から推測する」アーキテクチャにあります。</p>
+    <div class="install-block">
+
+      <h3>Win32 クラシックアプリ — 問題なし（どのツールでも動く）</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-bottom:1.5rem">
+        メモ帳・ワードパッドなど従来の Win32 アプリは、IME との連携が単純で、キーを送り込むだけで正しく動作します。多くの親指シフトソフトがここでは問題なく動いていました。
+      </p>
+
+      <h3>TSF アプリ（Zoom・LINE など）— 内部状態が見えない</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-bottom:1.5rem">
+        Zoom・LINE・WezTerm などの TSF（Text Services Framework）アプリは、IME との通信が高度な内部プロトコルで行われており、外部プログラムから「今 IME が文字を受け付けられる状態かどうか」を直接問い合わせる手段がありません。<br><br>
+        awase は Google 日本語入力の I/O アクティビティをバックグラウンドで監視し、その静止タイミングから「TSF composition context が準備完了したか」を推測します。DLL インジェクションなどの侵襲的手法を使わずに、外部観測だけで内部状態を推定するアプローチです。
+      </p>
+
+      <h3>Chrome / Microsoft Edge — プロセスをまたぐ制御</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-bottom:1.5rem">
+        Chrome や Edge は複数のプロセスが協調動作するため、通常の IMM32 クロスプロセス API が使えません。従来の親指シフトツールが IME ON/OFF 切り替えで誤動作しやすいのはこのためです。<br><br>
+        awase は Chrome/Edge 向けに専用の制御戦略を持ちます。IME の実際の状態を shadow モデルとして内部で追跡し、OS に送信したキーと観測された結果の差分から「本当に IME が切り替わったか」を継続的に検証します。
+      </p>
+
+      <h3>Windows ストアアプリ（UWP）— 入力経路が異なる</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9">
+        UWP アプリはフォーカスの仕組みが Win32 と異なり、入力経路も独自です。awase はフォーカス変化のたびにアプリの種別を自動検出し、UWP・TSF・Win32 それぞれに最適な入力戦略を切り替えます。
+      </p>
+    </div>
+  </div>
+</section>
+
 <!-- n-gram -->
 <section>
   <div class="container">
@@ -605,6 +637,27 @@ footer p{margin-bottom:0.3rem}
       <div class="faq-item">
         <p class="faq-q">NICOLA 以外の配列は使えますか？</p>
         <p class="faq-a">.yab 形式の配列定義ファイルを作成すれば、任意の配列を定義できます。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Naming -->
+<section>
+  <div class="container">
+    <h2 class="section-title">名前の由来</h2>
+    <div class="install-block" style="text-align:center">
+      <p style="font-size:3rem;font-weight:800;letter-spacing:0.15em;color:var(--accent);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;margin-bottom:1rem">a&nbsp;w&nbsp;a&nbsp;s&nbsp;e</p>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;max-width:560px;margin:0 auto">
+        「awase」は QWERTY キーボードで打つと、<strong>左小指 → 左薬指 → 左小指 → 左薬指 → 左中指</strong> と、左手だけで外側から内側へ流れるように進みます。<br><br>
+        キーボードソフトウェアの名前がキーボード上で美しい動きをする——「合わせ（同時打鍵を合わせる）」という意味とともに、そんな遊び心から名付けました。
+      </p>
+      <div style="margin-top:1.8rem;display:flex;justify-content:center;gap:0.5rem;flex-wrap:wrap">
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">A<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">小指</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">W<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">薬指</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">A<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">小指</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">S<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">薬指</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">E<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">中指</span></span>
       </div>
     </div>
   </div>
