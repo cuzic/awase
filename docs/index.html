@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>awase（合わせ）— 親指シフト（NICOLA）キーボードエミュレータ</title>
-<meta name="description" content="Rust 製の高速・安定な親指シフト（NICOLA）キーボードエミュレータ。Windows で動作し、macOS / Linux にも対応予定。">
+<meta name="description" content="Rust 製の高速・安定な親指シフト（NICOLA）キーボードエミュレータ。Chrome・Zoom・LINE など難しいアプリも完全対応。Windows で動作。">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -65,10 +65,55 @@ a:hover{text-decoration:underline}
   margin-top:2rem;
 }
 .hero-desc{
-  max-width:600px;
+  max-width:640px;
   margin:1rem auto 0;
   color:var(--text-secondary);
   font-size:1.05rem;
+}
+.hero-badges{
+  display:flex;
+  gap:0.6rem;
+  justify-content:center;
+  flex-wrap:wrap;
+  margin-top:1.8rem;
+}
+.badge{
+  display:inline-block;
+  padding:0.3rem 0.9rem;
+  border-radius:9999px;
+  font-size:0.85rem;
+  font-weight:600;
+  background:var(--accent);
+  color:#fff;
+}
+.badge.outline{
+  background:transparent;
+  border:1.5px solid var(--accent);
+  color:var(--accent);
+}
+
+/* CTA buttons */
+.cta-group{
+  display:flex;
+  gap:1rem;
+  justify-content:center;
+  flex-wrap:wrap;
+  margin-top:2.5rem;
+}
+.btn{
+  display:inline-block;
+  padding:0.75rem 2rem;
+  border-radius:8px;
+  font-weight:700;
+  font-size:1rem;
+  transition:opacity .15s;
+}
+.btn:hover{opacity:.85;text-decoration:none}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-secondary{
+  background:transparent;
+  border:2px solid var(--accent);
+  color:var(--accent);
 }
 
 /* Sections */
@@ -78,8 +123,14 @@ section:nth-child(even){background:var(--bg-alt)}
   font-size:1.6rem;
   font-weight:700;
   text-align:center;
-  margin-bottom:2.5rem;
+  margin-bottom:0.6rem;
   color:var(--text);
+}
+.section-lead{
+  text-align:center;
+  color:var(--text-secondary);
+  margin-bottom:2.5rem;
+  font-size:1rem;
 }
 
 /* Features */
@@ -119,7 +170,60 @@ section:nth-child(even){background:var(--bg-alt)}
   color:var(--accent-light);
 }
 
+/* Compatibility */
+.compat-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:1.2rem;
+}
+.compat-card{
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.4rem 1.6rem;
+  box-shadow:var(--card-shadow);
+}
+.compat-card h3{
+  font-size:1rem;
+  font-weight:700;
+  margin-bottom:0.5rem;
+  color:var(--text);
+}
+.compat-card p{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  line-height:1.6;
+}
+.compat-tag{
+  display:inline-block;
+  font-size:0.75rem;
+  font-weight:600;
+  padding:0.15rem 0.55rem;
+  border-radius:4px;
+  margin-bottom:0.5rem;
+  background:var(--accent);
+  color:#fff;
+}
+.compat-tag.hard{background:#dc2626}
+
 /* Install */
+.install-tabs{
+  display:flex;
+  gap:0.5rem;
+  margin-bottom:1.5rem;
+  border-bottom:2px solid var(--border);
+  padding-bottom:0;
+}
+.install-tab{
+  padding:0.5rem 1.2rem;
+  font-weight:600;
+  font-size:0.95rem;
+  border-radius:6px 6px 0 0;
+  cursor:pointer;
+  color:var(--text-secondary);
+  background:transparent;
+  border:none;
+}
 .install-block{max-width:700px;margin:0 auto}
 .install-block h3{
   font-size:1.1rem;
@@ -146,6 +250,40 @@ code,.code-block{
   margin:0.8rem 0;
   overflow-x:auto;
   color:var(--text);
+}
+.install-note{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  margin-top:0.4rem;
+}
+
+/* Modes */
+.modes-grid{
+  display:grid;
+  grid-template-columns:repeat(1,1fr);
+  gap:0.8rem;
+  max-width:700px;
+  margin:0 auto;
+}
+.mode-row{
+  display:grid;
+  grid-template-columns:180px 1fr;
+  gap:1rem;
+  align-items:start;
+  padding:0.9rem 1.2rem;
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:8px;
+}
+.mode-name{
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:0.88rem;
+  font-weight:700;
+  color:var(--accent);
+}
+.mode-desc{
+  font-size:0.92rem;
+  color:var(--text-secondary);
 }
 
 /* Usage */
@@ -218,6 +356,8 @@ footer p{margin-bottom:0.3rem}
   .hero-title{font-size:2rem}
   .hero-catchcopy{font-size:1.2rem}
   .features-grid{grid-template-columns:1fr}
+  .compat-grid{grid-template-columns:1fr}
+  .mode-row{grid-template-columns:1fr}
   section{padding:3rem 0}
   .section-title{font-size:1.3rem}
 }
@@ -231,7 +371,17 @@ footer p{margin-bottom:0.3rem}
     <h1 class="hero-title">awase（合わせ）</h1>
     <p class="hero-subtitle">親指シフト（NICOLA）キーボードエミュレータ</p>
     <p class="hero-catchcopy">親指シフトを、もっと快適に。</p>
-    <p class="hero-desc">Rust 製の高速・安定な親指シフトエミュレータ。Windows で動作し、macOS / Linux にも対応予定。</p>
+    <p class="hero-desc">Rust 製の高速・安定な親指シフトエミュレータ。Chrome・Zoom・LINE など、従来のツールが苦手としてきたアプリでも完全に動作します。</p>
+    <div class="hero-badges">
+      <span class="badge">Windows 対応</span>
+      <span class="badge outline">Chrome / Edge 完全対応</span>
+      <span class="badge outline">Zoom 対応</span>
+      <span class="badge outline">Google 日本語入力 最適化</span>
+    </div>
+    <div class="cta-group">
+      <a class="btn btn-primary" href="https://github.com/cuzic/awase/releases">ダウンロード</a>
+      <a class="btn btn-secondary" href="https://github.com/cuzic/awase">GitHub</a>
+    </div>
   </div>
 </header>
 
@@ -239,6 +389,7 @@ footer p{margin-bottom:0.3rem}
 <section>
   <div class="container">
     <h2 class="section-title">特徴</h2>
+    <p class="section-lead">他の親指シフトツールにはない機能を、徹底的に作り込んでいます。</p>
     <div class="features-grid">
       <div class="feature-card">
         <h3>安定動作</h3>
@@ -246,14 +397,16 @@ footer p{margin-bottom:0.3rem}
           <li>独自のリレーモードで、キーボードフックが OS に強制解除されにくい設計</li>
           <li>万が一解除されても、自動復旧機能で即座に再登録</li>
           <li>スリープ復帰やスクリーンロック解除時も自動回復</li>
+          <li>DLL インジェクション不使用 — ウイルス対策ソフトに誤検知されない</li>
         </ul>
       </div>
       <div class="feature-card">
         <h3>高速・正確</h3>
         <ul>
-          <li>Rust 製で処理速度 1-5ms。入力遅延を感じさせない</li>
-          <li>n-gram 統計予測で、通常打鍵と同時打鍵を賢く判定</li>
+          <li>Rust 製で処理速度 1–5ms。入力遅延を感じさせない</li>
+          <li>n-gram 統計モデルで「文脈に合う方」を予測し、同時打鍵を賢く判定</li>
           <li>5 種類の確定モードからタイピングスタイルに合わせて選択</li>
+          <li>AutoHotKey など他のフックソフトウェアとも共存可能</li>
         </ul>
       </div>
       <div class="feature-card">
@@ -270,8 +423,87 @@ footer p{margin-bottom:0.3rem}
         <ul>
           <li>MIT / Apache 2.0 デュアルライセンス</li>
           <li>GitHub でソースコード公開</li>
-          <li>macOS / Linux 対応も進行中</li>
+          <li>Scoop でのワンコマンドインストールに対応</li>
+          <li>MSI インストーラーで簡単セットアップ</li>
         </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Compatibility -->
+<section>
+  <div class="container">
+    <h2 class="section-title">アプリ対応状況</h2>
+    <p class="section-lead">従来の親指シフトツールが苦手としてきたアプリに、徹底対応しています。</p>
+    <div class="compat-grid">
+      <div class="compat-card">
+        <span class="compat-tag hard">従来ツールで苦手</span>
+        <h3>Chrome / Edge</h3>
+        <p>TSF composition のタイミング問題を独自の GJI I/O 監視で解決。候補ウィンドウ表示中も安定して動作します。</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag hard">従来ツールで苦手</span>
+        <h3>Zoom</h3>
+        <p>TSF アプリケーションとして動作する Zoom に完全対応。ビデオ会議中のチャット入力も快適です。</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag hard">従来ツールで苦手</span>
+        <h3>TSF アプリ全般</h3>
+        <p>Windows Terminal・WezTerm などの TSF ネイティブアプリでも、cold-start 問題を解決して正確に動作します。</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag" style="background:#16a34a">完全対応</span>
+        <h3>Google 日本語入力</h3>
+        <p>F13/F14 による直接 IME 制御で、VK_KANJI トグルのアーティファクトなしに IME ON/OFF を切り替えます。</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag" style="background:#16a34a">完全対応</span>
+        <h3>LINE / Qt アプリ</h3>
+        <p>Ctrl+無変換 による IME-OFF が正確に機能します。誤タイプ救済機能で意図しない IME-OFF も防ぎます。</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag" style="background:#16a34a">完全対応</span>
+        <h3>Microsoft IME / その他</h3>
+        <p>Windows 標準の Microsoft IME はもちろん、主要な IME に幅広く対応しています。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- n-gram -->
+<section>
+  <div class="container">
+    <h2 class="section-title">n-gram による賢い同時打鍵判定</h2>
+    <p class="section-lead">タイミングだけでなく「日本語として自然かどうか」を統計モデルで判断します。</p>
+    <div class="install-block">
+      <p style="color:var(--text-secondary);font-size:0.98rem;line-height:1.9">
+        高速タイピング時、「よかった」の <strong>か</strong> は右親指と組み合わせて <strong>が</strong> になるのか、<strong>か</strong> のままなのか——タイミングだけで判断すると誤変換が起きやすくなります。<br><br>
+        awase は日本語 n-gram コーパスから学習した統計モデルを内蔵し、前後の文脈から「どちらが自然な日本語か」を判定します。速く打っても誤変換が少なく、長文入力でも快適です。
+      </p>
+
+      <h3>5 種類の確定モード</h3>
+      <div class="modes-grid">
+        <div class="mode-row">
+          <span class="mode-name">ngram_predictive</span>
+          <span class="mode-desc">n-gram 統計モデルで文脈予測。速度と精度のバランスが最も良い（推奨）</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">adaptive_timing</span>
+          <span class="mode-desc">直前のタイピング速度に応じて閾値を自動調整</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">two_phase</span>
+          <span class="mode-desc">投機出力で速度を確保しつつ、親指キーが来れば差し替え</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">speculative</span>
+          <span class="mode-desc">単独打鍵を即時出力。最速だが高速タイピング時は誤変換が増える場合あり</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">wait</span>
+          <span class="mode-desc">タイマーまで待機してから確定。最も正確で、ゆったり打つ方に向く</span>
+        </div>
       </div>
     </div>
   </div>
@@ -282,15 +514,21 @@ footer p{margin-bottom:0.3rem}
   <div class="container">
     <h2 class="section-title">インストール</h2>
     <div class="install-block">
-      <h3>ダウンロード</h3>
-      <p><a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> からバイナリを取得できます。</p>
 
-      <h3>セットアップ手順</h3>
+      <h3>MSI インストーラー（推奨）</h3>
+      <p class="install-note" style="color:var(--text-secondary);font-size:0.95rem">ダブルクリックでセットアップ完了。スタートアップ登録も自動で行います。</p>
+      <p style="margin-top:0.8rem"><a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code>awase-x.x.x-x64.msi</code> をダウンロードして実行してください。</p>
+
+      <h3>Scoop（コマンドライン）</h3>
+      <div class="code-block">scoop install awase</div>
+      <p class="install-note">Scoop がインストールされていない場合は <a href="https://scoop.sh">scoop.sh</a> を参照してください。</p>
+
+      <h3>ZIP 版（ポータブル）</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">インストール不要。解凍してすぐ使えます。</p>
       <ol>
-        <li><code>awase.exe</code> を任意のフォルダに配置</li>
-        <li><code>config.toml</code> と <code>layout/nicola.yab</code> を同じフォルダに配置</li>
+        <li><a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code>awase-x.x.x-x64.zip</code> をダウンロードして解凍</li>
+        <li>解凍したフォルダ内の <code>install.ps1</code> を PowerShell で実行（スタートアップ登録）</li>
         <li><code>awase.exe</code> を実行（トレイアイコンに常駐）</li>
-        <li>初回起動時に自動起動の設定ダイアログが表示される</li>
       </ol>
 
       <h3>ソースからビルド</h3>
@@ -316,7 +554,7 @@ footer p{margin-bottom:0.3rem}
       <table class="config-table">
         <tr>
           <th><code>confirm_mode</code></th>
-          <td>確定モードの選択。<code>wait</code>（正確重視）、<code>speculative</code>（速度重視）、<code>ngram_predictive</code>（バランス）など</td>
+          <td>確定モードの選択。<code>ngram_predictive</code>（推奨）、<code>wait</code>（正確重視）、<code>speculative</code>（速度重視）など</td>
         </tr>
         <tr>
           <th><code>output_mode</code></th>
@@ -337,8 +575,20 @@ footer p{margin-bottom:0.3rem}
     <h2 class="section-title">よくある質問</h2>
     <div class="faq-list">
       <div class="faq-item">
+        <p class="faq-q">Chrome や Edge でちゃんと動きますか？</p>
+        <p class="faq-a">はい。Chrome / Edge は TSF composition のタイミングが難しく、従来ツールでは文字化けや遅延が発生しがちでした。awase は GJI の I/O を監視して composition の準備完了を検知する独自方式で、これを解決しています。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Zoom のチャットでも使えますか？</p>
+        <p class="faq-a">はい。Zoom は TSF アプリケーションとして動作しますが、awase は TSF ネイティブアプリへの入力を最適化しており、問題なく使用できます。</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">ウイルス対策ソフトに誤検知されませんか？</p>
+        <p class="faq-a">awase は DLL インジェクションを一切使用しないため、セキュリティソフトに誤検知されにくい設計です。キーボードフックと SendInput による標準的な Windows API のみを使用しています。</p>
+      </div>
+      <div class="faq-item">
         <p class="faq-q">IME は何に対応していますか？</p>
-        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。</p>
+        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。Google 日本語入力は F13/F14 による直接制御で特に安定しています。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">他のキーリマッパー（AutoHotKey 等）と併用できますか？</p>
@@ -346,15 +596,11 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">スリープ復帰後に動かなくなりませんか？</p>
-        <p class="faq-a">スリープ復帰・スクリーンロック解除時に自動でフックを再登録します。また 3 秒ごとのヘルスチェックで異常を検知し、自動復旧します。</p>
+        <p class="faq-a">スリープ復帰・スクリーンロック解除時に自動でフックを再登録します。また定期的なヘルスチェックで異常を検知し、自動復旧します。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">パスワード入力画面で誤動作しませんか？</p>
         <p class="faq-a">IME が OFF のときは自動的にエンジンが無効になり、通常のキー入力になります。</p>
-      </div>
-      <div class="faq-item">
-        <p class="faq-q">macOS / Linux に対応していますか？</p>
-        <p class="faq-a">基盤は完成しており、プラットフォーム固有の実装を進めています。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">NICOLA 以外の配列は使えますか？</p>
