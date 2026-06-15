@@ -21,6 +21,27 @@ pub(super) const fn make_key_input(vk: VkCode, is_keyup: bool) -> INPUT {
     make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
 }
 
+/// VK INPUT に使うマーカー種別。
+///
+/// - `Injected`: Chrome/VK モード（INJECTED_MARKER）
+/// - `Tsf`:      WezTerm TSF モード（TSF_MARKER）
+///
+/// LSHIFT は常に INJECTED_MARKER のため、このマーカーは VK 本体にのみ適用する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VkMarker {
+    Injected,
+    Tsf,
+}
+
+impl VkMarker {
+    pub(crate) fn make_input(self, vk: VkCode, is_keyup: bool) -> INPUT {
+        match self {
+            VkMarker::Injected => make_key_input(vk, is_keyup),
+            VkMarker::Tsf => make_tsf_key_input(vk, is_keyup),
+        }
+    }
+}
+
 /// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
 /// - `transmit`: VK または Unicode kana で romaji を WezTerm に送信
@@ -112,7 +133,7 @@ impl Output {
     pub(super) fn send_romaji_per_key(&self, romaji: &str) {
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {
-                Self::send_vk_pair(vk, needs_shift, false);
+                Self::send_vk_pair(vk, needs_shift, VkMarker::Injected);
             }
         }
     }
@@ -297,7 +318,7 @@ impl Output {
     /// send_vk_runs と同様にラン境界で分割して別 SendInput を使う。
     pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(VkCode, bool)]) {
         for run in Self::split_vk_runs(chars) {
-            let n = Self::send_vk_run_batch(run, make_key_input);
+            let n = Self::send_vk_run_batch(run, VkMarker::Injected);
             log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", n);
         }
     }
@@ -336,7 +357,7 @@ impl Output {
                     })
                     .join(","),
             );
-            Self::send_vk_run_batch(run, make_tsf_key_input);
+            Self::send_vk_run_batch(run, VkMarker::Tsf);
         }
     }
 
@@ -475,7 +496,7 @@ impl Output {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
-                Self::send_vk_pair(vk, needs_shift, true);
+                Self::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
                 // VK_OEM_MINUS (0xBD, no-shift) = '-' は GJI ローマ字モードで「ー」として
                 // composition に取り込まれる（composition context はリセットされない）。
                 // これらは warm 状態を維持し、次の romaji を warmup sleep なしで即送信する。
@@ -525,7 +546,7 @@ impl Output {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
-                Self::send_vk_pair(vk, needs_shift, false);
+                Self::send_vk_pair(vk, needs_shift, VkMarker::Injected);
             }
             CharResolution::Unicode(ch) => {
                 log::debug!(
@@ -551,40 +572,16 @@ impl Output {
     ///
     /// 同一 VK が連続する箇所（例 "nn"）ではオートリピート誤検出を避けるため
     /// `send_vk_runs` と同様にランごとに分割して別 SendInput を使う。
-    pub(crate) fn send_deferred_probe_vks_from(vks: &[(VkCode, bool)], use_tsf_marker: bool) {
+    pub(crate) fn send_deferred_probe_vks_from(vks: &[(VkCode, bool)], marker: VkMarker) {
         if vks.is_empty() {
             return;
         }
         log::debug!(
-            "[tsf-probe] deferred {} VK(s) を romaji 直後に送出 (tsf_marker={use_tsf_marker})",
+            "[tsf-probe] deferred {} VK(s) を romaji 直後に送出 ({marker:?})",
             vks.len()
         );
-
         for run in Self::split_vk_runs(vks) {
-            let mut inputs: Vec<INPUT> = Vec::with_capacity(run.len() * 4);
-            // 全↓（コード順前半）
-            for &(vk, needs_shift) in run {
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-                }
-                if use_tsf_marker {
-                    inputs.push(make_tsf_key_input(vk, false));
-                } else {
-                    inputs.push(make_key_input(vk, false));
-                }
-            }
-            // 全↑（コード順後半）
-            for &(vk, needs_shift) in run {
-                if use_tsf_marker {
-                    inputs.push(make_tsf_key_input(vk, true));
-                } else {
-                    inputs.push(make_key_input(vk, true));
-                }
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-                }
-            }
-            let _ = crate::win32::send_input_safe(&inputs);
+            Self::send_vk_run_batch(run, marker);
         }
     }
 
@@ -594,18 +591,13 @@ impl Output {
     /// 来ると IME-OFF が誤発火する不具合を防ぐため、修飾キーを毎回解放する設計。
     /// modifier_snapshot の Shift 判定は `PHYSICAL_KEY_STATE` ベースのため、
     /// この合成 `↑` が OS state を汚染しても engine 側の shift 面判定には影響しない。
-    fn send_vk_pair(vk: VkCode, needs_shift: bool, use_tsf_marker: bool) {
+    fn send_vk_pair(vk: VkCode, needs_shift: bool, marker: VkMarker) {
         let mut inputs = Vec::with_capacity(4);
         if needs_shift {
             inputs.push(make_key_input(VK_LSHIFT, false));
         }
-        if use_tsf_marker {
-            inputs.push(make_tsf_key_input(vk, false));
-            inputs.push(make_tsf_key_input(vk, true));
-        } else {
-            inputs.push(make_key_input(vk, false));
-            inputs.push(make_key_input(vk, true));
-        }
+        inputs.push(marker.make_input(vk, false));
+        inputs.push(marker.make_input(vk, true));
         if needs_shift {
             inputs.push(make_key_input(VK_LSHIFT, true));
         }
@@ -648,21 +640,17 @@ impl Output {
 
     /// 1 ラン分の INPUT を構築して送信し、送信した INPUT 数を返す。
     ///
-    /// `make_vk` は VK キー用 INPUT を生成する関数ポインタ。
-    /// - VK モード（Chrome）: `make_key_input`（INJECTED_MARKER）
-    /// - TSF モード（WezTerm）: `make_tsf_key_input`（TSF_MARKER）
-    ///
-    /// LSHIFT は常に INJECTED_MARKER を使う（両モード共通）。
-    fn send_vk_run_batch(run: &[(VkCode, bool)], make_vk: fn(VkCode, bool) -> INPUT) -> usize {
+    /// `marker`: VK キーの INPUT マーカー種別（LSHIFT は常に INJECTED_MARKER）。
+    fn send_vk_run_batch(run: &[(VkCode, bool)], marker: VkMarker) -> usize {
         let mut inputs = Vec::with_capacity(run.len() * 4);
         for &(vk, needs_shift) in run {
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
             }
-            inputs.push(make_vk(vk, false));
+            inputs.push(marker.make_input(vk, false));
         }
         for &(vk, needs_shift) in run {
-            inputs.push(make_vk(vk, true));
+            inputs.push(marker.make_input(vk, true));
             if needs_shift {
                 inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
             }

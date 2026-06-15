@@ -20,7 +20,7 @@ use resolve::{ascii_to_vk, build_symbol_to_vk, special_key_to_vk};
 /// 公開ヘルパー: ASCII → VK 変換（`platform.rs` の dispatcher 用）。
 pub(crate) use resolve::ascii_to_vk as resolve_ascii_to_vk;
 /// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
-pub(crate) use vk_send::TsfSendPipeline;
+pub(crate) use vk_send::{TsfSendPipeline, VkMarker};
 
 pub(crate) use crate::tsf::probe_fsm::{DeferredVk, TsfProbeMachine};
 
