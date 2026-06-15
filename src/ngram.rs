@@ -13,8 +13,6 @@ pub struct NgramModel {
     bigram: FxHashMap<(char, char), f32>,
     /// 3-gram frequency: (2-back, 1-back, current) -> log-probability score
     trigram: FxHashMap<(char, char, char), f32>,
-    /// Base threshold in microseconds
-    base_threshold_us: u64,
     /// Adjustment range in microseconds (+/-)
     adjustment_range_us: u64,
     /// Minimum threshold in microseconds (clamp lower bound)
@@ -24,18 +22,12 @@ pub struct NgramModel {
 }
 
 impl NgramModel {
-    /// Create a new empty `NgramModel` with the given base threshold and adjustment range.
+    /// Create a new empty `NgramModel` with the given adjustment range.
     #[must_use]
-    pub fn new(
-        base_threshold_us: u64,
-        adjustment_range_us: u64,
-        min_threshold_us: u64,
-        max_threshold_us: u64,
-    ) -> Self {
+    pub fn new(adjustment_range_us: u64, min_threshold_us: u64, max_threshold_us: u64) -> Self {
         Self {
             bigram: FxHashMap::default(),
             trigram: FxHashMap::default(),
-            base_threshold_us,
             adjustment_range_us,
             min_threshold_us,
             max_threshold_us,
@@ -54,7 +46,6 @@ impl NgramModel {
     /// Returns an error if the file cannot be read, decompressed, or parsed.
     pub fn from_file(
         path: &Path,
-        base_threshold_us: u64,
         adjustment_range_us: u64,
         min_threshold_us: u64,
         max_threshold_us: u64,
@@ -70,21 +61,9 @@ impl NgramModel {
         };
 
         if content.trim_start().starts_with('[') {
-            Self::from_toml(
-                &content,
-                base_threshold_us,
-                adjustment_range_us,
-                min_threshold_us,
-                max_threshold_us,
-            )
+            Self::from_toml(&content, adjustment_range_us, min_threshold_us, max_threshold_us)
         } else {
-            Self::from_csv(
-                &content,
-                base_threshold_us,
-                adjustment_range_us,
-                min_threshold_us,
-                max_threshold_us,
-            )
+            Self::from_csv(&content, adjustment_range_us, min_threshold_us, max_threshold_us)
         }
     }
 
@@ -107,7 +86,6 @@ impl NgramModel {
     /// character count for the given n-gram type.
     pub fn from_csv(
         csv: &str,
-        base_threshold_us: u64,
         adjustment_range_us: u64,
         min_threshold_us: u64,
         max_threshold_us: u64,
@@ -141,14 +119,7 @@ impl NgramModel {
             }
         }
 
-        Ok(Self {
-            bigram,
-            trigram,
-            base_threshold_us,
-            adjustment_range_us,
-            min_threshold_us,
-            max_threshold_us,
-        })
+        Ok(Self { bigram, trigram, adjustment_range_us, min_threshold_us, max_threshold_us })
     }
 
     /// Load from a TOML string.
@@ -171,7 +142,6 @@ impl NgramModel {
     /// an incorrect number of characters.
     pub fn from_toml(
         toml_str: &str,
-        base_threshold_us: u64,
         adjustment_range_us: u64,
         min_threshold_us: u64,
         max_threshold_us: u64,
@@ -179,55 +149,44 @@ impl NgramModel {
         let table: toml::Value = toml_str.parse()?;
 
         let mut bigram = FxHashMap::default();
-        if let Some(bi_table) = table.get("bigram").and_then(toml::Value::as_table) {
-            for (key, value) in bi_table {
-                let chars: Vec<char> = key.chars().collect();
-                if chars.len() != 2 {
-                    anyhow::bail!(
-                        "bigram key must be exactly 2 characters, got {} for {:?}",
-                        chars.len(),
-                        key
-                    );
-                }
-                #[allow(clippy::cast_precision_loss)]
-                let score = value
-                    .as_float()
-                    .or_else(|| value.as_integer().map(|i| i as f64))
-                    .ok_or_else(|| anyhow::anyhow!("bigram value for {key:?} is not a number"))?;
-                #[allow(clippy::cast_possible_truncation)]
-                bigram.insert((chars[0], chars[1]), score as f32);
-            }
+        for (chars, score) in Self::parse_toml_section(&table, "bigram", 2)? {
+            bigram.insert((chars[0], chars[1]), score);
         }
 
         let mut trigram = FxHashMap::default();
-        if let Some(tri_table) = table.get("trigram").and_then(toml::Value::as_table) {
-            for (key, value) in tri_table {
-                let chars: Vec<char> = key.chars().collect();
-                if chars.len() != 3 {
-                    anyhow::bail!(
-                        "trigram key must be exactly 3 characters, got {} for {:?}",
-                        chars.len(),
-                        key
-                    );
-                }
-                #[allow(clippy::cast_precision_loss)]
-                let score = value
-                    .as_float()
-                    .or_else(|| value.as_integer().map(|i| i as f64))
-                    .ok_or_else(|| anyhow::anyhow!("trigram value for {key:?} is not a number"))?;
-                #[allow(clippy::cast_possible_truncation)]
-                trigram.insert((chars[0], chars[1], chars[2]), score as f32);
-            }
+        for (chars, score) in Self::parse_toml_section(&table, "trigram", 3)? {
+            trigram.insert((chars[0], chars[1], chars[2]), score);
         }
 
-        Ok(Self {
-            bigram,
-            trigram,
-            base_threshold_us,
-            adjustment_range_us,
-            min_threshold_us,
-            max_threshold_us,
-        })
+        Ok(Self { bigram, trigram, adjustment_range_us, min_threshold_us, max_threshold_us })
+    }
+
+    fn parse_toml_section(
+        table: &toml::Value,
+        section_name: &str,
+        expected_len: usize,
+    ) -> anyhow::Result<Vec<(Vec<char>, f32)>> {
+        let Some(section) = table.get(section_name).and_then(toml::Value::as_table) else {
+            return Ok(vec![]);
+        };
+        let mut result = Vec::with_capacity(section.len());
+        for (key, value) in section {
+            let chars: Vec<char> = key.chars().collect();
+            if chars.len() != expected_len {
+                anyhow::bail!(
+                    "{section_name} key must be exactly {expected_len} characters, got {} for {key:?}",
+                    chars.len()
+                );
+            }
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+            let score = value
+                .as_float()
+                .or_else(|| value.as_integer().map(|i| i as f64))
+                .ok_or_else(|| anyhow::anyhow!("{section_name} value for {key:?} is not a number"))?
+                as f32;
+            result.push((chars, score));
+        }
+        Ok(result)
     }
 
     /// Calculate adjusted threshold based on recent output and candidate character.
@@ -239,18 +198,17 @@ impl NgramModel {
     ///
     /// Result is clamped to [`min_threshold_us`, `max_threshold_us`].
     #[must_use]
-    pub fn adjusted_threshold(&self, recent: &[char], candidate: char) -> u64 {
+    pub fn adjusted_threshold(&self, base_us: u64, recent: &[char], candidate: char) -> u64 {
         let score = self.frequency_score(recent, candidate);
         #[allow(clippy::cast_precision_loss)]
-        let base = self.base_threshold_us as f64;
-        #[allow(clippy::cast_precision_loss)]
-        let range = self.adjustment_range_us as f64;
+        let (base, range, min, max) = (
+            base_us as f64,
+            self.adjustment_range_us as f64,
+            self.min_threshold_us as f64,
+            self.max_threshold_us as f64,
+        );
         // tanh maps to [-1, 1], then scale by range
         let adjustment = f64::from(score).tanh() * range;
-        #[allow(clippy::cast_precision_loss)]
-        let min = self.min_threshold_us as f64;
-        #[allow(clippy::cast_precision_loss)]
-        let max = self.max_threshold_us as f64;
         // Clamped to [min, max] which are both non-negative, so the cast is safe.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         {
@@ -289,7 +247,7 @@ mod tests {
     use super::*;
 
     fn sample_model() -> NgramModel {
-        let mut model = NgramModel::new(100_000, 20_000, 30_000, 120_000);
+        let mut model = NgramModel::new(20_000, 30_000, 120_000);
         model.bigram.insert(('あ', 'る'), 1.5);
         model.bigram.insert(('し', 'た'), 1.8);
         model.bigram.insert(('を', 'ぱ'), -1.5);
@@ -338,9 +296,9 @@ mod tests {
 
     #[test]
     fn adjusted_threshold_neutral_returns_base() {
-        let model = NgramModel::new(100_000, 20_000, 30_000, 120_000);
+        let model = NgramModel::new(20_000, 30_000, 120_000);
         // Unknown combination -> score=0 -> tanh(0)=0 -> no adjustment
-        let threshold = model.adjusted_threshold(&['x'], 'y');
+        let threshold = model.adjusted_threshold(100_000, &['x'], 'y');
         assert_eq!(threshold, 100_000);
     }
 
@@ -348,7 +306,7 @@ mod tests {
     fn adjusted_threshold_high_frequency_increases() {
         let model = sample_model();
         // bigram ('あ', 'る') = 1.5, tanh(1.5) ~ 0.905
-        let threshold = model.adjusted_threshold(&['あ'], 'る');
+        let threshold = model.adjusted_threshold(100_000, &['あ'], 'る');
         assert!(threshold > 100_000, "high-freq should increase threshold");
         // Should be approximately 100_000 + 0.905 * 20_000 = ~118_100
         assert!(threshold > 115_000);
@@ -359,7 +317,7 @@ mod tests {
     fn adjusted_threshold_low_frequency_decreases() {
         let model = sample_model();
         // bigram ('ぬ', 'ゔ') = -2.0, tanh(-2.0) ~ -0.964
-        let threshold = model.adjusted_threshold(&['ぬ'], 'ゔ');
+        let threshold = model.adjusted_threshold(100_000, &['ぬ'], 'ゔ');
         assert!(threshold < 100_000, "low-freq should decrease threshold");
         // Should be approximately 100_000 - 0.964 * 20_000 = ~80_720
         assert!(threshold < 85_000);
@@ -369,15 +327,15 @@ mod tests {
     #[test]
     fn adjusted_threshold_clamps_to_range() {
         // Very small base: should clamp to 30_000
-        let mut model = NgramModel::new(25_000, 5_000, 30_000, 120_000);
+        let mut model = NgramModel::new(5_000, 30_000, 120_000);
         model.bigram.insert(('a', 'b'), -3.0);
-        let threshold = model.adjusted_threshold(&['a'], 'b');
+        let threshold = model.adjusted_threshold(25_000, &['a'], 'b');
         assert_eq!(threshold, 30_000);
 
         // Very large base: should clamp to 120_000
-        let mut model = NgramModel::new(130_000, 5_000, 30_000, 120_000);
+        let mut model = NgramModel::new(5_000, 30_000, 120_000);
         model.bigram.insert(('a', 'b'), 3.0);
-        let threshold = model.adjusted_threshold(&['a'], 'b');
+        let threshold = model.adjusted_threshold(130_000, &['a'], 'b');
         assert_eq!(threshold, 120_000);
     }
 
@@ -393,7 +351,7 @@ mod tests {
 "ありが" = 2.5
 "ですか" = 2.0
 "#;
-        let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
         assert!((model.frequency_score(&['し'], 'た') - 1.8).abs() < f32::EPSILON);
         assert!((model.frequency_score(&['を'], 'ぱ') - (-1.5)).abs() < f32::EPSILON);
@@ -407,7 +365,7 @@ mod tests {
 [bigram]
 "abc" = 1.0
 "#;
-        let result = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000);
+        let result = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000);
         assert!(result.is_err());
     }
 
@@ -417,14 +375,14 @@ mod tests {
 [trigram]
 "ab" = 1.0
 "#;
-        let result = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000);
+        let result = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000);
         assert!(result.is_err());
     }
 
     #[test]
     fn from_toml_empty_sections_ok() {
         let toml_str = "";
-        let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['a'], 'b')).abs() < f32::EPSILON);
     }
 
@@ -434,7 +392,7 @@ mod tests {
 [bigram]
 "あい" = 2
 "#;
-        let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['あ'], 'い') - 2.0).abs() < f32::EPSILON);
     }
 
@@ -449,7 +407,7 @@ mod tests {
 3,ありが,2.5
 3,ですか,2.0
 ";
-        let model = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_csv(csv, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
         assert!((model.frequency_score(&['し'], 'た') - 1.8).abs() < f32::EPSILON);
         assert!((model.frequency_score(&['を'], 'ぱ') - (-1.5)).abs() < f32::EPSILON);
@@ -460,21 +418,21 @@ mod tests {
     #[test]
     fn from_csv_empty_and_comments_ok() {
         let csv = "# only comments\n\n# another comment\n";
-        let model = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_csv(csv, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['a'], 'b')).abs() < f32::EPSILON);
     }
 
     #[test]
     fn from_csv_rejects_wrong_char_count() {
         let csv = "2,abc,1.0\n";
-        let result = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000);
+        let result = NgramModel::from_csv(csv, 20_000, 30_000, 120_000);
         assert!(result.is_err());
     }
 
     #[test]
     fn from_csv_rejects_invalid_line() {
         let csv = "bad line\n";
-        let result = NgramModel::from_csv(csv, 100_000, 20_000, 30_000, 120_000);
+        let result = NgramModel::from_csv(csv, 20_000, 30_000, 120_000);
         assert!(result.is_err());
     }
 
@@ -484,7 +442,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.csv");
         std::fs::write(&path, "2,ある,1.5\n3,ありが,2.5\n").unwrap();
-        let model = NgramModel::from_file(&path, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_file(&path, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
         assert!((model.frequency_score(&['あ', 'り'], 'が') - 2.5).abs() < f32::EPSILON);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -500,7 +458,7 @@ mod tests {
             "[bigram]\n\"ある\" = 1.5\n\n[trigram]\n\"ありが\" = 2.5\n",
         )
         .unwrap();
-        let model = NgramModel::from_file(&path, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_file(&path, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
         assert!((model.frequency_score(&['あ', 'り'], 'が') - 2.5).abs() < f32::EPSILON);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -522,7 +480,7 @@ mod tests {
         encoder.write_all(csv_data.as_bytes()).unwrap();
         encoder.finish().unwrap();
 
-        let model = NgramModel::from_file(&path, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_file(&path, 20_000, 30_000, 120_000).unwrap();
         assert!((model.frequency_score(&['あ'], 'る') - 1.5).abs() < f32::EPSILON);
         assert!((model.frequency_score(&['あ', 'り'], 'が') - 2.5).abs() < f32::EPSILON);
         std::fs::remove_dir_all(&dir).unwrap();

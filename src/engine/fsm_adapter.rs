@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn set_ngram_model_does_not_panic() {
         let mut adapter = make_adapter();
-        let model = NgramModel::new(100_000, 50_000, 30_000, 200_000);
+        let model = NgramModel::new(50_000, 30_000, 200_000);
         adapter.set_ngram_model(model);
     }
 

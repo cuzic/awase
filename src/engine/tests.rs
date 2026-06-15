@@ -1264,7 +1264,7 @@ fn test_set_ngram_model_and_timing_judge() {
     drop(judge);
 
     // With model, timing_judge uses the model for threshold adjustment
-    let model = NgramModel::new(100_000, 20_000, 30_000, 120_000);
+    let model = NgramModel::new(20_000, 30_000, 120_000);
     engine.set_ngram_model(model);
     // Unknown candidate -> score 0 -> tanh(0)=0 -> base threshold unchanged
     let judge = engine.timing_judge();
@@ -1856,7 +1856,7 @@ fn make_ngram_model() -> NgramModel {
 [trigram]
 "#;
     // base = 100ms = 100_000us, range = 20ms = 20_000us
-    NgramModel::from_toml(toml, 100_000, 20_000, 30_000, 120_000).unwrap()
+    NgramModel::from_toml(toml, 20_000, 30_000, 120_000).unwrap()
 }
 
 /// High-frequency bigram candidate relaxes threshold so borderline timing
@@ -2588,7 +2588,7 @@ fn test_ngram_predictive_high_normal_score_uses_speculative() {
 "あを" = 0.5
 "あゔ" = 0.3
 "#;
-    let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+    let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
     engine.set_ngram_model(model);
 
     let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
@@ -2624,7 +2624,7 @@ fn test_ngram_predictive_high_thumb_score_uses_wait() {
 "あを" = 2.0
 "あゔ" = 0.1
 "#;
-    let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+    let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
     engine.set_ngram_model(model);
 
     let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
@@ -2673,7 +2673,7 @@ fn test_ngram_predictive_no_history_uses_wait() {
 [bigram]
 "あう" = 2.0
 "#;
-    let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+    let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
     engine.set_ngram_model(model);
 
     let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
@@ -3492,7 +3492,7 @@ mod fsm_adapter_tests {
 [bigram]
 "あり" = 1.5
 "#;
-        let model = NgramModel::from_toml(toml_str, 100_000, 20_000, 30_000, 120_000).unwrap();
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
         adapter.set_ngram_model(model);
     }
 
@@ -4404,7 +4404,7 @@ mod engine_integration_tests {
     fn on_command_set_ngram_model() {
         use crate::ngram::NgramModel;
         let mut engine = make_test_engine();
-        let model = NgramModel::new(100_000, 20_000, 50_000, 200_000);
+        let model = NgramModel::new(20_000, 50_000, 200_000);
         let d = engine.on_command(EngineCommand::SetNgramModel(model), &ime_on_ctx());
         assert!(!d.is_consumed());
     }

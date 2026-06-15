@@ -219,11 +219,10 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
         return;
     };
     let ngram_path = resolve_relative(ngram_path);
-    let base_us = u64::from(config.general.simultaneous_threshold_ms) * 1000;
     let range_us = u64::from(config.general.ngram_adjustment_range_ms) * 1000;
     let min_us = u64::from(config.general.ngram_min_threshold_ms) * 1000;
     let max_us = u64::from(config.general.ngram_max_threshold_ms) * 1000;
-    match NgramModel::from_file(&ngram_path, base_us, range_us, min_us, max_us) {
+    match NgramModel::from_file(&ngram_path, range_us, min_us, max_us) {
         Ok(model) => {
             log::info!("N-gram model loaded from {}", ngram_path.display());
             let _ = with_app(|app| app.set_ngram_model(model));
