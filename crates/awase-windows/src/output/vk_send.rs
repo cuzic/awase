@@ -297,21 +297,8 @@ impl Output {
     /// send_vk_runs と同様にラン境界で分割して別 SendInput を使う。
     pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(VkCode, bool)]) {
         for run in Self::split_vk_runs(chars) {
-            let mut inputs = Vec::with_capacity(run.len() * 4);
-            for &(vk, needs_shift) in run {
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, false));
-                }
-                inputs.push(make_key_input(vk, false));
-            }
-            for &(vk, needs_shift) in run {
-                inputs.push(make_key_input(vk, true));
-                if needs_shift {
-                    inputs.push(make_key_input(VK_LSHIFT, true));
-                }
-            }
-            log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", inputs.len());
-            let _ = crate::win32::send_input_safe(&inputs);
+            let n = Self::send_vk_run_batch(run, make_key_input);
+            log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", n);
         }
     }
 
@@ -349,20 +336,7 @@ impl Output {
                     })
                     .join(","),
             );
-            let mut inputs = Vec::with_capacity(run.len() * 4);
-            for &(vk, needs_shift) in run {
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
-                }
-                inputs.push(make_tsf_key_input(vk, false));
-            }
-            for &(vk, needs_shift) in run {
-                inputs.push(make_tsf_key_input(vk, true));
-                if needs_shift {
-                    inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
-                }
-            }
-            let _ = crate::win32::send_input_safe(&inputs);
+            Self::send_vk_run_batch(run, make_tsf_key_input);
         }
     }
 
@@ -670,6 +644,32 @@ impl Output {
                 },
             });
         }
+    }
+
+    /// 1 ラン分の INPUT を構築して送信し、送信した INPUT 数を返す。
+    ///
+    /// `make_vk` は VK キー用 INPUT を生成する関数ポインタ。
+    /// - VK モード（Chrome）: `make_key_input`（INJECTED_MARKER）
+    /// - TSF モード（WezTerm）: `make_tsf_key_input`（TSF_MARKER）
+    ///
+    /// LSHIFT は常に INJECTED_MARKER を使う（両モード共通）。
+    fn send_vk_run_batch(run: &[(VkCode, bool)], make_vk: fn(VkCode, bool) -> INPUT) -> usize {
+        let mut inputs = Vec::with_capacity(run.len() * 4);
+        for &(vk, needs_shift) in run {
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, false, INJECTED_MARKER));
+            }
+            inputs.push(make_vk(vk, false));
+        }
+        for &(vk, needs_shift) in run {
+            inputs.push(make_vk(vk, true));
+            if needs_shift {
+                inputs.push(make_key_input_ex(VK_LSHIFT, true, INJECTED_MARKER));
+            }
+        }
+        let n = inputs.len();
+        let _ = crate::win32::send_input_safe(&inputs);
+        n
     }
 
     /// 同一 VK が連続する境界でランを分割する。
