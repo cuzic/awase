@@ -31,10 +31,11 @@ pub enum OutputMode {
     Unicode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmMode {
     /// 待機モード: タイムアウトまで出力を保留
+    #[default]
     Wait,
     /// 先行確定モード: 即座に出力、同時打鍵時に BS で差し替え
     Speculative,
@@ -47,290 +48,147 @@ pub enum ConfirmMode {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct GeneralConfig {
     /// キーボードの物理レイアウトモデル（"jis" or "us"）
-    #[serde(default = "default_keyboard_model")]
     pub keyboard_model: String,
-
     /// 同時打鍵の判定閾値（ミリ秒）
-    #[serde(default = "default_threshold")]
     pub simultaneous_threshold_ms: u32,
-
     /// 左親指キーのキー名
-    #[serde(default = "default_left_thumb")]
     pub left_thumb_key: String,
-
     /// 右親指キーの仮想キーコード名
-    #[serde(default = "default_right_thumb")]
     pub right_thumb_key: String,
-
     /// 有効/無効切り替えホットキー
-    #[serde(default)]
     pub engine_toggle_hotkey: Option<String>,
-
     /// 配列定義ファイルの格納ディレクトリ
-    #[serde(default = "default_layouts_dir")]
     pub layouts_dir: String,
-
     /// デフォルトの .yab レイアウトファイル名
-    #[serde(default = "default_layout")]
     pub default_layout: String,
-
     /// n-gram コーパスファイル（オプション）
-    #[serde(default = "default_ngram_file")]
     pub ngram_file: Option<String>,
-
     /// n-gram 閾値調整幅（ミリ秒、デフォルト 20ms）
-    #[serde(default = "default_ngram_adjustment")]
     pub ngram_adjustment_range_ms: u32,
-
     /// n-gram 適応閾値の下限（ミリ秒、デフォルト 30ms）
-    #[serde(default = "default_ngram_min_threshold")]
     pub ngram_min_threshold_ms: u32,
-
     /// n-gram 適応閾値の上限（ミリ秒、デフォルト 120ms）
-    #[serde(default = "default_ngram_max_threshold")]
     pub ngram_max_threshold_ms: u32,
-
     /// 確定モード（デフォルト: wait）
-    #[serde(default = "default_confirm_mode")]
     pub confirm_mode: ConfirmMode,
-
     /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming で使用）
-    #[serde(default = "default_speculative_delay")]
     pub speculative_delay_ms: u32,
-
     /// ローマ字出力の送信方式（デフォルト: per_key）
-    #[serde(default)]
     pub output_mode: OutputMode,
-
     /// フックの動作モード（デフォルト: filter）
-    #[serde(default)]
     pub hook_mode: HookMode,
-
     /// フォーカス遷移デバウンス時間（ミリ秒）。
     /// Alt-Tab 等でフォーカスが連続変更される際に IME 状態の誤検知を防ぐ。
-    #[serde(default = "default_focus_debounce_ms")]
     pub focus_debounce_ms: u32,
-
     /// IME 状態ポーリング間隔（ミリ秒）。
     /// イベント駆動の IME 検出を補完する安全ネット。
-    #[serde(default = "default_ime_poll_interval_ms")]
     pub ime_poll_interval_ms: u32,
-
     /// 自動起動の設定（"ask" = 初回起動時に確認, "enabled" = 有効, "disabled" = 無効）
-    #[serde(default = "default_auto_start")]
     pub auto_start: String,
-
     /// Linux 入力バックエンド ("evdev", "x11", "libinput")
-    #[serde(default = "default_linux_input_backend")]
     pub linux_input_backend: String,
-
     /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
-    #[serde(default)]
     pub linux_evdev_device: Option<String>,
 }
 
-fn default_keyboard_model() -> String {
-    "jis".to_string()
-}
-
-/// NICOLA 規格の標準的な同時打鍵判定閾値（100ms）
-const fn default_threshold() -> u32 {
-    100
-}
-
-fn default_left_thumb() -> String {
-    "無変換".to_string()
-}
-
-fn default_right_thumb() -> String {
-    "変換".to_string()
-}
-
-fn default_layouts_dir() -> String {
-    "config".to_string()
-}
-
-fn default_layout() -> String {
-    "nicola.yab".to_string()
-}
-
-// serde の #[serde(default = "...")] はフィールド型と同じ型を返す関数を要求するため、
-// Option<String> フィールドのデフォルトは Option<String> を返す必要がある。
-#[allow(clippy::unnecessary_wraps)]
-fn default_ngram_file() -> Option<String> {
-    Some("data/ngram_hiragana.csv.gz".to_string())
-}
-
-const fn default_ngram_adjustment() -> u32 {
-    20
-}
-
-const fn default_ngram_min_threshold() -> u32 {
-    30
-}
-
-const fn default_ngram_max_threshold() -> u32 {
-    120
-}
-
-const fn default_confirm_mode() -> ConfirmMode {
-    ConfirmMode::Wait
-}
-
-/// TwoPhase/AdaptiveTiming の投機出力待機時間（30ms: Phase 1 を短く保つ）
-const fn default_speculative_delay() -> u32 {
-    30
-}
-
-fn default_engine_on_keys() -> Vec<String> {
-    vec!["Ctrl+Shift+変換".to_string()]
-}
-
-fn default_engine_off_keys() -> Vec<String> {
-    vec!["Ctrl+Shift+無変換".to_string()]
-}
-
-fn default_ime_control_on_keys() -> Vec<String> {
-    vec!["Ctrl+変換".to_string()]
-}
-
-fn default_ime_control_off_keys() -> Vec<String> {
-    vec!["Ctrl+無変換".to_string()]
-}
-
-const fn default_focus_debounce_ms() -> u32 {
-    50
-}
-
-const fn default_ime_poll_interval_ms() -> u32 {
-    500
-}
-
-fn default_auto_start() -> String {
-    "ask".to_string()
-}
-
-fn default_linux_input_backend() -> String {
-    "evdev".to_string()
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            keyboard_model: "jis".to_string(),
+            simultaneous_threshold_ms: 100,
+            left_thumb_key: "無変換".to_string(),
+            right_thumb_key: "変換".to_string(),
+            engine_toggle_hotkey: None,
+            layouts_dir: "config".to_string(),
+            default_layout: "nicola.yab".to_string(),
+            ngram_file: Some("data/ngram_hiragana.csv.gz".to_string()),
+            ngram_adjustment_range_ms: 20,
+            ngram_min_threshold_ms: 30,
+            ngram_max_threshold_ms: 120,
+            confirm_mode: ConfirmMode::Wait,
+            speculative_delay_ms: 30,
+            output_mode: OutputMode::Unicode,
+            hook_mode: HookMode::Relay,
+            focus_debounce_ms: 50,
+            ime_poll_interval_ms: 500,
+            auto_start: "ask".to_string(),
+            linux_input_backend: "evdev".to_string(),
+            linux_evdev_device: None,
+        }
+    }
 }
 
 /// IME 検出設定（シャドウ IME 状態追跡用キー定義）
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct ImeDetectConfig {
     /// Toggle keys (direction unknown, flip shadow state)
-    #[serde(default = "default_ime_toggle_keys")]
     pub toggle: Vec<String>,
-
     /// ON keys (IME is now ON / zenkaku)
-    #[serde(default = "default_ime_on_keys")]
     pub on: Vec<String>,
-
     /// OFF keys (IME is now OFF / hankaku)
-    #[serde(default = "default_ime_off_keys")]
     pub off: Vec<String>,
 }
 
 impl Default for ImeDetectConfig {
     fn default() -> Self {
         Self {
-            toggle: default_ime_toggle_keys(),
-            on: default_ime_on_keys(),
-            off: default_ime_off_keys(),
+            toggle: vec!["漢字".to_string()],
+            on: vec!["IMEオン".to_string()],
+            off: vec!["IMEオフ".to_string()],
         }
     }
 }
 
 /// キーバインディング設定
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
 pub struct KeysConfig {
     /// Engine ON keys (multiple combos allowed)
-    #[serde(default = "default_engine_on_keys")]
     pub engine_on: Vec<String>,
-
     /// Engine OFF keys (multiple combos allowed)
-    #[serde(default = "default_engine_off_keys")]
     pub engine_off: Vec<String>,
-
     /// IME ON keys — IME を ON にするキーコンボ
-    #[serde(default = "default_ime_control_on_keys")]
     pub ime_on: Vec<String>,
-
     /// IME OFF keys — IME を OFF にするキーコンボ
-    #[serde(default = "default_ime_control_off_keys")]
     pub ime_off: Vec<String>,
-
     /// IME 検出設定
-    #[serde(default)]
     pub ime_detect: ImeDetectConfig,
-
     /// ソロ3連打でエンジン OFF するキー（None または空文字列で無効）
     ///
     /// モディファイア不要のキー名を1つ指定する（"VK_NONCONVERT" 等）。
     /// Ctrl スタック等でホットキーが効かなくなった場合の緊急回復用。
-    #[serde(default = "default_engine_off_solo_triple")]
     pub engine_off_solo_triple: Option<String>,
-
     /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
     ///
     /// エンジンが有効になったとき、このキーを `SendInput` で送信して
     /// IME を全角/ひらがなモードに切り替える。
     /// デフォルト: `"VK_DBE_DBCSCHAR"` (0xF4 = 全角モード)
-    #[serde(default = "default_engine_on_ime_key")]
     pub engine_on_ime_key: Option<String>,
-
     /// Engine OFF 時に送信する IME モード切り替えキー（None で無効）
     ///
     /// エンジンが無効になったとき、このキーを `SendInput` で送信して
     /// IME を半角/直接入力モードに切り替える。
     /// デフォルト: `"VK_DBE_SBCSCHAR"` (0xF3 = 半角モード)
-    #[serde(default = "default_engine_off_ime_key")]
     pub engine_off_ime_key: Option<String>,
 }
 
 impl Default for KeysConfig {
     fn default() -> Self {
         Self {
-            engine_on: default_engine_on_keys(),
-            engine_off: default_engine_off_keys(),
-            ime_on: default_ime_control_on_keys(),
-            ime_off: default_ime_control_off_keys(),
+            engine_on: vec!["Ctrl+Shift+変換".to_string()],
+            engine_off: vec!["Ctrl+Shift+無変換".to_string()],
+            ime_on: vec!["Ctrl+変換".to_string()],
+            ime_off: vec!["Ctrl+無変換".to_string()],
             ime_detect: ImeDetectConfig::default(),
-            engine_off_solo_triple: default_engine_off_solo_triple(),
-            engine_on_ime_key: default_engine_on_ime_key(),
-            engine_off_ime_key: default_engine_off_ime_key(),
+            engine_off_solo_triple: Some("VK_NONCONVERT".to_string()),
+            engine_on_ime_key: Some("VK_DBE_DBCSCHAR".to_string()),
+            engine_off_ime_key: Some("VK_DBE_SBCSCHAR".to_string()),
         }
     }
-}
-
-// serde の #[serde(default = "...")] はフィールド型と同じ型を返す関数を要求するため、
-// Option<String> フィールドのデフォルトは Option<String> を返す必要がある。
-#[allow(clippy::unnecessary_wraps)]
-fn default_engine_off_solo_triple() -> Option<String> {
-    Some("VK_NONCONVERT".to_string())
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn default_engine_on_ime_key() -> Option<String> {
-    Some("VK_DBE_DBCSCHAR".to_string())
-}
-
-#[allow(clippy::unnecessary_wraps)]
-fn default_engine_off_ime_key() -> Option<String> {
-    Some("VK_DBE_SBCSCHAR".to_string())
-}
-
-fn default_ime_toggle_keys() -> Vec<String> {
-    vec!["漢字".to_string()]
-}
-
-fn default_ime_on_keys() -> Vec<String> {
-    vec!["IMEオン".to_string()]
-}
-
-fn default_ime_off_keys() -> Vec<String> {
-    vec!["IMEオフ".to_string()]
 }
 
 /// アプリオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
