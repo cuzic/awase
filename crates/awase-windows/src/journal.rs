@@ -127,7 +127,6 @@ pub struct JournalEnvelope {
 ///
 /// タイムスタンプは注入された `quanta::Clock` で自己採取するため、
 /// 呼び出し側は時刻を渡す必要がない。テスト時は `new_with_clock` でモック化可能。
-#[allow(missing_debug_implementations)]
 pub struct UnifiedJournal {
     clock: quanta::Clock,
     start: quanta::Instant,
@@ -232,7 +231,6 @@ impl Default for UnifiedJournal {
 /// テスト時は `with_clock` でモック化可能。
 ///
 /// ステップ: 0=idle → 1=Alt+変換① → 2=Alt+無変換① → 3=Alt+変換② → 0(+dump発動)
-#[allow(missing_debug_implementations)]
 pub struct DumpTriggerTracker {
     clock: quanta::Clock,
     step: u8,
