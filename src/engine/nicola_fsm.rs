@@ -509,8 +509,8 @@ impl NicolaFsm {
         // Handled before the parser loop because bypass needs consumed=false
         // even when flush actions are emitted.
         let ev = self.phys.classified;
-        if self.bypass_reason(&ev).is_some() {
-            return self.handle_bypass(&ev);
+        if let Some(reason) = self.bypass_reason(&ev) {
+            return self.handle_bypass(&ev, reason);
         }
 
         self.parse(ev)
@@ -523,7 +523,7 @@ impl NicolaFsm {
             EngineState::Idle => self.decide_idle(ev),
             EngineState::PendingChar(_) => self.decide_pending_char(ev),
             EngineState::PendingThumb(_) => self.decide_pending_thumb(ev),
-            EngineState::PendingCharThumb { .. } => self.decide_pending_char_thumb(ev),
+            EngineState::PendingCharThumb { .. } => self.step_pending_char_thumb_3key(ev),
             EngineState::SpeculativeChar(_) => self.decide_speculative(ev),
         }
     }
@@ -640,26 +640,12 @@ impl NicolaFsm {
         }
     }
 
-    /// PendingCharThumb 状態でのキー押下処理
-    fn decide_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        self.step_pending_char_thumb_3key(ev)
-    }
-
     /// SpeculativeChar 状態でのキー押下処理
     fn decide_speculative(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         match ev.key_class {
             KeyClass::LeftThumb | KeyClass::RightThumb => self.step_speculative_thumb(ev),
-            KeyClass::Char => {
-                // SpeculativeChar + Char: speculative was correct, go Idle and re-loop
-                self.go_idle();
-                ParseAction::ReduceAndContinue {
-                    actions: SmallVec::new(),
-                    record: OutputUpdate::None,
-                    remaining: *ev,
-                }
-            }
-            KeyClass::Passthrough => {
-                // Speculative char was already sent to IME; just go idle and pass through.
+            KeyClass::Char | KeyClass::Passthrough => {
+                // 投機出力は正しかった → Idle に戻って再処理
                 self.go_idle();
                 ParseAction::ReduceAndContinue {
                     actions: SmallVec::new(),
@@ -1099,23 +1085,10 @@ impl NicolaFsm {
 // ── タイムアウト処理 ──
 impl NicolaFsm {
     /// PendingChar タイムアウト：文字キーを単独打鍵として確定する
-    fn timeout_pending_char(
-        &mut self,
-        scan_code: ScanCode,
-        vk_code: VkCode,
-        pos: Option<PhysicalPos>,
-    ) -> Resp {
-        if let Some((action, kana)) = self.lookup_face(pos, self.get_face(Face::Normal)) {
-            self.update_history(OutputUpdate::record(scan_code, &action, kana));
-            self.build_response(smallvec![action], true, TimerIntent::CancelAll)
-        } else {
-            // Normal face に定義なし（yab に明示的に '無' がある場合は lookup_face が
-            // Some(Suppress) を返すため、ここには来ない）。
-            // 配列定義外のキー → Key(vk_code) でそのまま通す
-            let action = KeyAction::Key(vk_code);
-            self.update_history(OutputUpdate::record(scan_code, &action, None));
-            self.build_response(smallvec![action], true, TimerIntent::CancelAll)
-        }
+    fn timeout_pending_char(&mut self, pending: &PendingKey) -> Resp {
+        let resolved = self.resolve_pending_char_as_single(pending);
+        self.update_history(resolved.output);
+        self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
     /// PendingThumb タイムアウト：親指キーを単独打鍵として確定する
@@ -1213,17 +1186,12 @@ impl NicolaFsm {
     /// 消費タイムスタンプが現在の物理押下と一致すれば消費済み。
     /// 物理状態が変わると自動的に不一致になるため、明示的なリセットは不要。
     fn is_thumb_consumed(&self, face: Face) -> bool {
-        match face {
-            Face::LeftThumb => {
-                self.phys.left_thumb_down.is_some()
-                    && self.left_thumb_consumed == self.phys.left_thumb_down
-            }
-            Face::RightThumb => {
-                self.phys.right_thumb_down.is_some()
-                    && self.right_thumb_consumed == self.phys.right_thumb_down
-            }
-            Face::Normal | Face::Shift => false,
-        }
+        let (phys_down, consumed) = match face {
+            Face::LeftThumb => (self.phys.left_thumb_down, self.left_thumb_consumed),
+            Face::RightThumb => (self.phys.right_thumb_down, self.right_thumb_consumed),
+            Face::Normal | Face::Shift => return false,
+        };
+        phys_down.is_some() && consumed == phys_down
     }
 
     /// 現在押下中かつ未消費の親指キーに対応するシフト面を返す。
@@ -1273,10 +1241,8 @@ impl NicolaFsm {
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
-    fn handle_bypass(&mut self, ev: &ClassifiedEvent) -> Resp {
-        if let Some(reason) = self.bypass_reason(ev) {
-            log::trace!("bypass: {reason:?}");
-        }
+    fn handle_bypass(&mut self, ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
+        log::trace!("bypass: {reason:?}");
         if self.state.is_idle() {
             return Response::pass_through();
         }
@@ -1328,9 +1294,7 @@ impl NicolaFsm {
                 // pass_through to avoid suppressing unrelated keys.
                 Response::pass_through().with_kill_timer(TIMER_PENDING)
             }
-            EngineState::PendingChar(pending) => {
-                self.timeout_pending_char(pending.scan_code, pending.vk_code, pending.pos)
-            }
+            EngineState::PendingChar(pending) => self.timeout_pending_char(&pending),
             EngineState::PendingThumb(thumb) => {
                 self.timeout_pending_thumb(thumb.scan_code, thumb.vk_code, thumb.timestamp)
             }
