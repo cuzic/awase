@@ -123,7 +123,12 @@ impl FocusTracker {
     ///
     /// `self.current` の pid / class_name を使うため、`update()` の前に呼ぶこと。
     /// フォーカスが確立していない場合は何もしない。
-    pub(crate) fn save_ime_state(&mut self, ime_on: bool, input_mode: InputModeState) {
+    pub(crate) fn save_ime_state(
+        &mut self,
+        ime_on: bool,
+        input_mode: InputModeState,
+        from_explicit_off_intent: bool,
+    ) {
         if !self.current.is_focused() {
             return;
         }
@@ -132,6 +137,7 @@ impl FocusTracker {
             self.current.class_name.clone(),
             ime_on,
             input_mode,
+            from_explicit_off_intent,
         );
     }
 

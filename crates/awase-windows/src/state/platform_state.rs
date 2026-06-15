@@ -92,7 +92,10 @@ impl ImeStateHub {
         self.shadow_model.applied = if ts == 0 {
             AppliedImeState::Optimistic(value)
         } else {
-            AppliedImeState::Confirmed { open: value, at_ms: ts }
+            AppliedImeState::Confirmed {
+                open: value,
+                at_ms: ts,
+            }
         };
         // 同じ apply が完了した扱いなので pending も clear
         if let Some(p) = &self.shadow_model.pending {
@@ -164,7 +167,9 @@ impl ImeStateHub {
     }
 
     pub(crate) fn detect_miss_count(&self) -> u32 {
-        self.shadow_model.observe_miss_monitor.consecutive_miss_count
+        self.shadow_model
+            .observe_miss_monitor
+            .consecutive_miss_count
     }
 
     pub(crate) fn is_force_on_guard_active(&self) -> bool {
@@ -300,10 +305,7 @@ impl ImeStateHub {
     ///
     /// `observer::ime_observer::poll_and_classify_ime()` の結果を受け取り、
     /// 状態への書き込みをここに集約する。判断ロジックを持たない純粋適用関数。
-    pub(crate) fn apply_ime_update(
-        &mut self,
-        update: &crate::observer::ime_observer::ImeUpdate,
-    ) {
+    pub(crate) fn apply_ime_update(&mut self, update: &crate::observer::ime_observer::ImeUpdate) {
         if let Some(is_jp) = update.is_japanese_ime {
             self.belief.is_japanese_ime = is_jp;
         }
@@ -319,7 +321,10 @@ impl ImeStateHub {
             self.shadow_model
                 .observe_miss_monitor
                 .record_miss(std::time::Instant::now());
-            let miss = self.shadow_model.observe_miss_monitor.consecutive_miss_count;
+            let miss = self
+                .shadow_model
+                .observe_miss_monitor
+                .consecutive_miss_count;
             if miss == crate::IME_DETECT_MISS_THRESHOLD {
                 log::warn!("IME detection failed {miss} consecutive times, will force IME ON");
             }
@@ -375,6 +380,32 @@ impl ImeStateHub {
         log::info!(
             "TsfNative entry without cache: reset stale ime_on=false → true \
              (no intent, Japanese layout, IME state untrackable in TSF-native)"
+        );
+        self.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: true,
+            source: IntentSource::Recovery,
+        });
+    }
+
+    /// Imm32Unavailable (Chrome/Teams 等) 入場時に stale な `desired_open=false` を IME ON へ寄せ直す。
+    ///
+    /// TsfNative と同様だが、Imm32Unavailable では awase が IME 状態を制御できないため
+    /// キャッシュが carry-over で汚染されやすい。キャッシュ値が「ユーザー明示の OFF」に
+    /// 由来しない場合にのみ呼ぶこと（呼び出し側が stale 判定を行う）。
+    pub(crate) fn reset_stale_ime_on_for_imm_broken(&mut self) {
+        if !self.belief.is_japanese_ime() || self.shadow_model.effective_open() {
+            return;
+        }
+        if let Some(intent) = self.shadow_model.last_intent.as_ref() {
+            log::debug!(
+                "Imm32Unavailable entry: preserving ime_on=false (intent source={:?})",
+                intent.source
+            );
+            return;
+        }
+        log::info!(
+            "Imm32Unavailable entry without trusted cache: reset stale ime_on=false → true \
+             (no explicit intent, Japanese layout, IME state uncontrollable in Imm32Unavailable)"
         );
         self.dispatch_event(ImeEvent::UserImeSetIntent {
             target: true,
@@ -497,7 +528,6 @@ impl Default for PlatformState {
         Self::new()
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -140,9 +140,27 @@ impl Runtime {
         let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
 
         if process_changed {
+            let ime_on = self.platform_state.ime.effective_open();
+            // ime_on=false のとき、それがユーザーの明示操作（SyncKey 等）由来かを記録する。
+            // Imm32Unavailable アプリでは IME を awase が制御できないためキャッシュが stale に
+            // なりやすく、入場時に信頼できる OFF か否かをこのフラグで区別する。
+            let from_explicit_off_intent = !ime_on && {
+                use crate::state::ime_event::IntentSource;
+                matches!(
+                    self.platform_state.ime.model().last_intent.as_ref(),
+                    Some(i) if !i.target
+                        && matches!(
+                            i.source,
+                            IntentSource::SyncKey
+                                | IntentSource::PhysicalImeKey
+                                | IntentSource::Command
+                        )
+                )
+            };
             self.platform.focus.save_ime_state(
-                self.platform_state.ime.effective_open(),
+                ime_on,
                 self.platform_state.ime.belief.input_mode(),
+                from_explicit_off_intent,
             );
         }
 
@@ -198,17 +216,36 @@ impl Runtime {
 
         {
             let cache_hit = self.platform.focus.restore_ime_state();
-            let cache_miss = cache_hit.is_none();
-            self.platform_state.ime.apply_hwnd_cache_restore(cache_hit);
+            let profile = self.platform.current_app_profile();
+            let is_imm_broken = matches!(
+                profile,
+                crate::focus::classify::AppImeProfile::Imm32Unavailable,
+            );
 
-            // TsfNative プロファイルへの cache miss 入場では、前ウィンドウの ime_on=false が
-            // carry over したまま IMM/poll で復旧できず Engine が活性化不能になる。
-            // stale を true へ寄せ直して trap を解く。
+            // Imm32Unavailable (Chrome/Teams 等) では awase が IME 状態を制御できないため
+            // キャッシュ値 false が前ウィンドウの carry-over である可能性がある。
+            // 「ユーザー明示の OFF」由来でない false は stale とみなして破棄する。
+            let stale_false_cache = is_imm_broken
+                && matches!(&cache_hit, Some(snap) if !snap.ime_on && !snap.from_explicit_off_intent);
+            if stale_false_cache {
+                log::debug!(
+                    "[focus] Imm32Unavailable stale-false cache discarded \
+                     (not from explicit user intent) — treating as cache miss"
+                );
+            }
+            let effective_cache = if stale_false_cache { None } else { cache_hit };
+            let effective_cache_miss = effective_cache.is_none();
+            self.platform_state.ime.apply_hwnd_cache_restore(effective_cache);
+
+            // TsfNative / Imm32Unavailable プロファイルへの cache miss 入場では、
+            // 前ウィンドウの ime_on=false が carry over したまま IMM/poll で復旧できず
+            // Engine が活性化不能になる。stale を true へ寄せ直して trap を解く。
             // ただし直近 10 秒以内に明示的 IME OFF にしていた場合はユーザーの意図を尊重する。
-            if cache_miss
+            if effective_cache_miss
                 && matches!(
-                    self.platform.current_app_profile(),
-                    crate::focus::classify::AppImeProfile::TsfNative,
+                    profile,
+                    crate::focus::classify::AppImeProfile::TsfNative
+                        | crate::focus::classify::AppImeProfile::Imm32Unavailable,
                 )
             {
                 let now_ms = crate::hook::current_tick_ms();
@@ -218,8 +255,11 @@ impl Runtime {
                 let elapsed = now_ms.saturating_sub(last_off_ms);
                 if last_off_ms > 0 && elapsed < 10_000 {
                     log::debug!(
-                        "[focus] TsfNative cache-miss: skip reset_stale — explicit IME-OFF {elapsed}ms ago",
+                        "[focus] {} cache-miss: skip reset_stale — explicit IME-OFF {elapsed}ms ago",
+                        if is_imm_broken { "Imm32Unavailable" } else { "TsfNative" },
                     );
+                } else if is_imm_broken {
+                    self.platform_state.ime.reset_stale_ime_on_for_imm_broken();
                 } else {
                     self.platform_state.ime.reset_stale_ime_on_for_tsf_native();
                 }
