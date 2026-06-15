@@ -19,7 +19,6 @@
 //! すべての Win32 API 依存コードを集約する。
 
 pub mod autostart;
-pub mod journal;
 pub mod focus;
 pub mod gji;
 pub mod hook;
@@ -28,6 +27,7 @@ pub(crate) mod ime_controller;
 pub mod ime_diagnostic;
 pub(crate) mod imm;
 pub mod input_defer;
+pub mod journal;
 pub mod keymap;
 pub mod observer;
 pub mod output;

@@ -50,6 +50,7 @@ pub struct ClassifiedEvent {
 
 impl ClassifiedEvent {
     /// タイマー用ダミーイベント（イベントなしスナップショット構築に使う）
+    #[must_use]
     pub const fn dummy() -> Self {
         Self {
             key_class: KeyClass::Passthrough,

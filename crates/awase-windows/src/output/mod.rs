@@ -451,7 +451,11 @@ impl Output {
                 id: crate::TIMER_TSF_PROBE,
             };
         };
-        log::debug!("[tsf-probe-tick] cold={} t={}ms", machine.cold_seq_hint(), tick_t);
+        log::debug!(
+            "[tsf-probe-tick] cold={} t={}ms",
+            machine.cold_seq_hint(),
+            tick_t
+        );
         let actions = machine.tick();
         let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
         if done {

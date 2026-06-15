@@ -84,7 +84,7 @@ impl FsmAdapter {
     }
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
-    pub(super) fn set_engine_off_triple_vk(&mut self, vk: crate::types::VkCode) {
+    pub(super) const fn set_engine_off_triple_vk(&mut self, vk: crate::types::VkCode) {
         self.fsm.set_engine_off_triple_vk(vk);
     }
 

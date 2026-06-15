@@ -643,7 +643,10 @@ mod tests {
         // min_ms=80 の phase1 wait 後に即解放（I/O なし → 正常状態）
         // → 60ms 以上 200ms 以内に完了するはず
         assert!(elapsed >= 60, "phase1 min_wait not respected: {elapsed}ms");
-        assert!(elapsed < 200, "should release at ~80ms, not wait full 300ms: {elapsed}ms");
+        assert!(
+            elapsed < 200,
+            "should release at ~80ms, not wait full 300ms: {elapsed}ms"
+        );
     }
 
     /// warmup 後に GJI I/O が発生しない場合は min_ms 経過後に即解放（WezTerm 等の正常ケース）

@@ -217,11 +217,9 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let (callback, sync_outcomes) = self.executor.execute_from_loop(
-            &mut self.platform,
-            &self.platform_state.ime,
-            decision,
-        );
+        let (callback, sync_outcomes) =
+            self.executor
+                .execute_from_loop(&mut self.platform, &self.platform_state.ime, decision);
         self.dispatch_outcomes(sync_outcomes);
         callback
     }
@@ -392,11 +390,18 @@ impl Runtime {
         }
         let _success = self.platform.set_ime_open(true);
         log::trace!("Blacklist force-ON: set_ime_open(true)");
-        if !self.platform_state.ime.belief.input_mode().is_romaji_capable() {
+        if !self
+            .platform_state
+            .ime
+            .belief
+            .input_mode()
+            .is_romaji_capable()
+        {
             use awase::engine::{AssumedReason, InputModeState};
             log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-            self.platform_state.ime.belief.input_mode =
-                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken };
+            self.platform_state.ime.belief.input_mode = InputModeState::AssumedRomaji {
+                reason: AssumedReason::ImmBridgeBroken,
+            };
         }
     }
 
@@ -654,7 +659,12 @@ impl Runtime {
             focus_pid,
             focus_class,
             shadow_ime_on: self.platform_state.ime.effective_open(),
-            shadow_is_romaji: self.platform_state.ime.belief.input_mode().is_romaji_capable(),
+            shadow_is_romaji: self
+                .platform_state
+                .ime
+                .belief
+                .input_mode()
+                .is_romaji_capable(),
             shadow_is_japanese: self.platform_state.ime.belief.is_japanese_ime(),
             last_focus_change_ms: self.platform_state.last_focus_change_ms,
             last_hook_activity_ms: self.platform_state.last_hook_activity_ms,

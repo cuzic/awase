@@ -187,13 +187,19 @@ impl Runtime {
         // ime_on=true のとき AssumedRomaji と仮定して補正する。
         if skip_imm_query
             && self.platform_state.ime.effective_open()
-            && !self.platform_state.ime.belief.input_mode().is_romaji_capable()
+            && !self
+                .platform_state
+                .ime
+                .belief
+                .input_mode()
+                .is_romaji_capable()
         {
             log::info!(
                 "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
             );
-            self.platform_state.ime.belief.input_mode =
-                InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken };
+            self.platform_state.ime.belief.input_mode = InputModeState::AssumedRomaji {
+                reason: AssumedReason::ImmBridgeBroken,
+            };
         }
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
@@ -346,7 +352,13 @@ impl Runtime {
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
         );
-        let applied_ime_on = self.platform_state.ime.model().applied.applied_open().unwrap_or(false);
+        let applied_ime_on = self
+            .platform_state
+            .ime
+            .model()
+            .applied
+            .applied_open()
+            .unwrap_or(false);
         if !applied_ime_on && !new_profile_is_tsf_native {
             let _ = self.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");

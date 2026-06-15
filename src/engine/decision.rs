@@ -111,14 +111,20 @@ impl ActivationState {
     }
 
     /// `Inactive` を `ContextChange` にマップする（flush 理由として使用）。
+    ///
+    /// # Panics
+    ///
+    /// `Active` または `Pending` 状態で呼ばれた場合にパニックする。
     #[must_use]
     pub const fn to_context_change(self) -> ContextChange {
         match self {
             Self::Inactive(InactiveReason::UserDisabled) => ContextChange::EngineDisabled,
             Self::Inactive(InactiveReason::NonTextFocus) => ContextChange::FocusChanged,
-            Self::Inactive(InactiveReason::ImeOff)
-            | Self::Inactive(InactiveReason::NotRomajiInput)
-            | Self::Inactive(InactiveReason::NotJapaneseIme) => ContextChange::ImeOff,
+            Self::Inactive(
+                InactiveReason::ImeOff
+                | InactiveReason::NotRomajiInput
+                | InactiveReason::NotJapaneseIme,
+            ) => ContextChange::ImeOff,
             Self::Active | Self::Pending(_) => {
                 panic!("to_context_change called on non-inactive state")
             }

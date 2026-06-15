@@ -181,7 +181,11 @@ impl UnifiedJournal {
         if self.buffer.len() == self.capacity {
             self.buffer.pop_front();
         }
-        self.buffer.push_back(JournalEnvelope { seq, elapsed_ms, entry });
+        self.buffer.push_back(JournalEnvelope {
+            seq,
+            elapsed_ms,
+            entry,
+        });
         seq
     }
 
@@ -206,8 +210,10 @@ impl UnifiedJournal {
         let tick = crate::hook::current_tick_ms();
         let path = std::env::temp_dir().join(format!("awase_journal_{tick}.json"));
         let json = self.to_json()?;
-        std::fs::write(&path, &json)
-            .map_err(|source| DumpError::Write { path: path.clone(), source })?;
+        std::fs::write(&path, &json).map_err(|source| DumpError::Write {
+            path: path.clone(),
+            source,
+        })?;
         Ok(path)
     }
 }

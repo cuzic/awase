@@ -7,9 +7,7 @@ use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
-use windows::Win32::System::Registry::{
-    RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
-};
+use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
 use windows::Win32::System::Threading::{
     OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
@@ -252,10 +250,7 @@ pub fn run_gji_setup() -> Result<bool, String> {
             }
             fs::write(&path, &patched)
                 .map_err(|e| format!("config1.db の書き込みに失敗しました: {e}"))?;
-            log::info!(
-                "GJI config patched: {} entries added",
-                added.len()
-            );
+            log::info!("GJI config patched: {} entries added", added.len());
             Ok(true)
         }
     }

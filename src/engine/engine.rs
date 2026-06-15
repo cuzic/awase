@@ -79,7 +79,7 @@ impl Engine {
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
     /// `VkCode(0)` を渡すと機能を無効にする。
-    pub fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
+    pub const fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
         self.adapter.set_engine_off_triple_vk(vk);
     }
 
@@ -456,9 +456,9 @@ impl Engine {
         let m = self.match_special_keys(ctx, event)?;
         Some(self.apply_special_key_match(&m, ctx))
     }
-
 }
 
+#[allow(clippy::suspicious_operation_groupings)]
 fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent, modifiers: ModifierState) -> bool {
     event.vk_code == combo.vk
         && combo.ctrl == modifiers.ctrl

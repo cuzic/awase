@@ -29,7 +29,10 @@ pub enum AppliedImeState {
     #[default]
     Unknown,
     Optimistic(bool),
-    Confirmed { open: bool, at_ms: u64 },
+    Confirmed {
+        open: bool,
+        at_ms: u64,
+    },
 }
 
 impl AppliedImeState {
@@ -228,11 +231,8 @@ impl ImeModel {
                     expires_at: None,
                 });
                 // drift 追跡 (desired と observed の乖離)
-                self.observations.update_drift(
-                    self.desired_open,
-                    open,
-                    envelope.time.monotonic,
-                );
+                self.observations
+                    .update_drift(self.desired_open, open, envelope.time.monotonic);
             }
             ImeEvent::FocusChanged { profile, to, .. } => {
                 // Step 1.5/5: policy 確定 → observation 評価の順序ルール。
@@ -289,7 +289,10 @@ impl ImeModel {
                 // Step 7: **必須** generation 照合で stale apply を排除。
                 // pending の generation と一致しなければ無視する。
                 if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
-                    self.applied = AppliedImeState::Confirmed { open: target, at_ms: envelope.time.tick_ms };
+                    self.applied = AppliedImeState::Confirmed {
+                        open: target,
+                        at_ms: envelope.time.tick_ms,
+                    };
                     self.pending = None;
                 }
                 // 一致しない場合は何もしない (stale → 無視)
@@ -308,7 +311,6 @@ impl ImeModel {
             }
         }
     }
-
 }
 
 #[cfg(test)]

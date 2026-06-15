@@ -136,13 +136,14 @@ pub(crate) unsafe fn handle_wm_timer(
             let state_before = app.engine.debug_state_label();
             let decision = app.engine.on_timeout(timer_id, &ctx);
             let state_after = app.engine.debug_state_label();
-            app.platform_state.ime.journal.record(
-                crate::journal::JournalEntry::TimerFired {
+            app.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::TimerFired {
                     timer_id,
                     state_before,
                     state_after,
-                },
-            );
+                });
             app.execute_decision(decision);
         }
         None => {
@@ -400,7 +401,9 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         for (timer_id, os_id) in deferred {
             let current = app.platform.timer.current_os_id(timer_id);
             if current == Some(os_id) {
-                log::debug!("[deferred-timer] drain 後に replay logical_id={timer_id} (os_id={os_id})");
+                log::debug!(
+                    "[deferred-timer] drain 後に replay logical_id={timer_id} (os_id={os_id})"
+                );
                 let decision = app.engine.on_timeout(timer_id, &ctx);
                 app.execute_decision(decision);
             } else {
@@ -427,10 +430,9 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
     match app.platform_state.ime.journal.dump_to_file() {
         Ok(path) => {
             log::info!("[journal] ダンプ完了: {}", path.display());
-            app.platform.tray.show_balloon(
-                "awase journal",
-                &format!("ダンプ完了: {}", path.display()),
-            );
+            app.platform
+                .tray
+                .show_balloon("awase journal", &format!("ダンプ完了: {}", path.display()));
         }
         Err(e) => {
             log::error!("[journal] ダンプ失敗: {e}");

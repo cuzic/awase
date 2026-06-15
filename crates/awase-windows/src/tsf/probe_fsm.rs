@@ -67,7 +67,11 @@ enum NextStep {
     /// 現フェーズで継続待機（actions なし）
     Wait,
     /// `WaitingForCallback(FreshF2Sent { .. })` へ遷移し `SendFreshF2` を emit
-    EmitSendFreshF2 { probe_settled: bool, gji_idle_ms: u64, remaining_ms: u64 },
+    EmitSendFreshF2 {
+        probe_settled: bool,
+        gji_idle_ms: u64,
+        remaining_ms: u64,
+    },
     /// `enter_transmit_tsf()` を呼ぶ
     TransmitTsf { nc_fired: bool },
     /// `enter_transmit_chrome()` を呼ぶ
@@ -445,8 +449,7 @@ impl TsfProbeMachine {
                         if *needs_settle_check {
                             let is_ime_init_cold = cold_reason.requires_settle();
                             if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
-                                let remaining_ms =
-                                    total_max_ms.saturating_sub(outcome.elapsed_ms);
+                                let remaining_ms = total_max_ms.saturating_sub(outcome.elapsed_ms);
                                 return NextStep::EmitSendFreshF2 {
                                     probe_settled: outcome.settled,
                                     gji_idle_ms: outcome.gji_idle_ms,
@@ -588,12 +591,11 @@ impl TsfProbeMachine {
         //   settled=false かつ gji_idle < LONG_IDLE_MS  → 短期休止、SETTLE_TIMEOUT_MS
         //   settled=false かつ gji_idle >= LONG_IDLE_MS → 長期休止（WezTerm 等）、
         //     TSF 初期化に時間がかかる（実測 ~936ms）ため残余バジェットを上限に延長
-        let timeout_ms =
-            if !probe_settled && gji_idle_ms >= crate::tuning::LONG_IDLE_MS {
-                remaining_ms.max(crate::tuning::SETTLE_TIMEOUT_MS)
-            } else {
-                crate::tuning::SETTLE_TIMEOUT_MS
-            };
+        let timeout_ms = if !probe_settled && gji_idle_ms >= crate::tuning::LONG_IDLE_MS {
+            remaining_ms.max(crate::tuning::SETTLE_TIMEOUT_MS)
+        } else {
+            crate::tuning::SETTLE_TIMEOUT_MS
+        };
         let deadline_ms = fresh_f2_ms + timeout_ms;
         log::debug!(
             "[tsf-probe] cold={} NameChangeWait deadline {}ms (probe_settled={probe_settled}, gji_idle={gji_idle_ms}ms, remaining={remaining_ms}ms)",

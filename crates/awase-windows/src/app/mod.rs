@@ -20,9 +20,9 @@ use crate::ime;
 use crate::runtime::message_handlers;
 use crate::vk::VkCodeExt;
 use crate::{
-    with_app, with_app_or_repost, with_app_or_repost_with, WM_DRAIN_OUTPUT_QUEUE,
-    WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE,
-    WM_IME_KEY_DETECTED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
+    with_app, with_app_or_repost, with_app_or_repost_with, WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL,
+    WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED,
+    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -496,13 +496,17 @@ pub(crate) fn reload_config() {
             alt: k.alt,
             is_on: true,
         })
-        .chain(ime_off.iter().map(|k| crate::panic_detect::PanicTriggerCombo {
-            vk: k.vk,
-            ctrl: k.ctrl,
-            shift: k.shift,
-            alt: k.alt,
-            is_on: false,
-        }))
+        .chain(
+            ime_off
+                .iter()
+                .map(|k| crate::panic_detect::PanicTriggerCombo {
+                    vk: k.vk,
+                    ctrl: k.ctrl,
+                    shift: k.shift,
+                    alt: k.alt,
+                    is_on: false,
+                }),
+        )
         .collect();
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
     key_diag.report();

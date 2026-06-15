@@ -160,14 +160,15 @@ impl Runtime {
         let state_before = self.engine.debug_state_label();
         let decision = self.engine.on_input(event, &ctx);
         let state_after = self.engine.debug_state_label();
-        self.platform_state.ime.journal.record(
-            crate::journal::JournalEntry::KeyInput {
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::KeyInput {
                 event: crate::journal::KeyEventSummary::from_raw(&event),
                 state_before,
                 state_after,
                 decision: crate::journal::DecisionKind::from_decision(&decision),
-            },
-        );
+            });
 
         self.kp_stage_post_decision(&decision, &event);
 
@@ -210,7 +211,13 @@ impl Runtime {
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.platform_state.last_focus_change_ms;
-        let shadow_on = self.platform_state.ime.model().applied.applied_open().unwrap_or(false);
+        let shadow_on = self
+            .platform_state
+            .ime
+            .model()
+            .applied
+            .applied_open()
+            .unwrap_or(false);
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
@@ -453,8 +460,7 @@ impl Runtime {
             // shadow_toggle が OFF→ON に反転する（Ctrl+無変換後の IME-ON 戻り現象）。
             is_kanji_event
                 && !profile.should_pass_physical_key()
-                && (shadow_toggled
-                    || matches!(event.event_type, awase::types::KeyEventType::KeyUp))
+                && (shadow_toggled || matches!(event.event_type, awase::types::KeyEventType::KeyUp))
         };
         let decision = if suppress_physical {
             let reason = if profile.can_use_imm32_cross_process() {
@@ -613,7 +619,9 @@ impl Runtime {
         let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
         let ime_on_before_probe = self.platform_state.ime.effective_open();
 
-        self.platform_state.ime.set_is_japanese_ime(probe.is_japanese_ime);
+        self.platform_state
+            .ime
+            .set_is_japanese_ime(probe.is_japanese_ime);
 
         let now_ms = hook::current_tick_ms();
         let signals = compute_focus_probe_grace(

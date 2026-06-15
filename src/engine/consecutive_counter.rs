@@ -45,7 +45,7 @@ impl ConsecutiveSoloCounter {
         self.count
     }
 
-    pub fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.count = 0;
         self.last_vk = VkCode(0);
         self.last_us = 0;
@@ -91,7 +91,7 @@ mod tests {
         let mut c = ConsecutiveSoloCounter::new(TIMEOUT);
         c.record(VK_A, 0);
         c.record(VK_A, 200_000); // last_us = 200_000
-        // 前回(200_000µs)から TIMEOUT 超過 → reset
+                                 // 前回(200_000µs)から TIMEOUT 超過 → reset
         assert_eq!(c.record(VK_A, 200_000 + TIMEOUT + 1), 1);
     }
 

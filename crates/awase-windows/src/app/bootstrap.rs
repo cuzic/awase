@@ -547,13 +547,15 @@ pub(super) fn run_all() -> Result<()> {
             log::info!("--exit-after タイムアウト ({secs}s) → 終了");
             use crate::{MAIN_THREAD_ID, QUIT_REQUESTED};
             use std::sync::atomic::Ordering;
-            use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
             use windows::Win32::Foundation::{LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
             QUIT_REQUESTED.store(true, Ordering::SeqCst);
             let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
             if tid != 0 {
                 // SAFETY: tid は起動時に格納した有効なスレッド ID。
-                unsafe { let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0)); }
+                unsafe {
+                    let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+                }
             } else {
                 std::process::exit(0);
             }
@@ -640,13 +642,17 @@ pub(super) fn run_all() -> Result<()> {
             alt: k.alt,
             is_on: true,
         })
-        .chain(ime_control_off_keys.iter().map(|k| crate::panic_detect::PanicTriggerCombo {
-            vk: k.vk,
-            ctrl: k.ctrl,
-            shift: k.shift,
-            alt: k.alt,
-            is_on: false,
-        }))
+        .chain(
+            ime_control_off_keys
+                .iter()
+                .map(|k| crate::panic_detect::PanicTriggerCombo {
+                    vk: k.vk,
+                    ctrl: k.ctrl,
+                    shift: k.shift,
+                    alt: k.alt,
+                    is_on: false,
+                }),
+        )
         .collect();
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
 

@@ -63,8 +63,7 @@ impl ProbeIo for Output {
     }
 
     fn gji_long_idle(&self) -> bool {
-        crate::hook::current_tick_ms()
-            .saturating_sub(crate::tsf::observer::gji_last_io_ms())
+        crate::hook::current_tick_ms().saturating_sub(crate::tsf::observer::gji_last_io_ms())
             >= crate::tuning::LONG_IDLE_MS
     }
 
@@ -226,8 +225,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             });
                         }
                         let gji_active = io.gji_monitor_healthy();
-                        let needs_literal =
-                            prepend_f2_warmup
+                        let needs_literal = prepend_f2_warmup
                             && gji_active
                             && !io.gji_long_idle()
                             && !io.is_tsf_mode();
@@ -497,7 +495,10 @@ mod tests {
             target: TransmitTarget::Tsf,
         }];
         let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done, "should be Done — LiteralDetect must be skipped when GJI is long-idle");
+        assert!(
+            done,
+            "should be Done — LiteralDetect must be skipped when GJI is long-idle"
+        );
         assert!(io.transmit_tsf_called.get());
         assert!(io.mark_warm_called.get());
     }
@@ -626,15 +627,13 @@ mod tests {
             romaji: "ka".to_string(),
             deferred_vks: vec![],
         });
-        machine.force_phase_for_test(ProbePhase::WaitingForCallback(
-            WaitingFor::FreshF2Sent {
-                probe_settled: false,
-                gji_idle_ms: 15_000,
-                remaining_ms: 0,
-                send,
-                guard: OutputActiveGuard::noop_for_test(),
-            },
-        ));
+        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
+            probe_settled: false,
+            gji_idle_ms: 15_000,
+            remaining_ms: 0,
+            send,
+            guard: OutputActiveGuard::noop_for_test(),
+        }));
         let actions = vec![ProbeAction::SendFreshF2 {
             cold_seq: 0,
             probe_settled: false,
@@ -642,7 +641,10 @@ mod tests {
         // gji_long_idle=true のとき、同一ディスパッチで NameChangeWait をスキップして
         // TransmitTsf まで実行される（返値 true = Done）。
         let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done, "gji_long_idle: NameChangeWait をスキップして同一コールで Done になるべき");
+        assert!(
+            done,
+            "gji_long_idle: NameChangeWait をスキップして同一コールで Done になるべき"
+        );
         assert!(io.send_fresh_f2_called.get());
         assert!(io.transmit_tsf_called.get(), "TransmitTsf が実行されるべき");
         assert!(
