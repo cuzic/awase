@@ -44,7 +44,6 @@ pub mod tuning;
 pub mod vk;
 pub mod win32;
 
-#[allow(dead_code)]
 pub(crate) mod app;
 pub use app::run;
 
