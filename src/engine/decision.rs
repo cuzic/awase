@@ -295,13 +295,6 @@ pub struct InputContext {
     pub right_thumb_down: Option<Timestamp>,
 }
 
-impl InputContext {
-    /// 後方互換: is_romaji の bool アクセサ。
-    #[must_use]
-    pub const fn is_romaji(&self) -> bool {
-        self.input_mode.is_romaji_capable()
-    }
-}
 
 /// エンジン切替・IME 制御の特殊キーコンボを集約する構造体。
 #[derive(Debug)]

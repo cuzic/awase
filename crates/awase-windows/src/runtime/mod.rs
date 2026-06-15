@@ -16,7 +16,6 @@ use crate::win32::HwndExt as _;
 use crate::ImeBelief;
 use awase::platform::PlatformRuntime as _;
 
-pub use crate::focus::classifier::{ImmCapability, InjectionHint};
 
 /// `ImeBelief` と修飾キースナップショットから `InputContext` を構築する。
 ///

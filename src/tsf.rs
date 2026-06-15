@@ -45,11 +45,9 @@ use std::time::Duration;
 
 use timed_fsm::{Response, TimedStateMachine};
 
-use crate::gate::HoldingGate;
+use crate::gate::{GateAction, HoldingGate};
 use crate::types::RawKeyEvent;
 
-// 後方互換: 旧 `crate::tsf::GateAction` パスを維持する re-export。
-pub use crate::gate::GateAction;
 
 /// PendingWarmup フォールバックタイムアウト（ms）。
 pub const WARMUP_TIMEOUT_MS: u64 = 500;
