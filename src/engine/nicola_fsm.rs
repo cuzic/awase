@@ -1241,7 +1241,7 @@ impl NicolaFsm {
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
-    fn handle_bypass(&mut self, ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
+    fn handle_bypass(&mut self, _ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
         log::trace!("bypass: {reason:?}");
         if self.state.is_idle() {
             return Response::pass_through();
