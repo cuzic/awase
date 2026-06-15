@@ -288,24 +288,31 @@ impl Output {
         self.mark_composition_warm();
     }
 
-    /// ローマ字を即座にバッチ送信する（重畳順）。
+    /// ローマ字を即座にバッチ送信する（重畳順・VK ラン分割）。
     /// warm パスおよび `advance_tsf_probe` の ChromeProbe 完了時に呼ぶ。
+    ///
+    /// 同一 VK が連続する箇所（例 "nn"）を 1 つの SendInput に N↓N↓N↑N↑ で含めると
+    /// Chrome/Edge IME が 2 つ目の N↓ をオートリピートと判定して破棄し、
+    /// composition に "n" が残って後続の "i" と結合し "に" になるバグが起きる。
+    /// send_vk_runs と同様にラン境界で分割して別 SendInput を使う。
     pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(VkCode, bool)]) {
-        let mut inputs = Vec::with_capacity(chars.len() * 4);
-        for &(vk, needs_shift) in chars {
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, false));
+        for run in Self::split_vk_runs(chars) {
+            let mut inputs = Vec::with_capacity(run.len() * 4);
+            for &(vk, needs_shift) in run {
+                if needs_shift {
+                    inputs.push(make_key_input(VK_LSHIFT, false));
+                }
+                inputs.push(make_key_input(vk, false));
             }
-            inputs.push(make_key_input(vk, false));
-        }
-        for &(vk, needs_shift) in chars {
-            inputs.push(make_key_input(vk, true));
-            if needs_shift {
-                inputs.push(make_key_input(VK_LSHIFT, true));
+            for &(vk, needs_shift) in run {
+                inputs.push(make_key_input(vk, true));
+                if needs_shift {
+                    inputs.push(make_key_input(VK_LSHIFT, true));
+                }
             }
+            log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", inputs.len());
+            let _ = crate::win32::send_input_safe(&inputs);
         }
-        log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", inputs.len());
-        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     /// Unicode モード: ローマ字→ひらがなに変換して Unicode 文字として直接送信
