@@ -161,41 +161,25 @@ impl TimerIntent {
         threshold_us: u64,
         speculative_delay_us: u64,
     ) -> Vec<timed_fsm::TimerCommand<usize>> {
+        use timed_fsm::TimerCommand::{Kill, Set};
         match self {
             Self::CancelAll => vec![
-                timed_fsm::TimerCommand::Kill { id: TIMER_PENDING },
-                timed_fsm::TimerCommand::Kill {
-                    id: TIMER_SPECULATIVE,
-                },
+                Kill { id: TIMER_PENDING },
+                Kill { id: TIMER_SPECULATIVE },
             ],
             Self::Pending => vec![
-                timed_fsm::TimerCommand::Kill { id: TIMER_PENDING },
-                timed_fsm::TimerCommand::Kill {
-                    id: TIMER_SPECULATIVE,
-                },
-                timed_fsm::TimerCommand::Set {
-                    id: TIMER_PENDING,
-                    duration: Duration::from_micros(threshold_us),
-                },
+                Kill { id: TIMER_PENDING },
+                Kill { id: TIMER_SPECULATIVE },
+                Set { id: TIMER_PENDING, duration: Duration::from_micros(threshold_us) },
             ],
             Self::SpeculativeWait => vec![
-                timed_fsm::TimerCommand::Kill { id: TIMER_PENDING },
-                timed_fsm::TimerCommand::Kill {
-                    id: TIMER_SPECULATIVE,
-                },
-                timed_fsm::TimerCommand::Set {
-                    id: TIMER_SPECULATIVE,
-                    duration: Duration::from_micros(speculative_delay_us),
-                },
+                Kill { id: TIMER_PENDING },
+                Kill { id: TIMER_SPECULATIVE },
+                Set { id: TIMER_SPECULATIVE, duration: Duration::from_micros(speculative_delay_us) },
             ],
             Self::Phase2Transition { remaining_us } => vec![
-                timed_fsm::TimerCommand::Kill {
-                    id: TIMER_SPECULATIVE,
-                },
-                timed_fsm::TimerCommand::Set {
-                    id: TIMER_PENDING,
-                    duration: Duration::from_micros(remaining_us),
-                },
+                Kill { id: TIMER_SPECULATIVE },
+                Set { id: TIMER_PENDING, duration: Duration::from_micros(remaining_us) },
             ],
             Self::Keep => vec![],
         }
@@ -274,6 +258,23 @@ pub enum EngineState {
     SpeculativeChar(PendingKey),
 }
 
+macro_rules! impl_expect {
+    ($fn_name:ident, $variant:ident, $ty:ty) => {
+        #[track_caller]
+        #[must_use]
+        pub fn $fn_name(self) -> $ty {
+            if let Self::$variant(x) = self {
+                x
+            } else {
+                unreachable!(
+                    concat!("FSM invariant violation: expected ", stringify!($variant), ", got {:?}"),
+                    self
+                )
+            }
+        }
+    };
+}
+
 impl EngineState {
     /// 状態が Idle かどうか
     #[must_use]
@@ -302,68 +303,18 @@ impl EngineState {
         }
     }
 
-    /// `PendingChar` の内容を取り出す。他の状態ならパニック。
-    ///
-    /// # Panics
-    ///
-    /// `self` が `PendingChar` でない場合。
-    #[track_caller]
-    #[must_use]
-    pub fn expect_pending_char(self) -> PendingKey {
-        if let Self::PendingChar(key) = self {
-            key
-        } else {
-            unreachable!("FSM invariant violation: expected PendingChar, got {self:?}")
-        }
-    }
-
-    /// `PendingThumb` の内容を取り出す。他の状態ならパニック。
-    ///
-    /// # Panics
-    ///
-    /// `self` が `PendingThumb` でない場合。
-    #[track_caller]
-    #[must_use]
-    pub fn expect_pending_thumb(self) -> PendingThumbData {
-        if let Self::PendingThumb(thumb) = self {
-            thumb
-        } else {
-            unreachable!("FSM invariant violation: expected PendingThumb, got {self:?}")
-        }
-    }
+    impl_expect!(expect_pending_char, PendingChar, PendingKey);
+    impl_expect!(expect_pending_thumb, PendingThumb, PendingThumbData);
+    impl_expect!(expect_speculative_char, SpeculativeChar, PendingKey);
 
     /// `PendingCharThumb` の内容を取り出す。他の状態ならパニック。
-    ///
-    /// # Panics
-    ///
-    /// `self` が `PendingCharThumb` でない場合。
     #[track_caller]
     #[must_use]
     pub fn expect_pending_char_thumb(self) -> (PendingKey, PendingThumbData, bool) {
-        if let Self::PendingCharThumb {
-            char_key,
-            thumb,
-            char1_released,
-        } = self
-        {
+        if let Self::PendingCharThumb { char_key, thumb, char1_released } = self {
             (char_key, thumb, char1_released)
         } else {
             unreachable!("FSM invariant violation: expected PendingCharThumb, got {self:?}")
-        }
-    }
-
-    /// `SpeculativeChar` の内容を取り出す。他の状態ならパニック。
-    ///
-    /// # Panics
-    ///
-    /// `self` が `SpeculativeChar` でない場合。
-    #[track_caller]
-    #[must_use]
-    pub fn expect_speculative_char(self) -> PendingKey {
-        if let Self::SpeculativeChar(key) = self {
-            key
-        } else {
-            unreachable!("FSM invariant violation: expected SpeculativeChar, got {self:?}")
         }
     }
 }
