@@ -94,7 +94,7 @@ static PHYSICAL_KEY_STATE: [AtomicBool; 256] = [const { AtomicBool::new(false) }
 /// VK ごとの物理 KeyDown 時刻（`current_tick_ms` 値）。0 = 押下されていない。
 ///
 /// 用途: 「Shift をどれくらい長く押しているか」で再注入の要否を判断する。
-/// 短押し（例: 200ms 未満）では Ctrl+I 直後の無変換 で IME-OFF 誤発火を
+/// 短押し（例: 200ms 未満）では Ctrl+I 直後の無変換 で IME OFF 誤発火を
 /// 避けるため修飾解放を生かし、長押しでのみ OS state を物理状態に再同期する。
 static PHYSICAL_KEY_DOWN_AT_MS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
 
@@ -118,8 +118,8 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
 /// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
 ///
 /// 用途: `Ctrl↓ → I↓ I↑ → 無変換↓` のような「Ctrl が既に他キーで consume された」
-/// パターンを検知し、無変換↓ で Ctrl+無変換 IME-OFF を即発火せず 50ms 救済窓を設けるため。
-/// 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは false のままなので、即時 IME-OFF できる。
+/// パターンを検知し、無変換↓ で Ctrl+無変換 IME OFF を即発火せず 50ms 救済窓を設けるため。
+/// 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは false のままなので、即時 IME OFF できる。
 ///
 /// Ctrl↓/Ctrl↑ で false にリセットされる。
 static CTRL_CONSUMED_SINCE_DOWN: AtomicBool = AtomicBool::new(false);

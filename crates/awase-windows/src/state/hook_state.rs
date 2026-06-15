@@ -8,7 +8,7 @@ pub struct HookConfig {
     pub right_thumb_vk: VkCode,
 }
 
-/// IME 同期キー（Henkan/Muhenkan/Kanji 等）押下後のキー保留バッファ。
+/// IME 同期キー（変換/無変換/漢字 等）押下後のキー保留バッファ。
 ///
 /// # 役割
 ///

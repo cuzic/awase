@@ -255,7 +255,7 @@ impl Runtime {
                 let elapsed = now_ms.saturating_sub(last_off_ms);
                 if last_off_ms > 0 && elapsed < 10_000 {
                     log::debug!(
-                        "[focus] {} cache-miss: skip reset_stale — explicit IME-OFF {elapsed}ms ago",
+                        "[focus] {} cache-miss: skip reset_stale — explicit IME OFF {elapsed}ms ago",
                         if is_imm_broken { "Imm32Unavailable" } else { "TsfNative" },
                     );
                 } else if is_imm_broken {

@@ -88,7 +88,7 @@ pub(crate) unsafe fn handle_wm_timer(
         Some(id) if id == crate::TIMER_IME_OFF_RESCUE => {
             if let Some(pending_event) = app.take_ime_off_rescue_pending() {
                 log::info!(
-                    "[ime-off-rescue] 50ms timer expired → 保留 vk=0x{:02X} を IME-OFF として発火",
+                    "[ime-off-rescue] 50ms timer expired → 保留 vk=0x{:02X} を IME OFF として発火",
                     pending_event.vk_code
                 );
                 let result = app.replay_ime_off_rescue_event(pending_event);

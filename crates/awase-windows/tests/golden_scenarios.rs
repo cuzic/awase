@@ -7,7 +7,7 @@
 //!
 //! 1. LINE/Qt KANJI ON/OFF
 //! 2. Ctrl+無変換 直後の Ctrl KeyUp で再アクティベートしない (b7d4cdb 防波堤)
-//! 3. Ctrl+変換 IME-ON が直後に解除されない (6fce373 防波堤)
+//! 3. Ctrl+変換 IME ON が直後に解除されない (6fce373 防波堤)
 //! 4. Chrome/Edge no-imm32 で IME OFF が機能
 //! 5. WezTerm TSF cold start
 //! 6. Focus change 直後の stale false が desired を override しない
@@ -115,7 +115,7 @@ fn scenario_2_ctrl_muhenkan_does_not_reactivate_on_ctrl_keyup() {
     );
 }
 
-// ── シナリオ 3: Ctrl+変換 IME-ON が直後に解除されない ─────────
+// ── シナリオ 3: Ctrl+変換 IME ON が直後に解除されない ─────────
 
 #[test]
 fn scenario_3_ctrl_henkan_does_not_deactivate_immediately() {

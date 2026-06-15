@@ -72,9 +72,9 @@ pub struct Runtime {
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
     all_keymaps: crate::keymap::KeymapTable,
-    /// Ctrl+無変換 IME-OFF 救済窓中に保留している event。
+    /// Ctrl+無変換 IME OFF 救済窓中に保留している event。
     ///
-    /// `TIMER_IME_OFF_RESCUE` 満了で IME-OFF 発火、Ctrl↑ 到達で ctrl=false に書き換えて発火。
+    /// `TIMER_IME_OFF_RESCUE` 満了で IME OFF 発火、Ctrl↑ 到達で ctrl=false に書き換えて発火。
     /// `Some` 中に他のキーが到着したら救済中止して原 event を engine に渡す。
     pending_ime_off_rescue: Option<RawKeyEvent>,
     /// OUTPUT_GATE active 中に発火したエンジンタイマー（TIMER_PENDING / TIMER_SPECULATIVE）の

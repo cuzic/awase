@@ -399,9 +399,9 @@ impl Engine {
         Decision::consumed_with(effects)
     }
 
-    /// 与えられたイベントが IME-OFF コンボキーにマッチするかを副作用なしで返す。
+    /// 与えられたイベントが IME OFF コンボキーにマッチするかを副作用なしで返す。
     ///
-    /// Platform 層が「即時 IME-OFF か 50ms 救済窓 か」を判断するための先読み用 API。
+    /// Platform 層が「即時 IME OFF か 50ms 救済窓 か」を判断するための先読み用 API。
     /// 状態は何も変更しないので `&self`。
     #[must_use]
     pub fn matches_ime_off(&self, ctx: &InputContext, event: &RawKeyEvent) -> bool {

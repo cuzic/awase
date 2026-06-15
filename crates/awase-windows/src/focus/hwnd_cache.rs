@@ -15,7 +15,7 @@ pub struct HwndImeSnapshot {
     pub recorded_ms: u64,
     /// `ime_on=false` のとき、その状態がユーザーの明示的操作（SyncKey/PhysicalImeKey 等）によるものか。
     ///
-    /// `true`: Ctrl+無変換 等の明示的 IME-OFF 操作の結果 → このキャッシュは信頼できる。
+    /// `true`: Ctrl+無変換 等の明示的 IME OFF 操作の結果 → このキャッシュは信頼できる。
     /// `false`: 前ウィンドウからの carry-over や Recovery 等の不確かな状態 → stale の可能性あり。
     /// `ime_on=true` のときは常に `false`（使用しない）。
     pub from_explicit_off_intent: bool,

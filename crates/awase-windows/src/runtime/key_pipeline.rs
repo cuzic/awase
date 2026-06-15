@@ -48,9 +48,9 @@ impl Runtime {
             return CallbackResult::Consumed;
         }
 
-        // Phase A: 既存の pending IME-OFF rescue を解決する。
+        // Phase A: 既存の pending IME OFF rescue を解決する。
         // 現在 event が Ctrl↑ なら保留キーを破棄（thumb shift 防止）、
-        // それ以外なら救済中止（原 event を発火 → IME-OFF）。
+        // それ以外なら救済中止（原 event を発火 → IME OFF）。
         // Ctrl↑ 以外は skip_rescue_defer=true でネスト呼び出しし、
         // 再 defer による無限ループを防ぐ。
         if let Some(pending_event) = self.take_ime_off_rescue_pending() {
@@ -59,7 +59,7 @@ impl Runtime {
             if is_ctrl_up {
                 // Ctrl↑ within 50ms: 「Ctrl+他キー中の誤打 無変換」を破棄する。
                 // ctrl=false で発火すると NICOLA FSM が PendingThumb に入り thumb shift に
-                // 化けてしまうため、無変換を消費する（IME-OFF も発火しない）。
+                // 化けてしまうため、無変換を消費する（IME OFF も発火しない）。
                 log::info!(
                     "[ime-off-rescue] Ctrl↑ within 50ms → 無変換 vk=0x{:02X} を破棄（thumb shift 防止）",
                     pending_event.vk_code
@@ -67,7 +67,7 @@ impl Runtime {
                 // 続けて現在 event (Ctrl↑) を通常処理する
             } else {
                 log::info!(
-                    "[ime-off-rescue] non-Ctrl↑ event 到着 → 保留 vk=0x{:02X} を IME-OFF として発火",
+                    "[ime-off-rescue] non-Ctrl↑ event 到着 → 保留 vk=0x{:02X} を IME OFF として発火",
                     pending_event.vk_code
                 );
                 let inner_result = self.kp_run_inner(pending_event, true);
@@ -139,10 +139,10 @@ impl Runtime {
                 event.vk_code, event.event_type,
             );
         }
-        // Phase B: Ctrl+無変換 IME-OFF ミスタイプ救済の defer 判定。
+        // Phase B: Ctrl+無変換 IME OFF ミスタイプ救済の defer 判定。
         // 「Ctrl↓ → 他キー consume → 無変換↓」の並びなら 50ms 救済窓を設けて defer する。
         // 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは ctrl_consumed_since_down=false なので
-        // ここを通過せず engine が即 IME-OFF を発火する。
+        // ここを通過せず engine が即 IME OFF を発火する。
         if !skip_rescue_defer
             && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && event.modifier_snapshot.ctrl
@@ -446,7 +446,7 @@ impl Runtime {
         // - ImmCross (LINE/Qt): KeyDown も KeyUp も Consume。set_ime_open_cross_process で
         //   IME 制御済みのため、物理キーや IMM 注入の KeyUp をアプリに渡すと内部 IME ハンドラが
         //   反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
-        //   (IME-ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデル。
+        //   (IME ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデル。
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
         let profile = self.platform.current_app_profile();
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
@@ -457,7 +457,7 @@ impl Runtime {
             // Imm32Unavailable: KeyDown は shadow_toggle 発火時のみ Consume。
             // KeyUp は KANJI 関連なら常に Consume。
             // 理由: 0xF3 KeyUp を OS に通すと OS IME が 0xF4 KeyDown を生成し、
-            // shadow_toggle が OFF→ON に反転する（Ctrl+無変換後の IME-ON 戻り現象）。
+            // shadow_toggle が OFF→ON に反転する（Ctrl+無変換後の IME ON 戻り現象）。
             is_kanji_event
                 && !profile.should_pass_physical_key()
                 && (shadow_toggled || matches!(event.event_type, awase::types::KeyEventType::KeyUp))

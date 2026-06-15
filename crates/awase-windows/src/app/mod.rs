@@ -357,7 +357,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // SAFETY: lParam は Box::into_raw(Box::new(RawKeyEvent)) のポインタ。
                 //         RawKeyEvent は Copy なので値をコピーして Box をドロップする。
                 let event = unsafe { *Box::from_raw(msg.lParam.0 as *mut RawKeyEvent) };
-                // パニックリセット検出: IME-OFF→ON→OFF の交互シーケンスのみ発動
+                // パニックリセット検出: IME OFF→ON→OFF の交互シーケンスのみ発動
                 if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
                     let mods = event.modifier_snapshot;
                     if let Some(is_on) = crate::panic_detect::get_panic_trigger_direction(

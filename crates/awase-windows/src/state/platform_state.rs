@@ -151,7 +151,7 @@ impl ImeStateHub {
 
     // ── Explicit intent timing ──
 
-    /// 最後に明示的 IME-OFF（target=false）を行った時刻 (tick_ms)。
+    /// 最後に明示的 IME OFF（target=false）を行った時刻 (tick_ms)。
     ///
     /// `last_intent` が `target=false` であればその `at_ms` を返す。
     /// 未設定・target=true の場合は 0 を返す。

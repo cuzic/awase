@@ -25,13 +25,13 @@ pub struct PanicTriggerCombo {
     pub ctrl: bool,
     pub shift: bool,
     pub alt: bool,
-    /// true = IME-ON ショートカット、false = IME-OFF ショートカット
+    /// true = IME ON ショートカット、false = IME OFF ショートカット
     pub is_on: bool,
 }
 
 /// シーケンス検出用の軽量トラッカー。
 ///
-/// 「IME-OFF → IME-ON → IME-OFF」の交互シーケンスが `WINDOW_MS` 以内に
+/// 「IME OFF → IME ON → IME OFF」の交互シーケンスが `WINDOW_MS` 以内に
 /// 完結したときだけ `true` を返す。同一キーの連打では発動しない。
 #[derive(Debug)]
 pub struct RapidPressTracker {
@@ -103,7 +103,7 @@ pub fn record_ime_keydown(is_on: bool, now_ms: u64) {
     });
 }
 
-/// `vk` + modifier が IME-ON/OFF ショートカットに一致する場合、`is_on` 値を返す。
+/// `vk` + modifier が IME ON/OFF ショートカットに一致する場合、`is_on` 値を返す。
 ///
 /// 一致しなければ `None`。bootstrap 前は常に `None`。
 #[must_use]

@@ -588,7 +588,7 @@ impl Output {
     /// VK の DOWN+UP ペアを（オプション shift 付きで）1回の SendInput で送信する。
     ///
     /// 末尾の合成 `LSHIFT↑` は、Ctrl+I 無変換 高速タイピング時に Ctrl 解放前に NONCONVERT が
-    /// 来ると IME-OFF が誤発火する不具合を防ぐため、修飾キーを毎回解放する設計。
+    /// 来ると IME OFF が誤発火する不具合を防ぐため、修飾キーを毎回解放する設計。
     /// modifier_snapshot の Shift 判定は `PHYSICAL_KEY_STATE` ベースのため、
     /// この合成 `↑` が OS state を汚染しても engine 側の shift 面判定には影響しない。
     fn send_vk_pair(vk: VkCode, needs_shift: bool, marker: VkMarker) {

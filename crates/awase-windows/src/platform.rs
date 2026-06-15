@@ -218,9 +218,9 @@ impl PlatformRuntime for WindowsPlatform {
     // ── IME ──
 
     fn set_ime_open(&mut self, open: bool) -> bool {
-        // IMM API で直接 open/close できないアプリ（Imm32Unavailable / TSF-native）では
+        // IMM32 API で直接 open/close できないアプリ（Imm32Unavailable / TSF-native）では
         // get_gui_thread_info + send_ime_control が ~200ms タイムアウトしてブロックする。
-        // 早期 return して IMM 経由のクロスプロセス呼び出しをスキップする。
+        // 早期 return して IMM32 経由のクロスプロセス呼び出しをスキップする。
         if !self.current_app_profile().can_use_imm32_cross_process() {
             return false;
         }
