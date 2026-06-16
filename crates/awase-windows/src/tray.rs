@@ -817,7 +817,7 @@ pub(crate) fn handle_gji_teardown() {
 ///
 /// 現在の登録状態を確認し、登録 → 解除、解除 → 登録 を切り替える。
 /// 結果を config.toml に保存し、バルーン通知で知らせる。
-fn handle_autostart_toggle() {
+pub(crate) fn handle_autostart_toggle() {
     use crate::autostart;
 
     let is_registered = autostart::is_registered();

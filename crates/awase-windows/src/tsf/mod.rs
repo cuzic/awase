@@ -16,6 +16,7 @@ pub mod probe_bridge;
 pub(crate) mod probe_fsm;
 pub mod send;
 
+pub use awase::gate::GateAction;
 pub use awase::tsf::{
-    GateAction, GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, WARMUP_TIMEOUT_MS,
+    GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, WARMUP_TIMEOUT_MS,
 };

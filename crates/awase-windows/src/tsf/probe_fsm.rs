@@ -611,7 +611,7 @@ impl TsfProbeMachine {
             &mut self.phase,
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone),
         );
-        let (probe_settled, gji_idle_ms, remaining_ms, send) = match phase {
+        let (probe_settled, gji_idle_ms, _remaining_ms, send) = match phase {
             ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
                 probe_settled,
                 gji_idle_ms,

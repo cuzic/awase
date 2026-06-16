@@ -10,6 +10,7 @@ use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::cache::DetectionSource;
+use crate::focus::classifier::InjectionHint;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
 use crate::win32::HwndExt as _;
