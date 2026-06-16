@@ -73,7 +73,7 @@ enum NextStep {
         remaining_ms: u64,
     },
     /// `enter_transmit_tsf()` を呼ぶ
-    TransmitTsf { nc_fired: bool },
+    TransmitTsf { nc_fired: bool, gji_resumed: bool },
     /// `enter_transmit_chrome()` を呼ぶ
     TransmitChrome,
     /// `NameChangeWait` → `Probing(GjiSecondary)` へ遷移（fresh_f2_ms を引き継ぐ）
@@ -150,6 +150,11 @@ pub(crate) enum ProbePhase {
         deadline_ms: u64,
         fresh_f2_ms: u64,
         probe_settled: bool,
+        /// gji_long_idle 時に F2×2 送信後の GJI I/O 応答を NameChangeWait 内で監視するフラグ。
+        ///
+        /// `true` の場合、OBJ_NAMECHANGE 待機と並行して GJI I/O 発生を確認し、
+        /// `GJI_IDLE_MS` 静止後に VK パス（`gji_resumed=true`）へ移行する。
+        gji_long_idle_probe: bool,
         send: SendState,
     },
     /// raw TSF literal 検出待ち（TSF 送信後の verify フェーズ）。
@@ -188,6 +193,10 @@ pub(crate) enum ProbeAction {
         /// `false` の場合（タイムアウト）は TSF レイヤーの IME モード切替が未確認のため、
         /// `deferred_vks` が存在しても Unicode TSF パスへのフォールバックを許可する。
         nc_fired: bool,
+        /// gji_long_idle 後に F2×2 を送信し GJI が I/O で応答したことを確認済み。
+        ///
+        /// `true` のとき `used_eager_path`/`gji_long_idle` に関わらず VK パスを強制する。
+        gji_resumed: bool,
         romaji: String,
         deferred_vks: Vec<DeferredVk>,
         target: TransmitTarget,
@@ -392,7 +401,9 @@ impl TsfProbeMachine {
                     probe_settled,
                 }]
             }
-            NextStep::TransmitTsf { nc_fired } => self.enter_transmit_tsf(nc_fired),
+            NextStep::TransmitTsf { nc_fired, gji_resumed } => {
+                self.enter_transmit_tsf(nc_fired, gji_resumed)
+            }
             NextStep::TransmitChrome => self.enter_transmit_chrome(),
             NextStep::StartSecondaryProbe { fresh_f2_ms } => {
                 let send = self.take_send_for_secondary_probe();
@@ -457,7 +468,10 @@ impl TsfProbeMachine {
                                 };
                             }
                         }
-                        NextStep::TransmitTsf { nc_fired: true }
+                        NextStep::TransmitTsf {
+                            nc_fired: true,
+                            gji_resumed: false,
+                        }
                     }
                     ProbeKind::GjiSecondary => {
                         log::debug!(
@@ -466,7 +480,10 @@ impl TsfProbeMachine {
                             outcome.elapsed_ms
                         );
                         // GjiSecondary は NameChange 発火後の二次プローブなので nc_fired=true。
-                        NextStep::TransmitTsf { nc_fired: true }
+                        NextStep::TransmitTsf {
+                            nc_fired: true,
+                            gji_resumed: false,
+                        }
                     }
                     ProbeKind::Chrome => {
                         log::debug!(
@@ -486,9 +503,30 @@ impl TsfProbeMachine {
                 deadline_ms,
                 fresh_f2_ms,
                 probe_settled,
+                gji_long_idle_probe,
                 ..
             } => {
                 let now = clock.now_ms();
+
+                // gji_long_idle_probe モード: F2×2 送信後に GJI が I/O を出したか確認。
+                // GJI_IDLE_MS 静止を確認できれば OBJ_NAMECHANGE を待たず即 VK path へ。
+                if *gji_long_idle_probe {
+                    let gji_io = crate::tsf::observer::gji_last_io_ms();
+                    if gji_io >= *fresh_f2_ms {
+                        let gji_idle = now.saturating_sub(gji_io);
+                        if gji_idle >= crate::tuning::GJI_IDLE_MS {
+                            log::debug!(
+                                "[tsf-probe] cold={} NameChangeWait(long-idle): GJI が F2×2 に応答 (idle={}ms) → VK path",
+                                self.cold_seq, gji_idle
+                            );
+                            return NextStep::TransmitTsf {
+                                nc_fired: true,
+                                gji_resumed: true,
+                            };
+                        }
+                    }
+                }
+
                 let nc_fired = nc_baseline.fired();
                 let timed_out = now >= *deadline_ms;
                 if !nc_fired && !timed_out {
@@ -511,7 +549,10 @@ impl TsfProbeMachine {
                 } else {
                     // nc_fired=false（タイムアウト）の場合は IME モード切替が未確認。
                     // nc_fired=true && probe_settled=true は上の if に入らないのでここに来る。
-                    NextStep::TransmitTsf { nc_fired }
+                    NextStep::TransmitTsf {
+                        nc_fired,
+                        gji_resumed: false,
+                    }
                 }
             }
 
@@ -586,19 +627,19 @@ impl TsfProbeMachine {
                 return;
             }
         };
-        // 3段階タイムアウト:
-        //   settled=true  → GJI 活発、NAMECHANGE はすぐ届く → SETTLE_TIMEOUT_MS
-        //   settled=false かつ gji_idle < LONG_IDLE_MS  → 短期休止、SETTLE_TIMEOUT_MS
-        //   settled=false かつ gji_idle >= LONG_IDLE_MS → 長期休止（WezTerm 等）、
-        //     TSF 初期化に時間がかかる（実測 ~936ms）ため残余バジェットを上限に延長
-        let timeout_ms = if !probe_settled && gji_idle_ms >= crate::tuning::LONG_IDLE_MS {
-            remaining_ms.max(crate::tuning::SETTLE_TIMEOUT_MS)
+        // タイムアウト選択:
+        //   gji_long_idle_probe → F2×2 に対する GJI I/O 応答を短期待機（GJI_LONG_IDLE_PROBE_TOTAL_MS）
+        //     タイムアウト後は unicode TSF フォールバック。GJI が応答すれば VK path に移行。
+        //   settled=true / settled=false かつ gji_idle < LONG_IDLE_MS → SETTLE_TIMEOUT_MS
+        let gji_long_idle_probe = !probe_settled && gji_idle_ms >= crate::tuning::LONG_IDLE_MS;
+        let timeout_ms = if gji_long_idle_probe {
+            crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS
         } else {
             crate::tuning::SETTLE_TIMEOUT_MS
         };
         let deadline_ms = fresh_f2_ms + timeout_ms;
         log::debug!(
-            "[tsf-probe] cold={} NameChangeWait deadline {}ms (probe_settled={probe_settled}, gji_idle={gji_idle_ms}ms, remaining={remaining_ms}ms)",
+            "[tsf-probe] cold={} NameChangeWait deadline {}ms (probe_settled={probe_settled}, gji_idle={gji_idle_ms}ms, gji_long_idle_probe={gji_long_idle_probe})",
             self.cold_seq, timeout_ms
         );
         self.phase = ProbePhase::NameChangeWait {
@@ -606,6 +647,7 @@ impl TsfProbeMachine {
             deadline_ms,
             fresh_f2_ms,
             probe_settled,
+            gji_long_idle_probe,
             send,
         };
     }
@@ -640,28 +682,7 @@ impl TsfProbeMachine {
         }
     }
 
-    /// gji_long_idle 時に NameChangeWait をスキップして直接 TransmitTsf へ進む。
-    ///
-    /// `apply_fresh_f2_sent` の直後に呼ぶこと。`nc_fired=false` として TransmitTsf を emit する。
-    /// 呼び出し元 (`dispatch_probe_actions`) で `used_eager_path || gji_long_idle` として
-    /// unicode TSF が強制される。
-    pub(crate) fn skip_namechange_wait(&mut self) -> Vec<ProbeAction> {
-        if !matches!(self.phase, ProbePhase::NameChangeWait { .. }) {
-            log::warn!(
-                "[tsf-probe] cold={} skip_namechange_wait: unexpected phase {}",
-                self.cold_seq,
-                self.phase_label_internal()
-            );
-            return vec![];
-        }
-        log::debug!(
-            "[tsf-probe] cold={} gji_long_idle → NameChangeWait スキップ (nc_fired=false, unicode TSF 強制)",
-            self.cold_seq
-        );
-        self.enter_transmit_tsf(false)
-    }
-
-    fn enter_transmit_tsf(&mut self, nc_fired: bool) -> Vec<ProbeAction> {
+    fn enter_transmit_tsf(&mut self, nc_fired: bool, gji_resumed: bool) -> Vec<ProbeAction> {
         let send = self.take_current_send_for_transmit();
         let cold_seq = self.cold_seq;
         let ctx = self.ctx;
@@ -671,6 +692,7 @@ impl TsfProbeMachine {
             prepend_f2_warmup: ctx.prepend_f2_warmup,
             used_eager_path: ctx.used_eager_path,
             nc_fired,
+            gji_resumed,
             romaji: send.romaji,
             deferred_vks: send.deferred_vks,
             target: TransmitTarget::Tsf,
@@ -686,6 +708,7 @@ impl TsfProbeMachine {
             prepend_f2_warmup: false,
             used_eager_path: false,
             nc_fired: true,
+            gji_resumed: false,
             romaji: send.romaji,
             deferred_vks: send.deferred_vks,
             target: TransmitTarget::Chrome,
@@ -782,6 +805,7 @@ mod tests {
             deadline_ms,
             fresh_f2_ms: 0,
             probe_settled,
+            gji_long_idle_probe: false,
             send: SendState::default(),
         }
     }

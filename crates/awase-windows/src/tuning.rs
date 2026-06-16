@@ -72,6 +72,13 @@ pub const SETTLE_TIMEOUT_MS: u64 = 300;
 /// OBJ_NAMECHANGE 後の GJI 二次プローブ最大待機時間 (ms)。
 pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
 
+/// GJI long idle 後の F2×2 に対する GJI I/O 応答確認 NameChangeWait の最大タイムアウト (ms)。
+///
+/// GJI は F2 単発（1×DOWN+UP）では I/O を出さないが F2×2 連続では出す（cold=1244 実測: 31ms）。
+/// GJI_IDLE_MS (80ms) + POST_IDLE_MARGIN_MS (30ms) + バッファ = 150ms 以内に収まるよう設定。
+/// タイムアウト時は unicode TSF フォールバックへ（現状と同じ挙動）。
+pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 150;
+
 /// Chrome プローブ最小待機時間 (ms)。
 ///
 /// F2 を SendMessageTimeout で送信後、TSF 応答を待つ最低時間。
