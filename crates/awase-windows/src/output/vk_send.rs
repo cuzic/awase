@@ -178,27 +178,30 @@ impl Output {
             // プログラム的な F2 送信（SendMessageTimeout + SendInput）をスキップし、
             // 物理 F2 の時刻を probe 基準点として使うことで Chrome が 3 回 F2 を受け取る
             // バグ（「かんりのつごう → kaんりのつごう」）を防ぐ。
-            // ただし F2 から F2_STALE_MS 以上経過した場合は context が失効している
-            // 可能性があるため、F2NonTsf を無効化して programmatic F2 を再送する。
+            // ただし以下の場合は F2NonTsf を無効化して programmatic F2 を再送する:
+            // - F2 から F2_STALE_MS 以上経過した場合: context が失効している可能性
+            // - long_idle=true の場合: 物理 F2 単体では Chrome の composition context
+            //   を再初期化できない（実測: ~518ms 必要なのに probe が 499ms で発火して
+            //   最初のキーが literal になる）。programmatic F2 (SendMessageTimeout +
+            //   SendInput) を必ず送って確実に初期化する。
             let cold_reason = self.composition.last_cold_reason();
             let cold_marked_ms = self.composition.cold_marked_ms();
             let f2_stale = cold_reason == ColdReason::F2NonTsf
                 && cold_marked_ms != 0
                 && crate::hook::current_tick_ms().saturating_sub(cold_marked_ms)
                     > crate::tuning::F2_STALE_MS;
-            let skip_f2_send = cold_reason == ColdReason::F2NonTsf && !f2_stale;
-            let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
-                cold_marked_ms
-            } else {
-                crate::hook::current_tick_ms()
-            };
-
             // ノンブロッキング Chrome プローブを開始。
             // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
             // min/max を延長する（120ms では GJI が settle する前に timeout して literal
             // 出力される回帰を抑制）。
             let long_idle =
                 self.composition.idle_ms_at_last_cold() > crate::tuning::CHROME_LONG_IDLE_MS;
+            let skip_f2_send = cold_reason == ColdReason::F2NonTsf && !f2_stale && !long_idle;
+            let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
+                cold_marked_ms
+            } else {
+                crate::hook::current_tick_ms()
+            };
             // 物理 F2 (skip_f2_send=true) かつ GJI が長期 idle の場合: Chrome の composition
             // context 再初期化に ~326ms 要するケースを確認。keyboard idle が短くても
             // GJI が休眠していれば長いプローブ min_ms が必要。
