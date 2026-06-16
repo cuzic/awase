@@ -80,13 +80,14 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 ///   `Composition\tF14\tIMEOff`
 ///   `Conversion\tF14\tIMEOff`
 ///
-/// `gji_monitor_ok=true`（GJI プロセス検出済み）の場合のみ適用可能。
-/// GJI が起動していない環境では `KanjiToggleStrategy`（MS-IME 向け）がフォールバックする。
+/// `gji_monitor_ok=true`（GJI プロセス検出済み）かつ
+/// `gji_keybinds_ok=true`（F13/F14 が config1.db に登録済み）の場合のみ適用可能。
+/// どちらかが false の場合は `KanjiToggleStrategy`（MS-IME 向け）がフォールバックする。
 pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.observed.gji_monitor_ok
+        view.observed.gji_monitor_ok && view.observed.gji_keybinds_ok
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {

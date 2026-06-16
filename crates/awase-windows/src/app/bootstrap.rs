@@ -111,7 +111,12 @@ pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
                 }
             }
         }
-        "enabled" | "disabled" => {}
+        "enabled" => {
+            if !autostart::is_registered() {
+                let _ = autostart::register();
+            }
+        }
+        "disabled" => {}
         other => {
             log::warn!("Unknown auto_start value: {other}, ignoring");
         }

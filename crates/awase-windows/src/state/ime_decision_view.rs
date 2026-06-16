@@ -39,6 +39,9 @@ pub(crate) struct ObservedState {
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     /// `GjiDirectStrategy` の `is_applicable` ゲートに使用する。
     pub gji_monitor_ok: bool,
+    /// F13/F14 キーバインドが GJI の config1.db に登録済みか。
+    /// `GjiDirectStrategy` の `is_applicable` ゲートに使用する。
+    pub gji_keybinds_ok: bool,
     /// GJI candidate が SHOW になってから次の `apply_ime_open` 完了まで `true`。
     /// `shadow=false` なのに candidate が表示された desync を `KanjiToggleStrategy` が検出するために使う。
     pub candidate_was_seen: bool,
@@ -54,6 +57,7 @@ impl ObservedState {
             candidate_visible: obs.gji_candidate_visible(),
             gji_last_io_ms: obs.gji_last_io_ms(),
             gji_monitor_ok: obs.gji_monitor_ok(),
+            gji_keybinds_ok: obs.gji_keybinds_ok(),
             candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
         }
     }

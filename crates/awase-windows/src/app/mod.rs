@@ -129,7 +129,7 @@ fn load_config() -> Result<AppConfig> {
 }
 
 /// 設定ファイルのパスを探索する
-fn find_config_path() -> Result<PathBuf> {
+pub(crate) fn find_config_path() -> Result<PathBuf> {
     // `--flag` / `--flag value` 形式をスキップし、最初の非フラグ引数をパスとして扱う
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

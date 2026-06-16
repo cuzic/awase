@@ -125,6 +125,12 @@ pub struct TsfObservations {
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
+    /// F13/F14 キーバインドが GJI の config1.db に登録済みか。
+    ///
+    /// GJI attach 時に config1.db を読み取り、`gji::patch()` が `Ok(None)` を返した場合に `true`。
+    /// GJI detach 時に `false` にリセットされる。
+    pub(super) gji_keybinds_ok: AtomicBool,
+
     /// GJI candidate が SHOW になってから次の `on_ime_applied` 呼び出しまでの間に
     /// 「shadow=OFF なのに候補ウィンドウが表示された（desync）」ことがあったかを記録するラッチ。
     ///
@@ -149,6 +155,7 @@ impl TsfObservations {
             composition_probe: ChangeCounter::new(),
             gji_last_io_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
+            gji_keybinds_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
         }
     }
@@ -161,6 +168,11 @@ impl TsfObservations {
     /// GJI モニターが利用可能かを読み取る（Acquire）。
     pub fn gji_monitor_ok(&self) -> bool {
         self.gji_monitor_ok.load(Ordering::Acquire)
+    }
+
+    /// F13/F14 キーバインドが config1.db に登録済みかを読み取る（Acquire）。
+    pub fn gji_keybinds_ok(&self) -> bool {
+        self.gji_keybinds_ok.load(Ordering::Acquire)
     }
 
     /// GJI candidate window が現在表示中かを読み取る（Relaxed）。
@@ -252,6 +264,22 @@ pub(crate) fn gji_candidate_visible_now() -> bool {
 /// `apply_ime_open` 後に `candidate_was_seen` フラグをリセットする。
 pub(crate) fn reset_candidate_was_seen() {
     TSF_OBS.candidate_was_seen.store(false, Ordering::Relaxed);
+}
+
+/// GJI setup 完了後に呼んで `gji_keybinds_ok` を即座に `true` にセットする。
+///
+/// config1.db パッチが成功した時点で GJI monitor の re-attach を待たずに
+/// `GjiDirectStrategy` を有効化するために使う。
+pub(crate) fn notify_gji_keybinds_registered() {
+    TSF_OBS.gji_keybinds_ok.store(true, Ordering::Release);
+}
+
+/// GJI teardown 完了後に呼んで `gji_keybinds_ok` を即座に `false` にセットする。
+///
+/// config1.db から F13/F14 エントリを削除した時点で GJI monitor の re-attach を待たずに
+/// `GjiDirectStrategy` を無効化し `KanjiToggle` にフォールバックさせるために使う。
+pub(crate) fn notify_gji_keybinds_removed() {
+    TSF_OBS.gji_keybinds_ok.store(false, Ordering::Release);
 }
 
 /// OBJ_NAMECHANGE カウンタのベースライン値。
@@ -447,6 +475,18 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
                 log::info!("[gji-monitor] attached to GJI process");
+                let keybinds_ok = crate::gji::default_config_path()
+                    .and_then(|p| std::fs::read(&p).ok())
+                    .map_or(false, |data| matches!(crate::gji::patch(&data), Ok(None)));
+                if keybinds_ok {
+                    log::info!("[gji-monitor] F13/F14 keybinds registered in config1.db");
+                } else {
+                    log::warn!(
+                        "[gji-monitor] F13/F14 keybinds not registered in config1.db \
+                         — GjiDirect strategy unavailable, falling back to KanjiToggle"
+                    );
+                }
+                TSF_OBS.gji_keybinds_ok.store(keybinds_ok, Ordering::Release);
                 TSF_OBS
                     .gji_last_io_ms
                     .store(m.last_change_ms(), Ordering::Relaxed);
@@ -466,6 +506,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
             } else {
                 log::info!("[gji-monitor] GJI process exited, will re-attach");
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
+                TSF_OBS.gji_keybinds_ok.store(false, Ordering::Relaxed);
                 monitor = None;
                 next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
             }

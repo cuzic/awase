@@ -14,9 +14,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_SEPARATOR,
-    MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_DESTROY, WM_RBUTTONUP,
-    WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED,
+    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_DESTROY,
+    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use anyhow::{Context, Result};
@@ -26,6 +26,8 @@ const IDM_SETTINGS: u16 = 50;
 const IDM_RESTART_ADMIN: u16 = 51;
 const IDM_CLEAR_IMM_CACHE: u16 = 52;
 const IDM_GJI_SETUP: u16 = 53;
+const IDM_AUTOSTART: u16 = 54;
+const IDM_GJI_TEARDOWN: u16 = 55;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -41,6 +43,8 @@ pub enum TrayCommand {
     RestartAdmin,
     ClearImmCache,
     GjiSetup,
+    GjiTeardown,
+    ToggleAutoStart,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
 }
@@ -60,6 +64,20 @@ unsafe fn append_menu_item(hmenu: HMENU, id: u16, label: &str) {
 /// `hmenu` は有効なポップアップメニューハンドルでなければならない。
 unsafe fn append_menu_sep(hmenu: HMENU) {
     let _ = unsafe { AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null()) };
+}
+
+/// チェックマーク付き文字列メニュー項目を追加するヘルパー。
+///
+/// # Safety
+/// `hmenu` は有効なポップアップメニューハンドルでなければならない。
+unsafe fn append_menu_item_checked(hmenu: HMENU, id: u16, label: &str, checked: bool) {
+    let text = crate::win32::to_wide(label);
+    let flags = if checked {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
+    let _ = unsafe { AppendMenuW(hmenu, flags, usize::from(id), PCWSTR(text.as_ptr())) };
 }
 
 /// トレイアイコン ID
@@ -479,6 +497,14 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
         append_menu_item(hmenu, IDM_CLEAR_IMM_CACHE, "学習キャッシュをクリア");
         append_menu_item(hmenu, IDM_GJI_SETUP, "Google 日本語入力のセットアップ");
+        append_menu_item(hmenu, IDM_GJI_TEARDOWN, "Google 日本語入力の F13/F14 設定を削除");
+        let autostart_registered = crate::autostart::is_registered();
+        append_menu_item_checked(
+            hmenu,
+            IDM_AUTOSTART,
+            "ログオン時に自動起動",
+            autostart_registered,
+        );
         if !elevated {
             append_menu_item(hmenu, IDM_RESTART_ADMIN, "管理者として再起動");
         }
@@ -515,6 +541,8 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_RESTART_ADMIN => Some(TrayCommand::RestartAdmin),
         IDM_CLEAR_IMM_CACHE => Some(TrayCommand::ClearImmCache),
         IDM_GJI_SETUP => Some(TrayCommand::GjiSetup),
+        IDM_GJI_TEARDOWN => Some(TrayCommand::GjiTeardown),
+        IDM_AUTOSTART => Some(TrayCommand::ToggleAutoStart),
         c if (IDM_LAYOUT_BASE..IDM_TOGGLE).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
@@ -647,6 +675,7 @@ pub(crate) fn handle_gji_setup() {
             return;
         }
         Ok(false) => {
+            crate::tsf::observer::notify_gji_keybinds_registered();
             let _ = crate::with_app(|app| {
                 app.show_tray_balloon(
                     "awase — セットアップ済み",
@@ -657,6 +686,7 @@ pub(crate) fn handle_gji_setup() {
         }
         Ok(true) => {
             log::info!("GJI config patched successfully");
+            crate::tsf::observer::notify_gji_keybinds_registered();
         }
     }
 
@@ -692,6 +722,133 @@ pub(crate) fn handle_gji_setup() {
                 });
             }
         },
+    }
+}
+
+/// GJI F13/F14 キーバインド削除をトレイメニューから実行する。
+pub(crate) fn handle_gji_teardown() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDCANCEL, MB_ICONWARNING, MB_OKCANCEL,
+    };
+
+    let caption = crate::win32::to_wide("Google 日本語入力の F13/F14 設定を削除");
+    let message = crate::win32::to_wide(concat!(
+        "Google 日本語入力から F13/F14 キーバインドを削除します。\r\n\r\n",
+        "削除後は IME ON/OFF に VK_KANJI（半角/全角キー）を使う\r\n",
+        "フォールバック動作に切り替わります。\r\n\r\n",
+        "設定を適用するため Google 日本語入力を再起動します。\r\n",
+        "よろしいですか？"
+    ));
+
+    // SAFETY: `MessageBoxW` は有効な NUL 終端 UTF-16 文字列ポインタを受け取る標準的な呼び出し。
+    let response = unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(message.as_ptr()),
+            PCWSTR(caption.as_ptr()),
+            MB_OKCANCEL | MB_ICONWARNING,
+        )
+    };
+
+    if response == IDCANCEL {
+        return;
+    }
+
+    match crate::gji::run_gji_teardown() {
+        Err(e) => {
+            log::error!("GJI teardown failed: {e}");
+            let _ = crate::with_app(|app| {
+                app.show_tray_balloon("awase — 削除失敗", &e);
+            });
+            return;
+        }
+        Ok(false) => {
+            crate::tsf::observer::notify_gji_keybinds_removed();
+            let _ = crate::with_app(|app| {
+                app.show_tray_balloon(
+                    "awase — 設定なし",
+                    "F13/F14 キーバインドは登録されていません",
+                );
+            });
+            return;
+        }
+        Ok(true) => {
+            log::info!("GJI config unpatched successfully");
+            crate::tsf::observer::notify_gji_keybinds_removed();
+        }
+    }
+
+    // GJI 実行ファイルパスをレジストリから取得して再起動
+    match crate::gji::get_gji_exe_path() {
+        None => {
+            log::warn!("GJI exe path not found in registry — skipping restart");
+            let _ = crate::with_app(|app| {
+                app.show_tray_balloon(
+                    "awase — 削除完了",
+                    "F13/F14 キーバインドを削除しました。\nGoogle 日本語入力を手動で再起動してください。",
+                );
+            });
+        }
+        Some(exe) => match crate::gji::kill_and_restart_gji(&exe) {
+            Ok(()) => {
+                let _ = crate::with_app(|app| {
+                    app.show_tray_balloon(
+                        "awase — 削除完了",
+                        "F13/F14 キーバインドを削除し、Google 日本語入力を再起動しました。",
+                    );
+                });
+            }
+            Err(e) => {
+                log::error!("GJI restart failed: {e}");
+                let _ = crate::with_app(|app| {
+                    app.show_tray_balloon(
+                        "awase — 削除完了（再起動失敗）",
+                        &format!(
+                            "F13/F14 キーバインドを削除しましたが、再起動に失敗しました:\n{e}"
+                        ),
+                    );
+                });
+            }
+        },
+    }
+}
+
+/// 自動起動のトグル処理。
+///
+/// 現在の登録状態を確認し、登録 → 解除、解除 → 登録 を切り替える。
+/// 結果を config.toml に保存し、バルーン通知で知らせる。
+fn handle_autostart_toggle() {
+    use crate::autostart;
+
+    let is_registered = autostart::is_registered();
+    let (success, new_value, msg) = if is_registered {
+        (autostart::unregister(), "disabled", "自動起動を無効にしました")
+    } else {
+        (autostart::register(), "enabled", "自動起動を有効にしました")
+    };
+
+    if success {
+        save_auto_start_config(new_value);
+        let _ = crate::with_app(|app| {
+            app.show_tray_balloon("awase", msg);
+        });
+    }
+}
+
+/// config.toml の `auto_start` 値を書き換えて保存する。
+fn save_auto_start_config(value: &str) {
+    let Ok(config_path) = crate::app::find_config_path() else {
+        log::warn!("Could not find config path to save auto_start");
+        return;
+    };
+    match awase::config::AppConfig::load(&config_path) {
+        Ok(mut config) => {
+            config.general.auto_start = value.to_string();
+            if let Err(e) = config.save(&config_path) {
+                log::error!("Failed to save auto_start config: {e}");
+            }
+        }
+        Err(e) => log::error!("Failed to load config for saving auto_start: {e}"),
     }
 }
 
@@ -735,6 +892,8 @@ unsafe extern "system" fn tray_wnd_proc(
                 }
                 Some(TrayCommand::RestartAdmin) => restart_as_admin(),
                 Some(TrayCommand::GjiSetup) => handle_gji_setup(),
+                Some(TrayCommand::GjiTeardown) => handle_gji_teardown(),
+                Some(TrayCommand::ToggleAutoStart) => handle_autostart_toggle(),
                 Some(TrayCommand::SelectLayout(index)) => {
                     let _ = crate::with_app(|app| app.switch_layout(index));
                 }

@@ -228,6 +228,81 @@ pub fn kill_and_restart_gji(exe_path: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// config1.db から F13/F14 キーバインドを削除する。
+///
+/// `Ok(None)` = 削除不要（未登録）、`Ok(Some((bytes, names)))` = 削除済み。
+pub fn unpatch(data: &[u8]) -> PatchResult {
+    let (varint_offset, block_start, block_length) = find_block(data)?;
+
+    let block_end = block_start
+        .checked_add(block_length)
+        .filter(|&e| e <= data.len())
+        .ok_or_else(|| {
+            format!(
+                "block length {block_length} overflows file size {}",
+                data.len()
+            )
+        })?;
+
+    let block = std::str::from_utf8(&data[block_start..block_end])
+        .map_err(|e| format!("key binding block is not valid UTF-8: {e}"))?;
+
+    let present: Vec<&'static str> = ENTRIES
+        .iter()
+        .copied()
+        .filter(|entry| block.contains(entry))
+        .collect();
+
+    if present.is_empty() {
+        return Ok(None);
+    }
+
+    let mut new_block = block.to_string();
+    for entry in &present {
+        new_block = new_block.replace(entry, "");
+    }
+
+    let new_block_bytes = new_block.into_bytes();
+    let new_length = new_block_bytes.len();
+    let new_varint = encode_varint2(new_length)?;
+
+    let mut result = Vec::with_capacity(data.len());
+    result.extend_from_slice(&data[..block_start]);
+    result.extend_from_slice(&new_block_bytes);
+    result.extend_from_slice(&data[block_end..]);
+    result[varint_offset] = new_varint[0];
+    result[varint_offset + 1] = new_varint[1];
+
+    Ok(Some((result, present)))
+}
+
+/// トレイメニューから呼ばれる GJI キーバインド削除。
+///
+/// 1. config1.db から ENTRIES を除去（未登録なら `Ok(false)`）
+///
+/// 戻り値: `Ok(true)` = 削除実施、`Ok(false)` = 未登録（変更なし）、`Err` = エラーメッセージ
+pub fn run_gji_teardown() -> Result<bool, String> {
+    let path = default_config_path()
+        .ok_or("LOCALAPPDATA が設定されていないため config1.db のパスを特定できません")?;
+
+    let data = fs::read(&path)
+        .map_err(|e| format!("config1.db を読み込めません ({}): {e}", path.display()))?;
+
+    match unpatch(&data)? {
+        None => Ok(false),
+        Some((patched, removed)) => {
+            let backup = path.with_extension("db.bak");
+            if let Err(e) = fs::write(&backup, &data) {
+                log::warn!("GJI config backup failed: {e}");
+            }
+            fs::write(&path, &patched)
+                .map_err(|e| format!("config1.db の書き込みに失敗しました: {e}"))?;
+            log::info!("GJI config unpatched: {} entries removed", removed.len());
+            Ok(true)
+        }
+    }
+}
+
 /// トレイメニューから呼ばれるワンショット GJI セットアップ。
 ///
 /// 1. config1.db をパッチ（すでに完了なら `Ok(false)`）
@@ -307,5 +382,44 @@ mod tests {
             let decoded = ((b0 & 0x7F) as usize) | (((b1 & 0x7F) as usize) << 7);
             assert_eq!(decoded, v, "roundtrip failed for {v}");
         }
+    }
+
+    #[test]
+    fn unpatch_removes_all_entries() {
+        let existing = ENTRIES.join("");
+        let db = make_test_db(&existing);
+        let (patched, removed) = unpatch(&db).unwrap().unwrap();
+        assert_eq!(removed.len(), 6);
+        for entry in ENTRIES {
+            assert!(
+                !patched.windows(entry.len()).any(|w| w == entry.as_bytes()),
+                "still present: {entry}"
+            );
+        }
+    }
+
+    #[test]
+    fn unpatch_skips_when_none_present() {
+        let db = make_test_db("DirectInput\tF15\tIMEOn\n");
+        assert!(unpatch(&db).unwrap().is_none());
+    }
+
+    #[test]
+    fn unpatch_removes_only_present() {
+        let db = make_test_db("Precomposition\tF13\tIMEOn\nPrecomposition\tF14\tIMEOff\n");
+        let (_, removed) = unpatch(&db).unwrap().unwrap();
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"Precomposition\tF13\tIMEOn\n"));
+        assert!(removed.contains(&"Precomposition\tF14\tIMEOff\n"));
+    }
+
+    #[test]
+    fn patch_then_unpatch_roundtrip() {
+        let original = make_test_db("DirectInput\tF15\tIMEOn\n");
+        let (patched, _) = patch(&original).unwrap().unwrap();
+        let (restored, _) = unpatch(&patched).unwrap().unwrap();
+        // 元のブロック内容が復元されていること
+        assert!(unpatch(&restored).unwrap().is_none());
+        assert!(patch(&restored).unwrap().is_some());
     }
 }
