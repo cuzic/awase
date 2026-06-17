@@ -58,18 +58,22 @@ impl TsfSendPipeline {
         outcome: &WarmupOutcome,
     ) -> usize {
         // cold パスかつ eager warmup あり → unicode TSF（既存）
-        // warm パス（prepend_f2_warmup=false）→ ひらがなとして判明している場合のみ unicode TSF
-        //   未確定文字（VK romaji の途中）がなく直接 codepoint が分かるため、
-        //   B↓A↓B↑A↑ VK 送信による「b」チラつきを回避できる。
         // cold パスかつ eager なし → VK のまま（F2 ウォームアップ未完のため）
+        // warm パス（prepend_f2_warmup=false）:
+        //   used_eager_path=true → unicode TSF（B↓A↓B↑A↑ VK の「b」チラつき回避）
+        //   used_eager_path=false → VK run
+        //   TSF-native (WezTerm): send_romaji_as_tsf_warm が false を設定するため常に VK run →
+        //     GJI コンポジション経由で候補ウィンドウが表示される。
         let unicode_kana: Option<char> = if outcome.prepend_f2_warmup {
             if outcome.used_eager_path {
                 kana_for_romaji_static(romaji)
             } else {
                 None
             }
-        } else {
+        } else if outcome.used_eager_path {
             kana_for_romaji_static(romaji)
+        } else {
+            None
         };
 
         let t_send = crate::hook::current_tick_ms();
@@ -376,7 +380,10 @@ impl Output {
             session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
-        let used_eager_path = self.composition.eager_warmup_sent_ms() != 0;
+        // TSF-native (WezTerm 等 ForceTsf) では unicode は KEYEVENTF_UNICODE で GJI コンポジションを
+        // バイパスするため、VK path を強制する（used_eager_path=false → VK run）。
+        // 非 TSF mode では既存の挙動（eager warmup 送信済みなら unicode）を維持する。
+        let used_eager_path = !self.is_tsf_mode() && self.composition.eager_warmup_sent_ms() != 0;
 
         log::debug!(
             "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",

@@ -225,10 +225,19 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             //     通常ここに来ない。gji_resumed=true で VK path が強制される。
                             //   gji_long_idle (keybinds_ok=false): unicode TSF を強制（IME モード非依存）。
                             //   非 long_idle: used_eager_path のまま（8d38b2d の挙動を維持）。
+                            //
+                            // TSF mode (WezTerm 等 ForceTsf): OBJ_NAMECHANGE が CASCADIA クラスではない
+                            //   ため nc_fired=false は常態。unicode は KEYEVENTF_UNICODE で GJI コンポジション
+                            //   を完全にバイパスし候補ウィンドウが表示されない。
+                            //   GJI が warmup に応答して活動中 (!gji_long_idle) → VK path で GJI コンポジション経由。
+                            //   GJI が長期静止 (gji_long_idle) → unicode fallback（GJI 未応答時の安全策）。
                             used_eager_path: if gji_resumed {
                                 false // GJI が F2×2 に応答: VK path 強制
                             } else if nc_fired {
                                 (used_eager_path || io.gji_long_idle()) && deferred_vks.is_empty()
+                            } else if io.is_tsf_mode() {
+                                // TSF-native (WezTerm): GJI 活動中は VK path で候補表示; 長期静止は unicode
+                                io.gji_long_idle()
                             } else {
                                 used_eager_path || io.gji_long_idle()
                             },
@@ -707,9 +716,10 @@ mod tests {
     #[test]
     fn nc_not_fired_with_gji_long_idle_forces_unicode_tsf() {
         // nc_fired=false（NameChangeWait タイムアウトまたはスキップ）かつ gji_long_idle のとき、
-        // used_eager_path=false でも unicode TSF（used_eager_path=true）が強制される。
+        // 非 TSF mode では used_eager_path=false でも unicode TSF（used_eager_path=true）が強制される。
         let io = FakeProbeIo {
             gji_long_idle: true,
+            tsf_mode: false, // 非 TSF mode（Chrome 等）
             ..Default::default()
         };
         let mut machine = make_gji_machine();
@@ -728,7 +738,65 @@ mod tests {
         assert!(io.transmit_tsf_called.get());
         assert!(
             io.last_used_eager_path.get(),
-            "gji_long_idle: nc_fired=false でも used_eager_path が true になるべき（unicode TSF 強制）"
+            "非TSF mode + gji_long_idle: nc_fired=false でも used_eager_path が true になるべき（unicode TSF 強制）"
+        );
+    }
+
+    #[test]
+    fn tsf_mode_nc_not_fired_gji_active_uses_vk_path() {
+        // TSF-native (WezTerm): nc_fired=false でも GJI が活動中（!gji_long_idle）なら VK path。
+        // KEYEVENTF_UNICODE は GJI コンポジションをバイパスして候補ウィンドウが出ないため。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            gji_long_idle: false, // GJI 活動中（warmup に応答済み）
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: true, // eager warmup あり
+            nc_fired: false,       // WezTerm は CASCADIA クラスではないため常に false
+            gji_resumed: false,
+            romaji: "i".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done);
+        assert!(io.transmit_tsf_called.get());
+        assert!(
+            !io.last_used_eager_path.get(),
+            "TSF mode + nc_fired=false + GJI 活動中 → VK path（used_eager_path=false）で GJI 候補を表示"
+        );
+    }
+
+    #[test]
+    fn tsf_mode_nc_not_fired_gji_long_idle_uses_unicode_fallback() {
+        // TSF-native (WezTerm): GJI が長期静止（warmup 未応答）なら unicode fallback。
+        // VK path では GJI が受け付けず romaji がそのまま出力される可能性があるため。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            gji_long_idle: true, // GJI 長期静止（warmup に未応答）
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: true,
+            nc_fired: false,
+            gji_resumed: false,
+            romaji: "i".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done);
+        assert!(io.transmit_tsf_called.get());
+        assert!(
+            io.last_used_eager_path.get(),
+            "TSF mode + nc_fired=false + GJI 長期静止 → unicode fallback（used_eager_path=true）"
         );
     }
 }
