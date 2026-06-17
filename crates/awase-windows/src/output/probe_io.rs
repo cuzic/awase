@@ -56,12 +56,10 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
-    /// F14（IME-OFF）→ F13（IME-ON）を送信して GJI を確実に活性化する。
+    /// 単一の VK キーを `SendInput` で送信する。
     ///
-    /// keybinds_ok=true 時に NameChangeWait のタイムアウト後（nc_fired=false）に発行され、
-    /// GJI に直接 IME OFF → ON 遷移を強制して I/O 応答を促す。
-    /// `apply_f14f13_sent` に渡す送信時刻（ms）を返す。
-    fn send_f14_f13(&self) -> u64;
+    /// `KeySeqExec` フェーズが `ProbeAction::SendSeqKey` を emit したときに呼ばれる。
+    fn send_key(&self, vk: awase::types::VkCode);
 }
 
 impl ProbeIo for Output {
@@ -137,10 +135,9 @@ impl ProbeIo for Output {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
     }
 
-    fn send_f14_f13(&self) -> u64 {
-        unsafe { crate::ime::post_gji_ime_off() }; // F14: IME OFF
-        unsafe { crate::ime::post_gji_ime_on() }; // F13: IME ON
-        crate::hook::current_tick_ms()
+    fn send_key(&self, vk: awase::types::VkCode) {
+        // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
+        unsafe { crate::ime::send_ime_mode_key(vk) };
     }
 }
 
@@ -297,12 +294,11 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                 }
             }
 
-            ProbeAction::SendF14F13 { cold_seq } => {
+            ProbeAction::SendSeqKey { cold_seq, vk } => {
                 log::debug!(
-                    "[tsf-probe] cold={cold_seq} nc_fired=false + keybinds_ok → F14→F13 で GJI を活性化"
+                    "[tsf-probe] cold={cold_seq} KeySeqExec: send_key vk=0x{vk:02X}"
                 );
-                let sent_ms = io.send_f14_f13();
-                machine.apply_f14f13_sent(sent_ms);
+                io.send_key(vk);
             }
 
             ProbeAction::RawTsfLiteralRecovery {
@@ -420,8 +416,8 @@ mod tests {
         fn send_extra_f2(&self) {
             self.send_extra_f2_called.set(true);
         }
-        fn send_f14_f13(&self) -> u64 {
-            0 // テスト用: 実際には送信しない
+        fn send_key(&self, _vk: awase::types::VkCode) {
+            // テスト用: 実際には送信しない
         }
         fn consecutive_count(&self) -> u32 {
             self.consecutive
