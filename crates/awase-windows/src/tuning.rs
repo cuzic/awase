@@ -76,8 +76,15 @@ pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
 ///
 /// GJI は F2 単発（1×DOWN+UP）では I/O を出さないが F2×2 連続では出す（cold=1244 実測: 31ms）。
 /// GJI_IDLE_MS (80ms) + POST_IDLE_MARGIN_MS (30ms) + バッファ = 150ms 以内に収まるよう設定。
-/// タイムアウト時は unicode TSF フォールバックへ（現状と同じ挙動）。
+/// タイムアウト時は F14→F13 セカンドステージへ（keybinds_ok=true の場合）。
 pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 150;
+
+/// F14→F13 送信後の GJI I/O 応答待ちタイムアウト (ms)。
+///
+/// F2×2 で GJI が応答しなかった場合のセカンドステージ。
+/// F14（IME-OFF）→ F13（IME-ON）の状態遷移 I/O と GJI_IDLE_MS (80ms) 静止確認を含む。
+/// タイムアウト後も VK path を試みる（unicode は WezTerm TSF-native で確実に失敗するため）。
+pub const F14F13_WAIT_MS: u64 = 200;
 
 /// Chrome プローブ最小待機時間 (ms)。
 ///

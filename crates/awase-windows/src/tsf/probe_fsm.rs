@@ -10,7 +10,8 @@
 //! Probing(GjiInitial) ─[settle 不要]──► WaitingForCallback ─[apply_transmit_done]─► LiteralDetect
 //!                     └─[settle 必要]─► WaitingForCallback ─[apply_fresh_f2_sent]─► NameChangeWait
 //!                                                                                        ├─[nc_fired && !settled]► Probing(GjiSecondary) ─► WaitingForCallback
-//!                                                                                        └─[timeout or nc_fired+settled]─────────────────► WaitingForCallback
+//!                                                                                        ├─[timeout, gji_long_idle, keybinds_ok]─► WaitingForCallback ─[apply_f14f13_sent]─► F14F13Wait ─► WaitingForCallback
+//!                                                                                        └─[timeout, other]──────────────────────────────────────────────────────────────────► WaitingForCallback
 //! Probing(Chrome) ─────────────────────────────────────────────────────────────────► (TransmitChrome 後に即完了)
 //! ```
 //!
@@ -82,6 +83,8 @@ enum NextStep {
     LiteralDone,
     /// `LiteralDetect`: raw literal 疑い → `RawTsfLiteralRecovery + Done`
     LiteralSuspected { ze_bs_count: usize },
+    /// `NameChangeWait` タイムアウト（gji_long_idle_probe, nc_fired=false）→ F14→F13 活性化へ
+    SendF14F13Activation,
 }
 
 /// [`ProbePhase::Probing`] の完了後アクションを区別するタグ。
@@ -131,6 +134,8 @@ pub(crate) enum WaitingFor {
     },
     /// `apply_transmit_done` 待ち（Transmit(Tsf) パス）。
     TransmitDone,
+    /// `apply_f14f13_sent` 待ち（F14→F13 セカンドステージ活性化パス）。
+    F14F13Pending { send: SendState },
 }
 
 /// プローブ FSM の現在フェーズ。
@@ -161,6 +166,17 @@ pub(crate) enum ProbePhase {
     LiteralDetect {
         detector: LiteralDetector,
         ze_bs_count: usize,
+        deadline_ms: u64,
+        send: SendState,
+    },
+    /// F14→F13 送信後の GJI I/O 応答待ち（gji_long_idle_probe 失敗後のセカンドステージ）。
+    ///
+    /// GJI が F14/F13 に応答すれば VK path へ。タイムアウト後も VK path を試みる
+    /// （unicode は WezTerm TSF-native で確実に失敗するため）。
+    F14F13Wait {
+        /// F14→F13 送信時刻（ms）。GJI I/O 応答確認のベースライン。
+        f14f13_sent_ms: u64,
+        /// フェーズタイムアウト絶対時刻（ms）。
         deadline_ms: u64,
         send: SendState,
     },
@@ -207,6 +223,11 @@ pub(crate) enum ProbeAction {
         backs: usize,
         romaji: String,
     },
+    /// F14（IME-OFF）→ F13（IME-ON）を送信して GJI を活性化する。
+    /// 完了後 [`TsfProbeMachine::apply_f14f13_sent`] を呼ぶ。
+    ///
+    /// F2×2（gji_long_idle_probe）タイムアウト後のセカンドステージとして発行される。
+    SendF14F13 { cold_seq: u32 },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
@@ -349,7 +370,9 @@ impl TsfProbeMachine {
             ProbePhase::Probing { send, .. }
             | ProbePhase::NameChangeWait { send, .. }
             | ProbePhase::LiteralDetect { send, .. }
-            | ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
+            | ProbePhase::F14F13Wait { send, .. }
+            | ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. })
+            | ProbePhase::WaitingForCallback(WaitingFor::F14F13Pending { send }) => Some(send),
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
         }
     }
@@ -361,11 +384,15 @@ impl TsfProbeMachine {
             ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { .. }) => {
                 "WaitingForCallback(FreshF2Sent)"
             }
+            ProbePhase::WaitingForCallback(WaitingFor::F14F13Pending { .. }) => {
+                "WaitingForCallback(F14F13Pending)"
+            }
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => {
                 "WaitingForCallback(TransmitDone)"
             }
             ProbePhase::NameChangeWait { .. } => "NameChangeWait",
             ProbePhase::LiteralDetect { .. } => "LiteralDetect",
+            ProbePhase::F14F13Wait { .. } => "F14F13Wait",
         }
     }
 
@@ -428,6 +455,20 @@ impl TsfProbeMachine {
                     },
                     ProbeAction::Done,
                 ]
+            }
+            NextStep::SendF14F13Activation => {
+                let send = if let ProbePhase::NameChangeWait { send, .. } = &mut self.phase {
+                    std::mem::take(send)
+                } else {
+                    log::warn!(
+                        "[tsf-probe] cold={} SendF14F13Activation: unexpected phase {}",
+                        self.cold_seq,
+                        self.phase_label_internal()
+                    );
+                    SendState::default()
+                };
+                self.phase = ProbePhase::WaitingForCallback(WaitingFor::F14F13Pending { send });
+                vec![ProbeAction::SendF14F13 { cold_seq: self.cold_seq }]
             }
         }
     }
@@ -546,6 +587,17 @@ impl TsfProbeMachine {
                     NextStep::StartSecondaryProbe {
                         fresh_f2_ms: *fresh_f2_ms,
                     }
+                } else if *gji_long_idle_probe
+                    && !nc_fired
+                    && crate::tsf::observer::gji_keybinds_ok()
+                {
+                    // F2×2 タイムアウト後のセカンドステージ: F14→F13 で GJI を活性化する。
+                    // unicode は WezTerm（TSF-native）で確実に失敗するため VK path を維持する。
+                    log::debug!(
+                        "[tsf-probe] cold={} NameChangeWait(long-idle): F2×2 タイムアウト → F14→F13 セカンドステージへ",
+                        self.cold_seq
+                    );
+                    NextStep::SendF14F13Activation
                 } else {
                     // nc_fired=false（タイムアウト）の場合は IME モード切替が未確認。
                     // nc_fired=true && probe_settled=true は上の if に入らないのでここに来る。
@@ -554,6 +606,42 @@ impl TsfProbeMachine {
                         gji_resumed: false,
                     }
                 }
+            }
+
+            ProbePhase::F14F13Wait {
+                f14f13_sent_ms,
+                deadline_ms,
+                ..
+            } => {
+                let now = clock.now_ms();
+                let gji_io = crate::tsf::observer::gji_last_io_ms();
+                if gji_io >= *f14f13_sent_ms {
+                    let gji_idle = now.saturating_sub(gji_io);
+                    if gji_idle >= crate::tuning::GJI_IDLE_MS {
+                        log::debug!(
+                            "[tsf-probe] cold={} F14F13Wait: GJI が F13 に応答 (idle={}ms) → VK path",
+                            self.cold_seq,
+                            gji_idle
+                        );
+                        return NextStep::TransmitTsf {
+                            nc_fired: true,
+                            gji_resumed: true,
+                        };
+                    }
+                }
+                if now >= *deadline_ms {
+                    // GJI が F14→F13 にも応答しなかった。VK path で試みる。
+                    // gji_resumed=true で unicode フォールバックを抑制する（WezTerm で確実に失敗のため）。
+                    log::debug!(
+                        "[tsf-probe] cold={} F14F13Wait: タイムアウト → VK path 強制 (unicode は WezTerm で失敗のため)",
+                        self.cold_seq
+                    );
+                    return NextStep::TransmitTsf {
+                        nc_fired: false,
+                        gji_resumed: true,
+                    };
+                }
+                NextStep::Wait
             }
 
             ProbePhase::LiteralDetect {
@@ -715,12 +803,37 @@ impl TsfProbeMachine {
         }]
     }
 
+    /// dispatcher が `SendF14F13` を実行した後に呼ぶ。
+    /// `WaitingForCallback(F14F13Pending { .. })` → `F14F13Wait` へ遷移する。
+    pub(crate) fn apply_f14f13_sent(&mut self, f14f13_sent_ms: u64) {
+        let phase = std::mem::replace(
+            &mut self.phase,
+            ProbePhase::WaitingForCallback(WaitingFor::TransmitDone),
+        );
+        let send = match phase {
+            ProbePhase::WaitingForCallback(WaitingFor::F14F13Pending { send }) => send,
+            other => {
+                log::warn!(
+                    "[tsf-probe] cold={} apply_f14f13_sent: unexpected phase",
+                    self.cold_seq
+                );
+                self.phase = other;
+                return;
+            }
+        };
+        self.phase = ProbePhase::F14F13Wait {
+            f14f13_sent_ms,
+            deadline_ms: f14f13_sent_ms + crate::tuning::F14F13_WAIT_MS,
+            send,
+        };
+    }
+
     /// `Transmit` action 生成時に現フェーズから `SendState` を取り出す。
     fn take_current_send_for_transmit(&mut self) -> SendState {
         match &mut self.phase {
-            ProbePhase::Probing { send, .. } | ProbePhase::NameChangeWait { send, .. } => {
-                std::mem::take(send)
-            }
+            ProbePhase::Probing { send, .. }
+            | ProbePhase::NameChangeWait { send, .. }
+            | ProbePhase::F14F13Wait { send, .. } => std::mem::take(send),
             _ => {
                 log::warn!(
                     "[tsf-probe] cold={} enter_transmit_* called from unexpected phase {}",

@@ -56,6 +56,11 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
+    /// F14（IME-OFF）→ F13（IME-ON）を送信して GJI を活性化する。
+    ///
+    /// F2×2 が失敗した後のセカンドステージ。GJI の TSF に直接 IME OFF → ON 遷移を強制し、
+    /// I/O 応答を促す。`apply_f14f13_sent` に渡す送信時刻（ms）を返す。
+    fn send_f14_f13(&self) -> u64;
 }
 
 impl ProbeIo for Output {
@@ -129,6 +134,12 @@ impl ProbeIo for Output {
 
     fn mark_cold_raw_tsf(&self) {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+    }
+
+    fn send_f14_f13(&self) -> u64 {
+        unsafe { crate::ime::post_gji_ime_off() }; // F14: IME OFF
+        unsafe { crate::ime::post_gji_ime_on() }; // F13: IME ON
+        crate::hook::current_tick_ms()
     }
 }
 
@@ -210,7 +221,9 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             //
                             // nc_fired=false: NameChangeWait タイムアウト。
                             //   IME モード切替未確認。VK ローマ字で送ると katakana 等で誤出力になる。
-                            //   gji_long_idle: unicode TSF を強制（IME モード非依存）。
+                            //   gji_long_idle (keybinds_ok=true): F14→F13 セカンドステージが先行するため
+                            //     通常ここに来ない。gji_resumed=true で VK path が強制される。
+                            //   gji_long_idle (keybinds_ok=false): unicode TSF を強制（IME モード非依存）。
                             //   非 long_idle: used_eager_path のまま（8d38b2d の挙動を維持）。
                             used_eager_path: if gji_resumed {
                                 false // GJI が F2×2 に応答: VK path 強制
@@ -272,6 +285,14 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                     }
                 }
+            }
+
+            ProbeAction::SendF14F13 { cold_seq } => {
+                log::debug!(
+                    "[tsf-probe] cold={cold_seq} F2×2 タイムアウト後 → F14→F13 セカンドステージ活性化"
+                );
+                let sent_ms = io.send_f14_f13();
+                machine.apply_f14f13_sent(sent_ms);
             }
 
             ProbeAction::RawTsfLiteralRecovery {
@@ -388,6 +409,9 @@ mod tests {
         }
         fn send_extra_f2(&self) {
             self.send_extra_f2_called.set(true);
+        }
+        fn send_f14_f13(&self) -> u64 {
+            0 // テスト用: 実際には送信しない
         }
         fn consecutive_count(&self) -> u32 {
             self.consecutive
