@@ -83,7 +83,7 @@ enum NextStep {
     LiteralDone,
     /// `LiteralDetect`: raw literal 疑い → `RawTsfLiteralRecovery + Done`
     LiteralSuspected { ze_bs_count: usize },
-    /// `NameChangeWait` タイムアウト（gji_long_idle_probe, nc_fired=false）→ F14→F13 活性化へ
+    /// `NameChangeWait` タイムアウト（nc_fired=false + keybinds_ok=true）→ F14→F13 で GJI 活性化へ
     SendF14F13Activation,
 }
 
@@ -587,14 +587,13 @@ impl TsfProbeMachine {
                     NextStep::StartSecondaryProbe {
                         fresh_f2_ms: *fresh_f2_ms,
                     }
-                } else if *gji_long_idle_probe
-                    && !nc_fired
-                    && crate::tsf::observer::gji_keybinds_ok()
-                {
-                    // F2×2 タイムアウト後のセカンドステージ: F14→F13 で GJI を活性化する。
-                    // unicode は WezTerm（TSF-native）で確実に失敗するため VK path を維持する。
+                } else if !nc_fired && crate::tsf::observer::gji_keybinds_ok() {
+                    // keybinds_ok: F14→F13 で GJI を確実に活性化してから VK path へ。
+                    // long_idle か否かにかかわらず、keybinds が使えるなら常にこの経路を優先する。
+                    // F14（IME OFF）→ F13（IME ON）により GJI が確実に I/O を発行し、
+                    // F14F13Wait フェーズでその応答を確認してから VK 入力することで候補表示が保証される。
                     log::debug!(
-                        "[tsf-probe] cold={} NameChangeWait(long-idle): F2×2 タイムアウト → F14→F13 セカンドステージへ",
+                        "[tsf-probe] cold={} NameChangeWait: nc_fired=false + keybinds_ok → F14→F13 で GJI 活性化へ",
                         self.cold_seq
                     );
                     NextStep::SendF14F13Activation

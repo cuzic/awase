@@ -56,10 +56,11 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
-    /// F14（IME-OFF）→ F13（IME-ON）を送信して GJI を活性化する。
+    /// F14（IME-OFF）→ F13（IME-ON）を送信して GJI を確実に活性化する。
     ///
-    /// F2×2 が失敗した後のセカンドステージ。GJI の TSF に直接 IME OFF → ON 遷移を強制し、
-    /// I/O 応答を促す。`apply_f14f13_sent` に渡す送信時刻（ms）を返す。
+    /// keybinds_ok=true 時に NameChangeWait のタイムアウト後（nc_fired=false）に発行され、
+    /// GJI に直接 IME OFF → ON 遷移を強制して I/O 応答を促す。
+    /// `apply_f14f13_sent` に渡す送信時刻（ms）を返す。
     fn send_f14_f13(&self) -> u64;
 }
 
@@ -221,10 +222,10 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             //
                             // nc_fired=false: NameChangeWait タイムアウト。
                             //   IME モード切替未確認。VK ローマ字で送ると katakana 等で誤出力になる。
-                            //   gji_long_idle (keybinds_ok=true): F14→F13 セカンドステージが先行するため
-                            //     通常ここに来ない。gji_resumed=true で VK path が強制される。
-                            //   gji_long_idle (keybinds_ok=false): unicode TSF を強制（IME モード非依存）。
-                            //   非 long_idle: used_eager_path のまま（8d38b2d の挙動を維持）。
+                            //   keybinds_ok=true: F14→F13 活性化が先行するため通常ここに来ない。
+                            //     gji_resumed=true で VK path が強制される。
+                            //   keybinds_ok=false + gji_long_idle: unicode TSF を強制（IME モード非依存）。
+                            //   keybinds_ok=false + 非 long_idle: used_eager_path のまま。
                             //
                             // TSF mode (WezTerm 等 ForceTsf): OBJ_NAMECHANGE が CASCADIA クラスではない
                             //   ため nc_fired=false は常態。unicode は KEYEVENTF_UNICODE で GJI コンポジション
@@ -298,7 +299,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
 
             ProbeAction::SendF14F13 { cold_seq } => {
                 log::debug!(
-                    "[tsf-probe] cold={cold_seq} F2×2 タイムアウト後 → F14→F13 セカンドステージ活性化"
+                    "[tsf-probe] cold={cold_seq} nc_fired=false + keybinds_ok → F14→F13 で GJI を活性化"
                 );
                 let sent_ms = io.send_f14_f13();
                 machine.apply_f14f13_sent(sent_ms);
