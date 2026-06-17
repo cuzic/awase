@@ -83,8 +83,12 @@ enum NextStep {
     LiteralDone,
     /// `LiteralDetect`: raw literal 疑い → `RawTsfLiteralRecovery + Done`
     LiteralSuspected { ze_bs_count: usize },
-    /// `NameChangeWait` タイムアウト（nc_fired=false + keybinds_ok=true）→ `KeySeqExec` フェーズへ
-    StartKeySeq { seq: crate::tsf::key_seq::KeySeq, deadline_ms: u64 },
+    /// キーシーケンスを開始し `KeySeqExec` フェーズへ遷移する
+    StartKeySeq {
+        seq: crate::tsf::key_seq::KeySeq,
+        deadline_ms: u64,
+        after: KeySeqAfter,
+    },
     /// `KeySeqExec` フェーズで 1 ステップ進める（`seq.poll()` を呼ぶ）
     AdvanceKeySeq { now_ms: u64 },
 }
@@ -172,16 +176,27 @@ pub(crate) enum ProbePhase {
     /// マルチティックキーシーケンス実行 + GJI I/O 応答待ち。
     ///
     /// `seq` が空になるまで毎ティック 1 キーずつ送信し、
-    /// 完了後は GJI が I/O で応答するまで待機してから VK path へ移行する。
-    /// タイムアウト後も VK path を強制（unicode は WezTerm TSF-native で確実に失敗のため）。
+    /// 完了後は GJI が I/O で応答するまで待機してから `after` で指定した送信先へ移行する。
+    /// タイムアウト後も `after` の送信先を強制（Tsf の場合は VK path 強制）。
     KeySeqExec {
         seq: crate::tsf::key_seq::KeySeq,
         /// キーシーケンス完了時刻 (ms)。`None` = まだシーケンス実行中。
         gji_wait_since_ms: Option<u64>,
         /// フェーズタイムアウト絶対時刻（ms）。
         deadline_ms: u64,
+        /// KeySeq 完了後の送信先（TSF VK path / Chrome batch）。
+        after: KeySeqAfter,
         send: SendState,
     },
+}
+
+/// [`NextStep::StartKeySeq`] / [`ProbePhase::KeySeqExec`] 完了後の送信先。
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum KeySeqAfter {
+    /// TSF パス（VK ローマ字）。GJI 応答後は gji_resumed=true で VK path を強制する。
+    Tsf,
+    /// Chrome バッチパス。GJI 応答有無にかかわらず同じ送信先。
+    Chrome,
 }
 
 /// [`ProbeAction::Transmit`] の送信先。
@@ -454,21 +469,24 @@ impl TsfProbeMachine {
                     ProbeAction::Done,
                 ]
             }
-            NextStep::StartKeySeq { seq, deadline_ms } => {
-                let send = if let ProbePhase::NameChangeWait { send, .. } = &mut self.phase {
-                    std::mem::take(send)
-                } else {
-                    log::warn!(
-                        "[tsf-probe] cold={} StartKeySeq: unexpected phase {}",
-                        self.cold_seq,
-                        self.phase_label_internal()
-                    );
-                    SendState::default()
+            NextStep::StartKeySeq { seq, deadline_ms, after } => {
+                let send = match &mut self.phase {
+                    ProbePhase::NameChangeWait { send, .. }
+                    | ProbePhase::Probing { send, .. } => std::mem::take(send),
+                    _ => {
+                        log::warn!(
+                            "[tsf-probe] cold={} StartKeySeq: unexpected phase {}",
+                            self.cold_seq,
+                            self.phase_label_internal()
+                        );
+                        SendState::default()
+                    }
                 };
                 self.phase = ProbePhase::KeySeqExec {
                     seq,
                     gji_wait_since_ms: None,
                     deadline_ms,
+                    after,
                     send,
                 };
                 vec![]
@@ -547,11 +565,27 @@ impl TsfProbeMachine {
                     }
                     ProbeKind::Chrome => {
                         log::debug!(
-                            "[tsf-probe] cold={} ChromeProbe 完了 → batched 送信 ({}ms)",
+                            "[tsf-probe] cold={} ChromeProbe 完了 ({}ms)",
                             self.cold_seq,
                             outcome.elapsed_ms
                         );
-                        NextStep::TransmitChrome
+                        if crate::tsf::observer::gji_keybinds_ok() {
+                            // keybinds_ok: Chrome でも F14→F13 で GJI を確実に活性化してから送信。
+                            let now = clock.now_ms();
+                            log::debug!(
+                                "[tsf-probe] cold={} ChromeProbe: keybinds_ok → KeySeq F14→F13 開始",
+                                self.cold_seq
+                            );
+                            NextStep::StartKeySeq {
+                                seq: crate::tsf::key_seq::KeySeq::new(now)
+                                    .key(crate::vk::VK_F14)
+                                    .key(crate::vk::VK_F13),
+                                deadline_ms: now + crate::tuning::F14F13_WAIT_MS,
+                                after: KeySeqAfter::Chrome,
+                            }
+                        } else {
+                            NextStep::TransmitChrome
+                        }
                     }
                 }
             }
@@ -621,6 +655,7 @@ impl TsfProbeMachine {
                             .key(crate::vk::VK_F14)
                             .key(crate::vk::VK_F13),
                         deadline_ms: now + crate::tuning::F14F13_WAIT_MS,
+                        after: KeySeqAfter::Tsf,
                     }
                 } else {
                     // nc_fired=false（タイムアウト）の場合は IME モード切替が未確認。
@@ -635,6 +670,7 @@ impl TsfProbeMachine {
             ProbePhase::KeySeqExec {
                 gji_wait_since_ms,
                 deadline_ms,
+                after,
                 ..
             } => {
                 let now = clock.now_ms();
@@ -645,24 +681,32 @@ impl TsfProbeMachine {
                         let gji_idle = now.saturating_sub(gji_io);
                         if gji_idle >= crate::tuning::GJI_IDLE_MS {
                             log::debug!(
-                                "[tsf-probe] cold={} KeySeqExec: GJI が応答 (idle={}ms) → VK path",
+                                "[tsf-probe] cold={} KeySeqExec: GJI が応答 (idle={}ms) → {:?} path",
                                 self.cold_seq,
-                                gji_idle
+                                gji_idle,
+                                after,
                             );
-                            return NextStep::TransmitTsf {
-                                nc_fired: true,
-                                gji_resumed: true,
+                            return match after {
+                                KeySeqAfter::Tsf => NextStep::TransmitTsf {
+                                    nc_fired: true,
+                                    gji_resumed: true,
+                                },
+                                KeySeqAfter::Chrome => NextStep::TransmitChrome,
                             };
                         }
                     }
                     if now >= *deadline_ms {
                         log::debug!(
-                            "[tsf-probe] cold={} KeySeqExec: タイムアウト → VK path 強制",
-                            self.cold_seq
+                            "[tsf-probe] cold={} KeySeqExec: タイムアウト → {:?} path 強制",
+                            self.cold_seq,
+                            after,
                         );
-                        return NextStep::TransmitTsf {
-                            nc_fired: false,
-                            gji_resumed: true,
+                        return match after {
+                            KeySeqAfter::Tsf => NextStep::TransmitTsf {
+                                nc_fired: false,
+                                gji_resumed: true,
+                            },
+                            KeySeqAfter::Chrome => NextStep::TransmitChrome,
                         };
                     }
                     NextStep::Wait
@@ -1030,6 +1074,7 @@ mod tests {
             seq,
             gji_wait_since_ms: None,
             deadline_ms,
+            after: KeySeqAfter::Tsf,
             send: SendState::default(),
         }
     }
@@ -1101,6 +1146,7 @@ mod tests {
             seq,
             gji_wait_since_ms: Some(0), // 完了済みとしてマーク
             deadline_ms: 100,           // デッドライン = 100ms
+            after: KeySeqAfter::Tsf,
             send: SendState::default(),
         });
 
