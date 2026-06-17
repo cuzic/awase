@@ -59,7 +59,7 @@ pub(crate) trait ProbeIo {
     /// 単一の VK キーを `SendInput` で送信する。
     ///
     /// `KeySeqExec` フェーズが `ProbeAction::SendSeqKey` を emit したときに呼ばれる。
-    fn send_key(&self, vk: awase::types::VkCode);
+    fn send_key(&self, vk: VkCode);
 }
 
 impl ProbeIo for Output {
@@ -135,7 +135,7 @@ impl ProbeIo for Output {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
     }
 
-    fn send_key(&self, vk: awase::types::VkCode) {
+    fn send_key(&self, vk: VkCode) {
         // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
         unsafe { crate::ime::send_ime_mode_key(vk) };
     }
