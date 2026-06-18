@@ -17,12 +17,12 @@ use windows::Win32::System::Threading::{
 const MARKER: &[u8] = b"status\tkey\tcommand\n";
 
 pub const ENTRIES: &[&str] = &[
-    "Precomposition\tF13\tIMEOn\n",
-    "Precomposition\tF14\tIMEOff\n",
-    "Composition\tF13\tIMEOn\n",
-    "Composition\tF14\tIMEOff\n",
-    "Conversion\tF13\tIMEOn\n",
-    "Conversion\tF14\tIMEOff\n",
+    "Precomposition\tF21\tIMEOn\n",
+    "Precomposition\tF22\tIMEOff\n",
+    "Composition\tF21\tIMEOn\n",
+    "Composition\tF22\tIMEOff\n",
+    "Conversion\tF21\tIMEOn\n",
+    "Conversion\tF22\tIMEOff\n",
 ];
 
 pub fn find_block(data: &[u8]) -> Result<(usize, usize, usize), String> {
@@ -228,7 +228,7 @@ pub fn kill_and_restart_gji(exe_path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-/// config1.db から F13/F14 キーバインドを削除する。
+/// config1.db から F21/F22 キーバインドを削除する。
 ///
 /// `Ok(None)` = 削除不要（未登録）、`Ok(Some((bytes, names)))` = 削除済み。
 pub fn unpatch(data: &[u8]) -> PatchResult {
@@ -368,11 +368,11 @@ mod tests {
 
     #[test]
     fn patch_adds_only_missing() {
-        let db = make_test_db("Precomposition\tF13\tIMEOn\nPrecomposition\tF14\tIMEOff\n");
+        let db = make_test_db("Precomposition\tF21\tIMEOn\nPrecomposition\tF22\tIMEOff\n");
         let (_, added) = patch(&db).unwrap().unwrap();
         assert_eq!(added.len(), 4);
-        assert!(!added.contains(&"Precomposition\tF13\tIMEOn\n"));
-        assert!(!added.contains(&"Precomposition\tF14\tIMEOff\n"));
+        assert!(!added.contains(&"Precomposition\tF21\tIMEOn\n"));
+        assert!(!added.contains(&"Precomposition\tF22\tIMEOff\n"));
     }
 
     #[test]
@@ -406,11 +406,11 @@ mod tests {
 
     #[test]
     fn unpatch_removes_only_present() {
-        let db = make_test_db("Precomposition\tF13\tIMEOn\nPrecomposition\tF14\tIMEOff\n");
+        let db = make_test_db("Precomposition\tF21\tIMEOn\nPrecomposition\tF22\tIMEOff\n");
         let (_, removed) = unpatch(&db).unwrap().unwrap();
         assert_eq!(removed.len(), 2);
-        assert!(removed.contains(&"Precomposition\tF13\tIMEOn\n"));
-        assert!(removed.contains(&"Precomposition\tF14\tIMEOff\n"));
+        assert!(removed.contains(&"Precomposition\tF21\tIMEOn\n"));
+        assert!(removed.contains(&"Precomposition\tF22\tIMEOff\n"));
     }
 
     #[test]

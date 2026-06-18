@@ -92,31 +92,31 @@ mod tests {
 
     #[test]
     fn single_key_sends_on_first_poll() {
-        let mut seq = KeySeq::new(100).key(VkCode(0x7D)); // VK_F14
+        let mut seq = KeySeq::new(100).key(VkCode(0x85)); // VK_F22
         // wait_ms=0 なので now(100) >= prev(100)+0 → Send
         let poll = seq.poll(100);
-        assert!(matches!(poll, KeySeqPoll::Send(VkCode(0x7D))));
+        assert!(matches!(poll, KeySeqPoll::Send(VkCode(0x85))));
         // 次は Done
         assert!(matches!(seq.poll(110), KeySeqPoll::Done(100)));
     }
 
     #[test]
     fn two_keys_send_on_consecutive_polls() {
-        let mut seq = KeySeq::new(100).key(VkCode(0x7D)).key(VkCode(0x7C)); // F14, F13
-        assert!(matches!(seq.poll(100), KeySeqPoll::Send(VkCode(0x7D))));
+        let mut seq = KeySeq::new(100).key(VkCode(0x85)).key(VkCode(0x84)); // F22, F21
+        assert!(matches!(seq.poll(100), KeySeqPoll::Send(VkCode(0x85))));
         // prev_ms = 100、次は wait_ms=0 なので now(110) >= 100+0 → Send
-        assert!(matches!(seq.poll(110), KeySeqPoll::Send(VkCode(0x7C))));
+        assert!(matches!(seq.poll(110), KeySeqPoll::Send(VkCode(0x84))));
         assert!(matches!(seq.poll(120), KeySeqPoll::Done(110)));
     }
 
     #[test]
     fn wait_key_blocks_until_delay_elapsed() {
-        let mut seq = KeySeq::new(100).key(VkCode(0x7D)).wait_key(50, VkCode(0x7C));
-        assert!(matches!(seq.poll(100), KeySeqPoll::Send(VkCode(0x7D)))); // prev_ms = 100
+        let mut seq = KeySeq::new(100).key(VkCode(0x85)).wait_key(50, VkCode(0x84));
+        assert!(matches!(seq.poll(100), KeySeqPoll::Send(VkCode(0x85)))); // prev_ms = 100
         // 10ms 後: 100+50=150 > 110 → Pending
         assert!(matches!(seq.poll(110), KeySeqPoll::Pending));
         // 50ms 後: 100+50=150 <= 150 → Send
-        assert!(matches!(seq.poll(150), KeySeqPoll::Send(VkCode(0x7C))));
+        assert!(matches!(seq.poll(150), KeySeqPoll::Send(VkCode(0x84))));
         assert!(matches!(seq.poll(160), KeySeqPoll::Done(150)));
     }
 }

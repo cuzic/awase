@@ -570,17 +570,17 @@ impl TsfProbeMachine {
                             outcome.elapsed_ms
                         );
                         if crate::tsf::observer::gji_keybinds_ok() {
-                            // keybinds_ok: Chrome でも F14→F13 で GJI を確実に活性化してから送信。
+                            // keybinds_ok: Chrome でも F22→F21 で GJI を確実に活性化してから送信。
                             let now = clock.now_ms();
                             log::debug!(
-                                "[tsf-probe] cold={} ChromeProbe: keybinds_ok → KeySeq F14→F13 開始",
+                                "[tsf-probe] cold={} ChromeProbe: keybinds_ok → KeySeq F22→F21 開始",
                                 self.cold_seq
                             );
                             NextStep::StartKeySeq {
                                 seq: crate::tsf::key_seq::KeySeq::new(now)
-                                    .key(crate::vk::VK_F14)
-                                    .key(crate::vk::VK_F13),
-                                deadline_ms: now + crate::tuning::F14F13_WAIT_MS,
+                                    .key(crate::vk::VK_F22)
+                                    .key(crate::vk::VK_F21),
+                                deadline_ms: now + crate::tuning::F22F21_WAIT_MS,
                                 after: KeySeqAfter::Chrome,
                             }
                         } else {
@@ -641,20 +641,20 @@ impl TsfProbeMachine {
                         fresh_f2_ms: *fresh_f2_ms,
                     }
                 } else if !nc_fired && crate::tsf::observer::gji_keybinds_ok() {
-                    // keybinds_ok: F14→F13 で GJI を確実に活性化してから VK path へ。
+                    // keybinds_ok: F22→F21 で GJI を確実に活性化してから VK path へ。
                     // long_idle か否かにかかわらず、keybinds が使えるなら常にこの経路を優先する。
-                    // F14（IME OFF）→ F13（IME ON）により GJI が確実に I/O を発行し、
+                    // F22（IME OFF）→ F21（IME ON）により GJI が確実に I/O を発行し、
                     // KeySeqExec フェーズでその応答を確認してから VK 入力することで候補表示が保証される。
                     log::debug!(
-                        "[tsf-probe] cold={} NameChangeWait: nc_fired=false + keybinds_ok → KeySeq F14→F13 開始",
+                        "[tsf-probe] cold={} NameChangeWait: nc_fired=false + keybinds_ok → KeySeq F22→F21 開始",
                         self.cold_seq
                     );
                     let now = clock.now_ms();
                     NextStep::StartKeySeq {
                         seq: crate::tsf::key_seq::KeySeq::new(now)
-                            .key(crate::vk::VK_F14)
-                            .key(crate::vk::VK_F13),
-                        deadline_ms: now + crate::tuning::F14F13_WAIT_MS,
+                            .key(crate::vk::VK_F22)
+                            .key(crate::vk::VK_F21),
+                        deadline_ms: now + crate::tuning::F22F21_WAIT_MS,
                         after: KeySeqAfter::Tsf,
                     }
                 } else {
@@ -1083,25 +1083,25 @@ mod tests {
     fn key_seq_exec_emits_send_seq_key_per_tick() {
         // KeySeqExec フェーズ: 毎ティック 1 キーずつ SendSeqKey を emit する
         use crate::tsf::key_seq::KeySeq;
-        use crate::vk::{VK_F13, VK_F14};
+        use crate::vk::{VK_F21, VK_F22};
 
         let mut machine = make_gji_machine();
-        let seq = KeySeq::new(100).key(VK_F14).key(VK_F13);
+        let seq = KeySeq::new(100).key(VK_F22).key(VK_F21);
         machine.force_phase_for_test(make_key_seq_exec(seq, 500));
 
-        // ティック 1: F14 送信
+        // ティック 1: F22 送信
         let actions = machine.tick_with_clock(&ManualClock(100));
         assert!(
-            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F14),
-            "ティック1 で F14 を emit するべき: {actions:?}"
+            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F22),
+            "ティック1 で F22 を emit するべき: {actions:?}"
         );
         assert_eq!(machine.phase_label(), "KeySeqExec");
 
-        // ティック 2: F13 送信
+        // ティック 2: F21 送信
         let actions = machine.tick_with_clock(&ManualClock(110));
         assert!(
-            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F13),
-            "ティック2 で F13 を emit するべき: {actions:?}"
+            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F21),
+            "ティック2 で F21 を emit するべき: {actions:?}"
         );
 
         // ティック 3: seq 完了 → GJI 待ちへ（まだ GJI 未応答なので空 Vec）
@@ -1114,22 +1114,22 @@ mod tests {
     fn key_seq_exec_wait_key_respects_delay() {
         // wait_key(50, ...) は 50ms 経過するまで Pending を返す
         use crate::tsf::key_seq::KeySeq;
-        use crate::vk::{VK_F13, VK_F14};
+        use crate::vk::{VK_F21, VK_F22};
 
         let mut machine = make_gji_machine();
-        let seq = KeySeq::new(100).key(VK_F14).wait_key(50, VK_F13);
+        let seq = KeySeq::new(100).key(VK_F22).wait_key(50, VK_F21);
         machine.force_phase_for_test(make_key_seq_exec(seq, 500));
 
-        // ティック 1 (t=100): F14 送信 → prev_ms = 100
+        // ティック 1 (t=100): F22 送信 → prev_ms = 100
         machine.tick_with_clock(&ManualClock(100));
         // ティック 2 (t=110): 50ms 未経過 → Pending（空 Vec）
         let actions = machine.tick_with_clock(&ManualClock(110));
         assert!(actions.is_empty(), "50ms 未経過: Wait のはず: {actions:?}");
-        // ティック 3 (t=150): 50ms 経過 → F13 送信
+        // ティック 3 (t=150): 50ms 経過 → F21 送信
         let actions = machine.tick_with_clock(&ManualClock(150));
         assert!(
-            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F13),
-            "50ms 経過後に F13 を emit するべき: {actions:?}"
+            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F21),
+            "50ms 経過後に F21 を emit するべき: {actions:?}"
         );
     }
 
@@ -1137,11 +1137,11 @@ mod tests {
     fn key_seq_exec_timeout_forces_vk_path() {
         // deadline を超えたら gji_wait_since_ms の有無にかかわらず TransmitTsf を emit する
         use crate::tsf::key_seq::KeySeq;
-        use crate::vk::{VK_F13, VK_F14};
+        use crate::vk::{VK_F21, VK_F22};
 
         let mut machine = make_gji_machine();
         // seq は完了済み（prev_ms = 0 で steps 空）にするため、Done が即返る状態を作る
-        let seq = KeySeq::new(0).key(VK_F14).key(VK_F13);
+        let seq = KeySeq::new(0).key(VK_F22).key(VK_F21);
         machine.force_phase_for_test(ProbePhase::KeySeqExec {
             seq,
             gji_wait_since_ms: Some(0), // 完了済みとしてマーク
