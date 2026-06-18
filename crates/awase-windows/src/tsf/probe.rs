@@ -36,7 +36,8 @@ use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 ///
 /// | 状況 | min_ms |
 /// |---|---|
-/// | FocusChange / SetOpenTrue / NativeF2Consumed | 300ms |
+/// | FocusChange / SetOpenTrue / NativeF2Consumed (long_idle) | 300ms |
+/// | FocusChange / SetOpenTrue / NativeF2Consumed (short_idle) | 100ms |
 /// | SessionExpired | 200ms |
 /// | PassthroughConfirmKey / ReinjectConfirmKey | 50ms |
 /// | SymbolVkSent | 30ms |

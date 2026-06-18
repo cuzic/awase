@@ -81,7 +81,14 @@ impl ColdReason {
     #[must_use]
     pub const fn probe_min_ms(self, long_idle: bool) -> u64 {
         match self {
-            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => 300,
+            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => {
+                if long_idle {
+                    300
+                } else {
+                    // short_idle: LiteralDetect が安全網になるため短縮可
+                    100
+                }
+            }
             Self::SessionExpired => 200,
             Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
                 if long_idle {

@@ -635,9 +635,12 @@ mod tests {
 
     #[test]
     fn cold_reason_probe_min_ms() {
-        assert_eq!(ColdReason::FocusChange.probe_min_ms(false), 300);
-        assert_eq!(ColdReason::NativeF2Consumed.probe_min_ms(false), 300);
-        assert_eq!(ColdReason::SetOpenTrue.probe_min_ms(false), 300);
+        assert_eq!(ColdReason::FocusChange.probe_min_ms(false), 100);
+        assert_eq!(ColdReason::NativeF2Consumed.probe_min_ms(false), 100);
+        assert_eq!(ColdReason::SetOpenTrue.probe_min_ms(false), 100);
+        assert_eq!(ColdReason::FocusChange.probe_min_ms(true), 300);
+        assert_eq!(ColdReason::NativeF2Consumed.probe_min_ms(true), 300);
+        assert_eq!(ColdReason::SetOpenTrue.probe_min_ms(true), 300);
         assert_eq!(ColdReason::SessionExpired.probe_min_ms(false), 200);
         assert_eq!(ColdReason::PassthroughConfirmKey.probe_min_ms(false), 50);
         assert_eq!(ColdReason::ReinjectConfirmKey.probe_min_ms(false), 50);
