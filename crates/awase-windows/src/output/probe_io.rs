@@ -234,15 +234,17 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             // TSF mode (WezTerm 等 ForceTsf): OBJ_NAMECHANGE が CASCADIA クラスではない
                             //   ため nc_fired=false は常態。unicode は KEYEVENTF_UNICODE で GJI コンポジション
                             //   を完全にバイパスし候補ウィンドウが表示されない。
-                            //   GJI が warmup に応答して活動中 (!gji_long_idle) → VK path で GJI コンポジション経由。
-                            //   GJI が長期静止 (gji_long_idle) → unicode fallback（GJI 未応答時の安全策）。
+                            //   GJI 活動中・長期静止いずれも → VK path で GJI コンポジション経由。
+                            //   unicode (KEYEVENTF_UNICODE) は使わない。直後の VK "n" が GJI の
+                            //   unicode 処理と競合して "nお" になる race を引き起こすため。
+                            //   GJI 未応答時は VK がリテラルになるが LiteralDetect + BS 再送で回収する。
                             used_eager_path: if gji_resumed {
                                 false // GJI が F2×2 に応答: VK path 強制
                             } else if nc_fired {
                                 (used_eager_path || io.gji_long_idle()) && deferred_vks.is_empty()
                             } else if io.is_tsf_mode() {
-                                // TSF-native (WezTerm): GJI 活動中は VK path で候補表示; 長期静止は unicode
-                                io.gji_long_idle()
+                                // TSF-native (WezTerm): active/long_idle いずれも VK path
+                                false
                             } else {
                                 used_eager_path || io.gji_long_idle()
                             },
@@ -272,11 +274,13 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             });
                         }
                         let gji_active = io.gji_monitor_healthy();
-                        // TSF mode (WezTerm) でも LiteralDetect を有効にする。
-                        // GJI が正常で long_idle でなければ gji_candidate_show 変化で
-                        // リテラル判定が可能（WezTerm は GJI コンポジションを使う）。
-                        // 回収パスは warm 経路を通るため WezTerm の 344ms タイマーをリセットしない。
-                        let needs_literal = prepend_f2_warmup && gji_active && !io.gji_long_idle();
+                        // TSF mode (WezTerm) では gji_long_idle でも LiteralDetect を有効にする。
+                        // VK path 強制により GJI 未応答時にリテラル化するが、
+                        // gji_candidate_show 変化で検出し BS 再送で回収できる。
+                        // 非 TSF mode (Chrome 等) は gji_long_idle 時に GJI 再起動直後で
+                        // 候補ウィンドウが遅延するため、false positive 防止のため無効のまま。
+                        let needs_literal =
+                            prepend_f2_warmup && gji_active && (!io.gji_long_idle() || io.is_tsf_mode());
                         let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Tsf);
@@ -796,12 +800,14 @@ mod tests {
     }
 
     #[test]
-    fn tsf_mode_nc_not_fired_gji_long_idle_uses_unicode_fallback() {
-        // TSF-native (WezTerm): GJI が長期静止（warmup 未応答）なら unicode fallback。
-        // VK path では GJI が受け付けず romaji がそのまま出力される可能性があるため。
+    fn tsf_mode_nc_not_fired_gji_long_idle_uses_vk_path() {
+        // TSF-native (WezTerm): GJI が長期静止でも VK path を使う。
+        // unicode (KEYEVENTF_UNICODE) 直後に VK が来ると "nお" race が起きるため。
+        // GJI 未応答でリテラルになった場合は LiteralDetect + BS 再送で回収する。
         let io = FakeProbeIo {
             tsf_mode: true,
-            gji_long_idle: true, // GJI 長期静止（warmup に未応答）
+            gji_long_idle: true, // GJI 長期静止
+            // gji_healthy: false (default) → LiteralDetect 無効 → done=true
             ..Default::default()
         };
         let mut machine = make_gji_machine();
@@ -819,9 +825,44 @@ mod tests {
         assert!(done);
         assert!(io.transmit_tsf_called.get());
         assert!(
-            io.last_used_eager_path.get(),
-            "TSF mode + nc_fired=false + GJI 長期静止 → unicode fallback（used_eager_path=true）"
+            !io.last_used_eager_path.get(),
+            "TSF mode + nc_fired=false + GJI 長期静止 → VK path（used_eager_path=false）"
         );
+    }
+
+    #[test]
+    fn tsf_mode_nc_not_fired_gji_long_idle_gji_healthy_enables_literal_detect() {
+        // TSF-native (WezTerm): GJI 長期静止でも GJI モニター健全なら LiteralDetect を有効化する。
+        // VK path で送りリテラル化した場合に BS 再送で回収できるようにするため。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            gji_long_idle: true,
+            gji_healthy: true, // GJI モニター健全 → LiteralDetect 有効
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: true,
+            nc_fired: false,
+            gji_resumed: false,
+            romaji: "ko".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(
+            !done,
+            "TSF mode + gji_long_idle + gji_healthy → LiteralDetect phase: Done を即返さないべき"
+        );
+        assert!(io.transmit_tsf_called.get());
+        assert!(io.mark_warm_called.get());
+        assert!(
+            !io.last_used_eager_path.get(),
+            "TSF mode + gji_long_idle → VK path（used_eager_path=false）"
+        );
+        assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
     #[test]
