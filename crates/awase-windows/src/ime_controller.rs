@@ -74,11 +74,11 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// VK_KANJI（トグル）を使わずに IME OFF を達成できる（desync フリー）。
 /// GJI が TSF 層で消費しない場合は KanjiToggleStrategy にフォールスルーする。
 ///
-/// GJI の config1.db に以下を登録することで有効になる:
-///   `DirectInput\tF21\tIMEOn`（デフォルト登録済み）
-///   `Precomposition\tF22\tIMEOff`
-///   `Composition\tF22\tIMEOff`
-///   `Conversion\tF22\tIMEOff`
+/// GJI の config1.db に以下を登録することで有効になる（awase が gji::ENTRIES で管理）:
+///   `DirectInput\tF21\tIMEOn`
+///   `Precomposition\tF21\tIMEOn` / `Precomposition\tF22\tIMEOff`
+///   `Composition\tF21\tIMEOn`   / `Composition\tF22\tIMEOff`
+///   `Conversion\tF21\tIMEOn`    / `Conversion\tF22\tIMEOff`
 ///
 /// `gji_monitor_ok=true`（GJI プロセス検出済み）かつ
 /// `gji_keybinds_ok=true`（F21/F22 が config1.db に登録済み）の場合のみ適用可能。

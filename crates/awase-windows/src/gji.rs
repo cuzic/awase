@@ -17,6 +17,7 @@ use windows::Win32::System::Threading::{
 const MARKER: &[u8] = b"status\tkey\tcommand\n";
 
 pub const ENTRIES: &[&str] = &[
+    "DirectInput\tF21\tIMEOn\n",
     "Precomposition\tF21\tIMEOn\n",
     "Precomposition\tF22\tIMEOff\n",
     "Composition\tF21\tIMEOn\n",
