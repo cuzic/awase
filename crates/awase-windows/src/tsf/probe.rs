@@ -502,6 +502,17 @@ impl CompositionState {
     pub const fn consecutive_count(&self) -> u32 {
         self.cold_ctx.consecutive_count()
     }
+
+    /// warm 状態を維持したまま連続カウントをインクリメントする。
+    ///
+    /// TSF mode の回収パスで呼ぶ。`mark_composition_cold` は呼ばないため
+    /// `flush_raw_tsf_literal_romaji` の再送が warm 経路（F2 なし）を通る。
+    pub fn increment_consecutive_count(&self) {
+        let n = self.cold_ctx.increment_consecutive_count();
+        log::debug!(
+            "[composition] increment_consecutive_count → {n} (warm state preserved for TSF mode re-send)"
+        );
+    }
 }
 
 // ── LiteralDetector ──

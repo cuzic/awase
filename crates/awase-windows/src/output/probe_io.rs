@@ -47,11 +47,14 @@ pub(crate) trait ProbeIo {
     fn send_extra_f2(&self);
     /// TSF モード（WezTerm 等 ForceTsf アプリ）かどうかを返す。
     ///
-    /// `true` のとき LiteralDetect は IMM composition context が存在しないため
-    /// 常に false positive になる。スキップして warm を維持する。
+    /// `true` のとき `RawTsfLiteralRecovery` では `mark_cold_raw_tsf` を呼ばず warm を維持する
+    /// ことで、`flush_raw_tsf_literal_romaji` の再送が F2 warmup なしの直接 VK 送信を通る
+    /// （WezTerm の 344ms composition context タイマーをリセットしないため）。
     fn is_tsf_mode(&self) -> bool;
     /// 連続 raw TSF literal 回数を返す。
     fn consecutive_count(&self) -> u32;
+    /// warm 状態を維持したまま連続カウントをインクリメントする（TSF mode 回収パス用）。
+    fn increment_consecutive_count(&self);
     /// `RAW_TSF_LITERAL` グローバルを設定する（`consecutive == 0` のときのみ呼ばれる）。
     fn set_raw_literal(&self, backs: usize, romaji: String);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
@@ -125,6 +128,10 @@ impl ProbeIo for Output {
 
     fn consecutive_count(&self) -> u32 {
         self.composition.consecutive_count()
+    }
+
+    fn increment_consecutive_count(&self) {
+        self.composition.increment_consecutive_count();
     }
 
     fn set_raw_literal(&self, backs: usize, romaji: String) {
@@ -265,10 +272,11 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             });
                         }
                         let gji_active = io.gji_monitor_healthy();
-                        let needs_literal = prepend_f2_warmup
-                            && gji_active
-                            && !io.gji_long_idle()
-                            && !io.is_tsf_mode();
+                        // TSF mode (WezTerm) でも LiteralDetect を有効にする。
+                        // GJI が正常で long_idle でなければ gji_candidate_show 変化で
+                        // リテラル判定が可能（WezTerm は GJI コンポジションを使う）。
+                        // 回収パスは warm 経路を通るため WezTerm の 344ms タイマーをリセットしない。
+                        let needs_literal = prepend_f2_warmup && gji_active && !io.gji_long_idle();
                         let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Tsf);
@@ -308,20 +316,34 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
             } => {
                 let consecutive = io.consecutive_count();
                 if consecutive == 0 {
-                    log::warn!(
-                        "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
-                        → backspace ×{backs} + re-send {romaji:?} scheduled \
-                        + mark cold"
-                    );
-                    io.set_raw_literal(backs, romaji);
+                    if io.is_tsf_mode() {
+                        // TSF mode (WezTerm): warm を維持して再送。
+                        // mark_cold_raw_tsf を呼ぶと flush_raw_tsf_literal_romaji が
+                        // cold 経路で F2 warmup を再送し WezTerm の 344ms タイマーをリセットする。
+                        // warm のまま即 VK 再送することでタイマーリセットを回避する。
+                        log::warn!(
+                            "[raw-tsf-literal] cold={cold_seq} TSF mode literal suspected \
+                            → backspace ×{backs} + re-send {romaji:?} scheduled (warm maintained)"
+                        );
+                        io.set_raw_literal(backs, romaji);
+                        io.increment_consecutive_count();
+                    } else {
+                        log::warn!(
+                            "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
+                            → backspace ×{backs} + re-send {romaji:?} scheduled \
+                            + mark cold"
+                        );
+                        io.set_raw_literal(backs, romaji);
+                        io.mark_cold_raw_tsf();
+                    }
                 } else {
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
                         (count={}) → likely false positive, giving up",
                         consecutive + 1,
                     );
+                    io.mark_cold_raw_tsf();
                 }
-                io.mark_cold_raw_tsf();
             }
         }
     }
@@ -351,6 +373,7 @@ mod tests {
         send_extra_f2_called: Cell<bool>,
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
+        increment_consecutive_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
     }
@@ -372,6 +395,7 @@ mod tests {
                 send_extra_f2_called: Cell::new(false),
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
+                increment_consecutive_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
             }
         }
@@ -421,6 +445,9 @@ mod tests {
         }
         fn consecutive_count(&self) -> u32 {
             self.consecutive
+        }
+        fn increment_consecutive_count(&self) {
+            self.increment_consecutive_called.set(true);
         }
         fn set_raw_literal(&self, _backs: usize, _romaji: String) {
             self.set_raw_literal_called.set(true);
@@ -794,6 +821,104 @@ mod tests {
         assert!(
             io.last_used_eager_path.get(),
             "TSF mode + nc_fired=false + GJI 長期静止 → unicode fallback（used_eager_path=true）"
+        );
+    }
+
+    #[test]
+    fn tsf_mode_cold_start_enables_literal_detect_when_gji_healthy() {
+        // WezTerm long-idle バグ修正 (idle=55797ms, cold=343) の検出パス確認:
+        // TSF mode + prepend_f2_warmup=true + gji_healthy=true + !gji_long_idle
+        // → LiteralDetect フェーズへ遷移し Done を即返さない。
+        // これが `needs_literal` に `!is_tsf_mode()` 条件がなくなったことの証明。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            gji_healthy: true,
+            gji_long_idle: false, // GJI 活動中（warmup に応答済み）
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true, // cold start からの送信
+            used_eager_path: false,
+            nc_fired: false,
+            gji_resumed: false,
+            romaji: "ko".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(
+            !done,
+            "TSF mode cold start + gji_healthy → LiteralDetect phase: Done を即返さないべき"
+        );
+        assert!(io.transmit_tsf_called.get());
+        assert!(io.mark_warm_called.get());
+        assert_eq!(machine.phase_label(), "LiteralDetect");
+    }
+
+    #[test]
+    fn raw_tsf_literal_recovery_tsf_mode_keeps_warm_and_increments_consecutive() {
+        // TSF mode の RawTsfLiteralRecovery: warm を維持 + consecutive インクリメント。
+        // mark_cold_raw_tsf を呼ぶと flush_raw_tsf_literal_romaji が cold 経路で F2 warmup を
+        // 再送し WezTerm の 344ms タイマーをリセットしてしまう。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            consecutive: 0,
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![
+            ProbeAction::RawTsfLiteralRecovery {
+                cold_seq: 0,
+                backs: 2,
+                romaji: "ko".to_string(),
+            },
+            ProbeAction::Done,
+        ];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done);
+        assert!(
+            io.set_raw_literal_called.get(),
+            "TSF mode: set_raw_literal は呼ぶべき"
+        );
+        assert!(
+            !io.mark_cold_raw_tsf_called.get(),
+            "TSF mode: mark_cold_raw_tsf を呼ばず warm を維持するべき"
+        );
+        assert!(
+            io.increment_consecutive_called.get(),
+            "TSF mode: ループ防止のため increment_consecutive_count を呼ぶべき"
+        );
+    }
+
+    #[test]
+    fn raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark() {
+        // TSF mode でも consecutive > 0 のときは諦めて mark_cold_raw_tsf を呼ぶ。
+        // 連続 false positive ループを防ぐ。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            consecutive: 1, // already attempted once
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![
+            ProbeAction::RawTsfLiteralRecovery {
+                cold_seq: 0,
+                backs: 2,
+                romaji: "ko".to_string(),
+            },
+            ProbeAction::Done,
+        ];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(done);
+        assert!(
+            !io.set_raw_literal_called.get(),
+            "consecutive > 0: set_raw_literal を呼ばないべき"
+        );
+        assert!(
+            io.mark_cold_raw_tsf_called.get(),
+            "consecutive > 0: mark_cold_raw_tsf で cold に戻すべき"
         );
     }
 }
