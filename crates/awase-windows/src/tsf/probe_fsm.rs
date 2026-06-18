@@ -640,23 +640,6 @@ impl TsfProbeMachine {
                     NextStep::StartSecondaryProbe {
                         fresh_f2_ms: *fresh_f2_ms,
                     }
-                } else if !nc_fired && crate::tsf::observer::gji_keybinds_ok() {
-                    // keybinds_ok: F22→F21 で GJI を確実に活性化してから VK path へ。
-                    // long_idle か否かにかかわらず、keybinds が使えるなら常にこの経路を優先する。
-                    // F22（IME OFF）→ F21（IME ON）により GJI が確実に I/O を発行し、
-                    // KeySeqExec フェーズでその応答を確認してから VK 入力することで候補表示が保証される。
-                    log::debug!(
-                        "[tsf-probe] cold={} NameChangeWait: nc_fired=false + keybinds_ok → KeySeq F22→F21 開始",
-                        self.cold_seq
-                    );
-                    let now = clock.now_ms();
-                    NextStep::StartKeySeq {
-                        seq: crate::tsf::key_seq::KeySeq::new(now)
-                            .key(crate::vk::VK_F22)
-                            .key(crate::vk::VK_F21),
-                        deadline_ms: now + crate::tuning::F22F21_WAIT_MS,
-                        after: KeySeqAfter::Tsf,
-                    }
                 } else {
                     // nc_fired=false（タイムアウト）の場合は IME モード切替が未確認。
                     // nc_fired=true && probe_settled=true は上の if に入らないのでここに来る。
