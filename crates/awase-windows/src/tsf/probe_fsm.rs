@@ -91,6 +91,14 @@ enum NextStep {
     },
     /// `KeySeqExec` フェーズで 1 ステップ進める（`seq.poll()` を呼ぶ）
     AdvanceKeySeq { now_ms: u64 },
+    /// `KeySeqExec` 完了後に VK probe フェーズへ遷移する（`keybinds_ok=true` + GJI 応答時）。
+    ///
+    /// dispatcher が VK 'A' を送信し、`VkProbe` フェーズで gji_candidate_show の変化を待つ。
+    StartVkProbe { deadline_ms: u64 },
+    /// `VkProbe` で SHOW 変化を確認 → BS + Transmit へ。
+    VkProbeConfirmed,
+    /// `VkProbe` がタイムアウト → TransmitTsf(nc_fired=false, gji_resumed=true) へ直行。
+    VkProbeTimeout,
 }
 
 /// [`ProbePhase::Probing`] の完了後アクションを区別するタグ。
@@ -188,6 +196,15 @@ pub(crate) enum ProbePhase {
         after: KeySeqAfter,
         send: SendState,
     },
+    /// VK 'A' probe 送信後に gji_candidate_show 変化を待つフェーズ。
+    ///
+    /// keybinds_ok=true の gji_long_idle cold start 時のみ使用する。
+    /// F22→F21 (KeySeqExec) の GJI I/O 応答を確認後に遷移する。
+    VkProbe {
+        detector: LiteralDetector,
+        deadline_ms: u64,
+        send: SendState,
+    },
 }
 
 /// [`NextStep::StartKeySeq`] / [`ProbePhase::KeySeqExec`] 完了後の送信先。
@@ -245,6 +262,16 @@ pub(crate) enum ProbeAction {
     /// `seq.poll()` が `Send(vk)` を返したときに emit される。
     /// dispatcher は `io.send_key(vk)` を呼ぶだけでよい（コールバック不要）。
     SendSeqKey { cold_seq: u32, vk: VkCode },
+    /// VK probe キー（'A'）を送信する。
+    ///
+    /// `StartVkProbe` 遷移時に emit される。dispatcher は `io.send_vk_probe_key()` を呼ぶ。
+    /// GJI が composition 中なら gji_candidate_show が変化し `VkProbeConfirmed` へ続く。
+    SendVkProbeKey { cold_seq: u32 },
+    /// VK probe composition を BS でキャンセルする。
+    ///
+    /// `VkProbeConfirmed` 遷移時に `Transmit` の直前に emit される。
+    /// dispatcher は `io.send_probe_backspaces(1)` を呼ぶ。
+    SendVkProbeBs { cold_seq: u32 },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
@@ -388,6 +415,7 @@ impl TsfProbeMachine {
             | ProbePhase::NameChangeWait { send, .. }
             | ProbePhase::LiteralDetect { send, .. }
             | ProbePhase::KeySeqExec { send, .. }
+            | ProbePhase::VkProbe { send, .. }
             | ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
         }
@@ -406,6 +434,7 @@ impl TsfProbeMachine {
             ProbePhase::NameChangeWait { .. } => "NameChangeWait",
             ProbePhase::LiteralDetect { .. } => "LiteralDetect",
             ProbePhase::KeySeqExec { .. } => "KeySeqExec",
+            ProbePhase::VkProbe { .. } => "VkProbe",
         }
     }
 
@@ -506,6 +535,29 @@ impl TsfProbeMachine {
                 } else {
                     vec![]
                 }
+            }
+            NextStep::StartVkProbe { deadline_ms } => {
+                // KeySeqExec から SendState を取り出してから LiteralDetector のベースラインを確定する。
+                // ベースラインは VK probe 送信前でなければならない。
+                let send = match &mut self.phase {
+                    ProbePhase::KeySeqExec { send, .. } => std::mem::take(send),
+                    _ => {
+                        log::warn!(
+                            "[tsf-probe] cold={} StartVkProbe: unexpected phase {}",
+                            self.cold_seq,
+                            self.phase_label_internal()
+                        );
+                        SendState::default()
+                    }
+                };
+                let detector = LiteralDetector::new();
+                self.phase = ProbePhase::VkProbe { detector, deadline_ms, send };
+                vec![ProbeAction::SendVkProbeKey { cold_seq: self.cold_seq }]
+            }
+            NextStep::VkProbeConfirmed => self.enter_vk_probe_confirmed(),
+            NextStep::VkProbeTimeout => {
+                // SHOW 未確認のままタイムアウト → nc_fired=false で直接送信を試みる。
+                self.enter_transmit_tsf(false, true)
             }
         }
     }
@@ -687,9 +739,9 @@ impl TsfProbeMachine {
                                 after,
                             );
                             return match after {
-                                KeySeqAfter::Tsf => NextStep::TransmitTsf {
-                                    nc_fired: true,
-                                    gji_resumed: true,
+                                // GJI が F22→F21 に応答 → VK probe で composition 活動を確認してから送信。
+                                KeySeqAfter::Tsf => NextStep::StartVkProbe {
+                                    deadline_ms: now + crate::tuning::VK_PROBE_DETECT_MS,
                                 },
                                 KeySeqAfter::Chrome => NextStep::TransmitChrome,
                             };
@@ -742,6 +794,29 @@ impl TsfProbeMachine {
                         NextStep::LiteralSuspected {
                             ze_bs_count: *ze_bs_count,
                         }
+                    }
+                }
+            }
+
+            ProbePhase::VkProbe { detector, deadline_ms, .. } => {
+                use crate::tsf::probe::DetectionResult;
+                let Some(result) = detector.check_now(*deadline_ms) else {
+                    return NextStep::Wait;
+                };
+                match result {
+                    DetectionResult::CompositionConfirmed => {
+                        log::debug!(
+                            "[tsf-probe] cold={} VkProbe: SHOW 確認 → BS + Transmit",
+                            self.cold_seq
+                        );
+                        NextStep::VkProbeConfirmed
+                    }
+                    DetectionResult::SuspectedLiteral => {
+                        log::debug!(
+                            "[tsf-probe] cold={} VkProbe: タイムアウト → TransmitTsf 直接",
+                            self.cold_seq
+                        );
+                        NextStep::VkProbeTimeout
                     }
                 }
             }
@@ -875,12 +950,34 @@ impl TsfProbeMachine {
         }]
     }
 
+    /// VkProbe で SHOW 確認済み → BS + Transmit(nc_fired=true, gji_resumed=true) を emit。
+    fn enter_vk_probe_confirmed(&mut self) -> Vec<ProbeAction> {
+        let send = self.take_current_send_for_transmit();
+        let cold_seq = self.cold_seq;
+        let ctx = self.ctx;
+        self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
+        vec![
+            ProbeAction::SendVkProbeBs { cold_seq },
+            ProbeAction::Transmit {
+                cold_seq,
+                prepend_f2_warmup: ctx.prepend_f2_warmup,
+                used_eager_path: ctx.used_eager_path,
+                nc_fired: true,
+                gji_resumed: true,
+                romaji: send.romaji,
+                deferred_vks: send.deferred_vks,
+                target: TransmitTarget::Tsf,
+            },
+        ]
+    }
+
     /// `Transmit` action 生成時に現フェーズから `SendState` を取り出す。
     fn take_current_send_for_transmit(&mut self) -> SendState {
         match &mut self.phase {
             ProbePhase::Probing { send, .. }
             | ProbePhase::NameChangeWait { send, .. }
-            | ProbePhase::KeySeqExec { send, .. } => std::mem::take(send),
+            | ProbePhase::KeySeqExec { send, .. }
+            | ProbePhase::VkProbe { send, .. } => std::mem::take(send),
             _ => {
                 log::warn!(
                     "[tsf-probe] cold={} enter_transmit_* called from unexpected phase {}",
