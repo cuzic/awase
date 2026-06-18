@@ -468,18 +468,11 @@ pub fn start_monitor_thread() -> win32_worker::WorkerThread {
     })
 }
 
-fn check_keybinds_in_db() -> bool {
-    crate::gji::default_config_path()
-        .and_then(|p| std::fs::read(&p).ok())
-        .map_or(false, |data| matches!(crate::gji::patch(&data), Ok(None)))
-}
-
 fn monitor_loop(token: &win32_worker::ShutdownToken) {
     log::info!("[gji-monitor] thread started");
 
     let mut monitor: Option<GjiMonitor> = None;
     let mut next_attach_ms: u64 = 0;
-    let mut next_config_check_ms: u64 = 0;
 
     loop {
         let now = crate::hook::current_tick_ms();
@@ -487,7 +480,9 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
                 log::info!("[gji-monitor] attached to GJI process");
-                let keybinds_ok = check_keybinds_in_db();
+                let keybinds_ok = crate::gji::default_config_path()
+                    .and_then(|p| std::fs::read(&p).ok())
+                    .map_or(false, |data| matches!(crate::gji::patch(&data), Ok(None)));
                 if keybinds_ok {
                     log::info!("[gji-monitor] F21/F22 keybinds registered in config1.db");
                 } else {
@@ -501,7 +496,6 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     .gji_last_io_ms
                     .store(m.last_change_ms(), Ordering::Relaxed);
                 TSF_OBS.gji_monitor_ok.store(true, Ordering::Release);
-                next_config_check_ms = now + crate::tuning::GJI_CONFIG_RECHECK_INTERVAL_MS;
                 monitor = Some(m);
             } else {
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
@@ -521,27 +515,6 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                 monitor = None;
                 next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
             }
-        }
-
-        // 定期的に config1.db を再検査して、GJI クラウド同期等による F21/F22 消去を検出する。
-        if monitor.is_some() && now >= next_config_check_ms {
-            let keybinds_ok = check_keybinds_in_db();
-            let prev = TSF_OBS.gji_keybinds_ok.load(Ordering::Relaxed);
-            if keybinds_ok != prev {
-                if keybinds_ok {
-                    log::info!(
-                        "[gji-monitor] config1.db に F21/F22 キーバインドが追加されました \
-                         — keybinds_ok → true"
-                    );
-                } else {
-                    log::warn!(
-                        "[gji-monitor] config1.db から F21/F22 キーバインドが消去されました \
-                         (GJI クラウド同期またはアップデートの可能性) — keybinds_ok → false"
-                    );
-                }
-                TSF_OBS.gji_keybinds_ok.store(keybinds_ok, Ordering::Release);
-            }
-            next_config_check_ms = now + crate::tuning::GJI_CONFIG_RECHECK_INTERVAL_MS;
         }
 
         if token

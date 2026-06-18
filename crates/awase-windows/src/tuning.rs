@@ -200,7 +200,3 @@ pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
 
 /// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
 pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
-
-/// GJI モニタが config1.db を定期再検査する間隔 (ms)。
-/// GJI クラウド同期やアップデートによる F21/F22 消去を検出するために使用する。
-pub const GJI_CONFIG_RECHECK_INTERVAL_MS: u64 = 30_000;
