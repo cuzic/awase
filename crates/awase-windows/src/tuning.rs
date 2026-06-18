@@ -90,14 +90,6 @@ pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
 /// タイムアウト後も VK path を試みる（unicode は WezTerm TSF-native で確実に失敗するため）。
 pub const F22F21_WAIT_MS: u64 = 200;
 
-/// VK probe 送信後の GJI SHOW 待機タイムアウト (ms)。
-///
-/// keybinds_ok + gji_long_idle の場合、F22→F21 後に VK 'A' を probe 送信して
-/// gji_candidate_show が変化（composition 開始）するのを確認する。
-/// GJI が活動中なら SHOW は通常 50ms 以内に来る。200ms = 余裕を持たせた上限。
-/// タイムアウト時は BS なしで直接 TransmitTsf（nc_fired=false, gji_resumed=true）。
-pub const VK_PROBE_DETECT_MS: u64 = 200;
-
 /// Chrome プローブ最小待機時間 (ms)。
 ///
 /// F2 を SendMessageTimeout で送信後、TSF 応答を待つ最低時間。

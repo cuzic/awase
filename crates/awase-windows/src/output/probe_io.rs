@@ -63,14 +63,6 @@ pub(crate) trait ProbeIo {
     ///
     /// `KeySeqExec` フェーズが `ProbeAction::SendSeqKey` を emit したときに呼ばれる。
     fn send_key(&self, vk: VkCode);
-    /// VK probe キー（VK 'A'）を TSF_MARKER 付きで down+up 送信する。
-    ///
-    /// `VkProbe` フェーズ開始時に `ProbeAction::SendVkProbeKey` が emit されたときに呼ばれる。
-    fn send_vk_probe_key(&self);
-    /// VK probe composition をキャンセルする BS を TSF_MARKER 付きで count 回送信する。
-    ///
-    /// `VkProbeConfirmed` 遷移時に `ProbeAction::SendVkProbeBs` が emit されたときに呼ばれる。
-    fn send_probe_backspaces(&self, count: u8);
 }
 
 impl ProbeIo for Output {
@@ -153,29 +145,6 @@ impl ProbeIo for Output {
     fn send_key(&self, vk: VkCode) {
         // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
         unsafe { crate::ime::send_ime_mode_key(vk) };
-    }
-
-    fn send_vk_probe_key(&self) {
-        // VK 'A' (0x41) を TSF_MARKER 付きで down+up 送信する。
-        // GJI が composition 中なら gji_candidate_show が変化し VkProbe フェーズが検出する。
-        let inputs = [
-            crate::tsf::output::make_tsf_key_input(VkCode(0x41), false),
-            crate::tsf::output::make_tsf_key_input(VkCode(0x41), true),
-        ];
-        let _ = crate::win32::send_input_safe(&inputs);
-    }
-
-    fn send_probe_backspaces(&self, count: u8) {
-        use crate::vk::VK_BACK;
-        let backs: Vec<_> = (0..count)
-            .flat_map(|_| {
-                [
-                    crate::tsf::output::make_tsf_key_input(VK_BACK, false),
-                    crate::tsf::output::make_tsf_key_input(VK_BACK, true),
-                ]
-            })
-            .collect();
-        let _ = crate::win32::send_input_safe(&backs);
     }
 }
 
@@ -344,16 +313,6 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                 io.send_key(vk);
             }
 
-            ProbeAction::SendVkProbeKey { cold_seq } => {
-                log::debug!("[tsf-probe] cold={cold_seq} VkProbe: VK 'A' 送信 (probe)");
-                io.send_vk_probe_key();
-            }
-
-            ProbeAction::SendVkProbeBs { cold_seq } => {
-                log::debug!("[tsf-probe] cold={cold_seq} VkProbe: BS 送信 (probe cancel)");
-                io.send_probe_backspaces(1);
-            }
-
             ProbeAction::RawTsfLiteralRecovery {
                 cold_seq,
                 backs,
@@ -486,12 +445,6 @@ mod tests {
             self.send_extra_f2_called.set(true);
         }
         fn send_key(&self, _vk: awase::types::VkCode) {
-            // テスト用: 実際には送信しない
-        }
-        fn send_vk_probe_key(&self) {
-            // テスト用: 実際には送信しない
-        }
-        fn send_probe_backspaces(&self, _count: u8) {
             // テスト用: 実際には送信しない
         }
         fn consecutive_count(&self) -> u32 {
