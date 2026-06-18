@@ -10,7 +10,7 @@
 //! Probing(GjiInitial) ─[settle 不要]──► WaitingForCallback ─[apply_transmit_done]─► LiteralDetect
 //!                     └─[settle 必要]─► WaitingForCallback ─[apply_fresh_f2_sent]─► NameChangeWait
 //!                                                                                        ├─[nc_fired && !settled]──────────────────────────────────────► Probing(GjiSecondary) ─► WaitingForCallback
-//!                                                                                        ├─[!nc_fired, keybinds_ok]─► KeySeqExec (F14→F13 multitick) ─► (GJI I/O 待ち) ─► WaitingForCallback
+//!                                                                                        ├─[!nc_fired, keybinds_ok]─► KeySeqExec (F22→F21 multitick) ─► (GJI I/O 待ち) ─► WaitingForCallback
 //!                                                                                        └─[その他]────────────────────────────────────────────────────────────────────────────► WaitingForCallback
 //! Probing(Chrome) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────► (TransmitChrome 後に即完了)
 //! ```

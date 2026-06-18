@@ -81,7 +81,7 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 /// 修飾キー（Ctrl / Shift / Alt）の押下状態スナップショット。
 ///
 /// `SendInput` で修飾なしキーを届ける際の解放・復元シーケンス構築に使う。
-/// 3つの IME キー送信関数（VK_KANJI / F13 / F14）が同じパターンを共有する。
+/// 3つの IME キー送信関数（VK_KANJI / F21 / F22）が同じパターンを共有する。
 struct HeldModifiers {
     ctrl: bool,
     shift: bool,
@@ -170,7 +170,7 @@ impl HeldModifiers {
 ///
 /// 候補ウィンドウ表示中は VK_KANJI が候補窓に吸われて IME OFF に失敗する場合があるが、
 /// 以前の「Ctrl+Enter で候補確定後に VK_KANJI」方式は Chrome フォームを submit させる
-/// 副作用があったため廃止。GJI 環境では GjiDirectStrategy (F14) が先行するため、
+/// 副作用があったため廃止。GJI 環境では GjiDirectStrategy (F22) が先行するため、
 /// この関数に到達するのは GJI 以外か GJI fallback 時のみ。
 ///
 /// # Safety

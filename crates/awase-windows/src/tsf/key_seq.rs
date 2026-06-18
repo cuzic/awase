@@ -12,11 +12,11 @@ use awase::types::VkCode;
 /// # 例
 ///
 /// ```
-/// // F14 → F13 を 1 ティックずつ送信（間隔 = タイマー間隔 ≒ 10ms）
-/// let seq = KeySeq::new(now_ms).key(VK_F14).key(VK_F13);
+/// // F22 → F21 を 1 ティックずつ送信（間隔 = タイマー間隔 ≒ 10ms）
+/// let seq = KeySeq::new(now_ms).key(VK_F22).key(VK_F21);
 ///
-/// // F14 の 50ms 後に F13
-/// let seq = KeySeq::new(now_ms).key(VK_F14).wait_key(50, VK_F13);
+/// // F22 の 50ms 後に F21
+/// let seq = KeySeq::new(now_ms).key(VK_F22).wait_key(50, VK_F21);
 /// ```
 ///
 /// [`poll`]: KeySeq::poll

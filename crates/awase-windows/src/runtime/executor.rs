@@ -813,7 +813,7 @@ impl DecisionExecutor {
             //
             // EngineIntent (Ctrl+無変換 等、ユーザーの明示的操作) かつ ImmCross が使えない
             // プロファイル (Imm32Unavailable: Chrome/Edge 等、TsfNative: LINE XAML 入力等) の場合、
-            // shadow state が desync していても VK_KANJI / F14 を確実に送信するため
+            // shadow state が desync していても VK_KANJI / F22 を確実に送信するため
             // apply_context を !open に override する。
             //
             // 背景: フォーカス変更直後や awase 起動時に実 IME 状態が unknown になり、
@@ -824,8 +824,8 @@ impl DecisionExecutor {
             //
             // TsfNative (LINE の Windows.UI.Input.InputSite.WindowClass 等) でも
             // KanjiToggle がフォールバックとして使われるため同様の desync 対策が必要。
-            // GJI が起動している場合は GjiDirectStrategy (F13/F14) が選ばれるため override 不要。
-            // F14 は shadow に関わらず常に送信される (べき等)。F13 も GjiDirectStrategy が自前で
+            // GJI が起動している場合は GjiDirectStrategy (F21/F22) が選ばれるため override 不要。
+            // F22 は shadow に関わらず常に送信される (べき等)。F21 も GjiDirectStrategy が自前で
             // shadow_on チェックを持つため executor 側の override は冗長かつ有害。
             let profile = platform.current_app_profile();
             let now_ms = crate::hook::current_tick_ms();

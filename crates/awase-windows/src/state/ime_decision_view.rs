@@ -39,7 +39,7 @@ pub(crate) struct ObservedState {
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     /// `GjiDirectStrategy` の `is_applicable` ゲートに使用する。
     pub gji_monitor_ok: bool,
-    /// F13/F14 キーバインドが GJI の config1.db に登録済みか。
+    /// F21/F22 キーバインドが GJI の config1.db に登録済みか。
     /// `GjiDirectStrategy` の `is_applicable` ゲートに使用する。
     pub gji_keybinds_ok: bool,
     /// GJI candidate が SHOW になってから次の `apply_ime_open` 完了まで `true`。

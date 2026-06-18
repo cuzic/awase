@@ -5,7 +5,7 @@
 //!
 //! # 戦略リスト（優先順）
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
-//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F13/F14）。**全プロファイル**で適用可能
+//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F21/F22）。**全プロファイル**で適用可能
 //! 3. `KanjiToggleStrategy`     — 最終フォールバック。GJI 非検出時の MS-IME 環境向け
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
@@ -13,7 +13,7 @@
 //! GJI が検出されている場合は `GjiDirectStrategy` が全プロファイルで `KanjiToggleStrategy` より優先される。
 //!
 //! ## GJI 前提の設計方針
-//! F13/F14 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
+//! F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
 //! GJI 稼働中はアプリ種別に関わらず GJI を使うことで VK_KANJI トグルアーティファクトを回避できる。
 //! GJI が起動していない環境（MS-IME 等）では `KanjiToggleStrategy` が引き続き機能する。
 //!
@@ -60,28 +60,28 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// GJI を使った一方向 IME 制御戦略。
 ///
 /// VK_KANJI（トグル）の代わりに GJI 固有のキーを使うことで shadow desync の影響を排除する:
-/// - ON  → F13（DirectInput 時にひらがなへ切り替え、既に ON なら no-op）
-/// - OFF → F14（Precomposition/Composition/Conversion 時に IME OFF）
+/// - ON  → F21（DirectInput 時にひらがなへ切り替え、既に ON なら no-op）
+/// - OFF → F22（Precomposition/Composition/Conversion 時に IME OFF）
 ///
-/// F13/F14 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
+/// F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
 /// Standard / Imm32Unavailable **全プロファイル**で利用できる。
-/// F13/F14 は実キーボードに存在しないためブラウザショートカットと衝突しない。
+/// F21/F22 は実キーボードに存在しないためブラウザショートカットと衝突しない。
 ///
 /// **TsfNative プロファイル（WezTerm / Windows Terminal 等）について**
-/// これらの VT ターミナルエミュレータは通常 F13 を ESC[25~、F14 を ESC[26~ という
-/// VT エスケープシーケンスに変換するが、WezTerm 側で F13/F14 を Nop にバインドすれば
-/// ターミナルへの漏れを防げる。その場合、GJI の TSF 層が F14 を消費すれば
+/// これらの VT ターミナルエミュレータは F21/F22 に対してエスケープシーケンスを
+/// 生成しないことを実測で確認済み（WezTerm 実機テスト）。
+/// GJI の TSF 層が F22 を消費することで
 /// VK_KANJI（トグル）を使わずに IME OFF を達成できる（desync フリー）。
 /// GJI が TSF 層で消費しない場合は KanjiToggleStrategy にフォールスルーする。
 ///
 /// GJI の config1.db に以下を登録することで有効になる:
-///   `DirectInput\tF13\tIMEOn`（デフォルト登録済み）
-///   `Precomposition\tF14\tIMEOff`
-///   `Composition\tF14\tIMEOff`
-///   `Conversion\tF14\tIMEOff`
+///   `DirectInput\tF21\tIMEOn`（デフォルト登録済み）
+///   `Precomposition\tF22\tIMEOff`
+///   `Composition\tF22\tIMEOff`
+///   `Conversion\tF22\tIMEOff`
 ///
 /// `gji_monitor_ok=true`（GJI プロセス検出済み）かつ
-/// `gji_keybinds_ok=true`（F13/F14 が config1.db に登録済み）の場合のみ適用可能。
+/// `gji_keybinds_ok=true`（F21/F22 が config1.db に登録済み）の場合のみ適用可能。
 /// どちらかが false の場合は `KanjiToggleStrategy`（MS-IME 向け）がフォールバックする。
 pub(crate) struct GjiDirectStrategy;
 
@@ -93,19 +93,19 @@ impl ImeOpenStrategy for GjiDirectStrategy {
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if open {
             if view.control.shadow_on {
-                // shadow が ON を示しており F13 は no-op と見込まれるためスキップ
-                log::debug!("[apply-ime] GJI direct: shadow ON, skip F13");
+                // shadow が ON を示しており F21 は no-op と見込まれるためスキップ
+                log::debug!("[apply-ime] GJI direct: shadow ON, skip F21");
                 return ImeOpenOutcome::AlreadyMatched;
             }
-            log::debug!("[apply-ime] GJI direct: F13 (IME ON)");
+            log::debug!("[apply-ime] GJI direct: F21 (IME ON)");
             unsafe { crate::ime::post_gji_ime_on() };
         } else {
-            // F14 は GJI config で Conversion\tF14\tIMEOff が登録されているため、
-            // 候補ウィンドウ表示中でも直接 F14 を送れば IME OFF になる。
-            // Ctrl+Enter で候補確定→F14 の2段構えは不要かつ Chrome フォーム送信を
+            // F22 は GJI config で Conversion\tF22\tIMEOff が登録されているため、
+            // 候補ウィンドウ表示中でも直接 F22 を送れば IME OFF になる。
+            // Ctrl+Enter で候補確定→F22 の2段構えは不要かつ Chrome フォーム送信を
             // 引き起こす副作用があるため送らない。
             log::debug!(
-                "[apply-ime] GJI direct: F14 (IME OFF, candidate={})",
+                "[apply-ime] GJI direct: F22 (IME OFF, candidate={})",
                 view.observed.candidate_visible,
             );
             unsafe { crate::ime::post_gji_ime_off() };

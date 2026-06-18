@@ -497,7 +497,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
         append_menu_item(hmenu, IDM_CLEAR_IMM_CACHE, "学習キャッシュをクリア");
         append_menu_item(hmenu, IDM_GJI_SETUP, "Google 日本語入力のセットアップ");
-        append_menu_item(hmenu, IDM_GJI_TEARDOWN, "Google 日本語入力の F13/F14 設定を削除");
+        append_menu_item(hmenu, IDM_GJI_TEARDOWN, "Google 日本語入力の F21/F22 設定を削除");
         let autostart_registered = crate::autostart::is_registered();
         append_menu_item_checked(
             hmenu,
@@ -645,9 +645,9 @@ pub(crate) fn handle_gji_setup() {
 
     let caption = crate::win32::to_wide("Google 日本語入力のセットアップ");
     let message = crate::win32::to_wide(concat!(
-        "Google 日本語入力に F13/F14 キーバインドを追加します。\r\n\r\n",
-        "  F13 → IME ON\r\n",
-        "  F14 → IME OFF\r\n\r\n",
+        "Google 日本語入力に F21/F22 キーバインドを追加します。\r\n\r\n",
+        "  F21 → IME ON\r\n",
+        "  F22 → IME OFF\r\n\r\n",
         "設定を適用するため Google 日本語入力を再起動します。\r\n",
         "よろしいですか？"
     ));
@@ -679,7 +679,7 @@ pub(crate) fn handle_gji_setup() {
             let _ = crate::with_app(|app| {
                 app.show_tray_balloon(
                     "awase — セットアップ済み",
-                    "すでに F13/F14 キーバインドが設定されています",
+                    "すでに F21/F22 キーバインドが設定されています",
                 );
             });
             return;
@@ -697,7 +697,7 @@ pub(crate) fn handle_gji_setup() {
             let _ = crate::with_app(|app| {
                 app.show_tray_balloon(
                     "awase — セットアップ完了",
-                    "F13/F14 キーバインドを追加しました。\nGoogle 日本語入力を手動で再起動してください。",
+                    "F21/F22 キーバインドを追加しました。\nGoogle 日本語入力を手動で再起動してください。",
                 );
             });
         }
@@ -706,7 +706,7 @@ pub(crate) fn handle_gji_setup() {
                 let _ = crate::with_app(|app| {
                     app.show_tray_balloon(
                         "awase — セットアップ完了",
-                        "F13/F14 キーバインドを追加し、Google 日本語入力を再起動しました。",
+                        "F21/F22 キーバインドを追加し、Google 日本語入力を再起動しました。",
                     );
                 });
             }
@@ -716,7 +716,7 @@ pub(crate) fn handle_gji_setup() {
                     app.show_tray_balloon(
                         "awase — セットアップ完了（再起動失敗）",
                         &format!(
-                            "F13/F14 キーバインドを追加しましたが、再起動に失敗しました:\n{e}"
+                            "F21/F22 キーバインドを追加しましたが、再起動に失敗しました:\n{e}"
                         ),
                     );
                 });
@@ -725,15 +725,15 @@ pub(crate) fn handle_gji_setup() {
     }
 }
 
-/// GJI F13/F14 キーバインド削除をトレイメニューから実行する。
+/// GJI F21/F22 キーバインド削除をトレイメニューから実行する。
 pub(crate) fn handle_gji_teardown() {
     use windows::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, IDCANCEL, MB_ICONWARNING, MB_OKCANCEL,
     };
 
-    let caption = crate::win32::to_wide("Google 日本語入力の F13/F14 設定を削除");
+    let caption = crate::win32::to_wide("Google 日本語入力の F21/F22 設定を削除");
     let message = crate::win32::to_wide(concat!(
-        "Google 日本語入力から F13/F14 キーバインドを削除します。\r\n\r\n",
+        "Google 日本語入力から F21/F22 キーバインドを削除します。\r\n\r\n",
         "削除後は IME ON/OFF に VK_KANJI（半角/全角キー）を使う\r\n",
         "フォールバック動作に切り替わります。\r\n\r\n",
         "設定を適用するため Google 日本語入力を再起動します。\r\n",
@@ -767,7 +767,7 @@ pub(crate) fn handle_gji_teardown() {
             let _ = crate::with_app(|app| {
                 app.show_tray_balloon(
                     "awase — 設定なし",
-                    "F13/F14 キーバインドは登録されていません",
+                    "F21/F22 キーバインドは登録されていません",
                 );
             });
             return;
@@ -785,7 +785,7 @@ pub(crate) fn handle_gji_teardown() {
             let _ = crate::with_app(|app| {
                 app.show_tray_balloon(
                     "awase — 削除完了",
-                    "F13/F14 キーバインドを削除しました。\nGoogle 日本語入力を手動で再起動してください。",
+                    "F21/F22 キーバインドを削除しました。\nGoogle 日本語入力を手動で再起動してください。",
                 );
             });
         }
@@ -794,7 +794,7 @@ pub(crate) fn handle_gji_teardown() {
                 let _ = crate::with_app(|app| {
                     app.show_tray_balloon(
                         "awase — 削除完了",
-                        "F13/F14 キーバインドを削除し、Google 日本語入力を再起動しました。",
+                        "F21/F22 キーバインドを削除し、Google 日本語入力を再起動しました。",
                     );
                 });
             }
@@ -804,7 +804,7 @@ pub(crate) fn handle_gji_teardown() {
                     app.show_tray_balloon(
                         "awase — 削除完了（再起動失敗）",
                         &format!(
-                            "F13/F14 キーバインドを削除しましたが、再起動に失敗しました:\n{e}"
+                            "F21/F22 キーバインドを削除しましたが、再起動に失敗しました:\n{e}"
                         ),
                     );
                 });

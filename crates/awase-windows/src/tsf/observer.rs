@@ -125,7 +125,7 @@ pub struct TsfObservations {
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
-    /// F13/F14 キーバインドが GJI の config1.db に登録済みか。
+    /// F21/F22 キーバインドが GJI の config1.db に登録済みか。
     ///
     /// GJI attach 時に config1.db を読み取り、`gji::patch()` が `Ok(None)` を返した場合に `true`。
     /// GJI detach 時に `false` にリセットされる。
@@ -170,7 +170,7 @@ impl TsfObservations {
         self.gji_monitor_ok.load(Ordering::Acquire)
     }
 
-    /// F13/F14 キーバインドが config1.db に登録済みかを読み取る（Acquire）。
+    /// F21/F22 キーバインドが config1.db に登録済みかを読み取る（Acquire）。
     pub fn gji_keybinds_ok(&self) -> bool {
         self.gji_keybinds_ok.load(Ordering::Acquire)
     }
@@ -236,7 +236,7 @@ pub(crate) fn gji_monitor_healthy() -> bool {
     TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)
 }
 
-/// F13/F14 キーバインドが GJI config1.db に登録済みかどうか。live 読み取り。
+/// F21/F22 キーバインドが GJI config1.db に登録済みかどうか。live 読み取り。
 pub(crate) fn gji_keybinds_ok() -> bool {
     TSF_OBS.gji_keybinds_ok.load(Ordering::Acquire)
 }
@@ -281,7 +281,7 @@ pub(crate) fn notify_gji_keybinds_registered() {
 
 /// GJI teardown 完了後に呼んで `gji_keybinds_ok` を即座に `false` にセットする。
 ///
-/// config1.db から F13/F14 エントリを削除した時点で GJI monitor の re-attach を待たずに
+/// config1.db から F21/F22 エントリを削除した時点で GJI monitor の re-attach を待たずに
 /// `GjiDirectStrategy` を無効化し `KanjiToggle` にフォールバックさせるために使う。
 pub(crate) fn notify_gji_keybinds_removed() {
     TSF_OBS.gji_keybinds_ok.store(false, Ordering::Release);
@@ -484,10 +484,10 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     .and_then(|p| std::fs::read(&p).ok())
                     .map_or(false, |data| matches!(crate::gji::patch(&data), Ok(None)));
                 if keybinds_ok {
-                    log::info!("[gji-monitor] F13/F14 keybinds registered in config1.db");
+                    log::info!("[gji-monitor] F21/F22 keybinds registered in config1.db");
                 } else {
                     log::warn!(
-                        "[gji-monitor] F13/F14 keybinds not registered in config1.db \
+                        "[gji-monitor] F21/F22 keybinds not registered in config1.db \
                          — GjiDirect strategy unavailable, falling back to KanjiToggle"
                     );
                 }

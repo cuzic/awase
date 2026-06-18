@@ -219,7 +219,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             //
                             // nc_fired=false: NameChangeWait タイムアウト。
                             //   IME モード切替未確認。VK ローマ字で送ると katakana 等で誤出力になる。
-                            //   keybinds_ok=true: F14→F13 活性化が先行するため通常ここに来ない。
+                            //   keybinds_ok=true: F22→F21 活性化が先行するため通常ここに来ない。
                             //     gji_resumed=true で VK path が強制される。
                             //   keybinds_ok=false + gji_long_idle: unicode TSF を強制（IME モード非依存）。
                             //   keybinds_ok=false + 非 long_idle: used_eager_path のまま。
