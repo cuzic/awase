@@ -74,10 +74,14 @@ pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
 
 /// GJI long idle 後の F2×2 に対する GJI I/O 応答確認 NameChangeWait の最大タイムアウト (ms)。
 ///
-/// GJI は F2 単発（1×DOWN+UP）では I/O を出さないが F2×2 連続では出す（cold=1244 実測: 31ms）。
-/// GJI_IDLE_MS (80ms) + POST_IDLE_MARGIN_MS (30ms) + バッファ = 150ms 以内に収まるよう設定。
+/// GJI I/O 早期終了（gji_long_idle_probe）が機能するケースでは GJI_IDLE_MS (80ms) 静止後に
+/// 即送信できる。機能しない（WezTerm + keybinds_ok=false 等）場合のフォールバックタイムアウト。
+///
+/// 実測（28s アイドル後 cold=16）: F2×2 送信から 181ms 後に GJI が初めて VK を受け入れた。
+/// 150ms ではタイムアウトが早すぎ「bあ」のような部分リテラル化が発生したため 350ms に延長。
+/// 350ms = 実測最大 ~180ms + 170ms マージン。
 /// タイムアウト時は F22→F21 セカンドステージへ（keybinds_ok=true の場合）。
-pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 150;
+pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
 
 /// F22→F21 送信後の GJI I/O 応答待ちタイムアウト (ms)。
 ///
