@@ -290,14 +290,16 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         }
                     }
                     TransmitTarget::Chrome => {
-                        // Chrome VK path では LiteralDetect を使わない。
-                        // Teams 等 GJI 候補ウィンドウを表示しないアプリで
-                        // gji_candidate_show が変化せず常に false positive になる。
+                        // GJI モニター健全時のみ literal 検出を起動する。
+                        // 検出ベースラインは送信前に確定させること。
+                        let detector = io
+                            .gji_monitor_healthy()
+                            .then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Injected);
                         io.mark_warm();
-                        if machine.apply_transmit_done(romaji, ze_bs_count, None) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector) {
                             return true;
                         }
                     }
