@@ -569,23 +569,10 @@ impl TsfProbeMachine {
                             self.cold_seq,
                             outcome.elapsed_ms
                         );
-                        if crate::tsf::observer::gji_keybinds_ok() {
-                            // keybinds_ok: Chrome でも F22→F21 で GJI を確実に活性化してから送信。
-                            let now = clock.now_ms();
-                            log::debug!(
-                                "[tsf-probe] cold={} ChromeProbe: keybinds_ok → KeySeq F22→F21 開始",
-                                self.cold_seq
-                            );
-                            NextStep::StartKeySeq {
-                                seq: crate::tsf::key_seq::KeySeq::new(now)
-                                    .key(crate::vk::VK_F22)
-                                    .key(crate::vk::VK_F21),
-                                deadline_ms: now + crate::tuning::F22F21_WAIT_MS,
-                                after: KeySeqAfter::Chrome,
-                            }
-                        } else {
-                            NextStep::TransmitChrome
-                        }
+                        // F22→F21 を Chrome path で使わない。
+                        // F22 (IME OFF) が Chrome TSF context を壊し、F21 が間に合わず na がリテラル化する。
+                        // ChromeProbe の F2 (VK_DBE_HIRAGANA) warmup のみで GJI を活性化する。
+                        NextStep::TransmitChrome
                     }
                 }
             }
