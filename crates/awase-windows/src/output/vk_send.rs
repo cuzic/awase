@@ -83,6 +83,8 @@ impl TsfSendPipeline {
             romaji,
             if unicode_kana.is_some() {
                 "unicode"
+            } else if outcome.prepend_f2_warmup {
+                "vk-run+f2"
             } else {
                 "vk-run"
             },
@@ -93,7 +95,16 @@ impl TsfSendPipeline {
 
         unicode_kana.map_or_else(
             || {
-                Output::send_vk_runs(chars, outcome.cold_seq);
+                if outcome.prepend_f2_warmup {
+                    // VK run cold path: F2 を K+O と同一 SendInput バッチに含める。
+                    // F2↓ が K↓ の直前に WezTerm へ届くため、GJI の composition context が
+                    // K を受け取る前に確実に初期化される（partial literal 防止）。
+                    // 例: NameChangeWait nc_fired=false 後に ko を送る際、
+                    //   F2+K+O バッチ → F2↓ で GJI 初期化 → K↓ でコンポジション開始 → こ
+                    Output::send_vk_runs_with_leading_f2(chars, outcome.cold_seq);
+                } else {
+                    Output::send_vk_runs(chars, outcome.cold_seq);
+                }
                 chars.len()
             },
             |kana| {
@@ -356,6 +367,34 @@ impl Output {
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
+                run.iter()
+                    .map(|&(v, s)| if s {
+                        format!("S{v:02X}")
+                    } else {
+                        format!("{v:02X}")
+                    })
+                    .join(","),
+            );
+            Self::send_vk_run_batch(run, VkMarker::Tsf);
+        }
+    }
+
+    /// VK run 分割送信（F2 leading）: F2 を先頭に付加して `send_vk_runs` と同様に送信する。
+    ///
+    /// cold パスの VK run で GJI の partial literal を防ぐ。
+    /// F2↓ を K↓ の直前に同一 SendInput バッチで送ることで、WezTerm の TSF が K↓ を
+    /// 処理する前に GJI の composition context が確実に初期化される。
+    pub(super) fn send_vk_runs_with_leading_f2(chars: &[(VkCode, bool)], cold_seq: u32) {
+        let mut f2_plus_chars = Vec::with_capacity(chars.len() + 1);
+        f2_plus_chars.push((VK_DBE_HIRAGANA, false));
+        f2_plus_chars.extend_from_slice(chars);
+        let runs = Self::split_vk_runs(&f2_plus_chars);
+        let total_runs = runs.len();
+        for (run_idx, run) in runs.into_iter().enumerate() {
+            let last_io = crate::tsf::observer::gji_last_io_ms();
+            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            log::debug!(
+                "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] (f2-leading)",
                 run.iter()
                     .map(|&(v, s)| if s {
                         format!("S{v:02X}")
