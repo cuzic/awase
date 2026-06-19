@@ -185,3 +185,8 @@ pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
 
 /// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
 pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
+
+/// GJI アタッチ中に config1.db の keybind 登録状態を再確認する間隔 (ms)。
+///
+/// GJI 設定同期等で config1.db が書き戻され F21/F22 エントリが消える場合に検知する。
+pub const GJI_CONFIG_RECHECK_INTERVAL_MS: u64 = 30_000;
