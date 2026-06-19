@@ -163,6 +163,9 @@ pub(crate) enum ProbePhase {
         ze_bs_count: usize,
         deadline_ms: u64,
         send: SendState,
+        /// SHOW 発火時に IMM32 composition と突き合わせる期待かな文字。
+        /// None の場合は IMM32 検証をスキップして CompositionConfirmed を返す。
+        expected_kana: Option<char>,
     },
 }
 
@@ -306,6 +309,7 @@ impl TsfProbeMachine {
                 ze_bs_count,
                 deadline_ms,
                 send: SendState::new(romaji),
+                expected_kana: None,
             },
         }
     }
@@ -563,6 +567,7 @@ impl TsfProbeMachine {
                 detector,
                 ze_bs_count,
                 deadline_ms,
+                expected_kana,
                 ..
             } => {
                 use crate::tsf::probe::DetectionResult;
@@ -571,12 +576,32 @@ impl TsfProbeMachine {
                 };
                 match detection {
                     DetectionResult::CompositionConfirmed => {
+                        // 部分リテラル検出: SHOW が発火しても composition 内容が expected_kana と
+                        // 異なる場合は「K がリテラル化して O だけが compose された」部分リテラルを示す。
+                        // TSF→IMM32 bridge が composition 中に HIMC を更新する環境でのみ有効。
+                        // HIMC が NULL の場合（bridge 未対応など）は None → スキップして安全に CompositionConfirmed へ。
+                        if let Some(expected) = expected_kana {
+                            // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
+                            //         TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ぶ。Win32 IMM32 API は任意スレッドから安全。
+                            let actual = unsafe { crate::ime::get_foreground_comp_str_char() };
+                            if actual.map_or(false, |c| c != *expected) {
+                                log::warn!(
+                                    "[raw-tsf-literal] cold={} partial literal: comp={actual:?} ≠ expected='{expected}' → SuspectedLiteral",
+                                    self.cold_seq
+                                );
+                                crate::ime_diagnostic::log_composition_probe(
+                                    self.cold_seq,
+                                    "partial-literal",
+                                );
+                                return NextStep::LiteralSuspected {
+                                    ze_bs_count: *ze_bs_count,
+                                };
+                            }
+                        }
                         log::debug!(
                             "[raw-tsf-literal] cold={} composition confirmed",
                             self.cold_seq
                         );
-                        // 部分リテラル観測実験: composition の実際の文字列をログに残す。
-                        // GJI/各 IME / 各プロファイルでの IMM API 応答を比較するための観測点。
                         crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
                         NextStep::LiteralDone
                     }
@@ -667,6 +692,7 @@ impl TsfProbeMachine {
         ze_bs_count: usize,
         detector: Option<LiteralDetector>,
         literal_detect_ms: u64,
+        expected_kana: Option<char>,
     ) -> bool {
         if let Some(detector) = detector {
             let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
@@ -678,6 +704,7 @@ impl TsfProbeMachine {
                     romaji,
                     deferred_vks: Vec::new(),
                 },
+                expected_kana,
             };
             false
         } else {

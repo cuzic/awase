@@ -1044,6 +1044,32 @@ unsafe fn read_imm_bytes(
     Some(buf)
 }
 
+/// フォアグラウンドウィンドウの IMM32 composition string の最初の文字を返す。
+///
+/// TSF→IMM32 bridge が composition 中に HIMC を更新する場合、コンポジション内容を読める。
+/// HIMC が NULL（コンポジション外・TSF-native で bridge 無効など）のときは `None` を返す。
+///
+/// 部分リテラル検出で SHOW 発火直後に呼ぶことで、expected kana と突き合わせる。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
+pub unsafe fn get_foreground_comp_str_char() -> Option<char> {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    // SAFETY: GetForegroundWindow はスレッドセーフ。
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.non_null().is_none() {
+        return None;
+    }
+    // SAFETY: hwnd は non_null() で NULL チェック済み。
+    let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
+        return None;
+    };
+    // SAFETY: ctx.himc() は ImmContextGuard が保持する有効な HIMC。
+    let s = unsafe { read_imm_string(ctx.himc(), crate::imm::GCS_COMPSTR) }?;
+    s.chars().next()
+}
+
 /// 部分リテラル検出の実験用 composition スナップショット。
 #[derive(Debug, Default, Clone)]
 pub struct CompositionSnapshot {

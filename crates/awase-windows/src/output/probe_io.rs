@@ -280,10 +280,14 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         } else {
                             crate::tuning::RAW_TSF_LITERAL_DETECT_MS
                         };
+                        // TSF cold path の部分リテラル検出: SHOW 発火時に IMM32 composition と突き合わせる。
+                        // K がリテラル化して O だけが compose された場合（"ko"→'k'+'お'）を
+                        // expected_kana='こ' vs actual='お' の不一致で検出する。
+                        let expected_kana = crate::tsf::output::kana_for_romaji_static(&romaji);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Tsf);
                         io.mark_warm();
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms, expected_kana) {
                             return true;
                         }
                     }
@@ -297,7 +301,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Injected);
                         io.mark_warm();
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, crate::tuning::RAW_TSF_LITERAL_DETECT_MS) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, crate::tuning::RAW_TSF_LITERAL_DETECT_MS, None) {
                             return true;
                         }
                     }
