@@ -236,11 +236,6 @@ pub(crate) fn gji_monitor_healthy() -> bool {
     TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)
 }
 
-/// F21/F22 キーバインドが GJI config1.db に登録済みかどうか。live 読み取り。
-pub(crate) fn gji_keybinds_ok() -> bool {
-    TSF_OBS.gji_keybinds_ok.load(Ordering::Acquire)
-}
-
 /// OBJ_NAMECHANGE カウンタのベースラインを取得する。
 ///
 /// `SendInput` 等を呼ぶ前に取得し、完了後に `NamechangeBaseline::fired()` で

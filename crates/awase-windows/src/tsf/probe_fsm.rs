@@ -9,10 +9,9 @@
 //! ```text
 //! Probing(GjiInitial) ─[settle 不要]──► WaitingForCallback ─[apply_transmit_done]─► LiteralDetect
 //!                     └─[settle 必要]─► WaitingForCallback ─[apply_fresh_f2_sent]─► NameChangeWait
-//!                                                                                        ├─[nc_fired && !settled]──────────────────────────────────────► Probing(GjiSecondary) ─► WaitingForCallback
-//!                                                                                        ├─[!nc_fired, keybinds_ok]─► KeySeqExec (F22→F21 multitick) ─► (GJI I/O 待ち) ─► WaitingForCallback
-//!                                                                                        └─[その他]────────────────────────────────────────────────────────────────────────────► WaitingForCallback
-//! Probing(Chrome) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────► (TransmitChrome 後に即完了)
+//!                                                                                        ├─[nc_fired && !settled]─► Probing(GjiSecondary) ─► WaitingForCallback
+//!                                                                                        └─[その他]────────────────────────────────────────────────────────► WaitingForCallback
+//! Probing(Chrome) ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────► (TransmitChrome 後に即完了)
 //! ```
 //!
 //! ## 設計ポリシー
@@ -83,14 +82,6 @@ enum NextStep {
     LiteralDone,
     /// `LiteralDetect`: raw literal 疑い → `RawTsfLiteralRecovery + Done`
     LiteralSuspected { ze_bs_count: usize },
-    /// キーシーケンスを開始し `KeySeqExec` フェーズへ遷移する
-    StartKeySeq {
-        seq: crate::tsf::key_seq::KeySeq,
-        deadline_ms: u64,
-        after: KeySeqAfter,
-    },
-    /// `KeySeqExec` フェーズで 1 ステップ進める（`seq.poll()` を呼ぶ）
-    AdvanceKeySeq { now_ms: u64 },
 }
 
 /// [`ProbePhase::Probing`] の完了後アクションを区別するタグ。
@@ -173,30 +164,6 @@ pub(crate) enum ProbePhase {
         deadline_ms: u64,
         send: SendState,
     },
-    /// マルチティックキーシーケンス実行 + GJI I/O 応答待ち。
-    ///
-    /// `seq` が空になるまで毎ティック 1 キーずつ送信し、
-    /// 完了後は GJI が I/O で応答するまで待機してから `after` で指定した送信先へ移行する。
-    /// タイムアウト後も `after` の送信先を強制（Tsf の場合は VK path 強制）。
-    KeySeqExec {
-        seq: crate::tsf::key_seq::KeySeq,
-        /// キーシーケンス完了時刻 (ms)。`None` = まだシーケンス実行中。
-        gji_wait_since_ms: Option<u64>,
-        /// フェーズタイムアウト絶対時刻（ms）。
-        deadline_ms: u64,
-        /// KeySeq 完了後の送信先（TSF VK path / Chrome batch）。
-        after: KeySeqAfter,
-        send: SendState,
-    },
-}
-
-/// [`NextStep::StartKeySeq`] / [`ProbePhase::KeySeqExec`] 完了後の送信先。
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum KeySeqAfter {
-    /// TSF パス（VK ローマ字）。GJI 応答後は gji_resumed=true で VK path を強制する。
-    Tsf,
-    /// Chrome バッチパス。GJI 応答有無にかかわらず同じ送信先。
-    Chrome,
 }
 
 /// [`ProbeAction::Transmit`] の送信先。
@@ -240,11 +207,6 @@ pub(crate) enum ProbeAction {
         backs: usize,
         romaji: String,
     },
-    /// `KeySeqExec` フェーズ中に 1 キーを送信する。
-    ///
-    /// `seq.poll()` が `Send(vk)` を返したときに emit される。
-    /// dispatcher は `io.send_key(vk)` を呼ぶだけでよい（コールバック不要）。
-    SendSeqKey { cold_seq: u32, vk: VkCode },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
@@ -387,7 +349,6 @@ impl TsfProbeMachine {
             ProbePhase::Probing { send, .. }
             | ProbePhase::NameChangeWait { send, .. }
             | ProbePhase::LiteralDetect { send, .. }
-            | ProbePhase::KeySeqExec { send, .. }
             | ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
         }
@@ -405,7 +366,6 @@ impl TsfProbeMachine {
             }
             ProbePhase::NameChangeWait { .. } => "NameChangeWait",
             ProbePhase::LiteralDetect { .. } => "LiteralDetect",
-            ProbePhase::KeySeqExec { .. } => "KeySeqExec",
         }
     }
 
@@ -468,44 +428,6 @@ impl TsfProbeMachine {
                     },
                     ProbeAction::Done,
                 ]
-            }
-            NextStep::StartKeySeq { seq, deadline_ms, after } => {
-                let send = match &mut self.phase {
-                    ProbePhase::NameChangeWait { send, .. }
-                    | ProbePhase::Probing { send, .. } => std::mem::take(send),
-                    _ => {
-                        log::warn!(
-                            "[tsf-probe] cold={} StartKeySeq: unexpected phase {}",
-                            self.cold_seq,
-                            self.phase_label_internal()
-                        );
-                        SendState::default()
-                    }
-                };
-                self.phase = ProbePhase::KeySeqExec {
-                    seq,
-                    gji_wait_since_ms: None,
-                    deadline_ms,
-                    after,
-                    send,
-                };
-                vec![]
-            }
-            NextStep::AdvanceKeySeq { now_ms } => {
-                if let ProbePhase::KeySeqExec { seq, gji_wait_since_ms, .. } = &mut self.phase {
-                    match seq.poll(now_ms) {
-                        crate::tsf::key_seq::KeySeqPoll::Send(vk) => {
-                            vec![ProbeAction::SendSeqKey { cold_seq: self.cold_seq, vk }]
-                        }
-                        crate::tsf::key_seq::KeySeqPoll::Pending => vec![],
-                        crate::tsf::key_seq::KeySeqPoll::Done(sent_ms) => {
-                            *gji_wait_since_ms = Some(sent_ms);
-                            vec![]
-                        }
-                    }
-                } else {
-                    vec![]
-                }
             }
         }
     }
@@ -634,55 +556,6 @@ impl TsfProbeMachine {
                         nc_fired,
                         gji_resumed: false,
                     }
-                }
-            }
-
-            ProbePhase::KeySeqExec {
-                gji_wait_since_ms,
-                deadline_ms,
-                after,
-                ..
-            } => {
-                let now = clock.now_ms();
-                if let Some(since_ms) = gji_wait_since_ms {
-                    // キーシーケンス完了済み → GJI I/O 応答を待つ
-                    let gji_io = crate::tsf::observer::gji_last_io_ms();
-                    if gji_io >= *since_ms {
-                        let gji_idle = now.saturating_sub(gji_io);
-                        if gji_idle >= crate::tuning::GJI_IDLE_MS {
-                            log::debug!(
-                                "[tsf-probe] cold={} KeySeqExec: GJI が応答 (idle={}ms) → {:?} path",
-                                self.cold_seq,
-                                gji_idle,
-                                after,
-                            );
-                            return match after {
-                                KeySeqAfter::Tsf => NextStep::TransmitTsf {
-                                    nc_fired: true,
-                                    gji_resumed: true,
-                                },
-                                KeySeqAfter::Chrome => NextStep::TransmitChrome,
-                            };
-                        }
-                    }
-                    if now >= *deadline_ms {
-                        log::debug!(
-                            "[tsf-probe] cold={} KeySeqExec: タイムアウト → {:?} path 強制",
-                            self.cold_seq,
-                            after,
-                        );
-                        return match after {
-                            KeySeqAfter::Tsf => NextStep::TransmitTsf {
-                                nc_fired: false,
-                                gji_resumed: true,
-                            },
-                            KeySeqAfter::Chrome => NextStep::TransmitChrome,
-                        };
-                    }
-                    NextStep::Wait
-                } else {
-                    // まだキーシーケンスを送信中
-                    NextStep::AdvanceKeySeq { now_ms: now }
                 }
             }
 
@@ -849,8 +722,7 @@ impl TsfProbeMachine {
     fn take_current_send_for_transmit(&mut self) -> SendState {
         match &mut self.phase {
             ProbePhase::Probing { send, .. }
-            | ProbePhase::NameChangeWait { send, .. }
-            | ProbePhase::KeySeqExec { send, .. } => std::mem::take(send),
+            | ProbePhase::NameChangeWait { send, .. } => std::mem::take(send),
             _ => {
                 log::warn!(
                     "[tsf-probe] cold={} enter_transmit_* called from unexpected phase {}",
@@ -1035,104 +907,6 @@ mod tests {
             },
         ]);
         // panic しないことを確認
-    }
-
-    // ── KeySeqExec フェーズテスト ─────────────────────────────────────────────
-
-    fn make_key_seq_exec(seq: crate::tsf::key_seq::KeySeq, deadline_ms: u64) -> ProbePhase {
-        ProbePhase::KeySeqExec {
-            seq,
-            gji_wait_since_ms: None,
-            deadline_ms,
-            after: KeySeqAfter::Tsf,
-            send: SendState::default(),
-        }
-    }
-
-    #[test]
-    fn key_seq_exec_emits_send_seq_key_per_tick() {
-        // KeySeqExec フェーズ: 毎ティック 1 キーずつ SendSeqKey を emit する
-        use crate::tsf::key_seq::KeySeq;
-        use crate::vk::{VK_F21, VK_F22};
-
-        let mut machine = make_gji_machine();
-        let seq = KeySeq::new(100).key(VK_F22).key(VK_F21);
-        machine.force_phase_for_test(make_key_seq_exec(seq, 500));
-
-        // ティック 1: F22 送信
-        let actions = machine.tick_with_clock(&ManualClock(100));
-        assert!(
-            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F22),
-            "ティック1 で F22 を emit するべき: {actions:?}"
-        );
-        assert_eq!(machine.phase_label(), "KeySeqExec");
-
-        // ティック 2: F21 送信
-        let actions = machine.tick_with_clock(&ManualClock(110));
-        assert!(
-            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F21),
-            "ティック2 で F21 を emit するべき: {actions:?}"
-        );
-
-        // ティック 3: seq 完了 → GJI 待ちへ（まだ GJI 未応答なので空 Vec）
-        let actions = machine.tick_with_clock(&ManualClock(120));
-        assert!(actions.is_empty(), "seq 完了直後は Wait を返すべき: {actions:?}");
-        assert_eq!(machine.phase_label(), "KeySeqExec");
-    }
-
-    #[test]
-    fn key_seq_exec_wait_key_respects_delay() {
-        // wait_key(50, ...) は 50ms 経過するまで Pending を返す
-        use crate::tsf::key_seq::KeySeq;
-        use crate::vk::{VK_F21, VK_F22};
-
-        let mut machine = make_gji_machine();
-        let seq = KeySeq::new(100).key(VK_F22).wait_key(50, VK_F21);
-        machine.force_phase_for_test(make_key_seq_exec(seq, 500));
-
-        // ティック 1 (t=100): F22 送信 → prev_ms = 100
-        machine.tick_with_clock(&ManualClock(100));
-        // ティック 2 (t=110): 50ms 未経過 → Pending（空 Vec）
-        let actions = machine.tick_with_clock(&ManualClock(110));
-        assert!(actions.is_empty(), "50ms 未経過: Wait のはず: {actions:?}");
-        // ティック 3 (t=150): 50ms 経過 → F21 送信
-        let actions = machine.tick_with_clock(&ManualClock(150));
-        assert!(
-            matches!(actions[..], [ProbeAction::SendSeqKey { vk, .. }] if vk == VK_F21),
-            "50ms 経過後に F21 を emit するべき: {actions:?}"
-        );
-    }
-
-    #[test]
-    fn key_seq_exec_timeout_forces_vk_path() {
-        // deadline を超えたら gji_wait_since_ms の有無にかかわらず TransmitTsf を emit する
-        use crate::tsf::key_seq::KeySeq;
-        use crate::vk::{VK_F21, VK_F22};
-
-        let mut machine = make_gji_machine();
-        // seq は完了済み（prev_ms = 0 で steps 空）にするため、Done が即返る状態を作る
-        let seq = KeySeq::new(0).key(VK_F22).key(VK_F21);
-        machine.force_phase_for_test(ProbePhase::KeySeqExec {
-            seq,
-            gji_wait_since_ms: Some(0), // 完了済みとしてマーク
-            deadline_ms: 100,           // デッドライン = 100ms
-            after: KeySeqAfter::Tsf,
-            send: SendState::default(),
-        });
-
-        // t=200 でタイムアウト → TransmitTsf(gji_resumed=true) を emit
-        let actions = machine.tick_with_clock(&ManualClock(200));
-        assert!(
-            matches!(
-                actions[..],
-                [ProbeAction::Transmit {
-                    nc_fired: false,
-                    gji_resumed: true,
-                    ..
-                }]
-            ),
-            "タイムアウト時は Transmit(gji_resumed=true) を emit するべき: {actions:?}"
-        );
     }
 
     // ── regression: literal_suspected 経路で romaji が保持されるか ────────────

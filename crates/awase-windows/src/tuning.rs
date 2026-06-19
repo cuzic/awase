@@ -83,13 +83,6 @@ pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
 /// タイムアウト時は F22→F21 セカンドステージへ（keybinds_ok=true の場合）。
 pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
 
-/// F22→F21 送信後の GJI I/O 応答待ちタイムアウト (ms)。
-///
-/// F2×2 で GJI が応答しなかった場合のセカンドステージ。
-/// F22（IME-OFF）→ F21（IME-ON）の状態遷移 I/O と GJI_IDLE_MS (80ms) 静止確認を含む。
-/// タイムアウト後も VK path を試みる（unicode は WezTerm TSF-native で確実に失敗するため）。
-pub const F22F21_WAIT_MS: u64 = 200;
-
 /// Chrome プローブ最小待機時間 (ms)。
 ///
 /// F2 を SendMessageTimeout で送信後、TSF 応答を待つ最低時間。

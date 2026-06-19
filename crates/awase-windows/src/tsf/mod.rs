@@ -9,7 +9,6 @@
 //! - [`cold_warmup`]  — cold-start ウォームアップシーケンス（Preamble/Eager/Non-eager 分解）
 
 pub(crate) mod cold_warmup;
-pub(crate) mod key_seq;
 pub mod observer;
 pub mod output;
 pub mod probe;

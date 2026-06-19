@@ -59,10 +59,6 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
-    /// 単一の VK キーを `SendInput` で送信する。
-    ///
-    /// `KeySeqExec` フェーズが `ProbeAction::SendSeqKey` を emit したときに呼ばれる。
-    fn send_key(&self, vk: VkCode);
 }
 
 impl ProbeIo for Output {
@@ -140,11 +136,6 @@ impl ProbeIo for Output {
 
     fn mark_cold_raw_tsf(&self) {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-    }
-
-    fn send_key(&self, vk: VkCode) {
-        // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-        unsafe { crate::ime::send_ime_mode_key(vk) };
     }
 }
 
@@ -306,13 +297,6 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                 }
             }
 
-            ProbeAction::SendSeqKey { cold_seq, vk } => {
-                log::debug!(
-                    "[tsf-probe] cold={cold_seq} KeySeqExec: send_key vk=0x{vk:02X}"
-                );
-                io.send_key(vk);
-            }
-
             ProbeAction::RawTsfLiteralRecovery {
                 cold_seq,
                 backs,
@@ -443,9 +427,6 @@ mod tests {
         }
         fn send_extra_f2(&self) {
             self.send_extra_f2_called.set(true);
-        }
-        fn send_key(&self, _vk: awase::types::VkCode) {
-            // テスト用: 実際には送信しない
         }
         fn consecutive_count(&self) -> u32 {
             self.consecutive
