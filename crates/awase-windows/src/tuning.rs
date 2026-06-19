@@ -59,6 +59,14 @@ pub const COMPOSITION_TIMEOUT_MS: u64 = 2000;
 /// RAW TSF リテラルとして回収する。
 pub const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
 
+/// GJI long idle + TSF mode (WezTerm 等) での RAW TSF リテラル検出ウィンドウ (ms)。
+///
+/// gji_idle > LONG_IDLE_MS(10000ms) 時、GJI は F2 warmup に対して候補ウィンドウを
+/// 表示するまで最大 ~370ms かかる実測がある（通常 300ms 以内に収まる）。
+/// FreshF2 パス (eager_elapsed > eager_settle_ms) では NameChangeWait を経由しないため
+/// LiteralDetect のタイムアウトで補う必要がある。500ms = 実測最大 ~370ms + 130ms マージン。
+pub const RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE: u64 = 500;
+
 /// ProbeWithSettle フェーズでの再 warmup 最大待機時間 (ms)。
 ///
 /// eager_re_warmup で F2 を送信してから GJI settled を待つ最大時間。

@@ -666,10 +666,10 @@ impl TsfProbeMachine {
         romaji: String,
         ze_bs_count: usize,
         detector: Option<LiteralDetector>,
+        literal_detect_ms: u64,
     ) -> bool {
         if let Some(detector) = detector {
-            let deadline_ms =
-                crate::hook::current_tick_ms() + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
+            let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
             self.phase = ProbePhase::LiteralDetect {
                 detector,
                 ze_bs_count,

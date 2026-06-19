@@ -273,10 +273,17 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         let needs_literal =
                             prepend_f2_warmup && gji_active && (!io.gji_long_idle() || io.is_tsf_mode());
                         let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
+                        // GJI long idle + TSF mode では候補ウィンドウ表示に最大 ~370ms かかるため
+                        // LiteralDetect タイムアウトを延長する（通常 300ms → 500ms）。
+                        let literal_detect_ms = if io.gji_long_idle() && io.is_tsf_mode() {
+                            crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
+                        } else {
+                            crate::tuning::RAW_TSF_LITERAL_DETECT_MS
+                        };
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Tsf);
                         io.mark_warm();
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms) {
                             return true;
                         }
                     }
@@ -290,7 +297,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Injected);
                         io.mark_warm();
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, crate::tuning::RAW_TSF_LITERAL_DETECT_MS) {
                             return true;
                         }
                     }
