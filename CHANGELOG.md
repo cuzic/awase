@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-06-20
+
+### 重要な変更
+
+- **GJI キーバインドを F13/F14 → F21/F22 に変更** ([7f8291f](https://github.com/cuzic/awase/commit/7f8291f))
+  - F21/F22 は実キーボードに存在しない仮想キーで VT エスケープシーケンスを生成しない
+  - WezTerm・Windows Terminal での Nop バインド設定が不要になった
+  - **アップグレード時は必ずトレイメニューから「Google 日本語入力のセットアップ」を再実行してください**
+
+### 新機能
+
+- **GJI keybind 自動監視**: config1.db から F21/F22 エントリが消去された場合、30 秒以内に検知して自動再登録 ([58557e9](https://github.com/cuzic/awase/commit/58557e9))
+- **トレイメニュー拡張**: GJI teardown・自動起動トグルを追加 ([e67cb49](https://github.com/cuzic/awase/commit/e67cb49))
+
+### バグ修正
+
+- **WezTerm long-idle 後の最初の文字リテラル化**（「こ」→「ko」）を修正（LiteralDetect + BS 再送方式） ([84e6942](https://github.com/cuzic/awase/commit/84e6942))
+- **GJI IME-ON 不能バグ**を修正: `DirectInput\tF21\tIMEOn` エントリ欠落により F21 が無視されていた ([9d11cd7](https://github.com/cuzic/awase/commit/9d11cd7))
+- **Teams / Chrome での partial literal**（「kおんな」→「こんな」変換失敗）を修正 ([3744457](https://github.com/cuzic/awase/commit/3744457), [040f8f8](https://github.com/cuzic/awase/commit/040f8f8))
+- **GJI long-idle 後の LiteralDetect false positive** を修正 ([a6b4c0d](https://github.com/cuzic/awase/commit/a6b4c0d))
+
+### パフォーマンス
+
+- フォーカス変更直後の probe 待ち時間を 300ms → 100ms に短縮（入力レスポンス改善） ([23052fb](https://github.com/cuzic/awase/commit/23052fb))
+
+### ドキュメント
+
+- awase.cc の全ページで F13/F14 → F21/F22 に更新、WezTerm Nop 設定手順を削除
+
+### 内部改善
+
+- TSF probe の KeySeq 機構を削除（dead code）([550781f](https://github.com/cuzic/awase/commit/550781f))
+
 ## [1.0.1] - 2026-06-15
 
 ### バグ修正
@@ -21,7 +54,7 @@ All notable changes to this project will be documented in this file.
   - 高速タイピング時のシフト漏れ
   - Google IME でのトグルではなく冪等な IME 制御
   - 他ツール（やまぶき R 等）で起きがちな4つの症状と対策
-  - Windows Terminal / WezTerm の F13/F14 Nop 設定手順
+  - Windows Terminal / WezTerm の F21/F22 Nop 設定手順
 - コメント内の用語を統一（IMM → IMM32、IME-ON/OFF → IME ON/OFF、Henkan/Muhenkan → 変換/無変換）
 
 ### 削除
@@ -41,5 +74,6 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
 
+[1.1.0]: https://github.com/cuzic/awase/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/cuzic/awase/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0

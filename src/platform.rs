@@ -174,7 +174,7 @@ pub enum ImeOpenOutcome {
     Failed,
     /// トグル操作が unsafe のため送信しなかった（shadow 信頼度不足・focus 直後等）
     ///
-    /// F13/F14 や IMM32 SetOpen は冪等だが VK_KANJI は冪等でない。
+    /// F21/F22 や IMM32 SetOpen は冪等だが VK_KANJI は冪等でない。
     /// shadow が stale な状態でトグルすると意図と逆方向に反転する恐れがある。
     /// このケースでは apply は行われていないため applied_snapshot / state は更新しない。
     UnsafeToToggle,

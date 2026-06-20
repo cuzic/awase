@@ -37,7 +37,7 @@ awase の IME 制御は 6 つの責務レイヤーに分かれている。
          ↕ Windows API
 ┌──────────────────────────────────────────────────────┐
 │  OS API 層   ime.rs / imm.rs                         │
-│  SendMessageTimeoutW / SendInput(VK_KANJI, F13, F14) │
+│  SendMessageTimeoutW / SendInput(VK_KANJI, F21, F22) │
 └──────────────────────────────────────────────────────┘
          ↕ Observer ポーリング（非同期）
 ┌──────────────────────────────────────────────────────┐
@@ -181,8 +181,8 @@ ImeController::apply(desired_open, view)
   ├─ [2] GjiDirectStrategy          ← Google日本語入力専用（全プロファイル共通）
   │       is_applicable(): gji_monitor_ok == true
   │       実装: post_gji_ime_on() / post_gji_ime_off()
-  │         IME ON  → SendInput(F13)  // GJI ひらがなへ
-  │         IME OFF → SendInput(F14)  // GJI IME-OFF
+  │         IME ON  → SendInput(F21)  // GJI ひらがなへ
+  │         IME OFF → SendInput(F22)  // GJI IME-OFF
   │
   └─ [3] KanjiToggleStrategy        ← 最終フォールバック
           is_applicable(): 常に true
@@ -215,10 +215,10 @@ ImmCross が `Applied` を返した場合も同様に後続戦略はスキップ
 | `TsfNative` | WezTerm, Windows Terminal, UWP | GJI → KANJI（※要 Nop バインド） |
 
 > **TsfNative での GJI 利用:** `ImmGetDefaultIMEWnd` が NULL を返すため ImmCross は使えない。
-> GJI の TSF text service (ITfKeyEventSink) が F14 を消費することを実機確認済み。
-> ただし F14 が VT シーケンス（ESC[26~）としてターミナルに漏れないよう、
-> アプリ側で F13/F14 を Nop/unbound に設定することが必須。
-> 設定方法は [ADR-034](adr/034-gji-direct-strategy.md#tsfnative) 参照。
+> GJI の TSF text service (ITfKeyEventSink) が F22 を消費することを実機確認済み。
+> F21/F22 は実キーボードに存在せず VT エスケープシーケンスも生成しないため、
+> アプリ側の追加設定なしで動作する。
+> 詳細は [ADR-034](adr/034-gji-direct-strategy.md#tsfnative) 参照。
 
 ### AppImeProfile と AppImePolicy の責務分離
 
@@ -243,7 +243,7 @@ LINE = Standard（AppImeProfile）+ owns_physical_kanji=true（AppImePolicy）
 
 ### KanjiToggleStrategy の confidence gate と 300ms ウィンドウ
 
-VK_KANJI はトグル操作であり**冪等ではない**。F13/F14（GJI）や IMM32 SetOpen と異なり、
+VK_KANJI はトグル操作であり**冪等ではない**。F21/F22（GJI）や IMM32 SetOpen と異なり、
 shadow が stale な状態で送ると意図と逆方向に反転する。
 
 `kanji_needs_context_override`（`executor.rs`）が送信可否を判断する。
@@ -372,7 +372,7 @@ refresh_ime_state()
 
 IMM32 ブリッジが使えないため GJI → KANJI のフォールバックを辿る。
 
-- **GJI 検出済み**: F13/F14 で直接制御（`candidate_visible` 中も動作）
+- **GJI 検出済み**: F21/F22 で直接制御（`candidate_visible` 中も動作）
 - **GJI 未検出**: VK_KANJI トグル（`effective_shadow` と `desired` が異なる時のみ送信）
 
 ### 5-2. Google 日本語入力（GJI）検出
@@ -391,14 +391,14 @@ gji_observer.rs::observe_gji_after_focus()
 | 状態 | 意味 | KanjiToggle へのフォールバック |
 |------|------|-------------------------------|
 | `Unknown` | まだ判定できない（focus 後 2500ms 以内）| 禁止 |
-| `Present` | GJI I/O を確認済み | 不要（F13/F14 使用） |
+| `Present` | GJI I/O を確認済み | 不要（F21/F22 使用） |
 | `Absent` | GJI なしと確認 | 条件付きで許可 |
 | `Broken` | GJI はあるが異常 | 禁止または保守的動作 |
 
 `Unknown` と `Absent` を区別することで、未確定状態での VK_KANJI 誤送信を防げる。
 
 **VK_KANJI を使わない理由:** GJI は VK_KANJI を「トグル」として解釈するが、
-F13/F14 は冪等（ON なら ON、OFF なら OFF）のため desync が起きない。
+F21/F22 は冪等（ON なら ON、OFF なら OFF）のため desync が起きない。
 
 ### 5-3. ImmCross アプリ（LINE, Qt 等）
 
@@ -412,27 +412,13 @@ VK_KANJI を送る場合は `IME_KANJI_MARKER` を付けて自己注入として
 ### 5-4. TsfNative アプリ（WezTerm / Windows Terminal）
 
 TsfNative アプリは `ImmGetContext` が NULL を返し、`ImmGetDefaultIMEWnd` も NULL になるため
-ImmCross が使えない。GJI の TSF text service (ITfKeyEventSink) が F14 を消費することを実機確認し、
+ImmCross が使えない。GJI の TSF text service (ITfKeyEventSink) が F22 を消費することを実機確認し、
 2026-06-07 より `GjiDirectStrategy` の TsfNative 除外を撤廃した。
 
-**制約:** F14 を SendInput すると VT ターミナルが ESC[26~ として解釈するため、
-アプリ側で F13/F14 を Nop に設定する必要がある（設定しないと `~` がターミナルに入力される）。
+F21/F22 は実キーボードに存在せず VT エスケープシーケンスも生成しないため、
+アプリ側の追加設定（Nop バインド等）は不要。
 
-**設定（WezTerm）:**
-```lua
-config.keys = {
-  { key = 'F13', mods = '', action = wezterm.action.Nop },
-  { key = 'F14', mods = '', action = wezterm.action.Nop },
-}
-```
-
-**設定（Windows Terminal）:**
-```json
-{ "command": "unbound", "keys": "f13" },
-{ "command": "unbound", "keys": "f14" }
-```
-
-GJI が TSF 層で F14 を消費しない場合は `Applied` を返すが IME は変わらず、
+GJI が TSF 層で F22 を消費しない場合は `Applied` を返すが IME は変わらず、
 KanjiToggle へのフォールスルーも起きない。動作不良の場合は TsfNative 除外に戻すこと。
 
 ### 5-5. Ctrl+無変換 IME-OFF 救済機構
@@ -475,7 +461,7 @@ hook.rs: 親指キーを SavedRescueEvent から除外
 → IME 実態 OFF → VK_KANJI → ON（意図と逆）
 ```
 
-F13/F14 や IMM32 SetOpen は冪等だが、VK_KANJI は冪等でない。
+F21/F22 や IMM32 SetOpen は冪等だが、VK_KANJI は冪等でない。
 `KanjiToggleStrategy` を安全に使える条件は §3 参照。
 
 ---

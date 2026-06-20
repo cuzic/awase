@@ -563,8 +563,8 @@ Windows / アプリケーション</div>
     <div class="strategy-card">
       <div class="strategy-num">2</div>
       <div class="strategy-body">
-        <h4>Google 日本語入力 直接制御（F13/F14）</h4>
-        <p>Google 日本語入力に専用のキー（F13 で「ひらがなモードへ」、F14 で「IME OFF」）を送る。
+        <h4>Google 日本語入力 直接制御（F21/F22）</h4>
+        <p>Google 日本語入力に専用のキー（F21 で「ひらがなモードへ」、F22 で「IME OFF」）を送る。
         冪等な操作なので、何度送っても意図通りになります。</p>
         <p class="for">対象: Google 日本語入力が起動しているすべてのアプリ</p>
       </div>
@@ -625,7 +625,7 @@ Chrome のプロセス構成（简略）:
   届けられない</div>
 
   <p class="body">
-    そこで awase は方法2の「Google 日本語入力への F13/F14 送信」に頼ります。
+    そこで awase は方法2の「Google 日本語入力への F21/F22 送信」に頼ります。
     Google 日本語入力の内部プロセスに直接届くため、Chrome のプロセス構成に関係なく動作します。
   </p>
 
@@ -699,9 +699,8 @@ cold-start の発生タイムライン:
 
   <div class="callout">
     <strong>WezTerm での注意：</strong>
-    WezTerm はターミナルエミュレータとして F13/F14 を別の用途に使おうとします。
-    awase が Google 日本語入力に送る F14 がターミナルに漏れると「~」が入力されてしまいます。
-    WezTerm の設定ファイルで F13/F14 を「何もしない」にバインドする必要があります（<a href="usage.html">使い方ページ</a>参照）。
+    awase が Google 日本語入力に送る F21/F22 は実キーボードに存在しない仮想キーで、
+    VT エスケープシーケンスも生成しません。WezTerm や Windows Terminal での追加設定は不要です。
   </div>
 
 </div>
