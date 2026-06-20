@@ -520,6 +520,21 @@ impl CompositionState {
 
 /// `send_romaji_as_tsf` が文字を送信した直後に生成し、
 /// GJI 候補ウィンドウの変化を監視して composition が成功したか判定する検出器。
+///
+/// ## 確認シグナル
+///
+/// - 通常（`was_candidate_visible=false` かつ `use_process_io_confirm=false`）:
+///   `gji_candidate_show` の SHOW イベント変化を待つ。
+///
+/// - 候補ウィンドウ表示中（`was_candidate_visible=true`）または
+///   プロセス I/O 早期確認モード（`use_process_io_confirm=true`）:
+///   `gji_last_io_ms` の変化（GJI プロセス I/O カウンタ）を待つ。
+///
+/// `use_process_io_confirm=true` の使いどころ: `gji_resumed=true`（F2×2 warmup 後に
+/// GJI が I/O 応答済み）の long_idle パス。この場合 SHOW が >500ms 遅れることがあるが、
+/// GJI が VK を受け取ると辞書参照等の I/O を SHOW より先に行うため、
+/// `gji_last_io_ms` 変化（〜数十ms）で早期確認できる。
+/// リテラル時は GJI が VK を受け取らないため I/O 変化なし → 通常タイムアウトで検出。
 #[derive(Debug)]
 pub struct LiteralDetector {
     /// 送信前の GJI 候補ウィンドウ SHOW ベースライン
@@ -528,6 +543,11 @@ pub struct LiteralDetector {
     io_baseline: u64,
     /// 送信前に候補ウィンドウが表示中だったか
     was_candidate_visible: bool,
+    /// SHOW イベントの代わりに GJI プロセス I/O 変化で早期確認するか
+    ///
+    /// `gji_resumed=true` の long_idle パスで使用。SHOW が遅い（>500ms）ケースでも
+    /// I/O 変化（VK 処理による辞書 I/O）で数十ms 以内に CompositionConfirmed を返す。
+    use_process_io_confirm: bool,
 }
 
 /// raw-TSF-literal 検出結果。
@@ -555,7 +575,20 @@ impl LiteralDetector {
             gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
             io_baseline: TSF_OBS.gji_last_io_ms.load(Relaxed),
             was_candidate_visible: TSF_OBS.gji_candidate_visible.load(Relaxed),
+            use_process_io_confirm: false,
         }
+    }
+
+    /// GJI プロセス I/O 変化を早期確認シグナルとして使う `LiteralDetector` を生成する。
+    ///
+    /// `gji_resumed=true`（F2×2 warmup 後に GJI I/O 応答確認済み）の long_idle TSF パスで使用。
+    /// GJI が VK を処理すると辞書 I/O が発生し `gji_last_io_ms` が SHOW より先に更新される
+    /// ため、数十ms で CompositionConfirmed を返せる。
+    /// リテラル時（GJI が VK を受け取らない）は I/O 変化なし → タイムアウトで SuspectedLiteral。
+    pub fn new_gji_resumed() -> Self {
+        let mut d = Self::new();
+        d.use_process_io_confirm = true;
+        d
     }
 
     /// タイマーポーリング用ノンブロッキング判定。
@@ -565,7 +598,7 @@ impl LiteralDetector {
     pub fn check_now(&self, deadline_ms: u64) -> Option<DetectionResult> {
         use std::sync::atomic::Ordering::Relaxed;
         let now = crate::hook::current_tick_ms();
-        let confirmed = if self.was_candidate_visible {
+        let confirmed = if self.was_candidate_visible || self.use_process_io_confirm {
             TSF_OBS.gji_last_io_ms.load(Relaxed) != self.io_baseline
         } else {
             TSF_OBS

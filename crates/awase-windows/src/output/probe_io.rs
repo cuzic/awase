@@ -270,18 +270,23 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         // gji_candidate_show 変化で検出し BS 再送で回収できる。
                         // 非 TSF mode (Chrome 等) は gji_long_idle 時に GJI 再起動直後で
                         // 候補ウィンドウが遅延するため、false positive 防止のため無効のまま。
-                        //
-                        // ただし gji_resumed=true（F2×2 への GJI I/O 応答を確認済み）の場合は
-                        // LiteralDetect をスキップする。GJI が活性であれば VK composition は
-                        // 成功する。long_idle 後の候補ウィンドウ表示には >500ms かかることがあり、
-                        // タイムアウトによる false positive BS 再送で composition context を
-                        // 破壊するのを防ぐ（WezTerm long_idle 実機問題 2026-06-20）。
                         let needs_literal =
-                            prepend_f2_warmup && gji_active && (!io.gji_long_idle() || io.is_tsf_mode())
-                            && !gji_resumed;
-                        let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
-                        // GJI long idle + TSF mode では候補ウィンドウ表示に最大 ~370ms かかるため
-                        // LiteralDetect タイムアウトを延長する（通常 300ms → 500ms）。
+                            prepend_f2_warmup && gji_active && (!io.gji_long_idle() || io.is_tsf_mode());
+                        // gji_resumed=true（F2×2 への GJI I/O 応答確認済み）の場合は
+                        // long_idle 後に SHOW が >500ms 遅れるが、GJI が VK を処理すると
+                        // 辞書 I/O が発生し gji_last_io_ms が SHOW より先に更新される（数十ms）。
+                        // LiteralDetector::new_gji_resumed() で I/O 変化を早期確認シグナルとして使う：
+                        //   composition 成功 → VK 処理 → GJI I/O → 数十ms で CompositionConfirmed
+                        //   実際のリテラル → GJI は VK を受け取らず → I/O 変化なし → タイムアウト
+                        let detector = if needs_literal {
+                            if gji_resumed && io.is_tsf_mode() {
+                                Some(crate::tsf::probe::LiteralDetector::new_gji_resumed())
+                            } else {
+                                Some(crate::tsf::probe::LiteralDetector::new())
+                            }
+                        } else {
+                            None
+                        };
                         let literal_detect_ms = if io.gji_long_idle() && io.is_tsf_mode() {
                             crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
                         } else {
