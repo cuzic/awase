@@ -72,7 +72,13 @@ pub(crate) unsafe fn handle_wm_timer(
             app.dispatch_outcomes(outcomes);
         }
         Some(id) if id == TIMER_TSF_PROBE => {
+            // log_composition_probe が with_app_ref (共有借用) を使うが、
+            // ここでは RUNTIME が排他借用中で BorrowError になる。
+            // diagnostic_snapshot を事前に取得してスレッドローカルに渡す。
+            let snap = app.diagnostic_snapshot();
+            crate::ime_diagnostic::set_tsf_probe_snap(snap);
             app.platform.advance_tsf_probe();
+            crate::ime_diagnostic::clear_tsf_probe_snap();
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.platform.timer.kill(TIMER_TSF_GATE);

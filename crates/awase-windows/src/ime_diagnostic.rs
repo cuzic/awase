@@ -15,11 +15,32 @@
 //!
 //! Phase 2 以降で ITfInputProcessorProfileMgr による active TIP 情報の追加を検討。
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use crate::win32::HwndExt as _;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+
+// TIMER_TSF_PROBE ハンドラから log_composition_probe への状態受け渡し用スレッドローカル。
+//
+// handle_wm_timer は RUNTIME を排他借用中のため、with_app_ref (共有借用) は
+// BorrowError で None を返す。ハンドラが事前に diagnostic_snapshot() を取得して
+// ここにセットしておくことで、log_composition_probe がそれを読み出せる。
+thread_local! {
+    static TSF_PROBE_SNAP: RefCell<Option<crate::runtime::RuntimeDiagnosticSnapshot>> =
+        const { RefCell::new(None) };
+}
+
+/// TIMER_TSF_PROBE ハンドラが `advance_tsf_probe()` を呼ぶ前に設定する。
+pub(crate) fn set_tsf_probe_snap(snap: crate::runtime::RuntimeDiagnosticSnapshot) {
+    TSF_PROBE_SNAP.with(|s| *s.borrow_mut() = Some(snap));
+}
+
+/// `advance_tsf_probe()` 完了後に呼んでクリアする。
+pub(crate) fn clear_tsf_probe_snap() {
+    TSF_PROBE_SNAP.with(|s| *s.borrow_mut() = None);
+}
 
 /// `with_app_ref` クロージャの戻り値を保持する中間構造体。
 struct AppStateView {
@@ -261,18 +282,20 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
         )
     };
 
-    let diag =
-        crate::with_app_ref(crate::runtime::Runtime::diagnostic_snapshot).unwrap_or_else(|| {
-            crate::runtime::RuntimeDiagnosticSnapshot {
-                focus_pid: 0,
-                focus_class: String::new(),
-                shadow_ime_on: false,
-                shadow_is_romaji: false,
-                shadow_is_japanese: false,
-                last_focus_change_ms: 0,
-                last_hook_activity_ms: 0,
-                app_profile: "Unknown".to_string(),
-            }
+    // TSF_PROBE_SNAP を優先して使用する（handle_wm_timer が RUNTIME を排他借用中の場合、
+    // with_app_ref の try_borrow() は BorrowError を返し None になるため）。
+    let diag = TSF_PROBE_SNAP
+        .with(|s| s.borrow().clone())
+        .or_else(|| crate::with_app_ref(crate::runtime::Runtime::diagnostic_snapshot))
+        .unwrap_or_else(|| crate::runtime::RuntimeDiagnosticSnapshot {
+            focus_pid: 0,
+            focus_class: String::new(),
+            shadow_ime_on: false,
+            shadow_is_romaji: false,
+            shadow_is_japanese: false,
+            last_focus_change_ms: 0,
+            last_hook_activity_ms: 0,
+            app_profile: "Unknown".to_string(),
         });
     let view = (
         diag.focus_class,

@@ -92,6 +92,7 @@ impl std::fmt::Debug for Runtime {
 }
 
 /// `ime_diagnostic` が必要とする Runtime の読み取り専用スナップショット。
+#[derive(Clone)]
 pub(crate) struct RuntimeDiagnosticSnapshot {
     pub focus_pid: u32,
     pub focus_class: String,
