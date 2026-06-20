@@ -342,12 +342,6 @@ impl Runtime {
         self.platform_state.ime.mirror_applied_open(ime_on_now);
         self.platform.mark_composition_cold_focus_change();
 
-        let applied_open = self.platform_state.ime.model().applied.applied_open();
-        self.platform.send_eager_warmup(applied_open);
-        log::debug!(
-            "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
-        );
-
         let new_profile_is_tsf_native = matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::TsfNative,
@@ -359,6 +353,31 @@ impl Runtime {
             .applied
             .applied_open()
             .unwrap_or(false);
+
+        // TsfNative (WezTerm 等) + IME ON でフォーカス入場: GJI F21 を shadow_on なしで強制送信。
+        //
+        // 通常の GjiDirectStrategy は shadow_on=true を見て「既に ON」と判断し F21 をスキップする。
+        // しかしフォーカス変更時の shadow_on は直前ウィンドウ（Chrome 等）の applied 値が
+        // hard pre-sync で引き継がれており、WezTerm の実 GJI IME が OFF でも F21 が送られない。
+        // apply_ime_open_with_applied(true, None) で shadow_on=∅(false) にして F21 を確実に送る。
+        // F21 は GJI が既に ON の場合も no-op（冪等）なので副作用なし。
+        // GJI 未使用環境（MS-IME + TsfNative）で KanjiToggle が誤送信されないよう GJI ガードを設ける。
+        if applied_ime_on && new_profile_is_tsf_native {
+            let obs = crate::state::ObservedState::capture_now();
+            if obs.gji_monitor_ok && obs.gji_keybinds_ok {
+                let _ = self.platform.apply_ime_open_with_applied(true, None);
+                log::debug!(
+                    "[composition] FocusChange: TsfNative IME ON → GJI F21 強制 (shadow_on を無視)"
+                );
+            }
+        }
+
+        let applied_open = self.platform_state.ime.model().applied.applied_open();
+        self.platform.send_eager_warmup(applied_open);
+        log::debug!(
+            "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
+        );
+
         if !applied_ime_on && !new_profile_is_tsf_native {
             let _ = self.platform.set_ime_open(false);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");

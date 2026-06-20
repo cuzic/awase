@@ -137,7 +137,11 @@ pub const F2_STALE_MS: u64 = 1200;
 // === キャッシュ有効期限 ===
 
 /// フォーカス切り替え時の per-HWND IME 状態スナップショットの最大有効期間 (ms)。
-pub const HWND_CACHE_MAX_AGE_MS: u64 = 5_000;
+///
+/// 旧値 5_000 は Chrome で 19s 過ごした後 WezTerm に戻るだけでキャッシュが失効し
+/// "IME-OFF Engine ON" を引き起こす原因となっていた。
+/// 通常の作業切り替えは数十秒単位のため 30s に拡張する。
+pub const HWND_CACHE_MAX_AGE_MS: u64 = 30_000;
 
 // === 観測失敗カウント ===
 
