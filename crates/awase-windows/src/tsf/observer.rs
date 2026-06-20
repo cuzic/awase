@@ -122,6 +122,21 @@ pub struct TsfObservations {
     /// `send_romaji_as_tsf` や `TsfReadinessJudge` が参照する。
     pub(super) gji_last_io_ms: AtomicU64,
 
+    /// GJI プロセスの累積 ReadOperationCount。
+    ///
+    /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
+    /// ベースラインとの差分で「GJI が VK を受け取って辞書 lookup したか」を確認できる
+    /// （composition 確認シグナルとして `gji_last_io_ms` より限定的）。
+    /// 観測・状態推定用。0 = 未取得。
+    pub(super) gji_read_op_count: AtomicU64,
+
+    /// GJI プロセスの累積 ReadTransferCount（バイト数）。
+    ///
+    /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
+    /// スパイク（数 MB）= 辞書ファイル再ロード（コールドスタート）の可能性がある。
+    /// 観測・状態推定用。0 = 未取得。
+    pub(super) gji_read_bytes: AtomicU64,
+
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
@@ -154,6 +169,8 @@ impl TsfObservations {
             gji_candidate_visible: AtomicBool::new(false),
             composition_probe: ChangeCounter::new(),
             gji_last_io_ms: AtomicU64::new(0),
+            gji_read_op_count: AtomicU64::new(0),
+            gji_read_bytes: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             gji_keybinds_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
@@ -163,6 +180,16 @@ impl TsfObservations {
     /// GJI 最終 I/O 変化時刻 (ms) を読み取る（Relaxed）。
     pub fn gji_last_io_ms(&self) -> u64 {
         self.gji_last_io_ms.load(Ordering::Relaxed)
+    }
+
+    /// GJI プロセスの累積 ReadOperationCount を読み取る（Relaxed）。
+    pub fn gji_read_op_count(&self) -> u64 {
+        self.gji_read_op_count.load(Ordering::Relaxed)
+    }
+
+    /// GJI プロセスの累積 ReadTransferCount（バイト数）を読み取る（Relaxed）。
+    pub fn gji_read_bytes(&self) -> u64 {
+        self.gji_read_bytes.load(Ordering::Relaxed)
     }
 
     /// GJI モニターが利用可能かを読み取る（Acquire）。
@@ -229,6 +256,16 @@ pub(crate) fn tsf_obs() -> &'static TsfObservations {
 /// GJI プロセスの最終 I/O 変化時刻 (ms) を返す。0 = 未観測。live 読み取り。
 pub(crate) fn gji_last_io_ms() -> u64 {
     TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed)
+}
+
+/// GJI プロセスの累積 ReadOperationCount を返す。0 = 未取得。live 読み取り。
+pub(crate) fn gji_read_op_count() -> u64 {
+    TSF_OBS.gji_read_op_count.load(Ordering::Relaxed)
+}
+
+/// GJI プロセスの累積 ReadTransferCount（バイト数）を返す。0 = 未取得。live 読み取り。
+pub(crate) fn gji_read_bytes() -> u64 {
+    TSF_OBS.gji_read_bytes.load(Ordering::Relaxed)
 }
 
 /// GJI モニターが利用可能かどうか。live 読み取り。
@@ -377,12 +414,32 @@ fn find_gji_pid() -> Option<(u32, String)> {
 ///
 /// `GetProcessIoCounters` で累積 I/O を 10ms ごとにサンプリングし、
 /// カウントが変化しなくなった時刻を記録する。
+/// [`GjiMonitor::sample`] が返す I/O カウンタ差分。
+struct GjiIoDelta {
+    /// 前回ポーリングからの ReadOperationCount 差分
+    read_ops: u64,
+    /// 前回ポーリングからの WriteOperationCount 差分
+    write_ops: u64,
+    /// 前回ポーリングからの OtherOperationCount 差分（IPC・パイプ等）
+    other_ops: u64,
+    /// 前回ポーリングからの ReadTransferCount 差分（バイト数）
+    read_bytes: u64,
+}
+
+impl GjiIoDelta {
+    const fn any(&self) -> bool {
+        self.read_ops > 0 || self.write_ops > 0 || self.other_ops > 0
+    }
+}
+
 struct GjiMonitor {
     handle: HANDLE,
     last_read_ops: u64,
     last_write_ops: u64,
     /// パイプ・セクション経由 IPC などが OtherOperationCount に計上される
     last_other_ops: u64,
+    /// GJI プロセスの累積 ReadTransferCount（バイト数）
+    last_read_bytes: u64,
     /// 最後に I/O 変化を検出した時刻 (GetTickCount64 ms)
     last_change_ms: u64,
 }
@@ -406,6 +463,7 @@ impl GjiMonitor {
             last_read_ops: 0,
             last_write_ops: 0,
             last_other_ops: 0,
+            last_read_bytes: 0,
             last_change_ms: now_ms,
         };
         // ベースライン読み込み（次回 sample との差分比較用）
@@ -413,30 +471,43 @@ impl GjiMonitor {
         Some(monitor)
     }
 
-    /// I/O カウンタを読んで `last_change_ms` を更新する。
+    /// I/O カウンタを読んで差分を返す。
     ///
-    /// 返り値: プロセスが生存していれば `true`、死亡 or エラーなら `false`。
-    fn sample(&mut self) -> bool {
+    /// 返り値: `Some(delta)` = プロセス生存（delta.any() が false なら変化なし）、
+    ///        `None` = プロセス死亡またはエラー。
+    fn sample(&mut self) -> Option<GjiIoDelta> {
         let mut counters = IO_COUNTERS::default();
         // SAFETY: `self.handle` は `try_attach` で `OpenProcess` が返した有効なハンドル。
         //         `counters` は `IO_COUNTERS::default()` で初期化された有効なバッファ。
         if unsafe { GetProcessIoCounters(self.handle, &raw mut counters) }.is_err() {
-            return false;
+            return None;
         }
-        let changed = counters.ReadOperationCount != self.last_read_ops
-            || counters.WriteOperationCount != self.last_write_ops
-            || counters.OtherOperationCount != self.last_other_ops;
-        if changed {
+        let delta = GjiIoDelta {
+            read_ops: counters.ReadOperationCount.saturating_sub(self.last_read_ops),
+            write_ops: counters.WriteOperationCount.saturating_sub(self.last_write_ops),
+            other_ops: counters.OtherOperationCount.saturating_sub(self.last_other_ops),
+            read_bytes: counters.ReadTransferCount.saturating_sub(self.last_read_bytes),
+        };
+        if delta.any() {
             self.last_read_ops = counters.ReadOperationCount;
             self.last_write_ops = counters.WriteOperationCount;
             self.last_other_ops = counters.OtherOperationCount;
+            self.last_read_bytes = counters.ReadTransferCount;
             self.last_change_ms = crate::hook::current_tick_ms();
         }
-        true
+        Some(delta)
     }
 
     const fn last_change_ms(&self) -> u64 {
         self.last_change_ms
+    }
+
+    const fn last_read_ops(&self) -> u64 {
+        self.last_read_ops
+    }
+
+    const fn last_read_bytes(&self) -> u64 {
+        self.last_read_bytes
     }
 }
 
@@ -505,16 +576,41 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         }
 
         if let Some(ref mut m) = monitor {
-            if m.sample() {
-                TSF_OBS
-                    .gji_last_io_ms
-                    .store(m.last_change_ms(), Ordering::Relaxed);
-            } else {
-                log::info!("[gji-monitor] GJI process exited, will re-attach");
-                TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
-                TSF_OBS.gji_keybinds_ok.store(false, Ordering::Relaxed);
-                monitor = None;
-                next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
+            match m.sample() {
+                None => {
+                    log::info!("[gji-monitor] GJI process exited, will re-attach");
+                    TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
+                    TSF_OBS.gji_keybinds_ok.store(false, Ordering::Relaxed);
+                    monitor = None;
+                    next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
+                }
+                Some(delta) => {
+                    TSF_OBS
+                        .gji_last_io_ms
+                        .store(m.last_change_ms(), Ordering::Relaxed);
+                    TSF_OBS
+                        .gji_read_op_count
+                        .store(m.last_read_ops(), Ordering::Relaxed);
+                    TSF_OBS
+                        .gji_read_bytes
+                        .store(m.last_read_bytes(), Ordering::Relaxed);
+                    if delta.any() {
+                        log::debug!(
+                            "[gji-io] r_ops=+{} w_ops=+{} x_ops=+{} read_KB=+{:.1}",
+                            delta.read_ops,
+                            delta.write_ops,
+                            delta.other_ops,
+                            delta.read_bytes as f64 / 1024.0,
+                        );
+                        if delta.read_bytes >= 512 * 1024 {
+                            log::info!(
+                                "[gji-io] HEAVY read: +{:.1}KB \
+                                 (possible cold-start dictionary reload)",
+                                delta.read_bytes as f64 / 1024.0,
+                            );
+                        }
+                    }
+                }
             }
         }
 
