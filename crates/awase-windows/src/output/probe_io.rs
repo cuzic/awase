@@ -270,8 +270,15 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         // gji_candidate_show 変化で検出し BS 再送で回収できる。
                         // 非 TSF mode (Chrome 等) は gji_long_idle 時に GJI 再起動直後で
                         // 候補ウィンドウが遅延するため、false positive 防止のため無効のまま。
+                        //
+                        // ただし gji_resumed=true（F2×2 への GJI I/O 応答を確認済み）の場合は
+                        // LiteralDetect をスキップする。GJI が活性であれば VK composition は
+                        // 成功する。long_idle 後の候補ウィンドウ表示には >500ms かかることがあり、
+                        // タイムアウトによる false positive BS 再送で composition context を
+                        // 破壊するのを防ぐ（WezTerm long_idle 実機問題 2026-06-20）。
                         let needs_literal =
-                            prepend_f2_warmup && gji_active && (!io.gji_long_idle() || io.is_tsf_mode());
+                            prepend_f2_warmup && gji_active && (!io.gji_long_idle() || io.is_tsf_mode())
+                            && !gji_resumed;
                         let detector = needs_literal.then(crate::tsf::probe::LiteralDetector::new);
                         // GJI long idle + TSF mode では候補ウィンドウ表示に最大 ~370ms かかるため
                         // LiteralDetect タイムアウトを延長する（通常 300ms → 500ms）。
@@ -887,6 +894,71 @@ mod tests {
         );
         assert!(io.transmit_tsf_called.get());
         assert!(io.mark_warm_called.get());
+        assert_eq!(machine.phase_label(), "LiteralDetect");
+    }
+
+    #[test]
+    fn gji_resumed_skips_literal_detect_to_prevent_false_positive() {
+        // gji_resumed=true: F2×2 送信後に GJI I/O 応答を確認済み → VK composition は成功する。
+        // long_idle 後の候補ウィンドウ表示に 500ms 超かかるため LiteralDetect タイムアウトが
+        // false positive (BS 誤送信) になる。gji_resumed=true では LiteralDetect をスキップする。
+        //
+        // 実機ログ: WezTerm long_idle(120s) + NativeF2Consumed → cold=72 で 'と' が正常 compose されたが
+        // SuspectedLiteral 誤判定 → BS×2 で 'と' 削除 → 後続打鍵 'つ' の composition context 破壊
+        // → IME-OFF Engine-ON 状態になった（2026-06-20 報告）。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            gji_long_idle: true,
+            gji_healthy: true,
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: false,
+            nc_fired: true,
+            gji_resumed: true, // F2×2 に GJI が I/O 応答 → composition は成功するはず
+            romaji: "to".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(
+            done,
+            "gji_resumed=true: LiteralDetect は不要 → Done を即返すべき（false positive BS 防止）"
+        );
+        assert!(io.transmit_tsf_called.get());
+        assert!(io.mark_warm_called.get());
+    }
+
+    #[test]
+    fn gji_not_resumed_long_idle_tsf_mode_keeps_literal_detect() {
+        // gji_resumed=false + gji_long_idle + tsf_mode: GJI 応答未確認 → LiteralDetect 有効。
+        // VK がリテラル化した場合の回収パスが必要。
+        let io = FakeProbeIo {
+            tsf_mode: true,
+            gji_long_idle: true,
+            gji_healthy: true,
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![ProbeAction::Transmit {
+            cold_seq: 0,
+            prepend_f2_warmup: true,
+            used_eager_path: false,
+            nc_fired: false,
+            gji_resumed: false, // GJI 応答未確認
+            romaji: "to".to_string(),
+            deferred_vks: vec![],
+            target: TransmitTarget::Tsf,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(
+            !done,
+            "gji_resumed=false: LiteralDetect フェーズへ移行 → Done を即返さないべき"
+        );
+        assert!(io.transmit_tsf_called.get());
         assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
