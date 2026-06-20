@@ -384,12 +384,14 @@ impl NicolaFsm {
     ///
     /// 現在の物理押下タイムスタンプを記録する。物理状態が変われば（新しい KeyDown
     /// や KeyUp）タイムスタンプが不一致になり、自動的に「未消費」に戻る。
+    /// 同時打鍵として消費されたことはソロ連打ではないため、ソロ連打カウンターをリセットする。
     const fn consume_thumb(&mut self, face: Face) {
         match face {
             Face::LeftThumb => self.left_thumb_consumed = self.phys.left_thumb_down,
             Face::RightThumb => self.right_thumb_consumed = self.phys.right_thumb_down,
             Face::Normal | Face::Shift => {} // 親指面以外は消費対象なし
         }
+        self.solo_counter.reset();
     }
 
     pub(crate) const fn enter_pending_char(&mut self, key: PendingKey) {

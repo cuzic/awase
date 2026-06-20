@@ -3306,6 +3306,61 @@ fn test_alt_released_while_disabled_does_not_stick() {
     r.assert_consumed();
 }
 
+// ── engine_off_triple_vk (consecutive solo muhenkan) tests ──
+
+#[test]
+fn test_engine_off_triple_solo_thumb_triggers() {
+    // 無変換を単独タイムアウトで3回連続確定するとエンジン OFF 要求が立つことを確認
+    let mut engine = make_engine();
+    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+
+    let gap = 150_000u64; // 150ms < SOLO_TRIPLE_TIMEOUT_US (400ms)
+
+    for i in 0..3u64 {
+        let t = i * gap;
+        engine.on_event(Ev::down(VK_NONCONVERT).at(t).build());
+        engine.on_timeout(TIMER_PENDING);
+    }
+    assert!(engine.take_engine_off_requested(), "3 consecutive solo presses → engine off");
+}
+
+#[test]
+fn test_engine_off_counter_resets_on_thumb_consume() {
+    // 同時打鍵として consume された場合、ソロ連打カウンターがリセットされることを確認。
+    // (「アップロード」のような連続左親指シフト入力でエンジン OFF が誤発動しないことを保証)
+    let mut engine = make_engine();
+    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+
+    let gap = 150_000u64; // 150ms = within SOLO_TRIPLE_TIMEOUT_US (400ms)
+
+    // solo 1 回目 (タイムアウト経由)
+    engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(!engine.take_engine_off_requested());
+
+    // solo 2 回目 (タイムアウト経由) → count=2
+    engine.on_event(Ev::down(VK_NONCONVERT).at(gap).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(!engine.take_engine_off_requested());
+
+    // 同時打鍵 (無変換+A → 'を'): consume_thumb が呼ばれ solo_counter がリセットされる
+    engine.on_event(Ev::down(VK_NONCONVERT).at(2 * gap).build());
+    let result = engine.on_event(Ev::down(VK_A).at(2 * gap + 30_000).build()); // 30ms = within 100ms threshold
+    assert!(
+        result.actions.iter().any(|a| matches!(a, KeyAction::Char('を'))),
+        "無変換+A should produce 'を'"
+    );
+
+    // リセット後: solo 2 回 (count=1, then count=2 → engine off しない)
+    engine.on_event(Ev::down(VK_NONCONVERT).at(3 * gap).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(!engine.take_engine_off_requested(), "count=1 after reset → no engine off");
+
+    engine.on_event(Ev::down(VK_NONCONVERT).at(4 * gap).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(!engine.take_engine_off_requested(), "count=2 after reset → no engine off");
+}
+
 // ── FsmAdapter tests ──
 
 mod fsm_adapter_tests {
