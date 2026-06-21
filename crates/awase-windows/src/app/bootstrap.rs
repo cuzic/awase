@@ -541,6 +541,24 @@ pub(super) fn run_all() -> Result<()> {
     let debug_console = args.iter().any(|a| a == "--debug");
     init_logging(debug_console);
 
+    // panic 発生時にファイル:行番号とメッセージをログに記録する。
+    // デフォルトの panic handler は stderr に書くだけなので awase.log には残らない。
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info.location().map_or_else(
+            || "unknown location".to_owned(),
+            |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
+        );
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("(non-string payload)");
+        log::error!("[PANIC] {msg} @ {location}");
+        prev_hook(info);
+    }));
+
     // --exit-after <SECS>: デバッグ用タイムアウト自動終了
     let exit_after_secs: Option<u64> = args
         .windows(2)
