@@ -114,15 +114,6 @@ pub const CHROME_PROBE_LONG_IDLE_MIN_MS: u64 = 200;
 /// 症状を抑えるため、500ms まで延長する（GJI が settle すれば短く済む）。
 pub const CHROME_PROBE_LONG_IDLE_MAX_MS: u64 = 500;
 
-/// 物理 F2 (F2NonTsf) かつ GJI が長期 idle のとき Chrome プローブが待機する最小時間 (ms)。
-///
-/// keyboard idle が短くても GJI が LONG_IDLE_MS 以上無活動の場合、Chrome の TSF は
-/// 物理 F2 受信後に composition context 再初期化で ~326ms 要することが実測で確認された。
-/// 20ms の短期プローブでは timeout 後即発火してしまい「to」等がリテラルになる。
-/// 350ms に設定することで GJI 長期 idle 状態でも composition context が確実に初期化
-/// されるまで待機する（probe は物理 F2 時刻起点）。
-pub const CHROME_PROBE_F2_GJI_IDLE_MIN_MS: u64 = 350;
-
 /// F2NonTsf cold start で物理 F2 送信からこの時間以上経過した場合、
 /// Chrome の TSF composition context が失効した可能性があるため
 /// programmatic F2 を再送する（ms）。

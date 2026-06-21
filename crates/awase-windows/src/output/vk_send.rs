@@ -207,6 +207,10 @@ impl Output {
             //   を再初期化できない（実測: ~518ms 必要なのに probe が 499ms で発火して
             //   最初のキーが literal になる）。programmatic F2 (SendMessageTimeout +
             //   SendInput) を必ず送って確実に初期化する。
+            // - f2_gji_long_idle=true の場合: GJI が長期 idle のとき物理 F2 だけでは
+            //   TSF context が起動せず GJI I/O が来ない。probe の "GJI I/O なし →
+            //   min_ms 後に即解放" パスが早期発火して最初のキーがリテラルになる
+            //   （例: たんなる → tあんなる）。long_idle 同様 programmatic F2 を送る。
             let cold_reason = self.composition.last_cold_reason();
             let cold_marked_ms = self.composition.cold_marked_ms();
             let f2_stale = cold_reason == ColdReason::F2NonTsf
@@ -220,27 +224,23 @@ impl Output {
             let long_idle =
                 self.composition.idle_ms_at_last_cold() > crate::tuning::CHROME_LONG_IDLE_MS;
             let skip_f2_send = cold_reason == ColdReason::F2NonTsf && !f2_stale && !long_idle;
-            let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
-                cold_marked_ms
-            } else {
-                crate::hook::current_tick_ms()
-            };
-            // 物理 F2 (skip_f2_send=true) かつ GJI が長期 idle の場合: Chrome の composition
-            // context 再初期化に ~326ms 要するケースを確認。keyboard idle が短くても
-            // GJI が休眠していれば長いプローブ min_ms が必要。
+            // 物理 F2 (skip_f2_send=true) かつ GJI が長期 idle の場合:
+            // GJI I/O が来ないのは正常状態だからではなく Chrome TSF context が未起動のため。
+            // skip_f2_send を false に上書きして programmatic F2 を強制送信する。
             let f2_gji_long_idle = skip_f2_send && {
                 let gji_last_io = crate::tsf::observer::gji_last_io_ms();
                 crate::hook::current_tick_ms().saturating_sub(gji_last_io)
                     > crate::tuning::CHROME_LONG_IDLE_MS
             };
-            let (probe_min_ms, probe_max_ms) = if long_idle {
+            let skip_f2_send = skip_f2_send && !f2_gji_long_idle;
+            let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
+                cold_marked_ms
+            } else {
+                crate::hook::current_tick_ms()
+            };
+            let (probe_min_ms, probe_max_ms) = if long_idle || f2_gji_long_idle {
                 (
                     crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
-                    crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
-                )
-            } else if f2_gji_long_idle {
-                (
-                    crate::tuning::CHROME_PROBE_F2_GJI_IDLE_MIN_MS,
                     crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
                 )
             } else {
