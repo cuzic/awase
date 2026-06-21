@@ -554,6 +554,7 @@ impl Output {
             machine.cold_seq_hint(),
             tick_t
         );
+        use probe_io::ProbeIo as _;
         let env = crate::tsf::probe_fsm::TsfEnvSnapshot {
             is_tsf_mode: self.is_tsf_mode(),
             gji_long_idle: self.gji_long_idle(),
