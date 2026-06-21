@@ -115,6 +115,53 @@ impl ImeStateHub {
         self.shadow_model.active_chord_kind()
     }
 
+    /// Engine が SetOpen を要求したときの chord-aware 処理を一元化するメソッド。
+    ///
+    /// chord active + IME OFF の組み合わせは「chord transaction 中の二次要求」として
+    /// フィルタする（write_set_open_request と ImeApplyRequested の両方をスキップ）。
+    /// パイプラインがコード状態を直接参照しなくて済むよう、判断をここに集約する。
+    ///
+    /// 戻り値: apply 要求が実行されたか（ログ用）
+    pub(crate) fn handle_engine_set_open(
+        &mut self,
+        target: bool,
+        ctrl_held: bool,
+        generation: u64,
+    ) -> bool {
+        if self.is_ctrl_ime_chord_active() && !target {
+            // chord transaction 中の二次 IME OFF 要求: フィルタ。
+            // ChordEnded（Ctrl KeyUp）が barrier を解除するため、ここでは何もしない。
+            return false;
+        }
+        self.write_set_open_request(target);
+        self.on_set_open_requested();
+        self.dispatch_event(ImeEvent::ImeApplyRequested {
+            target,
+            generation,
+            ctrl_held,
+        });
+        true
+    }
+
+    /// Ctrl 系 KeyUp で chord barrier を解除する。
+    ///
+    /// パイプラインが chord 状態を直接参照しなくて済むよう、
+    /// is_ctrl_ime_chord_active / active_chord_kind の参照をここに集約する。
+    /// 呼び出し元は `crate::vk::is_ctrl_variant` チェック後に呼ぶこと。
+    pub(crate) fn on_ctrl_key_up(&mut self, vk: awase::types::VkCode) {
+        if !self.is_ctrl_ime_chord_active() {
+            return;
+        }
+        let kind = self
+            .active_chord_kind()
+            .unwrap_or(ChordKind::CtrlMuhenkanImeOff);
+        self.dispatch_event(ImeEvent::ChordEnded { kind });
+        log::debug!(
+            "[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{:02X})",
+            vk
+        );
+    }
+
     // ── Input barrier ──
 
     /// フォーカス遷移 barrier が pending なら消費して true を返す。

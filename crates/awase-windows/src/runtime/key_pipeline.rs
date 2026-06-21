@@ -172,27 +172,12 @@ impl Runtime {
 
         self.kp_stage_post_decision(&decision, &event);
 
-        // Ctrl 系 KeyUp で chord barrier を解除する (ChordEnded dispatch)。
-        // ChordEnded のトリガは常に「Ctrl KeyUp」なので、SetOpen の有無
-        // （chord 中の二次 SetOpen は kp_stage_post_decision が skip する／
-        //   Phase 2 が Inactive を認識して SetOpen を省略する）に関わらず
-        // ここを唯一の置き場として一元化する。
-        if self.platform_state.ime.is_ctrl_ime_chord_active()
-            && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+        // Ctrl 系 KeyUp で chord barrier を解除する。
+        // chord 状態の判断は ImeStateHub.on_ctrl_key_up() に集約（パイプラインは VK 分類のみ担う）。
+        if !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
-            let kind = self
-                .platform_state
-                .ime
-                .active_chord_kind()
-                .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
-            self.platform_state
-                .ime
-                .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
-            log::debug!(
-                "[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{:02X})",
-                event.vk_code
-            );
+            self.platform_state.ime.on_ctrl_key_up(event.vk_code);
         }
 
         self.kp_stage_execute(decision, &event, shadow_toggled)
@@ -344,54 +329,19 @@ impl Runtime {
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
-    #[allow(clippy::cognitive_complexity)]
     fn kp_stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
-            let is_key_up = !matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-            let chord_active = self.platform_state.ime.is_ctrl_ime_chord_active();
-            if chord_active && !new_ime_on {
-                // Step 4: CtrlImeChord transaction 中の二次 IME OFF SetOpen を filter する。
-                // Ctrl KeyUp が Phase 2 Active→Inactive 遷移を起こして生成した SetOpen を
-                // 再 write すると Priority-3 が消費済みのため stale observer_poll が belief を
-                // 上書きし、直後の TIMER_IME_REFRESH で engine が再アクティブ化する。
-                // skip して belief を安定させる。ChordEnded（Ctrl KeyUp）は kp_run_inner 末尾が dispatch する。
-                self.platform.timer.kill(TIMER_IME_REFRESH);
-                log::debug!(
-                    "IME control: chord barrier active → skip write_set_open_request({new_ime_on}), \
-                     chord {}",
-                    if is_key_up { "ending (Ctrl KeyUp handled at tail)" } else { "held" }
-                );
-            } else {
-                self.platform_state.ime.write_set_open_request(new_ime_on);
-                self.platform_state.ime.on_set_open_requested();
-                self.platform.timer.kill(TIMER_IME_REFRESH);
-
-                // Phase 3b: ImeApplyRequested event を dispatch して shadow_model.pending を
-                // 更新する。generation は event_log.next_seq() を使う (event の seq とも一致)。
-                // ctrl_held を渡すことで reducer が CtrlImeChord barrier の開始/終了を判断する:
-                //   - IME OFF 要求 + Ctrl 押下中 → chord 開始
-                //   - IME ON 要求 + chord active → chord 即時終了
-                // （ChordStarted/ChordEnded dispatch を pipeline から撤去し reducer に集約）
-                let generation = self.platform_state.ime.event_log.next_seq();
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::ImeApplyRequested {
-                        target: new_ime_on,
-                        generation,
-                        ctrl_held: event.modifier_snapshot.ctrl,
-                    },
-                );
-
-                let chord_state = if !new_ime_on && event.modifier_snapshot.ctrl {
-                    "started (Ctrl combo)"
-                } else if !new_ime_on {
-                    "not started (KANJI/no Ctrl)"
-                } else if chord_active {
-                    "ended (IME ON during chord)"
-                } else {
-                    "not started (IME ON)"
-                };
-                log::debug!("IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended, chord {chord_state}");
-            }
+            self.platform.timer.kill(TIMER_IME_REFRESH);
+            let generation = self.platform_state.ime.event_log.next_seq();
+            let applied = self.platform_state.ime.handle_engine_set_open(
+                new_ime_on,
+                event.modifier_snapshot.ctrl,
+                generation,
+            );
+            log::debug!(
+                "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended{}",
+                if applied { "" } else { " [chord barrier active → skipped]" }
+            );
         }
 
         if !decision.is_consumed()
