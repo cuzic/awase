@@ -1058,13 +1058,9 @@ pub unsafe fn get_foreground_comp_str_char() -> Option<char> {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
     // SAFETY: GetForegroundWindow はスレッドセーフ。
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.non_null().is_none() {
-        return None;
-    }
+    hwnd.non_null()?;
     // SAFETY: hwnd は non_null() で NULL チェック済み。
-    let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
-        return None;
-    };
+    let ctx = unsafe { crate::imm::ImmContextGuard::new(hwnd) }?;
     // SAFETY: ctx.himc() は ImmContextGuard が保持する有効な HIMC。
     let s = unsafe { read_imm_string(ctx.himc(), crate::imm::GCS_COMPSTR) }?;
     s.chars().next()
