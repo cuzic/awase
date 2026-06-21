@@ -8,16 +8,16 @@
 /// - **Relay**: 全キーを Consume し、PassThrough キーも ReinjectKey として
 ///   キューに入れる。全 Effects がメッセージループで FIFO 実行される。
 ///   フック内で OS API を一切呼ばない。
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use awase::config::HookMode;
 use awase::engine::{Decision, Effect, ImeEffect, InputEffect, TimerEffect, UiEffect};
 use awase::platform::{EffectOrigin, PlatformRuntime};
-use awase::types::{RawKeyEvent, VkCode};
+use awase::types::RawKeyEvent;
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
-use crate::runtime::PhysicalKeyDisposition;
+use crate::runtime::{PassthroughQueue, PhysicalKeyDisposition};
 use crate::state::platform_state::ImeStateHub;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
@@ -42,9 +42,8 @@ pub(crate) struct DecisionExecutor {
     queue: VecDeque<Effect>,
     /// フックの動作モード
     hook_mode: HookMode,
-    /// Reinject 経由で送った PassThrough KeyDown の VK 集合。
-    /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
-    deferred_passthrough_vks: HashSet<VkCode>,
+    /// passthrough キーの Down/Up 対称性と output guard defer を管理する。
+    passthrough_queue: PassthroughQueue,
     /// OUTPUT_GUARD で park した ReinjectKey イベント。
     ///
     /// 不変条件: `guard_held.is_some()` ⟺ `TIMER_OUTPUT_GUARD` が登録済み。
@@ -71,7 +70,7 @@ impl DecisionExecutor {
         Self {
             queue: VecDeque::new(),
             hook_mode,
-            deferred_passthrough_vks: HashSet::new(),
+            passthrough_queue: PassthroughQueue::new(),
             guard_held: None,
             applied_snapshot: crate::state::AppliedImeState::Unknown,
         }
@@ -391,8 +390,10 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
 
         // 1. KeyUp 対称性: deferred KeyDown の VK は KeyUp も reinject に揃える。
-        if let Some(result) = self.try_keyup_symmetry(raw_event) {
-            return result;
+        if let Some(event) = self.passthrough_queue.check_keyup_symmetry(raw_event) {
+            self.queue
+                .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
+            return CallbackResult::Consumed;
         }
 
         // 2. warm+TSF Enter/Space/Esc KeyUp: 保留 eager warmup を送信。
@@ -419,10 +420,15 @@ impl DecisionExecutor {
         );
 
         // 4. output in-flight / pending queue: defer して reinject 経由で順序保証。
-        if let Some(result) =
-            self.try_output_guard_defer(raw_event, output_in_flight, in_flight_ms, has_pending)
-        {
-            return result;
+        if let Some(event) = self.passthrough_queue.check_output_guard_defer(
+            raw_event,
+            output_in_flight,
+            in_flight_ms,
+            has_pending,
+        ) {
+            self.queue
+                .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
+            return CallbackResult::Consumed;
         }
 
         // 5. F2 KeyDown: CompositionFsm に委譲。TSF mode は Consume（double-F2 防止）、
@@ -451,23 +457,6 @@ impl DecisionExecutor {
         CallbackResult::PassThrough
     }
 
-    /// KeyUp: 対応する KeyDown を reinject 経由で送っていた場合、
-    /// KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ。
-    /// （WezTerm が INJECTED↓ + physical↑ のペアを異常扱いする可能性を排除）
-    fn try_keyup_symmetry(&mut self, raw_event: &RawKeyEvent) -> Option<CallbackResult> {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && self.deferred_passthrough_vks.remove(&raw_event.vk_code) {
-            log::debug!(
-                "[relay-sym] PassThrough KeyUp vk={:#04x}: KeyDown was deferred → force reinject for symmetry",
-                raw_event.vk_code,
-            );
-            self.queue
-                .push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
-            return Some(CallbackResult::Consumed);
-        }
-        None
-    }
-
     /// warm+TSF Enter/Space/Escape KeyDown で保留した eager warmup を KeyUp で送信する。
     /// KeyDown 時は SendInput(F2) → CallNextHookEx(Enter↓) の順になり WezTerm が
     /// F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
@@ -492,53 +481,6 @@ impl DecisionExecutor {
         if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
             platform.composition_ctrl_up(self.applied_snapshot.applied_open());
         }
-    }
-
-    /// OUTPUT_GATE.active が true / pending queue がある場合: Consume + reinject で順序保証する。
-    ///
-    /// 例外: 修飾キー (Ctrl/Alt/Win) の KeyUp を defer すると、reinject まで OS は
-    /// 修飾キーが押されたままと認識し、その間に届く次キーが Ctrl+key 等のショートカット
-    /// として誤発火する (Ctrl 残留 → Ctrl+H 暴発)。pair 保持の責務は `try_keyup_symmetry`
-    /// が `deferred_passthrough_vks` でカバー済みのため、ここに到達した修飾 Up は
-    /// 必ず Down が defer されていない (即 passthrough されている) 状態なので、
-    /// Up も即 passthrough しても pair は崩れない。
-    fn try_output_guard_defer(
-        &mut self,
-        raw_event: &RawKeyEvent,
-        output_in_flight: bool,
-        in_flight_ms: u64,
-        has_pending: bool,
-    ) -> Option<CallbackResult> {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && raw_event.vk_code.is_non_shift_modifier() {
-            // 修飾 Up は defer しない (Ctrl 残留窓を作らない)。
-            // Down が defer されたケースは try_keyup_symmetry が先に捕捉している。
-            return None;
-        }
-        if has_pending || output_in_flight {
-            // pending effects または output in-flight 中の passthrough は
-            // Consume + reinject 経由で順序保証する。
-            let reason = if output_in_flight && !has_pending {
-                format!("output in-flight ({in_flight_ms}ms ago)")
-            } else if has_pending && output_in_flight {
-                format!("pending effects + output in-flight ({in_flight_ms}ms)")
-            } else {
-                "pending effects".to_string()
-            };
-            log::debug!(
-                "[relay-defer] PassThrough deferred: {reason}, reinject(vk={:#04x} {})",
-                raw_event.vk_code,
-                if is_key_down { "down" } else { "up" },
-            );
-            self.queue
-                .push_back(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
-            // KeyDown を defer した場合は VK を記録して KeyUp も reinject に揃える。
-            if is_key_down {
-                self.deferred_passthrough_vks.insert(raw_event.vk_code);
-            }
-            return Some(CallbackResult::Consumed);
-        }
-        None
     }
 
     /// 物理 F2 (vk=0xF2) を `CompositionFsm` に委譲し、TSF mode なら Consume する（double-F2 防止）。

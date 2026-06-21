@@ -5,7 +5,7 @@ mod key_pipeline;
 pub(crate) mod message_handlers;
 mod transport;
 
-pub(crate) use transport::PhysicalKeyDisposition;
+pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use awase::config::ValidatedConfig;
 use awase::engine::{Engine, EngineCommand, InputContext, SpecialKeyCombos};
