@@ -15,8 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
     TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED,
-    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_COMMAND, WM_DESTROY,
-    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_CLOSE, WM_COMMAND,
+    WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use anyhow::{Context, Result};
@@ -899,6 +899,14 @@ unsafe extern "system" fn tray_wnd_proc(
                 }
                 None => {}
             }
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            // DefWindowProcW は WM_CLOSE を DestroyWindow → WM_DESTROY → PostQuitMessage に
+            // 変換してしまうため、意図しない Alt+F4 等によるシャットダウンを防ぐ。
+            // トレイウィンドウは常に非表示であり、明示的な終了操作（トレイメニュー "終了"）
+            // 以外では閉じるべきでない。
+            log::warn!("Tray window received unexpected WM_CLOSE — ignoring to prevent accidental shutdown");
             LRESULT(0)
         }
         WM_DESTROY => {
