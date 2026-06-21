@@ -1,0 +1,32 @@
+name: Generate changelog.html
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - CHANGELOG.md
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Generate changelog.html
+        run: uv run --with mistune scripts/gen_changelog.py
+
+      - name: Commit if changed
+        run: |
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add docs/changelog.html
+          git diff --staged --quiet && echo "No changes." || \
+            git commit -m "chore(docs): auto-generate changelog.html from CHANGELOG.md [skip ci]"
+          git push

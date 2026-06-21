@@ -16,7 +16,6 @@
   --text-secondary:#475569;
   --border:#E2E8F0;
   --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
-  --section-gap:4rem;
 }
 @media(prefers-color-scheme:dark){
   :root{
@@ -25,164 +24,71 @@
     --text:#E2E8F0;
     --text-secondary:#94A3B8;
     --border:#334155;
-    --card-shadow:0 1px 3px rgba(0,0,0,0.3),0 1px 2px rgba(0,0,0,0.2);
   }
 }
 html{scroll-behavior:smooth}
-body{
-  font-family:system-ui,-apple-system,sans-serif;
-  line-height:1.7;
-  color:var(--text);
-  background:var(--bg);
-}
+body{font-family:system-ui,-apple-system,sans-serif;line-height:1.7;color:var(--text);background:var(--bg)}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 .container{max-width:800px;margin:0 auto;padding:0 1.5rem}
-
-/* Site nav */
-.site-nav{
-  background:var(--bg-alt);
-  border-bottom:1px solid var(--border);
-  padding:0.75rem 1.5rem;
-}
-.site-nav .inner{
-  max-width:860px;
-  margin:0 auto;
-  display:flex;
-  align-items:center;
-  gap:1.5rem;
-}
+.site-nav{background:var(--bg-alt);border-bottom:1px solid var(--border);padding:0.75rem 1.5rem}
+.site-nav .inner{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:1.5rem}
 .site-nav .brand{font-weight:700;font-size:1rem;color:var(--text)}
 .site-nav a{font-size:0.92rem;color:var(--text-secondary)}
 .site-nav a:hover{color:var(--accent);text-decoration:none}
 .site-nav a.active{color:var(--accent);font-weight:600}
-
-/* Page header */
-.page-header{
-  padding:3.5rem 1.5rem 2.5rem;
-  background:var(--bg-alt);
-  border-bottom:1px solid var(--border);
-  text-align:center;
-}
-.page-header h1{
-  font-size:2rem;
-  font-weight:800;
-  letter-spacing:-0.02em;
-  color:var(--text);
-}
-.page-header p{
-  font-size:1rem;
-  color:var(--text-secondary);
-  margin-top:0.5rem;
-}
-
-/* Changelog entries */
-.cl-section{
-  padding:var(--section-gap) 0;
-}
-.cl-version{
-  display:flex;
-  align-items:baseline;
-  gap:1rem;
-  margin-bottom:1.5rem;
-  padding-bottom:0.6rem;
+.page-header{padding:3.5rem 1.5rem 2.5rem;background:var(--bg-alt);border-bottom:1px solid var(--border);text-align:center}
+.page-header h1{font-size:2rem;font-weight:800;letter-spacing:-0.02em;color:var(--text)}
+.page-header p{font-size:1rem;color:var(--text-secondary);margin-top:0.5rem}
+section{padding:4rem 0}
+/* Markdown-rendered changelog */
+.cl-content h2{
+  font-size:1.4rem;font-weight:800;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
   border-bottom:2px solid var(--border);
+  padding-bottom:0.5rem;margin:2.5rem 0 1rem;color:var(--text)
 }
-.cl-version-tag{
-  font-size:1.5rem;
-  font-weight:800;
-  color:var(--text);
+.cl-content h2:first-child{margin-top:0}
+.cl-content h3{
+  font-size:0.8rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:0.06em;
+  color:var(--text-secondary);margin:1.2rem 0 0.5rem
+}
+.cl-content ul{list-style:none;padding:0}
+.cl-content > ul > li,
+.cl-content ul > li{
+  position:relative;padding:0.35rem 0 0.35rem 1.4em;
+  font-size:0.95rem;border-bottom:1px solid var(--border)
+}
+.cl-content ul > li:last-child{border-bottom:none}
+.cl-content ul > li::before{
+  content:"\25B8";position:absolute;left:0;
+  color:var(--accent-light);font-size:0.75rem;top:0.55rem
+}
+.cl-content ul ul{margin-top:0.3rem}
+.cl-content ul ul > li{
+  border-bottom:none;font-size:0.875rem;
+  color:var(--text-secondary);padding-top:0.15rem;padding-bottom:0.15rem
+}
+.cl-content ul ul > li::before{content:"\2013";top:0.3rem}
+.cl-content hr{border:none;border-top:1px solid var(--border);margin:2.5rem 0}
+.cl-content p{font-size:0.95rem;color:var(--text-secondary);margin:0.5rem 0}
+.cl-content code{
   font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:0.85em;background:var(--bg-alt);
+  padding:0.1em 0.35em;border-radius:3px;border:1px solid var(--border)
 }
-.cl-version-date{
-  font-size:0.9rem;
-  color:var(--text-secondary);
-}
-.cl-version-badge{
-  display:inline-block;
-  padding:0.15rem 0.6rem;
-  border-radius:9999px;
-  font-size:0.75rem;
-  font-weight:700;
-  background:var(--accent);
-  color:#fff;
-}
-.cl-version-badge.breaking{background:#dc2626}
-.cl-version-badge.latest{background:#16a34a}
-
-.cl-group{
-  margin-top:1.2rem;
-}
-.cl-group-title{
-  font-size:0.8rem;
-  font-weight:700;
-  text-transform:uppercase;
-  letter-spacing:0.06em;
-  color:var(--text-secondary);
-  margin-bottom:0.6rem;
-}
-.cl-list{
-  list-style:none;
-  padding:0;
-}
-.cl-list li{
-  position:relative;
-  padding:0.35rem 0 0.35rem 1.4em;
-  font-size:0.95rem;
-  color:var(--text);
-  border-bottom:1px solid var(--border);
-}
-.cl-list li:last-child{border-bottom:none}
-.cl-list li::before{
-  content:"\25B8";
-  position:absolute;
-  left:0;
-  color:var(--accent-light);
-  font-size:0.75rem;
-  top:0.55rem;
-}
-.cl-list li strong{color:var(--text)}
-.cl-list li .cl-sub{
-  display:block;
-  margin-top:0.2rem;
-  padding-left:0;
-  font-size:0.875rem;
-  color:var(--text-secondary);
-}
-.cl-list li .cl-sub li{
-  border-bottom:none;
-  padding:0.1rem 0 0.1rem 1.2em;
-  font-size:0.875rem;
-}
-.cl-list li .cl-sub li::before{content:"\2013";top:0.3rem}
-
-.cl-hash{
-  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
-  font-size:0.8rem;
-  color:var(--text-secondary);
-}
-
-.cl-divider{
-  border:none;
-  border-top:1px solid var(--border);
-  margin:0;
-}
-
-/* Footer */
+.cl-content strong{color:var(--text);font-weight:700}
 footer{
-  background:var(--bg-alt);
-  border-top:1px solid var(--border);
-  padding:2rem 1.5rem;
-  text-align:center;
-  font-size:0.875rem;
-  color:var(--text-secondary);
+  background:var(--bg-alt);border-top:1px solid var(--border);
+  padding:2rem 1.5rem;text-align:center;
+  font-size:0.875rem;color:var(--text-secondary)
 }
 footer p{margin:0.3rem 0}
 </style>
 </head>
 <body>
 
-<!-- Site nav -->
 <nav class="site-nav">
   <div class="inner">
     <span class="brand">awase（合わせ）</span>
@@ -194,188 +100,107 @@ footer p{margin:0.3rem 0}
   </div>
 </nav>
 
-<!-- Page header -->
 <div class="page-header">
   <h1>更新履歴</h1>
   <p>awase の各バージョンの変更内容。ダウンロードは <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から。</p>
 </div>
 
-<section class="cl-section">
+<section>
 <div class="container">
+<div class="cl-content">
+<h2>[1.1.1] - 2026-06-20</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>Chrome → WezTerm フォーカス切替後の IME-OFF Engine-ON 状態</strong> を修正 (<a href="https://github.com/cuzic/awase/commit/12dd094">12dd094</a>, <a href="https://github.com/cuzic/awase/commit/56f5e49">56f5e49</a>)<ul>
+<li>TsfNative 入場時に GJI F21 を <code>shadow_on</code> を無視して強制送信するよう変更</li>
+<li>TsfNative cache miss 時の belief を carry-over (true) から安全デフォルト OFF に変更</li>
+<li>フォーカス cache TTL を 5 秒 → 1 時間に延長（IME ON でウィンドウを離れて戻ると cache miss 扱いになっていた問題を解消）</li>
+<li>短期フォーカス (&lt; 100ms) の cache 保存をスキップ（通知ポップアップ等が正常な状態を上書きするのを防止）</li>
+</ul>
+</li>
+<li><strong>WezTerm gji_resumed 後の LiteralDetect false positive</strong> を修正（「あ」が「a」になるケース） (<a href="https://github.com/cuzic/awase/commit/da8dad1">da8dad1</a>)</li>
+<li><strong>WezTerm gji_resumed 後の composition 早期確認</strong> を実装（GJI I/O 変化を検知して待ち時間を短縮） (<a href="https://github.com/cuzic/awase/commit/aa8a79d">aa8a79d</a>)</li>
+<li><strong>comp-probe: RUNTIME 再入借用バグ</strong> を修正（<code>shadow_on</code> / <code>jp</code> が常時 false になっていた） (<a href="https://github.com/cuzic/awase/commit/2225578">2225578</a>)</li>
+<li><strong>nicola-fsm: ソロ連打</strong> でシフトカウンターが残存するバグを修正 (<a href="https://github.com/cuzic/awase/commit/a53344b">a53344b</a>)</li>
+</ul>
+<h3>内部改善</h3>
+<ul>
+<li>GJI プロセスの I/O 統計 (ReadOperationCount / ReadTransferCount) を監視ログに追加 (<a href="https://github.com/cuzic/awase/commit/93236a8">93236a8</a>)</li>
+</ul>
+<hr />
+<h2>[1.1.0] - 2026-06-20</h2>
+<h3>重要な変更</h3>
+<ul>
+<li><strong>GJI キーバインドを F13/F14 → F21/F22 に変更</strong> (<a href="https://github.com/cuzic/awase/commit/7f8291f">7f8291f</a>)<ul>
+<li>F21/F22 は実キーボードに存在しない仮想キーで VT エスケープシーケンスを生成しない</li>
+<li>WezTerm・Windows Terminal での Nop バインド設定が不要になった</li>
+<li><strong>アップグレード時は必ずトレイメニューから「Google 日本語入力のセットアップ」を再実行してください</strong></li>
+</ul>
+</li>
+</ul>
+<h3>新機能</h3>
+<ul>
+<li><strong>GJI keybind 自動監視</strong>: config1.db から F21/F22 エントリが消去された場合、30 秒以内に検知して自動再登録 (<a href="https://github.com/cuzic/awase/commit/58557e9">58557e9</a>)</li>
+<li><strong>トレイメニュー拡張</strong>: GJI teardown・自動起動トグルを追加 (<a href="https://github.com/cuzic/awase/commit/e67cb49">e67cb49</a>)</li>
+</ul>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>WezTerm long-idle 後の最初の文字リテラル化</strong>（「こ」→「ko」）を修正（LiteralDetect + BS 再送方式） (<a href="https://github.com/cuzic/awase/commit/84e6942">84e6942</a>)</li>
+<li><strong>GJI IME-ON 不能バグ</strong>を修正: <code>DirectInput\tF21\tIMEOn</code> エントリ欠落により F21 が無視されていた (<a href="https://github.com/cuzic/awase/commit/9d11cd7">9d11cd7</a>)</li>
+<li><strong>Teams / Chrome での partial literal</strong>（「kおんな」→「こんな」変換失敗）を修正 (<a href="https://github.com/cuzic/awase/commit/3744457">3744457</a>, <a href="https://github.com/cuzic/awase/commit/040f8f8">040f8f8</a>)</li>
+<li><strong>GJI long-idle 後の LiteralDetect false positive</strong> を修正 (<a href="https://github.com/cuzic/awase/commit/a6b4c0d">a6b4c0d</a>)</li>
+</ul>
+<h3>パフォーマンス</h3>
+<ul>
+<li>フォーカス変更直後の probe 待ち時間を 300ms → 100ms に短縮（入力レスポンス改善） (<a href="https://github.com/cuzic/awase/commit/23052fb">23052fb</a>)</li>
+</ul>
+<h3>ドキュメント</h3>
+<ul>
+<li>awase.cc の全ページで F13/F14 → F21/F22 に更新、WezTerm Nop 設定手順を削除</li>
+</ul>
+<h3>内部改善</h3>
+<ul>
+<li>TSF probe の KeySeq 機構を削除（dead code）(<a href="https://github.com/cuzic/awase/commit/550781f">550781f</a>)</li>
+</ul>
+<h2>[1.0.1] - 2026-06-15</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>Chrome VK モード</strong>の「んい→に」変換バグを修正 (<a href="https://github.com/cuzic/awase/commit/71a4d68">71a4d68</a>)</li>
+<li><strong>Imm32Unavailable</strong> 入場時に stale な <code>ime_on=false</code> が残るバグを修正 (<a href="https://github.com/cuzic/awase/commit/bfad1a8">bfad1a8</a>)</li>
+<li>Ctrl/Alt/Win 保持中の <strong>KeyUp</strong> を <code>on_key_down</code> と対称にバイパスするよう修正 (<a href="https://github.com/cuzic/awase/commit/5904d67">5904d67</a>)</li>
+<li>executor: <strong>Relay モード</strong>で Timer を即時実行し deferred timer の誤発火を修正 (<a href="https://github.com/cuzic/awase/commit/71ebfb9">71ebfb9</a>)</li>
+<li>executor: イベントキュー (<code>VecDeque</code>) の <code>push</code> を <code>push_back</code> に修正 (<a href="https://github.com/cuzic/awase/commit/3823f12">3823f12</a>)</li>
+</ul>
+<h3>ドキュメント</h3>
+<ul>
+<li><strong>ランディングページ</strong>を大幅リニューアル（技術的差別化・ネーミング由来を追加）</li>
+<li><strong>使い方ページ</strong> (usage.html) を新設（設定画面・config.toml 全項目・緊急操作手順を掲載）</li>
+<li><strong>内部動作解説ページ</strong> (internals.html) を新設</li>
+<li><strong>FAQ</strong> を大幅拡充<ul>
+<li>高速タイピング時のシフト漏れ</li>
+<li>Google IME でのトグルではなく冪等な IME 制御</li>
+<li>他ツール（やまぶき R 等）で起きがちな4つの症状と対策</li>
+<li>Windows Terminal / WezTerm の F21/F22 Nop 設定手順</li>
+</ul>
+</li>
+<li>コメント内の用語を統一（IMM → IMM32、IME-ON/OFF → IME ON/OFF、Henkan/Muhenkan → 変換/無変換）</li>
+</ul>
+<h3>削除</h3>
+<ul>
+<li><code>awase-gji-setup.exe</code> を配布物から削除（機能は awase 本体に統合済み）</li>
+</ul>
+<h3>内部改善</h3>
+<ul>
+<li><code>config</code>: <code>#[serde(default)]</code> 構造体に昇格して <code>default_*</code> 関数群 18 個を撤去（-142 行）</li>
+<li><code>vk</code>: <code>enum VkMarker</code> を導入して bool/fn_ptr によるマーカー選択を型統一</li>
+<li><code>fsm</code> / <code>nicola_fsm</code> / <code>ngram</code>: 重複コード・ラッパー関数・dead code を整理（合計 -270 行）</li>
+<li>rustfmt / clippy 整形</li>
+</ul>
+<h2>[1.0.0] - 2026-06-14</h2>
+<p>最初の安定版リリース。</p>
+<p><strong>Full Changelog</strong>: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0</p>
 
-<!-- v1.1.1 -->
-<div class="cl-version">
-  <span class="cl-version-tag">v1.1.1</span>
-  <span class="cl-version-date">2026-06-20</span>
-  <span class="cl-version-badge latest">最新</span>
 </div>
-
-<div class="cl-group">
-  <div class="cl-group-title">バグ修正</div>
-  <ul class="cl-list">
-    <li>
-      <strong>Chrome → WezTerm フォーカス切替後の IME-OFF Engine-ON 状態を修正</strong>
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/12dd094">12dd094</a>, <a href="https://github.com/cuzic/awase/commit/56f5e49">56f5e49</a>)</span>
-      <ul class="cl-sub">
-        <li>TsfNative 入場時に GJI F21 を <code>shadow_on</code> を無視して強制送信するよう変更</li>
-        <li>TsfNative cache miss 時の belief を carry-over (ON) から安全デフォルト OFF に変更</li>
-        <li>フォーカス cache TTL を 5 秒 → 1 時間に延長（IME ON でウィンドウを離れて戻ると cache miss 扱いになっていた問題を解消）</li>
-        <li>短期フォーカス (&lt; 100ms) の cache 保存をスキップ（通知ポップアップ等が正常な状態を上書きするのを防止）</li>
-      </ul>
-    </li>
-    <li>
-      <strong>WezTerm gji_resumed 後の LiteralDetect false positive を修正</strong>（「あ」が「a」になるケース）
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/da8dad1">da8dad1</a>)</span>
-    </li>
-    <li>
-      <strong>WezTerm gji_resumed 後の composition 早期確認を実装</strong>（GJI I/O 変化を検知して待ち時間を短縮）
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/aa8a79d">aa8a79d</a>)</span>
-    </li>
-    <li>
-      <strong>comp-probe: RUNTIME 再入借用バグを修正</strong>（<code>shadow_on</code> / <code>jp</code> が常時 false になっていた）
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/2225578">2225578</a>)</span>
-    </li>
-    <li>
-      <strong>nicola-fsm: ソロ連打でシフトカウンターが残存するバグを修正</strong>
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/a53344b">a53344b</a>)</span>
-    </li>
-  </ul>
-</div>
-
-<div class="cl-group">
-  <div class="cl-group-title">内部改善</div>
-  <ul class="cl-list">
-    <li>GJI プロセスの I/O 統計（ReadOperationCount / ReadTransferCount）を監視ログに追加
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/93236a8">93236a8</a>)</span>
-    </li>
-  </ul>
-</div>
-
-<hr class="cl-divider" style="margin:3rem 0">
-
-<!-- v1.1.0 -->
-<div class="cl-version">
-  <span class="cl-version-tag">v1.1.0</span>
-  <span class="cl-version-date">2026-06-20</span>
-</div>
-
-<div class="cl-group">
-  <div class="cl-group-title" style="color:#dc2626">重要な変更（要対応）</div>
-  <ul class="cl-list">
-    <li>
-      <strong>GJI キーバインドを F13/F14 → F21/F22 に変更</strong>
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/7f8291f">7f8291f</a>)</span>
-      <ul class="cl-sub">
-        <li>F21/F22 は実キーボードに存在しない仮想キーで VT エスケープシーケンスを生成しない</li>
-        <li>WezTerm・Windows Terminal での Nop バインド設定が不要になった</li>
-        <li><strong>アップグレード時は必ずトレイメニューから「Google 日本語入力のセットアップ」を再実行してください</strong></li>
-      </ul>
-    </li>
-  </ul>
-</div>
-
-<div class="cl-group">
-  <div class="cl-group-title">新機能</div>
-  <ul class="cl-list">
-    <li>
-      <strong>GJI keybind 自動監視</strong>: config1.db から F21/F22 エントリが消去された場合、30 秒以内に検知して自動再登録
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/58557e9">58557e9</a>)</span>
-    </li>
-    <li>
-      <strong>トレイメニュー拡張</strong>: GJI teardown・自動起動トグルを追加
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/e67cb49">e67cb49</a>)</span>
-    </li>
-  </ul>
-</div>
-
-<div class="cl-group">
-  <div class="cl-group-title">バグ修正</div>
-  <ul class="cl-list">
-    <li>
-      <strong>WezTerm long-idle 後の最初の文字リテラル化</strong>（「こ」→「ko」）を修正（LiteralDetect + BS 再送方式）
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/84e6942">84e6942</a>)</span>
-    </li>
-    <li>
-      <strong>GJI IME-ON 不能バグ</strong>を修正: <code>DirectInput\tF21\tIMEOn</code> エントリ欠落により F21 が無視されていた
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/9d11cd7">9d11cd7</a>)</span>
-    </li>
-    <li>
-      <strong>Teams / Chrome での partial literal</strong>（「kおんな」→「こんな」変換失敗）を修正
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/3744457">3744457</a>, <a href="https://github.com/cuzic/awase/commit/040f8f8">040f8f8</a>)</span>
-    </li>
-    <li>
-      <strong>GJI long-idle 後の LiteralDetect false positive</strong> を修正
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/a6b4c0d">a6b4c0d</a>)</span>
-    </li>
-  </ul>
-</div>
-
-<div class="cl-group">
-  <div class="cl-group-title">パフォーマンス</div>
-  <ul class="cl-list">
-    <li>フォーカス変更直後の probe 待ち時間を 300ms → 100ms に短縮（入力レスポンス改善）
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/23052fb">23052fb</a>)</span>
-    </li>
-  </ul>
-</div>
-
-<hr class="cl-divider" style="margin:3rem 0">
-
-<!-- v1.0.1 -->
-<div class="cl-version">
-  <span class="cl-version-tag">v1.0.1</span>
-  <span class="cl-version-date">2026-06-15</span>
-</div>
-
-<div class="cl-group">
-  <div class="cl-group-title">バグ修正</div>
-  <ul class="cl-list">
-    <li><strong>Chrome VK モード</strong>の「んい→に」変換バグを修正
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/71a4d68">71a4d68</a>)</span>
-    </li>
-    <li><strong>Imm32Unavailable</strong> 入場時に stale な <code>ime_on=false</code> が残るバグを修正
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/bfad1a8">bfad1a8</a>)</span>
-    </li>
-    <li>Ctrl/Alt/Win 保持中の <strong>KeyUp</strong> を <code>on_key_down</code> と対称にバイパスするよう修正
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/5904d67">5904d67</a>)</span>
-    </li>
-    <li>executor: <strong>Relay モード</strong>で Timer を即時実行し deferred timer の誤発火を修正
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/71ebfb9">71ebfb9</a>)</span>
-    </li>
-    <li>executor: イベントキュー (<code>VecDeque</code>) の <code>push</code> を <code>push_back</code> に修正
-      <span class="cl-hash">(<a href="https://github.com/cuzic/awase/commit/3823f12">3823f12</a>)</span>
-    </li>
-  </ul>
-</div>
-
-<div class="cl-group">
-  <div class="cl-group-title">ドキュメント</div>
-  <ul class="cl-list">
-    <li>ランディングページを大幅リニューアル（技術的差別化・ネーミング由来を追加）</li>
-    <li>使い方ページ (usage.html) を新設（設定画面・config.toml 全項目・緊急操作手順）</li>
-    <li>内部動作解説ページ (internals.html) を新設</li>
-    <li>FAQ を大幅拡充（高速タイピング時のシフト漏れ・WezTerm 設定手順 等）</li>
-  </ul>
-</div>
-
-<hr class="cl-divider" style="margin:3rem 0">
-
-<!-- v1.0.0 -->
-<div class="cl-version">
-  <span class="cl-version-tag">v1.0.0</span>
-  <span class="cl-version-date">2026-06-14</span>
-</div>
-
-<div class="cl-group">
-  <ul class="cl-list">
-    <li>最初の安定版リリース</li>
-  </ul>
-</div>
-
-<p style="margin-top:2.5rem;font-size:0.875rem;color:var(--text-secondary)">
-  全コミット履歴は <a href="https://github.com/cuzic/awase/commits/main">GitHub Commits</a> を参照してください。
-</p>
-
 </div>
 </section>
 
