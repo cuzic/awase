@@ -141,27 +141,42 @@ impl Runtime {
 
         if process_changed {
             let ime_on = self.platform_state.ime.effective_open();
-            // ime_on=false のとき、それがユーザーの明示操作（SyncKey 等）由来かを記録する。
-            // Imm32Unavailable アプリでは IME を awase が制御できないためキャッシュが stale に
-            // なりやすく、入場時に信頼できる OFF か否かをこのフラグで区別する。
-            let from_explicit_off_intent = !ime_on && {
-                use crate::state::ime_event::IntentSource;
-                matches!(
-                    self.platform_state.ime.model().last_intent.as_ref(),
-                    Some(i) if !i.target
-                        && matches!(
-                            i.source,
-                            IntentSource::SyncKey
-                                | IntentSource::PhysicalImeKey
-                                | IntentSource::Command
-                        )
-                )
-            };
-            self.platform.focus.save_ime_state(
-                ime_on,
-                self.platform_state.ime.belief.input_mode(),
-                from_explicit_off_intent,
-            );
+
+            // 滞在時間が短すぎる（通知ポップアップ等の瞬間フォーカス）場合はキャッシュを
+            // 上書きしない。last_focus_change_ms は前回の on_focus_process_changed で記録済み。
+            let focus_start_ms = self.platform_state.last_focus_change_ms;
+            let now_ms = crate::hook::current_tick_ms();
+            let focus_duration_ms = now_ms.saturating_sub(focus_start_ms);
+            let should_save = focus_duration_ms >= crate::tuning::MIN_FOCUS_DURATION_MS;
+
+            if should_save {
+                // ime_on=false のとき、それがユーザーの明示操作（SyncKey 等）由来かを記録する。
+                // Imm32Unavailable アプリでは IME を awase が制御できないためキャッシュが stale に
+                // なりやすく、入場時に信頼できる OFF か否かをこのフラグで区別する。
+                let from_explicit_off_intent = !ime_on && {
+                    use crate::state::ime_event::IntentSource;
+                    matches!(
+                        self.platform_state.ime.model().last_intent.as_ref(),
+                        Some(i) if !i.target
+                            && matches!(
+                                i.source,
+                                IntentSource::SyncKey
+                                    | IntentSource::PhysicalImeKey
+                                    | IntentSource::Command
+                            )
+                    )
+                };
+                self.platform.focus.save_ime_state(
+                    ime_on,
+                    self.platform_state.ime.belief.input_mode(),
+                    from_explicit_off_intent,
+                );
+            } else {
+                log::debug!(
+                    "[focus] focus duration {focus_duration_ms}ms < MIN_FOCUS_DURATION_MS={} — cache save スキップ",
+                    crate::tuning::MIN_FOCUS_DURATION_MS,
+                );
+            }
         }
 
         self.platform
@@ -261,7 +276,10 @@ impl Runtime {
                 } else if is_imm_broken {
                     self.platform_state.ime.reset_stale_ime_on_for_imm_broken();
                 } else {
-                    self.platform_state.ime.reset_stale_ime_on_for_tsf_native();
+                    // TsfNative cache miss: 前ウィンドウの belief true を carry-over すると
+                    // GjiDirectStrategy が shadow_on=true で F21 をスキップするリスクがある。
+                    // 安全デフォルト OFF に倒す（Fix 1 の GJI F21 強制と組み合わせて機能する）。
+                    self.platform_state.ime.reset_to_off_for_tsf_native_cache_miss();
                 }
             }
         }

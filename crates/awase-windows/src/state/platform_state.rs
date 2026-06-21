@@ -387,6 +387,35 @@ impl ImeStateHub {
         });
     }
 
+    /// TsfNative cache miss 時に belief を安全デフォルト OFF に設定する。
+    ///
+    /// キャッシュがない（初回訪問または TTL 切れ）TsfNative ウィンドウへの入場時、
+    /// 前ウィンドウから carry-over された belief=true をそのまま引き継ぐと
+    /// GjiDirectStrategy が shadow_on=true 由来で F21 をスキップし IME-OFF Engine-ON
+    /// になる可能性がある。安全デフォルトとして OFF に倒し、ユーザーが必要なら ON にする。
+    ///
+    /// `last_intent = None` に戻すことで `last_explicit_off_ms()` を汚染しない
+    /// （`apply_panic_reset()` と同じパターン）。
+    pub(crate) fn reset_to_off_for_tsf_native_cache_miss(&mut self) {
+        if !self.belief.is_japanese_ime() {
+            return;
+        }
+        if !self.shadow_model.effective_open() {
+            log::debug!("[focus] TsfNative cache-miss: belief 既に OFF — リセット不要");
+            return;
+        }
+        log::info!(
+            "[focus] TsfNative cache-miss: belief true → false にリセット (安全デフォルト OFF)"
+        );
+        self.dispatch_event(ImeEvent::UserImeSetIntent {
+            target: false,
+            source: IntentSource::Recovery,
+        });
+        // last_explicit_off_ms() を汚染しないよう dispatch 後にクリアする。
+        // これにより次ウィンドウの cache-miss 時に 10s ガードが誤発動しない。
+        self.shadow_model.last_intent = None;
+    }
+
     /// Imm32Unavailable (Chrome/Teams 等) 入場時に stale な `desired_open=false` を IME ON へ寄せ直す。
     ///
     /// TsfNative と同様だが、Imm32Unavailable では awase が IME 状態を制御できないため
