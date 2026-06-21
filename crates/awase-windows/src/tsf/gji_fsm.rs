@@ -63,6 +63,8 @@ pub(crate) enum WarmupPath {
 }
 
 /// warmup probe の結果。送信方法（`SendInput`）の決定に使う。
+// Phase 3 で SendInput dispatch が実装されるまでフィールドは書き込みのみ。
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WarmupResult {
     pub path: WarmupPath,
@@ -88,6 +90,8 @@ impl WarmupResult {
 /// `OnCold` 中に蓄積する入力バッファ（旧 `TsfProbeMachine::SendState` に相当）。
 ///
 /// warmup 完了後に `GjiAction::SendInput` に格納して dispatcher に渡す。
+// Phase 3 で SendInput/SendInputDirect が実際に dispatch されるまでフィールドは蓄積のみ。
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PendingInput {
     pub romaji: String,
@@ -102,6 +106,7 @@ impl PendingInput {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.romaji.is_empty() && self.deferred_vks.is_empty()
     }
@@ -169,10 +174,16 @@ pub(crate) enum GjiEvent {
     /// warmup probe 完了
     WarmupComplete { probe_id: ProbeId, result: WarmupResult },
     /// warmup probe が budget 内に完了しなかった
+    // Phase 3 で接続予定
+    #[allow(dead_code)]
     WarmupFailed { probe_id: ProbeId },
     /// `WM_IME_STARTCOMPOSITION`
+    // Phase 3 で接続予定
+    #[allow(dead_code)]
     StartComposition,
     /// `WM_IME_ENDCOMPOSITION`（epoch チェック付き）
+    // Phase 3 で接続予定
+    #[allow(dead_code)]
     EndComposition { epoch: FocusEpoch },
     /// IME ON/OFF やフォーカス変化なしに composition context が無効化された
     /// (PassthroughKey, NativeF2Consumed, RawTsfLiteralRecovery 等)
@@ -186,9 +197,11 @@ pub(crate) enum GjiAction {
     StartProbe { probe_id: ProbeId, budget_ms: u64 },
     /// 実行中の probe をキャンセルする
     CancelProbe { probe_id: ProbeId },
-    /// warmup 完了後に蓄積入力を送信する
+    /// warmup 完了後に蓄積入力を送信する（Phase 3 で dispatch 実装予定）
+    #[allow(dead_code)]
     SendInput { result: WarmupResult, pending: Vec<PendingInput> },
-    /// warm 状態で即送信する
+    /// warm 状態で即送信する（Phase 3 で dispatch 実装予定）
+    #[allow(dead_code)]
     SendInputDirect(PendingInput),
 }
 
