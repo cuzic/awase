@@ -269,17 +269,22 @@ impl Runtime {
                 // クリア済みのため dispatch 後に last_explicit_off_ms() を呼ぶと 0 になる。
                 let last_off_ms = pre_focus_explicit_off_ms;
                 let elapsed = now_ms.saturating_sub(last_off_ms);
+                // CoreWindow (UWP/WinUI) は Imm32Unavailable でも TSF ネイティブ。
+                // Chrome/Edge と異なりキャッシュミス時は安全デフォルト OFF を適用する
+                // （Chrome は awase が制御できないため false→true 寄せが必要だが、
+                //  CoreWindow は TSF 経由で awase がキー注入するため true carry-over が有害）。
+                let is_imm_broken_tsf_native = is_imm_broken
+                    && crate::focus::class_names::is_tsf_native_window(&classified.class_name);
                 if last_off_ms > 0 && elapsed < 10_000 {
                     log::debug!(
                         "[focus] {} cache-miss: skip reset_stale — explicit IME OFF {elapsed}ms ago",
                         if is_imm_broken { "Imm32Unavailable" } else { "TsfNative" },
                     );
-                } else if is_imm_broken {
+                } else if is_imm_broken && !is_imm_broken_tsf_native {
                     self.platform_state.ime.reset_stale_ime_on_for_imm_broken();
                 } else {
-                    // TsfNative cache miss: 前ウィンドウの belief true を carry-over すると
-                    // GjiDirectStrategy が shadow_on=true で F21 をスキップするリスクがある。
-                    // 安全デフォルト OFF に倒す（Fix 1 の GJI F21 強制と組み合わせて機能する）。
+                    // TsfNative cache miss (CoreWindow を含む): 前ウィンドウの belief true を
+                    // carry-over すると hiragana 直接注入が発生する。安全デフォルト OFF に倒す。
                     self.platform_state.ime.reset_to_off_for_tsf_native_cache_miss();
                 }
             }
