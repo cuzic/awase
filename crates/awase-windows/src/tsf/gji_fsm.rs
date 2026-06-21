@@ -391,35 +391,47 @@ impl TimedStateMachine for GjiFsm {
             }
 
             // ── KeyInput ───────────────────────────────────────────────────
-            GjiEvent::KeyInput(input) => match &mut self.state {
-                GjiState::OffCold => Response::pass_through(),
+            GjiEvent::KeyInput(input) => {
+                // NotStarted の場合のみ probe_id を事前確保する（&mut self.state との二重借用を回避）
+                let maybe_new_probe_id = if matches!(
+                    &self.state,
+                    GjiState::OnCold { probe: ProbeStatus::NotStarted, .. }
+                ) {
+                    Some(self.alloc_probe_id())
+                } else {
+                    None
+                };
 
-                GjiState::OnCold { probe, pending, kind } => {
-                    let kind = *kind;
-                    match probe {
-                        ProbeStatus::NotStarted => {
-                            // Long の最初の KeyInput で probe を開始する
-                            let probe_id = self.alloc_probe_id();
-                            let budget_ms = kind.budget_ms();
-                            *probe = ProbeStatus::Running { probe_id };
-                            pending.push(input);
-                            Response::emit(vec![GjiAction::StartProbe { probe_id, budget_ms }])
-                        }
-                        ProbeStatus::Running { .. } => {
-                            pending.push(input);
-                            Response::consume()
+                match &mut self.state {
+                    GjiState::OffCold => Response::pass_through(),
+
+                    GjiState::OnCold { probe, pending, kind } => {
+                        let kind = *kind;
+                        match probe {
+                            ProbeStatus::NotStarted => {
+                                // Long の最初の KeyInput で probe を開始する
+                                let probe_id = maybe_new_probe_id.unwrap();
+                                let budget_ms = kind.budget_ms();
+                                *probe = ProbeStatus::Running { probe_id };
+                                pending.push(input);
+                                Response::emit(vec![GjiAction::StartProbe { probe_id, budget_ms }])
+                            }
+                            ProbeStatus::Running { .. } => {
+                                pending.push(input);
+                                Response::consume()
+                            }
                         }
                     }
-                }
 
-                GjiState::OnWarm { long_idle_ms } => {
-                    let ms = *long_idle_ms;
-                    Response::emit_one(GjiAction::SendInputDirect(input))
-                        .with_timer(GjiTimer::LongIdle, Duration::from_millis(ms))
-                }
+                    GjiState::OnWarm { long_idle_ms } => {
+                        let ms = *long_idle_ms;
+                        Response::emit_one(GjiAction::SendInputDirect(input))
+                            .with_timer(GjiTimer::LongIdle, Duration::from_millis(ms))
+                    }
 
-                GjiState::OnComposing { .. } => {
-                    Response::emit_one(GjiAction::SendInputDirect(input))
+                    GjiState::OnComposing { .. } => {
+                        Response::emit_one(GjiAction::SendInputDirect(input))
+                    }
                 }
             },
 
