@@ -108,6 +108,40 @@ footer p{margin:0.3rem 0}
 <section>
 <div class="container">
 <div class="cl-content">
+<h2>[1.2.0] - 2026-06-21</h2>
+<h3>新機能</h3>
+<ul>
+<li><strong>GjiFsm を新規追加</strong>: GJI (Google 日本語入力) の内部 composition 状態を推測する FSM を導入 (<a href="https://github.com/cuzic/awase/commit/b152c7e">b152c7e</a>)<ul>
+<li>Phase 2a: GjiFsm を Output に接続し FocusChange / ImeOn / ImeOff / WarmupComplete を配線 (<a href="https://github.com/cuzic/awase/commit/bb228c2">bb228c2</a>)</li>
+<li>Phase 2b: CompositionReset・KeyInput を配線し <code>is_composition_warm</code> を FSM 化 (<a href="https://github.com/cuzic/awase/commit/d49c516">d49c516</a>)</li>
+<li>Phase 3: <code>is_composition_warm</code> を GjiFsm SSOT に切替 (<a href="https://github.com/cuzic/awase/commit/2b6d25f">2b6d25f</a>)</li>
+<li>Phase 4: legacy epoch warm 追跡を撤去し GjiFsm を SSOT に一本化 (<a href="https://github.com/cuzic/awase/commit/588ea32">588ea32</a>)</li>
+</ul>
+</li>
+<li><strong>panic ログ強化</strong>: panic 発生時の場所とメッセージを <code>awase.log</code> に記録するフックを追加 (<a href="https://github.com/cuzic/awase/commit/de0226a">de0226a</a>)</li>
+<li><strong>更新履歴ページ自動生成</strong>: GitHub Actions で <code>CHANGELOG.md</code> → <code>changelog.html</code> を自動生成するワークフローを追加 (<a href="https://github.com/cuzic/awase/commit/efc4310">efc4310</a>, <a href="https://github.com/cuzic/awase/commit/6fb7a38">6fb7a38</a>)</li>
+</ul>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>WezTerm TSF cold start の F2+S race</strong> と <code>gji_resumed</code> 後の false-positive BS を修正 (<a href="https://github.com/cuzic/awase/commit/b754277">b754277</a>)</li>
+<li><strong>CoreWindow キャッシュミス時</strong> の IME ON carry-over によるひらがな注入を修正 (<a href="https://github.com/cuzic/awase/commit/1c5cc91">1c5cc91</a>)</li>
+<li><strong>NICOLA 同時打鍵</strong> で <code>StartProbe</code> が上書きされる <code>debug_assert</code> パニックを修正 (<a href="https://github.com/cuzic/awase/commit/a5a9412">a5a9412</a>)</li>
+<li><strong>Chrome: f2_gji_long_idle</strong> フラグ有効時も programmatic F2 を強制送信するよう修正 (<a href="https://github.com/cuzic/awase/commit/43dca5a">43dca5a</a>)</li>
+<li><strong>probe: SetOpenTrue</strong> 時も <code>consecutive_count</code> をリセットするよう修正 (<a href="https://github.com/cuzic/awase/commit/cbd1946">cbd1946</a>)</li>
+<li><strong>tray</strong>: <code>WM_CLOSE</code> を明示的にハンドルして意図しないシャットダウンを防止 (<a href="https://github.com/cuzic/awase/commit/c924eed">c924eed</a>)</li>
+</ul>
+<h3>内部改善</h3>
+<ul>
+<li><strong>probe-fsm</strong>: <code>TransmitPlan</code> / <code>ProbeObservations</code> 導入により FSM レイヤー境界を整理 (<a href="https://github.com/cuzic/awase/commit/3c36f21">3c36f21</a>)</li>
+<li><strong>chord 管理</strong>: ImeStateHub に完全集約（Phase 2 完了） (<a href="https://github.com/cuzic/awase/commit/fd17da0">fd17da0</a>)<ul>
+<li>Chord 開始/終了判断を reducer に集約 (<a href="https://github.com/cuzic/awase/commit/a7218e0">a7218e0</a>)</li>
+<li><code>pending_warmup_on_keyup</code> を CompositionFsm に昇格 (<a href="https://github.com/cuzic/awase/commit/f3b0448">f3b0448</a>)</li>
+</ul>
+</li>
+<li><strong>transport</strong>: <code>suppress_physical</code> を <code>PhysicalKeyDisposition</code> に分離 (<a href="https://github.com/cuzic/awase/commit/8a045bb">8a045bb</a>)</li>
+<li>Clippy pedantic 対応（CI Rust 1.96） (<a href="https://github.com/cuzic/awase/commit/881f824">881f824</a>)</li>
+</ul>
+<hr />
 <h2>[1.1.1] - 2026-06-20</h2>
 <h3>バグ修正</h3>
 <ul>
