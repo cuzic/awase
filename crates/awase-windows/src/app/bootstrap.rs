@@ -356,6 +356,7 @@ pub(super) fn initialize_app(
                 crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
                 crate::focus::classifier::ImmCapabilityStore::new(base_dir),
             ),
+            composition_fsm: crate::tsf::composition_fsm::CompositionFsm::new(),
         },
         layouts,
         sync_toggle_keys,

@@ -58,11 +58,6 @@ pub(crate) struct DecisionExecutor {
     /// バッチ内の `SetOpen` 処理後に即時更新される（intra-batch ordering 用）。
     /// `ImeModel` が SSOT; これはバッチ内 communication channel 兼 cross-decision cache。
     applied_snapshot: crate::state::AppliedImeState,
-    /// warm+TSF の confirm キー KeyDown 後に KeyUp で eager warmup を送信するフラグ。
-    ///
-    /// `on_passthrough_key` が `true` を返したとき KeyDown 側でセットされ、
-    /// `try_pending_warmup_on_keyup` の KeyUp タイミングでクリアして warmup を送信する。
-    pending_warmup_on_keyup: bool,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -79,7 +74,6 @@ impl DecisionExecutor {
             deferred_passthrough_vks: HashSet::new(),
             guard_held: None,
             applied_snapshot: crate::state::AppliedImeState::Unknown,
-            pending_warmup_on_keyup: false,
         }
     }
 
@@ -431,16 +425,14 @@ impl DecisionExecutor {
             return result;
         }
 
-        // 5. F2 + TSF mode: 物理 F2 を Consume（double-F2 防止）。
+        // 5. F2 KeyDown: CompositionFsm に委譲。TSF mode は Consume（double-F2 防止）、
+        //    非 TSF は mark_cold のみで PassThrough に進む。
         if let Some(result) = self.try_native_f2_consume(platform, raw_event) {
             return result;
         }
 
         // 6. Space/Enter/Esc KeyDown: warm+TSF または cold の composition 確定処理。
         self.handle_confirm_key_passthrough(platform, raw_event);
-
-        // 7. F2 + KeyDown + non-TSF: mark_cold（Chrome/Win32 向け）。
-        self.handle_f2_non_tsf(platform, raw_event);
 
         // Effects なし → 直接 OS に通す
         // Passthrough 系の VK (Enter, Esc, Tab 等) は awase 出力との
@@ -480,34 +472,25 @@ impl DecisionExecutor {
     /// KeyDown 時は SendInput(F2) → CallNextHookEx(Enter↓) の順になり WezTerm が
     /// F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
     /// KeyUp タイミングでは Enter↓ が既に処理済みのため F2 との競合なし。
-    fn try_pending_warmup_on_keyup(&mut self, platform: &WindowsPlatform, raw_event: &RawKeyEvent) {
+    ///
+    /// 保留状態は `CompositionFsm` が `PendingWarmupOnKeyUp` として持つ。
+    /// KeyUp を FSM に feed し、保留があれば dispatcher が warmup を送信する。
+    fn try_pending_warmup_on_keyup(&self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down
-            && raw_event.vk_code.is_composition_confirm_key()
-            && self.pending_warmup_on_keyup
-        {
-            self.pending_warmup_on_keyup = false;
-            log::debug!(
-                "[composition] vk={:#04x} KeyUp: 保留 eager warmup 送信 (warm+TSF 変換確定後)",
-                raw_event.vk_code,
-            );
-            platform.send_eager_warmup(self.applied_snapshot.applied_open());
+        if !is_key_down && raw_event.vk_code.is_composition_confirm_key() {
+            platform
+                .composition_confirm_key_up(raw_event.vk_code, self.applied_snapshot.applied_open());
         }
     }
 
     /// Ctrl↑: cold 状態であれば eager_warmup_sent_ms をリセット（この→kおの バグ対策）。
     /// Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。
     /// Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
-    /// 副作用のみで CallbackResult は返さない。
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn handle_ctrl_up_recovery(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
+    /// cold 判定・warmup 送信は `CompositionFsm`（CtrlUp）に委譲する。副作用のみ。
+    fn handle_ctrl_up_recovery(&self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && raw_event.vk_code.is_ctrl_variant() && !platform.is_composition_warm() {
-            log::debug!(
-                "[composition] Ctrl↑ (vk={:#04x}) cold 検出 → eager_warmup_sent_ms リセット (GJI recovery 500ms 再計測)",
-                raw_event.vk_code,
-            );
-            platform.send_eager_warmup(self.applied_snapshot.applied_open());
+        if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
+            platform.composition_ctrl_up(self.applied_snapshot.applied_open());
         }
     }
 
@@ -558,34 +541,33 @@ impl DecisionExecutor {
         None
     }
 
-    /// vk=0xF2 かつ TSF mode のとき物理 F2 を Consume する（double-F2 防止）。
+    /// 物理 F2 (vk=0xF2) を `CompositionFsm` に委譲し、TSF mode なら Consume する（double-F2 防止）。
     ///
     /// 物理 F2 が WezTerm に届いた後に warmup F2 を含むバッチを送ると、
     /// WezTerm の TSF ハンドラが F2 を 2 回受け取り "この→koの" になる
     /// （WezTerm 内部で F2 がトグル動作をしている模様）。
     /// 物理 F2 を Consume し、次の NICOLA バッチの warmup F2 で一本化することで解消する。
-    /// → output.rs の composition_warm ドキュメントの設計意図と一致。
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    /// 非 TSF mode では Consume せず mark_cold(F2NonTsf) のみ（FSM dispatcher 実行）。
     fn try_native_f2_consume(
-        &mut self,
+        &self,
         platform: &mut WindowsPlatform,
         raw_event: &RawKeyEvent,
     ) -> Option<CallbackResult> {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && platform.is_tsf_mode() {
-            if is_key_down {
-                // 物理 F2 消費時の composition 状態更新を platform に委譲する。
-                // mark_cold(NativeF2Consumed) + eager warmup を platform 内で処理。
-                let _ = platform.on_passthrough_key(
-                    raw_event.vk_code,
-                    true,
-                    self.applied_snapshot.applied_open(),
-                );
-            } else {
-                log::debug!(
-                    "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
-                );
-            }
+        if raw_event.vk_code != crate::vk::VK_DBE_HIRAGANA {
+            return None;
+        }
+        if is_key_down {
+            // CompositionFsm が NativeF2Down を処理し、TSF mode なら ConsumeF2 を返す。
+            // mark_cold(NativeF2Consumed) + eager warmup も FSM dispatcher が実行する。
+            let consume = platform.composition_native_f2_down(self.applied_snapshot.applied_open());
+            return consume.then_some(CallbackResult::Consumed);
+        }
+        // KeyUp: 対応する KeyDown が consume された場合のみ KeyUp も consume する。
+        if platform.is_tsf_mode() {
+            log::debug!(
+                "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
+            );
             return Some(CallbackResult::Consumed);
         }
         None
@@ -594,33 +576,17 @@ impl DecisionExecutor {
     /// Space/Enter/Esc KeyDown の直接 passthrough: warm+TSF または cold の composition 確定処理。
     /// 副作用のみで CallbackResult は返さない。
     fn handle_confirm_key_passthrough(
-        &mut self,
+        &self,
         platform: &mut WindowsPlatform,
         raw_event: &RawKeyEvent,
     ) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
         // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-        // mark_cold / eager warmup は platform に委譲する。戻り値が true なら warmup を KeyUp へ遅延。
+        // mark_cold / eager warmup / warmup の KeyUp 遅延は CompositionFsm（on_passthrough_key
+        // 経由）に委譲する。保留状態は FSM が PendingWarmupOnKeyUp として持つ。
         if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            let deferred = platform.on_passthrough_key(
-                raw_event.vk_code,
-                true,
-                self.applied_snapshot.applied_open(),
-            );
-            self.pending_warmup_on_keyup = deferred;
-        }
-    }
-
-    /// vk=0xF2 + KeyDown かつ non-TSF mode のとき mark_cold（Chrome/Win32 向け）。
-    /// 副作用のみで CallbackResult は返さない。
-    #[allow(clippy::needless_pass_by_ref_mut)]
-    fn handle_f2_non_tsf(&mut self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        // F2 non-TSF mode: passthrough + mark_cold（Chrome/Win32 向け）
-        // mark_cold(F2NonTsf) を platform に委譲する。
-        if raw_event.vk_code == crate::vk::VK_DBE_HIRAGANA && is_key_down {
-            let _ = platform.on_passthrough_key(
+            platform.on_passthrough_key(
                 raw_event.vk_code,
                 true,
                 self.applied_snapshot.applied_open(),

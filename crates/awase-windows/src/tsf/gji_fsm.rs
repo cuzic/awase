@@ -43,6 +43,16 @@ use crate::tuning;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct FocusEpoch(u32);
 
+impl FocusEpoch {
+    /// 初期 epoch。
+    pub(crate) const ZERO: Self = Self(0);
+
+    /// 次の epoch（単調増加、wrapping）。
+    pub(crate) const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
 /// probe ID。stale な `WarmupComplete` / `WarmupFailed` を弾くための識別子。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProbeId(u32);
@@ -249,7 +259,7 @@ impl GjiFsm {
     }
 
     fn bump_epoch(&mut self) -> FocusEpoch {
-        self.epoch = FocusEpoch(self.epoch.0.wrapping_add(1));
+        self.epoch = self.epoch.next();
         self.epoch
     }
 

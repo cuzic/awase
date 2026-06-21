@@ -29,6 +29,12 @@ pub struct WindowsPlatform {
     pub suppress_engine_state_key: bool,
     /// フォーカス追跡の全状態（ウィンドウ情報・判定キャッシュ・IME キャッシュ等）。
     pub(crate) focus: FocusTracker,
+    /// confirm キーの warmup タイミングを管理する FSM。
+    ///
+    /// executor の `pending_warmup_on_keyup: bool` ミニ FSM を状態に昇格させたもの。
+    /// warm 判定そのものは GjiFsm が SSOT であり、この FSM は「confirm キー KeyDown 後、
+    /// KeyUp まで warmup を保留する」遷移を所有する。
+    pub(crate) composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -214,10 +220,100 @@ impl WindowsPlatform {
         }
     }
 
+    // ── CompositionFsm ディスパッチャ ─────────────────────────────────────────
+
+    /// `CompositionFsm` の `Response` を処理し、warmup 送信・cold mark・GJI reset を実行する。
+    ///
+    /// `applied_ime_on` は `EmitWarmup` の送信先 IME 状態。戻り値は F2 を consume すべきか
+    /// （`ConsumeF2` アクションの有無）で、TSF mode で物理 F2 を swallow する判断に使う。
+    fn dispatch_composition_response(
+        &mut self,
+        response: &timed_fsm::Response<
+            crate::tsf::composition_fsm::CompositionAction,
+            std::convert::Infallible,
+        >,
+        applied_ime_on: Option<bool>,
+    ) -> bool {
+        use crate::tsf::composition_fsm::CompositionAction;
+        let mut consume_f2 = false;
+        for action in &response.actions {
+            match *action {
+                CompositionAction::EmitWarmup { reason } => {
+                    log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
+                    self.output.send_eager_tsf_warmup(applied_ime_on);
+                }
+                CompositionAction::MarkCold { reason } => {
+                    self.output.mark_composition_cold(reason);
+                }
+                CompositionAction::GjiCompositionReset => {
+                    self.gji_on_composition_reset();
+                }
+                CompositionAction::ConsumeF2 => {
+                    consume_f2 = true;
+                }
+            }
+        }
+        consume_f2
+    }
+
+    /// `CompositionFsm` にイベントを feed し、`Response` を dispatch する。
+    /// 戻り値は F2 を consume すべきか（`ConsumeF2` の有無）。
+    fn feed_composition_event(
+        &mut self,
+        event: crate::tsf::composition_fsm::CompositionEvent,
+        applied_ime_on: Option<bool>,
+    ) -> bool {
+        use timed_fsm::TimedStateMachine;
+        let response = self.composition_fsm.on_event(event);
+        let consume_f2 = self.dispatch_composition_response(&response, applied_ime_on);
+        log::trace!(
+            "[composition-fsm] state={}",
+            self.composition_fsm.state_label()
+        );
+        consume_f2
+    }
+
+    /// confirm キー KeyUp を `CompositionFsm` に通知し、保留 warmup があれば送信する。
+    pub(crate) fn composition_confirm_key_up(
+        &mut self,
+        vk: awase::types::VkCode,
+        applied_ime_on: Option<bool>,
+    ) {
+        self.feed_composition_event(
+            crate::tsf::composition_fsm::CompositionEvent::ConfirmKeyUp { vk },
+            applied_ime_on,
+        );
+    }
+
+    /// Ctrl↑ を `CompositionFsm` に通知し、cold 状態なら warmup を再送する。
+    pub(crate) fn composition_ctrl_up(&mut self, applied_ime_on: Option<bool>) {
+        let warm = self.output.is_composition_warm();
+        self.feed_composition_event(
+            crate::tsf::composition_fsm::CompositionEvent::CtrlUp { warm },
+            applied_ime_on,
+        );
+    }
+
+    /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown を `CompositionFsm` に通知する。
+    /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
+    pub(crate) fn composition_native_f2_down(&mut self, applied_ime_on: Option<bool>) -> bool {
+        let tsf_mode = self.output.is_tsf_mode();
+        self.feed_composition_event(
+            crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode },
+            applied_ime_on,
+        )
+    }
+
     // ── GjiFsm イベント通知 ──────────────────────────────────────────────────
 
     /// フォーカス変更を GjiFsm に通知する（`ir_post_focus_change_snapshot` から呼ぶ）。
     pub(crate) fn gji_on_focus_change(&mut self, injection_mode: crate::output::types::InjectionMode) {
+        // CompositionFsm の epoch を進めて、フォーカスを跨いだ保留 warmup を無効化する。
+        let tsf_mode = matches!(injection_mode, crate::output::types::InjectionMode::Tsf);
+        self.feed_composition_event(
+            crate::tsf::composition_fsm::CompositionEvent::FocusChange { tsf_mode },
+            None,
+        );
         let resp = self.output.gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
             injection_mode,
         });
@@ -439,6 +535,14 @@ impl PlatformRuntime for WindowsPlatform {
         // IME 状態が変化したので GJI 候補ウィンドウの「見た」フラグをリセットする。
         // これをリセットしないと次の composition 検出で desync と誤判定される。
         crate::tsf::observer::reset_candidate_was_seen();
+        // CompositionFsm の状態を IME ON/OFF に追従させる（保留 warmup の epoch 整合用）。
+        let tsf_mode = self.output.is_tsf_mode();
+        let comp_event = if open {
+            crate::tsf::composition_fsm::CompositionEvent::ImeOn { tsf_mode }
+        } else {
+            crate::tsf::composition_fsm::CompositionEvent::ImeOff
+        };
+        self.feed_composition_event(comp_event, Some(effective));
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
@@ -460,50 +564,22 @@ impl PlatformRuntime for WindowsPlatform {
         is_keydown: bool,
         applied_ime_on: Option<bool>,
     ) -> bool {
+        use crate::tsf::composition_fsm::CompositionEvent;
         use crate::vk::VkCodeExt as _;
-        let applied = applied_ime_on;
 
-        // F2 in TSF mode keydown: NativeF2Consumed (consume decision は executor 側で行う)
-        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
-            log::debug!(
-                "[composition] vk=0xf2 passthrough TSF mode → marking cold (NativeF2Consumed)",
-            );
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-            self.gji_on_composition_reset();
-            self.output.send_eager_tsf_warmup(applied);
-            return false;
-        }
-
-        // Confirm key keydown: warm+TSF なら KeyUp まで eager warmup を遅延する
+        // confirm キー KeyDown を CompositionFsm に委譲する。
+        // FSM が cold mark / GJI reset / warmup 送信 を action として返し dispatcher が実行する。
+        // warm+TSF では warmup を KeyUp まで遅延し PendingWarmupOnKeyUp に入るので、
+        // その有無を deferral 戻り値とする。
+        // （物理 F2 は composition_native_f2_down を直接呼ぶ別経路で処理する。）
         if is_keydown && vk.is_composition_confirm_key() {
-            let was_warm = self.output.is_composition_warm();
-            let is_tsf = self.output.is_tsf_mode();
-            if was_warm && is_tsf {
-                log::debug!(
-                    "[composition] passthrough vk={vk:#04x} KeyDown (warm+TSF) → 変換確定, cold markのみ (eager F2はKeyUpで送信)",
-                );
-                self.output
-                    .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-                self.gji_on_composition_reset();
-                return true; // warmup deferred to KeyUp
-            }
-            log::debug!(
-                "[composition] passthrough vk={vk:#04x} KeyDown → marking cold + eager warmup",
+            let tsf_mode = self.output.is_tsf_mode();
+            let warm = self.output.is_composition_warm();
+            self.feed_composition_event(
+                CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm },
+                applied_ime_on,
             );
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
-            self.gji_on_composition_reset();
-            self.output.send_eager_tsf_warmup(applied);
-            return false;
-        }
-
-        // F2 non-TSF mode keydown
-        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown {
-            log::debug!("[composition] vk=0xf2 passthrough direct → marking cold");
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::F2NonTsf);
-            self.gji_on_composition_reset();
+            return self.composition_fsm.pending_warmup_vk() == Some(vk);
         }
         false
     }
