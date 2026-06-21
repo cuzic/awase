@@ -345,6 +345,7 @@ const fn is_self_injected(extra_info: usize) -> bool {
 /// # Safety
 /// OS から `WH_KEYBOARD_LL` フックコールバックとして呼び出される。
 /// フックスレッドの GetMessageW ループ内でのみ呼ばれる。
+#[allow(clippy::cognitive_complexity)]
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // ウォッチドッグ用タイムスタンプを更新（自己注入キーも含む全コールバック）
     HOOK_ALIVE_TICK_MS.store(current_tick_ms(), Ordering::Relaxed);

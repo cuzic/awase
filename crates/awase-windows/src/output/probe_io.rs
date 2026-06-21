@@ -144,6 +144,7 @@ impl ProbeIo for Output {
 /// `platform.rs` の `dispatch_probe_actions` を置き換える。
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
 #[expect(clippy::too_many_lines)]
+#[allow(clippy::cognitive_complexity)]
 pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
     machine: &mut crate::tsf::probe_fsm::TsfProbeMachine,
     initial_actions: Vec<crate::tsf::probe_fsm::ProbeAction>,

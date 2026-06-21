@@ -343,6 +343,7 @@ impl Runtime {
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
+    #[allow(clippy::cognitive_complexity)]
     fn kp_stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             let is_key_up = !matches!(event.event_type, awase::types::KeyEventType::KeyDown);
