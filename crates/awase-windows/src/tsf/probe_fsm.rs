@@ -59,6 +59,95 @@ struct ProbeContext {
     used_eager_path: bool,
 }
 
+/// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
+/// テストでは任意値を注入できる。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TsfEnvSnapshot {
+    pub is_tsf_mode: bool,
+    pub gji_long_idle: bool,
+    pub gji_active: bool,
+    /// `NameChangeWait` の `gji_long_idle_probe` モードで参照する GJI 最終 I/O タイムスタンプ。
+    /// `crate::tsf::observer::gji_last_io_ms()` のスナップショット。
+    pub gji_last_io_ms: u64,
+    /// `LiteralDetect` の部分リテラル検出で参照する現在 composition 先頭文字。
+    /// `crate::ime::get_foreground_comp_str_char()` のスナップショット。
+    /// `None` = HIMC 未取得（テスト・LiteralDetect 非活性時）→ 部分リテラル検出をスキップ。
+    pub foreground_comp_char: Option<char>,
+}
+
+/// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProbeObservations {
+    pub nc_fired: bool,
+    pub gji_resumed: bool,
+}
+
+/// `decide_transmit_plan` が確定した実行方針。dispatcher がそのまま実行する。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TransmitPlan {
+    /// バッチ送信に F2 (VK_DBE_HIRAGANA) を先行させるか。
+    pub should_prepend_f2: bool,
+    /// VK ローマ字パス（true）か Unicode TSF パス（false）か。
+    pub used_eager_path: bool,
+    /// raw TSF literal の LiteralDetect フェーズを有効にするか。
+    pub needs_literal: bool,
+    /// LiteralDetect のタイムアウト期間（ms）。
+    pub literal_detect_ms: u64,
+}
+
+/// probe 観測値・環境スナップショット・コンテキストから送信方針を決定する純粋計算関数。
+///
+/// FSM 内の `enter_transmit_tsf` から呼ばれるが、単独でテストも可能。
+/// 副作用なし。
+pub(crate) fn decide_transmit_plan(
+    initial_prepend_f2: bool,
+    initial_used_eager: bool,
+    obs: ProbeObservations,
+    env: &TsfEnvSnapshot,
+    deferred_empty: bool,
+) -> TransmitPlan {
+    // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
+    // SendFreshF2 action が ~300ms 前に fresh F2 を送信済み → WezTerm の TSF context は
+    // 既に初期化済み。バッチに再び F2 を含めると WezTerm が TSF reinit を再トリガーし、
+    // 同一バッチの先頭 VK が reinit 中に届いてリテラル化する race が起きる。
+    // gji_long_idle の場合は F2×2 で GJI を起動する必要があるためバッチ同梱が必要。
+    let should_prepend_f2 = initial_prepend_f2
+        && (obs.nc_fired || !env.is_tsf_mode || env.gji_long_idle);
+
+    // gji_resumed=true: GJI が F2×2 に I/O 応答 → VK path 強制。
+    // nc_fired=true: IME モード確認済み（gji_long_idle かつ deferred なし → unicode 優先）。
+    // nc_fired=false + TSF mode: VK path 固定（unicode は GJI composition をバイパスし "nお" race が起きる）。
+    let used_eager_path = if obs.gji_resumed {
+        false
+    } else if obs.nc_fired {
+        (initial_used_eager || env.gji_long_idle) && deferred_empty
+    } else if env.is_tsf_mode {
+        false
+    } else {
+        initial_used_eager || env.gji_long_idle
+    };
+
+    // gji_resumed=true: GJI I/O 応答確認済み → composition 成功が確定。
+    // long_idle 後は候補ウィンドウ表示に >500ms かかり false positive になる（BS 誤送信 → context 破壊）。
+    let needs_literal = should_prepend_f2
+        && env.gji_active
+        && (!env.gji_long_idle || env.is_tsf_mode)
+        && !obs.gji_resumed;
+
+    let literal_detect_ms = if env.gji_long_idle && env.is_tsf_mode {
+        crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
+    } else {
+        crate::tuning::RAW_TSF_LITERAL_DETECT_MS
+    };
+
+    TransmitPlan {
+        should_prepend_f2,
+        used_eager_path,
+        needs_literal,
+        literal_detect_ms,
+    }
+}
+
 /// `inspect_phase` が返す「次に何をすべきか」の宣言。
 ///
 /// `tick_with_clock` はこれを受け取って状態遷移と `ProbeAction` emit を行う。
@@ -189,17 +278,10 @@ pub(crate) enum ProbeAction {
     /// `target == Chrome`: `deferred_vks` をフラッシュし warm マークして完了。
     Transmit {
         cold_seq: u32,
-        prepend_f2_warmup: bool,
-        used_eager_path: bool,
-        /// NameChangeWait を経由した場合に OBJ_NAMECHANGE が発火したかどうか。
-        ///
-        /// `false` の場合（タイムアウト）は TSF レイヤーの IME モード切替が未確認のため、
-        /// `deferred_vks` が存在しても Unicode TSF パスへのフォールバックを許可する。
-        nc_fired: bool,
-        /// gji_long_idle 後に F2×2 を送信し GJI が I/O で応答したことを確認済み。
-        ///
-        /// `true` のとき `used_eager_path`/`gji_long_idle` に関わらず VK パスを強制する。
-        gji_resumed: bool,
+        /// FSM が確定した実行方針。dispatcher はそのまま実行する（再導出不要）。
+        plan: TransmitPlan,
+        /// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
+        observations: ProbeObservations,
         romaji: String,
         deferred_vks: Vec<DeferredVk>,
         target: TransmitTarget,
@@ -377,16 +459,25 @@ impl TsfProbeMachine {
     ///
     /// 返値の `Vec<ProbeAction>` を `dispatch_probe_actions` が実行する。
     /// 空 Vec = まだ待機中（タイマー継続）。
-    pub(crate) fn tick(&mut self) -> Vec<ProbeAction> {
-        self.tick_with_clock(&SystemClock)
+    pub(crate) fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+        self.tick_impl(&SystemClock, env)
     }
 
-    /// `Clock` を注入できる `tick` の内部実装（テスト用）。
+    /// `Clock` と `TsfEnvSnapshot` を注入できる `tick` の内部実装（テスト用）。
     ///
     /// `inspect_phase` で副作用なしに次の遷移先を決定し、
     /// その後 `&self` を解放してから状態変化を適用する。
-    pub(crate) fn tick_with_clock<C: Clock>(&mut self, clock: &C) -> Vec<ProbeAction> {
-        match self.inspect_phase(clock) {
+    #[cfg(test)]
+    pub(crate) fn tick_with_clock_env<C: Clock>(
+        &mut self,
+        clock: &C,
+        env: &TsfEnvSnapshot,
+    ) -> Vec<ProbeAction> {
+        self.tick_impl(clock, env)
+    }
+
+    fn tick_impl<C: Clock>(&mut self, clock: &C, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+        match self.inspect_phase(clock, env) {
             NextStep::Wait => vec![],
             NextStep::EmitSendFreshF2 {
                 probe_settled,
@@ -406,9 +497,9 @@ impl TsfProbeMachine {
                 }]
             }
             NextStep::TransmitTsf { nc_fired, gji_resumed } => {
-                self.enter_transmit_tsf(nc_fired, gji_resumed)
+                self.enter_transmit_tsf(nc_fired, gji_resumed, env)
             }
-            NextStep::TransmitChrome => self.enter_transmit_chrome(),
+            NextStep::TransmitChrome => self.enter_transmit_chrome(env),
             NextStep::StartSecondaryProbe { fresh_f2_ms } => {
                 let send = self.take_send_for_secondary_probe();
                 let probe = TsfReadinessProbe::new(fresh_f2_ms, self.cold_seq, 0);
@@ -438,7 +529,7 @@ impl TsfProbeMachine {
 
     /// 現フェーズを検査して次の遷移先を返す。副作用なし（`&self` のみ使用）。
     #[allow(clippy::too_many_lines)]
-    fn inspect_phase<C: Clock>(&self, clock: &C) -> NextStep {
+    fn inspect_phase<C: Clock>(&self, clock: &C, env: &TsfEnvSnapshot) -> NextStep {
         match &self.phase {
             ProbePhase::Probing {
                 probe,
@@ -518,7 +609,7 @@ impl TsfProbeMachine {
                 // gji_long_idle_probe モード: F2×2 送信後に GJI が I/O を出したか確認。
                 // GJI_IDLE_MS 静止を確認できれば OBJ_NAMECHANGE を待たず即 VK path へ。
                 if *gji_long_idle_probe {
-                    let gji_io = crate::tsf::observer::gji_last_io_ms();
+                    let gji_io = env.gji_last_io_ms;
                     if gji_io >= *fresh_f2_ms {
                         let gji_idle = now.saturating_sub(gji_io);
                         if gji_idle >= crate::tuning::GJI_IDLE_MS {
@@ -581,9 +672,9 @@ impl TsfProbeMachine {
                         // TSF→IMM32 bridge が composition 中に HIMC を更新する環境でのみ有効。
                         // HIMC が NULL の場合（bridge 未対応など）は None → スキップして安全に CompositionConfirmed へ。
                         if let Some(expected) = expected_kana {
-                            // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
-                            //         TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ぶ。Win32 IMM32 API は任意スレッドから安全。
-                            let actual = unsafe { crate::ime::get_foreground_comp_str_char() };
+                            // env.foreground_comp_char は output/mod.rs が取得して注入したスナップショット。
+                            // None = HIMC 未取得（テスト・bridge 非対応環境）→ 部分リテラル検出をスキップ。
+                            let actual = env.foreground_comp_char;
                             if actual.map_or(false, |c| c != *expected) {
                                 log::warn!(
                                     "[raw-tsf-literal] cold={} partial literal: comp={actual:?} ≠ expected='{expected}' → SuspectedLiteral",
@@ -712,33 +803,47 @@ impl TsfProbeMachine {
         }
     }
 
-    fn enter_transmit_tsf(&mut self, nc_fired: bool, gji_resumed: bool) -> Vec<ProbeAction> {
+    fn enter_transmit_tsf(
+        &mut self,
+        nc_fired: bool,
+        gji_resumed: bool,
+        env: &TsfEnvSnapshot,
+    ) -> Vec<ProbeAction> {
         let send = self.take_current_send_for_transmit();
         let cold_seq = self.cold_seq;
         let ctx = self.ctx;
+        let observations = ProbeObservations { nc_fired, gji_resumed };
+        let plan = decide_transmit_plan(
+            ctx.prepend_f2_warmup,
+            ctx.used_eager_path,
+            observations,
+            env,
+            send.deferred_vks.is_empty(),
+        );
         self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
         vec![ProbeAction::Transmit {
             cold_seq,
-            prepend_f2_warmup: ctx.prepend_f2_warmup,
-            used_eager_path: ctx.used_eager_path,
-            nc_fired,
-            gji_resumed,
+            plan,
+            observations,
             romaji: send.romaji,
             deferred_vks: send.deferred_vks,
             target: TransmitTarget::Tsf,
         }]
     }
 
-    fn enter_transmit_chrome(&mut self) -> Vec<ProbeAction> {
+    fn enter_transmit_chrome(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         let send = self.take_current_send_for_transmit();
         let cold_seq = self.cold_seq;
         self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
         vec![ProbeAction::Transmit {
             cold_seq,
-            prepend_f2_warmup: false,
-            used_eager_path: false,
-            nc_fired: true,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: false,
+                used_eager_path: false,
+                needs_literal: env.gji_active,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: send.romaji,
             deferred_vks: send.deferred_vks,
             target: TransmitTarget::Chrome,
@@ -846,7 +951,7 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(make_namechange_wait(1000, false));
 
-        let actions = machine.tick_with_clock(&ManualClock(500)); // now < deadline
+        let actions = machine.tick_with_clock_env(&ManualClock(500), &TsfEnvSnapshot::default());
         assert!(actions.is_empty(), "待機中は空 Vec を返すべき");
         assert_eq!(machine.phase_label(), "NameChangeWait");
     }
@@ -856,19 +961,13 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(make_namechange_wait(500, true)); // settled=true
 
-        let actions = machine.tick_with_clock(&ManualClock(1000)); // now >= deadline
+        let actions = machine.tick_with_clock_env(&ManualClock(1000), &TsfEnvSnapshot::default());
         assert!(
             !actions.is_empty(),
             "タイムアウト後は action を emit するべき"
         );
         assert!(
-            matches!(
-                actions[0],
-                ProbeAction::Transmit {
-                    target: TransmitTarget::Tsf,
-                    ..
-                }
-            ),
+            matches!(actions[0], ProbeAction::Transmit { target: TransmitTarget::Tsf, .. }),
             "タイムアウト時は Transmit(Tsf) を emit するべき: {actions:?}",
         );
     }
@@ -879,18 +978,14 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(make_namechange_wait(500, false));
 
-        let actions = machine.tick_with_clock(&ManualClock(1000));
+        let actions = machine.tick_with_clock_env(&ManualClock(1000), &TsfEnvSnapshot::default());
         assert!(
-            matches!(
-                actions[0],
-                ProbeAction::Transmit {
-                    target: TransmitTarget::Tsf,
-                    nc_fired: false, // タイムアウトなので nc_fired=false が必須
-                    ..
-                }
-            ),
-            "タイムアウト(unsettled)でも Transmit(Tsf) を emit するべき。nc_fired=false: {actions:?}",
+            matches!(actions[0], ProbeAction::Transmit { target: TransmitTarget::Tsf, .. }),
+            "タイムアウト(unsettled)でも Transmit(Tsf) を emit するべき: {actions:?}",
         );
+        if let ProbeAction::Transmit { observations, .. } = &actions[0] {
+            assert!(!observations.nc_fired, "タイムアウトなので nc_fired=false が必須");
+        }
     }
 
     // ── WaitingForCallback フェーズテスト ────────────────────────────────────
@@ -900,7 +995,7 @@ mod tests {
         let mut machine = make_gji_machine();
         machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::TransmitDone));
 
-        let actions = machine.tick_with_clock(&ManualClock(0));
+        let actions = machine.tick_with_clock_env(&ManualClock(0), &TsfEnvSnapshot::default());
         assert!(actions.is_empty(), "WaitingForCallback は空 Vec を返すべき");
         assert_eq!(machine.phase_label(), "WaitingForCallback(TransmitDone)");
     }
@@ -943,7 +1038,7 @@ mod tests {
         let guard = OutputActiveGuard::noop_for_test();
         let detector = crate::tsf::probe::LiteralDetector::new();
         let mut machine = TsfProbeMachine::new_literal_detect("a", 0, detector, 1, 0, guard);
-        let actions = machine.tick_with_clock(&ManualClock(1000));
+        let actions = machine.tick_with_clock_env(&ManualClock(1000), &TsfEnvSnapshot::default());
         match &actions[..] {
             [ProbeAction::RawTsfLiteralRecovery { romaji, backs, .. }, ProbeAction::Done] => {
                 assert_eq!(
@@ -953,6 +1048,114 @@ mod tests {
                 assert_eq!(*backs, 1);
             }
             other => panic!("unexpected actions: {other:?}"),
+        }
+    }
+
+    // ── decide_transmit_plan 回帰テスト ──────────────────────────────────────
+
+    #[test]
+    fn decide_plan_nc_not_fired_tsf_not_long_idle_suppresses_f2_and_literal() {
+        // Bug 1 再発防止: "さいごの" → "sあいごの"
+        // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
+        // SendFreshF2 が ~300ms 前に送信済み → バッチに F2 を含めると reinit race でリテラル化する。
+        let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true };
+
+        let plan = decide_transmit_plan(true, false, obs, &env, true);
+
+        assert!(!plan.should_prepend_f2, "nc_fired=false + tsf + !long_idle: F2 をバッチに含めない");
+        assert!(!plan.needs_literal, "F2 なし → LiteralDetect 不要");
+    }
+
+    #[test]
+    fn decide_plan_gji_resumed_disables_literal_detection() {
+        // Bug 2 再発防止: gji_resumed=true 時の false positive BS
+        // GJI が F2×2 に I/O 応答済み → composition 成功確定 → LiteralDetect は false positive になる。
+        let obs = ProbeObservations { nc_fired: true, gji_resumed: true };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true };
+
+        let plan = decide_transmit_plan(true, false, obs, &env, true);
+
+        assert!(!plan.needs_literal, "gji_resumed=true: LiteralDetect をスキップしないと BS 誤送信になる");
+    }
+
+    #[test]
+    fn decide_plan_nc_not_fired_tsf_long_idle_keeps_f2_and_literal() {
+        // gji_long_idle=true: F2×2 で GJI を起動する必要があるためバッチに F2 が必要。
+        // LiteralDetect も有効（GJI 応答未確認）。
+        let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true };
+
+        let plan = decide_transmit_plan(true, false, obs, &env, true);
+
+        assert!(plan.should_prepend_f2, "gji_long_idle=true: F2 バッチ同梱が必要");
+        assert!(plan.needs_literal, "gji_resumed=false + tsf: LiteralDetect 有効");
+    }
+
+    #[test]
+    fn decide_plan_nc_fired_keeps_f2_and_enables_literal_when_gji_active() {
+        // nc_fired=true: NameChange 発火確認済み → F2 はバッチに含める。
+        let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true };
+
+        let plan = decide_transmit_plan(true, false, obs, &env, true);
+
+        assert!(plan.should_prepend_f2, "nc_fired=true: F2 はバッチに含める");
+        assert!(plan.needs_literal, "gji_active + !long_idle + !gji_resumed: LiteralDetect 有効");
+    }
+
+    #[test]
+    fn decide_plan_non_tsf_mode_keeps_f2() {
+        // 非 TSF mode（Chrome 等）: nc_fired=false でも F2 バッチ同梱が必要。
+        let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
+        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: true };
+
+        let plan = decide_transmit_plan(true, false, obs, &env, true);
+
+        assert!(plan.should_prepend_f2, "非 TSF mode: nc_fired=false でも F2 を含める");
+    }
+
+    #[test]
+    fn decide_plan_nc_fired_with_deferred_vks_disables_eager_path() {
+        // nc_fired=true でも deferred_vks が存在する場合は unicode に戻さない（nお race 防止）。
+        let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
+        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: false };
+
+        let plan = decide_transmit_plan(false, true, obs, &env, false); // deferred_empty=false
+
+        assert!(!plan.used_eager_path, "deferred_vks あり: unicode TSF パスを使わない");
+    }
+
+    // FSM 統合: NameChangeWait タイムアウト → Transmit で plan が正しく emit されること
+    #[test]
+    fn fsm_ncwait_timeout_tsf_mode_emits_correct_plan() {
+        // Bug 1 の FSM 統合テスト: nc_fired=false + tsf_mode + !long_idle → should_prepend_f2=false
+        let mut machine = {
+            let guard = OutputActiveGuard::noop_for_test();
+            let probe = TsfReadinessProbe::new(0, 0, 0);
+            TsfProbeMachine::new_gji(
+                "sa",
+                0,
+                probe,
+                0,
+                false,
+                ColdReason::FocusChange,
+                true,  // prepend_f2_warmup=true (cold start)
+                false,
+                guard,
+            )
+        };
+        machine.force_phase_for_test(make_namechange_wait(0, false)); // 即タイムアウト
+
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true };
+        let actions = machine.tick_with_clock_env(&ManualClock(1000), &env);
+
+        if let ProbeAction::Transmit { plan, observations, target: TransmitTarget::Tsf, .. } = &actions[0] {
+            assert!(!plan.should_prepend_f2, "nc_fired=false + tsf + !long_idle: F2 をバッチに含めない");
+            assert!(!plan.needs_literal, "F2 なし → LiteralDetect 不要");
+            assert!(!observations.nc_fired, "タイムアウト: nc_fired=false");
+        } else {
+            panic!("Transmit(Tsf) を emit するべき: {actions:?}");
         }
     }
 }

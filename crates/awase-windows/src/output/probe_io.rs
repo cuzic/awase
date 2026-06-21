@@ -157,6 +157,24 @@ impl ProbeIo for Output {
 }
 
 /// probe dispatcher の汎用実装。
+/// `ProbeObservations` と `TransmitPlan` から `WarmupPath` を分類する純粋関数。
+/// Tsf/Chrome の両 Transmit アームで共用する。
+fn classify_warmup_path(
+    obs: &crate::tsf::probe_fsm::ProbeObservations,
+    plan: &crate::tsf::probe_fsm::TransmitPlan,
+) -> crate::tsf::gji_fsm::WarmupPath {
+    use crate::tsf::gji_fsm::WarmupPath;
+    if obs.gji_resumed {
+        WarmupPath::GjiResumed
+    } else if obs.nc_fired {
+        WarmupPath::NameChangeConfirmed
+    } else if plan.used_eager_path {
+        WarmupPath::EagerLiteralDetected
+    } else {
+        WarmupPath::TimedOutFallback
+    }
+}
+
 ///
 /// `platform.rs` の `dispatch_probe_actions` を置き換える。
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
@@ -201,10 +219,8 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
 
             ProbeAction::Transmit {
                 cold_seq,
-                prepend_f2_warmup,
-                used_eager_path,
-                nc_fired,
-                gji_resumed,
+                plan,
+                observations,
                 romaji,
                 deferred_vks,
                 target,
@@ -222,50 +238,11 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         if chars.is_empty() {
                             return true;
                         }
-                        // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
-                        // SendFreshF2 が ~300ms 前に fresh F2 を送信済みで WezTerm の TSF context は
-                        // 既に初期化されている。バッチに再び F2 を含めると WezTerm が TSF reinit を
-                        // 再トリガーし、同一バッチの S が reinit 中に届いてリテラル化する race が起きる。
-                        // (例: "さいごの" → "sあいごの": F2↓S↓A↓ の S が TSF reinit 中に届く)
-                        // gji_long_idle の場合は F2×2 で GJI を起動する必要があり F2 バッチ同梱が必要。
-                        let effective_prepend_f2 = prepend_f2_warmup
-                            && (nc_fired || !io.is_tsf_mode() || io.gji_long_idle());
-
+                        // plan は FSM の enter_transmit_tsf が confirm 時点の env で確定済み。
+                        // dispatcher は再導出せずそのまま使う。
                         let outcome = WarmupOutcome {
-                            prepend_f2_warmup: effective_prepend_f2,
-                            // gji_resumed=true: F2×2 後に GJI が I/O 応答 → VK パス強制。
-                            //
-                            // nc_fired=true: IME モード確認済み（OBJ_NAMECHANGE 受信）。
-                            //   通常は deferred_vks.is_empty() を守り、
-                            //   KEYEVENTF_UNICODE 直後の N VK で "の" が "nお" になる
-                            //   WezTerm バグを防ぐ。
-                            //   gji_long_idle 時は IME モード依存の VK ローマ字を避けるため
-                            //   deferred_vks が空なら unicode TSF を優先する。
-                            //
-                            // nc_fired=false: NameChangeWait タイムアウト。
-                            //   IME モード切替未確認。VK ローマ字で送ると katakana 等で誤出力になる。
-                            //   keybinds_ok=true: F22→F21 活性化が先行するため通常ここに来ない。
-                            //     gji_resumed=true で VK path が強制される。
-                            //   keybinds_ok=false + gji_long_idle: unicode TSF を強制（IME モード非依存）。
-                            //   keybinds_ok=false + 非 long_idle: used_eager_path のまま。
-                            //
-                            // TSF mode (WezTerm 等 ForceTsf): OBJ_NAMECHANGE が CASCADIA クラスではない
-                            //   ため nc_fired=false は常態。unicode は KEYEVENTF_UNICODE で GJI コンポジション
-                            //   を完全にバイパスし候補ウィンドウが表示されない。
-                            //   GJI 活動中・長期静止いずれも → VK path で GJI コンポジション経由。
-                            //   unicode (KEYEVENTF_UNICODE) は使わない。直後の VK "n" が GJI の
-                            //   unicode 処理と競合して "nお" になる race を引き起こすため。
-                            //   GJI 未応答時は VK がリテラルになるが LiteralDetect + BS 再送で回収する。
-                            used_eager_path: if gji_resumed {
-                                false // GJI が F2×2 に応答: VK path 強制
-                            } else if nc_fired {
-                                (used_eager_path || io.gji_long_idle()) && deferred_vks.is_empty()
-                            } else if io.is_tsf_mode() {
-                                // TSF-native (WezTerm): active/long_idle いずれも VK path
-                                false
-                            } else {
-                                used_eager_path || io.gji_long_idle()
-                            },
+                            prepend_f2_warmup: plan.should_prepend_f2,
+                            used_eager_path: plan.used_eager_path,
                             cold_seq,
                         };
                         {
@@ -291,30 +268,9 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                                 );
                             });
                         }
-                        let gji_active = io.gji_monitor_healthy();
-                        // TSF mode (WezTerm) では gji_long_idle でも LiteralDetect を有効にする。
-                        // VK path 強制により GJI 未応答時にリテラル化するが、
-                        // gji_candidate_show 変化で検出し BS 再送で回収できる。
-                        // 非 TSF mode (Chrome 等) は gji_long_idle 時に GJI 再起動直後で
-                        // 候補ウィンドウが遅延するため、false positive 防止のため無効のまま。
-                        //
-                        // gji_resumed=true: F2×2 への GJI I/O 応答で composition が成功することを確認済み。
-                        // long_idle 後は候補ウィンドウ表示に >500ms かかり LiteralDetect が false positive
-                        // になる（BS 誤送信 → composition context 破壊）。gji_resumed=true では不要。
-                        let needs_literal = effective_prepend_f2
-                            && gji_active
-                            && (!io.gji_long_idle() || io.is_tsf_mode())
-                            && !gji_resumed;
-                        let detector = if needs_literal {
-                            Some(crate::tsf::probe::LiteralDetector::new())
-                        } else {
-                            None
-                        };
-                        let literal_detect_ms = if io.gji_long_idle() && io.is_tsf_mode() {
-                            crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
-                        } else {
-                            crate::tuning::RAW_TSF_LITERAL_DETECT_MS
-                        };
+                        let detector = plan
+                            .needs_literal
+                            .then(crate::tsf::probe::LiteralDetector::new);
                         // TSF cold path の部分リテラル検出: SHOW 発火時に IMM32 composition と突き合わせる。
                         // K がリテラル化して O だけが compose された場合（"ko"→'k'+'お'）を
                         // expected_kana='こ' vs actual='お' の不一致で検出する。
@@ -325,32 +281,23 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
                         if io.current_gji_probe_id().is_some() {
-                            use crate::tsf::gji_fsm::{WarmupPath, WarmupResult};
-                            let path = if gji_resumed {
-                                WarmupPath::GjiResumed
-                            } else if nc_fired {
-                                WarmupPath::NameChangeConfirmed
-                            } else if outcome.used_eager_path {
-                                WarmupPath::EagerLiteralDetected
-                            } else {
-                                WarmupPath::TimedOutFallback
-                            };
+                            use crate::tsf::gji_fsm::WarmupResult;
                             io.store_gji_warmup_result(WarmupResult {
-                                path,
-                                prepend_f2_warmup: effective_prepend_f2,
-                                nc_fired,
-                                gji_resumed,
+                                path: classify_warmup_path(&observations, &plan),
+                                prepend_f2_warmup: plan.should_prepend_f2,
+                                nc_fired: observations.nc_fired,
+                                gji_resumed: observations.gji_resumed,
                             });
                         }
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms, expected_kana) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, expected_kana) {
                             return true;
                         }
                     }
                     TransmitTarget::Chrome => {
-                        // GJI モニター健全時のみ literal 検出を起動する。
+                        // plan.needs_literal は enter_transmit_chrome が env.gji_active で確定済み。
                         // 検出ベースラインは送信前に確定させること。
-                        let detector = io
-                            .gji_monitor_healthy()
+                        let detector = plan
+                            .needs_literal
                             .then(crate::tsf::probe::LiteralDetector::new);
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
@@ -358,24 +305,15 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         io.mark_warm();
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
                         if io.current_gji_probe_id().is_some() {
-                            use crate::tsf::gji_fsm::{WarmupPath, WarmupResult};
-                            let path = if gji_resumed {
-                                WarmupPath::GjiResumed
-                            } else if nc_fired {
-                                WarmupPath::NameChangeConfirmed
-                            } else if used_eager_path {
-                                WarmupPath::EagerLiteralDetected
-                            } else {
-                                WarmupPath::TimedOutFallback
-                            };
+                            use crate::tsf::gji_fsm::WarmupResult;
                             io.store_gji_warmup_result(WarmupResult {
-                                path,
-                                prepend_f2_warmup,
-                                nc_fired,
-                                gji_resumed,
+                                path: classify_warmup_path(&observations, &plan),
+                                prepend_f2_warmup: plan.should_prepend_f2,
+                                nc_fired: observations.nc_fired,
+                                gji_resumed: observations.gji_resumed,
                             });
                         }
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, crate::tuning::RAW_TSF_LITERAL_DETECT_MS, None) {
+                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, None) {
                             return true;
                         }
                     }
@@ -427,7 +365,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
 mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
-    use crate::tsf::probe_fsm::{ProbeAction, TransmitTarget};
+    use crate::tsf::probe_fsm::{ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget};
     use std::cell::Cell;
 
     /// テスト用フェイク ProbeIo。Win32 副作用を no-op にし、呼び出しをフラグで記録する。
@@ -576,10 +514,13 @@ mod tests {
         let mut machine = make_chrome_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: false,
-            used_eager_path: false,
-            nc_fired: true,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: false,
+                used_eager_path: false,
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Chrome,
@@ -593,19 +534,19 @@ mod tests {
 
     #[test]
     fn chrome_transmit_with_gji_healthy_installs_literal_detect() {
-        // GJI モニター健全時は Chrome バッチ送信後も LiteralDetect フェーズへ遷移し、
+        // plan.needs_literal=true のとき Chrome バッチ送信後も LiteralDetect フェーズへ遷移し、
         // Done を即返さないことで literal 検出のための再ティックを許可する。
-        let io = FakeProbeIo {
-            gji_healthy: true,
-            ..Default::default()
-        };
+        let io = FakeProbeIo::default();
         let mut machine = make_chrome_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: false,
-            used_eager_path: false,
-            nc_fired: true,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: false,
+                used_eager_path: false,
+                needs_literal: true, // enter_transmit_chrome が gji_active=true のとき設定
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Chrome,
@@ -626,10 +567,13 @@ mod tests {
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: false,
-            used_eager_path: false,
-            nc_fired: true,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: false,
+                used_eager_path: false,
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -642,20 +586,19 @@ mod tests {
 
     #[test]
     fn tsf_transmit_skips_literal_detect_when_gji_long_idle() {
-        // GJI が長期静止（WezTerm 等）のとき LiteralDetect を入れないことで
-        // false positive による BS 送信ループを防ぐ。
-        let io = FakeProbeIo {
-            gji_healthy: true,
-            gji_long_idle: true,
-            ..Default::default()
-        };
+        // plan.needs_literal=false のとき (gji_long_idle で decide_transmit_plan が設定)
+        // LiteralDetect を入れない → Done を即返す。
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: false,
-            nc_fired: true,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: true,
+                used_eager_path: true, // nc_fired=true + gji_long_idle=true
+                needs_literal: false,  // gji_long_idle + !is_tsf_mode → false
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -671,14 +614,17 @@ mod tests {
 
     #[test]
     fn tsf_transmit_calls_transmit_tsf_and_mark_warm() {
-        let io = FakeProbeIo::default(); // bypass=false, gji_healthy=false
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: false,
-            used_eager_path: false,
-            nc_fired: true,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: false,
+                used_eager_path: false,
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -692,20 +638,20 @@ mod tests {
 
     #[test]
     fn tsf_transmit_uses_eager_path_when_nc_not_fired_even_with_deferred_vks() {
-        // NameChangeWait がタイムアウトした（nc_fired=false）場合、deferred_vks があっても
-        // used_eager_path を尊重して Unicode TSF パスを使う。
-        // IME モード切替未確認時に VK ローマ字を送ると katakana 等でリテラル出力になるバグ回避。
-        let io = FakeProbeIo {
-            gji_healthy: false, // LiteralDetect は無効化（today's focus はモード切替）
-            ..Default::default()
-        };
+        // nc_fired=false のとき、decide_transmit_plan は deferred_vks に関わらず
+        // used_eager_path=true（nc_fired=true branch の deferred_vks チェックは通らない）。
+        // WarmupOutcome.used_eager_path=true が transmit_tsf に渡ることを確認する。
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: true,
-            nc_fired: false, // NameChangeWait タイムアウト
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: true,
+                used_eager_path: true, // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ki".to_string(),
             deferred_vks: vec![crate::tsf::probe_fsm::DeferredVk {
                 vk: awase::types::VkCode(0x49), // VK_I
@@ -716,10 +662,10 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(done);
         assert!(io.transmit_tsf_called.get());
-        // nc_fired=false のとき used_eager_path は deferred_vks.is_empty() に関わらず true。
-        // TsfSendPipeline::transmit が Unicode TSF を選ぶかどうかは transmit_tsf の内部判定だが
-        // ここでは WarmupOutcome に used_eager_path=true が渡ることを確認する。
-        // （実際の Unicode 選択は transmit_tsf 実装依存のため、呼び出しが行われたことのみ確認）
+        assert!(
+            io.last_used_eager_path.get(),
+            "plan.used_eager_path=true は WarmupOutcome に反映されるべき"
+        );
     }
 
     #[test]
@@ -821,18 +767,18 @@ mod tests {
     fn nc_not_fired_with_gji_long_idle_forces_unicode_tsf() {
         // nc_fired=false（NameChangeWait タイムアウトまたはスキップ）かつ gji_long_idle のとき、
         // 非 TSF mode では used_eager_path=false でも unicode TSF（used_eager_path=true）が強制される。
-        let io = FakeProbeIo {
-            gji_long_idle: true,
-            tsf_mode: false, // 非 TSF mode（Chrome 等）
-            ..Default::default()
-        };
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: false, // eager warmup なしのコールドスタート
-            nc_fired: false,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: true,
+                // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle = false || true = true
+                used_eager_path: true,
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ka".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -842,26 +788,27 @@ mod tests {
         assert!(io.transmit_tsf_called.get());
         assert!(
             io.last_used_eager_path.get(),
-            "非TSF mode + gji_long_idle: nc_fired=false でも used_eager_path が true になるべき（unicode TSF 強制）"
+            "plan.used_eager_path=true は WarmupOutcome に反映されるべき"
         );
     }
 
     #[test]
     fn tsf_mode_nc_not_fired_gji_active_uses_vk_path() {
-        // TSF-native (WezTerm): nc_fired=false でも GJI が活動中（!gji_long_idle）なら VK path。
-        // KEYEVENTF_UNICODE は GJI コンポジションをバイパスして候補ウィンドウが出ないため。
-        let io = FakeProbeIo {
-            tsf_mode: true,
-            gji_long_idle: false, // GJI 活動中（warmup に応答済み）
-            ..Default::default()
-        };
+        // decide_transmit_plan: nc_fired=false + is_tsf_mode=true → used_eager_path=false (VK path)。
+        // KEYEVENTF_UNICODE は GJI コンポジションをバイパスして候補ウィンドウが出ないため TSF mode では使わない。
+        // prepend_f2_warmup + nc_fired=false + !is_tsf_mode → should_prepend_f2=false。
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: true, // eager warmup あり
-            nc_fired: false,       // WezTerm は CASCADIA クラスではないため常に false
-            gji_resumed: false,
+            plan: TransmitPlan {
+                // nc_fired=false + is_tsf_mode=true + !gji_long_idle → should_prepend_f2=false
+                should_prepend_f2: false,
+                used_eager_path: false, // is_tsf_mode=true → VK path
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "i".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -871,28 +818,27 @@ mod tests {
         assert!(io.transmit_tsf_called.get());
         assert!(
             !io.last_used_eager_path.get(),
-            "TSF mode + nc_fired=false + GJI 活動中 → VK path（used_eager_path=false）で GJI 候補を表示"
+            "plan.used_eager_path=false は WarmupOutcome に反映されるべき"
         );
     }
 
     #[test]
     fn tsf_mode_nc_not_fired_gji_long_idle_uses_vk_path() {
-        // TSF-native (WezTerm): GJI が長期静止でも VK path を使う。
-        // unicode (KEYEVENTF_UNICODE) 直後に VK が来ると "nお" race が起きるため。
-        // GJI 未応答でリテラルになった場合は LiteralDetect + BS 再送で回収する。
-        let io = FakeProbeIo {
-            tsf_mode: true,
-            gji_long_idle: true, // GJI 長期静止
-            // gji_healthy: false (default) → LiteralDetect 無効 → done=true
-            ..Default::default()
-        };
+        // decide_transmit_plan: nc_fired=false + is_tsf_mode=true → used_eager_path=false (VK path)。
+        // gji_long_idle=true でも TSF mode では KEYEVENTF_UNICODE による "nお" race を避けるため VK path。
+        // gji_active=false (default) → needs_literal=false → done=true。
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: true,
-            nc_fired: false,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                // nc_fired=false + is_tsf_mode=true + gji_long_idle=true → should_prepend_f2=true
+                should_prepend_f2: true,
+                used_eager_path: false, // is_tsf_mode=true → VK path
+                needs_literal: false,   // gji_active=false → false
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
+            },
+            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "i".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -902,27 +848,26 @@ mod tests {
         assert!(io.transmit_tsf_called.get());
         assert!(
             !io.last_used_eager_path.get(),
-            "TSF mode + nc_fired=false + GJI 長期静止 → VK path（used_eager_path=false）"
+            "plan.used_eager_path=false (VK path) は WarmupOutcome に反映されるべき"
         );
     }
 
     #[test]
     fn tsf_mode_nc_not_fired_gji_long_idle_gji_healthy_enables_literal_detect() {
-        // TSF-native (WezTerm): GJI 長期静止でも GJI モニター健全なら LiteralDetect を有効化する。
-        // VK path で送りリテラル化した場合に BS 再送で回収できるようにするため。
-        let io = FakeProbeIo {
-            tsf_mode: true,
-            gji_long_idle: true,
-            gji_healthy: true, // GJI モニター健全 → LiteralDetect 有効
-            ..Default::default()
-        };
+        // decide_transmit_plan: nc_fired=false + is_tsf_mode=true + gji_active=true + gji_long_idle=true
+        // → should_prepend_f2=true, used_eager_path=false (VK), needs_literal=true (TSF mode override)。
+        // VK path でリテラル化した場合に BS 再送で回収できるよう LiteralDetect を有効化する。
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: true,
-            nc_fired: false,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: true,
+                used_eager_path: false,  // is_tsf_mode → VK path
+                needs_literal: true,     // should_prepend_f2 && gji_active && (!gji_long_idle || is_tsf_mode) && !gji_resumed
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
+            },
+            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ko".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -930,36 +875,35 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             !done,
-            "TSF mode + gji_long_idle + gji_healthy → LiteralDetect phase: Done を即返さないべき"
+            "plan.needs_literal=true → LiteralDetect phase: Done を即返さないべき"
         );
         assert!(io.transmit_tsf_called.get());
         assert!(io.mark_warm_called.get());
         assert!(
             !io.last_used_eager_path.get(),
-            "TSF mode + gji_long_idle → VK path（used_eager_path=false）"
+            "plan.used_eager_path=false (VK path) は WarmupOutcome に反映されるべき"
         );
         assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
     #[test]
     fn tsf_mode_cold_start_nc_not_fired_not_long_idle_skips_f2_and_literal_detect() {
-        // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
-        // SendFreshF2 action が ~300ms 前に fresh F2 を送信済み → TSF context 初期化済み。
-        // バッチに再び F2 を含めると TSF reinit race で S がリテラル化する（例: "さいごの"→"sあいごの"）。
-        // 修正: effective_prepend_f2=false でバッチから F2 を除外 → race 解消 → LiteralDetect 不要。
-        let io = FakeProbeIo {
-            tsf_mode: true,
-            gji_healthy: true,
-            gji_long_idle: false,
-            ..Default::default()
-        };
+        // nc_fired=false + is_tsf_mode=true + !gji_long_idle:
+        // decide_transmit_plan: should_prepend_f2 = prepend_f2_warmup && (nc_fired || !is_tsf_mode || gji_long_idle)
+        //   = true && (false || false || false) = false → F2 をバッチに含めない。
+        // SendFreshF2 が ~300ms 前に fresh F2 を送信済み → 再び含めると TSF reinit race (Bug 1)。
+        // should_prepend_f2=false → needs_literal=false → done=true。
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true, // cold start からの送信
-            used_eager_path: false,
-            nc_fired: false,
-            gji_resumed: false,
+            plan: TransmitPlan {
+                should_prepend_f2: false, // nc_fired=false + is_tsf_mode + !gji_long_idle → false
+                used_eager_path: false,
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ko".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -967,13 +911,13 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             done,
-            "TSF mode + nc_fired=false + !gji_long_idle: F2 バッチ除外 → LiteralDetect 不要 → Done を即返す"
+            "plan.should_prepend_f2=false + plan.needs_literal=false → Done を即返す"
         );
         assert!(io.transmit_tsf_called.get());
         assert!(io.mark_warm_called.get());
         assert!(
             !io.last_used_prepend_f2.get(),
-            "effective_prepend_f2=false: バッチ送信に F2 を含めないべき"
+            "plan.should_prepend_f2=false は WarmupOutcome.prepend_f2_warmup に反映されるべき"
         );
     }
 
@@ -986,19 +930,17 @@ mod tests {
         // 実機ログ: WezTerm long_idle(120s) + NativeF2Consumed → cold=72 で 'と' が正常 compose されたが
         // SuspectedLiteral 誤判定 → BS×2 で 'と' 削除 → 後続打鍵 'つ' の composition context 破壊
         // → IME-OFF Engine-ON 状態になった（2026-06-20 報告）。
-        let io = FakeProbeIo {
-            tsf_mode: true,
-            gji_long_idle: true,
-            gji_healthy: true,
-            ..Default::default()
-        };
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: false,
-            nc_fired: true,
-            gji_resumed: true, // F2×2 に GJI が I/O 応答 → composition は成功するはず
+            plan: TransmitPlan {
+                should_prepend_f2: true,
+                used_eager_path: false, // gji_resumed=true → false
+                needs_literal: false,   // !gji_resumed=false → false
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: true },
             romaji: "to".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -1006,7 +948,7 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             done,
-            "gji_resumed=true: LiteralDetect は不要 → Done を即返すべき（false positive BS 防止）"
+            "plan.needs_literal=false → Done を即返す（false positive BS 防止）"
         );
         assert!(io.transmit_tsf_called.get());
         assert!(io.mark_warm_called.get());
@@ -1016,19 +958,17 @@ mod tests {
     fn gji_not_resumed_long_idle_tsf_mode_keeps_literal_detect() {
         // gji_resumed=false + gji_long_idle + tsf_mode: GJI 応答未確認 → LiteralDetect 有効。
         // VK がリテラル化した場合の回収パスが必要。
-        let io = FakeProbeIo {
-            tsf_mode: true,
-            gji_long_idle: true,
-            gji_healthy: true,
-            ..Default::default()
-        };
+        let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
-            prepend_f2_warmup: true,
-            used_eager_path: false,
-            nc_fired: false,
-            gji_resumed: false, // GJI 応答未確認
+            plan: TransmitPlan {
+                should_prepend_f2: true,
+                used_eager_path: false, // is_tsf_mode → VK path
+                needs_literal: true,    // gji_resumed=false → LiteralDetect 有効
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
+            },
+            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "to".to_string(),
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
@@ -1036,7 +976,7 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             !done,
-            "gji_resumed=false: LiteralDetect フェーズへ移行 → Done を即返さないべき"
+            "plan.needs_literal=true → LiteralDetect フェーズへ移行"
         );
         assert!(io.transmit_tsf_called.get());
         assert_eq!(machine.phase_label(), "LiteralDetect");

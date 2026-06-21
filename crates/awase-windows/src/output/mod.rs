@@ -554,7 +554,16 @@ impl Output {
             machine.cold_seq_hint(),
             tick_t
         );
-        let actions = machine.tick();
+        let env = crate::tsf::probe_fsm::TsfEnvSnapshot {
+            is_tsf_mode: self.is_tsf_mode(),
+            gji_long_idle: self.gji_long_idle(),
+            gji_active: self.gji_monitor_healthy(),
+            gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
+            // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
+            //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。
+            foreground_comp_char: unsafe { crate::ime::get_foreground_comp_str_char() },
+        };
+        let actions = machine.tick(&env);
         let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
         if done {
             self.on_tsf_probe_ready();
