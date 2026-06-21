@@ -168,7 +168,7 @@ impl Output {
             let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
                 crate::tsf::gji_fsm::PendingInput::new(romaji),
             ));
-            *self.pending_gji_key_response.borrow_mut() = Some(resp);
+            self.pending_gji_key_responses.borrow_mut().push(resp);
         }
 
         let WarmthContext {
@@ -428,7 +428,7 @@ impl Output {
             let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
                 crate::tsf::gji_fsm::PendingInput::new(romaji),
             ));
-            *self.pending_gji_key_response.borrow_mut() = Some(resp);
+            self.pending_gji_key_responses.borrow_mut().push(resp);
         }
 
         let WarmthContext {

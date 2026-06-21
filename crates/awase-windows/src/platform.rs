@@ -297,8 +297,9 @@ impl PlatformRuntime for WindowsPlatform {
     fn send_keys(&mut self, actions: &[KeyAction]) {
         self.output.send_keys(actions);
         // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
-        // SendInput / SendInputDirect は Phase 2b では no-op（dispatch_gji_response が無視）。
-        if let Some(resp) = self.output.take_pending_gji_key_response() {
+        // Vec で取り出すのは、1回の send_keys で複数文字を送る際に全 Response（StartProbe 含む）を
+        // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。
+        for resp in self.output.drain_pending_gji_key_responses() {
             self.dispatch_gji_response(resp);
         }
         // SymbolVkSent 等の CompositionReset フラグを drain する。

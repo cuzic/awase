@@ -98,10 +98,15 @@ pub struct Output {
     /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
     ///
     /// これらのメソッドは `&self` しか取れないためタイマー操作を直接行えない。
-    /// Platform の `send_keys` が `take_pending_gji_key_response` で取り出して
+    /// Platform の `send_keys` が `drain_pending_gji_key_responses` で全件取り出して
     /// `dispatch_gji_response` に渡し、LongIdle タイマーリセット等を実行する。
-    pub(crate) pending_gji_key_response: std::cell::RefCell<
-        Option<
+    ///
+    /// Vec にするのは、1回の send_keys で複数文字（例: NICOLA 同時打鍵で す+る）を
+    /// 送る際に各文字の KeyInput Response を全て保存するため。Option だと後の文字が
+    /// 前の文字の StartProbe Response を上書きしてしまい、gji_store_probe_id が
+    /// 呼ばれなくなる。
+    pub(crate) pending_gji_key_responses: std::cell::RefCell<
+        Vec<
             timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
         >,
     >,
@@ -162,7 +167,7 @@ impl Output {
             current_gji_probe_id: std::cell::Cell::new(None),
             pending_gji_warmup: std::cell::Cell::new(None),
             pending_gji_composition_reset: std::cell::Cell::new(false),
-            pending_gji_key_response: std::cell::RefCell::new(None),
+            pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -202,15 +207,16 @@ impl Output {
         self.current_gji_probe_id.get()
     }
 
-    /// `pending_gji_key_response` を取り出す（1回限り）。
+    /// `pending_gji_key_responses` を全件取り出す。
     ///
     /// Platform の `send_keys` が呼び出し、タイマー操作（LongIdle リセット等）を実行する。
-    pub(crate) fn take_pending_gji_key_response(
+    /// Vec で返すのは、1回の send_keys で複数文字を送る場合に全 Response を保存するため。
+    pub(crate) fn drain_pending_gji_key_responses(
         &self,
-    ) -> Option<
+    ) -> Vec<
         timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
     > {
-        self.pending_gji_key_response.borrow_mut().take()
+        std::mem::take(&mut *self.pending_gji_key_responses.borrow_mut())
     }
 
     /// `pending_gji_warmup` を取り出す（1回限り）。
