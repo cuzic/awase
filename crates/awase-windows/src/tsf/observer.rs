@@ -178,31 +178,37 @@ impl TsfObservations {
     }
 
     /// GJI 最終 I/O 変化時刻 (ms) を読み取る（Relaxed）。
+    #[must_use]
     pub fn gji_last_io_ms(&self) -> u64 {
         self.gji_last_io_ms.load(Ordering::Relaxed)
     }
 
     /// GJI プロセスの累積 ReadOperationCount を読み取る（Relaxed）。
+    #[must_use]
     pub fn gji_read_op_count(&self) -> u64 {
         self.gji_read_op_count.load(Ordering::Relaxed)
     }
 
     /// GJI プロセスの累積 ReadTransferCount（バイト数）を読み取る（Relaxed）。
+    #[must_use]
     pub fn gji_read_bytes(&self) -> u64 {
         self.gji_read_bytes.load(Ordering::Relaxed)
     }
 
     /// GJI モニターが利用可能かを読み取る（Acquire）。
+    #[must_use]
     pub fn gji_monitor_ok(&self) -> bool {
         self.gji_monitor_ok.load(Ordering::Acquire)
     }
 
     /// F21/F22 キーバインドが config1.db に登録済みかを読み取る（Acquire）。
+    #[must_use]
     pub fn gji_keybinds_ok(&self) -> bool {
         self.gji_keybinds_ok.load(Ordering::Acquire)
     }
 
     /// GJI candidate window が現在表示中かを読み取る（Relaxed）。
+    #[must_use]
     pub fn gji_candidate_visible(&self) -> bool {
         self.gji_candidate_visible.load(Ordering::Relaxed)
     }
@@ -527,9 +533,10 @@ pub fn start_monitor_thread() -> win32_worker::WorkerThread {
 fn check_keybinds_in_db() -> bool {
     crate::gji::default_config_path()
         .and_then(|p| std::fs::read(&p).ok())
-        .map_or(false, |data| matches!(crate::gji::patch(&data), Ok(None)))
+        .is_some_and(|data| matches!(crate::gji::patch(&data), Ok(None)))
 }
 
+#[allow(clippy::cognitive_complexity)]
 fn monitor_loop(token: &win32_worker::ShutdownToken) {
     log::info!("[gji-monitor] thread started");
 
@@ -750,6 +757,7 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
 }
 
 /// WinEvent 観察コールバック。NAMECHANGE / IME_SHOW / IME_HIDE / IME_CHANGE を処理する。
+#[allow(clippy::cognitive_complexity)]
 unsafe extern "system" fn observation_event_proc(
     _hook: HWINEVENTHOOK,
     event: u32,

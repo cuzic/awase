@@ -106,6 +106,7 @@ pub fn patch(data: &[u8]) -> PatchResult {
 }
 
 /// `%LOCALAPPDATA%\..\LocalLow\Google\Google Japanese Input\config1.db`
+#[must_use]
 pub fn default_config_path() -> Option<PathBuf> {
     let local = std::env::var("LOCALAPPDATA").ok()?;
     Some(
@@ -161,6 +162,7 @@ fn find_gji_pid() -> Option<u32> {
 ///
 /// `HKLM\SOFTWARE\Google\Google Japanese Input` の `InstalledPath` 値を読み、
 /// `GoogleIMEJaConverter.exe` を付加して返す。
+#[must_use]
 pub fn get_gji_exe_path() -> Option<PathBuf> {
     let subkey = crate::win32::to_wide("SOFTWARE\\Google\\Google Japanese Input");
     let value_name = crate::win32::to_wide("InstalledPath");

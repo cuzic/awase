@@ -12,7 +12,7 @@ use serde::Serialize;
 
 pub const DEFAULT_CAPACITY: usize = 2048;
 
-const TRIGGER_WINDOW: Duration = Duration::from_millis(3000);
+const TRIGGER_WINDOW: Duration = Duration::from_secs(3);
 
 // ── DumpError ─────────────────────────────────────────────────────────────────
 
@@ -44,6 +44,7 @@ pub struct KeyEventSummary {
 }
 
 impl KeyEventSummary {
+    #[must_use]
     pub fn from_raw(event: &awase::types::RawKeyEvent) -> Self {
         use awase::types::{KeyClassification, KeyEventType};
         Self {
@@ -74,6 +75,7 @@ pub enum DecisionKind {
 }
 
 impl DecisionKind {
+    #[must_use]
     pub fn from_decision(decision: &awase::engine::Decision) -> Self {
         use awase::engine::Decision;
         match decision {
@@ -141,7 +143,7 @@ impl std::fmt::Debug for UnifiedJournal {
             .field("len", &self.buffer.len())
             .field("capacity", &self.capacity)
             .field("next_seq", &self.next_seq)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -241,7 +243,7 @@ impl std::fmt::Debug for DumpTriggerTracker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DumpTriggerTracker")
             .field("step", &self.step)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -257,7 +259,7 @@ impl DumpTriggerTracker {
 
     /// テスト用: 外部から `quanta::Clock` を注入してトラッカーを作成する。
     #[must_use]
-    pub fn with_clock(clock: quanta::Clock) -> Self {
+    pub const fn with_clock(clock: quanta::Clock) -> Self {
         Self {
             clock,
             step: 0,
@@ -269,6 +271,9 @@ impl DumpTriggerTracker {
     ///
     /// `vk`: VkCode の raw 値, `alt`: Alt 修飾キー状態
     pub fn push(&mut self, vk: u16, alt: bool) -> bool {
+        const VK_CONVERT: u16 = 0x1C;
+        const VK_NONCONVERT: u16 = 0x1D;
+
         let now = self.clock.now();
 
         if let Some(last) = self.last_instant {
@@ -276,9 +281,6 @@ impl DumpTriggerTracker {
                 self.step = 0;
             }
         }
-
-        const VK_CONVERT: u16 = 0x1C;
-        const VK_NONCONVERT: u16 = 0x1D;
 
         if !alt {
             self.step = 0;
