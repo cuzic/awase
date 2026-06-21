@@ -17,6 +17,7 @@ use awase::types::{RawKeyEvent, VkCode};
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
+use crate::runtime::PhysicalKeyDisposition;
 use crate::state::platform_state::ImeStateHub;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
@@ -93,11 +94,12 @@ impl DecisionExecutor {
         ime: &ImeStateHub,
         decision: Decision,
         raw_event: &RawKeyEvent,
+        physical: PhysicalKeyDisposition,
     ) -> BatchResult {
         self.applied_snapshot = ime.model().applied;
         match self.hook_mode {
-            HookMode::Filter => self.execute_filter(platform, decision),
-            HookMode::Relay => self.execute_relay(platform, decision, raw_event),
+            HookMode::Filter => self.execute_filter(platform, decision, physical),
+            HookMode::Relay => self.execute_relay(platform, decision, raw_event, physical),
         }
     }
 
@@ -255,17 +257,18 @@ impl DecisionExecutor {
         &mut self,
         platform: &mut WindowsPlatform,
         decision: Decision,
+        physical: PhysicalKeyDisposition,
     ) -> BatchResult {
-        let (consumed, effects) = match decision {
+        let (callback, effects) = match decision {
             Decision::PassThrough => {
                 return BatchResult {
-                    callback: CallbackResult::PassThrough,
+                    callback: physical.to_callback(false),
                     has_pending: self.has_pending(),
                     sync_outcomes: Vec::new(),
                 }
             }
-            Decision::PassThroughWith { effects } => (false, effects),
-            Decision::Consume { effects } => (true, effects),
+            Decision::PassThroughWith { effects } => (physical.to_callback(false), effects),
+            Decision::Consume { effects } => (physical.to_callback(true), effects),
         };
 
         let mut sync_outcomes = Vec::new();
@@ -281,11 +284,7 @@ impl DecisionExecutor {
         }
 
         BatchResult {
-            callback: if consumed {
-                CallbackResult::Consumed
-            } else {
-                CallbackResult::PassThrough
-            },
+            callback,
             has_pending: self.has_pending(),
             sync_outcomes,
         }
@@ -306,9 +305,19 @@ impl DecisionExecutor {
         platform: &mut WindowsPlatform,
         decision: Decision,
         raw_event: &RawKeyEvent,
+        physical: PhysicalKeyDisposition,
     ) -> BatchResult {
         match decision {
             Decision::PassThrough => {
+                // physical=Suppress（KANJI 物理キー抑止）の場合は OS に届けず Consume する。
+                // handle_passthrough の reinject/warmup 後処理も走らせない。
+                if physical == PhysicalKeyDisposition::Suppress {
+                    return BatchResult {
+                        has_pending: self.has_pending(),
+                        callback: CallbackResult::Consumed,
+                        sync_outcomes: Vec::new(),
+                    };
+                }
                 let callback = self.handle_passthrough(platform, raw_event);
                 BatchResult {
                     has_pending: self.has_pending(),
@@ -317,17 +326,22 @@ impl DecisionExecutor {
                 }
             }
             Decision::PassThroughWith { mut effects } => {
-                // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー
+                // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー。
+                // physical=Suppress（KANJI 物理キー抑止）の場合は reinject を積まない。
+                let reinject = physical == PhysicalKeyDisposition::Allow;
                 log::debug!(
-                    "[relay-flush] PassThroughWith: queue {} effect(s) + reinject(vk={:#04x} {})",
+                    "[relay-flush] PassThroughWith: queue {} effect(s){} (vk={:#04x} {})",
                     effects.len(),
+                    if reinject { " + reinject" } else { " (no reinject, suppressed)" },
                     raw_event.vk_code,
                     match raw_event.event_type {
                         awase::types::KeyEventType::KeyDown => "down",
                         awase::types::KeyEventType::KeyUp => "up",
                     },
                 );
-                effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                if reinject {
+                    effects.push(Effect::Input(InputEffect::ReinjectKey(*raw_event)));
+                }
                 self.queue.extend(effects);
                 BatchResult {
                     callback: CallbackResult::Consumed,

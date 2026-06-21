@@ -440,66 +440,38 @@ impl Runtime {
         event: &RawKeyEvent,
         shadow_toggled: bool,
     ) -> CallbackResult {
-        // 物理 IME キー（VK_KANJI / VK_F3 / VK_F4 等）の Consume 条件:
-        // - Imm32Unavailable (Chrome/Edge): KeyDown のみ。VK_KANJI を SendInput 済みなので
-        //   物理キーをそのまま届けると二重制御になる。
-        // - ImmCross (LINE/Qt): KeyDown も KeyUp も Consume。set_ime_open_cross_process で
-        //   IME 制御済みのため、物理キーや IMM 注入の KeyUp をアプリに渡すと内部 IME ハンドラが
-        //   反応して spurious VK_F3/F4 を生成し shadow_toggle が反転する
-        //   (IME ON Engine-OFF バグの根本原因)。Ctrl+無変換 と同じ「awase が完全所有」モデル。
+        // 物理 IME キー（VK_KANJI / VK_F3 / VK_F4 等）を OS に届けるかは Decision（意味論）
+        // とは独立した「配送機構」の判断であり、Decision を書き換えずに
+        // PhysicalKeyDisposition で表現する。
+        // - Imm32Unavailable (Chrome/Edge): KeyDown は shadow_toggle 発火時のみ、KeyUp は常に
+        //   Suppress。VK_KANJI を SendInput 済みなので物理キーを届けると二重制御になり、
+        //   0xF3 KeyUp は OS が 0xF4 KeyDown を生成して shadow_toggle が反転する。
+        // - ImmCross (LINE/Qt): Down/Up 共に Suppress。set_ime_open_cross_process で IME 制御済み。
+        //   物理キー / IMM 注入の KeyUp をアプリに渡すと内部 IME ハンドラが spurious VK_F3/F4 を
+        //   生成し shadow_toggle が反転する（IME ON Engine-OFF バグの根本原因）。
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
         let profile = self.platform.current_app_profile();
-        let is_kanji_event = event.ime_relevance.shadow_action.is_some();
-        let suppress_physical = if profile.can_use_imm32_cross_process() {
-            // ImmCross: KANJI 関連 VK は Down/Up 共に Consume（spurious 連鎖を構造的に遮断）
-            is_kanji_event
-        } else {
-            // Imm32Unavailable: KeyDown は shadow_toggle 発火時のみ Consume。
-            // KeyUp は KANJI 関連なら常に Consume。
-            // 理由: 0xF3 KeyUp を OS に通すと OS IME が 0xF4 KeyDown を生成し、
-            // shadow_toggle が OFF→ON に反転する（Ctrl+無変換後の IME ON 戻り現象）。
-            is_kanji_event
-                && !profile.should_pass_physical_key()
-                && (shadow_toggled || matches!(event.event_type, awase::types::KeyEventType::KeyUp))
-        };
-        let decision = if suppress_physical {
+        let physical =
+            crate::runtime::PhysicalKeyDisposition::plan(event, profile, shadow_toggled);
+        if physical == crate::runtime::PhysicalKeyDisposition::Suppress {
             let reason = if profile.can_use_imm32_cross_process() {
                 "imm-cross"
             } else {
                 "imm32-off"
             };
-            match decision {
-                awase::engine::Decision::PassThrough => {
-                    log::debug!(
-                        "[{reason}] KANJI key consume vk={:#04x} {:?} (was PassThrough)",
-                        event.vk_code,
-                        event.event_type
-                    );
-                    awase::engine::Decision::Consume {
-                        effects: vec![].into(),
-                    }
-                }
-                awase::engine::Decision::PassThroughWith { effects } => {
-                    log::debug!(
-                        "[{reason}] KANJI key consume vk={:#04x} {:?} (was PassThroughWith)",
-                        event.vk_code,
-                        event.event_type
-                    );
-                    awase::engine::Decision::Consume { effects }
-                }
-                awase::engine::Decision::Consume { effects } => {
-                    awase::engine::Decision::Consume { effects }
-                }
-            }
-        } else {
-            decision
-        };
+            log::debug!(
+                "[{reason}] KANJI key suppress vk={:#04x} {:?} (physical disposition)",
+                event.vk_code,
+                event.event_type
+            );
+        }
 
         let result = self.executor.execute_from_hook(
             &mut self.platform,
             &self.platform_state.ime,
             decision,
             event,
+            physical,
         );
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。

@@ -3,6 +3,9 @@ mod focus_tracking;
 mod ime_refresh;
 mod key_pipeline;
 pub(crate) mod message_handlers;
+mod transport;
+
+pub(crate) use transport::PhysicalKeyDisposition;
 
 use awase::config::ValidatedConfig;
 use awase::engine::{Engine, EngineCommand, InputContext, SpecialKeyCombos};
