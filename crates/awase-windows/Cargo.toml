@@ -81,3 +81,5 @@ too_many_lines = "allow"
 fn_params_excessive_bools = "allow"
 # I/O 統計の u64 → f64 変換は許容精度
 cast_precision_loss = "allow"
+# 1.96 で新たに const 化可能と判断されたが、依存先が const でないため個別対応より blanket allow が安全
+missing_const_for_fn = "allow"

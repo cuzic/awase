@@ -350,7 +350,7 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 });
             }
             WM_DUMP_JOURNAL => {
-                let _ = with_app(|app| message_handlers::handle_wm_dump_journal(app));
+                let _ = with_app(message_handlers::handle_wm_dump_journal);
             }
             WM_KEY_FROM_HOOK => {
                 // フックスレッドから転送された物理キーイベント

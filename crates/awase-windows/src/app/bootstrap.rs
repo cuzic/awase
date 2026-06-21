@@ -535,6 +535,7 @@ impl LayoutEntry {
 ///
 /// `app::run()` から呼ばれる唯一のエントリポイント。
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::items_after_statements)]
 pub(super) fn run_all() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_console = args.iter().any(|a| a == "--debug");
@@ -679,7 +680,7 @@ pub(super) fn run_all() -> Result<()> {
         .filter(|s| !s.is_empty())
         .and_then(|s: &str| {
             VkCode::from_name(s).or_else(|| {
-                diag.warn(&format!("Unknown key name for engine_off_solo_triple: {s}"));
+                diag.warn(format!("Unknown key name for engine_off_solo_triple: {s}"));
                 None
             })
         })
