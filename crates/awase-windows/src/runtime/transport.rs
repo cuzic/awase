@@ -101,16 +101,27 @@ impl PhysicalKeyDisposition {
         }
     }
 
-    /// KANJI 関連キーの物理配送判断を計算する純粋関数。
+    /// 物理キーを OS に届けるかどうかの純粋関数。
     ///
+    /// **F2 (VK_DBE_HIRAGANA)**:
+    /// - TSF mode (WezTerm): Down/Up 共に Suppress（物理 F2 + SendInput(F2) の double-F2 防止）
+    /// - 非 TSF mode: Allow
+    ///
+    /// **KANJI 関連キー**:
     /// - ImmCross プロファイル: Down/Up 共に Suppress（spurious 連鎖を構造的に遮断）
     /// - Imm32Unavailable: shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress
-    /// - TsfNative: 物理キーを通す（従来通り）
+    /// - TsfNative: Allow（物理キーを通す）
     pub(crate) fn plan(
         event: &RawKeyEvent,
         profile: AppImeProfile,
         shadow_toggled: bool,
+        is_tsf_mode: bool,
     ) -> Self {
+        // F2 (VK_DBE_HIRAGANA): TSF mode は Down/Up 共に Suppress
+        if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
+            return if is_tsf_mode { Self::Suppress } else { Self::Allow };
+        }
+
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
         if !is_kanji_event {
             return Self::Allow;

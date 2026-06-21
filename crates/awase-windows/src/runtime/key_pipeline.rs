@@ -371,19 +371,31 @@ impl Runtime {
         //   生成し shadow_toggle が反転する（IME ON Engine-OFF バグの根本原因）。
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
         let profile = self.platform.current_app_profile();
+        let is_tsf_mode = self.platform.is_tsf_mode();
         let physical =
-            crate::runtime::PhysicalKeyDisposition::plan(event, profile, shadow_toggled);
+            crate::runtime::PhysicalKeyDisposition::plan(event, profile, shadow_toggled, is_tsf_mode);
         if physical == crate::runtime::PhysicalKeyDisposition::Suppress {
-            let reason = if profile.can_use_imm32_cross_process() {
+            let reason = if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
+                "tsf-f2"
+            } else if profile.can_use_imm32_cross_process() {
                 "imm-cross"
             } else {
                 "imm32-off"
             };
             log::debug!(
-                "[{reason}] KANJI key suppress vk={:#04x} {:?} (physical disposition)",
+                "[{reason}] key suppress vk={:#04x} {:?} (physical disposition)",
                 event.vk_code,
                 event.event_type
             );
+        }
+
+        // F2 (VK_DBE_HIRAGANA) KeyDown: CompositionFsm に副作用を委譲。
+        // Suppress（TSF mode）・Allow（非 TSF mode）いずれの場合も mark_cold + eager warmup を実行。
+        if event.vk_code == crate::vk::VK_DBE_HIRAGANA
+            && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+        {
+            let applied_open = self.platform_state.ime.model().applied.applied_open();
+            self.platform.composition_native_f2_down(applied_open);
         }
 
         let result = self.executor.execute_from_hook(

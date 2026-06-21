@@ -431,13 +431,7 @@ impl DecisionExecutor {
             return CallbackResult::Consumed;
         }
 
-        // 5. F2 KeyDown: CompositionFsm に委譲。TSF mode は Consume（double-F2 防止）、
-        //    非 TSF は mark_cold のみで PassThrough に進む。
-        if let Some(result) = self.try_native_f2_consume(platform, raw_event) {
-            return result;
-        }
-
-        // 6. Space/Enter/Esc KeyDown: warm+TSF または cold の composition 確定処理。
+        // 5. Space/Enter/Esc KeyDown: warm+TSF または cold の composition 確定処理。
         self.handle_confirm_key_passthrough(platform, raw_event);
 
         // Effects なし → 直接 OS に通す
@@ -481,38 +475,6 @@ impl DecisionExecutor {
         if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
             platform.composition_ctrl_up(self.applied_snapshot.applied_open());
         }
-    }
-
-    /// 物理 F2 (vk=0xF2) を `CompositionFsm` に委譲し、TSF mode なら Consume する（double-F2 防止）。
-    ///
-    /// 物理 F2 が WezTerm に届いた後に warmup F2 を含むバッチを送ると、
-    /// WezTerm の TSF ハンドラが F2 を 2 回受け取り "この→koの" になる
-    /// （WezTerm 内部で F2 がトグル動作をしている模様）。
-    /// 物理 F2 を Consume し、次の NICOLA バッチの warmup F2 で一本化することで解消する。
-    /// 非 TSF mode では Consume せず mark_cold(F2NonTsf) のみ（FSM dispatcher 実行）。
-    fn try_native_f2_consume(
-        &self,
-        platform: &mut WindowsPlatform,
-        raw_event: &RawKeyEvent,
-    ) -> Option<CallbackResult> {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if raw_event.vk_code != crate::vk::VK_DBE_HIRAGANA {
-            return None;
-        }
-        if is_key_down {
-            // CompositionFsm が NativeF2Down を処理し、TSF mode なら ConsumeF2 を返す。
-            // mark_cold(NativeF2Consumed) + eager warmup も FSM dispatcher が実行する。
-            let consume = platform.composition_native_f2_down(self.applied_snapshot.applied_open());
-            return consume.then_some(CallbackResult::Consumed);
-        }
-        // KeyUp: 対応する KeyDown が consume された場合のみ KeyUp も consume する。
-        if platform.is_tsf_mode() {
-            log::debug!(
-                "[composition] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
-            );
-            return Some(CallbackResult::Consumed);
-        }
-        None
     }
 
     /// Space/Enter/Esc KeyDown の直接 passthrough: warm+TSF または cold の composition 確定処理。
