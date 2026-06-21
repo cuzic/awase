@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2026-06-20
+
+### バグ修正
+
+- **Chrome → WezTerm フォーカス切替後の IME-OFF Engine-ON 状態** を修正 ([12dd094](https://github.com/cuzic/awase/commit/12dd094), [56f5e49](https://github.com/cuzic/awase/commit/56f5e49))
+  - TsfNative 入場時に GJI F21 を `shadow_on` を無視して強制送信するよう変更
+  - TsfNative cache miss 時の belief を carry-over (true) から安全デフォルト OFF に変更
+  - フォーカス cache TTL を 5 秒 → 1 時間に延長（IME ON でウィンドウを離れて戻ると cache miss 扱いになっていた問題を解消）
+  - 短期フォーカス (< 100ms) の cache 保存をスキップ（通知ポップアップ等が正常な状態を上書きするのを防止）
+- **WezTerm gji_resumed 後の LiteralDetect false positive** を修正（「あ」が「a」になるケース） ([da8dad1](https://github.com/cuzic/awase/commit/da8dad1))
+- **WezTerm gji_resumed 後の composition 早期確認** を実装（GJI I/O 変化を検知して待ち時間を短縮） ([aa8a79d](https://github.com/cuzic/awase/commit/aa8a79d))
+- **comp-probe: RUNTIME 再入借用バグ** を修正（`shadow_on` / `jp` が常時 false になっていた） ([2225578](https://github.com/cuzic/awase/commit/2225578))
+- **nicola-fsm: ソロ連打** でシフトカウンターが残存するバグを修正 ([a53344b](https://github.com/cuzic/awase/commit/a53344b))
+
+### 内部改善
+
+- GJI プロセスの I/O 統計 (ReadOperationCount / ReadTransferCount) を監視ログに追加 ([93236a8](https://github.com/cuzic/awase/commit/93236a8))
+
+---
+
 ## [1.1.0] - 2026-06-20
 
 ### 重要な変更
@@ -74,6 +94,7 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
 
+[1.1.1]: https://github.com/cuzic/awase/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cuzic/awase/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/cuzic/awase/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
