@@ -204,7 +204,6 @@ impl Runtime {
             return;
         }
 
-        self.platform.on_focus_probe_started();
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.platform.eager_warmup_sent_ms();

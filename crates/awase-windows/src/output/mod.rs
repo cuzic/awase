@@ -259,14 +259,7 @@ impl Output {
         self.composition.mark_composition_cold(reason);
     }
 
-    /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
-    ///
-    /// フォーカス遷移直後の最初のキーで呼ぶ。
-    pub fn reset_warm_epoch(&self) {
-        self.composition.reset_warm_epoch();
-    }
-
-    /// IME composition context をウォーム状態にマークする。
+    /// IME composition context をウォーム状態にマークする（ログのみ。warm 追跡は GjiFsm が SSOT）。
     ///
     /// 直前の NICOLA 出力バッチで warmup F2 が正常に送信され、
     /// TSF composition context が初期化済みであると分かっている場合に呼ぶ。
@@ -274,23 +267,14 @@ impl Output {
         self.composition.mark_composition_warm();
     }
 
-    /// 現在の composition_warm フラグを返す。
-    ///
-    /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
+    /// 現在の composition_warm フラグを返す（GjiFsm が SSOT）。
     #[must_use]
     pub fn is_composition_warm(&self) -> bool {
         use crate::tsf::gji_fsm::GjiState;
-        let legacy = self.composition.is_composition_warm();
-        let fsm = matches!(
+        matches!(
             self.gji_fsm.borrow().state(),
             GjiState::OnWarm { .. } | GjiState::OnComposing { .. }
-        );
-        debug_assert_eq!(
-            legacy, fsm,
-            "[is_composition_warm] mismatch: legacy={legacy} fsm={fsm}"
-        );
-        // Phase 3: FSM が SSOT。legacy は debug_assert の相手として残す（次フェーズで撤去）。
-        fsm
+        )
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
@@ -818,45 +802,6 @@ mod tests {
     }
 
     #[test]
-    fn output_mark_warm_then_cold() {
-        let o = make_output();
-        o.mark_composition_warm();
-        assert!(
-            o.is_composition_warm(),
-            "should be warm after mark_composition_warm"
-        );
-        o.mark_composition_cold(ColdReason::FocusChange);
-        assert!(
-            !o.is_composition_warm(),
-            "should be cold after mark_composition_cold"
-        );
-    }
-
-    #[test]
-    fn output_focus_change_invalidates_warm() {
-        let o = make_output();
-        o.mark_composition_warm();
-        assert!(o.is_composition_warm());
-        o.on_focus_changed();
-        assert!(
-            !o.is_composition_warm(),
-            "focus change should invalidate warm state"
-        );
-    }
-
-    #[test]
-    fn output_rewarm_after_focus_change() {
-        let o = make_output();
-        o.mark_composition_warm();
-        o.on_focus_changed();
-        o.mark_composition_warm();
-        assert!(
-            o.is_composition_warm(),
-            "can warm again after focus change + re-warm"
-        );
-    }
-
-    #[test]
     fn output_consecutive_count_increments_on_raw_tsf_literal_recovery() {
         let o = make_output();
         assert_eq!(o.composition.consecutive_count(), 0);
@@ -877,20 +822,6 @@ mod tests {
             o.composition.consecutive_count(),
             0,
             "non-recovery cold should reset count"
-        );
-    }
-
-    #[test]
-    fn output_consecutive_count_resets_on_warm() {
-        let o = make_output();
-        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        assert_eq!(o.composition.consecutive_count(), 2);
-        o.mark_composition_warm();
-        assert_eq!(
-            o.composition.consecutive_count(),
-            0,
-            "warm should reset consecutive count"
         );
     }
 

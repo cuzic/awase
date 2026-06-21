@@ -164,12 +164,7 @@ impl TsfReadinessProbe {
 /// フォーカス epoch とウォーム epoch の組み合わせにより、
 /// フォーカス変更後の古いウォーム状態を自動無効化する。
 #[derive(Debug)]
-#[allow(clippy::struct_field_names)]
 pub struct WarmEpoch {
-    /// ウォーム状態の epoch（0 = cold）
-    composition_warm_epoch: std::cell::Cell<u32>,
-    /// フォーカスウィンドウの epoch（変更のたびにインクリメント）
-    focus_epoch: std::cell::Cell<u32>,
     /// 最後の `send_keys` 完了時刻（ms）
     last_send_ms: std::cell::Cell<u64>,
     /// Cold-start 発生回数カウンタ
@@ -182,49 +177,20 @@ impl WarmEpoch {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            composition_warm_epoch: std::cell::Cell::new(0),
-            focus_epoch: std::cell::Cell::new(1),
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(0),
             eager_warmup_sent_ms: std::cell::Cell::new(0),
         }
     }
 
-    /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
-    pub fn reset_warm_epoch(&self) {
-        self.composition_warm_epoch.set(0);
-        log::debug!("[composition] warm epoch suppressed (eager_warmup_sent_ms preserved)");
-    }
-
-    /// ウォーム状態にマークする。
-    pub fn mark_warm(&self) {
-        let epoch = self.focus_epoch.get();
-        self.composition_warm_epoch.set(epoch);
-    }
-
-    /// コールド状態にマークする（epoch と eager_warmup_sent_ms をリセット）。
+    /// コールド状態にマークする（eager_warmup_sent_ms をリセット）。
     pub fn mark_cold(&self) {
-        self.composition_warm_epoch.set(0);
         self.eager_warmup_sent_ms.set(0);
     }
 
-    /// 現在 warm かどうかを返す。
-    ///
-    /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
-    pub const fn is_warm(&self) -> bool {
-        let epoch = self.focus_epoch.get();
-        self.composition_warm_epoch.get() == epoch && epoch != 0
-    }
-
-    /// フォーカス変更時に epoch をインクリメントし、warm/eager 状態をリセットする。
-    ///
-    /// 戻り値: 新しい focus_epoch
-    pub fn on_focus_changed(&self) -> u32 {
-        let new_epoch = self.focus_epoch.get().wrapping_add(1).max(1);
-        self.focus_epoch.set(new_epoch);
-        self.composition_warm_epoch.set(0);
+    /// フォーカス変更時に eager_warmup_sent_ms をリセットする。
+    pub fn on_focus_changed(&self) {
         self.eager_warmup_sent_ms.set(0);
-        new_epoch
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
@@ -388,14 +354,6 @@ impl CompositionState {
         }
     }
 
-    /// `composition_warm_epoch` のみ 0 にリセットする（`eager_warmup_sent_ms` は保持）。
-    ///
-    /// フォーカス遷移直後の最初のキーで呼ぶ。eager warmup タイムスタンプを消さないことで
-    /// non-eager 1500ms パスへの意図しない劣化を防ぐ。
-    pub fn reset_warm_epoch(&self) {
-        self.warm_epoch.reset_warm_epoch();
-    }
-
     /// IME composition context をコールド状態にマークする。
     pub fn mark_composition_cold(&self, reason: crate::output::ColdReason) {
         let idle_ms = self.ms_since_last_send();
@@ -416,34 +374,21 @@ impl CompositionState {
         self.cold_ctx.record_cold(reason, idle_ms);
     }
 
-    /// IME composition context をウォーム状態にマークする。
+    /// IME composition context をウォーム状態にマークする（ログのみ。warm 追跡は GjiFsm が SSOT）。
     pub fn mark_composition_warm(&self) {
-        let epoch = self.warm_epoch.focus_epoch.get();
-        log::debug!("[composition] marked warm (epoch={epoch}) → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
-        self.warm_epoch.mark_warm();
-        // NOTE: consecutive_count はリセットしない。
-        // warm になっても連続 RawTsfLiteralRecovery のカウントを保持することで
-        // ChromeProbe → warm → 再検出 の無限ループを防ぐ。
-        // カウントのリセットはフォーカス変更時にのみ行われる。
-    }
-
-    /// 現在の composition_warm フラグを返す。
-    ///
-    /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
-    pub const fn is_composition_warm(&self) -> bool {
-        self.warm_epoch.is_warm()
+        log::debug!("[composition] marked warm → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
     pub fn on_focus_changed(&self) {
         let idle_ms = self.ms_since_last_send();
-        let new_epoch = self.warm_epoch.on_focus_changed();
+        self.warm_epoch.on_focus_changed();
         // FocusChange で last_cold_reason を更新し、F2NonTsf などの前回理由が
         // フォーカス遷移後も残り続けて誤判定される不具合を防ぐ。
         self.cold_ctx
             .record_cold(crate::output::ColdReason::FocusChange, idle_ms);
         self.cold_ctx.reset_consecutive_count();
-        log::debug!("[composition] focus changed → epoch={new_epoch}, marked cold");
+        log::debug!("[composition] focus changed → marked cold");
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。

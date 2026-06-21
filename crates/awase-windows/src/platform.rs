@@ -118,19 +118,6 @@ impl WindowsPlatform {
         self.output.try_hold_key(event)
     }
 
-    /// `composition_warm_epoch` のみリセットする（フォーカス遷移直後の最初キー用）。
-    pub(crate) fn reset_warm_epoch(&self) {
-        self.output.reset_warm_epoch();
-    }
-
-    /// フォーカス切替後の最初キー到達で async probe を開始するときに呼ぶ。
-    ///
-    /// async probe が完了する前にキーが来た場合、前ウィンドウの stale な warm 状態を
-    /// 返さないよう warm epoch を抑制する。
-    pub(crate) fn on_focus_probe_started(&self) {
-        self.reset_warm_epoch();
-    }
-
     /// `suppress_engine_state_key = true` のスコープを RAII で管理する。
     ///
     /// 返されたガードが Drop されると `false` に戻る。パニック時も保証。
