@@ -361,11 +361,18 @@ impl CompositionState {
             let n = self.cold_ctx.increment_consecutive_count();
             log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         } else {
-            // consecutive_count はフォーカス変更時のみリセット。
+            // consecutive_count はフォーカス変更と SetOpenTrue（engine activation）でリセット。
+            // SetOpenTrue = engine が新たに IME ON を決定した瞬間。前回セッションのリテラル履歴は
+            // 新しい IME ON セッションには無関係なため、リセットして recovery の機会を再付与する。
+            // これにより「0xF2→literal→BS再送(count=1)→0xF0→0xF2→literal→give up→stuck」を防ぐ。
             // PassthroughConfirmKey / ReinjectConfirmKey / SymbolVkSent 等の通常タイピング操作では
             // リセットしないことで「GJI 非対応ウィンドウでスペースを押すたびに BS が発動する」
             // false positive ループを防ぐ。
-            if reason == crate::output::ColdReason::FocusChange {
+            if matches!(
+                reason,
+                crate::output::ColdReason::FocusChange
+                    | crate::output::ColdReason::SetOpenTrue
+            ) {
                 self.cold_ctx.reset_consecutive_count();
             }
             log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
