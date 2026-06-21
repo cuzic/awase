@@ -71,3 +71,13 @@ multiple_crate_versions = "allow"
 doc_markdown = "allow"
 # `unreachable_pub` (Rust lint) と矛盾するため allow: pub(crate) モジュール内の pub(crate) アイテムは両方が矛盾して fire する
 redundant_pub_crate = "allow"
+# Win32 内部 API 関数の全エラーパスを文書化するのは不要
+missing_errors_doc = "allow"
+# Windows 状態管理構造体は bool フラグが多数必要
+struct_excessive_bools = "allow"
+# 行数制限はコンパイラ向けロジックで越えることがある
+too_many_lines = "allow"
+# 内部コンストラクタの bool パラメータ
+fn_params_excessive_bools = "allow"
+# I/O 統計の u64 → f64 変換は許容精度
+cast_precision_loss = "allow"
