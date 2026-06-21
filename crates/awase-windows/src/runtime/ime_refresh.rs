@@ -341,6 +341,8 @@ impl Runtime {
         let ime_on_now = self.platform_state.ime.effective_open();
         self.platform_state.ime.mirror_applied_open(ime_on_now);
         self.platform.mark_composition_cold_focus_change();
+        let mode = self.platform.output.injection_mode;
+        self.platform.gji_on_focus_change(mode);
 
         let new_profile_is_tsf_native = matches!(
             self.platform.current_app_profile(),

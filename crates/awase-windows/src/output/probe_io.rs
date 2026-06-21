@@ -59,6 +59,14 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
+    /// `ProbeAction::Transmit` 完了時に `WarmupResult` を一時バッファに保存する。
+    ///
+    /// `Output::step_probe` が probe 完了を確認した後に取り出し、`GjiFsm::WarmupComplete` に変換する。
+    fn store_gji_warmup_result(&self, result: crate::tsf::gji_fsm::WarmupResult);
+    /// 現在実行中の GJI probe_id を返す（GjiFsm へ通知済みの ID）。
+    ///
+    /// `None` の場合は GjiFsm 未接続なので `store_gji_warmup_result` 呼び出しをスキップできる。
+    fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId>;
 }
 
 impl ProbeIo for Output {
@@ -136,6 +144,14 @@ impl ProbeIo for Output {
 
     fn mark_cold_raw_tsf(&self) {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+    }
+
+    fn store_gji_warmup_result(&self, result: crate::tsf::gji_fsm::WarmupResult) {
+        self.pending_gji_warmup.set(Some(result));
+    }
+
+    fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
+        self.current_gji_probe_id.get()
     }
 }
 
@@ -300,6 +316,26 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Tsf);
                         io.mark_warm();
+                        // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
+                        // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
+                        if io.current_gji_probe_id().is_some() {
+                            use crate::tsf::gji_fsm::{WarmupPath, WarmupResult};
+                            let path = if gji_resumed {
+                                WarmupPath::GjiResumed
+                            } else if nc_fired {
+                                WarmupPath::NameChangeConfirmed
+                            } else if outcome.used_eager_path {
+                                WarmupPath::EagerLiteralDetected
+                            } else {
+                                WarmupPath::TimedOutFallback
+                            };
+                            io.store_gji_warmup_result(WarmupResult {
+                                path,
+                                prepend_f2_warmup,
+                                nc_fired,
+                                gji_resumed,
+                            });
+                        }
                         if machine.apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms, expected_kana) {
                             return true;
                         }
@@ -314,6 +350,25 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Injected);
                         io.mark_warm();
+                        // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
+                        if io.current_gji_probe_id().is_some() {
+                            use crate::tsf::gji_fsm::{WarmupPath, WarmupResult};
+                            let path = if gji_resumed {
+                                WarmupPath::GjiResumed
+                            } else if nc_fired {
+                                WarmupPath::NameChangeConfirmed
+                            } else if used_eager_path {
+                                WarmupPath::EagerLiteralDetected
+                            } else {
+                                WarmupPath::TimedOutFallback
+                            };
+                            io.store_gji_warmup_result(WarmupResult {
+                                path,
+                                prepend_f2_warmup,
+                                nc_fired,
+                                gji_resumed,
+                            });
+                        }
                         if machine.apply_transmit_done(romaji, ze_bs_count, detector, crate::tuning::RAW_TSF_LITERAL_DETECT_MS, None) {
                             return true;
                         }
@@ -463,6 +518,12 @@ mod tests {
         }
         fn mark_cold_raw_tsf(&self) {
             self.mark_cold_raw_tsf_called.set(true);
+        }
+
+        fn store_gji_warmup_result(&self, _result: crate::tsf::gji_fsm::WarmupResult) {}
+
+        fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
+            None
         }
     }
 

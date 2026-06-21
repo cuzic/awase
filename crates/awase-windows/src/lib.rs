@@ -214,6 +214,12 @@ pub const TIMER_TSF_GATE: usize = 106;
 /// 来た場合は救済として ctrl=false に書き換えてから engine に渡す。
 pub const TIMER_IME_OFF_RESCUE: usize = 107;
 
+/// GjiFsm の LongIdle タイムアウトタイマー ID
+///
+/// `OnWarm` 入場時にセットされ、ファイアすると `OnCold(Long, NotStarted)` に遷移する。
+/// タイムアウト値は `long_idle_ms_for(injection_mode)` で InjectionMode 別に決定される。
+pub const TIMER_GJI_LONG_IDLE: usize = 108;
+
 /// ReinjectKey の output guard 解除待ちタイマー ID
 ///
 /// SendInput 直後 50ms は OS キューに出力イベントが残っており、

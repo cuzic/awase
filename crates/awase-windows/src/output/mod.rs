@@ -77,6 +77,19 @@ pub struct Output {
     /// フォーカスが確定するたびに `update_injection_mode()` で更新される。
     /// `with_app_ref` によるグローバル読み取りを排除し、output 層を self-contained にする。
     pub(crate) injection_mode: InjectionMode,
+    /// GJI の warm/cold 状態機械。
+    ///
+    /// フォーカス変更・IME ON/OFF・WarmupComplete を受け取り、LongIdle タイマーを管理する。
+    /// Phase 2: CompositionState と並走（FSM が安定したら CompositionState を撤去）。
+    pub(crate) gji_fsm: std::cell::RefCell<crate::tsf::gji_fsm::GjiFsm>,
+    /// 現在実行中の GJI probe の ID（`GjiAction::StartProbe` 受信時にセット）。
+    ///
+    /// `dispatch_probe_actions` が `WarmupResult` を生成した際の照合に使う。
+    pub(crate) current_gji_probe_id: std::cell::Cell<Option<crate::tsf::gji_fsm::ProbeId>>,
+    /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
+    ///
+    /// `ProbeIo::store_gji_warmup_result` がセットし、`step_probe` 完了後に取り出す。
+    pending_gji_warmup: std::cell::Cell<Option<crate::tsf::gji_fsm::WarmupResult>>,
 }
 
 impl std::fmt::Debug for Output {
@@ -91,6 +104,15 @@ pub(super) struct WarmthContext {
     pub elapsed: u64,
     pub session_expired: bool,
     pub prepend_f2_warmup: bool,
+}
+
+/// `Output::step_probe` の戻り値。タイマー命令と GjiFsm レスポンスを束ねる。
+pub(crate) struct StepProbeResult {
+    pub timer_cmd: TimerCommand,
+    /// probe 完了時に GjiFsm から返ってきた Response（`WarmupComplete` イベント由来）。
+    /// `None` = probe 進行中 or warmup result がなかった（probe_id 不一致等）。
+    pub gji_response:
+        Option<timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>>,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -118,12 +140,51 @@ impl Output {
             pending_tsf: std::cell::RefCell::new(None),
             tsf_gate: crate::tsf::TsfGate::new(),
             injection_mode: InjectionMode::Unicode,
+            gji_fsm: std::cell::RefCell::new(crate::tsf::gji_fsm::GjiFsm::new()),
+            current_gji_probe_id: std::cell::Cell::new(None),
+            pending_gji_warmup: std::cell::Cell::new(None),
         }
     }
 
     /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
     pub(crate) const fn update_injection_mode(&mut self, mode: InjectionMode) {
         self.injection_mode = mode;
+    }
+
+    // ── GjiFsm ヘルパー ─────────────────────────────────────────────────────
+
+    /// GjiFsm にイベントを送り、Response を返す（`WindowsPlatform::dispatch_gji_response` に渡す）。
+    pub(crate) fn gji_on_event(
+        &self,
+        event: crate::tsf::gji_fsm::GjiEvent,
+    ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
+        use timed_fsm::TimedStateMachine as _;
+        self.gji_fsm.borrow_mut().on_event(event)
+    }
+
+    /// GjiFsm に LongIdle タイムアウトを送り、Response を返す。
+    pub(crate) fn gji_on_long_idle(
+        &self,
+    ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
+        use timed_fsm::TimedStateMachine as _;
+        self.gji_fsm
+            .borrow_mut()
+            .on_timeout(crate::tsf::gji_fsm::GjiTimer::LongIdle)
+    }
+
+    /// `GjiAction::StartProbe` を受信したとき probe_id を記録する。
+    pub(crate) fn gji_store_probe_id(&self, id: crate::tsf::gji_fsm::ProbeId) {
+        self.current_gji_probe_id.set(Some(id));
+    }
+
+    /// 現在の GJI probe_id を返す（確認用、消費しない）。
+    pub(crate) fn gji_current_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
+        self.current_gji_probe_id.get()
+    }
+
+    /// `pending_gji_warmup` を取り出す（1回限り）。
+    pub(crate) fn gji_take_warmup_result(&self) -> Option<crate::tsf::gji_fsm::WarmupResult> {
+        self.pending_gji_warmup.take()
     }
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
@@ -439,16 +500,20 @@ impl Output {
             })
     }
 
-    /// TIMER_TSF_PROBE ハンドラから呼ぶ。probe を 1 ステップ進め、タイマー命令を返す。
+    /// TIMER_TSF_PROBE ハンドラから呼ぶ。probe を 1 ステップ進め、結果を返す。
     ///
-    /// `WindowsPlatform::advance_tsf_probe` はこの戻り値を `apply_timer_command` に渡すだけでよい。
+    /// `WindowsPlatform::advance_tsf_probe` は `timer_cmd` を `apply_timer_command` に渡し、
+    /// `gji_response` を `dispatch_gji_response` に渡す。
     /// pending_tsf の有無とタイマー kill/set の判断はここで完結する。
-    pub(crate) fn step_probe(&mut self) -> TimerCommand {
+    pub(crate) fn step_probe(&mut self) -> StepProbeResult {
         let tick_t = crate::hook::current_tick_ms();
         let machine = self.pending_tsf.borrow_mut().take();
         let Some(mut machine) = machine else {
-            return TimerCommand::Kill {
-                id: crate::TIMER_TSF_PROBE,
+            return StepProbeResult {
+                timer_cmd: TimerCommand::Kill {
+                    id: crate::TIMER_TSF_PROBE,
+                },
+                gji_response: None,
             };
         };
         log::debug!(
@@ -460,14 +525,29 @@ impl Output {
         let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
         if done {
             self.on_tsf_probe_ready();
-            TimerCommand::Kill {
-                id: crate::TIMER_TSF_PROBE,
+            // `dispatch_probe_actions` が `ProbeIo::store_gji_warmup_result` を呼んでいれば
+            // `pending_gji_warmup` に結果が入っている。probe_id と照合して FSM に渡す。
+            let gji_response = self.gji_take_warmup_result().and_then(|result| {
+                let probe_id = self.current_gji_probe_id.take()?;
+                Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
+                    probe_id,
+                    result,
+                }))
+            });
+            StepProbeResult {
+                timer_cmd: TimerCommand::Kill {
+                    id: crate::TIMER_TSF_PROBE,
+                },
+                gji_response,
             }
         } else {
             *self.pending_tsf.borrow_mut() = Some(machine);
-            TimerCommand::Continue {
-                id: crate::TIMER_TSF_PROBE,
-                delay: Duration::from_millis(10),
+            StepProbeResult {
+                timer_cmd: TimerCommand::Continue {
+                    id: crate::TIMER_TSF_PROBE,
+                    delay: Duration::from_millis(10),
+                },
+                gji_response: None,
             }
         }
     }

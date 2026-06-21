@@ -162,10 +162,98 @@ impl WindowsPlatform {
 
     // ── TIMER_TSF_PROBE / raw TSF literal ─────────────────────────────────
 
-    /// TIMER_TSF_PROBE ハンドラ。`Output::step_probe` に委譲し、タイマー命令を実行する。
+    /// TIMER_TSF_PROBE ハンドラ。`Output::step_probe` に委譲し、タイマー命令と GJI FSM 応答を処理する。
     pub fn advance_tsf_probe(&mut self) {
-        let cmd = self.output.step_probe();
-        self.apply_timer_command(cmd);
+        let result = self.output.step_probe();
+        if let Some(gji_resp) = result.gji_response {
+            self.dispatch_gji_response(gji_resp);
+        }
+        self.apply_timer_command(result.timer_cmd);
+    }
+
+    // ── GjiFsm ディスパッチャ ────────────────────────────────────────────────
+
+    /// `GjiFsm::on_event` / `on_timeout` の結果を処理し、タイマー操作とアクションを実行する。
+    pub(crate) fn dispatch_gji_response(
+        &mut self,
+        response: timed_fsm::Response<
+            crate::tsf::gji_fsm::GjiAction,
+            crate::tsf::gji_fsm::GjiTimer,
+        >,
+    ) {
+        use crate::tsf::gji_fsm::{GjiAction, GjiTimer};
+        use timed_fsm::TimerCommand;
+        for cmd in &response.timers {
+            match cmd {
+                TimerCommand::Set {
+                    id: GjiTimer::LongIdle,
+                    duration,
+                } => {
+                    log::debug!(
+                        "[gji-fsm] LongIdle timer set duration={}ms",
+                        duration.as_millis()
+                    );
+                    self.timer.set(crate::TIMER_GJI_LONG_IDLE, *duration);
+                }
+                TimerCommand::Kill {
+                    id: GjiTimer::LongIdle,
+                } => {
+                    self.timer.kill(crate::TIMER_GJI_LONG_IDLE);
+                }
+            }
+        }
+        for action in &response.actions {
+            match action {
+                GjiAction::StartProbe { probe_id, budget_ms } => {
+                    log::debug!(
+                        "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms"
+                    );
+                    self.output.gji_store_probe_id(*probe_id);
+                }
+                GjiAction::CancelProbe { probe_id } => {
+                    if self.output.gji_current_probe_id() == Some(*probe_id) {
+                        log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
+                        *self.output.pending_tsf.borrow_mut() = None;
+                        self.timer.kill(crate::TIMER_TSF_PROBE);
+                        let _ = self.output.current_gji_probe_id.take();
+                    }
+                }
+                // Phase 2a では SendInput は no-op（KeyInput ルーティングは Phase 2b 以降）
+                GjiAction::SendInput { .. } | GjiAction::SendInputDirect(..) => {}
+            }
+        }
+    }
+
+    // ── GjiFsm イベント通知 ──────────────────────────────────────────────────
+
+    /// フォーカス変更を GjiFsm に通知する（`ir_post_focus_change_snapshot` から呼ぶ）。
+    pub(crate) fn gji_on_focus_change(&mut self, injection_mode: crate::output::types::InjectionMode) {
+        let resp = self.output.gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
+            injection_mode,
+        });
+        self.dispatch_gji_response(resp);
+    }
+
+    /// IME ON を GjiFsm に通知する（`on_ime_applied(open=true)` から呼ぶ）。
+    pub(crate) fn gji_on_ime_on(&mut self, injection_mode: crate::output::types::InjectionMode) {
+        let resp = self
+            .output
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn { injection_mode });
+        self.dispatch_gji_response(resp);
+    }
+
+    /// IME OFF を GjiFsm に通知する（`on_ime_applied(open=false)` から呼ぶ）。
+    pub(crate) fn gji_on_ime_off(&mut self) {
+        let resp = self
+            .output
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOff);
+        self.dispatch_gji_response(resp);
+    }
+
+    /// TIMER_GJI_LONG_IDLE ハンドラ。LongIdle タイムアウトを GjiFsm に通知する。
+    pub(crate) fn gji_on_timer_long_idle(&mut self) {
+        let resp = self.output.gji_on_long_idle();
+        self.dispatch_gji_response(resp);
     }
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
@@ -344,11 +432,14 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            let mode = self.output.injection_mode;
+            self.gji_on_ime_on(mode);
             self.output.send_eager_tsf_warmup(Some(effective));
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
+            self.gji_on_ime_off();
         }
     }
 

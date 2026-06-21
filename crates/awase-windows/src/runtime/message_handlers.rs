@@ -15,8 +15,9 @@ use crate::hook::CallbackResult;
 use crate::tray;
 use crate::win32::post_to_main_thread;
 use crate::{
-    with_app, with_app_ref, Runtime, ELEVATED, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH,
-    TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
+    with_app, with_app_ref, Runtime, ELEVATED, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG,
+    TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE,
+    WM_EXECUTE_EFFECTS,
 };
 use awase::types::{ContextChange, FocusKind};
 
@@ -103,6 +104,10 @@ pub(crate) unsafe fn handle_wm_timer(
                     post_to_main_thread(WM_EXECUTE_EFFECTS);
                 }
             }
+        }
+        Some(id) if id == TIMER_GJI_LONG_IDLE => {
+            app.platform.timer.kill(TIMER_GJI_LONG_IDLE);
+            app.platform.gji_on_timer_long_idle();
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
             let last_activity = hook::HOOK_ALIVE_TICK_MS.load(Ordering::Relaxed);
