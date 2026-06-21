@@ -283,8 +283,8 @@ impl Output {
             legacy, fsm,
             "[is_composition_warm] mismatch: legacy={legacy} fsm={fsm}"
         );
-        // Phase 2b: FSM を SSOT にする。legacy が安定したら assert を外し legacy 判定を撤去する。
-        legacy
+        // Phase 3: FSM が SSOT。legacy は debug_assert の相手として残す（次フェーズで撤去）。
+        fsm
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
