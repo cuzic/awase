@@ -311,7 +311,7 @@ impl DecisionExecutor {
                         sync_outcomes: Vec::new(),
                     };
                 }
-                let callback = self.handle_passthrough(platform, raw_event);
+                let callback = self.run_passthrough_pipeline(platform, raw_event);
                 BatchResult {
                     has_pending: self.has_pending(),
                     callback,
@@ -371,83 +371,63 @@ impl DecisionExecutor {
 
     // ── PassThrough サブハンドラ ──
 
-    /// `Decision::PassThrough` アーム全体を処理する。
+    /// PassThrough パイプラインの統合エントリポイント。
     ///
-    /// 各 `try_*` / `handle_*` を早期 return チェーンで呼び出し、
-    /// 全チェックを通過した場合は OS に PassThrough を返す。
-    fn handle_passthrough(
+    /// 段階:
+    ///   A. [transport] KeyUp 対称性 — deferred Down に対応する Up も reinject に揃える
+    ///   B. [platform]  確認キー KeyUp warmup / Ctrl↑ cold recovery（副作用のみ）
+    ///   C. [transport] output guard defer — 出力 in-flight 中は reinject 経由で順序保証
+    ///   D. [platform]  確認キー KeyDown passthrough 後処理（副作用のみ）
+    ///   → PassThrough
+    fn run_passthrough_pipeline(
         &mut self,
         platform: &mut WindowsPlatform,
         raw_event: &RawKeyEvent,
     ) -> CallbackResult {
-        // awase の SendInput 出力直後 N ms は、OS キュー → アプリ → IME の pipeline で
-        // 出力イベントが処理中。この間に user passthrough キー (Enter / Ctrl /
-        // Backspace 等) が割り込むと IME composition が cancel され
-        // 「タスク → タスk」のような race が発生する。
-        // 本ガードは「直近 N ms 以内の passthrough キーは pending と同様に
-        // deferr して reinject 時に wait する」ことで race を構造的に解消する。
-
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
 
-        // 1. KeyUp 対称性: deferred KeyDown の VK は KeyUp も reinject に揃える。
+        // A. [transport] KeyUp 対称性
         if let Some(event) = self.passthrough_queue.check_keyup_symmetry(raw_event) {
-            self.queue
-                .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
+            self.enqueue_reinject(event);
             return CallbackResult::Consumed;
         }
 
-        // 2. warm+TSF Enter/Space/Esc KeyUp: 保留 eager warmup を送信。
+        // B. [platform] 副作用（defer されても FSM は進める）
         self.try_pending_warmup_on_keyup(platform, raw_event);
-
-        // 3. Ctrl↑ cold recovery: eager_warmup_sent_ms をリセット。
         self.handle_ctrl_up_recovery(platform, raw_event);
 
+        // C. [transport] output guard defer
         let in_flight_ms = platform.output_in_flight_ms();
         let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
         let has_pending = self.has_pending();
-
         log::debug!(
             "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
             raw_event.vk_code,
             if is_key_down { "down" } else { "up" },
-            if in_flight_ms == u64::MAX {
-                "never".to_string()
-            } else {
-                in_flight_ms.to_string()
-            },
+            if in_flight_ms == u64::MAX { "never".to_string() } else { in_flight_ms.to_string() },
             has_pending,
             output_in_flight,
         );
-
-        // 4. output in-flight / pending queue: defer して reinject 経由で順序保証。
         if let Some(event) = self.passthrough_queue.check_output_guard_defer(
             raw_event,
             output_in_flight,
             in_flight_ms,
             has_pending,
         ) {
-            self.queue
-                .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
+            self.enqueue_reinject(event);
             return CallbackResult::Consumed;
         }
 
-        // 5. Space/Enter/Esc KeyDown: warm+TSF または cold の composition 確定処理。
+        // D. [platform] 確認キー後処理
         self.handle_confirm_key_passthrough(platform, raw_event);
 
-        // Effects なし → 直接 OS に通す
-        // Passthrough 系の VK (Enter, Esc, Tab 等) は awase 出力との
-        // 時系列を見えるようログを残す（char/thumb はノイズになるため除外）。
-        if matches!(
-            raw_event.key_classification,
-            awase::types::KeyClassification::Passthrough
-        ) {
+        if matches!(raw_event.key_classification, awase::types::KeyClassification::Passthrough) {
             log::debug!(
                 "[relay-passthrough] PassThrough idle: direct OS pass-through (vk={:#04x} {})",
                 raw_event.vk_code,
                 if is_key_down { "down" } else { "up" },
             );
         }
-
         CallbackResult::PassThrough
     }
 
