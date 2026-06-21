@@ -144,6 +144,7 @@ impl ProbeIo for Output {
 
     fn mark_cold_raw_tsf(&self) {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        self.pending_gji_composition_reset.set(true);
     }
 
     fn store_gji_warmup_result(&self, result: crate::tsf::gji_fsm::WarmupResult) {

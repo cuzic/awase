@@ -165,6 +165,9 @@ impl WindowsPlatform {
     /// TIMER_TSF_PROBE ハンドラ。`Output::step_probe` に委譲し、タイマー命令と GJI FSM 応答を処理する。
     pub fn advance_tsf_probe(&mut self) {
         let result = self.output.step_probe();
+        if result.needs_gji_composition_reset {
+            self.gji_on_composition_reset();
+        }
         if let Some(gji_resp) = result.gji_response {
             self.dispatch_gji_response(gji_resp);
         }
@@ -256,6 +259,17 @@ impl WindowsPlatform {
         self.dispatch_gji_response(resp);
     }
 
+    /// IME ON/OFF やフォーカス変化なしに composition context が無効化されたことを GjiFsm に通知する。
+    ///
+    /// `on_passthrough_key` の PassthroughKey / NativeF2Consumed / F2NonTsf や
+    /// `mark_cold_raw_tsf`（`step_probe` 経由）から呼ぶ。
+    pub(crate) fn gji_on_composition_reset(&mut self) {
+        let resp = self
+            .output
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::CompositionReset);
+        self.dispatch_gji_response(resp);
+    }
+
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
     ///
     /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` を呼ぶため
@@ -282,6 +296,15 @@ impl PlatformRuntime for WindowsPlatform {
 
     fn send_keys(&mut self, actions: &[KeyAction]) {
         self.output.send_keys(actions);
+        // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
+        // SendInput / SendInputDirect は Phase 2b では no-op（dispatch_gji_response が無視）。
+        if let Some(resp) = self.output.take_pending_gji_key_response() {
+            self.dispatch_gji_response(resp);
+        }
+        // SymbolVkSent 等の CompositionReset フラグを drain する。
+        if self.output.pending_gji_composition_reset.take() {
+            self.gji_on_composition_reset();
+        }
         // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
         if let Some(cmd) = self.output.pending_tsf_timer() {
             self.apply_timer_command(cmd);
@@ -459,6 +482,7 @@ impl PlatformRuntime for WindowsPlatform {
             );
             self.output
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.gji_on_composition_reset();
             self.output.send_eager_tsf_warmup(applied);
             return false;
         }
@@ -473,6 +497,7 @@ impl PlatformRuntime for WindowsPlatform {
                 );
                 self.output
                     .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+                self.gji_on_composition_reset();
                 return true; // warmup deferred to KeyUp
             }
             log::debug!(
@@ -480,6 +505,7 @@ impl PlatformRuntime for WindowsPlatform {
             );
             self.output
                 .mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+            self.gji_on_composition_reset();
             self.output.send_eager_tsf_warmup(applied);
             return false;
         }
@@ -489,6 +515,7 @@ impl PlatformRuntime for WindowsPlatform {
             log::debug!("[composition] vk=0xf2 passthrough direct → marking cold");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::F2NonTsf);
+            self.gji_on_composition_reset();
         }
         false
     }
@@ -518,6 +545,7 @@ impl PlatformRuntime for WindowsPlatform {
             );
             self.output
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+            self.gji_on_composition_reset();
             self.output.send_eager_tsf_warmup(applied);
         }
     }

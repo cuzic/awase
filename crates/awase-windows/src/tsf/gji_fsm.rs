@@ -174,6 +174,9 @@ pub(crate) enum GjiEvent {
     StartComposition,
     /// `WM_IME_ENDCOMPOSITION`（epoch チェック付き）
     EndComposition { epoch: FocusEpoch },
+    /// IME ON/OFF やフォーカス変化なしに composition context が無効化された
+    /// (PassthroughKey, NativeF2Consumed, RawTsfLiteralRecovery 等)
+    CompositionReset,
 }
 
 /// GJI FSM が出力するアクション（ディスパッチャが副作用を実行する）。
@@ -523,6 +526,35 @@ impl TimedStateMachine for GjiFsm {
                         state_label(&self.state)
                     );
                     Response::consume()
+                }
+            },
+
+            // ── CompositionReset ───────────────────────────────────────────
+            GjiEvent::CompositionReset => match &self.state {
+                GjiState::OffCold => Response::consume(),
+
+                GjiState::OnCold { .. } => {
+                    // 既存 probe をキャンセルして Short で再開（pending も破棄）
+                    let old = self.running_probe_id();
+                    self.state = GjiState::OnCold {
+                        kind: ColdKind::Short,
+                        probe: ProbeStatus::NotStarted,
+                        pending: vec![],
+                    };
+                    let mut actions = Vec::new();
+                    if let Some(id) = old {
+                        actions.push(GjiAction::CancelProbe { probe_id: id });
+                    }
+                    Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
+                }
+
+                GjiState::OnWarm { .. } | GjiState::OnComposing { .. } => {
+                    self.state = GjiState::OnCold {
+                        kind: ColdKind::Short,
+                        probe: ProbeStatus::NotStarted,
+                        pending: vec![],
+                    };
+                    Response::consume().with_kill_timer(GjiTimer::LongIdle)
                 }
             },
         }

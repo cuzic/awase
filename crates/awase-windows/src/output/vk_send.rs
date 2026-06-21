@@ -163,6 +163,14 @@ impl Output {
             return;
         }
 
+        // KeyInput shadow routing: FSM state track のためだけ（actual send は既存ロジックが担う）。
+        {
+            let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
+                crate::tsf::gji_fsm::PendingInput::new(romaji),
+            ));
+            *self.pending_gji_key_response.borrow_mut() = Some(resp);
+        }
+
         let WarmthContext {
             warm,
             elapsed,
@@ -413,6 +421,16 @@ impl Output {
             return;
         }
 
+        // KeyInput shadow routing: FSM state track のためだけ（actual send は既存ロジックが担う）。
+        // Response のタイマー操作（LongIdle リセット）は Platform の send_keys が dispatch する。
+        // SendInputDirect / SendInput アクションは Phase 2b では no-op。
+        {
+            let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
+                crate::tsf::gji_fsm::PendingInput::new(romaji),
+            ));
+            *self.pending_gji_key_response.borrow_mut() = Some(resp);
+        }
+
         let WarmthContext {
             warm,
             elapsed,
@@ -552,6 +570,7 @@ impl Output {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
                 } else {
                     self.mark_composition_cold(ColdReason::SymbolVkSent);
+                    self.pending_gji_composition_reset.set(true);
                     self.send_eager_tsf_warmup(None);
                 }
             }

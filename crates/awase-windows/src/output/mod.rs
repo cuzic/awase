@@ -90,6 +90,21 @@ pub struct Output {
     ///
     /// `ProbeIo::store_gji_warmup_result` がセットし、`step_probe` 完了後に取り出す。
     pending_gji_warmup: std::cell::Cell<Option<crate::tsf::gji_fsm::WarmupResult>>,
+    /// `ProbeIo::mark_cold_raw_tsf` → `GjiFsm::CompositionReset` の橋渡しフラグ。
+    ///
+    /// `mark_cold_raw_tsf` は `&self` しか取れないため直接 `dispatch_gji_response` を呼べない。
+    /// このフラグで pending を表現し、`step_probe` 完了後に Platform が拾う。
+    pub(crate) pending_gji_composition_reset: std::cell::Cell<bool>,
+    /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
+    ///
+    /// これらのメソッドは `&self` しか取れないためタイマー操作を直接行えない。
+    /// Platform の `send_keys` が `take_pending_gji_key_response` で取り出して
+    /// `dispatch_gji_response` に渡し、LongIdle タイマーリセット等を実行する。
+    pub(crate) pending_gji_key_response: std::cell::RefCell<
+        Option<
+            timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
+        >,
+    >,
 }
 
 impl std::fmt::Debug for Output {
@@ -113,6 +128,9 @@ pub(crate) struct StepProbeResult {
     /// `None` = probe 進行中 or warmup result がなかった（probe_id 不一致等）。
     pub gji_response:
         Option<timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>>,
+    /// `ProbeIo::mark_cold_raw_tsf` が呼ばれたとき true になる。
+    /// `advance_tsf_probe` が `gji_on_composition_reset` を呼ぶために使う。
+    pub needs_gji_composition_reset: bool,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -143,6 +161,8 @@ impl Output {
             gji_fsm: std::cell::RefCell::new(crate::tsf::gji_fsm::GjiFsm::new()),
             current_gji_probe_id: std::cell::Cell::new(None),
             pending_gji_warmup: std::cell::Cell::new(None),
+            pending_gji_composition_reset: std::cell::Cell::new(false),
+            pending_gji_key_response: std::cell::RefCell::new(None),
         }
     }
 
@@ -180,6 +200,17 @@ impl Output {
     /// 現在の GJI probe_id を返す（確認用、消費しない）。
     pub(crate) fn gji_current_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
         self.current_gji_probe_id.get()
+    }
+
+    /// `pending_gji_key_response` を取り出す（1回限り）。
+    ///
+    /// Platform の `send_keys` が呼び出し、タイマー操作（LongIdle リセット等）を実行する。
+    pub(crate) fn take_pending_gji_key_response(
+        &self,
+    ) -> Option<
+        timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
+    > {
+        self.pending_gji_key_response.borrow_mut().take()
     }
 
     /// `pending_gji_warmup` を取り出す（1回限り）。
@@ -241,8 +272,19 @@ impl Output {
     ///
     /// `focus_epoch` が変化していれば前ウィンドウのウォーム状態は自動無効化される。
     #[must_use]
-    pub const fn is_composition_warm(&self) -> bool {
-        self.composition.is_composition_warm()
+    pub fn is_composition_warm(&self) -> bool {
+        use crate::tsf::gji_fsm::GjiState;
+        let legacy = self.composition.is_composition_warm();
+        let fsm = matches!(
+            self.gji_fsm.borrow().state(),
+            GjiState::OnWarm { .. } | GjiState::OnComposing { .. }
+        );
+        debug_assert_eq!(
+            legacy, fsm,
+            "[is_composition_warm] mismatch: legacy={legacy} fsm={fsm}"
+        );
+        // Phase 2b: FSM を SSOT にする。legacy が安定したら assert を外し legacy 判定を撤去する。
+        legacy
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
@@ -514,6 +556,7 @@ impl Output {
                     id: crate::TIMER_TSF_PROBE,
                 },
                 gji_response: None,
+                needs_gji_composition_reset: false,
             };
         };
         log::debug!(
@@ -534,13 +577,16 @@ impl Output {
                     result,
                 }))
             });
+            let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
             StepProbeResult {
                 timer_cmd: TimerCommand::Kill {
                     id: crate::TIMER_TSF_PROBE,
                 },
                 gji_response,
+                needs_gji_composition_reset,
             }
         } else {
+            let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
             *self.pending_tsf.borrow_mut() = Some(machine);
             StepProbeResult {
                 timer_cmd: TimerCommand::Continue {
@@ -548,6 +594,7 @@ impl Output {
                     delay: Duration::from_millis(10),
                 },
                 gji_response: None,
+                needs_gji_composition_reset,
             }
         }
     }
