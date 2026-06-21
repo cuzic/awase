@@ -258,16 +258,6 @@ pub(crate) fn gji_last_io_ms() -> u64 {
     TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed)
 }
 
-/// GJI プロセスの累積 ReadOperationCount を返す。0 = 未取得。live 読み取り。
-pub(crate) fn gji_read_op_count() -> u64 {
-    TSF_OBS.gji_read_op_count.load(Ordering::Relaxed)
-}
-
-/// GJI プロセスの累積 ReadTransferCount（バイト数）を返す。0 = 未取得。live 読み取り。
-pub(crate) fn gji_read_bytes() -> u64 {
-    TSF_OBS.gji_read_bytes.load(Ordering::Relaxed)
-}
-
 /// GJI モニターが利用可能かどうか。live 読み取り。
 pub(crate) fn gji_monitor_healthy() -> bool {
     TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)

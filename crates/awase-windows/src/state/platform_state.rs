@@ -362,31 +362,6 @@ impl ImeStateHub {
         }
     }
 
-    /// TsfNative 入場時に stale な `desired_open=false` を IME ON へ寄せ直す。
-    ///
-    /// 日本語レイアウトかつ `last_intent` がない（前ウィンドウからの carry-over）
-    /// 場合のみ実行する。`last_intent` があれば現フォーカス文脈の意図として保護する。
-    pub(crate) fn reset_stale_ime_on_for_tsf_native(&mut self) {
-        if !self.belief.is_japanese_ime() || self.shadow_model.effective_open() {
-            return;
-        }
-        if let Some(intent) = self.shadow_model.last_intent.as_ref() {
-            log::debug!(
-                "TsfNative entry: preserving ime_on=false (intent source={:?})",
-                intent.source
-            );
-            return;
-        }
-        log::info!(
-            "TsfNative entry without cache: reset stale ime_on=false → true \
-             (no intent, Japanese layout, IME state untrackable in TSF-native)"
-        );
-        self.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: true,
-            source: IntentSource::Recovery,
-        });
-    }
-
     /// TsfNative cache miss 時に belief を安全デフォルト OFF に設定する。
     ///
     /// キャッシュがない（初回訪問または TTL 切れ）TsfNative ウィンドウへの入場時、
@@ -585,59 +560,37 @@ mod tests {
         ps
     }
 
-    // フレッシュな intent が backing する false は保護される。
-    // ユーザが直前に Ctrl+無変換 等で IME OFF した状態が、TsfNative ウィンドウへの
-    // 切替で勝手に ON に戻されてはいけない。
+    // cache miss 時: belief=true → false にリセットされる（安全デフォルト OFF）。
     #[test]
-    fn reset_stale_preserves_intent_backed_false_sync_key() {
-        let mut ps = ps_with_shadow(false, Some(IntentSource::SyncKey), true);
-        ps.ime.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.effective_open());
-    }
-
-    #[test]
-    fn reset_stale_preserves_intent_backed_false_physical_key() {
-        let mut ps = ps_with_shadow(false, Some(IntentSource::PhysicalImeKey), true);
-        ps.ime.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.effective_open());
-    }
-
-    #[test]
-    fn reset_stale_preserves_intent_backed_false_command() {
-        let mut ps = ps_with_shadow(false, Some(IntentSource::Command), true);
-        ps.ime.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.effective_open());
-    }
-
-    #[test]
-    fn reset_stale_preserves_intent_backed_false_hwnd_cache() {
-        let mut ps = ps_with_shadow(false, Some(IntentSource::HwndCache), true);
-        ps.ime.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.effective_open());
-    }
-
-    // last_intent=None (前ウィンドウからの carry-over) は ON へ寄せ直す。
-    #[test]
-    fn reset_stale_overrides_carry_over_false() {
-        let mut ps = ps_with_shadow(false, None, true);
-        ps.ime.reset_stale_ime_on_for_tsf_native();
-        assert!(ps.ime.effective_open());
-        assert_eq!(ps.ime.last_intent_source(), Some(IntentSource::Recovery),);
-    }
-
-    // 既に ON なら何もしない（早期 return）。
-    #[test]
-    fn reset_stale_noop_when_already_on() {
+    fn cache_miss_resets_true_to_false() {
         let mut ps = ps_with_shadow(true, Some(IntentSource::SyncKey), true);
-        ps.ime.reset_stale_ime_on_for_tsf_native();
-        assert!(ps.ime.effective_open());
+        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        assert!(!ps.ime.effective_open());
+    }
+
+    // cache miss 後: last_intent が None になり last_explicit_off_ms() を汚染しない。
+    #[test]
+    fn cache_miss_reset_clears_last_intent() {
+        let mut ps = ps_with_shadow(true, Some(IntentSource::Recovery), true);
+        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        assert_eq!(ps.ime.last_intent_source(), None);
+    }
+
+    // 既に belief=false なら no-op（二重リセットしない）。
+    #[test]
+    fn cache_miss_noop_when_already_off() {
+        let mut ps = ps_with_shadow(false, Some(IntentSource::SyncKey), true);
+        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        // 状態は変わらず、intent も保持される。
+        assert!(!ps.ime.effective_open());
+        assert_eq!(ps.ime.last_intent_source(), Some(IntentSource::SyncKey));
     }
 
     // 非日本語レイアウトでは何もしない。
     #[test]
-    fn reset_stale_noop_when_not_japanese() {
-        let mut ps = ps_with_shadow(false, None, false);
-        ps.ime.reset_stale_ime_on_for_tsf_native();
-        assert!(!ps.ime.effective_open());
+    fn cache_miss_noop_when_not_japanese() {
+        let mut ps = ps_with_shadow(true, None, false);
+        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        assert!(ps.ime.effective_open());
     }
 }
