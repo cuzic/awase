@@ -36,8 +36,8 @@ pub(crate) enum VkMarker {
 impl VkMarker {
     pub(crate) fn make_input(self, vk: VkCode, is_keyup: bool) -> INPUT {
         match self {
-            VkMarker::Injected => make_key_input(vk, is_keyup),
-            VkMarker::Tsf => make_tsf_key_input(vk, is_keyup),
+            Self::Injected => make_key_input(vk, is_keyup),
+            Self::Tsf => make_tsf_key_input(vk, is_keyup),
         }
     }
 }
@@ -337,7 +337,7 @@ impl Output {
     pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(VkCode, bool)]) {
         for run in Self::split_vk_runs(chars) {
             let n = Self::send_vk_run_batch(run, VkMarker::Injected);
-            log::debug!("[vk-send] romaji={romaji:?} batch {} inputs", n);
+            log::debug!("[vk-send] romaji={romaji:?} batch {n} inputs");
         }
     }
 
@@ -461,10 +461,7 @@ impl Output {
     fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence, used_eager_path: bool) {
         let t_warm = crate::hook::current_tick_ms();
         let cold_seq = self.composition.cold_start_count();
-        log::debug!(
-            "[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={}ms",
-            t_warm
-        );
+        log::debug!("[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms");
         let outcome = WarmupOutcome {
             prepend_f2_warmup: false,
             used_eager_path,
