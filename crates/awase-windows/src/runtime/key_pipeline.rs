@@ -172,9 +172,11 @@ impl Runtime {
 
         self.kp_stage_post_decision(&decision, &event);
 
-        // Step 4 安全策: Phase 2 で SetOpen が生成されなかった場合でも
         // Ctrl 系 KeyUp で chord barrier を解除する (ChordEnded dispatch)。
-        // (Phase 2 が既に Inactive を認識して SetOpen を省略するケースへの対処)
+        // ChordEnded のトリガは常に「Ctrl KeyUp」なので、SetOpen の有無
+        // （chord 中の二次 SetOpen は kp_stage_post_decision が skip する／
+        //   Phase 2 が Inactive を認識して SetOpen を省略する）に関わらず
+        // ここを唯一の置き場として一元化する。
         if self.platform_state.ime.is_ctrl_ime_chord_active()
             && !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
@@ -188,7 +190,7 @@ impl Runtime {
                 .ime
                 .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
             log::debug!(
-                "[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{:02X}, no SetOpen in decision)",
+                "[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{:02X})",
                 event.vk_code
             );
         }
@@ -352,71 +354,39 @@ impl Runtime {
                 // Ctrl KeyUp が Phase 2 Active→Inactive 遷移を起こして生成した SetOpen を
                 // 再 write すると Priority-3 が消費済みのため stale observer_poll が belief を
                 // 上書きし、直後の TIMER_IME_REFRESH で engine が再アクティブ化する。
-                // skip して belief を安定させる。KeyUp 到達で ChordEnded を dispatch。
-                // (IME ON 要求は chord を即時終了して通常処理する: 下の else ブランチを参照)
+                // skip して belief を安定させる。ChordEnded（Ctrl KeyUp）は kp_run_inner 末尾が dispatch する。
                 self.platform.timer.kill(TIMER_IME_REFRESH);
-                if is_key_up {
-                    let kind = self
-                        .platform_state
-                        .ime
-                        .active_chord_kind()
-                        .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
-                    self.platform_state
-                        .ime
-                        .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
-                }
                 log::debug!(
                     "IME control: chord barrier active → skip write_set_open_request({new_ime_on}), \
                      chord {}",
-                    if is_key_up { "ended" } else { "held" }
+                    if is_key_up { "ending (Ctrl KeyUp handled at tail)" } else { "held" }
                 );
             } else {
-                if chord_active {
-                    // Ctrl+変換 IME ON が Ctrl+無変換 chord 中に到着: chord を即時終了して通常処理する。
-                    // chord を持続させると Ctrl↑ まで IME ON 要求が宙に浮くのではなく、
-                    // ここで明示的に終了することで後続の Ctrl↑ が二重 ChordEnded を起こさない。
-                    let kind = self
-                        .platform_state
-                        .ime
-                        .active_chord_kind()
-                        .unwrap_or(crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff);
-                    self.platform_state
-                        .ime
-                        .dispatch_event(crate::state::ime_event::ImeEvent::ChordEnded { kind });
-                    log::debug!(
-                        "IME control: IME ON request during chord → ChordEnded, processing normally"
-                    );
-                }
                 self.platform_state.ime.write_set_open_request(new_ime_on);
                 self.platform_state.ime.on_set_open_requested();
                 self.platform.timer.kill(TIMER_IME_REFRESH);
 
                 // Phase 3b: ImeApplyRequested event を dispatch して shadow_model.pending を
                 // 更新する。generation は event_log.next_seq() を使う (event の seq とも一致)。
+                // ctrl_held を渡すことで reducer が CtrlImeChord barrier の開始/終了を判断する:
+                //   - IME OFF 要求 + Ctrl 押下中 → chord 開始
+                //   - IME ON 要求 + chord active → chord 即時終了
+                // （ChordStarted/ChordEnded dispatch を pipeline から撤去し reducer に集約）
                 let generation = self.platform_state.ime.event_log.next_seq();
                 self.platform_state.ime.dispatch_event(
                     crate::state::ime_event::ImeEvent::ImeApplyRequested {
                         target: new_ime_on,
                         generation,
+                        ctrl_held: event.modifier_snapshot.ctrl,
                     },
                 );
 
-                // Step 4: Ctrl 押下中の IME OFF 要求（Ctrl+無変換等）で ChordStarted を dispatch。
-                // KANJI（Ctrl なし）では dispatch しない: ChordEnded のトリガが Ctrl KeyUp なので
-                // ペアにならず永続する事故を防ぐ。
-                // IME ON 要求では dispatch しない: 後続の Ctrl+無変換 IME OFF で
-                // write_set_open_request がスキップされ belief が true のまま残る事故を防ぐ。
-                if !new_ime_on && event.modifier_snapshot.ctrl {
-                    self.platform_state.ime.dispatch_event(
-                        crate::state::ime_event::ImeEvent::ChordStarted {
-                            kind: crate::state::ime_event::ChordKind::CtrlMuhenkanImeOff,
-                        },
-                    );
-                }
                 let chord_state = if !new_ime_on && event.modifier_snapshot.ctrl {
                     "started (Ctrl combo)"
                 } else if !new_ime_on {
                     "not started (KANJI/no Ctrl)"
+                } else if chord_active {
+                    "ended (IME ON during chord)"
                 } else {
                     "not started (IME ON)"
                 };

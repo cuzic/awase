@@ -219,12 +219,14 @@ fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
         ImeEvent::ImeApplyRequested {
             target: true,
             generation: 10,
+            ctrl_held: false,
         },
         user_intent(false, IntentSource::PhysicalImeKey),
         // 新しい intent で別の apply が発生 (gen=11) して pending を上書きする想定
         ImeEvent::ImeApplyRequested {
             target: false,
             generation: 11,
+            ctrl_held: false,
         },
         // 古い gen=10 の success が遅れて到着
         ImeEvent::ImeApplySucceeded {
@@ -250,6 +252,7 @@ fn apply_succeeded_with_matching_generation_updates_applied() {
         ImeEvent::ImeApplyRequested {
             target: true,
             generation: 5,
+            ctrl_held: false,
         },
         ImeEvent::ImeApplySucceeded {
             target: true,

@@ -275,7 +275,11 @@ impl ImeModel {
                 // Step 4: chord transaction を終了。barrier を解除。
                 self.input_barrier = None;
             }
-            ImeEvent::ImeApplyRequested { target, generation } => {
+            ImeEvent::ImeApplyRequested {
+                target,
+                generation,
+                ctrl_held,
+            } => {
                 // Step 7: pending transition を立てる。
                 // 実際の timeout / actuator 詳細は呼び出し元 (Phase 3 cleanup) が
                 // 個別 dispatch で渡す想定。Step 7 では最低限の placeholder。
@@ -284,6 +288,21 @@ impl ImeModel {
                     generation,
                     timeout_at: envelope.time.monotonic + std::time::Duration::from_secs(1),
                 });
+                // Chord 開始判断: IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる。
+                // KANJI（Ctrl なし）では立てない: ChordEnded のトリガが Ctrl KeyUp なので
+                // ペアにならず永続する事故を防ぐ。
+                if !target && ctrl_held {
+                    self.input_barrier = Some(InputBarrier::CtrlImeChord {
+                        target: false,
+                        kind: ChordKind::CtrlMuhenkanImeOff,
+                        started_seq: envelope.time.seq,
+                        started_at: envelope.time.monotonic,
+                    });
+                }
+                // Chord 中に IME ON 要求が来た場合 → chord を即時終了する。
+                if target && self.is_ctrl_ime_chord_active() {
+                    self.input_barrier = None;
+                }
             }
             ImeEvent::ImeApplySucceeded { target, generation } => {
                 // Step 7: **必須** generation 照合で stale apply を排除。
@@ -453,6 +472,70 @@ mod tests {
         assert!(
             model.desired_open,
             "focus change は desired_open を変えない"
+        );
+    }
+
+    // ── ImeApplyRequested による chord barrier 制御 (Phase 2) ──
+
+    #[test]
+    fn ime_off_with_ctrl_held_starts_chord() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 1,
+                ctrl_held: true,
+            },
+        ));
+        assert!(
+            model.is_ctrl_ime_chord_active(),
+            "IME OFF 要求 + Ctrl 押下中 → chord 開始"
+        );
+        assert_eq!(model.active_chord_kind(), Some(ChordKind::CtrlMuhenkanImeOff));
+    }
+
+    #[test]
+    fn ime_off_without_ctrl_does_not_start_chord() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 1,
+                ctrl_held: false,
+            },
+        ));
+        assert!(
+            !model.is_ctrl_ime_chord_active(),
+            "KANJI（Ctrl なし）IME OFF では chord を開始しない"
+        );
+    }
+
+    #[test]
+    fn ime_on_during_chord_ends_it() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 1,
+                ctrl_held: true,
+            },
+        ));
+        assert!(model.is_ctrl_ime_chord_active());
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 2,
+                ctrl_held: true,
+            },
+        ));
+        assert!(
+            !model.is_ctrl_ime_chord_active(),
+            "chord 中の IME ON 要求は chord を即時終了する"
         );
     }
 }

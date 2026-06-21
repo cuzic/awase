@@ -125,8 +125,15 @@ pub enum ImeEvent {
     /// ユーザー/awase が IME を ON/OFF に設定したい意図
     UserImeSetIntent { target: bool, source: IntentSource },
 
-    /// OS への適用を開始した
-    ImeApplyRequested { target: bool, generation: u64 },
+    /// OS への適用を開始した。
+    ///
+    /// `ctrl_held` は dispatch 時点で Ctrl が押下されていたか。reducer が
+    /// 「IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる」判断に使う。
+    ImeApplyRequested {
+        target: bool,
+        generation: u64,
+        ctrl_held: bool,
+    },
 
     /// OS への適用が成功した (async 完了時、generation 照合必須)
     ImeApplySucceeded { target: bool, generation: u64 },
