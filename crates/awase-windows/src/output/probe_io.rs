@@ -222,8 +222,17 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         if chars.is_empty() {
                             return true;
                         }
+                        // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
+                        // SendFreshF2 が ~300ms 前に fresh F2 を送信済みで WezTerm の TSF context は
+                        // 既に初期化されている。バッチに再び F2 を含めると WezTerm が TSF reinit を
+                        // 再トリガーし、同一バッチの S が reinit 中に届いてリテラル化する race が起きる。
+                        // (例: "さいごの" → "sあいごの": F2↓S↓A↓ の S が TSF reinit 中に届く)
+                        // gji_long_idle の場合は F2×2 で GJI を起動する必要があり F2 バッチ同梱が必要。
+                        let effective_prepend_f2 = prepend_f2_warmup
+                            && (nc_fired || !io.is_tsf_mode() || io.gji_long_idle());
+
                         let outcome = WarmupOutcome {
-                            prepend_f2_warmup,
+                            prepend_f2_warmup: effective_prepend_f2,
                             // gji_resumed=true: F2×2 後に GJI が I/O 応答 → VK パス強制。
                             //
                             // nc_fired=true: IME モード確認済み（OBJ_NAMECHANGE 受信）。
@@ -288,20 +297,16 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         // gji_candidate_show 変化で検出し BS 再送で回収できる。
                         // 非 TSF mode (Chrome 等) は gji_long_idle 時に GJI 再起動直後で
                         // 候補ウィンドウが遅延するため、false positive 防止のため無効のまま。
-                        let needs_literal =
-                            prepend_f2_warmup && gji_active && (!io.gji_long_idle() || io.is_tsf_mode());
-                        // gji_resumed=true（F2×2 への GJI I/O 応答確認済み）の場合は
-                        // long_idle 後に SHOW が >500ms 遅れるが、GJI が VK を処理すると
-                        // 辞書 I/O が発生し gji_last_io_ms が SHOW より先に更新される（数十ms）。
-                        // LiteralDetector::new_gji_resumed() で I/O 変化を早期確認シグナルとして使う：
-                        //   composition 成功 → VK 処理 → GJI I/O → 数十ms で CompositionConfirmed
-                        //   実際のリテラル → GJI は VK を受け取らず → I/O 変化なし → タイムアウト
+                        //
+                        // gji_resumed=true: F2×2 への GJI I/O 応答で composition が成功することを確認済み。
+                        // long_idle 後は候補ウィンドウ表示に >500ms かかり LiteralDetect が false positive
+                        // になる（BS 誤送信 → composition context 破壊）。gji_resumed=true では不要。
+                        let needs_literal = effective_prepend_f2
+                            && gji_active
+                            && (!io.gji_long_idle() || io.is_tsf_mode())
+                            && !gji_resumed;
                         let detector = if needs_literal {
-                            if gji_resumed && io.is_tsf_mode() {
-                                Some(crate::tsf::probe::LiteralDetector::new_gji_resumed())
-                            } else {
-                                Some(crate::tsf::probe::LiteralDetector::new())
-                            }
+                            Some(crate::tsf::probe::LiteralDetector::new())
                         } else {
                             None
                         };
@@ -332,7 +337,7 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                             };
                             io.store_gji_warmup_result(WarmupResult {
                                 path,
-                                prepend_f2_warmup,
+                                prepend_f2_warmup: effective_prepend_f2,
                                 nc_fired,
                                 gji_resumed,
                             });
@@ -444,6 +449,8 @@ mod tests {
         increment_consecutive_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
+        /// transmit_tsf に渡された WarmupOutcome.prepend_f2_warmup を記録する。
+        last_used_prepend_f2: Cell<bool>,
     }
 
     impl Default for FakeProbeIo {
@@ -465,6 +472,7 @@ mod tests {
                 mark_cold_raw_tsf_called: Cell::new(false),
                 increment_consecutive_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
+                last_used_prepend_f2: Cell::new(false),
             }
         }
     }
@@ -490,6 +498,7 @@ mod tests {
         ) -> usize {
             self.transmit_tsf_called.set(true);
             self.last_used_eager_path.set(outcome.used_eager_path);
+            self.last_used_prepend_f2.set(outcome.prepend_f2_warmup);
             self.tsf_transmit_result
         }
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
@@ -933,15 +942,15 @@ mod tests {
     }
 
     #[test]
-    fn tsf_mode_cold_start_enables_literal_detect_when_gji_healthy() {
-        // WezTerm long-idle バグ修正 (idle=55797ms, cold=343) の検出パス確認:
-        // TSF mode + prepend_f2_warmup=true + gji_healthy=true + !gji_long_idle
-        // → LiteralDetect フェーズへ遷移し Done を即返さない。
-        // これが `needs_literal` に `!is_tsf_mode()` 条件がなくなったことの証明。
+    fn tsf_mode_cold_start_nc_not_fired_not_long_idle_skips_f2_and_literal_detect() {
+        // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
+        // SendFreshF2 action が ~300ms 前に fresh F2 を送信済み → TSF context 初期化済み。
+        // バッチに再び F2 を含めると TSF reinit race で S がリテラル化する（例: "さいごの"→"sあいごの"）。
+        // 修正: effective_prepend_f2=false でバッチから F2 を除外 → race 解消 → LiteralDetect 不要。
         let io = FakeProbeIo {
             tsf_mode: true,
             gji_healthy: true,
-            gji_long_idle: false, // GJI 活動中（warmup に応答済み）
+            gji_long_idle: false,
             ..Default::default()
         };
         let mut machine = make_gji_machine();
@@ -957,12 +966,15 @@ mod tests {
         }];
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
-            !done,
-            "TSF mode cold start + gji_healthy → LiteralDetect phase: Done を即返さないべき"
+            done,
+            "TSF mode + nc_fired=false + !gji_long_idle: F2 バッチ除外 → LiteralDetect 不要 → Done を即返す"
         );
         assert!(io.transmit_tsf_called.get());
         assert!(io.mark_warm_called.get());
-        assert_eq!(machine.phase_label(), "LiteralDetect");
+        assert!(
+            !io.last_used_prepend_f2.get(),
+            "effective_prepend_f2=false: バッチ送信に F2 を含めないべき"
+        );
     }
 
     #[test]
