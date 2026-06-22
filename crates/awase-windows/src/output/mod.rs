@@ -587,7 +587,6 @@ impl Output {
         use probe_io::ProbeIo as _;
         let env = crate::tsf::probe_fsm::TsfEnvSnapshot {
             is_tsf_mode: self.is_tsf_mode(),
-            gji_long_idle: self.gji_long_idle(),
             gji_active: self.gji_monitor_healthy(),
             // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
             //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。

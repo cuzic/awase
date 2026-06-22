@@ -72,7 +72,6 @@ struct ProbeContext {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct TsfEnvSnapshot {
     pub is_tsf_mode: bool,
-    pub gji_long_idle: bool,
     pub gji_active: bool,
     /// `LiteralDetect` の部分リテラル検出で参照する現在 composition 先頭文字。
     /// `crate::ime::get_foreground_comp_str_char()` のスナップショット。
@@ -1159,7 +1158,7 @@ mod tests {
         // ただし IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
         // （seつぞく バグ再発防止: gji_idle ~1.4s で nc_fired=false のまま timeout したケース）
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
@@ -1172,7 +1171,7 @@ mod tests {
         // Bug 2 再発防止: gji_resumed=true 時の false positive BS
         // GJI が F2×2 に I/O 応答済み → composition 成功確定 → LiteralDetect は false positive になる。
         let obs = ProbeObservations { nc_fired: true, gji_resumed: true };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true, ..Default::default() };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
 
@@ -1184,7 +1183,7 @@ mod tests {
         // Long cold (forces_prepend_f2=true): F2×2 で GJI を起動する必要があるためバッチに F2 が必要。
         // LiteralDetect も有効（GJI 応答未確認）。
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true, ..Default::default() };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
 
@@ -1196,7 +1195,7 @@ mod tests {
     fn decide_plan_nc_fired_keeps_f2_and_enables_literal_when_gji_active() {
         // nc_fired=true: NameChange 発火確認済み → F2 はバッチに含める。
         let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
@@ -1208,7 +1207,7 @@ mod tests {
     fn decide_plan_non_tsf_mode_keeps_f2() {
         // 非 TSF mode（Chrome 等）: nc_fired=false でも F2 バッチ同梱が必要。
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: true, ..Default::default() };
+        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
@@ -1219,7 +1218,7 @@ mod tests {
     fn decide_plan_nc_fired_with_deferred_vks_disables_eager_path() {
         // nc_fired=true でも deferred_vks が存在する場合は unicode に戻さない（nお race 防止）。
         let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: false, ..Default::default() };
+        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_active: false, ..Default::default() };
 
         let plan = decide_transmit_plan(false, true, obs, &env, false, false, false); // deferred_empty=false
 
@@ -1234,9 +1233,7 @@ mod tests {
     fn decide_plan_medium_cold_forces_f2_in_batch_on_ncwait_timeout() {
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
         let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_long_idle: false,
-            gji_active: true,
+            is_tsf_mode: true, gji_active: true,
             ..Default::default()
         };
 
@@ -1273,9 +1270,7 @@ mod tests {
         machine.force_phase_for_test(make_namechange_wait(0, false)); // 即タイムアウト
 
         let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_long_idle: false,
-            gji_active: true,
+            is_tsf_mode: true, gji_active: true,
             ..Default::default()
         };
         let actions = machine.tick_with_clock_env(&ManualClock(1000), &env);
@@ -1318,9 +1313,7 @@ mod tests {
         machine.force_phase_for_test(make_namechange_wait(0, false)); // Short cold: 即タイムアウト
 
         let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_long_idle: false,
-            gji_active: true,
+            is_tsf_mode: true, gji_active: true,
             ..Default::default()
         };
         let actions = machine.tick_with_clock_env(&ManualClock(1000), &env);
@@ -1362,7 +1355,7 @@ mod tests {
         };
         machine.force_phase_for_test(make_namechange_wait(0, false)); // 即タイムアウト
 
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
         let actions = machine.tick_with_clock_env(&ManualClock(1000), &env);
 
         if let ProbeAction::Transmit { plan, observations, target: TransmitTarget::Tsf, .. } = &actions[0] {

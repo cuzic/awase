@@ -19,10 +19,6 @@ pub(crate) trait ProbeIo {
     fn gate_is_bypass(&self) -> bool;
     /// GJI モニターが正常動作しているかどうかを返す。
     fn gji_monitor_healthy(&self) -> bool;
-    /// GJI が LONG_IDLE_MS 以上静止しているかどうかを返す。
-    ///
-    /// `true` のとき LiteralDetect は常に false positive になるためスキップする。
-    fn gji_long_idle(&self) -> bool;
     /// TSF 送信パイプラインを実行し、backspace 相当数を返す。
     fn transmit_tsf(
         &self,
@@ -76,11 +72,6 @@ impl ProbeIo for Output {
 
     fn gji_monitor_healthy(&self) -> bool {
         crate::tsf::observer::gji_monitor_healthy()
-    }
-
-    fn gji_long_idle(&self) -> bool {
-        crate::hook::current_tick_ms().saturating_sub(crate::tsf::observer::gji_last_io_ms())
-            >= crate::tuning::LONG_IDLE_MS
     }
 
     fn transmit_tsf(
@@ -372,7 +363,6 @@ mod tests {
     struct FakeProbeIo {
         bypass: bool,
         gji_healthy: bool,
-        gji_long_idle: bool,
         tsf_mode: bool,
         tsf_transmit_result: usize,
         consecutive: u32,
@@ -396,7 +386,6 @@ mod tests {
             Self {
                 bypass: false,
                 gji_healthy: false,
-                gji_long_idle: false,
                 tsf_mode: false,
                 tsf_transmit_result: 1,
                 consecutive: 0,
@@ -421,9 +410,6 @@ mod tests {
         }
         fn gji_monitor_healthy(&self) -> bool {
             self.gji_healthy
-        }
-        fn gji_long_idle(&self) -> bool {
-            self.gji_long_idle
         }
         fn is_tsf_mode(&self) -> bool {
             self.tsf_mode
