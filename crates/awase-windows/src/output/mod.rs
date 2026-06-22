@@ -86,6 +86,13 @@ pub struct Output {
     ///
     /// `dispatch_probe_actions` が `WarmupResult` を生成した際の照合に使う。
     pub(crate) current_gji_probe_id: std::cell::Cell<Option<crate::tsf::gji_fsm::ProbeId>>,
+    /// GJI probe 中に OUTPUT_GATE を活性化するガード。
+    ///
+    /// `TsfProbeMachine::new_gji` は guard を受け取らなくなった（Task 2 以降）。
+    /// `send_romaji_as_tsf` の cold パスで `gji_begin_probe_guard()` を呼び、
+    /// `step_probe` 完了時 / `CancelProbe` 時に `gji_end_probe_guard()` で解放する。
+    /// Chrome / LiteralDetect probe は `TsfProbeMachine._guard` で独立管理する。
+    gji_probe_guard: std::cell::RefCell<Option<crate::tsf::probe_bridge::OutputActiveGuard>>,
     /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
     ///
     /// `ProbeIo::store_gji_warmup_result` がセットし、`step_probe` 完了後に取り出す。
@@ -165,6 +172,7 @@ impl Output {
             injection_mode: InjectionMode::Unicode,
             gji_fsm: std::cell::RefCell::new(crate::tsf::gji_fsm::GjiFsm::new()),
             current_gji_probe_id: std::cell::Cell::new(None),
+            gji_probe_guard: std::cell::RefCell::new(None),
             pending_gji_warmup: std::cell::Cell::new(None),
             pending_gji_composition_reset: std::cell::Cell::new(false),
             pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
@@ -234,6 +242,20 @@ impl Output {
     /// 現在の GJI probe_id を返す（確認用、消費しない）。
     pub(crate) fn gji_current_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
         self.current_gji_probe_id.get()
+    }
+
+    /// GJI probe の OUTPUT_GATE ガードを開始する。
+    ///
+    /// `send_romaji_as_tsf` の cold パスで `TsfProbeMachine::new_gji` を呼ぶ直前に使う。
+    pub(crate) fn gji_begin_probe_guard(&self) {
+        *self.gji_probe_guard.borrow_mut() = Some(crate::tsf::probe_bridge::OutputActiveGuard::begin());
+    }
+
+    /// GJI probe の OUTPUT_GATE ガードを解放する。
+    ///
+    /// `step_probe` 完了時 / `CancelProbe` 時に呼ぶ。
+    pub(crate) fn gji_end_probe_guard(&self) {
+        *self.gji_probe_guard.borrow_mut() = None;
     }
 
     /// `pending_gji_key_responses` を全件取り出す。
@@ -596,6 +618,7 @@ impl Output {
         let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
         if done {
             self.on_tsf_probe_ready();
+            self.gji_end_probe_guard();
             // `dispatch_probe_actions` が `ProbeIo::store_gji_warmup_result` を呼んでいれば
             // `pending_gji_warmup` に結果が入っている。probe_id と照合して FSM に渡す。
             let gji_response = self.gji_take_warmup_result().and_then(|result| {

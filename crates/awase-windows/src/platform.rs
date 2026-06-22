@@ -224,6 +224,7 @@ impl WindowsPlatform {
                         } else {
                             log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
                             *self.output.pending_tsf.borrow_mut() = None;
+                            self.output.gji_end_probe_guard();
                         }
                         self.timer.kill(crate::TIMER_TSF_PROBE);
                         let _ = self.output.current_gji_probe_id.take();

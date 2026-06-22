@@ -313,8 +313,11 @@ pub(crate) enum ProbeAction {
 pub(crate) struct TsfProbeMachine {
     /// ログ相関番号
     cold_seq: u32,
-    /// RAII guard。drop で `OUTPUT_GATE.active=false`
-    _guard: OutputActiveGuard,
+    /// RAII guard。drop で `OUTPUT_GATE.active=false`。
+    ///
+    /// GJI probe では `None`（guard は `Output::gji_probe_guard` で管理する）。
+    /// Chrome / LiteralDetect probe では `Some` を保持する。
+    _guard: Option<OutputActiveGuard>,
     /// 送信コンテキスト（`enter_transmit_*` で `ProbeAction` に畳み込む）
     ctx: ProbeContext,
     /// 現在フェーズ
@@ -323,6 +326,8 @@ pub(crate) struct TsfProbeMachine {
 
 impl TsfProbeMachine {
     /// TSF cold warmup (`send_romaji_as_tsf` の cold パス) 用コンストラクタ。
+    ///
+    /// guard は渡さない。`Output::gji_probe_guard` で管理する（Task 2 以降）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_gji(
         romaji: &str,
@@ -337,11 +342,10 @@ impl TsfProbeMachine {
         forces_prepend_f2: bool,
         is_long_cold: bool,
         fresh_f2_at_probe_start: bool,
-        guard: OutputActiveGuard,
     ) -> Self {
         Self {
             cold_seq,
-            _guard: guard,
+            _guard: None,
             ctx: ProbeContext {
                 prepend_f2_warmup,
                 used_eager_path,
@@ -372,7 +376,7 @@ impl TsfProbeMachine {
     ) -> Self {
         Self {
             cold_seq,
-            _guard: guard,
+            _guard: Some(guard),
             ctx: ProbeContext {
                 prepend_f2_warmup: false,
                 used_eager_path: false,
@@ -403,7 +407,7 @@ impl TsfProbeMachine {
     ) -> Self {
         Self {
             cold_seq,
-            _guard: guard,
+            _guard: Some(guard),
             ctx: ProbeContext {
                 prepend_f2_warmup: false,
                 used_eager_path: false,
@@ -956,7 +960,6 @@ mod tests {
 
     fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> TsfProbeMachine {
         let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
-        let guard = OutputActiveGuard::noop_for_test();
         let probe = TsfReadinessProbe::new(0, 0, 0);
         TsfProbeMachine::new_gji(
             "ka",
@@ -971,7 +974,6 @@ mod tests {
             forces_prepend_f2,
             is_long_cold,
             false,
-            guard,
         )
     }
 
@@ -1284,7 +1286,6 @@ mod tests {
     #[test]
     fn fsm_ncwait_medium_cold_timeout_emits_f2_in_batch() {
         let mut machine = {
-            let guard = OutputActiveGuard::noop_for_test();
             let probe = TsfReadinessProbe::new(0, 0, 0);
             TsfProbeMachine::new_gji(
                 "ka",
@@ -1299,7 +1300,6 @@ mod tests {
                 true,  // forces_prepend_f2
                 false, // is_long_cold: Medium ではなく Long のみ true
                 false, // fresh_f2_at_probe_start: NameChangeWait パスはプローブ開始時に F2 未送信
-                guard,
             )
         };
         machine.force_phase_for_test(make_namechange_wait(0, false)); // 即タイムアウト
@@ -1328,7 +1328,6 @@ mod tests {
     #[test]
     fn fsm_ncwait_short_idle_timeout_still_skips_f2() {
         let mut machine = {
-            let guard = OutputActiveGuard::noop_for_test();
             let probe = TsfReadinessProbe::new(0, 0, 0);
             TsfProbeMachine::new_gji(
                 "sa",
@@ -1343,7 +1342,6 @@ mod tests {
                 false, // forces_prepend_f2
                 false, // is_long_cold
                 false, // fresh_f2_at_probe_start
-                guard,
             )
         };
         machine.force_phase_for_test(make_namechange_wait(0, false)); // Short cold: 即タイムアウト
@@ -1372,7 +1370,6 @@ mod tests {
         // Bug 1 の FSM 統合テスト: nc_fired=false + tsf_mode + !long_idle → should_prepend_f2=false
         // seつぞく バグ再発防止: nc_fired=false でも LiteralDetect を有効にして回収する。
         let mut machine = {
-            let guard = OutputActiveGuard::noop_for_test();
             let probe = TsfReadinessProbe::new(0, 0, 0);
             TsfProbeMachine::new_gji(
                 "sa",
@@ -1387,7 +1384,6 @@ mod tests {
                 false, // forces_prepend_f2
                 false, // is_long_cold
                 false, // fresh_f2_at_probe_start
-                guard,
             )
         };
         machine.force_phase_for_test(make_namechange_wait(0, false)); // 即タイムアウト

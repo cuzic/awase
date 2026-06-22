@@ -478,7 +478,7 @@ impl Output {
             let started = crate::tsf::cold_warmup::ColdWarmupSequence::new(self)
                 .run_start(session_expired, elapsed);
             let cold_seq = started.probe.cold_seq;
-            let guard = OutputActiveGuard::begin();
+            self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params();
             self.install_pending_tsf(TsfProbeMachine::new_gji(
                 romaji,
@@ -493,7 +493,6 @@ impl Output {
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
                 started.fresh_f2_at_probe_start,
-                guard,
             ));
             // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
             return;
