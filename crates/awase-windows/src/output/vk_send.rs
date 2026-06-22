@@ -171,6 +171,17 @@ impl Output {
             self.pending_gji_key_responses.borrow_mut().push(resp);
         }
 
+        {
+            let now_ms = crate::hook::current_tick_ms();
+            let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+            let write_ago = if last_write_ms == 0 {
+                "never".to_string()
+            } else {
+                format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+            };
+            log::info!("[gji-obs] KeyInput(batched): romaji={romaji:?} last_gji_write={write_ago}");
+        }
+
         let WarmthContext {
             warm,
             elapsed,
@@ -429,6 +440,17 @@ impl Output {
                 crate::tsf::gji_fsm::PendingInput::new(romaji),
             ));
             self.pending_gji_key_responses.borrow_mut().push(resp);
+        }
+
+        {
+            let now_ms = crate::hook::current_tick_ms();
+            let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+            let write_ago = if last_write_ms == 0 {
+                "never".to_string()
+            } else {
+                format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+            };
+            log::info!("[gji-obs] KeyInput(tsf): romaji={romaji:?} last_gji_write={write_ago}");
         }
 
         let WarmthContext {

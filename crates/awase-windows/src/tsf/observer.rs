@@ -137,6 +137,12 @@ pub struct TsfObservations {
     /// 観測・状態推定用。0 = 未取得。
     pub(super) gji_read_bytes: AtomicU64,
 
+    /// GJI プロセスの最終 WriteTransferCount 変化時刻 (GetTickCount64 ms)。0 = 未観測。
+    ///
+    /// `gji_last_io_ms`（読み書き問わず）とは独立して、WriteOperationCount が増加した
+    /// タイミングのみを記録する。historydb 更新タイミングの観測に使う。
+    pub(super) gji_last_write_ms: AtomicU64,
+
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
@@ -171,6 +177,7 @@ impl TsfObservations {
             gji_last_io_ms: AtomicU64::new(0),
             gji_read_op_count: AtomicU64::new(0),
             gji_read_bytes: AtomicU64::new(0),
+            gji_last_write_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             gji_keybinds_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
@@ -262,6 +269,14 @@ pub(crate) fn tsf_obs() -> &'static TsfObservations {
 /// GJI プロセスの最終 I/O 変化時刻 (ms) を返す。0 = 未観測。live 読み取り。
 pub(crate) fn gji_last_io_ms() -> u64 {
     TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed)
+}
+
+/// GJI プロセスの最終 WriteOperationCount 変化時刻 (ms) を返す。0 = 未観測。live 読み取り。
+///
+/// 読み書き問わず更新される `gji_last_io_ms` と異なり、書き込みのみを追跡する。
+/// historydb 更新タイミングの観測ログで使う。
+pub(crate) fn gji_last_write_ms() -> u64 {
+    TSF_OBS.gji_last_write_ms.load(Ordering::Relaxed)
 }
 
 /// GJI モニターが利用可能かどうか。live 読み取り。
@@ -420,6 +435,8 @@ struct GjiIoDelta {
     other_ops: u64,
     /// 前回ポーリングからの ReadTransferCount 差分（バイト数）
     read_bytes: u64,
+    /// 前回ポーリングからの WriteTransferCount 差分（バイト数）
+    write_bytes: u64,
 }
 
 impl GjiIoDelta {
@@ -436,8 +453,12 @@ struct GjiMonitor {
     last_other_ops: u64,
     /// GJI プロセスの累積 ReadTransferCount（バイト数）
     last_read_bytes: u64,
+    /// GJI プロセスの累積 WriteTransferCount（バイト数）
+    last_write_bytes: u64,
     /// 最後に I/O 変化を検出した時刻 (GetTickCount64 ms)
     last_change_ms: u64,
+    /// 最後に WriteOperationCount が変化した時刻 (GetTickCount64 ms)。0 = 未観測。
+    last_write_change_ms: u64,
 }
 
 // プロセスハンドルはスレッド非依存なので Send は安全。
@@ -460,7 +481,9 @@ impl GjiMonitor {
             last_write_ops: 0,
             last_other_ops: 0,
             last_read_bytes: 0,
+            last_write_bytes: 0,
             last_change_ms: now_ms,
+            last_write_change_ms: 0,
         };
         // ベースライン読み込み（次回 sample との差分比較用）
         let _ = monitor.sample();
@@ -483,19 +506,29 @@ impl GjiMonitor {
             write_ops: counters.WriteOperationCount.saturating_sub(self.last_write_ops),
             other_ops: counters.OtherOperationCount.saturating_sub(self.last_other_ops),
             read_bytes: counters.ReadTransferCount.saturating_sub(self.last_read_bytes),
+            write_bytes: counters.WriteTransferCount.saturating_sub(self.last_write_bytes),
         };
         if delta.any() {
+            let now_ms = crate::hook::current_tick_ms();
             self.last_read_ops = counters.ReadOperationCount;
             self.last_write_ops = counters.WriteOperationCount;
             self.last_other_ops = counters.OtherOperationCount;
             self.last_read_bytes = counters.ReadTransferCount;
-            self.last_change_ms = crate::hook::current_tick_ms();
+            self.last_write_bytes = counters.WriteTransferCount;
+            self.last_change_ms = now_ms;
+            if delta.write_ops > 0 {
+                self.last_write_change_ms = now_ms;
+            }
         }
         Some(delta)
     }
 
     const fn last_change_ms(&self) -> u64 {
         self.last_change_ms
+    }
+
+    const fn last_write_change_ms(&self) -> u64 {
+        self.last_write_change_ms
     }
 
     const fn last_read_ops(&self) -> u64 {
@@ -591,7 +624,19 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     TSF_OBS
                         .gji_read_bytes
                         .store(m.last_read_bytes(), Ordering::Relaxed);
-                    if delta.any() {
+                    if delta.write_ops > 0 {
+                        TSF_OBS
+                            .gji_last_write_ms
+                            .store(m.last_write_change_ms(), Ordering::Relaxed);
+                        log::info!(
+                            "[gji-io] WRITE: w_ops=+{} w_KB=+{:.1} \
+                             (r_ops=+{} x_ops=+{})",
+                            delta.write_ops,
+                            delta.write_bytes as f64 / 1024.0,
+                            delta.read_ops,
+                            delta.other_ops,
+                        );
+                    } else if delta.any() {
                         log::debug!(
                             "[gji-io] r_ops=+{} w_ops=+{} x_ops=+{} read_KB=+{:.1}",
                             delta.read_ops,
@@ -599,13 +644,13 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                             delta.other_ops,
                             delta.read_bytes as f64 / 1024.0,
                         );
-                        if delta.read_bytes >= 512 * 1024 {
-                            log::info!(
-                                "[gji-io] HEAVY read: +{:.1}KB \
-                                 (possible cold-start dictionary reload)",
-                                delta.read_bytes as f64 / 1024.0,
-                            );
-                        }
+                    }
+                    if delta.read_bytes >= 512 * 1024 {
+                        log::info!(
+                            "[gji-io] HEAVY read: +{:.1}KB \
+                             (possible cold-start dictionary reload)",
+                            delta.read_bytes as f64 / 1024.0,
+                        );
                     }
                 }
             }
@@ -790,7 +835,16 @@ unsafe extern "system" fn observation_event_proc(
                 // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方が
                 // AtomicWatcher で event-driven に待機する設計）
                 TSF_OBS.composition_probe.notify();
-                log::debug!("[gji-candidate] SHOW #{seq}");
+                {
+                    let now_ms = crate::hook::current_tick_ms();
+                    let last_write_ms = TSF_OBS.gji_last_write_ms.load(Ordering::Relaxed);
+                    let write_ago = if last_write_ms == 0 {
+                        "never".to_string()
+                    } else {
+                        format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+                    };
+                    log::info!("[gji-obs] candidate SHOW #{seq}: last_gji_write={write_ago}");
+                }
                 win32_async::notify_all();
             } else if class == MSCTFIME_UI_CLASS {
                 log::debug!("[tsf-ime-ui] SHOW hwnd={:?}", hwnd.0);
@@ -802,7 +856,16 @@ unsafe extern "system" fn observation_event_proc(
                 TSF_OBS
                     .gji_candidate_visible
                     .store(false, Ordering::Relaxed);
-                log::debug!("[gji-candidate] HIDE");
+                {
+                    let now_ms = crate::hook::current_tick_ms();
+                    let last_write_ms = TSF_OBS.gji_last_write_ms.load(Ordering::Relaxed);
+                    let write_ago = if last_write_ms == 0 {
+                        "never".to_string()
+                    } else {
+                        format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+                    };
+                    log::info!("[gji-obs] candidate HIDE: last_gji_write={write_ago}");
+                }
             } else if class == MSCTFIME_UI_CLASS {
                 log::debug!("[tsf-ime-ui] HIDE hwnd={:?}", hwnd.0);
             }
