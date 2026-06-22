@@ -158,6 +158,11 @@ impl ColdKind {
         matches!(self, Self::Medium | Self::Long)
     }
 
+    /// Long cold（≥ LONG_IDLE_MS = 10s）か。`literal_detect_ms` 延長の判定に使う。
+    pub(crate) const fn is_long(self) -> bool {
+        matches!(self, Self::Long)
+    }
+
     /// 即プローブを開始するか（Short のみ true、Medium/Long は KeyInput まで待機）。
     pub(crate) const fn is_proactive(self) -> bool {
         matches!(self, Self::Short)
@@ -256,6 +261,8 @@ pub(crate) enum GjiAction {
         ncwait_budget_ms: u64,
         /// F2 をバッチに強制同梱するか（Medium/Long cold で true）。
         forces_prepend_f2: bool,
+        /// Long cold（≥10s idle）か。`literal_detect_ms` 延長の判定に使う。
+        is_long_cold: bool,
     },
     /// 実行中の probe をキャンセルする
     CancelProbe { probe_id: ProbeId },
@@ -348,6 +355,7 @@ impl GjiFsm {
                     budget_ms: kind.budget_ms(),
                     ncwait_budget_ms: kind.ncwait_budget_ms(),
                     forces_prepend_f2: kind.forces_prepend_f2(),
+                    is_long_cold: kind.is_long(),
                 }),
             )
         } else {
@@ -496,6 +504,7 @@ impl TimedStateMachine for GjiFsm {
                                 let budget_ms = kind.budget_ms();
                                 let ncwait_budget_ms = kind.ncwait_budget_ms();
                                 let forces_prepend_f2 = kind.forces_prepend_f2();
+                                let is_long_cold = kind.is_long();
                                 *probe = ProbeStatus::Running { probe_id };
                                 pending.push(input);
                                 Response::emit(vec![GjiAction::StartProbe {
@@ -503,6 +512,7 @@ impl TimedStateMachine for GjiFsm {
                                     budget_ms,
                                     ncwait_budget_ms,
                                     forces_prepend_f2,
+                                    is_long_cold,
                                 }])
                             }
                             ProbeStatus::Running { .. } => {

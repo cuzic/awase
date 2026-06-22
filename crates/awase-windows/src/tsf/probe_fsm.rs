@@ -62,6 +62,9 @@ struct ProbeContext {
     /// F2 をバッチに強制同梱するか（GjiFsm の ColdKind::Medium/Long で true）。
     /// `SendFreshF2` dispatch 時に追加 F2 (F2×2) を送るかどうかにも使う。
     forces_prepend_f2: bool,
+    /// GjiFsm の ColdKind::Long（≥10s idle）か。
+    /// `literal_detect_ms` 延長（RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE）の判定に使う。
+    is_long_cold: bool,
 }
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
@@ -119,38 +122,33 @@ pub(crate) fn decide_transmit_plan(
     obs: ProbeObservations,
     env: &TsfEnvSnapshot,
     deferred_empty: bool,
+    forces_prepend_f2: bool,
+    is_long_cold: bool,
 ) -> TransmitPlan {
-    // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
+    // nc_fired=false + TSF mode (WezTerm) + !forces_prepend_f2 (Short cold):
     // SendFreshF2 action が ~300ms 前に fresh F2 を送信済み → WezTerm の TSF context は
     // 既に初期化済み。バッチに再び F2 を含めると WezTerm が TSF reinit を再トリガーし、
     // 同一バッチの先頭 VK が reinit 中に届いてリテラル化する race が起きる。
-    // gji_long_idle の場合は F2×2 で GJI を起動する必要があるためバッチ同梱が必要。
-    //
-    // gji_long_idle_probe_nonfired=true: medium idle (7000–9999ms) で GJI が F2 に応答せず
-    // NameChangeWait がタイムアウトしたケース。F2 が効いていない可能性が高く、
-    // バッチに F2 を含めないと先頭 VK ('k' 等) がリテラル化する（"かわんないよ → kあわんないよ"）。
-    // long_idle 相当として F2 同梱を強制する。
+    // Medium/Long cold (forces_prepend_f2=true): GJI が F2×2 で起動中 or 無応答のため F2 同梱が必要。
     let should_prepend_f2 = initial_prepend_f2
-        && (obs.nc_fired
-            || !env.is_tsf_mode
-            || env.gji_long_idle
-            || obs.gji_long_idle_probe_nonfired);
+        && (obs.nc_fired || !env.is_tsf_mode || forces_prepend_f2);
 
     // gji_resumed=true: GJI が F2×2 に I/O 応答 → VK path 強制。
-    // nc_fired=true: IME モード確認済み（gji_long_idle かつ deferred なし → unicode 優先）。
+    // nc_fired=true: IME モード確認済み（Medium/Long cold かつ deferred なし → VK path）。
     // nc_fired=false + TSF mode: VK path 固定（unicode は GJI composition をバイパスし "nお" race が起きる）。
     let used_eager_path = if obs.gji_resumed {
         false
     } else if obs.nc_fired {
-        (initial_used_eager || env.gji_long_idle) && deferred_empty
+        (initial_used_eager || forces_prepend_f2) && deferred_empty
     } else if env.is_tsf_mode {
         false
     } else {
-        initial_used_eager || env.gji_long_idle
+        initial_used_eager || forces_prepend_f2
     };
 
     // gji_resumed=true: GJI I/O 応答確認済み → composition 成功が確定。
-    // long_idle 後は候補ウィンドウ表示に >500ms かかり false positive になる（BS 誤送信 → context 破壊）。
+    // Long cold (is_long_cold=true) 後は候補ウィンドウ表示に >500ms かかり false positive になる
+    // （BS 誤送信 → context 破壊）。Medium cold は 7-10s で gji_long_idle_probe=true のため対象外。
     //
     // nc_fired=false + TSF mode 節:
     // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
@@ -158,11 +156,11 @@ pub(crate) fn decide_transmit_plan(
     // （seつぞく バグ: gji_idle ~1.4s で 300ms NameChangeWait が間に合わなかったケース）
     let needs_literal = (should_prepend_f2
         && env.gji_active
-        && (!env.gji_long_idle || env.is_tsf_mode)
+        && (!is_long_cold || env.is_tsf_mode)
         && !obs.gji_resumed)
         || (!obs.nc_fired && env.is_tsf_mode && env.gji_active && !obs.gji_resumed);
 
-    let literal_detect_ms = if env.gji_long_idle && env.is_tsf_mode {
+    let literal_detect_ms = if is_long_cold && env.is_tsf_mode {
         crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
     } else {
         crate::tuning::RAW_TSF_LITERAL_DETECT_MS
@@ -348,6 +346,7 @@ impl TsfProbeMachine {
         used_eager_path: bool,
         ncwait_budget_ms: u64,
         forces_prepend_f2: bool,
+        is_long_cold: bool,
         guard: OutputActiveGuard,
     ) -> Self {
         Self {
@@ -358,6 +357,7 @@ impl TsfProbeMachine {
                 used_eager_path,
                 ncwait_budget_ms,
                 forces_prepend_f2,
+                is_long_cold,
             },
             phase: ProbePhase::Probing {
                 probe,
@@ -387,6 +387,7 @@ impl TsfProbeMachine {
                 used_eager_path: false,
                 ncwait_budget_ms: crate::tuning::SETTLE_TIMEOUT_MS,
                 forces_prepend_f2: false,
+                is_long_cold: false,
             },
             phase: ProbePhase::Probing {
                 probe,
@@ -416,6 +417,7 @@ impl TsfProbeMachine {
                 used_eager_path: false,
                 ncwait_budget_ms: crate::tuning::SETTLE_TIMEOUT_MS,
                 forces_prepend_f2: false,
+                is_long_cold: false,
             },
             phase: ProbePhase::LiteralDetect {
                 detector,
@@ -858,6 +860,8 @@ impl TsfProbeMachine {
             observations,
             env,
             send.deferred_vks.is_empty(),
+            ctx.forces_prepend_f2,
+            ctx.is_long_cold,
         );
         self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
         vec![ProbeAction::Transmit {
@@ -960,6 +964,7 @@ mod tests {
     }
 
     fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> TsfProbeMachine {
+        let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
         let guard = OutputActiveGuard::noop_for_test();
         let probe = TsfReadinessProbe::new(0, 0, 0);
         TsfProbeMachine::new_gji(
@@ -973,6 +978,7 @@ mod tests {
             false,
             ncwait_budget_ms,
             forces_prepend_f2,
+            is_long_cold,
             guard,
         )
     }
@@ -1193,16 +1199,16 @@ mod tests {
     #[test]
     fn decide_plan_nc_not_fired_tsf_not_long_idle_suppresses_f2_but_keeps_literal() {
         // Bug 1 再発防止: "さいごの" → "sあいごの"
-        // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
+        // nc_fired=false + TSF mode (WezTerm) + Short cold (forces_prepend_f2=false):
         // SendFreshF2 が ~300ms 前に送信済み → バッチに F2 を含めると reinit race でリテラル化する。
         // ただし IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
         // （seつぞく バグ再発防止: gji_idle ~1.4s で nc_fired=false のまま timeout したケース）
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false, gji_long_idle_probe_nonfired: false };
         let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
 
-        let plan = decide_transmit_plan(true, false, obs, &env, true);
+        let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
-        assert!(!plan.should_prepend_f2, "nc_fired=false + tsf + !long_idle: F2 をバッチに含めない");
+        assert!(!plan.should_prepend_f2, "nc_fired=false + tsf + Short cold: F2 をバッチに含めない");
         assert!(plan.needs_literal, "nc_fired=false + tsf: IME 準備未確認 → LiteralDetect で保護");
     }
 
@@ -1213,21 +1219,21 @@ mod tests {
         let obs = ProbeObservations { nc_fired: true, gji_resumed: true, gji_long_idle_probe_nonfired: false };
         let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true, ..Default::default() };
 
-        let plan = decide_transmit_plan(true, false, obs, &env, true);
+        let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
 
         assert!(!plan.needs_literal, "gji_resumed=true: LiteralDetect をスキップしないと BS 誤送信になる");
     }
 
     #[test]
     fn decide_plan_nc_not_fired_tsf_long_idle_keeps_f2_and_literal() {
-        // gji_long_idle=true: F2×2 で GJI を起動する必要があるためバッチに F2 が必要。
+        // Long cold (forces_prepend_f2=true): F2×2 で GJI を起動する必要があるためバッチに F2 が必要。
         // LiteralDetect も有効（GJI 応答未確認）。
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false, gji_long_idle_probe_nonfired: false };
         let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true, ..Default::default() };
 
-        let plan = decide_transmit_plan(true, false, obs, &env, true);
+        let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
 
-        assert!(plan.should_prepend_f2, "gji_long_idle=true: F2 バッチ同梱が必要");
+        assert!(plan.should_prepend_f2, "Long cold: F2 バッチ同梱が必要");
         assert!(plan.needs_literal, "gji_resumed=false + tsf: LiteralDetect 有効");
     }
 
@@ -1237,10 +1243,10 @@ mod tests {
         let obs = ProbeObservations { nc_fired: true, gji_resumed: false, gji_long_idle_probe_nonfired: false };
         let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
 
-        let plan = decide_transmit_plan(true, false, obs, &env, true);
+        let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
         assert!(plan.should_prepend_f2, "nc_fired=true: F2 はバッチに含める");
-        assert!(plan.needs_literal, "gji_active + !long_idle + !gji_resumed: LiteralDetect 有効");
+        assert!(plan.needs_literal, "gji_active + !is_long_cold + !gji_resumed: LiteralDetect 有効");
     }
 
     #[test]
@@ -1249,7 +1255,7 @@ mod tests {
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false, gji_long_idle_probe_nonfired: false };
         let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: true, ..Default::default() };
 
-        let plan = decide_transmit_plan(true, false, obs, &env, true);
+        let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
         assert!(plan.should_prepend_f2, "非 TSF mode: nc_fired=false でも F2 を含める");
     }
@@ -1260,7 +1266,7 @@ mod tests {
         let obs = ProbeObservations { nc_fired: true, gji_resumed: false, gji_long_idle_probe_nonfired: false };
         let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: false, ..Default::default() };
 
-        let plan = decide_transmit_plan(false, true, obs, &env, false); // deferred_empty=false
+        let plan = decide_transmit_plan(false, true, obs, &env, false, false, false); // deferred_empty=false
 
         assert!(!plan.used_eager_path, "deferred_vks あり: unicode TSF パスを使わない");
     }
@@ -1278,7 +1284,7 @@ mod tests {
     }
 
     // 再現テスト: "かわんないよ → kあわんないよ"
-    // medium idle (gji_idle 7000–9999ms) で GJI が NameChangeWait 内の F2 に応答せず
+    // Medium cold (forces_prepend_f2=true) で GJI が NameChangeWait 内の F2 に応答せず
     // nc_fired=false のままタイムアウト → gji_long_idle_probe_nonfired=true →
     // should_prepend_f2=true（F2 バッチ同梱で先頭 VK リテラル化を防止）
     #[test]
@@ -1290,16 +1296,16 @@ mod tests {
         };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
-            gji_long_idle: false, // medium idle < LONG_IDLE_MS
+            gji_long_idle: false,
             gji_active: true,
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(true, false, obs, &env, true);
+        let plan = decide_transmit_plan(true, false, obs, &env, true, true, false); // Medium cold
 
         assert!(
             plan.should_prepend_f2,
-            "medium idle + GJI 無応答: F2 をバッチに含めないと先頭 VK がリテラル化する"
+            "Medium cold + GJI 無応答: F2 をバッチに含めないと先頭 VK がリテラル化する"
         );
         assert!(plan.needs_literal, "GJI 応答未確認: LiteralDetect 有効");
     }
@@ -1319,6 +1325,9 @@ mod tests {
                 ColdReason::FocusChange,
                 true, // prepend_f2_warmup=true (cold start)
                 false,
+                crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS, // Medium cold budget
+                true,  // forces_prepend_f2
+                false, // is_long_cold: Medium ではなく Long のみ true
                 guard,
             )
         };
@@ -1365,6 +1374,9 @@ mod tests {
                 ColdReason::FocusChange,
                 true,
                 false,
+                crate::tuning::SETTLE_TIMEOUT_MS, // Short cold budget
+                false, // forces_prepend_f2
+                false, // is_long_cold
                 guard,
             )
         };
@@ -1408,6 +1420,9 @@ mod tests {
                 ColdReason::FocusChange,
                 true,  // prepend_f2_warmup=true (cold start)
                 false,
+                crate::tuning::SETTLE_TIMEOUT_MS, // Short cold budget
+                false, // forces_prepend_f2
+                false, // is_long_cold
                 guard,
             )
         };

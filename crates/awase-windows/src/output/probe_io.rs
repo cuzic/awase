@@ -486,6 +486,7 @@ mod tests {
     }
 
     fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::probe_fsm::TsfProbeMachine {
+        let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
         let guard = OutputActiveGuard::noop_for_test();
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
         crate::tsf::probe_fsm::TsfProbeMachine::new_gji(
@@ -499,6 +500,7 @@ mod tests {
             false,
             ncwait_budget_ms,
             forces_prepend_f2,
+            is_long_cold,
             guard,
         )
     }

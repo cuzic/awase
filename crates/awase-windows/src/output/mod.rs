@@ -90,6 +90,8 @@ pub struct Output {
     pub(crate) current_gji_ncwait_budget_ms: std::cell::Cell<u64>,
     /// 最新 `StartProbe` の F2 強制同梱フラグ（Medium/Long cold で true）。
     pub(crate) current_gji_forces_prepend_f2: std::cell::Cell<bool>,
+    /// 最新 `StartProbe` の Long cold フラグ（ColdKind::Long で true）。
+    pub(crate) current_gji_is_long_cold: std::cell::Cell<bool>,
     /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
     ///
     /// `ProbeIo::store_gji_warmup_result` がセットし、`step_probe` 完了後に取り出す。
@@ -171,6 +173,7 @@ impl Output {
             current_gji_probe_id: std::cell::Cell::new(None),
             current_gji_ncwait_budget_ms: std::cell::Cell::new(crate::tuning::SETTLE_TIMEOUT_MS),
             current_gji_forces_prepend_f2: std::cell::Cell::new(false),
+            current_gji_is_long_cold: std::cell::Cell::new(false),
             pending_gji_warmup: std::cell::Cell::new(None),
             pending_gji_composition_reset: std::cell::Cell::new(false),
             pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
@@ -220,12 +223,13 @@ impl Output {
         self.current_gji_probe_id.set(Some(id));
     }
 
-    /// `GjiAction::StartProbe` の ncwait_budget_ms / forces_prepend_f2 を記録する。
+    /// `GjiAction::StartProbe` の ncwait_budget_ms / forces_prepend_f2 / is_long_cold を記録する。
     ///
     /// `send_romaji_as_tsf` が `TsfProbeMachine::new_gji` を生成する際に参照する。
-    pub(crate) fn gji_store_probe_ncwait(&self, ncwait_budget_ms: u64, forces_prepend_f2: bool) {
+    pub(crate) fn gji_store_probe_ncwait(&self, ncwait_budget_ms: u64, forces_prepend_f2: bool, is_long_cold: bool) {
         self.current_gji_ncwait_budget_ms.set(ncwait_budget_ms);
         self.current_gji_forces_prepend_f2.set(forces_prepend_f2);
+        self.current_gji_is_long_cold.set(is_long_cold);
     }
 
     /// 現在の GJI probe_id を返す（確認用、消費しない）。

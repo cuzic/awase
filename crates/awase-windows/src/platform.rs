@@ -202,13 +202,13 @@ impl WindowsPlatform {
         }
         for action in &response.actions {
             match action {
-                GjiAction::StartProbe { probe_id, budget_ms, ncwait_budget_ms, forces_prepend_f2 } => {
+                GjiAction::StartProbe { probe_id, budget_ms, ncwait_budget_ms, forces_prepend_f2, is_long_cold } => {
                     log::debug!(
                         "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms \
-                         ncwait={ncwait_budget_ms}ms forces_f2={forces_prepend_f2}"
+                         ncwait={ncwait_budget_ms}ms forces_f2={forces_prepend_f2} long={is_long_cold}"
                     );
                     self.output.gji_store_probe_id(*probe_id);
-                    self.output.gji_store_probe_ncwait(*ncwait_budget_ms, *forces_prepend_f2);
+                    self.output.gji_store_probe_ncwait(*ncwait_budget_ms, *forces_prepend_f2, *is_long_cold);
                 }
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {

@@ -490,6 +490,7 @@ impl Output {
                 used_eager_path,
                 self.current_gji_ncwait_budget_ms.get(),
                 self.current_gji_forces_prepend_f2.get(),
+                self.current_gji_is_long_cold.get(),
                 guard,
             ));
             // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
