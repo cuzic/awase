@@ -57,6 +57,27 @@ impl FocusEpoch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProbeId(u32);
 
+/// `GjiAction::StartProbe` / `ProbeStatus::Authorized` が持つ probe パラメータ。
+///
+/// `TsfProbeMachine::new_gji` に渡す3値をまとめる。
+/// `ColdKind` から `transition_to_cold` / `on_event(KeyInput NotStarted)` で生成する。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProbeParams {
+    pub ncwait_budget_ms: u64,
+    pub forces_prepend_f2: bool,
+    pub is_long_cold: bool,
+}
+
+impl Default for ProbeParams {
+    fn default() -> Self {
+        Self {
+            ncwait_budget_ms: tuning::SETTLE_TIMEOUT_MS,
+            forces_prepend_f2: false,
+            is_long_cold: false,
+        }
+    }
+}
+
 // ── WarmupResult ─────────────────────────────────────────────────────────────
 
 /// warmup probe の完了経路（4-bool の旧 WarmupResult を enum に昇格）。
@@ -181,12 +202,18 @@ impl ColdKind {
 }
 
 /// `OnCold` 内の probe 進行状態。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ProbeStatus {
-    /// probe 未開始（`Long` タイムアウト直後、最初の `KeyInput` を待つ）
+    /// probe 未開始（Medium/Long タイムアウト直後、最初の `KeyInput` を待つ）
     NotStarted,
-    /// probe 実行中
-    Running { probe_id: ProbeId },
+    /// `StartProbe` を発行済みだが `TsfProbeMachine` はまだ作成されていない。
+    ///
+    /// `vk_send` が `params` を読み出して `TsfProbeMachine::new_gji` に渡す。
+    /// Task 3 で `Executing` へ昇格する。
+    Authorized { probe_id: ProbeId, params: ProbeParams },
+    /// `TsfProbeMachine` が実行中（Task 3 で machine フィールドを追加予定）。
+    #[allow(dead_code)]
+    Executing { probe_id: ProbeId },
 }
 
 /// GJI FSM の状態。
@@ -257,12 +284,8 @@ pub(crate) enum GjiAction {
         probe_id: ProbeId,
         /// GjiProbe フェーズの最大待機時間 (ms)
         budget_ms: u64,
-        /// NameChangeWait フェーズの deadline budget (ms)。`apply_fresh_f2_sent` に渡す。
-        ncwait_budget_ms: u64,
-        /// F2 をバッチに強制同梱するか（Medium/Long cold で true）。
-        forces_prepend_f2: bool,
-        /// Long cold（≥10s idle）か。`literal_detect_ms` 延長の判定に使う。
-        is_long_cold: bool,
+        /// `TsfProbeMachine::new_gji` に渡す probe パラメータ
+        params: ProbeParams,
     },
     /// 実行中の probe をキャンセルする
     CancelProbe { probe_id: ProbeId },
@@ -326,13 +349,28 @@ impl GjiFsm {
         long_idle_ms_for(self.injection_mode)
     }
 
-    /// 現在状態が `OnCold(Running)` なら probe_id を返す。
+    /// `OnCold(Authorized | Executing)` なら probe_id を返す。
     fn running_probe_id(&self) -> Option<ProbeId> {
         match &self.state {
+            GjiState::OnCold { probe, .. } => match probe {
+                ProbeStatus::Authorized { probe_id, .. } | ProbeStatus::Executing { probe_id } => {
+                    Some(*probe_id)
+                }
+                ProbeStatus::NotStarted => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// `OnCold(Authorized)` なら `ProbeParams` を返す。
+    ///
+    /// `vk_send` が `TsfProbeMachine::new_gji` に渡すパラメータを読み出すために使う。
+    pub(crate) fn current_probe_params(&self) -> Option<ProbeParams> {
+        match &self.state {
             GjiState::OnCold {
-                probe: ProbeStatus::Running { probe_id },
+                probe: ProbeStatus::Authorized { params, .. },
                 ..
-            } => Some(*probe_id),
+            } => Some(*params),
             _ => None,
         }
     }
@@ -348,15 +386,14 @@ impl GjiFsm {
     ) -> Response<GjiAction, GjiTimer> {
         let (probe_status, start_action) = if kind.is_proactive() {
             let probe_id = self.alloc_probe_id();
+            let params = ProbeParams {
+                ncwait_budget_ms: kind.ncwait_budget_ms(),
+                forces_prepend_f2: kind.forces_prepend_f2(),
+                is_long_cold: kind.is_long(),
+            };
             (
-                ProbeStatus::Running { probe_id },
-                Some(GjiAction::StartProbe {
-                    probe_id,
-                    budget_ms: kind.budget_ms(),
-                    ncwait_budget_ms: kind.ncwait_budget_ms(),
-                    forces_prepend_f2: kind.forces_prepend_f2(),
-                    is_long_cold: kind.is_long(),
-                }),
+                ProbeStatus::Authorized { probe_id, params },
+                Some(GjiAction::StartProbe { probe_id, budget_ms: kind.budget_ms(), params }),
             )
         } else {
             (ProbeStatus::NotStarted, None)
@@ -537,21 +574,20 @@ impl TimedStateMachine for GjiFsm {
                             ProbeStatus::NotStarted => {
                                 // Medium/Long の最初の KeyInput で probe を開始する
                                 let probe_id = maybe_new_probe_id.unwrap();
-                                let budget_ms = kind.budget_ms();
-                                let ncwait_budget_ms = kind.ncwait_budget_ms();
-                                let forces_prepend_f2 = kind.forces_prepend_f2();
-                                let is_long_cold = kind.is_long();
-                                *probe = ProbeStatus::Running { probe_id };
+                                let params = ProbeParams {
+                                    ncwait_budget_ms: kind.ncwait_budget_ms(),
+                                    forces_prepend_f2: kind.forces_prepend_f2(),
+                                    is_long_cold: kind.is_long(),
+                                };
+                                *probe = ProbeStatus::Authorized { probe_id, params };
                                 pending.push(input);
                                 Response::emit(vec![GjiAction::StartProbe {
                                     probe_id,
-                                    budget_ms,
-                                    ncwait_budget_ms,
-                                    forces_prepend_f2,
-                                    is_long_cold,
+                                    budget_ms: kind.budget_ms(),
+                                    params,
                                 }])
                             }
-                            ProbeStatus::Running { .. } => {
+                            ProbeStatus::Authorized { .. } | ProbeStatus::Executing { .. } => {
                                 pending.push(input);
                                 Response::consume()
                             }
@@ -572,14 +608,8 @@ impl TimedStateMachine for GjiFsm {
 
             // ── WarmupComplete ─────────────────────────────────────────────
             GjiEvent::WarmupComplete { probe_id, result } => {
-                // 現在 Running の probe_id と照合（stale 判定）
-                let current_id = match &self.state {
-                    GjiState::OnCold {
-                        probe: ProbeStatus::Running { probe_id: id },
-                        ..
-                    } => Some(*id),
-                    _ => None,
-                };
+                // 現在 Authorized/Executing の probe_id と照合（stale 判定）
+                let current_id = self.running_probe_id();
                 if current_id != Some(probe_id) {
                     log::debug!(
                         "[gji-fsm] WarmupComplete {probe_id:?}: stale (current={current_id:?}), ignored"
@@ -600,13 +630,7 @@ impl TimedStateMachine for GjiFsm {
 
             // ── WarmupFailed ───────────────────────────────────────────────
             GjiEvent::WarmupFailed { probe_id } => {
-                let current_id = match &self.state {
-                    GjiState::OnCold {
-                        probe: ProbeStatus::Running { probe_id: id },
-                        ..
-                    } => Some(*id),
-                    _ => None,
-                };
+                let current_id = self.running_probe_id();
                 if current_id != Some(probe_id) {
                     log::debug!(
                         "[gji-fsm] WarmupFailed {probe_id:?}: stale (current={current_id:?}), ignored"
@@ -790,10 +814,10 @@ mod tests {
     fn complete(fsm: &GjiFsm) -> GjiEvent {
         let probe_id = match fsm.state() {
             GjiState::OnCold {
-                probe: ProbeStatus::Running { probe_id },
+                probe: ProbeStatus::Authorized { probe_id, .. },
                 ..
             } => *probe_id,
-            s => panic!("expected OnCold(Running), got {}", state_label(s)),
+            s => panic!("expected OnCold(Authorized), got {}", state_label(s)),
         };
         GjiEvent::WarmupComplete {
             probe_id,
@@ -809,10 +833,10 @@ mod tests {
     fn failed(fsm: &GjiFsm) -> GjiEvent {
         let probe_id = match fsm.state() {
             GjiState::OnCold {
-                probe: ProbeStatus::Running { probe_id },
+                probe: ProbeStatus::Authorized { probe_id, .. },
                 ..
             } => *probe_id,
-            s => panic!("expected OnCold(Running), got {}", state_label(s)),
+            s => panic!("expected OnCold(Authorized), got {}", state_label(s)),
         };
         GjiEvent::WarmupFailed { probe_id }
     }
@@ -891,7 +915,7 @@ mod tests {
         fsm.on_event(ime_on());
         // 古い probe_id でイベントを作成
         let stale_probe_id = match fsm.state() {
-            GjiState::OnCold { probe: ProbeStatus::Running { probe_id }, .. } => *probe_id,
+            GjiState::OnCold { probe: ProbeStatus::Authorized { probe_id, .. }, .. } => *probe_id,
             _ => panic!(),
         };
         // FocusChange で probe を再起動
@@ -980,7 +1004,7 @@ mod tests {
         );
         assert!(matches!(
             fsm.state(),
-            GjiState::OnCold { probe: ProbeStatus::Running { .. }, .. }
+            GjiState::OnCold { probe: ProbeStatus::Authorized { .. }, .. }
         ));
     }
 
@@ -1032,12 +1056,12 @@ mod tests {
         let r = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
         let probe_action = r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }));
         assert!(probe_action.is_some(), "Medium cold: KeyInput で StartProbe が必要");
-        if let Some(GjiAction::StartProbe { ncwait_budget_ms, forces_prepend_f2, .. }) = probe_action {
+        if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
             assert_eq!(
-                *ncwait_budget_ms, crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
+                params.ncwait_budget_ms, crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
                 "Medium cold: ncwait_budget_ms = MEDIUM_IDLE_PROBE_TOTAL_MS"
             );
-            assert!(*forces_prepend_f2, "Medium cold: forces_prepend_f2=true");
+            assert!(params.forces_prepend_f2, "Medium cold: forces_prepend_f2=true");
         }
     }
 
@@ -1050,14 +1074,14 @@ mod tests {
         // LongIdle タイムアウトから Long cold に入る
         fsm.on_timeout(GjiTimer::LongIdle);
         let r = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("a")));
-        if let Some(GjiAction::StartProbe { ncwait_budget_ms, forces_prepend_f2, .. }) =
+        if let Some(GjiAction::StartProbe { params, .. }) =
             r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
             assert_eq!(
-                *ncwait_budget_ms, crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
+                params.ncwait_budget_ms, crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
                 "Long cold: ncwait_budget_ms = GJI_LONG_IDLE_PROBE_TOTAL_MS"
             );
-            assert!(*forces_prepend_f2, "Long cold: forces_prepend_f2=true");
+            assert!(params.forces_prepend_f2, "Long cold: forces_prepend_f2=true");
         } else {
             panic!("Long cold KeyInput: StartProbe が必要");
         }
@@ -1068,14 +1092,14 @@ mod tests {
         let mut fsm = GjiFsm::new();
         // ImeOn → OnCold(Short) で即 StartProbe
         let r = fsm.on_event(ime_on());
-        if let Some(GjiAction::StartProbe { ncwait_budget_ms, forces_prepend_f2, .. }) =
+        if let Some(GjiAction::StartProbe { params, .. }) =
             r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
             assert_eq!(
-                *ncwait_budget_ms, crate::tuning::SETTLE_TIMEOUT_MS,
+                params.ncwait_budget_ms, crate::tuning::SETTLE_TIMEOUT_MS,
                 "Short cold: ncwait_budget_ms = SETTLE_TIMEOUT_MS"
             );
-            assert!(!forces_prepend_f2, "Short cold: forces_prepend_f2=false");
+            assert!(!params.forces_prepend_f2, "Short cold: forces_prepend_f2=false");
         } else {
             panic!("ImeOn: StartProbe が必要");
         }
@@ -1102,7 +1126,7 @@ mod tests {
     #[test]
     fn native_f2_consumed_while_short_cold_resets_probe() {
         let mut fsm = GjiFsm::new();
-        fsm.on_event(ime_on()); // → OnCold(Short, Running)
+        fsm.on_event(ime_on()); // → OnCold(Short, Authorized)
         // NativeF2Consumed → CompositionReset 相当（CancelProbe + NotStarted）
         let r = fsm.on_event(GjiEvent::NativeF2Consumed);
         assert!(

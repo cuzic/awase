@@ -479,6 +479,7 @@ impl Output {
                 .run_start(session_expired, elapsed);
             let cold_seq = started.probe.cold_seq;
             let guard = OutputActiveGuard::begin();
+            let probe_params = self.gji_current_probe_params();
             self.install_pending_tsf(TsfProbeMachine::new_gji(
                 romaji,
                 cold_seq,
@@ -488,9 +489,9 @@ impl Output {
                 started.cold_reason,
                 prepend_f2_warmup,
                 used_eager_path,
-                self.current_gji_ncwait_budget_ms.get(),
-                self.current_gji_forces_prepend_f2.get(),
-                self.current_gji_is_long_cold.get(),
+                probe_params.ncwait_budget_ms,
+                probe_params.forces_prepend_f2,
+                probe_params.is_long_cold,
                 started.fresh_f2_at_probe_start,
                 guard,
             ));

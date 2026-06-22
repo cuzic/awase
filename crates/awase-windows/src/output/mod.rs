@@ -86,12 +86,6 @@ pub struct Output {
     ///
     /// `dispatch_probe_actions` が `WarmupResult` を生成した際の照合に使う。
     pub(crate) current_gji_probe_id: std::cell::Cell<Option<crate::tsf::gji_fsm::ProbeId>>,
-    /// 最新 `StartProbe` の NameChangeWait budget (ms)。`TsfProbeMachine` 生成時に参照する。
-    pub(crate) current_gji_ncwait_budget_ms: std::cell::Cell<u64>,
-    /// 最新 `StartProbe` の F2 強制同梱フラグ（Medium/Long cold で true）。
-    pub(crate) current_gji_forces_prepend_f2: std::cell::Cell<bool>,
-    /// 最新 `StartProbe` の Long cold フラグ（ColdKind::Long で true）。
-    pub(crate) current_gji_is_long_cold: std::cell::Cell<bool>,
     /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
     ///
     /// `ProbeIo::store_gji_warmup_result` がセットし、`step_probe` 完了後に取り出す。
@@ -171,9 +165,6 @@ impl Output {
             injection_mode: InjectionMode::Unicode,
             gji_fsm: std::cell::RefCell::new(crate::tsf::gji_fsm::GjiFsm::new()),
             current_gji_probe_id: std::cell::Cell::new(None),
-            current_gji_ncwait_budget_ms: std::cell::Cell::new(crate::tuning::SETTLE_TIMEOUT_MS),
-            current_gji_forces_prepend_f2: std::cell::Cell::new(false),
-            current_gji_is_long_cold: std::cell::Cell::new(false),
             pending_gji_warmup: std::cell::Cell::new(None),
             pending_gji_composition_reset: std::cell::Cell::new(false),
             pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
@@ -226,10 +217,18 @@ impl Output {
     /// `GjiAction::StartProbe` の ncwait_budget_ms / forces_prepend_f2 / is_long_cold を記録する。
     ///
     /// `send_romaji_as_tsf` が `TsfProbeMachine::new_gji` を生成する際に参照する。
-    pub(crate) fn gji_store_probe_ncwait(&self, ncwait_budget_ms: u64, forces_prepend_f2: bool, is_long_cold: bool) {
-        self.current_gji_ncwait_budget_ms.set(ncwait_budget_ms);
-        self.current_gji_forces_prepend_f2.set(forces_prepend_f2);
-        self.current_gji_is_long_cold.set(is_long_cold);
+    /// GjiFsm の `Authorized` 状態から `ProbeParams` を読み出す。
+    ///
+    /// `vk_send` が `TsfProbeMachine::new_gji` を呼ぶ直前に使う。
+    /// GjiFsm の状態更新（`on_event(KeyInput)`) はこの呼び出しより先に完了しているので、
+    /// Medium/Long cold の最初の打鍵でも正しいパラメータが返る（旧 Cell 方式の timing bug 修正）。
+    ///
+    /// `Authorized` でない場合は `ProbeParams::default()` を返す（Short cold Executing 移行後）。
+    pub(crate) fn gji_current_probe_params(&self) -> crate::tsf::gji_fsm::ProbeParams {
+        self.gji_fsm
+            .borrow()
+            .current_probe_params()
+            .unwrap_or_default()
     }
 
     /// 現在の GJI probe_id を返す（確認用、消費しない）。
