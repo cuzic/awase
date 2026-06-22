@@ -194,6 +194,7 @@ enum NextStep {
 /// [`ProbePhase::Probing`] の完了後アクションを区別するタグ。
 pub(crate) enum ProbeKind {
     /// 初回 GJI probe。settle check が必要な場合あり。
+    #[allow(dead_code)] // 構築はテスト専用 new_gji のみ、match は production で使用
     GjiInitial {
         needs_settle_check: bool,
         cold_reason: ColdReason,
@@ -349,6 +350,7 @@ impl TsfProbeMachine {
     /// TSF cold warmup (`send_romaji_as_tsf` の cold パス) 用コンストラクタ。
     ///
     /// guard は渡さない。`Output::gji_probe_guard` で管理する（Task 2 以降）。
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_gji(
         romaji: &str,

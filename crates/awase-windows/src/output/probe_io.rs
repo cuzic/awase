@@ -171,6 +171,7 @@ pub(crate) enum DispatchResult {
 }
 
 impl DispatchResult {
+    #[cfg(test)]
     pub(crate) fn is_done(&self) -> bool {
         matches!(self, Self::Done)
     }
