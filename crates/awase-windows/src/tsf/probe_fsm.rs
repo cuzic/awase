@@ -606,7 +606,7 @@ impl TsfProbeMachine {
             } => {
                 let now = clock.now_ms();
 
-                // gji_long_idle_probe モード: F2×2 送信後に GJI が I/O を出したか確認。
+                // gji_long_idle_probe モード: F2 送信後に GJI が I/O を出したか確認。
                 // GJI_IDLE_MS 静止を確認できれば OBJ_NAMECHANGE を待たず即 VK path へ。
                 if *gji_long_idle_probe {
                     let gji_io = env.gji_last_io_ms;
@@ -614,7 +614,7 @@ impl TsfProbeMachine {
                         let gji_idle = now.saturating_sub(gji_io);
                         if gji_idle >= crate::tuning::GJI_IDLE_MS {
                             log::debug!(
-                                "[tsf-probe] cold={} NameChangeWait(long-idle): GJI が F2×2 に応答 (idle={}ms) → VK path",
+                                "[tsf-probe] cold={} NameChangeWait(idle-probe): GJI が F2 後に応答 (idle={}ms) → VK path",
                                 self.cold_seq, gji_idle
                             );
                             return NextStep::TransmitTsf {
@@ -747,12 +747,18 @@ impl TsfProbeMachine {
             }
         };
         // タイムアウト選択:
-        //   gji_long_idle_probe → F2×2 に対する GJI I/O 応答を短期待機（GJI_LONG_IDLE_PROBE_TOTAL_MS）
-        //     タイムアウト後は unicode TSF フォールバック。GJI が応答すれば VK path に移行。
-        //   settled=true / settled=false かつ gji_idle < LONG_IDLE_MS → SETTLE_TIMEOUT_MS
-        let gji_long_idle_probe = !probe_settled && gji_idle_ms >= crate::tuning::LONG_IDLE_MS;
-        let timeout_ms = if gji_long_idle_probe {
+        //   gji_idle >= LONG_IDLE_MS (10s)  → GJI_LONG_IDLE_PROBE_TOTAL_MS (350ms)
+        //     F2×2 に対する GJI I/O 応答を監視。タイムアウト後は unicode TSF フォールバック。
+        //   gji_idle >= MEDIUM_IDLE_PROBE_MS (7s) → MEDIUM_IDLE_PROBE_TOTAL_MS (550ms)
+        //     ~8-10s idle 後は WezTerm GJI が fresh F2 への応答に ~325ms かかる実測あり。
+        //     GJI I/O 応答を監視し、settled (GJI_IDLE_MS 静止) を検出してから送信する。
+        //   gji_idle < MEDIUM_IDLE_PROBE_MS → SETTLE_TIMEOUT_MS (300ms)
+        let gji_long_idle_probe =
+            !probe_settled && gji_idle_ms >= crate::tuning::MEDIUM_IDLE_PROBE_MS;
+        let timeout_ms = if gji_idle_ms >= crate::tuning::LONG_IDLE_MS {
             crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS
+        } else if gji_long_idle_probe {
+            crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS
         } else {
             crate::tuning::SETTLE_TIMEOUT_MS
         };
@@ -985,6 +991,67 @@ mod tests {
         );
         if let ProbeAction::Transmit { observations, .. } = &actions[0] {
             assert!(!observations.nc_fired, "タイムアウトなので nc_fired=false が必須");
+        }
+    }
+
+    // 再現テスト: cold=7 "このろぐ → kおのろぐ" バグ
+    // gji_idle=8719ms (MEDIUM_IDLE_PROBE_MS 以上 LONG_IDLE_MS 未満) のとき、
+    // apply_fresh_f2_sent が gji_long_idle_probe=true かつ MEDIUM_IDLE_PROBE_TOTAL_MS タイムアウトで
+    // NameChangeWait へ遷移することを確認する。
+    #[test]
+    fn apply_fresh_f2_sent_medium_idle_sets_gji_long_idle_probe_and_extended_timeout() {
+        let baseline = crate::tsf::observer::namechange_baseline();
+        let mut machine = make_gji_machine();
+        // probe_settled=false, gji_idle_ms=8719 → MEDIUM_IDLE_PROBE_MS (7000) 以上 LONG_IDLE_MS (10000) 未満
+        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
+            probe_settled: false,
+            gji_idle_ms: 8_719,
+            remaining_ms: 0,
+            send: SendState::default(),
+        }));
+        let fresh_f2_ms: u64 = 1000;
+        machine.apply_fresh_f2_sent(baseline, fresh_f2_ms);
+
+        // NameChangeWait に遷移し、gji_long_idle_probe=true + 延長タイムアウトであることを確認。
+        // GJI I/O が 325ms 後に来ても 550ms 以内なら検出できる。
+        assert_eq!(machine.phase_label(), "NameChangeWait");
+        if let ProbePhase::NameChangeWait { gji_long_idle_probe, deadline_ms, .. } = &machine.phase {
+            assert!(*gji_long_idle_probe, "medium idle: gji_long_idle_probe=true が必須");
+            let expected_deadline = fresh_f2_ms + crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS;
+            assert_eq!(
+                *deadline_ms, expected_deadline,
+                "medium idle タイムアウト = MEDIUM_IDLE_PROBE_TOTAL_MS ({}ms) が必須",
+                crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS
+            );
+        } else {
+            panic!("NameChangeWait フェーズになるべき: {:?}", machine.phase_label());
+        }
+    }
+
+    #[test]
+    fn apply_fresh_f2_sent_long_idle_uses_long_idle_probe_timeout() {
+        let baseline = crate::tsf::observer::namechange_baseline();
+        let mut machine = make_gji_machine();
+        // gji_idle_ms >= LONG_IDLE_MS (10000) → GJI_LONG_IDLE_PROBE_TOTAL_MS タイムアウト
+        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
+            probe_settled: false,
+            gji_idle_ms: 15_000,
+            remaining_ms: 0,
+            send: SendState::default(),
+        }));
+        let fresh_f2_ms: u64 = 1000;
+        machine.apply_fresh_f2_sent(baseline, fresh_f2_ms);
+
+        if let ProbePhase::NameChangeWait { gji_long_idle_probe, deadline_ms, .. } = &machine.phase {
+            assert!(*gji_long_idle_probe, "long idle: gji_long_idle_probe=true が必須");
+            let expected_deadline = fresh_f2_ms + crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
+            assert_eq!(
+                *deadline_ms, expected_deadline,
+                "long idle タイムアウト = GJI_LONG_IDLE_PROBE_TOTAL_MS ({}ms) が必須",
+                crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS
+            );
+        } else {
+            panic!("NameChangeWait フェーズになるべき: {:?}", machine.phase_label());
         }
     }
 

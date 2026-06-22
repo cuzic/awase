@@ -91,6 +91,21 @@ pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
 /// タイムアウト時は F22→F21 セカンドステージへ（keybinds_ok=true の場合）。
 pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
 
+/// GJI セッションが「中程度の idle」と判断する GJI アイドル閾値 (ms)。
+///
+/// LONG_IDLE_MS (10s) 未満でも ~7s 以上の idle 後は WezTerm TSF が応答するまでに
+/// ~325ms かかる実測がある（cold=7: gji_idle=8719ms 後 GJI が 325ms 後に起動）。
+/// SETTLE_TIMEOUT_MS (300ms) では間に合わないため、gji_long_idle_probe（GJI I/O 応答監視）
+/// をこの閾値以上でも有効にし、MEDIUM_IDLE_PROBE_TOTAL_MS の余裕を確保する。
+pub const MEDIUM_IDLE_PROBE_MS: u64 = 7_000;
+
+/// GJI 中程度 idle 時の NameChangeWait GJI I/O 応答確認タイムアウト (ms)。
+///
+/// 実測（~8.7s idle 後 cold=7）: fresh F2 から 325ms 後に GJI I/O → +80ms 静止 = 405ms。
+/// 550ms = 実測最大 ~405ms + 145ms マージン。
+/// タイムアウトした場合は GJI_LONG_IDLE_PROBE_TOTAL_MS 同様に TransmitTsf へフォールバック。
+pub const MEDIUM_IDLE_PROBE_TOTAL_MS: u64 = 550;
+
 /// Chrome プローブ最小待機時間 (ms)。
 ///
 /// F2 を SendMessageTimeout で送信後、TSF 応答を待つ最低時間。

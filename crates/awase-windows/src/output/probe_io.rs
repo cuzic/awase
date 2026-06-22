@@ -764,6 +764,39 @@ mod tests {
     }
 
     #[test]
+    fn send_fresh_f2_with_medium_idle_enables_gji_probe_without_extra_f2() {
+        // 再現テスト: gji_idle=8719ms（MEDIUM_IDLE_PROBE_MS 以上、LONG_IDLE_MS 未満）
+        // cold=7 "このろぐ → kおのろぐ" バグ: GJI が fresh F2 から 325ms 後に起動するため
+        // SETTLE_TIMEOUT_MS (300ms) では間に合わず "kお" になっていた。
+        // gji_long_idle_probe=true + MEDIUM_IDLE_PROBE_TOTAL_MS (550ms) で GJI I/O を待てること。
+        // gji_long_idle=false のため追加 F2 は送らない（F2×1 のみ）。
+        use crate::tsf::probe_fsm::{ProbePhase, WaitingFor};
+        let io = FakeProbeIo {
+            gji_long_idle: false, // LONG_IDLE_MS 未満なので追加 F2 なし
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
+            probe_settled: false,
+            gji_idle_ms: 8_719, // MEDIUM_IDLE_PROBE_MS (7000) 以上 LONG_IDLE_MS (10000) 未満
+            remaining_ms: 0,
+            send: crate::tsf::probe_fsm::SendState::default(),
+        }));
+        let actions = vec![ProbeAction::SendFreshF2 {
+            cold_seq: 0,
+            probe_settled: false,
+        }];
+        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(!done, "medium idle: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき");
+        assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
+        assert!(
+            !io.send_extra_f2_called.get(),
+            "medium idle (gji_long_idle=false): 追加 F2 は送らない（F2×1 のみ）"
+        );
+        assert_eq!(machine.phase_label(), "NameChangeWait", "NameChangeWait フェーズで GJI I/O を監視するべき");
+    }
+
+    #[test]
     fn nc_not_fired_with_gji_long_idle_forces_unicode_tsf() {
         // nc_fired=false（NameChangeWait タイムアウトまたはスキップ）かつ gji_long_idle のとき、
         // 非 TSF mode では used_eager_path=false でも unicode TSF（used_eager_path=true）が強制される。
