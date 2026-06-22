@@ -187,6 +187,18 @@ impl Output {
         self.gji_fsm.borrow_mut().on_event(event)
     }
 
+    /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
+    /// `OnComposing` 以外の状態では `None`。
+    pub(crate) fn gji_current_composition_epoch(
+        &self,
+    ) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
+        use crate::tsf::gji_fsm::GjiState;
+        match self.gji_fsm.borrow().state() {
+            GjiState::OnComposing { epoch } => Some(*epoch),
+            _ => None,
+        }
+    }
+
     /// GjiFsm に LongIdle タイムアウトを送り、Response を返す。
     pub(crate) fn gji_on_long_idle(
         &self,
@@ -563,6 +575,7 @@ impl Output {
             // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
             //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。
             foreground_comp_char: unsafe { crate::ime::get_foreground_comp_str_char() },
+            gji_candidate_visible: crate::tsf::observer::gji_candidate_visible_now(),
         };
         let actions = machine.tick(&env);
         let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);

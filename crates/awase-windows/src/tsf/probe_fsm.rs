@@ -73,6 +73,10 @@ pub(crate) struct TsfEnvSnapshot {
     /// `crate::ime::get_foreground_comp_str_char()` のスナップショット。
     /// `None` = HIMC 未取得（テスト・LiteralDetect 非活性時）→ 部分リテラル検出をスキップ。
     pub foreground_comp_char: Option<char>,
+    /// `NameChangeWait` の早期脱出判定。`GoogleJapaneseInputCandidateWindow` が現在表示中なら true。
+    /// true = composition active → OBJ_NAMECHANGE を待たず即 transmit（WezTerm 連続入力の 300ms 削減）。
+    /// `crate::tsf::observer::gji_candidate_visible_now()` のスナップショット。
+    pub gji_candidate_visible: bool,
 }
 
 /// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
@@ -612,6 +616,19 @@ impl TsfProbeMachine {
             } => {
                 let now = clock.now_ms();
 
+                // candidate 窓が表示中 = composition active → OBJ_NAMECHANGE を待たず即 transmit。
+                // fresh F2 は既に送信済みのためバッチに F2 を含めない (nc_fired=false の plan 経路)。
+                // LiteralDetect は有効のまま: IME mode が未確認の状態を安全に回収する。
+                // （WezTerm 連続入力時に毎文字 ~300ms の NameChangeWait タイムアウトを削減する）
+                if env.gji_candidate_visible {
+                    let elapsed = now.saturating_sub(*fresh_f2_ms);
+                    log::debug!(
+                        "[tsf-probe] cold={} NameChangeWait: candidate visible → composition active ({elapsed}ms)",
+                        self.cold_seq
+                    );
+                    return NextStep::TransmitTsf { nc_fired: false, gji_resumed: false };
+                }
+
                 // gji_long_idle_probe モード: F2 送信後に GJI が I/O を出したか確認。
                 // GJI_IDLE_MS 静止を確認できれば OBJ_NAMECHANGE を待たず即 VK path へ。
                 if *gji_long_idle_probe {
@@ -966,6 +983,33 @@ mod tests {
         let actions = machine.tick_with_clock_env(&ManualClock(500), &TsfEnvSnapshot::default());
         assert!(actions.is_empty(), "待機中は空 Vec を返すべき");
         assert_eq!(machine.phase_label(), "NameChangeWait");
+    }
+
+    #[test]
+    fn namechange_wait_candidate_visible_exits_immediately() {
+        // WezTerm 連続入力: candidate 窓が既に表示中 → 300ms タイムアウトを待たず即 transmit。
+        // nc_fired=false の plan 経路（prepend_f2=false、needs_literal=true）であることを検証する。
+        let mut machine = make_gji_machine();
+        machine.force_phase_for_test(make_namechange_wait(10_000, true)); // deadline は遠い未来
+
+        let env = TsfEnvSnapshot {
+            gji_candidate_visible: true,
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
+        let actions = machine.tick_with_clock_env(&ManualClock(500), &env);
+
+        assert!(!actions.is_empty(), "candidate visible → 即 Transmit を emit するべき");
+        assert!(
+            matches!(actions[0], ProbeAction::Transmit { target: TransmitTarget::Tsf, .. }),
+            "candidate visible: Transmit(Tsf) を emit するべき: {actions:?}",
+        );
+        if let ProbeAction::Transmit { observations, plan, .. } = &actions[0] {
+            assert!(!observations.nc_fired, "candidate visible 経路: nc_fired=false");
+            assert!(!plan.should_prepend_f2, "candidate visible 経路: 余分な F2 はバッチに含めない");
+            assert!(plan.needs_literal, "candidate visible 経路: IME mode 未確認 → LiteralDetect 有効");
+        }
     }
 
     #[test]
