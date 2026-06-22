@@ -263,6 +263,9 @@ impl WindowsPlatform {
                 CompositionAction::GjiCompositionReset => {
                     self.gji_on_composition_reset();
                 }
+                CompositionAction::GjiNativeF2Consumed => {
+                    self.gji_on_native_f2_consumed();
+                }
                 CompositionAction::ConsumeF2 => {
                     consume_f2 = true;
                 }

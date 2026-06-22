@@ -7,7 +7,7 @@
 //! ## 設計
 //!
 //! - 副作用なし。遷移ごとに [`CompositionAction`] を返し、dispatcher（`WindowsPlatform`）が
-//!   `EmitWarmup` / `MarkCold` / `ConsumeF2` / `GjiCompositionReset` を実行する。
+//!   `EmitWarmup` / `MarkCold` / `ConsumeF2` / `GjiCompositionReset` / `GjiNativeF2Consumed` を実行する。
 //! - warm 判定そのものは GjiFsm が SSOT であり、この FSM は重複させない。ここが
 //!   所有するのは「confirm キー KeyDown 後、KeyUp まで warmup を保留する」という
 //!   executor 固有の遷移である。warm/tsf の現況は呼び出し元がイベントに載せて渡す。
@@ -89,6 +89,11 @@ pub(crate) enum CompositionAction {
     ConsumeF2,
     /// GJI composition reset を通知する。
     GjiCompositionReset,
+    /// TSF mode での物理 F2 消費を GjiFsm に通知する（NativeF2Down(tsf_mode=true) 専用）。
+    ///
+    /// `GjiCompositionReset` の代わりに使用することで、GjiFsm が Medium/Long cold 中に
+    /// `OnCold(Long/Medium)` 状態を維持できる（`handle_composition_reset` による Short 降格を回避する）。
+    GjiNativeF2Consumed,
 }
 
 /// composition warmup タイミング FSM。
@@ -236,6 +241,9 @@ impl TimedStateMachine for CompositionFsm {
             CompositionEvent::NativeF2Down { tsf_mode } => {
                 if tsf_mode {
                     // 物理 F2 を consume し、代替の warmup F2 で一本化する（double-F2 防止）。
+                    // GjiNativeF2Consumed を使うことで GjiFsm が Medium/Long cold 状態を維持できる。
+                    // GjiCompositionReset を使うと handle_composition_reset が Short に降格してしまい、
+                    // Long cold の forces_prepend_f2/is_long_cold が失われる（Bug 1 の原因）。
                     self.state = CompositionState::Cold {
                         reason: ColdReason::NativeF2Consumed,
                     };
@@ -244,7 +252,7 @@ impl TimedStateMachine for CompositionFsm {
                         CompositionAction::MarkCold {
                             reason: ColdReason::NativeF2Consumed,
                         },
-                        CompositionAction::GjiCompositionReset,
+                        CompositionAction::GjiNativeF2Consumed,
                         CompositionAction::EmitWarmup {
                             reason: WarmupReason::NativeF2,
                         },
