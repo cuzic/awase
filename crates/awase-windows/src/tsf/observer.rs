@@ -158,6 +158,16 @@ pub struct TsfObservations {
     /// `EVENT_OBJECT_SHOW` で `true` に、`reset_candidate_was_seen()` 呼び出し時に `false` にリセット。
     /// `KanjiToggleStrategy` が shadow=false でも desync を検出して VK_KANJI を送れるようにする。
     pub(super) candidate_was_seen: AtomicBool,
+
+    /// `EVENT_OBJECT_SHOW` で GJI candidate が表示されたことを `GjiFsm::StartComposition` に橋渡しする pending フラグ。
+    ///
+    /// `observation_event_proc` が set → `take_pending_start_composition()` で drain → platform が `StartComposition` を dispatch。
+    pub(in crate::tsf) pending_start_composition: AtomicBool,
+
+    /// `EVENT_OBJECT_HIDE` で GJI candidate が消えたことを `GjiFsm::EndComposition` に橋渡しする pending フラグ。
+    ///
+    /// `observation_event_proc` が set → `take_pending_end_composition()` で drain → platform が `EndComposition` を dispatch。
+    pub(in crate::tsf) pending_end_composition: AtomicBool,
 }
 
 impl Default for TsfObservations {
@@ -181,6 +191,8 @@ impl TsfObservations {
             gji_monitor_ok: AtomicBool::new(false),
             gji_keybinds_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
+            pending_start_composition: AtomicBool::new(false),
+            pending_end_composition: AtomicBool::new(false),
         }
     }
 
@@ -312,6 +324,24 @@ pub(crate) fn gji_candidate_visible_now() -> bool {
 /// `apply_ime_open` 後に `candidate_was_seen` フラグをリセットする。
 pub(crate) fn reset_candidate_was_seen() {
     TSF_OBS.candidate_was_seen.store(false, Ordering::Relaxed);
+}
+
+/// `pending_start_composition` フラグを取り出す（set→false swap）。
+///
+/// `true` が返った場合、platform は `GjiFsm::StartComposition` を dispatch する。
+/// `observation_event_proc` の `EVENT_OBJECT_SHOW` が set し、
+/// `advance_tsf_probe` / `send_keys` 後に drain する。
+pub(crate) fn take_pending_start_composition() -> bool {
+    TSF_OBS.pending_start_composition.swap(false, Ordering::Relaxed)
+}
+
+/// `pending_end_composition` フラグを取り出す（set→false swap）。
+///
+/// `true` が返った場合、platform は `GjiFsm::EndComposition` を dispatch する。
+/// `observation_event_proc` の `EVENT_OBJECT_HIDE` が set し、
+/// `advance_tsf_probe` / `send_keys` 後に drain する。
+pub(crate) fn take_pending_end_composition() -> bool {
+    TSF_OBS.pending_end_composition.swap(false, Ordering::Relaxed)
 }
 
 /// GJI setup 完了後に呼んで `gji_keybinds_ok` を即座に `true` にセットする。
@@ -831,6 +861,7 @@ unsafe extern "system" fn observation_event_proc(
             if class == GJI_CANDIDATE_CLASS {
                 TSF_OBS.gji_candidate_visible.store(true, Ordering::Relaxed);
                 TSF_OBS.candidate_was_seen.store(true, Ordering::Relaxed);
+                TSF_OBS.pending_start_composition.store(true, Ordering::Relaxed);
                 let seq = TSF_OBS.gji_candidate_show.notify();
                 // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方が
                 // AtomicWatcher で event-driven に待機する設計）
@@ -853,9 +884,8 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_HIDE => {
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
-                TSF_OBS
-                    .gji_candidate_visible
-                    .store(false, Ordering::Relaxed);
+                TSF_OBS.gji_candidate_visible.store(false, Ordering::Relaxed);
+                TSF_OBS.pending_end_composition.store(true, Ordering::Relaxed);
                 {
                     let now_ms = crate::hook::current_tick_ms();
                     let last_write_ms = TSF_OBS.gji_last_write_ms.load(Ordering::Relaxed);

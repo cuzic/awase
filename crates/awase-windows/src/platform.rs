@@ -161,6 +161,8 @@ impl WindowsPlatform {
         if result.needs_gji_composition_reset {
             self.gji_on_composition_reset();
         }
+        // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition
+        self.drain_pending_composition_events();
         if let Some(gji_resp) = result.gji_response {
             self.dispatch_gji_response(gji_resp);
         }
@@ -353,6 +355,46 @@ impl WindowsPlatform {
         self.dispatch_gji_response(resp);
     }
 
+    /// GJI candidate SHOW → GjiFsm::StartComposition を dispatch する。
+    ///
+    /// `observation_event_proc` が `pending_start_composition` を set した後、
+    /// `advance_tsf_probe` / `send_keys` で `take_pending_start_composition()` が true を返したときに呼ぶ。
+    pub(crate) fn gji_on_start_composition(&mut self) {
+        log::debug!("[gji-fsm] StartComposition (candidate SHOW)");
+        let resp = self
+            .output
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::StartComposition);
+        self.dispatch_gji_response(resp);
+    }
+
+    /// GJI candidate HIDE → GjiFsm::EndComposition を dispatch する。
+    ///
+    /// `observation_event_proc` が `pending_end_composition` を set した後、
+    /// `advance_tsf_probe` / `send_keys` で `take_pending_end_composition()` が true を返したときに呼ぶ。
+    /// `OnComposing` 以外の状態では epoch が取れないためスキップする（GjiFsm 側でも無視される）。
+    pub(crate) fn gji_on_end_composition(&mut self) {
+        if let Some(epoch) = self.output.gji_current_composition_epoch() {
+            log::debug!("[gji-fsm] EndComposition (candidate HIDE) epoch={epoch:?}");
+            let resp = self
+                .output
+                .gji_on_event(crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch });
+            self.dispatch_gji_response(resp);
+        }
+    }
+
+    /// candidate SHOW/HIDE → StartComposition/EndComposition の pending フラグを drain する。
+    ///
+    /// `advance_tsf_probe` と `send_keys` の末尾で呼ぶ。
+    /// StartComposition を先に dispatch してから EndComposition を dispatch する順序を保つ。
+    fn drain_pending_composition_events(&mut self) {
+        if crate::tsf::observer::take_pending_start_composition() {
+            self.gji_on_start_composition();
+        }
+        if crate::tsf::observer::take_pending_end_composition() {
+            self.gji_on_end_composition();
+        }
+    }
+
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
     ///
     /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` を呼ぶため
@@ -389,6 +431,8 @@ impl PlatformRuntime for WindowsPlatform {
         if self.output.pending_gji_composition_reset.take() {
             self.gji_on_composition_reset();
         }
+        // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition
+        self.drain_pending_composition_events();
         // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
         if let Some(cmd) = self.output.pending_tsf_timer() {
             self.apply_timer_command(cmd);
