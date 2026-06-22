@@ -215,7 +215,7 @@ pub(crate) struct SendState {
 }
 
 impl SendState {
-    fn new(romaji: &str) -> Self {
+    pub(crate) fn new(romaji: &str) -> Self {
         Self {
             romaji: romaji.to_string(),
             deferred_vks: Vec::new(),
@@ -275,6 +275,20 @@ pub(crate) enum TransmitTarget {
     Chrome,
 }
 
+/// [`GjiWarmupFsm`] が LiteralDetect フェーズに引き渡す設定。
+///
+/// [`ProbeAction::StartLiteralDetect`] のペイロード。
+/// `GjiWarmupFsm` が transmit 完了後、`needs_literal=true` と判断したときに emit する。
+#[derive(Debug)]
+pub(crate) struct LiteralDetectConfig {
+    pub cold_seq: u32,
+    pub romaji: String,
+    pub deferred_vks: Vec<DeferredVk>,
+    pub plan: TransmitPlan,
+    pub observations: ProbeObservations,
+    pub literal_detect_ms: u64,
+}
+
 /// ステートマシン → dispatcher 方向の宣言的アクション。
 #[derive(Debug)]
 pub(crate) enum ProbeAction {
@@ -302,6 +316,11 @@ pub(crate) enum ProbeAction {
         backs: usize,
         romaji: String,
     },
+    /// GJI warmup 完了後に LiteralDetect フェーズを開始する。
+    ///
+    /// [`GjiWarmupFsm`] が `needs_literal=true` と判断したときに emit する。
+    /// dispatcher は `LiteralDetectFsm` を生成して `TIMER_TSF_PROBE` を継続させる。
+    StartLiteralDetect(LiteralDetectConfig),
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }

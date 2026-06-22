@@ -303,6 +303,15 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                 }
             }
 
+            ProbeAction::StartLiteralDetect(config) => {
+                // GjiWarmupFsm から emit される。#15 で LiteralDetectFsm を起動する処理を追加予定。
+                // TsfProbeMachine はこのアクションを emit しないため、現時点では未到達。
+                log::warn!(
+                    "[tsf-probe] cold={} StartLiteralDetect: LiteralDetect FSM 未接続 (task #15 実装予定)",
+                    config.cold_seq
+                );
+            }
+
             ProbeAction::RawTsfLiteralRecovery {
                 cold_seq,
                 backs,
