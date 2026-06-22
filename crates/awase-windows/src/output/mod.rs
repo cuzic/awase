@@ -589,7 +589,6 @@ impl Output {
             is_tsf_mode: self.is_tsf_mode(),
             gji_long_idle: self.gji_long_idle(),
             gji_active: self.gji_monitor_healthy(),
-            gji_last_io_ms: crate::tsf::observer::gji_last_io_ms(),
             // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
             //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。
             foreground_comp_char: unsafe { crate::ime::get_foreground_comp_str_char() },
