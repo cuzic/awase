@@ -205,18 +205,9 @@ impl ColdKind {
 pub(crate) enum ProbeStatus {
     /// probe 未開始（Medium/Long タイムアウト直後、最初の `KeyInput` を待つ）
     NotStarted,
-    /// `StartProbe` を発行済みだが `TsfProbeMachine` はまだ作成されていない。
-    ///
-    /// `vk_send` が `TsfProbeMachine::new_gji` を作成して `install_probe_machine` を呼ぶと
-    /// `Executing` へ昇格する。
+    /// `StartProbe` を発行済み。`vk_send` が `GjiWarmupFsm::new` を作成して
+    /// `install_pending_tsf` を呼ぶと probe が開始される。
     Authorized { probe_id: ProbeId, params: ProbeParams },
-    /// `TsfProbeMachine` が GjiFsm 内で実行中。
-    ///
-    /// `machine` は ticking 中に一時的に `None` になる（take/restore パターン）。
-    Executing {
-        probe_id: ProbeId,
-        machine: Option<Box<crate::tsf::probe_fsm::TsfProbeMachine>>,
-    },
 }
 
 impl std::fmt::Debug for ProbeStatus {
@@ -225,12 +216,6 @@ impl std::fmt::Debug for ProbeStatus {
             Self::NotStarted => write!(f, "NotStarted"),
             Self::Authorized { probe_id, params } => {
                 f.debug_struct("Authorized").field("probe_id", probe_id).field("params", params).finish()
-            }
-            Self::Executing { probe_id, machine } => {
-                f.debug_struct("Executing")
-                    .field("probe_id", probe_id)
-                    .field("machine", &machine.is_some())
-                    .finish()
             }
         }
     }
@@ -263,8 +248,8 @@ pub(crate) enum GjiState {
 /// GJI FSM に入力するイベント。
 #[derive(Debug)]
 pub(crate) enum GjiEvent {
-    /// IME ON（エンジン起動）
-    ImeOn { injection_mode: InjectionMode },
+    /// IME ON（エンジン起動）。`gji_idle_ms` で ColdKind を分類する（FocusChange と同様）。
+    ImeOn { injection_mode: InjectionMode, gji_idle_ms: u64 },
     /// IME OFF（エンジン停止）
     ImeOff,
     /// フォーカス変更。`gji_idle_ms` で ColdKind を分類する。
@@ -369,15 +354,10 @@ impl GjiFsm {
         long_idle_ms_for(self.injection_mode)
     }
 
-    /// `OnCold(Authorized | Executing)` なら probe_id を返す。
+    /// `OnCold(Authorized)` なら probe_id を返す。
     fn running_probe_id(&self) -> Option<ProbeId> {
         match &self.state {
-            GjiState::OnCold { probe, .. } => match probe {
-                ProbeStatus::Authorized { probe_id, .. } | ProbeStatus::Executing { probe_id, .. } => {
-                    Some(*probe_id)
-                }
-                ProbeStatus::NotStarted => None,
-            },
+            GjiState::OnCold { probe: ProbeStatus::Authorized { probe_id, .. }, .. } => Some(*probe_id),
             _ => None,
         }
     }
@@ -395,71 +375,34 @@ impl GjiFsm {
         }
     }
 
-    /// `Authorized` 状態で `TsfProbeMachine` を受け取り `Executing` へ昇格する。
+    /// OnCold 入場（probe を強制即開始）。`ImeOn` 専用。
     ///
-    /// `vk_send` が `TsfProbeMachine::new_gji` を作成した直後に呼ぶ。
-    pub(crate) fn install_probe_machine(
+    /// `FocusChange` と異なり、ユーザーが F2 で IME ON した場合は Long/Medium でも
+    /// 即プローブを開始する（入力意図が確実なため）。
+    fn transition_to_cold_proactive(
         &mut self,
-        machine: Box<crate::tsf::probe_fsm::TsfProbeMachine>,
-    ) {
-        match &mut self.state {
-            GjiState::OnCold { probe, .. } => {
-                if let ProbeStatus::Authorized { probe_id, .. } = probe {
-                    let id = *probe_id;
-                    *probe = ProbeStatus::Executing { probe_id: id, machine: Some(machine) };
-                } else {
-                    log::warn!("[gji-fsm] install_probe_machine: not Authorized (state={:?}), ignored", probe);
-                }
-            }
-            s => log::warn!("[gji-fsm] install_probe_machine: not OnCold ({:?}), ignored", s),
+        kind: ColdKind,
+        initial_pending: Vec<PendingInput>,
+        old_probe: Option<ProbeId>,
+    ) -> Response<GjiAction, GjiTimer> {
+        let probe_id = self.alloc_probe_id();
+        let params = ProbeParams {
+            ncwait_budget_ms: kind.ncwait_budget_ms(),
+            forces_prepend_f2: kind.forces_prepend_f2(),
+            is_long_cold: kind.is_long(),
+        };
+        self.state = GjiState::OnCold {
+            kind,
+            probe: ProbeStatus::Authorized { probe_id, params },
+            pending: initial_pending,
+            saw_native_f2: false,
+        };
+        let mut actions = Vec::new();
+        if let Some(id) = old_probe {
+            actions.push(GjiAction::CancelProbe { probe_id: id });
         }
-    }
-
-    /// `Executing` の machine を一時的に取り出す（tick のため）。
-    ///
-    /// 取り出した後は必ず `restore_probe_machine` か WarmupComplete で状態を更新すること。
-    pub(crate) fn take_probe_machine(
-        &mut self,
-    ) -> Option<Box<crate::tsf::probe_fsm::TsfProbeMachine>> {
-        match &mut self.state {
-            GjiState::OnCold {
-                probe: ProbeStatus::Executing { machine, .. },
-                ..
-            } => machine.take(),
-            _ => None,
-        }
-    }
-
-    /// `take_probe_machine` で取り出した machine を戻す（probe がまだ完了していない場合）。
-    pub(crate) fn restore_probe_machine(
-        &mut self,
-        machine: Box<crate::tsf::probe_fsm::TsfProbeMachine>,
-    ) {
-        match &mut self.state {
-            GjiState::OnCold {
-                probe: ProbeStatus::Executing { machine: slot, .. },
-                ..
-            } => *slot = Some(machine),
-            s => log::warn!("[gji-fsm] restore_probe_machine: not Executing ({:?}), dropped", s),
-        }
-    }
-
-    /// GJI probe machine を 1 ステップ進める（take + tick の集約）。
-    ///
-    /// `Executing` 状態でなければ `None` を返す。
-    /// 呼び出し元は受け取った `machine` で `dispatch_probe_actions` を呼び、
-    /// 完了なら machine を drop し `gji_on_event(WarmupComplete)` へ進む。
-    /// 継続なら `restore_probe_machine(machine)` で戻すこと。
-    pub(crate) fn tick_probe_machine(
-        &mut self,
-        tick_t: u64,
-        env: &crate::tsf::probe_fsm::TsfEnvSnapshot,
-    ) -> Option<(Vec<crate::tsf::probe_fsm::ProbeAction>, Box<crate::tsf::probe_fsm::TsfProbeMachine>)>
-    {
-        let mut machine = self.take_probe_machine()?;
-        log::debug!("[tsf-probe-tick] gji cold={} t={}ms", machine.cold_seq_hint(), tick_t);
-        let actions = machine.tick(env);
-        Some((actions, machine))
+        actions.push(GjiAction::StartProbe { probe_id, budget_ms: kind.budget_ms(), params });
+        Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
     }
 
     /// OnCold 入場（既存 probe のキャンセルと新 probe の開始を含む）。
@@ -576,10 +519,16 @@ impl TimedStateMachine for GjiFsm {
     fn on_event(&mut self, event: GjiEvent) -> Response<GjiAction, GjiTimer> {
         match event {
             // ── ImeOn ──────────────────────────────────────────────────────
-            GjiEvent::ImeOn { injection_mode } => {
+            GjiEvent::ImeOn { injection_mode, gji_idle_ms } => {
                 self.injection_mode = injection_mode;
                 match &self.state {
-                    GjiState::OffCold => self.transition_to_cold(ColdKind::Short, vec![], None),
+                    GjiState::OffCold => {
+                        let kind = ColdKind::classify(gji_idle_ms);
+                        log::debug!("[gji-fsm] ImeOn gji_idle={gji_idle_ms}ms → {kind:?}");
+                        // ImeOn（ユーザーが F2 を押した）は FocusChange と異なり
+                        // 即入力する意図があるため、Long/Medium でも proactive に probe を開始する。
+                        self.transition_to_cold_proactive(kind, vec![], None)
+                    }
                     _ => {
                         log::debug!(
                             "[gji-fsm] ImeOn: already on ({}), ignored",
@@ -674,7 +623,7 @@ impl TimedStateMachine for GjiFsm {
                                     params,
                                 }])
                             }
-                            ProbeStatus::Authorized { .. } | ProbeStatus::Executing { .. } => {
+                            ProbeStatus::Authorized { .. } => {
                                 pending.push(input);
                                 Response::consume()
                             }
@@ -884,6 +833,14 @@ mod tests {
     fn ime_on() -> GjiEvent {
         GjiEvent::ImeOn {
             injection_mode: InjectionMode::Vk,
+            gji_idle_ms: 0,
+        }
+    }
+
+    fn ime_on_with_idle(gji_idle_ms: u64) -> GjiEvent {
+        GjiEvent::ImeOn {
+            injection_mode: InjectionMode::Vk,
+            gji_idle_ms,
         }
     }
 
@@ -1293,6 +1250,41 @@ mod tests {
             "expected CancelProbe on ImeOff while cold"
         );
         assert!(matches!(fsm.state(), GjiState::OffCold));
+    }
+
+    // ── ImeOn with long idle → proactive Long probe (regression: IME Off Engine ON) ──
+
+    #[test]
+    fn ime_on_with_long_idle_uses_long_probe_proactively() {
+        // WezTerm で F2 を押した際に gji_idle > LONG_IDLE_MS なら
+        // forces_prepend_f2=true の probe を即開始する（FocusChange とは異なり NotStarted にしない）。
+        let mut fsm = GjiFsm::new();
+        let r = fsm.on_event(ime_on_with_idle(crate::tuning::LONG_IDLE_MS + 1000));
+        let probe_action = r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }));
+        assert!(probe_action.is_some(), "long idle ImeOn: StartProbe を即開始すべき");
+        if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
+            assert!(params.forces_prepend_f2, "long idle ImeOn: forces_prepend_f2=true が必要");
+            assert!(params.is_long_cold, "long idle ImeOn: is_long_cold=true が必要");
+        }
+        assert!(
+            matches!(fsm.state(), GjiState::OnCold { kind: ColdKind::Long, probe: ProbeStatus::Authorized { .. }, .. }),
+            "long idle ImeOn → OnCold(Long, Authorized)（NotStarted ではない）"
+        );
+    }
+
+    #[test]
+    fn ime_on_with_medium_idle_uses_medium_probe_proactively() {
+        let mut fsm = GjiFsm::new();
+        let r = fsm.on_event(ime_on_with_idle(crate::tuning::MEDIUM_IDLE_PROBE_MS + 500));
+        let probe_action = r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }));
+        assert!(probe_action.is_some(), "medium idle ImeOn: StartProbe を即開始すべき");
+        if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
+            assert!(params.forces_prepend_f2, "medium idle ImeOn: forces_prepend_f2=true が必要");
+        }
+        assert!(
+            matches!(fsm.state(), GjiState::OnCold { kind: ColdKind::Medium, probe: ProbeStatus::Authorized { .. }, .. }),
+            "medium idle ImeOn → OnCold(Medium, Authorized)"
+        );
     }
 
     // ── KeyInput in OnWarm → timer reset ─────────────────────────────────

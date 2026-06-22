@@ -213,9 +213,8 @@ impl WindowsPlatform {
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {
                         log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
-                        // GJI probe は GjiFsm::Executing に格納されている（Task 3 以降）。
-                        // machine を take して drop する（guard も解放）。
-                        self.output.gji_fsm.borrow_mut().cancel_probe();
+                        // GjiWarmupFsm は pending_tsf に格納されているため drop して解放する。
+                        *self.output.pending_tsf.borrow_mut() = None;
                         self.output.gji_end_probe_guard();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
                         let _ = self.output.current_gji_probe_id.take();
@@ -335,9 +334,11 @@ impl WindowsPlatform {
 
     /// IME ON を GjiFsm に通知する（`on_ime_applied(open=true)` から呼ぶ）。
     pub(crate) fn gji_on_ime_on(&mut self, injection_mode: crate::output::types::InjectionMode) {
+        let last_io = crate::tsf::observer::gji_last_io_ms();
+        let gji_idle_ms = crate::hook::current_tick_ms().saturating_sub(last_io);
         let resp = self
             .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn { injection_mode });
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn { injection_mode, gji_idle_ms });
         self.dispatch_gji_response(resp);
     }
 

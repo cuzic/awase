@@ -22,7 +22,7 @@ pub(crate) use resolve::ascii_to_vk as resolve_ascii_to_vk;
 /// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
 pub(crate) use vk_send::{TsfSendPipeline, VkMarker};
 
-pub(crate) use crate::tsf::probe_fsm::{DeferredVk, TsfProbeMachine};
+pub(crate) use crate::tsf::probe_fsm::DeferredVk;
 
 /// VK コード＋シフトフラグのペアを要素とする VK シーケンス型。
 pub(crate) type VkSequence = Vec<(VkCode, bool)>;
@@ -88,9 +88,8 @@ pub struct Output {
     pub(crate) current_gji_probe_id: std::cell::Cell<Option<crate::tsf::gji_fsm::ProbeId>>,
     /// GJI probe 中に OUTPUT_GATE を活性化するガード。
     ///
-    /// `TsfProbeMachine::new_gji` は guard を受け取らなくなった（Task 2 以降）。
     /// `send_romaji_as_tsf` の cold パスで `gji_begin_probe_guard()` を呼び、
-    /// `step_probe` 完了時 / `CancelProbe` 時に `gji_end_probe_guard()` で解放する。
+    /// `step_probe` 完了時 / `CancelProbe` 時 / `SwitchMachine` 時に `gji_end_probe_guard()` で解放する。
     /// Chrome / LiteralDetect probe は `TsfProbeMachine._guard` で独立管理する。
     gji_probe_guard: std::cell::RefCell<Option<crate::tsf::probe_bridge::OutputActiveGuard>>,
     /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
@@ -216,14 +215,10 @@ self.gji_fsm.borrow_mut().on_gji_long_idle()
 
     /// `GjiAction::StartProbe` の ncwait_budget_ms / forces_prepend_f2 / is_long_cold を記録する。
     ///
-    /// `send_romaji_as_tsf` が `TsfProbeMachine::new_gji` を生成する際に参照する。
+    /// `send_romaji_as_tsf` が `GjiWarmupFsm::new` を生成する際に参照する。
     /// GjiFsm の `Authorized` 状態から `ProbeParams` を読み出す。
     ///
-    /// `vk_send` が `TsfProbeMachine::new_gji` を呼ぶ直前に使う。
-    /// GjiFsm の状態更新（`on_event(KeyInput)`) はこの呼び出しより先に完了しているので、
-    /// Medium/Long cold の最初の打鍵でも正しいパラメータが返る（旧 Cell 方式の timing bug 修正）。
-    ///
-    /// `Authorized` でない場合は `ProbeParams::default()` を返す（Short cold Executing 移行後）。
+    /// `Authorized` でない場合は `ProbeParams::default()` を返す。
     pub(crate) fn gji_current_probe_params(&self) -> crate::tsf::gji_fsm::ProbeParams {
         self.gji_fsm
             .borrow()
@@ -234,14 +229,6 @@ self.gji_fsm.borrow_mut().on_gji_long_idle()
     /// 現在の GJI probe_id を返す（確認用、消費しない）。
     pub(crate) fn gji_current_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
         self.current_gji_probe_id.get()
-    }
-
-    /// GJI probe machine を GjiFsm::OnCold::Executing にインストールする。
-    ///
-    /// `send_romaji_as_tsf` の cold パスで `TsfProbeMachine::new_gji` 直後に呼ぶ。
-    /// GjiFsm が Authorized → Executing に遷移する。
-    pub(crate) fn install_gji_probe_machine(&self, machine: TsfProbeMachine) {
-        self.gji_fsm.borrow_mut().install_probe_machine(Box::new(machine));
     }
 
     /// GJI probe の OUTPUT_GATE ガードを開始する。
@@ -590,45 +577,6 @@ self.gji_fsm.borrow().is_warm()
             gji_candidate_visible: crate::tsf::observer::gji_candidate_visible_now(),
         };
 
-        // ── GJI probe パス（machine は GjiFsm::Executing に格納）──────────────
-        // tick_probe_machine が take+tick を集約する（Task 4 以降）。
-        // borrow_mut() の RefMut は tick_probe_machine 返却後に drop され、
-        // dispatch_probe_actions が &self(ProbeIo) を借用する前に解放される。
-        let gji_tick = self.gji_fsm.borrow_mut().tick_probe_machine(tick_t, &env);
-        if let Some((actions, mut machine)) = gji_tick {
-            let dispatch = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
-            let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
-            match dispatch {
-                probe_io::DispatchResult::Done => {
-                    self.on_tsf_probe_ready();
-                    self.gji_end_probe_guard();
-                    let gji_response = self.gji_take_warmup_result().and_then(|result| {
-                        let probe_id = self.current_gji_probe_id.take()?;
-                        Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
-                            probe_id,
-                            result,
-                        }))
-                    });
-                    return StepProbeResult {
-                        timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
-                        gji_response,
-                        needs_gji_composition_reset,
-                    };
-                }
-                probe_io::DispatchResult::Continue | probe_io::DispatchResult::SwitchMachine(_) => {
-                    self.gji_fsm.borrow_mut().restore_probe_machine(machine);
-                    return StepProbeResult {
-                        timer_cmd: TimerCommand::Continue {
-                            id: crate::TIMER_TSF_PROBE,
-                            delay: Duration::from_millis(10),
-                        },
-                        gji_response: None,
-                        needs_gji_composition_reset,
-                    };
-                }
-            }
-        }
-
         // ── Chrome / LiteralDetect / GjiWarmup probe パス（machine は pending_tsf に格納）──
         let machine = self.pending_tsf.borrow_mut().take();
         let Some(mut machine) = machine else {
@@ -704,12 +652,11 @@ self.gji_fsm.borrow().is_warm()
         *slot = Some(machine);
     }
 
-    /// GJI probe または Chrome/LiteralDetect probe が実行中なら継続タイマー命令を返す。
+    /// Chrome/LiteralDetect/GjiWarmup probe が実行中なら継続タイマー命令を返す。
     ///
-    /// `send_keys` 完了後の補完に使う。GJI probe は GjiFsm::Executing に移動した（Task 3）。
+    /// `send_keys` 完了後の補完に使う。
     pub(crate) fn pending_tsf_timer(&self) -> Option<TimerCommand> {
-        let gji_executing = self.gji_fsm.borrow().is_gji_probe_executing();
-        (gji_executing || self.pending_tsf.borrow().is_some()).then_some(TimerCommand::Continue {
+        self.pending_tsf.borrow().is_some().then_some(TimerCommand::Continue {
             id: crate::TIMER_TSF_PROBE,
             delay: Duration::from_millis(10),
         })
