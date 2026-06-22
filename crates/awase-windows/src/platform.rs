@@ -145,7 +145,7 @@ impl WindowsPlatform {
     /// pending_tsf をインストールし、TIMER_TSF_PROBE を起動する（vk_send async パス用）。
     pub(crate) fn install_pending_tsf_and_set_timer(
         &mut self,
-        machine: crate::output::TsfProbeMachine,
+        machine: Box<dyn crate::tsf::tickable_fsm::TickableFsm>,
     ) {
         self.output.install_pending_tsf(machine);
         if let Some(cmd) = self.output.pending_tsf_timer() {

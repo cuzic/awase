@@ -974,6 +974,40 @@ impl crate::tsf::tickable_fsm::TickableFsm for TsfProbeMachine {
     fn cold_seq_hint(&self) -> u32 {
         TsfProbeMachine::cold_seq_hint(self)
     }
+
+    fn forces_prepend_f2_for_extra_f2(&self) -> bool {
+        TsfProbeMachine::forces_prepend_f2_for_extra_f2(self)
+    }
+
+    fn apply_fresh_f2_sent(
+        &mut self,
+        nc_baseline: crate::tsf::observer::NamechangeBaseline,
+        fresh_f2_ms: u64,
+    ) {
+        TsfProbeMachine::apply_fresh_f2_sent(self, nc_baseline, fresh_f2_ms);
+    }
+
+    fn apply_transmit_done(
+        &mut self,
+        romaji: String,
+        ze_bs_count: usize,
+        detector: Option<crate::tsf::probe::LiteralDetector>,
+        literal_detect_ms: u64,
+        expected_kana: Option<char>,
+    ) -> bool {
+        TsfProbeMachine::apply_transmit_done(
+            self,
+            romaji,
+            ze_bs_count,
+            detector,
+            literal_detect_ms,
+            expected_kana,
+        )
+    }
+
+    fn push_deferred(&mut self, vk: awase::types::VkCode, needs_shift: bool) {
+        TsfProbeMachine::push_deferred(self, vk, needs_shift);
+    }
 }
 
 #[cfg(test)]

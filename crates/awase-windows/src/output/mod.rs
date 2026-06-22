@@ -66,7 +66,7 @@ pub struct Output {
     /// `send_romaji_as_tsf` / `send_romaji_batched` が cold start 時に設定し、
     /// `WindowsPlatform::advance_tsf_probe` がタイマーごとに 1 ステップ進める。
     /// 内部 `_guard` により OUTPUT_GATE.active が保留期間中維持される。
-    pub(crate) pending_tsf: std::cell::RefCell<Option<TsfProbeMachine>>,
+    pub(crate) pending_tsf: std::cell::RefCell<Option<Box<dyn crate::tsf::tickable_fsm::TickableFsm>>>,
     /// フォーカス変更直後の TSF モード確定前にキーを一時保留するゲート。
     ///
     /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
@@ -647,7 +647,7 @@ impl Output {
         };
         log::debug!("[tsf-probe-tick] cold={} t={}ms", machine.cold_seq_hint(), tick_t);
         let actions = machine.tick(&env);
-        let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
+        let done = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
         if done {
             self.on_tsf_probe_ready();
             self.gji_end_probe_guard();
@@ -682,7 +682,7 @@ impl Output {
     ///
     /// 直接 `*self.pending_tsf.borrow_mut() = Some(...)` するのではなくこのメソッドを使うことで、
     /// 暗黙のキャンセルをログに残し、バグ調査を容易にする。
-    pub(super) fn install_pending_tsf(&self, machine: TsfProbeMachine) {
+    pub(super) fn install_pending_tsf(&self, machine: Box<dyn crate::tsf::tickable_fsm::TickableFsm>) {
         let mut slot = self.pending_tsf.borrow_mut();
         if slot.is_some() {
             log::warn!(

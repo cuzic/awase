@@ -634,7 +634,7 @@ impl Runtime {
     /// TSF プローブマシンをインストールしてタイマーを起動する（async 送信パス用）。
     pub(crate) fn install_pending_tsf_and_set_timer(
         &mut self,
-        machine: crate::output::TsfProbeMachine,
+        machine: Box<dyn crate::tsf::tickable_fsm::TickableFsm>,
     ) {
         self.platform.install_pending_tsf_and_set_timer(machine);
     }

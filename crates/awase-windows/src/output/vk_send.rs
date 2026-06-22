@@ -328,12 +328,14 @@ impl Output {
                     // 同期パスでは WindowsPlatform::send_keys 完了後に pending_tsf_timer() が
                     // TIMER_TSF_PROBE を起動するが、async パスでは send_keys は既に return 済み。
                     // install_pending_tsf_and_set_timer で probe インストールとタイマー起動を一括実行する。
-                    app.install_pending_tsf_and_set_timer(TsfProbeMachine::new_chrome(
-                        &romaji_owned,
-                        cold_seq,
-                        probe,
-                        probe_max_ms,
-                        guard,
+                    app.install_pending_tsf_and_set_timer(Box::new(
+                        crate::tsf::chrome_probe::ChromeProbe::new(
+                            &romaji_owned,
+                            cold_seq,
+                            probe,
+                            probe_max_ms,
+                            guard,
+                        ),
                     ));
                 });
             });
@@ -547,16 +549,27 @@ impl Output {
             && !gji_long_idle
             && !self.is_tsf_mode()
         {
-            let deadline_ms =
-                crate::hook::current_tick_ms() + crate::tuning::RAW_TSF_LITERAL_DETECT_MS;
-            let guard = OutputActiveGuard::begin();
-            self.install_pending_tsf(TsfProbeMachine::new_literal_detect(
-                romaji,
-                cold_seq,
-                detector,
-                ze_bs_count,
-                deadline_ms,
-                guard,
+            // detector と guard は LiteralDetectFsm::new が内部生成するため渡さない。
+            // ze_bs_count は実際の値を渡す。
+            let _ = (detector,);
+            self.install_pending_tsf(Box::new(
+                crate::tsf::literal_detect_fsm::LiteralDetectFsm::new(
+                    cold_seq,
+                    romaji.to_owned(),
+                    vec![],
+                    crate::tsf::probe_fsm::TransmitPlan {
+                        should_prepend_f2: false,
+                        used_eager_path: false,
+                        needs_literal: true,
+                        literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    },
+                    crate::tsf::probe_fsm::ProbeObservations {
+                        nc_fired: false,
+                        gji_resumed: false,
+                    },
+                    ze_bs_count,
+                    crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                ),
             ));
         } else {
             // detector と ze_bs_count は Probing+GJI 健全パスでのみ使う。

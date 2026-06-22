@@ -59,6 +59,7 @@ impl LiteralDetectFsm {
         deferred_vks: Vec<DeferredVk>,
         plan: TransmitPlan,
         observations: ProbeObservations,
+        ze_bs_count: usize,
         literal_detect_ms: u64,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
@@ -73,7 +74,7 @@ impl LiteralDetectFsm {
             observations,
             detector,
             deadline_ms,
-            ze_bs_count: 1,
+            ze_bs_count,
         }
     }
 
