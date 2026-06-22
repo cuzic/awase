@@ -207,11 +207,11 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                     "[tsf-probe] cold={cold_seq} {settle_reason} → fresh F2 + NameChangeWait"
                 );
                 let (nc_baseline, fresh_f2_ms) = io.send_fresh_f2();
-                if io.gji_long_idle() {
-                    // F2 単発では GJI が I/O を出さない。F2×2 連続で GJI を起動させる。
+                if machine.forces_prepend_f2_for_extra_f2() {
+                    // Medium/Long cold: F2 単発では GJI が I/O を出さない。F2×2 連続で GJI を起動させる。
                     // NameChangeWait 内の gji_long_idle_probe が GJI I/O 応答を監視し、
                     // GJI_IDLE_MS 静止確認後に VK path へ移行する。
-                    log::debug!("[tsf-probe] cold={cold_seq} gji_long_idle: 追加 F2 送信 (F2×2 連続で GJI 起動)");
+                    log::debug!("[tsf-probe] cold={cold_seq} forces_prepend_f2: 追加 F2 送信 (F2×2 連続で GJI 起動)");
                     io.send_extra_f2();
                 }
                 machine.apply_fresh_f2_sent(nc_baseline, fresh_f2_ms);
@@ -482,6 +482,10 @@ mod tests {
     }
 
     fn make_gji_machine() -> crate::tsf::probe_fsm::TsfProbeMachine {
+        make_gji_machine_with_cold(crate::tuning::SETTLE_TIMEOUT_MS, false)
+    }
+
+    fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::probe_fsm::TsfProbeMachine {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
         crate::tsf::probe_fsm::TsfProbeMachine::new_gji(
@@ -493,6 +497,8 @@ mod tests {
             crate::tsf::output::ColdReason::FocusChange,
             false,
             false,
+            ncwait_budget_ms,
+            forces_prepend_f2,
             guard,
         )
     }
@@ -727,59 +733,53 @@ mod tests {
 
     #[test]
     fn send_fresh_f2_with_gji_long_idle_sends_extra_f2_and_waits_namechange() {
-        // gji_long_idle 時は SendFreshF2 の直後に追加 F2 を送信して F2×2 連続とする。
+        // forces_prepend_f2=true (Long cold) 時は SendFreshF2 の直後に追加 F2 を送信して F2×2 連続とする。
         // NameChangeWait はスキップせず GJI I/O 応答を gji_long_idle_probe モードで監視する。
         use crate::tsf::probe_fsm::{ProbePhase, WaitingFor};
-        let io = FakeProbeIo {
-            gji_long_idle: true,
-            ..Default::default()
-        };
-        let mut machine = make_gji_machine();
+        let io = FakeProbeIo::default();
+        let mut machine = make_gji_machine_with_cold(crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS, true);
         // apply_fresh_f2_sent が機能するよう、FreshF2Sent フェーズへ強制移行する。
         machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
             probe_settled: false,
-            gji_idle_ms: 15_000,
-            remaining_ms: 0,
+            budget_ms: crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
             send: crate::tsf::probe_fsm::SendState::default(),
         }));
         let actions = vec![ProbeAction::SendFreshF2 {
             cold_seq: 0,
             probe_settled: false,
         }];
-        // gji_long_idle=true のとき:
+        // forces_prepend_f2=true (Long cold) のとき:
         // - send_fresh_f2 と send_extra_f2 が呼ばれる（F2×2 連続）
         // - NameChangeWait フェーズへ移行し GJI I/O 応答を待つ（Done を即返さない）
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             !done,
-            "gji_long_idle: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき"
+            "forces_prepend_f2: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき"
         );
         assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
         assert!(
             io.send_extra_f2_called.get(),
-            "gji_long_idle: 追加 F2 で F2×2 連続にするべき"
+            "forces_prepend_f2: 追加 F2 で F2×2 連続にするべき"
         );
         assert_eq!(machine.phase_label(), "NameChangeWait", "NameChangeWait フェーズで待機するべき");
         assert!(!io.transmit_tsf_called.get(), "TransmitTsf は即実行されないべき");
     }
 
     #[test]
-    fn send_fresh_f2_with_medium_idle_enables_gji_probe_without_extra_f2() {
-        // 再現テスト: gji_idle=8719ms（MEDIUM_IDLE_PROBE_MS 以上、LONG_IDLE_MS 未満）
+    fn send_fresh_f2_with_medium_cold_sends_extra_f2_and_waits_namechange() {
+        // 再現テスト: ColdKind::Medium（7s〜10s idle）
         // cold=7 "このろぐ → kおのろぐ" バグ: GJI が fresh F2 から 325ms 後に起動するため
         // SETTLE_TIMEOUT_MS (300ms) では間に合わず "kお" になっていた。
         // gji_long_idle_probe=true + MEDIUM_IDLE_PROBE_TOTAL_MS (550ms) で GJI I/O を待てること。
-        // gji_long_idle=false のため追加 F2 は送らない（F2×1 のみ）。
+        // forces_prepend_f2=true だが Long ではないので追加 F2 なし（F2×1 のみ）。
+        // ※ Medium の forces_prepend_f2=true は「F2×2 を強制」ではなく「gji_long_idle_probe=true」の意味。
         use crate::tsf::probe_fsm::{ProbePhase, WaitingFor};
-        let io = FakeProbeIo {
-            gji_long_idle: false, // LONG_IDLE_MS 未満なので追加 F2 なし
-            ..Default::default()
-        };
-        let mut machine = make_gji_machine();
+        let io = FakeProbeIo::default();
+        // Medium cold: forces_prepend_f2=true (gji_long_idle_probe 有効), budget=MEDIUM_IDLE_PROBE_TOTAL_MS
+        let mut machine = make_gji_machine_with_cold(crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS, true);
         machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
             probe_settled: false,
-            gji_idle_ms: 8_719, // MEDIUM_IDLE_PROBE_MS (7000) 以上 LONG_IDLE_MS (10000) 未満
-            remaining_ms: 0,
+            budget_ms: crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
             send: crate::tsf::probe_fsm::SendState::default(),
         }));
         let actions = vec![ProbeAction::SendFreshF2 {
@@ -790,8 +790,8 @@ mod tests {
         assert!(!done, "medium idle: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき");
         assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
         assert!(
-            !io.send_extra_f2_called.get(),
-            "medium idle (gji_long_idle=false): 追加 F2 は送らない（F2×1 のみ）"
+            io.send_extra_f2_called.get(),
+            "medium idle (forces_prepend_f2=true): F2×2 を送るべき"
         );
         assert_eq!(machine.phase_label(), "NameChangeWait", "NameChangeWait フェーズで GJI I/O を監視するべき");
     }

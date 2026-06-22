@@ -57,6 +57,11 @@ impl Clock for SystemClock {
 struct ProbeContext {
     prepend_f2_warmup: bool,
     used_eager_path: bool,
+    /// NameChangeWait フェーズの deadline budget (ms)。GjiFsm の ColdKind 由来。
+    ncwait_budget_ms: u64,
+    /// F2 をバッチに強制同梱するか（GjiFsm の ColdKind::Medium/Long で true）。
+    /// `SendFreshF2` dispatch 時に追加 F2 (F2×2) を送るかどうかにも使う。
+    forces_prepend_f2: bool,
 }
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
@@ -181,8 +186,6 @@ enum NextStep {
     /// `WaitingForCallback(FreshF2Sent { .. })` へ遷移し `SendFreshF2` を emit
     EmitSendFreshF2 {
         probe_settled: bool,
-        gji_idle_ms: u64,
-        remaining_ms: u64,
     },
     /// `enter_transmit_tsf()` を呼ぶ
     TransmitTsf { nc_fired: bool, gji_resumed: bool },
@@ -233,12 +236,9 @@ pub(crate) enum WaitingFor {
     /// `apply_fresh_f2_sent` 待ち（SendFreshF2 パス）。
     FreshF2Sent {
         probe_settled: bool,
-        /// GjiProbe 完了時点での GJI 無通信時間（ms）。
-        /// `probe_settled=false` かつ長期休止時の NameChangeWait タイムアウト延長判定に使う。
-        gji_idle_ms: u64,
-        /// GjiProbe 完了時点での残余バジェット（ms）。
-        /// `probe_settled=false` かつ長期休止時の NameChangeWait タイムアウト上限に使う。
-        remaining_ms: u64,
+        /// NameChangeWait フェーズの deadline budget (ms)。
+        /// `ProbeContext::ncwait_budget_ms`（GjiFsm ColdKind 由来）をコピーして保持する。
+        budget_ms: u64,
         send: SendState,
     },
     /// `apply_transmit_done` 待ち（Transmit(Tsf) パス）。
@@ -346,6 +346,8 @@ impl TsfProbeMachine {
         cold_reason: ColdReason,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
+        ncwait_budget_ms: u64,
+        forces_prepend_f2: bool,
         guard: OutputActiveGuard,
     ) -> Self {
         Self {
@@ -354,6 +356,8 @@ impl TsfProbeMachine {
             ctx: ProbeContext {
                 prepend_f2_warmup,
                 used_eager_path,
+                ncwait_budget_ms,
+                forces_prepend_f2,
             },
             phase: ProbePhase::Probing {
                 probe,
@@ -381,6 +385,8 @@ impl TsfProbeMachine {
             ctx: ProbeContext {
                 prepend_f2_warmup: false,
                 used_eager_path: false,
+                ncwait_budget_ms: crate::tuning::SETTLE_TIMEOUT_MS,
+                forces_prepend_f2: false,
             },
             phase: ProbePhase::Probing {
                 probe,
@@ -408,6 +414,8 @@ impl TsfProbeMachine {
             ctx: ProbeContext {
                 prepend_f2_warmup: false,
                 used_eager_path: false,
+                ncwait_budget_ms: crate::tuning::SETTLE_TIMEOUT_MS,
+                forces_prepend_f2: false,
             },
             phase: ProbePhase::LiteralDetect {
                 detector,
@@ -502,16 +510,11 @@ impl TsfProbeMachine {
     fn tick_impl<C: Clock>(&mut self, clock: &C, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         match self.inspect_phase(clock, env) {
             NextStep::Wait => vec![],
-            NextStep::EmitSendFreshF2 {
-                probe_settled,
-                gji_idle_ms,
-                remaining_ms,
-            } => {
+            NextStep::EmitSendFreshF2 { probe_settled } => {
                 let send = self.take_send_for_fresh_f2();
                 self.phase = ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
                     probe_settled,
-                    gji_idle_ms,
-                    remaining_ms,
+                    budget_ms: self.ctx.ncwait_budget_ms,
                     send,
                 });
                 vec![ProbeAction::SendFreshF2 {
@@ -578,11 +581,8 @@ impl TsfProbeMachine {
                         if *needs_settle_check {
                             let is_ime_init_cold = cold_reason.requires_settle();
                             if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
-                                let remaining_ms = total_max_ms.saturating_sub(outcome.elapsed_ms);
                                 return NextStep::EmitSendFreshF2 {
                                     probe_settled: outcome.settled,
-                                    gji_idle_ms: outcome.gji_idle_ms,
-                                    remaining_ms,
                                 };
                             }
                         }
@@ -755,6 +755,11 @@ impl TsfProbeMachine {
         self.phase_label_internal()
     }
 
+    /// `SendFreshF2` dispatch 時に追加 F2 (F2×2) を送るかを示す（probe 生成時の ColdKind 由来）。
+    pub(crate) fn forces_prepend_f2_for_extra_f2(&self) -> bool {
+        self.ctx.forces_prepend_f2
+    }
+
     /// dispatcher が `SendFreshF2` を実行した後に呼ぶ。
     /// `WaitingForCallback(FreshF2Sent { .. })` → `NameChangeWait` へ遷移する。
     pub(crate) fn apply_fresh_f2_sent(
@@ -766,13 +771,12 @@ impl TsfProbeMachine {
             &mut self.phase,
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone),
         );
-        let (probe_settled, gji_idle_ms, _remaining_ms, send) = match phase {
+        let (probe_settled, budget_ms, send) = match phase {
             ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
                 probe_settled,
-                gji_idle_ms,
-                remaining_ms,
+                budget_ms,
                 send,
-            }) => (probe_settled, gji_idle_ms, remaining_ms, send),
+            }) => (probe_settled, budget_ms, send),
             other => {
                 log::warn!(
                     "[tsf-probe] cold={} apply_fresh_f2_sent: unexpected phase",
@@ -782,26 +786,12 @@ impl TsfProbeMachine {
                 return;
             }
         };
-        // タイムアウト選択:
-        //   gji_idle >= LONG_IDLE_MS (10s)  → GJI_LONG_IDLE_PROBE_TOTAL_MS (350ms)
-        //     F2×2 に対する GJI I/O 応答を監視。タイムアウト後は unicode TSF フォールバック。
-        //   gji_idle >= MEDIUM_IDLE_PROBE_MS (7s) → MEDIUM_IDLE_PROBE_TOTAL_MS (550ms)
-        //     ~8-10s idle 後は WezTerm GJI が fresh F2 への応答に ~325ms かかる実測あり。
-        //     GJI I/O 応答を監視し、settled (GJI_IDLE_MS 静止) を検出してから送信する。
-        //   gji_idle < MEDIUM_IDLE_PROBE_MS → SETTLE_TIMEOUT_MS (300ms)
-        let gji_long_idle_probe =
-            !probe_settled && gji_idle_ms >= crate::tuning::MEDIUM_IDLE_PROBE_MS;
-        let timeout_ms = if gji_idle_ms >= crate::tuning::LONG_IDLE_MS {
-            crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS
-        } else if gji_long_idle_probe {
-            crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS
-        } else {
-            crate::tuning::SETTLE_TIMEOUT_MS
-        };
-        let deadline_ms = fresh_f2_ms + timeout_ms;
+        // budget_ms は GjiFsm の ColdKind 由来（Short=300ms, Medium=550ms, Long=350ms）。
+        let gji_long_idle_probe = !probe_settled && self.ctx.forces_prepend_f2;
+        let deadline_ms = fresh_f2_ms + budget_ms;
         log::debug!(
-            "[tsf-probe] cold={} NameChangeWait deadline {}ms (probe_settled={probe_settled}, gji_idle={gji_idle_ms}ms, gji_long_idle_probe={gji_long_idle_probe})",
-            self.cold_seq, timeout_ms
+            "[tsf-probe] cold={} NameChangeWait deadline {}ms (probe_settled={probe_settled}, budget={budget_ms}ms, gji_long_idle_probe={gji_long_idle_probe})",
+            self.cold_seq, budget_ms
         );
         self.phase = ProbePhase::NameChangeWait {
             nc_baseline,
@@ -966,6 +956,10 @@ mod tests {
     use timed_fsm::ManualClock;
 
     fn make_gji_machine() -> TsfProbeMachine {
+        make_gji_machine_with_cold(crate::tuning::SETTLE_TIMEOUT_MS, false)
+    }
+
+    fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> TsfProbeMachine {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = TsfReadinessProbe::new(0, 0, 0);
         TsfProbeMachine::new_gji(
@@ -977,6 +971,8 @@ mod tests {
             ColdReason::FocusChange,
             false,
             false,
+            ncwait_budget_ms,
+            forces_prepend_f2,
             guard,
         )
     }
@@ -1071,12 +1067,14 @@ mod tests {
     #[test]
     fn apply_fresh_f2_sent_medium_idle_sets_gji_long_idle_probe_and_extended_timeout() {
         let baseline = crate::tsf::observer::namechange_baseline();
-        let mut machine = make_gji_machine();
-        // probe_settled=false, gji_idle_ms=8719 → MEDIUM_IDLE_PROBE_MS (7000) 以上 LONG_IDLE_MS (10000) 未満
+        // ColdKind::Medium: forces_prepend_f2=true, budget=MEDIUM_IDLE_PROBE_TOTAL_MS
+        let mut machine = make_gji_machine_with_cold(
+            crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
+            true,
+        );
         machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
             probe_settled: false,
-            gji_idle_ms: 8_719,
-            remaining_ms: 0,
+            budget_ms: crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
             send: SendState::default(),
         }));
         let fresh_f2_ms: u64 = 1000;
@@ -1101,12 +1099,14 @@ mod tests {
     #[test]
     fn apply_fresh_f2_sent_long_idle_uses_long_idle_probe_timeout() {
         let baseline = crate::tsf::observer::namechange_baseline();
-        let mut machine = make_gji_machine();
-        // gji_idle_ms >= LONG_IDLE_MS (10000) → GJI_LONG_IDLE_PROBE_TOTAL_MS タイムアウト
+        // ColdKind::Long: forces_prepend_f2=true, budget=GJI_LONG_IDLE_PROBE_TOTAL_MS
+        let mut machine = make_gji_machine_with_cold(
+            crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
+            true,
+        );
         machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
             probe_settled: false,
-            gji_idle_ms: 15_000,
-            remaining_ms: 0,
+            budget_ms: crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
             send: SendState::default(),
         }));
         let fresh_f2_ms: u64 = 1000;

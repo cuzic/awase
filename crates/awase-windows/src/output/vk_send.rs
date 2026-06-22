@@ -488,6 +488,8 @@ impl Output {
                 started.cold_reason,
                 prepend_f2_warmup,
                 used_eager_path,
+                self.current_gji_ncwait_budget_ms.get(),
+                self.current_gji_forces_prepend_f2.get(),
                 guard,
             ));
             // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
