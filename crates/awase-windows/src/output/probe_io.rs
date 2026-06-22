@@ -30,8 +30,6 @@ pub(crate) trait ProbeIo {
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
     /// deferred VKs を送信する。
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker);
-    /// composition を warm にマークする。
-    fn mark_warm(&self);
     /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、`(namechange_baseline, sent_ms)` を返す。
     ///
     /// ベースラインは SendInput **前**に取得すること（送信中の NAMECHANGE を見逃さないため）。
@@ -90,10 +88,6 @@ impl ProbeIo for Output {
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker) {
         let pairs: Vec<(VkCode, bool)> = vks.iter().map(|d| (d.vk, d.needs_shift)).collect();
         Self::send_deferred_probe_vks_from(&pairs, marker);
-    }
-
-    fn mark_warm(&self) {
-        self.mark_composition_warm();
     }
 
     fn send_fresh_f2(&self) -> (NamechangeBaseline, u64) {
@@ -268,7 +262,6 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         let expected_kana = crate::tsf::output::kana_for_romaji_static(&romaji);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Tsf);
-                        io.mark_warm();
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
                         if io.current_gji_probe_id().is_some() {
@@ -293,7 +286,6 @@ pub(crate) fn dispatch_probe_actions<I: ProbeIo>(
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Injected);
-                        io.mark_warm();
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
                         if io.current_gji_probe_id().is_some() {
                             use crate::tsf::gji_fsm::WarmupResult;
@@ -369,7 +361,6 @@ mod tests {
         transmit_tsf_called: Cell<bool>,
         transmit_chrome_called: Cell<bool>,
         deferred_vks_called: Cell<bool>,
-        mark_warm_called: Cell<bool>,
         send_fresh_f2_called: Cell<bool>,
         send_extra_f2_called: Cell<bool>,
         set_raw_literal_called: Cell<bool>,
@@ -392,7 +383,6 @@ mod tests {
                 transmit_tsf_called: Cell::new(false),
                 transmit_chrome_called: Cell::new(false),
                 deferred_vks_called: Cell::new(false),
-                mark_warm_called: Cell::new(false),
                 send_fresh_f2_called: Cell::new(false),
                 send_extra_f2_called: Cell::new(false),
                 set_raw_literal_called: Cell::new(false),
@@ -430,9 +420,6 @@ mod tests {
         }
         fn send_deferred_vks(&self, _vks: &[DeferredVk], _marker: VkMarker) {
             self.deferred_vks_called.set(true);
-        }
-        fn mark_warm(&self) {
-            self.mark_warm_called.set(true);
         }
         fn send_fresh_f2(&self) -> (NamechangeBaseline, u64) {
             self.send_fresh_f2_called.set(true);
@@ -500,7 +487,6 @@ mod tests {
         assert!(done);
         assert!(!io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
-        assert!(!io.mark_warm_called.get());
     }
 
     #[test]
@@ -523,7 +509,6 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(done);
         assert!(io.transmit_chrome_called.get());
-        assert!(io.mark_warm_called.get());
         assert!(!io.transmit_tsf_called.get());
     }
 
@@ -549,7 +534,6 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(!done, "should not be Done — LiteralDetect phase pending");
         assert!(io.transmit_chrome_called.get());
-        assert!(io.mark_warm_called.get());
         assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
@@ -576,7 +560,6 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(done);
         assert!(!io.transmit_tsf_called.get());
-        assert!(!io.mark_warm_called.get());
     }
 
     #[test]
@@ -604,7 +587,6 @@ mod tests {
             "should be Done — LiteralDetect must be skipped when GJI is long-idle"
         );
         assert!(io.transmit_tsf_called.get());
-        assert!(io.mark_warm_called.get());
     }
 
     #[test]
@@ -627,7 +609,6 @@ mod tests {
         let done = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(done);
         assert!(io.transmit_tsf_called.get());
-        assert!(io.mark_warm_called.get());
         assert!(!io.transmit_chrome_called.get());
     }
 
@@ -900,7 +881,6 @@ mod tests {
             "plan.needs_literal=true → LiteralDetect phase: Done を即返さないべき"
         );
         assert!(io.transmit_tsf_called.get());
-        assert!(io.mark_warm_called.get());
         assert!(
             !io.last_used_eager_path.get(),
             "plan.used_eager_path=false (VK path) は WarmupOutcome に反映されるべき"
@@ -936,7 +916,6 @@ mod tests {
             "plan.should_prepend_f2=false + plan.needs_literal=false → Done を即返す"
         );
         assert!(io.transmit_tsf_called.get());
-        assert!(io.mark_warm_called.get());
         assert!(
             !io.last_used_prepend_f2.get(),
             "plan.should_prepend_f2=false は WarmupOutcome.prepend_f2_warmup に反映されるべき"
@@ -973,7 +952,6 @@ mod tests {
             "plan.needs_literal=false → Done を即返す（false positive BS 防止）"
         );
         assert!(io.transmit_tsf_called.get());
-        assert!(io.mark_warm_called.get());
     }
 
     #[test]

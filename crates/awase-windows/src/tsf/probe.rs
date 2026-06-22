@@ -381,11 +381,6 @@ impl CompositionState {
         self.cold_ctx.record_cold(reason, idle_ms);
     }
 
-    /// IME composition context をウォーム状態にマークする（ログのみ。warm 追跡は GjiFsm が SSOT）。
-    pub fn mark_composition_warm(&self) {
-        log::debug!("[composition] marked warm → next VK/TSF output will NOT send VK_DBE_HIRAGANA warmup");
-    }
-
     /// フォーカスウィンドウが変わったことを通知する。
     pub fn on_focus_changed(&self) {
         let idle_ms = self.ms_since_last_send();

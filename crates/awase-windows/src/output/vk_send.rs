@@ -343,7 +343,6 @@ impl Output {
 
         // warm パス: 即座にバッチ送信
         Self::send_romaji_batch_immediate(romaji, &chars);
-        self.mark_composition_warm();
     }
 
     /// ローマ字を即座にバッチ送信する（重畳順・VK ラン分割）。
@@ -535,7 +534,6 @@ impl Output {
 
         let detector = crate::tsf::probe::LiteralDetector::new();
         let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
-        self.mark_composition_warm();
 
         // GJI が LONG_IDLE_MS 以上静止している場合（WezTerm 等 TSF ネイティブ app）は
         // LiteralDetector が常にタイムアウト → SuspectedLiteral の false positive になる。

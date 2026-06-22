@@ -318,14 +318,6 @@ impl Output {
         self.composition.mark_composition_cold(reason);
     }
 
-    /// IME composition context をウォーム状態にマークする（ログのみ。warm 追跡は GjiFsm が SSOT）。
-    ///
-    /// 直前の NICOLA 出力バッチで warmup F2 が正常に送信され、
-    /// TSF composition context が初期化済みであると分かっている場合に呼ぶ。
-    pub fn mark_composition_warm(&self) {
-        self.composition.mark_composition_warm();
-    }
-
     /// 現在の composition_warm フラグを返す（GjiFsm が SSOT）。
     #[must_use]
     pub fn is_composition_warm(&self) -> bool {
