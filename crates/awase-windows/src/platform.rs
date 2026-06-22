@@ -202,11 +202,13 @@ impl WindowsPlatform {
         }
         for action in &response.actions {
             match action {
-                GjiAction::StartProbe { probe_id, budget_ms } => {
+                GjiAction::StartProbe { probe_id, budget_ms, ncwait_budget_ms, forces_prepend_f2 } => {
                     log::debug!(
-                        "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms"
+                        "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms \
+                         ncwait={ncwait_budget_ms}ms forces_f2={forces_prepend_f2}"
                     );
                     self.output.gji_store_probe_id(*probe_id);
+                    self.output.gji_store_probe_ncwait(*ncwait_budget_ms, *forces_prepend_f2);
                 }
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {
@@ -327,8 +329,11 @@ impl WindowsPlatform {
             crate::tsf::composition_fsm::CompositionEvent::FocusChange { tsf_mode },
             None,
         );
+        let last_io = crate::tsf::observer::gji_last_io_ms();
+        let gji_idle_ms = crate::hook::current_tick_ms().saturating_sub(last_io);
         let resp = self.output.gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
             injection_mode,
+            gji_idle_ms,
         });
         self.dispatch_gji_response(resp);
     }

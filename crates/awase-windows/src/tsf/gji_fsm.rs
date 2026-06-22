@@ -127,17 +127,50 @@ impl PendingInput {
 /// `OnCold` の種別と warmup budget。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ColdKind {
-    /// フォーカス変更・IME-ON 直後（budget = 100 ms）
+    /// フォーカス変更・IME-ON 直後、GJI 確実に生存（即 Running、budget=100ms）
     Short,
-    /// LongIdle タイムアウト後（budget = GJI_LONG_IDLE_PROBE_TOTAL_MS = 350 ms）
+    /// medium idle (7000–9999ms)、GJI 生存不明（NotStarted、ncwait_budget=550ms）
+    Medium,
+    /// LongIdle タイムアウト後（NotStarted、ncwait_budget=GJI_LONG_IDLE_PROBE_TOTAL_MS=350ms）
     Long,
 }
 
 impl ColdKind {
+    /// GjiProbe フェーズの probe_budget_ms（Short のみ即プローブ開始で使用）
     pub(crate) const fn budget_ms(self) -> u64 {
         match self {
             Self::Short => 100,
+            Self::Medium | Self::Long => tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
+        }
+    }
+
+    /// NameChangeWait フェーズの deadline budget。`apply_fresh_f2_sent` に渡す。
+    pub(crate) const fn ncwait_budget_ms(self) -> u64 {
+        match self {
+            Self::Short => tuning::SETTLE_TIMEOUT_MS,
+            Self::Medium => tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
             Self::Long => tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
+        }
+    }
+
+    /// F2 をバッチに強制同梱するか（GJI が寝ている可能性がある Medium/Long で true）。
+    pub(crate) const fn forces_prepend_f2(self) -> bool {
+        matches!(self, Self::Medium | Self::Long)
+    }
+
+    /// 即プローブを開始するか（Short のみ true、Medium/Long は KeyInput まで待機）。
+    pub(crate) const fn is_proactive(self) -> bool {
+        matches!(self, Self::Short)
+    }
+
+    /// gji_idle_ms から cold 種別を分類する。idle 判断の唯一の所在地。
+    pub(crate) const fn classify(gji_idle_ms: u64) -> Self {
+        if gji_idle_ms >= tuning::LONG_IDLE_MS {
+            Self::Long
+        } else if gji_idle_ms >= tuning::MEDIUM_IDLE_PROBE_MS {
+            Self::Medium
+        } else {
+            Self::Short
         }
     }
 }
@@ -161,6 +194,11 @@ pub(crate) enum GjiState {
         kind: ColdKind,
         probe: ProbeStatus,
         pending: Vec<PendingInput>,
+        /// `NativeF2Consumed` を Medium/Long cold 中に受信したことを示すフラグ。
+        ///
+        /// WezTerm が FocusChange 直後に自分で F2 を送る際に立つ。
+        /// probe はキャンセルせず継続し、この事実を probe 完了時に参照できる。
+        saw_native_f2: bool,
     },
     /// IME ON、TSF warm
     OnWarm { long_idle_ms: u64 },
@@ -177,8 +215,8 @@ pub(crate) enum GjiEvent {
     ImeOn { injection_mode: InjectionMode },
     /// IME OFF（エンジン停止）
     ImeOff,
-    /// フォーカス変更
-    FocusChange { injection_mode: InjectionMode },
+    /// フォーカス変更。`gji_idle_ms` で ColdKind を分類する。
+    FocusChange { injection_mode: InjectionMode, gji_idle_ms: u64 },
     /// キー入力（ローマ字 + deferred VK）
     KeyInput(PendingInput),
     /// warmup probe 完了
@@ -195,8 +233,14 @@ pub(crate) enum GjiEvent {
     // Phase 3 で接続予定
     #[allow(dead_code)]
     EndComposition { epoch: FocusEpoch },
+    /// WezTerm が FocusChange 直後に内部で F2 を送信し TSF context を初期化した
+    /// (reinject-tsf の NativeF2Consumed パス)。
+    ///
+    /// Medium/Long cold の場合は probe を継続し、`OnCold.saw_native_f2 = true` を立てる。
+    /// Short cold / OnWarm / OnComposing の場合は `CompositionReset` 相当で処理する。
+    NativeF2Consumed,
     /// IME ON/OFF やフォーカス変化なしに composition context が無効化された
-    /// (PassthroughKey, NativeF2Consumed, RawTsfLiteralRecovery 等)
+    /// (PassthroughKey, RawTsfLiteralRecovery 等)
     CompositionReset,
 }
 
@@ -204,7 +248,15 @@ pub(crate) enum GjiEvent {
 #[derive(Debug)]
 pub(crate) enum GjiAction {
     /// 新しい warmup probe を開始する
-    StartProbe { probe_id: ProbeId, budget_ms: u64 },
+    StartProbe {
+        probe_id: ProbeId,
+        /// GjiProbe フェーズの最大待機時間 (ms)
+        budget_ms: u64,
+        /// NameChangeWait フェーズの deadline budget (ms)。`apply_fresh_f2_sent` に渡す。
+        ncwait_budget_ms: u64,
+        /// F2 をバッチに強制同梱するか（Medium/Long cold で true）。
+        forces_prepend_f2: bool,
+    },
     /// 実行中の probe をキャンセルする
     CancelProbe { probe_id: ProbeId },
     /// warmup 完了後に蓄積入力を送信する（Phase 3 で dispatch 実装予定）
@@ -280,20 +332,22 @@ impl GjiFsm {
 
     /// OnCold 入場（既存 probe のキャンセルと新 probe の開始を含む）。
     ///
-    /// `Short` → 即 probe 開始、`Long` → `NotStarted`（最初の `KeyInput` まで待機）。
+    /// `Short` → 即 probe 開始（is_proactive）、`Medium`/`Long` → `NotStarted`（最初の `KeyInput` まで待機）。
     fn transition_to_cold(
         &mut self,
         kind: ColdKind,
         initial_pending: Vec<PendingInput>,
         old_probe: Option<ProbeId>,
     ) -> Response<GjiAction, GjiTimer> {
-        let (probe_status, start_action) = if kind == ColdKind::Short {
+        let (probe_status, start_action) = if kind.is_proactive() {
             let probe_id = self.alloc_probe_id();
             (
                 ProbeStatus::Running { probe_id },
                 Some(GjiAction::StartProbe {
                     probe_id,
-                    budget_ms: ColdKind::Short.budget_ms(),
+                    budget_ms: kind.budget_ms(),
+                    ncwait_budget_ms: kind.ncwait_budget_ms(),
+                    forces_prepend_f2: kind.forces_prepend_f2(),
                 }),
             )
         } else {
@@ -304,6 +358,7 @@ impl GjiFsm {
             kind,
             probe: probe_status,
             pending: initial_pending,
+            saw_native_f2: false,
         };
 
         let mut actions = Vec::new();
@@ -392,7 +447,7 @@ impl TimedStateMachine for GjiFsm {
             }
 
             // ── FocusChange ────────────────────────────────────────────────
-            GjiEvent::FocusChange { injection_mode } => {
+            GjiEvent::FocusChange { injection_mode, gji_idle_ms } => {
                 self.injection_mode = injection_mode;
                 let old_probe = self.running_probe_id();
                 let pending_count = match &self.state {
@@ -410,7 +465,11 @@ impl TimedStateMachine for GjiFsm {
                         "[gji-fsm] FocusChange with {pending_count} pending input(s) — discarding"
                     );
                 }
-                self.transition_to_cold(ColdKind::Short, vec![], old_probe)
+                let kind = ColdKind::classify(gji_idle_ms);
+                log::debug!(
+                    "[gji-fsm] FocusChange gji_idle={gji_idle_ms}ms → {kind:?}"
+                );
+                self.transition_to_cold(kind, vec![], old_probe)
             }
 
             // ── KeyInput ───────────────────────────────────────────────────
@@ -428,16 +487,23 @@ impl TimedStateMachine for GjiFsm {
                 match &mut self.state {
                     GjiState::OffCold => Response::pass_through(),
 
-                    GjiState::OnCold { probe, pending, kind } => {
+                    GjiState::OnCold { probe, pending, kind, .. } => {
                         let kind = *kind;
                         match probe {
                             ProbeStatus::NotStarted => {
-                                // Long の最初の KeyInput で probe を開始する
+                                // Medium/Long の最初の KeyInput で probe を開始する
                                 let probe_id = maybe_new_probe_id.unwrap();
                                 let budget_ms = kind.budget_ms();
+                                let ncwait_budget_ms = kind.ncwait_budget_ms();
+                                let forces_prepend_f2 = kind.forces_prepend_f2();
                                 *probe = ProbeStatus::Running { probe_id };
                                 pending.push(input);
-                                Response::emit(vec![GjiAction::StartProbe { probe_id, budget_ms }])
+                                Response::emit(vec![GjiAction::StartProbe {
+                                    probe_id,
+                                    budget_ms,
+                                    ncwait_budget_ms,
+                                    forces_prepend_f2,
+                                }])
                             }
                             ProbeStatus::Running { .. } => {
                                 pending.push(input);
@@ -564,34 +630,67 @@ impl TimedStateMachine for GjiFsm {
                 }
             },
 
-            // ── CompositionReset ───────────────────────────────────────────
-            GjiEvent::CompositionReset => match &self.state {
-                GjiState::OffCold => Response::consume(),
-
-                GjiState::OnCold { .. } => {
-                    // 既存 probe をキャンセルして Short で再開（pending も破棄）
-                    let old = self.running_probe_id();
-                    self.state = GjiState::OnCold {
-                        kind: ColdKind::Short,
-                        probe: ProbeStatus::NotStarted,
-                        pending: vec![],
-                    };
-                    let mut actions = Vec::new();
-                    if let Some(id) = old {
-                        actions.push(GjiAction::CancelProbe { probe_id: id });
+            // ── NativeF2Consumed ───────────────────────────────────────────
+            GjiEvent::NativeF2Consumed => {
+                // Medium/Long cold 中は probe を継続し、saw_native_f2 フラグを立てる。
+                // WezTerm が FocusChange 直後に自分で F2 を送る動作は probe に役立てられる。
+                // Short cold / OnWarm / OnComposing は文脈破壊として CompositionReset 相当で処理する。
+                let is_medium_or_long_cold = matches!(
+                    &self.state,
+                    GjiState::OnCold { kind, .. } if !kind.is_proactive()
+                );
+                if is_medium_or_long_cold {
+                    if let GjiState::OnCold { saw_native_f2, kind, .. } = &mut self.state {
+                        log::debug!(
+                            "[gji-fsm] NativeF2Consumed: {kind:?} cold, probe continues (saw_native_f2=true)"
+                        );
+                        *saw_native_f2 = true;
                     }
-                    Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
+                    Response::consume()
+                } else {
+                    log::debug!("[gji-fsm] NativeF2Consumed → CompositionReset (short/warm/composing)");
+                    self.handle_composition_reset()
                 }
+            }
 
-                GjiState::OnWarm { .. } | GjiState::OnComposing { .. } => {
-                    self.state = GjiState::OnCold {
-                        kind: ColdKind::Short,
-                        probe: ProbeStatus::NotStarted,
-                        pending: vec![],
-                    };
-                    Response::consume().with_kill_timer(GjiTimer::LongIdle)
+            // ── CompositionReset ───────────────────────────────────────────
+            GjiEvent::CompositionReset => self.handle_composition_reset(),
+        }
+    }
+
+    /// composition context が無効化されたときの共通処理。
+    ///
+    /// 既存 probe をキャンセルして `OnCold(Short, NotStarted)` に戻る。
+    /// `NativeF2Consumed` と `CompositionReset` 双方から呼ばれる。
+    fn handle_composition_reset(&mut self) -> Response<GjiAction, GjiTimer> {
+        match &self.state {
+            GjiState::OffCold => Response::consume(),
+
+            GjiState::OnCold { .. } => {
+                // 既存 probe をキャンセルして Short で再開（pending も破棄）
+                let old = self.running_probe_id();
+                self.state = GjiState::OnCold {
+                    kind: ColdKind::Short,
+                    probe: ProbeStatus::NotStarted,
+                    pending: vec![],
+                    saw_native_f2: false,
+                };
+                let mut actions = Vec::new();
+                if let Some(id) = old {
+                    actions.push(GjiAction::CancelProbe { probe_id: id });
                 }
-            },
+                Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
+            }
+
+            GjiState::OnWarm { .. } | GjiState::OnComposing { .. } => {
+                self.state = GjiState::OnCold {
+                    kind: ColdKind::Short,
+                    probe: ProbeStatus::NotStarted,
+                    pending: vec![],
+                    saw_native_f2: false,
+                };
+                Response::consume().with_kill_timer(GjiTimer::LongIdle)
+            }
         }
     }
 
@@ -604,6 +703,7 @@ impl TimedStateMachine for GjiFsm {
                         kind: ColdKind::Long,
                         probe: ProbeStatus::NotStarted,
                         pending: vec![],
+                        saw_native_f2: false,
                     };
                     Response::consume()
                 }
@@ -642,6 +742,10 @@ fn state_label(state: &GjiState) -> &'static str {
             ..
         } => "OnCold(Short)",
         GjiState::OnCold {
+            kind: ColdKind::Medium,
+            ..
+        } => "OnCold(Medium)",
+        GjiState::OnCold {
             kind: ColdKind::Long,
             ..
         } => "OnCold(Long)",
@@ -663,8 +767,13 @@ mod tests {
     }
 
     fn focus_change() -> GjiEvent {
+        focus_change_with_idle(0)
+    }
+
+    fn focus_change_with_idle(gji_idle_ms: u64) -> GjiEvent {
         GjiEvent::FocusChange {
             injection_mode: InjectionMode::Vk,
+            gji_idle_ms,
         }
     }
 
@@ -862,6 +971,137 @@ mod tests {
         assert!(matches!(
             fsm.state(),
             GjiState::OnCold { probe: ProbeStatus::Running { .. }, .. }
+        ));
+    }
+
+    // ── ColdKind::Medium + NativeF2Consumed ─────────────────────────────
+
+    #[test]
+    fn focus_change_medium_idle_enters_cold_medium_not_started() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        // medium idle: 7000ms ≤ gji_idle < 10000ms → ColdKind::Medium, NotStarted
+        let r = fsm.on_event(focus_change_with_idle(8_000));
+        // NotStarted なので StartProbe アクションなし（pending_tsf のみ設定）
+        assert!(
+            !r.actions.iter().any(|a| matches!(a, GjiAction::StartProbe { .. })),
+            "Medium cold は即 probe を開始しない（KeyInput まで NotStarted）"
+        );
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold { kind: ColdKind::Medium, probe: ProbeStatus::NotStarted, .. }
+        ));
+    }
+
+    #[test]
+    fn focus_change_long_idle_enters_cold_long_not_started() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        let r = fsm.on_event(focus_change_with_idle(12_000));
+        assert!(
+            !r.actions.iter().any(|a| matches!(a, GjiAction::StartProbe { .. })),
+            "Long cold は即 probe を開始しない"
+        );
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold { kind: ColdKind::Long, probe: ProbeStatus::NotStarted, .. }
+        ));
+    }
+
+    #[test]
+    fn medium_cold_key_input_starts_probe_with_ncwait_budget() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        fsm.on_event(focus_change_with_idle(8_000));
+        let r = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        let probe_action = r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }));
+        assert!(probe_action.is_some(), "Medium cold: KeyInput で StartProbe が必要");
+        if let Some(GjiAction::StartProbe { ncwait_budget_ms, forces_prepend_f2, .. }) = probe_action {
+            assert_eq!(
+                *ncwait_budget_ms, crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
+                "Medium cold: ncwait_budget_ms = MEDIUM_IDLE_PROBE_TOTAL_MS"
+            );
+            assert!(*forces_prepend_f2, "Medium cold: forces_prepend_f2=true");
+        }
+    }
+
+    #[test]
+    fn long_cold_key_input_starts_probe_with_long_ncwait_budget() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        // LongIdle タイムアウトから Long cold に入る
+        fsm.on_timeout(GjiTimer::LongIdle);
+        let r = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("a")));
+        if let Some(GjiAction::StartProbe { ncwait_budget_ms, forces_prepend_f2, .. }) =
+            r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }))
+        {
+            assert_eq!(
+                *ncwait_budget_ms, crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
+                "Long cold: ncwait_budget_ms = GJI_LONG_IDLE_PROBE_TOTAL_MS"
+            );
+            assert!(*forces_prepend_f2, "Long cold: forces_prepend_f2=true");
+        } else {
+            panic!("Long cold KeyInput: StartProbe が必要");
+        }
+    }
+
+    #[test]
+    fn short_cold_starts_probe_with_short_ncwait_budget() {
+        let mut fsm = GjiFsm::new();
+        // ImeOn → OnCold(Short) で即 StartProbe
+        let r = fsm.on_event(ime_on());
+        if let Some(GjiAction::StartProbe { ncwait_budget_ms, forces_prepend_f2, .. }) =
+            r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }))
+        {
+            assert_eq!(
+                *ncwait_budget_ms, crate::tuning::SETTLE_TIMEOUT_MS,
+                "Short cold: ncwait_budget_ms = SETTLE_TIMEOUT_MS"
+            );
+            assert!(!forces_prepend_f2, "Short cold: forces_prepend_f2=false");
+        } else {
+            panic!("ImeOn: StartProbe が必要");
+        }
+    }
+
+    #[test]
+    fn native_f2_consumed_while_medium_cold_continues_probe() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        fsm.on_event(focus_change_with_idle(8_000));
+        // NativeF2Consumed → probe 継続、saw_native_f2=true
+        let r = fsm.on_event(GjiEvent::NativeF2Consumed);
+        r.assert_consumed();
+        r.assert_action_count(0);
+        // まだ OnCold(Medium, NotStarted) のまま
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold { kind: ColdKind::Medium, probe: ProbeStatus::NotStarted, saw_native_f2: true, .. }
+        ));
+    }
+
+    #[test]
+    fn native_f2_consumed_while_short_cold_resets_probe() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on()); // → OnCold(Short, Running)
+        // NativeF2Consumed → CompositionReset 相当（CancelProbe + NotStarted）
+        let r = fsm.on_event(GjiEvent::NativeF2Consumed);
+        assert!(
+            r.actions.iter().any(|a| matches!(a, GjiAction::CancelProbe { .. })),
+            "Short cold: NativeF2Consumed → CancelProbe が必要"
+        );
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold { kind: ColdKind::Short, probe: ProbeStatus::NotStarted, .. }
         ));
     }
 
