@@ -362,12 +362,23 @@ impl WindowsPlatform {
 
     /// IME ON/OFF やフォーカス変化なしに composition context が無効化されたことを GjiFsm に通知する。
     ///
-    /// `on_passthrough_key` の PassthroughKey / NativeF2Consumed / F2NonTsf や
+    /// `on_passthrough_key` の PassthroughKey / F2NonTsf や
     /// `mark_cold_raw_tsf`（`step_probe` 経由）から呼ぶ。
     pub(crate) fn gji_on_composition_reset(&mut self) {
         let resp = self
             .output
             .gji_on_event(crate::tsf::gji_fsm::GjiEvent::CompositionReset);
+        self.dispatch_gji_response(resp);
+    }
+
+    /// TSF mode で物理 F2 が消費されたことを GjiFsm に通知する（`on_reinject_key` の NativeF2Consumed パス）。
+    ///
+    /// Medium/Long cold 中は probe が継続（saw_native_f2=true）。Short cold / OnWarm / OnComposing は
+    /// CompositionReset 相当として処理される（GjiFsm 側で分岐）。
+    pub(crate) fn gji_on_native_f2_consumed(&mut self) {
+        let resp = self
+            .output
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed);
         self.dispatch_gji_response(resp);
     }
 
@@ -659,6 +670,7 @@ impl PlatformRuntime for WindowsPlatform {
             );
             self.output
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.gji_on_native_f2_consumed();
             self.output.send_eager_tsf_warmup(applied);
             return;
         }
