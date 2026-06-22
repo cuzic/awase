@@ -379,6 +379,7 @@ impl TsfProbeMachine {
                 ncwait_budget_ms: crate::tuning::SETTLE_TIMEOUT_MS,
                 forces_prepend_f2: false,
                 is_long_cold: false,
+                fresh_f2_at_probe_start: false,
             },
             phase: ProbePhase::Probing {
                 probe,
@@ -409,6 +410,7 @@ impl TsfProbeMachine {
                 ncwait_budget_ms: crate::tuning::SETTLE_TIMEOUT_MS,
                 forces_prepend_f2: false,
                 is_long_cold: false,
+                fresh_f2_at_probe_start: false,
             },
             phase: ProbePhase::LiteralDetect {
                 detector,
