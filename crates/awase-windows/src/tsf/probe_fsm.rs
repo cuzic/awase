@@ -569,6 +569,23 @@ impl TsfProbeMachine {
                         if *needs_settle_check {
                             let is_ime_init_cold = cold_reason.requires_settle();
                             if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
+                                // GJI がウォームアップ前から既にアイドルだった場合（long_idle）は、
+                                // fresh F2 を送っても NAMECHANGE は発火しない（まだキーを打っていないため）。
+                                // forces_prepend_f2=true なら F2 はキーバッチに含まれるので安全にスキップできる。
+                                let pre_idle = outcome.gji_idle_ms
+                                    >= outcome.elapsed_ms.saturating_add(crate::tuning::GJI_IDLE_MS);
+                                if !outcome.settled && outcome.monitor_healthy && pre_idle && self.ctx.forces_prepend_f2 {
+                                    log::debug!(
+                                        "[tsf-probe] cold={} GJI pre-idle (idle={}ms elapsed={}ms forces_f2=true) → skip fresh F2",
+                                        self.cold_seq,
+                                        outcome.gji_idle_ms,
+                                        outcome.elapsed_ms,
+                                    );
+                                    return NextStep::TransmitTsf {
+                                        nc_fired: false,
+                                        gji_resumed: false,
+                                    };
+                                }
                                 return NextStep::EmitSendFreshF2 {
                                     probe_settled: outcome.settled,
                                 };
