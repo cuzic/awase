@@ -399,6 +399,42 @@ impl GjiFsm {
         self.state = GjiState::OnComposing { epoch };
         Response::emit(extra_actions).with_kill_timer(GjiTimer::LongIdle)
     }
+
+    /// composition context が無効化されたときの共通処理。
+    ///
+    /// 既存 probe をキャンセルして `OnCold(Short, NotStarted)` に戻る。
+    /// `NativeF2Consumed` と `CompositionReset` 双方から呼ばれる。
+    fn handle_composition_reset(&mut self) -> Response<GjiAction, GjiTimer> {
+        match &self.state {
+            GjiState::OffCold => Response::consume(),
+
+            GjiState::OnCold { .. } => {
+                // 既存 probe をキャンセルして Short で再開（pending も破棄）
+                let old = self.running_probe_id();
+                self.state = GjiState::OnCold {
+                    kind: ColdKind::Short,
+                    probe: ProbeStatus::NotStarted,
+                    pending: vec![],
+                    saw_native_f2: false,
+                };
+                let mut actions = Vec::new();
+                if let Some(id) = old {
+                    actions.push(GjiAction::CancelProbe { probe_id: id });
+                }
+                Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
+            }
+
+            GjiState::OnWarm { .. } | GjiState::OnComposing { .. } => {
+                self.state = GjiState::OnCold {
+                    kind: ColdKind::Short,
+                    probe: ProbeStatus::NotStarted,
+                    pending: vec![],
+                    saw_native_f2: false,
+                };
+                Response::consume().with_kill_timer(GjiTimer::LongIdle)
+            }
+        }
+    }
 }
 
 impl Default for GjiFsm {
@@ -665,42 +701,6 @@ impl TimedStateMachine for GjiFsm {
 
             // ── CompositionReset ───────────────────────────────────────────
             GjiEvent::CompositionReset => self.handle_composition_reset(),
-        }
-    }
-
-    /// composition context が無効化されたときの共通処理。
-    ///
-    /// 既存 probe をキャンセルして `OnCold(Short, NotStarted)` に戻る。
-    /// `NativeF2Consumed` と `CompositionReset` 双方から呼ばれる。
-    fn handle_composition_reset(&mut self) -> Response<GjiAction, GjiTimer> {
-        match &self.state {
-            GjiState::OffCold => Response::consume(),
-
-            GjiState::OnCold { .. } => {
-                // 既存 probe をキャンセルして Short で再開（pending も破棄）
-                let old = self.running_probe_id();
-                self.state = GjiState::OnCold {
-                    kind: ColdKind::Short,
-                    probe: ProbeStatus::NotStarted,
-                    pending: vec![],
-                    saw_native_f2: false,
-                };
-                let mut actions = Vec::new();
-                if let Some(id) = old {
-                    actions.push(GjiAction::CancelProbe { probe_id: id });
-                }
-                Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
-            }
-
-            GjiState::OnWarm { .. } | GjiState::OnComposing { .. } => {
-                self.state = GjiState::OnCold {
-                    kind: ColdKind::Short,
-                    probe: ProbeStatus::NotStarted,
-                    pending: vec![],
-                    saw_native_f2: false,
-                };
-                Response::consume().with_kill_timer(GjiTimer::LongIdle)
-            }
         }
     }
 
