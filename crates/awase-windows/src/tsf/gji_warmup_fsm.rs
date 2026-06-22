@@ -79,6 +79,12 @@ struct GjiProbeContext {
     is_long_cold: bool,
     /// プローブ開始前に VK_DBE_HIRAGANA pair が送信済みか（ReWarmup / FreshF2 / non-eager）。
     fresh_f2_at_probe_start: bool,
+    /// `EmitSendFreshF2` を経由して fresh F2 を送信済みか。
+    ///
+    /// `apply_fresh_f2_sent` 呼び出し時に true になる。
+    /// `enter_transmit_tsf` で `suppress_f2_in_batch` の判定に使い、
+    /// TSF モードで F2 を再送するとリテラル化レース（"kお" バグ）が起きるのを防ぐ。
+    fresh_f2_sent: bool,
 }
 
 // ── NextStep (FSM 内部遷移) ───────────────────────────────────────────────────
@@ -134,6 +140,7 @@ impl GjiWarmupFsm {
                 forces_prepend_f2,
                 is_long_cold,
                 fresh_f2_at_probe_start,
+                fresh_f2_sent: false,
             },
             phase: GjiProbePhase::Probing {
                 probe,
@@ -366,6 +373,9 @@ impl GjiWarmupFsm {
         nc_baseline: NamechangeBaseline,
         fresh_f2_ms: u64,
     ) {
+        // TSF モードで transmit バッチに F2 を再送すると reinit レースで先頭 VK がリテラル化する。
+        // EmitSendFreshF2 で F2 送信済みとしてフラグを立て、enter_transmit_tsf で抑制する。
+        self.ctx.fresh_f2_sent = true;
         let phase = std::mem::replace(
             &mut self.phase,
             GjiProbePhase::WaitingForCallback(WaitingFor::TransmitDone),
@@ -504,13 +514,16 @@ impl GjiWarmupFsm {
         let cold_seq = self.cold_seq;
         let ctx = self.ctx;
 
-        // ReWarmup / FreshF2 / non-eager パスではプローブ開始前に VK_DBE_HIRAGANA を送信済み。
-        // TSF モード（WezTerm）でバッチに F2 を再送すると reinit が起きて先頭 VK がリテラル化する。
-        let suppress_f2_in_batch = ctx.fresh_f2_at_probe_start && env.is_tsf_mode;
+        // ReWarmup / FreshF2 / non-eager パスではプローブ開始前に F2 を送信済み。
+        // EmitSendFreshF2 パスでもプローブ中に F2 を送信済み。
+        // TSF モード（WezTerm）でバッチに F2 を再送すると reinit が起きて先頭 VK がリテラル化する
+        // ("kお" バグ)。いずれかの経路で F2 を送信済みの場合はバッチへの同梱を抑制する。
+        let already_sent_f2 = ctx.fresh_f2_at_probe_start || ctx.fresh_f2_sent;
+        let suppress_f2_in_batch = already_sent_f2 && env.is_tsf_mode;
         if suppress_f2_in_batch {
             log::debug!(
-                "[gji-warmup] cold={} fresh_f2_at_probe_start + TSF → F2 バッチ重複を抑制",
-                cold_seq
+                "[gji-warmup] cold={} F2 送信済み (probe_start={} sent={}) + TSF → F2 バッチ重複を抑制",
+                cold_seq, ctx.fresh_f2_at_probe_start, ctx.fresh_f2_sent
             );
         }
         let effective_prepend_f2 = ctx.prepend_f2_warmup && !suppress_f2_in_batch;
