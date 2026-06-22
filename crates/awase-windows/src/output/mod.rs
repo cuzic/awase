@@ -596,37 +596,40 @@ self.gji_fsm.borrow().is_warm()
         // dispatch_probe_actions が &self(ProbeIo) を借用する前に解放される。
         let gji_tick = self.gji_fsm.borrow_mut().tick_probe_machine(tick_t, &env);
         if let Some((actions, mut machine)) = gji_tick {
-            let done = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
+            let dispatch = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
             let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
-            if done {
-                self.on_tsf_probe_ready();
-                self.gji_end_probe_guard();
-                let gji_response = self.gji_take_warmup_result().and_then(|result| {
-                    let probe_id = self.current_gji_probe_id.take()?;
-                    Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
-                        probe_id,
-                        result,
-                    }))
-                });
-                return StepProbeResult {
-                    timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
-                    gji_response,
-                    needs_gji_composition_reset,
-                };
-            } else {
-                self.gji_fsm.borrow_mut().restore_probe_machine(machine);
-                return StepProbeResult {
-                    timer_cmd: TimerCommand::Continue {
-                        id: crate::TIMER_TSF_PROBE,
-                        delay: Duration::from_millis(10),
-                    },
-                    gji_response: None,
-                    needs_gji_composition_reset,
-                };
+            match dispatch {
+                probe_io::DispatchResult::Done => {
+                    self.on_tsf_probe_ready();
+                    self.gji_end_probe_guard();
+                    let gji_response = self.gji_take_warmup_result().and_then(|result| {
+                        let probe_id = self.current_gji_probe_id.take()?;
+                        Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
+                            probe_id,
+                            result,
+                        }))
+                    });
+                    return StepProbeResult {
+                        timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
+                        gji_response,
+                        needs_gji_composition_reset,
+                    };
+                }
+                probe_io::DispatchResult::Continue | probe_io::DispatchResult::SwitchMachine(_) => {
+                    self.gji_fsm.borrow_mut().restore_probe_machine(machine);
+                    return StepProbeResult {
+                        timer_cmd: TimerCommand::Continue {
+                            id: crate::TIMER_TSF_PROBE,
+                            delay: Duration::from_millis(10),
+                        },
+                        gji_response: None,
+                        needs_gji_composition_reset,
+                    };
+                }
             }
         }
 
-        // ── Chrome / LiteralDetect probe パス（machine は pending_tsf に格納）──
+        // ── Chrome / LiteralDetect / GjiWarmup probe パス（machine は pending_tsf に格納）──
         let machine = self.pending_tsf.borrow_mut().take();
         let Some(mut machine) = machine else {
             return StepProbeResult {
@@ -637,33 +640,51 @@ self.gji_fsm.borrow().is_warm()
         };
         log::debug!("[tsf-probe-tick] cold={} t={}ms", machine.cold_seq_hint(), tick_t);
         let actions = machine.tick(&env);
-        let done = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
-        if done {
-            self.on_tsf_probe_ready();
-            self.gji_end_probe_guard();
-            let gji_response = self.gji_take_warmup_result().and_then(|result| {
-                let probe_id = self.current_gji_probe_id.take()?;
-                Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
-                    probe_id,
-                    result,
-                }))
-            });
-            let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
-            StepProbeResult {
-                timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
-                gji_response,
-                needs_gji_composition_reset,
+        let dispatch = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
+        match dispatch {
+            probe_io::DispatchResult::Done => {
+                self.on_tsf_probe_ready();
+                self.gji_end_probe_guard();
+                let gji_response = self.gji_take_warmup_result().and_then(|result| {
+                    let probe_id = self.current_gji_probe_id.take()?;
+                    Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
+                        probe_id,
+                        result,
+                    }))
+                });
+                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
+                StepProbeResult {
+                    timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
+                    gji_response,
+                    needs_gji_composition_reset,
+                }
             }
-        } else {
-            let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
-            *self.pending_tsf.borrow_mut() = Some(machine);
-            StepProbeResult {
-                timer_cmd: TimerCommand::Continue {
-                    id: crate::TIMER_TSF_PROBE,
-                    delay: Duration::from_millis(10),
-                },
-                gji_response: None,
-                needs_gji_composition_reset,
+            probe_io::DispatchResult::Continue => {
+                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
+                *self.pending_tsf.borrow_mut() = Some(machine);
+                StepProbeResult {
+                    timer_cmd: TimerCommand::Continue {
+                        id: crate::TIMER_TSF_PROBE,
+                        delay: Duration::from_millis(10),
+                    },
+                    gji_response: None,
+                    needs_gji_composition_reset,
+                }
+            }
+            probe_io::DispatchResult::SwitchMachine(new_machine) => {
+                // GjiWarmupFsm → LiteralDetectFsm 切り替え。
+                // LiteralDetectFsm が内部ガードを保持するため gji_probe_guard を解放する。
+                self.gji_end_probe_guard();
+                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
+                *self.pending_tsf.borrow_mut() = Some(new_machine);
+                StepProbeResult {
+                    timer_cmd: TimerCommand::Continue {
+                        id: crate::TIMER_TSF_PROBE,
+                        delay: Duration::from_millis(10),
+                    },
+                    gji_response: None,
+                    needs_gji_composition_reset,
+                }
             }
         }
     }

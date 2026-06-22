@@ -1,6 +1,5 @@
 //! GJI cold-start warmup 専用ステートマシン。
-// GjiWarmupFsm は現在 ImeWarmupStrategy に統合前のため dead_code 警告を抑制する。
-#![allow(dead_code, private_interfaces)]
+#![allow(private_interfaces)]
 //!
 //! [`GjiWarmupFsm`] は `TsfProbeMachine` から GJI 固有のフェーズを切り出した FSM。
 //! GJI の静止待ち・FreshF2 送信・NameChangeWait を担当し、
@@ -172,6 +171,7 @@ impl GjiWarmupFsm {
     }
 
     /// probe 進行中に後続 VK を複数蓄積する。
+    #[allow(dead_code)]
     pub(crate) fn extend_deferred(&mut self, vks: impl IntoIterator<Item = DeferredVk>) {
         let collected: Vec<DeferredVk> = vks.into_iter().collect();
         if let Some(send) = self.current_send_mut() {
@@ -559,6 +559,30 @@ impl TickableFsm for GjiWarmupFsm {
 
     fn cold_seq_hint(&self) -> u32 {
         GjiWarmupFsm::cold_seq_hint(self)
+    }
+
+    fn forces_prepend_f2_for_extra_f2(&self) -> bool {
+        GjiWarmupFsm::forces_prepend_f2_for_extra_f2(self)
+    }
+
+    fn apply_fresh_f2_sent(&mut self, nc_baseline: NamechangeBaseline, fresh_f2_ms: u64) {
+        GjiWarmupFsm::apply_fresh_f2_sent(self, nc_baseline, fresh_f2_ms);
+    }
+
+    fn apply_transmit_done(
+        &mut self,
+        _romaji: String,
+        _ze_bs_count: usize,
+        _detector: Option<crate::tsf::probe::LiteralDetector>,
+        _literal_detect_ms: u64,
+        _expected_kana: Option<char>,
+    ) -> bool {
+        self.apply_transmit_done_no_literal();
+        true
+    }
+
+    fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
+        GjiWarmupFsm::push_deferred(self, vk, needs_shift);
     }
 }
 

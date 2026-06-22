@@ -160,6 +160,22 @@ fn classify_warmup_path(
     }
 }
 
+/// `dispatch_probe_actions` の結果。
+pub(crate) enum DispatchResult {
+    /// probe 完了（タイマー停止）。
+    Done,
+    /// probe 継続（次回 tick を待つ）。
+    Continue,
+    /// 別の FSM に切り替える（`LiteralDetectFsm` 等）。
+    SwitchMachine(Box<dyn crate::tsf::tickable_fsm::TickableFsm>),
+}
+
+impl DispatchResult {
+    pub(crate) fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
+    }
+}
+
 ///
 /// `platform.rs` の `dispatch_probe_actions` を置き換える。
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
@@ -169,7 +185,7 @@ pub(crate) fn dispatch_probe_actions<M, I>(
     machine: &mut M,
     initial_actions: Vec<crate::tsf::probe_fsm::ProbeAction>,
     io: &I,
-) -> bool
+) -> DispatchResult
 where
     M: crate::tsf::tickable_fsm::TickableFsm + ?Sized,
     I: ProbeIo,
@@ -181,7 +197,7 @@ where
 
     while let Some(action) = queue.pop_front() {
         match action {
-            ProbeAction::Done => return true,
+            ProbeAction::Done => return DispatchResult::Done,
 
             ProbeAction::SendFreshF2 {
                 cold_seq,
@@ -222,10 +238,10 @@ where
                     TransmitTarget::Tsf => {
                         if io.gate_is_bypass() {
                             log::debug!("[do-transmit] gate=Bypass, skipping TSF injection");
-                            return true;
+                            return DispatchResult::Done;
                         }
                         if chars.is_empty() {
-                            return true;
+                            return DispatchResult::Done;
                         }
                         // plan は FSM の enter_transmit_tsf が confirm 時点の env で確定済み。
                         // dispatcher は再導出せずそのまま使う。
@@ -278,7 +294,7 @@ where
                             });
                         }
                         if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, expected_kana) {
-                            return true;
+                            return DispatchResult::Done;
                         }
                     }
                     TransmitTarget::Chrome => {
@@ -301,19 +317,59 @@ where
                             });
                         }
                         if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, None) {
-                            return true;
+                            return DispatchResult::Done;
                         }
                     }
                 }
             }
 
             ProbeAction::StartLiteralDetect(config) => {
-                // GjiWarmupFsm から emit される。#15 で LiteralDetectFsm を起動する処理を追加予定。
-                // TsfProbeMachine はこのアクションを emit しないため、現時点では未到達。
-                log::warn!(
-                    "[tsf-probe] cold={} StartLiteralDetect: LiteralDetect FSM 未接続 (task #15 実装予定)",
-                    config.cold_seq
+                // GjiWarmupFsm から emit される（plan.needs_literal=true の場合）。
+                // TSF 送信を実行してから LiteralDetectFsm に切り替える。
+                let chars: VkSequence = config.romaji
+                    .chars()
+                    .filter_map(crate::output::resolve_ascii_to_vk)
+                    .collect();
+                if io.gate_is_bypass() {
+                    log::debug!(
+                        "[tsf-probe] cold={} StartLiteralDetect: gate=Bypass, skipping",
+                        config.cold_seq
+                    );
+                    return DispatchResult::Done;
+                }
+                if chars.is_empty() {
+                    return DispatchResult::Done;
+                }
+                let outcome = WarmupOutcome {
+                    prepend_f2_warmup: config.plan.should_prepend_f2,
+                    used_eager_path: config.plan.used_eager_path,
+                    cold_seq: config.cold_seq,
+                };
+                if io.current_gji_probe_id().is_some() {
+                    use crate::tsf::gji_fsm::WarmupResult;
+                    io.store_gji_warmup_result(WarmupResult {
+                        path: classify_warmup_path(&config.observations, &config.plan),
+                        prepend_f2_warmup: config.plan.should_prepend_f2,
+                        nc_fired: config.observations.nc_fired,
+                        gji_resumed: config.observations.gji_resumed,
+                    });
+                }
+                let ze_bs_count = io.transmit_tsf(&config.romaji, &chars, &outcome);
+                io.send_deferred_vks(&config.deferred_vks, VkMarker::Tsf);
+                log::debug!(
+                    "[tsf-probe] cold={} StartLiteralDetect → LiteralDetectFsm (ze_bs={})",
+                    config.cold_seq, ze_bs_count
                 );
+                let literal_fsm = crate::tsf::literal_detect_fsm::LiteralDetectFsm::new(
+                    config.cold_seq,
+                    config.romaji,
+                    config.deferred_vks,
+                    config.plan,
+                    config.observations,
+                    ze_bs_count,
+                    config.literal_detect_ms,
+                );
+                return DispatchResult::SwitchMachine(Box::new(literal_fsm));
             }
 
             ProbeAction::RawTsfLiteralRecovery {
@@ -354,7 +410,7 @@ where
             }
         }
     }
-    false
+    DispatchResult::Continue
 }
 
 #[cfg(test)]
@@ -473,7 +529,6 @@ mod tests {
 
     fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::probe_fsm::TsfProbeMachine {
         let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
-        let guard = OutputActiveGuard::noop_for_test();
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
         crate::tsf::probe_fsm::TsfProbeMachine::new_gji(
             "ka",
@@ -488,7 +543,6 @@ mod tests {
             forces_prepend_f2,
             is_long_cold,
             false,
-            guard,
         )
     }
 
@@ -496,8 +550,8 @@ mod tests {
     fn done_action_returns_true_without_side_effects() {
         let io = FakeProbeIo::default();
         let mut machine = make_chrome_machine();
-        let done = dispatch_probe_actions(&mut machine, vec![ProbeAction::Done], &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine,vec![ProbeAction::Done], &io);
+        assert!(result.is_done());
         assert!(!io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
     }
@@ -519,8 +573,8 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Chrome,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(io.transmit_chrome_called.get());
         assert!(!io.transmit_tsf_called.get());
     }
@@ -544,8 +598,8 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Chrome,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(!done, "should not be Done — LiteralDetect phase pending");
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(!result.is_done(), "should not be Done — LiteralDetect phase pending");
         assert!(io.transmit_chrome_called.get());
         assert_eq!(machine.phase_label(), "LiteralDetect");
     }
@@ -570,8 +624,8 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(!io.transmit_tsf_called.get());
     }
 
@@ -594,9 +648,9 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
-            done,
+            result.is_done(),
             "should be Done — LiteralDetect must be skipped when GJI is long-idle"
         );
         assert!(io.transmit_tsf_called.get());
@@ -619,8 +673,8 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
     }
@@ -648,8 +702,8 @@ mod tests {
             }],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
             io.last_used_eager_path.get(),
@@ -669,8 +723,8 @@ mod tests {
             },
             ProbeAction::Done,
         ];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(io.set_raw_literal_called.get());
         assert!(io.mark_cold_raw_tsf_called.get());
     }
@@ -690,8 +744,8 @@ mod tests {
             },
             ProbeAction::Done,
         ];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(
             !io.set_raw_literal_called.get(),
             "should skip set when consecutive > 0"
@@ -709,8 +763,8 @@ mod tests {
         }];
         // SendFreshF2 は apply_fresh_f2_sent を呼ぶだけで Done を emit しない。
         // 返値は false（queue が空になり Done なし）。
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(!done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(!result.is_done());
         assert!(io.send_fresh_f2_called.get());
     }
 
@@ -734,9 +788,9 @@ mod tests {
         // forces_prepend_f2=true (Long cold) のとき:
         // - send_fresh_f2 と send_extra_f2 が呼ばれる（F2×2 連続）
         // - NameChangeWait フェーズへ移行し GJI I/O 応答を待つ（Done を即返さない）
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
-            !done,
+            !result.is_done(),
             "forces_prepend_f2: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき"
         );
         assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
@@ -769,8 +823,8 @@ mod tests {
             cold_seq: 0,
             probe_settled: false,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(!done, "medium idle: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき");
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(!result.is_done(), "medium idle: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき");
         assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
         assert!(
             io.send_extra_f2_called.get(),
@@ -799,8 +853,8 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
             io.last_used_eager_path.get(),
@@ -829,8 +883,8 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
             !io.last_used_eager_path.get(),
@@ -859,8 +913,8 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
             !io.last_used_eager_path.get(),
@@ -888,9 +942,9 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
-            !done,
+            !result.is_done(),
             "plan.needs_literal=true → LiteralDetect phase: Done を即返さないべき"
         );
         assert!(io.transmit_tsf_called.get());
@@ -923,9 +977,9 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
-            done,
+            result.is_done(),
             "plan.should_prepend_f2=false + plan.needs_literal=false → Done を即返す"
         );
         assert!(io.transmit_tsf_called.get());
@@ -959,9 +1013,9 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
-            done,
+            result.is_done(),
             "plan.needs_literal=false → Done を即返す（false positive BS 防止）"
         );
         assert!(io.transmit_tsf_called.get());
@@ -986,9 +1040,9 @@ mod tests {
             deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
-            !done,
+            !result.is_done(),
             "plan.needs_literal=true → LiteralDetect フェーズへ移行"
         );
         assert!(io.transmit_tsf_called.get());
@@ -1014,8 +1068,8 @@ mod tests {
             },
             ProbeAction::Done,
         ];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(
             io.set_raw_literal_called.get(),
             "TSF mode: set_raw_literal は呼ぶべき"
@@ -1048,8 +1102,8 @@ mod tests {
             },
             ProbeAction::Done,
         ];
-        let done = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(done);
+        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(result.is_done());
         assert!(
             !io.set_raw_literal_called.get(),
             "consecutive > 0: set_raw_literal を呼ばないべき"
