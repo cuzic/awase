@@ -947,6 +947,16 @@ impl TsfProbeMachine {
     }
 }
 
+impl crate::tsf::tickable_fsm::TickableFsm for TsfProbeMachine {
+    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+        TsfProbeMachine::tick(self, env)
+    }
+
+    fn cold_seq_hint(&self) -> u32 {
+        TsfProbeMachine::cold_seq_hint(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

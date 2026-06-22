@@ -12,6 +12,7 @@ pub(crate) mod cold_warmup;
 pub(crate) mod composition_fsm;
 pub(crate) mod gji_fsm;
 pub mod observer;
+pub(crate) mod tickable_fsm;
 pub(crate) mod warmup_strategy;
 pub mod output;
 pub mod probe;
