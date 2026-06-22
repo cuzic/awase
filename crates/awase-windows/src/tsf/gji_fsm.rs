@@ -698,13 +698,19 @@ impl TimedStateMachine for GjiFsm {
                 }
 
                 GjiState::OnCold { .. } => {
-                    // Cold 中の StartComposition は通常起きないが、
-                    // GJI が先に composition を開始した場合に備えて probe をキャンセルして遷移する。
-                    log::warn!("[gji-fsm] StartComposition while cold — probe cancelled");
-                    let cancel = self
-                        .running_probe_id()
-                        .map(|id| GjiAction::CancelProbe { probe_id: id });
-                    self.transition_to_composing(cancel.into_iter().collect())
+                    // probe 実行中の StartComposition は GJI が既に warm である証拠。
+                    // CancelProbe を出すと pending_tsf（GjiWarmupFsm）が破棄され、
+                    // バッファされたロマ字が失われる（例：「こ」→「れ」バグ）。
+                    // probe はキャンセルせず継続させ、次の TIMER_TSF_PROBE tick で
+                    // ロマ字を送信させる。
+                    if self.running_probe_id().is_some() {
+                        log::debug!(
+                            "[gji-fsm] StartComposition while cold (probe running) — probe continues"
+                        );
+                    } else {
+                        log::debug!("[gji-fsm] StartComposition while cold (no probe)");
+                    }
+                    self.transition_to_composing(vec![])
                 }
 
                 GjiState::OffCold => {
@@ -1184,6 +1190,39 @@ mod tests {
     }
 
     // ── StartComposition / EndComposition ────────────────────────────────
+
+    /// 回帰テスト: OnCold(Authorized) 中に StartComposition が来ても probe をキャンセルしない。
+    ///
+    /// WezTerm で「こ」→「れでいいか」と化けるバグの再現シナリオ:
+    /// 1. ImeOn → OnCold(Short, Authorized)
+    /// 2. キー入力 → GjiWarmupFsm が pending_tsf にセットされる（このテストでは FSM 外部）
+    /// 3. eager F2 から来た StartComposition がキューから drain される
+    ///    → CancelProbe を出して GjiWarmupFsm を破壊してはいけない
+    #[test]
+    fn start_composition_while_cold_does_not_cancel_probe() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on()); // → OnCold(Short, Authorized, probe_id=0)
+
+        let probe_id_before = match fsm.state() {
+            GjiState::OnCold { probe: ProbeStatus::Authorized { probe_id, .. }, .. } => *probe_id,
+            _ => panic!("expected OnCold(Authorized)"),
+        };
+
+        let r = fsm.on_event(GjiEvent::StartComposition);
+
+        // CancelProbe を出してはいけない
+        assert!(
+            !r.actions.iter().any(|a| matches!(a, GjiAction::CancelProbe { .. })),
+            "StartComposition while cold must NOT emit CancelProbe (would destroy GjiWarmupFsm)"
+        );
+        // OnComposing に遷移しているはず
+        assert!(
+            matches!(fsm.state(), GjiState::OnComposing { .. }),
+            "expected OnComposing after StartComposition while cold"
+        );
+        // probe_id は外部の current_gji_probe_id に記録されているので FSM では追跡しない
+        let _ = probe_id_before;
+    }
 
     #[test]
     fn start_then_end_composition_returns_to_warm() {
