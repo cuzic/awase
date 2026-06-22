@@ -1,0 +1,126 @@
+//! IME ウォームアップ戦略の抽象レイヤー。
+//!
+//! GJI（`GjiFsm`）と MS IME（`MsImeStrategy`）のプローブ動作の差異を隠蔽する。
+//! GJI は cold-start probe 機構を持ち、MS IME は常に warm を返す。
+//!
+//! ## 設計
+//!
+//! [`ImeWarmupStrategy`] はプローブのライフサイクルのみを抽象化する。
+//! GJI 固有のイベント（`GjiEvent::ImeOn`、`FocusChange` 等）は依然 [`crate::tsf::gji_fsm::GjiFsm`]
+//! が直接処理する。このトレイトは `Output` が MS IME 対応を追加する際の足場として用意する。
+
+use crate::tsf::gji_fsm::ProbeParams;
+use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot, TsfProbeMachine};
+
+// ── トレイト定義 ──────────────────────────────────────────────────────────────
+
+/// IME ウォームアップ戦略の共通インターフェース。
+///
+/// - [`crate::tsf::gji_fsm::GjiFsm`] が実装する（cold-start probe 機構付き）。
+/// - [`MsImeStrategy`] が実装する（常に warm、probe なし）。
+pub(crate) trait ImeWarmupStrategy {
+    /// IME/TSF が現在 warm（ローマ字を即送信できる）かどうか。
+    fn is_warm(&self) -> bool;
+
+    /// `Authorized` 状態の場合に probe パラメータを返す。
+    ///
+    /// `None` は「probe 不要」を意味する（`Executing`・`NotStarted` 状態、または MS IME）。
+    fn current_probe_params(&self) -> Option<ProbeParams>;
+
+    /// `Authorized → Executing`: probe machine をインストールする。
+    fn install_probe_machine(&mut self, machine: Box<TsfProbeMachine>);
+
+    /// probe machine を 1 ステップ進め、アクションと machine を返す。
+    ///
+    /// `None` は「probe 未実行」（`Executing` 状態でない、または MS IME）。
+    fn tick_probe_machine(
+        &mut self,
+        tick_t: u64,
+        env: &TsfEnvSnapshot,
+    ) -> Option<(Vec<ProbeAction>, Box<TsfProbeMachine>)>;
+
+    /// tick 後に probe が継続する場合 machine を戻す。
+    fn restore_probe_machine(&mut self, machine: Box<TsfProbeMachine>);
+
+    /// 実行中の probe をキャンセルし machine を drop する。
+    fn cancel_probe(&mut self);
+}
+
+// ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
+
+impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
+    fn is_warm(&self) -> bool {
+        use crate::tsf::gji_fsm::GjiState;
+        matches!(self.state(), GjiState::OnWarm { .. } | GjiState::OnComposing { .. })
+    }
+
+    fn current_probe_params(&self) -> Option<ProbeParams> {
+        crate::tsf::gji_fsm::GjiFsm::current_probe_params(self)
+    }
+
+    fn install_probe_machine(&mut self, machine: Box<TsfProbeMachine>) {
+        crate::tsf::gji_fsm::GjiFsm::install_probe_machine(self, machine);
+    }
+
+    fn tick_probe_machine(
+        &mut self,
+        tick_t: u64,
+        env: &TsfEnvSnapshot,
+    ) -> Option<(Vec<ProbeAction>, Box<TsfProbeMachine>)> {
+        crate::tsf::gji_fsm::GjiFsm::tick_probe_machine(self, tick_t, env)
+    }
+
+    fn restore_probe_machine(&mut self, machine: Box<TsfProbeMachine>) {
+        crate::tsf::gji_fsm::GjiFsm::restore_probe_machine(self, machine);
+    }
+
+    fn cancel_probe(&mut self) {
+        let _ = crate::tsf::gji_fsm::GjiFsm::take_probe_machine(self);
+    }
+}
+
+// ── MsImeStrategy ─────────────────────────────────────────────────────────────
+
+/// MS IME 向けウォームアップ戦略。
+///
+/// MS IME は TSF context が常にウォームで、GJI のような外部プローブが不要。
+/// `is_warm()` は常に `true`、probe 操作は全て no-op となる。
+///
+/// # 将来の実装方針
+///
+/// MS IME 対応を本格実装する際は、`Output` が保持する `gji_fsm` フィールドを
+/// `Box<dyn ImeWarmupStrategy>` に換装し、起動時に GJI/MS IME を判別して
+/// 適切な Strategy を注入する。
+pub(crate) struct MsImeStrategy;
+
+impl ImeWarmupStrategy for MsImeStrategy {
+    fn is_warm(&self) -> bool {
+        true
+    }
+
+    fn current_probe_params(&self) -> Option<ProbeParams> {
+        None
+    }
+
+    fn install_probe_machine(&mut self, machine: Box<TsfProbeMachine>) {
+        drop(machine);
+        log::warn!("[ms-ime-strategy] install_probe_machine: unexpected call, machine dropped");
+    }
+
+    fn tick_probe_machine(
+        &mut self,
+        _tick_t: u64,
+        _env: &TsfEnvSnapshot,
+    ) -> Option<(Vec<ProbeAction>, Box<TsfProbeMachine>)> {
+        None
+    }
+
+    fn restore_probe_machine(&mut self, machine: Box<TsfProbeMachine>) {
+        drop(machine);
+        log::warn!("[ms-ime-strategy] restore_probe_machine: unexpected call, machine dropped");
+    }
+
+    fn cancel_probe(&mut self) {
+        // MS IME はプローブを持たない。
+    }
+}
