@@ -480,7 +480,7 @@ impl Output {
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params();
-            self.install_pending_tsf(TsfProbeMachine::new_gji(
+            let machine = TsfProbeMachine::new_gji(
                 romaji,
                 cold_seq,
                 started.probe,
@@ -493,8 +493,9 @@ impl Output {
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
                 started.fresh_f2_at_probe_start,
-            ));
-            // WindowsPlatform::send_keys が pending_tsf を見て TIMER_TSF_PROBE をセットする
+            );
+            self.install_gji_probe_machine(machine);
+            // WindowsPlatform::send_keys が TIMER_TSF_PROBE をセットする
             return;
         }
 

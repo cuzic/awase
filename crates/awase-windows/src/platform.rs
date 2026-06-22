@@ -212,20 +212,11 @@ impl WindowsPlatform {
                 }
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {
-                        // FSM が warm になった（StartComposition 等）かつ pending char がある場合、
-                        // pending_tsf を捨てずに次の probe tick で transmit させる。
-                        // タイマーは kill するが send_keys 末尾の pending_tsf_timer() が再セットする。
-                        let keep = self.output.is_composition_warm()
-                            && self.output.pending_tsf.borrow().is_some();
-                        if keep {
-                            log::debug!(
-                                "[gji-fsm] CancelProbe probe_id={probe_id:?} → warm, pending_tsf kept for transmit"
-                            );
-                        } else {
-                            log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
-                            *self.output.pending_tsf.borrow_mut() = None;
-                            self.output.gji_end_probe_guard();
-                        }
+                        log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
+                        // GJI probe は GjiFsm::Executing に格納されている（Task 3 以降）。
+                        // machine を take して drop する（guard も解放）。
+                        let _ = self.output.gji_fsm.borrow_mut().take_probe_machine();
+                        self.output.gji_end_probe_guard();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
                         let _ = self.output.current_gji_probe_id.take();
                     }

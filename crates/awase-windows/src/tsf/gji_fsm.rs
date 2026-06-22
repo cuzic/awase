@@ -202,18 +202,38 @@ impl ColdKind {
 }
 
 /// `OnCold` 内の probe 進行状態。
-#[derive(Debug, Clone, Copy)]
 pub(crate) enum ProbeStatus {
     /// probe 未開始（Medium/Long タイムアウト直後、最初の `KeyInput` を待つ）
     NotStarted,
     /// `StartProbe` を発行済みだが `TsfProbeMachine` はまだ作成されていない。
     ///
-    /// `vk_send` が `params` を読み出して `TsfProbeMachine::new_gji` に渡す。
-    /// Task 3 で `Executing` へ昇格する。
+    /// `vk_send` が `TsfProbeMachine::new_gji` を作成して `install_probe_machine` を呼ぶと
+    /// `Executing` へ昇格する。
     Authorized { probe_id: ProbeId, params: ProbeParams },
-    /// `TsfProbeMachine` が実行中（Task 3 で machine フィールドを追加予定）。
-    #[allow(dead_code)]
-    Executing { probe_id: ProbeId },
+    /// `TsfProbeMachine` が GjiFsm 内で実行中。
+    ///
+    /// `machine` は ticking 中に一時的に `None` になる（take/restore パターン）。
+    Executing {
+        probe_id: ProbeId,
+        machine: Option<Box<crate::tsf::probe_fsm::TsfProbeMachine>>,
+    },
+}
+
+impl std::fmt::Debug for ProbeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotStarted => write!(f, "NotStarted"),
+            Self::Authorized { probe_id, params } => {
+                f.debug_struct("Authorized").field("probe_id", probe_id).field("params", params).finish()
+            }
+            Self::Executing { probe_id, machine } => {
+                f.debug_struct("Executing")
+                    .field("probe_id", probe_id)
+                    .field("machine", &machine.is_some())
+                    .finish()
+            }
+        }
+    }
 }
 
 /// GJI FSM の状態。
@@ -353,7 +373,7 @@ impl GjiFsm {
     fn running_probe_id(&self) -> Option<ProbeId> {
         match &self.state {
             GjiState::OnCold { probe, .. } => match probe {
-                ProbeStatus::Authorized { probe_id, .. } | ProbeStatus::Executing { probe_id } => {
+                ProbeStatus::Authorized { probe_id, .. } | ProbeStatus::Executing { probe_id, .. } => {
                     Some(*probe_id)
                 }
                 ProbeStatus::NotStarted => None,
@@ -372,6 +392,55 @@ impl GjiFsm {
                 ..
             } => Some(*params),
             _ => None,
+        }
+    }
+
+    /// `Authorized` 状態で `TsfProbeMachine` を受け取り `Executing` へ昇格する。
+    ///
+    /// `vk_send` が `TsfProbeMachine::new_gji` を作成した直後に呼ぶ。
+    pub(crate) fn install_probe_machine(
+        &mut self,
+        machine: Box<crate::tsf::probe_fsm::TsfProbeMachine>,
+    ) {
+        match &mut self.state {
+            GjiState::OnCold { probe, .. } => {
+                if let ProbeStatus::Authorized { probe_id, .. } = probe {
+                    let id = *probe_id;
+                    *probe = ProbeStatus::Executing { probe_id: id, machine: Some(machine) };
+                } else {
+                    log::warn!("[gji-fsm] install_probe_machine: not Authorized (state={:?}), ignored", probe);
+                }
+            }
+            s => log::warn!("[gji-fsm] install_probe_machine: not OnCold ({:?}), ignored", s),
+        }
+    }
+
+    /// `Executing` の machine を一時的に取り出す（tick のため）。
+    ///
+    /// 取り出した後は必ず `restore_probe_machine` か WarmupComplete で状態を更新すること。
+    pub(crate) fn take_probe_machine(
+        &mut self,
+    ) -> Option<Box<crate::tsf::probe_fsm::TsfProbeMachine>> {
+        match &mut self.state {
+            GjiState::OnCold {
+                probe: ProbeStatus::Executing { machine, .. },
+                ..
+            } => machine.take(),
+            _ => None,
+        }
+    }
+
+    /// `take_probe_machine` で取り出した machine を戻す（probe がまだ完了していない場合）。
+    pub(crate) fn restore_probe_machine(
+        &mut self,
+        machine: Box<crate::tsf::probe_fsm::TsfProbeMachine>,
+    ) {
+        match &mut self.state {
+            GjiState::OnCold {
+                probe: ProbeStatus::Executing { machine: slot, .. },
+                ..
+            } => *slot = Some(machine),
+            s => log::warn!("[gji-fsm] restore_probe_machine: not Executing ({:?}), dropped", s),
         }
     }
 
