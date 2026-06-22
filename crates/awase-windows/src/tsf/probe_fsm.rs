@@ -129,10 +129,16 @@ pub(crate) fn decide_transmit_plan(
 
     // gji_resumed=true: GJI I/O 応答確認済み → composition 成功が確定。
     // long_idle 後は候補ウィンドウ表示に >500ms かかり false positive になる（BS 誤送信 → context 破壊）。
-    let needs_literal = should_prepend_f2
+    //
+    // nc_fired=false + TSF mode 節:
+    // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
+    // LiteralDetect で回収する。F2 をバッチに含めない場合も IME が cold の可能性がある。
+    // （seつぞく バグ: gji_idle ~1.4s で 300ms NameChangeWait が間に合わなかったケース）
+    let needs_literal = (should_prepend_f2
         && env.gji_active
         && (!env.gji_long_idle || env.is_tsf_mode)
-        && !obs.gji_resumed;
+        && !obs.gji_resumed)
+        || (!obs.nc_fired && env.is_tsf_mode && env.gji_active && !obs.gji_resumed);
 
     let literal_detect_ms = if env.gji_long_idle && env.is_tsf_mode {
         crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
@@ -1121,17 +1127,19 @@ mod tests {
     // ── decide_transmit_plan 回帰テスト ──────────────────────────────────────
 
     #[test]
-    fn decide_plan_nc_not_fired_tsf_not_long_idle_suppresses_f2_and_literal() {
+    fn decide_plan_nc_not_fired_tsf_not_long_idle_suppresses_f2_but_keeps_literal() {
         // Bug 1 再発防止: "さいごの" → "sあいごの"
         // nc_fired=false + TSF mode (WezTerm) + !gji_long_idle:
         // SendFreshF2 が ~300ms 前に送信済み → バッチに F2 を含めると reinit race でリテラル化する。
+        // ただし IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
+        // （seつぞく バグ再発防止: gji_idle ~1.4s で nc_fired=false のまま timeout したケース）
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true);
 
         assert!(!plan.should_prepend_f2, "nc_fired=false + tsf + !long_idle: F2 をバッチに含めない");
-        assert!(!plan.needs_literal, "F2 なし → LiteralDetect 不要");
+        assert!(plan.needs_literal, "nc_fired=false + tsf: IME 準備未確認 → LiteralDetect で保護");
     }
 
     #[test]
@@ -1139,7 +1147,7 @@ mod tests {
         // Bug 2 再発防止: gji_resumed=true 時の false positive BS
         // GJI が F2×2 に I/O 応答済み → composition 成功確定 → LiteralDetect は false positive になる。
         let obs = ProbeObservations { nc_fired: true, gji_resumed: true };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true);
 
@@ -1151,7 +1159,7 @@ mod tests {
         // gji_long_idle=true: F2×2 で GJI を起動する必要があるためバッチに F2 が必要。
         // LiteralDetect も有効（GJI 応答未確認）。
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: true, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true);
 
@@ -1163,7 +1171,7 @@ mod tests {
     fn decide_plan_nc_fired_keeps_f2_and_enables_literal_when_gji_active() {
         // nc_fired=true: NameChange 発火確認済み → F2 はバッチに含める。
         let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true);
 
@@ -1175,7 +1183,7 @@ mod tests {
     fn decide_plan_non_tsf_mode_keeps_f2() {
         // 非 TSF mode（Chrome 等）: nc_fired=false でも F2 バッチ同梱が必要。
         let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: true };
+        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: true, ..Default::default() };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true);
 
@@ -1186,7 +1194,7 @@ mod tests {
     fn decide_plan_nc_fired_with_deferred_vks_disables_eager_path() {
         // nc_fired=true でも deferred_vks が存在する場合は unicode に戻さない（nお race 防止）。
         let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: false };
+        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_long_idle: false, gji_active: false, ..Default::default() };
 
         let plan = decide_transmit_plan(false, true, obs, &env, false); // deferred_empty=false
 
@@ -1197,6 +1205,7 @@ mod tests {
     #[test]
     fn fsm_ncwait_timeout_tsf_mode_emits_correct_plan() {
         // Bug 1 の FSM 統合テスト: nc_fired=false + tsf_mode + !long_idle → should_prepend_f2=false
+        // seつぞく バグ再発防止: nc_fired=false でも LiteralDetect を有効にして回収する。
         let mut machine = {
             let guard = OutputActiveGuard::noop_for_test();
             let probe = TsfReadinessProbe::new(0, 0, 0);
@@ -1214,12 +1223,12 @@ mod tests {
         };
         machine.force_phase_for_test(make_namechange_wait(0, false)); // 即タイムアウト
 
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true };
+        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_long_idle: false, gji_active: true, ..Default::default() };
         let actions = machine.tick_with_clock_env(&ManualClock(1000), &env);
 
         if let ProbeAction::Transmit { plan, observations, target: TransmitTarget::Tsf, .. } = &actions[0] {
             assert!(!plan.should_prepend_f2, "nc_fired=false + tsf + !long_idle: F2 をバッチに含めない");
-            assert!(!plan.needs_literal, "F2 なし → LiteralDetect 不要");
+            assert!(plan.needs_literal, "nc_fired=false + tsf: IME 準備未確認 → LiteralDetect で保護");
             assert!(!observations.nc_fired, "タイムアウト: nc_fired=false");
         } else {
             panic!("Transmit(Tsf) を emit するべき: {actions:?}");
