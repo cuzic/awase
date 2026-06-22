@@ -19,7 +19,7 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::probe::TsfReadinessProbe;
 use crate::tsf::probe_fsm::{
     decide_transmit_plan, DeferredVk, LiteralDetectConfig, ProbeAction, ProbeObservations,
-    SendState, TransmitPlan, TransmitTarget, TsfEnvSnapshot, WaitingFor,
+    SendState, TransmitTarget, TsfEnvSnapshot, WaitingFor,
 };
 use crate::tsf::tickable_fsm::TickableFsm;
 use awase::types::VkCode;
