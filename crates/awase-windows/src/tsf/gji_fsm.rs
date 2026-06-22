@@ -444,6 +444,24 @@ impl GjiFsm {
         }
     }
 
+    /// GJI probe machine を 1 ステップ進める（take + tick の集約）。
+    ///
+    /// `Executing` 状態でなければ `None` を返す。
+    /// 呼び出し元は受け取った `machine` で `dispatch_probe_actions` を呼び、
+    /// 完了なら machine を drop し `gji_on_event(WarmupComplete)` へ進む。
+    /// 継続なら `restore_probe_machine(machine)` で戻すこと。
+    pub(crate) fn tick_probe_machine(
+        &mut self,
+        tick_t: u64,
+        env: &crate::tsf::probe_fsm::TsfEnvSnapshot,
+    ) -> Option<(Vec<crate::tsf::probe_fsm::ProbeAction>, Box<crate::tsf::probe_fsm::TsfProbeMachine>)>
+    {
+        let mut machine = self.take_probe_machine()?;
+        log::debug!("[tsf-probe-tick] gji cold={} t={}ms", machine.cold_seq_hint(), tick_t);
+        let actions = machine.tick(env);
+        Some((actions, machine))
+    }
+
     /// OnCold 入場（既存 probe のキャンセルと新 probe の開始を含む）。
     ///
     /// `Short` → 即 probe 開始（is_proactive）、`Medium`/`Long` → `NotStarted`（最初の `KeyInput` まで待機）。

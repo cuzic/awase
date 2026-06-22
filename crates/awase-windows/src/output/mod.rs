@@ -609,11 +609,11 @@ impl Output {
         };
 
         // ── GJI probe パス（machine は GjiFsm::Executing に格納）──────────────
-        // borrow_mut() → take_probe_machine() → RefMut は即 drop（dispatch 前に解放）
-        let gji_machine = self.gji_fsm.borrow_mut().take_probe_machine();
-        if let Some(mut machine) = gji_machine {
-            log::debug!("[tsf-probe-tick] gji cold={} t={}ms", machine.cold_seq_hint(), tick_t);
-            let actions = machine.tick(&env);
+        // tick_probe_machine が take+tick を集約する（Task 4 以降）。
+        // borrow_mut() の RefMut は tick_probe_machine 返却後に drop され、
+        // dispatch_probe_actions が &self(ProbeIo) を借用する前に解放される。
+        let gji_tick = self.gji_fsm.borrow_mut().tick_probe_machine(tick_t, &env);
+        if let Some((actions, mut machine)) = gji_tick {
             let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
             let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
             if done {
