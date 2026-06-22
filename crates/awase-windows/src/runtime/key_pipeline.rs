@@ -8,6 +8,7 @@ use crate::hook;
 use crate::hook::CallbackResult;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+use awase::platform::PlatformRuntime as _;
 use awase::types::{RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
