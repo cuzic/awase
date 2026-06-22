@@ -80,6 +80,12 @@ pub(crate) struct WarmupStarted {
     pub needs_settle_check: bool,
     /// cold になった理由（NAMECHANGE フェーズの判断に使用）
     pub cold_reason: crate::output::ColdReason,
+    /// プローブ開始前に VK_DBE_HIRAGANA pair が送信済みかどうか。
+    ///
+    /// ReWarmup / FreshF2 / non-eager パスで `true`。
+    /// `TransmitTsf` 時にバッチへの F2 重複送信を抑制するために使用する。
+    /// （バッチに F2 を追加すると WezTerm が TSF reinit を起こし先頭 VK がリテラル化する）
+    pub fresh_f2_at_probe_start: bool,
 }
 
 /// TSF cold-start ウォームアップシーケンスを管理する構造体。
@@ -250,6 +256,7 @@ impl<'a> ColdWarmupSequence<'a> {
             total_max_ms: ctx.eager_settle_ms,
             needs_settle_check: false,
             cold_reason: ctx.cold_reason,
+            fresh_f2_at_probe_start: true,
         }
     }
 
@@ -279,6 +286,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     total_max_ms: ctx.eager_settle_ms,
                     needs_settle_check: false,
                     cold_reason: ctx.cold_reason,
+                    fresh_f2_at_probe_start: true,
                 }
             }
             WarmupKind::ReWarmup => {
@@ -298,6 +306,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     total_max_ms: crate::tuning::RE_WARMUP_MS,
                     needs_settle_check: false,
                     cold_reason: ctx.cold_reason,
+                    fresh_f2_at_probe_start: true,
                 }
             }
             WarmupKind::ProbeWithSettle => {
@@ -315,6 +324,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     total_max_ms: ctx.eager_settle_ms,
                     needs_settle_check: true,
                     cold_reason: ctx.cold_reason,
+                    fresh_f2_at_probe_start: false,
                 }
             }
         }

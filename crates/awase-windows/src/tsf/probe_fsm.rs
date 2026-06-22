@@ -65,6 +65,9 @@ struct ProbeContext {
     /// GjiFsm の ColdKind::Long（≥10s idle）か。
     /// `literal_detect_ms` 延長（RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE）の判定に使う。
     is_long_cold: bool,
+    /// プローブ開始前に VK_DBE_HIRAGANA pair が送信済みか（ReWarmup / FreshF2 / non-eager）。
+    /// true のとき TSF モードでバッチへの F2 重複送信を抑制する。
+    fresh_f2_at_probe_start: bool,
 }
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
@@ -333,6 +336,7 @@ impl TsfProbeMachine {
         ncwait_budget_ms: u64,
         forces_prepend_f2: bool,
         is_long_cold: bool,
+        fresh_f2_at_probe_start: bool,
         guard: OutputActiveGuard,
     ) -> Self {
         Self {
@@ -344,6 +348,7 @@ impl TsfProbeMachine {
                 ncwait_budget_ms,
                 forces_prepend_f2,
                 is_long_cold,
+                fresh_f2_at_probe_start,
             },
             phase: ProbePhase::Probing {
                 probe,
@@ -824,13 +829,22 @@ impl TsfProbeMachine {
         gji_resumed: bool,
         env: &TsfEnvSnapshot,
     ) -> Vec<ProbeAction> {
-        // medium idle (7000–9999ms) で GJI が F2 に無応答のままタイムアウトしたか。
         let send = self.take_current_send_for_transmit();
         let cold_seq = self.cold_seq;
         let ctx = self.ctx;
+        // ReWarmup / FreshF2 / non-eager パスではプローブ開始前に VK_DBE_HIRAGANA を送信済み。
+        // TSF モード（WezTerm）でバッチに F2 を再送すると reinit が起きて先頭 VK がリテラル化する。
+        let suppress_f2_in_batch = ctx.fresh_f2_at_probe_start && env.is_tsf_mode;
+        if suppress_f2_in_batch {
+            log::debug!(
+                "[tsf-probe] cold={} fresh_f2_at_probe_start + TSF → F2 バッチ重複を抑制",
+                cold_seq
+            );
+        }
+        let effective_prepend_f2 = ctx.prepend_f2_warmup && !suppress_f2_in_batch;
         let observations = ProbeObservations { nc_fired, gji_resumed };
         let plan = decide_transmit_plan(
-            ctx.prepend_f2_warmup,
+            effective_prepend_f2,
             ctx.used_eager_path,
             observations,
             env,
@@ -954,6 +968,7 @@ mod tests {
             ncwait_budget_ms,
             forces_prepend_f2,
             is_long_cold,
+            false,
             guard,
         )
     }
@@ -1281,6 +1296,7 @@ mod tests {
                 crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS, // Medium cold budget
                 true,  // forces_prepend_f2
                 false, // is_long_cold: Medium ではなく Long のみ true
+                false, // fresh_f2_at_probe_start: NameChangeWait パスはプローブ開始時に F2 未送信
                 guard,
             )
         };
@@ -1324,6 +1340,7 @@ mod tests {
                 crate::tuning::SETTLE_TIMEOUT_MS, // Short cold budget
                 false, // forces_prepend_f2
                 false, // is_long_cold
+                false, // fresh_f2_at_probe_start
                 guard,
             )
         };
@@ -1367,6 +1384,7 @@ mod tests {
                 crate::tuning::SETTLE_TIMEOUT_MS, // Short cold budget
                 false, // forces_prepend_f2
                 false, // is_long_cold
+                false, // fresh_f2_at_probe_start
                 guard,
             )
         };

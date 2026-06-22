@@ -487,6 +487,7 @@ mod tests {
             ncwait_budget_ms,
             forces_prepend_f2,
             is_long_cold,
+            false,
             guard,
         )
     }
