@@ -5,11 +5,12 @@
 //!
 //! ## 設計
 //!
-//! [`ImeWarmupStrategy`] はプローブのライフサイクルのみを抽象化する。
+//! [`ImeWarmupStrategy`] はプローブのライフサイクルと GJI イベント処理を抽象化する。
 //! GJI 固有のイベント（`GjiEvent::ImeOn`、`FocusChange` 等）は依然 [`crate::tsf::gji_fsm::GjiFsm`]
 //! が直接処理する。このトレイトは `Output` が MS IME 対応を追加する際の足場として用意する。
 
-use crate::tsf::gji_fsm::ProbeParams;
+use timed_fsm::Response;
+use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiTimer, ProbeParams};
 use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot, TsfProbeMachine};
 
 // ── トレイト定義 ──────────────────────────────────────────────────────────────
@@ -44,6 +45,38 @@ pub(crate) trait ImeWarmupStrategy {
 
     /// 実行中の probe をキャンセルし machine を drop する。
     fn cancel_probe(&mut self);
+
+    /// GJI イベントを処理し `Response<GjiAction, GjiTimer>` を返す。
+    ///
+    /// MS IME では GJI が存在しないため `Response::consume()` を返す（デフォルト）。
+    fn on_gji_event(
+        &mut self,
+        event: GjiEvent,
+    ) -> Response<GjiAction, GjiTimer> {
+        let _ = event;
+        Response::consume()
+    }
+
+    /// GJI LongIdle タイムアウトを処理する。
+    ///
+    /// MS IME では no-op（デフォルト）。
+    fn on_gji_long_idle(&mut self) -> Response<GjiAction, GjiTimer> {
+        Response::consume()
+    }
+
+    /// OnComposing 状態の epoch を返す（EndComposition に使用）。
+    ///
+    /// MS IME / GJI が OnComposing でない場合は `None`（デフォルト）。
+    fn gji_current_composition_epoch(&self) -> Option<FocusEpoch> {
+        None
+    }
+
+    /// GJI probe が Executing 状態かどうかを返す（タイマー継続判定に使用）。
+    ///
+    /// MS IME は常に warm でプローブを持たないため `false`（デフォルト）。
+    fn is_gji_probe_executing(&self) -> bool {
+        false
+    }
 }
 
 // ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
@@ -77,6 +110,35 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
     fn cancel_probe(&mut self) {
         let _ = crate::tsf::gji_fsm::GjiFsm::take_probe_machine(self);
     }
+
+    fn on_gji_event(
+        &mut self,
+        event: GjiEvent,
+    ) -> Response<GjiAction, GjiTimer> {
+        use timed_fsm::TimedStateMachine as _;
+        crate::tsf::gji_fsm::GjiFsm::on_event(self, event)
+    }
+
+    fn on_gji_long_idle(&mut self) -> Response<GjiAction, GjiTimer> {
+        use timed_fsm::TimedStateMachine as _;
+        crate::tsf::gji_fsm::GjiFsm::on_timeout(self, GjiTimer::LongIdle)
+    }
+
+    fn gji_current_composition_epoch(&self) -> Option<FocusEpoch> {
+        use crate::tsf::gji_fsm::GjiState;
+        match crate::tsf::gji_fsm::GjiFsm::state(self) {
+            GjiState::OnComposing { epoch } => Some(*epoch),
+            _ => None,
+        }
+    }
+
+    fn is_gji_probe_executing(&self) -> bool {
+        use crate::tsf::gji_fsm::{GjiState, ProbeStatus};
+        matches!(
+            crate::tsf::gji_fsm::GjiFsm::state(self),
+            GjiState::OnCold { probe: ProbeStatus::Executing { .. }, .. }
+        )
+    }
 }
 
 // ── MsImeStrategy ─────────────────────────────────────────────────────────────
@@ -85,12 +147,6 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
 ///
 /// MS IME は TSF context が常にウォームで、GJI のような外部プローブが不要。
 /// `is_warm()` は常に `true`、probe 操作は全て no-op となる。
-///
-/// # 将来の実装方針
-///
-/// MS IME 対応を本格実装する際は、`Output` が保持する `gji_fsm` フィールドを
-/// `Box<dyn ImeWarmupStrategy>` に換装し、起動時に GJI/MS IME を判別して
-/// 適切な Strategy を注入する。
 pub(crate) struct MsImeStrategy;
 
 impl ImeWarmupStrategy for MsImeStrategy {
@@ -123,4 +179,6 @@ impl ImeWarmupStrategy for MsImeStrategy {
     fn cancel_probe(&mut self) {
         // MS IME はプローブを持たない。
     }
+    // on_gji_event, on_gji_long_idle, gji_current_composition_epoch, is_gji_probe_executing
+    // はすべてデフォルト実装を使用する。
 }

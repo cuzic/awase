@@ -81,7 +81,7 @@ pub struct Output {
     ///
     /// フォーカス変更・IME ON/OFF・WarmupComplete を受け取り、LongIdle タイマーを管理する。
     /// Phase 2: CompositionState と並走（FSM が安定したら CompositionState を撤去）。
-    pub(crate) gji_fsm: std::cell::RefCell<crate::tsf::gji_fsm::GjiFsm>,
+    pub(crate) gji_fsm: std::cell::RefCell<Box<dyn crate::tsf::warmup_strategy::ImeWarmupStrategy>>,
     /// 現在実行中の GJI probe の ID（`GjiAction::StartProbe` 受信時にセット）。
     ///
     /// `dispatch_probe_actions` が `WarmupResult` を生成した際の照合に使う。
@@ -170,7 +170,7 @@ impl Output {
             pending_tsf: std::cell::RefCell::new(None),
             tsf_gate: crate::tsf::TsfGate::new(),
             injection_mode: InjectionMode::Unicode,
-            gji_fsm: std::cell::RefCell::new(crate::tsf::gji_fsm::GjiFsm::new()),
+            gji_fsm: std::cell::RefCell::new(Box::new(crate::tsf::gji_fsm::GjiFsm::new())),
             current_gji_probe_id: std::cell::Cell::new(None),
             gji_probe_guard: std::cell::RefCell::new(None),
             pending_gji_warmup: std::cell::Cell::new(None),
@@ -191,8 +191,8 @@ impl Output {
         &self,
         event: crate::tsf::gji_fsm::GjiEvent,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-        use timed_fsm::TimedStateMachine as _;
-        self.gji_fsm.borrow_mut().on_event(event)
+        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
+        self.gji_fsm.borrow_mut().on_gji_event(event)
     }
 
     /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
@@ -200,21 +200,16 @@ impl Output {
     pub(crate) fn gji_current_composition_epoch(
         &self,
     ) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
-        use crate::tsf::gji_fsm::GjiState;
-        match self.gji_fsm.borrow().state() {
-            GjiState::OnComposing { epoch } => Some(*epoch),
-            _ => None,
-        }
+        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
+        self.gji_fsm.borrow().gji_current_composition_epoch()
     }
 
     /// GjiFsm に LongIdle タイムアウトを送り、Response を返す。
     pub(crate) fn gji_on_long_idle(
         &self,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-        use timed_fsm::TimedStateMachine as _;
-        self.gji_fsm
-            .borrow_mut()
-            .on_timeout(crate::tsf::gji_fsm::GjiTimer::LongIdle)
+        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
+        self.gji_fsm.borrow_mut().on_gji_long_idle()
     }
 
     /// `GjiAction::StartProbe` を受信したとき probe_id を記録する。
@@ -321,11 +316,8 @@ impl Output {
     /// 現在の composition_warm フラグを返す（GjiFsm が SSOT）。
     #[must_use]
     pub fn is_composition_warm(&self) -> bool {
-        use crate::tsf::gji_fsm::GjiState;
-        matches!(
-            self.gji_fsm.borrow().state(),
-            GjiState::OnWarm { .. } | GjiState::OnComposing { .. }
-        )
+        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
+        self.gji_fsm.borrow().is_warm()
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
@@ -697,11 +689,7 @@ impl Output {
     ///
     /// `send_keys` 完了後の補完に使う。GJI probe は GjiFsm::Executing に移動した（Task 3）。
     pub(crate) fn pending_tsf_timer(&self) -> Option<TimerCommand> {
-        use crate::tsf::gji_fsm::{GjiState, ProbeStatus};
-        let gji_executing = matches!(
-            self.gji_fsm.borrow().state(),
-            GjiState::OnCold { probe: ProbeStatus::Executing { .. }, .. }
-        );
+        let gji_executing = self.gji_fsm.borrow().is_gji_probe_executing();
         (gji_executing || self.pending_tsf.borrow().is_some()).then_some(TimerCommand::Continue {
             id: crate::TIMER_TSF_PROBE,
             delay: Duration::from_millis(10),
