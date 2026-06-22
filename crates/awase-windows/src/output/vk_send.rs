@@ -7,7 +7,6 @@ use crate::tsf::output::{
     kana_for_romaji_static, make_key_input_ex, make_tsf_key_input, INJECTED_MARKER,
 };
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::TsfProbeMachine;
 use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS};
 use awase::types::VkCode;
 use itertools::Itertools as _;
@@ -277,7 +276,7 @@ impl Output {
             // を with_app の外で実行するため、async タスクへオフロードする。
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックが
             // キーを INPUT_DEFER に退避し、cold start シーケンスと race しないようにする。
-            // guard は TsfProbeMachine に move されて probe 完了まで保持される。
+            // guard は ChromeProbe に move されて probe 完了まで保持される。
             let guard = OutputActiveGuard::begin();
             let romaji_owned: String = romaji.to_string();
 
@@ -321,7 +320,7 @@ impl Output {
                     );
                 }
 
-                // probe を install。guard は TsfProbeMachine に move されて probe 完了まで保持される。
+                // probe を install。guard は ChromeProbe に move されて probe 完了まで保持される。
                 let probe =
                     crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
                 let _ = crate::with_app(|app| {
@@ -481,7 +480,7 @@ impl Output {
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params();
-            let machine = TsfProbeMachine::new_gji(
+            let fsm = Box::new(crate::tsf::gji_warmup_fsm::GjiWarmupFsm::new(
                 romaji,
                 cold_seq,
                 started.probe,
@@ -494,8 +493,8 @@ impl Output {
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
                 started.fresh_f2_at_probe_start,
-            );
-            self.install_gji_probe_machine(machine);
+            ));
+            self.install_pending_tsf(fsm);
             // WindowsPlatform::send_keys が TIMER_TSF_PROBE をセットする
             return;
         }
