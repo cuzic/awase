@@ -130,3 +130,13 @@ impl LiteralDetectFsm {
         self.cold_seq
     }
 }
+
+impl crate::tsf::tickable_fsm::TickableFsm for LiteralDetectFsm {
+    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+        LiteralDetectFsm::tick(self, env)
+    }
+
+    fn cold_seq_hint(&self) -> u32 {
+        self.cold_seq
+    }
+}
