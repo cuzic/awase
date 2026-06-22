@@ -215,7 +215,7 @@ impl WindowsPlatform {
                         log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
                         // GJI probe は GjiFsm::Executing に格納されている（Task 3 以降）。
                         // machine を take して drop する（guard も解放）。
-                        let _ = self.output.gji_fsm.borrow_mut().take_probe_machine();
+                        self.output.gji_fsm.borrow_mut().cancel_probe();
                         self.output.gji_end_probe_guard();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
                         let _ = self.output.current_gji_probe_id.take();

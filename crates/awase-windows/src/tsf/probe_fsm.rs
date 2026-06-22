@@ -981,7 +981,7 @@ impl crate::tsf::tickable_fsm::TickableFsm for TsfProbeMachine {
 
     fn apply_fresh_f2_sent(
         &mut self,
-        nc_baseline: crate::tsf::observer::NamechangeBaseline,
+        nc_baseline: NamechangeBaseline,
         fresh_f2_ms: u64,
     ) {
         TsfProbeMachine::apply_fresh_f2_sent(self, nc_baseline, fresh_f2_ms);
@@ -991,7 +991,7 @@ impl crate::tsf::tickable_fsm::TickableFsm for TsfProbeMachine {
         &mut self,
         romaji: String,
         ze_bs_count: usize,
-        detector: Option<crate::tsf::probe::LiteralDetector>,
+        detector: Option<LiteralDetector>,
         literal_detect_ms: u64,
         expected_kana: Option<char>,
     ) -> bool {
@@ -1005,7 +1005,7 @@ impl crate::tsf::tickable_fsm::TickableFsm for TsfProbeMachine {
         )
     }
 
-    fn push_deferred(&mut self, vk: awase::types::VkCode, needs_shift: bool) {
+    fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
         TsfProbeMachine::push_deferred(self, vk, needs_shift);
     }
 }

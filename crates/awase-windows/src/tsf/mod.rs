@@ -22,7 +22,6 @@ pub mod probe;
 pub mod probe_bridge;
 pub(crate) mod probe_fsm;
 pub mod send;
-pub(crate) mod warmup_strategy;
 
 pub use awase::gate::GateAction;
 pub use awase::tsf::{

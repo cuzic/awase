@@ -191,8 +191,7 @@ impl Output {
         &self,
         event: crate::tsf::gji_fsm::GjiEvent,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
-        self.gji_fsm.borrow_mut().on_gji_event(event)
+self.gji_fsm.borrow_mut().on_gji_event(event)
     }
 
     /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
@@ -200,16 +199,14 @@ impl Output {
     pub(crate) fn gji_current_composition_epoch(
         &self,
     ) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
-        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
-        self.gji_fsm.borrow().gji_current_composition_epoch()
+self.gji_fsm.borrow().gji_current_composition_epoch()
     }
 
     /// GjiFsm に LongIdle タイムアウトを送り、Response を返す。
     pub(crate) fn gji_on_long_idle(
         &self,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
-        self.gji_fsm.borrow_mut().on_gji_long_idle()
+self.gji_fsm.borrow_mut().on_gji_long_idle()
     }
 
     /// `GjiAction::StartProbe` を受信したとき probe_id を記録する。
@@ -316,8 +313,7 @@ impl Output {
     /// 現在の composition_warm フラグを返す（GjiFsm が SSOT）。
     #[must_use]
     pub fn is_composition_warm(&self) -> bool {
-        use crate::tsf::warmup_strategy::ImeWarmupStrategy as _;
-        self.gji_fsm.borrow().is_warm()
+self.gji_fsm.borrow().is_warm()
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
@@ -558,7 +554,9 @@ impl Output {
                     vks.len(),
                     romaji
                 );
-                machine.extend_deferred(vks);
+                for crate::tsf::probe_fsm::DeferredVk { vk, needs_shift } in vks {
+                    machine.push_deferred(vk, needs_shift);
+                }
                 true
             })
     }
@@ -598,7 +596,7 @@ impl Output {
         // dispatch_probe_actions が &self(ProbeIo) を借用する前に解放される。
         let gji_tick = self.gji_fsm.borrow_mut().tick_probe_machine(tick_t, &env);
         if let Some((actions, mut machine)) = gji_tick {
-            let done = probe_io::dispatch_probe_actions(&mut machine, actions, self);
+            let done = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
             let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
             if done {
                 self.on_tsf_probe_ready();
