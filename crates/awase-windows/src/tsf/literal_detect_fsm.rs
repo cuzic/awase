@@ -126,10 +126,6 @@ impl LiteralDetectFsm {
         }
     }
 
-    /// ログ用 cold_seq 参照。
-    pub(crate) const fn cold_seq_hint(&self) -> u32 {
-        self.cold_seq
-    }
 }
 
 impl crate::tsf::tickable_fsm::TickableFsm for LiteralDetectFsm {

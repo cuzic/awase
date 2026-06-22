@@ -280,6 +280,7 @@ pub(crate) enum TransmitTarget {
 /// [`ProbeAction::StartLiteralDetect`] のペイロード。
 /// `GjiWarmupFsm` が transmit 完了後、`needs_literal=true` と判断したときに emit する。
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct LiteralDetectConfig {
     pub cold_seq: u32,
     pub romaji: String,
@@ -320,6 +321,7 @@ pub(crate) enum ProbeAction {
     ///
     /// [`GjiWarmupFsm`] が `needs_literal=true` と判断したときに emit する。
     /// dispatcher は `LiteralDetectFsm` を生成して `TIMER_TSF_PROBE` を継続させる。
+    #[allow(dead_code)]
     StartLiteralDetect(LiteralDetectConfig),
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
@@ -413,38 +415,6 @@ impl TsfProbeMachine {
         }
     }
 
-    /// warm パスからの LiteralDetect 直入り用コンストラクタ。
-    ///
-    /// `send_romaji_as_tsf` の warm パスで投機送信後に LiteralDetect だけを動かしたい場合に使う。
-    pub(crate) fn new_literal_detect(
-        romaji: &str,
-        cold_seq: u32,
-        detector: LiteralDetector,
-        ze_bs_count: usize,
-        deadline_ms: u64,
-        guard: OutputActiveGuard,
-    ) -> Self {
-        Self {
-            cold_seq,
-            _guard: Some(guard),
-            ctx: ProbeContext {
-                prepend_f2_warmup: false,
-                used_eager_path: false,
-                ncwait_budget_ms: crate::tuning::SETTLE_TIMEOUT_MS,
-                forces_prepend_f2: false,
-                is_long_cold: false,
-                fresh_f2_at_probe_start: false,
-            },
-            phase: ProbePhase::LiteralDetect {
-                detector,
-                ze_bs_count,
-                deadline_ms,
-                send: SendState::new(romaji),
-                expected_kana: None,
-            },
-        }
-    }
-
     /// ログ用 cold_seq 参照（上書き警告等で使う）。
     pub(crate) const fn cold_seq_hint(&self) -> u32 {
         self.cold_seq
@@ -458,21 +428,6 @@ impl TsfProbeMachine {
             log::warn!(
                 "[tsf-probe] cold={} push_deferred dropped: phase has no SendState (label={})",
                 self.cold_seq,
-                self.phase_label_internal()
-            );
-        }
-    }
-
-    /// probe 進行中に後続 VK を複数蓄積する。
-    pub(crate) fn extend_deferred(&mut self, vks: impl IntoIterator<Item = DeferredVk>) {
-        let collected: Vec<DeferredVk> = vks.into_iter().collect();
-        if let Some(send) = self.current_send_mut() {
-            send.deferred_vks.extend(collected);
-        } else {
-            log::warn!(
-                "[tsf-probe] cold={} extend_deferred dropped {} VK(s): phase has no SendState (label={})",
-                self.cold_seq,
-                collected.len(),
                 self.phase_label_internal()
             );
         }

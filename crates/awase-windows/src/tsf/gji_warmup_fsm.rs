@@ -1,4 +1,6 @@
 //! GJI cold-start warmup 専用ステートマシン。
+// GjiWarmupFsm は現在 ImeWarmupStrategy に統合前のため dead_code 警告を抑制する。
+#![allow(dead_code, private_interfaces)]
 //!
 //! [`GjiWarmupFsm`] は `TsfProbeMachine` から GJI 固有のフェーズを切り出した FSM。
 //! GJI の静止待ち・FreshF2 送信・NameChangeWait を担当し、

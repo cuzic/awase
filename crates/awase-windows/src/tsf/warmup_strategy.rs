@@ -147,6 +147,7 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
 ///
 /// MS IME は TSF context が常にウォームで、GJI のような外部プローブが不要。
 /// `is_warm()` は常に `true`、probe 操作は全て no-op となる。
+#[allow(dead_code)]
 pub(crate) struct MsImeStrategy;
 
 impl ImeWarmupStrategy for MsImeStrategy {

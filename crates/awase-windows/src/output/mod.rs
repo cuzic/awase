@@ -554,7 +554,7 @@ self.gji_fsm.borrow().is_warm()
                     vks.len(),
                     romaji
                 );
-                for crate::tsf::probe_fsm::DeferredVk { vk, needs_shift } in vks {
+                for DeferredVk { vk, needs_shift } in vks {
                     machine.push_deferred(vk, needs_shift);
                 }
                 true
