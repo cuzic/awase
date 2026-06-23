@@ -82,7 +82,7 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
     fn gji_current_composition_epoch(&self) -> Option<FocusEpoch> {
         use crate::tsf::gji_fsm::GjiState;
         match crate::tsf::gji_fsm::GjiFsm::state(self) {
-            GjiState::OnComposing { epoch } => Some(*epoch),
+            GjiState::OnComposing { epoch, .. } => Some(*epoch),
             _ => None,
         }
     }
