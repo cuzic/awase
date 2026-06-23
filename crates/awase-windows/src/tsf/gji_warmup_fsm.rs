@@ -47,6 +47,9 @@ pub(crate) enum GjiProbePhase {
         deadline_ms: u64,
         fresh_f2_ms: u64,
         probe_settled: bool,
+        /// fresh F2 送信直前の `gji_last_write_ms()` スナップショット。
+        /// タイムアウト時に現在値と比較して GJI が F2 に I/O 応答したか判定する。
+        gji_write_baseline: u64,
         send: SendState,
     },
     /// 終端フェーズ（transmit 完了後）。
@@ -318,6 +321,7 @@ impl GjiWarmupFsm {
                 deadline_ms,
                 fresh_f2_ms,
                 probe_settled,
+                gji_write_baseline,
                 ..
             } => {
                 let now = clock.now_ms();
@@ -341,8 +345,13 @@ impl GjiWarmupFsm {
                     return NextStep::Wait;
                 }
                 let elapsed = now.saturating_sub(*fresh_f2_ms);
+                // fresh F2 送信後に GJI が I/O 書き込みを行ったか確認する。
+                // 書き込みあり → GJI が F2 に応答して composition を開始した可能性が高い
+                // (gji_resumed=true)。書き込みなし → TSF が cold のまま (gji_resumed=false)。
+                let gji_wrote_after_f2 =
+                    crate::tsf::observer::gji_last_write_ms() > *gji_write_baseline;
                 log::debug!(
-                    "[gji-warmup] cold={} NameChangeWait → nc_fired={nc_fired} timed_out={timed_out} ({elapsed}ms)",
+                    "[gji-warmup] cold={} NameChangeWait → nc_fired={nc_fired} timed_out={timed_out} gji_wrote_after_f2={gji_wrote_after_f2} ({elapsed}ms)",
                     self.cold_seq
                 );
                 if nc_fired && !probe_settled {
@@ -357,7 +366,7 @@ impl GjiWarmupFsm {
                 } else {
                     NextStep::TransmitTsf {
                         nc_fired,
-                        gji_resumed: false,
+                        gji_resumed: gji_wrote_after_f2,
                     }
                 }
             }
@@ -396,6 +405,7 @@ impl GjiWarmupFsm {
             }
         };
         let deadline_ms = fresh_f2_ms + budget_ms;
+        let gji_write_baseline = crate::tsf::observer::gji_last_write_ms();
         log::debug!(
             "[gji-warmup] cold={} NameChangeWait deadline {}ms (probe_settled={probe_settled}, budget={budget_ms}ms forces_f2={})",
             self.cold_seq, budget_ms, self.ctx.forces_prepend_f2
@@ -405,6 +415,7 @@ impl GjiWarmupFsm {
             deadline_ms,
             fresh_f2_ms,
             probe_settled,
+            gji_write_baseline,
             send,
         };
     }
@@ -630,12 +641,21 @@ mod tests {
     }
 
     fn make_namechange_wait(deadline_ms: u64, probe_settled: bool) -> GjiProbePhase {
+        make_namechange_wait_with_gji_baseline(deadline_ms, probe_settled, 0)
+    }
+
+    fn make_namechange_wait_with_gji_baseline(
+        deadline_ms: u64,
+        probe_settled: bool,
+        gji_write_baseline: u64,
+    ) -> GjiProbePhase {
         let baseline = crate::tsf::observer::namechange_baseline();
         GjiProbePhase::NameChangeWait {
             nc_baseline: baseline,
             deadline_ms,
             fresh_f2_ms: 0,
             probe_settled,
+            gji_write_baseline,
             send: SendState::default(),
         }
     }
