@@ -506,6 +506,25 @@ impl Output {
     fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence, used_eager_path: bool) {
         let t_warm = crate::hook::current_tick_ms();
         let cold_seq = self.composition.cold_start_count();
+
+        // PendingGjiConfirm: unicode 送信後 GJI がまだ I/O 応答していない状態。
+        // この間は VK sequential を送っても GJI composition が準備できておらず先頭 VK が
+        // リテラル化する（例: こ(unicode)+れ(VK) → こrえ）。
+        // GJI が応答するまで次のキーも unicode で送ることで race を回避する。
+        let in_post_unicode_pending = {
+            let last_unicode_ms = self.composition.last_unicode_transmit_ms();
+            last_unicode_ms != 0
+                && crate::tsf::observer::gji_last_io_ms() <= last_unicode_ms
+        };
+        let used_eager_path = if in_post_unicode_pending {
+            log::debug!(
+                "[tsf-warm-start] cold={cold_seq} PendingGjiConfirm: GJI 未応答 → romaji={romaji:?} を unicode で強制送信"
+            );
+            true
+        } else {
+            used_eager_path
+        };
+
         log::debug!("[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms");
         let outcome = WarmupOutcome {
             prepend_f2_warmup: false,

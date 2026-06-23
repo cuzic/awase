@@ -171,6 +171,12 @@ pub struct WarmEpoch {
     cold_start_count: std::cell::Cell<u32>,
     /// NativeF2Consumed 時に即送信した eager warmup F2 の送信時刻（ms）。0 = 未送信
     eager_warmup_sent_ms: std::cell::Cell<u64>,
+    /// KEYEVENTF_UNICODE で文字を送信した時刻（ms）。0 = 未送信 / リセット済み。
+    ///
+    /// GJI probe が settled=false で完了した後 unicode fallback を使った際にセットされる。
+    /// `gji_last_io_ms() > last_unicode_transmit_ms` になれば GJI が応答したとみなし、
+    /// 次の warm パスは通常 VK sequential に戻る（`PendingGjiConfirm` 状態の SSOT）。
+    last_unicode_transmit_ms: std::cell::Cell<u64>,
 }
 
 impl WarmEpoch {
@@ -180,17 +186,31 @@ impl WarmEpoch {
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(0),
             eager_warmup_sent_ms: std::cell::Cell::new(0),
+            last_unicode_transmit_ms: std::cell::Cell::new(0),
         }
     }
 
-    /// コールド状態にマークする（eager_warmup_sent_ms をリセット）。
+    /// コールド状態にマークする（eager_warmup_sent_ms / last_unicode_transmit_ms をリセット）。
     pub fn mark_cold(&self) {
         self.eager_warmup_sent_ms.set(0);
+        self.last_unicode_transmit_ms.set(0);
     }
 
-    /// フォーカス変更時に eager_warmup_sent_ms をリセットする。
+    /// フォーカス変更時に eager_warmup_sent_ms / last_unicode_transmit_ms をリセットする。
     pub fn on_focus_changed(&self) {
         self.eager_warmup_sent_ms.set(0);
+        self.last_unicode_transmit_ms.set(0);
+    }
+
+    /// unicode 送信時刻を返す。0 = 未送信。
+    #[must_use]
+    pub const fn last_unicode_transmit_ms(&self) -> u64 {
+        self.last_unicode_transmit_ms.get()
+    }
+
+    /// unicode 送信時刻をセットする。
+    pub fn set_last_unicode_transmit_ms(&self, ms: u64) {
+        self.last_unicode_transmit_ms.set(ms);
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。
@@ -449,6 +469,17 @@ impl CompositionState {
     #[must_use]
     pub const fn consecutive_count(&self) -> u32 {
         self.cold_ctx.consecutive_count()
+    }
+
+    /// unicode 送信時刻を返す。0 = 未送信。
+    #[must_use]
+    pub const fn last_unicode_transmit_ms(&self) -> u64 {
+        self.warm_epoch.last_unicode_transmit_ms()
+    }
+
+    /// unicode 送信時刻をセットする（`PendingGjiConfirm` 状態の開始）。
+    pub fn set_last_unicode_transmit_ms(&self, ms: u64) {
+        self.warm_epoch.set_last_unicode_transmit_ms(ms);
     }
 
     /// warm 状態を維持したまま連続カウントをインクリメントする。

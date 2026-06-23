@@ -78,7 +78,19 @@ impl ProbeIo for Output {
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
+        let result = crate::output::TsfSendPipeline::transmit(romaji, chars, outcome);
+        // unicode パスを使った場合（used_eager_path=true かつ kana が存在する）は
+        // PendingGjiConfirm 状態に入る: GJI が I/O 応答するまで次の warm キーも unicode で送る。
+        if outcome.used_eager_path
+            && crate::tsf::output::kana_for_romaji_static(romaji).is_some()
+        {
+            let now = crate::hook::current_tick_ms();
+            self.composition.set_last_unicode_transmit_ms(now);
+            log::debug!(
+                "[post-unicode] PendingGjiConfirm 開始: last_unicode_transmit_ms={now} romaji={romaji:?}"
+            );
+        }
+        result
     }
 
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]) {
