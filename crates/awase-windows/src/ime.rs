@@ -82,6 +82,7 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 ///
 /// `SendInput` で修飾なしキーを届ける際の解放・復元シーケンス構築に使う。
 /// 3つの IME キー送信関数（VK_KANJI / F21 / F22）が同じパターンを共有する。
+#[derive(Clone, Copy)]
 struct HeldModifiers {
     ctrl: bool,
     shift: bool,
@@ -317,23 +318,26 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
 
     let held = HeldModifiers::read();
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
-    held.push_release(&mut inputs);
+    // F21/F22 は GJI 専用の仮想 VK（実キーボードに存在しない）。
+    // GJI のキーバインドは VK コードのみで照合するため ALT+F21/F22 でも正常に処理される。
+    // ALT を解放すると ALT+TAB スイッチャーが確定してしまうため、ALT は解放しない。
+    let held_skip_alt = HeldModifiers { alt: false, ..held };
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(6);
+    held_skip_alt.push_release(&mut inputs);
     inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
     inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
     // SAFETY: push_restore は Win32 SendInput を呼ぶ。
-    let still = unsafe { held.push_restore(&mut inputs) };
+    let still = unsafe { held_skip_alt.push_restore(&mut inputs) };
 
     log::debug!(
         "[ime-mode] SendInput vk=0x{vk:02X} \
-         release(ctrl={} shift={} alt={}) \
-         restore(ctrl={} shift={} alt={}) total={} events",
+         release(ctrl={} shift={} alt=false(skipped)) \
+         restore(ctrl={} shift={} alt=false(skipped)) phys_alt={} total={} events",
         held.ctrl,
         held.shift,
-        held.alt,
         still.ctrl,
         still.shift,
-        still.alt,
+        held.alt,
         inputs.len()
     );
     // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
