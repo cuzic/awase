@@ -121,7 +121,6 @@ impl LiteralDetectFsm {
                     // 削除 = BS×1 (composition クリア) + BS×1 (リテラル削除) = 2 固定。
                     // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition → BS×2 が正しく
                     //     ze_bs_count=3 を使うと挿入点前の無関係な文字まで消える。
-                    const PARTIAL_LITERAL_BS: usize = super::PARTIAL_LITERAL_BS;
                     log::debug!(
                         "[raw-tsf-literal] cold={} LiteralDetectFsm: partial literal (nc=false gji_resumed=false tsf romaji={:?} backs={})",
                         self.cold_seq,
