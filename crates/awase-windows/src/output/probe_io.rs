@@ -301,9 +301,14 @@ where
                     TransmitTarget::Chrome => {
                         // plan.needs_literal は enter_transmit_chrome が env.gji_active で確定済み。
                         // 検出ベースラインは送信前に確定させること。
+                        // Chrome 経由では GJI が VK を処理すると辞書 I/O が発生し gji_last_io_ms が
+                        // 更新される。gji_candidate_show はシンプルなかな（「や」など）では発火しないため
+                        // new_gji_resumed() を使って I/O 変化を確認シグナルとする。
+                        // これにより「ya→や」等で false SuspectedLiteral が発生し BS×2 + 再送が
+                        // ループするバグを防ぐ。
                         let detector = plan
                             .needs_literal
-                            .then(crate::tsf::probe::LiteralDetector::new);
+                            .then(crate::tsf::probe::LiteralDetector::new_gji_resumed);
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&deferred_vks, VkMarker::Injected);
