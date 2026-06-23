@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-06-23
+
+### バグ修正
+
+- **ALT+TAB が連続して押せない問題を修正** ([d6cb1a4](https://github.com/cuzic/awase/commit/d6cb1a4))
+  - フォーカス変化のたびに F21/F22 (IME ON/OFF キー) を送信する際、ALT を一時的に解放していたため ALT+TAB スイッチャーが「ALT 離した＝確定」と誤認していた
+  - F21/F22 は GJI 専用の仮想 VK のため ALT を保持したまま送信しても正常に動作する
+- **GJI long-idle 後の「kお」cold start バグを修正** ([e4a6248](https://github.com/cuzic/awase/commit/e4a6248), [c571acf](https://github.com/cuzic/awase/commit/c571acf))
+  - GJI が 8〜10 秒以上アイドル後、最初のキー入力が部分リテラル化（「こ」→「kお」）するケースを修正
+  - medium idle (7〜10 秒) でも GJI 無応答タイムアウト時に F2 をバッチ同梱するよう改善 ([2159dca](https://github.com/cuzic/awase/commit/2159dca))
+- **部分リテラル（「kお」「seつぞく」）の修正** ([5562b6a](https://github.com/cuzic/awase/commit/5562b6a), [d54f5b1](https://github.com/cuzic/awase/commit/d54f5b1), [125d2c1](https://github.com/cuzic/awase/commit/125d2c1))
+  - GJI I/O 応答後に `gji_resumed` を設定して部分リテラルを救済
+  - TSF mode でも LiteralDetect を有効化（「seつぞく」の再発防止）
+  - 部分リテラル BS 数を `chars.len()` から 2 固定に修正
+- **Chrome パスの LiteralDetector を改善** ([c279fc7](https://github.com/cuzic/awase/commit/c279fc7))
+  - `new_gji_resumed` に切り替えて GJI resume 後のリテラル誤検出を抑制
+- **probe-fsm: F2 二重送信・遅延の修正** ([d195c43](https://github.com/cuzic/awase/commit/d195c43), [4de228b](https://github.com/cuzic/awase/commit/4de228b))
+  - ReWarmup/non-eager パスで TSF バッチへの F2 二重送信を抑制
+  - GJI pre-idle 時に fresh F2 + NameChangeWait をスキップして遅延を削減
+- **composition-fsm: Long cold 状態を正しく維持するよう修正** ([c96598f](https://github.com/cuzic/awase/commit/c96598f))
+
+### 新機能
+
+- **GjiWarmupFsm を新規作成**: GJI cold-start warmup 専用 FSM を導入し warm-up ロジックを独立化 ([fcd1b82](https://github.com/cuzic/awase/commit/fcd1b82), [f768944](https://github.com/cuzic/awase/commit/f768944))
+- **LiteralDetectFsm を新規作成**: warm パス・GJI post-transmit で共用するリテラル検出 FSM ([8608062](https://github.com/cuzic/awase/commit/8608062), [660ee19](https://github.com/cuzic/awase/commit/660ee19))
+- **ChromeProbe を新規作成**: `pending_tsf` を `Box<dyn TickableFsm>` に換装し Chrome 専用 probe を追加 ([51901c0](https://github.com/cuzic/awase/commit/51901c0))
+- **ColdKind::Medium を追加**: GJI idle 時間を Long / Medium / Short に分類して warmup 戦略を最適化 ([bf3eade](https://github.com/cuzic/awase/commit/bf3eade))
+- **NameChangeWait で candidate 可視時に即 transmit**: WezTerm での probe 待ち時間を最大 300ms 短縮 ([25182eb](https://github.com/cuzic/awase/commit/25182eb))
+
+### 内部改善
+
+- **TickableFsm トレイト定義**: `TsfProbeMachine` / `GjiWarmupFsm` / `LiteralDetectFsm` / `ChromeProbe` が共通インターフェースを実装 ([d22e987](https://github.com/cuzic/awase/commit/d22e987))
+- **ImeWarmupStrategy トレイト定義**: `GjiFsm` / `MsImeStrategy` を統一インターフェースで扱えるよう抽象化 ([eb8b9d4](https://github.com/cuzic/awase/commit/eb8b9d4))
+- **GjiFsm 大規模リファクタリング**: `ProbeStatus` を `Authorized+Executing` に分離し Cell 3本を撤去、`OutputActiveGuard` を Output に移動 ([0ca92b2](https://github.com/cuzic/awase/commit/0ca92b2), [65e0a1a](https://github.com/cuzic/awase/commit/65e0a1a))
+- **transport リファクタリング**: `PassthroughQueue` を抽出・`PhysicalKeyDisposition::plan()` に F2 ケースを統合 ([3cfc57b](https://github.com/cuzic/awase/commit/3cfc57b), [005ed17](https://github.com/cuzic/awase/commit/005ed17))
+
+---
+
 ## [1.2.0] - 2026-06-21
 
 ### 新機能
