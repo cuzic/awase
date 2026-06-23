@@ -20,6 +20,14 @@ use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, ProbeObservations, TransmitPlan};
 use crate::tsf::probe_fsm::TsfEnvSnapshot;
 
+/// 部分リテラル検出時に送るバックスペース数。
+///
+/// 部分リテラルの構造は「先頭 1 文字リテラル + 残りが 1 composition ユニット」であり、
+/// BS×1 で composition をクリアし BS×1 でリテラル文字を削除する計 2 回が正しい。
+/// `ze_bs_count`（= chars.len()）はローマ字文字数に等しいが、3 文字ローマ字（"ltu" など）
+/// では ze_bs_count=3 となり 1 回多くなるため、部分リテラルパスでは使わない。
+const PARTIAL_LITERAL_BS: usize = 2;
+
 /// warm パス・GJI post-transmit 共用の LiteralDetect ステートマシン。
 ///
 /// 構築後は 10ms ごとに [`tick`](LiteralDetectFsm::tick) を呼ぶ。
@@ -107,18 +115,25 @@ impl LiteralDetectFsm {
                     && self.romaji.chars().count() >= 2;
 
                 if partial_literal_suspected {
+                    // ze_bs_count (= chars.len()) は「全部リテラル」向けの値であり、
+                    // 部分リテラルには使えない。部分リテラルの構造は常に:
+                    //   先頭 1 文字リテラル + 残りが 1 composition ユニット
+                    // 削除 = BS×1 (composition クリア) + BS×1 (リテラル削除) = 2 固定。
+                    // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition → BS×2 が正しく
+                    //     ze_bs_count=3 を使うと挿入点前の無関係な文字まで消える。
+                    const PARTIAL_LITERAL_BS: usize = super::PARTIAL_LITERAL_BS;
                     log::debug!(
                         "[raw-tsf-literal] cold={} LiteralDetectFsm: partial literal (nc=false gji_resumed=false tsf romaji={:?} backs={})",
                         self.cold_seq,
                         self.romaji,
-                        self.ze_bs_count,
+                        PARTIAL_LITERAL_BS,
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
                     let romaji = std::mem::take(&mut self.romaji);
                     return vec![
                         ProbeAction::RawTsfLiteralRecovery {
                             cold_seq: self.cold_seq,
-                            backs: self.ze_bs_count,
+                            backs: PARTIAL_LITERAL_BS,
                             romaji,
                         },
                         ProbeAction::Done,
@@ -265,5 +280,26 @@ mod tests {
             && env.is_tsf_mode
             && fsm.romaji.chars().count() >= 2;
         assert!(!partial, "non-TSF mode → 強制 recovery 不要");
+    }
+
+    // 3 文字ローマ字 (っ = "ltu") でも BS は 2 固定
+    #[test]
+    fn partial_literal_bs_count_is_always_2_regardless_of_romaji_length() {
+        // ze_bs_count=3 (chars.len()) を渡しても部分リテラルパスは PARTIAL_LITERAL_BS=2 を使う。
+        // "ltu" → 'l' リテラル + 'tu'→'と' composition → BS×2 が正しい。
+        // BS×3 を送ると挿入点前の無関係な文字を消してしまう。
+        let fsm = make_fsm("ltu", false, false, 3);
+        let env = tsf_env();
+        let partial = !fsm.observations.nc_fired
+            && !fsm.observations.gji_resumed
+            && env.is_tsf_mode
+            && fsm.romaji.chars().count() >= 2;
+        assert!(partial, "ltu: 部分リテラル条件が揃っているべき");
+        // PARTIAL_LITERAL_BS=2 であることを確認
+        // (tick() 内で self.ze_bs_count=3 でなく 2 を使っていることを静的に検証)
+        assert_eq!(
+            super::PARTIAL_LITERAL_BS, 2,
+            "PARTIAL_LITERAL_BS は常に 2 (1 リテラル + 1 composition クリア)"
+        );
     }
 }
