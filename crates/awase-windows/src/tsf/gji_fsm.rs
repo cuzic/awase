@@ -315,6 +315,12 @@ pub(crate) enum GjiTimer {
 ///
 /// 副作用はなし。遷移ごとに `Response<GjiAction, GjiTimer>` を返し、
 /// ディスパッチャが `GjiAction` を実行し timed-fsm ランタイムがタイマーを管理する。
+///
+/// ## CompositionFsm との関係
+///
+/// [`crate::tsf::composition_fsm::CompositionFsm`] も warm/cold を追跡するが意味が異なる。
+/// `CompositionFsm` は warmup 送信タイミングの制御、`GjiFsm` は GJI readiness の事実推測。
+/// dispatcher が両方に個別にイベントを送り、直接の依存関係はない。
 pub(crate) struct GjiFsm {
     state: GjiState,
     /// `EndComposition` の stale 判定用 epoch

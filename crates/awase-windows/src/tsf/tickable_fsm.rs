@@ -1,8 +1,16 @@
 //! tick 駆動型 FSM の共通インターフェース。
 //!
 //! 10ms タイマー (`TIMER_TSF_PROBE`) から `tick()` が呼ばれるパターンを型として表現する。
-//! [`crate::tsf::probe_fsm::TsfProbeMachine`] が現在この役割を担っており、
-//! 将来の `GjiWarmupFsm` / `LiteralDetectFsm` / `ChromeProbe` もこのトレイトを実装する予定。
+//!
+//! ## 実装一覧
+//!
+//! | 実装型 | 用途 | 使用するメソッド |
+//! |--------|------|-----------------|
+//! | `GjiWarmupFsm` | GJI cold-start warmup probe | `tick`, `cold_seq_hint`, `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `push_deferred` |
+//! | `TsfProbeMachine` | Chrome probe + LiteralDetect | `tick`, `cold_seq_hint`, `apply_transmit_done`, `push_deferred` |
+//! | `LiteralDetectFsm` | post-transmit の composition 確認 | `tick`, `cold_seq_hint` のみ |
+//!
+//! デフォルト実装（no-op）が多いのは各 implementor が必要なメソッドだけをオーバーライドするため。
 
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::probe::LiteralDetector;

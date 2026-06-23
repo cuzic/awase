@@ -16,6 +16,19 @@
 //! - `epoch` はフォーカス変更を跨いだ stale な `PendingWarmupOnKeyUp` を弾く内部カウンタ。
 //!   FSM が自前で保持・更新するためイベントには載せない。
 //! - タイマーは不要なので `TimerId = std::convert::Infallible`。
+//!
+//! ## GjiFsm との warm/cold の違い
+//!
+//! `CompositionFsm` と `GjiFsm` はどちらも warm/cold の概念を持つが、意味が異なる。
+//!
+//! - **CompositionFsm**: 「最後の warmup シーケンスを送った」という**タイミング制御**の状態。
+//!   confirm キーや F2 の KeyDown/Up タイミングに応じて warmup の送信を遅延・即時化する。
+//!
+//! - **GjiFsm**: 「GJI が実際に readiness を確認済みか」という**事実推測**の状態。
+//!   probe（TsfReadinessProbe）による観測結果で更新される。
+//!
+//! 両者は独立して管理されており、統合は意図的にしていない。
+//! dispatcher（`platform.rs`）が両方に対して個別にイベントを送る。
 
 use std::convert::Infallible;
 
