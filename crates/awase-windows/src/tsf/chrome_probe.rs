@@ -2,7 +2,6 @@
 //!
 //! [`TsfProbeMachine::new_chrome`] を [`TickableFsm`] トレイト経由で使えるようにラップする。
 
-use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot, TsfProbeMachine};
@@ -32,13 +31,8 @@ impl TickableFsm for ChromeProbe {
         self.0.cold_seq_hint()
     }
 
-    fn forces_prepend_f2_for_extra_f2(&self) -> bool {
-        self.0.forces_prepend_f2_for_extra_f2()
-    }
-
-    fn apply_fresh_f2_sent(&mut self, nc_baseline: NamechangeBaseline, fresh_f2_ms: u64) {
-        self.0.apply_fresh_f2_sent(nc_baseline, fresh_f2_ms);
-    }
+    // forces_prepend_f2_for_extra_f2 / apply_fresh_f2_sent は GjiWarmupFsm 専用。
+    // TsfProbeMachine はデフォルト（false / no-op）を返すため委譲不要。
 
     fn apply_transmit_done(
         &mut self,
