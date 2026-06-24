@@ -105,13 +105,13 @@ impl SacrificialWarmupFsm {
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
     ///
     /// VK_A の composition を確認次第（成功・タイムアウトいずれも）[`ProbeAction::SacrificialResend`] を emit する。
-    pub(crate) fn tick(&mut self, _env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    pub(crate) fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         // ── Phase 2: Chrome HIDE 待機中 ────────────────────────────────────────
         // composition-confirmed 後、VK_A+BS の EndComposition IPC が Chrome に
         // 到達するのを candidate window HIDE で確認してから実ローマ字を送る。
         if let Some(hide_deadline) = self.hide_wait_deadline_ms {
             let now = crate::hook::current_tick_ms();
-            let candidate_gone = !crate::tsf::observer::gji_candidate_visible_now();
+            let candidate_gone = !env.gji_candidate_visible;
             let timed_out = now >= hide_deadline;
             if !candidate_gone && !timed_out {
                 return vec![];
@@ -172,7 +172,7 @@ impl SacrificialWarmupFsm {
         // EndComposition IPC が Chrome に伝播するまで ~200ms かかるため、
         // candidate window HIDE を確認してから実ローマ字を送る（IPC race 回避）。
         if confirmed_warm && self.target == TransmitTarget::Chrome {
-            if crate::tsf::observer::gji_candidate_visible_now() {
+            if env.gji_candidate_visible {
                 // candidate window がまだ表示中 → HIDE 待機フェーズへ移行
                 let hide_deadline = crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_HIDE_WAIT_MS;
                 self.hide_wait_deadline_ms = Some(hide_deadline);
@@ -206,7 +206,7 @@ impl SacrificialWarmupFsm {
 
 impl crate::tsf::tickable_fsm::TickableFsm for SacrificialWarmupFsm {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
-        SacrificialWarmupFsm::tick(self, env)
+        Self::tick(self, env)
     }
 
     fn cold_seq_hint(&self) -> u32 {
