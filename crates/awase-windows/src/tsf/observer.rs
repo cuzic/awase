@@ -178,6 +178,18 @@ pub struct TsfObservations {
     ///
     /// `observation_event_proc` が set → `take_pending_end_composition()` で drain → platform が `EndComposition` を dispatch。
     pub(in crate::tsf) pending_end_composition: AtomicBool,
+
+    /// `EVENT_OBJECT_IME_SHOW`（0x8027）が発火するたびに +1 するカウンタ（実機検証用）。
+    ///
+    /// Chrome などのアプリで F21 受信後に GJI がひらがなモードへ移行したとき発火するかを確認する。
+    /// 検証で発火が確認されれば `ChromeGjiReinitFsm` の IMC ポーリング代替シグナルとして活用できる。
+    pub(in crate::tsf) ime_show_seq: ChangeCounter,
+
+    /// `EVENT_OBJECT_IME_CHANGE`（0x8029）が発火するたびに +1 するカウンタ（実機検証用）。
+    ///
+    /// IME の入力モード切り替え（ひらがな↔英字など）を捕捉するために使用する。
+    /// 発火クラス・タイミングの確認が目的。
+    pub(in crate::tsf) ime_change_seq: ChangeCounter,
 }
 
 impl Default for TsfObservations {
@@ -204,6 +216,8 @@ impl TsfObservations {
             candidate_was_seen: AtomicBool::new(false),
             pending_start_composition: AtomicBool::new(false),
             pending_end_composition: AtomicBool::new(false),
+            ime_show_seq: ChangeCounter::new(),
+            ime_change_seq: ChangeCounter::new(),
         }
     }
 
@@ -368,6 +382,16 @@ pub(crate) fn take_pending_start_composition() -> bool {
 /// `advance_tsf_probe` / `send_keys` 後に drain する。
 pub(crate) fn take_pending_end_composition() -> bool {
     TSF_OBS.pending_end_composition.swap(false, Ordering::Relaxed)
+}
+
+/// `EVENT_OBJECT_IME_SHOW` カウンタへの参照を返す（`AtomicWatcher` / ベースライン比較用）。
+pub(crate) fn ime_show_seq_atomic() -> &'static AtomicU32 {
+    TSF_OBS.ime_show_seq.atomic()
+}
+
+/// `EVENT_OBJECT_IME_CHANGE` カウンタへの参照を返す（`AtomicWatcher` / ベースライン比較用）。
+pub(crate) fn ime_change_seq_atomic() -> &'static AtomicU32 {
+    TSF_OBS.ime_change_seq.atomic()
 }
 
 /// GJI setup 完了後に呼んで `gji_keybinds_ok` を即座に `true` にセットする。
@@ -935,15 +959,19 @@ unsafe extern "system" fn observation_event_proc(
         }
         EVENT_OBJECT_IME_SHOW => {
             let class = hwnd_class_name(hwnd);
-            log::debug!("[ime-obj] IME_SHOW class={class} hwnd={:?}", hwnd.0);
+            let seq = TSF_OBS.ime_show_seq.notify();
+            log::info!("[ime-obj] IME_SHOW #{seq} class={class} hwnd={:?}", hwnd.0);
+            win32_async::notify_all();
         }
         EVENT_OBJECT_IME_HIDE => {
             let class = hwnd_class_name(hwnd);
-            log::debug!("[ime-obj] IME_HIDE class={class} hwnd={:?}", hwnd.0);
+            log::info!("[ime-obj] IME_HIDE class={class} hwnd={:?}", hwnd.0);
         }
         EVENT_OBJECT_IME_CHANGE => {
             let class = hwnd_class_name(hwnd);
-            log::debug!("[ime-obj] IME_CHANGE class={class} hwnd={:?}", hwnd.0);
+            let seq = TSF_OBS.ime_change_seq.notify();
+            log::info!("[ime-obj] IME_CHANGE #{seq} class={class} hwnd={:?}", hwnd.0);
+            win32_async::notify_all();
         }
         _ => {}
     }
