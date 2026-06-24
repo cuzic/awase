@@ -269,7 +269,7 @@ impl ProbeIo for Output {
             / crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS;
         win32_async::spawn_local(async move {
             for i in 0..max_retries {
-                win32_async::sleep_ms(crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS).await;
+                win32_async::sleep_ms(crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS as u32).await;
                 let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(15).await;
                 log::debug!(
                     "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={}",
