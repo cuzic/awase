@@ -713,6 +713,17 @@ self.gji_fsm.borrow().is_warm()
             delay: Duration::from_millis(10),
         })
     }
+
+    /// sacr-warmup probe に StartComposition が観測されたことを通知する。
+    ///
+    /// `platform.rs::drain_pending_composition_events` が StartComposition を処理した際に呼ぶ。
+    /// VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了したケースを検出するため、
+    /// `SacrificialWarmupFsm::composition_was_seen` フラグをセットする。
+    pub(crate) fn notify_probe_start_composition(&self) {
+        if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
+            machine.notify_start_composition();
+        }
+    }
 }
 
 impl awase::platform::CompositionOutput for Output {

@@ -161,6 +161,15 @@ pub const CHROME_GJI_REINIT_POLL_INTERVAL_MS: u64 = 10;
 /// タイムアウト時（window が最初から非表示だった場合等）は即時再送する。
 pub const SACR_WARMUP_CHROME_HIDE_WAIT_MS: u64 = 300;
 
+/// VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了したときの IPC settle 待機時間（ms）。
+///
+/// VK_A+BS は1回の SendInput で送るため Chrome は同一メッセージポンプ反復内で処理し、
+/// SHOW と HIDE が ~5ms 以内に連続して発火する。この場合 sacr-warmup の最初の tick では
+/// `gji_candidate_visible=false` だが EndComposition IPC はまだ Chrome に伝播中（~200ms）。
+/// HIDE wait（Phase 2）が機能しないため、固定時間の IPC settle 待機（Phase 3）を使う。
+/// ~200ms の IPC 伝播より長い 250ms を設定する。
+pub const SACR_WARMUP_CHROME_IPC_SETTLE_MS: u64 = 250;
+
 /// F2NonTsf cold start で物理 F2 送信からこの時間以上経過した場合、
 /// Chrome の TSF composition context が失効した可能性があるため
 /// programmatic F2 を再送する（ms）。

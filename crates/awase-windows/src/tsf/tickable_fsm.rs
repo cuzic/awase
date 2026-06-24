@@ -63,4 +63,13 @@ pub(crate) trait TickableFsm {
     // LiteralDetectFsm は deferred input を処理しないため no-op デフォルト。
 
     fn push_deferred(&mut self, _vk: VkCode, _needs_shift: bool) {}
+
+    // ── StartComposition 通知（SacrificialWarmupFsm のみ）────────────────
+    //
+    // drain_pending_composition_events が StartComposition を取り出したとき、
+    // 現在の sacr-warmup probe に対して composition が観測されたことを通知する。
+    // VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了する場合の
+    // IPC race 検出（Phase 3 IPC settle 待機）に使う。
+
+    fn notify_start_composition(&mut self) {}
 }

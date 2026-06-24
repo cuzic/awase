@@ -31,7 +31,10 @@
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, SacrificialResend, TransmitTarget};
-use crate::tuning::{CHROME_GJI_REINIT_CONFIRM_MS, SACR_WARMUP_CHROME_HIDE_WAIT_MS};
+use crate::tuning::{
+    CHROME_GJI_REINIT_CONFIRM_MS, SACR_WARMUP_CHROME_HIDE_WAIT_MS,
+    SACR_WARMUP_CHROME_IPC_SETTLE_MS,
+};
 use crate::tsf::probe_fsm::TsfEnvSnapshot;
 use awase::types::VkCode;
 
@@ -61,6 +64,19 @@ pub(crate) struct SacrificialWarmupFsm {
     /// VK_A+BS の EndComposition が Chrome の IPC を伝播するまで ~200ms かかるため、
     /// candidate window が非表示になる（HIDE 観測）まで実ローマ字送信を遅延させる。
     hide_wait_deadline_ms: Option<u64>,
+    /// VK_A 送信後に StartComposition が観測された（HIDE 済みを含む）。
+    ///
+    /// `drain_pending_composition_events` が StartComposition を処理した際に
+    /// `notify_start_composition()` 経由でセットされる。
+    /// Phase 1 で `gji_candidate_visible=false` だがこのフラグが true の場合、
+    /// SHOW+HIDE が atomic batch により最初の tick 前に完了したことを示す。
+    /// この場合は EndComposition IPC がまだ飛行中のため Phase 3 IPC settle 待機に移行する。
+    composition_was_seen: bool,
+    /// Phase 3: VK_A+BS atomic batch で SHOW+HIDE が早期完了したときの IPC settle 待機デッドライン。
+    ///
+    /// `None` = まだ Phase 3 に入っていない。
+    /// `Some(deadline_ms)` = IPC settle 待機中（deadline 到達後に再送）。
+    ipc_settle_deadline_ms: Option<u64>,
 }
 
 impl SacrificialWarmupFsm {
@@ -99,6 +115,8 @@ impl SacrificialWarmupFsm {
             deadline_ms,
             target,
             hide_wait_deadline_ms: None,
+            composition_was_seen: false,
+            ipc_settle_deadline_ms: None,
         }
     }
 
@@ -106,6 +124,33 @@ impl SacrificialWarmupFsm {
     ///
     /// VK_A の composition を確認次第（成功・タイムアウトいずれも）[`ProbeAction::SacrificialResend`] を emit する。
     pub(crate) fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+        // ── Phase 3: Chrome IPC settle 待機（早期 HIDE ケース）────────────────
+        // VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了した場合、
+        // gji_candidate_visible=false だが EndComposition IPC はまだ伝播中（~200ms）。
+        // 固定時間待機して IPC settle を確認してから実ローマ字を送る。
+        if let Some(settle_deadline) = self.ipc_settle_deadline_ms {
+            let now = crate::hook::current_tick_ms();
+            if now < settle_deadline {
+                return vec![];
+            }
+            log::debug!(
+                "[sacr-warmup] cold={} IPC settle 待機完了 → 再送",
+                self.cold_seq,
+            );
+            let romaji = std::mem::take(&mut self.romaji);
+            let deferred_vks = std::mem::take(&mut self.deferred_vks);
+            return vec![
+                ProbeAction::SacrificialResend(SacrificialResend {
+                    cold_seq: self.cold_seq,
+                    romaji,
+                    deferred_vks,
+                    target: self.target,
+                    confirmed_warm: true,
+                }),
+                ProbeAction::Done,
+            ];
+        }
+
         // ── Phase 2: Chrome HIDE 待機中 ────────────────────────────────────────
         // composition-confirmed 後、VK_A+BS の EndComposition IPC が Chrome に
         // 到達するのを candidate window HIDE で確認してから実ローマ字を送る。
@@ -173,7 +218,7 @@ impl SacrificialWarmupFsm {
         // candidate window HIDE を確認してから実ローマ字を送る（IPC race 回避）。
         if confirmed_warm && self.target == TransmitTarget::Chrome {
             if env.gji_candidate_visible {
-                // candidate window がまだ表示中 → HIDE 待機フェーズへ移行
+                // Phase 2: candidate window がまだ表示中 → HIDE 待機フェーズへ移行
                 let hide_deadline = crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_HIDE_WAIT_MS;
                 self.hide_wait_deadline_ms = Some(hide_deadline);
                 log::debug!(
@@ -182,7 +227,20 @@ impl SacrificialWarmupFsm {
                 );
                 return vec![];
             }
-            // candidate window が最初から非表示（window が出なかった等）→ 即送信
+            if self.composition_was_seen {
+                // Phase 3: SHOW+HIDE が atomic batch により最初の tick 前に完了した。
+                // gji_candidate_visible=false だが EndComposition IPC はまだ伝播中のため
+                // 固定時間待機する（Phase 2 の HIDE 待機は既に HIDE 済みで機能しない）。
+                let settle_deadline =
+                    crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_IPC_SETTLE_MS;
+                self.ipc_settle_deadline_ms = Some(settle_deadline);
+                log::debug!(
+                    "[sacr-warmup] cold={} Chrome warm → composition 観測済み（早期 HIDE）、IPC settle 待機 ({}ms)",
+                    self.cold_seq, SACR_WARMUP_CHROME_IPC_SETTLE_MS,
+                );
+                return vec![];
+            }
+            // candidate window が全く出なかった（composition_was_seen=false）→ 即送信
             log::debug!(
                 "[sacr-warmup] cold={} Chrome warm → candidate 非表示、即再送",
                 self.cold_seq,
@@ -215,5 +273,9 @@ impl crate::tsf::tickable_fsm::TickableFsm for SacrificialWarmupFsm {
 
     fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
         self.deferred_vks.push(DeferredVk { vk, needs_shift });
+    }
+
+    fn notify_start_composition(&mut self) {
+        self.composition_was_seen = true;
     }
 }
