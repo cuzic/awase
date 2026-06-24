@@ -92,7 +92,7 @@ impl SacrificialWarmupFsm {
         use crate::tsf::probe::DetectionResult;
         let confirmed_warm = matches!(detection, DetectionResult::CompositionConfirmed);
         log::debug!(
-            "[sacr-warmup] cold={} VK_A 判定={} → BS×1 + 実ローマ字 {:?} 再送",
+            "[sacr-warmup] cold={} VK_A 判定={} → 実ローマ字 {:?} 再送",
             self.cold_seq,
             if confirmed_warm { "composition-confirmed (TSF warm)" } else { "timeout (TSF still cold)" },
             self.romaji,
@@ -110,6 +110,7 @@ impl SacrificialWarmupFsm {
                 romaji,
                 deferred_vks,
                 target: self.target,
+                confirmed_warm,
             }),
             ProbeAction::Done,
         ]

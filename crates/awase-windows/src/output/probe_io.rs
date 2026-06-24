@@ -75,6 +75,12 @@ pub(crate) trait ProbeIo {
     ///
     /// `SacrificialResend` ハンドラが呼ぶ（TSF/WezTerm target のみ）。
     fn send_sacrificial_bs_one(&self, cold_seq: u32);
+    /// Chrome sacr-warmup cold タイムアウト後に GJI を強制リセットする（F22→F21）。
+    ///
+    /// VK_A+BS でも Chrome の GJI が初期化されなかった場合（80s 以上の超長時間 idle 等）に、
+    /// F22（IME OFF）→ F21（IME ON）を SendInput でキューイングして再初期化を試みる。
+    /// "ma" より先にキューイングすることで Chrome が F22→F21 を処理してから "ma" を受け取る。
+    fn send_chrome_gji_reinit(&self, cold_seq: u32);
 }
 
 impl ProbeIo for Output {
@@ -231,6 +237,21 @@ impl ProbeIo for Output {
                 i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
             );
         }
+    }
+
+    fn send_chrome_gji_reinit(&self, cold_seq: u32) {
+        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+        use crate::vk::{VK_F21, VK_F22};
+        // F22（IME OFF）→ F21（IME ON）を SendInput でキューイングし GJI を OFF/ON トグル。
+        // "ma" より先にキューイングされるため Chrome は F22→F21 処理後に "ma" を受け取る。
+        let inputs = [
+            make_key_input_ex(VK_F22, false, IME_KANJI_MARKER),
+            make_key_input_ex(VK_F22, true, IME_KANJI_MARKER),
+            make_key_input_ex(VK_F21, false, IME_KANJI_MARKER),
+            make_key_input_ex(VK_F21, true, IME_KANJI_MARKER),
+        ];
+        log::debug!("[sacr-warmup] cold={cold_seq} Chrome cold 超長 idle: F22→F21 強制リセット送信");
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 }
 
@@ -551,9 +572,15 @@ where
                     match resend.target {
                         TransmitTarget::Chrome => {
                             // Chrome パス: INJECTED_MARKER バッチ送信
+                            if !resend.confirmed_warm {
+                                // Cold タイムアウト: GJI が起動しなかった（超長 idle 等）。
+                                // F22→F21 を先にキューイングして GJI を OFF/ON トグルリセット。
+                                io.send_chrome_gji_reinit(cold_seq);
+                            }
                             log::debug!(
-                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を Chrome パスで再送",
-                                resend.romaji
+                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を Chrome パスで再送 \
+                                (confirmed_warm={})",
+                                resend.romaji, resend.confirmed_warm,
                             );
                             io.transmit_chrome(&resend.romaji, &chars);
                             io.send_deferred_vks(&resend.deferred_vks, VkMarker::Injected);
@@ -728,6 +755,8 @@ mod tests {
         fn send_sacrificial_vk_a_with_bs(&self, _cold_seq: u32) {}
 
         fn send_sacrificial_bs_one(&self, _cold_seq: u32) {}
+
+        fn send_chrome_gji_reinit(&self, _cold_seq: u32) {}
     }
 
     fn make_chrome_machine() -> crate::tsf::probe_fsm::TsfProbeMachine {
