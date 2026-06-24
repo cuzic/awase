@@ -142,6 +142,25 @@ pub const CHROME_GJI_REINIT_CONFIRM_MS: u64 = 300;
 /// 10ms 間隔で最大 30 回 = 300ms（`CHROME_GJI_REINIT_CONFIRM_MS` に対応）。
 pub const CHROME_GJI_REINIT_POLL_INTERVAL_MS: u64 = 10;
 
+/// SacrificialWarmup（VK_A+BS）で composition-confirmed 後、GJI candidate window が
+/// 非表示になるのを待つ最大時間 (ms)。
+///
+/// ## 背景（Chrome IPC race condition）
+///
+/// Chrome/GJI の IME 処理はクロスプロセス IPC（レンダラー↔ブラウザー）を経由するため、
+/// VK_A+BS の EndComposition が TSF スタックを伝播するまでに ~200ms 程度かかる。
+///
+/// GJI write (+400B) による composition-confirmed は VK_A+BS 送信から ~26ms で検出できるが、
+/// そこで即座に実ローマ字を送ると、delayed EndComposition IPC が後続の composition を
+/// キャンセルする競合が発生する（例：「korede」が composition 後 225ms で消える）。
+///
+/// candidate window が非表示になった（HIDE 観測）= EndComposition IPC が Chrome に到達した
+/// ことの代理指標として使い、その後に実ローマ字を送ることで race を回避する。
+///
+/// 実測: VK_A+BS → HIDE まで ~225ms（long-idle cold Chrome）。300ms で十分な余裕を確保。
+/// タイムアウト時（window が最初から非表示だった場合等）は即時再送する。
+pub const SACR_WARMUP_CHROME_HIDE_WAIT_MS: u64 = 300;
+
 /// F2NonTsf cold start で物理 F2 送信からこの時間以上経過した場合、
 /// Chrome の TSF composition context が失効した可能性があるため
 /// programmatic F2 を再送する（ms）。
