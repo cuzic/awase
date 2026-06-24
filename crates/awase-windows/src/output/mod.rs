@@ -122,6 +122,12 @@ pub struct Output {
     /// `TsfEnvSnapshot.ime_mode` / `ime_mode_confirmed` を通じて各 TickableFsm に公開する。
     /// `ChromeGjiReinitFsm` が F22→F21 後の Hiragana 確認待機に使用する。
     pub(crate) ime_mode_fsm: std::cell::RefCell<crate::tsf::ime_mode_fsm::ImeModeFsm>,
+    /// `gji_on_focus_change` の `spawn_local` IMC ポーリングを世代管理する。
+    ///
+    /// フォーカス変更のたびにインクリメントし、`spawn_local` クロージャが取得時の世代を
+    /// キャプチャする。コールバック到達時に現在値と一致しない（= その後に別のフォーカス変更
+    /// が来た）場合は stale として破棄し、古いポーリング結果で ImeModeFsm を汚染しない。
+    pub(crate) ime_mode_focus_gen: std::cell::Cell<u32>,
 }
 
 impl std::fmt::Debug for Output {
@@ -182,6 +188,7 @@ impl Output {
             pending_gji_composition_reset: std::cell::Cell::new(false),
             pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
+            ime_mode_focus_gen: std::cell::Cell::new(0),
         }
     }
 
@@ -218,9 +225,14 @@ self.gji_fsm.borrow().gji_current_composition_epoch()
     }
 
     /// フォーカス変更時に呼ぶ。F21/F22 直後の副作用 FocusChange かを判定して適切にリセット。
+    ///
+    /// 世代カウンタ `ime_mode_focus_gen` をインクリメントすることで、
+    /// 以前の `spawn_local` IMC ポーリングが古いフォーカスの結果を書き込まないよう保護する。
     pub(crate) fn on_ime_mode_focus_changed(&self) {
         let now_ms = crate::hook::current_tick_ms();
         self.ime_mode_fsm.borrow_mut().on_focus_changed(now_ms);
+        self.ime_mode_focus_gen
+            .set(self.ime_mode_focus_gen.get().wrapping_add(1));
     }
 
     /// F21/F22 送信時に `ImeModeFsm` の belief を即時更新する。

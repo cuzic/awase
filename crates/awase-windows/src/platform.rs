@@ -331,14 +331,24 @@ impl WindowsPlatform {
         });
         self.dispatch_gji_response(resp);
         // ImeModeFsm: フォーカス変更で Unknown に戻す（次の IMC 確認待ち）。
+        // on_ime_mode_focus_changed が ime_mode_focus_gen をインクリメントするため、
+        // spawn_local の前に gen を取得して closure にキャプチャする。
         self.output.on_ime_mode_focus_changed();
+        let ime_mode_gen = self.output.ime_mode_focus_gen.get();
         // FocusChange 直後に IMC を 1 回ポーリングして初期状態を Unknown → 実値に更新する。
         // sacr-warmup 開始前から Off/Hiragana が判明するため cold 判定の精度が上がる。
         // with_app 再入を避けるため spawn_local でメインループに戻してから実行する。
         win32_async::spawn_local(async move {
             let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             let _ = crate::with_app(|runtime| {
-                runtime.platform.output.update_ime_mode_from_imc(conv);
+                let current_gen = runtime.platform.output.ime_mode_focus_gen.get();
+                if current_gen == ime_mode_gen {
+                    runtime.platform.output.update_ime_mode_from_imc(conv);
+                } else {
+                    log::debug!(
+                        "[ime-mode] FocusProbe: stale gen={ime_mode_gen} current={current_gen} → skip"
+                    );
+                }
             });
         });
     }
