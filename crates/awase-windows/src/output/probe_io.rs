@@ -61,13 +61,19 @@ pub(crate) trait ProbeIo {
     ///
     /// `None` の場合は GjiFsm 未接続なので `store_gji_warmup_result` 呼び出しをスキップできる。
     fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId>;
-    /// 犠牲キー（VK_A）を TSF パイプライン経由で送信する。
+    /// 犠牲キー（VK_A）を TSF パイプライン経由で送信する（TSF/WezTerm 用）。
     ///
     /// `StartSacrificialWarmup` ハンドラが呼ぶ。F2 prepend なし・VK path で送信する。
     fn send_sacrificial_vk_a(&self, cold_seq: u32);
+    /// 犠牲キー（VK_A + BS）を同一 SendInput バッチで送信する（Chrome 用）。
+    ///
+    /// VK_A と BS を一括送信することで Chrome が次フレームを描画する前に
+    /// 'あ'/'a' が形成→即消去される。ユーザーには文字が表示されない。
+    /// `SacrificialResend` Chrome 側では追加の BS 送信を行わない。
+    fn send_sacrificial_vk_a_with_bs(&self, cold_seq: u32);
     /// BS×1 を送信する（犠牲キーの削除用）。
     ///
-    /// `SacrificialResend` ハンドラが呼ぶ。
+    /// `SacrificialResend` ハンドラが呼ぶ（TSF/WezTerm target のみ）。
     fn send_sacrificial_bs_one(&self, cold_seq: u32);
 }
 
@@ -173,6 +179,32 @@ impl ProbeIo for Output {
             make_key_input_ex(VK_A, true, INJECTED_MARKER),
         ];
         log::debug!("[sacr-warmup] cold={cold_seq} VK_A 送信（犠牲キー）");
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
+    }
+
+    fn send_sacrificial_vk_a_with_bs(&self, cold_seq: u32) {
+        use awase::types::VkCode;
+        use crate::tsf::output::make_key_input_ex;
+        use crate::tsf::output::INJECTED_MARKER;
+        use crate::vk::VK_BACK;
+        use std::mem::size_of;
+        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
+        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
+        const VK_A: VkCode = VkCode(0x41);
+        // VK_A + BS を一括 SendInput することで Chrome が次フレームを描画する前に
+        // 'あ'/'a' → BS と処理され、ユーザーには文字フラッシュが見えない。
+        let inputs = [
+            make_key_input_ex(VK_A, false, INJECTED_MARKER),
+            make_key_input_ex(VK_A, true, INJECTED_MARKER),
+            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+        ];
+        log::debug!("[sacr-warmup] cold={cold_seq} VK_A+BS 同時送信（Chrome 用：文字フラッシュ防止）");
         unsafe {
             SendInput(
                 &inputs,
@@ -471,8 +503,13 @@ where
                         gji_resumed: config.observations.gji_resumed,
                     });
                 }
-                // VK_A（犠牲キー）を送信。TSF warm なら 'あ' formation、cold なら 'a' リテラル。
-                io.send_sacrificial_vk_a(config.cold_seq);
+                // VK_A（犠牲キー）を送信。
+                // Chrome: VK_A + BS を同一 SendInput バッチで送信し 'a'/'あ' を不可視にする。
+                // TSF/WezTerm: VK_A のみ送信（BS は SacrificialResend 時に別送）。
+                match config.target {
+                    TransmitTarget::Chrome => io.send_sacrificial_vk_a_with_bs(config.cold_seq),
+                    TransmitTarget::Tsf => io.send_sacrificial_vk_a(config.cold_seq),
+                }
                 log::debug!(
                     "[sacr-warmup] cold={} VK_A 送信完了 → SacrificialWarmupFsm 開始 \
                     (romaji={:?} literal_detect={}ms)",
@@ -502,8 +539,10 @@ where
                     // ゲートが閉じている or 実ローマ字なし: BS も送らず即終了
                     log::debug!("[sacr-warmup] cold={cold_seq} SacrificialResend: skip (bypass or empty)");
                 } else {
-                    // BS×1: 犠牲 VK_A（'a' または 'あ' composition unit）を削除
-                    io.send_sacrificial_bs_one(cold_seq);
+                    // BS×1: 犠牲 VK_A の結果を削除（TSF/WezTerm のみ。Chrome は VK_A 送信時に既に BS 済み）。
+                    if resend.target != TransmitTarget::Chrome {
+                        io.send_sacrificial_bs_one(cold_seq);
+                    }
                     match resend.target {
                         TransmitTarget::Chrome => {
                             // Chrome パス: INJECTED_MARKER バッチ送信
@@ -680,6 +719,8 @@ mod tests {
         }
 
         fn send_sacrificial_vk_a(&self, _cold_seq: u32) {}
+
+        fn send_sacrificial_vk_a_with_bs(&self, _cold_seq: u32) {}
 
         fn send_sacrificial_bs_one(&self, _cold_seq: u32) {}
     }
