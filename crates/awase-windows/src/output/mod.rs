@@ -116,6 +116,12 @@ pub struct Output {
             timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
         >,
     >,
+    /// IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
+    ///
+    /// F21/F22 送信時に即時 belief 更新。`IMC_GETCONVERSIONMODE` async ポーリングで確認。
+    /// `TsfEnvSnapshot.ime_mode` / `ime_mode_confirmed` を通じて各 TickableFsm に公開する。
+    /// `ChromeGjiReinitFsm` が F22→F21 後の Hiragana 確認待機に使用する。
+    pub(crate) ime_mode_fsm: std::cell::RefCell<crate::tsf::ime_mode_fsm::ImeModeFsm>,
 }
 
 impl std::fmt::Debug for Output {
@@ -175,6 +181,7 @@ impl Output {
             pending_gji_warmup: std::cell::Cell::new(None),
             pending_gji_composition_reset: std::cell::Cell::new(false),
             pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
+            ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
         }
     }
 
@@ -199,6 +206,20 @@ self.gji_fsm.borrow_mut().on_gji_event(event)
         &self,
     ) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
 self.gji_fsm.borrow().gji_current_composition_epoch()
+    }
+
+    // ── ImeModeFsm ヘルパー ─────────────────────────────────────────────────────
+
+    /// `IMC_GETCONVERSIONMODE` の結果を `ImeModeFsm` に反映する。
+    ///
+    /// `spawn_local` 内の async ポーリングタスクから `with_app(|runtime| runtime.platform.output.update_ime_mode_from_imc(conv))` で呼ぶ。
+    pub(crate) fn update_ime_mode_from_imc(&self, mode: Option<u32>) {
+        self.ime_mode_fsm.borrow_mut().on_conversion_mode_read(mode);
+    }
+
+    /// フォーカス変更時に呼ぶ。`ImeModeFsm` を Unknown に戻す。
+    pub(crate) fn on_ime_mode_focus_changed(&self) {
+        self.ime_mode_fsm.borrow_mut().on_focus_changed();
     }
 
     /// GjiFsm に LongIdle タイムアウトを送り、Response を返す。
@@ -568,13 +589,18 @@ self.gji_fsm.borrow().is_warm()
     pub(crate) fn step_probe(&mut self) -> StepProbeResult {
         let tick_t = crate::hook::current_tick_ms();
         use probe_io::ProbeIo as _;
-        let env = crate::tsf::probe_fsm::TsfEnvSnapshot {
-            is_tsf_mode: self.is_tsf_mode(),
-            gji_active: self.gji_monitor_healthy(),
-            // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
-            //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。
-            foreground_comp_char: unsafe { crate::ime::get_foreground_comp_str_char() },
-            gji_candidate_visible: crate::tsf::observer::gji_candidate_visible_now(),
+        let env = {
+            let ime_fsm = self.ime_mode_fsm.borrow();
+            crate::tsf::probe_fsm::TsfEnvSnapshot {
+                is_tsf_mode: self.is_tsf_mode(),
+                gji_active: self.gji_monitor_healthy(),
+                // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
+                //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。
+                foreground_comp_char: unsafe { crate::ime::get_foreground_comp_str_char() },
+                gji_candidate_visible: crate::tsf::observer::gji_candidate_visible_now(),
+                ime_mode: ime_fsm.state(),
+                ime_mode_confirmed: ime_fsm.is_confirmed(),
+            }
         };
 
         // ── Chrome / LiteralDetect / GjiWarmup probe パス（machine は pending_tsf に格納）──

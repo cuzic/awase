@@ -330,6 +330,8 @@ impl WindowsPlatform {
             gji_idle_ms,
         });
         self.dispatch_gji_response(resp);
+        // ImeModeFsm: フォーカス変更で Unknown に戻す（次の IMC 確認待ち）。
+        self.output.on_ime_mode_focus_changed();
     }
 
     /// IME ON を GjiFsm に通知する（`on_ime_applied(open=true)` から呼ぶ）。

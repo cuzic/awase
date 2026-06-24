@@ -129,6 +129,19 @@ pub const CHROME_PROBE_LONG_IDLE_MIN_MS: u64 = 200;
 /// 症状を抑えるため、500ms まで延長する（GJI が settle すれば短く済む）。
 pub const CHROME_PROBE_LONG_IDLE_MAX_MS: u64 = 500;
 
+/// Chrome GJI 再初期化（F22→F21）後、`IMC_GETCONVERSIONMODE` で Hiragana を確認するまでの
+/// 最大待機時間 (ms)。
+///
+/// GJI は F21 受信後 ~50-100ms 以内に IME ON 状態に移行する実測値が多い。
+/// 300ms あれば十分な余裕を確保できる。タイムアウト時は強制再送する。
+pub const CHROME_GJI_REINIT_CONFIRM_MS: u64 = 300;
+
+/// Chrome GJI 再初期化確認ポーリング間隔 (ms)。
+///
+/// `IMC_GETCONVERSIONMODE` を async でこの間隔ごとに発行する。
+/// 10ms 間隔で最大 30 回 = 300ms（`CHROME_GJI_REINIT_CONFIRM_MS` に対応）。
+pub const CHROME_GJI_REINIT_POLL_INTERVAL_MS: u64 = 10;
+
 /// F2NonTsf cold start で物理 F2 送信からこの時間以上経過した場合、
 /// Chrome の TSF composition context が失効した可能性があるため
 /// programmatic F2 を再送する（ms）。

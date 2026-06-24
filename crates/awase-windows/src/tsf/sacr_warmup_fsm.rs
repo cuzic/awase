@@ -20,6 +20,7 @@
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, SacrificialResend, TransmitTarget};
+use crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS;
 use crate::tsf::probe_fsm::TsfEnvSnapshot;
 use awase::types::VkCode;
 
@@ -104,6 +105,21 @@ impl SacrificialWarmupFsm {
 
         let romaji = std::mem::take(&mut self.romaji);
         let deferred_vks = std::mem::take(&mut self.deferred_vks);
+
+        // Chrome cold: F22→F21 リセット + ImeMode 確認待機フェーズへ移行。
+        // ChromeGjiReinitFsm が Hiragana 確認後に SacrificialResend を emit する。
+        if !confirmed_warm && self.target == TransmitTarget::Chrome {
+            log::debug!(
+                "[sacr-warmup] cold={} Chrome cold → StartChromeGjiReinit (reinit timeout={}ms)",
+                self.cold_seq, CHROME_GJI_REINIT_CONFIRM_MS,
+            );
+            return vec![ProbeAction::StartChromeGjiReinit {
+                cold_seq: self.cold_seq,
+                romaji,
+                deferred_vks,
+            }];
+        }
+
         vec![
             ProbeAction::SacrificialResend(SacrificialResend {
                 cold_seq: self.cold_seq,

@@ -9,6 +9,7 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
 use awase::types::VkCode;
+use win32_async;
 
 /// `dispatch_probe_actions` が要求する Win32 / 状態ミューテーション操作の抽象。
 ///
@@ -75,12 +76,15 @@ pub(crate) trait ProbeIo {
     ///
     /// `SacrificialResend` ハンドラが呼ぶ（TSF/WezTerm target のみ）。
     fn send_sacrificial_bs_one(&self, cold_seq: u32);
-    /// Chrome sacr-warmup cold タイムアウト後に GJI を強制リセットする（F22→F21）。
+    /// Chrome sacr-warmup cold タイムアウト後に GJI を強制リセットし、IMC ポーリングを開始する。
     ///
     /// VK_A+BS でも Chrome の GJI が初期化されなかった場合（80s 以上の超長時間 idle 等）に、
     /// F22（IME OFF）→ F21（IME ON）を SendInput でキューイングして再初期化を試みる。
-    /// "ma" より先にキューイングすることで Chrome が F22→F21 を処理してから "ma" を受け取る。
-    fn send_chrome_gji_reinit(&self, cold_seq: u32);
+    ///
+    /// さらに `ImeModeFsm` の belief を Off → Hiragana に更新し、
+    /// async `IMC_GETCONVERSIONMODE` ポーリングを `spawn_local` で開始する。
+    /// ポーリング結果は `with_app(|runtime| runtime.platform.output.update_ime_mode_from_imc(conv))` で反映される。
+    fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32);
 }
 
 impl ProbeIo for Output {
@@ -239,19 +243,52 @@ impl ProbeIo for Output {
         }
     }
 
-    fn send_chrome_gji_reinit(&self, cold_seq: u32) {
+    fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{VK_F21, VK_F22};
-        // F22（IME OFF）→ F21（IME ON）を SendInput でキューイングし GJI を OFF/ON トグル。
-        // "ma" より先にキューイングされるため Chrome は F22→F21 処理後に "ma" を受け取る。
+        // 1. F22（IME OFF）→ F21（IME ON）を SendInput でキューイングし GJI を OFF/ON トグル。
         let inputs = [
             make_key_input_ex(VK_F22, false, IME_KANJI_MARKER),
             make_key_input_ex(VK_F22, true, IME_KANJI_MARKER),
             make_key_input_ex(VK_F21, false, IME_KANJI_MARKER),
             make_key_input_ex(VK_F21, true, IME_KANJI_MARKER),
         ];
-        log::debug!("[sacr-warmup] cold={cold_seq} Chrome cold 超長 idle: F22→F21 強制リセット送信");
+        log::debug!("[chrome-reinit] cold={cold_seq} F22→F21 強制リセット送信 + IMC ポーリング開始");
         let _ = crate::win32::send_input_safe(&inputs);
+
+        // 2. ImeModeFsm belief を即時更新: F22 → Off, F21 → Hiragana。
+        {
+            let mut fsm = self.ime_mode_fsm.borrow_mut();
+            fsm.on_f22_sent();
+            fsm.on_f21_sent();
+        }
+
+        // 3. async IMC ポーリング開始（CHROME_GJI_REINIT_CONFIRM_MS の間、10ms ごとに発行）。
+        //    with_app 再入を避けるため spawn_local で defer する。
+        let max_retries = crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS
+            / crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS;
+        win32_async::spawn_local(async move {
+            for i in 0..max_retries {
+                win32_async::sleep_ms(crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS).await;
+                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(15).await;
+                log::debug!(
+                    "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={}",
+                    conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}")),
+                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                );
+                let confirmed = crate::with_app(|runtime| {
+                    runtime.platform.output.update_ime_mode_from_imc(conv);
+                    // Hiragana 確認済みならポーリング終了
+                    runtime.platform.output.ime_mode_fsm.borrow().state()
+                        == crate::tsf::ime_mode_fsm::ImeModeState::Hiragana
+                        && runtime.platform.output.ime_mode_fsm.borrow().is_confirmed()
+                });
+                if confirmed.unwrap_or(false) {
+                    log::debug!("[chrome-reinit] cold={cold_seq} Hiragana 確認 → ポーリング終了");
+                    break;
+                }
+            }
+        });
     }
 }
 
@@ -551,6 +588,22 @@ where
                 return DispatchResult::SwitchMachine(Box::new(sacr_fsm));
             }
 
+            ProbeAction::StartChromeGjiReinit { cold_seq, romaji, deferred_vks } => {
+                // Chrome sacr-warmup cold タイムアウト後の GJI 再初期化フェーズ。
+                // F22→F21 送信 + ImeModeFsm belief 更新 + async IMC ポーリング開始。
+                // ChromeGjiReinitFsm が Hiragana 確認 or タイムアウト後に SacrificialResend を emit する。
+                io.send_chrome_gji_reinit_and_poll(cold_seq);
+                let deadline_ms = crate::hook::current_tick_ms()
+                    + crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS;
+                let reinit_fsm = crate::tsf::chrome_gji_reinit_fsm::ChromeGjiReinitFsm::new(
+                    cold_seq,
+                    romaji,
+                    deferred_vks,
+                    deadline_ms,
+                );
+                return DispatchResult::SwitchMachine(Box::new(reinit_fsm));
+            }
+
             ProbeAction::SacrificialResend(resend) => {
                 // SacrificialWarmupFsm から emit される（composition 確認後）。
                 // BS×1（犠牲 VK_A 削除）→ 実ローマ字送信 → deferred_vks 送信。
@@ -571,12 +624,9 @@ where
                     }
                     match resend.target {
                         TransmitTarget::Chrome => {
-                            // Chrome パス: INJECTED_MARKER バッチ送信
-                            if !resend.confirmed_warm {
-                                // Cold タイムアウト: GJI が起動しなかった（超長 idle 等）。
-                                // F22→F21 を先にキューイングして GJI を OFF/ON トグルリセット。
-                                io.send_chrome_gji_reinit(cold_seq);
-                            }
+                            // Chrome パス: INJECTED_MARKER バッチ送信。
+                            // Chrome cold case は StartChromeGjiReinit → ChromeGjiReinitFsm 経由で来る。
+                            // confirmed_warm=false の場合も F22→F21 は StartChromeGjiReinit で送信済み。
                             log::debug!(
                                 "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を Chrome パスで再送 \
                                 (confirmed_warm={})",
@@ -756,7 +806,7 @@ mod tests {
 
         fn send_sacrificial_bs_one(&self, _cold_seq: u32) {}
 
-        fn send_chrome_gji_reinit(&self, _cold_seq: u32) {}
+        fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {}
     }
 
     fn make_chrome_machine() -> crate::tsf::probe_fsm::TsfProbeMachine {

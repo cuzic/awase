@@ -61,6 +61,13 @@ pub(crate) struct TsfEnvSnapshot {
     /// `GjiWarmupFsm` の NameChangeWait 早期脱出判定に使用する。
     /// `crate::tsf::observer::gji_candidate_visible_now()` のスナップショット。
     pub gji_candidate_visible: bool,
+    /// 現在の IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
+    /// `ImeModeFsm.state()` のスナップショット（OS 呼び出しなし）。
+    /// `ChromeGjiReinitFsm` が IME モード確認待機に使用する。
+    pub ime_mode: crate::tsf::ime_mode_fsm::ImeModeState,
+    /// `ime_mode` が `IMC_GETCONVERSIONMODE` で OS から確認済みなら true。
+    /// false = F21/F22 送信直後の belief のみ（async 確認待ち）。
+    pub ime_mode_confirmed: bool,
 }
 
 /// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
@@ -302,6 +309,17 @@ pub(crate) enum ProbeAction {
     ///
     /// dispatcher が BS×1（犠牲 VK_A 削除）→ 実ローマ字 transmit_tsf → deferred_vks 送信を行う。
     SacrificialResend(SacrificialResend),
+    /// Chrome sacr-warmup cold タイムアウト後の GJI 再初期化フェーズを開始する。
+    ///
+    /// dispatcher が F22→F21 を SendInput でキューイング + `ImeModeFsm` belief 更新 +
+    /// async `IMC_GETCONVERSIONMODE` ポーリングを開始し、
+    /// [`crate::tsf::chrome_gji_reinit_fsm::ChromeGjiReinitFsm`] に切り替える。
+    /// FSM が Hiragana 確認 or タイムアウト後に `SacrificialResend` を emit して実ローマ字を送る。
+    StartChromeGjiReinit {
+        cold_seq: u32,
+        romaji: String,
+        deferred_vks: Vec<DeferredVk>,
+    },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
