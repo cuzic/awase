@@ -6,7 +6,7 @@
 use crate::output::{Output, VkMarker, VkSequence, WarmupOutcome};
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
-use crate::tsf::probe_fsm::{DeferredVk, TransmitTarget};
+use crate::tsf::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
 use awase::types::VkCode;
 
