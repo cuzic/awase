@@ -480,8 +480,6 @@ where
                     config.cold_seq,
                     config.romaji,
                     config.deferred_vks,
-                    config.plan,
-                    config.observations,
                     config.literal_detect_ms,
                 );
                 return DispatchResult::SwitchMachine(Box::new(sacr_fsm));

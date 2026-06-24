@@ -19,9 +19,7 @@
 
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{
-    DeferredVk, ProbeAction, ProbeObservations, SacrificialResend, TransmitPlan,
-};
+use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, SacrificialResend};
 use crate::tsf::probe_fsm::TsfEnvSnapshot;
 use awase::types::VkCode;
 
@@ -37,10 +35,6 @@ pub(crate) struct SacrificialWarmupFsm {
     romaji: String,
     /// probe 中に蓄積した後続 VK（実ローマ字の後に送信する）
     deferred_vks: Vec<DeferredVk>,
-    /// 送信方針（SacrificialResend ペイロード用）
-    plan: TransmitPlan,
-    /// probe 中に観測した事実（GjiFsm bridge 用）
-    observations: ProbeObservations,
     /// composition 確認 / literal 検出器（VK_A の composition を確認する）
     detector: LiteralDetector,
     /// 暖機判定タイムアウト絶対時刻（ms）
@@ -56,8 +50,6 @@ impl SacrificialWarmupFsm {
         cold_seq: u32,
         romaji: String,
         deferred_vks: Vec<DeferredVk>,
-        plan: TransmitPlan,
-        observations: ProbeObservations,
         literal_detect_ms: u64,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
@@ -68,8 +60,6 @@ impl SacrificialWarmupFsm {
             _guard: guard,
             romaji,
             deferred_vks,
-            plan,
-            observations,
             detector,
             deadline_ms,
         }
@@ -103,8 +93,6 @@ impl SacrificialWarmupFsm {
                 cold_seq: self.cold_seq,
                 romaji,
                 deferred_vks,
-                plan: self.plan,
-                observations: self.observations,
             }),
             ProbeAction::Done,
         ]

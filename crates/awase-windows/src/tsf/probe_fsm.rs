@@ -249,8 +249,6 @@ pub(crate) struct SacrificialResend {
     pub cold_seq: u32,
     pub romaji: String,
     pub deferred_vks: Vec<DeferredVk>,
-    pub plan: TransmitPlan,
-    pub observations: ProbeObservations,
 }
 
 /// ステートマシン → dispatcher 方向の宣言的アクション。
