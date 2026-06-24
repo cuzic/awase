@@ -19,7 +19,7 @@
 
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, SacrificialResend};
+use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, SacrificialResend, TransmitTarget};
 use crate::tsf::probe_fsm::TsfEnvSnapshot;
 use awase::types::VkCode;
 
@@ -39,6 +39,8 @@ pub(crate) struct SacrificialWarmupFsm {
     detector: LiteralDetector,
     /// 暖機判定タイムアウト絶対時刻（ms）
     deadline_ms: u64,
+    /// 再送先ターゲット（Chrome / TSF）
+    target: TransmitTarget,
 }
 
 impl SacrificialWarmupFsm {
@@ -51,9 +53,16 @@ impl SacrificialWarmupFsm {
         romaji: String,
         deferred_vks: Vec<DeferredVk>,
         literal_detect_ms: u64,
+        target: TransmitTarget,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
-        let detector = LiteralDetector::new();
+        // Chrome は gji_candidate_show がシンプルなかな（'あ' 等）で発火しないため
+        // gji_last_io_ms 変化を composition confirmation シグナルとして使う。
+        // TSF/WezTerm は gji_candidate_show（候補ウィンドウ出現）で確認する。
+        let detector = match target {
+            TransmitTarget::Chrome => LiteralDetector::new_gji_resumed(),
+            TransmitTarget::Tsf => LiteralDetector::new(),
+        };
         let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
         Self {
             cold_seq,
@@ -62,6 +71,7 @@ impl SacrificialWarmupFsm {
             deferred_vks,
             detector,
             deadline_ms,
+            target,
         }
     }
 
@@ -93,6 +103,7 @@ impl SacrificialWarmupFsm {
                 cold_seq: self.cold_seq,
                 romaji,
                 deferred_vks,
+                target: self.target,
             }),
             ProbeAction::Done,
         ]

@@ -239,16 +239,21 @@ pub(crate) struct LiteralDetectConfig {
     pub plan: TransmitPlan,
     pub observations: ProbeObservations,
     pub literal_detect_ms: u64,
+    /// 送信先ターゲット。SacrificialWarmup の resend フェーズで Chrome/TSF を切り替える。
+    pub target: TransmitTarget,
 }
 
 /// [`SacrificialWarmupFsm`] が composition 確認後に emit する再送設定。
 ///
-/// dispatcher が BS×1（犠牲 'a' 削除）→ 実ローマ字 transmit_tsf を行う。
+/// dispatcher が BS×1（犠牲 'a' 削除）→ 実ローマ字 transmit_tsf/transmit_chrome を行う。
 #[derive(Debug)]
 pub(crate) struct SacrificialResend {
     pub cold_seq: u32,
     pub romaji: String,
     pub deferred_vks: Vec<DeferredVk>,
+    /// 送信先ターゲット。Chrome の場合は `transmit_chrome` + `VkMarker::Injected`、
+    /// TSF の場合は `transmit_tsf` + `VkMarker::Tsf` を使う。
+    pub target: TransmitTarget,
 }
 
 /// ステートマシン → dispatcher 方向の宣言的アクション。
@@ -546,20 +551,42 @@ impl TsfProbeMachine {
     fn enter_transmit_chrome(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         let send = self.take_current_send_for_transmit();
         let cold_seq = self.cold_seq;
-        self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
-        vec![ProbeAction::Transmit {
-            cold_seq,
-            plan: TransmitPlan {
-                should_prepend_f2: false,
-                used_eager_path: false,
-                needs_literal: env.gji_active,
+        if env.gji_active {
+            // GJI active: SacrificialWarmup で TSF warm 確認後に実ローマ字を送信する。
+            // ChromeProbe 完了直後に TSF context がまだ初期化中で先頭 VK がリテラル化する race を防ぐ。
+            // （例: "ko"→'k' literal + 'o'→'お' → "kお..." となる partial literal バグ）
+            // VK_A を送信して GJI I/O 応答を待ち、BS×1 + 実ローマ字の順で再送する。
+            vec![ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
+                cold_seq,
+                romaji: send.romaji,
+                deferred_vks: send.deferred_vks,
+                plan: TransmitPlan {
+                    should_prepend_f2: false,
+                    used_eager_path: false,
+                    needs_literal: true,
+                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                },
+                observations: ProbeObservations { nc_fired: true, gji_resumed: false },
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
-            romaji: send.romaji,
-            deferred_vks: send.deferred_vks,
-            target: TransmitTarget::Chrome,
-        }]
+                target: TransmitTarget::Chrome,
+            })]
+        } else {
+            // GJI inactive: GJI モニター不健全のため composition 確認不可 → 直接送信。
+            self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
+            vec![ProbeAction::Transmit {
+                cold_seq,
+                plan: TransmitPlan {
+                    should_prepend_f2: false,
+                    used_eager_path: false,
+                    needs_literal: false,
+                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                },
+                observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+                romaji: send.romaji,
+                deferred_vks: send.deferred_vks,
+                target: TransmitTarget::Chrome,
+            }]
+        }
     }
 
     /// `Transmit` action 生成時に現フェーズから `SendState` を取り出す。

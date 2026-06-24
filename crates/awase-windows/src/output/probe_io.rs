@@ -6,7 +6,7 @@
 use crate::output::{Output, VkMarker, VkSequence, WarmupOutcome};
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
-use crate::tsf::probe_fsm::DeferredVk;
+use crate::tsf::probe_fsm::{DeferredVk, TransmitTarget};
 use crate::tsf::TsfGateState;
 use awase::types::VkCode;
 
@@ -481,13 +481,15 @@ where
                     config.romaji,
                     config.deferred_vks,
                     config.literal_detect_ms,
+                    config.target,
                 );
                 return DispatchResult::SwitchMachine(Box::new(sacr_fsm));
             }
 
             ProbeAction::SacrificialResend(resend) => {
                 // SacrificialWarmupFsm から emit される（composition 確認後）。
-                // BS×1（犠牲 VK_A 削除）→ 実ローマ字 transmit_tsf → deferred_vks 送信。
+                // BS×1（犠牲 VK_A 削除）→ 実ローマ字送信 → deferred_vks 送信。
+                // target に応じて Chrome/TSF パスを切り替える。
                 let cold_seq = resend.cold_seq;
                 let chars: VkSequence = resend.romaji
                     .chars()
@@ -499,20 +501,32 @@ where
                 } else {
                     // BS×1: 犠牲 VK_A（'a' または 'あ' composition unit）を削除
                     io.send_sacrificial_bs_one(cold_seq);
-                    // 実ローマ字を warm パスで送信（F2 prepend なし、VK path）。
-                    // warm は SacrificialWarmupFsm の probe 中も維持されているため
-                    // WezTerm の 344ms composition context タイマーをリセットしない。
-                    let outcome = WarmupOutcome {
-                        prepend_f2_warmup: false,
-                        used_eager_path: false,
-                        cold_seq,
-                    };
-                    log::debug!(
-                        "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を warm パスで再送",
-                        resend.romaji
-                    );
-                    io.transmit_tsf(&resend.romaji, &chars, &outcome);
-                    io.send_deferred_vks(&resend.deferred_vks, VkMarker::Tsf);
+                    match resend.target {
+                        TransmitTarget::Chrome => {
+                            // Chrome パス: INJECTED_MARKER バッチ送信
+                            log::debug!(
+                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を Chrome パスで再送",
+                                resend.romaji
+                            );
+                            io.transmit_chrome(&resend.romaji, &chars);
+                            io.send_deferred_vks(&resend.deferred_vks, VkMarker::Injected);
+                        }
+                        TransmitTarget::Tsf => {
+                            // TSF パス: warm 維持のまま VK run 送信（F2 prepend なし）
+                            // WezTerm の 344ms composition context タイマーをリセットしない。
+                            let outcome = WarmupOutcome {
+                                prepend_f2_warmup: false,
+                                used_eager_path: false,
+                                cold_seq,
+                            };
+                            log::debug!(
+                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を warm パスで再送",
+                                resend.romaji
+                            );
+                            io.transmit_tsf(&resend.romaji, &chars, &outcome);
+                            io.send_deferred_vks(&resend.deferred_vks, VkMarker::Tsf);
+                        }
+                    }
                 }
                 // SacrificialWarmupFsm は Done を後続 action として emit しているため
                 // ここでは machine 状態を更新せず Continue を返す（queue が Done を処理する）。
