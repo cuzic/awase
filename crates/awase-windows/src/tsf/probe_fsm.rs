@@ -226,9 +226,9 @@ pub(crate) enum TransmitTarget {
     Chrome,
 }
 
-/// [`GjiWarmupFsm`] が LiteralDetect フェーズに引き渡す設定。
+/// [`GjiWarmupFsm`] が LiteralDetect / SacrificialWarmup フェーズに引き渡す設定。
 ///
-/// [`ProbeAction::StartLiteralDetect`] のペイロード。
+/// [`ProbeAction::StartLiteralDetect`] および [`ProbeAction::StartSacrificialWarmup`] のペイロード。
 /// `GjiWarmupFsm` が transmit 完了後、`needs_literal=true` と判断したときに emit する。
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -239,6 +239,18 @@ pub(crate) struct LiteralDetectConfig {
     pub plan: TransmitPlan,
     pub observations: ProbeObservations,
     pub literal_detect_ms: u64,
+}
+
+/// [`SacrificialWarmupFsm`] が composition 確認後に emit する再送設定。
+///
+/// dispatcher が BS×1（犠牲 'a' 削除）→ 実ローマ字 transmit_tsf を行う。
+#[derive(Debug)]
+pub(crate) struct SacrificialResend {
+    pub cold_seq: u32,
+    pub romaji: String,
+    pub deferred_vks: Vec<DeferredVk>,
+    pub plan: TransmitPlan,
+    pub observations: ProbeObservations,
 }
 
 /// ステートマシン → dispatcher 方向の宣言的アクション。
@@ -274,6 +286,16 @@ pub(crate) enum ProbeAction {
     /// dispatcher は `LiteralDetectFsm` を生成して `TIMER_TSF_PROBE` を継続させる。
     #[allow(dead_code)]
     StartLiteralDetect(LiteralDetectConfig),
+    /// GJI warmup 完了後に犠牲キー（VK_A）暖機フェーズを開始する。
+    ///
+    /// [`GjiWarmupFsm`] が `needs_literal=true` と判断したときに emit する。
+    /// dispatcher が VK_A を送信してから [`crate::tsf::sacr_warmup_fsm::SacrificialWarmupFsm`]
+    /// に切り替える。実ローマ字は TSF warm 確認後に [`SacrificialResend`] 経由で送信される。
+    StartSacrificialWarmup(LiteralDetectConfig),
+    /// [`crate::tsf::sacr_warmup_fsm::SacrificialWarmupFsm`] が composition 確認後に emit する。
+    ///
+    /// dispatcher が BS×1（犠牲 VK_A 削除）→ 実ローマ字 transmit_tsf → deferred_vks 送信を行う。
+    SacrificialResend(SacrificialResend),
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }

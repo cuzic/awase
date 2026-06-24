@@ -4,15 +4,15 @@
 //! [`GjiWarmupFsm`] は `TsfProbeMachine` から GJI 固有のフェーズを切り出した FSM。
 //! GJI の静止待ち・FreshF2 送信・NameChangeWait を担当し、
 //! transmit 準備が整ったら [`ProbeAction::Transmit`]（Tsf）または
-//! [`ProbeAction::StartLiteralDetect`] を emit して終了する。
+//! [`ProbeAction::StartSacrificialWarmup`] を emit して終了する。
 //!
 //! ## フェーズ遷移
 //!
 //! ```text
-//! Probing(GjiInitial) ─[settle 不要]──► WaitingForCallback(TransmitDone) ─► emit Transmit or StartLiteralDetect
+//! Probing(GjiInitial) ─[settle 不要]──► WaitingForCallback(TransmitDone) ─► emit Transmit or StartSacrificialWarmup
 //!                     └─[settle 必要]─► WaitingForCallback(FreshF2Sent)   ─[apply_fresh_f2_sent]─► NameChangeWait
 //!                                                                                        ├─[nc_fired && !settled]─► Probing(GjiSecondary) ─► WaitingForCallback
-//!                                                                                        └─[その他]────────────────────────────────────────────────────────────────► emit Transmit or StartLiteralDetect
+//!                                                                                        └─[その他]────────────────────────────────────────────────────────────────► emit Transmit or StartSacrificialWarmup
 //! ```
 
 use crate::tsf::observer::NamechangeBaseline;
@@ -106,7 +106,7 @@ enum NextStep {
 /// `TsfProbeMachine` の GJI フェーズ（`Probing(GjiInitial/GjiSecondary)` +
 /// `WaitingForCallback(FreshF2Sent)` + `NameChangeWait`）を担当する。
 /// transmit 準備が整ったら [`ProbeAction::Transmit`] または
-/// [`ProbeAction::StartLiteralDetect`] を emit して終了する。
+/// [`ProbeAction::StartSacrificialWarmup`] を emit して終了する。
 ///
 /// LiteralDetect フェーズ自体は `LiteralDetectFsm`（別ファイル予定）が担当する。
 pub(crate) struct GjiWarmupFsm {
@@ -513,7 +513,7 @@ impl GjiWarmupFsm {
 
     /// transmit フェーズへ進み `ProbeAction` を返す。
     ///
-    /// `plan.needs_literal == true` の場合は [`ProbeAction::StartLiteralDetect`]、
+    /// `plan.needs_literal == true` の場合は [`ProbeAction::StartSacrificialWarmup`]、
     /// それ以外は [`ProbeAction::Transmit`]（Tsf）を emit して Done へ遷移する。
     fn enter_transmit_tsf(
         &mut self,
@@ -550,11 +550,12 @@ impl GjiWarmupFsm {
         );
 
         if plan.needs_literal {
-            // LiteralDetect フェーズが必要 → StartLiteralDetect を emit し、Done へ遷移する。
-            // LiteralDetect FSM は caller 側で起動する（#15 以降）。
+            // TSF warm 確認フェーズが必要 → StartSacrificialWarmup を emit し、Done へ遷移する。
+            // VK_A（犠牲キー）を dispatcher が送信し、SacrificialWarmupFsm が composition を確認する。
+            // 実ローマ字が readline バッファにリテラル状態で残らないため Enter 誤 submit を防ぐ。
             let literal_detect_ms = plan.literal_detect_ms;
             self.phase = GjiProbePhase::Done;
-            vec![ProbeAction::StartLiteralDetect(LiteralDetectConfig {
+            vec![ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
                 cold_seq,
                 romaji: send.romaji,
                 deferred_vks: send.deferred_vks,
@@ -686,12 +687,12 @@ mod tests {
         let actions = fsm.tick_with_clock_env(&ManualClock(500), &env);
 
         assert!(!actions.is_empty(), "candidate visible → action を emit するべき");
-        // TSF mode + gji_active + nc_fired=false → needs_literal=true → StartLiteralDetect
+        // TSF mode + gji_active + nc_fired=false → needs_literal=true → StartSacrificialWarmup
         assert!(
-            matches!(actions[0], ProbeAction::StartLiteralDetect(_)),
-            "candidate visible (TSF mode, gji_active): StartLiteralDetect を emit するべき: {actions:?}",
+            matches!(actions[0], ProbeAction::StartSacrificialWarmup(_)),
+            "candidate visible (TSF mode, gji_active): StartSacrificialWarmup を emit するべき: {actions:?}",
         );
-        if let ProbeAction::StartLiteralDetect(cfg) = &actions[0] {
+        if let ProbeAction::StartSacrificialWarmup(cfg) = &actions[0] {
             assert!(!cfg.observations.nc_fired, "candidate visible 経路: nc_fired=false");
             assert!(
                 !cfg.plan.should_prepend_f2,
@@ -699,7 +700,7 @@ mod tests {
             );
             assert!(
                 cfg.plan.needs_literal,
-                "candidate visible 経路: IME mode 未確認 → LiteralDetect 有効"
+                "candidate visible 経路: IME mode 未確認 → SacrificialWarmup 有効"
             );
         }
     }
@@ -848,17 +849,17 @@ mod tests {
         };
         let actions = fsm.tick_with_clock_env(&ManualClock(1000), &env);
 
-        // Medium cold + TSF mode + gji_active → needs_literal=true → StartLiteralDetect
-        if let ProbeAction::StartLiteralDetect(cfg) = &actions[0] {
+        // Medium cold + TSF mode + gji_active → needs_literal=true → StartSacrificialWarmup
+        if let ProbeAction::StartSacrificialWarmup(cfg) = &actions[0] {
             assert!(
                 cfg.plan.should_prepend_f2,
                 "Medium cold + nc_fired=false: forces_prepend_f2=true → F2 をバッチに含める"
             );
-            assert!(cfg.plan.needs_literal, "GJI 未応答: LiteralDetect 有効");
+            assert!(cfg.plan.needs_literal, "GJI 未応答: SacrificialWarmup 有効");
             assert!(!cfg.observations.nc_fired, "タイムアウト: nc_fired=false");
         } else {
             panic!(
-                "StartLiteralDetect を emit するべき (Medium cold, TSF mode): {actions:?}"
+                "StartSacrificialWarmup を emit するべき (Medium cold, TSF mode): {actions:?}"
             );
         }
     }
@@ -891,16 +892,16 @@ mod tests {
         };
         let actions = fsm.tick_with_clock_env(&ManualClock(1000), &env);
 
-        // Short cold + TSF + gji_active → needs_literal=true → StartLiteralDetect
-        if let ProbeAction::StartLiteralDetect(cfg) = &actions[0] {
+        // Short cold + TSF + gji_active → needs_literal=true → StartSacrificialWarmup
+        if let ProbeAction::StartSacrificialWarmup(cfg) = &actions[0] {
             assert!(
                 !cfg.plan.should_prepend_f2,
                 "Short cold (forces_prepend_f2=false) + nc_fired=false: F2 をバッチに含めない"
             );
-            assert!(cfg.plan.needs_literal, "TSF + gji_active: LiteralDetect 有効");
+            assert!(cfg.plan.needs_literal, "TSF + gji_active: SacrificialWarmup 有効");
         } else {
             panic!(
-                "StartLiteralDetect を emit するべき (Short cold, TSF mode): {actions:?}"
+                "StartSacrificialWarmup を emit するべき (Short cold, TSF mode): {actions:?}"
             );
         }
     }

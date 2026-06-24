@@ -61,6 +61,14 @@ pub(crate) trait ProbeIo {
     ///
     /// `None` の場合は GjiFsm 未接続なので `store_gji_warmup_result` 呼び出しをスキップできる。
     fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId>;
+    /// 犠牲キー（VK_A）を TSF パイプライン経由で送信する。
+    ///
+    /// `StartSacrificialWarmup` ハンドラが呼ぶ。F2 prepend なし・VK path で送信する。
+    fn send_sacrificial_vk_a(&self, cold_seq: u32);
+    /// BS×1 を送信する（犠牲キーの削除用）。
+    ///
+    /// `SacrificialResend` ハンドラが呼ぶ。
+    fn send_sacrificial_bs_one(&self, cold_seq: u32);
 }
 
 impl ProbeIo for Output {
@@ -150,6 +158,47 @@ impl ProbeIo for Output {
 
     fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
         self.current_gji_probe_id.get()
+    }
+
+    fn send_sacrificial_vk_a(&self, cold_seq: u32) {
+        use awase::types::VkCode;
+        use crate::tsf::output::make_key_input_ex;
+        use crate::tsf::output::INJECTED_MARKER;
+        use std::mem::size_of;
+        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
+        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
+        const VK_A: VkCode = VkCode(0x41);
+        let inputs = [
+            make_key_input_ex(VK_A, false, INJECTED_MARKER),
+            make_key_input_ex(VK_A, true, INJECTED_MARKER),
+        ];
+        log::debug!("[sacr-warmup] cold={cold_seq} VK_A 送信（犠牲キー）");
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
+    }
+
+    fn send_sacrificial_bs_one(&self, cold_seq: u32) {
+        use crate::tsf::output::make_key_input_ex;
+        use crate::tsf::output::INJECTED_MARKER;
+        use crate::vk::VK_BACK;
+        use std::mem::size_of;
+        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
+        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
+        let inputs = [
+            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+        ];
+        log::debug!("[sacr-warmup] cold={cold_seq} BS×1 送信（犠牲キー削除）");
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
     }
 }
 
@@ -390,6 +439,87 @@ where
                 return DispatchResult::SwitchMachine(Box::new(literal_fsm));
             }
 
+            ProbeAction::StartSacrificialWarmup(config) => {
+                // GjiWarmupFsm から emit される（plan.needs_literal=true の場合）。
+                // 実ローマ字を即送信する代わりに VK_A（犠牲キー）を送信し、
+                // composition 確認後に BS×1 + 実ローマ字を再送する。
+                // これにより実ローマ字が readline バッファにリテラル状態で残らない
+                // （Engine ON / IME OFF 状態を構造的に排除する）。
+                let real_chars: VkSequence = config.romaji
+                    .chars()
+                    .filter_map(crate::output::resolve_ascii_to_vk)
+                    .collect();
+                if io.gate_is_bypass() {
+                    log::debug!(
+                        "[sacr-warmup] cold={} StartSacrificialWarmup: gate=Bypass, skipping",
+                        config.cold_seq
+                    );
+                    return DispatchResult::Done;
+                }
+                if real_chars.is_empty() {
+                    return DispatchResult::Done;
+                }
+                // GjiFsm bridge: 犠牲キー送信時点で warmup 結果を記録する。
+                if io.current_gji_probe_id().is_some() {
+                    use crate::tsf::gji_fsm::WarmupResult;
+                    io.store_gji_warmup_result(WarmupResult {
+                        path: classify_warmup_path(&config.observations, &config.plan),
+                        prepend_f2_warmup: config.plan.should_prepend_f2,
+                        nc_fired: config.observations.nc_fired,
+                        gji_resumed: config.observations.gji_resumed,
+                    });
+                }
+                // VK_A（犠牲キー）を送信。TSF warm なら 'あ' formation、cold なら 'a' リテラル。
+                io.send_sacrificial_vk_a(config.cold_seq);
+                log::debug!(
+                    "[sacr-warmup] cold={} VK_A 送信完了 → SacrificialWarmupFsm 開始 \
+                    (romaji={:?} literal_detect={}ms)",
+                    config.cold_seq, config.romaji, config.literal_detect_ms,
+                );
+                let sacr_fsm = crate::tsf::sacr_warmup_fsm::SacrificialWarmupFsm::new(
+                    config.cold_seq,
+                    config.romaji,
+                    config.deferred_vks,
+                    config.plan,
+                    config.observations,
+                    config.literal_detect_ms,
+                );
+                return DispatchResult::SwitchMachine(Box::new(sacr_fsm));
+            }
+
+            ProbeAction::SacrificialResend(resend) => {
+                // SacrificialWarmupFsm から emit される（composition 確認後）。
+                // BS×1（犠牲 VK_A 削除）→ 実ローマ字 transmit_tsf → deferred_vks 送信。
+                let cold_seq = resend.cold_seq;
+                let chars: VkSequence = resend.romaji
+                    .chars()
+                    .filter_map(crate::output::resolve_ascii_to_vk)
+                    .collect();
+                if io.gate_is_bypass() || chars.is_empty() {
+                    // ゲートが閉じている or 実ローマ字なし: BS も送らず即終了
+                    log::debug!("[sacr-warmup] cold={cold_seq} SacrificialResend: skip (bypass or empty)");
+                } else {
+                    // BS×1: 犠牲 VK_A（'a' または 'あ' composition unit）を削除
+                    io.send_sacrificial_bs_one(cold_seq);
+                    // 実ローマ字を warm パスで送信（F2 prepend なし、VK path）。
+                    // warm は SacrificialWarmupFsm の probe 中も維持されているため
+                    // WezTerm の 344ms composition context タイマーをリセットしない。
+                    let outcome = WarmupOutcome {
+                        prepend_f2_warmup: false,
+                        used_eager_path: false,
+                        cold_seq,
+                    };
+                    log::debug!(
+                        "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を warm パスで再送",
+                        resend.romaji
+                    );
+                    io.transmit_tsf(&resend.romaji, &chars, &outcome);
+                    io.send_deferred_vks(&resend.deferred_vks, VkMarker::Tsf);
+                }
+                // SacrificialWarmupFsm は Done を後続 action として emit しているため
+                // ここでは machine 状態を更新せず Continue を返す（queue が Done を処理する）。
+            }
+
             ProbeAction::RawTsfLiteralRecovery {
                 cold_seq,
                 backs,
@@ -533,6 +663,10 @@ mod tests {
         fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
             None
         }
+
+        fn send_sacrificial_vk_a(&self, _cold_seq: u32) {}
+
+        fn send_sacrificial_bs_one(&self, _cold_seq: u32) {}
     }
 
     fn make_chrome_machine() -> crate::tsf::probe_fsm::TsfProbeMachine {
