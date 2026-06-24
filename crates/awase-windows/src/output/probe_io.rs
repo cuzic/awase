@@ -449,7 +449,9 @@ where
                     .chars()
                     .filter_map(crate::output::resolve_ascii_to_vk)
                     .collect();
-                if io.gate_is_bypass() {
+                // Chrome は常に gate=Bypass のため Chrome target の場合はゲートチェックをスキップする。
+                // TSF/WezTerm の場合のみ bypass 状態でスキップする。
+                if config.target != TransmitTarget::Chrome && io.gate_is_bypass() {
                     log::debug!(
                         "[sacr-warmup] cold={} StartSacrificialWarmup: gate=Bypass, skipping",
                         config.cold_seq
@@ -495,7 +497,8 @@ where
                     .chars()
                     .filter_map(crate::output::resolve_ascii_to_vk)
                     .collect();
-                if io.gate_is_bypass() || chars.is_empty() {
+                // Chrome は常に gate=Bypass のため Chrome target の場合はゲートチェックをスキップする。
+                if chars.is_empty() || (resend.target != TransmitTarget::Chrome && io.gate_is_bypass()) {
                     // ゲートが閉じている or 実ローマ字なし: BS も送らず即終了
                     log::debug!("[sacr-warmup] cold={cold_seq} SacrificialResend: skip (bypass or empty)");
                 } else {
