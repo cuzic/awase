@@ -504,16 +504,20 @@ where
                     });
                 }
                 // VK_A（犠牲キー）を送信。
+                // Chrome: VK_A 送信前に gji_write_bytes を取得してベースラインとする。
+                //   送信後に取得すると cold Chrome の write がベースラインに吸収され検出不能になる。
                 // Chrome: VK_A + BS を同一 SendInput バッチで送信し 'a'/'あ' を不可視にする。
                 // TSF/WezTerm: VK_A のみ送信（BS は SacrificialResend 時に別送）。
+                let write_bytes_before_vk_a = crate::tsf::observer::gji_write_bytes();
                 match config.target {
                     TransmitTarget::Chrome => io.send_sacrificial_vk_a_with_bs(config.cold_seq),
                     TransmitTarget::Tsf => io.send_sacrificial_vk_a(config.cold_seq),
                 }
                 log::debug!(
                     "[sacr-warmup] cold={} VK_A 送信完了 → SacrificialWarmupFsm 開始 \
-                    (romaji={:?} literal_detect={}ms)",
+                    (romaji={:?} literal_detect={}ms write_bytes_baseline={})",
                     config.cold_seq, config.romaji, config.literal_detect_ms,
+                    write_bytes_before_vk_a,
                 );
                 let sacr_fsm = crate::tsf::sacr_warmup_fsm::SacrificialWarmupFsm::new(
                     config.cold_seq,
@@ -521,6 +525,7 @@ where
                     config.deferred_vks,
                     config.literal_detect_ms,
                     config.target,
+                    write_bytes_before_vk_a,
                 );
                 return DispatchResult::SwitchMachine(Box::new(sacr_fsm));
             }

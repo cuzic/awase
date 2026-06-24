@@ -585,11 +585,31 @@ impl LiteralDetector {
         d
     }
 
-    /// F2 等のモード切り替えキーと文字コンポジションを区別するための WriteTransferCount 閾値。
+    /// VK_A 送信前に取得済みの WriteTransferCount ベースラインを使う `LiteralDetector` を生成する。
     ///
-    /// F2 は WriteTransferCount を増加させない（w_KB=+0.0）のに対し、
-    /// 文字変換は通常 +200〜400 バイト増加する。誤検知を避けるため 50 バイトを閾値とする。
-    const COMPOSITION_BYTES_THRESHOLD: u64 = 50;
+    /// `SacrificialWarmup` の Chrome パスで使用する。VK_A 送信後に `new_gji_resumed()` を
+    /// 呼ぶと、タイミングによっては VK_A の write がベースラインに吸収されて検出できない。
+    /// VK_A 送信直前に取得したベースラインを引数で渡すことでこの race を解消する。
+    ///
+    /// ## 閾値の根拠
+    ///
+    /// 実機ログ（5サンプル）より:
+    /// - cold Chrome（リテラル 'a'）: VK_A 後 w_KB ≈ +0.3KB（+300 バイト）
+    /// - warm Chrome（コンポジション 'あ'）: VK_A 後 w_KB ≈ +0.4KB（+400 バイト）
+    ///
+    /// [`COMPOSITION_BYTES_THRESHOLD`] = 350 バイトで cold/warm を分離できる。
+    pub fn new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a: u64) -> Self {
+        let mut d = Self::new();
+        d.use_process_io_confirm = true;
+        d.write_bytes_baseline = Some(write_bytes_before_vk_a);
+        d
+    }
+
+    /// cold Chrome（リテラル 'a': +300B）と warm Chrome（コンポジション 'あ': +400B）を
+    /// 区別するための WriteTransferCount 増加閾値。
+    ///
+    /// 実機ログ 5 サンプルに基づく。cold/warm の中間値 350 バイトを閾値とする。
+    const COMPOSITION_BYTES_THRESHOLD: u64 = 350;
 
     /// タイマーポーリング用ノンブロッキング判定。
     ///

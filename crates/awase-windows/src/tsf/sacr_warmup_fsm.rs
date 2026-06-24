@@ -54,13 +54,19 @@ impl SacrificialWarmupFsm {
         deferred_vks: Vec<DeferredVk>,
         literal_detect_ms: u64,
         target: TransmitTarget,
+        write_bytes_before_vk_a: u64,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
-        // Chrome は gji_candidate_show がシンプルなかな（'あ' 等）で発火しないため
-        // gji_last_io_ms 変化を composition confirmation シグナルとして使う。
-        // TSF/WezTerm は gji_candidate_show（候補ウィンドウ出現）で確認する。
+        // Chrome: VK_A 送信前に取得したベースラインを使って cold/warm を区別する。
+        //   cold リテラル 'a' → GJI write ≈ +300B < 350B 閾値 → 不検出 → timeout
+        //   warm コンポジション 'あ' → GJI write ≈ +400B > 350B 閾値 → confirmed
+        // VK_A 送信後にベースラインを取得すると cold の write がベースラインに吸収されてしまう
+        // ため、呼び出し元（probe_io.rs）で VK_A 送信前に取得し引数で渡す。
+        // TSF/WezTerm: gji_candidate_show（候補ウィンドウ出現）で確認する。
         let detector = match target {
-            TransmitTarget::Chrome => LiteralDetector::new_gji_resumed(),
+            TransmitTarget::Chrome => {
+                LiteralDetector::new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a)
+            }
             TransmitTarget::Tsf => LiteralDetector::new(),
         };
         let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
