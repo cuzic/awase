@@ -619,7 +619,14 @@ impl TimedStateMachine for GjiFsm {
                 log::debug!(
                     "[gji-fsm] FocusChange gji_idle={gji_idle_ms}ms → {kind:?}"
                 );
-                self.transition_to_cold(kind, vec![], old_probe)
+                // ImeOn の直後（proactive probe が進行中）に FocusChange が来た場合、
+                // そのまま NotStarted に落とすと warmup が止まる。
+                // old_probe が Some = Authorized probe が動いていたので proactive に継続する。
+                if old_probe.is_some() {
+                    self.transition_to_cold_proactive(kind, vec![], old_probe)
+                } else {
+                    self.transition_to_cold(kind, vec![], old_probe)
+                }
             }
 
             // ── KeyInput ───────────────────────────────────────────────────
