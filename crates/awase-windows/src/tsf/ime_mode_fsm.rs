@@ -52,6 +52,11 @@ pub(crate) struct ImeModeFsm {
     state: ImeModeState,
     /// `true` = `IMC_GETCONVERSIONMODE` で OS から確認済み（belief ではなく ground truth）。
     confirmed: bool,
+    /// 最後に F21/F22 を送信した時刻 (ms)。0 = 未送信。
+    ///
+    /// F21/F22 送信が Chrome の FocusChange を誘発するため、送信後 100ms 以内の
+    /// FocusChange では state を Unknown にリセットせず confirmed のみクリアする。
+    last_vk_send_ms: u64,
 }
 
 impl Default for ImeModeFsm {
@@ -65,6 +70,7 @@ impl ImeModeFsm {
         Self {
             state: ImeModeState::Unknown,
             confirmed: false,
+            last_vk_send_ms: 0,
         }
     }
 
@@ -81,6 +87,7 @@ impl ImeModeFsm {
         log::debug!("[ime-mode] F22 送信 → Off (belief, unconfirmed)");
         self.state = ImeModeState::Off;
         self.confirmed = false;
+        self.last_vk_send_ms = crate::hook::current_tick_ms();
     }
 
     /// F21（IME ON / ひらがな）送信時に呼ぶ。Hiragana belief に即時移行する。
@@ -88,6 +95,7 @@ impl ImeModeFsm {
         log::debug!("[ime-mode] F21 送信 → Hiragana (belief, unconfirmed)");
         self.state = ImeModeState::Hiragana;
         self.confirmed = false;
+        self.last_vk_send_ms = crate::hook::current_tick_ms();
     }
 
     /// `IMC_GETCONVERSIONMODE` の結果を反映する。
@@ -123,8 +131,21 @@ impl ImeModeFsm {
         self.confirmed = true;
     }
 
-    /// フォーカス変更時に呼ぶ。Unknown に戻す（次の `IMC_GETCONVERSIONMODE` で再確認）。
-    pub(crate) fn on_focus_changed(&mut self) {
+    /// フォーカス変更時に呼ぶ。
+    ///
+    /// F21/F22 送信から 100ms 以内の場合は Chrome の副作用 FocusChange と判断し
+    /// state を維持したまま `confirmed` のみクリアする。
+    /// それ以外は Unknown に戻して次の `IMC_GETCONVERSIONMODE` で再確認する。
+    pub(crate) fn on_focus_changed(&mut self, now_ms: u64) {
+        let since_vk_ms = now_ms.saturating_sub(self.last_vk_send_ms);
+        if self.last_vk_send_ms > 0 && since_vk_ms < 100 {
+            log::debug!(
+                "[ime-mode] FocusChange ({}ms after VK send) → confirmed=false のみ（state={:?} 維持）",
+                since_vk_ms, self.state
+            );
+            self.confirmed = false;
+            return;
+        }
         log::debug!("[ime-mode] FocusChange → Unknown");
         self.state = ImeModeState::Unknown;
         self.confirmed = false;

@@ -217,9 +217,23 @@ self.gji_fsm.borrow().gji_current_composition_epoch()
         self.ime_mode_fsm.borrow_mut().on_conversion_mode_read(mode);
     }
 
-    /// フォーカス変更時に呼ぶ。`ImeModeFsm` を Unknown に戻す。
+    /// フォーカス変更時に呼ぶ。F21/F22 直後の副作用 FocusChange かを判定して適切にリセット。
     pub(crate) fn on_ime_mode_focus_changed(&self) {
-        self.ime_mode_fsm.borrow_mut().on_focus_changed();
+        let now_ms = crate::hook::current_tick_ms();
+        self.ime_mode_fsm.borrow_mut().on_focus_changed(now_ms);
+    }
+
+    /// F21/F22 送信時に `ImeModeFsm` の belief を即時更新する。
+    ///
+    /// `send_chrome_gji_reinit_and_poll` は個別に `on_f22_sent()`/`on_f21_sent()` を呼ぶため、
+    /// このメソッドは通常 IME ON/OFF（`send_engine_state_ime_key` 経由）用。
+    pub(crate) fn on_ime_mode_vk_sent(&self, vk: VkCode) {
+        let mut fsm = self.ime_mode_fsm.borrow_mut();
+        if vk == crate::vk::VK_F21 {
+            fsm.on_f21_sent();
+        } else if vk == crate::vk::VK_F22 {
+            fsm.on_f22_sent();
+        }
     }
 
     /// GjiFsm に LongIdle タイムアウトを送り、Response を返す。

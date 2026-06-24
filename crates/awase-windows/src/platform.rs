@@ -562,6 +562,7 @@ impl PlatformRuntime for WindowsPlatform {
         };
         if let Some(vk) = vk {
             unsafe { crate::ime::send_ime_mode_key(vk) };
+            self.output.on_ime_mode_vk_sent(vk);
         }
     }
 
