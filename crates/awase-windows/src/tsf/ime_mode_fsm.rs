@@ -99,16 +99,25 @@ impl ImeModeFsm {
             return;
         };
         let new_state = ImeModeState::from_conversion_mode(mode);
-        if new_state != self.state {
-            log::warn!(
-                "[ime-mode] drift detected: belief={:?} → actual={:?} (conv=0x{:08X})",
-                self.state, new_state, mode
-            );
-        } else {
-            log::debug!(
-                "[ime-mode] confirmed: {:?} (conv=0x{:08X})",
-                new_state, mode
-            );
+        match (self.state, new_state == self.state) {
+            (ImeModeState::Unknown, _) => {
+                log::debug!(
+                    "[ime-mode] initial confirm: {:?} (conv=0x{:08X})",
+                    new_state, mode
+                );
+            }
+            (_, false) => {
+                log::warn!(
+                    "[ime-mode] drift detected: belief={:?} → actual={:?} (conv=0x{:08X})",
+                    self.state, new_state, mode
+                );
+            }
+            (_, true) => {
+                log::debug!(
+                    "[ime-mode] confirmed: {:?} (conv=0x{:08X})",
+                    new_state, mode
+                );
+            }
         }
         self.state = new_state;
         self.confirmed = true;
