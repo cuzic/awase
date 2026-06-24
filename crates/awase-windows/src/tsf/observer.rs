@@ -384,16 +384,6 @@ pub(crate) fn take_pending_end_composition() -> bool {
     TSF_OBS.pending_end_composition.swap(false, Ordering::Relaxed)
 }
 
-/// `EVENT_OBJECT_IME_SHOW` カウンタへの参照を返す（`AtomicWatcher` / ベースライン比較用）。
-pub(crate) fn ime_show_seq_atomic() -> &'static AtomicU32 {
-    TSF_OBS.ime_show_seq.atomic()
-}
-
-/// `EVENT_OBJECT_IME_CHANGE` カウンタへの参照を返す（`AtomicWatcher` / ベースライン比較用）。
-pub(crate) fn ime_change_seq_atomic() -> &'static AtomicU32 {
-    TSF_OBS.ime_change_seq.atomic()
-}
-
 /// GJI setup 完了後に呼んで `gji_keybinds_ok` を即座に `true` にセットする。
 ///
 /// config1.db パッチが成功した時点で GJI monitor の re-attach を待たずに

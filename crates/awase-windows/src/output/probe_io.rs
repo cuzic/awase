@@ -279,9 +279,8 @@ impl ProbeIo for Output {
                 let confirmed = crate::with_app(|runtime| {
                     runtime.platform.output.update_ime_mode_from_imc(conv);
                     // Hiragana 確認済みならポーリング終了
-                    runtime.platform.output.ime_mode_fsm.borrow().state()
-                        == crate::tsf::ime_mode_fsm::ImeModeState::Hiragana
-                        && runtime.platform.output.ime_mode_fsm.borrow().is_confirmed()
+                    let fsm = runtime.platform.output.ime_mode_fsm.borrow();
+                    fsm.state().is_hiragana() && fsm.is_confirmed()
                 });
                 if confirmed.unwrap_or(false) {
                     log::debug!("[chrome-reinit] cold={cold_seq} Hiragana 確認 → ポーリング終了");
