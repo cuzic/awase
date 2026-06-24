@@ -137,6 +137,16 @@ pub struct TsfObservations {
     /// 観測・状態推定用。0 = 未取得。
     pub(super) gji_read_bytes: AtomicU64,
 
+    /// GJI プロセスの累積 WriteTransferCount（バイト数）。
+    ///
+    /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
+    /// F2（モード切り替え）は WriteTransferCount が増加しない（w_KB=+0.0）のに対し、
+    /// 文字変換は +0.2KB 以上増加する。ベースラインとの差分で
+    /// 「モード切り替えのみか文字コンポジションが発生したか」を区別できる。
+    /// [`LiteralDetector::new_gji_resumed`] の Chrome 用確認シグナルとして使用する。
+    /// 観測・状態推定用。0 = 未取得。
+    pub(super) gji_write_bytes: AtomicU64,
+
     /// GJI プロセスの最終 WriteTransferCount 変化時刻 (GetTickCount64 ms)。0 = 未観測。
     ///
     /// `gji_last_io_ms`（読み書き問わず）とは独立して、WriteOperationCount が増加した
@@ -187,6 +197,7 @@ impl TsfObservations {
             gji_last_io_ms: AtomicU64::new(0),
             gji_read_op_count: AtomicU64::new(0),
             gji_read_bytes: AtomicU64::new(0),
+            gji_write_bytes: AtomicU64::new(0),
             gji_last_write_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             gji_keybinds_ok: AtomicBool::new(false),
@@ -212,6 +223,12 @@ impl TsfObservations {
     #[must_use]
     pub fn gji_read_bytes(&self) -> u64 {
         self.gji_read_bytes.load(Ordering::Relaxed)
+    }
+
+    /// GJI プロセスの累積 WriteTransferCount（バイト数）を読み取る（Relaxed）。
+    #[must_use]
+    pub fn gji_write_bytes(&self) -> u64 {
+        self.gji_write_bytes.load(Ordering::Relaxed)
     }
 
     /// GJI モニターが利用可能かを読み取る（Acquire）。
@@ -289,6 +306,15 @@ pub(crate) fn gji_last_io_ms() -> u64 {
 /// historydb 更新タイミングの観測ログで使う。
 pub(crate) fn gji_last_write_ms() -> u64 {
     TSF_OBS.gji_last_write_ms.load(Ordering::Relaxed)
+}
+
+/// GJI プロセスの累積 WriteTransferCount（バイト数）を返す。0 = 未観測。live 読み取り。
+///
+/// F2 などのモード切り替えキーは WriteTransferCount が増加しない（w_KB=+0.0）のに対し、
+/// 文字変換は +0.2KB 以上増加する。`LiteralDetector::new_gji_resumed` の
+/// Chrome 用 composition 確認シグナルとして使用する。
+pub(crate) fn gji_write_bytes() -> u64 {
+    TSF_OBS.gji_write_bytes.load(Ordering::Relaxed)
 }
 
 /// GJI モニターが利用可能かどうか。live 読み取り。
@@ -568,6 +594,10 @@ impl GjiMonitor {
     const fn last_read_bytes(&self) -> u64 {
         self.last_read_bytes
     }
+
+    const fn last_write_bytes(&self) -> u64 {
+        self.last_write_bytes
+    }
 }
 
 impl Drop for GjiMonitor {
@@ -654,6 +684,9 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     TSF_OBS
                         .gji_read_bytes
                         .store(m.last_read_bytes(), Ordering::Relaxed);
+                    TSF_OBS
+                        .gji_write_bytes
+                        .store(m.last_write_bytes(), Ordering::Relaxed);
                     if delta.write_ops > 0 {
                         TSF_OBS
                             .gji_last_write_ms
