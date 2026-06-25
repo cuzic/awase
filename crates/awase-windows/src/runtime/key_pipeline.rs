@@ -192,24 +192,6 @@ impl Runtime {
             return;
         }
 
-        // 非同期プローブ完了前の stale injection_mode を即時修正する。
-        // Chrome（TsfNative → Vk）から Windows Terminal（Uwp → Unicode）へ切り替えた
-        // 直後に文字を入力すると、非同期プローブ完了前に stale な Vk モードが使われて
-        // ローマ字 VK キーが Windows Terminal に送出されリテラル入力になる。
-        // クラス名は同期的に取得可能なため、バリア消費時に injection_mode を即時更新する。
-        // injection_hint（WezTerm ForceTsf 検出）は後の非同期プローブで確定する。
-        // SAFETY: GetForegroundWindow/GetClassName はスレッドセーフ。メッセージループ上から呼ぶ。
-        {
-            let class = unsafe { crate::ime::get_foreground_window_class() };
-            let app_kind = crate::observer::focus_observer::detect_app_kind(&class);
-            let hint = self.platform.injection_hint();
-            let new_mode = crate::output::types::InjectionMode::from((hint, app_kind));
-            self.platform.update_injection_mode(new_mode);
-            log::debug!(
-                "[focus-barrier] eager injection_mode: class={class} kind={app_kind:?} → {new_mode:?}"
-            );
-        }
-
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.platform.eager_warmup_sent_ms();
