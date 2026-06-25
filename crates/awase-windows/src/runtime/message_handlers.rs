@@ -12,6 +12,7 @@ use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, PostQuitMessage,
 use crate::focus::cache::DetectionSource;
 use crate::hook;
 use crate::hook::CallbackResult;
+use crate::vk::VkCodeExt;
 use crate::tray;
 use crate::win32::post_to_main_thread;
 use crate::{

@@ -102,6 +102,7 @@ impl ColdReason {
             }
             Self::SymbolVkSent => 30,
             Self::F2NonTsf | Self::RawTsfLiteralRecovery | Self::SetOpenFalse => 100,
+            Self::CtrlKeyBypass => 50,
         }
     }
 
