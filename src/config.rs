@@ -312,6 +312,8 @@ pub struct ValidatedConfig {
     pub app_overrides: AppOverrides,
     /// キーマップインターセプトルール
     pub keymaps: Vec<KeymapRule>,
+    /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
+    pub post_bypass: Vec<PostBypassRule>,
 }
 
 impl AppConfig {
@@ -418,6 +420,7 @@ impl AppConfig {
                 keys: self.keys,
                 app_overrides,
                 keymaps: self.keymaps,
+                post_bypass: self.post_bypass,
             },
             warnings,
         )
