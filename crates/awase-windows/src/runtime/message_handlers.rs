@@ -80,12 +80,20 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
                     event.vk_code
                 );
             }
-            // Ctrl+key bypass 後の次の非修飾キーを NICOLA スキップさせるフラグをセット。
+            // [[post_bypass]] ルールに一致する場合、次の非修飾キーを NICOLA スキップ。
             // tmux では prefix (Ctrl+J) 後に standalone n/p 等のコマンドキーを入力するため。
-            app.platform_state.post_bypass_passthrough = true;
-            log::debug!(
-                "[ctrl-bypass] post_bypass_passthrough=true (next non-ctrl key will bypass NICOLA)"
-            );
+            let proc = app.platform.focus.process_name();
+            let cls = app.platform.focus.class_name();
+            if app
+                .post_bypass_rules
+                .iter()
+                .any(|r| r.matches(event.vk_code, proc, cls))
+            {
+                app.platform_state.post_bypass_passthrough = true;
+                log::debug!(
+                    "[ctrl-bypass] post_bypass_passthrough=true (proc={proc:?} class={cls:?})"
+                );
+            }
         }
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);

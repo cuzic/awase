@@ -56,6 +56,27 @@ pub struct LayoutEntry {
     pub layout: YabLayout,
 }
 
+/// `[[post_bypass]]` 設定のコンパイル済みエントリ。
+///
+/// Ctrl+`vk` が PassThrough になった直後、`process`/`class` が一致していれば
+/// `platform_state.post_bypass_passthrough` フラグをセットする。
+#[derive(Debug, Clone)]
+pub(crate) struct PostBypassEntry {
+    pub(crate) vk: VkCode,
+    /// 小文字化済みプロセス名フィルタ（空=全アプリ）
+    pub(crate) process: String,
+    /// 小文字化済みクラス名フィルタ（空=全クラス）
+    pub(crate) class: String,
+}
+
+impl PostBypassEntry {
+    pub(crate) fn matches(&self, vk: VkCode, process: &str, class: &str) -> bool {
+        self.vk == vk
+            && (self.process.is_empty() || process.to_lowercase().contains(self.process.as_str()))
+            && (self.class.is_empty() || class.to_lowercase().contains(self.class.as_str()))
+    }
+}
+
 /// アプリケーションランタイム。
 ///
 /// Engine (判断) と DecisionExecutor (実行) を保持し、配線する。
@@ -75,6 +96,8 @@ pub struct Runtime {
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
     all_keymaps: crate::keymap::KeymapTable,
+    /// post_bypass コンパイル済みルール一覧
+    pub(crate) post_bypass_rules: Vec<PostBypassEntry>,
     /// Ctrl+無変換 IME OFF 救済窓中に保留している event。
     ///
     /// `TIMER_IME_OFF_RESCUE` 満了で IME OFF 発火、Ctrl↑ 到達で ctrl=false に書き換えて発火。
@@ -550,7 +573,7 @@ impl Runtime {
 
     /// Runtime を初期化して返す。
     #[allow(clippy::too_many_arguments)]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         engine: Engine,
         executor: DecisionExecutor,
         platform: WindowsPlatform,
@@ -560,6 +583,7 @@ impl Runtime {
         sync_off_keys: Vec<VkCode>,
         platform_state: crate::PlatformState,
         all_keymaps: crate::keymap::KeymapTable,
+        post_bypass_rules: Vec<PostBypassEntry>,
     ) -> Self {
         Self {
             engine,
@@ -571,6 +595,7 @@ impl Runtime {
             sync_off_keys,
             platform_state,
             all_keymaps,
+            post_bypass_rules,
             pending_ime_off_rescue: None,
             deferred_engine_timers: Vec::<(usize, usize)>::new(),
         }

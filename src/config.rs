@@ -229,6 +229,33 @@ pub struct AppOverrides {
     pub force_tsf: Vec<AppOverrideEntry>,
 }
 
+/// Ctrl+key バイパス直後に次キーを NICOLA スキップするルール
+///
+/// `key` に指定した Ctrl+key が PassThrough になった直後、
+/// 次の non-Ctrl 非修飾キー 1 つを NICOLA エンジンをスキップして
+/// 直接 passthrough させる。
+///
+/// 例: tmux の prefix (Ctrl+J) → コマンドキー (n/p) で
+/// NICOLA が n/p を横取りするのを防ぐ。
+///
+/// ```toml
+/// [[post_bypass]]
+/// key = "Ctrl+J"
+/// process = "WindowsTerminal"   # wt.exe（省略=全アプリ）
+/// class = ""                    # ウィンドウクラス（省略=全クラス）
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PostBypassRule {
+    /// バイパストリガーキー（例: "Ctrl+J"）
+    pub key: String,
+    /// プロセス名フィルタ（省略=全アプリ、大文字小文字無視）
+    #[serde(default)]
+    pub process: String,
+    /// ウィンドウクラスフィルタ（省略=全クラス、大文字小文字無視）
+    #[serde(default)]
+    pub class: String,
+}
+
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
@@ -242,6 +269,9 @@ pub struct AppConfig {
     pub app_overrides: AppOverrides,
     #[serde(default)]
     pub keymaps: Vec<KeymapRule>,
+    /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
+    #[serde(default)]
+    pub post_bypass: Vec<PostBypassRule>,
 }
 
 impl AppConfig {

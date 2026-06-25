@@ -339,6 +339,33 @@ pub(super) fn initialize_app(
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
 
+    // [[post_bypass]] ルールをコンパイル（キー名パース + 小文字化）
+    let post_bypass_rules: Vec<crate::runtime::PostBypassEntry> = config
+        .post_bypass
+        .iter()
+        .filter_map(|rule| {
+            let combo = crate::vk::parse_key_combo(&rule.key)?;
+            if !combo.ctrl {
+                log::warn!(
+                    "[post_bypass] key {:?} は Ctrl+key 形式であること（例: \"Ctrl+J\"）",
+                    rule.key
+                );
+                return None;
+            }
+            Some(crate::runtime::PostBypassEntry {
+                vk: combo.vk,
+                process: rule.process.to_lowercase(),
+                class: rule.class.to_lowercase(),
+            })
+        })
+        .collect();
+    if !post_bypass_rules.is_empty() {
+        log::info!(
+            "[post_bypass] {} ルールをロード",
+            post_bypass_rules.len()
+        );
+    }
+
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
     RUNTIME.set(Runtime::new(
@@ -364,6 +391,7 @@ pub(super) fn initialize_app(
         sync_off_keys,
         ps,
         all_keymaps,
+        post_bypass_rules,
     ));
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());

@@ -53,3 +53,14 @@ force_tsf = [
 # force_vk = [
 #     { process = "chrome.exe", class = "Chrome_WidgetWin_1" },
 # ]
+
+# Ctrl+key バイパス直後に次キーを NICOLA スキップするルール。
+# tmux の prefix (Ctrl+J) → コマンドキー (n/p) のように、
+# prefix キーの直後に来るコマンドキーが NICOLA に横取りされる場合に設定する。
+# key: バイパストリガー（Ctrl+key 形式で指定）
+# process: プロセス名フィルタ（省略=全アプリ、部分一致、大文字小文字無視）
+# class: ウィンドウクラスフィルタ（省略=全クラス、部分一致）
+#
+# [[post_bypass]]
+# key = "Ctrl+J"
+# process = "WindowsTerminal"   # wt.exe
