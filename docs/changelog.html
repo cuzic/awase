@@ -108,6 +108,74 @@ footer p{margin:0.3rem 0}
 <section>
 <div class="container">
 <div class="cl-content">
+<h2>[1.4.0] - 2026-06-25</h2>
+<h3>新機能</h3>
+<ul>
+<li><strong>[[post_bypass]] 設定を追加</strong>: tmux (<code>Ctrl+B</code>) や screen など、コマンドキーの直後の次打鍵を NICOLA スキップする設定を追加 (<a href="https://github.com/cuzic/awase/commit/a67ebb5">a67ebb5</a>)<ul>
+<li><code>[[post_bypass]]</code> セクションで対象キーと待機時間を指定可能</li>
+<li>tmux 向けのコメントと設定例を TOML サンプルに追記 (<a href="https://github.com/cuzic/awase/commit/49b8343">49b8343</a>)</li>
+</ul>
+</li>
+<li><strong>SacrificialWarmup を導入</strong>: Chrome cold-start と WezTerm long-idle の部分リテラル化を、自己犠牲 VK_A+BS バッチで解消 (<a href="https://github.com/cuzic/awase/commit/28fc97a">28fc97a</a>, <a href="https://github.com/cuzic/awase/commit/16a288d">16a288d</a>)<ul>
+<li>Chrome の「kおのなかで」型 partial literal を warmup フェーズで事前修正</li>
+<li>WezTerm が長時間アイドル後に Engine-ON/IME-OFF 状態になるケースを解消</li>
+<li>long-cold + TSF mode 専用に限定して通常時の性能低下を防止 (<a href="https://github.com/cuzic/awase/commit/d02ec44">d02ec44</a>)</li>
+</ul>
+</li>
+<li><strong>ImeModeFsm + ChromeGjiReinitFsm を実装</strong>: F22→F21 送信後、GJI が Hiragana モードに落ち着いたことを確認してから次入力を許可する FSM を追加 (<a href="https://github.com/cuzic/awase/commit/2c8d647">2c8d647</a>)</li>
+<li><strong>Chrome 用 LiteralDetector を WriteTransferCount ベースに改善</strong>: パイプへの書き込みバイト数で composition 完了を判定し、誤 BS を抑制 (<a href="https://github.com/cuzic/awase/commit/c7ef500">c7ef500</a>)</li>
+<li><strong>F21/F22 全送信パスで belief 更新 + VK 直後の FocusChange 抑制</strong>: IME モード state の信頼度を高め、不要な re-probe を削減 (<a href="https://github.com/cuzic/awase/commit/1a0e54e">1a0e54e</a>)</li>
+</ul>
+<h3>バグ修正</h3>
+<p><strong>Ctrl+J 問題の完全修正</strong></p>
+<ul>
+<li><strong>IME ON 状態で Ctrl+J が tmux に届かない問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/32a037d">32a037d</a>)<ul>
+<li>TsfGate が IME ON 中の Ctrl+J を GJI warmup パスに誤送信していた</li>
+</ul>
+</li>
+<li><strong>Ctrl+J が GJI に横取りされる問題を再修正</strong> (<a href="https://github.com/cuzic/awase/commit/ee0b1fd">ee0b1fd</a>)</li>
+<li><strong>Ctrl バイパス後に modifier 先行リリースが来ると J↑ を誤 Suppress する問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/bd51ea1">bd51ea1</a>)</li>
+<li><strong>Ctrl+key bypass 直後の次キーを NICOLA スキップするよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/ddb6b58">ddb6b58</a>)<ul>
+<li>バイパス直後のキーが親指シフト同時打鍵と誤判定されるケースを排除</li>
+</ul>
+</li>
+</ul>
+<p><strong>SacrificialWarmup の安定化</strong></p>
+<ul>
+<li><strong>gate=Bypass で即終了するバグを修正</strong> (<a href="https://github.com/cuzic/awase/commit/0426fb6">0426fb6</a>)</li>
+<li><strong>VK_A+BS を同一バッチで送信して文字フラッシュを防止</strong> (<a href="https://github.com/cuzic/awase/commit/af906b1">af906b1</a>)</li>
+<li><strong>write_bytes ベースラインを VK_A 送信前に取得し閾値を 350B に調整</strong> (<a href="https://github.com/cuzic/awase/commit/26bc0fe">26bc0fe</a>)</li>
+<li><strong>Chrome cold タイムアウト時に F22→F21 で GJI を強制リセット</strong> (<a href="https://github.com/cuzic/awase/commit/9630acb">9630acb</a>)</li>
+<li><strong>Chrome warm 確認後、HIDE 待機してから実ローマ字を再送するよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/2355761">2355761</a>)</li>
+<li><strong>VK_A+BS atomic batch 後の早期 HIDE で「おお」が消える IPC race を修正</strong> (<a href="https://github.com/cuzic/awase/commit/123efb1">123efb1</a>)</li>
+<li><strong><code>composition_was_seen</code> が最初の tick で false になる drain 順序バグを修正</strong> (<a href="https://github.com/cuzic/awase/commit/e40a2eb">e40a2eb</a>)</li>
+</ul>
+<p><strong>WezTerm</strong></p>
+<ul>
+<li><strong>WezTerm long-idle 後の 2 文字目リテラル化を PendingGjiConfirm 状態で修正</strong> (<a href="https://github.com/cuzic/awase/commit/7041b20">7041b20</a>)</li>
+<li><strong>フォーカス直後 injection_mode を同期し、Unicode long-cold 時に F22→F21 再初期化</strong> (<a href="https://github.com/cuzic/awase/commit/6ecb8e9">6ecb8e9</a>)</li>
+<li><strong>HWND キャスト型を <code>*mut c_void</code> に修正</strong>（<code>isize</code> への暗黙変換が Windows API 境界で UB）(<a href="https://github.com/cuzic/awase/commit/ff1f092">ff1f092</a>)</li>
+</ul>
+<p><strong>GJI FSM</strong></p>
+<ul>
+<li><strong>Unicode モードの <code>StartProbe</code> で即 <code>WarmupComplete</code> を dispatch</strong>（OnCold 固着バグ修正）(<a href="https://github.com/cuzic/awase/commit/444e9a6">444e9a6</a>)</li>
+<li><strong>ImeOn 直後の FocusChange で proactive probe を維持するよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/782f10d">782f10d</a>)</li>
+<li><strong>FocusChange spawn_local ポーリングに generation ガードを追加</strong>（二重適用防止）(<a href="https://github.com/cuzic/awase/commit/90c9962">90c9962</a>)</li>
+</ul>
+<p><strong>その他</strong></p>
+<ul>
+<li><code>ValidatedConfig</code> に <code>post_bypass</code> フィールドを追加（ビルドエラー修正）(<a href="https://github.com/cuzic/awase/commit/089858d">089858d</a>)</li>
+<li>Unknown → 実値 の IME 状態遷移を drift WARN から initial confirm DEBUG に格下げ (<a href="https://github.com/cuzic/awase/commit/4347928">4347928</a>)</li>
+<li><code>sleep_ms</code> に <code>u64</code> を渡していた型ミスマッチを修正 (<a href="https://github.com/cuzic/awase/commit/ddc6be3">ddc6be3</a>)</li>
+</ul>
+<h3>内部改善</h3>
+<ul>
+<li><strong>HoldingGate / GateAction を timed-fsm クレートへ移植</strong>: ゲートロジックをライブラリ層に集約し再利用性を向上 (<a href="https://github.com/cuzic/awase/commit/ebbc9e4">ebbc9e4</a>)</li>
+<li><strong>HwndId に <code>to_hwnd()</code> を追加し raw cast を一箇所に集約</strong> (<a href="https://github.com/cuzic/awase/commit/1932948">1932948</a>)</li>
+<li><strong><code>gji_candidate_visible</code> を env 経由で参照</strong>（直接ポーリング撤去）(<a href="https://github.com/cuzic/awase/commit/19f4372">19f4372</a>)</li>
+<li><strong>SacrificialResend から不要な <code>plan</code> / <code>observations</code> フィールドを削除</strong> (<a href="https://github.com/cuzic/awase/commit/61c4c12">61c4c12</a>)</li>
+</ul>
+<hr />
 <h2>[1.3.0] - 2026-06-23</h2>
 <h3>バグ修正</h3>
 <ul>
