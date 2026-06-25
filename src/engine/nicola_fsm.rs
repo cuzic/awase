@@ -1243,8 +1243,13 @@ impl NicolaFsm {
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
-    fn handle_bypass(&mut self, _ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
+    fn handle_bypass(&mut self, ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
         log::trace!("bypass: {reason:?}");
+        // バイパスされたキーの output_history エントリを削除する。
+        // OsModifierHeld で J↓ がバイパスされた後、modifier が J↑ より先にリリースされると
+        // on_key_up の is_os_modifier_held() チェックが通らず、output_history に前回の
+        // NICOLA 組み合わせのエントリが残っていると J↑ が誤って Suppress される。
+        self.output_history.remove_by_scan(ev.scan_code);
         if self.state.is_idle() {
             return Response::pass_through();
         }
