@@ -811,9 +811,17 @@ impl NicolaFsm {
     pub(crate) fn update_history(&mut self, output: OutputUpdate) {
         match output {
             OutputUpdate::Record(entry) => {
+                log::debug!(
+                    "[nicola-hist] push scan=0x{:02X} action={:?} len→{}",
+                    entry.scan_code, entry.action, self.output_history.len() + 1
+                );
                 self.output_history.push(entry);
             }
             OutputUpdate::RetractAndRecord(entry) => {
+                log::debug!(
+                    "[nicola-hist] retract+push scan=0x{:02X} action={:?} len→{}",
+                    entry.scan_code, entry.action, self.output_history.len()
+                );
                 self.output_history.retract_last();
                 self.output_history.push(entry);
             }
@@ -1065,6 +1073,10 @@ impl NicolaFsm {
     /// output_history から対応する注入済みキーを探してリリースする
     fn handle_key_up_active(&mut self, event: &RawKeyEvent) -> Resp {
         if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
+            log::debug!(
+                "[nicola-keyup] scan=0x{:02X} found action={:?} → Suppress/KeyUp",
+                event.scan_code, entry.action
+            );
             return match entry.action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）
                 KeyAction::Char(_) | KeyAction::Romaji(_) => self.build_response(
@@ -1244,12 +1256,17 @@ impl NicolaFsm {
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
     fn handle_bypass(&mut self, ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
-        log::trace!("bypass: {reason:?}");
         // バイパスされたキーの output_history エントリを削除する。
         // OsModifierHeld で J↓ がバイパスされた後、modifier が J↑ より先にリリースされると
         // on_key_up の is_os_modifier_held() チェックが通らず、output_history に前回の
         // NICOLA 組み合わせのエントリが残っていると J↑ が誤って Suppress される。
-        self.output_history.remove_by_scan(ev.scan_code);
+        let removed = self.output_history.remove_by_scan(ev.scan_code);
+        log::debug!(
+            "[nicola-bypass] vk=0x{:02X} scan=0x{:02X} reason={:?} removed={:?} hist_len={}",
+            ev.vk_code, ev.scan_code, reason,
+            removed.as_ref().map(|e| &e.action),
+            self.output_history.len()
+        );
         if self.state.is_idle() {
             return Response::pass_through();
         }
