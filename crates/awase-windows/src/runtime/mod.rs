@@ -16,7 +16,6 @@ use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
-use crate::win32::HwndExt as _;
 use crate::ImeBelief;
 use awase::platform::PlatformRuntime as _;
 
