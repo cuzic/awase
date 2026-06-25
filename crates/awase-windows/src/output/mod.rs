@@ -607,6 +607,15 @@ self.gji_fsm.borrow().is_warm()
             })
     }
 
+    /// long-cold 後の GJI 再初期化: F22（IME OFF）→ F21（IME ON）を SendInput で注入する。
+    ///
+    /// Chrome の `send_chrome_gji_reinit_and_poll` と同じ F22→F21 シーケンスだが、
+    /// WT（Unicode mode）向けに async IMC ポーリングは行わない。
+    pub(crate) fn send_f22_f21_reinit(&self) {
+        use probe_io::ProbeIo as _;
+        self.send_chrome_gji_reinit_and_poll(0);
+    }
+
     /// TIMER_TSF_PROBE ハンドラから呼ぶ。probe を 1 ステップ進め、結果を返す。
     ///
     /// `WindowsPlatform::advance_tsf_probe` は `timer_cmd` を `apply_timer_command` に渡し、

@@ -80,6 +80,12 @@ impl FocusTracker {
             .injection_hint(self.current.pid, &self.current.class_name)
     }
 
+    /// 指定した pid/class に対する injection_hint を返す（フォーカス変更直後の stale 回避用）。
+    /// `self.current` が更新される前に新ウィンドウの hint を引くために使う。
+    pub(crate) fn injection_hint_for(&self, pid: u32, class_name: &str) -> InjectionHint {
+        self.overrides.injection_hint(pid, class_name)
+    }
+
     // ── フォーカス更新 ──────────────────────────────────────────────────────
 
     /// フォーカス情報を更新する。`app_profile` は `class_name` から自動導出。

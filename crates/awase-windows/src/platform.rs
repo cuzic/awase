@@ -217,7 +217,15 @@ impl WindowsPlatform {
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
                     // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
+                    // long-cold（≥10s idle）の場合は Chrome と同様に F22→F21 で GJI を再初期化してから
+                    // WarmupComplete を dispatch する。
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
+                        if params.is_long_cold {
+                            log::debug!(
+                                "[gji-fsm] Unicode long-cold StartProbe: F22→F21 reinit (dormant GJI wakeup)"
+                            );
+                            self.output.send_f22_f21_reinit();
+                        }
                         use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
                             probe_id: *probe_id,
@@ -778,6 +786,12 @@ impl WindowsPlatform {
     #[must_use]
     pub fn injection_hint(&self) -> InjectionHint {
         self.focus.injection_hint()
+    }
+
+    /// 指定した pid/class に対する injection_hint を返す（フォーカス変更直後の stale 回避用）。
+    #[must_use]
+    pub(crate) fn injection_hint_for(&self, pid: u32, class_name: &str) -> InjectionHint {
+        self.focus.injection_hint_for(pid, class_name)
     }
 
     /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
