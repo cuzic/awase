@@ -36,6 +36,28 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
         return;
     }
 
+    // ── Post-bypass passthrough（Ctrl+J 等 tmux prefix 直後のコマンドキー）──
+    // Ctrl+key bypass の直後に non-Ctrl 非修飾キーが来た場合、NICOLA エンジンを
+    // スキップして直接 passthrough する（1 キー分のみ）。
+    // 例: Ctrl+J (tmux prefix) → n (next-window) で NICOLA が n を横取りするのを防ぐ。
+    let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
+    if app.platform_state.post_bypass_passthrough
+        && !event.modifier_snapshot.ctrl
+        && !event.vk_code.is_passthrough()
+    {
+        if is_key_down {
+            // KeyDown でフラグを消費（対応する KeyUp も後続で通常通り PassThrough になる）
+            app.platform_state.post_bypass_passthrough = false;
+            log::debug!(
+                "[post-bypass] consumed: vk=0x{:02X} → direct passthrough (NICOLA skipped)",
+                event.vk_code
+            );
+        }
+        app.executor.enqueue_reinject(event);
+        post_to_main_thread(WM_EXECUTE_EFFECTS);
+        return;
+    }
+
     let result = app.process_key_event(event);
     if matches!(result, CallbackResult::PassThrough) {
         // GJI 候補ウィンドウが表示中に Ctrl+key がパススルーされる際、
@@ -43,7 +65,6 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
         // 先にキャンセルする。例: IME ON + め入力中 → Ctrl+J → tmux prefix。
         // Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
         // 修飾キーのみの押下時に composition を誤ってキャンセルしない。
-        let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         if is_key_down && event.modifier_snapshot.ctrl && !event.vk_code.is_passthrough() {
             let candidate_visible = app.platform.is_composition_warm_in_tsf();
             log::debug!(
@@ -59,6 +80,12 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
                     event.vk_code
                 );
             }
+            // Ctrl+key bypass 後の次の非修飾キーを NICOLA スキップさせるフラグをセット。
+            // tmux では prefix (Ctrl+J) 後に standalone n/p 等のコマンドキーを入力するため。
+            app.platform_state.post_bypass_passthrough = true;
+            log::debug!(
+                "[ctrl-bypass] post_bypass_passthrough=true (next non-ctrl key will bypass NICOLA)"
+            );
         }
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);

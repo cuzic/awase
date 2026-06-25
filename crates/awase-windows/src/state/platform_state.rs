@@ -550,6 +550,13 @@ pub struct PlatformState {
     pub focus_debounce_ms: u32,
     pub ime_poll_interval_ms: u32,
     pub last_hook_activity_ms: u64,
+    /// Ctrl+key bypass 直後フラグ。
+    ///
+    /// Ctrl+非修飾キーが PassThrough として素通りした後、次の非修飾 non-Ctrl キー 1 つを
+    /// NICOLA エンジンをスキップして直接 passthrough させる。
+    /// tmux prefix (Ctrl+J) → コマンドキー (n/p) のように、
+    /// prefix 直後のコマンドキーが NICOLA に横取りされる問題を防ぐ。
+    pub post_bypass_passthrough: bool,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
     /// 現在のフォーカスアプリに適用されるキーマップルール
@@ -568,6 +575,7 @@ impl PlatformState {
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
             last_hook_activity_ms: 0,
+            post_bypass_passthrough: false,
             sync_key_gate: SyncKeyGate::new(),
             active_keymaps: crate::keymap::KeymapTable::default(),
         }
