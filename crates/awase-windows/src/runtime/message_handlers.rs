@@ -38,13 +38,15 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
 
     let result = app.process_key_event(event);
     if matches!(result, CallbackResult::PassThrough) {
-        // TsfNative mode で Ctrl↓ がパススルーされる際、active な composition が
-        // 後続の Ctrl+key を IME ショートカットとして横取りしないよう先にキャンセルする。
-        // 例: IME ON + Ctrl+J → tmux prefix。Ctrl↓ 時点でキャンセルすることで
-        // J↓ 到着時には composition context がなく、IME に奪われない。
+        // GJI 候補ウィンドウが表示中に Ctrl+key がパススルーされる際、
+        // GJI が Ctrl+key を IME ショートカットとして横取りしないよう composition を
+        // 先にキャンセルする。例: IME ON + め入力中 → Ctrl+J → tmux prefix。
+        // Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
+        // 修飾キーのみの押下時に composition を誤ってキャンセルしない。
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         if is_key_down
-            && event.vk_code.is_ctrl_variant()
+            && event.modifier_snapshot.ctrl
+            && !event.vk_code.is_passthrough()
             && app.platform.is_composition_warm_in_tsf()
         {
             // SAFETY: メインスレッドから呼ぶ。

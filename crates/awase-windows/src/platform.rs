@@ -86,9 +86,12 @@ impl WindowsPlatform {
             .mark_composition_cold(crate::output::ColdReason::FocusChange);
     }
 
-    /// TsfNative mode かつ composition が warm な状態かどうか（Ctrl bypass 判定用）。
+    /// GJI 候補ウィンドウが現在表示中かどうか（Ctrl bypass 判定用）。
+    ///
+    /// `GjiFsm` の状態遷移は WM_* 処理を経由するため数百 ms の遅延がある。
+    /// ここでは observer が AtomicBool で即時更新する値を直接読む。
     pub(crate) fn is_composition_warm_in_tsf(&self) -> bool {
-        self.is_tsf_mode() && self.is_composition_warm()
+        crate::tsf::observer::gji_candidate_visible_now()
     }
 
     /// Ctrl+key パススルー時の composition キャンセル内部状態更新。

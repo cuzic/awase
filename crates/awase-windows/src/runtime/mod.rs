@@ -864,14 +864,28 @@ fn send_all_modifier_key_ups() {
 /// Win32 IMM API (`ImmGetContext`, `ImmNotifyIME`, `ImmReleaseContext`) を呼び出す。
 /// メインスレッドから呼ぶこと。
 unsafe fn cancel_ime_composition() {
+    use std::mem::size_of;
     use windows::Win32::UI::Input::Ime::{ImmNotifyIME, NOTIFY_IME_ACTION, NOTIFY_IME_INDEX};
-    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
 
-    // SAFETY: `GetForegroundWindow` は呼び出し時点のフォアグラウンドウィンドウを返す安全なクエリ。
-    //         NULL の場合は `non_null()` が None を返すため early return する。
-    let Some(hwnd) = GetForegroundWindow().non_null() else {
-        return;
+    // `GetForegroundWindow()` は外側の CASCADIA_HOSTING_WINDOW_CLASS を返すが、
+    // WezTerm などでは実際の IME コンテキストは子ウィンドウ
+    // (Windows.UI.Input.InputSite.WindowClass) に紐付いている。
+    // `GetGUIThreadInfo(0)` でフォアグラウンドスレッドの hwndFocus を取得することで
+    // InputSite HWND を得る。
+    let mut info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
     };
+    // SAFETY: `GetGUIThreadInfo` はメインスレッドから呼ぶ安全なクエリ。
+    //         tid=0 はフォアグラウンドスレッドを意味する。
+    if unsafe { GetGUIThreadInfo(0, &raw mut info) }.is_err() {
+        return;
+    }
+    let hwnd = info.hwndFocus;
+    if hwnd.0.is_null() {
+        return;
+    }
     // SAFETY: `hwnd` は直上で NULL でないことを確認済み。
     //         `ImmContextGuard` は RAII で `ImmReleaseContext` を呼ぶため、
     //         コンテキストリークは発生しない。
