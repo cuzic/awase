@@ -214,6 +214,22 @@ impl WindowsPlatform {
                         params.ncwait_budget_ms, params.forces_prepend_f2, params.is_long_cold
                     );
                     self.output.gji_store_probe_id(*probe_id);
+                    // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
+                    // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
+                    // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
+                    if self.output.injection_mode == crate::output::InjectionMode::Unicode {
+                        use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
+                        let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
+                            probe_id: *probe_id,
+                            result: WarmupResult {
+                                path: WarmupPath::GjiResumed,
+                                prepend_f2_warmup: false,
+                                nc_fired: false,
+                                gji_resumed: false,
+                            },
+                        });
+                        self.dispatch_gji_response(warmup_resp);
+                    }
                 }
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {
