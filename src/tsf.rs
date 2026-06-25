@@ -45,7 +45,7 @@ use std::time::Duration;
 
 use timed_fsm::{Response, TimedStateMachine};
 
-use crate::gate::{GateAction, HoldingGate};
+use timed_fsm::{GateAction, HoldingGate};
 use crate::types::RawKeyEvent;
 
 

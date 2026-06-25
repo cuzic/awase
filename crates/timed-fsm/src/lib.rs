@@ -227,12 +227,14 @@
 
 pub mod clock;
 mod dispatch;
+pub mod gate;
 mod machine;
 pub mod parser;
 mod response;
 
 pub use clock::{Clock, ManualClock, MonotonicClock};
 pub use dispatch::{ActionExecutor, TimerRuntime};
+pub use gate::{GateAction, HoldingGate};
 pub use machine::TimedStateMachine;
 pub use parser::{ParseAction, ShiftReduceParser};
 pub use response::{Response, TimerCommand};
