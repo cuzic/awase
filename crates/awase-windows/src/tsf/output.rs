@@ -48,6 +48,8 @@ pub enum ColdReason {
     SessionExpired,
     /// raw TSF literal 検出後のリカバリ（バックスペース後に再 cold 扱い）
     RawTsfLiteralRecovery,
+    /// Ctrl+key パススルー時の composition キャンセル（IME ショートカット横取り防止）
+    CtrlKeyBypass,
 }
 
 impl ColdReason {
@@ -73,6 +75,7 @@ impl ColdReason {
             | Self::SymbolVkSent
             | Self::F2NonTsf
             | Self::RawTsfLiteralRecovery
+            | Self::CtrlKeyBypass
             | Self::SetOpenFalse => 500,
         }
     }

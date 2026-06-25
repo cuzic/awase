@@ -86,6 +86,20 @@ impl WindowsPlatform {
             .mark_composition_cold(crate::output::ColdReason::FocusChange);
     }
 
+    /// TsfNative mode かつ composition が warm な状態かどうか（Ctrl bypass 判定用）。
+    pub(crate) fn is_composition_warm_in_tsf(&self) -> bool {
+        self.is_tsf_mode() && self.is_composition_warm()
+    }
+
+    /// Ctrl+key パススルー時の composition キャンセル内部状態更新。
+    ///
+    /// IMM32 の `cancel_ime_composition()` を呼んだ直後に続けて呼ぶこと。
+    pub(crate) fn on_ctrl_bypass_composition_cancel(&mut self) {
+        self.output
+            .mark_composition_cold(crate::output::ColdReason::CtrlKeyBypass);
+        self.gji_on_composition_reset();
+    }
+
     /// フォーカス変更時に injection_mode を更新する（runtime 用）。
     pub(crate) const fn update_injection_mode(
         &mut self,

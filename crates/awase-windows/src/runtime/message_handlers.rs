@@ -37,6 +37,23 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
 
     let result = app.process_key_event(event);
     if matches!(result, CallbackResult::PassThrough) {
+        // TsfNative mode で Ctrl↓ がパススルーされる際、active な composition が
+        // 後続の Ctrl+key を IME ショートカットとして横取りしないよう先にキャンセルする。
+        // 例: IME ON + Ctrl+J → tmux prefix。Ctrl↓ 時点でキャンセルすることで
+        // J↓ 到着時には composition context がなく、IME に奪われない。
+        let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
+        if is_key_down
+            && event.vk_code.is_ctrl_variant()
+            && app.platform.is_composition_warm_in_tsf()
+        {
+            // SAFETY: メインスレッドから呼ぶ。
+            unsafe { super::cancel_ime_composition() };
+            app.platform.on_ctrl_bypass_composition_cancel();
+            log::debug!(
+                "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
+                event.vk_code
+            );
+        }
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
     }
