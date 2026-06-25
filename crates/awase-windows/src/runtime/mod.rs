@@ -601,8 +601,7 @@ impl Runtime {
         // 正しくなるよう、フォーカス変更直後に新ウィンドウの class/pid から同期更新する。
         // WezTerm(ForceTsf) → Chrome 等の遷移でも hint を新ウィンドウから引くため stale にならない。
         {
-            use windows::Win32::Foundation::HWND;
-            let hwnd = HWND(hwnd_id.0 as *mut _);
+            let hwnd = hwnd_id.to_hwnd();
             let class_name = crate::focus::classify::get_class_name_string(hwnd);
             if !class_name.is_empty() {
                 let pid = crate::focus::classify::get_window_process_id(hwnd);
