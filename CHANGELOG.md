@@ -2,6 +2,69 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-06-25
+
+### 新機能
+
+- **[[post_bypass]] 設定を追加**: tmux (`Ctrl+B`) や screen など、コマンドキーの直後の次打鍵を NICOLA スキップする設定を追加 ([a67ebb5](https://github.com/cuzic/awase/commit/a67ebb5))
+  - `[[post_bypass]]` セクションで対象キーと待機時間を指定可能
+  - tmux 向けのコメントと設定例を TOML サンプルに追記 ([49b8343](https://github.com/cuzic/awase/commit/49b8343))
+- **SacrificialWarmup を導入**: Chrome cold-start と WezTerm long-idle の部分リテラル化を、自己犠牲 VK_A+BS バッチで解消 ([28fc97a](https://github.com/cuzic/awase/commit/28fc97a), [16a288d](https://github.com/cuzic/awase/commit/16a288d))
+  - Chrome の「kおのなかで」型 partial literal を warmup フェーズで事前修正
+  - WezTerm が長時間アイドル後に Engine-ON/IME-OFF 状態になるケースを解消
+  - long-cold + TSF mode 専用に限定して通常時の性能低下を防止 ([d02ec44](https://github.com/cuzic/awase/commit/d02ec44))
+- **ImeModeFsm + ChromeGjiReinitFsm を実装**: F22→F21 送信後、GJI が Hiragana モードに落ち着いたことを確認してから次入力を許可する FSM を追加 ([2c8d647](https://github.com/cuzic/awase/commit/2c8d647))
+- **Chrome 用 LiteralDetector を WriteTransferCount ベースに改善**: パイプへの書き込みバイト数で composition 完了を判定し、誤 BS を抑制 ([c7ef500](https://github.com/cuzic/awase/commit/c7ef500))
+- **F21/F22 全送信パスで belief 更新 + VK 直後の FocusChange 抑制**: IME モード state の信頼度を高め、不要な re-probe を削減 ([1a0e54e](https://github.com/cuzic/awase/commit/1a0e54e))
+
+### バグ修正
+
+**Ctrl+J 問題の完全修正**
+
+- **IME ON 状態で Ctrl+J が tmux に届かない問題を修正** ([32a037d](https://github.com/cuzic/awase/commit/32a037d))
+  - TsfGate が IME ON 中の Ctrl+J を GJI warmup パスに誤送信していた
+- **Ctrl+J が GJI に横取りされる問題を再修正** ([ee0b1fd](https://github.com/cuzic/awase/commit/ee0b1fd))
+- **Ctrl バイパス後に modifier 先行リリースが来ると J↑ を誤 Suppress する問題を修正** ([bd51ea1](https://github.com/cuzic/awase/commit/bd51ea1))
+- **Ctrl+key bypass 直後の次キーを NICOLA スキップするよう修正** ([ddb6b58](https://github.com/cuzic/awase/commit/ddb6b58))
+  - バイパス直後のキーが親指シフト同時打鍵と誤判定されるケースを排除
+
+**SacrificialWarmup の安定化**
+
+- **gate=Bypass で即終了するバグを修正** ([0426fb6](https://github.com/cuzic/awase/commit/0426fb6))
+- **VK_A+BS を同一バッチで送信して文字フラッシュを防止** ([af906b1](https://github.com/cuzic/awase/commit/af906b1))
+- **write_bytes ベースラインを VK_A 送信前に取得し閾値を 350B に調整** ([26bc0fe](https://github.com/cuzic/awase/commit/26bc0fe))
+- **Chrome cold タイムアウト時に F22→F21 で GJI を強制リセット** ([9630acb](https://github.com/cuzic/awase/commit/9630acb))
+- **Chrome warm 確認後、HIDE 待機してから実ローマ字を再送するよう修正** ([2355761](https://github.com/cuzic/awase/commit/2355761))
+- **VK_A+BS atomic batch 後の早期 HIDE で「おお」が消える IPC race を修正** ([123efb1](https://github.com/cuzic/awase/commit/123efb1))
+- **`composition_was_seen` が最初の tick で false になる drain 順序バグを修正** ([e40a2eb](https://github.com/cuzic/awase/commit/e40a2eb))
+
+**WezTerm**
+
+- **WezTerm long-idle 後の 2 文字目リテラル化を PendingGjiConfirm 状態で修正** ([7041b20](https://github.com/cuzic/awase/commit/7041b20))
+- **フォーカス直後 injection_mode を同期し、Unicode long-cold 時に F22→F21 再初期化** ([6ecb8e9](https://github.com/cuzic/awase/commit/6ecb8e9))
+- **HWND キャスト型を `*mut c_void` に修正**（`isize` への暗黙変換が Windows API 境界で UB）([ff1f092](https://github.com/cuzic/awase/commit/ff1f092))
+
+**GJI FSM**
+
+- **Unicode モードの `StartProbe` で即 `WarmupComplete` を dispatch**（OnCold 固着バグ修正）([444e9a6](https://github.com/cuzic/awase/commit/444e9a6))
+- **ImeOn 直後の FocusChange で proactive probe を維持するよう修正** ([782f10d](https://github.com/cuzic/awase/commit/782f10d))
+- **FocusChange spawn_local ポーリングに generation ガードを追加**（二重適用防止）([90c9962](https://github.com/cuzic/awase/commit/90c9962))
+
+**その他**
+
+- `ValidatedConfig` に `post_bypass` フィールドを追加（ビルドエラー修正）([089858d](https://github.com/cuzic/awase/commit/089858d))
+- Unknown → 実値 の IME 状態遷移を drift WARN から initial confirm DEBUG に格下げ ([4347928](https://github.com/cuzic/awase/commit/4347928))
+- `sleep_ms` に `u64` を渡していた型ミスマッチを修正 ([ddc6be3](https://github.com/cuzic/awase/commit/ddc6be3))
+
+### 内部改善
+
+- **HoldingGate / GateAction を timed-fsm クレートへ移植**: ゲートロジックをライブラリ層に集約し再利用性を向上 ([ebbc9e4](https://github.com/cuzic/awase/commit/ebbc9e4))
+- **HwndId に `to_hwnd()` を追加し raw cast を一箇所に集約** ([1932948](https://github.com/cuzic/awase/commit/1932948))
+- **`gji_candidate_visible` を env 経由で参照**（直接ポーリング撤去）([19f4372](https://github.com/cuzic/awase/commit/19f4372))
+- **SacrificialResend から不要な `plan` / `observations` フィールドを削除** ([61c4c12](https://github.com/cuzic/awase/commit/61c4c12))
+
+---
+
 ## [1.3.0] - 2026-06-23
 
 ### バグ修正
