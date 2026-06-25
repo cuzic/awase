@@ -157,11 +157,16 @@ impl WindowsPlatform {
 
     /// TIMER_TSF_PROBE ハンドラ。`Output::step_probe` に委譲し、タイマー命令と GJI FSM 応答を処理する。
     pub fn advance_tsf_probe(&mut self) {
+        // tick() より前に drain する: VK_A+BS atomic batch で SHOW+HIDE が最初の tick 前に
+        // 完了した場合、composition_was_seen フラグは tick() が参照する前にセットされる必要がある。
+        // drain を tick() の後に置くと、最初の tick で composition_was_seen=false になり
+        // Phase 1 即再送に落ちて IPC race が再発する。
+        self.drain_pending_composition_events();
         let result = self.output.step_probe();
         if result.needs_gji_composition_reset {
             self.gji_on_composition_reset();
         }
-        // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition
+        // step_probe 内（SacrificialResend 等）で発生したイベントを追加で drain する。
         self.drain_pending_composition_events();
         if let Some(gji_resp) = result.gji_response {
             self.dispatch_gji_response(gji_resp);
