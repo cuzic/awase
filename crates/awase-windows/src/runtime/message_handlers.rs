@@ -44,18 +44,21 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
         // Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
         // 修飾キーのみの押下時に composition を誤ってキャンセルしない。
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-        if is_key_down
-            && event.modifier_snapshot.ctrl
-            && !event.vk_code.is_passthrough()
-            && app.platform.is_composition_warm_in_tsf()
-        {
-            // SAFETY: メインスレッドから呼ぶ。
-            unsafe { super::cancel_ime_composition() };
-            app.platform.on_ctrl_bypass_composition_cancel();
+        if is_key_down && event.modifier_snapshot.ctrl && !event.vk_code.is_passthrough() {
+            let candidate_visible = app.platform.is_composition_warm_in_tsf();
             log::debug!(
-                "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
+                "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
                 event.vk_code
             );
+            if candidate_visible {
+                // SAFETY: メインスレッドから呼ぶ。
+                unsafe { super::cancel_ime_composition() };
+                app.platform.on_ctrl_bypass_composition_cancel();
+                log::debug!(
+                    "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
+                    event.vk_code
+                );
+            }
         }
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);

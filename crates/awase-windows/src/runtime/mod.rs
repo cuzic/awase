@@ -889,12 +889,13 @@ unsafe fn cancel_ime_composition() {
     //         `ImmContextGuard` は RAII で `ImmReleaseContext` を呼ぶため、
     //         コンテキストリークは発生しない。
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
+        log::debug!("[ctrl-bypass] ImmGetContext returned NULL for hwnd={hwnd:?}, cancel skipped");
         return;
     };
     // NI_COMPOSITIONSTR = 0x15, CPS_CANCEL = 0x04
     // SAFETY: `ctx.himc()` は `ImmContextGuard` が保持する有効な HIMC。
     //         `NI_COMPOSITIONSTR`/`CPS_CANCEL` は未確定文字列キャンセルの標準的な呼び出し。
-    let _ = unsafe {
+    let ok = unsafe {
         ImmNotifyIME(
             ctx.himc(),
             NOTIFY_IME_ACTION(0x15),
@@ -902,5 +903,5 @@ unsafe fn cancel_ime_composition() {
             0,
         )
     };
-    log::debug!("Cancelled IME composition");
+    log::debug!("[ctrl-bypass] ImmNotifyIME(CPS_CANCEL) hwnd={hwnd:?} → {}", ok.as_bool());
 }
