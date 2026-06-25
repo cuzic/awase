@@ -55,12 +55,21 @@ force_tsf = [
 # ]
 
 # Ctrl+key バイパス直後に次キーを NICOLA スキップするルール。
-# tmux の prefix (Ctrl+J) → コマンドキー (n/p) のように、
-# prefix キーの直後に来るコマンドキーが NICOLA に横取りされる場合に設定する。
-# key: バイパストリガー（Ctrl+key 形式で指定）
-# process: プロセス名フィルタ（省略=全アプリ、部分一致、大文字小文字無視）
-# class: ウィンドウクラスフィルタ（省略=全クラス、部分一致）
+#
+# 【tmux ユーザー向け】
+# IME ON のまま tmux を操作するときに役立つ設定。
+#
+# tmux の prefix キーを Ctrl+J に設定している場合（set -g prefix C-j）、
+# Ctrl+J の直後に押すコマンドキー（n=次ウィンドウ、p=前ウィンドウ など）が
+# NICOLA エンジンに横取りされてしまい、tmux 操作ができない問題が起きる。
+# この設定を有効にすると、Ctrl+J の直後の 1 キーだけ NICOLA をスキップして
+# そのまま WezTerm / Windows Terminal に届けるため、日本語入力を切らずに
+# tmux のウィンドウ切り替えやペイン操作が行えるようになる。
+#
+# key     : バイパストリガー（Ctrl+key 形式で指定）
+# process : プロセス名フィルタ（省略=全アプリ、部分一致、大文字小文字無視）
+# class   : ウィンドウクラスフィルタ（省略=全クラス、部分一致）
 #
 # [[post_bypass]]
 # key = "Ctrl+J"
-# process = "WindowsTerminal"   # wt.exe
+# process = "WindowsTerminal"   # Windows Terminal (wt.exe) でのみ有効
