@@ -19,9 +19,12 @@ pub fn register() -> bool {
         return false;
     };
 
+    // /delay: ログオン後 30 秒待ってから起動する。
+    // デスクトップシェルが完全に初期化される前に起動するとトレイ生成やフック設定が失敗する。
     let output = Command::new("schtasks")
         .args([
-            "/create", "/tn", TASK_NAME, "/tr", exe_path, "/sc", "onlogon", "/rl", "limited", "/f",
+            "/create", "/tn", TASK_NAME, "/tr", exe_path,
+            "/sc", "onlogon", "/rl", "limited", "/delay", "0000:30", "/f",
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .output();
