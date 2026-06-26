@@ -49,6 +49,7 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 [app_overrides]
 force_tsf = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+    { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
 ]
 # force_vk = [
 #     { process = "chrome.exe", class = "Chrome_WidgetWin_1" },

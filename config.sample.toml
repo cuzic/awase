@@ -114,10 +114,14 @@ ime_off_keys = ["Ctrl+VK_NONCONVERT"]
 # ]
 
 # ── ローマ字出力方式のオーバーライド ──
-# force_vk: ローマ字を VK キーストローク経由で送る (IME composition 必須のアプリ用)
-# IMM query は通るが composition は独自 TSF text store というハイブリッド系
-# (wezterm 等) を VK 側へ倒すときに使用。
-force_vk = [
-    # wezterm: IMM query は通るが composition は独自 TSF text store のため VK 必須
+# force_tsf: ローマ字出力を VK Sequential モードで送る（WezTerm / Windows Terminal 等 TSF 直結アプリ）
+#   IME コンポジション（下線・漢字変換）を有効にする。
+# force_vk: Batched VK 注入（Chrome/Edge 系）
+[app_overrides]
+force_tsf = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+    { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
 ]
+# force_vk = [
+#     { process = "chrome.exe", class = "Chrome_WidgetWin_1" },
+# ]
