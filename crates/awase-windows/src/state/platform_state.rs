@@ -33,6 +33,17 @@ pub(crate) struct ImeStateHub {
     /// Shadow IME モデル (Step 1)。Phase 3a で recovery 統合済。
     /// IME ON/OFF (desired_open / applied_open) と force_guards / observe_miss_monitor を持つ SSOT。
     shadow_model: ImeModel,
+
+    /// ユーザーが明示的に IME OFF にした最終時刻 (tick_ms)。
+    ///
+    /// `FocusChanged` でクリアされない永続フィールド。複数の rapid focus 変化が連続する
+    /// 場合（仮想デスクトップ切替等）でも、最初のフォーカス変化後に `last_intent` が
+    /// クリアされても guard が機能し続けるようにする。
+    ///
+    /// - SyncKey / PhysicalImeKey による `target=false` で更新。
+    /// - SyncKey / PhysicalImeKey による `target=true` でリセット。
+    /// - FocusChanged / Recovery / HwndCache ではリセットしない。
+    last_user_explicit_off_ms: u64,
 }
 
 impl ImeStateHub {
@@ -47,6 +58,7 @@ impl ImeStateHub {
             event_log: ImeEventLog::default(),
             journal: UnifiedJournal::default(),
             shadow_model: ImeModel::default(),
+            last_user_explicit_off_ms: 0,
         }
     }
 }
@@ -57,6 +69,22 @@ impl ImeStateHub {
     /// `event_log.record()` だけを呼ぶより、こちらを使うと record + reduce が
     /// 同一 envelope で進む。write_* メソッドはこちらを使う。
     pub(crate) fn dispatch_event(&mut self, event: ImeEvent) {
+        // ユーザー明示の IME OFF/ON を永続タイムスタンプに反映する。
+        // FocusChanged で last_intent がクリアされても guard が機能し続けるよう、
+        // ImeStateHub 側で独自に保持する。
+        if let ImeEvent::UserImeSetIntent { target, source } = &event {
+            if matches!(
+                source,
+                IntentSource::SyncKey | IntentSource::PhysicalImeKey
+            ) {
+                if !target {
+                    self.last_user_explicit_off_ms = crate::hook::current_tick_ms();
+                } else {
+                    self.last_user_explicit_off_ms = 0;
+                }
+            }
+        }
+
         let description = format!("{event:?}");
         let event_for_reduce = event.clone();
         let time = self.event_log.record(event);
@@ -198,15 +226,14 @@ impl ImeStateHub {
 
     // ── Explicit intent timing ──
 
-    /// 最後に明示的 IME OFF（target=false）を行った時刻 (tick_ms)。
+    /// フォーカス変化をまたいで持続するユーザー明示 IME OFF タイムスタンプ。
     ///
-    /// `last_intent` が `target=false` であればその `at_ms` を返す。
-    /// 未設定・target=true の場合は 0 を返す。
-    pub(crate) fn last_explicit_off_ms(&self) -> u64 {
-        match &self.shadow_model.last_intent {
-            Some(i) if !i.target => i.at_ms,
-            _ => 0,
-        }
+    /// `last_explicit_off_ms()` は `FocusChanged` で `last_intent` がクリアされると 0 に
+    /// 戻るため、複数の rapid focus 変化（仮想デスクトップ切替等）では 2 回目以降の
+    /// guard が機能しない。このメソッドは SyncKey / PhysicalImeKey による明示 OFF のみを
+    /// 追跡し、FocusChanged でリセットしない。
+    pub(crate) fn persistent_explicit_off_ms(&self) -> u64 {
+        self.last_user_explicit_off_ms
     }
 
     pub(crate) fn effective_open(&self) -> bool {
