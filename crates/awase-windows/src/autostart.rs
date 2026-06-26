@@ -3,6 +3,12 @@
 //! `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` に
 //! 値を書き込む方式。schtasks より軽量で GPO 制限の影響を受けない。
 //! 起動遅延は不要（シェル未起動時はトレイ登録に失敗しても TaskbarCreated で復元）。
+//!
+//! 旧バージョンとの互換: `migrate_from_schtasks()` が起動時に一度だけ呼ばれ、
+//! 旧 Task Scheduler タスクが残っていれば自動削除する。
+
+use std::os::windows::process::CommandExt;
+use std::process::Command;
 
 use windows::Win32::System::Registry::{
     RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ, REG_SZ,
@@ -80,6 +86,32 @@ pub fn is_registered() -> bool {
             None,
         )
         .is_ok()
+    }
+}
+
+/// 旧バージョンの Task Scheduler タスクが残っていれば削除する。
+///
+/// v1.4.x 以前は schtasks でタスク登録していた。
+/// 起動時に一度呼ぶことで、旧タスクを静かに移行する。
+pub fn migrate_from_schtasks() {
+    const TASK_NAME: &str = "awase";
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let output = Command::new("schtasks")
+        .args(["/delete", "/tn", TASK_NAME, "/f"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            log::info!("Migration: removed legacy schtasks task '{TASK_NAME}'");
+        }
+        Ok(_) => {
+            // タスクが存在しない場合は正常（ほとんどの実行はここを通る）
+        }
+        Err(e) => {
+            log::warn!("Migration: failed to invoke schtasks: {e}");
+        }
     }
 }
 

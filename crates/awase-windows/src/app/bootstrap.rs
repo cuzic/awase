@@ -95,6 +95,9 @@ pub(super) fn init_logging(debug_console: bool) {
 pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
     use crate::autostart;
 
+    // 旧バージョン（schtasks 方式）からの移行: 古いタスクが残っていれば削除する
+    autostart::migrate_from_schtasks();
+
     match config.general.auto_start.as_str() {
         "ask" => {
             if !autostart::is_registered() {
