@@ -170,11 +170,13 @@ impl SystemTray {
             set_tooltip(&mut nid, enabled, "", elevated);
 
             // トレイアイコンを追加
-            Shell_NotifyIconW(NIM_ADD, &raw const nid)
-                .ok()
-                .context("Failed to add tray icon")?;
-
-            log::info!("System tray icon created (elevated={elevated})");
+            // シェル未起動時（ログオン直後等）は失敗しても OK。
+            // TaskbarCreated がブロードキャストされた時点で recreate() が呼ばれる。
+            if Shell_NotifyIconW(NIM_ADD, &raw const nid).is_err() {
+                log::warn!("Shell_NotifyIcon NIM_ADD failed — shell not ready, will retry on TaskbarCreated");
+            } else {
+                log::info!("System tray icon created (elevated={elevated})");
+            }
 
             Ok(Self {
                 hwnd,

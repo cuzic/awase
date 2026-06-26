@@ -1,78 +1,86 @@
-//! Windows 自動起動管理（Task Scheduler 経由）
+//! Windows 自動起動管理（HKCU Run レジストリキー経由）
+//!
+//! `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` に
+//! 値を書き込む方式。schtasks より軽量で GPO 制限の影響を受けない。
+//! 起動遅延は不要（シェル未起動時はトレイ登録に失敗しても TaskbarCreated で復元）。
 
-use std::os::windows::process::CommandExt;
-use std::process::Command;
+use windows::Win32::System::Registry::{
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ, REG_SZ,
+};
 
-const TASK_NAME: &str = "awase";
+const RUN_SUBKEY: windows::core::PCWSTR =
+    windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+const VALUE_NAME: windows::core::PCWSTR = windows::core::w!("awase");
 
-/// コンソールウィンドウを生成しない CreateProcess フラグ。
-/// schtasks.exe はコンソールアプリのため、GUI アプリから起動すると
-/// 一瞬コマンドプロンプト窓が出る。このフラグで非表示にする。
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-/// Task Scheduler にログオン時自動起動タスクを登録する
+/// HKCU Run キーに自動起動エントリを登録する
 #[must_use]
 pub fn register() -> bool {
-    let exe = std::env::current_exe().ok();
-    let Some(exe_path) = exe.as_ref().and_then(|p| p.to_str()) else {
+    let Ok(exe) = std::env::current_exe() else {
         log::error!("Failed to get current executable path");
         return false;
     };
+    let Some(exe_str) = exe.to_str() else {
+        log::error!("Executable path contains non-UTF-8 characters");
+        return false;
+    };
 
-    // /delay: ログオン後 30 秒待ってから起動する。
-    // デスクトップシェルが完全に初期化される前に起動するとトレイ生成やフック設定が失敗する。
-    let output = Command::new("schtasks")
-        .args([
-            "/create", "/tn", TASK_NAME, "/tr", exe_path,
-            "/sc", "onlogon", "/rl", "limited", "/delay", "0000:30", "/f",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    // REG_SZ は NUL 終端済み UTF-16 が必要
+    let exe_wide: Vec<u16> = exe_str.encode_utf16().chain(std::iter::once(0)).collect();
+    let byte_len = u32::try_from(exe_wide.len() * 2).unwrap_or(u32::MAX);
 
-    match output {
-        Ok(o) if o.status.success() => {
-            log::info!("Auto-start task registered: {TASK_NAME}");
-            true
-        }
-        Ok(o) => {
-            log::error!("schtasks failed: {}", String::from_utf8_lossy(&o.stderr));
-            false
-        }
-        Err(e) => {
-            log::error!("Failed to run schtasks: {e}");
-            false
-        }
+    // SAFETY: exe_wide は NUL 終端済み UTF-16 文字列。ポインタは呼び出し中有効。
+    //         HKEY_CURRENT_USER は擬似ハンドルで CloseHandle 不要。
+    let result = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            RUN_SUBKEY,
+            VALUE_NAME,
+            REG_SZ.0,
+            Some(exe_wide.as_ptr().cast()),
+            byte_len,
+        )
+    };
+
+    if result.is_ok() {
+        log::info!("Auto-start registered: {exe_str}");
+        true
+    } else {
+        log::error!("Failed to register auto-start: {result:?}");
+        false
     }
 }
 
-/// Task Scheduler から自動起動タスクを削除する
+/// HKCU Run キーから自動起動エントリを削除する
 #[must_use]
 pub fn unregister() -> bool {
-    let output = Command::new("schtasks")
-        .args(["/delete", "/tn", TASK_NAME, "/f"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    // SAFETY: HKEY_CURRENT_USER は擬似ハンドル。サブキー・値名は NUL 終端済み UTF-16。
+    let result = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_SUBKEY, VALUE_NAME) };
 
-    match output {
-        Ok(o) if o.status.success() => {
-            log::info!("Auto-start task unregistered: {TASK_NAME}");
-            true
-        }
-        Ok(_) | Err(_) => {
-            log::warn!("Failed to unregister auto-start task (may not exist)");
-            false
-        }
+    if result.is_ok() {
+        log::info!("Auto-start unregistered");
+        true
+    } else {
+        log::warn!("Failed to unregister auto-start (may not exist): {result:?}");
+        false
     }
 }
 
-/// タスクが登録済みかどうかを確認する
+/// HKCU Run キーに自動起動エントリが存在するか確認する
 #[must_use]
 pub fn is_registered() -> bool {
-    Command::new("schtasks")
-        .args(["/query", "/tn", TASK_NAME])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .is_ok_and(|o| o.status.success())
+    // SAFETY: data/size を None にして存在確認のみ行う。
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_SUBKEY,
+            VALUE_NAME,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            None,
+        )
+        .is_ok()
+    }
 }
 
 /// ユーザーにダイアログで自動起動を確認する
