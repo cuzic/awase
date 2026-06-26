@@ -52,6 +52,13 @@ pub(crate) trait ImeWarmupStrategy {
         None
     }
 
+    /// 次の `KeyInput` が long-cold（≥10s idle）の最初のキーか（Unicode cold defer 判定用）。
+    ///
+    /// MS IME は常に warm なので `false`（デフォルト）。
+    fn is_next_key_long_cold(&self) -> bool {
+        false
+    }
+
 }
 
 // ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
@@ -85,6 +92,10 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
             GjiState::OnComposing { epoch, .. } => Some(*epoch),
             _ => None,
         }
+    }
+
+    fn is_next_key_long_cold(&self) -> bool {
+        crate::tsf::gji_fsm::GjiFsm::is_next_key_long_cold(self)
     }
 
 }

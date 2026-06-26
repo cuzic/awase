@@ -199,7 +199,8 @@ impl WindowsPlatform {
             self.output
                 .update_injection_mode(crate::output::InjectionMode::Tsf);
             // 次の文字送信が cold-start TSF probe を正しく踏むよう composition を cold にリセット。
-            self.output.mark_composition_cold_focus_change();
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::FocusChange);
         }
         self.apply_timer_command(result.timer_cmd);
     }
@@ -264,9 +265,9 @@ impl WindowsPlatform {
                                      ({} chars deferred)",
                                     deferred.len()
                                 );
-                                let baseline = crate::tsf::observer::gji_write_bytes();
-                                self.output.send_f21_poke();
                                 let cold_seq = probe_id.0;
+                                let baseline = crate::tsf::observer::gji_write_bytes();
+                                self.output.send_unicode_cold_warmup_keys(cold_seq);
                                 let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
                                     cold_seq, deferred, baseline,
                                 );
