@@ -7,8 +7,10 @@ use awase::config::{AppOverrideEntry, AppOverrides};
 
 // ── IMM capability cache ──
 
-/// IMM 能力キャッシュファイル名（config.toml と同じディレクトリ）
-const IMM_CACHE_FILENAME: &str = "imm_cache.toml";
+/// 学習済みキャッシュファイル名（exe と同じディレクトリ）
+const CACHE_FILENAME: &str = "cache.toml";
+/// 旧バージョンのキャッシュファイル名（移行時に削除対象）
+const LEGACY_CACHE_FILENAME: &str = "imm_cache.toml";
 
 /// IMM32 クロスプロセス制御能力の検出結果（class_name ごとにキャッシュ）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,7 +171,7 @@ impl ImmCapabilityStore {
     }
 
     fn load(base_dir: &std::path::Path) -> std::collections::HashMap<String, ImmCapability> {
-        let path = base_dir.join(IMM_CACHE_FILENAME);
+        let path = base_dir.join(CACHE_FILENAME);
         let Ok(content) = std::fs::read_to_string(&path) else {
             return std::collections::HashMap::new();
         };
@@ -181,12 +183,12 @@ impl ImmCapabilityStore {
             }
         };
         let mut cache = std::collections::HashMap::new();
-        if let Some(toml::Value::Table(classes)) = table.get("classes") {
-            for (class_name, value) in classes {
+        if let Some(toml::Value::Table(section)) = table.get("imm_capability") {
+            for (class_name, value) in section {
                 if let toml::Value::String(s) = value {
                     let cap = match s.as_str() {
                         "works" => ImmCapability::Works,
-                        "unavailable" | "broken" => ImmCapability::Unavailable, // "broken" は旧フォーマット互換
+                        "unavailable" | "broken" => ImmCapability::Unavailable,
                         _ => continue,
                     };
                     cache.insert(class_name.clone(), cap);
@@ -204,17 +206,17 @@ impl ImmCapabilityStore {
     }
 
     fn save(&self) {
-        let path = self.base_dir.join(IMM_CACHE_FILENAME);
-        let mut classes = toml::Table::new();
+        let path = self.base_dir.join(CACHE_FILENAME);
+        let mut section = toml::Table::new();
         for (class_name, cap) in &self.cache {
             let value = match cap {
                 ImmCapability::Works => "works",
                 ImmCapability::Unavailable => "unavailable",
             };
-            classes.insert(class_name.clone(), toml::Value::String(value.to_string()));
+            section.insert(class_name.clone(), toml::Value::String(value.to_string()));
         }
         let mut root = toml::Table::new();
-        root.insert("classes".to_string(), toml::Value::Table(classes));
+        root.insert("imm_capability".to_string(), toml::Value::Table(section));
         let content = toml::to_string_pretty(&root).unwrap_or_default();
         if let Err(e) = std::fs::write(&path, content) {
             log::warn!("Failed to save IMM cache to {}: {e}", path.display());
@@ -231,10 +233,12 @@ impl ImmCapabilityStore {
     pub(crate) fn clear(&mut self) -> usize {
         let count = self.cache.len();
         self.cache.clear();
-        let path = self.base_dir.join(IMM_CACHE_FILENAME);
-        if let Err(e) = std::fs::remove_file(&path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                log::warn!("Failed to remove IMM cache file {}: {e}", path.display());
+        for filename in [CACHE_FILENAME, LEGACY_CACHE_FILENAME] {
+            let path = self.base_dir.join(filename);
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    log::warn!("Failed to remove cache file {}: {e}", path.display());
+                }
             }
         }
         count
