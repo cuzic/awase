@@ -568,14 +568,15 @@ impl PlatformRuntime for WindowsPlatform {
             self.output.set_unicode_cold_defer(false);
             let deferred = self.output.take_unicode_cold_deferred();
             if !deferred.is_empty() {
-                // output.send_keys() で chars が defer された。F21 を送って GJI を起動し、
-                // UnicodeColdWarmupFsm が GJI write を確認した後に chars を送信する。
-                let baseline = crate::tsf::observer::gji_write_bytes();
-                self.output.send_f21_poke();
+                // output.send_keys() で chars が defer された。
+                // F21 + VK_A+BS（犠牲キー）で GJI を起動し、gji_write_bytes 増加を確認してから
+                // deferred chars を送信する（VK_A が GJI composition を走らせ write_bytes が増える）。
                 let cold_seq = self.output.composition.cold_start_count();
+                let baseline = crate::tsf::observer::gji_write_bytes();
+                self.output.send_unicode_cold_warmup_keys(cold_seq);
                 log::info!(
                     "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
-                     F21 poke → {} chars defer",
+                     F21+VK_A+BS → {} chars defer",
                     deferred.len()
                 );
                 let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(

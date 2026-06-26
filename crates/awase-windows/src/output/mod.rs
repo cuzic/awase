@@ -245,19 +245,34 @@ impl Output {
         std::mem::take(&mut *self.unicode_cold_deferred.borrow_mut())
     }
 
-    /// F21（VK_DBE_HIRAGANA）を GJI wake-up ポークとして送信する。
+    /// Unicode cold-start 用の GJI ウォームアップキーを送信する。
     ///
-    /// `IME_KANJI_MARKER` で awase フックが再処理しないよう保護する。
-    pub(crate) fn send_f21_poke(&self) {
-        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use crate::vk::VK_F21;
-        let inputs = [
+    /// 1. F21（VK_DBE_HIRAGANA）を `IME_KANJI_MARKER` 付きで送信してひらがなモードへ切替。
+    /// 2. VK_A + BS を `INJECTED_MARKER` 付きで同一バッチ送信（犠牲キー）。
+    ///    VK_A が GJI の hiragana composition を起動して `gji_write_bytes` を増やし、
+    ///    BS が即キャンセルするため文字フラッシュは発生しない。
+    pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: u32) {
+        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER, INJECTED_MARKER};
+        use crate::vk::{VK_BACK, VK_F21};
+        use awase::types::VkCode;
+        const VK_A: VkCode = VkCode(0x41);
+
+        let f21_inputs = [
             make_key_input_ex(VK_F21, false, IME_KANJI_MARKER),
             make_key_input_ex(VK_F21, true, IME_KANJI_MARKER),
         ];
-        log::debug!("[unicode-cold-warmup] F21 poke 送信 (GJI 起動待ち)");
-        let _ = crate::win32::send_input_safe(&inputs);
+        log::debug!("[unicode-cold-warmup] cold={cold_seq} F21 送信 (ひらがなモード切替)");
+        let _ = crate::win32::send_input_safe(&f21_inputs);
         self.ime_mode_fsm.borrow_mut().on_f21_sent();
+
+        let sacr_inputs = [
+            make_key_input_ex(VK_A, false, INJECTED_MARKER),
+            make_key_input_ex(VK_A, true, INJECTED_MARKER),
+            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+        ];
+        log::debug!("[unicode-cold-warmup] cold={cold_seq} VK_A+BS 犠牲キー送信 (gji_write_bytes 上昇待ち)");
+        let _ = crate::win32::send_input_safe(&sacr_inputs);
     }
 
     /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
