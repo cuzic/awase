@@ -131,8 +131,13 @@ impl Output {
     }
 
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
-    #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
+    ///
+    /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
     pub(super) fn send_unicode_char(&self, ch: char) {
+        if self.unicode_cold_defer.load(std::sync::atomic::Ordering::Relaxed) {
+            self.unicode_cold_deferred.borrow_mut().push(ch);
+            return;
+        }
         let mut inputs = Vec::with_capacity(4);
         Self::push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
         let _ = crate::win32::send_input_safe(&inputs);

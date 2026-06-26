@@ -85,6 +85,11 @@ pub(crate) trait ProbeIo {
     /// async `IMC_GETCONVERSIONMODE` ポーリングを `spawn_local` で開始する。
     /// ポーリング結果は `with_app(|runtime| runtime.platform.output.update_ime_mode_from_imc(conv))` で反映される。
     fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32);
+    /// Unicode char を直接送信する（defer モードを無視して即送信）。
+    ///
+    /// `FlushDeferredUnicodeChars` ハンドラが deferred chars を送信するために使う。
+    /// `Output::send_unicode_char()` とは異なり defer フラグをチェックしない。
+    fn send_unicode_char_direct(&self, ch: char);
 }
 
 impl ProbeIo for Output {
@@ -288,6 +293,11 @@ impl ProbeIo for Output {
                 }
             }
         });
+    }
+
+    fn send_unicode_char_direct(&self, ch: char) {
+        // FSM tick 時は unicode_cold_defer=false のため、通常の send_unicode_char で直接送信できる。
+        self.send_unicode_char(ch);
     }
 }
 
@@ -665,6 +675,18 @@ where
                 return DispatchResult::LearnedTsf;
             }
 
+            ProbeAction::FlushDeferredUnicodeChars(chars) => {
+                // UnicodeColdWarmupFsm が GJI wake-up 確認後に emit する。
+                // deferred chars を直接送信する（Done が続いて FSM 完了）。
+                log::debug!(
+                    "[unicode-cold-warmup] FlushDeferredUnicodeChars: {} chars 送信",
+                    chars.len()
+                );
+                for ch in &chars {
+                    io.send_unicode_char_direct(*ch);
+                }
+            }
+
             ProbeAction::RawTsfLiteralRecovery {
                 cold_seq,
                 backs,
@@ -816,6 +838,8 @@ mod tests {
         fn send_sacrificial_bs_one(&self, _cold_seq: u32) {}
 
         fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {}
+
+        fn send_unicode_char_direct(&self, _ch: char) {}
     }
 
     fn make_chrome_machine() -> crate::tsf::probe_fsm::TsfProbeMachine {

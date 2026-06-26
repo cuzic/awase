@@ -116,6 +116,16 @@ pub struct Output {
             timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
         >,
     >,
+    /// Unicode cold-start warmup: `send_unicode_char()` の送信を遅延させるフラグ。
+    ///
+    /// `Platform::send_keys` が GjiFsm long-cold 検出時にセットし、`send_keys` 完了後にクリア。
+    /// フラグが立っている間 `send_unicode_char()` は実送信せず `unicode_cold_deferred` に蓄積する。
+    unicode_cold_defer: std::sync::atomic::AtomicBool,
+    /// `unicode_cold_defer=true` 中に蓄積した Unicode 文字バッファ。
+    ///
+    /// `Platform::dispatch_gji_response` が `StartProbe { is_long_cold }` を受け取ったとき
+    /// `take_unicode_cold_deferred()` で取り出し `UnicodeColdWarmupFsm` に渡す。
+    unicode_cold_deferred: std::cell::RefCell<Vec<char>>,
     /// IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
     ///
     /// F21/F22 送信時に即時 belief 更新。`IMC_GETCONVERSIONMODE` async ポーリングで確認。
@@ -199,6 +209,8 @@ impl Output {
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(0),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
+            unicode_cold_defer: std::sync::atomic::AtomicBool::new(false),
+            unicode_cold_deferred: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -208,6 +220,44 @@ impl Output {
     pub(crate) fn request_unicode_observation(&self) {
         self.observe_unicode_literal
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // ── Unicode cold-start warmup ────────────────────────────────────────────
+
+    /// GjiFsm が long-cold（≥10s idle）な次の KeyInput か判定する（send_keys の defer 判定用）。
+    pub(crate) fn gji_is_next_key_long_cold(&self) -> bool {
+        self.gji_fsm.borrow().is_next_key_long_cold()
+    }
+
+    /// `send_unicode_char()` の遅延モードを ON/OFF する。
+    ///
+    /// ON 中は `send_unicode_char()` が実送信せず `unicode_cold_deferred` に蓄積する。
+    /// `Platform::send_keys` が `output.send_keys()` の前後でセット／クリアする。
+    pub(crate) fn set_unicode_cold_defer(&self, defer: bool) {
+        self.unicode_cold_defer
+            .store(defer, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 蓄積した Unicode deferred 文字を取り出してバッファをクリアする。
+    ///
+    /// `Platform::dispatch_gji_response` が `StartProbe { is_long_cold }` 処理時に呼ぶ。
+    pub(crate) fn take_unicode_cold_deferred(&self) -> Vec<char> {
+        std::mem::take(&mut *self.unicode_cold_deferred.borrow_mut())
+    }
+
+    /// F21（VK_DBE_HIRAGANA）を GJI wake-up ポークとして送信する。
+    ///
+    /// `IME_KANJI_MARKER` で awase フックが再処理しないよう保護する。
+    pub(crate) fn send_f21_poke(&self) {
+        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+        use crate::vk::VK_F21;
+        let inputs = [
+            make_key_input_ex(VK_F21, false, IME_KANJI_MARKER),
+            make_key_input_ex(VK_F21, true, IME_KANJI_MARKER),
+        ];
+        log::debug!("[unicode-cold-warmup] F21 poke 送信 (GJI 起動待ち)");
+        let _ = crate::win32::send_input_safe(&inputs);
+        self.ime_mode_fsm.borrow_mut().on_f21_sent();
     }
 
     /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
@@ -568,7 +618,7 @@ self.gji_fsm.borrow().is_warm()
                         let ime_state = self.ime_mode_fsm.borrow().state();
                         if matches!(ime_state, ImeModeState::Hiragana | ImeModeState::Katakana) {
                             let baseline = crate::tsf::observer::gji_write_bytes();
-                            let cold_seq = self.cold_seq.load(std::sync::atomic::Ordering::Relaxed);
+                            let cold_seq = self.composition.cold_start_count();
                             log::debug!(
                                 "[unicode-obs] cold={cold_seq} Unicode Romaji 送信後に GJI write 観測開始 \
                                 (baseline={baseline})"

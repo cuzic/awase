@@ -55,7 +55,7 @@ impl FocusEpoch {
 
 /// probe ID。stale な `WarmupComplete` / `WarmupFailed` を弾くための識別子。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProbeId(u32);
+pub(crate) struct ProbeId(pub(crate) u32);
 
 /// `GjiAction::StartProbe` / `ProbeStatus::Authorized` が持つ probe パラメータ。
 ///
@@ -379,6 +379,16 @@ impl GjiFsm {
             GjiState::OnComposing { warmup: ComposingWarmup::AwaitingProbe { probe_id, .. }, .. } => Some(*probe_id),
             _ => None,
         }
+    }
+
+    /// 次の `KeyInput` が `StartProbe { is_long_cold: true }` を emit するか（Unicode cold defer 判定用）。
+    ///
+    /// `Long` cold + `NotStarted`（=10s 以上 idle 後の最初のキー入力直前）のときのみ `true`。
+    pub(crate) fn is_next_key_long_cold(&self) -> bool {
+        matches!(
+            &self.state,
+            GjiState::OnCold { kind: ColdKind::Long, probe: ProbeStatus::NotStarted, .. }
+        )
     }
 
     /// `OnCold(Authorized)` なら `ProbeParams` を返す。

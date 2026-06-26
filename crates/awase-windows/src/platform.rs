@@ -247,14 +247,31 @@ impl WindowsPlatform {
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
                     // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
-                    // long-cold（≥10s idle）の場合は Chrome と同様に F22→F21 で GJI を再初期化してから
-                    // WarmupComplete を dispatch する。
+                    // long-cold（≥10s idle）の場合:
+                    //   deferred chars あり → F21 poke + UnicodeColdWarmupFsm (GJI 起動待ち後に chars 送信)
+                    //   deferred chars なし → 従来通り F22→F21 reinit
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
                         if params.is_long_cold {
-                            log::debug!(
-                                "[gji-fsm] Unicode long-cold StartProbe: F22→F21 reinit (dormant GJI wakeup)"
-                            );
-                            self.output.send_f22_f21_reinit();
+                            let deferred = self.output.take_unicode_cold_deferred();
+                            if deferred.is_empty() {
+                                log::debug!(
+                                    "[gji-fsm] Unicode long-cold StartProbe: F22→F21 reinit (chars なし)"
+                                );
+                                self.output.send_f22_f21_reinit();
+                            } else {
+                                log::debug!(
+                                    "[gji-fsm] Unicode long-cold StartProbe: F21 poke + UnicodeColdWarmupFsm \
+                                     ({} chars deferred)",
+                                    deferred.len()
+                                );
+                                let baseline = crate::tsf::observer::gji_write_bytes();
+                                self.output.send_f21_poke();
+                                let cold_seq = probe_id.0;
+                                let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
+                                    cold_seq, deferred, baseline,
+                                );
+                                self.install_pending_tsf_and_set_timer(Box::new(fsm));
+                            }
                         }
                         use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
@@ -536,7 +553,37 @@ impl PlatformRuntime for WindowsPlatform {
         {
             self.output.request_unicode_observation();
         }
+        // Unicode cold-start warmup: GjiFsm が long cold のとき chars を defer する。
+        //
+        // Unicode モードでは send_romaji_as_unicode() が GjiFsm::KeyInput を発行しないため
+        // GjiFsm が StartProbe を emit することがない。そのため dispatch_gji_response() を
+        // 経由せず、ここで直接 FSM をインストールする。
+        let unicode_cold_defer = self.output.injection_mode == crate::output::InjectionMode::Unicode
+            && self.output.gji_is_next_key_long_cold();
+        if unicode_cold_defer {
+            self.output.set_unicode_cold_defer(true);
+        }
         self.output.send_keys(actions);
+        if unicode_cold_defer {
+            self.output.set_unicode_cold_defer(false);
+            let deferred = self.output.take_unicode_cold_deferred();
+            if !deferred.is_empty() {
+                // output.send_keys() で chars が defer された。F21 を送って GJI を起動し、
+                // UnicodeColdWarmupFsm が GJI write を確認した後に chars を送信する。
+                let baseline = crate::tsf::observer::gji_write_bytes();
+                self.output.send_f21_poke();
+                let cold_seq = self.output.composition.cold_start_count();
+                log::info!(
+                    "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
+                     F21 poke → {} chars defer",
+                    deferred.len()
+                );
+                let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
+                    cold_seq, deferred, baseline,
+                );
+                self.install_pending_tsf_and_set_timer(Box::new(fsm));
+            }
+        }
         // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
         // Vec で取り出すのは、1回の send_keys で複数文字を送る際に全 Response（StartProbe 含む）を
         // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。
