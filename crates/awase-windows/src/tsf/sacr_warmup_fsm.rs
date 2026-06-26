@@ -9,8 +9,9 @@
 //! 2. VK_A を送信（犠牲キー。TSF warm なら 'あ' 形成、cold なら 'a' リテラル）
 //! 3. 本 FSM が 10ms ごとに composition 状態を確認
 //! 4. 判定完了（composition 確認 or タイムアウト）
-//! 5. Chrome パス: candidate window HIDE を待つ（IPC race 回避）
-//! 6. [`ProbeAction::SacrificialResend`] を emit → dispatcher が BS×1 + 実ローマ字再送
+//! 5. Chrome パス: candidate window HIDE を待つ（Phase 2）
+//! 6. 早期 HIDE（~30ms）の場合は IPC settle 待機（Phase 3）に移行（~250ms）
+//! 7. [`ProbeAction::SacrificialResend`] を emit → dispatcher が BS×1 + 実ローマ字再送
 //!
 //! ## Chrome IPC race と HIDE 待機
 //!
@@ -154,6 +155,11 @@ impl SacrificialWarmupFsm {
         // ── Phase 2: Chrome HIDE 待機中 ────────────────────────────────────────
         // composition-confirmed 後、VK_A+BS の EndComposition IPC が Chrome に
         // 到達するのを candidate window HIDE で確認してから実ローマ字を送る。
+        //
+        // ただし VK_A+BS atomic batch では candidate window HIDE（Chrome UI スレッド応答, ~30ms）と
+        // EndComposition IPC 到達（~200ms）が分離している。HIDE 検出後もまだ IPC は飛行中のため、
+        // 早期 HIDE（candidate_gone=true）の場合は Phase 3 IPC settle 待機に移行する。
+        // タイムアウト（300ms）では IPC settle は batch send から ~310ms 以上経過しており済みと見なす。
         if let Some(hide_deadline) = self.hide_wait_deadline_ms {
             let now = crate::hook::current_tick_ms();
             let candidate_gone = !env.gji_candidate_visible;
@@ -165,6 +171,18 @@ impl SacrificialWarmupFsm {
                 "[sacr-warmup] cold={} Chrome HIDE 待機完了: candidate_gone={} timed_out={}",
                 self.cold_seq, candidate_gone, timed_out,
             );
+            if candidate_gone {
+                // 早期 HIDE: candidate window は消えたが EndComposition IPC は ~200ms かかる。
+                // Phase 3 IPC settle 待機に移行して IPC 到達後に実ローマ字を送る。
+                let settle_deadline = now + crate::tuning::SACR_WARMUP_CHROME_IPC_SETTLE_MS;
+                self.ipc_settle_deadline_ms = Some(settle_deadline);
+                log::debug!(
+                    "[sacr-warmup] cold={} Chrome Phase2 HIDE 後 IPC settle 待機 ({}ms)",
+                    self.cold_seq, crate::tuning::SACR_WARMUP_CHROME_IPC_SETTLE_MS,
+                );
+                return vec![];
+            }
+            // timed_out: 300ms 経過で IPC は settle 済みのため即再送
             let romaji = std::mem::take(&mut self.romaji);
             let deferred_vks = std::mem::take(&mut self.deferred_vks);
             return vec![
