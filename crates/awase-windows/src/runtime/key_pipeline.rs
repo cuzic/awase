@@ -493,6 +493,7 @@ fn build_ime_on_suffix(
     suppressed_reason: Option<&'static str>,
     signals: &FocusProbeGraceFlags,
     probe_age_ms: u64,
+    used_shadow_fallback: bool,
 ) -> String {
     if let Some(reason) = suppressed_reason {
         let detail = match reason {
@@ -501,6 +502,8 @@ fn build_ime_on_suffix(
             _ => format!("shadow:{probe_age_ms}ms"),
         };
         format!("(suppressed:{detail})")
+    } else if probe_ime_on.is_none() && used_shadow_fallback {
+        "(shadow)".to_string()
     } else if probe_ime_on.is_none() {
         "(stale)".to_string()
     } else {
@@ -538,6 +541,10 @@ impl Runtime {
             shadow_on,
         );
 
+        // TsfNative/Imm32Unavailable では probe.ime_on が常に None になる。
+        // この場合は shadow の apply 値を代替観測として記録し drift 追跡を維持する。
+        let used_shadow_fallback = probe.ime_on.is_none() && probe.is_japanese_ime;
+
         let suppressed_reason: Option<&'static str> = if let Some(on) = probe.ime_on {
             let effective = on && probe.is_japanese_ime;
             if !effective && signals.any() {
@@ -547,13 +554,23 @@ impl Runtime {
                 None
             }
         } else {
+            // TsfNative/Imm32Unavailable: IMM32 非対応のため probe は常に None を返す。
+            // shadow の apply 値を代替観測として focus_probe スロットに記録する。
+            if probe.is_japanese_ime {
+                self.apply_effective_ime(shadow_on);
+            }
             None
         };
 
         let ime_on_after_probe = self.platform_state.ime.effective_open();
         let input_mode_after_probe = self.platform_state.ime.belief.input_mode();
-        let ime_on_suffix =
-            build_ime_on_suffix(probe.ime_on, suppressed_reason, &signals, probe_age_ms);
+        let ime_on_suffix = build_ime_on_suffix(
+            probe.ime_on,
+            suppressed_reason,
+            &signals,
+            probe_age_ms,
+            used_shadow_fallback,
+        );
 
         log::info!(
             "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={} sig2={} sig3={}]",
@@ -575,9 +592,14 @@ impl Runtime {
             Some(reason) => log::debug!(
                 "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
             ),
+            None if used_shadow_fallback => log::debug!(
+                "FocusProbe: TsfNative/Imm32Unavailable — shadow 値 {} を代替観測として記録 \
+                 [probe_age={probe_age_ms}ms]",
+                shadow_on,
+            ),
             None if probe.ime_on.is_none() => log::warn!(
-                "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} が ObserverPoll まで持続 \
-                 [probe_age={probe_age_ms}ms, A/B判断: ime_on stale頻度を確認]",
+                "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} \
+                 [probe_age={probe_age_ms}ms]",
             ),
             None => {}
         }
