@@ -318,6 +318,10 @@ pub(crate) enum DispatchResult {
     Continue,
     /// 別の FSM に切り替える（`LiteralDetectFsm` 等）。
     SwitchMachine(Box<dyn crate::tsf::tickable_fsm::TickableFsm>),
+    /// Unicode 送信後に GJI write が観測されなかった → フォーカス中クラスを Tsf に昇格する。
+    ///
+    /// `advance_tsf_probe` が `focus.learn_injection_mode_tsf()` を呼ぶ。
+    LearnedTsf,
 }
 
 impl DispatchResult {
@@ -653,6 +657,12 @@ where
                 }
                 // SacrificialWarmupFsm は Done を後続 action として emit しているため
                 // ここでは machine 状態を更新せず Continue を返す（queue が Done を処理する）。
+            }
+
+            ProbeAction::UpgradeToTsf => {
+                // UnicodeLiteralObserverFsm が GJI write なしと判断した。
+                // Done は後続 action として queue に入っているので、ここでは LearnedTsf を返す。
+                return DispatchResult::LearnedTsf;
             }
 
             ProbeAction::RawTsfLiteralRecovery {

@@ -320,6 +320,12 @@ pub(crate) enum ProbeAction {
         romaji: String,
         deferred_vks: Vec<DeferredVk>,
     },
+    /// Unicode モードで GJI write が観測されなかった。
+    ///
+    /// [`crate::tsf::unicode_literal_observer::UnicodeLiteralObserverFsm`] が emit する。
+    /// dispatcher は `DispatchResult::LearnedTsf` を返し、呼び出し元 (`advance_tsf_probe`) が
+    /// フォーカス中クラスを `InjectionModeStore` に学習し injection_mode を Tsf に昇格させる。
+    UpgradeToTsf,
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }

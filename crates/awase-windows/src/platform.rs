@@ -188,6 +188,19 @@ impl WindowsPlatform {
         if let Some(gji_resp) = result.gji_response {
             self.dispatch_gji_response(gji_resp);
         }
+        if result.learned_tsf {
+            // UnicodeLiteralObserverFsm が GJI write なしと判断 → フォーカス中クラスを Tsf に昇格。
+            let class_name = self.focus.class_name().to_string();
+            log::info!(
+                "[injection-mode] {class_name:?} → Tsf 事後昇格（GJI write 未観測）"
+            );
+            self.focus.learn_injection_mode_tsf(class_name);
+            // 現セッション（現在のフォーカスウィンドウ）にも即時 Tsf モードを適用する。
+            self.output
+                .update_injection_mode(crate::output::InjectionMode::Tsf);
+            // 次の文字送信が cold-start TSF probe を正しく踏むよう composition を cold にリセット。
+            self.output.mark_composition_cold_focus_change();
+        }
         self.apply_timer_command(result.timer_cmd);
     }
 
@@ -515,6 +528,14 @@ impl PlatformRuntime for WindowsPlatform {
     // ── キー出力 ──
 
     fn send_keys(&mut self, actions: &[KeyAction]) {
+        // Unicode モード + 未学習クラスなら、Romaji 送信後に GJI write 観測をリクエストする（事後昇格）。
+        if self.output.injection_mode == crate::output::InjectionMode::Unicode
+            && !self
+                .focus
+                .has_learned_injection_mode_tsf(self.focus.class_name())
+        {
+            self.output.request_unicode_observation();
+        }
         self.output.send_keys(actions);
         // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
         // Vec で取り出すのは、1回の send_keys で複数文字を送る際に全 Response（StartProbe 含む）を

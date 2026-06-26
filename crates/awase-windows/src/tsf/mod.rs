@@ -19,6 +19,7 @@ pub(crate) mod literal_detect_fsm;
 pub mod observer;
 pub(crate) mod sacr_warmup_fsm;
 pub(crate) mod tickable_fsm;
+pub(crate) mod unicode_literal_observer;
 pub(crate) mod warmup_strategy;
 pub mod output;
 pub mod probe;

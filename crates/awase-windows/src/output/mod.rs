@@ -128,6 +128,12 @@ pub struct Output {
     /// キャプチャする。コールバック到達時に現在値と一致しない（= その後に別のフォーカス変更
     /// が来た）場合は stale として破棄し、古いポーリング結果で ImeModeFsm を汚染しない。
     pub(crate) ime_mode_focus_gen: std::cell::Cell<u32>,
+    /// Unicode 送信後に GJI write 観測を行うフラグ。
+    ///
+    /// Platform::send_keys が Unicode モード + 未学習クラスのときにセットし、
+    /// send_keys 内の `KeyAction::Romaji` 処理で `UnicodeLiteralObserverFsm` をインストールする。
+    /// フラグは最初の Romaji 送信時に消費される（swap false）。
+    observe_unicode_literal: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for Output {
@@ -154,6 +160,9 @@ pub(crate) struct StepProbeResult {
     /// `ProbeIo::mark_cold_raw_tsf` が呼ばれたとき true になる。
     /// `advance_tsf_probe` が `gji_on_composition_reset` を呼ぶために使う。
     pub needs_gji_composition_reset: bool,
+    /// `UnicodeLiteralObserverFsm` が GJI write なしと判断したとき true になる。
+    /// `advance_tsf_probe` がフォーカス中クラスを Tsf に昇格する。
+    pub learned_tsf: bool,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -189,7 +198,16 @@ impl Output {
             pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(0),
+            observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// 次の Unicode モード Romaji 送信後に GJI write 観測を行うようリクエストする。
+    ///
+    /// `Platform::send_keys` が Unicode モード + 未学習クラスのときに呼ぶ。
+    pub(crate) fn request_unicode_observation(&self) {
+        self.observe_unicode_literal
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
@@ -537,6 +555,31 @@ self.gji_fsm.borrow().is_warm()
                 KeyAction::Romaji(s) => {
                     log::debug!("  → Romaji(\"{s}\") via {}", sender.mode_label());
                     sender.send_romaji(s);
+                    // Unicode モードで未学習クラスの場合、GJI write を観測して事後昇格を判断する。
+                    // observe_unicode_literal フラグは Platform が request_unicode_observation() でセット。
+                    // 最初の Romaji 送信時に 1 回だけ消費する（複数文字を 1 回の send_keys で送る場合も 1 度のみ）。
+                    if self
+                        .observe_unicode_literal
+                        .swap(false, std::sync::atomic::Ordering::Relaxed)
+                        && self.injection_mode == InjectionMode::Unicode
+                        && self.pending_tsf.borrow().is_none()
+                    {
+                        use crate::tsf::ime_mode_fsm::ImeModeState;
+                        let ime_state = self.ime_mode_fsm.borrow().state();
+                        if matches!(ime_state, ImeModeState::Hiragana | ImeModeState::Katakana) {
+                            let baseline = crate::tsf::observer::gji_write_bytes();
+                            let cold_seq = self.cold_seq.load(std::sync::atomic::Ordering::Relaxed);
+                            log::debug!(
+                                "[unicode-obs] cold={cold_seq} Unicode Romaji 送信後に GJI write 観測開始 \
+                                (baseline={baseline})"
+                            );
+                            self.install_pending_tsf(Box::new(
+                                crate::tsf::unicode_literal_observer::UnicodeLiteralObserverFsm::new(
+                                    baseline, cold_seq,
+                                ),
+                            ));
+                        }
+                    }
                 }
                 KeyAction::KeySequence(s) => {
                     log::debug!("  → KeySequence(\"{s}\") via {}", sender.mode_label());
@@ -645,6 +688,7 @@ self.gji_fsm.borrow().is_warm()
                 timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
                 gji_response: None,
                 needs_gji_composition_reset: false,
+                learned_tsf: false,
             };
         };
         log::debug!("[tsf-probe-tick] cold={} t={}ms", machine.cold_seq_hint(), tick_t);
@@ -666,6 +710,7 @@ self.gji_fsm.borrow().is_warm()
                     timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
                     gji_response,
                     needs_gji_composition_reset,
+                    learned_tsf: false,
                 }
             }
             probe_io::DispatchResult::Continue => {
@@ -678,6 +723,7 @@ self.gji_fsm.borrow().is_warm()
                     },
                     gji_response: None,
                     needs_gji_composition_reset,
+                    learned_tsf: false,
                 }
             }
             probe_io::DispatchResult::SwitchMachine(new_machine) => {
@@ -693,6 +739,18 @@ self.gji_fsm.borrow().is_warm()
                     },
                     gji_response: None,
                     needs_gji_composition_reset,
+                    learned_tsf: false,
+                }
+            }
+            probe_io::DispatchResult::LearnedTsf => {
+                // UnicodeLiteralObserverFsm が GJI write なしと判断した。
+                // advance_tsf_probe がフォーカス中クラスを Tsf に昇格する。
+                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
+                StepProbeResult {
+                    timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
+                    gji_response: None,
+                    needs_gji_composition_reset,
+                    learned_tsf: true,
                 }
             }
         }
