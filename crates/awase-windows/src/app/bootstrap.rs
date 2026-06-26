@@ -187,6 +187,69 @@ fn select_default_layout(layouts: &[LayoutEntry], config: &ValidatedConfig) -> (
     (entry.layout.clone(), entry.name.clone())
 }
 
+/// 競合する親指シフトソフトウェアが起動中でないかチェックし、警告を出す
+pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
+    use std::mem::size_of;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    struct ConflictEntry {
+        exe: &'static str,
+        display: &'static str,
+    }
+
+    const CONFLICTS: &[ConflictEntry] = &[
+        ConflictEntry { exe: "yamabuki.exe",  display: "やまぶき" },
+        ConflictEntry { exe: "yamabukiR.exe", display: "やまぶきR" },
+        ConflictEntry { exe: "benizara.exe",  display: "紅皿" },
+    ];
+
+    // SAFETY: CreateToolhelp32Snapshot / Process32FirstW / Process32NextW は
+    //         有効なハンドルと dwSize 設定済み PROCESSENTRY32W を渡す標準的な呼び出し。
+    let found: Vec<&str> = unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let mut results = Vec::new();
+        if Process32FirstW(snap, &raw mut entry).is_ok() {
+            loop {
+                let end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let exe_name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+                for conflict in CONFLICTS {
+                    if exe_name.eq_ignore_ascii_case(conflict.exe) {
+                        results.push(conflict.display);
+                        break;
+                    }
+                }
+                if Process32NextW(snap, &raw mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+        results
+    };
+
+    for name in found {
+        diag.warn(format!(
+            "競合する親指シフトソフトウェア「{name}」が起動中です。\
+             awase と同時に使用するとキー入力が二重になるなどの不具合が生じます。\
+             どちらか一方を終了してください。"
+        ));
+    }
+}
+
 /// キーボードレイアウトが日本語(106/109)かどうかを検証し、警告を出す
 pub(super) fn check_keyboard_layout(diag: &mut StartupDiagnostics) {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
@@ -679,6 +742,7 @@ pub(super) fn run_all() -> Result<()> {
         parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut diag);
     let (ime_sync_toggle, ime_sync_on, ime_sync_off) =
         init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
+    check_conflicting_software(&mut diag);
     check_keyboard_layout(&mut diag);
     let system_tray = init_tray(&layout_names, &initial_layout_name, elevated)?;
 
