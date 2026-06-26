@@ -174,11 +174,11 @@ impl SacrificialWarmupFsm {
             if candidate_gone {
                 // 早期 HIDE: candidate window は消えたが EndComposition IPC は ~200ms かかる。
                 // Phase 3 IPC settle 待機に移行して IPC 到達後に実ローマ字を送る。
-                let settle_deadline = now + crate::tuning::SACR_WARMUP_CHROME_IPC_SETTLE_MS;
+                let settle_deadline = now + SACR_WARMUP_CHROME_IPC_SETTLE_MS;
                 self.ipc_settle_deadline_ms = Some(settle_deadline);
                 log::debug!(
                     "[sacr-warmup] cold={} Chrome Phase2 HIDE 後 IPC settle 待機 ({}ms)",
-                    self.cold_seq, crate::tuning::SACR_WARMUP_CHROME_IPC_SETTLE_MS,
+                    self.cold_seq, SACR_WARMUP_CHROME_IPC_SETTLE_MS,
                 );
                 return vec![];
             }
