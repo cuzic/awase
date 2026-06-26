@@ -447,7 +447,8 @@ pub(super) fn initialize_app(
             focus: crate::focus::tracker::FocusTracker::new(
                 crate::focus::cache::FocusCache::new(),
                 crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
-                crate::focus::classifier::ImmCapabilityStore::new(base_dir),
+                crate::focus::classifier::ImmCapabilityStore::new(base_dir.clone()),
+                crate::focus::classifier::InjectionModeStore::new(base_dir),
             ),
             composition_fsm: crate::tsf::composition_fsm::CompositionFsm::new(),
         },

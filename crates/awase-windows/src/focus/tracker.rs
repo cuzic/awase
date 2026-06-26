@@ -9,7 +9,9 @@ use awase::engine::InputModeState;
 use awase::types::FocusKind;
 
 use crate::focus::cache::{DetectionSource, FocusCache};
-use crate::focus::classifier::{ForceOverrides, ImmCapability, ImmCapabilityStore, InjectionHint};
+use crate::focus::classifier::{
+    ForceOverrides, ImmCapability, ImmCapabilityStore, InjectionHint, InjectionModeStore,
+};
 use crate::focus::current::CurrentFocus;
 use crate::focus::hwnd_cache::{HwndImeCache, HwndImeSnapshot};
 use crate::focus::uia::SendableHwnd;
@@ -25,6 +27,7 @@ pub(crate) struct FocusTracker {
     overrides: ForceOverrides,
     uia_sender: Option<Sender<SendableHwnd>>,
     imm_learning: ImmCapabilityStore,
+    injection_mode_store: InjectionModeStore,
     hwnd_ime_cache: HwndImeCache,
 }
 
@@ -39,6 +42,7 @@ impl FocusTracker {
         cache: FocusCache,
         overrides: ForceOverrides,
         imm_learning: ImmCapabilityStore,
+        injection_mode_store: InjectionModeStore,
     ) -> Self {
         Self {
             current: CurrentFocus::unfocused(),
@@ -46,6 +50,7 @@ impl FocusTracker {
             overrides,
             uia_sender: None,
             imm_learning,
+            injection_mode_store,
             hwnd_ime_cache: HwndImeCache::new(),
         }
     }
@@ -76,14 +81,29 @@ impl FocusTracker {
         if !self.current.is_focused() {
             return InjectionHint::Default;
         }
-        self.overrides
-            .injection_hint(self.current.pid, &self.current.class_name)
+        let hint = self
+            .overrides
+            .injection_hint(self.current.pid, &self.current.class_name);
+        if hint != InjectionHint::Default {
+            return hint;
+        }
+        if self.injection_mode_store.has_tsf(&self.current.class_name) {
+            return InjectionHint::ForceTsf;
+        }
+        InjectionHint::Default
     }
 
     /// 指定した pid/class に対する injection_hint を返す（フォーカス変更直後の stale 回避用）。
     /// `self.current` が更新される前に新ウィンドウの hint を引くために使う。
     pub(crate) fn injection_hint_for(&self, pid: u32, class_name: &str) -> InjectionHint {
-        self.overrides.injection_hint(pid, class_name)
+        let hint = self.overrides.injection_hint(pid, class_name);
+        if hint != InjectionHint::Default {
+            return hint;
+        }
+        if self.injection_mode_store.has_tsf(class_name) {
+            return InjectionHint::ForceTsf;
+        }
+        InjectionHint::Default
     }
 
     // ── フォーカス更新 ──────────────────────────────────────────────────────
@@ -168,6 +188,18 @@ impl FocusTracker {
     /// IMM 能力キャッシュを全クリアし、削除件数を返す（診断コマンド用）。
     pub(crate) fn clear_imm_learning(&mut self) -> usize {
         self.imm_learning.clear()
+    }
+
+    // ── Injection モード学習 ────────────────────────────────────────────────
+
+    /// class_name が Tsf モード必要と学習済みかどうか。
+    pub(crate) fn has_learned_injection_mode_tsf(&self, class_name: &str) -> bool {
+        self.injection_mode_store.has_tsf(class_name)
+    }
+
+    /// GJI write 観測で判明した「Tsf 必要」クラスを永続化する（事後昇格）。
+    pub(crate) fn learn_injection_mode_tsf(&mut self, class_name: String) {
+        self.injection_mode_store.learn_tsf(class_name);
     }
 
     // ── UIA ─────────────────────────────────────────────────────────────────

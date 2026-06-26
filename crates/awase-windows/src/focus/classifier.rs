@@ -206,7 +206,6 @@ impl ImmCapabilityStore {
     }
 
     fn save(&self) {
-        let path = self.base_dir.join(CACHE_FILENAME);
         let mut section = toml::Table::new();
         for (class_name, cap) in &self.cache {
             let value = match cap {
@@ -215,21 +214,12 @@ impl ImmCapabilityStore {
             };
             section.insert(class_name.clone(), toml::Value::String(value.to_string()));
         }
-        let mut root = toml::Table::new();
-        root.insert("imm_capability".to_string(), toml::Value::Table(section));
-        let content = toml::to_string_pretty(&root).unwrap_or_default();
-        if let Err(e) = std::fs::write(&path, content) {
-            log::warn!("Failed to save IMM cache to {}: {e}", path.display());
-        } else {
-            log::debug!(
-                "Saved IMM capability cache: {} entries to {}",
-                self.cache.len(),
-                path.display()
-            );
-        }
+        save_section(&self.base_dir, "imm_capability", section);
+        log::debug!("Saved IMM capability cache: {} entries", self.cache.len());
     }
 
     /// キャッシュをメモリとファイルの両方からクリアする。
+    /// `cache.toml` 全体を削除するため `InjectionModeStore` のデータも失われる。
     pub(crate) fn clear(&mut self) -> usize {
         let count = self.cache.len();
         self.cache.clear();
@@ -242,5 +232,88 @@ impl ImmCapabilityStore {
             }
         }
         count
+    }
+}
+
+// ── キャッシュファイル共通 write ヘルパー ──────────────────────────────────────
+
+/// `cache.toml` の指定セクションだけを更新し、他のセクションを保持して上書き保存する。
+fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::Table) {
+    let path = base_dir.join(CACHE_FILENAME);
+    let mut root: toml::Table = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| c.parse().ok())
+        .unwrap_or_default();
+    root.insert(section_name.to_string(), toml::Value::Table(section));
+    let content = toml::to_string_pretty(&root).unwrap_or_default();
+    if let Err(e) = std::fs::write(&path, &content) {
+        log::warn!("Failed to save cache to {}: {e}", path.display());
+    }
+}
+
+// ── InjectionModeStore ────────────────────────────────────────────────────────
+
+/// 事後昇格学習ストア：GJI write 観測によって「Tsf モードが必要」と判明した class_name を永続化する。
+///
+/// `cache.toml` の `[injection_mode]` セクションに `class_name = "tsf"` の形式で保存する。
+/// `ForceOverrides::injection_hint()` が未マッチのとき、このストアを参照して `ForceTsf` を返す。
+#[derive(Debug)]
+pub struct InjectionModeStore {
+    tsf_classes: std::collections::HashSet<String>,
+    base_dir: std::path::PathBuf,
+}
+
+impl InjectionModeStore {
+    pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
+        let tsf_classes = Self::load(&base_dir);
+        Self { tsf_classes, base_dir }
+    }
+
+    /// class_name が Tsf モード必要と学習済みかどうか。
+    pub(crate) fn has_tsf(&self, class_name: &str) -> bool {
+        self.tsf_classes.contains(class_name)
+    }
+
+    /// class_name を Tsf 必要としてキャッシュに登録し永続化する（冪等）。
+    pub(crate) fn learn_tsf(&mut self, class_name: String) {
+        if self.tsf_classes.insert(class_name) {
+            self.save();
+        }
+    }
+
+    fn load(base_dir: &std::path::Path) -> std::collections::HashSet<String> {
+        let path = base_dir.join(CACHE_FILENAME);
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return std::collections::HashSet::new();
+        };
+        let table: toml::Table = match content.parse() {
+            Ok(t) => t,
+            Err(_) => return std::collections::HashSet::new(),
+        };
+        let mut classes = std::collections::HashSet::new();
+        if let Some(toml::Value::Table(section)) = table.get("injection_mode") {
+            for (class_name, value) in section {
+                if matches!(value, toml::Value::String(s) if s == "tsf") {
+                    classes.insert(class_name.clone());
+                }
+            }
+        }
+        if !classes.is_empty() {
+            log::info!(
+                "Loaded injection mode cache: {} TSF classes from {}",
+                classes.len(),
+                path.display()
+            );
+        }
+        classes
+    }
+
+    fn save(&self) {
+        let mut section = toml::Table::new();
+        for class_name in &self.tsf_classes {
+            section.insert(class_name.clone(), toml::Value::String("tsf".to_string()));
+        }
+        save_section(&self.base_dir, "injection_mode", section);
+        log::debug!("Saved injection mode cache: {} TSF classes", self.tsf_classes.len());
     }
 }
