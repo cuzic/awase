@@ -32,6 +32,7 @@
 | [049](049-tsf-mode-literal-detect-wezterm-warm.md) | TSF mode LiteralDetect と WezTerm long-idle warm 維持 | 採用済み |
 | [050](050-post-bypass-config.md) | post_bypass — バイパス後キーの NICOLA スキップ設定 | 採用済み |
 | [051](051-holding-gate-timed-fsm-migration.md) | HoldingGate の timed-fsm クレートへの移植 | 採用済み |
+| [052](052-tray-panic-reset.md) | トレイメニューからのパニックリセット | 採用済み |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
