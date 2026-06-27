@@ -79,7 +79,7 @@ impl SyncKeyGate {
 
     /// バッファにキーが残っているかどうかを返す。
     #[must_use]
-    pub fn has_deferred_keys(&self) -> bool {
+    pub const fn has_deferred_keys(&self) -> bool {
         !self.inner.is_empty()
     }
 
