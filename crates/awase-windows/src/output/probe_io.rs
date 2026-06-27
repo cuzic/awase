@@ -76,6 +76,10 @@ pub(crate) trait ProbeIo {
     ///
     /// `SacrificialResend` ハンドラが呼ぶ（TSF/WezTerm target のみ）。
     fn send_sacrificial_bs_one(&self, cold_seq: u32);
+    /// BS×n を送信する（partial literal 回収前の terminal cleanup 用）。
+    ///
+    /// `RawTsfLiteralRecovery` → sacr warmup 切り替え時に VK_A 送信前に呼ぶ。
+    fn send_literal_recovery_bs(&self, backs: usize, cold_seq: u32);
     /// Chrome sacr-warmup cold タイムアウト後に GJI を強制リセットし、IMC ポーリングを開始する。
     ///
     /// VK_A+BS でも Chrome の GJI が初期化されなかった場合（80s 以上の超長時間 idle 等）に、
@@ -240,6 +244,33 @@ impl ProbeIo for Output {
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ];
         log::debug!("[sacr-warmup] cold={cold_seq} BS×1 送信（犠牲キー削除）");
+        unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+            );
+        }
+    }
+
+    fn send_literal_recovery_bs(&self, backs: usize, cold_seq: u32) {
+        use crate::tsf::output::make_key_input_ex;
+        use crate::tsf::output::INJECTED_MARKER;
+        use crate::vk::VK_BACK;
+        use std::mem::size_of;
+        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
+        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
+        if backs == 0 {
+            return;
+        }
+        let inputs: Vec<INPUT> = (0..backs)
+            .flat_map(|_| {
+                [
+                    make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+                    make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+                ]
+            })
+            .collect();
+        log::debug!("[raw-tsf-literal] cold={cold_seq} partial literal cleanup BS×{backs}");
         unsafe {
             SendInput(
                 &inputs,
@@ -649,16 +680,22 @@ where
                             io.send_deferred_vks(&resend.deferred_vks, VkMarker::Injected);
                         }
                         TransmitTarget::Tsf => {
-                            // TSF パス: warm 維持のまま VK run 送信（F2 prepend なし）
-                            // WezTerm の 344ms composition context タイマーをリセットしない。
+                            // confirmed_warm=true: warm 維持のまま VK run 送信（F2 prepend なし）。
+                            //   WezTerm の 344ms composition context タイマーをリセットしない。
+                            // confirmed_warm=false: VK_A timeout → TSF cold 確定 → F2 で warmup。
+                            //   partial literal 回収後の sacr warmup や long-cold timeout で使われる。
+                            //   timeout 期間（≥300ms）中に WezTerm の 344ms timer が既に発火している
+                            //   可能性があるため、F2 を明示的に送って TSF context を再初期化する。
+                            let prepend_f2 = !resend.confirmed_warm;
                             let outcome = WarmupOutcome {
-                                prepend_f2_warmup: false,
+                                prepend_f2_warmup: prepend_f2,
                                 used_eager_path: false,
                                 cold_seq,
                             };
                             log::debug!(
-                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を warm パスで再送",
-                                resend.romaji
+                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を {} パスで再送",
+                                resend.romaji,
+                                if prepend_f2 { "F2+warm" } else { "warm" },
                             );
                             io.transmit_tsf(&resend.romaji, &chars, &outcome);
                             io.send_deferred_vks(&resend.deferred_vks, VkMarker::Tsf);
@@ -695,16 +732,28 @@ where
                 let consecutive = io.consecutive_count();
                 if consecutive == 0 {
                     if io.is_tsf_mode() {
-                        // TSF mode (WezTerm): warm を維持して再送。
-                        // mark_cold_raw_tsf を呼ぶと flush_raw_tsf_literal_romaji が
-                        // cold 経路で F2 warmup を再送し WezTerm の 344ms タイマーをリセットする。
-                        // warm のまま即 VK 再送することでタイマーリセットを回避する。
+                        // TSF mode: BS×backs で terminal を cleanup してから sacr warmup で確認。
+                        // 従来の「warm 維持 + 再送」では flush_raw_tsf_literal_romaji が同じ warm
+                        // path を通り 2 回目の partial literal が確実に起きていた。
+                        // sacr warmup (VK_A → composition 確認 → BS×1 + 実字) により
+                        // TSF cold を確認してから送ることで 2 回目以降の失敗を防ぐ。
                         log::warn!(
-                            "[raw-tsf-literal] cold={cold_seq} TSF mode literal suspected \
-                            → backspace ×{backs} + re-send {romaji:?} scheduled (warm maintained)"
+                            "[raw-tsf-literal] cold={cold_seq} TSF partial literal \
+                            → BS×{backs} cleanup + sacr warmup resend ({romaji:?})"
                         );
-                        io.set_raw_literal(backs, romaji);
+                        io.send_literal_recovery_bs(backs, cold_seq);
+                        let write_bytes_before_vk_a = crate::tsf::observer::gji_write_bytes();
+                        io.send_sacrificial_vk_a(cold_seq);
                         io.increment_consecutive_count();
+                        let sacr_fsm = crate::tsf::sacr_warmup_fsm::SacrificialWarmupFsm::new(
+                            cold_seq,
+                            romaji,
+                            vec![],
+                            crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                            TransmitTarget::Tsf,
+                            write_bytes_before_vk_a,
+                        );
+                        return DispatchResult::SwitchMachine(Box::new(sacr_fsm));
                     } else {
                         log::warn!(
                             "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
@@ -754,6 +803,8 @@ mod tests {
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
         increment_consecutive_called: Cell<bool>,
+        send_literal_recovery_bs_called: Cell<bool>,
+        send_sacrificial_vk_a_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.prepend_f2_warmup を記録する。
@@ -776,6 +827,8 @@ mod tests {
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
                 increment_consecutive_called: Cell::new(false),
+                send_literal_recovery_bs_called: Cell::new(false),
+                send_sacrificial_vk_a_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
                 last_used_prepend_f2: Cell::new(false),
             }
@@ -835,11 +888,17 @@ mod tests {
             None
         }
 
-        fn send_sacrificial_vk_a(&self, _cold_seq: u32) {}
+        fn send_sacrificial_vk_a(&self, _cold_seq: u32) {
+            self.send_sacrificial_vk_a_called.set(true);
+        }
 
         fn send_sacrificial_vk_a_with_bs(&self, _cold_seq: u32) {}
 
         fn send_sacrificial_bs_one(&self, _cold_seq: u32) {}
+
+        fn send_literal_recovery_bs(&self, _backs: usize, _cold_seq: u32) {
+            self.send_literal_recovery_bs_called.set(true);
+        }
 
         fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {}
 
@@ -1379,10 +1438,10 @@ mod tests {
     }
 
     #[test]
-    fn raw_tsf_literal_recovery_tsf_mode_keeps_warm_and_increments_consecutive() {
-        // TSF mode の RawTsfLiteralRecovery: warm を維持 + consecutive インクリメント。
-        // mark_cold_raw_tsf を呼ぶと flush_raw_tsf_literal_romaji が cold 経路で F2 warmup を
-        // 再送し WezTerm の 344ms タイマーをリセットしてしまう。
+    fn raw_tsf_literal_recovery_tsf_mode_switches_to_sacr_warmup() {
+        // TSF mode の RawTsfLiteralRecovery(consecutive=0):
+        // BS×backs で terminal cleanup → VK_A 送信 → SacrificialWarmupFsm に切り替え。
+        // 従来の「warm 維持 + 直接再送」では 2 回目も同じ partial literal になっていた。
         let io = FakeProbeIo {
             tsf_mode: true,
             consecutive: 0,
@@ -1398,14 +1457,25 @@ mod tests {
             ProbeAction::Done,
         ];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(result.is_done());
         assert!(
-            io.set_raw_literal_called.get(),
-            "TSF mode: set_raw_literal は呼ぶべき"
+            matches!(result, DispatchResult::SwitchMachine(_)),
+            "TSF mode consecutive=0: SacrificialWarmupFsm に SwitchMachine するべき"
+        );
+        assert!(
+            io.send_literal_recovery_bs_called.get(),
+            "TSF mode: partial literal cleanup のため send_literal_recovery_bs を呼ぶべき"
+        );
+        assert!(
+            io.send_sacrificial_vk_a_called.get(),
+            "TSF mode: sacr warmup のため VK_A を送るべき"
+        );
+        assert!(
+            !io.set_raw_literal_called.get(),
+            "TSF mode: RAW_TSF_LITERAL は使わない（BS は直接送信）"
         );
         assert!(
             !io.mark_cold_raw_tsf_called.get(),
-            "TSF mode: mark_cold_raw_tsf を呼ばず warm を維持するべき"
+            "TSF mode: cold マークは SacrificialWarmupFsm が判断する"
         );
         assert!(
             io.increment_consecutive_called.get(),
