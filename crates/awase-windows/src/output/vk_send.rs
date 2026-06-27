@@ -592,6 +592,7 @@ impl Output {
                     },
                     ze_bs_count,
                     crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    self.composition.consecutive_count(),
                 ),
             ));
         } else {
