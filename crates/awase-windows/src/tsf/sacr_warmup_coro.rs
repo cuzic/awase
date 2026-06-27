@@ -23,7 +23,7 @@ use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{
     DeferredVk, ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot,
 };
-use crate::tsf::step_coro::{yield_step, Channel, CoroStep, StepCoro};
+use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 use crate::tsf::tickable_fsm::TickableFsm;
 use crate::tuning::{
     CHROME_GJI_REINIT_CONFIRM_MS, SACR_WARMUP_CHROME_HIDE_WAIT_MS,
@@ -229,8 +229,8 @@ impl SacrificialWarmupCoro {
         target: TransmitTarget,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
-        let coro = StepCoro::new(|ch| {
-            sacr_warmup_coro_body(ch, cold_seq, romaji, deferred_vks, detector, deadline_ms, target)
+        let coro = StepCoro::new(async move |ch| {
+            sacr_warmup_coro_body(ch, cold_seq, romaji, deferred_vks, detector, deadline_ms, target).await
         });
         Self {
             coro,

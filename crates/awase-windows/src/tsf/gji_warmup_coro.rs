@@ -33,7 +33,7 @@ use crate::tsf::probe_fsm::{
     decide_transmit_plan, DeferredVk, LiteralDetectConfig, ProbeAction, ProbeObservations,
     TransmitPlan, TransmitTarget, TsfEnvSnapshot,
 };
-use crate::tsf::step_coro::{yield_step, Channel, CoroStep, StepCoro};
+use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 use crate::tsf::tickable_fsm::TickableFsm;
 use awase::types::VkCode;
 
@@ -402,7 +402,7 @@ pub(crate) struct GjiWarmupCoro {
 
 impl GjiWarmupCoro {
     /// `GjiWarmupFsm::new` と同等のシグネチャ。`consecutive` は LiteralDetect 判定用。
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         romaji: &str,
         cold_seq: u32,
@@ -428,17 +428,9 @@ impl GjiWarmupCoro {
             fresh_f2_at_probe_start,
             consecutive,
         };
-        let romaji_owned = romaji.to_string();
-        let coro = StepCoro::new(|ch| {
-            gji_coro_body(
-                ch,
-                romaji_owned,
-                probe,
-                total_max_ms,
-                needs_settle_check,
-                cold_reason,
-                ctx,
-            )
+        let romaji = romaji.to_string();
+        let coro = StepCoro::new(async move |ch| {
+            gji_coro_body(ch, romaji, probe, total_max_ms, needs_settle_check, cold_reason, ctx).await
         });
         Self {
             coro,

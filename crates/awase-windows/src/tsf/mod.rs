@@ -15,7 +15,6 @@ pub(crate) mod gji_fsm;
 pub(crate) mod gji_warmup_coro;
 pub(crate) mod ime_mode_fsm;
 pub(crate) mod literal_detect_fsm;
-pub(crate) mod step_coro;
 pub mod observer;
 pub(crate) mod sacr_warmup_coro;
 pub(crate) mod tickable_fsm;

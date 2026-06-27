@@ -31,7 +31,7 @@ pub(crate) struct DeferredVk {
 }
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::step_coro::{yield_step, Channel, CoroStep, StepCoro};
+use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 use crate::tsf::tickable_fsm::TickableFsm;
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
@@ -427,9 +427,9 @@ impl TsfProbeCoro {
         total_max_ms: u64,
         guard: OutputActiveGuard,
     ) -> Self {
-        let romaji_owned = romaji.to_string();
-        let coro = StepCoro::new(|ch| {
-            tsf_probe_coro_body(ch, romaji_owned, probe, total_max_ms, cold_seq)
+        let romaji = romaji.to_string();
+        let coro = StepCoro::new(async move |ch| {
+            tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await
         });
         Self {
             coro,
