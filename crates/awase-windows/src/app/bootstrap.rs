@@ -359,7 +359,7 @@ impl Drop for WtsGuard {
 }
 
 /// セッション変更通知（画面ロック/アンロック）を登録する
-#[allow(clippy::redundant_closure_for_method_calls)]
+#[expect(clippy::redundant_closure_for_method_calls)]
 pub(super) fn register_session_notification() -> Result<WtsGuard> {
     let tray_hwnd = with_app_ref(|app| app.tray_hwnd()).context("RUNTIME not initialized")?;
     let ok = unsafe {
@@ -371,7 +371,7 @@ pub(super) fn register_session_notification() -> Result<WtsGuard> {
 }
 
 /// APP グローバルの初期化（PlatformState を含む）
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn initialize_app(
     engine: Engine,
     tray: SystemTray,
@@ -549,7 +549,7 @@ unsafe extern "system" fn win_event_proc(
         // (FocusChanged event の dispatch まで少しタイムラグがある場合に備えた safety net)
         let now = std::time::Instant::now();
         // HWND is a pointer value; cast to usize is valid
-        #[allow(clippy::cast_sign_loss)]
+        #[expect(clippy::cast_sign_loss)]
         app.on_window_focus_event(crate::state::ime_event::HwndId(hwnd_isize as usize), now);
     });
 }
@@ -630,8 +630,8 @@ impl LayoutEntry {
 /// アプリケーション全体の起動シーケンスを実行する。
 ///
 /// `app::run()` から呼ばれる唯一のエントリポイント。
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::items_after_statements)]
+#[expect(clippy::too_many_lines)]
+#[expect(clippy::items_after_statements)]
 pub(super) fn run_all() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_console = args.iter().any(|a| a == "--debug");
