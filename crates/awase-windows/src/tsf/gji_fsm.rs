@@ -59,7 +59,7 @@ pub(crate) struct ProbeId(pub(crate) u32);
 
 /// `GjiAction::StartProbe` / `ProbeStatus::Authorized` が持つ probe パラメータ。
 ///
-/// `TsfProbeMachine::new_gji` に渡す3値をまとめる。
+/// `GjiWarmupCoro::new` に渡すパラメータをまとめる。
 /// `ColdKind` から `transition_to_cold` / `on_event(KeyInput NotStarted)` で生成する。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProbeParams {
@@ -118,7 +118,7 @@ impl WarmupResult {
 
 // ── PendingInput ─────────────────────────────────────────────────────────────
 
-/// `OnCold` 中に蓄積する入力バッファ（旧 `TsfProbeMachine::SendState` に相当）。
+/// `OnCold` 中に蓄積する入力バッファ（warmup 前の入力キャッシュ）。
 ///
 /// warmup 完了後に `GjiAction::SendInput` に格納して dispatcher に渡す。
 // Phase 3 で SendInput/SendInputDirect が実際に dispatch されるまでフィールドは蓄積のみ。
@@ -301,7 +301,7 @@ pub(crate) enum GjiAction {
         probe_id: ProbeId,
         /// GjiProbe フェーズの最大待機時間 (ms)
         budget_ms: u64,
-        /// `TsfProbeMachine::new_gji` に渡す probe パラメータ
+        /// `GjiWarmupCoro::new` に渡す probe パラメータ
         params: ProbeParams,
     },
     /// 実行中の probe をキャンセルする
@@ -393,7 +393,7 @@ impl GjiFsm {
 
     /// `OnCold(Authorized)` なら `ProbeParams` を返す。
     ///
-    /// `vk_send` が `TsfProbeMachine::new_gji` に渡すパラメータを読み出すために使う。
+    /// `vk_send` が `GjiWarmupCoro::new` に渡すパラメータを読み出すために使う。
     pub(crate) fn current_probe_params(&self) -> Option<ProbeParams> {
         match &self.state {
             GjiState::OnCold {

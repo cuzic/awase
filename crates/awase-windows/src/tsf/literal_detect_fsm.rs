@@ -1,7 +1,7 @@
 //! warm パスおよび GJI post-transmit 共用の LiteralDetect ステートマシン。
 //!
-//! [`TsfProbeMachine::new_literal_detect`] が担う LiteralDetect フェーズを
-//! 独立した [`LiteralDetectFsm`] として切り出したもの。
+//! warm パスで `TsfProbeCoro` の inline LiteralDetect から独立した
+//! [`LiteralDetectFsm`] として切り出したもの。
 //!
 //! ## 使用場面
 //!

@@ -90,7 +90,7 @@ pub struct Output {
     ///
     /// `send_romaji_as_tsf` の cold パスで `gji_begin_probe_guard()` を呼び、
     /// `step_probe` 完了時 / `CancelProbe` 時 / `SwitchMachine` 時に `gji_end_probe_guard()` で解放する。
-    /// Chrome / LiteralDetect probe は `TsfProbeMachine._guard` で独立管理する。
+    /// Chrome / LiteralDetect probe は `TsfProbeCoro._guard` で独立管理する。
     gji_probe_guard: std::cell::RefCell<Option<crate::tsf::probe_bridge::OutputActiveGuard>>,
     /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
     ///
@@ -363,7 +363,7 @@ self.gji_fsm.borrow_mut().on_gji_long_idle()
 
     /// GJI probe の OUTPUT_GATE ガードを開始する。
     ///
-    /// `send_romaji_as_tsf` の cold パスで `TsfProbeMachine::new_gji` を呼ぶ直前に使う。
+    /// `send_romaji_as_tsf` の cold パスで `GjiWarmupCoro::new` を呼ぶ直前に使う。
     pub(crate) fn gji_begin_probe_guard(&self) {
         *self.gji_probe_guard.borrow_mut() = Some(crate::tsf::probe_bridge::OutputActiveGuard::begin());
     }

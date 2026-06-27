@@ -1,15 +1,15 @@
-//! TSF/Chrome cold-start probe ステートマシン。
+//! TSF/Chrome cold-start probe コルーチン実装。
 //!
-//! [`TsfProbeMachine`] は 10ms 間隔の `TIMER_TSF_PROBE` ハンドラから駆動される。
+//! [`TsfProbeCoro`] は 10ms 間隔の `TIMER_TSF_PROBE` ハンドラから駆動される。
 //! `tick()` がフェーズを 1 ステップ進め、dispatcher が返す [`ProbeAction`] を
 //! `platform.rs::dispatch_probe_actions` が実行する。
 //!
 //! ## フェーズ遷移
 //!
 //! ```text
-//! Probing(Chrome) ──► (TransmitChrome 後に即完了)
-//!                      ├─[needs_literal=false]─► Done
-//!                      └─[needs_literal=true]──► LiteralDetect ─[apply_transmit_done]─► Done
+//! ChromeProbe ──► [gji_active]──► StartSacrificialWarmup（SacrificialWarmupCoro に委譲）
+//!              └─[!gji_active]──► Transmit(Chrome) ─[needs_literal=false]─► Done
+//!                                                   └─[needs_literal=true]──► LiteralDetect ─► Done
 //! ```
 //!
 //! ## 設計ポリシー
@@ -17,11 +17,9 @@
 //! - `tick()` / `apply_*` は副作用なし。状態のみ更新し [`ProbeAction`] を返す。
 //! - SendInput / mark_warm / mark_cold / RAW_TSF_LITERAL 操作は dispatcher 側で実行する
 //!   (`platform.rs::dispatch_probe_actions`)。
-//! - `romaji` / `deferred_vks` は `SendState` として各 phase variant に埋め込まれており、
-//!   `ProbeAction::Transmit` 生成時に `take_current_send_for_transmit` で move する
-//!   （clone コストを避ける）。
-//! - FSM 内部フィールドは非公開。送信コンテキスト（`cold_seq` 等）は
-//!   [`ProbeAction`] のペイロードに畳み込んで dispatcher に渡す。
+//! - フェーズ遷移は `StepCoro` async 本体に直線記述し、`ProbePhase` enum は不要。
+
+use std::rc::Rc;
 
 use awase::types::VkCode;
 
@@ -33,19 +31,8 @@ pub(crate) struct DeferredVk {
 }
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use timed_fsm::Clock;
-
-/// 本番クロック: `crate::hook::current_tick_ms()` に委譲する。
-///
-/// `deadline_ms` は `current_tick_ms()` 起点で計算されるため、
-/// `MonotonicClock` と混在させると epoch がずれる。
-pub(crate) struct SystemClock;
-impl Clock for SystemClock {
-    fn now_ms(&self) -> u64 {
-        crate::hook::current_tick_ms()
-    }
-}
-
+use crate::tsf::step_coro::{yield_step, Channel, CoroStep, StepCoro};
+use crate::tsf::tickable_fsm::TickableFsm;
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
 /// テストでは任意値を注入できる。
@@ -59,14 +46,10 @@ pub(crate) struct TsfEnvSnapshot {
     pub foreground_comp_char: Option<char>,
     /// `GoogleJapaneseInputCandidateWindow` が現在表示中なら true。
     /// `GjiWarmupCoro` の NameChangeWait 早期脱出判定に使用する。
-    /// `crate::tsf::observer::gji_candidate_visible_now()` のスナップショット。
     pub gji_candidate_visible: bool,
     /// 現在の IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
-    /// `ImeModeFsm.state()` のスナップショット（OS 呼び出しなし）。
-    /// `ChromeGjiReinitFsm` が IME モード確認待機に使用する。
     pub ime_mode: crate::tsf::ime_mode_fsm::ImeModeState,
     /// `ime_mode` が `IMC_GETCONVERSIONMODE` で OS から確認済みなら true。
-    /// false = F21/F22 送信直後の belief のみ（async 確認待ち）。
     pub ime_mode_confirmed: bool,
 }
 
@@ -151,75 +134,6 @@ pub(crate) fn decide_transmit_plan(
     }
 }
 
-/// `inspect_phase` が返す「次に何をすべきか」の宣言。
-///
-/// `tick_with_clock` はこれを受け取って状態遷移と `ProbeAction` emit を行う。
-/// `inspect_phase` は `&self` のみ使用（副作用なし）。
-enum NextStep {
-    /// 現フェーズで継続待機（actions なし）
-    Wait,
-    /// `enter_transmit_chrome()` を呼ぶ
-    TransmitChrome,
-    /// `LiteralDetect`: composition 確定 → `Done`
-    LiteralDone,
-    /// `LiteralDetect`: raw literal 疑い → `RawTsfLiteralRecovery + Done`
-    LiteralSuspected { ze_bs_count: usize },
-}
-
-/// [`ProbePhase::Probing`] の完了後アクションを区別するタグ。
-pub(crate) enum ProbeKind {
-    /// Chrome F2 probe。完了後 `Transmit(Chrome)` を emit。
-    Chrome,
-}
-
-/// multi-tick にわたって蓄積する送信データ。
-///
-/// `ProbePhase` の各 variant に埋め込まれ、phase が単独所有する。
-/// `Clone` は derive しない（所有権移動のみ許可）。
-#[derive(Debug, Default)]
-pub(crate) struct SendState {
-    pub(crate) romaji: String,
-    pub(crate) deferred_vks: Vec<DeferredVk>,
-}
-
-impl SendState {
-    pub(crate) fn new(romaji: &str) -> Self {
-        Self {
-            romaji: romaji.to_string(),
-            deferred_vks: Vec::new(),
-        }
-    }
-}
-
-/// [`ProbePhase::WaitingForCallback`] の内部状態。
-pub(crate) enum WaitingFor {
-    /// `apply_transmit_done` 待ち（Transmit(Chrome) パス）。
-    TransmitDone,
-}
-
-/// プローブ FSM の現在フェーズ。
-pub(crate) enum ProbePhase {
-    /// Chrome F2 後の静止待ち。
-    Probing {
-        probe: TsfReadinessProbe,
-        total_max_ms: u64,
-        kind: ProbeKind,
-        send: SendState,
-    },
-    /// dispatcher コールバック（`apply_transmit_done`）待ち。
-    WaitingForCallback(WaitingFor),
-    /// raw TSF literal 検出待ち（TSF 送信後の verify フェーズ）。
-    LiteralDetect {
-        detector: LiteralDetector,
-        ze_bs_count: usize,
-        deadline_ms: u64,
-        send: SendState,
-        /// SHOW 発火時に IMM32 composition と突き合わせる期待かな文字。
-        /// None の場合は IMM32 検証をスキップして CompositionConfirmed を返す。
-        expected_kana: Option<char>,
-    },
-}
-
 /// [`ProbeAction::Transmit`] の送信先。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransmitTarget {
@@ -266,12 +180,12 @@ pub(crate) struct SacrificialResend {
 #[derive(Debug)]
 pub(crate) enum ProbeAction {
     /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、完了したら
-    /// [`TsfProbeMachine::apply_fresh_f2_sent`] を呼ぶ。
+    /// [`TsfProbeCoro::apply_fresh_f2_sent`] を呼ぶ。
     SendFreshF2 { cold_seq: u32, probe_settled: bool },
     /// TSF または Chrome バッチパイプラインで `romaji` を送信する。
     ///
     /// `target == Tsf`: `deferred_vks` をフラッシュし warm マークしたあと
-    /// [`TsfProbeMachine::apply_transmit_done`] を呼ぶ。
+    /// [`TsfProbeCoro::apply_transmit_done`] を呼ぶ。
     /// `target == Chrome`: `deferred_vks` をフラッシュし warm マークして完了。
     Transmit {
         cold_seq: u32,
@@ -331,259 +245,62 @@ pub(crate) enum ProbeAction {
     Done,
 }
 
-/// TSF/Chrome cold-start プローブの状態機械本体。
-///
-/// `pending_tsf` (`RefCell<Option<TsfProbeMachine>>`) に格納し、
-/// `TIMER_TSF_PROBE` ハンドラが `tick()` で 1 ステップ進める。
-pub(crate) struct TsfProbeMachine {
-    /// ログ相関番号
-    cold_seq: u32,
-    /// RAII guard。drop で `OUTPUT_GATE.active=false`。
-    ///
-    /// Chrome / LiteralDetect probe では `Some` を保持する。
-    _guard: Option<OutputActiveGuard>,
-    /// 現在フェーズ
-    phase: ProbePhase,
+// ── TickInput ─────────────────────────────────────────────────────────────────
+
+struct TsfProbeTickInput {
+    env: TsfEnvSnapshot,
+    new_deferred: Vec<DeferredVk>,
+    transmit_done: Option<TsfTransmitDonePayload>,
 }
 
-impl TsfProbeMachine {
-    /// Chrome F2 cold warmup (`send_romaji_batched` の cold パス) 用コンストラクタ。
-    pub(crate) fn new_chrome(
-        romaji: &str,
-        cold_seq: u32,
-        probe: TsfReadinessProbe,
-        total_max_ms: u64,
-        guard: OutputActiveGuard,
-    ) -> Self {
-        Self {
-            cold_seq,
-            _guard: Some(guard),
-            phase: ProbePhase::Probing {
-                probe,
-                total_max_ms,
-                kind: ProbeKind::Chrome,
-                send: SendState::new(romaji),
-            },
-        }
-    }
+/// `apply_transmit_done(Some(detector))` のペイロード。次 tick で inline LiteralDetect に入る。
+struct TsfTransmitDonePayload {
+    romaji: String,
+    ze_bs_count: usize,
+    detector: LiteralDetector,
+    /// `apply_transmit_done` 呼び出し時点の `current_tick_ms() + literal_detect_ms`。
+    deadline_ms: u64,
+    expected_kana: Option<char>,
+}
 
-    /// ログ用 cold_seq 参照（上書き警告等で使う）。
-    pub(crate) const fn cold_seq_hint(&self) -> u32 {
-        self.cold_seq
-    }
+// ── コルーチン本体 ────────────────────────────────────────────────────────────
 
-    /// probe 進行中に後続 VK を 1 つ蓄積する。
-    pub(crate) fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        if let Some(send) = self.current_send_mut() {
-            send.deferred_vks.push(DeferredVk { vk, needs_shift });
-        } else {
-            log::warn!(
-                "[tsf-probe] cold={} push_deferred dropped: phase has no SendState (label={})",
-                self.cold_seq,
-                self.phase_label_internal()
-            );
-        }
-    }
+async fn tsf_probe_coro_body(
+    ch: Rc<Channel<TsfProbeTickInput, Vec<ProbeAction>>>,
+    romaji: String,
+    probe: TsfReadinessProbe,
+    total_max_ms: u64,
+    cold_seq: u32,
+) {
+    let mut deferred_vks: Vec<DeferredVk> = vec![];
 
-    /// 現フェーズの `SendState` への可変参照を返す。`TransmitDone` フェーズは `None`。
-    const fn current_send_mut(&mut self) -> Option<&mut SendState> {
-        match &mut self.phase {
-            ProbePhase::Probing { send, .. }
-            | ProbePhase::LiteralDetect { send, .. } => Some(send),
-            ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
-        }
-    }
+    // ── Phase 1: ChromeProbe ポーリング ──────────────────────────────────────
+    let env = loop {
+        let input = yield_step(ch.clone(), vec![]).await;
+        deferred_vks.extend(input.new_deferred);
+        let Some(outcome) = probe.check_outcome(total_max_ms) else {
+            continue;
+        };
+        log::debug!(
+            "[tsf-probe] cold={cold_seq} ChromeProbe 完了 ({}ms)",
+            outcome.elapsed_ms
+        );
+        // F22→F21 を Chrome path で使わない。
+        // F22 (IME OFF) が Chrome TSF context を壊し、F21 が間に合わず na がリテラル化する。
+        // ChromeProbe の F2 (VK_DBE_HIRAGANA) warmup のみで GJI を活性化する。
+        break input.env;
+    };
 
-    /// フェーズ名文字列（内部用）。
-    const fn phase_label_internal(&self) -> &'static str {
-        match &self.phase {
-            ProbePhase::Probing { .. } => "Probing",
-            ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => {
-                "WaitingForCallback(TransmitDone)"
-            }
-            ProbePhase::LiteralDetect { .. } => "LiteralDetect",
-        }
-    }
-
-    /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。フェーズを 1 ステップ進める。
-    ///
-    /// 返値の `Vec<ProbeAction>` を `dispatch_probe_actions` が実行する。
-    /// 空 Vec = まだ待機中（タイマー継続）。
-    pub(crate) fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
-        self.tick_impl(&SystemClock, env)
-    }
-
-    /// `Clock` と `TsfEnvSnapshot` を注入できる `tick` の内部実装（テスト用）。
-    ///
-    /// `inspect_phase` で副作用なしに次の遷移先を決定し、
-    /// その後 `&self` を解放してから状態変化を適用する。
-    #[cfg(test)]
-    pub(crate) fn tick_with_clock_env<C: Clock>(
-        &mut self,
-        clock: &C,
-        env: &TsfEnvSnapshot,
-    ) -> Vec<ProbeAction> {
-        self.tick_impl(clock, env)
-    }
-
-    fn tick_impl<C: Clock>(&mut self, clock: &C, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
-        match self.inspect_phase(clock, env) {
-            NextStep::Wait => vec![],
-            NextStep::TransmitChrome => self.enter_transmit_chrome(env),
-            NextStep::LiteralDone => vec![ProbeAction::Done],
-            NextStep::LiteralSuspected { ze_bs_count } => {
-                let romaji = self.take_romaji_from_literal_detect();
-                // ※「consecutive_count」のチェック (false-positive 抑制) は dispatcher 側で行う。
-                vec![
-                    ProbeAction::RawTsfLiteralRecovery {
-                        cold_seq: self.cold_seq,
-                        backs: ze_bs_count,
-                        romaji,
-                    },
-                    ProbeAction::Done,
-                ]
-            }
-        }
-    }
-
-    /// 現フェーズを検査して次の遷移先を返す。副作用なし（`&self` のみ使用）。
-    fn inspect_phase<C: Clock>(&self, _clock: &C, env: &TsfEnvSnapshot) -> NextStep {
-        match &self.phase {
-            ProbePhase::Probing {
-                probe,
-                total_max_ms,
-                kind,
-                ..
-            } => {
-                let Some(outcome) = probe.check_outcome(*total_max_ms) else {
-                    return NextStep::Wait;
-                };
-                match kind {
-                    ProbeKind::Chrome => {
-                        log::debug!(
-                            "[tsf-probe] cold={} ChromeProbe 完了 ({}ms)",
-                            self.cold_seq,
-                            outcome.elapsed_ms
-                        );
-                        // F22→F21 を Chrome path で使わない。
-                        // F22 (IME OFF) が Chrome TSF context を壊し、F21 が間に合わず na がリテラル化する。
-                        // ChromeProbe の F2 (VK_DBE_HIRAGANA) warmup のみで GJI を活性化する。
-                        NextStep::TransmitChrome
-                    }
-                }
-            }
-
-            ProbePhase::WaitingForCallback(_) => NextStep::Wait,
-
-            ProbePhase::LiteralDetect {
-                detector,
-                ze_bs_count,
-                deadline_ms,
-                expected_kana,
-                ..
-            } => {
-                use crate::tsf::probe::DetectionResult;
-                let Some(detection) = detector.check_now(*deadline_ms) else {
-                    return NextStep::Wait;
-                };
-                match detection {
-                    DetectionResult::CompositionConfirmed => {
-                        // 部分リテラル検出: SHOW が発火しても composition 内容が expected_kana と
-                        // 異なる場合は「K がリテラル化して O だけが compose された」部分リテラルを示す。
-                        // TSF→IMM32 bridge が composition 中に HIMC を更新する環境でのみ有効。
-                        // HIMC が NULL の場合（bridge 未対応など）は None → スキップして安全に CompositionConfirmed へ。
-                        if let Some(expected) = expected_kana {
-                            // env.foreground_comp_char は output/mod.rs が取得して注入したスナップショット。
-                            // None = HIMC 未取得（テスト・bridge 非対応環境）→ 部分リテラル検出をスキップ。
-                            let actual = env.foreground_comp_char;
-                            if actual.map_or(false, |c| c != *expected) {
-                                log::warn!(
-                                    "[raw-tsf-literal] cold={} partial literal: comp={actual:?} ≠ expected='{expected}' → SuspectedLiteral",
-                                    self.cold_seq
-                                );
-                                crate::ime_diagnostic::log_composition_probe(
-                                    self.cold_seq,
-                                    "partial-literal",
-                                );
-                                return NextStep::LiteralSuspected {
-                                    ze_bs_count: *ze_bs_count,
-                                };
-                            }
-                        }
-                        log::debug!(
-                            "[raw-tsf-literal] cold={} composition confirmed",
-                            self.cold_seq
-                        );
-                        crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
-                        NextStep::LiteralDone
-                    }
-                    DetectionResult::SuspectedLiteral => {
-                        crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
-                        NextStep::LiteralSuspected {
-                            ze_bs_count: *ze_bs_count,
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// テスト専用: 任意のフェーズに強制遷移する。
-    #[cfg(test)]
-    pub(crate) fn force_phase_for_test(&mut self, phase: ProbePhase) {
-        self.phase = phase;
-    }
-
-    /// テスト専用: 現在フェーズの文字列ラベルを返す。
-    #[cfg(test)]
-    pub(crate) fn phase_label(&self) -> &'static str {
-        self.phase_label_internal()
-    }
-
-    /// dispatcher が `Transmit(Chrome)` を実行した後に呼ぶ。
-    ///
-    /// `detector` は送信**前**に dispatcher 側で生成し渡すこと（ベースラインは transmit 前が正しい）。
-    ///
-    /// `true` を返した場合は Done（dispatcher は `TIMER_TSF_PROBE` を kill する）。
-    /// `false` を返した場合は `LiteralDetect` フェーズへ遷移し、タイマーを継続する。
-    pub(crate) fn apply_transmit_done(
-        &mut self,
-        romaji: String,
-        ze_bs_count: usize,
-        detector: Option<LiteralDetector>,
-        literal_detect_ms: u64,
-        expected_kana: Option<char>,
-    ) -> bool {
-        if let Some(detector) = detector {
-            let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
-            self.phase = ProbePhase::LiteralDetect {
-                detector,
-                ze_bs_count,
-                deadline_ms,
-                send: SendState {
-                    romaji,
-                    deferred_vks: Vec::new(),
-                },
-                expected_kana,
-            };
-            false
-        } else {
-            true
-        }
-    }
-
-    fn enter_transmit_chrome(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
-        let send = self.take_current_send_for_transmit();
-        let cold_seq = self.cold_seq;
-        if env.gji_active {
-            // GJI active: SacrificialWarmup で TSF warm 確認後に実ローマ字を送信する。
-            // ChromeProbe 完了直後に TSF context がまだ初期化中で先頭 VK がリテラル化する race を防ぐ。
-            // （例: "ko"→'k' literal + 'o'→'お' → "kお..." となる partial literal バグ）
-            // VK_A を送信して GJI I/O 応答を待ち、BS×1 + 実ローマ字の順で再送する。
+    // ── Phase 2a: gji_active → SacrificialWarmupCoro に委譲 ──────────────────
+    if env.gji_active {
+        // GJI active: SacrificialWarmup で TSF warm 確認後に実ローマ字を送信する。
+        // ChromeProbe 完了直後に TSF context がまだ初期化中で先頭 VK がリテラル化する race を防ぐ。
+        yield_step(
+            ch,
             vec![ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
                 cold_seq,
-                romaji: send.romaji,
-                deferred_vks: send.deferred_vks,
+                romaji,
+                deferred_vks,
                 plan: TransmitPlan {
                     should_prepend_f2: false,
                     used_eager_path: false,
@@ -594,65 +311,157 @@ impl TsfProbeMachine {
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 target: TransmitTarget::Chrome,
                 from_literal_recovery: false,
-            })]
-        } else {
-            // GJI inactive: GJI モニター不健全のため composition 確認不可 → 直接送信。
-            self.phase = ProbePhase::WaitingForCallback(WaitingFor::TransmitDone);
-            vec![ProbeAction::Transmit {
-                cold_seq,
-                plan: TransmitPlan {
-                    should_prepend_f2: false,
-                    used_eager_path: false,
-                    needs_literal: false,
-                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                },
-                observations: ProbeObservations { nc_fired: true, gji_resumed: false },
-                romaji: send.romaji,
-                deferred_vks: send.deferred_vks,
-                target: TransmitTarget::Chrome,
-            }]
-        }
+            })],
+        )
+        .await;
+        return; // SacrificialWarmupCoro が引き継ぐ → このコルーチンは破棄
     }
 
-    /// `Transmit` action 生成時に現フェーズから `SendState` を取り出す。
-    fn take_current_send_for_transmit(&mut self) -> SendState {
-        match &mut self.phase {
-            ProbePhase::Probing { send, .. } => std::mem::take(send),
-            _ => {
+    // ── Phase 2b: !gji_active → GJI モニター不健全のため直接 Chrome 送信 ─────
+    let transmit_input = yield_step(
+        ch.clone(),
+        vec![ProbeAction::Transmit {
+            cold_seq,
+            plan: TransmitPlan {
+                should_prepend_f2: false,
+                used_eager_path: false,
+                needs_literal: false,
+                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+            },
+            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+            romaji,
+            deferred_vks,
+            target: TransmitTarget::Chrome,
+        }],
+    )
+    .await;
+
+    // ── Phase 3: Inline LiteralDetect（dispatcher が detector を渡した場合のみ）─
+    let Some(TsfTransmitDonePayload {
+        romaji: recovery_romaji,
+        ze_bs_count,
+        detector,
+        deadline_ms,
+        expected_kana,
+    }) = transmit_input.transmit_done
+    else {
+        return;
+    };
+
+    loop {
+        use crate::tsf::probe::DetectionResult;
+        let detect_input = yield_step(ch.clone(), vec![]).await;
+        let env = detect_input.env;
+
+        let Some(detection) = detector.check_now(deadline_ms) else {
+            continue;
+        };
+
+        // 部分リテラル判定: SHOW 後に composition 内容が expected_kana と異なるケース。
+        // TSF→IMM32 bridge が composition 中に HIMC を更新する環境でのみ有効。
+        let partial_literal = matches!(detection, DetectionResult::CompositionConfirmed)
+            && expected_kana.map_or(false, |e| {
+                env.foreground_comp_char.map_or(false, |c| c != e)
+            });
+
+        let final_actions = match detection {
+            DetectionResult::CompositionConfirmed if partial_literal => {
                 log::warn!(
-                    "[tsf-probe] cold={} enter_transmit_chrome called from unexpected phase {}",
-                    self.cold_seq,
-                    self.phase_label_internal()
+                    "[raw-tsf-literal] cold={cold_seq} partial literal: comp={:?} ≠ expected='{:?}' → SuspectedLiteral",
+                    env.foreground_comp_char, expected_kana
                 );
-                SendState::default()
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "partial-literal");
+                vec![
+                    ProbeAction::RawTsfLiteralRecovery {
+                        cold_seq,
+                        backs: ze_bs_count,
+                        romaji: recovery_romaji,
+                    },
+                    ProbeAction::Done,
+                ]
             }
-        }
-    }
+            DetectionResult::SuspectedLiteral => {
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "suspected");
+                vec![
+                    ProbeAction::RawTsfLiteralRecovery {
+                        cold_seq,
+                        backs: ze_bs_count,
+                        romaji: recovery_romaji,
+                    },
+                    ProbeAction::Done,
+                ]
+            }
+            _ => {
+                log::debug!("[raw-tsf-literal] cold={cold_seq} composition confirmed");
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "confirmed");
+                vec![ProbeAction::Done]
+            }
+        };
 
-    /// `LiteralSuspected` 遷移時に `LiteralDetect` フェーズから `romaji` を取り出す。
-    fn take_romaji_from_literal_detect(&mut self) -> String {
-        if let ProbePhase::LiteralDetect { send, .. } = &mut self.phase {
-            std::mem::take(&mut send.romaji)
-        } else {
-            log::warn!(
-                "[tsf-probe] cold={} take_romaji_from_literal_detect unexpected phase {}",
-                self.cold_seq,
-                self.phase_label_internal()
-            );
-            String::new()
+        yield_step(ch, final_actions).await;
+        return;
+    }
+}
+
+// ── TsfProbeCoro ──────────────────────────────────────────────────────────────
+
+/// TSF/Chrome cold-start プローブ コルーチン。`TsfProbeMachine` の後継。
+///
+/// `pending_tsf` (`RefCell<Option<Box<dyn TickableFsm>>>`) に格納し、
+/// `TIMER_TSF_PROBE` ハンドラが `tick()` で 1 ステップ進める。
+pub(crate) struct TsfProbeCoro {
+    coro: StepCoro<TsfProbeTickInput, Vec<ProbeAction>>,
+    pending_deferred: Vec<DeferredVk>,
+    pending_transmit_done: Option<TsfTransmitDonePayload>,
+    cold_seq: u32,
+    /// RAII guard。drop で `OUTPUT_GATE.active=false`。
+    _guard: OutputActiveGuard,
+}
+
+impl TsfProbeCoro {
+    /// Chrome F2 cold warmup (`send_romaji_batched` の cold パス) 用コンストラクタ。
+    pub(crate) fn new_chrome(
+        romaji: &str,
+        cold_seq: u32,
+        probe: TsfReadinessProbe,
+        total_max_ms: u64,
+        guard: OutputActiveGuard,
+    ) -> Self {
+        let romaji_owned = romaji.to_string();
+        let coro = StepCoro::new(|ch| {
+            tsf_probe_coro_body(ch, romaji_owned, probe, total_max_ms, cold_seq)
+        });
+        Self {
+            coro,
+            pending_deferred: vec![],
+            pending_transmit_done: None,
+            cold_seq,
+            _guard: guard,
         }
     }
 }
 
-impl crate::tsf::tickable_fsm::TickableFsm for TsfProbeMachine {
+impl TickableFsm for TsfProbeCoro {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
-        TsfProbeMachine::tick(self, env)
+        let input = TsfProbeTickInput {
+            env: *env,
+            new_deferred: std::mem::take(&mut self.pending_deferred),
+            transmit_done: self.pending_transmit_done.take(),
+        };
+        match self.coro.step(input) {
+            CoroStep::Yielded(actions) => actions,
+            CoroStep::Complete => vec![ProbeAction::Done],
+        }
     }
 
     fn cold_seq_hint(&self) -> u32 {
-        TsfProbeMachine::cold_seq_hint(self)
+        self.cold_seq
     }
 
+    /// dispatcher が `Transmit(Chrome)` を実行した後に呼ぶ。
+    ///
+    /// `detector` が `Some` なら `LiteralDetect` フェーズへ進む（`false` を返す）。
+    /// `None` なら Done（`true` を返す）。
     fn apply_transmit_done(
         &mut self,
         romaji: String,
@@ -661,18 +470,24 @@ impl crate::tsf::tickable_fsm::TickableFsm for TsfProbeMachine {
         literal_detect_ms: u64,
         expected_kana: Option<char>,
     ) -> bool {
-        TsfProbeMachine::apply_transmit_done(
-            self,
-            romaji,
-            ze_bs_count,
-            detector,
-            literal_detect_ms,
-            expected_kana,
-        )
+        match detector {
+            Some(det) => {
+                let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
+                self.pending_transmit_done = Some(TsfTransmitDonePayload {
+                    romaji,
+                    ze_bs_count,
+                    detector: det,
+                    deadline_ms,
+                    expected_kana,
+                });
+                false
+            }
+            None => true,
+        }
     }
 
     fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        TsfProbeMachine::push_deferred(self, vk, needs_shift);
+        self.pending_deferred.push(DeferredVk { vk, needs_shift });
     }
 }
 
@@ -681,55 +496,20 @@ mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
 
-    use timed_fsm::ManualClock;
-
-    fn make_chrome_machine() -> TsfProbeMachine {
+    fn make_chrome_coro() -> TsfProbeCoro {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = TsfReadinessProbe::new(0, 0, 0);
-        TsfProbeMachine::new_chrome("ka", 0, probe, 0, guard)
+        TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
     }
 
-    // ── WaitingForCallback フェーズテスト ────────────────────────────────────
-
-    #[test]
-    fn waiting_for_callback_is_no_op() {
-        let mut machine = make_chrome_machine();
-        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::TransmitDone));
-
-        let actions = machine.tick_with_clock_env(&ManualClock(0), &TsfEnvSnapshot::default());
-        assert!(actions.is_empty(), "WaitingForCallback は空 Vec を返すべき");
-        assert_eq!(machine.phase_label(), "WaitingForCallback(TransmitDone)");
-    }
-
-    // ── push_deferred テスト ─────────────────────────────────────────────────
+    // ── push_deferred テスト ─────────────────────────────────────────────────────
 
     #[test]
     fn push_deferred_appends_vk() {
-        let mut machine = make_chrome_machine();
-        machine.push_deferred(VkCode(0x41), false);
-        machine.push_deferred(VkCode(0x42), true);
-        // deferred_vks は private だが Transmit action 経由で確認できる。
-        // ここでは push_deferred が panic しないことを確認するだけで十分。
-    }
-
-    // ── regression: literal_suspected 経路で romaji が保持されるか ────────────
-
-    #[test]
-    fn literal_suspected_carries_romaji_through_transmit_to_recovery() {
-        let guard = OutputActiveGuard::noop_for_test();
-        let detector = crate::tsf::probe::LiteralDetector::new();
-        let mut machine = TsfProbeMachine::new_literal_detect("a", 0, detector, 1, 0, guard);
-        let actions = machine.tick_with_clock_env(&ManualClock(1000), &TsfEnvSnapshot::default());
-        match &actions[..] {
-            [ProbeAction::RawTsfLiteralRecovery { romaji, backs, .. }, ProbeAction::Done] => {
-                assert_eq!(
-                    romaji, "a",
-                    "literal suspected 経路で romaji が空になってはいけない"
-                );
-                assert_eq!(*backs, 1);
-            }
-            other => panic!("unexpected actions: {other:?}"),
-        }
+        let mut coro = make_chrome_coro();
+        coro.push_deferred(VkCode(0x41), false);
+        coro.push_deferred(VkCode(0x42), true);
+        // push_deferred が panic しないことを確認する。
     }
 
     // ── decide_transmit_plan 回帰テスト ──────────────────────────────────────

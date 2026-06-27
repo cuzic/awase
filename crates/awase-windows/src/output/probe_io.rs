@@ -830,20 +830,20 @@ mod tests {
         fn send_unicode_char_direct(&self, _ch: char) {}
     }
 
-    fn make_chrome_machine() -> crate::tsf::probe_fsm::TsfProbeMachine {
+    fn make_chrome_machine() -> crate::tsf::probe_fsm::TsfProbeCoro {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
-        crate::tsf::probe_fsm::TsfProbeMachine::new_chrome("ka", 0, probe, 0, guard)
+        crate::tsf::probe_fsm::TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
     }
 
-    fn make_gji_machine() -> crate::tsf::probe_fsm::TsfProbeMachine {
+    fn make_gji_machine() -> crate::tsf::gji_warmup_coro::GjiWarmupCoro {
         make_gji_machine_with_cold(crate::tuning::SETTLE_TIMEOUT_MS, false)
     }
 
-    fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::probe_fsm::TsfProbeMachine {
+    fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::gji_warmup_coro::GjiWarmupCoro {
         let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
-        crate::tsf::probe_fsm::TsfProbeMachine::new_gji(
+        crate::tsf::gji_warmup_coro::GjiWarmupCoro::new(
             "ka",
             0,
             probe,
@@ -856,6 +856,7 @@ mod tests {
             forces_prepend_f2,
             is_long_cold,
             false,
+            0,
         )
     }
 
@@ -914,7 +915,6 @@ mod tests {
         let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(!result.is_done(), "should not be Done — LiteralDetect phase pending");
         assert!(io.transmit_chrome_called.get());
-        assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
     #[test]
@@ -1085,33 +1085,25 @@ mod tests {
     fn send_fresh_f2_with_gji_long_idle_sends_extra_f2_and_waits_namechange() {
         // forces_prepend_f2=true (Long cold) 時は SendFreshF2 の直後に追加 F2 を送信して F2×2 連続とする。
         // NameChangeWait はスキップせず GJI I/O 応答を gji_long_idle_probe モードで監視する。
-        use crate::tsf::probe_fsm::{ProbePhase, WaitingFor};
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine_with_cold(crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS, true);
-        // apply_fresh_f2_sent が機能するよう、FreshF2Sent フェーズへ強制移行する。
-        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
-            probe_settled: false,
-            budget_ms: crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
-            send: crate::tsf::probe_fsm::SendState::default(),
-        }));
         let actions = vec![ProbeAction::SendFreshF2 {
             cold_seq: 0,
             probe_settled: false,
         }];
         // forces_prepend_f2=true (Long cold) のとき:
         // - send_fresh_f2 と send_extra_f2 が呼ばれる（F2×2 連続）
-        // - NameChangeWait フェーズへ移行し GJI I/O 応答を待つ（Done を即返さない）
+        // - GjiWarmupCoro が GJI I/O 応答を待つため Done を即返さない
         let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             !result.is_done(),
-            "forces_prepend_f2: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき"
+            "forces_prepend_f2: GJI I/O 応答を待つため Done を即返さないべき"
         );
         assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
         assert!(
             io.send_extra_f2_called.get(),
             "forces_prepend_f2: 追加 F2 で F2×2 連続にするべき"
         );
-        assert_eq!(machine.phase_label(), "NameChangeWait", "NameChangeWait フェーズで待機するべき");
         assert!(!io.transmit_tsf_called.get(), "TransmitTsf は即実行されないべき");
     }
 
@@ -1123,27 +1115,20 @@ mod tests {
         // gji_long_idle_probe=true + MEDIUM_IDLE_PROBE_TOTAL_MS (550ms) で GJI I/O を待てること。
         // forces_prepend_f2=true だが Long ではないので追加 F2 なし（F2×1 のみ）。
         // ※ Medium の forces_prepend_f2=true は「F2×2 を強制」ではなく「gji_long_idle_probe=true」の意味。
-        use crate::tsf::probe_fsm::{ProbePhase, WaitingFor};
         let io = FakeProbeIo::default();
         // Medium cold: forces_prepend_f2=true (gji_long_idle_probe 有効), budget=MEDIUM_IDLE_PROBE_TOTAL_MS
         let mut machine = make_gji_machine_with_cold(crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS, true);
-        machine.force_phase_for_test(ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent {
-            probe_settled: false,
-            budget_ms: crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
-            send: crate::tsf::probe_fsm::SendState::default(),
-        }));
         let actions = vec![ProbeAction::SendFreshF2 {
             cold_seq: 0,
             probe_settled: false,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(!result.is_done(), "medium idle: NameChangeWait で GJI I/O 応答を待つため Done を即返さないべき");
+        assert!(!result.is_done(), "medium idle: GJI I/O 応答を待つため Done を即返さないべき");
         assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
         assert!(
             io.send_extra_f2_called.get(),
             "medium idle (forces_prepend_f2=true): F2×2 を送るべき"
         );
-        assert_eq!(machine.phase_label(), "NameChangeWait", "NameChangeWait フェーズで GJI I/O を監視するべき");
     }
 
     #[test]
@@ -1265,7 +1250,6 @@ mod tests {
             !io.last_used_eager_path.get(),
             "plan.used_eager_path=false (VK path) は WarmupOutcome に反映されるべき"
         );
-        assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
     #[test]
@@ -1359,7 +1343,6 @@ mod tests {
             "plan.needs_literal=true → LiteralDetect フェーズへ移行"
         );
         assert!(io.transmit_tsf_called.get());
-        assert_eq!(machine.phase_label(), "LiteralDetect");
     }
 
     #[test]
