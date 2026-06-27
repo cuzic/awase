@@ -81,12 +81,12 @@ No `SetTimer`. No `sleep`. No mock clock. Just call `on_event` / `on_timeout` an
 
 ## Connecting to a runtime
 
-Implement `TimerRuntime` and `ActionExecutor` for your platform, then call `dispatch` after
-every transition:
+Implement `TimerRuntime` and `ActionExecutor` for your platform, then call `Response::dispatch`
+after every transition:
 
 ```rust
 use std::time::Duration;
-use timed_fsm::{dispatch, TimerRuntime, ActionExecutor};
+use timed_fsm::{Response, TimerRuntime, ActionExecutor};
 
 struct MyPlatform;
 
@@ -108,8 +108,8 @@ impl ActionExecutor for MyPlatform {
 }
 
 // In your event loop:
-let response = state_machine.on_event(event);
-let consumed = dispatch(&response, &mut platform, &mut platform);
+let response = Response::<bool, ()>::emit_one(true);
+let consumed = response.dispatch(&mut MyPlatform, &mut MyPlatform);
 // If consumed is false, pass the event to the next handler in the chain.
 ```
 
@@ -162,22 +162,85 @@ When the decision about a token depends on tokens that arrive *after* it — for
 detecting whether two keys were pressed simultaneously (chord) or in sequence — a plain
 `TimedStateMachine` is not enough.
 
-The `parser` module provides a `ShiftReduceParser` trait and a `parse` driver that buffer
-tokens until a pattern is recognized or a timer forces a decision. See the
+The `parser` module provides a `ShiftReduceParser` trait and a `ShiftReduceParser::parse`
+driver that buffer tokens until a pattern is recognized or a timer forces a decision. See the
 [API docs](https://docs.rs/timed-fsm) for details and a worked example.
+
+## Coroutine extension
+
+For sequential multi-phase workflows where a plain FSM would need an explicit state enum,
+the `coro` module provides `StepCoro<I, Y>`: a minimal coroutine backed by `async`/`await`
+(no external runtime, `!Send`, MSRV 1.85).
+
+```rust
+use std::rc::Rc;
+use timed_fsm::coro::{Channel, CoroStep, StepCoro, yield_step};
+
+async fn phases(ch: Rc<Channel<u32, String>>) {
+    let n = yield_step(ch.clone(), "phase1".to_owned()).await;
+    let _ = yield_step(ch, format!("phase2: got {n}")).await;
+}
+
+let mut coro: StepCoro<u32, String> = StepCoro::new(phases);
+let CoroStep::Yielded(out) = coro.step(0) else { panic!() };
+assert_eq!(out, "phase1");
+let CoroStep::Yielded(out) = coro.step(42) else { panic!() };
+assert_eq!(out, "phase2: got 42");
+```
+
+## Clock abstraction
+
+The `clock` module provides a `Clock` trait for injecting time into deadline-based FSMs.
+`MonotonicClock` wraps `std::time::Instant` for production; `ManualClock` lets tests
+set arbitrary timestamps without sleeping.
+
+```rust
+use timed_fsm::clock::{Clock, ManualClock};
+
+assert_eq!(ManualClock(42).now_ms(), 42);
+```
+
+## Holding gate
+
+The `gate` module provides `HoldingGate<M, T>`: a wrapper that buffers items while a
+`TimedStateMachine<Action = GateAction>` is in hold mode and drains them on demand.
+
+```rust
+use timed_fsm::{GateAction, HoldingGate, Response, TimedStateMachine};
+
+struct AlwaysHold;
+impl TimedStateMachine for AlwaysHold {
+    type Event  = ();
+    type Action = GateAction;
+    type TimerId = ();
+    fn on_event(&mut self, _: ()) -> Response<GateAction, ()> {
+        Response::emit_one(GateAction::InitiateHold)
+    }
+    fn on_timeout(&mut self, _: ()) -> Response<GateAction, ()> {
+        Response::pass_through()
+    }
+}
+
+let mut gate: HoldingGate<AlwaysHold, u32> = HoldingGate::new(AlwaysHold, 8);
+gate.on_event(());   // InitiateHold
+gate.try_hold(42);
+```
 
 ## API overview
 
-| Type | Role |
-|------|------|
+| Type / function | Role |
+|-----------------|------|
 | `TimedStateMachine` | Core trait: `on_event` + `on_timeout` → `Response` |
 | `Response<A, T>` | Transition result: actions + timer commands + consumed flag |
 | `TimerCommand<T>` | `Set { id, duration }` or `Kill { id }` |
-| `dispatch()` | Execute a `Response` against a runtime |
+| `Response::dispatch` | Execute a `Response` against a runtime |
 | `TimerRuntime` | Trait for platform timer operations |
 | `ActionExecutor` | Trait for platform action execution |
 | `ShiftReduceParser` | Extension: shift-reduce grammar with timer support |
-| `parse()` | Main loop for a `ShiftReduceParser` |
+| `ShiftReduceParser::parse` | Main loop for a `ShiftReduceParser` |
+| `StepCoro<I, Y>` | Coroutine for sequential multi-phase workflows |
+| `Clock` / `MonotonicClock` / `ManualClock` | Clock abstraction for deadline-based FSMs |
+| `HoldingGate<M, T>` / `GateAction` | Item-buffering gate controlled by an FSM |
 
 ### Response builder
 
