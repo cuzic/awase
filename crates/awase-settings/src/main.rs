@@ -1167,12 +1167,12 @@ fn yab_value_display(v: &awase::yab::YabValue) -> String {
 // ── Utility functions ──
 
 fn find_config_path() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let p = dir.join("config.toml");
-            if p.exists() {
-                return p;
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let p = dir.join("config.toml");
+        if p.exists() {
+            return p;
         }
     }
     std::path::PathBuf::from("config.toml")
@@ -1240,7 +1240,7 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-#[allow(clippy::missing_const_for_fn)]
+#[expect(clippy::missing_const_for_fn)]
 fn send_reload_config_message() {
     #[cfg(target_os = "windows")]
     {
