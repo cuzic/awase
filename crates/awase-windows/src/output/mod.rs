@@ -345,7 +345,7 @@ self.gji_fsm.borrow_mut().on_gji_long_idle()
 
     /// `GjiAction::StartProbe` の ncwait_budget_ms / forces_prepend_f2 / is_long_cold を記録する。
     ///
-    /// `send_romaji_as_tsf` が `GjiWarmupFsm::new` を生成する際に参照する。
+    /// `send_romaji_as_tsf` が `GjiWarmupCoro::new` を生成する際に参照する。
     /// GjiFsm の `Authorized` 状態から `ProbeParams` を読み出す。
     ///
     /// `Authorized` でない場合は `ProbeParams::default()` を返す。
@@ -792,8 +792,8 @@ self.gji_fsm.borrow().is_warm()
                 }
             }
             probe_io::DispatchResult::SwitchMachine(new_machine) => {
-                // GjiWarmupFsm → LiteralDetectFsm 切り替え。
-                // LiteralDetectFsm が内部ガードを保持するため gji_probe_guard を解放する。
+                // SacrificialWarmupFsm への切り替え（GjiWarmupCoro long_cold パス / Chrome）。
+                // 新 machine が内部ガードを保持するため gji_probe_guard を解放する。
                 self.gji_end_probe_guard();
                 let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
                 *self.pending_tsf.borrow_mut() = Some(new_machine);

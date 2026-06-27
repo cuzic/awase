@@ -58,7 +58,7 @@ pub(crate) struct TsfEnvSnapshot {
     /// `None` = HIMC 未取得（テスト・LiteralDetect 非活性時）→ 部分リテラル検出をスキップ。
     pub foreground_comp_char: Option<char>,
     /// `GoogleJapaneseInputCandidateWindow` が現在表示中なら true。
-    /// `GjiWarmupFsm` の NameChangeWait 早期脱出判定に使用する。
+    /// `GjiWarmupCoro` の NameChangeWait 早期脱出判定に使用する。
     /// `crate::tsf::observer::gji_candidate_visible_now()` のスナップショット。
     pub gji_candidate_visible: bool,
     /// 現在の IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
@@ -92,7 +92,7 @@ pub(crate) struct TransmitPlan {
 
 /// probe 観測値・環境スナップショット・コンテキストから送信方針を決定する純粋計算関数。
 ///
-/// `GjiWarmupFsm` 内から呼ばれるが、単独でテストも可能。副作用なし。
+/// `GjiWarmupCoro` 内から呼ばれるが、単独でテストも可能。副作用なし。
 pub(crate) fn decide_transmit_plan(
     initial_prepend_f2: bool,
     initial_used_eager: bool,
@@ -233,12 +233,10 @@ pub(crate) enum TransmitTarget {
     Chrome,
 }
 
-/// [`GjiWarmupFsm`] が LiteralDetect / SacrificialWarmup フェーズに引き渡す設定。
+/// LiteralDetect / SacrificialWarmup フェーズに引き渡す設定。
 ///
-/// [`ProbeAction::StartLiteralDetect`] および [`ProbeAction::StartSacrificialWarmup`] のペイロード。
-/// `GjiWarmupFsm` が transmit 完了後、`needs_literal=true` と判断したときに emit する。
+/// [`ProbeAction::StartSacrificialWarmup`] のペイロード。
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct LiteralDetectConfig {
     pub cold_seq: u32,
     pub romaji: String,
@@ -297,15 +295,9 @@ pub(crate) enum ProbeAction {
         backs: usize,
         romaji: String,
     },
-    /// GJI warmup 完了後に LiteralDetect フェーズを開始する。
-    ///
-    /// [`GjiWarmupFsm`] が `needs_literal=true` と判断したときに emit する。
-    /// dispatcher は `LiteralDetectFsm` を生成して `TIMER_TSF_PROBE` を継続させる。
-    #[allow(dead_code)]
-    StartLiteralDetect(LiteralDetectConfig),
     /// GJI warmup 完了後に犠牲キー（VK_A）暖機フェーズを開始する。
     ///
-    /// [`GjiWarmupFsm`] が `needs_literal=true` と判断したときに emit する。
+    /// `GjiWarmupCoro` が `needs_literal=true` かつ `is_long_cold` と判断したときに emit する。
     /// dispatcher が VK_A を送信してから [`crate::tsf::sacr_warmup_fsm::SacrificialWarmupFsm`]
     /// に切り替える。実ローマ字は TSF warm 確認後に [`SacrificialResend`] 経由で送信される。
     StartSacrificialWarmup(LiteralDetectConfig),

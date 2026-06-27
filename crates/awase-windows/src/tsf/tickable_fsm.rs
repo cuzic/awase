@@ -6,9 +6,9 @@
 //!
 //! | 実装型 | 用途 | 使用するメソッド |
 //! |--------|------|-----------------|
-//! | `GjiWarmupFsm` | GJI cold-start warmup probe | `tick`, `cold_seq_hint`, `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `push_deferred` |
+//! | `GjiWarmupCoro` | GJI cold-start warmup probe | `tick`, `cold_seq_hint`, `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done`, `push_deferred` |
 //! | `TsfProbeMachine` | Chrome probe + LiteralDetect | `tick`, `cold_seq_hint`, `apply_transmit_done`, `push_deferred` |
-//! | `LiteralDetectFsm` | post-transmit の composition 確認 | `tick`, `cold_seq_hint` のみ |
+//! | `LiteralDetectFsm` | warm パスの post-transmit composition 確認 | `tick`, `cold_seq_hint` のみ |
 //!
 //! デフォルト実装（no-op）が多いのは各 implementor が必要なメソッドだけをオーバーライドするため。
 
@@ -29,22 +29,20 @@ pub(crate) trait TickableFsm {
     /// ログ相関用の cold_seq を返す。
     fn cold_seq_hint(&self) -> u32;
 
-    // ── FreshF2 ケイパビリティ（GjiWarmupFsm のみ）────────────────────────
+    // ── FreshF2 ケイパビリティ（GjiWarmupCoro のみ）───────────────────────
     //
     // Medium/Long cold start で F2×2 連続送信が必要かどうか。
-    // GjiWarmupFsm のみが `true` または実装を返す。他は no-op デフォルト。
+    // GjiWarmupCoro のみが `true` または実装を返す。他は no-op デフォルト。
 
     fn forces_prepend_f2_for_extra_f2(&self) -> bool {
         false
     }
     fn apply_fresh_f2_sent(&mut self, _nc_baseline: NamechangeBaseline, _fresh_f2_ms: u64) {}
 
-    // ── TransmitDone ケイパビリティ（TsfProbeMachine / ChromeProbe）────────
+    // ── TransmitDone ケイパビリティ（GjiWarmupCoro / TsfProbeMachine）──────
     //
-    // TSF/Chrome 経由の送信完了後、LiteralDetectFsm への切り替えを制御する。
-    // `true` = この machine は完了扱い、`false` = LiteralDetect フェーズに続く。
-    // GjiWarmupFsm は LiteralDetect を ProbeAction::StartLiteralDetect 経由で
-    // 独立起動するため、ここでは常に `true` を返す。
+    // TSF/Chrome 経由の送信完了後、inline LiteralDetect フェーズへの継続を制御する。
+    // `true` = この machine は完了扱い（Done）、`false` = 次 tick で LiteralDetect に続く（Continue）。
 
     fn apply_transmit_done(
         &mut self,
@@ -57,7 +55,7 @@ pub(crate) trait TickableFsm {
         true
     }
 
-    // ── Deferred input（GjiWarmupFsm + TsfProbeMachine）──────────────────
+    // ── Deferred input（GjiWarmupCoro + TsfProbeMachine）─────────────────
     //
     // probe 中に届いた後続 VK を内部バッファに積む。
     // LiteralDetectFsm は deferred input を処理しないため no-op デフォルト。

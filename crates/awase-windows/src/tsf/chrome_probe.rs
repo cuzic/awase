@@ -31,7 +31,7 @@ impl TickableFsm for ChromeProbe {
         self.0.cold_seq_hint()
     }
 
-    // forces_prepend_f2_for_extra_f2 / apply_fresh_f2_sent は GjiWarmupFsm 専用。
+    // forces_prepend_f2_for_extra_f2 / apply_fresh_f2_sent は GjiWarmupCoro 専用。
     // TsfProbeMachine はデフォルト（false / no-op）を返すため委譲不要。
 
     fn apply_transmit_done(

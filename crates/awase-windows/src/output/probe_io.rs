@@ -514,66 +514,16 @@ where
                 }
             }
 
-            ProbeAction::StartLiteralDetect(config) => {
-                // GjiWarmupFsm から emit される（plan.needs_literal=true の場合）。
-                // TSF 送信を実行してから LiteralDetectFsm に切り替える。
-                let chars: VkSequence = config.romaji
-                    .chars()
-                    .filter_map(crate::output::resolve_ascii_to_vk)
-                    .collect();
-                if io.gate_is_bypass() {
-                    log::debug!(
-                        "[tsf-probe] cold={} StartLiteralDetect: gate=Bypass, skipping",
-                        config.cold_seq
-                    );
-                    return DispatchResult::Done;
-                }
-                if chars.is_empty() {
-                    return DispatchResult::Done;
-                }
-                let outcome = WarmupOutcome {
-                    prepend_f2_warmup: config.plan.should_prepend_f2,
-                    used_eager_path: config.plan.used_eager_path,
-                    cold_seq: config.cold_seq,
-                };
-                if io.current_gji_probe_id().is_some() {
-                    use crate::tsf::gji_fsm::WarmupResult;
-                    io.store_gji_warmup_result(WarmupResult {
-                        path: classify_warmup_path(&config.observations, &config.plan),
-                        prepend_f2_warmup: config.plan.should_prepend_f2,
-                        nc_fired: config.observations.nc_fired,
-                        gji_resumed: config.observations.gji_resumed,
-                    });
-                }
-                let ze_bs_count = io.transmit_tsf(&config.romaji, &chars, &outcome);
-                io.send_deferred_vks(&config.deferred_vks, VkMarker::Tsf);
-                log::debug!(
-                    "[tsf-probe] cold={} StartLiteralDetect → LiteralDetectFsm (ze_bs={})",
-                    config.cold_seq, ze_bs_count
-                );
-                let literal_fsm = crate::tsf::literal_detect_fsm::LiteralDetectFsm::new(
-                    config.cold_seq,
-                    config.romaji,
-                    config.deferred_vks,
-                    config.plan,
-                    config.observations,
-                    ze_bs_count,
-                    config.literal_detect_ms,
-                    io.consecutive_count(),
-                );
-                return DispatchResult::SwitchMachine(Box::new(literal_fsm));
-            }
-
             ProbeAction::SendRecoveryBs { cold_seq, backs } => {
-                // LiteralDetectFsm が TSF mode + consecutive==0 で partial literal / SuspectedLiteral を
-                // 検出したときに emit する。StartSacrificialWarmup の直前に VK_A 送信前の
-                // terminal cleanup として backs 個の BS を送信する。
+                // GjiWarmupCoro（inline LiteralDetect）が TSF mode + consecutive==0 で
+                // partial literal / SuspectedLiteral を検出したときに emit する。
+                // StartSacrificialWarmup の直前に backs 個の BS で terminal cleanup を行う。
                 io.send_literal_recovery_bs(backs, cold_seq);
             }
 
             ProbeAction::StartSacrificialWarmup(config) => {
-                // GjiWarmupFsm から emit される（plan.needs_literal=true の場合）か、
-                // LiteralDetectFsm が partial literal / SuspectedLiteral を検出して
+                // GjiWarmupCoro が long_cold + TSF mode のときに emit する（直接）か、
+                // inline LiteralDetect が partial literal / SuspectedLiteral を検出して
                 // sacr warmup 経由で回収する場合（from_literal_recovery=true）に emit される。
                 // 実ローマ字を即送信する代わりに VK_A（犠牲キー）を送信し、
                 // composition 確認後に BS×1 + 実ローマ字を再送する。
@@ -596,7 +546,7 @@ where
                     return DispatchResult::Done;
                 }
                 // literal recovery パスでは consecutive をインクリメントしてループを防ぐ。
-                // （GjiWarmupFsm の通常 cold-start パスではインクリメントしない）
+                // （GjiWarmupCoro の通常 cold-start パスではインクリメントしない）
                 if config.from_literal_recovery {
                     io.increment_consecutive_count();
                 }
@@ -734,7 +684,7 @@ where
                 backs,
                 romaji,
             } => {
-                // TSF mode + consecutive==0 の場合は LiteralDetectFsm が SendRecoveryBs +
+                // TSF mode + consecutive==0 の場合は GjiWarmupCoro が SendRecoveryBs +
                 // StartSacrificialWarmup を直接 emit するため、このハンドラには到達しない。
                 // ここに来るのは非 TSF パス（Chrome 等）か give-up（consecutive>0）のみ。
                 let consecutive = io.consecutive_count();
@@ -1477,7 +1427,7 @@ mod tests {
 
     #[test]
     fn start_sacrificial_warmup_without_literal_recovery_does_not_increment_consecutive() {
-        // GjiWarmupFsm の通常 cold-start パス（from_literal_recovery=false）では
+        // GjiWarmupCoro の通常 cold-start パス（from_literal_recovery=false）では
         // increment_consecutive_count を呼ばない。
         let io = FakeProbeIo {
             consecutive: 0,
