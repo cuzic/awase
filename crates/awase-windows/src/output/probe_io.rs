@@ -717,9 +717,13 @@ where
                 } else {
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
-                        (count={}) → likely false positive, giving up",
+                        (count={}) → giving up, backs={backs} cleanup only (no re-send)",
                         consecutive + 1,
                     );
+                    // 諦めても partial literal 由来の 'k'(literal) + composition が
+                    // terminal に残ると "kおの" 等の文字化けになる。
+                    // romaji 再送はせず BS のみ送って terminal をクリーンにする。
+                    io.set_raw_literal(backs, String::new());
                     io.mark_cold_raw_tsf();
                 }
             }
@@ -1411,8 +1415,8 @@ mod tests {
 
     #[test]
     fn raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark() {
-        // TSF mode でも consecutive > 0 のときは諦めて mark_cold_raw_tsf を呼ぶ。
-        // 連続 false positive ループを防ぐ。
+        // TSF mode でも consecutive > 0 のときは諦める。
+        // ただし terminal に 'k'(literal) + composition が残らないよう BS のみ送る (romaji 再送なし)。
         let io = FakeProbeIo {
             tsf_mode: true,
             consecutive: 1, // already attempted once
@@ -1430,8 +1434,8 @@ mod tests {
         let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(
-            !io.set_raw_literal_called.get(),
-            "consecutive > 0: set_raw_literal を呼ばないべき"
+            io.set_raw_literal_called.get(),
+            "consecutive > 0: BS cleanup のため set_raw_literal を呼ぶべき (romaji は空で再送なし)"
         );
         assert!(
             io.mark_cold_raw_tsf_called.get(),
