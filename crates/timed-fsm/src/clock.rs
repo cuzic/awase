@@ -60,7 +60,7 @@ static EPOCH: OnceLock<Instant> = OnceLock::new();
 pub struct MonotonicClock;
 
 impl Clock for MonotonicClock {
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::cast_possible_truncation)]
     fn now_ms(&self) -> u64 {
         // Overflows after ~585 million years of uptime.
         EPOCH.get_or_init(Instant::now).elapsed().as_millis() as u64

@@ -138,13 +138,13 @@ where
 
     /// バッファの長さを返す。
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.held.len()
     }
 
     /// バッファが空かどうかを返す。
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.held.is_empty()
     }
 
@@ -157,7 +157,7 @@ where
     /// バッファをクリアし、保留モードも解除する。
     ///
     /// パニックリセット・安全フィルタ等の緊急用。
-    /// 通常は `on_event` / `on_timeout` 経由でマシンに DrainHeld を emit させること。
+    /// 通常は `on_event` / `on_timeout` 経由でマシンに `DrainHeld` を emit させること。
     pub fn clear(&mut self) {
         self.held.clear();
         self.holding = false;
@@ -191,7 +191,7 @@ where
                 }
                 GateAction::DrainHeld => {
                     self.holding = false;
-                    drained.extend(self.held.drain(..));
+                    drained.append(&mut self.held);
                 }
             }
         }

@@ -226,6 +226,7 @@
 //! `timed-fsm` has no runtime dependencies beyond `std`.
 
 pub mod clock;
+pub mod coro;
 mod dispatch;
 pub mod gate;
 mod machine;
@@ -233,6 +234,7 @@ pub mod parser;
 mod response;
 
 pub use clock::{Clock, ManualClock, MonotonicClock};
+pub use coro::{Channel, CoroStep, StepCoro, yield_step};
 pub use dispatch::{ActionExecutor, TimerRuntime};
 pub use gate::{GateAction, HoldingGate};
 pub use machine::TimedStateMachine;
