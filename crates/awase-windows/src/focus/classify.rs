@@ -154,7 +154,7 @@ pub fn get_class_name_string(hwnd: HWND) -> String {
     //         スライス長を上限として GetClassNameW に渡すため書き込み範囲は保証される。
     let len = unsafe { GetClassNameW(hwnd, &mut class_buf) };
     if len > 0 {
-        #[allow(clippy::cast_sign_loss)] // len is guaranteed non-negative by GetClassNameW
+        #[expect(clippy::cast_sign_loss)] // len is guaranteed non-negative by GetClassNameW
         String::from_utf16_lossy(&class_buf[..len as usize])
     } else {
         String::new()

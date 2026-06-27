@@ -154,7 +154,7 @@ impl WindowsPlatform {
     }
 
     /// 出力モードを切り替える（設定変更時）。
-    #[allow(clippy::missing_const_for_fn)]
+    #[expect(clippy::missing_const_for_fn)]
     pub(crate) fn set_output_mode(&mut self, mode: awase::config::OutputMode) {
         self.output.set_mode(mode);
     }

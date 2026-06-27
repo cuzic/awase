@@ -10,7 +10,7 @@ use awase::types::VkCode;
 /// 設定ファイル (.toml) のキー名解決に使用する。
 /// macOS に直接対応しないキー（"Kanji", "ImeOn", "ImeOff" 等）は `None` を返す。
 #[must_use]
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 pub fn key_name_to_keycode(name: &str) -> Option<VkCode> {
     match name {
         // ── 日本語入力制御キー ──

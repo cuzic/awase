@@ -17,7 +17,7 @@ impl<F: Future> std::fmt::Debug for RaceWithTimeout<F> {
     }
 }
 
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 impl<T, F: Future<Output = T>> Future for RaceWithTimeout<F> {
     type Output = Option<T>;
 

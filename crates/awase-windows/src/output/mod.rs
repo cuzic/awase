@@ -900,7 +900,7 @@ impl Output {
     /// `RawTsfLiteralRecovery` 処理で `consecutive == 0` のときのみ呼ぶ。
     /// `flush_raw_tsf_literal_backspaces` と `flush_raw_tsf_literal_romaji` の read 側と
     /// ここの write 側を `Output` に集約し、dispatcher が直接グローバルを触らないようにする。
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self)]
     pub(crate) fn record_raw_tsf_literal(&self, backs: usize, romaji: String) {
         use std::sync::atomic::Ordering::Relaxed;
         crate::RAW_TSF_LITERAL.backs.store(backs, Relaxed);

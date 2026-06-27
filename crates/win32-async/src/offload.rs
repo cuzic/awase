@@ -34,7 +34,7 @@ impl<T> std::fmt::Debug for OffloadFuture<T> {
     }
 }
 
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 impl<T: Send + 'static> Future for OffloadFuture<T> {
     type Output = T;
 

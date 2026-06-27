@@ -60,7 +60,7 @@ struct AppStateView {
 /// すべてのフィールドが取得失敗を許容する `Option` または `bool`。
 /// クロスプロセスクエリは `run_with_timeout` で保護される。
 #[derive(Debug, Clone)]
-#[allow(clippy::struct_excessive_bools)]
+#[expect(clippy::struct_excessive_bools)]
 pub struct ImeDiagnosticSnapshot {
     /// 観測点の識別ラベル（例: "focus_change_done", "send_keys_pre"）
     pub label: &'static str,

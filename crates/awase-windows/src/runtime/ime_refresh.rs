@@ -76,7 +76,7 @@ impl Runtime {
     // Phase 2.5: IMM ブリッジ非対応クラスの判定（Phase 2 の前に実行する必要あり）
     // Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）
 
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     fn ir_stage_focus(
         &mut self,
         focus_probe: Option<Option<crate::focus::probe::FocusSnapshot>>,

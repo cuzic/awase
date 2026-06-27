@@ -673,7 +673,7 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-#[allow(clippy::missing_const_for_fn)]
+#[expect(clippy::missing_const_for_fn)]
 fn send_reload_config_message() {
     #[cfg(target_os = "windows")]
     {

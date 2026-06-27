@@ -152,7 +152,7 @@ impl Runtime {
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
-    #[allow(clippy::missing_const_for_fn)]
+    #[expect(clippy::missing_const_for_fn)]
     #[must_use]
     pub fn can_use_imm32_cross_process(&self) -> bool {
         self.platform
@@ -572,7 +572,7 @@ impl Runtime {
     // ── app/ 境界 API（private フィールドへのアクセスを app/ に許可しない）──
 
     /// Runtime を初期化して返す。
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         engine: Engine,
         executor: DecisionExecutor,

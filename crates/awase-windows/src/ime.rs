@@ -177,7 +177,7 @@ impl HeldModifiers {
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 // 変数名が意図的に似ているため similar_names を抑制する（gas_lctrl/gks_lctrl 等）。
-#[allow(clippy::similar_names)]
+#[expect(clippy::similar_names)]
 pub unsafe fn post_kanji_toggle_to_focused() {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use crate::vk::{
@@ -661,7 +661,7 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
 }
 
 /// `read_ime_state_full` の async 版（ワーカースレッドで実行）
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 pub async fn read_ime_state_full_async() -> ImeSnapshot {
     // SAFETY: read_ime_state_full は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         IMM32 API はワーカースレッドからも呼び出し可能。
@@ -669,7 +669,7 @@ pub async fn read_ime_state_full_async() -> ImeSnapshot {
 }
 
 /// `read_ime_state_fast` の async 版（ワーカースレッドで実行）
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 pub async fn read_ime_state_fast_async() -> FastImeProbeResult {
     // SAFETY: read_ime_state_fast は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         IMM32 API はワーカースレッドからも呼び出し可能。
@@ -677,7 +677,7 @@ pub async fn read_ime_state_fast_async() -> FastImeProbeResult {
 }
 
 /// `set_ime_open_cross_process` の async 版（ワーカースレッドで実行）
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
     // SAFETY: set_ime_open_cross_process は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -685,7 +685,7 @@ pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
 }
 
 /// `set_ime_romaji_mode` の async 版（ワーカースレッドで実行）
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 pub async fn set_ime_romaji_mode_async() -> bool {
     // SAFETY: set_ime_romaji_mode は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -696,7 +696,7 @@ pub async fn set_ime_romaji_mode_async() -> bool {
 ///
 /// メインスレッドの `with_app` 再入を避けるため、`SendMessageTimeoutW` (×2) を
 /// ワーカースレッドで実行する。メッセージループは await 中も継続する。
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 pub async fn send_f2_via_sendmessage_async() -> bool {
     // SAFETY: send_f2_via_sendmessage は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -706,7 +706,7 @@ pub async fn send_f2_via_sendmessage_async() -> bool {
 /// `get_ime_conversion_mode_raw_timeout` の async 版（ワーカースレッドで実行）
 ///
 /// 診断ログ用途で、`with_app` 再入を避けるためにワーカースレッドへオフロードする。
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 pub async fn get_ime_conversion_mode_raw_timeout_async(timeout_ms: u32) -> Option<u32> {
     // SAFETY: get_ime_conversion_mode_raw_timeout は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。

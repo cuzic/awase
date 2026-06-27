@@ -124,7 +124,7 @@ impl TsfSendPipeline {
 
 impl Output {
     /// 仮想キーコードを使って即座に KeyDown/KeyUp を送信する
-    #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
+    #[expect(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
     pub(super) fn send_key(&self, vk: VkCode, is_keyup: bool) {
         let input = make_key_input(vk, is_keyup);
         let _ = crate::win32::send_input_safe(&[input]);
@@ -148,7 +148,7 @@ impl Output {
     /// 各文字の KeyDown+KeyUp は1回の SendInput にまとめるが、
     /// 文字間は別の SendInput 呼び出しに分離する。
     /// 他のキーボードフックに処理時間を与える。
-    #[allow(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
+    #[expect(clippy::unused_self)] // Output の impl に所属させ API の一貫性を保つ
     pub(super) fn send_romaji_per_key(&self, romaji: &str) {
         for ch in romaji.chars() {
             if let Some((vk, needs_shift)) = ascii_to_vk(ch) {

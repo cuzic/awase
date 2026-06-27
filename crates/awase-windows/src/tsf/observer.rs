@@ -643,7 +643,7 @@ fn check_keybinds_in_db() -> bool {
         .is_some_and(|data| matches!(crate::gji::patch(&data), Ok(None)))
 }
 
-#[allow(clippy::cognitive_complexity)]
+#[expect(clippy::cognitive_complexity)]
 fn monitor_loop(token: &win32_worker::ShutdownToken) {
     log::info!("[gji-monitor] thread started");
 
@@ -879,7 +879,7 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
 }
 
 /// WinEvent 観察コールバック。NAMECHANGE / IME_SHOW / IME_HIDE / IME_CHANGE を処理する。
-#[allow(clippy::cognitive_complexity)]
+#[expect(clippy::cognitive_complexity)]
 unsafe extern "system" fn observation_event_proc(
     _hook: HWINEVENTHOOK,
     event: u32,
@@ -977,7 +977,7 @@ fn hwnd_class_name(hwnd: HWND) -> String {
     //         `buf` は十分なサイズの有効な UTF-16 バッファ。
     let len = unsafe { windows::Win32::UI::WindowsAndMessaging::GetClassNameW(hwnd, &mut buf) };
     if len > 0 {
-        #[allow(clippy::cast_sign_loss)]
+        #[expect(clippy::cast_sign_loss)]
         String::from_utf16_lossy(&buf[..len as usize])
     } else {
         String::new()

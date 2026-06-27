@@ -232,7 +232,7 @@ pub fn is_modifier_free_char(vk_code: VkCode, os_modifier_held: bool) -> bool {
 }
 
 /// Windows VK 分類メソッドを `VkCode` にメソッドとして追加する拡張トレイト。
-#[allow(clippy::wrong_self_convention)]
+#[expect(clippy::wrong_self_convention)]
 pub trait VkCodeExt {
     fn is_passthrough(self) -> bool;
     fn is_ime_control(self) -> bool;
@@ -342,7 +342,7 @@ impl VkCodeExt for VkCode {
             "VK_ESCAPE" => Some(VkCode(0x1B)),
             "VK_DELETE" => Some(VkCode(0x2E)),
             "VK_CONVERT" | "Convert" | "変換" => Some(VkCode(0x1C)),
-            #[allow(clippy::match_same_arms)]
+            #[expect(clippy::match_same_arms)]
             "VK_NONCONVERT" | "VK_MUHENKAN" | "Nonconvert" | "無変換" => Some(VkCode(0x1D)),
             "VK_KANA" | "Kana" | "かな" | "カナ" => Some(VkCode(0x15)),
             "VK_KANJI" | "Kanji" | "漢字" => Some(VkCode(0x19)),

@@ -130,7 +130,7 @@ impl DecisionExecutor {
     /// `guard_held` に park 済みの Effect があれば最初にそれを試し、
     /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
-    #[allow(clippy::useless_let_if_seq)]
+    #[expect(clippy::useless_let_if_seq)]
     pub(crate) fn drain_deferred(&mut self, platform: &mut WindowsPlatform) -> Vec<ImeApplyPair> {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
         // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
@@ -206,7 +206,7 @@ impl DecisionExecutor {
     }
 
     /// output guard 期間中なら残り ms を返す。期間外なら None。
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self)]
     fn output_guard_remaining(&self, platform: &WindowsPlatform) -> Option<u64> {
         let elapsed = platform.output_in_flight_ms();
         if elapsed < crate::tuning::OUTPUT_GUARD_MS {
@@ -724,7 +724,7 @@ impl DecisionExecutor {
     ///
     /// B（`on_ime_applied`）は `Runtime::on_ime_apply_complete` に委譲済み。
     /// UnsafeToToggle は送信していないので更新しない。
-    #[allow(clippy::needless_pass_by_ref_mut)]
+    #[expect(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn update_intra_batch_applied(
         &mut self,
         open: bool,

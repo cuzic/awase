@@ -487,7 +487,7 @@ impl Runtime {
     }
 }
 
-#[allow(clippy::option_if_let_else)]
+#[expect(clippy::option_if_let_else)]
 fn build_ime_on_suffix(
     probe_ime_on: Option<bool>,
     suppressed_reason: Option<&'static str>,
@@ -514,7 +514,7 @@ fn build_ime_on_suffix(
 impl Runtime {
     /// read_ime_state_fast_async の結果を self に適用する（with_app 内で呼ぶ）。
     /// kp_stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
-    #[allow(clippy::needless_pass_by_value, clippy::option_if_let_else)]
+    #[expect(clippy::needless_pass_by_value, clippy::option_if_let_else)]
     fn apply_focus_probe(
         &mut self,
         probe: crate::ime::FastImeProbeResult,

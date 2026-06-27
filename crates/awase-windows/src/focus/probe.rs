@@ -20,7 +20,7 @@ impl FocusSnapshot {
 
 /// `read_focus_snapshot` の async 版。
 /// ワーカースレッドで実行し、メッセージループに制御を返しながら待つ。
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 pub async fn run_focus_probe_async() -> Option<FocusSnapshot> {
     win32_async::offload(move || {
         let result = unsafe {

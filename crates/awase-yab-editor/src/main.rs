@@ -72,11 +72,11 @@ impl std::fmt::Debug for YabEditor {
 }
 
 impl YabEditor {
-    #[allow(clippy::needless_pass_by_value)]
+    #[expect(clippy::needless_pass_by_value)]
     fn new(cc: &eframe::CreationContext<'_>, file_path: Option<PathBuf>) -> Self {
         setup_fonts(&cc.egui_ctx);
         let model = KeyboardModel::Jis;
-        #[allow(clippy::option_if_let_else)]
+        #[expect(clippy::option_if_let_else)]
         let (layout, status, fp) = if let Some(ref path) = file_path {
             match load_layout(path, model) {
                 Ok(ly) => (
@@ -450,7 +450,7 @@ impl YabEditor {
             ui.horizontal(|ui| {
                 ui.add_space(indents[row]);
                 for col in 0..cols {
-                    #[allow(clippy::cast_possible_truncation)]
+                    #[expect(clippy::cast_possible_truncation)]
                     let pos = PhysicalPos::new(row as u8, col as u8);
                     let value = self.face(self.current_face).get(&pos);
                     let is_selected = self.selected_pos == Some(pos);
@@ -482,7 +482,7 @@ impl YabEditor {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
     fn draw_edit_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("編集パネル");
         let Some(pos) = self.selected_pos else {

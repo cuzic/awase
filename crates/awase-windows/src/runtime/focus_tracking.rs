@@ -191,7 +191,7 @@ impl Runtime {
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。
-    #[allow(clippy::cognitive_complexity)]
+    #[expect(clippy::cognitive_complexity)]
     fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
         log::info!(
             "FocusChange [{}→{}] {}: stale ime_on={} intent={:?} mode={:?} japanese={}",
