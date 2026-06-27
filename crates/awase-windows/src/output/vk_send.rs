@@ -485,7 +485,7 @@ impl Output {
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params();
-            let fsm = Box::new(crate::tsf::gji_warmup_fsm::GjiWarmupFsm::new(
+            let coro = Box::new(crate::tsf::gji_warmup_coro::GjiWarmupCoro::new(
                 romaji,
                 cold_seq,
                 started.probe,
@@ -498,8 +498,9 @@ impl Output {
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
                 started.fresh_f2_at_probe_start,
+                self.composition.consecutive_count(),
             ));
-            self.install_pending_tsf(fsm);
+            self.install_pending_tsf(coro);
             // WindowsPlatform::send_keys が TIMER_TSF_PROBE をセットする
             return;
         }
