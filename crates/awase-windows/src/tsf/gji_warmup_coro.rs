@@ -56,7 +56,6 @@ struct TransmitDonePayload {
     detector: LiteralDetector,
     /// `apply_transmit_done` 呼び出し時点の `current_tick_ms() + literal_detect_ms`。
     deadline_ms: u64,
-    expected_kana: Option<char>,
 }
 
 // ── TickInput ────────────────────────────────────────────────────────────────
@@ -97,7 +96,8 @@ async fn gji_coro_body(
     ctx: GjiProbeCtx,
 ) {
     let mut deferred_vks: Vec<DeferredVk> = vec![];
-    let mut env = TsfEnvSnapshot::default();
+    // env は 'initial ループの最初の yield で必ず設定される（loop は常に 1 回以上実行）。
+    let mut env: TsfEnvSnapshot;
     let mut fresh_f2_sent = false;
 
     // ── Phase 1 / 2 / 3: GJI probe ──────────────────────────────────────────
@@ -146,7 +146,6 @@ async fn gji_coro_body(
                     }],
                 )
                 .await;
-                env = f2_input.env;
                 deferred_vks.extend(f2_input.new_deferred);
                 fresh_f2_sent = true;
 
@@ -320,7 +319,6 @@ async fn gji_coro_body(
                 ctx.cold_seq,
                 &recovery_romaji,
                 backs,
-                plan,
                 observations,
                 ctx.consecutive,
                 &env,
@@ -343,7 +341,6 @@ fn emit_literal_recovery_actions(
     cold_seq: u32,
     romaji: &str,
     backs: usize,
-    plan: TransmitPlan,
     observations: ProbeObservations,
     consecutive: u32,
     env: &TsfEnvSnapshot,
@@ -498,7 +495,7 @@ impl TickableFsm for GjiWarmupCoro {
         ze_bs_count: usize,
         detector: Option<LiteralDetector>,
         literal_detect_ms: u64,
-        expected_kana: Option<char>,
+        _expected_kana: Option<char>,
     ) -> bool {
         match detector {
             Some(det) => {
@@ -509,7 +506,6 @@ impl TickableFsm for GjiWarmupCoro {
                     ze_bs_count,
                     detector: det,
                     deadline_ms,
-                    expected_kana,
                 });
                 false
             }

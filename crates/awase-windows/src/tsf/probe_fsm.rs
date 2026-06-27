@@ -193,12 +193,6 @@ impl SendState {
 
 /// [`ProbePhase::WaitingForCallback`] の内部状態。
 pub(crate) enum WaitingFor {
-    /// Fresh F2 送信済み・namechange コールバック待ち（GJI warmup パス）。
-    FreshF2Sent {
-        probe_settled: bool,
-        budget_ms: u64,
-        send: SendState,
-    },
     /// `apply_transmit_done` 待ち（Transmit(Chrome) パス）。
     TransmitDone,
 }
@@ -399,7 +393,6 @@ impl TsfProbeMachine {
         match &mut self.phase {
             ProbePhase::Probing { send, .. }
             | ProbePhase::LiteralDetect { send, .. } => Some(send),
-            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { send, .. }) => Some(send),
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => None,
         }
     }
@@ -408,9 +401,6 @@ impl TsfProbeMachine {
     const fn phase_label_internal(&self) -> &'static str {
         match &self.phase {
             ProbePhase::Probing { .. } => "Probing",
-            ProbePhase::WaitingForCallback(WaitingFor::FreshF2Sent { .. }) => {
-                "WaitingForCallback(FreshF2Sent)"
-            }
             ProbePhase::WaitingForCallback(WaitingFor::TransmitDone) => {
                 "WaitingForCallback(TransmitDone)"
             }
