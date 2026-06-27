@@ -40,12 +40,6 @@ pub(crate) trait ProbeIo {
     /// F2 単発では GJI I/O が発生しないが、F2×2 連続では GJI が起動して I/O を出す
     /// （cold=1244 実測: 31ms 以内）。`send_fresh_f2` の直後に呼ぶこと。
     fn send_extra_f2(&self);
-    /// TSF モード（WezTerm 等 ForceTsf アプリ）かどうかを返す。
-    ///
-    /// `true` のとき `RawTsfLiteralRecovery` では `mark_cold_raw_tsf` を呼ばず warm を維持する
-    /// ことで、`flush_raw_tsf_literal_romaji` の再送が F2 warmup なしの直接 VK 送信を通る
-    /// （WezTerm の 344ms composition context タイマーをリセットしないため）。
-    fn is_tsf_mode(&self) -> bool;
     /// 連続 raw TSF literal 回数を返す。
     fn consecutive_count(&self) -> u32;
     /// warm 状態を維持したまま連続カウントをインクリメントする（TSF mode 回収パス用）。
@@ -154,10 +148,6 @@ impl ProbeIo for Output {
             crate::tsf::output::make_tsf_key_input(VK_DBE_HIRAGANA, true),
         ];
         let _ = crate::win32::send_input_safe(&extra);
-    }
-
-    fn is_tsf_mode(&self) -> bool {
-        self.is_tsf_mode()
     }
 
     fn consecutive_count(&self) -> u32 {
@@ -785,7 +775,6 @@ mod tests {
     struct FakeProbeIo {
         bypass: bool,
         gji_healthy: bool,
-        tsf_mode: bool,
         tsf_transmit_result: usize,
         consecutive: u32,
         transmit_tsf_called: Cell<bool>,
@@ -809,7 +798,6 @@ mod tests {
             Self {
                 bypass: false,
                 gji_healthy: false,
-                tsf_mode: false,
                 tsf_transmit_result: 1,
                 consecutive: 0,
                 transmit_tsf_called: Cell::new(false),
@@ -834,9 +822,6 @@ mod tests {
         }
         fn gji_monitor_healthy(&self) -> bool {
             self.gji_healthy
-        }
-        fn is_tsf_mode(&self) -> bool {
-            self.tsf_mode
         }
         fn transmit_tsf(
             &self,
@@ -1440,7 +1425,6 @@ mod tests {
         //   3. send_sacrificial_vk_a (VK_A 送信)
         //   4. SacrificialWarmupFsm に SwitchMachine
         let io = FakeProbeIo {
-            tsf_mode: true,
             consecutive: 0,
             ..Default::default()
         };
@@ -1529,7 +1513,6 @@ mod tests {
         // TSF mode でも consecutive > 0 のときは諦める。
         // ただし terminal に 'k'(literal) + composition が残らないよう BS のみ送る (romaji 再送なし)。
         let io = FakeProbeIo {
-            tsf_mode: true,
             consecutive: 1, // already attempted once
             ..Default::default()
         };
