@@ -248,6 +248,10 @@ pub(crate) struct LiteralDetectConfig {
     pub literal_detect_ms: u64,
     /// 送信先ターゲット。SacrificialWarmup の resend フェーズで Chrome/TSF を切り替える。
     pub target: TransmitTarget,
+    /// `true` = `LiteralDetectFsm` が partial literal / SuspectedLiteral を検出して
+    /// 回収目的で emit した（consecutive インクリメントが必要）。
+    /// `false` = `GjiWarmupFsm` の通常 cold-start パスで emit した。
+    pub from_literal_recovery: bool,
 }
 
 /// [`SacrificialWarmupFsm`] が composition 確認後に emit する再送設定。
@@ -319,6 +323,14 @@ pub(crate) enum ProbeAction {
         cold_seq: u32,
         romaji: String,
         deferred_vks: Vec<DeferredVk>,
+    },
+    /// partial literal / SuspectedLiteral 回収前の terminal cleanup 用 BS 送信。
+    ///
+    /// [`LiteralDetectFsm`] が TSF mode + consecutive==0 のときに `StartSacrificialWarmup` の直前に
+    /// emit する。dispatcher は `ProbeIo::send_literal_recovery_bs` を呼び出す。
+    SendRecoveryBs {
+        cold_seq: u32,
+        backs: usize,
     },
     /// Unicode モードで GJI write が観測されなかった。
     ///
@@ -602,6 +614,7 @@ impl TsfProbeMachine {
                 observations: ProbeObservations { nc_fired: true, gji_resumed: false },
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 target: TransmitTarget::Chrome,
+                from_literal_recovery: false,
             })]
         } else {
             // GJI inactive: GJI モニター不健全のため composition 確認不可 → 直接送信。

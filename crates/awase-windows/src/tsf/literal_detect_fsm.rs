@@ -17,7 +17,9 @@
 
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, ProbeObservations, TransmitPlan};
+use crate::tsf::probe_fsm::{
+    DeferredVk, LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
+};
 use crate::tsf::probe_fsm::TsfEnvSnapshot;
 
 /// 部分リテラル検出時に送るバックスペース数。
@@ -37,15 +39,15 @@ pub(crate) struct LiteralDetectFsm {
     cold_seq: u32,
     /// RAII guard — drop で `OUTPUT_GATE.active=false`
     _guard: OutputActiveGuard,
-    /// 送信したローマ字（RawTsfLiteralRecovery ペイロード用）
+    /// 送信したローマ字（回収アクションのペイロード用）
     romaji: String,
     /// probe 中に蓄積した後続 VK（現在は LiteralDetect フェーズでは使用しないが保持）
     #[allow(dead_code)]
     deferred_vks: Vec<DeferredVk>,
-    /// 送信方針（RawTsfLiteralRecovery ペイロード用）
+    /// 送信方針（回収アクションのペイロード用）
     #[allow(dead_code)]
     plan: TransmitPlan,
-    /// probe 中に観測した事実。部分リテラル判定に使用する。
+    /// probe 中に観測した事実。部分リテラル判定・sacr warmup config に使用する。
     observations: ProbeObservations,
     /// composition 確認 / raw literal 検出器
     detector: LiteralDetector,
@@ -53,6 +55,11 @@ pub(crate) struct LiteralDetectFsm {
     deadline_ms: u64,
     /// raw literal 検出時に送るバックスペース数
     ze_bs_count: usize,
+    /// 構築時点の連続 raw-tsf-literal 回数。
+    ///
+    /// 0 かつ TSF mode の場合は `StartSacrificialWarmup` 経由で sacr warmup を起動する。
+    /// 1 以上の場合は give-up（cleanup のみ）。
+    consecutive: u32,
 }
 
 impl LiteralDetectFsm {
@@ -60,6 +67,8 @@ impl LiteralDetectFsm {
     ///
     /// `literal_detect_ms` はタイムアウト期間（ms）。`OutputActiveGuard::begin()` を内部で
     /// 呼び出し、デッドライン（`current_tick_ms() + literal_detect_ms`）を確定する。
+    ///
+    /// `consecutive` は現在の連続 raw-tsf-literal 回数。0 かつ TSF mode のとき sacr warmup を起動する。
     pub(crate) fn new(
         cold_seq: u32,
         romaji: String,
@@ -68,6 +77,7 @@ impl LiteralDetectFsm {
         observations: ProbeObservations,
         ze_bs_count: usize,
         literal_detect_ms: u64,
+        consecutive: u32,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
         let detector = LiteralDetector::new();
@@ -82,6 +92,45 @@ impl LiteralDetectFsm {
             detector,
             deadline_ms,
             ze_bs_count,
+            consecutive,
+        }
+    }
+
+    /// literal 回収用アクション列を生成する。
+    ///
+    /// TSF mode かつ consecutive==0 → sacr warmup パス（`SendRecoveryBs + StartSacrificialWarmup + Done`）。
+    /// それ以外 → 従来の `RawTsfLiteralRecovery + Done`。
+    fn emit_recovery_actions(&mut self, env: &TsfEnvSnapshot, backs: usize) -> Vec<ProbeAction> {
+        let romaji = std::mem::take(&mut self.romaji);
+        if env.is_tsf_mode && self.consecutive == 0 {
+            vec![
+                ProbeAction::SendRecoveryBs { cold_seq: self.cold_seq, backs },
+                ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
+                    cold_seq: self.cold_seq,
+                    romaji,
+                    deferred_vks: vec![],
+                    plan: TransmitPlan {
+                        should_prepend_f2: false,
+                        used_eager_path: false,
+                        needs_literal: true,
+                        literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    },
+                    observations: self.observations,
+                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    target: TransmitTarget::Tsf,
+                    from_literal_recovery: true,
+                }),
+                ProbeAction::Done,
+            ]
+        } else {
+            vec![
+                ProbeAction::RawTsfLiteralRecovery {
+                    cold_seq: self.cold_seq,
+                    backs,
+                    romaji,
+                },
+                ProbeAction::Done,
+            ]
         }
     }
 
@@ -122,21 +171,14 @@ impl LiteralDetectFsm {
                     // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition → BS×2 が正しく
                     //     ze_bs_count=3 を使うと挿入点前の無関係な文字まで消える。
                     log::debug!(
-                        "[raw-tsf-literal] cold={} LiteralDetectFsm: partial literal (nc=false gji_resumed=false tsf romaji={:?} backs={})",
+                        "[raw-tsf-literal] cold={} LiteralDetectFsm: partial literal (nc=false gji_resumed=false tsf romaji={:?} backs={} consecutive={})",
                         self.cold_seq,
                         self.romaji,
                         PARTIAL_LITERAL_BS,
+                        self.consecutive,
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
-                    let romaji = std::mem::take(&mut self.romaji);
-                    return vec![
-                        ProbeAction::RawTsfLiteralRecovery {
-                            cold_seq: self.cold_seq,
-                            backs: PARTIAL_LITERAL_BS,
-                            romaji,
-                        },
-                        ProbeAction::Done,
-                    ];
+                    return self.emit_recovery_actions(env, PARTIAL_LITERAL_BS);
                 }
 
                 log::debug!(
@@ -148,20 +190,13 @@ impl LiteralDetectFsm {
             }
             DetectionResult::SuspectedLiteral => {
                 log::debug!(
-                    "[raw-tsf-literal] cold={} LiteralDetectFsm: suspected literal (backs={})",
+                    "[raw-tsf-literal] cold={} LiteralDetectFsm: suspected literal (backs={} consecutive={})",
                     self.cold_seq,
-                    self.ze_bs_count
+                    self.ze_bs_count,
+                    self.consecutive,
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
-                let romaji = std::mem::take(&mut self.romaji);
-                vec![
-                    ProbeAction::RawTsfLiteralRecovery {
-                        cold_seq: self.cold_seq,
-                        backs: self.ze_bs_count,
-                        romaji,
-                    },
-                    ProbeAction::Done,
-                ]
+                self.emit_recovery_actions(env, self.ze_bs_count)
             }
         }
     }
@@ -204,6 +239,7 @@ mod tests {
             ProbeObservations { nc_fired, gji_resumed },
             ze_bs_count,
             500,
+            0, // consecutive
         )
     }
 

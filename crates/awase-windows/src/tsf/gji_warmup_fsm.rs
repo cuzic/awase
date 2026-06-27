@@ -566,6 +566,7 @@ impl GjiWarmupFsm {
                     observations,
                     literal_detect_ms,
                     target: TransmitTarget::Tsf,
+                    from_literal_recovery: false,
                 })]
             } else {
                 vec![ProbeAction::StartLiteralDetect(LiteralDetectConfig {
@@ -576,6 +577,7 @@ impl GjiWarmupFsm {
                     observations,
                     literal_detect_ms,
                     target: TransmitTarget::Tsf,
+                    from_literal_recovery: false,
                 })]
             }
         } else {
