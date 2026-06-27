@@ -462,7 +462,7 @@ fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str, elev
 /// `WM_APP` メッセージを受け取った時にメッセージループから呼ばれる。
 /// 右クリックでコンテキストメニューを表示する。
 pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], elevated: bool) {
-    #[allow(clippy::cast_sign_loss)]
+    #[expect(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
 
     log::debug!(
@@ -559,7 +559,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
 #[must_use]
 pub fn is_elevated() -> bool {
     #[link(name = "shell32")]
-    extern "system" {
+    unsafe extern "system" {
         fn IsUserAnAdmin() -> i32;
     }
     // SAFETY: `IsUserAnAdmin` は shell32.dll にリンクされた有効な外部関数。

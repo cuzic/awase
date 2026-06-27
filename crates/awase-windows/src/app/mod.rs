@@ -44,7 +44,7 @@ const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 const NOTIFY_FOR_THIS_SESSION: u32 = 0;
 
 #[link(name = "wtsapi32")]
-extern "system" {
+unsafe extern "system" {
     fn WTSRegisterSessionNotification(hwnd: HWND, flags: u32) -> windows::core::BOOL;
     fn WTSUnRegisterSessionNotification(hwnd: HWND) -> windows::core::BOOL;
 }
@@ -258,7 +258,7 @@ pub(crate) fn check_keyboard_layout_on_change() {
 
 // ── メッセージループ ──
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines)]
 fn run_message_loop(taskbar_created_msg: u32) {
     // フックスレッドへエンジンスレッド TID を公開（WM_KEY_FROM_HOOK の送信先）
     // SAFETY: GetCurrentThreadId は常に成功し副作用もない。
