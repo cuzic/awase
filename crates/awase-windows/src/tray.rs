@@ -28,6 +28,7 @@ const IDM_CLEAR_IMM_CACHE: u16 = 52;
 const IDM_GJI_SETUP: u16 = 53;
 const IDM_AUTOSTART: u16 = 54;
 const IDM_GJI_TEARDOWN: u16 = 55;
+const IDM_PANIC_RESET: u16 = 56;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -45,6 +46,7 @@ pub enum TrayCommand {
     GjiSetup,
     GjiTeardown,
     ToggleAutoStart,
+    PanicReset,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
 }
@@ -498,6 +500,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
         append_menu_item(hmenu, IDM_CLEAR_IMM_CACHE, "学習キャッシュをクリア");
+        append_menu_item(hmenu, IDM_PANIC_RESET, "内部状態をリセット");
         append_menu_item(hmenu, IDM_GJI_SETUP, "Google 日本語入力のセットアップ");
         append_menu_item(hmenu, IDM_GJI_TEARDOWN, "Google 日本語入力の F21/F22 設定を削除");
         let autostart_registered = crate::autostart::is_registered();
@@ -545,6 +548,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_GJI_SETUP => Some(TrayCommand::GjiSetup),
         IDM_GJI_TEARDOWN => Some(TrayCommand::GjiTeardown),
         IDM_AUTOSTART => Some(TrayCommand::ToggleAutoStart),
+        IDM_PANIC_RESET => Some(TrayCommand::PanicReset),
         c if (IDM_LAYOUT_BASE..IDM_TOGGLE).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
@@ -896,6 +900,10 @@ unsafe extern "system" fn tray_wnd_proc(
                 Some(TrayCommand::GjiSetup) => handle_gji_setup(),
                 Some(TrayCommand::GjiTeardown) => handle_gji_teardown(),
                 Some(TrayCommand::ToggleAutoStart) => handle_autostart_toggle(),
+                Some(TrayCommand::PanicReset) => {
+                    log::warn!("Panic reset requested from tray menu");
+                    crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
+                }
                 Some(TrayCommand::SelectLayout(index)) => {
                     let _ = crate::with_app(|app| app.switch_layout(index));
                 }
