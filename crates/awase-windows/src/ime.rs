@@ -316,6 +316,19 @@ pub unsafe fn post_gji_ime_off() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    use crate::vk::{VK_LWIN, VK_RWIN};
+
+    // Win キー押下中は注入をスキップする。
+    // Win+F21/F22 は OS に未認識ショートカットとして届き、Win↑ のタイミングで
+    // スタートメニューを誤起動させる原因になる。
+    // Win を SendInput で解放すると Win 自体がスタートメニューを開くため、
+    // Alt と同様にスキップ（解放しない）が正しい対処。
+    if crate::hook::is_physical_key_down(VK_LWIN) || crate::hook::is_physical_key_down(VK_RWIN) {
+        log::debug!(
+            "[ime-mode] skipped vk=0x{vk:02X} (Win key held — Win+F21/F22 triggers Start Menu on Win↑)"
+        );
+        return;
+    }
 
     let held = HeldModifiers::read();
     // F21/F22 は GJI 専用の仮想 VK（実キーボードに存在しない）。
