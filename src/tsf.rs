@@ -354,24 +354,24 @@ impl TsfReadiness {
     ///
     /// `PendingWarmup` 中はキーを `held` に蓄積し、TSF/Bypass 確定後に再投入する。
     #[must_use]
-    pub fn is_holding(&self) -> bool {
-        self.gate == TsfGateState::PendingWarmup
+    pub const fn is_holding(&self) -> bool {
+        matches!(self.gate, TsfGateState::PendingWarmup)
     }
 
     /// TSF モードで文字送信を実行できる状態か。
     ///
     /// `is_tsf_mode && gate != PendingWarmup` — `Probing` 中も送信可能。
     #[must_use]
-    pub fn can_send_tsf(&self) -> bool {
-        self.is_tsf_mode && self.gate != TsfGateState::PendingWarmup
+    pub const fn can_send_tsf(&self) -> bool {
+        self.is_tsf_mode && !matches!(self.gate, TsfGateState::PendingWarmup)
     }
 
     /// すべての条件が整った完全な Ready 状態か。
     ///
     /// `is_tsf_mode && ime_on && gate == Ready`
     #[must_use]
-    pub fn is_fully_ready(&self) -> bool {
-        self.is_tsf_mode && self.ime_on && self.gate == TsfGateState::Ready
+    pub const fn is_fully_ready(&self) -> bool {
+        self.is_tsf_mode && self.ime_on && matches!(self.gate, TsfGateState::Ready)
     }
 }
 

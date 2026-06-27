@@ -4,7 +4,7 @@
 //! FSM（処理レイヤー）とは独立して動作し、IME チェック等で FSM がスキップ
 //! される場合でも物理キー状態を正確に追跡し続ける。
 
-use crate::types::{KeyClassification, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+use crate::types::{KeyClassification, KeyEventType, RawKeyEvent, Timestamp};
 
 use super::decision::InputContext;
 use super::fsm_types::{ClassifiedEvent, KeyClass, ModifierState};
@@ -30,17 +30,10 @@ impl PhysicalKeyState {
     ///
     /// Engine の初期化時など、まだ実イベントを受け取っていない段階で使う。
     #[must_use]
-    pub fn empty() -> Self {
+    pub const fn empty() -> Self {
         Self {
-            classified: ClassifiedEvent {
-                key_class: KeyClass::Passthrough,
-                pos: None,
-                scan_code: ScanCode(0),
-                vk_code: VkCode(0),
-                timestamp: 0,
-                is_ime_control: false,
-            },
-            modifiers: ModifierState::default(),
+            classified: ClassifiedEvent::dummy(),
+            modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
             left_thumb_down: None,
             right_thumb_down: None,
         }
