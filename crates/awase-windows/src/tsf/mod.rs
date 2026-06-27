@@ -8,7 +8,6 @@
 //! - [`probe_bridge`] — メッセージループ統合: OUTPUT_GATE / WM_DRAIN_OUTPUT_QUEUE
 //! - [`cold_warmup`]  — cold-start ウォームアップシーケンス（Preamble/Eager/Non-eager 分解）
 
-pub(crate) mod chrome_gji_reinit_fsm;
 pub(crate) mod chrome_probe;
 pub(crate) mod cold_warmup;
 pub(crate) mod composition_fsm;
@@ -18,7 +17,7 @@ pub(crate) mod ime_mode_fsm;
 pub(crate) mod literal_detect_fsm;
 pub(crate) mod step_coro;
 pub mod observer;
-pub(crate) mod sacr_warmup_fsm;
+pub(crate) mod sacr_warmup_coro;
 pub(crate) mod tickable_fsm;
 pub(crate) mod unicode_cold_warmup_fsm;
 pub(crate) mod unicode_literal_observer;

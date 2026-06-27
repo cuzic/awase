@@ -299,17 +299,14 @@ pub(crate) enum ProbeAction {
     ///
     /// dispatcher が BS×1（犠牲 VK_A 削除）→ 実ローマ字 transmit_tsf → deferred_vks 送信を行う。
     SacrificialResend(SacrificialResend),
-    /// Chrome sacr-warmup cold タイムアウト後の GJI 再初期化フェーズを開始する。
+    /// Chrome sacr-warmup cold タイムアウト後の GJI 再初期化を dispatcher に委譲する。
     ///
     /// dispatcher が F22→F21 を SendInput でキューイング + `ImeModeFsm` belief 更新 +
-    /// async `IMC_GETCONVERSIONMODE` ポーリングを開始し、
-    /// [`crate::tsf::chrome_gji_reinit_fsm::ChromeGjiReinitFsm`] に切り替える。
-    /// FSM が Hiragana 確認 or タイムアウト後に `SacrificialResend` を emit して実ローマ字を送る。
-    StartChromeGjiReinit {
-        cold_seq: u32,
-        romaji: String,
-        deferred_vks: Vec<DeferredVk>,
-    },
+    /// async `IMC_GETCONVERSIONMODE` ポーリングを開始する。
+    /// FSM 切り替えは不要（[`SacrificialWarmupCoro`] がそのまま IME 確認を待機する）。
+    ///
+    /// [`crate::tsf::sacr_warmup_coro::SacrificialWarmupCoro`] が emit する。
+    SendChromeGjiReinit { cold_seq: u32 },
     /// partial literal / SuspectedLiteral 回収前の terminal cleanup 用 BS 送信。
     ///
     /// [`LiteralDetectFsm`] が TSF mode + consecutive==0 のときに `StartSacrificialWarmup` の直前に

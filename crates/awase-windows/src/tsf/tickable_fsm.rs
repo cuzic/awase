@@ -8,6 +8,7 @@
 //! |--------|------|-----------------|
 //! | `GjiWarmupCoro` | GJI cold-start warmup probe | `tick`, `cold_seq_hint`, `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done`, `push_deferred` |
 //! | `TsfProbeMachine` | Chrome probe + LiteralDetect | `tick`, `cold_seq_hint`, `apply_transmit_done`, `push_deferred` |
+//! | `SacrificialWarmupCoro` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化 | `tick`, `cold_seq_hint`, `push_deferred`, `notify_start_composition` |
 //! | `LiteralDetectFsm` | warm パスの post-transmit composition 確認 | `tick`, `cold_seq_hint` のみ |
 //!
 //! デフォルト実装（no-op）が多いのは各 implementor が必要なメソッドだけをオーバーライドするため。

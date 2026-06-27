@@ -570,41 +570,37 @@ where
                     TransmitTarget::Chrome => io.send_sacrificial_vk_a_with_bs(config.cold_seq),
                     TransmitTarget::Tsf => io.send_sacrificial_vk_a(config.cold_seq),
                 }
+                let detector = match config.target {
+                    TransmitTarget::Chrome => crate::tsf::probe::LiteralDetector::new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a),
+                    TransmitTarget::Tsf => crate::tsf::probe::LiteralDetector::new(),
+                };
+                let deadline_ms = crate::hook::current_tick_ms() + config.literal_detect_ms;
                 log::debug!(
-                    "[sacr-warmup] cold={} VK_A 送信完了 → SacrificialWarmupFsm 開始 \
+                    "[sacr-warmup] cold={} VK_A 送信完了 → SacrificialWarmupCoro 開始 \
                     (romaji={:?} literal_detect={}ms write_bytes_baseline={} from_literal_recovery={})",
                     config.cold_seq, config.romaji, config.literal_detect_ms,
                     write_bytes_before_vk_a, config.from_literal_recovery,
                 );
-                let sacr_fsm = crate::tsf::sacr_warmup_fsm::SacrificialWarmupFsm::new(
+                let sacr_coro = crate::tsf::sacr_warmup_coro::SacrificialWarmupCoro::new(
                     config.cold_seq,
                     config.romaji,
                     config.deferred_vks,
-                    config.literal_detect_ms,
+                    detector,
+                    deadline_ms,
                     config.target,
-                    write_bytes_before_vk_a,
                 );
-                return DispatchResult::SwitchMachine(Box::new(sacr_fsm));
+                return DispatchResult::SwitchMachine(Box::new(sacr_coro));
             }
 
-            ProbeAction::StartChromeGjiReinit { cold_seq, romaji, deferred_vks } => {
-                // Chrome sacr-warmup cold タイムアウト後の GJI 再初期化フェーズ。
+            ProbeAction::SendChromeGjiReinit { cold_seq } => {
+                // SacrificialWarmupCoro が Chrome cold タイムアウト後に emit する。
                 // F22→F21 送信 + ImeModeFsm belief 更新 + async IMC ポーリング開始。
-                // ChromeGjiReinitFsm が Hiragana 確認 or タイムアウト後に SacrificialResend を emit する。
+                // FSM 切り替えは不要（SacrificialWarmupCoro がそのまま IME 確認を待機する）。
                 io.send_chrome_gji_reinit_and_poll(cold_seq);
-                let deadline_ms = crate::hook::current_tick_ms()
-                    + crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS;
-                let reinit_fsm = crate::tsf::chrome_gji_reinit_fsm::ChromeGjiReinitFsm::new(
-                    cold_seq,
-                    romaji,
-                    deferred_vks,
-                    deadline_ms,
-                );
-                return DispatchResult::SwitchMachine(Box::new(reinit_fsm));
             }
 
             ProbeAction::SacrificialResend(resend) => {
-                // SacrificialWarmupFsm から emit される（composition 確認後）。
+                // SacrificialWarmupCoro から emit される（composition 確認後）。
                 // BS×1（犠牲 VK_A 削除）→ 実ローマ字送信 → deferred_vks 送信。
                 // target に応じて Chrome/TSF パスを切り替える。
                 let cold_seq = resend.cold_seq;
@@ -624,8 +620,9 @@ where
                     match resend.target {
                         TransmitTarget::Chrome => {
                             // Chrome パス: INJECTED_MARKER バッチ送信。
-                            // Chrome cold case は StartChromeGjiReinit → ChromeGjiReinitFsm 経由で来る。
-                            // confirmed_warm=false の場合も F22→F21 は StartChromeGjiReinit で送信済み。
+                            // Chrome cold case は SendChromeGjiReinit 後に SacrificialWarmupCoro が
+                            // IME 確認し SacrificialResend(confirmed_warm=false) を emit する。
+                            // F22→F21 は SendChromeGjiReinit で送信済み。
                             log::debug!(
                                 "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を Chrome パスで再送 \
                                 (confirmed_warm={})",
@@ -657,7 +654,7 @@ where
                         }
                     }
                 }
-                // SacrificialWarmupFsm は Done を後続 action として emit しているため
+                // SacrificialWarmupCoro は Done を後続 action として emit しているため
                 // ここでは machine 状態を更新せず Continue を返す（queue が Done を処理する）。
             }
 
@@ -1373,7 +1370,7 @@ mod tests {
         //   1. send_literal_recovery_bs (BS×backs で terminal cleanup)
         //   2. increment_consecutive_count (ループ防止)
         //   3. send_sacrificial_vk_a (VK_A 送信)
-        //   4. SacrificialWarmupFsm に SwitchMachine
+        //   4. SacrificialWarmupCoro に SwitchMachine
         let io = FakeProbeIo {
             consecutive: 0,
             ..Default::default()
@@ -1401,7 +1398,7 @@ mod tests {
         let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             matches!(result, DispatchResult::SwitchMachine(_)),
-            "from_literal_recovery: SacrificialWarmupFsm に SwitchMachine するべき"
+            "from_literal_recovery: SacrificialWarmupCoro に SwitchMachine するべき"
         );
         assert!(
             io.send_literal_recovery_bs_called.get(),
