@@ -83,13 +83,20 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 ///   `Conversion\tF21\tIMEOn`    / `Conversion\tF22\tIMEOff`
 ///
 /// `gji_monitor_ok=true`（GJI プロセス検出済み）かつ
-/// `gji_keybinds_ok=true`（F21/F22 が config1.db に登録済み）の場合のみ適用可能。
-/// どちらかが false の場合は `KanjiToggleStrategy`（MS-IME 向け）がフォールバックする。
+/// `gji_keybinds_ok=true`（F21/F22 が config1.db に登録済み）かつ
+/// `gji_write_idle_ms < LONG_IDLE_MS`（GJI が最近書き込み済み = アクティブ IME）の場合のみ適用可能。
+///
+/// GJI がインストール済み・起動中でも MS-IME がアクティブ IME として選択されている場合、
+/// GJI はキー入力を処理しないため WriteTransferCount が増加しない。
+/// `gji_write_idle_ms >= LONG_IDLE_MS`（10 秒以上書き込みなし）のときは GJI がアクティブでないと
+/// みなし `MsImeDirectStrategy`（VK_DBE_ALPHANUMERIC）にフォールスルーする。
 pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.observed.gji_monitor_ok && view.observed.gji_keybinds_ok
+        view.observed.gji_monitor_ok
+            && view.observed.gji_keybinds_ok
+            && view.observed.gji_write_idle_ms < crate::tuning::LONG_IDLE_MS
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
@@ -120,23 +127,28 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 
 /// MS-IME 向けの冪等 IME 制御戦略（VK_DBE_HIRAGANA / VK_DBE_ALPHANUMERIC）。
 ///
-/// GJI が検出されておらず、かつ IMM32 クロスプロセス制御が使えない TSF アプリ
+/// GJI が最近書き込みをしていない（`gji_write_idle_ms >= LONG_IDLE_MS`）か、
+/// GJI が未検出の環境で、かつ IMM32 クロスプロセス制御が使えない TSF アプリ
 /// （Chrome / Edge 等）に対して冪等な VK_DBE_* を送信する。
 ///
 /// - ON  → `VK_DBE_HIRAGANA` (0xF2) — ひらがなモードに設定（既に ON なら no-op）
 /// - OFF → `VK_DBE_ALPHANUMERIC` (0xF0) — 半角英数モードに設定（既に OFF なら no-op）
 ///
 /// `VK_KANJI` トグルと異なり冪等なため shadow desync の影響を受けない。
-/// GJI 環境では `GjiDirectStrategy` が先行するためここには到達しない。
+/// GJI がアクティブ IME として最近動作中であれば `GjiDirectStrategy` が先行する。
+///
+/// GJI インストール済みでも MS-IME に切り替えた場合、GJI の WriteTransferCount が
+/// 増加しなくなるため `LONG_IDLE_MS`（10 秒）後にこの戦略が有効になる。
+/// VK_DBE_* は GJI・MS-IME 双方が標準 Windows IME プロトコルとして処理するため、
+/// GJI の LongIdle 後（アクティブ状態は維持）にフォールバックしても正しく動作する。
 pub(crate) struct MsImeDirectStrategy;
 
 impl ImeOpenStrategy for MsImeDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        // MS-IME 推定（GJI 非検出）かつ IMM32 が使えない TSF アプリのみ
-        matches!(
-            view.observed.active_ime_kind,
-            crate::tsf::observer::ActiveImeKind::MicrosoftIme
-        ) && !view.focus.profile.can_use_imm32_cross_process()
+        // GJI が最近アクティブでない（または未検出）かつ IMM32 が使えない TSF アプリのみ
+        (!view.observed.gji_monitor_ok
+            || view.observed.gji_write_idle_ms >= crate::tuning::LONG_IDLE_MS)
+            && !view.focus.profile.can_use_imm32_cross_process()
     }
 
     fn apply(&self, open: bool, _view: &ImeControlView<'_>) -> ImeOpenOutcome {

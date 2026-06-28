@@ -46,8 +46,15 @@ pub(crate) struct ObservedState {
     /// `shadow=false` なのに candidate が表示された desync を `KanjiToggleStrategy` が検出するために使う。
     pub candidate_was_seen: bool,
     /// 現在使用中の IME 種別（`gji_monitor_ok` から派生）。
-    /// `MsImeDirectStrategy` の `is_applicable` ゲートに使用する。
+    /// warmup strategy 切り替え（`WM_IME_KIND_CHANGED`）に使用する。
     pub active_ime_kind: crate::tsf::observer::ActiveImeKind,
+    /// `capture_now()` 時点での GJI 最終 Write からの経過時間 (ms)。
+    ///
+    /// `GetTickCount64 - gji_last_write_ms` で計算する。
+    /// GJI がアクティブ IME として動作しているとき（キーを処理するたびに TSF に書き込む）は
+    /// 小さい値になる。MS-IME がアクティブな場合は GJI が書き込まないため増加し続ける。
+    /// `GjiDirectStrategy.is_applicable()` で `LONG_IDLE_MS` と比較して GJI 活性判定に使う。
+    pub gji_write_idle_ms: u64,
 }
 
 impl Default for ObservedState {
@@ -59,6 +66,7 @@ impl Default for ObservedState {
             gji_keybinds_ok: false,
             candidate_was_seen: false,
             active_ime_kind: crate::tsf::observer::ActiveImeKind::MicrosoftIme,
+            gji_write_idle_ms: u64::MAX,
         }
     }
 }
@@ -69,6 +77,7 @@ impl ObservedState {
     /// 判断サイトはこのメソッドで 1 回スナップショットを取り、以降は `&ObservedState` を参照する。
     pub(crate) fn capture_now() -> Self {
         let obs = crate::tsf::observer::tsf_obs();
+        let now_ms = crate::hook::current_tick_ms();
         Self {
             candidate_visible: obs.gji_candidate_visible(),
             gji_last_io_ms: obs.gji_last_io_ms(),
@@ -76,6 +85,7 @@ impl ObservedState {
             gji_keybinds_ok: obs.gji_keybinds_ok(),
             candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
             active_ime_kind: obs.active_ime_kind(),
+            gji_write_idle_ms: now_ms.saturating_sub(obs.gji_last_write_ms()),
         }
     }
 }
