@@ -89,13 +89,17 @@ impl ImeOpenStrategy for GjiDirectStrategy {
             }
             log::debug!("[apply-ime] GJI direct: F21 (IME ON)");
             unsafe { crate::ime::post_gji_ime_on() };
-        } else {
-            // F22 は GJI config で Conversion\tF22\tIMEOff が登録されているため、
-            // 候補ウィンドウ表示中でも直接 F22 を送れば IME OFF になる。
-            // Ctrl+Enter で候補確定→F22 の2段構えは不要かつ Chrome フォーム送信を
-            // 引き起こす副作用があるため送らない。
-            log::debug!("[apply-ime] GJI direct: F22 (IME OFF)");
+        } else if view.focus.profile.can_use_imm32_cross_process() {
+            // Chrome/Edge (ImmCross): F22 (config1.db keybind 経由) を使う。
+            // VK_DBE_ALPHANUMERIC は Chrome で無効なため F22 を維持する。
+            log::debug!("[apply-ime] GJI direct: F22 (IME OFF, ImmCross)");
             unsafe { crate::ime::post_gji_ime_off() };
+        } else {
+            // TsfNative (Windows Terminal 等): VK_DBE_ALPHANUMERIC を使う。
+            // GJI コールド時に F22 は config1.db ルックアップで ~750ms かかるが、
+            // VK_DBE_ALPHANUMERIC は TSF アダプタが直接処理するためファイル I/O なし。
+            log::debug!("[apply-ime] GJI direct: VK_DBE_ALPHANUMERIC (IME OFF, TsfNative)");
+            unsafe { crate::ime::post_ms_ime_off() };
         }
         ImeOpenOutcome::Applied
     }
