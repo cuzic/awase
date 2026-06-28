@@ -64,13 +64,15 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 
 /// GJI を使った一方向 IME 制御戦略。
 ///
-/// VK_KANJI（トグル）の代わりに GJI 固有のキーを使うことで shadow desync の影響を排除する:
-/// - ON  → F21（DirectInput 時にひらがなへ切り替え、既に ON なら no-op）
-/// - OFF → F22（Precomposition/Composition/Conversion 時に IME OFF）
+/// VK_KANJI（トグル）の代わりに冪等キーを使うことで shadow desync の影響を排除する:
+/// - ON  → VK_IME_ON（IME ON、既に ON なら no-op）
+/// - OFF → VK_IME_OFF（IME OFF、既に OFF なら no-op）
 ///
-/// F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないが、
-/// TsfNative（Windows Terminal 等）では F22 が GJI の TSF compartment を閉じず半角英数になるため
-/// TsfNative を除外し KanjiToggleStrategy（VK_KANJI）にフォールバックする。
+/// TsfNative（Windows Terminal 等）では VK_IME_OFF が GJI の TSF compartment を正しく閉じるか
+/// 未確認のため TsfNative を除外し KanjiToggleStrategy（VK_KANJI）にフォールバックする。
+///
+/// 注: ウォームアップ FSM（UnicodeColdWarmupFsm / ChromeGjiReinitFsm）は
+/// 引き続き F21/F22 を config1.db 経由で使用する。
 ///
 /// 適用条件:
 /// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
@@ -93,14 +95,10 @@ impl ImeOpenStrategy for GjiDirectStrategy {
                 log::debug!("[apply-ime] GJI direct: shadow ON, skip F21");
                 return ImeOpenOutcome::AlreadyMatched;
             }
-            log::debug!("[apply-ime] GJI direct: F21 (IME ON)");
+            log::debug!("[apply-ime] GJI direct: VK_IME_ON");
             unsafe { crate::ime::post_gji_ime_on() };
         } else {
-            // F22 は GJI config で Conversion\tF22\tIMEOff が登録されているため、
-            // 候補ウィンドウ表示中でも直接 F22 を送れば IME OFF になる。
-            // Ctrl+Enter で候補確定→F22 の2段構えは不要かつ Chrome フォーム送信を
-            // 引き起こす副作用があるため送らない。
-            log::debug!("[apply-ime] GJI direct: F22 (IME OFF)");
+            log::debug!("[apply-ime] GJI direct: VK_IME_OFF");
             unsafe { crate::ime::post_gji_ime_off() };
         }
         ImeOpenOutcome::Applied

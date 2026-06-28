@@ -288,38 +288,30 @@ pub unsafe fn post_ms_ime_off() {
     unsafe { send_ime_mode_key(crate::vk::VK_DBE_ALPHANUMERIC) }
 }
 
-/// GJI 専用 IME ON: F21 を送信してひらがなモードに切り替える。
+/// GJI 専用 IME ON: VK_IME_ON を送信してひらがなモードに切り替える。
 ///
-/// GJI の直接入力モード（IME OFF 状態）で F21 を押すとひらがな入力に切り替わる。
-/// 既に ON の場合は no-op（冪等）。候補ウィンドウ表示中も no-op（入力は継続）。
+/// GJI の直接入力モード（IME OFF 状態）で VK_IME_ON を押すとひらがな入力に切り替わる。
+/// 既に ON の場合は no-op（冪等）。
 ///
 /// VK_KANJI と異なりトグルではないため shadow desync の影響を受けない。
-/// F21 は実キーボードに存在せず terminal にエスケープシーケンスも生成しない。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_on() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_F21) }
+    unsafe { send_ime_mode_key(crate::vk::VK_IME_ON) }
 }
 
-/// GJI 専用 IME OFF: F22 を送信して IME を無効化する。
+/// GJI 専用 IME OFF: VK_IME_OFF を送信して IME を無効化する。
 ///
-/// GJI の config1.db に `Precomposition/Composition/Conversion\tF22\tIMEOff` を
-/// 登録することで、物理キーボードに存在しない F22（VK=0x85）を IME OFF キーとして使用する。
-///
-/// F22 は実キーボードに存在せず terminal にエスケープシーケンスも生成しない。
-///
-/// GJI config で Conversion\tF22\tIMEOff が設定されているため、候補ウィンドウ表示中でも
-/// F22 を直接送れば IME OFF になる。
-/// GJI は DirectInput に F22 を登録していないため、IME が既に OFF の場合は
-/// F22 がアプリにパススルーされるが、F22 は無害（ブラウザショートカットなし）。
+/// VK_KANJI と異なりトグルではないため shadow desync の影響を受けない。
+/// 既に OFF の場合は no-op（冪等）。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_off() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_F22) }
+    unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) }
 }
 
 /// IME モード切り替えキーを `SendInput` で送信する。

@@ -325,9 +325,9 @@ self.tsf_warmup.borrow().gji_current_composition_epoch()
     /// このメソッドは通常 IME ON/OFF（`send_engine_state_ime_key` 経由）用。
     pub(crate) fn on_ime_mode_vk_sent(&self, vk: VkCode) {
         let mut fsm = self.ime_mode_fsm.borrow_mut();
-        if vk == crate::vk::VK_F21 {
+        if vk == crate::vk::VK_F21 || vk == crate::vk::VK_IME_ON {
             fsm.on_f21_sent();
-        } else if vk == crate::vk::VK_F22 {
+        } else if vk == crate::vk::VK_F22 || vk == crate::vk::VK_IME_OFF {
             fsm.on_f22_sent();
         }
     }
