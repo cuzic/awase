@@ -18,8 +18,6 @@ use win32_async;
 pub(crate) trait ProbeIo {
     /// TSF ゲートが `Bypass` 状態かどうかを返す。
     fn gate_is_bypass(&self) -> bool;
-    /// GJI モニターが正常動作しているかどうかを返す。
-    fn gji_monitor_healthy(&self) -> bool;
     /// TSF 送信パイプラインを実行し、backspace 相当数を返す。
     fn transmit_tsf(
         &self,
@@ -93,10 +91,6 @@ pub(crate) trait ProbeIo {
 impl ProbeIo for Output {
     fn gate_is_bypass(&self) -> bool {
         self.tsf_gate.state() == TsfGateState::Bypass
-    }
-
-    fn gji_monitor_healthy(&self) -> bool {
-        crate::tsf::observer::gji_monitor_healthy()
     }
 
     fn transmit_tsf(
@@ -721,7 +715,6 @@ mod tests {
     /// テスト用フェイク ProbeIo。Win32 副作用を no-op にし、呼び出しをフラグで記録する。
     struct FakeProbeIo {
         bypass: bool,
-        gji_healthy: bool,
         tsf_transmit_result: usize,
         consecutive: u32,
         transmit_tsf_called: Cell<bool>,
@@ -744,7 +737,6 @@ mod tests {
         fn default() -> Self {
             Self {
                 bypass: false,
-                gji_healthy: false,
                 tsf_transmit_result: 1,
                 consecutive: 0,
                 transmit_tsf_called: Cell::new(false),
@@ -766,9 +758,6 @@ mod tests {
     impl ProbeIo for FakeProbeIo {
         fn gate_is_bypass(&self) -> bool {
             self.bypass
-        }
-        fn gji_monitor_healthy(&self) -> bool {
-            self.gji_healthy
         }
         fn transmit_tsf(
             &self,

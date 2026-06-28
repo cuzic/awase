@@ -754,7 +754,6 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     /// pending_tsf の有無とタイマー kill/set の判断はここで完結する。
     pub(crate) fn step_probe(&mut self) -> StepProbeResult {
         let tick_t = crate::hook::current_tick_ms();
-        use probe_io::ProbeIo as _;
         let env = {
             let ime_fsm = self.ime_mode_fsm.borrow();
             crate::tsf::probe_fsm::TsfEnvSnapshot {
