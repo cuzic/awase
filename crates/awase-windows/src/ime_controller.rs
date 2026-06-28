@@ -96,7 +96,11 @@ impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
         view.observed.gji_monitor_ok
             && view.observed.gji_keybinds_ok
-            && view.observed.gji_write_idle_ms < crate::tuning::LONG_IDLE_MS
+            // 候補窓が出ているときは GJI がアクティブ IME であることが確実なので
+            // write idle 時間にかかわらず GJI Direct を使う（長考中の候補窓でも F22 が正しく動作）。
+            // 候補窓がない場合は LONG_IDLE_MS（10s）以内に書き込みがあれば GJI アクティブとみなす。
+            && (view.observed.candidate_visible
+                || view.observed.gji_write_idle_ms < crate::tuning::LONG_IDLE_MS)
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
@@ -145,9 +149,12 @@ pub(crate) struct MsImeDirectStrategy;
 
 impl ImeOpenStrategy for MsImeDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        // GJI が最近アクティブでない（または未検出）かつ IMM32 が使えない TSF アプリのみ
+        // GJI が最近アクティブでない（または未検出）かつ IMM32 が使えない TSF アプリのみ。
+        // GjiDirectStrategy.is_applicable() の否定に対称させる:
+        //   !gji_monitor_ok  OR  (!candidate_visible AND gji_write_idle >= LONG_IDLE_MS)
         (!view.observed.gji_monitor_ok
-            || view.observed.gji_write_idle_ms >= crate::tuning::LONG_IDLE_MS)
+            || (!view.observed.candidate_visible
+                && view.observed.gji_write_idle_ms >= crate::tuning::LONG_IDLE_MS))
             && !view.focus.profile.can_use_imm32_cross_process()
     }
 
