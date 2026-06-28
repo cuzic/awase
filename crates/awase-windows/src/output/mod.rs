@@ -254,16 +254,16 @@ impl Output {
     ///    BS が即キャンセルするため文字フラッシュは発生しない。
     pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: u32) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER, INJECTED_MARKER};
-        use crate::vk::{VK_BACK, VK_F21};
+        use crate::vk::{VK_BACK, VK_IME_ON};
         use awase::types::VkCode;
         const VK_A: VkCode = VkCode(0x41);
 
-        let f21_inputs = [
-            make_key_input_ex(VK_F21, false, IME_KANJI_MARKER),
-            make_key_input_ex(VK_F21, true, IME_KANJI_MARKER),
+        let ime_on_inputs = [
+            make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
+            make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
         ];
-        log::debug!("[unicode-cold-warmup] cold={cold_seq} F21 送信 (ひらがなモード切替)");
-        let _ = crate::win32::send_input_safe(&f21_inputs);
+        log::debug!("[unicode-cold-warmup] cold={cold_seq} VK_IME_ON 送信 (ひらがなモード切替)");
+        let _ = crate::win32::send_input_safe(&ime_on_inputs);
         self.ime_mode_fsm.borrow_mut().on_f21_sent();
 
         let sacr_inputs = [
@@ -325,9 +325,9 @@ self.tsf_warmup.borrow().gji_current_composition_epoch()
     /// このメソッドは通常 IME ON/OFF（`send_engine_state_ime_key` 経由）用。
     pub(crate) fn on_ime_mode_vk_sent(&self, vk: VkCode) {
         let mut fsm = self.ime_mode_fsm.borrow_mut();
-        if vk == crate::vk::VK_F21 || vk == crate::vk::VK_IME_ON {
+        if vk == crate::vk::VK_IME_ON {
             fsm.on_f21_sent();
-        } else if vk == crate::vk::VK_F22 || vk == crate::vk::VK_IME_OFF {
+        } else if vk == crate::vk::VK_IME_OFF {
             fsm.on_f22_sent();
         }
     }

@@ -265,15 +265,15 @@ impl ProbeIo for Output {
 
     fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use crate::vk::{VK_F21, VK_F22};
-        // 1. F22（IME OFF）→ F21（IME ON）を SendInput でキューイングし GJI を OFF/ON トグル。
+        use crate::vk::{VK_IME_OFF, VK_IME_ON};
+        // 1. VK_IME_OFF → VK_IME_ON を SendInput でキューイングし GJI を OFF/ON リセット。
         let inputs = [
-            make_key_input_ex(VK_F22, false, IME_KANJI_MARKER),
-            make_key_input_ex(VK_F22, true, IME_KANJI_MARKER),
-            make_key_input_ex(VK_F21, false, IME_KANJI_MARKER),
-            make_key_input_ex(VK_F21, true, IME_KANJI_MARKER),
+            make_key_input_ex(VK_IME_OFF, false, IME_KANJI_MARKER),
+            make_key_input_ex(VK_IME_OFF, true, IME_KANJI_MARKER),
+            make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
+            make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
         ];
-        log::debug!("[chrome-reinit] cold={cold_seq} F22→F21 強制リセット送信 + IMC ポーリング開始");
+        log::debug!("[chrome-reinit] cold={cold_seq} VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始");
         let _ = crate::win32::send_input_safe(&inputs);
 
         // 2. ImeModeFsm belief を即時更新: F22 → Off, F21 → Hiragana。

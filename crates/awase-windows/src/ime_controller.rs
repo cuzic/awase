@@ -68,15 +68,13 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// - ON  → VK_IME_ON（IME ON、既に ON なら no-op）
 /// - OFF → VK_IME_OFF（IME OFF、既に OFF なら no-op）
 ///
+/// VK_IME_ON/OFF は Windows 標準 IME 制御キーで config1.db バインド不要。
+///
 /// TsfNative（Windows Terminal 等）では VK_IME_OFF が GJI の TSF compartment を正しく閉じるか
 /// 未確認のため TsfNative を除外し KanjiToggleStrategy（VK_KANJI）にフォールバックする。
 ///
-/// 注: ウォームアップ FSM（UnicodeColdWarmupFsm / ChromeGjiReinitFsm）は
-/// 引き続き F21/F22 を config1.db 経由で使用する。
-///
 /// 適用条件:
 /// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
-/// - `gji_keybinds_ok == true` (F21/F22 が config1.db に登録済み)
 /// - `profile != TsfNative`（TsfNative は VK_KANJI でフォールバック）
 pub(crate) struct GjiDirectStrategy;
 
@@ -84,15 +82,14 @@ impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
         use crate::focus::class_names::AppImeProfile;
         view.observed.active_ime_kind == ActiveImeKind::GoogleJapaneseInput
-            && view.observed.gji_keybinds_ok
             && !matches!(view.focus.profile, AppImeProfile::TsfNative)
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if open {
             if view.control.shadow_on {
-                // shadow が ON を示しており F21 は no-op と見込まれるためスキップ
-                log::debug!("[apply-ime] GJI direct: shadow ON, skip F21");
+                // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
+                log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
                 return ImeOpenOutcome::AlreadyMatched;
             }
             log::debug!("[apply-ime] GJI direct: VK_IME_ON");
