@@ -291,20 +291,17 @@ impl TsfObservations {
     /// 現在使用中の IME 種別を返す。
     ///
     /// `tsf_active_kind`（CLSID ベース）が取得済みならそれを優先する。
-    /// 未取得（0）の場合は `gji_monitor_ok` から派生する（起動直後のフォールバック）。
+    /// 未取得（0）の場合は `MicrosoftIme` をデフォルトとする。
+    ///
+    /// `gji_monitor_ok` をフォールバックに使うと、GJI プロセスが起動中でも
+    /// MS-IME がアクティブな場合に GJI と誤判定して F22 を送信してしまうため廃止した。
+    /// `VK_DBE_ALPHANUMERIC/HIRAGANA` は GJI でも機能するため未検出時は MsIme 扱いが安全。
     #[must_use]
     pub(crate) fn active_ime_kind(&self) -> ActiveImeKind {
         match self.tsf_active_kind.load(Ordering::Acquire) {
             1 => ActiveImeKind::GoogleJapaneseInput,
             2 => ActiveImeKind::MicrosoftIme,
-            _ => {
-                // CLSID 未取得: gji_monitor_ok から派生（後方互換フォールバック）
-                if self.gji_monitor_ok() {
-                    ActiveImeKind::GoogleJapaneseInput
-                } else {
-                    ActiveImeKind::MicrosoftIme
-                }
-            }
+            _ => ActiveImeKind::MicrosoftIme, // 未検出時は安全なデフォルト
         }
     }
 
