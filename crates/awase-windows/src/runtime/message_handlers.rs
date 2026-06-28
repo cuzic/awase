@@ -398,8 +398,6 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::SelectLayout(index)) => {
             let _ = with_app(|app| app.switch_layout(index));
         }
-        Some(tray::TrayCommand::GjiSetup) => tray::handle_gji_setup(),
-        Some(tray::TrayCommand::GjiTeardown) => tray::handle_gji_teardown(),
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
         Some(tray::TrayCommand::PanicReset) => {
             log::warn!("[tray] Panic reset requested from tray menu");

@@ -20,7 +20,6 @@
 
 pub mod autostart;
 pub mod focus;
-pub mod gji;
 pub mod hook;
 pub mod ime;
 pub(crate) mod ime_controller;

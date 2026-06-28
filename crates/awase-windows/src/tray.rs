@@ -25,9 +25,7 @@ use anyhow::{Context, Result};
 const IDM_SETTINGS: u16 = 50;
 const IDM_RESTART_ADMIN: u16 = 51;
 const IDM_CLEAR_IMM_CACHE: u16 = 52;
-const IDM_GJI_SETUP: u16 = 53;
 const IDM_AUTOSTART: u16 = 54;
-const IDM_GJI_TEARDOWN: u16 = 55;
 const IDM_PANIC_RESET: u16 = 56;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
@@ -43,8 +41,6 @@ pub enum TrayCommand {
     Settings,
     RestartAdmin,
     ClearImmCache,
-    GjiSetup,
-    GjiTeardown,
     ToggleAutoStart,
     PanicReset,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
@@ -501,8 +497,6 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
         append_menu_item(hmenu, IDM_CLEAR_IMM_CACHE, "学習キャッシュをクリア");
         append_menu_item(hmenu, IDM_PANIC_RESET, "内部状態をリセット");
-        append_menu_item(hmenu, IDM_GJI_SETUP, "Google 日本語入力のセットアップ");
-        append_menu_item(hmenu, IDM_GJI_TEARDOWN, "Google 日本語入力の F21/F22 設定を削除");
         let autostart_registered = crate::autostart::is_registered();
         append_menu_item_checked(
             hmenu,
@@ -545,8 +539,6 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_SETTINGS => Some(TrayCommand::Settings),
         IDM_RESTART_ADMIN => Some(TrayCommand::RestartAdmin),
         IDM_CLEAR_IMM_CACHE => Some(TrayCommand::ClearImmCache),
-        IDM_GJI_SETUP => Some(TrayCommand::GjiSetup),
-        IDM_GJI_TEARDOWN => Some(TrayCommand::GjiTeardown),
         IDM_AUTOSTART => Some(TrayCommand::ToggleAutoStart),
         IDM_PANIC_RESET => Some(TrayCommand::PanicReset),
         c if (IDM_LAYOUT_BASE..IDM_TOGGLE).contains(&c) => {
@@ -639,184 +631,6 @@ fn launch_settings_gui() {
 fn show_settings_error(msg: &str) {
     log::error!("Settings launch: {msg}");
     let _ = crate::with_app(|app| app.show_tray_balloon("awase", msg));
-}
-
-/// GJI セットアップをトレイメニューから実行する。
-///
-/// 確認ダイアログを出してから config1.db パッチ → kill → 再起動の順に処理する。
-pub(crate) fn handle_gji_setup() {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDCANCEL, MB_ICONINFORMATION, MB_OKCANCEL,
-    };
-
-    let caption = crate::win32::to_wide("Google 日本語入力のセットアップ");
-    let message = crate::win32::to_wide(concat!(
-        "Google 日本語入力に F21/F22 キーバインドを追加します。\r\n\r\n",
-        "  F21 → IME ON\r\n",
-        "  F22 → IME OFF\r\n\r\n",
-        "設定を適用するため Google 日本語入力を再起動します。\r\n",
-        "よろしいですか？"
-    ));
-
-    // SAFETY: `MessageBoxW` は有効な NUL 終端 UTF-16 文字列ポインタを受け取る標準的な呼び出し。
-    let response = unsafe {
-        MessageBoxW(
-            None,
-            PCWSTR(message.as_ptr()),
-            PCWSTR(caption.as_ptr()),
-            MB_OKCANCEL | MB_ICONINFORMATION,
-        )
-    };
-
-    if response == IDCANCEL {
-        return;
-    }
-
-    match crate::gji::run_gji_setup() {
-        Err(e) => {
-            log::error!("GJI setup failed: {e}");
-            let _ = crate::with_app(|app| {
-                app.show_tray_balloon("awase — セットアップ失敗", &e);
-            });
-            return;
-        }
-        Ok(false) => {
-            crate::tsf::observer::notify_gji_keybinds_registered();
-            let _ = crate::with_app(|app| {
-                app.show_tray_balloon(
-                    "awase — セットアップ済み",
-                    "すでに F21/F22 キーバインドが設定されています",
-                );
-            });
-            return;
-        }
-        Ok(true) => {
-            log::info!("GJI config patched successfully");
-            crate::tsf::observer::notify_gji_keybinds_registered();
-        }
-    }
-
-    // GJI 実行ファイルパスをレジストリから取得して再起動
-    match crate::gji::get_gji_exe_path() {
-        None => {
-            log::warn!("GJI exe path not found in registry — skipping restart");
-            let _ = crate::with_app(|app| {
-                app.show_tray_balloon(
-                    "awase — セットアップ完了",
-                    "F21/F22 キーバインドを追加しました。\nGoogle 日本語入力を手動で再起動してください。",
-                );
-            });
-        }
-        Some(exe) => match crate::gji::kill_and_restart_gji(&exe) {
-            Ok(()) => {
-                let _ = crate::with_app(|app| {
-                    app.show_tray_balloon(
-                        "awase — セットアップ完了",
-                        "F21/F22 キーバインドを追加し、Google 日本語入力を再起動しました。",
-                    );
-                });
-            }
-            Err(e) => {
-                log::error!("GJI restart failed: {e}");
-                let _ = crate::with_app(|app| {
-                    app.show_tray_balloon(
-                        "awase — セットアップ完了（再起動失敗）",
-                        &format!(
-                            "F21/F22 キーバインドを追加しましたが、再起動に失敗しました:\n{e}"
-                        ),
-                    );
-                });
-            }
-        },
-    }
-}
-
-/// GJI F21/F22 キーバインド削除をトレイメニューから実行する。
-pub(crate) fn handle_gji_teardown() {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDCANCEL, MB_ICONWARNING, MB_OKCANCEL,
-    };
-
-    let caption = crate::win32::to_wide("Google 日本語入力の F21/F22 設定を削除");
-    let message = crate::win32::to_wide(concat!(
-        "Google 日本語入力から F21/F22 キーバインドを削除します。\r\n\r\n",
-        "削除後は IME ON/OFF に VK_KANJI（半角/全角キー）を使う\r\n",
-        "フォールバック動作に切り替わります。\r\n\r\n",
-        "設定を適用するため Google 日本語入力を再起動します。\r\n",
-        "よろしいですか？"
-    ));
-
-    // SAFETY: `MessageBoxW` は有効な NUL 終端 UTF-16 文字列ポインタを受け取る標準的な呼び出し。
-    let response = unsafe {
-        MessageBoxW(
-            None,
-            PCWSTR(message.as_ptr()),
-            PCWSTR(caption.as_ptr()),
-            MB_OKCANCEL | MB_ICONWARNING,
-        )
-    };
-
-    if response == IDCANCEL {
-        return;
-    }
-
-    match crate::gji::run_gji_teardown() {
-        Err(e) => {
-            log::error!("GJI teardown failed: {e}");
-            let _ = crate::with_app(|app| {
-                app.show_tray_balloon("awase — 削除失敗", &e);
-            });
-            return;
-        }
-        Ok(false) => {
-            crate::tsf::observer::notify_gji_keybinds_removed();
-            let _ = crate::with_app(|app| {
-                app.show_tray_balloon(
-                    "awase — 設定なし",
-                    "F21/F22 キーバインドは登録されていません",
-                );
-            });
-            return;
-        }
-        Ok(true) => {
-            log::info!("GJI config unpatched successfully");
-            crate::tsf::observer::notify_gji_keybinds_removed();
-        }
-    }
-
-    // GJI 実行ファイルパスをレジストリから取得して再起動
-    match crate::gji::get_gji_exe_path() {
-        None => {
-            log::warn!("GJI exe path not found in registry — skipping restart");
-            let _ = crate::with_app(|app| {
-                app.show_tray_balloon(
-                    "awase — 削除完了",
-                    "F21/F22 キーバインドを削除しました。\nGoogle 日本語入力を手動で再起動してください。",
-                );
-            });
-        }
-        Some(exe) => match crate::gji::kill_and_restart_gji(&exe) {
-            Ok(()) => {
-                let _ = crate::with_app(|app| {
-                    app.show_tray_balloon(
-                        "awase — 削除完了",
-                        "F21/F22 キーバインドを削除し、Google 日本語入力を再起動しました。",
-                    );
-                });
-            }
-            Err(e) => {
-                log::error!("GJI restart failed: {e}");
-                let _ = crate::with_app(|app| {
-                    app.show_tray_balloon(
-                        "awase — 削除完了（再起動失敗）",
-                        &format!(
-                            "F21/F22 キーバインドを削除しましたが、再起動に失敗しました:\n{e}"
-                        ),
-                    );
-                });
-            }
-        },
-    }
 }
 
 /// 自動起動のトグル処理。

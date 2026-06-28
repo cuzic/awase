@@ -366,7 +366,7 @@ impl Runtime {
         // GJI 未使用環境（MS-IME + TsfNative）で KanjiToggle が誤送信されないよう GJI ガードを設ける。
         if applied_ime_on && new_profile_is_tsf_native {
             let obs = crate::state::ObservedState::capture_now();
-            if obs.gji_monitor_ok && obs.gji_keybinds_ok {
+            if obs.gji_monitor_ok {
                 let _ = self.platform.apply_ime_open_with_applied(true, None);
                 log::debug!(
                     "[composition] FocusChange: TsfNative IME ON → GJI F21 強制 (shadow_on を無視)"
