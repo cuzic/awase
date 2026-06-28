@@ -567,7 +567,7 @@ impl Output {
         let gji_long_idle = crate::hook::current_tick_ms()
             .saturating_sub(crate::tsf::observer::gji_last_io_ms())
             >= crate::tuning::LONG_IDLE_MS;
-        let gji_active = crate::tsf::observer::gji_monitor_healthy();
+        let gji_active = crate::tsf::observer::gji_is_active_ime();
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing
             && gji_active
             && !gji_long_idle

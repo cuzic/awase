@@ -380,6 +380,17 @@ pub(crate) fn gji_monitor_healthy() -> bool {
     TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)
 }
 
+/// GJI プロセスが起動済みかつアクティブ IME として CLSID ベースで選択されているかどうか。
+///
+/// `gji_monitor_ok`（プロセス稼働）だけでは、GJI Converter が起動中でも
+/// MS-IME がアクティブな場合に GJI と誤判定してしまう。
+/// `tsf_active_kind == GoogleJapaneseInput`（CLSID 判定）を合わせることで
+/// MS-IME 使用中の LiteralDetect 誤発火（BS 連射）を防ぐ。
+pub(crate) fn gji_is_active_ime() -> bool {
+    TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)
+        && TSF_OBS.tsf_active_kind.load(Ordering::Acquire) == 1
+}
+
 /// OBJ_NAMECHANGE カウンタのベースラインを取得する。
 ///
 /// `SendInput` 等を呼ぶ前に取得し、完了後に `NamechangeBaseline::fired()` で
