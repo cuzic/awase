@@ -128,7 +128,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             // SAFETY: post_ms_ime_on は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             unsafe { crate::ime::post_ms_ime_on() };
         } else {
-            log::debug!("[apply-ime] MS-IME direct: VK_IME_OFF (直接入力)");
+            log::debug!("[apply-ime] MS-IME direct: VK_DBE_ALPHANUMERIC (IME OFF)");
             // SAFETY: post_ms_ime_off は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             unsafe { crate::ime::post_ms_ime_off() };
         }
