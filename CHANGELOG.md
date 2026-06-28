@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-06-27
+
+### 新機能
+
+- **トレイメニューに「内部状態をリセット」を追加** ([1591593](https://github.com/cuzic/awase/commit/1591593))
+  - IME 状態や FSM が壊れたときにマウス操作だけで内部状態を初期化可能
+  - キーボードが正常に動かない状況でも確実にリセットできる（ADR-052）
+- **StepCoro — タイマー駆動コルーチン基盤を導入** ([e548e63](https://github.com/cuzic/awase/commit/e548e63))
+  - `GjiWarmupFsm` / `LiteralDetectFsm` / `SacrificialWarmupFsm` / `TsfProbeMachine` を StepCoro に置き換え（ADR-053）
+  - FSM ステートの中間変数をコルーチンのローカル変数として記述でき、コード量を大幅削減
+  - `timed_fsm::coro` モジュールとして昇格（[118b3cf](https://github.com/cuzic/awase/commit/118b3cf)）
+- **InjectionMode を cache.toml で永続化** ([c6fed60](https://github.com/cuzic/awase/commit/c6fed60))
+  - `InjectionModeStore` を追加し、セッションをまたいで注入モードを記憶
+  - 再起動後の cold-start コストを削減（ADR-058）
+  - `imm_cache.toml` を `cache.toml` に統合（[10918c2](https://github.com/cuzic/awase/commit/10918c2)）
+- **InjectionMode 事後昇格: GJI write_bytes 観測で自動昇格** ([68c24e1](https://github.com/cuzic/awase/commit/68c24e1))
+  - フォーカス直後に Unicode モードで送信したキーが GJI に処理されたか WriteTransferCount で判定
+  - GJI が動作していれば injection_mode を Tsf に自動昇格（ADR-062）
+- **Unicode long-cold 対応: UnicodeColdWarmupFsm** ([70d3fed](https://github.com/cuzic/awase/commit/70d3fed))
+  - Unicode モードで長時間アイドル後に F21 poke を送り GJI の起動を確認してから文字を送信
+  - GJI が応答するまで文字送信を保留することで partial literal を防止
+- **競合ソフトウェア起動時チェックを追加** ([9875c2c](https://github.com/cuzic/awase/commit/9875c2c))
+  - やまぶき等の NICOLA 対応 IME が同時に起動している場合、バルーン通知で警告（ADR-060）
+
+### 改善
+
+- **自動起動を schtasks → HKCU\\Run レジストリに移行** ([0d09d80](https://github.com/cuzic/awase/commit/0d09d80))
+  - ログオン即起動（30 秒遅延が不要に）、管理者権限なしで登録可能（ADR-059）
+  - 旧 schtasks タスクは起動時に自動削除（[584897a](https://github.com/cuzic/awase/commit/584897a)）
+- **Windows Terminal を force_tsf に追加** ([4e49ee1](https://github.com/cuzic/awase/commit/4e49ee1))
+  - GJI コンポジションを確実に有効化し、Windows Terminal での変換精度を向上
+
+### バグ修正
+
+- **Win キー押下中の F21/F22 注入をスキップ** ([6469f51](https://github.com/cuzic/awase/commit/6469f51))
+  - Win+A でスタートメニューが開いてしまう誤動作を修正（ADR-061）
+- **仮想デスクトップ切替時の誤 F21 送信を防止** ([a97173a](https://github.com/cuzic/awase/commit/a97173a))
+  - 仮想デスクトップを切り替えた直後に LINE 等へ誤って F21 が送信されていたフォーカスガード漏れを修正
+- **Partial literal の残骸を BS で除去** ([f3ff84d](https://github.com/cuzic/awase/commit/f3ff84d))
+  - TSF literal recovery が give-up したとき terminal に残ったリテラル文字を BS で削除
+- **Partial literal 検出後の resend を SacrificialWarmup 化** ([62ad28b](https://github.com/cuzic/awase/commit/62ad28b))
+  - 部分リテラル検出後の再送を安全な warmup フローに統一
+- **SacrificialWarmup Phase2 早期 HIDE 後に IPC settle 待機を追加** ([88d562f](https://github.com/cuzic/awase/commit/88d562f))
+  - 候補ウィンドウが早期 HIDE された後、GJI IPC が完了するまで待機してから次入力を解放
+- **Unicode long-cold で F21 単体 → F21+VK_A+BS 犠牲キーに変更** ([6cb175f](https://github.com/cuzic/awase/commit/6cb175f))
+  - GJI の WriteTransferCount を確実に増加させ cold 判定の精度を向上
+- **TsfNative/Imm32Unavailable で shadow 値を代替観測として記録** ([1e77002](https://github.com/cuzic/awase/commit/1e77002))
+  - IMM32 が利用不可なウィンドウでも shadow_on を観測値として保存し状態推定を安定化
+
+### 内部改善
+
+- **`#[allow]` を `#[expect]` に一括置換**（全クレート）([c2b0685](https://github.com/cuzic/awase/commit/c2b0685))
+  - Rust 2024 edition の lint 強化に対応、抑制理由が不要になった時点でコンパイラが警告
+- **`unsafe extern` を明示**（Rust 2024 lint 対応）([f645d3c](https://github.com/cuzic/awase/commit/f645d3c))
+- **awase-settings を edition 2024 に移行** ([ee2487c](https://github.com/cuzic/awase/commit/ee2487c))
+- **GjiWarmupFsm / StartLiteralDetect を撤去**（StepCoro 移行後の dead code 除去）([f01d401](https://github.com/cuzic/awase/commit/f01d401))
+- **MSRV を 1.85 に引き上げ**（`timed_fsm::coro` が `async`/`await` 構文を使用）
+
+---
+
 ## [1.4.0] - 2026-06-25
 
 ### 新機能
