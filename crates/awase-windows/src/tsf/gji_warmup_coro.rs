@@ -216,7 +216,14 @@ async fn gji_coro_body(
     };
 
     // ── Phase 4: transmit plan 決定 ───────────────────────────────────────────
-    let observations = ProbeObservations { nc_fired, gji_resumed };
+    // ReinjectConfirmKey/PassthroughConfirmKey + TSF mode（WezTerm等）:
+    // Enter/Space 後に WezTerm は NameChange を発火しないが GJI は VKs を正常にコンポジション中。
+    // nc_fired=false のまま decide_transmit_plan に渡すと needs_literal 第2項が true になり
+    // LiteralDetect が誤検出して backspace を送る（composited 'な' が消えるバグ）。
+    // → is_confirm_key && TSF mode の場合は nc_fired を true に昇格して第2項を抑制する。
+    let nc_for_plan = nc_fired
+        || (cold_reason.is_confirm_key() && env.is_tsf_mode && !gji_resumed);
+    let observations = ProbeObservations { nc_fired: nc_for_plan, gji_resumed };
 
     // fresh F2 を送信済みかつ TSF mode → バッチへの F2 再同梱を抑制（"kお" バグ防止）
     let already_sent_f2 = ctx.fresh_f2_at_probe_start || fresh_f2_sent;
