@@ -17,7 +17,7 @@ use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD, ITfInputProcessorProfileMgr,
     ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE, TF_PROFILETYPE_INPUTPROCESSOR,
 };
-use windows_core::GUID;
+use windows::core::{Interface as _, GUID};
 
 use super::observer::ActiveImeKind;
 
