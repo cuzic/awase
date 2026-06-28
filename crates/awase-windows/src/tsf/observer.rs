@@ -269,6 +269,20 @@ impl TsfObservations {
     pub const fn composition_probe_atomic(&self) -> &AtomicU32 {
         self.composition_probe.atomic()
     }
+
+    /// 現在使用中の IME 種別を返す。
+    ///
+    /// GJI プロセスが検出済みなら `GoogleJapaneseInput`、
+    /// そうでなければ `MicrosoftIme`（MS-IME または互換 IME と推定）。
+    /// `gji_monitor_ok` から派生するため新たなアトミックは不要。
+    #[must_use]
+    pub(crate) fn active_ime_kind(&self) -> ActiveImeKind {
+        if self.gji_monitor_ok() {
+            ActiveImeKind::GoogleJapaneseInput
+        } else {
+            ActiveImeKind::MicrosoftIme
+        }
+    }
 }
 
 /// TSF/GJI 観測値グローバル。
@@ -413,6 +427,18 @@ impl NamechangeBaseline {
 }
 
 // ── GJI プロセス発見 ──
+
+/// フォアグラウンドで使用中の IME の種別。
+///
+/// `gji_monitor_ok` の状態から派生する（新たなアトミック不要）。
+/// GJI が検出されていなければ MS-IME（または互換 IME）とみなす。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ActiveImeKind {
+    /// Google 日本語入力が起動・検出済み。
+    GoogleJapaneseInput,
+    /// GJI 非検出 — MS-IME（または互換 IME）と推定。
+    MicrosoftIme,
+}
 
 /// GJI Converter プロセスのプレフィックス候補（大文字小文字無視）。
 /// バージョンによりプロセス名が異なるため複数候補を持つ。
@@ -650,6 +676,9 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
     let mut monitor: Option<GjiMonitor> = None;
     let mut next_attach_ms: u64 = 0;
     let mut next_config_recheck_ms: u64 = 0;
+    // GJI 検出状態の直前通知値。変化したときのみ WM_IME_KIND_CHANGED を post する。
+    // None = まだ通知未送信（起動直後）。
+    let mut last_notified_ok: Option<bool> = None;
 
     loop {
         let now = crate::hook::current_tick_ms();
@@ -673,9 +702,21 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                 TSF_OBS.gji_monitor_ok.store(true, Ordering::Release);
                 next_config_recheck_ms = now + crate::tuning::GJI_CONFIG_RECHECK_INTERVAL_MS;
                 monitor = Some(m);
+                // GJI 検出: GoogleJapaneseInput に変化
+                if last_notified_ok != Some(true) {
+                    last_notified_ok = Some(true);
+                    log::info!("[gji-monitor] IME kind → GoogleJapaneseInput");
+                    crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                }
             } else {
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                 next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
+                // GJI 非検出: MicrosoftIme に変化（起動初回 or GJI 消失後）
+                if last_notified_ok != Some(false) {
+                    last_notified_ok = Some(false);
+                    log::info!("[gji-monitor] IME kind → MicrosoftIme (GJI not found)");
+                    crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                }
             }
         }
 
@@ -687,6 +728,12 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     TSF_OBS.gji_keybinds_ok.store(false, Ordering::Relaxed);
                     monitor = None;
                     next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
+                    // GJI 消失: MicrosoftIme に変化
+                    if last_notified_ok != Some(false) {
+                        last_notified_ok = Some(false);
+                        log::info!("[gji-monitor] IME kind → MicrosoftIme (GJI exited)");
+                        crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                    }
                 }
                 Some(delta) => {
                     TSF_OBS

@@ -28,7 +28,7 @@ pub(crate) struct FocusFacts<'a> {
 /// `crate::tsf::observer::tsf_obs()` を判断コードから直接呼んではいけない。
 /// スナップショット化が必要でない live 読み取り（`output/` のシーケンスカウンタ等）は
 /// `tsf_obs()` を直接使う別カテゴリであり、この型の対象外。
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub(crate) struct ObservedState {
     /// TSF/GJI: `GoogleJapaneseInputCandidateWindow` が現在表示中かどうか。
     /// EVENT_OBJECT_SHOW/HIDE で更新されるアトミック値のスナップショット。
@@ -45,6 +45,22 @@ pub(crate) struct ObservedState {
     /// GJI candidate が SHOW になってから次の `apply_ime_open` 完了まで `true`。
     /// `shadow=false` なのに candidate が表示された desync を `KanjiToggleStrategy` が検出するために使う。
     pub candidate_was_seen: bool,
+    /// 現在使用中の IME 種別（`gji_monitor_ok` から派生）。
+    /// `MsImeDirectStrategy` の `is_applicable` ゲートに使用する。
+    pub active_ime_kind: crate::tsf::observer::ActiveImeKind,
+}
+
+impl Default for ObservedState {
+    fn default() -> Self {
+        Self {
+            candidate_visible: false,
+            gji_last_io_ms: 0,
+            gji_monitor_ok: false,
+            gji_keybinds_ok: false,
+            candidate_was_seen: false,
+            active_ime_kind: crate::tsf::observer::ActiveImeKind::MicrosoftIme,
+        }
+    }
 }
 
 impl ObservedState {
@@ -59,6 +75,7 @@ impl ObservedState {
             gji_monitor_ok: obs.gji_monitor_ok(),
             gji_keybinds_ok: obs.gji_keybinds_ok(),
             candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
+            active_ime_kind: obs.active_ime_kind(),
         }
     }
 }

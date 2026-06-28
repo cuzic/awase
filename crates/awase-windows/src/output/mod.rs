@@ -77,11 +77,12 @@ pub struct Output {
     /// フォーカスが確定するたびに `update_injection_mode()` で更新される。
     /// `with_app_ref` によるグローバル読み取りを排除し、output 層を self-contained にする。
     pub(crate) injection_mode: InjectionMode,
-    /// GJI の warm/cold 状態機械。
+    /// IME の warm/cold ウォームアップ戦略（GJI: `GjiFsm`、MS-IME: `MsImeStrategy`）。
     ///
     /// フォーカス変更・IME ON/OFF・WarmupComplete を受け取り、LongIdle タイマーを管理する。
+    /// IME 種別が変化した場合は `set_active_ime_kind()` で戦略を動的に切り替える。
     /// Phase 2: CompositionState と並走（FSM が安定したら CompositionState を撤去）。
-    pub(crate) gji_fsm: std::cell::RefCell<Box<dyn crate::tsf::warmup_strategy::ImeWarmupStrategy>>,
+    pub(crate) tsf_warmup: std::cell::RefCell<Box<dyn crate::tsf::warmup_strategy::ImeWarmupStrategy>>,
     /// 現在実行中の GJI probe の ID（`GjiAction::StartProbe` 受信時にセット）。
     ///
     /// `dispatch_probe_actions` が `WarmupResult` を生成した際の照合に使う。
@@ -200,7 +201,7 @@ impl Output {
             pending_tsf: std::cell::RefCell::new(None),
             tsf_gate: crate::tsf::TsfGate::new(),
             injection_mode: InjectionMode::Unicode,
-            gji_fsm: std::cell::RefCell::new(Box::new(crate::tsf::gji_fsm::GjiFsm::new())),
+            tsf_warmup: std::cell::RefCell::new(Box::new(crate::tsf::gji_fsm::GjiFsm::new())),
             current_gji_probe_id: std::cell::Cell::new(None),
             gji_probe_guard: std::cell::RefCell::new(None),
             pending_gji_warmup: std::cell::Cell::new(None),
@@ -226,7 +227,7 @@ impl Output {
 
     /// GjiFsm が long-cold（≥10s idle）な次の KeyInput か判定する（send_keys の defer 判定用）。
     pub(crate) fn gji_is_next_key_long_cold(&self) -> bool {
-        self.gji_fsm.borrow().is_next_key_long_cold()
+        self.tsf_warmup.borrow().is_next_key_long_cold()
     }
 
     /// `send_unicode_char()` の遅延モードを ON/OFF する。
@@ -287,7 +288,7 @@ impl Output {
         &self,
         event: crate::tsf::gji_fsm::GjiEvent,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-self.gji_fsm.borrow_mut().on_gji_event(event)
+self.tsf_warmup.borrow_mut().on_gji_event(event)
     }
 
     /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
@@ -295,7 +296,7 @@ self.gji_fsm.borrow_mut().on_gji_event(event)
     pub(crate) fn gji_current_composition_epoch(
         &self,
     ) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
-self.gji_fsm.borrow().gji_current_composition_epoch()
+self.tsf_warmup.borrow().gji_current_composition_epoch()
     }
 
     // ── ImeModeFsm ヘルパー ─────────────────────────────────────────────────────
@@ -335,7 +336,7 @@ self.gji_fsm.borrow().gji_current_composition_epoch()
     pub(crate) fn gji_on_long_idle(
         &self,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-self.gji_fsm.borrow_mut().on_gji_long_idle()
+self.tsf_warmup.borrow_mut().on_gji_long_idle()
     }
 
     /// `GjiAction::StartProbe` を受信したとき probe_id を記録する。
@@ -427,10 +428,32 @@ self.gji_fsm.borrow_mut().on_gji_long_idle()
         self.composition.mark_composition_cold(reason);
     }
 
-    /// 現在の composition_warm フラグを返す（GjiFsm が SSOT）。
+    /// 現在の composition_warm フラグを返す（`tsf_warmup` 戦略が SSOT）。
     #[must_use]
     pub fn is_composition_warm(&self) -> bool {
-self.gji_fsm.borrow().is_warm()
+        self.tsf_warmup.borrow().is_warm()
+    }
+
+    /// 検出した IME 種別に応じてウォームアップ戦略を切り替える。
+    ///
+    /// - MS-IME → `MsImeStrategy`（常に warm、probe なし）
+    /// - GJI → `GjiFsm`（cold probe 機構あり、起動時と同じ）
+    ///
+    /// `WM_IME_KIND_CHANGED` がメインスレッドで受信されたときに呼ぶこと。
+    pub(crate) fn set_active_ime_kind(&self, kind: crate::tsf::observer::ActiveImeKind) {
+        use crate::tsf::observer::ActiveImeKind;
+        match kind {
+            ActiveImeKind::MicrosoftIme => {
+                log::info!("[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)");
+                *self.tsf_warmup.borrow_mut() =
+                    Box::new(crate::tsf::warmup_strategy::MsImeStrategy);
+            }
+            ActiveImeKind::GoogleJapaneseInput => {
+                log::info!("[output] Switching warmup strategy → GjiFsm (GJI detected)");
+                *self.tsf_warmup.borrow_mut() =
+                    Box::new(crate::tsf::gji_fsm::GjiFsm::new());
+            }
+        }
     }
 
     /// フォーカスウィンドウが変わったことを通知する。

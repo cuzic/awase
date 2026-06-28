@@ -262,6 +262,32 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     }
 }
 
+/// MS-IME 専用 IME ON: `VK_DBE_HIRAGANA` (0xF2) を送信してひらがなモードに切り替える。
+///
+/// MS-IME は `VK_DBE_HIRAGANA` でひらがな入力に切り替わる。
+/// 既に ON（ひらがな）の場合は no-op（冪等）。
+/// `VK_KANJI` トグルと異なり shadow desync の影響を受けない。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn post_ms_ime_on() {
+    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
+    unsafe { send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) }
+}
+
+/// MS-IME 専用 IME OFF: `VK_DBE_ALPHANUMERIC` (0xF0) を送信して英数モードに切り替える。
+///
+/// MS-IME は `VK_DBE_ALPHANUMERIC` で半角英数入力に切り替わる。
+/// 既に OFF（英数）の場合は no-op（冪等）。
+/// `VK_KANJI` トグルと異なり shadow desync の影響を受けない。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn post_ms_ime_off() {
+    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
+    unsafe { send_ime_mode_key(crate::vk::VK_DBE_ALPHANUMERIC) }
+}
+
 /// GJI 専用 IME ON: F21 を送信してひらがなモードに切り替える。
 ///
 /// GJI の直接入力モード（IME OFF 状態）で F21 を押すとひらがな入力に切り替わる。

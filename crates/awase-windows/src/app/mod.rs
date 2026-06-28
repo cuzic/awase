@@ -22,7 +22,7 @@ use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL,
     WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED,
-    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
+    WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -299,6 +299,11 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // SAFETY: WM_DUPLICATE_INSTANCE はメインスレッドのメッセージループからのみ配送される。
                 let _ =
                     with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
+            }
+            WM_IME_KIND_CHANGED => {
+                // SAFETY: WM_IME_KIND_CHANGED はメインスレッドのメッセージループからのみ配送される。
+                let _ =
+                    with_app(|app| unsafe { message_handlers::handle_wm_ime_kind_changed(app) });
             }
             WM_IME_KEY_DETECTED => {
                 // SAFETY: WM_IME_KEY_DETECTED はメインスレッドのメッセージループからのみ配送される。

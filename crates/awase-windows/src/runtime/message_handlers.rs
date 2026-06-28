@@ -234,6 +234,16 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
     app.panic_reset();
 }
 
+/// WM_IME_KIND_CHANGED ハンドラ
+///
+/// GJI モニタースレッドが IME 種別の変化（GJI 検出 / 消失）を検知したときに呼ばれる。
+/// `Output` のウォームアップ戦略を現在の IME 種別に合わせて切り替える。
+pub(crate) unsafe fn handle_wm_ime_kind_changed(app: &mut Runtime) {
+    let kind = crate::tsf::observer::tsf_obs().active_ime_kind();
+    log::info!("[runtime] WM_IME_KIND_CHANGED received: IME kind → {kind:?}");
+    app.platform.output.set_active_ime_kind(kind);
+}
+
 /// WM_DUPLICATE_INSTANCE ハンドラ
 pub(crate) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
     log::info!("Duplicate instance notification received");

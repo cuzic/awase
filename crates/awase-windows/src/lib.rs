@@ -266,6 +266,13 @@ pub const WM_KEY_FROM_HOOK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_AP
 /// ジャーナルダンプ要求（Alt+変換→Alt+無変換 ×2 でフックから post）
 pub const WM_DUMP_JOURNAL: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 20;
 
+/// IME 種別変化通知（GJI モニタースレッドから post）
+///
+/// GJI プロセスの検出状態が変化したときにバックグラウンドスレッドから post される。
+/// メインスレッドは受信時に `Output::set_active_ime_kind()` を呼び、
+/// ウォームアップ戦略（`GjiFsm` / `MsImeStrategy`）を切り替える。
+pub const WM_IME_KIND_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 21;
+
 /// `RawKeyEvent` の SendInput 再注入ヘルパー。
 pub trait RawKeyEventExt {
     /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）。
