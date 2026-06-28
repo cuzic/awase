@@ -275,17 +275,19 @@ pub unsafe fn post_ms_ime_on() {
     unsafe { send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) }
 }
 
-/// MS-IME 専用 IME OFF: `VK_DBE_ALPHANUMERIC` (0xF0) を送信して英数モードに切り替える。
+/// MS-IME 専用 IME OFF: `VK_IME_OFF` (0x1A) を送信して直接入力モードに切り替える。
 ///
-/// MS-IME は `VK_DBE_ALPHANUMERIC` で半角英数入力に切り替わる。
-/// 既に OFF（英数）の場合は no-op（冪等）。
-/// `VK_KANJI` トグルと異なり shadow desync の影響を受けない。
+/// `VK_DBE_ALPHANUMERIC` (0xF0) は「半角英数モード（IME ON）」で IME がまだ仲介するため、
+/// TSF アプリ（Windows Terminal 等）でアプリによっては確定 Enter が必要になる。
+/// `VK_IME_OFF` は「直接入力（IME 完全 OFF）」で IMM32 アプリの ImmSetOpenStatus(false)
+/// と同じ意味論になり、Enter 1回で確定できる一貫した動作になる。
+/// 既に OFF の場合は no-op（冪等）。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_ms_ime_off() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_DBE_ALPHANUMERIC) }
+    unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) }
 }
 
 /// GJI 専用 IME ON: F21 を送信してひらがなモードに切り替える。
