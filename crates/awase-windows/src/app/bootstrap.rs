@@ -841,7 +841,7 @@ pub(super) fn run_all() -> Result<()> {
     });
 
     let (_uia_worker, uia_tx) = crate::focus::uia::spawn_uia_worker();
-    let _gji_worker = crate::tsf::observer::start_monitor_thread();
+    let _gji_worker = crate::tsf::observer::start_monitor_thread(base_dir.clone());
     let _ = with_app(|app| app.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification()
