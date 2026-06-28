@@ -108,6 +108,96 @@ footer p{margin:0.3rem 0}
 <section>
 <div class="container">
 <div class="cl-content">
+<h2>[1.5.0] - 2026-06-27</h2>
+<h3>新機能</h3>
+<ul>
+<li><strong>トレイメニューに「内部状態をリセット」を追加</strong> (<a href="https://github.com/cuzic/awase/commit/1591593">1591593</a>)<ul>
+<li>IME 状態や FSM が壊れたときにマウス操作だけで内部状態を初期化可能</li>
+<li>キーボードが正常に動かない状況でも確実にリセットできる（ADR-052）</li>
+</ul>
+</li>
+<li><strong>StepCoro — タイマー駆動コルーチン基盤を導入</strong> (<a href="https://github.com/cuzic/awase/commit/e548e63">e548e63</a>)<ul>
+<li><code>GjiWarmupFsm</code> / <code>LiteralDetectFsm</code> / <code>SacrificialWarmupFsm</code> / <code>TsfProbeMachine</code> を StepCoro に置き換え（ADR-053）</li>
+<li>FSM ステートの中間変数をコルーチンのローカル変数として記述でき、コード量を大幅削減</li>
+<li><code>timed_fsm::coro</code> モジュールとして昇格（<a href="https://github.com/cuzic/awase/commit/118b3cf">118b3cf</a>）</li>
+</ul>
+</li>
+<li><strong>InjectionMode を cache.toml で永続化</strong> (<a href="https://github.com/cuzic/awase/commit/c6fed60">c6fed60</a>)<ul>
+<li><code>InjectionModeStore</code> を追加し、セッションをまたいで注入モードを記憶</li>
+<li>再起動後の cold-start コストを削減（ADR-058）</li>
+<li><code>imm_cache.toml</code> を <code>cache.toml</code> に統合（<a href="https://github.com/cuzic/awase/commit/10918c2">10918c2</a>）</li>
+</ul>
+</li>
+<li><strong>InjectionMode 事後昇格: GJI write_bytes 観測で自動昇格</strong> (<a href="https://github.com/cuzic/awase/commit/68c24e1">68c24e1</a>)<ul>
+<li>フォーカス直後に Unicode モードで送信したキーが GJI に処理されたか WriteTransferCount で判定</li>
+<li>GJI が動作していれば injection_mode を Tsf に自動昇格（ADR-062）</li>
+</ul>
+</li>
+<li><strong>Unicode long-cold 対応: UnicodeColdWarmupFsm</strong> (<a href="https://github.com/cuzic/awase/commit/70d3fed">70d3fed</a>)<ul>
+<li>Unicode モードで長時間アイドル後に F21 poke を送り GJI の起動を確認してから文字を送信</li>
+<li>GJI が応答するまで文字送信を保留することで partial literal を防止</li>
+</ul>
+</li>
+<li><strong>競合ソフトウェア起動時チェックを追加</strong> (<a href="https://github.com/cuzic/awase/commit/9875c2c">9875c2c</a>)<ul>
+<li>やまぶき等の NICOLA 対応 IME が同時に起動している場合、バルーン通知で警告（ADR-060）</li>
+</ul>
+</li>
+</ul>
+<h3>改善</h3>
+<ul>
+<li><strong>自動起動を schtasks → HKCU\Run レジストリに移行</strong> (<a href="https://github.com/cuzic/awase/commit/0d09d80">0d09d80</a>)<ul>
+<li>ログオン即起動（30 秒遅延が不要に）、管理者権限なしで登録可能（ADR-059）</li>
+<li>旧 schtasks タスクは起動時に自動削除（<a href="https://github.com/cuzic/awase/commit/584897a">584897a</a>）</li>
+</ul>
+</li>
+<li><strong>Windows Terminal を force_tsf に追加</strong> (<a href="https://github.com/cuzic/awase/commit/4e49ee1">4e49ee1</a>)<ul>
+<li>GJI コンポジションを確実に有効化し、Windows Terminal での変換精度を向上</li>
+</ul>
+</li>
+</ul>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>Win キー押下中の F21/F22 注入をスキップ</strong> (<a href="https://github.com/cuzic/awase/commit/6469f51">6469f51</a>)<ul>
+<li>Win+A でスタートメニューが開いてしまう誤動作を修正（ADR-061）</li>
+</ul>
+</li>
+<li><strong>仮想デスクトップ切替時の誤 F21 送信を防止</strong> (<a href="https://github.com/cuzic/awase/commit/a97173a">a97173a</a>)<ul>
+<li>仮想デスクトップを切り替えた直後に LINE 等へ誤って F21 が送信されていたフォーカスガード漏れを修正</li>
+</ul>
+</li>
+<li><strong>Partial literal の残骸を BS で除去</strong> (<a href="https://github.com/cuzic/awase/commit/f3ff84d">f3ff84d</a>)<ul>
+<li>TSF literal recovery が give-up したとき terminal に残ったリテラル文字を BS で削除</li>
+</ul>
+</li>
+<li><strong>Partial literal 検出後の resend を SacrificialWarmup 化</strong> (<a href="https://github.com/cuzic/awase/commit/62ad28b">62ad28b</a>)<ul>
+<li>部分リテラル検出後の再送を安全な warmup フローに統一</li>
+</ul>
+</li>
+<li><strong>SacrificialWarmup Phase2 早期 HIDE 後に IPC settle 待機を追加</strong> (<a href="https://github.com/cuzic/awase/commit/88d562f">88d562f</a>)<ul>
+<li>候補ウィンドウが早期 HIDE された後、GJI IPC が完了するまで待機してから次入力を解放</li>
+</ul>
+</li>
+<li><strong>Unicode long-cold で F21 単体 → F21+VK_A+BS 犠牲キーに変更</strong> (<a href="https://github.com/cuzic/awase/commit/6cb175f">6cb175f</a>)<ul>
+<li>GJI の WriteTransferCount を確実に増加させ cold 判定の精度を向上</li>
+</ul>
+</li>
+<li><strong>TsfNative/Imm32Unavailable で shadow 値を代替観測として記録</strong> (<a href="https://github.com/cuzic/awase/commit/1e77002">1e77002</a>)<ul>
+<li>IMM32 が利用不可なウィンドウでも shadow_on を観測値として保存し状態推定を安定化</li>
+</ul>
+</li>
+</ul>
+<h3>内部改善</h3>
+<ul>
+<li><strong><code>#[allow]</code> を <code>#[expect]</code> に一括置換</strong>（全クレート）(<a href="https://github.com/cuzic/awase/commit/c2b0685">c2b0685</a>)<ul>
+<li>Rust 2024 edition の lint 強化に対応、抑制理由が不要になった時点でコンパイラが警告</li>
+</ul>
+</li>
+<li><strong><code>unsafe extern</code> を明示</strong>（Rust 2024 lint 対応）(<a href="https://github.com/cuzic/awase/commit/f645d3c">f645d3c</a>)</li>
+<li><strong>awase-settings を edition 2024 に移行</strong> (<a href="https://github.com/cuzic/awase/commit/ee2487c">ee2487c</a>)</li>
+<li><strong>GjiWarmupFsm / StartLiteralDetect を撤去</strong>（StepCoro 移行後の dead code 除去）(<a href="https://github.com/cuzic/awase/commit/f01d401">f01d401</a>)</li>
+<li><strong>MSRV を 1.85 に引き上げ</strong>（<code>timed_fsm::coro</code> が <code>async</code>/<code>await</code> 構文を使用）</li>
+</ul>
+<hr />
 <h2>[1.4.0] - 2026-06-25</h2>
 <h3>新機能</h3>
 <ul>
