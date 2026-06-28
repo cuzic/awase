@@ -40,7 +40,7 @@ fn read_dword(value_name: windows::core::PCWSTR) -> Option<u32> {
             Some(&mut size),
         )
     };
-    ok.ok().map(|_| val)
+    ok.ok().ok().map(|_| val)
 }
 
 fn write_dword(value_name: windows::core::PCWSTR, data: u32) -> bool {
