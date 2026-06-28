@@ -27,6 +27,7 @@
 use awase::platform::ImeOpenOutcome;
 
 use crate::state::ime_decision_view::ImeControlView;
+use crate::tsf::observer::ActiveImeKind;
 
 /// IME ON/OFF を実行する戦略インターフェース。
 pub(crate) trait ImeOpenStrategy: Sync {
@@ -66,41 +67,17 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// - OFF → F22（Precomposition/Composition/Conversion 時に IME OFF）
 ///
 /// F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
-/// Standard / Imm32Unavailable **全プロファイル**で利用できる。
-/// F21/F22 は実キーボードに存在しないためブラウザショートカットと衝突しない。
+/// GJI 稼働中はアプリ種別に関わらず GJI を使うことで VK_KANJI トグルアーティファクトを回避できる。
 ///
-/// **TsfNative プロファイル（WezTerm / Windows Terminal 等）について**
-/// これらの VT ターミナルエミュレータは F21/F22 に対してエスケープシーケンスを
-/// 生成しないことを実測で確認済み（WezTerm 実機テスト）。
-/// GJI の TSF 層が F22 を消費することで
-/// VK_KANJI（トグル）を使わずに IME OFF を達成できる（desync フリー）。
-/// GJI が TSF 層で消費しない場合は KanjiToggleStrategy にフォールスルーする。
-///
-/// GJI の config1.db に以下を登録することで有効になる（awase が gji::ENTRIES で管理）:
-///   `DirectInput\tF21\tIMEOn`
-///   `Precomposition\tF21\tIMEOn` / `Precomposition\tF22\tIMEOff`
-///   `Composition\tF21\tIMEOn`   / `Composition\tF22\tIMEOff`
-///   `Conversion\tF21\tIMEOn`    / `Conversion\tF22\tIMEOff`
-///
-/// `gji_monitor_ok=true`（GJI プロセス検出済み）かつ
-/// `gji_keybinds_ok=true`（F21/F22 が config1.db に登録済み）かつ
-/// `gji_write_idle_ms < LONG_IDLE_MS`（GJI が最近書き込み済み = アクティブ IME）の場合のみ適用可能。
-///
-/// GJI がインストール済み・起動中でも MS-IME がアクティブ IME として選択されている場合、
-/// GJI はキー入力を処理しないため WriteTransferCount が増加しない。
-/// `gji_write_idle_ms >= LONG_IDLE_MS`（10 秒以上書き込みなし）のときは GJI がアクティブでないと
-/// みなし `MsImeDirectStrategy`（VK_DBE_ALPHANUMERIC）にフォールスルーする。
+/// 適用条件:
+/// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
+/// - `gji_keybinds_ok == true` (F21/F22 が config1.db に登録済み)
 pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.observed.gji_monitor_ok
+        view.observed.active_ime_kind == ActiveImeKind::GoogleJapaneseInput
             && view.observed.gji_keybinds_ok
-            // 候補窓が出ているときは GJI がアクティブ IME であることが確実なので
-            // write idle 時間にかかわらず GJI Direct を使う（長考中の候補窓でも F22 が正しく動作）。
-            // 候補窓がない場合は LONG_IDLE_MS（10s）以内に書き込みがあれば GJI アクティブとみなす。
-            && (view.observed.candidate_visible
-                || view.observed.gji_write_idle_ms < crate::tuning::LONG_IDLE_MS)
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
@@ -117,10 +94,7 @@ impl ImeOpenStrategy for GjiDirectStrategy {
             // 候補ウィンドウ表示中でも直接 F22 を送れば IME OFF になる。
             // Ctrl+Enter で候補確定→F22 の2段構えは不要かつ Chrome フォーム送信を
             // 引き起こす副作用があるため送らない。
-            log::debug!(
-                "[apply-ime] GJI direct: F22 (IME OFF, candidate={})",
-                view.observed.candidate_visible,
-            );
+            log::debug!("[apply-ime] GJI direct: F22 (IME OFF)");
             unsafe { crate::ime::post_gji_ime_off() };
         }
         ImeOpenOutcome::Applied
@@ -131,30 +105,20 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 
 /// MS-IME 向けの冪等 IME 制御戦略（VK_DBE_HIRAGANA / VK_DBE_ALPHANUMERIC）。
 ///
-/// GJI が最近書き込みをしていない（`gji_write_idle_ms >= LONG_IDLE_MS`）か、
-/// GJI が未検出の環境で、かつ IMM32 クロスプロセス制御が使えない TSF アプリ
-/// （Chrome / Edge 等）に対して冪等な VK_DBE_* を送信する。
+/// CLSID ベースで MS-IME（または互換 IME）がアクティブと判定された場合に、
+/// IMM32 クロスプロセス制御が使えない TSF アプリ（Chrome / Edge 等）へ冪等な VK_DBE_* を送信する。
 ///
 /// - ON  → `VK_DBE_HIRAGANA` (0xF2) — ひらがなモードに設定（既に ON なら no-op）
 /// - OFF → `VK_DBE_ALPHANUMERIC` (0xF0) — 半角英数モードに設定（既に OFF なら no-op）
 ///
-/// `VK_KANJI` トグルと異なり冪等なため shadow desync の影響を受けない。
-/// GJI がアクティブ IME として最近動作中であれば `GjiDirectStrategy` が先行する。
-///
-/// GJI インストール済みでも MS-IME に切り替えた場合、GJI の WriteTransferCount が
-/// 増加しなくなるため `LONG_IDLE_MS`（10 秒）後にこの戦略が有効になる。
-/// VK_DBE_* は GJI・MS-IME 双方が標準 Windows IME プロトコルとして処理するため、
-/// GJI の LongIdle 後（アクティブ状態は維持）にフォールバックしても正しく動作する。
+/// 適用条件:
+/// - `active_ime_kind == MicrosoftIme` (CLSID ベース判定)
+/// - `can_use_imm32_cross_process() == false`（IMM32 が使えない TSF アプリ）
 pub(crate) struct MsImeDirectStrategy;
 
 impl ImeOpenStrategy for MsImeDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        // GJI が最近アクティブでない（または未検出）かつ IMM32 が使えない TSF アプリのみ。
-        // GjiDirectStrategy.is_applicable() の否定に対称させる:
-        //   !gji_monitor_ok  OR  (!candidate_visible AND gji_write_idle >= LONG_IDLE_MS)
-        (!view.observed.gji_monitor_ok
-            || (!view.observed.candidate_visible
-                && view.observed.gji_write_idle_ms >= crate::tuning::LONG_IDLE_MS))
+        view.observed.active_ime_kind == ActiveImeKind::MicrosoftIme
             && !view.focus.profile.can_use_imm32_cross_process()
     }
 
