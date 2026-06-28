@@ -711,8 +711,6 @@ unsafe extern "system" fn tray_wnd_proc(
                     });
                 }
                 Some(TrayCommand::RestartAdmin) => restart_as_admin(),
-                Some(TrayCommand::GjiSetup) => handle_gji_setup(),
-                Some(TrayCommand::GjiTeardown) => handle_gji_teardown(),
                 Some(TrayCommand::ToggleAutoStart) => handle_autostart_toggle(),
                 Some(TrayCommand::PanicReset) => {
                     log::warn!("Panic reset requested from tray menu");
