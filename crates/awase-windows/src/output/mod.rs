@@ -351,7 +351,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     ///
     /// `Authorized` でない場合は `ProbeParams::default()` を返す。
     pub(crate) fn gji_current_probe_params(&self) -> crate::tsf::gji_fsm::ProbeParams {
-        self.gji_fsm
+        self.tsf_warmup
             .borrow()
             .current_probe_params()
             .unwrap_or_default()

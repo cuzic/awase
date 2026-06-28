@@ -397,6 +397,10 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::GjiSetup) => tray::handle_gji_setup(),
         Some(tray::TrayCommand::GjiTeardown) => tray::handle_gji_teardown(),
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
+        Some(tray::TrayCommand::PanicReset) => {
+            log::warn!("[tray] Panic reset requested from tray menu");
+            crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
+        }
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }
