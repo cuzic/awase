@@ -17,7 +17,7 @@
 //! [`ObservedState::capture_now()`]: crate::state::ime_decision_view::ObservedState::capture_now
 
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 // ── ChangeCounter ──────────────────────────────────────────────────────────
 
@@ -190,6 +190,14 @@ pub struct TsfObservations {
     /// IME の入力モード切り替え（ひらがな↔英字など）を捕捉するために使用する。
     /// 発火クラス・タイミングの確認が目的。
     pub(in crate::tsf) ime_change_seq: ChangeCounter,
+
+    /// `ITfInputProcessorProfileMgr::GetActiveProfile` の CLSID ベース IME 種別。
+    ///
+    /// `gji-io-monitor` スレッドが 2 秒ごとに更新する。
+    /// 0 = 未取得（起動直後）、1 = GoogleJapaneseInput、2 = MicrosoftIme。
+    ///
+    /// `active_ime_kind()` はこの値を優先し、0（未取得）の場合のみ `gji_monitor_ok` から派生する。
+    pub(super) tsf_active_kind: AtomicU8,
 }
 
 impl Default for TsfObservations {
@@ -218,6 +226,7 @@ impl TsfObservations {
             pending_end_composition: AtomicBool::new(false),
             ime_show_seq: ChangeCounter::new(),
             ime_change_seq: ChangeCounter::new(),
+            tsf_active_kind: AtomicU8::new(0),
         }
     }
 
@@ -281,16 +290,31 @@ impl TsfObservations {
 
     /// 現在使用中の IME 種別を返す。
     ///
-    /// GJI プロセスが検出済みなら `GoogleJapaneseInput`、
-    /// そうでなければ `MicrosoftIme`（MS-IME または互換 IME と推定）。
-    /// `gji_monitor_ok` から派生するため新たなアトミックは不要。
+    /// `tsf_active_kind`（CLSID ベース）が取得済みならそれを優先する。
+    /// 未取得（0）の場合は `gji_monitor_ok` から派生する（起動直後のフォールバック）。
     #[must_use]
     pub(crate) fn active_ime_kind(&self) -> ActiveImeKind {
-        if self.gji_monitor_ok() {
-            ActiveImeKind::GoogleJapaneseInput
-        } else {
-            ActiveImeKind::MicrosoftIme
+        match self.tsf_active_kind.load(Ordering::Acquire) {
+            1 => ActiveImeKind::GoogleJapaneseInput,
+            2 => ActiveImeKind::MicrosoftIme,
+            _ => {
+                // CLSID 未取得: gji_monitor_ok から派生（後方互換フォールバック）
+                if self.gji_monitor_ok() {
+                    ActiveImeKind::GoogleJapaneseInput
+                } else {
+                    ActiveImeKind::MicrosoftIme
+                }
+            }
         }
+    }
+
+    /// CLSID ベース IME 種別を更新する。値が変化した場合 `true` を返す。
+    pub(super) fn set_tsf_active_kind(&self, kind: ActiveImeKind) -> bool {
+        let val: u8 = match kind {
+            ActiveImeKind::GoogleJapaneseInput => 1,
+            ActiveImeKind::MicrosoftIme => 2,
+        };
+        self.tsf_active_kind.swap(val, Ordering::Release) != val
     }
 }
 
@@ -682,15 +706,53 @@ fn check_keybinds_in_db() -> bool {
 fn monitor_loop(token: &win32_worker::ShutdownToken) {
     log::info!("[gji-monitor] thread started");
 
+    // COM STA 初期化 (TSF プロファイル API に必要)
+    // S_FALSE (既に初期化済み) も含めて無視する。
+    let _ = unsafe {
+        windows::Win32::System::Com::CoInitializeEx(
+            None,
+            windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+        )
+    };
+
+    // TSF プロファイル COM オブジェクトを生成（失敗しても GJI モニタリングは継続）
+    let tsf_ctx = super::tip_detector::create_profile_ctx();
+    if let Some((ref mgr, ref profiles)) = tsf_ctx {
+        super::tip_detector::dump_profiles(mgr, profiles);
+        super::tip_detector::discover_and_cache_gji_clsid(mgr, profiles);
+        // 起動時点の IME 種別を即時取得
+        if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
+            TSF_OBS.set_tsf_active_kind(kind);
+            log::info!("[tip-detect] initial IME kind: {kind:?}");
+        }
+    } else {
+        log::warn!("[tip-detect] TSF COM 初期化失敗 — CLSID ベース IME 判定を無効化");
+    }
+
     let mut monitor: Option<GjiMonitor> = None;
     let mut next_attach_ms: u64 = 0;
     let mut next_config_recheck_ms: u64 = 0;
     // GJI 検出状態の直前通知値。変化したときのみ WM_IME_KIND_CHANGED を post する。
     // None = まだ通知未送信（起動直後）。
     let mut last_notified_ok: Option<bool> = None;
+    // CLSID ベース IME 種別ポーリング次回時刻
+    let mut next_clsid_check_ms: u64 = 0;
 
     loop {
         let now = crate::hook::current_tick_ms();
+
+        // CLSID ベース IME 種別を 2 秒ごとにポーリングして更新する
+        if let Some((ref mgr, _)) = tsf_ctx {
+            if now >= next_clsid_check_ms {
+                next_clsid_check_ms = now + 2_000;
+                if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
+                    if TSF_OBS.set_tsf_active_kind(kind) {
+                        log::info!("[tip-detect] IME kind → {kind:?}");
+                        crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                    }
+                }
+            }
+        }
 
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
