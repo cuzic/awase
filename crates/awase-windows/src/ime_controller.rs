@@ -5,17 +5,19 @@
 //!
 //! # 戦略リスト（優先順）
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
-//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F21/F22）。**全プロファイル**で適用可能
+//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F21/F22）。TsfNative を**除く**全プロファイルで適用
 //! 3. `MsImeDirectStrategy`     — MS-IME 環境の TSF アプリ向け（VK_DBE_HIRAGANA/ALPHANUMERIC 冪等制御）
-//! 4. `KanjiToggleStrategy`     — 最終フォールバック。IME 種別不明環境向け
+//! 4. `KanjiToggleStrategy`     — 最終フォールバック。IME 種別不明環境および GJI + TsfNative 向け
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
 //! `ImeController` は次の適用可能な戦略へフォールスルーする。
-//! GJI が検出されている場合は `GjiDirectStrategy` が全プロファイルで後続戦略より優先される。
+//! GJI が検出されている場合は `GjiDirectStrategy` が TsfNative を除く後続戦略より優先される。
 //!
 //! ## GJI 前提の設計方針
-//! F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
-//! GJI 稼働中はアプリ種別に関わらず GJI を使うことで VK_KANJI トグルアーティファクトを回避できる。
+//! F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないが、
+//! TsfNative（Windows Terminal 等）では F22 が GJI の TSF compartment を閉じず「半角英数」に
+//! なるため除外し `KanjiToggleStrategy`（VK_KANJI）にフォールバックする。
+//! VK_KANJI は GJI の TSF compartment を正しく閉じるため TsfNative で「直接入力」を達成できる。
 //! GJI が起動していない環境（MS-IME 等）では `MsImeDirectStrategy`（冪等 VK_DBE_*）が先行し、
 //! IME 種別不明時に限り `KanjiToggleStrategy`（トグル）がフォールバックする。
 //!
@@ -66,18 +68,22 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// - ON  → F21（DirectInput 時にひらがなへ切り替え、既に ON なら no-op）
 /// - OFF → F22（Precomposition/Composition/Conversion 時に IME OFF）
 ///
-/// F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、
-/// GJI 稼働中はアプリ種別に関わらず GJI を使うことで VK_KANJI トグルアーティファクトを回避できる。
+/// F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないが、
+/// TsfNative（Windows Terminal 等）では F22 が GJI の TSF compartment を閉じず半角英数になるため
+/// TsfNative を除外し KanjiToggleStrategy（VK_KANJI）にフォールバックする。
 ///
 /// 適用条件:
 /// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
 /// - `gji_keybinds_ok == true` (F21/F22 が config1.db に登録済み)
+/// - `profile != TsfNative`（TsfNative は VK_KANJI でフォールバック）
 pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
+        use crate::focus::class_names::AppImeProfile;
         view.observed.active_ime_kind == ActiveImeKind::GoogleJapaneseInput
             && view.observed.gji_keybinds_ok
+            && !matches!(view.focus.profile, AppImeProfile::TsfNative)
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
