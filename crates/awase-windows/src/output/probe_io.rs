@@ -75,7 +75,7 @@ pub(crate) trait ProbeIo {
     /// Chrome sacr-warmup cold タイムアウト後に GJI を強制リセットし、IMC ポーリングを開始する。
     ///
     /// VK_A+BS でも Chrome の GJI が初期化されなかった場合（80s 以上の超長時間 idle 等）に、
-    /// F22（IME OFF）→ F21（IME ON）を SendInput でキューイングして再初期化を試みる。
+    /// VK_IME_OFF→VK_IME_ON を SendInput でキューイングして再初期化を試みる。
     ///
     /// さらに `ImeModeFsm` の belief を Off → Hiragana に更新し、
     /// async `IMC_GETCONVERSIONMODE` ポーリングを `spawn_local` で開始する。
@@ -276,7 +276,7 @@ impl ProbeIo for Output {
         log::debug!("[chrome-reinit] cold={cold_seq} VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始");
         let _ = crate::win32::send_input_safe(&inputs);
 
-        // 2. ImeModeFsm belief を即時更新: F22 → Off, F21 → Hiragana。
+        // 2. ImeModeFsm belief を即時更新: VK_IME_OFF → Off, VK_IME_ON → Hiragana。
         {
             let mut fsm = self.ime_mode_fsm.borrow_mut();
             fsm.on_f22_sent();
@@ -588,7 +588,7 @@ where
 
             ProbeAction::SendChromeGjiReinit { cold_seq } => {
                 // SacrificialWarmupCoro が Chrome cold タイムアウト後に emit する。
-                // F22→F21 送信 + ImeModeFsm belief 更新 + async IMC ポーリング開始。
+                // VK_IME_OFF→VK_IME_ON 送信 + ImeModeFsm belief 更新 + async IMC ポーリング開始。
                 // FSM 切り替えは不要（SacrificialWarmupCoro がそのまま IME 確認を待機する）。
                 io.send_chrome_gji_reinit_and_poll(cold_seq);
             }
@@ -616,7 +616,7 @@ where
                             // Chrome パス: INJECTED_MARKER バッチ送信。
                             // Chrome cold case は SendChromeGjiReinit 後に SacrificialWarmupCoro が
                             // IME 確認し SacrificialResend(confirmed_warm=false) を emit する。
-                            // F22→F21 は SendChromeGjiReinit で送信済み。
+                            // VK_IME_OFF→VK_IME_ON は SendChromeGjiReinit で送信済み。
                             log::debug!(
                                 "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を Chrome パスで再送 \
                                 (confirmed_warm={})",

@@ -37,22 +37,13 @@ WezTerm 系 cold start バグは直近まで継続修正中（`8b90725`）。タ
 
 ### 1-2. GJI 再起動後の待機
 
-**場所:** `crates/awase-windows/src/gji.rs:218-219`
+**場所:** ~~`crates/awase-windows/src/gji.rs:218-219`~~
 
-**内容:** GJI プロセスを `TerminateProcess` で終了させた後、再起動前に待機する処理。
-
-**経緯:** 元々は固定 500ms `thread::sleep` で待っていた。`TerminateProcess` は非同期のため、sleep が短すぎると旧プロセスが死にきっていない状態で新プロセスを起動してしまう可能性があった。
-
-**対処済み (`2f4c766`):**  
-`PROCESS_SYNCHRONIZE` 権限を追加し、`WaitForSingleObject(h, 5_000)` でプロセス消滅を確認してから再起動するよう変更。最大 5 秒の確実な待機に改善。
-
-```rust
-// before
-std::thread::sleep(std::time::Duration::from_millis(500));
-
-// after
-let _ = WaitForSingleObject(h, 5_000);
-```
+**削除済み（2026-06-28）:**  
+`gji.rs`（GJI config1.db キーバインド管理・プロセス再起動機構）は、
+VK_IME_ON/OFF 移行に伴い完全削除された。
+GJI は `VK_IME_ON` (0x16) / `VK_IME_OFF` (0x1A) をネイティブに処理するため
+config1.db パッチが不要になり、プロセス管理コードも不要になった。
 
 ---
 
@@ -137,10 +128,12 @@ GJI の composition 動作の実際の挙動に依存した最適化。削除す
 
 **場所:** `crates/awase-windows/src/ime_controller.rs:14-18`
 
-**内容:** GJI 稼働中はアプリ種別（Standard / Imm32Unavailable / TsfNative）によらず F21/F22 を使い、`VK_KANJI` トグルアーティファクトを回避する設計方針。
+**内容:** GJI 稼働中はアプリ種別（Standard / Imm32Unavailable / TsfNative）によらず VK_IME_ON/OFF を使い、`VK_KANJI` トグルアーティファクトを回避する設計方針。
 
 **判定: ワークアラウンドではない**  
-`4312706` で意図的に設計した正規方針。F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないため、GJI 稼働時は常に安全に使える。
+意図的に設計した正規方針。VK_IME_ON/OFF は Windows 標準の冪等キーで IME 層で処理されるため、
+フォアグラウンドアプリのプロファイルに依存しない。GJI 稼働時は常に安全に使える。  
+（旧: F21/F22 + config1.db パッチ → 2026-06-28 に VK_IME_ON/OFF へ移行）
 
 ---
 

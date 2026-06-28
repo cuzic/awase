@@ -81,7 +81,7 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
 /// 修飾キー（Ctrl / Shift / Alt）の押下状態スナップショット。
 ///
 /// `SendInput` で修飾なしキーを届ける際の解放・復元シーケンス構築に使う。
-/// 3つの IME キー送信関数（VK_KANJI / F21 / F22）が同じパターンを共有する。
+/// 3つの IME キー送信関数（VK_KANJI / VK_IME_ON / VK_IME_OFF）が同じパターンを共有する。
 #[derive(Clone, Copy)]
 struct HeldModifiers {
     ctrl: bool,
@@ -171,7 +171,7 @@ impl HeldModifiers {
 ///
 /// 候補ウィンドウ表示中は VK_KANJI が候補窓に吸われて IME OFF に失敗する場合があるが、
 /// 以前の「Ctrl+Enter で候補確定後に VK_KANJI」方式は Chrome フォームを submit させる
-/// 副作用があったため廃止。GJI 環境では GjiDirectStrategy (F22) が先行するため、
+/// 副作用があったため廃止。GJI 環境では GjiDirectStrategy (VK_IME_OFF) が先行するため、
 /// この関数に到達するのは GJI 以外か GJI fallback 時のみ。
 ///
 /// # Safety
@@ -337,20 +337,19 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
     use crate::vk::{VK_LWIN, VK_RWIN};
 
     // Win キー押下中は注入をスキップする。
-    // Win+F21/F22 は OS に未認識ショートカットとして届き、Win↑ のタイミングで
+    // Win+VK_IME_ON/OFF は OS に未認識ショートカットとして届き、Win↑ のタイミングで
     // スタートメニューを誤起動させる原因になる。
     // Win を SendInput で解放すると Win 自体がスタートメニューを開くため、
     // Alt と同様にスキップ（解放しない）が正しい対処。
     if crate::hook::is_physical_key_down(VK_LWIN) || crate::hook::is_physical_key_down(VK_RWIN) {
         log::debug!(
-            "[ime-mode] skipped vk=0x{vk:02X} (Win key held — Win+F21/F22 triggers Start Menu on Win↑)"
+            "[ime-mode] skipped vk=0x{vk:02X} (Win key held — Win+VK_IME triggers Start Menu on Win↑)"
         );
         return;
     }
 
     let held = HeldModifiers::read();
-    // F21/F22 は GJI 専用の仮想 VK（実キーボードに存在しない）。
-    // GJI のキーバインドは VK コードのみで照合するため ALT+F21/F22 でも正常に処理される。
+    // VK_IME_ON/OFF は Windows 標準の冪等 IME キー（GJI / MS-IME がネイティブに処理）。
     // ALT を解放すると ALT+TAB スイッチャーが確定してしまうため、ALT は解放しない。
     let held_skip_alt = HeldModifiers { alt: false, ..held };
     let mut inputs: Vec<INPUT> = Vec::with_capacity(6);

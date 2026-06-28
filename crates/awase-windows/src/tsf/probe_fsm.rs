@@ -172,7 +172,7 @@ pub(crate) struct SacrificialResend {
     /// TSF の場合は `transmit_tsf` + `VkMarker::Tsf` を使う。
     pub target: TransmitTarget,
     /// `true` = VK_A が composition を確認（warm）、`false` = タイムアウト（cold）。
-    /// Chrome dispatcher が cold 時に F22→F21 強制リセットを行うかどうかの判定に使う。
+    /// Chrome dispatcher が cold 時に VK_IME_OFF→VK_IME_ON 強制リセットを行うかどうかの判定に使う。
     pub confirmed_warm: bool,
 }
 
@@ -215,7 +215,7 @@ pub(crate) enum ProbeAction {
     SacrificialResend(SacrificialResend),
     /// Chrome sacr-warmup cold タイムアウト後の GJI 再初期化を dispatcher に委譲する。
     ///
-    /// dispatcher が F22→F21 を SendInput でキューイング + `ImeModeFsm` belief 更新 +
+    /// dispatcher が VK_IME_OFF→VK_IME_ON を SendInput でキューイング + `ImeModeFsm` belief 更新 +
     /// async `IMC_GETCONVERSIONMODE` ポーリングを開始する。
     /// FSM 切り替えは不要（[`SacrificialWarmupCoro`] がそのまま IME 確認を待機する）。
     ///
@@ -285,8 +285,8 @@ async fn tsf_probe_coro_body(
             "[tsf-probe] cold={cold_seq} ChromeProbe 完了 ({}ms)",
             outcome.elapsed_ms
         );
-        // F22→F21 を Chrome path で使わない。
-        // F22 (IME OFF) が Chrome TSF context を壊し、F21 が間に合わず na がリテラル化する。
+        // VK_IME_OFF→VK_IME_ON を Chrome path で使わない（タイムアウト後のリセット専用）。
+        // VK_IME_OFF が Chrome TSF context を壊し、VK_IME_ON が間に合わず na がリテラル化する。
         // ChromeProbe の F2 (VK_DBE_HIRAGANA) warmup のみで GJI を活性化する。
         break input.env;
     };

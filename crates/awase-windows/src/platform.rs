@@ -249,19 +249,19 @@ impl WindowsPlatform {
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
                     // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
                     // long-cold（≥10s idle）の場合:
-                    //   deferred chars あり → F21 poke + UnicodeColdWarmupFsm (GJI 起動待ち後に chars 送信)
-                    //   deferred chars なし → 従来通り F22→F21 reinit
+                    //   deferred chars あり → VK_IME_ON poke + UnicodeColdWarmupFsm (GJI 起動待ち後に chars 送信)
+                    //   deferred chars なし → 従来通り VK_IME_OFF→VK_IME_ON reinit
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
                         if params.is_long_cold {
                             let deferred = self.output.take_unicode_cold_deferred();
                             if deferred.is_empty() {
                                 log::debug!(
-                                    "[gji-fsm] Unicode long-cold StartProbe: F22→F21 reinit (chars なし)"
+                                    "[gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)"
                                 );
                                 self.output.send_f22_f21_reinit();
                             } else {
                                 log::debug!(
-                                    "[gji-fsm] Unicode long-cold StartProbe: F21 poke + UnicodeColdWarmupFsm \
+                                    "[gji-fsm] Unicode long-cold StartProbe: VK_IME_ON poke + UnicodeColdWarmupFsm \
                                      ({} chars deferred)",
                                     deferred.len()
                                 );
@@ -570,14 +570,14 @@ impl PlatformRuntime for WindowsPlatform {
             let deferred = self.output.take_unicode_cold_deferred();
             if !deferred.is_empty() {
                 // output.send_keys() で chars が defer された。
-                // F21 + VK_A+BS（犠牲キー）で GJI を起動し、gji_write_bytes 増加を確認してから
+                // VK_IME_ON + VK_A+BS（犠牲キー）で GJI を起動し、gji_write_bytes 増加を確認してから
                 // deferred chars を送信する（VK_A が GJI composition を走らせ write_bytes が増える）。
                 let cold_seq = self.output.composition.cold_start_count();
                 let baseline = crate::tsf::observer::gji_write_bytes();
                 self.output.send_unicode_cold_warmup_keys(cold_seq);
                 log::info!(
                     "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
-                     F21+VK_A+BS → {} chars defer",
+                     VK_IME_ON+VK_A+BS → {} chars defer",
                     deferred.len()
                 );
                 let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(

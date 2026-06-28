@@ -4,7 +4,7 @@
 //!
 //! 1. `Platform::dispatch_gji_response` が `GjiAction::StartProbe { is_long_cold: true }` を
 //!    受信し、Unicode モード + deferred chars がある場合に本 FSM をインストールする。
-//! 2. 呼び出し元が F21（VK_DBE_HIRAGANA）を送信して GJI 起動をポークする。
+//! 2. 呼び出し元が VK_IME_ON (0x16) を送信して GJI 起動をポークする。
 //! 3. 本 FSM が 10ms ごとに `gji_write_bytes()` を監視する。
 //! 4. GJI が write した（`gji_write_bytes` 増加）か `WARMUP_TIMEOUT_MS` 経過したら
 //!    [`ProbeAction::FlushDeferredUnicodeChars`] を emit して完了する。
@@ -19,12 +19,12 @@ const WARMUP_TIMEOUT_MS: u64 = 200;
 
 /// Unicode cold-start warm-up FSM。
 ///
-/// F21 送信後に GJI の起動を確認（`gji_write_bytes` 増加）してから deferred chars を送る。
+/// VK_IME_ON 送信後に GJI の起動を確認（`gji_write_bytes` 増加）してから deferred chars を送る。
 pub(crate) struct UnicodeColdWarmupFsm {
     cold_seq: u32,
     /// RAII guard — Drop で `OUTPUT_GATE.active=false`（後続キーを INPUT_DEFER に退避）
     _guard: OutputActiveGuard,
-    /// F21 送信前に取得した `gji_write_bytes()` ベースライン
+    /// VK_IME_ON 送信前に取得した `gji_write_bytes()` ベースライン
     baseline_bytes: u64,
     /// GJI が warm になったら送信する Unicode 文字バッファ
     deferred_chars: Vec<char>,

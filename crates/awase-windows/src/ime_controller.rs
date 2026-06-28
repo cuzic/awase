@@ -5,19 +5,18 @@
 //!
 //! # 戦略リスト（優先順）
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
-//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（F21/F22）。TsfNative を**除く**全プロファイルで適用
+//! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（VK_IME_ON/OFF）。全プロファイルで適用
 //! 3. `MsImeDirectStrategy`     — MS-IME 環境の TSF アプリ向け（VK_DBE_HIRAGANA/ALPHANUMERIC 冪等制御）
-//! 4. `KanjiToggleStrategy`     — 最終フォールバック。IME 種別不明環境および GJI + TsfNative 向け
+//! 4. `KanjiToggleStrategy`     — 最終フォールバック。IME 種別不明環境向け
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
 //! `ImeController` は次の適用可能な戦略へフォールスルーする。
-//! GJI が検出されている場合は `GjiDirectStrategy` が TsfNative を除く後続戦略より優先される。
+//! GJI が検出されている場合は `GjiDirectStrategy` が後続戦略より優先される。
 //!
 //! ## GJI 前提の設計方針
-//! F21/F22 は IME 層で処理されフォアグラウンドアプリのプロファイルに依存しないが、
-//! TsfNative（Windows Terminal 等）では F22 が GJI の TSF compartment を閉じず「半角英数」に
-//! なるため除外し `KanjiToggleStrategy`（VK_KANJI）にフォールバックする。
-//! VK_KANJI は GJI の TSF compartment を正しく閉じるため TsfNative で「直接入力」を達成できる。
+//! VK_IME_ON (0x16) / VK_IME_OFF (0x1A) は Windows 標準の冪等キーで GJI がネイティブに処理する。
+//! IME 層で処理されるためフォアグラウンドアプリのプロファイルに依存しない。
+//! Chrome / WezTerm / Windows Terminal すべてで動作確認済み（2026-06-28）。
 //! GJI が起動していない環境（MS-IME 等）では `MsImeDirectStrategy`（冪等 VK_DBE_*）が先行し、
 //! IME 種別不明時に限り `KanjiToggleStrategy`（トグル）がフォールバックする。
 //!

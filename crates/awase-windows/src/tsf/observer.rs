@@ -175,7 +175,7 @@ pub struct TsfObservations {
 
     /// `EVENT_OBJECT_IME_SHOW`（0x8027）が発火するたびに +1 するカウンタ（実機検証用）。
     ///
-    /// Chrome などのアプリで F21 受信後に GJI がひらがなモードへ移行したとき発火するかを確認する。
+    /// Chrome などのアプリで VK_IME_ON 受信後に GJI がひらがなモードへ移行したとき発火するかを確認する。
     /// 検証で発火が確認されれば `ChromeGjiReinitFsm` の IMC ポーリング代替シグナルとして活用できる。
     pub(in crate::tsf) ime_show_seq: ChangeCounter,
 
@@ -281,7 +281,7 @@ impl TsfObservations {
     /// 未取得（0）の場合は `MicrosoftIme` をデフォルトとする。
     ///
     /// `gji_monitor_ok` をフォールバックに使うと、GJI プロセスが起動中でも
-    /// MS-IME がアクティブな場合に GJI と誤判定して F22 を送信してしまうため廃止した。
+    /// MS-IME がアクティブな場合に GJI と誤判定して VK_IME_OFF を送信してしまうため廃止した。
     /// `VK_DBE_ALPHANUMERIC/HIRAGANA` は GJI でも機能するため未検出時は MsIme 扱いが安全。
     #[must_use]
     pub(crate) fn active_ime_kind(&self) -> ActiveImeKind {

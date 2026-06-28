@@ -440,7 +440,7 @@ impl ImeStateHub {
     ///
     /// キャッシュがない（初回訪問または TTL 切れ）TsfNative ウィンドウへの入場時、
     /// 前ウィンドウから carry-over された belief=true をそのまま引き継ぐと
-    /// GjiDirectStrategy が shadow_on=true 由来で F21 をスキップし IME-OFF Engine-ON
+    /// GjiDirectStrategy が shadow_on=true 由来で VK_IME_ON をスキップし IME-OFF Engine-ON
     /// になる可能性がある。安全デフォルトとして OFF に倒し、ユーザーが必要なら ON にする。
     ///
     /// `last_intent = None` に戻すことで `last_explicit_off_ms()` を汚染しない

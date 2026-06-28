@@ -356,20 +356,20 @@ impl Runtime {
             .applied_open()
             .unwrap_or(false);
 
-        // TsfNative (WezTerm 等) + IME ON でフォーカス入場: GJI F21 を shadow_on なしで強制送信。
+        // TsfNative (WezTerm 等) + IME ON でフォーカス入場: GJI VK_IME_ON を shadow_on なしで強制送信。
         //
-        // 通常の GjiDirectStrategy は shadow_on=true を見て「既に ON」と判断し F21 をスキップする。
+        // 通常の GjiDirectStrategy は shadow_on=true を見て「既に ON」と判断し VK_IME_ON をスキップする。
         // しかしフォーカス変更時の shadow_on は直前ウィンドウ（Chrome 等）の applied 値が
-        // hard pre-sync で引き継がれており、WezTerm の実 GJI IME が OFF でも F21 が送られない。
-        // apply_ime_open_with_applied(true, None) で shadow_on=∅(false) にして F21 を確実に送る。
-        // F21 は GJI が既に ON の場合も no-op（冪等）なので副作用なし。
+        // hard pre-sync で引き継がれており、WezTerm の実 GJI IME が OFF でも VK_IME_ON が送られない。
+        // apply_ime_open_with_applied(true, None) で shadow_on=∅(false) にして VK_IME_ON を確実に送る。
+        // VK_IME_ON は GJI が既に ON の場合も no-op（冪等）なので副作用なし。
         // GJI 未使用環境（MS-IME + TsfNative）で KanjiToggle が誤送信されないよう GJI ガードを設ける。
         if applied_ime_on && new_profile_is_tsf_native {
             let obs = crate::state::ObservedState::capture_now();
             if obs.gji_monitor_ok {
                 let _ = self.platform.apply_ime_open_with_applied(true, None);
                 log::debug!(
-                    "[composition] FocusChange: TsfNative IME ON → GJI F21 強制 (shadow_on を無視)"
+                    "[composition] FocusChange: TsfNative IME ON → GJI VK_IME_ON 強制 (shadow_on を無視)"
                 );
             }
         }

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 改善
+
+- **GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行** — config1.db パッチ不要に ([adb856c](https://github.com/cuzic/awase/commit/adb856c))
+  - `gji.rs`（config1.db パッチ・プロセス管理）を完全削除（-692 行）
+  - トレイメニューの「GJI セットアップ / 解除」を撤去
+  - Chrome / WezTerm / Windows Terminal すべてで VK_IME_ON/OFF の動作を実機確認（2026-06-28）
+  - GJI インストール後に設定ファイルを書き換える初回セットアップが不要になった
+  - `gji_keybinds_ok` フラグ・Observer の config1.db 監視ループを撤去
+
 ## [1.5.0] - 2026-06-27
 
 ### 新機能
@@ -21,7 +32,7 @@ All notable changes to this project will be documented in this file.
   - フォーカス直後に Unicode モードで送信したキーが GJI に処理されたか WriteTransferCount で判定
   - GJI が動作していれば injection_mode を Tsf に自動昇格（ADR-062）
 - **Unicode long-cold 対応: UnicodeColdWarmupFsm** ([70d3fed](https://github.com/cuzic/awase/commit/70d3fed))
-  - Unicode モードで長時間アイドル後に F21 poke を送り GJI の起動を確認してから文字を送信
+  - Unicode モードで長時間アイドル後に VK_IME_ON poke を送り GJI の起動を確認してから文字を送信
   - GJI が応答するまで文字送信を保留することで partial literal を防止
 - **競合ソフトウェア起動時チェックを追加** ([9875c2c](https://github.com/cuzic/awase/commit/9875c2c))
   - やまぶき等の NICOLA 対応 IME が同時に起動している場合、バルーン通知で警告（ADR-060）
@@ -36,17 +47,17 @@ All notable changes to this project will be documented in this file.
 
 ### バグ修正
 
-- **Win キー押下中の F21/F22 注入をスキップ** ([6469f51](https://github.com/cuzic/awase/commit/6469f51))
+- **Win キー押下中の IME キー注入をスキップ** ([6469f51](https://github.com/cuzic/awase/commit/6469f51))
   - Win+A でスタートメニューが開いてしまう誤動作を修正（ADR-061）
-- **仮想デスクトップ切替時の誤 F21 送信を防止** ([a97173a](https://github.com/cuzic/awase/commit/a97173a))
-  - 仮想デスクトップを切り替えた直後に LINE 等へ誤って F21 が送信されていたフォーカスガード漏れを修正
+- **仮想デスクトップ切替時の誤 IME キー送信を防止** ([a97173a](https://github.com/cuzic/awase/commit/a97173a))
+  - 仮想デスクトップを切り替えた直後に LINE 等へ誤って IME キーが送信されていたフォーカスガード漏れを修正
 - **Partial literal の残骸を BS で除去** ([f3ff84d](https://github.com/cuzic/awase/commit/f3ff84d))
   - TSF literal recovery が give-up したとき terminal に残ったリテラル文字を BS で削除
 - **Partial literal 検出後の resend を SacrificialWarmup 化** ([62ad28b](https://github.com/cuzic/awase/commit/62ad28b))
   - 部分リテラル検出後の再送を安全な warmup フローに統一
 - **SacrificialWarmup Phase2 早期 HIDE 後に IPC settle 待機を追加** ([88d562f](https://github.com/cuzic/awase/commit/88d562f))
   - 候補ウィンドウが早期 HIDE された後、GJI IPC が完了するまで待機してから次入力を解放
-- **Unicode long-cold で F21 単体 → F21+VK_A+BS 犠牲キーに変更** ([6cb175f](https://github.com/cuzic/awase/commit/6cb175f))
+- **Unicode long-cold で VK_IME_ON 単体 → VK_IME_ON+VK_A+BS 犠牲キーに変更** ([6cb175f](https://github.com/cuzic/awase/commit/6cb175f))
   - GJI の WriteTransferCount を確実に増加させ cold 判定の精度を向上
 - **TsfNative/Imm32Unavailable で shadow 値を代替観測として記録** ([1e77002](https://github.com/cuzic/awase/commit/1e77002))
   - IMM32 が利用不可なウィンドウでも shadow_on を観測値として保存し状態推定を安定化

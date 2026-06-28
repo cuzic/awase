@@ -129,9 +129,9 @@ pub struct Output {
     unicode_cold_deferred: std::cell::RefCell<Vec<char>>,
     /// IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
     ///
-    /// F21/F22 送信時に即時 belief 更新。`IMC_GETCONVERSIONMODE` async ポーリングで確認。
+    /// VK_IME_ON/OFF 送信時に即時 belief 更新。`IMC_GETCONVERSIONMODE` async ポーリングで確認。
     /// `TsfEnvSnapshot.ime_mode` / `ime_mode_confirmed` を通じて各 TickableFsm に公開する。
-    /// `ChromeGjiReinitFsm` が F22→F21 後の Hiragana 確認待機に使用する。
+    /// `ChromeGjiReinitFsm` が VK_IME_OFF→VK_IME_ON 後の Hiragana 確認待機に使用する。
     pub(crate) ime_mode_fsm: std::cell::RefCell<crate::tsf::ime_mode_fsm::ImeModeFsm>,
     /// `gji_on_focus_change` の `spawn_local` IMC ポーリングを世代管理する。
     ///
@@ -248,7 +248,7 @@ impl Output {
 
     /// Unicode cold-start 用の GJI ウォームアップキーを送信する。
     ///
-    /// 1. F21（VK_DBE_HIRAGANA）を `IME_KANJI_MARKER` 付きで送信してひらがなモードへ切替。
+    /// 1. VK_IME_ON (0x16) を `IME_KANJI_MARKER` 付きで送信してひらがなモードへ切替。
     /// 2. VK_A + BS を `INJECTED_MARKER` 付きで同一バッチ送信（犠牲キー）。
     ///    VK_A が GJI の hiragana composition を起動して `gji_write_bytes` を増やし、
     ///    BS が即キャンセルするため文字フラッシュは発生しない。
@@ -308,7 +308,7 @@ self.tsf_warmup.borrow().gji_current_composition_epoch()
         self.ime_mode_fsm.borrow_mut().on_conversion_mode_read(mode);
     }
 
-    /// フォーカス変更時に呼ぶ。F21/F22 直後の副作用 FocusChange かを判定して適切にリセット。
+    /// フォーカス変更時に呼ぶ。VK_IME_ON/OFF 直後の副作用 FocusChange かを判定して適切にリセット。
     ///
     /// 世代カウンタ `ime_mode_focus_gen` をインクリメントすることで、
     /// 以前の `spawn_local` IMC ポーリングが古いフォーカスの結果を書き込まないよう保護する。
@@ -319,7 +319,7 @@ self.tsf_warmup.borrow().gji_current_composition_epoch()
             .set(self.ime_mode_focus_gen.get().wrapping_add(1));
     }
 
-    /// F21/F22 送信時に `ImeModeFsm` の belief を即時更新する。
+    /// VK_IME_ON/OFF 送信時に `ImeModeFsm` の belief を即時更新する。
     ///
     /// `send_chrome_gji_reinit_and_poll` は個別に `on_f22_sent()`/`on_f21_sent()` を呼ぶため、
     /// このメソッドは通常 IME ON/OFF（`send_engine_state_ime_key` 経由）用。
@@ -738,9 +738,9 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
             })
     }
 
-    /// long-cold 後の GJI 再初期化: F22（IME OFF）→ F21（IME ON）を SendInput で注入する。
+    /// long-cold 後の GJI 再初期化: VK_IME_OFF→VK_IME_ON を SendInput で注入する。
     ///
-    /// Chrome の `send_chrome_gji_reinit_and_poll` と同じ F22→F21 シーケンスだが、
+    /// Chrome の `send_chrome_gji_reinit_and_poll` と同じ VK_IME_OFF→VK_IME_ON シーケンスだが、
     /// WT（Unicode mode）向けに async IMC ポーリングは行わない。
     pub(crate) fn send_f22_f21_reinit(&self) {
         use probe_io::ProbeIo as _;

@@ -5,8 +5,8 @@
 //!
 //! ## 更新ソース
 //!
-//! - F22 送信 → `Off`（即時 belief）
-//! - F21 送信 → `Hiragana`（即時 belief）
+//! - VK_IME_OFF 送信 → `Off`（即時 belief）
+//! - VK_IME_ON 送信 → `Hiragana`（即時 belief）
 //! - `IMC_GETCONVERSIONMODE` async ポーリング → 確定（`confirmed=true`）
 //! - フォーカス変更 → `Unknown`（再確認が必要）
 //!
@@ -52,9 +52,9 @@ pub(crate) struct ImeModeFsm {
     state: ImeModeState,
     /// `true` = `IMC_GETCONVERSIONMODE` で OS から確認済み（belief ではなく ground truth）。
     confirmed: bool,
-    /// 最後に F21/F22 を送信した時刻 (ms)。0 = 未送信。
+    /// 最後に VK_IME_ON/OFF を送信した時刻 (ms)。0 = 未送信。
     ///
-    /// F21/F22 送信が Chrome の FocusChange を誘発するため、送信後 100ms 以内の
+    /// VK_IME_ON/OFF 送信が Chrome の FocusChange を誘発するため、送信後 100ms 以内の
     /// FocusChange では state を Unknown にリセットせず confirmed のみクリアする。
     last_vk_send_ms: u64,
 }
@@ -82,17 +82,17 @@ impl ImeModeFsm {
         self.confirmed
     }
 
-    /// F22（IME OFF）送信時に呼ぶ。Off belief に即時移行する。
+    /// VK_IME_OFF 送信時に呼ぶ。Off belief に即時移行する。
     pub(crate) fn on_f22_sent(&mut self) {
-        log::debug!("[ime-mode] F22 送信 → Off (belief, unconfirmed)");
+        log::debug!("[ime-mode] VK_IME_OFF 送信 → Off (belief, unconfirmed)");
         self.state = ImeModeState::Off;
         self.confirmed = false;
         self.last_vk_send_ms = crate::hook::current_tick_ms();
     }
 
-    /// F21（IME ON / ひらがな）送信時に呼ぶ。Hiragana belief に即時移行する。
+    /// VK_IME_ON 送信時に呼ぶ。Hiragana belief に即時移行する。
     pub(crate) fn on_f21_sent(&mut self) {
-        log::debug!("[ime-mode] F21 送信 → Hiragana (belief, unconfirmed)");
+        log::debug!("[ime-mode] VK_IME_ON 送信 → Hiragana (belief, unconfirmed)");
         self.state = ImeModeState::Hiragana;
         self.confirmed = false;
         self.last_vk_send_ms = crate::hook::current_tick_ms();
@@ -133,7 +133,7 @@ impl ImeModeFsm {
 
     /// フォーカス変更時に呼ぶ。
     ///
-    /// F21/F22 送信から 100ms 以内の場合は Chrome の副作用 FocusChange と判断し
+    /// VK_IME_ON/OFF 送信から 100ms 以内の場合は Chrome の副作用 FocusChange と判断し
     /// state を維持したまま `confirmed` のみクリアする。
     /// それ以外は Unknown に戻して次の `IMC_GETCONVERSIONMODE` で再確認する。
     pub(crate) fn on_focus_changed(&mut self, now_ms: u64) {

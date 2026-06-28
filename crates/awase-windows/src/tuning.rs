@@ -88,7 +88,7 @@ pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
 /// 実測（28s アイドル後 cold=16）: F2×2 送信から 181ms 後に GJI が初めて VK を受け入れた。
 /// 150ms ではタイムアウトが早すぎ「bあ」のような部分リテラル化が発生したため 350ms に延長。
 /// 350ms = 実測最大 ~180ms + 170ms マージン。
-/// タイムアウト時は F22→F21 セカンドステージへ（keybinds_ok=true の場合）。
+/// タイムアウト時は VK_IME_OFF→VK_IME_ON セカンドステージへ。
 pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
 
 /// GJI セッションが「中程度の idle」と判断する GJI アイドル閾値 (ms)。
@@ -129,10 +129,10 @@ pub const CHROME_PROBE_LONG_IDLE_MIN_MS: u64 = 200;
 /// 症状を抑えるため、500ms まで延長する（GJI が settle すれば短く済む）。
 pub const CHROME_PROBE_LONG_IDLE_MAX_MS: u64 = 500;
 
-/// Chrome GJI 再初期化（F22→F21）後、`IMC_GETCONVERSIONMODE` で Hiragana を確認するまでの
+/// Chrome GJI 再初期化（VK_IME_OFF→VK_IME_ON）後、`IMC_GETCONVERSIONMODE` で Hiragana を確認するまでの
 /// 最大待機時間 (ms)。
 ///
-/// GJI は F21 受信後 ~50-100ms 以内に IME ON 状態に移行する実測値が多い。
+/// GJI は VK_IME_ON 受信後 ~50-100ms 以内に IME ON 状態に移行する実測値が多い。
 /// 300ms あれば十分な余裕を確保できる。タイムアウト時は強制再送する。
 pub const CHROME_GJI_REINIT_CONFIRM_MS: u64 = 300;
 

@@ -80,14 +80,14 @@ async fn sacr_warmup_coro_body(
 
     let confirmed_warm = matches!(detection, DetectionResult::CompositionConfirmed);
 
-    // ── Chrome cold: F22→F21 + IME 確認待機（旧 ChromeGjiReinitFsm の内容）──
+    // ── Chrome cold: VK_IME_OFF→VK_IME_ON + IME 確認待機（旧 ChromeGjiReinitFsm の内容）──
     if !confirmed_warm && target == TransmitTarget::Chrome {
         let reinit_deadline_ms = crate::hook::current_tick_ms() + CHROME_GJI_REINIT_CONFIRM_MS;
         log::debug!(
             "[sacr-warmup] cold={cold_seq} Chrome cold → SendChromeGjiReinit (timeout={}ms)",
             CHROME_GJI_REINIT_CONFIRM_MS,
         );
-        // F22→F21 送信 + async IMC ポーリング開始を dispatcher に委譲する。
+        // VK_IME_OFF→VK_IME_ON 送信 + async IMC ポーリング開始を dispatcher に委譲する。
         yield_step(ch.clone(), vec![ProbeAction::SendChromeGjiReinit { cold_seq }]).await;
 
         // IME mode が Hiragana に確定するまで待機する。
