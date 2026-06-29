@@ -751,6 +751,21 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
         <li>解凍したフォルダごと削除します</li>
       </ol>
     </div>
+
+    <div class="card">
+      <h3>Microsoft IME のレジストリ設定を元に戻す（任意）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">
+        Microsoft IME を使用していた場合、awase が以下のレジストリ値を書き込んでいることがあります。
+        親指シフト以外の用途で <kbd>無変換</kbd>/<kbd>変換</kbd> の割り当てを戻したい場合は削除してください。
+      </p>
+      <div class="code-block">HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME
+  IsKeyAssignmentEnabled
+  KeyAssignmentMuhenkan
+  KeyAssignmentHenkan</div>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.7rem">
+        または Microsoft IME の「設定 → キーとタッチのカスタマイズ」で「各キーに好みの機能を割り当てる」をオフにしてください。
+      </p>
+    </div>
   </div>
 </section>
 
@@ -770,7 +785,24 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
     </div>
 
     <div class="card">
-      <h3>2. 確定モードの調整</h3>
+      <h3>2. Microsoft IME を使う場合（初回のみ）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
+        awase 起動時に Microsoft IME が検出されると、<strong>キー割り当ての自動設定ダイアログ</strong>が1回だけ表示されます。
+        「OK」を押すと以下のレジストリ値を書き込み、<kbd>無変換</kbd> で IME オフ・<kbd>変換</kbd> で IME オンに割り当てます。
+      </p>
+      <div class="code-block">HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME
+  IsKeyAssignmentEnabled = 1   ← キー割り当てを有効化
+  KeyAssignmentMuhenkan  = 1   ← 無変換キー → IME オフ（直接入力）
+  KeyAssignmentHenkan    = 0   ← 変換キー   → ひらがな（IME オン）</div>
+      <ul style="margin-top:0.8rem">
+        <li>既に同じ設定が書かれている場合はダイアログを表示せずスキップします</li>
+        <li>「キャンセル」を押した場合はレジストリを変更しません</li>
+        <li>設定を元に戻すには Microsoft IME の「設定 → キーとタッチのカスタマイズ」でキー割り当てを無効化してください</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>3. 確定モードの調整</h3>
       <ul>
         <li>まず <code>confirm_mode = "ngram_predictive"</code>（推奨）で試す</li>
         <li>誤変換が多い場合は <code>"wait"</code> に変更（正確だがやや遅め）</li>
@@ -779,7 +811,7 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
     </div>
 
     <div class="card">
-      <h3>3. Chrome / Edge での入力がうまくいかない場合</h3>
+      <h3>4. Chrome / Edge での入力がうまくいかない場合</h3>
       <ul>
         <li>Google 日本語入力または Microsoft IME を使用していることを確認します（awase は両 IME に対応しています）</li>
         <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME を ON にしてから入力を始めます</li>
@@ -788,7 +820,7 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
     </div>
 
     <div class="card">
-      <h3>4. WezTerm で使う場合</h3>
+      <h3>5. WezTerm で使う場合</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
         awase は VK_IME_ON (0x16) / VK_IME_OFF (0x1A) を送って IME を制御します。
         これらは実キーボードに存在しない仮想キーで VT エスケープシーケンスも生成しないため、
@@ -797,7 +829,7 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
     </div>
 
     <div class="card">
-      <h3>5. エンジンがおかしくなったときのリセット</h3>
+      <h3>6. エンジンがおかしくなったときのリセット</h3>
       <ul>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>変換</kbd> でエンジン ON を明示的に指定</li>
         <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME ON を明示的に指定</li>
