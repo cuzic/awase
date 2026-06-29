@@ -398,7 +398,6 @@ footer p{margin-bottom:0.3rem}
       <ul>
         <li><strong>配列選択</strong> — <code>layouts_dir</code> 内の .yab ファイルを一覧表示。選択するとレイアウトが即座に切り替わります</li>
         <li><strong>有効/無効切替</strong> — エンジンの ON/OFF をトグルします（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd> と同じ操作）</li>
-        <li><strong>Google 日本語入力のセットアップ</strong> — Google 日本語入力に F21/F22 キーバインドを自動追加します。<strong>初回インストール時に必ず実行してください</strong></li>
         <li><strong>管理者として再起動</strong> — UAC で昇格して awase を再起動します。管理者権限を要求するアプリ（一部のゲームなど）でも動作するようになります</li>
         <li><strong>設定...</strong> — 設定画面を開きます</li>
         <li><strong>終了</strong> — awase を終了します</li>
@@ -782,7 +781,7 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
     <div class="card">
       <h3>3. Chrome / Edge での入力がうまくいかない場合</h3>
       <ul>
-        <li>Google 日本語入力を使用していることを確認します（awase は Google 日本語入力に最適化されています）</li>
+        <li>Google 日本語入力または Microsoft IME を使用していることを確認します（awase は両 IME に対応しています）</li>
         <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME を ON にしてから入力を始めます</li>
         <li>最初の1文字だけ英字になる場合は awase が自動的に修正します（TSF cold-start 対応）</li>
       </ul>
@@ -791,8 +790,8 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
     <div class="card">
       <h3>4. WezTerm で使う場合</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
-        awase は Google 日本語入力に F21/F22 を送って IME を制御します。
-        F21/F22 は実キーボードに存在しない仮想キーで VT エスケープシーケンスも生成しないため、
+        awase は VK_IME_ON (0x16) / VK_IME_OFF (0x1A) を送って IME を制御します。
+        これらは実キーボードに存在しない仮想キーで VT エスケープシーケンスも生成しないため、
         WezTerm や Windows Terminal での追加設定は不要です。
       </p>
     </div>

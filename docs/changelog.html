@@ -134,7 +134,7 @@ footer p{margin:0.3rem 0}
 </ul>
 </li>
 <li><strong>Unicode long-cold 対応: UnicodeColdWarmupFsm</strong> (<a href="https://github.com/cuzic/awase/commit/70d3fed">70d3fed</a>)<ul>
-<li>Unicode モードで長時間アイドル後に F21 poke を送り GJI の起動を確認してから文字を送信</li>
+<li>Unicode モードで長時間アイドル後に VK_IME_ON poke を送り GJI の起動を確認してから文字を送信</li>
 <li>GJI が応答するまで文字送信を保留することで partial literal を防止</li>
 </ul>
 </li>
@@ -157,12 +157,12 @@ footer p{margin:0.3rem 0}
 </ul>
 <h3>バグ修正</h3>
 <ul>
-<li><strong>Win キー押下中の F21/F22 注入をスキップ</strong> (<a href="https://github.com/cuzic/awase/commit/6469f51">6469f51</a>)<ul>
+<li><strong>Win キー押下中の IME キー注入をスキップ</strong> (<a href="https://github.com/cuzic/awase/commit/6469f51">6469f51</a>)<ul>
 <li>Win+A でスタートメニューが開いてしまう誤動作を修正（ADR-061）</li>
 </ul>
 </li>
-<li><strong>仮想デスクトップ切替時の誤 F21 送信を防止</strong> (<a href="https://github.com/cuzic/awase/commit/a97173a">a97173a</a>)<ul>
-<li>仮想デスクトップを切り替えた直後に LINE 等へ誤って F21 が送信されていたフォーカスガード漏れを修正</li>
+<li><strong>仮想デスクトップ切替時の誤 IME キー送信を防止</strong> (<a href="https://github.com/cuzic/awase/commit/a97173a">a97173a</a>)<ul>
+<li>仮想デスクトップを切り替えた直後に LINE 等へ誤って IME キーが送信されていたフォーカスガード漏れを修正</li>
 </ul>
 </li>
 <li><strong>Partial literal の残骸を BS で除去</strong> (<a href="https://github.com/cuzic/awase/commit/f3ff84d">f3ff84d</a>)<ul>
@@ -177,7 +177,7 @@ footer p{margin:0.3rem 0}
 <li>候補ウィンドウが早期 HIDE された後、GJI IPC が完了するまで待機してから次入力を解放</li>
 </ul>
 </li>
-<li><strong>Unicode long-cold で F21 単体 → F21+VK_A+BS 犠牲キーに変更</strong> (<a href="https://github.com/cuzic/awase/commit/6cb175f">6cb175f</a>)<ul>
+<li><strong>Unicode long-cold で VK_IME_ON 単体 → VK_IME_ON+VK_A+BS 犠牲キーに変更</strong> (<a href="https://github.com/cuzic/awase/commit/6cb175f">6cb175f</a>)<ul>
 <li>GJI の WriteTransferCount を確実に増加させ cold 判定の精度を向上</li>
 </ul>
 </li>
