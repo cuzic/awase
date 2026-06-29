@@ -788,13 +788,26 @@ engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
       <h3>2. Microsoft IME を使う場合（初回のみ）</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
         awase 起動時に Microsoft IME が検出されると、<strong>キー割り当ての自動設定ダイアログ</strong>が1回だけ表示されます。
-        「OK」を押すと以下のレジストリ値を書き込み、<kbd>無変換</kbd> で IME オフ・<kbd>変換</kbd> で IME オンに割り当てます。
+        「OK」を押すと以下のレジストリ値を書き込みます。
       </p>
       <div class="code-block">HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME
   IsKeyAssignmentEnabled = 1   ← キー割り当てを有効化
   KeyAssignmentMuhenkan  = 1   ← 無変換キー → IME オフ（直接入力）
   KeyAssignmentHenkan    = 0   ← 変換キー   → ひらがな（IME オン）</div>
-      <ul style="margin-top:0.8rem">
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.9rem;margin-bottom:0.4rem">
+        <strong>なぜこの設定が必要か：</strong>
+        awase はキーフックで <kbd>無変換</kbd>/<kbd>変換</kbd> の物理打鍵を横取りしているため、
+        ユーザーがこれらのキーを押しても MS-IME には届きません（親指シフトの親指キーとして awase が処理します）。
+        awase が内部的に IME の ON/OFF を制御する必要があるとき、ソフトウェア的に
+        <kbd>無変換</kbd>/<kbd>変換</kbd> の VK コードを注入します。
+        このとき MS-IME に「無変換 = IME オフ・変換 = IME オン」と認識させるために上記の割り当てが必要です。
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
+        ユーザーから見た操作は <kbd>Ctrl</kbd>+<kbd>無変換</kbd> で IME オフ、
+        <kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME オン（awase 自身が処理するショートカット）です。
+        <kbd>無変換</kbd>/<kbd>変換</kbd> の単独打鍵で意図せず IME 状態が変わることはありません。
+      </p>
+      <ul>
         <li>既に同じ設定が書かれている場合はダイアログを表示せずスキップします</li>
         <li>「キャンセル」を押した場合はレジストリを変更しません</li>
         <li>設定を元に戻すには Microsoft IME の「設定 → キーとタッチのカスタマイズ」でキー割り当てを無効化してください</li>
