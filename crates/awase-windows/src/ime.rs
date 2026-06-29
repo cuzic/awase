@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::focus::class_names::is_tsf_native_window;
 use crate::imm::{
     IMC_GETCONVERSIONMODE, IMC_GETOPENSTATUS, IMC_SETCONVERSIONMODE, IMC_SETOPENSTATUS,
-    IME_CMODE_NATIVE, IME_CMODE_ROMAN,
+    IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CMODE_ROMAN,
 };
 use crate::win32::HwndExt as _;
 
@@ -707,6 +707,60 @@ pub async fn set_ime_romaji_mode_async() -> bool {
     // SAFETY: set_ime_romaji_mode は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
     win32_async::offload(|| unsafe { set_ime_romaji_mode() }).await
+}
+
+/// クロスプロセスで IME の変換モードをひらがなに強制する。
+///
+/// `IMC_GETCONVERSIONMODE` で現在の変換モードを取得し、
+/// `IME_CMODE_KATAKANA` ビットを落として `IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE` を立てる。
+/// 半角カタカナ・全角カタカナ状態でパニックリセットしたときでもひらがなに戻る。
+///
+/// Returns `true` if the operation succeeded or mode was already hiragana.
+///
+/// # Safety
+/// Calls Win32 APIs.
+#[must_use]
+pub unsafe fn set_ime_hiragana_mode_cross_process() -> bool {
+    let gui_result =
+        crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(150));
+    let Some(hwnd) = gui_result.focused_hwnd else {
+        log::debug!("set_ime_hiragana_mode_cross_process: no focused hwnd, abort");
+        return false;
+    };
+    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
+        log::debug!("set_ime_hiragana_mode_cross_process: hwnd={hwnd:?} no IME wnd, abort");
+        return false;
+    };
+    let Some(current) =
+        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
+    else {
+        log::debug!("set_ime_hiragana_mode_cross_process: IMC_GETCONVERSIONMODE timeout");
+        return false;
+    };
+    let conv = current as u32;
+    // ひらがなモード = NATIVE + FULLSHAPE、KATAKANA ビットなし
+    // 半角カタカナ (NATIVE|KATAKANA、FULLSHAPEなし) の場合も FULLSHAPE を補完してひらがなにする。
+    let new_conv = (conv | IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE) & !IME_CMODE_KATAKANA;
+    if new_conv == conv {
+        return true; // already hiragana
+    }
+    let success = unsafe {
+        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
+    }
+    .is_some();
+    log::debug!(
+        "set_ime_hiragana_mode_cross_process: hwnd={hwnd:?} \
+         conv 0x{conv:08X} → 0x{new_conv:08X} success={success}"
+    );
+    success
+}
+
+/// `set_ime_hiragana_mode_cross_process` の async 版（ワーカースレッドで実行）
+#[expect(clippy::future_not_send)]
+pub async fn set_ime_hiragana_mode_cross_process_async() -> bool {
+    // SAFETY: set_ime_hiragana_mode_cross_process は unsafe fn。
+    //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
+    win32_async::offload(|| unsafe { set_ime_hiragana_mode_cross_process() }).await
 }
 
 /// `send_f2_via_sendmessage` の async 版（ワーカースレッドで実行）

@@ -801,6 +801,8 @@ impl Runtime {
             win32_async::spawn_local(async {
                 let _ = crate::ime::set_ime_open_cross_process_async(false).await;
                 let _ = crate::ime::set_ime_open_cross_process_async(true).await;
+                // カタカナ・半角カタカナ状態でリセットした場合でもひらがなに戻す
+                let _ = crate::ime::set_ime_hiragana_mode_cross_process_async().await;
             });
         }
 
