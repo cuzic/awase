@@ -738,9 +738,11 @@ pub unsafe fn set_ime_hiragana_mode_cross_process() -> bool {
         return false;
     };
     let conv = current as u32;
-    // ひらがなモード = NATIVE + FULLSHAPE、KATAKANA ビットなし
-    // 半角カタカナ (NATIVE|KATAKANA、FULLSHAPEなし) の場合も FULLSHAPE を補完してひらがなにする。
-    let new_conv = (conv | IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE) & !IME_CMODE_KATAKANA;
+    // ローマ字ひらがなモード = NATIVE + FULLSHAPE + ROMAN、KATAKANA ビットなし。
+    // かな入力の半角カタカナ (NATIVE|KATAKANA、ROMAN/FULLSHAPEなし) でリセットした場合も
+    // ROMAN を補完してローマ字ひらがなに戻す。awase はローマ字 VK を送るため ROMAN が必要。
+    let new_conv =
+        (conv | IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE | IME_CMODE_ROMAN) & !IME_CMODE_KATAKANA;
     if new_conv == conv {
         return true; // already hiragana
     }
