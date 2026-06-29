@@ -2,29 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.6.0] - 2026-06-29
 
 ### 新機能
 
-- **Microsoft IME 対応** ([56cd9a5](https://github.com/cuzic/awase/commit/56cd9a5))
-  - MS-IME 検出時にキー割り当てを自動設定（無変換 → IME オフ、変換 → IME オン）
-  - `MsImeDirectStrategy`（`VK_DBE_HIRAGANA` / `VK_DBE_ALPHANUMERIC`）で冪等制御（ADR-063）
-  - `WM_IME_KIND_CHANGED` でランタイムに IME 種別を切り替え
+- **Microsoft IME 完全対応** ([45edf19](https://github.com/cuzic/awase/commit/45edf19), [56cd9a5](https://github.com/cuzic/awase/commit/56cd9a5))
+  - `MsImeDirectStrategy`（`VK_DBE_HIRAGANA` / `VK_DBE_ALPHANUMERIC`）による冪等 ON/OFF 制御（ADR-063）
+  - 起動時に MS-IME を検出するとキー割り当てを自動設定（無変換 → IME オフ、変換 → IME オン）
+  - `WM_IME_KIND_CHANGED` でランタイムに GJI / MS-IME を切り替え
+- **TSF EnumProfiles による GJI CLSID 動的発見** ([55233f0](https://github.com/cuzic/awase/commit/55233f0), [005f0a6](https://github.com/cuzic/awase/commit/005f0a6))
+  - プロセス名依存から CLSID ベースの IME 種別判定に移行
+  - CLSID を `cache.toml` に永続化し再起動後のコールドスタートコストを削減
 
 ### 改善
 
-- **GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行** — config1.db パッチ不要に ([adb856c](https://github.com/cuzic/awase/commit/adb856c))
+- **GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行** — config1.db パッチ不要に ([b271aee](https://github.com/cuzic/awase/commit/b271aee), [8c39b8e](https://github.com/cuzic/awase/commit/8c39b8e))
   - `gji.rs`（config1.db パッチ・プロセス管理）を完全削除（-692 行）
-  - トレイメニューの「GJI セットアップ / 解除」を撤去
+  - トレイメニューの「GJI セットアップ / 解除」を撤去、初回インストール作業が不要に
   - Chrome / WezTerm / Windows Terminal すべてで VK_IME_ON/OFF の動作を実機確認（2026-06-28）
-  - GJI インストール後に設定ファイルを書き換える初回セットアップが不要になった
   - `gji_keybinds_ok` フラグ・Observer の config1.db 監視ループを撤去
+- **IME 種別判定を CLSID ベースに一本化** ([2d5cfe9](https://github.com/cuzic/awase/commit/2d5cfe9))
+  - `gji_write_idle_ms` ヒューリスティックを撤去し判定精度を向上
 
 ### バグ修正
 
-- **パニックリセットでカタカナ・JIS かな状態からもひらがなに復帰** ([a88bb36](https://github.com/cuzic/awase/commit/a88bb36), [6ee20bf](https://github.com/cuzic/awase/commit/6ee20bf))
+- **WezTerm で Enter 後の最初の文字（「な」等）が突然消えるバグを修正** ([3ffbe66](https://github.com/cuzic/awase/commit/3ffbe66))
+  - ReinjectConfirmKey + TSF mode で `nc_fired` を昇格し LiteralDetect 誤検出を抑制
+- **MS-IME アクティブ時の LiteralDetect 誤発火による BS 連射を修正** ([699ab5f](https://github.com/cuzic/awase/commit/699ab5f))
+- **パニックリセットでカタカナ・JIS かな状態からもローマ字ひらがなに復帰** ([a88bb36](https://github.com/cuzic/awase/commit/a88bb36), [6ee20bf](https://github.com/cuzic/awase/commit/6ee20bf))
   - `IMC_SETCONVERSIONMODE` で `NATIVE | FULLSHAPE | ROMAN` を強制し `KATAKANA` を落とす
-  - 半角カタカナ（かな入力モード含む）・全角カタカナからでもローマ字ひらがなに戻る
+  - 半角カタカナ（JIS かな入力モード含む）・全角カタカナからでもローマ字ひらがなに戻る
 
 ## [1.5.0] - 2026-06-27
 

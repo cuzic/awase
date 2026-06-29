@@ -108,32 +108,45 @@ footer p{margin:0.3rem 0}
 <section>
 <div class="container">
 <div class="cl-content">
-<h2>[Unreleased]</h2>
+<h2>[1.6.0] - 2026-06-29</h2>
 <h3>新機能</h3>
 <ul>
-<li><strong>Microsoft IME 対応</strong> (<a href="https://github.com/cuzic/awase/commit/56cd9a5">56cd9a5</a>)<ul>
-<li>MS-IME 検出時にキー割り当てを自動設定（無変換 → IME オフ、変換 → IME オン）</li>
-<li><code>MsImeDirectStrategy</code>（<code>VK_DBE_HIRAGANA</code> / <code>VK_DBE_ALPHANUMERIC</code>）で冪等制御（ADR-063）</li>
-<li><code>WM_IME_KIND_CHANGED</code> でランタイムに IME 種別を切り替え</li>
+<li><strong>Microsoft IME 完全対応</strong> (<a href="https://github.com/cuzic/awase/commit/45edf19">45edf19</a>, <a href="https://github.com/cuzic/awase/commit/56cd9a5">56cd9a5</a>)<ul>
+<li><code>MsImeDirectStrategy</code>（<code>VK_DBE_HIRAGANA</code> / <code>VK_DBE_ALPHANUMERIC</code>）による冪等 ON/OFF 制御（ADR-063）</li>
+<li>起動時に MS-IME を検出するとキー割り当てを自動設定（無変換 → IME オフ、変換 → IME オン）</li>
+<li><code>WM_IME_KIND_CHANGED</code> でランタイムに GJI / MS-IME を切り替え</li>
+</ul>
+</li>
+<li><strong>TSF EnumProfiles による GJI CLSID 動的発見</strong> (<a href="https://github.com/cuzic/awase/commit/55233f0">55233f0</a>, <a href="https://github.com/cuzic/awase/commit/005f0a6">005f0a6</a>)<ul>
+<li>プロセス名依存から CLSID ベースの IME 種別判定に移行</li>
+<li>CLSID を <code>cache.toml</code> に永続化し再起動後のコールドスタートコストを削減</li>
 </ul>
 </li>
 </ul>
 <h3>改善</h3>
 <ul>
-<li><strong>GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行</strong> — config1.db パッチ不要に (<a href="https://github.com/cuzic/awase/commit/adb856c">adb856c</a>)<ul>
+<li><strong>GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行</strong> — config1.db パッチ不要に (<a href="https://github.com/cuzic/awase/commit/b271aee">b271aee</a>, <a href="https://github.com/cuzic/awase/commit/8c39b8e">8c39b8e</a>)<ul>
 <li><code>gji.rs</code>（config1.db パッチ・プロセス管理）を完全削除（-692 行）</li>
-<li>トレイメニューの「GJI セットアップ / 解除」を撤去</li>
+<li>トレイメニューの「GJI セットアップ / 解除」を撤去、初回インストール作業が不要に</li>
 <li>Chrome / WezTerm / Windows Terminal すべてで VK_IME_ON/OFF の動作を実機確認（2026-06-28）</li>
-<li>GJI インストール後に設定ファイルを書き換える初回セットアップが不要になった</li>
 <li><code>gji_keybinds_ok</code> フラグ・Observer の config1.db 監視ループを撤去</li>
+</ul>
+</li>
+<li><strong>IME 種別判定を CLSID ベースに一本化</strong> (<a href="https://github.com/cuzic/awase/commit/2d5cfe9">2d5cfe9</a>)<ul>
+<li><code>gji_write_idle_ms</code> ヒューリスティックを撤去し判定精度を向上</li>
 </ul>
 </li>
 </ul>
 <h3>バグ修正</h3>
 <ul>
-<li><strong>パニックリセットでカタカナ・JIS かな状態からもひらがなに復帰</strong> (<a href="https://github.com/cuzic/awase/commit/a88bb36">a88bb36</a>, <a href="https://github.com/cuzic/awase/commit/6ee20bf">6ee20bf</a>)<ul>
+<li><strong>WezTerm で Enter 後の最初の文字が突然消えるバグを修正</strong> (<a href="https://github.com/cuzic/awase/commit/3ffbe66">3ffbe66</a>)<ul>
+<li>ReinjectConfirmKey + TSF mode で <code>nc_fired</code> を昇格し LiteralDetect 誤検出を抑制</li>
+</ul>
+</li>
+<li><strong>MS-IME アクティブ時の LiteralDetect 誤発火による BS 連射を修正</strong> (<a href="https://github.com/cuzic/awase/commit/699ab5f">699ab5f</a>)</li>
+<li><strong>パニックリセットでカタカナ・JIS かな状態からもローマ字ひらがなに復帰</strong> (<a href="https://github.com/cuzic/awase/commit/a88bb36">a88bb36</a>, <a href="https://github.com/cuzic/awase/commit/6ee20bf">6ee20bf</a>)<ul>
 <li><code>IMC_SETCONVERSIONMODE</code> で <code>NATIVE | FULLSHAPE | ROMAN</code> を強制し <code>KATAKANA</code> を落とす</li>
-<li>半角カタカナ（かな入力モード含む）・全角カタカナからでもローマ字ひらがなに戻る</li>
+<li>半角カタカナ（JIS かな入力モード含む）・全角カタカナからでもローマ字ひらがなに戻る</li>
 </ul>
 </li>
 </ul>
