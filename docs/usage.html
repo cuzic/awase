@@ -397,9 +397,12 @@ footer p{margin-bottom:0.3rem}
       <h3>右クリックメニュー</h3>
       <ul>
         <li><strong>配列選択</strong> — <code>layouts_dir</code> 内の .yab ファイルを一覧表示。選択するとレイアウトが即座に切り替わります</li>
-        <li><strong>有効/無効切替</strong> — エンジンの ON/OFF をトグルします（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd> と同じ操作）</li>
-        <li><strong>管理者として再起動</strong> — UAC で昇格して awase を再起動します。管理者権限を要求するアプリ（一部のゲームなど）でも動作するようになります</li>
         <li><strong>設定...</strong> — 設定画面を開きます</li>
+        <li><strong>学習キャッシュをクリア</strong> — IME の学習データキャッシュを削除します</li>
+        <li><strong>内部状態をリセット</strong> — 入力がおかしくなったときに標準状態（IME ON・ひらがな入力・エンジン ON）へ強制復帰します（詳細は<a href="#panic-reset">「緊急操作・リセット」</a>参照）</li>
+        <li><strong>自動起動</strong> — ログオン時の自動起動を有効/無効にします（チェックで有効）</li>
+        <li><strong>管理者として再起動</strong> — UAC で昇格して awase を再起動します。管理者権限を要求するアプリ（一部のゲームなど）でも動作するようになります</li>
+        <li><strong>有効/無効切替</strong> — エンジンの ON/OFF をトグルします（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd> と同じ操作）</li>
         <li><strong>終了</strong> — awase を終了します</li>
       </ul>
     </div>
@@ -624,32 +627,38 @@ force_tsf = [
 </section>
 
 <!-- 緊急操作・リセット -->
-<section>
+<section id="panic-reset">
   <div class="container">
     <h2 class="section-title">緊急操作・リセット</h2>
     <p class="section-lead">入力がおかしくなったときや、エンジンを強制的に止めたいときの操作です。</p>
 
     <div class="card">
-      <h3>パニックリセット — 状態を全初期化する</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
-        修飾キー（Shift・Ctrl など）が押しっぱなし状態でスタックした・IME 状態が混乱した・
-        保留中の文字が残っているなど、入力全体がおかしくなったときに使います。
+      <h3>標準状態へのリセット（推奨 — まずここから試す）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">
+        修飾キーがスタックした・IME が混乱した・保留中の文字が残っているなど、入力全体がおかしくなったときに使います。
+        リセット後の状態は <strong>IME ON（ひらがな入力）・エンジン ON（親指シフト有効）</strong> です。
       </p>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
-        <strong>操作：</strong> <kbd>Ctrl</kbd>+<kbd>無変換</kbd> → <kbd>Ctrl</kbd>+<kbd>変換</kbd> → <kbd>Ctrl</kbd>+<kbd>無変換</kbd>
+
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.4rem"><strong>方法 1 — トレイアイコン（マウスが使えるとき）</strong></p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">
+        タスクバーの awase アイコンを右クリック →「<strong>内部状態をリセット</strong>」
+      </p>
+
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.4rem"><strong>方法 2 — キーボードショートカット（パニックリセット）</strong></p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.3rem">
+        <kbd>Ctrl</kbd>+<kbd>無変換</kbd> → <kbd>Ctrl</kbd>+<kbd>変換</kbd> → <kbd>Ctrl</kbd>+<kbd>無変換</kbd>
         を <strong>2秒以内</strong> に素早く入力する
       </p>
-      <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:0.6rem">
+      <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:0.7rem">
         （IME-OFF → IME-ON → IME-OFF のシーケンス。同じキーの連打では発動しません）
       </p>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
-        <strong>効果：</strong>
-      </p>
+
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.4rem"><strong>効果（どちらも同じ）：</strong></p>
       <ul style="color:var(--text-secondary);padding-left:1.4em;font-size:0.93rem">
-        <li>エンジンの保留状態をフラッシュ（未確定の同時打鍵を破棄）</li>
-        <li>IME の未確定文字列をキャンセル</li>
         <li>Shift・Ctrl・Alt・Win の押しっぱなし状態を強制解除</li>
-        <li>IME 状態を OFF → ON で再初期化</li>
+        <li>IME の未確定文字列をキャンセル</li>
+        <li>IME 状態を OFF → ON（ひらがな入力）で再初期化</li>
+        <li>エンジンの保留状態をフラッシュ（未確定の同時打鍵を破棄、エンジン ON 状態を復元）</li>
         <li>awase 内部の状態を全リセット</li>
       </ul>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.6rem">
@@ -658,7 +667,7 @@ force_tsf = [
     </div>
 
     <div class="card">
-      <h3>エンジン強制 OFF — 単キー3連打</h3>
+      <h3>エンジン強制 OFF — 無変換キー3連打</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
         Ctrl キーがスタックしているなど、通常のショートカットも効かない状態で
         NICOLA エンジンを強制的に止めたいときの最終手段です。
