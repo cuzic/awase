@@ -198,13 +198,13 @@ impl Runtime {
         let obs = crate::state::ObservedState::capture_now();
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.platform_state.last_focus_change_ms;
-        let shadow_on = self
-            .platform_state
-            .ime
-            .model()
-            .applied
-            .applied_open()
-            .unwrap_or(false);
+        // Imm32Unavailable (Chrome 等) は probe.ime_on が常に None のため、
+        // shadow_on がフォールバック値として使われる。
+        // applied_open() は前ウィンドウの状態を引き継ぐことがあるため
+        // (例: UWP の applied=true が Chrome フォーカス後もリセットされない)、
+        // フォーカス変更後にキャッシュリストア済みの desired を反映する
+        // effective_open() を使う。
+        let shadow_on = self.platform_state.ime.effective_open();
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
