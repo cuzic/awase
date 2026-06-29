@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 新機能
+
+- **Microsoft IME 対応** ([56cd9a5](https://github.com/cuzic/awase/commit/56cd9a5))
+  - MS-IME 検出時にキー割り当てを自動設定（無変換 → IME オフ、変換 → IME オン）
+  - `MsImeDirectStrategy`（`VK_DBE_HIRAGANA` / `VK_DBE_ALPHANUMERIC`）で冪等制御（ADR-063）
+  - `WM_IME_KIND_CHANGED` でランタイムに IME 種別を切り替え
+
 ### 改善
 
 - **GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行** — config1.db パッチ不要に ([adb856c](https://github.com/cuzic/awase/commit/adb856c))
@@ -12,6 +19,12 @@ All notable changes to this project will be documented in this file.
   - Chrome / WezTerm / Windows Terminal すべてで VK_IME_ON/OFF の動作を実機確認（2026-06-28）
   - GJI インストール後に設定ファイルを書き換える初回セットアップが不要になった
   - `gji_keybinds_ok` フラグ・Observer の config1.db 監視ループを撤去
+
+### バグ修正
+
+- **パニックリセットでカタカナ・JIS かな状態からもひらがなに復帰** ([a88bb36](https://github.com/cuzic/awase/commit/a88bb36), [6ee20bf](https://github.com/cuzic/awase/commit/6ee20bf))
+  - `IMC_SETCONVERSIONMODE` で `NATIVE | FULLSHAPE | ROMAN` を強制し `KATAKANA` を落とす
+  - 半角カタカナ（かな入力モード含む）・全角カタカナからでもローマ字ひらがなに戻る
 
 ## [1.5.0] - 2026-06-27
 

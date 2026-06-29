@@ -108,6 +108,35 @@ footer p{margin:0.3rem 0}
 <section>
 <div class="container">
 <div class="cl-content">
+<h2>[Unreleased]</h2>
+<h3>新機能</h3>
+<ul>
+<li><strong>Microsoft IME 対応</strong> (<a href="https://github.com/cuzic/awase/commit/56cd9a5">56cd9a5</a>)<ul>
+<li>MS-IME 検出時にキー割り当てを自動設定（無変換 → IME オフ、変換 → IME オン）</li>
+<li><code>MsImeDirectStrategy</code>（<code>VK_DBE_HIRAGANA</code> / <code>VK_DBE_ALPHANUMERIC</code>）で冪等制御（ADR-063）</li>
+<li><code>WM_IME_KIND_CHANGED</code> でランタイムに IME 種別を切り替え</li>
+</ul>
+</li>
+</ul>
+<h3>改善</h3>
+<ul>
+<li><strong>GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行</strong> — config1.db パッチ不要に (<a href="https://github.com/cuzic/awase/commit/adb856c">adb856c</a>)<ul>
+<li><code>gji.rs</code>（config1.db パッチ・プロセス管理）を完全削除（-692 行）</li>
+<li>トレイメニューの「GJI セットアップ / 解除」を撤去</li>
+<li>Chrome / WezTerm / Windows Terminal すべてで VK_IME_ON/OFF の動作を実機確認（2026-06-28）</li>
+<li>GJI インストール後に設定ファイルを書き換える初回セットアップが不要になった</li>
+<li><code>gji_keybinds_ok</code> フラグ・Observer の config1.db 監視ループを撤去</li>
+</ul>
+</li>
+</ul>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>パニックリセットでカタカナ・JIS かな状態からもひらがなに復帰</strong> (<a href="https://github.com/cuzic/awase/commit/a88bb36">a88bb36</a>, <a href="https://github.com/cuzic/awase/commit/6ee20bf">6ee20bf</a>)<ul>
+<li><code>IMC_SETCONVERSIONMODE</code> で <code>NATIVE | FULLSHAPE | ROMAN</code> を強制し <code>KATAKANA</code> を落とす</li>
+<li>半角カタカナ（かな入力モード含む）・全角カタカナからでもローマ字ひらがなに戻る</li>
+</ul>
+</li>
+</ul>
 <h2>[1.5.0] - 2026-06-27</h2>
 <h3>新機能</h3>
 <ul>
