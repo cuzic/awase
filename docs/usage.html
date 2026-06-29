@@ -376,6 +376,16 @@ footer p{margin-bottom:0.3rem}
           <td><kbd>半角/全角</kbd></td>
           <td>IME の ON/OFF をトグル（Windows 標準の動作）</td>
         </tr>
+        <tr>
+          <td><span class="cat cat-system">緊急</span></td>
+          <td><kbd>無変換</kbd> × 3（400ms 以内）</td>
+          <td>NICOLA エンジンを強制 OFF（Ctrl スタック等でショートカットが効かないとき）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-system">緊急</span></td>
+          <td><kbd>Ctrl</kbd>+<kbd>無変換</kbd> → <kbd>Ctrl</kbd>+<kbd>変換</kbd> → <kbd>Ctrl</kbd>+<kbd>無変換</kbd>（2秒以内）</td>
+          <td>パニックリセット — 標準状態（IME ON・ひらがな・エンジン ON）へ強制復帰</td>
+        </tr>
       </tbody>
     </table>
 
@@ -512,21 +522,32 @@ footer p{margin-bottom:0.3rem}
 
     <div class="card">
       <h3>ショートカットのカスタマイズ</h3>
-      <div class="code-block"># エンジン ON キー（NICOLA 入力を有効にするキー）
-engine_on_keys = ["Ctrl+Shift+VK_CONVERT"]
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">以下がデフォルト値です。<code>config.toml</code> に <code>[keys]</code> セクションを追加して上書きできます。</p>
+      <div class="code-block">[keys]
+# NICOLA エンジン ON（親指シフト入力を有効化）
+engine_on = ["Ctrl+Shift+変換"]
 
-# エンジン OFF キー（NICOLA 入力を無効にするキー）
-engine_off_keys = ["Ctrl+Shift+VK_NONCONVERT"]
+# NICOLA エンジン OFF（通常入力に切り替え）
+engine_off = ["Ctrl+Shift+無変換"]
 
-# IME ON キー（IME を ON にするキー）
-ime_on_keys = ["Ctrl+VK_CONVERT"]
+# IME ON（ひらがな入力モードへ）
+ime_on = ["Ctrl+変換"]
 
-# IME OFF キー（IME を OFF にするキー）
-ime_off_keys = ["Ctrl+VK_NONCONVERT"]
+# IME OFF（直接入力モードへ）
+ime_off = ["Ctrl+無変換"]
 
-# エンジン ON/OFF トグルのグローバルホットキー
-engine_toggle_hotkey = "Ctrl+Shift+F12"</div>
-      <p class="note">複数のキーを割り当てるには配列に追加してください: <code>["Ctrl+Shift+VK_CONVERT", "Ctrl+F8"]</code></p>
+# 緊急用: 無変換を単独で 400ms 以内に 3 連打するとエンジン OFF になる
+# Ctrl がスタックしてショートカットが効かなくなったときの最終手段。
+# 空文字列 "" または削除で無効化できる。
+engine_off_solo_triple = "VK_NONCONVERT"
+
+# エンジン ON 時に送る IME モードキー（全角ひらがなモードへ切替）
+engine_on_ime_key = "VK_DBE_DBCSCHAR"
+
+# エンジン OFF 時に送る IME モードキー（半角英数モードへ切替）
+engine_off_ime_key = "VK_DBE_SBCSCHAR"</div>
+      <p class="note" style="margin-top:0.7rem">複数キーを割り当てるには配列に追加してください: <code>["Ctrl+Shift+変換", "Ctrl+F8"]</code></p>
+      <p class="note">グローバルホットキー（アプリのフォーカスに関係なく機能）は <code>[general]</code> の <code>engine_toggle_hotkey = "Ctrl+Shift+F12"</code> で設定します。</p>
     </div>
 
     <div class="card">
@@ -671,13 +692,16 @@ force_tsf = [
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
         Ctrl キーがスタックしているなど、通常のショートカットも効かない状態で
         NICOLA エンジンを強制的に止めたいときの最終手段です。
-        <strong>デフォルトでは無効</strong>です。<code>config.toml</code> で有効にしてください。
+        <strong>デフォルトで有効</strong>（無変換キーに割り当て済み）です。
       </p>
-      <div class="code-block">[general]
-# 単独で3回連打するとエンジン OFF になるキー（緊急脱出用）
-engine_off_solo_triple = "VK_NONCONVERT"  # 無変換キーの場合</div>
+      <div class="code-block">[keys]
+# 単独で400ms以内に3回連打するとエンジン OFF になるキー（デフォルト: 無変換）
+engine_off_solo_triple = "VK_NONCONVERT"
+
+# 無効にするには空文字列を指定
+# engine_off_solo_triple = ""</div>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.8rem;margin-bottom:0.4rem">
-        <strong>操作：</strong> 設定したキーを他のキーと同時押しせず、単独で <strong>400ms 以内に3回</strong> 連打する
+        <strong>操作：</strong> <kbd>無変換</kbd> を他のキーと同時押しせず、単独で <strong>400ms 以内に3回</strong> 連打する
       </p>
       <p style="color:var(--text-secondary);font-size:0.88rem">
         ※ 通常の親指シフト入力中は「親指キー単独タイムアウト」としてカウントされるため、
