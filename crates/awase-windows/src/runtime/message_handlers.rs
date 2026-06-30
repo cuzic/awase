@@ -243,9 +243,7 @@ pub(crate) unsafe fn handle_wm_ime_kind_changed(app: &mut Runtime) {
     log::info!("[runtime] WM_IME_KIND_CHANGED received: IME kind → {kind:?}");
     app.platform.output.set_active_ime_kind(kind);
 
-    if kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme {
-        crate::msime::on_startup_msime_detected();
-    }
+
 }
 
 /// WM_DUPLICATE_INSTANCE ハンドラ

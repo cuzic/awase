@@ -8,7 +8,6 @@ All notable changes to this project will be documented in this file.
 
 - **Microsoft IME 完全対応** ([45edf19](https://github.com/cuzic/awase/commit/45edf19), [56cd9a5](https://github.com/cuzic/awase/commit/56cd9a5))
   - `MsImeDirectStrategy`（`VK_DBE_HIRAGANA` / `VK_DBE_ALPHANUMERIC`）による冪等 ON/OFF 制御（ADR-063）
-  - 起動時に MS-IME を検出するとキー割り当てを自動設定（無変換 → IME オフ、変換 → IME オン）
   - `WM_IME_KIND_CHANGED` でランタイムに GJI / MS-IME を切り替え
 - **TSF EnumProfiles による GJI CLSID 動的発見** ([55233f0](https://github.com/cuzic/awase/commit/55233f0), [005f0a6](https://github.com/cuzic/awase/commit/005f0a6))
   - プロセス名依存から CLSID ベースの IME 種別判定に移行

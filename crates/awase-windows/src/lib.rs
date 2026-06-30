@@ -28,7 +28,6 @@ pub(crate) mod imm;
 pub mod input_defer;
 pub mod journal;
 pub mod keymap;
-pub mod msime;
 pub mod observer;
 pub mod output;
 pub mod panic_detect;
