@@ -5,6 +5,7 @@
 
 mod confirm_policy;
 pub mod consecutive_counter;
+pub mod conv;
 pub mod decision;
 #[allow(clippy::module_inception)]
 mod engine;
@@ -18,10 +19,11 @@ pub mod timing;
 
 // Public re-exports
 pub use crate::platform::EffectOrigin;
+pub use conv::{Charset, ConvMode};
 pub use decision::{
-    classify_conv_transition, classify_idle_conv, should_run_idle_conv_check, ActivationState,
-    AssumedReason, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext,
-    InputEffect, InputModeState, SpecialKeyCombos, TimerEffect, UiEffect,
+    should_run_idle_conv_check, ActivationState, AssumedReason, Decision, Effect, EffectVec,
+    EngineCommand, ImeEffect, InputContext, InputEffect, InputModeState, SpecialKeyCombos,
+    TimerEffect, UiEffect,
 };
 pub use engine::Engine;
 pub use fsm_types::{

@@ -246,7 +246,7 @@ impl Runtime {
             self.platform.current_app_profile(),
             crate::focus::class_names::AppImeProfile::TsfNative
         );
-        if !nicola::engine::should_run_idle_conv_check(
+        if !awase::engine::should_run_idle_conv_check(
             matches!(event.event_type, KeyEventType::KeyDown),
             is_tsf_native,
             in_flight,
@@ -283,7 +283,7 @@ impl Runtime {
         let current = self.platform_state.ime.belief.input_mode();
         let is_cold = in_flight == u64::MAX;
 
-        let Some(new_mode) = crate::state::classify_idle_conv(conv, is_cold, current) else {
+        let Some(new_mode) = awase::engine::ConvMode::from_u32(conv).classify_idle(is_cold, current) else {
             log::debug!(
                 "[idle-conv-check] TsfNative: conv=0x{:08X}{} → belief {:?} 変更なし",
                 conv,

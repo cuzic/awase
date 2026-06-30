@@ -17,9 +17,6 @@ pub(crate) use ime_decision_view::{ControlLog, FocusFacts, ImeControlView, Obser
 pub(crate) mod conv_mode;
 pub(crate) use conv_mode::{Charset, ConvModeMgr};
 
-pub(crate) mod conv_classifier;
-pub(crate) use conv_classifier::classify_idle_conv;
-
 pub mod app_ime_policy;
 pub mod force_guard;
 pub mod ime_event;
