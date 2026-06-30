@@ -59,10 +59,6 @@ pub(crate) trait ProbeIo {
     /// `StartSacrificialWarmup` ハンドラが呼ぶ。Off→On 遷移が GJI WriteTransferCount を増加させ、
     /// `ImeOffOnWarmupCoro` が write_bytes 上昇を検出してから実ローマ字を再送する。
     fn send_sacrificial_ime_off_on(&self, cold_seq: u32);
-    /// 犠牲キー（VK_A）を TSF パイプライン経由で送信する（TSF/WezTerm 用）。
-    ///
-    /// `StartSacrificialWarmup` ハンドラが呼ぶ。F2 prepend なし・VK path で送信する。
-    fn send_sacrificial_vk_a(&self, cold_seq: u32);
     /// 犠牲キー（VK_A + BS）を同一 SendInput バッチで送信する（Chrome 用）。
     ///
     /// VK_A と BS を一括送信することで Chrome が次フレームを描画する前に
@@ -206,27 +202,6 @@ impl ProbeIo for Output {
             fsm.on_f22_sent();
             fsm.on_f21_sent();
         }
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
-    }
-
-    fn send_sacrificial_vk_a(&self, cold_seq: u32) {
-        use awase::types::VkCode;
-        use crate::tsf::output::make_key_input_ex;
-        use crate::tsf::output::INJECTED_MARKER;
-        use std::mem::size_of;
-        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
-        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
-        const VK_A: VkCode = VkCode(0x41);
-        let inputs = [
-            make_key_input_ex(VK_A, false, INJECTED_MARKER),
-            make_key_input_ex(VK_A, true, INJECTED_MARKER),
-        ];
-        log::debug!("[sacr-warmup] cold={cold_seq} VK_A 送信（犠牲キー）");
         unsafe {
             SendInput(
                 &inputs,
@@ -813,7 +788,7 @@ mod tests {
         mark_cold_raw_tsf_called: Cell<bool>,
         increment_consecutive_called: Cell<bool>,
         send_literal_recovery_bs_called: Cell<bool>,
-        send_sacrificial_vk_a_called: Cell<bool>,
+        send_sacrificial_ime_off_on_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.prepend_f2_warmup を記録する。
@@ -835,7 +810,7 @@ mod tests {
                 mark_cold_raw_tsf_called: Cell::new(false),
                 increment_consecutive_called: Cell::new(false),
                 send_literal_recovery_bs_called: Cell::new(false),
-                send_sacrificial_vk_a_called: Cell::new(false),
+                send_sacrificial_ime_off_on_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
                 last_used_prepend_f2: Cell::new(false),
             }
@@ -889,10 +864,8 @@ mod tests {
             None
         }
 
-        fn send_sacrificial_ime_off_on(&self, _cold_seq: u32) {}
-
-        fn send_sacrificial_vk_a(&self, _cold_seq: u32) {
-            self.send_sacrificial_vk_a_called.set(true);
+        fn send_sacrificial_ime_off_on(&self, _cold_seq: u32) {
+            self.send_sacrificial_ime_off_on_called.set(true);
         }
 
         fn send_sacrificial_vk_a_with_bs(&self, _cold_seq: u32) {}
@@ -1430,7 +1403,7 @@ mod tests {
         // dispatch_probe_actions がこの列を処理し:
         //   1. send_literal_recovery_bs (BS×backs で terminal cleanup)
         //   2. increment_consecutive_count (ループ防止)
-        //   3. send_sacrificial_vk_a (VK_A 送信)
+        //   3. send_sacrificial_ime_off_on (VK_IME_OFF→ON 送信)
         //   4. SacrificialWarmupCoro に SwitchMachine
         let io = FakeProbeIo {
             consecutive: 0,
@@ -1470,8 +1443,8 @@ mod tests {
             "from_literal_recovery=true: increment_consecutive_count を呼ぶべき"
         );
         assert!(
-            io.send_sacrificial_vk_a_called.get(),
-            "StartSacrificialWarmup(TSF): send_sacrificial_vk_a を呼ぶべき"
+            io.send_sacrificial_ime_off_on_called.get(),
+            "StartSacrificialWarmup(TSF): send_sacrificial_ime_off_on を呼ぶべき"
         );
         assert!(
             !io.set_raw_literal_called.get(),

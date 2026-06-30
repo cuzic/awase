@@ -587,7 +587,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         //   ひらがな/英数: VK_DBE_HIRAGANA (F2) — TSF composition context を初期化
         //   全角カタカナ:  VK_DBE_KATAKANA (F1) — カタカナモードを維持しつつ初期化
         //   半角カタカナ:  VK_DBE_KATAKANA+VK_DBE_SBCSCHAR (F1+F3) — 半角カタカナを維持
-        let charset = self.conv_mode.get().charset;
+        let charset = self.conv_mode.get().map(|m| m.charset).unwrap_or(crate::state::Charset::Hiragana);
         let ms = if charset.is_katakana() {
             let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
             log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
