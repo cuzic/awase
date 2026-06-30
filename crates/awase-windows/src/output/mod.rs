@@ -150,6 +150,11 @@ pub struct Output {
     /// send_keys 内の `KeyAction::Romaji` 処理で `UnicodeLiteralObserverFsm` をインストールする。
     /// フラグは最初の Romaji 送信時に消費される（swap false）。
     observe_unicode_literal: std::sync::atomic::AtomicBool,
+    /// `ConvModePolicy::AwaseLocked` のときだけ true。
+    ///
+    /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
+    /// `Platform::set_conv_mode_policy` が `allows_conv_mutation()` の結果を push する。
+    conv_mutation_allowed: std::cell::Cell<bool>,
 }
 
 impl std::fmt::Debug for Output {
@@ -218,7 +223,15 @@ impl Output {
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             unicode_cold_defer: std::sync::atomic::AtomicBool::new(false),
             unicode_cold_deferred: std::cell::RefCell::new(Vec::new()),
+            conv_mutation_allowed: std::cell::Cell::new(false),
         }
+    }
+
+    /// conv mutation（`send_eager_tsf_warmup`・`ImmSetConversionStatus` 等）の許可フラグを更新する。
+    ///
+    /// `Platform::set_conv_mode_policy` が `ConvModePolicy::allows_conv_mutation()` の結果を push する。
+    pub(crate) fn set_conv_mutation_allowed(&self, allowed: bool) {
+        self.conv_mutation_allowed.set(allowed);
     }
 
     /// 次の Unicode モード Romaji 送信後に GJI write 観測を行うようリクエストする。
@@ -560,6 +573,10 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     /// `eager_warmup_sent_ms` を現在時刻で更新する。NativeF2Consumed 等の前に
     /// `mark_composition_cold` が呼ばれて 0 にリセットされるため二重更新は発生しない。
     pub fn send_eager_tsf_warmup(&self, applied_ime_on: Option<bool>) {
+        if !self.conv_mutation_allowed.get() {
+            log::trace!("[tsf-eager-warmup] UserManaged → warmup スキップ");
+            return;
+        }
         if !self.tsf_readiness(applied_ime_on).can_warmup() {
             return;
         }

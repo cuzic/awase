@@ -112,6 +112,7 @@ impl WindowsPlatform {
     /// エンジンが有効になったとき `AwaseLocked`、無効になったとき `UserManaged` を渡す。
     pub(crate) fn set_conv_mode_policy(&mut self, policy: ConvModePolicy) {
         self.conv_mode_policy = policy;
+        self.output.set_conv_mutation_allowed(policy.allows_conv_mutation());
     }
 
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。

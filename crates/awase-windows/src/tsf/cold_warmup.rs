@@ -63,6 +63,10 @@ struct WarmupContext {
     probe_min_ms: u64,
     /// cold になった理由（ログ用）
     cold_reason: crate::output::ColdReason,
+    /// `ConvModePolicy::AwaseLocked` のとき `true`。
+    ///
+    /// `false` (UserManaged) のとき VK_DBE_HIRAGANA 送信と `ImmSetConversionStatus` をスキップする。
+    conv_mutation_allowed: bool,
 }
 
 /// `ColdWarmupSequence::run_start` の戻り値。
@@ -165,6 +169,7 @@ impl<'a> ColdWarmupSequence<'a> {
         // conv_mode から ImmSetConversionStatus の目標値を取得する。
         // カタカナ系は KATAKANA/FULLSHAPE ビットを明示的に復元する必要があるため Some を返す。
         let conv_target = self.output.conv_mode.get().and_then(|m| m.imm_conv_target());
+        let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
         win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(
@@ -175,7 +180,9 @@ impl<'a> ColdWarmupSequence<'a> {
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
                 conv_target.map(|v| format!("0x{v:08X}")),
             );
-            let _ = crate::ime::set_ime_romaji_mode_with_target_async(conv_target).await;
+            if conv_mutation_allowed {
+                let _ = crate::ime::set_ime_romaji_mode_with_target_async(conv_target).await;
+            }
         });
 
         let cold_seq = self.output.composition.increment_cold_start_count();
@@ -228,27 +235,31 @@ impl<'a> ColdWarmupSequence<'a> {
             eager_settle_ms,
             probe_min_ms,
             cold_reason,
+            conv_mutation_allowed,
         }
     }
 
     /// non-eager: F2×2 を送信して WarmupStarted を返す。
     fn run_non_eager_start(ctx: &WarmupContext) -> WarmupStarted {
         log::debug!(
-            "[h1-warmup] cold={} non-eager: VK_DBE_HIRAGANA warmup+probe 送信",
-            ctx.cold_seq
+            "[h1-warmup] cold={} non-eager: VK_DBE_HIRAGANA warmup+probe 送信 (conv_mutation={})",
+            ctx.cold_seq,
+            ctx.conv_mutation_allowed,
         );
-        let ime_on_probe = [
-            make_tsf_key_input(VK_DBE_HIRAGANA, false),
-            make_tsf_key_input(VK_DBE_HIRAGANA, true),
-            make_tsf_key_input(VK_DBE_HIRAGANA, false),
-            make_tsf_key_input(VK_DBE_HIRAGANA, true),
-        ];
-        // SAFETY: ime_on_probe is a valid array of INPUT structs.
-        unsafe {
-            SendInput(
-                &ime_on_probe,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
+        if ctx.conv_mutation_allowed {
+            let ime_on_probe = [
+                make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                make_tsf_key_input(VK_DBE_HIRAGANA, true),
+                make_tsf_key_input(VK_DBE_HIRAGANA, false),
+                make_tsf_key_input(VK_DBE_HIRAGANA, true),
+            ];
+            // SAFETY: ime_on_probe is a valid array of INPUT structs.
+            unsafe {
+                SendInput(
+                    &ime_on_probe,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
+                );
+            }
         }
         let probe_sent_ms = crate::hook::current_tick_ms();
         WarmupStarted {
@@ -276,11 +287,16 @@ impl<'a> ColdWarmupSequence<'a> {
                 let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
                 let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
                 log::debug!(
-                    "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start",
+                    "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start (conv_mutation={})",
                     ctx.cold_seq,
                     ctx.eager_settle_ms,
+                    ctx.conv_mutation_allowed,
                 );
-                let fresh_f2_ms = send_vk_dbe_hiragana_pair();
+                let fresh_f2_ms = if ctx.conv_mutation_allowed {
+                    send_vk_dbe_hiragana_pair()
+                } else {
+                    crate::hook::current_tick_ms()
+                };
                 WarmupStarted {
                     probe: crate::tsf::probe::TsfReadinessProbe::new(
                         fresh_f2_ms,
@@ -290,17 +306,22 @@ impl<'a> ColdWarmupSequence<'a> {
                     total_max_ms: ctx.eager_settle_ms,
                     needs_settle_check: false,
                     cold_reason: ctx.cold_reason,
-                    fresh_f2_at_probe_start: true,
+                    fresh_f2_at_probe_start: ctx.conv_mutation_allowed,
                 }
             }
             WarmupKind::ReWarmup => {
                 // eager_re_warmup: fresh F2 を送信して RE_WARMUP_MS 待機
                 log::debug!(
-                    "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start",
+                    "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start (conv_mutation={})",
                     ctx.cold_seq,
                     ctx.eager_settle_ms,
+                    ctx.conv_mutation_allowed,
                 );
-                let re_warmup_ms = send_vk_dbe_hiragana_pair();
+                let re_warmup_ms = if ctx.conv_mutation_allowed {
+                    send_vk_dbe_hiragana_pair()
+                } else {
+                    crate::hook::current_tick_ms()
+                };
                 WarmupStarted {
                     probe: crate::tsf::probe::TsfReadinessProbe::new(
                         re_warmup_ms,
@@ -310,7 +331,7 @@ impl<'a> ColdWarmupSequence<'a> {
                     total_max_ms: crate::tuning::RE_WARMUP_MS,
                     needs_settle_check: false,
                     cold_reason: ctx.cold_reason,
-                    fresh_f2_at_probe_start: true,
+                    fresh_f2_at_probe_start: ctx.conv_mutation_allowed,
                 }
             }
             WarmupKind::ProbeWithSettle => {
