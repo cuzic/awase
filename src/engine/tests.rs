@@ -3799,14 +3799,14 @@ mod engine_integration_tests {
         assert!(!engine.is_user_enabled());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
         )));
 
         let d = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
         assert!(engine.is_user_enabled());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true, .. })
         )));
     }
 
@@ -3832,7 +3832,7 @@ mod engine_integration_tests {
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
         )));
     }
 
@@ -3848,7 +3848,7 @@ mod engine_integration_tests {
         assert!(engine.compute_active(&ime_on_ctx()));
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true, .. })
         )));
     }
 
@@ -3946,7 +3946,7 @@ mod engine_integration_tests {
         );
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true, .. })
         )));
     }
 
@@ -3974,7 +3974,7 @@ mod engine_integration_tests {
         );
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
         )));
     }
 
@@ -4210,7 +4210,7 @@ mod engine_integration_tests {
         );
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true, .. })
         )));
     }
 
@@ -4240,7 +4240,7 @@ mod engine_integration_tests {
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
         )));
     }
 
@@ -4277,7 +4277,7 @@ mod engine_integration_tests {
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
         )));
     }
 
@@ -4306,7 +4306,7 @@ mod engine_integration_tests {
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
         )));
     }
 
@@ -4449,7 +4449,7 @@ mod engine_integration_tests {
         assert!(engine.is_user_enabled(), "user_enabled unchanged");
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
         )));
     }
 
@@ -4563,7 +4563,7 @@ mod engine_integration_tests {
         );
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true, .. })
         )));
     }
 

@@ -588,9 +588,11 @@ impl DecisionExecutor {
                 }
             },
             Effect::Ui(ue) => match ue {
-                UiEffect::EngineStateChanged { enabled } => {
+                UiEffect::EngineStateChanged { enabled, send_ime_key } => {
                     platform_rt.update_tray(enabled);
-                    platform_rt.send_engine_state_ime_key(enabled, applied_for_engine_key);
+                    if send_ime_key {
+                        platform_rt.send_engine_state_ime_key(enabled, applied_for_engine_key);
+                    }
                     None
                 }
             },

@@ -174,7 +174,7 @@ impl InputTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ImeRelevance, KeyClassification, ModifierKey};
+    use crate::types::{ImeRelevance, KeyClassification, ModifierKey, ScanCode, VkCode};
 
     fn make_event(event_type: KeyEventType) -> RawKeyEvent {
         RawKeyEvent {

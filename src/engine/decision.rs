@@ -50,8 +50,10 @@ pub enum ImeEffect {
 /// UI に関する副作用
 #[derive(Debug, Clone)]
 pub enum UiEffect {
-    /// エンジンの有効/無効が変わった
-    EngineStateChanged { enabled: bool },
+    /// エンジンの有効/無効が変わった。
+    /// `send_ime_key=false` の場合、IME モードキー送信を抑制する
+    /// （NotRomajiInput 等、ユーザーが既に望むモードを選択済みの場合）。
+    EngineStateChanged { enabled: bool, send_ime_key: bool },
 }
 
 /// アプリケーション全体の副作用を表す宣言型。
@@ -337,7 +339,7 @@ mod tests {
     use super::*;
 
     fn test_effect() -> Effect {
-        Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
+        Effect::Ui(UiEffect::EngineStateChanged { enabled: true, send_ime_key: true })
     }
 
     // ── Decision factory methods ──
