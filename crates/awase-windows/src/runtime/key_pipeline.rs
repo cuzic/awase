@@ -56,7 +56,7 @@ impl Runtime {
         // Ctrl↑ 以外は skip_rescue_defer=true でネスト呼び出しし、
         // 再 defer による無限ループを防ぐ。
         if let Some(pending_event) = self.take_ime_off_rescue_pending() {
-            let is_ctrl_up = matches!(event.event_type, awase::types::KeyEventType::KeyUp)
+            let is_ctrl_up = matches!(event.event_type, KeyEventType::KeyUp)
                 && crate::vk::is_ctrl_variant(event.vk_code);
             if is_ctrl_up {
                 // Ctrl↑ within 50ms: 「Ctrl+他キー中の誤打 無変換」を破棄する。
@@ -147,7 +147,7 @@ impl Runtime {
         // 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは ctrl_consumed_since_down=false なので
         // ここを通過せず engine が即 IME OFF を発火する。
         if !skip_rescue_defer
-            && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+            && matches!(event.event_type, KeyEventType::KeyDown)
             && event.modifier_snapshot.ctrl
             && hook::ctrl_consumed_since_down()
             && self.engine.matches_ime_off(&ctx, &event)
@@ -177,7 +177,7 @@ impl Runtime {
 
         // Ctrl 系 KeyUp で chord barrier を解除する。
         // chord 状態の判断は ImeStateHub.on_ctrl_key_up() に集約（パイプラインは VK 分類のみ担う）。
-        if !matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+        if !matches!(event.event_type, KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
             self.platform_state.ime.on_ctrl_key_up(event.vk_code);
@@ -335,7 +335,7 @@ impl Runtime {
     /// IME ON/OFF が変化したら `true` を返す。`kp_stage_execute` がこの値を見て
     /// Imm32Unavailable アプリで物理 IME キーを抑止すべきか判定する。
     fn kp_stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
-        if !matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
+        if !matches!(event.event_type, KeyEventType::KeyDown) {
             return false;
         }
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
@@ -456,7 +456,7 @@ impl Runtime {
 
         if !decision.is_consumed()
             && event.ime_relevance.may_change_ime
-            && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+            && matches!(event.event_type, KeyEventType::KeyDown)
         {
             self.schedule_ime_refresh(20);
             log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
@@ -502,7 +502,7 @@ impl Runtime {
         // F2 (VK_DBE_HIRAGANA) KeyDown: CompositionFsm に副作用を委譲。
         // Suppress（TSF mode）・Allow（非 TSF mode）いずれの場合も mark_cold + eager warmup を実行。
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA
-            && matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+            && matches!(event.event_type, KeyEventType::KeyDown)
         {
             let applied_open = self.platform_state.ime.model().applied.applied_open();
             self.platform.composition_native_f2_down(applied_open);
