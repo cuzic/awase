@@ -1,5 +1,4 @@
-// Windows 専用クレート — 非 Windows では空クレートとしてコンパイルされる
-#![cfg(windows)]
+// Windows 専用クレート — 非 Windows では純粋モジュールのみコンパイルされる
 // Win32 API (フック, SendInput, SetTimer 等) の使用に unsafe が必須
 #![allow(unsafe_code)]
 #![warn(unused_qualifications)]
@@ -17,57 +16,91 @@
 //!
 //! キーボードフック、出力、IME 制御、システムトレイ、フォーカス判定など
 //! すべての Win32 API 依存コードを集約する。
+//! 非 Windows では `focus/{cache,class_names}`, `scanmap`, `single_thread_cell`, `tuning`
+//! などの純粋モジュールのみコンパイルされる。
 
-pub mod autostart;
+// ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod focus;
-pub mod hook;
-pub mod ime;
-pub(crate) mod ime_controller;
-pub mod ime_diagnostic;
-pub(crate) mod imm;
-pub mod input_defer;
-pub mod journal;
-pub mod keymap;
-pub mod observer;
-pub mod output;
-pub mod panic_detect;
-pub mod platform;
-pub mod runtime;
 pub mod scanmap;
 pub mod single_thread_cell;
-pub mod state;
-pub mod timer;
-pub mod tray;
-pub mod tsf;
 pub mod tuning;
+
+// ── Windows 専用モジュール ───────────────────────────────────────────────────────
+#[cfg(windows)]
+pub mod autostart;
+#[cfg(windows)]
+pub mod hook;
+#[cfg(windows)]
+pub mod ime;
+#[cfg(windows)]
+pub(crate) mod ime_controller;
+#[cfg(windows)]
+pub mod ime_diagnostic;
+#[cfg(windows)]
+pub(crate) mod imm;
+#[cfg(windows)]
+pub mod input_defer;
+#[cfg(windows)]
+pub mod journal;
+#[cfg(windows)]
+pub mod keymap;
+#[cfg(windows)]
+pub mod observer;
+#[cfg(windows)]
+pub mod output;
+#[cfg(windows)]
+pub mod panic_detect;
+#[cfg(windows)]
+pub mod platform;
+#[cfg(windows)]
+pub mod runtime;
+#[cfg(windows)]
+pub mod state;
+#[cfg(windows)]
+pub mod timer;
+#[cfg(windows)]
+pub mod tray;
+#[cfg(windows)]
+pub mod tsf;
+#[cfg(windows)]
 pub mod vk;
+#[cfg(windows)]
 pub mod win32;
 
+#[cfg(windows)]
 pub(crate) mod app;
+#[cfg(windows)]
 pub use app::run;
 
+#[cfg(windows)]
 pub use runtime::{LayoutEntry, Runtime};
 pub use single_thread_cell::SingleThreadCell;
 
-use std::sync::atomic::AtomicBool;
-
+#[cfg(windows)]
 use awase::types::RawKeyEvent;
 
+#[cfg(windows)]
 pub use crate::state::{HookConfig, ImeBelief, PlatformState};
+#[cfg(windows)]
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
+#[cfg(windows)]
 pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
 
+#[cfg(windows)]
 pub use crate::input_defer::{InputDeferQueue, INPUT_DEFER};
 
 // ── クロススレッド共有グローバル状態 ──
 //
 // Ctrl+C ハンドラ（別スレッド）からアクセスされるため、Atomic 型でなければならない。
 
+use std::sync::atomic::AtomicBool;
+
 /// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
 pub static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// エンジンスレッド ID（フックスレッドから WM_KEY_FROM_HOOK を送るため）
+#[cfg(windows)]
 pub(crate) static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
@@ -81,6 +114,7 @@ pub static ELEVATED: AtomicBool = AtomicBool::new(false);
 ///
 /// バックスペース数とローマ字再送文字列を一括管理する。
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラが `flush_raw_tsf_literal_recovery()` で消費する。
+#[cfg(windows)]
 #[derive(Debug)]
 pub struct RawTsfLiteralPending {
     /// 送信すべきバックスペースの数
@@ -89,6 +123,7 @@ pub struct RawTsfLiteralPending {
     pub(crate) romaji: std::sync::Mutex<String>,
 }
 
+#[cfg(windows)]
 impl RawTsfLiteralPending {
     const fn new() -> Self {
         Self {
@@ -119,27 +154,23 @@ impl RawTsfLiteralPending {
     }
 }
 
+#[cfg(windows)]
 pub static RAW_TSF_LITERAL: RawTsfLiteralPending = RawTsfLiteralPending::new();
 
-// ── PlatformState: シングルスレッド上の全状態を集約 ──
-// PlatformState は crate::state::platform_state に移動済み。re-export は上部の pub use で行う。
-
 /// RUNTIME グローバル — シングルスレッド専用
+#[cfg(windows)]
 pub static RUNTIME: SingleThreadCell<Runtime> = SingleThreadCell::new();
 
 /// `RUNTIME` グローバルへの集約アクセスポイント。
 ///
 /// `RefCell` の実行時借用チェックにより再入を安全に検出する。
 /// 再入を検出した場合は `log::warn!` を出力して `None` を返す（UB なし）。
+#[cfg(windows)]
 #[must_use = "再入時は None を返す。消えてはいけないメッセージには with_app_or_repost を、\
 意図的に捨てる場合は `let _ = with_app(...)` を使うこと"]
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
     RUNTIME.try_borrow_mut().map_or_else(
         || {
-            // SendMessage (cross-process IME) や block_on のネストメッセージループ経由で
-            // win_event_proc などの外部コールバックから再呼び出しされた場合。
-            // extern "system" FFI 境界を越えて panic を伝播させると UB になるため、
-            // ここでは警告に留めて None を返す。
             log::warn!(
                 "with_app re-entry detected — returning None (caller should re-post if needed)"
             );
@@ -150,13 +181,13 @@ pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
 }
 
 /// `RUNTIME` グローバルへの読み取り専用アクセスファサード。
+#[cfg(windows)]
 pub fn with_app_ref<R>(f: impl FnOnce(&Runtime) -> R) -> Option<R> {
     RUNTIME.with(f)
 }
 
 /// `with_app` を呼び、再入で `None` が返った場合は `msg` を自スレッドのキューに再 post する。
-///
-/// `WM_PANIC_RESET` のように「再入中に消えてはいけないメッセージ」に使う。
+#[cfg(windows)]
 pub fn with_app_or_repost(msg: u32, f: impl FnOnce(&mut Runtime)) {
     if with_app(f).is_none() {
         win32::post_to_main_thread(msg);
@@ -164,8 +195,7 @@ pub fn with_app_or_repost(msg: u32, f: impl FnOnce(&mut Runtime)) {
 }
 
 /// `with_app_or_repost` の wparam / lparam 付きバリアント。
-///
-/// `WM_FOCUS_KIND_UPDATE` のようにパラメータを持つメッセージに使う。
+#[cfg(windows)]
 pub fn with_app_or_repost_with(
     msg: u32,
     wparam: usize,
@@ -177,112 +207,74 @@ pub fn with_app_or_repost_with(
     }
 }
 
+// ── タイマー ID 定数（純粋 usize、全プラットフォーム）─────────────────────────────
+
 /// 統合 IME リフレッシュタイマー ID
-///
-/// フォーカスデバウンス (50ms) と定期ポーリング (500ms) を統合。
-/// `schedule_ime_refresh(delay_ms)` で遅延を指定してリセットする。
-/// refresh 完了後に自動的に `ime_poll_interval_ms` で再スケジュールされる。
 pub const TIMER_IME_REFRESH: usize = 101;
-
-/// フック消失ウォッチドッグタイマー ID（IME ポーリングとは独立）
+/// フック消失ウォッチドッグタイマー ID
 pub const TIMER_HOOK_WATCHDOG: usize = 102;
-
 /// スリープ復帰 / セッションアンロック後の遅延リカバリタイマー ID
-///
-/// 復帰直後は OS や IME サービスがまだ回復途中で、ブロッキング Win32 API が
-/// メッセージループをハングさせる恐れがある。2秒遅延して安全に復帰処理を行う。
 pub const TIMER_POWER_RESUME: usize = 103;
-
+/// ReinjectKey の output guard 解除待ちタイマー ID
+pub const TIMER_OUTPUT_GUARD: usize = 104;
 /// TSF ウォームアッププローブのポーリングタイマー ID
-///
-/// block_on ネストメッセージループを回避するため、
-/// 10ms 間隔で GJI 静止・NAMECHANGE・リテラル検出を行う。
 pub const TIMER_TSF_PROBE: usize = 105;
-
 /// TsfGate の PendingWarmup フォールバックタイマー ID
-///
-/// フォーカス変更後 `WARMUP_TIMEOUT_MS`（500ms）以内にプローブが完了しない場合、
-/// Bypass へ強制遷移して保留キーをドレインする。
 pub const TIMER_TSF_GATE: usize = 106;
-
-/// Ctrl+無変換 IME OFF ミスタイプ救済の先読みタイマー ID。
-///
-/// `Ctrl↓ → I↓ I↑ → 無変換↓` のように Ctrl が他キーを consume 済みで
-/// Ctrl+無変換 が届いたとき、即 IME OFF せず 50ms 待機する。タイマー満了で
-/// 元の Ctrl 付き event を engine に渡し IME OFF を発火する。途中で Ctrl↑ が
-/// 来た場合は救済として ctrl=false に書き換えてから engine に渡す。
+/// Ctrl+無変換 IME OFF ミスタイプ救済の先読みタイマー ID
 pub const TIMER_IME_OFF_RESCUE: usize = 107;
-
 /// GjiFsm の LongIdle タイムアウトタイマー ID
-///
-/// `OnWarm` 入場時にセットされ、ファイアすると `OnCold(Long, NotStarted)` に遷移する。
-/// タイムアウト値は `long_idle_ms_for(injection_mode)` で InjectionMode 別に決定される。
 pub const TIMER_GJI_LONG_IDLE: usize = 108;
 
-/// ReinjectKey の output guard 解除待ちタイマー ID
-///
-/// SendInput 直後 50ms は OS キューに出力イベントが残っており、
-/// その間に passthrough キーを reinject すると IME composition が
-/// キャンセルされる race が起きる。
-/// block_on(sleep) を排除するため、SetTimer で待機してから drain_deferred を再実行する。
-pub const TIMER_OUTPUT_GUARD: usize = 104;
+// ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 
-/// 設定リロード用カスタムメッセージ（設定 GUI から `PostMessageW` で送信される）
-pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
-
-/// IME 制御キー後の遅延キー再処理用カスタムメッセージ
-pub const WM_PROCESS_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
-
-/// UIA 非同期判定完了通知用カスタムメッセージ
-pub const WM_FOCUS_KIND_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
 /// `WM_FOCUS_KIND_UPDATE` の wParam 上位 8bit が「AppKind 不明」を示すセンチネル値。
-///
-/// `Option<AppKind>` を `usize` の 1 byte に詰めるための都合で、`None` を 0xFF で表す。
-/// 受信側はこの値と一致したら `None` として扱う。
 pub const FOCUS_KIND_UPDATE_NO_APP_KIND: u8 = 0xFF;
 
+/// 設定リロード用カスタムメッセージ
+#[cfg(windows)]
+pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
+/// IME 制御キー後の遅延キー再処理用カスタムメッセージ
+#[cfg(windows)]
+pub const WM_PROCESS_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
+/// UIA 非同期判定完了通知用カスタムメッセージ
+#[cfg(windows)]
+pub const WM_FOCUS_KIND_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
 /// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
+#[cfg(windows)]
 pub const WM_IME_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
-
 /// フックコールバックからキューされた Effects の実行要求
+#[cfg(windows)]
 pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
-
-/// パニックリセット要求（IME 関連キー連打検出時にフックから PostMessage）
+/// パニックリセット要求
+#[cfg(windows)]
 pub const WM_PANIC_RESET: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 16;
-
-/// 多重起動検出時に新インスタンスから既存インスタンスに送る通知
-///
-/// 既存インスタンスはこのメッセージを受けるとタスクトレイにバルーン通知を表示し、
-/// ユーザーに「すでに起動している」ことを知らせる。
+/// 多重起動検出時の通知
+#[cfg(windows)]
 pub const WM_DUPLICATE_INSTANCE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 17;
-
 /// フックスレッドからエンジンスレッドへのキーイベント転送メッセージ
-///
-/// lParam は `Box::into_raw(Box::new(RawKeyEvent))` のポインタ。
-/// 受信側は `unsafe { *Box::from_raw(lParam.0 as *mut RawKeyEvent) }` で消費する。
+#[cfg(windows)]
 pub const WM_KEY_FROM_HOOK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 19;
-
-/// ジャーナルダンプ要求（Alt+変換→Alt+無変換 ×2 でフックから post）
+/// ジャーナルダンプ要求
+#[cfg(windows)]
 pub const WM_DUMP_JOURNAL: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 20;
-
-/// IME 種別変化通知（GJI モニタースレッドから post）
-///
-/// GJI プロセスの検出状態が変化したときにバックグラウンドスレッドから post される。
-/// メインスレッドは受信時に `Output::set_active_ime_kind()` を呼び、
-/// ウォームアップ戦略（`GjiFsm` / `MsImeStrategy`）を切り替える。
+/// IME 種別変化通知
+#[cfg(windows)]
 pub const WM_IME_KIND_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 21;
 
+// ── RawKeyEventExt ───────────────────────────────────────────────────────────────
+
 /// `RawKeyEvent` の SendInput 再注入ヘルパー。
+#[cfg(windows)]
 pub trait RawKeyEventExt {
     /// キーイベントを SendInput で再注入する（IME OFF 時の遅延キー用）。
-    ///
-    /// INJECTED_MARKER 付きなのでフックに再捕捉されない。
     ///
     /// # Safety
     /// Win32 API (`send_input_safe`) を呼び出す。メインスレッドから呼ぶこと。
     unsafe fn reinject(&self);
 }
 
+#[cfg(windows)]
 impl RawKeyEventExt for RawKeyEvent {
     unsafe fn reinject(&self) {
         use crate::output::INJECTED_MARKER;
