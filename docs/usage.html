@@ -494,7 +494,7 @@ footer p{margin-bottom:0.3rem}
         <tr><td>テキスト入力として強制</td><td>自動判定に関わらず常に NICOLA 入力を有効にする</td><td>誤ってバイパスされるアプリ</td></tr>
         <tr><td>バイパスとして強制</td><td>常にエンジンを無効にする</td><td>スタートメニュー、パスワードマネージャー</td></tr>
         <tr><td>VK 出力モードとして強制</td><td>ローマ字を VK キーストロークで送信する</td><td>Chrome・Edge・Electron ベースのアプリ</td></tr>
-        <tr><td>TSF 出力モードとして強制</td><td>TSF ネイティブモードで送信する</td><td>WezTerm など TSF 直結アプリ</td></tr>
+        <tr><td>TSF 出力モードとして強制</td><td>TSF ネイティブモードで送信する</td><td>Windows Terminal など TSF 直結アプリ</td></tr>
       </table>
       <p class="note" style="margin-top:0.7rem">プロセス名・クラス名は <code>awase.exe --debug</code> で起動したときのログで確認できます。</p>
     </div>
@@ -625,9 +625,9 @@ force_vk = [
     { process = "code.exe",    class = "Chrome_RenderWidgetHostHWND" },
 ]
 
-# TSF ネイティブモードで送信する（WezTerm 等）
+# TSF ネイティブモードで送信する（Windows Terminal 等）
 force_tsf = [
-    { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
+    { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
 ]</div>
     </div>
 
@@ -785,20 +785,6 @@ engine_off_solo_triple = "VK_NONCONVERT"
       </ol>
     </div>
 
-    <div class="card">
-      <h3>Microsoft IME のレジストリ設定を元に戻す（任意）</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">
-        Microsoft IME を使用していた場合、awase が以下のレジストリ値を書き込んでいることがあります。
-        親指シフト以外の用途で <kbd>無変換</kbd>/<kbd>変換</kbd> の割り当てを戻したい場合は削除してください。
-      </p>
-      <div class="code-block">HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME
-  IsKeyAssignmentEnabled
-  KeyAssignmentMuhenkan
-  KeyAssignmentHenkan</div>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.7rem">
-        または Microsoft IME の「設定 → キーとタッチのカスタマイズ」で「各キーに好みの機能を割り当てる」をオフにしてください。
-      </p>
-    </div>
   </div>
 </section>
 
@@ -818,37 +804,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
     </div>
 
     <div class="card">
-      <h3>2. Microsoft IME を使う場合（初回のみ）</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
-        awase 起動時に Microsoft IME が検出されると、<strong>キー割り当ての自動設定ダイアログ</strong>が1回だけ表示されます。
-        「OK」を押すと以下のレジストリ値を書き込みます。
-      </p>
-      <div class="code-block">HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME
-  IsKeyAssignmentEnabled = 1   ← キー割り当てを有効化
-  KeyAssignmentMuhenkan  = 1   ← 無変換キー → IME オフ（直接入力）
-  KeyAssignmentHenkan    = 0   ← 変換キー   → ひらがな（IME オン）</div>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.9rem;margin-bottom:0.4rem">
-        <strong>なぜこの設定が必要か：</strong>
-        awase はキーフックで <kbd>無変換</kbd>/<kbd>変換</kbd> の物理打鍵を横取りしているため、
-        ユーザーがこれらのキーを押しても MS-IME には届きません（親指シフトの親指キーとして awase が処理します）。
-        awase が内部的に IME の ON/OFF を制御する必要があるとき、ソフトウェア的に
-        <kbd>無変換</kbd>/<kbd>変換</kbd> の VK コードを注入します。
-        このとき MS-IME に「無変換 = IME オフ・変換 = IME オン」と認識させるために上記の割り当てが必要です。
-      </p>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
-        ユーザーから見た操作は <kbd>Ctrl</kbd>+<kbd>無変換</kbd> で IME オフ、
-        <kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME オン（awase 自身が処理するショートカット）です。
-        <kbd>無変換</kbd>/<kbd>変換</kbd> の単独打鍵で意図せず IME 状態が変わることはありません。
-      </p>
-      <ul>
-        <li>既に同じ設定が書かれている場合はダイアログを表示せずスキップします</li>
-        <li>「キャンセル」を押した場合はレジストリを変更しません</li>
-        <li>設定を元に戻すには Microsoft IME の「設定 → キーとタッチのカスタマイズ」でキー割り当てを無効化してください</li>
-      </ul>
-    </div>
-
-    <div class="card">
-      <h3>3. 確定モードの調整</h3>
+      <h3>2. 確定モードの調整</h3>
       <ul>
         <li>まず <code>confirm_mode = "ngram_predictive"</code>（推奨）で試す</li>
         <li>誤変換が多い場合は <code>"wait"</code> に変更（正確だがやや遅め）</li>
@@ -857,25 +813,30 @@ engine_off_solo_triple = "VK_NONCONVERT"
     </div>
 
     <div class="card">
-      <h3>4. Chrome / Edge での入力がうまくいかない場合</h3>
+      <h3>3. Chrome / Edge での入力がうまくいかない場合</h3>
       <ul>
         <li>Google 日本語入力または Microsoft IME を使用していることを確認します（awase は両 IME に対応しています）</li>
         <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME を ON にしてから入力を始めます</li>
         <li>最初の1文字だけ英字になる場合は awase が自動的に修正します（TSF cold-start 対応）</li>
       </ul>
-    </div>
-
-    <div class="card">
-      <h3>5. WezTerm で使う場合</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
-        awase は VK_IME_ON (0x16) / VK_IME_OFF (0x1A) を送って IME を制御します。
-        これらは実キーボードに存在しない仮想キーで VT エスケープシーケンスも生成しないため、
-        WezTerm や Windows Terminal での追加設定は不要です。
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.8rem;margin-bottom:0.2rem">
+        <strong>「あ」が一瞬チラッと見えることがあります（捨て打ち機能）</strong>
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.2rem">
+        Chrome や Windows Terminal では、IME ON 直後の最初の入力時に「あ」が瞬間的に表示されてすぐ消えることがあります。
+        これは <strong>捨て打ち機能</strong> が正常に動作しているサインです。
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        Chrome などの TSF アプリでは IME の入力受付が完了しているかどうかを外部から確認する公式な手段がありません。
+        そこで awase は「<kbd>A</kbd> キーを打って <kbd>BS</kbd> で消す」という操作を画面描画前に一瞬行い、
+        IME が「あ」に変換できたかどうかを観測することで入力受付の完了を確認しています。
+        この捨て打ちで得た情報をもとに、本来打ちたい文字を正確なタイミングで送ります。
+        通常は画面に何も表示されませんが、タイミングによって「あ」がほんの一瞬見えることがあります。
       </p>
     </div>
 
     <div class="card">
-      <h3>6. エンジンがおかしくなったときのリセット</h3>
+      <h3>5. エンジンがおかしくなったときのリセット</h3>
       <ul>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>変換</kbd> でエンジン ON を明示的に指定</li>
         <li><kbd>Ctrl</kbd>+<kbd>変換</kbd> で IME ON を明示的に指定</li>

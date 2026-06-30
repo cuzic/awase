@@ -217,7 +217,7 @@ FocusTracker::on_focus_change()
 | 分類 | 例 | IME 制御方式 |
 |---|---|---|
 | `ImmCapable` | メモ帳, VSCode | IMM32（ImmGetContext 経由） |
-| `TsfOnly` | WezTerm, Windows Terminal | TSF probe + VK_DBE_HIRAGANA |
+| `TsfOnly` | Windows Terminal | TSF probe + VK_DBE_HIRAGANA |
 | `ImmCross` | LINE, Qt アプリ | 別プロセス ImmSetOpenStatus + KANJI 物理キー Consume |
 | `Unknown` | ゲーム等 | パススルー |
 
@@ -238,6 +238,32 @@ probe_fsm: Probing 状態
     ├─ 変化あり → Warm と判断 → deferred キューを一括送信
     └─ タイムアウト → Cold → fallback（IMM32 or VK_KANJI）
 ```
+
+### 捨て打ち機能（ADR-048）
+
+Chrome・Windows Terminal 等の TSF ネイティブアプリでは、GJI I/O カウンタのタイミング観測だけでは
+composition context が確立されたか確実に判断できないケースがあります。
+そこで **捨て打ち機能** を使って強制的に暖機しつつ状態を確認します。
+
+```
+[cold-start 検出]
+   │
+   ├─ VK_A + BS を同一バッチで送信（捨て打ち）
+   │     ← 同一バッチのため画面描画前に処理され「あ」は表示されない
+   │
+   ├─ GJI の WriteTransferCount（I/O 書き込みバイト数）を観測
+   │   ├─ 送信前より +350B 以上 → composition 確立 → 本物のローマ字を送信
+   │   └─ タイムアウト → VK_IME_OFF→VK_IME_ON で GJI 強制リセット → 再試行
+   │
+   └─ 本物のローマ字を再送（捨て打ちで1文字分は消去済みのため追加 BS 不要）
+```
+
+捨て打ちの役割は2つあります。
+
+1. **強制暖機**: VK_A の送信により GJI が composition を開始し、context が確実に活性化される。
+2. **状態観測**: GJI が VK_A を処理すると変換候補データの送信で WriteTransferCount が 300〜400B 増加する。この増加をタイミングではなくバイト数で計測することで、競合条件に依存しない確実な確認が可能になる。
+
+適用条件は `long-cold && tsf_mode`（長時間放置後の TSF ネイティブアプリ）に限定しています。
 
 ---
 

@@ -463,7 +463,7 @@ footer p{margin-bottom:0.3rem}
       <div class="compat-card">
         <span class="compat-tag hard">従来ツールで苦手</span>
         <h3>TSF アプリ全般</h3>
-        <p>Windows Terminal・WezTerm などの TSF ネイティブアプリでも、cold-start 問題を解決して正確に動作します。</p>
+        <p>Windows Terminal などの TSF ネイティブアプリでも、cold-start 問題を解決して正確に動作します。</p>
       </div>
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
@@ -498,7 +498,7 @@ footer p{margin-bottom:0.3rem}
 
       <h3>TSF アプリ（Zoom・LINE など）— 内部状態が見えない</h3>
       <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-bottom:1.5rem">
-        Zoom・LINE・WezTerm などの TSF（Text Services Framework）アプリは、IME との通信が高度な内部プロトコルで行われており、外部プログラムから「今 IME が文字を受け付けられる状態かどうか」を直接問い合わせる手段がありません。<br><br>
+        Zoom・LINE・Windows Terminal などの TSF（Text Services Framework）アプリは、IME との通信が高度な内部プロトコルで行われており、外部プログラムから「今 IME が文字を受け付けられる状態かどうか」を直接問い合わせる手段がありません。<br><br>
         awase は Google 日本語入力の I/O アクティビティをバックグラウンドで監視し、その静止タイミングから「TSF composition context が準備完了したか」を推測します。DLL インジェクションなどの侵襲的手法を使わずに、外部観測だけで内部状態を推定するアプローチです。
       </p>
 

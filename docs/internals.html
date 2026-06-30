@@ -658,7 +658,7 @@ Chrome のプロセス構成（简略）:
   <p class="sec-lead">TSF アプリでは「入力を受け付ける準備」に時間がかかります。</p>
 
   <p class="body">
-    Windows Terminal・WezTerm などの TSF ネイティブアプリや Chrome で、
+    Windows Terminal などの TSF ネイティブアプリや Chrome で、
     「こ」と打ったつもりが「ko」と出る現象が起きることがあります。
     これは「TSF cold-start 問題」と呼ばれます。
   </p>
@@ -698,10 +698,50 @@ cold-start の発生タイムライン:
     化けが起きにくくなっています。
   </p>
 
+  <h3 class="sub">捨て打ち機能（Chrome・Windows Terminal の確実な暖機）</h3>
+
+  <p class="body">
+    Chrome や Windows Terminal などの TSF ネイティブアプリでは、上記の予熱だけでは
+    composition context が確実に活性化されたか判断できないケースがあります。
+    awase はこれを解決するために<strong>捨て打ち機能</strong>を備えています。
+  </p>
+
+  <p class="body">
+    捨て打ちとは、本来打ちたい文字の直前に「捨て駒」として <kbd>A</kbd> キーを
+    バックスペースとセットで送り込む動作です。
+    <kbd>A</kbd> と <kbd>BS</kbd> を同一バッチで送るため、
+    Chrome は画面を描画する前に両方を処理し、「あ」が一瞬でも表示されることはありません。
+  </p>
+
+  <div class="diagram">
+捨て打ち機能の流れ:
+
+[cold-start 検出]
+   │
+   ├─ VK_A + BS を同一バッチで送信（捨て打ち）
+   │     ← 画面には何も表示されない
+   │
+   ├─ GJI の I/O 書き込みバイト数（WriteTransferCount）を観測
+   │   ├─ +350B 以上 → composition 確立を確認 → 本物のローマ字を送信
+   │   └─ タイムアウト → VK_IME_OFF→VK_IME_ON で GJI を強制リセット → 再試行
+   │
+   └─ 本物のローマ字を再送（追加 BS 不要：捨て打ちで1文字分は消去済み）</div>
+
+  <p class="body">
+    捨て打ちには2つの役割があります。
+    第一に<strong>強制暖機</strong>：<kbd>A</kbd> キーで GJI が composition を開始するため、
+    context を確実に活性化できます。
+    第二に<strong>状態観測</strong>：GJI が <kbd>A</kbd> を処理すると
+    プロセス内部の I/O 書き込みバイト数が増加します（「あ」の変換候補データ送信のため）。
+    この増加量を <code>WriteTransferCount</code> で計測することで、
+    「composition が本当に確立されたか」を直接確認できます。
+    タイミングの競合に左右されない、コンテンツベースの確認方法です。
+  </p>
+
   <div class="callout">
-    <strong>WezTerm での注意：</strong>
+    <strong>Windows Terminal での注意：</strong>
     awase が Google 日本語入力に送る F21/F22 は実キーボードに存在しない仮想キーで、
-    VT エスケープシーケンスも生成しません。WezTerm や Windows Terminal での追加設定は不要です。
+    VT エスケープシーケンスも生成しません。Windows Terminal での追加設定は不要です。
   </div>
 
 </div>
