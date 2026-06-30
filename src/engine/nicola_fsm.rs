@@ -1243,7 +1243,7 @@ impl NicolaFsm {
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
-    fn handle_bypass(&mut self, ev: &ClassifiedEvent, _reason: BypassReason) -> Resp {
+    fn handle_bypass(&mut self, ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
         // バイパスされたキーの output_history エントリを削除する。
         // OsModifierHeld で J↓ がバイパスされた後、modifier が J↑ より先にリリースされると
         // on_key_up の is_os_modifier_held() チェックが通らず、output_history に前回の
@@ -1252,7 +1252,13 @@ impl NicolaFsm {
         if self.state.is_idle() {
             return Response::pass_through();
         }
-        let flush = self.flush_pending(ContextChange::ImeOff);
+        log::debug!(
+            "handle_bypass: vk=0x{:02X} reason={:?} state={}",
+            ev.vk_code.0,
+            reason,
+            self.state.debug_label(),
+        );
+        let flush = self.flush_pending(ContextChange::BypassKey);
         let mut resp = Response::pass_through();
         resp.actions = flush.actions;
         resp.timers = flush.timers;
