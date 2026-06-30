@@ -1137,6 +1137,42 @@ mod tests {
         );
     }
 
+    // ── ConvModePolicy 不変条件テスト ────────────────────────────────────────────
+
+    #[test]
+    fn conv_mutation_allowed_starts_false() {
+        // Output 初期状態は UserManaged → conv mutation 禁止
+        let o = make_output();
+        assert!(!o.conv_mutation_allowed.get());
+    }
+
+    #[test]
+    fn set_conv_mutation_allowed_roundtrip() {
+        let o = make_output();
+        o.set_conv_mutation_allowed(true);
+        assert!(o.conv_mutation_allowed.get());
+        o.set_conv_mutation_allowed(false);
+        assert!(!o.conv_mutation_allowed.get());
+    }
+
+    #[test]
+    fn conv_policy_user_managed_forbids_mutation() {
+        use crate::platform::ConvModePolicy;
+        assert!(!ConvModePolicy::UserManaged.allows_conv_mutation());
+    }
+
+    #[test]
+    fn conv_policy_awase_locked_allows_mutation() {
+        use crate::platform::ConvModePolicy;
+        assert!(ConvModePolicy::AwaseLocked.allows_conv_mutation());
+    }
+
+    #[test]
+    fn conv_policy_default_is_user_managed() {
+        use crate::platform::ConvModePolicy;
+        assert_eq!(ConvModePolicy::default(), ConvModePolicy::UserManaged);
+    }
+
     // ── RAW_TSF_LITERAL グローバル構造体テスト ──────────────────────────────────
 
     #[test]
