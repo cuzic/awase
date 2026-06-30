@@ -305,25 +305,28 @@ impl Runtime {
                     conv,
                 );
             }
+        } else if conv & crate::imm::IME_CMODE_KATAKANA != 0 {
+            // NATIVE=1, KATAKANA=1, ROMAN=0: カタカナ JIS かな入力モード
+            // カタカナ出力を目的として NICOLA を使うユーザーのためにエンジンは有効のまま維持する。
+            // warmup（VK_DBE_HIRAGANA + ImmSetConversionStatus）が ROMAN ビットを補うため
+            // 実際のキー入力はローマ字として処理される。
+            log::debug!(
+                "[idle-conv-check] TsfNative: conv=0x{:08X} (カタカナ ROMAN=false) → belief 変更なし (NICOLA 維持)",
+                conv,
+            );
         } else {
-            // NATIVE=1, ROMAN=0: JISかな / カタカナ入力
-            // post-active では ROMAN=0 は「ユーザーが非ローマ字モードに切り替えた」ことを意味する
+            // NATIVE=1, KATAKANA=0, ROMAN=0: JISかな ひらがな直接入力
+            // ローマ字ではなくキーをかな文字に直接マップするため NICOLA は機能しない。
             if current.is_romaji_capable() {
-                let mode_name = if conv & crate::imm::IME_CMODE_KATAKANA != 0 {
-                    "カタカナ"
-                } else {
-                    "JISかな"
-                };
                 log::info!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} ({}) → belief {:?}→ObservedKana",
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (JISかな) → belief {:?}→ObservedKana",
                     conv,
-                    mode_name,
                     current,
                 );
                 self.platform_state.ime.belief.input_mode = InputModeState::ObservedKana;
             } else {
                 log::debug!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (NATIVE=true ROMAN=false) → belief 変更なし",
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (JISかな) → belief 変更なし",
                     conv,
                 );
             }
