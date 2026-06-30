@@ -22,16 +22,6 @@ use crate::state::platform_state::ImeStateHub;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
 
-/// belief の input_mode から ConvModePolicy を暫定計算する。
-///
-/// TODO(#7): エンジン ON/OFF イベントで policy を切り替えるよう移行する。
-fn conv_policy_from_belief(ime: &ImeStateHub) -> ConvModePolicy {
-    if ime.belief.input_mode().is_romaji_capable() {
-        ConvModePolicy::AwaseLocked
-    } else {
-        ConvModePolicy::UserManaged
-    }
-}
 
 /// IME apply の sync 完了 1 件分。`(open: bool, outcome: ImeOpenOutcome)` のエイリアス。
 pub(crate) type ImeApplyPair = (bool, awase::platform::ImeOpenOutcome);
@@ -101,9 +91,6 @@ impl DecisionExecutor {
         physical: PhysicalKeyDisposition,
     ) -> BatchResult {
         self.applied_snapshot = ime.model().applied;
-        // TODO(#7): エンジン ON/OFF イベントで policy を切り替えるよう移行する。
-        // 現在は belief から暫定計算（belief はキー毎に最新化される）。
-        platform.set_conv_mode_policy(conv_policy_from_belief(ime));
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(platform, decision, physical),
             HookMode::Relay => self.execute_relay(platform, decision, raw_event, physical),
@@ -118,7 +105,6 @@ impl DecisionExecutor {
         decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
         self.applied_snapshot = ime.model().applied;
-        platform.set_conv_mode_policy(conv_policy_from_belief(ime));
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),
@@ -573,6 +559,16 @@ impl DecisionExecutor {
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
         if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
             return self.dispatch_ime_set_open(platform, open, origin);
+        }
+        // EngineStateChanged: エンジン ON/OFF に連動して ConvModePolicy を更新する。
+        // platform_rt (&mut dyn PlatformRuntime) 変換前に行う必要がある。
+        if let Effect::Ui(UiEffect::EngineStateChanged { enabled, .. }) = &effect {
+            let policy = if *enabled {
+                ConvModePolicy::AwaseLocked
+            } else {
+                ConvModePolicy::UserManaged
+            };
+            platform.set_conv_mode_policy(policy);
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
         let applied_for_engine_key = self.applied_snapshot.applied_open();
