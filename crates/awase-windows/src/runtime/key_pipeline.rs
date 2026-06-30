@@ -299,23 +299,41 @@ impl Runtime {
                 }
             }
             Some(new_mode) => {
-                log::info!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
-                    conv,
-                    current,
-                    new_mode,
-                );
-                self.platform_state.ime.belief.input_mode = new_mode;
+                // TsfNative (WezTerm/UWP 等) では ROMAN ビット (0x10) が信頼できないため
+                // conv=0x0009 でも romaji 入力が機能する。
+                // AssumedRomaji (IMM broken) → ObservedKana への downgrade を抑制し
+                // エンジン非活性化（NotRomajiInput）を防ぐ。
+                let is_hiragana_native = conv & crate::imm::IME_CMODE_NATIVE != 0
+                    && conv & crate::imm::IME_CMODE_KATAKANA == 0;
+                let suppress_kana_downgrade = new_mode == InputModeState::ObservedKana
+                    && is_hiragana_native
+                    && matches!(current, InputModeState::AssumedRomaji { .. });
 
-                // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
-                if new_mode == InputModeState::ObservedRomaji
-                    && conv & crate::imm::IME_CMODE_KATAKANA != 0
-                    && !self.platform_state.ime.effective_open()
-                {
-                    self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.event_log.next_seq();
-                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
-                    log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
+                if suppress_kana_downgrade {
+                    log::debug!(
+                        "[idle-conv-check] TsfNative: conv=0x{:08X} ひらがな切替 {:?} → \
+                         ObservedKana 更新抑制 (ROMAN ビット不信頼, romaji 維持)",
+                        conv, current,
+                    );
+                } else {
+                    log::info!(
+                        "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
+                        conv,
+                        current,
+                        new_mode,
+                    );
+                    self.platform_state.ime.belief.input_mode = new_mode;
+
+                    // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
+                    if new_mode == InputModeState::ObservedRomaji
+                        && conv & crate::imm::IME_CMODE_KATAKANA != 0
+                        && !self.platform_state.ime.effective_open()
+                    {
+                        self.platform.timer.kill(TIMER_IME_REFRESH);
+                        let generation = self.platform_state.ime.event_log.next_seq();
+                        self.platform_state.ime.handle_engine_set_open(true, false, generation);
+                        log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
+                    }
                 }
             }
         }
