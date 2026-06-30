@@ -44,9 +44,42 @@
 | [061](061-win-key-ime-injection-skip.md) | Win キー押下中の IME キー注入スキップ | 採用済み |
 | [062](062-injection-mode-auto-upgrade.md) | InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格 | 採用済み |
 | [063](063-ms-ime-tsf-separation.md) | TSF 共通層と IME 固有層の分離 + MS-IME 対応（案B） | 採用済み |
+| [064](064-conv-mode-policy-gate.md) | ConvModePolicy による conv mutation ゲートの導入 | 採用済み |
+| [065](065-conv-classifier-pure-fn-and-cfg-ungating.md) | conv 分類の純粋関数化と awase-windows の段階的プラットフォーム非依存化 | 採用済み |
+| [066](066-gji-clsid-ime-detection.md) | GJI CLSID ベース IME 種別検出（gji_write_idle_ms ヒューリスティック廃止） | 採用済み |
+| [067](067-vk-ime-on-off-migration.md) | F21/F22 → VK_IME_ON/OFF への完全移行と config1.db バインド廃止 | 採用済み |
+| [068](068-jiskana-katakana-support.md) | JISかな・カタカナモードの完全サポート | 採用済み |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
+
+### 2026-06-27〜30: MS-IME 対応完了後の連続改善（ADR-064〜068）
+
+ADR-063（MS-IME 対応）の後、GJI/MS-IME 共存環境の安定化・F21/F22 廃止・JISかな/カタカナ完全対応・
+テスト可能性向上という5本の大きな改善が続いた。
+
+- **ADR-064** — `ConvModePolicy`（AwaseLocked / UserManaged）で conv mutation 権限を
+  明示的型で表現。`EngineStateChanged` を唯一の更新トリガーにする SSOT 化。
+- **ADR-065** — conv 分類を nicola クレートの純粋関数に抽出し Linux で 75 件のテストを追加。
+  `#![cfg(windows)]` blanket を廃止して純粋モジュール群を段階的 ungated 化。
+- **ADR-066** — TSF `EnumProfiles` + `GetActiveProfile` で GJI の CLSID を動的発見し
+  `cache.toml` に永続化。`gji_write_idle_ms` ヒューリスティックを CLSID 確定判定に置換。
+- **ADR-067** — `VK_IME_ON`/`VK_IME_OFF` が config1.db バインドなしで動作すると判明し、
+  F21/F22 と `gji.rs`（428 行）+ 関連コード全体を削除。ADR-057 を廃止。
+- **ADR-068** — JISかな・カタカナモードの完全サポート。「カタカナ = ObservedRomaji」を
+  中心原則に、belief 更新・conv 保護・ConvModeMgr 型安全化・warmup VK 選択の多層ガードを構築。
+
+### 2026-06-30: conv 制御の構造的改善（ADR-064〜065）
+
+ADR-063（MS-IME 対応）に続いて、conv mode 制御の安全性とテスト可能性を
+構造で保証する2本の ADR が追加された。
+
+- **ADR-064** — `ConvModePolicy`（AwaseLocked / UserManaged）で conv mutation 権限を
+  明示的型で表現。bool フラグと散在したガード条件を廃止し、`EngineStateChanged` を
+  唯一の更新トリガーにする SSOT 化。idle-conv-check による JISかな上書きバグも解消。
+- **ADR-065** — `classify_idle_conv` / `classify_conv_transition` / `should_run_idle_conv_check`
+  を nicola クレートの純粋関数として抽出し、Linux で 75 件の回帰テストを追加。
+  合わせて `#![cfg(windows)]` blanket を廃止し、純粋モジュール群を段階的に ungated 化。
 
 ### 2026-06 の進化（ADR-045 完了後）
 
