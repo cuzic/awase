@@ -141,6 +141,23 @@ impl crate::ime::ImeSnapshot {
         let curr_has_native = conv_mode & IME_CMODE_NATIVE != 0;
         let prev_conv = current_prev_conversion_mode?;
         let prev_had_roman = prev_conv & IME_CMODE_ROMAN != 0;
+        let prev_had_native = prev_conv & IME_CMODE_NATIVE != 0;
+
+        // 英数モードへの遷移を検出（ROMAN も NATIVE もなくなった）
+        let curr_is_eisu = !curr_has_roman && !curr_has_native;
+        let prev_was_not_eisu = prev_had_roman || prev_had_native;
+        if curr_is_eisu && prev_was_not_eisu {
+            if current_input_mode.is_romaji_capable() {
+                log::info!(
+                    "IME input method changed (→英数): romaji → kana (conv=0x{:08X}→0x{:08X})",
+                    prev_conv,
+                    conv_mode,
+                );
+            }
+            return Some(InputModeState::ObservedKana);
+        }
+
+        // ROMAN ビット変化 かつ NATIVE あり → ひらがな↔ローマ字切り替え
         if !(prev_had_roman != curr_has_roman && curr_has_native) {
             return None;
         }

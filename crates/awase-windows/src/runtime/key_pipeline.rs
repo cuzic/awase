@@ -8,8 +8,9 @@ use crate::hook;
 use crate::hook::CallbackResult;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+use awase::engine::InputModeState;
 use awase::platform::PlatformRuntime as _;
-use awase::types::{RawKeyEvent, ShadowImeAction};
+use awase::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
@@ -82,6 +83,7 @@ impl Runtime {
         }
 
         self.kp_stage_focus_probe(&mut event);
+        self.kp_stage_idle_conv_check(&event);
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
 
         let ctx = super::build_input_context(
@@ -219,6 +221,60 @@ impl Runtime {
                 );
             });
         });
+    }
+
+    /// TsfNative アイドル時の変換モード確認
+    ///
+    /// TsfNative (WezTerm 等) は通常ポーリングが無効のため、タスクバーから入力モードを
+    /// 変更しても `belief.input_mode` が更新されない。
+    /// TYPING_IDLE_MS 以上アイドル後の最初の KeyDown でのみ conv を読み、
+    /// 英数モード（ROMAN/NATIVE どちらも 0）を検出したら belief を ObservedKana に更新する。
+    fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
+        if !matches!(event.event_type, KeyEventType::KeyDown) {
+            return;
+        }
+        if !matches!(
+            self.platform.current_app_profile(),
+            crate::focus::class_names::AppImeProfile::TsfNative
+        ) {
+            return;
+        }
+        // TYPING_IDLE_MS 未満ならタイピング中 → スキップ（一時停止後の最初のキーのみ確認）
+        if self.platform.output_in_flight_ms() <= crate::tuning::TYPING_IDLE_MS {
+            return;
+        }
+        // SAFETY: フォアグラウンドウィンドウの IME 変換モードを 10ms タイムアウトで読む。
+        let Some(conv) = (unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }) else {
+            return;
+        };
+        let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
+        let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;
+
+        // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
+        self.platform_state.ime.set_prev_conversion_mode(Some(conv));
+
+        if !has_roman && !has_native {
+            // 英数モード：ROMAN も NATIVE もない → NICOLA を無効化
+            let current = self.platform_state.ime.belief.input_mode();
+            if current.is_romaji_capable() {
+                log::info!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (英数) → belief {:?}→ObservedKana",
+                    conv,
+                    current,
+                );
+                self.platform_state.ime.belief.input_mode = InputModeState::ObservedKana;
+            }
+        } else {
+            // NATIVE または ROMAN あり → 日本語入力モード、belief は変更しない
+            // （ROMAN ビットは WezTerm では romaji モードでも欠落する可能性があるため
+            //  ObservedRomaji への強制更新は行わない）
+            log::debug!(
+                "[idle-conv-check] TsfNative: conv=0x{:08X} (NATIVE={} ROMAN={}) → belief 変更なし",
+                conv,
+                has_native,
+                has_roman,
+            );
+        }
     }
 
     /// Shadow IME トグル処理
