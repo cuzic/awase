@@ -275,7 +275,7 @@ impl Runtime {
         };
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
-        self.platform.output.conv_mode.update_from_conv(conv);
+        let conv_mode_changed = self.platform.output.conv_mode.update_from_conv(conv);
 
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
@@ -283,33 +283,55 @@ impl Runtime {
         let current = self.platform_state.ime.belief.input_mode();
         let is_cold = in_flight == u64::MAX;
 
-        let Some(new_mode) = awase::engine::ConvMode::from_u32(conv).classify_idle(is_cold, current) else {
-            log::debug!(
-                "[idle-conv-check] TsfNative: conv=0x{:08X}{} → belief {:?} 変更なし",
-                conv,
-                if is_cold && conv & crate::imm::IME_CMODE_ROMAN != 0 { " cold-start" } else { "" },
-                current,
-            );
-            return;
-        };
+        let new_mode_opt = awase::engine::ConvMode::from_u32(conv).classify_idle(is_cold, current);
 
-        log::info!(
-            "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
-            conv,
-            current,
-            new_mode,
-        );
-        self.platform_state.ime.belief.input_mode = new_mode;
+        match new_mode_opt {
+            None => {
+                log::debug!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X}{} → belief {:?} 変更なし",
+                    conv,
+                    if is_cold && conv & crate::imm::IME_CMODE_ROMAN != 0 { " cold-start" } else { "" },
+                    current,
+                );
+                // conv 変化なしかつ belief 変化なし → 何もすることがない
+                if !conv_mode_changed {
+                    return;
+                }
+            }
+            Some(new_mode) => {
+                log::info!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
+                    conv,
+                    current,
+                    new_mode,
+                );
+                self.platform_state.ime.belief.input_mode = new_mode;
 
-        // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
-        if new_mode == InputModeState::ObservedRomaji
-            && conv & crate::imm::IME_CMODE_KATAKANA != 0
+                // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
+                if new_mode == InputModeState::ObservedRomaji
+                    && conv & crate::imm::IME_CMODE_KATAKANA != 0
+                    && !self.platform_state.ime.effective_open()
+                {
+                    self.platform.timer.kill(TIMER_IME_REFRESH);
+                    let generation = self.platform_state.ime.event_log.next_seq();
+                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
+                    log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
+                }
+            }
+        }
+
+        // ひらがな系モード（NATIVE=1, KATAKANA=0）への切替は IME ON を意味する。
+        // classify_idle が None を返す場合（belief 変化なし）も含めて conv 変化時に同期する。
+        // カタカナは上記 match arm で処理済みのため除外。
+        if conv_mode_changed
+            && conv & crate::imm::IME_CMODE_NATIVE != 0
+            && conv & crate::imm::IME_CMODE_KATAKANA == 0
             && !self.platform_state.ime.effective_open()
         {
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.event_log.next_seq();
             self.platform_state.ime.handle_engine_set_open(true, false, generation);
-            log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
+            log::info!("[idle-conv-check] TsfNative: ひらがな切替検出 + shadow=OFF → IME ON 同期");
         }
     }
 

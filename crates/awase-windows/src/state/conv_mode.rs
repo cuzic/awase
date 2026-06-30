@@ -67,10 +67,10 @@ impl ConvModeMgr {
 
     /// `ImmGetConversionStatus` の raw conv 値からモードを更新する。
     ///
-    /// 変化があった場合のみ `info` ログを出力する。
+    /// 変化があった場合のみ `info` ログを出力し `true` を返す。
     /// HankakuKatakana → ZenkakuKatakana のダウングレードは `suppress_zenkata_until_ms` 期限内
     /// であれば無視する（フォーカス後 1500ms または HanKata warmup 後 500ms）。
-    pub(crate) fn update_from_conv(&self, conv: u32) {
+    pub(crate) fn update_from_conv(&self, conv: u32) -> bool {
         let new = ConvMode::from_u32(conv);
         let old = self.mode.get();
         if old != Some(new) {
@@ -86,7 +86,7 @@ impl ConvModeMgr {
                          (残り{}ms, conv=0x{conv:08X})",
                         until.saturating_sub(now)
                     );
-                    return;
+                    return false;
                 }
             }
             log::info!(
@@ -95,6 +95,9 @@ impl ConvModeMgr {
                 new,
             );
             self.mode.set(Some(new));
+            true
+        } else {
+            false
         }
     }
 
