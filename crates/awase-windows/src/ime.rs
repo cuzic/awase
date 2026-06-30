@@ -709,6 +709,53 @@ pub async fn set_ime_romaji_mode_async() -> bool {
     win32_async::offload(|| unsafe { set_ime_romaji_mode() }).await
 }
 
+/// カタカナ hint 付き `set_ime_romaji_mode`。
+///
+/// `katakana_hint != 0` かつ KATAKANA ビットが立っている場合は
+/// `katakana_hint | ROMAN` を目標 conv に使う（VK_DBE_HIRAGANA で失われた KATAKANA ビットを復元）。
+/// それ以外は `set_ime_romaji_mode()` と同じ動作（current_conv | ROMAN）。
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread or worker thread via offload.
+#[must_use]
+pub unsafe fn set_ime_romaji_mode_with_hint(katakana_hint: u32) -> bool {
+    use crate::imm::{IME_CMODE_KATAKANA, IME_CMODE_ROMAN};
+    let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
+        return false;
+    };
+    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
+        return false;
+    };
+    let Some(current) =
+        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
+    else {
+        return false;
+    };
+    let conv = current as u32;
+    let new_conv = if katakana_hint != 0 && (katakana_hint & IME_CMODE_KATAKANA != 0) {
+        katakana_hint | IME_CMODE_ROMAN
+    } else {
+        conv | IME_CMODE_ROMAN
+    };
+    if new_conv == conv {
+        return true;
+    }
+    let success = unsafe {
+        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
+    }
+    .is_some();
+    log::debug!(
+        "[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success} hint=0x{katakana_hint:08X}"
+    );
+    success
+}
+
+/// `set_ime_romaji_mode_with_hint` の async 版（ワーカースレッドで実行）
+#[expect(clippy::future_not_send)]
+pub async fn set_ime_romaji_mode_with_hint_async(katakana_hint: u32) -> bool {
+    win32_async::offload(move || unsafe { set_ime_romaji_mode_with_hint(katakana_hint) }).await
+}
+
 /// クロスプロセスで IME の変換モードをひらがなに強制する。
 ///
 /// `IMC_GETCONVERSIONMODE` で現在の変換モードを取得し、

@@ -274,6 +274,13 @@ impl Runtime {
         let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
         let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;
 
+        // カタカナ hint を更新: KATAKANA ビットあり → conv を保存、なし → クリア。
+        // VK_DBE_HIRAGANA 送信後に conv が 0x9 (ひらがな) に変わっても、
+        // cold_warmup の ImmSetConversionStatus で KATAKANA ビットを復元できるようにする。
+        self.platform.output.set_katakana_conv_hint(
+            if conv & crate::imm::IME_CMODE_KATAKANA != 0 { conv } else { 0 },
+        );
+
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
 

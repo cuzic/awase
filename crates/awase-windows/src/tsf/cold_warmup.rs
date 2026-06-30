@@ -162,16 +162,19 @@ impl<'a> ColdWarmupSequence<'a> {
         // ハンドリング経由で行われる (probe_min_ms ≥ 50ms 待機)。
         // worker-thread SendMessageTimeoutW は通常 10ms 以内に完了するため、
         // ROMAN ビット設定は実 romaji 送信より先に完了する。
-        win32_async::spawn_local(async {
+        // カタカナ hint を取得（VK_DBE_HIRAGANA 送信前に保存された元の conv）。
+        // KATAKANA ビットが立っていれば hint | ROMAN を目標 conv にして半角/全角カタカナを維持する。
+        let katakana_hint = self.output.katakana_conv_hint();
+        win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(
-                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
+                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} hint=0x{katakana_hint:08X}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
             );
-            let _ = crate::ime::set_ime_romaji_mode_async().await;
+            let _ = crate::ime::set_ime_romaji_mode_with_hint_async(katakana_hint).await;
         });
 
         let cold_seq = self.output.composition.increment_cold_start_count();
