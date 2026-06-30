@@ -615,6 +615,7 @@ impl Output {
             .saturating_sub(crate::tsf::observer::gji_last_io_ms())
             >= crate::tuning::LONG_IDLE_MS;
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing
+            && crate::tsf::observer::gji_is_active_ime()
             && self.tsf_warmup.borrow().needs_cold_start_probe()
             && !probe_long_idle
             && !self.is_tsf_mode()
