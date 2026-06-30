@@ -716,8 +716,8 @@ impl Runtime {
                     let has_kata = conv & crate::imm::IME_CMODE_KATAKANA != 0;
                     use awase::engine::InputModeState;
                     let current = self.platform_state.ime.belief.input_mode();
-                    if !has_roman && !has_native {
-                        // 英数モード
+                    if awase::engine::ConvMode::from_u32(conv).is_eisu() {
+                        // 英数モード (HankakuAlpha / ZenkakuAlpha)。ROMAN ビットの有無は問わない。
                         if current.is_romaji_capable() {
                             log::info!(
                                 "[focus-conv-check] TsfNative: conv=0x{:08X} (英数) \
