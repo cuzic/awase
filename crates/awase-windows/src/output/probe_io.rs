@@ -622,22 +622,53 @@ where
                         gji_resumed: config.observations.gji_resumed,
                     });
                 }
-                // VK_IME_OFF→ON 送信前に write_bytes ベースラインを取得する。
-                let write_bytes_baseline = crate::tsf::observer::gji_write_bytes();
-                io.send_sacrificial_ime_off_on(config.cold_seq);
-                log::debug!(
-                    "[sacr-warmup] cold={} VK_IME_OFF→ON 送信完了 → ImeOffOnWarmupCoro 開始 \
-                    (romaji={:?} write_bytes_baseline={} from_literal_recovery={})",
-                    config.cold_seq, config.romaji, write_bytes_baseline, config.from_literal_recovery,
-                );
-                let coro = crate::tsf::ime_offon_warmup_coro::ImeOffOnWarmupCoro::new(
-                    config.cold_seq,
-                    config.romaji,
-                    config.deferred_vks,
-                    config.target,
-                    write_bytes_baseline,
-                );
-                return DispatchResult::SwitchMachine(Box::new(coro));
+                // target に応じて戦略を切り替える。
+                //
+                // Chrome: VK_A+BS（元の方式）。
+                //   VK_IME_OFF が Chrome TSF context を壊すため使用不可（過去検証済み）。
+                //   Chrome 内で vim が動くケースは稀であり VK_A の vim 問題は許容。
+                //
+                // TSF（WezTerm 等）: VK_IME_OFF→ON + write_bytes 検出（vim 安全プローブ）。
+                //   vim は VK_IME_OFF/ON を無視するため cold 時にアプリへ届いても誤動作しない。
+                match config.target {
+                    TransmitTarget::Chrome => {
+                        let write_bytes_before_vk_a = crate::tsf::observer::gji_write_bytes();
+                        io.send_sacrificial_vk_a_with_bs(config.cold_seq);
+                        let detector = crate::tsf::probe::LiteralDetector::new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a);
+                        let deadline_ms = crate::hook::current_tick_ms() + config.literal_detect_ms;
+                        log::debug!(
+                            "[sacr-warmup] cold={} VK_A+BS 送信 → SacrificialWarmupCoro 開始 \
+                            (romaji={:?} write_bytes_baseline={})",
+                            config.cold_seq, config.romaji, write_bytes_before_vk_a,
+                        );
+                        let sacr_coro = crate::tsf::sacr_warmup_coro::SacrificialWarmupCoro::new(
+                            config.cold_seq,
+                            config.romaji,
+                            config.deferred_vks,
+                            detector,
+                            deadline_ms,
+                            config.target,
+                        );
+                        return DispatchResult::SwitchMachine(Box::new(sacr_coro));
+                    }
+                    TransmitTarget::Tsf => {
+                        let write_bytes_baseline = crate::tsf::observer::gji_write_bytes();
+                        io.send_sacrificial_ime_off_on(config.cold_seq);
+                        log::debug!(
+                            "[sacr-warmup] cold={} VK_IME_OFF→ON 送信 → ImeOffOnWarmupCoro 開始 \
+                            (romaji={:?} write_bytes_baseline={})",
+                            config.cold_seq, config.romaji, write_bytes_baseline,
+                        );
+                        let coro = crate::tsf::ime_offon_warmup_coro::ImeOffOnWarmupCoro::new(
+                            config.cold_seq,
+                            config.romaji,
+                            config.deferred_vks,
+                            config.target,
+                            write_bytes_baseline,
+                        );
+                        return DispatchResult::SwitchMachine(Box::new(coro));
+                    }
+                }
             }
 
             ProbeAction::SendChromeGjiReinit { cold_seq } => {
