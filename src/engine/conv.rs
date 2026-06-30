@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use crate::engine::InputModeState;
+use crate::engine::{AssumedReason, InputModeState};
 
 // ImmGetConversionStatus のビット定数 (imm.h)
 const IME_CMODE_NATIVE: u32 = 0x0001;
@@ -112,7 +112,16 @@ impl ConvMode {
     /// # 引数
     /// - `is_cold_start`: `output_in_flight_ms() == u64::MAX`（ROMAN ビット未確定期間）
     /// - `current`: 現在の `InputModeState` belief
-    pub fn classify_idle(self, is_cold_start: bool, current: InputModeState) -> Option<InputModeState> {
+    /// - `is_roman_reliable`: ROMAN ビット (0x10) が信頼できるかどうか。
+    ///   通常の IMM32 ウィンドウでは `true`。TsfNative (WezTerm 等) では ROMAN ビットが
+    ///   常に 0 のため `false` を渡す。`false` の場合、ひらがな conv で ObservedKana への
+    ///   downgrade を行わず、非 romaji-capable なら `AssumedRomaji` に回復する。
+    pub fn classify_idle(
+        self,
+        is_cold_start: bool,
+        current: InputModeState,
+        is_roman_reliable: bool,
+    ) -> Option<InputModeState> {
         use InputModeState::{ObservedKana, ObservedRomaji};
 
         // 英数モード: cold start でも ROMAN=0 なので確実に判定可能
@@ -134,8 +143,20 @@ impl ConvMode {
                 (!current.is_romaji_capable()).then_some(ObservedRomaji)
             }
             _ => {
-                // JISかな / ひらがな直接入力
-                current.is_romaji_capable().then_some(ObservedKana)
+                if is_roman_reliable {
+                    // ROMAN=0 が信頼できる: ひらがな conv = JISかな。romaji-capable なら訂正。
+                    current.is_romaji_capable().then_some(ObservedKana)
+                } else {
+                    // ROMAN=0 が信頼できない (TsfNative): ひらがな conv はローマ字/JISかな不明。
+                    // romaji-capable なら変更なし。そうでなければ AssumedRomaji に回復。
+                    if current.is_romaji_capable() {
+                        None
+                    } else {
+                        Some(InputModeState::AssumedRomaji {
+                            reason: AssumedReason::ImmBridgeBroken,
+                        })
+                    }
+                }
             }
         }
     }
@@ -253,77 +274,117 @@ mod tests {
         assert_eq!(cm(CONV_HIRAGANA).imm_conv_target(), None);
     }
 
-    // ── classify_idle ────────────────────────────────────────────────────────
+    // ── classify_idle (is_roman_reliable=true: 通常 IMM32) ────────────────────
 
     // 英数
     #[test]
     fn idle_eisuu_from_romaji_yields_kana() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedRomaji), Some(ObservedKana));
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedRomaji, true), Some(ObservedKana));
     }
 
     #[test]
     fn idle_eisuu_from_assumed_yields_kana() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(false, assumed()), Some(ObservedKana));
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, assumed(), true), Some(ObservedKana));
     }
 
     #[test]
     fn idle_eisuu_from_kana_yields_none() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedKana), None);
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedKana, true), None);
     }
 
     #[test]
     fn idle_eisuu_cold_start_still_classifies() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(true, ObservedRomaji), Some(ObservedKana));
+        assert_eq!(cm(CONV_EISUU).classify_idle(true, ObservedRomaji, true), Some(ObservedKana));
     }
 
     // ひらがなローマ字
     #[test]
     fn idle_hiragana_from_kana_yields_romaji() {
-        assert_eq!(cm(CONV_HIRAGANA).classify_idle(false, ObservedKana), Some(ObservedRomaji));
+        assert_eq!(cm(CONV_HIRAGANA).classify_idle(false, ObservedKana, true), Some(ObservedRomaji));
     }
 
     #[test]
     fn idle_hiragana_from_romaji_yields_none() {
-        assert_eq!(cm(CONV_HIRAGANA).classify_idle(false, ObservedRomaji), None);
+        assert_eq!(cm(CONV_HIRAGANA).classify_idle(false, ObservedRomaji, true), None);
     }
 
     #[test]
     fn idle_hiragana_cold_start_skips() {
-        assert_eq!(cm(CONV_HIRAGANA).classify_idle(true, ObservedKana), None);
-        assert_eq!(cm(CONV_HIRAGANA).classify_idle(true, Unknown), None);
+        assert_eq!(cm(CONV_HIRAGANA).classify_idle(true, ObservedKana, true), None);
+        assert_eq!(cm(CONV_HIRAGANA).classify_idle(true, Unknown, true), None);
     }
 
-    // JISかな
+    // JISかな (is_roman_reliable=true)
     #[test]
     fn idle_jisakana_from_romaji_yields_kana() {
-        assert_eq!(cm(CONV_JISAKANA).classify_idle(false, ObservedRomaji), Some(ObservedKana));
+        assert_eq!(cm(CONV_JISAKANA).classify_idle(false, ObservedRomaji, true), Some(ObservedKana));
     }
 
     #[test]
     fn idle_jisakana_cold_start_classifies() {
-        assert_eq!(cm(CONV_JISAKANA).classify_idle(true, ObservedRomaji), Some(ObservedKana));
+        assert_eq!(cm(CONV_JISAKANA).classify_idle(true, ObservedRomaji, true), Some(ObservedKana));
     }
 
     // 全角カタカナ (NICOLA)
     #[test]
     fn idle_zenkata_from_kana_yields_romaji() {
-        assert_eq!(cm(CONV_ZENKATA).classify_idle(false, ObservedKana), Some(ObservedRomaji));
+        assert_eq!(cm(CONV_ZENKATA).classify_idle(false, ObservedKana, true), Some(ObservedRomaji));
     }
 
     #[test]
     fn idle_zenkata_from_romaji_yields_none() {
-        assert_eq!(cm(CONV_ZENKATA).classify_idle(false, ObservedRomaji), None);
+        assert_eq!(cm(CONV_ZENKATA).classify_idle(false, ObservedRomaji, true), None);
     }
 
     #[test]
     fn idle_zenkata_cold_start_classifies() {
-        assert_eq!(cm(CONV_ZENKATA).classify_idle(true, ObservedKana), Some(ObservedRomaji));
+        assert_eq!(cm(CONV_ZENKATA).classify_idle(true, ObservedKana, true), Some(ObservedRomaji));
     }
 
     // 半角カタカナ
     #[test]
     fn idle_hankata_from_kana_yields_romaji() {
-        assert_eq!(cm(CONV_HANKATA).classify_idle(false, ObservedKana), Some(ObservedRomaji));
+        assert_eq!(cm(CONV_HANKATA).classify_idle(false, ObservedKana, true), Some(ObservedRomaji));
+    }
+
+    // ── classify_idle (is_roman_reliable=false: TsfNative) ────────────────────
+
+    // ひらがな系 conv (CONV_JISAKANA: NATIVE=1, ROMAN=0)
+    #[test]
+    fn idle_jisakana_tsf_assumed_yields_none() {
+        // TsfNative: AssumedRomaji は変更なし（downgrade 抑制）
+        assert_eq!(cm(CONV_JISAKANA).classify_idle(false, assumed(), false), None);
+    }
+
+    #[test]
+    fn idle_jisakana_tsf_romaji_yields_none() {
+        // TsfNative: ObservedRomaji も変更なし（ROMAN=0 は信頼できない）
+        assert_eq!(cm(CONV_JISAKANA).classify_idle(false, ObservedRomaji, false), None);
+    }
+
+    #[test]
+    fn idle_jisakana_tsf_kana_recovers_assumed() {
+        // TsfNative: ObservedKana → AssumedRomaji に回復
+        assert_eq!(cm(CONV_JISAKANA).classify_idle(false, ObservedKana, false), Some(assumed()));
+    }
+
+    #[test]
+    fn idle_jisakana_tsf_unknown_recovers_assumed() {
+        // TsfNative: Unknown → AssumedRomaji に回復
+        assert_eq!(cm(CONV_JISAKANA).classify_idle(false, Unknown, false), Some(assumed()));
+    }
+
+    // 英数 conv は is_roman_reliable に依存しない
+    #[test]
+    fn idle_eisuu_tsf_from_assumed_yields_kana() {
+        // HanAlpha は ROMAN bit 関係なく英数モード確定
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, assumed(), false), Some(ObservedKana));
+    }
+
+    // カタカナ conv も is_roman_reliable に依存しない
+    #[test]
+    fn idle_zenkata_tsf_from_kana_yields_romaji() {
+        assert_eq!(cm(CONV_ZENKATA).classify_idle(false, ObservedKana, false), Some(ObservedRomaji));
     }
 
     // ── classify_transition ──────────────────────────────────────────────────
@@ -399,7 +460,7 @@ mod tests {
     fn all_kana_modes_from_romaji_yield_kana_on_idle() {
         for conv in [CONV_EISUU, CONV_JISAKANA] {
             assert_eq!(
-                cm(conv).classify_idle(false, ObservedRomaji),
+                cm(conv).classify_idle(false, ObservedRomaji, true),
                 Some(ObservedKana),
                 "conv=0x{conv:08X}"
             );
@@ -410,7 +471,7 @@ mod tests {
     fn all_romaji_modes_from_kana_yield_romaji_on_idle() {
         for conv in [CONV_HIRAGANA, CONV_ZENKATA, CONV_HANKATA] {
             assert_eq!(
-                cm(conv).classify_idle(false, ObservedKana),
+                cm(conv).classify_idle(false, ObservedKana, true),
                 Some(ObservedRomaji),
                 "conv=0x{conv:08X}"
             );

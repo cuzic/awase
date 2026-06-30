@@ -282,8 +282,13 @@ impl Runtime {
 
         let current = self.platform_state.ime.belief.input_mode();
         let is_cold = in_flight == u64::MAX;
-
-        let new_mode_opt = awase::engine::ConvMode::from_u32(conv).classify_idle(is_cold, current);
+        // kp_stage_idle_conv_check は TsfNative 専用（should_run_idle_conv_check のガード 2）。
+        // TsfNative では ROMAN ビットが常に 0 のため is_roman_reliable=false。
+        // これにより classify_idle はひらがな conv で ObservedKana への downgrade を行わず、
+        // romaji-capable でない場合は AssumedRomaji { ImmBridgeBroken } に回復する。
+        let was_romaji_capable = current.is_romaji_capable();
+        let new_mode_opt =
+            awase::engine::ConvMode::from_u32(conv).classify_idle(is_cold, current, false);
 
         match new_mode_opt {
             None => {
@@ -299,41 +304,35 @@ impl Runtime {
                 }
             }
             Some(new_mode) => {
-                // TsfNative (WezTerm/UWP 等) では ROMAN ビット (0x10) が信頼できないため
-                // conv=0x0009 でも romaji 入力が機能する。
-                // AssumedRomaji (IMM broken) → ObservedKana への downgrade を抑制し
-                // エンジン非活性化（NotRomajiInput）を防ぐ。
-                let is_hiragana_native = conv & crate::imm::IME_CMODE_NATIVE != 0
-                    && conv & crate::imm::IME_CMODE_KATAKANA == 0;
-                let suppress_kana_downgrade = new_mode == InputModeState::ObservedKana
-                    && is_hiragana_native
-                    && matches!(current, InputModeState::AssumedRomaji { .. });
+                log::info!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
+                    conv, current, new_mode,
+                );
+                self.platform_state.ime.belief.input_mode = new_mode;
 
-                if suppress_kana_downgrade {
-                    log::debug!(
-                        "[idle-conv-check] TsfNative: conv=0x{:08X} ひらがな切替 {:?} → \
-                         ObservedKana 更新抑制 (ROMAN ビット不信頼, romaji 維持)",
-                        conv, current,
-                    );
-                } else {
+                // カタカナへの切替 + shadow=OFF → engine ON 同期
+                if new_mode == InputModeState::ObservedRomaji
+                    && conv & crate::imm::IME_CMODE_KATAKANA != 0
+                    && !self.platform_state.ime.effective_open()
+                {
+                    self.platform.timer.kill(TIMER_IME_REFRESH);
+                    let generation = self.platform_state.ime.event_log.next_seq();
+                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
+                    log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
+                }
+
+                // belief が romaji 不可→可 に変化 かつ shadow=ON → engine を再起動する。
+                // (例: HanAlpha→Hiragana で ObservedKana → AssumedRomaji に回復したとき)
+                if !was_romaji_capable
+                    && new_mode.is_romaji_capable()
+                    && self.platform_state.ime.effective_open()
+                {
+                    self.platform.timer.kill(TIMER_IME_REFRESH);
+                    let generation = self.platform_state.ime.event_log.next_seq();
+                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
                     log::info!(
-                        "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
-                        conv,
-                        current,
-                        new_mode,
+                        "[idle-conv-check] TsfNative: belief romaji 回復 + shadow=ON → engine 再起動"
                     );
-                    self.platform_state.ime.belief.input_mode = new_mode;
-
-                    // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
-                    if new_mode == InputModeState::ObservedRomaji
-                        && conv & crate::imm::IME_CMODE_KATAKANA != 0
-                        && !self.platform_state.ime.effective_open()
-                    {
-                        self.platform.timer.kill(TIMER_IME_REFRESH);
-                        let generation = self.platform_state.ime.event_log.next_seq();
-                        self.platform_state.ime.handle_engine_set_open(true, false, generation);
-                        log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
-                    }
                 }
             }
         }
@@ -344,33 +343,12 @@ impl Runtime {
         if conv_mode_changed
             && conv & crate::imm::IME_CMODE_NATIVE != 0
             && conv & crate::imm::IME_CMODE_KATAKANA == 0
+            && !self.platform_state.ime.effective_open()
         {
-            // belief が romaji 不可（ObservedKana 等）の場合は AssumedRomaji に回復する。
-            // TsfNative では ROMAN ビットが信頼できないため、ひらがな conv でもローマ字入力が機能する。
-            // 例: HanAlpha → Hiragana でエンジンが落ちたままになるのを防ぐ。
-            let cur = self.platform_state.ime.belief.input_mode();
-            let belief_restored = if !cur.is_romaji_capable() {
-                log::info!(
-                    "[idle-conv-check] TsfNative: ひらがな切替 + belief {:?} → AssumedRomaji 回復",
-                    cur,
-                );
-                self.platform_state.ime.belief.input_mode =
-                    InputModeState::AssumedRomaji {
-                        reason: awase::engine::AssumedReason::ImmBridgeBroken,
-                    };
-                true
-            } else {
-                false
-            };
-            if belief_restored || !self.platform_state.ime.effective_open() {
-                self.platform.timer.kill(TIMER_IME_REFRESH);
-                let generation = self.platform_state.ime.event_log.next_seq();
-                self.platform_state.ime.handle_engine_set_open(true, false, generation);
-                log::info!(
-                    "[idle-conv-check] TsfNative: ひらがな切替検出 + {} → IME ON 同期",
-                    if belief_restored { "belief 回復" } else { "shadow=OFF" },
-                );
-            }
+            self.platform.timer.kill(TIMER_IME_REFRESH);
+            let generation = self.platform_state.ime.event_log.next_seq();
+            self.platform_state.ime.handle_engine_set_open(true, false, generation);
+            log::info!("[idle-conv-check] TsfNative: ひらがな切替検出 + shadow=OFF → IME ON 同期");
         }
     }
 
@@ -751,31 +729,26 @@ impl Runtime {
                                 InputModeState::ObservedKana;
                         }
                     } else if has_native && !has_roman && !has_kata {
-                        // JISかな: ひらがな直接入力。belief が romaji-capable なら訂正。
-                        // ただし TsfNative では ROMAN ビットが信頼できないため、
-                        // ImmBridgeBroken AssumedRomaji → ObservedKana への downgrade は抑制する
-                        // （WezTerm では conv=0x0009 でもローマ字入力が機能する）。
-                        let suppress_jiskana = matches!(
-                            current,
-                            InputModeState::AssumedRomaji {
-                                reason: awase::engine::AssumedReason::ImmBridgeBroken,
+                        // JISかな / ひらがな: classify_idle(is_roman_reliable=false) に委ねる。
+                        // TsfNative では ROMAN=0 が信頼できないため ObservedKana への downgrade は
+                        // 行わず、非 romaji-capable なら AssumedRomaji に回復する。
+                        use awase::engine::ConvMode;
+                        match ConvMode::from_u32(conv).classify_idle(false, current, false) {
+                            Some(new_mode) => {
+                                log::info!(
+                                    "[focus-conv-check] TsfNative: conv=0x{:08X} (JISかな) \
+                                     → belief {:?}→{:?}",
+                                    conv, current, new_mode,
+                                );
+                                self.platform_state.ime.belief.input_mode = new_mode;
                             }
-                        );
-                        if current.is_romaji_capable() && !suppress_jiskana {
-                            log::info!(
-                                "[focus-conv-check] TsfNative: conv=0x{:08X} (JISかな) \
-                                 → belief {:?}→ObservedKana",
-                                conv,
-                                current,
-                            );
-                            self.platform_state.ime.belief.input_mode =
-                                InputModeState::ObservedKana;
-                        } else if suppress_jiskana {
-                            log::debug!(
-                                "[focus-conv-check] TsfNative: conv=0x{:08X} (JISかな) \
-                                 → belief {:?} 更新抑制 (ROMAN ビット不信頼)",
-                                conv, current,
-                            );
+                            None => {
+                                log::debug!(
+                                    "[focus-conv-check] TsfNative: conv=0x{:08X} (JISかな) \
+                                     → belief {:?} 変更なし",
+                                    conv, current,
+                                );
+                            }
                         }
                     } else if has_roman && !current.is_romaji_capable() {
                         // ローマ字モードだが belief が kana 系: 訂正。
