@@ -283,7 +283,17 @@ impl Runtime {
                 } else {
                     // TsfNative cache miss (CoreWindow を含む): 前ウィンドウの belief true を
                     // carry-over すると hiragana 直接注入が発生する。安全デフォルト OFF に倒す。
-                    self.platform_state.ime.reset_to_off_for_tsf_native_cache_miss();
+                    // ただし FocusKind::NonText（タスクバー通知領域の CoreWindow 等）への
+                    // フォーカスはテキスト入力が行われないため、belief をリセットすると
+                    // VK_DBE_ALPHANUMERIC 送信で conv mode が破壊される。
+                    if classified.kind == FocusKind::NonText {
+                        log::debug!(
+                            "[focus] TsfNative/CoreWindow cache-miss: NonText \
+                             → belief リセットをスキップ (transient, conv 保護)"
+                        );
+                    } else {
+                        self.platform_state.ime.reset_to_off_for_tsf_native_cache_miss();
+                    }
                 }
             }
         }
