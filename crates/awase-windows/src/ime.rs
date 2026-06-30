@@ -709,17 +709,19 @@ pub async fn set_ime_romaji_mode_async() -> bool {
     win32_async::offload(|| unsafe { set_ime_romaji_mode() }).await
 }
 
-/// カタカナ hint 付き `set_ime_romaji_mode`。
+/// 目標 conv 指定付き `set_ime_romaji_mode`。
 ///
-/// `katakana_hint != 0` かつ KATAKANA ビットが立っている場合は
-/// `katakana_hint | ROMAN` を目標 conv に使う（VK_DBE_HIRAGANA で失われた KATAKANA ビットを復元）。
-/// それ以外は `set_ime_romaji_mode()` と同じ動作（current_conv | ROMAN）。
+/// `target_conv` が `Some(v)` の場合は `v` をそのまま `ImmSetConversionStatus` に設定する。
+/// `None` の場合は現在の conv に ROMAN ビットを追加する（`set_ime_romaji_mode` 相当）。
+///
+/// カタカナ系は `ConvMode::imm_conv_target()` が KATAKANA/FULLSHAPE/ROMAN を含む値を返すため、
+/// VK_DBE_HIRAGANA で失われたビットを正確に復元できる。
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread or worker thread via offload.
 #[must_use]
-pub unsafe fn set_ime_romaji_mode_with_hint(katakana_hint: u32) -> bool {
-    use crate::imm::{IME_CMODE_KATAKANA, IME_CMODE_ROMAN};
+pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool {
+    use crate::imm::IME_CMODE_ROMAN;
     let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
         return false;
     };
@@ -732,11 +734,7 @@ pub unsafe fn set_ime_romaji_mode_with_hint(katakana_hint: u32) -> bool {
         return false;
     };
     let conv = current as u32;
-    let new_conv = if katakana_hint != 0 && (katakana_hint & IME_CMODE_KATAKANA != 0) {
-        katakana_hint | IME_CMODE_ROMAN
-    } else {
-        conv | IME_CMODE_ROMAN
-    };
+    let new_conv = target_conv.unwrap_or(conv | IME_CMODE_ROMAN);
     if new_conv == conv {
         return true;
     }
@@ -745,15 +743,16 @@ pub unsafe fn set_ime_romaji_mode_with_hint(katakana_hint: u32) -> bool {
     }
     .is_some();
     log::debug!(
-        "[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success} hint=0x{katakana_hint:08X}"
+        "[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success} target={:?}",
+        target_conv.map(|v| format!("0x{v:08X}")),
     );
     success
 }
 
-/// `set_ime_romaji_mode_with_hint` の async 版（ワーカースレッドで実行）
+/// `set_ime_romaji_mode_with_target` の async 版（ワーカースレッドで実行）
 #[expect(clippy::future_not_send)]
-pub async fn set_ime_romaji_mode_with_hint_async(katakana_hint: u32) -> bool {
-    win32_async::offload(move || unsafe { set_ime_romaji_mode_with_hint(katakana_hint) }).await
+pub async fn set_ime_romaji_mode_with_target_async(target_conv: Option<u32>) -> bool {
+    win32_async::offload(move || unsafe { set_ime_romaji_mode_with_target(target_conv) }).await
 }
 
 /// クロスプロセスで IME の変換モードをひらがなに強制する。

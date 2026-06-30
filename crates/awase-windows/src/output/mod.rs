@@ -102,12 +102,11 @@ pub struct Output {
     /// `mark_cold_raw_tsf` は `&self` しか取れないため直接 `dispatch_gji_response` を呼べない。
     /// このフラグで pending を表現し、`step_probe` 完了後に Platform が拾う。
     pub(crate) pending_gji_composition_reset: std::cell::Cell<bool>,
-    /// tray 経由でカタカナモード (半角/全角) が検出されたときの元の conv 値 (0 = なし)。
+    /// IME 変換モード管理コンポーネント。
     ///
-    /// VK_DBE_HIRAGANA 送信後は conv が 0x9 (ひらがな) に変わってしまうため、
-    /// `cold_warmup` の `ImmSetConversionStatus` で KATAKANA ビットを復元するために使う。
-    /// idle-conv-check が conv を読むたびに更新 (KATAKANA ビットなし → 0 でクリア)。
-    pub(crate) katakana_conv_hint: std::cell::Cell<u32>,
+    /// `kp_stage_idle_conv_check` が `update_from_conv` で更新し、
+    /// `cold_warmup` と `transmit_tsf` が warmup VK と `ImmSetConversionStatus` 目標値の選択に使う。
+    pub(crate) conv_mode: crate::state::ConvModeMgr,
     /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
     ///
     /// これらのメソッドは `&self` しか取れないためタイマー操作を直接行えない。
@@ -212,7 +211,7 @@ impl Output {
             gji_probe_guard: std::cell::RefCell::new(None),
             pending_gji_warmup: std::cell::Cell::new(None),
             pending_gji_composition_reset: std::cell::Cell::new(false),
-            katakana_conv_hint: std::cell::Cell::new(0),
+            conv_mode: crate::state::ConvModeMgr::default(),
             pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(0),
@@ -220,19 +219,6 @@ impl Output {
             unicode_cold_defer: std::sync::atomic::AtomicBool::new(false),
             unicode_cold_deferred: std::cell::RefCell::new(Vec::new()),
         }
-    }
-
-    /// tray 経由カタカナ conv ヒントを設定する (0 = クリア)。
-    ///
-    /// idle-conv-check が KATAKANA ビット付きの conv を検出したときに呼ぶ。
-    /// cold_warmup が `ImmSetConversionStatus` を呼ぶ際に KATAKANA ビットを復元するために参照する。
-    pub(crate) fn set_katakana_conv_hint(&self, conv: u32) {
-        self.katakana_conv_hint.set(conv);
-    }
-
-    /// tray 経由カタカナ conv ヒントを返す (0 = なし)。
-    pub(crate) fn katakana_conv_hint(&self) -> u32 {
-        self.katakana_conv_hint.get()
     }
 
     /// 次の Unicode モード Romaji 送信後に GJI write 観測を行うようリクエストする。

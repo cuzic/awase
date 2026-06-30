@@ -436,29 +436,24 @@ impl Output {
     /// `ImmSetConversionStatus` は TSF-native windows では TSF モードに反映されないため、
     /// キーイベントで直接 TSF 入力モードを切り替える。
     ///
-    /// - 半角カタカナ (`KATAKANA=1, FULLSHAPE=0`): `[VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, romaji...]`
-    /// - 全角カタカナ (`KATAKANA=1, FULLSHAPE=1`): `[VK_DBE_KATAKANA, romaji...]`
-    /// - ひらがな / hint=0:                        `[VK_DBE_HIRAGANA, romaji...]` (従来と同じ)
+    /// - `HankakuKatakana`: `[VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, romaji...]`
+    /// - `ZenkakuKatakana`: `[VK_DBE_KATAKANA, romaji...]`
+    /// - その他:            `[VK_DBE_HIRAGANA, romaji...]` (従来と同じ)
     pub(super) fn send_vk_runs_with_leading_warmup(
         chars: &[(VkCode, bool)],
         cold_seq: u32,
-        katakana_hint: u32,
+        charset: crate::state::Charset,
     ) {
-        use crate::imm::{IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA};
+        use crate::state::Charset;
 
-        let (leading_label, leading_vks): (&str, Vec<(VkCode, bool)>) =
-            if katakana_hint & IME_CMODE_KATAKANA != 0 {
-                if katakana_hint & IME_CMODE_FULLSHAPE != 0 {
-                    ("f1-leading", vec![(VK_DBE_KATAKANA, false)])
-                } else {
-                    (
-                        "f1+f3-leading",
-                        vec![(VK_DBE_KATAKANA, false), (VK_DBE_SBCSCHAR, false)],
-                    )
-                }
-            } else {
-                ("f2-leading", vec![(VK_DBE_HIRAGANA, false)])
-            };
+        let (leading_label, leading_vks): (&str, Vec<(VkCode, bool)>) = match charset {
+            Charset::ZenkakuKatakana => ("f1-leading", vec![(VK_DBE_KATAKANA, false)]),
+            Charset::HankakuKatakana => (
+                "f1+f3-leading",
+                vec![(VK_DBE_KATAKANA, false), (VK_DBE_SBCSCHAR, false)],
+            ),
+            _ => ("f2-leading", vec![(VK_DBE_HIRAGANA, false)]),
+        };
 
         let mut warmup_plus_chars = Vec::with_capacity(chars.len() + leading_vks.len());
         warmup_plus_chars.extend_from_slice(&leading_vks);

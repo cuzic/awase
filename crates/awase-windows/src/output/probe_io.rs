@@ -100,15 +100,16 @@ impl ProbeIo for Output {
         outcome: &WarmupOutcome,
     ) -> usize {
         // TSF-native (WezTerm 等) では ImmSetConversionStatus が TSF モードに反映されない。
-        // VK cold path (prepend_f2_warmup=true, used_eager_path=false) でカタカナ hint がある場合、
+        // VK cold path (prepend_f2_warmup=true, used_eager_path=false) でカタカナモードの場合、
         // 先頭 VK_DBE_HIRAGANA の代わりに VK_DBE_KATAKANA (+ 半角なら VK_DBE_SBCSCHAR) を送り
         // TSF 入力モードをカタカナに切り替える。
-        let katakana_hint = self.katakana_conv_hint();
+        let conv_mode = self.conv_mode.get();
         let result = if outcome.prepend_f2_warmup
             && !outcome.used_eager_path
-            && katakana_hint & crate::imm::IME_CMODE_KATAKANA != 0
+            && conv_mode.is_some_and(|m| m.charset.is_katakana())
         {
-            Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, katakana_hint);
+            let charset = conv_mode.unwrap().charset;
+            Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, charset);
             chars.len()
         } else {
             crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
