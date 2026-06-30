@@ -171,9 +171,12 @@ pub(crate) struct SacrificialResend {
     /// 送信先ターゲット。Chrome の場合は `transmit_chrome` + `VkMarker::Injected`、
     /// TSF の場合は `transmit_tsf` + `VkMarker::Tsf` を使う。
     pub target: TransmitTarget,
-    /// `true` = VK_A が composition を確認（warm）、`false` = タイムアウト（cold）。
+    /// `true` = warm 確認済み、`false` = タイムアウト（cold）。
     /// Chrome dispatcher が cold 時に VK_IME_OFF→VK_IME_ON 強制リセットを行うかどうかの判定に使う。
     pub confirmed_warm: bool,
+    /// `true` = 犠牲キー（VK_A）を送っていないため BS クリーンアップ不要。
+    /// `ImeOffOnWarmupCoro` がこのフラグを立てる。`SacrificialWarmupCoro` は `false`。
+    pub skip_cleanup_bs: bool,
 }
 
 /// ステートマシン → dispatcher 方向の宣言的アクション。

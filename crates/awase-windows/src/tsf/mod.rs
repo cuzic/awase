@@ -15,6 +15,7 @@ pub(crate) mod composition_fsm;
 pub(crate) mod gji_fsm;
 pub(crate) mod gji_warmup_coro;
 pub(crate) mod ime_mode_fsm;
+pub(crate) mod ime_offon_warmup_coro;
 pub(crate) mod literal_detect_fsm;
 pub mod observer;
 pub(crate) mod sacr_warmup_coro;
