@@ -271,9 +271,6 @@ impl Runtime {
         let Some(conv) = (unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }) else {
             return;
         };
-        let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
-        let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;
-
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
         self.platform.output.conv_mode.update_from_conv(conv);
@@ -281,94 +278,36 @@ impl Runtime {
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
 
-        if !has_roman && !has_native {
-            // 英数モード：ROMAN も NATIVE もない → cold start でも確実に判定可能
-            let current = self.platform_state.ime.belief.input_mode();
-            if current.is_romaji_capable() {
-                log::info!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (英数) → belief {:?}→ObservedKana",
-                    conv,
-                    current,
-                );
-                self.platform_state.ime.belief.input_mode = InputModeState::ObservedKana;
-            }
-            return;
-        }
+        let current = self.platform_state.ime.belief.input_mode();
+        let is_cold = in_flight == u64::MAX;
 
-        // JISかな / カタカナ / ローマ字モードの判定:
-        // cold start（in_flight == u64::MAX）では ROMAN ビットが信頼できないため、
-        // has_roman == true のローマ字判定はスキップ。
-        // has_roman == false（かな/カタカナ）は ROMAN ビットに依存しないため cold start でも判定可能。
-        if has_roman && in_flight == u64::MAX {
+        let Some(new_mode) = crate::state::classify_idle_conv(conv, is_cold, current) else {
             log::debug!(
-                "[idle-conv-check] TsfNative: conv=0x{:08X} cold start → ROMAN ビット判定スキップ",
+                "[idle-conv-check] TsfNative: conv=0x{:08X}{} → belief {:?} 変更なし",
                 conv,
+                if is_cold && conv & crate::imm::IME_CMODE_ROMAN != 0 { " cold-start" } else { "" },
+                current,
             );
             return;
-        }
+        };
 
-        let current = self.platform_state.ime.belief.input_mode();
-        if has_roman {
-            // ローマ字モード
-            if !current.is_romaji_capable() {
-                log::info!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (ローマ字) → belief {:?}→ObservedRomaji",
-                    conv,
-                    current,
-                );
-                self.platform_state.ime.belief.input_mode = InputModeState::ObservedRomaji;
-            } else {
-                log::debug!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (ROMAN=true) → belief 変更なし",
-                    conv,
-                );
-            }
-        } else if conv & crate::imm::IME_CMODE_KATAKANA != 0 {
-            // NATIVE=1, KATAKANA=1, ROMAN=0: カタカナモード（タスクバー経由のモード切替を含む）
-            // カタカナ出力に NICOLA を使う場合、belief を romaji-capable に設定する。
-            // warmup（VK_DBE_HIRAGANA + ImmSetConversionStatus）が ROMAN ビットを補うため
-            // 実際のキー入力はローマ字として処理される。
-            if current.is_romaji_capable() {
-                // すでに NICOLA active → 維持（shadow は ON のはず）
-                log::debug!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (カタカナ ROMAN=false) → belief 変更なし (NICOLA 維持)",
-                    conv,
-                );
-            } else {
-                // ObservedKana / Unknown からカタカナへ遷移 → NICOLA 有効化。
-                // ROMAN=0 はタスクバー経由の切替を示す（warmup 前）。
-                log::info!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (カタカナ) → belief {:?}→ObservedRomaji (NICOLA 有効化)",
-                    conv,
-                    current,
-                );
-                self.platform_state.ime.belief.input_mode = InputModeState::ObservedRomaji;
-                // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
-                if !self.platform_state.ime.effective_open() {
-                    self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.event_log.next_seq();
-                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
-                    log::info!(
-                        "[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期"
-                    );
-                }
-            }
-        } else {
-            // NATIVE=1, KATAKANA=0, ROMAN=0: JISかな ひらがな直接入力
-            // ローマ字ではなくキーをかな文字に直接マップするため NICOLA は機能しない。
-            if current.is_romaji_capable() {
-                log::info!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (JISかな) → belief {:?}→ObservedKana",
-                    conv,
-                    current,
-                );
-                self.platform_state.ime.belief.input_mode = InputModeState::ObservedKana;
-            } else {
-                log::debug!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} (JISかな) → belief 変更なし",
-                    conv,
-                );
-            }
+        log::info!(
+            "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
+            conv,
+            current,
+            new_mode,
+        );
+        self.platform_state.ime.belief.input_mode = new_mode;
+
+        // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
+        if new_mode == InputModeState::ObservedRomaji
+            && conv & crate::imm::IME_CMODE_KATAKANA != 0
+            && !self.platform_state.ime.effective_open()
+        {
+            self.platform.timer.kill(TIMER_IME_REFRESH);
+            let generation = self.platform_state.ime.event_log.next_seq();
+            self.platform_state.ime.handle_engine_set_open(true, false, generation);
+            log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
         }
     }
 

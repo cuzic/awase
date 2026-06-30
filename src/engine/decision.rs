@@ -272,6 +272,58 @@ impl InputModeState {
     }
 }
 
+/// `ImmGetConversionStatus` の u32 値から belief の `InputModeState` への分類。
+///
+/// Win32 API を一切呼ばないため、Linux でもテスト可能。
+/// 戻り値は「belief を更新すべき新しい状態」。`None` は変更なし（現在値を維持）。
+///
+/// # 引数
+/// - `conv`: `ImmGetConversionStatus` が返した変換モードビットフィールド
+/// - `is_cold_start`: `output_in_flight_ms() == u64::MAX`（ROMAN ビット未確定期間）
+/// - `current`: 現在の `InputModeState` belief
+#[must_use]
+pub fn classify_idle_conv(
+    conv: u32,
+    is_cold_start: bool,
+    current: InputModeState,
+) -> Option<InputModeState> {
+    // ImmGetConversionStatus のビット定数 (imm.h)
+    const NATIVE: u32 = 0x0001;
+    const KATAKANA: u32 = 0x0002;
+    const ROMAN: u32 = 0x0010;
+
+    let has_roman = conv & ROMAN != 0;
+    let has_native = conv & NATIVE != 0;
+    let has_kata = conv & KATAKANA != 0;
+
+    if !has_roman && !has_native {
+        // 英数モード (conv=0x00 等): cold start でも確実に判定可能
+        return if current.is_romaji_capable() {
+            Some(InputModeState::ObservedKana)
+        } else {
+            None
+        };
+    }
+
+    // ROMAN ビットは cold start 中は信頼できない → has_roman=true の判定をスキップ
+    if has_roman && is_cold_start {
+        return None;
+    }
+
+    if has_roman {
+        // ローマ字モード (conv=0x19 など)
+        if current.is_romaji_capable() { None } else { Some(InputModeState::ObservedRomaji) }
+    } else if has_kata {
+        // カタカナモード (conv=0x0B=全角カタカナ, conv=0x03=半角カタカナ)
+        // NICOLA はカタカナも romaji-capable として扱う
+        if current.is_romaji_capable() { None } else { Some(InputModeState::ObservedRomaji) }
+    } else {
+        // JISかな / ひらがな直接入力 (conv=0x09)
+        // NATIVE=1, KATAKANA=0, ROMAN=0 → NICOLA は使えない
+        if current.is_romaji_capable() { Some(InputModeState::ObservedKana) } else { None }
+    }
+}
+
 /// Engine が判断に使う外部コンテキスト（読み取り専用）。
 ///
 /// # 設計ルール
@@ -430,6 +482,168 @@ mod tests {
     }
 
     // ── effects_mut ──
+
+    // ── classify_idle_conv ────────────────────────────────────────────────────
+
+    fn assumed() -> InputModeState {
+        InputModeState::AssumedRomaji { reason: AssumedReason::ImmBridgeBroken }
+    }
+
+    // ImmGetConversionStatus 代表値 (imm.h ビット定数の組み合わせ)
+    const CONV_EISUU: u32 = 0x0000; // 半角英数 (NATIVE=0, ROMAN=0)
+    const CONV_HIRAGANA: u32 = 0x0019; // ひらがなローマ字 (NATIVE|FULLSHAPE|ROMAN)
+    const CONV_JISAKANA: u32 = 0x0009; // JISかな (NATIVE|FULLSHAPE)
+    const CONV_ZENKATA: u32 = 0x000B; // 全角カタカナ (NATIVE|KATAKANA|FULLSHAPE)
+    const CONV_HANKATA: u32 = 0x0003; // 半角カタカナ (NATIVE|KATAKANA)
+
+    // ── 英数 (0x00) ──
+    #[test]
+    fn conv_eisuu_from_romaji_yields_kana() {
+        assert_eq!(
+            classify_idle_conv(CONV_EISUU, false, InputModeState::ObservedRomaji),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    #[test]
+    fn conv_eisuu_from_assumed_romaji_yields_kana() {
+        assert_eq!(classify_idle_conv(CONV_EISUU, false, assumed()), Some(InputModeState::ObservedKana));
+    }
+
+    #[test]
+    fn conv_eisuu_from_kana_yields_none() {
+        assert_eq!(classify_idle_conv(CONV_EISUU, false, InputModeState::ObservedKana), None);
+    }
+
+    #[test]
+    fn conv_eisuu_cold_start_still_classifies() {
+        // 英数は ROMAN ビットが 0 なので cold start でも判定可能
+        assert_eq!(
+            classify_idle_conv(CONV_EISUU, true, InputModeState::ObservedRomaji),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    // ── ひらがなローマ字 (0x19) ──
+    #[test]
+    fn conv_hiragana_from_kana_yields_romaji() {
+        assert_eq!(
+            classify_idle_conv(CONV_HIRAGANA, false, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedRomaji)
+        );
+    }
+
+    #[test]
+    fn conv_hiragana_from_romaji_yields_none() {
+        assert_eq!(classify_idle_conv(CONV_HIRAGANA, false, InputModeState::ObservedRomaji), None);
+    }
+
+    #[test]
+    fn conv_hiragana_cold_start_skips() {
+        // ROMAN=1 だが cold start → スキップ
+        assert_eq!(classify_idle_conv(CONV_HIRAGANA, true, InputModeState::ObservedKana), None);
+        assert_eq!(classify_idle_conv(CONV_HIRAGANA, true, InputModeState::Unknown), None);
+    }
+
+    // ── JISかな (0x09) ──
+    #[test]
+    fn conv_jisakana_from_romaji_yields_kana() {
+        assert_eq!(
+            classify_idle_conv(CONV_JISAKANA, false, InputModeState::ObservedRomaji),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    #[test]
+    fn conv_jisakana_from_assumed_romaji_yields_kana() {
+        assert_eq!(
+            classify_idle_conv(CONV_JISAKANA, false, assumed()),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    #[test]
+    fn conv_jisakana_from_kana_yields_none() {
+        assert_eq!(classify_idle_conv(CONV_JISAKANA, false, InputModeState::ObservedKana), None);
+    }
+
+    #[test]
+    fn conv_jisakana_cold_start_classifies() {
+        // ROMAN=0 なので cold start でも判定可能
+        assert_eq!(
+            classify_idle_conv(CONV_JISAKANA, true, InputModeState::ObservedRomaji),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    // ── 全角カタカナ (0x0B) ──
+    #[test]
+    fn conv_zenkata_from_kana_yields_romaji() {
+        assert_eq!(
+            classify_idle_conv(CONV_ZENKATA, false, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedRomaji)
+        );
+    }
+
+    #[test]
+    fn conv_zenkata_from_romaji_yields_none() {
+        // NICOLA 維持
+        assert_eq!(classify_idle_conv(CONV_ZENKATA, false, InputModeState::ObservedRomaji), None);
+    }
+
+    #[test]
+    fn conv_zenkata_cold_start_classifies() {
+        // KATAKANA=1, ROMAN=0 → cold start でも判定可能
+        assert_eq!(
+            classify_idle_conv(CONV_ZENKATA, true, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedRomaji)
+        );
+    }
+
+    // ── 半角カタカナ (0x03) ──
+    #[test]
+    fn conv_hankata_from_kana_yields_romaji() {
+        assert_eq!(
+            classify_idle_conv(CONV_HANKATA, false, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedRomaji)
+        );
+    }
+
+    #[test]
+    fn conv_hankata_from_romaji_yields_none() {
+        assert_eq!(classify_idle_conv(CONV_HANKATA, false, InputModeState::ObservedRomaji), None);
+    }
+
+    #[test]
+    fn conv_hankata_cold_start_classifies() {
+        assert_eq!(
+            classify_idle_conv(CONV_HANKATA, true, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedRomaji)
+        );
+    }
+
+    // ── 全モード網羅 ──
+    #[test]
+    fn all_kana_conv_modes_from_romaji_yield_kana() {
+        for conv in [CONV_EISUU, CONV_JISAKANA] {
+            assert_eq!(
+                classify_idle_conv(conv, false, InputModeState::ObservedRomaji),
+                Some(InputModeState::ObservedKana),
+                "conv=0x{conv:08X}"
+            );
+        }
+    }
+
+    #[test]
+    fn all_romaji_conv_modes_from_kana_yield_romaji() {
+        for conv in [CONV_HIRAGANA, CONV_ZENKATA, CONV_HANKATA] {
+            assert_eq!(
+                classify_idle_conv(conv, false, InputModeState::ObservedKana),
+                Some(InputModeState::ObservedRomaji),
+                "conv=0x{conv:08X}"
+            );
+        }
+    }
 
     #[test]
     fn effects_mut_on_pass_through_promotes_to_pass_through_with() {
