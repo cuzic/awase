@@ -319,14 +319,35 @@ impl Runtime {
                 );
             }
         } else if conv & crate::imm::IME_CMODE_KATAKANA != 0 {
-            // NATIVE=1, KATAKANA=1, ROMAN=0: カタカナ JIS かな入力モード
-            // カタカナ出力を目的として NICOLA を使うユーザーのためにエンジンは有効のまま維持する。
+            // NATIVE=1, KATAKANA=1, ROMAN=0: カタカナモード（タスクバー経由のモード切替を含む）
+            // カタカナ出力に NICOLA を使う場合、belief を romaji-capable に設定する。
             // warmup（VK_DBE_HIRAGANA + ImmSetConversionStatus）が ROMAN ビットを補うため
             // 実際のキー入力はローマ字として処理される。
-            log::debug!(
-                "[idle-conv-check] TsfNative: conv=0x{:08X} (カタカナ ROMAN=false) → belief 変更なし (NICOLA 維持)",
-                conv,
-            );
+            if current.is_romaji_capable() {
+                // すでに NICOLA active → 維持（shadow は ON のはず）
+                log::debug!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (カタカナ ROMAN=false) → belief 変更なし (NICOLA 維持)",
+                    conv,
+                );
+            } else {
+                // ObservedKana / Unknown からカタカナへ遷移 → NICOLA 有効化。
+                // ROMAN=0 はタスクバー経由の切替を示す（warmup 前）。
+                log::info!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (カタカナ) → belief {:?}→ObservedRomaji (NICOLA 有効化)",
+                    conv,
+                    current,
+                );
+                self.platform_state.ime.belief.input_mode = InputModeState::ObservedRomaji;
+                // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
+                if !self.platform_state.ime.effective_open() {
+                    self.platform.timer.kill(crate::TIMER_IME_REFRESH);
+                    let generation = self.platform_state.ime.event_log.next_seq();
+                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
+                    log::info!(
+                        "[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期"
+                    );
+                }
+            }
         } else {
             // NATIVE=1, KATAKANA=0, ROMAN=0: JISかな ひらがな直接入力
             // ローマ字ではなくキーをかな文字に直接マップするため NICOLA は機能しない。
