@@ -23,6 +23,7 @@
 pub mod focus;
 pub mod scanmap;
 pub mod single_thread_cell;
+pub mod state;
 pub mod tuning;
 
 // ── Windows 専用モジュール ───────────────────────────────────────────────────────
@@ -55,8 +56,6 @@ pub mod platform;
 #[cfg(windows)]
 pub mod runtime;
 #[cfg(windows)]
-pub mod state;
-#[cfg(windows)]
 pub mod timer;
 #[cfg(windows)]
 pub mod tray;
@@ -79,9 +78,9 @@ pub use single_thread_cell::SingleThreadCell;
 #[cfg(windows)]
 use awase::types::RawKeyEvent;
 
+pub use crate::state::{HookConfig, ImeBelief};
 #[cfg(windows)]
-pub use crate::state::{HookConfig, ImeBelief, PlatformState};
-#[cfg(windows)]
+pub use crate::state::PlatformState;
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
 #[cfg(windows)]

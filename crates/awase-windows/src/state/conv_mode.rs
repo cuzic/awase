@@ -3,7 +3,9 @@
 //! `Charset` と `ConvMode` の定義は platform 非依存の `nicola` クレートに移動済み。
 //! このファイルは `ConvModeMgr`（状態管理ラッパー）のみを定義する。
 
-pub(crate) use awase::engine::{Charset, ConvMode};
+pub(crate) use awase::engine::ConvMode;
+#[cfg(windows)]
+pub(crate) use awase::engine::Charset;
 
 // ─── 管理コンポーネント ────────────────────────────────────────────────────────
 
@@ -12,10 +14,12 @@ pub(crate) use awase::engine::{Charset, ConvMode};
 /// `kp_stage_idle_conv_check` が `update_from_conv` でモードを更新し、
 /// warmup コードが `get` でモードを参照して先頭 VK と ImmSetConversionStatus 目標値を決定する。
 #[derive(Debug, Default)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct ConvModeMgr {
     mode: std::cell::Cell<Option<ConvMode>>,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl ConvModeMgr {
     /// `ImmGetConversionStatus` の raw conv 値からモードを更新する。
     ///
@@ -25,9 +29,9 @@ impl ConvModeMgr {
         let old = self.mode.get();
         if old != Some(new) {
             log::info!(
-                "[conv-mode] {:?} → {:?} (conv=0x{conv:08X})",
-                old.as_ref().map(|m| format!("{:?}/{}", m.charset, if m.romaji { "roma" } else { "kana" })),
-                format!("{:?}/{}", new.charset, if new.romaji { "roma" } else { "kana" }),
+                "[conv-mode] {} → {} (conv=0x{conv:08X})",
+                old.map_or_else(|| "None".to_string(), |m| m.to_string()),
+                new,
             );
             self.mode.set(Some(new));
         }

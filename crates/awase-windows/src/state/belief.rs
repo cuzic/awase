@@ -29,6 +29,7 @@ use awase::engine::InputModeState;
 ///
 /// IME ON/OFF 自体は [`crate::state::ime_model::ImeModel`] の `desired_open` が SSOT。
 #[derive(Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct ImeBelief {
     /// 入力モード（ローマ字 / かな / 不明）
     ///
@@ -42,6 +43,7 @@ pub struct ImeBelief {
     pub(in crate::state) prev_conversion_mode: Option<u32>,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 impl ImeBelief {
     /// 入力モードを返す。
     #[inline]
