@@ -718,15 +718,15 @@ impl Runtime {
                     let current = self.platform_state.ime.belief.input_mode();
                     if awase::engine::ConvMode::from_u32(conv).is_eisu() {
                         // 英数モード (HankakuAlpha / ZenkakuAlpha)。ROMAN ビットの有無は問わない。
-                        if current.is_romaji_capable() {
+                        if !matches!(current, InputModeState::ObservedEisu) {
                             log::info!(
                                 "[focus-conv-check] TsfNative: conv=0x{:08X} (英数) \
-                                 → belief {:?}→ObservedKana",
+                                 → belief {:?}→ObservedEisu",
                                 conv,
                                 current,
                             );
                             self.platform_state.ime.belief.input_mode =
-                                InputModeState::ObservedKana;
+                                InputModeState::ObservedEisu;
                         }
                     } else if has_native && !has_roman && !has_kata {
                         // JISかな / ひらがな: classify_idle(is_roman_reliable=false) に委ねる。

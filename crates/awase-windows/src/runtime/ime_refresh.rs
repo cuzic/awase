@@ -1,4 +1,4 @@
-use awase::engine::{AssumedReason, EngineCommand, InputModeState};
+use awase::engine::{AssumedReason, ConvMode, EngineCommand, InputModeState};
 use awase::platform::PlatformRuntime;
 
 use super::Runtime;
@@ -185,6 +185,7 @@ impl Runtime {
         // 前ウィンドウの stale な ObservedKana を引き継いでいると、FocusChanged の ctx で
         // engine が inactive になる。broken アプリでは入力モードを検出できないため、
         // ime_on=true のとき AssumedRomaji と仮定して補正する。
+        // ただし ObservedKana が英数モード由来の場合は補正しない（英数モードで Engine ON 誤起動防止）。
         if skip_imm_query
             && self.platform_state.ime.effective_open()
             && !self
@@ -194,12 +195,21 @@ impl Runtime {
                 .input_mode()
                 .is_romaji_capable()
         {
-            log::info!(
-                "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
-            );
-            self.platform_state.ime.belief.input_mode = InputModeState::AssumedRomaji {
-                reason: AssumedReason::ImmBridgeBroken,
-            };
+            if matches!(
+                self.platform_state.ime.belief.input_mode(),
+                InputModeState::ObservedEisu
+            ) {
+                log::info!(
+                    "FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)"
+                );
+            } else {
+                log::info!(
+                    "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
+                );
+                self.platform_state.ime.belief.input_mode = InputModeState::AssumedRomaji {
+                    reason: AssumedReason::ImmBridgeBroken,
+                };
+            }
         }
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
@@ -375,15 +385,19 @@ impl Runtime {
         }
 
         let applied_open = self.platform_state.ime.model().applied.applied_open();
-        // tray で半角英数に切り替えた直後は conv=0x00000000 (英数) になる。
-        // この状態で VK_DBE_HIRAGANA を送るとひらがなモードに戻ってしまうため、
-        // applied_open=true でも英数モードならウォームアップをスキップする。
+        // tray で英数／カタカナ等に切り替えた直後の conv を読み、prev_conversion_mode を更新する。
+        // apply_force_on_for_imm_broken（直後に呼ばれる）が正確な conv を参照できるようにする。
+        // 英数モード (is_eisu) なら warmup をスキップする:
+        //   NATIVE=0 のまま VK_DBE_HIRAGANA を送るとひらがなモードに戻ってしまうため。
+        // 旧 eisu_guard は conv=0x0000 のみを対象としていたが、MS-IME は 0x0010 (ROMAN=1,NATIVE=0)
+        // を返すことがあるため is_eisu() に統一する。
+        let focus_change_conv =
+            unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+        if let Some(conv) = focus_change_conv {
+            self.platform.output.conv_mode.update_from_conv(conv);
+        }
         let eisu_guard_active = applied_open == Some(true)
-            && unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
-                .is_some_and(|conv| {
-                    conv & crate::imm::IME_CMODE_NATIVE == 0
-                        && conv & crate::imm::IME_CMODE_ROMAN == 0
-                });
+            && focus_change_conv.is_some_and(|conv| ConvMode::from_u32(conv).is_eisu());
         if eisu_guard_active {
             log::info!(
                 "[composition] FocusChange: applied_open=true だが conv=英数 → warmup スキップ (tray 半角英数 保護)"

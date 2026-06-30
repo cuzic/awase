@@ -125,11 +125,11 @@ impl ConvMode {
         current: InputModeState,
         is_roman_reliable: bool,
     ) -> Option<InputModeState> {
-        use InputModeState::{ObservedKana, ObservedRomaji};
+        use InputModeState::{ObservedEisu, ObservedKana, ObservedRomaji};
 
         // 英数モード: cold start でも ROMAN=0 なので確実に判定可能
         if self.is_eisu() {
-            return current.is_romaji_capable().then_some(ObservedKana);
+            return (!matches!(current, ObservedEisu)).then_some(ObservedEisu);
         }
         // ROMAN ビットは cold start 中は信頼できない
         if self.romaji && is_cold_start {
@@ -170,13 +170,13 @@ impl ConvMode {
     ///
     /// # 注意: 英数遷移の特殊ケース
     /// `self` が英数モードかつ `prev` が非英数だった場合、
-    /// `current` に関わらず `Some(ObservedKana)` を返す（belief を強制補正）。
+    /// `current` に関わらず `Some(ObservedEisu)` を返す（belief を強制補正）。
     pub fn classify_transition(self, prev: ConvMode, current: InputModeState) -> Option<InputModeState> {
-        use InputModeState::{ObservedKana, ObservedRomaji};
+        use InputModeState::{ObservedEisu, ObservedKana, ObservedRomaji};
 
-        // 英数モードへの遷移 → 常に ObservedKana
+        // 英数モードへの遷移 → 常に ObservedEisu
         if self.is_eisu() && !prev.is_eisu() {
-            return Some(ObservedKana);
+            return Some(ObservedEisu);
         }
         // ROMAN ビット変化 かつ NATIVE あり → ひらがな↔ローマ字切り替え
         let roman_changed = prev.romaji != self.romaji;
@@ -195,7 +195,7 @@ impl ConvMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use InputModeState::{AssumedRomaji, ObservedKana, ObservedRomaji, Unknown};
+    use InputModeState::{AssumedRomaji, ObservedEisu, ObservedKana, ObservedRomaji, Unknown};
     use crate::engine::AssumedReason;
 
     // ── テスト用ヘルパー ──────────────────────────────────────────────────────
@@ -299,23 +299,30 @@ mod tests {
 
     // 英数
     #[test]
-    fn idle_eisuu_from_romaji_yields_kana() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedRomaji, true), Some(ObservedKana));
+    fn idle_eisuu_from_romaji_yields_eisu() {
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedRomaji, true), Some(ObservedEisu));
     }
 
     #[test]
-    fn idle_eisuu_from_assumed_yields_kana() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(false, assumed(), true), Some(ObservedKana));
+    fn idle_eisuu_from_assumed_yields_eisu() {
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, assumed(), true), Some(ObservedEisu));
     }
 
     #[test]
-    fn idle_eisuu_from_kana_yields_none() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedKana, true), None);
+    fn idle_eisuu_from_kana_yields_eisu() {
+        // ObservedKana（かな）から英数に変わったので ObservedEisu に更新
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedKana, true), Some(ObservedEisu));
+    }
+
+    #[test]
+    fn idle_eisuu_from_eisu_yields_none() {
+        // 既に ObservedEisu なら変更なし
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedEisu, true), None);
     }
 
     #[test]
     fn idle_eisuu_cold_start_still_classifies() {
-        assert_eq!(cm(CONV_EISUU).classify_idle(true, ObservedRomaji, true), Some(ObservedKana));
+        assert_eq!(cm(CONV_EISUU).classify_idle(true, ObservedRomaji, true), Some(ObservedEisu));
     }
 
     // ひらがなローマ字
@@ -370,28 +377,36 @@ mod tests {
 
     // 半角英数/ローマ字 (conv=0x0010): ROMAN ビットがあっても英数モード
     #[test]
-    fn idle_hanalpha_roma_from_assumed_yields_kana() {
-        // is_roman_reliable に関わらず ObservedKana を返す
-        assert_eq!(cm(0x0010).classify_idle(false, assumed(), true), Some(ObservedKana));
-        assert_eq!(cm(0x0010).classify_idle(false, assumed(), false), Some(ObservedKana));
+    fn idle_hanalpha_roma_from_assumed_yields_eisu() {
+        // is_roman_reliable に関わらず ObservedEisu を返す
+        assert_eq!(cm(0x0010).classify_idle(false, assumed(), true), Some(ObservedEisu));
+        assert_eq!(cm(0x0010).classify_idle(false, assumed(), false), Some(ObservedEisu));
     }
 
     #[test]
-    fn idle_hanalpha_roma_from_romaji_yields_kana() {
-        assert_eq!(cm(0x0010).classify_idle(false, ObservedRomaji, true), Some(ObservedKana));
-        assert_eq!(cm(0x0010).classify_idle(false, ObservedRomaji, false), Some(ObservedKana));
+    fn idle_hanalpha_roma_from_romaji_yields_eisu() {
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedRomaji, true), Some(ObservedEisu));
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedRomaji, false), Some(ObservedEisu));
     }
 
     #[test]
-    fn idle_hanalpha_roma_from_kana_yields_none() {
-        assert_eq!(cm(0x0010).classify_idle(false, ObservedKana, true), None);
-        assert_eq!(cm(0x0010).classify_idle(false, ObservedKana, false), None);
+    fn idle_hanalpha_roma_from_kana_yields_eisu() {
+        // ObservedKana（かな）から英数に変わったので ObservedEisu に更新
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedKana, true), Some(ObservedEisu));
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedKana, false), Some(ObservedEisu));
+    }
+
+    #[test]
+    fn idle_hanalpha_roma_from_eisu_yields_none() {
+        // 既に ObservedEisu なら変更なし
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedEisu, true), None);
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedEisu, false), None);
     }
 
     #[test]
     fn idle_hanalpha_roma_cold_start_still_classifies() {
         // is_eisu() ブランチは cold start でも早期リターンする
-        assert_eq!(cm(0x0010).classify_idle(true, assumed(), true), Some(ObservedKana));
+        assert_eq!(cm(0x0010).classify_idle(true, assumed(), true), Some(ObservedEisu));
     }
 
     // ── classify_idle (is_roman_reliable=false: TsfNative) ────────────────────
@@ -423,9 +438,21 @@ mod tests {
 
     // 英数 conv は is_roman_reliable に依存しない
     #[test]
-    fn idle_eisuu_tsf_from_assumed_yields_kana() {
-        // HanAlpha は ROMAN bit 関係なく英数モード確定
-        assert_eq!(cm(CONV_EISUU).classify_idle(false, assumed(), false), Some(ObservedKana));
+    fn idle_eisuu_tsf_from_assumed_yields_eisu() {
+        // HanAlpha は ROMAN bit 関係なく英数モード確定 → ObservedEisu
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, assumed(), false), Some(ObservedEisu));
+    }
+
+    #[test]
+    fn idle_eisuu_tsf_from_eisu_yields_none() {
+        // 既に ObservedEisu なら変更なし
+        assert_eq!(cm(CONV_EISUU).classify_idle(false, ObservedEisu, false), None);
+    }
+
+    #[test]
+    fn idle_jisakana_tsf_from_eisu_recovers_assumed() {
+        // TsfNative: ObservedEisu → AssumedRomaji に回復（かなモードへの復帰）
+        assert_eq!(cm(CONV_JISAKANA).classify_idle(false, ObservedEisu, false), Some(assumed()));
     }
 
     // カタカナ conv も is_roman_reliable に依存しない
@@ -438,15 +465,15 @@ mod tests {
 
     // 英数遷移
     #[test]
-    fn tr_hiragana_to_eisu_always_kana() {
+    fn tr_hiragana_to_eisu_always_eisu() {
         assert_eq!(
             cm(CONV_EISUU).classify_transition(cm(CONV_HIRAGANA), ObservedRomaji),
-            Some(ObservedKana)
+            Some(ObservedEisu)
         );
-        // belief が Kana でも Some を返す（強制補正）
+        // belief が ObservedKana でも ObservedEisu を返す（強制補正）
         assert_eq!(
             cm(CONV_EISUU).classify_transition(cm(CONV_JISAKANA), ObservedKana),
-            Some(ObservedKana)
+            Some(ObservedEisu)
         );
     }
 
@@ -504,14 +531,22 @@ mod tests {
 
     // ── 全モード網羅 ──────────────────────────────────────────────────────────
     #[test]
-    fn all_kana_modes_from_romaji_yield_kana_on_idle() {
-        for conv in [CONV_EISUU, CONV_ZENALPHA, 0x0010, 0x0018, CONV_JISAKANA] {
+    fn all_eisu_modes_from_romaji_yield_eisu_on_idle() {
+        for conv in [CONV_EISUU, CONV_ZENALPHA, 0x0010, 0x0018] {
             assert_eq!(
                 cm(conv).classify_idle(false, ObservedRomaji, true),
-                Some(ObservedKana),
+                Some(ObservedEisu),
                 "conv=0x{conv:08X}"
             );
         }
+    }
+
+    #[test]
+    fn jisakana_from_romaji_yields_kana_on_idle() {
+        assert_eq!(
+            cm(CONV_JISAKANA).classify_idle(false, ObservedRomaji, true),
+            Some(ObservedKana)
+        );
     }
 
     #[test]

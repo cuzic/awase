@@ -242,8 +242,10 @@ impl Decision {
 pub enum InputModeState {
     /// IMM クエリ等でローマ字入力と確認できた
     ObservedRomaji,
-    /// IMM クエリ等でかな入力と確認できた
+    /// IMM クエリ等でかな入力と確認できた（ひらがな・JISかな。英数とは区別する）
     ObservedKana,
+    /// IMM クエリ等で英数モードと確認できた（半角英数・全角英数）
+    ObservedEisu,
     /// 観測不能だが状況証拠から romaji と仮定（Chrome/UWP/Electron 等）
     AssumedRomaji { reason: AssumedReason },
     /// 不明（起動直後、フォーカス確定前等）
