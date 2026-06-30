@@ -286,7 +286,8 @@ impl Runtime {
                     "[idle-conv-check] AwaseLocked: conv=0x{conv:08X} ≠ 0x{HIRAGANA_CONV:08X} → reconcile to hiragana",
                 );
                 // SAFETY: フォアグラウンドウィンドウへの IMM API 呼び出し。
-                unsafe { crate::ime::set_ime_romaji_mode_with_target(Some(HIRAGANA_CONV)) };
+                let ok = unsafe { crate::ime::set_ime_romaji_mode_with_target(Some(HIRAGANA_CONV)) };
+                log::debug!("[idle-conv-check] reconcile ok={ok}");
             }
         }
 
