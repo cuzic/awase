@@ -31,6 +31,7 @@ impl HwndId {
     }
 }
 
+#[cfg(windows)]
 impl HwndId {
     /// `HWND` に変換する。`windows` クレートの型変化 (`isize` → `*mut c_void`) に
     /// 対してここだけ修正すれば済むよう、raw cast を一箇所に集約する。
@@ -40,6 +41,7 @@ impl HwndId {
     }
 }
 
+#[cfg(windows)]
 impl From<windows::Win32::Foundation::HWND> for HwndId {
     fn from(hwnd: windows::Win32::Foundation::HWND) -> Self {
         Self(hwnd.0 as usize)

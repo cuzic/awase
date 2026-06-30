@@ -4,6 +4,8 @@
 //! （`Charset` + `romaji`）に変換した値型。Win32 API を呼ばないため
 //! Linux でもコンパイル・テスト可能。
 
+use std::fmt;
+
 use crate::engine::InputModeState;
 
 // ImmGetConversionStatus のビット定数 (imm.h)
@@ -31,6 +33,24 @@ impl Charset {
     /// カタカナ系（全角・半角）かどうか。
     pub fn is_katakana(self) -> bool {
         matches!(self, Self::ZenkakuKatakana | Self::HankakuKatakana)
+    }
+}
+
+impl fmt::Display for Charset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Hiragana => "Hiragana",
+            Self::ZenkakuKatakana => "ZenKata",
+            Self::HankakuKatakana => "HanKata",
+            Self::ZenkakuAlpha => "ZenAlpha",
+            Self::HankakuAlpha => "HanAlpha",
+        })
+    }
+}
+
+impl fmt::Display for ConvMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.charset, if self.romaji { "roma" } else { "kana" })
     }
 }
 
