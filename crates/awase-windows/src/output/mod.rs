@@ -581,8 +581,8 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
             log::trace!("[tsf-eager-warmup] UserManaged → warmup スキップ");
             return;
         }
-        if !crate::tsf::observer::gji_is_active_ime() {
-            log::trace!("[tsf-eager-warmup] GJI 以外 → warmup スキップ");
+        if !self.tsf_warmup.borrow().needs_cold_start_probe() {
+            log::trace!("[tsf-eager-warmup] cold-start probe 不要 → warmup スキップ");
             return;
         }
         if !self.tsf_readiness(applied_ime_on).can_warmup() {
@@ -754,7 +754,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
             elapsed,
             session_expired,
             prepend_f2_warmup: (!warm || session_expired)
-                && crate::tsf::observer::gji_is_active_ime(),
+                && self.tsf_warmup.borrow().needs_cold_start_probe(),
         }
     }
 

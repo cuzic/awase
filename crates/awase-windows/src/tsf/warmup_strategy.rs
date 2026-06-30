@@ -59,6 +59,15 @@ pub(crate) trait ImeWarmupStrategy {
         false
     }
 
+    /// この IME が cold-start probe 機構（VK_DBE_* eager warmup + TsfReadinessProbe）を必要とするか。
+    ///
+    /// - GJI: `true`  — 外部プロセスのため idle 後に TSF composition context が失われる
+    /// - MS-IME: `false` (デフォルト) — カーネル統合のため常に warm
+    /// - ATOK 等: 実態に応じてオーバーライド
+    fn needs_cold_start_probe(&self) -> bool {
+        false
+    }
+
 }
 
 // ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
@@ -96,6 +105,10 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
 
     fn is_next_key_long_cold(&self) -> bool {
         crate::tsf::gji_fsm::GjiFsm::is_next_key_long_cold(self)
+    }
+
+    fn needs_cold_start_probe(&self) -> bool {
+        true
     }
 
 }

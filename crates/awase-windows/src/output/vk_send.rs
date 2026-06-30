@@ -608,16 +608,15 @@ impl Output {
         let detector = crate::tsf::probe::LiteralDetector::new();
         let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
 
-        // GJI が LONG_IDLE_MS 以上静止している場合（WezTerm 等 TSF ネイティブ app）は
+        // cold-start probe 機構を持つ IME（GJI 等）が LONG_IDLE_MS 以上静止している場合は
         // LiteralDetector が常にタイムアウト → SuspectedLiteral の false positive になる。
-        // GJI 長期静止時は composition が TSF で正常に処理されたと見なして LiteralDetect をスキップ。
-        let gji_long_idle = crate::hook::current_tick_ms()
+        // 長期静止時は composition が TSF で正常に処理されたと見なして LiteralDetect をスキップ。
+        let probe_long_idle = crate::hook::current_tick_ms()
             .saturating_sub(crate::tsf::observer::gji_last_io_ms())
             >= crate::tuning::LONG_IDLE_MS;
-        let gji_active = crate::tsf::observer::gji_is_active_ime();
         if self.tsf_gate.state() == crate::tsf::TsfGateState::Probing
-            && gji_active
-            && !gji_long_idle
+            && self.tsf_warmup.borrow().needs_cold_start_probe()
+            && !probe_long_idle
             && !self.is_tsf_mode()
         {
             // detector と guard は LiteralDetectFsm::new が内部生成するため渡さない。
