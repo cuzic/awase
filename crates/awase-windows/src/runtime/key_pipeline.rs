@@ -274,6 +274,22 @@ impl Runtime {
         let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
         let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;
 
+        // AwaseLocked 時: conv が 0x19 (NATIVE|FULLSHAPE|ROMAN) からずれていたら reconcile する。
+        // get_ime_conversion_mode_raw_timeout と同様に SendMessageTimeoutW を呼ぶため、
+        // ここではすでに同等の権限で動作していることを前提とする。
+        if self.platform.conv_mode_policy.allows_conv_mutation() {
+            const HIRAGANA_CONV: u32 = crate::imm::IME_CMODE_NATIVE
+                | crate::imm::IME_CMODE_FULLSHAPE
+                | crate::imm::IME_CMODE_ROMAN;
+            if conv != HIRAGANA_CONV {
+                log::info!(
+                    "[idle-conv-check] AwaseLocked: conv=0x{conv:08X} ≠ 0x{HIRAGANA_CONV:08X} → reconcile to hiragana",
+                );
+                // SAFETY: フォアグラウンドウィンドウへの IMM API 呼び出し。
+                unsafe { crate::ime::set_ime_romaji_mode_with_target(Some(HIRAGANA_CONV)) };
+            }
+        }
+
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
         self.platform.output.conv_mode.update_from_conv(conv);
