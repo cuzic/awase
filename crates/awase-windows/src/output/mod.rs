@@ -596,6 +596,17 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         //   HanKata   → F1+F3 (VK_DBE_KATAKANA + VK_DBE_SBCSCHAR)
         //   ZenAlpha  → F0+F4 (VK_DBE_ALPHANUMERIC + VK_DBE_DBCSCHAR)
         //   HanAlpha  → F0 (VK_DBE_ALPHANUMERIC)
+        //
+        // conv_mode は idle-check / focus-probe でしか更新されないため、ユーザーが直前に
+        // モードを切替えた直後にキーを押すと stale な Hiragana で F2 を送ってしまう。
+        // apply_focus_probe と同様に直前の IMM 読み取りで conv_mode を最新化する。
+        // SAFETY: get_ime_conversion_mode_raw_timeout は apply_focus_probe (with_app 内) でも
+        //         安全に呼ばれており、ここも同じ with_app コンテキストで安全。
+        if let Some(fresh_conv) =
+            unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
+        {
+            self.conv_mode.update_from_conv(fresh_conv);
+        }
         let charset = self.conv_mode.get().map(|m| m.charset).unwrap_or(crate::state::Charset::Hiragana);
         let ms = match charset {
             crate::state::Charset::ZenkakuKatakana | crate::state::Charset::HankakuKatakana => {
