@@ -108,7 +108,7 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
     }
 
     fn needs_cold_start_probe(&self) -> bool {
-        true
+        crate::tsf::observer::gji_is_active_ime()
     }
 
 }
