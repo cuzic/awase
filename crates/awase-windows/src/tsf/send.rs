@@ -33,6 +33,41 @@ pub(crate) fn send_vk_dbe_hiragana_pair() -> u64 {
     crate::hook::current_tick_ms()
 }
 
+/// 英数モード用: `charset` に応じた DBE VK ペアを送信する。
+///
+/// - `ZenkakuAlpha`: `VK_DBE_ALPHANUMERIC` (F0) + `VK_DBE_DBCSCHAR` (F4) DOWN+UP
+/// - `HankakuAlpha`: `VK_DBE_ALPHANUMERIC` (F0) DOWN+UP
+///
+/// 送信後の時刻（`current_tick_ms` の値）を返す。
+pub(crate) fn send_vk_dbe_alpha_warmup(charset: awase::engine::Charset) -> u64 {
+    use crate::vk::{VK_DBE_ALPHANUMERIC, VK_DBE_DBCSCHAR};
+
+    if win_key_held() {
+        log::debug!("[tsf-warmup] skipped alpha warmup (Win key held)");
+        return crate::hook::current_tick_ms();
+    }
+
+    match charset {
+        awase::engine::Charset::ZenkakuAlpha => {
+            let inputs = [
+                make_tsf_key_input(VK_DBE_ALPHANUMERIC, false),
+                make_tsf_key_input(VK_DBE_ALPHANUMERIC, true),
+                make_tsf_key_input(VK_DBE_DBCSCHAR, false),
+                make_tsf_key_input(VK_DBE_DBCSCHAR, true),
+            ];
+            let _ = crate::win32::send_input_safe(&inputs);
+        }
+        _ => {
+            let inputs = [
+                make_tsf_key_input(VK_DBE_ALPHANUMERIC, false),
+                make_tsf_key_input(VK_DBE_ALPHANUMERIC, true),
+            ];
+            let _ = crate::win32::send_input_safe(&inputs);
+        }
+    }
+    crate::hook::current_tick_ms()
+}
+
 /// カタカナモード用: `charset` に応じた DBE VK ペアを送信する。
 ///
 /// - `ZenkakuKatakana`: `VK_DBE_KATAKANA` (F1) DOWN+UP

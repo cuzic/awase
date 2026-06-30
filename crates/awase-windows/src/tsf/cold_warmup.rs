@@ -20,18 +20,21 @@ use std::sync::atomic::Ordering::Relaxed;
 use crate::output::Output;
 use crate::tuning::LONG_IDLE_MS;
 
-use super::send::{send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup};
+use super::send::{send_vk_dbe_alpha_warmup, send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup};
 
 /// charset に応じた warmup VK ペアを 1 回送信し、送信後の時刻を返す。
 ///
 /// - `HankakuKatakana` → F1↓F1↑F3↓F3↑ (半角カタカナ)
 /// - `ZenkakuKatakana` → F1↓F1↑ (全角カタカナ)
-/// - その他 → F2↓F2↑ (ひらがな)
+/// - `Hiragana` → F2↓F2↑ (ひらがな)
+/// - `ZenkakuAlpha` → F0↓F0↑F4↓F4↑ (全角英数)
+/// - `HankakuAlpha` → F0↓F0↑ (半角英数)
 fn send_charset_warmup_pair(charset: awase::engine::Charset) -> u64 {
-    if charset.is_katakana() {
-        send_vk_dbe_katakana_warmup(charset)
-    } else {
-        send_vk_dbe_hiragana_pair()
+    use awase::engine::Charset;
+    match charset {
+        Charset::ZenkakuKatakana | Charset::HankakuKatakana => send_vk_dbe_katakana_warmup(charset),
+        Charset::ZenkakuAlpha | Charset::HankakuAlpha => send_vk_dbe_alpha_warmup(charset),
+        Charset::Hiragana => send_vk_dbe_hiragana_pair(),
     }
 }
 
@@ -77,7 +80,7 @@ struct WarmupContext {
     conv_mutation_allowed: bool,
     /// 現在の入力文字セット（warmup VK の選択に使用）。
     ///
-    /// `HankakuKatakana` のとき F1+F3、`ZenkakuKatakana` のとき F1、その他は F2 を使う。
+    /// HanKata→F1+F3、ZenKata→F1、Hiragana→F2、ZenAlpha→F0+F4、HanAlpha→F0。
     charset: awase::engine::Charset,
 }
 

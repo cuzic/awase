@@ -586,25 +586,34 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
         crate::tsf::observer::reset_namechange_seq();
-        // カタカナモードのとき VK_DBE_HIRAGANA を送るとひらがなに戻ってしまう。
-        // charset に応じた warmup VK を選択する:
-        //   ひらがな/英数: VK_DBE_HIRAGANA (F2) — TSF composition context を初期化
-        //   全角カタカナ:  VK_DBE_KATAKANA (F1) — カタカナモードを維持しつつ初期化
-        //   半角カタカナ:  VK_DBE_KATAKANA+VK_DBE_SBCSCHAR (F1+F3) — 半角カタカナを維持
+        // charset に応じた warmup VK を選択する（送るとモードが変わってしまうため charset-aware が必須）:
+        //   Hiragana  → F2 (VK_DBE_HIRAGANA)
+        //   ZenKata   → F1 (VK_DBE_KATAKANA)
+        //   HanKata   → F1+F3 (VK_DBE_KATAKANA + VK_DBE_SBCSCHAR)
+        //   ZenAlpha  → F0+F4 (VK_DBE_ALPHANUMERIC + VK_DBE_DBCSCHAR)
+        //   HanAlpha  → F0 (VK_DBE_ALPHANUMERIC)
         let charset = self.conv_mode.get().map(|m| m.charset).unwrap_or(crate::state::Charset::Hiragana);
-        let ms = if charset.is_katakana() {
-            let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
-            log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
-            // HanKata warmup (F1+F3) 後は IMM conv が ZenKata (0x0B) を返すことがある。
-            // TsfNative では F3 が IMM FULLSHAPE ビットを変更しないため。conv_mode 汚染を抑制する。
-            if charset == crate::state::Charset::HankakuKatakana {
-                self.conv_mode.on_hankata_warmup_sent();
+        let ms = match charset {
+            crate::state::Charset::ZenkakuKatakana | crate::state::Charset::HankakuKatakana => {
+                let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
+                log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
+                // HanKata warmup (F1+F3) 後は IMM conv が ZenKata (0x0B) を返すことがある。
+                // TsfNative では F3 が IMM FULLSHAPE ビットを変更しないため。conv_mode 汚染を抑制する。
+                if charset == crate::state::Charset::HankakuKatakana {
+                    self.conv_mode.on_hankata_warmup_sent();
+                }
+                ms
             }
-            ms
-        } else {
-            let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
-            log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
-            ms
+            crate::state::Charset::ZenkakuAlpha | crate::state::Charset::HankakuAlpha => {
+                let ms = crate::tsf::send::send_vk_dbe_alpha_warmup(charset);
+                log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
+                ms
+            }
+            crate::state::Charset::Hiragana => {
+                let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
+                log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
+                ms
+            }
         };
         self.composition.set_eager_warmup_sent_ms(ms);
     }
