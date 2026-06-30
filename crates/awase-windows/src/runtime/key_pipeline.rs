@@ -296,9 +296,10 @@ impl Runtime {
         }
 
         // JISかな / カタカナ / ローマ字モードの判定:
-        // cold start（in_flight == u64::MAX）では ROMAN ビットが信頼できないためスキップ。
-        // awase が warmup を 1 回でも行った後（in_flight < u64::MAX）は ROMAN ビット変化を使う。
-        if in_flight == u64::MAX {
+        // cold start（in_flight == u64::MAX）では ROMAN ビットが信頼できないため、
+        // has_roman == true のローマ字判定はスキップ。
+        // has_roman == false（かな/カタカナ）は ROMAN ビットに依存しないため cold start でも判定可能。
+        if has_roman && in_flight == u64::MAX {
             log::debug!(
                 "[idle-conv-check] TsfNative: conv=0x{:08X} cold start → ROMAN ビット判定スキップ",
                 conv,

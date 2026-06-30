@@ -151,6 +151,9 @@ impl Engine {
     ///
     /// inactive → active: OS IME を強制的に開く（"nonaiyo" 問題対策）
     /// active → inactive: OS IME を強制的に閉じる（対称性のため）
+    ///   ただし NotRomajiInput（tray での英数モード選択等）の場合は SetOpen(false) を出さない。
+    ///   ユーザーが既に望むモード（全角英数等）を選択済みなので、VK_DBE_ALPHANUMERIC を
+    ///   追加送信すると全角英数→半角英数のような意図しない conv 変化が起きる。
     /// 同じ状態: 空の EffectVec
     fn transition_activation(&mut self, new_state: ActivationState) -> EffectVec {
         let was_active = self.prev_activation.is_active();
@@ -158,10 +161,16 @@ impl Engine {
         let mut effects = EffectVec::new();
 
         if was_active != now_active {
-            effects.push(Effect::Ime(ImeEffect::SetOpen {
-                open: now_active,
-                origin: EffectOrigin::EngineIntent,
-            }));
+            let suppress_set_open = matches!(
+                new_state,
+                ActivationState::Inactive(InactiveReason::NotRomajiInput)
+            );
+            if !suppress_set_open {
+                effects.push(Effect::Ime(ImeEffect::SetOpen {
+                    open: now_active,
+                    origin: EffectOrigin::EngineIntent,
+                }));
+            }
             effects.push(Effect::Ui(UiEffect::EngineStateChanged {
                 enabled: now_active,
             }));
