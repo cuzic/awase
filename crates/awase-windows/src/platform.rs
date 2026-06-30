@@ -35,6 +35,11 @@ pub struct WindowsPlatform {
     /// warm 判定そのものは GjiFsm が SSOT であり、この FSM は「confirm キー KeyDown 後、
     /// KeyUp まで warmup を保留する」遷移を所有する。
     pub(crate) composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
+    /// 現在の入力モードがローマ字かどうか（JISかな時は false）。
+    ///
+    /// executor が各バッチ開始時に `ImeStateHub::belief::input_mode().is_romaji_capable()` から
+    /// 更新する。JISかなモードでは TSF warmup (VK_DBE_HIRAGANA) を送信しない。
+    pub(crate) is_romaji_mode: bool,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -78,6 +83,11 @@ impl WindowsPlatform {
     /// `applied_ime_on` を指定して eager warmup を送信する。
     pub(crate) fn send_eager_warmup(&self, applied_ime_on: Option<bool>) {
         self.output.send_eager_tsf_warmup(applied_ime_on);
+    }
+
+    /// 現在の入力モードがローマ字かどうかを更新する（executor が各バッチ開始時に呼ぶ）。
+    pub(crate) fn set_romaji_mode(&mut self, is_romaji: bool) {
+        self.is_romaji_mode = is_romaji;
     }
 
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
@@ -323,7 +333,14 @@ impl WindowsPlatform {
             match *action {
                 CompositionAction::EmitWarmup { reason } => {
                     log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
-                    self.output.send_eager_tsf_warmup(applied_ime_on);
+                    if self.is_romaji_mode {
+                        self.output.send_eager_tsf_warmup(applied_ime_on);
+                    } else {
+                        log::debug!(
+                            "[composition-fsm] EmitWarmup ({reason:?}): \
+                             JISかなモード → VK_DBE_HIRAGANA warmup スキップ"
+                        );
+                    }
                 }
                 CompositionAction::MarkCold { reason } => {
                     self.output.mark_composition_cold(reason);
@@ -810,7 +827,10 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.gji_on_native_f2_consumed();
-            self.output.send_eager_tsf_warmup(applied);
+            // JISかなモードでは VK_DBE_HIRAGANA warmup は不要かつ有害
+            if self.is_romaji_mode {
+                self.output.send_eager_tsf_warmup(applied);
+            }
             return;
         }
 
@@ -821,7 +841,14 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.gji_on_composition_reset();
-            self.output.send_eager_tsf_warmup(applied);
+            // JISかなモードでは VK_DBE_HIRAGANA warmup は不要かつ有害
+            if self.is_romaji_mode {
+                self.output.send_eager_tsf_warmup(applied);
+            } else {
+                log::debug!(
+                    "[composition] reinject confirm key: JISかなモード → warmup スキップ"
+                );
+            }
         }
     }
 }

@@ -90,6 +90,7 @@ impl DecisionExecutor {
         physical: PhysicalKeyDisposition,
     ) -> BatchResult {
         self.applied_snapshot = ime.model().applied;
+        platform.set_romaji_mode(ime.belief.input_mode().is_romaji_capable());
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(platform, decision, physical),
             HookMode::Relay => self.execute_relay(platform, decision, raw_event, physical),
@@ -104,6 +105,7 @@ impl DecisionExecutor {
         decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
         self.applied_snapshot = ime.model().applied;
+        platform.set_romaji_mode(ime.belief.input_mode().is_romaji_capable());
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),
