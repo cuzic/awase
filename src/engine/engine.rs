@@ -248,7 +248,13 @@ impl Engine {
                     if user_enabled { "ON" } else { "OFF" },
                     if new_active { "ON" } else { "OFF" },
                 );
-                self.apply_active_transition(old_active, new_active, &mut decision);
+                if user_enabled && !new_active {
+                    // ユーザーが明示的に有効化したが ime_on=false 等で active になれない。
+                    // pseudo_ctx で IME 強制 ON + tray 更新を行う。
+                    self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
+                } else {
+                    self.apply_active_transition(old_active, new_active, &mut decision);
+                }
                 decision
             }
             EngineCommand::InvalidateContext(reason) => self.adapter.flush(reason),
@@ -367,6 +373,34 @@ impl Engine {
         }
     }
 
+    /// エンジン有効化時に IME が OFF で active になれない場合の回復処理。
+    ///
+    /// `user_enabled=true` だが `ime_on=false` 等で `compute_active` が false のとき、
+    /// pseudo_ctx (ime_on=true) で目標状態を計算し `transition_activation` を実行する。
+    /// これにより `ImeEffect::SetOpen{true}` と `UiEffect::EngineStateChanged{true}` が
+    /// 発行され、IME 強制 ON と tray 更新が行われる。
+    ///
+    /// `is_japanese_ime=false` 等で IME を ON にしても active になれない場合は
+    /// `SetOpen{true}` のみ追加する（意図を Platform 層に伝えるため）。
+    fn apply_engine_on_with_ime_recovery(&mut self, ctx: &InputContext, decision: &mut Decision) {
+        let pseudo_ctx = InputContext {
+            ime_on: true,
+            ..*ctx
+        };
+        let target_state = self.compute_state(&pseudo_ctx);
+        let effects = self.transition_activation(target_state);
+        if effects.is_empty() {
+            decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
+                open: true,
+                origin: EffectOrigin::EngineIntent,
+            }));
+        } else {
+            for e in effects {
+                decision.push_effect(e);
+            }
+        }
+    }
+
     /// IME ON/OFF コンボキーに対する Decision を構築する。
     ///
     /// `open` を反映した擬似 `InputContext` で新 `ActivationState` を求め、
@@ -429,7 +463,12 @@ impl Engine {
                 let (_, mut decision) = self.adapter.set_enabled(true);
                 let new_active = self.compute_active(ctx);
                 log::info!("Engine user_enabled ON (key combo, active={new_active})");
-                self.apply_active_transition(old_active, new_active, &mut decision);
+                if !new_active {
+                    // ime_on=false 等で active になれない → pseudo_ctx で IME 強制 ON
+                    self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
+                } else {
+                    self.apply_active_transition(old_active, new_active, &mut decision);
+                }
                 decision
             }
             SpecialKeyMatch::EngineOff => {

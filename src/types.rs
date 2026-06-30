@@ -203,6 +203,8 @@ pub enum ContextChange {
     LayoutSwapped,
     /// フォーカスが別のコントロールに移動した
     FocusChanged,
+    /// バイパスキーイベント（Passthrough / IME制御 / OSモディファイア）
+    BypassKey,
 }
 
 /// アプリケーションの UI フレームワーク種別
