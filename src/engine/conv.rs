@@ -84,9 +84,12 @@ impl ConvMode {
         ConvMode { charset, romaji: has_roman }
     }
 
-    /// 英数モード (NATIVE=0 かつ ROMAN=0) かどうか。
+    /// 英数モード (NATIVE=0) かどうか。ROMAN ビットの有無は関係ない。
+    ///
+    /// MS-IME は半角英数モードでも ROMAN ビット (0x10) をセットしたまま返す場合がある
+    /// (conv=0x0010)。charset が Alpha 系であれば英数モードとして扱う。
     pub fn is_eisu(self) -> bool {
-        !self.romaji && matches!(self.charset, Charset::HankakuAlpha | Charset::ZenkakuAlpha)
+        matches!(self.charset, Charset::HankakuAlpha | Charset::ZenkakuAlpha)
     }
 
     /// `ImmSetConversionStatus` の目標 conv 値を返す。
@@ -258,6 +261,24 @@ mod tests {
         assert!(m.is_eisu());
     }
 
+    #[test]
+    fn from_u32_hanalpha_roma() {
+        // MS-IME が半角英数モードで ROMAN ビット (0x10) をセットする場合
+        let m = cm(0x0010);
+        assert_eq!(m.charset, Charset::HankakuAlpha);
+        assert!(m.romaji);
+        assert!(m.is_eisu()); // charset が Alpha なら ROMAN ビット不問
+    }
+
+    #[test]
+    fn from_u32_zenalpha_roma() {
+        // 全角英数 + ROMAN ビット (0x0018)
+        let m = cm(0x0018);
+        assert_eq!(m.charset, Charset::ZenkakuAlpha);
+        assert!(m.romaji);
+        assert!(m.is_eisu());
+    }
+
     // ── imm_conv_target ──────────────────────────────────────────────────────
     #[test]
     fn imm_conv_target_zenkata() {
@@ -345,6 +366,32 @@ mod tests {
     #[test]
     fn idle_hankata_from_kana_yields_romaji() {
         assert_eq!(cm(CONV_HANKATA).classify_idle(false, ObservedKana, true), Some(ObservedRomaji));
+    }
+
+    // 半角英数/ローマ字 (conv=0x0010): ROMAN ビットがあっても英数モード
+    #[test]
+    fn idle_hanalpha_roma_from_assumed_yields_kana() {
+        // is_roman_reliable に関わらず ObservedKana を返す
+        assert_eq!(cm(0x0010).classify_idle(false, assumed(), true), Some(ObservedKana));
+        assert_eq!(cm(0x0010).classify_idle(false, assumed(), false), Some(ObservedKana));
+    }
+
+    #[test]
+    fn idle_hanalpha_roma_from_romaji_yields_kana() {
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedRomaji, true), Some(ObservedKana));
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedRomaji, false), Some(ObservedKana));
+    }
+
+    #[test]
+    fn idle_hanalpha_roma_from_kana_yields_none() {
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedKana, true), None);
+        assert_eq!(cm(0x0010).classify_idle(false, ObservedKana, false), None);
+    }
+
+    #[test]
+    fn idle_hanalpha_roma_cold_start_still_classifies() {
+        // is_eisu() ブランチは cold start でも早期リターンする
+        assert_eq!(cm(0x0010).classify_idle(true, assumed(), true), Some(ObservedKana));
     }
 
     // ── classify_idle (is_roman_reliable=false: TsfNative) ────────────────────
@@ -458,7 +505,7 @@ mod tests {
     // ── 全モード網羅 ──────────────────────────────────────────────────────────
     #[test]
     fn all_kana_modes_from_romaji_yield_kana_on_idle() {
-        for conv in [CONV_EISUU, CONV_JISAKANA] {
+        for conv in [CONV_EISUU, CONV_ZENALPHA, 0x0010, 0x0018, CONV_JISAKANA] {
             assert_eq!(
                 cm(conv).classify_idle(false, ObservedRomaji, true),
                 Some(ObservedKana),
