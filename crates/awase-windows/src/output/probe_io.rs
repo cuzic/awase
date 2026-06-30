@@ -189,6 +189,23 @@ impl ProbeIo for Output {
         use crate::vk::{VK_IME_OFF, VK_IME_ON};
         use std::mem::size_of;
         use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
+        // VK_IME_ON 後に GJI が正しい conv を復元できるよう、直前に ImmSetConversionStatus を
+        // 再スケジュールする。cold warmup 開始時の imm-romaji が stale な conv_mode を参照して
+        // いた場合（例: cold=3 で ZenKata が誤設定された状態）の補正として機能する。
+        // GJI は cross-process で VK_IME_ON を非同期処理するため、spawn_local が完了する
+        // ~10ms 以内に ImmSetConversionStatus が確定し、GJI が conv を読む前に間に合う。
+        if self.conv_mutation_allowed.get() {
+            if let Some(conv_target) = self.conv_mode.get().and_then(|m| m.imm_conv_target()) {
+                win32_async::spawn_local(async move {
+                    let _ =
+                        crate::ime::set_ime_romaji_mode_with_target_async(Some(conv_target)).await;
+                    log::debug!(
+                        "[sacr-warmup] cold={cold_seq} imm-romaji 直前補正: \
+                         target=0x{conv_target:08X}"
+                    );
+                });
+            }
+        }
         let inputs = [
             make_key_input_ex(VK_IME_OFF, false, IME_KANJI_MARKER),
             make_key_input_ex(VK_IME_OFF, true, IME_KANJI_MARKER),

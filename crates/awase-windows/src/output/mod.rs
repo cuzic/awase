@@ -481,6 +481,10 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     /// 従来の `mark_composition_cold()` 呼び出しの代わりに使う（明示的なコールド化も同時に行う）。
     pub fn on_focus_changed(&self) {
         self.composition.on_focus_changed();
+        // フォーカス変更後 1500ms 以内の HanKata→ZenKata ダウングレードを抑制するため
+        // タイムスタンプを記録する（TsfNative IMM/TSF 乖離対策）。
+        #[cfg(windows)]
+        self.conv_mode.on_focus_changed();
         // deferred_vks は TsfProbeData に内包されているため、
         // pending_tsf が Some の場合は probe と一緒にドロップされる。
     }
