@@ -228,7 +228,17 @@ impl Runtime {
     /// TsfNative (WezTerm 等) は通常ポーリングが無効のため、タスクバーから入力モードを
     /// 変更しても `belief.input_mode` が更新されない。
     /// TYPING_IDLE_MS 以上アイドル後の最初の KeyDown でのみ conv を読み、
-    /// 英数モード（ROMAN/NATIVE どちらも 0）を検出したら belief を ObservedKana に更新する。
+    /// モード変化を検出したら belief を更新する。
+    ///
+    /// ## cold start の特別処理
+    ///
+    /// `output_in_flight_ms() == u64::MAX`（まだ一度も awase が文字を送信していない）の場合、
+    /// IMM32 ブリッジが WezTerm 等で ROMAN ビットをローマ字モードでも正しく報告しないことがある。
+    /// この状態では NATIVE/ROMAN の組み合わせが曖昧になるため、明確に判定できる
+    /// 英数モード（ROMAN=0 かつ NATIVE=0）のみ検出し、それ以外はスキップする。
+    ///
+    /// awase が一度でも warmup を行い `ImmSetConversionStatus(conv | ROMAN)` を確立した後は
+    /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
         if !matches!(event.event_type, KeyEventType::KeyDown) {
             return;
@@ -240,7 +250,8 @@ impl Runtime {
             return;
         }
         // TYPING_IDLE_MS 未満ならタイピング中 → スキップ（一時停止後の最初のキーのみ確認）
-        if self.platform.output_in_flight_ms() <= crate::tuning::TYPING_IDLE_MS {
+        let in_flight = self.platform.output_in_flight_ms();
+        if in_flight <= crate::tuning::TYPING_IDLE_MS {
             return;
         }
         // SAFETY: フォアグラウンドウィンドウの IME 変換モードを 10ms タイムアウトで読む。
@@ -254,7 +265,7 @@ impl Runtime {
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
 
         if !has_roman && !has_native {
-            // 英数モード：ROMAN も NATIVE もない → NICOLA を無効化
+            // 英数モード：ROMAN も NATIVE もない → cold start でも確実に判定可能
             let current = self.platform_state.ime.belief.input_mode();
             if current.is_romaji_capable() {
                 log::info!(
@@ -264,16 +275,58 @@ impl Runtime {
                 );
                 self.platform_state.ime.belief.input_mode = InputModeState::ObservedKana;
             }
-        } else {
-            // NATIVE または ROMAN あり → 日本語入力モード、belief は変更しない
-            // （ROMAN ビットは WezTerm では romaji モードでも欠落する可能性があるため
-            //  ObservedRomaji への強制更新は行わない）
+            return;
+        }
+
+        // JISかな / カタカナ / ローマ字モードの判定:
+        // cold start（in_flight == u64::MAX）では ROMAN ビットが信頼できないためスキップ。
+        // awase が warmup を 1 回でも行った後（in_flight < u64::MAX）は ROMAN ビット変化を使う。
+        if in_flight == u64::MAX {
             log::debug!(
-                "[idle-conv-check] TsfNative: conv=0x{:08X} (NATIVE={} ROMAN={}) → belief 変更なし",
+                "[idle-conv-check] TsfNative: conv=0x{:08X} cold start → ROMAN ビット判定スキップ",
                 conv,
-                has_native,
-                has_roman,
             );
+            return;
+        }
+
+        let current = self.platform_state.ime.belief.input_mode();
+        if has_roman {
+            // ローマ字モード
+            if !current.is_romaji_capable() {
+                log::info!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (ローマ字) → belief {:?}→ObservedRomaji",
+                    conv,
+                    current,
+                );
+                self.platform_state.ime.belief.input_mode = InputModeState::ObservedRomaji;
+            } else {
+                log::debug!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (ROMAN=true) → belief 変更なし",
+                    conv,
+                );
+            }
+        } else {
+            // NATIVE=1, ROMAN=0: JISかな / カタカナ入力
+            // post-active では ROMAN=0 は「ユーザーが非ローマ字モードに切り替えた」ことを意味する
+            if current.is_romaji_capable() {
+                let mode_name = if conv & crate::imm::IME_CMODE_KATAKANA != 0 {
+                    "カタカナ"
+                } else {
+                    "JISかな"
+                };
+                log::info!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} ({}) → belief {:?}→ObservedKana",
+                    conv,
+                    mode_name,
+                    current,
+                );
+                self.platform_state.ime.belief.input_mode = InputModeState::ObservedKana;
+            } else {
+                log::debug!(
+                    "[idle-conv-check] TsfNative: conv=0x{:08X} (NATIVE=true ROMAN=false) → belief 変更なし",
+                    conv,
+                );
+            }
         }
     }
 
