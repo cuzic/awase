@@ -375,10 +375,25 @@ impl Runtime {
         }
 
         let applied_open = self.platform_state.ime.model().applied.applied_open();
-        self.platform.send_eager_warmup(applied_open);
-        log::debug!(
-            "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
-        );
+        // tray で半角英数に切り替えた直後は conv=0x00000000 (英数) になる。
+        // この状態で VK_DBE_HIRAGANA を送るとひらがなモードに戻ってしまうため、
+        // applied_open=true でも英数モードならウォームアップをスキップする。
+        let eisu_guard_active = applied_open == Some(true)
+            && unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
+                .is_some_and(|conv| {
+                    conv & crate::imm::IME_CMODE_NATIVE == 0
+                        && conv & crate::imm::IME_CMODE_ROMAN == 0
+                });
+        if eisu_guard_active {
+            log::info!(
+                "[composition] FocusChange: applied_open=true だが conv=英数 → warmup スキップ (tray 半角英数 保護)"
+            );
+        } else {
+            self.platform.send_eager_warmup(applied_open);
+            log::debug!(
+                "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
+            );
+        }
 
         if !applied_ime_on && !new_profile_is_tsf_native {
             let _ = self.platform.set_ime_open(false);
