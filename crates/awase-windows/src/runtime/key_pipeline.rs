@@ -712,6 +712,69 @@ impl Runtime {
             None
         };
 
+        // TsfNative フォーカス復帰時: HwndCache が最大1時間有効なため、ユーザーが
+        // JISかな⇔ローマ字を切り替えていると cached input_mode が stale になる。
+        // idle-conv-check は TYPING_IDLE_MS(500ms) ゲートがあり打ち始めのキーで発火しない。
+        // ここで即時 conv mode を読んで belief を補正する（FocusProbe ログに反映される）。
+        if matches!(
+            self.platform.current_app_profile(),
+            crate::focus::class_names::AppImeProfile::TsfNative
+        ) && probe.is_japanese_ime
+        {
+            let in_flight = self.platform.output_in_flight_ms();
+            // cold start: ROMAN ビットが信頼できないためスキップ
+            if in_flight != u64::MAX {
+                // SAFETY: メッセージループスレッドから呼ぶ。10ms タイムアウト。
+                if let Some(conv) =
+                    unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
+                {
+                    self.platform.output.conv_mode.update_from_conv(conv);
+                    self.platform_state.ime.set_prev_conversion_mode(Some(conv));
+                    let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
+                    let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;
+                    let has_kata = conv & crate::imm::IME_CMODE_KATAKANA != 0;
+                    use awase::engine::InputModeState;
+                    let current = self.platform_state.ime.belief.input_mode();
+                    if !has_roman && !has_native {
+                        // 英数モード
+                        if current.is_romaji_capable() {
+                            log::info!(
+                                "[focus-conv-check] TsfNative: conv=0x{:08X} (英数) \
+                                 → belief {:?}→ObservedKana",
+                                conv,
+                                current,
+                            );
+                            self.platform_state.ime.belief.input_mode =
+                                InputModeState::ObservedKana;
+                        }
+                    } else if has_native && !has_roman && !has_kata {
+                        // JISかな: ひらがな直接入力。belief が romaji-capable なら訂正。
+                        if current.is_romaji_capable() {
+                            log::info!(
+                                "[focus-conv-check] TsfNative: conv=0x{:08X} (JISかな) \
+                                 → belief {:?}→ObservedKana",
+                                conv,
+                                current,
+                            );
+                            self.platform_state.ime.belief.input_mode =
+                                InputModeState::ObservedKana;
+                        }
+                    } else if has_roman && !current.is_romaji_capable() {
+                        // ローマ字モードだが belief が kana 系: 訂正。
+                        log::info!(
+                            "[focus-conv-check] TsfNative: conv=0x{:08X} (ローマ字) \
+                             → belief {:?}→ObservedRomaji",
+                            conv,
+                            current,
+                        );
+                        self.platform_state.ime.belief.input_mode =
+                            InputModeState::ObservedRomaji;
+                    }
+                    // カタカナモードは NICOLA shadow-sync が複雑なため idle-conv-check に委ねる。
+                }
+            }
+        }
+
         let ime_on_after_probe = self.platform_state.ime.effective_open();
         let input_mode_after_probe = self.platform_state.ime.belief.input_mode();
         let ime_on_suffix = build_ime_on_suffix(
