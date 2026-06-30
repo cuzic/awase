@@ -108,7 +108,9 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
     }
 
     fn needs_cold_start_probe(&self) -> bool {
-        true
+        // tsf_warmup が GjiFsm であっても、GJI が実際にアクティブでなければ probe 不要。
+        // tsf_warmup と active_ime_kind の desync（WM_IME_KIND_CHANGED 未着 等）に対する防衛。
+        crate::tsf::observer::gji_is_active_ime()
     }
 
 }
