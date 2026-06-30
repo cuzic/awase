@@ -11,6 +11,14 @@
 /// タイピング中は IMM との SendMessage を一切行わない。
 pub const TYPING_IDLE_MS: u64 = 500;
 
+/// 明示的 IME 操作（Ctrl+変換/無変換 等）後に idle-conv-check を抑制する時間 (ms)。
+///
+/// Ctrl+変換 後に VK_DBE_HIRAGANA が送られ、GJI probe が ImmSetConversionStatus(ROMAN) を
+/// 確立するまでの猶予。この間は conv mode が JISかな (0x00000009) のままなので
+/// idle-conv-check が誤って belief を ObservedKana に上書きしないようスキップする。
+/// GJI probe budget (350ms) + warmup完了マージン を考慮して 1500ms に設定。
+pub const EXPLICIT_IME_SUPPRESS_MS: u64 = 1500;
+
 /// GJI I/O が静止したと判断するまでの時間 (ms)。
 ///
 /// warmup 後に GJI I/O が発生した場合、この時間以上静止したら settled と判断する。

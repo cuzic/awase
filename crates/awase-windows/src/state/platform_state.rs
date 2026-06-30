@@ -44,6 +44,13 @@ pub(crate) struct ImeStateHub {
     /// - SyncKey / PhysicalImeKey による `target=true` でリセット。
     /// - FocusChanged / Recovery / HwndCache ではリセットしない。
     last_user_explicit_off_ms: u64,
+
+    /// エンジンが明示的 IME ON/OFF を適用した最終時刻 (tick_ms)。0 = 未操作。
+    ///
+    /// `handle_engine_set_open` が実際に apply を実行したときに更新される。
+    /// idle-conv-check が明示的 IME 操作直後に belief を上書きしないよう
+    /// `EXPLICIT_IME_SUPPRESS_MS` の間スキップするために参照する。
+    last_explicit_ime_action_ms: u64,
 }
 
 impl ImeStateHub {
@@ -59,6 +66,7 @@ impl ImeStateHub {
             journal: UnifiedJournal::default(),
             shadow_model: ImeModel::default(),
             last_user_explicit_off_ms: 0,
+            last_explicit_ime_action_ms: 0,
         }
     }
 }
@@ -168,6 +176,7 @@ impl ImeStateHub {
             generation,
             ctrl_held,
         });
+        self.last_explicit_ime_action_ms = crate::hook::current_tick_ms();
         true
     }
 
@@ -225,6 +234,17 @@ impl ImeStateHub {
     }
 
     // ── Explicit intent timing ──
+
+    /// 直近の明示的 IME 操作からの経過 ms (current_tick_ms ベース)。
+    ///
+    /// 未操作の場合は `u64::MAX` を返す。
+    /// `EXPLICIT_IME_SUPPRESS_MS` との比較で idle-conv-check を抑制するために使う。
+    pub(crate) fn explicit_ime_action_age_ms(&self) -> u64 {
+        if self.last_explicit_ime_action_ms == 0 {
+            return u64::MAX;
+        }
+        crate::hook::current_tick_ms().saturating_sub(self.last_explicit_ime_action_ms)
+    }
 
     /// フォーカス変化をまたいで持続するユーザー明示 IME OFF タイムスタンプ。
     ///

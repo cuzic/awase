@@ -254,6 +254,19 @@ impl Runtime {
         if in_flight <= crate::tuning::TYPING_IDLE_MS {
             return;
         }
+        // 明示的 IME 操作（Ctrl+変換/無変換 等）直後はスキップ。
+        // output_in_flight_ms() は文字出力のみ追跡し VK_DBE_HIRAGANA は計上しないため、
+        // Ctrl+変換 後に GJI probe が conv mode (ROMAN ビット) を確立する前に check が
+        // 走って AssumedRomaji を ObservedKana に上書きしてしまう問題を防ぐ。
+        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms();
+        if explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS {
+            log::debug!(
+                "[idle-conv-check] TsfNative: explicit IME action {}ms ago → スキップ (suppress={}ms)",
+                explicit_age,
+                crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
+            );
+            return;
+        }
         // SAFETY: フォアグラウンドウィンドウの IME 変換モードを 10ms タイムアウトで読む。
         let Some(conv) = (unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }) else {
             return;
