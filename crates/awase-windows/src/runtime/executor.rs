@@ -16,11 +16,22 @@ use awase::platform::{EffectOrigin, PlatformRuntime};
 use awase::types::RawKeyEvent;
 
 use crate::hook::CallbackResult;
-use crate::platform::WindowsPlatform;
+use crate::platform::{ConvModePolicy, WindowsPlatform};
 use crate::runtime::{PassthroughQueue, PhysicalKeyDisposition};
 use crate::state::platform_state::ImeStateHub;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
+
+/// belief の input_mode から ConvModePolicy を暫定計算する。
+///
+/// TODO(#7): エンジン ON/OFF イベントで policy を切り替えるよう移行する。
+fn conv_policy_from_belief(ime: &ImeStateHub) -> ConvModePolicy {
+    if ime.belief.input_mode().is_romaji_capable() {
+        ConvModePolicy::AwaseLocked
+    } else {
+        ConvModePolicy::UserManaged
+    }
+}
 
 /// IME apply の sync 完了 1 件分。`(open: bool, outcome: ImeOpenOutcome)` のエイリアス。
 pub(crate) type ImeApplyPair = (bool, awase::platform::ImeOpenOutcome);
@@ -90,7 +101,9 @@ impl DecisionExecutor {
         physical: PhysicalKeyDisposition,
     ) -> BatchResult {
         self.applied_snapshot = ime.model().applied;
-        platform.set_romaji_mode(ime.belief.input_mode().is_romaji_capable());
+        // TODO(#7): エンジン ON/OFF イベントで policy を切り替えるよう移行する。
+        // 現在は belief から暫定計算（belief はキー毎に最新化される）。
+        platform.set_conv_mode_policy(conv_policy_from_belief(ime));
         match self.hook_mode {
             HookMode::Filter => self.execute_filter(platform, decision, physical),
             HookMode::Relay => self.execute_relay(platform, decision, raw_event, physical),
@@ -105,7 +118,7 @@ impl DecisionExecutor {
         decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
         self.applied_snapshot = ime.model().applied;
-        platform.set_romaji_mode(ime.belief.input_mode().is_romaji_capable());
+        platform.set_conv_mode_policy(conv_policy_from_belief(ime));
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),

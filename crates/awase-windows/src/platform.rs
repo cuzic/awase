@@ -15,6 +15,28 @@ use crate::output::Output;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
+/// awase が IME conv mode を管理する権限を表す。
+///
+/// awase ON 中は `AwaseLocked`、OFF 中または非活性時は `UserManaged`。
+/// `AwaseLocked` のときのみ `VK_DBE_HIRAGANA` 等の conv mutation が許可される。
+/// ユーザーが JISかな/カタカナ等を選択した場合は `UserManaged` として conv に触らない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ConvModePolicy {
+    /// awase 無効・エンジン OFF。IME conv mode に一切触らない。
+    #[default]
+    UserManaged,
+    /// awase ON 中。conv mode = RomajiHiragana (0x00000019) に lock する。
+    /// ユーザーの JISかな/カタカナ変更は外乱として reconcile する。
+    AwaseLocked,
+}
+
+impl ConvModePolicy {
+    /// conv mode を変更する操作（VK_DBE_HIRAGANA 等）を許可するか。
+    pub(crate) const fn allows_conv_mutation(self) -> bool {
+        matches!(self, Self::AwaseLocked)
+    }
+}
+
 /// Windows 固有のプラットフォーム実装
 pub struct WindowsPlatform {
     pub output: Output,
@@ -35,11 +57,11 @@ pub struct WindowsPlatform {
     /// warm 判定そのものは GjiFsm が SSOT であり、この FSM は「confirm キー KeyDown 後、
     /// KeyUp まで warmup を保留する」遷移を所有する。
     pub(crate) composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
-    /// 現在の入力モードがローマ字かどうか（JISかな時は false）。
+    /// IME conv mode に対する awase の制御権限。
     ///
-    /// executor が各バッチ開始時に `ImeStateHub::belief::input_mode().is_romaji_capable()` から
-    /// 更新する。JISかなモードでは TSF warmup (VK_DBE_HIRAGANA) を送信しない。
-    pub(crate) is_romaji_mode: bool,
+    /// `AwaseLocked`: awase ON 中。VK_DBE_HIRAGANA 等の conv mutation を許可する。
+    /// `UserManaged`: awase OFF/非活性中。conv mode に一切触らない。
+    pub(crate) conv_mode_policy: ConvModePolicy,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -85,9 +107,11 @@ impl WindowsPlatform {
         self.output.send_eager_tsf_warmup(applied_ime_on);
     }
 
-    /// 現在の入力モードがローマ字かどうかを更新する（executor が各バッチ開始時に呼ぶ）。
-    pub(crate) fn set_romaji_mode(&mut self, is_romaji: bool) {
-        self.is_romaji_mode = is_romaji;
+    /// conv mode 制御権限を更新する。
+    ///
+    /// エンジンが有効になったとき `AwaseLocked`、無効になったとき `UserManaged` を渡す。
+    pub(crate) fn set_conv_mode_policy(&mut self, policy: ConvModePolicy) {
+        self.conv_mode_policy = policy;
     }
 
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
@@ -333,12 +357,12 @@ impl WindowsPlatform {
             match *action {
                 CompositionAction::EmitWarmup { reason } => {
                     log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
-                    if self.is_romaji_mode {
+                    if self.conv_mode_policy.allows_conv_mutation() {
                         self.output.send_eager_tsf_warmup(applied_ime_on);
                     } else {
                         log::debug!(
                             "[composition-fsm] EmitWarmup ({reason:?}): \
-                             JISかなモード → VK_DBE_HIRAGANA warmup スキップ"
+                             UserManaged → VK_DBE_HIRAGANA warmup スキップ"
                         );
                     }
                 }
@@ -827,8 +851,8 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.gji_on_native_f2_consumed();
-            // JISかなモードでは VK_DBE_HIRAGANA warmup は不要かつ有害
-            if self.is_romaji_mode {
+            // UserManaged (awase OFF/JISかな等) では conv mutation は禁止
+            if self.conv_mode_policy.allows_conv_mutation() {
                 self.output.send_eager_tsf_warmup(applied);
             }
             return;
@@ -841,12 +865,12 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.gji_on_composition_reset();
-            // JISかなモードでは VK_DBE_HIRAGANA warmup は不要かつ有害
-            if self.is_romaji_mode {
+            // UserManaged (awase OFF/JISかな等) では conv mutation は禁止
+            if self.conv_mode_policy.allows_conv_mutation() {
                 self.output.send_eager_tsf_warmup(applied);
             } else {
                 log::debug!(
-                    "[composition] reinject confirm key: JISかなモード → warmup スキップ"
+                    "[composition] reinject confirm key: UserManaged → warmup スキップ"
                 );
             }
         }

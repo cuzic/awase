@@ -451,7 +451,7 @@ pub(super) fn initialize_app(
                 crate::focus::classifier::InjectionModeStore::new(base_dir),
             ),
             composition_fsm: crate::tsf::composition_fsm::CompositionFsm::new(),
-            is_romaji_mode: true,
+            conv_mode_policy: crate::platform::ConvModePolicy::UserManaged,
         },
         layouts,
         sync_toggle_keys,
