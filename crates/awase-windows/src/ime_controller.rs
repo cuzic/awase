@@ -124,6 +124,21 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
 
     fn apply(&self, open: bool, _view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if open {
+            // カタカナモード（KATAKANA bit 立ち）のとき VK_DBE_HIRAGANA を送ると
+            // ひらがなに切り替わる（IME 的には「ON→ON」だが conv mode が破壊される）。
+            // 現在の conv を読んで KATAKANA bit が立っている場合は送信をスキップする。
+            // Safety: get_ime_conversion_mode_raw_timeout は Win32 API。メインスレッドから呼ぶこと。
+            if let Some(conv) =
+                unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
+            {
+                if crate::imm::cmode_has(conv, crate::imm::IME_CMODE_KATAKANA) {
+                    log::debug!(
+                        "[apply-ime] MS-IME direct: conv=0x{conv:08X} カタカナモード \
+                         → VK_DBE_HIRAGANA スキップ (AlreadyMatched)"
+                    );
+                    return ImeOpenOutcome::AlreadyMatched;
+                }
+            }
             log::debug!("[apply-ime] MS-IME direct: VK_DBE_HIRAGANA (IME ON)");
             // SAFETY: post_ms_ime_on は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             unsafe { crate::ime::post_ms_ime_on() };

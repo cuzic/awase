@@ -582,12 +582,22 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
         crate::tsf::observer::reset_namechange_seq();
-        // VK_DBE_HIRAGANA (F2) を送信: VK_IME_ON (0x16) は IME ON 状態をセットするだけで
-        // TSF composition context の初期化をトリガーしない。WezTerm は物理 F2 受信時に
-        // TSF composition を初期化するため、同等の VK_DBE_HIRAGANA を送る必要がある。
-        let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
+        // カタカナモードのとき VK_DBE_HIRAGANA を送るとひらがなに戻ってしまう。
+        // charset に応じた warmup VK を選択する:
+        //   ひらがな/英数: VK_DBE_HIRAGANA (F2) — TSF composition context を初期化
+        //   全角カタカナ:  VK_DBE_KATAKANA (F1) — カタカナモードを維持しつつ初期化
+        //   半角カタカナ:  VK_DBE_KATAKANA+VK_DBE_SBCSCHAR (F1+F3) — 半角カタカナを維持
+        let charset = self.conv_mode.get().charset;
+        let ms = if charset.is_katakana() {
+            let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
+            log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
+            ms
+        } else {
+            let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
+            log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
+            ms
+        };
         self.composition.set_eager_warmup_sent_ms(ms);
-        log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
