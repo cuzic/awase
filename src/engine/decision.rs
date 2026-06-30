@@ -324,6 +324,59 @@ pub fn classify_idle_conv(
     }
 }
 
+/// IME 変換モードの**前後差分**から belief の `InputModeState` への分類。
+///
+/// `ImmGetConversionStatus` の「直前値 → 今回値」遷移を見て belief を決定する。
+/// `classify_idle_conv`（絶対値スナップショット判定）の差分版。
+///
+/// Win32 API を一切呼ばないため、Linux でもテスト可能。
+/// `Option<u32>` のアンラップは呼び出し元で行い、両値が確定している場合のみ呼ぶこと。
+///
+/// # 戻り値
+/// - `Some(new_mode)` — belief を `new_mode` に更新すべき
+/// - `None`           — 変更なし（英数遷移以外で belief が既に一致している場合）
+///
+/// # 注意: 英数遷移の特殊ケース
+/// `curr_conv` が英数モード（ROMAN=0 かつ NATIVE=0）かつ前回が非英数だった場合、
+/// `current` の値に関わらず `Some(ObservedKana)` を返す（belief を強制補正）。
+#[must_use]
+pub fn classify_conv_transition(
+    curr_conv: u32,
+    prev_conv: u32,
+    current: InputModeState,
+) -> Option<InputModeState> {
+    // ImmGetConversionStatus のビット定数 (imm.h)
+    const NATIVE: u32 = 0x0001;
+    const ROMAN: u32 = 0x0010;
+
+    let curr_has_roman = curr_conv & ROMAN != 0;
+    let curr_has_native = curr_conv & NATIVE != 0;
+    let prev_had_roman = prev_conv & ROMAN != 0;
+    let prev_had_native = prev_conv & NATIVE != 0;
+
+    // 英数モードへの遷移（ROMAN も NATIVE もなくなった）→ 常に ObservedKana
+    let curr_is_eisu = !curr_has_roman && !curr_has_native;
+    let prev_was_not_eisu = prev_had_roman || prev_had_native;
+    if curr_is_eisu && prev_was_not_eisu {
+        return Some(InputModeState::ObservedKana);
+    }
+
+    // ROMAN ビット変化 かつ NATIVE あり → ひらがな↔ローマ字切り替え
+    if !(prev_had_roman != curr_has_roman && curr_has_native) {
+        return None;
+    }
+    let new_is_romaji = curr_has_roman;
+    // belief が既に新方向と一致していれば更新不要
+    if current.is_romaji_capable() == new_is_romaji {
+        return None;
+    }
+    Some(if new_is_romaji {
+        InputModeState::ObservedRomaji
+    } else {
+        InputModeState::ObservedKana
+    })
+}
+
 /// Engine が判断に使う外部コンテキスト（読み取り専用）。
 ///
 /// # 設計ルール
@@ -643,6 +696,150 @@ mod tests {
                 "conv=0x{conv:08X}"
             );
         }
+    }
+
+    // ── classify_conv_transition ──────────────────────────────────────────────
+    //
+    // classify_idle_conv との違い:
+    //   - 「前回値→今回値」の差分で判定（絶対スナップショットではない）
+    //   - 英数遷移は belief に関わらず常に Some(ObservedKana) を返す
+    //   - カタカナは ROMAN=0 のまま → ROMAN bit 変化なし → None（idle check と挙動が異なる）
+
+    // ── 英数モードへの遷移 ──
+    #[test]
+    fn tr_hiragana_to_eisu_from_romaji_yields_kana() {
+        // 0x19 → 0x00: ひらがなローマ字 → 英数
+        assert_eq!(
+            classify_conv_transition(CONV_EISUU, CONV_HIRAGANA, InputModeState::ObservedRomaji),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    #[test]
+    fn tr_jisakana_to_eisu_always_yields_kana() {
+        // 0x09 → 0x00: JISかな → 英数（belief がすでに kana でも Some を返す）
+        assert_eq!(
+            classify_conv_transition(CONV_EISUU, CONV_JISAKANA, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    #[test]
+    fn tr_hiragana_to_eisu_from_unknown_yields_kana() {
+        assert_eq!(
+            classify_conv_transition(CONV_EISUU, CONV_HIRAGANA, InputModeState::Unknown),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    // ── 英数 → 英数（変化なし）──
+    #[test]
+    fn tr_eisu_to_eisu_yields_none() {
+        // prev も curr も NATIVE=0 → 英数遷移条件 (prev_was_not_eisu) を満たさない
+        assert_eq!(
+            classify_conv_transition(CONV_EISUU, CONV_EISUU, InputModeState::ObservedRomaji),
+            None
+        );
+    }
+
+    // ── ROMAN ビット変化: かな → ローマ字 ──
+    #[test]
+    fn tr_jisakana_to_hiragana_from_kana_yields_romaji() {
+        // 0x09 → 0x19: ROMAN 0→1, NATIVE=1
+        assert_eq!(
+            classify_conv_transition(CONV_HIRAGANA, CONV_JISAKANA, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedRomaji)
+        );
+    }
+
+    #[test]
+    fn tr_eisu_to_hiragana_from_kana_yields_romaji() {
+        // 0x00 → 0x19: 英数 → ひらがなローマ字
+        assert_eq!(
+            classify_conv_transition(CONV_HIRAGANA, CONV_EISUU, InputModeState::ObservedKana),
+            Some(InputModeState::ObservedRomaji)
+        );
+    }
+
+    // ── ROMAN ビット変化: ローマ字 → かな ──
+    #[test]
+    fn tr_hiragana_to_jisakana_from_romaji_yields_kana() {
+        // 0x19 → 0x09: ROMAN 1→0, NATIVE=1
+        assert_eq!(
+            classify_conv_transition(CONV_JISAKANA, CONV_HIRAGANA, InputModeState::ObservedRomaji),
+            Some(InputModeState::ObservedKana)
+        );
+    }
+
+    // ── belief が既に新方向と一致 → None ──
+    #[test]
+    fn tr_jisakana_to_hiragana_already_romaji_yields_none() {
+        // 0x09 → 0x19 だが belief がすでに ObservedRomaji → 変更なし
+        assert_eq!(
+            classify_conv_transition(
+                CONV_HIRAGANA,
+                CONV_JISAKANA,
+                InputModeState::ObservedRomaji
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tr_hiragana_to_jisakana_already_kana_yields_none() {
+        // 0x19 → 0x09 だが belief がすでに ObservedKana → 変更なし
+        assert_eq!(
+            classify_conv_transition(
+                CONV_JISAKANA,
+                CONV_HIRAGANA,
+                InputModeState::ObservedKana
+            ),
+            None
+        );
+    }
+
+    // ── ROMAN ビット不変 → None ──
+    #[test]
+    fn tr_hiragana_to_hiragana_yields_none() {
+        assert_eq!(
+            classify_conv_transition(
+                CONV_HIRAGANA,
+                CONV_HIRAGANA,
+                InputModeState::ObservedKana
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tr_jisakana_to_jisakana_yields_none() {
+        assert_eq!(
+            classify_conv_transition(CONV_JISAKANA, CONV_JISAKANA, InputModeState::ObservedRomaji),
+            None
+        );
+    }
+
+    #[test]
+    fn tr_jisakana_to_zenkata_yields_none() {
+        // 0x09 → 0x0B: どちらも ROMAN=0 → ROMAN bit 変化なし → None
+        // （カタカナは idle check では ObservedRomaji になるが、差分検出では検出しない）
+        assert_eq!(
+            classify_conv_transition(CONV_ZENKATA, CONV_JISAKANA, InputModeState::ObservedKana),
+            None
+        );
+    }
+
+    #[test]
+    fn tr_hiragana_to_zenkata_yields_kana() {
+        // 0x19 → 0x0B: ROMAN 1→0, NATIVE=1 → belief が Romaji なら Some(ObservedKana)
+        assert_eq!(
+            classify_conv_transition(
+                CONV_ZENKATA,
+                CONV_HIRAGANA,
+                InputModeState::ObservedRomaji
+            ),
+            Some(InputModeState::ObservedKana)
+        );
     }
 
     #[test]

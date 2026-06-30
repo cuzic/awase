@@ -13,7 +13,6 @@
 //!
 //! `None` を「偽」として扱ってはならない。
 
-use crate::imm::{IME_CMODE_NATIVE, IME_CMODE_ROMAN};
 use awase::engine::InputModeState;
 
 /// Observer が返す単一観測 (値 + タイムスタンプ)。
@@ -136,46 +135,20 @@ impl crate::ime::ImeSnapshot {
         current_prev_conversion_mode: Option<u32>,
         current_input_mode: InputModeState,
     ) -> Option<InputModeState> {
-        let conv_mode = self.conversion_mode?;
-        let curr_has_roman = conv_mode & IME_CMODE_ROMAN != 0;
-        let curr_has_native = conv_mode & IME_CMODE_NATIVE != 0;
+        let curr_conv = self.conversion_mode?;
         let prev_conv = current_prev_conversion_mode?;
-        let prev_had_roman = prev_conv & IME_CMODE_ROMAN != 0;
-        let prev_had_native = prev_conv & IME_CMODE_NATIVE != 0;
-
-        // 英数モードへの遷移を検出（ROMAN も NATIVE もなくなった）
-        let curr_is_eisu = !curr_has_roman && !curr_has_native;
-        let prev_was_not_eisu = prev_had_roman || prev_had_native;
-        if curr_is_eisu && prev_was_not_eisu {
-            if current_input_mode.is_romaji_capable() {
-                log::info!(
-                    "IME input method changed (→英数): romaji → kana (conv=0x{:08X}→0x{:08X})",
-                    prev_conv,
-                    conv_mode,
-                );
-            }
-            return Some(InputModeState::ObservedKana);
+        let result =
+            awase::engine::classify_conv_transition(curr_conv, prev_conv, current_input_mode);
+        if let Some(new_mode) = result {
+            log::info!(
+                "IME input method changed: conv=0x{:08X}→0x{:08X}, belief {:?}→{:?}",
+                prev_conv,
+                curr_conv,
+                current_input_mode,
+                new_mode,
+            );
         }
-
-        // ROMAN ビット変化 かつ NATIVE あり → ひらがな↔ローマ字切り替え
-        if !(prev_had_roman != curr_has_roman && curr_has_native) {
-            return None;
-        }
-        let new_romaji = curr_has_roman;
-        let prev_romaji = current_input_mode.is_romaji_capable();
-        if prev_romaji == new_romaji {
-            return None;
-        }
-        log::info!(
-            "IME input method changed (ROMAN bit transition): {} → {}",
-            if prev_romaji { "romaji" } else { "kana" },
-            if new_romaji { "romaji" } else { "kana" },
-        );
-        Some(if new_romaji {
-            InputModeState::ObservedRomaji
-        } else {
-            InputModeState::ObservedKana
-        })
+        result
     }
 }
 
