@@ -7,7 +7,7 @@ use crate::tsf::output::{
     kana_for_romaji_static, make_key_input_ex, make_tsf_key_input, INJECTED_MARKER,
 };
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_OEM_MINUS};
+use crate::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, VK_LSHIFT, VK_OEM_MINUS};
 use awase::types::VkCode;
 use itertools::Itertools as _;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -419,6 +419,58 @@ impl Output {
             let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] (f2-leading)",
+                run.iter()
+                    .map(|&(v, s)| if s {
+                        format!("S{v:02X}")
+                    } else {
+                        format!("{v:02X}")
+                    })
+                    .join(","),
+            );
+            Self::send_vk_run_batch(run, VkMarker::Tsf);
+        }
+    }
+
+    /// VK run 分割送信（カタカナ warmup 選択）: hint に応じた先頭ウォームアップ VK を使う。
+    ///
+    /// `ImmSetConversionStatus` は TSF-native windows では TSF モードに反映されないため、
+    /// キーイベントで直接 TSF 入力モードを切り替える。
+    ///
+    /// - 半角カタカナ (`KATAKANA=1, FULLSHAPE=0`): `[VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, romaji...]`
+    /// - 全角カタカナ (`KATAKANA=1, FULLSHAPE=1`): `[VK_DBE_KATAKANA, romaji...]`
+    /// - ひらがな / hint=0:                        `[VK_DBE_HIRAGANA, romaji...]` (従来と同じ)
+    pub(super) fn send_vk_runs_with_leading_warmup(
+        chars: &[(VkCode, bool)],
+        cold_seq: u32,
+        katakana_hint: u32,
+    ) {
+        use crate::imm::{IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA};
+
+        let (leading_label, leading_vks): (&str, Vec<(VkCode, bool)>) =
+            if katakana_hint & IME_CMODE_KATAKANA != 0 {
+                if katakana_hint & IME_CMODE_FULLSHAPE != 0 {
+                    ("f1-leading", vec![(VK_DBE_KATAKANA, false)])
+                } else {
+                    (
+                        "f1+f3-leading",
+                        vec![(VK_DBE_KATAKANA, false), (VK_DBE_SBCSCHAR, false)],
+                    )
+                }
+            } else {
+                ("f2-leading", vec![(VK_DBE_HIRAGANA, false)])
+            };
+
+        let mut warmup_plus_chars = Vec::with_capacity(chars.len() + leading_vks.len());
+        warmup_plus_chars.extend_from_slice(&leading_vks);
+        warmup_plus_chars.extend_from_slice(chars);
+        let runs = Self::split_vk_runs(&warmup_plus_chars);
+        let total_runs = runs.len();
+
+        for (run_idx, run) in runs.into_iter().enumerate() {
+            let last_io = crate::tsf::observer::gji_last_io_ms();
+            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            log::debug!(
+                "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] ({leading_label})",
                 run.iter()
                     .map(|&(v, s)| if s {
                         format!("S{v:02X}")

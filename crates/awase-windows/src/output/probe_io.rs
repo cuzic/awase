@@ -99,7 +99,20 @@ impl ProbeIo for Output {
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        let result = crate::output::TsfSendPipeline::transmit(romaji, chars, outcome);
+        // TSF-native (WezTerm 等) では ImmSetConversionStatus が TSF モードに反映されない。
+        // VK cold path (prepend_f2_warmup=true, used_eager_path=false) でカタカナ hint がある場合、
+        // 先頭 VK_DBE_HIRAGANA の代わりに VK_DBE_KATAKANA (+ 半角なら VK_DBE_SBCSCHAR) を送り
+        // TSF 入力モードをカタカナに切り替える。
+        let katakana_hint = self.katakana_conv_hint();
+        let result = if outcome.prepend_f2_warmup
+            && !outcome.used_eager_path
+            && katakana_hint & crate::imm::IME_CMODE_KATAKANA != 0
+        {
+            Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, katakana_hint);
+            chars.len()
+        } else {
+            crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
+        };
         // unicode パスを使った場合（used_eager_path=true かつ kana が存在する）は
         // PendingGjiConfirm 状態に入る: GJI が I/O 応答するまで次の warm キーも unicode で送る。
         if outcome.used_eager_path
