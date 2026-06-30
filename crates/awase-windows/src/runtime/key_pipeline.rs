@@ -340,7 +340,7 @@ impl Runtime {
                 self.platform_state.ime.belief.input_mode = InputModeState::ObservedRomaji;
                 // カタカナモードへの切替は IME ON を意味する。shadow が OFF なら同期する。
                 if !self.platform_state.ime.effective_open() {
-                    self.platform.timer.kill(crate::TIMER_IME_REFRESH);
+                    self.platform.timer.kill(TIMER_IME_REFRESH);
                     let generation = self.platform_state.ime.event_log.next_seq();
                     self.platform_state.ime.handle_engine_set_open(true, false, generation);
                     log::info!(
