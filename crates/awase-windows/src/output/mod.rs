@@ -595,6 +595,11 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         let ms = if charset.is_katakana() {
             let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
             log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
+            // HanKata warmup (F1+F3) 後は IMM conv が ZenKata (0x0B) を返すことがある。
+            // TsfNative では F3 が IMM FULLSHAPE ビットを変更しないため。conv_mode 汚染を抑制する。
+            if charset == crate::state::Charset::HankakuKatakana {
+                self.conv_mode.on_hankata_warmup_sent();
+            }
             ms
         } else {
             let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();

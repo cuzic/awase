@@ -17,12 +17,15 @@ pub(crate) use awase::engine::Charset;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct ConvModeMgr {
     mode: std::cell::Cell<Option<ConvMode>>,
-    /// フォーカス変更が最後に発生した時刻（`current_tick_ms` 値）。
+    /// HankakuKatakana → ZenkakuKatakana ダウングレードを抑制する期限（`current_tick_ms` 値）。
     ///
-    /// TsfNative ウィンドウ（WezTerm 等）はフォーカス直後の IMM conv 読み取りが
-    /// TSF 実態を反映しないため、直後の idle-conv-check による conv_mode 更新を抑制するために使う。
+    /// 0 = 抑制なし。以下の契機で更新される:
+    ///
+    /// - フォーカス変更後 1500ms: TsfNative でフォーカス直後に IMM conv が TSF を反映しない
+    /// - HanKata warmup (F1+F3) 送信後 500ms: TsfNative では F3 が IMM conv の FULLSHAPE ビットを
+    ///   変更しないため、F1+F3 後の IMM 読み取りが ZenKata (0x0B) を返す副作用を遮断する
     #[cfg(windows)]
-    focus_changed_ms: std::cell::Cell<u64>,
+    suppress_zenkata_until_ms: std::cell::Cell<u64>,
 }
 
 impl Default for ConvModeMgr {
@@ -30,7 +33,7 @@ impl Default for ConvModeMgr {
         Self {
             mode: std::cell::Cell::new(None),
             #[cfg(windows)]
-            focus_changed_ms: std::cell::Cell::new(0),
+            suppress_zenkata_until_ms: std::cell::Cell::new(0),
         }
     }
 }
@@ -40,34 +43,48 @@ impl ConvModeMgr {
     /// フォーカスウィンドウが変わったことを通知する。
     ///
     /// 以後 1500ms 以内の HankakuKatakana → ZenkakuKatakana ダウングレードを抑制する。
+    /// TsfNative ウィンドウはフォーカス直後に IMM conv が TSF mode を反映しないため。
     #[cfg(windows)]
     pub(crate) fn on_focus_changed(&self) {
-        self.focus_changed_ms.set(crate::hook::current_tick_ms());
+        let until = crate::hook::current_tick_ms() + 1500;
+        if until > self.suppress_zenkata_until_ms.get() {
+            self.suppress_zenkata_until_ms.set(until);
+        }
+    }
+
+    /// HankakuKatakana 用 warmup VK (F1+F3) を送信したことを通知する。
+    ///
+    /// 以後 500ms 以内の HankakuKatakana → ZenkakuKatakana ダウングレードを抑制する。
+    /// TsfNative ウィンドウでは F3 (VK_DBE_SBCSCHAR) が IMM conv の FULLSHAPE ビットを変更しない
+    /// ため、F1+F3 送信後の IMM 読み取りが ZenKata (0x0B) を返す副作用を遮断する。
+    #[cfg(windows)]
+    pub(crate) fn on_hankata_warmup_sent(&self) {
+        let until = crate::hook::current_tick_ms() + 500;
+        if until > self.suppress_zenkata_until_ms.get() {
+            self.suppress_zenkata_until_ms.set(until);
+        }
     }
 
     /// `ImmGetConversionStatus` の raw conv 値からモードを更新する。
     ///
     /// 変化があった場合のみ `info` ログを出力する。
-    /// フォーカス変更後 1500ms 以内に HankakuKatakana → ZenkakuKatakana へダウングレードしようと
-    /// した場合は更新を抑制する（TsfNative ウィンドウの IMM/TSF 乖離対策）。
+    /// HankakuKatakana → ZenkakuKatakana のダウングレードは `suppress_zenkata_until_ms` 期限内
+    /// であれば無視する（フォーカス後 1500ms または HanKata warmup 後 500ms）。
     pub(crate) fn update_from_conv(&self, conv: u32) {
         let new = ConvMode::from_u32(conv);
         let old = self.mode.get();
         if old != Some(new) {
-            // TsfNative (WezTerm 等) はフォーカス直後に IMM conv が TSF mode を反映しない。
-            // idle-conv-check が ZenKata を誤読して HanKata → ZenKata に書き換えると、
-            // 次の send_eager_tsf_warmup が F1 のみ（ZenKata 用）を送信して TSF を破壊する。
-            // フォーカス変更後 1500ms 以内のダウングレードは無視する。
             #[cfg(windows)]
             if old.map_or(false, |m| m.charset == Charset::HankakuKatakana)
                 && new.charset == Charset::ZenkakuKatakana
             {
-                let elapsed = crate::hook::current_tick_ms()
-                    .saturating_sub(self.focus_changed_ms.get());
-                if elapsed < 1500 {
+                let now = crate::hook::current_tick_ms();
+                let until = self.suppress_zenkata_until_ms.get();
+                if now < until {
                     log::debug!(
-                        "[conv-mode] focus 後 {elapsed}ms: HanKata→ZenKata ダウングレード抑制 \
-                         (conv=0x{conv:08X})"
+                        "[conv-mode] HanKata→ZenKata ダウングレード抑制 \
+                         (残り{}ms, conv=0x{conv:08X})",
+                        until.saturating_sub(now)
                     );
                     return;
                 }

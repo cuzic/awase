@@ -15,17 +15,25 @@
 //!      └─ run_non_eager_start(): F2×2 送信 + WarmupStarted (GjiProbe)
 //! ```
 
-use std::mem::size_of;
 use std::sync::atomic::Ordering::Relaxed;
 
-use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
-
 use crate::output::Output;
-use crate::tsf::output::make_tsf_key_input;
 use crate::tuning::LONG_IDLE_MS;
 
-use super::send::send_vk_dbe_hiragana_pair;
-use crate::vk::VK_DBE_HIRAGANA;
+use super::send::{send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup};
+
+/// charset に応じた warmup VK ペアを 1 回送信し、送信後の時刻を返す。
+///
+/// - `HankakuKatakana` → F1↓F1↑F3↓F3↑ (半角カタカナ)
+/// - `ZenkakuKatakana` → F1↓F1↑ (全角カタカナ)
+/// - その他 → F2↓F2↑ (ひらがな)
+fn send_charset_warmup_pair(charset: awase::engine::Charset) -> u64 {
+    if charset.is_katakana() {
+        send_vk_dbe_katakana_warmup(charset)
+    } else {
+        send_vk_dbe_hiragana_pair()
+    }
+}
 
 /// eager パスの 3 分岐を表す enum。
 ///
@@ -67,6 +75,10 @@ struct WarmupContext {
     ///
     /// `false` (UserManaged) のとき VK_DBE_HIRAGANA 送信と `ImmSetConversionStatus` をスキップする。
     conv_mutation_allowed: bool,
+    /// 現在の入力文字セット（warmup VK の選択に使用）。
+    ///
+    /// `HankakuKatakana` のとき F1+F3、`ZenkakuKatakana` のとき F1、その他は F2 を使う。
+    charset: awase::engine::Charset,
 }
 
 /// `ColdWarmupSequence::run_start` の戻り値。
@@ -140,11 +152,23 @@ impl<'a> ColdWarmupSequence<'a> {
             crate::output::fmt_ms(eager_elapsed),
         );
 
-        if use_eager {
+        let started = if use_eager {
             Self::run_eager_start(&ctx, eager_ms, eager_elapsed)
         } else {
             Self::run_non_eager_start(&ctx)
+        };
+
+        // FreshF2 / ReWarmup / non-eager パスで HanKata warmup (F1+F3) を送信した場合、
+        // IMM が ZenKata (0x0B) を返すことがあるため conv_mode 汚染を抑制する。
+        // fresh_f2_at_probe_start=true かつ HanKata かつ conv_mutation_allowed のとき実際に送信済み。
+        if started.fresh_f2_at_probe_start
+            && ctx.conv_mutation_allowed
+            && ctx.charset == awase::engine::Charset::HankakuKatakana
+        {
+            self.output.conv_mode.on_hankata_warmup_sent();
         }
+
+        started
     }
 
     /// 準備フェーズ: 診断ログ出力・IMM32 設定・`cold_seq` インクリメントを行い
@@ -230,38 +254,39 @@ impl<'a> ColdWarmupSequence<'a> {
             self.output.composition.idle_ms_at_last_cold()
         );
 
+        let charset = self
+            .output
+            .conv_mode
+            .get()
+            .map(|m| m.charset)
+            .unwrap_or(awase::engine::Charset::Hiragana);
+
         WarmupContext {
             cold_seq,
             eager_settle_ms,
             probe_min_ms,
             cold_reason,
             conv_mutation_allowed,
+            charset,
         }
     }
 
-    /// non-eager: F2×2 を送信して WarmupStarted を返す。
+    /// non-eager: charset に応じた warmup VK×2 を送信して WarmupStarted を返す。
     fn run_non_eager_start(ctx: &WarmupContext) -> WarmupStarted {
         log::debug!(
-            "[h1-warmup] cold={} non-eager: VK_DBE_HIRAGANA warmup+probe 送信 (conv_mutation={})",
+            "[h1-warmup] cold={} non-eager: {} warmup+probe 送信 (conv_mutation={})",
             ctx.cold_seq,
+            ctx.charset,
             ctx.conv_mutation_allowed,
         );
-        if ctx.conv_mutation_allowed {
-            let ime_on_probe = [
-                make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                make_tsf_key_input(VK_DBE_HIRAGANA, true),
-                make_tsf_key_input(VK_DBE_HIRAGANA, false),
-                make_tsf_key_input(VK_DBE_HIRAGANA, true),
-            ];
-            // SAFETY: ime_on_probe is a valid array of INPUT structs.
-            unsafe {
-                SendInput(
-                    &ime_on_probe,
-                    i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-                );
-            }
-        }
-        let probe_sent_ms = crate::hook::current_tick_ms();
+        let probe_sent_ms = if ctx.conv_mutation_allowed {
+            // warmup VK ペアを 2 回送信（GJI I/O を確実に起動する）。
+            // HanKata: F1+F3 × 2、ZenKata: F1 × 2、Hiragana: F2 × 2。
+            send_charset_warmup_pair(ctx.charset);
+            send_charset_warmup_pair(ctx.charset)
+        } else {
+            crate::hook::current_tick_ms()
+        };
         WarmupStarted {
             probe: crate::tsf::probe::TsfReadinessProbe::new(
                 probe_sent_ms,
@@ -283,23 +308,24 @@ impl<'a> ColdWarmupSequence<'a> {
 
         match kind {
             WarmupKind::FreshF2 => {
-                // eager_fresh_f2_then_probe: fresh F2 + probe
+                // eager_fresh_f2_then_probe: fresh warmup + probe
                 let last_io = crate::tsf::observer::TSF_OBS.gji_last_io_ms.load(Relaxed);
                 let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
                 log::debug!(
-                    "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh F2 start (conv_mutation={})",
+                    "[h1-warmup] cold={} eager: {}ms 経過 (gji_idle={gji_idle}ms) → fresh {} start (conv_mutation={})",
                     ctx.cold_seq,
                     ctx.eager_settle_ms,
+                    ctx.charset,
                     ctx.conv_mutation_allowed,
                 );
-                let fresh_f2_ms = if ctx.conv_mutation_allowed {
-                    send_vk_dbe_hiragana_pair()
+                let fresh_warmup_ms = if ctx.conv_mutation_allowed {
+                    send_charset_warmup_pair(ctx.charset)
                 } else {
                     crate::hook::current_tick_ms()
                 };
                 WarmupStarted {
                     probe: crate::tsf::probe::TsfReadinessProbe::new(
-                        fresh_f2_ms,
+                        fresh_warmup_ms,
                         ctx.cold_seq,
                         ctx.probe_min_ms,
                     ),
@@ -310,15 +336,16 @@ impl<'a> ColdWarmupSequence<'a> {
                 }
             }
             WarmupKind::ReWarmup => {
-                // eager_re_warmup: fresh F2 を送信して RE_WARMUP_MS 待機
+                // eager_re_warmup: fresh warmup を送信して RE_WARMUP_MS 待機
                 log::debug!(
-                    "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup start (conv_mutation={})",
+                    "[h1-warmup] cold={} eager: {}ms 経過 → 再warmup ({}) start (conv_mutation={})",
                     ctx.cold_seq,
                     ctx.eager_settle_ms,
+                    ctx.charset,
                     ctx.conv_mutation_allowed,
                 );
                 let re_warmup_ms = if ctx.conv_mutation_allowed {
-                    send_vk_dbe_hiragana_pair()
+                    send_charset_warmup_pair(ctx.charset)
                 } else {
                     crate::hook::current_tick_ms()
                 };
