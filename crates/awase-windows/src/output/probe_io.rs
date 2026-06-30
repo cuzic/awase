@@ -287,7 +287,13 @@ impl ProbeIo for Output {
             make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
             make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
         ];
-        log::debug!("[chrome-reinit] cold={cold_seq} VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始");
+        // write_bytes ベースラインを SendInput 前に取得する。
+        // VK_IME_OFF→ON が GJI の WriteTransferCount を上昇させるかを観測する実験ログ。
+        let write_bytes_before = crate::tsf::observer::gji_write_bytes();
+        log::debug!(
+            "[chrome-reinit] cold={cold_seq} VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始 \
+             (write_bytes_baseline={write_bytes_before})"
+        );
         let _ = crate::win32::send_input_safe(&inputs);
 
         // 2. ImeModeFsm belief を即時更新: VK_IME_OFF → Off, VK_IME_ON → Hiragana。
@@ -302,11 +308,23 @@ impl ProbeIo for Output {
         let max_retries = crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS
             / crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS;
         win32_async::spawn_local(async move {
+            let mut first_write_tick: Option<u32> = None;
             for i in 0..max_retries {
                 win32_async::sleep_ms(crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS as u32).await;
+                let write_bytes_now = crate::tsf::observer::gji_write_bytes();
+                let write_delta = write_bytes_now.saturating_sub(write_bytes_before);
+                if write_delta > 0 && first_write_tick.is_none() {
+                    first_write_tick = Some(i as u32 + 1);
+                    log::info!(
+                        "[chrome-reinit] cold={cold_seq} GJI write_bytes 上昇検出: \
+                         tick=#{i} delta=+{write_delta}B (+{:.1}KB)",
+                        write_delta as f64 / 1024.0,
+                    );
+                }
                 let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(15).await;
                 log::debug!(
-                    "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={}",
+                    "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={} \
+                     write_delta=+{write_delta}B",
                     conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}")),
                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                 );
@@ -321,6 +339,12 @@ impl ProbeIo for Output {
                     break;
                 }
             }
+            log::info!(
+                "[chrome-reinit] cold={cold_seq} ポーリング完了: \
+                 total_write_delta=+{}B first_write_tick={:?}",
+                crate::tsf::observer::gji_write_bytes().saturating_sub(write_bytes_before),
+                first_write_tick,
+            );
         });
     }
 
