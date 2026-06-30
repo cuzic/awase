@@ -19,9 +19,9 @@ pub mod timing;
 // Public re-exports
 pub use crate::platform::EffectOrigin;
 pub use decision::{
-    classify_conv_transition, classify_idle_conv, ActivationState, AssumedReason, Decision, Effect,
-    EffectVec, EngineCommand, ImeEffect, InputContext, InputEffect, InputModeState,
-    SpecialKeyCombos, TimerEffect, UiEffect,
+    classify_conv_transition, classify_idle_conv, should_run_idle_conv_check, ActivationState,
+    AssumedReason, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext,
+    InputEffect, InputModeState, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 pub use engine::Engine;
 pub use fsm_types::{

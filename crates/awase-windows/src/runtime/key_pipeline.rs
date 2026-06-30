@@ -240,31 +240,33 @@ impl Runtime {
     /// awase が一度でも warmup を行い `ImmSetConversionStatus(conv | ROMAN)` を確立した後は
     /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
-        if !matches!(event.event_type, KeyEventType::KeyDown) {
-            return;
-        }
-        if !matches!(
+        let in_flight = self.platform.output_in_flight_ms();
+        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms();
+        let is_tsf_native = matches!(
             self.platform.current_app_profile(),
             crate::focus::class_names::AppImeProfile::TsfNative
+        );
+        if !nicola::engine::should_run_idle_conv_check(
+            matches!(event.event_type, KeyEventType::KeyDown),
+            is_tsf_native,
+            in_flight,
+            explicit_age,
+            crate::tuning::TYPING_IDLE_MS,
+            crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
         ) {
-            return;
-        }
-        // TYPING_IDLE_MS 未満ならタイピング中 → スキップ（一時停止後の最初のキーのみ確認）
-        let in_flight = self.platform.output_in_flight_ms();
-        if in_flight <= crate::tuning::TYPING_IDLE_MS {
-            return;
-        }
-        // 明示的 IME 操作（Ctrl+変換/無変換 等）直後はスキップ。
-        // output_in_flight_ms() は文字出力のみ追跡し VK_DBE_HIRAGANA は計上しないため、
-        // Ctrl+変換 後に GJI probe が conv mode (ROMAN ビット) を確立する前に check が
-        // 走って AssumedRomaji を ObservedKana に上書きしてしまう問題を防ぐ。
-        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms();
-        if explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS {
-            log::debug!(
-                "[idle-conv-check] TsfNative: explicit IME action {}ms ago → スキップ (suppress={}ms)",
-                explicit_age,
-                crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
-            );
+            // explicit IME 操作直後のスキップのみデバッグログを残す
+            // （KeyDown・TsfNative・idle の 3 条件を通過した上で explicit_age だけが残っている場合）
+            if matches!(event.event_type, KeyEventType::KeyDown)
+                && is_tsf_native
+                && in_flight > crate::tuning::TYPING_IDLE_MS
+                && explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS
+            {
+                log::debug!(
+                    "[idle-conv-check] TsfNative: explicit IME action {}ms ago → スキップ (suppress={}ms)",
+                    explicit_age,
+                    crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
+                );
+            }
             return;
         }
         // SAFETY: フォアグラウンドウィンドウの IME 変換モードを 10ms タイムアウトで読む。
