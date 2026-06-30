@@ -451,7 +451,7 @@ pub(super) fn initialize_app(
                 crate::focus::classifier::InjectionModeStore::new(base_dir),
             ),
             composition_fsm: crate::tsf::composition_fsm::CompositionFsm::new(),
-            conv_mode_policy: crate::platform::ConvModePolicy::UserManaged,
+            conv_mode_policy: platform::ConvModePolicy::UserManaged,
         },
         layouts,
         sync_toggle_keys,

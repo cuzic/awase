@@ -154,7 +154,7 @@ pub struct Output {
     ///
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
     /// `Platform::set_conv_mode_policy` が `allows_conv_mutation()` の結果を push する。
-    conv_mutation_allowed: std::cell::Cell<bool>,
+    pub(crate) conv_mutation_allowed: std::cell::Cell<bool>,
 }
 
 impl std::fmt::Debug for Output {
