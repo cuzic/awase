@@ -1,7 +1,5 @@
 use awase::config::OutputMode;
-use awase::kana_table::KanaTable;
 use awase::types::{KeyAction, VkCode};
-use std::collections::HashMap;
 use std::time::Duration;
 
 pub use crate::tsf::output::ColdReason;
@@ -15,12 +13,15 @@ pub(crate) use types::InjectionMode;
 pub(crate) mod probe_io;
 mod resolve;
 mod vk_send;
-use resolve::{ascii_to_vk, build_symbol_to_vk, special_key_to_vk};
+mod key_injector;
+use resolve::special_key_to_vk;
 
 /// 公開ヘルパー: ASCII → VK 変換（`platform.rs` の dispatcher 用）。
-pub(crate) use resolve::ascii_to_vk as resolve_ascii_to_vk;
+pub(crate) use crate::vk::ascii_to_vk as resolve_ascii_to_vk;
 /// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
-pub(crate) use vk_send::{TsfSendPipeline, VkMarker};
+pub(crate) use vk_send::TsfSendPipeline;
+/// SendInput / Unicode / VK 送信コンポーネント。
+pub(crate) use key_injector::{KeyInjector, VkMarker};
 
 pub(crate) use crate::tsf::probe_fsm::DeferredVk;
 
@@ -49,13 +50,16 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
     }
 }
 
-/// SendInput によるキー注入を行うモジュール
+/// SendInput によるキー注入を行うモジュール。
+///
+/// キー注入の低レベル操作は [`KeyInjector`] に委譲する Facade。
 pub struct Output {
     mode: OutputMode,
-    /// ローマ字↔かな双方向テーブル（Unicode モード・Chrome VK モード両用）
-    kana_table: KanaTable,
-    /// Chrome VK モード用: 記号→VK コードマッピング
-    symbol_to_vk: HashMap<char, (VkCode, bool)>,
+    /// SendInput / Unicode / VK 送信コンポーネント。
+    ///
+    /// `kana_table`・`symbol_to_vk`・`unicode_cold_defer` 等を内包し、
+    /// 低レベルのキー注入操作を一括して管理する。
+    pub(crate) injector: KeyInjector,
     /// TSF composition context の warm/cold 状態管理。
     ///
     /// warm/cold epoch、last_send_ms、eager_warmup_sent_ms 等を集約する。
@@ -122,16 +126,6 @@ pub struct Output {
             timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
         >,
     >,
-    /// Unicode cold-start warmup: `send_unicode_char()` の送信を遅延させるフラグ。
-    ///
-    /// `Platform::send_keys` が GjiFsm long-cold 検出時にセットし、`send_keys` 完了後にクリア。
-    /// フラグが立っている間 `send_unicode_char()` は実送信せず `unicode_cold_deferred` に蓄積する。
-    unicode_cold_defer: std::sync::atomic::AtomicBool,
-    /// `unicode_cold_defer=true` 中に蓄積した Unicode 文字バッファ。
-    ///
-    /// `Platform::dispatch_gji_response` が `StartProbe { is_long_cold }` を受け取ったとき
-    /// `take_unicode_cold_deferred()` で取り出し `UnicodeColdWarmupFsm` に渡す。
-    unicode_cold_deferred: std::cell::RefCell<Vec<char>>,
     /// IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
     ///
     /// VK_IME_ON/OFF 送信時に即時 belief 更新。`IMC_GETCONVERSIONMODE` async ポーリングで確認。
@@ -205,8 +199,7 @@ impl Output {
     pub fn new(mode: OutputMode) -> Self {
         Self {
             mode,
-            kana_table: KanaTable::build(),
-            symbol_to_vk: build_symbol_to_vk(),
+            injector: KeyInjector::new(),
             composition: crate::tsf::probe::CompositionState::new(),
             pending_tsf: std::cell::RefCell::new(None),
             tsf_gate: crate::tsf::TsfGate::new(),
@@ -221,8 +214,6 @@ impl Output {
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(0),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
-            unicode_cold_defer: std::sync::atomic::AtomicBool::new(false),
-            unicode_cold_deferred: std::cell::RefCell::new(Vec::new()),
             conv_mutation_allowed: std::cell::Cell::new(false),
         }
     }
@@ -254,15 +245,14 @@ impl Output {
     /// ON 中は `send_unicode_char()` が実送信せず `unicode_cold_deferred` に蓄積する。
     /// `Platform::send_keys` が `output.send_keys()` の前後でセット／クリアする。
     pub(crate) fn set_unicode_cold_defer(&self, defer: bool) {
-        self.unicode_cold_defer
-            .store(defer, std::sync::atomic::Ordering::Relaxed);
+        self.injector.set_unicode_cold_defer(defer);
     }
 
     /// 蓄積した Unicode deferred 文字を取り出してバッファをクリアする。
     ///
     /// `Platform::dispatch_gji_response` が `StartProbe { is_long_cold }` 処理時に呼ぶ。
     pub(crate) fn take_unicode_cold_deferred(&self) -> Vec<char> {
-        std::mem::take(&mut *self.unicode_cold_deferred.borrow_mut())
+        self.injector.take_unicode_cold_deferred()
     }
 
     /// Unicode cold-start 用の GJI ウォームアップキーを送信する。
@@ -695,15 +685,15 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
             match action {
                 KeyAction::SpecialKey(sk) => {
                     log::debug!("  → SpecialKey({sk:?}) vk=0x{:02X}", special_key_to_vk(*sk));
-                    self.send_key(special_key_to_vk(*sk), false);
+                    self.injector.send_key(special_key_to_vk(*sk), false);
                 }
                 KeyAction::Key(vk) => {
                     log::debug!("  → Key({vk:#06X})");
-                    self.send_key(*vk, false);
+                    self.injector.send_key(*vk, false);
                 }
                 KeyAction::KeyUp(vk) => {
                     log::debug!("  → KeyUp({vk:#06X})");
-                    self.send_key(*vk, true);
+                    self.injector.send_key(*vk, true);
                 }
                 KeyAction::Char(ch) => {
                     log::debug!("  → Char('{ch}') via {}", sender.mode_label());
