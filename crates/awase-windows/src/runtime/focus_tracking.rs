@@ -34,7 +34,7 @@ impl Runtime {
         {
             let hint = self.platform.injection_hint();
             let new_mode =
-                crate::output::types::InjectionMode::from((hint, self.platform_state.app_kind));
+                crate::output::types::InjectionMode::from((hint, self.platform_state.focus.app_kind));
             self.platform.update_injection_mode(new_mode);
         }
         if process_changed {
@@ -84,13 +84,13 @@ impl Runtime {
             );
         }
 
-        if self.platform_state.app_kind != new_app_kind {
+        if self.platform_state.focus.app_kind != new_app_kind {
             log::info!(
                 "AppKind changed: {:?} → {:?} (class={class_name})",
-                self.platform_state.app_kind,
+                self.platform_state.focus.app_kind,
                 new_app_kind
             );
-            self.platform_state.app_kind = new_app_kind;
+            self.platform_state.focus.app_kind = new_app_kind;
         }
 
         // SAFETY: `resolve_focus_kind` は Win32 API で HWND を問い合わせる unsafe fn。
@@ -103,12 +103,12 @@ impl Runtime {
         let reason = resolution.reason;
         let overridden = resolution.overridden;
 
-        if self.platform_state.focus_kind != kind {
+        if self.platform_state.focus.focus_kind != kind {
             log::debug!(
                 "Focus kind changed: {:?} → {kind:?} (reason={reason})",
-                self.platform_state.focus_kind
+                self.platform_state.focus.focus_kind
             );
-            self.platform_state.focus_kind = kind;
+            self.platform_state.focus.focus_kind = kind;
         }
 
         if !overridden {
@@ -144,7 +144,7 @@ impl Runtime {
 
             // 滞在時間が短すぎる（通知ポップアップ等の瞬間フォーカス）場合はキャッシュを
             // 上書きしない。last_focus_change_ms は前回の on_focus_process_changed で記録済み。
-            let focus_start_ms = self.platform_state.last_focus_change_ms;
+            let focus_start_ms = self.platform_state.focus.last_focus_change_ms;
             let now_ms = crate::hook::current_tick_ms();
             let focus_duration_ms = now_ms.saturating_sub(focus_start_ms);
             let should_save = focus_duration_ms >= crate::tuning::MIN_FOCUS_DURATION_MS;
@@ -205,7 +205,7 @@ impl Runtime {
         );
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.platform_state.last_focus_change_ms = tick_ms.0;
+        self.platform_state.focus.last_focus_change_ms = tick_ms.0;
         self.platform.notify_focus_changed();
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
@@ -226,10 +226,10 @@ impl Runtime {
 
         {
             let process_name = self.platform.focus.process_name().to_owned();
-            self.platform_state.active_keymaps = self.all_keymaps.filter_active(&process_name);
+            self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
             log::debug!(
                 "[keymap] active rules updated: {} rule(s) for process={:?}",
-                self.platform_state.active_keymaps.len(),
+                self.platform_state.keymap.active_keymaps.len(),
                 process_name
             );
         }

@@ -150,7 +150,7 @@ impl Runtime {
     /// focus/classify の内部型に直接アクセスしない。
     #[must_use]
     pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
-        (self.platform.injection_hint(), self.platform_state.app_kind)
+        (self.platform.injection_hint(), self.platform_state.focus.app_kind)
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
@@ -388,7 +388,7 @@ impl Runtime {
         if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
             return;
         }
-        self.schedule_ime_refresh(u64::from(self.platform_state.ime_poll_interval_ms));
+        self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
     }
 
     /// `spawn_ime_refresh` の async タスク内で IME リフレッシュ後に TsfGate を遷移させる。
@@ -498,14 +498,14 @@ impl Runtime {
 
     /// 手動アプリオーバーライドのトグル処理
     pub fn toggle_app_override(&mut self) {
-        let current = self.platform_state.focus_kind;
+        let current = self.platform_state.focus.focus_kind;
         let new_kind = if current == FocusKind::TextInput {
             FocusKind::NonText
         } else {
             FocusKind::TextInput
         };
 
-        self.platform_state.focus_kind = new_kind;
+        self.platform_state.focus.focus_kind = new_kind;
 
         // Update learning cache
         if self.platform.focus.is_focused() {
@@ -546,7 +546,7 @@ impl Runtime {
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     pub fn process_deferred_keys(&mut self) {
         // Guard を解除し、保留キーを回収
-        let keys = self.platform_state.sync_key_gate.deactivate();
+        let keys = self.platform_state.gate.sync_key_gate.deactivate();
         log::debug!("IME guard OFF (process_deferred_keys)");
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
@@ -675,7 +675,7 @@ impl Runtime {
             crate::TIMER_TSF_GATE,
             std::time::Duration::from_millis(crate::tsf::WARMUP_TIMEOUT_MS),
         );
-        let debounce_ms = u64::from(self.platform_state.focus_debounce_ms);
+        let debounce_ms = u64::from(self.platform_state.focus.focus_debounce_ms);
         self.schedule_ime_refresh(debounce_ms);
     }
 
@@ -739,8 +739,8 @@ impl Runtime {
             shadow_ime_on: self.platform_state.ime.effective_open(),
             shadow_is_romaji: self.platform_state.ime.input_mode().is_romaji_capable(),
             shadow_is_japanese: self.platform_state.ime.belief.is_japanese_ime(),
-            last_focus_change_ms: self.platform_state.last_focus_change_ms,
-            last_hook_activity_ms: self.platform_state.last_hook_activity_ms,
+            last_focus_change_ms: self.platform_state.focus.last_focus_change_ms,
+            last_hook_activity_ms: self.platform_state.gate.last_hook_activity_ms,
             app_profile: format!("{:?}", self.platform.current_app_profile()),
         }
     }
@@ -767,8 +767,8 @@ impl Runtime {
             &ctx,
         );
         self.platform.set_output_mode(config.general.output_mode);
-        self.platform_state.focus_debounce_ms = config.general.focus_debounce_ms;
-        self.platform_state.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+        self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
+        self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.sync_toggle_keys = sync_toggle;
         self.sync_on_keys = sync_on;
         self.sync_off_keys = sync_off;
@@ -839,7 +839,7 @@ impl Runtime {
         self.platform_state.ime.apply_panic_reset(tick_ms);
         // Step 4: chord barrier も clear (旧 ctrl_bypass_hold 相当)
         self.platform_state.ime.clear_input_barrier();
-        self.platform_state.sync_key_gate.clear();
+        self.platform_state.gate.sync_key_gate.clear();
 
         // 6. IME 状態を再取得
         self.refresh_ime_state_cache();

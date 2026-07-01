@@ -691,18 +691,14 @@ impl ImeStateHub {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// PlatformState
+// FocusStore
 // ────────────────────────────────────────────────────────────────────────────
 
-/// Platform 層の全状態を集約する構造体。
+/// フォーカスメタデータを集約する sub-struct。
 ///
-/// シングルスレッド（メインスレッド＋フックコールバック）からのみアクセスされる。
-/// `APP: SingleThreadCell<Runtime>` 経由で保持される。
+/// `PlatformState` の Facade から内部委譲される。親を参照しない。
 #[derive(Debug)]
-pub struct PlatformState {
-    /// IME 観測・判断・belief 書き戻しを担う凝集ユニット。
-    pub(crate) ime: ImeStateHub,
-    // ── フォーカス追跡フィールド（旧 FocusPlatformState から直接展開）──
+pub(crate) struct FocusStore {
     pub app_kind: AppKind,
     pub focus_kind: FocusKind,
     /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
@@ -710,6 +706,35 @@ pub struct PlatformState {
     pub last_focus_change_ms: u64,
     pub focus_debounce_ms: u32,
     pub ime_poll_interval_ms: u32,
+}
+
+impl FocusStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            app_kind: AppKind::Win32,
+            focus_kind: FocusKind::Undetermined,
+            last_focus_change_ms: 0,
+            focus_debounce_ms: 50,
+            ime_poll_interval_ms: 500,
+        }
+    }
+}
+
+impl Default for FocusStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// GateStore
+// ────────────────────────────────────────────────────────────────────────────
+
+/// フックゲート・バイパス関連状態を集約する sub-struct。
+///
+/// `PlatformState` の Facade から内部委譲される。親を参照しない。
+#[derive(Debug)]
+pub(crate) struct GateStore {
     pub last_hook_activity_ms: u64,
     /// Ctrl+key bypass 直後フラグ。
     ///
@@ -720,8 +745,58 @@ pub struct PlatformState {
     pub post_bypass_passthrough: bool,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
+}
+
+impl GateStore {
+    pub(crate) fn new() -> Self {
+        Self {
+            last_hook_activity_ms: 0,
+            post_bypass_passthrough: false,
+            sync_key_gate: SyncKeyGate::new(),
+        }
+    }
+}
+
+impl Default for GateStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// KeymapStore
+// ────────────────────────────────────────────────────────────────────────────
+
+/// アクティブなキーマップルールを保持する sub-struct。
+///
+/// `PlatformState` の Facade から内部委譲される。親を参照しない。
+#[derive(Debug, Default)]
+pub(crate) struct KeymapStore {
     /// 現在のフォーカスアプリに適用されるキーマップルール
     pub active_keymaps: crate::keymap::KeymapTable,
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// PlatformState
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Platform 層の全状態を集約する Facade 構造体。
+///
+/// 各ドメインの状態は sub-struct（`FocusStore` / `GateStore` / `KeymapStore`）に委譲する。
+/// `ImeStateHub` は IME 観測・判断を担う凝集ユニットとして引き続き `ime` フィールドで保持する。
+///
+/// シングルスレッド（メインスレッド＋フックコールバック）からのみアクセスされる。
+/// `APP: SingleThreadCell<Runtime>` 経由で保持される。
+#[derive(Debug)]
+pub struct PlatformState {
+    /// IME 観測・判断・belief 書き戻しを担う凝集ユニット（ImeStore 相当）。
+    pub(crate) ime: ImeStateHub,
+    /// フォーカスメタデータ（AppKind / FocusKind / タイムスタンプ / デバウンス設定）。
+    pub(crate) focus: FocusStore,
+    /// フックゲート・バイパス関連状態（アクティビティタイムスタンプ / post-bypass / sync_key_gate）。
+    pub(crate) gate: GateStore,
+    /// キーマップルール（フォーカスアプリ別アクティブルール）。
+    pub(crate) keymap: KeymapStore,
 }
 
 impl PlatformState {
@@ -730,15 +805,9 @@ impl PlatformState {
     pub fn new() -> Self {
         Self {
             ime: ImeStateHub::new(),
-            app_kind: AppKind::Win32,
-            focus_kind: FocusKind::Undetermined,
-            last_focus_change_ms: 0,
-            focus_debounce_ms: 50,
-            ime_poll_interval_ms: 500,
-            last_hook_activity_ms: 0,
-            post_bypass_passthrough: false,
-            sync_key_gate: SyncKeyGate::new(),
-            active_keymaps: crate::keymap::KeymapTable::default(),
+            focus: FocusStore::new(),
+            gate: GateStore::new(),
+            keymap: KeymapStore::default(),
         }
     }
 }

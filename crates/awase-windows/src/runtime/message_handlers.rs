@@ -26,10 +26,10 @@ use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config
 /// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
 pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
     // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
-    app.platform_state.last_hook_activity_ms = hook::current_tick_ms();
+    app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
 
     // NonText フォーカス（タスクバー等）はすべて OS にパススルー
-    if app.platform_state.focus_kind == FocusKind::NonText {
+    if app.platform_state.focus.focus_kind == FocusKind::NonText {
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
         return;
@@ -40,13 +40,13 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
     // スキップして直接 passthrough する（1 キー分のみ）。
     // 例: Ctrl+J (tmux prefix) → n (next-window) で NICOLA が n を横取りするのを防ぐ。
     let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-    if app.platform_state.post_bypass_passthrough
+    if app.platform_state.gate.post_bypass_passthrough
         && !event.modifier_snapshot.ctrl
         && !event.vk_code.is_passthrough()
     {
         if is_key_down {
             // KeyDown でフラグを消費（対応する KeyUp も後続で通常通り PassThrough になる）
-            app.platform_state.post_bypass_passthrough = false;
+            app.platform_state.gate.post_bypass_passthrough = false;
             log::debug!(
                 "[post-bypass] consumed: vk=0x{:02X} → direct passthrough (NICOLA skipped)",
                 event.vk_code
@@ -88,7 +88,7 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
                 .iter()
                 .any(|r| r.matches(event.vk_code, proc, cls))
             {
-                app.platform_state.post_bypass_passthrough = true;
+                app.platform_state.gate.post_bypass_passthrough = true;
                 log::debug!(
                     "[ctrl-bypass] post_bypass_passthrough=true (proc={proc:?} class={cls:?})"
                 );
@@ -110,8 +110,8 @@ pub(crate) unsafe fn handle_wm_timer(
     let logical_id = app.platform.timer.resolve(wparam);
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
-            if app.platform_state.sync_key_gate.is_active()
-                || app.platform_state.sync_key_gate.has_deferred_keys()
+            if app.platform_state.gate.sync_key_gate.is_active()
+                || app.platform_state.gate.sync_key_gate.has_deferred_keys()
             {
                 app.process_deferred_keys();
             }
@@ -122,7 +122,7 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.timer.kill(TIMER_POWER_RESUME);
             log::info!("Power resume recovery");
             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
-            app.platform_state.focus_kind = FocusKind::Undetermined;
+            app.platform_state.focus.focus_kind = FocusKind::Undetermined;
             app.schedule_ime_refresh(500);
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
@@ -260,8 +260,8 @@ pub(crate) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
 
 /// WM_IME_KEY_DETECTED ハンドラ
 pub(crate) unsafe fn handle_wm_ime_key_detected(app: &mut Runtime) {
-    if app.platform_state.sync_key_gate.is_active()
-        || app.platform_state.sync_key_gate.has_deferred_keys()
+    if app.platform_state.gate.sync_key_gate.is_active()
+        || app.platform_state.gate.sync_key_gate.has_deferred_keys()
     {
         app.process_deferred_keys();
     } else {
@@ -333,12 +333,12 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
     } else {
         if app_kind_u8 != crate::FOCUS_KIND_UPDATE_NO_APP_KIND {
             let app_kind = awase::types::AppKind::from_u8(app_kind_u8);
-            app.platform_state.app_kind = app_kind;
+            app.platform_state.focus.app_kind = app_kind;
             log::debug!("UIA AppKind update: {app_kind:?}");
         }
 
         if kind != FocusKind::Undetermined {
-            app.platform_state.focus_kind = kind;
+            app.platform_state.focus.focus_kind = kind;
 
             if app.platform.focus.is_focused() {
                 let pid = app.platform.focus.pid();

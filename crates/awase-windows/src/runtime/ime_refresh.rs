@@ -137,7 +137,7 @@ impl Runtime {
             ImeReadStrategy::Blacklist => {
                 log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
                 let obs = crate::observer::gji_observer::observe_gji_after_focus(
-                    self.platform_state.last_focus_change_ms,
+                    self.platform_state.focus.last_focus_change_ms,
                 );
                 log::debug!("[stage-observe] gji_result={:?}", obs.observer_poll_value);
                 if let Some(v) = obs.observer_poll_value {
@@ -223,7 +223,7 @@ impl Runtime {
     // IMM との SendMessage を一切行わない。
 
     fn ir_decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
-        let last_activity = self.platform_state.last_hook_activity_ms.max(
+        let last_activity = self.platform_state.gate.last_hook_activity_ms.max(
             crate::tsf::probe_bridge::OUTPUT_GATE
                 .last_vk_output_ms
                 .load(std::sync::atomic::Ordering::Relaxed),
@@ -307,7 +307,7 @@ impl Runtime {
         miss_after: u32,
     ) {
         let age_ms =
-            crate::hook::current_tick_ms().saturating_sub(self.platform_state.last_focus_change_ms);
+            crate::hook::current_tick_ms().saturating_sub(self.platform_state.focus.last_focus_change_ms);
         if age_ms < 10_000 {
             let ime_on_after = self.platform_state.ime.effective_open();
             let input_mode_after = self.platform_state.ime.input_mode();

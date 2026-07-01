@@ -201,7 +201,7 @@ impl Runtime {
         let warmup_ms = self.platform.eager_warmup_sent_ms();
         let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
         let gji_last_io_ms = obs.gji_last_io_ms;
-        let last_focus_change_ms = self.platform_state.last_focus_change_ms;
+        let last_focus_change_ms = self.platform_state.focus.last_focus_change_ms;
         // Imm32Unavailable (Chrome 等) は probe.ime_on が常に None のため、
         // shadow_on がフォールバック値として使われる。
         // applied_open() は前ウィンドウの状態を引き継ぐことがあるため
