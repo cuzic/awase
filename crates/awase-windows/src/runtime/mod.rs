@@ -8,7 +8,7 @@ mod transport;
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use awase::config::ValidatedConfig;
-use awase::engine::{Engine, EngineCommand, InputContext, SpecialKeyCombos};
+use awase::engine::{Engine, EngineCommand, InputContext, InputModeState, SpecialKeyCombos};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
 
@@ -16,27 +16,28 @@ use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
-use crate::ImeBelief;
 use awase::platform::PlatformRuntime as _;
 
 
-/// `ImeBelief` と修飾キースナップショットから `InputContext` を構築する。
+/// IME 状態と修飾キースナップショットから `InputContext` を構築する。
 ///
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
 /// タイマー等のイベント非同期パスでは呼び出し元が `read_os_modifiers()` で取得する。
 ///
 /// `ime_on` は呼び出し元が `platform_state.ime.effective_open()` を評価して渡す。
-/// `belief` からは入力モード等の追加情報のみ取得する。
+/// `input_mode` は `ImeStateHub::input_mode()`（SSOT = `shadow_model.input_mode`）から取得する。
+/// `is_japanese_ime` は `ImeBelief::is_japanese_ime()` から取得する。
 #[must_use]
 pub const fn build_input_context(
     ime_on: bool,
-    belief: &ImeBelief,
+    input_mode: InputModeState,
+    is_japanese_ime: bool,
     modifiers: &awase::engine::ModifierState,
 ) -> InputContext {
     InputContext {
         ime_on,
-        input_mode: belief.input_mode(),
-        is_japanese_ime: belief.is_japanese_ime(),
+        input_mode,
+        is_japanese_ime,
         modifiers: *modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
@@ -136,7 +137,8 @@ impl Runtime {
         let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
         build_input_context(
             self.platform_state.ime.effective_open(),
-            &self.platform_state.ime.belief,
+            self.platform_state.ime.input_mode(),
+            self.platform_state.ime.belief.is_japanese_ime(),
             &modifiers,
         )
     }
@@ -417,14 +419,8 @@ impl Runtime {
         }
         let _success = self.platform.set_ime_open(true);
         log::trace!("Blacklist force-ON: set_ime_open(true)");
-        if !self
-            .platform_state
-            .ime
-            .belief
-            .input_mode()
-            .is_romaji_capable()
-        {
-            if let Some(new_mode) = self.platform_state.ime.belief.correction_for_imm_broken() {
+        if !self.platform_state.ime.input_mode().is_romaji_capable() {
+            if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
                 log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
                 self.platform_state.ime.dispatch_event(
@@ -545,7 +541,7 @@ impl Runtime {
             crate::observer::ime_observer::poll_and_classify_ime(
                 self.platform_state.ime.effective_open(),
                 self.platform_state.ime.is_force_on_guard_active(),
-                self.platform_state.ime.belief.input_mode(),
+                self.platform_state.ime.input_mode(),
                 self.platform_state.ime.belief.prev_conversion_mode(),
             )
         };
@@ -726,12 +722,7 @@ impl Runtime {
             focus_pid,
             focus_class,
             shadow_ime_on: self.platform_state.ime.effective_open(),
-            shadow_is_romaji: self
-                .platform_state
-                .ime
-                .belief
-                .input_mode()
-                .is_romaji_capable(),
+            shadow_is_romaji: self.platform_state.ime.input_mode().is_romaji_capable(),
             shadow_is_japanese: self.platform_state.ime.belief.is_japanese_ime(),
             last_focus_change_ms: self.platform_state.last_focus_change_ms,
             last_hook_activity_ms: self.platform_state.last_hook_activity_ms,

@@ -168,7 +168,7 @@ impl Runtime {
                 };
                 self.platform.focus.save_ime_state(
                     ime_on,
-                    self.platform_state.ime.belief.input_mode(),
+                    self.platform_state.ime.input_mode(),
                     from_explicit_off_intent,
                 );
             } else {
@@ -200,7 +200,7 @@ impl Runtime {
             classified.class_name,
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.explicit_intent(),
-            self.platform_state.ime.belief.input_mode(),
+            self.platform_state.ime.input_mode(),
             self.platform_state.ime.belief.is_japanese_ime(),
         );
 

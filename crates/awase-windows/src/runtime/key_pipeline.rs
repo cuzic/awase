@@ -88,7 +88,8 @@ impl Runtime {
 
         let ctx = super::build_input_context(
             self.platform_state.ime.effective_open(),
-            &self.platform_state.ime.belief,
+            self.platform_state.ime.input_mode(),
+            self.platform_state.ime.belief.is_japanese_ime(),
             &event.modifier_snapshot,
         );
         // [engine-input] order-bug 調査用: drain と inline の処理順序を可視化する。
@@ -282,7 +283,7 @@ impl Runtime {
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
 
-        let current = self.platform_state.ime.belief.input_mode();
+        let current = self.platform_state.ime.input_mode();
         let is_cold = in_flight == u64::MAX;
         // kp_stage_idle_conv_check は TsfNative 専用（should_run_idle_conv_check のガード 2）。
         // TsfNative では ROMAN ビットが常に 0 のため is_roman_reliable=false。
@@ -736,7 +737,7 @@ impl Runtime {
                     let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;
                     let has_kata = conv & crate::imm::IME_CMODE_KATAKANA != 0;
                     use awase::engine::InputModeState;
-                    let current = self.platform_state.ime.belief.input_mode();
+                    let current = self.platform_state.ime.input_mode();
                     use crate::state::ime_event::{ImeEvent, ObservationSource};
                     if awase::engine::ConvMode::from_u32(conv).is_eisu() {
                         // 英数モード (HankakuAlpha / ZenkakuAlpha)。ROMAN ビットの有無は問わない。
@@ -808,7 +809,7 @@ impl Runtime {
         }
 
         let ime_on_after_probe = self.platform_state.ime.effective_open();
-        let input_mode_after_probe = self.platform_state.ime.belief.input_mode();
+        let input_mode_after_probe = self.platform_state.ime.input_mode();
         let ime_on_suffix = build_ime_on_suffix(
             probe.ime_on,
             suppressed_reason,

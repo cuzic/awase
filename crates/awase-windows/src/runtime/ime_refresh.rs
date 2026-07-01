@@ -189,14 +189,9 @@ impl Runtime {
         // ただし ObservedEisu（英数モード確定済み）の場合は補正しない（Engine ON 誤起動防止）。
         if skip_imm_query
             && self.platform_state.ime.effective_open()
-            && !self
-                .platform_state
-                .ime
-                .belief
-                .input_mode()
-                .is_romaji_capable()
+            && !self.platform_state.ime.input_mode().is_romaji_capable()
         {
-            if let Some(new_mode) = self.platform_state.ime.belief.correction_for_imm_broken() {
+            if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
                 log::info!(
                     "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
                 );
@@ -265,7 +260,7 @@ impl Runtime {
 
     fn ir_poll_and_learn(&mut self, miss_before: u32, ime_snap: Option<&crate::ime::ImeSnapshot>) {
         let ime_on_before_poll = self.platform_state.ime.effective_open();
-        let input_mode_before_poll = self.platform_state.ime.belief.input_mode();
+        let input_mode_before_poll = self.platform_state.ime.input_mode();
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         let observer_out = match ime_snap {
@@ -273,7 +268,7 @@ impl Runtime {
                 crate::observer::ime_observer::poll_and_classify_ime(
                     self.platform_state.ime.effective_open(),
                     self.platform_state.ime.is_force_on_guard_active(),
-                    self.platform_state.ime.belief.input_mode(),
+                    self.platform_state.ime.input_mode(),
                     self.platform_state.ime.belief.prev_conversion_mode(),
                 )
             },
@@ -283,7 +278,7 @@ impl Runtime {
                     tick_ms.0,
                     self.platform_state.ime.effective_open(),
                     self.platform_state.ime.is_force_on_guard_active(),
-                    self.platform_state.ime.belief.input_mode(),
+                    self.platform_state.ime.input_mode(),
                     self.platform_state.ime.belief.prev_conversion_mode(),
                 )
             }
@@ -315,7 +310,7 @@ impl Runtime {
             crate::hook::current_tick_ms().saturating_sub(self.platform_state.last_focus_change_ms);
         if age_ms < 10_000 {
             let ime_on_after = self.platform_state.ime.effective_open();
-            let input_mode_after = self.platform_state.ime.belief.input_mode();
+            let input_mode_after = self.platform_state.ime.input_mode();
             let ime_changed = ime_on_before_poll != ime_on_after;
             let mode_changed = input_mode_before_poll != input_mode_after;
             if ime_changed || mode_changed {

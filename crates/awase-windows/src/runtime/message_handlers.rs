@@ -198,7 +198,8 @@ pub(crate) unsafe fn handle_wm_timer(
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
             let ctx = super::build_input_context(
                 app.platform_state.ime.effective_open(),
-                &app.platform_state.ime.belief,
+                app.platform_state.ime.input_mode(),
+                app.platform_state.ime.belief.is_japanese_ime(),
                 &modifiers,
             );
             let state_before = app.engine.debug_state_label();

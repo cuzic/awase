@@ -61,11 +61,7 @@ impl ImeStateHub {
     /// デフォルト値で初期化する。
     pub(crate) fn new() -> Self {
         Self {
-            belief: ImeBelief {
-                input_mode: InputModeState::ObservedRomaji, // デフォルト: ローマ字入力
-                is_japanese_ime: true,                      // デフォルト: 日本語
-                prev_conversion_mode: None,
-            },
+            belief: ImeBelief::default(),
             event_log: ImeEventLog::default(),
             journal: UnifiedJournal::default(),
             shadow_model: ImeModel::default(),
@@ -108,18 +104,6 @@ impl ImeStateHub {
             event: event_for_reduce,
         };
         self.shadow_model.reduce(&envelope);
-        // H-3-c: belief.input_mode 並走更新（H-3-d で belief.input_mode 廃止後に削除）
-        if matches!(
-            &envelope.event,
-            ImeEvent::InputModeObserved { .. }
-                | ImeEvent::InputModeApplied {
-                    result: InputModeApplyResult::Applied,
-                    ..
-                }
-                | ImeEvent::UserChangedInputMode { .. }
-        ) {
-            self.belief.input_mode = self.shadow_model.input_mode;
-        }
         self.journal.record(JournalEntry::ImeEvent { description });
     }
 
@@ -301,6 +285,29 @@ impl ImeStateHub {
         self.shadow_model.force_guards.requires_on()
     }
 
+    /// 現在の入力モードを返す（SSOT = `shadow_model.input_mode`）。
+    ///
+    /// H-3-d 以降、`belief.input_mode` は private 化されたため、
+    /// 呼び出し元はすべてこのメソッドを使うこと。
+    pub(crate) fn input_mode(&self) -> InputModeState {
+        self.shadow_model.input_mode
+    }
+
+    /// IMM-broken アプリで IME-ON が確認されたとき、`input_mode` を補正すべき値を返す。
+    ///
+    /// `ImeBelief::correction_for_imm_broken` と同じロジックを `shadow_model.input_mode`
+    /// に対して適用する（H-3-d で `belief.input_mode` が private 化されたため移譲）。
+    pub(crate) fn correction_for_imm_broken(&self) -> Option<InputModeState> {
+        use awase::engine::AssumedReason;
+        let mode = self.shadow_model.input_mode;
+        if mode.is_romaji_capable() || matches!(mode, InputModeState::ObservedEisu) {
+            return None;
+        }
+        Some(InputModeState::AssumedRomaji {
+            reason: AssumedReason::ImmBridgeBroken,
+        })
+    }
+
     /// `ImeModel` への読み取り専用アクセス。
     ///
     /// 書き込みはすべて `dispatch_event()` 経由とすること。
@@ -366,7 +373,7 @@ impl ImeStateHub {
 
         if let Some(generation) = self.shadow_model.pending_generation() {
             let event = ImeEvent::from_apply_outcome(open, outcome, generation);
-            self.dispatch_event(event);
+            self.dispatch_event(event, TickMs(ts));
         }
     }
 }

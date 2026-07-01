@@ -33,10 +33,10 @@ use awase::engine::{AssumedReason, InputModeState};
 pub struct ImeBelief {
     /// 入力モード（ローマ字 / かな / 不明）
     ///
-    /// 読み取りは [`ImeBelief::input_mode()`] アクセサ経由で行うこと。
-    /// 書き込みは H-3-c 完了まで runtime/ から直接代入しているため `pub(crate)` とする。
-    /// H-3-c（ImeEvent 経由の reducer 置換）が完了次第 `pub(in crate::state)` に絞る予定。
-    pub(crate) input_mode: InputModeState,
+    /// H-3-d 以降は private フィールド。外部からの読み取りは
+    /// [`ImeStateHub::input_mode()`] を経由すること（SSOT = `shadow_model.input_mode`）。
+    /// 書き込みは `ImeModel::reduce()` が `shadow_model.input_mode` を更新する経路のみ。
+    input_mode: InputModeState,
     /// 日本語 IME がアクティブか
     pub(in crate::state) is_japanese_ime: bool,
     /// 直前の conversion_mode（ROMAN ビット消失によるかな切替検出用）
@@ -44,17 +44,18 @@ pub struct ImeBelief {
     pub(in crate::state) prev_conversion_mode: Option<u32>,
 }
 
+impl Default for ImeBelief {
+    fn default() -> Self {
+        Self {
+            input_mode: InputModeState::ObservedRomaji,
+            is_japanese_ime: true,
+            prev_conversion_mode: None,
+        }
+    }
+}
+
 #[cfg_attr(not(windows), allow(dead_code))]
 impl ImeBelief {
-    /// 入力モードを返す。
-    ///
-    /// `self.input_mode` フィールドへの直接アクセスを避け、このアクセサを使うこと。
-    /// フィールドは H-3-d で private 化される予定のため、このメソッドが唯一の読み取り経路となる。
-    #[inline]
-    pub(crate) const fn input_mode(&self) -> InputModeState {
-        self.input_mode
-    }
-
     /// 日本語 IME がアクティブかを返す。
     #[inline]
     pub(crate) const fn is_japanese_ime(&self) -> bool {
