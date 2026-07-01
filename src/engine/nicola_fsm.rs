@@ -16,15 +16,10 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
     BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, OutputUpdate,
-    ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
+    ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent, TIMER_PENDING,
+    TIMER_SPECULATIVE,
 };
 use super::timing;
-
-/// 同時打鍵判定用タイマー ID
-pub const TIMER_PENDING: usize = 1;
-
-/// TwoPhase モード: Phase 1（短い待機）→ Phase 2（投機出力）遷移用タイマー ID
-pub const TIMER_SPECULATIVE: usize = 2;
 
 /// AdaptiveTiming モードで連続打鍵と判定する閾値（マイクロ秒）
 pub(super) const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;

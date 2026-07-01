@@ -7,7 +7,11 @@ use smallvec::SmallVec;
 use crate::scanmap::PhysicalPos;
 use crate::types::{KeyAction, ScanCode, Timestamp, VkCode};
 
-use super::nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
+/// 同時打鍵判定用タイマー ID
+pub const TIMER_PENDING: usize = 1;
+
+/// TwoPhase モード: Phase 1（短い待機）→ Phase 2（投機出力）遷移用タイマー ID
+pub const TIMER_SPECULATIVE: usize = 2;
 
 /// キーの分類（フック受信時に一度だけ決定）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -373,7 +377,6 @@ pub use crate::types::ModifierState;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
     use crate::scanmap::PhysicalPos;
     use crate::types::{KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode};
 
