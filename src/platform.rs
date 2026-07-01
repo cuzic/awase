@@ -22,6 +22,19 @@ pub enum EffectOrigin {
     ObservationSync,
 }
 
+impl From<crate::engine::decision::DecisionOrigin> for EffectOrigin {
+    fn from(origin: crate::engine::decision::DecisionOrigin) -> Self {
+        use crate::engine::decision::DecisionOrigin;
+        match origin {
+            DecisionOrigin::NicolaFsm
+            | DecisionOrigin::Speculative
+            | DecisionOrigin::PendingTimer
+            | DecisionOrigin::Bypass => EffectOrigin::EngineIntent,
+            DecisionOrigin::Unknown => EffectOrigin::ObservationSync,
+        }
+    }
+}
+
 /// IME の変換モード（プラットフォーム非依存）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImeMode {

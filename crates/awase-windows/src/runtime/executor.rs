@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 
 use awase::config::HookMode;
-use awase::engine::{Decision, Effect, ImeEffect, InputEffect, TimerEffect, UiEffect};
+use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, InputEffect, TimerEffect, UiEffect};
 use awase::platform::{EffectOrigin, PlatformRuntime};
 use awase::types::RawKeyEvent;
 
@@ -620,7 +620,7 @@ impl DecisionExecutor {
         &mut self,
         platform: &WindowsPlatform,
         open: bool,
-        origin: EffectOrigin,
+        origin: DecisionOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         let (imm_first, shadow_on) = {
             let view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
@@ -710,7 +710,7 @@ impl DecisionExecutor {
                 open,
                 self.applied_snapshot,
                 shadow_on,
-                origin == EffectOrigin::EngineIntent,
+                EffectOrigin::from(origin) == EffectOrigin::EngineIntent,
                 profile.can_use_imm32_cross_process(),
                 crate::tsf::observer::gji_monitor_healthy(),
                 now_ms,

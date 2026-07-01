@@ -18,7 +18,7 @@ pub mod output_history;
 pub mod timing;
 
 // Public re-exports
-pub use crate::platform::EffectOrigin;
+pub use decision::DecisionOrigin;
 pub use conv::{Charset, ConvMode};
 pub use decision::{
     should_run_idle_conv_check, ActivationState, AssumedReason, Decision, Effect, EffectVec,
