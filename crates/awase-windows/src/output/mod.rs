@@ -14,7 +14,9 @@ pub(crate) mod probe_io;
 mod resolve;
 mod vk_send;
 mod key_injector;
+mod tsf_warmup_coord;
 use resolve::special_key_to_vk;
+pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 
 /// 公開ヘルパー: ASCII → VK 変換（`platform.rs` の dispatcher 用）。
 pub(crate) use crate::vk::ascii_to_vk as resolve_ascii_to_vk;
@@ -65,12 +67,11 @@ pub struct Output {
     /// warm/cold epoch、last_send_ms、eager_warmup_sent_ms 等を集約する。
     /// 詳細は [`crate::tsf::probe::CompositionState`] を参照。
     pub composition: crate::tsf::probe::CompositionState,
-    /// TIMER_TSF_PROBE で処理中の保留 TSF/VK probe ステートマシン。
+    /// GJI ウォームアップ / TSF プローブ調停コンポーネント。
     ///
-    /// `send_romaji_as_tsf` / `send_romaji_batched` が cold start 時に設定し、
-    /// `WindowsPlatform::advance_tsf_probe` がタイマーごとに 1 ステップ進める。
-    /// 内部 `_guard` により OUTPUT_GATE.active が保留期間中維持される。
-    pub(crate) pending_tsf: std::cell::RefCell<Option<Box<dyn crate::tsf::tickable_fsm::TickableFsm>>>,
+    /// warmup 戦略・保留 TSF プローブ FSM・probe_id・OUTPUT_GATE ガード・
+    /// GJI FSM 橋渡しバッファ群を集約する。詳細は [`TsfWarmupCoordinator`] を参照。
+    pub(crate) warmup_coord: TsfWarmupCoordinator,
     /// フォーカス変更直後の TSF モード確定前にキーを一時保留するゲート。
     ///
     /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
@@ -81,51 +82,11 @@ pub struct Output {
     /// フォーカスが確定するたびに `update_injection_mode()` で更新される。
     /// `with_app_ref` によるグローバル読み取りを排除し、output 層を self-contained にする。
     pub(crate) injection_mode: InjectionMode,
-    /// IME の warm/cold ウォームアップ戦略（GJI: `GjiFsm`、MS-IME: `MsImeStrategy`）。
-    ///
-    /// フォーカス変更・IME ON/OFF・WarmupComplete を受け取り、LongIdle タイマーを管理する。
-    /// IME 種別が変化した場合は `set_active_ime_kind()` で戦略を動的に切り替える。
-    /// Phase 2: CompositionState と並走（FSM が安定したら CompositionState を撤去）。
-    pub(crate) tsf_warmup: std::cell::RefCell<Box<dyn crate::tsf::warmup_strategy::ImeWarmupStrategy>>,
-    /// 現在実行中の GJI probe の ID（`GjiAction::StartProbe` 受信時にセット）。
-    ///
-    /// `dispatch_probe_actions` が `WarmupResult` を生成した際の照合に使う。
-    pub(crate) current_gji_probe_id: std::cell::Cell<Option<crate::tsf::gji_fsm::ProbeId>>,
-    /// GJI probe 中に OUTPUT_GATE を活性化するガード。
-    ///
-    /// `send_romaji_as_tsf` の cold パスで `gji_begin_probe_guard()` を呼び、
-    /// `step_probe` 完了時 / `CancelProbe` 時 / `SwitchMachine` 時に `gji_end_probe_guard()` で解放する。
-    /// Chrome / LiteralDetect probe は `TsfProbeCoro._guard` で独立管理する。
-    gji_probe_guard: std::cell::RefCell<Option<crate::tsf::probe_bridge::OutputActiveGuard>>,
-    /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
-    ///
-    /// `ProbeIo::store_gji_warmup_result` がセットし、`step_probe` 完了後に取り出す。
-    pending_gji_warmup: std::cell::Cell<Option<crate::tsf::gji_fsm::WarmupResult>>,
-    /// `ProbeIo::mark_cold_raw_tsf` → `GjiFsm::CompositionReset` の橋渡しフラグ。
-    ///
-    /// `mark_cold_raw_tsf` は `&self` しか取れないため直接 `dispatch_gji_response` を呼べない。
-    /// このフラグで pending を表現し、`step_probe` 完了後に Platform が拾う。
-    pub(crate) pending_gji_composition_reset: std::cell::Cell<bool>,
     /// IME 変換モード管理コンポーネント。
     ///
     /// `kp_stage_idle_conv_check` が `update_from_conv` で更新し、
     /// `cold_warmup` と `transmit_tsf` が warmup VK と `ImmSetConversionStatus` 目標値の選択に使う。
     pub(crate) conv_mode: crate::state::ConvModeMgr,
-    /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
-    ///
-    /// これらのメソッドは `&self` しか取れないためタイマー操作を直接行えない。
-    /// Platform の `send_keys` が `drain_pending_gji_key_responses` で全件取り出して
-    /// `dispatch_gji_response` に渡し、LongIdle タイマーリセット等を実行する。
-    ///
-    /// Vec にするのは、1回の send_keys で複数文字（例: NICOLA 同時打鍵で す+る）を
-    /// 送る際に各文字の KeyInput Response を全て保存するため。Option だと後の文字が
-    /// 前の文字の StartProbe Response を上書きしてしまい、gji_store_probe_id が
-    /// 呼ばれなくなる。
-    pub(crate) pending_gji_key_responses: std::cell::RefCell<
-        Vec<
-            timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
-        >,
-    >,
     /// IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
     ///
     /// VK_IME_ON/OFF 送信時に即時 belief 更新。`IMC_GETCONVERSIONMODE` async ポーリングで確認。
@@ -201,16 +162,10 @@ impl Output {
             mode,
             injector: KeyInjector::new(),
             composition: crate::tsf::probe::CompositionState::new(),
-            pending_tsf: std::cell::RefCell::new(None),
+            warmup_coord: TsfWarmupCoordinator::new(),
             tsf_gate: crate::tsf::TsfGate::new(),
             injection_mode: InjectionMode::Unicode,
-            tsf_warmup: std::cell::RefCell::new(Box::new(crate::tsf::gji_fsm::GjiFsm::new())),
-            current_gji_probe_id: std::cell::Cell::new(None),
-            gji_probe_guard: std::cell::RefCell::new(None),
-            pending_gji_warmup: std::cell::Cell::new(None),
-            pending_gji_composition_reset: std::cell::Cell::new(false),
             conv_mode: crate::state::ConvModeMgr::default(),
-            pending_gji_key_responses: std::cell::RefCell::new(Vec::new()),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(0),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
@@ -237,7 +192,7 @@ impl Output {
 
     /// GjiFsm が long-cold（≥10s idle）な次の KeyInput か判定する（send_keys の defer 判定用）。
     pub(crate) fn gji_is_next_key_long_cold(&self) -> bool {
-        self.tsf_warmup.borrow().is_next_key_long_cold()
+        self.warmup_coord.is_next_key_long_cold()
     }
 
     /// `send_unicode_char()` の遅延モードを ON/OFF する。
@@ -297,7 +252,7 @@ impl Output {
         &self,
         event: crate::tsf::gji_fsm::GjiEvent,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-self.tsf_warmup.borrow_mut().on_gji_event(event)
+        self.warmup_coord.gji_on_event(event)
     }
 
     /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
@@ -305,7 +260,7 @@ self.tsf_warmup.borrow_mut().on_gji_event(event)
     pub(crate) fn gji_current_composition_epoch(
         &self,
     ) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
-self.tsf_warmup.borrow().gji_current_composition_epoch()
+        self.warmup_coord.gji_current_composition_epoch()
     }
 
     // ── ImeModeFsm ヘルパー ─────────────────────────────────────────────────────
@@ -345,12 +300,12 @@ self.tsf_warmup.borrow().gji_current_composition_epoch()
     pub(crate) fn gji_on_long_idle(
         &self,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
-self.tsf_warmup.borrow_mut().on_gji_long_idle()
+        self.warmup_coord.gji_on_long_idle()
     }
 
     /// `GjiAction::StartProbe` を受信したとき probe_id を記録する。
     pub(crate) fn gji_store_probe_id(&self, id: crate::tsf::gji_fsm::ProbeId) {
-        self.current_gji_probe_id.set(Some(id));
+        self.warmup_coord.store_probe_id(id);
     }
 
     /// `GjiAction::StartProbe` の ncwait_budget_ms / forces_prepend_f2 / is_long_cold を記録する。
@@ -360,29 +315,26 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     ///
     /// `Authorized` でない場合は `ProbeParams::default()` を返す。
     pub(crate) fn gji_current_probe_params(&self) -> crate::tsf::gji_fsm::ProbeParams {
-        self.tsf_warmup
-            .borrow()
-            .current_probe_params()
-            .unwrap_or_default()
+        self.warmup_coord.current_probe_params()
     }
 
     /// 現在の GJI probe_id を返す（確認用、消費しない）。
     pub(crate) fn gji_current_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
-        self.current_gji_probe_id.get()
+        self.warmup_coord.current_probe_id()
     }
 
     /// GJI probe の OUTPUT_GATE ガードを開始する。
     ///
     /// `send_romaji_as_tsf` の cold パスで `GjiWarmupCoro::new` を呼ぶ直前に使う。
     pub(crate) fn gji_begin_probe_guard(&self) {
-        *self.gji_probe_guard.borrow_mut() = Some(crate::tsf::probe_bridge::OutputActiveGuard::begin());
+        self.warmup_coord.begin_probe_guard();
     }
 
     /// GJI probe の OUTPUT_GATE ガードを解放する。
     ///
     /// `step_probe` 完了時 / `CancelProbe` 時に呼ぶ。
     pub(crate) fn gji_end_probe_guard(&self) {
-        *self.gji_probe_guard.borrow_mut() = None;
+        self.warmup_coord.end_probe_guard();
     }
 
     /// `pending_gji_key_responses` を全件取り出す。
@@ -394,12 +346,12 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     ) -> Vec<
         timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
     > {
-        std::mem::take(&mut *self.pending_gji_key_responses.borrow_mut())
+        self.warmup_coord.drain_key_responses()
     }
 
     /// `pending_gji_warmup` を取り出す（1回限り）。
     pub(crate) fn gji_take_warmup_result(&self) -> Option<crate::tsf::gji_fsm::WarmupResult> {
-        self.pending_gji_warmup.take()
+        self.warmup_coord.take_warmup_result()
     }
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
@@ -440,7 +392,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     /// 現在の composition_warm フラグを返す（`tsf_warmup` 戦略が SSOT）。
     #[must_use]
     pub fn is_composition_warm(&self) -> bool {
-        self.tsf_warmup.borrow().is_warm()
+        self.warmup_coord.is_warm()
     }
 
     /// 検出した IME 種別に応じてウォームアップ戦略を切り替える。
@@ -450,19 +402,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     ///
     /// `WM_IME_KIND_CHANGED` がメインスレッドで受信されたときに呼ぶこと。
     pub(crate) fn set_active_ime_kind(&self, kind: crate::tsf::observer::ActiveImeKind) {
-        use crate::tsf::observer::ActiveImeKind;
-        match kind {
-            ActiveImeKind::MicrosoftIme => {
-                log::info!("[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)");
-                *self.tsf_warmup.borrow_mut() =
-                    Box::new(crate::tsf::warmup_strategy::MsImeStrategy);
-            }
-            ActiveImeKind::GoogleJapaneseInput => {
-                log::info!("[output] Switching warmup strategy → GjiFsm (GJI detected)");
-                *self.tsf_warmup.borrow_mut() =
-                    Box::new(crate::tsf::gji_fsm::GjiFsm::new());
-            }
-        }
+        self.warmup_coord.set_active_ime_kind(kind);
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
@@ -712,7 +652,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
                         .observe_unicode_literal
                         .swap(false, std::sync::atomic::Ordering::Relaxed)
                         && self.injection_mode == InjectionMode::Unicode
-                        && self.pending_tsf.borrow().is_none()
+                        && !self.warmup_coord.has_pending_tsf()
                     {
                         use crate::tsf::ime_mode_fsm::ImeModeState;
                         let ime_state = self.ime_mode_fsm.borrow().state();
@@ -768,37 +708,22 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     /// probe 進行中なら romaji を VK 列に変換して deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_if_probe_in_flight(&self, romaji: &str) -> bool {
-        self.pending_tsf
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|machine| {
-                let vks: Vec<DeferredVk> = romaji
-                    .chars()
-                    .filter_map(ascii_to_vk)
-                    .map(|(vk, needs_shift)| DeferredVk { vk, needs_shift })
-                    .collect();
-                log::debug!(
-                    "[tsf] probe in flight → deferred {} VK(s) for {:?}",
-                    vks.len(),
-                    romaji
-                );
-                for DeferredVk { vk, needs_shift } in vks {
-                    machine.push_deferred(vk, needs_shift);
-                }
-                true
-            })
+        if !self.warmup_coord.has_pending_tsf() {
+            return false;
+        }
+        let vks: Vec<(VkCode, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        log::debug!(
+            "[tsf] probe in flight → deferred {} VK(s) for {:?}",
+            vks.len(),
+            romaji
+        );
+        self.warmup_coord.defer_vks_if_in_flight(&vks)
     }
 
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_vk_if_probe_in_flight(&self, vk: VkCode, needs_shift: bool) -> bool {
-        self.pending_tsf
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|machine| {
-                machine.push_deferred(vk, needs_shift);
-                true
-            })
+        self.warmup_coord.defer_vks_if_in_flight(&[(vk, needs_shift)])
     }
 
     /// long-cold 後の GJI 再初期化: VK_IME_OFF→VK_IME_ON を SendInput で注入する。
@@ -832,7 +757,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         };
 
         // ── Chrome / LiteralDetect / GjiWarmup probe パス（machine は pending_tsf に格納）──
-        let machine = self.pending_tsf.borrow_mut().take();
+        let machine = self.warmup_coord.take_pending_tsf();
         let Some(mut machine) = machine else {
             return StepProbeResult {
                 timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
@@ -849,13 +774,13 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
                 self.on_tsf_probe_ready();
                 self.gji_end_probe_guard();
                 let gji_response = self.gji_take_warmup_result().and_then(|result| {
-                    let probe_id = self.current_gji_probe_id.take()?;
+                    let probe_id = self.warmup_coord.take_probe_id()?;
                     Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
                         probe_id,
                         result,
                     }))
                 });
-                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
+                let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 StepProbeResult {
                     timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
                     gji_response,
@@ -864,8 +789,8 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
                 }
             }
             probe_io::DispatchResult::Continue => {
-                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
-                *self.pending_tsf.borrow_mut() = Some(machine);
+                let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
+                self.warmup_coord.restore_pending_tsf(machine);
                 StepProbeResult {
                     timer_cmd: TimerCommand::Continue {
                         id: crate::TIMER_TSF_PROBE,
@@ -880,8 +805,8 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
                 // SacrificialWarmupFsm への切り替え（GjiWarmupCoro long_cold パス / Chrome）。
                 // 新 machine が内部ガードを保持するため gji_probe_guard を解放する。
                 self.gji_end_probe_guard();
-                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
-                *self.pending_tsf.borrow_mut() = Some(new_machine);
+                let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
+                self.warmup_coord.restore_pending_tsf(new_machine);
                 StepProbeResult {
                     timer_cmd: TimerCommand::Continue {
                         id: crate::TIMER_TSF_PROBE,
@@ -895,7 +820,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
             probe_io::DispatchResult::LearnedTsf => {
                 // UnicodeLiteralObserverFsm が GJI write なしと判断した。
                 // advance_tsf_probe がフォーカス中クラスを Tsf に昇格する。
-                let needs_gji_composition_reset = self.pending_gji_composition_reset.take();
+                let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 StepProbeResult {
                     timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
                     gji_response: None,
@@ -906,29 +831,19 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         }
     }
 
-    /// probe を `pending_tsf` にセットする。既存 probe があれば上書きして warn を出す。
+    /// probe を `warmup_coord` にインストールする。既存 probe があれば上書きして warn を出す。
     ///
-    /// 直接 `*self.pending_tsf.borrow_mut() = Some(...)` するのではなくこのメソッドを使うことで、
-    /// 暗黙のキャンセルをログに残し、バグ調査を容易にする。
+    /// [`TsfWarmupCoordinator::install_pending_tsf`] への Facade。暗黙のキャンセルを
+    /// ログに残し、バグ調査を容易にする。
     pub(super) fn install_pending_tsf(&self, machine: Box<dyn crate::tsf::tickable_fsm::TickableFsm>) {
-        let mut slot = self.pending_tsf.borrow_mut();
-        if slot.is_some() {
-            log::warn!(
-                "[tsf-probe] overwriting in-flight probe with new probe cold={}",
-                machine.cold_seq_hint()
-            );
-        }
-        *slot = Some(machine);
+        self.warmup_coord.install_pending_tsf(machine);
     }
 
     /// Chrome/LiteralDetect/GjiWarmup probe が実行中なら継続タイマー命令を返す。
     ///
     /// `send_keys` 完了後の補完に使う。
     pub(crate) fn pending_tsf_timer(&self) -> Option<TimerCommand> {
-        self.pending_tsf.borrow().is_some().then_some(TimerCommand::Continue {
-            id: crate::TIMER_TSF_PROBE,
-            delay: Duration::from_millis(10),
-        })
+        self.warmup_coord.pending_tsf_timer()
     }
 
     /// sacr-warmup probe に StartComposition が観測されたことを通知する。
@@ -937,9 +852,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     /// VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了したケースを検出するため、
     /// `SacrificialWarmupFsm::composition_was_seen` フラグをセットする。
     pub(crate) fn notify_probe_start_composition(&self) {
-        if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
-            machine.notify_start_composition();
-        }
+        self.warmup_coord.notify_probe_start_composition();
     }
 }
 

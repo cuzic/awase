@@ -172,7 +172,7 @@ impl Output {
             let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
                 crate::tsf::gji_fsm::PendingInput::new(romaji),
             ));
-            self.pending_gji_key_responses.borrow_mut().push(resp);
+            self.warmup_coord.push_key_response(resp);
         }
 
         {
@@ -490,7 +490,7 @@ impl Output {
             let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
                 crate::tsf::gji_fsm::PendingInput::new(romaji),
             ));
-            self.pending_gji_key_responses.borrow_mut().push(resp);
+            self.warmup_coord.push_key_response(resp);
         }
 
         {
@@ -678,7 +678,7 @@ impl Output {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
                 } else {
                     self.mark_composition_cold(ColdReason::SymbolVkSent);
-                    self.pending_gji_composition_reset.set(true);
+                    self.warmup_coord.mark_composition_reset();
                     self.send_eager_tsf_warmup(None);
                 }
             }

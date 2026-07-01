@@ -23,7 +23,7 @@ use super::TickMs;
 /// | `UserOwned`        | awase エンジン OFF / 非活性中。conv mode に一切触らない。         |
 /// | `TemporarilyUnowned` | warmup シーケンス等で awase が一時的に制御権を手放している状態。 |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ConvModeAuthority {
+pub enum ConvModeAuthority {
     /// 初期状態。所有権が誰にあるか不明（起動直後、エンジン状態未受信）。
     #[default]
     Unknown,
@@ -41,7 +41,7 @@ impl ConvModeAuthority {
     ///
     /// `AwaseOwned` のときのみ true。
     #[must_use]
-    pub(crate) const fn allows_conv_mutation(self) -> bool {
+    pub const fn allows_conv_mutation(self) -> bool {
         matches!(self, Self::AwaseOwned)
     }
 }

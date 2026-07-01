@@ -179,15 +179,15 @@ impl ProbeIo for Output {
 
     fn mark_cold_raw_tsf(&self) {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
-        self.pending_gji_composition_reset.set(true);
+        self.warmup_coord.mark_composition_reset();
     }
 
     fn store_gji_warmup_result(&self, result: crate::tsf::gji_fsm::WarmupResult) {
-        self.pending_gji_warmup.set(Some(result));
+        self.warmup_coord.store_warmup_result(result);
     }
 
     fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
-        self.current_gji_probe_id.get()
+        self.warmup_coord.current_probe_id()
     }
 
     fn send_sacrificial_ime_off_on(&self, cold_seq: u32) {

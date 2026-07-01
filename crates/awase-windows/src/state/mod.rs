@@ -28,7 +28,7 @@ pub mod hook_state;
 pub use hook_state::*;
 
 pub(crate) mod conv_mode;
-pub(crate) use conv_mode::ConvModeAuthority;
+pub use conv_mode::ConvModeAuthority;
 #[cfg(windows)]
 pub(crate) use conv_mode::{Charset, ConvModeMgr};
 
