@@ -15,6 +15,8 @@ mod resolve;
 mod vk_send;
 mod key_injector;
 mod tsf_warmup_coord;
+#[allow(dead_code)] // production 配線は将来（plan→execute 2 段化）。現状は純粋 planner + テスト
+mod ime_apply_planner;
 use resolve::special_key_to_vk;
 pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 
