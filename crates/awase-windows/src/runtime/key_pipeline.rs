@@ -351,20 +351,20 @@ impl Runtime {
 
                 // ObservedEisu 検出 → 自動 DirectInput 切替
                 // 半角英数（IME-ON の 0x10 モード）は使用しない設計。shadow ON/OFF を問わず
-                // VK_KANJI で DirectInput へ落とす。
-                // shadow=ON 偽装（Some((true,0))）で already_matched をバイパスして
-                // MsImeDirectStrategy の VK_KANJI 送信を確実に実行させる。
+                // VK_IME_OFF / VK_KANJI で DirectInput へ落とす。
+                // conv_mode=0x10 の観測は IME-ON の確証なので effective_open=true を直接注入する。
                 if new_mode == InputModeState::ObservedEisu {
                     log::info!(
-                        "[idle-conv-check] TsfNative: ObservedEisu 検出 → VK_KANJI (DirectInput)"
+                        "[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput"
                     );
                     self.platform.timer.kill(TIMER_IME_REFRESH);
                     let generation = self.platform_state.ime.event_log.next_seq();
                     self.platform_state
                         .ime
                         .handle_engine_set_open(false, false, generation, now_tick);
-                    let outcome =
-                        self.platform.apply_ime_open_with_applied(false, Some((true, 0)));
+                    // conv=0x10 (ROMAN bit) が観測済み → IME-ON 確定。direct belief で already_matched をバイパス。
+                    let belief = crate::output::ApplyBelief { effective_open: true, confident: true };
+                    let outcome = self.platform.apply_ime_open_with_belief(false, None, belief);
                     self.on_ime_apply_complete(false, outcome);
                 }
             }

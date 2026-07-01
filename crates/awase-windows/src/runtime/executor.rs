@@ -690,44 +690,47 @@ impl DecisionExecutor {
         } else {
             // ── sync path (Chrome / GJI 経路 / TsfNative 経路) ──
             //
-            // EngineIntent (Ctrl+無変換 等、ユーザーの明示的操作) かつ ImmCross が使えない
-            // プロファイル (Imm32Unavailable: Chrome/Edge 等、TsfNative: LINE XAML 入力等) の場合、
-            // shadow state が desync していても VK_KANJI / VK_IME_OFF を確実に送信するため
-            // apply_context を !open に override する。
-            //
-            // 背景: フォーカス変更直後や awase 起動時に実 IME 状態が unknown になり、
-            // applied_snapshot=None または false のまま IME が ON になっていることがある。
-            // この状態で KanjiToggle/GjiDirect が shadow=desired と判断してスキップし、
-            // Ctrl+無変換 が効かなくなる。
-            // ユーザーの明示的操作では shadow desync を無視して必ず送信することで対処する。
-            //
-            // TsfNative (LINE の Windows.UI.Input.InputSite.WindowClass 等) でも
-            // KanjiToggle がフォールバックとして使われるため同様の desync 対策が必要。
-            // GJI が起動している場合は GjiDirectStrategy (VK_IME_ON/OFF) が選ばれるため override 不要。
-            // VK_IME_OFF は shadow に関わらず常に送信される (べき等)。VK_IME_ON も GjiDirectStrategy が
-            // 自前で shadow_on チェックを持つため executor 側の override は冗長かつ有害。
+            // 観測値を集約して pure に belief を計算する。
+            // EngineIntent かつ ImmCross/GJI で確認できない環境では
+            // `confident=false` → `already_matched=false` → 必ず apply する（desync 対策）。
             let profile = platform.current_app_profile();
             let now_ms = crate::hook::current_tick_ms();
-            let apply_context = if kanji_needs_context_override(
-                open,
-                self.applied_snapshot,
-                shadow_on,
-                EffectOrigin::from(origin) == EffectOrigin::EngineIntent,
-                profile.can_use_imm32_cross_process(),
-                crate::tsf::observer::gji_monitor_healthy(),
-                now_ms,
-            ) {
-                log::debug!(
-                    "[dispatch-ime] KanjiToggle (profile={:?}): context override \
-                     ({} → VK_KANJI 強制送信, 6-C desync 対策)",
-                    profile,
-                    !open
-                );
-                crate::state::AppliedImeState::Optimistic(!open)
+            let is_engine_intent =
+                EffectOrigin::from(origin) == EffectOrigin::EngineIntent;
+
+            // MS-IME + TsfNative の場合のみ conv_mode を直接読む（ground-truth）。
+            // ImmCross 対応アプリはこの branch に来ない。GJI 環境は conv_mode 不要。
+            let tsf_obs = crate::tsf::observer::tsf_obs();
+            let active_ime_kind = crate::state::ObservedState::from_snapshot(tsf_obs).active_ime_kind;
+            let conv_mode = if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme
+                && !profile.can_use_imm32_cross_process()
+            {
+                // SAFETY: get_ime_conversion_mode_raw_timeout は Win32 IMM API。メインスレッド前提。
+                unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
             } else {
-                self.applied_snapshot
+                None
             };
-            let outcome = platform.apply_ime_open_with_applied(open, apply_context.to_pair());
+
+            let belief_inputs = crate::output::ApplyBeliefInputs {
+                shadow_on,
+                applied: self.applied_snapshot,
+                candidate_visible: tsf_obs.gji_candidate_visible(),
+                candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
+                gji_monitor_ok: crate::tsf::observer::gji_monitor_healthy(),
+                conv_mode,
+                can_imm32_cross_process: profile.can_use_imm32_cross_process(),
+                is_engine_intent,
+                now_ms,
+            };
+            let belief = crate::output::reduce_apply_belief(&belief_inputs, open);
+            log::debug!(
+                "[dispatch-ime] belief: effective={} confident={} conv={:?} \
+                 (engine_intent={is_engine_intent} profile={:?})",
+                belief.effective_open, belief.confident, conv_mode, profile
+            );
+            let outcome = platform.apply_ime_open_with_belief(
+                open, self.applied_snapshot.to_pair(), belief
+            );
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 log::warn!("apply_ime_open({open}) failed");
             }
@@ -763,88 +766,48 @@ impl DecisionExecutor {
     }
 }
 
-// ── KanjiToggle apply 判断ロジック（純粋関数） ───────────────────────────────
 
-/// KanjiToggle の apply_context を `!open` に上書きすべきか判断する。
-///
-/// `true` を返した場合、呼び出し側は apply_context を `Optimistic(!open)` に
-/// 差し替える。これにより Controller は `shadow_on != open` と判断して
-/// VK_KANJI を必ず送信する（workaround 6-C）。
-/// `false` の場合は apply_context をそのまま使い、Controller が
-/// `shadow_on == open` なら自然にスキップする。
-///
-/// OS 呼び出しを一切含まないため単体テスト可能。
-///
-/// # 背景（workaround 6-C）
-/// ImmCross 非対応アプリ（Chrome/WezTerm 等）ではフォーカス変更直後に
-/// shadow desync が発生する。この状態でユーザーが Ctrl+無変換を押すと
-/// shadow が既に desired と一致しているとして VK_KANJI が送られず
-/// IME 操作が無視される。EngineIntent では desync を無視して強制送信する。
-///
-/// # 引数
-/// - `desired_open`: 目標 IME 状態
-/// - `applied`: 現在の apply 確信度スナップショット
-/// - `shadow_on`: shadow model が示す現在の IME 状態
-/// - `is_engine_intent`: EngineIntent（ユーザー明示的操作）か否か
-/// - `can_imm32_cross_process`: IMM32 クロスプロセス制御が利用可能か
-/// - `gji_monitor_healthy`: GJI モニターが健全か（GJI 稼働中は override 不要）
-/// - `now_ms`: 現在時刻 (GetTickCount64 ms)
-pub(crate) fn kanji_needs_context_override(
-    desired_open: bool,
-    applied: crate::state::AppliedImeState,
-    shadow_on: bool,
-    is_engine_intent: bool,
-    can_imm32_cross_process: bool,
-    gji_monitor_healthy: bool,
-    now_ms: u64,
-) -> bool {
-    // override が必要な条件: EngineIntent かつ IMM32/GJI で確認できないプロファイル
-    if !is_engine_intent || can_imm32_cross_process || gji_monitor_healthy {
-        return false;
-    }
-
-    // Confirmed かつ shadow が一致し 300ms 以内の場合のみ override 不要。
-    // - Unknown / Optimistic は desync の可能性があるため override する。
-    // - 300ms 超過後は再送を許可する: スリープ復帰後に VK_KANJI が逆方向トグル
-    //   (実 IME が既に OFF → ON) になった際、2 回目以降の Ctrl+無変換で desync を修正できる。
-    //   ON 方向も同様（KeyDown+KeyUp 二重送信防止の 300ms ウィンドウ）。
-    let confirmed_at_ms = applied.confirmed_at_ms();
-    let safely_confirmed = shadow_on == desired_open
-        && applied.is_confirmed()
-        && now_ms.saturating_sub(confirmed_at_ms) < 300;
-
-    !safely_confirmed
-}
-
-/// `kanji_needs_context_override` および `AppliedImeState` の unit tests。
+/// `reduce_apply_belief` および `AppliedImeState` の unit tests。
 ///
 /// `awase-windows` クレートは `#![cfg(windows)]` で囲まれているため
 /// Windows 実機でのみ実行される。
 #[cfg(test)]
 mod tests {
-    use super::kanji_needs_context_override;
+    use crate::output::{ApplyBeliefInputs, reduce_apply_belief};
     use crate::state::AppliedImeState;
 
-    /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で呼ぶヘルパー
-    fn chrome_intent(
+    /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で confident を返すヘルパー。
+    /// `kanji_needs_context_override(...)` == `!chrome_intent(...).confident`
+    fn chrome_intent_confident(
         desired: bool,
         applied: AppliedImeState,
         shadow_on: bool,
         now_ms: u64,
     ) -> bool {
-        kanji_needs_context_override(desired, applied, shadow_on, true, false, false, now_ms)
+        let inputs = ApplyBeliefInputs {
+            shadow_on,
+            applied,
+            candidate_visible: false,
+            candidate_was_seen: false,
+            gji_monitor_ok: false,
+            conv_mode: None,
+            can_imm32_cross_process: false,
+            is_engine_intent: true,
+            now_ms,
+        };
+        reduce_apply_belief(&inputs, desired).confident
     }
 
-    // workaround 6-C ケース 1: フォーカス直後 (Unknown) → override 必要
+    // 6-C ケース 1: フォーカス直後 (Unknown) → confident=false（必ず apply）
     #[test]
-    fn override_when_unknown() {
-        assert!(chrome_intent(false, AppliedImeState::Unknown, false, 1000));
+    fn not_confident_when_unknown() {
+        assert!(!chrome_intent_confident(false, AppliedImeState::Unknown, false, 1000));
     }
 
-    // workaround 6-C ケース 2: Optimistic のみ（ImmCross async 事前更新）→ override 必要
+    // 6-C ケース 2: Optimistic のみ → confident=false
     #[test]
-    fn override_when_optimistic_only() {
-        assert!(chrome_intent(
+    fn not_confident_when_optimistic_only() {
+        assert!(!chrome_intent_confident(
             false,
             AppliedImeState::Optimistic(false),
             false,
@@ -852,108 +815,105 @@ mod tests {
         ));
     }
 
-    // ケース 3a: Confirmed OFF + 目標 OFF + 300ms 以内 → スキップ（二重送信防止）
+    // ケース 3a: Confirmed OFF + 目標 OFF + 300ms 以内 → confident（二重送信防止）
     #[test]
-    fn no_override_when_confirmed_off_within_300ms() {
-        assert!(!chrome_intent(
+    fn confident_when_confirmed_off_within_300ms() {
+        assert!(chrome_intent_confident(
             false,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 900
-            },
+            AppliedImeState::Confirmed { open: false, at_ms: 900 },
             false,
             1000
         ));
     }
 
-    // ケース 3b: Confirmed OFF + 目標 OFF + 300ms 超過 → 送信（desync 修正のため再送許可）
+    // ケース 3b: Confirmed OFF + 目標 OFF + 300ms 超過 → not confident（desync 修正のため再送）
     #[test]
-    fn override_when_confirmed_off_over_300ms() {
-        assert!(chrome_intent(
+    fn not_confident_when_confirmed_off_over_300ms() {
+        assert!(!chrome_intent_confident(
             false,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 500
-            },
+            AppliedImeState::Confirmed { open: false, at_ms: 500 },
             false,
             1000
         ));
     }
 
-    // ケース 4: Confirmed + 目標 ON + 300ms 以内 → override 不要（KeyDown+KeyUp 二重送信防止）
+    // ケース 4: Confirmed + 目標 ON + 300ms 以内 → confident（二重送信防止）
     #[test]
-    fn no_override_when_confirmed_within_300ms() {
-        assert!(!chrome_intent(
+    fn confident_when_confirmed_within_300ms() {
+        assert!(chrome_intent_confident(
             true,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 800
-            },
+            AppliedImeState::Confirmed { open: false, at_ms: 800 },
             true,
             1000
         ));
     }
 
-    // ケース 5: Confirmed + 300ms 超過 → override 必要（再試行許容）
+    // ケース 5: Confirmed + 300ms 超過 → not confident（再試行許容）
     #[test]
-    fn override_when_confirmed_over_300ms() {
-        assert!(chrome_intent(
+    fn not_confident_when_confirmed_over_300ms() {
+        assert!(!chrome_intent_confident(
             true,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 500
-            },
+            AppliedImeState::Confirmed { open: false, at_ms: 500 },
             true,
             1000
         ));
     }
 
-    // ケース 6: IMM32 使用可 → override 不要
+    // ケース 6: IMM32 使用可 → confident（ImmCross が先行するのでここには来ないが念のため）
     #[test]
-    fn no_override_when_imm32_available() {
-        assert!(!kanji_needs_context_override(
-            false,
-            AppliedImeState::Unknown,
-            false,
-            true,
-            true,
-            false,
-            1000
-        ));
+    fn confident_when_imm32_available() {
+        let inputs = ApplyBeliefInputs {
+            shadow_on: false,
+            applied: AppliedImeState::Unknown,
+            candidate_visible: false,
+            candidate_was_seen: false,
+            gji_monitor_ok: false,
+            conv_mode: None,
+            can_imm32_cross_process: true,
+            is_engine_intent: true,
+            now_ms: 1000,
+        };
+        assert!(reduce_apply_belief(&inputs, false).confident);
     }
 
-    // ケース 7: GJI 健全 → override 不要
+    // ケース 7: GJI 健全 → confident
     #[test]
-    fn no_override_when_gji_healthy() {
-        assert!(!kanji_needs_context_override(
-            false,
-            AppliedImeState::Unknown,
-            false,
-            true,
-            false,
-            true,
-            1000
-        ));
+    fn confident_when_gji_healthy() {
+        let inputs = ApplyBeliefInputs {
+            shadow_on: false,
+            applied: AppliedImeState::Unknown,
+            candidate_visible: false,
+            candidate_was_seen: false,
+            gji_monitor_ok: true,
+            conv_mode: None,
+            can_imm32_cross_process: false,
+            is_engine_intent: true,
+            now_ms: 1000,
+        };
+        assert!(reduce_apply_belief(&inputs, false).confident);
     }
 
-    // ケース 8: EngineIntent でない → override 不要
+    // ケース 8: EngineIntent でない → confident（override 不要）
     #[test]
-    fn no_override_when_not_engine_intent() {
-        assert!(!kanji_needs_context_override(
-            false,
-            AppliedImeState::Unknown,
-            false,
-            false,
-            false,
-            false,
-            1000
-        ));
+    fn confident_when_not_engine_intent() {
+        let inputs = ApplyBeliefInputs {
+            shadow_on: false,
+            applied: AppliedImeState::Unknown,
+            candidate_visible: false,
+            candidate_was_seen: false,
+            gji_monitor_ok: false,
+            conv_mode: None,
+            can_imm32_cross_process: false,
+            is_engine_intent: false,
+            now_ms: 1000,
+        };
+        assert!(reduce_apply_belief(&inputs, false).confident);
     }
 
-    // ケース 9: Confirmed ON + 目標 ON → 永続スキップ（override 不要）
+    // ケース 9: Confirmed ON + 目標 ON → confident（永続スキップ）
     #[test]
-    fn no_override_when_confirmed_on_desired_on() {
-        assert!(!chrome_intent(
+    fn confident_when_confirmed_on_desired_on() {
+        assert!(chrome_intent_confident(
             true,
             AppliedImeState::Confirmed {
                 open: true,
