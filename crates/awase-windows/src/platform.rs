@@ -714,8 +714,7 @@ impl PlatformRuntime for WindowsPlatform {
     }
 
     fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
-        let view = self.build_ime_control_view(None);
-        crate::ime_controller::CONTROLLER.apply(open, &view)
+        self.apply_ime_open_with_applied(open, None)
     }
 
     fn post_ime_refresh(&mut self) {
@@ -936,13 +935,42 @@ impl WindowsPlatform {
     }
 
     /// `applied` を明示的に渡す `apply_ime_open` 実装。
+    ///
+    /// [`crate::output::ImeApplyPlanner`] で計画を立て、`Noop` の場合は早期返却する。
+    /// それ以外は [`crate::ime_controller::CONTROLLER`] に委譲して実行する。
+    ///
+    /// `probe_in_flight` は常に `false` を渡す。IME 開閉適用は TSF probe 実行中でも即時適用する
+    /// （TSF probe は composition context の暖機であり、IME ON/OFF とは直交する）。
     pub(crate) fn apply_ime_open_with_applied(
         &self,
         open: bool,
         applied: Option<(bool, u64)>,
     ) -> awase::platform::ImeOpenOutcome {
+        use awase::platform::ImeOpenOutcome;
+        use crate::output::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
+
         let view = self.build_ime_control_view(applied);
-        crate::ime_controller::CONTROLLER.apply(open, &view)
+        // IME apply 経路では probe_in_flight=false（DeferUntilProbe は keystroke deferred VK 用）。
+        let ctx = ImeApplyContext::from_view(&view, open, false);
+        let plan = ImeApplyPlanner::plan(&ctx);
+        log::debug!("[apply-ime] open={open} plan={plan:?}");
+
+        let outcome = match plan {
+            ImeApplyPlan::Noop => ImeOpenOutcome::AlreadyMatched,
+            ImeApplyPlan::DeferUntilProbe => {
+                // probe_in_flight=false のためここには到達しない（防衛的ハンドリング）。
+                log::debug!("[apply-ime] DeferUntilProbe (probe_in_flight=false の場合は到達しないはず) → UnsafeToToggle");
+                ImeOpenOutcome::UnsafeToToggle
+            }
+            _ => crate::ime_controller::CONTROLLER.apply(open, &view),
+        };
+
+        let result = ImeApplyResult::from_outcome(outcome);
+        log::debug!(
+            "[apply-ime] result={result:?} should_commit={}",
+            result.should_commit_state()
+        );
+        outcome
     }
 
     // ── タイマー問い合わせ ──

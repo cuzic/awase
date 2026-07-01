@@ -83,6 +83,49 @@ pub(crate) struct ImeApplyContext {
     pub uses_kanji_toggle: bool,
 }
 
+impl ImeApplyContext {
+    /// [`crate::state::ImeControlView`] からコンテキストを構築する。
+    ///
+    /// - `open`: 目標 IME 開閉状態（`already_matched` の計算に必要）。
+    /// - `probe_in_flight`: GJI TSF probe が実行中かどうか。
+    ///   IME apply 経路では `false` を渡す（開閉適用は probe 中でも即時実行する）。
+    ///
+    /// ## `already_matched` の計算方針（保守的）
+    ///
+    /// - GJI: `open=true && shadow_on=true` のみ `AlreadyMatched` とする。
+    ///   `GjiDirectStrategy` は `open=false` では shadow に関わらず常に `VK_IME_OFF` を送る。
+    /// - その他（MS-IME / KanjiToggle）: `effective_shadow == open` で `AlreadyMatched`。
+    ///   `effective_shadow` は `shadow_on | candidate_visible | candidate_was_seen` で、
+    ///   `KanjiToggleStrategy` の既存ロジックと一致する。
+    pub(crate) fn from_view(
+        view: &crate::state::ImeControlView<'_>,
+        open: bool,
+        probe_in_flight: bool,
+    ) -> Self {
+        let already_matched = match view.observed.active_ime_kind {
+            ActiveImeKind::GoogleJapaneseInput => {
+                // GJI は IME OFF（open=false）のとき shadow に関わらず VK_IME_OFF を送るため、
+                // already_matched は open=true かつ shadow ON のときのみ true にする。
+                open && view.control.shadow_on
+            }
+            _ => {
+                // KanjiToggle / MS-IME: effective_shadow が目標と一致すればスキップ。
+                let effective_shadow = view.control.shadow_on
+                    || view.observed.candidate_visible
+                    || view.observed.candidate_was_seen;
+                effective_shadow == open
+            }
+        };
+        Self {
+            already_matched,
+            probe_in_flight,
+            imm_cross_available: view.focus.profile.can_use_imm32_cross_process(),
+            active_ime_kind: view.observed.active_ime_kind,
+            uses_kanji_toggle: view.focus.profile.uses_kanji_toggle(),
+        }
+    }
+}
+
 /// IME 適用機構を副作用なしで決定する planner。
 pub(crate) struct ImeApplyPlanner;
 

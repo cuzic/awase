@@ -16,8 +16,9 @@ mod resolve;
 mod vk_send;
 mod key_injector;
 mod tsf_warmup_coord;
-#[allow(dead_code)] // production 配線は将来（plan→execute 2 段化）。現状は純粋 planner + テスト
-mod ime_apply_planner;
+pub(crate) mod ime_apply_planner;
+/// IME 適用計画を副作用なしで決定する planner（計画型・実行型・コンテキスト型）。
+pub(crate) use ime_apply_planner::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
 use resolve::special_key_to_vk;
 pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 
@@ -873,6 +874,14 @@ impl Output {
     /// `SacrificialWarmupFsm::composition_was_seen` フラグをセットする。
     pub(crate) fn notify_probe_start_composition(&self) {
         self.warmup_coord.notify_probe_start_composition();
+    }
+
+    /// TSF probe（GjiWarmup / ChromeProbe 等）が実行中かどうかを返す。
+    ///
+    /// [`ImeApplyContext::from_view`] の `probe_in_flight` 引数に渡す。
+    /// IME apply 経路では probe 中でも即時適用するため、呼び出し元が目的に合わせて使い分ける。
+    pub(crate) fn has_probe_in_flight(&self) -> bool {
+        self.warmup_coord.has_pending_tsf()
     }
 
     /// GJI probe をキャンセルし、OUTPUT_GATE ガードを解放する。
