@@ -4,7 +4,10 @@ use awase::types::{AppKind, FocusKind};
 use super::belief::ImeBelief;
 use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::SyncKeyGate;
-use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSource};
+use super::ime_event::{
+    ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult,
+    InputModeApplyStrategy, IntentSource, ObservationSource,
+};
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
 use super::input_barrier::InputBarrier;
@@ -105,6 +108,18 @@ impl ImeStateHub {
             event: event_for_reduce,
         };
         self.shadow_model.reduce(&envelope);
+        // H-3-c: belief.input_mode 並走更新（H-3-d で belief.input_mode 廃止後に削除）
+        if matches!(
+            &envelope.event,
+            ImeEvent::InputModeObserved { .. }
+                | ImeEvent::InputModeApplied {
+                    result: InputModeApplyResult::Applied,
+                    ..
+                }
+                | ImeEvent::UserChangedInputMode { .. }
+        ) {
+            self.belief.input_mode = self.shadow_model.input_mode;
+        }
         self.journal.record(JournalEntry::ImeEvent { description });
     }
 
@@ -395,7 +410,15 @@ impl ImeStateHub {
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     pub(crate) fn apply_panic_reset(&mut self, tick_ms: TickMs) {
-        self.belief.input_mode = InputModeState::ObservedRomaji;
+        self.dispatch_event(
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::ObservedRomaji,
+                strategy: InputModeApplyStrategy::PanicReset,
+                result: InputModeApplyResult::Applied,
+                at: tick_ms,
+            },
+            tick_ms,
+        );
         self.belief.is_japanese_ime = true;
         self.belief.prev_conversion_mode = None;
         self.shadow_model.observe_miss_monitor.record_success();
@@ -465,7 +488,14 @@ impl ImeStateHub {
             self.shadow_model.observe_miss_monitor.record_success();
         }
         if let Some(mode) = update.new_input_mode {
-            self.belief.input_mode = mode;
+            self.dispatch_event(
+                ImeEvent::InputModeObserved {
+                    mode,
+                    source: ObservationSource::ObserverPoll,
+                    at: tick_ms,
+                },
+                tick_ms,
+            );
         }
         if let Some(conv) = update.new_prev_conversion_mode {
             self.belief.prev_conversion_mode = Some(conv);
@@ -488,7 +518,15 @@ impl ImeStateHub {
                 },
                 tick_ms,
             );
-            self.belief.input_mode = snap.input_mode;
+            self.dispatch_event(
+                ImeEvent::InputModeApplied {
+                    mode: snap.input_mode,
+                    strategy: InputModeApplyStrategy::CacheRestore,
+                    result: InputModeApplyResult::Applied,
+                    at: tick_ms,
+                },
+                tick_ms,
+            );
         }
     }
 

@@ -310,7 +310,14 @@ impl Runtime {
                     "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
                     conv, current, new_mode,
                 );
-                self.platform_state.ime.belief.input_mode = new_mode;
+                self.platform_state.ime.dispatch_event(
+                    crate::state::ime_event::ImeEvent::InputModeObserved {
+                        mode: new_mode,
+                        source: crate::state::ime_event::ObservationSource::ImmGetOpenStatus,
+                        at: now_tick,
+                    },
+                    now_tick,
+                );
 
                 // カタカナへの切替 + shadow=OFF → engine ON 同期
                 if new_mode == InputModeState::ObservedRomaji
@@ -730,6 +737,7 @@ impl Runtime {
                     let has_kata = conv & crate::imm::IME_CMODE_KATAKANA != 0;
                     use awase::engine::InputModeState;
                     let current = self.platform_state.ime.belief.input_mode();
+                    use crate::state::ime_event::{ImeEvent, ObservationSource};
                     if awase::engine::ConvMode::from_u32(conv).is_eisu() {
                         // 英数モード (HankakuAlpha / ZenkakuAlpha)。ROMAN ビットの有無は問わない。
                         if !matches!(current, InputModeState::ObservedEisu) {
@@ -739,8 +747,14 @@ impl Runtime {
                                 conv,
                                 current,
                             );
-                            self.platform_state.ime.belief.input_mode =
-                                InputModeState::ObservedEisu;
+                            self.platform_state.ime.dispatch_event(
+                                ImeEvent::InputModeObserved {
+                                    mode: InputModeState::ObservedEisu,
+                                    source: ObservationSource::FocusProbe,
+                                    at: now_tick_ms,
+                                },
+                                now_tick_ms,
+                            );
                         }
                     } else if has_native && !has_roman && !has_kata {
                         // JISかな / ひらがな: classify_idle(is_roman_reliable=false) に委ねる。
@@ -754,7 +768,14 @@ impl Runtime {
                                      → belief {:?}→{:?}",
                                     conv, current, new_mode,
                                 );
-                                self.platform_state.ime.belief.input_mode = new_mode;
+                                self.platform_state.ime.dispatch_event(
+                                    ImeEvent::InputModeObserved {
+                                        mode: new_mode,
+                                        source: ObservationSource::FocusProbe,
+                                        at: now_tick_ms,
+                                    },
+                                    now_tick_ms,
+                                );
                             }
                             None => {
                                 log::debug!(
@@ -772,8 +793,14 @@ impl Runtime {
                             conv,
                             current,
                         );
-                        self.platform_state.ime.belief.input_mode =
-                            InputModeState::ObservedRomaji;
+                        self.platform_state.ime.dispatch_event(
+                            ImeEvent::InputModeObserved {
+                                mode: InputModeState::ObservedRomaji,
+                                source: ObservationSource::FocusProbe,
+                                at: now_tick_ms,
+                            },
+                            now_tick_ms,
+                        );
                     }
                     // カタカナモードは NICOLA shadow-sync が複雑なため idle-conv-check に委ねる。
                 }

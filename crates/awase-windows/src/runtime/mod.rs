@@ -426,7 +426,16 @@ impl Runtime {
         {
             if let Some(new_mode) = self.platform_state.ime.belief.correction_for_imm_broken() {
                 log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-                self.platform_state.ime.belief.input_mode = new_mode;
+                let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+                self.platform_state.ime.dispatch_event(
+                    crate::state::ime_event::ImeEvent::InputModeApplied {
+                        mode: new_mode,
+                        strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                        result: crate::state::ime_event::InputModeApplyResult::Applied,
+                        at: tick_ms,
+                    },
+                    tick_ms,
+                );
             } else {
                 // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
                 log::info!(
