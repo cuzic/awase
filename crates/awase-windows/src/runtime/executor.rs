@@ -624,13 +624,9 @@ impl DecisionExecutor {
         open: bool,
         origin: DecisionOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
-        let (imm_first, shadow_on) = {
-            let view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
-            (
-                crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view),
-                view.control.shadow_on,
-            )
-        };
+        // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
+        let view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
+        let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
         if imm_first {
             // ── async path (ImmCross が選ばれるアプリ) ──
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
@@ -690,35 +686,32 @@ impl DecisionExecutor {
         } else {
             // ── sync path (Chrome / GJI 経路 / TsfNative 経路) ──
             //
-            // 観測値を集約して pure に belief を計算する。
+            // 観測値は冒頭で構築済みの view から読む（tsf_obs() の二重呼び出し回避）。
             // EngineIntent かつ ImmCross/GJI で確認できない環境では
             // `confident=false` → `already_matched=false` → 必ず apply する（desync 対策）。
-            let profile = platform.current_app_profile();
+            let is_engine_intent = EffectOrigin::from(origin) == EffectOrigin::EngineIntent;
             let now_ms = crate::hook::current_tick_ms();
-            let is_engine_intent =
-                EffectOrigin::from(origin) == EffectOrigin::EngineIntent;
 
             // MS-IME + TsfNative の場合のみ conv_mode を直接読む（ground-truth）。
             // ImmCross 対応アプリはこの branch に来ない。GJI 環境は conv_mode 不要。
-            let tsf_obs = crate::tsf::observer::tsf_obs();
-            let active_ime_kind = crate::state::ObservedState::from_snapshot(tsf_obs).active_ime_kind;
-            let conv_mode = if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme
-                && !profile.can_use_imm32_cross_process()
+            let conv_mode = if view.observed.active_ime_kind
+                == crate::tsf::observer::ActiveImeKind::MicrosoftIme
+                && !view.focus.profile.can_use_imm32_cross_process()
             {
-                // SAFETY: get_ime_conversion_mode_raw_timeout は Win32 IMM API。メインスレッド前提。
+                // SAFETY: Win32 IMM API。メインスレッド前提。
                 unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
             } else {
                 None
             };
 
             let belief_inputs = crate::output::OpenBeliefInputs {
-                shadow_on,
+                shadow_on: view.control.shadow_on,
                 applied: self.applied_snapshot,
-                candidate_visible: tsf_obs.gji_candidate_visible(),
-                candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
-                gji_monitor_ok: crate::tsf::observer::gji_monitor_healthy(),
+                candidate_visible: view.observed.candidate_visible,
+                candidate_was_seen: view.observed.candidate_was_seen,
+                gji_monitor_ok: view.observed.gji_monitor_ok,
                 conv_mode,
-                can_imm32_cross_process: profile.can_use_imm32_cross_process(),
+                can_imm32_cross_process: view.focus.profile.can_use_imm32_cross_process(),
                 is_engine_intent,
                 now_ms,
             };
@@ -726,11 +719,9 @@ impl DecisionExecutor {
             log::debug!(
                 "[dispatch-ime] belief: effective={} confident={} conv={:?} \
                  (engine_intent={is_engine_intent} profile={:?})",
-                belief.effective_open, belief.confident, conv_mode, profile
+                belief.effective_open, belief.confident, conv_mode, view.focus.profile
             );
-            let outcome = platform.apply_ime_open_with_belief(
-                open, self.applied_snapshot.to_pair(), belief
-            );
+            let outcome = platform.apply_ime_open_with_view(open, &view, belief);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 log::warn!("apply_ime_open({open}) failed");
             }

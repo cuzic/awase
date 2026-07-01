@@ -934,25 +934,23 @@ impl WindowsPlatform {
         }
     }
 
-    /// ビリーフを明示的に渡す `apply_ime_open` の中核実装。
+    /// 事前構築済みの `ImeControlView` と `OpenBelief` を受け取る中核実装。
     ///
-    /// `belief` は呼び出し元が [`crate::output::reduce_apply_belief`] で事前計算したもの。
+    /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
     /// [`crate::output::ImeApplyPlanner`] で計画を立て、`Noop` の場合は早期返却する。
     /// それ以外は [`crate::ime_controller::CONTROLLER`] に委譲して実行する。
     ///
-    /// `probe_in_flight` は常に `false` を渡す。IME 開閉適用は TSF probe 実行中でも即時適用する
-    /// （TSF probe は composition context の暖機であり、IME ON/OFF とは直交する）。
-    pub(crate) fn apply_ime_open_with_belief(
+    /// `probe_in_flight` は常に `false`。IME 開閉適用は TSF probe と直交するため即時実行する。
+    pub(crate) fn apply_ime_open_with_view(
         &self,
         open: bool,
-        applied: Option<(bool, u64)>,
+        view: &crate::state::ImeControlView<'_>,
         belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
         use awase::platform::ImeOpenOutcome;
         use crate::output::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
 
-        let view = self.build_ime_control_view(applied);
-        let ctx = ImeApplyContext::from_view(&view, open, false, belief);
+        let ctx = ImeApplyContext::from_view(view, open, false, belief);
         let plan = ImeApplyPlanner::plan(&ctx);
         log::debug!(
             "[apply-ime] open={open} plan={plan:?} (eff={} conf={})",
@@ -963,10 +961,10 @@ impl WindowsPlatform {
             ImeApplyPlan::Noop => ImeOpenOutcome::AlreadyMatched,
             ImeApplyPlan::DeferUntilProbe => {
                 // probe_in_flight=false のためここには到達しない（防衛的ハンドリング）。
-                log::debug!("[apply-ime] DeferUntilProbe (probe_in_flight=false の場合は到達しないはず) → UnsafeToToggle");
+                log::debug!("[apply-ime] DeferUntilProbe → UnsafeToToggle");
                 ImeOpenOutcome::UnsafeToToggle
             }
-            _ => crate::ime_controller::CONTROLLER.apply(open, &view),
+            _ => crate::ime_controller::CONTROLLER.apply(open, view),
         };
 
         let result = ImeApplyResult::from_outcome(outcome);
@@ -977,10 +975,22 @@ impl WindowsPlatform {
         outcome
     }
 
+    /// `applied` から view を構築して [`Self::apply_ime_open_with_view`] に委譲する。
+    ///
+    /// 呼び出し元が view を持たない場合（refresh / probe 完了後等）のラッパー。
+    pub(crate) fn apply_ime_open_with_belief(
+        &self,
+        open: bool,
+        applied: Option<(bool, u64)>,
+        belief: crate::output::OpenBelief,
+    ) -> awase::platform::ImeOpenOutcome {
+        let view = self.build_ime_control_view(applied);
+        self.apply_ime_open_with_view(open, &view, belief)
+    }
+
     /// shadow のみから自明なビリーフを作る後方互換ラッパー。
     ///
-    /// ImmCross 非経路かつ EngineIntent 外（refresh / probe 完了後等）の呼び出しに使う。
-    /// EngineIntent の KanjiToggle 系経路は [`Self::apply_ime_open_with_belief`] を直接使うこと。
+    /// ImmCross 非経路かつ EngineIntent 外の呼び出しに使う。
     pub(crate) fn apply_ime_open_with_applied(
         &self,
         open: bool,
