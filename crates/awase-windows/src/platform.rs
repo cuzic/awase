@@ -90,6 +90,37 @@ impl Drop for SuppressEngineStateKeyGuard {
 }
 
 impl WindowsPlatform {
+    // ── コンストラクタ ────────────────────────────────────────────────────────
+
+    /// `WindowsPlatform` を構築する。
+    ///
+    /// `conv_mode_authority` は常に `UserOwned` で初期化される。
+    /// 初期化後の権限変更は `set_conv_mode_authority()` 経由で行うこと。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        output: crate::output::Output,
+        tray: crate::tray::SystemTray,
+        timer: crate::timer::Win32Timer,
+        engine_on_ime_vk: Option<awase::types::VkCode>,
+        engine_off_ime_vk: Option<awase::types::VkCode>,
+        suppress_engine_state_key: bool,
+        focus: crate::focus::tracker::FocusTracker,
+        composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
+    ) -> Self {
+        Self {
+            output,
+            tray,
+            timer,
+            engine_on_ime_vk,
+            engine_off_ime_vk,
+            suppress_engine_state_key,
+            focus,
+            composition_fsm,
+            conv_mode_authority: ConvModeAuthority::UserOwned,
+            pending_conv_mode_authority: None,
+        }
+    }
+
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
 
     /// `applied_ime_on` を指定して eager warmup を送信する。

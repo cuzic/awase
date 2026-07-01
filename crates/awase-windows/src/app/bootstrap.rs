@@ -435,23 +435,21 @@ pub(super) fn initialize_app(
     RUNTIME.set(Runtime::new(
         engine,
         executor::DecisionExecutor::new(config.general.hook_mode),
-        platform::WindowsPlatform {
-            output: Output::new(config.general.output_mode),
+        platform::WindowsPlatform::new(
+            Output::new(config.general.output_mode),
             tray,
-            timer: crate::timer::Win32Timer::new(),
+            crate::timer::Win32Timer::new(),
             engine_on_ime_vk,
             engine_off_ime_vk,
-            suppress_engine_state_key: false,
-            focus: crate::focus::tracker::FocusTracker::new(
+            false,
+            crate::focus::tracker::FocusTracker::new(
                 crate::focus::cache::FocusCache::new(),
                 crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
                 crate::focus::classifier::ImmCapabilityStore::new(base_dir.clone()),
                 crate::focus::classifier::InjectionModeStore::new(base_dir),
             ),
-            composition_fsm: crate::tsf::composition_fsm::CompositionFsm::new(),
-            conv_mode_authority: crate::state::ConvModeAuthority::UserOwned,
-            pending_conv_mode_authority: None,
-        },
+            crate::tsf::composition_fsm::CompositionFsm::new(),
+        ),
         layouts,
         sync_toggle_keys,
         sync_on_keys,
