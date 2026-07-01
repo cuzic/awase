@@ -114,14 +114,6 @@ impl KeyInjector {
         let _ = crate::win32::send_input_safe(&inputs);
     }
 
-    /// Unicode char を直接送信する（defer モードを無視して即送信）。
-    ///
-    /// `FlushDeferredUnicodeChars` ハンドラが deferred chars を送信するために使う。
-    pub(super) fn send_unicode_char_direct(&self, ch: char) {
-        // FSM tick 時は unicode_cold_defer=false のため、通常の send_unicode_char で直接送信できる。
-        self.send_unicode_char(ch);
-    }
-
     /// PerKey モード: 1文字ずつ個別の SendInput 呼び出し
     #[expect(clippy::unused_self)]
     pub(super) fn send_romaji_per_key(&self, romaji: &str) {
@@ -191,7 +183,7 @@ impl KeyInjector {
     }
 
     /// 1 ラン分の INPUT を構築して送信し、送信した INPUT 数を返す。
-    pub(crate) fn send_vk_run_batch(run: &[(VkCode, bool)], marker: VkMarker) -> usize {
+    fn send_vk_run_batch(run: &[(VkCode, bool)], marker: VkMarker) -> usize {
         let mut inputs = Vec::with_capacity(run.len() * 4);
         for &(vk, needs_shift) in run {
             if needs_shift {
@@ -211,7 +203,7 @@ impl KeyInjector {
     }
 
     /// 同一 VK が連続する境界でランを分割する。
-    pub(crate) fn split_vk_runs(vks: &[(VkCode, bool)]) -> Vec<&[(VkCode, bool)]> {
+    fn split_vk_runs(vks: &[(VkCode, bool)]) -> Vec<&[(VkCode, bool)]> {
         if vks.is_empty() {
             return vec![];
         }

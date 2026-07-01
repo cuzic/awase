@@ -28,7 +28,6 @@ pub(crate) use vk_send::TsfSendPipeline;
 /// SendInput / Unicode / VK 送信コンポーネント。
 pub(crate) use key_injector::{KeyInjector, VkMarker};
 
-pub(crate) use crate::tsf::probe_fsm::DeferredVk;
 
 /// VK コード＋シフトフラグのペアを要素とする VK シーケンス型。
 pub(crate) type VkSequence = Vec<(VkCode, bool)>;
