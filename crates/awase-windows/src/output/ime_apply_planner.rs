@@ -186,9 +186,11 @@ impl ImeApplyContext {
             false
         } else {
             match view.observed.active_ime_kind {
-                ActiveImeKind::GoogleJapaneseInput => {
+                ActiveImeKind::GoogleJapaneseInput | ActiveImeKind::MicrosoftIme => {
                     // GJI: VK_IME_ON/VK_IME_OFF は冪等なので open に関わらず AlreadyMatched にしない。
                     // open=true 時も常に VK_IME_ON を送ることで半角英数→ひらがな復帰を保証する。
+                    // MS-IME: VK_DBE_HIRAGANA / VK_IME_OFF も同様に冪等。GJI と同じ理由で
+                    // shadow 一致でも Noop にしない（shadow desync 時のひらがな復帰保証）。
                     false
                 }
                 _ => belief.effective_open == open,
