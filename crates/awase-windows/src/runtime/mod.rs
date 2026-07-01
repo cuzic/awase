@@ -423,22 +423,16 @@ impl Runtime {
             .input_mode()
             .is_romaji_capable()
         {
-            // belief が ObservedEisu なら英数モード中の誤 AssumedRomaji 強制をスキップする。
-            // （GJI tray で半角英数選択後、Blacklist アプリにフォーカスが移ったとき）
-            use awase::engine::{AssumedReason, InputModeState};
-            if matches!(
-                self.platform_state.ime.belief.input_mode(),
-                InputModeState::ObservedEisu
-            ) {
+            if let Some(new_mode) = self.platform_state.ime.belief.correction_for_imm_broken() {
+                log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
+                self.platform_state.ime.belief.input_mode = new_mode;
+            } else {
+                // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
                 log::info!(
                     "Blacklist force-ON: input_mode スキップ (belief=ObservedEisu, eisu guard)"
                 );
                 return;
             }
-            log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
-            self.platform_state.ime.belief.input_mode = InputModeState::AssumedRomaji {
-                reason: AssumedReason::ImmBridgeBroken,
-            };
         }
     }
 

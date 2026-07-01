@@ -1,4 +1,4 @@
-use awase::engine::{AssumedReason, ConvMode, EngineCommand, InputModeState};
+use awase::engine::{ConvMode, EngineCommand, InputModeState};
 use awase::platform::PlatformRuntime;
 
 use super::Runtime;
@@ -195,20 +195,16 @@ impl Runtime {
                 .input_mode()
                 .is_romaji_capable()
         {
-            if matches!(
-                self.platform_state.ime.belief.input_mode(),
-                InputModeState::ObservedEisu
-            ) {
-                log::info!(
-                    "FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)"
-                );
-            } else {
+            if let Some(new_mode) = self.platform_state.ime.belief.correction_for_imm_broken() {
                 log::info!(
                     "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
                 );
-                self.platform_state.ime.belief.input_mode = InputModeState::AssumedRomaji {
-                    reason: AssumedReason::ImmBridgeBroken,
-                };
+                self.platform_state.ime.belief.input_mode = new_mode;
+            } else {
+                // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
+                log::info!(
+                    "FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)"
+                );
             }
         }
         let ctx = self.build_ctx();
