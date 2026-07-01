@@ -6,18 +6,14 @@
 //! `drain` して実行する。
 //!
 //! # 使い方
-//! - push 側: H-4-b で `vk_send.rs` の `with_app` 呼び出しを `RuntimeRequest` 積み込みに移行。
+//! - push 側: `vk_send.rs` の Chrome cold パスが `StartTsfProbe` を積む（H-4-b 完了）。
 //! - drain 側: `Runtime::drain_runtime_requests()` が `WM_EXECUTE_EFFECTS` /
 //!   `WM_DRAIN_OUTPUT_QUEUE` の末尾で呼ばれ、各リクエストを実行する。
 
 use awase::types::VkCode;
 
 /// `Output` が `Runtime` に依頼する遅延操作。
-///
-/// 各バリアントは現在 H-4-b で push 側が実装される予定のため構築されていない。
-/// drain 側（`Runtime::drain_runtime_requests`）はすでに配線済み。
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // push 側は H-4-b で vk_send.rs の with_app 置換時に構築される
 pub(crate) enum RuntimeRequest {
     /// IME 状態を再取得して shadow model を同期する。
     RefreshIme,
@@ -45,9 +41,6 @@ impl RuntimeOutbox {
     }
 
     /// リクエストを末尾に積む。
-    ///
-    /// H-4-b で `vk_send.rs` の `with_app` 呼び出しを置換するまでは未使用。
-    #[allow(dead_code)]
     pub(crate) fn push(&mut self, request: RuntimeRequest) {
         self.requests.push(request);
     }

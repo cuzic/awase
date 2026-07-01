@@ -224,9 +224,25 @@ impl Output {
             // を with_app の外で実行するため、async タスクへオフロードする。
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックが
             // キーを INPUT_DEFER に退避し、cold start シーケンスと race しないようにする。
-            // guard は ChromeProbe に move されて probe 完了まで保持される。
+            //
+            // H-4-b: ChromeProbe を spawn_local より前に同期生成してインストールする。
+            // これにより async クロージャ内の with_app() → Runtime 逆参照が不要になり、
+            // Runtime → Platform → Output → グローバル → Runtime の循環依存を断つ。
+            // guard は ChromeProbe に move され、probe 完了まで OUTPUT_GATE を保持する。
+            // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
+            // （sync パスと同一経路）。RuntimeRequest::StartTsfProbe は belt-and-suspenders として積む。
             let guard = OutputActiveGuard::begin();
-            let romaji_owned: String = romaji.to_string();
+            let probe = crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
+            self.install_pending_tsf(Box::new(crate::tsf::chrome_probe::ChromeProbe::new(
+                romaji,
+                cold_seq,
+                probe,
+                probe_max_ms,
+                guard,
+            )));
+            self.runtime_outbox
+                .borrow_mut()
+                .push(crate::runtime::outbox::RuntimeRequest::StartTsfProbe);
 
             win32_async::spawn_local(async move {
                 // 診断: pre-send IME conversion mode（旧 [cold-diag] log）
@@ -267,24 +283,6 @@ impl Output {
                         "[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)"
                     );
                 }
-
-                // probe を install。guard は ChromeProbe に move されて probe 完了まで保持される。
-                let probe =
-                    crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
-                let _ = crate::with_app(|app| {
-                    // 同期パスでは WindowsPlatform::send_keys 完了後に pending_tsf_timer() が
-                    // TIMER_TSF_PROBE を起動するが、async パスでは send_keys は既に return 済み。
-                    // install_pending_tsf_and_set_timer で probe インストールとタイマー起動を一括実行する。
-                    app.install_pending_tsf_and_set_timer(Box::new(
-                        crate::tsf::chrome_probe::ChromeProbe::new(
-                            &romaji_owned,
-                            cold_seq,
-                            probe,
-                            probe_max_ms,
-                            guard,
-                        ),
-                    ));
-                });
             });
 
             return;

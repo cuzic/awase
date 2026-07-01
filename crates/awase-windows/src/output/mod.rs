@@ -118,8 +118,8 @@ pub struct Output {
     ///
     /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
     /// `RuntimeRequest` を積んでキー処理境界で Runtime が `take_pending_requests` で drain する。
-    /// TODO(H-4-b): vk_send.rs の `install_pending_tsf_and_set_timer` with_app を
-    /// `RuntimeRequest::StartTsfProbe` へ移行する（現状は plumbing のみ）。
+    /// H-4-b: vk_send.rs Chrome cold パスが `StartTsfProbe` を積み、
+    /// drain_runtime_requests が TIMER_TSF_PROBE を起動する。
     pub(crate) runtime_outbox: std::cell::RefCell<crate::runtime::outbox::RuntimeOutbox>,
 }
 

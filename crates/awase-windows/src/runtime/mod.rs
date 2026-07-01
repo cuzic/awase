@@ -804,8 +804,7 @@ impl Runtime {
     ///
     /// `Output` はキー注入中に `with_app` を再入させられないため、IME リフレッシュ・
     /// TSF プローブ起動などの Runtime 操作を `RuntimeOutbox` に積んでおき、
-    /// ここで一括実行する。H-4-b で push 側（`vk_send.rs` の `with_app` 置換）が
-    /// 配線されるまでは常に空の vec を drain するだけで副作用はない。
+    /// ここで一括実行する（H-4-b: `StartTsfProbe` が Chrome cold パスから積まれる）。
     pub(crate) fn drain_runtime_requests(&mut self) {
         use crate::runtime::outbox::RuntimeRequest;
         let requests = self.platform.output.take_pending_requests();
