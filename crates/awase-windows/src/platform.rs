@@ -359,11 +359,9 @@ impl WindowsPlatform {
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {
                         log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
-                        // GjiWarmupFsm は pending_tsf に格納されているため drop して解放する。
-                        self.output.warmup_coord.clear_pending_tsf();
-                        self.output.gji_end_probe_guard();
+                        // pending_tsf / OUTPUT_GATE ガード / probe_id を一括キャンセルする。
+                        self.output.cancel_probe();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
-                        let _ = self.output.warmup_coord.take_probe_id();
                     }
                 }
                 // 実際の送信は Output が担うため FSM の SendInput/SendInputDirect は無視する。
@@ -669,7 +667,7 @@ impl PlatformRuntime for WindowsPlatform {
             self.dispatch_gji_response(resp);
         }
         // SymbolVkSent 等の CompositionReset フラグを drain する。
-        if self.output.warmup_coord.take_composition_reset() {
+        if self.output.take_composition_reset() {
             self.gji_on_composition_reset();
         }
         // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition

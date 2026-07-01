@@ -73,7 +73,8 @@ pub struct Output {
     ///
     /// warmup 戦略・保留 TSF プローブ FSM・probe_id・OUTPUT_GATE ガード・
     /// GJI FSM 橋渡しバッファ群を集約する。詳細は [`TsfWarmupCoordinator`] を参照。
-    pub(crate) warmup_coord: TsfWarmupCoordinator,
+    /// `output` モジュール外からは `Output` の公開メソッド経由でのみ操作する。
+    warmup_coord: TsfWarmupCoordinator,
     /// フォーカス変更直後の TSF モード確定前にキーを一時保留するゲート。
     ///
     /// PendingWarmup 状態中のみキーを保留し、run_with_prefetched 完了後に
@@ -872,6 +873,28 @@ impl Output {
     /// `SacrificialWarmupFsm::composition_was_seen` フラグをセットする。
     pub(crate) fn notify_probe_start_composition(&self) {
         self.warmup_coord.notify_probe_start_composition();
+    }
+
+    /// GJI probe をキャンセルし、OUTPUT_GATE ガードを解放する。
+    ///
+    /// `GjiAction::CancelProbe` ハンドラが呼ぶ。内部で以下を一括実行する:
+    /// 1. `pending_tsf` をクリア
+    /// 2. OUTPUT_GATE ガードを解放
+    /// 3. `current_gji_probe_id` をクリア
+    ///
+    /// 呼び出し元は続けて `TIMER_TSF_PROBE` を kill すること（タイマー操作は platform の責務）。
+    pub(crate) fn cancel_probe(&self) {
+        self.warmup_coord.clear_pending_tsf();
+        self.gji_end_probe_guard();
+        let _ = self.warmup_coord.take_probe_id();
+    }
+
+    /// `warmup_coord` の composition reset フラグを取り出す。
+    ///
+    /// `SymbolVkSent` 等の VK 記号送信直後に `send_char_as_tsf` が立てたフラグを
+    /// `platform.rs::send_keys` が drain して `gji_on_composition_reset` を呼ぶために使う。
+    pub(crate) fn take_composition_reset(&self) -> bool {
+        self.warmup_coord.take_composition_reset()
     }
 }
 
