@@ -68,6 +68,13 @@ impl TsfWarmupCoordinator {
         self.tsf_warmup.borrow().is_next_key_long_cold()
     }
 
+    /// 現在の戦略が F2 (VK_DBE_HIRAGANA) cold-start probe を必要とするか。
+    ///
+    /// GJI 戦略（[`GjiFsm`]）なら `true`、MS-IME 戦略（[`MsImeStrategy`]）なら `false`。
+    pub(crate) fn needs_f2_probe(&self) -> bool {
+        self.tsf_warmup.borrow().needs_f2_probe()
+    }
+
     /// 検出した IME 種別に応じてウォームアップ戦略を切り替える。
     pub(crate) fn set_active_ime_kind(&self, kind: crate::tsf::observer::ActiveImeKind) {
         use crate::tsf::observer::ActiveImeKind;

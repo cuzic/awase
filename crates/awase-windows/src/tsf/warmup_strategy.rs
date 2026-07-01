@@ -59,6 +59,14 @@ pub(crate) trait ImeWarmupStrategy {
         false
     }
 
+    /// この戦略が F2 (VK_DBE_HIRAGANA) cold-start probe を必要とするか。
+    ///
+    /// GJI は TSF composition context の事前初期化が必要なので `true`（デフォルト）。
+    /// MS IME は常に warm なので `false`（[`MsImeStrategy`] がオーバーライド）。
+    fn needs_f2_probe(&self) -> bool {
+        true
+    }
+
 }
 
 // ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
@@ -116,6 +124,10 @@ impl ImeWarmupStrategy for MsImeStrategy {
 
     fn current_probe_params(&self) -> Option<ProbeParams> {
         None
+    }
+
+    fn needs_f2_probe(&self) -> bool {
+        false
     }
     // on_gji_event, on_gji_long_idle, gji_current_composition_epoch はすべてデフォルト実装を使用する。
 }

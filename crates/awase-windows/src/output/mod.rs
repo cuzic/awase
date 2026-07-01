@@ -535,8 +535,8 @@ impl Output {
             log::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
             return;
         }
-        if !crate::tsf::observer::gji_is_active_ime() {
-            log::trace!("[tsf-eager-warmup] cold-start probe 不要 → warmup スキップ");
+        if !self.warmup_coord.needs_f2_probe() {
+            log::trace!("[tsf-eager-warmup] non-GJI strategy → warmup スキップ");
             return;
         }
         if !self.tsf_readiness(applied_ime_on).can_warmup() {
@@ -724,7 +724,7 @@ impl Output {
             elapsed,
             session_expired,
             prepend_f2_warmup: (!warm || session_expired)
-                && crate::tsf::observer::gji_is_active_ime(),
+                && self.warmup_coord.needs_f2_probe(),
         }
     }
 
