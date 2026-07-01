@@ -92,11 +92,17 @@ impl ImeApplyContext {
     ///
     /// ## `already_matched` の計算方針（保守的）
     ///
-    /// - GJI: `open=true && shadow_on=true` のみ `AlreadyMatched` とする。
-    ///   `GjiDirectStrategy` は `open=false` では shadow に関わらず常に `VK_IME_OFF` を送る。
-    /// - その他（MS-IME / KanjiToggle）: `effective_shadow == open` で `AlreadyMatched`。
-    ///   `effective_shadow` は `shadow_on | candidate_visible | candidate_was_seen` で、
-    ///   `KanjiToggleStrategy` の既存ロジックと一致する。
+    /// ここが `already_matched` の **唯一の計算場所**。Strategy は再チェックしない。
+    ///
+    /// - GJI: `open=true && shadow_on=true` のみ `AlreadyMatched`。
+    ///   `GjiDirectStrategy` は `open=false` では shadow に関わらず常に `VK_IME_OFF`（冪等）を送る。
+    /// - KanjiToggle / MS-IME: `effective_shadow == open` で `AlreadyMatched`。
+    ///   - `candidate_visible`: 候補窓表示中 → Chrome/Edge の IME は確実に ON。
+    ///   - `candidate_was_seen`: VK_KANJI が誤トグルした場合の desync 検出ラッチ（open=false 専用）。
+    ///     例: 新タブ(実態=OFF, shadow=true ステール) → VK_KANJI → 実態 ON, shadow=false
+    ///         → GJI candidate SHOW → candidate_was_seen=true
+    ///         → 次の apply(false) で shadow=false でも VK_KANJI を送れるようにする。
+    ///     open=true 時に含めると古いラッチが残って誤 Noop になるため除外する。
     pub(crate) fn from_view(
         view: &crate::state::ImeControlView<'_>,
         open: bool,

@@ -160,8 +160,14 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
 
 /// `SendInput(VK_KANJI)` トグルを使う最終フォールバック戦略。
 ///
-/// IME 種別が不明な環境での全プロファイル共通フォールバック。
-/// VK_KANJI はトグルキーのため shadow と目標が一致している場合は送信をスキップする。
+/// IME 種別が不明な環境での全プロファイル共通フォールバック（Chrome/Edge の主戦略）。
+///
+/// `already_matched` の判定は [`ImeApplyContext::from_view`] が一元管理する。
+/// この Strategy は Planner が `SendKanjiToggle` を選んだ時点で「送信が必要」と確定しているため、
+/// shadow や `candidate_was_seen` を再チェックせずに VK_KANJI を送信する。
+///
+/// 候補表示中は VK_KANJI が候補窓に吸われて OFF に失敗する可能性があるが、
+/// GJI 環境では `GjiDirectStrategy` が先行するため、ここには GJI 以外か GJI 失敗時のみ到達する。
 pub(crate) struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
@@ -170,36 +176,15 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        // 候補ウィンドウが表示中 → Chrome/Edge の IME は確実に ON。
-        // shadow が desync で false になっていても強制送信して desync を修復する。
-        //
-        // candidate_was_seen: VK_KANJI が誤って OFF→ON トグルした場合の desync 検出ラッチ。
-        // 例: 新タブ(IME実態=OFF)でshadow=true(ステール) → VK_KANJI → 実態ON, shadow=false
-        //     → GJI candidate SHOW → candidate_was_seen=true
-        //     → 次の apply_ime_open(false) で shadow=false でも VK_KANJI を送れるようにする。
-        let effective_shadow = view.control.shadow_on
-            || view.observed.candidate_visible
-            || view.observed.candidate_was_seen;
-
-        if effective_shadow == open {
-            log::debug!(
-                "[apply-ime] shadow={} candidate={} was_seen={} already matches desired={open}, skip VK_KANJI",
-                view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen
-            );
-            ImeOpenOutcome::AlreadyMatched
-        } else {
-            // 候補表示中は VK_KANJI が候補窓に吸われて IME OFF に失敗する可能性があるが、
-            // Ctrl+Enter で事前に候補確定する方式は Chrome フォームを送信してしまうため廃止。
-            // GJI 環境では GjiDirectStrategy が先行して処理するため、ここには GJI 以外か
-            // GJI 失敗時のみ到達する。VK_KANJI をそのまま送り、稀に候補窓に吸われる場合は許容する。
-            log::debug!(
-                "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} → desired={open}: SendInput VK_KANJI",
-                view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,
-                view.focus.profile,
-            );
-            unsafe { crate::ime::post_kanji_toggle_to_focused() };
-            ImeOpenOutcome::FallbackSent
-        }
+        // Planner（ImeApplyContext::from_view）が already_matched=false を確認済み。
+        // ここでは shadow/candidate を再チェックせず、無条件に VK_KANJI を送信する。
+        log::debug!(
+            "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} → desired={open}: SendInput VK_KANJI",
+            view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,
+            view.focus.profile,
+        );
+        unsafe { crate::ime::post_kanji_toggle_to_focused() };
+        ImeOpenOutcome::FallbackSent
     }
 }
 
