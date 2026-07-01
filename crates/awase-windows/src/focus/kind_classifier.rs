@@ -1,6 +1,5 @@
 //! フォーカス種別（FocusKind）の決定ロジック
 
-use awase::engine::{TIMER_PENDING, TIMER_SPECULATIVE};
 use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
 
@@ -48,11 +47,7 @@ pub unsafe fn resolve_focus_kind(
     }
 
     // 3. エンジンタイマー活性中はスキップ
-    let engine_timer_active = {
-        let timer = &platform.timer;
-        timer.is_active(TIMER_PENDING) || timer.is_active(TIMER_SPECULATIVE)
-    };
-    if engine_timer_active {
+    if platform.is_engine_processing() {
         log::debug!("classify_focus skipped: engine timer active (user typing)");
         return FocusKindResolution {
             kind: FocusKind::Undetermined,

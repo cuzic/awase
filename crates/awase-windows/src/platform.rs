@@ -916,6 +916,18 @@ impl WindowsPlatform {
         crate::ime_controller::CONTROLLER.apply(open, &view)
     }
 
+    // ── タイマー問い合わせ ──
+
+    /// エンジンの親指シフト FSM タイマー（PENDING / SPECULATIVE）が活性かどうかを返す。
+    ///
+    /// タイピング中はフォーカス分類をスキップするためのガード判定に使用する。
+    /// タイマー ID の詳細を focus 層に露出しないためのカプセル化。
+    #[must_use]
+    pub fn is_engine_processing(&self) -> bool {
+        use awase::engine::{TIMER_PENDING, TIMER_SPECULATIVE};
+        self.timer.is_active(TIMER_PENDING) || self.timer.is_active(TIMER_SPECULATIVE)
+    }
+
     // ── フォーカス委譲メソッド ──
 
     /// フォーカス中アプリの IME 制御プロファイルを返す。
