@@ -1,5 +1,6 @@
 use awase::config::OutputMode;
 use awase::types::{KeyAction, VkCode};
+use crate::vk::ascii_to_vk;
 use std::time::Duration;
 
 pub use crate::tsf::output::ColdReason;
@@ -183,9 +184,6 @@ impl Output {
         }
     }
 
-    /// conv mutation（`send_eager_tsf_warmup`・`ImmSetConversionStatus` 等）の許可フラグを更新する。
-    ///
-    /// `Platform::set_conv_mode_authority` が `ConvModeAuthority::allows_conv_mutation()` の結果を push する。
     /// Output が蓄積した `RuntimeRequest` を全件取り出す。
     ///
     /// Runtime がキー処理境界（`send_keys` 完了後）で呼び、各リクエストを実行する。
@@ -195,6 +193,9 @@ impl Output {
         self.runtime_outbox.borrow_mut().drain()
     }
 
+    /// conv mutation（`send_eager_tsf_warmup`・`ImmSetConversionStatus` 等）の許可フラグを更新する。
+    ///
+    /// `Platform::set_conv_mode_authority` が `ConvModeAuthority::allows_conv_mutation()` の結果を push する。
     pub(crate) fn set_conv_mutation_allowed(&self, allowed: bool) {
         self.conv_mutation_allowed.set(allowed);
     }
