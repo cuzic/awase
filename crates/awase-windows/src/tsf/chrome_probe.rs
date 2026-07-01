@@ -6,7 +6,6 @@ use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot, TsfProbeCoro};
 use crate::tsf::tickable_fsm::TickableFsm;
-use awase::types::VkCode;
 
 pub(crate) struct ChromeProbe(TsfProbeCoro);
 
@@ -43,9 +42,5 @@ impl TickableFsm for ChromeProbe {
         expected_kana: Option<char>,
     ) -> bool {
         self.0.apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms, expected_kana)
-    }
-
-    fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        self.0.push_deferred(vk, needs_shift);
     }
 }

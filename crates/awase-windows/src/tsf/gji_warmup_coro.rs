@@ -30,12 +30,11 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{
-    decide_transmit_plan, DeferredVk, LiteralDetectConfig, ProbeAction, ProbeObservations,
+    decide_transmit_plan, LiteralDetectConfig, ProbeAction, ProbeObservations,
     TransmitPlan, TransmitTarget, TsfEnvSnapshot,
 };
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 use crate::tsf::tickable_fsm::TickableFsm;
-use awase::types::VkCode;
 
 // ── FreshF2Callback ──────────────────────────────────────────────────────────
 
@@ -62,7 +61,6 @@ struct TransmitDonePayload {
 
 struct TickInput {
     env: TsfEnvSnapshot,
-    new_deferred: Vec<DeferredVk>,
     fresh_f2_callback: Option<FreshF2Callback>,
     transmit_done: Option<TransmitDonePayload>,
 }
@@ -95,7 +93,6 @@ async fn gji_coro_body(
     cold_reason: ColdReason,
     ctx: GjiProbeCtx,
 ) {
-    let mut deferred_vks: Vec<DeferredVk> = vec![];
     // env は 'initial ループの最初の yield で必ず設定される（loop は常に 1 回以上実行）。
     let mut env: TsfEnvSnapshot;
     let mut fresh_f2_sent = false;
@@ -103,10 +100,11 @@ async fn gji_coro_body(
     // ── Phase 1 / 2 / 3: GJI probe ──────────────────────────────────────────
     let (nc_fired, gji_resumed) = 'initial: loop {
         // 最初の step() で input は消費されないため、env は 2 tick 目から更新される。
-        // 10ms タイマー駆動の 1 tick ズレは動作に影響しない。
+        // 10ms タイマー駆動の 1 tick ズレは動作に影響しない
+        // （`GjiWarmupCoro::new` が construction 時に self-priming tick を行うため、
+        //   外部から見た最初の tick は既にこの「捨てられる」1回を消費済みになっている）。
         let input = yield_step(ch.clone(), vec![]).await;
         env = input.env;
-        deferred_vks.extend(input.new_deferred);
 
         let Some(outcome) = probe.check_outcome(total_max_ms) else {
             continue;
@@ -146,7 +144,6 @@ async fn gji_coro_body(
                     }],
                 )
                 .await;
-                deferred_vks.extend(f2_input.new_deferred);
                 fresh_f2_sent = true;
 
                 let cb = f2_input
@@ -160,7 +157,6 @@ async fn gji_coro_body(
                 let result = 'ncwait: loop {
                     let nc_input = yield_step(ch.clone(), vec![]).await;
                     env = nc_input.env;
-                    deferred_vks.extend(nc_input.new_deferred);
 
                     if env.gji_candidate_visible {
                         log::debug!(
@@ -194,7 +190,6 @@ async fn gji_coro_body(
                         loop {
                             let sp_input = yield_step(ch.clone(), vec![]).await;
                             env = sp_input.env;
-                            deferred_vks.extend(sp_input.new_deferred);
                             if secondary.check_outcome(crate::tuning::GJI_POST_NAMECHANGE_MS).is_some() {
                                 log::debug!(
                                     "[gji-coro] cold={} SecondaryGjiProbe 完了",
@@ -235,7 +230,7 @@ async fn gji_coro_body(
         ctx.used_eager_path,
         observations,
         &env,
-        deferred_vks.is_empty(),
+        !env.deferred_pending,
         ctx.forces_prepend_f2,
         ctx.is_long_cold,
     );
@@ -251,7 +246,6 @@ async fn gji_coro_body(
             vec![ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
                 cold_seq: ctx.cold_seq,
                 romaji,
-                deferred_vks,
                 plan,
                 observations,
                 literal_detect_ms: plan.literal_detect_ms,
@@ -273,7 +267,6 @@ async fn gji_coro_body(
             plan,
             observations,
             romaji: romaji.clone(),
-            deferred_vks,
             target: TransmitTarget::Tsf,
         }],
     )
@@ -358,7 +351,6 @@ fn emit_literal_recovery_actions(
             ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
                 cold_seq,
                 romaji: romaji.to_string(),
-                deferred_vks: vec![],
                 plan: TransmitPlan {
                     should_prepend_f2: false,
                     used_eager_path: false,
@@ -398,7 +390,6 @@ fn emit_literal_recovery_actions(
 /// `OutputActiveGuard` は参照カウント (`depth`) 方式なので 2 つのガードが重複しても安全。
 pub(crate) struct GjiWarmupCoro {
     coro: StepCoro<TickInput, Vec<ProbeAction>>,
-    pending_deferred: Vec<DeferredVk>,
     pending_fresh_f2: Option<FreshF2Callback>,
     pending_transmit_done: Option<TransmitDonePayload>,
     cold_seq: u32,
@@ -439,15 +430,25 @@ impl GjiWarmupCoro {
         let coro = StepCoro::new(async move |ch| {
             gji_coro_body(ch, romaji, probe, total_max_ms, needs_settle_check, cold_reason, ctx).await
         });
-        Self {
+        let mut this = Self {
             coro,
-            pending_deferred: vec![],
             pending_fresh_f2: None,
             pending_transmit_done: None,
             cold_seq,
             forces_prepend_f2,
             _literal_detect_guard: None,
-        }
+        };
+        // Self-priming: StepCoro の最初の step() は input を消費しない
+        // （timed_fsm::coro のドキュメント参照）。construction 直後・pending_tsf に
+        // 格納される前にこの「捨てられる1回」を消費しておくことで、install 後に
+        // 外部から届く最初の tick の入力（deferred VK 等）が握り潰されるのを防ぐ。
+        // construction 時点では何も届いていないため、捨てても安全。
+        let primed = this.tick(&TsfEnvSnapshot::default());
+        debug_assert!(
+            primed.is_empty(),
+            "GjiWarmupCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
+        );
+        this
     }
 }
 
@@ -457,7 +458,6 @@ impl TickableFsm for GjiWarmupCoro {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         let input = TickInput {
             env: *env,
-            new_deferred: std::mem::take(&mut self.pending_deferred),
             fresh_f2_callback: self.pending_fresh_f2.take(),
             transmit_done: self.pending_transmit_done.take(),
         };
@@ -510,9 +510,5 @@ impl TickableFsm for GjiWarmupCoro {
             }
             None => true,
         }
-    }
-
-    fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        self.pending_deferred.push(DeferredVk { vk, needs_shift });
     }
 }

@@ -29,6 +29,11 @@ pub(crate) trait ProbeIo {
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
     /// deferred VKs を送信する。
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker);
+    /// `TsfWarmupCoordinator` の deferred キューを取り出してクリアする。
+    ///
+    /// probe machine が何回 tick されたか・途中で置き換わったかに関係なく、
+    /// 実際に romaji を送信する直前でこれを呼んで得た値を `send_deferred_vks` に渡すこと。
+    fn take_pending_deferred_vks(&self) -> Vec<DeferredVk>;
     /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、`(namechange_baseline, sent_ms)` を返す。
     ///
     /// ベースラインは SendInput **前**に取得すること（送信中の NAMECHANGE を見逃さないため）。
@@ -142,6 +147,10 @@ impl ProbeIo for Output {
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker) {
         let pairs: Vec<(VkCode, bool)> = vks.iter().map(|d| (d.vk, d.needs_shift)).collect();
         Self::send_deferred_probe_vks_from(&pairs, marker);
+    }
+
+    fn take_pending_deferred_vks(&self) -> Vec<DeferredVk> {
+        self.warmup_coord.take_pending_deferred()
     }
 
     fn send_fresh_f2(&self) -> (NamechangeBaseline, u64) {
@@ -474,7 +483,6 @@ where
                 plan,
                 observations,
                 romaji,
-                deferred_vks,
                 target,
             } => {
                 let chars: VkSequence = romaji
@@ -528,7 +536,7 @@ where
                         // expected_kana='こ' vs actual='お' の不一致で検出する。
                         let expected_kana = crate::tsf::output::kana_for_romaji_static(&romaji);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
-                        io.send_deferred_vks(&deferred_vks, VkMarker::Tsf);
+                        io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
                         if io.current_gji_probe_id().is_some() {
@@ -557,7 +565,7 @@ where
                             .then(crate::tsf::probe::LiteralDetector::new_gji_resumed);
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
-                        io.send_deferred_vks(&deferred_vks, VkMarker::Injected);
+                        io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
                         if io.current_gji_probe_id().is_some() {
                             use crate::tsf::gji_fsm::WarmupResult;
@@ -642,7 +650,6 @@ where
                         let sacr_coro = crate::tsf::sacr_warmup_coro::SacrificialWarmupCoro::new(
                             config.cold_seq,
                             config.romaji,
-                            config.deferred_vks,
                             detector,
                             deadline_ms,
                             config.target,
@@ -660,7 +667,6 @@ where
                         let coro = crate::tsf::ime_offon_warmup_coro::ImeOffOnWarmupCoro::new(
                             config.cold_seq,
                             config.romaji,
-                            config.deferred_vks,
                             config.target,
                             write_bytes_baseline,
                         );
@@ -708,7 +714,7 @@ where
                                 resend.romaji, resend.confirmed_warm,
                             );
                             io.transmit_chrome(&resend.romaji, &chars);
-                            io.send_deferred_vks(&resend.deferred_vks, VkMarker::Injected);
+                            io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
                         }
                         TransmitTarget::Tsf => {
                             // confirmed_warm=true: warm 維持のまま VK run 送信（F2 prepend なし）。
@@ -729,7 +735,7 @@ where
                                 if prepend_f2 { "F2+warm" } else { "warm" },
                             );
                             io.transmit_tsf(&resend.romaji, &chars, &outcome);
-                            io.send_deferred_vks(&resend.deferred_vks, VkMarker::Tsf);
+                            io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
                         }
                     }
                 }
@@ -861,6 +867,9 @@ mod tests {
         fn send_deferred_vks(&self, _vks: &[DeferredVk], _marker: VkMarker) {
             self.deferred_vks_called.set(true);
         }
+        fn take_pending_deferred_vks(&self) -> Vec<DeferredVk> {
+            vec![]
+        }
         fn send_fresh_f2(&self) -> (NamechangeBaseline, u64) {
             self.send_fresh_f2_called.set(true);
             (crate::tsf::observer::namechange_baseline(), 0)
@@ -958,7 +967,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Chrome,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -983,7 +991,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Chrome,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1008,7 +1015,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1032,7 +1038,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1057,7 +1062,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji: "ka".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1067,10 +1071,9 @@ mod tests {
     }
 
     #[test]
-    fn tsf_transmit_uses_eager_path_when_nc_not_fired_even_with_deferred_vks() {
-        // nc_fired=false のとき、decide_transmit_plan は deferred_vks に関わらず
-        // used_eager_path=true（nc_fired=true branch の deferred_vks チェックは通らない）。
-        // WarmupOutcome.used_eager_path=true が transmit_tsf に渡ることを確認する。
+    fn tsf_transmit_uses_eager_path_when_nc_not_fired() {
+        // nc_fired=false のとき、decide_transmit_plan が確定した used_eager_path=true が
+        // WarmupOutcome.used_eager_path=true として transmit_tsf に渡ることを確認する。
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
@@ -1083,10 +1086,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ki".to_string(),
-            deferred_vks: vec![crate::tsf::probe_fsm::DeferredVk {
-                vk: awase::types::VkCode(0x49), // VK_I
-                needs_shift: false,
-            }],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1222,7 +1221,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ka".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1252,7 +1250,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "i".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1282,7 +1279,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "i".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1311,7 +1307,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ko".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1345,7 +1340,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "ko".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1381,7 +1375,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: true, gji_resumed: true },
             romaji: "to".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1408,7 +1401,6 @@ mod tests {
             },
             observations: ProbeObservations { nc_fired: false, gji_resumed: false },
             romaji: "to".to_string(),
-            deferred_vks: vec![],
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1438,7 +1430,6 @@ mod tests {
             ProbeAction::StartSacrificialWarmup(crate::tsf::probe_fsm::LiteralDetectConfig {
                 cold_seq: 0,
                 romaji: "ko".to_string(),
-                deferred_vks: vec![],
                 plan: TransmitPlan {
                     should_prepend_f2: false,
                     used_eager_path: false,
@@ -1492,7 +1483,6 @@ mod tests {
             ProbeAction::StartSacrificialWarmup(crate::tsf::probe_fsm::LiteralDetectConfig {
                 cold_seq: 0,
                 romaji: "ko".to_string(),
-                deferred_vks: vec![],
                 plan: TransmitPlan {
                     should_prepend_f2: false,
                     used_eager_path: false,

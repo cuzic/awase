@@ -15,9 +15,8 @@
 //! `TIMEOUT_MS` 内に上昇しない場合は `confirmed_warm=false`（F2 prepend フォールバック）で再送。
 
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{DeferredVk, ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
+use crate::tsf::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
 use crate::tsf::tickable_fsm::TickableFsm;
-use awase::types::VkCode;
 
 /// VK_IME_OFF→ON 送信後に GJI write が観測されるまで待つミリ秒数。
 ///
@@ -27,11 +26,9 @@ const TIMEOUT_MS: u64 = 200;
 pub(crate) struct ImeOffOnWarmupCoro {
     cold_seq: u32,
     romaji: String,
-    deferred_vks: Vec<DeferredVk>,
     target: TransmitTarget,
     baseline_bytes: u64,
     elapsed_ms: u64,
-    pending_deferred: Vec<DeferredVk>,
     _guard: OutputActiveGuard,
 }
 
@@ -39,7 +36,6 @@ impl ImeOffOnWarmupCoro {
     pub(crate) fn new(
         cold_seq: u32,
         romaji: String,
-        deferred_vks: Vec<DeferredVk>,
         target: TransmitTarget,
         baseline_bytes: u64,
     ) -> Self {
@@ -50,11 +46,9 @@ impl ImeOffOnWarmupCoro {
         Self {
             cold_seq,
             romaji,
-            deferred_vks,
             target,
             baseline_bytes,
             elapsed_ms: 0,
-            pending_deferred: vec![],
             _guard: OutputActiveGuard::begin(),
         }
     }
@@ -76,14 +70,10 @@ impl ImeOffOnWarmupCoro {
             self.cold_seq, self.elapsed_ms,
         );
 
-        let mut deferred_vks = std::mem::take(&mut self.deferred_vks);
-        deferred_vks.extend(std::mem::take(&mut self.pending_deferred));
-
         vec![
             ProbeAction::SacrificialResend(SacrificialResend {
                 cold_seq: self.cold_seq,
                 romaji: std::mem::take(&mut self.romaji),
-                deferred_vks,
                 target: self.target,
                 confirmed_warm: gji_wrote,
                 skip_cleanup_bs: true,
@@ -100,9 +90,5 @@ impl TickableFsm for ImeOffOnWarmupCoro {
 
     fn cold_seq_hint(&self) -> u32 {
         self.cold_seq
-    }
-
-    fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        self.pending_deferred.push(DeferredVk { vk, needs_shift });
     }
 }

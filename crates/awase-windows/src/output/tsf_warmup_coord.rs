@@ -17,6 +17,7 @@ use crate::tsf::gji_fsm::{
 };
 use crate::tsf::gji_fsm::GjiTimer;
 use crate::tsf::probe_bridge::OutputActiveGuard;
+use crate::tsf::probe_fsm::DeferredVk;
 use crate::tsf::tickable_fsm::TickableFsm;
 use crate::tsf::warmup_strategy::ImeWarmupStrategy;
 
@@ -41,6 +42,12 @@ pub(crate) struct TsfWarmupCoordinator {
     pub(super) pending_gji_composition_reset: Cell<bool>,
     /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
     pending_gji_key_responses: RefCell<Vec<GjiResponse>>,
+    /// probe 進行中に届いた後続 VK の単一キュー。
+    ///
+    /// 個々の probe machine（`GjiWarmupCoro` 等）ではなく coordinator が直接所有する。
+    /// これにより「最初の tick で握り潰される」「probe が上書きされて drop される」という
+    /// 2種類のデータ消失を構造的に防ぐ（probe の生存期間に依存しない単一の書き込み先）。
+    pending_deferred: RefCell<Vec<DeferredVk>>,
 }
 
 impl TsfWarmupCoordinator {
@@ -53,6 +60,7 @@ impl TsfWarmupCoordinator {
             pending_gji_warmup: Cell::new(None),
             pending_gji_composition_reset: Cell::new(false),
             pending_gji_key_responses: RefCell::new(Vec::new()),
+            pending_deferred: RefCell::new(Vec::new()),
         }
     }
 
@@ -227,16 +235,94 @@ impl TsfWarmupCoordinator {
         }
     }
 
-    /// probe 進行中なら渡された VK 列を deferred_vks に追記し true を返す。
+    /// probe 進行中なら渡された VK 列を coordinator の deferred キューに追記し true を返す。
+    ///
+    /// キューは probe machine ではなく coordinator が所有するため、どの machine が
+    /// `pending_tsf` に入っているか・何回 tick されたかに関係なく安全に蓄積できる。
     pub(crate) fn defer_vks_if_in_flight(&self, vks: &[(VkCode, bool)]) -> bool {
-        self.pending_tsf
+        if !self.has_pending_tsf() {
+            return false;
+        }
+        self.pending_deferred
             .borrow_mut()
-            .as_mut()
-            .is_some_and(|machine| {
-                for &(vk, needs_shift) in vks {
-                    machine.push_deferred(vk, needs_shift);
-                }
-                true
-            })
+            .extend(vks.iter().map(|&(vk, needs_shift)| DeferredVk { vk, needs_shift }));
+        true
+    }
+
+    /// deferred キューが空でないかを覗き見る（消費しない）。
+    ///
+    /// `decide_transmit_plan` の eager path 判定に使う。
+    pub(crate) fn has_pending_deferred(&self) -> bool {
+        !self.pending_deferred.borrow().is_empty()
+    }
+
+    /// deferred キューの中身を取り出してクリアする。
+    ///
+    /// 実際に romaji を送信する直前（`dispatch_probe_actions`）でのみ呼ぶこと。
+    pub(crate) fn take_pending_deferred(&self) -> Vec<DeferredVk> {
+        std::mem::take(&mut *self.pending_deferred.borrow_mut())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tsf::probe_fsm::TsfEnvSnapshot;
+
+    /// `TickableFsm` の最小テストダブル。tick 回数を記録するだけで何も yield しない。
+    struct StubMachine {
+        ticks: u32,
+    }
+
+    impl TickableFsm for StubMachine {
+        fn tick(&mut self, _env: &TsfEnvSnapshot) -> Vec<crate::tsf::probe_fsm::ProbeAction> {
+            self.ticks += 1;
+            vec![]
+        }
+        fn cold_seq_hint(&self) -> u32 {
+            0
+        }
+    }
+
+    #[test]
+    fn defer_vks_if_in_flight_returns_false_without_pending_probe() {
+        let coord = TsfWarmupCoordinator::new();
+        assert!(!coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)]));
+        assert!(!coord.has_pending_deferred());
+    }
+
+    #[test]
+    fn deferred_vks_survive_regardless_of_how_many_times_the_probe_was_ticked() {
+        // 元バグの再現条件: 「probe インストール直後・最初の tick が一度も走っていない」
+        // 状態で push された deferred VK が、tick 回数に関係なく消えないことを確認する。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+
+        // まだ一度も tick していない状態で defer する。
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x4C), false), (VkCode(0x59), false)]));
+        assert!(coord.has_pending_deferred());
+
+        let drained = coord.take_pending_deferred();
+        assert_eq!(drained.len(), 2, "tick 前に push した VK が失われてはいけない");
+        assert_eq!(drained[0].vk, VkCode(0x4C));
+        assert!(!coord.has_pending_deferred(), "take 後はキューが空になる");
+    }
+
+    #[test]
+    fn deferred_vks_survive_probe_replacement() {
+        // 元バグその2: pending_tsf が別 machine に置き換わっても deferred キューは
+        // machine 側ではなく coordinator 側にあるため失われない。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)]));
+
+        // 別の probe が同じ pending_tsf スロットを上書きする（warn ログのみで許容される操作）。
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+
+        assert!(
+            coord.has_pending_deferred(),
+            "probe が上書きされても deferred キューは coordinator に残り続ける"
+        );
+        assert_eq!(coord.take_pending_deferred().len(), 1);
     }
 }

@@ -476,7 +476,6 @@ impl Output {
                 crate::tsf::literal_detect_fsm::LiteralDetectFsm::new(
                     cold_seq,
                     romaji.to_owned(),
-                    vec![],
                     crate::tsf::probe_fsm::TransmitPlan {
                         should_prepend_f2: false,
                         used_eager_path: false,

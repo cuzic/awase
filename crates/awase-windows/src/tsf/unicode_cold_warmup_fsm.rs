@@ -12,7 +12,6 @@
 
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot};
-use awase::types::VkCode;
 
 /// GJI が write するか、このミリ秒以上経過したら deferred chars を送信する。
 const WARMUP_TIMEOUT_MS: u64 = 200;
@@ -74,10 +73,5 @@ impl crate::tsf::tickable_fsm::TickableFsm for UnicodeColdWarmupFsm {
 
     fn cold_seq_hint(&self) -> u32 {
         self.cold_seq
-    }
-
-    fn push_deferred(&mut self, _vk: VkCode, _needs_shift: bool) {
-        // Unicode cold-start 中に VK が届くことはまれ。
-        // 通常は OUTPUT_GATE.active=true により INPUT_DEFER に退避される。
     }
 }

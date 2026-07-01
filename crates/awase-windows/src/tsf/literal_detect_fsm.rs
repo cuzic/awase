@@ -18,7 +18,7 @@
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::probe_fsm::{
-    DeferredVk, LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
+    LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
 };
 use crate::tsf::probe_fsm::TsfEnvSnapshot;
 
@@ -41,9 +41,6 @@ pub(crate) struct LiteralDetectFsm {
     _guard: OutputActiveGuard,
     /// 送信したローマ字（回収アクションのペイロード用）
     romaji: String,
-    /// probe 中に蓄積した後続 VK（現在は LiteralDetect フェーズでは使用しないが保持）
-    #[allow(dead_code)]
-    deferred_vks: Vec<DeferredVk>,
     /// 送信方針（回収アクションのペイロード用）
     #[allow(dead_code)]
     plan: TransmitPlan,
@@ -72,7 +69,6 @@ impl LiteralDetectFsm {
     pub(crate) fn new(
         cold_seq: u32,
         romaji: String,
-        deferred_vks: Vec<DeferredVk>,
         plan: TransmitPlan,
         observations: ProbeObservations,
         ze_bs_count: usize,
@@ -86,7 +82,6 @@ impl LiteralDetectFsm {
             cold_seq,
             _guard: guard,
             romaji,
-            deferred_vks,
             plan,
             observations,
             detector,
@@ -108,7 +103,6 @@ impl LiteralDetectFsm {
                 ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
                     cold_seq: self.cold_seq,
                     romaji,
-                    deferred_vks: vec![],
                     plan: TransmitPlan {
                         should_prepend_f2: false,
                         used_eager_path: false,
@@ -229,7 +223,6 @@ mod tests {
         LiteralDetectFsm::new(
             0,
             romaji.to_string(),
-            vec![],
             TransmitPlan {
                 should_prepend_f2: false,
                 used_eager_path: false,

@@ -6,17 +6,19 @@
 //!
 //! | 実装型 | 用途 | 使用するメソッド |
 //! |--------|------|-----------------|
-//! | `GjiWarmupCoro` | GJI cold-start warmup probe | `tick`, `cold_seq_hint`, `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done`, `push_deferred` |
-//! | `TsfProbeCoro` | Chrome probe + LiteralDetect | `tick`, `cold_seq_hint`, `apply_transmit_done`, `push_deferred` |
-//! | `SacrificialWarmupCoro` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化 | `tick`, `cold_seq_hint`, `push_deferred`, `notify_start_composition` |
+//! | `GjiWarmupCoro` | GJI cold-start warmup probe | `tick`, `cold_seq_hint`, `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done` |
+//! | `TsfProbeCoro` | Chrome probe + LiteralDetect | `tick`, `cold_seq_hint`, `apply_transmit_done` |
+//! | `SacrificialWarmupCoro` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化 | `tick`, `cold_seq_hint`, `notify_start_composition` |
 //! | `LiteralDetectFsm` | warm パスの post-transmit composition 確認 | `tick`, `cold_seq_hint` のみ |
 //!
 //! デフォルト実装（no-op）が多いのは各 implementor が必要なメソッドだけをオーバーライドするため。
+//!
+//! probe 進行中に届いた後続 VK（deferred VK）は `TsfWarmupCoordinator` が一元管理する
+//! （`push_deferred` は個々の実装が持たない）。
 
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot};
-use awase::types::VkCode;
 
 /// tick 駆動型 FSM の共通インターフェース。
 ///
@@ -55,13 +57,6 @@ pub(crate) trait TickableFsm {
     ) -> bool {
         true
     }
-
-    // ── Deferred input（GjiWarmupCoro + TsfProbeCoro）────────────────────
-    //
-    // probe 中に届いた後続 VK を内部バッファに積む。
-    // LiteralDetectFsm は deferred input を処理しないため no-op デフォルト。
-
-    fn push_deferred(&mut self, _vk: VkCode, _needs_shift: bool) {}
 
     // ── StartComposition 通知（SacrificialWarmupFsm のみ）────────────────
     //

@@ -51,6 +51,9 @@ pub(crate) struct TsfEnvSnapshot {
     pub ime_mode: crate::tsf::ime_mode_fsm::ImeModeState,
     /// `ime_mode` が `IMC_GETCONVERSIONMODE` で OS から確認済みなら true。
     pub ime_mode_confirmed: bool,
+    /// `TsfWarmupCoordinator` の deferred キューに現在何か積まれているか（覗き見、消費しない）。
+    /// `GjiWarmupCoro` の `decide_transmit_plan` eager path 判定に使う。
+    pub deferred_pending: bool,
 }
 
 /// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
@@ -148,7 +151,6 @@ pub(crate) enum TransmitTarget {
 pub(crate) struct LiteralDetectConfig {
     pub cold_seq: u32,
     pub romaji: String,
-    pub deferred_vks: Vec<DeferredVk>,
     pub plan: TransmitPlan,
     pub observations: ProbeObservations,
     pub literal_detect_ms: u64,
@@ -167,7 +169,6 @@ pub(crate) struct LiteralDetectConfig {
 pub(crate) struct SacrificialResend {
     pub cold_seq: u32,
     pub romaji: String,
-    pub deferred_vks: Vec<DeferredVk>,
     /// 送信先ターゲット。Chrome の場合は `transmit_chrome` + `VkMarker::Injected`、
     /// TSF の場合は `transmit_tsf` + `VkMarker::Tsf` を使う。
     pub target: TransmitTarget,
@@ -187,9 +188,9 @@ pub(crate) enum ProbeAction {
     SendFreshF2 { cold_seq: u32, probe_settled: bool },
     /// TSF または Chrome バッチパイプラインで `romaji` を送信する。
     ///
-    /// `target == Tsf`: `deferred_vks` をフラッシュし warm マークしたあと
+    /// dispatcher は romaji 送信直後に `TsfWarmupCoordinator` の deferred キューを
+    /// フラッシュしてから warm マークし、`target == Tsf` なら
     /// [`TsfProbeCoro::apply_transmit_done`] を呼ぶ。
-    /// `target == Chrome`: `deferred_vks` をフラッシュし warm マークして完了。
     Transmit {
         cold_seq: u32,
         /// FSM が確定した実行方針。dispatcher はそのまま実行する（再導出不要）。
@@ -197,7 +198,6 @@ pub(crate) enum ProbeAction {
         /// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
         observations: ProbeObservations,
         romaji: String,
-        deferred_vks: Vec<DeferredVk>,
         target: TransmitTarget,
     },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
@@ -252,7 +252,6 @@ pub(crate) enum ProbeAction {
 
 struct TsfProbeTickInput {
     env: TsfEnvSnapshot,
-    new_deferred: Vec<DeferredVk>,
     transmit_done: Option<TsfTransmitDonePayload>,
 }
 
@@ -275,12 +274,9 @@ async fn tsf_probe_coro_body(
     total_max_ms: u64,
     cold_seq: u32,
 ) {
-    let mut deferred_vks: Vec<DeferredVk> = vec![];
-
     // ── Phase 1: ChromeProbe ポーリング ──────────────────────────────────────
     let env = loop {
         let input = yield_step(ch.clone(), vec![]).await;
-        deferred_vks.extend(input.new_deferred);
         let Some(outcome) = probe.check_outcome(total_max_ms) else {
             continue;
         };
@@ -303,7 +299,6 @@ async fn tsf_probe_coro_body(
             vec![ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
                 cold_seq,
                 romaji,
-                deferred_vks,
                 plan: TransmitPlan {
                     should_prepend_f2: false,
                     used_eager_path: false,
@@ -333,7 +328,6 @@ async fn tsf_probe_coro_body(
             },
             observations: ProbeObservations { nc_fired: true, gji_resumed: false },
             romaji,
-            deferred_vks,
             target: TransmitTarget::Chrome,
         }],
     )
@@ -414,7 +408,6 @@ async fn tsf_probe_coro_body(
 /// `TIMER_TSF_PROBE` ハンドラが `tick()` で 1 ステップ進める。
 pub(crate) struct TsfProbeCoro {
     coro: StepCoro<TsfProbeTickInput, Vec<ProbeAction>>,
-    pending_deferred: Vec<DeferredVk>,
     pending_transmit_done: Option<TsfTransmitDonePayload>,
     cold_seq: u32,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`。
@@ -434,13 +427,21 @@ impl TsfProbeCoro {
         let coro = StepCoro::new(async move |ch| {
             tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await
         });
-        Self {
+        let mut this = Self {
             coro,
-            pending_deferred: vec![],
             pending_transmit_done: None,
             cold_seq,
             _guard: guard,
-        }
+        };
+        // Self-priming: StepCoro の最初の step() は input を消費しない。construction 直後・
+        // pending_tsf に格納される前にこの「捨てられる1回」を消費しておく
+        // （詳細は `GjiWarmupCoro::new` のコメント参照）。
+        let primed = this.tick(&TsfEnvSnapshot::default());
+        debug_assert!(
+            primed.is_empty(),
+            "TsfProbeCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
+        );
+        this
     }
 }
 
@@ -448,7 +449,6 @@ impl TickableFsm for TsfProbeCoro {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         let input = TsfProbeTickInput {
             env: *env,
-            new_deferred: std::mem::take(&mut self.pending_deferred),
             transmit_done: self.pending_transmit_done.take(),
         };
         match self.coro.step(input) {
@@ -488,32 +488,11 @@ impl TickableFsm for TsfProbeCoro {
             None => true,
         }
     }
-
-    fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        self.pending_deferred.push(DeferredVk { vk, needs_shift });
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tsf::probe_bridge::OutputActiveGuard;
-
-    fn make_chrome_coro() -> TsfProbeCoro {
-        let guard = OutputActiveGuard::noop_for_test();
-        let probe = TsfReadinessProbe::new(0, 0, 0);
-        TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
-    }
-
-    // ── push_deferred テスト ─────────────────────────────────────────────────────
-
-    #[test]
-    fn push_deferred_appends_vk() {
-        let mut coro = make_chrome_coro();
-        coro.push_deferred(VkCode(0x41), false);
-        coro.push_deferred(VkCode(0x42), true);
-        // push_deferred が panic しないことを確認する。
-    }
 
     // ── decide_transmit_plan 回帰テスト ──────────────────────────────────────
 

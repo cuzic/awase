@@ -20,16 +20,13 @@ use std::rc::Rc;
 use crate::tsf::ime_mode_fsm::ImeModeState;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{
-    DeferredVk, ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot,
-};
+use crate::tsf::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 use crate::tsf::tickable_fsm::TickableFsm;
 use crate::tuning::{
     CHROME_GJI_REINIT_CONFIRM_MS, SACR_WARMUP_CHROME_HIDE_WAIT_MS,
     SACR_WARMUP_CHROME_IPC_SETTLE_MS,
 };
-use awase::types::VkCode;
 
 // ── TickInput ─────────────────────────────────────────────────────────────────
 
@@ -37,8 +34,6 @@ struct TickInput {
     env: TsfEnvSnapshot,
     /// `notify_start_composition()` で蓄積された composition 観測フラグ。
     composition_seen: bool,
-    /// `push_deferred()` で蓄積された後続 VK。
-    new_deferred: Vec<DeferredVk>,
 }
 
 // ── コルーチン本体 ─────────────────────────────────────────────────────────────
@@ -47,7 +42,6 @@ async fn sacr_warmup_coro_body(
     ch: Rc<Channel<TickInput, Vec<ProbeAction>>>,
     cold_seq: u32,
     romaji: String,
-    mut deferred_vks: Vec<DeferredVk>,
     detector: LiteralDetector,
     deadline_ms: u64,
     target: TransmitTarget,
@@ -60,7 +54,6 @@ async fn sacr_warmup_coro_body(
     let (detection, detection_env) = loop {
         let input = yield_step(ch.clone(), vec![]).await;
         composition_was_seen |= input.composition_seen;
-        deferred_vks.extend(input.new_deferred);
 
         let Some(detection) = detector.check_now(deadline_ms) else {
             continue;
@@ -93,7 +86,6 @@ async fn sacr_warmup_coro_body(
         // IME mode が Hiragana に確定するまで待機する。
         loop {
             let input = yield_step(ch.clone(), vec![]).await;
-            deferred_vks.extend(input.new_deferred);
             let ime_ready =
                 input.env.ime_mode == ImeModeState::Hiragana && input.env.ime_mode_confirmed;
             if ime_ready {
@@ -116,7 +108,6 @@ async fn sacr_warmup_coro_body(
                 ProbeAction::SacrificialResend(SacrificialResend {
                     cold_seq,
                     romaji,
-                    deferred_vks,
                     target,
                     confirmed_warm: false,
                     skip_cleanup_bs: false,
@@ -135,7 +126,6 @@ async fn sacr_warmup_coro_body(
             let hide_deadline = crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_HIDE_WAIT_MS;
             let early_hide = loop {
                 let input = yield_step(ch.clone(), vec![]).await;
-                deferred_vks.extend(input.new_deferred);
                 let candidate_gone = !input.env.gji_candidate_visible;
                 let timed_out = crate::hook::current_tick_ms() >= hide_deadline;
                 if candidate_gone || timed_out {
@@ -156,8 +146,7 @@ async fn sacr_warmup_coro_body(
                     SACR_WARMUP_CHROME_IPC_SETTLE_MS,
                 );
                 loop {
-                    let input = yield_step(ch.clone(), vec![]).await;
-                    deferred_vks.extend(input.new_deferred);
+                    yield_step(ch.clone(), vec![]).await;
                     if crate::hook::current_tick_ms() >= settle_deadline {
                         log::debug!("[sacr-warmup] cold={cold_seq} IPC settle 完了 → 再送");
                         break;
@@ -176,8 +165,7 @@ async fn sacr_warmup_coro_body(
                 SACR_WARMUP_CHROME_IPC_SETTLE_MS,
             );
             loop {
-                let input = yield_step(ch.clone(), vec![]).await;
-                deferred_vks.extend(input.new_deferred);
+                yield_step(ch.clone(), vec![]).await;
                 if crate::hook::current_tick_ms() >= settle_deadline {
                     log::debug!("[sacr-warmup] cold={cold_seq} IPC settle 完了 → 再送");
                     break;
@@ -196,7 +184,6 @@ async fn sacr_warmup_coro_body(
             ProbeAction::SacrificialResend(SacrificialResend {
                 cold_seq,
                 romaji,
-                deferred_vks,
                 target,
                 confirmed_warm,
                 skip_cleanup_bs: false,
@@ -218,29 +205,35 @@ pub(crate) struct SacrificialWarmupCoro {
     cold_seq: u32,
     _guard: OutputActiveGuard,
     pending_composition_seen: bool,
-    pending_deferred: Vec<DeferredVk>,
 }
 
 impl SacrificialWarmupCoro {
     pub(crate) fn new(
         cold_seq: u32,
         romaji: String,
-        deferred_vks: Vec<DeferredVk>,
         detector: LiteralDetector,
         deadline_ms: u64,
         target: TransmitTarget,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
         let coro = StepCoro::new(async move |ch| {
-            sacr_warmup_coro_body(ch, cold_seq, romaji, deferred_vks, detector, deadline_ms, target).await
+            sacr_warmup_coro_body(ch, cold_seq, romaji, detector, deadline_ms, target).await
         });
-        Self {
+        let mut this = Self {
             coro,
             cold_seq,
             _guard: guard,
             pending_composition_seen: false,
-            pending_deferred: vec![],
-        }
+        };
+        // Self-priming: StepCoro の最初の step() は input を消費しない。construction 直後・
+        // pending_tsf に格納される前にこの「捨てられる1回」を消費しておく
+        // （詳細は `GjiWarmupCoro::new` のコメント参照）。
+        let primed = this.tick(&TsfEnvSnapshot::default());
+        debug_assert!(
+            primed.is_empty(),
+            "SacrificialWarmupCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
+        );
+        this
     }
 }
 
@@ -249,7 +242,6 @@ impl TickableFsm for SacrificialWarmupCoro {
         let input = TickInput {
             env: *env,
             composition_seen: std::mem::take(&mut self.pending_composition_seen),
-            new_deferred: std::mem::take(&mut self.pending_deferred),
         };
         match self.coro.step(input) {
             CoroStep::Yielded(actions) => actions,
@@ -259,10 +251,6 @@ impl TickableFsm for SacrificialWarmupCoro {
 
     fn cold_seq_hint(&self) -> u32 {
         self.cold_seq
-    }
-
-    fn push_deferred(&mut self, vk: VkCode, needs_shift: bool) {
-        self.pending_deferred.push(DeferredVk { vk, needs_shift });
     }
 
     fn notify_start_composition(&mut self) {
