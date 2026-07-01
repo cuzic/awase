@@ -361,11 +361,6 @@ pub(crate) fn gji_write_bytes() -> u64 {
     TSF_OBS.gji_write_bytes.load(Ordering::Relaxed)
 }
 
-/// GJI モニターが利用可能かどうか。live 読み取り。
-pub(crate) fn gji_monitor_healthy() -> bool {
-    TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)
-}
-
 /// GJI プロセスが起動済みかつアクティブ IME として CLSID ベースで選択されているかどうか。
 ///
 /// `gji_monitor_ok`（プロセス稼働）だけでは、GJI Converter が起動中でも

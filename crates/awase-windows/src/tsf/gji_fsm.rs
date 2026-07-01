@@ -93,8 +93,11 @@ pub(crate) enum WarmupPath {
     TimedOutFallback,
 }
 
-/// warmup probe の結果。送信方法（`SendInput`）の決定に使う。
+/// warmup probe の結果。`GjiAction::SendInput` に格納されるが、実際の送信は
+/// `vk_send.rs` の既存ロジックが担うため dispatcher (`platform.rs`) はこの値を読まない
+/// (shadow tracking 専用、フィールドはテストでのみ検証される)。
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) struct WarmupResult {
     pub path: WarmupPath,
     pub prepend_f2_warmup: bool,
@@ -103,6 +106,7 @@ pub(crate) struct WarmupResult {
 }
 
 impl WarmupResult {
+    #[allow(dead_code)]
     pub(crate) const fn conservative_fallback() -> Self {
         Self {
             path: WarmupPath::TimedOutFallback,
@@ -117,8 +121,10 @@ impl WarmupResult {
 
 /// `OnCold` 中に蓄積する入力バッファ（warmup 前の入力キャッシュ）。
 ///
-/// warmup 完了後に `GjiAction::SendInput` に格納して dispatcher に渡す。
+/// warmup 完了後に `GjiAction::SendInput` に格納して dispatcher に渡す
+/// (shadow tracking 専用、フィールドはテストでのみ検証される)。
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 pub(crate) struct PendingInput {
     pub romaji: String,
     pub deferred_vks: Vec<DeferredVk>,
@@ -130,10 +136,6 @@ impl PendingInput {
             romaji: romaji.into(),
             deferred_vks: Vec::new(),
         }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.romaji.is_empty() && self.deferred_vks.is_empty()
     }
 }
 
@@ -292,7 +294,11 @@ pub(crate) enum GjiAction {
     },
     /// 実行中の probe をキャンセルする
     CancelProbe { probe_id: ProbeId },
+    /// warmup 完了・入力バッファの shadow tracking 用（実際の送信は既存ロジックが担うため
+    /// dispatcher はペイロードを読まない。テストが `pending` の件数検証に使う）。
+    #[allow(dead_code)]
     SendInput { result: WarmupResult, pending: Vec<PendingInput> },
+    #[allow(dead_code)]
     SendInputDirect(PendingInput),
 }
 
