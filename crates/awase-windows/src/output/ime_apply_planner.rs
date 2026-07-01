@@ -164,38 +164,20 @@ pub(crate) struct ImeApplyContext {
 impl ImeApplyContext {
     /// [`crate::state::ImeControlView`] からコンテキストを構築する。
     ///
-    /// - `open`: 目標 IME 開閉状態（`already_matched` の計算に必要）。
-    ///
     /// ## `already_matched` の計算方針（保守的）
     ///
     /// ここが `already_matched` の **唯一の計算場所**。Strategy は再チェックしない。
     ///
-    /// - `belief.confident=false`: 必ず `already_matched=false`（強制 apply）。
-    ///   KanjiToggle 系で desync の疑いがある場合（[`reduce_open_belief`] で判定）に設定される。
-    /// - GJI: `open=true && belief.effective_open=true` のみ `AlreadyMatched`。
-    ///   `GjiDirectStrategy` は `open=false` では shadow に関わらず VK_IME_OFF（冪等）を送る。
-    /// - KanjiToggle / MS-IME: `belief.effective_open == open` で `AlreadyMatched`。
-    ///   `effective_open` は `reduce_open_belief` が candidate_visible / candidate_was_seen を
-    ///   加味して計算済み。
+    /// GJI・MS-IME ともに送信キー（VK_IME_ON/VK_IME_OFF・VK_DBE_HIRAGANA）は冪等であり、
+    /// shadow が一致していても常に送信することで shadow desync 時のひらがな復帰を保証する。
+    /// そのため現在サポートする全 IME 種別で `already_matched` は常に `false`。
     pub(crate) fn from_view(
         view: &crate::state::ImeControlView<'_>,
         open: bool,
         belief: OpenBelief,
     ) -> Self {
-        let already_matched = if !belief.confident {
-            false
-        } else {
-            match view.observed.active_ime_kind {
-                ActiveImeKind::GoogleJapaneseInput | ActiveImeKind::MicrosoftIme => {
-                    // GJI: VK_IME_ON/VK_IME_OFF は冪等なので open に関わらず AlreadyMatched にしない。
-                    // open=true 時も常に VK_IME_ON を送ることで半角英数→ひらがな復帰を保証する。
-                    // MS-IME: VK_DBE_HIRAGANA / VK_IME_OFF も同様に冪等。GJI と同じ理由で
-                    // shadow 一致でも Noop にしない（shadow desync 時のひらがな復帰保証）。
-                    false
-                }
-                _ => belief.effective_open == open,
-            }
-        };
+        let _ = (open, belief); // currently always false; kept for future IME kinds
+        let already_matched = false;
         Self {
             already_matched,
             imm_cross_available: view.focus.profile.can_use_imm32_cross_process(),
