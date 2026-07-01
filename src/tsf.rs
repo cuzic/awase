@@ -647,9 +647,9 @@ mod tests {
 
     #[test]
     fn gate_wrapper_on_warmup_timeout_drains_held() {
-        use crate::engine::ModifierState;
         use crate::types::{
-            ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, VkCode,
+            ImeRelevance, KeyClassification, KeyEventType, ModifierState, RawKeyEvent, ScanCode,
+            VkCode,
         };
 
         let mut gate = TsfGate::new();

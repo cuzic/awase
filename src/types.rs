@@ -84,6 +84,40 @@ pub enum ModifierKey {
     Meta,
 }
 
+/// 修飾キー（Ctrl / Alt / Shift / Win）の押下状態
+#[derive(Debug, Default, Clone, Copy)]
+#[allow(clippy::struct_excessive_bools)] // 各修飾キーの物理状態を1:1で表現
+pub struct ModifierState {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub win: bool,
+}
+
+impl ModifierState {
+    /// Ctrl / Alt / Shift / Meta キーの押下状態を更新する
+    ///
+    /// プラットフォーム層が `RawKeyEvent.modifier_key` に事前分類した情報を使用する。
+    pub const fn update(&mut self, event: &RawKeyEvent) {
+        let is_down = matches!(event.event_type, KeyEventType::KeyDown);
+
+        if let Some(mk) = event.modifier_key {
+            match mk {
+                ModifierKey::Ctrl => self.ctrl = is_down,
+                ModifierKey::Alt => self.alt = is_down,
+                ModifierKey::Shift => self.shift = is_down,
+                ModifierKey::Meta => self.win = is_down,
+            }
+        }
+    }
+
+    /// OS 予約キーコンビネーション用の修飾キーが押下中かどうか
+    #[must_use]
+    pub const fn is_os_modifier_held(self) -> bool {
+        self.ctrl || self.alt || self.win
+    }
+}
+
 // ── IME 関連 ──
 
 /// IME 状態への影響（プラットフォーム非依存）
@@ -156,7 +190,7 @@ pub struct RawKeyEvent {
     /// `GetAsyncKeyState` を replay 時ではなく capture 時に呼ぶことで、
     /// OUTPUT_PENDING_QUEUE 経由の drain 時に modifier 状態が変化していても
     /// 正しい文脈でイベントを再処理できる。
-    pub modifier_snapshot: crate::engine::ModifierState,
+    pub modifier_snapshot: ModifierState,
 }
 
 /// 出力アクション

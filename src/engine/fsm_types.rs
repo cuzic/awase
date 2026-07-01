@@ -5,7 +5,7 @@ use std::time::Duration;
 use smallvec::SmallVec;
 
 use crate::scanmap::PhysicalPos;
-use crate::types::{KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode};
+use crate::types::{KeyAction, ScanCode, Timestamp, VkCode};
 
 use super::nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
 
@@ -367,39 +367,8 @@ impl PendingThumbData {
     }
 }
 
-/// 修飾キー（Ctrl / Alt / Shift / Win）の押下状態
-#[derive(Debug, Default, Clone, Copy)]
-#[allow(clippy::struct_excessive_bools)] // 各修飾キーの物理状態を1:1で表現
-pub struct ModifierState {
-    pub ctrl: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub win: bool,
-}
-
-impl ModifierState {
-    /// Ctrl / Alt / Shift / Meta キーの押下状態を更新する
-    ///
-    /// プラットフォーム層が `RawKeyEvent.modifier_key` に事前分類した情報を使用する。
-    pub const fn update(&mut self, event: &RawKeyEvent) {
-        let is_down = matches!(event.event_type, KeyEventType::KeyDown);
-
-        if let Some(mk) = event.modifier_key {
-            match mk {
-                crate::types::ModifierKey::Ctrl => self.ctrl = is_down,
-                crate::types::ModifierKey::Alt => self.alt = is_down,
-                crate::types::ModifierKey::Shift => self.shift = is_down,
-                crate::types::ModifierKey::Meta => self.win = is_down,
-            }
-        }
-    }
-
-    /// OS 予約キーコンビネーション用の修飾キーが押下中かどうか
-    #[must_use]
-    pub const fn is_os_modifier_held(self) -> bool {
-        self.ctrl || self.alt || self.win
-    }
-}
+// ModifierState は crate::types::ModifierState として定義済み（上の use で import）
+pub use crate::types::ModifierState;
 
 #[cfg(test)]
 mod tests {
