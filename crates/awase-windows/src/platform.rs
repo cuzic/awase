@@ -934,26 +934,30 @@ impl WindowsPlatform {
         }
     }
 
-    /// `applied` を明示的に渡す `apply_ime_open` 実装。
+    /// ビリーフを明示的に渡す `apply_ime_open` の中核実装。
     ///
+    /// `belief` は呼び出し元が [`crate::output::reduce_apply_belief`] で事前計算したもの。
     /// [`crate::output::ImeApplyPlanner`] で計画を立て、`Noop` の場合は早期返却する。
     /// それ以外は [`crate::ime_controller::CONTROLLER`] に委譲して実行する。
     ///
     /// `probe_in_flight` は常に `false` を渡す。IME 開閉適用は TSF probe 実行中でも即時適用する
     /// （TSF probe は composition context の暖機であり、IME ON/OFF とは直交する）。
-    pub(crate) fn apply_ime_open_with_applied(
+    pub(crate) fn apply_ime_open_with_belief(
         &self,
         open: bool,
         applied: Option<(bool, u64)>,
+        belief: crate::output::ApplyBelief,
     ) -> awase::platform::ImeOpenOutcome {
         use awase::platform::ImeOpenOutcome;
         use crate::output::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
 
         let view = self.build_ime_control_view(applied);
-        // IME apply 経路では probe_in_flight=false（DeferUntilProbe は keystroke deferred VK 用）。
-        let ctx = ImeApplyContext::from_view(&view, open, false);
+        let ctx = ImeApplyContext::from_view(&view, open, false, belief);
         let plan = ImeApplyPlanner::plan(&ctx);
-        log::debug!("[apply-ime] open={open} plan={plan:?}");
+        log::debug!(
+            "[apply-ime] open={open} plan={plan:?} (eff={} conf={})",
+            belief.effective_open, belief.confident
+        );
 
         let outcome = match plan {
             ImeApplyPlan::Noop => ImeOpenOutcome::AlreadyMatched,
@@ -971,6 +975,19 @@ impl WindowsPlatform {
             result.should_commit_state()
         );
         outcome
+    }
+
+    /// shadow のみから自明なビリーフを作る後方互換ラッパー。
+    ///
+    /// ImmCross 非経路かつ EngineIntent 外（refresh / probe 完了後等）の呼び出しに使う。
+    /// EngineIntent の KanjiToggle 系経路は [`Self::apply_ime_open_with_belief`] を直接使うこと。
+    pub(crate) fn apply_ime_open_with_applied(
+        &self,
+        open: bool,
+        applied: Option<(bool, u64)>,
+    ) -> awase::platform::ImeOpenOutcome {
+        let shadow_on = applied.map_or(false, |(s, _)| s);
+        self.apply_ime_open_with_belief(open, applied, crate::output::ApplyBelief::from_shadow(shadow_on))
     }
 
     // ── タイマー問い合わせ ──

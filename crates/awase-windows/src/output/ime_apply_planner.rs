@@ -12,6 +12,82 @@
 use awase::platform::ImeOpenOutcome;
 use crate::tsf::observer::ActiveImeKind;
 
+// ── Observation → Belief reduction ───────────────────────────────
+
+/// [`reduce_apply_belief`] へ渡す観測値の集約。
+///
+/// 呼び出し元が収集できる全観測値をここにまとめる。
+/// planner / strategy は自らこれらの値を読まない（テスト可能性のため）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ApplyBeliefInputs {
+    // ── 指令状態 ──
+    pub shadow_on: bool,
+    pub applied: crate::state::AppliedImeState,
+    // ── OS イベント観測 ──
+    pub candidate_visible: bool,
+    pub candidate_was_seen: bool,
+    pub gji_monitor_ok: bool,
+    // ── OS 直接読み取り（任意） ──
+    pub conv_mode: Option<u32>,
+    // ── コンテキスト ──
+    pub can_imm32_cross_process: bool,
+    pub is_engine_intent: bool,
+    pub now_ms: u64,
+}
+
+/// 複数の観測値を 1 つの「適用時 IME 状態ビリーフ」に純粋関数で還元する。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ApplyBelief {
+    /// 現在の IME open 状態の推定値。
+    pub effective_open: bool,
+    /// 推定に十分な確信があるか。`false` の場合は already_matched を強制 false にする。
+    pub confident: bool,
+}
+
+impl ApplyBelief {
+    /// shadow のみから自明なビリーフを作る（後方互換ラッパー用）。
+    pub(crate) fn from_shadow(shadow_on: bool) -> Self {
+        Self { effective_open: shadow_on, confident: true }
+    }
+}
+
+/// 観測値を純粋に還元して `ApplyBelief` を返す。
+///
+/// # effective_open の計算
+/// `conv_mode` が取得できた場合はそれを ground-truth として使用する（conv=0 → DirectInput=false）。
+/// 取得できない場合は shadow_on + candidate 観測で推定する。
+///
+/// # confident の計算
+/// EngineIntent かつ ImmCross/GJI で確認できない環境（KanjiToggle 系）でのみ
+/// `safely_confirmed` を検査する。それ以外は常に `true`。
+/// `confident=false` は「already_matched を強制 false」つまり「必ず apply する」を意味する。
+pub(crate) fn reduce_apply_belief(inputs: &ApplyBeliefInputs, desired_open: bool) -> ApplyBelief {
+    let effective_open = if let Some(conv) = inputs.conv_mode {
+        conv != 0
+    } else {
+        inputs.shadow_on
+            || inputs.candidate_visible
+            || (!desired_open && inputs.candidate_was_seen)
+    };
+
+    let confident = if inputs.is_engine_intent
+        && !inputs.can_imm32_cross_process
+        && !inputs.gji_monitor_ok
+        && inputs.conv_mode.is_none()
+    {
+        // KanjiToggle 系（Chrome/TsfNative 等）: Confirmed かつ shadow 一致 かつ 300ms 以内のみ確信あり
+        inputs.shadow_on == desired_open
+            && inputs.applied.is_confirmed()
+            && inputs.now_ms.saturating_sub(inputs.applied.confirmed_at_ms()) < 300
+    } else {
+        true
+    };
+
+    ApplyBelief { effective_open, confident }
+}
+
+// ─────────────────────────────────────────────────────────────────
+
 /// IME を目標状態へ移すために選択された適用機構。
 ///
 /// [`crate::ime_controller`] の戦略優先順（ImmCross → GjiDirect → MsImeDirect →
@@ -94,34 +170,28 @@ impl ImeApplyContext {
     ///
     /// ここが `already_matched` の **唯一の計算場所**。Strategy は再チェックしない。
     ///
-    /// - GJI: `open=true && shadow_on=true` のみ `AlreadyMatched`。
-    ///   `GjiDirectStrategy` は `open=false` では shadow に関わらず常に `VK_IME_OFF`（冪等）を送る。
-    /// - KanjiToggle / MS-IME: `effective_shadow == open` で `AlreadyMatched`。
-    ///   - `candidate_visible`: 候補窓表示中 → Chrome/Edge の IME は確実に ON。
-    ///   - `candidate_was_seen`: VK_KANJI が誤トグルした場合の desync 検出ラッチ（open=false 専用）。
-    ///     例: 新タブ(実態=OFF, shadow=true ステール) → VK_KANJI → 実態 ON, shadow=false
-    ///         → GJI candidate SHOW → candidate_was_seen=true
-    ///         → 次の apply(false) で shadow=false でも VK_KANJI を送れるようにする。
-    ///     open=true 時に含めると古いラッチが残って誤 Noop になるため除外する。
+    /// - `belief.confident=false`: 必ず `already_matched=false`（強制 apply）。
+    ///   KanjiToggle 系で desync の疑いがある場合（[`reduce_apply_belief`] で判定）に設定される。
+    /// - GJI: `open=true && belief.effective_open=true` のみ `AlreadyMatched`。
+    ///   `GjiDirectStrategy` は `open=false` では shadow に関わらず VK_IME_OFF（冪等）を送る。
+    /// - KanjiToggle / MS-IME: `belief.effective_open == open` で `AlreadyMatched`。
+    ///   `effective_open` は `reduce_apply_belief` が candidate_visible / candidate_was_seen を
+    ///   加味して計算済み。
     pub(crate) fn from_view(
         view: &crate::state::ImeControlView<'_>,
         open: bool,
         probe_in_flight: bool,
+        belief: ApplyBelief,
     ) -> Self {
-        let already_matched = match view.observed.active_ime_kind {
-            ActiveImeKind::GoogleJapaneseInput => {
-                // GJI は IME OFF（open=false）のとき shadow に関わらず VK_IME_OFF を送るため、
-                // already_matched は open=true かつ shadow ON のときのみ true にする。
-                open && view.control.shadow_on
-            }
-            _ => {
-                // KanjiToggle / MS-IME: effective_shadow が目標と一致すればスキップ。
-                // candidate_was_seen は「IME-OFF の desync 検出」ラッチであり、
-                // open=true（IME ON 要求）時に含めると古いラッチが残って誤 Noop になる。
-                let effective_shadow = view.control.shadow_on
-                    || view.observed.candidate_visible
-                    || (!open && view.observed.candidate_was_seen);
-                effective_shadow == open
+        let already_matched = if !belief.confident {
+            false
+        } else {
+            match view.observed.active_ime_kind {
+                ActiveImeKind::GoogleJapaneseInput => {
+                    // GJI は open=false では AlreadyMatched にしない（VK_IME_OFF は冪等なので常に送る）。
+                    open && belief.effective_open
+                }
+                _ => belief.effective_open == open,
             }
         };
         Self {

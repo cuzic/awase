@@ -18,7 +18,10 @@ mod key_injector;
 mod tsf_warmup_coord;
 pub(crate) mod ime_apply_planner;
 /// IME 適用計画を副作用なしで決定する planner（計画型・実行型・コンテキスト型）。
-pub(crate) use ime_apply_planner::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
+pub(crate) use ime_apply_planner::{
+    ApplyBelief, ApplyBeliefInputs, ImeApplyContext, ImeApplyPlan, ImeApplyPlanner,
+    ImeApplyResult, reduce_apply_belief,
+};
 use resolve::special_key_to_vk;
 pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 
