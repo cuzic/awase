@@ -150,10 +150,10 @@ pub struct Output {
     /// send_keys 内の `KeyAction::Romaji` 処理で `UnicodeLiteralObserverFsm` をインストールする。
     /// フラグは最初の Romaji 送信時に消費される（swap false）。
     observe_unicode_literal: std::sync::atomic::AtomicBool,
-    /// `ConvModePolicy::AwaseLocked` のときだけ true。
+    /// `ConvModeAuthority::AwaseOwned` のときだけ true。
     ///
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
-    /// `Platform::set_conv_mode_policy` が `allows_conv_mutation()` の結果を push する。
+    /// `Platform::set_conv_mode_authority` が `allows_conv_mutation()` の結果を push する。
     pub(crate) conv_mutation_allowed: std::cell::Cell<bool>,
 }
 
@@ -229,7 +229,7 @@ impl Output {
 
     /// conv mutation（`send_eager_tsf_warmup`・`ImmSetConversionStatus` 等）の許可フラグを更新する。
     ///
-    /// `Platform::set_conv_mode_policy` が `ConvModePolicy::allows_conv_mutation()` の結果を push する。
+    /// `Platform::set_conv_mode_authority` が `ConvModeAuthority::allows_conv_mutation()` の結果を push する。
     pub(crate) fn set_conv_mutation_allowed(&self, allowed: bool) {
         self.conv_mutation_allowed.set(allowed);
     }
@@ -579,7 +579,7 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
     /// `mark_composition_cold` が呼ばれて 0 にリセットされるため二重更新は発生しない。
     pub fn send_eager_tsf_warmup(&self, applied_ime_on: Option<bool>) {
         if !self.conv_mutation_allowed.get() {
-            log::trace!("[tsf-eager-warmup] UserManaged → warmup スキップ");
+            log::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
             return;
         }
         if !crate::tsf::observer::gji_is_active_ime() {
@@ -1187,11 +1187,11 @@ mod tests {
         );
     }
 
-    // ── ConvModePolicy 不変条件テスト ────────────────────────────────────────────
+    // ── ConvModeAuthority 不変条件テスト ─────────────────────────────────────────
 
     #[test]
     fn conv_mutation_allowed_starts_false() {
-        // Output 初期状態は UserManaged → conv mutation 禁止
+        // Output 初期状態は UserOwned（Unknown）相当 → conv mutation 禁止
         let o = make_output();
         assert!(!o.conv_mutation_allowed.get());
     }
@@ -1207,20 +1207,20 @@ mod tests {
 
     #[test]
     fn conv_policy_user_managed_forbids_mutation() {
-        use crate::platform::ConvModePolicy;
-        assert!(!ConvModePolicy::UserManaged.allows_conv_mutation());
+        use crate::state::ConvModeAuthority;
+        assert!(!ConvModeAuthority::UserOwned.allows_conv_mutation());
     }
 
     #[test]
     fn conv_policy_awase_locked_allows_mutation() {
-        use crate::platform::ConvModePolicy;
-        assert!(ConvModePolicy::AwaseLocked.allows_conv_mutation());
+        use crate::state::ConvModeAuthority;
+        assert!(ConvModeAuthority::AwaseOwned.allows_conv_mutation());
     }
 
     #[test]
     fn conv_policy_default_is_user_managed() {
-        use crate::platform::ConvModePolicy;
-        assert_eq!(ConvModePolicy::default(), ConvModePolicy::UserManaged);
+        use crate::state::ConvModeAuthority;
+        assert_eq!(ConvModeAuthority::default(), ConvModeAuthority::Unknown);
     }
 
     // ── RAW_TSF_LITERAL グローバル構造体テスト ──────────────────────────────────

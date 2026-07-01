@@ -128,6 +128,8 @@ pub(crate) unsafe fn handle_wm_timer(
         Some(id) if id == TIMER_OUTPUT_GUARD => {
             let outcomes = app.executor.on_output_guard_timer(&mut app.platform);
             app.dispatch_outcomes(outcomes);
+            // H-3-e: drain 中に EngineStateChanged が処理された場合に ImeStateHub へ dispatch。
+            app.sync_conv_mode_authority();
         }
         Some(id) if id == TIMER_TSF_PROBE => {
             // log_composition_probe が with_app_ref (共有借用) を使うが、
@@ -227,6 +229,8 @@ pub(crate) unsafe fn handle_wm_timer(
 pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     let outcomes = app.executor.drain_deferred(&mut app.platform);
     app.dispatch_outcomes(outcomes);
+    // H-3-e: drain 中に EngineStateChanged が処理された場合に ImeStateHub へ dispatch。
+    app.sync_conv_mode_authority();
 }
 
 /// WM_PANIC_RESET ハンドラ

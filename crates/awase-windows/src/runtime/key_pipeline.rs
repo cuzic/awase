@@ -561,6 +561,8 @@ impl Runtime {
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
         self.dispatch_outcomes(result.sync_outcomes);
+        // H-3-e: executor が set_conv_mode_authority() で格納した保留値を ImeStateHub に dispatch。
+        self.sync_conv_mode_authority();
 
         if result.has_pending {
             post_to_main_thread(WM_EXECUTE_EFFECTS);

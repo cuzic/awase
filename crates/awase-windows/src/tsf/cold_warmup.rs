@@ -74,9 +74,10 @@ struct WarmupContext {
     probe_min_ms: u64,
     /// cold になった理由（ログ用）
     cold_reason: crate::output::ColdReason,
-    /// `ConvModePolicy::AwaseLocked` のとき `true`。
+    /// `ConvModeAuthority::AwaseOwned` のとき `true`。
     ///
-    /// `false` (UserManaged) のとき VK_DBE_HIRAGANA 送信と `ImmSetConversionStatus` をスキップする。
+    /// `false`（UserOwned/TemporarilyUnowned/Unknown）のとき VK_DBE_HIRAGANA 送信と
+    /// `ImmSetConversionStatus` をスキップする。
     conv_mutation_allowed: bool,
     /// 現在の入力文字セット（warmup VK の選択に使用）。
     ///

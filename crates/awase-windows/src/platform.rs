@@ -15,27 +15,7 @@ use crate::output::Output;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
-/// awase が IME conv mode を管理する権限を表す。
-///
-/// awase ON 中は `AwaseLocked`、OFF 中または非活性時は `UserManaged`。
-/// `AwaseLocked` のときのみ `VK_DBE_HIRAGANA` 等の conv mutation が許可される。
-/// ユーザーが JISかな/カタカナ等を選択した場合は `UserManaged` として conv に触らない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ConvModePolicy {
-    /// awase 無効・エンジン OFF。IME conv mode に一切触らない。
-    #[default]
-    UserManaged,
-    /// awase ON 中。conv mode = RomajiHiragana (0x00000019) に lock する。
-    /// ユーザーの JISかな/カタカナ変更は外乱として reconcile する。
-    AwaseLocked,
-}
-
-impl ConvModePolicy {
-    /// conv mode を変更する操作（VK_DBE_HIRAGANA 等）を許可するか。
-    pub(crate) const fn allows_conv_mutation(self) -> bool {
-        matches!(self, Self::AwaseLocked)
-    }
-}
+use crate::state::ConvModeAuthority;
 
 /// Windows 固有のプラットフォーム実装
 pub struct WindowsPlatform {
@@ -57,11 +37,21 @@ pub struct WindowsPlatform {
     /// warm 判定そのものは GjiFsm が SSOT であり、この FSM は「confirm キー KeyDown 後、
     /// KeyUp まで warmup を保留する」遷移を所有する。
     pub(crate) composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
-    /// IME conv mode に対する awase の制御権限。
+    /// IME conv mode に対する awase の制御権限 (H-3-e)。
     ///
-    /// `AwaseLocked`: awase ON 中。VK_DBE_HIRAGANA 等の conv mutation を許可する。
-    /// `UserManaged`: awase OFF/非活性中。conv mode に一切触らない。
-    pub(crate) conv_mode_policy: ConvModePolicy,
+    /// `AwaseOwned`: awase ON 中。VK_DBE_HIRAGANA 等の conv mutation を許可する。
+    /// `UserOwned`:  awase OFF/非活性中。conv mode に一切触らない。
+    ///
+    /// 外部からは `set_conv_mode_authority()` 経由でのみ更新し、フィールドに直接アクセスしない。
+    /// `ImeModel.conv_mode_authority` が SSOT; これは runtime 側の即時ゲート用コピー。
+    conv_mode_authority: ConvModeAuthority,
+    /// `set_conv_mode_authority()` 呼び出し後に runtime が dispatch するための保留値。
+    ///
+    /// `ImeStateHub::dispatch_event(ConvModeOwnershipChanged)` は `&mut ImeStateHub` が必要なため、
+    /// executor（`&ImeStateHub` しか持てない）からは直接 dispatch できない。
+    /// `set_conv_mode_authority()` がここに格納し、runtime が `take_pending_conv_mode_authority()`
+    /// で読み出して dispatch する。
+    pending_conv_mode_authority: Option<ConvModeAuthority>,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -107,12 +97,25 @@ impl WindowsPlatform {
         self.output.send_eager_tsf_warmup(applied_ime_on);
     }
 
-    /// conv mode 制御権限を更新する。
+    /// conv mode 制御権限を更新する (H-3-e)。
     ///
-    /// エンジンが有効になったとき `AwaseLocked`、無効になったとき `UserManaged` を渡す。
-    pub(crate) fn set_conv_mode_policy(&mut self, policy: ConvModePolicy) {
-        self.conv_mode_policy = policy;
-        self.output.set_conv_mutation_allowed(policy.allows_conv_mutation());
+    /// エンジンが有効になったとき `AwaseOwned`、無効になったとき `UserOwned` を渡す。
+    /// warmup が一時的に制御権を手放すときは `TemporarilyUnowned` を渡す。
+    ///
+    /// `ImeModel.conv_mode_authority` への reducer dispatch は runtime が
+    /// `take_pending_conv_mode_authority()` で読み出して行う（executor は `&ImeStateHub`
+    /// しか持てないため直接 dispatch できない）。
+    pub(crate) fn set_conv_mode_authority(&mut self, authority: ConvModeAuthority) {
+        self.conv_mode_authority = authority;
+        self.output.set_conv_mutation_allowed(authority.allows_conv_mutation());
+        self.pending_conv_mode_authority = Some(authority);
+    }
+
+    /// 保留中の conv mode authority を取り出す（runtime が dispatch するために使う）。
+    ///
+    /// `set_conv_mode_authority()` が格納した値を一度だけ取り出す。`None` = 変化なし。
+    pub(crate) fn take_pending_conv_mode_authority(&mut self) -> Option<ConvModeAuthority> {
+        self.pending_conv_mode_authority.take()
     }
 
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
@@ -358,12 +361,12 @@ impl WindowsPlatform {
             match *action {
                 CompositionAction::EmitWarmup { reason } => {
                     log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
-                    if self.conv_mode_policy.allows_conv_mutation() {
+                    if self.conv_mode_authority.allows_conv_mutation() {
                         self.output.send_eager_tsf_warmup(applied_ime_on);
                     } else {
                         log::debug!(
                             "[composition-fsm] EmitWarmup ({reason:?}): \
-                             UserManaged → VK_DBE_HIRAGANA warmup スキップ"
+                             UserOwned/TemporarilyUnowned → VK_DBE_HIRAGANA warmup スキップ"
                         );
                     }
                 }
@@ -852,8 +855,8 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.gji_on_native_f2_consumed();
-            // UserManaged (awase OFF/JISかな等) では conv mutation は禁止
-            if self.conv_mode_policy.allows_conv_mutation() {
+            // AwaseOwned でない場合（UserOwned/TemporarilyUnowned/Unknown）は conv mutation は禁止
+            if self.conv_mode_authority.allows_conv_mutation() {
                 self.output.send_eager_tsf_warmup(applied);
             }
             return;
@@ -866,12 +869,12 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.gji_on_composition_reset();
-            // UserManaged (awase OFF/JISかな等) では conv mutation は禁止
-            if self.conv_mode_policy.allows_conv_mutation() {
+            // AwaseOwned でない場合（UserOwned/TemporarilyUnowned/Unknown）は conv mutation は禁止
+            if self.conv_mode_authority.allows_conv_mutation() {
                 self.output.send_eager_tsf_warmup(applied);
             } else {
                 log::debug!(
-                    "[composition] reinject confirm key: UserManaged → warmup スキップ"
+                    "[composition] reinject confirm key: non-AwaseOwned → warmup スキップ"
                 );
             }
         }

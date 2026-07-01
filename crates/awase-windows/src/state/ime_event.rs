@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use awase::engine::InputModeState;
 
+use super::conv_mode::ConvModeAuthority;
 use super::TickMs;
 
 /// HWND の Send-safe な表現 (raw pointer 値を usize で保持)。
@@ -265,6 +266,17 @@ pub enum ImeEvent {
     /// Ctrl+Caps・VK_DBE_ROMAN・VK_DBE_HIRAGANA などのユーザー操作で
     /// input_mode が決定したときに通知する。
     UserChangedInputMode { mode: InputModeState, at: TickMs },
+
+    /// IME 変換モードの所有権が変化した。
+    ///
+    /// awase エンジン ON/OFF・warmup 開始/終了など、conv mode 制御権の移譲時に dispatch する。
+    /// reducer が `ImeModel::conv_mode_authority` を更新する。
+    ///
+    /// - エンジン ON  → `AwaseOwned`
+    /// - エンジン OFF → `UserOwned`
+    /// - warmup 開始  → `TemporarilyUnowned`（将来拡張）
+    /// - warmup 完了  → `AwaseOwned`（将来拡張）
+    ConvModeOwnershipChanged { authority: ConvModeAuthority },
 }
 
 impl ImeEvent {

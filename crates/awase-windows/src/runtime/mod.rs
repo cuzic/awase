@@ -249,7 +249,22 @@ impl Runtime {
             self.executor
                 .execute_from_loop(&mut self.platform, &self.platform_state.ime, decision);
         self.dispatch_outcomes(sync_outcomes);
+        self.sync_conv_mode_authority();
         callback
+    }
+
+    /// executor が `set_conv_mode_authority()` で格納した保留値を ImeStateHub に dispatch する。
+    ///
+    /// H-3-e: executor は `&ImeStateHub` しか持てないため直接 dispatch できない。
+    /// executor 呼び出しの直後（`dispatch_outcomes` の後）に呼ぶこと。
+    pub(crate) fn sync_conv_mode_authority(&mut self) {
+        if let Some(authority) = self.platform.take_pending_conv_mode_authority() {
+            let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::ConvModeOwnershipChanged { authority },
+                tick_ms,
+            );
+        }
     }
 
     /// IME apply 完了後の後処理 SSOT。sync / async 両経路から呼ばれる。

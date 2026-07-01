@@ -16,7 +16,8 @@ use awase::platform::{EffectOrigin, PlatformRuntime};
 use awase::types::RawKeyEvent;
 
 use crate::hook::CallbackResult;
-use crate::platform::{ConvModePolicy, WindowsPlatform};
+use crate::platform::WindowsPlatform;
+use crate::state::ConvModeAuthority;
 use crate::runtime::{PassthroughQueue, PhysicalKeyDisposition};
 use crate::state::platform_state::ImeStateHub;
 use crate::vk::VkCodeExt;
@@ -560,15 +561,16 @@ impl DecisionExecutor {
         if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
             return self.dispatch_ime_set_open(platform, open, origin);
         }
-        // EngineStateChanged: エンジン ON/OFF に連動して ConvModePolicy を更新する。
+        // EngineStateChanged: エンジン ON/OFF に連動して ConvModeAuthority を更新する。
         // platform_rt (&mut dyn PlatformRuntime) 変換前に行う必要がある。
+        // pending_conv_mode_authority に格納し、runtime が take して ImeStateHub に dispatch する。
         if let Effect::Ui(UiEffect::EngineStateChanged { enabled, .. }) = &effect {
-            let policy = if *enabled {
-                ConvModePolicy::AwaseLocked
+            let authority = if *enabled {
+                ConvModeAuthority::AwaseOwned
             } else {
-                ConvModePolicy::UserManaged
+                ConvModeAuthority::UserOwned
             };
-            platform.set_conv_mode_policy(policy);
+            platform.set_conv_mode_authority(authority);
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
         let applied_for_engine_key = self.applied_snapshot.applied_open();

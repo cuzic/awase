@@ -1,13 +1,50 @@
 //! IME 変換モードの管理コンポーネント。
 //!
 //! `Charset` と `ConvMode` の定義は platform 非依存の `nicola` クレートに移動済み。
-//! このファイルは `ConvModeMgr`（状態管理ラッパー）のみを定義する。
+//! このファイルは `ConvModeMgr`（状態管理ラッパー）と `ConvModeAuthority`（所有権管理）を定義する。
 
 pub(crate) use awase::engine::ConvMode;
 #[cfg(windows)]
 pub(crate) use awase::engine::Charset;
 
 use super::TickMs;
+
+// ─── 変換モード所有権 ────────────────────────────────────────────────────────────
+
+/// IME 変換モードに対する awase の所有権状態。
+///
+/// awase エンジン ON/OFF・warmup 開始/終了など、conv mode 制御権の移譲時に更新される。
+/// `ImeModel::reduce()` が `ImeEvent::ConvModeOwnershipChanged` を受けて更新する SSOT。
+///
+/// | 状態               | 説明                                                              |
+/// |--------------------|-------------------------------------------------------------------|
+/// | `Unknown`          | 初期状態。まだ所有権が確定していない。                            |
+/// | `AwaseOwned`       | awase エンジン ON 中。conv mode を RomajiHiragana に lock する。  |
+/// | `UserOwned`        | awase エンジン OFF / 非活性中。conv mode に一切触らない。         |
+/// | `TemporarilyUnowned` | warmup シーケンス等で awase が一時的に制御権を手放している状態。 |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ConvModeAuthority {
+    /// 初期状態。所有権が誰にあるか不明（起動直後、エンジン状態未受信）。
+    #[default]
+    Unknown,
+    /// awase エンジン ON 中。VK_DBE_HIRAGANA 等の conv mutation を許可する。
+    AwaseOwned,
+    /// awase 無効・エンジン OFF。IME conv mode に一切触らない。
+    UserOwned,
+    /// warmup シーケンス等で awase が一時的に conv mode 制御を手放している。
+    /// `AwaseOwned` に戻るまでは conv mutation を行わない。
+    TemporarilyUnowned,
+}
+
+impl ConvModeAuthority {
+    /// conv mode を変更する操作（VK_DBE_HIRAGANA 等・ImmSetConversionStatus）を許可するか。
+    ///
+    /// `AwaseOwned` のときのみ true。
+    #[must_use]
+    pub(crate) const fn allows_conv_mutation(self) -> bool {
+        matches!(self, Self::AwaseOwned)
+    }
+}
 
 // ─── 管理コンポーネント ────────────────────────────────────────────────────────
 
