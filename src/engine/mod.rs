@@ -11,8 +11,10 @@ pub mod decision;
 mod engine;
 mod fsm_adapter;
 pub mod fsm_types;
+pub mod idle_check;
 pub mod input_tracker;
 pub mod key_lifecycle;
+pub mod mode_state;
 mod nicola_fsm;
 pub mod output_history;
 pub mod timing;
@@ -21,10 +23,11 @@ pub mod timing;
 pub use decision::DecisionOrigin;
 pub use conv::{Charset, ConvMode};
 pub use decision::{
-    should_run_idle_conv_check, ActivationState, AssumedReason, Decision, Effect, EffectVec,
-    EngineCommand, ImeEffect, InputContext, InputEffect, InputModeState, SpecialKeyCombos,
-    TimerEffect, UiEffect,
+    ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext,
+    InputEffect, SpecialKeyCombos, TimerEffect, UiEffect,
 };
+pub use idle_check::should_run_idle_conv_check;
+pub use mode_state::{AssumedReason, InputModeState};
 pub use engine::Engine;
 pub use fsm_types::{
     ClassifiedEvent, EngineState, KeyClass, ModifierState, OutputUpdate, ParseAction, PendingKey,

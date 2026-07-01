@@ -3,7 +3,8 @@
 use proptest::prelude::*;
 
 use crate::config::ConfirmMode;
-use crate::engine::decision::{InputContext, InputModeState, SpecialKeyCombos};
+use crate::engine::decision::{InputContext, SpecialKeyCombos};
+use crate::engine::mode_state::InputModeState;
 use crate::engine::engine::Engine;
 use crate::engine::fsm_types::EngineState;
 use crate::engine::input_tracker::InputTracker;
