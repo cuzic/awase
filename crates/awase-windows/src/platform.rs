@@ -332,7 +332,7 @@ impl WindowsPlatform {
                         let _ = self.output.current_gji_probe_id.take();
                     }
                 }
-                // Phase 2a では SendInput は no-op（KeyInput ルーティングは Phase 2b 以降）
+                // 実際の送信は Output が担うため FSM の SendInput/SendInputDirect は無視する。
                 GjiAction::SendInput { .. } | GjiAction::SendInputDirect(..) => {}
             }
         }

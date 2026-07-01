@@ -486,7 +486,6 @@ impl Output {
 
         // KeyInput shadow routing: FSM state track のためだけ（actual send は既存ロジックが担う）。
         // Response のタイマー操作（LongIdle リセット）は Platform の send_keys が dispatch する。
-        // SendInputDirect / SendInput アクションは Phase 2b では no-op。
         {
             let resp = self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::KeyInput(
                 crate::tsf::gji_fsm::PendingInput::new(romaji),

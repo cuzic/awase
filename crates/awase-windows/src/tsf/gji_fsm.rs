@@ -94,8 +94,6 @@ pub(crate) enum WarmupPath {
 }
 
 /// warmup probe の結果。送信方法（`SendInput`）の決定に使う。
-// Phase 3 で SendInput dispatch が実装されるまでフィールドは書き込みのみ。
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WarmupResult {
     pub path: WarmupPath,
@@ -105,7 +103,6 @@ pub(crate) struct WarmupResult {
 }
 
 impl WarmupResult {
-    /// budget 枯渇時の保守的フォールバック値（`WarmupFailed` イベントで使用）。
     pub(crate) const fn conservative_fallback() -> Self {
         Self {
             path: WarmupPath::TimedOutFallback,
@@ -121,8 +118,6 @@ impl WarmupResult {
 /// `OnCold` 中に蓄積する入力バッファ（warmup 前の入力キャッシュ）。
 ///
 /// warmup 完了後に `GjiAction::SendInput` に格納して dispatcher に渡す。
-// Phase 3 で SendInput/SendInputDirect が実際に dispatch されるまでフィールドは蓄積のみ。
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PendingInput {
     pub romaji: String,
@@ -137,7 +132,6 @@ impl PendingInput {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.romaji.is_empty() && self.deferred_vks.is_empty()
     }
@@ -270,17 +264,9 @@ pub(crate) enum GjiEvent {
     KeyInput(PendingInput),
     /// warmup probe 完了
     WarmupComplete { probe_id: ProbeId, result: WarmupResult },
-    /// warmup probe が budget 内に完了しなかった
-    // Phase 3 で接続予定
-    #[allow(dead_code)]
-    WarmupFailed { probe_id: ProbeId },
     /// `WM_IME_STARTCOMPOSITION`
-    // Phase 3 で接続予定
-    #[allow(dead_code)]
     StartComposition,
     /// `WM_IME_ENDCOMPOSITION`（epoch チェック付き）
-    // Phase 3 で接続予定
-    #[allow(dead_code)]
     EndComposition { epoch: FocusEpoch },
     /// WezTerm が FocusChange 直後に内部で F2 を送信し TSF context を初期化した
     /// (reinject-tsf の NativeF2Consumed パス)。
@@ -306,11 +292,7 @@ pub(crate) enum GjiAction {
     },
     /// 実行中の probe をキャンセルする
     CancelProbe { probe_id: ProbeId },
-    /// warmup 完了後に蓄積入力を送信する（Phase 3 で dispatch 実装予定）
-    #[allow(dead_code)]
     SendInput { result: WarmupResult, pending: Vec<PendingInput> },
-    /// warm 状態で即送信する（Phase 3 で dispatch 実装予定）
-    #[allow(dead_code)]
     SendInputDirect(PendingInput),
 }
 
@@ -731,48 +713,6 @@ impl TimedStateMachine for GjiFsm {
                 }
             }
 
-            // ── WarmupFailed ───────────────────────────────────────────────
-            GjiEvent::WarmupFailed { probe_id } => {
-                let current_id = self.running_probe_id();
-                if current_id != Some(probe_id) {
-                    log::debug!(
-                        "[gji-fsm] WarmupFailed {probe_id:?}: stale (current={current_id:?}), ignored"
-                    );
-                    return Response::consume();
-                }
-                log::warn!(
-                    "[gji-fsm] WarmupFailed {probe_id:?}: budget exhausted, using conservative fallback"
-                );
-                let result = WarmupResult::conservative_fallback();
-                match &mut self.state {
-                    GjiState::OnCold { pending, .. } => {
-                        let pending = std::mem::take(pending);
-                        let mut extra_actions = Vec::new();
-                        if !pending.is_empty() {
-                            extra_actions.push(GjiAction::SendInput { result, pending });
-                        }
-                        self.transition_to_warm(extra_actions)
-                    }
-                    GjiState::OnComposing {
-                        warmup: ComposingWarmup::AwaitingProbe { pending, .. },
-                        ..
-                    } => {
-                        // composition 中なので OnWarm には遷移しない。pending だけ flush（保守的フォールバック）。
-                        let pending = std::mem::take(pending);
-                        let mut extra_actions = Vec::new();
-                        if !pending.is_empty() {
-                            extra_actions.push(GjiAction::SendInput { result, pending });
-                        }
-                        // warmup を AlreadyWarm に更新
-                        if let GjiState::OnComposing { warmup, .. } = &mut self.state {
-                            *warmup = ComposingWarmup::AlreadyWarm;
-                        }
-                        Response::emit(extra_actions)
-                    }
-                    _ => Response::consume(),
-                }
-            }
-
             // ── StartComposition ───────────────────────────────────────────
             GjiEvent::StartComposition => match &self.state {
                 GjiState::OnWarm { .. } => {
@@ -999,17 +939,6 @@ mod tests {
         }
     }
 
-    fn failed(fsm: &GjiFsm) -> GjiEvent {
-        let probe_id = match fsm.state() {
-            GjiState::OnCold {
-                probe: ProbeStatus::Authorized { probe_id, .. },
-                ..
-            } => *probe_id,
-            s => panic!("expected OnCold(Authorized), got {}", state_label(s)),
-        };
-        GjiEvent::WarmupFailed { probe_id }
-    }
-
     // ── ImeOn → OnCold(Short) ────────────────────────────────────────────
 
     #[test]
@@ -1061,19 +990,6 @@ mod tests {
             r.actions.iter().any(|a| matches!(a, GjiAction::SendInput { pending, .. } if pending.len() == 2)),
             "expected SendInput with 2 pending items, got {:?}", r.actions
         );
-    }
-
-    // ── WarmupFailed → OnWarm（conservative fallback）───────────────────
-
-    #[test]
-    fn warmup_failed_transitions_to_warm_with_fallback() {
-        let mut fsm = GjiFsm::new();
-        fsm.on_event(ime_on());
-        let ev = failed(&fsm);
-        let r = fsm.on_event(ev);
-        r.assert_consumed();
-        r.assert_timer_set(GjiTimer::LongIdle);
-        assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
     }
 
     // ── probe_id stale 防止 ──────────────────────────────────────────────
