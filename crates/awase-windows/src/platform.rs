@@ -98,13 +98,13 @@ impl WindowsPlatform {
     /// 初期化後の権限変更は `set_conv_mode_authority()` 経由で行うこと。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        output: crate::output::Output,
-        tray: crate::tray::SystemTray,
-        timer: crate::timer::Win32Timer,
+        output: Output,
+        tray: SystemTray,
+        timer: Win32Timer,
         engine_on_ime_vk: Option<awase::types::VkCode>,
         engine_off_ime_vk: Option<awase::types::VkCode>,
         suppress_engine_state_key: bool,
-        focus: crate::focus::tracker::FocusTracker,
+        focus: FocusTracker,
         composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
     ) -> Self {
         Self {

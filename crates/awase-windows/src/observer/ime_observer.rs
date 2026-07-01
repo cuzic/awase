@@ -178,8 +178,8 @@ pub fn classify_ime_snapshot(
         // 英数モードは romaji フラグより優先して ObservedEisu を返す。
         // input_mode_from_romaji_flag は romaji=false を ObservedKana と判定するため
         // 英数モードを誤って ObservedKana にしてしまう問題をここで遮断する。
-        (!matches!(current_input_mode, awase::engine::InputModeState::ObservedEisu))
-            .then_some(awase::engine::InputModeState::ObservedEisu)
+        (!matches!(current_input_mode, InputModeState::ObservedEisu))
+            .then_some(InputModeState::ObservedEisu)
     } else {
         snap.input_mode_from_romaji_flag(current_input_mode)
             .or_else(|| {

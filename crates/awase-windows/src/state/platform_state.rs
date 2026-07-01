@@ -6,7 +6,7 @@ use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::SyncKeyGate;
 use super::ime_event::{
     ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult,
-    InputModeApplyStrategy, IntentSource, ObservationSource,
+    InputModeApplyStrategy, IntentSource, ObservationConfidence, ObservationSource,
 };
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
@@ -472,9 +472,9 @@ impl ImeStateHub {
             self.dispatch_event(
                 ImeEvent::ObserverReported {
                     open: obs.value,
-                    source: super::ime_event::ObservationSource::ObserverPoll,
+                    source: ObservationSource::ObserverPoll,
                     hwnd: HwndId::NULL,
-                    confidence: super::ime_event::ObservationConfidence::Medium,
+                    confidence: ObservationConfidence::Medium,
                 },
                 tick_ms,
             );
@@ -624,9 +624,9 @@ impl ImeStateHub {
         self.dispatch_event(
             ImeEvent::ObserverReported {
                 open: value,
-                source: super::ime_event::ObservationSource::ObserverPoll,
+                source: ObservationSource::ObserverPoll,
                 hwnd: HwndId::NULL,
-                confidence: super::ime_event::ObservationConfidence::Medium,
+                confidence: ObservationConfidence::Medium,
             },
             tick_ms,
         );
@@ -666,9 +666,9 @@ impl ImeStateHub {
         self.dispatch_event(
             ImeEvent::ObserverReported {
                 open: value,
-                source: super::ime_event::ObservationSource::FocusProbe,
+                source: ObservationSource::FocusProbe,
                 hwnd: HwndId::NULL,
-                confidence: super::ime_event::ObservationConfidence::Medium,
+                confidence: ObservationConfidence::Medium,
             },
             tick_ms,
         );
