@@ -231,6 +231,8 @@ pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     app.dispatch_outcomes(outcomes);
     // H-3-e: drain 中に EngineStateChanged が処理された場合に ImeStateHub へ dispatch。
     app.sync_conv_mode_authority();
+    // H-4-a: Output が send_keys 中に積んだ RuntimeRequest を一括処理する。
+    app.drain_runtime_requests();
 }
 
 /// WM_PANIC_RESET ハンドラ
@@ -501,6 +503,12 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
                 );
             }
         }
+    });
+
+    // H-4-a: 全キー処理完了後に RuntimeOutbox を drain する。
+    // drain_output_queue 中の process_key_event → send_keys で積まれた RuntimeRequest を実行する。
+    let _ = with_app(|app| {
+        app.drain_runtime_requests();
     });
 }
 

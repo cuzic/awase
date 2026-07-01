@@ -798,6 +798,45 @@ impl Runtime {
             .on_command(EngineCommand::SetNgramModel(model), &ctx);
     }
 
+    /// Output が積んだ `RuntimeRequest` を drain して処理する。
+    ///
+    /// キー処理境界（`WM_EXECUTE_EFFECTS` / `WM_DRAIN_OUTPUT_QUEUE` 末尾）で呼ぶ。
+    ///
+    /// `Output` はキー注入中に `with_app` を再入させられないため、IME リフレッシュ・
+    /// TSF プローブ起動などの Runtime 操作を `RuntimeOutbox` に積んでおき、
+    /// ここで一括実行する。H-4-b で push 側（`vk_send.rs` の `with_app` 置換）が
+    /// 配線されるまでは常に空の vec を drain するだけで副作用はない。
+    pub(crate) fn drain_runtime_requests(&mut self) {
+        use crate::runtime::outbox::RuntimeRequest;
+        let requests = self.platform.output.take_pending_requests();
+        if requests.is_empty() {
+            return;
+        }
+        log::debug!("[runtime-outbox] {} request(s) を drain", requests.len());
+        for request in requests {
+            match request {
+                RuntimeRequest::RefreshIme => {
+                    log::debug!("[runtime-outbox] RefreshIme → schedule_ime_refresh(0)");
+                    self.schedule_ime_refresh(0);
+                }
+                RuntimeRequest::ScheduleIdleConvCheck => {
+                    log::debug!("[runtime-outbox] ScheduleIdleConvCheck → reschedule_ime_refresh");
+                    self.reschedule_ime_refresh();
+                }
+                RuntimeRequest::StartTsfProbe => {
+                    log::debug!("[runtime-outbox] StartTsfProbe → pending TSF timer 適用");
+                    if let Some(cmd) = self.platform.output.pending_tsf_timer() {
+                        self.platform.apply_timer_command(cmd);
+                    }
+                }
+                RuntimeRequest::ReclassifyFocus { vk } => {
+                    log::debug!("[runtime-outbox] ReclassifyFocus vk=0x{:02X}", vk);
+                    // TODO(H-4-b): vk_send.rs の injection_hint 更新 with_app をここへ移行
+                }
+            }
+        }
+    }
+
     /// パニックリセット: IME 関連キー連打で発動する緊急リセット。
     ///
     /// エンジン状態・IME・修飾キー・フック・キャッシュをすべて初期状態に戻す。

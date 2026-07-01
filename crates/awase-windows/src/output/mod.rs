@@ -187,9 +187,8 @@ impl Output {
 
     /// Output が蓄積した `RuntimeRequest` を全件取り出す。
     ///
-    /// Runtime がキー処理境界（`send_keys` 完了後）で呼び、各リクエストを実行する。
-    /// TODO(H-4-b): 現状 push 側（vk_send.rs の with_app 置換）が未配線のため常に空。
-    #[allow(dead_code)]
+    /// Runtime がキー処理境界（`WM_EXECUTE_EFFECTS` / `WM_DRAIN_OUTPUT_QUEUE` 末尾）で呼び、
+    /// 各リクエストを実行する。H-4-b で push 側が配線されるまでは常に空を返す。
     pub(crate) fn take_pending_requests(&self) -> Vec<crate::runtime::outbox::RuntimeRequest> {
         self.runtime_outbox.borrow_mut().drain()
     }

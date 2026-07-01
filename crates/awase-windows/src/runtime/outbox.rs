@@ -4,18 +4,29 @@
 //! Runtime 操作を直接呼べない（`with_app` 再入を招く）。代わりに
 //! `RuntimeRequest` を `RuntimeOutbox` に積み、キー処理の境界で Runtime が
 //! `drain` して実行する。
+//!
+//! # 使い方
+//! - push 側: H-4-b で `vk_send.rs` の `with_app` 呼び出しを `RuntimeRequest` 積み込みに移行。
+//! - drain 側: `Runtime::drain_runtime_requests()` が `WM_EXECUTE_EFFECTS` /
+//!   `WM_DRAIN_OUTPUT_QUEUE` の末尾で呼ばれ、各リクエストを実行する。
 
 use awase::types::VkCode;
 
 /// `Output` が `Runtime` に依頼する遅延操作。
+///
+/// 各バリアントは現在 H-4-b で push 側が実装される予定のため構築されていない。
+/// drain 側（`Runtime::drain_runtime_requests`）はすでに配線済み。
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // #17 (H-4-b) で vk_send.rs の with_app 置換時に構築される
+#[allow(dead_code)] // push 側は H-4-b で vk_send.rs の with_app 置換時に構築される
 pub(crate) enum RuntimeRequest {
     /// IME 状態を再取得して shadow model を同期する。
     RefreshIme,
     /// アイドル時の変換モードチェックタイマーを再スケジュールする。
     ScheduleIdleConvCheck,
     /// TSF プローブ（cold start ウォームアップ）を開始する。
+    ///
+    /// `output.install_pending_tsf()` で probe を先にインストールしてから push すること。
+    /// `drain_runtime_requests` が `output.pending_tsf_timer()` でタイマー命令を取得し適用する。
     StartTsfProbe,
     /// フォーカスウィンドウの注入クラスを再分類する。
     ReclassifyFocus { vk: VkCode },
@@ -23,12 +34,10 @@ pub(crate) enum RuntimeRequest {
 
 /// `RuntimeRequest` を蓄積し、Runtime が一括で取り出す FIFO バッファ。
 #[derive(Debug, Default)]
-#[allow(dead_code)] // #17 (H-4-b) で Output に組み込まれる
 pub(crate) struct RuntimeOutbox {
     requests: Vec<RuntimeRequest>,
 }
 
-#[allow(dead_code)] // #17 (H-4-b) で呼び出される
 impl RuntimeOutbox {
     #[must_use]
     pub(crate) fn new() -> Self {
@@ -36,6 +45,9 @@ impl RuntimeOutbox {
     }
 
     /// リクエストを末尾に積む。
+    ///
+    /// H-4-b で `vk_send.rs` の `with_app` 呼び出しを置換するまでは未使用。
+    #[allow(dead_code)]
     pub(crate) fn push(&mut self, request: RuntimeRequest) {
         self.requests.push(request);
     }
