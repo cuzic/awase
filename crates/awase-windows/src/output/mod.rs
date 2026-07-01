@@ -878,14 +878,6 @@ impl Output {
         self.warmup_coord.notify_probe_start_composition();
     }
 
-    /// TSF probe（GjiWarmup / ChromeProbe 等）が実行中かどうかを返す。
-    ///
-    /// [`ImeApplyContext::from_view`] の `probe_in_flight` 引数に渡す。
-    /// IME apply 経路では probe 中でも即時適用するため、呼び出し元が目的に合わせて使い分ける。
-    pub(crate) fn has_probe_in_flight(&self) -> bool {
-        self.warmup_coord.has_pending_tsf()
-    }
-
     /// GJI probe をキャンセルし、OUTPUT_GATE ガードを解放する。
     ///
     /// `GjiAction::CancelProbe` ハンドラが呼ぶ。内部で以下を一括実行する:

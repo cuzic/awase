@@ -939,8 +939,6 @@ impl WindowsPlatform {
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
     /// [`crate::output::ImeApplyPlanner`] で計画を立て、`Noop` の場合は早期返却する。
     /// それ以外は [`crate::ime_controller::CONTROLLER`] に委譲して実行する。
-    ///
-    /// `probe_in_flight` は常に `false`。IME 開閉適用は TSF probe と直交するため即時実行する。
     pub(crate) fn apply_ime_open_with_view(
         &self,
         open: bool,
@@ -950,7 +948,7 @@ impl WindowsPlatform {
         use awase::platform::ImeOpenOutcome;
         use crate::output::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
 
-        let ctx = ImeApplyContext::from_view(view, open, false, belief);
+        let ctx = ImeApplyContext::from_view(view, open, belief);
         let plan = ImeApplyPlanner::plan(&ctx);
         log::debug!(
             "[apply-ime] open={open} plan={plan:?} (eff={} conf={})",
@@ -959,11 +957,6 @@ impl WindowsPlatform {
 
         let outcome = match plan {
             ImeApplyPlan::Noop => ImeOpenOutcome::AlreadyMatched,
-            ImeApplyPlan::DeferUntilProbe => {
-                // probe_in_flight=false のためここには到達しない（防衛的ハンドリング）。
-                log::debug!("[apply-ime] DeferUntilProbe → UnsafeToToggle");
-                ImeOpenOutcome::UnsafeToToggle
-            }
             _ => crate::ime_controller::CONTROLLER.apply(open, view),
         };
 

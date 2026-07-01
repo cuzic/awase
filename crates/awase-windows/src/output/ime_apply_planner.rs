@@ -110,13 +110,11 @@ pub(crate) enum ImeApplyPlan {
     SendKanjiToggle,
     /// IMM クロスプロセス / GJI direct で TSF compartment を開閉する。
     UseTsfCompartment,
-    /// GJI プローブ実行中のため適用を保留する。
-    DeferUntilProbe,
 }
 
 /// IME 適用の正規化された結果。
 ///
-/// [`ImeOpenOutcome`] を「確定 / 未確定送信済み / 失敗 / 保留 / 陳腐化」に写像する。
+/// [`ImeOpenOutcome`] を「確定 / 未確定送信済み / 失敗 / 陳腐化」に写像する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImeApplyResult {
     /// IMM 経由等で目標状態が確定した（`Applied` / `AlreadyMatched`）。
@@ -125,8 +123,6 @@ pub(crate) enum ImeApplyResult {
     SentUnverified,
     /// 適用に失敗した（`Failed`、非日本語環境等）。
     Failed,
-    /// プローブ保留等で適用しなかった。
-    Deferred,
     /// shadow が stale でトグルが unsafe のため送信を見送った（`UnsafeToToggle`）。
     Stale,
 }
@@ -145,7 +141,7 @@ impl ImeApplyResult {
 
     /// shadow model / applied_snapshot を更新してよい結果か。
     ///
-    /// `Deferred` / `Stale` は適用が実行されていないため状態を進めてはいけない。
+    /// `Stale` は適用が実行されていないため状態を進めてはいけない。
     #[must_use]
     pub(crate) fn should_commit_state(self) -> bool {
         matches!(self, Self::Confirmed | Self::SentUnverified)
@@ -157,8 +153,6 @@ impl ImeApplyResult {
 pub(crate) struct ImeApplyContext {
     /// shadow が既に目標 open 状態か。
     pub already_matched: bool,
-    /// GJI プローブ実行中か。
-    pub probe_in_flight: bool,
     /// IMM クロスプロセス bridge が生きているか（Imm32Unavailable では false）。
     pub imm_cross_available: bool,
     /// 検出済み IME 種別。
@@ -171,8 +165,6 @@ impl ImeApplyContext {
     /// [`crate::state::ImeControlView`] からコンテキストを構築する。
     ///
     /// - `open`: 目標 IME 開閉状態（`already_matched` の計算に必要）。
-    /// - `probe_in_flight`: GJI TSF probe が実行中かどうか。
-    ///   IME apply 経路では `false` を渡す（開閉適用は probe 中でも即時実行する）。
     ///
     /// ## `already_matched` の計算方針（保守的）
     ///
@@ -188,7 +180,6 @@ impl ImeApplyContext {
     pub(crate) fn from_view(
         view: &crate::state::ImeControlView<'_>,
         open: bool,
-        probe_in_flight: bool,
         belief: OpenBelief,
     ) -> Self {
         let already_matched = if !belief.confident {
@@ -205,7 +196,6 @@ impl ImeApplyContext {
         };
         Self {
             already_matched,
-            probe_in_flight,
             imm_cross_available: view.focus.profile.can_use_imm32_cross_process(),
             active_ime_kind: view.observed.active_ime_kind,
             uses_kanji_toggle: view.focus.profile.uses_kanji_toggle(),
@@ -221,17 +211,13 @@ impl ImeApplyPlanner {
     ///
     /// 戦略優先順（ime_controller 準拠）:
     /// 1. 既に一致 → `Noop`
-    /// 2. プローブ実行中 → `DeferUntilProbe`
-    /// 3. IMM クロス可 or GJI 検出 → `UseTsfCompartment`
-    /// 4. MS-IME 検出 → `SendVkDbeHiragana`
-    /// 5. それ以外（VK_KANJI トグルアプリ / 種別不明）→ `SendKanjiToggle`
+    /// 2. IMM クロス可 or GJI 検出 → `UseTsfCompartment`
+    /// 3. MS-IME 検出 → `SendVkDbeHiragana`
+    /// 4. それ以外（VK_KANJI トグルアプリ / 種別不明）→ `SendKanjiToggle`
     #[must_use]
     pub(crate) fn plan(ctx: &ImeApplyContext) -> ImeApplyPlan {
         if ctx.already_matched {
             return ImeApplyPlan::Noop;
-        }
-        if ctx.probe_in_flight {
-            return ImeApplyPlan::DeferUntilProbe;
         }
         match ctx.active_ime_kind {
             ActiveImeKind::GoogleJapaneseInput => ImeApplyPlan::UseTsfCompartment,
@@ -253,7 +239,6 @@ mod tests {
     fn ctx() -> ImeApplyContext {
         ImeApplyContext {
             already_matched: false,
-            probe_in_flight: false,
             imm_cross_available: false,
             active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
             uses_kanji_toggle: false,
@@ -264,12 +249,6 @@ mod tests {
     fn already_matched_is_noop() {
         let c = ImeApplyContext { already_matched: true, ..ctx() };
         assert_eq!(ImeApplyPlanner::plan(&c), ImeApplyPlan::Noop);
-    }
-
-    #[test]
-    fn probe_in_flight_defers_before_strategy() {
-        let c = ImeApplyContext { probe_in_flight: true, ..ctx() };
-        assert_eq!(ImeApplyPlanner::plan(&c), ImeApplyPlan::DeferUntilProbe);
     }
 
     #[test]
@@ -352,7 +331,6 @@ mod tests {
             ImeApplyResult::Stale
         );
         assert!(ImeApplyResult::Confirmed.should_commit_state());
-        assert!(!ImeApplyResult::Deferred.should_commit_state());
         assert!(!ImeApplyResult::Stale.should_commit_state());
     }
 }
