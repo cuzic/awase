@@ -204,7 +204,8 @@ impl Runtime {
             self.platform_state.ime.belief.is_japanese_ime(),
         );
 
-        self.platform_state.last_focus_change_ms = crate::hook::current_tick_ms();
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state.last_focus_change_ms = tick_ms.0;
         self.platform.notify_focus_changed();
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
@@ -214,11 +215,14 @@ impl Runtime {
         let pre_focus_explicit_off_ms = self.platform_state.ime.persistent_explicit_off_ms();
         self.platform_state
             .ime
-            .dispatch_event(crate::state::ime_event::ImeEvent::FocusChanged {
-                from: None,
-                to: new_hwnd,
-                profile: new_profile,
-            });
+            .dispatch_event(
+                crate::state::ime_event::ImeEvent::FocusChanged {
+                    from: None,
+                    to: new_hwnd,
+                    profile: new_profile,
+                },
+                tick_ms,
+            );
 
         {
             let process_name = self.platform.focus.process_name().to_owned();
@@ -251,7 +255,9 @@ impl Runtime {
             }
             let effective_cache = if stale_false_cache { None } else { cache_hit };
             let effective_cache_miss = effective_cache.is_none();
-            self.platform_state.ime.apply_hwnd_cache_restore(effective_cache);
+            self.platform_state
+                .ime
+                .apply_hwnd_cache_restore(effective_cache, tick_ms);
 
             // TsfNative / Imm32Unavailable プロファイルへの cache miss 入場では、
             // 前ウィンドウの ime_on=false が carry over したまま IMM/poll で復旧できず
@@ -264,9 +270,8 @@ impl Runtime {
                         | crate::focus::classify::AppImeProfile::Imm32Unavailable,
                 )
             {
-                let now_ms = crate::hook::current_tick_ms();
                 let last_off_ms = pre_focus_explicit_off_ms;
-                let elapsed = now_ms.saturating_sub(last_off_ms);
+                let elapsed = tick_ms.saturating_sub(last_off_ms);
                 // CoreWindow (UWP/WinUI) は Imm32Unavailable でも TSF ネイティブ。
                 // Chrome/Edge と異なりキャッシュミス時は安全デフォルト OFF を適用する
                 // （Chrome は awase が制御できないため false→true 寄せが必要だが、
@@ -279,7 +284,9 @@ impl Runtime {
                         if is_imm_broken { "Imm32Unavailable" } else { "TsfNative" },
                     );
                 } else if is_imm_broken && !is_imm_broken_tsf_native {
-                    self.platform_state.ime.reset_stale_ime_on_for_imm_broken();
+                    self.platform_state
+                        .ime
+                        .reset_stale_ime_on_for_imm_broken(tick_ms);
                 } else {
                     // TsfNative cache miss (CoreWindow を含む): 前ウィンドウの belief true を
                     // carry-over すると hiragana 直接注入が発生する。安全デフォルト OFF に倒す。
@@ -292,7 +299,9 @@ impl Runtime {
                              → belief リセットをスキップ (transient, conv 保護)"
                         );
                     } else {
-                        self.platform_state.ime.reset_to_off_for_tsf_native_cache_miss();
+                        self.platform_state
+                            .ime
+                            .reset_to_off_for_tsf_native_cache_miss(tick_ms);
                     }
                 }
             }
@@ -304,7 +313,7 @@ impl Runtime {
         ) {
             let ime_on_now = self.platform_state.ime.effective_open();
             if ime_on_now {
-                self.platform_state.ime.mirror_applied_open(true);
+                self.platform_state.ime.mirror_applied_open(true, tick_ms);
                 log::debug!(
                     "[focus] TsfNative hard pre-sync applied=true (prevent spurious VK_KANJI from SetOpen(true))"
                 );

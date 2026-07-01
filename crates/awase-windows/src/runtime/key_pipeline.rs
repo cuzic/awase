@@ -180,7 +180,8 @@ impl Runtime {
         if !matches!(event.event_type, KeyEventType::KeyDown)
             && crate::vk::is_ctrl_variant(event.vk_code)
         {
-            self.platform_state.ime.on_ctrl_key_up(event.vk_code);
+            let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+            self.platform_state.ime.on_ctrl_key_up(event.vk_code, tick_ms);
         }
 
         self.kp_stage_execute(decision, &event, shadow_toggled)
@@ -241,7 +242,8 @@ impl Runtime {
     /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
         let in_flight = self.platform.output_in_flight_ms();
-        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms();
+        let now_tick = crate::state::TickMs(hook::current_tick_ms());
+        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
         let is_tsf_native = matches!(
             self.platform.current_app_profile(),
             crate::focus::class_names::AppImeProfile::TsfNative
@@ -275,7 +277,7 @@ impl Runtime {
         };
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
-        let conv_mode_changed = self.platform.output.conv_mode.update_from_conv(conv);
+        let conv_mode_changed = self.platform.output.conv_mode.update_from_conv(conv, now_tick);
 
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
@@ -317,7 +319,9 @@ impl Runtime {
                 {
                     self.platform.timer.kill(TIMER_IME_REFRESH);
                     let generation = self.platform_state.ime.event_log.next_seq();
-                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
+                    self.platform_state
+                        .ime
+                        .handle_engine_set_open(true, false, generation, now_tick);
                     log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
                 }
 
@@ -329,7 +333,9 @@ impl Runtime {
                 {
                     self.platform.timer.kill(TIMER_IME_REFRESH);
                     let generation = self.platform_state.ime.event_log.next_seq();
-                    self.platform_state.ime.handle_engine_set_open(true, false, generation);
+                    self.platform_state
+                        .ime
+                        .handle_engine_set_open(true, false, generation, now_tick);
                     log::info!(
                         "[idle-conv-check] TsfNative: belief romaji 回復 + shadow=ON → engine 再起動"
                     );
@@ -347,7 +353,9 @@ impl Runtime {
         {
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.event_log.next_seq();
-            self.platform_state.ime.handle_engine_set_open(true, false, generation);
+            self.platform_state
+                .ime
+                .handle_engine_set_open(true, false, generation, now_tick);
             log::info!("[idle-conv-check] TsfNative: ひらがな切替検出 + shadow=OFF → IME ON 同期");
         }
     }
@@ -381,9 +389,12 @@ impl Runtime {
             ShadowImeAction::TurnOn => true,
             ShadowImeAction::TurnOff => false,
         };
+        let tick_ms = crate::state::TickMs(hook::current_tick_ms());
         match kind {
-            IntentKind::SyncKey => self.platform_state.ime.write_sync_key(new_val),
-            IntentKind::PhysicalImeKey => self.platform_state.ime.write_physical_key(new_val),
+            IntentKind::SyncKey => self.platform_state.ime.write_sync_key(new_val, tick_ms),
+            IntentKind::PhysicalImeKey => {
+                self.platform_state.ime.write_physical_key(new_val, tick_ms);
+            }
         }
         if self.platform_state.ime.effective_open() == current {
             return false;
@@ -409,7 +420,7 @@ impl Runtime {
             let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
             if imm_first {
                 // 楽観的 C: async 完了前から ImeModel を OFF に同期する。
-                self.platform_state.ime.mirror_applied_open(false);
+                self.platform_state.ime.mirror_applied_open(false, tick_ms);
                 let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
                 win32_async::spawn_local(async move {
                     let ok = crate::ime::set_ime_open_cross_process_async(false).await;
@@ -465,10 +476,12 @@ impl Runtime {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.event_log.next_seq();
+            let tick_ms = crate::state::TickMs(hook::current_tick_ms());
             let applied = self.platform_state.ime.handle_engine_set_open(
                 new_ime_on,
                 event.modifier_snapshot.ctrl,
                 generation,
+                tick_ms,
             );
             log::debug!(
                 "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended{}",
@@ -610,11 +623,11 @@ const fn compute_focus_probe_grace(
 }
 
 impl Runtime {
-    fn apply_effective_ime(&mut self, effective: bool) {
+    fn apply_effective_ime(&mut self, effective: bool, tick_ms: crate::state::TickMs) {
         if effective {
             self.platform_state.ime.reset_detect_state();
         }
-        self.platform_state.ime.write_focus_probe(effective);
+        self.platform_state.ime.write_focus_probe(effective, tick_ms);
     }
 }
 
@@ -655,14 +668,15 @@ impl Runtime {
         last_focus_change_ms: u64,
         shadow_on: bool,
     ) {
-        let probe_age_ms = hook::current_tick_ms().saturating_sub(probe_started_ms);
+        let now_tick_ms = crate::state::TickMs(hook::current_tick_ms());
+        let probe_age_ms = now_tick_ms.saturating_sub(probe_started_ms);
         let ime_on_before_probe = self.platform_state.ime.effective_open();
 
         self.platform_state
             .ime
             .set_is_japanese_ime(probe.is_japanese_ime);
 
-        let now_ms = hook::current_tick_ms();
+        let now_ms = now_tick_ms.0;
         let signals = compute_focus_probe_grace(
             now_ms,
             probe_age_ms,
@@ -681,14 +695,14 @@ impl Runtime {
             if !effective && signals.any() {
                 Some(signals.primary_reason())
             } else {
-                self.apply_effective_ime(effective);
+                self.apply_effective_ime(effective, now_tick_ms);
                 None
             }
         } else {
             // TsfNative/Imm32Unavailable: IMM32 非対応のため probe は常に None を返す。
             // shadow の apply 値を代替観測として focus_probe スロットに記録する。
             if probe.is_japanese_ime {
-                self.apply_effective_ime(shadow_on);
+                self.apply_effective_ime(shadow_on, now_tick_ms);
             }
             None
         };
@@ -709,7 +723,7 @@ impl Runtime {
                 if let Some(conv) =
                     unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
                 {
-                    self.platform.output.conv_mode.update_from_conv(conv);
+                    self.platform.output.conv_mode.update_from_conv(conv, now_tick_ms);
                     self.platform_state.ime.set_prev_conversion_mode(Some(conv));
                     let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
                     let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;

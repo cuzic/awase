@@ -141,7 +141,8 @@ impl Runtime {
                 );
                 log::debug!("[stage-observe] gji_result={:?}", obs.observer_poll_value);
                 if let Some(v) = obs.observer_poll_value {
-                    self.platform_state.ime.write_observer_poll(v);
+                    let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+                    self.platform_state.ime.write_observer_poll(v, tick_ms);
                 }
             }
             ImeReadStrategy::OsPoll => {
@@ -257,6 +258,7 @@ impl Runtime {
         let ime_on_before_poll = self.platform_state.ime.effective_open();
         let input_mode_before_poll = self.platform_state.ime.belief.input_mode();
 
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         let observer_out = match ime_snap {
             None => unsafe {
                 crate::observer::ime_observer::poll_and_classify_ime(
@@ -267,10 +269,9 @@ impl Runtime {
                 )
             },
             Some(snap) => {
-                let now_ms = crate::hook::current_tick_ms();
                 crate::observer::ime_observer::classify_fetched_snapshot(
                     snap,
-                    now_ms,
+                    tick_ms.0,
                     self.platform_state.ime.effective_open(),
                     self.platform_state.ime.is_force_on_guard_active(),
                     self.platform_state.ime.belief.input_mode(),
@@ -278,7 +279,7 @@ impl Runtime {
                 )
             }
         };
-        self.platform_state.ime.apply_ime_update(&observer_out);
+        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms);
 
         let miss_after = self.platform_state.ime.detect_miss_count();
 
@@ -345,7 +346,8 @@ impl Runtime {
         }
         log::debug!("[composition] focus change → marking cold");
         let ime_on_now = self.platform_state.ime.effective_open();
-        self.platform_state.ime.mirror_applied_open(ime_on_now);
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state.ime.mirror_applied_open(ime_on_now, tick_ms);
         self.platform.mark_composition_cold_focus_change();
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
@@ -389,7 +391,8 @@ impl Runtime {
         let focus_change_conv =
             unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
         if let Some(conv) = focus_change_conv {
-            self.platform.output.conv_mode.update_from_conv(conv);
+            let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+            self.platform.output.conv_mode.update_from_conv(conv, tick_ms);
         }
         let eisu_guard_active = applied_open == Some(true)
             && focus_change_conv.is_some_and(|conv| ConvMode::from_u32(conv).is_eisu());
@@ -443,13 +446,17 @@ impl Runtime {
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
              → set_ime_open({desired})"
         );
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         self.platform_state
             .ime
-            .dispatch_event(crate::state::ime_event::ImeEvent::DriftDetected {
-                desired,
-                observed,
-                duration_ms,
-            });
+            .dispatch_event(
+                crate::state::ime_event::ImeEvent::DriftDetected {
+                    desired,
+                    observed,
+                    duration_ms,
+                },
+                tick_ms,
+            );
         let _ = self.platform.set_ime_open(desired);
         self.platform_state
             .ime

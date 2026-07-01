@@ -168,7 +168,9 @@ impl<'a> ColdWarmupSequence<'a> {
             && ctx.conv_mutation_allowed
             && ctx.charset == awase::engine::Charset::HankakuKatakana
         {
-            self.output.conv_mode.on_hankata_warmup_sent();
+            self.output.conv_mode.on_hankata_warmup_sent(crate::state::TickMs(
+                crate::hook::current_tick_ms(),
+            ));
         }
 
         started

@@ -113,7 +113,9 @@ impl ProbeIo for Output {
             Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, charset);
             // HanKata (F1+F3) leading warmup 後は IMM が ZenKata を返すため conv_mode 汚染を抑制する。
             if charset == crate::state::Charset::HankakuKatakana {
-                self.conv_mode.on_hankata_warmup_sent();
+                self.conv_mode.on_hankata_warmup_sent(crate::state::TickMs(
+                    crate::hook::current_tick_ms(),
+                ));
             }
             chars.len()
         } else {

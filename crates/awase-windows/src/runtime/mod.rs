@@ -388,7 +388,8 @@ impl Runtime {
             // BypassConfirmed（非TSFウィンドウ確定）: warmup_grace を無視して ime_on=false に確定。
             // apply_focus_probe が WARMUP_GRACE_MS(300ms) の抑制で ime_on=true を保持したまま
             // bypass_tsf() に到達すると Win+X 等の1文字ショートカットが NICOLA 変換される。
-            self.platform_state.ime.write_focus_probe(false);
+            let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+            self.platform_state.ime.write_focus_probe(false, tick_ms);
             self.platform.bypass_tsf()
         };
         self.platform.timer.kill(crate::TIMER_TSF_GATE);
@@ -539,7 +540,8 @@ impl Runtime {
                 self.platform_state.ime.belief.prev_conversion_mode(),
             )
         };
-        self.platform_state.ime.apply_ime_update(&observer_out);
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms);
 
         // LastAppliedImeState を OS 観測値に同期する。
         // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。
@@ -547,7 +549,7 @@ impl Runtime {
         // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
         let observed_ime_on = self.platform_state.ime.effective_open();
-        self.platform_state.ime.mirror_applied_open(observed_ime_on);
+        self.platform_state.ime.mirror_applied_open(observed_ime_on, tick_ms);
         log::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。
@@ -818,7 +820,8 @@ impl Runtime {
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
         // ime_on=true を stale な observe() 結果が即座に上書きしてしまう。
         // force_on_guard で 1 サイクルだけ保護し、次の検出成功時に自然に解除する。
-        self.platform_state.ime.apply_panic_reset();
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state.ime.apply_panic_reset(tick_ms);
         // Step 4: chord barrier も clear (旧 ctrl_bypass_hold 相当)
         self.platform_state.ime.clear_input_barrier();
         self.platform_state.sync_key_gate.clear();

@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use super::ime_event::{EventTime, ImeEvent, ImeEventEnvelope};
+use super::TickMs;
 
 /// デフォルトの保持容量。古い event は drop される。
 pub const DEFAULT_CAPACITY: usize = 512;
@@ -35,12 +36,12 @@ impl ImeEventLog {
     /// Event を記録し、付与された `EventTime` を返す。
     ///
     /// `seq` は単調増加、`monotonic` は `Instant::now()`、
-    /// `tick_ms` は `GetTickCount64()` 由来。
-    pub fn record(&mut self, event: ImeEvent) -> EventTime {
+    /// `tick_ms` は呼び出し元が `GetTickCount64()` から取得して渡す。
+    pub fn record(&mut self, event: ImeEvent, tick_ms: TickMs) -> EventTime {
         let time = EventTime {
             seq: self.next_seq,
             monotonic: Instant::now(),
-            tick_ms: crate::hook::current_tick_ms(),
+            tick_ms: tick_ms.0,
         };
         self.next_seq += 1;
 
@@ -120,8 +121,8 @@ mod tests {
     #[test]
     fn record_assigns_increasing_seq() {
         let mut log = ImeEventLog::new(10);
-        let t0 = log.record(intent(true));
-        let t1 = log.record(intent(false));
+        let t0 = log.record(intent(true), TickMs(0));
+        let t1 = log.record(intent(false), TickMs(1));
         assert_eq!(t0.seq, 0);
         assert_eq!(t1.seq, 1);
         assert_eq!(log.next_seq(), 2);
@@ -131,7 +132,7 @@ mod tests {
     fn capacity_drops_oldest() {
         let mut log = ImeEventLog::new(3);
         for _ in 0..5 {
-            log.record(intent(true));
+            log.record(intent(true), TickMs(0));
         }
         assert_eq!(log.len(), 3);
         // seq は drop されても増え続ける
@@ -145,7 +146,7 @@ mod tests {
     fn recent_returns_newest_first() {
         let mut log = ImeEventLog::new(10);
         for _ in 0..5 {
-            log.record(intent(true));
+            log.record(intent(true), TickMs(0));
         }
         let recent_seqs: Vec<u64> = log.recent(3).map(|e| e.time.seq).collect();
         assert_eq!(recent_seqs, vec![4, 3, 2]);
@@ -155,7 +156,7 @@ mod tests {
     fn recent_vec_returns_newest_first() {
         let mut log = ImeEventLog::new(10);
         for _ in 0..5 {
-            log.record(intent(true));
+            log.record(intent(true), TickMs(0));
         }
         let recent: Vec<u64> = log.recent_vec(3).iter().map(|e| e.time.seq).collect();
         assert_eq!(recent, vec![4, 3, 2]);
@@ -164,8 +165,8 @@ mod tests {
     #[test]
     fn monotonic_timestamps_are_non_decreasing() {
         let mut log = ImeEventLog::new(10);
-        let t0 = log.record(intent(true));
-        let t1 = log.record(intent(false));
+        let t0 = log.record(intent(true), TickMs(0));
+        let t1 = log.record(intent(false), TickMs(1));
         assert!(t1.monotonic >= t0.monotonic);
     }
 }

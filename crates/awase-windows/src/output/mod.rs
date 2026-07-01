@@ -484,7 +484,8 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         // フォーカス変更後 1500ms 以内の HanKata→ZenKata ダウングレードを抑制するため
         // タイムスタンプを記録する（TsfNative IMM/TSF 乖離対策）。
         #[cfg(windows)]
-        self.conv_mode.on_focus_changed();
+        self.conv_mode
+            .on_focus_changed(crate::state::TickMs(crate::hook::current_tick_ms()));
         // deferred_vks は TsfProbeData に内包されているため、
         // pending_tsf が Some の場合は probe と一緒にドロップされる。
     }
@@ -605,7 +606,10 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
         if let Some(fresh_conv) =
             unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
         {
-            self.conv_mode.update_from_conv(fresh_conv);
+            self.conv_mode.update_from_conv(
+                fresh_conv,
+                crate::state::TickMs(crate::hook::current_tick_ms()),
+            );
         }
         let charset = self.conv_mode.get().map(|m| m.charset).unwrap_or(crate::state::Charset::Hiragana);
         let ms = match charset {
@@ -615,7 +619,9 @@ self.tsf_warmup.borrow_mut().on_gji_long_idle()
                 // HanKata warmup (F1+F3) 後は IMM conv が ZenKata (0x0B) を返すことがある。
                 // TsfNative では F3 が IMM FULLSHAPE ビットを変更しないため。conv_mode 汚染を抑制する。
                 if charset == crate::state::Charset::HankakuKatakana {
-                    self.conv_mode.on_hankata_warmup_sent();
+                    self.conv_mode.on_hankata_warmup_sent(crate::state::TickMs(
+                        crate::hook::current_tick_ms(),
+                    ));
                 }
                 ms
             }

@@ -7,6 +7,8 @@ pub(crate) use awase::engine::ConvMode;
 #[cfg(windows)]
 pub(crate) use awase::engine::Charset;
 
+use super::TickMs;
+
 // ─── 管理コンポーネント ────────────────────────────────────────────────────────
 
 /// IME 変換モードを一元管理するコンポーネント。
@@ -38,15 +40,17 @@ impl Default for ConvModeMgr {
     }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg_attr(not(windows), allow(dead_code, unused_variables))]
 impl ConvModeMgr {
     /// フォーカスウィンドウが変わったことを通知する。
     ///
     /// 以後 1500ms 以内の HankakuKatakana → ZenkakuKatakana ダウングレードを抑制する。
     /// TsfNative ウィンドウはフォーカス直後に IMM conv が TSF mode を反映しないため。
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     #[cfg(windows)]
-    pub(crate) fn on_focus_changed(&self) {
-        let until = crate::hook::current_tick_ms() + 1500;
+    pub(crate) fn on_focus_changed(&self, tick_ms: TickMs) {
+        let until = tick_ms.0 + 1500;
         if until > self.suppress_zenkata_until_ms.get() {
             self.suppress_zenkata_until_ms.set(until);
         }
@@ -57,9 +61,11 @@ impl ConvModeMgr {
     /// 以後 500ms 以内の HankakuKatakana → ZenkakuKatakana ダウングレードを抑制する。
     /// TsfNative ウィンドウでは F3 (VK_DBE_SBCSCHAR) が IMM conv の FULLSHAPE ビットを変更しない
     /// ため、F1+F3 送信後の IMM 読み取りが ZenKata (0x0B) を返す副作用を遮断する。
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     #[cfg(windows)]
-    pub(crate) fn on_hankata_warmup_sent(&self) {
-        let until = crate::hook::current_tick_ms() + 500;
+    pub(crate) fn on_hankata_warmup_sent(&self, tick_ms: TickMs) {
+        let until = tick_ms.0 + 500;
         if until > self.suppress_zenkata_until_ms.get() {
             self.suppress_zenkata_until_ms.set(until);
         }
@@ -70,7 +76,9 @@ impl ConvModeMgr {
     /// 変化があった場合のみ `info` ログを出力し `true` を返す。
     /// HankakuKatakana → ZenkakuKatakana のダウングレードは `suppress_zenkata_until_ms` 期限内
     /// であれば無視する（フォーカス後 1500ms または HanKata warmup 後 500ms）。
-    pub(crate) fn update_from_conv(&self, conv: u32) -> bool {
+    ///
+    /// `now_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn update_from_conv(&self, conv: u32, now_ms: TickMs) -> bool {
         let new = ConvMode::from_u32(conv);
         let old = self.mode.get();
         if old != Some(new) {
@@ -78,7 +86,7 @@ impl ConvModeMgr {
             if old.map_or(false, |m| m.charset == Charset::HankakuKatakana)
                 && new.charset == Charset::ZenkakuKatakana
             {
-                let now = crate::hook::current_tick_ms();
+                let now = now_ms.0;
                 let until = self.suppress_zenkata_until_ms.get();
                 if now < until {
                     log::debug!(
