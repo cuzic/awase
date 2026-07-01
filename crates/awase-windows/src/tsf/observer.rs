@@ -268,10 +268,10 @@ impl TsfObservations {
     ///
     /// `tsf_active_kind`（CLSID ベース）が取得済みならそれを優先する。
     /// 未取得（0）の場合は `MicrosoftIme` をデフォルトとする。
-    ///
-    /// `gji_monitor_ok` をフォールバックに使うと、GJI プロセスが起動中でも
-    /// MS-IME がアクティブな場合に GJI と誤判定して VK_IME_OFF を送信してしまうため廃止した。
     /// `VK_DBE_ALPHANUMERIC/HIRAGANA` は GJI でも機能するため未検出時は MsIme 扱いが安全。
+    ///
+    /// なお、一度 GJI と確定した後は `set_tsf_active_kind` により GJI 固定になるため、
+    /// 定期ポーリングで MS-IME に戻ることはない。
     #[must_use]
     pub(crate) fn active_ime_kind(&self) -> ActiveImeKind {
         match self.tsf_active_kind.load(Ordering::Acquire) {
@@ -282,11 +282,21 @@ impl TsfObservations {
     }
 
     /// CLSID ベース IME 種別を更新する。値が変化した場合 `true` を返す。
+    ///
+    /// # GJI 固定ポリシー
+    ///
+    /// 一度 `GoogleJapaneseInput` と確定したら、以後他の種別への変更を拒否する。
+    /// GJI ↔ MS-IME の動的切り替えは通常行われないため、プロセス中は GJI 固定とする。
+    /// デバッグ目的の強制切り替えはトレイメニュー経由で別途実装予定。
     pub(super) fn set_tsf_active_kind(&self, kind: ActiveImeKind) -> bool {
         let val: u8 = match kind {
             ActiveImeKind::GoogleJapaneseInput => 1,
             ActiveImeKind::MicrosoftIme => 2,
         };
+        // GJI(1) 確定後は他種別への降格を禁止する。
+        if self.tsf_active_kind.load(Ordering::Acquire) == 1 && val != 1 {
+            return false;
+        }
         self.tsf_active_kind.swap(val, Ordering::Release) != val
     }
 }
