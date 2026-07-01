@@ -11,7 +11,11 @@
 
 use super::app_ime_policy::AppImePolicy;
 use super::force_guard::{ForceGuardSet, ObserveMissMonitor};
-use super::ime_event::{ChordKind, ImeEvent, ImeEventEnvelope, IntentSource};
+use awase::engine::InputModeState;
+
+use super::ime_event::{
+    ChordKind, ImeEvent, ImeEventEnvelope, InputModeApplyResult, IntentSource,
+};
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
 use super::transition::ImeTransition;
@@ -80,6 +84,14 @@ pub struct ImeModel {
     /// awase が IME をこうしたい状態。UserIntent のみが書き換える。
     pub desired_open: bool,
 
+    /// 入力モード（ローマ字/かな/英数/不明）の belief。
+    ///
+    /// H-3-b で追加。H-3-c で `ImeBelief::input_mode` への直接代入が
+    /// `InputModeObserved` / `InputModeApplied` / `UserChangedInputMode` イベント経由に
+    /// 置換されるまでは shadow として記録するのみで本番判定には使わない。
+    /// H-3-d で `ImeBelief::input_mode` が private 化されたのち、このフィールドが SSOT になる。
+    pub input_mode: InputModeState,
+
     /// 直近のユーザー意図 (intent guard 等の判断材料)
     pub last_intent: Option<RecordedIntent>,
 
@@ -125,6 +137,7 @@ impl ImeModel {
     pub fn new() -> Self {
         Self {
             desired_open: true,
+            input_mode: InputModeState::ObservedRomaji, // ImeBelief 初期値に合わせる
             last_intent: None,
             observations: ObservationStore::default(),
             app_policy: AppImePolicy::standard(),
@@ -327,6 +340,21 @@ impl ImeModel {
                 // 次の SetOpen(desired) が「確認済み apply がない」扱いになり skip されなくなる。
                 // applied は desired に合わせて楽観的にセット（ImmCross async 送信と同じ扱い）。
                 self.applied = AppliedImeState::Optimistic(desired);
+            }
+            ImeEvent::InputModeObserved { mode, .. } => {
+                // 絶対ルール: Observer は desired_open を直接書き換えない（IME ON/OFF に準じる）。
+                // input_mode は観測が正しい情報なので直接更新する。
+                self.input_mode = mode;
+            }
+            ImeEvent::InputModeApplied { mode, result, .. } => {
+                // Skipped の場合はモード変更が起きていないため更新しない。
+                if result == InputModeApplyResult::Applied {
+                    self.input_mode = mode;
+                }
+            }
+            ImeEvent::UserChangedInputMode { mode, .. } => {
+                // ユーザーの明示操作 → 観測と同等の信頼度で即時反映する。
+                self.input_mode = mode;
             }
         }
     }

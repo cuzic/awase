@@ -13,6 +13,10 @@
 
 use std::time::Instant;
 
+use awase::engine::InputModeState;
+
+use super::TickMs;
+
 /// HWND の Send-safe な表現 (raw pointer 値を usize で保持)。
 ///
 /// 実際の `HWND` は raw pointer を含むため Send/Sync ではない。
@@ -146,6 +150,32 @@ pub enum ApplyError {
     Other,
 }
 
+/// `InputModeApplied` event における適用手段。
+///
+/// awase が能動的に入力モードを変更するとき、どの経路で行ったかを記録する。
+/// reducer が適用後の belief 更新や競合解決に使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputModeApplyStrategy {
+    /// IMM-broken アプリ（Chrome/Edge 等）向けの強制補正 (AssumedRomaji)。
+    /// IMM クロスプロセス呼び出しが不可のため、観測値を捨てて仮定に切り替える。
+    ImmBrokenCorrection,
+    /// パニックリセット時の強制 ObservedRomaji 設定。
+    PanicReset,
+    /// フォーカス変更に伴う入力モードリセット（前ウィンドウの stale 値を消去）。
+    FocusReset,
+    /// hwnd キャッシュからの入力モード復元（前回フォーカス時の belief を再現）。
+    CacheRestore,
+}
+
+/// `InputModeApplied` event における適用結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputModeApplyResult {
+    /// 入力モードを変更した。
+    Applied,
+    /// ObservedEisu guard 等の条件でスキップした（モード変更なし）。
+    Skipped,
+}
+
 /// IME 状態モデルへの全 event。
 ///
 /// 時刻情報は `ImeEventEnvelope::time` に集約する (event 内に重複させない)。
@@ -204,6 +234,37 @@ pub enum ImeEvent {
         observed: bool,
         duration_ms: u64,
     },
+
+    /// 入力モード（ローマ字/かな/英数 等）を外部から観測した。
+    ///
+    /// GJI probe・IMM クエリ・conv_mode ビット変化など passively 取得した値を通知する。
+    /// reducer は `ImeModel::input_mode` をこの値で上書きする。
+    ///
+    /// `at` は観測を取得したときの tick_ms（envelop time と一致することが多いが、
+    /// 非同期 probe が完了した時刻を明示したい場合は別値になることがある）。
+    InputModeObserved {
+        mode: InputModeState,
+        source: ObservationSource,
+        at: TickMs,
+    },
+
+    /// awase が能動的に入力モードを変更した（または変更しようとした）。
+    ///
+    /// IMM-broken 補正・パニックリセット・フォーカスリセット・キャッシュ復元など、
+    /// awase 側が belief を書き換える経路はすべてこのイベントで通知する。
+    /// `result` が `Skipped` の場合 reducer は `input_mode` を更新しない。
+    InputModeApplied {
+        mode: InputModeState,
+        strategy: InputModeApplyStrategy,
+        result: InputModeApplyResult,
+        at: TickMs,
+    },
+
+    /// ユーザーが入力モードを明示的に変更した。
+    ///
+    /// Ctrl+Caps・VK_DBE_ROMAN・VK_DBE_HIRAGANA などのユーザー操作で
+    /// input_mode が決定したときに通知する。
+    UserChangedInputMode { mode: InputModeState, at: TickMs },
 }
 
 impl ImeEvent {
