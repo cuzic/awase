@@ -185,7 +185,7 @@ impl Runtime {
         // 前ウィンドウの stale な ObservedKana を引き継いでいると、FocusChanged の ctx で
         // engine が inactive になる。broken アプリでは入力モードを検出できないため、
         // ime_on=true のとき AssumedRomaji と仮定して補正する。
-        // ただし ObservedKana が英数モード由来の場合は補正しない（英数モードで Engine ON 誤起動防止）。
+        // ただし ObservedEisu（英数モード確定済み）の場合は補正しない（Engine ON 誤起動防止）。
         if skip_imm_query
             && self.platform_state.ime.effective_open()
             && !self
@@ -385,8 +385,7 @@ impl Runtime {
         }
 
         let applied_open = self.platform_state.ime.model().applied.applied_open();
-        // tray で英数／カタカナ等に切り替えた直後の conv を読み、prev_conversion_mode を更新する。
-        // apply_force_on_for_imm_broken（直後に呼ばれる）が正確な conv を参照できるようにする。
+        // tray で英数／カタカナ等に切り替えた直後の conv を読む。
         // 英数モード (is_eisu) なら warmup をスキップする:
         //   NATIVE=0 のまま VK_DBE_HIRAGANA を送るとひらがなモードに戻ってしまうため。
         // 旧 eisu_guard は conv=0x0000 のみを対象としていたが、MS-IME は 0x0010 (ROMAN=1,NATIVE=0)
