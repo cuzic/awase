@@ -349,21 +349,23 @@ impl Runtime {
                     );
                 }
 
-                // ObservedEisu 検出 + shadow=ON → 自動 IME OFF（直接入力）
-                // IME-ON の半角英数（英字キーが ASCII で通る「IME 中立」モード）は使用しない設計。
-                // 検出次第 IME OFF に落とし、直接入力として扱う。
-                if new_mode == InputModeState::ObservedEisu
-                    && self.platform_state.ime.effective_open()
-                {
+                // ObservedEisu 検出 → 自動 DirectInput 切替
+                // 半角英数（IME-ON の 0x10 モード）は使用しない設計。shadow ON/OFF を問わず
+                // VK_KANJI で DirectInput へ落とす。
+                // shadow=ON 偽装（Some((true,0))）で already_matched をバイパスして
+                // MsImeDirectStrategy の VK_KANJI 送信を確実に実行させる。
+                if new_mode == InputModeState::ObservedEisu {
                     log::info!(
-                        "[idle-conv-check] TsfNative: ObservedEisu + shadow=ON → 自動 IME OFF（直接入力）"
+                        "[idle-conv-check] TsfNative: ObservedEisu 検出 → VK_KANJI (DirectInput)"
                     );
-                    self.platform.apply_ime_open_with_applied(false, None);
                     self.platform.timer.kill(TIMER_IME_REFRESH);
                     let generation = self.platform_state.ime.event_log.next_seq();
                     self.platform_state
                         .ime
                         .handle_engine_set_open(false, false, generation, now_tick);
+                    let outcome =
+                        self.platform.apply_ime_open_with_applied(false, Some((true, 0)));
+                    self.on_ime_apply_complete(false, outcome);
                 }
             }
         }
