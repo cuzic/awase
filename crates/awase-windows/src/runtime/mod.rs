@@ -6,7 +6,6 @@ mod ime_refresh;
 mod key_pipeline;
 pub(crate) mod message_handlers;
 pub(crate) mod outbox;
-mod refresh_scheduler;
 mod transport;
 
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
@@ -92,7 +91,6 @@ impl PostBypassEntry {
 /// `Runtime` は以下の論理コンポーネントへの Facade として機能する：
 ///
 /// - [`focus_tracker::FocusTracker`] — フォーカス追跡・IMM 能力学習・sync key 補完
-/// - [`refresh_scheduler::RefreshScheduler`] — IME リフレッシュのタイマー調停
 /// - [`ime_coordinator::ImeCoordinator`] — IME apply・パニック回復の調停
 ///
 /// コンポーネント間の相互参照はなく、`Runtime` を介してのみ通信する。
@@ -111,8 +109,6 @@ pub struct Runtime {
     all_keymaps: crate::keymap::KeymapTable,
     /// post_bypass コンパイル済みルール一覧
     pub(crate) post_bypass_rules: Vec<PostBypassEntry>,
-    /// IME リフレッシュスケジューリング論理コンポーネント
-    refresh_scheduler: refresh_scheduler::RefreshScheduler,
     /// IME apply・パニック回復の調停
     ime_coordinator: ime_coordinator::ImeCoordinator,
 }
@@ -613,7 +609,6 @@ impl Runtime {
             platform_state,
             all_keymaps,
             post_bypass_rules,
-            refresh_scheduler: refresh_scheduler::RefreshScheduler,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
         }
     }
@@ -693,14 +688,6 @@ impl Runtime {
     /// IMM 能力学習キャッシュをクリアして削除件数を返す。
     pub(crate) fn clear_imm_learning(&mut self) -> usize {
         self.platform.focus.clear_imm_learning()
-    }
-
-    /// TSF プローブマシンをインストールしてタイマーを起動する（async 送信パス用）。
-    pub(crate) fn install_pending_tsf_and_set_timer(
-        &mut self,
-        machine: Box<dyn crate::tsf::tickable_fsm::TickableFsm>,
-    ) {
-        self.platform.install_pending_tsf_and_set_timer(machine);
     }
 
     /// async パスの IME apply 完了処理（executor 更新 + on_ime_apply_complete）。
@@ -807,23 +794,11 @@ impl Runtime {
         log::debug!("[runtime-outbox] {} request(s) を drain", requests.len());
         for request in requests {
             match request {
-                RuntimeRequest::RefreshIme => {
-                    log::debug!("[runtime-outbox] RefreshIme → schedule_ime_refresh(0)");
-                    self.schedule_ime_refresh(0);
-                }
-                RuntimeRequest::ScheduleIdleConvCheck => {
-                    log::debug!("[runtime-outbox] ScheduleIdleConvCheck → reschedule_ime_refresh");
-                    self.reschedule_ime_refresh();
-                }
                 RuntimeRequest::StartTsfProbe => {
                     log::debug!("[runtime-outbox] StartTsfProbe → pending TSF timer 適用");
                     if let Some(cmd) = self.platform.output.pending_tsf_timer() {
                         self.platform.apply_timer_command(cmd);
                     }
-                }
-                RuntimeRequest::ReclassifyFocus { vk } => {
-                    log::debug!("[runtime-outbox] ReclassifyFocus vk=0x{:02X}", vk);
-                    // TODO(H-4-b): vk_send.rs の injection_hint 更新 with_app をここへ移行
                 }
             }
         }

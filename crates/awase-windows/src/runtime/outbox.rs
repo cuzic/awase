@@ -10,22 +10,14 @@
 //! - drain 側: `Runtime::drain_runtime_requests()` が `WM_EXECUTE_EFFECTS` /
 //!   `WM_DRAIN_OUTPUT_QUEUE` の末尾で呼ばれ、各リクエストを実行する。
 
-use awase::types::VkCode;
-
 /// `Output` が `Runtime` に依頼する遅延操作。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RuntimeRequest {
-    /// IME 状態を再取得して shadow model を同期する。
-    RefreshIme,
-    /// アイドル時の変換モードチェックタイマーを再スケジュールする。
-    ScheduleIdleConvCheck,
     /// TSF プローブ（cold start ウォームアップ）を開始する。
     ///
     /// `output.install_pending_tsf()` で probe を先にインストールしてから push すること。
     /// `drain_runtime_requests` が `output.pending_tsf_timer()` でタイマー命令を取得し適用する。
     StartTsfProbe,
-    /// フォーカスウィンドウの注入クラスを再分類する。
-    ReclassifyFocus { vk: VkCode },
 }
 
 /// `RuntimeRequest` を蓄積し、Runtime が一括で取り出す FIFO バッファ。
@@ -48,11 +40,5 @@ impl RuntimeOutbox {
     /// 蓄積したリクエストを全件取り出してバッファを空にする。
     pub(crate) fn drain(&mut self) -> Vec<RuntimeRequest> {
         std::mem::take(&mut self.requests)
-    }
-
-    /// 保留リクエストがなければ true。
-    #[must_use]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.requests.is_empty()
     }
 }
