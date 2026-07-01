@@ -946,7 +946,7 @@ impl WindowsPlatform {
         &self,
         open: bool,
         applied: Option<(bool, u64)>,
-        belief: crate::output::ApplyBelief,
+        belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
         use awase::platform::ImeOpenOutcome;
         use crate::output::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
@@ -987,7 +987,7 @@ impl WindowsPlatform {
         applied: Option<(bool, u64)>,
     ) -> awase::platform::ImeOpenOutcome {
         let shadow_on = applied.map_or(false, |(s, _)| s);
-        self.apply_ime_open_with_belief(open, applied, crate::output::ApplyBelief::from_shadow(shadow_on))
+        self.apply_ime_open_with_belief(open, applied, crate::output::OpenBelief::from_shadow(shadow_on))
     }
 
     // ── タイマー問い合わせ ──

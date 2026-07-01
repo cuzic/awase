@@ -14,12 +14,12 @@ use crate::tsf::observer::ActiveImeKind;
 
 // ── Observation → Belief reduction ───────────────────────────────
 
-/// [`reduce_apply_belief`] へ渡す観測値の集約。
+/// [`reduce_open_belief`] へ渡す観測値の集約。
 ///
 /// 呼び出し元が収集できる全観測値をここにまとめる。
 /// planner / strategy は自らこれらの値を読まない（テスト可能性のため）。
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ApplyBeliefInputs {
+pub(crate) struct OpenBeliefInputs {
     // ── 指令状態 ──
     pub shadow_on: bool,
     pub applied: crate::state::AppliedImeState,
@@ -37,21 +37,21 @@ pub(crate) struct ApplyBeliefInputs {
 
 /// 複数の観測値を 1 つの「適用時 IME 状態ビリーフ」に純粋関数で還元する。
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ApplyBelief {
+pub(crate) struct OpenBelief {
     /// 現在の IME open 状態の推定値。
     pub effective_open: bool,
     /// 推定に十分な確信があるか。`false` の場合は already_matched を強制 false にする。
     pub confident: bool,
 }
 
-impl ApplyBelief {
+impl OpenBelief {
     /// shadow のみから自明なビリーフを作る（後方互換ラッパー用）。
     pub(crate) fn from_shadow(shadow_on: bool) -> Self {
         Self { effective_open: shadow_on, confident: true }
     }
 }
 
-/// 観測値を純粋に還元して `ApplyBelief` を返す。
+/// 観測値を純粋に還元して `OpenBelief` を返す。
 ///
 /// # effective_open の計算
 /// `conv_mode` が取得できた場合はそれを ground-truth として使用する（conv=0 → DirectInput=false）。
@@ -61,7 +61,7 @@ impl ApplyBelief {
 /// EngineIntent かつ ImmCross/GJI で確認できない環境（KanjiToggle 系）でのみ
 /// `safely_confirmed` を検査する。それ以外は常に `true`。
 /// `confident=false` は「already_matched を強制 false」つまり「必ず apply する」を意味する。
-pub(crate) fn reduce_apply_belief(inputs: &ApplyBeliefInputs, desired_open: bool) -> ApplyBelief {
+pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
     let effective_open = if let Some(conv) = inputs.conv_mode {
         conv != 0
     } else {
@@ -83,7 +83,7 @@ pub(crate) fn reduce_apply_belief(inputs: &ApplyBeliefInputs, desired_open: bool
         true
     };
 
-    ApplyBelief { effective_open, confident }
+    OpenBelief { effective_open, confident }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -171,17 +171,17 @@ impl ImeApplyContext {
     /// ここが `already_matched` の **唯一の計算場所**。Strategy は再チェックしない。
     ///
     /// - `belief.confident=false`: 必ず `already_matched=false`（強制 apply）。
-    ///   KanjiToggle 系で desync の疑いがある場合（[`reduce_apply_belief`] で判定）に設定される。
+    ///   KanjiToggle 系で desync の疑いがある場合（[`reduce_open_belief`] で判定）に設定される。
     /// - GJI: `open=true && belief.effective_open=true` のみ `AlreadyMatched`。
     ///   `GjiDirectStrategy` は `open=false` では shadow に関わらず VK_IME_OFF（冪等）を送る。
     /// - KanjiToggle / MS-IME: `belief.effective_open == open` で `AlreadyMatched`。
-    ///   `effective_open` は `reduce_apply_belief` が candidate_visible / candidate_was_seen を
+    ///   `effective_open` は `reduce_open_belief` が candidate_visible / candidate_was_seen を
     ///   加味して計算済み。
     pub(crate) fn from_view(
         view: &crate::state::ImeControlView<'_>,
         open: bool,
         probe_in_flight: bool,
-        belief: ApplyBelief,
+        belief: OpenBelief,
     ) -> Self {
         let already_matched = if !belief.confident {
             false

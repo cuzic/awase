@@ -711,7 +711,7 @@ impl DecisionExecutor {
                 None
             };
 
-            let belief_inputs = crate::output::ApplyBeliefInputs {
+            let belief_inputs = crate::output::OpenBeliefInputs {
                 shadow_on,
                 applied: self.applied_snapshot,
                 candidate_visible: tsf_obs.gji_candidate_visible(),
@@ -722,7 +722,7 @@ impl DecisionExecutor {
                 is_engine_intent,
                 now_ms,
             };
-            let belief = crate::output::reduce_apply_belief(&belief_inputs, open);
+            let belief = crate::output::reduce_open_belief(&belief_inputs, open);
             log::debug!(
                 "[dispatch-ime] belief: effective={} confident={} conv={:?} \
                  (engine_intent={is_engine_intent} profile={:?})",
@@ -767,13 +767,13 @@ impl DecisionExecutor {
 }
 
 
-/// `reduce_apply_belief` および `AppliedImeState` の unit tests。
+/// `reduce_open_belief` および `AppliedImeState` の unit tests。
 ///
 /// `awase-windows` クレートは `#![cfg(windows)]` で囲まれているため
 /// Windows 実機でのみ実行される。
 #[cfg(test)]
 mod tests {
-    use crate::output::{ApplyBeliefInputs, reduce_apply_belief};
+    use crate::output::{OpenBeliefInputs, reduce_open_belief};
     use crate::state::AppliedImeState;
 
     /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で confident を返すヘルパー。
@@ -784,7 +784,7 @@ mod tests {
         shadow_on: bool,
         now_ms: u64,
     ) -> bool {
-        let inputs = ApplyBeliefInputs {
+        let inputs = OpenBeliefInputs {
             shadow_on,
             applied,
             candidate_visible: false,
@@ -795,7 +795,7 @@ mod tests {
             is_engine_intent: true,
             now_ms,
         };
-        reduce_apply_belief(&inputs, desired).confident
+        reduce_open_belief(&inputs, desired).confident
     }
 
     // 6-C ケース 1: フォーカス直後 (Unknown) → confident=false（必ず apply）
@@ -862,7 +862,7 @@ mod tests {
     // ケース 6: IMM32 使用可 → confident（ImmCross が先行するのでここには来ないが念のため）
     #[test]
     fn confident_when_imm32_available() {
-        let inputs = ApplyBeliefInputs {
+        let inputs = OpenBeliefInputs {
             shadow_on: false,
             applied: AppliedImeState::Unknown,
             candidate_visible: false,
@@ -873,13 +873,13 @@ mod tests {
             is_engine_intent: true,
             now_ms: 1000,
         };
-        assert!(reduce_apply_belief(&inputs, false).confident);
+        assert!(reduce_open_belief(&inputs, false).confident);
     }
 
     // ケース 7: GJI 健全 → confident
     #[test]
     fn confident_when_gji_healthy() {
-        let inputs = ApplyBeliefInputs {
+        let inputs = OpenBeliefInputs {
             shadow_on: false,
             applied: AppliedImeState::Unknown,
             candidate_visible: false,
@@ -890,13 +890,13 @@ mod tests {
             is_engine_intent: true,
             now_ms: 1000,
         };
-        assert!(reduce_apply_belief(&inputs, false).confident);
+        assert!(reduce_open_belief(&inputs, false).confident);
     }
 
     // ケース 8: EngineIntent でない → confident（override 不要）
     #[test]
     fn confident_when_not_engine_intent() {
-        let inputs = ApplyBeliefInputs {
+        let inputs = OpenBeliefInputs {
             shadow_on: false,
             applied: AppliedImeState::Unknown,
             candidate_visible: false,
@@ -907,7 +907,7 @@ mod tests {
             is_engine_intent: false,
             now_ms: 1000,
         };
-        assert!(reduce_apply_belief(&inputs, false).confident);
+        assert!(reduce_open_belief(&inputs, false).confident);
     }
 
     // ケース 9: Confirmed ON + 目標 ON → confident（永続スキップ）

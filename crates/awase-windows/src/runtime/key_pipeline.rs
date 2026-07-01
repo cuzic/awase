@@ -363,7 +363,7 @@ impl Runtime {
                         .ime
                         .handle_engine_set_open(false, false, generation, now_tick);
                     // conv=0x10 (ROMAN bit) が観測済み → IME-ON 確定。direct belief で already_matched をバイパス。
-                    let belief = crate::output::ApplyBelief { effective_open: true, confident: true };
+                    let belief = crate::output::OpenBelief { effective_open: true, confident: true };
                     let outcome = self.platform.apply_ime_open_with_belief(false, None, belief);
                     self.on_ime_apply_complete(false, outcome);
                 }
