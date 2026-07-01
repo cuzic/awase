@@ -5,7 +5,7 @@
 use super::resolve::CharResolution;
 use awase::kana_table::KanaTable;
 use awase::types::VkCode;
-use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER, make_key_input_ex};
+use crate::tsf::output::{INJECTED_MARKER, make_key_input_ex};
 use crate::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, VK_LSHIFT};
 use itertools::Itertools as _;
 use std::collections::HashMap;

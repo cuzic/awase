@@ -112,6 +112,13 @@ pub struct Output {
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
     /// `Platform::set_conv_mode_authority` が `allows_conv_mutation()` の結果を push する。
     pub(crate) conv_mutation_allowed: std::cell::Cell<bool>,
+    /// Output → Runtime の遅延リクエストを蓄積するアウトボックス。
+    ///
+    /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
+    /// `RuntimeRequest` を積んでキー処理境界で Runtime が `take_pending_requests` で drain する。
+    /// TODO(H-4-b): vk_send.rs の `install_pending_tsf_and_set_timer` with_app を
+    /// `RuntimeRequest::StartTsfProbe` へ移行する（現状は plumbing のみ）。
+    pub(crate) runtime_outbox: std::cell::RefCell<crate::runtime::outbox::RuntimeOutbox>,
 }
 
 impl std::fmt::Debug for Output {
@@ -172,12 +179,22 @@ impl Output {
             ime_mode_focus_gen: std::cell::Cell::new(0),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
+            runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
         }
     }
 
     /// conv mutation（`send_eager_tsf_warmup`・`ImmSetConversionStatus` 等）の許可フラグを更新する。
     ///
     /// `Platform::set_conv_mode_authority` が `ConvModeAuthority::allows_conv_mutation()` の結果を push する。
+    /// Output が蓄積した `RuntimeRequest` を全件取り出す。
+    ///
+    /// Runtime がキー処理境界（`send_keys` 完了後）で呼び、各リクエストを実行する。
+    /// TODO(H-4-b): 現状 push 側（vk_send.rs の with_app 置換）が未配線のため常に空。
+    #[allow(dead_code)]
+    pub(crate) fn take_pending_requests(&self) -> Vec<crate::runtime::outbox::RuntimeRequest> {
+        self.runtime_outbox.borrow_mut().drain()
+    }
+
     pub(crate) fn set_conv_mutation_allowed(&self, allowed: bool) {
         self.conv_mutation_allowed.set(allowed);
     }
