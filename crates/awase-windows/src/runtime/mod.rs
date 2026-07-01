@@ -1,4 +1,5 @@
 pub(crate) mod executor;
+mod focus_tracker;
 mod focus_tracking;
 mod ime_refresh;
 mod key_pipeline;
@@ -164,30 +165,25 @@ impl Runtime {
     }
 
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
+    ///
+    /// 判定は [`FocusTracker::decide_imm_capability`]（純粋関数）に委譲し、
+    /// ここではクラス名取得・キャッシュ書き込み・ログの I/O のみ行う。
     pub fn learn_imm_capability_from_miss(&mut self, miss_before: u32, miss_after: u32) {
-        use crate::focus::classifier::ImmCapability;
         if !self.platform.focus.is_focused() {
             return;
         }
         let class_name = self.platform.focus.class_name().to_owned();
-        if miss_after == 0 && miss_before > 0 {
-            let prev = self.platform.focus.imm_capability(&class_name);
-            if prev != Some(ImmCapability::Works) {
-                log::info!("IMM capability learned: {class_name} → Works (detection succeeded)");
-                self.platform
-                    .learn_imm_capability(class_name, ImmCapability::Works);
-            }
-        } else if miss_after >= crate::IME_DETECT_MISS_THRESHOLD
-            && miss_before < crate::IME_DETECT_MISS_THRESHOLD
-        {
-            let prev = self.platform.focus.imm_capability(&class_name);
-            if prev != Some(ImmCapability::Unavailable) {
-                log::info!(
-                    "IMM32 capability learned: {class_name} → Unavailable (detection failed {miss_after} times)"
-                );
-                self.platform
-                    .learn_imm_capability(class_name, ImmCapability::Unavailable);
-            }
+        let current = self.platform.focus.imm_capability(&class_name);
+        if let Some(new_cap) = focus_tracker::FocusTracker::decide_imm_capability(
+            miss_before,
+            miss_after,
+            crate::IME_DETECT_MISS_THRESHOLD,
+            current,
+        ) {
+            log::info!(
+                "IMM capability learned: {class_name} → {new_cap:?} (miss {miss_before}→{miss_after})"
+            );
+            self.platform.learn_imm_capability(class_name, new_cap);
         }
     }
 
