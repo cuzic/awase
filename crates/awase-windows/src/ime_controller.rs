@@ -103,15 +103,15 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 
 // ── MsImeDirectStrategy ──────────────────────────────────────────
 
-/// MS-IME 向けの IME 制御戦略（TsfNative アプリ用）。
+/// MS-IME 向けの冪等 IME 制御戦略（TsfNative アプリ用）。
 ///
 /// CLSID ベースで MS-IME（または互換 IME）がアクティブと判定された場合に、
 /// IMM32 クロスプロセス制御が使えない TSF アプリ（Windows Terminal 等）への制御を担う。
 ///
 /// - ON  → `VK_DBE_HIRAGANA` (0xF2) — ひらがなモードに設定（カタカナ時はスキップ）
-/// - OFF → `VK_KANJI` トグル — DirectInput（直接入力）へ移行。
+/// - OFF → `VK_IME_OFF` (0x1A) — DirectInput（直接入力）へ移行。MS-IME がネイティブに処理する冪等キー。
 ///         `VK_DBE_ALPHANUMERIC` は半角英数（IME-ON）に留まるため使用しない。
-///         conv mode = 0 を DirectInput 済みとみなして二重トグルを防ぐ。
+///         `VK_KANJI` はトグルのため使用しない（shadow desync で逆転する）。
 ///
 /// 適用条件:
 /// - `active_ime_kind == MicrosoftIme` (CLSID ベース判定)
@@ -145,19 +145,12 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             // SAFETY: post_ms_ime_on は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             unsafe { crate::ime::post_ms_ime_on() };
         } else {
-            // 直接入力（DirectInput）へ移行する。
-            // VK_DBE_ALPHANUMERIC は半角英数（IME-ON）モードに落ち着くため使用しない。
-            // VK_KANJI で DirectInput にトグルする。
-            // 二重トグル防止: conv=0 は DirectInput 済みとみなしてスキップ。
-            // Safety: get_ime_conversion_mode_raw_timeout は Win32 API。メインスレッドから呼ぶこと。
-            let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) };
-            if conv == Some(0) {
-                log::debug!("[apply-ime] MS-IME direct: conv=0 → DirectInput 済み (AlreadyMatched)");
-                return ImeOpenOutcome::AlreadyMatched;
-            }
-            log::debug!("[apply-ime] MS-IME direct: conv={conv:08X?} → VK_KANJI (DirectInput)");
-            // SAFETY: post_kanji_toggle_to_focused は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-            unsafe { crate::ime::post_kanji_toggle_to_focused() };
+            // DirectInput（直接入力）へ移行する。
+            // VK_IME_OFF は MS-IME がネイティブに処理する冪等キー。
+            // 既に DirectInput の場合は no-op のため conv チェック不要。
+            log::debug!("[apply-ime] MS-IME direct: VK_IME_OFF (DirectInput, 冪等)");
+            // SAFETY: post_ime_off_direct は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+            unsafe { crate::ime::post_ime_off_direct() };
         }
         ImeOpenOutcome::Applied
     }

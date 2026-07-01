@@ -288,30 +288,45 @@ pub unsafe fn post_ms_ime_off() {
     unsafe { send_ime_mode_key(crate::vk::VK_DBE_ALPHANUMERIC) }
 }
 
-/// GJI 専用 IME ON: VK_IME_ON を送信してひらがなモードに切り替える。
+/// 冪等 IME ON: VK_IME_ON (0x16) を送信して DirectInput → IME ON に切り替える。
 ///
-/// GJI の直接入力モード（IME OFF 状態）で VK_IME_ON を押すとひらがな入力に切り替わる。
-/// 既に ON の場合は no-op（冪等）。
-///
-/// VK_KANJI と異なりトグルではないため shadow desync の影響を受けない。
+/// GJI・MS-IME ともにネイティブに処理する Windows 標準キー。
+/// 既に ON の場合は no-op（冪等）。VK_KANJI トグルと異なり shadow desync の影響を受けない。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_gji_ime_on() {
+pub unsafe fn post_ime_on_direct() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
     unsafe { send_ime_mode_key(crate::vk::VK_IME_ON) }
 }
 
-/// GJI 専用 IME OFF: VK_IME_OFF を送信して IME を無効化する。
+/// 冪等 IME OFF: VK_IME_OFF (0x1A) を送信して DirectInput（直接入力）へ移行する。
 ///
-/// VK_KANJI と異なりトグルではないため shadow desync の影響を受けない。
-/// 既に OFF の場合は no-op（冪等）。
+/// GJI・MS-IME ともにネイティブに処理する Windows 標準キー。
+/// 既に DirectInput の場合は no-op（冪等）。VK_KANJI トグルと異なり shadow desync の影響を受けない。
+/// Chrome/Edge など Imm32Unavailable アプリは VK_IME_OFF を無視するため KanjiToggleStrategy が担当する。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn post_ime_off_direct() {
+    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
+    unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) }
+}
+
+/// GJI 専用 IME ON（後方互換エイリアス）。新規コードは `post_ime_on_direct` を使うこと。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn post_gji_ime_on() {
+    unsafe { post_ime_on_direct() }
+}
+
+/// GJI 専用 IME OFF（後方互換エイリアス）。新規コードは `post_ime_off_direct` を使うこと。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_gji_ime_off() {
-    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) }
+    unsafe { post_ime_off_direct() }
 }
 
 /// IME モード切り替えキーを `SendInput` で送信する。
