@@ -301,8 +301,25 @@ impl Runtime {
                     if is_cold && conv & crate::imm::IME_CMODE_ROMAN != 0 { " cold-start" } else { "" },
                     current,
                 );
-                // conv 変化なしかつ belief 変化なし → 何もすることがない
+                // conv 変化なしかつ belief 変化なし → 通常は何もすることがない。
+                // ただし カタカナ(NATIVE+KATAKANA)+shadow=OFF の場合は例外:
+                //   - AssumedRomaji は romaji_capable のため classify_idle が常に None を返す
+                //   - conv 不変が続く限りこの arm に来続けるため、ここが唯一の回復経路
                 if !conv_mode_changed {
+                    if conv & crate::imm::IME_CMODE_KATAKANA != 0
+                        && conv & crate::imm::IME_CMODE_NATIVE != 0
+                        && !self.platform_state.ime.effective_open()
+                    {
+                        self.platform.timer.kill(TIMER_IME_REFRESH);
+                        let generation = self.platform_state.ime.event_log.next_seq();
+                        self.platform_state
+                            .ime
+                            .handle_engine_set_open(true, false, generation, now_tick);
+                        log::info!(
+                            "[idle-conv-check] TsfNative: カタカナ+shadow=OFF → IME ON 同期 \
+                             (conv=0x{conv:08X} 不変)"
+                        );
+                    }
                     return;
                 }
             }
@@ -370,12 +387,11 @@ impl Runtime {
             }
         }
 
-        // ひらがな系モード（NATIVE=1, KATAKANA=0）への切替は IME ON を意味する。
-        // classify_idle が None を返す場合（belief 変化なし）も含めて conv 変化時に同期する。
-        // カタカナは上記 match arm で処理済みのため除外。
+        // ひらがな/カタカナ(NATIVE=1)+shadow=OFF → conv 変化時に engine ON 同期。
+        // classify_idle が None を返す場合（belief 変化なし）も含む。
+        // カタカナ+conv 不変は上記 None arm で処理済み。
         if conv_mode_changed
             && conv & crate::imm::IME_CMODE_NATIVE != 0
-            && conv & crate::imm::IME_CMODE_KATAKANA == 0
             && !self.platform_state.ime.effective_open()
         {
             self.platform.timer.kill(TIMER_IME_REFRESH);
@@ -383,7 +399,10 @@ impl Runtime {
             self.platform_state
                 .ime
                 .handle_engine_set_open(true, false, generation, now_tick);
-            log::info!("[idle-conv-check] TsfNative: ひらがな切替検出 + shadow=OFF → IME ON 同期");
+            log::info!(
+                "[idle-conv-check] TsfNative: {}切替検出 + shadow=OFF → IME ON 同期",
+                if conv & crate::imm::IME_CMODE_KATAKANA != 0 { "カタカナ" } else { "ひらがな" }
+            );
         }
     }
 
