@@ -2,6 +2,7 @@ use awase::engine::InputModeState;
 use awase::types::{AppKind, FocusKind};
 
 use super::belief::ImeBelief;
+use super::conv_mode::ConvModeAuthority;
 use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::SyncKeyGate;
 use super::ime_event::{
@@ -374,6 +375,27 @@ impl ImeStateHub {
         if let Some(generation) = self.shadow_model.pending_generation() {
             let event = ImeEvent::from_apply_outcome(open, outcome, generation);
             self.dispatch_event(event, TickMs(ts));
+        }
+
+        // conv_mode_authority を apply 結果と再同期する。
+        //
+        // `ConvModeOwnershipChanged` は本来 `UiEffect::EngineStateChanged`（activation の
+        // 遷移エッジ）でのみ発火するが、その effect が実行前に取り消されたりキューに
+        // 積まれたまま古い値で後から dispatch されたりすると、既に Active な状態で
+        // IME だけ再オープンする経路（例: Ctrl+変換 の 2 度目の押下で activation は
+        // 既に Active のため遷移が起きない）で発火せず、conv_mode_authority が
+        // 古い値（UserOwned）のまま取り残されることがある。結果として IME apply は
+        // Confirmed するのに TSF warmup が「non-AwaseOwned」でスキップされ続け、
+        // 「IME OFF 表示 / Engine ON」の desync を引き起こす。
+        // apply が成功/失敗にかかわらず完了するたびに、実際に確定した open 状態
+        // (`effective`) へ補正することで、この経路依存の取りこぼしを構造的になくす。
+        let corrected = if effective {
+            ConvModeAuthority::AwaseOwned
+        } else {
+            ConvModeAuthority::UserOwned
+        };
+        if self.model().conv_mode_authority() != corrected {
+            self.dispatch_event(ImeEvent::ConvModeOwnershipChanged { authority: corrected }, TickMs(ts));
         }
     }
 }
