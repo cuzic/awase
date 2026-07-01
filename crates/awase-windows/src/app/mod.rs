@@ -262,10 +262,7 @@ pub(crate) fn check_keyboard_layout_on_change() {
 fn run_message_loop(taskbar_created_msg: u32) {
     // フックスレッドへエンジンスレッド TID を公開（WM_KEY_FROM_HOOK の送信先）
     // SAFETY: GetCurrentThreadId は常に成功し副作用もない。
-    crate::ENGINE_THREAD_ID.store(
-        unsafe { GetCurrentThreadId() },
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    crate::set_engine_thread_id(unsafe { GetCurrentThreadId() });
 
     let mut msg = MSG::default();
 

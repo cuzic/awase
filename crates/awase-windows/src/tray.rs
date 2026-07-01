@@ -689,7 +689,7 @@ unsafe extern "system" fn tray_wnd_proc(
             // PostMessage ではなく直接処理する（同じスレッドなので安全）
             let layout_names: Vec<String> =
                 crate::with_app_ref(crate::Runtime::layout_names).unwrap_or_default();
-            let elevated = crate::ELEVATED.load(std::sync::atomic::Ordering::Relaxed);
+            let elevated = crate::is_elevated();
             handle_tray_message(hwnd, lparam, &layout_names, elevated);
             LRESULT(0)
         }

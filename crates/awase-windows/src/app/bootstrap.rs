@@ -25,9 +25,8 @@ use crate::platform;
 use crate::runtime::executor;
 use crate::tray;
 use crate::tray::SystemTray;
-use crate::{with_app, with_app_ref, LayoutEntry, Runtime, ELEVATED, RUNTIME};
+use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
-use crate::MAIN_THREAD_ID;
 
 use super::{
     find_config_path, init_ime_sync_keys, init_ngram_validated, load_config, parse_key_combos,
@@ -558,10 +557,9 @@ unsafe extern "system" fn win_event_proc(
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
 pub(super) fn install_ctrl_handler() -> Result<()> {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
-        use crate::{MAIN_THREAD_ID, QUIT_REQUESTED};
         use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-        QUIT_REQUESTED.store(true, Ordering::SeqCst);
-        let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
+        crate::request_quit();
+        let tid = crate::main_thread_id();
         if tid != 0 {
             let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
         }
@@ -666,12 +664,10 @@ pub(super) fn run_all() -> Result<()> {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
             log::info!("--exit-after タイムアウト ({secs}s) → 終了");
-            use crate::{MAIN_THREAD_ID, QUIT_REQUESTED};
-            use std::sync::atomic::Ordering;
             use windows::Win32::Foundation::{LPARAM, WPARAM};
             use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-            QUIT_REQUESTED.store(true, Ordering::SeqCst);
-            let tid = MAIN_THREAD_ID.load(Ordering::SeqCst);
+            crate::request_quit();
+            let tid = crate::main_thread_id();
             if tid != 0 {
                 // SAFETY: tid は起動時に格納した有効なスレッド ID。
                 unsafe {
@@ -721,7 +717,7 @@ pub(super) fn run_all() -> Result<()> {
     let mut diag = StartupDiagnostics::new();
 
     let elevated = tray::is_elevated();
-    ELEVATED.store(elevated, Ordering::Relaxed);
+    crate::set_elevated(elevated);
     if elevated {
         log::info!("Running with administrator privileges");
     } else {
@@ -824,11 +820,8 @@ pub(super) fn run_all() -> Result<()> {
     diag.report();
 
     log::info!("Hook installed. Running message loop...");
-    MAIN_THREAD_ID.store(
-        // SAFETY: GetCurrentThreadId always succeeds and has no preconditions.
-        unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
-        Ordering::SeqCst,
-    );
+    // SAFETY: GetCurrentThreadId always succeeds and has no preconditions.
+    crate::set_main_thread_id(unsafe { windows::Win32::System::Threading::GetCurrentThreadId() });
     if let Err(e) = install_ctrl_handler() {
         log::warn!("{e}");
     }

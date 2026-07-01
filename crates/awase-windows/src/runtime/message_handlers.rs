@@ -4,7 +4,6 @@
 //! すべて `pub(crate)` で `app/mod.rs` からのみ呼ばれる。
 
 use std::mem::size_of;
-use std::sync::atomic::Ordering;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO};
@@ -16,7 +15,7 @@ use crate::vk::VkCodeExt;
 use crate::tray;
 use crate::win32::post_to_main_thread;
 use crate::{
-    with_app, with_app_ref, Runtime, ELEVATED, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG,
+    with_app, with_app_ref, Runtime, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG,
     TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE,
     WM_EXECUTE_EFFECTS,
 };
@@ -168,7 +167,7 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.gji_on_timer_long_idle();
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
-            let last_activity = hook::HOOK_ALIVE_TICK_MS.load(Ordering::Relaxed);
+            let last_activity = hook::hook_alive_tick_ms();
             let now = hook::current_tick_ms();
             let stale_ms = now.saturating_sub(last_activity);
             if stale_ms > 5000 {
@@ -374,7 +373,7 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
         hwnd,
         lparam,
         &layout_names,
-        ELEVATED.load(Ordering::Relaxed),
+        crate::is_elevated(),
     );
 }
 

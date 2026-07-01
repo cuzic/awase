@@ -78,11 +78,34 @@ static CACHED_THUMB_VKS: AtomicU32 = AtomicU32::new(0);
 /// フックコールバックの最終活動タイムスタンプ（ウォッチドッグ用、クロススレッド対応）
 ///
 /// 自己注入キー含む全コールバックで更新する。エンジンスレッドの watchdog がここを読む。
-pub static HOOK_ALIVE_TICK_MS: AtomicU64 = AtomicU64::new(0);
+static HOOK_ALIVE_TICK_MS: AtomicU64 = AtomicU64::new(0);
+
+/// フックコールバックの活動タイムスタンプを現在時刻で更新する
+pub(crate) fn tick_hook_alive() {
+    HOOK_ALIVE_TICK_MS.store(current_tick_ms(), Ordering::Relaxed);
+}
+
+/// フックコールバックの最終活動タイムスタンプ（ms）を返す
+pub fn hook_alive_tick_ms() -> u64 {
+    HOOK_ALIVE_TICK_MS.load(Ordering::Relaxed)
+}
 
 /// install_hook がフックスレッドからの TID 通知を待つスロット
 /// 0 = 待機中、u32::MAX = SetWindowsHookExW 失敗、それ以外 = フックスレッド TID
 static HOOK_TID_INIT_SLOT: AtomicU32 = AtomicU32::new(0);
+
+fn hook_tid_reset() {
+    HOOK_TID_INIT_SLOT.store(0, Ordering::SeqCst);
+}
+fn hook_tid_set(tid: u32) {
+    HOOK_TID_INIT_SLOT.store(tid, Ordering::Release);
+}
+fn hook_tid_fail() {
+    HOOK_TID_INIT_SLOT.store(u32::MAX, Ordering::Release);
+}
+fn hook_tid_poll() -> u32 {
+    HOOK_TID_INIT_SLOT.load(Ordering::Acquire)
+}
 
 /// VK ごとの物理押下状態。non-self-injected な KeyDown/KeyUp で更新する。
 ///
@@ -226,7 +249,7 @@ impl Drop for HookGuard {
 /// スレッドのスポーン失敗、または `SetWindowsHookExW` が失敗した場合。
 pub fn install_hook() -> windows::core::Result<HookGuard> {
     // 多重呼び出し対策: スロットをリセット
-    HOOK_TID_INIT_SLOT.store(0, Ordering::SeqCst);
+    hook_tid_reset();
 
     let thread = std::thread::Builder::new()
         .name("awase-hook".into())
@@ -240,7 +263,7 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
                         HOOK_HANDLE.set(hook);
                     }
                     let tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
-                    HOOK_TID_INIT_SLOT.store(tid, Ordering::Release);
+                    hook_tid_set(tid);
 
                     // 軽量メッセージポンプ（WH_KEYBOARD_LL フック用）
                     let mut msg = MSG::default();
@@ -270,7 +293,7 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
                 Err(e) => {
                     log::error!("SetWindowsHookExW failed in hook thread: {e}");
                     // u32::MAX でエラーを通知
-                    HOOK_TID_INIT_SLOT.store(u32::MAX, Ordering::Release);
+                    hook_tid_fail();
                 }
             }
         })
@@ -281,7 +304,7 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
 
     // フックスレッドが SetWindowsHookExW を完了するまでスピン待機
     let hook_tid = loop {
-        let t = HOOK_TID_INIT_SLOT.load(Ordering::Acquire);
+        let t = hook_tid_poll();
         if t != 0 {
             break t;
         }
@@ -348,7 +371,7 @@ const fn is_self_injected(extra_info: usize) -> bool {
 #[expect(clippy::cognitive_complexity)]
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // ウォッチドッグ用タイムスタンプを更新（自己注入キーも含む全コールバック）
-    HOOK_ALIVE_TICK_MS.store(current_tick_ms(), Ordering::Relaxed);
+    tick_hook_alive();
 
     let hook_handle = *HOOK_HANDLE.get_mut();
     if ncode < 0 {
@@ -423,7 +446,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         modifier_snapshot,
     );
 
-    let engine_tid = crate::ENGINE_THREAD_ID.load(Ordering::Relaxed);
+    let engine_tid = crate::engine_thread_id();
     if engine_tid != 0 {
         let ptr = Box::into_raw(Box::new(event));
         // SAFETY: engine_tid は run_message_loop 先頭で設定された有効なスレッド TID。

@@ -93,21 +93,29 @@ pub use crate::input_defer::{InputDeferQueue, INPUT_DEFER};
 //
 // Ctrl+C ハンドラ（別スレッド）からアクセスされるため、Atomic 型でなければならない。
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// メインスレッド ID（Ctrl+C ハンドラから WM_QUIT を送るため）
-pub static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// エンジンスレッド ID（フックスレッドから WM_KEY_FROM_HOOK を送るため）
+static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub fn main_thread_id() -> u32 { MAIN_THREAD_ID.load(Ordering::SeqCst) }
 #[cfg(windows)]
-pub(crate) static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0);
+pub(crate) fn set_main_thread_id(tid: u32) { MAIN_THREAD_ID.store(tid, Ordering::SeqCst); }
 
-/// Ctrl+C 受信フラグ
-pub static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+#[cfg(windows)]
+pub(crate) fn engine_thread_id() -> u32 { ENGINE_THREAD_ID.load(Ordering::Relaxed) }
+#[cfg(windows)]
+pub(crate) fn set_engine_thread_id(tid: u32) { ENGINE_THREAD_ID.store(tid, Ordering::Relaxed); }
 
-/// 管理者権限フラグ（起動時に設定、メニュー表示で参照）
-pub static ELEVATED: AtomicBool = AtomicBool::new(false);
+static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+pub fn is_quit_requested() -> bool { QUIT_REQUESTED.load(Ordering::SeqCst) }
+#[cfg(windows)]
+pub(crate) fn request_quit() { QUIT_REQUESTED.store(true, Ordering::SeqCst); }
+
+static ELEVATED: AtomicBool = AtomicBool::new(false);
+pub fn is_elevated() -> bool { ELEVATED.load(Ordering::Relaxed) }
+#[cfg(windows)]
+pub(crate) fn set_elevated(v: bool) { ELEVATED.store(v, Ordering::Relaxed); }
 
 /// raw TSF literal 検出後の回収ペイロード。
 ///
