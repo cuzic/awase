@@ -28,12 +28,10 @@ pub use decision::{
 pub use engine::Engine;
 pub use fsm_types::{
     ClassifiedEvent, EngineState, KeyClass, ModifierState, OutputUpdate, ParseAction, PendingKey,
-    PendingThumbData, TimerIntent,
+    PendingThumbData, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
 pub use key_lifecycle::KeyLifecycle;
 pub use nicola_fsm::NicolaFsm;
-
-pub use nicola_fsm::{TIMER_PENDING, TIMER_SPECULATIVE};
 pub use timing::{ThreeKeyResult, TimingJudge};
 
 #[cfg(test)]
