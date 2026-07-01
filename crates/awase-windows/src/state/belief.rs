@@ -33,8 +33,9 @@ use awase::engine::{AssumedReason, InputModeState};
 pub struct ImeBelief {
     /// 入力モード（ローマ字 / かな / 不明）
     ///
-    /// `hook.rs` がフックコールバック内で直接読み取るため `pub(crate)` とする。
-    /// 書き込みは `PlatformState::set_input_mode()` 経由で行うこと。
+    /// 読み取りは [`ImeBelief::input_mode()`] アクセサ経由で行うこと。
+    /// 書き込みは H-3-c 完了まで runtime/ から直接代入しているため `pub(crate)` とする。
+    /// H-3-c（ImeEvent 経由の reducer 置換）が完了次第 `pub(in crate::state)` に絞る予定。
     pub(crate) input_mode: InputModeState,
     /// 日本語 IME がアクティブか
     pub(in crate::state) is_japanese_ime: bool,
@@ -46,6 +47,9 @@ pub struct ImeBelief {
 #[cfg_attr(not(windows), allow(dead_code))]
 impl ImeBelief {
     /// 入力モードを返す。
+    ///
+    /// `self.input_mode` フィールドへの直接アクセスを避け、このアクセサを使うこと。
+    /// フィールドは H-3-d で private 化される予定のため、このメソッドが唯一の読み取り経路となる。
     #[inline]
     pub(crate) const fn input_mode(&self) -> InputModeState {
         self.input_mode
