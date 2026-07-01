@@ -140,6 +140,21 @@ impl AppImeProfile {
     }
 }
 
+/// `AppImeProfile` → `ImePolicyProfile` 変換。
+///
+/// focus 層でクラス名から決定した `AppImeProfile` を、state 層の event ペイロード型
+/// `ImePolicyProfile` に変換する。変換は runtime 境界（`focus_tracking.rs` 等）で行い、
+/// state 層が focus 層に直接依存しない設計を維持する。
+impl From<AppImeProfile> for crate::state::ime_event::ImePolicyProfile {
+    fn from(profile: AppImeProfile) -> Self {
+        match profile {
+            AppImeProfile::Standard => Self::ImmCross,
+            AppImeProfile::Imm32Unavailable => Self::Imm32Unavailable,
+            AppImeProfile::TsfNative => Self::TsfNative,
+        }
+    }
+}
+
 /// ブラウザ系・Electron 系のトップレベルウィンドウクラスかどうかを判定する。
 ///
 /// Chrome 系（Chrome/Edge/Brave/Electron 等）および Firefox が対象。

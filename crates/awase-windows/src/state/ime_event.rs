@@ -13,8 +13,6 @@
 
 use std::time::Instant;
 
-use crate::focus::class_names::AppImeProfile;
-
 /// HWND の Send-safe な表現 (raw pointer 値を usize で保持)。
 ///
 /// 実際の `HWND` は raw pointer を含むため Send/Sync ではない。
@@ -103,6 +101,29 @@ pub enum ObservationConfidence {
     High,
 }
 
+/// state 層が保持するアプリ IME 制御プロファイル。
+///
+/// `focus::class_names::AppImeProfile`（クラス名判定に特化した focus 層の型）への
+/// 逆依存を断つため、state 層では独自の列挙型を定義する。
+/// `FocusChanged` event のペイロードとして運ばれ、reducer が `AppImePolicy` を導出するために使う。
+///
+/// `From<AppImeProfile> for ImePolicyProfile` は focus 層（`focus::class_names`）に実装し、
+/// runtime 境界でフォーカス変更時に変換する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImePolicyProfile {
+    /// 通常の Win32 アプリ。IMM32 クロスプロセス制御（ImmCross）が使用可能。
+    ImmCross,
+    /// Chrome/Edge/UWP 等。IMM32 クロスプロセス制御が使えず、VK_KANJI で制御する。
+    Imm32Unavailable,
+    /// TSF ネイティブ（例: WezTerm/Windows Terminal）。`VK_DBE_HIRAGANA` + TSF probe が必要。
+    TsfNative,
+    /// IME 制御が不要なシンプルなアプリ（将来拡張用）。
+    Plain,
+    /// 未分類。起動直後または分類情報が得られない場合のデフォルト。
+    #[default]
+    Unknown,
+}
+
 /// 入力 chord の種別 (Step 4 で使う、Step 0 では定義のみ)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChordKind {
@@ -168,7 +189,7 @@ pub enum ImeEvent {
     FocusChanged {
         from: Option<HwndId>,
         to: HwndId,
-        profile: AppImeProfile,
+        profile: ImePolicyProfile,
     },
 
     /// Chord transaction の開始 (Ctrl+無変換 押下時等)

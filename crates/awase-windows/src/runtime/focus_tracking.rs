@@ -217,7 +217,7 @@ impl Runtime {
             .dispatch_event(crate::state::ime_event::ImeEvent::FocusChanged {
                 from: None,
                 to: new_hwnd,
-                profile: new_profile,
+                profile: crate::state::ime_event::ImePolicyProfile::from(new_profile),
             });
 
         {
