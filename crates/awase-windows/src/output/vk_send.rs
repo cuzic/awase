@@ -1,11 +1,10 @@
+use super::key_injector::{VkMarker, make_key_input};
 use super::resolve::{ascii_to_vk, CharResolution};
 use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
-use crate::tsf::output::{
-    kana_for_romaji_static, make_key_input_ex, make_tsf_key_input, INJECTED_MARKER,
-};
+use crate::tsf::output::{kana_for_romaji_static, make_key_input_ex, INJECTED_MARKER};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, VK_LSHIFT, VK_OEM_MINUS};
 use awase::types::VkCode;
@@ -13,33 +12,6 @@ use itertools::Itertools as _;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VIRTUAL_KEY,
 };
-
-/// INPUT 構造体を作成するヘルパー（INJECTED_MARKER 固定）
-#[must_use]
-pub(super) const fn make_key_input(vk: VkCode, is_keyup: bool) -> INPUT {
-    make_key_input_ex(vk, is_keyup, INJECTED_MARKER)
-}
-
-/// VK INPUT に使うマーカー種別。
-///
-/// - `Injected`: Chrome/VK モード（INJECTED_MARKER）
-/// - `Tsf`:      WezTerm TSF モード（TSF_MARKER）
-///
-/// LSHIFT は常に INJECTED_MARKER のため、このマーカーは VK 本体にのみ適用する。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum VkMarker {
-    Injected,
-    Tsf,
-}
-
-impl VkMarker {
-    pub(crate) fn make_input(self, vk: VkCode, is_keyup: bool) -> INPUT {
-        match self {
-            Self::Injected => make_key_input(vk, is_keyup),
-            Self::Tsf => make_tsf_key_input(vk, is_keyup),
-        }
-    }
-}
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
@@ -133,7 +105,7 @@ impl Output {
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
     ///
     /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
-    /// 実際の送信処理は [`KeyInjector::send_unicode_char`] に委譲する。
+    /// 実際の送信処理は `KeyInjector::send_unicode_char` に委譲する。
     pub(super) fn send_unicode_char(&self, ch: char) {
         self.injector.send_unicode_char(ch);
     }
