@@ -5,7 +5,7 @@
 //! [`TSF_OBS`] は `pub(in crate::tsf)` のためこのモジュール外から直接アクセス不可（コンパイルエラー）。
 //! `tsf/` 外のコードは [`tsf_obs()`] 経由でのみ読み取れる。
 //!
-//! 判断層（`ime_controller` 等）は [`ObservedState::capture_now()`] 経由のスナップショットを使うこと。
+//! 判断層（`ime_controller` 等）は [`ObservedState::from_snapshot()`] 経由のスナップショットを使うこと。
 //! 直接 [`tsf_obs()`] を呼んではいけない（tick 境界外での非一貫観測の防止）。
 //!
 //! ## 書き込み元
@@ -14,7 +14,7 @@
 //! - `observation_event_proc` → `TSF_OBS.gji_candidate_visible`,
 //!   `TSF_OBS.gji_candidate_show`, `TSF_OBS.focus_namechange`, `TSF_OBS.composition_probe`
 //!
-//! [`ObservedState::capture_now()`]: crate::state::ime_decision_view::ObservedState::capture_now
+//! [`ObservedState::from_snapshot()`]: crate::state::ime_decision_view::ObservedState::from_snapshot
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
@@ -324,12 +324,12 @@ pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 ///
 /// - `output/` — action 層: live シーケンスカウンタ読み取り（スナップショット不可のため直読）
 /// - `runtime/` — observe/poll 層: IME リフレッシュ中の GJI I/O ガード判定
-/// - `state::ime_decision_view` — `ObservedState::capture_now()` の実装元
+/// - `state::ime_decision_view` — `ObservedState::from_snapshot()` の実装元
 /// - `app::key_pipeline` — フォーカスプローブ結果の構築
 ///
 /// ## 呼び出し禁止レイヤー
 ///
-/// 判断層（`ime_controller` 等）は `ObservedState::capture_now()` 経由のスナップショットを使うこと。
+/// 判断層（`ime_controller` 等）は `ObservedState::from_snapshot()` 経由のスナップショットを使うこと。
 /// `tsf_obs()` を直接呼ぶと tick 境界外での非一貫観測が混入する恐れがある。
 pub(crate) fn tsf_obs() -> &'static TsfObservations {
     &TSF_OBS

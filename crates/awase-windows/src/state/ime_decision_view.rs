@@ -12,6 +12,7 @@
 //! `ImeControlView` は `ImeObservationSnapshot` を完全に置き換える。
 
 use crate::focus::class_names::AppImeProfile;
+use crate::tsf::observer::TsfObservations;
 
 /// フォーカス中アプリの分類情報（フォーカス変更時に更新される長期観測）。
 #[derive(Clone, Copy)]
@@ -60,17 +61,20 @@ impl Default for ObservedState {
 }
 
 impl ObservedState {
-    /// 現時点の TSF/GJI 観測値を全フィールドに一括ロードして返す（tick 境界スナップショット）。
+    /// `TsfObservations` スナップショットから `ObservedState` を構築する。
+    ///
+    /// 呼び出し元は `crate::tsf::observer::tsf_obs()` で取得した参照を渡す。
+    /// これにより `state/` レイヤーが `tsf::observer` を直接参照することなく
+    /// スナップショット化を行える（レイヤー境界の維持）。
     ///
     /// 判断サイトはこのメソッドで 1 回スナップショットを取り、以降は `&ObservedState` を参照する。
-    pub(crate) fn capture_now() -> Self {
-        let obs = crate::tsf::observer::tsf_obs();
+    pub(crate) fn from_snapshot(snapshot: &TsfObservations) -> Self {
         Self {
-            candidate_visible: obs.gji_candidate_visible(),
-            gji_last_io_ms: obs.gji_last_io_ms(),
-            gji_monitor_ok: obs.gji_monitor_ok(),
+            candidate_visible: snapshot.gji_candidate_visible(),
+            gji_last_io_ms: snapshot.gji_last_io_ms(),
+            gji_monitor_ok: snapshot.gji_monitor_ok(),
             candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
-            active_ime_kind: obs.active_ime_kind(),
+            active_ime_kind: snapshot.active_ime_kind(),
         }
     }
 }
