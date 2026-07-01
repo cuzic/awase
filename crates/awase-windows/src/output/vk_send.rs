@@ -133,14 +133,9 @@ impl Output {
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
     ///
     /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
+    /// 実際の送信処理は [`KeyInjector::send_unicode_char`] に委譲する。
     pub(super) fn send_unicode_char(&self, ch: char) {
-        if self.unicode_cold_defer.load(std::sync::atomic::Ordering::Relaxed) {
-            self.unicode_cold_deferred.borrow_mut().push(ch);
-            return;
-        }
-        let mut inputs = Vec::with_capacity(4);
-        Self::push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
-        let _ = crate::win32::send_input_safe(&inputs);
+        self.injector.send_unicode_char(ch);
     }
 
     /// PerKey モード: 1文字ずつ個別の SendInput 呼び出し
@@ -369,13 +364,9 @@ impl Output {
     ///
     /// IME を経由せず、ひらがなを直接テキストフィールドに挿入する。
     /// 変換テーブルにないローマ字は PerKey モードでフォールバック送信する。
+    /// 実際の変換・送信処理は [`KeyInjector::send_romaji_as_unicode`] に委譲する。
     pub(super) fn send_romaji_as_unicode(&self, romaji: &str) {
-        if let Some(kana) = self.kana_table.kana_for_romaji(romaji) {
-            self.send_unicode_char(kana);
-            return;
-        }
-        // テーブルにない場合はフォールバック
-        self.send_romaji_per_key(romaji);
+        self.injector.send_romaji_as_unicode(romaji);
     }
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
@@ -654,7 +645,7 @@ impl Output {
     /// 記号は symbol_to_vk テーブルで直接 VK コードに変換する。
     /// マッチしない場合は Unicode 直接出力にフォールバックする。
     pub(super) fn send_char_as_tsf(&self, ch: char) {
-        match self.resolve_char(ch) {
+        match self.injector.resolve_char(ch) {
             CharResolution::Romaji(romaji) => {
                 log::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
                 self.send_romaji_as_tsf(romaji);
@@ -703,7 +694,7 @@ impl Output {
     /// 2. 記号 → マッピングテーブルの VK コード（IME が全角変換）
     /// 3. フォールバック → Unicode 直接出力
     pub(super) fn send_char_as_vk(&self, ch: char) {
-        match self.resolve_char(ch) {
+        match self.injector.resolve_char(ch) {
             CharResolution::Romaji(romaji) => {
                 log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
                 // Batched (1回の SendInput) を使うことで、後続キー（Enter reinject 等）との

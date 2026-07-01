@@ -1,5 +1,4 @@
-use super::Output;
-pub(crate) use crate::vk::{ascii_to_vk, build_symbol_to_vk};
+pub(crate) use crate::vk::ascii_to_vk;
 use awase::types::{SpecialKey, VkCode};
 
 /// SpecialKey を Windows VK コードに変換する
@@ -22,20 +21,4 @@ pub(super) enum CharResolution<'a> {
     Vk(VkCode, bool),
     /// フォールバック（Unicode 直接出力）
     Unicode(char),
-}
-
-impl Output {
-    /// 文字の送信方法をルックアップテーブルで解決する。
-    ///
-    /// `send_char_as_tsf` / `send_char_as_vk` が共通で使う 3 段ルックアップ。
-    #[must_use]
-    pub(super) fn resolve_char(&self, ch: char) -> CharResolution<'_> {
-        if let Some(romaji) = self.kana_table.romaji_for_kana(ch) {
-            return CharResolution::Romaji(romaji);
-        }
-        if let Some(&(vk, shift)) = self.symbol_to_vk.get(&ch) {
-            return CharResolution::Vk(vk, shift);
-        }
-        CharResolution::Unicode(ch)
-    }
 }
