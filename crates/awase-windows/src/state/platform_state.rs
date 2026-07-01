@@ -293,14 +293,6 @@ impl ImeStateHub {
         self.shadow_model.input_mode
     }
 
-    /// IME 変換モードの所有権状態を返す（SSOT = `shadow_model.conv_mode_authority`）。
-    ///
-    /// H-3-e 以降、`ImeModel::conv_mode_authority` は private フィールドのため、
-    /// 外部からはこのアクセサを経由すること。
-    pub(crate) fn conv_mode_authority(&self) -> crate::state::ConvModeAuthority {
-        self.shadow_model.conv_mode_authority()
-    }
-
     /// IMM-broken アプリで IME-ON が確認されたとき、`input_mode` を補正すべき値を返す。
     ///
     /// `ImeBelief::correction_for_imm_broken` と同じロジックを `shadow_model.input_mode`
