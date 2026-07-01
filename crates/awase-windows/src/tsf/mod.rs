@@ -10,6 +10,8 @@
 
 pub(crate) mod chrome_probe;
 pub(super) mod tip_detector;
+mod gji_monitor;
+mod win_event_obs;
 pub(crate) mod cold_warmup;
 pub(crate) mod composition_fsm;
 pub(crate) mod gji_fsm;
