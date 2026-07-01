@@ -334,9 +334,10 @@ impl ImeModel {
 
 #[cfg(test)]
 mod tests {
-    use super::super::ime_event::{EventTime, HwndId, ObservationConfidence, ObservationSource};
+    use super::super::ime_event::{
+        EventTime, HwndId, ImePolicyProfile, ObservationConfidence, ObservationSource,
+    };
     use super::*;
-    use crate::focus::class_names::AppImeProfile;
     use crate::state::force_guard::{ForceGuard, ForceOnReason};
     use std::time::Instant;
 
@@ -415,7 +416,7 @@ mod tests {
             ImeEvent::FocusChanged {
                 from: None,
                 to: HwndId::NULL,
-                profile: AppImeProfile::Standard,
+                profile: ImePolicyProfile::ImmCross,
             },
         )
     }

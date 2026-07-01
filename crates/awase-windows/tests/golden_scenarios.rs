@@ -22,10 +22,9 @@
 
 use std::time::Instant;
 
-use awase_windows::focus::class_names::AppImeProfile;
 use awase_windows::state::ime_event::{
-    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, IntentSource, ObservationConfidence,
-    ObservationSource,
+    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, IntentSource,
+    ObservationConfidence, ObservationSource,
 };
 use awase_windows::state::ime_model::ImeModel;
 
@@ -55,7 +54,7 @@ fn observer_reported(open: bool, source: ObservationSource) -> ImeEvent {
     }
 }
 
-fn focus_changed(profile: AppImeProfile) -> ImeEvent {
+fn focus_changed(profile: ImePolicyProfile) -> ImeEvent {
     ImeEvent::FocusChanged {
         from: None,
         to: HwndId(0x1234),
@@ -78,14 +77,14 @@ fn run_reducer(events: Vec<ImeEvent>) -> ImeModel {
 fn scenario_1_line_qt_kanji_on_off() {
     // KANJI 押下 → IME OFF (physical key)
     let model = run_reducer(vec![
-        focus_changed(AppImeProfile::Standard),
+        focus_changed(ImePolicyProfile::ImmCross),
         user_intent(false, IntentSource::PhysicalImeKey),
     ]);
     assert!(!model.desired_open, "KANJI で IME OFF");
 
     // 続けて KANJI 押下 → IME ON
     let model = run_reducer(vec![
-        focus_changed(AppImeProfile::Standard),
+        focus_changed(ImePolicyProfile::ImmCross),
         user_intent(false, IntentSource::PhysicalImeKey),
         user_intent(true, IntentSource::PhysicalImeKey),
     ]);
@@ -140,7 +139,7 @@ fn scenario_3_ctrl_henkan_does_not_deactivate_immediately() {
 #[test]
 fn scenario_4_chrome_no_imm32_ime_off_works() {
     let model = run_reducer(vec![
-        focus_changed(AppImeProfile::Imm32Unavailable),
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
         user_intent(false, IntentSource::Command), // Ctrl+無変換 由来の SetOpenRequest
     ]);
     assert!(!model.desired_open, "Chrome でも IME OFF intent が効く");
@@ -160,7 +159,7 @@ fn scenario_4_chrome_no_imm32_ime_off_works() {
 
 #[test]
 fn scenario_5_wezterm_tsf_profile_policy() {
-    let model = run_reducer(vec![focus_changed(AppImeProfile::TsfNative)]);
+    let model = run_reducer(vec![focus_changed(ImePolicyProfile::TsfNative)]);
     assert!(
         !model.app_policy.owns_physical_kanji,
         "WezTerm では物理 KANJI を awase 所有しない (TSF が処理)"
@@ -177,7 +176,7 @@ fn scenario_6_focus_change_stale_false_does_not_override_desired() {
     // → desired_open は true のままであるべき
     let model = run_reducer(vec![
         user_intent(true, IntentSource::PhysicalImeKey),
-        focus_changed(AppImeProfile::Standard),
+        focus_changed(ImePolicyProfile::ImmCross),
         observer_reported(false, ObservationSource::ObserverPoll),
     ]);
     // 絶対ルール: observer は desired を変えない
@@ -294,8 +293,8 @@ fn drift_cleared_when_observation_agrees_with_desired() {
 #[test]
 fn focus_change_updates_app_policy() {
     let model = run_reducer(vec![
-        focus_changed(AppImeProfile::Imm32Unavailable),
-        focus_changed(AppImeProfile::TsfNative),
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        focus_changed(ImePolicyProfile::TsfNative),
     ]);
     assert!(
         !model.app_policy.owns_physical_kanji,
@@ -308,7 +307,7 @@ fn focus_change_clears_intent_and_observations() {
     let model = run_reducer(vec![
         user_intent(false, IntentSource::SyncKey),
         observer_reported(true, ObservationSource::Gji),
-        focus_changed(AppImeProfile::Standard),
+        focus_changed(ImePolicyProfile::ImmCross),
     ]);
     assert!(model.last_intent.is_none(), "intent は focus 変更で clear");
     assert!(
