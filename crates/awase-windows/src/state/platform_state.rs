@@ -8,6 +8,7 @@ use super::ime_event::{ChordKind, HwndId, ImeEvent, ImeEventEnvelope, IntentSour
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
 use super::input_barrier::InputBarrier;
+use super::TickMs;
 use crate::journal::{JournalEntry, UnifiedJournal};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -76,7 +77,10 @@ impl ImeStateHub {
     ///
     /// `event_log.record()` だけを呼ぶより、こちらを使うと record + reduce が
     /// 同一 envelope で進む。write_* メソッドはこちらを使う。
-    pub(crate) fn dispatch_event(&mut self, event: ImeEvent) {
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    /// state/ 層が `hook::current_tick_ms()` を直接呼ばないよう注入する。
+    pub(crate) fn dispatch_event(&mut self, event: ImeEvent, tick_ms: TickMs) {
         // ユーザー明示の IME OFF/ON を永続タイムスタンプに反映する。
         // FocusChanged で last_intent がクリアされても guard が機能し続けるよう、
         // ImeStateHub 側で独自に保持する。
@@ -86,7 +90,7 @@ impl ImeStateHub {
                 IntentSource::SyncKey | IntentSource::PhysicalImeKey
             ) {
                 if !target {
-                    self.last_user_explicit_off_ms = crate::hook::current_tick_ms();
+                    self.last_user_explicit_off_ms = tick_ms.0;
                 } else {
                     self.last_user_explicit_off_ms = 0;
                 }
@@ -95,7 +99,7 @@ impl ImeStateHub {
 
         let description = format!("{event:?}");
         let event_for_reduce = event.clone();
-        let time = self.event_log.record(event);
+        let time = self.event_log.record(event, tick_ms);
         let envelope = ImeEventEnvelope {
             time,
             event: event_for_reduce,
@@ -115,8 +119,10 @@ impl ImeStateHub {
     ///
     /// ImeModel アクセス可能なサイトで `set_ime_apply_latch` の代わりに呼ぶ。
     /// executor 内部 (PlatformState 非アクセス) は ImeApplySucceeded event 経由で更新される。
-    pub(crate) fn mirror_applied_open(&mut self, value: bool) {
-        self.mirror_applied_open_with_ts(value, crate::hook::current_tick_ms());
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn mirror_applied_open(&mut self, value: bool, tick_ms: TickMs) {
+        self.mirror_applied_open_with_ts(value, tick_ms.0);
     }
 
     /// `applied` を指定タイムスタンプで更新する。
@@ -157,26 +163,32 @@ impl ImeStateHub {
     /// フィルタする（write_set_open_request と ImeApplyRequested の両方をスキップ）。
     /// パイプラインがコード状態を直接参照しなくて済むよう、判断をここに集約する。
     ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    ///
     /// 戻り値: apply 要求が実行されたか（ログ用）
     pub(crate) fn handle_engine_set_open(
         &mut self,
         target: bool,
         ctrl_held: bool,
         generation: u64,
+        tick_ms: TickMs,
     ) -> bool {
         if self.is_ctrl_ime_chord_active() && !target {
             // chord transaction 中の二次 IME OFF 要求: フィルタ。
             // ChordEnded（Ctrl KeyUp）が barrier を解除するため、ここでは何もしない。
             return false;
         }
-        self.write_set_open_request(target);
+        self.write_set_open_request(target, tick_ms);
         self.on_set_open_requested();
-        self.dispatch_event(ImeEvent::ImeApplyRequested {
-            target,
-            generation,
-            ctrl_held,
-        });
-        self.last_explicit_ime_action_ms = crate::hook::current_tick_ms();
+        self.dispatch_event(
+            ImeEvent::ImeApplyRequested {
+                target,
+                generation,
+                ctrl_held,
+            },
+            tick_ms,
+        );
+        self.last_explicit_ime_action_ms = tick_ms.0;
         true
     }
 
@@ -185,14 +197,16 @@ impl ImeStateHub {
     /// パイプラインが chord 状態を直接参照しなくて済むよう、
     /// is_ctrl_ime_chord_active / active_chord_kind の参照をここに集約する。
     /// 呼び出し元は `crate::vk::is_ctrl_variant` チェック後に呼ぶこと。
-    pub(crate) fn on_ctrl_key_up(&mut self, vk: awase::types::VkCode) {
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn on_ctrl_key_up(&mut self, vk: awase::types::VkCode, tick_ms: TickMs) {
         if !self.is_ctrl_ime_chord_active() {
             return;
         }
         let kind = self
             .active_chord_kind()
             .unwrap_or(ChordKind::CtrlMuhenkanImeOff);
-        self.dispatch_event(ImeEvent::ChordEnded { kind });
+        self.dispatch_event(ImeEvent::ChordEnded { kind }, tick_ms);
         log::debug!(
             "[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{:02X})",
             vk
@@ -235,15 +249,17 @@ impl ImeStateHub {
 
     // ── Explicit intent timing ──
 
-    /// 直近の明示的 IME 操作からの経過 ms (current_tick_ms ベース)。
+    /// 直近の明示的 IME 操作からの経過 ms。
     ///
     /// 未操作の場合は `u64::MAX` を返す。
     /// `EXPLICIT_IME_SUPPRESS_MS` との比較で idle-conv-check を抑制するために使う。
-    pub(crate) fn explicit_ime_action_age_ms(&self) -> u64 {
+    ///
+    /// `now_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn explicit_ime_action_age_ms(&self, now_ms: TickMs) -> u64 {
         if self.last_explicit_ime_action_ms == 0 {
             return u64::MAX;
         }
-        crate::hook::current_tick_ms().saturating_sub(self.last_explicit_ime_action_ms)
+        now_ms.saturating_sub(self.last_explicit_ime_action_ms)
     }
 
     /// フォーカス変化をまたいで持続するユーザー明示 IME OFF タイムスタンプ。
@@ -376,7 +392,9 @@ impl ImeStateHub {
     /// panic_reset 向け全面リセット。
     ///
     /// belief・shadow_model を初期化し `PanicReset` force guard を立てる。
-    pub(crate) fn apply_panic_reset(&mut self) {
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn apply_panic_reset(&mut self, tick_ms: TickMs) {
         self.belief.input_mode = InputModeState::ObservedRomaji;
         self.belief.is_japanese_ime = true;
         self.belief.prev_conversion_mode = None;
@@ -387,10 +405,13 @@ impl ImeStateHub {
             expires_at: None,
             generation: self.event_log.next_seq(),
         });
-        self.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: true,
-            source: IntentSource::Recovery,
-        });
+        self.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: IntentSource::Recovery,
+            },
+            tick_ms,
+        );
         self.shadow_model.last_intent = None;
         self.shadow_model.observations.clear_on_focus_change();
     }
@@ -399,17 +420,26 @@ impl ImeStateHub {
     ///
     /// `observer::ime_observer::poll_and_classify_ime()` の結果を受け取り、
     /// 状態への書き込みをここに集約する。判断ロジックを持たない純粋適用関数。
-    pub(crate) fn apply_ime_update(&mut self, update: &crate::observer::ime_observer::ImeUpdate) {
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn apply_ime_update(
+        &mut self,
+        update: &crate::observer::ime_observer::ImeUpdate,
+        tick_ms: TickMs,
+    ) {
         if let Some(is_jp) = update.is_japanese_ime {
             self.belief.is_japanese_ime = is_jp;
         }
         if let Some(obs) = update.observer_poll {
-            self.dispatch_event(ImeEvent::ObserverReported {
-                open: obs.value,
-                source: super::ime_event::ObservationSource::ObserverPoll,
-                hwnd: HwndId::NULL,
-                confidence: super::ime_event::ObservationConfidence::Medium,
-            });
+            self.dispatch_event(
+                ImeEvent::ObserverReported {
+                    open: obs.value,
+                    source: super::ime_event::ObservationSource::ObserverPoll,
+                    hwnd: HwndId::NULL,
+                    confidence: super::ime_event::ObservationConfidence::Medium,
+                },
+                tick_ms,
+            );
         }
         if update.increment_miss_count {
             self.shadow_model
@@ -443,15 +473,21 @@ impl ImeStateHub {
     }
 
     /// `hwnd_cache` の復元結果を belief / shadow_model に反映する。
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     pub(crate) fn apply_hwnd_cache_restore(
         &mut self,
         snapshot: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
+        tick_ms: TickMs,
     ) {
         if let Some(snap) = snapshot {
-            self.dispatch_event(ImeEvent::UserImeSetIntent {
-                target: snap.ime_on,
-                source: IntentSource::HwndCache,
-            });
+            self.dispatch_event(
+                ImeEvent::UserImeSetIntent {
+                    target: snap.ime_on,
+                    source: IntentSource::HwndCache,
+                },
+                tick_ms,
+            );
             self.belief.input_mode = snap.input_mode;
         }
     }
@@ -465,7 +501,9 @@ impl ImeStateHub {
     ///
     /// `last_intent = None` に戻すことで `last_explicit_off_ms()` を汚染しない
     /// （`apply_panic_reset()` と同じパターン）。
-    pub(crate) fn reset_to_off_for_tsf_native_cache_miss(&mut self) {
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn reset_to_off_for_tsf_native_cache_miss(&mut self, tick_ms: TickMs) {
         if !self.belief.is_japanese_ime() {
             return;
         }
@@ -476,10 +514,13 @@ impl ImeStateHub {
         log::info!(
             "[focus] TsfNative cache-miss: belief true → false にリセット (安全デフォルト OFF)"
         );
-        self.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: false,
-            source: IntentSource::Recovery,
-        });
+        self.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: IntentSource::Recovery,
+            },
+            tick_ms,
+        );
         // last_explicit_off_ms() を汚染しないよう dispatch 後にクリアする。
         // これにより次ウィンドウの cache-miss 時に 10s ガードが誤発動しない。
         self.shadow_model.last_intent = None;
@@ -490,7 +531,9 @@ impl ImeStateHub {
     /// TsfNative と同様だが、Imm32Unavailable では awase が IME 状態を制御できないため
     /// キャッシュが carry-over で汚染されやすい。キャッシュ値が「ユーザー明示の OFF」に
     /// 由来しない場合にのみ呼ぶこと（呼び出し側が stale 判定を行う）。
-    pub(crate) fn reset_stale_ime_on_for_imm_broken(&mut self) {
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    pub(crate) fn reset_stale_ime_on_for_imm_broken(&mut self, tick_ms: TickMs) {
         if !self.belief.is_japanese_ime() || self.shadow_model.effective_open() {
             return;
         }
@@ -505,10 +548,13 @@ impl ImeStateHub {
             "Imm32Unavailable entry without trusted cache: reset stale ime_on=false → true \
              (no explicit intent, Japanese layout, IME state uncontrollable in Imm32Unavailable)"
         );
-        self.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: true,
-            source: IntentSource::Recovery,
-        });
+        self.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: IntentSource::Recovery,
+            },
+            tick_ms,
+        );
     }
 
     pub(crate) fn set_is_japanese_ime(&mut self, value: bool) {
@@ -521,43 +567,58 @@ impl ImeStateHub {
 
     // ── イベント dispatch ヘルパ ──
 
-    pub(crate) fn write_observer_poll(&mut self, value: bool) {
-        self.dispatch_event(ImeEvent::ObserverReported {
-            open: value,
-            source: super::ime_event::ObservationSource::ObserverPoll,
-            hwnd: HwndId::NULL,
-            confidence: super::ime_event::ObservationConfidence::Medium,
-        });
+    pub(crate) fn write_observer_poll(&mut self, value: bool, tick_ms: TickMs) {
+        self.dispatch_event(
+            ImeEvent::ObserverReported {
+                open: value,
+                source: super::ime_event::ObservationSource::ObserverPoll,
+                hwnd: HwndId::NULL,
+                confidence: super::ime_event::ObservationConfidence::Medium,
+            },
+            tick_ms,
+        );
     }
 
-    pub(crate) fn write_sync_key(&mut self, value: bool) {
-        self.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: value,
-            source: IntentSource::SyncKey,
-        });
+    pub(crate) fn write_sync_key(&mut self, value: bool, tick_ms: TickMs) {
+        self.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: value,
+                source: IntentSource::SyncKey,
+            },
+            tick_ms,
+        );
     }
 
-    pub(crate) fn write_physical_key(&mut self, value: bool) {
-        self.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: value,
-            source: IntentSource::PhysicalImeKey,
-        });
+    pub(crate) fn write_physical_key(&mut self, value: bool, tick_ms: TickMs) {
+        self.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: value,
+                source: IntentSource::PhysicalImeKey,
+            },
+            tick_ms,
+        );
     }
 
-    pub(crate) fn write_set_open_request(&mut self, value: bool) {
-        self.dispatch_event(ImeEvent::UserImeSetIntent {
-            target: value,
-            source: IntentSource::Command,
-        });
+    pub(crate) fn write_set_open_request(&mut self, value: bool, tick_ms: TickMs) {
+        self.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: value,
+                source: IntentSource::Command,
+            },
+            tick_ms,
+        );
     }
 
-    pub(crate) fn write_focus_probe(&mut self, value: bool) {
-        self.dispatch_event(ImeEvent::ObserverReported {
-            open: value,
-            source: super::ime_event::ObservationSource::FocusProbe,
-            hwnd: HwndId::NULL,
-            confidence: super::ime_event::ObservationConfidence::Medium,
-        });
+    pub(crate) fn write_focus_probe(&mut self, value: bool, tick_ms: TickMs) {
+        self.dispatch_event(
+            ImeEvent::ObserverReported {
+                open: value,
+                source: super::ime_event::ObservationSource::FocusProbe,
+                hwnd: HwndId::NULL,
+                confidence: super::ime_event::ObservationConfidence::Medium,
+            },
+            tick_ms,
+        );
     }
 }
 
@@ -651,10 +712,13 @@ mod tests {
         let mut ps = PlatformState::new();
         ps.ime.belief.is_japanese_ime = is_japanese;
         if let Some(source) = set_intent {
-            ps.ime.dispatch_event(ImeEvent::UserImeSetIntent {
-                target: desired_open,
-                source,
-            });
+            ps.ime.dispatch_event(
+                ImeEvent::UserImeSetIntent {
+                    target: desired_open,
+                    source,
+                },
+                TickMs(0),
+            );
         } else {
             ps.ime.set_desired_open_for_test(desired_open);
             ps.ime.clear_last_intent_for_test();
@@ -666,7 +730,7 @@ mod tests {
     #[test]
     fn cache_miss_resets_true_to_false() {
         let mut ps = ps_with_shadow(true, Some(IntentSource::SyncKey), true);
-        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         assert!(!ps.ime.effective_open());
     }
 
@@ -674,7 +738,7 @@ mod tests {
     #[test]
     fn cache_miss_reset_clears_last_intent() {
         let mut ps = ps_with_shadow(true, Some(IntentSource::Recovery), true);
-        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         assert_eq!(ps.ime.last_intent_source(), None);
     }
 
@@ -682,7 +746,7 @@ mod tests {
     #[test]
     fn cache_miss_noop_when_already_off() {
         let mut ps = ps_with_shadow(false, Some(IntentSource::SyncKey), true);
-        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         // 状態は変わらず、intent も保持される。
         assert!(!ps.ime.effective_open());
         assert_eq!(ps.ime.last_intent_source(), Some(IntentSource::SyncKey));
@@ -692,7 +756,7 @@ mod tests {
     #[test]
     fn cache_miss_noop_when_not_japanese() {
         let mut ps = ps_with_shadow(true, None, false);
-        ps.ime.reset_to_off_for_tsf_native_cache_miss();
+        ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         assert!(ps.ime.effective_open());
     }
 }
