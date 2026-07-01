@@ -336,7 +336,7 @@ impl Output {
     ///
     /// IME を経由せず、ひらがなを直接テキストフィールドに挿入する。
     /// 変換テーブルにないローマ字は PerKey モードでフォールバック送信する。
-    /// 実際の変換・送信処理は [`KeyInjector::send_romaji_as_unicode`] に委譲する。
+    /// 実際の変換・送信処理は `KeyInjector::send_romaji_as_unicode` に委譲する。
     pub(super) fn send_romaji_as_unicode(&self, romaji: &str) {
         self.injector.send_romaji_as_unicode(romaji);
     }
