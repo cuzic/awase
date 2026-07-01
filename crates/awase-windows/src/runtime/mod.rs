@@ -3,6 +3,7 @@ mod focus_tracking;
 mod ime_refresh;
 mod key_pipeline;
 pub(crate) mod message_handlers;
+pub(crate) mod outbox;
 mod transport;
 
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
