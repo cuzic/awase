@@ -110,9 +110,11 @@ impl ImeApplyContext {
             }
             _ => {
                 // KanjiToggle / MS-IME: effective_shadow が目標と一致すればスキップ。
+                // candidate_was_seen は「IME-OFF の desync 検出」ラッチであり、
+                // open=true（IME ON 要求）時に含めると古いラッチが残って誤 Noop になる。
                 let effective_shadow = view.control.shadow_on
                     || view.observed.candidate_visible
-                    || view.observed.candidate_was_seen;
+                    || (!open && view.observed.candidate_was_seen);
                 effective_shadow == open
             }
         };
