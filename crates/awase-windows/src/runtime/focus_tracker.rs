@@ -4,17 +4,63 @@
 //! SSOT として保持する。ここではその状態に対する純粋な判断（IMM 能力の学習判定）を
 //! `Runtime` から切り出し、テスト可能にする。
 //!
-//! TODO(H-5-e): `focus_tracking.rs` の `detect_and_update_focus` /
-//! `classify_focus_probe` / `advance_focus_tracking` も段階的にここへ移植する。
-//! TODO(H-5-e): `RefreshScheduler`（IME リフレッシュのタイマー調停）と
-//! `ImeCoordinator`（IME apply/observe の調停）も別コンポーネントとして抽出する。
+//! また IME sync キーのリスト（`sync_toggle_keys` / `sync_on_keys` / `sync_off_keys`）を
+//! 保持し、`enrich_ime_relevance` による `RawKeyEvent` の補完ロジックを担う。
+
+use awase::types::{RawKeyEvent, ShadowImeAction, VkCode};
 
 use crate::focus::classifier::ImmCapability;
 
 /// フォーカス追跡に付随する判断ロジックの集約点。
-pub(crate) struct FocusTracker;
+///
+/// - IMM 能力学習の純粋な判断（[`Self::decide_imm_capability`]）
+/// - IME sync キー情報（`sync_toggle/on/off_keys`）による [`Self::enrich_ime_relevance`]
+pub(crate) struct FocusTracker {
+    /// トグル系 sync キー（KANJI 等）
+    pub(crate) sync_toggle_keys: Vec<VkCode>,
+    /// IME ON 系 sync キー
+    pub(crate) sync_on_keys: Vec<VkCode>,
+    /// IME OFF 系 sync キー（無変換等）
+    pub(crate) sync_off_keys: Vec<VkCode>,
+}
 
 impl FocusTracker {
+    pub(crate) fn new(
+        sync_toggle_keys: Vec<VkCode>,
+        sync_on_keys: Vec<VkCode>,
+        sync_off_keys: Vec<VkCode>,
+    ) -> Self {
+        Self {
+            sync_toggle_keys,
+            sync_on_keys,
+            sync_off_keys,
+        }
+    }
+
+    /// IME 関連の事前分類情報を sync key 設定で補完する。
+    ///
+    /// `Runtime::enrich_ime_relevance` の実処理をここに集約する。
+    /// `sync_toggle_keys` / `sync_on_keys` / `sync_off_keys` に基づいて
+    /// `event.ime_relevance` の `is_sync_key` / `sync_direction` / `may_change_ime` を設定する。
+    pub(crate) fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
+        let vk = event.vk_code;
+        let rel = &mut event.ime_relevance;
+
+        if self.sync_toggle_keys.contains(&vk) {
+            rel.is_sync_key = true;
+            rel.sync_direction = Some(ShadowImeAction::Toggle);
+            rel.may_change_ime = true;
+        } else if self.sync_on_keys.contains(&vk) {
+            rel.is_sync_key = true;
+            rel.sync_direction = Some(ShadowImeAction::TurnOn);
+            rel.may_change_ime = true;
+        } else if self.sync_off_keys.contains(&vk) {
+            rel.is_sync_key = true;
+            rel.sync_direction = Some(ShadowImeAction::TurnOff);
+            rel.may_change_ime = true;
+        }
+    }
+
     /// IMM 検出のミス数遷移から、記録すべき新しい [`ImmCapability`] を判定する。
     ///
     /// `Runtime::learn_imm_capability_from_miss` の純粋な決定部。I/O（クラス名取得・

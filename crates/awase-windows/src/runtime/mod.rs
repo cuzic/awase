@@ -1,10 +1,12 @@
 pub(crate) mod executor;
 mod focus_tracker;
 mod focus_tracking;
+mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
 pub(crate) mod message_handlers;
 pub(crate) mod outbox;
+mod refresh_scheduler;
 mod transport;
 
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
@@ -12,7 +14,7 @@ pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 use awase::config::ValidatedConfig;
 use awase::engine::{Engine, EngineCommand, InputContext, InputModeState, SpecialKeyCombos};
 use awase::ngram::NgramModel;
-use awase::types::{ContextChange, FocusKind, RawKeyEvent, ShadowImeAction, VkCode};
+use awase::types::{ContextChange, FocusKind, RawKeyEvent, VkCode};
 
 use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
@@ -85,32 +87,34 @@ impl PostBypassEntry {
 /// Engine (判断) と DecisionExecutor (実行) を保持し、配線する。
 /// OS イベントの受け取り → Observer → Engine → Executor のパイプラインを駆動する。
 ///
+/// # アーキテクチャ（Facade パターン）
+///
+/// `Runtime` は以下の論理コンポーネントへの Facade として機能する：
+///
+/// - [`focus_tracker::FocusTracker`] — フォーカス追跡・IMM 能力学習・sync key 補完
+/// - [`refresh_scheduler::RefreshScheduler`] — IME リフレッシュのタイマー調停
+/// - [`ime_coordinator::ImeCoordinator`] — IME apply・パニック回復の調停
+///
+/// コンポーネント間の相互参照はなく、`Runtime` を介してのみ通信する。
+///
 /// 注意: 判断ロジックを追加しないこと。判断は Engine が担う。
 pub struct Runtime {
     engine: Engine,
     executor: DecisionExecutor,
     pub platform: WindowsPlatform,
     layouts: Vec<LayoutEntry>,
-    /// IME 同期キー（イベント事前分類用）
-    sync_toggle_keys: Vec<VkCode>,
-    sync_on_keys: Vec<VkCode>,
-    sync_off_keys: Vec<VkCode>,
+    /// フォーカス追跡・IMM 能力学習・sync key 補完
+    focus_tracker: focus_tracker::FocusTracker,
     /// Platform 層の全状態
     platform_state: crate::PlatformState,
     /// 全キーマップルール（アプリフィルタ前）
     all_keymaps: crate::keymap::KeymapTable,
     /// post_bypass コンパイル済みルール一覧
     pub(crate) post_bypass_rules: Vec<PostBypassEntry>,
-    /// Ctrl+無変換 IME OFF 救済窓中に保留している event。
-    ///
-    /// `TIMER_IME_OFF_RESCUE` 満了で IME OFF 発火、Ctrl↑ 到達で ctrl=false に書き換えて発火。
-    /// `Some` 中に他のキーが到着したら救済中止して原 event を engine に渡す。
-    pending_ime_off_rescue: Option<RawKeyEvent>,
-    /// OUTPUT_GATE active 中に発火したエンジンタイマー（TIMER_PENDING / TIMER_SPECULATIVE）の
-    /// (logical_id, os_id) リスト。drain 完了後に `handle_wm_drain_output_queue` が replay する。
-    /// os_id を一緒に保存することで、drain 中に元のタイマーが kill → 別の新規タイマーが
-    /// セットされた場合に誤って新タイマーを発火させないよう照合できる。
-    pub(crate) deferred_engine_timers: Vec<(usize, usize)>,
+    /// IME リフレッシュスケジューリング論理コンポーネント
+    refresh_scheduler: refresh_scheduler::RefreshScheduler,
+    /// IME apply・パニック回復の調停
+    ime_coordinator: ime_coordinator::ImeCoordinator,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -187,24 +191,11 @@ impl Runtime {
         }
     }
 
-    /// IME 関連の事前分類情報を sync key 設定で補完する
+    /// IME 関連の事前分類情報を sync key 設定で補完する。
+    ///
+    /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
-        let vk = event.vk_code;
-        let rel = &mut event.ime_relevance;
-
-        if self.sync_toggle_keys.contains(&vk) {
-            rel.is_sync_key = true;
-            rel.sync_direction = Some(ShadowImeAction::Toggle);
-            rel.may_change_ime = true;
-        } else if self.sync_on_keys.contains(&vk) {
-            rel.is_sync_key = true;
-            rel.sync_direction = Some(ShadowImeAction::TurnOn);
-            rel.may_change_ime = true;
-        } else if self.sync_off_keys.contains(&vk) {
-            rel.is_sync_key = true;
-            rel.sync_direction = Some(ShadowImeAction::TurnOff);
-            rel.may_change_ime = true;
-        }
+        self.focus_tracker.enrich_ime_relevance(event);
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
@@ -222,19 +213,19 @@ impl Runtime {
         self.execute_decision(decision)
     }
 
-    /// `pending_ime_off_rescue` を取り出し、`TIMER_IME_OFF_RESCUE` をキャンセルする。
+    /// `ImeCoordinator::pending_ime_off_rescue` を取り出し、`TIMER_IME_OFF_RESCUE` をキャンセルする。
     ///
     /// `.take()` と `timer.kill()` は常にペアで呼ぶ必要があるため一元化する。
     pub fn take_ime_off_rescue_pending(&mut self) -> Option<RawKeyEvent> {
         self.platform.timer.kill(crate::TIMER_IME_OFF_RESCUE);
-        self.pending_ime_off_rescue.take()
+        self.ime_coordinator.pending_ime_off_rescue.take()
     }
 
-    /// `pending_ime_off_rescue` をセットし、`TIMER_IME_OFF_RESCUE` を起動する。
+    /// `ImeCoordinator::pending_ime_off_rescue` をセットし、`TIMER_IME_OFF_RESCUE` を起動する。
     ///
     /// `.pending = Some(event)` と `timer.set()` は常にペアで呼ぶ必要があるため一元化する。
     pub fn set_ime_off_rescue_pending(&mut self, event: RawKeyEvent) {
-        self.pending_ime_off_rescue = Some(event);
+        self.ime_coordinator.pending_ime_off_rescue = Some(event);
         self.platform.timer.set(
             crate::TIMER_IME_OFF_RESCUE,
             std::time::Duration::from_millis(50),
@@ -614,14 +605,16 @@ impl Runtime {
             executor,
             platform,
             layouts,
-            sync_toggle_keys,
-            sync_on_keys,
-            sync_off_keys,
+            focus_tracker: focus_tracker::FocusTracker::new(
+                sync_toggle_keys,
+                sync_on_keys,
+                sync_off_keys,
+            ),
             platform_state,
             all_keymaps,
             post_bypass_rules,
-            pending_ime_off_rescue: None,
-            deferred_engine_timers: Vec::<(usize, usize)>::new(),
+            refresh_scheduler: refresh_scheduler::RefreshScheduler,
+            ime_coordinator: ime_coordinator::ImeCoordinator::new(),
         }
     }
 
@@ -766,9 +759,9 @@ impl Runtime {
         self.platform.set_output_mode(config.general.output_mode);
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
-        self.sync_toggle_keys = sync_toggle;
-        self.sync_on_keys = sync_on;
-        self.sync_off_keys = sync_off;
+        self.focus_tracker.sync_toggle_keys = sync_toggle;
+        self.focus_tracker.sync_on_keys = sync_on;
+        self.focus_tracker.sync_off_keys = sync_off;
         let _ = self.engine.on_command(
             EngineCommand::ReloadKeys {
                 special: special_keys,

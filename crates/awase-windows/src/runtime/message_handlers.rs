@@ -194,7 +194,7 @@ pub(crate) unsafe fn handle_wm_timer(
                 log::debug!(
                     "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} (os_id={wparam}) を drain 後に延期"
                 );
-                app.deferred_engine_timers.push((timer_id, wparam));
+                app.ime_coordinator.deferred_engine_timers.push((timer_id, wparam));
                 return;
             }
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
@@ -484,7 +484,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     //   新規タイマーを deferred replay で早期発火させると文字順が狂う
     //   （例: というのは → とはいうの）。os_id 照合でこれを防ぐ。
     let _ = with_app(|app| {
-        let deferred = std::mem::take(&mut app.deferred_engine_timers);
+        let deferred = std::mem::take(&mut app.ime_coordinator.deferred_engine_timers);
         if deferred.is_empty() {
             return;
         }
