@@ -348,6 +348,23 @@ impl Runtime {
                         "[idle-conv-check] TsfNative: belief romaji 回復 + shadow=ON → engine 再起動"
                     );
                 }
+
+                // ObservedEisu 検出 + shadow=ON → 自動 IME OFF（直接入力）
+                // IME-ON の半角英数（英字キーが ASCII で通る「IME 中立」モード）は使用しない設計。
+                // 検出次第 IME OFF に落とし、直接入力として扱う。
+                if new_mode == InputModeState::ObservedEisu
+                    && self.platform_state.ime.effective_open()
+                {
+                    log::info!(
+                        "[idle-conv-check] TsfNative: ObservedEisu + shadow=ON → 自動 IME OFF（直接入力）"
+                    );
+                    self.platform.apply_ime_open_with_applied(false, None);
+                    self.platform.timer.kill(TIMER_IME_REFRESH);
+                    let generation = self.platform_state.ime.event_log.next_seq();
+                    self.platform_state
+                        .ime
+                        .handle_engine_set_open(false, false, generation, now_tick);
+                }
             }
         }
 
