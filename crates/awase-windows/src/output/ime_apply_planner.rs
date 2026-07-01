@@ -63,7 +63,15 @@ impl OpenBelief {
 /// `confident=false` は「already_matched を強制 false」つまり「必ず apply する」を意味する。
 pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
     let effective_open = if let Some(conv) = inputs.conv_mode {
-        conv != 0
+        if desired_open {
+            // open=true 要求時: IME_CMODE_NATIVE(0x1) ビットでひらがな/カタカナを判定。
+            // conv=0 (DirectInput) や conv=0x10 (ROMAN のみ) は半角英数直接入力 = IME OFF 相当扱い。
+            // VK_DBE_HIRAGANA を送ってひらがなモードに復帰させる必要がある。
+            conv & 0x0001 != 0
+        } else {
+            // open=false 要求時: DirectInput(0) でなければ「IME ON」扱い（従来通り）。
+            conv != 0
+        }
     } else {
         inputs.shadow_on
             || inputs.candidate_visible
@@ -188,8 +196,9 @@ impl ImeApplyContext {
         } else {
             match view.observed.active_ime_kind {
                 ActiveImeKind::GoogleJapaneseInput => {
-                    // GJI は open=false では AlreadyMatched にしない（VK_IME_OFF は冪等なので常に送る）。
-                    open && belief.effective_open
+                    // GJI: VK_IME_ON/VK_IME_OFF は冪等なので open に関わらず AlreadyMatched にしない。
+                    // open=true 時も常に VK_IME_ON を送ることで半角英数→ひらがな復帰を保証する。
+                    false
                 }
                 _ => belief.effective_open == open,
             }
@@ -285,6 +294,45 @@ mod tests {
             ..ctx()
         };
         assert_eq!(ImeApplyPlanner::plan(&c), ImeApplyPlan::SendKanjiToggle);
+    }
+
+    #[test]
+    fn reduce_open_belief_roman_only_conv_is_not_hiragana() {
+        // conv=0x10 (IME_CMODE_ROMAN のみ) = GJI 半角英数。open=true 時は effective_open=false。
+        let inputs = crate::output::OpenBeliefInputs {
+            shadow_on: true,
+            applied: crate::state::AppliedImeState::Unknown,
+            candidate_visible: false,
+            candidate_was_seen: false,
+            gji_monitor_ok: false,
+            conv_mode: Some(0x10),
+            can_imm32_cross_process: false,
+            is_engine_intent: true,
+            now_ms: 0,
+        };
+        let belief = crate::output::reduce_open_belief(&inputs, true);
+        assert!(!belief.effective_open, "conv=16 (ROMAN only) は open=true 要求時に false");
+        // open=false 要求時は従来通り true（DirectInput でないため）
+        let belief_off = crate::output::reduce_open_belief(&inputs, false);
+        assert!(belief_off.effective_open, "conv=16 は open=false 要求時に true（IME ON 状態）");
+    }
+
+    #[test]
+    fn reduce_open_belief_hiragana_conv_is_matched() {
+        // conv=0x09 (NATIVE|ROMAN) = ひらがなローマ字。open=true 時は effective_open=true。
+        let inputs = crate::output::OpenBeliefInputs {
+            shadow_on: true,
+            applied: crate::state::AppliedImeState::Unknown,
+            candidate_visible: false,
+            candidate_was_seen: false,
+            gji_monitor_ok: false,
+            conv_mode: Some(0x09),
+            can_imm32_cross_process: false,
+            is_engine_intent: true,
+            now_ms: 0,
+        };
+        let belief = crate::output::reduce_open_belief(&inputs, true);
+        assert!(belief.effective_open, "conv=9 (NATIVE|ROMAN) は open=true 要求時に true");
     }
 
     #[test]
