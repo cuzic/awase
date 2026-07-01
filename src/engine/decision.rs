@@ -5,11 +5,32 @@ use std::time::Duration;
 use smallvec::SmallVec;
 
 use crate::config::ParsedKeyCombo;
-use crate::platform::EffectOrigin;
 use crate::types::{ContextChange, KeyAction, RawKeyEvent, Timestamp};
 use crate::yab::YabLayout;
 
 use super::fsm_types::ModifierState;
+
+// ── DecisionOrigin ──
+
+/// Engine が `ImeEffect::SetOpen` を発行した理由の粒度付き分類。
+///
+/// `platform::EffectOrigin` より細かい粒度を持ち、engine 内部でどの経路から
+/// IME 制御が要求されたかを Platform 層に伝えられる。
+/// Platform 側では `From<DecisionOrigin> for EffectOrigin` を使って
+/// 粗い `EffectOrigin` に変換する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionOrigin {
+    /// NICOLA FSM (同時打鍵判定) の出力として IME 制御が必要になった
+    NicolaFsm,
+    /// 投機的送信（タイマー確定前の先行出力）
+    Speculative,
+    /// ペンディングタイマー満了による確定出力
+    PendingTimer,
+    /// 特殊キーコンボ（Ctrl+無変換等）による IME 制御バイパス
+    Bypass,
+    /// 文脈不明（初期化直後・観測同期等）
+    Unknown,
+}
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
 
@@ -42,7 +63,7 @@ pub enum ImeEffect {
     /// `origin` で「Engine の意図」か「観測同期」かを区別する。
     /// Platform 側はこれを見てフォールバックキー送信（VK_KANJI 等）を
     /// 適用するか判断できる。
-    SetOpen { open: bool, origin: EffectOrigin },
+    SetOpen { open: bool, origin: DecisionOrigin },
     /// IME 状態更新を要求する (PostMessageW)
     RequestRefresh,
 }
