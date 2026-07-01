@@ -197,7 +197,7 @@ impl Runtime {
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
         let warmup_ms = self.platform.eager_warmup_sent_ms();
-        let obs = crate::state::ObservedState::capture_now();
+        let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
         let gji_last_io_ms = obs.gji_last_io_ms;
         let last_focus_change_ms = self.platform_state.last_focus_change_ms;
         // Imm32Unavailable (Chrome 等) は probe.ime_on が常に None のため、

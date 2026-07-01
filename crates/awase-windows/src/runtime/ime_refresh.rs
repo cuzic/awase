@@ -371,7 +371,7 @@ impl Runtime {
         // VK_IME_ON は GJI が既に ON の場合も no-op（冪等）なので副作用なし。
         // GJI 未使用環境（MS-IME + TsfNative）で KanjiToggle が誤送信されないよう GJI ガードを設ける。
         if applied_ime_on && new_profile_is_tsf_native {
-            let obs = crate::state::ObservedState::capture_now();
+            let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
             if obs.gji_monitor_ok {
                 let _ = self.platform.apply_ime_open_with_applied(true, None);
                 log::debug!(

@@ -898,7 +898,7 @@ impl WindowsPlatform {
                 class_name,
                 profile: self.current_app_profile(),
             },
-            observed: crate::state::ObservedState::capture_now(),
+            observed: crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs()),
             control: crate::state::ControlLog { shadow_on },
         }
     }
