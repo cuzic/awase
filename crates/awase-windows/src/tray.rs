@@ -26,7 +26,7 @@ const IDM_SETTINGS: u16 = 50;
 const IDM_RESTART_ADMIN: u16 = 51;
 const IDM_CLEAR_IMM_CACHE: u16 = 52;
 const IDM_AUTOSTART: u16 = 54;
-const IDM_PANIC_RESET: u16 = 56;
+const IDM_RESTART: u16 = 56;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -42,7 +42,7 @@ pub enum TrayCommand {
     RestartAdmin,
     ClearImmCache,
     ToggleAutoStart,
-    PanicReset,
+    Restart,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
 }
@@ -496,7 +496,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
         append_menu_item(hmenu, IDM_CLEAR_IMM_CACHE, "学習キャッシュをクリア");
-        append_menu_item(hmenu, IDM_PANIC_RESET, "内部状態をリセット");
+        append_menu_item(hmenu, IDM_RESTART, "再起動");
         let autostart_registered = crate::autostart::is_registered();
         append_menu_item_checked(
             hmenu,
@@ -540,7 +540,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_RESTART_ADMIN => Some(TrayCommand::RestartAdmin),
         IDM_CLEAR_IMM_CACHE => Some(TrayCommand::ClearImmCache),
         IDM_AUTOSTART => Some(TrayCommand::ToggleAutoStart),
-        IDM_PANIC_RESET => Some(TrayCommand::PanicReset),
+        IDM_RESTART => Some(TrayCommand::Restart),
         c if (IDM_LAYOUT_BASE..IDM_TOGGLE).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
@@ -596,6 +596,28 @@ pub fn restart_as_admin() {
             std::process::exit(0);
         } else {
             log::warn!("Failed to restart as admin (user may have cancelled UAC)");
+        }
+    }
+}
+
+/// 通常権限で自身を再起動する。
+///
+/// 現在の実行ファイルを新しいプロセスとして spawn し、成功したら現在のプロセスを終了する。
+pub fn restart_self() {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("Failed to get current exe path: {e}");
+            return;
+        }
+    };
+    match std::process::Command::new(&exe).spawn() {
+        Ok(_) => {
+            log::info!("Restarting self, exiting current process");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            log::error!("Failed to restart self: {e}");
         }
     }
 }
@@ -712,10 +734,7 @@ unsafe extern "system" fn tray_wnd_proc(
                 }
                 Some(TrayCommand::RestartAdmin) => restart_as_admin(),
                 Some(TrayCommand::ToggleAutoStart) => handle_autostart_toggle(),
-                Some(TrayCommand::PanicReset) => {
-                    log::warn!("Panic reset requested from tray menu");
-                    crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
-                }
+                Some(TrayCommand::Restart) => restart_self(),
                 Some(TrayCommand::SelectLayout(index)) => {
                     let _ = crate::with_app(|app| app.switch_layout(index));
                 }

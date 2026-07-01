@@ -403,10 +403,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             let _ = with_app(|app| app.switch_layout(index));
         }
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
-        Some(tray::TrayCommand::PanicReset) => {
-            log::warn!("[tray] Panic reset requested from tray menu");
-            post_to_main_thread(crate::WM_PANIC_RESET);
-        }
+        Some(tray::TrayCommand::Restart) => tray::restart_self(),
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }
