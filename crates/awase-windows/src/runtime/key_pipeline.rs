@@ -8,7 +8,7 @@ use crate::hook;
 use crate::hook::CallbackResult;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
-use awase::engine::InputModeState;
+use awase::engine::{AssumedReason, InputModeState};
 use awase::platform::PlatformRuntime as _;
 use awase::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
 
@@ -533,6 +533,30 @@ impl Runtime {
                 "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended{}",
                 if applied { "" } else { " [chord barrier active → skipped]" }
             );
+
+            // SetOpen(true) 後 input_mode=ObservedEisu が残ると engine が NotRomajiInput で
+            // inactive になり、VK_KANJI 送信後も 1500ms 間 NICOLA が処理されない。
+            // VK_KANJI 送信により GJI はひらがなへ遷移するため ObservedEisu は stale。
+            // AssumedRomaji にリセットして engine を即座に活性化する。
+            // (1500ms 後の idle-conv-check で GJI 実状態を再確認・訂正する)
+            if applied && new_ime_on
+                && self.platform_state.ime.input_mode() == InputModeState::ObservedEisu
+            {
+                self.platform_state.ime.dispatch_event(
+                    crate::state::ime_event::ImeEvent::InputModeObserved {
+                        mode: InputModeState::AssumedRomaji {
+                            reason: AssumedReason::AppKindExcluded,
+                        },
+                        source: crate::state::ime_event::ObservationSource::ImmGetOpenStatus,
+                        at: tick_ms,
+                    },
+                    tick_ms,
+                );
+                log::info!(
+                    "[post-decision] SetOpen(true) + ObservedEisu → AssumedRomaji にリセット \
+                     (engine 即活性化)"
+                );
+            }
         }
 
         if !decision.is_consumed()
