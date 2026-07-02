@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-02
+
 ### 新機能
 
 - **IME ON のまま英数直接入力になっている状態 (ObservedEisu) を自動検出し IME OFF (直接入力) へ切替** ([30e6c5f](https://github.com/cuzic/awase/commit/30e6c5f), [1ef82ca](https://github.com/cuzic/awase/commit/1ef82ca), [754a7a4](https://github.com/cuzic/awase/commit/754a7a4)) (ADR-074)
@@ -374,6 +376,8 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
 
+[Unreleased]: https://github.com/cuzic/awase/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/cuzic/awase/compare/v1.6.0...v1.7.0
 [1.2.0]: https://github.com/cuzic/awase/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/cuzic/awase/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/cuzic/awase/compare/v1.0.1...v1.1.0
