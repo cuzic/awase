@@ -67,21 +67,18 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// - ON  → VK_IME_ON（IME ON、既に ON なら no-op）
 /// - OFF → VK_IME_OFF（IME OFF、既に OFF なら no-op）
 ///
-/// VK_IME_ON/OFF は Windows 標準 IME 制御キーで config1.db バインド不要。
-///
-/// TsfNative（Windows Terminal 等）では VK_IME_OFF が GJI の TSF compartment を正しく閉じるか
-/// 未確認のため TsfNative を除外し KanjiToggleStrategy（VK_KANJI）にフォールバックする。
+/// VK_IME_ON/OFF は Windows 標準 IME 制御キーで GJI が TSF 層でネイティブに処理する。
+/// Chrome・WezTerm・Windows Terminal（TsfNative）すべてで動作確認済み（2026-06-28）。
+/// TsfNative では旧 F22 キーバインド時代に「半角英数止まり」の問題があったが、
+/// VK_IME_OFF (0x1A) 移行後は TSF compartment が正しく閉じることを確認済み。
 ///
 /// 適用条件:
 /// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
-/// - `profile != TsfNative`（TsfNative は VK_KANJI でフォールバック）
 pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        use crate::focus::class_names::AppImeProfile;
         view.observed.active_ime_kind == ActiveImeKind::GoogleJapaneseInput
-            && !matches!(view.focus.profile, AppImeProfile::TsfNative)
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
@@ -160,24 +157,20 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
 
 /// `SendInput(VK_KANJI)` トグルを使う最終フォールバック戦略。
 ///
-/// IME 種別が不明な環境での全プロファイル共通フォールバック（Chrome/Edge の主戦略）。
+/// IME 種別が不明な環境向けの汎用フォールバック。
+/// GJI 環境では `GjiDirectStrategy` が全プロファイルで先行するため、
+/// ここには GJI 以外（IME 種別不明 / ImmCross 失敗後）のみ到達する。
 ///
-/// `already_matched` の判定は [`ImeApplyContext::from_view`] が一元管理する。
-/// この Strategy は Planner が `SendKanjiToggle` を選んだ時点で「送信が必要」と確定しているため、
-/// shadow や `candidate_was_seen` を再チェックせずに VK_KANJI を送信する。
-///
-/// 候補表示中は VK_KANJI が候補窓に吸われて OFF に失敗する可能性があるが、
-/// GJI 環境では `GjiDirectStrategy` が先行するため、ここには GJI 以外か GJI 失敗時のみ到達する。
+/// VK_KANJI はトグルキーのため冪等ではなく、`already_matched` の判定は行わず送信する。
+/// GJI / MS-IME 環境では前段の戦略が処理するため、このフォールバックは稀にしか使われない。
 pub(crate) struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
     fn is_applicable(&self, _view: &ImeControlView<'_>) -> bool {
-        true // 汎用フォールバック: Imm32Unavailable の主戦略 + ImmCross 失敗時の代替
+        true // 汎用フォールバック: IME 種別不明環境 + ImmCross 失敗時の代替
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        // Planner（ImeApplyContext::from_view）が already_matched=false を確認済み。
-        // ここでは shadow/candidate を再チェックせず、無条件に VK_KANJI を送信する。
         log::debug!(
             "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} → desired={open}: SendInput VK_KANJI",
             view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,

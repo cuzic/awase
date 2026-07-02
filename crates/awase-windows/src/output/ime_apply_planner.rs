@@ -166,10 +166,10 @@ impl ImeApplyContext {
     ///
     /// ## `already_matched` の計算方針（保守的）
     ///
-    /// ここが `already_matched` の **唯一の計算場所**。Strategy は再チェックしない。
-    ///
-    /// GJI・MS-IME ともに送信キー（VK_IME_ON/VK_IME_OFF・VK_DBE_HIRAGANA）は冪等であり、
+    /// GJI（VK_IME_ON/OFF）・MS-IME（VK_DBE_HIRAGANA/VK_IME_OFF）は冪等キーを使うため、
     /// shadow が一致していても常に送信することで shadow desync 時のひらがな復帰を保証する。
+    /// GJI は全プロファイル（TsfNative 含む）で `GjiDirectStrategy` が担うため、
+    /// VK_KANJI フォールバックは IME 種別不明時のみ到達する。
     /// そのため現在サポートする全 IME 種別で `already_matched` は常に `false`。
     pub(crate) fn from_view(
         view: &crate::state::ImeControlView<'_>,

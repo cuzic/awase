@@ -204,6 +204,10 @@ impl Runtime {
             self.platform_state.ime.belief.is_japanese_ime(),
         );
 
+        // 前ウィンドウの candidate_was_seen をキャリーオーバーしない。
+        // 他プロセス窓で候補ウィンドウが表示された履歴が新窓の dispatch-ime に影響すると
+        // effective_open が誤って true になり VK_KANJI を誤送信する（shadow desync 偽陽性）。
+        crate::tsf::observer::reset_candidate_was_seen();
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         self.platform_state.focus.last_focus_change_ms = tick_ms.0;
         self.platform.notify_focus_changed();
