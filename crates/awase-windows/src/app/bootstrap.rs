@@ -678,37 +678,60 @@ pub(super) fn run_all() -> Result<()> {
     }
 
     // 多重起動防止: Named Mutex で既存インスタンスをチェック
+    // restart_self() (tray.rs) は新プロセスを spawn した直後に旧プロセスを
+    // exit(0) するため、旧プロセスの named mutex 解放 (OS のプロセス終了処理)
+    // が新プロセスの起動より遅れることがある。即座に諦めず短時間リトライして
+    // から多重起動と判定することで、この再起動レースを回避する。
     // SAFETY: CreateMutexW, FindWindowW, PostMessageW, CloseHandle are standard Win32 calls.
     unsafe {
         use windows::core::{w, PCWSTR};
-        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
         use windows::Win32::System::Threading::CreateMutexW;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
 
-        let mutex = CreateMutexW(None, false, w!("Global\\awase_keyboard_emulator"));
-        match mutex {
-            Ok(handle) => {
-                if GetLastError() == ERROR_ALREADY_EXISTS {
-                    log::error!("Another instance of awase is already running. Exiting.");
-                    let class_wide = crate::win32::to_wide(tray::WINDOW_CLASS_NAME);
-                    if let Ok(existing) = FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null()) {
-                        if !existing.is_invalid() {
-                            let _ = PostMessageW(
-                                Some(existing),
-                                WM_DUPLICATE_INSTANCE,
-                                WPARAM(0),
-                                LPARAM(0),
-                            );
-                        }
-                    }
+        const MAX_RETRIES: u32 = 20;
+        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let mut duplicate = false;
+        let mut acquired_handle: Option<HANDLE> = None;
+
+        for attempt in 0..=MAX_RETRIES {
+            match CreateMutexW(None, false, w!("Global\\awase_keyboard_emulator")) {
+                Ok(handle) if GetLastError() == ERROR_ALREADY_EXISTS => {
                     let _ = windows::Win32::Foundation::CloseHandle(handle);
-                    std::process::exit(1);
+                    if attempt == MAX_RETRIES {
+                        duplicate = true;
+                    } else {
+                        std::thread::sleep(RETRY_INTERVAL);
+                        continue;
+                    }
                 }
-                let _ = handle;
+                Ok(handle) => acquired_handle = Some(handle),
+                Err(e) => log::warn!("Failed to create instance mutex: {e}"),
             }
-            Err(e) => {
-                log::warn!("Failed to create instance mutex: {e}");
+            break;
+        }
+
+        if duplicate {
+            log::error!("Another instance of awase is already running. Exiting.");
+            let class_wide = crate::win32::to_wide(tray::WINDOW_CLASS_NAME);
+            if let Ok(existing) = FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null()) {
+                if !existing.is_invalid() {
+                    let _ = PostMessageW(
+                        Some(existing),
+                        WM_DUPLICATE_INSTANCE,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
             }
+            std::process::exit(1);
+        }
+
+        // ハンドルはプロセス生存中保持し続ける (HANDLE は Drop で自動 Close されないため
+        // 意図的に破棄せず named mutex を確保したままにする)。
+        if let Some(handle) = acquired_handle {
+            let _ = handle;
         }
     }
 
