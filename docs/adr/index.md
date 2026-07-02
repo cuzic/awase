@@ -56,9 +56,18 @@
 | [073](073-gji-kind-process-lock.md) | GJI 検出後は active_ime_kind をプロセス中固定（MS-IME 降格禁止） | 採用済み |
 | [074](074-observed-eisu-auto-direct.md) | ObservedEisu 自動直接入力切替 — idle-conv-check で IME ON 英数を自動 OFF | 採用済み |
 | [075](075-imm-cross-probe-belief.md) | ImmCrossProbe による belief 補正 — Qt/GJI フォーカス時の IME 誤認識修正 | 採用済み |
+| [076](076-sleep-wake-is-japanese-ime-grace.md) | スリープ復帰後 is_japanese_ime 一時 false — grace 保護 | 採用済み |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
+
+### 2026-07-02: スリープ復帰 IME 固定バグ修正（ADR-076）
+
+PC スリープ復帰後、Windows Terminal 等の TsfNative アプリで IME が OFF に固定されるバグを修正。
+
+- **ADR-076** — `apply_focus_probe` 内で `is_japanese_ime` の false ダウングレードを
+  shadow grace active 中に抑制。`compute_focus_probe_grace` を `set_is_japanese_ime` より
+  前に移動し、`imc_open` と `is_japanese_ime` の grace 保護を対称化。
 
 ### 2026-07-01: 凝集性リファクタと IME apply 精度向上（ADR-069〜074）
 

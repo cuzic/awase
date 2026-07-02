@@ -744,10 +744,6 @@ impl Runtime {
         let probe_age_ms = now_tick_ms.saturating_sub(probe_started_ms);
         let ime_on_before_probe = self.platform_state.ime.effective_open();
 
-        self.platform_state
-            .ime
-            .set_is_japanese_ime(probe.is_japanese_ime);
-
         let now_ms = now_tick_ms.0;
         let signals = compute_focus_probe_grace(
             now_ms,
@@ -757,6 +753,15 @@ impl Runtime {
             last_focus_change_ms,
             shadow_on,
         );
+
+        // スリープ復帰後など grace 期間中は read_ime_state_fast が一時的に
+        // is_japanese_ime=false を返すことがある。
+        // false へのダウングレードは grace active 中は行わない（true はいつでも更新）。
+        if probe.is_japanese_ime || !signals.any() {
+            self.platform_state
+                .ime
+                .set_is_japanese_ime(probe.is_japanese_ime);
+        }
 
         // TsfNative/Imm32Unavailable では probe.ime_on が常に None になる。
         // この場合は shadow の apply 値を代替観測として記録し drift 追跡を維持する。
