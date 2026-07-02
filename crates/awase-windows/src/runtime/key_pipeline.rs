@@ -889,12 +889,43 @@ impl Runtime {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
+                    let conv_mode = snap.conversion_mode;
                     let _ = crate::with_app(|app| {
                         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
                         app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
                         log::debug!(
                             "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
                         );
+                        // ImmCross アプリは kp_stage_idle_conv_check (TsfNative 専用) が
+                        // 動かないため ObservedEisu が stale になっても observer 実行まで
+                        // 自動回復しない。FocusProbe 毎にここで早期補正する。
+                        if open {
+                            if let Some(conv) = conv_mode {
+                                use awase::engine::{AssumedReason, ConvMode, InputModeState};
+                                use crate::state::ime_event::{ImeEvent, ObservationSource};
+                                if !ConvMode::from_u32(conv).is_eisu()
+                                    && matches!(
+                                        app.platform_state.ime.input_mode(),
+                                        InputModeState::ObservedEisu
+                                    )
+                                {
+                                    app.platform_state.ime.dispatch_event(
+                                        ImeEvent::InputModeObserved {
+                                            mode: InputModeState::AssumedRomaji {
+                                                reason: AssumedReason::AppKindExcluded,
+                                            },
+                                            source: ObservationSource::ImmCrossProbe,
+                                            at: tick_ms,
+                                        },
+                                        tick_ms,
+                                    );
+                                    log::info!(
+                                        "[ImmCrossProbe] ObservedEisu stale: conv=0x{conv:08X} \
+                                         → AssumedRomaji (engine 再活性化)"
+                                    );
+                                }
+                            }
+                        }
                     });
                 }
             });

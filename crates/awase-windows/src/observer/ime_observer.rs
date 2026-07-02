@@ -185,6 +185,29 @@ pub fn classify_ime_snapshot(
             .or_else(|| {
                 snap.input_mode_from_conversion(current_prev_conversion_mode, current_input_mode)
             })
+            .or_else(|| {
+                // ObservedEisu が stale の場合の回復。
+                // GJI 等 ROMAN bit 不使用 IME では英数→ひらがな切替で conv が変化しても
+                // ROMAN bit は両方 false のまま → classify_transition が None を返し
+                // belief が ObservedEisu に固まる。
+                // TsfNative は conversion_mode=None のため is_some_and が false → 不適用。
+                if matches!(current_input_mode, InputModeState::ObservedEisu)
+                    && snap
+                        .conversion_mode
+                        .is_some_and(|c| !awase::engine::ConvMode::from_u32(c).is_eisu())
+                {
+                    let conv = snap.conversion_mode.unwrap_or(0);
+                    log::info!(
+                        "IME input method changed: ObservedEisu → AssumedRomaji \
+                         (conv=0x{conv:08X}, GJI/ImmCross stale recovery)"
+                    );
+                    Some(InputModeState::AssumedRomaji {
+                        reason: awase::engine::AssumedReason::AppKindExcluded,
+                    })
+                } else {
+                    None
+                }
+            })
     };
 
     log::debug!(
