@@ -564,8 +564,8 @@ Windows / アプリケーション</div>
     <div class="strategy-card">
       <div class="strategy-num">2</div>
       <div class="strategy-body">
-        <h4>Google 日本語入力 直接制御（F21/F22）</h4>
-        <p>Google 日本語入力に専用のキー（F21 で「ひらがなモードへ」、F22 で「IME OFF」）を送る。
+        <h4>Google 日本語入力 直接制御（VK_IME_ON / VK_IME_OFF）</h4>
+        <p>Windows の仮想キー VK_IME_ON（ひらがなモードへ）と VK_IME_OFF（直接入力へ）を送る。
         冪等な操作なので、何度送っても意図通りになります。</p>
         <p class="for">対象: Google 日本語入力が起動しているすべてのアプリ</p>
       </div>
@@ -626,7 +626,7 @@ Chrome のプロセス構成（简略）:
   届けられない</div>
 
   <p class="body">
-    そこで awase は方法2の「Google 日本語入力への F21/F22 送信」に頼ります。
+    そこで awase は Google 日本語入力へ VK_IME_ON（ひらがなモード）/ VK_IME_OFF（直接入力）を送信します。
     Google 日本語入力の内部プロセスに直接届くため、Chrome のプロセス構成に関係なく動作します。
   </p>
 
@@ -740,8 +740,9 @@ cold-start の発生タイムライン:
 
   <div class="callout">
     <strong>Windows Terminal での注意：</strong>
-    awase が Google 日本語入力に送る F21/F22 は実キーボードに存在しない仮想キーで、
-    VT エスケープシーケンスも生成しません。Windows Terminal での追加設定は不要です。
+    awase が Google 日本語入力に送る VK_IME_ON (0x16) / VK_IME_OFF (0x1A) は
+    Windows 標準の仮想キーコードですが、物理キーボードには存在しません。
+    VT エスケープシーケンスも生成しないため、Windows Terminal での追加設定は不要です。
   </div>
 
 </div>
