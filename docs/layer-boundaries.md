@@ -270,7 +270,7 @@ ImmCross は awase が IME を完全所有するモデル。
 - 「KeyUp だけは通す」のような非対称処理
 
 **検出**:
-`crates/awase-windows/src/app/key_pipeline.rs::stage_execute` の
+`crates/awase-windows/src/runtime/key_pipeline.rs::kp_stage_execute` の
 `suppress_physical` 周辺を Read で確認。
 
 ---
