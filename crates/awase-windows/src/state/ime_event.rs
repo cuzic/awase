@@ -93,6 +93,12 @@ pub enum ObservationSource {
     Tsf,
     /// per-HWND IME キャッシュからの復元
     HwndCache,
+    /// フォーカス変更後の ImmCross 非同期プローブ
+    ///
+    /// Qt/LINE 等の ImmCross アプリで、フォーカス直後に `GetGUIThreadInfo.hwndFocus`
+    /// （子 hwnd）の IMM32 状態を `read_ime_state_full_async` で読む高信頼ソース。
+    /// `FocusProbe` が top-level hwnd の IMC を読む（Low）のと対になる。
+    ImmCrossProbe,
 }
 
 /// 観測の信頼度。reducer が profile 別に judge する際に使う。

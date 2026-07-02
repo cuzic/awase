@@ -872,6 +872,29 @@ impl Runtime {
             }
         }
 
+        // ImmCross アプリ（Qt/LINE 等）: FocusProbe は top-level hwnd の IMC を読むが、
+        // GJI 使用時は child hwnd と IME 状態が異なる場合がある（Qt の IME コンテキスト分割）。
+        // read_ime_state_full_async で child hwnd を正確に読み、High confidence 観測として記録する。
+        // これにより FocusProbe (Low) が誤って false を返しても derive_open() で正しく上書きされる。
+        if matches!(
+            self.platform.current_app_profile(),
+            crate::focus::classify::AppImeProfile::ImmCross,
+        ) && probe.is_japanese_ime {
+            crate::win32_async::spawn_local(async move {
+                // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
+                let snap = crate::ime::read_ime_state_full_async().await;
+                if let Some(open) = snap.ime_on {
+                    let _ = crate::with_app(|app| {
+                        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
+                        log::debug!(
+                            "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
+                        );
+                    });
+                }
+            });
+        }
+
         let ime_on_after_probe = self.platform_state.ime.effective_open();
         let input_mode_after_probe = self.platform_state.ime.input_mode();
         let ime_on_suffix = build_ime_on_suffix(

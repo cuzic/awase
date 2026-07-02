@@ -19,6 +19,7 @@ use super::ime_event::{
 };
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
+use std::time::Instant;
 use super::transition::ImeTransition;
 
 // ── AppliedImeState ──────────────────────────────────────────────────────────
@@ -174,13 +175,31 @@ impl ImeModel {
         matches!(self.input_barrier, Some(InputBarrier::CtrlImeChord { .. }))
     }
 
-    /// `desired_open` を `force_guards` で override した最終値 (Step 6)。
+    /// ユーザーの明示的な意図（HwndCache 復元を除く）が present かどうか。
     ///
-    /// guard が active なら `true` を強制、そうでなければ `desired_open` をそのまま。
-    /// Phase 3d 以降は `PlatformState::ime_on()` の SSOT。
+    /// true の場合は `desired_open` を観測より優先する。
+    /// false の場合は observation pool の `derive_open()` 結果を採用し、
+    /// 観測が空なら `desired_open` にフォールバックする。
+    fn has_user_explicit_intent(&self) -> bool {
+        self.last_intent.as_ref().is_some_and(|i| {
+            !matches!(i.source, IntentSource::HwndCache)
+        })
+    }
+
+    /// 観測プールと `desired_open` を統合した最終 belief (Step 6)。
+    ///
+    /// - ユーザーの明示意図がある場合: `desired_open` を優先（観測で上書きしない）
+    /// - 明示意図なし（フォーカス変化直後等）: `derive_open()` の結果を採用、
+    ///   観測が空なら `desired_open` にフォールバック
+    /// - 最後に `force_guards` を適用（guard が active なら強制 ON）
     #[must_use]
-    pub const fn effective_open(&self) -> bool {
-        self.force_guards.effective_open(self.desired_open)
+    pub fn effective_open(&self) -> bool {
+        let base = if self.has_user_explicit_intent() {
+            self.desired_open
+        } else {
+            self.observations.derive_open(Instant::now()).unwrap_or(self.desired_open)
+        };
+        self.force_guards.effective_open(base)
     }
 
     /// `AppliedImeState` を返す。executor の applied_snapshot 同期用。

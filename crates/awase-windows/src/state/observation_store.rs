@@ -54,6 +54,8 @@ pub struct PerSourceObservations {
     pub imm_get_open_status: Option<ImeObservation>,
     pub tsf: Option<ImeObservation>,
     pub hwnd_cache: Option<ImeObservation>,
+    /// フォーカス変更後の ImmCross 非同期プローブ（Qt/LINE 等の child hwnd 高信頼読み取り）
+    pub imm_cross_probe: Option<ImeObservation>,
 }
 
 impl PerSourceObservations {
@@ -67,6 +69,7 @@ impl PerSourceObservations {
             ObservationSource::ImmGetOpenStatus => self.imm_get_open_status.as_ref(),
             ObservationSource::Tsf => self.tsf.as_ref(),
             ObservationSource::HwndCache => self.hwnd_cache.as_ref(),
+            ObservationSource::ImmCrossProbe => self.imm_cross_probe.as_ref(),
         }
     }
 
@@ -79,6 +82,7 @@ impl PerSourceObservations {
             ObservationSource::ImmGetOpenStatus => self.imm_get_open_status = Some(obs),
             ObservationSource::Tsf => self.tsf = Some(obs),
             ObservationSource::HwndCache => self.hwnd_cache = Some(obs),
+            ObservationSource::ImmCrossProbe => self.imm_cross_probe = Some(obs),
         }
     }
 
@@ -91,6 +95,7 @@ impl PerSourceObservations {
             self.imm_get_open_status.as_ref(),
             self.tsf.as_ref(),
             self.hwnd_cache.as_ref(),
+            self.imm_cross_probe.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -104,6 +109,7 @@ impl PerSourceObservations {
         self.imm_get_open_status = None;
         self.tsf = None;
         self.hwnd_cache = None;
+        self.imm_cross_probe = None;
     }
 }
 
@@ -171,6 +177,55 @@ impl ObservationStore {
             .iter()
             .filter(|o| !o.is_expired(now))
             .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
+    }
+
+    /// 観測プールから IME 開閉の best-effort belief を導出する純粋決定関数。
+    ///
+    /// ## 判定順序
+    ///
+    /// 1. **High confidence** — 単一ソースでも即採用（ImmGetOpenStatus 直接 / ImmCrossProbe）
+    /// 2. **Medium+ ソースの無競合多数決** — 複数の間接観測が一致した場合のみ採用
+    ///    - 矛盾（true/false 両方あり）の場合は `None`
+    ///
+    /// `None` の場合は呼び出し側が `desired_open` にフォールバックする。
+    ///
+    /// ## 鮮度ウィンドウ
+    ///
+    /// `FRESH` を超えた観測は無視する。フォーカス変更時に `clear_on_focus_change()` が
+    /// 呼ばれるため通常は問題にならないが、稀に残留する古い観測を排除するためのガード。
+    #[must_use]
+    pub fn derive_open(&self, now: Instant) -> Option<bool> {
+        const FRESH: Duration = Duration::from_millis(3000);
+        let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;
+
+        // 1. High confidence: 単一ソースで即採用（最新のものを選ぶ）
+        let high = self
+            .per_source
+            .iter()
+            .filter(|o| is_fresh(o) && o.confidence == ObservationConfidence::High)
+            .max_by_key(|o| o.at);
+        if let Some(obs) = high {
+            return Some(obs.open);
+        }
+
+        // 2. Medium+ ソースの無競合多数決（1 ソースでも可）
+        let mut true_count = 0u32;
+        let mut false_count = 0u32;
+        for obs in self.per_source.iter() {
+            if !is_fresh(obs) || obs.confidence < ObservationConfidence::Medium {
+                continue;
+            }
+            if obs.open {
+                true_count += 1;
+            } else {
+                false_count += 1;
+            }
+        }
+        match (true_count, false_count) {
+            (t, 0) if t >= 1 => Some(true),
+            (0, f) if f >= 1 => Some(false),
+            _ => None, // 矛盾または観測なし → フォールバック
+        }
     }
 
     /// 直近 `window` 内に複数ソースが同じ値で合意しているか。
@@ -296,5 +351,95 @@ mod tests {
         o.expires_at = Some(now);
         s.record(o);
         assert_eq!(s.most_recent_trusted(now), None, "expire 済みは除外");
+    }
+
+    // ── derive_open ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn derive_open_empty_returns_none() {
+        let s = ObservationStore::default();
+        assert_eq!(s.derive_open(Instant::now()), None, "観測なし → None");
+    }
+
+    #[test]
+    fn derive_open_high_confidence_wins_immediately() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        // High confidence (ImmCrossProbe) が true → Some(true) を即採用
+        let mut high = obs(true, ObservationSource::ImmCrossProbe, now);
+        high.confidence = ObservationConfidence::High;
+        s.record(high);
+        assert_eq!(s.derive_open(now), Some(true), "High confidence 即採用");
+    }
+
+    #[test]
+    fn derive_open_high_wins_over_low() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        // Low confidence の false (FocusProbe) + High confidence の true (ImmCrossProbe)
+        // → High が勝ち true を返す（Qt/GJI バグ修正の核心ケース）
+        let mut low = obs(false, ObservationSource::FocusProbe, now);
+        low.confidence = ObservationConfidence::Low;
+        let mut high = obs(true, ObservationSource::ImmCrossProbe, now);
+        high.confidence = ObservationConfidence::High;
+        s.record(low);
+        s.record(high);
+        assert_eq!(
+            s.derive_open(now),
+            Some(true),
+            "High confidence true が Low confidence false を上書き"
+        );
+    }
+
+    #[test]
+    fn derive_open_low_confidence_alone_returns_none() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        // Low confidence だけでは Medium+ ステップでも High ステップでもヒットしない
+        let mut low = obs(false, ObservationSource::FocusProbe, now);
+        low.confidence = ObservationConfidence::Low;
+        s.record(low);
+        assert_eq!(
+            s.derive_open(now),
+            None,
+            "Low confidence のみ → fallback するよう None を返す"
+        );
+    }
+
+    #[test]
+    fn derive_open_medium_single_source() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        // Medium 1ソースでも無競合なら採用
+        s.record(obs(true, ObservationSource::ObserverPoll, now));
+        assert_eq!(s.derive_open(now), Some(true), "Medium 単独 → Some");
+    }
+
+    #[test]
+    fn derive_open_medium_conflict_returns_none() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        s.record(obs(true, ObservationSource::ObserverPoll, now));
+        s.record(obs(false, ObservationSource::Gji, now));
+        assert_eq!(
+            s.derive_open(now),
+            None,
+            "Medium 競合 → None（caller が desired にフォールバック）"
+        );
+    }
+
+    #[test]
+    fn derive_open_stale_observation_ignored() {
+        let mut s = ObservationStore::default();
+        let past = Instant::now() - Duration::from_secs(10);
+        // 10 秒前の Medium obs は FRESH(3s) を超えているため無視される
+        let mut old = obs(false, ObservationSource::ObserverPoll, past);
+        old.confidence = ObservationConfidence::Medium;
+        s.record(old);
+        assert_eq!(
+            s.derive_open(Instant::now()),
+            None,
+            "古い観測（FRESH 超過）は無視"
+        );
     }
 }

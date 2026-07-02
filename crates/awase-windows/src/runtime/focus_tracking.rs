@@ -328,6 +328,28 @@ impl Runtime {
             }
         }
 
+        // ImmCross アプリ（Qt/LINE 等）: FocusChanged 直後に child hwnd の正確な IME 状態を
+        // 非同期読み取りする。FocusProbe（first-key トリガー）より早く確定させることで
+        // 最初のキー入力から正しい belief で engine が動作する。
+        // FocusChanged が observations をクリアした後のため、この probe が最初の High conf 観測になる。
+        if matches!(
+            self.platform.current_app_profile(),
+            crate::focus::classify::AppImeProfile::ImmCross,
+        ) && self.platform_state.ime.belief.is_japanese_ime() {
+            crate::win32_async::spawn_local(async move {
+                let snap = crate::ime::read_ime_state_full_async().await;
+                if let Some(open) = snap.ime_on {
+                    let _ = crate::with_app(|app| {
+                        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
+                        log::debug!(
+                            "[ImmCrossProbe/focus] child-hwnd IME={open} → High confidence 観測記録"
+                        );
+                    });
+                }
+            });
+        }
+
         if self.platform_state.ime.is_force_on_guard_active()
             || self.platform_state.ime.detect_miss_count() > 0
         {

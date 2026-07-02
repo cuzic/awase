@@ -49,9 +49,40 @@
 | [066](066-gji-clsid-ime-detection.md) | GJI CLSID ベース IME 種別検出（gji_write_idle_ms ヒューリスティック廃止） | 採用済み |
 | [067](067-vk-ime-on-off-migration.md) | F21/F22 → VK_IME_ON/OFF への完全移行と config1.db バインド廃止 | 採用済み |
 | [068](068-jiskana-katakana-support.md) | JISかな・カタカナモードの完全サポート | 採用済み |
+| [069](069-cohesion-refactor-h1-m5.md) | 凝集性リファクタ H-1〜M-5（循環依存・God Object・Reducer 不変条件） | 採用済み |
+| [070](070-open-belief-pure-fn.md) | `reduce_open_belief` — 観測値を純粋関数で単一ビリーフに還元 | 採用済み |
+| [071](071-deferred-vk-queue-ownership.md) | deferred VK キュー所有権 → TsfWarmupCoordinator への移管 | 採用済み |
+| [072](072-conv-mode-authority-apply-resync.md) | conv_mode_authority を apply 完了ごとに再同期する | 採用済み |
+| [073](073-gji-kind-process-lock.md) | GJI 検出後は active_ime_kind をプロセス中固定（MS-IME 降格禁止） | 採用済み |
+| [074](074-observed-eisu-auto-direct.md) | ObservedEisu 自動直接入力切替 — idle-conv-check で IME ON 英数を自動 OFF | 採用済み |
+| [075](075-imm-cross-probe-belief.md) | ImmCrossProbe による belief 補正 — Qt/GJI フォーカス時の IME 誤認識修正 | 採用済み |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
+
+### 2026-07-01: 凝集性リファクタと IME apply 精度向上（ADR-069〜074）
+
+2026-06-30〜07-01 に 21 タスクの凝集性リファクタ（ADR-069）と、それに連動した
+4つの設計決定（ADR-070〜074）が確定した。
+
+- **ADR-069** — H-1〜M-5 全 21 タスクの凝集性リファクタ。循環依存解消・状態層 OS 依存除去・
+  Reducer 不変条件強化・Output→Runtime 逆依存解消・God Object 三連発の分割。
+  新設ファイル 10 本（`types.rs`, `key_injector.rs`, `tsf_warmup_coord.rs` 等）。
+- **ADR-070** — `OpenBeliefInputs` → `OpenBelief` の純粋関数 `reduce_open_belief`。
+  ad-hoc な boolean 判定を一箇所に集約し、`confident=false` で「必ず apply」を表現。
+  旧 `kanji_needs_context_override` を統合。
+- **ADR-071** — deferred VK キューを各 probe machine から `TsfWarmupCoordinator` へ移管。
+  「にゅうりょく→にうりょく」の probe 中打鍵消失を 2 原因同時に解消。
+  StepCoro の self-priming tick 追加で空白窓を構造的に排除。
+- **ADR-072** — `conv_mode_authority` を `record_ime_apply_result`（sync/async 共通）で
+  apply 完了ごとに再同期。`EngineStateChanged` 遷移エッジへの依存を廃止し、
+  パニックリセット後の TSF warmup スキップ desync を解消。
+- **ADR-073** — GJI が一度確定した後は `active_ime_kind` をプロセス中固定。
+  CLSID ポーリングの一時的な読み取り失敗で MS-IME に降格しなくなった。
+  デバッグはプロセス再起動で対応。
+- **ADR-074** — `idle_conv_check` で `ObservedEisu` 検出時に自動 IME OFF。
+  IME ON 半角英数モードへの陥落から 500ms 以内に自動復帰する。
+  `SetOpen(true)` 後の ObservedEisu stale も AssumedRomaji にリセットして engine を即活性化。
 
 ### 2026-06-27〜30: MS-IME 対応完了後の連続改善（ADR-064〜068）
 

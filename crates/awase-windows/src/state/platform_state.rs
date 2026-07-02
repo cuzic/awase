@@ -682,7 +682,25 @@ impl ImeStateHub {
                 open: value,
                 source: ObservationSource::FocusProbe,
                 hwnd: HwndId::NULL,
-                confidence: ObservationConfidence::Medium,
+                // Low: top-level hwnd の IMC を読むため Qt/GJI 等では child hwnd と異なる場合がある。
+                // High confidence の ImmCrossProbe が後から上書きする。
+                confidence: ObservationConfidence::Low,
+            },
+            tick_ms,
+        );
+    }
+
+    /// ImmCross 非同期プローブ結果を記録する（High confidence）。
+    ///
+    /// `read_ime_state_full_async` が child hwnd の IMM32 状態を読んだ後に呼ぶ。
+    /// High confidence のため `derive_open()` で即採用される。
+    pub(crate) fn write_imm_cross_probe(&mut self, value: bool, tick_ms: TickMs) {
+        self.dispatch_event(
+            ImeEvent::ObserverReported {
+                open: value,
+                source: ObservationSource::ImmCrossProbe,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::High,
             },
             tick_ms,
         );
