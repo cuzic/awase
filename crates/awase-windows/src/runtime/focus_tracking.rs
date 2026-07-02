@@ -8,6 +8,7 @@ use awase::types::FocusKind;
 use windows::Win32::Foundation::HWND;
 
 use super::Runtime;
+use win32_async;
 
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
 pub(super) struct ClassifiedFocus {
@@ -334,9 +335,9 @@ impl Runtime {
         // FocusChanged が observations をクリアした後のため、この probe が最初の High conf 観測になる。
         if matches!(
             self.platform.current_app_profile(),
-            crate::focus::classify::AppImeProfile::ImmCross,
+            crate::focus::classify::AppImeProfile::Standard,
         ) && self.platform_state.ime.belief.is_japanese_ime() {
-            crate::win32_async::spawn_local(async move {
+            win32_async::spawn_local(async move {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {

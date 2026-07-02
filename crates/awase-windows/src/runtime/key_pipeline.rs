@@ -878,14 +878,14 @@ impl Runtime {
         // これにより FocusProbe (Low) が誤って false を返しても derive_open() で正しく上書きされる。
         if matches!(
             self.platform.current_app_profile(),
-            crate::focus::classify::AppImeProfile::ImmCross,
+            crate::focus::classify::AppImeProfile::Standard,
         ) && probe.is_japanese_ime {
-            crate::win32_async::spawn_local(async move {
+            win32_async::spawn_local(async move {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+                        let tick_ms = crate::state::TickMs(hook::current_tick_ms());
                         app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
                         log::debug!(
                             "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
