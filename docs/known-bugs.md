@@ -1,6 +1,6 @@
 # awase 既知の不具合
 
-> 最終更新: 2026-06-02
+> 最終更新: 2026-07-02
 
 ---
 
@@ -11,12 +11,12 @@
 | 要素 | 役割 |
 |---|---|
 | `TsfReadinessProbe` | GJI I/O 静止を監視し「composition 受け付け可能か」を判定 |
-| `TsfProbeMachine` | probe FSM。`GjiInitial / GjiSecondary / Chrome` フェーズを 10ms tick で進行 |
+| `TsfProbeCoro` | probe コルーチン（`probe_fsm.rs`）。`ChromeProbe` → `SacrificialWarmupCoro`（GJI 有効時）または `Transmit + LiteralDetect`（GJI 無効時）を StepCoro で直線記述 |
 | `ColdWarmupSequence` | WezTerm TSF cold-start の F2 送信・probe 起動シーケンス |
-| `LiteralDetector` | 送信後に GJI SHOW を監視して composition 成否を判定 |
+| `LiteralDetector` | 送信後に GJI SHOW / プロセス I/O 変化を監視して composition 成否を判定 |
 | `ColdReason` | cold になった理由。`eager_settle_ms()` / `probe_min_ms()` で探索予算を決定 |
 
-GJI (Google Japanese Input / 候補ウィンドウ) の I/O を `GjiMonitor` バックグラウンドスレッドで監視し、
+GJI (Google Japanese Input / 候補ウィンドウ) の I/O を `GjiMonitor`（`tsf/gji_monitor.rs`）バックグラウンドスレッドで監視し、
 `TSF_OBS.gji_last_io_ms` に記録する。probe はこの timestamp を参照して GJI が settled かどうか判断する。
 
 ---
@@ -30,7 +30,7 @@ GJI (Google Japanese Input / 候補ウィンドウ) の I/O を `GjiMonitor` バ
 初期化に実測 ~300–936ms かかることがある。awase の romaji SendInput がこの初期化完了前に届くと
 1文字目が IME を通らずリテラルになる。
 
-**現在の対策:** `ColdWarmupSequence` + `TsfProbeMachine (GjiInitial)` によるノンブロッキング probe。
+**現在の対策:** `ColdWarmupSequence` + `TsfProbeCoro`（`tsf/probe_fsm.rs`）によるノンブロッキング probe。
 `eager_settle_ms`（最大バジェット）を `ColdReason` × `long_idle` の組み合わせで決定する:
 
 | ColdReason | short idle | long idle (>10s) |
@@ -46,7 +46,7 @@ probe 中に GJI が settled になれば早期解放される（タイムアウ
 - `NameChangeWait` での OBJ_NAMECHANGE タイムアウトが長期 idle 時に延長されるが、
   TSF 初期化が残余バジェット全体を超えた場合はリテラル出力が発生しうる。
 
-**関連ファイル:** `tsf/cold_warmup.rs`, `tsf/probe_fsm.rs`, `tsf/probe.rs`, `tsf/output.rs`
+**関連ファイル:** `tsf/cold_warmup.rs`, `tsf/probe_fsm.rs`, `tsf/probe.rs`, `output/vk_send.rs`
 
 **修正履歴:**
 - `8b90725`: long idle (>10s) 時の `FocusChange` / `SetOpenTrue` / `NativeF2Consumed` バジェットを
@@ -64,16 +64,16 @@ probe 中に GJI が settled になれば早期解放される（タイムアウ
 `found_io_after_warmup=false`（Chrome は F2 だけでは GJI I/O を出さない）で即解放するため、
 min_ms が短すぎると Chrome の初期化完了前に T+O バッチが届いてリテラルになる。
 
-**現在の対策:** `probe_min_ms` を以下の3段階で切り替える。
+**現在の対策:** `probe_min_ms` を以下の2段階で切り替える。
 
 | 状況 | probe_min_ms | probe_max_ms | 定数名 |
 |---|---|---|---|
 | 通常（short idle） | 20ms | 120ms | `CHROME_PROBE_MIN/MAX_MS` |
-| keyboard long idle (>10s) | 200ms | 500ms | `CHROME_PROBE_LONG_IDLE_MIN/MAX_MS` |
-| 物理 F2 (F2NonTsf) + GJI long idle (>10s) | 350ms | 500ms | `CHROME_PROBE_F2_GJI_IDLE_MIN_MS` |
+| keyboard long idle (>10s) または 物理 F2 + GJI long idle | 200ms | 500ms | `CHROME_PROBE_LONG_IDLE_MIN/MAX_MS` |
 
 物理 F2 (F2NonTsf) の場合は `cold_marked_ms`（物理 F2 の時刻）を probe 基準点とし、
 プログラム的 F2 の三重送信バグ（`かんりのつごう → kaんりのつごう`）を防ぐ。
+`long_idle || f2_gji_long_idle` の両条件で同じ `CHROME_PROBE_LONG_IDLE_MIN/MAX_MS` を使う。
 
 **残存リスク:**
 - 「keyboard short idle かつ GJI short idle」の条件下で Chrome が 20ms より長く必要とする
@@ -88,7 +88,7 @@ min_ms が短すぎると Chrome の初期化完了前に T+O バッチが届い
   （`こ → ko` バグ修正）
 - `79134f5`: 物理 F2 + GJI long idle 時に `CHROME_PROBE_F2_GJI_IDLE_MIN_MS=350ms` を導入
   （`という → toいう` バグ修正、GJI が12秒休眠後に Chrome の composition context 再初期化に
-  ~326ms 必要だった事例）
+  ~326ms 必要だった事例）→ 後に `CHROME_PROBE_LONG_IDLE_MIN/MAX_MS` に統合（350ms → 200ms 値変更）
 
 ---
 
@@ -139,7 +139,7 @@ GJI が使えない場合は固定タイムアウト待ちになる（BUG-01 の
 **GJI 再アタッチ:** `GjiMonitor` は切断後 `GJI_REATTACH_INTERVAL_MS=3000ms` ごとに
 再アタッチを試みる。
 
-**関連ファイル:** `tsf/probe.rs`, `tsf/observer.rs` (`GjiMonitor`), `tuning.rs`
+**関連ファイル:** `tsf/probe.rs`, `tsf/gji_monitor.rs` (`GjiMonitor`), `tuning.rs`
 
 ---
 
@@ -159,15 +159,21 @@ GJI が使えない場合は固定タイムアウト待ちになる（BUG-01 の
 
 ---
 
-## BUG-06: focus_epoch のオーバーフロー
+## BUG-06: focus_epoch のオーバーフロー ~~（解消済み）~~
 
-**症状:** u32::MAX 回ウィンドウ切り替えを行うと `focus_epoch` がオーバーフローして 1 に戻る。
+> **2026-07-02 注記:** `focus_epoch: u32` / `composition_warm_epoch: u32` フィールドは
+> `WarmEpoch` 構造体の再設計（ADR-069 凝集性リファクタ）で撤去済み。
+> フォーカス変更時は `WarmEpoch::on_focus_changed()` が `eager_warmup_sent_ms` /
+> `last_unicode_transmit_ms` をリセットするシンプルな方式に置き換わった。
+> u32 カウンタによるオーバーフローリスクは構造的に消滅している。
+
+~~**症状:** u32::MAX 回ウィンドウ切り替えを行うと `focus_epoch` がオーバーフローして 1 に戻る。
 このタイミングで前のウィンドウの `composition_warm_epoch` と一致した場合、
-stale な warm 状態が有効と誤判定される。
+stale な warm 状態が有効と誤判定される。~~
 
-**原因:** `on_focus_changed()` で `focus_epoch.wrapping_add(1).max(1)` を使用。
+~~**原因:** `on_focus_changed()` で `focus_epoch.wrapping_add(1).max(1)` を使用。~~
 
-**実用上の影響:** u32::MAX ≈ 42億回の切り替えが必要なため、実用上は発生しない。
+~~**実用上の影響:** u32::MAX ≈ 42億回の切り替えが必要なため、実用上は発生しない。~~
 
 **関連ファイル:** `tsf/probe.rs` (`WarmEpoch`)
 
