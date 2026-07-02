@@ -273,6 +273,25 @@ async fn gji_coro_body(
     .await;
 
     if !plan.needs_literal {
+        // 診断用（副作用なし）: gji_resumed/nc_fired ヒューリスティックで LiteralDetect を
+        // スキップした際、実際に composition が確定したか（部分リテラル false-negative の疑い）を
+        // 非同期に事後確認する。gate は保持しない fire-and-forget のため後続入力に影響しない。
+        // 参照: 「起動直後、GJIがローマ字をそのまま全角英数として通す」報告の再現条件切り分け。
+        let cold_seq = ctx.cold_seq;
+        let nc_fired = observations.nc_fired;
+        let gji_resumed = observations.gji_resumed;
+        let gji_active = env.gji_active;
+        let should_prepend_f2 = plan.should_prepend_f2;
+        let used_eager_path = plan.used_eager_path;
+        win32_async::spawn_local(async move {
+            win32_async::sleep_ms(crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE as u32).await;
+            log::debug!(
+                "[gji-coro-diag] cold={cold_seq} skip-verify nc_fired={nc_fired} \
+                 gji_resumed={gji_resumed} gji_active={gji_active} \
+                 should_prepend_f2={should_prepend_f2} used_eager_path={used_eager_path}"
+            );
+            crate::ime_diagnostic::log_composition_probe(cold_seq, "skip-verify");
+        });
         return;
     }
 
