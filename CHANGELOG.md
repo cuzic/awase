@@ -2,6 +2,63 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 新機能
+
+- **IME ON のまま英数直接入力になっている状態 (ObservedEisu) を自動検出し IME OFF (直接入力) へ切替** ([30e6c5f](https://github.com/cuzic/awase/commit/30e6c5f), [1ef82ca](https://github.com/cuzic/awase/commit/1ef82ca), [754a7a4](https://github.com/cuzic/awase/commit/754a7a4)) (ADR-074)
+  - `InputModeState::ObservedEisu` を新設し「shadow=ON だが実際は半角英数直接入力」を明示的に区別
+  - `idle_conv_check` が `ObservedEisu` を検出すると自動で IME OFF + Engine 非活性化を発行
+  - `SetOpen(true)` 直後に `ObservedEisu` が残っているケースは `AssumedRomaji` にリセットして Engine を即活性化
+- **トレイメニューの「内部状態をリセット」をプロセス再起動に置き換え** ([a720c7a](https://github.com/cuzic/awase/commit/a720c7a))
+  - FSM / IME 状態が壊れた際、マウス操作だけでプロセス全体を再起動し完全にクリーンな状態へ復帰できるように変更
+  - GJI 種別判定 (`active_ime_kind`) のプロセス中固定 (ADR-073) など、実行時に確定した状態をリセットする唯一の確実な手段として位置づけ
+
+### 改善
+
+- **Warmup 送信 VK を Charset (ひらがな/カタカナ/JIS かな) 対応に拡張** ([536d93a](https://github.com/cuzic/awase/commit/536d93a))
+  - GJI が非アクティブ（MS-IME 使用時等）な場合の TSF warmup 送信を判定に集約しスキップ漏れを解消
+- **`ConvModePolicy` による conv_mode 変更の一括ゲートを導入** ([2826248](https://github.com/cuzic/awase/commit/2826248), [cc9f745](https://github.com/cuzic/awase/commit/cc9f745), [af3b776](https://github.com/cuzic/awase/commit/af3b776)) (ADR-064)
+  - `Output` に `conv_mutation_allowed` ゲートを追加し、conv_mode への書き込みを一箇所で検証可能に
+  - `is_romaji_mode: bool` を `ConvModePolicy` 型に置き換えて意味を明確化
+
+### バグ修正
+
+- **MS-IME での Ctrl+変換 / Ctrl+無変換 が正しく動作しないバグ群を修正** ([f527a18](https://github.com/cuzic/awase/commit/f527a18), [baff902](https://github.com/cuzic/awase/commit/baff902), [301e911](https://github.com/cuzic/awase/commit/301e911), [48a667a](https://github.com/cuzic/awase/commit/48a667a))
+  - Ctrl+変換 で MS-IME がひらがなにならない・半角英数から戻らない不具合を修正
+  - `MsImeDirectStrategy` の DirectInput 切替を冪等な `VK_IME_OFF` に統一
+  - GJI が一度確定した後は MS-IME への誤降格を禁止（プロセス中固定、ADR-073）
+- **ImmCrossProbe / GJI+TsfNative フォーカス時の IME 誤認識・打鍵消失を修正** ([496926c](https://github.com/cuzic/awase/commit/496926c), [489cdf1](https://github.com/cuzic/awase/commit/489cdf1), [15ac8d8](https://github.com/cuzic/awase/commit/15ac8d8), [500dab6](https://github.com/cuzic/awase/commit/500dab6)) (ADR-071, ADR-075)
+  - Qt / GJI フォーカス時に `ImmCrossProbe` が IME 状態を誤認識するバグを修正
+  - GJI+TsfNative の IME OFF 送信を `VK_KANJI` トグルから冪等な `VK_IME_OFF` に変更
+  - TSF cold-start probe 実行中に後続キーが消失し「にゅうりょく」→「にうりょく」になるバグを修正（deferred VK キューの所有権を probe machine から `TsfWarmupCoordinator` へ移管）
+- **`conv_mode_authority` の再同期漏れによる IME/Engine desync を修正** ([e2199e7](https://github.com/cuzic/awase/commit/e2199e7), [c887da8](https://github.com/cuzic/awase/commit/c887da8), [1f96598](https://github.com/cuzic/awase/commit/1f96598)) (ADR-072)
+  - IME apply 完了ごとに `conv_mode_authority` を再同期し、パニックリセット直後や2回目の Ctrl+変換 で古い権限値が残る問題を解消
+  - `already_matched` 判定を全 IME 種別で一貫させ、`candidate_was_seen` を誤って混入させないよう修正
+- **カタカナ / JIS かなモードでの IME・NICOLA エンジン状態同期バグ群を修正** ([66bfc33](https://github.com/cuzic/awase/commit/66bfc33), [58fa2ac](https://github.com/cuzic/awase/commit/58fa2ac), [e8b09de](https://github.com/cuzic/awase/commit/e8b09de), [927f2a2](https://github.com/cuzic/awase/commit/927f2a2), [0f652ae](https://github.com/cuzic/awase/commit/0f652ae))
+  - カタカナモード切替で NICOLA エンジンが OFF のまま残る／トレイで半角カタカナ選択後にひらがなに戻される不具合を修正
+  - JIS かな・カタカナのタスクバー経由モード変更を belief に正しく反映
+  - HanKata → ZenKata の誤ダウングレードを抑制
+- **idle-conv-check 起因の Engine 状態同期漏れ・誤検出を修正** ([0f75b5b](https://github.com/cuzic/awase/commit/0f75b5b), [ea3da7f](https://github.com/cuzic/awase/commit/ea3da7f), [ed862bb](https://github.com/cuzic/awase/commit/ed862bb), [a325df7](https://github.com/cuzic/awase/commit/a325df7), [29bc9c4](https://github.com/cuzic/awase/commit/29bc9c4))
+  - カタカナ+shadow=OFF や HanAlpha→Hiragana 遷移時に Engine が復帰しない不具合を修正
+  - ALT+TAB 後の Chrome IME 状態誤認識、tray desync（`user_enabled=true` だが `ime_on=false`）を修正
+- **GJI cold-start / partial literal 対策を SacrificialWarmup (VK_A+BS) に統合** ([6c1732d](https://github.com/cuzic/awase/commit/6c1732d), [22c3905](https://github.com/cuzic/awase/commit/22c3905))
+  - `VK_IME_OFF→ON` + `write_bytes` 検出ベースの warmup に置き換え、vim 等との互換性を確保
+- **PC スリープ復帰後の最初の打鍵でエンジンが固定されるバグを修正** ([c4df99b](https://github.com/cuzic/awase/commit/c4df99b)) (ADR-076)
+  - スリープ復帰直後に `read_ime_state_fast` が一時的に `is_japanese_ime=false` を返し、エンジンが `NotJapaneseIme` で非活性化するバグを修正
+  - `apply_focus_probe` 内で grace 期間の判定を `set_is_japanese_ime` より前に計算し、shadow grace active 中は `false` へのダウングレードを抑制（`true` への更新は常時許可）
+  - `imc_open` と `is_japanese_ime` の grace 保護を対称化
+- **プロセス再起動時に named mutex レースで起動に失敗するバグを修正** ([bb84696](https://github.com/cuzic/awase/commit/bb84696))
+  - 本バージョンで追加したトレイの「プロセス再起動」機能自体に存在した不具合
+
+### 内部改善
+
+- **凝集性リファクタ H-1〜M-5 全21タスク完了**: 型定義の循環依存解消、状態層の OS グローバル直接呼び出し除去、`PlatformState` を `FocusStore`/`GateStore`/`KeymapStore` に、`Runtime` を `FocusTracker`/`RefreshScheduler`/`ImeCoordinator` に分割（ADR-069） ([a7a1e23](https://github.com/cuzic/awase/commit/a7a1e23), [811036a](https://github.com/cuzic/awase/commit/811036a), [8aad49a](https://github.com/cuzic/awase/commit/8aad49a))
+- **`ApplyBelief` → `OpenBelief` にリネームし `reduce_open_belief` 純粋関数に統合**（IME apply 判定ロジックを一箇所に集約・単体テスト容易化）（ADR-070） ([1e09e90](https://github.com/cuzic/awase/commit/1e09e90), [8c34984](https://github.com/cuzic/awase/commit/8c34984))
+- **`RuntimeOutbox`/`RuntimeRequest` イベントバスを導入し `Output` → `Runtime` の逆依存 (`with_app()`) を撤去** ([4782e3e](https://github.com/cuzic/awase/commit/4782e3e), [7568180](https://github.com/cuzic/awase/commit/7568180))
+- **`TsfWarmupCoordinator` / `KeyInjector` / `ImeApplyPlanner` を巨大化していた `Output` から抽出** ([03ebfc9](https://github.com/cuzic/awase/commit/03ebfc9), [e1993bf](https://github.com/cuzic/awase/commit/e1993bf), [080e96d](https://github.com/cuzic/awase/commit/080e96d))
+- **`ConvMode`/`Charset` 判定を `nicola` クレートへ移動し純粋関数化、`#[cfg(windows)]` ゲートを個別モジュール単位に緩和して Linux 単体テストを追加**（ADR-065） ([b1ab86f](https://github.com/cuzic/awase/commit/b1ab86f), [5ee724b](https://github.com/cuzic/awase/commit/5ee724b), [b27a218](https://github.com/cuzic/awase/commit/b27a218))
+
 ## [1.6.0] - 2026-06-29
 
 ### 新機能
