@@ -330,7 +330,13 @@ impl ImeStateHub {
         let desired = self.shadow_model.desired_open;
 
         let dur = self.shadow_model.observations.drift_duration(now)?;
-        let threshold = if explicit_intent == Some(desired) {
+        // HwndCache / Recovery 由来の intent はユーザーの能動的な操作ではない。
+        // 仮想デスクトップ切替等で OS が IME を復元した際に即時補正が連鎖するのを防ぐため、
+        // SyncKey / PhysicalImeKey / Command のみ閾値 0 (即時補正) を適用する。
+        let is_strong_intent = self.shadow_model.last_intent.as_ref().is_some_and(|i| {
+            !matches!(i.source, IntentSource::HwndCache | IntentSource::Recovery)
+        });
+        let threshold = if explicit_intent == Some(desired) && is_strong_intent {
             0
         } else {
             u128::from(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
