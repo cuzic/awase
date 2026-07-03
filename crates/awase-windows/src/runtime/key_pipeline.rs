@@ -889,42 +889,34 @@ impl Runtime {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
-                    let conv_mode = snap.conversion_mode;
                     let _ = crate::with_app(|app| {
                         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+                        // ON/OFF: High confidence (ImmCrossProbe source)
                         app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
                         log::debug!(
                             "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
                         );
-                        // ImmCross アプリは kp_stage_idle_conv_check (TsfNative 専用) が
-                        // 動かないため ObservedEisu が stale になっても observer 実行まで
-                        // 自動回復しない。FocusProbe 毎にここで早期補正する。
-                        if open {
-                            if let Some(conv) = conv_mode {
-                                use awase::engine::{AssumedReason, ConvMode, InputModeState};
-                                use crate::state::ime_event::{ImeEvent, ObservationSource};
-                                if !ConvMode::from_u32(conv).is_eisu()
-                                    && matches!(
-                                        app.platform_state.ime.input_mode(),
-                                        InputModeState::ObservedEisu
-                                    )
-                                {
-                                    app.platform_state.ime.dispatch_event(
-                                        ImeEvent::InputModeObserved {
-                                            mode: InputModeState::AssumedRomaji {
-                                                reason: AssumedReason::AppKindExcluded,
-                                            },
-                                            source: ObservationSource::ImmCrossProbe,
-                                            at: tick_ms,
-                                        },
-                                        tick_ms,
-                                    );
-                                    log::info!(
-                                        "[ImmCrossProbe] ObservedEisu stale: conv=0x{conv:08X} \
-                                         → AssumedRomaji (engine 再活性化)"
-                                    );
-                                }
-                            }
+                        // input_mode: Observe → pure decision → belief
+                        // classify_fetched_snapshot = classify_ime_snapshot の同期 wrapper。
+                        // ObservedEisu stale 回復を含む全 input_mode 判定をここに集約する。
+                        let update = crate::observer::ime_observer::classify_fetched_snapshot(
+                            &snap,
+                            tick_ms.0,
+                            app.platform_state.ime.effective_open(),
+                            app.platform_state.ime.is_force_on_guard_active(),
+                            app.platform_state.ime.input_mode(),
+                            app.platform_state.ime.belief.prev_conversion_mode(),
+                        );
+                        if let Some(mode) = update.new_input_mode {
+                            use crate::state::ime_event::{ImeEvent, ObservationSource};
+                            app.platform_state.ime.dispatch_event(
+                                ImeEvent::InputModeObserved {
+                                    mode,
+                                    source: ObservationSource::ImmCrossProbe,
+                                    at: tick_ms,
+                                },
+                                tick_ms,
+                            );
                         }
                     });
                 }
