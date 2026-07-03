@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-07-02
+
+### バグ修正
+
+- **LINE 等 ImmCross アプリで GJI 英数→ひらがな切替後にエンジンが停止する問題を修正** ([4bcf8b0](https://github.com/cuzic/awase/commit/4bcf8b0))
+  - GJI は英数モードでも ROMAN bit を立てないため `classify_transition` がひらがな復帰を検出できず `ObservedEisu` が残留してエンジンが `Inactive(NotRomajiInput)` になっていた
+  - `classify_ime_snapshot` に stale 回復ブランチを追加し、ImmCross アプリで conv_mode が非英数に変化した時点で `AssumedRomaji` へ自動リセット
+
+### リファクタリング
+
+- **ImmCrossProbe の input_mode 更新を `classify_fetched_snapshot` 経由に統一** ([c2c8b55](https://github.com/cuzic/awase/commit/c2c8b55))
+  - Observe → pure decision → belief の三層分離を ImmCrossProbe ハンドラに適用し、インライン判定を撤去
+
 ## [1.7.0] - 2026-07-02
 
 ### 新機能

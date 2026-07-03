@@ -17,4 +17,5 @@ logs/
 gomi
 docs/awase-state-machine-review.md
 src/engine/repomix-output.md
-.claude/
+.claude/*
+!.claude/rules/
