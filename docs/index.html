@@ -392,7 +392,8 @@ footer p{margin-bottom:0.3rem}
       <span class="badge outline">MS-IME 対応</span>
     </div>
     <div class="cta-group">
-      <a class="btn btn-primary" id="hero-dl-btn" href="https://github.com/cuzic/awase/releases">ダウンロード</a>
+      <a class="btn btn-primary" id="hero-dl-msi" href="https://github.com/cuzic/awase/releases">ダウンロード (MSI)</a>
+      <a class="btn btn-secondary" id="hero-dl-zip" href="https://github.com/cuzic/awase/releases">ダウンロード (ZIP)</a>
       <a class="btn btn-secondary" href="https://github.com/cuzic/awase">GitHub</a>
     </div>
   </div>
@@ -576,6 +577,7 @@ footer p{margin-bottom:0.3rem}
 
       <h3>ZIP 版（ポータブル）</h3>
       <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">インストール不要。解凍してすぐ使えます。</p>
+      <a id="dl-zip-btn" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.3rem 0 0.8rem">最新版をダウンロード (ZIP)</a>
       <ol>
         <li><a id="dl-zip" href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code id="zip-filename">awase-x.x.x-x64.zip</code> をダウンロードして解凍</li>
         <li>解凍したフォルダ内の <code>install.ps1</code> を PowerShell で実行（スタートアップ登録）</li>
@@ -719,13 +721,28 @@ footer p{margin-bottom:0.3rem}
     const msi = rel.assets?.find(a => a.name.endsWith('.msi'));
     const zip = rel.assets?.find(a => a.name.endsWith('.zip'));
 
-    const heroBtn = document.getElementById('hero-dl-btn');
-    if (heroBtn) heroBtn.textContent = `ダウンロード ${tag}`;
+    const heroMsi = document.getElementById('hero-dl-msi');
+    if (heroMsi) {
+      heroMsi.textContent = `ダウンロード (MSI) ${tag}`;
+      if (msi) heroMsi.href = msi.browser_download_url;
+    }
+
+    const heroZip = document.getElementById('hero-dl-zip');
+    if (heroZip) {
+      heroZip.textContent = `ダウンロード (ZIP) ${tag}`;
+      if (zip) heroZip.href = zip.browser_download_url;
+    }
 
     const dlMsi = document.getElementById('dl-msi');
     if (dlMsi) {
       dlMsi.textContent = `最新版をダウンロード (MSI) ${tag}`;
       if (msi) dlMsi.href = msi.browser_download_url;
+    }
+
+    const dlZipBtn = document.getElementById('dl-zip-btn');
+    if (dlZipBtn) {
+      dlZipBtn.textContent = `最新版をダウンロード (ZIP) ${tag}`;
+      if (zip) dlZipBtn.href = zip.browser_download_url;
     }
 
     const dlZip = document.getElementById('dl-zip');
