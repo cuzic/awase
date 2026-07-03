@@ -761,6 +761,24 @@ impl Runtime {
                 config.app_overrides.clone(),
             ));
         self.platform.focus.cache_reset();
+        if let (Some(left), Some(right)) = (
+            crate::vk::VkCode::from_name(&config.general.left_thumb_key),
+            crate::vk::VkCode::from_name(&config.general.right_thumb_key),
+        ) {
+            crate::hook::set_thumb_vk_codes(left, right);
+            self.engine.set_thumb_vks(left, right);
+            log::info!(
+                "Thumb keys updated: left={:?}, right={:?}",
+                config.general.left_thumb_key,
+                config.general.right_thumb_key,
+            );
+        } else {
+            log::warn!(
+                "Invalid thumb key names: left={:?}, right={:?}",
+                config.general.left_thumb_key,
+                config.general.right_thumb_key,
+            );
+        }
         log::info!(
             "Config applied: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
             config.general.simultaneous_threshold_ms,
