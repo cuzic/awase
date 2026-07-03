@@ -341,13 +341,13 @@ impl SettingsApp {
             ui.label("  左親指:").on_hover_text(
                 "左の親指シフトキーに使うキーです。\n通常は「無変換」キーを使います。",
             );
-            ui.text_edit_singleline(&mut self.config.general.left_thumb_key);
+            thumb_key_combo(ui, "left_thumb_key", &mut self.config.general.left_thumb_key);
         });
         ui.horizontal(|ui| {
             ui.label("  右親指:").on_hover_text(
                 "右の親指シフトキーに使うキーです。\n通常は「変換」キーを使います。",
             );
-            ui.text_edit_singleline(&mut self.config.general.right_thumb_key);
+            thumb_key_combo(ui, "right_thumb_key", &mut self.config.general.right_thumb_key);
         });
         ui.add_space(8.0);
 
@@ -793,6 +793,16 @@ fn key_list_ui(
     });
 }
 
+/// 親指キー選択用候補一覧（表示名, config 内部表記）。
+const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
+    ("Space", "VK_SPACE"),
+    ("変換", "VK_CONVERT"),
+    ("無変換", "VK_NONCONVERT"),
+    ("かな", "VK_KANA"),
+    ("カタカナ", "VK_DBE_KATAKANA"),
+    ("ひらがな", "VK_DBE_HIRAGANA"),
+];
+
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
 ///
 /// 記号キーの表示ラベルは JIS 配列基準（VK_OEM_PLUS=「;」, VK_OEM_3=「@」 等）。
@@ -932,6 +942,32 @@ fn format_combo(ctrl: bool, shift: bool, alt: bool, main: &str) -> String {
     }
     parts.push(main);
     parts.join("+")
+}
+
+/// 親指キー選択ドロップダウン。変更時は true を返す。
+fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+    let display = THUMB_KEY_OPTIONS
+        .iter()
+        .find(|(_, v)| *v == current.as_str())
+        .map_or(current.as_str(), |(d, _)| *d)
+        .to_string();
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() {
+            "（未選択）"
+        } else {
+            &display
+        })
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for (label, internal) in THUMB_KEY_OPTIONS {
+                if ui.selectable_label(current.as_str() == *internal, *label).clicked() {
+                    *current = (*internal).to_string();
+                    changed = true;
+                }
+            }
+        });
+    changed
 }
 
 /// main key ドロップダウン（必須選択版）。変更時は true を返す。
