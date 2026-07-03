@@ -235,7 +235,7 @@ fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
     ]);
     assert_eq!(model.desired_open, false, "newer intent (gen=11) が勝つ");
     assert_eq!(
-        model.applied_open, None,
+        model.applied.applied_open(), None,
         "stale gen=10 の success は無視 (generation 照合)"
     );
     assert!(
@@ -258,7 +258,7 @@ fn apply_succeeded_with_matching_generation_updates_applied() {
             generation: 5,
         },
     ]);
-    assert_eq!(model.applied_open, Some(true));
+    assert_eq!(model.applied.applied_open(), Some(true));
     assert!(model.pending.is_none(), "成功後 pending clear");
 }
 
@@ -270,9 +270,13 @@ fn drift_tracking_reflects_intent_observer_mismatch() {
         user_intent(true, IntentSource::PhysicalImeKey),
         observer_reported(false, ObservationSource::ObserverPoll),
     ]);
-    let drift = model.observations.drift.expect("drift が記録される");
-    assert_eq!(drift.desired, true);
-    assert_eq!(drift.observed, false);
+    assert!(model.observations.drift.is_some(), "drift が記録される");
+    assert_eq!(model.desired_open, true, "desired は intent の true");
+    assert_eq!(
+        model.observations.per_source.observer_poll.map(|o| o.open),
+        Some(false),
+        "observer は false を報告"
+    );
 }
 
 #[test]
