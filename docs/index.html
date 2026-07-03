@@ -714,34 +714,45 @@ footer p{margin-bottom:0.3rem}
 <script>
 (async () => {
   try {
-    const r = await fetch('https://api.github.com/repos/cuzic/awase/releases/latest');
+    const r = await fetch('https://api.github.com/repos/cuzic/awase/releases?per_page=10');
     if (!r.ok) return;
-    const rel = await r.json();
-    const tag = rel.tag_name;
-    const msi = rel.assets?.find(a => a.name.endsWith('.msi'));
-    const zip = rel.assets?.find(a => a.name.endsWith('.zip'));
+    const releases = await r.json();
+
+    // アセットが添付されている最新リリースを MSI・ZIP それぞれ独立して探す
+    let msi, msiTag, zip, zipTag;
+    for (const rel of releases) {
+      if (!msi) {
+        const found = rel.assets?.find(a => a.name.endsWith('.msi'));
+        if (found) { msi = found; msiTag = rel.tag_name; }
+      }
+      if (!zip) {
+        const found = rel.assets?.find(a => a.name.endsWith('.zip'));
+        if (found) { zip = found; zipTag = rel.tag_name; }
+      }
+      if (msi && zip) break;
+    }
 
     const heroMsi = document.getElementById('hero-dl-msi');
-    if (heroMsi) {
-      heroMsi.textContent = `ダウンロード (MSI) ${tag}`;
+    if (heroMsi && msiTag) {
+      heroMsi.textContent = `ダウンロード (MSI) ${msiTag}`;
       if (msi) heroMsi.href = msi.browser_download_url;
     }
 
     const heroZip = document.getElementById('hero-dl-zip');
-    if (heroZip) {
-      heroZip.textContent = `ダウンロード (ZIP) ${tag}`;
+    if (heroZip && zipTag) {
+      heroZip.textContent = `ダウンロード (ZIP) ${zipTag}`;
       if (zip) heroZip.href = zip.browser_download_url;
     }
 
     const dlMsi = document.getElementById('dl-msi');
-    if (dlMsi) {
-      dlMsi.textContent = `最新版をダウンロード (MSI) ${tag}`;
+    if (dlMsi && msiTag) {
+      dlMsi.textContent = `最新版をダウンロード (MSI) ${msiTag}`;
       if (msi) dlMsi.href = msi.browser_download_url;
     }
 
     const dlZipBtn = document.getElementById('dl-zip-btn');
-    if (dlZipBtn) {
-      dlZipBtn.textContent = `最新版をダウンロード (ZIP) ${tag}`;
+    if (dlZipBtn && zipTag) {
+      dlZipBtn.textContent = `最新版をダウンロード (ZIP) ${zipTag}`;
       if (zip) dlZipBtn.href = zip.browser_download_url;
     }
 
