@@ -392,7 +392,7 @@ footer p{margin-bottom:0.3rem}
       <span class="badge outline">MS-IME 対応</span>
     </div>
     <div class="cta-group">
-      <a class="btn btn-primary" href="https://github.com/cuzic/awase/releases">ダウンロード</a>
+      <a class="btn btn-primary" id="hero-dl-btn" href="https://github.com/cuzic/awase/releases">ダウンロード</a>
       <a class="btn btn-secondary" href="https://github.com/cuzic/awase">GitHub</a>
     </div>
   </div>
@@ -567,7 +567,8 @@ footer p{margin-bottom:0.3rem}
 
       <h3>MSI インストーラー（推奨）</h3>
       <p class="install-note" style="color:var(--text-secondary);font-size:0.95rem">ダブルクリックでセットアップ完了。スタートアップ登録も自動で行います。</p>
-      <p style="margin-top:0.8rem"><a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code>awase-x.x.x-x64.msi</code> をダウンロードして実行してください。</p>
+      <a id="dl-msi" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.8rem 0">最新版をダウンロード (MSI)</a>
+      <p style="color:var(--text-secondary);font-size:0.88rem">ダウンロードできない場合は <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から手動でダウンロードしてください。</p>
 
       <h3>Scoop（コマンドライン）</h3>
       <div class="code-block">scoop install awase</div>
@@ -576,7 +577,7 @@ footer p{margin-bottom:0.3rem}
       <h3>ZIP 版（ポータブル）</h3>
       <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">インストール不要。解凍してすぐ使えます。</p>
       <ol>
-        <li><a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code>awase-x.x.x-x64.zip</code> をダウンロードして解凍</li>
+        <li><a id="dl-zip" href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code id="zip-filename">awase-x.x.x-x64.zip</code> をダウンロードして解凍</li>
         <li>解凍したフォルダ内の <code>install.ps1</code> を PowerShell で実行（スタートアップ登録）</li>
         <li><code>awase.exe</code> を実行（トレイアイコンに常駐）</li>
       </ol>
@@ -708,5 +709,32 @@ footer p{margin-bottom:0.3rem}
   <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
 </footer>
 
+<script>
+(async () => {
+  try {
+    const r = await fetch('https://api.github.com/repos/cuzic/awase/releases/latest');
+    if (!r.ok) return;
+    const rel = await r.json();
+    const tag = rel.tag_name;
+    const msi = rel.assets?.find(a => a.name.endsWith('.msi'));
+    const zip = rel.assets?.find(a => a.name.endsWith('.zip'));
+
+    const heroBtn = document.getElementById('hero-dl-btn');
+    if (heroBtn) heroBtn.textContent = `ダウンロード ${tag}`;
+
+    const dlMsi = document.getElementById('dl-msi');
+    if (dlMsi) {
+      dlMsi.textContent = `最新版をダウンロード (MSI) ${tag}`;
+      if (msi) dlMsi.href = msi.browser_download_url;
+    }
+
+    const dlZip = document.getElementById('dl-zip');
+    if (dlZip && zip) dlZip.href = zip.browser_download_url;
+
+    const zipFn = document.getElementById('zip-filename');
+    if (zipFn && zip) zipFn.textContent = zip.name;
+  } catch (_) {}
+})();
+</script>
 </body>
 </html>
