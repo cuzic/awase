@@ -454,7 +454,7 @@ footer p{margin-bottom:0.3rem}
       <div class="compat-card">
         <span class="compat-tag hard">従来ツールで苦手</span>
         <h3>Chrome / Edge</h3>
-        <p>TSF composition のタイミング問題を独自の GJI I/O 監視で解決。候補ウィンドウ表示中も安定して動作します。</p>
+        <p>TSF composition のタイミング問題を独自の Google 日本語入力 I/O 監視で解決。候補ウィンドウ表示中も安定して動作します。</p>
       </div>
       <div class="compat-card">
         <span class="compat-tag hard">従来ツールで苦手</span>
@@ -478,8 +478,8 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
-        <h3>Microsoft IME / その他</h3>
-        <p>Windows 標準の Microsoft IME はもちろん、主要な IME に幅広く対応しています。</p>
+        <h3>Microsoft IME</h3>
+        <p>Windows 標準の Microsoft IME に対応しています。</p>
       </div>
     </div>
   </div>
@@ -631,7 +631,7 @@ footer p{margin-bottom:0.3rem}
     <div class="faq-list">
       <div class="faq-item">
         <p class="faq-q">Chrome や Edge でちゃんと動きますか？</p>
-        <p class="faq-a">はい。Chrome / Edge は TSF composition のタイミングが難しく、従来ツールでは文字化けや遅延が発生しがちでした。awase は GJI の I/O を監視して composition の準備完了を検知する独自方式で、これを解決しています。</p>
+        <p class="faq-a">はい。Chrome / Edge は TSF composition のタイミングが難しく、従来ツールでは文字化けや遅延が発生しがちでした。awase は Google 日本語入力 の I/O を監視して composition の準備完了を検知する独自方式で、これを解決しています。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">Zoom のチャットでも使えますか？</p>
@@ -643,7 +643,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">IME は何に対応していますか？</p>
-        <p class="faq-a">Microsoft IME、Google 日本語入力など、Windows の主要な IME に対応しています。従来ツールの多くは「トグルキー」で IME を切り替えるため、現在の状態を正確に把握していないと意図と逆の状態になってしまうという根本的な問題がありました。Google 日本語入力はとくに現在の IME 状態を外部から正しく取得できないため、この問題が起きやすい IME でした。awase は「IME を ON にする」「IME を OFF にする」という冪等（何度実行しても結果が変わらない）な操作で制御するため、状態がずれていても常に意図した結果になります。</p>
+        <p class="faq-a">Microsoft IME と Google 日本語入力に対応しています。従来ツールの多くは「トグルキー」で IME を切り替えるため、現在の状態を正確に把握していないと意図と逆の状態になってしまうという根本的な問題がありました。Google 日本語入力はとくに現在の IME 状態を外部から正しく取得できないため、この問題が起きやすい IME でした。awase は「IME を ON にする」「IME を OFF にする」という冪等（何度実行しても結果が変わらない）な操作で制御するため、状態がずれていても常に意図した結果になります。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">他のキーリマッパー（AutoHotKey 等）と併用できますか？</p>

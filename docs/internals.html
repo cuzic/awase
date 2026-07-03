@@ -630,7 +630,7 @@ Chrome のプロセス構成（简略）:
     Google 日本語入力の内部プロセスに直接届くため、Chrome のプロセス構成に関係なく動作します。
   </p>
 
-  <h3 class="sub">GJI I/O 監視でタイミングを合わせる</h3>
+  <h3 class="sub">Google 日本語入力 I/O 監視でタイミングを合わせる</h3>
 
   <p class="body">
     さらに Chrome には別の難問があります。
@@ -694,7 +694,7 @@ cold-start の発生タイムライン:
 
   <p class="body">
     それでも予測できないタイミングで cold-start が起きた場合も、
-    awase は GJI I/O 監視で「準備できた」タイミングを検知してから文字を送るため、
+    awase は Google 日本語入力 I/O 監視で「準備できた」タイミングを検知してから文字を送るため、
     化けが起きにくくなっています。
   </p>
 
@@ -721,17 +721,17 @@ cold-start の発生タイムライン:
    ├─ VK_A + BS を同一バッチで送信（捨て打ち）
    │     ← 画面には何も表示されない
    │
-   ├─ GJI の I/O 書き込みバイト数（WriteTransferCount）を観測
+   ├─ Google 日本語入力 の I/O 書き込みバイト数（WriteTransferCount）を観測
    │   ├─ +350B 以上 → composition 確立を確認 → 本物のローマ字を送信
-   │   └─ タイムアウト → VK_IME_OFF→VK_IME_ON で GJI を強制リセット → 再試行
+   │   └─ タイムアウト → VK_IME_OFF→VK_IME_ON で Google 日本語入力 を強制リセット → 再試行
    │
    └─ 本物のローマ字を再送（追加 BS 不要：捨て打ちで1文字分は消去済み）</div>
 
   <p class="body">
     捨て打ちには2つの役割があります。
-    第一に<strong>強制暖機</strong>：<kbd>A</kbd> キーで GJI が composition を開始するため、
+    第一に<strong>強制暖機</strong>：<kbd>A</kbd> キーで Google 日本語入力 が composition を開始するため、
     context を確実に活性化できます。
-    第二に<strong>状態観測</strong>：GJI が <kbd>A</kbd> を処理すると
+    第二に<strong>状態観測</strong>：Google 日本語入力 が <kbd>A</kbd> を処理すると
     プロセス内部の I/O 書き込みバイト数が増加します（「あ」の変換候補データ送信のため）。
     この増加量を <code>WriteTransferCount</code> で計測することで、
     「composition が本当に確立されたか」を直接確認できます。
