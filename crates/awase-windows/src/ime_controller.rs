@@ -138,6 +138,11 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
                     return ImeOpenOutcome::AlreadyMatched;
                 }
             }
+            // VK_DBE_HIRAGANA は ROMAN ビット (IME_CMODE_ROMAN=0x10) を変更しない。
+            // かな入力の conv=0x09 のまま IME ON すると JIS かな入力になる（例: LINE, Edge）。
+            // 先に ROMAN ビットを立てておくことでフォーカス直後のかな入力化けを防ぐ。
+            // SAFETY: set_ime_romaji_mode は Win32 API。メインスレッドから呼ぶこと。
+            let _ = unsafe { crate::ime::set_ime_romaji_mode() };
             log::debug!("[apply-ime] MS-IME direct: VK_DBE_HIRAGANA (IME ON)");
             // SAFETY: post_ms_ime_on は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             unsafe { crate::ime::post_ms_ime_on() };
