@@ -121,7 +121,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             && !view.focus.profile.can_use_imm32_cross_process()
     }
 
-    fn apply(&self, open: bool, _view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if open {
             // カタカナモード（KATAKANA bit 立ち）のとき VK_DBE_HIRAGANA を送ると
             // ひらがなに切り替わる（IME 的には「ON→ON」だが conv mode が破壊される）。
