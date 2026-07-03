@@ -392,8 +392,8 @@ footer p{margin-bottom:0.3rem}
       <span class="badge outline">MS-IME 対応</span>
     </div>
     <div class="cta-group">
-      <a class="btn btn-primary" id="hero-dl-msi" href="https://github.com/cuzic/awase/releases">ダウンロード (MSI)</a>
-      <a class="btn btn-secondary" id="hero-dl-zip" href="https://github.com/cuzic/awase/releases">ダウンロード (ZIP)</a>
+      <a class="btn btn-primary" href="#install">ダウンロード (MSI)</a>
+      <a class="btn btn-secondary" href="#install">ダウンロード (ZIP)</a>
       <a class="btn btn-secondary" href="https://github.com/cuzic/awase">GitHub</a>
     </div>
   </div>
@@ -561,7 +561,7 @@ footer p{margin-bottom:0.3rem}
 </section>
 
 <!-- Install -->
-<section>
+<section id="install">
   <div class="container">
     <h2 class="section-title">インストール</h2>
     <div class="install-block">
@@ -730,18 +730,6 @@ footer p{margin-bottom:0.3rem}
         if (found) { zip = found; zipTag = rel.tag_name; }
       }
       if (msi && zip) break;
-    }
-
-    const heroMsi = document.getElementById('hero-dl-msi');
-    if (heroMsi && msiTag) {
-      heroMsi.textContent = `ダウンロード (MSI) ${msiTag}`;
-      if (msi) heroMsi.href = msi.browser_download_url;
-    }
-
-    const heroZip = document.getElementById('hero-dl-zip');
-    if (heroZip && zipTag) {
-      heroZip.textContent = `ダウンロード (ZIP) ${zipTag}`;
-      if (zip) heroZip.href = zip.browser_download_url;
     }
 
     const dlMsi = document.getElementById('dl-msi');
