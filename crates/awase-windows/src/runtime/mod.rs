@@ -17,6 +17,7 @@ use awase::types::{ContextChange, FocusKind, RawKeyEvent, VkCode};
 
 use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
+use crate::vk::VkCodeExt as _;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
 use awase::platform::PlatformRuntime as _;
@@ -762,8 +763,8 @@ impl Runtime {
             ));
         self.platform.focus.cache_reset();
         if let (Some(left), Some(right)) = (
-            crate::vk::VkCode::from_name(&config.general.left_thumb_key),
-            crate::vk::VkCode::from_name(&config.general.right_thumb_key),
+            VkCode::from_name(&config.general.left_thumb_key),
+            VkCode::from_name(&config.general.right_thumb_key),
         ) {
             crate::hook::set_thumb_vk_codes(left, right);
             self.engine.set_thumb_vks(left, right);
