@@ -11,6 +11,8 @@
 //!
 //! `ImeControlView` は `ImeObservationSnapshot` を完全に置き換える。
 
+use awase::engine::InputModeState;
+
 use crate::focus::class_names::AppImeProfile;
 use crate::tsf::observer::TsfObservations;
 
@@ -108,4 +110,7 @@ pub(crate) struct ImeControlView<'a> {
     pub observed: ObservedState,
     /// 制御ログ（最後に送ったコマンド値）
     pub control: ControlLog,
+    /// ImeModel の入力方式 belief（`apply` 戦略がかな/ローマ字を区別するために使う）。
+    /// `build_ime_control_view` 時点では `Unknown`。呼び出し元が `input_mode()` で上書きすること。
+    pub belief_input_mode: InputModeState,
 }

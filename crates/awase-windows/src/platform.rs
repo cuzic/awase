@@ -931,6 +931,7 @@ impl WindowsPlatform {
             },
             observed: crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs()),
             control: crate::state::ControlLog { shadow_on },
+            belief_input_mode: awase::engine::InputModeState::Unknown,
         }
     }
 

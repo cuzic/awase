@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 
 use awase::config::HookMode;
-use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, InputEffect, TimerEffect, UiEffect};
+use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect};
 use awase::platform::{EffectOrigin, PlatformRuntime};
 use awase::types::RawKeyEvent;
 
@@ -59,6 +59,9 @@ pub(crate) struct DecisionExecutor {
     /// バッチ内の `SetOpen` 処理後に即時更新される（intra-batch ordering 用）。
     /// `ImeModel` が SSOT; これはバッチ内 communication channel 兼 cross-decision cache。
     applied_snapshot: crate::state::AppliedImeState,
+    /// 直近の入力方式 belief（`execute_from_loop` で `ime.input_mode()` から pre-fetch）。
+    /// `ImeControlView.belief_input_mode` に転記して apply 戦略に渡す。
+    belief_input_mode: InputModeState,
 }
 
 impl std::fmt::Debug for DecisionExecutor {
@@ -75,6 +78,7 @@ impl DecisionExecutor {
             passthrough_queue: PassthroughQueue::new(),
             guard_held: None,
             applied_snapshot: crate::state::AppliedImeState::Unknown,
+            belief_input_mode: InputModeState::Unknown,
         }
     }
 
@@ -106,6 +110,7 @@ impl DecisionExecutor {
         decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
         self.applied_snapshot = ime.model().applied;
+        self.belief_input_mode = ime.input_mode();
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),
@@ -625,7 +630,8 @@ impl DecisionExecutor {
         origin: DecisionOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
-        let view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
+        let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
+        view.belief_input_mode = self.belief_input_mode;
         let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
         if imm_first {
             // ── async path (ImmCross が選ばれるアプリ) ──
