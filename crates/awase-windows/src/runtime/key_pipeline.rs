@@ -201,6 +201,7 @@ impl Runtime {
         let warmup_ms = self.platform.eager_warmup_sent_ms();
         let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
         let gji_last_io_ms = obs.gji_last_io_ms;
+        let active_ime_kind = obs.active_ime_kind;
         let last_focus_change_ms = self.platform_state.focus.last_focus_change_ms;
         // Imm32Unavailable (Chrome 等) は probe.ime_on が常に None のため、
         // shadow_on がフォールバック値として使われる。
@@ -220,6 +221,7 @@ impl Runtime {
                     gji_last_io_ms,
                     last_focus_change_ms,
                     shadow_on,
+                    active_ime_kind,
                 );
             });
         });
@@ -739,6 +741,7 @@ impl Runtime {
         gji_last_io_ms: u64,
         last_focus_change_ms: u64,
         shadow_on: bool,
+        active_ime_kind: crate::tsf::observer::ActiveImeKind,
     ) {
         let now_tick_ms = crate::state::TickMs(hook::current_tick_ms());
         let probe_age_ms = now_tick_ms.saturating_sub(probe_started_ms);
@@ -920,6 +923,34 @@ impl Runtime {
                         }
                     });
                 }
+
+                // MS-IME + ImmCross (LINE 等): かなモード (conv=0x09) で IME ON すると
+                // JIS かな直接入力になる。ImmCrossProcessStrategy は romaji 修正を
+                // 先行実行するが、async probe 完了時点で stale な conv を読む場合に備えて
+                // ここでも ROMAN ビットを補完する（二重補正は冪等なので無害）。
+                // ObservedKana はユーザーが意図的にかな入力に設定した状態なので上書きしない。
+                if snap.ime_on == Some(true) {
+                    if let Some(conv) = snap.conversion_mode {
+                        let mode = awase::engine::ConvMode::from_u32(conv);
+                        if !mode.is_eisu() && !mode.romaji {
+                            let should_restore = crate::with_app(|app| {
+                                app.platform_state.ime.effective_open()
+                                    && !matches!(
+                                        app.platform_state.ime.input_mode(),
+                                        InputModeState::ObservedKana
+                                    )
+                            })
+                            .unwrap_or(false);
+                            if should_restore {
+                                log::debug!(
+                                    "[ImmCrossProbe] kana mode (conv=0x{conv:08X}) + IME ON \
+                                     → romaji 修正 (MS-IME かなモード修正)"
+                                );
+                                let _ = crate::ime::set_ime_romaji_mode_async().await;
+                            }
+                        }
+                    }
+                }
             });
         }
 
@@ -933,19 +964,24 @@ impl Runtime {
             used_shadow_fallback,
         );
 
+        let gji_fields = if active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput {
+            format!(
+                " gji_io={}ms sig2={}",
+                if signals.gji_idle_ms == u64::MAX { "never".to_string() } else { signals.gji_idle_ms.to_string() },
+                signals.gji_grace_active,
+            )
+        } else {
+            String::new()
+        };
         log::info!(
-            "FocusProbe +{}ms: ime_on={}{} mode={:?} [gji_io={}ms sig1={} sig2={} sig3={}]",
+            "FocusProbe +{}ms: ime_on={}{} mode={:?} [ime={:?} sig1={}{} sig3={}]",
             probe_age_ms,
             ime_on_after_probe,
             ime_on_suffix,
             input_mode_after_probe,
-            if signals.gji_idle_ms == u64::MAX {
-                "never".to_string()
-            } else {
-                signals.gji_idle_ms.to_string()
-            },
+            active_ime_kind,
             signals.warmup_grace_active,
-            signals.gji_grace_active,
+            gji_fields,
             signals.shadow_grace_active,
         );
 
