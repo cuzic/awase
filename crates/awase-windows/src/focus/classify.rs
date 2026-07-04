@@ -140,6 +140,22 @@ pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
                 reason: ClassifyReason::KnownNonTextClass(class_name),
             };
         }
+
+        // Windows シェルインフラ（デスクトップ切替アニメーション中に通過するホストウィンドウ）。
+        // Imm32Unavailable プロファイルで IME 制御不能なため NonText とみなす。
+        // NonText 判定により on_focus_process_changed の reset_to_off_for_tsf_native_cache_miss
+        // が回避され、仮想デスクトップ切替時に LINE 等で Engine OFF になる問題を防ぐ。
+        if matches!(
+            class_name.as_str(),
+            // Windows 11 エクスプローラー・タスクバーの XAML ホスト
+            // （IMM クロスプロセスクエリがタイムアウトするため Imm32Unavailable かつ TsfNative）
+            "XamlExplorerHostIslandWindow"
+        ) {
+            return ClassifyResult {
+                kind: FocusKind::NonText,
+                reason: ClassifyReason::KnownNonTextClass(class_name),
+            };
+        }
     }
 
     // 4. MSAA (IAccessible) role による判定
