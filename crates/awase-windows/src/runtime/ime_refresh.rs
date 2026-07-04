@@ -266,7 +266,7 @@ impl Runtime {
         let input_mode_before_poll = self.platform_state.ime.input_mode();
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        let observer_out = match ime_snap {
+        let mut observer_out = match ime_snap {
             None => unsafe {
                 crate::observer::ime_observer::poll_and_classify_ime(
                     self.platform_state.ime.effective_open(),
@@ -286,6 +286,18 @@ impl Runtime {
                 )
             }
         };
+        // ImmCross アプリ（LINE 等）は awase が ROMAN ビットを立てるまで conv=0x09 がデフォルト。
+        // romaji=false → ObservedKana の観測はユーザーの意図ではなく IME のデフォルト状態を
+        // 誤って信頼することになるため、ImmCross パスでは ObservedKana の伝播を抑制する。
+        // romaji=true（ROMAN ビット確認済み）→ ObservedRomaji はそのまま通す。
+        if self.can_use_imm32_cross_process()
+            && matches!(
+                observer_out.new_input_mode,
+                Some(awase::engine::InputModeState::ObservedKana)
+            )
+        {
+            observer_out.new_input_mode = None;
+        }
         let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
             self.platform_state.focus.focus_epoch,
         );

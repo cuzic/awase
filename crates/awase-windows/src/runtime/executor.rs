@@ -657,6 +657,8 @@ impl DecisionExecutor {
             // conv mode は変更しない。IME がかなモード (conv=0x09) のまま ON になると
             // NICOLA エンジンが is_romaji_capable=false で起動できない。
             // MsImeDirectStrategy と同じく ObservedKana 以外なら ROMAN ビットを補完する。
+            // ImmCross アプリは ir_poll_and_learn で ObservedKana の観測を抑制するため
+            // belief は ObservedKana にならず、ここに到達したときは常に補完対象になる。
             let belief_input_mode = self.belief_input_mode;
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             win32_async::spawn_local(async move {
