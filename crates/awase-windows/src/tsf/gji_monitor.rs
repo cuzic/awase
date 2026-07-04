@@ -273,16 +273,14 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
 
     let mut monitor: Option<GjiMonitor> = None;
     let mut next_attach_ms: u64 = 0;
-    // GJI 検出状態の直前通知値。変化したときのみ WM_IME_KIND_CHANGED を post する。
-    // None = まだ通知未送信（起動直後）。
-    let mut last_notified_ok: Option<bool> = None;
     // CLSID ベース IME 種別ポーリング次回時刻
     let mut next_clsid_check_ms: u64 = 0;
 
     loop {
         let now = crate::hook::current_tick_ms();
 
-        // CLSID ベース IME 種別を 2 秒ごとにポーリングして更新する
+        // CLSID ベース IME 種別を 2 秒ごとにポーリングして更新する。
+        // WM_IME_KIND_CHANGED はここだけから発行する（プロセス存在ではなく API で判定）。
         if let Some((ref mgr, _)) = tsf_ctx {
             if now >= next_clsid_check_ms {
                 next_clsid_check_ms = now + 2_000;
@@ -297,27 +295,30 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
 
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
-                log::info!("[gji-monitor] attached to GJI process");
+                log::info!("[gji-monitor] attached to GJI process (I/O monitoring enabled)");
                 TSF_OBS
                     .gji_last_io_ms
                     .store(m.last_change_ms(), Ordering::Relaxed);
                 TSF_OBS.gji_monitor_ok.store(true, Ordering::Release);
                 monitor = Some(m);
-                // GJI 検出: GoogleJapaneseInput に変化
-                if last_notified_ok != Some(true) {
-                    last_notified_ok = Some(true);
-                    log::info!("[gji-monitor] IME kind → GoogleJapaneseInput");
-                    crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                // GJI プロセスにアタッチした時点で CLSID を即時確認する。
+                // プロセス存在だけでは「GJI がアクティブ IME」とは限らないため、
+                // WM_IME_KIND_CHANGED はプロセス存在ではなく CLSID 結果の変化時のみ発行する。
+                if let Some((ref mgr, _)) = tsf_ctx {
+                    if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
+                        if TSF_OBS.set_tsf_active_kind(kind) {
+                            log::info!("[tip-detect] IME kind → {kind:?} (on GJI attach)");
+                            crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                        }
+                    }
+                    next_clsid_check_ms = now + 2_000;
                 }
             } else {
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                 next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
-                // GJI 非検出: MicrosoftIme に変化（起動初回 or GJI 消失後）
-                if last_notified_ok != Some(false) {
-                    last_notified_ok = Some(false);
-                    log::info!("[gji-monitor] IME kind → MicrosoftIme (GJI not found)");
-                    crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
-                }
+                log::debug!("[gji-monitor] GJI process not found (I/O monitoring unavailable)");
+                // プロセス非検出時は WM_IME_KIND_CHANGED を発行しない。
+                // CLSID ポーリングが IME 種別を管理する。
             }
         }
 
@@ -328,12 +329,8 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                     monitor = None;
                     next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
-                    // GJI 消失: MicrosoftIme に変化
-                    if last_notified_ok != Some(false) {
-                        last_notified_ok = Some(false);
-                        log::info!("[gji-monitor] IME kind → MicrosoftIme (GJI exited)");
-                        crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
-                    }
+                    // プロセス消失時も WM_IME_KIND_CHANGED は発行しない。
+                    // CLSID ポーリングが次のサイクルで MicrosoftIme を検出して発行する。
                 }
                 Some(delta) => {
                     TSF_OBS
