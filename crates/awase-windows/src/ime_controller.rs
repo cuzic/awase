@@ -50,7 +50,16 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
         view.focus.profile.can_use_imm32_cross_process()
     }
 
-    fn apply(&self, open: bool, _view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        if open
+            && view.observed.active_ime_kind == ActiveImeKind::MicrosoftIme
+            && !matches!(view.belief_input_mode, awase::engine::InputModeState::ObservedKana)
+        {
+            // MS-IME + ImmCross (LINE 等): かなモードのまま IME ON すると JIS かな入力になる。
+            // 先に ROMAN ビットを追加してローマ字モードに戻す。
+            // SAFETY: set_ime_romaji_mode は Win32 API。メインスレッドから呼ぶこと。
+            let _ = unsafe { crate::ime::set_ime_romaji_mode() };
+        }
         if unsafe { crate::ime::set_ime_open_cross_process(open) } {
             ImeOpenOutcome::Applied
         } else {
