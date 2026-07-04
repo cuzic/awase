@@ -211,6 +211,10 @@ impl Runtime {
         crate::tsf::observer::reset_candidate_was_seen();
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         self.platform_state.focus.last_focus_change_ms = tick_ms.0;
+        // フォーカスエポックをインクリメント。このフォーカスで spawn された probe が
+        // 次のフォーカス変更後に完了しても、epoch 不一致で棄却される。
+        self.platform_state.focus.focus_epoch =
+            self.platform_state.focus.focus_epoch.wrapping_add(1);
         self.platform.notify_focus_changed();
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
@@ -334,33 +338,31 @@ impl Runtime {
         // 最初のキー入力から正しい belief で engine が動作する。
         // FocusChanged が observations をクリアした後のため、この probe が最初の High conf 観測になる。
         //
-        // シャドウグレース: デスクトップ切替アニメーション中の ForegroundStaging 等の
-        // 経由ウィンドウは IME コンテキストを持たず false を返す。shadow=ON 時に SHADOW_GRACE_MS
-        // 以内の false 観測を抑制することで Engine OFF カスケードを防ぐ。
+        // エポック照合: spawn 後にフォーカスが変わった場合（仮想デスクトップ切替中の経由ウィンドウ等）
+        // は棄却する。時間ベースのシャドウグレースより正確で、誤って High confidence false を
+        // 書き込む Engine OFF カスケードを構造的に防ぐ。
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
         ) && self.platform_state.ime.belief.is_japanese_ime() {
-            let shadow_on = self.platform_state.ime.effective_open();
-            let probe_started_ms = tick_ms.0;
+            let ticket = crate::state::probe_admission::ImmLikeTicket {
+                focus_epoch: self.platform_state.focus.focus_epoch,
+            };
             win32_async::spawn_local(async move {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
-                        let probe_age_ms = now_tick.0.saturating_sub(probe_started_ms);
-                        if !open
-                            && shadow_on
-                            && probe_age_ms < crate::tuning::SHADOW_GRACE_MS
+                        let current_epoch = app.platform_state.focus.focus_epoch;
+                        if let crate::state::probe_admission::Admission::Reject(reason) =
+                            ticket.admit(current_epoch)
                         {
                             log::debug!(
-                                "[ImmCrossProbe/focus] shadow grace suppressed: \
-                                 shadow=ON probe=false probe_age={probe_age_ms}ms \
-                                 < {}ms (transient window)",
-                                crate::tuning::SHADOW_GRACE_MS
+                                "[ImmCrossProbe/focus] epoch rejected: {reason} \
+                                 (transient window — focus changed since probe spawn)"
                             );
                             return;
                         }
+                        let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
                         app.platform_state.ime.write_imm_cross_probe(open, now_tick);
                         log::debug!(
                             "[ImmCrossProbe/focus] child-hwnd IME={open} → High confidence 観測記録"

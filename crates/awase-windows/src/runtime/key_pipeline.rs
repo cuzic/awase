@@ -210,6 +210,9 @@ impl Runtime {
         // フォーカス変更後にキャッシュリストア済みの desired を反映する
         // effective_open() を使う。
         let shadow_on = self.platform_state.ime.effective_open();
+        // エポックを spawn 時にキャプチャ。apply_focus_probe 内でフォーカスが
+        // 変わっていないか照合し、stale な観測を棄却する。
+        let focus_epoch_at_spawn = self.platform_state.focus.focus_epoch;
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
@@ -222,6 +225,7 @@ impl Runtime {
                     last_focus_change_ms,
                     shadow_on,
                     active_ime_kind,
+                    focus_epoch_at_spawn,
                 );
             });
         });
@@ -637,38 +641,37 @@ impl Runtime {
 }
 
 /// フォーカスプローブの IME 更新抑制シグナルをまとめた値
+///
+/// shadow_grace は probe_admission の FocusEpoch 照合に置き換え済みのため
+/// このフラグには含まれない。
 struct FocusProbeGraceFlags {
     warmup_grace_active: bool,
     gji_grace_active: bool,
-    shadow_grace_active: bool,
     warmup_elapsed: u64,
     gji_idle_ms: u64,
 }
 
 impl FocusProbeGraceFlags {
     const fn any(&self) -> bool {
-        self.warmup_grace_active || self.gji_grace_active || self.shadow_grace_active
+        self.warmup_grace_active || self.gji_grace_active
     }
 
     const fn primary_reason(&self) -> &'static str {
         if self.warmup_grace_active {
             "warmup"
-        } else if self.gji_grace_active {
-            "gji-io"
         } else {
-            "shadow"
+            "gji-io"
         }
     }
 }
 
 const fn compute_focus_probe_grace(
     now_ms: u64,
-    probe_age_ms: u64,
     warmup_ms: u64,
     gji_last_io_ms: u64,
     last_focus_change_ms: u64,
-    shadow_on: bool,
 ) -> FocusProbeGraceFlags {
+
     let warmup_elapsed = if warmup_ms > 0 {
         now_ms.saturating_sub(warmup_ms)
     } else {
@@ -685,12 +688,9 @@ const fn compute_focus_probe_grace(
     let gji_grace_active =
         gji_active_after_focus && gji_idle_ms < crate::tuning::GJI_SETTLE_GRACE_MS;
 
-    let shadow_grace_active = shadow_on && probe_age_ms < crate::tuning::SHADOW_GRACE_MS;
-
     FocusProbeGraceFlags {
         warmup_grace_active,
         gji_grace_active,
-        shadow_grace_active,
         warmup_elapsed,
         gji_idle_ms,
     }
@@ -742,7 +742,19 @@ impl Runtime {
         last_focus_change_ms: u64,
         shadow_on: bool,
         active_ime_kind: crate::tsf::observer::ActiveImeKind,
+        focus_epoch_at_spawn: u64,
     ) {
+        // エポック照合: spawn 後にフォーカスが変わっていれば probe 全体を棄却する。
+        // 仮想デスクトップ切替中の経由ウィンドウが stale な FocusProbe を送り込む問題を防ぐ。
+        let current_epoch = self.platform_state.focus.focus_epoch;
+        if current_epoch != focus_epoch_at_spawn {
+            log::debug!(
+                "[FocusProbe] epoch rejected: {focus_epoch_at_spawn} → {current_epoch} \
+                 (focus changed since probe spawn)"
+            );
+            return;
+        }
+
         let now_tick_ms = crate::state::TickMs(hook::current_tick_ms());
         let probe_age_ms = now_tick_ms.saturating_sub(probe_started_ms);
         let ime_on_before_probe = self.platform_state.ime.effective_open();
@@ -750,11 +762,9 @@ impl Runtime {
         let now_ms = now_tick_ms.0;
         let signals = compute_focus_probe_grace(
             now_ms,
-            probe_age_ms,
             warmup_ms,
             gji_last_io_ms,
             last_focus_change_ms,
-            shadow_on,
         );
 
         // スリープ復帰後など grace 期間中は read_ime_state_fast が一時的に
@@ -885,33 +895,31 @@ impl Runtime {
         // read_ime_state_full_async で child hwnd を正確に読み、High confidence 観測として記録する。
         // これにより FocusProbe (Low) が誤って false を返しても derive_open() で正しく上書きされる。
         //
-        // シャドウグレース: FocusProbe 同様、shadow=ON かつ SHADOW_GRACE_MS 以内の false 観測を
-        // 抑制する。デスクトップ切替中の経由ウィンドウ（ForegroundStaging 等）は IME コンテキストを
-        // 持たず false を返すため、誤った Engine OFF を防ぐ。
+        // エポック照合: spawn 後にフォーカスが変わった場合は棄却する。apply_focus_probe 冒頭の
+        // epoch チェックを通過しているため focus_epoch_at_spawn は現在のエポックと等しいことが保証済み。
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
         ) && probe.is_japanese_ime {
-            let imm_probe_started_ms = hook::current_tick_ms();
+            let ticket = crate::state::probe_admission::ImmLikeTicket {
+                focus_epoch: focus_epoch_at_spawn,
+            };
             win32_async::spawn_local(async move {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-                        let probe_age_ms = tick_ms.0.saturating_sub(imm_probe_started_ms);
-                        if !open
-                            && shadow_on
-                            && probe_age_ms < crate::tuning::SHADOW_GRACE_MS
+                        let current_epoch = app.platform_state.focus.focus_epoch;
+                        if let crate::state::probe_admission::Admission::Reject(reason) =
+                            ticket.admit(current_epoch)
                         {
                             log::debug!(
-                                "[ImmCrossProbe] shadow grace suppressed: \
-                                 shadow=ON probe=false probe_age={probe_age_ms}ms \
-                                 < {}ms (transient window)",
-                                crate::tuning::SHADOW_GRACE_MS
+                                "[ImmCrossProbe] epoch rejected: {reason} \
+                                 (focus changed since probe spawn)"
                             );
                             return;
                         }
+                        let tick_ms = crate::state::TickMs(hook::current_tick_ms());
                         // ON/OFF: High confidence (ImmCrossProbe source)
                         app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
                         log::debug!(
@@ -992,7 +1000,7 @@ impl Runtime {
             String::new()
         };
         log::info!(
-            "FocusProbe +{}ms: ime_on={}{} mode={:?} [ime={:?} sig1={}{} sig3={}]",
+            "FocusProbe +{}ms: ime_on={}{} mode={:?} [ime={:?} sig1={}{}]",
             probe_age_ms,
             ime_on_after_probe,
             ime_on_suffix,
@@ -1000,7 +1008,6 @@ impl Runtime {
             active_ime_kind,
             signals.warmup_grace_active,
             gji_fields,
-            signals.shadow_grace_active,
         );
 
         match suppressed_reason {

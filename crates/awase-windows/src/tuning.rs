@@ -238,11 +238,6 @@ pub const WARMUP_GRACE_MS: u64 = 300;
 /// probe 結果による IME 状態フリップを抑制する。
 pub const GJI_SETTLE_GRACE_MS: u64 = 300;
 
-/// シャドウ IME グレース期間 (ms)。
-///
-/// シャドウ IME が有効な状態で probe_age がこの時間内なら抑制する。
-pub const SHADOW_GRACE_MS: u64 = 200;
-
 /// 出力送信後の後続キー保護期間 (ms)。
 ///
 /// SendInput 直後この時間は OS キューに出力イベントが残っているため、
