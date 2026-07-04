@@ -653,9 +653,17 @@ impl DecisionExecutor {
                 "[dispatch-ime] ImmCross async: optimistic applied_snapshot={open} \
                  (suppress send_engine_state_ime_key)"
             );
+            // ImmCross の set_ime_open_cross_process は IMC_SETOPENSTATUS のみ設定し
+            // conv mode は変更しない。IME がかなモード (conv=0x09) のまま ON になると
+            // NICOLA エンジンが is_romaji_capable=false で起動できない。
+            // MsImeDirectStrategy と同じく ObservedKana 以外なら ROMAN ビットを補完する。
+            let belief_input_mode = self.belief_input_mode;
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             win32_async::spawn_local(async move {
                 let ok = crate::ime::set_ime_open_cross_process_async(open).await;
+                if ok && open && !matches!(belief_input_mode, InputModeState::ObservedKana) {
+                    let _ = crate::ime::set_ime_romaji_mode_with_target_async(None).await;
+                }
                 let outcome = if ok {
                     awase::platform::ImeOpenOutcome::Applied
                 } else {
