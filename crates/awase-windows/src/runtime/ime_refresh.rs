@@ -293,7 +293,7 @@ impl Runtime {
         if self.can_use_imm32_cross_process()
             && matches!(
                 observer_out.new_input_mode,
-                Some(awase::engine::InputModeState::ObservedKana)
+                Some(InputModeState::ObservedKana)
             )
         {
             observer_out.new_input_mode = None;
