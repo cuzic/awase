@@ -333,16 +333,35 @@ impl Runtime {
         // 非同期読み取りする。FocusProbe（first-key トリガー）より早く確定させることで
         // 最初のキー入力から正しい belief で engine が動作する。
         // FocusChanged が observations をクリアした後のため、この probe が最初の High conf 観測になる。
+        //
+        // シャドウグレース: デスクトップ切替アニメーション中の ForegroundStaging 等の
+        // 経由ウィンドウは IME コンテキストを持たず false を返す。shadow=ON 時に SHADOW_GRACE_MS
+        // 以内の false 観測を抑制することで Engine OFF カスケードを防ぐ。
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
         ) && self.platform_state.ime.belief.is_japanese_ime() {
+            let shadow_on = self.platform_state.ime.effective_open();
+            let probe_started_ms = tick_ms.0;
             win32_async::spawn_local(async move {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
+                        let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
+                        let probe_age_ms = now_tick.0.saturating_sub(probe_started_ms);
+                        if !open
+                            && shadow_on
+                            && probe_age_ms < crate::tuning::SHADOW_GRACE_MS
+                        {
+                            log::debug!(
+                                "[ImmCrossProbe/focus] shadow grace suppressed: \
+                                 shadow=ON probe=false probe_age={probe_age_ms}ms \
+                                 < {}ms (transient window)",
+                                crate::tuning::SHADOW_GRACE_MS
+                            );
+                            return;
+                        }
+                        app.platform_state.ime.write_imm_cross_probe(open, now_tick);
                         log::debug!(
                             "[ImmCrossProbe/focus] child-hwnd IME={open} → High confidence 観測記録"
                         );

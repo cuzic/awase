@@ -884,16 +884,34 @@ impl Runtime {
         // GJI 使用時は child hwnd と IME 状態が異なる場合がある（Qt の IME コンテキスト分割）。
         // read_ime_state_full_async で child hwnd を正確に読み、High confidence 観測として記録する。
         // これにより FocusProbe (Low) が誤って false を返しても derive_open() で正しく上書きされる。
+        //
+        // シャドウグレース: FocusProbe 同様、shadow=ON かつ SHADOW_GRACE_MS 以内の false 観測を
+        // 抑制する。デスクトップ切替中の経由ウィンドウ（ForegroundStaging 等）は IME コンテキストを
+        // 持たず false を返すため、誤った Engine OFF を防ぐ。
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
         ) && probe.is_japanese_ime {
+            let imm_probe_started_ms = hook::current_tick_ms();
             win32_async::spawn_local(async move {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
                         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+                        let probe_age_ms = tick_ms.0.saturating_sub(imm_probe_started_ms);
+                        if !open
+                            && shadow_on
+                            && probe_age_ms < crate::tuning::SHADOW_GRACE_MS
+                        {
+                            log::debug!(
+                                "[ImmCrossProbe] shadow grace suppressed: \
+                                 shadow=ON probe=false probe_age={probe_age_ms}ms \
+                                 < {}ms (transient window)",
+                                crate::tuning::SHADOW_GRACE_MS
+                            );
+                            return;
+                        }
                         // ON/OFF: High confidence (ImmCrossProbe source)
                         app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
                         log::debug!(
