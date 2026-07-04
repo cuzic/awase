@@ -15,8 +15,13 @@
 use std::time::{Duration, Instant};
 
 use super::ime_event::{HwndId, ObservationConfidence, ObservationSource};
+use super::probe_admission::FocusEpoch;
 
-/// 単一の観測値レコード。reducer / actuator がこの完全な情報で判断する。
+/// 単一の観測値レコード。受理済みの観測のみがここに格納される。
+///
+/// `focus_epoch` は観測が受理された時点のフォーカスエポック。
+/// 同期 probe は呼び出し時点のエポック（= 現在のフォーカス）を持つ。
+/// 非同期 probe は `ImmLikeTicket::admit()` が照合したエポックを持つ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImeObservation {
     pub open: bool,
@@ -29,6 +34,10 @@ pub struct ImeObservation {
     pub confidence: ObservationConfidence,
     /// この観測値の有効期限 (フォーカス変更で expire させたい場合等)
     pub expires_at: Option<Instant>,
+    /// 観測が受理されたフォーカスエポック。診断・デバッグ用。
+    /// 同期 probe = 呼び出し時の現在エポック。
+    /// 非同期 probe = admit() が照合したエポック。
+    pub focus_epoch: FocusEpoch,
 }
 
 impl ImeObservation {
@@ -268,6 +277,7 @@ mod tests {
             hwnd: HwndId::NULL,
             confidence: ObservationConfidence::Medium,
             expires_at: None,
+            focus_epoch: 0,
         }
     }
 

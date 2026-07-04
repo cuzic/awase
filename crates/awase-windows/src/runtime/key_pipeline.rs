@@ -697,11 +697,16 @@ const fn compute_focus_probe_grace(
 }
 
 impl Runtime {
-    fn apply_effective_ime(&mut self, effective: bool, tick_ms: crate::state::TickMs) {
+    fn apply_effective_ime(
+        &mut self,
+        effective: bool,
+        tick_ms: crate::state::TickMs,
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
+    ) {
         if effective {
             self.platform_state.ime.reset_detect_state();
         }
-        self.platform_state.ime.write_focus_probe(effective, tick_ms);
+        self.platform_state.ime.write_focus_probe(effective, tick_ms, focus_epoch);
     }
 }
 
@@ -785,14 +790,14 @@ impl Runtime {
             if !effective && signals.any() {
                 Some(signals.primary_reason())
             } else {
-                self.apply_effective_ime(effective, now_tick_ms);
+                self.apply_effective_ime(effective, now_tick_ms, focus_epoch_at_spawn);
                 None
             }
         } else {
             // TsfNative/Imm32Unavailable: IMM32 非対応のため probe は常に None を返す。
             // shadow の apply 値を代替観測として focus_probe スロットに記録する。
             if probe.is_japanese_ime {
-                self.apply_effective_ime(shadow_on, now_tick_ms);
+                self.apply_effective_ime(shadow_on, now_tick_ms, focus_epoch_at_spawn);
             }
             None
         };
@@ -921,7 +926,8 @@ impl Runtime {
                         }
                         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
                         // ON/OFF: High confidence (ImmCrossProbe source)
-                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
+                        // ticket.focus_epoch は admit() 照合済みのエポック（= current_epoch と一致）
+                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms, ticket.focus_epoch);
                         log::debug!(
                             "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
                         );

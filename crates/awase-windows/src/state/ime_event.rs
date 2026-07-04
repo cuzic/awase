@@ -220,6 +220,10 @@ pub enum ImeEvent {
         source: ObservationSource,
         hwnd: HwndId,
         confidence: ObservationConfidence,
+        /// 観測が受理されたフォーカスエポック (`probe_admission::FocusEpoch`)。
+        /// 同期 probe は呼び出し時点の現在エポック。
+        /// 非同期 probe は `ImmLikeTicket::admit()` が照合済みのエポック。
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
     },
 
     /// フォーカスが変わった

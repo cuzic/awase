@@ -363,7 +363,8 @@ impl Runtime {
                             return;
                         }
                         let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
-                        app.platform_state.ime.write_imm_cross_probe(open, now_tick);
+                        // ticket.focus_epoch は admit() 照合済みのエポック（= current_epoch と一致）
+                        app.platform_state.ime.write_imm_cross_probe(open, now_tick, ticket.focus_epoch);
                         log::debug!(
                             "[ImmCrossProbe/focus] child-hwnd IME={open} → High confidence 観測記録"
                         );

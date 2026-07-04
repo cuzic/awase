@@ -484,6 +484,7 @@ impl ImeStateHub {
         &mut self,
         update: &crate::observer::ime_observer::ImeUpdate,
         tick_ms: TickMs,
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
     ) {
         if let Some(is_jp) = update.is_japanese_ime {
             self.belief.is_japanese_ime = is_jp;
@@ -495,6 +496,7 @@ impl ImeStateHub {
                     source: ObservationSource::ObserverPoll,
                     hwnd: HwndId::NULL,
                     confidence: ObservationConfidence::Medium,
+                    focus_epoch,
                 },
                 tick_ms,
             );
@@ -640,13 +642,19 @@ impl ImeStateHub {
 
     // ── イベント dispatch ヘルパ ──
 
-    pub(crate) fn write_observer_poll(&mut self, value: bool, tick_ms: TickMs) {
+    pub(crate) fn write_observer_poll(
+        &mut self,
+        value: bool,
+        tick_ms: TickMs,
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
+    ) {
         self.dispatch_event(
             ImeEvent::ObserverReported {
                 open: value,
                 source: ObservationSource::ObserverPoll,
                 hwnd: HwndId::NULL,
                 confidence: ObservationConfidence::Medium,
+                focus_epoch,
             },
             tick_ms,
         );
@@ -682,7 +690,12 @@ impl ImeStateHub {
         );
     }
 
-    pub(crate) fn write_focus_probe(&mut self, value: bool, tick_ms: TickMs) {
+    pub(crate) fn write_focus_probe(
+        &mut self,
+        value: bool,
+        tick_ms: TickMs,
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
+    ) {
         self.dispatch_event(
             ImeEvent::ObserverReported {
                 open: value,
@@ -691,6 +704,7 @@ impl ImeStateHub {
                 // Low: top-level hwnd の IMC を読むため Qt/GJI 等では child hwnd と異なる場合がある。
                 // High confidence の ImmCrossProbe が後から上書きする。
                 confidence: ObservationConfidence::Low,
+                focus_epoch,
             },
             tick_ms,
         );
@@ -700,13 +714,20 @@ impl ImeStateHub {
     ///
     /// `read_ime_state_full_async` が child hwnd の IMM32 状態を読んだ後に呼ぶ。
     /// High confidence のため `derive_open()` で即採用される。
-    pub(crate) fn write_imm_cross_probe(&mut self, value: bool, tick_ms: TickMs) {
+    /// `focus_epoch` には `ImmLikeTicket::admit()` が照合済みのエポックを渡す。
+    pub(crate) fn write_imm_cross_probe(
+        &mut self,
+        value: bool,
+        tick_ms: TickMs,
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
+    ) {
         self.dispatch_event(
             ImeEvent::ObserverReported {
                 open: value,
                 source: ObservationSource::ImmCrossProbe,
                 hwnd: HwndId::NULL,
                 confidence: ObservationConfidence::High,
+                focus_epoch,
             },
             tick_ms,
         );

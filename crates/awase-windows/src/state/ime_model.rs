@@ -270,6 +270,7 @@ impl ImeModel {
                 source,
                 confidence,
                 hwnd,
+                focus_epoch,
             } => {
                 // 絶対ルール: Observer は desired_open を直接書き換えない
                 self.observations.record(ImeObservation {
@@ -279,6 +280,7 @@ impl ImeModel {
                     hwnd,
                     confidence,
                     expires_at: None,
+                    focus_epoch,
                 });
                 // drift 追跡 (desired と observed の乖離)
                 self.observations
@@ -469,6 +471,7 @@ mod tests {
                 source: ObservationSource::ObserverPoll,
                 hwnd: HwndId::NULL,
                 confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
             },
         ));
         assert!(model.desired_open, "observer は desired を壊さない");
