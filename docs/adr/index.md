@@ -64,7 +64,7 @@ Windows IME 制御に特化した日本語 ADR を補完するものである。
 
 ### 2026-07-03: ObservationAdmission Layer による probe 受理ポリシー集約（ADR-077）
 
-仮想デスクトップ切替時の Engine OFF バグ修正を契機に、probe の「信用できる観測か」の
+ALT+TAB ウィンドウ切替時の Engine OFF バグ修正を契機に、probe の「信用できる観測か」の
 判断を一元化する ObservationAdmission Layer を実装。時間ベースの shadow grace を撤廃し、
 FocusEpoch による正確な epoch 照合に移行した。
 

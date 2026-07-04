@@ -6,14 +6,14 @@
 
 ## コンテキスト
 
-### 発端: 仮想デスクトップ切替時の Engine OFF
+### 発端: ALT+TAB ウィンドウ切替時の Engine OFF
 
-Windows の仮想デスクトップを切り替えると、LINE などの Qt/ImmCross アプリで
+ALT+TAB でウィンドウを切り替えると、LINE などの Qt/ImmCross アプリで
 awase エンジンが Engine OFF（ローマ字直接入力に戻る）になる不具合が報告された。
 
 **根本原因:**
 
-仮想デスクトップ切替アニメーション中、OS は経由ウィンドウ
+ALT+TAB のタスクスイッチャー表示中、OS は選択 UI ウィンドウ
 （`XamlExplorerHostIslandWindow` / `ForegroundStaging` など）に一時的に
 フォーカスを移す。このタイミングで起動した `ImmCrossProbe`（非同期）が
 経由ウィンドウを対象に IME 状態を読み取ると `false` を返す。
@@ -26,7 +26,7 @@ Engine OFF カスケードが発生した。
 
 | 修正 | 内容 |
 |------|------|
-| Fix B | `XamlExplorerHostIslandWindow` を `NonText`（IME リセット不要）に分類し、`reset_to_off` を防止 |
+| Fix B | `XamlExplorerHostIslandWindow` を `NonText`（IME リセット不要）に分類し、タスクスイッチャー選択中の `reset_to_off` を防止 |
 | Fix A | `shadow_on && probe_age_ms < 200ms` という時間ベースの grace 期間で `ImmCrossProbe` の `false` を抑制 |
 
 Fix A は機能したが、**時間ベース競合**という構造的な問題を抱えていた:

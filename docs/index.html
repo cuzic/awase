@@ -411,7 +411,7 @@ footer p{margin-bottom:0.3rem}
           <li>独自のリレーモードで、キーボードフックが OS に強制解除されにくい設計</li>
           <li>万が一解除されても、自動復旧機能で即座に再登録</li>
           <li>スリープ復帰やスクリーンロック解除時も自動回復</li>
-          <li>仮想デスクトップ切替時も IME 状態を正確に維持</li>
+          <li>ALT+TAB ウィンドウ切替時も IME 状態を正確に維持</li>
           <li>DLL インジェクション不使用 — ウイルス対策ソフトに誤検知されない</li>
         </ul>
       </div>
@@ -475,7 +475,7 @@ footer p{margin-bottom:0.3rem}
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
         <h3>LINE / Qt アプリ</h3>
-        <p>LINE が内部で行う IME 状態遷移を推測し、意図通りの IME ON/OFF 切り替えを実現します。仮想デスクトップ切替時の誤動作も解消。Qt ベースのアプリ全般に対応しています。</p>
+        <p>LINE が内部で行う IME 状態遷移を推測し、意図通りの IME ON/OFF 切り替えを実現します。ALT+TAB でのアプリ切替時の誤動作も解消。Qt ベースのアプリ全般に対応しています。</p>
       </div>
       <div class="compat-card">
         <span class="compat-tag" style="background:#16a34a">完全対応</span>
@@ -683,8 +683,8 @@ footer p{margin-bottom:0.3rem}
         <p class="faq-a">awase が内部で持つ「IME の状態」と実際の OS の状態がずれてしまい、「もう切り替え済み」と誤判定してしまうケースです。awase はフォーカス変化・アプリ切り替えのたびに IME の実態を再観測し、shadow モデルと照合することでずれを継続的に修正します。</p>
       </div>
       <div class="faq-item">
-        <p class="faq-q">仮想デスクトップを切り替えると LINE でエンジンが OFF になることがありました</p>
-        <p class="faq-a">Windows の仮想デスクトップ切替アニメーション中、OS は一時的に経由ウィンドウにフォーカスを移します。この瞬間に IME 状態を読み取ると誤って「IME OFF」と判定され、エンジンが停止してしまうことがありました。awase はフォーカス変更のたびに内部カウンタ（エポック）を更新し、切替アニメーション中に発生した古い観測を自動的に無効化します。これにより仮想デスクトップ切替後も正しく IME 状態が維持されます。</p>
+        <p class="faq-q">ALT+TAB で別アプリに切り替えると LINE でエンジンが OFF になることがありました</p>
+        <p class="faq-a">ALT+TAB のタスクスイッチャーが表示されている間、OS は一時的にスイッチャーのウィンドウにフォーカスを移します。この瞬間に IME 状態を読み取ると誤って「IME OFF」と判定され、エンジンが停止してしまうことがありました。awase はフォーカス変更のたびに内部カウンタ（エポック）を更新し、切替アニメーション中に発生した古い観測を自動的に無効化します。これにより ALT+TAB 後も正しく IME 状態が維持されます。</p>
       </div>
     </div>
   </div>
