@@ -236,9 +236,8 @@ impl Drop for GjiMonitor {
 /// 起動時に呼ぶこと（1 回のみ）。戻り値の [`win32_worker::WorkerThread`] を
 /// アプリ終了まで保持すること（drop 時にスレッドが停止・join される）。
 #[must_use]
-pub fn start_monitor_thread(base_dir: std::path::PathBuf) -> win32_worker::WorkerThread {
+pub fn start_monitor_thread() -> win32_worker::WorkerThread {
     win32_worker::WorkerThread::spawn("gji-io-monitor", move |token| {
-        super::tip_detector::set_base_dir(base_dir);
         monitor_loop(&token);
     })
 }

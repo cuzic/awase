@@ -855,12 +855,8 @@ pub(super) fn run_all() -> Result<()> {
         app.start_hook_watchdog();
     });
 
-    let base_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| PathBuf::from("."));
     let (_uia_worker, uia_tx) = crate::focus::uia::spawn_uia_worker();
-    let _gji_worker = crate::tsf::observer::start_monitor_thread(base_dir);
+    let _gji_worker = crate::tsf::observer::start_monitor_thread();
     let _ = with_app(|app| app.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification()

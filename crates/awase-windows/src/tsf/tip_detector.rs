@@ -2,7 +2,8 @@
 //!
 //! `ITfInputProcessorProfileMgr::GetActiveProfile` により現在アクティブな TIP の CLSID を取得し、
 //! GJI / MS-IME を識別する。GJI の CLSID はバージョンや環境で変わりうるため、
-//! 起動時に `EnumProfiles` + display name マッチングで動的に発見してセッションキャッシュに格納する。
+//! 起動時に `EnumProfiles` + display name マッチングで動的に発見してプロセス内キャッシュに格納する。
+//! ファイルキャッシュは使用しない（再起動時は毎回動的発見する）。
 //!
 //! ## スレッドモデル
 //!
@@ -10,7 +11,6 @@
 //! COM インターフェース（`ITfInputProcessorProfileMgr` 等）は STA アパートメントに束縛されるため、
 //! 生成スレッド以外で使ってはいけない。
 
-use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
@@ -22,19 +22,11 @@ use windows::core::{Interface as _, GUID};
 
 use super::observer::ActiveImeKind;
 
-/// このセッションで発見した GJI の TIP CLSID キャッシュ。
+/// このセッションで発見した GJI の TIP CLSID キャッシュ（プロセス内のみ）。
 ///
 /// `discover_and_cache_gji_clsid` により一度だけセットされる。
 /// `None` = GJI 未インストールまたは `EnumProfiles` で発見できなかった。
 static GJI_CLSID: OnceLock<GUID> = OnceLock::new();
-
-/// キャッシュファイルの保存先ディレクトリ（exe と同じ場所）。
-static CACHE_BASE_DIR: OnceLock<PathBuf> = OnceLock::new();
-
-/// `monitor_loop` 開始前に呼ぶ: キャッシュファイルの保存先を設定する。
-pub(super) fn set_base_dir(dir: PathBuf) {
-    let _ = CACHE_BASE_DIR.set(dir);
-}
 
 // ── COM オブジェクト生成 ──────────────────────────────────────────────────
 
@@ -58,7 +50,7 @@ pub(super) fn create_profile_ctx(
 
 // ── 起動時 GJI CLSID 発見 ──────────────────────────────────────────────────
 
-/// 日本語 TIP を列挙して GJI の CLSID をキャッシュに格納する（冪等）。
+/// 日本語 TIP を列挙して GJI の CLSID をプロセス内キャッシュに格納する（冪等）。
 ///
 /// display name に "Google" を含む TIP を GJI として識別する。CLSID はバージョンや
 /// インストール環境によって変わりうるためハードコードしない。
@@ -70,17 +62,10 @@ pub(super) fn discover_and_cache_gji_clsid(
     if GJI_CLSID.get().is_some() {
         return;
     }
-    // キャッシュから読み込む（あれば EnumProfiles をスキップ）
-    if let Some(clsid) = try_load_gji_clsid_from_cache() {
-        let _ = GJI_CLSID.set(clsid);
-        log::info!("[tip-detect] GJI CLSID loaded from cache: {}", fmt_guid(&clsid));
-        return;
-    }
     match find_gji_clsid(mgr, profiles) {
         Some(clsid) => {
             let _ = GJI_CLSID.set(clsid);
             log::info!("[tip-detect] GJI CLSID discovered: {}", fmt_guid(&clsid));
-            save_gji_clsid_to_cache(&clsid);
         }
         None => {
             log::info!("[tip-detect] GJI not found in EnumProfiles(JA)");
@@ -124,7 +109,7 @@ fn find_gji_clsid(
 
 /// 現在アクティブな TIP の CLSID から IME 種別を返す。
 ///
-/// - キャッシュ済み GJI CLSID と一致 → `GoogleJapaneseInput`
+/// - プロセス内キャッシュ済み GJI CLSID と一致 → `GoogleJapaneseInput`
 /// - それ以外の TIP または IMM32 HKL → `MicrosoftIme`
 /// - 取得失敗 → `None`（呼び出し元はフォールバック値を使う）
 pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<ActiveImeKind> {
@@ -146,60 +131,6 @@ pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<Act
         }
         Some(ActiveImeKind::MicrosoftIme)
     }
-}
-
-// ── GUID キャッシュ (cache.toml) ──────────────────────────────────────────
-
-const CACHE_FILENAME: &str = "cache.toml";
-const CACHE_SECTION: &str = "tip_clsid";
-
-/// `cache.toml` の `[tip_clsid]` セクションから GJI CLSID を読み込む。
-fn try_load_gji_clsid_from_cache() -> Option<GUID> {
-    let dir = CACHE_BASE_DIR.get()?;
-    let path = dir.join(CACHE_FILENAME);
-    let content = std::fs::read_to_string(&path).ok()?;
-    let table: toml::Table = content.parse().ok()?;
-    let section = table.get(CACHE_SECTION)?.as_table()?;
-    let s = section.get("gji")?.as_str()?;
-    let clsid = parse_guid(s)?;
-    log::debug!("[tip-detect] cache hit: gji={s}");
-    Some(clsid)
-}
-
-/// 発見した GJI CLSID を `cache.toml` の `[tip_clsid]` セクションに保存する。
-fn save_gji_clsid_to_cache(clsid: &GUID) {
-    let Some(dir) = CACHE_BASE_DIR.get() else { return };
-    let path = dir.join(CACHE_FILENAME);
-    let mut root: toml::Table = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| c.parse().ok())
-        .unwrap_or_default();
-    let mut section = toml::Table::new();
-    section.insert("gji".to_string(), toml::Value::String(fmt_guid(clsid)));
-    root.insert(CACHE_SECTION.to_string(), toml::Value::Table(section));
-    let content = toml::to_string_pretty(&root).unwrap_or_default();
-    if let Err(e) = std::fs::write(&path, &content) {
-        log::warn!("[tip-detect] cache 保存失敗: {e}");
-    } else {
-        log::info!("[tip-detect] GJI CLSID saved to cache.toml");
-    }
-}
-
-/// GUID 文字列 `{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}` を `GUID` に変換する。
-fn parse_guid(s: &str) -> Option<GUID> {
-    let s = s.trim().trim_start_matches('{').trim_end_matches('}');
-    let parts: Vec<&str> = s.split('-').collect();
-    if parts.len() != 5 { return None; }
-    let d1 = u32::from_str_radix(parts[0], 16).ok()?;
-    let d2 = u16::from_str_radix(parts[1], 16).ok()?;
-    let d3 = u16::from_str_radix(parts[2], 16).ok()?;
-    let d4_hex = format!("{}{}", parts[3], parts[4]);
-    if d4_hex.len() != 16 { return None; }
-    let mut d4 = [0u8; 8];
-    for i in 0..8 {
-        d4[i] = u8::from_str_radix(&d4_hex[i * 2..i * 2 + 2], 16).ok()?;
-    }
-    Some(GUID { data1: d1, data2: d2, data3: d3, data4: d4 })
 }
 
 // ── 診断ダンプ ─────────────────────────────────────────────────────────────
