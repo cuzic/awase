@@ -539,6 +539,48 @@ Windows / アプリケーション</div>
     状態を知らなくてよいので、ずれが起きても必ず意図通りになります。
   </div>
 
+  <h3 class="sub">観測の「信頼できるかどうか」を一元管理する — ObservationAdmission</h3>
+
+  <p class="body">
+    awase はバックグラウンドで複数の「プローブ」を非同期に走らせています。
+    プローブが結果を返してきたとき、その観測は本当に「今フォーカスしているウィンドウ」のものでしょうか？
+  </p>
+
+  <p class="body">
+    たとえば ALT+TAB でアプリを切り替えるとき、OS は一瞬だけタスクスイッチャーのウィンドウにフォーカスを移します。
+    このわずかな時間に起動したプローブが「IME OFF」と返してくると、
+    元のアプリに戻った後もエンジンが停止してしまいます。
+  </p>
+
+  <div class="diagram">
+ALT+TAB のタイムライン:
+
+LINE にフォーカス中
+  │ ALT+TAB 押下 → タスクスイッチャー表示
+  │ OS: フォーカス = スイッチャーウィンドウ
+  │  └─ ImmCrossProbe 起動 → 「IME OFF」を返す  ← stale な観測
+  │ ALT+TAB 離す → LINE に戻る
+  │  └─ probe の結果が届く → エンジン停止！（バグ）
+  ▼
+awase の対策: フォーカスが変わっていた → この観測は棄却</div>
+
+  <p class="body">
+    awase はこれを「エポック（epoch）」で解決しています。
+    フォーカスが変わるたびに内部カウンタ（FocusEpoch）を 1 増やします。
+    プローブはスタート時のエポック番号を記録しておき、
+    結果が届いたときに現在のエポック番号と照合します。
+    番号が違えば「その間にフォーカスが変わった = stale」と判断して結果を棄てます。
+  </p>
+
+  <div class="callout green">
+    <strong>型で保証する：</strong>
+    「エポック照合を通った観測だけが shadow モデルに書き込める」ことを、
+    <strong>コンパイラが強制</strong>しています。
+    エポック照合を通ると <code>AcceptedObservation</code> というトークンが発行され、
+    このトークンなしでは <code>write_*</code> 関数を呼べません。
+    将来プローブを追加した際も、照合を忘れると <strong>コンパイルエラー</strong>になります。
+  </div>
+
   <!-- Section 6 -->
   <span class="sec-num" id="strategy" style="margin-top:3rem;display:block">06</span>
   <h2 class="sec">アプリごとに制御方式が違う理由</h2>

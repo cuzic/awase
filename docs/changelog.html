@@ -109,6 +109,26 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>ALT+TAB でアプリを切り替えると LINE でエンジンが OFF になる問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/a8d9a00">a8d9a00</a>, <a href="https://github.com/cuzic/awase/commit/569bf0f">569bf0f</a>)<ul>
+<li>ALT+TAB のタスクスイッチャー表示中、OS が一時的にスイッチャーウィンドウ（<code>XamlExplorerHostIslandWindow</code>）にフォーカスを移すタイミングで起動した <code>ImmCrossProbe</code> が「IME OFF」を返し、エンジンが停止するバグを修正</li>
+<li><code>XamlExplorerHostIslandWindow</code> を <code>NonText</code>（IME リセット不要）に分類し、タスクスイッチャー選択中の IME リセットを防止（Fix B）</li>
+<li><code>ImmCrossProbe</code> に shadow grace 抑制を追加し、フォーカス変化直後の stale 観測を無効化（Fix A）</li>
+</ul>
+</li>
+</ul>
+<h3>内部改善</h3>
+<ul>
+<li><strong>ObservationAdmission Layer — FocusEpoch による probe 受理ポリシーの集約</strong> (<a href="https://github.com/cuzic/awase/commit/604cf99">604cf99</a>, <a href="https://github.com/cuzic/awase/commit/f478ee7">f478ee7</a>, <a href="https://github.com/cuzic/awase/commit/67e63ad">67e63ad</a>, <a href="https://github.com/cuzic/awase/commit/1345d95">1345d95</a>, <a href="https://github.com/cuzic/awase/commit/a0e4ec7">a0e4ec7</a>) (ADR-077)<ul>
+<li>時間ベースの shadow grace（3箇所に複製）を廃止し、フォーカス変更カウンタ（<code>FocusEpoch</code>）による正確な epoch 照合に移行</li>
+<li><code>ImmLikeTicket::admit()</code> が spawn 時と完了時の epoch を照合し、フォーカスが変わっていれば観測を棄却</li>
+<li><code>AcceptedObservation</code> トークンを導入し、<code>write_*</code> 関数が admission を通らない書き込みを <strong>コンパイル時に禁止</strong></li>
+<li><code>ObservationStore</code> に <code>current_focus_epoch</code> を追加し、<code>derive_open()</code> が <code>ImmCrossProbe</code> / <code>FocusProbe</code> の stale 観測を読み出し時にも排除</li>
+<li>棄却カウンタ（<code>REJECTED_EPOCH_MISMATCH</code> 原子カウンタ）とダンプ時ログ出力を追加</li>
+</ul>
+</li>
+</ul>
 <h2>[1.7.1] - 2026-07-02</h2>
 <h3>バグ修正</h3>
 <ul>
