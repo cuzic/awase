@@ -295,8 +295,14 @@ footer p{margin-bottom:0.3rem}
       <li><a href="#ngram">日本語の統計で誤判定を防ぐ — n-gram モデル</a></li>
       <li><a href="#shadow">見えない IME 状態を追いかける — shadow モデル</a></li>
       <li><a href="#strategy">アプリごとに制御方式が違う理由</a></li>
+      <li><a href="#line">LINE / Qt アプリがとくに厳しい理由</a></li>
+      <li><a href="#msime">Google 日本語入力と MS-IME で制御方式が変わる理由</a></li>
+      <li><a href="#injection">キーの届け方を自動で選ぶ — InjectionMode</a></li>
       <li><a href="#chrome">Chrome / Edge がとくに難しい理由</a></li>
       <li><a href="#coldstart">最初の1文字が化ける — TSF cold-start 問題</a></li>
+      <li><a href="#wezterm">長時間アイドル後に文字が消える — WezTerm long-idle 問題</a></li>
+      <li><a href="#kana">ひらがな以外でも正しく動く — カタカナ・JIS かな対応</a></li>
+      <li><a href="#sleep">スリープ・ロック解除後に自動回復する仕組み</a></li>
     </ol>
   </div>
 
@@ -637,8 +643,179 @@ awase の対策: フォーカスが変わっていた → この観測は棄却<
     IMM32 クロスプロセス制御だけで IME を操作します。
   </div>
 
-  <!-- Section 7 -->
-  <span class="sec-num" id="chrome" style="margin-top:3rem;display:block">07</span>
+  <!-- Section 7: LINE -->
+  <span class="sec-num" id="line" style="margin-top:3rem;display:block">07</span>
+  <h2 class="sec">LINE / Qt アプリがとくに厳しい理由</h2>
+  <p class="sec-lead">LINE は IME キーを受け取ると独自の状態遷移を始めてしまいます。</p>
+
+  <p class="body">
+    LINE などの Qt フレームワーク製アプリは、
+    半角/全角キー（VK_KANJI）などの IME 関連キーを受け取ると
+    <strong>アプリ自身が独自の IME 状態遷移</strong>を開始します。
+    awase が「IME ON にする」と送ったキーを LINE が別の意味で解釈し、
+    意図と逆の状態になってしまうのです。
+  </p>
+
+  <div class="diagram">
+通常のアプリ（メモ帳など）:
+  awase → VK_KANJI 送信 → OS の IME が受け取る → IME ON
+
+LINE（Qt アプリ）:
+  awase → VK_KANJI 送信 → LINE が横取り
+                           → LINE 独自の IME 状態遷移が始まる
+                           → 意図と逆になることがある</div>
+
+  <p class="body">
+    この問題を解決するために、awase は LINE に対して
+    <strong>物理的な IME キーを一切通さない</strong>という方針を取っています。
+    LINE が IME キーを見る機会そのものをなくし、
+    IMM32 クロスプロセス制御（戦略1）だけで IME を操作します。
+  </p>
+
+  <h3 class="sub">ALT+TAB との組み合わせ</h3>
+
+  <p class="body">
+    LINE は「IME キーを通さない」だけでは十分ではありませんでした。
+    ALT+TAB でウィンドウを切り替えるとき、
+    OS はタスクスイッチャーのウィンドウに一瞬フォーカスを移します。
+    この瞬間に IME 状態を読み取ると誤って「IME OFF」と判定され、
+    LINE に戻ったときにエンジンが停止してしまいます。
+  </p>
+
+  <p class="body">
+    awase は「フォーカスが変わるたびにカウンタ（エポック）を増やし、
+    古いカウンタの観測は棄却する」という仕組みでこれを解決しています
+    （セクション5の ObservationAdmission 参照）。
+    LINE での ALT+TAB 問題も、この epoch 照合によって構造的に解消されています。
+  </p>
+
+  <!-- Section 8: MS-IME -->
+  <span class="sec-num" id="msime" style="margin-top:3rem;display:block">08</span>
+  <h2 class="sec">Google 日本語入力と MS-IME で制御方式が変わる理由</h2>
+  <p class="sec-lead">同じ「IME ON にする」でも、IME ソフトごとにコマンドが異なります。</p>
+
+  <p class="body">
+    Windows には「どの IME ソフトを使うか」を自由に選べる仕組みがあります。
+    代表的なのは Windows 標準の <strong>MS-IME</strong> と、
+    別途インストールする <strong>Google 日本語入力</strong>です。
+    同じ「ひらがなモードにしてください」という操作でも、
+    受け付けるコマンドが違います。
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th>操作</th>
+      <th>Google 日本語入力</th>
+      <th>MS-IME</th>
+    </tr>
+    <tr>
+      <td>ひらがなモードへ</td>
+      <td><code>VK_IME_ON</code> (0x16)</td>
+      <td><code>VK_DBE_HIRAGANA</code> (0xF2)</td>
+    </tr>
+    <tr>
+      <td>直接入力（英数）へ</td>
+      <td><code>VK_IME_OFF</code> (0x1A)</td>
+      <td><code>VK_DBE_ALPHANUMERIC</code> (0xF0)</td>
+    </tr>
+    <tr>
+      <td>どちらも冪等か</td>
+      <td>はい（何度送っても結果が変わらない）</td>
+      <td>はい（同様）</td>
+    </tr>
+  </table>
+
+  <p class="body">
+    awase はどちらの IME が使われているかを、
+    <strong>TSF（Text Services Framework）の API</strong> で自動判別します。
+    具体的には IME ごとに固有の識別子（CLSID）を動的に取得し、
+    起動後初めて識別した IME 種別を <code>cache.toml</code> に保存します。
+    次回起動時はこのキャッシュを使うため、判別コストがかかりません。
+  </p>
+
+  <div class="callout">
+    <strong>なぜ CLSID で判別するのか：</strong>
+    かつては「Google 日本語入力のプロセス（GoogleIMEJaConverter.exe）が
+    動いているか」でプロセス名ベースの判別をしていました。
+    しかしプロセス名は環境によって変わることがあります。
+    TSF の <code>EnumProfiles</code> で CLSID を取得する方式は
+    OS レベルの公式 API を使うため、確実で安定しています。
+  </div>
+
+  <p class="body">
+    IME が切り替わったとき（たとえば Google 日本語入力をアンインストールして
+    MS-IME に戻したとき）は、<code>WM_IME_KIND_CHANGED</code> メッセージで
+    awase に通知が来ます。awase はこのメッセージを受け取ると
+    制御方式をリアルタイムに切り替えます。再起動は不要です。
+  </p>
+
+  <!-- Section 9: InjectionMode -->
+  <span class="sec-num" id="injection" style="margin-top:3rem;display:block">09</span>
+  <h2 class="sec">キーの届け方を自動で選ぶ — InjectionMode</h2>
+  <p class="sec-lead">同じキーでも「届け方」が違うと IME の動作が変わります。</p>
+
+  <p class="body">
+    awase がキーを送り返すとき（リレーモード）、
+    実は「どんな形式で送るか」にも選択肢があります。
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th>モード</th>
+      <th>説明</th>
+      <th>向いているケース</th>
+    </tr>
+    <tr>
+      <td><strong>Unicode モード</strong></td>
+      <td>文字コードとしてキーを送る。シンプルだが IME を経由しないことがある</td>
+      <td>IME 経由が不要なアプリ</td>
+    </tr>
+    <tr>
+      <td><strong>TSF モード</strong></td>
+      <td>物理キーと同等の形式で送る。IME が確実に受け取れる</td>
+      <td>Google 日本語入力 / TSF アプリ</td>
+    </tr>
+  </table>
+
+  <p class="body">
+    Google 日本語入力 が動いている環境では TSF モードが必要です。
+    しかし awase は起動時に Google 日本語入力 が動いているかを毎回確認するのではなく、
+    <strong>自動昇格</strong>という仕組みを使います。
+  </p>
+
+  <div class="diagram">
+InjectionMode 自動昇格の流れ:
+
+起動直後: Unicode モード
+  │
+  │ フォーカス変化 → Unicode モードでキーを送信
+  │
+  ├─ Google 日本語入力 の WriteTransferCount を観測
+  │   ├─ 増加あり（+350B 以上）
+  │   │    → 「Google 日本語入力 がキーを処理した」と判断
+  │   │    → TSF モードへ自動昇格
+  │   │    → cache.toml に保存（再起動後も維持）
+  │   │
+  │   └─ 増加なし → Unicode モードのまま継続</div>
+
+  <p class="body">
+    <code>WriteTransferCount</code> は Google 日本語入力 プロセスの
+    I/O 書き込みバイト数です。Google 日本語入力 がキーを受け取ると
+    辞書参照などのために書き込みが発生します。
+    この数値を監視することで「Google 日本語入力 が実際にキーを処理したか」を
+    外部から確認できます。
+  </p>
+
+  <div class="callout green">
+    <strong>ユーザーが設定不要な理由：</strong>
+    自動昇格により、Google 日本語入力 をインストールした環境では
+    最初のフォーカス変化のタイミングで自動的に TSF モードに切り替わります。
+    MS-IME 環境や Google 日本語入力 が入っていない環境では Unicode モードのまま動作します。
+    設定画面で IME の種類を選ぶ必要はありません。
+  </div>
+
+  <!-- Section 10: Chrome -->
+  <span class="sec-num" id="chrome" style="margin-top:3rem;display:block">10</span>
   <h2 class="sec">Chrome / Edge がとくに難しい理由</h2>
   <p class="sec-lead">Chrome は複数のプロセスが協調するため、通常の方法が通じません。</p>
 
@@ -695,7 +872,7 @@ Chrome のプロセス構成（简略）:
   </div>
 
   <!-- Section 8 -->
-  <span class="sec-num" id="coldstart" style="margin-top:3rem;display:block">08</span>
+  <span class="sec-num" id="coldstart" style="margin-top:3rem;display:block">11</span>
   <h2 class="sec">最初の1文字が化ける — TSF cold-start 問題</h2>
   <p class="sec-lead">TSF アプリでは「入力を受け付ける準備」に時間がかかります。</p>
 
@@ -785,6 +962,206 @@ cold-start の発生タイムライン:
     awase が Google 日本語入力に送る VK_IME_ON (0x16) / VK_IME_OFF (0x1A) は
     Windows 標準の仮想キーコードですが、物理キーボードには存在しません。
     VT エスケープシーケンスも生成しないため、Windows Terminal での追加設定は不要です。
+  </div>
+
+  <!-- Section 12: WezTerm long-idle -->
+  <span class="sec-num" id="wezterm" style="margin-top:3rem;display:block">12</span>
+  <h2 class="sec">長時間アイドル後に文字が消える — WezTerm long-idle 問題</h2>
+  <p class="sec-lead">WezTerm は長時間使わないでいると TSF の文脈が「冷え」てしまいます。</p>
+
+  <p class="body">
+    WezTerm（Rust 製ターミナル）では、しばらく入力しないでいた後に
+    最初の1文字が消えてしまうことがありました。
+    たとえば10分放置してから「な」と打つと、「な」が出ずに何も起きない、という現象です。
+  </p>
+
+  <h3 class="sub">なぜ起きるのか</h3>
+
+  <p class="body">
+    WezTerm は TSF ネイティブアプリです。
+    TSF では IME と通信する「composition context」が
+    <strong>長時間使われないと内部的にリセット</strong>されます。
+    次にキーが来たときにはすでに context が失われており、
+    最初のキーは IME に届かずに消えてしまいます。
+  </p>
+
+  <div class="diagram">
+WezTerm long-idle の発生タイムライン:
+
+0分    IME ON で入力中
+     ↓ 10〜15分 放置
+15分   TSF composition context がリセット（内部）
+     ↓ ユーザーがキーを押す
+15分   最初の「な」→ IME に届かず消滅
+       次の「に」→ IME が context を初期化 → 正常に届く
+
+結果: 「なにほ」と打ったつもりが「にほ」になる</div>
+
+  <h3 class="sub">awase の解決策 — 検出して再送</h3>
+
+  <p class="body">
+    固定のタイムアウトで「何分おきに warmup する」という方法も試みましたが、
+    WezTerm が context をリセットするタイミングは環境によって異なり、
+    閾値を固定しても競合条件が別のタイミングに移るだけでした。
+  </p>
+
+  <p class="body">
+    awase は「タイムアウトで予防する」のではなく、
+    <strong>「消えたことを検出して修復する」</strong>パターンを採用しています。
+    最初のキーが IME に届かなかったことを観測し、同じキーをもう一度送り直します。
+  </p>
+
+  <div class="diagram">
+LiteralDetect（検出して修復）の流れ:
+
+キーが届く
+  │
+  ├─ IME が受け取ったか確認（TSF mode の write bytes 観測）
+  │   │
+  │   ├─ 受け取った → 通常の入力として処理
+  │   │
+  │   └─ 受け取っていない（literal 化を検出）
+  │       │
+  │       ├─ WezTerm が表示した「生の文字（例: k）」を BS で消去
+  │       └─ 同じキーを再送 → 今度は context が初期化されているので届く</div>
+
+  <div class="callout green">
+    <strong>「予防」より「検出・修復」：</strong>
+    タイムアウト延長で予防しようとすると「このタイミングでは大丈夫だが
+    あのタイミングでは失敗する」という競合条件が常に残ります。
+    WezTerm の場合は「失敗したことがわかる」ため、
+    検出して修復するほうが競合条件を根本的に消せます。
+    awase ではこのパターンを <code>LiteralDetect</code> と呼んでいます。
+  </div>
+
+  <!-- Section 13: カタカナ・JISかな -->
+  <span class="sec-num" id="kana" style="margin-top:3rem;display:block">13</span>
+  <h2 class="sec">ひらがな以外でも正しく動く — カタカナ・JIS かな対応</h2>
+  <p class="sec-lead">IME がひらがな以外のモードのとき、親指シフトをどう扱うかは複雑です。</p>
+
+  <p class="body">
+    IME には「ひらがな」だけでなく「カタカナ」「JIS かな」「半角カタカナ」など
+    複数の入力モードがあります。
+    awase の親指シフトエンジンはひらがな前提で設計されているため、
+    これらのモードを適切に扱う追加の仕組みが必要でした。
+  </p>
+
+  <h3 class="sub">「カタカナ = ObservedRomaji」という中心原則</h3>
+
+  <p class="body">
+    カタカナモードでは、ローマ字入力が有効なまま
+    IME が出力をカタカナに変換します。
+    awase はカタカナモードを「ローマ字入力中」と同等に扱います。
+    これにより親指シフトエンジンが誤って非活性化されません。
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th>入力モード</th>
+      <th>awase の扱い</th>
+      <th>エンジン状態</th>
+    </tr>
+    <tr>
+      <td>ひらがな（ローマ字）</td>
+      <td>通常の親指シフト入力</td>
+      <td>Active</td>
+    </tr>
+    <tr>
+      <td>カタカナ（全角）</td>
+      <td>ローマ字入力中と同等</td>
+      <td>Active</td>
+    </tr>
+    <tr>
+      <td>半角カタカナ</td>
+      <td>ローマ字入力中と同等</td>
+      <td>Active</td>
+    </tr>
+    <tr>
+      <td>英数（直接入力）</td>
+      <td>親指シフト不要</td>
+      <td>Inactive</td>
+    </tr>
+    <tr>
+      <td>JIS かな</td>
+      <td>ローマ字を使わない入力。エンジンは維持</td>
+      <td>Active（旁受け）</td>
+    </tr>
+  </table>
+
+  <h3 class="sub">ObservedEisu — 英数直接入力の自動検出</h3>
+
+  <p class="body">
+    IME が ON のまま「英数入力モード」に切り替わることがあります。
+    この状態は「shadow = ON」「実態 = 英数直接入力」という
+    食い違いを引き起こします。
+  </p>
+
+  <p class="body">
+    awase はこれを <code>ObservedEisu</code>（英数観測）として独立したモードで管理します。
+    <code>ObservedEisu</code> を検出すると、500ms 以内に自動的に IME OFF（直接入力）に切り替え、
+    エンジンも非活性化します。
+    ユーザーが気づいてから手動で対処しなくてよくなります。
+  </p>
+
+  <div class="callout">
+    <strong>なぜ英数モードのまま放置してはいけないのか：</strong>
+    shadow モデルが「IME ON」と思っている状態で英数モードが続くと、
+    awase がひらがな入力を期待してキーを変換しようとする一方で
+    実際には英字が出力されるという不整合が続きます。
+    <code>ObservedEisu</code> を明示的なモードとして扱うことで、
+    「この状態は想定済み」として安全に自動回復できます。
+  </div>
+
+  <!-- Section 14: スリープ・ロック解除 -->
+  <span class="sec-num" id="sleep" style="margin-top:3rem;display:block">14</span>
+  <h2 class="sec">スリープ・ロック解除後に自動回復する仕組み</h2>
+  <p class="sec-lead">PC がスリープから復帰した直後は、IME の状態を正しく読み取れません。</p>
+
+  <p class="body">
+    PC をスリープさせて復帰させると、Windows の IME サブシステムも
+    一時的に「初期化中」の状態になります。
+    この瞬間に awase が IME 状態を読もうとすると、
+    <code>is_japanese_ime = false</code>（日本語 IME なし）という
+    誤った値が返ってくることがあります。
+  </p>
+
+  <div class="diagram">
+スリープ復帰後のタイムライン:
+
+スリープ前: Google 日本語入力 が動作中、IME ON
+  │
+  └─ スリープ
+       │
+  復帰  ├─ OS: IME サブシステムを再初期化中
+       │     ↓ この間に awase が読み取ると
+       │     is_japanese_ime = false（誤）
+       │     → エンジン停止（「日本語 IME なし」判定）
+       │
+       └─ 初期化完了（数百 ms 後）
+             → 正常な値が返ってくるが、エンジンはすでに止まっている</div>
+
+  <h3 class="sub">grace 保護による解決</h3>
+
+  <p class="body">
+    awase はスリープ復帰直後に「grace 期間」を設定します。
+    この期間中は <code>is_japanese_ime = false</code> への
+    <strong>ダウングレードを無視</strong>します。
+    一方で <code>is_japanese_ime = true</code>（正常）への更新は
+    常時受け付けます。
+  </p>
+
+  <p class="body">
+    これは「悪いニュースは一定時間保留、良いニュースはすぐ受け付ける」という非対称な設計です。
+    スリープ復帰直後の誤った <code>false</code> を捨て、
+    初期化完了後の正しい <code>true</code> が届いた時点でエンジンが回復します。
+  </p>
+
+  <div class="callout green">
+    <strong>shadow grace と epoch の使い分け：</strong>
+    「フォーカスが変わった後の stale 観測」には FocusEpoch を使います（セクション5）。
+    「スリープ復帰後の一時的な誤値」には grace 期間を使います。
+    前者は「観測が古い」という問題、後者は「観測自体が一時的に信用できない」という問題です。
+    それぞれ異なるアプローチで対処しています。
   </div>
 
 </div>
