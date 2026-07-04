@@ -744,6 +744,12 @@ pub(crate) struct FocusStore {
     pub last_focus_change_ms: u64,
     pub focus_debounce_ms: u32,
     pub ime_poll_interval_ms: u32,
+    /// フォーカスプロセス変更のエポック番号。
+    ///
+    /// `on_focus_process_changed` のたびに `wrapping_add(1)` でインクリメントされる。
+    /// probe の spawn 時にキャプチャし、完了時に照合することで「spawn 後にフォーカスが
+    /// 変わったか」を時間ベースの競合なしに正確に判定できる（→ probe_admission モジュール）。
+    pub focus_epoch: u64,
 }
 
 impl FocusStore {
@@ -754,6 +760,7 @@ impl FocusStore {
             last_focus_change_ms: 0,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
+            focus_epoch: 0,
         }
     }
 }

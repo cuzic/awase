@@ -40,6 +40,7 @@ pub mod ime_model;
 pub(crate) use ime_model::AppliedImeState;
 pub mod input_barrier;
 pub mod observation_store;
+pub mod probe_admission;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
