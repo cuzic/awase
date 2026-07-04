@@ -517,6 +517,14 @@ pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
 
 /// WM_DUMP_JOURNAL ハンドラ（Alt+変換→Alt+無変換 ×2 でトリガー）
 pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
+    // プローブ棄却統計をダンプ直前にログ出力してリセット
+    let stats = crate::state::probe_admission::drain_stats();
+    if stats.epoch_mismatch > 0 {
+        log::info!(
+            "[probe-admission] rejected since last dump: epoch_mismatch={}",
+            stats.epoch_mismatch
+        );
+    }
     app.platform_state
         .ime
         .journal

@@ -23,6 +23,31 @@
 //! これにより仮想デスクトップ切替アニメーション中の経由ウィンドウ
 //! （ForegroundStaging 等）が返す false 観測が High confidence で
 //! 書き込まれ Engine OFF カスケードが起きる問題を構造的に排除する。
+//!
+//! ## 棄却カウンタ（Step 8）
+//!
+//! 棄却された probe はアトミックカウンタに記録される。
+//! 診断ダンプ時に [`drain_stats`] で取り出し、ログ出力に使う。
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// 棄却統計（グローバルアトミック）。
+static REJECTED_EPOCH_MISMATCH: AtomicU64 = AtomicU64::new(0);
+
+/// 棄却統計のスナップショット。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RejectionStats {
+    /// FocusEpoch 不一致による棄却数（累積）
+    pub epoch_mismatch: u64,
+}
+
+/// 棄却カウンタを読み取り、ゼロにリセットする（診断ダンプ用）。
+#[must_use]
+pub fn drain_stats() -> RejectionStats {
+    RejectionStats {
+        epoch_mismatch: REJECTED_EPOCH_MISMATCH.swap(0, Ordering::Relaxed),
+    }
+}
 
 /// フォーカス変更のエポック番号。
 ///
@@ -90,9 +115,11 @@ impl ImmLikeTicket {
     /// 完了時の受理判定。
     ///
     /// `current_epoch` は `with_app` 内で `app.platform_state.focus.focus_epoch` を渡す。
+    /// 棄却時は [`drain_stats`] で集計できるアトミックカウンタをインクリメントする。
     #[must_use]
-    pub const fn admit(self, current_epoch: FocusEpoch) -> Admission {
+    pub fn admit(self, current_epoch: FocusEpoch) -> Admission {
         if current_epoch != self.focus_epoch {
+            REJECTED_EPOCH_MISMATCH.fetch_add(1, Ordering::Relaxed);
             return Admission::Reject(RejectReason::FocusEpochChanged {
                 at_spawn: self.focus_epoch,
                 current: current_epoch,
