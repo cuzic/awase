@@ -57,9 +57,22 @@
 | [074](074-observed-eisu-auto-direct.md) | ObservedEisu 自動直接入力切替 — idle-conv-check で IME ON 英数を自動 OFF | 採用済み |
 | [075](075-imm-cross-probe-belief.md) | ImmCrossProbe による belief 補正 — Qt/GJI フォーカス時の IME 誤認識修正 | 採用済み |
 | [076](076-sleep-wake-is-japanese-ime-grace.md) | スリープ復帰後 is_japanese_ime 一時 false — grace 保護 | 採用済み |
+| [077](077-observation-admission-epoch.md) | ObservationAdmission Layer — FocusEpoch による probe 受理ポリシー | 採用済み |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
+
+### 2026-07-03: ObservationAdmission Layer による probe 受理ポリシー集約（ADR-077）
+
+仮想デスクトップ切替時の Engine OFF バグ修正を契機に、probe の「信用できる観測か」の
+判断を一元化する ObservationAdmission Layer を実装。時間ベースの shadow grace を撤廃し、
+FocusEpoch による正確な epoch 照合に移行した。
+
+- **ADR-077** — `FocusEpoch`（フォーカス変更カウンタ）を `FocusStore` に導入。
+  `ImmLikeTicket::admit()` が spawn 時と完了時の epoch を照合し、stale な観測を棄却。
+  `AcceptedObservation` トークンにより `write_*` 関数の admission bypass をコンパイル時に禁止。
+  `derive_open()` に epoch フィルタを追加し、`ImmCrossProbe` / `FocusProbe` の
+  stale 観測を読み出し時にも排除（GJI / ObserverPoll / TSF はイベント駆動のため対象外）。
 
 ### 2026-07-02: スリープ復帰 IME 固定バグ修正（ADR-076）
 
