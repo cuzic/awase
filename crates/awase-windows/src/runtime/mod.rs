@@ -394,8 +394,10 @@ impl Runtime {
             // apply_focus_probe が WARMUP_GRACE_MS(300ms) の抑制で ime_on=true を保持したまま
             // bypass_tsf() に到達すると Win+X 等の1文字ショートカットが NICOLA 変換される。
             let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-            let focus_epoch = self.platform_state.focus.focus_epoch;
-            self.platform_state.ime.write_focus_probe(false, tick_ms, focus_epoch);
+            let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
+                self.platform_state.focus.focus_epoch,
+            );
+            self.platform_state.ime.write_focus_probe(false, tick_ms, accepted);
             self.platform.bypass_tsf()
         };
         self.platform.timer.kill(crate::TIMER_TSF_GATE);
@@ -550,8 +552,10 @@ impl Runtime {
             )
         };
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        let focus_epoch = self.platform_state.focus.focus_epoch;
-        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms, focus_epoch);
+        let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
+            self.platform_state.focus.focus_epoch,
+        );
+        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms, accepted);
 
         // LastAppliedImeState を OS 観測値に同期する。
         // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。

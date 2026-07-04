@@ -142,8 +142,10 @@ impl Runtime {
                 log::debug!("[stage-observe] observer_poll={:?}", obs.observer_poll_value);
                 if let Some(v) = obs.observer_poll_value {
                     let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                    let focus_epoch = self.platform_state.focus.focus_epoch;
-                    self.platform_state.ime.write_observer_poll(v, tick_ms, focus_epoch);
+                    let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
+                        self.platform_state.focus.focus_epoch,
+                    );
+                    self.platform_state.ime.write_observer_poll(v, tick_ms, accepted);
                 }
             }
             ImeReadStrategy::OsPoll => {
@@ -284,8 +286,10 @@ impl Runtime {
                 )
             }
         };
-        let focus_epoch = self.platform_state.focus.focus_epoch;
-        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms, focus_epoch);
+        let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
+            self.platform_state.focus.focus_epoch,
+        );
+        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms, accepted);
 
         let miss_after = self.platform_state.ime.detect_miss_count();
 

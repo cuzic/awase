@@ -210,13 +210,21 @@ impl Runtime {
         // フォーカス変更後にキャッシュリストア済みの desired を反映する
         // effective_open() を使う。
         let shadow_on = self.platform_state.ime.effective_open();
-        // エポックを spawn 時にキャプチャ。apply_focus_probe 内でフォーカスが
-        // 変わっていないか照合し、stale な観測を棄却する。
-        let focus_epoch_at_spawn = self.platform_state.focus.focus_epoch;
+        // spawn 時にチケットをキャプチャ。apply_focus_probe 完了時に epoch 照合し stale な観測を棄却する。
+        let ticket = crate::state::probe_admission::ImmLikeTicket {
+            focus_epoch: self.platform_state.focus.focus_epoch,
+        };
 
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
             let _ = crate::with_app(|app| {
+                let current_epoch = app.platform_state.focus.focus_epoch;
+                let crate::state::probe_admission::Admission::Accept(accepted) =
+                    ticket.admit(current_epoch)
+                else {
+                    log::debug!("[FocusProbe] epoch rejected (focus changed since probe spawn)");
+                    return;
+                };
                 app.apply_focus_probe(
                     probe,
                     probe_started_ms,
@@ -225,7 +233,7 @@ impl Runtime {
                     last_focus_change_ms,
                     shadow_on,
                     active_ime_kind,
-                    focus_epoch_at_spawn,
+                    accepted,
                 );
             });
         });
@@ -701,12 +709,12 @@ impl Runtime {
         &mut self,
         effective: bool,
         tick_ms: crate::state::TickMs,
-        focus_epoch: crate::state::probe_admission::FocusEpoch,
+        accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
         if effective {
             self.platform_state.ime.reset_detect_state();
         }
-        self.platform_state.ime.write_focus_probe(effective, tick_ms, focus_epoch);
+        self.platform_state.ime.write_focus_probe(effective, tick_ms, accepted);
     }
 }
 
@@ -747,18 +755,10 @@ impl Runtime {
         last_focus_change_ms: u64,
         shadow_on: bool,
         active_ime_kind: crate::tsf::observer::ActiveImeKind,
-        focus_epoch_at_spawn: u64,
+        accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
-        // エポック照合: spawn 後にフォーカスが変わっていれば probe 全体を棄却する。
-        // 仮想デスクトップ切替中の経由ウィンドウが stale な FocusProbe を送り込む問題を防ぐ。
-        let current_epoch = self.platform_state.focus.focus_epoch;
-        if current_epoch != focus_epoch_at_spawn {
-            log::debug!(
-                "[FocusProbe] epoch rejected: {focus_epoch_at_spawn} → {current_epoch} \
-                 (focus changed since probe spawn)"
-            );
-            return;
-        }
+        // epoch 照合は呼び出し元 (kp_stage_focus_probe の with_app 内) で完了済み。
+        // ここではキャプチャ済みの AcceptedObservation をそのまま使う。
 
         let now_tick_ms = crate::state::TickMs(hook::current_tick_ms());
         let probe_age_ms = now_tick_ms.saturating_sub(probe_started_ms);
@@ -790,14 +790,14 @@ impl Runtime {
             if !effective && signals.any() {
                 Some(signals.primary_reason())
             } else {
-                self.apply_effective_ime(effective, now_tick_ms, focus_epoch_at_spawn);
+                self.apply_effective_ime(effective, now_tick_ms, accepted);
                 None
             }
         } else {
             // TsfNative/Imm32Unavailable: IMM32 非対応のため probe は常に None を返す。
             // shadow の apply 値を代替観測として focus_probe スロットに記録する。
             if probe.is_japanese_ime {
-                self.apply_effective_ime(shadow_on, now_tick_ms, focus_epoch_at_spawn);
+                self.apply_effective_ime(shadow_on, now_tick_ms, accepted);
             }
             None
         };
@@ -900,14 +900,15 @@ impl Runtime {
         // read_ime_state_full_async で child hwnd を正確に読み、High confidence 観測として記録する。
         // これにより FocusProbe (Low) が誤って false を返しても derive_open() で正しく上書きされる。
         //
-        // エポック照合: spawn 後にフォーカスが変わった場合は棄却する。apply_focus_probe 冒頭の
-        // epoch チェックを通過しているため focus_epoch_at_spawn は現在のエポックと等しいことが保証済み。
+        // エポック照合: FocusProbe の admit() 済み epoch を引き継ぐ。
+        // apply_focus_probe の呼び出し前に epoch チェックを通過しているため
+        // accepted.focus_epoch は現在の epoch と等しいことが保証済み。
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
         ) && probe.is_japanese_ime {
             let ticket = crate::state::probe_admission::ImmLikeTicket {
-                focus_epoch: focus_epoch_at_spawn,
+                focus_epoch: accepted.focus_epoch,
             };
             win32_async::spawn_local(async move {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
@@ -915,19 +916,17 @@ impl Runtime {
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
                         let current_epoch = app.platform_state.focus.focus_epoch;
-                        if let crate::state::probe_admission::Admission::Reject(reason) =
+                        let crate::state::probe_admission::Admission::Accept(inner_accepted) =
                             ticket.admit(current_epoch)
-                        {
+                        else {
                             log::debug!(
-                                "[ImmCrossProbe] epoch rejected: {reason} \
-                                 (focus changed since probe spawn)"
+                                "[ImmCrossProbe] epoch rejected (focus changed since probe spawn)"
                             );
                             return;
-                        }
+                        };
                         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
                         // ON/OFF: High confidence (ImmCrossProbe source)
-                        // ticket.focus_epoch は admit() 照合済みのエポック（= current_epoch と一致）
-                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms, ticket.focus_epoch);
+                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
                         log::debug!(
                             "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
                         );

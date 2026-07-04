@@ -84,10 +84,37 @@ pub struct ImmLikeTicket {
     pub focus_epoch: FocusEpoch,
 }
 
+/// 受理済み観測のトークン。プライベートコンストラクタにより admission を通過した証明になる。
+///
+/// `write_*` 関数はこの型を受け取ることで、コンパイラレベルで
+/// "admission を通らない write" を防止する。
+///
+/// - 非同期 probe: `ImmLikeTicket::admit()` → `Admission::Accept(AcceptedObservation)`
+/// - 同期 probe: `AcceptedObservation::for_sync(epoch)` で直接構築（シングルスレッドのため常に有効）
+#[derive(Debug, Clone, Copy)]
+pub struct AcceptedObservation {
+    /// 受理時のフォーカスエポック（診断・derive_open フィルタ用）
+    pub focus_epoch: FocusEpoch,
+    /// プライベートフィールドにより外部から直接構築不可。
+    _private: (),
+}
+
+impl AcceptedObservation {
+    /// 同期プローブ専用コンストラクタ。
+    ///
+    /// シングルスレッド実行のため、spawn 〜 complete 間にフォーカスが変わることは
+    /// ない（epoch mismatch 不可）。epoch は観測の来歴記録・epoch フィルタ用。
+    #[must_use]
+    pub fn for_sync(focus_epoch: FocusEpoch) -> Self {
+        Self { focus_epoch, _private: () }
+    }
+}
+
 /// プローブ受理/棄却の判定結果
 #[derive(Debug)]
 pub enum Admission {
-    Accept,
+    /// 受理。`AcceptedObservation` トークンを持つ。
+    Accept(AcceptedObservation),
     Reject(RejectReason),
 }
 
@@ -125,6 +152,6 @@ impl ImmLikeTicket {
                 current: current_epoch,
             });
         }
-        Admission::Accept
+        Admission::Accept(AcceptedObservation { focus_epoch: current_epoch, _private: () })
     }
 }

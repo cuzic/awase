@@ -229,6 +229,7 @@ impl Runtime {
                     from: None,
                     to: new_hwnd,
                     profile: crate::state::ime_event::ImePolicyProfile::from(new_profile),
+                    focus_epoch: self.platform_state.focus.focus_epoch,
                 },
                 tick_ms,
             );
@@ -353,18 +354,17 @@ impl Runtime {
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
                         let current_epoch = app.platform_state.focus.focus_epoch;
-                        if let crate::state::probe_admission::Admission::Reject(reason) =
+                        let crate::state::probe_admission::Admission::Accept(accepted) =
                             ticket.admit(current_epoch)
-                        {
+                        else {
                             log::debug!(
-                                "[ImmCrossProbe/focus] epoch rejected: {reason} \
+                                "[ImmCrossProbe/focus] epoch rejected \
                                  (transient window — focus changed since probe spawn)"
                             );
                             return;
-                        }
+                        };
                         let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
-                        // ticket.focus_epoch は admit() 照合済みのエポック（= current_epoch と一致）
-                        app.platform_state.ime.write_imm_cross_probe(open, now_tick, ticket.focus_epoch);
+                        app.platform_state.ime.write_imm_cross_probe(open, now_tick, accepted);
                         log::debug!(
                             "[ImmCrossProbe/focus] child-hwnd IME={open} → High confidence 観測記録"
                         );

@@ -286,7 +286,7 @@ impl ImeModel {
                 self.observations
                     .update_drift(self.desired_open, open, envelope.time.monotonic);
             }
-            ImeEvent::FocusChanged { profile, to, .. } => {
+            ImeEvent::FocusChanged { profile, to, focus_epoch, .. } => {
                 // Step 1.5/5: policy 確定 → observation 評価の順序ルール。
                 // FocusChanged を受けた時点で policy を更新し、以降の observation は
                 // 新しい policy で評価される。
@@ -294,7 +294,9 @@ impl ImeModel {
                 // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
-                self.observations.clear_on_focus_change();
+                // 新しい epoch を store に伝える。derive_open() はこれ以降、
+                // 古い epoch の ImmCrossProbe / FocusProbe を無視する。
+                self.observations.clear_on_focus_change(focus_epoch);
                 log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied = AppliedImeState::Unknown;
                 // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
@@ -494,6 +496,7 @@ mod tests {
                 from: None,
                 to: HwndId::NULL,
                 profile: ImePolicyProfile::ImmCross,
+                focus_epoch: seq,
             },
         )
     }

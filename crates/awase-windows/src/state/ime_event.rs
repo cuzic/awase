@@ -231,6 +231,9 @@ pub enum ImeEvent {
         from: Option<HwndId>,
         to: HwndId,
         profile: ImePolicyProfile,
+        /// インクリメント後のフォーカスエポック。
+        /// reducer が `ObservationStore::current_focus_epoch` を更新するために使う。
+        focus_epoch: crate::state::probe_admission::FocusEpoch,
     },
 
     /// Chord transaction の開始 (Ctrl+無変換 押下時等)

@@ -141,6 +141,11 @@ pub struct ObservationStore {
     pub per_source: PerSourceObservations,
     /// desired との乖離追跡
     pub drift: Option<ImeDrift>,
+    /// 現在のフォーカスエポック。`FocusChanged` イベントで更新される。
+    ///
+    /// `derive_open()` が `ImmCrossProbe` / `FocusProbe` 観測を epoch フィルタする際に参照する。
+    /// これにより、stale な高信頼観測が意思決定に使われることを防ぐ。
+    pub current_focus_epoch: FocusEpoch,
 }
 
 impl ObservationStore {
@@ -151,9 +156,13 @@ impl ObservationStore {
     }
 
     /// 全ソースを clear する (フォーカス変更時用)。drift も clear。
-    pub fn clear_on_focus_change(&mut self) {
+    ///
+    /// `new_epoch` には `FocusStore::focus_epoch` のインクリメント後の値を渡す。
+    /// これ以降 `derive_open()` は古い epoch の ImmCrossProbe / FocusProbe を無視する。
+    pub fn clear_on_focus_change(&mut self, new_epoch: FocusEpoch) {
         self.per_source.clear_all();
         self.drift = None;
+        self.current_focus_epoch = new_epoch;
     }
 
     /// desired と observed の乖離を更新する。
@@ -202,16 +211,33 @@ impl ObservationStore {
     ///
     /// `FRESH` を超えた観測は無視する。フォーカス変更時に `clear_on_focus_change()` が
     /// 呼ばれるため通常は問題にならないが、稀に残留する古い観測を排除するためのガード。
+    ///
+    /// ## Epoch フィルタ（ImmCrossProbe / FocusProbe のみ）
+    ///
+    /// これらの probe は async または first-key トリガーのため、フォーカス変更後に
+    /// 古いウィンドウの観測が混入するリスクがある。`current_focus_epoch` と照合し、
+    /// epoch が異なる観測を排除する。
+    /// GJI / ObserverPoll / TSF はイベント駆動または周期同期のため epoch フィルタ対象外。
     #[must_use]
     pub fn derive_open(&self, now: Instant) -> Option<bool> {
         const FRESH: Duration = Duration::from_millis(3000);
+        let current_epoch = self.current_focus_epoch;
+
         let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;
+
+        // epoch 照合が必要なソース（async/first-key トリガーのスナップショット probe）
+        let is_epoch_ok = |o: &ImeObservation| match o.source {
+            ObservationSource::ImmCrossProbe | ObservationSource::FocusProbe => {
+                o.focus_epoch == current_epoch
+            }
+            _ => true,
+        };
 
         // 1. High confidence: 単一ソースで即採用（最新のものを選ぶ）
         let high = self
             .per_source
             .iter()
-            .filter(|o| is_fresh(o) && o.confidence == ObservationConfidence::High)
+            .filter(|o| is_fresh(o) && is_epoch_ok(o) && o.confidence == ObservationConfidence::High)
             .max_by_key(|o| o.at);
         if let Some(obs) = high {
             return Some(obs.open);
@@ -221,7 +247,7 @@ impl ObservationStore {
         let mut true_count = 0u32;
         let mut false_count = 0u32;
         for obs in self.per_source.iter() {
-            if !is_fresh(obs) || obs.confidence < ObservationConfidence::Medium {
+            if !is_fresh(obs) || !is_epoch_ok(obs) || obs.confidence < ObservationConfidence::Medium {
                 continue;
             }
             if obs.open {
