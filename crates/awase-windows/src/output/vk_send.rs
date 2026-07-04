@@ -119,14 +119,19 @@ impl Output {
         }
 
         {
-            let now_ms = crate::hook::current_tick_ms();
-            let last_write_ms = crate::tsf::observer::gji_last_write_ms();
-            let write_ago = if last_write_ms == 0 {
-                "never".to_string()
+            let ime_suffix = if self.warmup_coord.needs_f2_probe() {
+                let now_ms = crate::hook::current_tick_ms();
+                let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+                let ago = if last_write_ms == 0 {
+                    "never".to_string()
+                } else {
+                    format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+                };
+                format!("ime=GJI last_write={ago}")
             } else {
-                format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+                "ime=MsIme".to_string()
             };
-            log::info!("[gji-obs] KeyInput(batched): romaji={romaji:?} last_gji_write={write_ago}");
+            log::info!("[key-output] KeyInput(batched): romaji={romaji:?} {ime_suffix}");
         }
 
         let WarmthContext {
@@ -345,14 +350,19 @@ impl Output {
         }
 
         {
-            let now_ms = crate::hook::current_tick_ms();
-            let last_write_ms = crate::tsf::observer::gji_last_write_ms();
-            let write_ago = if last_write_ms == 0 {
-                "never".to_string()
+            let ime_suffix = if self.warmup_coord.needs_f2_probe() {
+                let now_ms = crate::hook::current_tick_ms();
+                let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+                let ago = if last_write_ms == 0 {
+                    "never".to_string()
+                } else {
+                    format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+                };
+                format!("ime=GJI last_write={ago}")
             } else {
-                format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
+                "ime=MsIme".to_string()
             };
-            log::info!("[gji-obs] KeyInput(tsf): romaji={romaji:?} last_gji_write={write_ago}");
+            log::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
         }
 
         let WarmthContext {

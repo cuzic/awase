@@ -139,7 +139,7 @@ impl Runtime {
                 let obs = crate::observer::gji_observer::observe_gji_after_focus(
                     self.platform_state.focus.last_focus_change_ms,
                 );
-                log::debug!("[stage-observe] gji_result={:?}", obs.observer_poll_value);
+                log::debug!("[stage-observe] observer_poll={:?}", obs.observer_poll_value);
                 if let Some(v) = obs.observer_poll_value {
                     let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
                     self.platform_state.ime.write_observer_poll(v, tick_ms);
