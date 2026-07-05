@@ -4,6 +4,7 @@ members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker",
 [workspace.metadata.dylint]
 libraries = [
     { path = "lints/no_vk_as_scan" },
+    { path = "lints/ime_event_guard" },
 ]
 
 [package]

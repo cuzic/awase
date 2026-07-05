@@ -1,0 +1,10 @@
+warning: constructing `ImeEvent::PanicReset` outside its designated function (found in `reset_stale_thing_for_some_new_reason`) — this event bypasses confidence-gated observation and writes belief state directly; new call sites should be rare and deliberate
+  --> $DIR/main.rs:28:5
+   |
+LL |     ImeEvent::PanicReset { target: false } //~ WARN constructing `ImeEvent::PanicReset`
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(restricted_ime_event_construction)]` on by default
+
+warning: 1 warning emitted
+
