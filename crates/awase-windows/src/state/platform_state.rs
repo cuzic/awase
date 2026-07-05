@@ -585,51 +585,6 @@ impl ImeStateHub {
         }
     }
 
-    /// TsfNative cache miss 時に belief を安全デフォルト OFF に設定する。
-    ///
-    /// キャッシュがない（初回訪問または TTL 切れ）TsfNative ウィンドウへの入場時、
-    /// 前ウィンドウから carry-over された belief=true をそのまま引き継ぐと
-    /// GjiDirectStrategy が shadow_on=true 由来で VK_IME_ON をスキップし IME-OFF Engine-ON
-    /// になる可能性がある。安全デフォルトとして OFF に倒し、ユーザーが必要なら ON にする。
-    ///
-    /// 「観測が何もない」こと自体が根拠のため、`UserImeSetIntent`（ユーザー意図）を
-    /// 偽装せず `ObserverReported`（`HeuristicDefault`, Low confidence）として記録する。
-    /// `desired_open` は書き換えない。そのため後から Low confidence の実観測
-    /// （例: Imm32Unavailable/TsfNative での FocusProbe shadow フォールバック）が
-    /// 届けば `effective_open()` の `most_recent_trusted()` フォールバックが自動的に
-    /// それを優先し、この安全デフォルトを上書きする。
-    ///
-    /// `last_intent` は明示的にクリアする（`FocusChanged` が通常先に行うが、念のため）。
-    /// これにより `has_user_explicit_intent()` が false のままとなり、この推測が
-    /// `desired_open` として固定化されない。
-    ///
-    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
-    pub(crate) fn reset_to_off_for_tsf_native_cache_miss(&mut self, tick_ms: TickMs) {
-        if !self.belief.is_japanese_ime() {
-            return;
-        }
-        if !self.shadow_model.effective_open() {
-            log::debug!("[focus] TsfNative cache-miss: belief 既に OFF — リセット不要");
-            return;
-        }
-        log::info!(
-            "[focus] TsfNative cache-miss: 安全デフォルト OFF を Low confidence observation \
-             として記録 (desired_open は不変、実観測到着で上書き可能)"
-        );
-        let focus_epoch = self.shadow_model.observations.current_focus_epoch;
-        self.dispatch_event(
-            ImeEvent::ObserverReported {
-                open: false,
-                source: ObservationSource::HeuristicDefault,
-                hwnd: HwndId::NULL,
-                confidence: ObservationConfidence::Low,
-                focus_epoch,
-            },
-            tick_ms,
-        );
-        self.shadow_model.last_intent = None;
-    }
-
     /// Imm32Unavailable (Chrome/Teams 等) 入場時に stale な `desired_open=false` を IME ON へ寄せ直す。
     ///
     /// TsfNative と同様だが、Imm32Unavailable では awase が IME 状態を制御できないため

@@ -251,98 +251,63 @@ impl Runtime {
                 profile,
                 crate::focus::classify::AppImeProfile::Imm32Unavailable,
             );
+            // CASCADIA_HOSTING_WINDOW_CLASS 等は profile が Imm32Unavailable になるため
+            // `matches!(profile, TsfNative)` では取りこぼす。`class_names.rs` 参照。
+            let is_effectively_tsf = crate::focus::class_names::is_effectively_tsf_native(
+                profile,
+                &classified.class_name,
+            );
 
-            // Imm32Unavailable (Chrome/Teams 等) では awase が IME 状態を制御できないため
-            // キャッシュ値 false が前ウィンドウの carry-over である可能性がある。
-            // 「ユーザー明示の OFF」由来でない false は stale とみなして破棄する。
-            //
-            // Imm32Unavailable かつ TsfNative (Windows.UI.Input.InputSite.WindowClass 等) の
-            // 窓は、仮想デスクトップ切替アニメーション中に瞬間フォーカスが入ることがある。
-            // FocusTransition settle 期間中は from_explicit_off_intent=true のキャッシュも
-            // 破棄する。この settle 期間中は FocusChanged イベントで barrier が直前に設定
-            // されており、Engine の誤 deactivate（「IME-ON Engine-OFF」desync）を防ぐ。
-            let is_imm_broken_tsf_native_early = is_imm_broken
-                && crate::focus::class_names::is_tsf_native_window(&classified.class_name);
-            let stale_false_during_transition = is_imm_broken_tsf_native_early
-                && self
-                    .platform_state
-                    .ime
-                    .is_focus_transition_settling(std::time::Instant::now());
-            let stale_false_cache = is_imm_broken
-                && matches!(&cache_hit, Some(snap) if !snap.ime_on
-                    && (!snap.from_explicit_off_intent || stale_false_during_transition));
-            if stale_false_cache {
-                if stale_false_during_transition {
-                    log::info!(
-                        "[focus] Imm32Unavailable+TsfNative stale-false cache discarded \
-                         (FocusTransition settling — transient shell window) \
-                         — treating as cache miss"
-                    );
-                } else {
+            if is_effectively_tsf {
+                // ── TsfNative SSOT ──────────────────────────────────────────────
+                // awase が TSF 経由で完全制御できるため awase が SSOT として機能する。
+                // フォーカス変化では desired_open を変更しない（前窓での値を維持）。
+                // FocusChanged が既に applied=Unknown を設定済みのため、最初のキー入力で
+                // エンジンが SetOpen effect を生成 → dispatch_ime が desired_open を
+                // 窓へ apply する（push model）。
+                // VK_DBE_HIRAGANA / VK_DBE_ALPHANUMERIC は SET（VK_KANJI トグルでない）
+                // ため、既に正しい状態でも重複送出の副作用がない。
+                log::debug!("[focus] TsfNative/SSOT: cache restore スキップ — 最初のキー入力で dispatch_ime が apply");
+            } else {
+                // ── 純粋な Imm32Unavailable (Chrome/Edge 等) ────────────────────
+                // awase が IME 状態を直接制御できないため、キャッシュが唯一の根拠。
+                // 「ユーザー明示の OFF」由来でない false は stale とみなして破棄する。
+                let stale_false_cache = is_imm_broken
+                    && matches!(&cache_hit, Some(snap) if !snap.ime_on && !snap.from_explicit_off_intent);
+                if stale_false_cache {
                     log::debug!(
                         "[focus] Imm32Unavailable stale-false cache discarded \
                          (not from explicit user intent) — treating as cache miss"
                     );
                 }
-            }
-            let effective_cache = if stale_false_cache { None } else { cache_hit };
-            let effective_cache_miss = effective_cache.is_none();
-            self.platform_state
-                .ime
-                .apply_hwnd_cache_restore(effective_cache, tick_ms);
+                let effective_cache = if stale_false_cache { None } else { cache_hit };
+                let effective_cache_miss = effective_cache.is_none();
+                self.platform_state
+                    .ime
+                    .apply_hwnd_cache_restore(effective_cache, tick_ms);
 
-            // TsfNative / Imm32Unavailable プロファイルへの cache miss 入場では、
-            // 前ウィンドウの ime_on=false が carry over したまま IMM/poll で復旧できず
-            // Engine が活性化不能になる。stale を true へ寄せ直して trap を解く。
-            // ただし直近 10 秒以内に明示的 IME OFF にしていた場合はユーザーの意図を尊重する。
-            if effective_cache_miss
-                && matches!(
-                    profile,
-                    crate::focus::classify::AppImeProfile::TsfNative
-                        | crate::focus::classify::AppImeProfile::Imm32Unavailable,
-                )
-            {
-                let last_off_ms = pre_focus_explicit_off_ms;
-                let elapsed = tick_ms.saturating_sub(last_off_ms);
-                // CoreWindow (UWP/WinUI) は Imm32Unavailable でも TSF ネイティブ。
-                // Chrome/Edge と異なりキャッシュミス時は安全デフォルト OFF を適用する
-                // （Chrome は awase が制御できないため false→true 寄せが必要だが、
-                //  CoreWindow は TSF 経由で awase がキー注入するため true carry-over が有害）。
-                let is_imm_broken_tsf_native = is_imm_broken
-                    && crate::focus::class_names::is_tsf_native_window(&classified.class_name);
-                if last_off_ms > 0 && elapsed < 10_000 {
-                    log::debug!(
-                        "[focus] {} cache-miss: skip reset_stale — explicit IME OFF {elapsed}ms ago",
-                        if is_imm_broken { "Imm32Unavailable" } else { "TsfNative" },
-                    );
-                } else if is_imm_broken && !is_imm_broken_tsf_native {
-                    self.platform_state
-                        .ime
-                        .reset_stale_ime_on_for_imm_broken(tick_ms);
-                } else {
-                    // TsfNative cache miss (CoreWindow を含む): 前ウィンドウの belief true を
-                    // carry-over すると hiragana 直接注入が発生する。安全デフォルト OFF に倒す。
-                    // ただし FocusKind::NonText（タスクバー通知領域の CoreWindow 等）への
-                    // フォーカスはテキスト入力が行われないため、belief をリセットすると
-                    // VK_DBE_ALPHANUMERIC 送信で conv mode が破壊される。
-                    if classified.kind == FocusKind::NonText {
+                if effective_cache_miss {
+                    let last_off_ms = pre_focus_explicit_off_ms;
+                    let elapsed = tick_ms.saturating_sub(last_off_ms);
+                    if last_off_ms > 0 && elapsed < 10_000 {
                         log::debug!(
-                            "[focus] TsfNative/CoreWindow cache-miss: NonText \
-                             → belief リセットをスキップ (transient, conv 保護)"
+                            "[focus] Imm32Unavailable cache-miss: skip reset_stale \
+                             — explicit IME OFF {elapsed}ms ago",
                         );
                     } else {
                         self.platform_state
                             .ime
-                            .reset_to_off_for_tsf_native_cache_miss(tick_ms);
+                            .reset_stale_ime_on_for_imm_broken(tick_ms);
                     }
                 }
             }
         }
 
-        // `is_effectively_tsf_native` を使う（CASCADIA_HOSTING_WINDOW_CLASS 等は
-        // `AppImeProfile::from_class_name` の優先順位で `Imm32Unavailable` になり
-        // `matches!(profile, TsfNative)` では取りこぼすため。`class_names.rs` 参照）。
-        if crate::focus::class_names::is_effectively_tsf_native(
+        // Imm32Unavailable (Chrome 等) のみ: VK_KANJI はトグルのため、desired=true で
+        // キャッシュが ON なら applied=true に先同期して冗長な VK_KANJI を防ぐ。
+        // TsfNative は SSOT model: applied=Unknown のまま維持し、最初のキーで
+        // SetOpen が VK_DBE_HIRAGANA/ALPHANUMERIC (SET、トグルでない) を発行する。
+        if !crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
             self.platform.focus.class_name(),
         ) {
@@ -350,11 +315,8 @@ impl Runtime {
             if ime_on_now {
                 self.platform_state.ime.mirror_applied_open(true, tick_ms);
                 log::debug!(
-                    "[focus] TsfNative hard pre-sync applied=true (prevent spurious VK_KANJI from SetOpen(true))"
-                );
-            } else {
-                log::debug!(
-                    "[focus] TsfNative soft pre-sync: applied_open=None (allow override on first Ctrl+無変換)"
+                    "[focus] Imm32Unavailable hard pre-sync applied=true \
+                     (prevent spurious VK_KANJI on first character key)"
                 );
             }
         }
