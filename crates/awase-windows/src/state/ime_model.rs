@@ -282,6 +282,18 @@ impl ImeModel {
             .as_ref()
             .is_some_and(InputBarrier::is_focus_transition)
     }
+
+    /// フォーカス切替直後の settle 期間内（`settle_until` 未経過）かどうか。
+    ///
+    /// `is_focus_transition_pending` と異なり、barrier がまだ consume されていなくても
+    /// `settle_until` を過ぎていれば false を返す。Engine 由来の `SetOpen` 効果適用を
+    /// 一時的にフィルタするための判断に使う（`handle_engine_set_open` 参照）。
+    #[must_use]
+    pub fn is_focus_transition_settling(&self, now: Instant) -> bool {
+        self.input_barrier
+            .as_ref()
+            .is_some_and(|b| b.is_focus_transition_active(now))
+    }
 }
 
 impl Default for ImeModel {
@@ -1121,5 +1133,48 @@ mod tests {
             InputModeState::ObservedRomaji,
             "InputModeApplied(Skipped) は input_mode を変更しない"
         );
+    }
+
+    // is_focus_transition_settling: settle_until 前後での判定。
+
+    #[test]
+    fn is_focus_transition_settling_true_before_settle_until() {
+        let mut model = ImeModel::new();
+        let now = Instant::now();
+        model.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: HwndId(1),
+            started_seq: 1,
+            started_at: now,
+            settle_until: now + std::time::Duration::from_millis(100),
+        });
+        assert!(model.is_focus_transition_settling(now));
+        assert!(model.is_focus_transition_pending(), "barrier はまだ consume されていない");
+    }
+
+    #[test]
+    fn is_focus_transition_settling_false_after_settle_until() {
+        let mut model = ImeModel::new();
+        let now = Instant::now();
+        model.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: HwndId(1),
+            started_seq: 1,
+            started_at: now,
+            settle_until: now + std::time::Duration::from_millis(100),
+        });
+        let later = now + std::time::Duration::from_millis(200);
+        assert!(
+            !model.is_focus_transition_settling(later),
+            "settle_until 経過後は settling ではない"
+        );
+        assert!(
+            model.is_focus_transition_pending(),
+            "settle_until 経過だけでは barrier は consume されない（別途 consume_focus_barrier が必要）"
+        );
+    }
+
+    #[test]
+    fn is_focus_transition_settling_false_when_no_barrier() {
+        let model = ImeModel::new();
+        assert!(!model.is_focus_transition_settling(Instant::now()));
     }
 }

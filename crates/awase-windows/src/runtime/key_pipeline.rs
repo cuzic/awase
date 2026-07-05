@@ -82,6 +82,14 @@ impl Runtime {
             }
         }
 
+        // kp_stage_focus_probe が FocusTransition barrier を consume する前に
+        // settle 状態をスナップショットしておく（post_decision で使う。
+        // 消費後に読むと常に false になり判断できないため）。
+        let focus_transition_was_pending = self
+            .platform_state
+            .ime
+            .is_focus_transition_settling(std::time::Instant::now());
+
         self.kp_stage_focus_probe(&mut event);
         self.kp_stage_idle_conv_check(&event);
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
@@ -174,7 +182,7 @@ impl Runtime {
                 decision: crate::journal::DecisionKind::from_decision(&decision),
             });
 
-        self.kp_stage_post_decision(&decision, &event);
+        self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
 
         // Ctrl 系 KeyUp で chord barrier を解除する。
         // chord 状態の判断は ImeStateHub.on_ctrl_key_up() に集約（パイプラインは VK 分類のみ担う）。
@@ -328,7 +336,7 @@ impl Runtime {
                         let generation = self.platform_state.ime.event_log.next_seq();
                         self.platform_state
                             .ime
-                            .handle_engine_set_open(true, false, generation, now_tick);
+                            .handle_engine_set_open(true, false, false, generation, now_tick);
                         log::info!(
                             "[idle-conv-check] TsfNative: カタカナ+shadow=OFF → IME ON 同期 \
                              (conv=0x{conv:08X} 不変)"
@@ -361,7 +369,7 @@ impl Runtime {
                     let generation = self.platform_state.ime.event_log.next_seq();
                     self.platform_state
                         .ime
-                        .handle_engine_set_open(true, false, generation, now_tick);
+                        .handle_engine_set_open(true, false, false, generation, now_tick);
                     log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
                 }
 
@@ -375,7 +383,7 @@ impl Runtime {
                     let generation = self.platform_state.ime.event_log.next_seq();
                     self.platform_state
                         .ime
-                        .handle_engine_set_open(true, false, generation, now_tick);
+                        .handle_engine_set_open(true, false, false, generation, now_tick);
                     log::info!(
                         "[idle-conv-check] TsfNative: belief romaji 回復 + shadow=ON → engine 再起動"
                     );
@@ -393,7 +401,7 @@ impl Runtime {
                     let generation = self.platform_state.ime.event_log.next_seq();
                     self.platform_state
                         .ime
-                        .handle_engine_set_open(false, false, generation, now_tick);
+                        .handle_engine_set_open(false, false, false, generation, now_tick);
                     // conv=0x10 (ROMAN bit) が観測済み → IME-ON 確定。direct belief で already_matched をバイパス。
                     let belief = crate::output::OpenBelief { effective_open: true, confident: true };
                     let outcome = self.platform.apply_ime_open_with_belief(false, None, belief);
@@ -413,7 +421,7 @@ impl Runtime {
             let generation = self.platform_state.ime.event_log.next_seq();
             self.platform_state
                 .ime
-                .handle_engine_set_open(true, false, generation, now_tick);
+                .handle_engine_set_open(true, false, false, generation, now_tick);
             log::info!(
                 "[idle-conv-check] TsfNative: {}切替検出 + shadow=OFF → IME ON 同期",
                 if conv & crate::imm::IME_CMODE_KATAKANA != 0 { "カタカナ" } else { "ひらがな" }
@@ -533,7 +541,15 @@ impl Runtime {
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
-    fn kp_stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
+    ///
+    /// `focus_transition_was_pending`: この event 処理開始時点で FocusTransition
+    /// barrier が settle 期間内だったか（`kp_run_inner` でのスナップショット）。
+    fn kp_stage_post_decision(
+        &mut self,
+        decision: &awase::engine::Decision,
+        event: &RawKeyEvent,
+        focus_transition_was_pending: bool,
+    ) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.event_log.next_seq();
@@ -541,6 +557,7 @@ impl Runtime {
             let applied = self.platform_state.ime.handle_engine_set_open(
                 new_ime_on,
                 event.modifier_snapshot.ctrl,
+                focus_transition_was_pending,
                 generation,
                 tick_ms,
             );
