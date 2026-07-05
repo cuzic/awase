@@ -15,7 +15,7 @@
 //! 代わりに `PanicReset` / `HwndCacheRestored` という専用イベントが追加された。
 //! このテストはその「専用イベントが専用の呼び出し元だけから発行され続けているか」を
 //! 監視する第二の防衛線。第一の防衛線は dylint lint
-//! (`lints/ime_belief_lints`, `cargo dylint --lib ime_belief_lints` で実行)。
+//! (`lints/ime_event_guard`, `cargo dylint --lib ime_event_guard -p awase-windows` で実行)。
 //!
 //! この形式のテストは「壊れたら教えてくれる」ためのものであり、将来的に
 //! 正当な理由で許可数が増える場合はこのファイルの定数を更新すること。
@@ -106,4 +106,56 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
              awase 自身の能動的な訂正には `InputModeApplied` を使ってください。"
         );
     }
+}
+
+/// `ObservationSource::HeuristicDefault` は観測データが存在しない状況での安全デフォルト推測に限定される。
+///
+/// 現在の designated 使用箇所（すべて Low confidence で `desired_open` を書き換えない）:
+/// - `reset_to_off_for_tsf_native_cache_miss`: TsfNative キャッシュミス時の安全デフォルト OFF
+/// - `reset_stale_ime_on_for_imm_broken`: Imm32Unavailable 入場時の安全デフォルト ON
+///
+/// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている。
+/// 「観測がない」状況を `UserImeSetIntent` で偽装することは禁止（confidence ガードをバイパスするため）。
+/// 新しい使用箇所を追加する場合は、本当に「観測データが存在しない」状況かを確認し、
+/// `UserImeSetIntent` ではなく `ObserverReported` + Low confidence を使う理由を明記すること。
+#[test]
+fn heuristic_default_observation_is_limited_to_designated_methods() {
+    let path = "src/state/platform_state.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production.matches("ObservationSource::HeuristicDefault").count();
+    assert_eq!(
+        count, 2,
+        "{path} 内の `ObservationSource::HeuristicDefault` 使用箇所数が想定(2)と異なります(実際: {count})。\n\
+         想定: reset_to_off_for_tsf_native_cache_miss (TsfNative cache-miss → OFF) と \
+         reset_stale_ime_on_for_imm_broken (Imm32Unavailable entry → ON) の2箇所のみ。\n\
+         新しい安全デフォルト推測を追加する場合は `UserImeSetIntent` を使わず \
+         `ObserverReported + ObservationConfidence::Low` を使い、このカウントを更新してください。"
+    );
+}
+
+/// `UserImeSetIntent` の dispatch は3つの typed writer 経由に限定される。
+///
+/// - `write_sync_key`        → `UserIntentSource::SyncKey`
+/// - `write_physical_key`    → `UserIntentSource::PhysicalImeKey`
+/// - `write_set_open_request`→ `UserIntentSource::Command`
+///
+/// 外部コードはこれらのメソッドを介して `UserImeSetIntent` を発行すること。
+/// `dispatch_event(ImeEvent::UserImeSetIntent { .. })` を直接呼ぶのは
+/// typed writer の実装内に限る。
+/// 新しい `UserIntentSource` variant を追加して dispatch する場合は
+/// 対応する typed writer メソッドを追加し、このカウントを更新すること。
+#[test]
+fn user_intent_source_construction_is_limited_to_typed_writers() {
+    let path = "src/state/platform_state.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production.matches("source: UserIntentSource::").count();
+    assert_eq!(
+        count, 3,
+        "{path} 内の `source: UserIntentSource::` リテラル構築箇所数が想定(3)と異なります(実際: {count})。\n\
+         想定: write_sync_key / write_physical_key / write_set_open_request の3箇所のみ。\n\
+         `UserImeSetIntent` は typed writer 経由で発行し、直接 dispatch_event() を呼ばないこと。\n\
+         新しい UserIntentSource variant を追加する場合は typed writer メソッドを追加してください。"
+    );
 }
