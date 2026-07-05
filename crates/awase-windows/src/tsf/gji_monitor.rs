@@ -261,10 +261,14 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
     if let Some((ref mgr, ref profiles)) = tsf_ctx {
         super::tip_detector::dump_profiles(mgr, profiles);
         super::tip_detector::discover_and_cache_gji_clsid(mgr, profiles);
-        // 起動時点の IME 種別を即時取得
+        // 起動時点の IME 種別を即時取得し、WM_IME_KIND_CHANGED を必ず発行して
+        // warmup 戦略（GjiFsm vs MsImeStrategy）を初期化する。
+        // ポーリングループは「変化時のみ」発行するため、MS-IME 環境では起動後に
+        // WM_IME_KIND_CHANGED が届かず GjiFsm が残り続けるバグを防ぐ。
         if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
             TSF_OBS.set_tsf_active_kind(kind);
             log::info!("[tip-detect] initial IME kind: {kind:?}");
+            crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
         }
     } else {
         log::warn!("[tip-detect] TSF COM 初期化失敗 — CLSID ベース IME 判定を無効化");
