@@ -255,13 +255,35 @@ impl Runtime {
             // Imm32Unavailable (Chrome/Teams 等) では awase が IME 状態を制御できないため
             // キャッシュ値 false が前ウィンドウの carry-over である可能性がある。
             // 「ユーザー明示の OFF」由来でない false は stale とみなして破棄する。
+            //
+            // Imm32Unavailable かつ TsfNative (Windows.UI.Input.InputSite.WindowClass 等) の
+            // 窓は、仮想デスクトップ切替アニメーション中に瞬間フォーカスが入ることがある。
+            // FocusTransition settle 期間中は from_explicit_off_intent=true のキャッシュも
+            // 破棄する。この settle 期間中は FocusChanged イベントで barrier が直前に設定
+            // されており、Engine の誤 deactivate（「IME-ON Engine-OFF」desync）を防ぐ。
+            let is_imm_broken_tsf_native_early = is_imm_broken
+                && crate::focus::class_names::is_tsf_native_window(&classified.class_name);
+            let stale_false_during_transition = is_imm_broken_tsf_native_early
+                && self
+                    .platform_state
+                    .ime
+                    .is_focus_transition_settling(std::time::Instant::now());
             let stale_false_cache = is_imm_broken
-                && matches!(&cache_hit, Some(snap) if !snap.ime_on && !snap.from_explicit_off_intent);
+                && matches!(&cache_hit, Some(snap) if !snap.ime_on
+                    && (!snap.from_explicit_off_intent || stale_false_during_transition));
             if stale_false_cache {
-                log::debug!(
-                    "[focus] Imm32Unavailable stale-false cache discarded \
-                     (not from explicit user intent) — treating as cache miss"
-                );
+                if stale_false_during_transition {
+                    log::info!(
+                        "[focus] Imm32Unavailable+TsfNative stale-false cache discarded \
+                         (FocusTransition settling — transient shell window) \
+                         — treating as cache miss"
+                    );
+                } else {
+                    log::debug!(
+                        "[focus] Imm32Unavailable stale-false cache discarded \
+                         (not from explicit user intent) — treating as cache miss"
+                    );
+                }
             }
             let effective_cache = if stale_false_cache { None } else { cache_hit };
             let effective_cache_miss = effective_cache.is_none();
