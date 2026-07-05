@@ -8,8 +8,9 @@ All notable changes to this project will be documented in this file.
 
 ### 新機能
 
-- **FocusEpoch + ImmLikeTicket による観測受理層 (ObservationAdmission) を新設** ([604cf99](https://github.com/cuzic/awase/commit/604cf99), [67e63ad](https://github.com/cuzic/awase/commit/67e63ad), [1345d95](https://github.com/cuzic/awase/commit/1345d95)) (ADR-077)
+- **FocusEpoch + ImmLikeTicket による観測受理層 (ObservationAdmission) を新設** ([604cf99](https://github.com/cuzic/awase/commit/604cf99), [569bf0f](https://github.com/cuzic/awase/commit/569bf0f), [67e63ad](https://github.com/cuzic/awase/commit/67e63ad), [1345d95](https://github.com/cuzic/awase/commit/1345d95)) (ADR-077)
   - フォーカス遷移をエポックで管理し、古い観測を構造的に棄却することで ImmCross アプリの誤観測連鎖を根本から防止
+  - ImmCrossProbe に shadow grace 抑制を追加し、全パスでエポック照合を徹底
   - 棄却カウンタとダンプ時ログを追加し観測受理状況を可視化
 - **設定画面で親指キーをドロップダウンで選択できるように変更** ([9e1621a](https://github.com/cuzic/awase/commit/9e1621a))
   - 親指左・親指右キーの割り当てをドロップダウン UI から直接変更可能になり、設定変更を即時反映
@@ -22,8 +23,8 @@ All notable changes to this project will be documented in this file.
   - IME ON 直後の ObservedKana 観測を ImmCross アプリで抑制し、エンジンが誤って非活性化されるケースを解消
 - **MS-IME + ImmCross アプリで IME ON 時に romaji モードが維持されない問題を修正** ([91631a0](https://github.com/cuzic/awase/commit/91631a0), [1969cd3](https://github.com/cuzic/awase/commit/1969cd3), [4c02f2e](https://github.com/cuzic/awase/commit/4c02f2e))
   - MS-IME で IME ON 前に ROMAN モードを強制し、ObservedKana 時は romaji 強制をスキップ
-- **IME 種別判定をプロセス存在からCLSID API に統一** ([ce252fe](https://github.com/cuzic/awase/commit/ce252fe))
-  - GJI 固定ポリシーを廃止し IME 動的切り替えに対応
+- **IME 種別判定をプロセス存在からCLSID API に統一し IME 動的切り替えに対応** ([e6456b2](https://github.com/cuzic/awase/commit/e6456b2), [ce252fe](https://github.com/cuzic/awase/commit/ce252fe))
+  - GJI 固定ポリシーを廃止し、実行時に CLSID API で IME 種別を判定することで GJI/MS-IME の動的切り替えをサポート
 - **設定画面起動時に黒いコンソールウィンドウが表示される問題を修正** ([49d4f31](https://github.com/cuzic/awase/commit/49d4f31))
 - **設定画面から親指キーを変更した際に即時反映されるよう修正** ([6cd1178](https://github.com/cuzic/awase/commit/6cd1178))
 - **HwndCache 由来 intent では即時ドリフト補正しないよう修正** ([d418035](https://github.com/cuzic/awase/commit/d418035))
@@ -419,7 +420,9 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
 
-[Unreleased]: https://github.com/cuzic/awase/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/cuzic/awase/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/cuzic/awase/compare/v1.7.1...v1.8.0
+[1.7.1]: https://github.com/cuzic/awase/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/cuzic/awase/compare/v1.6.0...v1.7.0
 [1.2.0]: https://github.com/cuzic/awase/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/cuzic/awase/compare/v1.1.0...v1.1.1
