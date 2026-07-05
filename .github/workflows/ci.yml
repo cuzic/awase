@@ -18,10 +18,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --lib
-      # awase-windows は Windows 専用コードだが、architecture_guard / golden_scenarios は
-      # プラットフォーム非依存（Win32 API を呼ばない state/ 層のみ検証）なため Linux でも走る。
-      # --lib は含めない: tsf/ 配下に既存の無関係な壊れたテストがあり Windows でのみ解決する。
+      # awase-windows は Windows 専用コードだが、state/ 層のユニットテストと
+      # architecture_guard / golden_scenarios はプラットフォーム非依存なため Linux でも走る。
+      - run: cargo test --lib -p awase-windows
       - run: cargo test -p awase-windows --test architecture_guard --test golden_scenarios
+
+  windows-cross-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get install -y gcc-mingw-w64-x86-64
+      # Windows GNU ターゲット向けにテストバイナリをビルド（実行はしない）。
+      # Linux では検出できない Windows 固有の型エラー・API 不一致をローカル CI で早期発見する。
+      # -D warnings で warning も CI エラーとして扱い、混入を防ぐ。
+      - run: RUSTFLAGS="-D warnings" cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows
 
   clippy:
     runs-on: ubuntu-latest
