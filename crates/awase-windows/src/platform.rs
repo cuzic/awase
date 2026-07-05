@@ -329,18 +329,7 @@ impl WindowsPlatform {
                                 );
                                 self.output.send_f22_f21_reinit();
                             } else {
-                                log::debug!(
-                                    "[gji-fsm] Unicode long-cold StartProbe: VK_IME_ON poke + UnicodeColdWarmupFsm \
-                                     ({} chars deferred)",
-                                    deferred.len()
-                                );
-                                let cold_seq = probe_id.0;
-                                let baseline = crate::tsf::observer::gji_write_bytes();
-                                self.output.send_unicode_cold_warmup_keys(cold_seq);
-                                let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
-                                    cold_seq, deferred, baseline,
-                                );
-                                self.install_pending_tsf_and_set_timer(Box::new(fsm));
+                                self.start_unicode_cold_warmup(probe_id.0, deferred);
                             }
                         }
                         use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
@@ -614,6 +603,46 @@ impl WindowsPlatform {
             crate::output::TimerCommand::Kill { id } => self.timer.kill(id),
         }
     }
+
+    // ── Unicode cold-start warmup ヘルパー ────────────────────────────────
+
+    /// Unicode long-cold warm-up: 飛行中 FSM があれば `deferred` を追記、なければ新規 FSM を生成する。
+    ///
+    /// `send_keys()` と `dispatch_gji_response()` の両方から呼ぶ共通起点。
+    /// 飛行中 FSM への追記に成功した場合は VK_IME_ON / VK_A+BS を再送しない。
+    fn start_unicode_cold_warmup(&mut self, cold_seq: u32, deferred: Vec<char>) {
+        if self.output.try_push_unicode_chars_to_pending(&deferred) {
+            log::debug!(
+                "[unicode-cold-warmup] {} chars を飛行中 FSM に追記 (新規 FSM/VK_A+BS 送信スキップ)",
+                deferred.len()
+            );
+            return;
+        }
+        let baseline = crate::tsf::observer::gji_write_bytes();
+        self.output.send_unicode_cold_warmup_keys(cold_seq);
+        log::info!(
+            "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
+             VK_IME_ON+VK_A+BS → {} chars defer",
+            deferred.len()
+        );
+        let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
+            cold_seq, deferred, baseline,
+        );
+        self.install_pending_tsf_and_set_timer(Box::new(fsm));
+    }
+
+    /// `output` の Unicode cold deferred chars を取り出し、warm-up FSM を起動する。
+    ///
+    /// `send_keys()` の Unicode cold-start パスで `output.send_keys()` の直後に呼ぶ。
+    /// deferred が空なら何もしない。
+    fn flush_unicode_cold_deferred_chars(&mut self) {
+        let deferred = self.output.take_unicode_cold_deferred();
+        if deferred.is_empty() {
+            return;
+        }
+        let cold_seq = self.output.composition.cold_start_count();
+        self.start_unicode_cold_warmup(cold_seq, deferred);
+    }
 }
 
 impl PlatformRuntime for WindowsPlatform {
@@ -633,42 +662,16 @@ impl PlatformRuntime for WindowsPlatform {
         // Unicode モードでは send_romaji_as_unicode() が GjiFsm::KeyInput を発行しないため
         // GjiFsm が StartProbe を emit することがない。そのため dispatch_gji_response() を
         // 経由せず、ここで直接 FSM をインストールする。
-        let unicode_cold_defer = self.output.injection_mode == crate::output::InjectionMode::Unicode
+        let needs_unicode_cold_warmup = self.output.injection_mode
+            == crate::output::InjectionMode::Unicode
             && self.output.gji_is_next_key_long_cold();
-        if unicode_cold_defer {
+        if needs_unicode_cold_warmup {
             self.output.set_unicode_cold_defer(true);
         }
         self.output.send_keys(actions);
-        if unicode_cold_defer {
+        if needs_unicode_cold_warmup {
             self.output.set_unicode_cold_defer(false);
-            let deferred = self.output.take_unicode_cold_deferred();
-            if !deferred.is_empty() {
-                // output.send_keys() で chars が defer された。
-                //
-                // 既に飛行中の UnicodeColdWarmupFsm があれば chars を追記するだけにする。
-                // 新しい FSM を作って上書きすると旧 FSM の deferred_chars が消失するため。
-                if self.output.try_push_unicode_chars_to_pending(&deferred) {
-                    log::debug!(
-                        "[unicode-cold-warmup] {} chars を飛行中 FSM に追記 (新規 FSM/VK_A+BS 送信スキップ)",
-                        deferred.len()
-                    );
-                } else {
-                    // VK_IME_ON + VK_A+BS（犠牲キー）で GJI を起動し、gji_write_bytes 増加を確認してから
-                    // deferred chars を送信する（VK_A が GJI composition を走らせ write_bytes が増える）。
-                    let cold_seq = self.output.composition.cold_start_count();
-                    let baseline = crate::tsf::observer::gji_write_bytes();
-                    self.output.send_unicode_cold_warmup_keys(cold_seq);
-                    log::info!(
-                        "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
-                         VK_IME_ON+VK_A+BS → {} chars defer",
-                        deferred.len()
-                    );
-                    let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
-                        cold_seq, deferred, baseline,
-                    );
-                    self.install_pending_tsf_and_set_timer(Box::new(fsm));
-                }
-            }
+            self.flush_unicode_cold_deferred_chars();
         }
         // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
         // Vec で取り出すのは、1回の send_keys で複数文字を送る際に全 Response（StartProbe 含む）を
