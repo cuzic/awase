@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-05
+
+### 新機能
+
+- **FocusEpoch + ImmLikeTicket による観測受理層 (ObservationAdmission) を新設** ([604cf99](https://github.com/cuzic/awase/commit/604cf99), [67e63ad](https://github.com/cuzic/awase/commit/67e63ad), [1345d95](https://github.com/cuzic/awase/commit/1345d95)) (ADR-077)
+  - フォーカス遷移をエポックで管理し、古い観測を構造的に棄却することで ImmCross アプリの誤観測連鎖を根本から防止
+  - 棄却カウンタとダンプ時ログを追加し観測受理状況を可視化
+- **設定画面で親指キーをドロップダウンで選択できるように変更** ([9e1621a](https://github.com/cuzic/awase/commit/9e1621a))
+  - 親指左・親指右キーの割り当てをドロップダウン UI から直接変更可能になり、設定変更を即時反映
+- **ウェブサイトから MSI/ZIP を直接ダウンロード可能に** ([877b1af](https://github.com/cuzic/awase/commit/877b1af), [15c6ff5](https://github.com/cuzic/awase/commit/15c6ff5), [21eadb1](https://github.com/cuzic/awase/commit/21eadb1))
+  - awase.cc から GitHub Releases の最新アセットを直接ダウンロードできるリンクを追加
+
+### バグ修正
+
+- **ImmCross アプリで IME ON 後にかなモードのままエンジンが停止する問題を修正** ([81f6576](https://github.com/cuzic/awase/commit/81f6576), [e4378c6](https://github.com/cuzic/awase/commit/e4378c6))
+  - IME ON 直後の ObservedKana 観測を ImmCross アプリで抑制し、エンジンが誤って非活性化されるケースを解消
+- **MS-IME + ImmCross アプリで IME ON 時に romaji モードが維持されない問題を修正** ([91631a0](https://github.com/cuzic/awase/commit/91631a0), [1969cd3](https://github.com/cuzic/awase/commit/1969cd3), [4c02f2e](https://github.com/cuzic/awase/commit/4c02f2e))
+  - MS-IME で IME ON 前に ROMAN モードを強制し、ObservedKana 時は romaji 強制をスキップ
+- **IME 種別判定をプロセス存在からCLSID API に統一** ([ce252fe](https://github.com/cuzic/awase/commit/ce252fe))
+  - GJI 固定ポリシーを廃止し IME 動的切り替えに対応
+- **設定画面起動時に黒いコンソールウィンドウが表示される問題を修正** ([49d4f31](https://github.com/cuzic/awase/commit/49d4f31))
+- **設定画面から親指キーを変更した際に即時反映されるよう修正** ([6cd1178](https://github.com/cuzic/awase/commit/6cd1178))
+- **HwndCache 由来 intent では即時ドリフト補正しないよう修正** ([d418035](https://github.com/cuzic/awase/commit/d418035))
+- **XamlExplorerHostIslandWindow を NonText に分類** ([a8d9a00](https://github.com/cuzic/awase/commit/a8d9a00))
+
+### リファクタリング
+
+- **全 ImmCrossProbe をエポック照合に移行・shadow grace 撤去** ([f478ee7](https://github.com/cuzic/awase/commit/f478ee7))
+- **TipDetector のファイルキャッシュを廃止しプロセス内 OnceLock のみに統一** ([9e0ecf0](https://github.com/cuzic/awase/commit/9e0ecf0))
+
 ## [1.7.1] - 2026-07-02
 
 ### バグ修正
