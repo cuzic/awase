@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn reduce_open_belief_roman_only_conv_is_not_hiragana() {
         // conv=0x10 (IME_CMODE_ROMAN のみ) = GJI 半角英数。open=true 時は effective_open=false。
-        let inputs = crate::output::OpenBeliefInputs {
+        let inputs = OpenBeliefInputs {
             shadow_on: true,
             applied: crate::state::AppliedImeState::Unknown,
             candidate_visible: false,
@@ -273,17 +273,17 @@ mod tests {
             is_engine_intent: true,
             now_ms: 0,
         };
-        let belief = crate::output::reduce_open_belief(&inputs, true);
+        let belief = reduce_open_belief(&inputs, true);
         assert!(!belief.effective_open, "conv=16 (ROMAN only) は open=true 要求時に false");
         // open=false 要求時は従来通り true（DirectInput でないため）
-        let belief_off = crate::output::reduce_open_belief(&inputs, false);
+        let belief_off = reduce_open_belief(&inputs, false);
         assert!(belief_off.effective_open, "conv=16 は open=false 要求時に true（IME ON 状態）");
     }
 
     #[test]
     fn reduce_open_belief_hiragana_conv_is_matched() {
         // conv=0x09 (NATIVE|ROMAN) = ひらがなローマ字。open=true 時は effective_open=true。
-        let inputs = crate::output::OpenBeliefInputs {
+        let inputs = OpenBeliefInputs {
             shadow_on: true,
             applied: crate::state::AppliedImeState::Unknown,
             candidate_visible: false,
@@ -294,7 +294,7 @@ mod tests {
             is_engine_intent: true,
             now_ms: 0,
         };
-        let belief = crate::output::reduce_open_belief(&inputs, true);
+        let belief = reduce_open_belief(&inputs, true);
         assert!(belief.effective_open, "conv=9 (NATIVE|ROMAN) は open=true 要求時に true");
     }
 

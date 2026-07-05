@@ -9,7 +9,7 @@
 //!                ImeOn / FocusChange
 //! OffCold ──────────────────────────────────────────────► OnCold(Short)
 //!                                                              │
-//!                                                   WarmupComplete / WarmupFailed
+//!                                                   WarmupComplete
 //!                                                              │
 //! OnComposing ◄── StartComposition ── OnWarm ◄───────────────┘
 //!     │                                  │
@@ -53,7 +53,7 @@ impl FocusEpoch {
     }
 }
 
-/// probe ID。stale な `WarmupComplete` / `WarmupFailed` を弾くための識別子。
+/// probe ID。stale な `WarmupComplete` を弾くための識別子。タイムアウトによる保守的フォールバックも同イベント経由（`WarmupResult::conservative_fallback()`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProbeId(pub(crate) u32);
 
@@ -1149,7 +1149,7 @@ mod tests {
         assert!(probe_action.is_some(), "Medium cold: KeyInput で StartProbe が必要");
         if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
             assert_eq!(
-                params.ncwait_budget_ms, crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
+                params.ncwait_budget_ms, tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
                 "Medium cold: ncwait_budget_ms = MEDIUM_IDLE_PROBE_TOTAL_MS"
             );
             assert!(params.forces_prepend_f2, "Medium cold: forces_prepend_f2=true");
@@ -1169,7 +1169,7 @@ mod tests {
             r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
             assert_eq!(
-                params.ncwait_budget_ms, crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
+                params.ncwait_budget_ms, tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
                 "Long cold: ncwait_budget_ms = GJI_LONG_IDLE_PROBE_TOTAL_MS"
             );
             assert!(params.forces_prepend_f2, "Long cold: forces_prepend_f2=true");
@@ -1187,7 +1187,7 @@ mod tests {
             r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
             assert_eq!(
-                params.ncwait_budget_ms, crate::tuning::SETTLE_TIMEOUT_MS,
+                params.ncwait_budget_ms, tuning::SETTLE_TIMEOUT_MS,
                 "Short cold: ncwait_budget_ms = SETTLE_TIMEOUT_MS"
             );
             assert!(!params.forces_prepend_f2, "Short cold: forces_prepend_f2=false");
@@ -1346,7 +1346,7 @@ mod tests {
         // WezTerm で F2 を押した際に gji_idle > LONG_IDLE_MS なら
         // forces_prepend_f2=true の probe を即開始する（FocusChange とは異なり NotStarted にしない）。
         let mut fsm = GjiFsm::new();
-        let r = fsm.on_event(ime_on_with_idle(crate::tuning::LONG_IDLE_MS + 1000));
+        let r = fsm.on_event(ime_on_with_idle(tuning::LONG_IDLE_MS + 1000));
         let probe_action = r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }));
         assert!(probe_action.is_some(), "long idle ImeOn: StartProbe を即開始すべき");
         if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
@@ -1362,7 +1362,7 @@ mod tests {
     #[test]
     fn ime_on_with_medium_idle_uses_medium_probe_proactively() {
         let mut fsm = GjiFsm::new();
-        let r = fsm.on_event(ime_on_with_idle(crate::tuning::MEDIUM_IDLE_PROBE_MS + 500));
+        let r = fsm.on_event(ime_on_with_idle(tuning::MEDIUM_IDLE_PROBE_MS + 500));
         let probe_action = r.actions.iter().find(|a| matches!(a, GjiAction::StartProbe { .. }));
         assert!(probe_action.is_some(), "medium idle ImeOn: StartProbe を即開始すべき");
         if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
@@ -1525,9 +1525,9 @@ mod tests {
         assert!(matches!(fsm.state(), GjiState::OnWarm { .. }), "expected OnWarm after WarmupComplete");
     }
 
-    /// WarmupFailed while AwaitingProbe で pending が消えない（保守的フォールバック flush）
+    /// TimedOutFallback (conservative_fallback) while AwaitingProbe で pending が flush される
     #[test]
-    fn warmup_failed_while_composing_flushes_pending() {
+    fn warmup_timed_out_while_composing_flushes_pending() {
         let mut fsm = GjiFsm::new();
         fsm.on_event(ime_on()); // → OnCold(Short, Authorized)
         fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
@@ -1545,8 +1545,11 @@ mod tests {
             matches!(fsm.state(), GjiState::OnComposing { warmup: ComposingWarmup::AwaitingProbe { .. }, .. })
         );
 
-        // WarmupFailed → pending が flush され warmup が AlreadyWarm になる
-        let r = fsm.on_event(GjiEvent::WarmupFailed { probe_id });
+        // TimedOutFallback → pending が flush され warmup が AlreadyWarm になる
+        let r = fsm.on_event(GjiEvent::WarmupComplete {
+            probe_id,
+            result: WarmupResult::conservative_fallback(),
+        });
 
         // SendInput（保守的フォールバック）が emit される
         assert!(
@@ -1557,7 +1560,7 @@ mod tests {
         // OnComposing(AlreadyWarm) に更新されている
         assert!(
             matches!(fsm.state(), GjiState::OnComposing { warmup: ComposingWarmup::AlreadyWarm, .. }),
-            "expected OnComposing(AlreadyWarm) after WarmupFailed"
+            "expected OnComposing(AlreadyWarm) after TimedOutFallback"
         );
 
         // OnWarm には遷移していない（composition 中）

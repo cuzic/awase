@@ -932,7 +932,7 @@ mod tests {
             probe,
             0,
             false,
-            crate::tsf::output::ColdReason::FocusChange,
+            ColdReason::FocusChange,
             false,
             false,
             ncwait_budget_ms,

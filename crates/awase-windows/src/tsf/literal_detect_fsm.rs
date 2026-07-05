@@ -247,7 +247,7 @@ mod tests {
     // CompositionConfirmed が partial literal 条件を満たす場合 → RawTsfLiteralRecovery
     #[test]
     fn composition_confirmed_tsf_nc_false_gji_not_resumed_multi_char_forces_recovery() {
-        let mut fsm = make_fsm("ni", false, false, 2);
+        let fsm = make_fsm("ni", false, false, 2);
         // detector.check_now はグローバル状態に依存するため直接テスト不可。
         // 代わりに partial_literal_suspected フラグの条件をロジックレベルで検証する。
         let env = tsf_env();
@@ -326,7 +326,7 @@ mod tests {
         // PARTIAL_LITERAL_BS=2 であることを確認
         // (tick() 内で self.ze_bs_count=3 でなく 2 を使っていることを静的に検証)
         assert_eq!(
-            super::PARTIAL_LITERAL_BS, 2,
+            PARTIAL_LITERAL_BS, 2,
             "PARTIAL_LITERAL_BS は常に 2 (1 リテラル + 1 composition クリア)"
         );
     }
