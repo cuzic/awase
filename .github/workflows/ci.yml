@@ -18,6 +18,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --lib
+      # awase-windows は Windows 専用コードだが、architecture_guard / golden_scenarios は
+      # プラットフォーム非依存（Win32 API を呼ばない state/ 層のみ検証）なため Linux でも走る。
+      # --lib は含めない: tsf/ 配下に既存の無関係な壊れたテストがあり Windows でのみ解決する。
+      - run: cargo test -p awase-windows --test architecture_guard --test golden_scenarios
 
   clippy:
     runs-on: ubuntu-latest
