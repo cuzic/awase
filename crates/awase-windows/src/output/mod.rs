@@ -313,10 +313,18 @@ impl Output {
             .set(self.ime_mode_focus_gen.get().wrapping_add(1));
     }
 
+    /// VK_IME_OFF → VK_IME_ON の連続送信を ImeModeFsm に通知する。
+    ///
+    /// `send_sacrificial_ime_off_on` / `send_chrome_gji_reinit_and_poll` で使う。
+    pub(crate) fn on_f22_f21_sent(&self) {
+        let mut fsm = self.ime_mode_fsm.borrow_mut();
+        fsm.on_f22_sent();
+        fsm.on_f21_sent();
+    }
+
     /// VK_IME_ON/OFF 送信時に `ImeModeFsm` の belief を即時更新する。
     ///
-    /// `send_chrome_gji_reinit_and_poll` は個別に `on_f22_sent()`/`on_f21_sent()` を呼ぶため、
-    /// このメソッドは通常 IME ON/OFF（`send_engine_state_ime_key` 経由）用。
+    /// 通常 IME ON/OFF（`send_engine_state_ime_key` 経由）用。
     pub(crate) fn on_ime_mode_vk_sent(&self, vk: VkCode) {
         let mut fsm = self.ime_mode_fsm.borrow_mut();
         if vk == crate::vk::VK_IME_ON {

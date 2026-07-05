@@ -463,8 +463,7 @@ impl WindowsPlatform {
             crate::tsf::composition_fsm::CompositionEvent::FocusChange { tsf_mode },
             None,
         );
-        let last_io = crate::tsf::observer::gji_last_io_ms();
-        let gji_idle_ms = crate::hook::current_tick_ms().saturating_sub(last_io);
+        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
         let resp = self.output.gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
             injection_mode,
             gji_idle_ms,
@@ -495,20 +494,21 @@ impl WindowsPlatform {
 
     /// IME ON を GjiFsm に通知する（`on_ime_applied(open=true)` から呼ぶ）。
     pub(crate) fn gji_on_ime_on(&mut self, injection_mode: crate::output::types::InjectionMode) {
-        let last_io = crate::tsf::observer::gji_last_io_ms();
-        let gji_idle_ms = crate::hook::current_tick_ms().saturating_sub(last_io);
+        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
         let resp = self
             .output
             .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn { injection_mode, gji_idle_ms });
         self.dispatch_gji_response(resp);
     }
 
+    fn dispatch_gji_event(&mut self, event: crate::tsf::gji_fsm::GjiEvent) {
+        let resp = self.output.gji_on_event(event);
+        self.dispatch_gji_response(resp);
+    }
+
     /// IME OFF を GjiFsm に通知する（`on_ime_applied(open=false)` から呼ぶ）。
     pub(crate) fn gji_on_ime_off(&mut self) {
-        let resp = self
-            .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOff);
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::ImeOff);
     }
 
     /// TIMER_GJI_LONG_IDLE ハンドラ。LongIdle タイムアウトを GjiFsm に通知する。
@@ -522,10 +522,7 @@ impl WindowsPlatform {
     /// `on_passthrough_key` の PassthroughKey / F2NonTsf や
     /// `mark_cold_raw_tsf`（`step_probe` 経由）から呼ぶ。
     pub(crate) fn gji_on_composition_reset(&mut self) {
-        let resp = self
-            .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::CompositionReset);
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::CompositionReset);
     }
 
     /// TSF mode で物理 F2 が消費されたことを GjiFsm に通知する（`on_reinject_key` の NativeF2Consumed パス）。
@@ -533,10 +530,7 @@ impl WindowsPlatform {
     /// Medium/Long cold 中は probe が継続（saw_native_f2=true）。Short cold / OnWarm / OnComposing は
     /// CompositionReset 相当として処理される（GjiFsm 側で分岐）。
     pub(crate) fn gji_on_native_f2_consumed(&mut self) {
-        let resp = self
-            .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed);
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed);
     }
 
     /// GJI candidate SHOW → GjiFsm::StartComposition を dispatch する。
@@ -545,10 +539,7 @@ impl WindowsPlatform {
     /// `advance_tsf_probe` / `send_keys` で `take_pending_start_composition()` が true を返したときに呼ぶ。
     pub(crate) fn gji_on_start_composition(&mut self) {
         log::debug!("[gji-fsm] StartComposition (candidate SHOW)");
-        let resp = self
-            .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::StartComposition);
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::StartComposition);
     }
 
     /// GJI candidate HIDE → GjiFsm::EndComposition を dispatch する。
@@ -559,10 +550,7 @@ impl WindowsPlatform {
     pub(crate) fn gji_on_end_composition(&mut self) {
         if let Some(epoch) = self.output.gji_current_composition_epoch() {
             log::debug!("[gji-fsm] EndComposition (candidate HIDE) epoch={epoch:?}");
-            let resp = self
-                .output
-                .gji_on_event(crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch });
-            self.dispatch_gji_response(resp);
+            self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch });
         }
     }
 

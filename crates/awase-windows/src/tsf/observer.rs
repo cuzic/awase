@@ -333,6 +333,11 @@ pub(crate) fn gji_last_io_ms() -> u64 {
     TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed)
 }
 
+/// 現在時刻と最終 GJI I/O 時刻の差（アイドル時間）を ms で返す。
+pub(crate) fn gji_idle_ms() -> u64 {
+    crate::hook::current_tick_ms().saturating_sub(gji_last_io_ms())
+}
+
 /// GJI プロセスの最終 WriteOperationCount 変化時刻 (ms) を返す。0 = 未観測。live 読み取り。
 ///
 /// 読み書き問わず更新される `gji_last_io_ms` と異なり、書き込みのみを追跡する。

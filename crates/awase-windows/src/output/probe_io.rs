@@ -228,12 +228,7 @@ impl ProbeIo for Output {
             make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
         ];
         log::debug!("[sacr-warmup] cold={cold_seq} VK_IME_OFF→ON 送信（vim 安全プローブ）");
-        // ImeModeFsm belief を即時更新する。
-        {
-            let mut fsm = self.ime_mode_fsm.borrow_mut();
-            fsm.on_f22_sent();
-            fsm.on_f21_sent();
-        }
+        self.on_f22_f21_sent();
         unsafe {
             SendInput(
                 &inputs,
@@ -335,11 +330,7 @@ impl ProbeIo for Output {
         let _ = crate::win32::send_input_safe(&inputs);
 
         // 2. ImeModeFsm belief を即時更新: VK_IME_OFF → Off, VK_IME_ON → Hiragana。
-        {
-            let mut fsm = self.ime_mode_fsm.borrow_mut();
-            fsm.on_f22_sent();
-            fsm.on_f21_sent();
-        }
+        self.on_f22_f21_sent();
 
         // 3. async IMC ポーリング開始（CHROME_GJI_REINIT_CONFIRM_MS の間、10ms ごとに発行）。
         //    with_app 再入を避けるため spawn_local で defer する。
@@ -534,8 +525,7 @@ where
                             // 診断ログ: IMC_GETCONVERSIONMODE は SendMessageTimeoutW を呼ぶため、
                             // with_app 再入を避けるため async タスクへオフロードする (Step 3)。
                             // ログ出力タイミングが数 ms 遅れるが診断用途のため許容。
-                            let last_io = crate::tsf::observer::gji_last_io_ms();
-                            let gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+                            let gji_idle = crate::tsf::observer::gji_idle_ms();
                             let romaji_owned: String = romaji.clone();
                             let chars_len = chars.len();
                             win32_async::spawn_local(async move {

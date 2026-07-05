@@ -227,23 +227,22 @@ impl KeyInjector {
         }
     }
 
+    fn format_vk_run(run: &[(VkCode, bool)]) -> String {
+        run.iter()
+            .map(|&(v, s)| if s { format!("S{v:02X}") } else { format!("{v:02X}") })
+            .join(",")
+    }
+
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
     pub(crate) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: u32) {
         let runs = Self::split_vk_runs(chars);
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.into_iter().enumerate() {
-            let last_io = crate::tsf::observer::gji_last_io_ms();
-            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
-                run.iter()
-                    .map(|&(v, s)| if s {
-                        format!("S{v:02X}")
-                    } else {
-                        format!("{v:02X}")
-                    })
-                    .join(","),
+                Self::format_vk_run(&run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);
         }
@@ -257,17 +256,10 @@ impl KeyInjector {
         let runs = Self::split_vk_runs(&f2_plus_chars);
         let total_runs = runs.len();
         for (run_idx, run) in runs.into_iter().enumerate() {
-            let last_io = crate::tsf::observer::gji_last_io_ms();
-            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] (f2-leading)",
-                run.iter()
-                    .map(|&(v, s)| if s {
-                        format!("S{v:02X}")
-                    } else {
-                        format!("{v:02X}")
-                    })
-                    .join(","),
+                Self::format_vk_run(&run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);
         }
@@ -297,17 +289,10 @@ impl KeyInjector {
         let total_runs = runs.len();
 
         for (run_idx, run) in runs.into_iter().enumerate() {
-            let last_io = crate::tsf::observer::gji_last_io_ms();
-            let run_gji_idle = crate::hook::current_tick_ms().saturating_sub(last_io);
+            let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] ({leading_label})",
-                run.iter()
-                    .map(|&(v, s)| if s {
-                        format!("S{v:02X}")
-                    } else {
-                        format!("{v:02X}")
-                    })
-                    .join(","),
+                Self::format_vk_run(&run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);
         }
