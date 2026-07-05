@@ -109,31 +109,53 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.8.0] - 2026-07-05</h2>
+<h3>新機能</h3>
+<ul>
+<li><strong>FocusEpoch + ImmLikeTicket による観測受理層 (ObservationAdmission) を新設</strong> (<a href="https://github.com/cuzic/awase/commit/604cf99">604cf99</a>, <a href="https://github.com/cuzic/awase/commit/569bf0f">569bf0f</a>, <a href="https://github.com/cuzic/awase/commit/67e63ad">67e63ad</a>, <a href="https://github.com/cuzic/awase/commit/1345d95">1345d95</a>) (ADR-077)<ul>
+<li>フォーカス遷移をエポックで管理し、古い観測を構造的に棄却することで ImmCross アプリの誤観測連鎖を根本から防止</li>
+<li>ImmCrossProbe に shadow grace 抑制を追加し、全パスでエポック照合を徹底</li>
+<li>棄却カウンタとダンプ時ログを追加し観測受理状況を可視化</li>
+</ul>
+</li>
+<li><strong>設定画面で親指キーをドロップダウンで選択できるように変更</strong> (<a href="https://github.com/cuzic/awase/commit/9e1621a">9e1621a</a>)<ul>
+<li>親指左・親指右キーの割り当てをドロップダウン UI から直接変更可能になり、設定変更を即時反映</li>
+</ul>
+</li>
+<li><strong>ウェブサイトから MSI/ZIP を直接ダウンロード可能に</strong> (<a href="https://github.com/cuzic/awase/commit/877b1af">877b1af</a>, <a href="https://github.com/cuzic/awase/commit/15c6ff5">15c6ff5</a>, <a href="https://github.com/cuzic/awase/commit/21eadb1">21eadb1</a>)<ul>
+<li>awase.cc から GitHub Releases の最新アセットを直接ダウンロードできるリンクを追加</li>
+</ul>
+</li>
+</ul>
 <h3>バグ修正</h3>
 <ul>
-<li><strong>ALT+TAB でアプリを切り替えると LINE でエンジンが OFF になる問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/a8d9a00">a8d9a00</a>, <a href="https://github.com/cuzic/awase/commit/569bf0f">569bf0f</a>)<ul>
-<li>ALT+TAB のタスクスイッチャー表示中、OS が一時的にスイッチャーウィンドウ（<code>XamlExplorerHostIslandWindow</code>）にフォーカスを移すタイミングで起動した <code>ImmCrossProbe</code> が「IME OFF」を返し、エンジンが停止するバグを修正</li>
-<li><code>XamlExplorerHostIslandWindow</code> を <code>NonText</code>（IME リセット不要）に分類し、タスクスイッチャー選択中の IME リセットを防止（Fix B）</li>
-<li><code>ImmCrossProbe</code> に shadow grace 抑制を追加し、フォーカス変化直後の stale 観測を無効化（Fix A）</li>
+<li><strong>ImmCross アプリで IME ON 後にかなモードのままエンジンが停止する問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/81f6576">81f6576</a>, <a href="https://github.com/cuzic/awase/commit/e4378c6">e4378c6</a>)<ul>
+<li>IME ON 直後の ObservedKana 観測を ImmCross アプリで抑制し、エンジンが誤って非活性化されるケースを解消</li>
 </ul>
 </li>
+<li><strong>MS-IME + ImmCross アプリで IME ON 時に romaji モードが維持されない問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/91631a0">91631a0</a>, <a href="https://github.com/cuzic/awase/commit/1969cd3">1969cd3</a>, <a href="https://github.com/cuzic/awase/commit/4c02f2e">4c02f2e</a>)<ul>
+<li>MS-IME で IME ON 前に ROMAN モードを強制し、ObservedKana 時は romaji 強制をスキップ</li>
 </ul>
-<h3>内部改善</h3>
+</li>
+<li><strong>IME 種別判定をプロセス存在からCLSID API に統一し IME 動的切り替えに対応</strong> (<a href="https://github.com/cuzic/awase/commit/e6456b2">e6456b2</a>, <a href="https://github.com/cuzic/awase/commit/ce252fe">ce252fe</a>)<ul>
+<li>GJI 固定ポリシーを廃止し、実行時に CLSID API で IME 種別を判定することで GJI/MS-IME の動的切り替えをサポート</li>
+</ul>
+</li>
+<li><strong>設定画面起動時に黒いコンソールウィンドウが表示される問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/49d4f31">49d4f31</a>)</li>
+<li><strong>設定画面から親指キーを変更した際に即時反映されるよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/6cd1178">6cd1178</a>)</li>
+<li><strong>HwndCache 由来 intent では即時ドリフト補正しないよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/d418035">d418035</a>)</li>
+<li><strong>XamlExplorerHostIslandWindow を NonText に分類</strong> (<a href="https://github.com/cuzic/awase/commit/a8d9a00">a8d9a00</a>)</li>
+</ul>
+<h3>リファクタリング</h3>
 <ul>
-<li><strong>ObservationAdmission Layer — FocusEpoch による probe 受理ポリシーの集約</strong> (<a href="https://github.com/cuzic/awase/commit/604cf99">604cf99</a>, <a href="https://github.com/cuzic/awase/commit/f478ee7">f478ee7</a>, <a href="https://github.com/cuzic/awase/commit/67e63ad">67e63ad</a>, <a href="https://github.com/cuzic/awase/commit/1345d95">1345d95</a>, <a href="https://github.com/cuzic/awase/commit/a0e4ec7">a0e4ec7</a>) (ADR-077)<ul>
-<li>時間ベースの shadow grace（3箇所に複製）を廃止し、フォーカス変更カウンタ（<code>FocusEpoch</code>）による正確な epoch 照合に移行</li>
-<li><code>ImmLikeTicket::admit()</code> が spawn 時と完了時の epoch を照合し、フォーカスが変わっていれば観測を棄却</li>
-<li><code>AcceptedObservation</code> トークンを導入し、<code>write_*</code> 関数が admission を通らない書き込みを <strong>コンパイル時に禁止</strong></li>
-<li><code>ObservationStore</code> に <code>current_focus_epoch</code> を追加し、<code>derive_open()</code> が <code>ImmCrossProbe</code> / <code>FocusProbe</code> の stale 観測を読み出し時にも排除</li>
-<li>棄却カウンタ（<code>REJECTED_EPOCH_MISMATCH</code> 原子カウンタ）とダンプ時ログ出力を追加</li>
-</ul>
-</li>
+<li><strong>全 ImmCrossProbe をエポック照合に移行・shadow grace 撤去</strong> (<a href="https://github.com/cuzic/awase/commit/f478ee7">f478ee7</a>)</li>
+<li><strong>TipDetector のファイルキャッシュを廃止しプロセス内 OnceLock のみに統一</strong> (<a href="https://github.com/cuzic/awase/commit/9e0ecf0">9e0ecf0</a>)</li>
 </ul>
 <h2>[1.7.1] - 2026-07-02</h2>
 <h3>バグ修正</h3>
 <ul>
-<li><strong>LINE 等 ImmCross アプリで Google 日本語入力 英数→ひらがな切替後にエンジンが停止する問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/4bcf8b0">4bcf8b0</a>)<ul>
-<li>Google 日本語入力 は英数モードでも ROMAN bit を立てないため <code>classify_transition</code> がひらがな復帰を検出できず <code>ObservedEisu</code> が残留してエンジンが <code>Inactive(NotRomajiInput)</code> になっていた</li>
+<li><strong>LINE 等 ImmCross アプリで GJI 英数→ひらがな切替後にエンジンが停止する問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/4bcf8b0">4bcf8b0</a>)<ul>
+<li>GJI は英数モードでも ROMAN bit を立てないため <code>classify_transition</code> がひらがな復帰を検出できず <code>ObservedEisu</code> が残留してエンジンが <code>Inactive(NotRomajiInput)</code> になっていた</li>
 <li><code>classify_ime_snapshot</code> に stale 回復ブランチを追加し、ImmCross アプリで conv_mode が非英数に変化した時点で <code>AssumedRomaji</code> へ自動リセット</li>
 </ul>
 </li>
@@ -156,14 +178,14 @@ footer p{margin:0.3rem 0}
 </li>
 <li><strong>トレイメニューの「内部状態をリセット」をプロセス再起動に置き換え</strong> (<a href="https://github.com/cuzic/awase/commit/a720c7a">a720c7a</a>)<ul>
 <li>FSM / IME 状態が壊れた際、マウス操作だけでプロセス全体を再起動し完全にクリーンな状態へ復帰できるように変更</li>
-<li>Google 日本語入力 種別判定 (<code>active_ime_kind</code>) のプロセス中固定 (ADR-073) など、実行時に確定した状態をリセットする唯一の確実な手段として位置づけ</li>
+<li>GJI 種別判定 (<code>active_ime_kind</code>) のプロセス中固定 (ADR-073) など、実行時に確定した状態をリセットする唯一の確実な手段として位置づけ</li>
 </ul>
 </li>
 </ul>
 <h3>改善</h3>
 <ul>
 <li><strong>Warmup 送信 VK を Charset (ひらがな/カタカナ/JIS かな) 対応に拡張</strong> (<a href="https://github.com/cuzic/awase/commit/536d93a">536d93a</a>)<ul>
-<li>Google 日本語入力 が非アクティブ（MS-IME 使用時等）な場合の TSF warmup 送信を判定に集約しスキップ漏れを解消</li>
+<li>GJI が非アクティブ（MS-IME 使用時等）な場合の TSF warmup 送信を判定に集約しスキップ漏れを解消</li>
 </ul>
 </li>
 <li><strong><code>ConvModePolicy</code> による conv_mode 変更の一括ゲートを導入</strong> (<a href="https://github.com/cuzic/awase/commit/2826248">2826248</a>, <a href="https://github.com/cuzic/awase/commit/cc9f745">cc9f745</a>, <a href="https://github.com/cuzic/awase/commit/af3b776">af3b776</a>) (ADR-064)<ul>
@@ -177,12 +199,12 @@ footer p{margin:0.3rem 0}
 <li><strong>MS-IME での Ctrl+変換 / Ctrl+無変換 が正しく動作しないバグ群を修正</strong> (<a href="https://github.com/cuzic/awase/commit/f527a18">f527a18</a>, <a href="https://github.com/cuzic/awase/commit/baff902">baff902</a>, <a href="https://github.com/cuzic/awase/commit/301e911">301e911</a>, <a href="https://github.com/cuzic/awase/commit/48a667a">48a667a</a>)<ul>
 <li>Ctrl+変換 で MS-IME がひらがなにならない・半角英数から戻らない不具合を修正</li>
 <li><code>MsImeDirectStrategy</code> の DirectInput 切替を冪等な <code>VK_IME_OFF</code> に統一</li>
-<li>Google 日本語入力 が一度確定した後は MS-IME への誤降格を禁止（プロセス中固定、ADR-073）</li>
+<li>GJI が一度確定した後は MS-IME への誤降格を禁止（プロセス中固定、ADR-073）</li>
 </ul>
 </li>
-<li><strong>ImmCrossProbe / Google 日本語入力+TsfNative フォーカス時の IME 誤認識・打鍵消失を修正</strong> (<a href="https://github.com/cuzic/awase/commit/496926c">496926c</a>, <a href="https://github.com/cuzic/awase/commit/489cdf1">489cdf1</a>, <a href="https://github.com/cuzic/awase/commit/15ac8d8">15ac8d8</a>, <a href="https://github.com/cuzic/awase/commit/500dab6">500dab6</a>) (ADR-071, ADR-075)<ul>
-<li>Qt / Google 日本語入力 フォーカス時に <code>ImmCrossProbe</code> が IME 状態を誤認識するバグを修正</li>
-<li>Google 日本語入力+TsfNative の IME OFF 送信を <code>VK_KANJI</code> トグルから冪等な <code>VK_IME_OFF</code> に変更</li>
+<li><strong>ImmCrossProbe / GJI+TsfNative フォーカス時の IME 誤認識・打鍵消失を修正</strong> (<a href="https://github.com/cuzic/awase/commit/496926c">496926c</a>, <a href="https://github.com/cuzic/awase/commit/489cdf1">489cdf1</a>, <a href="https://github.com/cuzic/awase/commit/15ac8d8">15ac8d8</a>, <a href="https://github.com/cuzic/awase/commit/500dab6">500dab6</a>) (ADR-071, ADR-075)<ul>
+<li>Qt / GJI フォーカス時に <code>ImmCrossProbe</code> が IME 状態を誤認識するバグを修正</li>
+<li>GJI+TsfNative の IME OFF 送信を <code>VK_KANJI</code> トグルから冪等な <code>VK_IME_OFF</code> に変更</li>
 <li>TSF cold-start probe 実行中に後続キーが消失し「にゅうりょく」→「にうりょく」になるバグを修正（deferred VK キューの所有権を probe machine から <code>TsfWarmupCoordinator</code> へ移管）</li>
 </ul>
 </li>
@@ -202,7 +224,7 @@ footer p{margin:0.3rem 0}
 <li>ALT+TAB 後の Chrome IME 状態誤認識、tray desync（<code>user_enabled=true</code> だが <code>ime_on=false</code>）を修正</li>
 </ul>
 </li>
-<li><strong>Google 日本語入力 cold-start / partial literal 対策を SacrificialWarmup (VK_A+BS) に統合</strong> (<a href="https://github.com/cuzic/awase/commit/6c1732d">6c1732d</a>, <a href="https://github.com/cuzic/awase/commit/22c3905">22c3905</a>)<ul>
+<li><strong>GJI cold-start / partial literal 対策を SacrificialWarmup (VK_A+BS) に統合</strong> (<a href="https://github.com/cuzic/awase/commit/6c1732d">6c1732d</a>, <a href="https://github.com/cuzic/awase/commit/22c3905">22c3905</a>)<ul>
 <li><code>VK_IME_OFF→ON</code> + <code>write_bytes</code> 検出ベースの warmup に置き換え、vim 等との互換性を確保</li>
 </ul>
 </li>
@@ -230,10 +252,10 @@ footer p{margin:0.3rem 0}
 <ul>
 <li><strong>Microsoft IME 完全対応</strong> (<a href="https://github.com/cuzic/awase/commit/45edf19">45edf19</a>, <a href="https://github.com/cuzic/awase/commit/56cd9a5">56cd9a5</a>)<ul>
 <li><code>MsImeDirectStrategy</code>（<code>VK_DBE_HIRAGANA</code> / <code>VK_DBE_ALPHANUMERIC</code>）による冪等 ON/OFF 制御（ADR-063）</li>
-<li><code>WM_IME_KIND_CHANGED</code> でランタイムに Google 日本語入力 / MS-IME を切り替え</li>
+<li><code>WM_IME_KIND_CHANGED</code> でランタイムに GJI / MS-IME を切り替え</li>
 </ul>
 </li>
-<li><strong>TSF EnumProfiles による Google 日本語入力 CLSID 動的発見</strong> (<a href="https://github.com/cuzic/awase/commit/55233f0">55233f0</a>, <a href="https://github.com/cuzic/awase/commit/005f0a6">005f0a6</a>)<ul>
+<li><strong>TSF EnumProfiles による GJI CLSID 動的発見</strong> (<a href="https://github.com/cuzic/awase/commit/55233f0">55233f0</a>, <a href="https://github.com/cuzic/awase/commit/005f0a6">005f0a6</a>)<ul>
 <li>プロセス名依存から CLSID ベースの IME 種別判定に移行</li>
 <li>CLSID を <code>cache.toml</code> に永続化し再起動後のコールドスタートコストを削減</li>
 </ul>
@@ -241,9 +263,9 @@ footer p{margin:0.3rem 0}
 </ul>
 <h3>改善</h3>
 <ul>
-<li><strong>Google 日本語入力 IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行</strong> — config1.db パッチ不要に (<a href="https://github.com/cuzic/awase/commit/b271aee">b271aee</a>, <a href="https://github.com/cuzic/awase/commit/8c39b8e">8c39b8e</a>)<ul>
+<li><strong>GJI IME 制御を VK_IME_ON/OFF (0x16/0x1A) に移行</strong> — config1.db パッチ不要に (<a href="https://github.com/cuzic/awase/commit/b271aee">b271aee</a>, <a href="https://github.com/cuzic/awase/commit/8c39b8e">8c39b8e</a>)<ul>
 <li><code>gji.rs</code>（config1.db パッチ・プロセス管理）を完全削除（-692 行）</li>
-<li>トレイメニューの「Google 日本語入力 セットアップ / 解除」を撤去、初回インストール作業が不要に</li>
+<li>トレイメニューの「GJI セットアップ / 解除」を撤去、初回インストール作業が不要に</li>
 <li>Chrome / WezTerm / Windows Terminal すべてで VK_IME_ON/OFF の動作を実機確認（2026-06-28）</li>
 <li><code>gji_keybinds_ok</code> フラグ・Observer の config1.db 監視ループを撤去</li>
 </ul>
@@ -286,14 +308,14 @@ footer p{margin:0.3rem 0}
 <li><code>imm_cache.toml</code> を <code>cache.toml</code> に統合（<a href="https://github.com/cuzic/awase/commit/10918c2">10918c2</a>）</li>
 </ul>
 </li>
-<li><strong>InjectionMode 事後昇格: Google 日本語入力 write_bytes 観測で自動昇格</strong> (<a href="https://github.com/cuzic/awase/commit/68c24e1">68c24e1</a>)<ul>
-<li>フォーカス直後に Unicode モードで送信したキーが Google 日本語入力 に処理されたか WriteTransferCount で判定</li>
-<li>Google 日本語入力 が動作していれば injection_mode を Tsf に自動昇格（ADR-062）</li>
+<li><strong>InjectionMode 事後昇格: GJI write_bytes 観測で自動昇格</strong> (<a href="https://github.com/cuzic/awase/commit/68c24e1">68c24e1</a>)<ul>
+<li>フォーカス直後に Unicode モードで送信したキーが GJI に処理されたか WriteTransferCount で判定</li>
+<li>GJI が動作していれば injection_mode を Tsf に自動昇格（ADR-062）</li>
 </ul>
 </li>
 <li><strong>Unicode long-cold 対応: UnicodeColdWarmupFsm</strong> (<a href="https://github.com/cuzic/awase/commit/70d3fed">70d3fed</a>)<ul>
-<li>Unicode モードで長時間アイドル後に VK_IME_ON poke を送り Google 日本語入力 の起動を確認してから文字を送信</li>
-<li>Google 日本語入力 が応答するまで文字送信を保留することで partial literal を防止</li>
+<li>Unicode モードで長時間アイドル後に VK_IME_ON poke を送り GJI の起動を確認してから文字を送信</li>
+<li>GJI が応答するまで文字送信を保留することで partial literal を防止</li>
 </ul>
 </li>
 <li><strong>競合ソフトウェア起動時チェックを追加</strong> (<a href="https://github.com/cuzic/awase/commit/9875c2c">9875c2c</a>)<ul>
@@ -309,7 +331,7 @@ footer p{margin:0.3rem 0}
 </ul>
 </li>
 <li><strong>Windows Terminal を force_tsf に追加</strong> (<a href="https://github.com/cuzic/awase/commit/4e49ee1">4e49ee1</a>)<ul>
-<li>Google 日本語入力 コンポジションを確実に有効化し、Windows Terminal での変換精度を向上</li>
+<li>GJI コンポジションを確実に有効化し、Windows Terminal での変換精度を向上</li>
 </ul>
 </li>
 </ul>
@@ -332,11 +354,11 @@ footer p{margin:0.3rem 0}
 </ul>
 </li>
 <li><strong>SacrificialWarmup Phase2 早期 HIDE 後に IPC settle 待機を追加</strong> (<a href="https://github.com/cuzic/awase/commit/88d562f">88d562f</a>)<ul>
-<li>候補ウィンドウが早期 HIDE された後、Google 日本語入力 IPC が完了するまで待機してから次入力を解放</li>
+<li>候補ウィンドウが早期 HIDE された後、GJI IPC が完了するまで待機してから次入力を解放</li>
 </ul>
 </li>
 <li><strong>Unicode long-cold で VK_IME_ON 単体 → VK_IME_ON+VK_A+BS 犠牲キーに変更</strong> (<a href="https://github.com/cuzic/awase/commit/6cb175f">6cb175f</a>)<ul>
-<li>Google 日本語入力 の WriteTransferCount を確実に増加させ cold 判定の精度を向上</li>
+<li>GJI の WriteTransferCount を確実に増加させ cold 判定の精度を向上</li>
 </ul>
 </li>
 <li><strong>TsfNative/Imm32Unavailable で shadow 値を代替観測として記録</strong> (<a href="https://github.com/cuzic/awase/commit/1e77002">1e77002</a>)<ul>
@@ -370,7 +392,7 @@ footer p{margin:0.3rem 0}
 <li>long-cold + TSF mode 専用に限定して通常時の性能低下を防止 (<a href="https://github.com/cuzic/awase/commit/d02ec44">d02ec44</a>)</li>
 </ul>
 </li>
-<li><strong>ImeModeFsm + ChromeGjiReinitFsm を実装</strong>: F22→F21 送信後、Google 日本語入力 が Hiragana モードに落ち着いたことを確認してから次入力を許可する FSM を追加 (<a href="https://github.com/cuzic/awase/commit/2c8d647">2c8d647</a>)</li>
+<li><strong>ImeModeFsm + ChromeGjiReinitFsm を実装</strong>: F22→F21 送信後、GJI が Hiragana モードに落ち着いたことを確認してから次入力を許可する FSM を追加 (<a href="https://github.com/cuzic/awase/commit/2c8d647">2c8d647</a>)</li>
 <li><strong>Chrome 用 LiteralDetector を WriteTransferCount ベースに改善</strong>: パイプへの書き込みバイト数で composition 完了を判定し、誤 BS を抑制 (<a href="https://github.com/cuzic/awase/commit/c7ef500">c7ef500</a>)</li>
 <li><strong>F21/F22 全送信パスで belief 更新 + VK 直後の FocusChange 抑制</strong>: IME モード state の信頼度を高め、不要な re-probe を削減 (<a href="https://github.com/cuzic/awase/commit/1a0e54e">1a0e54e</a>)</li>
 </ul>
@@ -378,10 +400,10 @@ footer p{margin:0.3rem 0}
 <p><strong>Ctrl+J 問題の完全修正</strong></p>
 <ul>
 <li><strong>IME ON 状態で Ctrl+J が tmux に届かない問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/32a037d">32a037d</a>)<ul>
-<li>TsfGate が IME ON 中の Ctrl+J を Google 日本語入力 warmup パスに誤送信していた</li>
+<li>TsfGate が IME ON 中の Ctrl+J を GJI warmup パスに誤送信していた</li>
 </ul>
 </li>
-<li><strong>Ctrl+J が Google 日本語入力 に横取りされる問題を再修正</strong> (<a href="https://github.com/cuzic/awase/commit/ee0b1fd">ee0b1fd</a>)</li>
+<li><strong>Ctrl+J が GJI に横取りされる問題を再修正</strong> (<a href="https://github.com/cuzic/awase/commit/ee0b1fd">ee0b1fd</a>)</li>
 <li><strong>Ctrl バイパス後に modifier 先行リリースが来ると J↑ を誤 Suppress する問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/bd51ea1">bd51ea1</a>)</li>
 <li><strong>Ctrl+key bypass 直後の次キーを NICOLA スキップするよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/ddb6b58">ddb6b58</a>)<ul>
 <li>バイパス直後のキーが親指シフト同時打鍵と誤判定されるケースを排除</li>
@@ -393,7 +415,7 @@ footer p{margin:0.3rem 0}
 <li><strong>gate=Bypass で即終了するバグを修正</strong> (<a href="https://github.com/cuzic/awase/commit/0426fb6">0426fb6</a>)</li>
 <li><strong>VK_A+BS を同一バッチで送信して文字フラッシュを防止</strong> (<a href="https://github.com/cuzic/awase/commit/af906b1">af906b1</a>)</li>
 <li><strong>write_bytes ベースラインを VK_A 送信前に取得し閾値を 350B に調整</strong> (<a href="https://github.com/cuzic/awase/commit/26bc0fe">26bc0fe</a>)</li>
-<li><strong>Chrome cold タイムアウト時に F22→F21 で Google 日本語入力 を強制リセット</strong> (<a href="https://github.com/cuzic/awase/commit/9630acb">9630acb</a>)</li>
+<li><strong>Chrome cold タイムアウト時に F22→F21 で GJI を強制リセット</strong> (<a href="https://github.com/cuzic/awase/commit/9630acb">9630acb</a>)</li>
 <li><strong>Chrome warm 確認後、HIDE 待機してから実ローマ字を再送するよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/2355761">2355761</a>)</li>
 <li><strong>VK_A+BS atomic batch 後の早期 HIDE で「おお」が消える IPC race を修正</strong> (<a href="https://github.com/cuzic/awase/commit/123efb1">123efb1</a>)</li>
 <li><strong><code>composition_was_seen</code> が最初の tick で false になる drain 順序バグを修正</strong> (<a href="https://github.com/cuzic/awase/commit/e40a2eb">e40a2eb</a>)</li>
@@ -404,7 +426,7 @@ footer p{margin:0.3rem 0}
 <li><strong>フォーカス直後 injection_mode を同期し、Unicode long-cold 時に F22→F21 再初期化</strong> (<a href="https://github.com/cuzic/awase/commit/6ecb8e9">6ecb8e9</a>)</li>
 <li><strong>HWND キャスト型を <code>*mut c_void</code> に修正</strong>（<code>isize</code> への暗黙変換が Windows API 境界で UB）(<a href="https://github.com/cuzic/awase/commit/ff1f092">ff1f092</a>)</li>
 </ul>
-<p><strong>Google 日本語入力 FSM</strong></p>
+<p><strong>GJI FSM</strong></p>
 <ul>
 <li><strong>Unicode モードの <code>StartProbe</code> で即 <code>WarmupComplete</code> を dispatch</strong>（OnCold 固着バグ修正）(<a href="https://github.com/cuzic/awase/commit/444e9a6">444e9a6</a>)</li>
 <li><strong>ImeOn 直後の FocusChange で proactive probe を維持するよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/782f10d">782f10d</a>)</li>
@@ -429,37 +451,37 @@ footer p{margin:0.3rem 0}
 <ul>
 <li><strong>ALT+TAB が連続して押せない問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/d6cb1a4">d6cb1a4</a>)<ul>
 <li>フォーカス変化のたびに F21/F22 (IME ON/OFF キー) を送信する際、ALT を一時的に解放していたため ALT+TAB スイッチャーが「ALT 離した＝確定」と誤認していた</li>
-<li>F21/F22 は Google 日本語入力 専用の仮想 VK のため ALT を保持したまま送信しても正常に動作する</li>
+<li>F21/F22 は GJI 専用の仮想 VK のため ALT を保持したまま送信しても正常に動作する</li>
 </ul>
 </li>
-<li><strong>Google 日本語入力 long-idle 後の「kお」cold start バグを修正</strong> (<a href="https://github.com/cuzic/awase/commit/e4a6248">e4a6248</a>, <a href="https://github.com/cuzic/awase/commit/c571acf">c571acf</a>)<ul>
-<li>Google 日本語入力 が 8〜10 秒以上アイドル後、最初のキー入力が部分リテラル化（「こ」→「kお」）するケースを修正</li>
-<li>medium idle (7〜10 秒) でも Google 日本語入力 無応答タイムアウト時に F2 をバッチ同梱するよう改善 (<a href="https://github.com/cuzic/awase/commit/2159dca">2159dca</a>)</li>
+<li><strong>GJI long-idle 後の「kお」cold start バグを修正</strong> (<a href="https://github.com/cuzic/awase/commit/e4a6248">e4a6248</a>, <a href="https://github.com/cuzic/awase/commit/c571acf">c571acf</a>)<ul>
+<li>GJI が 8〜10 秒以上アイドル後、最初のキー入力が部分リテラル化（「こ」→「kお」）するケースを修正</li>
+<li>medium idle (7〜10 秒) でも GJI 無応答タイムアウト時に F2 をバッチ同梱するよう改善 (<a href="https://github.com/cuzic/awase/commit/2159dca">2159dca</a>)</li>
 </ul>
 </li>
 <li><strong>部分リテラル（「kお」「seつぞく」）の修正</strong> (<a href="https://github.com/cuzic/awase/commit/5562b6a">5562b6a</a>, <a href="https://github.com/cuzic/awase/commit/d54f5b1">d54f5b1</a>, <a href="https://github.com/cuzic/awase/commit/125d2c1">125d2c1</a>)<ul>
-<li>Google 日本語入力 I/O 応答後に <code>gji_resumed</code> を設定して部分リテラルを救済</li>
+<li>GJI I/O 応答後に <code>gji_resumed</code> を設定して部分リテラルを救済</li>
 <li>TSF mode でも LiteralDetect を有効化（「seつぞく」の再発防止）</li>
 <li>部分リテラル BS 数を <code>chars.len()</code> から 2 固定に修正</li>
 </ul>
 </li>
 <li><strong>Chrome パスの LiteralDetector を改善</strong> (<a href="https://github.com/cuzic/awase/commit/c279fc7">c279fc7</a>)<ul>
-<li><code>new_gji_resumed</code> に切り替えて Google 日本語入力 resume 後のリテラル誤検出を抑制</li>
+<li><code>new_gji_resumed</code> に切り替えて GJI resume 後のリテラル誤検出を抑制</li>
 </ul>
 </li>
 <li><strong>probe-fsm: F2 二重送信・遅延の修正</strong> (<a href="https://github.com/cuzic/awase/commit/d195c43">d195c43</a>, <a href="https://github.com/cuzic/awase/commit/4de228b">4de228b</a>)<ul>
 <li>ReWarmup/non-eager パスで TSF バッチへの F2 二重送信を抑制</li>
-<li>Google 日本語入力 pre-idle 時に fresh F2 + NameChangeWait をスキップして遅延を削減</li>
+<li>GJI pre-idle 時に fresh F2 + NameChangeWait をスキップして遅延を削減</li>
 </ul>
 </li>
 <li><strong>composition-fsm: Long cold 状態を正しく維持するよう修正</strong> (<a href="https://github.com/cuzic/awase/commit/c96598f">c96598f</a>)</li>
 </ul>
 <h3>新機能</h3>
 <ul>
-<li><strong>GjiWarmupFsm を新規作成</strong>: Google 日本語入力 cold-start warmup 専用 FSM を導入し warm-up ロジックを独立化 (<a href="https://github.com/cuzic/awase/commit/fcd1b82">fcd1b82</a>, <a href="https://github.com/cuzic/awase/commit/f768944">f768944</a>)</li>
-<li><strong>LiteralDetectFsm を新規作成</strong>: warm パス・Google 日本語入力 post-transmit で共用するリテラル検出 FSM (<a href="https://github.com/cuzic/awase/commit/8608062">8608062</a>, <a href="https://github.com/cuzic/awase/commit/660ee19">660ee19</a>)</li>
+<li><strong>GjiWarmupFsm を新規作成</strong>: GJI cold-start warmup 専用 FSM を導入し warm-up ロジックを独立化 (<a href="https://github.com/cuzic/awase/commit/fcd1b82">fcd1b82</a>, <a href="https://github.com/cuzic/awase/commit/f768944">f768944</a>)</li>
+<li><strong>LiteralDetectFsm を新規作成</strong>: warm パス・GJI post-transmit で共用するリテラル検出 FSM (<a href="https://github.com/cuzic/awase/commit/8608062">8608062</a>, <a href="https://github.com/cuzic/awase/commit/660ee19">660ee19</a>)</li>
 <li><strong>ChromeProbe を新規作成</strong>: <code>pending_tsf</code> を <code>Box&lt;dyn TickableFsm&gt;</code> に換装し Chrome 専用 probe を追加 (<a href="https://github.com/cuzic/awase/commit/51901c0">51901c0</a>)</li>
-<li><strong>ColdKind::Medium を追加</strong>: Google 日本語入力 idle 時間を Long / Medium / Short に分類して warmup 戦略を最適化 (<a href="https://github.com/cuzic/awase/commit/bf3eade">bf3eade</a>)</li>
+<li><strong>ColdKind::Medium を追加</strong>: GJI idle 時間を Long / Medium / Short に分類して warmup 戦略を最適化 (<a href="https://github.com/cuzic/awase/commit/bf3eade">bf3eade</a>)</li>
 <li><strong>NameChangeWait で candidate 可視時に即 transmit</strong>: WezTerm での probe 待ち時間を最大 300ms 短縮 (<a href="https://github.com/cuzic/awase/commit/25182eb">25182eb</a>)</li>
 </ul>
 <h3>内部改善</h3>
@@ -473,7 +495,7 @@ footer p{margin:0.3rem 0}
 <h2>[1.2.0] - 2026-06-21</h2>
 <h3>新機能</h3>
 <ul>
-<li><strong>GjiFsm を新規追加</strong>: Google 日本語入力 (Google 日本語入力) の内部 composition 状態を推測する FSM を導入 (<a href="https://github.com/cuzic/awase/commit/b152c7e">b152c7e</a>)<ul>
+<li><strong>GjiFsm を新規追加</strong>: GJI (Google 日本語入力) の内部 composition 状態を推測する FSM を導入 (<a href="https://github.com/cuzic/awase/commit/b152c7e">b152c7e</a>)<ul>
 <li>Phase 2a: GjiFsm を Output に接続し FocusChange / ImeOn / ImeOff / WarmupComplete を配線 (<a href="https://github.com/cuzic/awase/commit/bb228c2">bb228c2</a>)</li>
 <li>Phase 2b: CompositionReset・KeyInput を配線し <code>is_composition_warm</code> を FSM 化 (<a href="https://github.com/cuzic/awase/commit/d49c516">d49c516</a>)</li>
 <li>Phase 3: <code>is_composition_warm</code> を GjiFsm SSOT に切替 (<a href="https://github.com/cuzic/awase/commit/2b6d25f">2b6d25f</a>)</li>
@@ -508,26 +530,26 @@ footer p{margin:0.3rem 0}
 <h3>バグ修正</h3>
 <ul>
 <li><strong>Chrome → WezTerm フォーカス切替後の IME-OFF Engine-ON 状態</strong> を修正 (<a href="https://github.com/cuzic/awase/commit/12dd094">12dd094</a>, <a href="https://github.com/cuzic/awase/commit/56f5e49">56f5e49</a>)<ul>
-<li>TsfNative 入場時に Google 日本語入力 F21 を <code>shadow_on</code> を無視して強制送信するよう変更</li>
+<li>TsfNative 入場時に GJI F21 を <code>shadow_on</code> を無視して強制送信するよう変更</li>
 <li>TsfNative cache miss 時の belief を carry-over (true) から安全デフォルト OFF に変更</li>
 <li>フォーカス cache TTL を 5 秒 → 1 時間に延長（IME ON でウィンドウを離れて戻ると cache miss 扱いになっていた問題を解消）</li>
 <li>短期フォーカス (&lt; 100ms) の cache 保存をスキップ（通知ポップアップ等が正常な状態を上書きするのを防止）</li>
 </ul>
 </li>
 <li><strong>WezTerm gji_resumed 後の LiteralDetect false positive</strong> を修正（「あ」が「a」になるケース） (<a href="https://github.com/cuzic/awase/commit/da8dad1">da8dad1</a>)</li>
-<li><strong>WezTerm gji_resumed 後の composition 早期確認</strong> を実装（Google 日本語入力 I/O 変化を検知して待ち時間を短縮） (<a href="https://github.com/cuzic/awase/commit/aa8a79d">aa8a79d</a>)</li>
+<li><strong>WezTerm gji_resumed 後の composition 早期確認</strong> を実装（GJI I/O 変化を検知して待ち時間を短縮） (<a href="https://github.com/cuzic/awase/commit/aa8a79d">aa8a79d</a>)</li>
 <li><strong>comp-probe: RUNTIME 再入借用バグ</strong> を修正（<code>shadow_on</code> / <code>jp</code> が常時 false になっていた） (<a href="https://github.com/cuzic/awase/commit/2225578">2225578</a>)</li>
 <li><strong>nicola-fsm: ソロ連打</strong> でシフトカウンターが残存するバグを修正 (<a href="https://github.com/cuzic/awase/commit/a53344b">a53344b</a>)</li>
 </ul>
 <h3>内部改善</h3>
 <ul>
-<li>Google 日本語入力 プロセスの I/O 統計 (ReadOperationCount / ReadTransferCount) を監視ログに追加 (<a href="https://github.com/cuzic/awase/commit/93236a8">93236a8</a>)</li>
+<li>GJI プロセスの I/O 統計 (ReadOperationCount / ReadTransferCount) を監視ログに追加 (<a href="https://github.com/cuzic/awase/commit/93236a8">93236a8</a>)</li>
 </ul>
 <hr />
 <h2>[1.1.0] - 2026-06-20</h2>
 <h3>重要な変更</h3>
 <ul>
-<li><strong>Google 日本語入力 キーバインドを F13/F14 → F21/F22 に変更</strong> (<a href="https://github.com/cuzic/awase/commit/7f8291f">7f8291f</a>)<ul>
+<li><strong>GJI キーバインドを F13/F14 → F21/F22 に変更</strong> (<a href="https://github.com/cuzic/awase/commit/7f8291f">7f8291f</a>)<ul>
 <li>F21/F22 は実キーボードに存在しない仮想キーで VT エスケープシーケンスを生成しない</li>
 <li>WezTerm・Windows Terminal での Nop バインド設定が不要になった</li>
 <li><strong>アップグレード時は必ずトレイメニューから「Google 日本語入力のセットアップ」を再実行してください</strong></li>
@@ -536,15 +558,15 @@ footer p{margin:0.3rem 0}
 </ul>
 <h3>新機能</h3>
 <ul>
-<li><strong>Google 日本語入力 keybind 自動監視</strong>: config1.db から F21/F22 エントリが消去された場合、30 秒以内に検知して自動再登録 (<a href="https://github.com/cuzic/awase/commit/58557e9">58557e9</a>)</li>
-<li><strong>トレイメニュー拡張</strong>: Google 日本語入力 teardown・自動起動トグルを追加 (<a href="https://github.com/cuzic/awase/commit/e67cb49">e67cb49</a>)</li>
+<li><strong>GJI keybind 自動監視</strong>: config1.db から F21/F22 エントリが消去された場合、30 秒以内に検知して自動再登録 (<a href="https://github.com/cuzic/awase/commit/58557e9">58557e9</a>)</li>
+<li><strong>トレイメニュー拡張</strong>: GJI teardown・自動起動トグルを追加 (<a href="https://github.com/cuzic/awase/commit/e67cb49">e67cb49</a>)</li>
 </ul>
 <h3>バグ修正</h3>
 <ul>
 <li><strong>WezTerm long-idle 後の最初の文字リテラル化</strong>（「こ」→「ko」）を修正（LiteralDetect + BS 再送方式） (<a href="https://github.com/cuzic/awase/commit/84e6942">84e6942</a>)</li>
-<li><strong>Google 日本語入力 IME-ON 不能バグ</strong>を修正: <code>DirectInput\tF21\tIMEOn</code> エントリ欠落により F21 が無視されていた (<a href="https://github.com/cuzic/awase/commit/9d11cd7">9d11cd7</a>)</li>
+<li><strong>GJI IME-ON 不能バグ</strong>を修正: <code>DirectInput\tF21\tIMEOn</code> エントリ欠落により F21 が無視されていた (<a href="https://github.com/cuzic/awase/commit/9d11cd7">9d11cd7</a>)</li>
 <li><strong>Teams / Chrome での partial literal</strong>（「kおんな」→「こんな」変換失敗）を修正 (<a href="https://github.com/cuzic/awase/commit/3744457">3744457</a>, <a href="https://github.com/cuzic/awase/commit/040f8f8">040f8f8</a>)</li>
-<li><strong>Google 日本語入力 long-idle 後の LiteralDetect false positive</strong> を修正 (<a href="https://github.com/cuzic/awase/commit/a6b4c0d">a6b4c0d</a>)</li>
+<li><strong>GJI long-idle 後の LiteralDetect false positive</strong> を修正 (<a href="https://github.com/cuzic/awase/commit/a6b4c0d">a6b4c0d</a>)</li>
 </ul>
 <h3>パフォーマンス</h3>
 <ul>
