@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-07-05
+
+### バグ修正
+
+- **LINE 等で drain キュー処理中に後続の入力文字が消える問題を修正** ([233b6e3](https://github.com/cuzic/awase/commit/233b6e3))
+  - `UnicodeColdWarmupFsm` が飛行中に新たな Unicode 文字が来ると FSM が上書きされ `deferred_chars` が失われていた
+  - `push_deferred_unicode_chars` を `TickableFsm` に追加し、飛行中 FSM に追記できるようにして上書きを回避
+- **MS-IME 環境で起動直後に GJI warmup（VK_A+BS）が誤発火する問題を修正** ([b694ffc](https://github.com/cuzic/awase/commit/b694ffc))
+  - gji_monitor スレッドが `WM_IME_KIND_CHANGED` を起動時に送信せず、`MsImeStrategy` の切り替えが遅延していた
+  - 初期 IME 種別検出後に無条件で `WM_IME_KIND_CHANGED` を post し、起動直後から正しい warmup 戦略を適用
+
+### リファクタリング
+
+- **unicode-cold-warmup ロジックをヘルパーメソッドに抽出** ([60a0b79](https://github.com/cuzic/awase/commit/60a0b79))
+  - `start_unicode_cold_warmup` / `flush_unicode_cold_deferred_chars` を `WindowsPlatform` に追加し、`send_keys` と `dispatch_gji_response` の重複コードを統合
+- **メソッド抽出で多段ネスト・重複を削減** ([b0cd4e9](https://github.com/cuzic/awase/commit/b0cd4e9), [c4900a3](https://github.com/cuzic/awase/commit/c4900a3), [f5023b4](https://github.com/cuzic/awase/commit/f5023b4))
+  - `fmt_conv()` / `store_gji_warmup_if_probing()` で `probe_io.rs` の重複ブロックを集約
+  - `observer::gji_idle_ms()` で 2行の idle 計算を関数化（6箇所削減）
+  - `dispatch_gji_event()` で `gji_on_event + dispatch_gji_response` の 4行パターンを 1行化（5メソッド）
+  - `Output::on_f22_f21_sent()` で IME OFF→ON 通知の 3行パターンを 1行化（2箇所）
+  - `KeyInjector::format_vk_run()` で VK 列フォーマットを関数化（`send_vk_runs*` 3メソッド共用）
+  - raw `SendInput` 7箇所を既存の `win32::send_input_safe()` に統一し `unsafe` ブロックを撤去
+
 ## [1.8.1] - 2026-07-05
 
 ### バグ修正
