@@ -134,6 +134,40 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
     );
 }
 
+/// `ImeEvent::InputModeApplied` は awase 自身の能動的な input_mode 更新に限定される。
+///
+/// 外部 API を呼んでいないのに `InputModeObserved` で「観測した体」を偽装するのを防ぐ。
+/// 現在の designated 使用箇所（各 strategy と対応）:
+/// - `platform_state.rs::apply_panic_reset`        → `InputModeApplyStrategy::PanicReset`
+/// - `platform_state.rs::apply_hwnd_cache_restore` → `InputModeApplyStrategy::CacheRestore`
+/// - `key_pipeline.rs`                             → `InputModeApplyStrategy::PostSetOpenEisuReset`
+/// - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
+/// - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
+///
+/// 新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用 variant を追加し
+/// このカウントを更新すること。外部観測には必ず `InputModeObserved` を使うこと。
+#[test]
+fn input_mode_applied_construction_sites_are_accounted_for() {
+    let known_sites: &[(&str, usize)] = &[
+        ("src/state/platform_state.rs", 2), // PanicReset + CacheRestore
+        ("src/runtime/key_pipeline.rs", 1), // PostSetOpenEisuReset
+        ("src/runtime/ime_refresh.rs", 1),  // ImmBrokenCorrection (FocusChanged)
+        ("src/runtime/mod.rs", 1),          // ImmBrokenCorrection (Blacklist force-ON)
+    ];
+    for (path, expected) in known_sites {
+        let content = read_crate_file(path);
+        let count = content.matches("ImeEvent::InputModeApplied {").count();
+        assert_eq!(
+            count, *expected,
+            "{path} 内の `ImeEvent::InputModeApplied` 構築箇所数が想定({expected})と \
+             異なります(実際: {count})。\n\
+             新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用 variant を追加し、\n\
+             このテストの期待値を更新してください。\n\
+             外部 API 観測には `InputModeObserved` を使ってください（偽装厳禁）。"
+        );
+    }
+}
+
 /// `UserImeSetIntent` の dispatch は3つの typed writer 経由に限定される。
 ///
 /// - `write_sync_key`        → `UserIntentSource::SyncKey`
