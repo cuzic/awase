@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-07-05
+
+### バグ修正
+
+- **Alt+Tab 等の高速フォーカス遷移中に IME の内部認識 (belief) と実際の OS 側 IME 状態がずれる問題を修正** ([dd6f208](https://github.com/cuzic/awase/commit/dd6f208), [08ce474](https://github.com/cuzic/awase/commit/08ce474), [11ee689](https://github.com/cuzic/awase/commit/11ee689), [435e2d3](https://github.com/cuzic/awase/commit/435e2d3))
+  - GJI 強制 IME-ON ガードが「GJI プロセスの生存」ではなく「実際にアクティブな IME 種別」を見るよう修正し、MS-IME 環境での VK_DBE_HIRAGANA 二重送信を解消
+  - フォーカス遷移直後の settle バリア (`settle_until`) を配線し、`Engine`/`ImeEffect::SetOpen` の全呼び出し経路（キーボード入力・フォーカス変更通知・IME リフレッシュポーリング・ホットキー等）を `execute_from_loop`/`execute_from_hook` の2箇所で一括ガード
+  - `AppImeProfile::from_class_name` の分類優先順位により Windows Terminal (`CASCADIA_HOSTING_WINDOW_CLASS`) が `TsfNative` に一切分類されない仕様を見落として「非 TSF ネイティブ」と誤判定していた5箇所を `is_effectively_tsf_native` に統一
+- **BrokenAppBootstrap force guard がユーザーの明示的 OFF 意図を上書きする問題を修正** ([a06ad69](https://github.com/cuzic/awase/commit/a06ad69))
+
 ## [1.8.0] - 2026-07-05
 
 ### 新機能
