@@ -178,8 +178,6 @@ pub enum InputModeApplyStrategy {
     ImmBrokenCorrection,
     /// パニックリセット時の強制 ObservedRomaji 設定。
     PanicReset,
-    /// フォーカス変更に伴う入力モードリセット（前ウィンドウの stale 値を消去）。
-    FocusReset,
     /// hwnd キャッシュからの入力モード復元（前回フォーカス時の belief を再現）。
     CacheRestore,
     /// `SetOpen(true)` 適用直後、stale な `ObservedEisu` を先回りで訂正する。
