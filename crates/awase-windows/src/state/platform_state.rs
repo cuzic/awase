@@ -58,6 +58,18 @@ pub(crate) struct ImeStateHub {
     last_explicit_ime_action_ms: u64,
 }
 
+/// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
+///
+/// `poll_and_classify_ime` / `classify_fetched_snapshot` の 4 引数をひとつにまとめることで
+/// `ir_poll_and_learn` 内の同一フィールド二重読み取りを解消する。
+#[derive(Clone, Copy)]
+pub(crate) struct ImePollState {
+    pub(crate) ime_on: bool,
+    pub(crate) force_guard: bool,
+    pub(crate) input_mode: InputModeState,
+    pub(crate) prev_conv: Option<u32>,
+}
+
 impl ImeStateHub {
     /// デフォルト値で初期化する。
     pub(crate) fn new() -> Self {
@@ -318,6 +330,34 @@ impl ImeStateHub {
     /// 呼び出し元はすべてこのメソッドを使うこと。
     pub(crate) fn input_mode(&self) -> InputModeState {
         self.shadow_model.input_mode()
+    }
+
+    /// `poll_and_classify_ime` / `classify_fetched_snapshot` に渡す 4 フィールドを一括取得する。
+    ///
+    /// `ir_poll_and_learn` で同じ 4 フィールドを 2 回読んでいた重複を解消する。
+    pub(crate) fn capture_poll_state(&self) -> ImePollState {
+        ImePollState {
+            ime_on: self.effective_open(),
+            force_guard: self.is_force_on_guard_active(),
+            input_mode: self.input_mode(),
+            prev_conv: self.belief.prev_conversion_mode(),
+        }
+    }
+
+    /// `belief.is_japanese_ime() && effective_open()` の複合述語。
+    ///
+    /// `apply_force_on_for_imm_broken` / `try_force_on_bootstrap` で重複していたガード条件。
+    /// `engine.is_user_enabled()` と組み合わせて IME force-ON の前提条件として使う。
+    pub(crate) fn is_eligible_for_ime_force_on(&self) -> bool {
+        self.belief.is_japanese_ime() && self.effective_open()
+    }
+
+    /// 次のイベント generation 番号を払い出す。
+    ///
+    /// 呼び出し元で `self.platform_state.ime.event_log.next_seq()` を直接書かずに
+    /// このメソッドを使うこと（3 段チェーンの解消）。
+    pub(crate) fn allocate_event_generation(&self) -> u64 {
+        self.event_log.next_seq()
     }
 
     /// IMM-broken アプリで IME-ON が確認されたとき、`input_mode` を補正すべき値を返す。

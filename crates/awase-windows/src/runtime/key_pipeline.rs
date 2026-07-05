@@ -350,7 +350,7 @@ impl Runtime {
                         && !self.platform_state.ime.effective_open()
                     {
                         self.platform.timer.kill(TIMER_IME_REFRESH);
-                        let generation = self.platform_state.ime.event_log.next_seq();
+                        let generation = self.platform_state.ime.allocate_event_generation();
                         self.platform_state
                             .ime
                             .handle_engine_set_open(true, false, false, generation, now_tick);
@@ -383,7 +383,7 @@ impl Runtime {
                     && !self.platform_state.ime.effective_open()
                 {
                     self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.event_log.next_seq();
+                    let generation = self.platform_state.ime.allocate_event_generation();
                     self.platform_state
                         .ime
                         .handle_engine_set_open(true, false, false, generation, now_tick);
@@ -397,7 +397,7 @@ impl Runtime {
                     && self.platform_state.ime.effective_open()
                 {
                     self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.event_log.next_seq();
+                    let generation = self.platform_state.ime.allocate_event_generation();
                     self.platform_state
                         .ime
                         .handle_engine_set_open(true, false, false, generation, now_tick);
@@ -415,7 +415,7 @@ impl Runtime {
                         "[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput"
                     );
                     self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.event_log.next_seq();
+                    let generation = self.platform_state.ime.allocate_event_generation();
                     self.platform_state
                         .ime
                         .handle_engine_set_open(false, false, false, generation, now_tick);
@@ -435,7 +435,7 @@ impl Runtime {
             && !self.platform_state.ime.effective_open()
         {
             self.platform.timer.kill(TIMER_IME_REFRESH);
-            let generation = self.platform_state.ime.event_log.next_seq();
+            let generation = self.platform_state.ime.allocate_event_generation();
             self.platform_state
                 .ime
                 .handle_engine_set_open(true, false, false, generation, now_tick);
@@ -569,7 +569,7 @@ impl Runtime {
     ) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             self.platform.timer.kill(TIMER_IME_REFRESH);
-            let generation = self.platform_state.ime.event_log.next_seq();
+            let generation = self.platform_state.ime.allocate_event_generation();
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
             let applied = self.platform_state.ime.handle_engine_set_open(
                 new_ime_on,

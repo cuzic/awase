@@ -262,27 +262,28 @@ impl Runtime {
     // ── IME 状態のポーリングと学習 ──
 
     fn ir_poll_and_learn(&mut self, miss_before: u32, ime_snap: Option<&crate::ime::ImeSnapshot>) {
-        let ime_on_before_poll = self.platform_state.ime.effective_open();
-        let input_mode_before_poll = self.platform_state.ime.input_mode();
+        let poll = self.platform_state.ime.capture_poll_state();
+        let ime_on_before_poll = poll.ime_on;
+        let input_mode_before_poll = poll.input_mode;
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         let mut observer_out = match ime_snap {
             None => unsafe {
                 crate::observer::ime_observer::poll_and_classify_ime(
-                    self.platform_state.ime.effective_open(),
-                    self.platform_state.ime.is_force_on_guard_active(),
-                    self.platform_state.ime.input_mode(),
-                    self.platform_state.ime.belief.prev_conversion_mode(),
+                    poll.ime_on,
+                    poll.force_guard,
+                    poll.input_mode,
+                    poll.prev_conv,
                 )
             },
             Some(snap) => {
                 crate::observer::ime_observer::classify_fetched_snapshot(
                     snap,
                     tick_ms.0,
-                    self.platform_state.ime.effective_open(),
-                    self.platform_state.ime.is_force_on_guard_active(),
-                    self.platform_state.ime.input_mode(),
-                    self.platform_state.ime.belief.prev_conversion_mode(),
+                    poll.ime_on,
+                    poll.force_guard,
+                    poll.input_mode,
+                    poll.prev_conv,
                 )
             }
         };

@@ -441,8 +441,7 @@ impl Runtime {
             return;
         }
         if !(self.engine.is_user_enabled()
-            && self.platform_state.ime.belief.is_japanese_ime()
-            && self.platform_state.ime.effective_open())
+            && self.platform_state.ime.is_eligible_for_ime_force_on())
         {
             return;
         }
@@ -475,8 +474,7 @@ impl Runtime {
     pub fn try_force_on_bootstrap(&mut self) {
         if self.platform_state.ime.detect_miss_count() >= crate::IME_DETECT_MISS_THRESHOLD
             && self.engine.is_user_enabled()
-            && self.platform_state.ime.belief.is_japanese_ime()
-            && self.platform_state.ime.effective_open()
+            && self.platform_state.ime.is_eligible_for_ime_force_on()
             && !self.platform_state.ime.is_force_on_guard_active()
         {
             if self.ime_apply_should_defer() {
