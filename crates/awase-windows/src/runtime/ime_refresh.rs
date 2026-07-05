@@ -394,9 +394,18 @@ impl Runtime {
         // apply_ime_open_with_applied(true, None) で shadow_on=∅(false) にして VK_IME_ON を確実に送る。
         // VK_IME_ON は GJI が既に ON の場合も no-op（冪等）なので副作用なし。
         // GJI 未使用環境（MS-IME + TsfNative）で KanjiToggle が誤送信されないよう GJI ガードを設ける。
+        //
+        // ガードは gji_monitor_ok（GJI プロセスの生存）ではなく active_ime_kind（CLSID ベースの
+        // 実際のアクティブ IME 判定）を見ること。GJI プロセスは他ウィンドウ（例: msedge）が
+        // 使用中で生きているだけのことがあり、その場合 gji_monitor_ok=true でもこのウィンドウの
+        // 実際の IME は MS-IME であり得る。gji_monitor_ok だけで判定すると、通常の
+        // belief 駆動 apply-ime（MsImeDirectStrategy）に続けて VK_DBE_HIRAGANA が二重送信され、
+        // TSF アクティベーション中の conv mode 破壊（roma→kana 化け）を誘発し得る。
         if applied_ime_on && new_profile_is_tsf_native {
             let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
-            if obs.gji_monitor_ok {
+            if obs.gji_monitor_ok
+                && obs.active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+            {
                 let _ = self.platform.apply_ime_open_with_applied(true, None);
                 log::debug!(
                     "[composition] FocusChange: TsfNative IME ON → GJI VK_IME_ON 強制 (shadow_on を無視)"
