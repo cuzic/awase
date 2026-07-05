@@ -556,12 +556,17 @@ impl Runtime {
             if applied && new_ime_on
                 && self.platform_state.ime.input_mode() == InputModeState::ObservedEisu
             {
+                // これは外部観測ではなく、awase 自身が直前に発行した SetOpen(true) の
+                // 帰結を先読みする能動的な訂正のため InputModeApplied で表現する
+                // (InputModeObserved を使うと「ImmGetOpenStatus で観測した」という
+                // 存在しない API 呼び出しを偽装することになる)。
                 self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeObserved {
+                    crate::state::ime_event::ImeEvent::InputModeApplied {
                         mode: InputModeState::AssumedRomaji {
                             reason: AssumedReason::AppKindExcluded,
                         },
-                        source: crate::state::ime_event::ObservationSource::ImmGetOpenStatus,
+                        strategy: crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
+                        result: crate::state::ime_event::InputModeApplyResult::Applied,
                         at: tick_ms,
                     },
                     tick_ms,
