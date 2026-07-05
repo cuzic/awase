@@ -346,6 +346,7 @@ impl Runtime {
                     crate::state::ime_event::ImeEvent::InputModeObserved {
                         mode: new_mode,
                         source: crate::state::ime_event::ObservationSource::ImmGetOpenStatus,
+                        confidence: crate::state::ime_event::ObservationConfidence::High,
                         at: now_tick,
                     },
                     now_tick,
@@ -826,45 +827,31 @@ impl Runtime {
                     self.platform.output.conv_mode.update_from_conv(conv, now_tick_ms);
                     self.platform_state.ime.set_prev_conversion_mode(Some(conv));
                     let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
-                    let has_native = conv & crate::imm::IME_CMODE_NATIVE != 0;
                     let has_kata = conv & crate::imm::IME_CMODE_KATAKANA != 0;
-                    use awase::engine::InputModeState;
                     let current = self.platform_state.ime.input_mode();
-                    use crate::state::ime_event::{ImeEvent, ObservationSource};
-                    if awase::engine::ConvMode::from_u32(conv).is_eisu() {
-                        // 英数モード (HankakuAlpha / ZenkakuAlpha)。ROMAN ビットの有無は問わない。
-                        if !matches!(current, InputModeState::ObservedEisu) {
-                            log::info!(
-                                "[focus-conv-check] TsfNative: conv=0x{:08X} (英数) \
-                                 → belief {:?}→ObservedEisu",
-                                conv,
-                                current,
-                            );
-                            self.platform_state.ime.dispatch_event(
-                                ImeEvent::InputModeObserved {
-                                    mode: InputModeState::ObservedEisu,
-                                    source: ObservationSource::FocusProbe,
-                                    at: now_tick_ms,
-                                },
-                                now_tick_ms,
-                            );
-                        }
-                    } else if has_native && !has_roman && !has_kata {
-                        // JISかな / ひらがな: classify_idle(is_roman_reliable=false) に委ねる。
-                        // TsfNative では ROMAN=0 が信頼できないため ObservedKana への downgrade は
-                        // 行わず、非 romaji-capable なら AssumedRomaji に回復する。
-                        use awase::engine::ConvMode;
+                    use crate::state::ime_event::{ImeEvent, ObservationConfidence, ObservationSource};
+                    use awase::engine::ConvMode;
+                    if has_kata && !has_roman {
+                        // カタカナモード (ROMAN=0) は NICOLA shadow-sync が複雑なため
+                        // idle-conv-check に委ねる（ここでは判定しない）。
+                        log::debug!(
+                            "[focus-conv-check] TsfNative: conv=0x{:08X} (カタカナ) → idle-conv-check に委譲",
+                            conv,
+                        );
+                    } else {
+                        // 英数/ローマ字/JISかな の分類は classify_idle（純粋関数）に一元化する。
+                        // TsfNative では ROMAN ビットが信頼できないため is_roman_reliable=false。
                         match ConvMode::from_u32(conv).classify_idle(false, current, false) {
                             Some(new_mode) => {
                                 log::info!(
-                                    "[focus-conv-check] TsfNative: conv=0x{:08X} (JISかな) \
-                                     → belief {:?}→{:?}",
+                                    "[focus-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
                                     conv, current, new_mode,
                                 );
                                 self.platform_state.ime.dispatch_event(
                                     ImeEvent::InputModeObserved {
                                         mode: new_mode,
                                         source: ObservationSource::FocusProbe,
+                                        confidence: ObservationConfidence::High,
                                         at: now_tick_ms,
                                     },
                                     now_tick_ms,
@@ -872,30 +859,12 @@ impl Runtime {
                             }
                             None => {
                                 log::debug!(
-                                    "[focus-conv-check] TsfNative: conv=0x{:08X} (JISかな) \
-                                     → belief {:?} 変更なし",
+                                    "[focus-conv-check] TsfNative: conv=0x{:08X} → belief {:?} 変更なし",
                                     conv, current,
                                 );
                             }
                         }
-                    } else if has_roman && !current.is_romaji_capable() {
-                        // ローマ字モードだが belief が kana 系: 訂正。
-                        log::info!(
-                            "[focus-conv-check] TsfNative: conv=0x{:08X} (ローマ字) \
-                             → belief {:?}→ObservedRomaji",
-                            conv,
-                            current,
-                        );
-                        self.platform_state.ime.dispatch_event(
-                            ImeEvent::InputModeObserved {
-                                mode: InputModeState::ObservedRomaji,
-                                source: ObservationSource::FocusProbe,
-                                at: now_tick_ms,
-                            },
-                            now_tick_ms,
-                        );
                     }
-                    // カタカナモードは NICOLA shadow-sync が複雑なため idle-conv-check に委ねる。
                 }
             }
         }
@@ -947,11 +916,14 @@ impl Runtime {
                             app.platform_state.ime.belief.prev_conversion_mode(),
                         );
                         if let Some(mode) = update.new_input_mode {
-                            use crate::state::ime_event::{ImeEvent, ObservationSource};
+                            use crate::state::ime_event::{
+                                ImeEvent, ObservationConfidence, ObservationSource,
+                            };
                             app.platform_state.ime.dispatch_event(
                                 ImeEvent::InputModeObserved {
                                     mode,
                                     source: ObservationSource::ImmCrossProbe,
+                                    confidence: ObservationConfidence::High,
                                     at: tick_ms,
                                 },
                                 tick_ms,
