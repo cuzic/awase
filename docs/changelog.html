@@ -109,6 +109,36 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.8.2] - 2026-07-05</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>LINE 等で drain キュー処理中に後続の入力文字が消える問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/233b6e3">233b6e3</a>)<ul>
+<li><code>UnicodeColdWarmupFsm</code> が飛行中に新たな Unicode 文字が来ると FSM が上書きされ <code>deferred_chars</code> が失われていた</li>
+<li><code>push_deferred_unicode_chars</code> を <code>TickableFsm</code> に追加し、飛行中 FSM に追記できるようにして上書きを回避</li>
+</ul>
+</li>
+<li><strong>MS-IME 環境で起動直後に GJI warmup（VK_A+BS）が誤発火する問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/b694ffc">b694ffc</a>)<ul>
+<li>gji_monitor スレッドが <code>WM_IME_KIND_CHANGED</code> を起動時に送信せず、<code>MsImeStrategy</code> の切り替えが遅延していた</li>
+<li>初期 IME 種別検出後に無条件で <code>WM_IME_KIND_CHANGED</code> を post し、起動直後から正しい warmup 戦略を適用</li>
+</ul>
+</li>
+</ul>
+<h3>リファクタリング</h3>
+<ul>
+<li><strong>unicode-cold-warmup ロジックをヘルパーメソッドに抽出</strong> (<a href="https://github.com/cuzic/awase/commit/60a0b79">60a0b79</a>)<ul>
+<li><code>start_unicode_cold_warmup</code> / <code>flush_unicode_cold_deferred_chars</code> を <code>WindowsPlatform</code> に追加し、<code>send_keys</code> と <code>dispatch_gji_response</code> の重複コードを統合</li>
+</ul>
+</li>
+<li><strong>メソッド抽出で多段ネスト・重複を削減</strong> (<a href="https://github.com/cuzic/awase/commit/b0cd4e9">b0cd4e9</a>, <a href="https://github.com/cuzic/awase/commit/c4900a3">c4900a3</a>, <a href="https://github.com/cuzic/awase/commit/f5023b4">f5023b4</a>)<ul>
+<li><code>fmt_conv()</code> / <code>store_gji_warmup_if_probing()</code> で <code>probe_io.rs</code> の重複ブロックを集約</li>
+<li><code>observer::gji_idle_ms()</code> で 2行の idle 計算を関数化（6箇所削減）</li>
+<li><code>dispatch_gji_event()</code> で <code>gji_on_event + dispatch_gji_response</code> の 4行パターンを 1行化（5メソッド）</li>
+<li><code>Output::on_f22_f21_sent()</code> で IME OFF→ON 通知の 3行パターンを 1行化（2箇所）</li>
+<li><code>KeyInjector::format_vk_run()</code> で VK 列フォーマットを関数化（<code>send_vk_runs*</code> 3メソッド共用）</li>
+<li>raw <code>SendInput</code> 7箇所を既存の <code>win32::send_input_safe()</code> に統一し <code>unsafe</code> ブロックを撤去</li>
+</ul>
+</li>
+</ul>
 <h2>[1.8.1] - 2026-07-05</h2>
 <h3>バグ修正</h3>
 <ul>
