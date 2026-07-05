@@ -29,6 +29,25 @@ pub enum ForceOnReason {
     ProfilePolicy,
 }
 
+impl ForceOnReason {
+    /// この guard がユーザーの明示的な意図（`UserImeSetIntent`/`UserImeToggleIntent`
+    /// 由来、SyncKey/PhysicalImeKey/Command）よりも優先されるべきか。
+    ///
+    /// `true`: 明示的意図があっても force-on する（安全弁として意図的にユーザー操作を
+    /// 一時的に上書きする）。`PanicReset`（クラッシュ直後の安全弁）・`ProfilePolicy`
+    /// （アプリ側の制約による恒久的な要求）が該当する。
+    ///
+    /// `false`: 「観測できない/信頼できない」ことのヒューリスティックな推測にすぎず、
+    /// ユーザーの本物の意図を上書きしてはならない。`BrokenAppBootstrap` は
+    /// observation-miss カウンタというヒューリスティックで立つため、ユーザーが
+    /// 明示的に IME を OFF にした場合はそちらを優先する（`ObservationConfidence` の
+    /// Low を `desired_open`/明示意図より優先させない、という belief 全体のルールと同じ）。
+    #[must_use]
+    pub const fn overrides_explicit_intent(self) -> bool {
+        matches!(self, Self::PanicReset | Self::ProfilePolicy)
+    }
+}
+
 /// 単一の force-on ガード。
 #[derive(Debug, Clone, Copy)]
 pub struct ForceGuard {
@@ -88,11 +107,18 @@ impl ForceGuardSet {
 
     /// `desired_open` を guard で override した最終値を返す。
     ///
-    /// guard が active なら true (= force-on)、そうでなければ desired をそのまま。
-    /// ChatGPT 推奨の `effective_open()` パターン。
+    /// `has_explicit_intent=true`（ユーザーが `UserImeSetIntent`/`UserImeToggleIntent`
+    /// で明示的に意図を示している）場合、`ForceOnReason::overrides_explicit_intent()`
+    /// が `false` の guard（`BrokenAppBootstrap` 等のヒューリスティック由来）は無視する。
+    /// 観測できないことの推測が、ユーザーの本物の意図を上書きしてはならないため。
+    /// `PanicReset` 等の安全弁は明示的意図があっても引き続き override する。
     #[must_use]
-    pub const fn effective_open(&self, desired_open: bool) -> bool {
-        if self.requires_on() {
+    pub fn effective_open(&self, desired_open: bool, has_explicit_intent: bool) -> bool {
+        let forces_on = self
+            .guards
+            .iter()
+            .any(|g| !has_explicit_intent || g.reason.overrides_explicit_intent());
+        if forces_on {
             true
         } else {
             desired_open
@@ -173,13 +199,52 @@ mod tests {
     #[test]
     fn effective_open_overrides_when_guard_active() {
         let mut set = ForceGuardSet::default();
-        assert!(!set.effective_open(false), "guard なし → desired そのまま");
+        assert!(
+            !set.effective_open(false, false),
+            "guard なし → desired そのまま"
+        );
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
             expires_at: None,
             generation: 1,
         });
-        assert!(set.effective_open(false), "guard で true に override");
+        assert!(
+            set.effective_open(false, false),
+            "guard で true に override (明示的意図なし)"
+        );
+    }
+
+    #[test]
+    fn panic_reset_guard_overrides_even_explicit_intent() {
+        let mut set = ForceGuardSet::default();
+        set.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        });
+        assert!(
+            set.effective_open(false, true),
+            "PanicReset は安全弁のため明示的意図があっても override する"
+        );
+    }
+
+    #[test]
+    fn broken_app_bootstrap_guard_does_not_override_explicit_intent() {
+        let mut set = ForceGuardSet::default();
+        set.add(ForceGuard {
+            reason: ForceOnReason::BrokenAppBootstrap,
+            expires_at: None,
+            generation: 1,
+        });
+        assert!(
+            set.effective_open(false, false),
+            "明示的意図が無ければ BrokenAppBootstrap も override する"
+        );
+        assert!(
+            !set.effective_open(false, true),
+            "BrokenAppBootstrap はヒューリスティックにすぎないため、ユーザーの明示的な \
+             OFF 意図を上書きしてはならない"
+        );
     }
 
     #[test]
