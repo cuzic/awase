@@ -933,8 +933,9 @@ impl Runtime {
                             return;
                         };
                         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+                        let ime = &mut app.platform_state.ime;
                         // ON/OFF: High confidence (ImmCrossProbe source)
-                        app.platform_state.ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
+                        ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
                         log::debug!(
                             "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
                         );
@@ -944,16 +945,16 @@ impl Runtime {
                         let update = crate::observer::ime_observer::classify_fetched_snapshot(
                             &snap,
                             tick_ms.0,
-                            app.platform_state.ime.effective_open(),
-                            app.platform_state.ime.is_force_on_guard_active(),
-                            app.platform_state.ime.input_mode(),
-                            app.platform_state.ime.belief.prev_conversion_mode(),
+                            ime.effective_open(),
+                            ime.is_force_on_guard_active(),
+                            ime.input_mode(),
+                            ime.belief.prev_conversion_mode(),
                         );
                         if let Some(mode) = update.new_input_mode {
                             use crate::state::ime_event::{
                                 ImeEvent, ObservationConfidence, ObservationSource,
                             };
-                            app.platform_state.ime.dispatch_event(
+                            ime.dispatch_event(
                                 ImeEvent::InputModeObserved {
                                     mode,
                                     source: ObservationSource::ImmCrossProbe,
@@ -971,25 +972,21 @@ impl Runtime {
                 // 先行実行するが、async probe 完了時点で stale な conv を読む場合に備えて
                 // ここでも ROMAN ビットを補完する（二重補正は冪等なので無害）。
                 // ObservedKana はユーザーが意図的にかな入力に設定した状態なので上書きしない。
-                if snap.ime_on == Some(true) {
-                    if let Some(conv) = snap.conversion_mode {
-                        let mode = awase::engine::ConvMode::from_u32(conv);
-                        if !mode.is_eisu() && !mode.romaji {
-                            let should_restore = crate::with_app(|app| {
-                                app.platform_state.ime.effective_open()
-                                    && !matches!(
-                                        app.platform_state.ime.input_mode(),
-                                        InputModeState::ObservedKana
-                                    )
-                            })
-                            .unwrap_or(false);
-                            if should_restore {
-                                log::debug!(
-                                    "[ImmCrossProbe] kana mode (conv=0x{conv:08X}) + IME ON \
-                                     → romaji 修正 (MS-IME かなモード修正)"
-                                );
-                                let _ = crate::ime::set_ime_romaji_mode_async().await;
-                            }
+                if let (Some(true), Some(conv)) = (snap.ime_on, snap.conversion_mode) {
+                    let mode = awase::engine::ConvMode::from_u32(conv);
+                    if !mode.is_eisu() && !mode.romaji {
+                        let should_restore = crate::with_app(|app| {
+                            let ime = &app.platform_state.ime;
+                            ime.effective_open()
+                                && !matches!(ime.input_mode(), InputModeState::ObservedKana)
+                        })
+                        .unwrap_or(false);
+                        if should_restore {
+                            log::debug!(
+                                "[ImmCrossProbe] kana mode (conv=0x{conv:08X}) + IME ON \
+                                 → romaji 修正 (MS-IME かなモード修正)"
+                            );
+                            let _ = crate::ime::set_ime_romaji_mode_async().await;
                         }
                     }
                 }

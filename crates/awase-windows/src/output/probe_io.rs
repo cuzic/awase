@@ -363,7 +363,7 @@ impl ProbeIo for Output {
                 log::debug!(
                     "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={} \
                      write_delta=+{write_delta}B",
-                    conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}")),
+                    fmt_conv(conv),
                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                 );
                 let confirmed = crate::with_app(|runtime| {
@@ -389,6 +389,31 @@ impl ProbeIo for Output {
     fn send_unicode_char_direct(&self, ch: char) {
         // FSM tick 時は unicode_cold_defer=false のため、通常の send_unicode_char で直接送信できる。
         self.send_unicode_char(ch);
+    }
+}
+
+/// `Option<u32>` の IMC conversion mode 値をログ用文字列にフォーマットする。
+fn fmt_conv(conv: Option<u32>) -> String {
+    conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}"))
+}
+
+/// GJI probe が飛行中なら `WarmupResult` を記録する。
+///
+/// `ProbeAction::Transmit` の TSF/Chrome 両アームと `StartSacrificialWarmup` で
+/// 同一の10行ブロックが繰り返されるため、共通関数として抽出する。
+fn store_gji_warmup_if_probing(
+    io: &impl ProbeIo,
+    obs: &crate::tsf::probe_fsm::ProbeObservations,
+    plan: &crate::tsf::probe_fsm::TransmitPlan,
+) {
+    if io.current_gji_probe_id().is_some() {
+        use crate::tsf::gji_fsm::WarmupResult;
+        io.store_gji_warmup_result(WarmupResult {
+            path: classify_warmup_path(obs, plan),
+            prepend_f2_warmup: plan.should_prepend_f2,
+            nc_fired: obs.nc_fired,
+            gji_resumed: obs.gji_resumed,
+        });
     }
 }
 
@@ -519,10 +544,7 @@ where
                                 log::debug!(
                                     "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} \
                                      gji_idle={gji_idle}ms conv={} ROMAN={} NATIVE={}",
-                                    conv.map_or_else(
-                                        || "none".to_string(),
-                                        |v| format!("0x{v:08X}")
-                                    ),
+                                    fmt_conv(conv),
                                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
                                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                                 );
@@ -539,15 +561,7 @@ where
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
-                        if io.current_gji_probe_id().is_some() {
-                            use crate::tsf::gji_fsm::WarmupResult;
-                            io.store_gji_warmup_result(WarmupResult {
-                                path: classify_warmup_path(&observations, &plan),
-                                prepend_f2_warmup: plan.should_prepend_f2,
-                                nc_fired: observations.nc_fired,
-                                gji_resumed: observations.gji_resumed,
-                            });
-                        }
+                        store_gji_warmup_if_probing(io, &observations, &plan);
                         if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, expected_kana) {
                             return DispatchResult::Done;
                         }
@@ -567,15 +581,7 @@ where
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
-                        if io.current_gji_probe_id().is_some() {
-                            use crate::tsf::gji_fsm::WarmupResult;
-                            io.store_gji_warmup_result(WarmupResult {
-                                path: classify_warmup_path(&observations, &plan),
-                                prepend_f2_warmup: plan.should_prepend_f2,
-                                nc_fired: observations.nc_fired,
-                                gji_resumed: observations.gji_resumed,
-                            });
-                        }
+                        store_gji_warmup_if_probing(io, &observations, &plan);
                         if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, None) {
                             return DispatchResult::Done;
                         }
@@ -619,15 +625,7 @@ where
                     io.increment_consecutive_count();
                 }
                 // GjiFsm bridge: 送信時点で warmup 結果を記録する。
-                if io.current_gji_probe_id().is_some() {
-                    use crate::tsf::gji_fsm::WarmupResult;
-                    io.store_gji_warmup_result(WarmupResult {
-                        path: classify_warmup_path(&config.observations, &config.plan),
-                        prepend_f2_warmup: config.plan.should_prepend_f2,
-                        nc_fired: config.observations.nc_fired,
-                        gji_resumed: config.observations.gji_resumed,
-                    });
-                }
+                store_gji_warmup_if_probing(io, &config.observations, &config.plan);
                 // target に応じて戦略を切り替える。
                 //
                 // Chrome: VK_A+BS（元の方式）。
