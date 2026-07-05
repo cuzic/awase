@@ -111,8 +111,8 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
 /// `ObservationSource::HeuristicDefault` は観測データが存在しない状況での安全デフォルト推測に限定される。
 ///
 /// 現在の designated 使用箇所（すべて Low confidence で `desired_open` を書き換えない）:
-/// - `reset_to_off_for_tsf_native_cache_miss`: TsfNative キャッシュミス時の安全デフォルト OFF
 /// - `reset_stale_ime_on_for_imm_broken`: Imm32Unavailable 入場時の安全デフォルト ON
+/// (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
 ///
 /// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている。
 /// 「観測がない」状況を `UserImeSetIntent` で偽装することは禁止（confidence ガードをバイパスするため）。

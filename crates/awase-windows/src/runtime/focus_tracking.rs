@@ -271,7 +271,7 @@ impl Runtime {
                 // 仮想デスクトップ transient bug (29a39b9) への影響なし:
                 //  transient UWP 窓のキャッシュが false (explicit/non-explicit) の場合は
                 //  cache_says_on=false → 復元しない → 従来の SSOT 継続。
-                let desired_open = self.platform_state.ime.desired_open();
+                let desired_open = self.platform_state.ime.model().desired_open();
                 let cache_says_on =
                     matches!(&cache_hit, Some(snap) if snap.ime_on);
                 if cache_says_on && !desired_open {
