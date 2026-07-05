@@ -322,3 +322,73 @@ fn focus_change_clears_intent_and_observations() {
         "observation も focus 変更で clear"
     );
 }
+
+// ── シナリオ 9: HwndCacheRestored は desired_open を復元するが観測で上書きされる ─
+
+// HwndCacheRestored はユーザー意図ではないため has_user_explicit_intent() = false のまま。
+// 後続の実観測が effective_open() を上書きできることを確認する。
+// （UserImeSetIntent との対比が設計の核心: キャッシュ復元 vs 能動的意図）
+#[test]
+fn scenario_9_hwnd_cache_restored_can_be_overridden_by_observation() {
+    // フォーカス変更でキャッシュから desired_open=false を復元
+    let model = run_reducer(vec![
+        ImeEvent::HwndCacheRestored { target: false },
+        // 実際の API 観測が IME ON を返す（実 IME 状態はキャッシュと異なる）
+        ImeEvent::ObserverReported {
+            open: true,
+            source: ObservationSource::ImmGetOpenStatus,
+            hwnd: HwndId::NULL,
+            confidence: ObservationConfidence::High,
+            focus_epoch: 0,
+        },
+    ]);
+    assert!(
+        !model.desired_open(),
+        "desired_open はキャッシュの復元値 (false) のまま変わらない"
+    );
+    assert!(
+        model.last_intent.is_none(),
+        "HwndCacheRestored は last_intent を設定しない"
+    );
+    assert!(
+        model.effective_open(),
+        "High 観測が effective_open を上書きする（has_user_explicit_intent=false のため）"
+    );
+}
+
+// ── シナリオ 10: HwndCacheRestored と UserImeSetIntent の動作の違い ──────────
+
+// UserImeSetIntent は last_intent を設定するため、
+// 後続の観測があっても effective_open() は desired_open を優先する。
+// HwndCacheRestored は last_intent を設定しないため、観測が優先される。
+// この違いが「キャッシュ復元はユーザーの能動的操作ではない」という設計の証明。
+#[test]
+fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
+    let stale_observation = ImeEvent::ObserverReported {
+        open: true,
+        source: ObservationSource::ObserverPoll,
+        hwnd: HwndId::NULL,
+        confidence: ObservationConfidence::Medium,
+        focus_epoch: 0,
+    };
+
+    // UserImeSetIntent: ユーザーが IME OFF を明示した → 観測で上書きされない
+    let model_intent = run_reducer(vec![
+        user_intent(false, UserIntentSource::SyncKey),
+        stale_observation.clone(),
+    ]);
+    assert!(
+        !model_intent.effective_open(),
+        "UserImeSetIntent(false) 後は explicit intent があるため、Medium 観測は effective_open を変えない"
+    );
+
+    // HwndCacheRestored: キャッシュから IME OFF を復元した → 観測で上書きされる
+    let model_cache = run_reducer(vec![
+        ImeEvent::HwndCacheRestored { target: false },
+        stale_observation,
+    ]);
+    assert!(
+        model_cache.effective_open(),
+        "HwndCacheRestored(false) 後は explicit intent がないため、Medium 観測が effective_open を上書きする"
+    );
+}

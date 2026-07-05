@@ -846,4 +846,185 @@ mod tests {
             "TemporarilyUnowned は conv mutation を禁止する"
         );
     }
+
+    // ── PanicReset ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn panic_reset_sets_desired_open() {
+        let mut model = ImeModel::new(); // desired_open = true
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(model.desired_open, "PanicReset は desired_open を target に設定する");
+    }
+
+    // 最重要: PanicReset は last_intent を設定しない。
+    // これが UserImeSetIntent との本質的な差異。
+    // last_intent が None のままなので has_user_explicit_intent() = false となり、
+    // 後続の実観測が effective_open() を上書きできる。
+    #[test]
+    fn panic_reset_does_not_set_last_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(
+            model.last_intent.is_none(),
+            "PanicReset は last_intent を設定しない（ForceGuard に委ねる）"
+        );
+    }
+
+    // PanicReset 後は has_user_explicit_intent() が false のため、
+    // Medium+ の実観測が effective_open() を上書きできることを確認。
+    #[test]
+    fn panic_reset_allows_observation_to_override_effective_open() {
+        let mut model = ImeModel::new();
+        // PanicReset で desired_open=true に戻す
+        model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(model.desired_open);
+        // Medium 観測が false を報告
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported {
+                open: false,
+                source: ObservationSource::ObserverPoll,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
+            },
+        ));
+        assert!(
+            !model.effective_open(),
+            "PanicReset 後は explicit intent がないため、Medium 観測が effective_open を上書きする"
+        );
+        assert!(
+            model.desired_open,
+            "desired_open は PanicReset の値 (true) のまま変わらない"
+        );
+    }
+
+    // PanicReset ≠ UserImeSetIntent の対比：UserImeSetIntent は観測で上書きされない。
+    #[test]
+    fn user_intent_blocks_observation_unlike_panic_reset() {
+        let mut model = ImeModel::new();
+        // ユーザーが明示的に IME ON に設定した
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        // Medium 観測が false を報告（PanicReset とは違い上書きされない）
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported {
+                open: false,
+                source: ObservationSource::ObserverPoll,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
+            },
+        ));
+        assert!(
+            model.effective_open(),
+            "UserImeSetIntent 後は explicit intent があるため、観測は effective_open を上書きしない"
+        );
+    }
+
+    // ── HwndCacheRestored ─────────────────────────────────────────────────────
+
+    #[test]
+    fn hwnd_cache_restored_sets_desired_open() {
+        let mut model = ImeModel::new(); // desired_open = true
+        model.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(!model.desired_open, "HwndCacheRestored は desired_open を target に設定する");
+    }
+
+    // 最重要: HwndCacheRestored は last_intent を設定しない。
+    // キャッシュ復元はユーザーの能動的操作ではないため、
+    // has_user_explicit_intent() を true にしてはならない。
+    #[test]
+    fn hwnd_cache_restored_does_not_set_last_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(
+            model.last_intent.is_none(),
+            "HwndCacheRestored は last_intent を設定しない（後続の実観測で上書き可能）"
+        );
+    }
+
+    // HwndCacheRestored 後は has_user_explicit_intent() が false のため、
+    // Medium+ の実観測が effective_open() を上書きできることを確認。
+    // これが PanicReset と同じ「非意図 desired 書き換え」の設計。
+    #[test]
+    fn hwnd_cache_restored_allows_observation_to_override_effective_open() {
+        let mut model = ImeModel::new();
+        // キャッシュから desired_open=false を復元
+        model.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(!model.desired_open);
+        // 実際の API 観測が true を返す（実 IME 状態は ON）
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ImmGetOpenStatus,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::High,
+                focus_epoch: 0,
+            },
+        ));
+        assert!(
+            model.effective_open(),
+            "HwndCacheRestored 後は explicit intent がないため、High 観測が effective_open を上書きする"
+        );
+        assert!(
+            !model.desired_open,
+            "desired_open はキャッシュの復元値 (false) のまま変わらない"
+        );
+    }
+
+    // HwndCacheRestored ≠ UserImeSetIntent の対比：
+    // UserImeSetIntent は観測で effective_open が変わらないが、
+    // HwndCacheRestored はキャッシュ起源なので観測で上書きされる。
+    #[test]
+    fn user_intent_blocks_observation_but_hwnd_cache_does_not() {
+        // UserImeSetIntent の場合
+        let mut model_intent = ImeModel::new();
+        model_intent.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::SyncKey,
+            },
+        ));
+        model_intent.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ImmGetOpenStatus,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::High,
+                focus_epoch: 0,
+            },
+        ));
+        assert!(
+            !model_intent.effective_open(),
+            "UserImeSetIntent 後は explicit intent が High 観測を遮断する"
+        );
+
+        // HwndCacheRestored の場合（同じ操作）
+        let mut model_cache = ImeModel::new();
+        model_cache.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        model_cache.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ImmGetOpenStatus,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::High,
+                focus_epoch: 0,
+            },
+        ));
+        assert!(
+            model_cache.effective_open(),
+            "HwndCacheRestored 後は explicit intent がなく、High 観測が通過する"
+        );
+    }
 }
