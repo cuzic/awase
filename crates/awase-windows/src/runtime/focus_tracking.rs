@@ -261,13 +261,38 @@ impl Runtime {
             if is_effectively_tsf {
                 // ── TsfNative SSOT ──────────────────────────────────────────────
                 // awase が TSF 経由で完全制御できるため awase が SSOT として機能する。
-                // フォーカス変化では desired_open を変更しない（前窓での値を維持）。
-                // FocusChanged が既に applied=Unknown を設定済みのため、最初のキー入力で
-                // エンジンが SetOpen effect を生成 → dispatch_ime が desired_open を
-                // 窓へ apply する（push model）。
-                // VK_DBE_HIRAGANA / VK_DBE_ALPHANUMERIC は SET（VK_KANJI トグルでない）
-                // ため、既に正しい状態でも重複送出の副作用がない。
-                log::debug!("[focus] TsfNative/SSOT: cache restore スキップ — 最初のキー入力で dispatch_ime が apply");
+                // 通常: desired_open を前窓の値のまま保持（push model）。
+                //
+                // 例外: Imm32Unavailable (Chrome 等) での明示 IME-OFF が
+                // desired_open=false をグローバルに書いた後に TsfNative 窓へ戻る場合。
+                // キャッシュが ime_on=true ならキャッシュ復元し TsfNative の最後の状態を回復する。
+                // (desired_open がどのコンテキストで設定されたかではなく
+                //  「キャッシュとの不一致」で Imm32Unavailable 汚染を検出する。)
+                // 仮想デスクトップ transient bug (29a39b9) への影響なし:
+                //  transient UWP 窓のキャッシュが false (explicit/non-explicit) の場合は
+                //  cache_says_on=false → 復元しない → 従来の SSOT 継続。
+                let desired_open = self.platform_state.ime.desired_open();
+                let cache_says_on =
+                    matches!(&cache_hit, Some(snap) if snap.ime_on);
+                if cache_says_on && !desired_open {
+                    // Imm32Unavailable コンテキストで desired_open が false に汚染された可能性。
+                    // キャッシュの true を復元して TsfNative 窓の状態を回復する。
+                    self.platform_state
+                        .ime
+                        .apply_hwnd_cache_restore(cache_hit, tick_ms);
+                    log::debug!(
+                        "[focus] TsfNative: cache restore \
+                         (desired_open=false だが cache=true — Imm32Unavailable 汚染を修正)"
+                    );
+                } else {
+                    // SSOT: desired_open を前窓の値のまま維持。
+                    // FocusChanged が applied=Unknown を設定済みのため、最初のキー入力で
+                    // dispatch_ime が desired_open を窓へ apply する。
+                    log::debug!(
+                        "[focus] TsfNative/SSOT: cache restore スキップ — \
+                         最初のキー入力で dispatch_ime が apply"
+                    );
+                }
             } else {
                 // ── 純粋な Imm32Unavailable (Chrome/Edge 等) ────────────────────
                 // awase が IME 状態を直接制御できないため、キャッシュが唯一の根拠。

@@ -125,10 +125,10 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
     let production = production_code_only(&content);
     let count = production.matches("ObservationSource::HeuristicDefault").count();
     assert_eq!(
-        count, 2,
-        "{path} 内の `ObservationSource::HeuristicDefault` 使用箇所数が想定(2)と異なります(実際: {count})。\n\
-         想定: reset_to_off_for_tsf_native_cache_miss (TsfNative cache-miss → OFF) と \
-         reset_stale_ime_on_for_imm_broken (Imm32Unavailable entry → ON) の2箇所のみ。\n\
+        count, 1,
+        "{path} 内の `ObservationSource::HeuristicDefault` 使用箇所数が想定(1)と異なります(実際: {count})。\n\
+         想定: reset_stale_ime_on_for_imm_broken (Imm32Unavailable entry → ON) の1箇所のみ。\n\
+         (reset_to_off_for_tsf_native_cache_miss は 37883d0 で TsfNative SSOT 化に伴い削除済み)\n\
          新しい安全デフォルト推測を追加する場合は `UserImeSetIntent` を使わず \
          `ObserverReported + ObservationConfidence::Low` を使い、このカウントを更新してください。"
     );
