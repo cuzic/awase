@@ -170,7 +170,24 @@ impl Runtime {
         }
 
         let state_before = self.engine.debug_state_label();
-        let decision = self.engine.on_input(event, &ctx);
+        let mut decision = self.engine.on_input(event, &ctx);
+        // フォーカス遷移直後（settle 期間内）に Engine が発行した SetOpen effect は、
+        // 実行(kp_stage_execute → 実際の SendInput)まで到達する前にここで取り除く。
+        // handle_engine_set_open 側のフィルタは belief の書き込み(desired_open等)だけを
+        // 防ぐもので、decision.effects に残った ImeEffect::SetOpen は kp_stage_execute
+        // 経由で無条件に実行されてしまうため、真の対策は「effect 自体を発行させない」
+        // ここでなければならない（2026-07-05: 前回の修正が効かなかった原因）。
+        if focus_transition_was_pending {
+            if let Some(target) = decision.find_ime_set_open() {
+                decision
+                    .effects_mut()
+                    .retain(|e| !matches!(e, awase::engine::Effect::Ime(awase::engine::ImeEffect::SetOpen { .. })));
+                log::debug!(
+                    "[focus-settle] SetOpen({target}) effect stripped from decision \
+                     (focus transition barrier still settling at event start)"
+                );
+            }
+        }
         let state_after = self.engine.debug_state_label();
         self.platform_state
             .ime

@@ -424,4 +424,50 @@ mod tests {
             other => panic!("expected PassThroughWith, got {:?}", other),
         }
     }
+
+    // ── find_ime_set_open ──
+
+    #[test]
+    fn find_ime_set_open_returns_none_for_pass_through() {
+        assert_eq!(Decision::pass_through().find_ime_set_open(), None);
+    }
+
+    #[test]
+    fn find_ime_set_open_finds_set_open_among_other_effects() {
+        let d = Decision::consumed_with(smallvec![
+            test_effect(),
+            Effect::Ime(ImeEffect::SetOpen { open: false, origin: DecisionOrigin::NicolaFsm }),
+        ]);
+        assert_eq!(d.find_ime_set_open(), Some(false));
+    }
+
+    // 2026-07-05: フォーカス遷移 settle 期間中に Engine が発行した SetOpen effect を
+    // 呼び出し側 (key_pipeline.rs の kp_run_inner) が effects_mut().retain() で
+    // 取り除く際に使う、まさにそのパターンを固定するテスト。
+    // これを怠ると decision.effects に SetOpen が残ったまま kp_stage_execute に渡り、
+    // 実際に SendInput(VK_IME_OFF 等) が発行されてしまう (belief 側だけフィルタしても
+    // 効果がない、という2026-07-05 の実機バグの再発防止)。
+    #[test]
+    fn retaining_non_set_open_effects_removes_set_open_but_keeps_others() {
+        let mut d = Decision::consumed_with(smallvec![
+            test_effect(),
+            Effect::Ime(ImeEffect::SetOpen { open: false, origin: DecisionOrigin::NicolaFsm }),
+        ]);
+        assert_eq!(d.find_ime_set_open(), Some(false));
+
+        d.effects_mut()
+            .retain(|e| !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })));
+
+        assert_eq!(
+            d.find_ime_set_open(),
+            None,
+            "SetOpen effect が取り除かれた後は見つからない"
+        );
+        match d {
+            Decision::Consume { effects } => {
+                assert_eq!(effects.len(), 1, "SetOpen 以外の effect は残る");
+            }
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
 }
