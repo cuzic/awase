@@ -317,9 +317,12 @@ impl Runtime {
             }
         }
 
-        if matches!(
+        // `is_effectively_tsf_native` を使う（CASCADIA_HOSTING_WINDOW_CLASS 等は
+        // `AppImeProfile::from_class_name` の優先順位で `Imm32Unavailable` になり
+        // `matches!(profile, TsfNative)` では取りこぼすため。`class_names.rs` 参照）。
+        if crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
-            crate::focus::classify::AppImeProfile::TsfNative,
+            self.platform.focus.class_name(),
         ) {
             let ime_on_now = self.platform_state.ime.effective_open();
             if ime_on_now {

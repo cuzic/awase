@@ -103,14 +103,37 @@ impl DecisionExecutor {
     }
 
     /// メッセージループから呼ぶ。全 Effects を即座に実行する。
+    ///
+    /// `EngineCommand::FocusChanged` / `RefreshState` 等、キーボードフックを経由しない
+    /// 全ての `Decision` 実行経路（フォーカス変更通知・IME リフレッシュポーリング・
+    /// ホットキー・タイマー由来の deferred key 再処理等）がここに合流する。
+    /// この関数はキーボード経路（`execute_from_hook`）と違い `kp_stage_focus_probe` による
+    /// barrier 消費を経ないため、ここで `is_focus_transition_settling` を素直に評価してよい。
+    ///
+    /// 2026-07-05: Alt+Tab 中間ウィンドウへの一瞬のフォーカスで `Engine::on_command`
+    /// (`FocusChanged`/`RefreshState`) が Active/Inactive 遷移を検知し `ImeEffect::SetOpen`
+    /// を発行 → ここで無条件に実行されて実際に SendInput してしまうバグを修正。
+    /// settle 期間中は `SetOpen` effect を取り除いてから実行する
+    /// （`key_pipeline.rs` の `kp_run_inner` と同じパターン）。
     pub(crate) fn execute_from_loop(
         &mut self,
         platform: &mut WindowsPlatform,
         ime: &ImeStateHub,
-        decision: Decision,
+        mut decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
         self.applied_snapshot = ime.model().applied;
         self.belief_input_mode = ime.input_mode();
+        if ime.is_focus_transition_settling(std::time::Instant::now()) {
+            if let Some(target) = decision.find_ime_set_open() {
+                decision
+                    .effects_mut()
+                    .retain(|e| !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })));
+                log::debug!(
+                    "[focus-settle] SetOpen({target}) effect stripped from decision \
+                     (execute_from_loop, focus transition barrier still settling)"
+                );
+            }
+        }
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),

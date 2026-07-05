@@ -374,9 +374,15 @@ impl Runtime {
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
 
-        let new_profile_is_tsf_native = matches!(
+        // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`
+        // を使うこと。CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) 等は
+        // `AppImeProfile::from_class_name` の優先順位により `Imm32Unavailable` に分類され
+        // `TsfNative` には決してならないため、直接比較だと誤って「非 TSF ネイティブ」と
+        // 判定してしまう（2026-07-05: これが原因で下の「enforce IME OFF」ブロックが
+        // Windows Terminal に対して誤発火していた）。
+        let new_profile_is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
-            crate::focus::classify::AppImeProfile::TsfNative,
+            self.platform.focus.class_name(),
         );
         let applied_ime_on = self
             .platform_state
@@ -401,7 +407,10 @@ impl Runtime {
         // 実際の IME は MS-IME であり得る。gji_monitor_ok だけで判定すると、通常の
         // belief 駆動 apply-ime（MsImeDirectStrategy）に続けて VK_DBE_HIRAGANA が二重送信され、
         // TSF アクティベーション中の conv mode 破壊（roma→kana 化け）を誘発し得る。
-        if applied_ime_on && new_profile_is_tsf_native {
+        // 2026-07-05: is_effectively_tsf_native への修正で XamlExplorerHostIslandWindow
+        // (Alt+Tab スイッチャーの中間ウィンドウ、is_tsf_native_window に該当) も true になる
+        // ようになったため、settle 期間中はこのブロック自体もフィルタする。
+        if applied_ime_on && new_profile_is_tsf_native && !self.ime_apply_should_defer() {
             let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
             if obs.gji_monitor_ok
                 && obs.active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
@@ -472,6 +481,12 @@ impl Runtime {
         let Some((desired, observed, duration_ms)) = self.ir_check_drift_correction(now) else {
             return;
         };
+        if self.ime_apply_should_defer() {
+            log::debug!(
+                "[focus-settle] drift correction skipped (settling): desired={desired} observed={observed}"
+            );
+            return;
+        }
 
         log::warn!(
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \

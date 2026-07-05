@@ -58,6 +58,23 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
     )
 }
 
+/// `profile == AppImeProfile::TsfNative` の代わりに使うべき「実質的に TSF ネイティブか」判定。
+///
+/// `AppImeProfile::from_class_name` は `IMM32_UNAVAILABLE_CLASSES` を `is_tsf_native_window`
+/// より優先して評価するため、CASCADIA_HOSTING_WINDOW_CLASS のような「両方に該当するクラス」
+/// では `AppImeProfile::TsfNative` が一切現れず、代わりに `Imm32Unavailable` になる
+/// （`from_class_name` のドキュメント参照）。そのため `profile` の値だけを見て
+/// `matches!(profile, AppImeProfile::TsfNative)` と判定すると、Windows Terminal のような
+/// 実質 TSF ネイティブなウィンドウを取りこぼす（2026-07-05 実機ログで確認: フォーカス着地直後の
+/// "enforce IME OFF" ブロックが、Windows Terminal を非 TSF ネイティブと誤判定して発火した）。
+///
+/// 「このウィンドウは TSF ネイティブとして扱うべきか」を判定したい呼び出し元は、
+/// `profile == AppImeProfile::TsfNative` ではなく必ずこの関数を使うこと。
+#[must_use]
+pub fn is_effectively_tsf_native(profile: AppImeProfile, class_name: &str) -> bool {
+    profile == AppImeProfile::TsfNative || is_tsf_native_window(class_name)
+}
+
 // ── AppImeProfile ──────────────────────────────────────────────
 
 /// フォーカス中アプリの IME 制御プロファイル。
@@ -182,5 +199,58 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
         AppKind::Uwp
     } else {
         AppKind::Win32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 回帰テスト (2026-07-05): CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) は
+    // IMM32_UNAVAILABLE_CLASSES にも is_tsf_native_window にも該当するため、
+    // from_class_name は優先順位により Imm32Unavailable を返す。
+    // `matches!(profile, AppImeProfile::TsfNative)` という直接比較ではこれを
+    // 取りこぼし、Windows Terminal 着地直後の「enforce IME OFF」ブロックが誤発火した。
+
+    #[test]
+    fn cascadia_profile_is_masked_to_imm32_unavailable() {
+        assert_eq!(
+            AppImeProfile::from_class_name("CASCADIA_HOSTING_WINDOW_CLASS"),
+            AppImeProfile::Imm32Unavailable,
+            "from_class_name の優先順位により TsfNative にはならない"
+        );
+    }
+
+    #[test]
+    fn cascadia_is_effectively_tsf_native_despite_masked_profile() {
+        let profile = AppImeProfile::from_class_name("CASCADIA_HOSTING_WINDOW_CLASS");
+        assert!(
+            is_effectively_tsf_native(profile, "CASCADIA_HOSTING_WINDOW_CLASS"),
+            "profile が Imm32Unavailable でも is_tsf_native_window で TSF ネイティブと判定できる"
+        );
+    }
+
+    #[test]
+    fn wezterm_is_tsf_native_directly_and_effectively() {
+        let profile = AppImeProfile::from_class_name("org.wezfurlong.wezterm");
+        assert_eq!(profile, AppImeProfile::TsfNative);
+        assert!(is_effectively_tsf_native(profile, "org.wezfurlong.wezterm"));
+    }
+
+    #[test]
+    fn chrome_is_not_effectively_tsf_native() {
+        let profile = AppImeProfile::from_class_name("Chrome_WidgetWin_1");
+        assert_eq!(profile, AppImeProfile::Imm32Unavailable);
+        assert!(
+            !is_effectively_tsf_native(profile, "Chrome_WidgetWin_1"),
+            "Chrome は IMM32Unavailable であって TSF ネイティブではない"
+        );
+    }
+
+    #[test]
+    fn standard_class_is_not_effectively_tsf_native() {
+        let profile = AppImeProfile::from_class_name("Notepad");
+        assert_eq!(profile, AppImeProfile::Standard);
+        assert!(!is_effectively_tsf_native(profile, "Notepad"));
     }
 }

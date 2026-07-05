@@ -369,9 +369,9 @@ impl Runtime {
         // explicit_intent の有無に関わらずポーリングで得られる情報がないため常に停止する。
         // explicit_intent が確定している他プロファイルも同様に停止。
         // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）
-        let is_tsf_native = matches!(
+        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
-            crate::focus::class_names::AppImeProfile::TsfNative
+            self.platform.focus.class_name(),
         );
         if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
             return;
@@ -410,11 +410,34 @@ impl Runtime {
         }
     }
 
+    /// IME を実際に ON/OFF する直接呼び出し（`Decision`/`Effect` を経由しない経路）が、
+    /// フォーカス遷移の settle 期間中に実行されるべきでないかどうかを判定する。
+    ///
+    /// `execute_decision`/`execute_decision_suppressed` 経由の `Decision` ベースの経路は
+    /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` や
+    /// `apply_ime_open_with_applied` を直接呼ぶ経路（`apply_force_on_for_imm_broken`,
+    /// `try_force_on_bootstrap`, `ir_apply_drift_correction`,
+    /// `ir_post_focus_change_snapshot` 内の GJI 強制 ON / IME OFF 強制ブロック）は
+    /// `Decision`/`Effect` という抽象を経由しないためそちらのガードが効かない。
+    /// これらの呼び出し元は実行前に必ずこれを確認すること。
+    ///
+    /// 2026-07-05: Alt+Tab 中間ウィンドウへの一瞬のフォーカス中に、これらの直接呼び出しが
+    /// settle 前の不安定な状態に基づいて IME を実際に切り替えてしまうバグの修正。
+    pub(crate) fn ime_apply_should_defer(&self) -> bool {
+        self.platform_state
+            .ime
+            .is_focus_transition_settling(std::time::Instant::now())
+    }
+
     /// Blacklist アプリ（Chrome 等）で IME belief が ON のとき OS に force-ON を送る。
     ///
     /// IMM クロスプロセスが使えるアプリ（通常 IMM アプリ）では何もしない。
     pub fn apply_force_on_for_imm_broken(&mut self) {
         if self.can_use_imm32_cross_process() {
+            return;
+        }
+        if self.ime_apply_should_defer() {
+            log::debug!("[focus-settle] apply_force_on_for_imm_broken skipped (settling)");
             return;
         }
         if !(self.engine.is_user_enabled()
@@ -456,6 +479,10 @@ impl Runtime {
             && self.platform_state.ime.effective_open()
             && !self.platform_state.ime.is_force_on_guard_active()
         {
+            if self.ime_apply_should_defer() {
+                log::debug!("[focus-settle] try_force_on_bootstrap skipped (settling)");
+                return;
+            }
             log::warn!(
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                 self.platform_state.ime.detect_miss_count()

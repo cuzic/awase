@@ -284,9 +284,9 @@ impl Runtime {
         let in_flight = self.platform.output_in_flight_ms();
         let now_tick = crate::state::TickMs(hook::current_tick_ms());
         let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
-        let is_tsf_native = matches!(
+        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
-            crate::focus::class_names::AppImeProfile::TsfNative
+            self.platform.focus.class_name(),
         );
         if !awase::engine::should_run_idle_conv_check(
             matches!(event.event_type, KeyEventType::KeyDown),
@@ -846,9 +846,9 @@ impl Runtime {
         // JISかな⇔ローマ字を切り替えていると cached input_mode が stale になる。
         // idle-conv-check は TYPING_IDLE_MS(500ms) ゲートがあり打ち始めのキーで発火しない。
         // ここで即時 conv mode を読んで belief を補正する（FocusProbe ログに反映される）。
-        if matches!(
+        if crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
-            crate::focus::class_names::AppImeProfile::TsfNative
+            self.platform.focus.class_name(),
         ) && probe.is_japanese_ime
         {
             let in_flight = self.platform.output_in_flight_ms();
