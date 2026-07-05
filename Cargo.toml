@@ -9,7 +9,7 @@ libraries = [
 
 [package]
 name = "awase"
-version = "1.9.0"
+version = "1.8.2"
 edition = "2021"
 description = "A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond"
 repository = "https://github.com/cuzic/awase"
