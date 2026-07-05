@@ -7,7 +7,7 @@ use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::SyncKeyGate;
 use super::ime_event::{
     ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult,
-    InputModeApplyStrategy, IntentSource, ObservationConfidence, ObservationSource,
+    InputModeApplyStrategy, UserIntentSource, ObservationConfidence, ObservationSource,
 };
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
@@ -87,7 +87,7 @@ impl ImeStateHub {
         if let ImeEvent::UserImeSetIntent { target, source } = &event {
             if matches!(
                 source,
-                IntentSource::SyncKey | IntentSource::PhysicalImeKey
+                UserIntentSource::SyncKey | UserIntentSource::PhysicalImeKey
             ) {
                 if !target {
                     self.last_user_explicit_off_ms = tick_ms.0;
@@ -291,7 +291,7 @@ impl ImeStateHub {
     /// H-3-d 以降、`belief.input_mode` は private 化されたため、
     /// 呼び出し元はすべてこのメソッドを使うこと。
     pub(crate) fn input_mode(&self) -> InputModeState {
-        self.shadow_model.input_mode
+        self.shadow_model.input_mode()
     }
 
     /// IMM-broken アプリで IME-ON が確認されたとき、`input_mode` を補正すべき値を返す。
@@ -300,7 +300,7 @@ impl ImeStateHub {
     /// に対して適用する（H-3-d で `belief.input_mode` が private 化されたため移譲）。
     pub(crate) fn correction_for_imm_broken(&self) -> Option<InputModeState> {
         use awase::engine::AssumedReason;
-        let mode = self.shadow_model.input_mode;
+        let mode = self.shadow_model.input_mode();
         if mode.is_romaji_capable() || matches!(mode, InputModeState::ObservedEisu) {
             return None;
         }
@@ -327,15 +327,13 @@ impl ImeStateHub {
         now: std::time::Instant,
         explicit_intent: Option<bool>,
     ) -> Option<(bool, bool, u64)> {
-        let desired = self.shadow_model.desired_open;
+        let desired = self.shadow_model.desired_open();
 
         let dur = self.shadow_model.observations.drift_duration(now)?;
-        // HwndCache / Recovery 由来の intent はユーザーの能動的な操作ではない。
-        // 仮想デスクトップ切替等で OS が IME を復元した際に即時補正が連鎖するのを防ぐため、
-        // SyncKey / PhysicalImeKey / Command のみ閾値 0 (即時補正) を適用する。
-        let is_strong_intent = self.shadow_model.last_intent.as_ref().is_some_and(|i| {
-            !matches!(i.source, IntentSource::HwndCache | IntentSource::Recovery)
-        });
+        // last_intent は UserImeSetIntent / UserImeToggleIntent のみが設定する。
+        // PanicReset / HwndCacheRestored は設定しないため、is_some() で十分。
+        // SyncKey / PhysicalImeKey / Command は全て閾値 0 (即時補正) の対象。
+        let is_strong_intent = self.shadow_model.last_intent.is_some();
         let threshold = if explicit_intent == Some(desired) && is_strong_intent {
             0
         } else {
@@ -463,14 +461,9 @@ impl ImeStateHub {
             expires_at: None,
             generation: self.event_log.next_seq(),
         });
-        self.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: true,
-                source: IntentSource::Recovery,
-            },
-            tick_ms,
-        );
-        self.shadow_model.last_intent = None;
+        // PanicReset は desired_open=true に戻すが last_intent を設定しない。
+        // ForceGuard::PanicReset が IME ON を保証する。
+        self.dispatch_event(ImeEvent::PanicReset { target: true }, tick_ms);
         // panic reset はフォーカスエポックを変えない（同じフォーカスコンテキスト内のリセット）。
         let cur_epoch = self.shadow_model.observations.current_focus_epoch;
         self.shadow_model.observations.clear_on_focus_change(cur_epoch);
@@ -531,6 +524,7 @@ impl ImeStateHub {
                 ImeEvent::InputModeObserved {
                     mode,
                     source: ObservationSource::ObserverPoll,
+                    confidence: ObservationConfidence::Medium,
                     at: tick_ms,
                 },
                 tick_ms,
@@ -550,13 +544,9 @@ impl ImeStateHub {
         tick_ms: TickMs,
     ) {
         if let Some(snap) = snapshot {
-            self.dispatch_event(
-                ImeEvent::UserImeSetIntent {
-                    target: snap.ime_on,
-                    source: IntentSource::HwndCache,
-                },
-                tick_ms,
-            );
+            // HwndCacheRestored は desired_open を回復するが last_intent を設定しない。
+            // キャッシュ復元はユーザーの能動的操作ではなく、後続の実観測で上書き可能。
+            self.dispatch_event(ImeEvent::HwndCacheRestored { target: snap.ime_on }, tick_ms);
             self.dispatch_event(
                 ImeEvent::InputModeApplied {
                     mode: snap.input_mode,
@@ -576,8 +566,16 @@ impl ImeStateHub {
     /// GjiDirectStrategy が shadow_on=true 由来で VK_IME_ON をスキップし IME-OFF Engine-ON
     /// になる可能性がある。安全デフォルトとして OFF に倒し、ユーザーが必要なら ON にする。
     ///
-    /// `last_intent = None` に戻すことで `last_explicit_off_ms()` を汚染しない
-    /// （`apply_panic_reset()` と同じパターン）。
+    /// 「観測が何もない」こと自体が根拠のため、`UserImeSetIntent`（ユーザー意図）を
+    /// 偽装せず `ObserverReported`（`HeuristicDefault`, Low confidence）として記録する。
+    /// `desired_open` は書き換えない。そのため後から Low confidence の実観測
+    /// （例: Imm32Unavailable/TsfNative での FocusProbe shadow フォールバック）が
+    /// 届けば `effective_open()` の `most_recent_trusted()` フォールバックが自動的に
+    /// それを優先し、この安全デフォルトを上書きする。
+    ///
+    /// `last_intent` は明示的にクリアする（`FocusChanged` が通常先に行うが、念のため）。
+    /// これにより `has_user_explicit_intent()` が false のままとなり、この推測が
+    /// `desired_open` として固定化されない。
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     pub(crate) fn reset_to_off_for_tsf_native_cache_miss(&mut self, tick_ms: TickMs) {
@@ -589,17 +587,20 @@ impl ImeStateHub {
             return;
         }
         log::info!(
-            "[focus] TsfNative cache-miss: belief true → false にリセット (安全デフォルト OFF)"
+            "[focus] TsfNative cache-miss: 安全デフォルト OFF を Low confidence observation \
+             として記録 (desired_open は不変、実観測到着で上書き可能)"
         );
+        let focus_epoch = self.shadow_model.observations.current_focus_epoch;
         self.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: IntentSource::Recovery,
+            ImeEvent::ObserverReported {
+                open: false,
+                source: ObservationSource::HeuristicDefault,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Low,
+                focus_epoch,
             },
             tick_ms,
         );
-        // last_explicit_off_ms() を汚染しないよう dispatch 後にクリアする。
-        // これにより次ウィンドウの cache-miss 時に 10s ガードが誤発動しない。
         self.shadow_model.last_intent = None;
     }
 
@@ -608,6 +609,11 @@ impl ImeStateHub {
     /// TsfNative と同様だが、Imm32Unavailable では awase が IME 状態を制御できないため
     /// キャッシュが carry-over で汚染されやすい。キャッシュ値が「ユーザー明示の OFF」に
     /// 由来しない場合にのみ呼ぶこと（呼び出し側が stale 判定を行う）。
+    ///
+    /// `reset_to_off_for_tsf_native_cache_miss` と同様、これも「観測が何もない」ことを
+    /// 根拠にした安全デフォルトの推測にすぎないため `UserImeSetIntent` は使わず
+    /// `ObserverReported`（`HeuristicDefault`, Low confidence）として記録する。
+    /// `desired_open` は書き換えない。
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     pub(crate) fn reset_stale_ime_on_for_imm_broken(&mut self, tick_ms: TickMs) {
@@ -622,13 +628,18 @@ impl ImeStateHub {
             return;
         }
         log::info!(
-            "Imm32Unavailable entry without trusted cache: reset stale ime_on=false → true \
-             (no explicit intent, Japanese layout, IME state uncontrollable in Imm32Unavailable)"
+            "Imm32Unavailable entry without trusted cache: 安全デフォルト ON を Low confidence \
+             observation として記録 (no explicit intent, Japanese layout, IME state \
+             uncontrollable in Imm32Unavailable)"
         );
+        let focus_epoch = self.shadow_model.observations.current_focus_epoch;
         self.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: true,
-                source: IntentSource::Recovery,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::HeuristicDefault,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Low,
+                focus_epoch,
             },
             tick_ms,
         );
@@ -666,7 +677,7 @@ impl ImeStateHub {
         self.dispatch_event(
             ImeEvent::UserImeSetIntent {
                 target: value,
-                source: IntentSource::SyncKey,
+                source: UserIntentSource::SyncKey,
             },
             tick_ms,
         );
@@ -676,7 +687,7 @@ impl ImeStateHub {
         self.dispatch_event(
             ImeEvent::UserImeSetIntent {
                 target: value,
-                source: IntentSource::PhysicalImeKey,
+                source: UserIntentSource::PhysicalImeKey,
             },
             tick_ms,
         );
@@ -686,7 +697,7 @@ impl ImeStateHub {
         self.dispatch_event(
             ImeEvent::UserImeSetIntent {
                 target: value,
-                source: IntentSource::Command,
+                source: UserIntentSource::Command,
             },
             tick_ms,
         );
@@ -739,14 +750,14 @@ impl ImeStateHub {
 #[cfg(test)]
 impl ImeStateHub {
     pub(crate) fn set_desired_open_for_test(&mut self, value: bool) {
-        self.shadow_model.desired_open = value;
+        self.shadow_model.set_desired_open_for_test(value);
     }
 
     pub(crate) fn clear_last_intent_for_test(&mut self) {
         self.shadow_model.last_intent = None;
     }
 
-    pub(crate) fn last_intent_source(&self) -> Option<IntentSource> {
+    pub(crate) fn last_intent_source(&self) -> Option<UserIntentSource> {
         self.shadow_model.last_intent.as_ref().map(|i| i.source)
     }
 }
@@ -891,12 +902,12 @@ mod tests {
     use super::*;
 
     /// shadow_model を直接設定するヘルパ:
-    /// `set_intent=Some(target)` なら UserImeSetIntent を dispatch し last_intent を設定する。
+    /// `set_intent=Some(source)` なら UserImeSetIntent を dispatch し last_intent を設定する。
     /// `set_intent=None` なら desired_open のみ直接書き換え、last_intent は空のままにする
     /// (focus 変更後の carry-over シナリオを模擬)。
     fn ps_with_shadow(
         desired_open: bool,
-        set_intent: Option<IntentSource>,
+        set_intent: Option<UserIntentSource>,
         is_japanese: bool,
     ) -> PlatformState {
         let mut ps = PlatformState::new();
@@ -919,7 +930,7 @@ mod tests {
     // cache miss 時: belief=true → false にリセットされる（安全デフォルト OFF）。
     #[test]
     fn cache_miss_resets_true_to_false() {
-        let mut ps = ps_with_shadow(true, Some(IntentSource::SyncKey), true);
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
         ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         assert!(!ps.ime.effective_open());
     }
@@ -927,7 +938,7 @@ mod tests {
     // cache miss 後: last_intent が None になり last_explicit_off_ms() を汚染しない。
     #[test]
     fn cache_miss_reset_clears_last_intent() {
-        let mut ps = ps_with_shadow(true, Some(IntentSource::Recovery), true);
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
         ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         assert_eq!(ps.ime.last_intent_source(), None);
     }
@@ -935,11 +946,11 @@ mod tests {
     // 既に belief=false なら no-op（二重リセットしない）。
     #[test]
     fn cache_miss_noop_when_already_off() {
-        let mut ps = ps_with_shadow(false, Some(IntentSource::SyncKey), true);
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
         ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         // 状態は変わらず、intent も保持される。
         assert!(!ps.ime.effective_open());
-        assert_eq!(ps.ime.last_intent_source(), Some(IntentSource::SyncKey));
+        assert_eq!(ps.ime.last_intent_source(), Some(UserIntentSource::SyncKey));
     }
 
     // 非日本語レイアウトでは何もしない。
@@ -948,5 +959,64 @@ mod tests {
         let mut ps = ps_with_shadow(true, None, false);
         ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
         assert!(ps.ime.effective_open());
+    }
+
+    // 回帰テスト: cache-miss の安全デフォルトは desired_open を書き換えない
+    // (Low confidence observation としてのみ記録される)。
+    #[test]
+    fn cache_miss_reset_does_not_touch_desired_open() {
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
+        ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
+        assert!(
+            ps.ime.model().desired_open(),
+            "desired_open はユーザーの真の意図のまま変更されない"
+        );
+        assert!(
+            !ps.ime.effective_open(),
+            "実効値は Low confidence observation 経由で false になる"
+        );
+    }
+
+    // 回帰テスト: cache-miss の安全デフォルト推測は、後から届いた実観測
+    // (Low confidence でも) によって上書きされる。これが「TsfNative/Imm32Unavailable
+    // ウィンドウへの切替でエンジンが OFF のまま戻らない」バグの修正点。
+    #[test]
+    fn cache_miss_default_is_overridden_by_later_low_observation() {
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
+        ps.ime.reset_to_off_for_tsf_native_cache_miss(TickMs(0));
+        assert!(!ps.ime.effective_open(), "reset 直後は安全デフォルト OFF");
+
+        // FocusProbe が Low confidence で shadow 値 true を代替観測として記録する
+        // (実 API が使えない TsfNative/Imm32Unavailable プロファイル等)。
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        ps.ime.dispatch_event(
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::FocusProbe,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Low,
+                focus_epoch: 0,
+            },
+            TickMs(1),
+        );
+        assert!(
+            ps.ime.effective_open(),
+            "後続の実観測（Low confidence でも）が cache-miss の安全デフォルトを上書きする"
+        );
+    }
+
+    // reset_stale_ime_on_for_imm_broken も同様に desired_open を書き換えない。
+    #[test]
+    fn imm_broken_reset_does_not_touch_desired_open() {
+        let mut ps = ps_with_shadow(false, None, true);
+        ps.ime.reset_stale_ime_on_for_imm_broken(TickMs(0));
+        assert!(
+            !ps.ime.model().desired_open(),
+            "desired_open はユーザーの真の意図のまま変更されない"
+        );
+        assert!(
+            ps.ime.effective_open(),
+            "実効値は Low confidence observation 経由で true になる"
+        );
     }
 }

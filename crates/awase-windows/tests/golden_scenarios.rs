@@ -23,7 +23,7 @@
 use std::time::Instant;
 
 use awase_windows::state::ime_event::{
-    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, IntentSource,
+    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, UserIntentSource,
     ObservationConfidence, ObservationSource,
 };
 use awase_windows::state::ime_model::ImeModel;
@@ -41,7 +41,7 @@ fn envelope(seq: u64, event: ImeEvent) -> ImeEventEnvelope {
     }
 }
 
-fn user_intent(target: bool, source: IntentSource) -> ImeEvent {
+fn user_intent(target: bool, source: UserIntentSource) -> ImeEvent {
     ImeEvent::UserImeSetIntent { target, source }
 }
 
@@ -51,6 +51,7 @@ fn observer_reported(open: bool, source: ObservationSource) -> ImeEvent {
         source,
         hwnd: HwndId::NULL,
         confidence: ObservationConfidence::Medium,
+        focus_epoch: 0,
     }
 }
 
@@ -59,6 +60,7 @@ fn focus_changed(profile: ImePolicyProfile) -> ImeEvent {
         from: None,
         to: HwndId(0x1234),
         profile,
+        focus_epoch: 1,
     }
 }
 
@@ -78,17 +80,17 @@ fn scenario_1_line_qt_kanji_on_off() {
     // KANJI 押下 → IME OFF (physical key)
     let model = run_reducer(vec![
         focus_changed(ImePolicyProfile::ImmCross),
-        user_intent(false, IntentSource::PhysicalImeKey),
+        user_intent(false, UserIntentSource::PhysicalImeKey),
     ]);
-    assert!(!model.desired_open, "KANJI で IME OFF");
+    assert!(!model.desired_open(), "KANJI で IME OFF");
 
     // 続けて KANJI 押下 → IME ON
     let model = run_reducer(vec![
         focus_changed(ImePolicyProfile::ImmCross),
-        user_intent(false, IntentSource::PhysicalImeKey),
-        user_intent(true, IntentSource::PhysicalImeKey),
+        user_intent(false, UserIntentSource::PhysicalImeKey),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
     ]);
-    assert!(model.desired_open, "もう一度 KANJI で IME ON");
+    assert!(model.desired_open(), "もう一度 KANJI で IME ON");
 }
 
 // ── シナリオ 2: Ctrl+無変換 直後の Ctrl KeyUp で再アクティベートしない ─
@@ -100,14 +102,14 @@ fn scenario_2_ctrl_muhenkan_does_not_reactivate_on_ctrl_keyup() {
         ImeEvent::ChordStarted {
             kind: ChordKind::CtrlMuhenkanImeOff,
         },
-        user_intent(false, IntentSource::SyncKey),
+        user_intent(false, UserIntentSource::SyncKey),
         // chord 中の stale observer (Ctrl KeyUp 由来等)
         observer_reported(true, ObservationSource::ObserverPoll),
         ImeEvent::ChordEnded {
             kind: ChordKind::CtrlMuhenkanImeOff,
         },
     ]);
-    assert!(!model.desired_open, "Ctrl+無変換 IME OFF が維持される");
+    assert!(!model.desired_open(), "Ctrl+無変換 IME OFF が維持される");
     assert!(
         model.input_barrier.is_none(),
         "ChordEnded で barrier が clear"
@@ -120,18 +122,18 @@ fn scenario_2_ctrl_muhenkan_does_not_reactivate_on_ctrl_keyup() {
 fn scenario_3_ctrl_henkan_does_not_deactivate_immediately() {
     let model = run_reducer(vec![
         // 前提: IME OFF 状態
-        user_intent(false, IntentSource::PhysicalImeKey),
+        user_intent(false, UserIntentSource::PhysicalImeKey),
         // Ctrl+変換 IME ON
         ImeEvent::ChordStarted {
             kind: ChordKind::CtrlHenkanImeOn,
         },
-        user_intent(true, IntentSource::SyncKey),
+        user_intent(true, UserIntentSource::SyncKey),
         observer_reported(false, ObservationSource::ObserverPoll), // stale
         ImeEvent::ChordEnded {
             kind: ChordKind::CtrlHenkanImeOn,
         },
     ]);
-    assert!(model.desired_open, "Ctrl+変換 IME ON が維持される");
+    assert!(model.desired_open(), "Ctrl+変換 IME ON が維持される");
 }
 
 // ── シナリオ 4: Chrome/Edge no-imm32 で IME OFF ──────────────
@@ -140,9 +142,9 @@ fn scenario_3_ctrl_henkan_does_not_deactivate_immediately() {
 fn scenario_4_chrome_no_imm32_ime_off_works() {
     let model = run_reducer(vec![
         focus_changed(ImePolicyProfile::Imm32Unavailable),
-        user_intent(false, IntentSource::Command), // Ctrl+無変換 由来の SetOpenRequest
+        user_intent(false, UserIntentSource::Command), // Ctrl+無変換 由来の SetOpenRequest
     ]);
-    assert!(!model.desired_open, "Chrome でも IME OFF intent が効く");
+    assert!(!model.desired_open(), "Chrome でも IME OFF intent が効く");
     // AppImePolicy が Imm32Unavailable に切り替わっていることを確認
     assert!(
         !matches!(
@@ -175,7 +177,7 @@ fn scenario_6_focus_change_stale_false_does_not_override_desired() {
     // 3. 直後に observer が false (stale) を返す
     // → desired_open は true のままであるべき
     let model = run_reducer(vec![
-        user_intent(true, IntentSource::PhysicalImeKey),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
         focus_changed(ImePolicyProfile::ImmCross),
         observer_reported(false, ObservationSource::ObserverPoll),
     ]);
@@ -183,7 +185,7 @@ fn scenario_6_focus_change_stale_false_does_not_override_desired() {
     // ただしフォーカス変更で last_intent は clear されるため、
     // desired_open は前のままでも last_intent が None になる
     assert!(
-        model.desired_open,
+        model.desired_open(),
         "観測が desired を上書きしない (絶対ルール)"
     );
 }
@@ -192,14 +194,15 @@ fn scenario_6_focus_change_stale_false_does_not_override_desired() {
 
 #[test]
 fn scenario_7_panic_reset_then_stale_poll_does_not_corrupt() {
-    // panic_reset は ImeModel level では「Recovery intent で desired_open=true」+
-    // observation clear で表現される。
+    // panic_reset は ImeModel level では PanicReset イベント（desired_open=true に戻す、
+    // last_intent は設定しない）で表現される。
     // その直後の stale false poll が desired を壊さないことを確認。
     let model = run_reducer(vec![
-        user_intent(true, IntentSource::Recovery),
+        ImeEvent::PanicReset { target: true },
         observer_reported(false, ObservationSource::ObserverPoll),
     ]);
-    assert!(model.desired_open, "Recovery intent 後の stale が壊さない");
+    assert!(model.desired_open(), "PanicReset 後の stale poll が desired を壊さない");
+    assert!(model.last_intent.is_none(), "PanicReset は last_intent を設定しない");
     assert!(model.observations.drift.is_some(), "drift は記録される");
 }
 
@@ -220,7 +223,7 @@ fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
             generation: 10,
             ctrl_held: false,
         },
-        user_intent(false, IntentSource::PhysicalImeKey),
+        user_intent(false, UserIntentSource::PhysicalImeKey),
         // 新しい intent で別の apply が発生 (gen=11) して pending を上書きする想定
         ImeEvent::ImeApplyRequested {
             target: false,
@@ -233,7 +236,7 @@ fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
             generation: 10,
         },
     ]);
-    assert_eq!(model.desired_open, false, "newer intent (gen=11) が勝つ");
+    assert_eq!(model.desired_open(), false, "newer intent (gen=11) が勝つ");
     assert_eq!(
         model.applied.applied_open(), None,
         "stale gen=10 の success は無視 (generation 照合)"
@@ -267,11 +270,11 @@ fn apply_succeeded_with_matching_generation_updates_applied() {
 #[test]
 fn drift_tracking_reflects_intent_observer_mismatch() {
     let model = run_reducer(vec![
-        user_intent(true, IntentSource::PhysicalImeKey),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
         observer_reported(false, ObservationSource::ObserverPoll),
     ]);
     assert!(model.observations.drift.is_some(), "drift が記録される");
-    assert_eq!(model.desired_open, true, "desired は intent の true");
+    assert_eq!(model.desired_open(), true, "desired は intent の true");
     assert_eq!(
         model.observations.per_source.observer_poll.map(|o| o.open),
         Some(false),
@@ -282,7 +285,7 @@ fn drift_tracking_reflects_intent_observer_mismatch() {
 #[test]
 fn drift_cleared_when_observation_agrees_with_desired() {
     let model = run_reducer(vec![
-        user_intent(true, IntentSource::PhysicalImeKey),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
         observer_reported(false, ObservationSource::ObserverPoll),
         observer_reported(true, ObservationSource::ObserverPoll), // 一致
     ]);
@@ -309,7 +312,7 @@ fn focus_change_updates_app_policy() {
 #[test]
 fn focus_change_clears_intent_and_observations() {
     let model = run_reducer(vec![
-        user_intent(false, IntentSource::SyncKey),
+        user_intent(false, UserIntentSource::SyncKey),
         observer_reported(true, ObservationSource::Gji),
         focus_changed(ImePolicyProfile::ImmCross),
     ]);

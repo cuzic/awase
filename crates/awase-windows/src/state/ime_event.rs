@@ -63,19 +63,21 @@ pub struct EventTime {
     pub tick_ms: u64,
 }
 
-/// Intent のソース (ユーザー意図 / awase 内部判断 / 復旧措置 等)。
+/// ユーザー意図のソース。
+///
+/// `UserImeSetIntent` / `UserImeToggleIntent` の `source` フィールドに使う。
+/// 復旧操作 (`PanicReset`) や HWND キャッシュ復元 (`HwndCacheRestored`) は
+/// 専用イベントを持つため、このリストには含まない。
+/// `Recovery` や `HwndCache` をここに追加すると `desired_open` を
+/// "ユーザー意図として" 書き換えられてしまうため、列挙値として存在してはならない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntentSource {
+pub enum UserIntentSource {
     /// 設定された同期キー (Shift+Space 等)
     SyncKey,
     /// 物理 KANJI 押下 (VK_F3/F4)
     PhysicalImeKey,
-    /// awase 内部の判断 (Engine から SetOpen 要求等)
+    /// awase エンジン内部の判断 (Engine から SetOpen 要求等)
     Command,
-    /// 復旧措置 (panic_reset 等)
-    Recovery,
-    /// per-HWND IME キャッシュ復元 (前回 focus 時の意図を再現)
-    HwndCache,
 }
 
 /// Observation のソース (外部観測の種類)。
@@ -99,6 +101,14 @@ pub enum ObservationSource {
     /// （子 hwnd）の IMM32 状態を `read_ime_state_full_async` で読む高信頼ソース。
     /// `FocusProbe` が top-level hwnd の IMC を読む（Low）のと対になる。
     ImmCrossProbe,
+    /// 観測が一切ない状態（cache miss 等）での安全デフォルトの推測。
+    ///
+    /// 実際の外部観測ではなく awase 側のポリシー的な best-guess のため、
+    /// 必ず `ObservationConfidence::Low` で record すること。`derive_open()` の
+    /// Medium+ 多数決には参加しないが、他に観測が一切ない場合の
+    /// `effective_open()` フォールバックとしてのみ使われる。真の観測（Lowでも）が
+    /// 後から届けば、鮮度・信頼度が同等以上のため上書きされる。
+    HeuristicDefault,
 }
 
 /// 観測の信頼度。reducer が profile 別に judge する際に使う。
@@ -172,6 +182,12 @@ pub enum InputModeApplyStrategy {
     FocusReset,
     /// hwnd キャッシュからの入力モード復元（前回フォーカス時の belief を再現）。
     CacheRestore,
+    /// `SetOpen(true)` 適用直後、stale な `ObservedEisu` を先回りで訂正する。
+    ///
+    /// 外部を観測したのではなく、awase 自身が直前に発行した SetOpen の帰結
+    /// （GJI がひらがなへ遷移するはず）を先読みする内部補正。1500ms 後の
+    /// idle-conv-check が実際の GJI 状態で再確認・再訂正する。
+    PostSetOpenEisuReset,
 }
 
 /// `InputModeApplied` event における適用結果。
@@ -189,10 +205,25 @@ pub enum InputModeApplyResult {
 #[derive(Debug, Clone)]
 pub enum ImeEvent {
     /// ユーザー/awase が IME を toggle したい意図
-    UserImeToggleIntent { source: IntentSource },
+    UserImeToggleIntent { source: UserIntentSource },
 
     /// ユーザー/awase が IME を ON/OFF に設定したい意図
-    UserImeSetIntent { target: bool, source: IntentSource },
+    UserImeSetIntent { target: bool, source: UserIntentSource },
+
+    /// パニックリセット: 復旧として desired_open を `target` に戻す。
+    ///
+    /// `UserImeSetIntent` と違い `last_intent` を設定しない。
+    /// `ForceGuard::PanicReset` が IME ON を保証するため、このイベントは
+    /// `desired_open` のみ安全デフォルト値に戻す（`has_user_explicit_intent()` を
+    /// 汚染しない）。Recovery コードは `UserImeSetIntent` ではなくこれを使うこと。
+    PanicReset { target: bool },
+
+    /// HWND キャッシュ復元: 前回フォーカス時の desired_open を回復する。
+    ///
+    /// `UserImeSetIntent` と違い `last_intent` を設定しない。
+    /// キャッシュ復元はユーザーの能動的操作ではないため、`has_user_explicit_intent()`
+    /// を true にしてはならない。HwndCache 復元コードはこれを使うこと。
+    HwndCacheRestored { target: bool },
 
     /// OS への適用を開始した。
     ///
@@ -252,13 +283,18 @@ pub enum ImeEvent {
     /// 入力モード（ローマ字/かな/英数 等）を外部から観測した。
     ///
     /// GJI probe・IMM クエリ・conv_mode ビット変化など passively 取得した値を通知する。
-    /// reducer は `ImeModel::input_mode` をこの値で上書きする。
+    /// reducer は `confidence >= Medium` の場合のみ `ImeModel::input_mode` をこの値で
+    /// 上書きする（ON/OFF の `derive_open()` と同じ考え方: Low confidence だけでは
+    /// belief を動かさない）。`source` に見合わない confidence を付けないこと —
+    /// 実際に外部 API/probe を呼んでいない場合はこのイベントを使わず、
+    /// awase 自身の能動的な訂正は `InputModeApplied` を使うこと。
     ///
     /// `at` は観測を取得したときの tick_ms（envelop time と一致することが多いが、
     /// 非同期 probe が完了した時刻を明示したい場合は別値になることがある）。
     InputModeObserved {
         mode: InputModeState,
         source: ObservationSource,
+        confidence: ObservationConfidence,
         at: TickMs,
     },
 

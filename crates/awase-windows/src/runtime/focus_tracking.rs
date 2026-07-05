@@ -155,15 +155,15 @@ impl Runtime {
                 // Imm32Unavailable アプリでは IME を awase が制御できないためキャッシュが stale に
                 // なりやすく、入場時に信頼できる OFF か否かをこのフラグで区別する。
                 let from_explicit_off_intent = !ime_on && {
-                    use crate::state::ime_event::IntentSource;
+                    use crate::state::ime_event::UserIntentSource;
                     matches!(
                         self.platform_state.ime.model().last_intent.as_ref(),
                         Some(i) if !i.target
                             && matches!(
                                 i.source,
-                                IntentSource::SyncKey
-                                    | IntentSource::PhysicalImeKey
-                                    | IntentSource::Command
+                                UserIntentSource::SyncKey
+                                    | UserIntentSource::PhysicalImeKey
+                                    | UserIntentSource::Command
                             )
                     )
                 };

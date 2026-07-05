@@ -109,12 +109,12 @@ impl Default for ImeEventLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::ime_event::IntentSource;
+    use crate::state::ime_event::UserIntentSource;
 
     fn intent(target: bool) -> ImeEvent {
         ImeEvent::UserImeSetIntent {
             target,
-            source: IntentSource::SyncKey,
+            source: UserIntentSource::SyncKey,
         }
     }
 

@@ -15,7 +15,8 @@ use super::force_guard::{ForceGuardSet, ObserveMissMonitor};
 use awase::engine::InputModeState;
 
 use super::ime_event::{
-    ChordKind, ImeEvent, ImeEventEnvelope, InputModeApplyResult, IntentSource,
+    ChordKind, ImeEvent, ImeEventEnvelope, InputModeApplyResult, UserIntentSource,
+    ObservationConfidence,
 };
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
@@ -84,7 +85,11 @@ impl AppliedImeState {
 #[derive(Debug)]
 pub struct ImeModel {
     /// awase が IME をこうしたい状態。UserIntent のみが書き換える。
-    pub desired_open: bool,
+    ///
+    /// private フィールド。`reduce()` 以外からの書き込みを禁止するため、
+    /// 外部からは読み取り専用アクセサ `desired_open()` を使うこと
+    /// （`conv_mode_authority` と同じパターン）。
+    desired_open: bool,
 
     /// 入力モード（ローマ字/かな/英数/不明）の belief。
     ///
@@ -92,7 +97,9 @@ pub struct ImeModel {
     /// `InputModeObserved` / `InputModeApplied` / `UserChangedInputMode` イベント経由に
     /// 置換されるまでは shadow として記録するのみで本番判定には使わない。
     /// H-3-d で `ImeBelief::input_mode` が private 化されたのち、このフィールドが SSOT になる。
-    pub input_mode: InputModeState,
+    ///
+    /// private フィールド。外部からは読み取り専用アクセサ `input_mode()` を使うこと。
+    input_mode: InputModeState,
 
     /// 直近のユーザー意図 (intent guard 等の判断材料)
     pub last_intent: Option<RecordedIntent>,
@@ -136,7 +143,7 @@ pub struct ImeModel {
 #[derive(Debug, Clone)]
 pub struct RecordedIntent {
     pub target: bool,
-    pub source: IntentSource,
+    pub source: UserIntentSource,
     pub at_ms: u64,
 }
 
@@ -168,6 +175,35 @@ impl ImeModel {
         self.conv_mode_authority
     }
 
+    /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
+    ///
+    /// `desired_open` フィールドは private。外部から書き込まず
+    /// `ImeEvent::UserImeSetIntent` / `UserImeToggleIntent` 経由で reducer を通すこと。
+    /// 実効値が欲しい場合は `effective_open()` を使うこと（こちらは生の意図のみ）。
+    #[must_use]
+    pub const fn desired_open(&self) -> bool {
+        self.desired_open
+    }
+
+    /// 入力モードの belief を返す（読み取り専用アクセサ）。
+    ///
+    /// `input_mode` フィールドは private。外部から書き込まず
+    /// `InputModeObserved` / `InputModeApplied` / `UserChangedInputMode` 経由で
+    /// reducer を通すこと。
+    #[must_use]
+    pub const fn input_mode(&self) -> InputModeState {
+        self.input_mode
+    }
+
+    /// テスト専用: `desired_open` を直接設定する。
+    ///
+    /// carry-over シナリオ（focus 変更前の stale な desired_open）をテストで
+    /// 模擬するための脱出口。本番コードから呼んではならない。
+    #[cfg(test)]
+    pub(crate) fn set_desired_open_for_test(&mut self, value: bool) {
+        self.desired_open = value;
+    }
+
     /// 現在 CtrlImeChord transaction が active か。
     /// `stage_post_decision` が二次 SetOpen を filter するかどうかの判断材料。
     #[must_use]
@@ -175,29 +211,39 @@ impl ImeModel {
         matches!(self.input_barrier, Some(InputBarrier::CtrlImeChord { .. }))
     }
 
-    /// ユーザーの明示的な意図（HwndCache 復元を除く）が present かどうか。
+    /// ユーザー/awase の明示的な意図が present かどうか。
     ///
     /// true の場合は `desired_open` を観測より優先する。
     /// false の場合は observation pool の `derive_open()` 結果を採用し、
     /// 観測が空なら `desired_open` にフォールバックする。
+    ///
+    /// `last_intent` は `UserImeSetIntent` / `UserImeToggleIntent` のみが設定する。
+    /// `PanicReset` / `HwndCacheRestored` は設定しないため、ここで除外不要。
     fn has_user_explicit_intent(&self) -> bool {
-        self.last_intent.as_ref().is_some_and(|i| {
-            !matches!(i.source, IntentSource::HwndCache)
-        })
+        self.last_intent.is_some()
     }
 
     /// 観測プールと `desired_open` を統合した最終 belief (Step 6)。
     ///
     /// - ユーザーの明示意図がある場合: `desired_open` を優先（観測で上書きしない）
-    /// - 明示意図なし（フォーカス変化直後等）: `derive_open()` の結果を採用、
-    ///   観測が空なら `desired_open` にフォールバック
+    /// - 明示意図なし（フォーカス変化直後等）:
+    ///   1. `derive_open()`（Medium+ の合意 / High 即採用）の結果を採用
+    ///   2. それが `None` なら `most_recent_trusted()`（confidence 不問、最新優先）
+    ///      にフォールバック。cache-miss 等の安全デフォルト推測（Low confidence の
+    ///      `HeuristicDefault`）はここでのみ効き、後から届いた実観測（Lowでも）が
+    ///      新しければそちらが優先される。
+    ///   3. 観測が一切なければ `desired_open` にフォールバック
     /// - 最後に `force_guards` を適用（guard が active なら強制 ON）
     #[must_use]
     pub fn effective_open(&self) -> bool {
+        let now = Instant::now();
         let base = if self.has_user_explicit_intent() {
             self.desired_open
         } else {
-            self.observations.derive_open(Instant::now()).unwrap_or(self.desired_open)
+            self.observations
+                .derive_open(now)
+                .or_else(|| self.observations.most_recent_trusted(now).map(|o| o.open))
+                .unwrap_or(self.desired_open)
         };
         self.force_guards.effective_open(base)
     }
@@ -264,6 +310,20 @@ impl ImeModel {
                     source,
                     at_ms: envelope.time.tick_ms,
                 });
+            }
+            ImeEvent::PanicReset { target } => {
+                // 復旧操作: desired_open を安全デフォルト値に戻す。
+                // UserImeSetIntent と異なり last_intent を設定しない。
+                // ForceGuard::PanicReset が IME ON を保証するため、
+                // has_user_explicit_intent() を汚染しない。
+                self.desired_open = target;
+            }
+            ImeEvent::HwndCacheRestored { target } => {
+                // HWND キャッシュ復元: 前回フォーカス時の desired_open を回復する。
+                // ユーザーの能動的操作ではないため last_intent を設定しない。
+                // has_user_explicit_intent() が false のまま維持され、
+                // 後続の実観測が effective_open() を上書きできる。
+                self.desired_open = target;
             }
             ImeEvent::ObserverReported {
                 open,
@@ -382,10 +442,16 @@ impl ImeModel {
                 // applied は desired に合わせて楽観的にセット（ImmCross async 送信と同じ扱い）。
                 self.applied = AppliedImeState::Optimistic(desired);
             }
-            ImeEvent::InputModeObserved { mode, .. } => {
-                // 絶対ルール: Observer は desired_open を直接書き換えない（IME ON/OFF に準じる）。
-                // input_mode は観測が正しい情報なので直接更新する。
-                self.input_mode = mode;
+            ImeEvent::InputModeObserved { mode, confidence, .. } => {
+                // ON/OFF の derive_open() と同じ考え方: Low confidence 単独では
+                // belief を動かさない（記録のみ）。Medium+ のみ input_mode を上書きする。
+                if confidence >= ObservationConfidence::Medium {
+                    self.input_mode = mode;
+                } else {
+                    log::debug!(
+                        "[input-mode] Low confidence observation 無視: {mode:?} (confidence={confidence:?})"
+                    );
+                }
             }
             ImeEvent::InputModeApplied { mode, result, .. } => {
                 // Skipped の場合はモード変更が起きていないため更新しない。
@@ -437,7 +503,7 @@ mod tests {
             1,
             ImeEvent::UserImeSetIntent {
                 target: false,
-                source: IntentSource::PhysicalImeKey,
+                source: UserIntentSource::PhysicalImeKey,
             },
         ));
         assert!(!model.desired_open);
@@ -450,14 +516,14 @@ mod tests {
         model.reduce(&envelope(
             1,
             ImeEvent::UserImeToggleIntent {
-                source: IntentSource::PhysicalImeKey,
+                source: UserIntentSource::PhysicalImeKey,
             },
         ));
         assert!(!model.desired_open);
         model.reduce(&envelope(
             2,
             ImeEvent::UserImeToggleIntent {
-                source: IntentSource::PhysicalImeKey,
+                source: UserIntentSource::PhysicalImeKey,
             },
         ));
         assert!(model.desired_open);
@@ -486,6 +552,94 @@ mod tests {
                 .unwrap()
                 .open,
             false
+        );
+    }
+
+    #[test]
+    fn effective_open_falls_back_to_most_recent_trusted_when_derive_open_is_none() {
+        let mut model = ImeModel::new(); // desired_open = true, 明示 intent なし
+        // Low confidence 単独 → derive_open() は None（Medium+ 専用のため）。
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported {
+                open: false,
+                source: ObservationSource::HeuristicDefault,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Low,
+                focus_epoch: 0,
+            },
+        ));
+        assert!(
+            !model.effective_open(),
+            "derive_open()=None でも most_recent_trusted() の Low observation が \
+             desired_open より優先される"
+        );
+    }
+
+    #[test]
+    fn effective_open_medium_observation_overrides_low_fallback() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported {
+                open: false,
+                source: ObservationSource::HeuristicDefault,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Low,
+                focus_epoch: 0,
+            },
+        ));
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ObserverPoll,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
+            },
+        ));
+        assert!(
+            model.effective_open(),
+            "Medium confidence の derive_open() 結果が Low fallback より常に優先される"
+        );
+    }
+
+    #[test]
+    fn input_mode_observed_low_confidence_is_ignored() {
+        let mut model = ImeModel::new(); // input_mode = ObservedRomaji (初期値)
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedEisu,
+                source: ObservationSource::FocusProbe,
+                confidence: ObservationConfidence::Low,
+                at: crate::state::TickMs(0),
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedRomaji,
+            "Low confidence の観測は input_mode を上書きしない"
+        );
+    }
+
+    #[test]
+    fn input_mode_observed_medium_confidence_updates() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedEisu,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+                at: crate::state::TickMs(0),
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedEisu,
+            "Medium+ confidence の観測は input_mode を更新する"
         );
     }
 
@@ -543,7 +697,7 @@ mod tests {
             1,
             ImeEvent::UserImeSetIntent {
                 target: true,
-                source: IntentSource::PhysicalImeKey,
+                source: UserIntentSource::PhysicalImeKey,
             },
         ));
         assert!(model.desired_open);
