@@ -233,6 +233,13 @@ impl Output {
         self.injector.take_unicode_cold_deferred()
     }
 
+    /// 飛行中の `UnicodeColdWarmupFsm` に chars を追記する。
+    ///
+    /// 成功（FSM が存在して追記できた）なら `true`、なければ `false`。
+    pub(crate) fn try_push_unicode_chars_to_pending(&self, chars: &[char]) -> bool {
+        self.warmup_coord.try_push_unicode_chars_to_pending(chars)
+    }
+
     /// Unicode cold-start 用の GJI ウォームアップキーを送信する。
     ///
     /// 1. VK_IME_ON (0x16) を `IME_KANJI_MARKER` 付きで送信してひらがなモードへ切替。

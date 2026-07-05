@@ -220,6 +220,18 @@ impl TsfWarmupCoordinator {
         self.pending_tsf.borrow().is_some()
     }
 
+    /// 飛行中の `UnicodeColdWarmupFsm` に chars を追記する。
+    ///
+    /// FSM が存在してかつ `push_deferred_unicode_chars` に対応していれば `true` を返す。
+    /// `false` の場合は呼び出し元が新しい FSM を生成すること。
+    pub(crate) fn try_push_unicode_chars_to_pending(&self, chars: &[char]) -> bool {
+        self.pending_tsf
+            .borrow_mut()
+            .as_mut()
+            .map(|m| m.push_deferred_unicode_chars(chars))
+            .unwrap_or(false)
+    }
+
     /// Chrome/LiteralDetect/GjiWarmup probe が実行中なら継続タイマー命令を返す。
     pub(crate) fn pending_tsf_timer(&self) -> Option<TimerCommand> {
         self.has_pending_tsf().then_some(TimerCommand::Continue {

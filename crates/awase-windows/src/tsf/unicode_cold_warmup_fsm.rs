@@ -74,4 +74,15 @@ impl crate::tsf::tickable_fsm::TickableFsm for UnicodeColdWarmupFsm {
     fn cold_seq_hint(&self) -> u32 {
         self.cold_seq
     }
+
+    fn push_deferred_unicode_chars(&mut self, chars: &[char]) -> bool {
+        log::debug!(
+            "[unicode-cold-warmup] cold={} in-flight FSM に {} chars 追記 (合計 {} chars)",
+            self.cold_seq,
+            chars.len(),
+            self.deferred_chars.len() + chars.len(),
+        );
+        self.deferred_chars.extend_from_slice(chars);
+        true
+    }
 }

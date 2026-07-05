@@ -66,4 +66,15 @@ pub(crate) trait TickableFsm {
     // IPC race 検出（Phase 3 IPC settle 待機）に使う。
 
     fn notify_start_composition(&mut self) {}
+
+    // ── Unicode deferred chars 追記（UnicodeColdWarmupFsm のみ）──────────
+    //
+    // drain 処理中に2文字目以降の long-cold Unicode char が届いたとき、
+    // 既存 FSM に追記することで FSM の上書きと文字消失を防ぐ。
+    //
+    // 対応していない FSM は `false` を返す（デフォルト）。
+
+    fn push_deferred_unicode_chars(&mut self, _chars: &[char]) -> bool {
+        false
+    }
 }

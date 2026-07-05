@@ -644,20 +644,30 @@ impl PlatformRuntime for WindowsPlatform {
             let deferred = self.output.take_unicode_cold_deferred();
             if !deferred.is_empty() {
                 // output.send_keys() で chars が defer された。
-                // VK_IME_ON + VK_A+BS（犠牲キー）で GJI を起動し、gji_write_bytes 増加を確認してから
-                // deferred chars を送信する（VK_A が GJI composition を走らせ write_bytes が増える）。
-                let cold_seq = self.output.composition.cold_start_count();
-                let baseline = crate::tsf::observer::gji_write_bytes();
-                self.output.send_unicode_cold_warmup_keys(cold_seq);
-                log::info!(
-                    "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
-                     VK_IME_ON+VK_A+BS → {} chars defer",
-                    deferred.len()
-                );
-                let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
-                    cold_seq, deferred, baseline,
-                );
-                self.install_pending_tsf_and_set_timer(Box::new(fsm));
+                //
+                // 既に飛行中の UnicodeColdWarmupFsm があれば chars を追記するだけにする。
+                // 新しい FSM を作って上書きすると旧 FSM の deferred_chars が消失するため。
+                if self.output.try_push_unicode_chars_to_pending(&deferred) {
+                    log::debug!(
+                        "[unicode-cold-warmup] {} chars を飛行中 FSM に追記 (新規 FSM/VK_A+BS 送信スキップ)",
+                        deferred.len()
+                    );
+                } else {
+                    // VK_IME_ON + VK_A+BS（犠牲キー）で GJI を起動し、gji_write_bytes 増加を確認してから
+                    // deferred chars を送信する（VK_A が GJI composition を走らせ write_bytes が増える）。
+                    let cold_seq = self.output.composition.cold_start_count();
+                    let baseline = crate::tsf::observer::gji_write_bytes();
+                    self.output.send_unicode_cold_warmup_keys(cold_seq);
+                    log::info!(
+                        "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
+                         VK_IME_ON+VK_A+BS → {} chars defer",
+                        deferred.len()
+                    );
+                    let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
+                        cold_seq, deferred, baseline,
+                    );
+                    self.install_pending_tsf_and_set_timer(Box::new(fsm));
+                }
             }
         }
         // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
