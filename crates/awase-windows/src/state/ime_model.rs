@@ -1027,4 +1027,50 @@ mod tests {
             "HwndCacheRestored 後は explicit intent がなく、High 観測が通過する"
         );
     }
+
+    // InputModeApplied のテスト
+
+    #[test]
+    fn input_mode_applied_updates_input_mode() {
+        let mut model = ImeModel::new();
+        // 初期状態は ObservedRomaji
+        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::ObservedEisu,
+                strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                result: InputModeApplyResult::Applied,
+                at: crate::state::TickMs(0),
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedEisu,
+            "InputModeApplied(Applied) は input_mode を更新する"
+        );
+    }
+
+    #[test]
+    fn input_mode_applied_skipped_does_not_update_input_mode() {
+        let mut model = ImeModel::new();
+        // 初期状態は ObservedRomaji
+        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InputModeApplied {
+                mode: InputModeState::ObservedEisu,
+                strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                result: InputModeApplyResult::Skipped,
+                at: crate::state::TickMs(0),
+            },
+        ));
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedRomaji,
+            "InputModeApplied(Skipped) は input_mode を変更しない"
+        );
+    }
 }
