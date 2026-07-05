@@ -65,6 +65,8 @@ pub struct PerSourceObservations {
     pub hwnd_cache: Option<ImeObservation>,
     /// フォーカス変更後の ImmCross 非同期プローブ（Qt/LINE 等の child hwnd 高信頼読み取り）
     pub imm_cross_probe: Option<ImeObservation>,
+    /// 観測が一切ない場合の安全デフォルト推測（常に Low confidence）
+    pub heuristic_default: Option<ImeObservation>,
 }
 
 impl PerSourceObservations {
@@ -79,6 +81,7 @@ impl PerSourceObservations {
             ObservationSource::Tsf => self.tsf.as_ref(),
             ObservationSource::HwndCache => self.hwnd_cache.as_ref(),
             ObservationSource::ImmCrossProbe => self.imm_cross_probe.as_ref(),
+            ObservationSource::HeuristicDefault => self.heuristic_default.as_ref(),
         }
     }
 
@@ -92,6 +95,7 @@ impl PerSourceObservations {
             ObservationSource::Tsf => self.tsf = Some(obs),
             ObservationSource::HwndCache => self.hwnd_cache = Some(obs),
             ObservationSource::ImmCrossProbe => self.imm_cross_probe = Some(obs),
+            ObservationSource::HeuristicDefault => self.heuristic_default = Some(obs),
         }
     }
 
@@ -105,6 +109,7 @@ impl PerSourceObservations {
             self.tsf.as_ref(),
             self.hwnd_cache.as_ref(),
             self.imm_cross_probe.as_ref(),
+            self.heuristic_default.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -119,6 +124,7 @@ impl PerSourceObservations {
         self.tsf = None;
         self.hwnd_cache = None;
         self.imm_cross_probe = None;
+        self.heuristic_default = None;
     }
 }
 
@@ -323,7 +329,7 @@ mod tests {
         let now = Instant::now();
         s.record(obs(true, ObservationSource::ObserverPoll, now));
         assert!(s.per_source.observer_poll.is_some());
-        s.clear_on_focus_change();
+        s.clear_on_focus_change(1);
         assert!(s.per_source.observer_poll.is_none());
     }
 
