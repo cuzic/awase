@@ -109,6 +109,17 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.8.1] - 2026-07-05</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>Alt+Tab 等の高速フォーカス遷移中に IME の内部認識 (belief) と実際の OS 側 IME 状態がずれる問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/dd6f208">dd6f208</a>, <a href="https://github.com/cuzic/awase/commit/08ce474">08ce474</a>, <a href="https://github.com/cuzic/awase/commit/11ee689">11ee689</a>, <a href="https://github.com/cuzic/awase/commit/435e2d3">435e2d3</a>)<ul>
+<li>GJI 強制 IME-ON ガードが「GJI プロセスの生存」ではなく「実際にアクティブな IME 種別」を見るよう修正し、MS-IME 環境での VK_DBE_HIRAGANA 二重送信を解消</li>
+<li>フォーカス遷移直後の settle バリア (<code>settle_until</code>) を配線し、<code>Engine</code>/<code>ImeEffect::SetOpen</code> の全呼び出し経路（キーボード入力・フォーカス変更通知・IME リフレッシュポーリング・ホットキー等）を <code>execute_from_loop</code>/<code>execute_from_hook</code> の2箇所で一括ガード</li>
+<li><code>AppImeProfile::from_class_name</code> の分類優先順位により Windows Terminal (<code>CASCADIA_HOSTING_WINDOW_CLASS</code>) が <code>TsfNative</code> に一切分類されない仕様を見落として「非 TSF ネイティブ」と誤判定していた5箇所を <code>is_effectively_tsf_native</code> に統一</li>
+</ul>
+</li>
+<li><strong>BrokenAppBootstrap force guard がユーザーの明示的 OFF 意図を上書きする問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/a06ad69">a06ad69</a>)</li>
+</ul>
 <h2>[1.8.0] - 2026-07-05</h2>
 <h3>新機能</h3>
 <ul>
