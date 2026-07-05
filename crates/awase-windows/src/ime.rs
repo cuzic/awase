@@ -1,11 +1,10 @@
-use std::mem::size_of;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetConversionStatus, ImmGetOpenStatus, IME_COMPOSITION_STRING,
     IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, MapVirtualKeyW, SendInput, INPUT, MAPVK_VK_TO_VSC,
+    GetKeyboardLayout, MapVirtualKeyW, INPUT, MAPVK_VK_TO_VSC,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
@@ -241,12 +240,9 @@ pub unsafe fn post_kanji_toggle_to_focused() {
         still.alt,
         inputs.len()
     );
-    // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
-    //         size_of::<INPUT>() は正確な構造体サイズを返す。
-    //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
     let candidate_pre = crate::tsf::observer::gji_candidate_visible_now();
     let t_send = std::time::Instant::now();
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    let sent = crate::win32::send_input_safe(&inputs);
     let send_elapsed = t_send.elapsed();
     let candidate_post = crate::tsf::observer::gji_candidate_visible_now();
     log::debug!(
@@ -385,10 +381,7 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
         held.alt,
         inputs.len()
     );
-    // SAFETY: inputs は make_key_input_ex で正しく初期化された INPUT の Vec であり、
-    //         size_of::<INPUT>() は正確な構造体サイズを返す。
-    //         SendInput はスレッドセーフで任意のスレッドから呼び出せる。
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
+    let sent = crate::win32::send_input_safe(&inputs);
     if sent as usize != inputs.len() {
         log::warn!(
             "[ime-mode] SendInput(vk=0x{vk:02X}) sent {sent}/{} events",

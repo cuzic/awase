@@ -202,8 +202,6 @@ impl ProbeIo for Output {
     fn send_sacrificial_ime_off_on(&self, cold_seq: u32) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{VK_IME_OFF, VK_IME_ON};
-        use std::mem::size_of;
-        use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
         // VK_IME_ON 後に GJI が正しい conv を復元できるよう、直前に ImmSetConversionStatus を
         // 再スケジュールする。cold warmup 開始時の imm-romaji が stale な conv_mode を参照して
         // いた場合（例: cold=3 で ZenKata が誤設定された状態）の補正として機能する。
@@ -229,12 +227,7 @@ impl ProbeIo for Output {
         ];
         log::debug!("[sacr-warmup] cold={cold_seq} VK_IME_OFF→ON 送信（vim 安全プローブ）");
         self.on_f22_f21_sent();
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     fn send_sacrificial_vk_a_with_bs(&self, cold_seq: u32) {
@@ -242,9 +235,6 @@ impl ProbeIo for Output {
         use crate::tsf::output::make_key_input_ex;
         use crate::tsf::output::INJECTED_MARKER;
         use crate::vk::VK_BACK;
-        use std::mem::size_of;
-        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
-        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
         const VK_A: VkCode = VkCode(0x41);
         // VK_A + BS を一括 SendInput することで Chrome が次フレームを描画する前に
         // 'あ'/'a' → BS と処理され、ユーザーには文字フラッシュが見えない。
@@ -255,40 +245,25 @@ impl ProbeIo for Output {
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ];
         log::debug!("[sacr-warmup] cold={cold_seq} VK_A+BS 同時送信（Chrome 用：文字フラッシュ防止）");
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     fn send_sacrificial_bs_one(&self, cold_seq: u32) {
         use crate::tsf::output::make_key_input_ex;
         use crate::tsf::output::INJECTED_MARKER;
         use crate::vk::VK_BACK;
-        use std::mem::size_of;
-        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
-        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
         let inputs = [
             make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ];
         log::debug!("[sacr-warmup] cold={cold_seq} BS×1 送信（犠牲キー削除）");
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     fn send_literal_recovery_bs(&self, backs: usize, cold_seq: u32) {
         use crate::tsf::output::make_key_input_ex;
         use crate::tsf::output::INJECTED_MARKER;
         use crate::vk::VK_BACK;
-        use std::mem::size_of;
-        use windows::Win32::UI::Input::KeyboardAndMouse::SendInput;
         use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
         if backs == 0 {
             return;
@@ -302,12 +277,7 @@ impl ProbeIo for Output {
             })
             .collect();
         log::debug!("[raw-tsf-literal] cold={cold_seq} partial literal cleanup BS×{backs}");
-        unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-            );
-        }
+        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32) {

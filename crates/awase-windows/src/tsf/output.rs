@@ -5,7 +5,7 @@
 //! - TSF 専用ヘルパー関数: `make_tsf_key_input`, `make_key_input_ex`
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    MapVirtualKeyW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 
@@ -190,7 +190,6 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
 pub fn flush_raw_tsf_literal_backspaces() {
     use crate::vk::VK_BACK;
-    use std::mem::size_of;
     use std::sync::atomic::Ordering::Relaxed;
     let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
     if n == 0 {
@@ -205,10 +204,5 @@ pub fn flush_raw_tsf_literal_backspaces() {
         })
         .collect();
     log::debug!("[raw-tsf-literal] flush backspace ×{n}");
-    unsafe {
-        SendInput(
-            &backs,
-            i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32"),
-        );
-    }
+    let _ = crate::win32::send_input_safe(&backs);
 }
