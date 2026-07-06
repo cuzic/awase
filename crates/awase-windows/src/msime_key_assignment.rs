@@ -70,30 +70,41 @@ impl MsImeKeyAssignment {
 
 #[cfg(windows)]
 mod windows_impl {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicU8, Ordering};
 
     use super::MsImeKeyAssignment;
 
-    /// プロセス内で一度だけチェックするためのガード。
-    static CHECKED: AtomicBool = AtomicBool::new(false);
+    /// 前回警告を出した割当て内容（bit0=変換, bit1=無変換）。`NOT_WARNED` = 未警告。
+    ///
+    /// 同じ内容で繰り返しポップアップを出さないためのデデュープ。競合が解消された
+    /// 観測でリセットされるため、割当てを解除→再度有効化した場合は再警告される。
+    static LAST_WARNED: AtomicU8 = AtomicU8::new(NOT_WARNED);
+    const NOT_WARNED: u8 = 0xFF;
 
     /// アクティブ IME が MS-IME と確定したときに呼ぶ: 競合割当てを検出したら
-    /// 警告ログ + 解除案内ポップアップを出す（プロセス内で一度だけ）。
+    /// 警告ログ + 解除案内ポップアップを出す（同一内容の警告はプロセス内で一度だけ）。
     ///
     /// 呼び出しタイミングは `WM_IME_KIND_CHANGED`（CLSID ベース判定の確定/変化時）。
     /// GJI 利用中はこの関数自体が呼ばれないため、MS-IME 非ユーザーには表示されない。
+    /// awase 起動後にレジストリを変更した場合、次の kind 確定イベント（GJI⇔MS-IME
+    /// 切替 or 再起動）で再チェックされる。
     /// ダイアログは別スレッドに出す — メインスレッドの `MessageBoxW` はモーダル
     /// メッセージループでフックのスレッドメッセージ処理を止めてしまうため。
-    pub fn check_and_warn_once() {
-        if CHECKED.swap(true, Ordering::Relaxed) {
-            return;
-        }
+    pub fn check_and_warn() {
         let assignment = read_from_registry();
         log::info!("[msime-keyassign] {assignment:?}");
-        if let Some(warning) = assignment.conflict_warning() {
-            log::warn!("[msime-keyassign] {}", warning.replace('\n', " "));
-            std::thread::spawn(move || show_conflict_dialog(&warning));
+        let Some(warning) = assignment.conflict_warning() else {
+            // 競合なし → 警告履歴をリセット（後で有効化されたら再警告できるように）
+            LAST_WARNED.store(NOT_WARNED, Ordering::Relaxed);
+            return;
+        };
+        let packed = u8::from(assignment.henkan_ime_on)
+            | (u8::from(assignment.muhenkan_ime_off) << 1);
+        if LAST_WARNED.swap(packed, Ordering::Relaxed) == packed {
+            return; // 同じ内容で警告済み
         }
+        log::warn!("[msime-keyassign] {}", warning.replace('\n', " "));
+        std::thread::spawn(move || show_conflict_dialog(&warning));
     }
 
     const MSIME_SUBKEY: windows::core::PCWSTR =
@@ -126,7 +137,7 @@ mod windows_impl {
     ///
     /// 値が存在しない場合は既定（割当てなし）として扱う。
     #[must_use]
-    pub fn read_from_registry() -> MsImeKeyAssignment {
+    fn read_from_registry() -> MsImeKeyAssignment {
         use windows::core::w;
         MsImeKeyAssignment {
             enabled: read_dword(w!("IsKeyAssignmentEnabled")) == Some(1),
@@ -139,10 +150,10 @@ mod windows_impl {
     ///
     /// `MessageBoxW` はユーザー応答まで呼び出し元をブロックする
     /// （起動時の `autostart::ask_user` と同じ扱い。フック導入前なので入力への影響はない）。
-    pub fn show_conflict_dialog(warning: &str) {
+    fn show_conflict_dialog(warning: &str) {
         use windows::core::{w, PCWSTR};
         use windows::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
+            MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
         };
 
         let text = format!(
@@ -160,7 +171,10 @@ mod windows_impl {
                 None,
                 PCWSTR(text_wide.as_ptr()),
                 w!("awase - MS-IME キー割り当ての競合"),
-                MB_YESNO | MB_ICONWARNING,
+                // MB_TOPMOST | MB_SETFOREGROUND: バックグラウンドスレッドの owner なし
+                // MessageBox はフォアグラウンドロックで現在のウィンドウの裏に出る
+                // （タスクバー点滅のみで気づけない）ため、最前面に強制する。
+                MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
             )
         };
         if result == IDYES {
@@ -195,7 +209,7 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::check_and_warn_once;
+pub use windows_impl::check_and_warn;
 
 #[cfg(test)]
 mod tests {

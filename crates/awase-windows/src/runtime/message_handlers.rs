@@ -309,10 +309,11 @@ pub(crate) unsafe fn handle_wm_ime_kind_changed(app: &mut Runtime) {
     app.platform.output.set_active_ime_kind(kind);
 
     // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
-    // 競合し belief 乖離を起こす）を一度だけチェックして解除を案内する。
+    // 競合し belief 乖離を起こす）をチェックして解除を案内する
+    // （ポップアップは同一内容につき一度、内容が変われば再警告）。
     // GJI 利用中は MS-IME 設定と競合しないためスキップ。
     if matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
-        crate::msime_key_assignment::check_and_warn_once();
+        crate::msime_key_assignment::check_and_warn();
     }
 }
 
