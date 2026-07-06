@@ -109,6 +109,22 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>変更</h3>
+<ul>
+<li><strong>意味を失っていた設定項目を撤去</strong><ul>
+<li><code>keyboard_model</code>: レイアウトパースが JIS 固定で一度も配線されていなかった（設定画面の jis/us 選択は無効だった）</li>
+<li><code>output_mode</code>: アプリごとの自動注入方式選択（InjectionMode）に置換済みで、書き込みのみの死に設定だった</li>
+<li><code>hook_mode</code>: Relay に一本化（Filter は relay 系機能の登場以降テストされていないレガシー経路のため実装ごと削除）</li>
+<li>旧 config.toml にこれらのキーが残っていても無害（無視される）。分離前の旧内蔵設定 GUI（gui/main.rs、孤児ファイル）も削除</li>
+<li><code>confirm_mode</code> は生きた設定として存続（デフォルト wait のまま）。n-gram 系の詳細設定は「n-gram 予測」モード選択時のみ有効化されるよう UI を連動</li>
+</ul>
+</li>
+<li><strong>設定画面にアプリ別オーバーライドと緊急脱出キーの UI を追加</strong><ul>
+<li>新タブ「アプリ別」: <code>app_overrides</code>（force_text / force_bypass / force_vk / force_tsf）と <code>post_bypass</code>（tmux prefix 等の素通し）を GUI から編集可能に</li>
+<li>キー設定タブ: <code>engine_off_solo_triple</code>（単独3連打でエンジン OFF、Ctrl スタック時の緊急脱出用）を追加</li>
+</ul>
+</li>
+</ul>
 <h2>[1.8.5] - 2026-07-06</h2>
 <h3>バグ修正</h3>
 <ul>
