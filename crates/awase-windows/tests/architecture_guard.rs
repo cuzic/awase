@@ -272,6 +272,69 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     );
 }
 
+/// `write_focus_probe` は実際に FocusProbe（first-key の `read_ime_state_fast`）を
+/// 実行した経路のみが呼べる。
+///
+/// 2026-07-06: TsfGate の bypass 確定処理（`settle_tsf_gate_after_refresh`）が、probe を
+/// 一切実行していないのに `write_focus_probe(false)` を毎リフレッシュ注入していた
+/// （ce45b82、「非TSFウィンドウには日本語IMEが存在しない」という誤前提）。実観測経路を
+/// 持たない Imm32Unavailable（Edge/Chrome）ではこの偽 Low false が `most_recent_trusted()`
+/// 経由で belief を支配し、フォーカス約 500ms 後に Engine が必ず OFF になった
+/// （docs/known-bugs.md BUG-07）。
+///
+/// TsfGate の状態確定（`bypass_tsf`/`confirm_tsf`）は injection 層の関心事であり、
+/// IME open belief とは独立に行うこと。「この種のウィンドウに IME は無いはず」という
+/// 推測を belief に書きたくなったら、それは観測の偽装である（`ObservationSource::FocusProbe`
+/// は「実際に read_ime_state_fast を実行した」ことを意味する）。
+#[test]
+fn focus_probe_observation_is_limited_to_real_probe_path() {
+    fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk_rs_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    // (相対パス, 期待マッチ数)。ここに列挙されないファイルは 0 でなければならない。
+    let expected: &[(&str, usize)] = &[
+        // apply_effective_ime — first-key FocusProbe（read_ime_state_fast 実行済み）の
+        // 結果適用点。TsfNative/Imm32Unavailable の shadow 代替観測もここに集約される。
+        ("runtime/key_pipeline.rs", 1),
+    ];
+
+    for path in &files {
+        let rel = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = production_code_only(&content);
+        let count = production.matches(".write_focus_probe(").count();
+        let expected_count = expected
+            .iter()
+            .find(|(f, _)| *f == rel)
+            .map_or(0, |(_, n)| *n);
+        assert_eq!(
+            count, expected_count,
+            "src/{rel} 内の `.write_focus_probe(` 呼び出し箇所数が想定({expected_count})と\
+             異なります(実際: {count})。\n\
+             write_focus_probe は「実際に FocusProbe を実行した」経路専用です。probe を\
+             実行していない場所から false を書くと、実観測経路を持たない Imm32Unavailable\
+             （Edge/Chrome）で belief が偽 false に支配され、Engine が必ず OFF になります\
+             （ce45b82 → BUG-07 の再発）。ヒューリスティックな推測なら \
+             `ObserverReported + ObservationSource::HeuristicDefault + Low` を、\
+             エンジンを keys に反応させたくないだけなら FocusKind::NonText 分類を使って\
+             ください。"
+        );
+    }
+}
+
 #[test]
 fn user_intent_source_construction_is_limited_to_typed_writers() {
     let path = "src/state/platform_state.rs";

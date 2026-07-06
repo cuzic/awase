@@ -376,14 +376,15 @@ impl Runtime {
         let held = if is_tsf {
             self.platform.confirm_tsf()
         } else {
-            // BypassConfirmed（非TSFウィンドウ確定）: warmup_grace を無視して ime_on=false に確定。
-            // apply_focus_probe が WARMUP_GRACE_MS(300ms) の抑制で ime_on=true を保持したまま
-            // bypass_tsf() に到達すると Win+X 等の1文字ショートカットが NICOLA 変換される。
-            let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-            let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
-                self.platform_state.focus.focus_epoch,
-            );
-            self.platform_state.ime.write_focus_probe(false, tick_ms, accepted);
+            // ここで belief（IME open observation）を書いてはならない。
+            // かつて ce45b82 が「非TSFウィンドウには日本語IMEが存在しない」という誤った
+            // 前提で write_focus_probe(false) の偽観測を注入していたが、Edge/Chrome
+            // （Imm32Unavailable, injection=Unicode）は非TSF注入かつ日本語IME有効であり、
+            // 実観測経路を持たないため偽 Low false が most_recent_trusted() 経由で belief を
+            // 支配し、フォーカス約500ms後（次ポーリング）に Engine が必ず OFF になった
+            // （docs/known-bugs.md BUG-07）。ce45b82 の元バグ（Win+X メニューの1文字
+            // ショートカットが NICOLA 変換される）は、現在は classify.rs の既知 NonText
+            // クラス判定 + message_handlers.rs の NonText パススルーが belief と独立に防ぐ。
             self.platform.bypass_tsf()
         };
         self.platform.timer.kill(crate::TIMER_TSF_GATE);
