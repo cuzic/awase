@@ -325,14 +325,30 @@ impl Runtime {
         // ROMAN ビットが常に 0 のため is_roman_reliable=false。これにより classify_idle は
         // ひらがな conv で ObservedKana への downgrade を行わず、romaji-capable でない場合は
         // AssumedRomaji { ImmBridgeBroken } に回復する。
+        let effective_open = self.platform_state.ime.effective_open();
         let transition = crate::state::conv_classify::classify_conv_transition(
             conv,
             current,
             is_cold,
-            self.platform_state.ime.effective_open(),
+            effective_open,
             conv_mode_changed,
             false,
         );
+        // P1: リプレイ回帰基盤用に呼び出し全体を構造化記録する。実機でこの周辺の
+        // バグに気づいたらダンプし、tests/journals/ のフィクスチャへ転記する
+        // （docs/journal-replay-guide.md 参照）。
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ConvClassifyCall {
+                conv,
+                current,
+                is_cold,
+                effective_open,
+                conv_mode_changed,
+                is_roman_reliable: false,
+                result: transition,
+            });
 
         // Apply(1): input_mode belief の更新を dispatch する。
         // ここが key_pipeline 内で唯一の idle-conv-check InputModeObserved 構築点。
