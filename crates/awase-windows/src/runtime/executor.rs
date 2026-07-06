@@ -598,10 +598,6 @@ impl DecisionExecutor {
             },
             Effect::Ime(ie) => match ie {
                 ImeEffect::SetOpen { .. } => unreachable!("handled above"),
-                ImeEffect::RequestRefresh => {
-                    platform_rt.post_ime_refresh();
-                    None
-                }
             },
             Effect::Ui(ue) => match ue {
                 UiEffect::EngineStateChanged { enabled, send_ime_key } => {

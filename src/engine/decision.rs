@@ -23,14 +23,11 @@ use super::mode_state::InputModeState;
 pub enum DecisionOrigin {
     /// NICOLA FSM (同時打鍵判定) の出力として IME 制御が必要になった
     NicolaFsm,
-    /// 投機的送信（タイマー確定前の先行出力）
-    Speculative,
-    /// ペンディングタイマー満了による確定出力
-    PendingTimer,
     /// 特殊キーコンボ（Ctrl+無変換等）による IME 制御バイパス
     Bypass,
-    /// 文脈不明（初期化直後・観測同期等）
-    Unknown,
+    // 旧 Speculative / PendingTimer / Unknown は 2026-07-06 の到達不能パス監査で撤去。
+    // どの emission サイトも構築しておらず（SetOpen は NicolaFsm / Bypass 固定）、
+    // Unknown → EffectOrigin::ObservationSync のマップも実質死んでいた。
 }
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
@@ -65,8 +62,7 @@ pub enum ImeEffect {
     /// Platform 側はこれを見てフォールバックキー送信（VK_KANJI 等）を
     /// 適用するか判断できる。
     SetOpen { open: bool, origin: DecisionOrigin },
-    /// IME 状態更新を要求する (PostMessageW)
-    RequestRefresh,
+    // 旧 RequestRefresh は 2026-07-06 の到達不能パス監査で撤去（構築サイトゼロ）。
 }
 
 /// UI に関する副作用
@@ -90,16 +86,16 @@ pub enum Effect {
 
 // ── Activation 状態モデル ──
 
-/// Engine の実効有効状態（3値）。
+/// Engine の実効有効状態。
 ///
-/// `Pending` を導入することで「フォーカス変更直後の観測待ち」を
-/// false に落とさずに表現できる。
+/// 旧 `Pending(PendingReason)`（フォーカス変更直後の観測待ち 3 値目）は
+/// 2026-07-06 の到達不能パス監査で撤去 — `compute_state` が一度も生成せず、
+/// フォーカス遷移の grace は awase-windows 側の `InputBarrier::FocusTransition`
+/// が実装している。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationState {
     Active,
     Inactive(InactiveReason),
-    /// 一時的に判断保留。直前が Active なら grace 期間中は Active 扱い。
-    Pending(PendingReason),
 }
 
 /// 不活性の確定理由
@@ -113,19 +109,8 @@ pub enum InactiveReason {
     NotRomajiInput,
     /// 日本語以外の IME（英語、中国語等）
     NotJapaneseIme,
-    /// フォーカスが非テキスト領域
-    NonTextFocus,
-}
-
-/// 判断保留の理由
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PendingReason {
-    /// フォーカス変更直後で probe 結果待ち
-    FocusTransition { since_ms: u64 },
-    /// observe() が連続失敗しているが閾値未満
-    ObservationMissing { miss_count: u32 },
-    /// IMM ブリッジ broken アプリで初回検出待ち
-    ImmBridgeUnknown,
+    // 旧 NonTextFocus は 2026-07-06 の到達不能パス監査で撤去（compute_state が
+    // 生成せず、非テキストフォーカスの扱いは focus 層の classifier が担う）。
 }
 
 impl ActivationState {
@@ -138,18 +123,17 @@ impl ActivationState {
     ///
     /// # Panics
     ///
-    /// `Active` または `Pending` 状態で呼ばれた場合にパニックする。
+    /// `Active` 状態で呼ばれた場合にパニックする。
     #[must_use]
     pub const fn to_context_change(self) -> ContextChange {
         match self {
             Self::Inactive(InactiveReason::UserDisabled) => ContextChange::EngineDisabled,
-            Self::Inactive(InactiveReason::NonTextFocus) => ContextChange::FocusChanged,
             Self::Inactive(
                 InactiveReason::ImeOff
                 | InactiveReason::NotRomajiInput
                 | InactiveReason::NotJapaneseIme,
             ) => ContextChange::ImeOff,
-            Self::Active | Self::Pending(_) => {
+            Self::Active => {
                 panic!("to_context_change called on non-inactive state")
             }
         }
