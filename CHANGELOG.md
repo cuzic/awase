@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-07-06
+
+### バグ修正
+
+- **Edge/Chrome フォーカスの約500ms後に Engine が必ず OFF になる問題を修正 (BUG-07)** ([0d67f20](https://github.com/cuzic/awase/commit/0d67f20))
+  - TsfGate の bypass 確定処理が probe 未実行のまま `write_focus_probe(false)` の偽観測を毎リフレッシュ注入していた（「非TSFウィンドウには日本語IMEが存在しない」という誤前提、ce45b82 の revert）
+  - 実観測経路を持たない Imm32Unavailable では偽 Low false が belief を支配し訂正不能だった。architecture_guard で `write_focus_probe` の呼び出し箇所を実 probe 経路に固定
+- **ワーカースレッド発のメッセージが main スレッドに届かない問題を修正 (BUG-09)** ([69f271d](https://github.com/cuzic/awase/commit/69f271d))
+  - `post_to_main_thread` の `PostMessageW(NULL)` は「呼び出しスレッド自身への投函」であり、gji-io-monitor 発の `WM_IME_KIND_CHANGED` が消失 → MS-IME 環境でも warmup 戦略がデフォルトの GjiFsm のまま迷走していた（検出層は正しいのに出力層だけ壊れる split-brain）
+  - `PostThreadMessageW(engine_thread_id())` 化 + メッセージループ開始時の IME 種別 pull 同期。実機で MicrosoftIme 検出の 3ms 後に MsImeStrategy 切替を確認
+- **MS-IME で物理ひらがなキーを押しても IME ON にならない問題を修正 (BUG-10)** ([9d5040b](https://github.com/cuzic/awase/commit/9d5040b))
+  - TSF mode の物理 F2 (VK_DBE_HIRAGANA) 無条件 Suppress は GJI 戦略の「F2 代替送信」契約とセットだったが、MsImeStrategy では代替が送られず食い逃げになっていた（Engine ON・実 IME OFF の乖離）
+  - Suppress を GJI 戦略（`f2_warmup_owned`）に限定し、MS-IME では物理キーを素通し
+- **合成 VK_KANA によるかなロック反転で JIS かな入力化する問題への防御 (BUG-08)** ([b38d67f](https://github.com/cuzic/awase/commit/b38d67f))
+  - 物理押下では不可能な間隔（135µs）の合成 VK_KANA ペアがパススルーされ、GJI がローマ字→JIS かな入力に反転していた
+  - `LLKHF_INJECTED` 付き VK_KANA を hook で swallow し、全 VK_KANA 到達に注入元特定用の診断ログを追加
+
+### 撤回・無効化
+
+- **UIA 非同期 focus 分類の適用を無効化 (BUG-11/BUG-12)** ([d941721](https://github.com/cuzic/awase/commit/d941721), [f88e89b](https://github.com/cuzic/awase/commit/f88e89b))
+  - BUG-09 の配送修正で史上初めて実行された受信ハンドラに 2 段階の実害が露出（キャッシュキー取り違え → Edge 永久 NonText、修正後も (pid,class) キャッシュ粒度とブラウザのウィンドウ内要素粒度の構造的不一致で再発）
+  - ハンドラをログのみに変更し、配送修正前の実績ある挙動へ意図的に復帰。sync 分類（既知クラス・WS_EX_NOIME・MSAA）は従来どおり
+- **JIS かな自動復元（restore_roman）の TsfNative での発火を撤回** ([92fddc8](https://github.com/cuzic/awase/commit/92fddc8), [f88e89b](https://github.com/cuzic/awase/commit/f88e89b))
+  - MS-IME × TsfNative では conv の ROMAN=0 が偽陽性であり、復元書き込みが conv を 0x19⇄0x09 で往復させ、直接入力中の spurious Engine/IME ON を誘発した
+  - `is_roman_reliable=true` の文脈のみ発火する仕様に変更（TsfNative idle 経路では実質無効）。経緯は docs/experiments.md エントリ 03 参照
+
 ## [1.8.2] - 2026-07-05
 
 ### バグ修正
@@ -453,7 +479,10 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
 
-[Unreleased]: https://github.com/cuzic/awase/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/cuzic/awase/compare/v1.8.3...HEAD
+[1.8.3]: https://github.com/cuzic/awase/compare/v1.8.2...v1.8.3
+[1.8.2]: https://github.com/cuzic/awase/compare/v1.8.1...v1.8.2
+[1.8.1]: https://github.com/cuzic/awase/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/cuzic/awase/compare/v1.7.1...v1.8.0
 [1.7.1]: https://github.com/cuzic/awase/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/cuzic/awase/compare/v1.6.0...v1.7.0
