@@ -796,6 +796,9 @@ fn key_list_ui(
 }
 
 /// 親指キー選択用候補一覧（表示名, config 内部表記）。
+///
+/// F13-F24: 物理キーとしては存在しない拡張ファンクションキー。プログラマブル
+/// キーボード（QMK/ZMK 等）で親指位置のキーに割り当てて使う想定。
 const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("Space", "VK_SPACE"),
     ("変換", "VK_CONVERT"),
@@ -803,6 +806,18 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("かな", "VK_KANA"),
     ("カタカナ", "VK_DBE_KATAKANA"),
     ("ひらがな", "VK_DBE_HIRAGANA"),
+    ("F13", "VK_F13"),
+    ("F14", "VK_F14"),
+    ("F15", "VK_F15"),
+    ("F16", "VK_F16"),
+    ("F17", "VK_F17"),
+    ("F18", "VK_F18"),
+    ("F19", "VK_F19"),
+    ("F20", "VK_F20"),
+    ("F21", "VK_F21"),
+    ("F22", "VK_F22"),
+    ("F23", "VK_F23"),
+    ("F24", "VK_F24"),
 ];
 
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
