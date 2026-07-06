@@ -187,6 +187,91 @@ fn input_mode_applied_construction_sites_are_accounted_for() {
 /// typed writer の実装内に限る。
 /// 新しい `UserIntentSource` variant を追加して dispatch する場合は
 /// 対応する typed writer メソッドを追加し、このカウントを更新すること。
+/// user IME-ON 経路には stale `ObservedEisu` 救済が対で配線されていることを監視する。
+///
+/// 背景 (2026-07-06 MS Edge で実発生): `ObservedEisu` belief は engine activation を
+/// `NotRomajiInput` で塞ぎ、activation 側の救済 (`PostSetOpenEisuReset`) は Decision 経由
+/// `SetOpen(true)` 限定のため、救済のない IME-ON 経路が 1 本でもあると
+/// Imm32Unavailable アプリ（観測経路なし）で engine が永久に inactive になる
+/// 循環デッドロックを作る。経路×救済の対応表は `src/state/eisu_recovery.rs` の
+/// module doc が SSOT。
+///
+/// このテストは typed writer（`write_sync_key` / `write_physical_key` /
+/// `write_set_open_request`）の**呼び出し箇所**を src/ 全域で走査して固定する。
+/// **新しい user IME-ON 経路（typed writer の新しい呼び出し元）を追加する場合は、
+/// `state::eisu_recovery::eisu_reset_on_ime_on` による ObservedEisu 救済を対で配線し、
+/// `eisu_recovery.rs` の対応表とこのテストの期待値を更新すること。**
+#[test]
+fn user_ime_on_paths_are_paired_with_eisu_reset() {
+    fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk_rs_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let patterns = ["write_sync_key(", "write_physical_key(", "write_set_open_request("];
+    // (相対パス, 期待マッチ数, 説明)。ここに列挙されないファイルは 0 でなければならない。
+    let expected: &[(&str, usize, &str)] = &[
+        (
+            "state/platform_state.rs",
+            4,
+            "typed writer 定義 3 + handle_engine_set_open 内部委譲 1 (Decision 経由 \
+             SetOpen — 救済: kp_stage_post_decision の PostSetOpenEisuReset)",
+        ),
+        (
+            "runtime/key_pipeline.rs",
+            2,
+            "kp_stage_shadow_ime_toggle の SyncKey/PhysicalImeKey (救済: 同関数内の \
+             UserImeOnEisuReset)",
+        ),
+    ];
+
+    for path in &files {
+        let rel = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let count: usize = patterns.iter().map(|p| content.matches(p).count()).sum();
+        let expected_count = expected
+            .iter()
+            .find(|(f, _, _)| *f == rel)
+            .map_or(0, |(_, n, _)| *n);
+        assert_eq!(
+            count, expected_count,
+            "src/{rel} 内の typed writer (write_sync_key/write_physical_key/\
+             write_set_open_request) 呼び出し箇所数が想定({expected_count})と異なります\
+             (実際: {count})。\n\
+             新しい user IME-ON 経路を追加した場合は、stale ObservedEisu の救済 \
+             (state::eisu_recovery::eisu_reset_on_ime_on) を対で配線しないと、\
+             Imm32Unavailable アプリで engine が永久 inactive になる循環デッドロックを\
+             作ります。src/state/eisu_recovery.rs の経路×救済対応表と、このテストの \
+             expected を更新してください。"
+        );
+    }
+
+    // 救済側の実在確認: 対応表の 2 経路が実際に共通純関数を使っているか
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    assert!(
+        kp.matches("eisu_reset_on_ime_on(").count() >= 2,
+        "key_pipeline.rs は PostSetOpenEisuReset / UserImeOnEisuReset の両経路で \
+         eisu_recovery::eisu_reset_on_ime_on を使うこと（インライン再実装の禁止）"
+    );
+    assert!(
+        kp.contains("InputModeApplyStrategy::UserImeOnEisuReset"),
+        "shadow toggle 経路の救済 (UserImeOnEisuReset) が撤去されています。\
+         撤去する場合は ObservedEisu 循環デッドロック (2026-07-06) の再発防止策を\
+         代わりに用意してください。"
+    );
+}
+
 #[test]
 fn user_intent_source_construction_is_limited_to_typed_writers() {
     let path = "src/state/platform_state.rs";

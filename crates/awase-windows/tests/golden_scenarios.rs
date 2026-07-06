@@ -13,6 +13,10 @@
 //! 6. Focus change 直後の stale false が desired を override しない
 //! 7. panic_reset 直後の stale poll が state を壊さない
 //! 8. **最重要**: stale async apply が新しい intent を壊さない (generation 照合)
+//! 9. HwndCacheRestored は desired_open を復元するが観測で上書きされる
+//! 10. HwndCacheRestored と UserImeSetIntent の動作の違い
+//! 11. Edge stale-ObservedEisu からの物理かなキー回復 (UserImeOnEisuReset)
+//! 12. GJI I/O 観測 (GjiIoInference) が ObservedEisu を自己回復する
 //!
 //! ## 実装状況
 //!
@@ -390,5 +394,107 @@ fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
     assert!(
         model_cache.effective_open(),
         "HwndCacheRestored(false) 後は explicit intent がないため、Medium 観測が effective_open を上書きする"
+    );
+}
+
+// ── シナリオ 11: Edge stale-ObservedEisu からの物理かなキー回復 ──────────────
+
+// 2026-07-06 MS Edge (Imm32Unavailable/Blacklist) で実発生した循環デッドロックの固定:
+// belief が ObservedEisu に固着すると engine が NotRomajiInput で inactive になり、
+// activation 側の救済 (PostSetOpenEisuReset) は Decision 経由 SetOpen(true) 限定のため
+// 発火できない。物理かなキーによる shadow toggle OFF→ON には UserImeOnEisuReset が
+// 対で配線され、「IME ON + romaji-capable」まで回復することをモデル層で保証する。
+// 経路×救済の対応表は src/state/eisu_recovery.rs の module doc を参照。
+#[test]
+fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::ime_event::{
+        InputModeApplyResult, InputModeApplyStrategy,
+    };
+    use awase_windows::state::TickMs;
+
+    // 1. Edge へフォーカス + キャッシュ復元で stale な ObservedEisu を引き継ぐ
+    let deadlocked = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::CacheRestore,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+        // 2. ユーザーが物理かなキーで IME ON
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+    ]);
+    // ここまでが「詰み」状態の再現: IME ON でも input_mode が Eisu のままだと
+    // engine は NotRomajiInput で活性化できない
+    assert!(deadlocked.effective_open(), "物理キーで IME ON にはなる");
+    assert!(
+        !deadlocked.input_mode().is_romaji_capable(),
+        "救済なしでは ObservedEisu が残り engine が活性化できない (バグの再現)"
+    );
+
+    // 3. shadow toggle OFF→ON に配線された UserImeOnEisuReset が発火
+    //    (判定: state/eisu_recovery::eisu_reset_on_ime_on)
+    let mut events = vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::CacheRestore,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+    ];
+    events.push(ImeEvent::InputModeApplied {
+        mode: InputModeState::AssumedRomaji {
+            reason: AssumedReason::AppKindExcluded,
+        },
+        strategy: InputModeApplyStrategy::UserImeOnEisuReset,
+        result: InputModeApplyResult::Applied,
+        at: TickMs(0),
+    });
+    let recovered = run_reducer(events);
+    assert!(recovered.effective_open(), "IME ON が維持される");
+    assert!(
+        recovered.input_mode().is_romaji_capable(),
+        "UserImeOnEisuReset で romaji-capable に回復し engine が活性化できる"
+    );
+}
+
+// ── シナリオ 12: GJI I/O 観測 (GjiIoInference) が ObservedEisu を自己回復する ──
+
+// Blacklist アプリでは IMM query がスキップされ idle-conv-check も TsfNative 限定のため、
+// stale ObservedEisu を訂正する観測経路がない。フォーカス後の GJI 変換 I/O は
+// 「英数モードではない」ことの真正の外部証拠であり、Medium confidence の
+// InputModeObserved として belief を訂正できることを固定する
+// (判定: state/eisu_recovery::gji_io_eisu_correction)。
+#[test]
+fn scenario_12_gji_io_inference_corrects_stale_eisu() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::ime_event::{
+        InputModeApplyResult, InputModeApplyStrategy,
+    };
+    use awase_windows::state::TickMs;
+
+    let model = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::CacheRestore,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+        ImeEvent::InputModeObserved {
+            mode: InputModeState::AssumedRomaji {
+                reason: AssumedReason::ImmBridgeBroken,
+            },
+            source: ObservationSource::GjiIoInference,
+            confidence: ObservationConfidence::Medium,
+            at: TickMs(0),
+        },
+    ]);
+    assert!(
+        model.input_mode().is_romaji_capable(),
+        "Medium confidence の GjiIoInference が ObservedEisu を訂正する"
     );
 }
