@@ -271,8 +271,8 @@ impl DumpTriggerTracker {
     ///
     /// `vk`: VkCode の raw 値, `alt`: Alt 修飾キー状態
     pub fn push(&mut self, vk: u16, alt: bool) -> bool {
-        const VK_CONVERT: u16 = 0x1C;
-        const VK_NONCONVERT: u16 = 0x1D;
+        const VK_CONVERT: u16 = crate::vk::VK_CONVERT.0;
+        const VK_NONCONVERT: u16 = crate::vk::VK_NONCONVERT.0;
 
         let now = self.clock.now();
 

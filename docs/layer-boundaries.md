@@ -116,23 +116,29 @@ grep -rn "TSF_OBS" crates/awase-windows/src/
 
 ADR-032 で定義した 6 つの設計原則をコード上で守るためのチェック項目。
 
-### C-1: Intent は `desired_open` を即時に変更できる唯一の経路
+### C-1: `desired_open` を即時に変更できるのは Intent と 2 つの専用復旧イベントのみ
 
-**ルール**: `ImeModel::reduce()` で `desired_open = ...` への代入は
-`UserImeSetIntent` / `UserImeToggleIntent` アームのみ。
+**ルール**: `ImeModel::reduce()` で `desired_open = ...` への代入は次の 4 アームのみ。
+
+- `UserImeSetIntent` / `UserImeToggleIntent` — 真のユーザー意図。`last_intent` を設定する。
+- `PanicReset` — パニックリセット（全面復旧）。`apply_panic_reset` 専用。`last_intent` を設定しない。
+- `HwndCacheRestored` — HWND キャッシュ復元。`apply_hwnd_cache_restore` 専用。`last_intent` を設定しない。
 
 **Why**: ADR-032 設計原則 1。intent と observation の責務分離。
+`PanicReset` / `HwndCacheRestored` は「観測ではないが、ユーザー意図でもない、直接書き込みの正当な例外」として明示的に隔離されている（かつて `UserIntentSource::Recovery` / `HwndCache` としてユーザー意図を偽装し confidence ガードをバイパスしていた抜け道を、型ごと削除して専用イベントに分離した経緯がある）。両者は `last_intent` を設定しないため `has_user_explicit_intent()` を汚染せず、後続の実観測が `effective_open()` を上書きできる。詳細は `.claude/rules/ime-belief-architecture.md` を参照。
 
 **禁則**:
-- 他の event arm から `self.desired_open = ...` を行う
+- 上記 4 アーム以外の event arm から `self.desired_open = ...` を行う
 - reducer 外（observer / focus / executor 等）から `shadow_model.desired_open` を直接代入する
+- `PanicReset` / `HwndCacheRestored` を designated 関数（`apply_panic_reset` / `apply_hwnd_cache_restore`）以外で構築する（dylint `ime_event_guard` / `architecture_guard` テストで検知）
+- 「観測が乏しい状況での安全デフォルト推測」を上記復旧イベントで表現する — これは `ObserverReported` + `ObservationConfidence::Low` を使う
 
 **検出**:
 ```sh
 grep -rn "desired_open\s*=" crates/awase-windows/src/
 ```
-期待: `state/ime_model.rs` の reduce 内 `UserImeSetIntent` / `UserImeToggleIntent`
-アームのみ（初期化の `Default::default()` 等は除く）。
+期待: `state/ime_model.rs` の reduce 内 `UserImeSetIntent` / `UserImeToggleIntent` /
+`PanicReset` / `HwndCacheRestored` アームのみ（初期化の `Default::default()` 等は除く）。
 
 ### C-2: Observer は `ImeEvent::ObserverReported` 経由で報告
 
