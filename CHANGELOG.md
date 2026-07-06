@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.4] - 2026-07-06
+
 ### 新機能
 
 - **親指キーの選択肢に F13-F24 を追加** ([81cac92](https://github.com/cuzic/awase/commit/81cac92))
@@ -485,7 +487,8 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
 
-[Unreleased]: https://github.com/cuzic/awase/compare/v1.8.3...HEAD
+[Unreleased]: https://github.com/cuzic/awase/compare/v1.8.4...HEAD
+[1.8.4]: https://github.com/cuzic/awase/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/cuzic/awase/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/cuzic/awase/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/cuzic/awase/compare/v1.8.0...v1.8.1
