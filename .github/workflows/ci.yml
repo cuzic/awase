@@ -19,9 +19,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --lib
       # awase-windows は Windows 専用コードだが、state/ 層のユニットテストと
-      # architecture_guard / golden_scenarios はプラットフォーム非依存なため Linux でも走る。
+      # architecture_guard / golden_scenarios / layer_boundary_guard は
+      # ソースをテキスト走査する第二防衛線でプラットフォーム非依存なため Linux でも走る。
+      # ime_key_sequence_golden は #![cfg(windows)] なので Linux では 0 tests。
+      # 実際の assert は windows-build ジョブで実行する。
       - run: cargo test --lib -p awase-windows
-      - run: cargo test -p awase-windows --test architecture_guard --test golden_scenarios
+      - run: cargo test -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard
 
   windows-cross-check:
     runs-on: ubuntu-latest
@@ -103,9 +106,33 @@ jobs:
           Set-WinUserLanguageList $langList -Force
           Write-Host "Language list set: ja-JP, en-US"
 
-      - name: Run E2E tests
+      # ime_key_sequence_golden は #![cfg(windows)] のため Linux の test ジョブでは
+      # 0 tests になり、実質どこでも走っていなかった。ここ（実 Windows）で初めて
+      # 戦略選択のゴールデンを assert する。architecture_guard/golden_scenarios/
+      # layer_boundary_guard も Windows ターゲットで再実行し、#[cfg] ドリフトを検知する。
+      # これらは決定的（環境非依存）なのでブロック化する（continue-on-error なし）。
+      - name: Run golden / architecture guard tests (Windows)
+        run: cargo test -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard --test ime_key_sequence_golden
+
+      # E2E の決定的テスト（純 Engine の in-process ロジック + SendMessage/WM_CHAR）は
+      # フォアグラウンドフォーカス非依存で、実 HWND 生成に失敗しても early-return で
+      # skip するため spurious failure を起こさない。よってブロック化する。
+      # 旧ステップは `-p` 欠落で "no test target" エラーになっていたが continue-on-error
+      # で握り潰されており、E2E は CI で一度も実行されていなかった（-p awase-windows で修正）。
+      - name: Run E2E tests (deterministic — blocks CI on failure)
+        run: cargo test -p awase-windows --test e2e_windows -- --nocapture --skip e2e_sendinput --skip e2e_ime_status_detection
+        env:
+          RUST_LOG: debug
+
+      # SendInput 系（e2e_sendinput_interactive / e2e_sendinput_special_keys_interactive）と
+      # 実 IME 依存（e2e_ime_status_detection）はフォアグラウンドフォーカスや実 IME の
+      # 生成タイミングに依存する非決定的テスト。CI (GITHUB_ACTIONS) では
+      # is_interactive_session() が false を返して early-return で skip されるが、
+      # 将来ローカル/セルフホストで有効化された際の timing race を CI 赤化に波及させない
+      # よう continue-on-error を維持する。
+      - name: Run E2E interactive tests (non-deterministic — informational only)
         continue-on-error: true
-        run: cargo test --test e2e_windows -- --nocapture
+        run: cargo test -p awase-windows --test e2e_windows -- --nocapture e2e_sendinput e2e_ime_status_detection
         env:
           RUST_LOG: debug
 
