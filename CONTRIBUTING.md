@@ -2,10 +2,11 @@
 
 ## カスタム lint（dylint）
 
-`lints/` にはレイヤー境界を機械的に強制する 2 つの自作 lint がある。
+`lints/` にはレイヤー境界を機械的に強制する 3 つの自作 lint がある。
 
 - `no_vk_as_scan` — `VkCode` の数値から `ScanCode` を構築するコード（別名前空間の混同バグ）を検出する。
 - `ime_event_guard` — `ImeEvent::PanicReset` / `HwndCacheRestored` を専用関数の外で構築するコードを検出する。
+- `observation_source_guard` — `ImeEvent::InputModeObserved` を、実際には呼んでいない API を偽装した `source`（`ImmGetOpenStatus` は常に禁止、`ConvBitsInference` は `kp_stage_idle_conv_check` 限定）で構築するコードを検出する。
 
 これらは `Cargo.toml` の `[workspace.metadata.dylint]` に登録されており、CI の `dylint` ジョブで自動実行される。
 
