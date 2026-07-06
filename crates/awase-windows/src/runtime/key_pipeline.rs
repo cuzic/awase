@@ -804,10 +804,16 @@ impl Runtime {
             None
         };
 
-        // TsfNative フォーカス復帰時: HwndCache が最大1時間有効なため、ユーザーが
-        // JISかな⇔ローマ字を切り替えていると cached input_mode が stale になる。
-        // idle-conv-check は TYPING_IDLE_MS(500ms) ゲートがあり打ち始めのキーで発火しない。
-        // ここで即時 conv mode を読んで belief を補正する（FocusProbe ログに反映される）。
+        // TsfNative フォーカス復帰時: conv mode を読んで ConvModeMgr（warmup 用）と
+        // prev_conversion_mode を更新する。
+        //
+        // 【belief は更新しない】フォーカス変更直後に読んだ conv 値は、そのウィンドウの
+        // 「たまたまの残留状態」であり、ユーザーが今このモードを望んでいるという signal
+        // ではない（ALT+TAB でウィンドウを切り替えただけで、以前そのウィンドウが JIS かな
+        // 等の状態で放置されていた場合、fresh read でそれを拾って belief をひらがな/ローマ字
+        // から巻き戻してしまうバグの温床だった）。同一ウィンドウ内でタスクバーからモードを
+        // 変更した場合は idle-conv-check（TYPING_IDLE_MS 経過後の次キー入力で発火）が
+        // 正当なユーザー操作として拾うため、そちらに一本化する。
         if crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
             self.platform.focus.class_name(),
@@ -822,45 +828,11 @@ impl Runtime {
                 {
                     self.platform.output.conv_mode.update_from_conv(conv, now_tick_ms);
                     self.platform_state.ime.set_prev_conversion_mode(Some(conv));
-                    let has_roman = conv & crate::imm::IME_CMODE_ROMAN != 0;
-                    let has_kata = conv & crate::imm::IME_CMODE_KATAKANA != 0;
-                    let current = self.platform_state.ime.input_mode();
-                    use crate::state::ime_event::{ImeEvent, ObservationConfidence, ObservationSource};
-                    use awase::engine::ConvMode;
-                    if has_kata && !has_roman {
-                        // カタカナモード (ROMAN=0) は NICOLA shadow-sync が複雑なため
-                        // idle-conv-check に委ねる（ここでは判定しない）。
-                        log::debug!(
-                            "[focus-conv-check] TsfNative: conv=0x{:08X} (カタカナ) → idle-conv-check に委譲",
-                            conv,
-                        );
-                    } else {
-                        // 英数/ローマ字/JISかな の分類は classify_idle（純粋関数）に一元化する。
-                        // TsfNative では ROMAN ビットが信頼できないため is_roman_reliable=false。
-                        match ConvMode::from_u32(conv).classify_idle(false, current, false) {
-                            Some(new_mode) => {
-                                log::info!(
-                                    "[focus-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
-                                    conv, current, new_mode,
-                                );
-                                self.platform_state.ime.dispatch_event(
-                                    ImeEvent::InputModeObserved {
-                                        mode: new_mode,
-                                        source: ObservationSource::FocusProbe,
-                                        confidence: ObservationConfidence::High,
-                                        at: now_tick_ms,
-                                    },
-                                    now_tick_ms,
-                                );
-                            }
-                            None => {
-                                log::debug!(
-                                    "[focus-conv-check] TsfNative: conv=0x{:08X} → belief {:?} 変更なし",
-                                    conv, current,
-                                );
-                            }
-                        }
-                    }
+                    log::debug!(
+                        "[focus-conv-check] TsfNative: conv=0x{:08X} 読み取り（belief 更新なし、\
+                         フォーカス変更直後の値はユーザー意図の signal ではないため idle-conv-check に一任）",
+                        conv,
+                    );
                 }
             }
         }

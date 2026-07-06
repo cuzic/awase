@@ -92,7 +92,10 @@ fn hwnd_cache_restored_event_is_limited_to_apply_hwnd_cache_restore() {
 fn input_mode_observed_construction_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
         ("src/state/platform_state.rs", 1), // apply_ime_update (ObserverPoll, Medium)
-        ("src/runtime/key_pipeline.rs", 3), // idle-conv-check / focus-conv-check / ImmCrossProbe
+        // idle-conv-check / ImmCrossProbe。focus-conv-check は ALT+TAB 直後の conv 値で
+        // belief を書き換えるバグの温床だったため撤去済み（フォーカス変更直後の読み取りは
+        // ユーザー意図の signal ではない。conv_mode/prev_conversion_mode の追跡のみ残す）。
+        ("src/runtime/key_pipeline.rs", 2),
     ];
     for (path, expected) in known_sites {
         let content = read_crate_file(path);
