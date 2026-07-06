@@ -1,0 +1,22 @@
+warning: constructing `InputModeObserved` with `source: ObservationSource::ConvBitsInference` outside its designated function (found in `some_other_helper_reusing_conv_bits`) — this source must reflect an API call that actually happened here; use `InputModeApplied` for internal corrections instead
+  --> $DIR/main.rs:49:17
+   |
+LL |         source: ObservationSource::ConvBitsInference, //~ WARN constructing `InputModeObserved`
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(restricted_input_mode_observation_source)]` on by default
+
+warning: constructing `InputModeObserved` with `source: ObservationSource::ImmGetOpenStatus` outside its designated function (found in `reset_stale_input_mode_for_some_new_reason`) — this source must reflect an API call that actually happened here; use `InputModeApplied` for internal corrections instead
+  --> $DIR/main.rs:59:17
+   |
+LL |         source: ObservationSource::ImmGetOpenStatus, //~ WARN constructing `InputModeObserved`
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constructing `InputModeObserved` with `source: ObservationSource::GjiIoInference` outside its designated function (found in `some_new_recovery_path_reusing_gji_inference`) — this source must reflect an API call that actually happened here; use `InputModeApplied` for internal corrections instead
+  --> $DIR/main.rs:75:17
+   |
+LL |         source: ObservationSource::GjiIoInference, //~ WARN constructing `InputModeObserved`
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: 3 warnings emitted
+
