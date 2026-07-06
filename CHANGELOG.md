@@ -6,9 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### バグ修正
 
-- **設定画面が複数ディスプレイの DPI 遷移で操作不能になる問題を修正** ([0ad7481](https://github.com/cuzic/awase/commit/0ad7481))
+- **設定画面が複数ディスプレイの DPI 遷移で操作不能になる問題を修正** ([0ad7481](https://github.com/cuzic/awase/commit/0ad7481), [7153a75](https://github.com/cuzic/awase/commit/7153a75), [201b86a](https://github.com/cuzic/awase/commit/201b86a))
   - DPI スケールの異なるディスプレイへ移動するとウィンドウが移動先モニタに収まらず、適用/キャンセルボタンが画面外に出ていた
   - モニタサイズへの自動クランプ + ボタンを常時表示の下部パネルへ移動 + 最小ウィンドウサイズを設定
+  - 狭い幅ではリフロー（キーボード図の縮小スケール・keymap 行の折り返し）で対応し、収まらない場合のみスクロールバーを表示。デフォルト幅を 580px に拡大（従来はプレビューの右端が切れていた）
 
 ## [1.8.4] - 2026-07-06
 
