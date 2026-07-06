@@ -14,8 +14,8 @@
 use awase::engine::{ConvMode, InputModeState};
 
 /// engine ON 同期の理由。ログとテストの両方で「どの規則が発火したか」を固定する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConvSyncReason {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ConvSyncReason {
     /// カタカナ (NATIVE+KATAKANA) を観測し shadow=OFF → engine ON 同期。
     KatakanaShadowOff,
     /// belief が romaji 不可→可 に回復 かつ shadow=ON → engine 再起動。
@@ -26,8 +26,8 @@ pub(crate) enum ConvSyncReason {
 
 /// engine 同期アクション。従来 5 箇所に散っていた `handle_engine_set_open` 呼び出しを
 /// 統一表現し、呼び出し元が 1 経路で dispatch できるようにする。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EngineSync {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum EngineSync {
     /// engine への働きかけなし。
     None,
     /// engine を ON にする (`handle_engine_set_open(true)`)。
@@ -39,8 +39,8 @@ pub(crate) enum EngineSync {
 }
 
 /// idle-conv-check の判断結果。input_mode belief の更新と engine 同期を分離して表す。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ConvTransition {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ConvTransition {
     /// belief.input_mode の更新 (`None` = 変更なし / ダウングレード抑制)。
     /// `Some` の場合、呼び出し元が `InputModeObserved` を dispatch する。
     pub input_mode_update: Option<InputModeState>,
@@ -60,7 +60,7 @@ pub(crate) struct ConvTransition {
 /// - `conv_mode_changed`: `ConvModeMgr::update_from_conv` が変化を検出したか。
 /// - `is_roman_reliable`: ROMAN ビット (0x10) が信頼できるか。TsfNative の idle 経路では
 ///   常に `false`。
-pub(crate) fn classify_conv_transition(
+pub fn classify_conv_transition(
     conv: u32,
     current: InputModeState,
     is_cold: bool,
@@ -120,6 +120,38 @@ pub(crate) fn classify_conv_transition(
         input_mode_update,
         engine,
     }
+}
+
+// ── ジャーナル・リプレイ回帰基盤（P1）───────────────────────────────────────────
+
+/// 実機ジャーナル由来（または手作り）の `classify_conv_transition` 呼び出し1件を
+/// 表す固定フィクスチャ。`tests/journals/*.json` に配列として保存し、
+/// `tests/journal_replay.rs` が読み込んで再実行・照合する。
+///
+/// `journal.rs::JournalEntry::ConvClassifyCall` が実機ダンプで記録する
+/// フィールドと同じ形（conv/current/is_cold/effective_open/conv_mode_changed/
+/// is_roman_reliable → result）だが、こちらは往復可能な独立フォーマットとして
+/// 定義する（`JournalEntry` 全体は `KeyEventSummary` に `&'static str` を含み
+/// 単純には `Deserialize` できないため、リプレイ専用に切り出している）。
+///
+/// フィクスチャの追加手順は `docs/journal-replay-guide.md` を参照。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConvClassifyFixture {
+    /// 何が起きたバグ/シナリオの記録か（人間可読な短い説明）。
+    pub name: String,
+    /// 参考: 実機で発生した既知のバグの説明・関連コミット等（任意）。
+    #[serde(default)]
+    pub note: String,
+    pub conv: u32,
+    pub current: InputModeState,
+    pub is_cold: bool,
+    pub effective_open: bool,
+    pub conv_mode_changed: bool,
+    pub is_roman_reliable: bool,
+    /// 期待される `ConvTransition`。実機ダンプをそのまま転記した直後はバグを
+    /// 含む「実際の」出力になっていることがあるため、修正後は必ず「あるべき」
+    /// 出力に手で書き換えてからコミットすること。
+    pub expected: ConvTransition,
 }
 
 #[cfg(test)]
