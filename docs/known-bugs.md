@@ -262,10 +262,15 @@ ROMAN ビットを信用しない設計）のため conv=0x0009 を読んでも 
    VK_KANA を swallow する（`hook.rs`）。フラグなし（物理押下含む）は通すが INFO ログを
    必ず残す。注入元がフラグなしの場合はこの層をすり抜けるが、次の層が復元する。
 2. **idle-conv-check 層（自己修復）**: `classify_conv_transition` に `restore_roman` を追加。
-   engine open 中に「ひらがな conv から ROMAN が落ちる変化」を観測したら、conv 権限
+   engine open 中に「ひらがな conv で ROMAN 無し」を観測したら、conv 権限
    （`conv_mutation_allowed`）確認の上 `set_ime_romaji_mode_with_target_async(None)`
-   （現 conv | ROMAN、冪等）で復元する。`conv_mode_changed` の遷移時のみ発火するため、
-   ROMAN を常に 0 で返す環境でも送信スパムにならない。
+   （現 conv | ROMAN、冪等）で復元する。
+   **2026-07-06 追補**: 当初は `conv_mode_changed` 遷移時のみ発火させたが、roma→kana の
+   変化検出はフォーカス変更時 refresh の `update_from_conv` が先に消費するため
+   idle-conv-check から見た conv は常に steady になり、一度も発火しなかった
+   （05:05 実機: WT がセッション中ずっと conv=0x0009 のまま）。steady-state でも
+   発火するよう変更し、スパム防止は呼び出し元のレート制限（3s 間隔、
+   `last_roman_restore_ms`）に移した。
 
 **再発防止テスト:** `state/conv_classify.rs` の unit tests（`jiskana_transition_while_open_requests_restore_roman` 等 6 件 + 不変条件）、
 `tests/journals/jiskana-vk-kana-injection.json`（実機ログからの リプレイ fixture、Linux でも実行可）。
@@ -321,6 +326,32 @@ hwnd=NULL の `PostMessageW` は「**呼び出しスレッド自身**への `Pos
 **関連ファイル:** `win32.rs` (`post_to_main_thread`), `app/mod.rs::run_message_loop`,
 `tsf/gji_monitor.rs::monitor_loop`, `focus/uia.rs`（UIA worker）,
 `output/tsf_warmup_coord.rs` (`set_active_ime_kind`)
+
+---
+
+## BUG-10: MS-IME で物理ひらがなキー（VK_DBE_HIRAGANA）が食い逃げされ IME ON にならない
+
+**症状:** 直接入力中に物理ひらがなキーで IME ON しようとすると、intent は記録され
+Engine は ON になるが、実 IME は OFF のまま。以後の親指シフト入力が生 ASCII で出る。
+2026-07-06T05:06 実機（Windows Terminal × MS-IME）。
+
+**原因:** `PhysicalKeyDisposition::plan` が TSF mode の物理 F2 (VK_DBE_HIRAGANA) を
+**無条件 Suppress** していた。この Suppress は「awase 自身が warmup として F2 を再送する」
+GJI 戦略の double-F2 防止契約とセットの設計だが、MsImeStrategy は
+`needs_f2_probe()=false` で F2 warmup を送らない（`send_eager_tsf_warmup` が
+non-GJI としてスキップ、trace レベルのためログにも写らない）。「消すが代わりを送らない」
+食い逃げになり、`EmitWarmup (NativeF2)` の後に `[tsf-eager-warmup] 送信` が一度も出ず、
+後続送信も `prepend_f2_warmup=false` のまま。
+
+**修正:** `plan()` に `f2_warmup_owned`（= `needs_f2_probe()`、GJI 戦略か）を渡し、
+Suppress を `is_tsf_mode && f2_warmup_owned` に限定。MsImeStrategy では物理 F2 を素通し
+（MS-IME は VK_DBE_HIRAGANA をネイティブ処理して IME ON にする）。
+
+**再発防止テスト:** `transport.rs::plan_tests::f2_tsf_mode_msime_strategy_allows_physical_key`
+（Windows 実行）。
+
+**関連ファイル:** `runtime/transport.rs` (`plan`), `runtime/key_pipeline.rs` (`kp_stage_execute`),
+`output/mod.rs` (`f2_warmup_owned` / `send_eager_tsf_warmup`)
 
 ---
 
