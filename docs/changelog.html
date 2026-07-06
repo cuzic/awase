@@ -109,6 +109,16 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>MS-IME cold start — IME ON 直後の先頭文字リテラル化を修正（BUG-13、「を」→「wお」）</strong><ul>
+<li><code>MsImeStrategy</code> は「MS-IME は常にウォーム」前提で cold-start 保護がなく、IME OFF→ON 遷移直後 ~130-300ms（実測）の送信で先頭 VK がリテラル化していた</li>
+<li>固定待ちではなく GJI probe と同型の confirm-then-transmit を導入: <code>ImeModeFsm</code> が NATIVE 未確認のとき romaji を <code>MsImeReadyCoro</code> に defer し、<code>IMC_GETCONVERSIONMODE</code> ポーリング（10ms 間隔）で NATIVE ビットを確認した瞬間に送信</li>
+<li><code>MS_IME_READY_CONFIRM_MS</code> (400ms) は安全弁のみ（IMC が読めない環境では強制送信 + give-up latch で毎キー probe 化を防止）</li>
+<li>詳細は docs/known-bugs.md BUG-13</li>
+</ul>
+</li>
+</ul>
 <h3>追加</h3>
 <ul>
 <li><strong>MS-IME キー割り当ての競合を検出して解除を案内</strong><ul>
