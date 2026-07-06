@@ -33,6 +33,9 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([500.0, 650.0])
+            // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
+            // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
+            .with_min_inner_size([420.0, 320.0])
             .with_title("awase 設定"),
         ..Default::default()
     };
@@ -706,6 +709,25 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 複数ディスプレイ対応: DPI スケールの異なるモニタへ移動すると、
+        // WM_DPICHANGED 後のウィンドウサイズが移動先モニタに収まらず
+        // 下部が画面外に出て操作不能になることがある。現在のモニタサイズを
+        // 超えていたら収まるサイズへ自動クランプする（収まった後は発火しない）。
+        let clamp = ctx.input(|i| {
+            let vp = i.viewport();
+            match (vp.monitor_size, vp.inner_rect) {
+                (Some(monitor), Some(inner)) if monitor.x > 0.0 && monitor.y > 0.0 => {
+                    let max = monitor * 0.95; // タイトルバー・タスクバー分の余白
+                    let size = inner.size();
+                    (size.x > max.x || size.y > max.y).then(|| size.min(max))
+                }
+                _ => None,
+            }
+        });
+        if let Some(new_size) = clamp {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(new_size));
+        }
+
         // Keymap capture: drain key events while capturing
         if self.capturing.is_some() {
             self.process_keymap_capture(ctx);
@@ -732,18 +754,12 @@ impl eframe::App for SettingsApp {
                 }
             });
 
-        // Main content
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| match self.active_tab {
-                Tab::Basic => self.tab_basic(ui),
-                Tab::Keys => self.tab_keys(ui),
-                Tab::Keymap => self.tab_keymap(ui),
-                Tab::ImeDetect => self.tab_ime_detect(ui),
-                Tab::Preview => self.tab_preview(ui),
-                Tab::Advanced => self.tab_advanced(ui),
-            });
-
-            ui.separator();
+        // 適用/キャンセルは常時表示の下部パネルに置く。
+        // スクロール領域の下に直置きすると、ウィンドウが縦に伸び切った状態や
+        // 画面外にはみ出した状態でボタンに到達できなくなるため
+        // （複数ディスプレイの DPI 遷移で実発生）。
+        egui::TopBottomPanel::bottom("action_panel").show(ctx, |ui| {
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.button("適用").clicked() {
                     self.apply();
@@ -755,6 +771,21 @@ impl eframe::App for SettingsApp {
                     ui.label(&self.status);
                 }
             });
+            ui.add_space(6.0);
+        });
+
+        // Main content（残り領域全体をスクロール可能に）
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| match self.active_tab {
+                    Tab::Basic => self.tab_basic(ui),
+                    Tab::Keys => self.tab_keys(ui),
+                    Tab::Keymap => self.tab_keymap(ui),
+                    Tab::ImeDetect => self.tab_ime_detect(ui),
+                    Tab::Preview => self.tab_preview(ui),
+                    Tab::Advanced => self.tab_advanced(ui),
+                });
         });
     }
 }
