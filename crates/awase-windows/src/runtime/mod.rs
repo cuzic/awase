@@ -750,9 +750,7 @@ impl Runtime {
         let _ = self.engine.on_command(
             EngineCommand::UpdateFsmParams {
                 threshold_ms: config.general.simultaneous_threshold_ms,
-                // 確定モードは NgramPredictive 固定（n-gram モデル未指定時は
-                // TwoPhase に自動フォールバック）。config.rs の撤去 NOTE 参照。
-                confirm_mode: awase::config::ConfirmMode::NgramPredictive,
+                confirm_mode: config.general.confirm_mode,
                 speculative_delay_ms: config.general.speculative_delay_ms,
             },
             &ctx,

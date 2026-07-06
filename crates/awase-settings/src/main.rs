@@ -243,16 +243,41 @@ impl SettingsApp {
                     .suffix(" ms"),
             );
         });
-        ui.label("確定モード: n-gram 予測に固定（n-gram モデル未指定時は二段タイマー動作）\n出力方式: アプリごとに最適な注入方式を自動選択");
         ui.horizontal(|ui| {
-            ui.label("投機出力待機:").on_hover_text(
-                "投機出力までの待機時間です。\n短いほど応答が速くなりますが、誤判定が増えます。\nn-gram モデル未指定時の二段タイマー動作、および n-gram 予測内部の投機待機で使用されます。",
-            );
-            ui.add(
-                egui::Slider::new(&mut self.config.general.speculative_delay_ms, 0..=100)
-                    .suffix(" ms"),
-            );
+            ui.label("確定モード:").on_hover_text("文字の確定方法を選びます。\nモードごとに速度と正確さのバランスが異なります。");
+            egui::ComboBox::from_id_salt("confirm_mode")
+                .selected_text(confirm_mode_label(self.config.general.confirm_mode))
+                .show_ui(ui, |ui| {
+                    use awase::config::ConfirmMode;
+                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Wait, "待機 (wait)")
+                        .on_hover_text("タイムアウトまで出力を保留します。\n最も正確ですが、入力に少し遅延を感じます。");
+                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Speculative, "先行確定 (speculative)")
+                        .on_hover_text("即座に出力し、親指シフトと判定されたら差し替えます。\n高速ですが、まれに画面がちらつきます。");
+                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::TwoPhase, "二段タイマー (two_phase)")
+                        .on_hover_text("短い待機の後に投機出力します。\nwait と speculative の中間的な動作です。");
+                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::AdaptiveTiming, "適応タイミング (adaptive_timing)")
+                        .on_hover_text("連続入力中は待機、途切れたら投機出力します。\nタイピング速度に自動適応します。");
+                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::NgramPredictive, "n-gram 予測 (ngram_predictive)")
+                        .on_hover_text("統計データで次の文字を予測し、判定を最適化します。\nn-gram ファイル未指定時は二段タイマーとして動作します。");
+                });
         });
+        ui.label(confirm_mode_tooltip(self.config.general.confirm_mode));
+        let spec_enabled = matches!(
+            self.config.general.confirm_mode,
+            awase::config::ConfirmMode::TwoPhase
+                | awase::config::ConfirmMode::AdaptiveTiming
+                | awase::config::ConfirmMode::NgramPredictive
+        );
+        ui.add_enabled_ui(spec_enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("投機出力待機:").on_hover_text("投機出力までの待機時間です。\n短いほど応答が速くなりますが、誤判定が増えます。\nTwoPhase/AdaptiveTiming と、NgramPredictive のフォールバック動作で使用されます。");
+                ui.add(
+                    egui::Slider::new(&mut self.config.general.speculative_delay_ms, 0..=100)
+                        .suffix(" ms"),
+                );
+            });
+        });
+        ui.label("出力方式: アプリごとに最適な注入方式を自動選択します（設定不要）");
         let mut auto_start_checked = self.config.general.auto_start == "enabled";
         if ui.checkbox(&mut auto_start_checked, "自動起動").on_hover_text("Windows ログオン時に自動的に awase を起動します。\nタスクスケジューラに登録されます。").changed() {
             self.config.general.auto_start = if auto_start_checked {
@@ -565,8 +590,8 @@ impl SettingsApp {
         for (i, rule) in self.config.post_bypass.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "    Ctrl+{} / process={} / class={}",
-                    key_display_name(&rule.key),
+                    "    {} / process={} / class={}",
+                    rule.key,
                     if rule.process.is_empty() { "(すべて)" } else { &rule.process },
                     if rule.class.is_empty() { "(すべて)" } else { &rule.class },
                 ));
@@ -592,8 +617,9 @@ impl SettingsApp {
                     .hint_text("クラス名 (部分一致)"),
             );
             if ui.button("+追加").clicked() && !self.new_pb_key.is_empty() {
+                // ランタイムの parse は "Ctrl+<キー>" 形式（Ctrl 必須）を要求する
                 self.config.post_bypass.push(awase::config::PostBypassRule {
-                    key: std::mem::take(&mut self.new_pb_key),
+                    key: format_combo(true, false, false, &std::mem::take(&mut self.new_pb_key)),
                     process: std::mem::take(&mut self.new_pb_process),
                     class: std::mem::take(&mut self.new_pb_class),
                 });
@@ -691,13 +717,6 @@ impl SettingsApp {
     fn tab_advanced(&mut self, ui: &mut egui::Ui) {
         ui.heading("詳細設定");
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("n-gram ファイル:").on_hover_text("n-gram 統計データファイルのパスです。\n.csv.gz または .toml 形式に対応しています。\nngram_predictive モードで使用されます。");
-            let mut buf = self.config.general.ngram_file.clone().unwrap_or_default();
-            if ui.text_edit_singleline(&mut buf).changed() {
-                self.config.general.ngram_file = if buf.is_empty() { None } else { Some(buf) };
-            }
-        });
         let slider_with_tip = |ui: &mut egui::Ui,
                                label: &str,
                                tip: &str,
@@ -708,6 +727,21 @@ impl SettingsApp {
                 ui.add(egui::Slider::new(val, range).suffix(" ms"));
             });
         };
+        let ngram_enabled = matches!(
+            self.config.general.confirm_mode,
+            awase::config::ConfirmMode::NgramPredictive
+        );
+        if !ngram_enabled {
+            ui.label("n-gram 設定は確定モードが「n-gram 予測」のときのみ使用されます（基本設定タブ）");
+        }
+        ui.add_enabled_ui(ngram_enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("n-gram ファイル:").on_hover_text("n-gram 統計データファイルのパスです。\n.csv.gz または .toml 形式に対応しています。\nngram_predictive モードで使用されます。");
+            let mut buf = self.config.general.ngram_file.clone().unwrap_or_default();
+            if ui.text_edit_singleline(&mut buf).changed() {
+                self.config.general.ngram_file = if buf.is_empty() { None } else { Some(buf) };
+            }
+        });
         slider_with_tip(
             ui,
             "n-gram 調整幅:",
@@ -729,6 +763,7 @@ impl SettingsApp {
             &mut self.config.general.ngram_max_threshold_ms,
             50..=500,
         );
+        });
         ui.add_space(8.0);
         slider_with_tip(
             ui,
@@ -1071,6 +1106,32 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     ("半角", "VK_DBE_SBCSCHAR"),
     ("全角", "VK_DBE_DBCSCHAR"),
 ];
+
+const fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
+    use awase::config::ConfirmMode;
+    match mode {
+        ConfirmMode::Wait => "待機 (wait)",
+        ConfirmMode::Speculative => "先行確定 (speculative)",
+        ConfirmMode::TwoPhase => "二段タイマー (two_phase)",
+        ConfirmMode::AdaptiveTiming => "適応タイミング (adaptive_timing)",
+        ConfirmMode::NgramPredictive => "n-gram 予測 (ngram_predictive)",
+    }
+}
+
+const fn confirm_mode_tooltip(mode: awase::config::ConfirmMode) -> &'static str {
+    use awase::config::ConfirmMode;
+    match mode {
+        ConfirmMode::Wait => "  タイムアウトまで出力を保留。最も正確だが遅延あり。",
+        ConfirmMode::Speculative => "  即座に出力し、同時打鍵時に差し替え。高速だが一瞬ちらつく。",
+        ConfirmMode::TwoPhase => "  短い待機後に投機出力。wait と speculative の中間。",
+        ConfirmMode::AdaptiveTiming => {
+            "  連続打鍵中は wait、途切れたら投機。タイピング速度に適応。"
+        }
+        ConfirmMode::NgramPredictive => {
+            "  n-gram 統計で投機/待機を動的判断。モデル未指定時は二段タイマー動作。"
+        }
+    }
+}
 
 /// 内部表記（"VK_I", "変換" 等）を表示名（"I", "変換"）に変換する。
 fn key_display_name(internal: &str) -> &str {

@@ -10,8 +10,8 @@ All notable changes to this project will be documented in this file.
   - `keyboard_model`: レイアウトパースが JIS 固定で一度も配線されていなかった（設定画面の jis/us 選択は無効だった）
   - `output_mode`: アプリごとの自動注入方式選択（InjectionMode）に置換済みで、書き込みのみの死に設定だった
   - `hook_mode`: Relay に一本化（Filter は relay 系機能の登場以降テストされていないレガシー経路のため実装ごと削除）
-  - `confirm_mode`: n-gram 予測（NgramPredictive）に固定。n-gram モデル未指定時は二段タイマーに自動フォールバック
   - 旧 config.toml にこれらのキーが残っていても無害（無視される）。分離前の旧内蔵設定 GUI（gui/main.rs、孤児ファイル）も削除
+  - `confirm_mode` は生きた設定として存続（デフォルト wait のまま）。n-gram 系の詳細設定は「n-gram 予測」モード選択時のみ有効化されるよう UI を連動
 - **設定画面にアプリ別オーバーライドと緊急脱出キーの UI を追加**
   - 新タブ「アプリ別」: `app_overrides`（force_text / force_bypass / force_vk / force_tsf）と `post_bypass`（tmux prefix 等の素通し）を GUI から編集可能に
   - キー設定タブ: `engine_off_solo_triple`（単独3連打でエンジン OFF、Ctrl スタック時の緊急脱出用）を追加

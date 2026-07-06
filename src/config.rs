@@ -11,8 +11,6 @@ use crate::types::VkCode;
 // - OutputMode (output_mode): per-window の InjectionMode（injection_hint + AppKind
 //   から自動決定）に完全置換済みで、フィールドは書き込みのみの死に設定だった。
 // - keyboard_model: レイアウトパースが KeyboardModel::Jis 固定で一度も配線されなかった。
-// - confirm_mode: NgramPredictive に固定（n-gram モデル未指定時は TwoPhase に自動
-//   フォールバック）。ConfirmMode enum 自体は engine API として存続。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -53,9 +51,10 @@ pub struct GeneralConfig {
     pub ngram_min_threshold_ms: u32,
     /// n-gram 適応閾値の上限（ミリ秒、デフォルト 120ms）
     pub ngram_max_threshold_ms: u32,
-    /// 投機出力までの待機時間（ミリ秒）。
-    /// 確定モードは NgramPredictive 固定で、n-gram モデル未指定時の TwoPhase
-    /// フォールバックおよび n-gram 予測内部の投機待機で使用される。
+    /// 確定モード（デフォルト: wait）
+    pub confirm_mode: ConfirmMode,
+    /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming と
+    /// NgramPredictive のフォールバック/投機待機で使用）
     pub speculative_delay_ms: u32,
     /// フォーカス遷移デバウンス時間（ミリ秒）。
     /// Alt-Tab 等でフォーカスが連続変更される際に IME 状態の誤検知を防ぐ。
@@ -84,6 +83,7 @@ impl Default for GeneralConfig {
             ngram_adjustment_range_ms: 20,
             ngram_min_threshold_ms: 30,
             ngram_max_threshold_ms: 120,
+            confirm_mode: ConfirmMode::Wait,
             speculative_delay_ms: 30,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
@@ -452,19 +452,33 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.layouts_dir, "config");
     }
 
-    /// 撤去済みフィールド（confirm_mode / output_mode / hook_mode / keyboard_model）が
+    /// 撤去済みフィールド（output_mode / hook_mode / keyboard_model）が
     /// 旧 config.toml に残っていてもパースが失敗しない（後方互換）。
     #[test]
     fn test_removed_fields_are_tolerated() {
         let toml_str = r#"
 [general]
-confirm_mode = "two_phase"
 output_mode = "batched"
 hook_mode = "filter"
 keyboard_model = "us"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.general.speculative_delay_ms, 30);
+    }
+
+    #[test]
+    fn test_confirm_mode_all_variants() {
+        for (input, expected) in [
+            ("wait", ConfirmMode::Wait),
+            ("speculative", ConfirmMode::Speculative),
+            ("two_phase", ConfirmMode::TwoPhase),
+            ("adaptive_timing", ConfirmMode::AdaptiveTiming),
+            ("ngram_predictive", ConfirmMode::NgramPredictive),
+        ] {
+            let toml_str = format!("[general]\nconfirm_mode = \"{input}\"");
+            let config: AppConfig = toml::from_str(&toml_str).unwrap();
+            assert_eq!(config.general.confirm_mode, expected);
+        }
     }
 
     #[test]

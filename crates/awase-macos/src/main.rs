@@ -63,9 +63,7 @@ fn main() -> Result<()> {
         left_thumb,
         right_thumb,
         config.general.simultaneous_threshold_ms,
-        // 確定モードは NgramPredictive 固定（n-gram モデル未指定時は TwoPhase に
-        // 自動フォールバック）
-        awase::config::ConfirmMode::NgramPredictive,
+        config.general.confirm_mode,
         config.general.speculative_delay_ms,
     );
     let _engine = Engine::new(
