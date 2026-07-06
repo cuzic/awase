@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### バグ修正
+
+- **設定画面が複数ディスプレイの DPI 遷移で操作不能になる問題を修正** ([0ad7481](https://github.com/cuzic/awase/commit/0ad7481))
+  - DPI スケールの異なるディスプレイへ移動するとウィンドウが移動先モニタに収まらず、適用/キャンセルボタンが画面外に出ていた
+  - モニタサイズへの自動クランプ + ボタンを常時表示の下部パネルへ移動 + 最小ウィンドウサイズを設定
+
 ## [1.8.4] - 2026-07-06
 
 ### 新機能
