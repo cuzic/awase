@@ -408,25 +408,15 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     }
 
-    // BUG-08/BUG-14: foreign-injected（LLKHF_INJECTED かつ awase 自身のマーカーなし）の
-    // IME モードキーは swallow する。VK_KANA 合成ペア（BUG-08: かなロックトグルで JISかな化）
-    // に加え、VK_DBE_HIRAGANA down+up の合成ペア（BUG-14: 0xF0 up + 0xF2 down に翻訳されて
-    // 到達し、shadow toggle が「ユーザーの物理かなキー押下」と誤読 → ユーザーの明示 IME OFF
-    // を Engine ON で上書きし続ける。2026-07-06 実機、注入元は MS-IME/CTF のエコーが第一容疑）
-    // への防御。物理押下（フラグなし）はここを通過し、従来どおりユーザー意図として扱われる。
-    if is_injected {
-        if let Some(kind) = ime_key_kind {
-            let dir = if is_keydown { "down" } else { "up" };
-            log::info!(
-                "[hook] foreign-injected IME-mode vk=0x{:02X} {dir} ({kind:?}) を swallow\
-                 （偽 PhysicalImeKey 意図/かなロック汚染の防止, scan=0x{:X}, extra=0x{:X}）",
-                vk.0,
-                kb.scanCode,
-                kb.dwExtraInfo,
-            );
-            return LRESULT(1);
-        }
-    }
+    // BUG-14 追記 (2026-07-06): ここにあった「foreign-injected IME モードキー全般の
+    // swallow」は撤回した。MS-IME × Windows Terminal 実機で、導入直後から一切入力
+    // できなくなったため（1 打鍵ごとに foreign-injected VK_KANA down+up ペアが到達
+    // = MS-IME 自身の機能的なキー注入で、これを遮断すると IME のモード遷移/かな修飾
+    // が壊れる）。foreign-injected IME モードキーは「観測」であって「ユーザー意図」
+    // でも「ノイズ」でもない — 遮断ではなく shadow toggle 側で意図として扱わない
+    // 方向で対処する（docs/known-bugs.md BUG-14）。VK_KANA のみ従来の BUG-08 swallow
+    // を維持する（下のブロック）。
+    //
     // PHYSICAL_KEY_STATE はハードウェア由来のイベントのみで更新する。
     // LLKHF_INJECTED 付き（X サーバー・他ツールの synthetic）はスキップし、
     // stuck modifier による汚染を防ぐ。自前の synthetic は上の is_self_injected で既に除外済み。
@@ -453,13 +443,23 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // VK_KANA down/up は OS のかなロックをトグルし、GJI/MS-IME がローマ字入力→JISかな
     // 入力に反転して NICOLA の romaji VK 出力が壊滅する（2026-07-06 実機: down→up
     // 135µs〜1ms の合成 VK_KANA ペアが 2 回到達し Windows Terminal が JISかな化。
-    // docs/known-bugs.md BUG-08。注入元は未特定）。
-    // LLKHF_INJECTED 付きは上の foreign-injected IME モードキー swallow で除外済み。
-    // ここに到達するのはフラグなし（物理押下 or ドライバレベル注入）のみ: 従来どおり
-    // 通すが、注入元特定のため必ず INFO ログを残す（VK_KANA は稀なキーなのでログコストは
-    // 無視できる）。通した結果 JISかな化しても idle-conv-check の restore_roman が復元する。
+    // docs/known-bugs.md BUG-08。注入元は BUG-14 調査で LLKHF_INJECTED 付き SendInput
+    // と確定、MS-IME/CTF 自身が第一容疑）。
+    // - LLKHF_INJECTED 付き（SendInput 由来・awase 自身のマーカーなし）: swallow する。
+    // - フラグなし（物理押下 or ドライバレベル注入）: 従来どおり通すが、注入元特定の
+    //   ため必ず INFO ログを残す（VK_KANA は稀なキーなのでログコストは無視できる）。
+    //   通した結果 JISかな化しても idle-conv-check の restore_roman が復元する。
     if vk == crate::vk::VK_KANA {
         let dir = if is_keydown { "down" } else { "up" };
+        if is_injected {
+            log::info!(
+                "[hook] foreign-injected VK_KANA {dir} を swallow\
+                 （kana-lock 汚染防止, scan=0x{:X}, extra=0x{:X}）",
+                kb.scanCode,
+                kb.dwExtraInfo,
+            );
+            return LRESULT(1);
+        }
         log::info!(
             "[hook] VK_KANA {dir} 到達 (injected=false, scan=0x{:X}, extra=0x{:X}) \
              — かなロックをトグルする可能性 (BUG-08 注入元調査ログ)",

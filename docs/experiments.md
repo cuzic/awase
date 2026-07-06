@@ -112,3 +112,27 @@ TsfGate の bypass 確定時に `write_focus_probe(false)` で belief を強制 
 - **長期間 dead だったコードパスの配送を直すときは、そのパスを一時停止した状態で直す**。
   BUG-09 の配送修正自体は正しかったが、「届いたことのないハンドラ」が全部動き出し、
   未検証コードの潜在バグ（BUG-11/12）が一気に露出した。配送修正と機能有効化は分離すべきだった。
+
+---
+
+## エントリ 04: foreign-injected IME モードキーの全面 swallow — 即日撤回（一切入力不能）
+
+**背景**: BUG-14（外部注入 VK_DBE_HIRAGANA が PhysicalImeKey と誤読され、ユーザーの
+IME OFF が Engine ON で上書きされ続ける）への防御として、BUG-08 の VK_KANA swallow を
+IME モードキー全般に一般化した。詳細は [docs/known-bugs.md](known-bugs.md) BUG-14。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-06 | foreign-injected (LLKHF_INJECTED) の IME モードキーは全て「偽装ユーザー意図」なので swallow してよい | Windows Terminal × MS-IME (TsfNative) | hook で ImeKeyKind 全 VK の foreign-injected を swallow | **一切入力できなくなった**。1 打鍵ごとに foreign-injected VK_KANA down+up ペア（injected=true, scan=0x0）が到達し swallow が連発、conv=0x0009 (ROMAN=false) 固定、エンジンは全キー PassThrough で不活性のまま | 撤回（VK_KANA のみの BUG-08 swallow に復元、injected= ログは維持） | `b8467b8` → 本 revert |
+
+**学び**:
+
+- **foreign-injected IME モードキーは「ノイズ」ではなく MS-IME 自身の機能的なキー注入を
+  含む**。1 打鍵ごとの VK_KANA ペアという高頻度パターンは、IME のモード遷移・かな修飾の
+  実装の一部とみられ、hook 層で遮断すると IME の状態機械そのものが壊れる。
+- **遮断（swallow）と解釈の修正は別物**。BUG-14 の本質は「注入イベントをユーザー意図
+  （PhysicalImeKey）として解釈する」ことであり、対処は shadow toggle 側で
+  「injected イベントは意図に昇格させない（観測として扱う）」べき。OS への配送は
+  維持したまま awase の解釈だけを変える。
+- 副産物: injected= ログにより BUG-08 以来未特定だった注入元が **LLKHF_INJECTED 付き
+  SendInput 由来と確定**（ドライバレベルではない）。
