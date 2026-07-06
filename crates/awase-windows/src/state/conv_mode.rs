@@ -24,7 +24,6 @@ use super::TickMs;
 /// | `Unknown`          | 初期状態。まだ所有権が確定していない。                            |
 /// | `AwaseOwned`       | awase エンジン ON 中。conv mode を RomajiHiragana に lock する。  |
 /// | `UserOwned`        | awase エンジン OFF / 非活性中。conv mode に一切触らない。         |
-/// | `TemporarilyUnowned` | warmup シーケンス等で awase が一時的に制御権を手放している状態。 |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConvModeAuthority {
     /// 初期状態。所有権が誰にあるか不明（起動直後、エンジン状態未受信）。
@@ -34,9 +33,9 @@ pub enum ConvModeAuthority {
     AwaseOwned,
     /// awase 無効・エンジン OFF。IME conv mode に一切触らない。
     UserOwned,
-    /// warmup シーケンス等で awase が一時的に conv mode 制御を手放している。
-    /// `AwaseOwned` に戻るまでは conv mutation を行わない。
-    TemporarilyUnowned,
+    // 旧 TemporarilyUnowned（warmup 中の一時的な制御権返上）は 2026-07-06 の
+    // 到達不能パス監査で撤去 — 構築サイトが一度も配線されなかった。
+    // 必要になったら set_conv_mode_authority の呼び出し元とセットで再導入すること。
 }
 
 impl ConvModeAuthority {

@@ -44,8 +44,10 @@ pub enum ColdReason {
     SymbolVkSent,
     /// F2 non-TSF mode passthrough
     F2NonTsf,
-    /// session_expired（前回送信から 2s 超過）
-    SessionExpired,
+    // 旧 SessionExpired は 2026-07-06 の到達不能パス監査で撤去 — production の
+    // 構築サイトゼロ。session-expiry は `assess_warmth` の bool（session_expired）
+    // 経由で F2 prepend バッチを駆動する別パスで実装されており、この ColdReason
+    // variant で mark_composition_cold する経路は一度も配線されなかった。
     /// raw TSF literal 検出後のリカバリ（バックスペース後に再 cold 扱い）
     RawTsfLiteralRecovery,
     /// Ctrl+key パススルー時の composition キャンセル（IME ショートカット横取り防止）
@@ -71,8 +73,7 @@ impl ColdReason {
                     500
                 }
             }
-            Self::SessionExpired
-            | Self::SymbolVkSent
+            Self::SymbolVkSent
             | Self::F2NonTsf
             | Self::RawTsfLiteralRecovery
             | Self::CtrlKeyBypass
@@ -92,7 +93,6 @@ impl ColdReason {
                     100
                 }
             }
-            Self::SessionExpired => 200,
             Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
                 if long_idle {
                     300

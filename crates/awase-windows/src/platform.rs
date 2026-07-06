@@ -114,7 +114,7 @@ impl WindowsPlatform {
     /// conv mode 制御権限を更新する (H-3-e)。
     ///
     /// エンジンが有効になったとき `AwaseOwned`、無効になったとき `UserOwned` を渡す。
-    /// warmup が一時的に制御権を手放すときは `TemporarilyUnowned` を渡す。
+    /// 現在の呼び出し元は `AwaseOwned` / `UserOwned` のみを渡す。
     ///
     /// conv mutation 可否の唯一の実体は `Output::conv_mutation_allowed`（Cell<bool>）で、
     /// `send_eager_tsf_warmup` / probe warmup がこのフラグを self-gate に使う。

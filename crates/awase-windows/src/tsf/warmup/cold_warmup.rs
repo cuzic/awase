@@ -76,7 +76,7 @@ struct WarmupContext {
     cold_reason: crate::output::ColdReason,
     /// `ConvModeAuthority::AwaseOwned` のとき `true`。
     ///
-    /// `false`（UserOwned/TemporarilyUnowned/Unknown）のとき VK_DBE_HIRAGANA 送信と
+    /// `false`（UserOwned/Unknown）のとき VK_DBE_HIRAGANA 送信と
     /// `ImmSetConversionStatus` をスキップする。
     conv_mutation_allowed: bool,
     /// 現在の入力文字セット（warmup VK の選択に使用）。

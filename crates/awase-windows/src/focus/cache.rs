@@ -6,12 +6,15 @@ use std::time::Instant;
 use crate::focus::FocusKind;
 
 /// 判定結果のソース（TTL と優先順位を決定する）
+///
+/// 旧 `UiaAsync = 1`（Phase 3 UIA 非同期判定の中間優先度）は 2026-07-06 の
+/// 到達不能パス監査で撤去 — 唯一の生成元だった `handle_wm_focus_kind_update` が
+/// BUG-12 でログのみ化されて以降、構築サイトゼロだった。UIA を再有効化する場合は
+/// BUG-12 の記録どおり hwnd 粒度の別設計が必要で、その際に階層を再導入すること。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DetectionSource {
-    /// Phase 1-2 同期判定（TTL: 5分、優先度: 最低）
+    /// Phase 1-2 同期判定（TTL: 5分、優先度: 低）
     Automatic = 0,
-    /// Phase 3 UIA 非同期判定（TTL: 5分）
-    UiaAsync = 1,
     /// ユーザー手動オーバーライド（TTL: 24時間、優先度: 最高）
     UserOverride = 2,
 }
@@ -21,8 +24,8 @@ impl DetectionSource {
     #[must_use]
     pub const fn ttl_secs(self) -> u64 {
         match self {
-            Self::Automatic | Self::UiaAsync => 300, // 5分
-            Self::UserOverride => 86400,             // 24時間
+            Self::Automatic => 300,      // 5分
+            Self::UserOverride => 86400, // 24時間
         }
     }
 }

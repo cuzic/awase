@@ -1037,7 +1037,6 @@ mod tests {
             500
         );
         assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(false), 500);
-        assert_eq!(ColdReason::SessionExpired.eager_settle_ms(false), 500);
         assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(false), 500);
         assert_eq!(ColdReason::F2NonTsf.eager_settle_ms(false), 500);
         assert_eq!(
@@ -1060,7 +1059,6 @@ mod tests {
         );
         assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(true), 1500);
         // 他は不変
-        assert_eq!(ColdReason::SessionExpired.eager_settle_ms(true), 500);
         assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(true), 500);
         assert_eq!(ColdReason::SetOpenFalse.eager_settle_ms(true), 500);
     }
@@ -1073,7 +1071,6 @@ mod tests {
         assert_eq!(ColdReason::FocusChange.probe_min_ms(true), 300);
         assert_eq!(ColdReason::NativeF2Consumed.probe_min_ms(true), 300);
         assert_eq!(ColdReason::SetOpenTrue.probe_min_ms(true), 300);
-        assert_eq!(ColdReason::SessionExpired.probe_min_ms(false), 200);
         assert_eq!(ColdReason::PassthroughConfirmKey.probe_min_ms(false), 50);
         assert_eq!(ColdReason::ReinjectConfirmKey.probe_min_ms(false), 50);
         assert_eq!(ColdReason::PassthroughConfirmKey.probe_min_ms(true), 300);
@@ -1088,7 +1085,6 @@ mod tests {
         assert!(ColdReason::PassthroughConfirmKey.is_confirm_key());
         assert!(ColdReason::ReinjectConfirmKey.is_confirm_key());
         assert!(!ColdReason::FocusChange.is_confirm_key());
-        assert!(!ColdReason::SessionExpired.is_confirm_key());
         assert!(!ColdReason::RawTsfLiteralRecovery.is_confirm_key());
         assert!(!ColdReason::SetOpenFalse.is_confirm_key());
     }
@@ -1099,7 +1095,6 @@ mod tests {
         assert!(ColdReason::NativeF2Consumed.requires_settle());
         assert!(ColdReason::SetOpenTrue.requires_settle());
         assert!(!ColdReason::PassthroughConfirmKey.requires_settle());
-        assert!(!ColdReason::SessionExpired.requires_settle());
         assert!(!ColdReason::RawTsfLiteralRecovery.requires_settle());
         assert!(!ColdReason::SetOpenFalse.requires_settle());
     }
@@ -1156,8 +1151,8 @@ mod tests {
     #[test]
     fn output_last_cold_reason_tracks_latest() {
         let o = make_output();
-        o.mark_composition_cold(ColdReason::SessionExpired);
-        assert_eq!(o.composition.last_cold_reason(), ColdReason::SessionExpired);
+        o.mark_composition_cold(ColdReason::SymbolVkSent);
+        assert_eq!(o.composition.last_cold_reason(), ColdReason::SymbolVkSent);
         o.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         assert_eq!(
             o.composition.last_cold_reason(),
