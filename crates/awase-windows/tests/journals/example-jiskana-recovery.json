@@ -1,7 +1,7 @@
 [
   {
     "name": "jiskana_recovers_to_assumed_romaji_restarts_engine",
-    "note": "ea3da7f 回帰の再現例（conv_classify.rs の既存 unit test と同一ケースをジャーナル・リプレイ形式に転記した最初のフィクスチャ）。JISかな (ROMANなし, conv=0x0009) を TsfNative で観測しても、is_roman_reliable=false のため ObservedKana へダウングレードせず AssumedRomaji{ImmBridgeBroken} に回復する。effective_open=true (shadow=ON) のため engine は SetOpen(RomajiRecovered) で再起動する。実機ジャーナルダンプが手に入ったら、この形式で tests/journals/ に追記していく（docs/journal-replay-guide.md 参照）。",
+    "note": "ea3da7f 回帰の再現例（conv_classify.rs の既存 unit test と同一ケースをジャーナル・リプレイ形式に転記した最初のフィクスチャ）。JISかな (ROMANなし, conv=0x0009) を TsfNative で観測しても、is_roman_reliable=false のため ObservedKana へダウングレードせず AssumedRomaji{ImmBridgeBroken} に回復する。effective_open=true (shadow=ON) のため engine は SetOpen(RomajiRecovered) で再起動する。実機ジャーナルダンプが手に入ったら、この形式で tests/journals/ に追記していく（docs/journal-replay-guide.md 参照）。 【反転記録 2026-07-06T05:28】当初 expected restore_roman=true としたが撤回。MS-IME × TsfNative では closed/idle 時の conv 読み取りが ROMAN ビットを落として報告する（偽陽性）ため、is_roman_reliable=false での復元書き込みは conv を 0x19⇄0x09 で往復させ、ObservedEisu/NativeToggleShadowOff を誤発火させて直接入力中の spurious Engine/IME ON を実機で引き起こした。restore_roman は is_roman_reliable=true の文脈のみ発火する仕様に反転（docs/experiments.md エントリ 03）。",
     "conv": 9,
     "current": "ObservedKana",
     "is_cold": false,
@@ -9,9 +9,15 @@
     "conv_mode_changed": true,
     "is_roman_reliable": false,
     "expected": {
-      "input_mode_update": { "AssumedRomaji": { "reason": "ImmBridgeBroken" } },
-      "engine": { "SetOpen": "RomajiRecovered" },
-      "restore_roman": true
+      "input_mode_update": {
+        "AssumedRomaji": {
+          "reason": "ImmBridgeBroken"
+        }
+      },
+      "engine": {
+        "SetOpen": "RomajiRecovered"
+      },
+      "restore_roman": false
     }
   }
 ]

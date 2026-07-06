@@ -136,10 +136,17 @@ pub fn classify_conv_transition(
 
     // JISかな化検出: ひらがな（NATIVE、非カタカナ）conv で ROMAN ビットが無い状態を
     // engine open 中に観測したらローマ字入力の復元を要求する。
+    // - is_roman_reliable 必須: MS-IME × TsfNative では closed/idle 時の conv 読み取りが
+    //   ROMAN ビットを落として報告する（偽陽性）。ここで復元書き込みをすると MS-IME が
+    //   数秒で 0x09 に戻し、conv が 0x19⇄0x09 を往復して他の conv ベースルール
+    //   （ObservedEisu / NativeToggleShadowOff）を誤発火させ、直接入力中に spurious な
+    //   Engine ON + IME ON を引き起こした（2026-07-06T05:28 実機、BUG-08 追補2）。
+    //   is_roman_reliable=false（TsfNative idle 経路）では発火しない。
     // - !is_cold 必須: コールドスタート期間の ROMAN ビットは未確定のため無視。
     // - steady-state でも要求する（変化検出は別経路が先に消費するため頼れない）。
     //   送信頻度の抑制は呼び出し元のレート制限が担う。
-    let restore_roman = !is_cold
+    let restore_roman = is_roman_reliable
+        && !is_cold
         && has_native
         && !has_katakana
         && (conv & CONV_ROMAN_BIT) == 0
@@ -484,34 +491,67 @@ mod tests {
     }
 
     // ── JISかな化 → ローマ字入力復元（restore_roman, BUG-08）───────────────────────
+    //
+    // 反転の記録（docs/experiments.md エントリ 03）:
+    // 当初 is_roman_reliable=false（TsfNative idle）でも発火させたが、MS-IME × TsfNative
+    // では ROMAN=0 が偽陽性（closed/idle 時に ROMAN を落として報告）であり、復元書き込みが
+    // conv を 0x19⇄0x09 で往復させ、他の conv ベースルールを誤発火させて直接入力中の
+    // spurious Engine/IME ON を引き起こした（2026-07-06T05:28 実機）。
+    // 現仕様: is_roman_reliable=true の文脈でのみ発火する。
 
-    /// BUG-08 実機再現: 外部注入 VK_KANA で GJI が Hiragana/roma → Hiragana/kana に
-    /// 反転（conv 0x0019 → 0x0009）。belief は ObservedRomaji のまま変更なしだが、
-    /// engine open 中の ROMAN 喪失遷移としてローマ字入力の復元を要求する。
+    /// ROMAN ビットが信頼できる文脈での JISかな検出 → 復元要求。
     #[test]
-    fn jiskana_transition_while_open_requests_restore_roman() {
-        let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, true, true);
-        assert_eq!(t.input_mode_update, None, "is_roman_reliable=false では downgrade しない");
-        assert_eq!(t.engine, EngineSync::None);
-        assert!(t.restore_roman, "JISかな化遷移 + engine open → ローマ字入力復元");
+    fn jiskana_with_reliable_roman_requests_restore() {
+        let t = classify_conv_transition(
+            CONV_JISKANA,
+            InputModeState::ObservedRomaji,
+            false, // is_cold
+            true,  // effective_open
+            true,  // conv_mode_changed
+            true,  // is_roman_reliable
+        );
+        assert!(t.restore_roman, "reliable ROMAN + JISかな + engine open → 復元");
     }
 
-    /// steady-state（conv 変化なし）の JISかな conv でも復元を要求する。
-    /// roma→kana の変化検出はフォーカス変更時 refresh 等の別経路が先に消費するため、
-    /// idle-conv-check から見た conv は常に steady になりうる（2026-07-06 実機で
-    /// WT がセッション中ずっと conv=0x0009 のまま未復元だった回帰）。
-    /// スパム防止は呼び出し元（kp_stage_idle_conv_check）のレート制限が担う。
+    /// steady-state（conv 変化なし）でも reliable なら復元を要求する
+    /// （変化検出は別経路が先に消費するため頼れない。スパム防止は呼び出し元のレート制限）。
     #[test]
-    fn jiskana_steady_state_still_requests_restore() {
-        let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, true, false);
+    fn jiskana_steady_state_with_reliable_roman_still_requests_restore() {
+        let t = classify_conv_transition(
+            CONV_JISKANA,
+            InputModeState::ObservedKana,
+            false,
+            true,
+            false, // conv_mode_changed
+            true,
+        );
         assert!(t.restore_roman);
     }
 
-    /// engine が閉じている（IME OFF 相当の belief）なら復元しない —
-    /// ユーザーが awase を使っていない文脈の conv には干渉しない。
+    /// TsfNative idle 経路（is_roman_reliable=false）では**決して**発火しない。
+    /// ROMAN=0 が偽陽性のため、復元書き込みは conv を荒らすだけで有害（BUG-08 追補2）。
+    #[test]
+    fn tsfnative_unreliable_roman_never_restores() {
+        for changed in [false, true] {
+            let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, true, changed);
+            assert!(
+                !t.restore_roman,
+                "is_roman_reliable=false では復元しない (changed={changed})"
+            );
+        }
+    }
+
+    /// engine が閉じている（IME OFF 相当の belief）なら復元しない。
     #[test]
     fn jiskana_while_closed_does_not_restore() {
-        let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, false, true);
+        let t = classify_conv_transition(
+            CONV_JISKANA,
+            InputModeState::ObservedRomaji,
+            false,
+            false, // effective_open
+            true,
+            true,
+        );
         assert!(!t.restore_roman);
     }
 
@@ -524,7 +564,7 @@ mod tests {
             true, // is_cold
             true,
             true,
-            false,
+            true,
         );
         assert!(!t.restore_roman);
     }
@@ -532,14 +572,28 @@ mod tests {
     /// ROMAN 付きひらがな（正常状態）では発火しない。
     #[test]
     fn hiragana_with_roman_does_not_restore() {
-        let t = classify(CONV_HIRAGANA, InputModeState::ObservedRomaji, true, true);
+        let t = classify_conv_transition(
+            CONV_HIRAGANA,
+            InputModeState::ObservedRomaji,
+            false,
+            true,
+            true,
+            true,
+        );
         assert!(!t.restore_roman);
     }
 
     /// カタカナ conv は restore_roman の対象外（imm_conv_target 系の warmup が担当）。
     #[test]
     fn katakana_without_roman_does_not_restore() {
-        let t = classify(CONV_ZENKATA, InputModeState::ObservedRomaji, true, true);
+        let t = classify_conv_transition(
+            CONV_ZENKATA,
+            InputModeState::ObservedRomaji,
+            false,
+            true,
+            true,
+            true,
+        );
         assert!(!t.restore_roman);
     }
 }

@@ -1,7 +1,7 @@
 [
   {
     "name": "vk_kana_injection_flips_gji_to_jiskana_restore_roman",
-    "note": "BUG-08 実機再現（2026-07-06T04:15 ログ）。外部注入（LLKHF_INJECTED、down→up 135µs）の VK_KANA ペアがパススルーされ、かなロックのトグルで GJI が Hiragana/roma → Hiragana/kana に反転（conv 0x0019 → 0x0009）。belief は ObservedRomaji のまま（is_roman_reliable=false のため downgrade しない）で修正前は誰も復元せず、engine の romaji VK 出力（例: ko → [4B,4F]）が JISかな解釈されて壊滅した。あるべき出力: engine open 中の ROMAN 喪失遷移として restore_roman=true（key_pipeline が set_ime_romaji_mode_with_target_async で復元する）。注入元対策として hook 側でも foreign-injected VK_KANA を swallow する（hook.rs）。",
+    "note": "BUG-08 実機再現（2026-07-06T04:15 ログ）。外部注入（LLKHF_INJECTED、down→up 135µs）の VK_KANA ペアがパススルーされ、かなロックのトグルで GJI が Hiragana/roma → Hiragana/kana に反転（conv 0x0019 → 0x0009）。belief は ObservedRomaji のまま（is_roman_reliable=false のため downgrade しない）で修正前は誰も復元せず、engine の romaji VK 出力（例: ko → [4B,4F]）が JISかな解釈されて壊滅した。あるべき出力: engine open 中の ROMAN 喪失遷移として restore_roman=true（key_pipeline が set_ime_romaji_mode_with_target_async で復元する）。注入元対策として hook 側でも foreign-injected VK_KANA を swallow する（hook.rs）。 【反転記録 2026-07-06T05:28】当初 expected restore_roman=true としたが撤回。MS-IME × TsfNative では closed/idle 時の conv 読み取りが ROMAN ビットを落として報告する（偽陽性）ため、is_roman_reliable=false での復元書き込みは conv を 0x19⇄0x09 で往復させ、ObservedEisu/NativeToggleShadowOff を誤発火させて直接入力中の spurious Engine/IME ON を実機で引き起こした。restore_roman は is_roman_reliable=true の文脈のみ発火する仕様に反転（docs/experiments.md エントリ 03）。",
     "conv": 9,
     "current": "ObservedRomaji",
     "is_cold": false,
@@ -11,12 +11,12 @@
     "expected": {
       "input_mode_update": null,
       "engine": "None",
-      "restore_roman": true
+      "restore_roman": false
     }
   },
   {
     "name": "vk_kana_injection_steady_state_kana_still_restores",
-    "note": "BUG-08 追補（2026-07-06T05:05 ログ）。roma→kana の変化検出はフォーカス変更時 refresh の update_from_conv が先に消費するため、idle-conv-check から見た conv は steady な 0x0009 になり、conv_mode_changed ゲート付きの restore_roman は一度も発火しなかった（WT がセッション中ずっと JISかな のまま）。あるべき出力: steady-state でも restore_roman=true（スパム防止は kp_stage_idle_conv_check のレート制限が担う）。",
+    "note": "BUG-08 追補（2026-07-06T05:05 ログ）。roma→kana の変化検出はフォーカス変更時 refresh の update_from_conv が先に消費するため、idle-conv-check から見た conv は steady な 0x0009 になり、conv_mode_changed ゲート付きの restore_roman は一度も発火しなかった（WT がセッション中ずっと JISかな のまま）。あるべき出力: steady-state でも restore_roman=true（スパム防止は kp_stage_idle_conv_check のレート制限が担う）。 【反転記録 2026-07-06T05:28】当初 expected restore_roman=true としたが撤回。MS-IME × TsfNative では closed/idle 時の conv 読み取りが ROMAN ビットを落として報告する（偽陽性）ため、is_roman_reliable=false での復元書き込みは conv を 0x19⇄0x09 で往復させ、ObservedEisu/NativeToggleShadowOff を誤発火させて直接入力中の spurious Engine/IME ON を実機で引き起こした。restore_roman は is_roman_reliable=true の文脈のみ発火する仕様に反転（docs/experiments.md エントリ 03）。",
     "conv": 9,
     "current": "ObservedRomaji",
     "is_cold": false,
@@ -26,7 +26,7 @@
     "expected": {
       "input_mode_update": null,
       "engine": "None",
-      "restore_roman": true
+      "restore_roman": false
     }
   }
 ]

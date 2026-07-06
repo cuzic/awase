@@ -7,10 +7,9 @@ use std::mem::size_of;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetGUIThreadInfo, GetWindowThreadProcessId, PostQuitMessage, GUITHREADINFO,
+    GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO,
 };
 
-use crate::focus::cache::DetectionSource;
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::vk::VkCodeExt;
@@ -390,60 +389,33 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
         cbSize: size_of::<GUITHREADINFO>() as u32,
         ..Default::default()
     };
+    // ── UIA 非同期分類の適用は無効化されている（BUG-12）────────────────────────
+    //
+    // この handler は BUG-09（post_to_main_thread 誤配送）の修正まで一度も実行された
+    // ことがなく、配送を直した途端に 2 段階の実害が露出した:
+    //
+    // 1. キャッシュキー取り違え（BUG-11）: 遅延した platform.focus からキーを取り、
+    //    Alt+Tab メニューの NonText を Edge のキーでキャッシュ → Edge 永久 NonText。
+    // 2. キー粒度の構造的不一致（BUG-12、BUG-11 修正後も再発 2026-07-06T05:28 実機）:
+    //    帰属を result_hwnd から正しく導出しても、ブラウザ（Chrome_WidgetWin_1）の
+    //    focus kind は「ウィンドウ内のどの要素にフォーカスがあるか」で毎秒変わる。
+    //    ページ本文フォーカス時の**正しい** NonText を (pid, class) でキャッシュした
+    //    瞬間、テキスト欄に移っても再分類イベントが来ない（ウィンドウ内クリックは
+    //    フォーカス変更として観測できない）ため Edge 全体が永久 NonText になり、
+    //    全キーがエンジン素通し（「IME ON・Engine OFF」症状）。
+    //
+    // UIA 結果を安全に適用するには hwnd 粒度 + ウィンドウ内フォーカス要素の追跡
+    // （UIA FocusChanged イベント購読等）が必要で、(pid, class) キャッシュ設計とは
+    // 両立しない。それまでは配送修正前の実績ある挙動（結果は届くが適用しない）に
+    // 意図的に戻す。sync 分類（既知クラス・WS_EX_NOIME・MSAA）は従来どおり機能する。
+    let _ = app;
     if GetGUIThreadInfo(0, &raw mut info).is_ok() && info.hwndFocus != result_hwnd {
         log::debug!("UIA result for stale hwnd, ignoring");
     } else {
-        // 結果の帰属（pid/class）は必ず result_hwnd 自身から導出する。
-        //
-        // awase 内部の focus 追跡（platform.focus）は refresh 経由で更新されるため
-        // 実フォーカスより最大数百 ms 遅れる。かつてここで platform.focus の
-        // pid/class をキャッシュキーに使っていたため、「Alt+Tab メニュー
-        // (XamlExplorerHostIslandWindow) の NonText 結果が、まだ Edge を指している
-        // 追跡状態のキー (msedge, Chrome_WidgetWin_1) でキャッシュされる」毒入りが
-        // 起きた（BUG-11、2026-07-06 実機: 以後 Edge が cache hit で永久 NonText →
-        // 全キーがエンジン素通しになり「IME ON・Engine OFF」化。NonText は
-        // Undetermined ではないため UIA 再問い合わせも走らず自己回復しない）。
-        let mut result_pid: u32 = 0;
-        // SAFETY: result_hwnd は UIA worker が probe した HWND。破棄済みでも
-        //         GetWindowThreadProcessId は 0 を返すだけで安全。
-        unsafe {
-            let _ = GetWindowThreadProcessId(result_hwnd, Some(&raw mut result_pid));
-        }
-        let result_class = crate::focus::classify::get_class_name_string(result_hwnd);
-        let matches_tracked = app.platform.focus.is_focused()
-            && app.platform.focus.pid() == result_pid
-            && app.platform.focus.class_name() == result_class;
-
-        // グローバルな「現在のフォーカス」状態への反映は、結果が awase の追跡中
-        // ウィンドウに帰属する場合のみ。
-        if matches_tracked && app_kind_u8 != crate::FOCUS_KIND_UPDATE_NO_APP_KIND {
-            let app_kind = crate::focus::AppKind::from_u8(app_kind_u8);
-            app.platform_state.focus.app_kind = app_kind;
-            log::debug!("UIA AppKind update: {app_kind:?}");
-        }
-
-        if kind != FocusKind::Undetermined {
-            // キャッシュは result_hwnd の素性で挿入する（追跡状態と無関係に正しいキー）。
-            if result_pid != 0 && !result_class.is_empty() {
-                app.platform.focus.cache_insert(
-                    result_pid,
-                    result_class.clone(),
-                    kind,
-                    DetectionSource::UiaAsync,
-                );
-            }
-            if matches_tracked {
-                app.platform_state.focus.focus_kind = kind;
-                if kind == FocusKind::NonText {
-                    app.invalidate_engine_context(ContextChange::FocusChanged);
-                }
-            } else {
-                log::debug!(
-                    "UIA result hwnd={result_hwnd:?} ({result_class}) は追跡中フォーカスと\
-                     不一致 → cache のみ更新（focus_kind は変更しない）"
-                );
-            }
-        }
+        log::debug!(
+            "UIA async result received (kind={kind:?} app_kind_u8={app_kind_u8}) — \
+             BUG-12 により適用せずログのみ"
+        );
     }
 }
 

@@ -86,3 +86,29 @@ TsfGate の bypass 確定時に `write_focus_probe(false)` で belief を強制 
 - `dispatch_event` はジャーナルに全イベントを残すが DEBUG ログには出さない。
   「ログに書き込みが見えないのにbeliefが反転する」場合はジャーナルか、ログを出さない
   dispatch 呼び出し元を疑う。
+
+---
+
+## エントリ 03: JISかな自動復元（restore_roman）と UIA 非同期分類 — 同日中に採用→撤回
+
+**背景**: BUG-08（合成 VK_KANA による JISかな化）の自己修復層と、BUG-09
+（post_to_main_thread 誤配送）修正で初めて動き出した UIA 非同期 focus 分類。
+どちらも同日中に実機で副作用が確認され撤回した。詳細は
+[docs/known-bugs.md](known-bugs.md) BUG-08 追補2 / BUG-11 / BUG-12。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-06 | conv=0x0009（ROMAN喪失）は実際の JISかな化なので自動復元してよい | WT × MS-IME (TsfNative) | restore_roman を steady-state でも発火 | ROMAN=0 は偽陽性（closed/idle 時 MS-IME が ROMAN を落として報告）。復元書き込みで conv が 0x19⇄0x09 を往復し、ObservedEisu/NativeToggleShadowOff が誤発火 → **直接入力中に spurious Engine ON + IME ON** | 撤回（is_roman_reliable=true 必須に） | `92fddc8` → 本修正 |
+| 2026-07-06 | UIA 非同期分類の結果は帰属さえ正しければ (pid,class) キャッシュしてよい | MS Edge × MS-IME | BUG-11 修正（result_hwnd から帰属導出） | ページ本文フォーカス時の「正しい NonText」が (pid,class) で固着 → ウィンドウ内クリックでは再分類されず Edge 永久 NonText → 全キーがエンジン素通し | 撤回（handler をログのみに、BUG-12） | `d941721` → 本修正 |
+
+**学び**:
+
+- **conv の ROMAN ビットは IME × プロファイル × open 状態で信頼性が変わる**。
+  「TsfNative では ROMAN が常に 0」という古いコメント（`is_roman_reliable=false` の根拠）は
+  正しかった。信頼できない読み値に対して是正書き込みをすると、書いた値と IME の報告が
+  往復して**他の conv ベースルールを誤発火させる**（二次被害が一次症状より重い）。
+- **focus kind の粒度はウィンドウではなく要素**。ブラウザでは同一 (pid,class) の中で
+  TextInput⇄NonText が毎秒変わるため、ウィンドウ粒度のキャッシュはどちらの値でも毒になる。
+- **長期間 dead だったコードパスの配送を直すときは、そのパスを一時停止した状態で直す**。
+  BUG-09 の配送修正自体は正しかったが、「届いたことのないハンドラ」が全部動き出し、
+  未検証コードの潜在バグ（BUG-11/12）が一気に露出した。配送修正と機能有効化は分離すべきだった。

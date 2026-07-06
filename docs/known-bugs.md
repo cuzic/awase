@@ -271,6 +271,15 @@ ROMAN ビットを信用しない設計）のため conv=0x0009 を読んでも 
    （05:05 実機: WT がセッション中ずっと conv=0x0009 のまま）。steady-state でも
    発火するよう変更し、スパム防止は呼び出し元のレート制限（3s 間隔、
    `last_roman_restore_ms`）に移した。
+   **2026-07-06 追補2（撤回）**: steady-state 発火は**撤回**。MS-IME × TsfNative では
+   closed/idle 時の conv 読み取りが ROMAN ビットを落として報告する（偽陽性 — 古い
+   「TsfNative では ROMAN が常に 0」コメントは正しかった）。復元書き込みが conv を
+   0x19⇄0x09 で往復させ、`ObservedEisu` / `NativeToggleShadowOff` を誤発火させて
+   **直接入力中の spurious Engine ON + IME ON** を実機で引き起こした（05:28）。
+   05:05 の「JISかな残留」も偽陽性の誤診だった可能性が高い（出力は正常だった）。
+   `restore_roman` は `is_roman_reliable=true` の文脈のみ発火する仕様に変更 —
+   TsfNative idle 経路（常に false）では発火せず、実質 hook 層の VK_KANA swallow が
+   本物のかなロックトグルへの防御となる。docs/experiments.md エントリ 03 参照。
 
 **再発防止テスト:** `state/conv_classify.rs` の unit tests（`jiskana_transition_while_open_requests_restore_roman` 等 6 件 + 不変条件）、
 `tests/journals/jiskana-vk-kana-injection.json`（実機ログからの リプレイ fixture、Linux でも実行可）。
@@ -381,8 +390,40 @@ NonText は Undetermined ではないため UIA 再問い合わせも走らず**
 グローバルな focus_kind / app_kind への反映は「追跡中ウィンドウと pid+class が一致する
 場合のみ」に限定。毒入り済みキャッシュはメモリ上のみのため awase 再起動で消える。
 
+**【2026-07-06 追記】この修正では不十分だった** — 帰属を正しくしても、ページ本文
+フォーカス時の「正しい NonText」が (pid, class) キーでキャッシュされ、同日 05:28 に
+Edge 永久 NonText が再発（`Focus kind changed: TextInput → NonText (reason=cache hit)`）。
+粒度の構造的不一致が真因。**BUG-12 で UIA 結果の適用自体を無効化した。**
+
 **関連ファイル:** `runtime/message_handlers.rs` (`handle_wm_focus_kind_update`),
 `focus/uia.rs`（結果送信側）, `runtime/focus_tracking.rs::classify_focus_probe`（cache hit 消費側）
+
+---
+
+## BUG-12: UIA 非同期 focus 分類の適用を無効化（(pid,class) キャッシュ粒度がブラウザと構造的に不一致）
+
+**症状:** BUG-11 修正後も Edge で「IME ON・Engine OFF」（全キーがエンジン素通し）が再発
+（2026-07-06T05:28 実機: Edge 入場時 `Focus kind changed: TextInput → NonText
+(reason=cache hit)`、キー入力が `[engine-input]` なしの `[reinject]` のみ）。
+
+**原因（構造的）:** ブラウザ（Chrome_WidgetWin_1）の focus kind は「ウィンドウ内の
+どの要素にフォーカスがあるか」で毎秒変わる。UIA がページ本文フォーカス時に返す
+**正しい NonText** であっても、(pid, class) 粒度でキャッシュした瞬間にウィンドウ全体へ
+固着する。ウィンドウ内クリックはトップレベルフォーカス変更として観測できないため
+再分類されず、自己回復しない。帰属の正確さ（BUG-11 修正）では解決不能な粒度問題。
+
+**経緯:** `handle_wm_focus_kind_update` は BUG-09（post_to_main_thread 誤配送）の修正まで
+**一度も実行されたことのない**コードだった。配送を直した途端に BUG-11 → BUG-12 と
+2 段階の実害が露出した。システム全体が「UIA 結果は届かない」前提で長期間チューニング
+されてきたため、安全に有効化するには hwnd 粒度 + ウィンドウ内フォーカス要素の追跡
+（UIA FocusChanged イベント購読）という別設計が必要。
+
+**対処:** handler をログのみ（適用・キャッシュなし）に変更し、配送修正前の実績ある
+挙動へ意図的に戻した。sync 分類（既知クラス・WS_EX_NOIME・MSAA）は従来どおり機能する。
+BUG-09 修正の本来の成果（`WM_IME_KIND_CHANGED` → warmup 戦略切替、実機検証済み）は維持。
+
+**関連ファイル:** `runtime/message_handlers.rs` (`handle_wm_focus_kind_update`),
+`focus/uia.rs`（worker は診断ログ用に稼働継続）
 
 ---
 
