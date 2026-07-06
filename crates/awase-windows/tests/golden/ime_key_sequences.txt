@@ -1,0 +1,73 @@
+# IME キー戦略 キャラクタライゼーションゴールデン (P2-1)
+#
+# 生成元: crates/awase-windows/tests/ime_key_sequence_golden.rs
+# このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。
+#
+# ── 戦略選択テーブル ──────────────────────────────────────────────
+# ImeController の is_applicable のみを評価した実行結果（apply は未実行）。
+# dispatch: apply = 通常経路 / apply_skipping_imm = async IMM が Failed を返した後の経路。
+# 列: active_ime_kind <TAB> profile <TAB> dispatch <TAB> selected_strategy
+GJI	Standard	apply	ImmCrossProcess
+GJI	Standard	apply_skipping_imm	GjiDirect
+GJI	Imm32Unavailable	apply	GjiDirect
+GJI	Imm32Unavailable	apply_skipping_imm	GjiDirect
+GJI	TsfNative	apply	GjiDirect
+GJI	TsfNative	apply_skipping_imm	GjiDirect
+MS-IME	Standard	apply	ImmCrossProcess
+MS-IME	Standard	apply_skipping_imm	KanjiToggle
+MS-IME	Imm32Unavailable	apply	MsImeDirect
+MS-IME	Imm32Unavailable	apply_skipping_imm	MsImeDirect
+MS-IME	TsfNative	apply	MsImeDirect
+MS-IME	TsfNative	apply_skipping_imm	MsImeDirect
+
+# ── 戦略別 送信キー / outcome ──────────────────────────────────────
+# ソース: crates/awase-windows/src/ime_controller.rs（apply は Win32 副作用のため未実行）。
+# 各戦略が open=true / open=false で送るキーと ImeOpenOutcome。根拠コミットを注記する。
+#
+# ImmCrossProcess (is_applicable: profile==Standard):
+#   ON/OFF ともに ImmSetOpenStatus クロスプロセス呼び出し = ime::set_ime_open_cross_process(open)。
+#   成功→Applied / 失敗→Failed（次の適用可能戦略へフォールスルー）。VK キーは送らない。
+#   MS-IME + ImmCross + open かつ belief!=ObservedKana のとき、直前に set_ime_romaji_mode()
+#   （ROMAN ビット付与）で JIS かな入力化けを防ぐ。
+#
+# GjiDirect (is_applicable: active_ime_kind==GoogleJapaneseInput):
+#   ON  → shadow_on なら送信せず AlreadyMatched（VK_IME_ON no-op 見込みでスキップ）、
+#         さもなくば VK_IME_ON (0x16) = ime::post_gji_ime_on() → Applied。
+#   OFF → VK_IME_OFF (0x1A) = ime::post_gji_ime_off() → Applied。
+#   VK_IME_ON/OFF は Windows 標準の冪等キーで GJI が TSF 層でネイティブ処理する。
+#   GJI+TsfNative の OFF は旧 VK_KANJI から VK_IME_OFF へ移行済み（489cdf1）。
+#   （履歴: adb856c で一時 VK_KANJI フォールバックへ戻したが 489cdf1 で VK_IME_OFF に再修正）
+#
+# MsImeDirect (is_applicable: active_ime_kind==MicrosoftIme && !can_use_imm32_cross_process()):
+#   ON  → 現 conv が KATAKANA ビット立ちなら送信せず AlreadyMatched（conv 破壊防止）、
+#         さもなくば（belief!=ObservedKana のとき set_ime_romaji_mode() 後）
+#         VK_DBE_HIRAGANA (0xF2) = ime::post_ms_ime_on() → Applied。
+#   OFF → VK_IME_OFF (0x1A) = ime::post_ime_off_direct()（DirectInput へ、冪等）→ Applied。
+#   OFF が VK_IME_OFF（冪等）である根拠: 48a667a。VK_DBE_ALPHANUMERIC は半角英数（IME-ON）に
+#   留まるため不可、VK_KANJI はトグルのため不可。
+#   （履歴: 9c3f11e→668a131 revert、be3b056 で一時 VK_KANJI、48a667a で VK_IME_OFF に確定）
+#
+# KanjiToggle (is_applicable: 常に true / 最終フォールバック):
+#   ON/OFF ともに VK_KANJI トグル = ime::post_kanji_toggle_to_focused() → FallbackSent。
+#   冪等でないトグルのため already_matched 判定はせず送信する。GJI/MS-IME 環境では前段が
+#   処理するため稀にしか到達しない。
+
+# ── warmup / sacrificial キー選択 ─────────────────────────────────
+# ソース: crates/awase-windows/src/output/probe_io.rs（impl ProbeIo for Output）。
+# dispatch_probe_actions が呼ぶ ProbeIo メソッドと、Output 実装が送るキー。キーは Output 側に
+# ハードコードされており分岐は主に TransmitTarget（Chrome / Tsf）で切り替わる。
+#
+# SendFreshF2         → send_fresh_f2(): VK_DBE_HIRAGANA (0xF2) down/up。
+#                       Medium/Long cold（forces_prepend_f2）では send_extra_f2() で F2×2 連続。
+# StartSacrificialWarmup:
+#   TransmitTarget::Chrome → send_sacrificial_vk_a_with_bs(): VK_A(0x41)+VK_BACK を同一バッチ送信
+#                            （文字フラッシュ防止）。根拠: 22c3905（Chrome は VK_A+BS 維持）,
+#                            af906b1（同一バッチ化）。VK_IME_OFF は Chrome TSF context を壊すため不可。
+#   TransmitTarget::Tsf    → send_sacrificial_ime_off_on(): VK_IME_OFF→VK_IME_ON（IME_KANJI_MARKER 付き、
+#                            vim 安全プローブ）。根拠: 22c3905（TSF のみ VK_IME_OFF→ON へ分岐）,
+#                            6c1732d（write_bytes 検出方式）。
+# SendChromeGjiReinit → send_chrome_gji_reinit_and_poll(): VK_IME_OFF→VK_IME_ON + async IMC ポーリング
+#                       （Chrome 超長時間 idle の再初期化）。
+# SacrificialResend   → BS×1（VK_A 削除、Chrome/skip_cleanup_bs 時は省略）後に実ローマ字を再送。
+# RawTsfLiteralRecovery → set_raw_literal(backs, romaji) で BS×backs + 再送を予約し mark_cold。
+#                         consecutive>0 のときは再送せず BS のみ（give-up）。

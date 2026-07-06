@@ -28,6 +28,9 @@
 use awase::platform::ImeOpenOutcome;
 
 use crate::state::ime_decision_view::ImeControlView;
+use crate::state::key_sequence_policy::{
+    self, ime_key_for, ImeOperation, KeyMechanism,
+};
 use crate::tsf::observer::ActiveImeKind;
 
 /// IME ON/OFF を実行する戦略インターフェース。
@@ -47,7 +50,7 @@ pub(crate) struct ImmCrossProcessStrategy;
 
 impl ImeOpenStrategy for ImmCrossProcessStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.focus.profile.can_use_imm32_cross_process()
+        key_sequence_policy::imm_cross_applicable(view.focus.profile)
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
@@ -87,22 +90,20 @@ pub(crate) struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.observed.active_ime_kind == ActiveImeKind::GoogleJapaneseInput
+        key_sequence_policy::gji_direct_applicable(view.observed.active_ime_kind)
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        if open {
-            if view.control.shadow_on {
-                // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
-                log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
-                return ImeOpenOutcome::AlreadyMatched;
-            }
-            log::debug!("[apply-ime] GJI direct: VK_IME_ON");
-            unsafe { crate::ime::post_gji_ime_on() };
-        } else {
-            log::debug!("[apply-ime] GJI direct: VK_IME_OFF");
-            unsafe { crate::ime::post_gji_ime_off() };
+        if open && view.control.shadow_on {
+            // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
+            log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
+            return ImeOpenOutcome::AlreadyMatched;
         }
+        // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON / VK_IME_OFF、GJI 冪等キー）。
+        let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::from_open(open));
+        log::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
+        // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+        unsafe { crate::ime::send_ime_mode_key(vk) };
         ImeOpenOutcome::Applied
     }
 }
@@ -126,8 +127,10 @@ pub(crate) struct MsImeDirectStrategy;
 
 impl ImeOpenStrategy for MsImeDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        view.observed.active_ime_kind == ActiveImeKind::MicrosoftIme
-            && !view.focus.profile.can_use_imm32_cross_process()
+        key_sequence_policy::ms_ime_direct_applicable(
+            view.observed.active_ime_kind,
+            view.focus.profile,
+        )
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
@@ -155,16 +158,19 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             if !matches!(view.belief_input_mode, awase::engine::InputModeState::ObservedKana) {
                 let _ = unsafe { crate::ime::set_ime_romaji_mode() };
             }
-            log::debug!("[apply-ime] MS-IME direct: VK_DBE_HIRAGANA (IME ON)");
-            // SAFETY: post_ms_ime_on は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-            unsafe { crate::ime::post_ms_ime_on() };
+            // 送信キーは KeySequencePolicy が SSOT（VK_DBE_HIRAGANA、MS-IME 冪等 ON キー）。
+            let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open);
+            log::debug!("[apply-ime] MS-IME direct: send {vk:#06X} (IME ON)");
+            // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+            unsafe { crate::ime::send_ime_mode_key(vk) };
         } else {
             // DirectInput（直接入力）へ移行する。
             // VK_IME_OFF は MS-IME がネイティブに処理する冪等キー。
             // 既に DirectInput の場合は no-op のため conv チェック不要。
-            log::debug!("[apply-ime] MS-IME direct: VK_IME_OFF (DirectInput, 冪等)");
-            // SAFETY: post_ime_off_direct は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-            unsafe { crate::ime::post_ime_off_direct() };
+            let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close);
+            log::debug!("[apply-ime] MS-IME direct: send {vk:#06X} (DirectInput, 冪等)");
+            // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+            unsafe { crate::ime::send_ime_mode_key(vk) };
         }
         ImeOpenOutcome::Applied
     }
@@ -276,3 +282,77 @@ impl ImeController {
 /// async branch 経路の双方から参照される（ImmCross が first applicable かどうかで
 /// async / sync 経路を切り替えるため、両所で同じインスタンスを共有する必要がある）。
 pub(crate) static CONTROLLER: ImeController = ImeController::new();
+
+// ── キャラクタライゼーションテスト用シーム ──────────────────────────
+//
+// P2-1 ゴールデンテスト（`tests/ime_key_sequence_golden.rs`）が、リファクタ前の
+// 現状の戦略選択を副作用なしで観測するために提供する読み取り専用 API。
+// `apply()` は Win32 SendInput 副作用を持つため呼ばない。ここで評価するのは
+// 純粋な `is_applicable` のみ（戦略の「選択」だけを固定し、送信キー自体は
+// ゴールデンファイル側にソース由来のドキュメントとして注記する）。
+// 本番経路（`apply` / `apply_skipping_imm`）からは参照されない。
+
+/// `strategies` 配列と同順の戦略名。`ImeController::new` の構築順に一致させること。
+const STRATEGY_NAMES: [&str; 4] = [
+    "ImmCrossProcess",
+    "GjiDirect",
+    "MsImeDirect",
+    "KanjiToggle",
+];
+
+impl ImeController {
+    /// 与えた view で最初に `is_applicable` を返す戦略の名前（`apply` は実行しない）。
+    fn first_applicable_name(&self, view: &ImeControlView<'_>) -> &'static str {
+        self.strategies
+            .iter()
+            .position(|s| s.is_applicable(view))
+            .map_or("None", |i| STRATEGY_NAMES[i])
+    }
+
+    /// `ImmCrossProcessStrategy` を除いた（async IMM が `Failed` を返した後の）
+    /// フォールバック選択の名前。`apply_skipping_imm` と同じ走査範囲。
+    fn first_applicable_name_skipping_imm(&self, view: &ImeControlView<'_>) -> &'static str {
+        self.strategies[1..]
+            .iter()
+            .position(|s| s.is_applicable(view))
+            .map_or("None", |i| STRATEGY_NAMES[i + 1])
+    }
+}
+
+/// キャラクタライゼーションテスト用: プリミティブから最小の `ImeControlView` を構築し、
+/// 現状のコードが選択する戦略名を返す（`apply` は実行せず `is_applicable` のみ評価）。
+///
+/// - `active_gji`: `active_ime_kind == GoogleJapaneseInput` かどうか。
+/// - `profile`: `"Standard"` / `"Imm32Unavailable"` / `"TsfNative"` のいずれか。
+/// - `skip_imm`: `true` なら ImmCross を除いた（IMM 失敗後の）フォールバック選択を返す。
+///
+/// 戦略選択は `active_ime_kind` と `profile.can_use_imm32_cross_process()` のみに
+/// 依存するため、`shadow_on` / `belief_input_mode` はここでは選択に影響しない既定値を渡す。
+#[must_use]
+pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) -> &'static str {
+    use crate::focus::class_names::AppImeProfile;
+    use crate::state::ime_decision_view::{ControlLog, FocusFacts, ObservedState};
+
+    let profile = match profile {
+        "Standard" => AppImeProfile::Standard,
+        "Imm32Unavailable" => AppImeProfile::Imm32Unavailable,
+        "TsfNative" => AppImeProfile::TsfNative,
+        other => panic!("unknown profile: {other}"),
+    };
+    let active_ime_kind = if active_gji {
+        ActiveImeKind::GoogleJapaneseInput
+    } else {
+        ActiveImeKind::MicrosoftIme
+    };
+    let view = ImeControlView {
+        focus: FocusFacts { class_name: "", profile },
+        observed: ObservedState { active_ime_kind, ..ObservedState::default() },
+        control: ControlLog { shadow_on: false },
+        belief_input_mode: awase::engine::InputModeState::Unknown,
+    };
+    if skip_imm {
+        CONTROLLER.first_applicable_name_skipping_imm(&view)
+    } else {
+        CONTROLLER.first_applicable_name(&view)
+    }
+}

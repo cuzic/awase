@@ -33,6 +33,11 @@ pub use conv_mode::ConvModeAuthority;
 pub(crate) use conv_mode::{Charset, ConvModeMgr};
 
 pub mod app_ime_policy;
+// 純粋関数モジュール。テストを Linux CI で実行できるよう ungated にするが、唯一の
+// 呼び出し元 runtime/key_pipeline.rs は #[cfg(windows)] のため非 Windows では未使用に
+// なる（ADR-065 と同じ局所抑制パターン）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod conv_classify;
 pub mod force_guard;
 pub mod ime_event;
 pub mod ime_model;
@@ -53,6 +58,9 @@ pub use platform_state::PlatformState;
 pub(crate) mod ime_decision_view;
 #[cfg(windows)]
 pub(crate) use ime_decision_view::{ControlLog, FocusFacts, ImeControlView, ObservedState};
+
+#[cfg(windows)]
+pub(crate) mod key_sequence_policy;
 
 #[cfg(windows)]
 pub mod ime_event_log;
