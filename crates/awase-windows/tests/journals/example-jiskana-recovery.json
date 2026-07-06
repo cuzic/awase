@@ -10,7 +10,8 @@
     "is_roman_reliable": false,
     "expected": {
       "input_mode_update": { "AssumedRomaji": { "reason": "ImmBridgeBroken" } },
-      "engine": { "SetOpen": "RomajiRecovered" }
+      "engine": { "SetOpen": "RomajiRecovered" },
+      "restore_roman": true
     }
   }
 ]

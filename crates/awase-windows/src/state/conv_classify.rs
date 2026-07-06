@@ -38,6 +38,10 @@ pub enum EngineSync {
     DirectInput,
 }
 
+/// ROMAN ビット (IME_CMODE_ROMAN)。`crate::imm` は Windows 専用のため、
+/// Linux でもリプレイ可能なこのモジュールにローカル定義する。
+const CONV_ROMAN_BIT: u32 = 0x0010;
+
 /// idle-conv-check の判断結果。input_mode belief の更新と engine 同期を分離して表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConvTransition {
@@ -46,6 +50,16 @@ pub struct ConvTransition {
     pub input_mode_update: Option<InputModeState>,
     /// engine ON/OFF 同期アクション。
     pub engine: EngineSync,
+    /// JISかな化（ひらがな conv から ROMAN ビットが落ちた）を観測 → ローマ字入力を
+    /// 復元すべきか。awase の engine は romaji VK を出力するため、engine が open の間に
+    /// IME がかな入力になると出力が壊滅する（外部注入 VK_KANA によるかなロック
+    /// トグルで実発生、BUG-08）。呼び出し元は conv 権限 (conv_mutation_allowed) を
+    /// 確認した上で `set_ime_romaji_mode_with_target_async(None)` を送る。
+    ///
+    /// `conv_mode_changed` の遷移時のみ true にする: ROMAN ビットを常に 0 で返す
+    /// 環境（コールドスタート直後等）で毎 idle-check の送信スパムにならないため。
+    #[serde(default)]
+    pub restore_roman: bool,
 }
 
 /// conv ポーリング値・現在の belief・engine 状態から idle-conv-check の同期判断を導く。
@@ -116,9 +130,22 @@ pub fn classify_conv_transition(
         }
     };
 
+    // JISかな化検出: ひらがな（NATIVE、非カタカナ）conv で ROMAN ビットが落ちる
+    // 「変化」を engine open 中に観測したらローマ字入力の復元を要求する。
+    // - conv_mode_changed 必須: steady-state の ROMAN=0（常時 0 を返す環境）で
+    //   スパムしない。復元が効かない環境では conv が変化しなくなるだけで無害。
+    // - !is_cold 必須: コールドスタート期間の ROMAN ビットは未確定のため無視。
+    let restore_roman = conv_mode_changed
+        && !is_cold
+        && has_native
+        && !has_katakana
+        && (conv & CONV_ROMAN_BIT) == 0
+        && effective_open;
+
     ConvTransition {
         input_mode_update,
         engine,
+        restore_roman,
     }
 }
 
@@ -439,9 +466,74 @@ mod tests {
                                 _ => assert!(!open),
                             }
                         }
+                        // restore_roman は「ひらがな・非カタカナ・ROMANなし・engine open・
+                        // conv 変化あり」でのみ発火する不変条件。
+                        if t.restore_roman {
+                            assert!(changed && open);
+                            assert_eq!(conv & ROMAN, 0);
+                            assert!(!ConvMode::from_u32(conv).is_eisu());
+                            assert!(!ConvMode::from_u32(conv).charset.is_katakana());
+                        }
                     }
                 }
             }
         }
+    }
+
+    // ── JISかな化 → ローマ字入力復元（restore_roman, BUG-08）───────────────────────
+
+    /// BUG-08 実機再現: 外部注入 VK_KANA で GJI が Hiragana/roma → Hiragana/kana に
+    /// 反転（conv 0x0019 → 0x0009）。belief は ObservedRomaji のまま変更なしだが、
+    /// engine open 中の ROMAN 喪失遷移としてローマ字入力の復元を要求する。
+    #[test]
+    fn jiskana_transition_while_open_requests_restore_roman() {
+        let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, true, true);
+        assert_eq!(t.input_mode_update, None, "is_roman_reliable=false では downgrade しない");
+        assert_eq!(t.engine, EngineSync::None);
+        assert!(t.restore_roman, "JISかな化遷移 + engine open → ローマ字入力復元");
+    }
+
+    /// steady-state（conv 変化なし）の JISかな conv では復元を要求しない
+    /// （ROMAN ビットを常に 0 で返す環境での送信スパム防止）。
+    #[test]
+    fn jiskana_steady_state_does_not_spam_restore() {
+        let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, true, false);
+        assert!(!t.restore_roman);
+    }
+
+    /// engine が閉じている（IME OFF 相当の belief）なら復元しない —
+    /// ユーザーが awase を使っていない文脈の conv には干渉しない。
+    #[test]
+    fn jiskana_while_closed_does_not_restore() {
+        let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, false, true);
+        assert!(!t.restore_roman);
+    }
+
+    /// コールドスタート期間（ROMAN ビット未確定）は復元しない。
+    #[test]
+    fn jiskana_cold_start_does_not_restore() {
+        let t = classify_conv_transition(
+            CONV_JISKANA,
+            InputModeState::ObservedRomaji,
+            true, // is_cold
+            true,
+            true,
+            false,
+        );
+        assert!(!t.restore_roman);
+    }
+
+    /// ROMAN 付きひらがな（正常状態）では発火しない。
+    #[test]
+    fn hiragana_with_roman_does_not_restore() {
+        let t = classify(CONV_HIRAGANA, InputModeState::ObservedRomaji, true, true);
+        assert!(!t.restore_roman);
+    }
+
+    /// カタカナ conv は restore_roman の対象外（imm_conv_target 系の warmup が担当）。
+    #[test]
+    fn katakana_without_roman_does_not_restore() {
+        let t = classify(CONV_ZENKATA, InputModeState::ObservedRomaji, true, true);
+        assert!(!t.restore_roman);
     }
 }

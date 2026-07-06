@@ -412,6 +412,32 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             slot.store(new_value, Ordering::Relaxed);
         }
     }
+    // VK_KANA down/up は OS のかなロックをトグルし、GJI/MS-IME がローマ字入力→JISかな
+    // 入力に反転して NICOLA の romaji VK 出力が壊滅する（2026-07-06 実機: down→up
+    // 135µs〜1ms の合成 VK_KANA ペアが 2 回到達し Windows Terminal が JISかな化。
+    // docs/known-bugs.md BUG-08。注入元は未特定）。
+    // - LLKHF_INJECTED 付き（SendInput 由来・awase 自身のマーカーなし）: swallow する。
+    // - フラグなし（物理押下 or ドライバレベル注入）: 従来どおり通すが、注入元特定の
+    //   ため必ず INFO ログを残す（VK_KANA は稀なキーなのでログコストは無視できる）。
+    //   通した結果 JISかな化しても idle-conv-check の restore_roman が復元する。
+    if vk == crate::vk::VK_KANA {
+        let dir = if is_keydown { "down" } else { "up" };
+        if is_injected {
+            log::info!(
+                "[hook] foreign-injected VK_KANA {dir} を swallow\
+                 （kana-lock 汚染防止, scan=0x{:X}, extra=0x{:X}）",
+                kb.scanCode,
+                kb.dwExtraInfo,
+            );
+            return LRESULT(1);
+        }
+        log::info!(
+            "[hook] VK_KANA {dir} 到達 (injected=false, scan=0x{:X}, extra=0x{:X}) \
+             — かなロックをトグルする可能性 (BUG-08 注入元調査ログ)",
+            kb.scanCode,
+            kb.dwExtraInfo,
+        );
+    }
     // CTRL_CONSUMED チェックと classify_key で共用するため先に取得する。
     let config = cached_hook_config();
     // Ctrl consumption tracking

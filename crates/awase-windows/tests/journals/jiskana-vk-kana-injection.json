@@ -1,0 +1,17 @@
+[
+  {
+    "name": "vk_kana_injection_flips_gji_to_jiskana_restore_roman",
+    "note": "BUG-08 実機再現（2026-07-06T04:15 ログ）。外部注入（LLKHF_INJECTED、down→up 135µs）の VK_KANA ペアがパススルーされ、かなロックのトグルで GJI が Hiragana/roma → Hiragana/kana に反転（conv 0x0019 → 0x0009）。belief は ObservedRomaji のまま（is_roman_reliable=false のため downgrade しない）で修正前は誰も復元せず、engine の romaji VK 出力（例: ko → [4B,4F]）が JISかな解釈されて壊滅した。あるべき出力: engine open 中の ROMAN 喪失遷移として restore_roman=true（key_pipeline が set_ime_romaji_mode_with_target_async で復元する）。注入元対策として hook 側でも foreign-injected VK_KANA を swallow する（hook.rs）。",
+    "conv": 9,
+    "current": "ObservedRomaji",
+    "is_cold": false,
+    "effective_open": true,
+    "conv_mode_changed": true,
+    "is_roman_reliable": false,
+    "expected": {
+      "input_mode_update": null,
+      "engine": "None",
+      "restore_roman": true
+    }
+  }
+]

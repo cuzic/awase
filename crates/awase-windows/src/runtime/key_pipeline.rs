@@ -385,6 +385,23 @@ impl Runtime {
         // Apply(2): engine 同期を 1 経路で dispatch する（従来 5 箇所の
         // handle_engine_set_open をここに集約）。
         self.kp_apply_conv_engine_sync(transition.engine, conv, now_tick);
+
+        // Apply(3): JISかな化（ROMAN ビット喪失遷移）→ ローマ字入力の復元（BUG-08）。
+        // 外部注入 VK_KANA 等でかなロックがトグルされると GJI/MS-IME がかな入力に
+        // 反転し、engine の romaji VK 出力が壊滅する。awase が conv を所有する
+        // ウィンドウ（conv_mutation_allowed）でのみ、非同期・冪等に ROMAN を立て直す。
+        if transition.restore_roman && self.platform.output.conv_mutation_allowed.get() {
+            log::info!(
+                "[idle-conv-check] JISかな化を検出 (conv=0x{conv:08X}, ROMAN 喪失) → \
+                 ローマ字入力を復元"
+            );
+            win32_async::spawn_local(async {
+                let ok = crate::ime::set_ime_romaji_mode_with_target_async(None).await;
+                if !ok {
+                    log::warn!("[idle-conv-check] ローマ字入力復元に失敗 (IMC_SETCONVERSIONMODE)");
+                }
+            });
+        }
     }
 
     /// idle-conv-check の engine 同期を単一経路で適用する。
