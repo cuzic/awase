@@ -299,22 +299,36 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
     app.panic_reset();
 }
 
-/// WM_IME_KIND_CHANGED ハンドラ
+/// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。
 ///
-/// GJI モニタースレッドが IME 種別の変化（GJI 検出 / 消失）を検知したときに呼ばれる。
-/// `Output` のウォームアップ戦略を現在の IME 種別に合わせて切り替える。
-pub(crate) unsafe fn handle_wm_ime_kind_changed(app: &mut Runtime) {
-    let kind = crate::tsf::observer::tsf_obs().active_ime_kind();
-    log::info!("[runtime] WM_IME_KIND_CHANGED received: IME kind → {kind:?}");
+/// IME 種別に依存する副作用の**単一の合流点**。呼び出し元は2つ:
+/// - [`handle_wm_ime_kind_changed`] — gji-monitor の CLSID 検出変化時（通常経路）
+/// - `run_message_loop` 起動時の pull 同期 — gji-monitor がメッセージループ開始前に
+///   post した初回 `WM_IME_KIND_CHANGED` が消失するレースの保険（BUG-09）。
+///   実機では保険経路だけが走るケースが常態のため、副作用をここに集約しないと
+///   「戦略は切り替わるのに割当てチェックが走らない」片肺になる（2026-07-06 実発生）。
+pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
+    let obs = crate::tsf::observer::tsf_obs();
+    let kind = obs.active_ime_kind();
+    let detected = obs.ime_kind_detected();
+    log::info!("[runtime] IME kind sync ({source}): {kind:?} (detected={detected})");
     app.platform.output.set_active_ime_kind(kind);
 
     // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
     // 競合し belief 乖離を起こす）をチェックして解除を案内する
     // （ポップアップは同一内容につき一度、内容が変われば再警告）。
-    // GJI 利用中は MS-IME 設定と競合しないためスキップ。
-    if matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
+    // detected を見るのは、未検出時の active_ime_kind() が安全デフォルトとして
+    // MicrosoftIme を返すため — これを見ないと GJI ユーザーの起動時にも誤発動する。
+    if detected && matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
         crate::msime_key_assignment::check_and_warn();
     }
+}
+
+/// WM_IME_KIND_CHANGED ハンドラ
+///
+/// GJI モニタースレッドが IME 種別の変化（GJI 検出 / 消失）を検知したときに呼ばれる。
+pub(crate) unsafe fn handle_wm_ime_kind_changed(app: &mut Runtime) {
+    sync_ime_kind_from_observation(app, "WM_IME_KIND_CHANGED");
 }
 
 /// WM_DUPLICATE_INSTANCE ハンドラ

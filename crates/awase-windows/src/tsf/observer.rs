@@ -278,6 +278,15 @@ impl TsfObservations {
         }
     }
 
+    /// CLSID ベース IME 種別が一度でも検出済みか。
+    ///
+    /// `false` の間、[`Self::active_ime_kind`] は安全デフォルト（`MicrosoftIme`）を
+    /// 返している。「実際に MS-IME と検出されたか」を区別したい呼び出し元
+    /// （MS-IME キー割当てチェック等）はこれを併用すること。
+    pub(crate) fn ime_kind_detected(&self) -> bool {
+        self.tsf_active_kind.load(Ordering::Acquire) != 0
+    }
+
     /// CLSID ベース IME 種別を更新する。値が変化した場合 `true` を返す。
     ///
     /// GJI ↔ MS-IME の動的切り替えに対応するため、値は常に上書きされる。

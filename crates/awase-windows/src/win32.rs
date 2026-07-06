@@ -50,9 +50,14 @@ pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
     let tid = crate::engine_thread_id();
     if tid == 0 {
         // メッセージループ開始前（run_message_loop が TID を設定する前）。
-        // この時点で呼び出せるのは初期化中の main スレッド自身に限られるため、
-        // 自スレッドのキューへの投函（旧動作）が正しい。キューは PostMessageW 自身が
-        // 生成し、ループ開始後に取り出される。
+        // main スレッド自身からの呼び出しなら自スレッドキューへの投函で正しく届く
+        // （キューは PostMessageW 自身が生成し、ループ開始後に取り出される）。
+        // 注意: **ワーカースレッド（gji-io-monitor 等）からこの窓で呼ぶと、投函先が
+        // 呼び出し元スレッドのキューになりメッセージは静かに消失する**（monitor は
+        // メッセージポンプを持たない）。gji-monitor の初回 WM_IME_KIND_CHANGED が
+        // まさにこのレースを踏むため、run_message_loop 先頭の
+        // `sync_ime_kind_from_observation("startup pull sync")` が保険として
+        // 同じ副作用を pull 実行する（BUG-09、2026-07-06 実機で消失を確認）。
         // SAFETY: msg はプロセス定義のカスタムメッセージ ID。
         let _ = unsafe {
             windows::Win32::UI::WindowsAndMessaging::PostMessageW(
