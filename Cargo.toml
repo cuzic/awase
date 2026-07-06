@@ -5,6 +5,7 @@ members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker",
 libraries = [
     { path = "lints/no_vk_as_scan" },
     { path = "lints/ime_event_guard" },
+    { path = "lints/observation_source_guard" },
 ]
 
 [package]
