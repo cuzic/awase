@@ -1,6 +1,6 @@
 # awase 既知の不具合
 
-> 最終更新: 2026-07-02
+> 最終更新: 2026-07-06
 
 ---
 
@@ -176,6 +176,53 @@ stale な warm 状態が有効と誤判定される。~~
 ~~**実用上の影響:** u32::MAX ≈ 42億回の切り替えが必要なため、実用上は発生しない。~~
 
 **関連ファイル:** `tsf/probe.rs` (`WarmEpoch`)
+
+---
+
+## BUG-07: Edge/Chrome フォーカス約500ms後に Engine が必ず OFF になる（偽 FocusProbe 観測）
+
+**症状:** MS Edge / Chrome（`Chrome_WidgetWin_1`、Imm32Unavailable プロファイル）に
+フォーカスすると、実 IME は ON のまま awase の belief だけが false になり、フォーカスの
+約 500ms 後（ポーリング1周期後）に `Engine deactivated (reason=Inactive(ImeOff))`。
+以後キーがローマ字のままパススルーされる。ユーザーが同期キーで明示 ON し直すまで回復しない。
+フォーカス変更のたびに再発する。
+
+**原因:** `ce45b82`（2026-05-27、Win+X メニューの1文字ショートカットが NICOLA 変換される
+バグの修正）が、`settle_tsf_gate_after_refresh()` の bypass 確定パス（非 ForceTsf ウィンドウ）
+で **probe を実行していないのに** `write_focus_probe(false)` を毎リフレッシュ注入していた。
+コミット本文の前提「非TSFウィンドウには日本語IMEが存在しない」が誤り:
+Edge/Chrome は非TSF注入（injection=Unicode）だが日本語 IME は有効。
+
+因果連鎖（2026-07-06 の実ログで確認）:
+
+1. Edge フォーカス（07.269）: FocusChanged で観測クリア、desired=true → belief=true、Engine activated
+2. 1回目 refresh 完了直後: `settle_tsf_gate_after_refresh` が**ログなしで** FocusProbe(Low, false) を注入
+3. Imm32Unavailable は Blacklist（実観測経路ゼロ）のため、偽 Low false が
+   `most_recent_trusted()` フォールバックで `effective_open()` を支配（Medium/High の訂正が来ない）
+4. 2回目 refresh（+500ms、07.773）: belief=false を読み Engine deactivated →
+   さらに SetOpen(false) を dispatch し 0x1A を送信（実 IME は無反応で ON のまま → 乖離固定）
+5. first-key FocusProbe が shadow 値 false を代替観測としてエコー、HwndCache も false を保存
+   → 自己強化
+
+一般アプリで顕在化しないのは、ObserverPoll/ImmCrossProbe の実観測（Medium/High）が
+偽 Low を上書きするため。**実観測経路を持たない Imm32Unavailable でのみ** Low が belief を
+支配する。前日の ObservedEisu 循環デッドロック修正（input_mode 側）とは独立の経路で、
+そちらを直しても本症状が残った理由。
+
+**修正:** `write_focus_probe(false)` を撤去（ce45b82 の実質 revert）。ce45b82 の元バグ
+（Win+X メニュー）は、現在は `classify.rs` の既知 NonText クラス判定
+（`XamlExplorerHostIslandWindow`）+ `message_handlers.rs` の NonText パススルーが
+belief と独立に防ぐため再発しない。ime-belief-architecture 規約の禁止パターン2
+（観測の偽装）の実例であり、`tests/architecture_guard.rs::focus_probe_observation_is_limited_to_real_probe_path`
+が `write_focus_probe` の呼び出し箇所を実 probe 経路（`key_pipeline.rs` の1箇所）に固定して
+再発を防止する。
+
+**関連ファイル:** `runtime/mod.rs` (`settle_tsf_gate_after_refresh`),
+`state/observation_store.rs` (`most_recent_trusted`), `runtime/key_pipeline.rs` (`apply_effective_ime`)
+
+**修正履歴:**
+- `ce45b82` (2026-05-27): 偽観測を導入（Win+X 対策としては当時有効だったが前提が誤り）
+- 2026-07-06: 偽観測撤去 + architecture_guard 追加（本修正）
 
 ---
 

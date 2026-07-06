@@ -61,3 +61,28 @@ awase の IME ON/OFF 制御・warmup・focus 分類まわりは、Windows / IME 
 - 反転が 6 回続いた根本は、キー選択（対症）と spurious apply の抑制（根治）が
   絡み合っていたこと。最終的に `489cdf1` で「キー冪等化 + candidate_was_seen リセット」
   の両輪が揃って収束した。
+
+---
+
+## エントリ 02: 「非TSFウィンドウ = 日本語IMEなし」という前提の偽 FocusProbe(false) 注入
+
+**背景**: Win+X メニューで1文字ショートカットが NICOLA 変換される（P→'，'）バグに対し、
+TsfGate の bypass 確定時に `write_focus_probe(false)` で belief を強制 OFF する対策が
+取られた。詳細は [docs/known-bugs.md BUG-07](known-bugs.md)。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-05-27 | 非TSFウィンドウには日本語IMEが無いので bypass 確定時に belief を false に固定してよい | Win+X メニュー × MS-IME | bypass_tsf() 前に `write_focus_probe(false)` を注入 | Win+X の誤変換は解消（当時） | 採用（この時点） | `ce45b82` |
+| 2026-07-06 | ↑の前提が誤り。Edge/Chrome は非TSF注入だが日本語IME有効で、実観測経路ゼロのため偽 Low false が belief を支配する | MS Edge (Chrome_WidgetWin_1) × MS-IME × フォーカス直後 | `write_focus_probe(false)` を撤去（実質 revert）+ architecture_guard で呼び出し箇所を実 probe 経路に固定 | Edge フォーカス約500ms後の Engine 必 OFF が解消（実機検証待ち）。Win+X は既知 NonText クラス + NonText パススルーで保護継続 | 撤回(revert) | （本修正） |
+
+**学び**:
+
+- 「このウィンドウ種別に IME は無いはず」という推測を observation として書くのは
+  ime-belief-architecture 規約の禁止パターン2（観測の偽装）。推測は
+  `HeuristicDefault + Low`、キーを処理させたくないだけなら `FocusKind::NonText` を使う。
+- 偽観測は**実観測経路を持つアプリでは無害に見える**（Medium/High が上書きするため）。
+  被害が Imm32Unavailable に限定されるせいで1ヶ月以上潜伏し、別バグ（ObservedEisu
+  循環デッドロック）の修正後も症状が残ることで初めて発見された。
+- `dispatch_event` はジャーナルに全イベントを残すが DEBUG ログには出さない。
+  「ログに書き込みが見えないのにbeliefが反転する」場合はジャーナルか、ログを出さない
+  dispatch 呼び出し元を疑う。
