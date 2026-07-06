@@ -8,7 +8,7 @@ All notable changes to this project will be documented in this file.
 
 ### 新機能
 
-- **親指キーの選択肢に F13-F24 を追加** ([81cac92](https://github.com/cuzic/awase/commit/81cac92))
+- **親指キーの選択肢に F13-F24 を追加** ([8951418](https://github.com/cuzic/awase/commit/8951418))
   - プログラマブルキーボード（QMK/ZMK 等）で親指位置に F13-F24 を割り当てているユーザー向け
   - `VkCode::from_name` にも VK_F13〜VK_F24 のパースを追加
 
