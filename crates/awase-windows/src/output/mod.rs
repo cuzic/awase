@@ -114,6 +114,9 @@ pub struct Output {
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
     /// `Platform::set_conv_mode_authority` が `allows_conv_mutation()` の結果を push する。
     pub(crate) conv_mutation_allowed: std::cell::Cell<bool>,
+    /// JISかな化からのローマ字入力復元（BUG-08 Apply(3)）を最後に送った時刻
+    /// （`GetTickCount64` 由来）。steady-state 検出のレート制限に使う。
+    pub(crate) last_roman_restore_ms: std::cell::Cell<u64>,
     /// Output → Runtime の遅延リクエストを蓄積するアウトボックス。
     ///
     /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
@@ -181,6 +184,7 @@ impl Output {
             ime_mode_focus_gen: std::cell::Cell::new(0),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
+            last_roman_restore_ms: std::cell::Cell::new(0),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
         }
     }
@@ -435,6 +439,14 @@ impl Output {
     /// - MS-IME → `MsImeStrategy`（常に warm、probe なし）
     /// - GJI → `GjiFsm`（cold probe 機構あり、起動時と同じ）
     ///
+    /// 現在の warmup 戦略が F2 (VK_DBE_HIRAGANA) を自前送信するか（= GJI 戦略か）。
+    ///
+    /// `PhysicalKeyDisposition::plan` の F2 Suppress 判断に使う。false（MsImeStrategy）
+    /// のとき物理 F2 を Suppress すると、代替送信が無いため IME ON にならない（BUG-10）。
+    pub(crate) fn f2_warmup_owned(&self) -> bool {
+        self.warmup_coord.needs_f2_probe()
+    }
+
     /// `WM_IME_KIND_CHANGED` がメインスレッドで受信されたときに呼ぶこと。
     pub(crate) fn set_active_ime_kind(&self, kind: crate::tsf::observer::ActiveImeKind) {
         self.warmup_coord.set_active_ime_kind(kind);

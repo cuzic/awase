@@ -386,11 +386,22 @@ impl Runtime {
         // handle_engine_set_open をここに集約）。
         self.kp_apply_conv_engine_sync(transition.engine, conv, now_tick);
 
-        // Apply(3): JISかな化（ROMAN ビット喪失遷移）→ ローマ字入力の復元（BUG-08）。
+        // Apply(3): JISかな化（ひらがな conv で ROMAN 無し）→ ローマ字入力の復元（BUG-08）。
         // 外部注入 VK_KANA 等でかなロックがトグルされると GJI/MS-IME がかな入力に
         // 反転し、engine の romaji VK 出力が壊滅する。awase が conv を所有する
         // ウィンドウ（conv_mutation_allowed）でのみ、非同期・冪等に ROMAN を立て直す。
-        if transition.restore_roman && self.platform.output.conv_mutation_allowed.get() {
+        //
+        // レート制限: classify は steady-state の JISかな conv でも復元を要求する
+        // （変化検出は別経路が先に消費するため頼れない）ので、送信間隔をここで抑える。
+        // 復元が成功すれば次回 conv=ROMAN 付きになり要求自体が止まる。復元が効かない
+        // 環境でも最悪この間隔で IMC_SETCONVERSIONMODE を打つだけ（冪等・非同期）。
+        const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
+        if transition.restore_roman
+            && self.platform.output.conv_mutation_allowed.get()
+            && now_tick.saturating_sub(self.platform.output.last_roman_restore_ms.get())
+                >= ROMAN_RESTORE_MIN_INTERVAL_MS
+        {
+            self.platform.output.last_roman_restore_ms.set(now_tick.0);
             log::info!(
                 "[idle-conv-check] JISかな化を検出 (conv=0x{conv:08X}, ROMAN 喪失) → \
                  ローマ字入力を復元"
@@ -665,8 +676,18 @@ impl Runtime {
         // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
         let profile = self.platform.current_app_profile();
         let is_tsf_mode = self.platform.is_tsf_mode();
-        let physical =
-            crate::runtime::PhysicalKeyDisposition::plan(event, profile, shadow_toggled, is_tsf_mode);
+        // F2 (VK_DBE_HIRAGANA) を Suppress してよいのは、warmup 戦略が F2 を自前送信
+        // （GJI: needs_f2_probe=true）して物理キーの代替になる場合のみ。MsImeStrategy は
+        // F2 warmup を送らないため、Suppress すると物理ひらがなキーが食い逃げされて
+        // IME ON にならない（BUG-10）。
+        let f2_warmup_owned = self.platform.output.f2_warmup_owned();
+        let physical = crate::runtime::PhysicalKeyDisposition::plan(
+            event,
+            profile,
+            shadow_toggled,
+            is_tsf_mode,
+            f2_warmup_owned,
+        );
         if physical == crate::runtime::PhysicalKeyDisposition::Suppress {
             let reason = if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
                 "tsf-f2"
