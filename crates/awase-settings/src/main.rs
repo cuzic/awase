@@ -774,9 +774,11 @@ impl eframe::App for SettingsApp {
             ui.add_space(6.0);
         });
 
-        // Main content（残り領域全体をスクロール可能に）
+        // Main content（残り領域全体を縦横スクロール可能に）。
+        // 横スクロールも有効にすることで、ウィンドウ幅が狭くても keymap 行や
+        // プレビューのキーボード図の右端に到達できる（どんなサイズでも全項目操作可能）。
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::both()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| match self.active_tab {
                     Tab::Basic => self.tab_basic(ui),
