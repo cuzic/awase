@@ -109,6 +109,23 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>変更</h3>
+<ul>
+<li><strong>実測学習した IMM32 能力をフォーカスプロファイル判定に配線</strong>（到達不能パス監査 B5）<ul>
+<li><code>ImmCapabilityStore</code>（<code>ImmGetDefaultIMEWnd</code>=NULL 検出・IME 検出ミス閾値超えから学習し cache.toml に永続化）は従来、学習・保存するだけで挙動を変える消費者が存在しなかった</li>
+<li>フォーカス更新時、静的分類が <code>Standard</code> かつ学習値が <code>Unavailable</code> のクラスを <code>Imm32Unavailable</code> に降格するようにした（静的リスト未掲載の IMM-broken アプリで無駄な <code>SendMessageTimeoutW</code> を踏まなくなる）</li>
+<li>昇格方向は行わない（静的な Imm32 不可 / TSF ネイティブ知識を優先）。<code>Works</code> 回復学習で降格は自己解除。降格は <code>[imm-learning] profile 降格</code> の INFO ログで監査可能、誤学習は cache.toml の <code>[imm_capability]</code> を手編集で解除</li>
+<li>注意: 既存の cache.toml に蓄積済みの学習エントリが即座に有効になる。想定外の降格が起きたらログを確認すること</li>
+</ul>
+</li>
+<li><strong>到達不能パス監査（2026-07-06、5 観点並列）に基づくクリーンアップ</strong><ul>
+<li>孤児 WM ハンドラ 2 件（<code>WM_PROCESS_DEFERRED</code> / <code>WM_IME_KEY_DETECTED</code>）、構築サイトゼロの enum variant 群（<code>ImeEffect::RequestRefresh</code>、<code>ActivationState::Pending</code>+<code>PendingReason</code>、<code>InactiveReason::NonTextFocus</code>、<code>DecisionOrigin</code>、<code>DetectionSource::UiaAsync</code>、<code>ConvModeAuthority::TemporarilyUnowned</code>、<code>ColdReason::SessionExpired</code>、<code>ChordKind::CtrlHenkanImeOn</code>+<code>ImeEvent::ChordStarted</code>）を撤去</li>
+<li>空振りしていた event-driven wakeup 機構（<code>win32-async::AtomicWatcher</code> + <code>notify_all</code>、write-only の <code>composition_probe</code> カウンタ）を撤去（待機はポーリング方式に置換済みだった）</li>
+<li>恒偽条件の簡約（<code>used_eager_path</code>）、恒真化していた <code>EffectOrigin</code>/<code>SetOpen.origin</code> の畳み込み、dead write（<code>GjiState::OnCold.saw_native_f2</code>）の除去</li>
+<li>いずれもリポジトリ全体 grep と証拠鎖の個別検証で「実行時に存在しない値/通らない経路」を確認済み。挙動変更なし</li>
+</ul>
+</li>
+</ul>
 <h3>バグ修正</h3>
 <ul>
 <li><strong>MS-IME cold start — IME ON 直後の先頭文字リテラル化を修正（BUG-13、「を」→「wお」）</strong><ul>
