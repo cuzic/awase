@@ -21,6 +21,7 @@
 //! | Decision 経由 `SetOpen(true)`（`kp_stage_post_decision`） | `InputModeApplyStrategy::PostSetOpenEisuReset` | [`eisu_reset_on_ime_on`] |
 //! | 物理 IME キー / SyncKey shadow toggle OFF→ON（`kp_stage_shadow_ime_toggle`） | `InputModeApplyStrategy::UserImeOnEisuReset` | [`eisu_reset_on_ime_on`] |
 //! | refresh force-ON（`apply_force_on_for_imm_broken`） | `InputModeApplyStrategy::ImmBrokenCorrection`（ObservedEisu は eisu guard で意図的に対象外 — 受動的経路がユーザーの英数選択を踏み潰さないため） | `correction_for_imm_broken` |
+//! | Blacklist typing 中の GJI I/O 観測（`ir_stage_observe`） | `ObservationSource::GjiIoInference`（こちらは真正の外部観測なので `InputModeObserved`） | [`gji_io_eisu_correction`] |
 //!
 //! この表と実装の対称性は `tests/architecture_guard.rs` の
 //! `user_ime_on_paths_are_paired_with_eisu_reset` が監視する。
@@ -57,6 +58,31 @@ pub fn eisu_reset_on_ime_on(
     (ime_turned_on && mode == InputModeState::ObservedEisu).then_some(
         InputModeState::AssumedRomaji {
             reason: AssumedReason::AppKindExcluded,
+        },
+    )
+}
+
+/// フォーカス後の GJI I/O 観測による stale `ObservedEisu` 救済判定。
+///
+/// Blacklist アプリで GJI がフォーカス後に実際に変換 I/O をしている
+/// （= 英数モードではあり得ない）ことが確認できた場合のみ、
+/// `AssumedRomaji { ImmBridgeBroken }` への訂正値を返す。
+/// これは awase 自身の先読みではなく真正の外部観測なので、呼び出し元は
+/// `InputModeObserved { source: GjiIoInference, confidence: Medium }` で dispatch すること。
+/// 方向は `ObservedEisu → AssumedRomaji` の一方通行のみ（他モードには触れない）。
+///
+/// # 引数
+/// - `gji_io_after_focus`: フォーカス変更より後の GJI I/O が確認できたか
+///   （`observe_gji_after_focus` の observer_poll=true と同じ条件）。
+/// - `mode`: 現在の `input_mode` belief。
+#[must_use]
+pub fn gji_io_eisu_correction(
+    gji_io_after_focus: bool,
+    mode: InputModeState,
+) -> Option<InputModeState> {
+    (gji_io_after_focus && mode == InputModeState::ObservedEisu).then_some(
+        InputModeState::AssumedRomaji {
+            reason: AssumedReason::ImmBridgeBroken,
         },
     )
 }
@@ -106,5 +132,36 @@ mod tests {
         // 担当領域。この関数は ObservedEisu 固着の救済に限定する。
         assert_eq!(eisu_reset_on_ime_on(true, InputModeState::ObservedKana), None);
         assert_eq!(eisu_reset_on_ime_on(true, InputModeState::Unknown), None);
+    }
+
+    // ── gji_io_eisu_correction ──
+
+    #[test]
+    fn gji_io_corrects_eisu_with_imm_bridge_broken_reason() {
+        assert_eq!(
+            gji_io_eisu_correction(true, EISU),
+            Some(InputModeState::AssumedRomaji {
+                reason: AssumedReason::ImmBridgeBroken
+            })
+        );
+    }
+
+    #[test]
+    fn gji_io_correction_requires_confirmed_io() {
+        assert_eq!(gji_io_eisu_correction(false, EISU), None);
+    }
+
+    #[test]
+    fn gji_io_correction_is_one_way_eisu_only() {
+        // ObservedEisu 以外には触れない（逆方向・他モードの推定はしない）
+        assert_eq!(
+            gji_io_eisu_correction(true, InputModeState::ObservedRomaji),
+            None
+        );
+        assert_eq!(
+            gji_io_eisu_correction(true, InputModeState::ObservedKana),
+            None
+        );
+        assert_eq!(gji_io_eisu_correction(true, InputModeState::Unknown), None);
     }
 }

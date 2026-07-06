@@ -82,8 +82,9 @@ impl PerSourceObservations {
             ObservationSource::HwndCache => self.hwnd_cache.as_ref(),
             ObservationSource::ImmCrossProbe => self.imm_cross_probe.as_ref(),
             ObservationSource::HeuristicDefault => self.heuristic_default.as_ref(),
-            // ConvBitsInference は input_mode 専用ソースで ON/OFF 観測としては記録されない。
-            ObservationSource::ConvBitsInference => None,
+            // ConvBitsInference / GjiIoInference は input_mode 専用ソースで
+            // ON/OFF 観測としては記録されない。
+            ObservationSource::ConvBitsInference | ObservationSource::GjiIoInference => None,
         }
     }
 
@@ -98,9 +99,10 @@ impl PerSourceObservations {
             ObservationSource::HwndCache => self.hwnd_cache = Some(obs),
             ObservationSource::ImmCrossProbe => self.imm_cross_probe = Some(obs),
             ObservationSource::HeuristicDefault => self.heuristic_default = Some(obs),
-            // ConvBitsInference は InputModeObserved 専用ソースで ObserverReported（ON/OFF 観測）
-            // としては dispatch されないため、この store には記録されない。
-            ObservationSource::ConvBitsInference => {}
+            // ConvBitsInference / GjiIoInference は InputModeObserved 専用ソースで
+            // ObserverReported（ON/OFF 観測）としては dispatch されないため、
+            // この store には記録されない。
+            ObservationSource::ConvBitsInference | ObservationSource::GjiIoInference => {}
         }
     }
 

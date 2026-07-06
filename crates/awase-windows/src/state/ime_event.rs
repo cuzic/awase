@@ -98,6 +98,15 @@ pub enum ObservationSource {
     /// 偽装になる。conv の読み取り自体は直接 API 成功なので confidence は `High` で扱うが、
     /// 「何を観測したか」を正直に表すためソースを分離する。
     ConvBitsInference,
+    /// GJI プロセス I/O 活動からの input_mode 推定。
+    ///
+    /// Blacklist (Imm32Unavailable) アプリではフォーカス後の GJI I/O だけが
+    /// 「IME が実際に変換動作をしている = 英数モードではない」ことの真正の
+    /// 外部証拠になる（IMM query はスキップ、idle-conv-check は TsfNative 限定）。
+    /// `ConvBitsInference` と同じく「何を観測したか」を正直に命名する。
+    /// I/O 活動は間接観測のため confidence は `Medium`、方向は
+    /// `ObservedEisu → AssumedRomaji` の一方通行のみ（逆方向の推定はしない）。
+    GjiIoInference,
     /// TSF observer 由来
     Tsf,
     /// per-HWND IME キャッシュからの復元

@@ -96,6 +96,10 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
         // belief を書き換えるバグの温床だったため撤去済み（フォーカス変更直後の読み取りは
         // ユーザー意図の signal ではない。conv_mode/prev_conversion_mode の追跡のみ残す）。
         ("src/runtime/key_pipeline.rs", 2),
+        // GjiIoInference: Blacklist で GJI I/O 確認中の ObservedEisu 矛盾訂正
+        // （フォーカス後の GJI プロセス I/O という真正の外部観測。Medium confidence、
+        // ObservedEisu→AssumedRomaji の一方通行のみ）。
+        ("src/runtime/ime_refresh.rs", 1),
     ];
     for (path, expected) in known_sites {
         let content = read_crate_file(path);

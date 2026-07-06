@@ -136,16 +136,49 @@ impl Runtime {
             ImeReadStrategy::SkipTyping => {}
             ImeReadStrategy::Blacklist => {
                 log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
-                let obs = crate::observer::gji_observer::observe_gji_after_focus(
-                    self.platform_state.focus.last_focus_change_ms,
-                );
-                log::debug!("[stage-observe] observer_poll={:?}", obs.observer_poll_value);
-                if let Some(v) = obs.observer_poll_value {
-                    let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                    let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
-                        self.platform_state.focus.focus_epoch,
+                // GJI I/O 観測は active IME が GJI のときに限定する。MS-IME 使用中も
+                // GJI Converter プロセスは常駐しており、そのバックグラウンド I/O を
+                // 根拠に observer_poll を書くと無関係な belief 汚染になる。
+                if crate::tsf::observer::tsf_obs().active_ime_kind()
+                    == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+                {
+                    let obs = crate::observer::gji_observer::observe_gji_after_focus(
+                        self.platform_state.focus.last_focus_change_ms,
+                        self.platform_state.ime.input_mode(),
                     );
-                    self.platform_state.ime.write_observer_poll(v, tick_ms, accepted);
+                    log::debug!("[stage-observe] observer_poll={:?}", obs.observer_poll_value);
+                    if let Some(v) = obs.observer_poll_value {
+                        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+                        let accepted =
+                            crate::state::probe_admission::AcceptedObservation::for_sync(
+                                self.platform_state.focus.focus_epoch,
+                            );
+                        self.platform_state.ime.write_observer_poll(v, tick_ms, accepted);
+                    }
+                    // stale ObservedEisu の矛盾証拠（GJI が変換 I/O 中 = 英数ではない）。
+                    // Blacklist では他に input_mode を訂正する観測経路がないため、
+                    // これが唯一のユーザー操作不要の自己回復経路になる
+                    // （state/eisu_recovery.rs の経路×救済対応表を参照）。
+                    if let Some(mode) = obs.input_mode_correction {
+                        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+                        log::info!(
+                            "[stage-observe] GJI I/O 中に belief=ObservedEisu → AssumedRomaji \
+                             訂正 (GjiIoInference)"
+                        );
+                        self.platform_state.ime.dispatch_event(
+                            crate::state::ime_event::ImeEvent::InputModeObserved {
+                                mode,
+                                source:
+                                    crate::state::ime_event::ObservationSource::GjiIoInference,
+                                confidence:
+                                    crate::state::ime_event::ObservationConfidence::Medium,
+                                at: tick_ms,
+                            },
+                            tick_ms,
+                        );
+                    }
+                } else {
+                    log::debug!("[stage-observe] GJI observe skipped (active IME is not GJI)");
                 }
             }
             ImeReadStrategy::OsPoll => {
