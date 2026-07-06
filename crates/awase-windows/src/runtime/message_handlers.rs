@@ -6,7 +6,9 @@
 use std::mem::size_of;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetGUIThreadInfo, GetWindowThreadProcessId, PostQuitMessage, GUITHREADINFO,
+};
 
 use crate::focus::cache::DetectionSource;
 use crate::hook;
@@ -391,24 +393,55 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
     if GetGUIThreadInfo(0, &raw mut info).is_ok() && info.hwndFocus != result_hwnd {
         log::debug!("UIA result for stale hwnd, ignoring");
     } else {
-        if app_kind_u8 != crate::FOCUS_KIND_UPDATE_NO_APP_KIND {
+        // 結果の帰属（pid/class）は必ず result_hwnd 自身から導出する。
+        //
+        // awase 内部の focus 追跡（platform.focus）は refresh 経由で更新されるため
+        // 実フォーカスより最大数百 ms 遅れる。かつてここで platform.focus の
+        // pid/class をキャッシュキーに使っていたため、「Alt+Tab メニュー
+        // (XamlExplorerHostIslandWindow) の NonText 結果が、まだ Edge を指している
+        // 追跡状態のキー (msedge, Chrome_WidgetWin_1) でキャッシュされる」毒入りが
+        // 起きた（BUG-11、2026-07-06 実機: 以後 Edge が cache hit で永久 NonText →
+        // 全キーがエンジン素通しになり「IME ON・Engine OFF」化。NonText は
+        // Undetermined ではないため UIA 再問い合わせも走らず自己回復しない）。
+        let mut result_pid: u32 = 0;
+        // SAFETY: result_hwnd は UIA worker が probe した HWND。破棄済みでも
+        //         GetWindowThreadProcessId は 0 を返すだけで安全。
+        unsafe {
+            let _ = GetWindowThreadProcessId(result_hwnd, Some(&raw mut result_pid));
+        }
+        let result_class = crate::focus::classify::get_class_name_string(result_hwnd);
+        let matches_tracked = app.platform.focus.is_focused()
+            && app.platform.focus.pid() == result_pid
+            && app.platform.focus.class_name() == result_class;
+
+        // グローバルな「現在のフォーカス」状態への反映は、結果が awase の追跡中
+        // ウィンドウに帰属する場合のみ。
+        if matches_tracked && app_kind_u8 != crate::FOCUS_KIND_UPDATE_NO_APP_KIND {
             let app_kind = crate::focus::AppKind::from_u8(app_kind_u8);
             app.platform_state.focus.app_kind = app_kind;
             log::debug!("UIA AppKind update: {app_kind:?}");
         }
 
         if kind != FocusKind::Undetermined {
-            app.platform_state.focus.focus_kind = kind;
-
-            if app.platform.focus.is_focused() {
-                let pid = app.platform.focus.pid();
-                let cls = app.platform.focus.class_name().to_owned();
-                app.platform
-                    .focus
-                    .cache_insert(pid, cls, kind, DetectionSource::UiaAsync);
+            // キャッシュは result_hwnd の素性で挿入する（追跡状態と無関係に正しいキー）。
+            if result_pid != 0 && !result_class.is_empty() {
+                app.platform.focus.cache_insert(
+                    result_pid,
+                    result_class.clone(),
+                    kind,
+                    DetectionSource::UiaAsync,
+                );
             }
-            if kind == FocusKind::NonText {
-                app.invalidate_engine_context(ContextChange::FocusChanged);
+            if matches_tracked {
+                app.platform_state.focus.focus_kind = kind;
+                if kind == FocusKind::NonText {
+                    app.invalidate_engine_context(ContextChange::FocusChanged);
+                }
+            } else {
+                log::debug!(
+                    "UIA result hwnd={result_hwnd:?} ({result_class}) は追跡中フォーカスと\
+                     不一致 → cache のみ更新（focus_kind は変更しない）"
+                );
             }
         }
     }
