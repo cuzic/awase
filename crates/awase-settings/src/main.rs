@@ -32,7 +32,10 @@ enum CaptureTarget {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([500.0, 650.0])
+            // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
+            // インデント ≈ 464) + 余白。最も幅を要するタブがデフォルトで横スクロール
+            // なしに収まる値（従来の 500 ではプレビュー右端が切れていた）。
+            .with_inner_size([580.0, 650.0])
             // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
             // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
             .with_min_inner_size([420.0, 320.0])
@@ -433,7 +436,9 @@ impl SettingsApp {
         } else {
             let mut rm = None;
             for (i, rule) in self.config.keymaps.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
+                // horizontal_wrapped: ウィンドウ幅が狭いときは行内で折り返す（リフロー）。
+                // 収まる幅では従来どおり1行表示。
+                ui.horizontal_wrapped(|ui| {
                     // App field
                     let mut app_buf = rule.app.clone().unwrap_or_default();
                     if ui
@@ -506,7 +511,7 @@ impl SettingsApp {
                 ui.end_row();
 
                 ui.label("  from:");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
                     ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
                     ui.checkbox(&mut self.new_keymap_from_alt, "Alt");
@@ -517,7 +522,7 @@ impl SettingsApp {
 
                 ui.label("  to:")
                     .on_hover_text("再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけ。");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     main_key_combo_optional(ui, "new_to_main", &mut self.new_keymap_to_main);
                     capture_button(ui, &mut capturing, CaptureTarget::NewTo);
                 });
@@ -1203,14 +1208,26 @@ fn load_layout_for_preview(
 }
 
 /// YabFace をキーボード風のグリッドで描画する。
+///
+/// キーサイズは利用可能幅から算出する（リフロー）: 最上段 13 キー + 行段差
+/// インデント + spacing が収まるよう 18〜32px の範囲で縮小し、狭いウィンドウでも
+/// 図全体が横スクロールなしで見えるようにする。フォント・インデントも比例縮小。
 fn draw_face_grid(ui: &mut egui::Ui, face: &awase::yab::YabFace, id_suffix: &str) {
-    let key_size = egui::vec2(32.0, 32.0);
+    let spacing = 2.0;
+    let max_cols = JIS_ROW_KEYS[0] as f32;
+    // 最下段のインデント（フルサイズ時 8px/段 × 3 段）を含めて収まるセルサイズ。
+    let indent_ratio = 0.25; // インデント = セルサイズ × 0.25（32px 時に従来の 8px）
+    let max_indent_units = (JIS_ROW_KEYS.len() - 1) as f32;
+    let cell = ((ui.available_width() - spacing * max_cols)
+        / (max_cols + indent_ratio * max_indent_units))
+        .clamp(18.0, 32.0);
+    let key_size = egui::vec2(cell, cell);
     egui::Grid::new(format!("face_grid_{id_suffix}"))
-        .spacing(egui::vec2(2.0, 2.0))
+        .spacing(egui::vec2(spacing, spacing))
         .show(ui, |ui| {
             for (row_idx, &col_count) in JIS_ROW_KEYS.iter().enumerate() {
-                // 行インデントで段差を表現
-                let indent = (row_idx as f32) * 8.0;
+                // 行インデントで段差を表現（セルサイズに比例）
+                let indent = (row_idx as f32) * cell * indent_ratio;
                 if indent > 0.0 {
                     ui.add_space(indent);
                 }
@@ -1228,7 +1245,7 @@ fn draw_face_grid(ui: &mut egui::Ui, face: &awase::yab::YabFace, id_suffix: &str
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         &label,
-                        egui::FontId::proportional(16.0),
+                        egui::FontId::proportional(cell * 0.5),
                         ui.visuals().text_color(),
                     );
                 }
