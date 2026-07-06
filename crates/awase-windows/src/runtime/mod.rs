@@ -32,17 +32,20 @@ use awase::platform::PlatformRuntime as _;
 /// `ime_on` は呼び出し元が `platform_state.ime.effective_open()` を評価して渡す。
 /// `input_mode` は `ImeStateHub::input_mode()`（SSOT = `shadow_model.input_mode`）から取得する。
 /// `is_japanese_ime` は `ImeBelief::is_japanese_ime()` から取得する。
+/// `composing` は呼び出し元が `tsf::observer::ime_composition_active_now()` を評価して渡す。
 #[must_use]
 pub const fn build_input_context(
     ime_on: bool,
     input_mode: InputModeState,
     is_japanese_ime: bool,
+    composing: bool,
     modifiers: &awase::engine::ModifierState,
 ) -> InputContext {
     InputContext {
         ime_on,
         input_mode,
         is_japanese_ime,
+        composing,
         modifiers: *modifiers,
         left_thumb_down: None,
         right_thumb_down: None,
@@ -143,6 +146,7 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
             self.platform_state.ime.belief.is_japanese_ime(),
+            crate::tsf::observer::ime_composition_active_now(),
             &modifiers,
         )
     }

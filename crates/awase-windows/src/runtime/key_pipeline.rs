@@ -98,6 +98,7 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
             self.platform_state.ime.belief.is_japanese_ime(),
+            crate::tsf::observer::ime_composition_active_now(),
             &event.modifier_snapshot,
         );
         // [engine-input] order-bug 調査用: drain と inline の処理順序を可視化する。

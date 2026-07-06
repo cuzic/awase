@@ -12,7 +12,7 @@
 //!
 //! - [`gji_monitor`] バックグラウンドスレッド → `TSF_OBS.gji_last_io_ms`, `TSF_OBS.gji_monitor_ok`
 //! - [`win_event_obs`] `observation_event_proc` → `TSF_OBS.gji_candidate_visible`,
-//!   `TSF_OBS.gji_candidate_show`, `TSF_OBS.focus_namechange`, `TSF_OBS.composition_probe`
+//!   `TSF_OBS.gji_candidate_show`, `TSF_OBS.focus_namechange`, `TSF_OBS.ime_composition_active`
 //!
 //! [`ObservedState::from_snapshot()`]: crate::state::ime_decision_view::ObservedState::from_snapshot
 //! [`gji_monitor`]: super::gji_monitor
@@ -52,11 +52,6 @@ impl ChangeCounter {
     pub(super) fn reset(&self) {
         self.0.store(0, Ordering::Relaxed);
     }
-
-    /// `AtomicWatcher` 等が直接参照できるよう内部 `AtomicU32` を返す。
-    pub(super) const fn atomic(&self) -> &AtomicU32 {
-        &self.0
-    }
 }
 
 /// [`ChangeCounter`] のベースライン値。
@@ -70,7 +65,7 @@ pub(in crate::tsf) struct Baseline(u32);
 /// 書き込み元:
 /// - `GjiMonitor` バックグラウンドスレッド → `gji_last_io_ms`, `gji_monitor_ok`
 /// - `observation_event_proc` → `gji_candidate_visible`, `gji_candidate_show`,
-///   `focus_namechange`, `composition_probe`
+///   `focus_namechange`, `ime_composition_active`
 ///
 /// 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
 #[derive(Debug)]
@@ -97,13 +92,10 @@ pub struct TsfObservations {
     /// ウィンドウが既に表示中の場合は SHOW イベントが来ないため、GJI I/O 変化で composition を検出する。
     pub(super) gji_candidate_visible: AtomicBool,
 
-    /// raw TSF literal 検出の汎用シグナル。
-    ///
-    /// `gji_candidate_show` が変化したとき（SHOW 発火）と
-    /// 検出タイムアウトタスクの両方が `notify()` を呼ぶ。
-    /// `output::raw_tsf_literal_show_or_timeout_async` の `AtomicWatcher` がこれを監視し、
-    /// SHOW またはタイムアウトのどちらが先に来たかを event-driven に判定する。
-    pub(in crate::tsf) composition_probe: ChangeCounter,
+    // 旧 composition_probe（raw TSF literal 検出の event-driven シグナル）は
+    // 2026-07-06 の到達不能パス監査で撤去 — 待ち手だった AtomicWatcher 消費者
+    // （raw_tsf_literal_show_or_timeout_async）が実装されないままポーリング方式
+    // （LiteralDetector の baseline 読み）に置き換わり、write-only になっていた。
 
     /// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
     ///
@@ -162,6 +154,18 @@ pub struct TsfObservations {
     /// `observation_event_proc` が set → `take_pending_end_composition()` で drain → platform が `EndComposition` を dispatch。
     pub(in crate::tsf) pending_end_composition: AtomicBool,
 
+    /// `EVENT_OBJECT_IME_SHOW`/`EVENT_OBJECT_IME_HIDE` で更新する、IME composition window
+    /// （IME固有の合成/候補 UI）が現在表示中かどうかのフラグ。GJI 専用の `gji_candidate_visible`
+    /// と異なり、MS-IME を含む任意の IME の composition window を対象にする近似シグナル。
+    ///
+    /// `NicolaFsm::timeout_pending_thumb`（無変換/変換キー単独タップの生VK送出）が
+    /// composition 中に MS-IME の既定機能（かな/カタカナ切替・再変換）を誤発火させるのを
+    /// 防ぐために `InputContext::composing` 経由で参照する。
+    ///
+    /// この WinEvent が実際にどの範囲の composition 状態と相関するか（インライン合成のみの
+    /// アプリで発火するか等）は実機検証が必要。
+    pub(super) ime_composition_active: AtomicBool,
+
     /// `EVENT_OBJECT_IME_SHOW`（0x8027）が発火するたびに +1 するカウンタ（実機検証用）。
     ///
     /// Chrome などのアプリで VK_IME_ON 受信後に GJI がひらがなモードへ移行したとき発火するかを確認する。
@@ -196,7 +200,6 @@ impl TsfObservations {
             focus_namechange: ChangeCounter::new(),
             gji_candidate_show: ChangeCounter::new(),
             gji_candidate_visible: AtomicBool::new(false),
-            composition_probe: ChangeCounter::new(),
             gji_last_io_ms: AtomicU64::new(0),
             gji_read_op_count: AtomicU64::new(0),
             gji_read_bytes: AtomicU64::new(0),
@@ -206,6 +209,7 @@ impl TsfObservations {
             candidate_was_seen: AtomicBool::new(false),
             pending_start_composition: AtomicBool::new(false),
             pending_end_composition: AtomicBool::new(false),
+            ime_composition_active: AtomicBool::new(false),
             ime_show_seq: ChangeCounter::new(),
             ime_change_seq: ChangeCounter::new(),
             tsf_active_kind: AtomicU8::new(0),
@@ -257,12 +261,6 @@ impl TsfObservations {
         self.gji_candidate_visible.load(Ordering::Relaxed)
     }
 
-    /// raw TSF literal 検出用汎用シグナルへの参照を返す（`AtomicWatcher` 用）。
-    ///
-    /// `AtomicWatcher::new` に必要な `&AtomicU32` はこのメソッド経由で取得する。
-    pub const fn composition_probe_atomic(&self) -> &AtomicU32 {
-        self.composition_probe.atomic()
-    }
 
     /// 現在使用中の IME 種別を返す。
     ///
@@ -398,6 +396,13 @@ pub(crate) fn candidate_was_seen() -> bool {
 /// 現時点で GJI candidate window が可視かどうか。診断ログ用 live 読み取り。
 pub(crate) fn gji_candidate_visible_now() -> bool {
     TSF_OBS.gji_candidate_visible.load(Ordering::Relaxed)
+}
+
+/// 現時点で（GJI/MS-IME 問わず）IME composition window が可視かどうか。
+///
+/// `InputContext::composing` の供給元。`EVENT_OBJECT_IME_SHOW`/`HIDE` により更新される。
+pub(crate) fn ime_composition_active_now() -> bool {
+    TSF_OBS.ime_composition_active.load(Ordering::Relaxed)
 }
 
 /// `apply_ime_open` 後に `candidate_was_seen` フラグをリセットする。

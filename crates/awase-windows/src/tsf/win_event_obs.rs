@@ -147,7 +147,6 @@ unsafe extern "system" fn observation_event_proc(
             if class.contains("CASCADIA") {
                 let seq = TSF_OBS.focus_namechange.notify();
                 log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
-                win32_async::notify_all();
             }
         }
         EVENT_OBJECT_SHOW => {
@@ -157,9 +156,6 @@ unsafe extern "system" fn observation_event_proc(
                 TSF_OBS.candidate_was_seen.store(true, Ordering::Relaxed);
                 TSF_OBS.pending_start_composition.store(true, Ordering::Relaxed);
                 let seq = TSF_OBS.gji_candidate_show.notify();
-                // raw TSF literal 検出用の汎用シグナルも +1（SHOW と timeout の両方が
-                // AtomicWatcher で event-driven に待機する設計）
-                TSF_OBS.composition_probe.notify();
                 {
                     let now_ms = crate::hook::current_tick_ms();
                     let last_write_ms = TSF_OBS.gji_last_write_ms.load(Ordering::Relaxed);
@@ -170,7 +166,6 @@ unsafe extern "system" fn observation_event_proc(
                     };
                     log::info!("[gji-obs] candidate SHOW #{seq}: last_gji_write={write_ago}");
                 }
-                win32_async::notify_all();
             } else if class == MSCTFIME_UI_CLASS {
                 log::debug!("[tsf-ime-ui] SHOW hwnd={:?}", hwnd.0);
             }
@@ -196,19 +191,19 @@ unsafe extern "system" fn observation_event_proc(
         }
         EVENT_OBJECT_IME_SHOW => {
             let class = hwnd_class_name(hwnd);
+            TSF_OBS.ime_composition_active.store(true, Ordering::Relaxed);
             let seq = TSF_OBS.ime_show_seq.notify();
             log::info!("[ime-obj] IME_SHOW #{seq} class={class} hwnd={:?}", hwnd.0);
-            win32_async::notify_all();
         }
         EVENT_OBJECT_IME_HIDE => {
             let class = hwnd_class_name(hwnd);
+            TSF_OBS.ime_composition_active.store(false, Ordering::Relaxed);
             log::info!("[ime-obj] IME_HIDE class={class} hwnd={:?}", hwnd.0);
         }
         EVENT_OBJECT_IME_CHANGE => {
             let class = hwnd_class_name(hwnd);
             let seq = TSF_OBS.ime_change_seq.notify();
             log::info!("[ime-obj] IME_CHANGE #{seq} class={class} hwnd={:?}", hwnd.0);
-            win32_async::notify_all();
         }
         _ => {}
     }

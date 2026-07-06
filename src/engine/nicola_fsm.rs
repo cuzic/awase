@@ -1094,6 +1094,7 @@ impl NicolaFsm {
         scan_code: ScanCode,
         vk_code: VkCode,
         timestamp: Timestamp,
+        composing: bool,
     ) -> Resp {
         // ソロ連打によるエンジン OFF トリガーチェック
         if self.engine_off_triple_vk.0 != 0 && vk_code == self.engine_off_triple_vk {
@@ -1106,6 +1107,14 @@ impl NicolaFsm {
             }
         } else {
             self.solo_counter.reset();
+        }
+
+        if composing {
+            // resolve_pending_thumb_as_single と同じ理由（IME 側のかな/カタカナ切替・
+            // 再変換の誤発火防止）。ただしこちらは「文字キーが一切来ないまま本物の
+            // 単独タップとして確定した」経路であり、composition していないときは
+            // 従来通り素通しする（Windows 全般での無変換/変換キー機能を維持するため）。
+            return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
         }
 
         let action = KeyAction::Key(vk_code);
@@ -1285,7 +1294,8 @@ impl NicolaFsm {
     ///
     /// `phys` は `InputTracker` の最新スナップショット。
     /// タイマー発火時点の正確な物理キー状態を反映する。
-    pub fn on_timeout(&mut self, timer_id: usize, phys: &PhysicalKeyState) -> Resp {
+    /// `composing` は IME composition が現在進行中か（`InputContext::composing` 由来）。
+    pub fn on_timeout(&mut self, timer_id: usize, phys: &PhysicalKeyState, composing: bool) -> Resp {
         self.phys = *phys;
         match timer_id {
             TIMER_SPECULATIVE => return self.on_timeout_speculative(),
@@ -1302,9 +1312,12 @@ impl NicolaFsm {
                 Response::pass_through().with_kill_timer(TIMER_PENDING)
             }
             EngineState::PendingChar(pending) => self.timeout_pending_char(&pending),
-            EngineState::PendingThumb(thumb) => {
-                self.timeout_pending_thumb(thumb.scan_code, thumb.vk_code, thumb.timestamp)
-            }
+            EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(
+                thumb.scan_code,
+                thumb.vk_code,
+                thumb.timestamp,
+                composing,
+            ),
             EngineState::PendingCharThumb {
                 char_key,
                 thumb,

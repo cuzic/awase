@@ -66,7 +66,13 @@ impl TestHarness {
 
     fn on_timeout(&mut self, timer_id: usize) -> Resp {
         let phys = self.tracker.snapshot();
-        self.engine.on_timeout(timer_id, &phys)
+        self.engine.on_timeout(timer_id, &phys, false)
+    }
+
+    /// `composing` を明示指定するタイムアウト処理（IME composition 中の挙動を検証するため）。
+    fn on_timeout_composing(&mut self, timer_id: usize, composing: bool) -> Resp {
+        let phys = self.tracker.snapshot();
+        self.engine.on_timeout(timer_id, &phys, composing)
     }
 }
 
@@ -337,6 +343,19 @@ fn test_pattern5_thumb_alone_timeout() {
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
     assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
+}
+
+/// composition 中は、無変換/変換キー単独タップの生 VK 送出を suppress する。
+/// 生VKをMS-IMEに渡すと既定機能（かな/カタカナ切替・再変換）が誤発火するため。
+#[test]
+fn test_pattern5_thumb_alone_timeout_suppressed_while_composing() {
+    let mut engine = make_engine();
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert_eq!(result.actions.len(), 0);
 }
 
 #[test]
@@ -3427,7 +3446,7 @@ mod fsm_adapter_tests {
     fn on_timeout_on_idle() {
         let mut adapter = make_adapter();
         let phys = PhysicalKeyState::empty();
-        let decision = adapter.on_timeout(0, &phys);
+        let decision = adapter.on_timeout(0, &phys, false);
         // Timeout on idle should not panic, just produce a decision
         let _ = decision;
     }
@@ -3587,6 +3606,7 @@ mod engine_integration_tests {
             ime_on: true,
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
+            composing: false,
             modifiers: ModifierState {
                 ctrl: false,
                 alt: false,
@@ -3603,6 +3623,7 @@ mod engine_integration_tests {
             ime_on: false,
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
+            composing: false,
             modifiers: ModifierState {
                 ctrl: false,
                 alt: false,
@@ -3670,6 +3691,7 @@ mod engine_integration_tests {
             ime_on: true,
             input_mode: InputModeState::ObservedKana,
             is_japanese_ime: true,
+            composing: false,
             modifiers: ModifierState::default(),
             left_thumb_down: None,
             right_thumb_down: None,
@@ -4231,6 +4253,7 @@ mod engine_integration_tests {
             ime_on: true,
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: false,
+            composing: false,
             modifiers: ModifierState::default(),
             left_thumb_down: None,
             right_thumb_down: None,

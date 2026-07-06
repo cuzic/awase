@@ -233,7 +233,7 @@ impl Engine {
             return self.adapter.flush(ContextChange::ImeOff);
         }
 
-        let decision = self.adapter.on_timeout(timer_id, &phys);
+        let decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);
 
         // ソロ連打によるエンジン OFF トリガー
         if self.adapter.take_engine_off_requested() {

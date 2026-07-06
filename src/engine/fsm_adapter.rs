@@ -33,8 +33,13 @@ impl FsmAdapter {
     }
 
     /// タイマー満了時の処理。
-    pub(super) fn on_timeout(&mut self, timer_id: usize, phys: &PhysicalKeyState) -> Decision {
-        let resp = self.fsm.on_timeout(timer_id, phys);
+    pub(super) fn on_timeout(
+        &mut self,
+        timer_id: usize,
+        phys: &PhysicalKeyState,
+        composing: bool,
+    ) -> Decision {
+        let resp = self.fsm.on_timeout(timer_id, phys, composing);
         Self::response_to_decision(resp)
     }
 
@@ -507,7 +512,7 @@ mod tests {
 
         // タイマー満了で文字が確定される
         let phys_snap = tracker.snapshot();
-        let decision = adapter.on_timeout(1, &phys_snap);
+        let decision = adapter.on_timeout(1, &phys_snap, false);
         assert!(decision.is_consumed());
         match decision {
             Decision::Consume { effects } => {

@@ -140,7 +140,7 @@ impl TestHarness {
 
     fn on_timeout(&mut self, timer_id: usize) -> Response<crate::types::KeyAction, usize> {
         let phys = self.tracker.snapshot();
-        self.fsm.on_timeout(timer_id, &phys)
+        self.fsm.on_timeout(timer_id, &phys, false)
     }
 }
 
@@ -149,6 +149,7 @@ fn ime_on_ctx() -> InputContext {
         ime_on: true,
         input_mode: InputModeState::ObservedRomaji,
         is_japanese_ime: true,
+        composing: false,
         modifiers: crate::engine::fsm_types::ModifierState {
             ctrl: false,
             alt: false,

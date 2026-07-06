@@ -254,6 +254,12 @@ pub struct InputContext {
     pub input_mode: InputModeState,
     /// 日本語 IME がアクティブか（MS-IME, Google, ATOK 等）
     pub is_japanese_ime: bool,
+    /// IME の composition window が現在表示中か（`EVENT_OBJECT_IME_SHOW`/`HIDE` 由来）。
+    ///
+    /// 無変換/変換キーの単独タップ生VK送出（`NicolaFsm::timeout_pending_thumb`）が
+    /// composition 中の MS-IME 既定機能（かな/カタカナ切替・再変換）を誤発火させるのを
+    /// 防ぐための近似シグナル。
+    pub composing: bool,
     // ── Physical key state (provided by Platform) ──
     /// 修飾キー状態（OS 実状態 — コンボキー検出・NicolaFsm の OsModifierHeld 判定用）
     pub modifiers: ModifierState,

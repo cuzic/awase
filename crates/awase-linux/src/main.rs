@@ -113,6 +113,7 @@ fn main() -> Result<()> {
             ime_on: true, // Assume IME ON for now
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
+            composing: false, // Linux では composition 検出未実装
             modifiers: awase::engine::ModifierState {
                 ctrl: false,
                 alt: false,

@@ -203,6 +203,7 @@ pub(crate) unsafe fn handle_wm_timer(
                 app.platform_state.ime.effective_open(),
                 app.platform_state.ime.input_mode(),
                 app.platform_state.ime.belief.is_japanese_ime(),
+                crate::tsf::observer::ime_composition_active_now(),
                 &modifiers,
             );
             let state_before = app.engine.debug_state_label();
