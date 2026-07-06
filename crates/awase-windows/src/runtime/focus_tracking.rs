@@ -4,7 +4,7 @@
 //! 親モジュール（`runtime/mod.rs`）のフィールドに `self.*` でアクセスできる。
 
 use crate::focus::cache::DetectionSource;
-use awase::types::FocusKind;
+use crate::focus::FocusKind;
 use windows::Win32::Foundation::HWND;
 
 use super::Runtime;

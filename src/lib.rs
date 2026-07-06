@@ -5,7 +5,6 @@ pub mod kana_table;
 pub mod ngram;
 pub mod platform;
 pub mod scanmap;
-pub mod tsf;
 pub mod types;
 pub mod yab;
 

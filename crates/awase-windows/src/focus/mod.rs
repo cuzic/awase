@@ -6,6 +6,9 @@
 // ── 純粋サブモジュール（全プラットフォーム）──────────────────────────────────────
 pub mod cache;
 pub mod class_names;
+pub mod kinds;
+
+pub use kinds::{AppKind, FocusKind};
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 #[cfg(windows)]

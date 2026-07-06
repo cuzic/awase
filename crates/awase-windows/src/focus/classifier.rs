@@ -95,7 +95,7 @@ impl ForceOverrides {
         &self,
         process_id: u32,
         class_name: &str,
-    ) -> Option<awase::types::FocusKind> {
+    ) -> Option<crate::focus::FocusKind> {
         if self.inner.force_text.is_empty() && self.inner.force_bypass.is_empty() {
             return None;
         }
@@ -104,14 +104,14 @@ impl ForceOverrides {
             if entry.process.eq_ignore_ascii_case(&process_name)
                 && entry.class.eq_ignore_ascii_case(class_name)
             {
-                return Some(awase::types::FocusKind::TextInput);
+                return Some(crate::focus::FocusKind::TextInput);
             }
         }
         for entry in &self.inner.force_bypass {
             if entry.process.eq_ignore_ascii_case(&process_name)
                 && entry.class.eq_ignore_ascii_case(class_name)
             {
-                return Some(awase::types::FocusKind::NonText);
+                return Some(crate::focus::FocusKind::NonText);
             }
         }
         None

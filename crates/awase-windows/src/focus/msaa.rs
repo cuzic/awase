@@ -1,6 +1,6 @@
 //! Phase 2: MSAA (IAccessible) によるロールベース判定
 
-use awase::types::FocusKind;
+use crate::focus::FocusKind;
 use windows::core::Interface;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Variant::VARIANT;

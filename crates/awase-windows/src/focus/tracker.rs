@@ -6,7 +6,7 @@
 use std::sync::mpsc::Sender;
 
 use awase::engine::InputModeState;
-use awase::types::FocusKind;
+use crate::focus::FocusKind;
 
 use crate::focus::cache::{DetectionSource, FocusCache};
 use crate::focus::classifier::{

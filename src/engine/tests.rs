@@ -8,7 +8,7 @@ use crate::engine::output_history::OutputEntry;
 use crate::ngram::NgramModel;
 use crate::scanmap::PhysicalPos;
 use crate::types::{
-    ContextChange, FocusKind, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode,
+    ContextChange, KeyAction, KeyEventType, RawKeyEvent, ScanCode, Timestamp, VkCode,
 };
 use crate::yab::YabValue;
 use timed_fsm::Response;
@@ -3217,43 +3217,6 @@ fn test_update_history_retract_and_record() {
         "retract+record should keep count at 1"
     );
     assert_eq!(engine.output_history.recent_kana(1), vec!['ゔ']);
-}
-
-// ── FocusKind のユニットテスト ──
-
-#[test]
-fn test_bypass_state_repr_values() {
-    // repr(u8) の値が AtomicU8 との変換で正しいことを確認
-    assert_eq!(FocusKind::TextInput as u8, 0);
-    assert_eq!(FocusKind::NonText as u8, 1);
-    assert_eq!(FocusKind::Undetermined as u8, 2);
-}
-
-#[test]
-fn test_bypass_state_equality() {
-    assert_eq!(FocusKind::TextInput, FocusKind::TextInput);
-    assert_ne!(FocusKind::TextInput, FocusKind::NonText);
-    assert_ne!(FocusKind::NonText, FocusKind::Undetermined);
-}
-
-#[test]
-fn test_bypass_state_copy_clone() {
-    let state = FocusKind::NonText;
-    let copied = state; // Copy
-    let cloned = state.clone(); // Clone
-    assert_eq!(copied, FocusKind::NonText);
-    assert_eq!(cloned, FocusKind::NonText);
-}
-
-#[test]
-fn test_bypass_state_debug_format() {
-    // Debug trait が実装されていることを確認
-    let s = format!("{:?}", FocusKind::TextInput);
-    assert_eq!(s, "TextInput");
-    let s = format!("{:?}", FocusKind::NonText);
-    assert_eq!(s, "NonText");
-    let s = format!("{:?}", FocusKind::Undetermined);
-    assert_eq!(s, "Undetermined");
 }
 
 #[test]

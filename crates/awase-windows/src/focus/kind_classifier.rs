@@ -1,6 +1,6 @@
 //! フォーカス種別（FocusKind）の決定ロジック
 
-use awase::types::FocusKind;
+use crate::focus::FocusKind;
 use windows::Win32::Foundation::HWND;
 
 /// `resolve_focus_kind` の戻り値

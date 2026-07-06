@@ -1,5 +1,5 @@
 use crate::focus::classifier::InjectionHint;
-use awase::types::AppKind;
+use crate::focus::AppKind;
 
 /// 出力注入モード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

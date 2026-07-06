@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use awase::types::FocusKind;
+use crate::focus::FocusKind;
 
 /// 判定結果のソース（TTL と優先順位を決定する）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

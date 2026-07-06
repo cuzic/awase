@@ -1,6 +1,6 @@
 //! Phase 1: 同期フォーカス判定（クラス名 + IMM + スタイル + MSAA）
 
-use awase::types::FocusKind;
+use crate::focus::FocusKind;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetWindowLongW, GetWindowThreadProcessId, GWL_EXSTYLE, GWL_STYLE,

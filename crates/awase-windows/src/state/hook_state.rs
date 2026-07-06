@@ -20,10 +20,10 @@ pub struct HookConfig {
 ///
 /// # `TsfGate` との違い
 ///
-/// `awase::tsf::TsfGate` はフォーカス変更後の TSF probe ウォームアップ用のステートマシンで、
+/// `crate::tsf::TsfGate` はフォーカス変更後の TSF probe ウォームアップ用のステートマシンで、
 /// 別目的・別タイミング・別レイヤー（Engine 出力側）で動作する:
 ///
-/// | | `SyncKeyGate`（本構造体） | [`TsfGate`](awase::tsf::TsfGate) |
+/// | | `SyncKeyGate`（本構造体） | [`TsfGate`](crate::tsf::TsfGate) |
 /// |--|--|--|
 /// | トリガー | sync key（IME ON/OFF キー）KeyDown | フォーカス変更 |
 /// | レイヤー | Platform 層（フックコールバック） | Output 層（TSF 注入直前） |

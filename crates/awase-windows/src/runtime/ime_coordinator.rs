@@ -1,6 +1,6 @@
 //! IME apply・パニック回復の調停を担う `ImeCoordinator`。
 //!
-//! `on_ime_apply_complete` / `on_async_ime_apply_complete` / `panic_reset` など
+//! `on_ime_apply_complete`（sync/async 両経路の単一入口）/ `panic_reset` など
 //! IME 適用結果の後処理と緊急回復に関連する状態をここに集約する。
 
 use awase::types::RawKeyEvent;

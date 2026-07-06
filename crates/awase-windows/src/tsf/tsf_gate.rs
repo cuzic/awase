@@ -5,7 +5,7 @@
 //!
 //! ## `SyncKeyGate` との混同に注意
 //!
-//! 名前は似ているが [`TsfGate`] と `awase_windows::state::hook_state::SyncKeyGate` は
+//! 名前は似ているが [`TsfGate`] と `crate::state::hook_state::SyncKeyGate` は
 //! 別目的・別トリガー・別レイヤーで動作する独立した仕組み:
 //!
 //! | | `TsfGate`（本モジュール） | `SyncKeyGate` |
@@ -46,7 +46,7 @@ use std::time::Duration;
 use timed_fsm::{Response, TimedStateMachine};
 
 use timed_fsm::{GateAction, HoldingGate};
-use crate::types::RawKeyEvent;
+use awase::types::RawKeyEvent;
 
 
 /// PendingWarmup フォールバックタイムアウト（ms）。
@@ -100,7 +100,7 @@ pub enum TsfGateState {
 /// 状態遷移ロジックのみを保持し、`RawKeyEvent` の保留は行わない。
 /// [`TimedStateMachine`] を実装しているため、プラットフォーム依存なしでテスト可能。
 ///
-/// `awase_windows::state::hook_state::SyncKeyGate` とは異なる目的の仕組み:
+/// `crate::state::hook_state::SyncKeyGate` とは異なる目的の仕組み:
 /// `TsfGate` は TSF probe のタイムアウト（500ms）をトリガーとするが、
 /// `SyncKeyGate` は sync key 直後のキー保留を担当する（モジュール doc 参照）。
 #[derive(Debug)]
@@ -187,7 +187,7 @@ impl TimedStateMachine for TsfGateMachine {
 /// `TsfGateMachine` にキー保留機能を追加したラッパー。
 ///
 /// フォーカス変更後の TSF ウォームアップ中にキーを `held` バッファに蓄積し、
-/// TSF/Bypass モード確定時にまとめて返す。`awase_windows::state::hook_state::SyncKeyGate`
+/// TSF/Bypass モード確定時にまとめて返す。`crate::state::hook_state::SyncKeyGate`
 /// （sync key 押下時のキー保留）とは別目的なので混同しないこと（モジュール doc 参照）。
 ///
 /// Win32 タイマー（`TIMER_TSF_GATE`）の Set/Kill は呼び出し元が担当する:
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn gate_wrapper_on_warmup_timeout_drains_held() {
-        use crate::types::{
+        use awase::types::{
             ImeRelevance, KeyClassification, KeyEventType, ModifierState, RawKeyEvent, ScanCode,
             VkCode,
         };

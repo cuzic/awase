@@ -59,3 +59,25 @@ Windows 固有の SysKeyDown/SysKeyUp をフック層で KeyDown/KeyUp に統合
 - macOS/Linux クレートが同じ Engine をそのまま使用可能
 - config.toml のデフォルトキー名をプラットフォーム非依存化（Nonconvert, Convert, Kanji 等）
 - 後方互換: awase-windows の vk_name_to_code が VK_ プレフィックス付き名前も受け付ける
+
+## 追記（2026-07、P5: lib からの Windows 概念退去 第2弾）
+
+ADR-019 で概ね達成した lib のプラットフォーム非依存化を、概念レベルで残っていた
+Windows 固有要素についてさらに進めた。以下を lib（`src/`）から awase-windows へ移設した。
+
+| 移動元 (lib) | 移動先 (awase-windows) | 備考 |
+|---|---|---|
+| src/tsf.rs（`TsfGate` 等） | crates/awase-windows/src/tsf/tsf_gate.rs | 語彙が全て TSF 固有。lib→awase-windows のレイヤ逆転 doc 参照も解消 |
+| src/types.rs の `AppKind` / `FocusKind`（atomic ヘルパ・テスト含む） | crates/awase-windows/src/focus/kinds.rs | `AppKind` は Windows 固有（Win32/TSF/UWP）。`FocusKind` は中立概念だが事前分類の境界複製として awase-windows 側に配置 |
+| tests/e2e_windows.rs | crates/awase-windows/tests/e2e_windows.rs | ルート Cargo.toml の windows dev-dependency も撤去（awase-windows は windows を通常依存で保持済み） |
+
+加えて `PlatformRuntime` トレイトから TSF composition 特有のフック7メソッド
+（`composition_output` / `output_in_flight_ms` / `is_composition_warm` / `is_tsf_mode` /
+`on_ime_applied` / `on_passthrough_key` / `on_reinject_key`）を新トレイト `TsfComposition`
+（`src/platform.rs`）へ分離した。macOS/Linux 実装者はコアの `PlatformRuntime`
+（send_keys / reinject / timer / set_ime_open / tray / send_engine_state_ime_key）だけを
+実装すればよく、`TsfComposition` は全メソッドが default 実装を持つため composition 機構が
+不要なら実装を省略できる。`send_engine_state_ime_key` は IME モードキー制御であり
+（TSF composition ではなく）`&mut dyn PlatformRuntime` 経由で呼ばれるため、コア側に残した。
+supertrait 化は避けた（default 持ちの TSF メソッドを空実装で強制することになり、
+非 Windows のエルゴノミクスを却って損なうため）。

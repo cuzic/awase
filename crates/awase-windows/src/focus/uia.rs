@@ -2,7 +2,7 @@
 
 use std::sync::mpsc;
 
-use awase::types::{AppKind, FocusKind};
+use crate::focus::{AppKind, FocusKind};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,

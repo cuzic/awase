@@ -3,7 +3,7 @@
 //! `classify.rs`・`ime.rs`・`focus_observer.rs` で重複していたクラス名リストと
 //! 判定ロジックを一元管理する。
 
-use awase::types::AppKind;
+use crate::focus::AppKind;
 
 /// IMM32 クロスプロセス制御（`WM_IME_CONTROL` / `ImmSetOpenStatus`）が使えない
 /// または不安定なウィンドウクラス。
