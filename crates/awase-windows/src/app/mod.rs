@@ -265,6 +265,16 @@ fn run_message_loop(taskbar_created_msg: u32) {
     // SAFETY: GetCurrentThreadId は常に成功し副作用もない。
     crate::set_engine_thread_id(unsafe { GetCurrentThreadId() });
 
+    // gji-io-monitor が TID 設定前に発行した初回 WM_IME_KIND_CHANGED は届かない
+    // 可能性があるため、ループ開始時点の検出済み IME 種別で warmup 戦略を一度
+    // pull 同期する（BUG-09 の保険）。未検出（起動直後）なら MicrosoftIme 安全
+    // デフォルトになり、後の CLSID 検出変化が WM_IME_KIND_CHANGED で上書きする。
+    let _ = with_app(|app| {
+        let kind = crate::tsf::observer::tsf_obs().active_ime_kind();
+        log::info!("[runtime] startup IME kind sync: {kind:?}");
+        app.platform.output.set_active_ime_kind(kind);
+    });
+
     let mut msg = MSG::default();
 
     loop {

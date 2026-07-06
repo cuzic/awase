@@ -29,35 +29,55 @@ impl HwndExt for HWND {
     }
 }
 
-/// メインスレッドのメッセージキューにカスタムメッセージを POST する。
+/// メインスレッド（エンジンスレッド）のメッセージキューにカスタムメッセージを POST する。
 ///
-/// `PostMessageW(None, msg, WPARAM(0), LPARAM(0))` の簡潔なラッパー。
-/// `None` はメッセージループを持つスレッド（= メインスレッド）を意味する。
+/// `PostThreadMessageW(engine_thread_id(), ..)` のラッパー。
+///
+/// 旧実装は `PostMessageW(None, ..)` を使っていたが、hwnd=NULL の `PostMessageW` は
+/// 「**呼び出しスレッド自身**への `PostThreadMessage`」と等価（Microsoft docs）であり、
+/// ワーカースレッド（gji-io-monitor / UIA worker 等）から呼ぶとメッセージが誰にも
+/// 処理されず消失していた。これにより `WM_IME_KIND_CHANGED` が main に一度も届かず、
+/// MS-IME 環境でも warmup 戦略がデフォルトの GjiFsm のまま走り続けた
+/// （docs/known-bugs.md BUG-09）。`WM_FOCUS_KIND_UPDATE`（UIA worker 発）も同罪だった。
 pub fn post_to_main_thread(msg: u32) {
-    // SAFETY: None HWND は呼び出しスレッドのメッセージキューに投函することを意味する。
-    //         msg はプロセス定義のカスタムメッセージ ID で、パラメータは 0 で安全。
-    let _ = unsafe {
-        windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-            None,
-            msg,
-            windows::Win32::Foundation::WPARAM(0),
-            windows::Win32::Foundation::LPARAM(0),
-        )
-    };
+    post_to_main_thread_with(msg, 0, 0);
 }
 
 /// メインスレッドのメッセージキューにパラメータ付きでカスタムメッセージを POST する。
+///
+/// スレッド安全: どのスレッドから呼んでも main（エンジン）スレッドに届く。
 pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
-    // SAFETY: None HWND は呼び出しスレッドのメッセージキューに投函することを意味する。
-    //         msg はプロセス定義のカスタムメッセージ ID で、wparam/lparam は呼び出し元が設定した値。
-    let _ = unsafe {
-        windows::Win32::UI::WindowsAndMessaging::PostMessageW(
-            None,
+    let tid = crate::engine_thread_id();
+    if tid == 0 {
+        // メッセージループ開始前（run_message_loop が TID を設定する前）。
+        // この時点で呼び出せるのは初期化中の main スレッド自身に限られるため、
+        // 自スレッドのキューへの投函（旧動作）が正しい。キューは PostMessageW 自身が
+        // 生成し、ループ開始後に取り出される。
+        // SAFETY: msg はプロセス定義のカスタムメッセージ ID。
+        let _ = unsafe {
+            windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                None,
+                msg,
+                windows::Win32::Foundation::WPARAM(wparam),
+                windows::Win32::Foundation::LPARAM(lparam),
+            )
+        };
+        return;
+    }
+    // SAFETY: tid は run_message_loop 先頭で設定された有効なスレッド ID。
+    //         msg はプロセス定義のカスタムメッセージ ID。
+    if unsafe {
+        windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
+            tid,
             msg,
             windows::Win32::Foundation::WPARAM(wparam),
             windows::Win32::Foundation::LPARAM(lparam),
         )
-    };
+    }
+    .is_err()
+    {
+        log::warn!("[post-main] PostThreadMessageW failed msg=0x{msg:X}");
+    }
 }
 
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
