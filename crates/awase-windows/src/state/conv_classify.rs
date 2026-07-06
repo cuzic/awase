@@ -50,14 +50,18 @@ pub struct ConvTransition {
     pub input_mode_update: Option<InputModeState>,
     /// engine ON/OFF 同期アクション。
     pub engine: EngineSync,
-    /// JISかな化（ひらがな conv から ROMAN ビットが落ちた）を観測 → ローマ字入力を
+    /// JISかな化（ひらがな conv で ROMAN ビットが無い）を観測 → ローマ字入力を
     /// 復元すべきか。awase の engine は romaji VK を出力するため、engine が open の間に
     /// IME がかな入力になると出力が壊滅する（外部注入 VK_KANA によるかなロック
-    /// トグルで実発生、BUG-08）。呼び出し元は conv 権限 (conv_mutation_allowed) を
-    /// 確認した上で `set_ime_romaji_mode_with_target_async(None)` を送る。
+    /// トグルで実発生、BUG-08）。呼び出し元は conv 権限 (conv_mutation_allowed) と
+    /// レート制限を確認した上で `set_ime_romaji_mode_with_target_async(None)` を送る。
     ///
-    /// `conv_mode_changed` の遷移時のみ true にする: ROMAN ビットを常に 0 で返す
-    /// 環境（コールドスタート直後等）で毎 idle-check の送信スパムにならないため。
+    /// steady-state（conv 不変）でも true を返す: 当初は `conv_mode_changed` 遷移時のみ
+    /// 発火させていたが、roma→kana の変化検出はフォーカス変更時の refresh 等
+    /// **別経路の `update_from_conv` が先に消費する**ため、idle-conv-check から見ると
+    /// 常に「変化なしの steady kana」になり一度も発火しなかった（2026-07-06 実機:
+    /// Windows Terminal がセッション中ずっと conv=0x0009 のまま）。送信スパム防止は
+    /// 純粋関数の責務ではなく、呼び出し元のレート制限（`kp_stage_idle_conv_check`）が担う。
     #[serde(default)]
     pub restore_roman: bool,
 }
@@ -130,13 +134,12 @@ pub fn classify_conv_transition(
         }
     };
 
-    // JISかな化検出: ひらがな（NATIVE、非カタカナ）conv で ROMAN ビットが落ちる
-    // 「変化」を engine open 中に観測したらローマ字入力の復元を要求する。
-    // - conv_mode_changed 必須: steady-state の ROMAN=0（常時 0 を返す環境）で
-    //   スパムしない。復元が効かない環境では conv が変化しなくなるだけで無害。
+    // JISかな化検出: ひらがな（NATIVE、非カタカナ）conv で ROMAN ビットが無い状態を
+    // engine open 中に観測したらローマ字入力の復元を要求する。
     // - !is_cold 必須: コールドスタート期間の ROMAN ビットは未確定のため無視。
-    let restore_roman = conv_mode_changed
-        && !is_cold
+    // - steady-state でも要求する（変化検出は別経路が先に消費するため頼れない）。
+    //   送信頻度の抑制は呼び出し元のレート制限が担う。
+    let restore_roman = !is_cold
         && has_native
         && !has_katakana
         && (conv & CONV_ROMAN_BIT) == 0
@@ -466,10 +469,10 @@ mod tests {
                                 _ => assert!(!open),
                             }
                         }
-                        // restore_roman は「ひらがな・非カタカナ・ROMANなし・engine open・
-                        // conv 変化あり」でのみ発火する不変条件。
+                        // restore_roman は「ひらがな・非カタカナ・ROMANなし・engine open」
+                        // でのみ発火する不変条件（conv 変化の有無には依存しない）。
                         if t.restore_roman {
-                            assert!(changed && open);
+                            assert!(open);
                             assert_eq!(conv & ROMAN, 0);
                             assert!(!ConvMode::from_u32(conv).is_eisu());
                             assert!(!ConvMode::from_u32(conv).charset.is_katakana());
@@ -493,12 +496,15 @@ mod tests {
         assert!(t.restore_roman, "JISかな化遷移 + engine open → ローマ字入力復元");
     }
 
-    /// steady-state（conv 変化なし）の JISかな conv では復元を要求しない
-    /// （ROMAN ビットを常に 0 で返す環境での送信スパム防止）。
+    /// steady-state（conv 変化なし）の JISかな conv でも復元を要求する。
+    /// roma→kana の変化検出はフォーカス変更時 refresh 等の別経路が先に消費するため、
+    /// idle-conv-check から見た conv は常に steady になりうる（2026-07-06 実機で
+    /// WT がセッション中ずっと conv=0x0009 のまま未復元だった回帰）。
+    /// スパム防止は呼び出し元（kp_stage_idle_conv_check）のレート制限が担う。
     #[test]
-    fn jiskana_steady_state_does_not_spam_restore() {
+    fn jiskana_steady_state_still_requests_restore() {
         let t = classify(CONV_JISKANA, InputModeState::ObservedRomaji, true, false);
-        assert!(!t.restore_roman);
+        assert!(t.restore_roman);
     }
 
     /// engine が閉じている（IME OFF 相当の belief）なら復元しない —

@@ -13,5 +13,20 @@
       "engine": "None",
       "restore_roman": true
     }
+  },
+  {
+    "name": "vk_kana_injection_steady_state_kana_still_restores",
+    "note": "BUG-08 追補（2026-07-06T05:05 ログ）。roma→kana の変化検出はフォーカス変更時 refresh の update_from_conv が先に消費するため、idle-conv-check から見た conv は steady な 0x0009 になり、conv_mode_changed ゲート付きの restore_roman は一度も発火しなかった（WT がセッション中ずっと JISかな のまま）。あるべき出力: steady-state でも restore_roman=true（スパム防止は kp_stage_idle_conv_check のレート制限が担う）。",
+    "conv": 9,
+    "current": "ObservedRomaji",
+    "is_cold": false,
+    "effective_open": true,
+    "conv_mode_changed": false,
+    "is_roman_reliable": false,
+    "expected": {
+      "input_mode_update": null,
+      "engine": "None",
+      "restore_roman": true
+    }
   }
 ]
