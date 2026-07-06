@@ -48,6 +48,7 @@ fn ctx() -> InputContext {
         ime_on: true,
         input_mode: InputModeState::ObservedRomaji,
         is_japanese_ime: true,
+        composing: false,
         modifiers: awase::engine::ModifierState::default(),
         left_thumb_down: None,
         right_thumb_down: None,

@@ -7,7 +7,8 @@
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
 //! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（VK_IME_ON/OFF）。全プロファイルで適用
 //! 3. `MsImeDirectStrategy`     — MS-IME 環境の TSF アプリ向け（VK_DBE_HIRAGANA/ALPHANUMERIC 冪等制御）
-//! 4. `KanjiToggleStrategy`     — 最終フォールバック。IME 種別不明環境向け
+//! 4. `KanjiToggleStrategy`     — 最終フォールバック。実到達は「Standard プロファイル ×
+//!    MS-IME × ImmCross 非同期失敗後（apply_skipping_imm）」の 1 組み合わせのみ
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
 //! `ImeController` は次の適用可能な戦略へフォールスルーする。
@@ -17,8 +18,11 @@
 //! VK_IME_ON (0x16) / VK_IME_OFF (0x1A) は Windows 標準の冪等キーで GJI がネイティブに処理する。
 //! IME 層で処理されるためフォアグラウンドアプリのプロファイルに依存しない。
 //! Chrome / WezTerm / Windows Terminal すべてで動作確認済み（2026-06-28）。
-//! GJI が起動していない環境（MS-IME 等）では `MsImeDirectStrategy`（冪等 VK_DBE_*）が先行し、
-//! IME 種別不明時に限り `KanjiToggleStrategy`（トグル）がフォールバックする。
+//! GJI が起動していない環境（MS-IME 等）では `MsImeDirectStrategy`（冪等 VK_DBE_*）が先行する。
+//! 注: `ActiveImeKind` は GJI / MS-IME の 2 値で「IME 種別不明」という状態は存在しない
+//! （未検出時は MicrosoftIme を安全デフォルトとして返す）。`KanjiToggleStrategy` に
+//! 到達するのは Standard プロファイル × MS-IME で ImmCross 非同期適用が Failed した
+//! 後（`apply_skipping_imm`）だけである（golden の戦略選択テーブルと一致、2026-07-06 監査）。
 //!
 //! ## アーキテクチャ制約
 //! このモジュールは観測値を自ら読んではいけない。
@@ -180,9 +184,11 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
 
 /// `SendInput(VK_KANJI)` トグルを使う最終フォールバック戦略。
 ///
-/// IME 種別が不明な環境向けの汎用フォールバック。
-/// GJI 環境では `GjiDirectStrategy` が全プロファイルで先行するため、
-/// ここには GJI 以外（IME 種別不明 / ImmCross 失敗後）のみ到達する。
+/// 実際に到達する組み合わせは 1 つだけ: **Standard プロファイル × MS-IME ×
+/// ImmCross 非同期適用の失敗後（`apply_skipping_imm`）**。
+/// `ActiveImeKind` は GJI / MS-IME の 2 値のため「IME 種別不明」は存在せず、
+/// 通常の `apply` では ImmCross（Standard）か GJI/MsImeDirect（非 Standard）が
+/// 必ず先に捕捉する（golden の戦略選択テーブル参照、2026-07-06 監査で確認）。
 ///
 /// VK_KANJI はトグルキーのため冪等ではなく、`already_matched` の判定は行わず送信する。
 /// GJI / MS-IME 環境では前段の戦略が処理するため、このフォールバックは稀にしか使われない。
