@@ -339,17 +339,6 @@ pub(crate) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
         .show_balloon("awase", "awase はすでに起動しています");
 }
 
-/// WM_IME_KEY_DETECTED ハンドラ
-pub(crate) unsafe fn handle_wm_ime_key_detected(app: &mut Runtime) {
-    if app.platform_state.gate.sync_key_gate.is_active()
-        || app.platform_state.gate.sync_key_gate.has_deferred_keys()
-    {
-        app.process_deferred_keys();
-    } else {
-        app.refresh_ime_state_cache();
-    }
-}
-
 /// WM_POWERBROADCAST ハンドラ。
 ///
 /// PBT_APMRESUMESUSPEND (7) と PBT_APMRESUMEAUTOMATIC (18) の両方を resume と
@@ -393,10 +382,6 @@ pub(crate) unsafe fn handle_wm_inputlangchange(app: &mut Runtime) {
     check_keyboard_layout_on_change();
 }
 
-/// WM_PROCESS_DEFERRED ハンドラ
-pub(crate) unsafe fn handle_wm_process_deferred(app: &mut Runtime) {
-    app.process_deferred_keys();
-}
 
 /// WM_FOCUS_KIND_UPDATE ハンドラ
 pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usize, lparam: isize) {

@@ -22,8 +22,8 @@ use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS,
-    WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED, WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK,
-    WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
+    WM_FOCUS_KIND_UPDATE, WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK,
+    WM_PANIC_RESET, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -319,11 +319,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 let _ =
                     with_app(|app| unsafe { message_handlers::handle_wm_ime_kind_changed(app) });
             }
-            WM_IME_KEY_DETECTED => {
-                // SAFETY: WM_IME_KEY_DETECTED はメインスレッドのメッセージループからのみ配送される。
-                let _ =
-                    with_app(|app| unsafe { message_handlers::handle_wm_ime_key_detected(app) });
-            }
             WM_POWERBROADCAST => {
                 let pbt = msg.wParam.0;
                 // SAFETY: WM_POWERBROADCAST はメインスレッドのメッセージループからのみ配送される。
@@ -342,11 +337,6 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_INPUTLANGCHANGE => {
                 // SAFETY: WM_INPUTLANGCHANGE はメインスレッドのメッセージループからのみ配送される。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
-            }
-            WM_PROCESS_DEFERRED => {
-                // SAFETY: WM_PROCESS_DEFERRED はメインスレッドのメッセージループからのみ配送される。
-                let _ =
-                    with_app(|app| unsafe { message_handlers::handle_wm_process_deferred(app) });
             }
             WM_FOCUS_KIND_UPDATE => {
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);

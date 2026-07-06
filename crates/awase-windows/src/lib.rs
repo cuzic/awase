@@ -242,15 +242,12 @@ pub const FOCUS_KIND_UPDATE_NO_APP_KIND: u8 = 0xFF;
 /// 設定リロード用カスタムメッセージ
 #[cfg(windows)]
 pub const WM_RELOAD_CONFIG: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 10;
-/// IME 制御キー後の遅延キー再処理用カスタムメッセージ
-#[cfg(windows)]
-pub const WM_PROCESS_DEFERRED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 11;
+// WM_APP+11 (旧 WM_PROCESS_DEFERRED) / +13 / +14 (旧 WM_IME_KEY_DETECTED) は欠番。
+// +11/+14 は post 側がモジュール分割リファクタで消えた孤児ハンドラを 2026-07-06 の
+// 到達不能パス監査で撤去したもの。再利用より欠番のままが安全。
 /// UIA 非同期判定完了通知用カスタムメッセージ
 #[cfg(windows)]
 pub const WM_FOCUS_KIND_UPDATE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 12;
-/// フックで IME 制御キーを検出した際の即時キャッシュ更新要求
-#[cfg(windows)]
-pub const WM_IME_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 14;
 /// フックコールバックからキューされた Effects の実行要求
 #[cfg(windows)]
 pub const WM_EXECUTE_EFFECTS: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 15;
