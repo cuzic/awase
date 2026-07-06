@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 変更
+
+- **実測学習した IMM32 能力をフォーカスプロファイル判定に配線**（到達不能パス監査 B5）
+  - `ImmCapabilityStore`（`ImmGetDefaultIMEWnd`=NULL 検出・IME 検出ミス閾値超えから学習し cache.toml に永続化）は従来、学習・保存するだけで挙動を変える消費者が存在しなかった
+  - フォーカス更新時、静的分類が `Standard` かつ学習値が `Unavailable` のクラスを `Imm32Unavailable` に降格するようにした（静的リスト未掲載の IMM-broken アプリで無駄な `SendMessageTimeoutW` を踏まなくなる）
+  - 昇格方向は行わない（静的な Imm32 不可 / TSF ネイティブ知識を優先）。`Works` 回復学習で降格は自己解除。降格は `[imm-learning] profile 降格` の INFO ログで監査可能、誤学習は cache.toml の `[imm_capability]` を手編集で解除
+  - 注意: 既存の cache.toml に蓄積済みの学習エントリが即座に有効になる。想定外の降格が起きたらログを確認すること
+- **到達不能パス監査（2026-07-06、5 観点並列）に基づくクリーンアップ**
+  - 孤児 WM ハンドラ 2 件（`WM_PROCESS_DEFERRED` / `WM_IME_KEY_DETECTED`）、構築サイトゼロの enum variant 群（`ImeEffect::RequestRefresh`、`ActivationState::Pending`+`PendingReason`、`InactiveReason::NonTextFocus`、`DecisionOrigin`、`DetectionSource::UiaAsync`、`ConvModeAuthority::TemporarilyUnowned`、`ColdReason::SessionExpired`、`ChordKind::CtrlHenkanImeOn`+`ImeEvent::ChordStarted`）を撤去
+  - 空振りしていた event-driven wakeup 機構（`win32-async::AtomicWatcher` + `notify_all`、write-only の `composition_probe` カウンタ）を撤去（待機はポーリング方式に置換済みだった）
+  - 恒偽条件の簡約（`used_eager_path`）、恒真化していた `EffectOrigin`/`SetOpen.origin` の畳み込み、dead write（`GjiState::OnCold.saw_native_f2`）の除去
+  - いずれもリポジトリ全体 grep と証拠鎖の個別検証で「実行時に存在しない値/通らない経路」を確認済み。挙動変更なし
+
 ### バグ修正
 
 - **MS-IME cold start — IME ON 直後の先頭文字リテラル化を修正（BUG-13、「を」→「wお」）**

@@ -108,9 +108,51 @@ impl FocusTracker {
 
     // ── フォーカス更新 ──────────────────────────────────────────────────────
 
-    /// フォーカス情報を更新する。`app_profile` は `class_name` から自動導出。
+    /// フォーカス情報を更新する。`app_profile` は `class_name` から自動導出したうえで、
+    /// 実測学習（`ImmCapabilityStore`）による降格を適用する。
     pub(crate) fn update(&mut self, pid: u32, class_name: String) {
         self.current.update(pid, class_name);
+        let learned = self.imm_learning.get(&self.current.class_name);
+        let overridden =
+            Self::apply_learned_imm_capability(self.current.app_profile, learned);
+        if overridden != self.current.app_profile {
+            log::info!(
+                "[imm-learning] profile 降格: class={:?} {:?} → {:?} \
+                 (実測学習 ImmCapability::Unavailable。誤学習なら cache.toml の \
+                 [imm_capability] から該当クラスを削除)",
+                self.current.class_name,
+                self.current.app_profile,
+                overridden,
+            );
+            self.current.app_profile = overridden;
+        }
+    }
+
+    /// 学習済み IMM 能力による profile 降格の純粋判定。
+    ///
+    /// 静的分類が `Standard` かつ実測学習が `Unavailable` のときだけ
+    /// `Imm32Unavailable` に降格する。昇格方向（`Works` による
+    /// `Imm32Unavailable`/`TsfNative` → `Standard`）は行わない — 静的リストの
+    /// Imm32 不可・TSF ネイティブ知識は実測 1 回の「読めた」より強いため。
+    ///
+    /// これにより静的リストに載っていない IMM-broken アプリ（`ImmGetDefaultIMEWnd`
+    /// が NULL / IME 検出ミスが閾値超え）でも、ImmCross の無駄な
+    /// `SendMessageTimeoutW` を踏まずに MsImeDirect / GjiDirect / KanjiToggle 系へ
+    /// 直行できる。学習の書き手は `focus/imm_learning.rs`（フォーカス時の
+    /// `ImmGetDefaultIMEWnd` 判定）と `Runtime::learn_imm_capability_from_miss`
+    /// （IME 検出ミス数の閾値超え/回復）。`Works` 回復学習で store が更新されれば
+    /// 次のフォーカス更新から降格は解除される（自己修復）。
+    pub(crate) fn apply_learned_imm_capability(
+        static_profile: crate::focus::class_names::AppImeProfile,
+        learned: Option<ImmCapability>,
+    ) -> crate::focus::class_names::AppImeProfile {
+        use crate::focus::class_names::AppImeProfile;
+        match (static_profile, learned) {
+            (AppImeProfile::Standard, Some(ImmCapability::Unavailable)) => {
+                AppImeProfile::Imm32Unavailable
+            }
+            (p, _) => p,
+        }
     }
 
     // ── フォーカスキャッシュ ────────────────────────────────────────────────
@@ -213,5 +255,60 @@ impl FocusTracker {
         if let Some(sender) = &self.uia_sender {
             let _ = sender.send(hwnd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::focus::class_names::AppImeProfile;
+
+    // ── apply_learned_imm_capability（B5 配線の純粋判定）────────────────────
+
+    #[test]
+    fn standard_with_learned_unavailable_downgrades() {
+        assert_eq!(
+            FocusTracker::apply_learned_imm_capability(
+                AppImeProfile::Standard,
+                Some(ImmCapability::Unavailable)
+            ),
+            AppImeProfile::Imm32Unavailable,
+            "実測で IMM 不可と学習済みの Standard クラスは降格する"
+        );
+    }
+
+    #[test]
+    fn standard_with_learned_works_or_unlearned_stays() {
+        assert_eq!(
+            FocusTracker::apply_learned_imm_capability(
+                AppImeProfile::Standard,
+                Some(ImmCapability::Works)
+            ),
+            AppImeProfile::Standard,
+        );
+        assert_eq!(
+            FocusTracker::apply_learned_imm_capability(AppImeProfile::Standard, None),
+            AppImeProfile::Standard,
+        );
+    }
+
+    #[test]
+    fn static_classification_is_never_upgraded() {
+        // 静的な Imm32Unavailable / TsfNative 知識は実測 Works より強い（昇格しない）。
+        assert_eq!(
+            FocusTracker::apply_learned_imm_capability(
+                AppImeProfile::Imm32Unavailable,
+                Some(ImmCapability::Works)
+            ),
+            AppImeProfile::Imm32Unavailable,
+        );
+        assert_eq!(
+            FocusTracker::apply_learned_imm_capability(
+                AppImeProfile::TsfNative,
+                Some(ImmCapability::Unavailable)
+            ),
+            AppImeProfile::TsfNative,
+            "TsfNative は Imm32Unavailable と物理キー扱いが異なるため学習で動かさない"
+        );
     }
 }
