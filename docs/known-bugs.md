@@ -280,32 +280,47 @@ ROMAN ビットを信用しない設計）のため conv=0x0009 を読んでも 
 
 ---
 
-## BUG-09: アクティブ IME 種別の誤検出（実際は MS-IME なのに ime=GJI）【調査中】
+## BUG-09: post_to_main_thread の誤配送 — WM_IME_KIND_CHANGED / WM_FOCUS_KIND_UPDATE がワーカースレッドから main に届かない
 
 **症状:** 2026-07-06T04:15 セッション（Windows Terminal）で、実際のアクティブ IME は
-MS-IME（ユーザー確認済み、GJI は Converter プロセス常駐のみ）なのに、awase は
-`[key-output] ... ime=GJI` と認識し GJI 戦略で動作した:
+MS-IME（ユーザー確認済み、GJI は Converter プロセス常駐のみ）なのに、awase の出力層は
+`[key-output] ... ime=GJI` として GJI 戦略で動作:
 `[gji-fsm] StartProbe` → GJI I/O 静止（`gji_idle=200000ms+`）→ `PendingGjiConfirm:
-GJI 未応答 → unicode で強制送信`。warmup・IME ON/OFF キー選択の戦略分岐がすべて
-誤った側に倒れる。同日 03:43 の別セッション（修正前ビルド）では `ime=MicrosoftIme` と
-正しく検出されており、**プロセス再起動をまたいで検出結果が反転している**。
+GJI 未応答 → unicode で強制送信`。一方、同ログの起動時検出は
+`[tip-detect] initial IME kind: MicrosoftIme` と**正しかった**（ユーザー提供ログで確認）。
+つまり「検出は正しいのに出力層に伝わらない」split-brain。
 
-**有力仮説:** `tip_detector::query_active_kind` は gji-io-monitor **ワーカースレッド**から
-`ITfInputProcessorProfileMgr::GetActiveProfile` を呼んでいるが、TSF の入力プロファイルは
-**スレッドごと**の状態。フォーカス・メッセージポンプを持たないワーカースレッドは
-ユーザーのインタラクティブな IME 切替（GJI⇔MS-IME）に追随せず、スレッド生成時点の
-プロファイル（またはユーザー既定）を返し続ける。awase の起動タイミングにより
-セッション間で結果が反転することも説明できる。
+**原因（確定）:** `win32::post_to_main_thread` が `PostMessageW(None, ..)` を使っていた。
+hwnd=NULL の `PostMessageW` は「**呼び出しスレッド自身**への `PostThreadMessage`」と
+等価（Microsoft docs）。main スレッドから呼ぶ分（`with_app_or_repost` の再 post 等）は
+偶然正しく動くが、ワーカースレッドから呼ぶと自分の（誰も読まない）キューに消える:
 
-**確認方法（次回セッション）:** ログを `grep "tip-detect"` — `initial IME kind:` が
-起動時の判定、`IME kind →` が 2 秒ポーリングでの変化。実 IME を切り替えても
-`IME kind →` が一度も出ないなら per-thread 固着で確定。
+- **gji-io-monitor worker** → `WM_IME_KIND_CHANGED` 消失 → `handle_wm_ime_kind_changed`
+  が一度も走らず、warmup 戦略がデフォルトの `GjiFsm::new()`
+  （`TsfWarmupCoordinator::new`）のまま。MS-IME 環境で GJI probe / unicode 強制送信の
+  迷走を引き起こした。なお belief 側の `tsf_obs().active_ime_kind()` は atomic 直読みの
+  ため正しく、`ime_controller`（MS-IME direct 選択）や GJI observe 判定は正常だった —
+  出力層だけが壊れるため気づきにくかった。
+- **UIA worker** → `WM_FOCUS_KIND_UPDATE`（UIA 非同期分類の結果）も同様に消失。
+  `UIA async: hwnd → TextInput/NonText` のログは出るが main には届いていなかった疑い。
+  UIA 由来の focus_kind 更新に依存する挙動が実質無効化されていた。
 
-**影響:** warmup 戦略（GjiFsm vs MsImeStrategy）、IME ON/OFF キー選択
-（`characterize_strategy`）、GJI observe の適用可否など、ActiveImeKind 分岐のすべて。
+初期調査の per-thread `GetActiveProfile` 固着仮説は、起動時検出が正しかったことで棄却。
 
-**関連ファイル:** `tsf/tip_detector.rs` (`query_active_kind`),
-`tsf/gji_monitor.rs::monitor_loop`（呼び出しスレッド）, `tsf/observer.rs` (`active_ime_kind`)
+**修正:**
+1. `post_to_main_thread(_with)` を `PostThreadMessageW(engine_thread_id(), ..)` に変更。
+   どのスレッドから呼んでも main に届く。TID 未設定（ループ開始前）のみ旧動作に
+   フォールバック（その時点の呼び出し元は main 自身のため正しい）。
+2. `run_message_loop` 先頭で、検出済み IME 種別による warmup 戦略の pull 同期を追加
+   （TID 設定前に発行された初回通知の取りこぼし保険）。
+
+**検証方法（実機）:** 起動ログに `[runtime] startup IME kind sync:` と、IME 切替時に
+`[runtime] WM_IME_KIND_CHANGED received` / `[output] Switching warmup strategy →` が
+出ること。MS-IME で `[gji-fsm]` の probe が走らないこと。
+
+**関連ファイル:** `win32.rs` (`post_to_main_thread`), `app/mod.rs::run_message_loop`,
+`tsf/gji_monitor.rs::monitor_loop`, `focus/uia.rs`（UIA worker）,
+`output/tsf_warmup_coord.rs` (`set_active_ime_kind`)
 
 ---
 
