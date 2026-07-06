@@ -133,6 +133,12 @@ footer p{margin:0.3rem 0}
 <li>キー設定タブ: <code>engine_off_solo_triple</code>（単独3連打でエンジン OFF、Ctrl スタック時の緊急脱出用）を追加</li>
 </ul>
 </li>
+<li><strong>「アプリ別」「プレビュー」タブをサイドパネルから一旦非表示に</strong><ul>
+<li>「アプリ別」は高度な機能のため GUI 化を見送り、<code>config.toml</code> の直接編集に委ねる</li>
+<li>「プレビュー」（配列プレビュー）はまだ実装が固まっていないため一旦非表示（今後の課題）</li>
+<li>いずれも実装自体は残しており、<code>config.toml</code> の <code>app_overrides</code> / <code>post_bypass</code> / レイアウト設定は従来どおり有効</li>
+</ul>
+</li>
 </ul>
 <h2>[1.8.5] - 2026-07-06</h2>
 <h3>バグ修正</h3>
