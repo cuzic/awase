@@ -4,9 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.5] - 2026-07-06
+
 ### バグ修正
 
-- **設定画面が複数ディスプレイの DPI 遷移で操作不能になる問題を修正** ([0ad7481](https://github.com/cuzic/awase/commit/0ad7481), [7153a75](https://github.com/cuzic/awase/commit/7153a75), [201b86a](https://github.com/cuzic/awase/commit/201b86a))
+- **設定画面が複数ディスプレイの DPI 遷移で操作不能になる問題を修正** ([a7d3e53](https://github.com/cuzic/awase/commit/a7d3e53), [7cb1625](https://github.com/cuzic/awase/commit/7cb1625), [7207413](https://github.com/cuzic/awase/commit/7207413))
   - DPI スケールの異なるディスプレイへ移動するとウィンドウが移動先モニタに収まらず、適用/キャンセルボタンが画面外に出ていた
   - モニタサイズへの自動クランプ + ボタンを常時表示の下部パネルへ移動 + 最小ウィンドウサイズを設定
   - 狭い幅ではリフロー（キーボード図の縮小スケール・keymap 行の折り返し）で対応し、収まらない場合のみスクロールバーを表示。デフォルト幅を 580px に拡大（従来はプレビューの右端が切れていた）
@@ -494,7 +496,8 @@ All notable changes to this project will be documented in this file.
 
 **Full Changelog**: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0
 
-[Unreleased]: https://github.com/cuzic/awase/compare/v1.8.4...HEAD
+[Unreleased]: https://github.com/cuzic/awase/compare/v1.8.5...HEAD
+[1.8.5]: https://github.com/cuzic/awase/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/cuzic/awase/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/cuzic/awase/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/cuzic/awase/compare/v1.8.1...v1.8.2
