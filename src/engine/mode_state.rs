@@ -4,7 +4,7 @@
 ///
 /// `bool` では「観測値」と「IMM broken アプリ向け仮定値」を区別できず、
 /// Chrome 等で stale な false に上書きされる問題があるため確度を保持する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InputModeState {
     /// IMM クエリ等でローマ字入力と確認できた
     ObservedRomaji,
@@ -19,7 +19,7 @@ pub enum InputModeState {
 }
 
 /// `AssumedRomaji` の根拠
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AssumedReason {
     /// IMM ブリッジが broken と既知のクラス名（Chrome_WidgetWin_1 等）
     ImmBridgeBroken,
