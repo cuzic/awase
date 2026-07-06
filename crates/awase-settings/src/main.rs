@@ -11,6 +11,7 @@ enum Tab {
     Basic,
     Keys,
     Keymap,
+    AppRules,
     ImeDetect,
     Preview,
     Advanced,
@@ -72,6 +73,12 @@ struct SettingsApp {
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
+    // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
+    new_override_bufs: [(String, String); 4],
+    // post_bypass add-buffers
+    new_pb_key: String,
+    new_pb_process: String,
+    new_pb_class: String,
     // Preview cache: (layout filename, parsed result)
     preview_cache: Option<(String, Result<awase::yab::YabLayout, String>)>,
 }
@@ -108,6 +115,10 @@ impl SettingsApp {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
+            new_override_bufs: Default::default(),
+            new_pb_key: String::new(),
+            new_pb_process: String::new(),
+            new_pb_class: String::new(),
             preview_cache: None,
         }
     }
@@ -226,86 +237,21 @@ impl SettingsApp {
         ui.add_space(4.0);
 
         ui.horizontal(|ui| {
-            ui.label("キーボードモデル:").on_hover_text("キーボードの種類を選びます。\n日本語キーボード(JIS)か、英語キーボード(US)かを指定します。");
-            egui::ComboBox::from_id_salt("kb_model")
-                .selected_text(&self.config.general.keyboard_model)
-                .show_ui(ui, |ui| {
-                    for m in ["jis", "us"] {
-                        ui.selectable_value(
-                            &mut self.config.general.keyboard_model,
-                            m.to_string(),
-                            m,
-                        );
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
             ui.label("同時打鍵閾値:").on_hover_text("同時打鍵と判定する時間の幅です。\n大きいほど判定が甘く(親指シフトが入りやすく)なりますが、遅延が増えます。\n100ms が NICOLA 規格の標準値です。");
             ui.add(
                 egui::Slider::new(&mut self.config.general.simultaneous_threshold_ms, 10..=500)
                     .suffix(" ms"),
             );
         });
+        ui.label("確定モード: n-gram 予測に固定（n-gram モデル未指定時は二段タイマー動作）\n出力方式: アプリごとに最適な注入方式を自動選択");
         ui.horizontal(|ui| {
-            ui.label("確定モード:").on_hover_text("文字の確定方法を選びます。\nモードごとに速度と正確さのバランスが異なります。");
-            egui::ComboBox::from_id_salt("confirm_mode")
-                .selected_text(confirm_mode_label(self.config.general.confirm_mode))
-                .show_ui(ui, |ui| {
-                    use awase::config::ConfirmMode;
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Wait, "待機 (wait)")
-                        .on_hover_text("タイムアウトまで出力を保留します。\n最も正確ですが、入力に少し遅延を感じます。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Speculative, "先行確定 (speculative)")
-                        .on_hover_text("即座に出力し、親指シフトと判定されたら差し替えます。\n高速ですが、まれに画面がちらつきます。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::TwoPhase, "二段タイマー (two_phase)")
-                        .on_hover_text("短い待機の後に投機出力します。\nwait と speculative の中間的な動作です。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::AdaptiveTiming, "適応タイミング (adaptive_timing)")
-                        .on_hover_text("連続入力中は待機、途切れたら投機出力します。\nタイピング速度に自動適応します。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::NgramPredictive, "n-gram 予測 (ngram_predictive)")
-                        .on_hover_text("統計データで次の文字を予測し、判定を最適化します。\nn-gram ファイルの指定が推奨です。");
-                });
-        });
-        ui.label(confirm_mode_tooltip(self.config.general.confirm_mode));
-        let spec_enabled = matches!(
-            self.config.general.confirm_mode,
-            awase::config::ConfirmMode::TwoPhase | awase::config::ConfirmMode::AdaptiveTiming
-        );
-        ui.add_enabled_ui(spec_enabled, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("投機出力待機:").on_hover_text("投機出力までの待機時間です。\n短いほど応答が速くなりますが、誤判定が増えます。\nTwoPhase/AdaptiveTiming モードで使用されます。");
-                ui.add(
-                    egui::Slider::new(&mut self.config.general.speculative_delay_ms, 0..=100)
-                        .suffix(" ms"),
-                );
-            });
-        });
-        ui.horizontal(|ui| {
-            ui.label("出力モード:").on_hover_text("文字の出力方式を選びます。\nアプリとの相性に応じて切り替えてください。");
-            egui::ComboBox::from_id_salt("output_mode")
-                .selected_text(output_mode_label(self.config.general.output_mode))
-                .show_ui(ui, |ui| {
-                    use awase::config::OutputMode;
-                    ui.selectable_value(&mut self.config.general.output_mode, OutputMode::Unicode, "Unicode")
-                        .on_hover_text("ひらがなを直接出力します。\nIME の未確定文字列にはなりません。\n最も互換性が高い方式です。");
-                    ui.selectable_value(&mut self.config.general.output_mode, OutputMode::PerKey, "PerKey")
-                        .on_hover_text("ローマ字をキーイベントとして送信します。\nIME の未確定文字列として入力されます。");
-                    ui.selectable_value(&mut self.config.general.output_mode, OutputMode::Batched, "Batched")
-                        .on_hover_text("ローマ字をまとめて送信します。\n高速ですが、一部のアプリと相性が悪い場合があります。");
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.label("フックモード:").on_hover_text("キーボードフックの動作方式です。\n通常は Relay を推奨します。");
-            ui.radio_value(
-                &mut self.config.general.hook_mode,
-                awase::config::HookMode::Filter,
-                "Filter",
-            )
-            .on_hover_text("変換しないキーはそのまま OS に通します。\n低遅延ですが、まれにキー順序の問題が起きます。");
-            ui.radio_value(
-                &mut self.config.general.hook_mode,
-                awase::config::HookMode::Relay,
-                "Relay",
-            )
-            .on_hover_text("全キーを一旦取り込んで再送信します。\nキーの順序が保証され、最も安定します。（推奨）");
+            ui.label("投機出力待機:").on_hover_text(
+                "投機出力までの待機時間です。\n短いほど応答が速くなりますが、誤判定が増えます。\nn-gram モデル未指定時の二段タイマー動作、および n-gram 予測内部の投機待機で使用されます。",
+            );
+            ui.add(
+                egui::Slider::new(&mut self.config.general.speculative_delay_ms, 0..=100)
+                    .suffix(" ms"),
+            );
         });
         let mut auto_start_checked = self.config.general.auto_start == "enabled";
         if ui.checkbox(&mut auto_start_checked, "自動起動").on_hover_text("Windows ログオン時に自動的に awase を起動します。\nタスクスケジューラに登録されます。").changed() {
@@ -377,6 +323,12 @@ impl SettingsApp {
             &mut self.new_engine_off_key,
             "エンジンを OFF にするキーの組み合わせです。\n複数登録できます。",
         );
+        ui.horizontal(|ui| {
+            ui.label("  単独3連打で OFF:").on_hover_text(
+                "指定キーを単独で素早く3回連続押下するとエンジンを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。",
+            );
+            solo_triple_combo(ui, &mut self.config.keys.engine_off_solo_triple);
+        });
         ui.add_space(8.0);
 
         // IME on/off
@@ -558,6 +510,97 @@ impl SettingsApp {
         }
     }
 
+    fn tab_app_rules(&mut self, ui: &mut egui::Ui) {
+        ui.heading("アプリ別オーバーライド");
+        ui.label(
+            "特定アプリでの awase の挙動を上書きします。\n\
+             プロセス名・クラス名は両方必須で、完全一致（大文字小文字は区別しない）です。\n\
+             クラス名はログの [focus-sync] 行などで確認できます。",
+        );
+        ui.add_space(8.0);
+
+        let [buf_text, buf_bypass, buf_vk, buf_tsf] = &mut self.new_override_bufs;
+        override_list_ui(
+            ui,
+            "ov_text",
+            "テキスト入力扱いを強制 (force_text)",
+            "フォーカス分類を強制的に TextInput にします。\nNICOLA 変換が効かないアプリで有効にします。",
+            &mut self.config.app_overrides.force_text,
+            buf_text,
+        );
+        override_list_ui(
+            ui,
+            "ov_bypass",
+            "素通しを強制 (force_bypass)",
+            "フォーカス分類を強制的に NonText にし、全キーを変換せず OS に通します。\nゲーム等、awase を効かせたくないアプリで有効にします。",
+            &mut self.config.app_overrides.force_bypass,
+            buf_bypass,
+        );
+        override_list_ui(
+            ui,
+            "ov_vk",
+            "VK 注入を強制 (force_vk)",
+            "文字出力を VK Batched 方式（IME に composition させる）に強制します。",
+            &mut self.config.app_overrides.force_vk,
+            buf_vk,
+        );
+        override_list_ui(
+            ui,
+            "ov_tsf",
+            "TSF 注入を強制 (force_tsf)",
+            "文字出力を TSF Sequential 方式に強制します。\nWezTerm 等の TSF ネイティブアプリで使用します。",
+            &mut self.config.app_overrides.force_tsf,
+            buf_tsf,
+        );
+
+        ui.separator();
+        ui.heading("プレフィックスキー素通し (post_bypass)");
+        ui.label(
+            "Ctrl+キー（tmux prefix 等）が素通しされた直後の次の1キーを\n\
+             NICOLA 変換せずそのまま通します。\n\
+             プロセス名・クラス名は部分一致で、空欄はすべてにマッチします。",
+        );
+        ui.add_space(4.0);
+        let mut rm = None;
+        for (i, rule) in self.config.post_bypass.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "    Ctrl+{} / process={} / class={}",
+                    key_display_name(&rule.key),
+                    if rule.process.is_empty() { "(すべて)" } else { &rule.process },
+                    if rule.class.is_empty() { "(すべて)" } else { &rule.class },
+                ));
+                if ui.small_button("x").clicked() {
+                    rm = Some(i);
+                }
+            });
+        }
+        if let Some(i) = rm {
+            self.config.post_bypass.remove(i);
+        }
+        ui.horizontal(|ui| {
+            ui.label("Ctrl+");
+            main_key_combo(ui, "new_pb_key", &mut self.new_pb_key);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_pb_process)
+                    .desired_width(120.0)
+                    .hint_text("プロセス名 (部分一致)"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_pb_class)
+                    .desired_width(120.0)
+                    .hint_text("クラス名 (部分一致)"),
+            );
+            if ui.button("+追加").clicked() && !self.new_pb_key.is_empty() {
+                self.config.post_bypass.push(awase::config::PostBypassRule {
+                    key: std::mem::take(&mut self.new_pb_key),
+                    process: std::mem::take(&mut self.new_pb_process),
+                    class: std::mem::take(&mut self.new_pb_class),
+                });
+            }
+        });
+    }
+
     fn tab_ime_detect(&mut self, ui: &mut egui::Ui) {
         ui.heading("IME 検出");
         ui.label("IME の ON/OFF 切り替えを検出するためのキー設定です。\n通常はデフォルトのままで問題ありません。\n半角/全角キーなど、IME を切り替えるキーを登録します。");
@@ -619,7 +662,6 @@ impl SettingsApp {
                 load_layout_for_preview(
                     &self.config.general.layouts_dir,
                     &layout_file,
-                    &self.config.general.keyboard_model,
                 ),
             ));
         }
@@ -749,6 +791,7 @@ impl eframe::App for SettingsApp {
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::Keymap, "ショートカット"),
+                    (Tab::AppRules, "アプリ別"),
                     (Tab::ImeDetect, "IME 検出"),
                     (Tab::Preview, "プレビュー"),
                     (Tab::Advanced, "詳細設定"),
@@ -789,6 +832,7 @@ impl eframe::App for SettingsApp {
                     Tab::Basic => self.tab_basic(ui),
                     Tab::Keys => self.tab_keys(ui),
                     Tab::Keymap => self.tab_keymap(ui),
+                    Tab::AppRules => self.tab_app_rules(ui),
                     Tab::ImeDetect => self.tab_ime_detect(ui),
                     Tab::Preview => self.tab_preview(ui),
                     Tab::Advanced => self.tab_advanced(ui),
@@ -798,6 +842,80 @@ impl eframe::App for SettingsApp {
 }
 
 // ── Reusable UI helpers ──
+
+/// アプリ別オーバーライド1カテゴリ分のリスト UI（完全一致・両フィールド必須）。
+fn override_list_ui(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    tooltip: &str,
+    entries: &mut Vec<awase::config::AppOverrideEntry>,
+    buf: &mut (String, String),
+) {
+    ui.label(label).on_hover_text(tooltip);
+    let mut rm = None;
+    for (i, e) in entries.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("    {} / {}", e.process, e.class));
+            if ui.small_button("x").clicked() {
+                rm = Some(i);
+            }
+        });
+    }
+    if let Some(i) = rm {
+        entries.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut buf.0)
+                .desired_width(150.0)
+                .hint_text("プロセス名 (例: msedge.exe)")
+                .id(egui::Id::new(format!("{id}_proc"))),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut buf.1)
+                .desired_width(200.0)
+                .hint_text("クラス名 (完全一致)")
+                .id(egui::Id::new(format!("{id}_class"))),
+        );
+        if ui.button("+追加").clicked() && !buf.0.is_empty() && !buf.1.is_empty() {
+            entries.push(awase::config::AppOverrideEntry {
+                process: std::mem::take(&mut buf.0),
+                class: std::mem::take(&mut buf.1),
+            });
+        }
+    });
+    ui.add_space(8.0);
+}
+
+/// `engine_off_solo_triple`（単独3連打でエンジン OFF にするキー）の選択 UI。
+fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>) {
+    let display = current.as_deref().map_or_else(
+        || "（無効）".to_string(),
+        |v| {
+            THUMB_KEY_OPTIONS
+                .iter()
+                .find(|(_, internal)| *internal == v)
+                .map_or_else(|| v.to_string(), |(d, _)| (*d).to_string())
+        },
+    );
+    egui::ComboBox::from_id_salt("engine_off_solo_triple")
+        .selected_text(display)
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_none(), "（無効）").clicked() {
+                *current = None;
+            }
+            for (label, internal) in THUMB_KEY_OPTIONS {
+                if ui
+                    .selectable_label(current.as_deref() == Some(*internal), *label)
+                    .clicked()
+                {
+                    *current = Some((*internal).to_string());
+                }
+            }
+        });
+}
 
 fn key_list_ui(
     ui: &mut egui::Ui,
@@ -1185,7 +1303,6 @@ const JIS_ROW_KEYS: [usize; 4] = [13, 12, 11, 10];
 fn load_layout_for_preview(
     layouts_dir: &str,
     layout_file: &str,
-    keyboard_model: &str,
 ) -> Result<awase::yab::YabLayout, String> {
     // layouts_dir が相対パスなら current_exe の隣を探す
     let dir = if std::path::Path::new(layouts_dir).is_absolute() {
@@ -1200,11 +1317,9 @@ fn load_layout_for_preview(
     };
     let path = dir.join(layout_file);
     let content = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let model = match keyboard_model {
-        "us" => awase::scanmap::KeyboardModel::Us,
-        _ => awase::scanmap::KeyboardModel::Jis,
-    };
-    awase::yab::YabLayout::parse(&content, model).map_err(|e| format!("{e}"))
+    // .yab は JIS 物理位置ベースのため Jis 固定
+    awase::yab::YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis)
+        .map_err(|e| format!("{e}"))
 }
 
 /// YabFace をキーボード風のグリッドで描画する。
@@ -1360,35 +1475,3 @@ fn send_reload_config_message() {
     }
 }
 
-const fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
-    use awase::config::ConfirmMode;
-    match mode {
-        ConfirmMode::Wait => "待機 (wait)",
-        ConfirmMode::Speculative => "先行確定 (speculative)",
-        ConfirmMode::TwoPhase => "二段タイマー (two_phase)",
-        ConfirmMode::AdaptiveTiming => "適応タイミング (adaptive_timing)",
-        ConfirmMode::NgramPredictive => "n-gram 予測 (ngram_predictive)",
-    }
-}
-
-const fn confirm_mode_tooltip(mode: awase::config::ConfirmMode) -> &'static str {
-    use awase::config::ConfirmMode;
-    match mode {
-        ConfirmMode::Wait => "  タイムアウトまで出力を保留。最も正確だが遅延あり。",
-        ConfirmMode::Speculative => "  即座に出力し、同時打鍵時に差し替え。高速だが一瞬ちらつく。",
-        ConfirmMode::TwoPhase => "  短い待機後に投機出力。wait と speculative の中間。",
-        ConfirmMode::AdaptiveTiming => {
-            "  連続打鍵中は wait、途切れたら投機。タイピング速度に適応。"
-        }
-        ConfirmMode::NgramPredictive => "  n-gram 統計で投機/待機を動的判断。最も賢い。",
-    }
-}
-
-const fn output_mode_label(mode: awase::config::OutputMode) -> &'static str {
-    use awase::config::OutputMode;
-    match mode {
-        OutputMode::Unicode => "Unicode",
-        OutputMode::PerKey => "PerKey",
-        OutputMode::Batched => "Batched",
-    }
-}
