@@ -24,7 +24,6 @@ pub(crate) struct OpenBeliefInputs {
     pub conv_mode: Option<u32>,
     // ── コンテキスト ──
     pub can_imm32_cross_process: bool,
-    pub is_engine_intent: bool,
     pub now_ms: u64,
 }
 
@@ -51,8 +50,10 @@ impl OpenBelief {
 /// 取得できない場合は shadow_on + candidate 観測で推定する。
 ///
 /// # confident の計算
-/// EngineIntent かつ ImmCross/GJI で確認できない環境（KanjiToggle 系）でのみ
-/// `safely_confirmed` を検査する。それ以外は常に `true`。
+/// ImmCross/GJI で確認できない環境（KanjiToggle 系）でのみ `safely_confirmed` を
+/// 検査する。それ以外は常に `true`。
+/// （旧 `is_engine_intent` 条件は 2026-07-06 到達不能パス監査 B6 で撤去 —
+/// SetOpen は常に Engine の意図であり恒真だった。）
 /// `confident=false` は「already_matched を強制 false」つまり「必ず apply する」を意味する。
 pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
     let effective_open = if let Some(conv) = inputs.conv_mode {
@@ -71,8 +72,7 @@ pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) 
             || (!desired_open && inputs.candidate_was_seen)
     };
 
-    let confident = if inputs.is_engine_intent
-        && !inputs.can_imm32_cross_process
+    let confident = if !inputs.can_imm32_cross_process
         && !inputs.gji_monitor_ok
         && inputs.conv_mode.is_none()
     {
@@ -102,7 +102,6 @@ mod tests {
             gji_monitor_ok: false,
             conv_mode: Some(0x10),
             can_imm32_cross_process: false,
-            is_engine_intent: true,
             now_ms: 0,
         };
         let belief = reduce_open_belief(&inputs, true);
@@ -123,7 +122,6 @@ mod tests {
             gji_monitor_ok: false,
             conv_mode: Some(0x09),
             can_imm32_cross_process: false,
-            is_engine_intent: true,
             now_ms: 0,
         };
         let belief = reduce_open_belief(&inputs, true);

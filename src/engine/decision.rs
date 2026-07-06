@@ -11,24 +11,10 @@ use crate::yab::YabLayout;
 use super::fsm_types::ModifierState;
 use super::mode_state::InputModeState;
 
-// ── DecisionOrigin ──
-
-/// Engine が `ImeEffect::SetOpen` を発行した理由の粒度付き分類。
-///
-/// `platform::EffectOrigin` より細かい粒度を持ち、engine 内部でどの経路から
-/// IME 制御が要求されたかを Platform 層に伝えられる。
-/// Platform 側では `From<DecisionOrigin> for EffectOrigin` を使って
-/// 粗い `EffectOrigin` に変換する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecisionOrigin {
-    /// NICOLA FSM (同時打鍵判定) の出力として IME 制御が必要になった
-    NicolaFsm,
-    /// 特殊キーコンボ（Ctrl+無変換等）による IME 制御バイパス
-    Bypass,
-    // 旧 Speculative / PendingTimer / Unknown は 2026-07-06 の到達不能パス監査で撤去。
-    // どの emission サイトも構築しておらず（SetOpen は NicolaFsm / Bypass 固定）、
-    // Unknown → EffectOrigin::ObservationSync のマップも実質死んでいた。
-}
+// 旧 DecisionOrigin / platform::EffectOrigin は 2026-07-06 の到達不能パス監査
+// (A9/B6) で段階的に撤去 — Speculative/PendingTimer/Unknown は構築ゼロ、残る
+// NicolaFsm/Bypass も読み手が「常に EngineIntent」へ畳む変換 1 箇所だけで、
+// SetOpen の origin を区別する消費者が存在しなかった。
 
 // ── 副作用モデル（Effect / Decision / InputContext）──
 
@@ -56,12 +42,8 @@ pub enum TimerEffect {
 /// IME 制御に関する副作用
 #[derive(Debug, Clone)]
 pub enum ImeEffect {
-    /// IME の ON/OFF を設定する。
-    ///
-    /// `origin` で「Engine の意図」か「観測同期」かを区別する。
-    /// Platform 側はこれを見てフォールバックキー送信（VK_KANJI 等）を
-    /// 適用するか判断できる。
-    SetOpen { open: bool, origin: DecisionOrigin },
+    /// IME の ON/OFF を設定する（常に Engine の意図。観測同期は別経路）。
+    SetOpen { open: bool },
     // 旧 RequestRefresh は 2026-07-06 の到達不能パス監査で撤去（構築サイトゼロ）。
 }
 
@@ -426,7 +408,7 @@ mod tests {
     fn find_ime_set_open_finds_set_open_among_other_effects() {
         let d = Decision::consumed_with(smallvec![
             test_effect(),
-            Effect::Ime(ImeEffect::SetOpen { open: false, origin: DecisionOrigin::NicolaFsm }),
+            Effect::Ime(ImeEffect::SetOpen { open: false }),
         ]);
         assert_eq!(d.find_ime_set_open(), Some(false));
     }
@@ -441,7 +423,7 @@ mod tests {
     fn retaining_non_set_open_effects_removes_set_open_but_keeps_others() {
         let mut d = Decision::consumed_with(smallvec![
             test_effect(),
-            Effect::Ime(ImeEffect::SetOpen { open: false, origin: DecisionOrigin::NicolaFsm }),
+            Effect::Ime(ImeEffect::SetOpen { open: false }),
         ]);
         assert_eq!(d.find_ime_set_open(), Some(false));
 

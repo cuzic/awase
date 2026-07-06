@@ -15,7 +15,7 @@ use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 
 use super::decision::{
-    ActivationState, Decision, DecisionOrigin, Effect, EffectVec, EngineCommand, ImeEffect,
+    ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
     InactiveReason, InputContext, InputEffect, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
@@ -166,7 +166,6 @@ impl Engine {
             if !suppress_set_open {
                 effects.push(Effect::Ime(ImeEffect::SetOpen {
                     open: now_active,
-                    origin: DecisionOrigin::Bypass,
                 }));
             }
             // NotRomajiInput の場合は SetOpen も engine-state キーも不要。
@@ -403,7 +402,6 @@ impl Engine {
         if effects.is_empty() {
             decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
                 open: true,
-                origin: DecisionOrigin::Bypass,
             }));
         } else {
             for e in effects {
@@ -438,7 +436,6 @@ impl Engine {
             // IME 制御の意図 (SetOpen) は明示的に追加する。
             effects.push(Effect::Ime(ImeEffect::SetOpen {
                 open,
-                origin: DecisionOrigin::Bypass,
             }));
         }
         Decision::consumed_with(effects)

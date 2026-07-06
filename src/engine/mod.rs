@@ -20,7 +20,7 @@ pub mod output_history;
 pub mod timing;
 
 // Public re-exports
-pub use decision::DecisionOrigin;
+
 pub use conv::{Charset, ConvMode};
 pub use decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext,

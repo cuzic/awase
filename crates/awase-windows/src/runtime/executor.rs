@@ -10,8 +10,8 @@
 ///   フック内で OS API を一切呼ばない。
 use std::collections::VecDeque;
 
-use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect};
-use awase::platform::{EffectOrigin, PlatformRuntime, TsfComposition};
+use awase::engine::{Decision, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect};
+use awase::platform::{PlatformRuntime, TsfComposition};
 use awase::types::RawKeyEvent;
 
 use crate::hook::CallbackResult;
@@ -561,8 +561,8 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
-            return self.dispatch_ime_set_open(platform, open, origin);
+        if let Effect::Ime(ImeEffect::SetOpen { open }) = effect {
+            return self.dispatch_ime_set_open(platform, open);
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
         // platform_rt (&mut dyn PlatformRuntime) 変換前に行う必要がある。
@@ -621,7 +621,6 @@ impl DecisionExecutor {
         &mut self,
         platform: &WindowsPlatform,
         open: bool,
-        origin: DecisionOrigin,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
@@ -698,7 +697,6 @@ impl DecisionExecutor {
             // 観測値は冒頭で構築済みの view から読む（tsf_obs() の二重呼び出し回避）。
             // EngineIntent かつ ImmCross/GJI で確認できない環境では
             // `confident=false` → `already_matched=false` → 必ず apply する（desync 対策）。
-            let is_engine_intent = EffectOrigin::from(origin) == EffectOrigin::EngineIntent;
             let now_ms = crate::hook::current_tick_ms();
 
             // MS-IME + TsfNative の場合のみ conv_mode を直接読む（ground-truth）。
@@ -721,13 +719,11 @@ impl DecisionExecutor {
                 gji_monitor_ok: view.observed.gji_monitor_ok,
                 conv_mode,
                 can_imm32_cross_process: view.focus.profile.can_use_imm32_cross_process(),
-                is_engine_intent,
                 now_ms,
             };
             let belief = crate::output::reduce_open_belief(&belief_inputs, open);
             log::debug!(
-                "[dispatch-ime] belief: effective={} confident={} conv={:?} \
-                 (engine_intent={is_engine_intent} profile={:?})",
+                "[dispatch-ime] belief: effective={} confident={} conv={:?} (profile={:?})",
                 belief.effective_open, belief.confident, conv_mode, view.focus.profile
             );
             let outcome = platform.apply_ime_open_with_view(open, &view, belief);
@@ -798,7 +794,6 @@ mod tests {
             gji_monitor_ok: false,
             conv_mode: None,
             can_imm32_cross_process: false,
-            is_engine_intent: true,
             now_ms,
         };
         reduce_open_belief(&inputs, desired).confident
@@ -876,7 +871,6 @@ mod tests {
             gji_monitor_ok: false,
             conv_mode: None,
             can_imm32_cross_process: true,
-            is_engine_intent: true,
             now_ms: 1000,
         };
         assert!(reduce_open_belief(&inputs, false).confident);
@@ -893,28 +887,13 @@ mod tests {
             gji_monitor_ok: true,
             conv_mode: None,
             can_imm32_cross_process: false,
-            is_engine_intent: true,
             now_ms: 1000,
         };
         assert!(reduce_open_belief(&inputs, false).confident);
     }
 
-    // ケース 8: EngineIntent でない → confident（override 不要）
-    #[test]
-    fn confident_when_not_engine_intent() {
-        let inputs = OpenBeliefInputs {
-            shadow_on: false,
-            applied: AppliedImeState::Unknown,
-            candidate_visible: false,
-            candidate_was_seen: false,
-            gji_monitor_ok: false,
-            conv_mode: None,
-            can_imm32_cross_process: false,
-            is_engine_intent: false,
-            now_ms: 1000,
-        };
-        assert!(reduce_open_belief(&inputs, false).confident);
-    }
+    // （旧ケース 8「EngineIntent でない → confident」は 2026-07-06 到達不能パス監査
+    // B6 で撤去 — SetOpen は常に Engine の意図であり is_engine_intent 区別ごと畳んだ。）
 
     // ケース 9: Confirmed ON + 目標 ON → confident（永続スキップ）
     #[test]
@@ -972,13 +951,10 @@ mod tests {
 
     // ── strip_ime_set_open_if_settling (P3-1: focus-settle SetOpen 一次フィルタ) ──
 
-    use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, TimerEffect};
+    use awase::engine::{Decision, Effect, ImeEffect, TimerEffect};
 
     fn set_open_effect(open: bool) -> Effect {
-        Effect::Ime(ImeEffect::SetOpen {
-            open,
-            origin: DecisionOrigin::NicolaFsm,
-        })
+        Effect::Ime(ImeEffect::SetOpen { open })
     }
 
     // settling=true: SetOpen effect は decision から除去される。
