@@ -22,6 +22,10 @@ All notable changes to this project will be documented in this file.
 - **設定画面にアプリ別オーバーライドと緊急脱出キーの UI を追加**
   - 新タブ「アプリ別」: `app_overrides`（force_text / force_bypass / force_vk / force_tsf）と `post_bypass`（tmux prefix 等の素通し）を GUI から編集可能に
   - キー設定タブ: `engine_off_solo_triple`（単独3連打でエンジン OFF、Ctrl スタック時の緊急脱出用）を追加
+- **「アプリ別」「プレビュー」タブをサイドパネルから一旦非表示に**
+  - 「アプリ別」は高度な機能のため GUI 化を見送り、`config.toml` の直接編集に委ねる
+  - 「プレビュー」（配列プレビュー）はまだ実装が固まっていないため一旦非表示（今後の課題）
+  - いずれも実装自体は残しており、`config.toml` の `app_overrides` / `post_bypass` / レイアウト設定は従来どおり有効
 
 ## [1.8.5] - 2026-07-06
 

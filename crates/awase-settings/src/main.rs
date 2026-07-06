@@ -11,8 +11,11 @@ enum Tab {
     Basic,
     Keys,
     Keymap,
+    // サイドパネルから外しているため未構築（今後の課題として実装は保持）。
+    #[allow(dead_code)]
     AppRules,
     ImeDetect,
+    #[allow(dead_code)]
     Preview,
     Advanced,
 }
@@ -822,13 +825,16 @@ impl eframe::App for SettingsApp {
             .default_width(100.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
+                // 「アプリ別」(AppRules) と「プレビュー」(Preview) は非表示。
+                // 前者は高度な機能のため GUI 化を見送り、後者は実装がまだ固まって
+                // いないため一旦非表示にしている（今後の課題）。config.toml 側の
+                // app_overrides / post_bypass / レイアウトは従来どおり有効で、
+                // tab_app_rules / tab_preview の実装自体は残してある。
                 for (tab, label) in [
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::Keymap, "ショートカット"),
-                    (Tab::AppRules, "アプリ別"),
                     (Tab::ImeDetect, "IME 検出"),
-                    (Tab::Preview, "プレビュー"),
                     (Tab::Advanced, "詳細設定"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
