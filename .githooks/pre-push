@@ -1,9 +1,73 @@
-#!/bin/bash
-# Pre-push hook: compile check before push
-echo "Running pre-push checks..."
-mise run check
-if [ $? -ne 0 ]; then
-    echo "❌ Compilation failed. Push aborted."
-    exit 1
+#!/usr/bin/env bash
+# pre-push: awase-windows を Windows ターゲットでクリーンチェックする
+#
+# pre-commit の cargo xwin check はキャッシュを使うため、Linux クロスコンパイルが
+# 誤って通過した場合にキャッシュ汚染が起きる。pre-push では awase-windows の
+# xwin キャッシュをクリアしてから再チェックすることでこれを防ぐ。
+set -euo pipefail
+
+# git が渡す ref リストは stdin から一度だけ読める。以下の advisory チェックと
+# 既存の xwin チェックの両方で使えるよう、先に変数へ退避する。
+push_refs="$(cat)"
+
+# --- [advisory] fix-requires-evidence（非ブロッキング警告） -------------------
+# 再発ファミリー（warmup/focus/belief/conv/キー選択）該当ファイルが変更されている
+# のに tests/ か docs/known-bugs.md に差分が無ければ、テスト/記録の追加を促す。
+# 参照: .claude/rules/fix-requires-evidence.md
+warn_if_missing_evidence() {
+    local refs="$1"
+    local changed="" _lref lsha _rref rsha
+    while IFS=' ' read -r _lref lsha _rref rsha; do
+        if [ -z "${lsha:-}" ]; then continue; fi
+        if [ "$lsha" = "0000000000000000000000000000000000000000" ]; then continue; fi
+        if [ "${rsha:-}" = "0000000000000000000000000000000000000000" ]; then continue; fi
+        if [ -z "${rsha:-}" ]; then continue; fi
+        changed+="$(git diff --name-only "${rsha}..${lsha}" 2>/dev/null || true)"$'\n'
+    done <<< "$refs"
+
+    local target='crates/awase-windows/src/(output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline)\.rs|state/(ime|conv_mode|observation_store)|ime_controller\.rs|tuning\.rs)'
+    local evidence='(crates/awase-windows/tests/|docs/known-bugs\.md)'
+
+    if printf '%s' "$changed" | grep -qE "$target"; then
+        if ! printf '%s' "$changed" | grep -qE "$evidence"; then
+            echo "[pre-push][warn] awase-windows の再発ファミリー該当ファイルが変更されていますが、"
+            echo "                 tests/ にも docs/known-bugs.md にも差分がありません。"
+            echo "                 golden/ジャーナルリプレイの追加、または known-bugs.md への再現手順追記を検討してください。"
+            echo "                 （.claude/rules/fix-requires-evidence.md 参照 / 警告のみ・push はブロックしません）"
+        fi
+    fi
+}
+warn_if_missing_evidence "$push_refs" || true
+# -----------------------------------------------------------------------------
+
+needs_check=false
+
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+    # 削除 push (local_sha が all-zeros) はスキップ
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        # 新規ブランチ: 保守的にチェック実行
+        needs_check=true
+    elif git diff --name-only "${remote_sha}..${local_sha}" 2>/dev/null \
+            | grep -q '^crates/awase-windows/'; then
+        needs_check=true
+    fi
+
+    $needs_check && break
+done <<< "$push_refs"
+
+if ! $needs_check; then
+    exit 0
 fi
-echo "✅ All checks passed."
+
+if ! command -v cargo-xwin &>/dev/null; then
+    echo "[pre-push] cargo-xwin が見つかりません。skip します（mise run check にフォールバック）。"
+    mise run check
+    exit $?
+fi
+
+echo "[pre-push] awase-windows xwin キャッシュをクリアして再チェック ..."
+# awase-windows 自身のキャッシュのみクリア（依存クレートは保持）
+cargo clean -p awase-windows --target x86_64-pc-windows-msvc 2>/dev/null || true
+cargo xwin check -p awase-windows 2>&1
