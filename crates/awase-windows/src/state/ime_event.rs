@@ -193,6 +193,15 @@ pub enum InputModeApplyStrategy {
     /// （GJI がひらがなへ遷移するはず）を先読みする内部補正。1500ms 後の
     /// idle-conv-check が実際の GJI 状態で再確認・再訂正する。
     PostSetOpenEisuReset,
+    /// 物理 IME キー / SyncKey による shadow toggle OFF→ON 直後、stale な
+    /// `ObservedEisu` を先回りで訂正する。
+    ///
+    /// `PostSetOpenEisuReset`（Decision 経由の SetOpen(true) パス）と対になる救済。
+    /// engine が `NotRomajiInput` で inactive の間は Decision 経由の SetOpen 自体が
+    /// 発生しない（activation が mode に塞がれる循環）ため、ユーザー起点の
+    /// IME-ON 経路にはこの専用 strategy で同じ訂正を配線する。
+    /// 判定は `state::eisu_recovery::eisu_reset_on_ime_on` に集約。
+    UserImeOnEisuReset,
 }
 
 /// `InputModeApplied` event における適用結果。

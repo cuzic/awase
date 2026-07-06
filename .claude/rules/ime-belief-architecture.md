@@ -115,7 +115,11 @@ self.dispatch_event(
 );
 ```
 
-新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用の variant を追加すること（既存の `ImmBrokenCorrection` / `PanicReset` / `FocusReset` / `CacheRestore` / `PostSetOpenEisuReset` を参照）。
+新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用の variant を追加すること（既存の `ImmBrokenCorrection` / `PanicReset` / `CacheRestore` / `PostSetOpenEisuReset` / `UserImeOnEisuReset` を参照。かつて記載していた `FocusReset` は実在しない）。
+
+## user IME-ON 経路と ObservedEisu 救済の対称性
+
+IME を ON にする経路を追加したら、stale `ObservedEisu` の救済（`state/eisu_recovery.rs` の `eisu_reset_on_ime_on`）を**必ず対で配線**すること。ObservedEisu は engine activation を塞ぎ、activation 側の救済は Decision 経由に限られるため、救済のない IME-ON 経路は Imm32Unavailable アプリで engine 永久 inactive の循環デッドロックを作る（2026-07-06 MS Edge で実発生）。経路×救済の対応表は `state/eisu_recovery.rs` の module doc を SSOT とし、`tests/architecture_guard.rs` の `user_ime_on_paths_are_paired_with_eisu_reset` が対称性を監視する。
 
 ## belief の書き込み点
 

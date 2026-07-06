@@ -143,7 +143,8 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 /// 現在の designated 使用箇所（各 strategy と対応）:
 /// - `platform_state.rs::apply_panic_reset`        → `InputModeApplyStrategy::PanicReset`
 /// - `platform_state.rs::apply_hwnd_cache_restore` → `InputModeApplyStrategy::CacheRestore`
-/// - `key_pipeline.rs`                             → `InputModeApplyStrategy::PostSetOpenEisuReset`
+/// - `key_pipeline.rs` (post-decision)             → `InputModeApplyStrategy::PostSetOpenEisuReset`
+/// - `key_pipeline.rs` (shadow toggle OFF→ON)      → `InputModeApplyStrategy::UserImeOnEisuReset`
 /// - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
 /// - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
 ///
@@ -153,7 +154,7 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 fn input_mode_applied_construction_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
         ("src/state/platform_state.rs", 2), // PanicReset + CacheRestore
-        ("src/runtime/key_pipeline.rs", 1), // PostSetOpenEisuReset
+        ("src/runtime/key_pipeline.rs", 2), // PostSetOpenEisuReset + UserImeOnEisuReset
         ("src/runtime/ime_refresh.rs", 1),  // ImmBrokenCorrection (FocusChanged)
         ("src/runtime/mod.rs", 1),          // ImmBrokenCorrection (Blacklist force-ON)
     ];

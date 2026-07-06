@@ -8,7 +8,7 @@ use crate::hook;
 use crate::hook::CallbackResult;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
-use awase::engine::{AssumedReason, InputModeState};
+use awase::engine::InputModeState;
 use awase::platform::TsfComposition as _;
 use awase::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
 
@@ -467,6 +467,33 @@ impl Runtime {
         }
         self.platform_state.ime.on_ime_toggled();
 
+        // OFF→ON の場合、stale な ObservedEisu を先回りで訂正する。
+        // ObservedEisu は engine activation を NotRomajiInput で塞ぎ、activation 側の
+        // 救済 (PostSetOpenEisuReset) は Decision 経由 SetOpen(true) 限定のため、
+        // この経路で訂正しないと Imm32Unavailable アプリ（観測経路なし）では
+        // engine が永久に inactive のままになる（2026-07-06 MS Edge で実発生）。
+        // ユーザーが明示的に IME を ON にした時点で IME はひらがなモードで再開する
+        // ため、過去の英数観測は stale（eisu guard の保護対象と衝突しない）。
+        if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_ime_on(
+            !current && self.platform_state.ime.effective_open(),
+            self.platform_state.ime.input_mode(),
+        ) {
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::InputModeApplied {
+                    mode: new_mode,
+                    strategy:
+                        crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
+                    result: crate::state::ime_event::InputModeApplyResult::Applied,
+                    at: tick_ms,
+                },
+                tick_ms,
+            );
+            log::info!(
+                "[shadow-toggle] IME ON + ObservedEisu → AssumedRomaji にリセット \
+                 (UserImeOnEisuReset, engine 即活性化)"
+            );
+        }
+
         // ON→OFF の場合、OS IME を明示的に OFF にする。
         // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
         // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
@@ -568,18 +595,18 @@ impl Runtime {
             // VK_KANJI 送信により GJI はひらがなへ遷移するため ObservedEisu は stale。
             // AssumedRomaji にリセットして engine を即座に活性化する。
             // (1500ms 後の idle-conv-check で GJI 実状態を再確認・訂正する)
-            if applied && new_ime_on
-                && self.platform_state.ime.input_mode() == InputModeState::ObservedEisu
-            {
+            // 判定は shadow toggle 経路 (UserImeOnEisuReset) と共通の純関数に集約。
+            if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_ime_on(
+                applied && new_ime_on,
+                self.platform_state.ime.input_mode(),
+            ) {
                 // これは外部観測ではなく、awase 自身が直前に発行した SetOpen(true) の
                 // 帰結を先読みする能動的な訂正のため InputModeApplied で表現する
                 // (InputModeObserved を使うと「ImmGetOpenStatus で観測した」という
                 // 存在しない API 呼び出しを偽装することになる)。
                 self.platform_state.ime.dispatch_event(
                     crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: InputModeState::AssumedRomaji {
-                            reason: AssumedReason::AppKindExcluded,
-                        },
+                        mode: new_mode,
                         strategy: crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
                         result: crate::state::ime_event::InputModeApplyResult::Applied,
                         at: tick_ms,

@@ -38,6 +38,10 @@ pub mod app_ime_policy;
 // なる（ADR-065 と同じ局所抑制パターン）。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod conv_classify;
+// 純粋関数モジュール（conv_classify と同じ ungated パターン）。呼び出し元は
+// #[cfg(windows)] の runtime/ のみ。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod eisu_recovery;
 pub mod force_guard;
 pub mod ime_event;
 pub mod ime_model;
