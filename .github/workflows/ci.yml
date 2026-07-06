@@ -47,6 +47,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --lib -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity
 
+  dylint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # カスタム dylint lint (no_vk_as_scan / ime_event_guard) はレイヤー境界を機械的に強制する。
+      # rustc_private を使うため nightly + rustc-dev/llvm-tools-preview が必須。
+      # toolchain は lints/*/rust-toolchain に固定された値と一致させること（勝手に上げない）。
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-05-22
+          components: rustc-dev, llvm-tools-preview
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-dylint
+        run: cargo install cargo-dylint dylint-link --version 6.0.0 --locked
+      # awase-windows を Windows ターゲットで check し、journal.rs 等の #[cfg(windows)]
+      # コードも含めて lint する（windows-cross-check ジョブと同じ cross-compile 方針）。
+      # 両 lint は Warn レベルなので DYLINT_RUSTFLAGS=-D warnings で CI エラーへ昇格させる。
+      - name: Run dylint (custom layer-boundary lints)
+        env:
+          DYLINT_RUSTFLAGS: "-D warnings"
+        run: cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-gnu
+
   fmt:
     runs-on: ubuntu-latest
     steps:
