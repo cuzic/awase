@@ -54,7 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # カスタム dylint lint (no_vk_as_scan / ime_event_guard) はレイヤー境界を機械的に強制する。
+      # カスタム dylint lint (no_vk_as_scan / ime_event_guard / observation_source_guard)
+      # はレイヤー境界を機械的に強制する。
       # rustc_private を使うため nightly + rustc-dev/llvm-tools-preview が必須。
       # toolchain は lints/*/rust-toolchain に固定された値と一致させること（勝手に上げない）。
       - uses: dtolnay/rust-toolchain@master
