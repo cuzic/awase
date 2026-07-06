@@ -268,6 +268,9 @@ impl EvdevInput {
                         ime_relevance: classify_ime_relevance(keycode),
                         modifier_key: classify_modifier(keycode),
                         modifier_snapshot: Default::default(),
+                        // evdev はハードウェアイベントのみ（uinput 注入は別デバイス経由で
+                        // ここには来ない）
+                        injected: false,
                     };
 
                     log::trace!(

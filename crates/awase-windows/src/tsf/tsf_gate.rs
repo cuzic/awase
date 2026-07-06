@@ -666,6 +666,7 @@ mod tests {
             ime_relevance: ImeRelevance::default(),
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
+            injected: false,
         };
         assert!(gate.try_hold(dummy));
 

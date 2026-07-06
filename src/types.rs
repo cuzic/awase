@@ -191,6 +191,14 @@ pub struct RawKeyEvent {
     /// OUTPUT_PENDING_QUEUE 経由の drain 時に modifier 状態が変化していても
     /// 正しい文脈でイベントを再処理できる。
     pub modifier_snapshot: ModifierState,
+    /// ソフトウェア注入イベント（Windows: `LLKHF_INJECTED`）。
+    ///
+    /// awase 自身の注入（marker 付き）はフック層で除外済みのため、これが true なのは
+    /// 他プロセス（MS-IME/CTF・タッチキーボード・他ツール等）の SendInput 由来のみ。
+    /// 注入イベントはユーザーの物理操作ではないので、ユーザー意図（PhysicalImeKey 等）
+    /// に昇格させてはならない（BUG-14: 外部注入 VK_DBE_HIRAGANA を物理かなキーと誤読し
+    /// ユーザーの IME OFF を Engine ON で上書きし続けた）。
+    pub injected: bool,
 }
 
 /// 出力アクション

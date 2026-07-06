@@ -463,6 +463,27 @@ impl Runtime {
         if !matches!(event.event_type, KeyEventType::KeyDown) {
             return false;
         }
+        // BUG-14: 注入イベント (LLKHF_INJECTED、awase 自身のマーカーなし = MS-IME/CTF 等の
+        // SendInput) はユーザーの物理操作ではないため、SyncKey / PhysicalImeKey の
+        // ユーザー意図に昇格させない。2026-07-06 実機: 外部注入 VK_DBE_HIRAGANA down+up
+        // (hook 上では 0xF0 up + 0xF2 down に翻訳、0.5ms 間隔) が PhysicalImeKey と
+        // 誤読され、ユーザーの Ctrl+無変換 IME OFF が Engine ON で上書きされ続けた。
+        // OS への配送 (passthrough) は従来どおり維持し、実 IME 状態の追従は
+        // may_change_ime → schedule_ime_refresh の観測経路に委ねる。
+        // hook 層での swallow は不可 (MS-IME 自身の機能的注入を壊す、experiments.md
+        // エントリ 04 で実証済み)。
+        if event.injected {
+            if event.ime_relevance.sync_direction.is_some()
+                || event.ime_relevance.shadow_action.is_some()
+            {
+                log::info!(
+                    "[shadow-toggle] injected IME キー vk=0x{:02X} はユーザー意図に昇格させない \
+                     (BUG-14) — belief 追従は may_change_ime refresh 観測に委譲",
+                    event.vk_code,
+                );
+            }
+            return false;
+        }
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))

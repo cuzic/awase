@@ -208,6 +208,7 @@ fn build_event(vk: VkCode, event_type: KeyEventType, timestamp: u64) -> RawKeyEv
         ime_relevance: crate::types::ImeRelevance::default(),
         modifier_key: classify_modifier(vk),
         modifier_snapshot: Default::default(),
+        injected: false,
     }
 }
 

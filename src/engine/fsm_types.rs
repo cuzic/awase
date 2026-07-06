@@ -397,6 +397,7 @@ mod tests {
             ime_relevance: crate::types::ImeRelevance::default(),
             modifier_key,
             modifier_snapshot: Default::default(),
+            injected: false,
         }
     }
 

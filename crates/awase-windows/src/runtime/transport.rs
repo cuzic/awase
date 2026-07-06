@@ -161,6 +161,7 @@ mod plan_tests {
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
+            injected: false,
         }
     }
 

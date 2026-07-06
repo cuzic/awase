@@ -167,6 +167,7 @@ impl EvBuilder {
             ime_relevance: crate::types::ImeRelevance::default(),
             modifier_key: classify_test_modifier(self.vk),
             modifier_snapshot: Default::default(),
+            injected: false,
         }
     }
 }
@@ -1017,6 +1018,7 @@ fn test_nicola_state_stores_scan_code() {
         key_classification: crate::types::KeyClassification::Char,
         physical_pos: Some(PhysicalPos::new(2, 0)),
         modifier_snapshot: Default::default(),
+        injected: false,
     };
 
     let result = engine.on_event(event);
@@ -1049,6 +1051,7 @@ fn test_pending_char_thumb_stores_char_scan() {
         key_classification: crate::types::KeyClassification::Char,
         physical_pos: Some(PhysicalPos::new(2, 0)),
         modifier_snapshot: Default::default(),
+        injected: false,
     };
     engine.on_event(char_event);
 
@@ -1063,6 +1066,7 @@ fn test_pending_char_thumb_stores_char_scan() {
         key_classification: crate::types::KeyClassification::RightThumb,
         physical_pos: None,
         modifier_snapshot: Default::default(),
+        injected: false,
     };
     let result = engine.on_event(thumb_event);
     assert_pending(&result);

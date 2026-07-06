@@ -332,6 +332,7 @@ fn build_raw_key_event(
     key_classification: KeyClassification,
     physical_pos: Option<PhysicalPos>,
     modifier_snapshot: awase::engine::ModifierState,
+    injected: bool,
 ) -> RawKeyEvent {
     use crate::vk::VkCodeExt;
     RawKeyEvent {
@@ -349,6 +350,7 @@ fn build_raw_key_event(
         ime_relevance: classify_ime_relevance(vk),
         modifier_key: vk.classify_modifier(),
         modifier_snapshot,
+        injected,
     }
 }
 
@@ -499,6 +501,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         key_classification,
         physical_pos,
         modifier_snapshot,
+        is_injected,
     );
 
     let engine_tid = crate::engine_thread_id();
