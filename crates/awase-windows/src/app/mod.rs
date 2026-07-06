@@ -20,9 +20,10 @@ use crate::ime;
 use crate::runtime::message_handlers;
 use crate::vk::VkCodeExt;
 use crate::{
-    with_app, with_app_or_repost, with_app_or_repost_with, WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL,
-    WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED,
-    WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
+    with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
+    WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS,
+    WM_FOCUS_KIND_UPDATE, WM_IME_KEY_DETECTED, WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK,
+    WM_PANIC_RESET, WM_PROCESS_DEFERRED, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -284,6 +285,15 @@ fn run_message_loop(taskbar_created_msg: u32) {
             WM_EXECUTE_EFFECTS => {
                 // SAFETY: WM_EXECUTE_EFFECTS はメインスレッドのメッセージループからのみ配送される。
                 let _ = with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
+            }
+            WM_ASYNC_IME_APPLY_COMPLETE => {
+                // ImmCross async apply の完了。sync path の sync_outcomes と対称に
+                // on_ime_apply_complete（単一入口）へ合流させる。
+                // wparam/lparam はポスト元 post_async_ime_apply_complete がパックした (open, outcome)。
+                let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
+                let _ = with_app(|app| {
+                    message_handlers::handle_wm_async_ime_apply_complete(app, wparam, lparam);
+                });
             }
             WM_PANIC_RESET => {
                 // 再入中に消えないよう repost する（blocking op 完了後に再実行）

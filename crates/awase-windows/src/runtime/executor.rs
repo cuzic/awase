@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 
 use awase::config::HookMode;
 use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect};
-use awase::platform::{EffectOrigin, PlatformRuntime};
+use awase::platform::{EffectOrigin, PlatformRuntime, TsfComposition};
 use awase::types::RawKeyEvent;
 
 use crate::hook::CallbackResult;
@@ -35,7 +35,8 @@ pub(crate) struct BatchResult {
     /// true なら `PostMessage(WM_EXECUTE_EFFECTS)` でメッセージループに通知が必要
     pub has_pending: bool,
     /// sync path の SetOpen 完了リスト。
-    /// async path は spawn_local 内で on_ime_apply_complete を直接呼ぶため含まない。
+    /// async path は `WM_ASYNC_IME_APPLY_COMPLETE` 経由で `on_ime_apply_complete` に合流するため
+    /// ここには含まない（`post_async_ime_apply_complete` を参照）。
     pub sync_outcomes: Vec<ImeApplyPair>,
 }
 
@@ -68,6 +69,34 @@ impl std::fmt::Debug for DecisionExecutor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DecisionExecutor").finish_non_exhaustive()
     }
+}
+
+/// FocusTransition settle 期間中に Engine が発行した `ImeEffect::SetOpen` を decision から取り除く。
+///
+/// 「settle 中は SetOpen を実行させない」という不変条件の**一次フィルタ（decision 除去）の
+/// 単一実装**。SetOpen が実行に到達する Decision 経路は 2 つだけ（`435e2d3` の調査）:
+/// - キーボード経路: `key_pipeline::kp_run_inner`（`focus_transition_was_pending` スナップショット）
+/// - 非キーボード経路: `execute_from_loop`（`is_focus_transition_settling` のライブ評価）
+///
+/// どちらの settle 判定を使うかは呼び出し元が持ち（barrier consume タイミングが異なるため）、
+/// ここでは `settling` を受け取るだけで判定条件自体は変えない。belief（`desired_open` 等）を
+/// 汚染させない最終防衛線は `ImeStateHub::handle_engine_set_open` にある（意図が異なるため別に残す）。
+///
+/// settle 中に落とした事実は必ずログに残す（無音で消すと focus 遷移バグの調査コストが跳ね上がるため）。
+pub(crate) fn strip_ime_set_open_if_settling(decision: &mut Decision, settling: bool) {
+    if !settling {
+        return;
+    }
+    let Some(target) = decision.find_ime_set_open() else {
+        return;
+    };
+    decision
+        .effects_mut()
+        .retain(|e| !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })));
+    log::debug!(
+        "[focus-settle] SetOpen({target}) effect stripped from decision \
+         (focus transition barrier still settling)"
+    );
 }
 
 impl DecisionExecutor {
@@ -123,17 +152,11 @@ impl DecisionExecutor {
     ) -> (CallbackResult, Vec<ImeApplyPair>) {
         self.applied_snapshot = ime.model().applied;
         self.belief_input_mode = ime.input_mode();
-        if ime.is_focus_transition_settling(std::time::Instant::now()) {
-            if let Some(target) = decision.find_ime_set_open() {
-                decision
-                    .effects_mut()
-                    .retain(|e| !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })));
-                log::debug!(
-                    "[focus-settle] SetOpen({target}) effect stripped from decision \
-                     (execute_from_loop, focus transition barrier still settling)"
-                );
-            }
-        }
+        // 非キーボード経路の一次フィルタ。ここは barrier consume を経ないので settling をライブ評価する。
+        strip_ime_set_open_if_settling(
+            &mut decision,
+            ime.is_focus_transition_settling(std::time::Instant::now()),
+        );
         let (consumed, effects) = match decision {
             Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
             Decision::PassThroughWith { effects } => (false, effects),
@@ -589,9 +612,9 @@ impl DecisionExecutor {
         if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
             return self.dispatch_ime_set_open(platform, open, origin);
         }
-        // EngineStateChanged: エンジン ON/OFF に連動して ConvModeAuthority を更新する。
+        // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
         // platform_rt (&mut dyn PlatformRuntime) 変換前に行う必要がある。
-        // pending_conv_mode_authority に格納し、runtime が take して ImeStateHub に dispatch する。
+        // set_conv_mode_authority が Output::conv_mutation_allowed（唯一の実体）へ push する。
         if let Effect::Ui(UiEffect::EngineStateChanged { enabled, .. }) = &effect {
             let authority = if *enabled {
                 ConvModeAuthority::AwaseOwned
@@ -713,12 +736,11 @@ impl DecisionExecutor {
                         .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
                     }
                 };
-                let _ = crate::with_app(|app| {
-                    if outcome == awase::platform::ImeOpenOutcome::Failed {
-                        log::warn!("apply_ime_open({open}) failed (async)");
-                    }
-                    app.on_async_ime_apply_complete(open, outcome);
-                });
+                // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と
+                // 対称に、完了 outcome を WM 経由で Runtime の単一入口へ委譲する。
+                // spawn_local の future 内で with_app を直接握らないことで再入面を減らし、
+                // generation 照合を含む B+C+D+E を on_ime_apply_complete に一元化する。
+                crate::runtime::message_handlers::post_async_ime_apply_complete(open, outcome);
                 drop(guard);
             });
             None
@@ -770,10 +792,16 @@ impl DecisionExecutor {
 
     /// intra-batch の applied_snapshot のみを更新する。
     ///
-    /// B（`on_ime_applied`）は `Runtime::on_ime_apply_complete` に委譲済み。
-    /// UnsafeToToggle は送信していないので更新しない。
+    /// sync SetOpen 直後に同一バッチ内の後続 effect（`send_engine_state_ime_key` 等）が
+    /// 参照するキャッシュを更新するためだけに使う（`execute_one` からのみ呼ばれる）。
+    /// B（`on_ime_applied`）と C（ImeModel write-back）は `Runtime::on_ime_apply_complete`
+    /// に委譲済み。UnsafeToToggle は送信していないので更新しない。
+    ///
+    /// async path は完了時にバッチが既に終わっており、次バッチ開始時に
+    /// `applied_snapshot = ime.model().applied` で SSOT から再取得されるため、
+    /// 完了時の intra-batch 更新は不要（`on_ime_apply_complete` が SSOT を更新する）。
     #[expect(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn update_intra_batch_applied(
+    fn update_intra_batch_applied(
         &mut self,
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
@@ -992,5 +1020,57 @@ mod tests {
             at_ms: 1
         }
         .is_confirmed());
+    }
+
+    // ── strip_ime_set_open_if_settling (P3-1: focus-settle SetOpen 一次フィルタ) ──
+
+    use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, TimerEffect};
+
+    fn set_open_effect(open: bool) -> Effect {
+        Effect::Ime(ImeEffect::SetOpen {
+            open,
+            origin: DecisionOrigin::NicolaFsm,
+        })
+    }
+
+    // settling=true: SetOpen effect は decision から除去される。
+    #[test]
+    fn strip_removes_set_open_when_settling() {
+        let mut decision = Decision::consumed_with(vec![set_open_effect(true)].into());
+        super::strip_ime_set_open_if_settling(&mut decision, true);
+        assert!(
+            decision.find_ime_set_open().is_none(),
+            "settle 中は SetOpen effect が除去される"
+        );
+    }
+
+    // settling=false: SetOpen effect はそのまま保持される（settle 外では通常実行）。
+    #[test]
+    fn strip_keeps_set_open_when_not_settling() {
+        let mut decision = Decision::consumed_with(vec![set_open_effect(true)].into());
+        super::strip_ime_set_open_if_settling(&mut decision, false);
+        assert_eq!(
+            decision.find_ime_set_open(),
+            Some(true),
+            "settle 外では SetOpen effect は保持される"
+        );
+    }
+
+    // settling=true でも SetOpen 以外の effect（Timer 等）は保持される（対象集合を SetOpen に限定）。
+    #[test]
+    fn strip_preserves_non_set_open_effects_when_settling() {
+        let mut decision = Decision::consumed_with(
+            vec![set_open_effect(false), Effect::Timer(TimerEffect::Kill(0))].into(),
+        );
+        super::strip_ime_set_open_if_settling(&mut decision, true);
+        assert!(
+            decision.find_ime_set_open().is_none(),
+            "SetOpen は除去される"
+        );
+        let remaining = match &decision {
+            Decision::Consume { effects } => effects.len(),
+            _ => unreachable!("Consume のまま"),
+        };
+        assert_eq!(remaining, 1, "SetOpen 以外の effect（Timer）は残る");
     }
 }

@@ -17,11 +17,8 @@ mod vk_send;
 mod key_injector;
 mod tsf_warmup_coord;
 pub(crate) mod ime_apply_planner;
-/// IME 適用計画を副作用なしで決定する planner（計画型・実行型・コンテキスト型）。
-pub(crate) use ime_apply_planner::{
-    OpenBelief, OpenBeliefInputs, ImeApplyContext, ImeApplyPlan, ImeApplyPlanner,
-    ImeApplyResult, reduce_open_belief,
-};
+/// IME open 状態の観測値を適用時ビリーフへ純粋還元する data-model。
+pub(crate) use ime_apply_planner::{OpenBelief, OpenBeliefInputs, reduce_open_belief};
 use resolve::special_key_to_vk;
 pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 
@@ -525,8 +522,8 @@ impl Output {
     /// executor は `applied_snapshot` から渡す。不明な場合は `None`（`false` として扱われる）。
     /// 条件判定には返り値のメソッド（`can_warmup()` 等）を使う。
     #[must_use]
-    pub fn tsf_readiness(&self, applied_ime_on: Option<bool>) -> awase::tsf::TsfReadiness {
-        awase::tsf::TsfReadiness {
+    pub fn tsf_readiness(&self, applied_ime_on: Option<bool>) -> crate::tsf::TsfReadiness {
+        crate::tsf::TsfReadiness {
             gate: self.tsf_gate.state(),
             ime_on: applied_ime_on.unwrap_or(false),
             is_tsf_mode: self.is_tsf_mode(),
@@ -702,7 +699,7 @@ impl Output {
                                 (baseline={baseline})"
                             );
                             self.install_pending_tsf(Box::new(
-                                crate::tsf::unicode_literal_observer::UnicodeLiteralObserverFsm::new(
+                                crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm::new(
                                     baseline, cold_seq,
                                 ),
                             ));
@@ -782,7 +779,7 @@ impl Output {
         let tick_t = crate::hook::current_tick_ms();
         let env = {
             let ime_fsm = self.ime_mode_fsm.borrow();
-            crate::tsf::probe_fsm::TsfEnvSnapshot {
+            crate::tsf::warmup::probe_fsm::TsfEnvSnapshot {
                 is_tsf_mode: self.is_tsf_mode(),
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
                 // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
@@ -874,7 +871,7 @@ impl Output {
     ///
     /// [`TsfWarmupCoordinator::install_pending_tsf`] への Facade。暗黙のキャンセルを
     /// ログに残し、バグ調査を容易にする。
-    pub(super) fn install_pending_tsf(&self, machine: Box<dyn crate::tsf::tickable_fsm::TickableFsm>) {
+    pub(super) fn install_pending_tsf(&self, machine: Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>) {
         self.warmup_coord.install_pending_tsf(machine);
     }
 

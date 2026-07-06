@@ -1,8 +1,7 @@
 use awase::engine::InputModeState;
-use awase::types::{AppKind, FocusKind};
+use crate::focus::{AppKind, FocusKind};
 
 use super::belief::ImeBelief;
-use super::conv_mode::ConvModeAuthority;
 use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::SyncKeyGate;
 use super::ime_event::{
@@ -198,15 +197,20 @@ impl ImeStateHub {
             return false;
         }
         if focus_transition_was_pending {
-            // フォーカス遷移直後（settle_until 未経過）の SetOpen 要求はフィルタする。
-            // Alt+Tab 等の高速な多重フォーカス遷移中は、中間ウィンドウ（Alt+Tab スイッチャー等）
-            // の未確定な belief に基づいて Engine が SetOpen を発行してしまうことがあり、
-            // これを実際に apply すると最終的な着地先ウィンドウとは無関係な SendInput が
-            // 発行され、belief と実IME状態が乖離する（2026-07-05 に実機ログで確認）。
-            // barrier consume 時に kick される非同期 focus probe が観測を更新すれば、
-            // 次の入力イベントで正しい SetOpen が改めて発行されるため自己修復する。
+            // belief 保護の最終防衛線（P3-1: 3→2 集約）。
+            //
+            // 一次フィルタは decision からの SetOpen effect 除去
+            // （`runtime::executor::strip_ime_set_open_if_settling`。キーボード経路 =
+            // key_pipeline::kp_run_inner と非キーボード経路 = execute_from_loop の両方から呼ぶ）。
+            // ここは意図が異なり（decision 除去 ≠ belief 汚染防止）、万一その一次フィルタを
+            // すり抜けた SetOpen 要求が belief（desired_open 等）を書き換えるのを防ぐ二重化。
+            //
+            // フォーカス遷移直後（settle_until 未経過）は、Alt+Tab 等の高速な多重フォーカス遷移で
+            // 中間ウィンドウ（Alt+Tab スイッチャー等）の未確定 belief に基づき Engine が SetOpen を
+            // 発行し得る（2026-07-05 実機ログで確認）。barrier consume 時に kick される非同期
+            // focus probe が観測を更新すれば、次の入力イベントで正しい SetOpen が再発行され自己修復する。
             log::debug!(
-                "[focus-settle] SetOpen({target}) request filtered \
+                "[focus-settle] SetOpen({target}) request filtered at belief last line of defense \
                  (focus transition barrier still settling at event start)"
             );
             return false;
@@ -445,27 +449,6 @@ impl ImeStateHub {
         if let Some(generation) = self.shadow_model.pending_generation() {
             let event = ImeEvent::from_apply_outcome(open, outcome, generation);
             self.dispatch_event(event, TickMs(ts));
-        }
-
-        // conv_mode_authority を apply 結果と再同期する。
-        //
-        // `ConvModeOwnershipChanged` は本来 `UiEffect::EngineStateChanged`（activation の
-        // 遷移エッジ）でのみ発火するが、その effect が実行前に取り消されたりキューに
-        // 積まれたまま古い値で後から dispatch されたりすると、既に Active な状態で
-        // IME だけ再オープンする経路（例: Ctrl+変換 の 2 度目の押下で activation は
-        // 既に Active のため遷移が起きない）で発火せず、conv_mode_authority が
-        // 古い値（UserOwned）のまま取り残されることがある。結果として IME apply は
-        // Confirmed するのに TSF warmup が「non-AwaseOwned」でスキップされ続け、
-        // 「IME OFF 表示 / Engine ON」の desync を引き起こす。
-        // apply が成功/失敗にかかわらず完了するたびに、実際に確定した open 状態
-        // (`effective`) へ補正することで、この経路依存の取りこぼしを構造的になくす。
-        let corrected = if effective {
-            ConvModeAuthority::AwaseOwned
-        } else {
-            ConvModeAuthority::UserOwned
-        };
-        if self.model().conv_mode_authority() != corrected {
-            self.dispatch_event(ImeEvent::ConvModeOwnershipChanged { authority: corrected }, TickMs(ts));
         }
     }
 }

@@ -19,7 +19,9 @@ use crate::{
     TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE,
     WM_EXECUTE_EFFECTS,
 };
-use awase::types::{ContextChange, FocusKind};
+use awase::platform::ImeOpenOutcome;
+use awase::types::ContextChange;
+use crate::focus::FocusKind;
 
 use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
 
@@ -128,8 +130,6 @@ pub(crate) unsafe fn handle_wm_timer(
         Some(id) if id == TIMER_OUTPUT_GUARD => {
             let outcomes = app.executor.on_output_guard_timer(&mut app.platform);
             app.dispatch_outcomes(outcomes);
-            // H-3-e: drain 中に EngineStateChanged が処理された場合に ImeStateHub へ dispatch。
-            app.sync_conv_mode_authority();
         }
         Some(id) if id == TIMER_TSF_PROBE => {
             // log_composition_probe が with_app_ref (共有借用) を使うが、
@@ -229,10 +229,68 @@ pub(crate) unsafe fn handle_wm_timer(
 pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     let outcomes = app.executor.drain_deferred(&mut app.platform);
     app.dispatch_outcomes(outcomes);
-    // H-3-e: drain 中に EngineStateChanged が処理された場合に ImeStateHub へ dispatch。
-    app.sync_conv_mode_authority();
     // H-4-a: Output が send_keys 中に積んだ RuntimeRequest を一括処理する。
     app.drain_runtime_requests();
+}
+
+// ── 非同期 IME apply 完了の WM ルーティング ──────────────────────────────────
+//
+// sync path は `BatchResult.sync_outcomes` → `dispatch_outcomes` → `on_ime_apply_complete`
+// に合流する。async path（ImmCross）も同じ単一入口へ合流させるため、spawn_local の
+// future 内で `with_app` を直接握らず、完了 outcome を WM_ASYNC_IME_APPLY_COMPLETE として
+// メインスレッドのメッセージループへ投函する。`(open, outcome)` は wparam/lparam にパックする。
+
+/// `ImeOpenOutcome` を lParam 用の整数にエンコードする。
+///
+/// 網羅 match のため、variant 追加時はここがコンパイルエラーになり追従を強制される。
+const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
+    match outcome {
+        ImeOpenOutcome::Applied => 0,
+        ImeOpenOutcome::FallbackSent => 1,
+        ImeOpenOutcome::AlreadyMatched => 2,
+        ImeOpenOutcome::Failed => 3,
+        ImeOpenOutcome::UnsafeToToggle => 4,
+    }
+}
+
+/// `encode_outcome` の逆変換。未知値は apply を行わない安全側の `UnsafeToToggle` に倒す。
+fn decode_outcome(value: isize) -> ImeOpenOutcome {
+    match value {
+        0 => ImeOpenOutcome::Applied,
+        1 => ImeOpenOutcome::FallbackSent,
+        2 => ImeOpenOutcome::AlreadyMatched,
+        3 => ImeOpenOutcome::Failed,
+        4 => ImeOpenOutcome::UnsafeToToggle,
+        other => {
+            log::error!("WM_ASYNC_IME_APPLY_COMPLETE: unknown outcome code {other}");
+            ImeOpenOutcome::UnsafeToToggle
+        }
+    }
+}
+
+/// async IME apply の完了を Runtime の単一入口へ届ける WM を投函する。
+///
+/// spawn_local の future（メインスレッド上でポーリングされる）から呼ぶこと。
+/// `with_app` を握らずメッセージループ経由で `on_ime_apply_complete` に合流させる。
+pub(crate) fn post_async_ime_apply_complete(open: bool, outcome: ImeOpenOutcome) {
+    crate::win32::post_to_main_thread_with(
+        crate::WM_ASYNC_IME_APPLY_COMPLETE,
+        usize::from(open),
+        encode_outcome(outcome),
+    );
+}
+
+/// WM_ASYNC_IME_APPLY_COMPLETE ハンドラ
+///
+/// ImmCross async apply の完了通知。sync path の `sync_outcomes` と対称に、
+/// generation 照合を含む単一入口 `on_ime_apply_complete`（B+C+D+E）へ合流する。
+pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
+    let open = wparam != 0;
+    let outcome = decode_outcome(lparam);
+    if outcome == ImeOpenOutcome::Failed {
+        log::warn!("apply_ime_open({open}) failed (async)");
+    }
+    app.on_ime_apply_complete(open, outcome);
 }
 
 /// WM_PANIC_RESET ハンドラ
@@ -334,7 +392,7 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
         log::debug!("UIA result for stale hwnd, ignoring");
     } else {
         if app_kind_u8 != crate::FOCUS_KIND_UPDATE_NO_APP_KIND {
-            let app_kind = awase::types::AppKind::from_u8(app_kind_u8);
+            let app_kind = crate::focus::AppKind::from_u8(app_kind_u8);
             app.platform_state.focus.app_kind = app_kind;
             log::debug!("UIA AppKind update: {app_kind:?}");
         }

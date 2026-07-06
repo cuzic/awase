@@ -9,7 +9,7 @@ use crate::hook::CallbackResult;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 use awase::engine::{AssumedReason, InputModeState};
-use awase::platform::PlatformRuntime as _;
+use awase::platform::TsfComposition as _;
 use awase::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
@@ -171,23 +171,19 @@ impl Runtime {
 
         let state_before = self.engine.debug_state_label();
         let mut decision = self.engine.on_input(event, &ctx);
+        // キーボード経路の一次フィルタ（decision 除去の単一実装は executor 側ヘルパ）。
         // フォーカス遷移直後（settle 期間内）に Engine が発行した SetOpen effect は、
         // 実行(kp_stage_execute → 実際の SendInput)まで到達する前にここで取り除く。
-        // handle_engine_set_open 側のフィルタは belief の書き込み(desired_open等)だけを
-        // 防ぐもので、decision.effects に残った ImeEffect::SetOpen は kp_stage_execute
-        // 経由で無条件に実行されてしまうため、真の対策は「effect 自体を発行させない」
-        // ここでなければならない（2026-07-05: 前回の修正が効かなかった原因）。
-        if focus_transition_was_pending {
-            if let Some(target) = decision.find_ime_set_open() {
-                decision
-                    .effects_mut()
-                    .retain(|e| !matches!(e, awase::engine::Effect::Ime(awase::engine::ImeEffect::SetOpen { .. })));
-                log::debug!(
-                    "[focus-settle] SetOpen({target}) effect stripped from decision \
-                     (focus transition barrier still settling at event start)"
-                );
-            }
-        }
+        // handle_engine_set_open 側のフィルタは belief の書き込み(desired_open等)を防ぐ
+        // 最終防衛線で意図が異なり、decision.effects に残った SetOpen は kp_stage_execute
+        // 経由で無条件に実行されてしまうため、effect 自体を落とすこの一次フィルタが必須
+        // （2026-07-05: 前回の修正が効かなかった原因）。
+        // この経路は kp_stage_focus_probe が barrier を consume 済みのため、live 評価ではなく
+        // イベント開始時にスナップショットした focus_transition_was_pending を settle 判定に使う。
+        crate::runtime::executor::strip_ime_set_open_if_settling(
+            &mut decision,
+            focus_transition_was_pending,
+        );
         let state_after = self.engine.debug_state_label();
         self.platform_state
             .ime
@@ -324,15 +320,23 @@ impl Runtime {
 
         let current = self.platform_state.ime.input_mode();
         let is_cold = in_flight == u64::MAX;
-        // kp_stage_idle_conv_check は TsfNative 専用（should_run_idle_conv_check のガード 2）。
-        // TsfNative では ROMAN ビットが常に 0 のため is_roman_reliable=false。
-        // これにより classify_idle はひらがな conv で ObservedKana への downgrade を行わず、
-        // romaji-capable でない場合は AssumedRomaji { ImmBridgeBroken } に回復する。
-        let was_romaji_capable = current.is_romaji_capable();
-        let new_mode_opt =
-            awase::engine::ConvMode::from_u32(conv).classify_idle(is_cold, current, false);
+        // Pure: conv ビットの解釈と engine 同期判断を conv_classify に委譲する。
+        // kp_stage_idle_conv_check は TsfNative 専用（should_run_idle_conv_check のガード 2）で
+        // ROMAN ビットが常に 0 のため is_roman_reliable=false。これにより classify_idle は
+        // ひらがな conv で ObservedKana への downgrade を行わず、romaji-capable でない場合は
+        // AssumedRomaji { ImmBridgeBroken } に回復する。
+        let transition = crate::state::conv_classify::classify_conv_transition(
+            conv,
+            current,
+            is_cold,
+            self.platform_state.ime.effective_open(),
+            conv_mode_changed,
+            false,
+        );
 
-        match new_mode_opt {
+        // Apply(1): input_mode belief の更新を dispatch する。
+        // ここが key_pipeline 内で唯一の idle-conv-check InputModeObserved 構築点。
+        match transition.input_mode_update {
             None => {
                 log::debug!(
                     "[idle-conv-check] TsfNative: conv=0x{:08X}{} → belief {:?} 変更なし",
@@ -340,109 +344,69 @@ impl Runtime {
                     if is_cold && conv & crate::imm::IME_CMODE_ROMAN != 0 { " cold-start" } else { "" },
                     current,
                 );
-                // conv 変化なしかつ belief 変化なし → 通常は何もすることがない。
-                // ただし カタカナ(NATIVE+KATAKANA)+shadow=OFF の場合は例外:
-                //   - AssumedRomaji は romaji_capable のため classify_idle が常に None を返す
-                //   - conv 不変が続く限りこの arm に来続けるため、ここが唯一の回復経路
-                if !conv_mode_changed {
-                    if conv & crate::imm::IME_CMODE_KATAKANA != 0
-                        && conv & crate::imm::IME_CMODE_NATIVE != 0
-                        && !self.platform_state.ime.effective_open()
-                    {
-                        self.platform.timer.kill(TIMER_IME_REFRESH);
-                        let generation = self.platform_state.ime.allocate_event_generation();
-                        self.platform_state
-                            .ime
-                            .handle_engine_set_open(true, false, false, generation, now_tick);
-                        log::info!(
-                            "[idle-conv-check] TsfNative: カタカナ+shadow=OFF → IME ON 同期 \
-                             (conv=0x{conv:08X} 不変)"
-                        );
-                    }
-                    return;
-                }
             }
             Some(new_mode) => {
                 log::info!(
                     "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
                     conv, current, new_mode,
                 );
+                // source=ConvBitsInference: 実態は conv ビット（ImmGetConversionStatus 由来）
+                // からの input_mode 推定であり、ImmGetOpenStatus API 観測ではない。conv の
+                // 読み取り自体は直接 API 成功なので confidence は High（sibling の focus-conv-check
+                // FocusProbe/High・ImmCrossProbe/High と揃える）。source だけを正直に分離する。
                 self.platform_state.ime.dispatch_event(
                     crate::state::ime_event::ImeEvent::InputModeObserved {
                         mode: new_mode,
-                        source: crate::state::ime_event::ObservationSource::ImmGetOpenStatus,
+                        source: crate::state::ime_event::ObservationSource::ConvBitsInference,
                         confidence: crate::state::ime_event::ObservationConfidence::High,
                         at: now_tick,
                     },
                     now_tick,
                 );
-
-                // カタカナへの切替 + shadow=OFF → engine ON 同期
-                if new_mode == InputModeState::ObservedRomaji
-                    && conv & crate::imm::IME_CMODE_KATAKANA != 0
-                    && !self.platform_state.ime.effective_open()
-                {
-                    self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.allocate_event_generation();
-                    self.platform_state
-                        .ime
-                        .handle_engine_set_open(true, false, false, generation, now_tick);
-                    log::info!("[idle-conv-check] TsfNative: カタカナ検出 + shadow=OFF → IME ON 同期");
-                }
-
-                // belief が romaji 不可→可 に変化 かつ shadow=ON → engine を再起動する。
-                // (例: HanAlpha→Hiragana で ObservedKana → AssumedRomaji に回復したとき)
-                if !was_romaji_capable
-                    && new_mode.is_romaji_capable()
-                    && self.platform_state.ime.effective_open()
-                {
-                    self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.allocate_event_generation();
-                    self.platform_state
-                        .ime
-                        .handle_engine_set_open(true, false, false, generation, now_tick);
-                    log::info!(
-                        "[idle-conv-check] TsfNative: belief romaji 回復 + shadow=ON → engine 再起動"
-                    );
-                }
-
-                // ObservedEisu 検出 → 自動 DirectInput 切替
-                // 半角英数（IME-ON の 0x10 モード）は使用しない設計。shadow ON/OFF を問わず
-                // VK_IME_OFF / VK_KANJI で DirectInput へ落とす。
-                // conv_mode=0x10 の観測は IME-ON の確証なので effective_open=true を直接注入する。
-                if new_mode == InputModeState::ObservedEisu {
-                    log::info!(
-                        "[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput"
-                    );
-                    self.platform.timer.kill(TIMER_IME_REFRESH);
-                    let generation = self.platform_state.ime.allocate_event_generation();
-                    self.platform_state
-                        .ime
-                        .handle_engine_set_open(false, false, false, generation, now_tick);
-                    // conv=0x10 (ROMAN bit) が観測済み → IME-ON 確定。direct belief で already_matched をバイパス。
-                    let belief = crate::output::OpenBelief { effective_open: true, confident: true };
-                    let outcome = self.platform.apply_ime_open_with_belief(false, None, belief);
-                    self.on_ime_apply_complete(false, outcome);
-                }
             }
         }
 
-        // ひらがな/カタカナ(NATIVE=1)+shadow=OFF → conv 変化時に engine ON 同期。
-        // classify_idle が None を返す場合（belief 変化なし）も含む。
-        // カタカナ+conv 不変は上記 None arm で処理済み。
-        if conv_mode_changed
-            && conv & crate::imm::IME_CMODE_NATIVE != 0
-            && !self.platform_state.ime.effective_open()
-        {
-            self.platform.timer.kill(TIMER_IME_REFRESH);
-            let generation = self.platform_state.ime.allocate_event_generation();
-            self.platform_state
-                .ime
-                .handle_engine_set_open(true, false, false, generation, now_tick);
-            log::info!(
-                "[idle-conv-check] TsfNative: {}切替検出 + shadow=OFF → IME ON 同期",
-                if conv & crate::imm::IME_CMODE_KATAKANA != 0 { "カタカナ" } else { "ひらがな" }
-            );
+        // Apply(2): engine 同期を 1 経路で dispatch する（従来 5 箇所の
+        // handle_engine_set_open をここに集約）。
+        self.kp_apply_conv_engine_sync(transition.engine, conv, now_tick);
+    }
+
+    /// idle-conv-check の engine 同期を単一経路で適用する。
+    ///
+    /// 従来 `kp_stage_idle_conv_check` の 5 箇所に散っていた `handle_engine_set_open`
+    /// 呼び出しを、純関数 `classify_conv_transition` が返す `EngineSync` に基づく
+    /// 1 箇所の dispatch に集約する。
+    fn kp_apply_conv_engine_sync(
+        &mut self,
+        engine: crate::state::conv_classify::EngineSync,
+        conv: u32,
+        now_tick: crate::state::TickMs,
+    ) {
+        use crate::state::conv_classify::EngineSync;
+        let target = match engine {
+            EngineSync::None => return,
+            EngineSync::SetOpen(reason) => {
+                log::info!(
+                    "[idle-conv-check] TsfNative: engine ON 同期 (conv=0x{conv:08X}, reason={reason:?})"
+                );
+                true
+            }
+            EngineSync::DirectInput => {
+                log::info!("[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput (conv=0x{conv:08X})");
+                false
+            }
+        };
+        self.platform.timer.kill(TIMER_IME_REFRESH);
+        let generation = self.platform_state.ime.allocate_event_generation();
+        self.platform_state
+            .ime
+            .handle_engine_set_open(target, false, false, generation, now_tick);
+        if matches!(engine, EngineSync::DirectInput) {
+            // conv の英数モード観測は IME-ON の確証。direct belief で already_matched を
+            // バイパスして apply する。
+            let belief = crate::output::OpenBelief { effective_open: true, confident: true };
+            let outcome = self.platform.apply_ime_open_with_belief(false, None, belief);
+            self.on_ime_apply_complete(false, outcome);
         }
     }
 
@@ -677,8 +641,6 @@ impl Runtime {
         // sync path の outcome を on_ime_apply_complete（B+C+D+E）に渡す。
         // Filter mode では IME effects がキューへ委譲されるため通常は空。
         self.dispatch_outcomes(result.sync_outcomes);
-        // H-3-e: executor が set_conv_mode_authority() で格納した保留値を ImeStateHub に dispatch。
-        self.sync_conv_mode_authority();
 
         if result.has_pending {
             post_to_main_thread(WM_EXECUTE_EFFECTS);

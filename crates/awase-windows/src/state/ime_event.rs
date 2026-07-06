@@ -15,7 +15,6 @@ use std::time::Instant;
 
 use awase::engine::InputModeState;
 
-use super::conv_mode::ConvModeAuthority;
 use super::TickMs;
 
 /// HWND の Send-safe な表現 (raw pointer 値を usize で保持)。
@@ -91,6 +90,14 @@ pub enum ObservationSource {
     Gji,
     /// `ImmGetOpenStatus` 直接呼び出し
     ImmGetOpenStatus,
+    /// conversion mode ビット（`ImmGetConversionStatus` 由来）からの input_mode 推定。
+    ///
+    /// idle-conv-check（TsfNative）が読み取った conv ビットを `classify_conv_transition`
+    /// で解釈して input_mode を導く経路。`ImmGetOpenStatus` API を直接呼んだわけではない
+    /// （open 状態ではなく conversion mode を読んでいる）ため、そのソースを名乗るのは
+    /// 偽装になる。conv の読み取り自体は直接 API 成功なので confidence は `High` で扱うが、
+    /// 「何を観測したか」を正直に表すためソースを分離する。
+    ConvBitsInference,
     /// TSF observer 由来
     Tsf,
     /// per-HWND IME キャッシュからの復元
@@ -313,17 +320,6 @@ pub enum ImeEvent {
     /// Ctrl+Caps・VK_DBE_ROMAN・VK_DBE_HIRAGANA などのユーザー操作で
     /// input_mode が決定したときに通知する。
     UserChangedInputMode { mode: InputModeState, at: TickMs },
-
-    /// IME 変換モードの所有権が変化した。
-    ///
-    /// awase エンジン ON/OFF・warmup 開始/終了など、conv mode 制御権の移譲時に dispatch する。
-    /// reducer が `ImeModel::conv_mode_authority` を更新する。
-    ///
-    /// - エンジン ON  → `AwaseOwned`
-    /// - エンジン OFF → `UserOwned`
-    /// - warmup 開始  → `TemporarilyUnowned`（将来拡張）
-    /// - warmup 完了  → `AwaseOwned`（将来拡張）
-    ConvModeOwnershipChanged { authority: ConvModeAuthority },
 }
 
 impl ImeEvent {

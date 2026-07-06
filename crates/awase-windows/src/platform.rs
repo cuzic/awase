@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use awase::platform::PlatformRuntime;
+use awase::platform::{PlatformRuntime, TsfComposition};
 use awase::types::{KeyAction, RawKeyEvent};
 
 use crate::focus::class_names::AppImeProfile;
@@ -37,21 +37,6 @@ pub struct WindowsPlatform {
     /// warm 判定そのものは GjiFsm が SSOT であり、この FSM は「confirm キー KeyDown 後、
     /// KeyUp まで warmup を保留する」遷移を所有する。
     pub(crate) composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
-    /// IME conv mode に対する awase の制御権限 (H-3-e)。
-    ///
-    /// `AwaseOwned`: awase ON 中。VK_DBE_HIRAGANA 等の conv mutation を許可する。
-    /// `UserOwned`:  awase OFF/非活性中。conv mode に一切触らない。
-    ///
-    /// 外部からは `set_conv_mode_authority()` 経由でのみ更新し、フィールドに直接アクセスしない。
-    /// `ImeModel.conv_mode_authority` が SSOT; これは runtime 側の即時ゲート用コピー。
-    conv_mode_authority: ConvModeAuthority,
-    /// `set_conv_mode_authority()` 呼び出し後に runtime が dispatch するための保留値。
-    ///
-    /// `ImeStateHub::dispatch_event(ConvModeOwnershipChanged)` は `&mut ImeStateHub` が必要なため、
-    /// executor（`&ImeStateHub` しか持てない）からは直接 dispatch できない。
-    /// `set_conv_mode_authority()` がここに格納し、runtime が `take_pending_conv_mode_authority()`
-    /// で読み出して dispatch する。
-    pending_conv_mode_authority: Option<ConvModeAuthority>,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -94,7 +79,7 @@ impl WindowsPlatform {
 
     /// `WindowsPlatform` を構築する。
     ///
-    /// `conv_mode_authority` は常に `UserOwned` で初期化される。
+    /// conv mode 権限の初期値は `Output::conv_mutation_allowed`（`false`）が保持する。
     /// 初期化後の権限変更は `set_conv_mode_authority()` 経由で行うこと。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -116,8 +101,6 @@ impl WindowsPlatform {
             suppress_engine_state_key,
             focus,
             composition_fsm,
-            conv_mode_authority: ConvModeAuthority::UserOwned,
-            pending_conv_mode_authority: None,
         }
     }
 
@@ -133,20 +116,12 @@ impl WindowsPlatform {
     /// エンジンが有効になったとき `AwaseOwned`、無効になったとき `UserOwned` を渡す。
     /// warmup が一時的に制御権を手放すときは `TemporarilyUnowned` を渡す。
     ///
-    /// `ImeModel.conv_mode_authority` への reducer dispatch は runtime が
-    /// `take_pending_conv_mode_authority()` で読み出して行う（executor は `&ImeStateHub`
-    /// しか持てないため直接 dispatch できない）。
+    /// conv mutation 可否の唯一の実体は `Output::conv_mutation_allowed`（Cell<bool>）で、
+    /// `send_eager_tsf_warmup` / probe warmup がこのフラグを self-gate に使う。
+    /// `AwaseOwned` かどうかだけが即時ゲートに効くため、ここでその bool を push する。
     pub(crate) fn set_conv_mode_authority(&mut self, authority: ConvModeAuthority) {
-        self.conv_mode_authority = authority;
-        self.output.set_conv_mutation_allowed(authority.allows_conv_mutation());
-        self.pending_conv_mode_authority = Some(authority);
-    }
-
-    /// 保留中の conv mode authority を取り出す（runtime が dispatch するために使う）。
-    ///
-    /// `set_conv_mode_authority()` が格納した値を一度だけ取り出す。`None` = 変化なし。
-    pub(crate) fn take_pending_conv_mode_authority(&mut self) -> Option<ConvModeAuthority> {
-        self.pending_conv_mode_authority.take()
+        self.output
+            .set_conv_mutation_allowed(authority.allows_conv_mutation());
     }
 
     /// フォーカス変更時の FocusChange cold マークを Output に通知する（ime_refresh 用）。
@@ -231,7 +206,7 @@ impl WindowsPlatform {
     /// pending_tsf をインストールし、TIMER_TSF_PROBE を起動する（vk_send async パス用）。
     pub(crate) fn install_pending_tsf_and_set_timer(
         &mut self,
-        machine: Box<dyn crate::tsf::tickable_fsm::TickableFsm>,
+        machine: Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>,
     ) {
         self.output.install_pending_tsf(machine);
         if let Some(cmd) = self.output.pending_tsf_timer() {
@@ -379,14 +354,9 @@ impl WindowsPlatform {
             match *action {
                 CompositionAction::EmitWarmup { reason } => {
                     log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
-                    if self.conv_mode_authority.allows_conv_mutation() {
-                        self.output.send_eager_tsf_warmup(applied_ime_on);
-                    } else {
-                        log::debug!(
-                            "[composition-fsm] EmitWarmup ({reason:?}): \
-                             UserOwned/TemporarilyUnowned → VK_DBE_HIRAGANA warmup スキップ"
-                        );
-                    }
+                    // conv mutation の可否は Output::send_eager_tsf_warmup が
+                    // `conv_mutation_allowed` で self-gate する（non-AwaseOwned なら内部で skip）。
+                    self.output.send_eager_tsf_warmup(applied_ime_on);
                 }
                 CompositionAction::MarkCold { reason } => {
                     self.output.mark_composition_cold(reason);
@@ -613,7 +583,7 @@ impl WindowsPlatform {
              VK_IME_ON+VK_A+BS → {} chars defer",
             deferred.len()
         );
-        let fsm = crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
+        let fsm = crate::tsf::warmup::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
             cold_seq, deferred, baseline,
         );
         self.install_pending_tsf_and_set_timer(Box::new(fsm));
@@ -785,11 +755,12 @@ impl PlatformRuntime for WindowsPlatform {
         self.tray.set_layout_name(name);
     }
 
+}
+
+impl TsfComposition for WindowsPlatform {
     fn composition_output(&self) -> Option<&dyn awase::platform::CompositionOutput> {
         Some(&self.output)
     }
-
-    // ── composition state クエリ / フック ──
 
     fn output_in_flight_ms(&self) -> u64 {
         self.output.ms_since_last_send()
@@ -884,10 +855,8 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.gji_on_native_f2_consumed();
-            // AwaseOwned でない場合（UserOwned/TemporarilyUnowned/Unknown）は conv mutation は禁止
-            if self.conv_mode_authority.allows_conv_mutation() {
-                self.output.send_eager_tsf_warmup(applied);
-            }
+            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
+            self.output.send_eager_tsf_warmup(applied);
             return;
         }
 
@@ -898,14 +867,8 @@ impl PlatformRuntime for WindowsPlatform {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.gji_on_composition_reset();
-            // AwaseOwned でない場合（UserOwned/TemporarilyUnowned/Unknown）は conv mutation は禁止
-            if self.conv_mode_authority.allows_conv_mutation() {
-                self.output.send_eager_tsf_warmup(applied);
-            } else {
-                log::debug!(
-                    "[composition] reinject confirm key: non-AwaseOwned → warmup スキップ"
-                );
-            }
+            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
+            self.output.send_eager_tsf_warmup(applied);
         }
     }
 }
@@ -939,33 +902,18 @@ impl WindowsPlatform {
     /// 事前構築済みの `ImeControlView` と `OpenBelief` を受け取る中核実装。
     ///
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
-    /// [`crate::output::ImeApplyPlanner`] で計画を立て、`Noop` の場合は早期返却する。
-    /// それ以外は [`crate::ime_controller::CONTROLLER`] に委譲して実行する。
+    /// 戦略選択と実行は [`crate::ime_controller::CONTROLLER`] が唯一の SSOT として担う。
+    /// `belief` は診断ログ用（`effective_open` / `confident`）に受け取る。
     pub(crate) fn apply_ime_open_with_view(
         &self,
         open: bool,
         view: &crate::state::ImeControlView<'_>,
         belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
-        use awase::platform::ImeOpenOutcome;
-        use crate::output::{ImeApplyContext, ImeApplyPlan, ImeApplyPlanner, ImeApplyResult};
-
-        let ctx = ImeApplyContext::from_view(view, open, belief);
-        let plan = ImeApplyPlanner::plan(&ctx);
+        let outcome = crate::ime_controller::CONTROLLER.apply(open, view);
         log::debug!(
-            "[apply-ime] open={open} plan={plan:?} (eff={} conf={})",
+            "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
             belief.effective_open, belief.confident
-        );
-
-        let outcome = match plan {
-            ImeApplyPlan::Noop => ImeOpenOutcome::AlreadyMatched,
-            _ => crate::ime_controller::CONTROLLER.apply(open, view),
-        };
-
-        let result = ImeApplyResult::from_outcome(outcome);
-        log::debug!(
-            "[apply-ime] result={result:?} should_commit={}",
-            result.should_commit_state()
         );
         outcome
     }

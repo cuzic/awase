@@ -13,7 +13,8 @@ pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 use awase::config::ValidatedConfig;
 use awase::engine::{Engine, EngineCommand, InputContext, InputModeState, SpecialKeyCombos};
 use awase::ngram::NgramModel;
-use awase::types::{ContextChange, FocusKind, RawKeyEvent, VkCode};
+use awase::types::{ContextChange, RawKeyEvent, VkCode};
+use crate::focus::FocusKind;
 
 use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
@@ -152,7 +153,7 @@ impl Runtime {
     /// `InjectionHint` を返す。output 層はこのメソッドのみを呼び、
     /// focus/classify の内部型に直接アクセスしない。
     #[must_use]
-    pub fn injection_hint(&self) -> (InjectionHint, awase::types::AppKind) {
+    pub fn injection_hint(&self) -> (InjectionHint, crate::focus::AppKind) {
         (self.platform.injection_hint(), self.platform_state.focus.app_kind)
     }
 
@@ -234,22 +235,7 @@ impl Runtime {
             self.executor
                 .execute_from_loop(&mut self.platform, &self.platform_state.ime, decision);
         self.dispatch_outcomes(sync_outcomes);
-        self.sync_conv_mode_authority();
         callback
-    }
-
-    /// executor が `set_conv_mode_authority()` で格納した保留値を ImeStateHub に dispatch する。
-    ///
-    /// H-3-e: executor は `&ImeStateHub` しか持てないため直接 dispatch できない。
-    /// executor 呼び出しの直後（`dispatch_outcomes` の後）に呼ぶこと。
-    pub(crate) fn sync_conv_mode_authority(&mut self) {
-        if let Some(authority) = self.platform.take_pending_conv_mode_authority() {
-            let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-            self.platform_state.ime.dispatch_event(
-                crate::state::ime_event::ImeEvent::ConvModeOwnershipChanged { authority },
-                tick_ms,
-            );
-        }
     }
 
     /// IME apply 完了後の後処理 SSOT。sync / async 両経路から呼ばれる。
@@ -261,7 +247,7 @@ impl Runtime {
     /// 呼び出し元が sync_outcomes ループ経由でここへ来る。
     /// async 経路では spawn_local 内で B を済ませた後に直接呼ばれる。
     pub fn on_ime_apply_complete(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
-        use awase::platform::{ImeOpenOutcome, PlatformRuntime as _};
+        use awase::platform::{ImeOpenOutcome, TsfComposition as _};
 
         if outcome == ImeOpenOutcome::UnsafeToToggle {
             return;
@@ -723,16 +709,6 @@ impl Runtime {
     /// IMM 能力学習キャッシュをクリアして削除件数を返す。
     pub(crate) fn clear_imm_learning(&mut self) -> usize {
         self.platform.focus.clear_imm_learning()
-    }
-
-    /// async パスの IME apply 完了処理（executor 更新 + on_ime_apply_complete）。
-    pub(crate) fn on_async_ime_apply_complete(
-        &mut self,
-        open: bool,
-        outcome: awase::platform::ImeOpenOutcome,
-    ) {
-        self.executor.update_intra_batch_applied(open, outcome);
-        self.on_ime_apply_complete(open, outcome);
     }
 
     /// 診断画面が必要とする状態を一括スナップショットとして返す。

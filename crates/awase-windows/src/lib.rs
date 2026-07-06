@@ -34,7 +34,7 @@ pub mod hook;
 #[cfg(windows)]
 pub mod ime;
 #[cfg(windows)]
-pub(crate) mod ime_controller;
+pub mod ime_controller;
 #[cfg(windows)]
 pub mod ime_diagnostic;
 #[cfg(windows)]
@@ -268,6 +268,15 @@ pub const WM_DUMP_JOURNAL: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP
 /// IME 種別変化通知
 #[cfg(windows)]
 pub const WM_IME_KIND_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 21;
+/// ImmCross 非同期 IME apply の完了通知。
+///
+/// spawn_local の future 内で `with_app` を直接握らず、`(open, outcome)` を wparam/lparam に
+/// パックしてメインスレッドのメッセージループへ投函する。ループの
+/// `handle_wm_async_ime_apply_complete` が sync path の `sync_outcomes` と対称に、
+/// generation 照合を含む単一入口 `on_ime_apply_complete` へ合流させる。
+#[cfg(windows)]
+pub const WM_ASYNC_IME_APPLY_COMPLETE: u32 =
+    windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

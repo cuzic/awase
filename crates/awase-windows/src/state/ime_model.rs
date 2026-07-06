@@ -10,7 +10,6 @@
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
 use super::app_ime_policy::AppImePolicy;
-use super::conv_mode::ConvModeAuthority;
 use super::force_guard::{ForceGuardSet, ObserveMissMonitor};
 use awase::engine::InputModeState;
 
@@ -88,7 +87,7 @@ pub struct ImeModel {
     ///
     /// private フィールド。`reduce()` 以外からの書き込みを禁止するため、
     /// 外部からは読み取り専用アクセサ `desired_open()` を使うこと
-    /// （`conv_mode_authority` と同じパターン）。
+    /// （`input_mode` と同じパターン）。
     desired_open: bool,
 
     /// 入力モード（ローマ字/かな/英数/不明）の belief。
@@ -131,13 +130,6 @@ pub struct ImeModel {
     /// 最後に actuator が成功させた IME 開閉状態の確信度 (Step 7)。
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
-
-    /// IME 変換モードに対する awase の所有権状態 (H-3-e)。
-    ///
-    /// `ImeEvent::ConvModeOwnershipChanged` によってのみ更新される。
-    /// 外部からの読み取りは `ImeModel::conv_mode_authority()` を経由すること。
-    /// 書き込みは `reduce()` 経由のみ。
-    conv_mode_authority: ConvModeAuthority,
 }
 
 #[derive(Debug, Clone)]
@@ -162,17 +154,7 @@ impl ImeModel {
             observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
             applied: AppliedImeState::Unknown,
-            conv_mode_authority: ConvModeAuthority::Unknown,
         }
-    }
-
-    /// conv mode 所有権状態を返す（読み取り専用アクセサ）。
-    ///
-    /// H-3-e: `conv_mode_authority` フィールドは private。外部から書き込まず
-    /// `ImeEvent::ConvModeOwnershipChanged` 経由で reducer を通すこと。
-    #[must_use]
-    pub fn conv_mode_authority(&self) -> ConvModeAuthority {
-        self.conv_mode_authority
     }
 
     /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
@@ -477,15 +459,6 @@ impl ImeModel {
             ImeEvent::UserChangedInputMode { mode, .. } => {
                 // ユーザーの明示操作 → 観測と同等の信頼度で即時反映する。
                 self.input_mode = mode;
-            }
-            ImeEvent::ConvModeOwnershipChanged { authority } => {
-                // H-3-e: エンジン ON/OFF・warmup 開始/終了で conv mode 所有権を更新する。
-                // `conv_mode_authority` は private フィールドのため、このイベント経由のみで更新される。
-                log::debug!(
-                    "[conv-authority] {:?} → {authority:?}",
-                    self.conv_mode_authority
-                );
-                self.conv_mode_authority = authority;
             }
         }
     }
@@ -835,78 +808,6 @@ mod tests {
         );
     }
 
-    // ── ConvModeOwnershipChanged (H-3-e) ─────────────────────────────────────
-
-    // 初期状態は Unknown。
-    #[test]
-    fn conv_mode_authority_starts_unknown() {
-        let model = ImeModel::new();
-        assert_eq!(
-            model.conv_mode_authority(),
-            ConvModeAuthority::Unknown,
-            "初期状態は Unknown"
-        );
-    }
-
-    // EngineStateChanged ON → AwaseOwned に遷移する。
-    #[test]
-    fn conv_mode_authority_engine_on_sets_awase_owned() {
-        let mut model = ImeModel::new();
-        model.reduce(&envelope(
-            1,
-            ImeEvent::ConvModeOwnershipChanged {
-                authority: ConvModeAuthority::AwaseOwned,
-            },
-        ));
-        assert_eq!(model.conv_mode_authority(), ConvModeAuthority::AwaseOwned);
-        assert!(
-            model.conv_mode_authority().allows_conv_mutation(),
-            "AwaseOwned は conv mutation を許可する"
-        );
-    }
-
-    // EngineStateChanged OFF → UserOwned に遷移し conv mutation が禁止される。
-    #[test]
-    fn conv_mode_authority_engine_off_sets_user_owned() {
-        let mut model = ImeModel::new();
-        model.reduce(&envelope(
-            1,
-            ImeEvent::ConvModeOwnershipChanged {
-                authority: ConvModeAuthority::AwaseOwned,
-            },
-        ));
-        model.reduce(&envelope(
-            2,
-            ImeEvent::ConvModeOwnershipChanged {
-                authority: ConvModeAuthority::UserOwned,
-            },
-        ));
-        assert_eq!(model.conv_mode_authority(), ConvModeAuthority::UserOwned);
-        assert!(
-            !model.conv_mode_authority().allows_conv_mutation(),
-            "UserOwned は conv mutation を禁止する"
-        );
-    }
-
-    // TemporarilyUnowned も conv mutation を禁止する。
-    #[test]
-    fn conv_mode_authority_temporarily_unowned_forbids_mutation() {
-        let mut model = ImeModel::new();
-        model.reduce(&envelope(
-            1,
-            ImeEvent::ConvModeOwnershipChanged {
-                authority: ConvModeAuthority::TemporarilyUnowned,
-            },
-        ));
-        assert_eq!(
-            model.conv_mode_authority(),
-            ConvModeAuthority::TemporarilyUnowned
-        );
-        assert!(
-            !model.conv_mode_authority().allows_conv_mutation(),
-            "TemporarilyUnowned は conv mutation を禁止する"
-        );
-    }
 
     // ── PanicReset ────────────────────────────────────────────────────────────
 

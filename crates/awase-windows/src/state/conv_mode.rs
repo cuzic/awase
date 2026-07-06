@@ -14,7 +14,10 @@ use super::TickMs;
 /// IME 変換モードに対する awase の所有権状態。
 ///
 /// awase エンジン ON/OFF・warmup 開始/終了など、conv mode 制御権の移譲時に更新される。
-/// `ImeModel::reduce()` が `ImeEvent::ConvModeOwnershipChanged` を受けて更新する SSOT。
+/// `executor` が `EngineStateChanged` で `WindowsPlatform::set_conv_mode_authority` を呼び、
+/// `allows_conv_mutation()` の bool を conv mutation ゲートの唯一の実体である
+/// `Output::conv_mutation_allowed`（Cell<bool>）へ push する。この enum 自体は状態を保持せず、
+/// bool を導出するための分類器として使われる。
 ///
 /// | 状態               | 説明                                                              |
 /// |--------------------|-------------------------------------------------------------------|

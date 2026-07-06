@@ -254,12 +254,6 @@ pub trait PlatformRuntime {
     /// 配列名をトレイに表示する
     fn set_tray_layout_name(&mut self, name: &str);
 
-    /// composition 出力コンポーネントへの参照を返す。
-    /// `None` の場合は composition 不要（macOS のシンプルモード等）。
-    fn composition_output(&self) -> Option<&dyn CompositionOutput> {
-        None
-    }
-
     // ── Engine 状態変化時 IME モードキー送信 ──
 
     /// Engine ON/OFF 時に IME 制御キーを送信する。
@@ -268,8 +262,23 @@ pub trait PlatformRuntime {
     /// `Some(v)` で `v == enabled` なら apply_ime_open 済みとして mode key 送信をスキップできる。
     /// プラットフォームが IME モードキー送信をサポートしない場合は何もしない。
     fn send_engine_state_ime_key(&self, _enabled: bool, _applied: Option<bool>) {}
+}
 
-    // ── composition state クエリ / フック ──
+/// TSF / IMM composition 特有の platform フック（Windows 固有の意味論）。
+///
+/// `PlatformRuntime` のコア（キー出力・タイマー・トレイ・IME open/close 制御）とは分離し、
+/// TSF composition warmup 特有の判定・フック（warm/cold 判定、passthrough / reinject 時の
+/// composition 状態更新等）をまとめる。macOS/Linux 実装者は `PlatformRuntime` のコアだけを
+/// 実装すればよく、本トレイトは全メソッドがデフォルト実装（no-op / `false` / `None` /
+/// `u64::MAX`）を持つため、composition 機構が不要なら実装を省略できる。
+///
+/// Windows では `WindowsPlatform` が本トレイトを override し、`tsf` サブシステムに委譲する。
+pub trait TsfComposition {
+    /// composition 出力コンポーネントへの参照を返す。
+    /// `None` の場合は composition 不要（macOS のシンプルモード等）。
+    fn composition_output(&self) -> Option<&dyn CompositionOutput> {
+        None
+    }
 
     /// 最後のキー出力からの経過時間 (ms) を返す。一度も送信していなければ `u64::MAX`。
     fn output_in_flight_ms(&self) -> u64 {
