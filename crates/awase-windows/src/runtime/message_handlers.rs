@@ -308,7 +308,12 @@ pub(crate) unsafe fn handle_wm_ime_kind_changed(app: &mut Runtime) {
     log::info!("[runtime] WM_IME_KIND_CHANGED received: IME kind → {kind:?}");
     app.platform.output.set_active_ime_kind(kind);
 
-
+    // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
+    // 競合し belief 乖離を起こす）を一度だけチェックして解除を案内する。
+    // GJI 利用中は MS-IME 設定と競合しないためスキップ。
+    if matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
+        crate::msime_key_assignment::check_and_warn_once();
+    }
 }
 
 /// WM_DUPLICATE_INSTANCE ハンドラ

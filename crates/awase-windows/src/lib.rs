@@ -21,6 +21,7 @@
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod focus;
+pub mod msime_key_assignment;
 pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;

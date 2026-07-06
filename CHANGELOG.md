@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 追加
+
+- **MS-IME キー割り当ての競合を検出して解除を案内**
+  - MS-IME の「無変換キー=IME-オフ」「変換キー=IME-オン」割り当てが有効だと、awase が素通しする無変換/変換の単独タップで OS 側だけ IME 状態が反転し belief と乖離する（実機 2026-07-06: IME ON の 92ms 後の無変換タップで「IME OFF・Engine ON」になり親指シフト入力が生ローマ字化）
+  - アクティブ IME が MS-IME と確定した最初の `WM_IME_KIND_CHANGED` で `HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME` の `IsKeyAssignmentEnabled` / `KeyAssignmentMuhenkan` / `KeyAssignmentHenkan` を読み取り、競合時は警告ポップアップを表示。「はい」で `ms-settings:regionlanguage-jpnime`（Microsoft IME 設定ページ）を直接開く
+  - GJI 利用中はチェック自体をスキップ。レジストリは読み取り専用（自動書き換えによる解除は行わない）
+
 ### 変更
 
 - **意味を失っていた設定項目を撤去**
