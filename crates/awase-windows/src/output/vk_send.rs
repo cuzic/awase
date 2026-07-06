@@ -371,10 +371,13 @@ impl Output {
             session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
-        // TSF-native (WezTerm 等 ForceTsf) では unicode は KEYEVENTF_UNICODE で GJI コンポジションを
-        // バイパスするため、VK path を強制する（used_eager_path=false → VK run）。
-        // 非 TSF mode では既存の挙動（eager warmup 送信済みなら unicode）を維持する。
-        let used_eager_path = !self.is_tsf_mode() && self.composition.eager_warmup_sent_ms() != 0;
+        // 常に VK path で開始する（unicode は GJI コンポジションをバイパスして "nお" race を
+        // 起こすため）。true になる生きた経路は send_romaji_as_tsf_warm 内の
+        // PendingGjiConfirm オーバーライドのみ。
+        // 旧条件 `!is_tsf_mode() && eager_warmup_sent_ms() != 0` は恒偽だった
+        // （eager の書き手は can_warmup() = ime_on && is_tsf_mode ガード内のみで、
+        // 非 TSF epoch では常に 0。2026-07-06 到達不能パス監査 B1）。
+        let used_eager_path = false;
 
         log::debug!(
             "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
