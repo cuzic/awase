@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
 
 use crate::focus::class_names::AppImeProfile;
-use crate::hook::CallbackResult;
 use crate::vk::VkCodeExt as _;
 
 /// 元の物理キーイベントを OS に届けるかどうかの配送判断。
@@ -87,20 +86,6 @@ impl PassthroughQueue {
 }
 
 impl PhysicalKeyDisposition {
-    /// Decision と PhysicalKeyDisposition から CallbackResult を導出する。
-    pub(crate) const fn to_callback(self, engine_consumed: bool) -> CallbackResult {
-        match self {
-            Self::Suppress => CallbackResult::Consumed,
-            Self::Allow => {
-                if engine_consumed {
-                    CallbackResult::Consumed
-                } else {
-                    CallbackResult::PassThrough
-                }
-            }
-        }
-    }
-
     /// 物理キーを OS に届けるかどうかの純粋関数。
     ///
     /// **F2 (VK_DBE_HIRAGANA)**:

@@ -489,10 +489,6 @@ impl DecisionExecutor {
 
     // ── 共通 ──
 
-    const fn is_input_critical(effect: &Effect) -> bool {
-        matches!(effect, Effect::Input(_) | Effect::Timer(_))
-    }
-
     fn execute_one(
         &mut self,
         platform: &mut WindowsPlatform,
