@@ -239,11 +239,10 @@ pub(crate) enum GjiState {
         kind: ColdKind,
         probe: ProbeStatus,
         pending: Vec<PendingInput>,
-        /// `NativeF2Consumed` を Medium/Long cold 中に受信したことを示すフラグ。
-        ///
-        /// WezTerm が FocusChange 直後に自分で F2 を送る際に立つ。
-        /// probe はキャンセルせず継続し、この事実を probe 完了時に参照できる。
-        saw_native_f2: bool,
+        // 旧 saw_native_f2 フラグは 2026-07-06 到達不能パス監査 B3 で撤去 —
+        // doc が約束した「probe 完了時の参照」（WarmupComplete での消費）が
+        // 実装されないまま dead write になっていた。「Medium/Long cold 中の
+        // NativeF2Consumed で probe を継続する」挙動自体は下の handler に残る。
     },
     /// IME ON、TSF warm
     OnWarm { long_idle_ms: u64 },
@@ -273,7 +272,7 @@ pub(crate) enum GjiEvent {
     /// WezTerm が FocusChange 直後に内部で F2 を送信し TSF context を初期化した
     /// (reinject-tsf の NativeF2Consumed パス)。
     ///
-    /// Medium/Long cold の場合は probe を継続し、`OnCold.saw_native_f2 = true` を立てる。
+    /// Medium/Long cold の場合は probe を継続する。
     /// Short cold / OnWarm / OnComposing の場合は `CompositionReset` 相当で処理する。
     NativeF2Consumed,
     /// IME ON/OFF やフォーカス変化なしに composition context が無効化された
@@ -412,7 +411,6 @@ impl GjiFsm {
             kind,
             probe: ProbeStatus::Authorized { probe_id, params },
             pending: initial_pending,
-            saw_native_f2: false,
         };
         let mut actions = Vec::new();
         if let Some(id) = old_probe {
@@ -450,7 +448,6 @@ impl GjiFsm {
             kind,
             probe: probe_status,
             pending: initial_pending,
-            saw_native_f2: false,
         };
 
         let mut actions = Vec::new();
@@ -513,8 +510,7 @@ impl GjiFsm {
                     kind: ColdKind::Short,
                     probe: ProbeStatus::NotStarted,
                     pending: vec![],
-                    saw_native_f2: false,
-                };
+                        };
                 let mut actions = Vec::new();
                 if let Some(id) = old {
                     actions.push(GjiAction::CancelProbe { probe_id: id });
@@ -527,8 +523,7 @@ impl GjiFsm {
                     kind: ColdKind::Short,
                     probe: ProbeStatus::NotStarted,
                     pending: vec![],
-                    saw_native_f2: false,
-                };
+                        };
                 Response::consume().with_kill_timer(GjiTimer::LongIdle)
             }
         }
@@ -791,8 +786,7 @@ impl TimedStateMachine for GjiFsm {
                                 kind,
                                 probe: ProbeStatus::Authorized { probe_id, params },
                                 pending,
-                                saw_native_f2: false,
-                            };
+                                                };
                             Response::consume()
                         }
                     }
@@ -808,19 +802,18 @@ impl TimedStateMachine for GjiFsm {
 
             // ── NativeF2Consumed ───────────────────────────────────────────
             GjiEvent::NativeF2Consumed => {
-                // Medium/Long cold 中は probe を継続し、saw_native_f2 フラグを立てる。
-                // WezTerm が FocusChange 直後に自分で F2 を送る動作は probe に役立てられる。
+                // Medium/Long cold 中は probe を継続する（WezTerm が FocusChange 直後に
+                // 自分で F2 を送る動作は probe を妨げない）。
                 // Short cold / OnWarm / OnComposing は文脈破壊として CompositionReset 相当で処理する。
                 let is_medium_or_long_cold = matches!(
                     &self.state,
                     GjiState::OnCold { kind, .. } if !kind.is_proactive()
                 );
                 if is_medium_or_long_cold {
-                    if let GjiState::OnCold { saw_native_f2, kind, .. } = &mut self.state {
+                    if let GjiState::OnCold { kind, .. } = &self.state {
                         log::debug!(
-                            "[gji-fsm] NativeF2Consumed: {kind:?} cold, probe continues (saw_native_f2=true)"
+                            "[gji-fsm] NativeF2Consumed: {kind:?} cold, probe continues"
                         );
-                        *saw_native_f2 = true;
                     }
                     Response::consume()
                 } else {
@@ -843,8 +836,7 @@ impl TimedStateMachine for GjiFsm {
                         kind: ColdKind::Long,
                         probe: ProbeStatus::NotStarted,
                         pending: vec![],
-                        saw_native_f2: false,
-                    };
+                                };
                     Response::consume()
                 }
                 _ => {
@@ -1203,14 +1195,14 @@ mod tests {
         let ev = complete(&fsm);
         fsm.on_event(ev);
         fsm.on_event(focus_change_with_idle(8_000));
-        // NativeF2Consumed → probe 継続、saw_native_f2=true
+        // NativeF2Consumed → probe 継続
         let r = fsm.on_event(GjiEvent::NativeF2Consumed);
         r.assert_consumed();
         r.assert_action_count(0);
         // まだ OnCold(Medium, NotStarted) のまま
         assert!(matches!(
             fsm.state(),
-            GjiState::OnCold { kind: ColdKind::Medium, probe: ProbeStatus::NotStarted, saw_native_f2: true, .. }
+            GjiState::OnCold { kind: ColdKind::Medium, probe: ProbeStatus::NotStarted, .. }
         ));
     }
 
