@@ -109,6 +109,16 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.8.5] - 2026-07-06</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>設定画面が複数ディスプレイの DPI 遷移で操作不能になる問題を修正</strong> (<a href="https://github.com/cuzic/awase/commit/a7d3e53">a7d3e53</a>, <a href="https://github.com/cuzic/awase/commit/7cb1625">7cb1625</a>, <a href="https://github.com/cuzic/awase/commit/7207413">7207413</a>)<ul>
+<li>DPI スケールの異なるディスプレイへ移動するとウィンドウが移動先モニタに収まらず、適用/キャンセルボタンが画面外に出ていた</li>
+<li>モニタサイズへの自動クランプ + ボタンを常時表示の下部パネルへ移動 + 最小ウィンドウサイズを設定</li>
+<li>狭い幅ではリフロー（キーボード図の縮小スケール・keymap 行の折り返し）で対応し、収まらない場合のみスクロールバーを表示。デフォルト幅を 580px に拡大（従来はプレビューの右端が切れていた）</li>
+</ul>
+</li>
+</ul>
 <h2>[1.8.4] - 2026-07-06</h2>
 <h3>新機能</h3>
 <ul>
