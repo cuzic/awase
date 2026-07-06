@@ -82,6 +82,34 @@ impl ImeModeFsm {
         self.confirmed
     }
 
+    /// かな VK 入力を受け付けられる状態が OS 確認済みか。
+    ///
+    /// Hiragana / Katakana はどちらも NATIVE ビットが立っており romaji VK が
+    /// compose されるため「準備完了」。MS-IME confirm-then-transmit ゲート
+    /// (`Output::ms_ime_gate_defer`) の判定に使う。
+    pub(crate) fn is_native_ready(&self) -> bool {
+        self.confirmed && matches!(self.state, ImeModeState::Hiragana | ImeModeState::Katakana)
+    }
+
+    /// `ImeEffect::SetOpen` の適用完了時に呼ぶ（機構は ImmCross / MsImeDirect /
+    /// GjiDirect / KanjiToggle のいずれでもよい）。belief を即時更新し unconfirmed にする。
+    ///
+    /// MsImeDirect（VK_DBE_HIRAGANA / VK_IME_OFF を `send_ime_mode_key` で送る）は
+    /// `on_f21_sent` / `on_f22_sent` を経由しないため、ここが唯一の invalidate 点になる。
+    /// IME ON/OFF 遷移直後は OS 側の準備に実測 ~130-300ms かかる（2026-07-06 WT×MS-IME）ので、
+    /// unconfirmed 化により次の送信が IMC 確認を待つ。
+    pub(crate) fn on_set_open_applied(&mut self, open: bool) {
+        let new_state = if open {
+            ImeModeState::Hiragana
+        } else {
+            ImeModeState::Off
+        };
+        log::debug!("[ime-mode] SetOpen({open}) applied → {new_state:?} (belief, unconfirmed)");
+        self.state = new_state;
+        self.confirmed = false;
+        self.last_vk_send_ms = crate::hook::current_tick_ms();
+    }
+
     /// VK_IME_OFF 送信時に呼ぶ。Off belief に即時移行する。
     pub(crate) fn on_f22_sent(&mut self) {
         log::debug!("[ime-mode] VK_IME_OFF 送信 → Off (belief, unconfirmed)");

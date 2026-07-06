@@ -412,8 +412,62 @@ impl Output {
             return;
         }
 
+        // MS-IME confirm-then-transmit ゲート（BUG-13）:
+        // MsImeStrategy は needs_f2_probe()=false のため上の GJI probe 分岐に入らず、
+        // IME ON 遷移直後（OS 準備に実測 ~130-300ms）でも即送信して先頭 VK がリテラル化
+        // していた（「を」→「wお」）。ImeModeFsm の NATIVE 確認が取れるまで defer する。
+        if self.ms_ime_gate_defer(romaji) {
+            return;
+        }
+
         // warm パス: 即座に送信
         self.send_romaji_as_tsf_warm(romaji, &chars, used_eager_path);
+    }
+
+    /// MS-IME confirm-then-transmit ゲート（BUG-13）。defer した場合 `true` を返す。
+    ///
+    /// 発動条件: MS-IME 戦略（GJI probe 非対象）+ TSF mode + `ImeModeFsm` が
+    /// NATIVE 未確認 + give-up latch なし。発動時は romaji を `MsImeReadyCoro` に
+    /// 預けて IMC 確認ポーリングを開始する。probe 進行中の後続キーは順序維持のため
+    /// 無条件で deferred キューに積む。
+    fn ms_ime_gate_defer(&self, romaji: &str) -> bool {
+        // GJI 戦略時は F2 probe 機構（prepend_f2_warmup 分岐）が cold-start を担う。
+        if self.warmup_coord.needs_f2_probe() {
+            return false;
+        }
+        if !self.is_tsf_mode() {
+            return false;
+        }
+        // 既に probe/coro 進行中 → 確認状態に関わらず defer（送信順序の維持）。
+        if self.defer_if_probe_in_flight(romaji) {
+            return true;
+        }
+        if self.ms_ime_gate_give_up.get() {
+            return false;
+        }
+        {
+            let fsm = self.ime_mode_fsm.borrow();
+            if fsm.is_native_ready() {
+                return false;
+            }
+            let cold_seq = self.composition.cold_start_count();
+            log::info!(
+                "[msime-ready] cold={cold_seq} IME mode 未確認 (state={:?} confirmed={}) → \
+                 {romaji:?} を defer して IMC 確認待ち",
+                fsm.state(),
+                fsm.is_confirmed(),
+            );
+        }
+        let cold_seq = self.composition.cold_start_count();
+        let deadline_ms =
+            crate::hook::current_tick_ms() + crate::tuning::MS_IME_READY_CONFIRM_MS;
+        self.start_ms_ime_ready_poll(cold_seq, deadline_ms);
+        let coro = Box::new(crate::tsf::warmup::ms_ime_ready_coro::MsImeReadyCoro::new(
+            romaji, cold_seq, deadline_ms,
+        ));
+        self.install_pending_tsf(coro);
+        // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
+        true
     }
 
     fn send_romaji_as_tsf_warm(&self, romaji: &str, chars: &VkSequence, used_eager_path: bool) {

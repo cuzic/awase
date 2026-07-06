@@ -10,9 +10,10 @@
 //!
 //! ## メンバー
 //!
-//! - [`tickable_fsm`]            — TickableFsm トレイト（family 共通 IF、実装 8 種）
+//! - [`tickable_fsm`]            — TickableFsm トレイト（family 共通 IF、実装 9 種）
 //! - [`probe_fsm`]              — ProbeAction 定義 + TsfProbeCoro + decide_transmit_plan
 //! - [`gji_warmup_coro`]        — GjiWarmupCoro（GJI cold-start probe, StepCoro）
+//! - [`ms_ime_ready_coro`]      — MsImeReadyCoro（MS-IME IMC 確認待ち, StepCoro, BUG-13）
 //! - [`sacr_warmup_coro`]       — SacrificialWarmupCoro（VK_A 犠牲キー暖機）
 //! - [`ime_offon_warmup_fsm`]   — ImeOffOnWarmupFsm（VK_IME_OFF→ON 暖機, カウンタ FSM）
 //! - [`literal_detect_fsm`]     — LiteralDetectCore/Fsm（literal 検出 単一所在地）
@@ -30,6 +31,7 @@ pub(crate) mod cold_warmup;
 pub(crate) mod gji_warmup_coro;
 pub(crate) mod ime_offon_warmup_fsm;
 pub(crate) mod literal_detect_fsm;
+pub(crate) mod ms_ime_ready_coro;
 pub(crate) mod probe_fsm;
 pub(crate) mod sacr_warmup_coro;
 pub(crate) mod tickable_fsm;

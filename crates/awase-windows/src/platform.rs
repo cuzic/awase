@@ -786,6 +786,19 @@ impl TsfComposition for WindowsPlatform {
         // IME 状態が変化したので GJI 候補ウィンドウの「見た」フラグをリセットする。
         // これをリセットしないと次の composition 検出で desync と誤判定される。
         crate::tsf::observer::reset_candidate_was_seen();
+        // ImeModeFsm belief 更新（BUG-13）: 実際に適用が走った場合のみ unconfirmed 化する。
+        // MsImeDirect は VK_IME_ON/OFF を送らず on_ime_mode_vk_sent を経由しないため、
+        // ここが唯一の invalidate 点。これにより IME ON 遷移直後の送信が
+        // ms_ime_gate_defer で IMC 確認を待つようになる。
+        // AlreadyMatched は状態不変（確認済み belief を降格させない）、Failed は
+        // 実状態が不明のため belief を汚さない。
+        if matches!(outcome, ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent) {
+            self.output.ime_mode_fsm.borrow_mut().on_set_open_applied(open);
+            if open {
+                // 新しい IME ON 試行 → give-up latch を解除して再確認の機会を与える。
+                self.output.ms_ime_gate_give_up.set(false);
+            }
+        }
         // CompositionFsm の状態を IME ON/OFF に追従させる（保留 warmup の epoch 整合用）。
         let tsf_mode = self.output.is_tsf_mode();
         let comp_event = if open {

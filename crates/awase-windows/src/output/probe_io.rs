@@ -359,6 +359,78 @@ fn fmt_conv(conv: Option<u32>) -> String {
     conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}"))
 }
 
+/// [`Output::start_ms_ime_ready_poll`] の `with_app` クロージャ戻り値。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MsImePollStatus {
+    /// NATIVE 確認済み → ポーリング終了。
+    Ready,
+    /// 未確認 → 継続。
+    Pending,
+    /// フォーカス世代不一致 / with_app 失敗 → 黙って終了。
+    Stale,
+}
+
+impl Output {
+    /// MS-IME confirm-then-transmit ゲート（BUG-13）の IMC 確認ポーリングを開始する。
+    ///
+    /// `MS_IME_READY_POLL_INTERVAL_MS` 間隔で `IMC_GETCONVERSIONMODE` を読み、
+    /// `ImeModeFsm` に反映する。NATIVE 確認（Hiragana/Katakana confirmed）で終了。
+    /// `deadline_ms` までに一度も確認できなければ `ms_ime_gate_give_up` を立てて
+    /// 以後のゲート発動をフォーカス変更 / 次の `SetOpen(true)` まで抑止する。
+    ///
+    /// `ime_mode_focus_gen` の世代照合により、ポーリング中にフォーカスが変わった場合は
+    /// stale 結果で `ImeModeFsm` / latch を汚染せず黙って終了する。
+    /// 待機側は `MsImeReadyCoro`（`pending_tsf`）が env 経由で確認を観測する。
+    /// 発行機構は `send_chrome_gji_reinit_and_poll` の IMC ポーリングと同型（VK 送信なし）。
+    pub(crate) fn start_ms_ime_ready_poll(&self, cold_seq: u32, deadline_ms: u64) {
+        let gen = self.ime_mode_focus_gen.get();
+        win32_async::spawn_local(async move {
+            loop {
+                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
+                let status = crate::with_app(|runtime| {
+                    let out = &runtime.platform.output;
+                    if out.ime_mode_focus_gen.get() != gen {
+                        return MsImePollStatus::Stale;
+                    }
+                    out.update_ime_mode_from_imc(conv);
+                    if out.ime_mode_fsm.borrow().is_native_ready() {
+                        MsImePollStatus::Ready
+                    } else {
+                        MsImePollStatus::Pending
+                    }
+                })
+                .unwrap_or(MsImePollStatus::Stale);
+
+                match status {
+                    MsImePollStatus::Ready => {
+                        log::debug!(
+                            "[msime-ready] cold={cold_seq} IMC ポーリング: NATIVE 確認 → 終了"
+                        );
+                        return;
+                    }
+                    MsImePollStatus::Stale => return,
+                    MsImePollStatus::Pending => {}
+                }
+
+                if crate::hook::current_tick_ms() >= deadline_ms {
+                    let _ = crate::with_app(|runtime| {
+                        let out = &runtime.platform.output;
+                        if out.ime_mode_focus_gen.get() == gen {
+                            out.ms_ime_gate_give_up.set(true);
+                            log::warn!(
+                                "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ → \
+                                 give-up latch 設定（フォーカス変更 / 次の IME ON まで gate 停止）"
+                            );
+                        }
+                    });
+                    return;
+                }
+                win32_async::sleep_ms(crate::tuning::MS_IME_READY_POLL_INTERVAL_MS as u32).await;
+            }
+        });
+    }
+}
+
 /// GJI probe が飛行中なら `WarmupResult` を記録する。
 ///
 /// `ProbeAction::Transmit` の TSF/Chrome 両アームと `StartSacrificialWarmup` で

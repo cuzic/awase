@@ -101,6 +101,13 @@ pub struct Output {
     /// キャプチャする。コールバック到達時に現在値と一致しない（= その後に別のフォーカス変更
     /// が来た）場合は stale として破棄し、古いポーリング結果で ImeModeFsm を汚染しない。
     pub(crate) ime_mode_focus_gen: std::cell::Cell<u32>,
+    /// MS-IME confirm-then-transmit ゲート（BUG-13）の give-up latch。
+    ///
+    /// `start_ms_ime_ready_poll` が「期限まで IMC が一度も確認できなかった」ときに立てる。
+    /// IMC が読めないアプリで毎キーストロークが probe 化（+`MS_IME_READY_CONFIRM_MS` の
+    /// 遅延）するのを防ぐ。フォーカス変更と `SetOpen(true)` 適用でクリアされ、
+    /// 再確認の機会が与えられる。
+    pub(crate) ms_ime_gate_give_up: std::cell::Cell<bool>,
     /// Unicode 送信後に GJI write 観測を行うフラグ。
     ///
     /// Platform::send_keys が Unicode モード + 未学習クラスのときにセットし、
@@ -179,6 +186,7 @@ impl Output {
             conv_mode: crate::state::ConvModeMgr::default(),
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(0),
+            ms_ime_gate_give_up: std::cell::Cell::new(false),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
             last_roman_restore_ms: std::cell::Cell::new(0),
@@ -309,7 +317,12 @@ impl Output {
         self.ime_mode_fsm.borrow_mut().on_focus_changed(now_ms);
         self.ime_mode_focus_gen
             .set(self.ime_mode_focus_gen.get().wrapping_add(1));
+        // 新しいフォーカス先では IMC が読める可能性があるため give-up latch を解除する。
+        self.ms_ime_gate_give_up.set(false);
     }
+
+    // `start_ms_ime_ready_poll`（BUG-13 の IMC 確認ポーリング）は spawn_local 内で
+    // with_app を使うため、layer-boundaries B-1 の ALLOW 対象である `probe_io.rs` にある。
 
     /// VK_IME_OFF → VK_IME_ON の連続送信を ImeModeFsm に通知する。
     ///

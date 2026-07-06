@@ -150,6 +150,25 @@ pub const CHROME_GJI_REINIT_CONFIRM_MS: u64 = 300;
 /// 10ms 間隔で最大 30 回 = 300ms（`CHROME_GJI_REINIT_CONFIRM_MS` に対応）。
 pub const CHROME_GJI_REINIT_POLL_INTERVAL_MS: u64 = 10;
 
+/// MS-IME confirm-then-transmit ゲート（BUG-13）の確認期限 (ms)。
+///
+/// **待ち時間ではなく安全弁**。準備完了の確認は `IMC_GETCONVERSIONMODE` ポーリングが
+/// 担い、NATIVE 確認の瞬間に送信するため通常のレイテンシは実際の準備時間 + ポーリング
+/// 1 tick で済む。この定数が効くのは IMC が読めない（None が返り続ける）環境のみで、
+/// 期限到達で強制送信 + give-up latch（以後 gate 停止）に落ちる。
+///
+/// 実測 (2026-07-06, Windows Terminal × MS-IME, IME OFF→ON 遷移):
+/// - +122ms: conv=0x00000000（未準備。この時点の送信で「を」→「wお」リテラル化 = BUG-13）
+/// - +281ms: conv=0x00000009（準備完了。「で」が正常に compose）
+///
+/// 準備完了の実測上限 ~281ms + マージン ~120ms = 400ms。
+pub const MS_IME_READY_CONFIRM_MS: u64 = 400;
+
+/// MS-IME confirm-then-transmit ゲートの IMC ポーリング間隔 (ms)。
+///
+/// `CHROME_GJI_REINIT_POLL_INTERVAL_MS` と同じ 10ms（同じシグナル・同じ発行機構）。
+pub const MS_IME_READY_POLL_INTERVAL_MS: u64 = 10;
+
 /// SacrificialWarmup（VK_A+BS）で composition-confirmed 後、GJI candidate window が
 /// 非表示になるのを待つ最大時間 (ms)。
 ///
