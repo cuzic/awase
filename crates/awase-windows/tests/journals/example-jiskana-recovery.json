@@ -1,0 +1,16 @@
+[
+  {
+    "name": "jiskana_recovers_to_assumed_romaji_restarts_engine",
+    "note": "ea3da7f 回帰の再現例（conv_classify.rs の既存 unit test と同一ケースをジャーナル・リプレイ形式に転記した最初のフィクスチャ）。JISかな (ROMANなし, conv=0x0009) を TsfNative で観測しても、is_roman_reliable=false のため ObservedKana へダウングレードせず AssumedRomaji{ImmBridgeBroken} に回復する。effective_open=true (shadow=ON) のため engine は SetOpen(RomajiRecovered) で再起動する。実機ジャーナルダンプが手に入ったら、この形式で tests/journals/ に追記していく（docs/journal-replay-guide.md 参照）。",
+    "conv": 9,
+    "current": "ObservedKana",
+    "is_cold": false,
+    "effective_open": true,
+    "conv_mode_changed": true,
+    "is_roman_reliable": false,
+    "expected": {
+      "input_mode_update": { "AssumedRomaji": { "reason": "ImmBridgeBroken" } },
+      "engine": { "SetOpen": "RomajiRecovered" }
+    }
+  }
+]
