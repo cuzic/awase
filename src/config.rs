@@ -4,32 +4,15 @@ use std::path::Path;
 
 use crate::types::VkCode;
 
-/// フックの動作モード
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum HookMode {
-    /// フィルター型: PassThrough キーは OS にそのまま通す。
-    /// フック内で SendInput を呼ぶため、レイヤー分離は不完全だがレイテンシが低い。
-    Filter,
-    /// スマートリレー型: 変換無関係なキーは直接 OS に通す。
-    /// flush を伴うキーのみ Consume して FIFO 順序を保証する。
-    /// Win キー等のシステム動作を壊さず、キー順序問題も解決。
-    #[default]
-    Relay,
-}
-
-/// ローマ字出力の送信方式
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum OutputMode {
-    /// 1文字ずつ個別にキーイベントを送信（他のフックとの互換性重視）
-    PerKey,
-    /// 全文字を1回にまとめて送信（高速、アトミック）
-    Batched,
-    /// ローマ字→ひらがなに変換して Unicode 文字として直接送信（IME 不要）
-    #[default]
-    Unicode,
-}
+// NOTE: かつて存在した設定項目（2026-07-06 撤去、旧 config.toml のキーは
+// #[serde(default)] + 未知フィールド無視により残っていても無害）:
+// - HookMode (hook_mode): Relay に一本化。Filter はリレー系機能（relay-defer/
+//   INPUT_DEFER 対称性/NonText パススルー等）の登場以降テストされておらず撤去。
+// - OutputMode (output_mode): per-window の InjectionMode（injection_hint + AppKind
+//   から自動決定）に完全置換済みで、フィールドは書き込みのみの死に設定だった。
+// - keyboard_model: レイアウトパースが KeyboardModel::Jis 固定で一度も配線されなかった。
+// - confirm_mode: NgramPredictive に固定（n-gram モデル未指定時は TwoPhase に自動
+//   フォールバック）。ConfirmMode enum 自体は engine API として存続。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -50,8 +33,6 @@ pub enum ConfirmMode {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct GeneralConfig {
-    /// キーボードの物理レイアウトモデル（"jis" or "us"）
-    pub keyboard_model: String,
     /// 同時打鍵の判定閾値（ミリ秒）
     pub simultaneous_threshold_ms: u32,
     /// 左親指キーのキー名
@@ -72,14 +53,10 @@ pub struct GeneralConfig {
     pub ngram_min_threshold_ms: u32,
     /// n-gram 適応閾値の上限（ミリ秒、デフォルト 120ms）
     pub ngram_max_threshold_ms: u32,
-    /// 確定モード（デフォルト: wait）
-    pub confirm_mode: ConfirmMode,
-    /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming で使用）
+    /// 投機出力までの待機時間（ミリ秒）。
+    /// 確定モードは NgramPredictive 固定で、n-gram モデル未指定時の TwoPhase
+    /// フォールバックおよび n-gram 予測内部の投機待機で使用される。
     pub speculative_delay_ms: u32,
-    /// ローマ字出力の送信方式（デフォルト: per_key）
-    pub output_mode: OutputMode,
-    /// フックの動作モード（デフォルト: filter）
-    pub hook_mode: HookMode,
     /// フォーカス遷移デバウンス時間（ミリ秒）。
     /// Alt-Tab 等でフォーカスが連続変更される際に IME 状態の誤検知を防ぐ。
     pub focus_debounce_ms: u32,
@@ -97,7 +74,6 @@ pub struct GeneralConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            keyboard_model: "jis".to_string(),
             simultaneous_threshold_ms: 100,
             left_thumb_key: "無変換".to_string(),
             right_thumb_key: "変換".to_string(),
@@ -108,10 +84,7 @@ impl Default for GeneralConfig {
             ngram_adjustment_range_ms: 20,
             ngram_min_threshold_ms: 30,
             ngram_max_threshold_ms: 120,
-            confirm_mode: ConfirmMode::Wait,
             speculative_delay_ms: 30,
-            output_mode: OutputMode::Unicode,
-            hook_mode: HookMode::Relay,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
             auto_start: "ask".to_string(),
@@ -479,38 +452,18 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.layouts_dir, "config");
     }
 
+    /// 撤去済みフィールド（confirm_mode / output_mode / hook_mode / keyboard_model）が
+    /// 旧 config.toml に残っていてもパースが失敗しない（後方互換）。
     #[test]
-    fn test_confirm_mode_deserialize() {
+    fn test_removed_fields_are_tolerated() {
         let toml_str = r#"
 [general]
 confirm_mode = "two_phase"
+output_mode = "batched"
+hook_mode = "filter"
+keyboard_model = "us"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.confirm_mode, ConfirmMode::TwoPhase);
-    }
-
-    #[test]
-    fn test_confirm_mode_all_variants() {
-        for (input, expected) in [
-            ("wait", ConfirmMode::Wait),
-            ("speculative", ConfirmMode::Speculative),
-            ("two_phase", ConfirmMode::TwoPhase),
-            ("adaptive_timing", ConfirmMode::AdaptiveTiming),
-            ("ngram_predictive", ConfirmMode::NgramPredictive),
-        ] {
-            let toml_str = format!("[general]\nconfirm_mode = \"{input}\"");
-            let config: AppConfig = toml::from_str(&toml_str).unwrap();
-            assert_eq!(config.general.confirm_mode, expected);
-        }
-    }
-
-    #[test]
-    fn test_confirm_mode_default() {
-        let toml_str = r#"
-[general]
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.confirm_mode, ConfirmMode::Wait);
         assert_eq!(config.general.speculative_delay_ms, 30);
     }
 

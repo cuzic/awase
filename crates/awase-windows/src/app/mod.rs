@@ -120,11 +120,9 @@ fn load_config() -> Result<AppConfig> {
     log::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
     log::info!(
-        "Default layout: {}, Threshold: {}ms, Output: {:?}, Hook: {:?}",
+        "Default layout: {}, Threshold: {}ms",
         config.general.default_layout,
         config.general.simultaneous_threshold_ms,
-        config.general.output_mode,
-        config.general.hook_mode,
     );
     Ok(config)
 }

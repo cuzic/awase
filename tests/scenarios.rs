@@ -25,7 +25,7 @@ fn make_nicola_engine() -> Engine {
         VK_NONCONVERT,
         VK_CONVERT,
         config.general.simultaneous_threshold_ms,
-        config.general.confirm_mode,
+        awase::config::ConfirmMode::NgramPredictive,
         config.general.speculative_delay_ms,
     );
 

@@ -1,4 +1,3 @@
-use awase::config::OutputMode;
 use awase::types::{KeyAction, VkCode};
 use crate::vk::ascii_to_vk;
 use std::time::Duration;
@@ -59,7 +58,6 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 ///
 /// キー注入の低レベル操作は [`KeyInjector`] に委譲する Facade。
 pub struct Output {
-    mode: OutputMode,
     /// SendInput / Unicode / VK 送信コンポーネント。
     ///
     /// `kana_table`・`symbol_to_vk`・`unicode_cold_defer` 等を内包し、
@@ -171,9 +169,8 @@ pub(crate) struct WarmupOutcome {
 /// - キー送信（`send_keys`、`send_romaji_*`、`send_char_*`、`send_unicode_char`）
 /// - ノンブロッキング TSF/Chrome プローブ FSM（`advance_tsf_probe` とその内部メソッド群）
 impl Output {
-    pub fn new(mode: OutputMode) -> Self {
+    pub fn new() -> Self {
         Self {
-            mode,
             injector: KeyInjector::new(),
             composition: crate::tsf::probe::CompositionState::new(),
             warmup_coord: TsfWarmupCoordinator::new(),
@@ -619,11 +616,6 @@ impl Output {
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
     fn mark_send(&self) {
         self.composition.update_last_send_ms();
-    }
-
-    /// 出力モードを変更する
-    pub const fn set_mode(&mut self, mode: OutputMode) {
-        self.mode = mode;
     }
 
     /// VK/TSF 出力後に「最終キー活動時刻」を同期更新する。
@@ -1102,7 +1094,7 @@ mod tests {
     // ── Output 状態管理テスト ───────────────────────────────────────────────────
 
     fn make_output() -> Output {
-        Output::new(OutputMode::Unicode)
+        Output::new()
     }
 
     #[test]

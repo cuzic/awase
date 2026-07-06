@@ -750,12 +750,13 @@ impl Runtime {
         let _ = self.engine.on_command(
             EngineCommand::UpdateFsmParams {
                 threshold_ms: config.general.simultaneous_threshold_ms,
-                confirm_mode: config.general.confirm_mode,
+                // 確定モードは NgramPredictive 固定（n-gram モデル未指定時は
+                // TwoPhase に自動フォールバック）。config.rs の撤去 NOTE 参照。
+                confirm_mode: awase::config::ConfirmMode::NgramPredictive,
                 speculative_delay_ms: config.general.speculative_delay_ms,
             },
             &ctx,
         );
-        self.platform.set_output_mode(config.general.output_mode);
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.focus_tracker.sync_toggle_keys = sync_toggle;
@@ -792,11 +793,9 @@ impl Runtime {
             );
         }
         log::info!(
-            "Config applied: threshold={}ms, confirm_mode={:?}, speculative_delay={}ms, output_mode={:?}",
+            "Config applied: threshold={}ms, speculative_delay={}ms",
             config.general.simultaneous_threshold_ms,
-            config.general.confirm_mode,
             config.general.speculative_delay_ms,
-            config.general.output_mode,
         );
     }
 

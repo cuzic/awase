@@ -1520,9 +1520,8 @@ fn e2e_config_validation() {
         let config = AppConfig::load(config_path).expect("config.toml should parse");
         let (validated, warnings) = config.validate();
         log::info!(
-            "Config validated: threshold={}ms mode={:?}",
+            "Config validated: threshold={}ms",
             validated.general.simultaneous_threshold_ms,
-            validated.general.confirm_mode
         );
         for w in &warnings {
             log::warn!("Config warning: {w}");

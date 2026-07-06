@@ -163,7 +163,9 @@ pub(super) fn init_engine_validated(
         left_thumb_vk,
         right_thumb_vk,
         config.general.simultaneous_threshold_ms,
-        config.general.confirm_mode,
+        // 確定モードは NgramPredictive 固定（n-gram モデル未指定時は TwoPhase に
+        // 自動フォールバック）。config.rs の撤去 NOTE 参照。
+        awase::config::ConfirmMode::NgramPredictive,
         config.general.speculative_delay_ms,
     );
 
@@ -434,9 +436,9 @@ pub(super) fn initialize_app(
     // RefCell が排他借用中でないことは構造的に保証されている。
     RUNTIME.set(Runtime::new(
         engine,
-        executor::DecisionExecutor::new(config.general.hook_mode),
+        executor::DecisionExecutor::new(),
         platform::WindowsPlatform::new(
-            Output::new(config.general.output_mode),
+            Output::new(),
             tray,
             crate::timer::Win32Timer::new(),
             engine_on_ime_vk,

@@ -42,10 +42,8 @@ fn main() -> Result<()> {
     awase_macos::hook::set_thumb_keycodes(left_thumb, right_thumb);
 
     // 5. Load .yab layout
-    let keyboard_model: KeyboardModel = config.general.keyboard_model.parse().unwrap_or_else(|e| {
-        log::warn!("Invalid keyboard_model: {e}, using jis");
-        KeyboardModel::Jis
-    });
+    // .yab は JIS 物理位置ベースのため Jis 固定（keyboard_model 設定は 2026-07-06 撤去）
+    let keyboard_model = KeyboardModel::Jis;
 
     let layout_path = Path::new(&config.general.layouts_dir).join(&config.general.default_layout);
     let layout = if layout_path.exists() {
@@ -65,7 +63,9 @@ fn main() -> Result<()> {
         left_thumb,
         right_thumb,
         config.general.simultaneous_threshold_ms,
-        config.general.confirm_mode,
+        // 確定モードは NgramPredictive 固定（n-gram モデル未指定時は TwoPhase に
+        // 自動フォールバック）
+        awase::config::ConfirmMode::NgramPredictive,
         config.general.speculative_delay_ms,
     );
     let _engine = Engine::new(

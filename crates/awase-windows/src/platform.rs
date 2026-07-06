@@ -199,10 +199,6 @@ impl WindowsPlatform {
 
     /// 出力モードを切り替える（設定変更時）。
     #[expect(clippy::missing_const_for_fn)]
-    pub(crate) fn set_output_mode(&mut self, mode: awase::config::OutputMode) {
-        self.output.set_mode(mode);
-    }
-
     /// pending_tsf をインストールし、TIMER_TSF_PROBE を起動する（vk_send async パス用）。
     pub(crate) fn install_pending_tsf_and_set_timer(
         &mut self,

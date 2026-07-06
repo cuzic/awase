@@ -10,7 +10,6 @@
 ///   フック内で OS API を一切呼ばない。
 use std::collections::VecDeque;
 
-use awase::config::HookMode;
 use awase::engine::{Decision, DecisionOrigin, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect};
 use awase::platform::{EffectOrigin, PlatformRuntime, TsfComposition};
 use awase::types::RawKeyEvent;
@@ -43,8 +42,6 @@ pub(crate) struct BatchResult {
 pub(crate) struct DecisionExecutor {
     /// Effects キュー（FIFO 順序保証）
     queue: VecDeque<Effect>,
-    /// フックの動作モード
-    hook_mode: HookMode,
     /// passthrough キーの Down/Up 対称性と output guard defer を管理する。
     passthrough_queue: PassthroughQueue,
     /// OUTPUT_GUARD で park した ReinjectKey イベント。
@@ -100,10 +97,9 @@ pub(crate) fn strip_ime_set_open_if_settling(decision: &mut Decision, settling: 
 }
 
 impl DecisionExecutor {
-    pub(crate) fn new(hook_mode: HookMode) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             queue: VecDeque::new(),
-            hook_mode,
             passthrough_queue: PassthroughQueue::new(),
             guard_held: None,
             applied_snapshot: crate::state::AppliedImeState::Unknown,
@@ -113,9 +109,11 @@ impl DecisionExecutor {
 
     /// フックコールバックから呼ぶ。
     ///
-    /// - Filter モード: 入出力系は即座実行、重い処理は遅延。PassThrough を OS に返す。
-    /// - Relay モード: 全 Effects をキューに入れ、PassThrough キーも ReinjectKey に変換。
-    ///   常に Consumed を返す。
+    /// Relay モード（唯一のモード）: 全 Effects をキューに入れ、PassThrough キーも
+    /// ReinjectKey に変換。常に Consumed を返す。
+    /// （旧 Filter モードは 2026-07-06 撤去 — relay-defer/INPUT_DEFER 対称性/
+    /// NonText パススルー等がすべて Relay 前提で設計・実機検証されており、
+    /// Filter は長期間テストされていないレガシー経路だったため。）
     pub(crate) fn execute_from_hook(
         &mut self,
         platform: &mut WindowsPlatform,
@@ -125,10 +123,7 @@ impl DecisionExecutor {
         physical: PhysicalKeyDisposition,
     ) -> BatchResult {
         self.applied_snapshot = ime.model().applied;
-        match self.hook_mode {
-            HookMode::Filter => self.execute_filter(platform, decision, physical),
-            HookMode::Relay => self.execute_relay(platform, decision, raw_event, physical),
-        }
+        self.execute_relay(platform, decision, raw_event, physical)
     }
 
     /// メッセージループから呼ぶ。全 Effects を即座に実行する。
@@ -295,45 +290,6 @@ impl DecisionExecutor {
     pub(crate) fn enqueue_reinject(&mut self, event: RawKeyEvent) {
         self.queue
             .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
-    }
-
-    // ── Filter モード ──
-
-    fn execute_filter(
-        &mut self,
-        platform: &mut WindowsPlatform,
-        decision: Decision,
-        physical: PhysicalKeyDisposition,
-    ) -> BatchResult {
-        let (callback, effects) = match decision {
-            Decision::PassThrough => {
-                return BatchResult {
-                    callback: physical.to_callback(false),
-                    has_pending: self.has_pending(),
-                    sync_outcomes: Vec::new(),
-                }
-            }
-            Decision::PassThroughWith { effects } => (physical.to_callback(false), effects),
-            Decision::Consume { effects } => (physical.to_callback(true), effects),
-        };
-
-        let mut sync_outcomes = Vec::new();
-        for effect in effects {
-            if Self::is_input_critical(&effect) {
-                // Ime/Ui effects are not critical → they go to queue, never reach execute_one here.
-                if let Some(o) = self.execute_one(platform, effect) {
-                    sync_outcomes.push(o);
-                }
-            } else {
-                self.queue.push_back(effect);
-            }
-        }
-
-        BatchResult {
-            callback,
-            has_pending: self.has_pending(),
-            sync_outcomes,
-        }
     }
 
     // ── Relay モード（スマートリレー）──
