@@ -161,13 +161,17 @@ pub enum ImePolicyProfile {
     Unknown,
 }
 
-/// 入力 chord の種別 (Step 4 で使う、Step 0 では定義のみ)。
+/// 入力 chord の種別。
+///
+/// 旧 `CtrlHenkanImeOn`（IME ON 側 chord）は 2026-07-06 到達不能パス監査 B2 で撤去 —
+/// production で構築されたことがなかった。ON 側は barrier を張るのではなく
+/// 「chord 中の IME ON 要求で barrier を即時解除する」のが設計
+/// （`ImeModel::reduce` の `ImeApplyRequested` arm 参照）。ON の apply は冪等のため
+/// 連打フィルタも不要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChordKind {
     /// Ctrl + 無変換 → IME OFF
     CtrlMuhenkanImeOff,
-    /// Ctrl + 変換 → IME ON
-    CtrlHenkanImeOn,
 }
 
 /// Apply 失敗の種別 (Step 7 で使う、Step 0 では定義のみ)。
@@ -290,9 +294,9 @@ pub enum ImeEvent {
         focus_epoch: crate::state::probe_admission::FocusEpoch,
     },
 
-    /// Chord transaction の開始 (Ctrl+無変換 押下時等)
-    ChordStarted { kind: ChordKind },
-
+    // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
+    // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
+    // ctrl_held:true } の内部で行われる）、golden テストだけが生かしていた。
     /// Chord transaction の終了 (Ctrl KeyUp 等)
     ChordEnded { kind: ChordKind },
 

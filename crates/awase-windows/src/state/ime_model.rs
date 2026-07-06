@@ -371,17 +371,6 @@ impl ImeModel {
                     settle_until,
                 });
             }
-            ImeEvent::ChordStarted { kind } => {
-                // Step 4: chord transaction を開始。barrier を立てる。
-                // CtrlMuhenkanImeOff/CtrlHenkanImeOn から target を導出。
-                let target = matches!(kind, ChordKind::CtrlHenkanImeOn);
-                self.input_barrier = Some(InputBarrier::CtrlImeChord {
-                    target,
-                    kind,
-                    started_seq: envelope.time.seq,
-                    started_at: envelope.time.monotonic,
-                });
-            }
             ImeEvent::ChordEnded { .. } => {
                 // Step 4: chord transaction を終了。barrier を解除。
                 self.input_barrier = None;
