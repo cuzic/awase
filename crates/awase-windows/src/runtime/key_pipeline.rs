@@ -491,6 +491,16 @@ impl Runtime {
             }
         }
         if self.platform_state.ime.effective_open() == current {
+            // 診断ログ (2026-07-06 "IME-OFF Engine-ON" 報告の切り分け用): belief が
+            // 既に new_val と一致しているため apply-ime/dispatch-ime に到達せず、
+            // 実 OS IME が別経路 (物理キー直結等) で乖離していても訂正されない。
+            // hook.rs の [hook] IME-mode ログと突き合わせ、直前に対応する KeyDown
+            // (vk=0xF0 等) が self_injected=false で到達していたか確認すること。
+            log::debug!(
+                "[shadow-toggle] no-op: vk=0x{:02X} action={:?} source={:?} \
+                 effective_open は既に {} → apply-ime 見送り",
+                event.vk_code, action, kind, current,
+            );
             return false;
         }
         self.platform_state.ime.on_ime_toggled();

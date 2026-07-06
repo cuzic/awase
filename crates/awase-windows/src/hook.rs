@@ -380,14 +380,28 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
 
-    // 自己注入キー（SendInput with INJECTED_MARKER 等）は OS にそのまま通す
-    if is_self_injected(kb.dwExtraInfo) {
-        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-    }
-
     let vk = VkCode(kb.vkCode as u16);
     let scan = ScanCode(kb.scanCode);
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+    let self_injected = is_self_injected(kb.dwExtraInfo);
+
+    // IME モードキー (VK_KANA/IME_ON/JUNJA/KANJI/IME_OFF/VK_DBE_*) 診断ログ。
+    // 「Ctrl+無変換→Ctrl+変換 で IME-OFF Engine-ON になる」報告 (2026-07-06) の切り分け用:
+    // 無変換キー (VK_DBE_ALPHANUMERIC=0xF0) の KeyDown が [engine-input] に一度も
+    // 現れず KeyUp だけ現れる現象が2回連続で観測された。自己注入として swallow
+    // されているのか、そもそもフックに届いていないのかをここで区別する。
+    if crate::vk::ImeKeyKind::from_vk(vk).is_some() {
+        let dir = if is_keydown { "down" } else { "up" };
+        log::debug!(
+            "[hook] IME-mode vk=0x{:02X} {dir} self_injected={self_injected} scan=0x{:X} extra=0x{:X}",
+            vk.0, kb.scanCode, kb.dwExtraInfo,
+        );
+    }
+
+    // 自己注入キー（SendInput with INJECTED_MARKER 等）は OS にそのまま通す
+    if self_injected {
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+    }
     // PHYSICAL_KEY_STATE はハードウェア由来のイベントのみで更新する。
     // LLKHF_INJECTED 付き（X サーバー・他ツールの synthetic）はスキップし、
     // stuck modifier による汚染を防ぐ。自前の synthetic は上の is_self_injected で既に除外済み。
