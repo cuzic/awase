@@ -238,7 +238,7 @@ impl Output {
             // （sync パスと同一経路）。RuntimeRequest::StartTsfProbe は belt-and-suspenders として積む。
             let guard = OutputActiveGuard::begin();
             let probe = crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
-            self.install_pending_tsf(Box::new(crate::tsf::chrome_probe::ChromeProbe::new(
+            self.install_pending_tsf(Box::new(crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                 romaji,
                 cold_seq,
                 probe,
@@ -387,12 +387,12 @@ impl Output {
             }
 
             // ノンブロッキング warmup を開始して pending_tsf に保留
-            let started = crate::tsf::cold_warmup::ColdWarmupSequence::new(self)
+            let started = crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self)
                 .run_start(session_expired, elapsed);
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params();
-            let coro = Box::new(crate::tsf::gji_warmup_coro::GjiWarmupCoro::new(
+            let coro = Box::new(crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
                 romaji,
                 cold_seq,
                 started.probe,
@@ -483,16 +483,10 @@ impl Output {
             // ze_bs_count は実際の値を渡す。
             let _ = (detector,);
             self.install_pending_tsf(Box::new(
-                crate::tsf::literal_detect_fsm::LiteralDetectFsm::new(
+                crate::tsf::warmup::literal_detect_fsm::LiteralDetectFsm::new(
                     cold_seq,
                     romaji.to_owned(),
-                    crate::tsf::probe_fsm::TransmitPlan {
-                        should_prepend_f2: false,
-                        used_eager_path: false,
-                        needs_literal: true,
-                        literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                    },
-                    crate::tsf::probe_fsm::ProbeObservations {
+                    crate::tsf::warmup::probe_fsm::ProbeObservations {
                         nc_fired: false,
                         gji_resumed: false,
                     },

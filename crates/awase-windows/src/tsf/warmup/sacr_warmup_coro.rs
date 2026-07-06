@@ -20,9 +20,9 @@ use std::rc::Rc;
 use crate::tsf::ime_mode_fsm::ImeModeState;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
+use crate::tsf::warmup::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
-use crate::tsf::tickable_fsm::TickableFsm;
+use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use crate::tuning::{
     CHROME_GJI_REINIT_CONFIRM_MS, SACR_WARMUP_CHROME_HIDE_WAIT_MS,
     SACR_WARMUP_CHROME_IPC_SETTLE_MS,

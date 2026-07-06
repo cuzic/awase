@@ -1,37 +1,30 @@
 //! TSF (Text Services Framework) 状態推測システム。
 //!
-//! ## 3層アーキテクチャ
+//! ## 4層アーキテクチャ（ADR-030）
 //!
-//! - [`observer`]     — observation 層: OS から生データを収集（GJI I/O, WinEvent）
-//! - [`probe`]        — judgement 層: 観測データから「ready か？」「warm か？」を判定
-//! - [`output`]       — action 層: 判定結果を元に SendInput を組み立て実行
+//! - [`observer`]     — Layer 1 observation: OS から生データを収集（GJI I/O, WinEvent）
+//! - [`probe`]        — Layer 2 judgement: 観測データから「ready か？」「warm か？」を判定
+//!   （`gji_fsm` / `composition_fsm` の判断寄り FSM もここに属する）
+//! - [`output`]       — Layer 3 action: 判定結果を元に SendInput を組み立て実行
+//! - [`warmup`]       — Layer 4 warmup オーケストレーション: 多段 warmup シーケンスを
+//!   タイマー駆動で進め `ProbeAction` を emit（TickableFsm family / strategy）
 //! - [`probe_bridge`] — メッセージループ統合: OUTPUT_GATE / WM_DRAIN_OUTPUT_QUEUE
-//! - [`cold_warmup`]  — cold-start ウォームアップシーケンス（Preamble/Eager/Non-eager 分解）
 
-pub(crate) mod chrome_probe;
 pub(super) mod tip_detector;
 mod gji_monitor;
 mod win_event_obs;
-pub(crate) mod cold_warmup;
 pub(crate) mod composition_fsm;
 pub(crate) mod gji_fsm;
-pub(crate) mod gji_warmup_coro;
 pub(crate) mod ime_mode_fsm;
-pub(crate) mod ime_offon_warmup_coro;
-pub(crate) mod literal_detect_fsm;
 pub mod observer;
-pub(crate) mod sacr_warmup_coro;
-pub(crate) mod tickable_fsm;
-pub(crate) mod unicode_cold_warmup_fsm;
-pub(crate) mod unicode_literal_observer;
-pub(crate) mod warmup_strategy;
+pub(crate) mod tsf_gate;
+pub(crate) mod warmup;
 pub mod output;
 pub mod probe;
 pub mod probe_bridge;
-pub(crate) mod probe_fsm;
 pub mod send;
 
 pub use awase::gate::GateAction;
-pub use awase::tsf::{
-    GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, WARMUP_TIMEOUT_MS,
+pub use tsf_gate::{
+    GateEvent, GateTimer, TsfGate, TsfGateMachine, TsfGateState, TsfReadiness, WARMUP_TIMEOUT_MS,
 };

@@ -2,23 +2,28 @@
 //!
 //! 10ms タイマー (`TIMER_TSF_PROBE`) から `tick()` が呼ばれるパターンを型として表現する。
 //!
-//! ## 実装一覧
+//! ## 実装一覧（本番実装 8 種 + テスト用 StubMachine）
 //!
-//! | 実装型 | 用途 | 使用するメソッド |
-//! |--------|------|-----------------|
-//! | `GjiWarmupCoro` | GJI cold-start warmup probe | `tick`, `cold_seq_hint`, `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done` |
-//! | `TsfProbeCoro` | Chrome probe + LiteralDetect | `tick`, `cold_seq_hint`, `apply_transmit_done` |
-//! | `SacrificialWarmupCoro` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化 | `tick`, `cold_seq_hint`, `notify_start_composition` |
-//! | `LiteralDetectFsm` | warm パスの post-transmit composition 確認 | `tick`, `cold_seq_hint` のみ |
+//! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
+//! |--------|---------|------|-----------------|
+//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done` |
+//! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome probe + LiteralDetect（StepCoro） | `apply_transmit_done` |
+//! | `SacrificialWarmupCoro` | `sacr_warmup_coro.rs` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化（StepCoro） | `notify_start_composition` |
+//! | `LiteralDetectFsm` | `literal_detect_fsm.rs` | warm パスの post-transmit composition 確認（`LiteralDetectCore` ラッパー） | なし（Core のみ） |
+//! | `ImeOffOnWarmupFsm` | `ime_offon_warmup_fsm.rs` | VK_IME_OFF→ON 暖機（手書きカウンタ FSM） | なし |
+//! | `UnicodeColdWarmupFsm` | `unicode_cold_warmup_fsm.rs` | Unicode long-cold の deferred chars 送信（手書き FSM） | `push_deferred_unicode_chars` |
+//! | `ChromeProbe` | `chrome_probe.rs` | Chrome cold-start GJI readiness probe（手書き FSM） | なし |
+//! | `UnicodeLiteralObserverFsm` | `unicode_literal_observer.rs` | Unicode 送信後の GJI write 観測（事後 Tsf 昇格） | なし |
 //!
-//! デフォルト実装（no-op）が多いのは各 implementor が必要なメソッドだけをオーバーライドするため。
+//! `Core`（`tick` / `cold_seq_hint`）は全実装型が実装する。上表は core 以外に
+//! オーバーライドするメソッドのみを列挙する（デフォルト no-op を使うため）。
 //!
 //! probe 進行中に届いた後続 VK（deferred VK）は `TsfWarmupCoordinator` が一元管理する
 //! （`push_deferred` は個々の実装が持たない）。
 
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::probe::LiteralDetector;
-use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot};
+use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
 
 /// tick 駆動型 FSM の共通インターフェース。
 ///

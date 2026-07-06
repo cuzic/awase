@@ -20,7 +20,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use crate::output::Output;
 use crate::tuning::LONG_IDLE_MS;
 
-use super::send::{send_vk_dbe_alpha_warmup, send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup};
+use crate::tsf::send::{send_vk_dbe_alpha_warmup, send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup};
 
 /// charset に応じた warmup VK ペアを 1 回送信し、送信後の時刻を返す。
 ///

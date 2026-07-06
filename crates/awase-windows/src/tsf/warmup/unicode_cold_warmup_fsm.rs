@@ -11,7 +11,7 @@
 //! 5. dispatcher が各文字を `send_unicode_char_direct()` で送信する。
 
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot};
+use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
 
 /// GJI が write するか、このミリ秒以上経過したら deferred chars を送信する。
 const WARMUP_TIMEOUT_MS: u64 = 200;
@@ -66,7 +66,7 @@ impl UnicodeColdWarmupFsm {
     }
 }
 
-impl crate::tsf::tickable_fsm::TickableFsm for UnicodeColdWarmupFsm {
+impl crate::tsf::warmup::tickable_fsm::TickableFsm for UnicodeColdWarmupFsm {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         self.tick_inner(env)
     }

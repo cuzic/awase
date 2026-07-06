@@ -1,7 +1,14 @@
-//! VK_IME_OFF→VK_IME_ON ウォームアップ コルーチン。
+//! VK_IME_OFF→VK_IME_ON ウォームアップ FSM。
 //!
-//! [`ImeOffOnWarmupCoro`] は VK_A+BS の代わりに VK_IME_OFF→VK_IME_ON を送信し、
+//! [`ImeOffOnWarmupFsm`] は VK_A+BS の代わりに VK_IME_OFF→VK_IME_ON を送信し、
 //! GJI の WriteTransferCount 上昇を検出してから実ローマ字を再送する。
+//!
+//! ## 名前が Coro でなく Fsm である理由
+//!
+//! 実体は「10ms ごとに elapsed_ms を加算し gji_write_bytes 上昇 or タイムアウトを待つ」
+//! 単一の線形カウンタであり、複数フェーズを跨ぐ制御フロー（`StepCoro` が解決する問題）を
+//! 持たない。そのため coroutine 化せず、手書き tick カウンタ FSM のまま保持する
+//! （ADR-053 の StepCoro 化基準: 分岐が線形シーケンスなら StepCoro、単純カウンタなら FSM）。
 //!
 //! ## vim 互換性
 //!
@@ -15,15 +22,15 @@
 //! `TIMEOUT_MS` 内に上昇しない場合は `confirmed_warm=false`（F2 prepend フォールバック）で再送。
 
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
-use crate::tsf::tickable_fsm::TickableFsm;
+use crate::tsf::warmup::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
+use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
 /// VK_IME_OFF→ON 送信後に GJI write が観測されるまで待つミリ秒数。
 ///
 /// 実測: VK_IME_OFF→ON 送信から +46B 検出まで ~30ms。余裕を持って 200ms。
 const TIMEOUT_MS: u64 = 200;
 
-pub(crate) struct ImeOffOnWarmupCoro {
+pub(crate) struct ImeOffOnWarmupFsm {
     cold_seq: u32,
     romaji: String,
     target: TransmitTarget,
@@ -32,7 +39,7 @@ pub(crate) struct ImeOffOnWarmupCoro {
     _guard: OutputActiveGuard,
 }
 
-impl ImeOffOnWarmupCoro {
+impl ImeOffOnWarmupFsm {
     pub(crate) fn new(
         cold_seq: u32,
         romaji: String,
@@ -83,7 +90,7 @@ impl ImeOffOnWarmupCoro {
     }
 }
 
-impl TickableFsm for ImeOffOnWarmupCoro {
+impl TickableFsm for ImeOffOnWarmupFsm {
     fn tick(&mut self, _env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         self.tick_inner()
     }

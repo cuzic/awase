@@ -4,9 +4,10 @@
 //! `dispatch_probe_actions` は `ProbeIo` を受け取り、Win32 呼び出しを直接行わない。
 
 use crate::output::{Output, VkMarker, VkSequence, WarmupOutcome};
+use crate::state::key_sequence_policy::{self, SacrificialWarmupKey};
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
-use crate::tsf::probe_fsm::DeferredVk;
+use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
 use awase::types::VkCode;
 use win32_async;
@@ -62,7 +63,7 @@ pub(crate) trait ProbeIo {
     /// VK_IME_OFF→VK_IME_ON を IME_KANJI_MARKER 付きで送信する（vim 安全な一次プローブ）。
     ///
     /// `StartSacrificialWarmup` ハンドラが呼ぶ。Off→On 遷移が GJI WriteTransferCount を増加させ、
-    /// `ImeOffOnWarmupCoro` が write_bytes 上昇を検出してから実ローマ字を再送する。
+    /// `ImeOffOnWarmupFsm` が write_bytes 上昇を検出してから実ローマ字を再送する。
     fn send_sacrificial_ime_off_on(&self, cold_seq: u32);
     /// 犠牲キー（VK_A + BS）を同一 SendInput バッチで送信する（Chrome 用）。
     ///
@@ -364,8 +365,8 @@ fn fmt_conv(conv: Option<u32>) -> String {
 /// 同一の10行ブロックが繰り返されるため、共通関数として抽出する。
 fn store_gji_warmup_if_probing(
     io: &impl ProbeIo,
-    obs: &crate::tsf::probe_fsm::ProbeObservations,
-    plan: &crate::tsf::probe_fsm::TransmitPlan,
+    obs: &crate::tsf::warmup::probe_fsm::ProbeObservations,
+    plan: &crate::tsf::warmup::probe_fsm::TransmitPlan,
 ) {
     if io.current_gji_probe_id().is_some() {
         use crate::tsf::gji_fsm::WarmupResult;
@@ -382,8 +383,8 @@ fn store_gji_warmup_if_probing(
 /// `ProbeObservations` と `TransmitPlan` から `WarmupPath` を分類する純粋関数。
 /// Tsf/Chrome の両 Transmit アームで共用する。
 fn classify_warmup_path(
-    obs: &crate::tsf::probe_fsm::ProbeObservations,
-    plan: &crate::tsf::probe_fsm::TransmitPlan,
+    obs: &crate::tsf::warmup::probe_fsm::ProbeObservations,
+    plan: &crate::tsf::warmup::probe_fsm::TransmitPlan,
 ) -> crate::tsf::gji_fsm::WarmupPath {
     use crate::tsf::gji_fsm::WarmupPath;
     if obs.gji_resumed {
@@ -404,7 +405,7 @@ pub(crate) enum DispatchResult {
     /// probe 継続（次回 tick を待つ）。
     Continue,
     /// 別の FSM に切り替える（`LiteralDetectFsm` 等）。
-    SwitchMachine(Box<dyn crate::tsf::tickable_fsm::TickableFsm>),
+    SwitchMachine(Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>),
     /// Unicode 送信後に GJI write が観測されなかった → フォーカス中クラスを Tsf に昇格する。
     ///
     /// `advance_tsf_probe` が `focus.learn_injection_mode_tsf()` を呼ぶ。
@@ -425,14 +426,14 @@ impl DispatchResult {
 #[expect(clippy::cognitive_complexity)]
 pub(crate) fn dispatch_probe_actions<M, I>(
     machine: &mut M,
-    initial_actions: Vec<crate::tsf::probe_fsm::ProbeAction>,
+    initial_actions: Vec<crate::tsf::warmup::probe_fsm::ProbeAction>,
     io: &I,
 ) -> DispatchResult
 where
-    M: crate::tsf::tickable_fsm::TickableFsm + ?Sized,
+    M: crate::tsf::warmup::tickable_fsm::TickableFsm + ?Sized,
     I: ProbeIo,
 {
-    use crate::tsf::probe_fsm::{ProbeAction, TransmitTarget};
+    use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitTarget};
     use std::collections::VecDeque;
 
     let mut queue: VecDeque<ProbeAction> = initial_actions.into();
@@ -563,14 +564,14 @@ where
                 //
                 // VK_A+BS の代わりに VK_IME_OFF→VK_IME_ON を送信する（vim 安全プローブ）。
                 // Off→On 状態遷移が GJI WriteTransferCount を増加させ（実測 +46B / ~30ms）、
-                // ImeOffOnWarmupCoro が write_bytes 上昇を検出してから実ローマ字を再送する。
+                // ImeOffOnWarmupFsm が write_bytes 上昇を検出してから実ローマ字を再送する。
                 let real_chars: VkSequence = config.romaji
                     .chars()
                     .filter_map(crate::output::resolve_ascii_to_vk)
                     .collect();
-                // Chrome は常に gate=Bypass のため Chrome target の場合はゲートチェックをスキップする。
+                // Chrome は常に gate=Bypass 運用のため gate チェック対象外（policy に集約）。
                 // TSF/WezTerm の場合のみ bypass 状態でスキップする。
-                if config.target != TransmitTarget::Chrome && io.gate_is_bypass() {
+                if key_sequence_policy::warmup_respects_bypass_gate(config.target) && io.gate_is_bypass() {
                     log::debug!(
                         "[sacr-warmup] cold={} StartSacrificialWarmup: gate=Bypass, skipping",
                         config.cold_seq
@@ -594,8 +595,8 @@ where
                 //
                 // TSF（WezTerm 等）: VK_IME_OFF→ON + write_bytes 検出（vim 安全プローブ）。
                 //   vim は VK_IME_OFF/ON を無視するため cold 時にアプリへ届いても誤動作しない。
-                match config.target {
-                    TransmitTarget::Chrome => {
+                match key_sequence_policy::sacrificial_warmup_key(config.target) {
+                    SacrificialWarmupKey::VkAThenBackspace => {
                         let write_bytes_before_vk_a = crate::tsf::observer::gji_write_bytes();
                         io.send_sacrificial_vk_a_with_bs(config.cold_seq);
                         let detector = crate::tsf::probe::LiteralDetector::new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a);
@@ -605,7 +606,7 @@ where
                             (romaji={:?} write_bytes_baseline={})",
                             config.cold_seq, config.romaji, write_bytes_before_vk_a,
                         );
-                        let sacr_coro = crate::tsf::sacr_warmup_coro::SacrificialWarmupCoro::new(
+                        let sacr_coro = crate::tsf::warmup::sacr_warmup_coro::SacrificialWarmupCoro::new(
                             config.cold_seq,
                             config.romaji,
                             detector,
@@ -614,21 +615,21 @@ where
                         );
                         return DispatchResult::SwitchMachine(Box::new(sacr_coro));
                     }
-                    TransmitTarget::Tsf => {
+                    SacrificialWarmupKey::ImeOffThenOn => {
                         let write_bytes_baseline = crate::tsf::observer::gji_write_bytes();
                         io.send_sacrificial_ime_off_on(config.cold_seq);
                         log::debug!(
-                            "[sacr-warmup] cold={} VK_IME_OFF→ON 送信 → ImeOffOnWarmupCoro 開始 \
+                            "[sacr-warmup] cold={} VK_IME_OFF→ON 送信 → ImeOffOnWarmupFsm 開始 \
                             (romaji={:?} write_bytes_baseline={})",
                             config.cold_seq, config.romaji, write_bytes_baseline,
                         );
-                        let coro = crate::tsf::ime_offon_warmup_coro::ImeOffOnWarmupCoro::new(
+                        let fsm = crate::tsf::warmup::ime_offon_warmup_fsm::ImeOffOnWarmupFsm::new(
                             config.cold_seq,
                             config.romaji,
                             config.target,
                             write_bytes_baseline,
                         );
-                        return DispatchResult::SwitchMachine(Box::new(coro));
+                        return DispatchResult::SwitchMachine(Box::new(fsm));
                     }
                 }
             }
@@ -649,15 +650,15 @@ where
                     .chars()
                     .filter_map(crate::output::resolve_ascii_to_vk)
                     .collect();
-                // Chrome は常に gate=Bypass のため Chrome target の場合はゲートチェックをスキップする。
-                if chars.is_empty() || (resend.target != TransmitTarget::Chrome && io.gate_is_bypass()) {
+                // Chrome は常に gate=Bypass 運用のため gate チェック対象外（policy に集約）。
+                if chars.is_empty() || (key_sequence_policy::warmup_respects_bypass_gate(resend.target) && io.gate_is_bypass()) {
                     // ゲートが閉じている or 実ローマ字なし: BS も送らず即終了
                     log::debug!("[sacr-warmup] cold={cold_seq} SacrificialResend: skip (bypass or empty)");
                 } else {
                     // BS×1: 犠牲 VK_A の結果を削除。
-                    // skip_cleanup_bs=true（ImeOffOnWarmupCoro）は VK_A を送っていないので BS 不要。
-                    // Chrome は VK_A+BS を atomic batch で送信済みのため BS 不要。
-                    if !resend.skip_cleanup_bs && resend.target != TransmitTarget::Chrome {
+                    // skip_cleanup_bs=true（ImeOffOnWarmupFsm）は VK_A を送っていないので BS 不要。
+                    // Chrome は VK_A+BS を atomic batch で送信済みのため cleanup BS 不要（policy に集約）。
+                    if !resend.skip_cleanup_bs && key_sequence_policy::target_needs_sacrificial_cleanup_bs(resend.target) {
                         io.send_sacrificial_bs_one(cold_seq);
                     }
                     match resend.target {
@@ -758,7 +759,7 @@ where
 mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
-    use crate::tsf::probe_fsm::{ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget};
+    use crate::tsf::warmup::probe_fsm::{ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget};
     use std::cell::Cell;
 
     /// テスト用フェイク ProbeIo。Win32 副作用を no-op にし、呼び出しをフラグで記録する。
@@ -871,20 +872,20 @@ mod tests {
         fn send_unicode_char_direct(&self, _ch: char) {}
     }
 
-    fn make_chrome_machine() -> crate::tsf::probe_fsm::TsfProbeCoro {
+    fn make_chrome_machine() -> crate::tsf::warmup::probe_fsm::TsfProbeCoro {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
-        crate::tsf::probe_fsm::TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
+        crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
     }
 
-    fn make_gji_machine() -> crate::tsf::gji_warmup_coro::GjiWarmupCoro {
+    fn make_gji_machine() -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
         make_gji_machine_with_cold(crate::tuning::SETTLE_TIMEOUT_MS, false)
     }
 
-    fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::gji_warmup_coro::GjiWarmupCoro {
+    fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
         let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
-        crate::tsf::gji_warmup_coro::GjiWarmupCoro::new(
+        crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
             "ka",
             0,
             probe,
@@ -1385,7 +1386,7 @@ mod tests {
         let mut machine = make_gji_machine();
         let actions = vec![
             ProbeAction::SendRecoveryBs { cold_seq: 0, backs: 2 },
-            ProbeAction::StartSacrificialWarmup(crate::tsf::probe_fsm::LiteralDetectConfig {
+            ProbeAction::StartSacrificialWarmup(crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
                 cold_seq: 0,
                 romaji: "ko".to_string(),
                 plan: TransmitPlan {
@@ -1438,7 +1439,7 @@ mod tests {
         };
         let mut machine = make_gji_machine();
         let actions = vec![
-            ProbeAction::StartSacrificialWarmup(crate::tsf::probe_fsm::LiteralDetectConfig {
+            ProbeAction::StartSacrificialWarmup(crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
                 cold_seq: 0,
                 romaji: "ko".to_string(),
                 plan: TransmitPlan {

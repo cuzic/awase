@@ -66,11 +66,29 @@ impl TickableFsm for GjiWarmupCoro {
 
 | コルーチン | 置き換えた FSM | コミット |
 |-----------|--------------|---------|
-| `GjiWarmupCoro` | `GjiWarmupFsm` + `LiteralDetectFsm` | ccd4711 |
+| `GjiWarmupCoro` | `GjiWarmupFsm` + `LiteralDetectFsm`（cold パス） | ccd4711 |
 | `SacrificialWarmupCoro` | `SacrificialWarmupFsm` + `ChromeGjiReinitFsm` | 2c756dd |
 | `TsfProbeCoro` | `TsfProbeMachine` | d1d6d17 |
 
 合計 **-1055 行** の削減。最終的に `step_coro` モジュールを awase-windows ローカルから撤去し `timed_fsm::coro` として公開した（118b3cf）。
+
+### 補足（P4-2, 2026-07-06）: LiteralDetect ロジックの単一所在地化
+
+ccd4711 が畳み込んだのは **cold パス**（`GjiWarmupCoro` の inline Phase 6）であり、
+**warm パス**の `LiteralDetectFsm`（`send_romaji_as_tsf_warm` が `pending_tsf` に install）は
+別実装として残っていた。その結果、literal 検出の判定ロジック（`check_now` → partial literal
+判定 → 回収アクション生成）が cold/warm の 2 箇所に**重複**していた（上表の「置き換えた」は
+cold パス限定の意味であり、`LiteralDetectFsm` 型自体は撤去されていなかった）。
+
+P4-2 でこの重複を解消し、判定ロジックを `literal_detect_fsm::LiteralDetectCore` に集約した:
+
+- `LiteralDetectCore` が literal 検出の**単一所在地**。`is_partial_literal` / `emit_recovery_actions`
+  もここに集約。
+- cold パス（`GjiWarmupCoro` Phase 6）は coro 本体内で `LiteralDetectCore::poll` を駆動する。
+- warm パス（`LiteralDetectFsm`）は `LiteralDetectCore` + `OutputActiveGuard` の薄いラッパー。
+
+cold/warm は依然として別の install 経路（互いに排他）を持つが、**判定ロジックは 1 箇所**になった。
+挙動（検出条件・タイミング・BS 数・回収アクション）は変更していない。
 
 ## なぜこの設計か / 検討した代替案
 

@@ -4,8 +4,8 @@
 
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot, TsfProbeCoro};
-use crate::tsf::tickable_fsm::TickableFsm;
+use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot, TsfProbeCoro};
+use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
 pub(crate) struct ChromeProbe(TsfProbeCoro);
 

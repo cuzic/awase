@@ -168,3 +168,79 @@ pub trait CompositionOutput {
 | `crates/awase-windows/src/tsf/probe_bridge.rs` | メッセージループ統合 |
 | `src/platform.rs` | `CompositionOutput` trait 定義 |
 | `crates/awase-windows/src/output.rs` | `CompositionOutput` の Windows 実装 |
+
+---
+
+## 改訂: 第4層 = warmup オーケストレーション（P4-3, 2026-07-06）
+
+> 本節は既存 3 層（observer / probe / output）+ 統合層の定義を変更しない**追記**である。
+> cold-start warmup 実装の成長に伴い、どの層にも属していなかった warmup FSM/coro 群を
+> 第 4 層として明示分離した記録。
+
+### 背景
+
+ADR-030 制定時 `tsf/` は 4〜5 ファイルだったが、cold-start warmup 実装が成長し
+`tsf/` は 20 ファイル超に膨張。warmup の「多段フェーズを時系列に駆動する」責務を担う
+FSM/coro 群が `tsf/` 直下に平置きされ、observer/probe/output のどの層にも属さない
+「暗黙の第 4 層」になっていた。バグ調査時にどのファイルを見るべきかの地図が壊れており、
+warmup 系の調査コスト・修正漏れの一因となっていた。
+
+### Layer 4: `tsf/warmup/`（warmup オーケストレーション）
+
+**責務を「時系列オーケストレーション + 副作用なしの `ProbeAction` emit」に限定する。**
+10ms タイマー (`TIMER_TSF_PROBE`) で駆動される [`TickableFsm`](../../crates/awase-windows/src/tsf/warmup/tickable_fsm.rs)
+実装群が、probe → FreshF2 → NameChangeWait → transmit → LiteralDetect → recovery の
+シーケンスを進め、副作用を持たない `ProbeAction` を emit する。実際の副作用実行
+（`SendInput`・timer 操作）は Layer 3（output）と `output/probe_io.rs` の
+`dispatch_probe_actions` が担う。
+
+```
+crates/awase-windows/src/tsf/
+├── observer.rs         ─ Layer 1: observation（gji_monitor / win_event_obs / tip_detector）
+├── probe.rs            ─ Layer 2: judgement（Readiness, CompositionState, LiteralDetector）
+│   ├ gji_fsm.rs        ─ Layer 2: warm/cold 判定 SSOT（ADR-046）
+│   └ composition_fsm.rs─ Layer 2: warmup タイミング FSM
+├── output.rs           ─ Layer 3: action（SendInput, ColdReason）
+├── warmup/             ─ Layer 4: warmup オーケストレーション（本改訂で新設）
+│   ├ mod.rs
+│   ├ tickable_fsm.rs           ─ TickableFsm トレイト（family 共通 IF）
+│   ├ probe_fsm.rs              ─ ProbeAction 定義 + TsfProbeCoro + decide_transmit_plan
+│   ├ gji_warmup_coro.rs        ─ GjiWarmupCoro（GJI cold-start, StepCoro）
+│   ├ sacr_warmup_coro.rs       ─ SacrificialWarmupCoro
+│   ├ ime_offon_warmup_fsm.rs   ─ ImeOffOnWarmupFsm（カウンタ FSM）
+│   ├ literal_detect_fsm.rs     ─ LiteralDetectCore/Fsm（literal 検出 単一所在地, P4-2）
+│   ├ unicode_cold_warmup_fsm.rs
+│   ├ unicode_literal_observer.rs
+│   ├ chrome_probe.rs
+│   ├ cold_warmup.rs            ─ ColdWarmupSequence
+│   └ warmup_strategy.rs        ─ ImeWarmupStrategy トレイト, MsImeStrategy
+└── probe_bridge.rs     ─ メッセージループ統合
+```
+
+### 明示的に第 4 層に **含めない** もの
+
+- **`platform.rs` の FSM ディスパッチャ**（`advance_tsf_probe` / `dispatch_gji_response` /
+  `dispatch_composition_response` / `feed_composition_event` / `drain_pending_composition_events` 等、
+  約 400 行）は **`WindowsPlatform` に据え置く**。これらは `output` / `timer` / `focus` /
+  `composition_fsm` という `WindowsPlatform` 所有の 4 サブシステムを繋ぐグルーであり、
+  warmup ロジックではなく `WindowsPlatform` の正当なオーケストレーション責務である。
+  warmup 層へ移すと「warmup 層がプラットフォーム全体を触れる」上方依存を新設するだけで
+  疎結合は達成されない。加えて `gji_on_focus_change` は `spawn_local`+`with_app` を含み
+  warmup 層へ持ち込めない（B-1）ことも、ディスパッチャが platform に属する裏付けである。
+- **warm/cold の判定**（`gji_fsm.rs`）と **warmup タイミング FSM**（`composition_fsm.rs`）は
+  `ProbeAction` を emit しない判断寄り状態機械のため **Layer 2（`tsf/` 直下）に残す**。
+- **`output/tsf_warmup_coord.rs`**（`TsfWarmupCoordinator`）は `Output` が `pub(super)` フィールドを
+  直接借用する密結合のため `output/` に据え置く（Layer 4 の中核だが物理配置は output 配下）。
+
+### P4-3 で実際に移動したファイル
+
+上記 `tsf/warmup/` 配下 11 ファイル（tickable_fsm / probe_fsm / gji_warmup_coro /
+sacr_warmup_coro / ime_offon_warmup_fsm / literal_detect_fsm / unicode_cold_warmup_fsm /
+unicode_literal_observer / chrome_probe / cold_warmup / warmup_strategy）。
+
+## 関連 ADR
+
+- ADR-046: GjiFsm（warm/cold 判定 SSOT、Layer 2 残置の根拠）
+- ADR-047: TickableFsm / ImeWarmupStrategy（Layer 4 family の trait）
+- ADR-053: StepCoro（GjiWarmupCoro / SacrificialWarmupCoro / TsfProbeCoro の基盤）
+- ADR-049: TSF mode LiteralDetect（LiteralDetectCore の対象問題）

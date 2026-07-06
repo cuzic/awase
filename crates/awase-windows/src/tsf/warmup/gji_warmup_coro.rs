@@ -17,11 +17,14 @@
 //!   ├─[needs_literal=false]──────────────────────────────► Done（single yield）
 //!   ├─[long_cold + is_tsf_mode]──► [StartSacrificialWarmup] → SacrificialWarmupFsm
 //!   └─[その他 needs_literal]──► [Transmit { needs_literal }] → inline LiteralDetect
-//!         LiteralDetect ループ
+//!         LiteralDetect ループ（warm パスと共有の `LiteralDetectCore` に委譲）
 //!           ├─[composition 確認]─► Done
 //!           ├─[partial literal]───► [SendRecoveryBs + StartSacrificialWarmup + Done]
 //!           └─[suspected literal]─► [RawTsfLiteralRecovery + Done]
 //! ```
+//!
+//! Phase 6 の LiteralDetect 判定は `literal_detect_fsm::LiteralDetectCore` に集約されており、
+//! warm パスの `LiteralDetectFsm` と同一ロジックを共有する（重複排除）。
 
 use std::rc::Rc;
 
@@ -29,12 +32,12 @@ use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::{
+use crate::tsf::warmup::probe_fsm::{
     decide_transmit_plan, LiteralDetectConfig, ProbeAction, ProbeObservations,
-    TransmitPlan, TransmitTarget, TsfEnvSnapshot,
+    TransmitTarget, TsfEnvSnapshot,
 };
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
-use crate::tsf::tickable_fsm::TickableFsm;
+use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
 // ── FreshF2Callback ──────────────────────────────────────────────────────────
 
@@ -80,9 +83,6 @@ struct GjiProbeCtx {
 }
 
 // ── コルーチン本体 ────────────────────────────────────────────────────────────
-
-/// TSF path での部分リテラル判定に使う BS 数（LiteralDetectFsm と同値）。
-const PARTIAL_LITERAL_BS: usize = 2;
 
 async fn gji_coro_body(
     ch: Rc<Channel<TickInput, Vec<ProbeAction>>>,
@@ -295,103 +295,31 @@ async fn gji_coro_body(
         return;
     }
 
-    // ── Phase 6: Inline LiteralDetect ────────────────────────────────────────
+    // ── Phase 6: Inline LiteralDetect（warm パスと共有の LiteralDetectCore） ────
+    // literal 検出の判定は warm パス（LiteralDetectFsm）と同一の LiteralDetectCore に
+    // 委譲する（ロジックの単一所在地: literal_detect_fsm.rs）。
     let Some(td) = transmit_input.transmit_done else {
         return;
     };
 
-    let detector = td.detector;
-    let deadline_ms = td.deadline_ms;
-    let ze_bs_count = td.ze_bs_count;
-    let recovery_romaji = td.romaji;
+    let mut core = crate::tsf::warmup::literal_detect_fsm::LiteralDetectCore::new(
+        ctx.cold_seq,
+        td.romaji,
+        observations,
+        td.detector,
+        td.deadline_ms,
+        td.ze_bs_count,
+        ctx.consecutive,
+    );
 
     loop {
-        use crate::tsf::probe::DetectionResult;
-
         let detect_input = yield_step(ch.clone(), vec![]).await;
         env = detect_input.env;
 
-        let Some(detection) = detector.check_now(deadline_ms) else {
-            continue;
-        };
-
-        // CompositionConfirmed でも 2 文字以上の TSF mode で nc/gji_resumed なし → partial literal
-        let partial_literal = matches!(detection, DetectionResult::CompositionConfirmed)
-            && !observations.nc_fired
-            && !observations.gji_resumed
-            && env.is_tsf_mode
-            && recovery_romaji.chars().count() >= 2;
-
-        let final_actions = if matches!(detection, DetectionResult::SuspectedLiteral)
-            || partial_literal
-        {
-            let backs = if partial_literal { PARTIAL_LITERAL_BS } else { ze_bs_count };
-            let label = if partial_literal { "partial-literal" } else { "suspected" };
-            log::debug!(
-                "[gji-coro] cold={} LiteralDetect: {label} (backs={backs} consecutive={})",
-                ctx.cold_seq,
-                ctx.consecutive,
-            );
-            crate::ime_diagnostic::log_composition_probe(ctx.cold_seq, label);
-
-            emit_literal_recovery_actions(
-                ctx.cold_seq,
-                &recovery_romaji,
-                backs,
-                observations,
-                ctx.consecutive,
-                &env,
-            )
-        } else {
-            log::debug!(
-                "[gji-coro] cold={} LiteralDetect: composition confirmed",
-                ctx.cold_seq
-            );
-            crate::ime_diagnostic::log_composition_probe(ctx.cold_seq, "confirmed");
-            vec![ProbeAction::Done]
-        };
-
-        yield_step(ch.clone(), final_actions).await;
-        return;
-    }
-}
-
-fn emit_literal_recovery_actions(
-    cold_seq: u32,
-    romaji: &str,
-    backs: usize,
-    observations: ProbeObservations,
-    consecutive: u32,
-    env: &TsfEnvSnapshot,
-) -> Vec<ProbeAction> {
-    if env.is_tsf_mode && consecutive == 0 {
-        vec![
-            ProbeAction::SendRecoveryBs { cold_seq, backs },
-            ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
-                cold_seq,
-                romaji: romaji.to_string(),
-                plan: TransmitPlan {
-                    should_prepend_f2: false,
-                    used_eager_path: false,
-                    needs_literal: true,
-                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                },
-                observations,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                target: TransmitTarget::Tsf,
-                from_literal_recovery: true,
-            }),
-            ProbeAction::Done,
-        ]
-    } else {
-        vec![
-            ProbeAction::RawTsfLiteralRecovery {
-                cold_seq,
-                backs,
-                romaji: romaji.to_string(),
-            },
-            ProbeAction::Done,
-        ]
+        if let Some(final_actions) = core.poll(&env) {
+            yield_step(ch.clone(), final_actions).await;
+            return;
+        }
     }
 }
 

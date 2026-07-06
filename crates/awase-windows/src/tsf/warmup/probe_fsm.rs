@@ -32,7 +32,7 @@ pub(crate) struct DeferredVk {
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
-use crate::tsf::tickable_fsm::TickableFsm;
+use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
 /// テストでは任意値を注入できる。
@@ -176,7 +176,7 @@ pub(crate) struct SacrificialResend {
     /// Chrome dispatcher が cold 時に VK_IME_OFF→VK_IME_ON 強制リセットを行うかどうかの判定に使う。
     pub confirmed_warm: bool,
     /// `true` = 犠牲キー（VK_A）を送っていないため BS クリーンアップ不要。
-    /// `ImeOffOnWarmupCoro` がこのフラグを立てる。`SacrificialWarmupCoro` は `false`。
+    /// `ImeOffOnWarmupFsm` がこのフラグを立てる。`SacrificialWarmupCoro` は `false`。
     pub skip_cleanup_bs: bool,
 }
 
@@ -222,7 +222,7 @@ pub(crate) enum ProbeAction {
     /// async `IMC_GETCONVERSIONMODE` ポーリングを開始する。
     /// FSM 切り替えは不要（[`SacrificialWarmupCoro`] がそのまま IME 確認を待機する）。
     ///
-    /// [`crate::tsf::sacr_warmup_coro::SacrificialWarmupCoro`] が emit する。
+    /// [`crate::tsf::warmup::sacr_warmup_coro::SacrificialWarmupCoro`] が emit する。
     SendChromeGjiReinit { cold_seq: u32 },
     /// partial literal / SuspectedLiteral 回収前の terminal cleanup 用 BS 送信。
     ///
@@ -234,13 +234,13 @@ pub(crate) enum ProbeAction {
     },
     /// Unicode モードで GJI write が観測されなかった。
     ///
-    /// [`crate::tsf::unicode_literal_observer::UnicodeLiteralObserverFsm`] が emit する。
+    /// [`crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm`] が emit する。
     /// dispatcher は `DispatchResult::LearnedTsf` を返し、呼び出し元 (`advance_tsf_probe`) が
     /// フォーカス中クラスを `InjectionModeStore` に学習し injection_mode を Tsf に昇格させる。
     UpgradeToTsf,
     /// Unicode cold-start warmup 完了後にバッファ済み文字を送信する。
     ///
-    /// [`crate::tsf::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm`] が GJI write 確認
+    /// [`crate::tsf::warmup::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm`] が GJI write 確認
     /// またはタイムアウト後に emit する。
     /// dispatcher が各 `char` を `send_unicode_char_direct()` で送信する。
     FlushDeferredUnicodeChars(Vec<char>),

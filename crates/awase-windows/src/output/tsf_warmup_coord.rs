@@ -17,9 +17,9 @@ use crate::tsf::gji_fsm::{
 };
 use crate::tsf::gji_fsm::GjiTimer;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::probe_fsm::DeferredVk;
-use crate::tsf::tickable_fsm::TickableFsm;
-use crate::tsf::warmup_strategy::ImeWarmupStrategy;
+use crate::tsf::warmup::probe_fsm::DeferredVk;
+use crate::tsf::warmup::tickable_fsm::TickableFsm;
+use crate::tsf::warmup::warmup_strategy::ImeWarmupStrategy;
 
 type GjiResponse = timed_fsm::Response<GjiAction, GjiTimer>;
 
@@ -89,7 +89,7 @@ impl TsfWarmupCoordinator {
         match kind {
             ActiveImeKind::MicrosoftIme => {
                 log::info!("[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)");
-                *self.tsf_warmup.borrow_mut() = Box::new(crate::tsf::warmup_strategy::MsImeStrategy);
+                *self.tsf_warmup.borrow_mut() = Box::new(crate::tsf::warmup::warmup_strategy::MsImeStrategy);
             }
             ActiveImeKind::GoogleJapaneseInput => {
                 log::info!("[output] Switching warmup strategy → GjiFsm (GJI detected)");
@@ -279,7 +279,7 @@ impl TsfWarmupCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tsf::probe_fsm::TsfEnvSnapshot;
+    use crate::tsf::warmup::probe_fsm::TsfEnvSnapshot;
 
     /// `TickableFsm` の最小テストダブル。tick 回数を記録するだけで何も yield しない。
     struct StubMachine {
@@ -287,7 +287,7 @@ mod tests {
     }
 
     impl TickableFsm for StubMachine {
-        fn tick(&mut self, _env: &TsfEnvSnapshot) -> Vec<crate::tsf::probe_fsm::ProbeAction> {
+        fn tick(&mut self, _env: &TsfEnvSnapshot) -> Vec<crate::tsf::warmup::probe_fsm::ProbeAction> {
             self.ticks += 1;
             vec![]
         }

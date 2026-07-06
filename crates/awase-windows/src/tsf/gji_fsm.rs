@@ -34,7 +34,7 @@ use std::time::Duration;
 use timed_fsm::{Response, TimedStateMachine};
 
 use crate::output::InjectionMode;
-use crate::tsf::probe_fsm::DeferredVk;
+use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tuning;
 
 // ── プリミティブ型 ────────────────────────────────────────────────────────────

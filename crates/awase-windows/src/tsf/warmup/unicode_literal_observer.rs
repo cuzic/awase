@@ -14,8 +14,8 @@
 //!    - GJI write あり → `ProbeAction::Done`（Unicode 維持）
 //!    - GJI write なし → `ProbeAction::UpgradeToTsf` + `ProbeAction::Done`
 
-use crate::tsf::probe_fsm::{ProbeAction, TsfEnvSnapshot};
-use crate::tsf::tickable_fsm::TickableFsm;
+use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
+use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
 /// Unicode 送信後の GJI 観測ウィンドウ (ms)。
 const OBSERVATION_WINDOW_MS: u64 = 100;
