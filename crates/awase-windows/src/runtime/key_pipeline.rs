@@ -1018,6 +1018,17 @@ fn build_ime_on_suffix(
     }
 }
 
+fn sanitize_focus_probe_open_status(
+    probe_ime_on: Option<bool>,
+    current_profile: crate::focus::class_names::AppImeProfile,
+) -> Option<bool> {
+    if current_profile.can_read_imm32_open_status() {
+        probe_ime_on
+    } else {
+        None
+    }
+}
+
 impl Runtime {
     /// read_ime_state_fast_async の結果を self に適用する（with_app 内で呼ぶ）。
     /// kp_stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
@@ -1057,11 +1068,22 @@ impl Runtime {
                 .set_is_japanese_ime(probe.is_japanese_ime);
         }
 
-        // TsfNative/Imm32Unavailable では probe.ime_on が常に None になる。
-        // この場合は shadow の apply 値を代替観測として記録し drift 追跡を維持する。
-        let used_shadow_fallback = probe.ime_on.is_none() && probe.is_japanese_ime;
+        let current_profile = self.platform.current_app_profile();
+        let probe_ime_on =
+            sanitize_focus_probe_open_status(probe.ime_on, current_profile);
+        if probe.ime_on.is_some() && probe_ime_on.is_none() {
+            log::debug!(
+                "FocusProbe: profile={current_profile:?} は IMM32 open status 非対応のため \
+                 probe.ime_on={:?} を破棄",
+                probe.ime_on
+            );
+        }
 
-        let suppressed_reason: Option<&'static str> = if let Some(on) = probe.ime_on {
+        // TsfNative/Imm32Unavailable では open status を信用しない。
+        // この場合は shadow の apply 値を代替観測として記録し drift 追跡を維持する。
+        let used_shadow_fallback = probe_ime_on.is_none() && probe.is_japanese_ime;
+
+        let suppressed_reason: Option<&'static str> = if let Some(on) = probe_ime_on {
             let effective = on && probe.is_japanese_ime;
             if !effective && signals.any() {
                 Some(signals.primary_reason())
@@ -1204,7 +1226,7 @@ impl Runtime {
         let ime_on_after_probe = self.platform_state.ime.effective_open();
         let input_mode_after_probe = self.platform_state.ime.input_mode();
         let ime_on_suffix = build_ime_on_suffix(
-            probe.ime_on,
+            probe_ime_on,
             suppressed_reason,
             &signals,
             probe_age_ms,
@@ -1246,5 +1268,35 @@ impl Runtime {
             ),
             None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::focus::class_names::AppImeProfile;
+
+    #[test]
+    fn focus_probe_open_status_is_ignored_for_imm32_unavailable() {
+        assert_eq!(
+            sanitize_focus_probe_open_status(Some(false), AppImeProfile::Imm32Unavailable),
+            None
+        );
+    }
+
+    #[test]
+    fn focus_probe_open_status_is_ignored_for_tsf_native() {
+        assert_eq!(
+            sanitize_focus_probe_open_status(Some(false), AppImeProfile::TsfNative),
+            None
+        );
+    }
+
+    #[test]
+    fn focus_probe_open_status_is_kept_for_standard() {
+        assert_eq!(
+            sanitize_focus_probe_open_status(Some(false), AppImeProfile::Standard),
+            Some(false)
+        );
     }
 }
