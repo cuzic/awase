@@ -428,7 +428,19 @@ impl Runtime {
             return;
         }
         if self.ime_apply_should_defer() {
-            log::debug!("[focus-settle] apply_force_on_for_imm_broken skipped (settling)");
+            // settle 中のスキップは必ず settle 明けに refresh で再試行する。
+            // 再試行がないと「belief ON × 実 IME OFF」のまま次の refresh（無保証、
+            // 実測で 8 秒後）まで放置され、最初の打鍵が閉じた IME にリテラル着弾する
+            // （2026-07-07 実機: 仮想デスクトップ切替 → Windows Terminal で
+            // 「これで」が「korede」化。TsfNative は open 状態を読めないため
+            // 観測での自己修復も効かない）。遅延は settle 残余の上限
+            // （= focus_settle_ms）+ タイマー粒度マージン 50ms。
+            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
+            log::debug!(
+                "[focus-settle] apply_force_on_for_imm_broken skipped (settling) → \
+                 {retry_ms}ms 後に refresh で再試行"
+            );
+            self.schedule_ime_refresh(retry_ms);
             return;
         }
         if !(self.engine.is_user_enabled()
@@ -469,7 +481,13 @@ impl Runtime {
             && !self.platform_state.ime.is_force_on_guard_active()
         {
             if self.ime_apply_should_defer() {
-                log::debug!("[focus-settle] try_force_on_bootstrap skipped (settling)");
+                // apply_force_on_for_imm_broken と同じく settle 明けに必ず再試行する。
+                let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
+                log::debug!(
+                    "[focus-settle] try_force_on_bootstrap skipped (settling) → \
+                     {retry_ms}ms 後に refresh で再試行"
+                );
+                self.schedule_ime_refresh(retry_ms);
                 return;
             }
             log::warn!(

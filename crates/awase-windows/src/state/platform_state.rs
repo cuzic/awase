@@ -364,6 +364,13 @@ impl ImeStateHub {
         self.belief.is_japanese_ime() && self.effective_open()
     }
 
+    /// 現在のアプリの focus settle 期間（ms、`AppImePolicy` 由来）。
+    ///
+    /// settle 中にスキップした force-ON の再試行スケジュールに使う。
+    pub(crate) fn focus_settle_ms(&self) -> u64 {
+        self.shadow_model.app_policy.focus_settle_ms
+    }
+
     /// 次のイベント generation 番号を払い出す。
     ///
     /// 呼び出し元で `self.platform_state.ime.event_log.next_seq()` を直接書かずに
