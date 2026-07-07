@@ -1243,3 +1243,101 @@ pub struct CompositionSnapshot {
     /// ImmGetConversionStatus の sentence mode（自動変換等のフラグ）
     pub sentence_mode: Option<u32>,
 }
+
+/// Caps Lock の状態をトグルする。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn toggle_caps_lock() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    };
+    let press = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0x14), // VK_CAPITAL
+                wScan: 0,
+                dwFlags: KEYBD_EVENT_FLAGS(0),
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let release = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0x14), // VK_CAPITAL
+                wScan: 0,
+                dwFlags: KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let _ = crate::win32::send_input_safe(&[press, release]);
+}
+
+/// クロスプロセスで IME の ON/OFF を切り替え、変換モードのマスクを適用する。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn set_ime_mode(
+    ime_on: bool,
+    target_conv_mask_to_set: u32,
+    target_conv_mask_to_clear: u32,
+) -> bool {
+    let open_ok = set_ime_open_cross_process(ime_on);
+    if !ime_on {
+        return open_ok;
+    }
+    let Some(hwnd) = GetForegroundWindow().non_null() else {
+        return false;
+    };
+    let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
+        return false;
+    };
+    let Some(current) =
+        crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50)
+    else {
+        return false;
+    };
+    let conv = current as u32;
+    let new_conv = (conv | target_conv_mask_to_set) & !target_conv_mask_to_clear;
+    if new_conv == conv {
+        return true;
+    }
+    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
+        .is_some()
+}
+
+/// クロスプロセスで IME のローマ字/かな入力を切り替える。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub unsafe fn set_ime_romaji_mode_state(romaji: bool) -> bool {
+    let Some(hwnd) = GetForegroundWindow().non_null() else {
+        return false;
+    };
+    let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
+        return false;
+    };
+    let Some(current) =
+        crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50)
+    else {
+        return false;
+    };
+    let conv = current as u32;
+    let new_conv = if romaji {
+        conv | IME_CMODE_ROMAN
+    } else {
+        conv & !IME_CMODE_ROMAN
+    };
+    if new_conv == conv {
+        return true;
+    }
+    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
+        .is_some()
+}
+
