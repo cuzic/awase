@@ -10,6 +10,8 @@ use windows::Win32::Foundation::HWND;
 use super::Runtime;
 use win32_async;
 
+const EXPLICIT_OFF_CACHE_SUPPRESS_MS: u64 = 10_000;
+
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
 pub(super) struct ClassifiedFocus {
     pub hwnd: HWND,
@@ -297,15 +299,19 @@ impl Runtime {
                 // ── 純粋な Imm32Unavailable (Chrome/Edge 等) ────────────────────
                 // awase が IME 状態を直接制御できないため、キャッシュが唯一の根拠。
                 // 「ユーザー明示の OFF」由来でない false は stale とみなして破棄する。
-                let stale_false_cache = is_imm_broken
-                    && matches!(&cache_hit, Some(snap) if !snap.ime_on && !snap.from_explicit_off_intent);
-                if stale_false_cache {
+                let discard_cache = should_discard_imm_broken_cache(
+                    cache_hit,
+                    is_imm_broken,
+                    tick_ms.0,
+                    pre_focus_explicit_off_ms,
+                );
+                if discard_cache {
                     log::debug!(
-                        "[focus] Imm32Unavailable stale-false cache discarded \
-                         (not from explicit user intent) — treating as cache miss"
+                        "[focus] Imm32Unavailable cache discarded \
+                         (stale false or explicit IME OFF is newer) — treating as cache miss"
                     );
                 }
-                let effective_cache = if stale_false_cache { None } else { cache_hit };
+                let effective_cache = if discard_cache { None } else { cache_hit };
                 let effective_cache_miss = effective_cache.is_none();
                 self.platform_state
                     .ime
@@ -314,7 +320,7 @@ impl Runtime {
                 if effective_cache_miss {
                     let last_off_ms = pre_focus_explicit_off_ms;
                     let elapsed = tick_ms.saturating_sub(last_off_ms);
-                    if last_off_ms > 0 && elapsed < 10_000 {
+                    if last_off_ms > 0 && elapsed < EXPLICIT_OFF_CACHE_SUPPRESS_MS {
                         log::debug!(
                             "[focus] Imm32Unavailable cache-miss: skip reset_stale \
                              — explicit IME OFF {elapsed}ms ago",
@@ -411,5 +417,75 @@ impl Runtime {
     pub(super) unsafe fn detect_and_update_focus(&mut self) -> bool {
         let probe = unsafe { crate::focus::probe::read_focus_snapshot() };
         self.apply_focus_probe_result(probe)
+    }
+}
+
+fn should_discard_imm_broken_cache(
+    cache_hit: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
+    is_imm_broken: bool,
+    now_ms: u64,
+    pre_focus_explicit_off_ms: u64,
+) -> bool {
+    if !is_imm_broken {
+        return false;
+    }
+    let Some(snap) = cache_hit else {
+        return false;
+    };
+    if !snap.ime_on {
+        return !snap.from_explicit_off_intent;
+    }
+    if pre_focus_explicit_off_ms == 0 {
+        return false;
+    }
+    now_ms.saturating_sub(pre_focus_explicit_off_ms) < EXPLICIT_OFF_CACHE_SUPPRESS_MS
+}
+
+#[cfg(test)]
+mod tests {
+    use awase::engine::InputModeState;
+
+    use super::*;
+
+    fn snap(
+        ime_on: bool,
+        from_explicit_off_intent: bool,
+    ) -> crate::focus::hwnd_cache::HwndImeSnapshot {
+        crate::focus::hwnd_cache::HwndImeSnapshot {
+            ime_on,
+            input_mode: InputModeState::ObservedRomaji,
+            recorded_ms: 0,
+            from_explicit_off_intent,
+        }
+    }
+
+    #[test]
+    fn imm_broken_true_cache_is_discarded_right_after_explicit_off() {
+        assert!(should_discard_imm_broken_cache(
+            Some(snap(true, false)),
+            true,
+            20_000,
+            19_000,
+        ));
+    }
+
+    #[test]
+    fn imm_broken_true_cache_is_kept_after_explicit_off_window_expires() {
+        assert!(!should_discard_imm_broken_cache(
+            Some(snap(true, false)),
+            true,
+            30_001,
+            20_000,
+        ));
+    }
+
+    #[test]
+    fn imm_broken_false_cache_is_kept_when_it_came_from_explicit_off() {
+        assert!(!should_discard_imm_broken_cache(
+            Some(snap(false, true)),
+            true,
+            20_000,
+            19_000,
+        ));
     }
 }
