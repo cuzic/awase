@@ -520,6 +520,17 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::InputKana) => {
             let _ = crate::ime::set_ime_romaji_mode_state(false);
         }
+        Some(tray::TrayCommand::ResetState) => {
+            let caps_lock_on = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+            if caps_lock_on {
+                crate::ime::toggle_caps_lock();
+            }
+            let _ = crate::ime::set_ime_mode(
+                true,
+                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE | crate::imm::IME_CMODE_ROMAN,
+                crate::imm::IME_CMODE_KATAKANA,
+            );
+        }
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }

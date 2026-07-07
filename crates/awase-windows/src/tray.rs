@@ -43,6 +43,7 @@ const IDM_IME_HALF_KATAKANA: u16 = 205;
 const IDM_IME_DIRECT: u16 = 206;
 const IDM_INPUT_ROMAJI: u16 = 207;
 const IDM_INPUT_KANA: u16 = 208;
+const IDM_RESET_STATE: u16 = 209;
 
 /// トレイメニューから選択されたコマンド
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,7 @@ pub enum TrayCommand {
     ImeDirect,
     InputRomaji,
     InputKana,
+    ResetState,
 }
 
 /// 文字列メニュー項目を追加するヘルパー。
@@ -557,6 +559,8 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             let _ = AppendMenuW(hmenu, MF_POPUP, h_input_menu.0 as usize, PCWSTR(input_title_wide.as_ptr()));
         }
 
+        append_menu_item(hmenu, IDM_RESET_STATE, "状態をリセット (Caps OFF/ひらがな/ローマ字)");
+
         append_menu_sep(hmenu);
 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
@@ -615,6 +619,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_IME_DIRECT => Some(TrayCommand::ImeDirect),
         IDM_INPUT_ROMAJI => Some(TrayCommand::InputRomaji),
         IDM_INPUT_KANA => Some(TrayCommand::InputKana),
+        IDM_RESET_STATE => Some(TrayCommand::ResetState),
         c if (IDM_LAYOUT_BASE..IDM_CAPSLOCK).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
@@ -873,6 +878,19 @@ unsafe extern "system" fn tray_wnd_proc(
                 Some(TrayCommand::InputKana) => {
                     unsafe {
                         let _ = crate::ime::set_ime_romaji_mode_state(false);
+                    }
+                }
+                Some(TrayCommand::ResetState) => {
+                    unsafe {
+                        let caps_lock_on = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+                        if caps_lock_on {
+                            crate::ime::toggle_caps_lock();
+                        }
+                        let _ = crate::ime::set_ime_mode(
+                            true,
+                            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE | crate::imm::IME_CMODE_ROMAN,
+                            crate::imm::IME_CMODE_KATAKANA,
+                        );
                     }
                 }
                 None => {}
