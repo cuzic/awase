@@ -592,6 +592,18 @@ BUG-14 の「Shift と相関する外部注入 VK_DBE_HIRAGANA」も、この英
 無効化できない**。したがって修正 2 の awase 側カウンターが唯一の防御であり、
 「設定を切ればよい」という提案は選択肢にならない（再提案しないこと）。
 
+**追補（2026-07-07 実機）: Shift 押下中の ASCII VK_PACKET は受信側で破棄される。**
+修正 1 の初版は Text を素の `KEYEVENTF_UNICODE` で送っていたが、Windows Terminal で
+**一切表示されなかった**。ログ上は `actions=[Text("K")]` → `→ Text("K") via Unicode
+direct` まで完走しており、送信は行われている。全角 `Ｋ`（U+FF2B）は同じ
+「物理 Shift 押下 + VK_PACKET」で届いていたため、**ASCII 文字の VK_PACKET だけが
+受信側（Terminal）で Shift+キーとして再解釈され破棄される**と判明。対策として
+`KeyInjector::send_text_direct` が物理 Shift 押下中は「Shift 解放 → VK_PACKET 列 →
+Shift 復元」を 1 回の SendInput にまとめて bare で届ける（IME モードキー送信の
+`HeldModifiers` release/restore と同じ手法）。なお修正 2（Shift 解放時の conv 復元 +
+msime-ready ゲート連携）はこの実機ログで正常動作を確認済み
+（`[shift-release] conv=0x00000019 NATIVE 確認 (#0) → 復元完了` → 直後のかな入力正常）。
+
 **再発防止テスト:** `src/engine/tests.rs`（`test_shift_face_fullwidth_ascii_becomes_halfwidth_text` /
 `test_shift_face_halfwidth_disabled_keeps_literal` / `test_shift_face_kana_stays_ime_routed`）。
 復元側（Windows cfg 下）は本エントリ + `[shift-release]` ログで検知する。
