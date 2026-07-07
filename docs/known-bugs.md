@@ -668,6 +668,17 @@ scan 修正で hold/復元が完動した後、「Shift+1 は全角 `！` にし
 | `'ウ'` 等のかな literal | `ウ`（Text 確定出力） |
 | Special（後/入 等） | 従来どおり |
 全角で出したい記号はクォート付き `'！'` で Shift 面に定義する。
+
+**追補6（2026-07-07 実機）: hold 入口の IMC write は順序保証がなく初回文字が全角化
+→ 入口も scan 付きモードキー注入に変更。**
+Shift down の `[shift-eisu]` 発火から IMC write 着地まで実測 250ms かかるケースがあり、
+その間に届いた最初の Shift+英字が MS-IME 自身の「Shift+英字 → 全角英数」挙動で
+全角 `Ａ` になった（write 時の読み値 conv=0x0008=全角英数が証拠。2 文字目以降は
+write 着地後で半角）。IMC write（SendMessage チャネル）は入力ストリームとの順序
+保証がない。対処: 入口を VK_DBE_ALPHANUMERIC + VK_DBE_SBCSCHAR の scan 付き注入に
+変更（`make_tsf_key_input`）。モードキーは後続の文字キー reinject と同じ入力キューを
+通るため「切替 → 文字」の順序が構造的に保証される。IMC write は冪等な保険として維持。
+出口（VK_DBE_HIRAGANA、追補4）と対称になった。
 - `KeyAction::Text` / `send_text_direct` は注入が通るアプリ向けフォールバックとして
   コードは維持（現在エンジンからの producer なし）。
 
