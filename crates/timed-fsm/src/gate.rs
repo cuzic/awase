@@ -138,13 +138,13 @@ where
 
     /// バッファの長さを返す。
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.held.len()
     }
 
     /// バッファが空かどうかを返す。
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.held.is_empty()
     }
 
