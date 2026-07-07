@@ -473,6 +473,53 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         }
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
         Some(tray::TrayCommand::Restart) => tray::restart_self(),
+        Some(tray::TrayCommand::CapsLock) => {
+            crate::ime::toggle_caps_lock();
+        }
+        Some(tray::TrayCommand::ImeHiragana) => {
+            let _ = crate::ime::set_ime_mode(
+                true,
+                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
+                crate::imm::IME_CMODE_KATAKANA,
+            );
+        }
+        Some(tray::TrayCommand::ImeFullKatakana) => {
+            let _ = crate::ime::set_ime_mode(
+                true,
+                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA | crate::imm::IME_CMODE_FULLSHAPE,
+                0,
+            );
+        }
+        Some(tray::TrayCommand::ImeFullAlpha) => {
+            let _ = crate::ime::set_ime_mode(
+                true,
+                crate::imm::IME_CMODE_FULLSHAPE,
+                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
+            );
+        }
+        Some(tray::TrayCommand::ImeHalfAlpha) => {
+            let _ = crate::ime::set_ime_mode(
+                true,
+                0,
+                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA | crate::imm::IME_CMODE_FULLSHAPE,
+            );
+        }
+        Some(tray::TrayCommand::ImeHalfKatakana) => {
+            let _ = crate::ime::set_ime_mode(
+                true,
+                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
+                crate::imm::IME_CMODE_FULLSHAPE,
+            );
+        }
+        Some(tray::TrayCommand::ImeDirect) => {
+            let _ = crate::ime::set_ime_mode(false, 0, 0);
+        }
+        Some(tray::TrayCommand::InputRomaji) => {
+            let _ = crate::ime::set_ime_romaji_mode_state(true);
+        }
+        Some(tray::TrayCommand::InputKana) => {
+            let _ = crate::ime::set_ime_romaji_mode_state(false);
+        }
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }
