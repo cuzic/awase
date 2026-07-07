@@ -769,11 +769,26 @@ impl Runtime {
         // （2026-07-07 実機: [shift-release] の IMC write/read は 0x19/NATIVE を返すのに
         // 実モードは半角英数のままで、ユーザーが物理かなキーを押すと復帰した。
         // 英数→かな方向の IMM→TSF 反映だけが壊れている。かな→英数方向の hold 側は
-        // IMC write で実際に効く）。ユーザーの手動回復と同じ操作を自動化する:
-        // MS-IME がネイティブ処理する VK_DBE_HIRAGANA を注入してひらがなモードへ戻し、
+        // IMC write で実際に効く）。ユーザーの手動回復と同じ VK_DBE_HIRAGANA を注入する。
+        //
+        // 注入は scan code 付き（make_tsf_key_input, MapVirtualKeyW → JIS で 0x70）で
+        // 送ること。scan=0x0 の send_ime_mode_key では MS-IME (TSF) がモードキーとして
+        // 処理しない（2026-07-07 実機: [ime-mode] SendInput vk=0xF2 scan=0x0 発火後も
+        // 半角英数のまま。物理かなキーの reinject (scan=0x70) と TSF warmup の F2
+        // (make_tsf_key_input) は効く — 差分は scan の有無のみ）。
         // 下の IMC write/verify は保険として残す。
-        // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-        unsafe { crate::ime::send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) };
+        let f2_inputs = [
+            // この時点では物理 Shift up の reinject が未実行（kp_stage_execute は後）で、
+            // OS 視点ではまだ Shift 押下中。Shift+ひらがなキー = カタカナ切替に
+            // 化けないよう、synthetic Shift up を同一バッチの先頭に入れる
+            // （物理は解放済みなので restore 不要。後続の本物の Shift up reinject と
+            // 二重になるが KeyUp の重複は無害）。
+            crate::tsf::output::make_tsf_key_input(crate::vk::VK_SHIFT, true),
+            crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_HIRAGANA, false),
+            crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_HIRAGANA, true),
+        ];
+        let _ = crate::win32::send_input_safe(&f2_inputs);
+        log::debug!("[shift-release] VK_DBE_HIRAGANA (scan 付き) 注入 → ひらがなモード復元");
         // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
         // 注意: hold 中の conv 読み取りで conv_mode が HanAlpha に更新されている場合、
         // imm_conv_target は None → ひらがな target になる（hold 前がカタカナだった
