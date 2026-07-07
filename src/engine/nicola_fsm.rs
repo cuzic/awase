@@ -494,6 +494,14 @@ impl ShiftReduceParser for NicolaFsm {
     }
 }
 
+/// `shift_plane_halfwidth` 有効時の Shift 面値の処遇（`shift_eisu_disposition` の結果）。
+enum ShiftEisuDisposition {
+    /// エンジン非介入で素通しする（IME-ON 半角英数の素のキー入力として確定させる）。
+    PassThrough,
+    /// .yab に書かれた文字列をそのまま `KeyAction::Text` で確定出力する（全角記号・かな等）。
+    EmitText(String),
+}
+
 // ── KeyDown ディスパッチ ──
 impl NicolaFsm {
     /// AdaptiveTiming 用: 直前キーとの間隔を算出してタイムスタンプを更新する
@@ -535,62 +543,94 @@ impl NicolaFsm {
         }
     }
 
-    /// Shift 面のアクションを半角英数リテラル（`KeyAction::Text`）に変換する。
-    ///
-    /// 半角化した結果が ASCII 印字文字のみの場合だけ変換する（Shift 面に
-    /// かな等を定義しているレイアウトでは IME 経由の従来経路を維持し、
-    /// 漢字変換可能性を壊さない）。Special（後退・入力等）/ Key / Suppress は対象外。
-    ///
-    /// 現在は `shift_face_reduce` の「素通し対象か」の判定（`is_some()`）にのみ使う。
-    /// Text 生成側は VK_PACKET 注入が Windows Terminal で不達のため主経路から撤回済み
-    /// （BUG-15 追補2）だが、注入が通るアプリ向けフォールバックとして維持している。
-    fn shift_action_halfwidth(action: &KeyAction) -> Option<KeyAction> {
-        use crate::yab::FullwidthStrExt;
-        let half = match action {
-            KeyAction::Char(c) => c.to_string().to_halfwidth_str(),
-            KeyAction::Romaji(s) | KeyAction::KeySequence(s) => s.to_halfwidth_str(),
-            _ => return None,
-        };
-        if !half.is_empty()
-            && half
-                .chars()
-                .all(|c| c.is_ascii() && !c.is_ascii_control())
-        {
-            Some(KeyAction::Text(half))
-        } else {
-            None
-        }
-    }
-
     /// Shift 面で Reduce する共通ヘルパー
+    ///
+    /// `shift_plane_halfwidth` 有効時（デフォルト）は .yab の値の書き方に従って
+    /// 処遇を分ける（ユーザー要望 2026-07-07「.yab の設定に従うべき」）:
+    ///
+    /// | .yab の Shift 面セル | パース結果 | 処遇 | 出力 |
+    /// |---|---|---|---|
+    /// | `Ｋ`（クォートなし全角英字） | Romaji("K") | 素通し | 半角 `K`（IME-ON 半角英数） |
+    /// | `'Ｋ'`（クォート付き全角英字） | Literal("Ｋ") | 素通し（英数字は半角優先） | 半角 `K` |
+    /// | `！`（クォートなし全角記号） | KeySequence("!") | 素通し | 半角 `!` |
+    /// | `'！'`（クォート付き全角記号） | Literal("！") | Text 確定出力 | **全角 `！`** |
+    /// | `'ウ'`（かな literal） | Literal("ウ") | Text 確定出力 | `ウ`（確定文字） |
+    /// | `後` 等の Special | Special | 従来 Reduce | 従来どおり |
+    ///
+    /// 素通し分は kp_stage_shift_eisu_hold（Windows）が IME を IME-ON 半角英数
+    /// （conv=0x0000）へ切り替えているため、素のキー入力として半角で確定する。
+    /// Text 分は KEYEVENTF_UNICODE 直接出力 — 非 ASCII は Windows Terminal でも
+    /// 届く（BUG-15 追補2 で不達なのは ASCII のみと実証済み）。
     fn shift_face_reduce(&self, ev: &ClassifiedEvent) -> ParseAction {
-        if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(Face::Shift)) {
-            // Shift 押下中は半角英数入力（ユーザー要望 2026-07-07）: ASCII 相当の
-            // Shift 面キーはエンジン非介入で素通しし、IME 自身に打たせる。
-            // プラットフォーム層（Windows: kp_stage_shift_eisu_hold）が Shift 押下中の
-            // IME 変換モードを半角英数（IME-ON conv=0x0000）に切り替えるため、
-            // 素通しした Shift+キーがそのまま半角英数として確定する。
-            //
-            // Text (KEYEVENTF_UNICODE) 直接注入は Windows Terminal が ASCII の
-            // VK_PACKET を落とすため撤回した（2026-07-07 実機、Shift 解放/復元付き
-            // bare 送信でも不達。docs/known-bugs.md BUG-15 追補2）。
-            // かな等の非 ASCII Shift 面は従来どおり IME 経由の Reduce を維持する。
-            if self.shift_plane_halfwidth && Self::shift_action_halfwidth(&action).is_some() {
-                return ParseAction::PassThrough {
-                    timer: TimerIntent::Keep,
-                };
+        let face = self.get_face(Face::Shift);
+        let Some(value) = ev.pos.as_ref().and_then(|p| face.get(p)) else {
+            // Shift 面に定義がないキーは OS に任せる
+            return ParseAction::PassThrough {
+                timer: TimerIntent::Keep,
+            };
+        };
+        if self.shift_plane_halfwidth {
+            match Self::shift_eisu_disposition(value) {
+                Some(ShiftEisuDisposition::PassThrough) => {
+                    return ParseAction::PassThrough {
+                        timer: TimerIntent::Keep,
+                    };
+                }
+                Some(ShiftEisuDisposition::EmitText(s)) => {
+                    let action = KeyAction::Text(s);
+                    return ParseAction::Reduce {
+                        actions: smallvec![action.clone()],
+                        record: OutputUpdate::record(ev.scan_code, &action, None),
+                        timer: TimerIntent::CancelAll,
+                    };
+                }
+                None => {} // Special 等は従来の Reduce 経路へ
             }
+        }
+        if let Some((action, kana)) = self.lookup_face(ev.pos, face) {
             ParseAction::Reduce {
                 actions: smallvec![action.clone()],
                 record: OutputUpdate::record(ev.scan_code, &action, kana),
                 timer: TimerIntent::CancelAll,
             }
         } else {
-            // Shift 面に定義がないキーは OS に任せる
             ParseAction::PassThrough {
                 timer: TimerIntent::Keep,
             }
         }
+    }
+
+    /// `shift_plane_halfwidth` 有効時の Shift 面値の処遇を分類する（純粋関数）。
+    ///
+    /// - 半角化すると英数字のみ → 素通し（IME-ON 半角英数の素のキー入力）
+    /// - 非 ASCII を含む値（全角記号 `'！'`・かな等の quoted literal） →
+    ///   .yab に書かれた文字をそのまま `Text` で確定出力
+    /// - 半角 ASCII 表記の記号（クォートなし `！` は半角化済みでここに来る） → 素通し
+    /// - Special / None 等 → `None`（従来の Reduce 経路）
+    fn shift_eisu_disposition(value: &YabValue) -> Option<ShiftEisuDisposition> {
+        use crate::yab::FullwidthStrExt;
+        let s: &str = match value {
+            YabValue::Literal(s) | YabValue::KeySequence(s) => s,
+            YabValue::Romaji { romaji, .. } => romaji,
+            _ => return None,
+        };
+        if s.is_empty() {
+            return None;
+        }
+        let half = s.to_halfwidth_str();
+        if half.chars().all(|c| c.is_ascii_alphanumeric()) {
+            // 英数字はユーザー要望どおり常に半角の素通し（全角 Ｋ 表記でも半角 K）。
+            return Some(ShiftEisuDisposition::PassThrough);
+        }
+        if s.chars().any(|c| !c.is_ascii()) {
+            // 全角記号・かな等: .yab に書かれたままを確定出力する。
+            return Some(ShiftEisuDisposition::EmitText(s.to_string()));
+        }
+        if half.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
+            // 半角 ASCII 記号表記: 素のキー入力（半角記号）。
+            return Some(ShiftEisuDisposition::PassThrough);
+        }
+        None
     }
 
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。

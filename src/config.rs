@@ -68,11 +68,15 @@ pub struct GeneralConfig {
     pub linux_input_backend: String,
     /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
     pub linux_evdev_device: Option<String>,
-    /// Shift 押下中の文字キー（Shift 面）を半角英数のリテラルとして直接出力する。
+    /// Shift 押下中を「半角英数入力モード」として扱う（IME-ON 半角英数 hold）。
     ///
-    /// true（デフォルト）: Shift 面の値を半角化し、IME を経由しない確定文字
-    /// （`KeyAction::Text`）として送信する。IME ON 中でも「Ｋ」ではなく「K」が出る。
-    /// false: 従来どおり .yab の Shift 面の値（全角リテラル等）をそのまま出力する。
+    /// true（デフォルト）: Shift 押下中はプラットフォーム層が IME を IME-ON 半角英数
+    /// （conv=0x0000）へ切り替え、.yab の Shift 面の書き方に従って処遇する:
+    /// - 英数字（`Ｋ` / `'Ｋ'`）→ 素通し = 半角 `K`
+    /// - クォートなし全角記号（`！`）→ 素通し = 半角 `!`
+    /// - クォート付き全角記号・かな（`'！'` / `'ウ'`）→ 書かれたまま確定出力 = 全角 `！` / `ウ`
+    /// Shift 解放でかな入力へ自動復帰する。
+    /// false: 従来どおり .yab の Shift 面の値を IME 経由で出力する。
     pub shift_plane_halfwidth: bool,
 }
 
