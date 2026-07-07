@@ -314,6 +314,15 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     let detected = obs.ime_kind_detected();
     log::info!("[runtime] IME kind sync ({source}): {kind:?} (detected={detected})");
     app.platform.output.set_active_ime_kind(kind);
+    if matches!(
+        kind,
+        crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+    ) && app.platform_state.ime.model().applied.applied_open() == Some(true)
+    {
+        let mode = app.platform.output.injection_mode;
+        log::debug!("[runtime] GJI warmup FSM sync: applied_open=true → ImeOn");
+        app.platform.gji_on_ime_on(mode);
+    }
 
     // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
     // 競合し belief 乖離を起こす）をチェックして解除を案内する

@@ -950,6 +950,19 @@ mod tests {
     }
 
     #[test]
+    fn startup_ime_on_sync_allows_candidate_show_to_warm_fsm() {
+        let mut fsm = GjiFsm::new();
+        let r = fsm.on_event(GjiEvent::StartComposition);
+        r.assert_consumed();
+        assert!(matches!(fsm.state(), GjiState::OffCold));
+
+        fsm.on_event(ime_on());
+        let r = fsm.on_event(GjiEvent::StartComposition);
+        r.assert_consumed();
+        assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
+    }
+
+    #[test]
     fn ime_on_while_on_warm_is_ignored() {
         let mut fsm = GjiFsm::new();
         fsm.on_event(ime_on());
