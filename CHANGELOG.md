@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.6] - 2026-07-07
+
 ### バグ修正
 
 - **Teams（TeamsWebView）が IMM32 クロスプロセス制御対象のまま誤分類されていたのを修正**
