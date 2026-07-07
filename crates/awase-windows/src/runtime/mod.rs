@@ -282,7 +282,7 @@ impl Runtime {
     }
 
     /// sync path の outcome リストを一括 dispatch する。
-    pub fn dispatch_outcomes(&mut self, outcomes: Vec<ImeApplyPair>) {
+    pub(crate) fn dispatch_outcomes(&mut self, outcomes: Vec<ImeApplyPair>) {
         for completion in outcomes {
             self.on_ime_apply_complete(completion.open, completion.outcome, completion.generation);
         }

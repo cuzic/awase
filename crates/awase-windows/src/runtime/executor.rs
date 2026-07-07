@@ -223,7 +223,7 @@ impl DecisionExecutor {
         }
 
         // 2) queue を FIFO で drain。
-        while let Some(effect) = self.queue.pop_front() {
+        while let Some(mut effect) = self.queue.pop_front() {
             let is_reinject = matches!(effect, Effect::Input(InputEffect::ReinjectKey(_)));
             if is_reinject && !reinject_guard_passed {
                 let Effect::Input(InputEffect::ReinjectKey(event)) = effect else {
@@ -237,7 +237,7 @@ impl DecisionExecutor {
                     self.park_in_guard(platform, event, remaining);
                     return sync_outcomes;
                 }
-                let effect = Effect::Input(InputEffect::ReinjectKey(event));
+                effect = Effect::Input(InputEffect::ReinjectKey(event));
                 reinject_guard_passed = true;
             } else if !is_reinject {
                 // NICOLA 出力など reinject 以外の effect は mark_send を呼ぶので
