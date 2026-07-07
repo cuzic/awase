@@ -448,8 +448,30 @@ impl Runtime {
         {
             return;
         }
-        let _success = self.platform.set_ime_open(true);
-        log::trace!("Blacklist force-ON: set_ime_open(true)");
+        // applied が既に ON なら送らない（500ms poll ごとの F2 再送スパム防止）。
+        // FocusChange が applied=Unknown にリセットするため、フォーカスごとに
+        // 1 回だけ force-apply される。Win-held スキップ（UnsafeToToggle）や
+        // 失敗時は applied が更新されないため次の refresh が再試行する。
+        if matches!(
+            self.platform_state.ime.model().applied,
+            crate::state::ime_model::AppliedImeState::Optimistic(true)
+                | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
+        ) {
+            return;
+        }
+        // `platform.set_ime_open` は IMM 専用実装で、Imm32Unavailable / TSF-native
+        // プロファイルでは早期 return する — つまり **この関数が対象とする Blacklist
+        // アプリで常に no-op だった**（2026-07-07 実機: BUG-16 の settle 明け再試行が
+        // 律儀に走っても実 IME OFF が直らず「koreha」リテラル化が再発。
+        // 手動 Ctrl+変換 = strategy chain 経由の apply は毎回効いていた）。
+        // strategy chain（MsImeDirect の冪等 VK_DBE_HIRAGANA 等）で apply する。
+        let belief = crate::output::OpenBelief {
+            effective_open: true,
+            confident: true,
+        };
+        let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
+        log::info!("Blacklist force-ON: apply_ime_open(true) → {outcome:?}");
+        self.on_ime_apply_complete(true, outcome);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
             if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
                 log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
@@ -494,11 +516,16 @@ impl Runtime {
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                 self.platform_state.ime.detect_miss_count()
             );
-            let dispatched = self.platform.set_ime_open(true);
+            // set_ime_open は IMM 専用実装で Imm32Unavailable では常に no-op
+            // （apply_force_on_for_imm_broken と同じ穴）。strategy chain で apply する。
+            let belief = crate::output::OpenBelief {
+                effective_open: true,
+                confident: true,
+            };
+            let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
+            log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
+            self.on_ime_apply_complete(true, outcome);
             self.platform_state.ime.set_force_on_broken_app_bootstrap();
-            if !dispatched {
-                log::warn!("set_ime_open dispatched=false (profile not IMM-capable) — guard set to suppress retry until focus change");
-            }
         }
     }
 

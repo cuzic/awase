@@ -669,7 +669,17 @@ scan 修正で hold/復元が完動した後、「Shift+1 は全角 `！` にし
 | Special（後/入 等） | 従来どおり |
 全角で出したい記号はクォート付き `'！'` で Shift 面に定義する。
 
-**追補6（2026-07-07 実機）: hold 入口の IMC write は順序保証がなく初回文字が全角化
+**追補7（2026-07-07 実機）: 追補6 の入口 F0/F3 注入は CapsLock を汚染するため撤回。**
+`VK_DBE_ALPHANUMERIC`（scan 0x3A = 物理 CapsLock 位置）は、**実 IME が OFF の文脈に
+着弾すると kbd106 の素の英数キー処理（CAPLOK）で CapsLock をトグルする**
+（実機: belief ON × 実 OFF の窓で Shift 押下のたびに CapsLock 点灯）。
+入口は IMC write のみに戻した。初回文字の全角化（追補6 の動機）は既知の限界として
+許容（CapsLock 汚染より軽微）。**教訓: IME モードキーの注入は「実 IME が確実に ON」
+でない限りしてはならない** — 解放側の F2（scan 0x70 = かなキー位置）も実 IME OFF に
+着弾すると kbd106 のかなロックをトグルする同族ハザードを持つ（BUG-08 の JISかな化と
+同根の危険。belief×実状態の乖離窓を塞ぐ BUG-16 系修正がこのハザードの暴露率を下げる）。
+
+**追補6（2026-07-07 実機、撤回済み → 追補7）: hold 入口の IMC write は順序保証がなく初回文字が全角化
 → 入口も scan 付きモードキー注入に変更。**
 Shift down の `[shift-eisu]` 発火から IMC write 着地まで実測 250ms かかるケースがあり、
 その間に届いた最初の Shift+英字が MS-IME 自身の「Shift+英字 → 全角英数」挙動で
@@ -743,6 +753,22 @@ GjiDirect / MsImeDirect strategy はスキップ時に `ImeOpenOutcome::UnsafeTo
 （= applied_snapshot / state を更新しない既存の意味論）を返す。
 `send_engine_state_ime_key` もスキップ時は `on_ime_mode_vk_sent` を呼ばない。
 これで Win 解放後の次の refresh / force-ON が実際に再送する。
+
+**追補2（2026-07-07 実機）: force-ON の実体 `platform.set_ime_open` は IMM 専用で、
+対象の Blacklist アプリでは常に no-op だった。**
+上記 2 修正後も再発（ロック解除 → デスクトップ切替 → Terminal で「koreha」化）。
+`apply_force_on_for_imm_broken` / `try_force_on_bootstrap` が呼ぶ
+`platform.set_ime_open` は `can_use_imm32_cross_process()==false`（= Imm32Unavailable /
+TSF-native、**まさに force-ON の対象アプリ**）で早期 return する実装であり、
+**force-ON は導入以来一度も実際の適用を行えていなかった**（settle 明け再試行も
+「何もしない関数」の再試行だった）。手動 Ctrl+変換が毎回効いたのは strategy chain
+（MsImeDirect の冪等 VK_DBE_HIRAGANA）経由だから。
+修正: 両 force-ON を `apply_ime_open_with_belief(true, ...)` +
+`on_ime_apply_complete` の strategy chain 経由に変更。あわせて applied が既に ON の
+場合は送らないスパムガードを追加（FocusChange が applied=Unknown にリセットするため
+フォーカスごとに 1 回だけ発火。Win-held スキップ時は applied 非更新 → 次の refresh が
+再試行）。非 TSF-native の Imm32Unavailable（Edge 等）は既存の hard pre-sync が
+applied=true を立てるため従来どおり発火しない（VK_KANJI トグル安全性の設計を維持）。
 
 **関連バグ:** BUG-07（focus 遷移系）、原因 3 の「conv confirm は open の証拠に
 ならない」は BUG-08 追補2 と同根（IMC 読み値と実状態の乖離）。
