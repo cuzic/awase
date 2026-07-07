@@ -285,6 +285,15 @@ impl Runtime {
             );
         }
 
+        // Shift 押下中の IME-ON 半角英数 hold（kp_stage_shift_eisu_hold）中は
+        // OS poll を凍結する。conv=0x00000000 は awase 自身が意図的に設定した
+        // 一時状態であり、観測して belief（input_mode=ObservedEisu 等）に
+        // 反映してはならない。解放時の復元 + 既存の観測経路が事後に整合させる。
+        if self.platform_state.gate.shift_eisu_hold {
+            log::debug!("Skipping observer/SSOT write: shift-eisu hold 中");
+            return ImeReadStrategy::SkipTyping;
+        }
+
         if skip_imm_query {
             ImeReadStrategy::Blacklist
         } else {

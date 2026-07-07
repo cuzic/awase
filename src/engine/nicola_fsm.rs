@@ -540,6 +540,10 @@ impl NicolaFsm {
     /// 半角化した結果が ASCII 印字文字のみの場合だけ変換する（Shift 面に
     /// かな等を定義しているレイアウトでは IME 経由の従来経路を維持し、
     /// 漢字変換可能性を壊さない）。Special（後退・入力等）/ Key / Suppress は対象外。
+    ///
+    /// 現在は `shift_face_reduce` の「素通し対象か」の判定（`is_some()`）にのみ使う。
+    /// Text 生成側は VK_PACKET 注入が Windows Terminal で不達のため主経路から撤回済み
+    /// （BUG-15 追補2）だが、注入が通るアプリ向けフォールバックとして維持している。
     fn shift_action_halfwidth(action: &KeyAction) -> Option<KeyAction> {
         use crate::yab::FullwidthStrExt;
         let half = match action {
@@ -561,17 +565,21 @@ impl NicolaFsm {
     /// Shift 面で Reduce する共通ヘルパー
     fn shift_face_reduce(&self, ev: &ClassifiedEvent) -> ParseAction {
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(Face::Shift)) {
-            // Shift 押下中は半角英数入力（ユーザー要望 2026-07-07）: 全角リテラル
-            // Ｋ → Text("K")。IME 非経由の確定文字なので、IME の変換モードや
-            // composition 状態に影響を与えず、Shift 解放後のかな入力を妨げない。
-            let (action, kana) = if self.shift_plane_halfwidth {
-                match Self::shift_action_halfwidth(&action) {
-                    Some(text) => (text, None),
-                    None => (action, kana),
-                }
-            } else {
-                (action, kana)
-            };
+            // Shift 押下中は半角英数入力（ユーザー要望 2026-07-07）: ASCII 相当の
+            // Shift 面キーはエンジン非介入で素通しし、IME 自身に打たせる。
+            // プラットフォーム層（Windows: kp_stage_shift_eisu_hold）が Shift 押下中の
+            // IME 変換モードを半角英数（IME-ON conv=0x0000）に切り替えるため、
+            // 素通しした Shift+キーがそのまま半角英数として確定する。
+            //
+            // Text (KEYEVENTF_UNICODE) 直接注入は Windows Terminal が ASCII の
+            // VK_PACKET を落とすため撤回した（2026-07-07 実機、Shift 解放/復元付き
+            // bare 送信でも不達。docs/known-bugs.md BUG-15 追補2）。
+            // かな等の非 ASCII Shift 面は従来どおり IME 経由の Reduce を維持する。
+            if self.shift_plane_halfwidth && Self::shift_action_halfwidth(&action).is_some() {
+                return ParseAction::PassThrough {
+                    timer: TimerIntent::Keep,
+                };
+            }
             ParseAction::Reduce {
                 actions: smallvec![action.clone()],
                 record: OutputUpdate::record(ev.scan_code, &action, kana),

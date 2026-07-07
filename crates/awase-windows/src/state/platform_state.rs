@@ -836,14 +836,13 @@ pub(crate) struct GateStore {
     pub post_bypass_passthrough: bool,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
-    /// 現在の物理 Shift 押下中に、エンジンが Shift 面で文字キーを consume したか。
+    /// Shift 押下中の IME-ON 半角英数 hold が有効か（`kp_stage_shift_eisu_hold`）。
     ///
-    /// consume された文字キーは OS / IME からは見えないため、MS-IME は
-    /// 「Shift が単独で押されて離された」と誤認して英数モード（conv=0x0000）へ
-    /// 切り替えてしまう（Shift 単独英数切替。2026-07-07 WT×MS-IME 実機）。
-    /// Shift KeyUp 時にこのフラグが立っていれば、MS-IME の誤切替を先回りして
-    /// conv をかな入力（NATIVE|FULLSHAPE|ROMAN）に復元する。
-    pub shift_plane_used_in_hold: bool,
+    /// Shift KeyDown で awase が conv=0x00000000（IME-ON 半角英数）へ切り替えたとき
+    /// true。Shift KeyUp で take してかな入力（conv=0x19 等）へ復元する。
+    /// hold 中は idle-conv-check の ObservedEisu 反応（DirectInput 落ち）を凍結する
+    /// — conv=0x0000 は awase 自身の意図的な状態のため。
+    pub shift_eisu_hold: bool,
 }
 
 impl GateStore {
@@ -852,7 +851,7 @@ impl GateStore {
             last_hook_activity_ms: 0,
             post_bypass_passthrough: false,
             sync_key_gate: SyncKeyGate::new(),
-            shift_plane_used_in_hold: false,
+            shift_eisu_hold: false,
         }
     }
 }

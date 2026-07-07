@@ -607,9 +607,10 @@ fn test_shift_held_uses_shift_face() {
 }
 
 #[test]
-fn test_shift_face_fullwidth_ascii_becomes_halfwidth_text() {
+fn test_shift_face_fullwidth_ascii_passes_through() {
     // Shift 押下中は半角英数入力（shift_plane_halfwidth=true デフォルト）:
-    // Shift 面の全角英字リテラルは半角 Text（IME 非経由）に変換される。
+    // ASCII 相当の Shift 面キーはエンジン非介入で素通しし、プラットフォーム層が
+    // IME を半角英数モード（IME-ON conv=0x0000）に切り替えて IME 自身に打たせる。
     let mut layout = make_layout();
     layout.shift.insert(POS_A, lit('Ｋ'));
     let mut engine = TestHarness {
@@ -618,14 +619,9 @@ fn test_shift_face_fullwidth_ascii_becomes_halfwidth_text() {
     };
 
     engine.on_event(Ev::down(VK_SHIFT).build());
-    let result = engine.on_event(Ev::down(VK_A).build());
-    result.assert_consumed();
-    assert_eq!(result.actions.len(), 1);
-    assert!(
-        matches!(&result.actions[0], KeyAction::Text(s) if s == "K"),
-        "expected Text(\"K\"), got {:?}",
-        result.actions[0]
-    );
+    engine
+        .on_event(Ev::down(VK_A).build())
+        .assert_pass_through();
 }
 
 #[test]

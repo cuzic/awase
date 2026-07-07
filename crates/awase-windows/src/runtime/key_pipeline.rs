@@ -278,6 +278,13 @@ impl Runtime {
     /// awase が一度でも warmup を行い `ImmSetConversionStatus(conv | ROMAN)` を確立した後は
     /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
+        // Shift 押下中の IME-ON 半角英数 hold（kp_stage_shift_eisu_hold）中は凍結する。
+        // conv=0x00000000 は awase 自身が意図的に設定した状態であり、ObservedEisu →
+        // DirectInput（IME OFF 落ち）に反応させてはならない。Shift 解放時の復元が
+        // explicit IME action として抑止を引き継ぐ。
+        if self.platform_state.gate.shift_eisu_hold {
+            return;
+        }
         let in_flight = self.platform.output_in_flight_ms();
         let now_tick = crate::state::TickMs(hook::current_tick_ms());
         let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
@@ -688,54 +695,63 @@ impl Runtime {
             log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
-        self.kp_stage_shift_plane_release(decision, event);
+        self.kp_stage_shift_eisu_hold(event);
     }
 
-    /// Shift 面使用の追跡と、Shift 解放時の MS-IME 英数誤切替カウンター。
+    /// Shift 押下中の IME-ON 半角英数切替（shift_plane_halfwidth の platform 側実装）。
     ///
-    /// エンジンが Shift 押下中の文字キーを consume すると、OS / IME には
-    /// 「Shift down → (何もなし) → Shift up」だけが届き、MS-IME の
-    /// 「Shift キー単独で英数モードに切り替える」が誤発動して conv=0x0000
-    /// （半角英数）へ落ちる（2026-07-07 WT×MS-IME 実機: shift up の
-    /// 478ms 後の idle-conv-check で conv=0x0000 を観測、ObservedEisu →
-    /// DirectInput → Engine OFF まで連鎖し、かな入力が数秒壊れた）。
+    /// ユーザー要望 (2026-07-07): 「SHIFT DOWN 中は半角英数入力（IME-ON のまま、
+    /// IME-OFF 直接入力ではない）、SHIFT UP したあとは親指シフトのかな入力」。
     ///
-    /// 対処: Shift 面を実際に使った Shift 押下の解放時に限り、conv をかな入力
-    /// （NATIVE|FULLSHAPE|ROMAN、カタカナ中はカタカナ target）へ先回り復元する。
-    /// ユーザーが本当に Shift を単独タップした場合（文字キー consume なし）は
-    /// 何もしないので、MS-IME の Shift 単独英数切替の意図的な使用は妨げない。
-    fn kp_stage_shift_plane_release(
-        &mut self,
-        decision: &awase::engine::Decision,
-        event: &RawKeyEvent,
-    ) {
-        use awase::types::{KeyClassification, ModifierKey};
-        let is_shift = event.modifier_key == Some(ModifierKey::Shift);
+    /// 方式: Shift KeyDown で MS-IME の変換モードを半角英数（conv=0x00000000、
+    /// IME は ON のまま）へ切り替え、Shift 面の ASCII キーはエンジンが素通しする
+    /// （`shift_face_reduce`）。出力は IME 自身が行うため、KEYEVENTF_UNICODE 注入が
+    /// Windows Terminal で不達になる問題（BUG-15 追補2: ASCII の VK_PACKET は
+    /// Shift 解放/復元付き bare 送信でも落とされる）を構造的に回避する。
+    /// Shift KeyUp で conv をかな入力へ復元する（verify-retry、実機動作確認済み）。
+    ///
+    /// これにより MS-IME の「Shift 単独タップで英数切替」の誤発動問題（BUG-15 本体:
+    /// awase がキーを consume して単独タップに見える）も吸収される — hold 中は
+    /// awase 自身が英数へ切り替えており、解放時に必ずかなへ復元するため。
+    fn kp_stage_shift_eisu_hold(&mut self, event: &RawKeyEvent) {
+        use awase::types::ModifierKey;
+        if event.modifier_key != Some(ModifierKey::Shift) || event.injected {
+            return;
+        }
         if matches!(event.event_type, KeyEventType::KeyDown) {
-            // フラグのリセットは Shift KeyUp の take 一点のみ。Shift KeyDown での
-            // リセットは置かない — Shift 長押し中の auto-repeat KeyDown が
-            // 「K↓(flag=true) → repeat Shift↓(誤リセット) → Shift↑」の取り逃しを生む。
-            if !is_shift
-                && event.modifier_snapshot.shift
-                && !event.injected
-                && decision.is_consumed()
-                && matches!(event.key_classification, KeyClassification::Char)
-            {
-                // Shift 押下中に文字キーがエンジンに consume された = Shift 面使用。
-                // このキーは IME からは見えないため、Shift 解放が単独タップに見える。
-                self.platform_state.gate.shift_plane_used_in_hold = true;
+            if self.platform_state.gate.shift_eisu_hold {
+                return; // Shift 長押しの auto-repeat KeyDown
             }
+            // Ctrl/Alt/Win チョード（ショートカット）では発動しない。
+            if event.modifier_snapshot.ctrl
+                || event.modifier_snapshot.alt
+                || event.modifier_snapshot.win
+            {
+                return;
+            }
+            // かな入力コンテキストのみ: MS-IME × IME ON × エンジン有効 × conv 書込権限。
+            if crate::tsf::observer::gji_is_active_ime()
+                || !self.platform_state.ime.effective_open()
+                || !self.platform_state.ime.belief.is_japanese_ime()
+                || !self.engine.is_user_enabled()
+                || !self.platform.output.conv_mutation_allowed.get()
+            {
+                return;
+            }
+            self.platform_state.gate.shift_eisu_hold = true;
+            let now_tick = crate::state::TickMs(hook::current_tick_ms());
+            self.platform_state.ime.note_explicit_ime_action(now_tick);
+            log::info!("[shift-eisu] Shift 押下 → IME-ON 半角英数へ切替 (conv→0x00000000)");
+            win32_async::spawn_local(async {
+                let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
+                if !ok {
+                    log::warn!("[shift-eisu] conv→0x0000 切替に失敗 (IMC_SETCONVERSIONMODE)");
+                }
+            });
             return;
         }
-        if !is_shift || !std::mem::take(&mut self.platform_state.gate.shift_plane_used_in_hold) {
-            return;
-        }
-        // MS-IME のみ（GJI に Shift 単独英数切替の同種挙動は観測されていない）。
-        // conv 書き込み権限（conv_mutation_allowed）と IME ON belief も確認する。
-        if crate::tsf::observer::gji_is_active_ime()
-            || !self.platform_state.ime.effective_open()
-            || !self.platform.output.conv_mutation_allowed.get()
-        {
+        // Shift KeyUp: hold 中だった場合のみ、かな入力へ復元する。
+        if !std::mem::take(&mut self.platform_state.gate.shift_eisu_hold) {
             return;
         }
         let now_tick = crate::state::TickMs(hook::current_tick_ms());
@@ -748,8 +764,11 @@ impl Runtime {
             .output
             .ime_mode_fsm
             .borrow_mut()
-            .unconfirm("shift-plane release");
+            .unconfirm("shift-eisu release");
         // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
+        // 注意: hold 中の conv 読み取りで conv_mode が HanAlpha に更新されている場合、
+        // imm_conv_target は None → ひらがな target になる（hold 前がカタカナだった
+        // 記憶は失われる。エッジケースとして許容）。
         let target = self
             .platform
             .output
@@ -762,8 +781,7 @@ impl Runtime {
                     | crate::imm::IME_CMODE_ROMAN,
             );
         log::info!(
-            "[shift-release] Shift 面使用後の解放 → MS-IME 英数誤切替の先回り復元 \
-             (target=0x{target:08X})"
+            "[shift-release] Shift 解放 → かな入力へ復元 (target=0x{target:08X})"
         );
         win32_async::spawn_local(async move {
             // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
