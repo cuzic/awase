@@ -107,8 +107,13 @@ impl ImeOpenStrategy for GjiDirectStrategy {
         let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::from_open(open));
         log::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
         // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-        unsafe { crate::ime::send_ime_mode_key(vk) };
-        ImeOpenOutcome::Applied
+        if unsafe { crate::ime::send_ime_mode_key(vk) } {
+            ImeOpenOutcome::Applied
+        } else {
+            // Win キー押下中で未送信。Applied 扱いにすると applied_snapshot がラッチされ
+            // 以降の再試行が全て no-op になる（BUG-16 追補）。未適用として返す。
+            ImeOpenOutcome::UnsafeToToggle
+        }
     }
 }
 
@@ -166,7 +171,14 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open);
             log::debug!("[apply-ime] MS-IME direct: send {vk:#06X} (IME ON)");
             // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-            unsafe { crate::ime::send_ime_mode_key(vk) };
+            if !unsafe { crate::ime::send_ime_mode_key(vk) } {
+                // Win キー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
+                // applied_snapshot がラッチされ、settle 明けの force-ON 再試行まで全て
+                // 「適用済み」no-op になり belief ON × 実 IME OFF が固定される
+                // （2026-07-07 実機: ロック解除 → Win+Ctrl+→ 直後の「korede」化。
+                // BUG-16 追補）。未適用として返し、次の refresh/force-ON に再送させる。
+                return ImeOpenOutcome::UnsafeToToggle;
+            }
         } else {
             // DirectInput（直接入力）へ移行する。
             // VK_IME_OFF は MS-IME がネイティブに処理する冪等キー。
@@ -174,7 +186,9 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close);
             log::debug!("[apply-ime] MS-IME direct: send {vk:#06X} (DirectInput, 冪等)");
             // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-            unsafe { crate::ime::send_ime_mode_key(vk) };
+            if !unsafe { crate::ime::send_ime_mode_key(vk) } {
+                return ImeOpenOutcome::UnsafeToToggle;
+            }
         }
         ImeOpenOutcome::Applied
     }

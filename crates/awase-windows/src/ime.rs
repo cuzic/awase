@@ -268,7 +268,7 @@ pub unsafe fn post_kanji_toggle_to_focused() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_ms_ime_on() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) }
+    let _ = unsafe { send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) };
 }
 
 /// MS-IME 専用 IME OFF: `VK_DBE_ALPHANUMERIC` (0xF0) を送信して英数モードに切り替える。
@@ -281,7 +281,7 @@ pub unsafe fn post_ms_ime_on() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_ms_ime_off() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_DBE_ALPHANUMERIC) }
+    let _ = unsafe { send_ime_mode_key(crate::vk::VK_DBE_ALPHANUMERIC) };
 }
 
 /// 冪等 IME ON: VK_IME_ON (0x16) を送信して DirectInput → IME ON に切り替える。
@@ -293,7 +293,7 @@ pub unsafe fn post_ms_ime_off() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_ime_on_direct() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_IME_ON) }
+    let _ = unsafe { send_ime_mode_key(crate::vk::VK_IME_ON) };
 }
 
 /// 冪等 IME OFF: VK_IME_OFF (0x1A) を送信して DirectInput（直接入力）へ移行する。
@@ -306,7 +306,7 @@ pub unsafe fn post_ime_on_direct() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn post_ime_off_direct() {
     // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) }
+    let _ = unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) };
 }
 
 /// GJI 専用 IME ON（後方互換エイリアス）。新規コードは `post_ime_on_direct` を使うこと。
@@ -341,9 +341,17 @@ pub unsafe fn post_gji_ime_off() {
 /// これを行わないと OS/IME/アプリが `Ctrl+<mode key>` の組み合わせとして解釈し、
 /// 想定外のショートカット発火を招く（`post_kanji_toggle_to_focused` と同じ理由）。
 ///
+/// 戻り値: 実際に注入した場合 `true`。Win キー押下中でスキップした場合 `false`。
+/// **呼び出し元は `false` を「apply していない」として扱うこと** — スキップを
+/// Applied 扱いで applied_snapshot にラッチすると、以降の force-ON/再試行が全て
+/// 「適用済み」no-op になり belief ON × 実 IME OFF が固定される（2026-07-07 実機:
+/// ロック解除 → Win+Ctrl+→ デスクトップ切替中の IME ON apply がここでスキップ
+/// されたのに Applied 記録され、Terminal で「これで」→「korede」化。BUG-16 追補）。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
+#[must_use]
+pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
     use crate::vk::{VK_LWIN, VK_RWIN};
 
@@ -356,7 +364,7 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
         log::debug!(
             "[ime-mode] skipped vk=0x{vk:02X} (Win key held — Win+VK_IME triggers Start Menu on Win↑)"
         );
-        return;
+        return false;
     }
 
     let held = HeldModifiers::read();
@@ -388,6 +396,7 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) {
             inputs.len()
         );
     }
+    true
 }
 
 /// 現在のフォアグラウンドウィンドウの IME 変換モード生値を返す（診断ログ専用）。

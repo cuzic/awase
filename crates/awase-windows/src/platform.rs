@@ -732,8 +732,11 @@ impl PlatformRuntime for WindowsPlatform {
             self.engine_off_ime_vk
         };
         if let Some(vk) = vk {
-            unsafe { crate::ime::send_ime_mode_key(vk) };
-            self.output.on_ime_mode_vk_sent(vk);
+            // Win キー押下中スキップ時は on_ime_mode_vk_sent も呼ばない
+            // （送っていないキーで ime_mode_fsm の belief を動かさない）。
+            if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                self.output.on_ime_mode_vk_sent(vk);
+            }
         }
     }
 
