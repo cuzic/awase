@@ -587,9 +587,10 @@ BUG-14 の「Shift と相関する外部注入 VK_DBE_HIRAGANA」も、この英
    本当に Shift を単独タップした場合（consume なし）は何もしない —
    MS-IME の Shift 単独英数切替を意図的に使う操作は妨げない。
 
-**恒久対策（推奨）:** MS-IME 側の「Shift キー単独で英数モードに切り替える」を
-無効化すれば誤認の芽そのものが消える（二重オーナー解消。`msime_key_assignment.rs`
-の検出ポップアップと同系）。修正 2 はその設定が有効なままでも壊れないための防御。
+**設定側の恒久対策は不可（2026-07-07 ユーザー確認）:** 「Shift キー単独で英数モードに
+切り替える」は旧 IME の詳細設定にのみ存在し、**新 IME（Win11 標準 MS-IME）では
+無効化できない**。したがって修正 2 の awase 側カウンターが唯一の防御であり、
+「設定を切ればよい」という提案は選択肢にならない（再提案しないこと）。
 
 **再発防止テスト:** `src/engine/tests.rs`（`test_shift_face_fullwidth_ascii_becomes_halfwidth_text` /
 `test_shift_face_halfwidth_disabled_keeps_literal` / `test_shift_face_kana_stays_ime_routed`）。
