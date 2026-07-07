@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### バグ修正
+
+- **Teams（TeamsWebView）が IMM32 クロスプロセス制御対象のまま誤分類されていたのを修正**
+  - Microsoft Teams のメインウィンドウクラス `TeamsWebView` が `IMM32_UNAVAILABLE_CLASSES` に未掲載で `Standard` 分類のまま扱われ、Chrome 系と同じ Chromium ベースにもかかわらず信頼できない IMM32 open status 読み取りが試みられていた。`Chrome_*` と同様に `Imm32Unavailable` / `TsfNative` に分類するよう追加
+  - あわせて `kp_stage_focus_probe` の完了処理に `sanitize_focus_probe_open_status()` を追加し、apply 時点の `current_app_profile` が IMM32 open status 非対応（Imm32Unavailable/TsfNative）なら `probe.ime_on` を強制的に破棄するよう防御を追加。分類が後から変わるアプリでも stale な `probe.ime_on` を信用しなくなる
+
 ### 変更
 
 - **実測学習した IMM32 能力をフォーカスプロファイル判定に配線**（到達不能パス監査 B5）
