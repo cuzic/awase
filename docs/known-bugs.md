@@ -629,6 +629,19 @@ Terminal に届かない**（推定: 1 SendInput 内の Shift 復元が GetAsync
 - 既知の残リスク: Shift down 直後 ~15ms 以内の初回キーは conv 切替が間に合わず
   romaji composition に入る可能性（Shift→初回キーの人間の間隔は通常 50ms 以上で
   実害は未観測。発生したら msime-ready 型の eisu 確認ゲートを追加する）。
+
+**追補3（2026-07-07 実機）: 英数→かな方向の IMC write は実モードに反映されない
+（IMM→TSF ブリッジの片方向故障）→ 復元は VK_DBE_HIRAGANA 注入に変更。**
+試行 3 初版の Shift 解放復元は IMC write が success を返し、直後の IMC read も
+conv=0x00000019/NATIVE を返す（`[shift-release] NATIVE 確認 (#0) → 復元完了`）のに、
+**実際の MS-IME は半角英数のまま**だった（ユーザーが物理かなキー
+= VK_DBE_HIRAGANA を押すと復帰。01:12 実機ログ）。逆方向（かな→英数、hold 開始側）の
+IMC write=0x0000 は実モードに効く — **Windows Terminal の IMM ブリッジは
+「英数→かな」方向の書き込みだけ TSF 実モードに反映されない**。
+対処: 解放時にユーザーの手動回復と同じ VK_DBE_HIRAGANA（MS-IME ネイティブ処理、
+BUG-10 と同じ経路）を `send_ime_mode_key` で注入し、IMC write/verify は保険として維持。
+IMC read が実モードと乖離する以上 verify は完全な確認にはならない点に注意
+（NATIVE 確認は「IMC エコーの確認」でしかない）。
 - `KeyAction::Text` / `send_text_direct` は注入が通るアプリ向けフォールバックとして
   コードは維持（現在エンジンからの producer なし）。
 

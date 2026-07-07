@@ -765,6 +765,15 @@ impl Runtime {
             .ime_mode_fsm
             .borrow_mut()
             .unconfirm("shift-eisu release");
+        // IMC の conv write だけでは新 MS-IME (TSF-native) の実モードが英数から戻らない
+        // （2026-07-07 実機: [shift-release] の IMC write/read は 0x19/NATIVE を返すのに
+        // 実モードは半角英数のままで、ユーザーが物理かなキーを押すと復帰した。
+        // 英数→かな方向の IMM→TSF 反映だけが壊れている。かな→英数方向の hold 側は
+        // IMC write で実際に効く）。ユーザーの手動回復と同じ操作を自動化する:
+        // MS-IME がネイティブ処理する VK_DBE_HIRAGANA を注入してひらがなモードへ戻し、
+        // 下の IMC write/verify は保険として残す。
+        // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+        unsafe { crate::ime::send_ime_mode_key(crate::vk::VK_DBE_HIRAGANA) };
         // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
         // 注意: hold 中の conv 読み取りで conv_mode が HanAlpha に更新されている場合、
         // imm_conv_target は None → ひらがな target になる（hold 前がカタカナだった
