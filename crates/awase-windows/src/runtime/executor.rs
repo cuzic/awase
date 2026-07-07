@@ -10,21 +10,32 @@
 ///   フック内で OS API を一切呼ばない。
 use std::collections::VecDeque;
 
-use awase::engine::{Decision, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect};
+use awase::engine::{
+    Decision, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect,
+};
 use awase::platform::{PlatformRuntime, TsfComposition};
 use awase::types::RawKeyEvent;
 
 use crate::hook::CallbackResult;
 use crate::platform::WindowsPlatform;
-use crate::state::ConvModeAuthority;
 use crate::runtime::{PassthroughQueue, PhysicalKeyDisposition};
 use crate::state::platform_state::ImeStateHub;
+use crate::state::ConvModeAuthority;
 use crate::vk::VkCodeExt;
 use crate::RawKeyEventExt as _;
 
+/// IME apply の sync 完了 1 件分。
+///
+/// `generation` は Engine `SetOpen` 要求時に払い出した generation。完了時に
+/// current pending と照合し、古い async/sync 完了が新しい IME 状態を壊すのを防ぐ。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ImeApplyCompletion {
+    pub open: bool,
+    pub outcome: awase::platform::ImeOpenOutcome,
+    pub generation: Option<u64>,
+}
 
-/// IME apply の sync 完了 1 件分。`(open: bool, outcome: ImeOpenOutcome)` のエイリアス。
-pub(crate) type ImeApplyPair = (bool, awase::platform::ImeOpenOutcome);
+pub(crate) type ImeApplyPair = ImeApplyCompletion;
 
 /// `execute_from_hook` の戻り値。
 #[derive(Debug)]
@@ -123,7 +134,7 @@ impl DecisionExecutor {
         physical: PhysicalKeyDisposition,
     ) -> BatchResult {
         self.applied_snapshot = ime.model().applied;
-        self.execute_relay(platform, decision, raw_event, physical)
+        self.execute_relay(platform, ime, decision, raw_event, physical)
     }
 
     /// メッセージループから呼ぶ。全 Effects を即座に実行する。
@@ -160,7 +171,8 @@ impl DecisionExecutor {
 
         let mut sync_outcomes = Vec::new();
         for effect in effects {
-            if let Some(o) = self.execute_one(platform, effect) {
+            let generation = ime.model().pending_generation();
+            if let Some(o) = self.execute_one(platform, effect, generation) {
                 sync_outcomes.push(o);
             }
         }
@@ -179,7 +191,11 @@ impl DecisionExecutor {
     /// output guard 期間中なら `TIMER_OUTPUT_GUARD` を設定して即座に返る（block_on しない）。
     /// タイマー発火後に再び呼ばれ、guard 解除済みなら reinject を実行する。
     #[expect(clippy::useless_let_if_seq)]
-    pub(crate) fn drain_deferred(&mut self, platform: &mut WindowsPlatform) -> Vec<ImeApplyPair> {
+    pub(crate) fn drain_deferred(
+        &mut self,
+        platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
+    ) -> Vec<ImeApplyPair> {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
         // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
         // Win が 150ms 以上 OS 側でスタックし、後続のショートカットが Win+key と
@@ -199,7 +215,8 @@ impl DecisionExecutor {
                 return sync_outcomes;
             }
             let effect = Effect::Input(InputEffect::ReinjectKey(event));
-            if let Some(o) = self.execute_one(platform, effect) {
+            let generation = ime.model().pending_generation();
+            if let Some(o) = self.execute_one(platform, effect, generation) {
                 sync_outcomes.push(o);
             }
             reinject_guard_passed = true;
@@ -227,7 +244,8 @@ impl DecisionExecutor {
                 // 次の reinject には再びガードを適用する。
                 reinject_guard_passed = false;
             }
-            if let Some(o) = self.execute_one(platform, effect) {
+            let generation = ime.model().pending_generation();
+            if let Some(o) = self.execute_one(platform, effect, generation) {
                 sync_outcomes.push(o);
             }
         }
@@ -244,9 +262,10 @@ impl DecisionExecutor {
     pub(crate) fn on_output_guard_timer(
         &mut self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
     ) -> Vec<ImeApplyPair> {
         platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
-        self.drain_deferred(platform)
+        self.drain_deferred(platform, ime)
     }
 
     /// queue または guard slot に Effect が残っているか
@@ -320,6 +339,7 @@ impl DecisionExecutor {
     fn execute_relay(
         &mut self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
         decision: Decision,
         raw_event: &RawKeyEvent,
         physical: PhysicalKeyDisposition,
@@ -349,7 +369,11 @@ impl DecisionExecutor {
                 log::debug!(
                     "[relay-flush] PassThroughWith: queue {} effect(s){} (vk={:#04x} {})",
                     effects.len(),
-                    if reinject { " + reinject" } else { " (no reinject, suppressed)" },
+                    if reinject {
+                        " + reinject"
+                    } else {
+                        " (no reinject, suppressed)"
+                    },
                     raw_event.vk_code,
                     match raw_event.event_type {
                         awase::types::KeyEventType::KeyDown => "down",
@@ -377,7 +401,8 @@ impl DecisionExecutor {
                 let mut sync_outcomes = Vec::new();
                 for effect in effects {
                     if matches!(effect, Effect::Timer(_)) {
-                        if let Some(o) = self.execute_one(platform, effect) {
+                        let generation = ime.model().pending_generation();
+                        if let Some(o) = self.execute_one(platform, effect, generation) {
                             sync_outcomes.push(o);
                         }
                     } else {
@@ -428,7 +453,11 @@ impl DecisionExecutor {
             "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
             raw_event.vk_code,
             if is_key_down { "down" } else { "up" },
-            if in_flight_ms == u64::MAX { "never".to_string() } else { in_flight_ms.to_string() },
+            if in_flight_ms == u64::MAX {
+                "never".to_string()
+            } else {
+                in_flight_ms.to_string()
+            },
             has_pending,
             output_in_flight,
         );
@@ -445,7 +474,10 @@ impl DecisionExecutor {
         // D. [platform] 確認キー後処理
         self.handle_confirm_key_passthrough(platform, raw_event);
 
-        if matches!(raw_event.key_classification, awase::types::KeyClassification::Passthrough) {
+        if matches!(
+            raw_event.key_classification,
+            awase::types::KeyClassification::Passthrough
+        ) {
             log::debug!(
                 "[relay-passthrough] PassThrough idle: direct OS pass-through (vk={:#04x} {})",
                 raw_event.vk_code,
@@ -465,8 +497,10 @@ impl DecisionExecutor {
     fn try_pending_warmup_on_keyup(&self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            platform
-                .composition_confirm_key_up(raw_event.vk_code, self.applied_snapshot.applied_open());
+            platform.composition_confirm_key_up(
+                raw_event.vk_code,
+                self.applied_snapshot.applied_open(),
+            );
         }
     }
 
@@ -508,15 +542,20 @@ impl DecisionExecutor {
         &mut self,
         platform: &mut WindowsPlatform,
         effect: Effect,
-    ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
+        generation: Option<u64>,
+    ) -> Option<ImeApplyCompletion> {
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
             self.handle_reinject(platform, event);
             return None;
         }
-        self.dispatch_effect(platform, effect)
+        self.dispatch_effect(platform, effect, generation)
             .map(|(open, outcome)| {
                 self.update_intra_batch_applied(open, outcome);
-                (open, outcome)
+                ImeApplyCompletion {
+                    open,
+                    outcome,
+                    generation,
+                }
             })
     }
 
@@ -572,12 +611,13 @@ impl DecisionExecutor {
         &mut self,
         platform: &mut WindowsPlatform,
         effect: Effect,
+        generation: Option<u64>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
         if let Effect::Ime(ImeEffect::SetOpen { open }) = effect {
-            return self.dispatch_ime_set_open(platform, open);
+            return self.dispatch_ime_set_open(platform, open, generation);
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
         // platform_rt (&mut dyn PlatformRuntime) 変換前に行う必要がある。
@@ -615,7 +655,10 @@ impl DecisionExecutor {
                 ImeEffect::SetOpen { .. } => unreachable!("handled above"),
             },
             Effect::Ui(ue) => match ue {
-                UiEffect::EngineStateChanged { enabled, send_ime_key } => {
+                UiEffect::EngineStateChanged {
+                    enabled,
+                    send_ime_key,
+                } => {
                     platform_rt.update_tray(enabled);
                     if send_ime_key {
                         platform_rt.send_engine_state_ime_key(enabled, applied_for_engine_key);
@@ -636,6 +679,7 @@ impl DecisionExecutor {
         &mut self,
         platform: &WindowsPlatform,
         open: bool,
+        generation: Option<u64>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
@@ -702,7 +746,9 @@ impl DecisionExecutor {
                 // 対称に、完了 outcome を WM 経由で Runtime の単一入口へ委譲する。
                 // spawn_local の future 内で with_app を直接握らないことで再入面を減らし、
                 // generation 照合を含む B+C+D+E を on_ime_apply_complete に一元化する。
-                crate::runtime::message_handlers::post_async_ime_apply_complete(open, outcome);
+                crate::runtime::message_handlers::post_async_ime_apply_complete(
+                    open, outcome, generation,
+                );
                 drop(guard);
             });
             None
@@ -739,7 +785,10 @@ impl DecisionExecutor {
             let belief = crate::output::reduce_open_belief(&belief_inputs, open);
             log::debug!(
                 "[dispatch-ime] belief: effective={} confident={} conv={:?} (profile={:?})",
-                belief.effective_open, belief.confident, conv_mode, view.focus.profile
+                belief.effective_open,
+                belief.confident,
+                conv_mode,
+                view.focus.profile
             );
             let outcome = platform.apply_ime_open_with_view(open, &view, belief);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
@@ -760,11 +809,7 @@ impl DecisionExecutor {
     /// `applied_snapshot = ime.model().applied` で SSOT から再取得されるため、
     /// 完了時の intra-batch 更新は不要（`on_ime_apply_complete` が SSOT を更新する）。
     #[expect(clippy::needless_pass_by_ref_mut)]
-    fn update_intra_batch_applied(
-        &mut self,
-        open: bool,
-        outcome: awase::platform::ImeOpenOutcome,
-    ) {
+    fn update_intra_batch_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
         if outcome == ImeOpenOutcome::UnsafeToToggle {
             return;
@@ -783,14 +828,13 @@ impl DecisionExecutor {
     }
 }
 
-
 /// `reduce_open_belief` および `AppliedImeState` の unit tests。
 ///
 /// `awase-windows` クレートは `#![cfg(windows)]` で囲まれているため
 /// Windows 実機でのみ実行される。
 #[cfg(test)]
 mod tests {
-    use crate::output::{OpenBeliefInputs, reduce_open_belief};
+    use crate::output::{reduce_open_belief, OpenBeliefInputs};
     use crate::state::AppliedImeState;
 
     /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で confident を返すヘルパー。
@@ -817,7 +861,12 @@ mod tests {
     // 6-C ケース 1: フォーカス直後 (Unknown) → confident=false（必ず apply）
     #[test]
     fn not_confident_when_unknown() {
-        assert!(!chrome_intent_confident(false, AppliedImeState::Unknown, false, 1000));
+        assert!(!chrome_intent_confident(
+            false,
+            AppliedImeState::Unknown,
+            false,
+            1000
+        ));
     }
 
     // 6-C ケース 2: Optimistic のみ → confident=false
@@ -836,7 +885,10 @@ mod tests {
     fn confident_when_confirmed_off_within_300ms() {
         assert!(chrome_intent_confident(
             false,
-            AppliedImeState::Confirmed { open: false, at_ms: 900 },
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 900
+            },
             false,
             1000
         ));
@@ -847,7 +899,10 @@ mod tests {
     fn not_confident_when_confirmed_off_over_300ms() {
         assert!(!chrome_intent_confident(
             false,
-            AppliedImeState::Confirmed { open: false, at_ms: 500 },
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 500
+            },
             false,
             1000
         ));
@@ -858,7 +913,10 @@ mod tests {
     fn confident_when_confirmed_within_300ms() {
         assert!(chrome_intent_confident(
             true,
-            AppliedImeState::Confirmed { open: false, at_ms: 800 },
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 800
+            },
             true,
             1000
         ));
@@ -869,7 +927,10 @@ mod tests {
     fn not_confident_when_confirmed_over_300ms() {
         assert!(!chrome_intent_confident(
             true,
-            AppliedImeState::Confirmed { open: false, at_ms: 500 },
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 500
+            },
             true,
             1000
         ));

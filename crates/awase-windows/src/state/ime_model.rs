@@ -14,13 +14,13 @@ use super::force_guard::{ForceGuardSet, ObserveMissMonitor};
 use awase::engine::InputModeState;
 
 use super::ime_event::{
-    ChordKind, ImeEvent, ImeEventEnvelope, InputModeApplyResult, UserIntentSource,
-    ObservationConfidence,
+    ChordKind, ImeEvent, ImeEventEnvelope, InputModeApplyResult, ObservationConfidence,
+    UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
 use super::observation_store::{ImeObservation, ObservationStore};
-use std::time::Instant;
 use super::transition::ImeTransition;
+use std::time::Instant;
 
 // ── AppliedImeState ──────────────────────────────────────────────────────────
 
@@ -343,7 +343,12 @@ impl ImeModel {
                 self.observations
                     .update_drift(self.desired_open, open, envelope.time.monotonic);
             }
-            ImeEvent::FocusChanged { profile, to, focus_epoch, .. } => {
+            ImeEvent::FocusChanged {
+                profile,
+                to,
+                focus_epoch,
+                ..
+            } => {
                 // Step 1.5/5: policy 確定 → observation 評価の順序ルール。
                 // FocusChanged を受けた時点で policy を更新し、以降の observation は
                 // 新しい policy で評価される。
@@ -428,7 +433,9 @@ impl ImeModel {
                 // applied は desired に合わせて楽観的にセット（ImmCross async 送信と同じ扱い）。
                 self.applied = AppliedImeState::Optimistic(desired);
             }
-            ImeEvent::InputModeObserved { mode, confidence, .. } => {
+            ImeEvent::InputModeObserved {
+                mode, confidence, ..
+            } => {
                 // ON/OFF の derive_open() と同じ考え方: Low confidence 単独では
                 // belief を動かさない（記録のみ）。Medium+ のみ input_mode を上書きする。
                 if confidence >= ObservationConfidence::Medium {
@@ -535,7 +542,7 @@ mod tests {
     #[test]
     fn effective_open_falls_back_to_most_recent_trusted_when_derive_open_is_none() {
         let mut model = ImeModel::new(); // desired_open = true, 明示 intent なし
-        // Low confidence 単独 → derive_open() は None（Medium+ 専用のため）。
+                                         // Low confidence 単独 → derive_open() は None（Medium+ 専用のため）。
         model.reduce(&envelope(
             1,
             ImeEvent::ObserverReported {
@@ -750,7 +757,10 @@ mod tests {
             model.is_ctrl_ime_chord_active(),
             "IME OFF 要求 + Ctrl 押下中 → chord 開始"
         );
-        assert_eq!(model.active_chord_kind(), Some(ChordKind::CtrlMuhenkanImeOff));
+        assert_eq!(
+            model.active_chord_kind(),
+            Some(ChordKind::CtrlMuhenkanImeOff)
+        );
     }
 
     #[test]
@@ -797,6 +807,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stale_ime_apply_success_does_not_consume_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplySucceeded {
+                target: false,
+                generation: 9,
+            },
+        ));
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(10),
+            "古い generation の完了で current pending を消費しない"
+        );
+    }
+
+    #[test]
+    fn matching_ime_apply_success_consumes_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplySucceeded {
+                target: false,
+                generation: 10,
+            },
+        ));
+
+        assert!(
+            model.pending_generation().is_none(),
+            "一致する generation の完了で pending を消費する"
+        );
+        assert!(
+            model.applied.applied_open() == Some(false),
+            "一致する generation の完了で applied state を更新する"
+        );
+    }
 
     // ── PanicReset ────────────────────────────────────────────────────────────
 
@@ -804,7 +870,10 @@ mod tests {
     fn panic_reset_sets_desired_open() {
         let mut model = ImeModel::new(); // desired_open = true
         model.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
-        assert!(model.desired_open, "PanicReset は desired_open を target に設定する");
+        assert!(
+            model.desired_open,
+            "PanicReset は desired_open を target に設定する"
+        );
     }
 
     // 最重要: PanicReset は last_intent を設定しない。
@@ -885,7 +954,10 @@ mod tests {
     fn hwnd_cache_restored_sets_desired_open() {
         let mut model = ImeModel::new(); // desired_open = true
         model.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
-        assert!(!model.desired_open, "HwndCacheRestored は desired_open を target に設定する");
+        assert!(
+            !model.desired_open,
+            "HwndCacheRestored は desired_open を target に設定する"
+        );
     }
 
     // 最重要: HwndCacheRestored は last_intent を設定しない。
@@ -1038,7 +1110,10 @@ mod tests {
             settle_until: now + std::time::Duration::from_millis(100),
         });
         assert!(model.is_focus_transition_settling(now));
-        assert!(model.is_focus_transition_pending(), "barrier はまだ consume されていない");
+        assert!(
+            model.is_focus_transition_pending(),
+            "barrier はまだ consume されていない"
+        );
     }
 
     #[test]

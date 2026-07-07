@@ -6,23 +6,20 @@
 use std::mem::size_of;
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO,
-};
+use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO};
 
+use crate::focus::FocusKind;
 use crate::hook;
 use crate::hook::CallbackResult;
-use crate::vk::VkCodeExt;
 use crate::tray;
+use crate::vk::VkCodeExt;
 use crate::win32::post_to_main_thread;
 use crate::{
-    with_app, with_app_ref, Runtime, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG,
-    TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE,
-    WM_EXECUTE_EFFECTS,
+    with_app, with_app_ref, Runtime, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH,
+    TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
 };
 use awase::platform::ImeOpenOutcome;
 use awase::types::ContextChange;
-use crate::focus::FocusKind;
 
 use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
 
@@ -129,7 +126,9 @@ pub(crate) unsafe fn handle_wm_timer(
             app.schedule_ime_refresh(500);
         }
         Some(id) if id == TIMER_OUTPUT_GUARD => {
-            let outcomes = app.executor.on_output_guard_timer(&mut app.platform);
+            let outcomes = app
+                .executor
+                .on_output_guard_timer(&mut app.platform, &app.platform_state.ime);
             app.dispatch_outcomes(outcomes);
         }
         Some(id) if id == TIMER_TSF_PROBE => {
@@ -195,7 +194,9 @@ pub(crate) unsafe fn handle_wm_timer(
                 log::debug!(
                     "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} (os_id={wparam}) を drain 後に延期"
                 );
-                app.ime_coordinator.deferred_engine_timers.push((timer_id, wparam));
+                app.ime_coordinator
+                    .deferred_engine_timers
+                    .push((timer_id, wparam));
                 return;
             }
             let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
@@ -229,7 +230,9 @@ pub(crate) unsafe fn handle_wm_timer(
 
 /// WM_EXECUTE_EFFECTS ハンドラ
 pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
-    let outcomes = app.executor.drain_deferred(&mut app.platform);
+    let outcomes = app
+        .executor
+        .drain_deferred(&mut app.platform, &app.platform_state.ime);
     app.dispatch_outcomes(outcomes);
     // H-4-a: Output が send_keys 中に積んだ RuntimeRequest を一括処理する。
     app.drain_runtime_requests();
@@ -240,7 +243,8 @@ pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
 // sync path は `BatchResult.sync_outcomes` → `dispatch_outcomes` → `on_ime_apply_complete`
 // に合流する。async path（ImmCross）も同じ単一入口へ合流させるため、spawn_local の
 // future 内で `with_app` を直接握らず、完了 outcome を WM_ASYNC_IME_APPLY_COMPLETE として
-// メインスレッドのメッセージループへ投函する。`(open, outcome)` は wparam/lparam にパックする。
+// メインスレッドのメッセージループへ投函する。`(open, generation, outcome)` は
+// wparam/lparam にパックする。
 
 /// `ImeOpenOutcome` を lParam 用の整数にエンコードする。
 ///
@@ -274,10 +278,16 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
 ///
 /// spawn_local の future（メインスレッド上でポーリングされる）から呼ぶこと。
 /// `with_app` を握らずメッセージループ経由で `on_ime_apply_complete` に合流させる。
-pub(crate) fn post_async_ime_apply_complete(open: bool, outcome: ImeOpenOutcome) {
+pub(crate) fn post_async_ime_apply_complete(
+    open: bool,
+    outcome: ImeOpenOutcome,
+    generation: Option<u64>,
+) {
+    let generation = generation.unwrap_or(0);
+    let wparam = ((generation as usize) << 1) | usize::from(open);
     crate::win32::post_to_main_thread_with(
         crate::WM_ASYNC_IME_APPLY_COMPLETE,
-        usize::from(open),
+        wparam,
         encode_outcome(outcome),
     );
 }
@@ -287,12 +297,16 @@ pub(crate) fn post_async_ime_apply_complete(open: bool, outcome: ImeOpenOutcome)
 /// ImmCross async apply の完了通知。sync path の `sync_outcomes` と対称に、
 /// generation 照合を含む単一入口 `on_ime_apply_complete`（B+C+D+E）へ合流する。
 pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
-    let open = wparam != 0;
+    let open = (wparam & 1) != 0;
+    let generation = match (wparam >> 1) as u64 {
+        0 => None,
+        generation => Some(generation),
+    };
     let outcome = decode_outcome(lparam);
     if outcome == ImeOpenOutcome::Failed {
         log::warn!("apply_ime_open({open}) failed (async)");
     }
-    app.on_ime_apply_complete(open, outcome);
+    app.on_ime_apply_complete(open, outcome, generation);
 }
 
 /// WM_PANIC_RESET ハンドラ
@@ -392,7 +406,6 @@ pub(crate) unsafe fn handle_wm_inputlangchange(app: &mut Runtime) {
     check_keyboard_layout_on_change();
 }
 
-
 /// WM_FOCUS_KIND_UPDATE ハンドラ
 pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usize, lparam: isize) {
     let kind_u8 = wparam as u8;
@@ -454,12 +467,7 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
     let layout_names: Vec<String> =
         with_app_ref(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
             .unwrap_or_default();
-    tray::handle_tray_message(
-        hwnd,
-        lparam,
-        &layout_names,
-        crate::is_elevated(),
-    );
+    tray::handle_tray_message(hwnd, lparam, &layout_names, crate::is_elevated());
 }
 
 /// WM_RELOAD_CONFIG ハンドラ
@@ -495,7 +503,9 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::ImeFullKatakana) => {
             let _ = crate::ime::set_ime_mode(
                 true,
-                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA | crate::imm::IME_CMODE_FULLSHAPE,
+                crate::imm::IME_CMODE_NATIVE
+                    | crate::imm::IME_CMODE_KATAKANA
+                    | crate::imm::IME_CMODE_FULLSHAPE,
                 0,
             );
         }
@@ -510,7 +520,9 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             let _ = crate::ime::set_ime_mode(
                 true,
                 0,
-                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA | crate::imm::IME_CMODE_FULLSHAPE,
+                crate::imm::IME_CMODE_NATIVE
+                    | crate::imm::IME_CMODE_KATAKANA
+                    | crate::imm::IME_CMODE_FULLSHAPE,
             );
         }
         Some(tray::TrayCommand::ImeHalfKatakana) => {
@@ -530,13 +542,16 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             let _ = crate::ime::set_ime_romaji_mode_state(false);
         }
         Some(tray::TrayCommand::ResetState) => {
-            let caps_lock_on = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+            let caps_lock_on =
+                windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
             if caps_lock_on {
                 crate::ime::toggle_caps_lock();
             }
             let _ = crate::ime::set_ime_mode(
                 true,
-                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE | crate::imm::IME_CMODE_ROMAN,
+                crate::imm::IME_CMODE_NATIVE
+                    | crate::imm::IME_CMODE_FULLSHAPE
+                    | crate::imm::IME_CMODE_ROMAN,
                 crate::imm::IME_CMODE_KATAKANA,
             );
         }

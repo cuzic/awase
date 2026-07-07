@@ -1,12 +1,12 @@
-use awase::engine::InputModeState;
 use crate::focus::{AppKind, FocusKind};
+use awase::engine::InputModeState;
 
 use super::belief::ImeBelief;
 use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::SyncKeyGate;
 use super::ime_event::{
-    ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult,
-    InputModeApplyStrategy, UserIntentSource, ObservationConfidence, ObservationSource,
+    ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult, InputModeApplyStrategy,
+    ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
@@ -443,15 +443,30 @@ impl ImeStateHub {
 
     /// IME apply 完了を記録する（C: mirror + D: generation 照合 dispatch）。
     ///
-    /// `mirror_applied_open_with_ts` と `pending_generation` チェックを一体化し、
-    /// 呼び出し元が generation を個別に取得する必要をなくす。
+    /// `generation` がある場合は pending transition と一致する完了だけを受理する。
+    /// 古い async 完了をここで弾くことで、GJI/Composition 側にも stale な
+    /// `SetOpen(false)` 完了を伝播させない。
+    ///
+    /// 戻り値は、この完了を現在の IME apply として受理したかどうか。
     pub(crate) fn record_ime_apply_result(
         &mut self,
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
+        generation: Option<u64>,
         ts: u64,
-    ) {
+    ) -> bool {
         use awase::platform::ImeOpenOutcome;
+        if let Some(generation) = generation {
+            let pending = self.shadow_model.pending_generation();
+            if pending != Some(generation) {
+                log::debug!(
+                    "[ime-apply] stale completion ignored: target={open} outcome={outcome:?} \
+                     generation={generation} pending={pending:?}"
+                );
+                return false;
+            }
+        }
+
         let effective = match outcome {
             ImeOpenOutcome::Applied
             | ImeOpenOutcome::FallbackSent
@@ -461,10 +476,11 @@ impl ImeStateHub {
         };
         self.mirror_applied_open_with_ts(effective, ts);
 
-        if let Some(generation) = self.shadow_model.pending_generation() {
+        if let Some(generation) = generation {
             let event = ImeEvent::from_apply_outcome(open, outcome, generation);
             self.dispatch_event(event, TickMs(ts));
         }
+        true
     }
 }
 
@@ -530,7 +546,9 @@ impl ImeStateHub {
         self.dispatch_event(ImeEvent::PanicReset { target: true }, tick_ms);
         // panic reset はフォーカスエポックを変えない（同じフォーカスコンテキスト内のリセット）。
         let cur_epoch = self.shadow_model.observations.current_focus_epoch;
-        self.shadow_model.observations.clear_on_focus_change(cur_epoch);
+        self.shadow_model
+            .observations
+            .clear_on_focus_change(cur_epoch);
     }
 
     /// `ImeUpdate` を belief / shadow_model に反映する。
@@ -610,7 +628,12 @@ impl ImeStateHub {
         if let Some(snap) = snapshot {
             // HwndCacheRestored は desired_open を回復するが last_intent を設定しない。
             // キャッシュ復元はユーザーの能動的操作ではなく、後続の実観測で上書き可能。
-            self.dispatch_event(ImeEvent::HwndCacheRestored { target: snap.ime_on }, tick_ms);
+            self.dispatch_event(
+                ImeEvent::HwndCacheRestored {
+                    target: snap.ime_on,
+                },
+                tick_ms,
+            );
             self.dispatch_event(
                 ImeEvent::InputModeApplied {
                     mode: snap.input_mode,
@@ -980,7 +1003,9 @@ mod tests {
     #[test]
     fn handle_engine_set_open_filters_when_focus_transition_was_pending() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps.ime.handle_engine_set_open(true, false, true, 1, TickMs(0));
+        let applied = ps
+            .ime
+            .handle_engine_set_open(true, false, true, 1, TickMs(0));
         assert!(!applied, "focus transition pending 中は適用されない");
         assert!(
             !ps.ime.model().desired_open(),
@@ -992,8 +1017,13 @@ mod tests {
     #[test]
     fn handle_engine_set_open_applies_when_focus_transition_not_pending() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps.ime.handle_engine_set_open(true, false, false, 1, TickMs(0));
-        assert!(applied, "focus transition が pending でなければ通常通り適用される");
+        let applied = ps
+            .ime
+            .handle_engine_set_open(true, false, false, 1, TickMs(0));
+        assert!(
+            applied,
+            "focus transition が pending でなければ通常通り適用される"
+        );
         assert!(ps.ime.model().desired_open());
     }
 
@@ -1003,11 +1033,18 @@ mod tests {
     fn handle_engine_set_open_ctrl_chord_filter_still_works() {
         let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
         // 1 回目: IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
-        let first = ps.ime.handle_engine_set_open(false, true, false, 1, TickMs(0));
+        let first = ps
+            .ime
+            .handle_engine_set_open(false, true, false, 1, TickMs(0));
         assert!(first, "chord を開始する最初の要求は適用される");
         assert!(ps.ime.is_ctrl_ime_chord_active());
         // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
-        let second = ps.ime.handle_engine_set_open(false, true, false, 2, TickMs(0));
-        assert!(!second, "chord transaction 中の二次 IME OFF 要求はフィルタされる");
+        let second = ps
+            .ime
+            .handle_engine_set_open(false, true, false, 2, TickMs(0));
+        assert!(
+            !second,
+            "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+        );
     }
 }

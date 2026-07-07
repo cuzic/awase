@@ -10,19 +10,18 @@ mod transport;
 
 pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
+use crate::focus::FocusKind;
 use awase::config::ValidatedConfig;
 use awase::engine::{Engine, EngineCommand, InputContext, InputModeState, SpecialKeyCombos};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, RawKeyEvent, VkCode};
-use crate::focus::FocusKind;
 
 use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
-use crate::vk::VkCodeExt as _;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
+use crate::vk::VkCodeExt as _;
 use awase::platform::PlatformRuntime as _;
-
 
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
 ///
@@ -158,7 +157,10 @@ impl Runtime {
     /// focus/classify の内部型に直接アクセスしない。
     #[must_use]
     pub fn injection_hint(&self) -> (InjectionHint, crate::focus::AppKind) {
-        (self.platform.injection_hint(), self.platform_state.focus.app_kind)
+        (
+            self.platform.injection_hint(),
+            self.platform_state.focus.app_kind,
+        )
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
@@ -250,22 +252,30 @@ impl Runtime {
     /// sync 経路では `execute_one` が `post_apply_ime_open`（B）を済ませた後、
     /// 呼び出し元が sync_outcomes ループ経由でここへ来る。
     /// async 経路では spawn_local 内で B を済ませた後に直接呼ばれる。
-    pub fn on_ime_apply_complete(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
+    pub fn on_ime_apply_complete(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: Option<u64>,
+    ) {
         use awase::platform::{ImeOpenOutcome, TsfComposition as _};
 
         if outcome == ImeOpenOutcome::UnsafeToToggle {
             return;
         }
 
-        // B: composition warm/cold 更新
-        self.platform.on_ime_applied(open, outcome);
-
         // C+D: ImeModel write-back + generation 照合 dispatch
-        self.platform_state.ime.record_ime_apply_result(
+        let accepted = self.platform_state.ime.record_ime_apply_result(
             open,
             outcome,
+            generation,
             crate::hook::current_tick_ms(),
         );
+
+        // B: composition warm/cold 更新。stale apply 完了は GJI/Composition に伝播させない。
+        if accepted {
+            self.platform.on_ime_applied(open, outcome);
+        }
 
         // E: IME 状態ポーリングをスケジュール
         self.platform.post_ime_refresh();
@@ -273,8 +283,8 @@ impl Runtime {
 
     /// sync path の outcome リストを一括 dispatch する。
     pub fn dispatch_outcomes(&mut self, outcomes: Vec<ImeApplyPair>) {
-        for (open, outcome) in outcomes {
-            self.on_ime_apply_complete(open, outcome);
+        for completion in outcomes {
+            self.on_ime_apply_complete(completion.open, completion.outcome, completion.generation);
         }
     }
 
@@ -471,15 +481,18 @@ impl Runtime {
         };
         let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
         log::info!("Blacklist force-ON: apply_ime_open(true) → {outcome:?}");
-        self.on_ime_apply_complete(true, outcome);
+        self.on_ime_apply_complete(true, outcome, None);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
             if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
-                log::info!("Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)");
+                log::info!(
+                    "Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)"
+                );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
                 self.platform_state.ime.dispatch_event(
                     crate::state::ime_event::ImeEvent::InputModeApplied {
                         mode: new_mode,
-                        strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                        strategy:
+                            crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                         result: crate::state::ime_event::InputModeApplyResult::Applied,
                         at: tick_ms,
                     },
@@ -524,7 +537,7 @@ impl Runtime {
             };
             let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
             log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
-            self.on_ime_apply_complete(true, outcome);
+            self.on_ime_apply_complete(true, outcome, None);
             self.platform_state.ime.set_force_on_broken_app_bootstrap();
         }
     }
@@ -616,7 +629,9 @@ impl Runtime {
         let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
             self.platform_state.focus.focus_epoch,
         );
-        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms, accepted);
+        self.platform_state
+            .ime
+            .apply_ime_update(&observer_out, tick_ms, accepted);
 
         // LastAppliedImeState を OS 観測値に同期する。
         // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。
@@ -624,7 +639,9 @@ impl Runtime {
         // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
         let observed_ime_on = self.platform_state.ime.effective_open();
-        self.platform_state.ime.mirror_applied_open(observed_ime_on, tick_ms);
+        self.platform_state
+            .ime
+            .mirror_applied_open(observed_ime_on, tick_ms);
         log::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。
@@ -712,11 +729,9 @@ impl Runtime {
             let class_name = crate::focus::classify::get_class_name_string(hwnd);
             if !class_name.is_empty() {
                 let pid = crate::focus::classify::get_window_process_id(hwnd);
-                let new_app_kind =
-                    crate::observer::focus_observer::detect_app_kind(&class_name);
+                let new_app_kind = crate::observer::focus_observer::detect_app_kind(&class_name);
                 let hint = self.platform.injection_hint_for(pid, &class_name);
-                let new_mode =
-                    crate::output::types::InjectionMode::from((hint, new_app_kind));
+                let new_mode = crate::output::types::InjectionMode::from((hint, new_app_kind));
                 self.platform.update_injection_mode(new_mode);
                 log::debug!(
                     "[focus-sync] hwnd=0x{:X} class={class_name:?} \
@@ -1032,5 +1047,8 @@ unsafe fn cancel_ime_composition() {
             0,
         )
     };
-    log::debug!("[ctrl-bypass] ImmNotifyIME(CPS_CANCEL) hwnd={hwnd:?} → {}", ok.as_bool());
+    log::debug!(
+        "[ctrl-bypass] ImmNotifyIME(CPS_CANCEL) hwnd={hwnd:?} → {}",
+        ok.as_bool()
+    );
 }
