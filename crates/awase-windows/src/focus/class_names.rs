@@ -21,6 +21,7 @@ const IMM32_UNAVAILABLE_CLASSES: &[&str] = &[
     "Chrome_RenderWidgetHostHWND",
     "Chrome_WidgetWin_0",
     "Chrome_WidgetWin_1",
+    "TeamsWebView",
     "Intermediate D3D Window",
     // UWP / WinUI
     "Windows.UI.Core.CoreWindow",
@@ -183,14 +184,17 @@ pub fn is_chromium_widget(class_name: &str) -> bool {
 
 /// ウィンドウクラス名からアプリの UI フレームワーク種別を判定する。
 ///
-/// - `Chrome_*`: Chromium 系（Chrome, Edge, Electron, VS Code 等）
+/// - `Chrome_*` / `TeamsWebView`: Chromium 系（Chrome, Edge, Electron, VS Code, Teams 等）
 /// - `MozillaWindowClass`: Firefox（Chromium と同様の入力処理）
 /// - `Windows.UI.Core.CoreWindow` / `ApplicationFrameWindow` / `Windows.UI.Input.*`: UWP / XAML 系
 /// - その他: Win32 クラシック（ヒューリスティックで Chrome に昇格する場合あり）
 #[must_use]
 pub fn detect_app_kind(class_name: &str) -> AppKind {
     let class_lower = class_name.to_ascii_lowercase();
-    if class_lower.starts_with("chrome_") || class_lower == "mozillawindowclass" {
+    if class_lower.starts_with("chrome_")
+        || class_lower == "teamswebview"
+        || class_lower == "mozillawindowclass"
+    {
         AppKind::TsfNative
     } else if class_lower == "windows.ui.core.corewindow"
         || class_lower == "applicationframewindow"
@@ -245,6 +249,15 @@ mod tests {
             !is_effectively_tsf_native(profile, "Chrome_WidgetWin_1"),
             "Chrome は IMM32Unavailable であって TSF ネイティブではない"
         );
+    }
+
+    #[test]
+    fn teams_webview_is_chromium_like_imm32_unavailable() {
+        assert_eq!(
+            AppImeProfile::from_class_name("TeamsWebView"),
+            AppImeProfile::Imm32Unavailable
+        );
+        assert_eq!(detect_app_kind("TeamsWebView"), AppKind::TsfNative);
     }
 
     #[test]
