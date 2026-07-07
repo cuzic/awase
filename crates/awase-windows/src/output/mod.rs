@@ -906,6 +906,11 @@ impl Output {
         self.warmup_coord.pending_tsf_timer()
     }
 
+    /// `send_keys()` が開始した TSF/GJI probe がまだ完了していないか。
+    pub(crate) fn has_pending_tsf_work(&self) -> bool {
+        self.warmup_coord.has_pending_tsf()
+    }
+
     /// sacr-warmup probe に StartComposition が観測されたことを通知する。
     ///
     /// `platform.rs::drain_pending_composition_events` が StartComposition を処理した際に呼ぶ。

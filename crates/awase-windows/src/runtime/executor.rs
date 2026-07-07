@@ -190,10 +190,10 @@ impl DecisionExecutor {
         // 1) 前回 park した ReinjectKey があれば最初に試す。
         //    guard 解除済みなら execute_one してから queue に進む (batching を継続)。
         if let Some(event) = self.guard_held.take() {
-            if let Some(remaining) = self.output_guard_remaining(platform) {
+            if let Some(remaining) = self.reinject_wait_remaining(platform, &event) {
                 log::debug!(
-                    "[reinject-guard] held event, output {}ms ago, suspending for {remaining}ms",
-                    crate::tuning::OUTPUT_GUARD_MS - remaining,
+                    "[reinject-guard] held event, suspending for {remaining}ms (vk={:#04x})",
+                    event.vk_code,
                 );
                 self.park_in_guard(platform, event, remaining);
                 return sync_outcomes;
@@ -209,17 +209,18 @@ impl DecisionExecutor {
         while let Some(effect) = self.queue.pop_front() {
             let is_reinject = matches!(effect, Effect::Input(InputEffect::ReinjectKey(_)));
             if is_reinject && !reinject_guard_passed {
-                if let Some(remaining) = self.output_guard_remaining(platform) {
+                let Effect::Input(InputEffect::ReinjectKey(event)) = effect else {
+                    unreachable!("is_reinject was true")
+                };
+                if let Some(remaining) = self.reinject_wait_remaining(platform, &event) {
                     log::debug!(
-                        "[reinject-guard] output {}ms ago, suspending drain for {remaining}ms",
-                        crate::tuning::OUTPUT_GUARD_MS - remaining,
+                        "[reinject-guard] suspending drain for {remaining}ms (vk={:#04x})",
+                        event.vk_code,
                     );
-                    let Effect::Input(InputEffect::ReinjectKey(event)) = effect else {
-                        unreachable!("is_reinject was true")
-                    };
                     self.park_in_guard(platform, event, remaining);
                     return sync_outcomes;
                 }
+                let effect = Effect::Input(InputEffect::ReinjectKey(event));
                 reinject_guard_passed = true;
             } else if !is_reinject {
                 // NICOLA 出力など reinject 以外の effect は mark_send を呼ぶので
@@ -253,9 +254,23 @@ impl DecisionExecutor {
         !self.queue.is_empty() || self.guard_held.is_some()
     }
 
-    /// output guard 期間中なら残り ms を返す。期間外なら None。
+    /// ReinjectKey をまだ流してはいけない場合、再試行までの待ち時間を返す。
+    ///
+    /// Enter/Space/Escape は IME composition を確定するため、直前の flush 出力が
+    /// TSF/GJI probe に残っている間は通さない。
     #[expect(clippy::unused_self)]
-    fn output_guard_remaining(&self, platform: &WindowsPlatform) -> Option<u64> {
+    fn reinject_wait_remaining(
+        &self,
+        platform: &WindowsPlatform,
+        event: &RawKeyEvent,
+    ) -> Option<u64> {
+        if matches!(event.event_type, awase::types::KeyEventType::KeyDown)
+            && event.vk_code.is_composition_confirm_key()
+            && platform.has_pending_tsf_work()
+        {
+            return Some(10);
+        }
+
         let elapsed = platform.output_in_flight_ms();
         if elapsed < crate::tuning::OUTPUT_GUARD_MS {
             Some(crate::tuning::OUTPUT_GUARD_MS - elapsed)

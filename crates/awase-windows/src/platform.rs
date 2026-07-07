@@ -197,6 +197,11 @@ impl WindowsPlatform {
         self.output.eager_warmup_sent_ms()
     }
 
+    /// `send_keys()` が開始した TSF/GJI probe がまだ完了していないか。
+    pub(crate) fn has_pending_tsf_work(&self) -> bool {
+        self.output.has_pending_tsf_work()
+    }
+
     /// 出力モードを切り替える（設定変更時）。
     #[expect(clippy::missing_const_for_fn)]
     /// pending_tsf をインストールし、TIMER_TSF_PROBE を起動する（vk_send async パス用）。
