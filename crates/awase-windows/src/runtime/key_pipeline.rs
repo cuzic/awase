@@ -687,6 +687,112 @@ impl Runtime {
             self.schedule_ime_refresh(20);
             log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
+
+        self.kp_stage_shift_plane_release(decision, event);
+    }
+
+    /// Shift 面使用の追跡と、Shift 解放時の MS-IME 英数誤切替カウンター。
+    ///
+    /// エンジンが Shift 押下中の文字キーを consume すると、OS / IME には
+    /// 「Shift down → (何もなし) → Shift up」だけが届き、MS-IME の
+    /// 「Shift キー単独で英数モードに切り替える」が誤発動して conv=0x0000
+    /// （半角英数）へ落ちる（2026-07-07 WT×MS-IME 実機: shift up の
+    /// 478ms 後の idle-conv-check で conv=0x0000 を観測、ObservedEisu →
+    /// DirectInput → Engine OFF まで連鎖し、かな入力が数秒壊れた）。
+    ///
+    /// 対処: Shift 面を実際に使った Shift 押下の解放時に限り、conv をかな入力
+    /// （NATIVE|FULLSHAPE|ROMAN、カタカナ中はカタカナ target）へ先回り復元する。
+    /// ユーザーが本当に Shift を単独タップした場合（文字キー consume なし）は
+    /// 何もしないので、MS-IME の Shift 単独英数切替の意図的な使用は妨げない。
+    fn kp_stage_shift_plane_release(
+        &mut self,
+        decision: &awase::engine::Decision,
+        event: &RawKeyEvent,
+    ) {
+        use awase::types::{KeyClassification, ModifierKey};
+        let is_shift = event.modifier_key == Some(ModifierKey::Shift);
+        if matches!(event.event_type, KeyEventType::KeyDown) {
+            // フラグのリセットは Shift KeyUp の take 一点のみ。Shift KeyDown での
+            // リセットは置かない — Shift 長押し中の auto-repeat KeyDown が
+            // 「K↓(flag=true) → repeat Shift↓(誤リセット) → Shift↑」の取り逃しを生む。
+            if !is_shift
+                && event.modifier_snapshot.shift
+                && !event.injected
+                && decision.is_consumed()
+                && matches!(event.key_classification, KeyClassification::Char)
+            {
+                // Shift 押下中に文字キーがエンジンに consume された = Shift 面使用。
+                // このキーは IME からは見えないため、Shift 解放が単独タップに見える。
+                self.platform_state.gate.shift_plane_used_in_hold = true;
+            }
+            return;
+        }
+        if !is_shift || !std::mem::take(&mut self.platform_state.gate.shift_plane_used_in_hold) {
+            return;
+        }
+        // MS-IME のみ（GJI に Shift 単独英数切替の同種挙動は観測されていない）。
+        // conv 書き込み権限（conv_mutation_allowed）と IME ON belief も確認する。
+        if crate::tsf::observer::gji_is_active_ime()
+            || !self.platform_state.ime.effective_open()
+            || !self.platform.output.conv_mutation_allowed.get()
+        {
+            return;
+        }
+        let now_tick = crate::state::TickMs(hook::current_tick_ms());
+        // idle-conv-check が復元途中の conv=0x0000 を読んで ObservedEisu →
+        // DirectInput に落とさないよう、明示的 IME 操作として抑止する。
+        self.platform_state.ime.note_explicit_ime_action(now_tick);
+        // 次の kana 送信は msime-ready ゲートに IMC の NATIVE を確認させる
+        // （MS-IME の誤切替が復元 write より後に来ても先頭文字をリテラル化させない）。
+        self.platform
+            .output
+            .ime_mode_fsm
+            .borrow_mut()
+            .unconfirm("shift-plane release");
+        // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
+        let target = self
+            .platform
+            .output
+            .conv_mode
+            .get()
+            .and_then(awase::engine::ConvMode::imm_conv_target)
+            .unwrap_or(
+                crate::imm::IME_CMODE_NATIVE
+                    | crate::imm::IME_CMODE_FULLSHAPE
+                    | crate::imm::IME_CMODE_ROMAN,
+            );
+        log::info!(
+            "[shift-release] Shift 面使用後の解放 → MS-IME 英数誤切替の先回り復元 \
+             (target=0x{target:08X})"
+        );
+        win32_async::spawn_local(async move {
+            // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
+            // idle-conv-check で観測 = 上限 478ms）。冪等な IMC write を
+            // 160ms 間隔で最大 4 回（0/160/320/480ms、実測上限をカバー）打ち、
+            // NATIVE が確認できた時点で打ち切る。
+            const RETRY_INTERVAL_MS: u32 = 160;
+            const MAX_TRIES: u32 = 4;
+            for attempt in 0..MAX_TRIES {
+                let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
+                if !ok {
+                    log::warn!("[shift-release] conv 復元 write #{attempt} 失敗");
+                }
+                win32_async::sleep_ms(RETRY_INTERVAL_MS).await;
+                let conv = win32_async::offload(|| unsafe {
+                    crate::ime::get_ime_conversion_mode_raw_timeout(10)
+                })
+                .await;
+                if let Some(c) = conv {
+                    if c & crate::imm::IME_CMODE_NATIVE != 0 {
+                        log::debug!(
+                            "[shift-release] conv=0x{c:08X} NATIVE 確認 (#{attempt}) → 復元完了"
+                        );
+                        return;
+                    }
+                }
+            }
+            log::warn!("[shift-release] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
+        });
     }
 
     /// Effects の実行（フックからキューに委譲）

@@ -110,6 +110,18 @@ impl ImeModeFsm {
         self.last_vk_send_ms = crate::hook::current_tick_ms();
     }
 
+    /// 外部要因で conv が変わった可能性があるとき、belief の state は保ったまま
+    /// unconfirmed 化する。次の送信は msime-ready ゲートが IMC を確認してから行う。
+    ///
+    /// 用途: Shift 解放時（MS-IME が Shift 単独タップと誤認して英数へ切り替える
+    /// 可能性があるタイミング）等、awase の送信起点ではない conv 変化の疑い。
+    pub(crate) fn unconfirm(&mut self, reason: &str) {
+        if self.confirmed {
+            log::debug!("[ime-mode] unconfirm ({reason}): {:?} → IMC 確認待ち", self.state);
+        }
+        self.confirmed = false;
+    }
+
     /// VK_IME_OFF 送信時に呼ぶ。Off belief に即時移行する。
     pub(crate) fn on_f22_sent(&mut self) {
         log::debug!("[ime-mode] VK_IME_OFF 送信 → Off (belief, unconfirmed)");

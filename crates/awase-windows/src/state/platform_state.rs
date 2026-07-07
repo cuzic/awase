@@ -292,6 +292,14 @@ impl ImeStateHub {
     /// `EXPLICIT_IME_SUPPRESS_MS` との比較で idle-conv-check を抑制するために使う。
     ///
     /// `now_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
+    /// idle-conv-check 抑止用に「明示的 IME 操作」時刻を記録する。
+    ///
+    /// `handle_engine_set_open` 以外の能動的 IME 書き込み（Shift 解放時の conv 復元等）
+    /// から呼ぶ。`EXPLICIT_IME_SUPPRESS_MS` の間 idle-conv-check がスキップされる。
+    pub(crate) fn note_explicit_ime_action(&mut self, tick_ms: TickMs) {
+        self.last_explicit_ime_action_ms = tick_ms.0;
+    }
+
     pub(crate) fn explicit_ime_action_age_ms(&self, now_ms: TickMs) -> u64 {
         if self.last_explicit_ime_action_ms == 0 {
             return u64::MAX;
@@ -828,6 +836,14 @@ pub(crate) struct GateStore {
     pub post_bypass_passthrough: bool,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
+    /// 現在の物理 Shift 押下中に、エンジンが Shift 面で文字キーを consume したか。
+    ///
+    /// consume された文字キーは OS / IME からは見えないため、MS-IME は
+    /// 「Shift が単独で押されて離された」と誤認して英数モード（conv=0x0000）へ
+    /// 切り替えてしまう（Shift 単独英数切替。2026-07-07 WT×MS-IME 実機）。
+    /// Shift KeyUp 時にこのフラグが立っていれば、MS-IME の誤切替を先回りして
+    /// conv をかな入力（NATIVE|FULLSHAPE|ROMAN）に復元する。
+    pub shift_plane_used_in_hold: bool,
 }
 
 impl GateStore {
@@ -836,6 +852,7 @@ impl GateStore {
             last_hook_activity_ms: 0,
             post_bypass_passthrough: false,
             sync_key_gate: SyncKeyGate::new(),
+            shift_plane_used_in_hold: false,
         }
     }
 }

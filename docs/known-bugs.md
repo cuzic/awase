@@ -549,7 +549,59 @@ injected= ログ）、`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle`（in
 `vk.rs::ImeKeyKind`
 
 **関連バグ:** BUG-08（同一ファミリーの合成 VK_KANA）、MS-IME 二重オーナー問題
-（`msime_key_assignment.rs`）
+（`msime_key_assignment.rs`）、BUG-15（Shift 単独タップ誤認も同じ二重オーナー構造）
+
+---
+
+## BUG-15: Shift 面使用後の Shift 解放で MS-IME が英数モードに落ち、かな入力が数秒壊れる
+
+**症状:** MS-IME（Windows Terminal / TsfNative）で Shift を押しながら文字キーを打ち
+（Shift 面 → 全角英字出力）、Shift を離した後にかな入力へ戻らない。
+2026-07-07T00:04 実機: Shift up の 478ms 後に conv=0x0000（半角英数）を観測 →
+idle-conv-check が ObservedEisu → DirectInput → **Engine OFF** まで連鎖し、
+直後の打鍵が素通り。conv=0x0009 が観測されて NativeToggleShadowOff で
+Engine ON に復帰するまで数秒〜十数秒かな入力が壊れた。
+
+**原因（二重オーナー構造）:** awase が Shift 押下中の文字キーをエンジンで consume
+するため、OS / MS-IME からは「Shift down → （何もなし） → Shift up」だけが見える。
+MS-IME の「Shift キー単独で英数モードに切り替える」がこれを単独タップと誤認して
+conv を 0x0000 へ切り替える。ユーザー操作としては Shift+文字入力であり誤爆。
+BUG-14 の「Shift と相関する外部注入 VK_DBE_HIRAGANA」も、この英数切替の
+復帰側エコーとして整合する。
+
+**修正（2 層）:**
+1. **Shift 面の半角リテラル化（`shift_plane_halfwidth`、デフォルト有効）**:
+   `KeyAction::Text`（`KEYEVENTF_UNICODE` 直接出力、IME 非経由）を新設し、
+   Shift 面の全角英数値を半角化して Text で送る（`nicola_fsm.rs::shift_face_reduce`）。
+   「Shift 押下中は半角英数入力」のユーザー要望を満たしつつ、IME の変換モード・
+   composition に一切触れない。半角化結果が ASCII 印字文字でない値（かな等）は
+   従来の IME 経由 Char を維持し、漢字変換可能性を壊さない。
+2. **Shift 解放時の先回り復元（`kp_stage_shift_plane_release`）**: Shift 押下中に
+   Shift 面で文字キーを consume していた場合のみ、Shift KeyUp で
+   (a) explicit IME action マーク（idle-conv-check の ObservedEisu→DirectInput 連鎖を
+   1500ms 抑止）、(b) `ImeModeFsm::unconfirm`（次の kana 送信は msime-ready ゲートが
+   IMC の NATIVE を確認してから送信 = 先頭文字リテラル化防止）、
+   (c) conv をかな入力（NATIVE|FULLSHAPE|ROMAN、カタカナ中は KATAKANA target）へ
+   冪等 write。MS-IME の誤切替タイミングが不定（実測上限 478ms）のため、
+   160ms 間隔 ×4 回の verify-retry で NATIVE 確認まで再送する。
+   本当に Shift を単独タップした場合（consume なし）は何もしない —
+   MS-IME の Shift 単独英数切替を意図的に使う操作は妨げない。
+
+**恒久対策（推奨）:** MS-IME 側の「Shift キー単独で英数モードに切り替える」を
+無効化すれば誤認の芽そのものが消える（二重オーナー解消。`msime_key_assignment.rs`
+の検出ポップアップと同系）。修正 2 はその設定が有効なままでも壊れないための防御。
+
+**再発防止テスト:** `src/engine/tests.rs`（`test_shift_face_fullwidth_ascii_becomes_halfwidth_text` /
+`test_shift_face_halfwidth_disabled_keeps_literal` / `test_shift_face_kana_stays_ime_routed`）。
+復元側（Windows cfg 下）は本エントリ + `[shift-release]` ログで検知する。
+
+**関連ファイル:** `src/types.rs`（`KeyAction::Text`）、`src/engine/nicola_fsm.rs`
+（半角化）、`src/config.rs`（`shift_plane_halfwidth`）、
+`runtime/key_pipeline.rs::kp_stage_shift_plane_release`（復元）、
+`state/platform_state.rs`（`GateStore::shift_plane_used_in_hold`）、
+`tsf/ime_mode_fsm.rs::unconfirm`、`output/mod.rs`（Text 送信）
+
+**関連バグ:** BUG-14（Shift 相関の外部注入）、MS-IME 二重オーナー問題
 
 ---
 
@@ -573,3 +625,5 @@ injected= ログ）、`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle`（in
 | `[hook] IME-mode vk=0xXX dir self_injected=B injected=B scan=0xXX extra=0xXX` | IME モードキー到達診断（injected=LLKHF_INJECTED、BUG-08/BUG-14 の注入元切り分け） |
 | `[hook] foreign-injected VK_KANA dir を swallow` | 外部注入 VK_KANA の遮断（BUG-08 防御。VK_KANA 以外の swallow は BUG-14 で撤回済み） |
 | `[shadow-toggle] injected IME キー vk=0xXX はユーザー意図に昇格させない (BUG-14)` | 外部注入 IME モードキーの意図昇格ガードが発動（OS への配送は維持） |
+| `[shift-release] Shift 面使用後の解放 → MS-IME 英数誤切替の先回り復元` | BUG-15 カウンター発動（conv をかな入力へ verify-retry 復元） |
+| `→ Text("...") via Unicode direct` | Shift 面半角英数の IME 非経由リテラル出力 |
