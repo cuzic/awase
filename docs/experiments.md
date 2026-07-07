@@ -136,3 +136,16 @@ IME モードキー全般に一般化した。詳細は [docs/known-bugs.md](kno
   維持したまま awase の解釈だけを変える。
 - 副産物: injected= ログにより BUG-08 以来未特定だった注入元が **LLKHF_INJECTED 付き
   SendInput 由来と確定**（ドライバレベルではない）。
+
+---
+
+## エントリ 05: shift-eisu hold 入口のモードキー注入 — CapsLock 汚染で即日撤回
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-07 | 入口も scan 付き VK_DBE_ALPHANUMERIC+SBCSCHAR 注入なら入力キュー順序保証で初回文字の全角化を防げる | Windows Terminal × MS-IME（belief ON × 実 IME OFF の乖離窓） | 345086b で入口注入を追加 | **CapsLock が点灯**。F0 は scan 0x3A（物理 CapsLock 位置）で、実 IME OFF の文脈に着弾すると kbd106 の素の処理（CAPLOK）で CapsLock をトグルする | 撤回（入口は IMC write のみに復元、初回文字全角化は既知の限界として許容） | 345086b → 本 revert |
+
+**学び**: IME モードキー（F0/F2/F3 等、物理キー位置と scancode を共有）は
+「実 IME が確実に ON」でない限り注入してはならない。IME が処理しない文脈では
+kbd106 の素のキー（CapsLock / かなロック / 半角全角）として作用し、
+グローバルなキーボード状態を汚染する。belief は実状態の保証にならない。

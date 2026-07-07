@@ -742,25 +742,19 @@ impl Runtime {
             let now_tick = crate::state::TickMs(hook::current_tick_ms());
             self.platform_state.ime.note_explicit_ime_action(now_tick);
             log::info!("[shift-eisu] Shift 押下 → IME-ON 半角英数へ切替 (conv→0x00000000)");
-            // 入口も scan 付きモードキー注入で行う（順序保証のため）。IMC write は
-            // 別チャネル（SendMessage）で入力ストリームとの順序保証がなく、着地が
-            // 遅れると最初の Shift+英字が旧モードの IME に届き、MS-IME 自身の
-            // 「Shift+英字 → 全角英数」挙動で全角 Ａ になる（2026-07-07 実機:
-            // [shift-eisu] 発火から write 着地まで 250ms、その間の初回 A が Ａ 化。
-            // write 時の読み値 conv=0x0008=全角英数がその証拠）。
-            // モードキーは後続の文字キー reinject と同じ入力キューを通るため、
-            // 「モード切替 → 文字」の順序が構造的に保証される。
-            // VK_DBE_ALPHANUMERIC（英数モード）+ VK_DBE_SBCSCHAR（半角）で半角英数を
-            // 確定させる。この時点では物理 Shift down の reinject も未実行
-            // （kp_stage_execute は後）なので、OS 視点では Shift 未押下 = bare で届く。
-            let eisu_inputs = [
-                crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_ALPHANUMERIC, false),
-                crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_ALPHANUMERIC, true),
-                crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_SBCSCHAR, false),
-                crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_SBCSCHAR, true),
-            ];
-            let _ = crate::win32::send_input_safe(&eisu_inputs);
-            // IMC write は保険として残す（冪等。モードキーが先に効いていれば no-op）。
+            // 入口は IMC write のみで行う。
+            //
+            // 撤回済みの試行（2026-07-07）: VK_DBE_ALPHANUMERIC + VK_DBE_SBCSCHAR の
+            // scan 付き注入（順序保証目的、追補6）は、**実 IME が OFF の文脈に着弾
+            // すると kbd106 の素の英数キー処理（scan 0x3A = CapsLock 位置、CAPLOK）で
+            // CapsLock をトグルしてしまう**（実機: belief ON × 実 OFF の窓で Shift を
+            // 押すたびに CapsLock 点灯）。IME モードキーは「実 IME が確実に ON」で
+            // ない限り注入してはならない。
+            //
+            // IMC write は入力ストリームとの順序保証がないため、着地が遅れた場合
+            // （実測最大 250ms）は最初の Shift+英字が MS-IME の「Shift+英字 → 全角英数」
+            // で全角化する既知の限界がある（BUG-15 追補6 参照）。CapsLock 汚染より
+            // 軽微なため許容し、defer ゲートでの根治は将来課題とする。
             win32_async::spawn_local(async {
                 let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
                 if !ok {
