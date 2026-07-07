@@ -820,6 +820,7 @@ pub(super) fn run_all() -> Result<()> {
     {
         engine.set_engine_off_triple_vk(vk);
     }
+    engine.set_shift_plane_halfwidth(config.general.shift_plane_halfwidth);
 
     let compiled_keymaps = crate::keymap::KeymapTable::new(&config.keymaps);
     initialize_app(

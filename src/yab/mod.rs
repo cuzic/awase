@@ -226,7 +226,7 @@ pub struct YabLayout {
 }
 
 /// 全角↔半角変換のキャラクタ拡張。
-trait FullwidthCharExt {
+pub trait FullwidthCharExt {
     /// 全角 ASCII 範囲 (U+FF01..U+FF5E) なら対応する半角文字を返す。
     fn to_halfwidth_ascii(self) -> Option<char>;
 }
@@ -245,7 +245,7 @@ impl FullwidthCharExt for char {
 }
 
 /// 全角↔半角変換の文字列拡張。
-trait FullwidthStrExt {
+pub trait FullwidthStrExt {
     fn to_halfwidth_str(&self) -> String;
     fn to_fullwidth_str(&self) -> String;
     fn is_all_fullwidth_ascii(&self) -> bool;

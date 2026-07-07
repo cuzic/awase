@@ -607,6 +607,57 @@ fn test_shift_held_uses_shift_face() {
 }
 
 #[test]
+fn test_shift_face_fullwidth_ascii_becomes_halfwidth_text() {
+    // Shift 押下中は半角英数入力（shift_plane_halfwidth=true デフォルト）:
+    // Shift 面の全角英字リテラルは半角 Text（IME 非経由）に変換される。
+    let mut layout = make_layout();
+    layout.shift.insert(POS_A, lit('Ｋ'));
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, ConfirmMode::Wait, 30),
+    };
+
+    engine.on_event(Ev::down(VK_SHIFT).build());
+    let result = engine.on_event(Ev::down(VK_A).build());
+    result.assert_consumed();
+    assert_eq!(result.actions.len(), 1);
+    assert!(
+        matches!(&result.actions[0], KeyAction::Text(s) if s == "K"),
+        "expected Text(\"K\"), got {:?}",
+        result.actions[0]
+    );
+}
+
+#[test]
+fn test_shift_face_halfwidth_disabled_keeps_literal() {
+    // shift_plane_halfwidth=false なら従来どおり .yab の値をそのまま出力する。
+    let mut layout = make_layout();
+    layout.shift.insert(POS_A, lit('Ｋ'));
+    let mut fsm = NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, ConfirmMode::Wait, 30);
+    fsm.set_shift_plane_halfwidth(false);
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine: fsm,
+    };
+
+    engine.on_event(Ev::down(VK_SHIFT).build());
+    let result = engine.on_event(Ev::down(VK_A).build());
+    result.assert_consumed();
+    assert!(matches!(result.actions[0], KeyAction::Char('Ｋ')));
+}
+
+#[test]
+fn test_shift_face_kana_stays_ime_routed() {
+    // Shift 面がかなのレイアウトでは半角化せず IME 経由の Char を維持する
+    // （漢字変換可能性を壊さない）。
+    let mut engine = make_engine_with_shift();
+    engine.on_event(Ev::down(VK_SHIFT).build());
+    let result = engine.on_event(Ev::down(VK_A).build());
+    result.assert_consumed();
+    assert!(matches!(result.actions[0], KeyAction::Char('ウ')));
+}
+
+#[test]
 fn test_shift_held_unlisted_key_passes_through() {
     let mut engine = make_engine_with_shift();
 

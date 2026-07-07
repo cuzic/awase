@@ -81,6 +81,11 @@ impl Engine {
         self.adapter.set_engine_off_triple_vk(vk);
     }
 
+    /// Shift 面の出力を半角英数リテラル（IME 非経由の `Text`）に変換するかを設定する。
+    pub const fn set_shift_plane_halfwidth(&mut self, enable: bool) {
+        self.adapter.set_shift_plane_halfwidth(enable);
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji

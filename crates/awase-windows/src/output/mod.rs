@@ -727,6 +727,14 @@ impl Output {
                     log::debug!("  → KeySequence(\"{s}\") via {}", sender.mode_label());
                     sender.send_key_sequence(s);
                 }
+                KeyAction::Text(s) => {
+                    // リテラル直接出力: モードにかかわらず KEYEVENTF_UNICODE で送る。
+                    // IME の変換モード・composition に一切触れない（Shift 面半角英数用）。
+                    log::debug!("  → Text(\"{s}\") via Unicode direct");
+                    for ch in s.chars() {
+                        self.injector.send_unicode_char(ch);
+                    }
+                }
             }
         }
 

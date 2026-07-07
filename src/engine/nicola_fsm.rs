@@ -109,6 +109,10 @@ pub struct NicolaFsm {
 
     /// triple 連打でのエンジン OFF 要求フラグ（1ショット）。
     engine_off_requested: bool,
+
+    /// Shift 面の出力を半角英数リテラル（`KeyAction::Text`、IME 非経由）に変換する。
+    /// `GeneralConfig::shift_plane_halfwidth` から配線される。
+    shift_plane_halfwidth: bool,
 }
 
 // ── 公開 API ──
@@ -139,6 +143,7 @@ impl NicolaFsm {
             solo_counter: ConsecutiveSoloCounter::new(SOLO_TRIPLE_TIMEOUT_US),
             engine_off_triple_vk: VkCode(0),
             engine_off_requested: false,
+            shift_plane_halfwidth: true,
         }
     }
 
@@ -275,6 +280,11 @@ impl NicolaFsm {
     /// `VkCode(0)` を渡すと機能を無効にする。
     pub const fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
         self.engine_off_triple_vk = vk;
+    }
+
+    /// Shift 面の出力を半角英数リテラル（`KeyAction::Text`）に変換するかを設定する。
+    pub const fn set_shift_plane_halfwidth(&mut self, enable: bool) {
+        self.shift_plane_halfwidth = enable;
     }
 
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
@@ -525,9 +535,43 @@ impl NicolaFsm {
         }
     }
 
+    /// Shift 面のアクションを半角英数リテラル（`KeyAction::Text`）に変換する。
+    ///
+    /// 半角化した結果が ASCII 印字文字のみの場合だけ変換する（Shift 面に
+    /// かな等を定義しているレイアウトでは IME 経由の従来経路を維持し、
+    /// 漢字変換可能性を壊さない）。Special（後退・入力等）/ Key / Suppress は対象外。
+    fn shift_action_halfwidth(action: &KeyAction) -> Option<KeyAction> {
+        use crate::yab::FullwidthStrExt;
+        let half = match action {
+            KeyAction::Char(c) => c.to_string().to_halfwidth_str(),
+            KeyAction::Romaji(s) | KeyAction::KeySequence(s) => s.to_halfwidth_str(),
+            _ => return None,
+        };
+        if !half.is_empty()
+            && half
+                .chars()
+                .all(|c| c.is_ascii() && !c.is_ascii_control())
+        {
+            Some(KeyAction::Text(half))
+        } else {
+            None
+        }
+    }
+
     /// Shift 面で Reduce する共通ヘルパー
     fn shift_face_reduce(&self, ev: &ClassifiedEvent) -> ParseAction {
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(Face::Shift)) {
+            // Shift 押下中は半角英数入力（ユーザー要望 2026-07-07）: 全角リテラル
+            // Ｋ → Text("K")。IME 非経由の確定文字なので、IME の変換モードや
+            // composition 状態に影響を与えず、Shift 解放後のかな入力を妨げない。
+            let (action, kana) = if self.shift_plane_halfwidth {
+                match Self::shift_action_halfwidth(&action) {
+                    Some(text) => (text, None),
+                    None => (action, kana),
+                }
+            } else {
+                (action, kana)
+            };
             ParseAction::Reduce {
                 actions: smallvec![action.clone()],
                 record: OutputUpdate::record(ev.scan_code, &action, kana),

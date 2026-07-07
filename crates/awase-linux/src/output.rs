@@ -127,7 +127,9 @@ impl UinputOutput {
                 KeyAction::Romaji(s) => {
                     self.send_romaji(s);
                 }
-                KeyAction::KeySequence(s) => {
+                // Text は ASCII 前提（Shift 面半角英数）なので evdev キーコードで送る。
+                // 非 ASCII は Char 同様 Linux では未サポート。
+                KeyAction::KeySequence(s) | KeyAction::Text(s) => {
                     for ch in s.chars() {
                         if let Some((code, needs_shift)) = ascii_to_evdev(ch) {
                             if needs_shift {
