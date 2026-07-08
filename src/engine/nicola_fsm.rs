@@ -622,7 +622,7 @@ impl NicolaFsm {
             // 英数字はユーザー要望どおり常に半角の素通し（全角 Ｋ 表記でも半角 K）。
             return Some(ShiftEisuDisposition::PassThrough);
         }
-        if s.chars().any(|c| !c.is_ascii()) {
+        if !s.is_ascii() {
             // 全角記号・かな等: .yab に書かれたままを確定出力する。
             return Some(ShiftEisuDisposition::EmitText(s.to_string()));
         }
@@ -1387,7 +1387,12 @@ impl NicolaFsm {
     /// `phys` は `InputTracker` の最新スナップショット。
     /// タイマー発火時点の正確な物理キー状態を反映する。
     /// `composing` は IME composition が現在進行中か（`InputContext::composing` 由来）。
-    pub fn on_timeout(&mut self, timer_id: usize, phys: &PhysicalKeyState, composing: bool) -> Resp {
+    pub fn on_timeout(
+        &mut self,
+        timer_id: usize,
+        phys: &PhysicalKeyState,
+        composing: bool,
+    ) -> Resp {
         self.phys = *phys;
         match timer_id {
             TIMER_SPECULATIVE => return self.on_timeout_speculative(),

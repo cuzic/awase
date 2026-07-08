@@ -323,13 +323,21 @@ impl SettingsApp {
             ui.label("  左親指:").on_hover_text(
                 "左の親指シフトキーに使うキーです。\n通常は「無変換」キーを使います。",
             );
-            thumb_key_combo(ui, "left_thumb_key", &mut self.config.general.left_thumb_key);
+            thumb_key_combo(
+                ui,
+                "left_thumb_key",
+                &mut self.config.general.left_thumb_key,
+            );
         });
         ui.horizontal(|ui| {
             ui.label("  右親指:").on_hover_text(
                 "右の親指シフトキーに使うキーです。\n通常は「変換」キーを使います。",
             );
-            thumb_key_combo(ui, "right_thumb_key", &mut self.config.general.right_thumb_key);
+            thumb_key_combo(
+                ui,
+                "right_thumb_key",
+                &mut self.config.general.right_thumb_key,
+            );
         });
         ui.add_space(8.0);
 
@@ -595,8 +603,16 @@ impl SettingsApp {
                 ui.label(format!(
                     "    {} / process={} / class={}",
                     rule.key,
-                    if rule.process.is_empty() { "(すべて)" } else { &rule.process },
-                    if rule.class.is_empty() { "(すべて)" } else { &rule.class },
+                    if rule.process.is_empty() {
+                        "(すべて)"
+                    } else {
+                        &rule.process
+                    },
+                    if rule.class.is_empty() {
+                        "(すべて)"
+                    } else {
+                        &rule.class
+                    },
                 ));
                 if ui.small_button("x").clicked() {
                     rm = Some(i);
@@ -688,10 +704,7 @@ impl SettingsApp {
         if need_reload {
             self.preview_cache = Some((
                 layout_file.clone(),
-                load_layout_for_preview(
-                    &self.config.general.layouts_dir,
-                    &layout_file,
-                ),
+                load_layout_for_preview(&self.config.general.layouts_dir, &layout_file),
             ));
         }
 
@@ -735,7 +748,9 @@ impl SettingsApp {
             awase::config::ConfirmMode::NgramPredictive
         );
         if !ngram_enabled {
-            ui.label("n-gram 設定は確定モードが「n-gram 予測」のときのみ使用されます（基本設定タブ）");
+            ui.label(
+                "n-gram 設定は確定モードが「n-gram 予測」のときのみ使用されます（基本設定タブ）",
+            );
         }
         ui.add_enabled_ui(ngram_enabled, |ui| {
         ui.horizontal(|ui| {
@@ -1201,7 +1216,10 @@ fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
         .width(110.0)
         .show_ui(ui, |ui| {
             for (label, internal) in THUMB_KEY_OPTIONS {
-                if ui.selectable_label(current.as_str() == *internal, *label).clicked() {
+                if ui
+                    .selectable_label(current.as_str() == *internal, *label)
+                    .clicked()
+                {
                     *current = (*internal).to_string();
                     changed = true;
                 }
@@ -1529,8 +1547,8 @@ fn setup_fonts(ctx: &egui::Context) {
 fn send_reload_config_message() {
     #[cfg(target_os = "windows")]
     {
-        use windows::core::w;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+        use windows::core::w;
         unsafe {
             let hwnd = FindWindowW(w!("awase_msg_window"), None);
             if let Ok(hwnd) = hwnd {
@@ -1541,4 +1559,3 @@ fn send_reload_config_message() {
         }
     }
 }
-

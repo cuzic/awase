@@ -169,21 +169,38 @@ impl TimerIntent {
         match self {
             Self::CancelAll => vec![
                 Kill { id: TIMER_PENDING },
-                Kill { id: TIMER_SPECULATIVE },
+                Kill {
+                    id: TIMER_SPECULATIVE,
+                },
             ],
             Self::Pending => vec![
                 Kill { id: TIMER_PENDING },
-                Kill { id: TIMER_SPECULATIVE },
-                Set { id: TIMER_PENDING, duration: Duration::from_micros(threshold_us) },
+                Kill {
+                    id: TIMER_SPECULATIVE,
+                },
+                Set {
+                    id: TIMER_PENDING,
+                    duration: Duration::from_micros(threshold_us),
+                },
             ],
             Self::SpeculativeWait => vec![
                 Kill { id: TIMER_PENDING },
-                Kill { id: TIMER_SPECULATIVE },
-                Set { id: TIMER_SPECULATIVE, duration: Duration::from_micros(speculative_delay_us) },
+                Kill {
+                    id: TIMER_SPECULATIVE,
+                },
+                Set {
+                    id: TIMER_SPECULATIVE,
+                    duration: Duration::from_micros(speculative_delay_us),
+                },
             ],
             Self::Phase2Transition { remaining_us } => vec![
-                Kill { id: TIMER_SPECULATIVE },
-                Set { id: TIMER_PENDING, duration: Duration::from_micros(remaining_us) },
+                Kill {
+                    id: TIMER_SPECULATIVE,
+                },
+                Set {
+                    id: TIMER_PENDING,
+                    duration: Duration::from_micros(remaining_us),
+                },
             ],
             Self::Keep => vec![],
         }
@@ -271,7 +288,11 @@ macro_rules! impl_expect {
                 x
             } else {
                 unreachable!(
-                    concat!("FSM invariant violation: expected ", stringify!($variant), ", got {:?}"),
+                    concat!(
+                        "FSM invariant violation: expected ",
+                        stringify!($variant),
+                        ", got {:?}"
+                    ),
                     self
                 )
             }
@@ -315,7 +336,12 @@ impl EngineState {
     #[track_caller]
     #[must_use]
     pub fn expect_pending_char_thumb(self) -> (PendingKey, PendingThumbData, bool) {
-        if let Self::PendingCharThumb { char_key, thumb, char1_released } = self {
+        if let Self::PendingCharThumb {
+            char_key,
+            thumb,
+            char1_released,
+        } = self
+        {
             (char_key, thumb, char1_released)
         } else {
             unreachable!("FSM invariant violation: expected PendingCharThumb, got {self:?}")

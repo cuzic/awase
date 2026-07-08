@@ -234,7 +234,7 @@ pub mod parser;
 mod response;
 
 pub use clock::{Clock, ManualClock, MonotonicClock};
-pub use coro::{Channel, CoroStep, StepCoro, yield_step};
+pub use coro::{yield_step, Channel, CoroStep, StepCoro};
 pub use dispatch::{ActionExecutor, TimerRuntime};
 pub use gate::{GateAction, HoldingGate};
 pub use machine::TimedStateMachine;

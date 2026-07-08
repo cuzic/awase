@@ -33,7 +33,12 @@ impl PhysicalKeyState {
     pub const fn empty() -> Self {
         Self {
             classified: ClassifiedEvent::dummy(),
-            modifiers: ModifierState { ctrl: false, alt: false, shift: false, win: false },
+            modifiers: ModifierState {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                win: false,
+            },
             left_thumb_down: None,
             right_thumb_down: None,
         }
