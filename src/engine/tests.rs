@@ -359,6 +359,94 @@ fn test_pattern5_thumb_alone_timeout_suppressed_while_composing() {
     assert_eq!(result.actions.len(), 0);
 }
 
+/// 親指キーに Ctrl/Alt（`ModifierState::is_os_modifier_held` が true になる系統）を
+/// 割り当てると、そのキーの KeyDown 自体が `bypass_reason` の `OsModifierHeld` に
+/// 即座に該当し、`PendingThumb` に一切入らず素通しされる（同時打鍵検出が機能しない）。
+/// これは単独タップの生 VK 送出うんぬん以前の、より根本的なブロッカーである。
+/// 真に「特定の物理 Alt キーを親指シフト専用にし、Alt としての機能は捨てる」を
+/// 実現するには、`ModifierState` を左右別に追跡した上で「親指キーとして設定された
+/// 側の modifier は `is_os_modifier_held` に含めない」という区別が必要
+/// （未実装。大掛かりな変更になるため見送り、この事実を明示するテストとして残す）。
+#[test]
+fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() {
+    use crate::types::{
+        ImeRelevance, KeyClassification, KeyEventType, ModifierKey, ModifierState, RawKeyEvent,
+    };
+
+    for (vk, scan, mk) in [
+        (VK_LALT, SCAN_LALT, ModifierKey::Alt),
+        (VK_LCTRL, SCAN_LCTRL, ModifierKey::Ctrl),
+    ] {
+        let mut engine = TestHarness {
+            tracker: input_tracker::InputTracker::new(),
+            engine: NicolaFsm::new(make_layout(), vk, VK_CONVERT, 100, ConfirmMode::Wait, 30),
+        };
+
+        let down = RawKeyEvent {
+            vk_code: vk,
+            scan_code: scan,
+            event_type: KeyEventType::KeyDown,
+            extra_info: 0,
+            timestamp: 0,
+            key_classification: KeyClassification::LeftThumb,
+            physical_pos: None,
+            ime_relevance: ImeRelevance::default(),
+            modifier_key: Some(mk),
+            modifier_snapshot: ModifierState::default(),
+            injected: false,
+        };
+
+        let result = engine.on_event(down);
+        assert!(
+            !result.consumed,
+            "{mk:?} thumb key should bypass to pass-through immediately, never reach PendingThumb"
+        );
+    }
+}
+
+/// Shift は `is_os_modifier_held`（ctrl/alt/win のみ）に含まれないため、
+/// 上記 Ctrl/Alt/Win と違って `bypass_reason` を素通りし `PendingThumb` に到達しうる。
+/// この経路では、composing に関わらず単独タップの生 VK 送出を suppress する必要がある
+/// （Shift 単独の KeyDown/KeyUp を生のまま OS に送るとアクセシビリティ機能の
+/// 誤発火等がありうるため）。
+#[test]
+fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
+    use crate::types::{
+        ImeRelevance, KeyClassification, KeyEventType, ModifierKey, ModifierState, RawKeyEvent,
+    };
+
+    let mut engine = TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine: NicolaFsm::new(make_layout(), VK_LSHIFT, VK_CONVERT, 100, ConfirmMode::Wait, 30),
+    };
+
+    let down = RawKeyEvent {
+        vk_code: VK_LSHIFT,
+        scan_code: vk_to_scan(VK_LSHIFT),
+        event_type: KeyEventType::KeyDown,
+        extra_info: 0,
+        timestamp: 0,
+        key_classification: KeyClassification::LeftThumb,
+        physical_pos: None,
+        ime_relevance: ImeRelevance::default(),
+        modifier_key: Some(ModifierKey::Shift),
+        modifier_snapshot: ModifierState::default(),
+        injected: false,
+    };
+
+    let result = engine.on_event(down);
+    assert_pending(&result);
+
+    // composing=false（Windows 全般でのキー機能維持のための素通し経路）でも、
+    // 親指キーが OS 修飾キーの場合は suppress されなければならない。
+    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "Shift を親指キーにした場合、単独タップは composing=false でも suppress されるべき"
+    );
+}
+
 #[test]
 fn test_char_then_thumb_after_threshold() {
     let mut engine = make_engine();

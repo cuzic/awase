@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::scanmap::KeyboardModel;
 use crate::types::VkCode;
 
 // NOTE: かつて存在した設定項目（2026-07-06 撤去、旧 config.toml のキーは
@@ -10,7 +11,11 @@ use crate::types::VkCode;
 //   INPUT_DEFER 対称性/NonText パススルー等）の登場以降テストされておらず撤去。
 // - OutputMode (output_mode): per-window の InjectionMode（injection_hint + AppKind
 //   から自動決定）に完全置換済みで、フィールドは書き込みのみの死に設定だった。
-// - keyboard_model: レイアウトパースが KeyboardModel::Jis 固定で一度も配線されなかった。
+//
+// keyboard_model は 2026-07-06 に「レイアウトパースが KeyboardModel::Jis 固定で
+// 一度も配線されなかった」として撤去されたが、2026-07-08 に US 配列対応
+// (scanmap の JIS/US テーブル分離・layout/nicola_us.yab 追加) と合わせて
+// 実際に配線した上で再導入した。旧 config.toml の "jis"/"us" はそのまま解釈される。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +83,41 @@ pub struct GeneralConfig {
     /// Shift 解放でかな入力へ自動復帰する。
     /// false: 従来どおり .yab の Shift 面の値を IME 経由で出力する。
     pub shift_plane_halfwidth: bool,
+    /// キーボードの物理レイアウトモデル（"jis" または "us"）。
+    ///
+    /// .yab のパース時の列数上限チェックと、プラットフォーム層の
+    /// スキャンコード⇔物理位置変換テーブルの選択に使う。
+    ///
+    /// "us" を指定する場合、既定の `left_thumb_key`/`right_thumb_key`
+    /// （無変換/変換）や `[keys]` の既定ホットキーは US キーボードに
+    /// 物理キーが存在しないため、明示的に上書きすること
+    /// （上書きを忘れると `AppConfig::validate` が警告を返す）。
+    ///
+    /// 上書き先の VK 選定には注意が必要:
+    ///
+    /// - **`VK_LMENU`/`VK_RMENU`（Alt）・`VK_LCONTROL`/`VK_RCONTROL`（Ctrl）・
+    ///   `VK_LWIN`/`VK_RWIN`（Win）は使用不可。** これらは `ModifierState::
+    ///   is_os_modifier_held()` で「OS 予約修飾キー」とみなされ、`bypass_reason`
+    ///   がそのキーの KeyDown を即座に `OsModifierHeld` として素通しするため、
+    ///   `PendingThumb` に一切入らず同時打鍵検出そのものが機能しない
+    ///   （`engine/tests.rs` の
+    ///   `test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass`
+    ///   で確認済み）。特定の物理キーだけを Alt から切り離して親指シフト専用にする
+    ///   運用は、`ModifierState` の左右別トラッキングという設計変更が要る未実装機能。
+    /// - `VK_LSHIFT`/`VK_RSHIFT` は `is_os_modifier_held()` の対象外のため
+    ///   `PendingThumb` には到達できるが、Shift を押しっぱなしのまま複数文字を
+    ///   連続入力した場合に既存の「Shift 面」機能（`shift_plane_halfwidth`）と
+    ///   衝突しないかは未検証。
+    /// - 親指キーは「同時打鍵が不成立の単独タップ」時に生の VK を `SendInput` で
+    ///   そのまま OS に送る設計（`nicola_fsm.rs` の `timeout_pending_thumb`）。
+    ///   無変換/変換は JIS キーボードでは OS 的に無害だからこそ安全に機能している。
+    /// - 現実的な代替は、プログラマブルキーボード側で予備キーを無変換/変換や
+    ///   F13-F24 等の無害な VK に物理リマップした上で JIS 既定値のまま使うか、
+    ///   `VK_SPACE`（単独タップ時に空白が誤挿入され得る）を使うこと。
+    ///
+    /// `default_layout` も、既定の `layout/nicola.yab`（JIS 版）ではなく
+    /// `layout/nicola_us.yab`（US 版、列数が少ない）を指すよう変更が必要。
+    pub keyboard_model: KeyboardModel,
 }
 
 impl Default for GeneralConfig {
@@ -101,6 +141,7 @@ impl Default for GeneralConfig {
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
             shift_plane_halfwidth: true,
+            keyboard_model: KeyboardModel::Jis,
         }
     }
 }
@@ -348,6 +389,67 @@ impl AppConfig {
         }
     }
 
+    /// `keyboard_model = "us"` のとき、無変換/変換キー前提のデフォルト値が
+    /// 残っていないか確認する。US キーボードにはこれらの物理キーが存在しない。
+    fn validate_keyboard_model(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
+        const JIS_ONLY_NEEDLES: &[&str] = &["無変換", "変換", "VK_NONCONVERT", "VK_CONVERT"];
+
+        if g.keyboard_model != KeyboardModel::Us {
+            return;
+        }
+
+        if g.default_layout.trim_end_matches(".yab") == "nicola" {
+            w.push(
+                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"nicola.yab\" \
+                 のままです。JIS 版は列数が US の上限を超えるためパースに失敗します。\
+                 \"nicola_us.yab\" を指定してください。"
+                    .to_string(),
+            );
+        }
+
+        let mentions_jis_only = |s: &str| JIS_ONLY_NEEDLES.iter().any(|n| s.contains(n));
+
+        let mut offending_fields: Vec<&str> = Vec::new();
+        if mentions_jis_only(&g.left_thumb_key) {
+            offending_fields.push("general.left_thumb_key");
+        }
+        if mentions_jis_only(&g.right_thumb_key) {
+            offending_fields.push("general.right_thumb_key");
+        }
+        if keys.engine_on.iter().any(|s| mentions_jis_only(s)) {
+            offending_fields.push("keys.engine_on");
+        }
+        if keys.engine_off.iter().any(|s| mentions_jis_only(s)) {
+            offending_fields.push("keys.engine_off");
+        }
+        if keys.ime_on.iter().any(|s| mentions_jis_only(s)) {
+            offending_fields.push("keys.ime_on");
+        }
+        if keys.ime_off.iter().any(|s| mentions_jis_only(s)) {
+            offending_fields.push("keys.ime_off");
+        }
+        if keys
+            .engine_off_solo_triple
+            .as_deref()
+            .is_some_and(mentions_jis_only)
+        {
+            offending_fields.push("keys.engine_off_solo_triple");
+        }
+
+        if !offending_fields.is_empty() {
+            w.push(format!(
+                "keyboard_model = \"us\" ですが、無変換/変換キー前提の既定値が \
+                 次の項目に残っています: {}。US キーボードにはこれらの物理キーが \
+                 存在しないため、config.toml で明示的に上書きしてください。\
+                 注意: VK_LMENU/VK_RMENU（Alt）・VK_LCONTROL/VK_RCONTROL（Ctrl）・ \
+                 VK_LWIN/VK_RWIN（Win）は使用不可（OS 予約修飾キーとして即座に \
+                 素通しされ、同時打鍵検出が機能しない）。プログラマブルキーボードで \
+                 無変換/変換や F13-F24 に物理リマップするか、VK_SPACE を検討してください。",
+                offending_fields.join(", ")
+            ));
+        }
+    }
+
     fn validate_linux_backend(g: &mut GeneralConfig, w: &mut Vec<String>) {
         if !["evdev", "x11", "libinput"].contains(&g.linux_input_backend.as_str()) {
             w.push(format!(
@@ -395,6 +497,7 @@ impl AppConfig {
         Self::validate_thresholds(&mut general, &mut warnings);
         Self::validate_layouts(&mut general, &mut warnings);
         Self::validate_thumb_keys(&general, &mut warnings);
+        Self::validate_keyboard_model(&general, &self.keys, &mut warnings);
         Self::validate_linux_backend(&mut general, &mut warnings);
         Self::validate_app_override_entries(&app_overrides, &mut warnings);
 
@@ -463,7 +566,7 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.layouts_dir, "config");
     }
 
-    /// 撤去済みフィールド（output_mode / hook_mode / keyboard_model）が
+    /// 撤去済みフィールド（output_mode / hook_mode）が
     /// 旧 config.toml に残っていてもパースが失敗しない（後方互換）。
     #[test]
     fn test_removed_fields_are_tolerated() {
@@ -471,10 +574,93 @@ default_layout = "nicola.yab"
 [general]
 output_mode = "batched"
 hook_mode = "filter"
-keyboard_model = "us"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.general.speculative_delay_ms, 30);
+    }
+
+    // ── keyboard_model テスト ──
+
+    #[test]
+    fn test_keyboard_model_defaults_to_jis() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.keyboard_model, KeyboardModel::Jis);
+    }
+
+    #[test]
+    fn test_keyboard_model_us_parses() {
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.keyboard_model, KeyboardModel::Us);
+    }
+
+    #[test]
+    fn test_validate_us_keyboard_with_default_thumb_keys_warns() {
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("left_thumb_key")));
+        assert!(warnings.iter().any(|w| w.contains("engine_on")));
+    }
+
+    #[test]
+    fn test_validate_us_keyboard_with_default_layout_warns() {
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+left_thumb_key = "VK_F16"
+right_thumb_key = "VK_F17"
+
+[keys]
+engine_on = ["Ctrl+Shift+VK_F13"]
+engine_off = ["Ctrl+Shift+VK_F14"]
+ime_on = ["Ctrl+VK_F13"]
+ime_off = ["Ctrl+VK_F14"]
+engine_off_solo_triple = "VK_F15"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("nicola_us.yab")));
+    }
+
+    #[test]
+    fn test_validate_us_keyboard_with_overridden_thumb_keys_is_clean() {
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+left_thumb_key = "VK_F16"
+right_thumb_key = "VK_F17"
+default_layout = "nicola_us.yab"
+
+[keys]
+engine_on = ["Ctrl+Shift+VK_F13"]
+engine_off = ["Ctrl+Shift+VK_F14"]
+ime_on = ["Ctrl+VK_F13"]
+ime_off = ["Ctrl+VK_F14"]
+engine_off_solo_triple = "VK_F15"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn test_validate_jis_keyboard_default_thumb_keys_is_clean() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     }
 
     #[test]

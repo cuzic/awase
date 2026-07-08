@@ -154,6 +154,7 @@ mod tests {
             vk_code: vk,
             timestamp: 0,
             is_ime_control: false,
+            modifier_key: None,
         }
     }
 
@@ -165,6 +166,7 @@ mod tests {
             vk_code: VK_NONCONVERT,
             timestamp: 0,
             is_ime_control: false,
+            modifier_key: None,
         }
     }
 
@@ -176,6 +178,7 @@ mod tests {
             vk_code: VK_CONVERT,
             timestamp: 0,
             is_ime_control: false,
+            modifier_key: None,
         }
     }
 

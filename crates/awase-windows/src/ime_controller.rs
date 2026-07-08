@@ -32,9 +32,7 @@
 use awase::platform::ImeOpenOutcome;
 
 use crate::state::ime_decision_view::ImeControlView;
-use crate::state::key_sequence_policy::{
-    self, ime_key_for, ImeOperation, KeyMechanism,
-};
+use crate::state::key_sequence_policy::{self, ime_key_for, ImeOperation, KeyMechanism};
 use crate::tsf::observer::ActiveImeKind;
 
 /// IME ON/OFF を実行する戦略インターフェース。
@@ -60,7 +58,10 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if open
             && view.observed.active_ime_kind == ActiveImeKind::MicrosoftIme
-            && !matches!(view.belief_input_mode, awase::engine::InputModeState::ObservedKana)
+            && !matches!(
+                view.belief_input_mode,
+                awase::engine::InputModeState::ObservedKana
+            )
         {
             // MS-IME + ImmCross (LINE 等): かなモードのまま IME ON すると JIS かな入力になる。
             // 先に ROMAN ビットを追加してローマ字モードに戻す。
@@ -148,9 +149,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             // ひらがなに切り替わる（IME 的には「ON→ON」だが conv mode が破壊される）。
             // 現在の conv を読んで KATAKANA bit が立っている場合は送信をスキップする。
             // Safety: get_ime_conversion_mode_raw_timeout は Win32 API。メインスレッドから呼ぶこと。
-            if let Some(conv) =
-                unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
-            {
+            if let Some(conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) } {
                 if crate::imm::cmode_has(conv, crate::imm::IME_CMODE_KATAKANA) {
                     log::debug!(
                         "[apply-ime] MS-IME direct: conv=0x{conv:08X} カタカナモード \
@@ -164,7 +163,10 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             // 先に ROMAN ビットを立てておくことでフォーカス直後のかな入力化けを防ぐ。
             // ただし ObservedKana はユーザーが意図的にかな入力に設定した状態なので上書きしない。
             // SAFETY: set_ime_romaji_mode は Win32 API。メインスレッドから呼ぶこと。
-            if !matches!(view.belief_input_mode, awase::engine::InputModeState::ObservedKana) {
+            if !matches!(
+                view.belief_input_mode,
+                awase::engine::InputModeState::ObservedKana
+            ) {
                 let _ = unsafe { crate::ime::set_ime_romaji_mode() };
             }
             // 送信キーは KeySequencePolicy が SSOT（VK_DBE_HIRAGANA、MS-IME 冪等 ON キー）。
@@ -239,7 +241,12 @@ static KANJI_STRATEGY: KanjiToggleStrategy = KanjiToggleStrategy;
 impl ImeController {
     pub(crate) const fn new() -> Self {
         Self {
-            strategies: [&IMM_STRATEGY, &GJI_STRATEGY, &MS_IME_STRATEGY, &KANJI_STRATEGY],
+            strategies: [
+                &IMM_STRATEGY,
+                &GJI_STRATEGY,
+                &MS_IME_STRATEGY,
+                &KANJI_STRATEGY,
+            ],
         }
     }
 
@@ -313,12 +320,7 @@ pub(crate) static CONTROLLER: ImeController = ImeController::new();
 // 本番経路（`apply` / `apply_skipping_imm`）からは参照されない。
 
 /// `strategies` 配列と同順の戦略名。`ImeController::new` の構築順に一致させること。
-const STRATEGY_NAMES: [&str; 4] = [
-    "ImmCrossProcess",
-    "GjiDirect",
-    "MsImeDirect",
-    "KanjiToggle",
-];
+const STRATEGY_NAMES: [&str; 4] = ["ImmCrossProcess", "GjiDirect", "MsImeDirect", "KanjiToggle"];
 
 impl ImeController {
     /// 与えた view で最初に `is_applicable` を返す戦略の名前（`apply` は実行しない）。
@@ -365,8 +367,14 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
         ActiveImeKind::MicrosoftIme
     };
     let view = ImeControlView {
-        focus: FocusFacts { class_name: "", profile },
-        observed: ObservedState { active_ime_kind, ..ObservedState::default() },
+        focus: FocusFacts {
+            class_name: "",
+            profile,
+        },
+        observed: ObservedState {
+            active_ime_kind,
+            ..ObservedState::default()
+        },
         control: ControlLog { shadow_on: false },
         belief_input_mode: awase::engine::InputModeState::Unknown,
     };

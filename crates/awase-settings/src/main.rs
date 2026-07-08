@@ -83,7 +83,10 @@ struct SettingsApp {
     new_pb_process: String,
     new_pb_class: String,
     // Preview cache: (layout filename, parsed result)
-    preview_cache: Option<(String, Result<awase::yab::YabLayout, String>)>,
+    preview_cache: Option<(
+        (String, awase::scanmap::KeyboardModel),
+        Result<awase::yab::YabLayout, String>,
+    )>,
 }
 
 impl SettingsApp {
@@ -289,6 +292,38 @@ impl SettingsApp {
                 "disabled"
             }
             .to_string();
+        }
+        ui.horizontal(|ui| {
+            ui.label("キーボード配列:").on_hover_text(
+                "物理キーボードの配列です。\n\
+                 JIS: 無変換/変換キーが物理的に存在する日本語キーボード。\n\
+                 US: ANSI 104キー配列。無変換/変換キーが無いため、\n\
+                 親指キーとホットキーを別途 US 向けに変更する必要があります。",
+            );
+            egui::ComboBox::from_id_salt("keyboard_model")
+                .selected_text(keyboard_model_label(self.config.general.keyboard_model))
+                .show_ui(ui, |ui| {
+                    use awase::scanmap::KeyboardModel;
+                    ui.selectable_value(
+                        &mut self.config.general.keyboard_model,
+                        KeyboardModel::Jis,
+                        "JIS (日本語109キー)",
+                    );
+                    ui.selectable_value(
+                        &mut self.config.general.keyboard_model,
+                        KeyboardModel::Us,
+                        "US (ANSI 104キー)",
+                    );
+                });
+        });
+        if self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us {
+            ui.label(
+                "  US 配列では既定の親指キー(無変換/変換)とホットキーが使えません。\n\
+                 下の「レイアウト」で nicola_us.yab を選び、キー設定タブで\n\
+                 親指キーを変更してください（Alt/Ctrl/Win は OS 予約修飾キーのため\n\
+                 使用不可・同時打鍵検出自体が機能しません。プログラマブルキーボードで\n\
+                 F13-F24 等へ物理リマップするか、Space を検討してください）。",
+            );
         }
         ui.horizontal(|ui| {
             ui.label("レイアウト:").on_hover_text("使用する配列定義ファイルを選びます。\nlayout フォルダ内の .yab ファイルが表示されます。");
@@ -672,6 +707,7 @@ impl SettingsApp {
         ui.add_space(8.0);
 
         let layout_file = self.config.general.default_layout.clone();
+        let keyboard_model = self.config.general.keyboard_model;
         ui.horizontal(|ui| {
             ui.label(format!("レイアウト: {layout_file}"));
             if ui.button("再読み込み").clicked() {
@@ -680,33 +716,32 @@ impl SettingsApp {
         });
         ui.add_space(8.0);
 
-        // キャッシュをチェック、無ければロード
+        // キャッシュをチェック、無ければロード（レイアウト名とキーボード配列の両方をキーにする）
+        let cache_key = (layout_file.clone(), keyboard_model);
         let need_reload = self
             .preview_cache
             .as_ref()
-            .map_or(true, |(cached_name, _)| cached_name != &layout_file);
+            .map_or(true, |(cached_key, _)| cached_key != &cache_key);
         if need_reload {
             self.preview_cache = Some((
-                layout_file.clone(),
-                load_layout_for_preview(
-                    &self.config.general.layouts_dir,
-                    &layout_file,
-                ),
+                cache_key,
+                load_layout_for_preview(&self.config.general.layouts_dir, &layout_file, keyboard_model),
             ));
         }
 
         match self.preview_cache.as_ref().map(|(_, r)| r) {
             Some(Ok(layout)) => {
+                let row_sizes = keyboard_model.row_sizes();
                 ui.label(format!("名前: {}", layout.name));
                 ui.add_space(12.0);
                 ui.label("通常面");
-                draw_face_grid(ui, &layout.normal, "normal");
+                draw_face_grid(ui, &layout.normal, "normal", row_sizes);
                 ui.add_space(12.0);
                 ui.label("左親指シフト面");
-                draw_face_grid(ui, &layout.left_thumb, "left");
+                draw_face_grid(ui, &layout.left_thumb, "left", row_sizes);
                 ui.add_space(12.0);
                 ui.label("右親指シフト面");
-                draw_face_grid(ui, &layout.right_thumb, "right");
+                draw_face_grid(ui, &layout.right_thumb, "right", row_sizes);
             }
             Some(Err(e)) => {
                 ui.colored_label(egui::Color32::RED, format!("読み込みエラー: {e}"));
@@ -995,7 +1030,17 @@ fn key_list_ui(
 /// 親指キー選択用候補一覧（表示名, config 内部表記）。
 ///
 /// F13-F24: 物理キーとしては存在しない拡張ファンクションキー。プログラマブル
-/// キーボード（QMK/ZMK 等）で親指位置のキーに割り当てて使う想定。
+/// キーボード（QMK/ZMK 等）で親指位置のキーに割り当てて使う想定。US 配列で
+/// 無変換/変換キーが無い場合の代替はこちらの範囲を推奨する。
+///
+/// 意図的に含めていないもの: VK_LMENU/VK_RMENU（Alt）・VK_LCONTROL/VK_RCONTROL
+/// （Ctrl）・VK_LWIN/VK_RWIN（Win）。これらは `ModifierState::is_os_modifier_held`
+/// の対象で、`bypass_reason` がそのキーの KeyDown を即座に `OsModifierHeld` として
+/// 素通しするため、親指キーに割り当てても `PendingThumb` に一切入らず同時打鍵検出
+/// そのものが機能しない（`engine/tests.rs` の
+/// `test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass` で
+/// 確認済み。手動 remap の思いつきではなく実測済みの制約）。手動で config.toml に
+/// 書けばパースは通るが動作しないため、GUI の候補としては提示しない。
 const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("Space", "VK_SPACE"),
     ("変換", "VK_CONVERT"),
@@ -1112,6 +1157,14 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     ("半角", "VK_DBE_SBCSCHAR"),
     ("全角", "VK_DBE_DBCSCHAR"),
 ];
+
+const fn keyboard_model_label(model: awase::scanmap::KeyboardModel) -> &'static str {
+    use awase::scanmap::KeyboardModel;
+    match model {
+        KeyboardModel::Jis => "JIS (日本語109キー)",
+        KeyboardModel::Us => "US (ANSI 104キー)",
+    }
+}
 
 const fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
     use awase::config::ConfirmMode;
@@ -1363,13 +1416,13 @@ fn main_key_combo_optional(ui: &mut egui::Ui, id: &str, current: &mut String) ->
 
 // ── Preview helpers ──
 
-/// JIS キーボードの各行のキー数（.yab の行/列と一致）
-const JIS_ROW_KEYS: [usize; 4] = [13, 12, 11, 10];
-
 /// 指定されたレイアウトファイルをパースしてプレビュー用に読み込む。
+///
+/// `model` は .yab の列数上限チェックに使う（`general.keyboard_model` 設定）。
 fn load_layout_for_preview(
     layouts_dir: &str,
     layout_file: &str,
+    model: awase::scanmap::KeyboardModel,
 ) -> Result<awase::yab::YabLayout, String> {
     // layouts_dir が相対パスなら current_exe の隣を探す
     let dir = if std::path::Path::new(layouts_dir).is_absolute() {
@@ -1384,9 +1437,7 @@ fn load_layout_for_preview(
     };
     let path = dir.join(layout_file);
     let content = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    // .yab は JIS 物理位置ベースのため Jis 固定
-    awase::yab::YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis)
-        .map_err(|e| format!("{e}"))
+    awase::yab::YabLayout::parse(&content, model).map_err(|e| format!("{e}"))
 }
 
 /// YabFace をキーボード風のグリッドで描画する。
@@ -1394,12 +1445,17 @@ fn load_layout_for_preview(
 /// キーサイズは利用可能幅から算出する（リフロー）: 最上段 13 キー + 行段差
 /// インデント + spacing が収まるよう 18〜32px の範囲で縮小し、狭いウィンドウでも
 /// 図全体が横スクロールなしで見えるようにする。フォント・インデントも比例縮小。
-fn draw_face_grid(ui: &mut egui::Ui, face: &awase::yab::YabFace, id_suffix: &str) {
+fn draw_face_grid(
+    ui: &mut egui::Ui,
+    face: &awase::yab::YabFace,
+    id_suffix: &str,
+    row_sizes: [usize; 4],
+) {
     let spacing = 2.0;
-    let max_cols = JIS_ROW_KEYS[0] as f32;
+    let max_cols = row_sizes[0] as f32;
     // 最下段のインデント（フルサイズ時 8px/段 × 3 段）を含めて収まるセルサイズ。
     let indent_ratio = 0.25; // インデント = セルサイズ × 0.25（32px 時に従来の 8px）
-    let max_indent_units = (JIS_ROW_KEYS.len() - 1) as f32;
+    let max_indent_units = (row_sizes.len() - 1) as f32;
     let cell = ((ui.available_width() - spacing * max_cols)
         / (max_cols + indent_ratio * max_indent_units))
         .clamp(18.0, 32.0);
@@ -1407,7 +1463,7 @@ fn draw_face_grid(ui: &mut egui::Ui, face: &awase::yab::YabFace, id_suffix: &str
     egui::Grid::new(format!("face_grid_{id_suffix}"))
         .spacing(egui::vec2(spacing, spacing))
         .show(ui, |ui| {
-            for (row_idx, &col_count) in JIS_ROW_KEYS.iter().enumerate() {
+            for (row_idx, &col_count) in row_sizes.iter().enumerate() {
                 // 行インデントで段差を表現（セルサイズに比例）
                 let indent = (row_idx as f32) * cell * indent_ratio;
                 if indent > 0.0 {

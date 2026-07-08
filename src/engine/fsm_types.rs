@@ -5,7 +5,7 @@ use std::time::Duration;
 use smallvec::SmallVec;
 
 use crate::scanmap::PhysicalPos;
-use crate::types::{KeyAction, ScanCode, Timestamp, VkCode};
+use crate::types::{KeyAction, ModifierKey, ScanCode, Timestamp, VkCode};
 
 /// 同時打鍵判定用タイマー ID
 pub const TIMER_PENDING: usize = 1;
@@ -50,6 +50,14 @@ pub struct ClassifiedEvent {
     pub timestamp: Timestamp,
     /// IME 制御キーか（保留フラッシュ判定用、プラットフォーム層が事前分類）
     pub is_ime_control: bool,
+    /// この VK が OS 修飾キー（Ctrl/Shift/Alt/Meta）であるかの事前分類。
+    /// プラットフォーム層の VK→ModifierKey 分類をそのまま引き継ぐ
+    /// （`crate::types::ModifierState::update` と同じ入力）。
+    /// 親指キーにこれらを割り当てた場合の単独タップタイムアウト処理
+    /// （`NicolaFsm::timeout_pending_thumb`）で、生の VK を OS へ
+    /// 素通しして良いか（無変換/変換等）／してはいけないか（Alt 等、
+    /// 単独タップで OS 側の副作用があるキー）を判定するために使う。
+    pub modifier_key: Option<ModifierKey>,
 }
 
 impl ClassifiedEvent {
@@ -63,6 +71,7 @@ impl ClassifiedEvent {
             vk_code: VkCode(0),
             timestamp: 0,
             is_ime_control: false,
+            modifier_key: None,
         }
     }
 }
@@ -351,6 +360,9 @@ pub struct PendingThumbData {
     pub vk_code: VkCode,
     pub is_left: bool,
     pub timestamp: Timestamp,
+    /// この親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられているか。
+    /// `NicolaFsm::timeout_pending_thumb` 参照。
+    pub modifier_key: Option<ModifierKey>,
 }
 
 impl PendingThumbData {
@@ -361,6 +373,7 @@ impl PendingThumbData {
             vk_code: ev.vk_code,
             is_left: ev.key_class.is_left_thumb(),
             timestamp: ev.timestamp,
+            modifier_key: ev.modifier_key,
         }
     }
 
@@ -651,6 +664,7 @@ mod tests {
             vk_code: VkCode(0x20),
             is_left,
             timestamp: 2000,
+            modifier_key: None,
         }
     }
 
@@ -928,6 +942,7 @@ mod tests {
             vk_code: VkCode(0x48),
             timestamp: 3000,
             is_ime_control: false,
+            modifier_key: None,
         };
         assert_eq!(ev.key_class, KeyClass::Char);
         assert!(ev.pos.is_some());
@@ -943,6 +958,7 @@ mod tests {
             vk_code: VkCode(0x20),
             timestamp: 4000,
             is_ime_control: false,
+            modifier_key: None,
         };
         assert!(ev.key_class.is_thumb());
         assert!(ev.pos.is_none());
@@ -957,6 +973,7 @@ mod tests {
             vk_code: VkCode(0xF3),
             timestamp: 5000,
             is_ime_control: true,
+            modifier_key: None,
         };
         assert!(ev.is_ime_control);
     }
@@ -1051,6 +1068,7 @@ mod tests {
             vk_code: VkCode(1),
             timestamp: 0,
             is_ime_control: false,
+            modifier_key: None,
         };
         let pa = ParseAction::ReduceAndContinue {
             actions: smallvec::smallvec![KeyAction::Suppress],

@@ -390,8 +390,7 @@ impl CompositionState {
             // false positive ループを防ぐ。
             if matches!(
                 reason,
-                crate::output::ColdReason::FocusChange
-                    | crate::output::ColdReason::SetOpenTrue
+                crate::output::ColdReason::FocusChange | crate::output::ColdReason::SetOpenTrue
             ) {
                 self.cold_ctx.reset_consecutive_count();
             }

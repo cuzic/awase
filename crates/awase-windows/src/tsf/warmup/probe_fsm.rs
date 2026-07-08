@@ -31,8 +31,8 @@ pub(crate) struct DeferredVk {
 }
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
+use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
 /// テストでは任意値を注入できる。
@@ -93,8 +93,8 @@ pub(crate) fn decide_transmit_plan(
     // 既に初期化済み。バッチに再び F2 を含めると WezTerm が TSF reinit を再トリガーし、
     // 同一バッチの先頭 VK が reinit 中に届いてリテラル化する race が起きる。
     // Medium/Long cold (forces_prepend_f2=true): GJI が F2×2 で起動中 or 無応答のため F2 同梱が必要。
-    let should_prepend_f2 = initial_prepend_f2
-        && (obs.nc_fired || !env.is_tsf_mode || forces_prepend_f2);
+    let should_prepend_f2 =
+        initial_prepend_f2 && (obs.nc_fired || !env.is_tsf_mode || forces_prepend_f2);
 
     // gji_resumed=true: GJI が F2×2 に I/O 応答 → VK path 強制。
     // nc_fired=true: IME モード確認済み（Medium/Long cold かつ deferred なし → VK path）。
@@ -228,10 +228,7 @@ pub(crate) enum ProbeAction {
     ///
     /// [`LiteralDetectFsm`] が TSF mode + consecutive==0 のときに `StartSacrificialWarmup` の直前に
     /// emit する。dispatcher は `ProbeIo::send_literal_recovery_bs` を呼び出す。
-    SendRecoveryBs {
-        cold_seq: u32,
-        backs: usize,
-    },
+    SendRecoveryBs { cold_seq: u32, backs: usize },
     /// Unicode モードで GJI write が観測されなかった。
     ///
     /// [`crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm`] が emit する。
@@ -305,7 +302,10 @@ async fn tsf_probe_coro_body(
                     needs_literal: true,
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 },
-                observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+                observations: ProbeObservations {
+                    nc_fired: true,
+                    gji_resumed: false,
+                },
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 target: TransmitTarget::Chrome,
                 from_literal_recovery: false,
@@ -326,7 +326,10 @@ async fn tsf_probe_coro_body(
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: true,
+                gji_resumed: false,
+            },
             romaji,
             target: TransmitTarget::Chrome,
         }],
@@ -501,80 +504,147 @@ mod tests {
         // nc_fired=false + TSF mode + Short cold (forces_prepend_f2=false):
         // SendFreshF2 が ~300ms 前に送信済み → バッチに F2 を含めると reinit race でリテラル化する。
         // ただし IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
-        let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
+        let obs = ProbeObservations {
+            nc_fired: false,
+            gji_resumed: false,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
-        assert!(!plan.should_prepend_f2, "nc_fired=false + tsf + Short cold: F2 をバッチに含めない");
-        assert!(plan.needs_literal, "nc_fired=false + tsf: IME 準備未確認 → LiteralDetect で保護");
+        assert!(
+            !plan.should_prepend_f2,
+            "nc_fired=false + tsf + Short cold: F2 をバッチに含めない"
+        );
+        assert!(
+            plan.needs_literal,
+            "nc_fired=false + tsf: IME 準備未確認 → LiteralDetect で保護"
+        );
     }
 
     #[test]
     fn decide_plan_gji_resumed_disables_literal_detection() {
         // gji_resumed=true 時の false positive BS 再発防止:
         // GJI が F2×2 に I/O 応答済み → composition 成功確定 → LiteralDetect は false positive になる。
-        let obs = ProbeObservations { nc_fired: true, gji_resumed: true };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
+        let obs = ProbeObservations {
+            nc_fired: true,
+            gji_resumed: true,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
 
-        assert!(!plan.needs_literal, "gji_resumed=true: LiteralDetect をスキップしないと BS 誤送信になる");
+        assert!(
+            !plan.needs_literal,
+            "gji_resumed=true: LiteralDetect をスキップしないと BS 誤送信になる"
+        );
     }
 
     #[test]
     fn decide_plan_nc_not_fired_tsf_long_idle_keeps_f2_and_literal() {
         // Long cold (forces_prepend_f2=true): F2×2 で GJI を起動する必要があるためバッチに F2 が必要。
         // LiteralDetect も有効（GJI 応答未確認）。
-        let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
+        let obs = ProbeObservations {
+            nc_fired: false,
+            gji_resumed: false,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
 
         assert!(plan.should_prepend_f2, "Long cold: F2 バッチ同梱が必要");
-        assert!(plan.needs_literal, "gji_resumed=false + tsf: LiteralDetect 有効");
+        assert!(
+            plan.needs_literal,
+            "gji_resumed=false + tsf: LiteralDetect 有効"
+        );
     }
 
     #[test]
     fn decide_plan_nc_fired_keeps_f2_and_enables_literal_when_gji_active() {
         // nc_fired=true: NameChange 発火確認済み → F2 はバッチに含める。
-        let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: true, gji_active: true, ..Default::default() };
+        let obs = ProbeObservations {
+            nc_fired: true,
+            gji_resumed: false,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
         assert!(plan.should_prepend_f2, "nc_fired=true: F2 はバッチに含める");
-        assert!(plan.needs_literal, "gji_active + !is_long_cold + !gji_resumed: LiteralDetect 有効");
+        assert!(
+            plan.needs_literal,
+            "gji_active + !is_long_cold + !gji_resumed: LiteralDetect 有効"
+        );
     }
 
     #[test]
     fn decide_plan_non_tsf_mode_keeps_f2() {
         // 非 TSF mode（Chrome 等）: nc_fired=false でも F2 バッチ同梱が必要。
-        let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_active: true, ..Default::default() };
+        let obs = ProbeObservations {
+            nc_fired: false,
+            gji_resumed: false,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: false,
+            gji_active: true,
+            ..Default::default()
+        };
 
         let plan = decide_transmit_plan(true, false, obs, &env, true, false, false);
 
-        assert!(plan.should_prepend_f2, "非 TSF mode: nc_fired=false でも F2 を含める");
+        assert!(
+            plan.should_prepend_f2,
+            "非 TSF mode: nc_fired=false でも F2 を含める"
+        );
     }
 
     #[test]
     fn decide_plan_nc_fired_with_deferred_vks_disables_eager_path() {
         // nc_fired=true でも deferred_vks が存在する場合は unicode に戻さない（nお race 防止）。
-        let obs = ProbeObservations { nc_fired: true, gji_resumed: false };
-        let env = TsfEnvSnapshot { is_tsf_mode: false, gji_active: false, ..Default::default() };
+        let obs = ProbeObservations {
+            nc_fired: true,
+            gji_resumed: false,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: false,
+            gji_active: false,
+            ..Default::default()
+        };
 
         let plan = decide_transmit_plan(false, true, obs, &env, false, false, false); // deferred_empty=false
 
-        assert!(!plan.used_eager_path, "deferred_vks あり: unicode TSF パスを使わない");
+        assert!(
+            !plan.used_eager_path,
+            "deferred_vks あり: unicode TSF パスを使わない"
+        );
     }
 
     #[test]
     fn decide_plan_medium_cold_forces_f2_in_batch_on_ncwait_timeout() {
         // Medium cold (forces_prepend_f2=true) + nc_fired=false → should_prepend_f2=true
-        let obs = ProbeObservations { nc_fired: false, gji_resumed: false };
+        let obs = ProbeObservations {
+            nc_fired: false,
+            gji_resumed: false,
+        };
         let env = TsfEnvSnapshot {
-            is_tsf_mode: true, gji_active: true,
+            is_tsf_mode: true,
+            gji_active: true,
             ..Default::default()
         };
 

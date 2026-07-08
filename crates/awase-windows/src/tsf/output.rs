@@ -5,8 +5,8 @@
 //! - TSF 専用ヘルパー関数: `make_tsf_key_input`, `make_key_input_ex`
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MapVirtualKeyW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
+    MapVirtualKeyW, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    MAPVK_VK_TO_VSC, VIRTUAL_KEY,
 };
 
 /// 自己注入マーカー（"KEYM" = 0x4B45_594D）

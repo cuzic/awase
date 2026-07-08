@@ -13,12 +13,12 @@
 
 use std::sync::OnceLock;
 
+use windows::core::{Interface as _, GUID};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_InputProcessorProfiles, GUID_TFCAT_TIP_KEYBOARD, ITfInputProcessorProfileMgr,
-    ITfInputProcessorProfiles, TF_INPUTPROCESSORPROFILE, TF_PROFILETYPE_INPUTPROCESSOR,
+    CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr, ITfInputProcessorProfiles,
+    GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE, TF_PROFILETYPE_INPUTPROCESSOR,
 };
-use windows::core::{Interface as _, GUID};
 
 use super::observer::ActiveImeKind;
 
@@ -85,8 +85,7 @@ fn find_gji_clsid(
         loop {
             let mut prof = TF_INPUTPROCESSORPROFILE::default();
             let mut fetched: u32 = 0;
-            let res =
-                enumerator.Next(std::slice::from_mut(&mut prof), &mut fetched as *mut u32);
+            let res = enumerator.Next(std::slice::from_mut(&mut prof), &mut fetched as *mut u32);
             if res.is_err() || fetched == 0 {
                 break;
             }
@@ -152,8 +151,7 @@ pub(super) fn dump_profiles(
         loop {
             let mut prof = TF_INPUTPROCESSORPROFILE::default();
             let mut fetched: u32 = 0;
-            let res =
-                enumerator.Next(std::slice::from_mut(&mut prof), &mut fetched as *mut u32);
+            let res = enumerator.Next(std::slice::from_mut(&mut prof), &mut fetched as *mut u32);
             if res.is_err() || fetched == 0 {
                 break;
             }

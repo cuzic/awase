@@ -12,10 +12,10 @@ use awase::types::VkCode;
 use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
+use crate::tsf::gji_fsm::GjiTimer;
 use crate::tsf::gji_fsm::{
     FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams, WarmupResult,
 };
-use crate::tsf::gji_fsm::GjiTimer;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
@@ -89,7 +89,8 @@ impl TsfWarmupCoordinator {
         match kind {
             ActiveImeKind::MicrosoftIme => {
                 log::info!("[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)");
-                *self.tsf_warmup.borrow_mut() = Box::new(crate::tsf::warmup::warmup_strategy::MsImeStrategy);
+                *self.tsf_warmup.borrow_mut() =
+                    Box::new(crate::tsf::warmup::warmup_strategy::MsImeStrategy);
             }
             ActiveImeKind::GoogleJapaneseInput => {
                 log::info!("[output] Switching warmup strategy → GjiFsm (GJI detected)");
@@ -255,9 +256,10 @@ impl TsfWarmupCoordinator {
         if !self.has_pending_tsf() {
             return false;
         }
-        self.pending_deferred
-            .borrow_mut()
-            .extend(vks.iter().map(|&(vk, needs_shift)| DeferredVk { vk, needs_shift }));
+        self.pending_deferred.borrow_mut().extend(
+            vks.iter()
+                .map(|&(vk, needs_shift)| DeferredVk { vk, needs_shift }),
+        );
         true
     }
 
@@ -287,7 +289,10 @@ mod tests {
     }
 
     impl TickableFsm for StubMachine {
-        fn tick(&mut self, _env: &TsfEnvSnapshot) -> Vec<crate::tsf::warmup::probe_fsm::ProbeAction> {
+        fn tick(
+            &mut self,
+            _env: &TsfEnvSnapshot,
+        ) -> Vec<crate::tsf::warmup::probe_fsm::ProbeAction> {
             self.ticks += 1;
             vec![]
         }
@@ -315,7 +320,11 @@ mod tests {
         assert!(coord.has_pending_deferred());
 
         let drained = coord.take_pending_deferred();
-        assert_eq!(drained.len(), 2, "tick 前に push した VK が失われてはいけない");
+        assert_eq!(
+            drained.len(),
+            2,
+            "tick 前に push した VK が失われてはいけない"
+        );
         assert_eq!(drained[0].vk, VkCode(0x4C));
         assert!(!coord.has_pending_deferred(), "take 後はキューが空になる");
     }

@@ -239,7 +239,11 @@ fn b1_with_app_confined_to_orchestrator_modules() {
             }
         }
     }
-    hits.retain(|h| !ALLOW.iter().any(|(p, needle)| h.contains(p) && h.contains(needle)));
+    hits.retain(|h| {
+        !ALLOW
+            .iter()
+            .any(|(p, needle)| h.contains(p) && h.contains(needle))
+    });
     assert_empty(
         "B-1",
         &hits,
@@ -382,7 +386,11 @@ fn d1_no_vk_magic_hex_outside_vk_rs() {
             }
         }
     }
-    hits.retain(|h| !ALLOW.iter().any(|(p, needle)| h.contains(p) && h.contains(needle)));
+    hits.retain(|h| {
+        !ALLOW
+            .iter()
+            .any(|(p, needle)| h.contains(p) && h.contains(needle))
+    });
     assert_empty(
         "D-1",
         &hits,
@@ -427,7 +435,8 @@ fn e1_send_message_confined_to_low_level_wrappers() {
     for f in &files {
         let content = fs::read_to_string(f).unwrap_or_default();
         for (line, code) in code_lines(&content) {
-            if code.contains("SendMessageTimeoutW") || contains_word_boundary(&code, "SendMessage") {
+            if code.contains("SendMessageTimeoutW") || contains_word_boundary(&code, "SendMessage")
+            {
                 hits.push(format!("{}:{line}: {}", rel(f), code.trim()));
             }
         }

@@ -36,8 +36,10 @@ impl Runtime {
         // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
         {
             let hint = self.platform.injection_hint();
-            let new_mode =
-                crate::output::types::InjectionMode::from((hint, self.platform_state.focus.app_kind));
+            let new_mode = crate::output::types::InjectionMode::from((
+                hint,
+                self.platform_state.focus.app_kind,
+            ));
             self.platform.update_injection_mode(new_mode);
         }
         if process_changed {
@@ -224,21 +226,20 @@ impl Runtime {
         // クリアしても、複数の rapid focus 変化（仮想デスクトップ切替等）で
         // 2 回目以降の guard が機能し続けるよう ImeStateHub 側で永続保持している。
         let pre_focus_explicit_off_ms = self.platform_state.ime.persistent_explicit_off_ms();
-        self.platform_state
-            .ime
-            .dispatch_event(
-                crate::state::ime_event::ImeEvent::FocusChanged {
-                    from: None,
-                    to: new_hwnd,
-                    profile: crate::state::ime_event::ImePolicyProfile::from(new_profile),
-                    focus_epoch: self.platform_state.focus.focus_epoch,
-                },
-                tick_ms,
-            );
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::FocusChanged {
+                from: None,
+                to: new_hwnd,
+                profile: crate::state::ime_event::ImePolicyProfile::from(new_profile),
+                focus_epoch: self.platform_state.focus.focus_epoch,
+            },
+            tick_ms,
+        );
 
         {
             let process_name = self.platform.focus.process_name().to_owned();
-            self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
+            self.platform_state.keymap.active_keymaps =
+                self.all_keymaps.filter_active(&process_name);
             log::debug!(
                 "[keymap] active rules updated: {} rule(s) for process={:?}",
                 self.platform_state.keymap.active_keymaps.len(),
@@ -274,8 +275,7 @@ impl Runtime {
                 //  transient UWP 窓のキャッシュが false (explicit/non-explicit) の場合は
                 //  cache_says_on=false → 復元しない → 従来の SSOT 継続。
                 let desired_open = self.platform_state.ime.model().desired_open();
-                let cache_says_on =
-                    matches!(&cache_hit, Some(snap) if snap.ime_on);
+                let cache_says_on = matches!(&cache_hit, Some(snap) if snap.ime_on);
                 if cache_says_on && !desired_open {
                     // Imm32Unavailable コンテキストで desired_open が false に汚染された可能性。
                     // キャッシュの true を復元して TsfNative 窓の状態を回復する。
@@ -379,7 +379,8 @@ impl Runtime {
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
-        ) && self.platform_state.ime.belief.is_japanese_ime() {
+        ) && self.platform_state.ime.belief.is_japanese_ime()
+        {
             let ticket = crate::state::probe_admission::ImmLikeTicket {
                 focus_epoch: self.platform_state.focus.focus_epoch,
             };
@@ -398,7 +399,9 @@ impl Runtime {
                             return;
                         };
                         let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
-                        app.platform_state.ime.write_imm_cross_probe(open, now_tick, accepted);
+                        app.platform_state
+                            .ime
+                            .write_imm_cross_probe(open, now_tick, accepted);
                         log::debug!(
                             "[ImmCrossProbe/focus] child-hwnd IME={open} → High confidence 観測記録"
                         );

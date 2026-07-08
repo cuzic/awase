@@ -3,10 +3,10 @@
 //! `Output` は Facade として本構造体を保持し、低レベルのキー注入操作を委譲する。
 
 use super::resolve::CharResolution;
+use crate::tsf::output::{make_key_input_ex, INJECTED_MARKER};
+use crate::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, VK_LSHIFT};
 use awase::kana_table::KanaTable;
 use awase::types::VkCode;
-use crate::tsf::output::{INJECTED_MARKER, make_key_input_ex};
-use crate::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, VK_LSHIFT};
 use itertools::Itertools as _;
 use std::collections::HashMap;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -105,7 +105,10 @@ impl KeyInjector {
     ///
     /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
     pub(super) fn send_unicode_char(&self, ch: char) {
-        if self.unicode_cold_defer.load(std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .unicode_cold_defer
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.unicode_cold_deferred.borrow_mut().push(ch);
             return;
         }
@@ -128,7 +131,10 @@ impl KeyInjector {
     pub(crate) fn send_text_direct(&self, s: &str) {
         use crate::tsf::output::make_key_input_ex;
         use crate::vk::{VK_LSHIFT, VK_RSHIFT, VK_SHIFT};
-        if self.unicode_cold_defer.load(std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .unicode_cold_defer
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.unicode_cold_deferred.borrow_mut().extend(s.chars());
             return;
         }
@@ -265,7 +271,13 @@ impl KeyInjector {
 
     fn format_vk_run(run: &[(VkCode, bool)]) -> String {
         run.iter()
-            .map(|&(v, s)| if s { format!("S{v:02X}") } else { format!("{v:02X}") })
+            .map(|&(v, s)| {
+                if s {
+                    format!("S{v:02X}")
+                } else {
+                    format!("{v:02X}")
+                }
+            })
             .join(",")
     }
 

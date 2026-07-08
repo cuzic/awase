@@ -1,5 +1,5 @@
-use awase::types::{KeyAction, VkCode};
 use crate::vk::ascii_to_vk;
+use awase::types::{KeyAction, VkCode};
 use std::time::Duration;
 
 pub use crate::tsf::output::ColdReason;
@@ -10,24 +10,23 @@ pub(crate) mod types;
 pub(crate) use sender::OutputSession;
 pub(crate) use types::InjectionMode;
 
+pub(crate) mod ime_apply_planner;
+mod key_injector;
 pub(crate) mod probe_io;
 mod resolve;
-mod vk_send;
-mod key_injector;
 mod tsf_warmup_coord;
-pub(crate) mod ime_apply_planner;
+mod vk_send;
 /// IME open 状態の観測値を適用時ビリーフへ純粋還元する data-model。
-pub(crate) use ime_apply_planner::{OpenBelief, OpenBeliefInputs, reduce_open_belief};
+pub(crate) use ime_apply_planner::{reduce_open_belief, OpenBelief, OpenBeliefInputs};
 use resolve::special_key_to_vk;
 pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 
 /// 公開ヘルパー: ASCII → VK 変換（`platform.rs` の dispatcher 用）。
 pub(crate) use crate::vk::ascii_to_vk as resolve_ascii_to_vk;
-/// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
-pub(crate) use vk_send::TsfSendPipeline;
 /// SendInput / Unicode / VK 送信コンポーネント。
 pub(crate) use key_injector::{KeyInjector, VkMarker};
-
+/// 公開ヘルパー: TSF 送信パイプライン（`platform.rs` の dispatcher 用）。
+pub(crate) use vk_send::TsfSendPipeline;
 
 /// VK コード＋シフトフラグのペアを要素とする VK シーケンス型。
 pub(crate) type VkSequence = Vec<(VkCode, bool)>;
@@ -272,7 +271,9 @@ impl Output {
             make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ];
-        log::debug!("[unicode-cold-warmup] cold={cold_seq} VK_A+BS 犠牲キー送信 (gji_write_bytes 上昇待ち)");
+        log::debug!(
+            "[unicode-cold-warmup] cold={cold_seq} VK_A+BS 犠牲キー送信 (gji_write_bytes 上昇待ち)"
+        );
         let _ = crate::win32::send_input_safe(&sacr_inputs);
     }
 
@@ -293,9 +294,7 @@ impl Output {
 
     /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
     /// `OnComposing` 以外の状態では `None`。
-    pub(crate) fn gji_current_composition_epoch(
-        &self,
-    ) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
+    pub(crate) fn gji_current_composition_epoch(&self) -> Option<crate::tsf::gji_fsm::FocusEpoch> {
         self.warmup_coord.gji_current_composition_epoch()
     }
 
@@ -392,9 +391,8 @@ impl Output {
     /// Vec で返すのは、1回の send_keys で複数文字を送る場合に全 Response を保存するため。
     pub(crate) fn drain_pending_gji_key_responses(
         &self,
-    ) -> Vec<
-        timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>,
-    > {
+    ) -> Vec<timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>>
+    {
         self.warmup_coord.drain_key_responses()
     }
 
@@ -590,19 +588,23 @@ impl Output {
         // apply_focus_probe と同様に直前の IMM 読み取りで conv_mode を最新化する。
         // SAFETY: get_ime_conversion_mode_raw_timeout は apply_focus_probe (with_app 内) でも
         //         安全に呼ばれており、ここも同じ with_app コンテキストで安全。
-        if let Some(fresh_conv) =
-            unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
-        {
+        if let Some(fresh_conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) } {
             self.conv_mode.update_from_conv(
                 fresh_conv,
                 crate::state::TickMs(crate::hook::current_tick_ms()),
             );
         }
-        let charset = self.conv_mode.get().map(|m| m.charset).unwrap_or(crate::state::Charset::Hiragana);
+        let charset = self
+            .conv_mode
+            .get()
+            .map(|m| m.charset)
+            .unwrap_or(crate::state::Charset::Hiragana);
         let ms = match charset {
             crate::state::Charset::ZenkakuKatakana | crate::state::Charset::HankakuKatakana => {
                 let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
-                log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
+                log::debug!(
+                    "[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms"
+                );
                 // HanKata warmup (F1+F3) 後は IMM conv が ZenKata (0x0B) を返すことがある。
                 // TsfNative では F3 が IMM FULLSHAPE ビットを変更しないため。conv_mode 汚染を抑制する。
                 if charset == crate::state::Charset::HankakuKatakana {
@@ -614,7 +616,9 @@ impl Output {
             }
             crate::state::Charset::ZenkakuAlpha | crate::state::Charset::HankakuAlpha => {
                 let ms = crate::tsf::send::send_vk_dbe_alpha_warmup(charset);
-                log::debug!("[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms");
+                log::debug!(
+                    "[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms"
+                );
                 ms
             }
             crate::state::Charset::Hiragana => {
@@ -759,8 +763,7 @@ impl Output {
             warm,
             elapsed,
             session_expired,
-            prepend_f2_warmup: (!warm || session_expired)
-                && self.warmup_coord.needs_f2_probe(),
+            prepend_f2_warmup: (!warm || session_expired) && self.warmup_coord.needs_f2_probe(),
         }
     }
 
@@ -782,7 +785,8 @@ impl Output {
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
     pub(super) fn defer_vk_if_probe_in_flight(&self, vk: VkCode, needs_shift: bool) -> bool {
-        self.warmup_coord.defer_vks_if_in_flight(&[(vk, needs_shift)])
+        self.warmup_coord
+            .defer_vks_if_in_flight(&[(vk, needs_shift)])
     }
 
     /// long-cold 後の GJI 再初期化: VK_IME_OFF→VK_IME_ON を SendInput で注入する。
@@ -820,13 +824,19 @@ impl Output {
         let machine = self.warmup_coord.take_pending_tsf();
         let Some(mut machine) = machine else {
             return StepProbeResult {
-                timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
+                timer_cmd: TimerCommand::Kill {
+                    id: crate::TIMER_TSF_PROBE,
+                },
                 gji_response: None,
                 needs_gji_composition_reset: false,
                 learned_tsf: false,
             };
         };
-        log::debug!("[tsf-probe-tick] cold={} t={}ms", machine.cold_seq_hint(), tick_t);
+        log::debug!(
+            "[tsf-probe-tick] cold={} t={}ms",
+            machine.cold_seq_hint(),
+            tick_t
+        );
         let actions = machine.tick(&env);
         let dispatch = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
         match dispatch {
@@ -835,14 +845,18 @@ impl Output {
                 self.gji_end_probe_guard();
                 let gji_response = self.gji_take_warmup_result().and_then(|result| {
                     let probe_id = self.warmup_coord.take_probe_id()?;
-                    Some(self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
-                        probe_id,
-                        result,
-                    }))
+                    Some(
+                        self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
+                            probe_id,
+                            result,
+                        }),
+                    )
                 });
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 StepProbeResult {
-                    timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
+                    timer_cmd: TimerCommand::Kill {
+                        id: crate::TIMER_TSF_PROBE,
+                    },
                     gji_response,
                     needs_gji_composition_reset,
                     learned_tsf: false,
@@ -882,7 +896,9 @@ impl Output {
                 // advance_tsf_probe がフォーカス中クラスを Tsf に昇格する。
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 StepProbeResult {
-                    timer_cmd: TimerCommand::Kill { id: crate::TIMER_TSF_PROBE },
+                    timer_cmd: TimerCommand::Kill {
+                        id: crate::TIMER_TSF_PROBE,
+                    },
                     gji_response: None,
                     needs_gji_composition_reset,
                     learned_tsf: true,
@@ -895,7 +911,10 @@ impl Output {
     ///
     /// [`TsfWarmupCoordinator::install_pending_tsf`] への Facade。暗黙のキャンセルを
     /// ログに残し、バグ調査を容易にする。
-    pub(super) fn install_pending_tsf(&self, machine: Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>) {
+    pub(super) fn install_pending_tsf(
+        &self,
+        machine: Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>,
+    ) {
         self.warmup_coord.install_pending_tsf(machine);
     }
 

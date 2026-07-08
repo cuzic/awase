@@ -266,7 +266,10 @@ pub struct InjectionModeStore {
 impl InjectionModeStore {
     pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
         let tsf_classes = Self::load(&base_dir);
-        Self { tsf_classes, base_dir }
+        Self {
+            tsf_classes,
+            base_dir,
+        }
     }
 
     /// class_name が Tsf モード必要と学習済みかどうか。
@@ -314,6 +317,9 @@ impl InjectionModeStore {
             section.insert(class_name.clone(), toml::Value::String("tsf".to_string()));
         }
         save_section(&self.base_dir, "injection_mode", section);
-        log::debug!("Saved injection mode cache: {} TSF classes", self.tsf_classes.len());
+        log::debug!(
+            "Saved injection mode cache: {} TSF classes",
+            self.tsf_classes.len()
+        );
     }
 }

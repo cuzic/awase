@@ -26,7 +26,6 @@ use crate::tray;
 use crate::tray::SystemTray;
 use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
-
 use super::{
     find_config_path, init_ime_sync_keys, init_ngram_validated, load_config, parse_key_combos,
     resolve_relative, run_message_loop, HotKeyGuard, RapidPressTracker, StartupDiagnostics,
@@ -146,7 +145,7 @@ pub(super) fn init_engine_validated(
     ))?;
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
-    let layouts = LayoutEntry::scan_all(&layouts_dir, diag)?;
+    let layouts = LayoutEntry::scan_all(&layouts_dir, diag, config.general.keyboard_model)?;
     let layout_names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
     log::info!("Available layouts: {layout_names:?}");
 
@@ -203,9 +202,18 @@ pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
     }
 
     const CONFLICTS: &[ConflictEntry] = &[
-        ConflictEntry { exe: "yamabuki.exe",  display: "やまぶき" },
-        ConflictEntry { exe: "yamabukiR.exe", display: "やまぶきR" },
-        ConflictEntry { exe: "benizara.exe",  display: "紅皿" },
+        ConflictEntry {
+            exe: "yamabuki.exe",
+            display: "やまぶき",
+        },
+        ConflictEntry {
+            exe: "yamabukiR.exe",
+            display: "やまぶきR",
+        },
+        ConflictEntry {
+            exe: "benizara.exe",
+            display: "紅皿",
+        },
     ];
 
     // SAFETY: CreateToolhelp32Snapshot / Process32FirstW / Process32NextW は
@@ -386,6 +394,7 @@ pub(super) fn initialize_app(
     ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
     ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
+    hook::set_keyboard_model(config.general.keyboard_model);
 
     let engine_on_ime_vk = config
         .keys
@@ -424,10 +433,7 @@ pub(super) fn initialize_app(
         })
         .collect();
     if !post_bypass_rules.is_empty() {
-        log::info!(
-            "[post_bypass] {} ルールをロード",
-            post_bypass_rules.len()
-        );
+        log::info!("[post_bypass] {} ルールをロード", post_bypass_rules.len());
     }
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
@@ -573,7 +579,13 @@ pub(super) fn install_ctrl_handler() -> Result<()> {
 
 impl LayoutEntry {
     /// layouts_dir 内の *.yab を全てスキャンして配列一覧を構築する
-    pub(super) fn scan_all(layouts_dir: &Path, diag: &mut StartupDiagnostics) -> Result<Vec<Self>> {
+    ///
+    /// `model` は .yab パース時の列数上限チェックに使う（`keyboard_model` 設定）。
+    pub(super) fn scan_all(
+        layouts_dir: &Path,
+        diag: &mut StartupDiagnostics,
+        model: awase::scanmap::KeyboardModel,
+    ) -> Result<Vec<Self>> {
         let mut layouts = Vec::new();
 
         if !layouts_dir.is_dir() {
@@ -597,7 +609,7 @@ impl LayoutEntry {
             if path.extension().is_some_and(|ext| ext == "yab") {
                 match std::fs::read_to_string(&path) {
                     Ok(content) => {
-                        match YabLayout::parse(&content, awase::scanmap::KeyboardModel::Jis) {
+                        match YabLayout::parse(&content, model) {
                             Ok(yab) => {
                                 let yab = yab.resolve_kana();
                                 log::info!("Discovered layout: {} ({})", yab.name, path.display());
@@ -717,12 +729,8 @@ pub(super) fn run_all() -> Result<()> {
             let class_wide = crate::win32::to_wide(tray::WINDOW_CLASS_NAME);
             if let Ok(existing) = FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null()) {
                 if !existing.is_invalid() {
-                    let _ = PostMessageW(
-                        Some(existing),
-                        WM_DUPLICATE_INSTANCE,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
+                    let _ =
+                        PostMessageW(Some(existing), WM_DUPLICATE_INSTANCE, WPARAM(0), LPARAM(0));
                 }
             }
             std::process::exit(1);

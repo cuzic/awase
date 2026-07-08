@@ -177,11 +177,21 @@ impl GjiMonitor {
             return None;
         }
         let delta = GjiIoDelta {
-            read_ops: counters.ReadOperationCount.saturating_sub(self.last_read_ops),
-            write_ops: counters.WriteOperationCount.saturating_sub(self.last_write_ops),
-            other_ops: counters.OtherOperationCount.saturating_sub(self.last_other_ops),
-            read_bytes: counters.ReadTransferCount.saturating_sub(self.last_read_bytes),
-            write_bytes: counters.WriteTransferCount.saturating_sub(self.last_write_bytes),
+            read_ops: counters
+                .ReadOperationCount
+                .saturating_sub(self.last_read_ops),
+            write_ops: counters
+                .WriteOperationCount
+                .saturating_sub(self.last_write_ops),
+            other_ops: counters
+                .OtherOperationCount
+                .saturating_sub(self.last_other_ops),
+            read_bytes: counters
+                .ReadTransferCount
+                .saturating_sub(self.last_read_bytes),
+            write_bytes: counters
+                .WriteTransferCount
+                .saturating_sub(self.last_write_bytes),
         };
         if delta.any() {
             let now_ms = crate::hook::current_tick_ms();
@@ -262,7 +272,11 @@ impl ImeKindDebounce {
     /// `observed == current`（変化なし）なら候補をクリアして `None`。
     /// `observed` が前回も候補だった（2 回連続で同じ新種別）なら確定として `Some` を返す。
     /// それ以外（初めて見る新種別）は候補として保持し `None` を返す。
-    fn observe(&mut self, observed: ActiveImeKind, current: ActiveImeKind) -> Option<ActiveImeKind> {
+    fn observe(
+        &mut self,
+        observed: ActiveImeKind,
+        current: ActiveImeKind,
+    ) -> Option<ActiveImeKind> {
         if observed == current {
             self.candidate = None;
             return None;
@@ -286,7 +300,10 @@ mod ime_kind_debounce_tests {
         let mut d = ImeKindDebounce::new();
         for _ in 0..5 {
             assert_eq!(
-                d.observe(ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::GoogleJapaneseInput),
+                d.observe(
+                    ActiveImeKind::GoogleJapaneseInput,
+                    ActiveImeKind::GoogleJapaneseInput
+                ),
                 None
             );
         }
@@ -298,12 +315,18 @@ mod ime_kind_debounce_tests {
         let mut d = ImeKindDebounce::new();
         // tick 1: 誤検出で MicrosoftIme が混入
         assert_eq!(
-            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput),
+            d.observe(
+                ActiveImeKind::MicrosoftIme,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
             None
         );
         // tick 2: 元の GoogleJapaneseInput に戻る → 候補クリア、確定させない
         assert_eq!(
-            d.observe(ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::GoogleJapaneseInput),
+            d.observe(
+                ActiveImeKind::GoogleJapaneseInput,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
             None
         );
     }
@@ -313,11 +336,17 @@ mod ime_kind_debounce_tests {
     fn two_consecutive_same_new_kind_confirms() {
         let mut d = ImeKindDebounce::new();
         assert_eq!(
-            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput),
+            d.observe(
+                ActiveImeKind::MicrosoftIme,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
             None
         );
         assert_eq!(
-            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput),
+            d.observe(
+                ActiveImeKind::MicrosoftIme,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
             Some(ActiveImeKind::MicrosoftIme)
         );
     }
@@ -327,8 +356,14 @@ mod ime_kind_debounce_tests {
     #[test]
     fn confirms_then_settles() {
         let mut d = ImeKindDebounce::new();
-        d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput);
-        let confirmed = d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput);
+        d.observe(
+            ActiveImeKind::MicrosoftIme,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
+        let confirmed = d.observe(
+            ActiveImeKind::MicrosoftIme,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
         assert_eq!(confirmed, Some(ActiveImeKind::MicrosoftIme));
         // 呼び出し元が TSF_OBS を MicrosoftIme に更新した後の次 tick
         assert_eq!(
@@ -341,9 +376,15 @@ mod ime_kind_debounce_tests {
     #[test]
     fn differing_candidates_do_not_accumulate_across_kinds() {
         let mut d = ImeKindDebounce::new();
-        d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput);
+        d.observe(
+            ActiveImeKind::MicrosoftIme,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
         assert_eq!(
-            d.observe(ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::GoogleJapaneseInput),
+            d.observe(
+                ActiveImeKind::GoogleJapaneseInput,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
             None
         );
     }
@@ -363,7 +404,6 @@ pub fn start_monitor_thread() -> win32_worker::WorkerThread {
         monitor_loop(&token);
     })
 }
-
 
 #[expect(clippy::cognitive_complexity)]
 fn monitor_loop(token: &win32_worker::ShutdownToken) {

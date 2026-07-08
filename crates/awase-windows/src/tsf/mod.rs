@@ -10,19 +10,19 @@
 //!   タイマー駆動で進め `ProbeAction` を emit（TickableFsm family / strategy）
 //! - [`probe_bridge`] — メッセージループ統合: OUTPUT_GATE / WM_DRAIN_OUTPUT_QUEUE
 
-pub(super) mod tip_detector;
-mod gji_monitor;
-mod win_event_obs;
 pub(crate) mod composition_fsm;
 pub(crate) mod gji_fsm;
+mod gji_monitor;
 pub(crate) mod ime_mode_fsm;
 pub mod observer;
-pub(crate) mod tsf_gate;
-pub(crate) mod warmup;
 pub mod output;
 pub mod probe;
 pub mod probe_bridge;
 pub mod send;
+pub(super) mod tip_detector;
+pub(crate) mod tsf_gate;
+pub(crate) mod warmup;
+mod win_event_obs;
 
 pub use awase::gate::GateAction;
 pub use tsf_gate::{

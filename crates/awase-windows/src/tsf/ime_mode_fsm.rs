@@ -117,7 +117,10 @@ impl ImeModeFsm {
     /// 可能性があるタイミング）等、awase の送信起点ではない conv 変化の疑い。
     pub(crate) fn unconfirm(&mut self, reason: &str) {
         if self.confirmed {
-            log::debug!("[ime-mode] unconfirm ({reason}): {:?} → IMC 確認待ち", self.state);
+            log::debug!(
+                "[ime-mode] unconfirm ({reason}): {:?} → IMC 確認待ち",
+                self.state
+            );
         }
         self.confirmed = false;
     }
@@ -151,19 +154,23 @@ impl ImeModeFsm {
             (ImeModeState::Unknown, _) => {
                 log::debug!(
                     "[ime-mode] initial confirm: {:?} (conv=0x{:08X})",
-                    new_state, mode
+                    new_state,
+                    mode
                 );
             }
             (_, false) => {
                 log::warn!(
                     "[ime-mode] drift detected: belief={:?} → actual={:?} (conv=0x{:08X})",
-                    self.state, new_state, mode
+                    self.state,
+                    new_state,
+                    mode
                 );
             }
             (_, true) => {
                 log::debug!(
                     "[ime-mode] confirmed: {:?} (conv=0x{:08X})",
-                    new_state, mode
+                    new_state,
+                    mode
                 );
             }
         }

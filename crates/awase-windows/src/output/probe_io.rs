@@ -119,9 +119,8 @@ impl ProbeIo for Output {
             Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, charset);
             // HanKata (F1+F3) leading warmup 後は IMM が ZenKata を返すため conv_mode 汚染を抑制する。
             if charset == crate::state::Charset::HankakuKatakana {
-                self.conv_mode.on_hankata_warmup_sent(crate::state::TickMs(
-                    crate::hook::current_tick_ms(),
-                ));
+                self.conv_mode
+                    .on_hankata_warmup_sent(crate::state::TickMs(crate::hook::current_tick_ms()));
             }
             chars.len()
         } else {
@@ -129,9 +128,7 @@ impl ProbeIo for Output {
         };
         // unicode パスを使った場合（used_eager_path=true かつ kana が存在する）は
         // PendingGjiConfirm 状態に入る: GJI が I/O 応答するまで次の warm キーも unicode で送る。
-        if outcome.used_eager_path
-            && crate::tsf::output::kana_for_romaji_static(romaji).is_some()
-        {
+        if outcome.used_eager_path && crate::tsf::output::kana_for_romaji_static(romaji).is_some() {
             let now = crate::hook::current_tick_ms();
             self.composition.set_last_unicode_transmit_ms(now);
             log::debug!(
@@ -232,10 +229,10 @@ impl ProbeIo for Output {
     }
 
     fn send_sacrificial_vk_a_with_bs(&self, cold_seq: u32) {
-        use awase::types::VkCode;
         use crate::tsf::output::make_key_input_ex;
         use crate::tsf::output::INJECTED_MARKER;
         use crate::vk::VK_BACK;
+        use awase::types::VkCode;
         const VK_A: VkCode = VkCode(0x41);
         // VK_A + BS を一括 SendInput することで Chrome が次フレームを描画する前に
         // 'あ'/'a' → BS と処理され、ユーザーには文字フラッシュが見えない。
@@ -245,7 +242,9 @@ impl ProbeIo for Output {
             make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ];
-        log::debug!("[sacr-warmup] cold={cold_seq} VK_A+BS 同時送信（Chrome 用：文字フラッシュ防止）");
+        log::debug!(
+            "[sacr-warmup] cold={cold_seq} VK_A+BS 同時送信（Chrome 用：文字フラッシュ防止）"
+        );
         let _ = crate::win32::send_input_safe(&inputs);
     }
 
@@ -310,7 +309,8 @@ impl ProbeIo for Output {
         win32_async::spawn_local(async move {
             let mut first_write_tick: Option<u32> = None;
             for i in 0..max_retries {
-                win32_async::sleep_ms(crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS as u32).await;
+                win32_async::sleep_ms(crate::tuning::CHROME_GJI_REINIT_POLL_INTERVAL_MS as u32)
+                    .await;
                 let write_bytes_now = crate::tsf::observer::gji_write_bytes();
                 let write_delta = write_bytes_now.saturating_sub(write_bytes_before);
                 if write_delta > 0 && first_write_tick.is_none() {
@@ -595,7 +595,13 @@ where
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
                         store_gji_warmup_if_probing(io, &observations, &plan);
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, expected_kana) {
+                        if machine.apply_transmit_done(
+                            romaji,
+                            ze_bs_count,
+                            detector,
+                            plan.literal_detect_ms,
+                            expected_kana,
+                        ) {
                             return DispatchResult::Done;
                         }
                     }
@@ -615,7 +621,13 @@ where
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
                         store_gji_warmup_if_probing(io, &observations, &plan);
-                        if machine.apply_transmit_done(romaji, ze_bs_count, detector, plan.literal_detect_ms, None) {
+                        if machine.apply_transmit_done(
+                            romaji,
+                            ze_bs_count,
+                            detector,
+                            plan.literal_detect_ms,
+                            None,
+                        ) {
                             return DispatchResult::Done;
                         }
                     }
@@ -637,13 +649,16 @@ where
                 // VK_A+BS の代わりに VK_IME_OFF→VK_IME_ON を送信する（vim 安全プローブ）。
                 // Off→On 状態遷移が GJI WriteTransferCount を増加させ（実測 +46B / ~30ms）、
                 // ImeOffOnWarmupFsm が write_bytes 上昇を検出してから実ローマ字を再送する。
-                let real_chars: VkSequence = config.romaji
+                let real_chars: VkSequence = config
+                    .romaji
                     .chars()
                     .filter_map(crate::output::resolve_ascii_to_vk)
                     .collect();
                 // Chrome は常に gate=Bypass 運用のため gate チェック対象外（policy に集約）。
                 // TSF/WezTerm の場合のみ bypass 状態でスキップする。
-                if key_sequence_policy::warmup_respects_bypass_gate(config.target) && io.gate_is_bypass() {
+                if key_sequence_policy::warmup_respects_bypass_gate(config.target)
+                    && io.gate_is_bypass()
+                {
                     log::debug!(
                         "[sacr-warmup] cold={} StartSacrificialWarmup: gate=Bypass, skipping",
                         config.cold_seq
@@ -676,15 +691,18 @@ where
                         log::debug!(
                             "[sacr-warmup] cold={} VK_A+BS 送信 → SacrificialWarmupCoro 開始 \
                             (romaji={:?} write_bytes_baseline={})",
-                            config.cold_seq, config.romaji, write_bytes_before_vk_a,
-                        );
-                        let sacr_coro = crate::tsf::warmup::sacr_warmup_coro::SacrificialWarmupCoro::new(
                             config.cold_seq,
                             config.romaji,
-                            detector,
-                            deadline_ms,
-                            config.target,
+                            write_bytes_before_vk_a,
                         );
+                        let sacr_coro =
+                            crate::tsf::warmup::sacr_warmup_coro::SacrificialWarmupCoro::new(
+                                config.cold_seq,
+                                config.romaji,
+                                detector,
+                                deadline_ms,
+                                config.target,
+                            );
                         return DispatchResult::SwitchMachine(Box::new(sacr_coro));
                     }
                     SacrificialWarmupKey::ImeOffThenOn => {
@@ -693,7 +711,9 @@ where
                         log::debug!(
                             "[sacr-warmup] cold={} VK_IME_OFF→ON 送信 → ImeOffOnWarmupFsm 開始 \
                             (romaji={:?} write_bytes_baseline={})",
-                            config.cold_seq, config.romaji, write_bytes_baseline,
+                            config.cold_seq,
+                            config.romaji,
+                            write_bytes_baseline,
                         );
                         let fsm = crate::tsf::warmup::ime_offon_warmup_fsm::ImeOffOnWarmupFsm::new(
                             config.cold_seq,
@@ -718,19 +738,27 @@ where
                 // BS×1（犠牲 VK_A 削除）→ 実ローマ字送信 → deferred_vks 送信。
                 // target に応じて Chrome/TSF パスを切り替える。
                 let cold_seq = resend.cold_seq;
-                let chars: VkSequence = resend.romaji
+                let chars: VkSequence = resend
+                    .romaji
                     .chars()
                     .filter_map(crate::output::resolve_ascii_to_vk)
                     .collect();
                 // Chrome は常に gate=Bypass 運用のため gate チェック対象外（policy に集約）。
-                if chars.is_empty() || (key_sequence_policy::warmup_respects_bypass_gate(resend.target) && io.gate_is_bypass()) {
+                if chars.is_empty()
+                    || (key_sequence_policy::warmup_respects_bypass_gate(resend.target)
+                        && io.gate_is_bypass())
+                {
                     // ゲートが閉じている or 実ローマ字なし: BS も送らず即終了
-                    log::debug!("[sacr-warmup] cold={cold_seq} SacrificialResend: skip (bypass or empty)");
+                    log::debug!(
+                        "[sacr-warmup] cold={cold_seq} SacrificialResend: skip (bypass or empty)"
+                    );
                 } else {
                     // BS×1: 犠牲 VK_A の結果を削除。
                     // skip_cleanup_bs=true（ImeOffOnWarmupFsm）は VK_A を送っていないので BS 不要。
                     // Chrome は VK_A+BS を atomic batch で送信済みのため cleanup BS 不要（policy に集約）。
-                    if !resend.skip_cleanup_bs && key_sequence_policy::target_needs_sacrificial_cleanup_bs(resend.target) {
+                    if !resend.skip_cleanup_bs
+                        && key_sequence_policy::target_needs_sacrificial_cleanup_bs(resend.target)
+                    {
                         io.send_sacrificial_bs_one(cold_seq);
                     }
                     match resend.target {
@@ -745,7 +773,10 @@ where
                                 resend.romaji, resend.confirmed_warm,
                             );
                             io.transmit_chrome(&resend.romaji, &chars);
-                            io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
+                            io.send_deferred_vks(
+                                &io.take_pending_deferred_vks(),
+                                VkMarker::Injected,
+                            );
                         }
                         TransmitTarget::Tsf => {
                             // confirmed_warm=true: warm 維持のまま VK run 送信（F2 prepend なし）。
@@ -831,7 +862,9 @@ where
 mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
-    use crate::tsf::warmup::probe_fsm::{ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget};
+    use crate::tsf::warmup::probe_fsm::{
+        ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
+    };
     use std::cell::Cell;
 
     /// テスト用フェイク ProbeIo。Win32 副作用を no-op にし、呼び出しをフラグで記録する。
@@ -954,7 +987,10 @@ mod tests {
         make_gji_machine_with_cold(crate::tuning::SETTLE_TIMEOUT_MS, false)
     }
 
-    fn make_gji_machine_with_cold(ncwait_budget_ms: u64, forces_prepend_f2: bool) -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
+    fn make_gji_machine_with_cold(
+        ncwait_budget_ms: u64,
+        forces_prepend_f2: bool,
+    ) -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
         let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
         crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
@@ -978,7 +1014,7 @@ mod tests {
     fn done_action_returns_true_without_side_effects() {
         let io = FakeProbeIo::default();
         let mut machine = make_chrome_machine();
-        let result = dispatch_probe_actions(&mut machine,vec![ProbeAction::Done], &io);
+        let result = dispatch_probe_actions(&mut machine, vec![ProbeAction::Done], &io);
         assert!(result.is_done());
         assert!(!io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
@@ -996,7 +1032,10 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: true,
+                gji_resumed: false,
+            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
         }];
@@ -1020,12 +1059,18 @@ mod tests {
                 needs_literal: true, // enter_transmit_chrome が gji_active=true のとき設定
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: true,
+                gji_resumed: false,
+            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(!result.is_done(), "should not be Done — LiteralDetect phase pending");
+        assert!(
+            !result.is_done(),
+            "should not be Done — LiteralDetect phase pending"
+        );
         assert!(io.transmit_chrome_called.get());
     }
 
@@ -1044,7 +1089,10 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: true,
+                gji_resumed: false,
+            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1067,7 +1115,10 @@ mod tests {
                 needs_literal: false,  // gji_long_idle + !is_tsf_mode → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: true,
+                gji_resumed: false,
+            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1091,7 +1142,10 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: true,
+                gji_resumed: false,
+            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1115,7 +1169,10 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: false,
+                gji_resumed: false,
+            },
             romaji: "ki".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1190,7 +1247,8 @@ mod tests {
         // forces_prepend_f2=true (Long cold) 時は SendFreshF2 の直後に追加 F2 を送信して F2×2 連続とする。
         // NameChangeWait はスキップせず GJI I/O 応答を gji_long_idle_probe モードで監視する。
         let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine_with_cold(crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS, true);
+        let mut machine =
+            make_gji_machine_with_cold(crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS, true);
         let actions = vec![ProbeAction::SendFreshF2 {
             cold_seq: 0,
             probe_settled: false,
@@ -1203,12 +1261,18 @@ mod tests {
             !result.is_done(),
             "forces_prepend_f2: GJI I/O 応答を待つため Done を即返さないべき"
         );
-        assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
+        assert!(
+            io.send_fresh_f2_called.get(),
+            "send_fresh_f2 が呼ばれるべき"
+        );
         assert!(
             io.send_extra_f2_called.get(),
             "forces_prepend_f2: 追加 F2 で F2×2 連続にするべき"
         );
-        assert!(!io.transmit_tsf_called.get(), "TransmitTsf は即実行されないべき");
+        assert!(
+            !io.transmit_tsf_called.get(),
+            "TransmitTsf は即実行されないべき"
+        );
     }
 
     #[test]
@@ -1221,14 +1285,21 @@ mod tests {
         // ※ Medium の forces_prepend_f2=true は「F2×2 を強制」ではなく「gji_long_idle_probe=true」の意味。
         let io = FakeProbeIo::default();
         // Medium cold: forces_prepend_f2=true (gji_long_idle_probe 有効), budget=MEDIUM_IDLE_PROBE_TOTAL_MS
-        let mut machine = make_gji_machine_with_cold(crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS, true);
+        let mut machine =
+            make_gji_machine_with_cold(crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS, true);
         let actions = vec![ProbeAction::SendFreshF2 {
             cold_seq: 0,
             probe_settled: false,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(!result.is_done(), "medium idle: GJI I/O 応答を待つため Done を即返さないべき");
-        assert!(io.send_fresh_f2_called.get(), "send_fresh_f2 が呼ばれるべき");
+        assert!(
+            !result.is_done(),
+            "medium idle: GJI I/O 応答を待つため Done を即返さないべき"
+        );
+        assert!(
+            io.send_fresh_f2_called.get(),
+            "send_fresh_f2 が呼ばれるべき"
+        );
         assert!(
             io.send_extra_f2_called.get(),
             "medium idle (forces_prepend_f2=true): F2×2 を送るべき"
@@ -1250,7 +1321,10 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: false,
+                gji_resumed: false,
+            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1279,7 +1353,10 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: false,
+                gji_resumed: false,
+            },
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1308,7 +1385,10 @@ mod tests {
                 needs_literal: false,   // gji_active=false → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
-            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: false,
+                gji_resumed: false,
+            },
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1332,11 +1412,14 @@ mod tests {
             cold_seq: 0,
             plan: TransmitPlan {
                 should_prepend_f2: true,
-                used_eager_path: false,  // is_tsf_mode → VK path
-                needs_literal: true,     // should_prepend_f2 && gji_active && (!gji_long_idle || is_tsf_mode) && !gji_resumed
+                used_eager_path: false, // is_tsf_mode → VK path
+                needs_literal: true, // should_prepend_f2 && gji_active && (!gji_long_idle || is_tsf_mode) && !gji_resumed
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
-            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: false,
+                gji_resumed: false,
+            },
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1369,7 +1452,10 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: false,
+                gji_resumed: false,
+            },
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1404,7 +1490,10 @@ mod tests {
                 needs_literal: false,   // !gji_resumed=false → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
-            observations: ProbeObservations { nc_fired: true, gji_resumed: true },
+            observations: ProbeObservations {
+                nc_fired: true,
+                gji_resumed: true,
+            },
             romaji: "to".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1430,7 +1519,10 @@ mod tests {
                 needs_literal: true,    // gji_resumed=false → LiteralDetect 有効
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
-            observations: ProbeObservations { nc_fired: false, gji_resumed: false },
+            observations: ProbeObservations {
+                nc_fired: false,
+                gji_resumed: false,
+            },
             romaji: "to".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1457,21 +1549,29 @@ mod tests {
         };
         let mut machine = make_gji_machine();
         let actions = vec![
-            ProbeAction::SendRecoveryBs { cold_seq: 0, backs: 2 },
-            ProbeAction::StartSacrificialWarmup(crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
+            ProbeAction::SendRecoveryBs {
                 cold_seq: 0,
-                romaji: "ko".to_string(),
-                plan: TransmitPlan {
-                    should_prepend_f2: false,
-                    used_eager_path: false,
-                    needs_literal: true,
+                backs: 2,
+            },
+            ProbeAction::StartSacrificialWarmup(
+                crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
+                    cold_seq: 0,
+                    romaji: "ko".to_string(),
+                    plan: TransmitPlan {
+                        should_prepend_f2: false,
+                        used_eager_path: false,
+                        needs_literal: true,
+                        literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    },
+                    observations: ProbeObservations {
+                        nc_fired: false,
+                        gji_resumed: false,
+                    },
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    target: TransmitTarget::Tsf,
+                    from_literal_recovery: true,
                 },
-                observations: ProbeObservations { nc_fired: false, gji_resumed: false },
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                target: TransmitTarget::Tsf,
-                from_literal_recovery: true,
-            }),
+            ),
             ProbeAction::Done,
         ];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
@@ -1510,8 +1610,8 @@ mod tests {
             ..Default::default()
         };
         let mut machine = make_gji_machine();
-        let actions = vec![
-            ProbeAction::StartSacrificialWarmup(crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
+        let actions = vec![ProbeAction::StartSacrificialWarmup(
+            crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
                 cold_seq: 0,
                 romaji: "ko".to_string(),
                 plan: TransmitPlan {
@@ -1520,12 +1620,15 @@ mod tests {
                     needs_literal: true,
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 },
-                observations: ProbeObservations { nc_fired: true, gji_resumed: false },
+                observations: ProbeObservations {
+                    nc_fired: true,
+                    gji_resumed: false,
+                },
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 target: TransmitTarget::Tsf,
                 from_literal_recovery: false,
-            }),
-        ];
+            },
+        )];
         dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             !io.increment_consecutive_called.get(),

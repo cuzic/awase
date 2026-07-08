@@ -27,10 +27,10 @@
 
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
+use crate::tsf::warmup::probe_fsm::TsfEnvSnapshot;
 use crate::tsf::warmup::probe_fsm::{
     LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
 };
-use crate::tsf::warmup::probe_fsm::TsfEnvSnapshot;
 
 /// 部分リテラル検出時に送るバックスペース数。
 ///
@@ -275,7 +275,10 @@ mod tests {
     use super::*;
 
     fn obs(nc_fired: bool, gji_resumed: bool) -> ProbeObservations {
-        ProbeObservations { nc_fired, gji_resumed }
+        ProbeObservations {
+            nc_fired,
+            gji_resumed,
+        }
     }
 
     fn tsf_env() -> TsfEnvSnapshot {

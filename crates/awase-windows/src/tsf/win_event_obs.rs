@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_OBJECT_HIDE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW, GetClassNameW,
+    GetClassNameW, EVENT_OBJECT_HIDE, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_SHOW,
     WINEVENT_OUTOFCONTEXT,
 };
 
@@ -154,7 +154,9 @@ unsafe extern "system" fn observation_event_proc(
             if class == GJI_CANDIDATE_CLASS {
                 TSF_OBS.gji_candidate_visible.store(true, Ordering::Relaxed);
                 TSF_OBS.candidate_was_seen.store(true, Ordering::Relaxed);
-                TSF_OBS.pending_start_composition.store(true, Ordering::Relaxed);
+                TSF_OBS
+                    .pending_start_composition
+                    .store(true, Ordering::Relaxed);
                 let seq = TSF_OBS.gji_candidate_show.notify();
                 {
                     let now_ms = crate::hook::current_tick_ms();
@@ -173,8 +175,12 @@ unsafe extern "system" fn observation_event_proc(
         EVENT_OBJECT_HIDE => {
             let class = hwnd_class_name(hwnd);
             if class == GJI_CANDIDATE_CLASS {
-                TSF_OBS.gji_candidate_visible.store(false, Ordering::Relaxed);
-                TSF_OBS.pending_end_composition.store(true, Ordering::Relaxed);
+                TSF_OBS
+                    .gji_candidate_visible
+                    .store(false, Ordering::Relaxed);
+                TSF_OBS
+                    .pending_end_composition
+                    .store(true, Ordering::Relaxed);
                 {
                     let now_ms = crate::hook::current_tick_ms();
                     let last_write_ms = TSF_OBS.gji_last_write_ms.load(Ordering::Relaxed);
@@ -191,19 +197,26 @@ unsafe extern "system" fn observation_event_proc(
         }
         EVENT_OBJECT_IME_SHOW => {
             let class = hwnd_class_name(hwnd);
-            TSF_OBS.ime_composition_active.store(true, Ordering::Relaxed);
+            TSF_OBS
+                .ime_composition_active
+                .store(true, Ordering::Relaxed);
             let seq = TSF_OBS.ime_show_seq.notify();
             log::info!("[ime-obj] IME_SHOW #{seq} class={class} hwnd={:?}", hwnd.0);
         }
         EVENT_OBJECT_IME_HIDE => {
             let class = hwnd_class_name(hwnd);
-            TSF_OBS.ime_composition_active.store(false, Ordering::Relaxed);
+            TSF_OBS
+                .ime_composition_active
+                .store(false, Ordering::Relaxed);
             log::info!("[ime-obj] IME_HIDE class={class} hwnd={:?}", hwnd.0);
         }
         EVENT_OBJECT_IME_CHANGE => {
             let class = hwnd_class_name(hwnd);
             let seq = TSF_OBS.ime_change_seq.notify();
-            log::info!("[ime-obj] IME_CHANGE #{seq} class={class} hwnd={:?}", hwnd.0);
+            log::info!(
+                "[ime-obj] IME_CHANGE #{seq} class={class} hwnd={:?}",
+                hwnd.0
+            );
         }
         _ => {}
     }

@@ -20,13 +20,14 @@ use std::rc::Rc;
 use crate::tsf::ime_mode_fsm::ImeModeState;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
-use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
+use crate::tsf::warmup::probe_fsm::{
+    ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot,
+};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use crate::tuning::{
-    CHROME_GJI_REINIT_CONFIRM_MS, SACR_WARMUP_CHROME_HIDE_WAIT_MS,
-    SACR_WARMUP_CHROME_IPC_SETTLE_MS,
+    CHROME_GJI_REINIT_CONFIRM_MS, SACR_WARMUP_CHROME_HIDE_WAIT_MS, SACR_WARMUP_CHROME_IPC_SETTLE_MS,
 };
+use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 
 // ── TickInput ─────────────────────────────────────────────────────────────────
 
@@ -62,11 +63,19 @@ async fn sacr_warmup_coro_body(
         let confirmed = matches!(detection, DetectionResult::CompositionConfirmed);
         log::debug!(
             "[sacr-warmup] cold={cold_seq} VK_A 判定={} → 実ローマ字 {romaji:?} 再送",
-            if confirmed { "composition-confirmed (TSF warm)" } else { "timeout (TSF still cold)" },
+            if confirmed {
+                "composition-confirmed (TSF warm)"
+            } else {
+                "timeout (TSF still cold)"
+            },
         );
         crate::ime_diagnostic::log_composition_probe(
             cold_seq,
-            if confirmed { "sacr-warm" } else { "sacr-timeout" },
+            if confirmed {
+                "sacr-warm"
+            } else {
+                "sacr-timeout"
+            },
         );
         break (detection, input.env);
     };
@@ -81,7 +90,11 @@ async fn sacr_warmup_coro_body(
             CHROME_GJI_REINIT_CONFIRM_MS,
         );
         // VK_IME_OFF→VK_IME_ON 送信 + async IMC ポーリング開始を dispatcher に委譲する。
-        yield_step(ch.clone(), vec![ProbeAction::SendChromeGjiReinit { cold_seq }]).await;
+        yield_step(
+            ch.clone(),
+            vec![ProbeAction::SendChromeGjiReinit { cold_seq }],
+        )
+        .await;
 
         // IME mode が Hiragana に確定するまで待機する。
         loop {
@@ -157,8 +170,7 @@ async fn sacr_warmup_coro_body(
         } else if composition_was_seen {
             // VK_A+BS atomic batch で SHOW+HIDE が最初の tick 前に完了した場合。
             // candidate は既に非表示だが EndComposition IPC は ~200ms かかる。
-            let settle_deadline =
-                crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_IPC_SETTLE_MS;
+            let settle_deadline = crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_IPC_SETTLE_MS;
             log::debug!(
                 "[sacr-warmup] cold={cold_seq} Chrome warm: 早期 HIDE (composition 観測済み) \
                  IPC settle 待機 ({}ms)",

@@ -9,8 +9,8 @@
 //! GJI 固有のイベント（`GjiEvent::ImeOn`、`FocusChange` 等）は依然 [`crate::tsf::gji_fsm::GjiFsm`]
 //! が直接処理する。このトレイトは `Output` が MS IME 対応を追加する際の足場として用意する。
 
-use timed_fsm::Response;
 use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiTimer, ProbeParams};
+use timed_fsm::Response;
 
 // ── トレイト定義 ──────────────────────────────────────────────────────────────
 
@@ -30,10 +30,7 @@ pub(crate) trait ImeWarmupStrategy {
     /// GJI イベントを処理し `Response<GjiAction, GjiTimer>` を返す。
     ///
     /// MS IME では GJI が存在しないため `Response::consume()` を返す（デフォルト）。
-    fn on_gji_event(
-        &mut self,
-        event: GjiEvent,
-    ) -> Response<GjiAction, GjiTimer> {
+    fn on_gji_event(&mut self, event: GjiEvent) -> Response<GjiAction, GjiTimer> {
         let _ = event;
         Response::consume()
     }
@@ -66,7 +63,6 @@ pub(crate) trait ImeWarmupStrategy {
     fn needs_f2_probe(&self) -> bool {
         true
     }
-
 }
 
 // ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
@@ -74,17 +70,17 @@ pub(crate) trait ImeWarmupStrategy {
 impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
     fn is_warm(&self) -> bool {
         use crate::tsf::gji_fsm::GjiState;
-        matches!(self.state(), GjiState::OnWarm { .. } | GjiState::OnComposing { .. })
+        matches!(
+            self.state(),
+            GjiState::OnWarm { .. } | GjiState::OnComposing { .. }
+        )
     }
 
     fn current_probe_params(&self) -> Option<ProbeParams> {
         crate::tsf::gji_fsm::GjiFsm::current_probe_params(self)
     }
 
-    fn on_gji_event(
-        &mut self,
-        event: GjiEvent,
-    ) -> Response<GjiAction, GjiTimer> {
+    fn on_gji_event(&mut self, event: GjiEvent) -> Response<GjiAction, GjiTimer> {
         use timed_fsm::TimedStateMachine as _;
         crate::tsf::gji_fsm::GjiFsm::on_event(self, event)
     }
@@ -105,7 +101,6 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
     fn is_next_key_long_cold(&self) -> bool {
         crate::tsf::gji_fsm::GjiFsm::is_next_key_long_cold(self)
     }
-
 }
 
 // ── MsImeStrategy ─────────────────────────────────────────────────────────────

@@ -834,6 +834,7 @@ impl NicolaFsm {
                     vk_code: ev.vk_code,
                     is_left: ev.key_class.is_left_thumb(),
                     timestamp: ev.timestamp,
+                    modifier_key: ev.modifier_key,
                 },
             );
             return ParseAction::Shift {
@@ -1187,6 +1188,7 @@ impl NicolaFsm {
         vk_code: VkCode,
         timestamp: Timestamp,
         composing: bool,
+        modifier_key: Option<crate::types::ModifierKey>,
     ) -> Resp {
         // ソロ連打によるエンジン OFF トリガーチェック
         if self.engine_off_triple_vk.0 != 0 && vk_code == self.engine_off_triple_vk {
@@ -1206,6 +1208,16 @@ impl NicolaFsm {
             // 再変換の誤発火防止）。ただしこちらは「文字キーが一切来ないまま本物の
             // 単独タップとして確定した」経路であり、composition していないときは
             // 従来通り素通しする（Windows 全般での無変換/変換キー機能を維持するため）。
+            return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
+        }
+
+        if modifier_key.is_some() {
+            // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta、例: 無変換/変換の代わりに
+            // 左右 Alt を親指キーに割り当てる場合）に分類される場合は、composing に
+            // 関わらず常に suppress する。無変換/変換と違い、Alt 単独の KeyDown/KeyUp を
+            // 生のまま OS に送ると Windows のメニューフォーカス等の副作用があり、
+            // 「親指キーとして使う以上、その物理キーはもう Alt としては機能しない」という
+            // 前提に反する。素通しが必要な Alt 操作は他の物理キーに割り当てること。
             return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
         }
 
@@ -1409,6 +1421,7 @@ impl NicolaFsm {
                 thumb.vk_code,
                 thumb.timestamp,
                 composing,
+                thumb.modifier_key,
             ),
             EngineState::PendingCharThumb {
                 char_key,
