@@ -346,9 +346,21 @@ impl Runtime {
         // ROMAN ビットが常に 0 のため is_roman_reliable=false。これにより classify_idle は
         // ひらがな conv で ObservedKana への downgrade を行わず、romaji-capable でない場合は
         // AssumedRomaji { ImmBridgeBroken } に回復する。
+        //
+        // `conv`（この tick で読んだ生値）ではなく `ConvModeMgr::get()`（直前の
+        // `update_from_conv` 済みのデバウンス確定値）を渡す。BUG-19: `conv` を直接
+        // 渡すと、`GetForegroundWindow` 基準の読み取りが候補ウィンドウ等から一発だけ
+        // 誤ったカタカナ conv を拾った際、warmup 側（ConvModeMgr 消費）は保護されても
+        // こちら（belief 更新・engine 同期）は無防備なままになる。
         let effective_open = self.platform_state.ime.effective_open();
+        let cm = self
+            .platform
+            .output
+            .conv_mode
+            .get()
+            .unwrap_or_else(|| awase::engine::ConvMode::from_u32(conv));
         let transition = crate::state::conv_classify::classify_conv_transition(
-            conv,
+            cm,
             current,
             is_cold,
             effective_open,

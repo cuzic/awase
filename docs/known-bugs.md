@@ -1069,13 +1069,47 @@ BUG-18（同じ AppKind 往復が引き金）とは異なり、こちらは **co
 `crates/awase-windows/src/output/mod.rs`（`send_eager_tsf_warmup`、
 `self.conv_mode.get()` を信頼する消費側）,
 `crates/awase-windows/src/state/conv_classify.rs`（`KatakanaShadowOff` の
-発火元、今回は raw conv ではなく `ConvModeMgr` 確定値経由で間接的に保護される）,
+発火元。当初この経路は `conv_mode_changed: bool` を受け取るのみで raw conv を
+直接再解釈しており無防備だったが、下記追補で対処済み）,
 `crates/awase-windows/src/ime.rs`（`get_ime_conversion_mode_raw_timeout`、
-`GetForegroundWindow()` 基準の読み取り — 今回は読み取り自体は変更せず、
+`GetForegroundWindow()` 基準の読み取り — 読み取り自体は変更せず、
 消費側のデバウンスで対処）
 
 **関連バグ:** BUG-17（`ImeKindDebounce` と同一の「2 tick 連続確認」パターンを
 conv mode 側に適用）, BUG-18（同じ AppKind 往復が引き金だが別経路・別修正）
+
+**追補（同日、belief/engine-sync 経路も保護）:** 上記修正は `ConvModeMgr`
+（warmup のキー選択・`ImmSetConversionStatus` 復元先）だけを保護しており、
+`state/conv_classify.rs::classify_conv_transition`（`InputModeObserved` 経由の
+belief 更新、および `KatakanaShadowOff`/`NativeToggleShadowOff` による engine
+ON/OFF 同期）は raw `conv: u32` を直接 `ConvMode::from_u32` して再解釈しており、
+同じ一発誤読に無防備なまま残っていた。実際の報告インシデントでこちらが発火
+しなかったのは `effective_open=true`（打鍵中）という**たまたまのタイミング**に
+よるもので、構造的な保護ではなかった。
+
+`kp_stage_idle_conv_check`（`runtime/key_pipeline.rs`）の呼び出しを、raw `conv`
+ではなく `ConvModeMgr::get()`（直前の `update_from_conv` 済みのデバウンス確定値）
+を渡すよう変更し、`classify_conv_transition` の第一引数も `conv: u32` から
+`cm: ConvMode` に変更した。これにより warmup 側と belief/engine-sync 側が
+**文字通り同じ確定値**を参照するようになり、片方だけ保護されるという構造的な
+ズレが解消された。`0f75b5b`（カタカナ+shadow=OFF+conv不変からの回復、
+`katakana_shadow_off_conv_unchanged_still_recovers_engine` テストで固定）は、
+GJI が本当にカタカナへ持続的に固定された場合は数百ms（1読み取り分）の遅延の後
+`ConvModeMgr` が確定するため、従来通り機能する。
+
+`restore_roman`（JISかな化検出）の ROMAN ビット判定も `conv & CONV_ROMAN_BIT`
+から `!cm.romaji` に置き換え、`ConvClassifyFixture`/`tests/journals/*.json` の
+JSON スキーマ（`conv: u32`）はそのまま維持し、リプレイ側
+（`tests/journal_replay.rs`）で `ConvMode::from_u32(fixture.conv)` に変換して
+から呼び出す形にした（このリプレイ基盤は conv ビット解釈ロジック自体の回帰検出が
+目的で、デバウンスとの相互作用は対象外のため）。`conv_classify.rs` 内の
+既存テスト（`classify()` ヘルパー経由・直接呼び出し双方、計28件）を機械的に
+`ConvMode::from_u32(...)` でラップし直し、全件通過を確認済み。
+
+**関連ファイル（追補）:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_idle_conv_check`）, `crates/awase-windows/src/state/conv_classify.rs`
+（`classify_conv_transition` のシグネチャ）,
+`crates/awase-windows/tests/journal_replay.rs`
 
 ---
 

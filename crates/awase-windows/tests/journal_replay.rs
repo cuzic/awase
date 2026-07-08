@@ -23,6 +23,7 @@
 //!    固定化してしまう）。
 //! 4. 修正を実装し、このテストが通ることを確認する。
 
+use awase::engine::ConvMode;
 use awase_windows::state::conv_classify::{classify_conv_transition, ConvClassifyFixture};
 
 fn load_fixtures(path: &std::path::Path) -> Vec<ConvClassifyFixture> {
@@ -49,8 +50,13 @@ fn replay_all_journal_fixtures() {
     for path in &paths {
         for fixture in load_fixtures(path) {
             total += 1;
+            // classify_conv_transition は ConvModeMgr::get() のデバウンス確定値を受け取る
+            // （BUG-19）。フィクスチャは実機観測の生 conv を保存しているだけなので、
+            // ここで ConvMode に変換する（このリプレイ基盤は conv ビット解釈ロジック
+            // 自体の回帰検出が目的で、デバウンスとの相互作用は対象外 — 詳細は
+            // `ConvClassifyFixture` のドキュメントコメント参照）。
             let actual = classify_conv_transition(
-                fixture.conv,
+                ConvMode::from_u32(fixture.conv),
                 fixture.current,
                 fixture.is_cold,
                 fixture.effective_open,

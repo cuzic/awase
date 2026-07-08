@@ -38,10 +38,6 @@ pub enum EngineSync {
     DirectInput,
 }
 
-/// ROMAN ビット (IME_CMODE_ROMAN)。`crate::imm` は Windows 専用のため、
-/// Linux でもリプレイ可能なこのモジュールにローカル定義する。
-const CONV_ROMAN_BIT: u32 = 0x0010;
-
 /// idle-conv-check の判断結果。input_mode belief の更新と engine 同期を分離して表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ConvTransition {
@@ -66,12 +62,17 @@ pub struct ConvTransition {
     pub restore_roman: bool,
 }
 
-/// conv ポーリング値・現在の belief・engine 状態から idle-conv-check の同期判断を導く。
+/// 現在確定している `ConvMode`・belief・engine 状態から idle-conv-check の同期判断を導く。
 ///
 /// I/O・時刻取得・`with_app` 呼び出しを一切行わない純粋関数。
 ///
 /// # 引数
-/// - `conv`: `ImmGetConversionStatus` の raw 値。
+/// - `cm`: 現在確定している `ConvMode`。呼び出し元は `ConvModeMgr::get()`
+///   （= `ConvModeMgr::update_from_conv` 済みの値）を渡すこと。`ImmGetConversionStatus`
+///   の生値を直接 `ConvMode::from_u32` してここに渡してはならない — `ConvModeMgr` は
+///   非カタカナ→カタカナ遷移を2回連続観測するまで確定させないデバウンスを持つ（BUG-19）。
+///   この関数が生値を直接受け取ると、`ConvModeMgr` 側（warmup のキー選択）だけが保護され、
+///   ここ（belief 更新・engine 同期）は一発誤読に無防備なままになってしまう。
 /// - `current`: 現在の `input_mode` belief。
 /// - `is_cold`: `output_in_flight_ms() == u64::MAX`（ROMAN ビット未確定期間）。
 /// - `effective_open`: 現在の engine open 状態 (`effective_open()`)。
@@ -79,14 +80,13 @@ pub struct ConvTransition {
 /// - `is_roman_reliable`: ROMAN ビット (0x10) が信頼できるか。TsfNative の idle 経路では
 ///   常に `false`。
 pub fn classify_conv_transition(
-    conv: u32,
+    cm: ConvMode,
     current: InputModeState,
     is_cold: bool,
     effective_open: bool,
     conv_mode_changed: bool,
     is_roman_reliable: bool,
 ) -> ConvTransition {
-    let cm = ConvMode::from_u32(conv);
     let input_mode_update = cm.classify_idle(is_cold, current, is_roman_reliable);
     // NATIVE=0 ⟺ 英数モード (is_eisu)。KATAKANA は Charset で判定する。
     let has_native = !cm.is_eisu();
@@ -149,7 +149,7 @@ pub fn classify_conv_transition(
         && !is_cold
         && has_native
         && !has_katakana
-        && (conv & CONV_ROMAN_BIT) == 0
+        && !cm.romaji
         && effective_open;
 
     ConvTransition {
@@ -170,6 +170,13 @@ pub fn classify_conv_transition(
 /// is_roman_reliable → result）だが、こちらは往復可能な独立フォーマットとして
 /// 定義する（`JournalEntry` 全体は `KeyEventSummary` に `&'static str` を含み
 /// 単純には `Deserialize` できないため、リプレイ専用に切り出している）。
+///
+/// `conv` フィールドは実機で観測された生の `ImmGetConversionStatus` 値。
+/// `classify_conv_transition` は `ConvMode` を受け取るため、リプレイ側
+/// (`tests/journal_replay.rs`) が `ConvMode::from_u32(fixture.conv)` に変換してから
+/// 呼び出す。このフィクスチャ基盤の目的は conv ビット解釈ロジック自体の回帰検出であり
+/// （モジュール冒頭のコメント参照）、`ConvModeMgr` のデバウンス（BUG-19）とのやり取り
+/// までは対象にしない — デバウンス自体の回帰は `state/conv_mode.rs` 側の単体テストが担う。
 ///
 /// フィクスチャの追加手順は `docs/journal-replay-guide.md` を参照。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -218,13 +225,22 @@ mod tests {
     }
 
     /// idle 経路のデフォルト引数で分類する（is_cold=false, is_roman_reliable=false）。
+    /// テストの可読性のため raw conv (`u32`) を受け取り、ここで `ConvMode` に変換する
+    /// （本番の呼び出し元は `ConvModeMgr::get()` のデバウンス済み値を渡す。BUG-19 参照）。
     fn classify(
         conv: u32,
         current: InputModeState,
         effective_open: bool,
         conv_mode_changed: bool,
     ) -> ConvTransition {
-        classify_conv_transition(conv, current, false, effective_open, conv_mode_changed, false)
+        classify_conv_transition(
+            ConvMode::from_u32(conv),
+            current,
+            false,
+            effective_open,
+            conv_mode_changed,
+            false,
+        )
     }
 
     // ── 英数モード検出（ObservedEisu → DirectInput）──────────────────────────────
@@ -382,14 +398,14 @@ mod tests {
     /// downgrade を抑制する。classify_idle は None を返すため belief は維持される。
     #[test]
     fn tsf_native_suppresses_romaji_to_kana_downgrade() {
-        let t = classify_conv_transition(CONV_JISKANA, assumed(), false, true, false, false);
+        let t = classify_conv_transition(ConvMode::from_u32(CONV_JISKANA), assumed(), false, true, false, false);
         assert_eq!(t.input_mode_update, None);
     }
 
     /// 逆に is_roman_reliable=true（通常 IMM32）ではひらがな conv で ObservedKana に訂正する。
     #[test]
     fn roman_reliable_downgrades_to_kana() {
-        let t = classify_conv_transition(CONV_JISKANA, assumed(), false, false, true, true);
+        let t = classify_conv_transition(ConvMode::from_u32(CONV_JISKANA), assumed(), false, false, true, true);
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
     }
 
@@ -399,13 +415,13 @@ mod tests {
     /// conv でも belief を変更しない（英数モードのみ確実に判定）。
     #[test]
     fn cold_start_hiragana_roman_no_input_mode_change() {
-        let t = classify_conv_transition(CONV_HIRAGANA, InputModeState::Unknown, true, false, false, false);
+        let t = classify_conv_transition(ConvMode::from_u32(CONV_HIRAGANA), InputModeState::Unknown, true, false, false, false);
         assert_eq!(t.input_mode_update, None);
     }
 
     #[test]
     fn cold_start_eisu_still_detected() {
-        let t = classify_conv_transition(CONV_HANALPHA, InputModeState::Unknown, true, false, true, false);
+        let t = classify_conv_transition(ConvMode::from_u32(CONV_HANALPHA), InputModeState::Unknown, true, false, true, false);
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedEisu));
         assert_eq!(t.engine, EngineSync::DirectInput);
     }
@@ -503,7 +519,7 @@ mod tests {
     #[test]
     fn jiskana_with_reliable_roman_requests_restore() {
         let t = classify_conv_transition(
-            CONV_JISKANA,
+            ConvMode::from_u32(CONV_JISKANA),
             InputModeState::ObservedRomaji,
             false, // is_cold
             true,  // effective_open
@@ -518,7 +534,7 @@ mod tests {
     #[test]
     fn jiskana_steady_state_with_reliable_roman_still_requests_restore() {
         let t = classify_conv_transition(
-            CONV_JISKANA,
+            ConvMode::from_u32(CONV_JISKANA),
             InputModeState::ObservedKana,
             false,
             true,
@@ -545,7 +561,7 @@ mod tests {
     #[test]
     fn jiskana_while_closed_does_not_restore() {
         let t = classify_conv_transition(
-            CONV_JISKANA,
+            ConvMode::from_u32(CONV_JISKANA),
             InputModeState::ObservedRomaji,
             false,
             false, // effective_open
@@ -559,7 +575,7 @@ mod tests {
     #[test]
     fn jiskana_cold_start_does_not_restore() {
         let t = classify_conv_transition(
-            CONV_JISKANA,
+            ConvMode::from_u32(CONV_JISKANA),
             InputModeState::ObservedRomaji,
             true, // is_cold
             true,
@@ -573,7 +589,7 @@ mod tests {
     #[test]
     fn hiragana_with_roman_does_not_restore() {
         let t = classify_conv_transition(
-            CONV_HIRAGANA,
+            ConvMode::from_u32(CONV_HIRAGANA),
             InputModeState::ObservedRomaji,
             false,
             true,
@@ -587,7 +603,7 @@ mod tests {
     #[test]
     fn katakana_without_roman_does_not_restore() {
         let t = classify_conv_transition(
-            CONV_ZENKATA,
+            ConvMode::from_u32(CONV_ZENKATA),
             InputModeState::ObservedRomaji,
             false,
             true,
