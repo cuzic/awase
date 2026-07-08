@@ -15,7 +15,7 @@ use windows::Win32::System::Threading::{
     GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_INFORMATION,
 };
 
-use super::observer::TSF_OBS;
+use super::observer::{ActiveImeKind, TSF_OBS};
 
 // ── GJI プロセス発見 ─────────────────────────────────────────────────────────
 
@@ -227,6 +227,128 @@ impl Drop for GjiMonitor {
     }
 }
 
+// ── CLSID ベース IME 種別のデバウンス ──
+
+/// `query_active_kind` の単発フリップを実際の切り替えとして即採用しないためのデバウンス。
+///
+/// `ITfInputProcessorProfileMgr::GetActiveProfile` は `gji-io-monitor` ワーカースレッド
+/// （フォーカスを持たない別 STA スレッド）から 2 秒ごとにポーリングする。フォアグラウンド
+/// アプリの実際の TIP 選択と切り離されているため、単発の読み取りが一時的に別の種別を
+/// 返すことがある（実測: `send_chrome_gji_reinit_and_poll` が送る実 `VK_IME_OFF→VK_IME_ON`
+/// トグル直後に 2146ms 間隔で2回 `[gji-fsm] StartComposition while engine off` が観測され、
+/// 2 秒ポーリング周期と一致 — 2026-07-07 ユーザー提供ログ）。
+///
+/// `set_active_ime_kind`（`output/tsf_warmup_coord.rs`）は種別変化のたびに warmup 戦略
+/// （`GjiFsm`/`MsImeStrategy`）を丸ごと新規生成し `OnWarm`/`OnComposing` を破棄するため、
+/// 単発フリップをそのまま流すと「Chrome cold-start reinit → 一時的な誤検出 → GjiFsm 再構築
+/// → 次の単語も cold → 再度 reinit → …」という自己増幅ループになり、`cold_seq` が単語ごと
+/// に発火し続ける（BUG-09 で一度否定された「per-thread GetActiveProfile 固着」仮説とは
+/// 別症状・別因果）。
+///
+/// 同じ新しい種別が 2 回連続（= 前回ポーリングでも候補になっていた）観測されて初めて
+/// 確定として扱う。誤検出が単発なら次の tick で元の種別に戻り `candidate` がクリアされる。
+struct ImeKindDebounce {
+    /// 直近 tick で観測された「まだ確定していない」新種別。
+    candidate: Option<ActiveImeKind>,
+}
+
+impl ImeKindDebounce {
+    const fn new() -> Self {
+        Self { candidate: None }
+    }
+
+    /// 新しい観測値を投入する。`current` は `TSF_OBS` に確定済みの現在値。
+    ///
+    /// `observed == current`（変化なし）なら候補をクリアして `None`。
+    /// `observed` が前回も候補だった（2 回連続で同じ新種別）なら確定として `Some` を返す。
+    /// それ以外（初めて見る新種別）は候補として保持し `None` を返す。
+    fn observe(&mut self, observed: ActiveImeKind, current: ActiveImeKind) -> Option<ActiveImeKind> {
+        if observed == current {
+            self.candidate = None;
+            return None;
+        }
+        if self.candidate == Some(observed) {
+            self.candidate = None;
+            Some(observed)
+        } else {
+            self.candidate = Some(observed);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod ime_kind_debounce_tests {
+    use super::{ActiveImeKind, ImeKindDebounce};
+
+    #[test]
+    fn stable_same_kind_never_confirms() {
+        let mut d = ImeKindDebounce::new();
+        for _ in 0..5 {
+            assert_eq!(
+                d.observe(ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::GoogleJapaneseInput),
+                None
+            );
+        }
+    }
+
+    /// 単発フリップ（1 tick だけ別種別 → 次 tick で元に戻る）は確定させない。
+    #[test]
+    fn single_tick_flap_is_filtered_out() {
+        let mut d = ImeKindDebounce::new();
+        // tick 1: 誤検出で MicrosoftIme が混入
+        assert_eq!(
+            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput),
+            None
+        );
+        // tick 2: 元の GoogleJapaneseInput に戻る → 候補クリア、確定させない
+        assert_eq!(
+            d.observe(ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::GoogleJapaneseInput),
+            None
+        );
+    }
+
+    /// 2 回連続で同じ新種別が観測されたら確定として返す。
+    #[test]
+    fn two_consecutive_same_new_kind_confirms() {
+        let mut d = ImeKindDebounce::new();
+        assert_eq!(
+            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput),
+            None
+        );
+        assert_eq!(
+            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput),
+            Some(ActiveImeKind::MicrosoftIme)
+        );
+    }
+
+    /// 確定後、次の観測が current 側の更新を反映して安定すれば再度クリアされる
+    /// （呼び出し元が確定値で `current` を更新した後の挙動）。
+    #[test]
+    fn confirms_then_settles() {
+        let mut d = ImeKindDebounce::new();
+        d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput);
+        let confirmed = d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput);
+        assert_eq!(confirmed, Some(ActiveImeKind::MicrosoftIme));
+        // 呼び出し元が TSF_OBS を MicrosoftIme に更新した後の次 tick
+        assert_eq!(
+            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::MicrosoftIme),
+            None
+        );
+    }
+
+    /// フリップ後、別の値が来ても連続2回条件を満たさない限り確定しない。
+    #[test]
+    fn differing_candidates_do_not_accumulate_across_kinds() {
+        let mut d = ImeKindDebounce::new();
+        d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::GoogleJapaneseInput);
+        assert_eq!(
+            d.observe(ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::GoogleJapaneseInput),
+            None
+        );
+    }
+}
+
 // ── バックグラウンドモニタースレッド ──
 
 /// GJI I/O モニタースレッドを起動する。
@@ -278,19 +400,33 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
     let mut next_attach_ms: u64 = 0;
     // CLSID ベース IME 種別ポーリング次回時刻
     let mut next_clsid_check_ms: u64 = 0;
+    // 単発フリップで warmup 戦略を破棄しないためのデバウンス（`ImeKindDebounce` 参照）。
+    let mut kind_debounce = ImeKindDebounce::new();
 
     loop {
         let now = crate::hook::current_tick_ms();
 
         // CLSID ベース IME 種別を 2 秒ごとにポーリングして更新する。
         // WM_IME_KIND_CHANGED はここだけから発行する（プロセス存在ではなく API で判定）。
+        // 同じ新種別が 2 tick 連続で観測されるまでは `TSF_OBS` を更新せず
+        // 通知も発行しない（`ImeKindDebounce` — 単発の誤検出で warmup 戦略
+        // (`GjiFsm`/`MsImeStrategy`) が丸ごと再構築され、確立済みの
+        // OnWarm/OnComposing が失われるのを防ぐ）。
         if let Some((ref mgr, _)) = tsf_ctx {
             if now >= next_clsid_check_ms {
                 next_clsid_check_ms = now + 2_000;
                 if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
-                    if TSF_OBS.set_tsf_active_kind(kind) {
-                        log::info!("[tip-detect] IME kind → {kind:?}");
-                        crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                    let current = TSF_OBS.active_ime_kind();
+                    if let Some(confirmed) = kind_debounce.observe(kind, current) {
+                        if TSF_OBS.set_tsf_active_kind(confirmed) {
+                            log::info!("[tip-detect] IME kind → {confirmed:?}");
+                            crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                        }
+                    } else if kind != current {
+                        log::debug!(
+                            "[tip-detect] IME kind candidate {kind:?} (current={current:?}), \
+                             awaiting confirmation next tick"
+                        );
                     }
                 }
             }

@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### バグ修正
+
+- **Chrome 入力中、CLSID ベース IME 種別の単発誤検出で `GjiFsm` が単語ごとに再構築され `cold` が発火し続ける不具合を修正（BUG-17）**
+  - `gji-io-monitor` ワーカースレッドが 2 秒ごとにポーリングする `ITfInputProcessorProfileMgr::GetActiveProfile` の単発フリップを `WM_IME_KIND_CHANGED` としてそのまま main スレッドへ伝播しており、`set_active_ime_kind` が種別変化のたびに warmup 戦略（`GjiFsm`/`MsImeStrategy`）を無条件で新規生成 → 確立済みの `OnWarm`/`OnComposing` を破棄していた
+  - Chrome cold-start reinit が実 `VK_IME_OFF→VK_IME_ON` トグルを送信すること自体が誤検出の引き金となり、「reinit → 誤検出 → GjiFsm 再構築 → 次の単語も cold → 再度 reinit → …」という自己増幅ループを形成していた（実機ログで `cold_seq` が単語ごとに 392→401 と climb、2 回の "StartComposition while engine off" 警告が CLSID ポーリング周期とほぼ一致する 2146ms 間隔で観測）
+  - `tsf/gji_monitor.rs` に `ImeKindDebounce` を追加し、同じ新種別が 2 tick 連続で観測されるまで確定させないようにした。詳細は docs/known-bugs.md BUG-17
+
 ## [1.8.6] - 2026-07-07
 
 ### バグ修正
