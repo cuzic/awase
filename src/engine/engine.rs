@@ -316,6 +316,7 @@ impl Engine {
                 }
             }
             EngineCommand::FocusChanged => self.handle_focus_changed(ctx),
+            EngineCommand::ForceEngineOn => self.force_enable_and_activate(ctx, "force"),
         }
     }
 
@@ -482,22 +483,29 @@ impl Engine {
             .match_event(event, ctx.modifiers, self.adapter.is_enabled())
     }
 
+    /// `user_enabled` を無条件で true にし、IME recovery を伴う activate 処理を行う。
+    ///
+    /// `SpecialKeyMatch::EngineOn`（`Ctrl+Shift+変換` キーコンボ経由）と
+    /// `EngineCommand::ForceEngineOn`（トレイの「状態をリセット」等、外部コマンド経由）の
+    /// 両方から呼ばれる共通ロジック。`trigger` はログ表示用のラベル。
+    fn force_enable_and_activate(&mut self, ctx: &InputContext, trigger: &str) -> Decision {
+        let old_active = self.compute_active(ctx);
+        let (_, mut decision) = self.adapter.set_enabled(true);
+        let new_active = self.compute_active(ctx);
+        log::info!("Engine user_enabled ON ({trigger}, active={new_active})");
+        if !new_active {
+            // ime_on=false 等で active になれない → pseudo_ctx で IME 強制 ON
+            self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
+        } else {
+            self.apply_active_transition(old_active, new_active, &mut decision);
+        }
+        decision
+    }
+
     /// `SpecialKeyMatch` に応じた状態変更と `Decision` 生成を行う副作用適用メソッド。
     fn apply_special_key_match(&mut self, m: &SpecialKeyMatch, ctx: &InputContext) -> Decision {
         match m {
-            SpecialKeyMatch::EngineOn => {
-                let old_active = self.compute_active(ctx);
-                let (_, mut decision) = self.adapter.set_enabled(true);
-                let new_active = self.compute_active(ctx);
-                log::info!("Engine user_enabled ON (key combo, active={new_active})");
-                if !new_active {
-                    // ime_on=false 等で active になれない → pseudo_ctx で IME 強制 ON
-                    self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
-                } else {
-                    self.apply_active_transition(old_active, new_active, &mut decision);
-                }
-                decision
-            }
+            SpecialKeyMatch::EngineOn => self.force_enable_and_activate(ctx, "key combo"),
             SpecialKeyMatch::EngineOff => {
                 let old_active = self.compute_active(ctx);
                 let (_, mut decision) = self.adapter.set_enabled(false);

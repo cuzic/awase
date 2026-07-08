@@ -592,7 +592,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         append_menu_item(
             hmenu,
             IDM_RESET_STATE,
-            "状態をリセット (Caps OFF/ひらがな/ローマ字)",
+            "状態をリセット (Engine ON/Caps OFF/ひらがな/ローマ字)",
         );
 
         append_menu_sep(hmenu);

@@ -3988,6 +3988,31 @@ mod engine_integration_tests {
     }
 
     #[test]
+    fn on_command_force_engine_on_from_off() {
+        // トレイの「状態をリセット」用: user_enabled=false からでも必ず ON にする。
+        let mut engine = make_test_engine();
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx()); // user OFF
+        assert!(!engine.is_user_enabled());
+
+        let d = engine.on_command(EngineCommand::ForceEngineOn, &ime_on_ctx());
+        assert!(engine.is_user_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: true, .. })
+        )));
+    }
+
+    #[test]
+    fn on_command_force_engine_on_is_noop_when_already_on() {
+        // トグルと違い、既に ON のときは OFF に反転させない（冪等）。
+        let mut engine = make_test_engine();
+        assert!(engine.is_user_enabled());
+
+        engine.on_command(EngineCommand::ForceEngineOn, &ime_on_ctx());
+        assert!(engine.is_user_enabled());
+    }
+
+    #[test]
     fn on_command_invalidate_context() {
         let mut engine = make_test_engine();
         engine.on_input(Ev::down(VK_A).at(100).build(), &ime_on_ctx());

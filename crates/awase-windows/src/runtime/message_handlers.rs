@@ -570,6 +570,9 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     | crate::imm::IME_CMODE_ROMAN,
                 crate::imm::IME_CMODE_KATAKANA,
             );
+            // 無変換ソロ連打の緊急停止（ADR-055 追補）等で user_enabled が false に
+            // なっていても、この操作で必ず Engine ON まで復帰させる。
+            let _ = with_app(Runtime::force_engine_on);
         }
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
