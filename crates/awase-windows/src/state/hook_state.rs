@@ -1,4 +1,5 @@
 use awase::gate::{HoldingGate, SyncKeyGateEvent, SyncKeyGateMachine};
+use awase::scanmap::KeyboardModel;
 use awase::types::{RawKeyEvent, VkCode};
 
 /// フック設定（親指キー VK コード）
@@ -6,6 +7,8 @@ use awase::types::{RawKeyEvent, VkCode};
 pub struct HookConfig {
     pub left_thumb_vk: VkCode,
     pub right_thumb_vk: VkCode,
+    /// 物理キーボードモデル。`scan_to_pos` のテーブル選択に使う。
+    pub keyboard_model: KeyboardModel,
 }
 
 /// IME 同期キー（変換/無変換/漢字 等）押下後のキー保留バッファ。

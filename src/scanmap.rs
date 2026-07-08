@@ -23,14 +23,21 @@ impl PhysicalPos {
 ///
 /// 行ごとのキー数はモデルによって異なる。
 /// .yab レイアウトのパース時と、プラットフォーム層のキーコード変換で使用される。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum KeyboardModel {
     /// JIS キーボード (日本語109キー)
-    /// Row 0: 13, Row 1: 12, Row 2: 12, Row 3: 11
+    /// Row 0: 13 (数字10 + `-` + `^` + `¥`), Row 1: 12, Row 2: 12, Row 3: 11
     #[default]
+    #[serde(alias = "jp", alias = "jis109")]
     Jis,
     /// US キーボード (ANSI 104キー)
-    /// Row 0: 13, Row 1: 12, Row 2: 11, Row 3: 10
+    /// Row 0: 12 (数字10 + `-` + `=`), Row 1: 12, Row 2: 11, Row 3: 10
+    ///
+    /// JIS の `半角/全角`（グレイブキー位置）・row2 の `]`（scan 0x2B）・
+    /// row3 の `ろ`（scan 0x73）は US 配列に物理キーが存在しないため
+    /// グリッド外（パススルー）として扱う。
+    #[serde(alias = "ansi", alias = "us104")]
     Us,
 }
 
@@ -40,7 +47,7 @@ impl KeyboardModel {
     pub const fn row_sizes(&self) -> [usize; 4] {
         match self {
             Self::Jis => [13, 12, 12, 11],
-            Self::Us => [13, 12, 11, 10],
+            Self::Us => [12, 12, 11, 10],
         }
     }
 }
@@ -80,7 +87,7 @@ mod tests {
 
     #[test]
     fn us_row_sizes() {
-        assert_eq!(KeyboardModel::Us.row_sizes(), [13, 12, 11, 10]);
+        assert_eq!(KeyboardModel::Us.row_sizes(), [12, 12, 11, 10]);
     }
 
     // ── KeyboardModel::Display ──
@@ -127,6 +134,30 @@ mod tests {
     #[test]
     fn default_is_jis() {
         assert_eq!(KeyboardModel::default(), KeyboardModel::Jis);
+    }
+
+    // ── KeyboardModel serde ──
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Wrapper {
+        model: KeyboardModel,
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        for model in [KeyboardModel::Jis, KeyboardModel::Us] {
+            let toml_str = toml::to_string(&Wrapper { model }).unwrap();
+            let parsed: Wrapper = toml::from_str(&toml_str).unwrap();
+            assert_eq!(parsed.model, model);
+        }
+    }
+
+    #[test]
+    fn serde_accepts_legacy_aliases() {
+        let jp: Wrapper = toml::from_str("model = \"jp\"").unwrap();
+        assert_eq!(jp.model, KeyboardModel::Jis);
+        let ansi: Wrapper = toml::from_str("model = \"ansi\"").unwrap();
+        assert_eq!(ansi.model, KeyboardModel::Us);
     }
 
     // ── PhysicalPos ──

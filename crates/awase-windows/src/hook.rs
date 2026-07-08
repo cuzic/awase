@@ -40,7 +40,7 @@ pub fn classify_key(
         (KeyClassification::RightThumb, None)
     } else if vk.is_passthrough() {
         (KeyClassification::Passthrough, None)
-    } else if let Some(pos) = scan_to_pos(scan) {
+    } else if let Some(pos) = scan_to_pos(config.keyboard_model, scan) {
         (KeyClassification::Char, Some(pos))
     } else {
         (KeyClassification::Passthrough, None)
@@ -153,11 +153,22 @@ pub fn ctrl_consumed_since_down() -> bool {
     CTRL_CONSUMED_SINCE_DOWN.load(Ordering::Relaxed)
 }
 
+/// キーボードモデル（JIS/US）のキャッシュ。RUNTIME 借用なしで `classify_key` から
+/// 参照するため `CACHED_THUMB_VKS` と同じ理由でグローバル AtomicBool にキャッシュする。
+/// false = Jis（既定）、true = Us。
+static CACHED_KEYBOARD_MODEL_IS_US: AtomicBool = AtomicBool::new(false);
+
 fn cached_hook_config() -> HookConfig {
     let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
+    let keyboard_model = if CACHED_KEYBOARD_MODEL_IS_US.load(Ordering::Acquire) {
+        awase::scanmap::KeyboardModel::Us
+    } else {
+        awase::scanmap::KeyboardModel::Jis
+    };
     HookConfig {
         left_thumb_vk: VkCode((packed >> 16) as u16),
         right_thumb_vk: VkCode(packed as u16),
+        keyboard_model,
     }
 }
 
@@ -165,6 +176,14 @@ fn cached_hook_config() -> HookConfig {
 pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
     CACHED_THUMB_VKS.store(
         (u32::from(left.0) << 16) | u32::from(right.0),
+        Ordering::Release,
+    );
+}
+
+/// キーボードモデル（JIS/US）を設定する（config 読み込み後に呼ぶ）
+pub fn set_keyboard_model(model: awase::scanmap::KeyboardModel) {
+    CACHED_KEYBOARD_MODEL_IS_US.store(
+        model == awase::scanmap::KeyboardModel::Us,
         Ordering::Release,
     );
 }

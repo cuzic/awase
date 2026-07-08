@@ -599,6 +599,36 @@ fn test_load_nicola_yab_file() {
     );
 }
 
+#[test]
+fn test_load_nicola_us_yab_file() {
+    let path = std::path::Path::new("layout/nicola_us.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    let layout = YabLayout::parse(&content, KeyboardModel::Us).unwrap();
+
+    assert_eq!(layout.name, "NICOLA配列(US)");
+    assert!(!layout.normal.is_empty());
+    assert!(!layout.left_thumb.is_empty());
+    assert!(!layout.right_thumb.is_empty());
+    assert!(!layout.shift.is_empty());
+
+    // JIS 版と同じ物理位置は同じ値を共有するはず（A キー = row2,col0 = "u"）
+    let a_pos = PhysicalPos::new(2, 0);
+    assert_eq!(
+        layout.normal.get(&a_pos),
+        Some(&YabValue::Romaji {
+            romaji: "u".into(),
+            kana: None
+        })
+    );
+
+    // US 配列には無い JIS 拡張列（row2 の 12 番目 = col11）は存在しない
+    let jis_only_pos = PhysicalPos::new(2, 11);
+    assert_eq!(layout.normal.get(&jis_only_pos), None);
+}
+
 // ── to_fullwidth_str テスト ──
 
 #[test]

@@ -4,7 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### バグ修正
+### 追加
+
+- **US (ANSI 104) キーボード対応**
+  - `crates/awase-windows/src/scanmap.rs` に US 配列専用のスキャンコード⇔物理位置テーブル（`scan_to_pos_us`/`pos_to_scan_us`）を追加し、`KeyboardModel::{Jis,Us}` に応じて使い分けるよう配線
+  - `general.keyboard_model`（"jis"/"us"）設定を再導入。2026-07-06 に「一度も配線されなかった」として撤去された同名フィールドを、今度は `.yab` パース・`HookConfig`（フックの scan_to_pos テーブル選択）まで実際に配線した上で復活させた
+  - `KeyboardModel::Us.row_sizes()` の row0 を 13→12 に修正（グレイブキーは物理キー非対応としてグリッド外扱い。旧値は一度も実行されなかった未検証コードの誤り）
+  - US 配列用レイアウト `layout/nicola_us.yab` を追加（`layout/nicola.yab` から JIS 専用キーの列を除去したもの。共有するスキャンコードの値はそのまま流用）
+  - `keyboard_model = "us"` かつ 無変換/変換キー前提の既定値（`left_thumb_key`/`right_thumb_key`/`[keys]` の各ホットキー）が残っている場合、起動時検証で警告するよう `AppConfig::validate` を拡張
+  - 設定画面（awase-settings）に JIS/US 選択・配列プレビューの追随・親指キー候補を追加
+  - Linux/macOS 側は今回未対応（`KeyboardModel::Jis` 固定のまま）
 
 - **Chrome/Edge で conv mode の一発誤読が GJI を実際にカタカナへ固定する不具合を修正（BUG-19）**
   - `GetForegroundWindow()` 基準の conv 読み取り（`get_ime_conversion_mode_raw_timeout`）が、`Chrome_WidgetWin_1` と GJI 候補ポップアップ（`Windows.UI.Input.InputSite.WindowClass`）の間でフォーカスが往復する際に一瞬だけ誤ったカタカナ conv を拾うことがあり、これを `ConvModeMgr` が無条件に確定していた
