@@ -109,8 +109,37 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
-<h3>バグ修正</h3>
+<h3>追加</h3>
 <ul>
+<li><p><strong>US (ANSI 104) キーボード対応</strong></p>
+<ul>
+<li><code>crates/awase-windows/src/scanmap.rs</code> に US 配列専用のスキャンコード⇔物理位置テーブル（<code>scan_to_pos_us</code>/<code>pos_to_scan_us</code>）を追加し、<code>KeyboardModel::{Jis,Us}</code> に応じて使い分けるよう配線</li>
+<li><code>general.keyboard_model</code>（&quot;jis&quot;/&quot;us&quot;）設定を再導入。2026-07-06 に「一度も配線されなかった」として撤去された同名フィールドを、今度は <code>.yab</code> パース・<code>HookConfig</code>（フックの scan_to_pos テーブル選択）まで実際に配線した上で復活させた</li>
+<li><code>KeyboardModel::Us.row_sizes()</code> の row0 を 13→12 に修正（グレイブキーは物理キー非対応としてグリッド外扱い。旧値は一度も実行されなかった未検証コードの誤り）</li>
+<li>US 配列用レイアウト <code>layout/nicola_us.yab</code> を追加（<code>layout/nicola.yab</code> から JIS 専用キーの列を除去したもの。共有するスキャンコードの値はそのまま流用）</li>
+<li><code>keyboard_model = &quot;us&quot;</code> かつ 無変換/変換キー前提の既定値（<code>left_thumb_key</code>/<code>right_thumb_key</code>/<code>[keys]</code> の各ホットキー）が残っている場合、起動時検証で警告するよう <code>AppConfig::validate</code> を拡張</li>
+<li>設定画面（awase-settings）に JIS/US 選択・配列プレビューの追随・親指キー候補を追加</li>
+<li>Linux/macOS 側は今回未対応（<code>KeyboardModel::Jis</code> 固定のまま）</li>
+</ul>
+</li>
+<li><p><strong>親指キーに Ctrl/Alt/Win を割り当てても機能しないことが判明（<code>engine/tests.rs</code>）</strong></p>
+<ul>
+<li>US 配列向けに <code>VK_LMENU</code>/<code>VK_RMENU</code>（Alt）を親指キーの代替として一度推奨したが、
+実際にはそのキーの KeyDown 自体が <code>ModifierState::is_os_modifier_held()</code> →
+<code>bypass_reason</code> の <code>OsModifierHeld</code> に即座に該当し、<code>PendingThumb</code> に一切入らず
+素通しされる（同時打鍵検出そのものが機能しない）ことが判明。Alt に限らず
+Ctrl/Win も同様に不可</li>
+<li><code>test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass</code> で
+この制約を固定。Shift は <code>is_os_modifier_held()</code> の対象外のため <code>PendingThumb</code>
+には到達できる（<code>test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier</code>
+で単独タップの suppress を確認済み）が、Shift 面機能との相互作用は未検証</li>
+<li>併せて <code>timeout_pending_thumb</code> に、親指キーが OS 修飾キーの場合は composing に
+関わらず単独タップの生 VK 送出を suppress する防御を追加（<code>ClassifiedEvent</code>/
+<code>PendingThumbData</code> に <code>modifier_key</code> を伝播）</li>
+<li>config.rs / config.toml.sample / awase-settings の推奨から Alt を撤回し、
+F13-F24（プログラマブルキーボードでの物理リマップ前提）/ VK_SPACE を代替として案内</li>
+</ul>
+</li>
 <li><p><strong>Chrome/Edge で conv mode の一発誤読が GJI を実際にカタカナへ固定する不具合を修正（BUG-19）</strong></p>
 <ul>
 <li><code>GetForegroundWindow()</code> 基準の conv 読み取り（<code>get_ime_conversion_mode_raw_timeout</code>）が、<code>Chrome_WidgetWin_1</code> と GJI 候補ポップアップ（<code>Windows.UI.Input.InputSite.WindowClass</code>）の間でフォーカスが往復する際に一瞬だけ誤ったカタカナ conv を拾うことがあり、これを <code>ConvModeMgr</code> が無条件に確定していた</li>
