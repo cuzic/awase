@@ -1,0 +1,53 @@
+# awase-macos-probe は macOS 専用 API（CGEventTap / TIS / NSWorkspace）を叩くため、
+# Linux 開発機ではリンクも実行もできない。このワークフローが、実 macOS ハードウェアが
+# 使えるようになるまでの主要な継続検証手段（native build+link+test）である。
+# 権限付与・物理キー入力・IME 切替などの対話的検証は実機依存のため対象外
+# （docs/known-bugs.md / macOS 移植メモ参照）。
+name: awase-macos-probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/awase-macos-probe/**"
+      - ".github/workflows/awase-macos-probe.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/awase-macos-probe/**"
+      - ".github/workflows/awase-macos-probe.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      # macos-latest は macOS をネイティブターゲットとするため、実 macOS SDK に対する
+      # 本物のリンクが走る。Linux 開発機では不可能な「リンクが通るか」の検証はここが唯一の砦。
+      - name: Build awase-macos-probe
+        run: cargo build -p awase-macos-probe
+
+      # ring buffer / synthetic identity cookie / JSON escaping / ShutdownSignal など
+      # プラットフォーム非依存な純ロジックのユニットテスト。
+      - name: Run unit tests
+        run: cargo test -p awase-macos-probe --lib
+
+      # layout_probe の keycode→文字クエリ（Carbon UCKeyTranslate）は権限不要な純クエリだが
+      # bin モジュールにあるため --lib では走らない。名前フィルタで layout_probe のテストだけを
+      # 実行し、tap/keys など TCC 権限を要する他モジュールのテストは巻き込まない。
+      # --nocapture でランナー既定レイアウト（US ABC 想定）の keycode→文字実測をログに残す。
+      - name: Run layout_probe keycode-translation tests
+        run: cargo test -p awase-macos-probe --bins layout_probe -- --nocapture
+
+      # crate 側の [lints.clippy] が cargo_common_metadata / multiple_crate_versions を
+      # allow 済みなので、ci.yml の workspace 版と違い -A clippy::cargo 系フラグは不要。
+      - name: Clippy
+        run: cargo clippy -p awase-macos-probe -- -D warnings
