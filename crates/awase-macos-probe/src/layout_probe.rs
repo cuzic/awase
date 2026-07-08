@@ -119,30 +119,36 @@ mod imp {
         // UCKeyTranslate 呼び出し中ずっと有効。UCKeyTranslate は読み取りのみ。
         let layout_ptr = layout.as_ptr().cast::<c_void>();
 
-        // SAFETY: 引数なしの Carbon 関数。現在のキーボード種別を返す。
-        let keyboard_type = u32::from(unsafe { LMGetKbdType() });
-
         let mut dead_key_state: u32 = 0;
         let mut buf = [0u16; 8];
         let mut actual_len: UniCharCount = 0;
         let max_len = buf.len() as UniCharCount;
 
-        // SAFETY: layout_ptr は len>0 の直列化 UCKeyboardLayout を指す借用ポインタ。
-        // dead_key_state / actual_len / buf は呼び出し側所有の可変域で、buf は max_len 要素。
-        let status = unsafe {
-            UCKeyTranslate(
-                layout_ptr,
-                virtual_keycode,
-                UC_KEY_ACTION_DOWN,
-                modifier_key_state,
-                keyboard_type,
-                UC_KEY_TRANSLATE_NO_DEAD_KEYS_MASK,
-                &raw mut dead_key_state,
-                max_len,
-                &raw mut actual_len,
-                buf.as_mut_ptr(),
-            )
-        };
+        // Carbon Text Services（LMGetKbdType/UCKeyTranslate）はスレッドセーフ性が
+        // 保証されておらず、tis_sys.rs 側の TIS 呼び出しと同時に別スレッドから叩くと
+        // クラッシュしうる（2026-07-08 macOS CI 初回実行で実測: --nocapture でテスト名すら
+        // 出ないまま即 SIGABRT）。tis_sys::with_tis_lock で同一プロセス内の全 Carbon Text
+        // Services 呼び出しと直列化する。
+        let status = crate::tis_sys::with_tis_lock(|| {
+            // SAFETY: 引数なしの Carbon 関数。現在のキーボード種別を返す。
+            let keyboard_type = u32::from(unsafe { LMGetKbdType() });
+            // SAFETY: layout_ptr は len>0 の直列化 UCKeyboardLayout を指す借用ポインタ。
+            // dead_key_state / actual_len / buf は呼び出し側所有の可変域で、buf は max_len 要素。
+            unsafe {
+                UCKeyTranslate(
+                    layout_ptr,
+                    virtual_keycode,
+                    UC_KEY_ACTION_DOWN,
+                    modifier_key_state,
+                    keyboard_type,
+                    UC_KEY_TRANSLATE_NO_DEAD_KEYS_MASK,
+                    &raw mut dead_key_state,
+                    max_len,
+                    &raw mut actual_len,
+                    buf.as_mut_ptr(),
+                )
+            }
+        });
 
         if status != 0 {
             return None;

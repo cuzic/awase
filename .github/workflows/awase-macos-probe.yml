@@ -44,8 +44,11 @@ jobs:
       # bin モジュールにあるため --lib では走らない。名前フィルタで layout_probe のテストだけを
       # 実行し、tap/keys など TCC 権限を要する他モジュールのテストは巻き込まない。
       # --nocapture でランナー既定レイアウト（US ABC 想定）の keycode→文字実測をログに残す。
+      # --test-threads=1: Carbon Text Services はスレッドセーフ性が保証されておらず、初回
+      # macOS 実機実行で並列テストが即 SIGABRT した（tis_sys::with_tis_lock で直列化済みだが
+      # 念のため多重の安全策として明示的に単一スレッド実行にする）。
       - name: Run layout_probe keycode-translation tests
-        run: cargo test -p awase-macos-probe --bins layout_probe -- --nocapture
+        run: cargo test -p awase-macos-probe --bins layout_probe -- --nocapture --test-threads=1
 
       # crate 側の [lints.clippy] が cargo_common_metadata / multiple_crate_versions を
       # allow 済みなので、ci.yml の workspace 版と違い -A clippy::cargo 系フラグは不要。

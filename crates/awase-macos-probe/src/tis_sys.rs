@@ -20,7 +20,7 @@
 pub use imp::{
     copy_current_input_source, create_input_source_list,
     enabled_input_sources_changed_notification_name, select_input_source,
-    selected_input_source_changed_notification_name, InputSourceHandle,
+    selected_input_source_changed_notification_name, with_tis_lock, InputSourceHandle,
 };
 
 #[allow(unused_imports)]
@@ -28,13 +28,14 @@ pub use imp::{
 pub use imp::{
     copy_current_input_source, create_input_source_list,
     enabled_input_sources_changed_notification_name, select_input_source,
-    selected_input_source_changed_notification_name, InputSourceHandle,
+    selected_input_source_changed_notification_name, with_tis_lock, InputSourceHandle,
 };
 
 #[cfg(target_os = "macos")]
 mod imp {
     use core::ffi::c_void;
     use core::ptr::NonNull;
+    use std::sync::Mutex;
 
     use objc2_core_foundation::{CFArray, CFBoolean, CFData, CFRetained, CFString, CFType};
 
@@ -42,6 +43,26 @@ mod imp {
     type CFTypeRef = *mut c_void;
     /// 借用／定数の `CFTypeRef`（property key 等）を表す生ポインタ型。
     type ConstCFTypeRef = *const c_void;
+
+    /// Carbon Text Input Source Services（TIS）呼び出し全体を直列化するプロセス内ロック。
+    ///
+    /// 2026-07-08 の初回 macOS CI 実機実行で、`cargo test` の既定並列実行下
+    /// （複数スレッドがほぼ同時に TIS/`UCKeyTranslate` を呼ぶ）で即座に SIGABRT する
+    /// ことを実測した（テスト名の出力すら無い即死）。Carbon 期の Text Services API 群は
+    /// スレッドセーフ性が保証されておらず、同時呼び出しで内部状態が壊れると見られる。
+    /// このロックを全 TIS 呼び出し（`property()` 経由の getter も含む）と
+    /// `layout_probe.rs` の `UCKeyTranslate`/`LMGetKbdType` の両方で共有し、同一プロセス内
+    /// では常に 1 スレッドしか Carbon Text Services を呼ばないようにする。
+    static TIS_LOCK: Mutex<()> = Mutex::new(());
+
+    /// [`TIS_LOCK`] を保持しながら `f` を実行する。Carbon Text Services を呼ぶコードは
+    /// 必ずこれ経由にすること（`tis_sys.rs` 内・`layout_probe.rs` の両方）。
+    pub fn with_tis_lock<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = TIS_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f()
+    }
 
     #[link(name = "Carbon", kind = "framework")]
     // dead_code: この extern ブロックは Carbon TIS API 全体の宣言を1箇所にまとめる。
@@ -121,8 +142,10 @@ mod imp {
     /// 現在選択中のキーボード入力ソースを取得する。
     #[must_use]
     pub fn copy_current_input_source() -> Option<InputSourceHandle> {
-        // SAFETY: 引数なしの Carbon 関数呼び出し。戻り値は所有付き CFTypeRef。
-        let ptr = unsafe { TISCopyCurrentKeyboardInputSource() };
+        let ptr = with_tis_lock(|| {
+            // SAFETY: 引数なしの Carbon 関数呼び出し。戻り値は所有付き CFTypeRef。
+            unsafe { TISCopyCurrentKeyboardInputSource() }
+        });
         adopt_owned(ptr)
     }
 
@@ -131,8 +154,9 @@ mod imp {
     pub fn create_input_source_list(include_all_installed: bool) -> Vec<InputSourceHandle> {
         // SAFETY: properties=NULL は「フィルタなし全件」を意味する妥当な引数。
         // 戻り値は所有付きの CFArrayRef。
-        let arr_ptr =
-            unsafe { TISCreateInputSourceList(core::ptr::null(), u8::from(include_all_installed)) };
+        let arr_ptr = with_tis_lock(|| unsafe {
+            TISCreateInputSourceList(core::ptr::null(), u8::from(include_all_installed))
+        });
         let Some(arr_owned) = adopt_owned(arr_ptr) else {
             return Vec::new();
         };
@@ -161,8 +185,10 @@ mod imp {
     /// `TISSelectInputSource` が 0 以外の `OSStatus` を返した場合。
     #[allow(dead_code)]
     pub fn select_input_source(handle: &InputSourceHandle) -> Result<(), i32> {
-        // SAFETY: handle.raw() は生存中の所有 TISInputSourceRef。
-        let status = unsafe { TISSelectInputSource(handle.raw()) };
+        let status = with_tis_lock(|| {
+            // SAFETY: handle.raw() は生存中の所有 TISInputSourceRef。
+            unsafe { TISSelectInputSource(handle.raw()) }
+        });
         if status == 0 {
             Ok(())
         } else {
@@ -203,9 +229,11 @@ mod imp {
         /// property を **借用**の `&CFType` として取得する（release しない）。
         /// 戻り値の生存期間は `&self`（対象 input source）に束縛される。
         fn property(&self, key: ConstCFTypeRef) -> Option<&CFType> {
-            // SAFETY: raw() は生存中の所有 TISInputSourceRef、key はグローバルな
-            // CFStringRef property key。戻り値は input source が所有する借用値。
-            let val = unsafe { TISGetInputSourceProperty(self.raw(), key) };
+            let val = with_tis_lock(|| {
+                // SAFETY: raw() は生存中の所有 TISInputSourceRef、key はグローバルな
+                // CFStringRef property key。戻り値は input source が所有する借用値。
+                unsafe { TISGetInputSourceProperty(self.raw(), key) }
+            });
             let nn = NonNull::new(val.cast::<CFType>())?;
             // SAFETY: 借用値は input source（= self）が生きている間有効。release しない。
             Some(unsafe { nn.as_ref() })
@@ -359,6 +387,12 @@ mod imp {
     //! 非 macOS ホスト（この開発機の Linux 等）向けフォールバック。Carbon は存在しない
     //! ため、全 API は空の結果を返す。これによりクレートはどのホストでもコンパイルできる。
     #![allow(clippy::unused_self)]
+
+    /// macOS 版 `with_tis_lock` の非 macOS スタブ。Carbon が無いので直列化の必要が無く、
+    /// 単に `f` を実行する。
+    pub fn with_tis_lock<T>(f: impl FnOnce() -> T) -> T {
+        f()
+    }
 
     /// 非 macOS では中身を持たないプレースホルダ。
     #[derive(Debug)]
