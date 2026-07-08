@@ -1111,6 +1111,90 @@ JSON スキーマ（`conv: u32`）はそのまま維持し、リプレイ側
 （`classify_conv_transition` のシグネチャ）,
 `crates/awase-windows/tests/journal_replay.rs`
 
+**追補2（2026-07-08 別インシデントで再発、根治）:** 上記2件の修正（デバウンス +
+確定値の一本化）を適用済みの状態でも、Chrome (`Chrome_WidgetWin_1`, `GJI`,
+`Imm32Unavailable`) で同一の症状（`conv=0x0000001B` ZenKata 誤読 → engine
+勝手に ON）が再発した（実機ログ 2026-07-08T09:07:03〜05）。今回はユーザーが
+`IME OFF (key combo)` で明示的に OFF にした **1.6 秒後**に発火しており、
+デバウンス自体は機能していた（`ConvModeMgr` の2回連続観測確定を経ていた）。
+
+**根本原因:** `KatakanaShadowOff`/`NativeToggleShadowOff` は
+`handle_engine_set_open(true)` → `write_set_open_request(true)` →
+`ImeEvent::UserImeSetIntent { source: UserIntentSource::Command }` という、
+物理キー押下による正規のユーザートグルと**同じ経路**を通っていた。`Command`
+は削除されていない正規の `UserIntentSource` 値のため、`IntentSource::Recovery`
+撤去（`6971168`）や `observation_source_guard` dylint では検知できない
+「観測がユーザー意図を偽装する」経路になっていた。これにより conv ビットからの
+間接推測（GJI 候補ポップアップ `Windows.UI.Input.InputSite.WindowClass` への
+フォーカス flicker 起因）が `desired_open` を直接 `true` へ上書きし、
+ユーザーの明示 OFF 意図（`last_intent=Some(false)`）を消し去っていた。
+
+さらに、これは単に `.claude/rules/ime-belief-architecture.md` の
+「Observer は `desired_open` を直接書き換えない」原則への違反であるだけでなく、
+**BUG-20 が同日修正した drift correction（`check_drift_correction` /
+`ir_apply_drift_correction`）を機能不全にする**副作用があった: `desired_open`
+が `true` に上書きされると `check_drift_correction` から見て
+「desired==observed（両方 true）で乖離なし」に見え、本来 `desired=false` を
+正しく再送すべき drift correction が発火する前に判断材料そのものが消えていた。
+
+**修正:** `KatakanaShadowOff`/`NativeToggleShadowOff` を `EngineSync::SetOpen`
+から新設の `EngineSync::ReportOpenInference` に分離し、`desired_open` を
+一切書き換えず `PlatformState::report_conv_open_inference()` 経由で
+`ObserverReported { source: ObservationSource::ConvOpenInference,
+confidence: Medium }` として記録するだけにした（engine を actuate しない）。
+`ConvOpenInference` は `ConvBitsInference`/`GjiIoInference`（input_mode 専用、
+`PerSourceObservations` に記録されない設計）とは別に、正式な open/close 観測
+として `PerSourceObservations` に配線した。
+
+実際の補正判断はこれで自動的に BUG-20 で修正済みの drift correction へ委譲
+される。ただし `check_drift_correction` の `most_recent_trusted()` は
+confidence の下限フィルタを持たないため（Low でも「他に観測が無ければ」採用
+され得る）、明示的なユーザー意図が一度も無い（起動直後等）状態で
+`ConvOpenInference` 単独が `desired_open` のデフォルト値を actuate してしまう
+リスクが残る。これを塞ぐため `check_drift_correction` に source-aware gate を
+追加した: `trusted.source == ConvOpenInference && explicit_intent.is_none()`
+の場合は補正を発火させない。ユーザーの明示意図がある場合（今回の再発シナリオ）
+はこの gate を素通りし、`desired`（ユーザーの意図した値）が正しく再適用される。
+
+**テスト:** `state/observation_store.rs`・`state/ime_model.rs`（Linux で
+`cargo test -p awase-windows --lib` 実行可能、純粋関数/reducer）に
+`ConvOpenInference` の配線・`desired_open`/`last_intent` 非破壊を固定する
+ユニットテストを追加。`state/platform_state.rs`（Windows 専用モジュールのため
+Linux ではコンパイル検証のみ、`cargo build/test --target
+x86_64-pc-windows-gnu` で確認）に `check_drift_correction`/
+`report_conv_open_inference` のユニットテスト5件（明示意図一致時は即時補正・
+明示意図なしでは補正しない・desired一致時は補正不要・max_age超過観測は無視、
+等）を追加。`tests/architecture_guard.rs` に
+`katakana_and_native_toggle_shadow_off_never_use_set_open`（`EngineSync::
+SetOpen(ConvSyncReason::KatakanaShadowOff/NativeToggleShadowOff)` の組み合わせ
+が本番コードに出現しないことを固定）と
+`conv_open_inference_source_is_limited_to_report_and_gate`（`ObservationSource::
+ConvOpenInference` の参照箇所を2箇所に固定）を追加。
+
+**検証状況:** Linux 上での `cargo build -p awase-windows --target
+x86_64-pc-windows-gnu` クロスコンパイルと `cargo test -p awase-windows`
+(lib 126件・architecture_guard 10件・golden_scenarios 17件・journal_replay
+1件・layer_boundary_guard 8件、全件 pass) を確認済み。`check_drift_correction`
+は `platform_state.rs` が `#[cfg(windows)]` 限定のため Linux 上でユニット
+テストを実行できず（`--target x86_64-pc-windows-gnu --no-run` でのコンパイル
+確認のみ）。Windows 実機（Chrome + GJI、GJI 候補ポップアップへのフォーカス
+flicker 再現）での動作確認は未実施。
+
+**関連ファイル（追補2）:** `crates/awase-windows/src/state/conv_classify.rs`
+（`EngineSync::ReportOpenInference`）,
+`crates/awase-windows/src/state/ime_event.rs`
+（`ObservationSource::ConvOpenInference`）,
+`crates/awase-windows/src/state/observation_store.rs`
+（`PerSourceObservations::conv_open_inference`）,
+`crates/awase-windows/src/state/platform_state.rs`
+（`report_conv_open_inference`, `check_drift_correction` の source-aware
+gate）, `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_apply_conv_engine_sync`）, `crates/awase-windows/tests/architecture_guard.rs`
+
+**関連バグ:** BUG-20（同日修正、drift correction の OFF 方向修正がこの根治の
+前提条件になった）, `.claude/rules/ime-belief-architecture.md`（Observer が
+`desired_open` を偽装して書き換える禁止パターンの実例として追記候補）
+
 ---
 
 ## BUG-20: ドリフト補正の再送が non-ImmCross アプリで no-op のため IME ON / Engine OFF が固定化する（修正済み・実機検証待ち）
