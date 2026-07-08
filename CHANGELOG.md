@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
   - 確定した誤読を eager warmup（`send_eager_tsf_warmup`）が鵜呑みにし、`VK_DBE_KATAKANA` を実送信 → 一過性の誤読が GJI の本当の状態としてロックインされ、以後の入力が全部カタカナ化し、さらに `KatakanaShadowOff` 救済ロジックが繰り返し IME OFF/ON を往復させて先頭文字の literal 漏れを誘発していた
   - `ConvModeMgr::update_from_conv` に、非カタカナ→カタカナ遷移限定のデバウンス（`ImeKindDebounce` と同一の「2 tick 連続確認」パターン）を追加
   - 追補: 上記は warmup 側（`ConvModeMgr`）しか保護しておらず、`classify_conv_transition`（belief 更新・`KatakanaShadowOff` 等の engine 同期）は raw conv を直接再解釈しており同じ誤読に無防備だった。`classify_conv_transition` の引数を `conv: u32` から `ConvModeMgr::get()` 由来の `ConvMode` に変更し、warmup と belief/engine-sync が同一の確定値を参照するよう統一した。詳細は docs/known-bugs.md BUG-19
+  - 追補2: デバウンス済み状態でも、ユーザーが IME を明示的に OFF にした直後に conv の誤読で `KatakanaShadowOff`/`NativeToggleShadowOff` が発火すると、`UserImeSetIntent{Command}` を偽装して `desired_open` を直接書き換えてしまい、engine が勝手に ON へ戻る別経路の再発があった。これを `EngineSync::ReportOpenInference` に分離し、`desired_open` を書き換えず `ObserverReported`（`ObservationSource::ConvOpenInference`, Medium confidence）として記録するだけに変更。実際の補正判断は既存の drift correction（BUG-20 で OFF 方向も修正済み）に委譲する。明示的なユーザー意図が一度も無い間はこの観測単独で補正を発火させない source-aware gate も追加した
 
 - **Chrome 入力中、CLSID ベース IME 種別の単発誤検出で `GjiFsm` が単語ごとに再構築され `cold` が発火し続ける不具合を修正（BUG-17）**
   - `gji-io-monitor` ワーカースレッドが 2 秒ごとにポーリングする `ITfInputProcessorProfileMgr::GetActiveProfile` の単発フリップを `WM_IME_KIND_CHANGED` としてそのまま main スレッドへ伝播しており、`set_active_ime_kind` が種別変化のたびに warmup 戦略（`GjiFsm`/`MsImeStrategy`）を無条件で新規生成 → 確立済みの `OnWarm`/`OnComposing` を破棄していた
