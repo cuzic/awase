@@ -30,12 +30,31 @@ pub enum ConvSyncReason {
 pub enum EngineSync {
     /// engine への働きかけなし。
     None,
-    /// engine を ON にする (`handle_engine_set_open(true)`)。
+    /// engine を ON にする (`handle_engine_set_open(true)`)。`RomajiRecovered` のみが
+    /// この経路を使う: `effective_open` が既に true の状態での belief 再同期であり、
+    /// shadow=OFF から新たに ON 意図を作り出すものではないため、ユーザー意図経路
+    /// (`UserImeSetIntent{Command}`) の再利用を許容する。
     SetOpen(ConvSyncReason),
     /// `ObservedEisu` 観測 → engine OFF + DirectInput。conv の英数モードは IME-ON の
     /// 確証（conv=0x10 は ROMAN ビット付き半角英数）のため、`effective_open=true` の
     /// belief を直接注入して apply する。
     DirectInput,
+    /// conv ビットが shadow=OFF 中に NATIVE/KATAKANA への切替を示した
+    /// (`KatakanaShadowOff` / `NativeToggleShadowOff`)。
+    ///
+    /// かつては `SetOpen` として `handle_engine_set_open(true)` を直接呼び、
+    /// `UserImeSetIntent{Command}` を偽装して `desired_open` を書き換えていた。
+    /// これによりユーザーが明示的に IME OFF にした直後でも、engine が conv の
+    /// 一発誤読（GJI 候補ポップアップへのフォーカス flicker 等）を理由に勝手に
+    /// ON へ戻る再発バグを起こした（2026-07-08, BUG-19 再発）。
+    ///
+    /// この variant は engine を actuate せず、呼び出し元が
+    /// `PlatformState::report_conv_open_inference()` 経由で `ObserverReported`
+    /// として記録するだけにとどめる。`desired_open` は変更されないため、実際に
+    /// 補正が必要かどうかの判断は既存の drift correction 経路
+    /// (`check_drift_correction` / `ir_apply_drift_correction`、BUG-20 で OFF 方向も
+    /// 修正済み) に委ねられる。
+    ReportOpenInference(ConvSyncReason),
 }
 
 /// idle-conv-check の判断結果。input_mode belief の更新と engine 同期を分離して表す。
@@ -101,12 +120,12 @@ pub fn classify_conv_transition(
             // - conv 変化: NATIVE(ひらがな/カタカナ)切替+shadow=OFF を engine ON 同期。
             if !conv_mode_changed {
                 if has_katakana && has_native && !effective_open {
-                    EngineSync::SetOpen(ConvSyncReason::KatakanaShadowOff)
+                    EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
                 } else {
                     EngineSync::None
                 }
             } else if has_native && !effective_open {
-                EngineSync::SetOpen(ConvSyncReason::NativeToggleShadowOff)
+                EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
             } else {
                 EngineSync::None
             }
@@ -123,11 +142,11 @@ pub fn classify_conv_transition(
                 && has_katakana
                 && !effective_open
             {
-                EngineSync::SetOpen(ConvSyncReason::KatakanaShadowOff)
+                EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
             } else if !was_romaji_capable && new_mode.is_romaji_capable() && effective_open {
                 EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
             } else if conv_mode_changed && has_native && !effective_open {
-                EngineSync::SetOpen(ConvSyncReason::NativeToggleShadowOff)
+                EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
             } else {
                 EngineSync::None
             }
@@ -285,10 +304,10 @@ mod tests {
     fn hankata_from_non_romaji_recovers_to_observed_romaji() {
         let t = classify(CONV_HANKATA, InputModeState::ObservedKana, false, true);
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedRomaji));
-        // shadow=OFF + カタカナ検出 → engine ON 同期
+        // shadow=OFF + カタカナ検出 → ObserverReported として記録するだけ (engine は actuate しない)
         assert_eq!(
             t.engine,
-            EngineSync::SetOpen(ConvSyncReason::KatakanaShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
         );
     }
 
@@ -298,7 +317,7 @@ mod tests {
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedRomaji));
         assert_eq!(
             t.engine,
-            EngineSync::SetOpen(ConvSyncReason::KatakanaShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
         );
     }
 
@@ -317,7 +336,7 @@ mod tests {
         assert_eq!(t.input_mode_update, None);
         assert_eq!(
             t.engine,
-            EngineSync::SetOpen(ConvSyncReason::KatakanaShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
         );
     }
 
@@ -329,7 +348,10 @@ mod tests {
     fn hiragana_roman_recovers_romaji_and_restarts_engine_when_shadow_on() {
         let t = classify(CONV_HIRAGANA, InputModeState::ObservedKana, true, true);
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedRomaji));
-        assert_eq!(t.engine, EngineSync::SetOpen(ConvSyncReason::RomajiRecovered));
+        assert_eq!(
+            t.engine,
+            EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
+        );
     }
 
     /// 同上だが shadow=OFF: RomajiRecovered は effective_open を要求するため発火せず、
@@ -340,7 +362,7 @@ mod tests {
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedRomaji));
         assert_eq!(
             t.engine,
-            EngineSync::SetOpen(ConvSyncReason::NativeToggleShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         );
     }
 
@@ -357,7 +379,10 @@ mod tests {
                 reason: AssumedReason::ImmBridgeBroken
             })
         );
-        assert_eq!(t.engine, EngineSync::SetOpen(ConvSyncReason::RomajiRecovered));
+        assert_eq!(
+            t.engine,
+            EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
+        );
     }
 
     #[test]
@@ -376,7 +401,7 @@ mod tests {
         assert_eq!(t.input_mode_update, None);
         assert_eq!(
             t.engine,
-            EngineSync::SetOpen(ConvSyncReason::NativeToggleShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         );
     }
 
@@ -388,7 +413,7 @@ mod tests {
         assert_eq!(t.input_mode_update, None);
         assert_eq!(
             t.engine,
-            EngineSync::SetOpen(ConvSyncReason::NativeToggleShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         );
     }
 
@@ -398,14 +423,28 @@ mod tests {
     /// downgrade を抑制する。classify_idle は None を返すため belief は維持される。
     #[test]
     fn tsf_native_suppresses_romaji_to_kana_downgrade() {
-        let t = classify_conv_transition(ConvMode::from_u32(CONV_JISKANA), assumed(), false, true, false, false);
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_JISKANA),
+            assumed(),
+            false,
+            true,
+            false,
+            false,
+        );
         assert_eq!(t.input_mode_update, None);
     }
 
     /// 逆に is_roman_reliable=true（通常 IMM32）ではひらがな conv で ObservedKana に訂正する。
     #[test]
     fn roman_reliable_downgrades_to_kana() {
-        let t = classify_conv_transition(ConvMode::from_u32(CONV_JISKANA), assumed(), false, false, true, true);
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_JISKANA),
+            assumed(),
+            false,
+            false,
+            true,
+            true,
+        );
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
     }
 
@@ -415,13 +454,27 @@ mod tests {
     /// conv でも belief を変更しない（英数モードのみ確実に判定）。
     #[test]
     fn cold_start_hiragana_roman_no_input_mode_change() {
-        let t = classify_conv_transition(ConvMode::from_u32(CONV_HIRAGANA), InputModeState::Unknown, true, false, false, false);
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_HIRAGANA),
+            InputModeState::Unknown,
+            true,
+            false,
+            false,
+            false,
+        );
         assert_eq!(t.input_mode_update, None);
     }
 
     #[test]
     fn cold_start_eisu_still_detected() {
-        let t = classify_conv_transition(ConvMode::from_u32(CONV_HANALPHA), InputModeState::Unknown, true, false, true, false);
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_HANALPHA),
+            InputModeState::Unknown,
+            true,
+            false,
+            true,
+            false,
+        );
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedEisu));
         assert_eq!(t.engine, EngineSync::DirectInput);
     }
@@ -484,13 +537,24 @@ mod tests {
                                 }
                             }
                         }
-                        // SetOpen は必ず !effective_open か RomajiRecovered(effective_open) の
-                        // いずれかの整合した条件でのみ発火する。
+                        // SetOpen は RomajiRecovered 専用で、effective_open (engine 既に ON)
+                        // の belief 再同期にのみ使う — shadow=OFF から新規に ON 意図を
+                        // 作り出す KatakanaShadowOff/NativeToggleShadowOff はここには来ない
+                        // (ReportOpenInference に分離済み、BUG-19 再発対策)。
                         if let EngineSync::SetOpen(reason) = t.engine {
-                            match reason {
-                                ConvSyncReason::RomajiRecovered => assert!(open),
-                                _ => assert!(!open),
-                            }
+                            assert_eq!(reason, ConvSyncReason::RomajiRecovered);
+                            assert!(open);
+                        }
+                        // ReportOpenInference (KatakanaShadowOff/NativeToggleShadowOff) は
+                        // !effective_open でのみ発火し、desired_open は変更しない
+                        // (ObserverReported として記録するだけ)。
+                        if let EngineSync::ReportOpenInference(reason) = t.engine {
+                            assert!(matches!(
+                                reason,
+                                ConvSyncReason::KatakanaShadowOff
+                                    | ConvSyncReason::NativeToggleShadowOff
+                            ));
+                            assert!(!open);
                         }
                         // restore_roman は「ひらがな・非カタカナ・ROMANなし・engine open」
                         // でのみ発火する不変条件（conv 変化の有無には依存しない）。
@@ -526,7 +590,10 @@ mod tests {
             true,  // conv_mode_changed
             true,  // is_roman_reliable
         );
-        assert!(t.restore_roman, "reliable ROMAN + JISかな + engine open → 復元");
+        assert!(
+            t.restore_roman,
+            "reliable ROMAN + JISかな + engine open → 復元"
+        );
     }
 
     /// steady-state（conv 変化なし）でも reliable なら復元を要求する

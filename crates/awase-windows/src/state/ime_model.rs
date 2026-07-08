@@ -539,6 +539,61 @@ mod tests {
         );
     }
 
+    /// BUG-19 再発対策: `KatakanaShadowOff`/`NativeToggleShadowOff` が
+    /// `PlatformState::report_conv_open_inference()` 経由で `ObserverReported
+    /// { source: ConvOpenInference }` を dispatch しても、`desired_open` と
+    /// `last_intent`（ユーザーの明示 OFF 意図）は一切変更されないことを固定する。
+    /// `ConvOpenInference` は `PerSourceObservations` に正式に記録される点が
+    /// `ConvBitsInference`（input_mode 専用、常に記録されない）と異なる。
+    #[test]
+    fn conv_open_inference_observer_does_not_change_desired_or_last_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(!model.desired_open);
+        assert!(model.last_intent.is_some());
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ConvOpenInference,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
+            },
+        ));
+
+        assert!(
+            !model.desired_open,
+            "conv 由来の open 推論は desired_open を書き換えない (BUG-19 再発対策)"
+        );
+        assert!(
+            model.last_intent.is_some(),
+            "conv 由来の open 推論は last_intent (ユーザー明示意図) を消さない"
+        );
+        assert_eq!(
+            model
+                .observations
+                .per_source
+                .conv_open_inference
+                .as_ref()
+                .unwrap()
+                .open,
+            true,
+            "ConvOpenInference は ConvBitsInference と異なり正式な open 観測として記録される"
+        );
+        assert!(
+            model.observations.drift.is_some(),
+            "desired=false と observed=true の乖離が drift として追跡される"
+        );
+    }
+
     #[test]
     fn effective_open_falls_back_to_most_recent_trusted_when_derive_open_is_none() {
         let mut model = ImeModel::new(); // desired_open = true, 明示 intent なし

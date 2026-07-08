@@ -434,6 +434,17 @@ impl ImeStateHub {
         if trusted.age(now) > max_age {
             return None;
         }
+        // ConvOpenInference（conv ビットからの間接推測、KatakanaShadowOff/
+        // NativeToggleShadowOff 由来）は、明示的なユーザー意図が一度も無い間は単独で
+        // drift correction を発火させない。desired_open のデフォルト値（起動直後等、
+        // last_intent が一度も設定されていない状態）を conv 由来の推論だけで
+        // actuate すると、ユーザーが望んでもいない ON/OFF の押し付けになりかねない。
+        // 明示意図がある場合（BUG-19 再発の本来のシナリオ: ユーザーが OFF にした
+        // 直後に conv がまだ native/katakana を示す）はこの gate を素通りし、
+        // 既存の `desired`（ユーザーの意図した値）が正しく再適用される。
+        if trusted.source == ObservationSource::ConvOpenInference && explicit_intent.is_none() {
+            return None;
+        }
         if trusted.open == desired {
             return None;
         }
@@ -787,6 +798,43 @@ impl ImeStateHub {
             tick_ms,
         );
     }
+
+    /// idle-conv-check の conv ビット推論から得た IME open 状態を観測として記録する
+    /// (`KatakanaShadowOff` / `NativeToggleShadowOff`、`conv_classify::EngineSync::
+    /// ReportOpenInference` 経由)。
+    ///
+    /// `desired_open` を直接書き換えない — `ObserverReported` として `observations`
+    /// に記録するだけにとどめ、実際に補正が必要かどうかの判断は既存の drift
+    /// correction 経路 (`check_drift_correction`) に委ねる。かつては
+    /// `handle_engine_set_open(true)` を直接呼び `UserImeSetIntent{Command}` を偽装して
+    /// `desired_open` を上書きしていたため、ユーザーの明示 OFF 直後でも engine が
+    /// 勝手に ON へ戻る再発バグを起こした（2026-07-08, BUG-19 再発）。
+    ///
+    /// conv 由来の open 推論は間接観測（`ImmGetConversionStatus` の conv ビットから
+    /// 「native/katakana ならおそらく open」と推測しているだけで、`ImmGetOpenStatus`
+    /// を直接呼んでいるわけではない）のため confidence は `Medium` を上限とする
+    /// (`GjiIoInference` と同じ「間接観測」区分)。
+    ///
+    /// `tick_ms`: 呼び出し元が取得した現在時刻。
+    pub(crate) fn report_conv_open_inference(
+        &mut self,
+        open: bool,
+        reason: crate::state::conv_classify::ConvSyncReason,
+        tick_ms: TickMs,
+    ) {
+        log::debug!("[conv-open-inference] reason={reason:?} open={open}");
+        let focus_epoch = self.shadow_model.observations.current_focus_epoch;
+        self.dispatch_event(
+            ImeEvent::ObserverReported {
+                open,
+                source: ObservationSource::ConvOpenInference,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch,
+            },
+            tick_ms,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1045,6 +1093,124 @@ mod tests {
         assert!(
             !second,
             "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+        );
+    }
+
+    // ── report_conv_open_inference / check_drift_correction (BUG-19 再発対策) ──
+    //
+    // 2026-07-08 実機再発: ユーザーが IME OFF (last_intent=Some(false)) にした
+    // 約1.6秒後、conv ビットが native/katakana を示したことを理由に
+    // KatakanaShadowOff が UserImeSetIntent{Command} を偽装して desired_open を
+    // true に書き換え、engine が勝手に ON へ戻った。修正後は ObserverReported
+    // (ConvOpenInference) として記録するだけにとどめ、既存の drift correction が
+    // 正しい方向（desired=false の再送）で解決することを、実時間 sleep を使わず
+    // （drift.started_at / 観測の at を直接バックデートして）確認する。
+
+    use super::super::observation_store::ImeDrift;
+    use crate::state::conv_classify::ConvSyncReason;
+
+    #[test]
+    fn report_conv_open_inference_does_not_touch_desired_open_or_last_intent() {
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
+        ps.ime
+            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+        assert!(
+            !ps.ime.model().desired_open(),
+            "conv 由来の open 推論は desired_open を書き換えない"
+        );
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            Some(false),
+            "last_intent (explicit_intent) も変更されない — ObserverReported は意図を偽装しない"
+        );
+    }
+
+    // BUG-19 再発の実ログ相当: last_intent=Some(false) (explicit_intent==desired) なので
+    // threshold=0 となり、conv の一発観測直後でも正しい方向 (false の再送) が返る。
+    #[test]
+    fn check_drift_correction_fires_immediately_when_explicit_off_intent_conflicts_with_conv_inference(
+    ) {
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
+        ps.ime
+            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+        let now = std::time::Instant::now();
+        let explicit_intent = ps.ime.explicit_intent();
+        match ps.ime.check_drift_correction(now, explicit_intent) {
+            Some((desired, observed, _dur_ms)) => {
+                assert!(!desired, "desired は false のまま保持されている");
+                assert!(observed, "conv 推論が observed=true として記録されている");
+            }
+            None => panic!(
+                "explicit intent が desired と一致する場合は即時 (threshold=0) で \
+                 補正が返るべき"
+            ),
+        }
+    }
+
+    // 明示意図が一度も無い（起動直後等）状態では、conv 推論単独で drift correction
+    // を発火させない — desired_open のデフォルト値をユーザーの意図なしに actuate
+    // してしまうのを防ぐ。
+    #[test]
+    fn check_drift_correction_ignores_conv_inference_alone_without_explicit_intent() {
+        let mut ps = ps_with_shadow(false, None, true);
+        ps.ime
+            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+        // 明示意図が無いので threshold=DRIFT_CORRECTION_THRESHOLD_MS。実時間 sleep を
+        // 避けるため drift.started_at を直接バックデートして閾値超過を模す。
+        ps.ime.shadow_model.observations.drift = Some(ImeDrift {
+            started_at: std::time::Instant::now()
+                - std::time::Duration::from_millis(
+                    crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
+                ),
+        });
+        let now = std::time::Instant::now();
+        let explicit_intent = ps.ime.explicit_intent();
+        assert_eq!(explicit_intent, None);
+        assert_eq!(
+            ps.ime.check_drift_correction(now, explicit_intent),
+            None,
+            "明示意図なしでは ConvOpenInference 単独で補正を発火させない"
+        );
+    }
+
+    #[test]
+    fn check_drift_correction_none_when_conv_inference_matches_desired() {
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::PhysicalImeKey), true);
+        ps.ime
+            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+        let now = std::time::Instant::now();
+        let explicit_intent = ps.ime.explicit_intent();
+        assert_eq!(
+            ps.ime.check_drift_correction(now, explicit_intent),
+            None,
+            "desired と observed が一致していれば補正不要"
+        );
+    }
+
+    // GJI 候補ポップアップの観測が古くなった場合 (DRIFT_CORRECTION_OBS_MAX_AGE_MS 超過)
+    // は、明示意図があっても採用しない（BUG-20 の max_age ガードが ConvOpenInference
+    // にも同じく効くことの確認）。
+    #[test]
+    fn check_drift_correction_ignores_stale_conv_inference_beyond_max_age() {
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
+        ps.ime
+            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+        let stale_at = std::time::Instant::now()
+            - std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 200);
+        ps.ime
+            .shadow_model
+            .observations
+            .per_source
+            .conv_open_inference
+            .as_mut()
+            .unwrap()
+            .at = stale_at;
+        let now = std::time::Instant::now();
+        let explicit_intent = ps.ime.explicit_intent();
+        assert_eq!(
+            ps.ime.check_drift_correction(now, explicit_intent),
+            None,
+            "max_age を超えた観測は無視される"
         );
     }
 }
