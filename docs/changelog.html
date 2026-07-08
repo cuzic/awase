@@ -117,6 +117,7 @@ footer p{margin:0.3rem 0}
 <li>確定した誤読を eager warmup（<code>send_eager_tsf_warmup</code>）が鵜呑みにし、<code>VK_DBE_KATAKANA</code> を実送信 → 一過性の誤読が GJI の本当の状態としてロックインされ、以後の入力が全部カタカナ化し、さらに <code>KatakanaShadowOff</code> 救済ロジックが繰り返し IME OFF/ON を往復させて先頭文字の literal 漏れを誘発していた</li>
 <li><code>ConvModeMgr::update_from_conv</code> に、非カタカナ→カタカナ遷移限定のデバウンス（<code>ImeKindDebounce</code> と同一の「2 tick 連続確認」パターン）を追加</li>
 <li>追補: 上記は warmup 側（<code>ConvModeMgr</code>）しか保護しておらず、<code>classify_conv_transition</code>（belief 更新・<code>KatakanaShadowOff</code> 等の engine 同期）は raw conv を直接再解釈しており同じ誤読に無防備だった。<code>classify_conv_transition</code> の引数を <code>conv: u32</code> から <code>ConvModeMgr::get()</code> 由来の <code>ConvMode</code> に変更し、warmup と belief/engine-sync が同一の確定値を参照するよう統一した。詳細は docs/known-bugs.md BUG-19</li>
+<li>追補2: デバウンス済み状態でも、ユーザーが IME を明示的に OFF にした直後に conv の誤読で <code>KatakanaShadowOff</code>/<code>NativeToggleShadowOff</code> が発火すると、<code>UserImeSetIntent{Command}</code> を偽装して <code>desired_open</code> を直接書き換えてしまい、engine が勝手に ON へ戻る別経路の再発があった。これを <code>EngineSync::ReportOpenInference</code> に分離し、<code>desired_open</code> を書き換えず <code>ObserverReported</code>（<code>ObservationSource::ConvOpenInference</code>, Medium confidence）として記録するだけに変更。実際の補正判断は既存の drift correction（BUG-20 で OFF 方向も修正済み）に委譲する。明示的なユーザー意図が一度も無い間はこの観測単独で補正を発火させない source-aware gate も追加した</li>
 </ul>
 </li>
 <li><p><strong>Chrome 入力中、CLSID ベース IME 種別の単発誤検出で <code>GjiFsm</code> が単語ごとに再構築され <code>cold</code> が発火し続ける不具合を修正（BUG-17）</strong></p>
