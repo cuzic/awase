@@ -1,0 +1,4 @@
+# golden ファイルは Rust コード側が生成する `actual`（常に \n）とバイト単位で比較される。
+# Windows ランナーの git 既定 core.autocrlf=true によるチェックアウト時 CRLF 変換を防ぐため、
+# 改行コードを LF に固定する。
+crates/awase-windows/tests/golden/** text eol=lf
