@@ -498,12 +498,18 @@ impl Runtime {
 
     // ── ドリフト補正 ──
     //
-    // desired ≠ observed が DRIFT_CORRECTION_THRESHOLD_MS 以上続いた場合、
-    // ImmCross 経由で set_ime_open(desired) を再送する。
+    // desired ≠ observed が DRIFT_CORRECTION_THRESHOLD_MS 以上続いた場合、再送する。
     //
-    // 対象: IMM32 クロスプロセス対応アプリ（LINE 等 ImmCross）。
-    //   Blacklist アプリは apply_force_on_for_imm_broken が担当するため除外。
-    //   TsfNative アプリは can_use_imm32_cross_process=false で set_ime_open が no-op。
+    // - IMM32 クロスプロセス対応アプリ（LINE 等 ImmCross）: set_ime_open(desired) を使う。
+    // - non-ImmCross（GJI/TsfNative/Blacklist、Chrome/Windows Terminal 等）:
+    //   set_ime_open は can_use_imm32_cross_process=false で no-op になるため使えない。
+    //   apply_force_on_for_imm_broken は ON 方向専用で OFF 方向の乖離は担当しないため、
+    //   ここで strategy chain 経由の apply_ime_open_with_belief（実 VK 送信）を使う
+    //   （2026-07-08 実機: Windows Terminal/Chrome + GJI で IME OFF コンボ送信後、
+    //   Engine 内部は即 OFF になるが OS 側 IME は ON のまま固定される不具合。
+    //   set_ime_open の戻り値を見ずに mirror_applied_open_with_ts で belief だけ
+    //   「反映済み」にしていたため、実際には一切再送されていなかった。詳細は
+    //   docs/known-bugs.md BUG-20 を参照）。
 
     fn ir_check_drift_correction(&self, now: std::time::Instant) -> Option<(bool, bool, u64)> {
         let explicit_intent = self.platform_state.ime.explicit_intent();
@@ -550,10 +556,22 @@ impl Runtime {
                 },
                 tick_ms,
             );
-        let _ = self.platform.set_ime_open(desired);
-        self.platform_state
-            .ime
-            .mirror_applied_open_with_ts(desired, 0);
+        if self.can_use_imm32_cross_process() {
+            let _ = self.platform.set_ime_open(desired);
+            self.platform_state
+                .ime
+                .mirror_applied_open_with_ts(desired, 0);
+        } else {
+            // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
+            // apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。
+            let belief = crate::output::OpenBelief {
+                effective_open: desired,
+                confident: true,
+            };
+            let outcome = self.platform.apply_ime_open_with_belief(desired, None, belief);
+            log::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
+            self.on_ime_apply_complete(desired, outcome, None);
+        }
     }
 
     // ── Engine 通知 ──

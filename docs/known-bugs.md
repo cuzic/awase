@@ -1113,6 +1113,56 @@ JSON スキーマ（`conv: u32`）はそのまま維持し、リプレイ側
 
 ---
 
+## BUG-20: ドリフト補正の再送が non-ImmCross アプリで no-op のため IME ON / Engine OFF が固定化する（修正済み・実機検証待ち）
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、`TsfNative` プロファイル）・
+Chrome（`Chrome_WidgetWin_1`、`TsfNative`/`Imm32Unavailable` プロファイル）で GJI
+(Google 日本語入力) を使用中、2026-07-08 実機ログ（ユーザー報告）で「IME ON Engine OFF
+の状態になった」。Ctrl+無変換 で IME OFF コンボを送信すると awase Engine 側は即座に
+内部状態を非活性化する（`Engine::build_ime_set_open_decision` の設計上の楽観的自己遷移、
+`src/engine/engine.rs:429-447`）が、Windows IME 側の表示は ON のまま変わらず、
+07:41:56〜07:42:06 の約10秒間に `IME OFF (key combo)` → `Engine activated` の反復が
+4回発生した（ユーザーが直らないため無変換キーを何度も押し直した痕跡と推定）。
+
+**原因（確定）:** `crates/awase-windows/src/runtime/ime_refresh.rs`
+`ir_apply_drift_correction()` は `desired`（awase が望む IME 状態）と `observed`
+（実観測、GJI I/O 等から得る）が `DRIFT_CORRECTION_THRESHOLD_MS`（400ms）以上乖離すると
+再送を試みる。しかし従来の実装は乖離の方向によらず常に
+`self.platform.set_ime_open(desired)`（`platform.rs:670-686`）を呼んでいた。この関数は
+`can_use_imm32_cross_process()`（`AppImeProfile::Standard` のみ true）が false のとき
+即座に `false` を返す no-op であり、GJI/TsfNative（Windows Terminal・Chrome 等）では
+**常に no-op** になる。にもかかわらず戻り値を見ずに `mirror_applied_open_with_ts` で
+belief を無条件に「反映済み」とマークしていたため、`[drift] correction:` ログは出力
+されるがOSには一切届いていなかった。
+
+ON 方向には対称の実装（`apply_force_on_for_imm_broken`、`runtime/mod.rs:445-521`）が
+既にあり、non-ImmCross プロファイルでは strategy chain 経由の `apply_ime_open_with_belief`
+（実 VK 送信、GjiDirect/MsImeDirect 等）で確実に force-ON していた。旧
+`ir_apply_drift_correction` 直上のコメントには「Blacklist アプリは
+`apply_force_on_for_imm_broken` が担当するため除外」とあったが、これは ON 方向のみを
+指しており、**OFF 方向の対称実装が存在しなかった**ことが見落とされていた。
+
+**修正:** `ir_apply_drift_correction` に `can_use_imm32_cross_process()` による分岐を
+追加。ImmCross 対応アプリは従来通り `set_ime_open`。non-ImmCross では
+`apply_force_on_for_imm_broken` と同じ `platform.apply_ime_open_with_belief()` +
+`on_ime_apply_complete()`（generation 照合込みの belief 書き戻し）を使う。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`
+（`ir_apply_drift_correction`）, `crates/awase-windows/src/runtime/mod.rs`
+（`apply_force_on_for_imm_broken`、`on_ime_apply_complete`、参照実装として流用）,
+`crates/awase-windows/src/platform.rs`（`set_ime_open`, `apply_ime_open_with_belief`）,
+`crates/awase-windows/src/state/platform_state.rs`（`check_drift_correction`）
+
+**検証状況:** Linux 上で `cargo build -p awase-windows --target x86_64-pc-windows-gnu`
+のクロスコンパイルと `cargo test -p awase-windows`（`golden_scenarios` /
+`architecture_guard` / `layer_boundary_guard` / `journal_replay`）の既存回帰なしを
+確認済み。`ir_apply_drift_correction` の先（`ime_controller::CONTROLLER.apply`）は
+`SendInput`/`ImmSetOpenStatus` 系の `unsafe` Win32 API に直結し注入用シームがないため、
+Linux 上でのユニットテストは書けない（`ime_key_sequence_golden.rs` と同じ制約）。
+実機（Windows Terminal/Chrome + GJI）での動作確認は未実施。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
