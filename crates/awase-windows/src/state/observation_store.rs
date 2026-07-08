@@ -67,6 +67,10 @@ pub struct PerSourceObservations {
     pub imm_cross_probe: Option<ImeObservation>,
     /// 観測が一切ない場合の安全デフォルト推測（常に Low confidence）
     pub heuristic_default: Option<ImeObservation>,
+    /// conv ビットからの open 状態推定（`KatakanaShadowOff`/`NativeToggleShadowOff`）。
+    /// `ConvBitsInference`（input_mode 専用）とは別枠で、こちらは open/close の
+    /// 観測として正式に扱う。常に `ObservationConfidence::Medium` 以下で record される。
+    pub conv_open_inference: Option<ImeObservation>,
 }
 
 impl PerSourceObservations {
@@ -82,6 +86,7 @@ impl PerSourceObservations {
             ObservationSource::HwndCache => self.hwnd_cache.as_ref(),
             ObservationSource::ImmCrossProbe => self.imm_cross_probe.as_ref(),
             ObservationSource::HeuristicDefault => self.heuristic_default.as_ref(),
+            ObservationSource::ConvOpenInference => self.conv_open_inference.as_ref(),
             // ConvBitsInference / GjiIoInference は input_mode 専用ソースで
             // ON/OFF 観測としては記録されない。
             ObservationSource::ConvBitsInference | ObservationSource::GjiIoInference => None,
@@ -99,6 +104,7 @@ impl PerSourceObservations {
             ObservationSource::HwndCache => self.hwnd_cache = Some(obs),
             ObservationSource::ImmCrossProbe => self.imm_cross_probe = Some(obs),
             ObservationSource::HeuristicDefault => self.heuristic_default = Some(obs),
+            ObservationSource::ConvOpenInference => self.conv_open_inference = Some(obs),
             // ConvBitsInference / GjiIoInference は InputModeObserved 専用ソースで
             // ObserverReported（ON/OFF 観測）としては dispatch されないため、
             // この store には記録されない。
@@ -117,6 +123,7 @@ impl PerSourceObservations {
             self.hwnd_cache.as_ref(),
             self.imm_cross_probe.as_ref(),
             self.heuristic_default.as_ref(),
+            self.conv_open_inference.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -132,6 +139,7 @@ impl PerSourceObservations {
         self.hwnd_cache = None;
         self.imm_cross_probe = None;
         self.heuristic_default = None;
+        self.conv_open_inference = None;
     }
 }
 
@@ -250,7 +258,9 @@ impl ObservationStore {
         let high = self
             .per_source
             .iter()
-            .filter(|o| is_fresh(o) && is_epoch_ok(o) && o.confidence == ObservationConfidence::High)
+            .filter(|o| {
+                is_fresh(o) && is_epoch_ok(o) && o.confidence == ObservationConfidence::High
+            })
             .max_by_key(|o| o.at);
         if let Some(obs) = high {
             return Some(obs.open);
@@ -260,7 +270,8 @@ impl ObservationStore {
         let mut true_count = 0u32;
         let mut false_count = 0u32;
         for obs in self.per_source.iter() {
-            if !is_fresh(obs) || !is_epoch_ok(obs) || obs.confidence < ObservationConfidence::Medium {
+            if !is_fresh(obs) || !is_epoch_ok(obs) || obs.confidence < ObservationConfidence::Medium
+            {
                 continue;
             }
             if obs.open {
@@ -330,6 +341,32 @@ mod tests {
         assert_eq!(p.get(ObservationSource::Tsf), None);
     }
 
+    /// BUG-19 再発対策: `ConvOpenInference` は `ConvBitsInference`/`GjiIoInference`
+    /// (input_mode 専用、常に記録されない no-op) とは異なり、正式な open/close
+    /// 観測として `PerSourceObservations` に記録・取得できることを固定する。
+    #[test]
+    fn conv_open_inference_is_recorded_unlike_conv_bits_inference() {
+        let mut p = PerSourceObservations::default();
+        let now = Instant::now();
+        p.set(
+            ObservationSource::ConvOpenInference,
+            obs(true, ObservationSource::ConvOpenInference, now),
+        );
+        assert_eq!(
+            p.get(ObservationSource::ConvOpenInference).map(|x| x.open),
+            Some(true),
+            "ConvOpenInference は open 観測として記録される"
+        );
+
+        // 対照: ConvBitsInference/GjiIoInference は input_mode 専用のため
+        // set() が no-op で get() は常に None のまま (既存の設計)。
+        p.set(
+            ObservationSource::ConvBitsInference,
+            obs(true, ObservationSource::ConvBitsInference, now),
+        );
+        assert_eq!(p.get(ObservationSource::ConvBitsInference), None);
+    }
+
     #[test]
     fn store_record_and_clear() {
         let mut s = ObservationStore::default();
@@ -338,6 +375,31 @@ mod tests {
         assert!(s.per_source.observer_poll.is_some());
         s.clear_on_focus_change(1);
         assert!(s.per_source.observer_poll.is_none());
+    }
+
+    #[test]
+    fn conv_open_inference_participates_in_iter_and_clear_all() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        s.record(obs(true, ObservationSource::ConvOpenInference, now));
+        assert_eq!(
+            s.per_source
+                .iter()
+                .filter(|o| o.source == ObservationSource::ConvOpenInference)
+                .count(),
+            1,
+            "iter() が ConvOpenInference を含む"
+        );
+        assert_eq!(
+            s.derive_open(now),
+            Some(true),
+            "Medium confidence 単独で derive_open() に反映される (通常の観測ソースと同待遇)"
+        );
+        s.clear_on_focus_change(1);
+        assert!(
+            s.per_source.conv_open_inference.is_none(),
+            "clear_all() で ConvOpenInference もクリアされる"
+        );
     }
 
     #[test]

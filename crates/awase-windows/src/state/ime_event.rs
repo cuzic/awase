@@ -107,6 +107,22 @@ pub enum ObservationSource {
     /// I/O 活動は間接観測のため confidence は `Medium`、方向は
     /// `ObservedEisu → AssumedRomaji` の一方通行のみ（逆方向の推定はしない）。
     GjiIoInference,
+    /// conversion mode ビット（`ImmGetConversionStatus` 由来）からの IME open 状態の推定。
+    ///
+    /// `ConvBitsInference` は input_mode 専用（`PerSourceObservations` には記録されず、
+    /// `derive_open()`/`most_recent_trusted()` からは常に不可視）であり、open/close の
+    /// 観測としては扱わない設計になっている。しかし `classify_conv_transition` の
+    /// `KatakanaShadowOff`/`NativeToggleShadowOff`（shadow=OFF 中に NATIVE/KATAKANA conv
+    /// を観測）は、conv ビットから「OS 側 IME はまだ open らしい」という open 状態の
+    /// 推測でもある。かつてはこれを `UserImeSetIntent{Command}` として偽装し
+    /// `desired_open` を直接書き換えていたため、ユーザーが明示的に OFF にした直後でも
+    /// エンジンが勝手に ON に戻る再発バグを起こした（2026-07-08, BUG-19 再発）。
+    ///
+    /// この source は `PlatformState::report_conv_open_inference()` 専用。conv 由来の
+    /// 間接推測のため confidence は `Medium` を上限とし、`desired_open` は変更しない —
+    /// 実際に補正が必要かどうかの判断は `check_drift_correction()` に委ねる
+    /// （明示意図が無い間、この source 単独では drift correction を発火させない）。
+    ConvOpenInference,
     /// TSF observer 由来
     Tsf,
     /// per-HWND IME キャッシュからの復元
@@ -235,7 +251,10 @@ pub enum ImeEvent {
     UserImeToggleIntent { source: UserIntentSource },
 
     /// ユーザー/awase が IME を ON/OFF に設定したい意図
-    UserImeSetIntent { target: bool, source: UserIntentSource },
+    UserImeSetIntent {
+        target: bool,
+        source: UserIntentSource,
+    },
 
     /// パニックリセット: 復旧として desired_open を `target` に戻す。
     ///
