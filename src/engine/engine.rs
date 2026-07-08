@@ -55,6 +55,9 @@ pub struct Engine {
     /// IME ON/OFF コンボ判定時に除外するために使用。
     /// VkCode(0) = 未設定。
     thumb_vks: (VkCode, VkCode),
+    /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかの 1 ショットフラグ。
+    /// Platform 層がトレイ通知を出すかどうかの判定に使う（`take_solo_off_notification`）。
+    solo_off_notify: bool,
 }
 
 impl Engine {
@@ -66,6 +69,7 @@ impl Engine {
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             thumb_vks: (VkCode(0), VkCode(0)),
+            solo_off_notify: false,
         }
     }
 
@@ -242,10 +246,20 @@ impl Engine {
         // ソロ連打によるエンジン OFF トリガー
         if self.adapter.take_engine_off_requested() {
             log::info!("Engine OFF triggered by consecutive solo key presses");
+            self.solo_off_notify = true;
             return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
         }
 
         decision
+    }
+
+    /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかを取得する（1 ショット）。
+    ///
+    /// Platform 層がトレイ通知等でユーザーに「engine が緊急停止したこと」と
+    /// 復帰方法を知らせるために使う。通常の `Ctrl+Shift+変換/無変換` による
+    /// 意図的な engine on/off ではこのフラグは立たない。
+    pub fn take_solo_off_notification(&mut self) -> bool {
+        std::mem::take(&mut self.solo_off_notify)
     }
 
     /// 外部コマンドの統合エントリポイント。

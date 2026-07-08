@@ -23,6 +23,21 @@ use awase::types::ContextChange;
 
 use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
 
+/// `Engine::on_timeout` 呼び出し直後に、ソロ連打緊急 OFF（ADR-055 追補）が
+/// 発動していればトレイ通知を出す。
+///
+/// 通常の `Ctrl+Shift+変換/無変換` による意図的な engine on/off では発動しない
+/// ため、ここで毎回チェックしてもユーザーを煩わせない。
+fn notify_if_solo_off_triggered(app: &mut Runtime) {
+    if app.engine.take_solo_off_notification() {
+        app.platform.tray.show_balloon(
+            "awase",
+            "無変換キーの連打でエンジンを緊急停止しました。\n\
+             戻すには Ctrl+Shift+変換 を押してください。",
+        );
+    }
+}
+
 /// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
 pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
     // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
@@ -209,6 +224,7 @@ pub(crate) unsafe fn handle_wm_timer(
             );
             let state_before = app.engine.debug_state_label();
             let decision = app.engine.on_timeout(timer_id, &ctx);
+            notify_if_solo_off_triggered(app);
             let state_after = app.engine.debug_state_label();
             app.platform_state
                 .ime
@@ -644,6 +660,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
                     "[deferred-timer] drain 後に replay logical_id={timer_id} (os_id={os_id})"
                 );
                 let decision = app.engine.on_timeout(timer_id, &ctx);
+                notify_if_solo_off_triggered(app);
                 app.execute_decision(decision);
             } else {
                 log::debug!(

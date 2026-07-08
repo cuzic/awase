@@ -387,8 +387,8 @@ impl SettingsApp {
             "エンジンを OFF にするキーの組み合わせです。\n複数登録できます。",
         );
         ui.horizontal(|ui| {
-            ui.label("  単独3連打で OFF:").on_hover_text(
-                "指定キーを単独で素早く3回連続押下するとエンジンを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。",
+            ui.label("  単独5連打で OFF:").on_hover_text(
+                "指定キーを単独で素早く5回連続押下するとエンジンを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。",
             );
             solo_triple_combo(ui, &mut self.config.keys.engine_off_solo_triple);
         });
@@ -964,7 +964,7 @@ fn override_list_ui(
     ui.add_space(8.0);
 }
 
-/// `engine_off_solo_triple`（単独3連打でエンジン OFF にするキー）の選択 UI。
+/// `engine_off_solo_triple`（単独5連打でエンジン OFF にするキー）の選択 UI。
 fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>) {
     let display = current.as_deref().map_or_else(
         || "（無効）".to_string(),

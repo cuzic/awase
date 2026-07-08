@@ -3475,18 +3475,27 @@ fn test_alt_released_while_disabled_does_not_stick() {
 
 #[test]
 fn test_engine_off_triple_solo_thumb_triggers() {
-    // 無変換を単独タイムアウトで3回連続確定するとエンジン OFF 要求が立つことを確認
+    // 無変換を単独タイムアウトで5回連続確定するとエンジン OFF 要求が立つことを確認。
+    // 3回だとスリープ復帰時の混乱で焦って連打しただけで誤発火した実機事例
+    // (2026-07-08) があり、5回に引き上げた。4回目までは発火しないことも確認する。
     let mut engine = make_engine();
     engine.set_engine_off_triple_vk(VK_NONCONVERT);
 
-    let gap = 150_000u64; // 150ms < SOLO_TRIPLE_TIMEOUT_US (400ms)
+    let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
 
-    for i in 0..3u64 {
+    for i in 0..4u64 {
         let t = i * gap;
         engine.on_event(Ev::down(VK_NONCONVERT).at(t).build());
         engine.on_timeout(TIMER_PENDING);
+        assert!(
+            !engine.take_engine_off_requested(),
+            "{} consecutive solo presses → must not yet trigger engine off",
+            i + 1
+        );
     }
-    assert!(engine.take_engine_off_requested(), "3 consecutive solo presses → engine off");
+    engine.on_event(Ev::down(VK_NONCONVERT).at(4 * gap).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(engine.take_engine_off_requested(), "5 consecutive solo presses → engine off");
 }
 
 #[test]
@@ -3496,7 +3505,7 @@ fn test_engine_off_counter_resets_on_thumb_consume() {
     let mut engine = make_engine();
     engine.set_engine_off_triple_vk(VK_NONCONVERT);
 
-    let gap = 150_000u64; // 150ms = within SOLO_TRIPLE_TIMEOUT_US (400ms)
+    let gap = 150_000u64; // 150ms = within SOLO_OFF_TIMEOUT_US (400ms)
 
     // solo 1 回目 (タイムアウト経由)
     engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
