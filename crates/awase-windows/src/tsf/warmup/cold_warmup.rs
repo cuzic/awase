@@ -20,7 +20,9 @@ use std::sync::atomic::Ordering::Relaxed;
 use crate::output::Output;
 use crate::tuning::LONG_IDLE_MS;
 
-use crate::tsf::send::{send_vk_dbe_alpha_warmup, send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup};
+use crate::tsf::send::{
+    send_vk_dbe_alpha_warmup, send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup,
+};
 
 /// charset に応じた warmup VK ペアを 1 回送信し、送信後の時刻を返す。
 ///
@@ -169,9 +171,9 @@ impl<'a> ColdWarmupSequence<'a> {
             && ctx.conv_mutation_allowed
             && ctx.charset == awase::engine::Charset::HankakuKatakana
         {
-            self.output.conv_mode.on_hankata_warmup_sent(crate::state::TickMs(
-                crate::hook::current_tick_ms(),
-            ));
+            self.output
+                .conv_mode
+                .on_hankata_warmup_sent(crate::state::TickMs(crate::hook::current_tick_ms()));
         }
 
         started
@@ -198,7 +200,11 @@ impl<'a> ColdWarmupSequence<'a> {
         // ROMAN ビット設定は実 romaji 送信より先に完了する。
         // conv_mode から ImmSetConversionStatus の目標値を取得する。
         // カタカナ系は KATAKANA/FULLSHAPE ビットを明示的に復元する必要があるため Some を返す。
-        let conv_target = self.output.conv_mode.get().and_then(|m| m.imm_conv_target());
+        let conv_target = self
+            .output
+            .conv_mode
+            .get()
+            .and_then(|m| m.imm_conv_target());
         let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
         win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;

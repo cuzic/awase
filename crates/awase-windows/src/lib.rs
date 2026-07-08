@@ -79,9 +79,9 @@ pub use single_thread_cell::SingleThreadCell;
 #[cfg(windows)]
 use awase::types::RawKeyEvent;
 
-pub use crate::state::{HookConfig, ImeBelief};
 #[cfg(windows)]
 pub use crate::state::PlatformState;
+pub use crate::state::{HookConfig, ImeBelief};
 pub use crate::tuning::IME_DETECT_MISS_THRESHOLD;
 
 #[cfg(windows)]
@@ -97,26 +97,42 @@ pub use crate::input_defer::{InputDeferQueue, INPUT_DEFER};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-pub fn main_thread_id() -> u32 { MAIN_THREAD_ID.load(Ordering::SeqCst) }
+pub fn main_thread_id() -> u32 {
+    MAIN_THREAD_ID.load(Ordering::SeqCst)
+}
 #[cfg(windows)]
-pub(crate) fn set_main_thread_id(tid: u32) { MAIN_THREAD_ID.store(tid, Ordering::SeqCst); }
+pub(crate) fn set_main_thread_id(tid: u32) {
+    MAIN_THREAD_ID.store(tid, Ordering::SeqCst);
+}
 
 #[cfg(windows)]
 static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 #[cfg(windows)]
-pub(crate) fn engine_thread_id() -> u32 { ENGINE_THREAD_ID.load(Ordering::Relaxed) }
+pub(crate) fn engine_thread_id() -> u32 {
+    ENGINE_THREAD_ID.load(Ordering::Relaxed)
+}
 #[cfg(windows)]
-pub(crate) fn set_engine_thread_id(tid: u32) { ENGINE_THREAD_ID.store(tid, Ordering::Relaxed); }
+pub(crate) fn set_engine_thread_id(tid: u32) {
+    ENGINE_THREAD_ID.store(tid, Ordering::Relaxed);
+}
 
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
-pub fn is_quit_requested() -> bool { QUIT_REQUESTED.load(Ordering::SeqCst) }
+pub fn is_quit_requested() -> bool {
+    QUIT_REQUESTED.load(Ordering::SeqCst)
+}
 #[cfg(windows)]
-pub(crate) fn request_quit() { QUIT_REQUESTED.store(true, Ordering::SeqCst); }
+pub(crate) fn request_quit() {
+    QUIT_REQUESTED.store(true, Ordering::SeqCst);
+}
 
 static ELEVATED: AtomicBool = AtomicBool::new(false);
-pub fn is_elevated() -> bool { ELEVATED.load(Ordering::Relaxed) }
+pub fn is_elevated() -> bool {
+    ELEVATED.load(Ordering::Relaxed)
+}
 #[cfg(windows)]
-pub(crate) fn set_elevated(v: bool) { ELEVATED.store(v, Ordering::Relaxed); }
+pub(crate) fn set_elevated(v: bool) {
+    ELEVATED.store(v, Ordering::Relaxed);
+}
 
 /// raw TSF literal 検出後の回収ペイロード。
 ///
@@ -273,8 +289,7 @@ pub const WM_IME_KIND_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 /// `handle_wm_async_ime_apply_complete` が sync path の `sync_outcomes` と対称に、
 /// generation 照合を含む単一入口 `on_ime_apply_complete` へ合流させる。
 #[cfg(windows)]
-pub const WM_ASYNC_IME_APPLY_COMPLETE: u32 =
-    windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
+pub const WM_ASYNC_IME_APPLY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

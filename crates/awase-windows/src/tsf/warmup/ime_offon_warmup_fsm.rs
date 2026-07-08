@@ -22,7 +22,9 @@
 //! `TIMEOUT_MS` 内に上昇しない場合は `confirmed_warm=false`（F2 prepend フォールバック）で再送。
 
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::{ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot};
+use crate::tsf::warmup::probe_fsm::{
+    ProbeAction, SacrificialResend, TransmitTarget, TsfEnvSnapshot,
+};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
 /// VK_IME_OFF→ON 送信後に GJI write が観測されるまで待つミリ秒数。
@@ -74,7 +76,8 @@ impl ImeOffOnWarmupFsm {
         log::debug!(
             "[ime-offon-warmup] cold={} gji_wrote={gji_wrote} timed_out={timed_out} \
              elapsed={}ms delta=+{delta}B",
-            self.cold_seq, self.elapsed_ms,
+            self.cold_seq,
+            self.elapsed_ms,
         );
 
         vec![

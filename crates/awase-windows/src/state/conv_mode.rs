@@ -3,9 +3,9 @@
 //! `Charset` と `ConvMode` の定義は platform 非依存の `nicola` クレートに移動済み。
 //! このファイルは `ConvModeMgr`（状態管理ラッパー）と `ConvModeAuthority`（所有権管理）を定義する。
 
-pub(crate) use awase::engine::ConvMode;
 #[cfg(windows)]
 pub(crate) use awase::engine::Charset;
+pub(crate) use awase::engine::ConvMode;
 
 use super::TickMs;
 
@@ -252,7 +252,10 @@ mod tests {
         );
         assert_eq!(mgr.get().unwrap().charset.to_string(), "Hiragana");
 
-        assert!(mgr.update_from_conv(CONV_ZENKATA, t(40)), "改めて2回連続で確定");
+        assert!(
+            mgr.update_from_conv(CONV_ZENKATA, t(40)),
+            "改めて2回連続で確定"
+        );
         assert_eq!(mgr.get().unwrap().charset.to_string(), "ZenKata");
     }
 

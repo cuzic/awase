@@ -270,4 +270,3 @@ pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
 
 /// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
 pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
-

@@ -14,9 +14,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED,
+    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED, MF_POPUP,
     MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW, MF_POPUP,
+    WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use anyhow::{Context, Result};
@@ -540,14 +540,39 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         let h_ime_menu = CreatePopupMenu().unwrap_or_default();
         if !h_ime_menu.is_invalid() {
             append_menu_item_checked(h_ime_menu, IDM_IME_HIRAGANA, "ひらがな", hiragana_checked);
-            append_menu_item_checked(h_ime_menu, IDM_IME_FULL_KATAKANA, "全角カタカナ", full_katakana_checked);
-            append_menu_item_checked(h_ime_menu, IDM_IME_FULL_ALPHA, "全角英数", full_alpha_checked);
-            append_menu_item_checked(h_ime_menu, IDM_IME_HALF_ALPHA, "半角英数", half_alpha_checked);
-            append_menu_item_checked(h_ime_menu, IDM_IME_HALF_KATAKANA, "半角カタカナ", half_katakana_checked);
+            append_menu_item_checked(
+                h_ime_menu,
+                IDM_IME_FULL_KATAKANA,
+                "全角カタカナ",
+                full_katakana_checked,
+            );
+            append_menu_item_checked(
+                h_ime_menu,
+                IDM_IME_FULL_ALPHA,
+                "全角英数",
+                full_alpha_checked,
+            );
+            append_menu_item_checked(
+                h_ime_menu,
+                IDM_IME_HALF_ALPHA,
+                "半角英数",
+                half_alpha_checked,
+            );
+            append_menu_item_checked(
+                h_ime_menu,
+                IDM_IME_HALF_KATAKANA,
+                "半角カタカナ",
+                half_katakana_checked,
+            );
             append_menu_item_checked(h_ime_menu, IDM_IME_DIRECT, "直接入力", direct_checked);
 
             let ime_title_wide = crate::win32::to_wide("IME 状態");
-            let _ = AppendMenuW(hmenu, MF_POPUP, h_ime_menu.0 as usize, PCWSTR(ime_title_wide.as_ptr()));
+            let _ = AppendMenuW(
+                hmenu,
+                MF_POPUP,
+                h_ime_menu.0 as usize,
+                PCWSTR(ime_title_wide.as_ptr()),
+            );
         }
 
         let h_input_menu = CreatePopupMenu().unwrap_or_default();
@@ -556,10 +581,19 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             append_menu_item_checked(h_input_menu, IDM_INPUT_KANA, "かな入力", !is_romaji);
 
             let input_title_wide = crate::win32::to_wide("JISかな / ローマ字");
-            let _ = AppendMenuW(hmenu, MF_POPUP, h_input_menu.0 as usize, PCWSTR(input_title_wide.as_ptr()));
+            let _ = AppendMenuW(
+                hmenu,
+                MF_POPUP,
+                h_input_menu.0 as usize,
+                PCWSTR(input_title_wide.as_ptr()),
+            );
         }
 
-        append_menu_item(hmenu, IDM_RESET_STATE, "状態をリセット (Caps OFF/ひらがな/ローマ字)");
+        append_menu_item(
+            hmenu,
+            IDM_RESET_STATE,
+            "状態をリセット (Caps OFF/ひらがな/ローマ字)",
+        );
 
         append_menu_sep(hmenu);
 
@@ -743,7 +777,11 @@ pub(crate) fn handle_autostart_toggle() {
 
     let is_registered = autostart::is_registered();
     let (success, new_value, msg) = if is_registered {
-        (autostart::unregister(), "disabled", "自動起動を無効にしました")
+        (
+            autostart::unregister(),
+            "disabled",
+            "自動起動を無効にしました",
+        )
     } else {
         (autostart::register(), "enabled", "自動起動を有効にしました")
     };
@@ -817,82 +855,71 @@ unsafe extern "system" fn tray_wnd_proc(
                 Some(TrayCommand::SelectLayout(index)) => {
                     let _ = crate::with_app(|app| app.switch_layout(index));
                 }
-                Some(TrayCommand::CapsLock) => {
-                    unsafe { crate::ime::toggle_caps_lock(); }
-                }
-                Some(TrayCommand::ImeHiragana) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_mode(
-                            true,
-                            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
-                            crate::imm::IME_CMODE_KATAKANA,
-                        );
+                Some(TrayCommand::CapsLock) => unsafe {
+                    crate::ime::toggle_caps_lock();
+                },
+                Some(TrayCommand::ImeHiragana) => unsafe {
+                    let _ = crate::ime::set_ime_mode(
+                        true,
+                        crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
+                        crate::imm::IME_CMODE_KATAKANA,
+                    );
+                },
+                Some(TrayCommand::ImeFullKatakana) => unsafe {
+                    let _ = crate::ime::set_ime_mode(
+                        true,
+                        crate::imm::IME_CMODE_NATIVE
+                            | crate::imm::IME_CMODE_KATAKANA
+                            | crate::imm::IME_CMODE_FULLSHAPE,
+                        0,
+                    );
+                },
+                Some(TrayCommand::ImeFullAlpha) => unsafe {
+                    let _ = crate::ime::set_ime_mode(
+                        true,
+                        crate::imm::IME_CMODE_FULLSHAPE,
+                        crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
+                    );
+                },
+                Some(TrayCommand::ImeHalfAlpha) => unsafe {
+                    let _ = crate::ime::set_ime_mode(
+                        true,
+                        0,
+                        crate::imm::IME_CMODE_NATIVE
+                            | crate::imm::IME_CMODE_KATAKANA
+                            | crate::imm::IME_CMODE_FULLSHAPE,
+                    );
+                },
+                Some(TrayCommand::ImeHalfKatakana) => unsafe {
+                    let _ = crate::ime::set_ime_mode(
+                        true,
+                        crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
+                        crate::imm::IME_CMODE_FULLSHAPE,
+                    );
+                },
+                Some(TrayCommand::ImeDirect) => unsafe {
+                    let _ = crate::ime::set_ime_mode(false, 0, 0);
+                },
+                Some(TrayCommand::InputRomaji) => unsafe {
+                    let _ = crate::ime::set_ime_romaji_mode_state(true);
+                },
+                Some(TrayCommand::InputKana) => unsafe {
+                    let _ = crate::ime::set_ime_romaji_mode_state(false);
+                },
+                Some(TrayCommand::ResetState) => unsafe {
+                    let caps_lock_on =
+                        windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+                    if caps_lock_on {
+                        crate::ime::toggle_caps_lock();
                     }
-                }
-                Some(TrayCommand::ImeFullKatakana) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_mode(
-                            true,
-                            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA | crate::imm::IME_CMODE_FULLSHAPE,
-                            0,
-                        );
-                    }
-                }
-                Some(TrayCommand::ImeFullAlpha) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_mode(
-                            true,
-                            crate::imm::IME_CMODE_FULLSHAPE,
-                            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
-                        );
-                    }
-                }
-                Some(TrayCommand::ImeHalfAlpha) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_mode(
-                            true,
-                            0,
-                            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA | crate::imm::IME_CMODE_FULLSHAPE,
-                        );
-                    }
-                }
-                Some(TrayCommand::ImeHalfKatakana) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_mode(
-                            true,
-                            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
-                            crate::imm::IME_CMODE_FULLSHAPE,
-                        );
-                    }
-                }
-                Some(TrayCommand::ImeDirect) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_mode(false, 0, 0);
-                    }
-                }
-                Some(TrayCommand::InputRomaji) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_romaji_mode_state(true);
-                    }
-                }
-                Some(TrayCommand::InputKana) => {
-                    unsafe {
-                        let _ = crate::ime::set_ime_romaji_mode_state(false);
-                    }
-                }
-                Some(TrayCommand::ResetState) => {
-                    unsafe {
-                        let caps_lock_on = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
-                        if caps_lock_on {
-                            crate::ime::toggle_caps_lock();
-                        }
-                        let _ = crate::ime::set_ime_mode(
-                            true,
-                            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE | crate::imm::IME_CMODE_ROMAN,
-                            crate::imm::IME_CMODE_KATAKANA,
-                        );
-                    }
-                }
+                    let _ = crate::ime::set_ime_mode(
+                        true,
+                        crate::imm::IME_CMODE_NATIVE
+                            | crate::imm::IME_CMODE_FULLSHAPE
+                            | crate::imm::IME_CMODE_ROMAN,
+                        crate::imm::IME_CMODE_KATAKANA,
+                    );
+                },
                 None => {}
             }
             LRESULT(0)

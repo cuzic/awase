@@ -146,14 +146,18 @@ impl Runtime {
                         self.platform_state.focus.last_focus_change_ms,
                         self.platform_state.ime.input_mode(),
                     );
-                    log::debug!("[stage-observe] observer_poll={:?}", obs.observer_poll_value);
+                    log::debug!(
+                        "[stage-observe] observer_poll={:?}",
+                        obs.observer_poll_value
+                    );
                     if let Some(v) = obs.observer_poll_value {
                         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                        let accepted =
-                            crate::state::probe_admission::AcceptedObservation::for_sync(
-                                self.platform_state.focus.focus_epoch,
-                            );
-                        self.platform_state.ime.write_observer_poll(v, tick_ms, accepted);
+                        let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
+                            self.platform_state.focus.focus_epoch,
+                        );
+                        self.platform_state
+                            .ime
+                            .write_observer_poll(v, tick_ms, accepted);
                     }
                     // stale ObservedEisu の矛盾証拠（GJI が変換 I/O 中 = 英数ではない）。
                     // Blacklist では他に input_mode を訂正する観測経路がないため、
@@ -168,10 +172,8 @@ impl Runtime {
                         self.platform_state.ime.dispatch_event(
                             crate::state::ime_event::ImeEvent::InputModeObserved {
                                 mode,
-                                source:
-                                    crate::state::ime_event::ObservationSource::GjiIoInference,
-                                confidence:
-                                    crate::state::ime_event::ObservationConfidence::Medium,
+                                source: crate::state::ime_event::ObservationSource::GjiIoInference,
+                                confidence: crate::state::ime_event::ObservationConfidence::Medium,
                                 at: tick_ms,
                             },
                             tick_ms,
@@ -235,7 +237,8 @@ impl Runtime {
                 self.platform_state.ime.dispatch_event(
                     crate::state::ime_event::ImeEvent::InputModeApplied {
                         mode: new_mode,
-                        strategy: crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
+                        strategy:
+                            crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                         result: crate::state::ime_event::InputModeApplyResult::Applied,
                         at: tick_ms,
                     },
@@ -243,9 +246,7 @@ impl Runtime {
                 );
             } else {
                 // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
-                log::info!(
-                    "FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)"
-                );
+                log::info!("FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)");
             }
         }
         let ctx = self.build_ctx();
@@ -318,16 +319,14 @@ impl Runtime {
                     poll.prev_conv,
                 )
             },
-            Some(snap) => {
-                crate::observer::ime_observer::classify_fetched_snapshot(
-                    snap,
-                    tick_ms.0,
-                    poll.ime_on,
-                    poll.force_guard,
-                    poll.input_mode,
-                    poll.prev_conv,
-                )
-            }
+            Some(snap) => crate::observer::ime_observer::classify_fetched_snapshot(
+                snap,
+                tick_ms.0,
+                poll.ime_on,
+                poll.force_guard,
+                poll.input_mode,
+                poll.prev_conv,
+            ),
         };
         // ImmCross アプリ（LINE 等）は awase が ROMAN ビットを立てるまで conv=0x09 がデフォルト。
         // romaji=false → ObservedKana の観測はユーザーの意図ではなく IME のデフォルト状態を
@@ -344,7 +343,9 @@ impl Runtime {
         let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
             self.platform_state.focus.focus_epoch,
         );
-        self.platform_state.ime.apply_ime_update(&observer_out, tick_ms, accepted);
+        self.platform_state
+            .ime
+            .apply_ime_update(&observer_out, tick_ms, accepted);
 
         let miss_after = self.platform_state.ime.detect_miss_count();
 
@@ -367,8 +368,8 @@ impl Runtime {
         miss_before: u32,
         miss_after: u32,
     ) {
-        let age_ms =
-            crate::hook::current_tick_ms().saturating_sub(self.platform_state.focus.last_focus_change_ms);
+        let age_ms = crate::hook::current_tick_ms()
+            .saturating_sub(self.platform_state.focus.last_focus_change_ms);
         if age_ms < 10_000 {
             let ime_on_after = self.platform_state.ime.effective_open();
             let input_mode_after = self.platform_state.ime.input_mode();
@@ -412,7 +413,9 @@ impl Runtime {
         log::debug!("[composition] focus change → marking cold");
         let ime_on_now = self.platform_state.ime.effective_open();
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.platform_state.ime.mirror_applied_open(ime_on_now, tick_ms);
+        self.platform_state
+            .ime
+            .mirror_applied_open(ime_on_now, tick_ms);
         self.platform.mark_composition_cold_focus_change();
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
@@ -471,11 +474,13 @@ impl Runtime {
         //   NATIVE=0 のまま VK_DBE_HIRAGANA を送るとひらがなモードに戻ってしまうため。
         // 旧 eisu_guard は conv=0x0000 のみを対象としていたが、MS-IME は 0x0010 (ROMAN=1,NATIVE=0)
         // を返すことがあるため is_eisu() に統一する。
-        let focus_change_conv =
-            unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
+        let focus_change_conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
         if let Some(conv) = focus_change_conv {
             let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-            self.platform.output.conv_mode.update_from_conv(conv, tick_ms);
+            self.platform
+                .output
+                .conv_mode
+                .update_from_conv(conv, tick_ms);
         }
         let eisu_guard_active = applied_open == Some(true)
             && focus_change_conv.is_some_and(|conv| ConvMode::from_u32(conv).is_eisu());
@@ -546,16 +551,14 @@ impl Runtime {
              → set_ime_open({desired})"
         );
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.platform_state
-            .ime
-            .dispatch_event(
-                crate::state::ime_event::ImeEvent::DriftDetected {
-                    desired,
-                    observed,
-                    duration_ms,
-                },
-                tick_ms,
-            );
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::DriftDetected {
+                desired,
+                observed,
+                duration_ms,
+            },
+            tick_ms,
+        );
         if self.can_use_imm32_cross_process() {
             let _ = self.platform.set_ime_open(desired);
             self.platform_state
@@ -568,7 +571,9 @@ impl Runtime {
                 effective_open: desired,
                 confident: true,
             };
-            let outcome = self.platform.apply_ime_open_with_belief(desired, None, belief);
+            let outcome = self
+                .platform
+                .apply_ime_open_with_belief(desired, None, belief);
             log::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
             self.on_ime_apply_complete(desired, outcome, None);
         }

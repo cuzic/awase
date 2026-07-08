@@ -11,7 +11,7 @@ use std::os::windows::process::CommandExt;
 use std::process::Command;
 
 use windows::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ, REG_SZ,
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
 };
 
 const RUN_SUBKEY: windows::core::PCWSTR =

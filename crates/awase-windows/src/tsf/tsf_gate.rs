@@ -45,9 +45,8 @@ use std::time::Duration;
 
 use timed_fsm::{Response, TimedStateMachine};
 
-use timed_fsm::{GateAction, HoldingGate};
 use awase::types::RawKeyEvent;
-
+use timed_fsm::{GateAction, HoldingGate};
 
 /// PendingWarmup フォールバックタイムアウト（ms）。
 pub const WARMUP_TIMEOUT_MS: u64 = 500;

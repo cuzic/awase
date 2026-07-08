@@ -12,9 +12,9 @@ pub use kinds::{AppKind, FocusKind};
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
 #[cfg(windows)]
-pub mod classify;
-#[cfg(windows)]
 pub mod classifier;
+#[cfg(windows)]
+pub mod classify;
 #[cfg(windows)]
 pub mod current;
 #[cfg(windows)]

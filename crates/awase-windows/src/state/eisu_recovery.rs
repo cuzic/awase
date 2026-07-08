@@ -51,10 +51,7 @@ use awase::engine::{AssumedReason, InputModeState};
 ///   - shadow toggle: `!was_open && now_open`
 /// - `mode`: 現在の `input_mode` belief。
 #[must_use]
-pub fn eisu_reset_on_ime_on(
-    ime_turned_on: bool,
-    mode: InputModeState,
-) -> Option<InputModeState> {
+pub fn eisu_reset_on_ime_on(ime_turned_on: bool, mode: InputModeState) -> Option<InputModeState> {
     (ime_turned_on && mode == InputModeState::ObservedEisu).then_some(
         InputModeState::AssumedRomaji {
             reason: AssumedReason::AppKindExcluded,
@@ -130,7 +127,10 @@ mod tests {
     fn no_reset_for_kana_and_unknown() {
         // ObservedKana / Unknown は correction_for_imm_broken (ImmBrokenCorrection) の
         // 担当領域。この関数は ObservedEisu 固着の救済に限定する。
-        assert_eq!(eisu_reset_on_ime_on(true, InputModeState::ObservedKana), None);
+        assert_eq!(
+            eisu_reset_on_ime_on(true, InputModeState::ObservedKana),
+            None
+        );
         assert_eq!(eisu_reset_on_ime_on(true, InputModeState::Unknown), None);
     }
 

@@ -60,9 +60,14 @@ impl UnicodeColdWarmupFsm {
         log::debug!(
             "[unicode-cold-warmup] cold={} gji_wrote={gji_wrote} timed_out={timed_out} \
              elapsed={}ms → {} chars 送信",
-            self.cold_seq, self.elapsed_ms, chars.len()
+            self.cold_seq,
+            self.elapsed_ms,
+            chars.len()
         );
-        vec![ProbeAction::FlushDeferredUnicodeChars(chars), ProbeAction::Done]
+        vec![
+            ProbeAction::FlushDeferredUnicodeChars(chars),
+            ProbeAction::Done,
+        ]
     }
 }
 

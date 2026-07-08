@@ -106,7 +106,10 @@ impl AcceptedObservation {
     /// ない（epoch mismatch 不可）。epoch は観測の来歴記録・epoch フィルタ用。
     #[must_use]
     pub fn for_sync(focus_epoch: FocusEpoch) -> Self {
-        Self { focus_epoch, _private: () }
+        Self {
+            focus_epoch,
+            _private: (),
+        }
     }
 }
 
@@ -152,6 +155,9 @@ impl ImmLikeTicket {
                 current: current_epoch,
             });
         }
-        Admission::Accept(AcceptedObservation { focus_epoch: current_epoch, _private: () })
+        Admission::Accept(AcceptedObservation {
+            focus_epoch: current_epoch,
+            _private: (),
+        })
     }
 }

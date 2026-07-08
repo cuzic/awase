@@ -96,7 +96,6 @@ pub struct TsfObservations {
     // 2026-07-06 の到達不能パス監査で撤去 — 待ち手だった AtomicWatcher 消費者
     // （raw_tsf_literal_show_or_timeout_async）が実装されないままポーリング方式
     // （LiteralDetector の baseline 読み）に置き換わり、write-only になっていた。
-
     /// GJI の最終 I/O 変化時刻 (GetTickCount64 ms)。0 = 未観測。
     ///
     /// バックグラウンドモニタースレッドが更新する。
@@ -261,7 +260,6 @@ impl TsfObservations {
         self.gji_candidate_visible.load(Ordering::Relaxed)
     }
 
-
     /// 現在使用中の IME 種別を返す。
     ///
     /// `tsf_active_kind`（CLSID ベース）が取得済みならそれを優先する。
@@ -416,7 +414,9 @@ pub(crate) fn reset_candidate_was_seen() {
 /// `observation_event_proc` の `EVENT_OBJECT_SHOW` が set し、
 /// `advance_tsf_probe` / `send_keys` 後に drain する。
 pub(crate) fn take_pending_start_composition() -> bool {
-    TSF_OBS.pending_start_composition.swap(false, Ordering::Relaxed)
+    TSF_OBS
+        .pending_start_composition
+        .swap(false, Ordering::Relaxed)
 }
 
 /// `pending_end_composition` フラグを取り出す（set→false swap）。
@@ -425,9 +425,10 @@ pub(crate) fn take_pending_start_composition() -> bool {
 /// `observation_event_proc` の `EVENT_OBJECT_HIDE` が set し、
 /// `advance_tsf_probe` / `send_keys` 後に drain する。
 pub(crate) fn take_pending_end_composition() -> bool {
-    TSF_OBS.pending_end_composition.swap(false, Ordering::Relaxed)
+    TSF_OBS
+        .pending_end_composition
+        .swap(false, Ordering::Relaxed)
 }
-
 
 /// OBJ_NAMECHANGE カウンタのベースライン値。
 ///
@@ -461,5 +462,4 @@ pub(crate) enum ActiveImeKind {
 // 外部からは引き続き `crate::tsf::observer::*` として参照できるよう re-export する。
 
 pub use super::gji_monitor::start_monitor_thread;
-pub use super::win_event_obs::{WinEventHookGuard, install_observation_hooks};
-
+pub use super::win_event_obs::{install_observation_hooks, WinEventHookGuard};

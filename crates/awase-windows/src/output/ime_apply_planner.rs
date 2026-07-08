@@ -39,7 +39,10 @@ pub(crate) struct OpenBelief {
 impl OpenBelief {
     /// shadow のみから自明なビリーフを作る（後方互換ラッパー用）。
     pub(crate) fn from_shadow(shadow_on: bool) -> Self {
-        Self { effective_open: shadow_on, confident: true }
+        Self {
+            effective_open: shadow_on,
+            confident: true,
+        }
     }
 }
 
@@ -67,9 +70,7 @@ pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) 
             conv != 0
         }
     } else {
-        inputs.shadow_on
-            || inputs.candidate_visible
-            || (!desired_open && inputs.candidate_was_seen)
+        inputs.shadow_on || inputs.candidate_visible || (!desired_open && inputs.candidate_was_seen)
     };
 
     let confident = if !inputs.can_imm32_cross_process
@@ -79,12 +80,18 @@ pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) 
         // KanjiToggle 系（Chrome/TsfNative 等）: Confirmed かつ shadow 一致 かつ 300ms 以内のみ確信あり
         inputs.shadow_on == desired_open
             && inputs.applied.is_confirmed()
-            && inputs.now_ms.saturating_sub(inputs.applied.confirmed_at_ms()) < 300
+            && inputs
+                .now_ms
+                .saturating_sub(inputs.applied.confirmed_at_ms())
+                < 300
     } else {
         true
     };
 
-    OpenBelief { effective_open, confident }
+    OpenBelief {
+        effective_open,
+        confident,
+    }
 }
 
 #[cfg(test)]
@@ -105,10 +112,16 @@ mod tests {
             now_ms: 0,
         };
         let belief = reduce_open_belief(&inputs, true);
-        assert!(!belief.effective_open, "conv=16 (ROMAN only) は open=true 要求時に false");
+        assert!(
+            !belief.effective_open,
+            "conv=16 (ROMAN only) は open=true 要求時に false"
+        );
         // open=false 要求時は従来通り true（DirectInput でないため）
         let belief_off = reduce_open_belief(&inputs, false);
-        assert!(belief_off.effective_open, "conv=16 は open=false 要求時に true（IME ON 状態）");
+        assert!(
+            belief_off.effective_open,
+            "conv=16 は open=false 要求時に true（IME ON 状態）"
+        );
     }
 
     #[test]
@@ -125,6 +138,9 @@ mod tests {
             now_ms: 0,
         };
         let belief = reduce_open_belief(&inputs, true);
-        assert!(belief.effective_open, "conv=9 (NATIVE|ROMAN) は open=true 要求時に true");
+        assert!(
+            belief.effective_open,
+            "conv=9 (NATIVE|ROMAN) は open=true 要求時に true"
+        );
     }
 }

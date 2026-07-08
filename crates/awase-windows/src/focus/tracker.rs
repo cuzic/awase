@@ -5,8 +5,8 @@
 
 use std::sync::mpsc::Sender;
 
-use awase::engine::InputModeState;
 use crate::focus::FocusKind;
+use awase::engine::InputModeState;
 
 use crate::focus::cache::{DetectionSource, FocusCache};
 use crate::focus::classifier::{
@@ -113,8 +113,7 @@ impl FocusTracker {
     pub(crate) fn update(&mut self, pid: u32, class_name: String) {
         self.current.update(pid, class_name);
         let learned = self.imm_learning.get(&self.current.class_name);
-        let overridden =
-            Self::apply_learned_imm_capability(self.current.app_profile, learned);
+        let overridden = Self::apply_learned_imm_capability(self.current.app_profile, learned);
         if overridden != self.current.app_profile {
             log::info!(
                 "[imm-learning] profile 降格: class={:?} {:?} → {:?} \

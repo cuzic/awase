@@ -1,10 +1,10 @@
-use super::key_injector::{KeyInjector, VkMarker, make_key_input};
+use super::key_injector::{make_key_input, KeyInjector, VkMarker};
 use super::resolve::{ascii_to_vk, CharResolution};
 use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
+use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
-use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::vk::{VK_DBE_HIRAGANA, VK_OEM_MINUS};
 use awase::types::VkCode;
@@ -237,14 +237,17 @@ impl Output {
             // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
             // （sync パスと同一経路）。RuntimeRequest::StartTsfProbe は belt-and-suspenders として積む。
             let guard = OutputActiveGuard::begin();
-            let probe = crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
-            self.install_pending_tsf(Box::new(crate::tsf::warmup::chrome_probe::ChromeProbe::new(
-                romaji,
-                cold_seq,
-                probe,
-                probe_max_ms,
-                guard,
-            )));
+            let probe =
+                crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
+            self.install_pending_tsf(Box::new(
+                crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                    romaji,
+                    cold_seq,
+                    probe,
+                    probe_max_ms,
+                    guard,
+                ),
+            ));
             self.runtime_outbox
                 .borrow_mut()
                 .push(crate::runtime::outbox::RuntimeRequest::StartTsfProbe);
@@ -462,11 +465,12 @@ impl Output {
             );
         }
         let cold_seq = self.composition.cold_start_count();
-        let deadline_ms =
-            crate::hook::current_tick_ms() + crate::tuning::MS_IME_READY_CONFIRM_MS;
+        let deadline_ms = crate::hook::current_tick_ms() + crate::tuning::MS_IME_READY_CONFIRM_MS;
         self.start_ms_ime_ready_poll(cold_seq, deadline_ms);
         let coro = Box::new(crate::tsf::warmup::ms_ime_ready_coro::MsImeReadyCoro::new(
-            romaji, cold_seq, deadline_ms,
+            romaji,
+            cold_seq,
+            deadline_ms,
         ));
         self.install_pending_tsf(coro);
         // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
@@ -483,8 +487,7 @@ impl Output {
         // GJI が応答するまで次のキーも unicode で送ることで race を回避する。
         let in_post_unicode_pending = {
             let last_unicode_ms = self.composition.last_unicode_transmit_ms();
-            last_unicode_ms != 0
-                && crate::tsf::observer::gji_last_io_ms() <= last_unicode_ms
+            last_unicode_ms != 0 && crate::tsf::observer::gji_last_io_ms() <= last_unicode_ms
         };
         let used_eager_path = if in_post_unicode_pending {
             log::debug!(
@@ -659,5 +662,4 @@ impl Output {
     fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
         KeyInjector::push_unicode_char_inputs(inputs, ch, marker);
     }
-
 }

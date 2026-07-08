@@ -236,9 +236,7 @@ impl WindowsPlatform {
         if result.learned_tsf {
             // UnicodeLiteralObserverFsm が GJI write なしと判断 → フォーカス中クラスを Tsf に昇格。
             let class_name = self.focus.class_name().to_string();
-            log::info!(
-                "[injection-mode] {class_name:?} → Tsf 事後昇格（GJI write 未観測）"
-            );
+            log::info!("[injection-mode] {class_name:?} → Tsf 事後昇格（GJI write 未観測）");
             self.focus.learn_injection_mode_tsf(class_name);
             // 現セッション（現在のフォーカスウィンドウ）にも即時 Tsf モードを適用する。
             self.output
@@ -283,11 +281,17 @@ impl WindowsPlatform {
         }
         for action in &response.actions {
             match action {
-                GjiAction::StartProbe { probe_id, budget_ms, params } => {
+                GjiAction::StartProbe {
+                    probe_id,
+                    budget_ms,
+                    params,
+                } => {
                     log::debug!(
                         "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms \
                          ncwait={}ms forces_f2={} long={}",
-                        params.ncwait_budget_ms, params.forces_prepend_f2, params.is_long_cold
+                        params.ncwait_budget_ms,
+                        params.forces_prepend_f2,
+                        params.is_long_cold
                     );
                     self.output.gji_store_probe_id(*probe_id);
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
@@ -427,7 +431,10 @@ impl WindowsPlatform {
     // ── GjiFsm イベント通知 ──────────────────────────────────────────────────
 
     /// フォーカス変更を GjiFsm に通知する（`ir_post_focus_change_snapshot` から呼ぶ）。
-    pub(crate) fn gji_on_focus_change(&mut self, injection_mode: crate::output::types::InjectionMode) {
+    pub(crate) fn gji_on_focus_change(
+        &mut self,
+        injection_mode: crate::output::types::InjectionMode,
+    ) {
         // CompositionFsm の epoch を進めて、フォーカスを跨いだ保留 warmup を無効化する。
         let tsf_mode = matches!(injection_mode, crate::output::types::InjectionMode::Tsf);
         self.feed_composition_event(
@@ -435,10 +442,12 @@ impl WindowsPlatform {
             None,
         );
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-        let resp = self.output.gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
-            injection_mode,
-            gji_idle_ms,
-        });
+        let resp = self
+            .output
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
+                injection_mode,
+                gji_idle_ms,
+            });
         self.dispatch_gji_response(resp);
         // ImeModeFsm: フォーカス変更で Unknown に戻す（次の IMC 確認待ち）。
         // on_ime_mode_focus_changed が ime_mode_focus_gen をインクリメントするため、
@@ -468,7 +477,10 @@ impl WindowsPlatform {
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
         let resp = self
             .output
-            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn { injection_mode, gji_idle_ms });
+            .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn {
+                injection_mode,
+                gji_idle_ms,
+            });
         self.dispatch_gji_response(resp);
     }
 
@@ -758,7 +770,6 @@ impl PlatformRuntime for WindowsPlatform {
     fn set_tray_layout_name(&mut self, name: &str) {
         self.tray.set_layout_name(name);
     }
-
 }
 
 impl TsfComposition for WindowsPlatform {
@@ -800,8 +811,14 @@ impl TsfComposition for WindowsPlatform {
         // ms_ime_gate_defer で IMC 確認を待つようになる。
         // AlreadyMatched は状態不変（確認済み belief を降格させない）、Failed は
         // 実状態が不明のため belief を汚さない。
-        if matches!(outcome, ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent) {
-            self.output.ime_mode_fsm.borrow_mut().on_set_open_applied(open);
+        if matches!(
+            outcome,
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent
+        ) {
+            self.output
+                .ime_mode_fsm
+                .borrow_mut()
+                .on_set_open_applied(open);
             if open {
                 // 新しい IME ON 試行 → give-up latch を解除して再確認の機会を与える。
                 self.output.ms_ime_gate_give_up.set(false);
@@ -930,7 +947,8 @@ impl WindowsPlatform {
         let outcome = crate::ime_controller::CONTROLLER.apply(open, view);
         log::debug!(
             "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
-            belief.effective_open, belief.confident
+            belief.effective_open,
+            belief.confident
         );
         outcome
     }
@@ -957,7 +975,11 @@ impl WindowsPlatform {
         applied: Option<(bool, u64)>,
     ) -> awase::platform::ImeOpenOutcome {
         let shadow_on = applied.map_or(false, |(s, _)| s);
-        self.apply_ime_open_with_belief(open, applied, crate::output::OpenBelief::from_shadow(shadow_on))
+        self.apply_ime_open_with_belief(
+            open,
+            applied,
+            crate::output::OpenBelief::from_shadow(shadow_on),
+        )
     }
 
     // ── タイマー問い合わせ ──

@@ -33,11 +33,11 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{
-    decide_transmit_plan, LiteralDetectConfig, ProbeAction, ProbeObservations,
-    TransmitTarget, TsfEnvSnapshot,
+    decide_transmit_plan, LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitTarget,
+    TsfEnvSnapshot,
 };
-use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
+use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 
 // ── FreshF2Callback ──────────────────────────────────────────────────────────
 
@@ -124,7 +124,9 @@ async fn gji_coro_body(
                 // pre-idle: F2 送信前から GJI が長期静止 + forces_prepend_f2
                 // → F2 を送っても GJI は応答しないので FreshF2 をスキップして transmit へ
                 let pre_idle = outcome.gji_idle_ms
-                    >= outcome.elapsed_ms.saturating_add(crate::tuning::GJI_IDLE_MS);
+                    >= outcome
+                        .elapsed_ms
+                        .saturating_add(crate::tuning::GJI_IDLE_MS);
                 if !outcome.settled && pre_idle && ctx.forces_prepend_f2 {
                     log::debug!(
                         "[gji-coro] cold={} GJI pre-idle (idle={}ms elapsed={}ms) → skip FreshF2",
@@ -190,7 +192,10 @@ async fn gji_coro_body(
                         loop {
                             let sp_input = yield_step(ch.clone(), vec![]).await;
                             env = sp_input.env;
-                            if secondary.check_outcome(crate::tuning::GJI_POST_NAMECHANGE_MS).is_some() {
+                            if secondary
+                                .check_outcome(crate::tuning::GJI_POST_NAMECHANGE_MS)
+                                .is_some()
+                            {
                                 log::debug!(
                                     "[gji-coro] cold={} SecondaryGjiProbe 完了",
                                     ctx.cold_seq
@@ -216,9 +221,11 @@ async fn gji_coro_body(
     // nc_fired=false のまま decide_transmit_plan に渡すと needs_literal 第2項が true になり
     // LiteralDetect が誤検出して backspace を送る（composited 'な' が消えるバグ）。
     // → is_confirm_key && TSF mode の場合は nc_fired を true に昇格して第2項を抑制する。
-    let nc_for_plan = nc_fired
-        || (cold_reason.is_confirm_key() && env.is_tsf_mode && !gji_resumed);
-    let observations = ProbeObservations { nc_fired: nc_for_plan, gji_resumed };
+    let nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode && !gji_resumed);
+    let observations = ProbeObservations {
+        nc_fired: nc_for_plan,
+        gji_resumed,
+    };
 
     // fresh F2 を送信済みかつ TSF mode → バッチへの F2 再同梱を抑制（"kお" バグ防止）
     let already_sent_f2 = ctx.fresh_f2_at_probe_start || fresh_f2_sent;
@@ -375,7 +382,16 @@ impl GjiWarmupCoro {
         };
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
-            gji_coro_body(ch, romaji, probe, total_max_ms, needs_settle_check, cold_reason, ctx).await
+            gji_coro_body(
+                ch,
+                romaji,
+                probe,
+                total_max_ms,
+                needs_settle_check,
+                cold_reason,
+                ctx,
+            )
+            .await
         });
         let mut this = Self {
             coro,

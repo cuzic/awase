@@ -137,8 +137,10 @@ impl crate::ime::ImeSnapshot {
     ) -> Option<InputModeState> {
         let curr_conv = self.conversion_mode?;
         let prev_conv = current_prev_conversion_mode?;
-        let result = awase::engine::ConvMode::from_u32(curr_conv)
-            .classify_transition(awase::engine::ConvMode::from_u32(prev_conv), current_input_mode);
+        let result = awase::engine::ConvMode::from_u32(curr_conv).classify_transition(
+            awase::engine::ConvMode::from_u32(prev_conv),
+            current_input_mode,
+        );
         if let Some(new_mode) = result {
             log::info!(
                 "IME input method changed: conv=0x{:08X}→0x{:08X}, belief {:?}→{:?}",

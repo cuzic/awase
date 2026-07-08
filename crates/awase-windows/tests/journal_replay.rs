@@ -35,8 +35,7 @@ fn load_fixtures(path: &std::path::Path) -> Vec<ConvClassifyFixture> {
 
 #[test]
 fn replay_all_journal_fixtures() {
-    let dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/journals");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/journals");
     let mut failures = Vec::new();
     let mut total = 0usize;
 

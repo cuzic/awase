@@ -45,7 +45,10 @@ use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 /// 純粋関数（`ImeModeFsm::is_native_ready` の env 版）。
 fn env_native_ready(env: &TsfEnvSnapshot) -> bool {
     env.ime_mode_confirmed
-        && matches!(env.ime_mode, ImeModeState::Hiragana | ImeModeState::Katakana)
+        && matches!(
+            env.ime_mode,
+            ImeModeState::Hiragana | ImeModeState::Katakana
+        )
 }
 
 async fn ms_ime_ready_coro_body(

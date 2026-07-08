@@ -24,11 +24,11 @@
 //! 述語は `AppImeProfile` / `ActiveImeKind` までの抽象で判断する。アプリ名文字列や class_name
 //! マッチはここに新設しない（それらは focus 層の classifier が所有する）。
 
-use awase::types::VkCode;
 use crate::focus::class_names::AppImeProfile;
 use crate::tsf::observer::ActiveImeKind;
 use crate::tsf::warmup::probe_fsm::TransmitTarget;
 use crate::vk::{VK_DBE_HIRAGANA, VK_IME_OFF, VK_IME_ON};
+use awase::types::VkCode;
 
 // ── 戦略選択の適用条件（ime_controller の is_applicable が引く述語）─────────────────
 
@@ -69,7 +69,11 @@ impl ImeOperation {
     /// `apply(open, ..)` の `open: bool` を操作に変換する。
     #[must_use]
     pub(crate) const fn from_open(open: bool) -> Self {
-        if open { Self::Open } else { Self::Close }
+        if open {
+            Self::Open
+        } else {
+            Self::Close
+        }
     }
 }
 
@@ -159,14 +163,26 @@ mod tests {
 
     #[test]
     fn gji_direct_keys() {
-        assert_eq!(ime_key_for(KeyMechanism::GjiDirect, ImeOperation::Open), VK_IME_ON);
-        assert_eq!(ime_key_for(KeyMechanism::GjiDirect, ImeOperation::Close), VK_IME_OFF);
+        assert_eq!(
+            ime_key_for(KeyMechanism::GjiDirect, ImeOperation::Open),
+            VK_IME_ON
+        );
+        assert_eq!(
+            ime_key_for(KeyMechanism::GjiDirect, ImeOperation::Close),
+            VK_IME_OFF
+        );
     }
 
     #[test]
     fn ms_ime_direct_keys() {
-        assert_eq!(ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open), VK_DBE_HIRAGANA);
-        assert_eq!(ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close), VK_IME_OFF);
+        assert_eq!(
+            ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open),
+            VK_DBE_HIRAGANA
+        );
+        assert_eq!(
+            ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close),
+            VK_IME_OFF
+        );
     }
 
     // ── 戦略選択述語が現行 is_applicable と一致することを固定（ゴールデンの一次診断補助）──
@@ -187,10 +203,22 @@ mod tests {
     #[test]
     fn ms_ime_direct_requires_non_imm_cross() {
         // MS-IME × 非 Standard のみ true。
-        assert!(ms_ime_direct_applicable(ActiveImeKind::MicrosoftIme, AppImeProfile::Imm32Unavailable));
-        assert!(ms_ime_direct_applicable(ActiveImeKind::MicrosoftIme, AppImeProfile::TsfNative));
-        assert!(!ms_ime_direct_applicable(ActiveImeKind::MicrosoftIme, AppImeProfile::Standard));
-        assert!(!ms_ime_direct_applicable(ActiveImeKind::GoogleJapaneseInput, AppImeProfile::TsfNative));
+        assert!(ms_ime_direct_applicable(
+            ActiveImeKind::MicrosoftIme,
+            AppImeProfile::Imm32Unavailable
+        ));
+        assert!(ms_ime_direct_applicable(
+            ActiveImeKind::MicrosoftIme,
+            AppImeProfile::TsfNative
+        ));
+        assert!(!ms_ime_direct_applicable(
+            ActiveImeKind::MicrosoftIme,
+            AppImeProfile::Standard
+        ));
+        assert!(!ms_ime_direct_applicable(
+            ActiveImeKind::GoogleJapaneseInput,
+            AppImeProfile::TsfNative
+        ));
     }
 
     // ── warmup ポリシー ──

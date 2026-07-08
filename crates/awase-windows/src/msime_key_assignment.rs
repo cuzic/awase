@@ -98,8 +98,8 @@ mod windows_impl {
             LAST_WARNED.store(NOT_WARNED, Ordering::Relaxed);
             return;
         };
-        let packed = u8::from(assignment.henkan_ime_on)
-            | (u8::from(assignment.muhenkan_ime_off) << 1);
+        let packed =
+            u8::from(assignment.henkan_ime_on) | (u8::from(assignment.muhenkan_ime_off) << 1);
         if LAST_WARNED.swap(packed, Ordering::Relaxed) == packed {
             return; // 同じ内容で警告済み
         }
@@ -112,9 +112,7 @@ mod windows_impl {
 
     /// `HKCU\...\MSIME` の DWORD 値を読む。値が存在しなければ `None`。
     fn read_dword(value_name: windows::core::PCWSTR) -> Option<u32> {
-        use windows::Win32::System::Registry::{
-            RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
-        };
+        use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
         let mut data: u32 = 0;
         let mut size = u32::try_from(size_of::<u32>()).unwrap_or(4);
         // SAFETY: HKEY_CURRENT_USER は擬似ハンドル。サブキー・値名は NUL 終端済み UTF-16。

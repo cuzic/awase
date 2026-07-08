@@ -27,8 +27,8 @@
 use std::time::Instant;
 
 use awase_windows::state::ime_event::{
-    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, UserIntentSource,
-    ObservationConfidence, ObservationSource,
+    ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
+    ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use awase_windows::state::ime_model::ImeModel;
 
@@ -217,8 +217,14 @@ fn scenario_7_panic_reset_then_stale_poll_does_not_corrupt() {
         ImeEvent::PanicReset { target: true },
         observer_reported(false, ObservationSource::ObserverPoll),
     ]);
-    assert!(model.desired_open(), "PanicReset 後の stale poll が desired を壊さない");
-    assert!(model.last_intent.is_none(), "PanicReset は last_intent を設定しない");
+    assert!(
+        model.desired_open(),
+        "PanicReset 後の stale poll が desired を壊さない"
+    );
+    assert!(
+        model.last_intent.is_none(),
+        "PanicReset は last_intent を設定しない"
+    );
     assert!(model.observations.drift.is_some(), "drift は記録される");
 }
 
@@ -254,7 +260,8 @@ fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
     ]);
     assert_eq!(model.desired_open(), false, "newer intent (gen=11) が勝つ");
     assert_eq!(
-        model.applied.applied_open(), None,
+        model.applied.applied_open(),
+        None,
         "stale gen=10 の success は無視 (generation 照合)"
     );
     assert!(
@@ -420,9 +427,7 @@ fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
 #[test]
 fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
     use awase::engine::{AssumedReason, InputModeState};
-    use awase_windows::state::ime_event::{
-        InputModeApplyResult, InputModeApplyStrategy,
-    };
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
     use awase_windows::state::TickMs;
 
     // 1. Edge へフォーカス + キャッシュ復元で stale な ObservedEisu を引き継ぐ
@@ -483,9 +488,7 @@ fn scenario_11_edge_stale_eisu_recovers_via_physical_ime_key() {
 #[test]
 fn scenario_12_gji_io_inference_corrects_stale_eisu() {
     use awase::engine::{AssumedReason, InputModeState};
-    use awase_windows::state::ime_event::{
-        InputModeApplyResult, InputModeApplyStrategy,
-    };
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
     use awase_windows::state::TickMs;
 
     let model = run_reducer(vec![

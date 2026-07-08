@@ -29,7 +29,9 @@ pub(crate) struct RuntimeOutbox {
 impl RuntimeOutbox {
     #[must_use]
     pub(crate) fn new() -> Self {
-        Self { requests: Vec::new() }
+        Self {
+            requests: Vec::new(),
+        }
     }
 
     /// リクエストを末尾に積む。

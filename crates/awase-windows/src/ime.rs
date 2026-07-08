@@ -1298,9 +1298,7 @@ pub unsafe fn set_ime_mode(
     let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
         return false;
     };
-    let Some(current) =
-        crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50)
-    else {
+    let Some(current) = crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) else {
         return false;
     };
     let conv = current as u32;
@@ -1308,8 +1306,7 @@ pub unsafe fn set_ime_mode(
     if new_conv == conv {
         return true;
     }
-    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
-        .is_some()
+    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50).is_some()
 }
 
 /// クロスプロセスで IME のローマ字/かな入力を切り替える。
@@ -1323,9 +1320,7 @@ pub unsafe fn set_ime_romaji_mode_state(romaji: bool) -> bool {
     let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
         return false;
     };
-    let Some(current) =
-        crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50)
-    else {
+    let Some(current) = crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) else {
         return false;
     };
     let conv = current as u32;
@@ -1337,7 +1332,5 @@ pub unsafe fn set_ime_romaji_mode_state(romaji: bool) -> bool {
     if new_conv == conv {
         return true;
     }
-    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
-        .is_some()
+    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50).is_some()
 }
-

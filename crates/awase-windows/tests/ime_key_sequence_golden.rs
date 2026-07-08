@@ -168,18 +168,36 @@ fn ime_key_strategy_selection_matches_golden() {
 #[test]
 fn strategy_selection_invariants() {
     // Standard プロファイルは常に ImmCrossProcess が先取りする（GJI/MS-IME 問わず）。
-    assert_eq!(characterize_strategy(true, "Standard", false), "ImmCrossProcess");
-    assert_eq!(characterize_strategy(false, "Standard", false), "ImmCrossProcess");
+    assert_eq!(
+        characterize_strategy(true, "Standard", false),
+        "ImmCrossProcess"
+    );
+    assert_eq!(
+        characterize_strategy(false, "Standard", false),
+        "ImmCrossProcess"
+    );
 
     // GJI 検出時は（ImmCross を除けば）常に GjiDirect。
-    assert_eq!(characterize_strategy(true, "Imm32Unavailable", false), "GjiDirect");
+    assert_eq!(
+        characterize_strategy(true, "Imm32Unavailable", false),
+        "GjiDirect"
+    );
     assert_eq!(characterize_strategy(true, "TsfNative", false), "GjiDirect");
     assert_eq!(characterize_strategy(true, "Standard", true), "GjiDirect");
 
     // MS-IME × 非 Standard は MsImeDirect。
-    assert_eq!(characterize_strategy(false, "Imm32Unavailable", false), "MsImeDirect");
-    assert_eq!(characterize_strategy(false, "TsfNative", false), "MsImeDirect");
+    assert_eq!(
+        characterize_strategy(false, "Imm32Unavailable", false),
+        "MsImeDirect"
+    );
+    assert_eq!(
+        characterize_strategy(false, "TsfNative", false),
+        "MsImeDirect"
+    );
 
     // MS-IME × Standard で IMM を飛ばすと最終フォールバック KanjiToggle まで落ちる。
-    assert_eq!(characterize_strategy(false, "Standard", true), "KanjiToggle");
+    assert_eq!(
+        characterize_strategy(false, "Standard", true),
+        "KanjiToggle"
+    );
 }

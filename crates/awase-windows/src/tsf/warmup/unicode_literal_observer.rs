@@ -30,7 +30,11 @@ pub(crate) struct UnicodeLiteralObserverFsm {
 impl UnicodeLiteralObserverFsm {
     /// `baseline_bytes` = 送信直前の `gji_write_bytes()` スナップショット。
     pub(crate) fn new(baseline_bytes: u64, cold_seq: u32) -> Self {
-        Self { cold_seq, baseline_bytes, elapsed_ms: 0 }
+        Self {
+            cold_seq,
+            baseline_bytes,
+            elapsed_ms: 0,
+        }
     }
 }
 
@@ -44,7 +48,8 @@ impl TickableFsm for UnicodeLiteralObserverFsm {
         if current == self.baseline_bytes {
             log::info!(
                 "[unicode-obs] cold={} {}ms GJI write なし → injection_mode Tsf 昇格",
-                self.cold_seq, self.elapsed_ms
+                self.cold_seq,
+                self.elapsed_ms
             );
             vec![ProbeAction::UpgradeToTsf, ProbeAction::Done]
         } else {

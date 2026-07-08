@@ -142,11 +142,12 @@ impl PhysicalKeyDisposition {
 #[cfg(test)]
 mod plan_tests {
     use super::*;
-    use awase::types::{
-        ImeRelevance, KeyClassification, ModifierState, ScanCode, ShadowImeAction,
-    };
+    use awase::types::{ImeRelevance, KeyClassification, ModifierState, ScanCode, ShadowImeAction};
 
-    fn kanji_event(event_type: KeyEventType, shadow_action: Option<ShadowImeAction>) -> RawKeyEvent {
+    fn kanji_event(
+        event_type: KeyEventType,
+        shadow_action: Option<ShadowImeAction>,
+    ) -> RawKeyEvent {
         RawKeyEvent {
             vk_code: crate::vk::VK_KANJI,
             scan_code: ScanCode(0x1E),
@@ -300,7 +301,13 @@ mod plan_tests {
             for shadow_toggled in [false, true] {
                 let ev = kanji_event(event_type, Some(ShadowImeAction::TurnOn));
                 assert_eq!(
-                    PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, shadow_toggled, false, false),
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        AppImeProfile::TsfNative,
+                        shadow_toggled,
+                        false,
+                        false
+                    ),
                     PhysicalKeyDisposition::Allow,
                     "TsfNative は shadow_toggled={shadow_toggled} event_type={event_type:?} でも \
                      常に Allow (TSF が物理キーを処理するため awase は介入しない)"
