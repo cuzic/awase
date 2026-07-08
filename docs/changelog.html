@@ -109,6 +109,15 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>バグ修正</h3>
+<ul>
+<li><strong>Chrome 入力中、CLSID ベース IME 種別の単発誤検出で <code>GjiFsm</code> が単語ごとに再構築され <code>cold</code> が発火し続ける不具合を修正（BUG-17）</strong><ul>
+<li><code>gji-io-monitor</code> ワーカースレッドが 2 秒ごとにポーリングする <code>ITfInputProcessorProfileMgr::GetActiveProfile</code> の単発フリップを <code>WM_IME_KIND_CHANGED</code> としてそのまま main スレッドへ伝播しており、<code>set_active_ime_kind</code> が種別変化のたびに warmup 戦略（<code>GjiFsm</code>/<code>MsImeStrategy</code>）を無条件で新規生成 → 確立済みの <code>OnWarm</code>/<code>OnComposing</code> を破棄していた</li>
+<li>Chrome cold-start reinit が実 <code>VK_IME_OFF→VK_IME_ON</code> トグルを送信すること自体が誤検出の引き金となり、「reinit → 誤検出 → GjiFsm 再構築 → 次の単語も cold → 再度 reinit → …」という自己増幅ループを形成していた（実機ログで <code>cold_seq</code> が単語ごとに 392→401 と climb、2 回の &quot;StartComposition while engine off&quot; 警告が CLSID ポーリング周期とほぼ一致する 2146ms 間隔で観測）</li>
+<li><code>tsf/gji_monitor.rs</code> に <code>ImeKindDebounce</code> を追加し、同じ新種別が 2 tick 連続で観測されるまで確定させないようにした。詳細は docs/known-bugs.md BUG-17</li>
+</ul>
+</li>
+</ul>
 <h2>[1.8.6] - 2026-07-07</h2>
 <h3>バグ修正</h3>
 <ul>
