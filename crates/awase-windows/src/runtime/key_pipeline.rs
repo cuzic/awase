@@ -181,10 +181,23 @@ impl Runtime {
         // （2026-07-05: 前回の修正が効かなかった原因）。
         // この経路は kp_stage_focus_probe が barrier を consume 済みのため、live 評価ではなく
         // イベント開始時にスナップショットした focus_transition_was_pending を settle 判定に使う。
-        crate::runtime::executor::strip_ime_set_open_if_settling(
+        let stripped_set_open = crate::runtime::executor::strip_ime_set_open_if_settling(
             &mut decision,
             focus_transition_was_pending,
         );
+        if stripped_set_open.is_some() {
+            // settle 中に握りつぶした SetOpen は自然には再発行されない
+            // （Engine::prev_activation は遷移確定済みのため）。既存の
+            // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
+            // パターンで確実に一度だけ再同期する
+            // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
+            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
+            log::debug!(
+                "[focus-settle] SetOpen stripped from kp_run_inner decision → \
+                 {retry_ms}ms 後に refresh で再試行"
+            );
+            self.schedule_ime_refresh(retry_ms);
+        }
         let state_after = self.engine.debug_state_label();
         self.platform_state
             .ime

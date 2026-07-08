@@ -237,10 +237,22 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let (callback, sync_outcomes) =
+        let (callback, sync_outcomes, stripped_set_open) =
             self.executor
                 .execute_from_loop(&mut self.platform, &self.platform_state.ime, decision);
         self.dispatch_outcomes(sync_outcomes);
+        if stripped_set_open.is_some() {
+            // settle 中に握りつぶした SetOpen は自然には再発行されない
+            // （Engine::prev_activation は遷移確定済みのため）。既存の
+            // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
+            // パターンで確実に一度だけ再同期する。
+            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
+            log::debug!(
+                "[focus-settle] SetOpen stripped from execute_from_loop decision → \
+                 {retry_ms}ms 後に refresh で再試行"
+            );
+            self.schedule_ime_refresh(retry_ms);
+        }
         callback
     }
 

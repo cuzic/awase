@@ -91,13 +91,24 @@ impl std::fmt::Debug for DecisionExecutor {
 /// 汚染させない最終防衛線は `ImeStateHub::handle_engine_set_open` にある（意図が異なるため別に残す）。
 ///
 /// settle 中に落とした事実は必ずログに残す（無音で消すと focus 遷移バグの調査コストが跳ね上がるため）。
-pub(crate) fn strip_ime_set_open_if_settling(decision: &mut Decision, settling: bool) {
+///
+/// 戻り値 `Some(target)` は「本来 apply されるはずだった SetOpen(target) を握りつぶした」ことを
+/// 呼び出し元に伝える。`Engine::check_active_transition` は該当する Active/Inactive 遷移を
+/// この呼び出しより前に確定させており（`prev_activation` 更新はログ出力と同時、effect 実行より
+/// 前）、以後 belief が変わらない限り同じ遷移は二度と検知されない＝この SetOpen は自然には
+/// 再発行されない。呼び出し元は `Some` を受けたら settle 明けの再試行
+/// （`focus_settle_ms() + 50`ms 後、`apply_force_on_for_imm_broken` 等と同じ確立済みパターン）を
+/// 必ずスケジュールすること（さもないと GjiFsm 等 apply 完了通知でしか同期しないサブシステムが
+/// 実 IME 状態と乖離したまま固着する。2026-07-08 実機: 「このせっけい」が「せっけい」に文字欠落）。
+#[must_use]
+pub(crate) fn strip_ime_set_open_if_settling(
+    decision: &mut Decision,
+    settling: bool,
+) -> Option<bool> {
     if !settling {
-        return;
+        return None;
     }
-    let Some(target) = decision.find_ime_set_open() else {
-        return;
-    };
+    let target = decision.find_ime_set_open()?;
     decision
         .effects_mut()
         .retain(|e| !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })));
@@ -105,6 +116,7 @@ pub(crate) fn strip_ime_set_open_if_settling(decision: &mut Decision, settling: 
         "[focus-settle] SetOpen({target}) effect stripped from decision \
          (focus transition barrier still settling)"
     );
+    Some(target)
 }
 
 impl DecisionExecutor {
@@ -150,21 +162,29 @@ impl DecisionExecutor {
     /// を発行 → ここで無条件に実行されて実際に SendInput してしまうバグを修正。
     /// settle 期間中は `SetOpen` effect を取り除いてから実行する
     /// （`key_pipeline.rs` の `kp_run_inner` と同じパターン）。
+    ///
+    /// 戻り値の第3要素は `strip_ime_set_open_if_settling` が握りつぶした SetOpen の目標値。
+    /// `Some` の場合、呼び出し元は settle 明けの再試行を必ずスケジュールすること
+    /// （`Engine::prev_activation` は該当遷移を確定済みで、同じ SetOpen は自然には
+    /// 再発行されないため。2026-07-08: GjiFsm が resync できず「このせっけい」の
+    /// 文字欠落に至った実機ログから判明）。
     pub(crate) fn execute_from_loop(
         &mut self,
         platform: &mut WindowsPlatform,
         ime: &ImeStateHub,
         mut decision: Decision,
-    ) -> (CallbackResult, Vec<ImeApplyPair>) {
+    ) -> (CallbackResult, Vec<ImeApplyPair>, Option<bool>) {
         self.applied_snapshot = ime.model().applied;
         self.belief_input_mode = ime.input_mode();
         // 非キーボード経路の一次フィルタ。ここは barrier consume を経ないので settling をライブ評価する。
-        strip_ime_set_open_if_settling(
+        let stripped_set_open = strip_ime_set_open_if_settling(
             &mut decision,
             ime.is_focus_transition_settling(std::time::Instant::now()),
         );
         let (consumed, effects) = match decision {
-            Decision::PassThrough => return (CallbackResult::PassThrough, Vec::new()),
+            Decision::PassThrough => {
+                return (CallbackResult::PassThrough, Vec::new(), stripped_set_open)
+            }
             Decision::PassThroughWith { effects } => (false, effects),
             Decision::Consume { effects } => (true, effects),
         };
@@ -182,7 +202,7 @@ impl DecisionExecutor {
         } else {
             CallbackResult::PassThrough
         };
-        (callback, sync_outcomes)
+        (callback, sync_outcomes, stripped_set_open)
     }
 
     /// `WM_EXECUTE_EFFECTS` ハンドラ、および `TIMER_OUTPUT_GUARD` タイマーから呼ぶ。
@@ -1033,27 +1053,52 @@ mod tests {
         Effect::Ime(ImeEffect::SetOpen { open })
     }
 
-    // settling=true: SetOpen effect は decision から除去される。
+    // settling=true: SetOpen effect は decision から除去され、除去された目標値が返る。
     #[test]
     fn strip_removes_set_open_when_settling() {
         let mut decision = Decision::consumed_with(vec![set_open_effect(true)].into());
-        super::strip_ime_set_open_if_settling(&mut decision, true);
+        let stripped = super::strip_ime_set_open_if_settling(&mut decision, true);
         assert!(
             decision.find_ime_set_open().is_none(),
             "settle 中は SetOpen effect が除去される"
         );
+        assert_eq!(
+            stripped,
+            Some(true),
+            "呼び出し元が settle 明けの再試行をスケジュールできるよう、\
+             除去した目標値を返す必要がある"
+        );
     }
 
-    // settling=false: SetOpen effect はそのまま保持される（settle 外では通常実行）。
+    // settling=false: SetOpen effect はそのまま保持され、何も除去していないので None が返る。
     #[test]
     fn strip_keeps_set_open_when_not_settling() {
         let mut decision = Decision::consumed_with(vec![set_open_effect(true)].into());
-        super::strip_ime_set_open_if_settling(&mut decision, false);
+        let stripped = super::strip_ime_set_open_if_settling(&mut decision, false);
         assert_eq!(
             decision.find_ime_set_open(),
             Some(true),
             "settle 外では SetOpen effect は保持される"
         );
+        assert_eq!(stripped, None, "何も除去していないので None");
+    }
+
+    // settling=true だが SetOpen effect が無い場合: 除去対象が無いので None
+    // （retry のスケジュールも不要 — 呼び出し元は Some のときだけ再試行すればよい）。
+    #[test]
+    fn strip_returns_none_when_settling_but_no_set_open_effect() {
+        let mut decision =
+            Decision::consumed_with(vec![Effect::Timer(TimerEffect::Kill(0))].into());
+        let stripped = super::strip_ime_set_open_if_settling(&mut decision, true);
+        assert_eq!(
+            stripped, None,
+            "SetOpen effect が無ければ settling=true でも None"
+        );
+        let remaining = match &decision {
+            Decision::Consume { effects } => effects.len(),
+            _ => unreachable!("Consume のまま"),
+        };
+        assert_eq!(remaining, 1, "SetOpen 以外の effect は手つかずのまま残る");
     }
 
     // settling=true でも SetOpen 以外の effect（Timer 等）は保持される（対象集合を SetOpen に限定）。
@@ -1062,15 +1107,35 @@ mod tests {
         let mut decision = Decision::consumed_with(
             vec![set_open_effect(false), Effect::Timer(TimerEffect::Kill(0))].into(),
         );
-        super::strip_ime_set_open_if_settling(&mut decision, true);
+        let stripped = super::strip_ime_set_open_if_settling(&mut decision, true);
         assert!(
             decision.find_ime_set_open().is_none(),
             "SetOpen は除去される"
         );
+        assert_eq!(stripped, Some(false), "除去した目標値 false が返る");
         let remaining = match &decision {
             Decision::Consume { effects } => effects.len(),
             _ => unreachable!("Consume のまま"),
         };
         assert_eq!(remaining, 1, "SetOpen 以外の effect（Timer）は残る");
+    }
+
+    // 2026-07-08: 実機で GjiFsm が resync できず「このせっけい」の文字欠落に至った
+    // シナリオの再発防止。settle 中に握りつぶした SetOpen(true) の戻り値を呼び出し元
+    // （execute_decision / kp_run_inner）が無視すると、Engine::prev_activation は既に
+    // 遷移確定済みのため、同じ SetOpen は二度と自然発行されない。
+    // この関数の契約（Some を返したら呼び出し元は必ず settle 明け再試行をスケジュールする）
+    // を型レベルで思い出させるため #[must_use] を付けている。ここでは戻り値の意味そのもの
+    // （「再試行が必要かどうか」の判定に使えること）を固定する。
+    #[test]
+    fn strip_stripped_value_signals_retry_is_owed() {
+        let mut decision = Decision::consumed_with(vec![set_open_effect(true)].into());
+        let stripped = super::strip_ime_set_open_if_settling(&mut decision, true);
+        // 呼び出し元の実装（execute_decision / kp_run_inner）はこの `is_some()` で
+        // schedule_ime_refresh(focus_settle_ms + 50) を呼ぶかどうかを判断する。
+        assert!(
+            stripped.is_some(),
+            "SetOpen を握りつぶしたら再試行が必要という事実を呼び出し元へ伝える"
+        );
     }
 }
