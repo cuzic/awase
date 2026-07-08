@@ -130,7 +130,9 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
     let path = "src/state/platform_state.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-    let count = production.matches("ObservationSource::HeuristicDefault").count();
+    let count = production
+        .matches("ObservationSource::HeuristicDefault")
+        .count();
     assert_eq!(
         count, 1,
         "{path} 内の `ObservationSource::HeuristicDefault` 使用箇所数が想定(1)と異なります(実際: {count})。\n\
@@ -219,7 +221,11 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     let mut files = Vec::new();
     walk_rs_files(&src, &mut files);
 
-    let patterns = ["write_sync_key(", "write_physical_key(", "write_set_open_request("];
+    let patterns = [
+        "write_sync_key(",
+        "write_physical_key(",
+        "write_set_open_request(",
+    ];
     // (相対パス, 期待マッチ数, 説明)。ここに列挙されないファイルは 0 でなければならない。
     let expected: &[(&str, usize, &str)] = &[
         (
@@ -237,7 +243,11 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     ];
 
     for path in &files {
-        let rel = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let count: usize = patterns.iter().map(|p| content.matches(p).count()).sum();
         let expected_count = expected
@@ -312,7 +322,11 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
     ];
 
     for path in &files {
-        let rel = path.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         let content = fs::read_to_string(path).unwrap();
         let production = production_code_only(&content);
         let count = production.matches(".write_focus_probe(").count();
@@ -333,6 +347,69 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
              ください。"
         );
     }
+}
+
+/// `EngineSync::SetOpen` は `RomajiRecovered` 専用。`KatakanaShadowOff`/
+/// `NativeToggleShadowOff` は `EngineSync::ReportOpenInference` を使うこと。
+///
+/// 2026-07-08 BUG-19 再発: `KatakanaShadowOff` が `SetOpen(true)` 経由で
+/// `handle_engine_set_open` → `UserImeSetIntent{Command}` を偽装し、`desired_open`
+/// を直接書き換えていた。これによりユーザーが明示的に IME OFF にした直後でも、
+/// conv の一発誤読（GJI 候補ポップアップへのフォーカス flicker 等）を理由に engine
+/// が勝手に ON へ戻る再発バグを起こした。修正後は `KatakanaShadowOff`/
+/// `NativeToggleShadowOff` を `ReportOpenInference`（`ObserverReported` として
+/// 記録するだけ、`desired_open` は変更しない、`PlatformState::
+/// report_conv_open_inference()` が唯一の消費経路）に分離した。この境界が将来
+/// 再び崩れないよう、`SetOpen(ConvSyncReason::KatakanaShadowOff)` /
+/// `SetOpen(ConvSyncReason::NativeToggleShadowOff)` という組み合わせが本番コードに
+/// 一切出現しないことを固定する。
+#[test]
+fn katakana_and_native_toggle_shadow_off_never_use_set_open() {
+    let path = "src/state/conv_classify.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    for forbidden in [
+        "SetOpen(ConvSyncReason::KatakanaShadowOff)",
+        "SetOpen(ConvSyncReason::NativeToggleShadowOff)",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "{path} に `{forbidden}` が出現しています。\n\
+             KatakanaShadowOff/NativeToggleShadowOff は SetOpen（engine を直接 \
+             actuate し、UserImeSetIntent{{Command}} を偽装して desired_open を \
+             書き換える）を使ってはならず、必ず ReportOpenInference（ObserverReported \
+             として記録するだけ）を使うこと。さもないとユーザーの明示 IME OFF が \
+             conv の一発誤読で上書きされる再発バグ（2026-07-08, BUG-19 再発）が戻ります。"
+        );
+    }
+}
+
+/// `ObservationSource::ConvOpenInference` への参照は2箇所のみに限定される。
+///
+/// - `report_conv_open_inference()`: `ObserverReported` の dispatch（唯一の書き込み点）。
+///   他の箇所がこの source を直接名乗って `ObserverReported` を dispatch すると、
+///   実際には conv ビットからの間接推論ではない値を「conv 推論」と偽装できてしまう
+///   （`ime-belief-architecture.md` が禁じる観測偽装パターンの一種）。confidence の
+///   上限（Medium）も `report_conv_open_inference()` 内で固定されているため、
+///   新しい呼び出し元を増やす場合はこの関数を経由すること。
+/// - `check_drift_correction()`: 明示意図が無い間はこの source 単独で drift
+///   correction を発火させない source-aware gate（BUG-19 再発対策）。
+#[test]
+fn conv_open_inference_source_is_limited_to_report_and_gate() {
+    let path = "src/state/platform_state.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production
+        .matches("ObservationSource::ConvOpenInference")
+        .count();
+    assert_eq!(
+        count, 2,
+        "{path} 内の `ObservationSource::ConvOpenInference` 参照箇所数が想定(2 = \
+         report_conv_open_inference の dispatch + check_drift_correction の \
+         source-aware gate)と異なります(実際: {count})。\n\
+         conv ビット由来の open 推論の dispatch は必ず `report_conv_open_inference()` \
+         経由にし、confidence の上限 (Medium) を勝手に上げないでください。"
+    );
 }
 
 #[test]
