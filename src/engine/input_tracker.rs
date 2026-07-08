@@ -157,6 +157,7 @@ impl InputTracker {
             vk_code: event.vk_code,
             timestamp: event.timestamp,
             is_ime_control: event.ime_relevance.is_ime_control,
+            modifier_key: event.modifier_key,
         }
     }
 
