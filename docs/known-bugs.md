@@ -873,6 +873,130 @@ climb し、その間 2 回 `[gji-fsm] StartComposition while engine off — ign
 
 ---
 
+## BUG-18: 無操作中の AppKind (TsfNative⇔Uwp/InputSite) 往復後、再開直後の入力が部分欠落する（修正済み）
+
+**症状:** Chrome（`Chrome_WidgetWin_1`、GJI、`Imm32Unavailable` プロファイル）で
+日本語入力中。2026-07-07 実機ログ（ローカル夜間、ログ内タイムスタンプは UTC
+2026-07-08T03:11〜03:13）で、「この内容を」（romaji `ko/no/na/i/yo/u/wo`）と
+入力したところ一部の文字が欠落した（ユーザー報告）。
+
+タイムライン:
+- `03:12:24.891` `IME OFF (key combo)` の後、この抜粋の終端（`03:13:54`）まで
+  `Engine activated` ログが一度も出ていない（= awase Engine 側は inactive の
+  ままだったはずの区間）。
+- その約90秒間（`03:12:16`〜`03:13:46`）、`Hook watchdog: no activity for
+  N ms` が継続的に出続けており、**ユーザーの実キー入力が無かったはず**の区間
+  にもかかわらず、`AppKind changed: TsfNative → Uwp`
+  （`Windows.UI.Input.InputSite.WindowClass`）/ `Uwp → TsfNative`
+  （`Chrome_WidgetWin_1`）が複数回（少なくとも4回）発生し、そのたびに
+  `HwndCache: restore [...] ime_on=... mode=ObservedRomaji` が走っている。
+- `03:13:46.340` `FocusProbe +15ms: ime_on=true(shadow) mode=ObservedRomaji
+  [ime=GoogleJapaneseInput ...]` — shadow 側は ON と認識。
+- `03:13:46.574`〜`47.010` に `ko`/`no`/`na`/`i`/`yo` を送信。`47.021` に
+  candidate SHOW #52 が出るが、直後 `47.027` に
+  `[gji-fsm] StartComposition while engine off — ignored`。
+- `47.120` `comp-probe partial-literal` → `47.254` `u` 送信 → `47.362`
+  `comp-probe confirmed` → `47.363` `wo` 送信 → `47.440`
+  `comp-probe partial-literal` に続けて
+  `[raw-tsf-literal] cold=35 consecutive raw-tsf-literal (count=2) →
+  giving up, backs=2 cleanup only (no re-send)` — **バックスペースで後始末は
+  したが再送していない**。
+- `49.234` にも再度 `[gji-fsm] StartComposition while engine off — ignored`
+  が発生。
+
+**原因（仮説・未確定）:** `src/engine/engine.rs::check_active_transition` は
+`ctx.ime_on` 等から Engine の active/inactive を computed する。無操作中の
+AppKind 往復（`runtime/focus_tracking.rs` の `AppKind changed` /
+`focus/hwnd_cache.rs` の `HwndCache: restore`）のたびに `ime_on`/`intent` が
+書き換わっており、実際にはユーザーが IME を再度 ON にしていないのに、キー
+入力パイプライン側（`FocusProbe`）は `ime_on=true(shadow)` と判定して romaji
+変換を継続実行した形跡がある。一方 `tsf/gji_fsm.rs::GjiFsm` は
+`GjiState::OffCold` のままだった — つまり「shadow ime_on」と「`GjiFsm` の
+engine 認識」の間に**不一致な期間**が生じ、その窓で最初の数文字の
+`StartComposition` が `OffCold` のまま握りつぶされ、`LiteralDetect`
+（`output/probe_io.rs`）が raw literal と判定してバックスペースのみで
+再送しなかった、というのが最有力仮説。
+
+直前に修正した BUG-17（`8d97e83`）は Chrome の CLSID/`GetActiveProfile`
+単発フリップによる `GjiFsm` 再構築ループが原因だったが、今回のトリガーは
+CLSID フリップではなく **`AppKind`（`TsfNative`⇔`Uwp`）の往復**であり、
+別経路の可能性が高い。この `AppKind` 往復自体が**ユーザー操作なしで**起きて
+いる点も未解明（`Windows.UI.Input.InputSite.WindowClass` 自体の automatic
+focus churn か、GJI 候補ウィンドウの表示/非表示に伴う副作用か、切り分けに
+`RUST_LOG=debug` の `[tip-detect]` 系ログが必要）。BUG-16（フォーカス遷移の
+settle スキップで belief×実状態が乖離する）と同系統の「focus 遷移中に
+shadow state と実 IME 状態がズレる」構造だが、今回は Engine 自体の
+activate/deactivate ログまで巻き込んでいる点で BUG-16 の修正範囲でカバー
+されていない可能性がある。
+
+**追補（2026-07-08 実機ログ、原因確定・修正）:** 2026-07-08T03:21〜03:25 の
+実機ログ（ユーザー報告「著しく不安定」）で同一パターンを再確認し、原因を確定した。
+
+タイムライン（抜粋）:
+- `03:22:35.829` `IME OFF (key combo)` → `tsf/gji_fsm.rs` の `GjiFsm` が
+  `GjiState::OffCold` に入る（`GjiEvent::ImeOff`, gji_fsm.rs:588）。
+- 以後 `AppKind changed: Uwp → TsfNative (class=Chrome_WidgetWin_1)` /
+  `TsfNative → Uwp (class=Windows.UI.Input.InputSite.WindowClass)` が
+  ユーザー操作なしに繰り返し発生し、`HwndCache: restore [...] ime_on=true`
+  が毎回走る。
+- Chrome (`Imm32Unavailable` プロファイル) 側に戻るたびに
+  `runtime/focus_tracking.rs::on_focus_process_changed` の「Imm32Unavailable
+  hard pre-sync」ブロック（VK_KANJI 二重送信防止のため `effective_open()==true`
+  なら `mirror_applied_open(true, ...)` で belief 層の `applied` だけを
+  直接 ON 確定させる箇所）が毎回発火する。
+- `03:24:43.513` 頃、`[gji-fsm] StartComposition while engine off — ignored`
+  が連発（本ログでは少なくとも8回）。
+
+**確定した原因:** `mirror_applied_open` は `ImeModel`（belief 層）の
+`applied` state のみを ON にする。`GjiFsm` への通知は
+`Runtime::gji_on_ime_on`（`platform.rs:467`）経由でしか行われず、これは
+実際に `on_ime_applied(open=true)`（executor の apply 完了時）からしか
+呼ばれない。ところが hard pre-sync はまさに「実 apply をスキップして
+belief だけ ON にする」ための経路なので、`gji_on_ime_on` が一度も呼ばれず、
+直前の実 `IME OFF` で入った `GjiFsm::OffCold` がそのまま残留する。
+`GjiEvent::FocusChange` も `OffCold` 中は no-op（gji_fsm.rs:600-605
+`if !engine_on { return Response::consume(); }`）なので、AppKind 往復
+（フォーカス変更）だけではこの残留状態から抜けられない。結果、belief 層は
+「IME ON」を指すのに `GjiFsm` は `OffCold` のままという不一致期間が生じ、
+その窓で送られた `StartComposition` が `gji_fsm.rs:753-756` で無条件に
+`consume()`（=破棄）され、対応する文字が欠落する。
+
+`Hook watchdog: no activity for Nms` が 30〜47 秒まで単調増加していたのは
+実際のフリーズではない（watchdog 自身が `WM_TIMER` 経由でメッセージループ
+から出ているため、ループが本当に止まればこのログ自体出なくなる）。単に
+その間ユーザーの実キー入力が無かっただけで、無操作中に `AppKind` が
+往復し続けていたことが本質。
+
+**修正:** `on_focus_process_changed`（`runtime/focus_tracking.rs`）の
+「Imm32Unavailable hard pre-sync」ブロックで `mirror_applied_open(true, ...)`
+を呼ぶのと同じ条件下で、`tsf/observer::tsf_obs().active_ime_kind()` が
+`GoogleJapaneseInput` の場合に限り `self.platform.gji_on_ime_on(mode)` も
+呼ぶよう追加した。`runtime/message_handlers.rs::sync_ime_kind_from_observation`
+が既に使っている「belief が ON なら `GjiFsm` にも `ImeOn` を通知する」と
+同一パターンで、`GjiFsm` が既に `OffCold` でなければ `ImeOn` ハンドラ側で
+no-op になる（gji_fsm.rs:558-565）ため副作用はない。
+
+**テスト:** 本修正は `Runtime`/`WindowsPlatform`（実 HWND・hook・GJI IPC 依存）
+の統合経路への配線であり、既存の golden テスト（`golden_scenarios.rs` 等）は
+`ImeModel::reduce` のみを対象とする純粋関数テストで `GjiFsm`/`Runtime` 配線を
+検証できない。[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)
+に従い、golden テストの代わりに本追記で修正履歴を記録する。Windows 実機での
+再現待ち（AppKind 往復自体を意図的に誘発する再現手順が未確立のため）。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/focus_tracking.rs`
+（`on_focus_process_changed` の hard pre-sync ブロック）,
+`crates/awase-windows/src/platform.rs`（`gji_on_ime_on`, `on_ime_applied`）,
+`crates/awase-windows/src/state/platform_state.rs`（`mirror_applied_open`）,
+`crates/awase-windows/src/runtime/message_handlers.rs`
+（`sync_ime_kind_from_observation`、同型の既存パターン）,
+`crates/awase-windows/src/tsf/gji_fsm.rs`（`GjiState::OffCold`,
+`StartComposition`, `FocusChange`）
+
+**関連バグ:** BUG-16（focus 遷移の belief×実状態乖離）, BUG-17
+（CLSID フリップによる `GjiFsm` 再構築、直前修正・別経路）
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

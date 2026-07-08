@@ -349,6 +349,22 @@ impl Runtime {
                     "[focus] Imm32Unavailable hard pre-sync applied=true \
                      (prevent spurious VK_KANJI on first character key)"
                 );
+                // BUG-18: HwndCacheRestored / mirror_applied_open は belief 層
+                // (ImeModel) だけを ON に戻し、GjiFsm には一切通知しない。
+                // 無操作中の AppKind 往復 (TsfNative⇔Uwp) で本経路を繰り返し通ると、
+                // 直前の実 IME-OFF で GjiFsm::OffCold に入ったまま belief だけが
+                // ON に戻り、再開後の StartComposition が OffCold で握りつぶされて
+                // 最初の数文字が欠落する。sync_ime_kind_from_observation
+                // (runtime/message_handlers.rs) と同じ「belief=ON なら GjiFsm へも
+                // ImeOn を通知する」パターンをここにも適用して揃える。GjiFsm が
+                // 既に ON なら ImeOn ハンドラ側で no-op になる (gji_fsm.rs 558-565)。
+                if matches!(
+                    crate::tsf::observer::tsf_obs().active_ime_kind(),
+                    crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+                ) {
+                    let mode = self.platform.output.injection_mode;
+                    self.platform.gji_on_ime_on(mode);
+                }
             }
         }
 
