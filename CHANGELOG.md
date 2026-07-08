@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### バグ修正
 
+- **Chrome/Edge で conv mode の一発誤読が GJI を実際にカタカナへ固定する不具合を修正（BUG-19）**
+  - `GetForegroundWindow()` 基準の conv 読み取り（`get_ime_conversion_mode_raw_timeout`）が、`Chrome_WidgetWin_1` と GJI 候補ポップアップ（`Windows.UI.Input.InputSite.WindowClass`）の間でフォーカスが往復する際に一瞬だけ誤ったカタカナ conv を拾うことがあり、これを `ConvModeMgr` が無条件に確定していた
+  - 確定した誤読を eager warmup（`send_eager_tsf_warmup`）が鵜呑みにし、`VK_DBE_KATAKANA` を実送信 → 一過性の誤読が GJI の本当の状態としてロックインされ、以後の入力が全部カタカナ化し、さらに `KatakanaShadowOff` 救済ロジックが繰り返し IME OFF/ON を往復させて先頭文字の literal 漏れを誘発していた
+  - `ConvModeMgr::update_from_conv` に、非カタカナ→カタカナ遷移限定のデバウンス（`ImeKindDebounce` と同一の「2 tick 連続確認」パターン）を追加。詳細は docs/known-bugs.md BUG-19
+
 - **Chrome 入力中、CLSID ベース IME 種別の単発誤検出で `GjiFsm` が単語ごとに再構築され `cold` が発火し続ける不具合を修正（BUG-17）**
   - `gji-io-monitor` ワーカースレッドが 2 秒ごとにポーリングする `ITfInputProcessorProfileMgr::GetActiveProfile` の単発フリップを `WM_IME_KIND_CHANGED` としてそのまま main スレッドへ伝播しており、`set_active_ime_kind` が種別変化のたびに warmup 戦略（`GjiFsm`/`MsImeStrategy`）を無条件で新規生成 → 確立済みの `OnWarm`/`OnComposing` を破棄していた
   - Chrome cold-start reinit が実 `VK_IME_OFF→VK_IME_ON` トグルを送信すること自体が誤検出の引き金となり、「reinit → 誤検出 → GjiFsm 再構築 → 次の単語も cold → 再度 reinit → …」という自己増幅ループを形成していた（実機ログで `cold_seq` が単語ごとに 392→401 と climb、2 回の "StartComposition while engine off" 警告が CLSID ポーリング周期とほぼ一致する 2146ms 間隔で観測）

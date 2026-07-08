@@ -67,6 +67,9 @@ pub(crate) struct ConvModeMgr {
     ///   変更しないため、F1+F3 後の IMM 読み取りが ZenKata (0x0B) を返す副作用を遮断する
     #[cfg(windows)]
     suppress_zenkata_until_ms: std::cell::Cell<u64>,
+    /// 非カタカナ → カタカナ (Zenkaku/Hankaku) への遷移候補。2 回連続で同じ値を観測する
+    /// まで `mode` を確定させない（BUG-19 の一発誤読ロック対策、下記 `update_from_conv` 参照）。
+    katakana_candidate: std::cell::Cell<Option<ConvMode>>,
 }
 
 impl Default for ConvModeMgr {
@@ -75,6 +78,7 @@ impl Default for ConvModeMgr {
             mode: std::cell::Cell::new(None),
             #[cfg(windows)]
             suppress_zenkata_until_ms: std::cell::Cell::new(0),
+            katakana_candidate: std::cell::Cell::new(None),
         }
     }
 }
@@ -116,40 +120,158 @@ impl ConvModeMgr {
     /// HankakuKatakana → ZenkakuKatakana のダウングレードは `suppress_zenkata_until_ms` 期限内
     /// であれば無視する（フォーカス後 1500ms または HanKata warmup 後 500ms）。
     ///
+    /// 非カタカナ → カタカナ (Zenkaku/Hankaku) への遷移は、既存の確定モードがある場合に限り
+    /// 2 回連続で同じ値を観測するまで確定させない（BUG-19: `GetForegroundWindow` 基準の
+    /// conv 読み取りが、候補ウィンドウ等フォーカスが一瞬他ウィンドウに移った際に一発だけ
+    /// 誤ったカタカナ conv を返すことがある。この値をここで確定させてしまうと、
+    /// warmup の先頭 VK 選択がカタカナ用キーを実送信し、誤読が GJI の実状態として
+    /// 定着してしまう — 詳細は `docs/known-bugs.md` BUG-19 参照）。
+    ///
     /// `now_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     pub(crate) fn update_from_conv(&self, conv: u32, now_ms: TickMs) -> bool {
         let new = ConvMode::from_u32(conv);
         let old = self.mode.get();
-        if old != Some(new) {
-            #[cfg(windows)]
-            if old.map_or(false, |m| m.charset == Charset::HankakuKatakana)
-                && new.charset == Charset::ZenkakuKatakana
-            {
-                let now = now_ms.0;
-                let until = self.suppress_zenkata_until_ms.get();
-                if now < until {
-                    log::debug!(
-                        "[conv-mode] HanKata→ZenKata ダウングレード抑制 \
-                         (残り{}ms, conv=0x{conv:08X})",
-                        until.saturating_sub(now)
-                    );
-                    return false;
-                }
+
+        // 非カタカナ → カタカナ遷移候補の追跡。`new` が現在の確定モードと一致する
+        // 場合（＝カタカナ候補と矛盾する読み取り）も含め、条件を満たさなければ
+        // 必ず候補をクリアする。そうしないと、2回連続でなく「候補→矛盾する読み取り
+        // →候補と同じ値」という間隔の空いた一致でも確定してしまう。
+        let entering_katakana =
+            new.charset.is_katakana() && old.is_some_and(|m| !m.charset.is_katakana());
+        if entering_katakana {
+            if self.katakana_candidate.get() != Some(new) {
+                self.katakana_candidate.set(Some(new));
+                log::debug!(
+                    "[conv-mode] カタカナ遷移候補観測 (1回目、確定保留): \
+                     {} → {} (conv=0x{conv:08X})",
+                    old.map_or_else(|| "None".to_string(), |m| m.to_string()),
+                    new,
+                );
+                return false;
             }
-            log::info!(
-                "[conv-mode] {} → {} (conv=0x{conv:08X})",
-                old.map_or_else(|| "None".to_string(), |m| m.to_string()),
-                new,
-            );
-            self.mode.set(Some(new));
-            true
+            // 2 回連続で同じカタカナ値を観測 — 確定へ進む。
         } else {
-            false
+            self.katakana_candidate.set(None);
         }
+
+        if old == Some(new) {
+            return false;
+        }
+
+        #[cfg(windows)]
+        if old.map_or(false, |m| m.charset == Charset::HankakuKatakana)
+            && new.charset == Charset::ZenkakuKatakana
+        {
+            let now = now_ms.0;
+            let until = self.suppress_zenkata_until_ms.get();
+            if now < until {
+                log::debug!(
+                    "[conv-mode] HanKata→ZenKata ダウングレード抑制 \
+                     (残り{}ms, conv=0x{conv:08X})",
+                    until.saturating_sub(now)
+                );
+                return false;
+            }
+        }
+        log::info!(
+            "[conv-mode] {} → {} (conv=0x{conv:08X})",
+            old.map_or_else(|| "None".to_string(), |m| m.to_string()),
+            new,
+        );
+        self.mode.set(Some(new));
+        self.katakana_candidate.set(None);
+        true
     }
 
     /// 現在のモードを返す。`None` = まだ `update_from_conv` が呼ばれていない。
     pub(crate) fn get(&self) -> Option<ConvMode> {
         self.mode.get()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 実機ログで観測された値。CONV_HIRAGANA: NATIVE|FULLSHAPE|ROMAN。
+    // CONV_ZENKATA: NATIVE|KATAKANA|FULLSHAPE|ROMAN。
+    const CONV_HIRAGANA: u32 = 0x0019;
+    const CONV_ZENKATA: u32 = 0x001B;
+
+    fn t(ms: u64) -> TickMs {
+        TickMs(ms)
+    }
+
+    /// BUG-19: 一発だけのカタカナ観測は確定させない（`GetForegroundWindow` 基準の
+    /// conv 読み取りが候補ウィンドウ等から誤ってカタカナ conv を拾うケースの再現）。
+    #[test]
+    fn single_spurious_katakana_reading_is_not_committed() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_HIRAGANA, t(0)));
+        assert_eq!(mgr.get().unwrap().charset.to_string(), "Hiragana");
+
+        let changed = mgr.update_from_conv(CONV_ZENKATA, t(10));
+        assert!(!changed, "1回目のカタカナ観測は確定してはいけない");
+        assert_eq!(
+            mgr.get().unwrap().charset.to_string(),
+            "Hiragana",
+            "1回目の観測では mode が書き換わってはいけない"
+        );
+    }
+
+    /// 2回連続で同じカタカナ値を観測したら確定する。
+    #[test]
+    fn katakana_reading_confirmed_after_two_consecutive_observations() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_HIRAGANA, t(0)));
+        assert!(!mgr.update_from_conv(CONV_ZENKATA, t(10)));
+
+        let changed = mgr.update_from_conv(CONV_ZENKATA, t(20));
+        assert!(changed, "2回連続で一致したら確定するべき");
+        assert_eq!(mgr.get().unwrap().charset.to_string(), "ZenKata");
+    }
+
+    /// 候補観測の直後に元の値へ戻る読み取りが入った場合、候補はクリアされ、
+    /// その後に同じカタカナ値が来ても「1回目」として扱われる（間隔の空いた
+    /// 一致で確定してしまわないことの回帰テスト）。
+    #[test]
+    fn intervening_reading_resets_katakana_candidate() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_HIRAGANA, t(0)));
+        assert!(!mgr.update_from_conv(CONV_ZENKATA, t(10)), "1回目: 保留");
+        assert!(
+            !mgr.update_from_conv(CONV_HIRAGANA, t(20)),
+            "現状維持の再観測（変化なし）"
+        );
+
+        // 直前に矛盾する読み取り(Hiragana)があったため、これは改めて「1回目」。
+        let changed = mgr.update_from_conv(CONV_ZENKATA, t(30));
+        assert!(
+            !changed,
+            "間に矛盾する読み取りを挟んだ場合、確定までもう一度連続一致が必要"
+        );
+        assert_eq!(mgr.get().unwrap().charset.to_string(), "Hiragana");
+
+        assert!(mgr.update_from_conv(CONV_ZENKATA, t(40)), "改めて2回連続で確定");
+        assert_eq!(mgr.get().unwrap().charset.to_string(), "ZenKata");
+    }
+
+    /// 初回観測（`old` が `None`）はデバウンス対象外 — 起動直後にカタカナの
+    /// アプリへフォーカスした場合等、正当なケースを即座に反映する。
+    #[test]
+    fn first_ever_observation_is_not_debounced_even_if_katakana() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_ZENKATA, t(0)));
+        assert_eq!(mgr.get().unwrap().charset.to_string(), "ZenKata");
+    }
+
+    /// カタカナ以外への遷移（英数化等）は従来通りデバウンスなしで即確定する。
+    #[test]
+    fn non_katakana_transitions_are_unaffected() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_HIRAGANA, t(0)));
+        // 半角英数 (conv=0)
+        assert!(mgr.update_from_conv(0x0000, t(10)));
+        assert_eq!(mgr.get().unwrap().charset.to_string(), "HanAlpha");
     }
 }

@@ -997,6 +997,88 @@ no-op になる（gji_fsm.rs:558-565）ため副作用はない。
 
 ---
 
+## BUG-19: 一発だけのカタカナ conv 誤読を warmup が鵜呑みにし、GJI が実際にカタカナへ固定される（修正済み）
+
+**症状:** Chrome/Edge (`Chrome_WidgetWin_1`、GJI、`Imm32Unavailable` プロファイル) で
+日本語入力中、2026-07-08 実機ログ（ユーザー報告）で「これでいいかな」と入力したところ、
+3通りの壊れ方が発生した: (a) 全部カタカナ化（「コレデイイカナ」）、(b) 先頭の "k" だけ
+生のローマ字として残留（「kおれでいいかな」）、(c) 先頭の "ko" だけ生のローマ字として
+残留（「koれでいいかな」）。ユーザーは同じ単語を壊れるたびに複数回打ち直しており、
+ログ上に同一 romaji 列 `ko/re/de/i/i/ka/na` が短時間に複数回出現するのは内部の再送では
+なくユーザー自身の打ち直しであることを確認済み。
+
+**タイムライン（抜粋、2026-07-08T05:01〜05:02）:**
+- `05:01:26` 前後、`AppKind changed: TsfNative → Uwp` / `Uwp → TsfNative` により
+  `Chrome_WidgetWin_1`（メインコンテンツ）と `Windows.UI.Input.InputSite.WindowClass`
+  （GJI 候補ポップアップ等）の間でフォーカスが往復（`FocusChange [20408→9668→20984]`)。
+- `05:01:54.387` `[conv-mode] Hiragana/roma → ZenKata/roma (conv=0x0000001B)` —
+  ユーザーが何もカタカナ変換操作をしていないのに conv mode がカタカナへ切り替わる。
+- 以後 `[idle-conv-check] TsfNative: engine ON 同期 (conv=0x0000001B,
+  reason=KatakanaShadowOff)` が `05:02:05.830` / `05:02:09.244` / `05:02:13.816` と
+  約3.5〜4.5秒間隔で反復し、そのたびに `IME OFF (key combo)` → `Engine activated`
+  の往復が発生する自己強化ループになっていた。
+
+**原因（確定）:** `state/conv_mode.rs::ConvModeMgr::update_from_conv` は
+`ImmGetConversionStatus` の raw 値を無条件に信頼し、変化があれば即座に確定していた。
+一方 conv 読み取り自体（`ime.rs:423` `get_ime_conversion_mode_raw_timeout` は
+`GetForegroundWindow()` 基準）は、フォーカスが `Chrome_WidgetWin_1` と候補ポップアップ
+(`Windows.UI.Input.InputSite.WindowClass`) の間を往復する状況下で、一瞬だけ候補
+ポップアップ側のコンテキストから誤ったカタカナ conv を拾い得る。この一発誤読が
+`ConvModeMgr` に即座に確定されると、次の eager warmup（`output/mod.rs:590-620`
+`send_eager_tsf_warmup`）が `self.conv_mode.get()` の charset を見て
+`ZenkakuKatakana` 用の warmup キー（`VK_DBE_KATAKANA`, F1 系）を**実際に GJI へ
+送信**してしまう。これにより一過性の誤読が GJI の**本当の**状態としてロックインされ、
+以後の raw conv 読み取りは「本当にカタカナになった GJI」を正しく反映し続けるため、
+単なる誤読では済まなくなる。GJI が実際にカタカナへ固定された結果、(a) 全文カタカナ化が
+発生し、さらに `conv_classify.rs::classify_conv_transition` の `KatakanaShadowOff`
+救済ロジックが shadow=OFF なタイミングで発火するたびに engine の IME OFF/ON を
+往復させ、その往復のたびに生じる cold な再開窓で (b)(c) の先頭文字 literal 漏れが
+誘発された（BUG-18 と同系統の「OffCold 残留窓での StartComposition 握りつぶし」）。
+
+BUG-18（同じ AppKind 往復が引き金）とは異なり、こちらは **conv mode（文字種）** の
+誤読が実際の IME 状態を書き換えてしまう経路であり、BUG-18 の修正（`f9b10ae`、
+`GjiFsm` への `ImeOn` 通知同期）ではカバーされない別経路。
+
+**修正:** `ConvModeMgr::update_from_conv` に、非カタカナ→カタカナへの遷移限定の
+デバウンスを追加した（`crates/awase-windows/src/state/conv_mode.rs`）。「同一の
+カタカナ値を2回連続で観測するまで `mode` を確定しない」という、BUG-17 の
+`ImeKindDebounce`（`tsf/gji_monitor.rs`）と同一パターン。1回目の観測は
+`katakana_candidate` に保持するのみで `mode`/`get()` は変更しない（＝eager warmup
+はまだ古い確定値を見るため実際の VK 送信は起きない）。2回目に同じ値が来て初めて
+確定する。間に矛盾する読み取り（元の charset に戻る等）を挟んだ場合は候補をクリアし、
+再び「1回目」からやり直す。初回観測（`mode` がまだ `None`）はデバウンス対象外
+（起動直後にカタカナ入力アプリへフォーカスした場合等の正当なケースを即反映するため）。
+
+**なぜこの粒度で十分か:** 誤読は `GetForegroundWindow()` が一瞬だけ候補ポップアップ
+側を指す間だけの一過性現象であり、次の読み取り（数百ms以内、typing 中は各キー入力
+ごとに複数の呼び出し site から読まれる）では通常フォーカスが正しいウィンドウへ
+戻っているため誤ったカタカナ値が連続することは稀。一方、本当にユーザーがカタカナへ
+切り替えた場合は同じ値が繰り返し観測されるため、1読み取り分の遅延だけで正しく確定する。
+
+**テスト:** `crates/awase-windows/src/state/conv_mode.rs` に5件のユニットテストを
+追加（Linux でも `cargo test -p awase-windows --lib conv_mode` で実行可能・純粋関数）:
+`single_spurious_katakana_reading_is_not_committed`,
+`katakana_reading_confirmed_after_two_consecutive_observations`,
+`intervening_reading_resets_katakana_candidate`,
+`first_ever_observation_is_not_debounced_even_if_katakana`,
+`non_katakana_transitions_are_unaffected`。Windows 実機（`GetForegroundWindow` の
+実際の誤読挙動を含む）での再現待ち。
+
+**関連ファイル:** `crates/awase-windows/src/state/conv_mode.rs`
+（`ConvModeMgr::update_from_conv`, `katakana_candidate`）,
+`crates/awase-windows/src/output/mod.rs`（`send_eager_tsf_warmup`、
+`self.conv_mode.get()` を信頼する消費側）,
+`crates/awase-windows/src/state/conv_classify.rs`（`KatakanaShadowOff` の
+発火元、今回は raw conv ではなく `ConvModeMgr` 確定値経由で間接的に保護される）,
+`crates/awase-windows/src/ime.rs`（`get_ime_conversion_mode_raw_timeout`、
+`GetForegroundWindow()` 基準の読み取り — 今回は読み取り自体は変更せず、
+消費側のデバウンスで対処）
+
+**関連バグ:** BUG-17（`ImeKindDebounce` と同一の「2 tick 連続確認」パターンを
+conv mode 側に適用）, BUG-18（同じ AppKind 往復が引き金だが別経路・別修正）
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
