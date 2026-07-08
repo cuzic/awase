@@ -704,7 +704,14 @@ fn test_shift_face_fullwidth_ascii_passes_through() {
     layout.shift.insert(POS_A, lit('Ｋ'));
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, ConfirmMode::Wait, 30),
+        engine: NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
     };
 
     engine.on_event(Ev::down(VK_SHIFT).build());
@@ -718,7 +725,14 @@ fn test_shift_face_halfwidth_disabled_keeps_literal() {
     // shift_plane_halfwidth=false なら従来どおり .yab の値をそのまま出力する。
     let mut layout = make_layout();
     layout.shift.insert(POS_A, lit('Ｋ'));
-    let mut fsm = NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, ConfirmMode::Wait, 30);
+    let mut fsm = NicolaFsm::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
     fsm.set_shift_plane_halfwidth(false);
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(),
@@ -755,7 +769,14 @@ fn test_shift_face_fullwidth_symbol_literal_emits_fullwidth_text() {
     layout.shift.insert(POS_A, lit('！'));
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, ConfirmMode::Wait, 30),
+        engine: NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
     };
     engine.on_event(Ev::down(VK_SHIFT).build());
     let result = engine.on_event(Ev::down(VK_A).build());
@@ -777,7 +798,14 @@ fn test_shift_face_halfwidth_symbol_passes_through() {
         .insert(POS_A, crate::yab::YabValue::KeySequence("!".to_string()));
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, ConfirmMode::Wait, 30),
+        engine: NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
     };
     engine.on_event(Ev::down(VK_SHIFT).build());
     engine
@@ -3486,7 +3514,10 @@ fn test_engine_off_triple_solo_thumb_triggers() {
         engine.on_event(Ev::down(VK_NONCONVERT).at(t).build());
         engine.on_timeout(TIMER_PENDING);
     }
-    assert!(engine.take_engine_off_requested(), "3 consecutive solo presses → engine off");
+    assert!(
+        engine.take_engine_off_requested(),
+        "3 consecutive solo presses → engine off"
+    );
 }
 
 #[test]
@@ -3512,18 +3543,27 @@ fn test_engine_off_counter_resets_on_thumb_consume() {
     engine.on_event(Ev::down(VK_NONCONVERT).at(2 * gap).build());
     let result = engine.on_event(Ev::down(VK_A).at(2 * gap + 30_000).build()); // 30ms = within 100ms threshold
     assert!(
-        result.actions.iter().any(|a| matches!(a, KeyAction::Char('を'))),
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('を'))),
         "無変換+A should produce 'を'"
     );
 
     // リセット後: solo 2 回 (count=1, then count=2 → engine off しない)
     engine.on_event(Ev::down(VK_NONCONVERT).at(3 * gap).build());
     engine.on_timeout(TIMER_PENDING);
-    assert!(!engine.take_engine_off_requested(), "count=1 after reset → no engine off");
+    assert!(
+        !engine.take_engine_off_requested(),
+        "count=1 after reset → no engine off"
+    );
 
     engine.on_event(Ev::down(VK_NONCONVERT).at(4 * gap).build());
     engine.on_timeout(TIMER_PENDING);
-    assert!(!engine.take_engine_off_requested(), "count=2 after reset → no engine off");
+    assert!(
+        !engine.take_engine_off_requested(),
+        "count=2 after reset → no engine off"
+    );
 }
 
 // ── FsmAdapter tests ──

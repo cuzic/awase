@@ -111,7 +111,11 @@ impl<I, Y> Future for SuspendOnce<I, Y> {
 /// `Rc` を使うため生成される future は `!Send`。これはタイマー駆動の単一スレッド設計による意図的な制約。
 #[expect(clippy::future_not_send)]
 pub async fn yield_step<I, Y>(channel: Rc<Channel<I, Y>>, output: Y) -> I {
-    SuspendOnce { channel, output: Some(output) }.await
+    SuspendOnce {
+        channel,
+        output: Some(output),
+    }
+    .await
 }
 
 // ── CoroStep ──────────────────────────────────────────────────────────────────

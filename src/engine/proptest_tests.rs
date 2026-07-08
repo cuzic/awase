@@ -4,11 +4,11 @@ use proptest::prelude::*;
 
 use crate::config::ConfirmMode;
 use crate::engine::decision::{InputContext, SpecialKeyCombos};
-use crate::engine::mode_state::InputModeState;
 use crate::engine::engine::Engine;
 use crate::engine::fsm_types::EngineState;
-use crate::engine::input_tracker::InputTracker;
 use crate::engine::fsm_types::TIMER_PENDING;
+use crate::engine::input_tracker::InputTracker;
+use crate::engine::mode_state::InputModeState;
 use crate::engine::nicola_fsm::NicolaFsm;
 use crate::scanmap::PhysicalPos;
 use crate::types::{KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode};

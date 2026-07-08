@@ -12,7 +12,7 @@
 /// - `typing_idle_ms`: タイピング停止とみなす閾値（`TYPING_IDLE_MS`、通常 500ms）
 /// - `explicit_suppress_ms`: 明示的 IME 操作後の抑制窓（`EXPLICIT_IME_SUPPRESS_MS`、通常 1500ms）
 #[must_use]
-pub fn should_run_idle_conv_check(
+pub const fn should_run_idle_conv_check(
     is_key_down: bool,
     is_tsf_native: bool,
     in_flight_ms: u64,
@@ -56,18 +56,39 @@ mod tests {
     // ── ガード 1: KeyDown のみ ──
     #[test]
     fn guard1_key_up_skips() {
-        assert!(!should_run_idle_conv_check(false, true, u64::MAX, u64::MAX, IDLE_MS, SUPPRESS_MS));
+        assert!(!should_run_idle_conv_check(
+            false,
+            true,
+            u64::MAX,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS
+        ));
     }
 
     #[test]
     fn guard1_key_down_passes() {
-        assert!(should_run_idle_conv_check(true, true, u64::MAX, u64::MAX, IDLE_MS, SUPPRESS_MS));
+        assert!(should_run_idle_conv_check(
+            true,
+            true,
+            u64::MAX,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS
+        ));
     }
 
     // ── ガード 2: TsfNative のみ ──
     #[test]
     fn guard2_non_tsf_native_skips() {
-        assert!(!should_run_idle_conv_check(true, false, u64::MAX, u64::MAX, IDLE_MS, SUPPRESS_MS));
+        assert!(!should_run_idle_conv_check(
+            true,
+            false,
+            u64::MAX,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS
+        ));
     }
 
     // ── ガード 3: タイピング停止後のみ ──
@@ -121,6 +142,13 @@ mod tests {
     #[test]
     fn multiple_guards_fail_still_skips() {
         // KeyUp かつ typing 中 → どちらもスキップ条件
-        assert!(!should_run_idle_conv_check(false, true, IDLE_MS, u64::MAX, IDLE_MS, SUPPRESS_MS));
+        assert!(!should_run_idle_conv_check(
+            false,
+            true,
+            IDLE_MS,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS
+        ));
     }
 }

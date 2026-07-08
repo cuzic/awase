@@ -13,7 +13,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
 thread_local! {
     /// 発火待ちタイマー ID → Waker のマップ（同一スレッド専用）
     // HashMap::new() は const fn ではないため const { } 形式は使えない
-    #[expect(clippy::missing_const_for_thread_local)]
     static PENDING_WAKERS: RefCell<HashMap<usize, Waker>> = RefCell::new(HashMap::new());
 }
 
