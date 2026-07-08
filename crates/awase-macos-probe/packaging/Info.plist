@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>tools.awase.macos-probe</string>
+	<key>CFBundleName</key>
+	<string>awase-macos-probe</string>
+	<key>CFBundleDisplayName</key>
+	<string>awase-macos-probe</string>
+	<key>CFBundleExecutable</key>
+	<string>awase-macos-probe</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<!-- Keep these in sync with the crate version in
+	     crates/awase-macos-probe/Cargo.toml (currently 0.1.0).
+	     Hardcoded for now; build_probe_app.sh does NOT rewrite them. -->
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<!-- LSUIElement=1: this is a background diagnostic tool (event-tap /
+	     input-source probe), so it needs no Dock icon or menu bar. If a
+	     future subcommand needs a visible UI (e.g. an interactive TCC-prompt
+	     flow that must come to the foreground), flip this to 0 or remove it. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+</dict>
+</plist>
